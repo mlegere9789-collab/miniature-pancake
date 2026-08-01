@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "AfterNoon",
+    "slug": "afternoon",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "afternoon",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#FBF6F0"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.afternoon.app"
+    },
+    "android": {
+      "package": "com.afternoon.app"
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "plugins": ["expo-sqlite"]
+  }
+}
