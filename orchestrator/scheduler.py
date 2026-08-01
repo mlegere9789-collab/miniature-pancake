@@ -70,7 +70,15 @@ def _parse_at(cadence: str, at: str) -> tuple[int, int, int | None]:
             raise ValueError(f"weekly 'at' must be 'dow HH:MM', got {at!r}")
         hh, mm = parts[1].split(":")
         return (int(hh), int(mm), _DOW[parts[0]])
-    raise ValueError(f"unknown cadence {cadence!r} (use hourly|daily|weekly)")
+    raise ValueError(f"unknown cadence {cadence!r} (use hourly|daily|weekly|every)")
+
+
+def _interval_hours(job: dict[str, Any]) -> int:
+    """Validate and return the N for an 'every' cadence (1..23 hours)."""
+    n = int(job.get("interval_hours", 1))
+    if not 1 <= n <= 23:
+        raise ValueError("'every' cadence needs interval_hours between 1 and 23")
+    return n
 
 
 # --------------------------------------------------------------------------- #
@@ -78,14 +86,17 @@ def _parse_at(cadence: str, at: str) -> tuple[int, int, int | None]:
 # --------------------------------------------------------------------------- #
 def to_cron_line(job: dict[str, Any]) -> str:
     cadence = job["cadence"].lower().strip()
-    hour, minute, dow = _parse_at(cadence, job.get("at", ""))
-    if cadence == "hourly":
-        expr = "0 * * * *"
-    elif cadence == "daily":
-        expr = f"{minute} {hour} * * *"
-    else:  # weekly
-        cron_dow = _CRON_DOW[[k for k, v in _DOW.items() if v == dow][0]]
-        expr = f"{minute} {hour} * * {cron_dow}"
+    if cadence == "every":
+        expr = f"0 */{_interval_hours(job)} * * *"
+    else:
+        hour, minute, dow = _parse_at(cadence, job.get("at", ""))
+        if cadence == "hourly":
+            expr = "0 * * * *"
+        elif cadence == "daily":
+            expr = f"{minute} {hour} * * *"
+        else:  # weekly
+            cron_dow = _CRON_DOW[[k for k, v in _DOW.items() if v == dow][0]]
+            expr = f"{minute} {hour} * * {cron_dow}"
     # cd into project so `python -m modules...` resolves; log to a per-job file.
     logfile = f"data/logs/{job['name']}.log"
     cmd = job["command"]
@@ -110,7 +121,12 @@ def cmd_list() -> int:
     print(f"Loaded {len(jobs)} job(s) from {src}:\n")
     for j in jobs:
         flag = "ENABLED " if j.get("enabled") else "disabled"
-        print(f"  [{flag}] {j['name']}  ({j['cadence']} {j.get('at','')})")
+        when = (
+            f"every {j.get('interval_hours', 1)}h"
+            if j.get("cadence", "").lower().strip() == "every"
+            else f"{j['cadence']} {j.get('at', '')}".strip()
+        )
+        print(f"  [{flag}] {j['name']}  ({when})")
         if j.get("enabled"):
             print(f"            {to_cron_line(j)}")
     enabled = [j for j in jobs if j.get("enabled")]
@@ -193,6 +209,10 @@ def _save_state(state: dict[str, str]) -> None:
 
 def _is_due(job: dict[str, Any], now: datetime, last_run: datetime | None) -> bool:
     cadence = job["cadence"].lower().strip()
+    if cadence == "every":
+        interval = timedelta(hours=_interval_hours(job))
+        # 1-minute slack so a poll that lands just under the interval still fires.
+        return last_run is None or (now - last_run) >= interval - timedelta(minutes=1)
     hour, minute, dow = _parse_at(cadence, job.get("at", ""))
     if cadence == "hourly":
         return last_run is None or (now - last_run) >= timedelta(minutes=59)
