@@ -9,3 +9,14 @@ thumbs.db
 .DS_Store
 .idea
 
+# --- Income Orchestrator ---
+# Secrets: never commit real credentials. Only .env.example is tracked.
+.env
+.env.*
+!.env.example
+# Local runtime data: the SQLite DB, per-job logs, scheduler state.
+data/*
+!data/.gitkeep
+# Your live job config (jobs.example.json IS tracked as the template).
+orchestrator/jobs.json
+

@@ -1,0 +1,46 @@
+{
+  "_comment": "Copy this to jobs.json and edit. 'cadence' is hourly|daily|weekly|every. For daily use 'at' = 'HH:MM' (24h). For weekly use 'at' = 'mon 09:00' (day = mon|tue|wed|thu|fri|sat|sun). For 'every' set 'interval_hours' (1-23), e.g. run every 3 hours. 'command' runs from the project root. Set 'enabled': true when a module is ready. All jobs ship disabled so nothing runs until you say so.",
+  "jobs": [
+    {
+      "name": "stock-licensing-daily-upload",
+      "module": "stock_licensing",
+      "command": "python -m modules.stock_licensing.run",
+      "cadence": "daily",
+      "at": "02:00",
+      "enabled": false
+    },
+    {
+      "name": "ecommerce-order-sync",
+      "module": "ecommerce_dropshipping",
+      "command": "python -m modules.ecommerce_dropshipping.run",
+      "cadence": "hourly",
+      "at": "",
+      "enabled": false
+    },
+    {
+      "name": "deal-alert-scan",
+      "module": "deal_alert_bot",
+      "command": "python -m modules.deal_alert_bot.run",
+      "cadence": "every",
+      "interval_hours": 3,
+      "at": "",
+      "enabled": false
+    },
+    {
+      "name": "digital-products-weekly-batch",
+      "module": "digital_products",
+      "command": "python -m modules.digital_products.run",
+      "cadence": "weekly",
+      "at": "mon 08:00",
+      "enabled": false
+    },
+    {
+      "name": "micro-saas-health-and-billing",
+      "module": "micro_saas",
+      "command": "python -m modules.micro_saas.run",
+      "cadence": "daily",
+      "at": "06:00",
+      "enabled": false
+    }
+  ]
+}

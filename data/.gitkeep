@@ -1,0 +1,2 @@
+# This folder holds local runtime data (SQLite DB, logs, scheduler state).
+# Its contents are git-ignored; this .gitkeep just keeps the folder in the repo.
