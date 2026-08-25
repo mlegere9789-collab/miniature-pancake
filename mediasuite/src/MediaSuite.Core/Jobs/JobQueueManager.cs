@@ -309,7 +309,10 @@ public sealed class JobQueueManager : IDisposable
 
             DropFinishedFromPending();
 
-            while (!_paused && _running.Count + starting.Count < _maxConcurrency && _pending.Count > 0)
+            // _running is the only count that matters: jobs are added to it in this same
+            // loop, so also counting `starting` would count each one twice and fill only
+            // half the configured slots.
+            while (!_paused && _running.Count < _maxConcurrency && _pending.Count > 0)
             {
                 var job = _pending.Dequeue();
 

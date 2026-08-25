@@ -39,6 +39,18 @@ public sealed class FakeEngine : IConversionEngine
     private int _active;
     private int _peakActive;
 
+    /// <summary>How many runs are inside the engine right now.</summary>
+    public int ActiveCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _active;
+            }
+        }
+    }
+
     /// <summary>The highest number of runs ever in flight at the same time.</summary>
     public int PeakActive
     {

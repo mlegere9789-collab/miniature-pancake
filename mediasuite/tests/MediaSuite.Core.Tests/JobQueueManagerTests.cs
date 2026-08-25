@@ -81,6 +81,10 @@ public class JobQueueManagerTests : IDisposable
         await WaitUntil(() => queue.RunningCount == 2);
         Assert.Equal(6, queue.PendingCount);
 
+        // Wait for the engines themselves to be in flight: the queue books a job as
+        // running the moment it hands it to the thread pool, which is earlier.
+        await WaitUntil(() => engine.ActiveCount == 2);
+
         gate.SetResult();
         await WaitForIdle(queue);
 
@@ -103,6 +107,36 @@ public class JobQueueManagerTests : IDisposable
 
         queue.MaxConcurrency = 4;
         await WaitUntil(() => queue.RunningCount == 4);
+
+        gate.SetResult();
+        await WaitForIdle(queue);
+    }
+
+    [Fact]
+    public async Task One_scheduling_pass_fills_every_free_slot()
+    {
+        // Regression guard: the scheduler used to count each job it was starting twice,
+        // so a queue set to 4 would only ever run 2. Pausing first forces the whole batch
+        // to be scheduled in a single pass, which is where the miscount showed up.
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var engine = FakeEngine.Gated(gate);
+        using var queue = CreateQueue(new EngineRegistry().Register(engine), maxConcurrency: 4);
+
+        queue.Pause();
+        for (var i = 0; i < 6; i++)
+        {
+            queue.Enqueue(Spec());
+        }
+
+        Assert.Equal(0, queue.RunningCount);
+
+        queue.Resume();
+
+        Assert.Equal(4, queue.RunningCount);
+        Assert.Equal(2, queue.PendingCount);
+
+        await WaitUntil(() => engine.ActiveCount == 4);
+        Assert.Equal(4, engine.PeakActive);
 
         gate.SetResult();
         await WaitForIdle(queue);
