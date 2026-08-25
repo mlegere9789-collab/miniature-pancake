@@ -11,6 +11,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The WPF SDK's implicit usings drop System.IO, which the plain net8.0 set
+         includes. Every module here deals in file paths, so put it back. -->
+    <Using Include="System.IO" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\MediaSuite.Core\MediaSuite.Core.csproj" />
   </ItemGroup>
 
