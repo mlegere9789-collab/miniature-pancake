@@ -34,6 +34,27 @@ public sealed class EngineRegistry
         return null;
     }
 
+    /// <summary>
+    /// True when some engine claims this operation id. Used by the UI to enable only the
+    /// tools that are actually wired up, rather than offering one that will fail.
+    /// </summary>
+    public bool SupportsOperation(string operationId)
+    {
+        if (string.IsNullOrWhiteSpace(operationId))
+        {
+            return false;
+        }
+
+        var probe = new JobSpec
+        {
+            OperationId = operationId,
+            InputPaths = Array.Empty<string>(),
+            Output = new OutputTarget { Directory = "." },
+        };
+
+        return Resolve(probe) is not null;
+    }
+
     /// <summary>Like <see cref="Resolve"/> but throws when nothing can handle the job.</summary>
     public IConversionEngine ResolveRequired(JobSpec spec) =>
         Resolve(spec) ?? throw new InvalidOperationException(

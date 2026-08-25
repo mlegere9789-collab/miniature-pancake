@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Threading;
 using MediaSuite.App.Services;
 using MediaSuite.App.ViewModels;
+using MediaSuite.Core.Engines;
 using MediaSuite.Core.Jobs;
 using MediaSuite.Core.Settings;
 using MediaSuite.Core.Tooling;
@@ -41,12 +42,16 @@ public partial class App : Application
         var workspaces = new DiskTempWorkspaceFactory(settings.ResolveTempDirectory());
         PurgeStaleWorkspaces(workspaces);
 
-        // Engines register from build step 4 onwards; the queue is engine-agnostic and
-        // simply reports "nothing can handle this yet" until they do.
-        var engines = new EngineRegistry();
+        // Every engine the app has so far. Later build steps add video, PDF, document
+        // and upscaling engines to the same registry.
+        var processRunner = new ProcessRunner();
+        var engines = EngineSetup.CreateDefaultRegistry(processRunner, toolLocator);
 
         _queue = new JobQueueManager(engines, workspaces, settings.MaxConcurrentJobs, toolLocator);
-        _mainViewModel = new MainViewModel(settings, store, _themeService, toolLocator, _queue, Dispatcher);
+        var launcher = new JobLauncher(_queue, settings);
+
+        _mainViewModel = new MainViewModel(
+            settings, store, _themeService, toolLocator, _queue, engines, launcher, Dispatcher);
 
         var window = new MainWindow(_themeService)
         {

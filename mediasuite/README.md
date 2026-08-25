@@ -5,8 +5,8 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–3 of 18.** The scaffold, shell, and the job queue manager are
-> in place. The conversion engines are next — see [Build order](#build-order).
+> **Status: build steps 1–4 of 18.** The scaffold, shell, job queue and the image module
+> are in place. Video and audio are next — see [Build order](#build-order).
 
 ## Layout
 
@@ -43,6 +43,9 @@ IConversionEngine  ── the single seam between the queue and the outside worl
     │
 Output handler → local folder, or Google Drive (optional, off by default)
 ```
+
+Engines shell out through a single `IProcessRunner`, which streams tool output, keeps
+only the tail of it for diagnostics, and kills the process tree when a job is canceled.
 
 Every engine is a thin adapter implementing one interface:
 
@@ -99,6 +102,10 @@ failing at the moment you press Convert.
   running, and a private scratch folder per job that is cleaned up afterwards
 - **Queue UI** — status strip plus a live panel: one row per job with its own progress
   bar and cancel button
+- **Image module** — convert (including camera RAW via LibRaw), compress, resize, crop,
+  rotate, flip, enlarge and PNG-to-SVG tracing, driven by ImageMagick and Potrace
+- **Running jobs from the UI** — pick a tool, an output format and a quality preset,
+  choose where results go, and the staged files are queued one job each
 
 ## Build order
 
@@ -107,8 +114,8 @@ failing at the moment you press Convert.
 | 1 | Project scaffold | done |
 | 2 | Core shell UI — nav, drop zone, theme system | done |
 | 3 | Job queue manager | done |
-| 4 | Image module (incl. RAW) | next |
-| 5 | Video / audio module | |
+| 4 | Image module (incl. RAW) | done |
+| 5 | Video / audio module | next |
 | 6 | GIF module | |
 | 7 | PDF module | |
 | 8 | Document / ebook module | |

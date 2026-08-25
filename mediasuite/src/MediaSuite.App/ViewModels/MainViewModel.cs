@@ -21,6 +21,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ThemeService themeService,
         ToolLocator toolLocator,
         JobQueueManager queue,
+        EngineRegistry engines,
+        JobLauncher launcher,
         Dispatcher dispatcher)
     {
         Convert = new ModulePageViewModel(
@@ -28,7 +30,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "\uE895",
             FeatureSection.Convert,
             "Convert anything",
-            "Video, audio, images including camera RAW, documents, ebooks, PDF, GIF and archives — all processed on this machine, with no size limit.")
+            "Video, audio, images including camera RAW, documents, ebooks, PDF, GIF and archives — all processed on this machine, with no size limit.",
+            engines,
+            launcher,
+            settings)
         {
             DropPrompt = "Drop files to convert",
             DropHint = "Video, audio, images, RAW, documents, ebooks, PDF, GIF, archives.",
@@ -39,7 +44,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "\uE73F",
             FeatureSection.Compress,
             "Make files smaller",
-            "Target a size or a quality level. Every compressor has Quick, Balanced and Best presets plus the raw parameters underneath.")
+            "Target a size or a quality level. Every compressor has Quick, Balanced and Best presets plus the raw parameters underneath.",
+            engines,
+            launcher,
+            settings)
         {
             DropPrompt = "Drop files to compress",
             DropHint = "Video, MP3, WAV, images, PDF and GIF.",
@@ -50,7 +58,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "\uE90F",
             FeatureSection.Tools,
             "Edit and fix",
-            "Crop, trim, resize, rotate and the full set of PDF page tools.")
+            "Crop, trim, resize, rotate and the full set of PDF page tools.",
+            engines,
+            launcher,
+            settings)
         {
             DropPrompt = "Drop files to edit",
             DropHint = "Video, images and PDF.",
@@ -61,7 +72,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "\uE740",
             FeatureSection.Upscale,
             "AI photo upscaler",
-            "Real-ESRGAN at 2x, 4x or 8x. Runs on the GPU through CUDA, with a CPU fallback when no supported GPU is present.")
+            "Real-ESRGAN at 2x, 4x or 8x. Runs on the GPU through CUDA, with a CPU fallback when no supported GPU is present.",
+            engines,
+            launcher,
+            settings)
         {
             DropPrompt = "Drop photos to upscale",
             DropHint = "JPG, PNG, WEBP, TIFF and camera RAW.",

@@ -7,4 +7,10 @@
     <Description>Platform-neutral domain model, engine contracts, tool discovery and settings for MediaSuite.</Description>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- Argument builders and format resolution are internal to the engines but are
+         exactly what the tests need to check without the tools installed. -->
+    <InternalsVisibleTo Include="MediaSuite.Core.Tests" />
+  </ItemGroup>
+
 </Project>
