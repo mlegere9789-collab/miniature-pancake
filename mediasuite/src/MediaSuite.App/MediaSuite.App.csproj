@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>MediaSuite.App</RootNamespace>
+    <AssemblyName>MediaSuite</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Description>MediaSuite desktop shell (WPF).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\MediaSuite.Core\MediaSuite.Core.csproj" />
+  </ItemGroup>
+
+</Project>

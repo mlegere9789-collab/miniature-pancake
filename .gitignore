@@ -20,3 +20,13 @@ data/*
 # Your live job config (jobs.example.json IS tracked as the template).
 orchestrator/jobs.json
 
+
+# --- MediaSuite (.NET) ---
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+.vs/
+# Bundled third-party binaries: downloaded per machine, never committed.
+mediasuite/tools/*
+!mediasuite/tools/README.md

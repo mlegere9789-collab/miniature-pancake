@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>MediaSuite.Core</RootNamespace>
+    <AssemblyName>MediaSuite.Core</AssemblyName>
+    <Description>Platform-neutral domain model, engine contracts, tool discovery and settings for MediaSuite.</Description>
+  </PropertyGroup>
+
+</Project>

@@ -1,0 +1,69 @@
+<Window x:Class="MediaSuite.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:converters="clr-namespace:MediaSuite.App.Converters"
+        Title="MediaSuite"
+        Width="1280"
+        Height="820"
+        MinWidth="900"
+        MinHeight="620"
+        WindowStartupLocation="CenterScreen"
+        FontFamily="Segoe UI Variable Text, Segoe UI"
+        FontSize="13"
+        Foreground="{DynamicResource Brush.Text.Primary}"
+        Background="{DynamicResource Brush.Window.Background}">
+
+    <Window.Resources>
+        <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
+    </Window.Resources>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="232" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- Navigation rail -->
+        <Border Grid.Column="0"
+                Background="{DynamicResource Brush.Nav.Background}"
+                BorderBrush="{DynamicResource Brush.Border}"
+                BorderThickness="0,0,1,0">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Top" Margin="20,22,20,18">
+                    <TextBlock Text="MediaSuite" Style="{DynamicResource Text.Display}" FontSize="20" />
+                    <TextBlock Text="Everything local. No limits."
+                               Style="{DynamicResource Text.Caption}"
+                               Margin="0,2,0,0" />
+                </StackPanel>
+
+                <ListBox ItemsSource="{Binding Pages}"
+                         SelectedItem="{Binding SelectedPage, Mode=TwoWay}"
+                         Style="{DynamicResource Nav.List}"
+                         ItemContainerStyle="{DynamicResource Nav.Item}" />
+            </DockPanel>
+        </Border>
+
+        <!-- Content -->
+        <DockPanel Grid.Column="1">
+
+            <Border DockPanel.Dock="Top"
+                    Background="{DynamicResource Brush.Accent.Subtle}"
+                    BorderBrush="{DynamicResource Brush.Border}"
+                    BorderThickness="0,0,0,1"
+                    Padding="20,10"
+                    Visibility="{Binding HasDependencyWarning, Converter={StaticResource BoolToVisibility}}">
+                <TextBlock Text="{Binding DependencyWarning}" Style="{DynamicResource Text.Secondary}" />
+            </Border>
+
+            <Border DockPanel.Dock="Bottom"
+                    Background="{DynamicResource Brush.Nav.Background}"
+                    BorderBrush="{DynamicResource Brush.Border}"
+                    BorderThickness="0,1,0,0"
+                    Padding="20,8">
+                <TextBlock Text="{Binding QueueStatus}" Style="{DynamicResource Text.Caption}" />
+            </Border>
+
+            <ContentControl Content="{Binding SelectedPage}" />
+        </DockPanel>
+    </Grid>
+</Window>

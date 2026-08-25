@@ -1,0 +1,38 @@
+name: MediaSuite CI
+
+# WPF only builds on Windows, so this is the real compile check for the app —
+# the whole solution, plus the Core test suite.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mediasuite/**'
+      - '.github/workflows/mediasuite-ci.yml'
+  pull_request:
+    paths:
+      - 'mediasuite/**'
+      - '.github/workflows/mediasuite-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore mediasuite/MediaSuite.sln
+
+      - name: Build
+        run: dotnet build mediasuite/MediaSuite.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test mediasuite/MediaSuite.sln -c Release --no-build --verbosity normal
