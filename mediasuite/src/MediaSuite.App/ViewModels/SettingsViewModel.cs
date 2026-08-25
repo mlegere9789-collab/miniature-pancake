@@ -42,6 +42,12 @@ public sealed class SettingsViewModel : PageViewModel
         RefreshTools();
     }
 
+    /// <summary>
+    /// Raised when the concurrency slider moves, so a queue that is already running can
+    /// widen or narrow without a restart.
+    /// </summary>
+    public event EventHandler<int>? MaxConcurrentJobsChanged;
+
     // --- Appearance -------------------------------------------------------
 
     public bool IsThemeSystem
@@ -113,6 +119,7 @@ public sealed class SettingsViewModel : PageViewModel
 
             _settings.MaxConcurrentJobs = clamped;
             Persist();
+            MaxConcurrentJobsChanged?.Invoke(this, clamped);
             OnPropertyChanged();
             OnPropertyChanged(nameof(ConcurrencyHint));
         }

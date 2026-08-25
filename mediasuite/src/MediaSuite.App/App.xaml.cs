@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Threading;
 using MediaSuite.App.Services;
 using MediaSuite.App.ViewModels;
+using MediaSuite.Core.Jobs;
 using MediaSuite.Core.Settings;
 using MediaSuite.Core.Tooling;
 
@@ -13,7 +14,12 @@ namespace MediaSuite.App;
 /// </summary>
 public partial class App : Application
 {
+    /// <summary>Scratch folders older than this are assumed to be crash leftovers.</summary>
+    private static readonly TimeSpan StaleWorkspaceAge = TimeSpan.FromHours(12);
+
     private ThemeService? _themeService;
+    private JobQueueManager? _queue;
+    private MainViewModel? _mainViewModel;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -32,9 +38,19 @@ public partial class App : Application
             settings.ToolsDirectory,
             BuildOverrides(settings));
 
+        var workspaces = new DiskTempWorkspaceFactory(settings.ResolveTempDirectory());
+        PurgeStaleWorkspaces(workspaces);
+
+        // Engines register from build step 4 onwards; the queue is engine-agnostic and
+        // simply reports "nothing can handle this yet" until they do.
+        var engines = new EngineRegistry();
+
+        _queue = new JobQueueManager(engines, workspaces, settings.MaxConcurrentJobs, toolLocator);
+        _mainViewModel = new MainViewModel(settings, store, _themeService, toolLocator, _queue, Dispatcher);
+
         var window = new MainWindow(_themeService)
         {
-            DataContext = new MainViewModel(settings, store, _themeService, toolLocator),
+            DataContext = _mainViewModel,
         };
 
         this.MainWindow = window;
@@ -43,8 +59,27 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        // Cancels anything still running and lets each job delete its scratch folder.
+        _queue?.Dispose();
+        _mainViewModel?.Dispose();
         _themeService?.Dispose();
         base.OnExit(e);
+    }
+
+    /// <summary>
+    /// Clears scratch folders a previous session left behind. A crash mid-encode skips
+    /// the normal cleanup, and those files can be very large.
+    /// </summary>
+    private static void PurgeStaleWorkspaces(DiskTempWorkspaceFactory workspaces)
+    {
+        try
+        {
+            workspaces.PurgeStaleWorkspaces(StaleWorkspaceAge);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Never let housekeeping stop the app from starting.
+        }
     }
 
     private static Dictionary<ExternalToolId, string> BuildOverrides(AppSettings settings)

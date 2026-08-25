@@ -29,6 +29,13 @@ public sealed record JobSpec
     /// <summary>Quality preset; engines fall back to their own defaults for anything the preset doesn't cover.</summary>
     public QualityPreset Preset { get; init; } = QualityPreset.Balanced;
 
+    /// <summary>
+    /// Private scratch folder for this run, assigned by the queue immediately before the
+    /// engine starts and deleted afterwards. Engines should write intermediates here
+    /// rather than beside the output. Null when the job is not running.
+    /// </summary>
+    public string? WorkingDirectory { get; init; }
+
     /// <summary>Advanced options, keyed case-insensitively (e.g. "crf" =&gt; "18").</summary>
     public IReadOnlyDictionary<string, string> Options { get; init; } =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

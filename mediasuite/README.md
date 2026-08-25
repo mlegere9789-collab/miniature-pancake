@@ -5,10 +5,8 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build step 1–2 of 18 (scaffold + shell).** The solution, the domain model,
-> the engine contract, tool discovery, the settings system and the navigation shell are
-> in place. The job queue and the conversion engines are the next steps — see
-> [Build order](#build-order).
+> **Status: build steps 1–3 of 18.** The scaffold, shell, and the job queue manager are
+> in place. The conversion engines are next — see [Build order](#build-order).
 
 ## Layout
 
@@ -32,7 +30,7 @@ Windows-only concerns from leaking into the domain model.
 ```
 WPF shell  (Convert / Compress / Tools / Upscale / Settings)
     │
-Job queue manager  (concurrency, progress, cancel, pause — build step 3)
+Job queue manager  (concurrency, progress, cancel, pause)
     │
 IConversionEngine  ── the single seam between the queue and the outside world
     │
@@ -96,6 +94,11 @@ failing at the moment you press Convert.
   per-page tool catalogue, full Settings screen
 - **Theming** — light, dark and follow-Windows, swapped live at runtime, including the
   title bar; persists between launches
+- **Job queue** — engine-agnostic runner with per-job and whole-queue cancel, pause and
+  resume, live progress, concurrency auto-tuned to the core count and adjustable while
+  running, and a private scratch folder per job that is cleaned up afterwards
+- **Queue UI** — status strip plus a live panel: one row per job with its own progress
+  bar and cancel button
 
 ## Build order
 
@@ -103,8 +106,8 @@ failing at the moment you press Convert.
 | --- | --- | --- |
 | 1 | Project scaffold | done |
 | 2 | Core shell UI — nav, drop zone, theme system | done |
-| 3 | Job queue manager | next |
-| 4 | Image module (incl. RAW) | |
+| 3 | Job queue manager | done |
+| 4 | Image module (incl. RAW) | next |
 | 5 | Video / audio module | |
 | 6 | GIF module | |
 | 7 | PDF module | |

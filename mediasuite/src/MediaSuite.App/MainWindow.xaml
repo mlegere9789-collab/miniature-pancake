@@ -55,12 +55,98 @@
                 <TextBlock Text="{Binding DependencyWarning}" Style="{DynamicResource Text.Secondary}" />
             </Border>
 
+            <!-- Status strip: always visible, one line about the queue plus its controls -->
             <Border DockPanel.Dock="Bottom"
                     Background="{DynamicResource Brush.Nav.Background}"
                     BorderBrush="{DynamicResource Brush.Border}"
                     BorderThickness="0,1,0,0"
                     Padding="20,8">
-                <TextBlock Text="{Binding QueueStatus}" Style="{DynamicResource Text.Caption}" />
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Text="{Binding Queue.StatusText}"
+                               Style="{DynamicResource Text.Caption}"
+                               VerticalAlignment="Center" />
+
+                    <StackPanel Grid.Column="1"
+                                Orientation="Horizontal"
+                                Visibility="{Binding Queue.HasJobs, Converter={StaticResource BoolToVisibility}}">
+                        <Button Content="{Binding Queue.PauseResumeLabel}"
+                                Style="{DynamicResource Button.Secondary}"
+                                Command="{Binding Queue.PauseResumeCommand}"
+                                MinWidth="80"
+                                Padding="12,4" />
+                        <Button Content="Cancel all"
+                                Style="{DynamicResource Button.Secondary}"
+                                Command="{Binding Queue.CancelAllCommand}"
+                                MinWidth="80"
+                                Padding="12,4"
+                                Margin="8,0,0,0" />
+                        <Button Content="Clear finished"
+                                Style="{DynamicResource Button.Secondary}"
+                                Command="{Binding Queue.ClearFinishedCommand}"
+                                MinWidth="80"
+                                Padding="12,4"
+                                Margin="8,0,0,0" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- Queue panel: one row per job, live progress, cancel per job -->
+            <Border DockPanel.Dock="Bottom"
+                    Background="{DynamicResource Brush.Surface}"
+                    BorderBrush="{DynamicResource Brush.Border}"
+                    BorderThickness="0,1,0,0"
+                    MaxHeight="240"
+                    Visibility="{Binding Queue.HasJobs, Converter={StaticResource BoolToVisibility}}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="20,10">
+                    <ItemsControl ItemsSource="{Binding Queue.Rows}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding DisplayName}"
+                                                   Style="{DynamicResource Text.Body}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <ProgressBar Height="4"
+                                                     Margin="0,6,0,0"
+                                                     Minimum="0"
+                                                     Maximum="100"
+                                                     Value="{Binding Percent, Mode=OneWay}"
+                                                     IsIndeterminate="{Binding IsIndeterminate}"
+                                                     Foreground="{DynamicResource Brush.Accent}"
+                                                     Background="{DynamicResource Brush.Surface.Hover}"
+                                                     BorderThickness="0" />
+                                        <TextBlock Text="{Binding StatusText}"
+                                                   Style="{DynamicResource Text.Caption}"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   Margin="0,4,0,0" />
+                                    </StackPanel>
+
+                                    <Button Grid.Column="1"
+                                            Content="Cancel"
+                                            Style="{DynamicResource Button.Secondary}"
+                                            Command="{Binding DataContext.Queue.CancelJobCommand,
+                                                              RelativeSource={RelativeSource AncestorType=Window}}"
+                                            CommandParameter="{Binding}"
+                                            IsEnabled="{Binding CanCancel}"
+                                            VerticalAlignment="Center"
+                                            MinWidth="72"
+                                            Padding="12,4"
+                                            Margin="16,0,0,0" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
             </Border>
 
             <ContentControl Content="{Binding SelectedPage}" />

@@ -1,22 +1,27 @@
 using System.Collections.ObjectModel;
+using System.Windows.Threading;
 using MediaSuite.App.Mvvm;
 using MediaSuite.App.Services;
 using MediaSuite.Core.Features;
+using MediaSuite.Core.Jobs;
 using MediaSuite.Core.Settings;
 using MediaSuite.Core.Tooling;
 
 namespace MediaSuite.App.ViewModels;
 
 /// <summary>Owns the navigation rail and the page currently showing.</summary>
-public sealed class MainViewModel : ObservableObject
+public sealed class MainViewModel : ObservableObject, IDisposable
 {
     private PageViewModel _selectedPage;
+    private bool _disposed;
 
     public MainViewModel(
         AppSettings settings,
         ISettingsStore store,
         ThemeService themeService,
-        ToolLocator toolLocator)
+        ToolLocator toolLocator,
+        JobQueueManager queue,
+        Dispatcher dispatcher)
     {
         Convert = new ModulePageViewModel(
             "Convert",
@@ -63,6 +68,11 @@ public sealed class MainViewModel : ObservableObject
         };
 
         Settings = new SettingsViewModel(settings, store, themeService, toolLocator);
+        Queue = new JobQueueViewModel(queue, dispatcher);
+
+        // The concurrency slider has to reach a queue that is already running, not just
+        // the settings file.
+        Settings.MaxConcurrentJobsChanged += (_, value) => Queue.SetMaxConcurrency(value);
 
         Pages = new ObservableCollection<PageViewModel>
         {
@@ -92,6 +102,9 @@ public sealed class MainViewModel : ObservableObject
 
     public SettingsViewModel Settings { get; }
 
+    /// <summary>Live queue: rows, counts, pause and cancel.</summary>
+    public JobQueueViewModel Queue { get; }
+
     public ObservableCollection<PageViewModel> Pages { get; }
 
     public PageViewModel SelectedPage
@@ -105,9 +118,14 @@ public sealed class MainViewModel : ObservableObject
 
     public bool HasDependencyWarning => DependencyWarning is not null;
 
-    /// <summary>
-    /// Placeholder for the queue status strip. The real queue arrives in build step 3;
-    /// until then the strip explains why nothing is running.
-    /// </summary>
-    public string QueueStatus => "Queue idle — the job runner lands in the next build step.";
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        Queue.Dispose();
+    }
 }
