@@ -21,6 +21,15 @@ public sealed class FakeProcessRunner : IProcessRunner
 
     public ProcessRequest LastRequest => Requests[^1];
 
+    /// <summary>
+    /// Canned FFprobe output. Probe calls never create a file — their last argument is the
+    /// *input* path, so writing to it would destroy the file under test.
+    /// </summary>
+    public string ProbeJson { get; set; } = string.Empty;
+
+    /// <summary>Lines pushed through the request's stdout callback, for progress tests.</summary>
+    public List<string> EmittedStdoutLines { get; } = new();
+
     /// <summary>Invocations whose executable path contains the given fragment.</summary>
     public IReadOnlyList<ProcessRequest> RequestsFor(string executableFragment) =>
         Requests.Where(r => r.FileName.Contains(executableFragment, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -37,6 +46,16 @@ public sealed class FakeProcessRunner : IProcessRunner
         if (_behaviour is not null)
         {
             return Task.FromResult(_behaviour(request));
+        }
+
+        if (request.FileName.Contains("ffprobe", StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult(new ProcessResult(0, ProbeJson, string.Empty, TimeSpan.FromMilliseconds(1)));
+        }
+
+        foreach (var line in EmittedStdoutLines)
+        {
+            request.OnStandardOutputLine?.Invoke(line);
         }
 
         CreateExpectedOutput(request);

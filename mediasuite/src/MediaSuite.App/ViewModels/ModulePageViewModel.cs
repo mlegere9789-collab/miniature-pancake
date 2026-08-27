@@ -2,7 +2,6 @@ using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows.Input;
 using MediaSuite.App.Mvvm;
-using MediaSuite.Core.Engines;
 using MediaSuite.Core.Features;
 using MediaSuite.Core.Jobs;
 using MediaSuite.Core.Settings;
@@ -251,7 +250,7 @@ public class ModulePageViewModel : PageViewModel
         }
 
         var operationId = SelectedFeature.OperationId;
-        var forced = ImageOperations.FixedFormatFor(operationId);
+        var forced = OutputFormatRules.ForcedFormat(operationId);
 
         if (forced is not null)
         {
@@ -261,7 +260,7 @@ public class ModulePageViewModel : PageViewModel
             return;
         }
 
-        if (ImageOperations.KeepsSourceFormat(operationId))
+        if (OutputFormatRules.KeepsSourceFormat(operationId))
         {
             OutputFormats.Add(SameAsInput);
         }

@@ -5,8 +5,8 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–4 of 18.** The scaffold, shell, job queue and the image module
-> are in place. Video and audio are next — see [Build order](#build-order).
+> **Status: build steps 1–5 of 18.** The scaffold, shell, job queue, image module and
+> video/audio module are in place. GIF is next — see [Build order](#build-order).
 
 ## Layout
 
@@ -104,6 +104,9 @@ failing at the moment you press Convert.
   bar and cancel button
 - **Image module** — convert (including camera RAW via LibRaw), compress, resize, crop,
   rotate, flip, enlarge and PNG-to-SVG tracing, driven by ImageMagick and Potrace
+- **Video and audio module** — convert, compress (by quality or by target size), extract
+  audio, crop and trim, driven by FFmpeg with progress parsed from its own output, and
+  remuxing instead of re-encoding whenever the streams already fit the container
 - **Running jobs from the UI** — pick a tool, an output format and a quality preset,
   choose where results go, and the staged files are queued one job each
 
@@ -115,8 +118,8 @@ failing at the moment you press Convert.
 | 2 | Core shell UI — nav, drop zone, theme system | done |
 | 3 | Job queue manager | done |
 | 4 | Image module (incl. RAW) | done |
-| 5 | Video / audio module | next |
-| 6 | GIF module | |
+| 5 | Video / audio module | done |
+| 6 | GIF module | next |
 | 7 | PDF module | |
 | 8 | Document / ebook module | |
 | 9 | Archive / unit / time converters | |
