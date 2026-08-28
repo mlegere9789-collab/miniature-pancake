@@ -43,8 +43,14 @@ public static class GifCommandBuilder
 
         return operation switch
         {
-            "gif.to-mp4" => new GifPlan(new[] { BuildToVideo(spec, source, outputPath) }),
-            "gif.to-apng" => new GifPlan(new[] { BuildToApng(spec, source, outputPath) }),
+            "gif.to-mp4" => new GifPlan(new[]
+            {
+                new GifStep("Encoding", BuildToVideo(spec, source, outputPath)),
+            }),
+            "gif.to-apng" => new GifPlan(new[]
+            {
+                new GifStep("Encoding", BuildToApng(spec, source, outputPath)),
+            }),
             _ when GifOperations.ProducesGif(operation) => BuildPalettePlan(spec, source, outputPath, workingDirectory),
             _ => throw new ArgumentException($"'{spec.OperationId}' is not a GIF operation.", nameof(spec)),
         };
