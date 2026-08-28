@@ -18,6 +18,7 @@ public static class EngineSetup
         return new EngineRegistry()
             .Register(new ImageMagickEngine(processRunner, toolLocator))
             .Register(new PngToSvgEngine(processRunner, toolLocator))
-            .Register(new FFmpegEngine(processRunner, toolLocator));
+            .Register(new FFmpegEngine(processRunner, toolLocator))
+            .Register(new GifEngine(processRunner, toolLocator));
     }
 }

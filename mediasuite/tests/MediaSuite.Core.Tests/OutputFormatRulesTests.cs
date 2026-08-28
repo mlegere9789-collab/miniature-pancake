@@ -12,6 +12,11 @@ public class OutputFormatRulesTests
     [InlineData("video.mov-to-mp4", "mp4")]
     [InlineData("audio.mp3-to-ogg", "ogg")]
     [InlineData("audio.compress.wav", "wav")]
+    [InlineData("gif.from-video", "gif")]
+    [InlineData("gif.compress", "gif")]
+    [InlineData("gif.maker", "gif")]
+    [InlineData("gif.to-mp4", "mp4")]
+    [InlineData("gif.to-apng", "apng")]
     public void A_tool_named_for_one_format_is_not_offered_a_choice(string operationId, string expected)
     {
         Assert.Equal(expected, OutputFormatRules.ForcedFormat(operationId));
@@ -42,6 +47,7 @@ public class OutputFormatRulesTests
     [InlineData("image.convert")]
     [InlineData("video.mp4-to-mp3")]
     [InlineData("audio.mp3-to-ogg")]
+    [InlineData("gif.compress")]
     public void Conversions_do_not_keep_the_source_format(string operationId)
     {
         Assert.False(OutputFormatRules.KeepsSourceFormat(operationId));

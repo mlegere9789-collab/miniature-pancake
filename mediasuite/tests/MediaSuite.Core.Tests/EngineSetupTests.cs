@@ -42,6 +42,38 @@ public class EngineSetupTests : IDisposable
     }
 
     [Fact]
+    public void Every_gif_operation_has_an_engine_behind_it()
+    {
+        var registry = Build();
+
+        foreach (var operation in GifOperations.All)
+        {
+            Assert.True(registry.SupportsOperation(operation), $"no engine claims {operation}");
+        }
+    }
+
+    [Fact]
+    public void Every_gif_feature_in_the_catalogue_is_now_runnable()
+    {
+        var registry = Build();
+
+        var features = FeatureCatalog.All.Where(feature => feature.BuildStep == 6).ToList();
+
+        Assert.NotEmpty(features);
+        Assert.All(features, feature =>
+            Assert.True(registry.SupportsOperation(feature.OperationId), $"no engine claims {feature.OperationId}"));
+    }
+
+    [Fact]
+    public void The_gif_operations_go_to_the_gif_engine_not_the_video_one()
+    {
+        // Both drive FFmpeg, so a stray id in the wrong table would run the single-pass
+        // video path and produce a GIF with FFmpeg's default web-safe palette.
+        Assert.All(GifOperations.All, operation => Assert.False(
+            FFmpegOperations.All.Contains(operation), $"{operation} is claimed by two engines"));
+    }
+
+    [Fact]
     public void Operations_from_later_build_steps_are_still_unclaimed()
     {
         var registry = Build();

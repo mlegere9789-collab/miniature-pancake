@@ -101,6 +101,63 @@ public class JobLauncherTests : IDisposable
     }
 
     [Fact]
+    public void A_tool_that_merges_its_inputs_gets_one_job_over_all_of_them()
+    {
+        // A GIF built from twenty stills is one animation, not twenty jobs racing to write
+        // twenty single-frame GIFs over each other.
+        using var queue = CreateQueue();
+        queue.Pause();
+
+        var launcher = new JobLauncher(queue, new AppSettings { DefaultOutputDirectory = _temp.Path });
+        var frames = new[] { "01.png", "02.png", "03.png" };
+
+        var job = Assert.Single(launcher.Launch(Feature("gif.from-images"), frames, null, QualityPreset.Balanced));
+
+        Assert.Equal(frames, job.Spec.InputPaths);
+    }
+
+    [Fact]
+    public void The_order_the_frames_were_added_in_is_the_order_they_play_in()
+    {
+        using var queue = CreateQueue();
+        queue.Pause();
+
+        var launcher = new JobLauncher(queue, new AppSettings { DefaultOutputDirectory = _temp.Path });
+        var frames = new[] { "c.png", "a.png", "b.png" };
+
+        var job = Assert.Single(launcher.Launch(Feature("gif.maker"), frames, null, QualityPreset.Balanced));
+
+        Assert.Equal(frames, job.Spec.InputPaths);
+    }
+
+    [Fact]
+    public void A_gif_conversion_is_still_one_job_per_file()
+    {
+        using var queue = CreateQueue();
+        queue.Pause();
+
+        var launcher = new JobLauncher(queue, new AppSettings { DefaultOutputDirectory = _temp.Path });
+
+        var jobs = launcher.Launch(
+            Feature("gif.mp4-to-gif"), new[] { "a.mp4", "b.mp4" }, null, QualityPreset.Balanced);
+
+        Assert.Equal(2, jobs.Count);
+        Assert.All(jobs, job => Assert.Single(job.Spec.InputPaths));
+    }
+
+    [Fact]
+    public void A_merging_tool_with_no_files_still_queues_nothing()
+    {
+        using var queue = CreateQueue();
+
+        var jobs = new JobLauncher(queue, new AppSettings())
+            .Launch(Feature("gif.from-images"), Array.Empty<string>(), null, QualityPreset.Balanced);
+
+        Assert.Empty(jobs);
+        Assert.True(queue.IsIdle);
+    }
+
+    [Fact]
     public void Launching_nothing_queues_nothing()
     {
         using var queue = CreateQueue();

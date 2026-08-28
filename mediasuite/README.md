@@ -5,8 +5,9 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–5 of 18.** The scaffold, shell, job queue, image module and
-> video/audio module are in place. GIF is next — see [Build order](#build-order).
+> **Status: build steps 1–6 of 18.** The scaffold, shell, job queue, image module,
+> video/audio module and GIF module are in place. PDF is next — see
+> [Build order](#build-order).
 
 ## Layout
 
@@ -107,8 +108,11 @@ failing at the moment you press Convert.
 - **Video and audio module** — convert, compress (by quality or by target size), extract
   audio, crop and trim, driven by FFmpeg with progress parsed from its own output, and
   remuxing instead of re-encoding whenever the streams already fit the container
+- **GIF module** — video to GIF and back, GIF from a folder of stills, and GIF
+  compression, each built on a per-clip palette rather than FFmpeg's default web-safe one
 - **Running jobs from the UI** — pick a tool, an output format and a quality preset,
-  choose where results go, and the staged files are queued one job each
+  choose where results go, and the staged files are queued one job each — except for
+  tools that merge their inputs, which take the whole selection as a single job
 
 ## Build order
 
@@ -119,8 +123,8 @@ failing at the moment you press Convert.
 | 3 | Job queue manager | done |
 | 4 | Image module (incl. RAW) | done |
 | 5 | Video / audio module | done |
-| 6 | GIF module | next |
-| 7 | PDF module | |
+| 6 | GIF module | done |
+| 7 | PDF module | next |
 | 8 | Document / ebook module | |
 | 9 | Archive / unit / time converters | |
 | 10 | AI upscaler (CUDA + CPU fallback) | |

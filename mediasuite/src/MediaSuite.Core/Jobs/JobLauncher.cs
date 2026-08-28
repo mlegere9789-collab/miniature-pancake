@@ -20,6 +20,8 @@ public sealed class JobLauncher
     /// <summary>
     /// Queues the work. One job per file, rather than a single job over the batch, so the
     /// queue can run them in parallel and the user can cancel one without losing the rest.
+    /// Tools that merge their inputs (see <see cref="OperationInputRules.CombinesInputs"/>)
+    /// are the exception and get a single job over the whole selection.
     /// </summary>
     public IReadOnlyList<QueuedJob> Launch(
         FeatureDescriptor feature,
@@ -41,15 +43,29 @@ public sealed class JobLauncher
             PreserveFolderStructure = _settings.PreserveFolderStructure,
         };
 
-        var specs = inputPaths.Select(path => new JobSpec
+        var resolvedOptions = options ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        JobSpec SpecFor(IReadOnlyList<string> paths) => new()
         {
             OperationId = feature.OperationId,
-            InputPaths = new[] { path },
+            InputPaths = paths,
             Output = target,
             Preset = preset,
-            Options = options ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
-        });
+            Options = resolvedOptions,
+        };
 
-        return _queue.EnqueueRange(specs);
+        if (OperationInputRules.CombinesInputs(feature.OperationId))
+        {
+            if (inputPaths.Count == 0)
+            {
+                return Array.Empty<QueuedJob>();
+            }
+
+            // The order the user added the files in is the order the frames play in, so it
+            // is passed through untouched.
+            return _queue.EnqueueRange(new[] { SpecFor(inputPaths.ToArray()) });
+        }
+
+        return _queue.EnqueueRange(inputPaths.Select(path => SpecFor(new[] { path })));
     }
 }
