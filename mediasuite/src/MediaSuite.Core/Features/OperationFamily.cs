@@ -54,6 +54,14 @@ public static class OperationFamily
             formats.AddRange(FormatCatalog.OfKind(MediaKind.Vector).Where(format => format.CanWrite));
         }
 
+        // A PDF page rasterises to JPG or PNG, and JPG/PNG images assemble back into PDF
+        // pages, so the PDF Converter's picker offers both directions.
+        if (kind == MediaKind.Pdf)
+        {
+            formats.AddRange(FormatCatalog.OfKind(MediaKind.Image)
+                .Where(format => format.CanWrite && (format.Extension == "jpg" || format.Extension == "png")));
+        }
+
         return formats;
     }
 }

@@ -5,9 +5,9 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–6 of 18.** The scaffold, shell, job queue, image module,
-> video/audio module and GIF module are in place. PDF is next — see
-> [Build order](#build-order).
+> **Status: build steps 1–7 of 18.** The scaffold, shell, job queue, image module,
+> video/audio module, GIF module and PDF module are in place. Document/ebook conversion
+> is next — see [Build order](#build-order).
 
 ## Layout
 
@@ -110,6 +110,10 @@ failing at the moment you press Convert.
   remuxing instead of re-encoding whenever the streams already fit the container
 - **GIF module** — video to GIF and back, GIF from a folder of stills, and GIF
   compression, each built on a per-clip palette rather than FFmpeg's default web-safe one
+- **PDF module** — merge, split, compress, rotate, protect/unlock, crop, resize, flatten,
+  organise/remove/extract pages, extract embedded images, and convert to and from JPG,
+  PNG and Word, driven by QPDF, Ghostscript and MuPDF (LibreOffice for PDF to Word), with
+  no one binary required for the whole module — a merge only needs QPDF installed
 - **Running jobs from the UI** — pick a tool, an output format and a quality preset,
   choose where results go, and the staged files are queued one job each — except for
   tools that merge their inputs, which take the whole selection as a single job
@@ -124,8 +128,8 @@ failing at the moment you press Convert.
 | 4 | Image module (incl. RAW) | done |
 | 5 | Video / audio module | done |
 | 6 | GIF module | done |
-| 7 | PDF module | next |
-| 8 | Document / ebook module | |
+| 7 | PDF module | done |
+| 8 | Document / ebook module | next |
 | 9 | Archive / unit / time converters | |
 | 10 | AI upscaler (CUDA + CPU fallback) | |
 | 11 | Settings system — presets | partial (shell settings done) |

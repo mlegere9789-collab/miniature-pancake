@@ -146,6 +146,20 @@ public class JobLauncherTests : IDisposable
     }
 
     [Fact]
+    public void Merging_pdfs_is_also_one_job_over_every_file()
+    {
+        using var queue = CreateQueue();
+        queue.Pause();
+
+        var launcher = new JobLauncher(queue, new AppSettings { DefaultOutputDirectory = _temp.Path });
+        var files = new[] { "a.pdf", "b.pdf", "c.pdf" };
+
+        var job = Assert.Single(launcher.Launch(Feature("pdf.merge"), files, null, QualityPreset.Balanced));
+
+        Assert.Equal(files, job.Spec.InputPaths);
+    }
+
+    [Fact]
     public void A_merging_tool_with_no_files_still_queues_nothing()
     {
         using var queue = CreateQueue();

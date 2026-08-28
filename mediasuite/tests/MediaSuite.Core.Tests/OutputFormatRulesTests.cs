@@ -17,6 +17,13 @@ public class OutputFormatRulesTests
     [InlineData("gif.maker", "gif")]
     [InlineData("gif.to-mp4", "mp4")]
     [InlineData("gif.to-apng", "apng")]
+    [InlineData("pdf.merge", "pdf")]
+    [InlineData("pdf.rotate", "pdf")]
+    [InlineData("pdf.split", "pdf")]
+    [InlineData("pdf.to-word", "docx")]
+    [InlineData("pdf.to-jpg", "jpg")]
+    [InlineData("image.heic-to-pdf", "pdf")]
+    [InlineData("image.jpg-to-pdf", "pdf")]
     public void A_tool_named_for_one_format_is_not_offered_a_choice(string operationId, string expected)
     {
         Assert.Equal(expected, OutputFormatRules.ForcedFormat(operationId));
@@ -26,10 +33,18 @@ public class OutputFormatRulesTests
     [InlineData("image.convert")]
     [InlineData("video.convert")]
     [InlineData("audio.convert")]
-    [InlineData("pdf.merge")]
+    [InlineData("pdf.convert")]
     public void Open_ended_tools_leave_the_format_to_the_user(string operationId)
     {
         Assert.Null(OutputFormatRules.ForcedFormat(operationId));
+    }
+
+    [Fact]
+    public void Extracting_images_leaves_the_format_to_whatever_was_embedded()
+    {
+        // A PDF's embedded images can be JPEG or PNG or something else entirely; the tool
+        // does not force one, unlike every other PDF operation.
+        Assert.Null(OutputFormatRules.ForcedFormat("pdf.extract-images"));
     }
 
     [Theory]
