@@ -238,52 +238,34 @@ public sealed class PdfEngine : ExternalProcessEngine
     {
         var outputPath = ResolveOutputPath(spec, inputPath, index, batchRoot);
 
-        var (toolId, arguments, toolName) = operation switch
+        // The tool each of these needs comes from PdfCommandBuilder.ToolFor rather than
+        // being repeated here, so there is exactly one place that maps an operation to a
+        // binary — a second copy could quietly drift out of step with it.
+        IReadOnlyList<string> arguments = operation switch
         {
-            "pdf.rotate" => (
-                ExternalToolId.QPdf,
-                PdfCommandBuilder.Rotate(inputPath, outputPath, ResolveRotationDegrees(spec), spec.GetOption("pages")),
-                "QPDF"),
-            "pdf.unlock" => (
-                ExternalToolId.QPdf,
-                PdfCommandBuilder.Unlock(inputPath, outputPath, spec.GetOption("password", string.Empty)),
-                "QPDF"),
-            "pdf.protect" => (
-                ExternalToolId.QPdf,
-                PdfCommandBuilder.Protect(
-                    inputPath,
-                    outputPath,
-                    RequirePassword(spec),
-                    spec.GetOption("ownerPassword"),
-                    spec.GetBool("allowPrinting", true),
-                    spec.GetBool("allowCopying", true)),
-                "QPDF"),
-            "pdf.flatten" => (ExternalToolId.QPdf, PdfCommandBuilder.Flatten(inputPath, outputPath), "QPDF"),
-            "pdf.organize" => (
-                ExternalToolId.QPdf,
-                PdfCommandBuilder.SelectPages(inputPath, outputPath, RequirePageList(spec, "pages")),
-                "QPDF"),
-            "pdf.extract-pages" => (
-                ExternalToolId.QPdf,
-                PdfCommandBuilder.SelectPages(inputPath, outputPath, RequirePageList(spec, "pages")),
-                "QPDF"),
-            "pdf.crop" => (
-                ExternalToolId.Ghostscript,
-                PdfCommandBuilder.Crop(inputPath, outputPath, spec.GetDouble("marginPoints", 36)),
-                "Ghostscript"),
-            "pdf.resize" => (
-                ExternalToolId.Ghostscript,
-                PdfCommandBuilder.Resize(inputPath, outputPath, ResolvePaperWidth(spec), ResolvePaperHeight(spec)),
-                "Ghostscript"),
-            "pdf.compress" => (
-                ExternalToolId.Ghostscript,
-                PdfCommandBuilder.Compress(inputPath, outputPath, ResolvePdfSettings(spec)),
-                "Ghostscript"),
+            "pdf.rotate" => PdfCommandBuilder.Rotate(
+                inputPath, outputPath, ResolveRotationDegrees(spec), spec.GetOption("pages")),
+            "pdf.unlock" => PdfCommandBuilder.Unlock(inputPath, outputPath, spec.GetOption("password", string.Empty)),
+            "pdf.protect" => PdfCommandBuilder.Protect(
+                inputPath,
+                outputPath,
+                RequirePassword(spec),
+                spec.GetOption("ownerPassword"),
+                spec.GetBool("allowPrinting", true),
+                spec.GetBool("allowCopying", true)),
+            "pdf.flatten" => PdfCommandBuilder.Flatten(inputPath, outputPath),
+            "pdf.organize" or "pdf.extract-pages" => PdfCommandBuilder.SelectPages(
+                inputPath, outputPath, RequirePageList(spec, "pages")),
+            "pdf.crop" => PdfCommandBuilder.Crop(inputPath, outputPath, spec.GetDouble("marginPoints", 36)),
+            "pdf.resize" => PdfCommandBuilder.Resize(
+                inputPath, outputPath, ResolvePaperWidth(spec), ResolvePaperHeight(spec)),
+            "pdf.compress" => PdfCommandBuilder.Compress(inputPath, outputPath, ResolvePdfSettings(spec)),
             _ => throw new ArgumentException($"'{operation}' is not a single-pass PDF operation.", nameof(operation)),
         };
 
+        var toolId = PdfCommandBuilder.ToolFor(operation);
         var tool = RequireTool(toolId);
-        await RunToolAsync(tool, arguments, toolName, cancellationToken).ConfigureAwait(false);
+        await RunToolAsync(tool, arguments, ToolManifest.Get(toolId).DisplayName, cancellationToken).ConfigureAwait(false);
         RequireOutput(outputPath, Path.GetFileName(inputPath));
         return outputPath;
     }
@@ -486,8 +468,13 @@ public sealed class PdfEngine : ExternalProcessEngine
 
         if (!sourceIsPdf)
         {
+            // Forced to "pdf" rather than taken from spec.Output.Format: in a batch that
+            // mixes PDF and image files, the picker offers one format for the whole job,
+            // and an image input assembled into a PDF must never be named ".jpg" because
+            // that was the choice made for a *different* file in the same batch.
             var mutool = RequireTool(ExternalToolId.MuPdf);
-            var outputPath = ResolveOutputPath(spec, inputPath, index, batchRoot);
+            var outputPath = OutputPathResolver.Resolve(
+                inputPath, spec.Output with { Format = "pdf" }, index, batchRoot);
 
             await RunToolAsync(
                 mutool, PdfCommandBuilder.ImagesToPdf(new[] { inputPath }, outputPath), "MuPDF", cancellationToken)
@@ -499,7 +486,8 @@ public sealed class PdfEngine : ExternalProcessEngine
 
         // PDF to PDF: rewrite through qpdf, which is a well-defined, lossless "convert".
         var qpdf = RequireTool(ExternalToolId.QPdf);
-        var rewrittenPath = ResolveOutputPath(spec, inputPath, index, batchRoot);
+        var rewrittenPath = OutputPathResolver.Resolve(
+            inputPath, spec.Output with { Format = "pdf" }, index, batchRoot);
 
         await RunToolAsync(
             qpdf, PdfCommandBuilder.PassThrough(inputPath, rewrittenPath), "QPDF", cancellationToken)

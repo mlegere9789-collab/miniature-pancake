@@ -436,6 +436,21 @@ public class PdfEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task An_image_in_a_mixed_batch_is_still_named_pdf_even_when_the_picker_chose_jpg()
+    {
+        // A batch can mix PDFs and images under one pdf.convert job with a single format
+        // choice for the whole batch. If that choice is "jpg" (meant for the PDF pages),
+        // an image input still has to be assembled into a real PDF and must not come out
+        // named "photo.jpg" while actually containing a PDF.
+        var input = _temp.CreateFile("photo.png");
+
+        var result = await Run(new PdfEngine(_runner, Tools()), Spec("pdf.convert", new[] { input }, format: "jpg"));
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.Equal(".pdf", Path.GetExtension(Assert.Single(result.OutputPaths)));
+    }
+
+    [Fact]
     public async Task Converting_a_pdf_to_pdf_rewrites_it_through_qpdf()
     {
         var input = _temp.CreateFile("in.pdf");
