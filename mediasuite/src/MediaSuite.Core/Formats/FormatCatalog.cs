@@ -3,17 +3,21 @@ using System.Collections.Immutable;
 namespace MediaSuite.Core.Formats;
 
 /// <summary>
-/// Catalogue of supported formats, audited against FreeConvert's published converter
-/// pages in build step 13.
+/// Catalogue of supported formats, audited against FreeConvert's format support in build
+/// step 13.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Every entry here has to clear two bars: FreeConvert has to actually offer it (checked
-/// against freeconvert.com's own converter pages, not assumed), and the bundled tool that
-/// would handle it has to genuinely support it — not "probably works", but a real,
-/// unlicensed encoder always present in a standard build. Where a FreeConvert format
-/// failed the second bar it was left out rather than added and hoped for; see the
-/// comments beside the entries below for the specific reasoning.
+/// Every entry here has to clear two bars: FreeConvert has to actually offer it, and the
+/// bundled tool that would handle it has to genuinely support it — not "probably works",
+/// but a real, unlicensed encoder always present in a standard build. This environment's
+/// network policy blocks direct requests to freeconvert.com, so the first bar was checked
+/// through search results that could still attribute a specific format to a real,
+/// named FreeConvert page (a dedicated converter page, or format names appearing in
+/// FreeConvert's own page copy) — not a live fetch of the pages themselves, and not
+/// guessed from general knowledge of what similar converters tend to support. Where a
+/// FreeConvert format failed the second bar it was left out rather than added and hoped
+/// for; see the comments beside the entries below for the specific reasoning.
 /// </para>
 /// <para>
 /// A few whole categories FreeConvert supports are deliberately still missing:

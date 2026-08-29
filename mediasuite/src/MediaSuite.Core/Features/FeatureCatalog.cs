@@ -42,7 +42,7 @@ public static class FeatureCatalog
 {
     private static readonly ImmutableArray<FeatureDescriptor> Features = ImmutableArray.Create(
         new FeatureDescriptor("video.convert", "Video Converter", FeatureSection.Convert, "Video & Audio", "Any container or codec FFmpeg can read, out to any it can write.", 5),
-        new FeatureDescriptor("audio.convert", "Audio Converter", FeatureSection.Convert, "Video & Audio", "MP3, WAV, AAC, FLAC, OGG, M4A, WMA, AIFF and Opus, in any direction.", 5),
+        new FeatureDescriptor("audio.convert", "Audio Converter", FeatureSection.Convert, "Video & Audio", "MP3, WAV, AAC, FLAC, OGG, M4A, WMA, AIFF, Opus and AC-3, in any direction.", 5),
         new FeatureDescriptor("audio.convert.mp3", "MP3 Converter", FeatureSection.Convert, "Video & Audio", "Anything with an audio track, out as MP3 at your chosen bitrate.", 5),
         new FeatureDescriptor("video.mp4-to-mp3", "MP4 to MP3", FeatureSection.Convert, "Video & Audio", "Pull the audio track out of an MP4 without re-encoding where possible.", 5),
         new FeatureDescriptor("video.to-mp3", "Video to MP3", FeatureSection.Convert, "Video & Audio", "Extract audio from any video format straight to MP3.", 5),

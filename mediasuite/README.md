@@ -8,7 +8,7 @@ limits, no server.
 > **Status: build steps 1–13 of 18.** Every conversion module from the brief is in place,
 > every tool has a Custom preset backed by named, savable option sets, jobs can optionally
 > upload their output to Google Drive, and the format catalogue has been audited against
-> FreeConvert's own converter pages — what is left is QA, the installer and polish. See
+> FreeConvert's format support — what is left is QA, the installer and polish. See
 > [Build order](#build-order).
 
 ## Layout
