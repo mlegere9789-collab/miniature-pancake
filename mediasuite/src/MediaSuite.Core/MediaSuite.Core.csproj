@@ -13,4 +13,13 @@
     <InternalsVisibleTo Include="MediaSuite.Core.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Google Drive is the one integration here that is not a bundled local binary, so
+         it is the one place this project takes a NuGet dependency instead of shelling out.
+         Floating to the newest published 1.x release rather than pinning an exact version,
+         since there is no way to confirm the current newest patch from this environment. -->
+    <PackageReference Include="Google.Apis.Drive.v3" Version="1.*" />
+    <PackageReference Include="Google.Apis.Auth" Version="1.*" />
+  </ItemGroup>
+
 </Project>

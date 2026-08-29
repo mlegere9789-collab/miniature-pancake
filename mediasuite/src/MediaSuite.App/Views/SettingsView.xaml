@@ -1,6 +1,11 @@
 <UserControl x:Class="MediaSuite.App.Views.SettingsView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:converters="clr-namespace:MediaSuite.App.Converters">
+
+    <UserControl.Resources>
+        <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
+    </UserControl.Resources>
 
     <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="28,24,28,24">
         <StackPanel MaxWidth="880" HorizontalAlignment="Left">
@@ -116,10 +121,51 @@
                     <CheckBox Content="Enable saving to Google Drive"
                               Style="{DynamicResource Input.Check}"
                               IsChecked="{Binding GoogleDriveEnabled, Mode=TwoWay}"
-                              IsEnabled="False" />
-                    <TextBlock Text="Google Drive sign-in arrives in build step 12. It stays off until you sign in, and upload remains a per-job toggle."
-                               Style="{DynamicResource Text.Caption}"
-                               Margin="24,0,0,0" />
+                              Margin="0,10,0,0" />
+
+                    <StackPanel Visibility="{Binding GoogleDriveEnabled, Converter={StaticResource BoolToVisibility}}"
+                                Margin="24,10,0,0">
+                        <TextBlock Text="Off by default and never uploads on its own — each job still has its own upload checkbox."
+                                   Style="{DynamicResource Text.Caption}" />
+
+                        <TextBlock Text="OAuth client file" Style="{DynamicResource Text.Caption}" Margin="0,10,0,4" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox Text="{Binding GoogleDriveCredentialsPath, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                     Style="{DynamicResource Input.Text}" />
+                            <Button Grid.Column="1"
+                                    Content="Browse…"
+                                    Style="{DynamicResource Button.Secondary}"
+                                    Command="{Binding BrowseGoogleDriveCredentialsCommand}"
+                                    Margin="8,0,0,0" />
+                        </Grid>
+                        <TextBlock Text="Drive access has to come from a Google Cloud project you own — create one at console.cloud.google.com, enable the Drive API, add an OAuth client of type &quot;Desktop app&quot;, and download its JSON here."
+                                   Style="{DynamicResource Text.Caption}"
+                                   Margin="0,4,0,0" />
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{Binding GoogleDriveStatus}" VerticalAlignment="Center" />
+                            <Button Grid.Column="1"
+                                    Content="Sign in"
+                                    Style="{DynamicResource Button.Secondary}"
+                                    Command="{Binding SignInToGoogleDriveCommand}"
+                                    Visibility="{Binding IsSignedInToGoogleDrive, Converter={StaticResource BoolToVisibility}, ConverterParameter=Invert}"
+                                    Margin="8,0,0,0" />
+                            <Button Grid.Column="1"
+                                    Content="Sign out"
+                                    Style="{DynamicResource Button.Secondary}"
+                                    Command="{Binding SignOutOfGoogleDriveCommand}"
+                                    Visibility="{Binding IsSignedInToGoogleDrive, Converter={StaticResource BoolToVisibility}}"
+                                    Margin="8,0,0,0" />
+                        </Grid>
+                    </StackPanel>
                 </StackPanel>
             </Border>
 

@@ -1,3 +1,4 @@
+using MediaSuite.Core.GoogleDrive;
 using MediaSuite.Core.Tooling;
 
 namespace MediaSuite.Core.Jobs;
@@ -22,6 +23,7 @@ public sealed class JobQueueManager : IDisposable
     private readonly EngineRegistry _engines;
     private readonly ITempWorkspaceFactory _workspaces;
     private readonly ToolLocator? _toolLocator;
+    private readonly IGoogleDriveClient? _driveClient;
     private readonly TimeProvider _time;
 
     private readonly object _gate = new();
@@ -40,11 +42,13 @@ public sealed class JobQueueManager : IDisposable
         ITempWorkspaceFactory workspaces,
         int maxConcurrency,
         ToolLocator? toolLocator = null,
+        IGoogleDriveClient? driveClient = null,
         TimeProvider? timeProvider = null)
     {
         _engines = engines ?? throw new ArgumentNullException(nameof(engines));
         _workspaces = workspaces ?? throw new ArgumentNullException(nameof(workspaces));
         _toolLocator = toolLocator;
+        _driveClient = driveClient;
         _time = timeProvider ?? TimeProvider.System;
         _maxConcurrency = Math.Max(1, maxConcurrency);
     }
@@ -395,6 +399,12 @@ public sealed class JobQueueManager : IDisposable
             });
 
             var result = await engine.RunAsync(spec, progress, cancellation.Token).ConfigureAwait(false);
+
+            if (result.IsSuccess && spec.Output.UploadToGoogleDrive)
+            {
+                result = await UploadOutputsAsync(spec, result, progress, cancellation.Token).ConfigureAwait(false);
+            }
+
             Finish(job, WithDuration(result, startedAt));
         }
         catch (OperationCanceledException)
@@ -439,6 +449,50 @@ public sealed class JobQueueManager : IDisposable
         result.Duration == TimeSpan.Zero
             ? result with { Duration = _time.GetUtcNow() - startedAt }
             : result;
+
+    /// <summary>
+    /// Uploads a successful job's outputs to Drive. A failure here never fails the job —
+    /// the converted files already exist locally, which is the primary deliverable — it
+    /// only attaches a warning explaining that the optional upload did not happen.
+    /// Cancellation is the one exception: it propagates so the job still ends up Canceled.
+    /// </summary>
+    private async Task<JobResult> UploadOutputsAsync(
+        JobSpec spec, JobResult result, IProgress<JobProgress> progress, CancellationToken cancellationToken)
+    {
+        if (_driveClient is null)
+        {
+            return result with
+            {
+                UploadWarning = "Google Drive upload was requested, but Drive is not set up. "
+                    + "Files were still saved locally.",
+            };
+        }
+
+        progress.Report(JobProgress.Indeterminate("Uploading"));
+
+        try
+        {
+            foreach (var path in result.OutputPaths)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await _driveClient.UploadFileAsync(path, spec.Output.GoogleDriveFolderId, null, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return result with
+            {
+                UploadWarning = $"Files were converted, but the Google Drive upload failed: {ex.Message}",
+            };
+        }
+    }
 
     private IReadOnlyList<string> MissingTools(IConversionEngine engine)
     {

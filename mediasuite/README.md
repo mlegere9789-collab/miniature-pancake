@@ -5,10 +5,10 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–11 of 18.** Every conversion module from the brief is in place,
-> and every tool now has a Custom preset backed by named, savable option sets — what is
-> left is Google Drive, the format-parity audit, QA, the installer and polish. See
-> [Build order](#build-order).
+> **Status: build steps 1–12 of 18.** Every conversion module from the brief is in place,
+> every tool has a Custom preset backed by named, savable option sets, and jobs can now
+> optionally upload their output to Google Drive — what is left is the format-parity
+> audit, QA, the installer and polish. See [Build order](#build-order).
 
 ## Layout
 
@@ -139,6 +139,11 @@ failing at the moment you press Convert.
   parameters come entirely from advanced options instead of a built-in table; the
   Settings-backed store lets those options be saved under a name per tool and reloaded
   later, so a one-off "crf=20" doesn't have to be retyped next time
+- **Google Drive upload** — off until you sign in from Settings, and off per job until
+  you tick the box, through the `drive.file` OAuth scope so the app can only ever see
+  files it uploaded itself; a failed upload never fails the job, since the converted
+  file already exists locally either way, it just shows as a warning on an otherwise
+  completed job
 
 ## Settings and presets
 
@@ -151,6 +156,26 @@ operation id, through the same atomic JSON store the rest of Settings uses — s
 survive a crash mid-save the same way the theme or the concurrency limit does, and a
 hand-edited or partially corrupt entry in the file is dropped rather than crashing the
 app on load.
+
+## Google Drive
+
+There is no bundled default the way there is for the conversion tools — Drive access has
+to come from a Google Cloud project you own, not one shipped in the app:
+
+1. Create a project at [console.cloud.google.com](https://console.cloud.google.com), enable
+   the Drive API, and add an OAuth client of type "Desktop app".
+2. Download that client's JSON file and point Settings → Google Drive at it (it defaults
+   to `google-drive-credentials.json` next to `settings.json`).
+3. Sign in from Settings. The consent screen opens in your browser; the resulting token is
+   cached locally so you only do this once.
+
+Everything after that is per-job: each module page gets an "Also upload to Google Drive"
+checkbox once the master switch is on, with a folder picker limited to Drive's top level
+(plus "New folder") rather than a full tree browser. The app requests the `drive.file`
+scope, not full Drive access, so it can only ever see files it created — never anything
+else already in your Drive. `JobQueueManager` runs the upload after a successful
+conversion, through the same `IGoogleDriveClient` seam every engine uses for its own
+external tool, so the queue and the tests never depend on the real Google API client.
 
 ## Build order
 
@@ -167,7 +192,7 @@ app on load.
 | 9 | Archive / unit / time converters | done |
 | 10 | AI upscaler (CUDA + CPU fallback) | done — Vulkan GPU path, no face-enhance yet |
 | 11 | Settings system — presets | done |
-| 12 | Google Drive integration | |
+| 12 | Google Drive integration | done |
 | 13 | Format-parity audit vs FreeConvert | |
 | 14 | QA pass against real sample files | |
 | 15 | Inno Setup installer | |

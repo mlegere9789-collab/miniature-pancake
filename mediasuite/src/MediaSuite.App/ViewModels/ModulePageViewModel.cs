@@ -1,8 +1,11 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Input;
 using MediaSuite.App.Mvvm;
 using MediaSuite.Core.Features;
+using MediaSuite.Core.GoogleDrive;
 using MediaSuite.Core.Jobs;
 using MediaSuite.Core.Settings;
 using Microsoft.Win32;
@@ -20,6 +23,7 @@ public class ModulePageViewModel : PageViewModel
     private readonly AppSettings _settings;
     private readonly ISettingsStore _store;
     private readonly JobLauncher _launcher;
+    private readonly IGoogleDriveClient _driveClient;
 
     private string _dropPrompt = "Drop files here";
     private string _dropHint = string.Empty;
@@ -32,6 +36,11 @@ public class ModulePageViewModel : PageViewModel
     private string _advancedOptionsText = string.Empty;
     private string _newPresetName = string.Empty;
     private string? _presetFeedback;
+    private bool _isGoogleDriveAvailable;
+    private bool _uploadToGoogleDrive;
+    private GoogleDriveFolder? _selectedDriveFolder;
+    private string _newDriveFolderName = string.Empty;
+    private string? _driveFolderHint;
 
     public ModulePageViewModel(
         string title,
@@ -42,7 +51,8 @@ public class ModulePageViewModel : PageViewModel
         EngineRegistry engines,
         JobLauncher launcher,
         AppSettings settings,
-        ISettingsStore store)
+        ISettingsStore store,
+        IGoogleDriveClient driveClient)
         : base(title, glyph)
     {
         ArgumentNullException.ThrowIfNull(engines);
@@ -54,7 +64,9 @@ public class ModulePageViewModel : PageViewModel
         _launcher = launcher ?? throw new ArgumentNullException(nameof(launcher));
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _store = store ?? throw new ArgumentNullException(nameof(store));
+        _driveClient = driveClient ?? throw new ArgumentNullException(nameof(driveClient));
         _outputDirectory = settings.ResolveOutputDirectory();
+        _isGoogleDriveAvailable = settings.GoogleDriveEnabled;
 
         FeatureGroups = FeatureCatalog
             .GroupedBySection(section)
@@ -72,6 +84,7 @@ public class ModulePageViewModel : PageViewModel
         OutputFormats = new ObservableCollection<string>();
         Presets = new[] { QualityPreset.Quick, QualityPreset.Balanced, QualityPreset.Best, QualityPreset.Custom };
         SavedPresets = new ObservableCollection<CustomPreset>();
+        DriveFolders = new ObservableCollection<GoogleDriveFolder>();
 
         StagedFiles = new ObservableCollection<string>();
         StagedFiles.CollectionChanged += (_, _) =>
@@ -88,6 +101,8 @@ public class ModulePageViewModel : PageViewModel
         StartCommand = new RelayCommand(Start, () => CanStart);
         SavePresetCommand = new RelayCommand(SavePreset, () => SelectedFeature is not null && NewPresetName.Trim().Length > 0);
         DeletePresetCommand = new RelayCommand(DeletePreset, () => SelectedSavedPreset is not null);
+        CreateDriveFolderCommand = new RelayCommand(
+            async () => await CreateDriveFolderAsync(), () => NewDriveFolderName.Trim().Length > 0);
 
         SelectedFeature = ReadyFeatures.FirstOrDefault();
     }
@@ -222,6 +237,63 @@ public class ModulePageViewModel : PageViewModel
 
     public bool HasPresetFeedback => !string.IsNullOrEmpty(PresetFeedback);
 
+    /// <summary>Mirrors Settings' master switch, so this page's checkbox only shows up when Drive is turned on.</summary>
+    public bool IsGoogleDriveAvailable
+    {
+        get => _isGoogleDriveAvailable;
+        set
+        {
+            if (SetProperty(ref _isGoogleDriveAvailable, value) && !value)
+            {
+                UploadToGoogleDrive = false;
+            }
+        }
+    }
+
+    public bool UploadToGoogleDrive
+    {
+        get => _uploadToGoogleDrive;
+        set
+        {
+            if (SetProperty(ref _uploadToGoogleDrive, value) && value && DriveFolders.Count == 0)
+            {
+                _ = RefreshDriveFoldersAsync();
+            }
+        }
+    }
+
+    public ObservableCollection<GoogleDriveFolder> DriveFolders { get; }
+
+    public GoogleDriveFolder? SelectedDriveFolder
+    {
+        get => _selectedDriveFolder;
+        set => SetProperty(ref _selectedDriveFolder, value);
+    }
+
+    /// <summary>Name typed in before pressing "New folder".</summary>
+    public string NewDriveFolderName
+    {
+        get => _newDriveFolderName;
+        set => SetProperty(ref _newDriveFolderName, value);
+    }
+
+    /// <summary>Status line under the folder picker — loading, empty, an error, or null once folders are showing.</summary>
+    public string? DriveFolderHint
+    {
+        get => _driveFolderHint;
+        private set
+        {
+            if (SetProperty(ref _driveFolderHint, value))
+            {
+                OnPropertyChanged(nameof(HasDriveFolderHint));
+            }
+        }
+    }
+
+    public bool HasDriveFolderHint => !string.IsNullOrEmpty(DriveFolderHint);
+
+    public ICommand CreateDriveFolderCommand { get; }
+
     public string OutputDirectory
     {
         get => _outputDirectory;
@@ -309,6 +381,14 @@ public class ModulePageViewModel : PageViewModel
 
         var files = StagedFiles.ToList();
         var options = IsCustomPreset ? OptionsTextFormat.Parse(AdvancedOptionsText) : null;
+        var uploadToGoogleDrive = IsGoogleDriveAvailable && UploadToGoogleDrive;
+        var driveFolderId = SelectedDriveFolder?.Id;
+
+        if (uploadToGoogleDrive && !string.Equals(_settings.LastGoogleDriveFolderId, driveFolderId, StringComparison.Ordinal))
+        {
+            _settings.LastGoogleDriveFolderId = driveFolderId;
+            _store.Save(_settings);
+        }
 
         var queued = _launcher.Launch(
             SelectedFeature.Descriptor,
@@ -316,7 +396,9 @@ public class ModulePageViewModel : PageViewModel
             format,
             SelectedPreset,
             OutputDirectory,
-            options);
+            options,
+            uploadToGoogleDrive,
+            driveFolderId);
 
         // Cleared on purpose: the files now live in the queue, and leaving them staged
         // invites queueing the same batch twice.
@@ -384,6 +466,58 @@ public class ModulePageViewModel : PageViewModel
         foreach (var preset in _settings.PresetsFor(SelectedFeature.OperationId))
         {
             SavedPresets.Add(preset);
+        }
+    }
+
+    private async Task RefreshDriveFoldersAsync()
+    {
+        try
+        {
+            DriveFolderHint = "Loading folders…";
+            var folders = await _driveClient.ListFoldersAsync(null, CancellationToken.None);
+
+            DriveFolders.Clear();
+            foreach (var folder in folders)
+            {
+                DriveFolders.Add(folder);
+            }
+
+            SelectedDriveFolder = DriveFolders.FirstOrDefault(
+                folder => string.Equals(folder.Id, _settings.LastGoogleDriveFolderId, StringComparison.Ordinal));
+
+            DriveFolderHint = DriveFolders.Count == 0 ? "No folders yet — Drive root will be used." : null;
+        }
+        catch (GoogleDriveNotSignedInException)
+        {
+            DriveFolderHint = "Sign in to Google Drive from Settings to pick a folder.";
+        }
+        catch (Exception ex)
+        {
+            DriveFolderHint = $"Could not load Drive folders: {ex.Message}";
+        }
+    }
+
+    private async Task CreateDriveFolderAsync()
+    {
+        var name = NewDriveFolderName.Trim();
+        if (name.Length == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var id = await _driveClient.CreateFolderAsync(name, null, CancellationToken.None);
+            var folder = new GoogleDriveFolder { Id = id, Name = name };
+
+            DriveFolders.Add(folder);
+            SelectedDriveFolder = folder;
+            NewDriveFolderName = string.Empty;
+            DriveFolderHint = null;
+        }
+        catch (Exception ex)
+        {
+            DriveFolderHint = $"Could not create the folder: {ex.Message}";
         }
     }
 

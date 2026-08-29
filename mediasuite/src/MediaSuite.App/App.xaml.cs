@@ -3,6 +3,7 @@ using System.Windows.Threading;
 using MediaSuite.App.Services;
 using MediaSuite.App.ViewModels;
 using MediaSuite.Core.Engines;
+using MediaSuite.Core.GoogleDrive;
 using MediaSuite.Core.Jobs;
 using MediaSuite.Core.Settings;
 using MediaSuite.Core.Tooling;
@@ -21,6 +22,7 @@ public partial class App : Application
     private ThemeService? _themeService;
     private JobQueueManager? _queue;
     private MainViewModel? _mainViewModel;
+    private GoogleDriveClient? _driveClient;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -47,11 +49,13 @@ public partial class App : Application
         var processRunner = new ProcessRunner();
         var engines = EngineSetup.CreateDefaultRegistry(processRunner, toolLocator);
 
-        _queue = new JobQueueManager(engines, workspaces, settings.MaxConcurrentJobs, toolLocator);
+        _driveClient = new GoogleDriveClient(settings);
+
+        _queue = new JobQueueManager(engines, workspaces, settings.MaxConcurrentJobs, toolLocator, _driveClient);
         var launcher = new JobLauncher(_queue, settings);
 
         _mainViewModel = new MainViewModel(
-            settings, store, _themeService, toolLocator, _queue, engines, launcher, Dispatcher);
+            settings, store, _themeService, toolLocator, _queue, engines, launcher, _driveClient, Dispatcher);
 
         var window = new MainWindow(_themeService)
         {
@@ -68,6 +72,7 @@ public partial class App : Application
         _queue?.Dispose();
         _mainViewModel?.Dispose();
         _themeService?.Dispose();
+        _driveClient?.Dispose();
         base.OnExit(e);
     }
 

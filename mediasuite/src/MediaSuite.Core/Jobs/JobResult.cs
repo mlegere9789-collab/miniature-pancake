@@ -15,6 +15,13 @@ public sealed record JobResult
     public string? ErrorMessage { get; init; }
 
     /// <summary>
+    /// Set when the local output succeeded but the optional Google Drive upload the job
+    /// asked for did not — the converted files still exist locally either way, so this is
+    /// a warning on an otherwise completed job rather than a failure.
+    /// </summary>
+    public string? UploadWarning { get; init; }
+
+    /// <summary>
     /// Raw tool output kept for diagnostics — the tail of stderr from the underlying
     /// process, so a failed job can explain itself without a log panel.
     /// </summary>

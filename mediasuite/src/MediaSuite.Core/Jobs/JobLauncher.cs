@@ -29,7 +29,9 @@ public sealed class JobLauncher
         string? outputFormat,
         QualityPreset preset,
         string? outputDirectory = null,
-        IReadOnlyDictionary<string, string>? options = null)
+        IReadOnlyDictionary<string, string>? options = null,
+        bool uploadToGoogleDrive = false,
+        string? googleDriveFolderId = null)
     {
         ArgumentNullException.ThrowIfNull(feature);
         ArgumentNullException.ThrowIfNull(inputPaths);
@@ -41,6 +43,8 @@ public sealed class JobLauncher
                 : outputDirectory,
             Format = string.IsNullOrWhiteSpace(outputFormat) ? null : outputFormat,
             PreserveFolderStructure = _settings.PreserveFolderStructure,
+            UploadToGoogleDrive = uploadToGoogleDrive,
+            GoogleDriveFolderId = string.IsNullOrWhiteSpace(googleDriveFolderId) ? null : googleDriveFolderId,
         };
 
         var resolvedOptions = options ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

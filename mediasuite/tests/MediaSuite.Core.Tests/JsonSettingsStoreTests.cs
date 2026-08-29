@@ -119,4 +119,20 @@ public class JsonSettingsStoreTests
 
         Assert.Equal(AppPaths.DefaultTempDirectory, settings.ResolveTempDirectory());
     }
+
+    [Fact]
+    public void An_unset_Google_Drive_credentials_path_resolves_to_the_documented_default()
+    {
+        var settings = new AppSettings();
+
+        Assert.Equal(AppPaths.DefaultGoogleDriveCredentialsFile, settings.ResolveGoogleDriveCredentialsPath());
+    }
+
+    [Fact]
+    public void A_Google_Drive_credentials_override_is_used_once_set()
+    {
+        var settings = new AppSettings { GoogleDriveCredentialsPath = @"D:\creds\client.json" };
+
+        Assert.Equal(@"D:\creds\client.json", settings.ResolveGoogleDriveCredentialsPath());
+    }
 }

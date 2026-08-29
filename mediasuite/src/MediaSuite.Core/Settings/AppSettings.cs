@@ -37,6 +37,14 @@ public sealed class AppSettings
     /// <summary>Remember the Drive folder chosen last time, so repeat uploads are one click.</summary>
     public string? LastGoogleDriveFolderId { get; set; }
 
+    /// <summary>
+    /// Override for the Google Drive OAuth client file. Null means
+    /// <see cref="AppPaths.DefaultGoogleDriveCredentialsFile"/>. There is no bundled
+    /// default the way there is for the conversion tools — Drive access has to be tied to
+    /// a Google Cloud project the user owns, not one shipped in the app.
+    /// </summary>
+    public string? GoogleDriveCredentialsPath { get; set; }
+
     /// <summary>Optional override for the bundled-tools folder, for a portable install.</summary>
     public string? ToolsDirectory { get; set; }
 
@@ -122,6 +130,12 @@ public sealed class AppSettings
         TempStorage == TempStorageMode.CustomFolder && !string.IsNullOrWhiteSpace(CustomTempDirectory)
             ? CustomTempDirectory
             : AppPaths.DefaultTempDirectory;
+
+    /// <summary>Effective Google Drive OAuth client file path, with the default applied.</summary>
+    public string ResolveGoogleDriveCredentialsPath() =>
+        string.IsNullOrWhiteSpace(GoogleDriveCredentialsPath)
+            ? AppPaths.DefaultGoogleDriveCredentialsFile
+            : GoogleDriveCredentialsPath;
 
     /// <summary>
     /// Pulls out-of-range values back into range. Called after loading so a corrupt or

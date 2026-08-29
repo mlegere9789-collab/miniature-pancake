@@ -42,13 +42,18 @@ public sealed class JobRowViewModel : ObservableObject, IDisposable
 
     public bool HasError => Job.Status == JobStatus.Failed;
 
+    /// <summary>Set when the local output succeeded but the requested Drive upload did not.</summary>
+    public string? UploadWarning => Job.Result?.UploadWarning;
+
+    public bool HasUploadWarning => !string.IsNullOrEmpty(UploadWarning);
+
     public string StatusText => Job.Status switch
     {
         JobStatus.Pending => "Waiting",
         JobStatus.Running => Job.Stage is { Length: > 0 } stage
             ? (Job.PercentComplete is { } percent ? $"{stage} — {percent:0}%" : stage)
             : (Job.PercentComplete is { } onlyPercent ? $"{onlyPercent:0}%" : "Running"),
-        JobStatus.Completed => "Done",
+        JobStatus.Completed => HasUploadWarning ? "Done — Drive upload failed" : "Done",
         JobStatus.Failed => Job.ErrorMessage ?? "Failed",
         JobStatus.Canceled => "Canceled",
         JobStatus.Paused => "Paused",

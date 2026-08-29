@@ -3,6 +3,7 @@ using System.Windows.Threading;
 using MediaSuite.App.Mvvm;
 using MediaSuite.App.Services;
 using MediaSuite.Core.Features;
+using MediaSuite.Core.GoogleDrive;
 using MediaSuite.Core.Jobs;
 using MediaSuite.Core.Settings;
 using MediaSuite.Core.Tooling;
@@ -23,6 +24,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         JobQueueManager queue,
         EngineRegistry engines,
         JobLauncher launcher,
+        IGoogleDriveClient driveClient,
         Dispatcher dispatcher)
     {
         Convert = new ModulePageViewModel(
@@ -34,7 +36,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             engines,
             launcher,
             settings,
-            store)
+            store,
+            driveClient)
         {
             DropPrompt = "Drop files to convert",
             DropHint = "Video, audio, images, RAW, documents, ebooks, PDF, GIF, archives.",
@@ -49,7 +52,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             engines,
             launcher,
             settings,
-            store)
+            store,
+            driveClient)
         {
             DropPrompt = "Drop files to compress",
             DropHint = "Video, MP3, WAV, images, PDF and GIF.",
@@ -64,7 +68,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             engines,
             launcher,
             settings,
-            store)
+            store,
+            driveClient)
         {
             DropPrompt = "Drop files to edit",
             DropHint = "Video, images and PDF.",
@@ -79,18 +84,29 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             engines,
             launcher,
             settings,
-            store)
+            store,
+            driveClient)
         {
             DropPrompt = "Drop photos to upscale",
             DropHint = "JPG, PNG, WEBP, TIFF and camera RAW.",
         };
 
-        Settings = new SettingsViewModel(settings, store, themeService, toolLocator);
+        Settings = new SettingsViewModel(settings, store, themeService, toolLocator, driveClient);
         Queue = new JobQueueViewModel(queue, dispatcher);
 
         // The concurrency slider has to reach a queue that is already running, not just
         // the settings file.
         Settings.MaxConcurrentJobsChanged += (_, value) => Queue.SetMaxConcurrency(value);
+
+        // Flipping the Drive master switch has to reach every module page already open,
+        // not just take effect on the next launch.
+        Settings.GoogleDriveEnabledChanged += (_, enabled) =>
+        {
+            Convert.IsGoogleDriveAvailable = enabled;
+            Compress.IsGoogleDriveAvailable = enabled;
+            Tools.IsGoogleDriveAvailable = enabled;
+            Upscale.IsGoogleDriveAvailable = enabled;
+        };
 
         Pages = new ObservableCollection<PageViewModel>
         {

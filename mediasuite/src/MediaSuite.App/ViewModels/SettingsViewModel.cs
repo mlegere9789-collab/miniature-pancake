@@ -1,8 +1,11 @@
 using System.Collections.ObjectModel;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Input;
 using MediaSuite.App.Mvvm;
 using MediaSuite.App.Services;
+using MediaSuite.Core.GoogleDrive;
 using MediaSuite.Core.Settings;
 using MediaSuite.Core.Tooling;
 using Microsoft.Win32;
@@ -19,18 +22,24 @@ public sealed class SettingsViewModel : PageViewModel
     private readonly ISettingsStore _store;
     private readonly ThemeService _themeService;
     private readonly ToolLocator _toolLocator;
+    private readonly IGoogleDriveClient _driveClient;
+
+    private bool _isSignedInToGoogleDrive;
+    private string _googleDriveStatus = "Checking\u2026";
 
     public SettingsViewModel(
         AppSettings settings,
         ISettingsStore store,
         ThemeService themeService,
-        ToolLocator toolLocator)
+        ToolLocator toolLocator,
+        IGoogleDriveClient driveClient)
         : base("Settings", "\uE713")
     {
         _settings = settings;
         _store = store;
         _themeService = themeService;
         _toolLocator = toolLocator;
+        _driveClient = driveClient;
 
         Tools = new ObservableCollection<ToolStatusViewModel>();
 
@@ -38,8 +47,14 @@ public sealed class SettingsViewModel : PageViewModel
         BrowseTempDirectoryCommand = new RelayCommand(BrowseTempDirectory);
         BrowseToolsDirectoryCommand = new RelayCommand(BrowseToolsDirectory);
         RefreshToolsCommand = new RelayCommand(RefreshTools);
+        BrowseGoogleDriveCredentialsCommand = new RelayCommand(BrowseGoogleDriveCredentials);
+        SignInToGoogleDriveCommand = new RelayCommand(
+            async () => await SignInToGoogleDriveAsync(), () => !_isSignedInToGoogleDrive);
+        SignOutOfGoogleDriveCommand = new RelayCommand(
+            async () => await SignOutOfGoogleDriveAsync(), () => _isSignedInToGoogleDrive);
 
         RefreshTools();
+        _ = RefreshGoogleDriveStatusAsync();
     }
 
     /// <summary>
@@ -47,6 +62,12 @@ public sealed class SettingsViewModel : PageViewModel
     /// widen or narrow without a restart.
     /// </summary>
     public event EventHandler<int>? MaxConcurrentJobsChanged;
+
+    /// <summary>
+    /// Raised when the Google Drive master switch is flipped, so a module page already
+    /// open can show or hide its own upload checkbox without a restart.
+    /// </summary>
+    public event EventHandler<bool>? GoogleDriveEnabledChanged;
 
     // --- Appearance -------------------------------------------------------
 
@@ -201,8 +222,49 @@ public sealed class SettingsViewModel : PageViewModel
             _settings.GoogleDriveEnabled = value;
             Persist();
             OnPropertyChanged();
+            GoogleDriveEnabledChanged?.Invoke(this, value);
         }
     }
+
+    public string GoogleDriveCredentialsPath
+    {
+        get => _settings.GoogleDriveCredentialsPath ?? "google-drive-credentials.json in the settings folder";
+        set
+        {
+            if (string.Equals(_settings.GoogleDriveCredentialsPath, value, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _settings.GoogleDriveCredentialsPath = string.IsNullOrWhiteSpace(value) ? null : value;
+            Persist();
+            OnPropertyChanged();
+        }
+    }
+
+    public ICommand BrowseGoogleDriveCredentialsCommand { get; }
+
+    public bool IsSignedInToGoogleDrive
+    {
+        get => _isSignedInToGoogleDrive;
+        private set
+        {
+            if (SetProperty(ref _isSignedInToGoogleDrive, value))
+            {
+                CommandManager.InvalidateRequerySuggested();
+            }
+        }
+    }
+
+    public string GoogleDriveStatus
+    {
+        get => _googleDriveStatus;
+        private set => SetProperty(ref _googleDriveStatus, value);
+    }
+
+    public ICommand SignInToGoogleDriveCommand { get; }
+
+    public ICommand SignOutOfGoogleDriveCommand { get; }
 
     // --- Bundled tools ----------------------------------------------------
 
@@ -298,6 +360,59 @@ public sealed class SettingsViewModel : PageViewModel
         if (chosen is not null)
         {
             ToolsDirectory = chosen;
+        }
+    }
+
+    private void BrowseGoogleDriveCredentials()
+    {
+        var dialog = new OpenFileDialog
+        {
+            Title = "Choose the Google Drive OAuth client file",
+            Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*",
+        };
+
+        if (dialog.ShowDialog() == true)
+        {
+            GoogleDriveCredentialsPath = dialog.FileName;
+        }
+    }
+
+    private async Task SignInToGoogleDriveAsync()
+    {
+        GoogleDriveStatus = "Signing in — check your browser…";
+
+        try
+        {
+            await _driveClient.SignInAsync(CancellationToken.None);
+            IsSignedInToGoogleDrive = true;
+            GoogleDriveStatus = "Signed in.";
+        }
+        catch (Exception ex)
+        {
+            // A failed sign-in (missing credentials file, closed consent screen, no
+            // network) is common and recoverable — show it, don't crash the screen.
+            IsSignedInToGoogleDrive = false;
+            GoogleDriveStatus = $"Sign-in failed: {ex.Message}";
+        }
+    }
+
+    private async Task SignOutOfGoogleDriveAsync()
+    {
+        await _driveClient.SignOutAsync();
+        IsSignedInToGoogleDrive = false;
+        GoogleDriveStatus = "Not signed in.";
+    }
+
+    private async Task RefreshGoogleDriveStatusAsync()
+    {
+        try
+        {
+            IsSignedInToGoogleDrive = await _driveClient.IsSignedInAsync(CancellationToken.None);
+            GoogleDriveStatus = IsSignedInToGoogleDrive ? "Signed in." : "Not signed in.";
+        }
+        catch (Exception ex)
+        {
+            GoogleDriveStatus = $"Could not check Google Drive status: {ex.Message}";
         }
     }
 

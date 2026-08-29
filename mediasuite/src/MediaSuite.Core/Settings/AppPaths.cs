@@ -20,4 +20,14 @@ public static class AppPaths
     /// <summary>Where converted files land until the user picks somewhere else.</summary>
     public static string DefaultOutputDirectory =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), AppFolderName);
+
+    /// <summary>
+    /// Default location for the Google Drive OAuth client file the user downloads from
+    /// Google Cloud Console — see Settings → Google Drive for how to get one.
+    /// </summary>
+    public static string DefaultGoogleDriveCredentialsFile =>
+        Path.Combine(DataDirectory, "google-drive-credentials.json");
+
+    /// <summary>Where the signed-in account's cached OAuth token lives.</summary>
+    public static string GoogleDriveTokenDirectory => Path.Combine(LocalDataDirectory, "google-drive-token");
 }

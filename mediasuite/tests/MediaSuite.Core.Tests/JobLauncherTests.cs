@@ -184,6 +184,51 @@ public class JobLauncherTests : IDisposable
     }
 
     [Fact]
+    public void Google_Drive_upload_is_off_by_default()
+    {
+        using var queue = CreateQueue();
+        queue.Pause();
+
+        var launcher = new JobLauncher(queue, new AppSettings { DefaultOutputDirectory = _temp.Path });
+        var job = launcher.Launch(Feature(), new[] { "a.jpg" }, "png", QualityPreset.Balanced)[0];
+
+        Assert.False(job.Spec.Output.UploadToGoogleDrive);
+        Assert.Null(job.Spec.Output.GoogleDriveFolderId);
+    }
+
+    [Fact]
+    public void Requesting_a_Google_Drive_upload_carries_the_folder_id_onto_every_job()
+    {
+        using var queue = CreateQueue();
+        queue.Pause();
+
+        var launcher = new JobLauncher(queue, new AppSettings { DefaultOutputDirectory = _temp.Path });
+        var jobs = launcher.Launch(
+            Feature(), new[] { "a.jpg", "b.jpg" }, "png", QualityPreset.Balanced,
+            uploadToGoogleDrive: true, googleDriveFolderId: "folder-42");
+
+        Assert.All(jobs, job =>
+        {
+            Assert.True(job.Spec.Output.UploadToGoogleDrive);
+            Assert.Equal("folder-42", job.Spec.Output.GoogleDriveFolderId);
+        });
+    }
+
+    [Fact]
+    public void A_blank_Google_Drive_folder_id_means_Drive_root()
+    {
+        using var queue = CreateQueue();
+        queue.Pause();
+
+        var launcher = new JobLauncher(queue, new AppSettings { DefaultOutputDirectory = _temp.Path });
+        var job = launcher.Launch(
+            Feature(), new[] { "a.jpg" }, "png", QualityPreset.Balanced,
+            uploadToGoogleDrive: true, googleDriveFolderId: "   ")[0];
+
+        Assert.Null(job.Spec.Output.GoogleDriveFolderId);
+    }
+
+    [Fact]
     public async Task Launched_jobs_actually_run_on_the_queue()
     {
         var input = _temp.CreateFile("photo.jpg");
