@@ -55,6 +55,35 @@
                 <TextBlock Text="{Binding DependencyWarning}" Style="{DynamicResource Text.Secondary}" />
             </Border>
 
+            <!-- Update banner: never installs anything on its own, only offers the download page -->
+            <Border DockPanel.Dock="Top"
+                    Background="{DynamicResource Brush.Accent.Subtle}"
+                    BorderBrush="{DynamicResource Brush.Border}"
+                    BorderThickness="0,0,0,1"
+                    Padding="20,10"
+                    Visibility="{Binding HasUpdateAvailable, Converter={StaticResource BoolToVisibility}}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding UpdateBannerText}"
+                               Style="{DynamicResource Text.Secondary}"
+                               VerticalAlignment="Center" />
+                    <Button Grid.Column="1"
+                            Content="Download"
+                            Style="{DynamicResource Button.Secondary}"
+                            Command="{Binding OpenDownloadPageCommand}"
+                            Margin="8,0,0,0" />
+                    <Button Grid.Column="2"
+                            Content="Dismiss"
+                            Style="{DynamicResource Button.Secondary}"
+                            Command="{Binding DismissUpdateBannerCommand}"
+                            Margin="8,0,0,0" />
+                </Grid>
+            </Border>
+
             <!-- Status strip: always visible, one line about the queue plus its controls -->
             <Border DockPanel.Dock="Bottom"
                     Background="{DynamicResource Brush.Nav.Background}"

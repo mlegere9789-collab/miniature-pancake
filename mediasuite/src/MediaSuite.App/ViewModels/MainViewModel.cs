@@ -1,4 +1,8 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Input;
 using System.Windows.Threading;
 using MediaSuite.App.Mvvm;
 using MediaSuite.App.Services;
@@ -7,14 +11,19 @@ using MediaSuite.Core.GoogleDrive;
 using MediaSuite.Core.Jobs;
 using MediaSuite.Core.Settings;
 using MediaSuite.Core.Tooling;
+using MediaSuite.Core.Updates;
 
 namespace MediaSuite.App.ViewModels;
 
 /// <summary>Owns the navigation rail and the page currently showing.</summary>
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
+    private readonly IUpdateCheckClient _updateChecker;
+
     private PageViewModel _selectedPage;
     private bool _disposed;
+    private UpdateCheckResult? _updateCheck;
+    private bool _updateBannerDismissed;
 
     public MainViewModel(
         AppSettings settings,
@@ -25,8 +34,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         EngineRegistry engines,
         JobLauncher launcher,
         IGoogleDriveClient driveClient,
+        IUpdateCheckClient updateChecker,
         Dispatcher dispatcher)
     {
+        _updateChecker = updateChecker ?? throw new ArgumentNullException(nameof(updateChecker));
         Convert = new ModulePageViewModel(
             "Convert",
             "\uE895",
@@ -124,6 +135,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             ? null
             : $"Missing required tools: {string.Join(", ", missing.Select(t => t.DisplayName))}. "
               + "Conversions that need them will stay disabled — see Settings for where to put them.";
+
+        OpenDownloadPageCommand = new RelayCommand(OpenDownloadPage, () => UpdateDownloadUrl is not null);
+        DismissUpdateBannerCommand = new RelayCommand(DismissUpdateBanner);
+
+        if (settings.CheckForUpdatesOnLaunch)
+        {
+            _ = CheckForUpdateAsync();
+        }
     }
 
     public ModulePageViewModel Convert { get; }
@@ -151,6 +170,51 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string? DependencyWarning { get; }
 
     public bool HasDependencyWarning => DependencyWarning is not null;
+
+    /// <summary>
+    /// True once a check finds a real, newer release and the user has not dismissed the
+    /// banner for it. The app never updates itself — this only ever offers the download
+    /// page, and the user decides.
+    /// </summary>
+    public bool HasUpdateAvailable => _updateCheck?.HasUpdate == true && !_updateBannerDismissed;
+
+    public string UpdateBannerText => _updateCheck is null
+        ? string.Empty
+        : $"MediaSuite {_updateCheck.LatestVersion} is available (you have {_updateCheck.CurrentVersion}).";
+
+    private string? UpdateDownloadUrl => _updateCheck?.DownloadUrl;
+
+    public ICommand OpenDownloadPageCommand { get; }
+
+    public ICommand DismissUpdateBannerCommand { get; }
+
+    private async Task CheckForUpdateAsync()
+    {
+        // Deliberately no ConfigureAwait(false): this needs to resume on the UI thread
+        // to raise PropertyChanged safely, and WPF's SynchronizationContext (captured
+        // here since the constructor runs on the UI thread) already provides that.
+        _updateCheck = await _updateChecker.CheckAsync(CancellationToken.None);
+
+        OnPropertyChanged(nameof(HasUpdateAvailable));
+        OnPropertyChanged(nameof(UpdateBannerText));
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    private void OpenDownloadPage()
+    {
+        if (UpdateDownloadUrl is null)
+        {
+            return;
+        }
+
+        Process.Start(new ProcessStartInfo(UpdateDownloadUrl) { UseShellExecute = true });
+    }
+
+    private void DismissUpdateBanner()
+    {
+        _updateBannerDismissed = true;
+        OnPropertyChanged(nameof(HasUpdateAvailable));
+    }
 
     public void Dispose()
     {

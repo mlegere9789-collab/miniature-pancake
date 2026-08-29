@@ -7,6 +7,7 @@ using MediaSuite.Core.GoogleDrive;
 using MediaSuite.Core.Jobs;
 using MediaSuite.Core.Settings;
 using MediaSuite.Core.Tooling;
+using MediaSuite.Core.Updates;
 
 namespace MediaSuite.App;
 
@@ -23,6 +24,7 @@ public partial class App : Application
     private JobQueueManager? _queue;
     private MainViewModel? _mainViewModel;
     private GoogleDriveClient? _driveClient;
+    private GitHubReleaseUpdateChecker? _updateChecker;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -50,12 +52,13 @@ public partial class App : Application
         var engines = EngineSetup.CreateDefaultRegistry(processRunner, toolLocator);
 
         _driveClient = new GoogleDriveClient(settings);
+        _updateChecker = new GitHubReleaseUpdateChecker();
 
         _queue = new JobQueueManager(engines, workspaces, settings.MaxConcurrentJobs, toolLocator, _driveClient);
         var launcher = new JobLauncher(_queue, settings);
 
         _mainViewModel = new MainViewModel(
-            settings, store, _themeService, toolLocator, _queue, engines, launcher, _driveClient, Dispatcher);
+            settings, store, _themeService, toolLocator, _queue, engines, launcher, _driveClient, _updateChecker, Dispatcher);
 
         var window = new MainWindow(_themeService)
         {
@@ -73,6 +76,7 @@ public partial class App : Application
         _mainViewModel?.Dispose();
         _themeService?.Dispose();
         _driveClient?.Dispose();
+        _updateChecker?.Dispose();
         base.OnExit(e);
     }
 
