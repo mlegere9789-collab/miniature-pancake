@@ -146,11 +146,40 @@ public class EngineSetupTests : IDisposable
     }
 
     [Fact]
-    public void Operations_from_later_build_steps_are_still_unclaimed()
+    public void Upscale_photo_has_an_engine_behind_it()
+    {
+        Assert.True(Build().SupportsOperation("upscale.photo"));
+    }
+
+    [Fact]
+    public void Every_step_ten_feature_is_runnable()
     {
         var registry = Build();
 
-        Assert.False(registry.SupportsOperation("upscale.photo"));
+        var features = FeatureCatalog.All.Where(feature => feature.BuildStep == 10).ToList();
+
+        Assert.NotEmpty(features);
+        Assert.All(features, feature =>
+            Assert.True(registry.SupportsOperation(feature.OperationId), $"no engine claims {feature.OperationId}"));
+    }
+
+    [Fact]
+    public void Every_operation_in_the_whole_catalogue_now_has_somewhere_to_go()
+    {
+        // The last build step with a real engine behind it — from here on, anything still
+        // unclaimed is a UI-only tool by design (image.color-picker, util.unit-convert,
+        // util.time-convert), not a gap.
+        var registry = Build();
+
+        var unclaimed = FeatureCatalog.All
+            .Where(feature => !registry.SupportsOperation(feature.OperationId))
+            .Select(feature => feature.OperationId)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToList();
+
+        Assert.Equal(
+            new[] { "image.color-picker", "util.time-convert", "util.unit-convert" },
+            unclaimed);
     }
 
     [Fact]

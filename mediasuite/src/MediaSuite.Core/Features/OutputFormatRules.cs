@@ -25,5 +25,6 @@ public static class OutputFormatRules
     /// <summary>True for edit-in-place tools, which keep the input's format by default.</summary>
     public static bool KeepsSourceFormat(string operationId) =>
         ImageOperations.KeepsSourceFormat(operationId)
-        || FFmpegOperations.KeepsSourceFormat(operationId);
+        || FFmpegOperations.KeepsSourceFormat(operationId)
+        || UpscaleOperations.KeepsSourceFormat(operationId);
 }

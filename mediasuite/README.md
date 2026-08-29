@@ -5,9 +5,9 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–9 of 18.** The scaffold, shell, job queue, image module,
-> video/audio module, GIF module, PDF module, document/ebook module and archive/unit/time
-> converters are in place. The AI upscaler is next — see [Build order](#build-order).
+> **Status: build steps 1–10 of 18.** Every conversion module from the brief is now in
+> place, ending with the AI upscaler — what is left is presets, Google Drive, the format-
+> parity audit, QA, the installer and polish. See [Build order](#build-order).
 
 ## Layout
 
@@ -125,6 +125,12 @@ failing at the moment you press Convert.
 - **Unit and time converters** — length/mass/area/volume/temperature/data/speed, and time
   zones/Unix timestamps/durations/frame counts; pure arithmetic with no file to convert,
   so unlike every other module these never touch the job queue at all
+- **AI upscaler** — 2x/4x/8x with general or anime models, optional denoise and sharpen,
+  through Real-ESRGAN's ncnn-vulkan build (GPU via Vulkan, with a CPU fallback); 8x is two
+  chained passes rather than trusting every build to accept a single "-s 8"; sharpening is
+  an ordinary ImageMagick unsharp pass afterwards, since Real-ESRGAN has none of its own.
+  "Face enhance" from the brief is not implemented — it needs a second bundled model
+  (GFPGAN) the tool manifest does not carry yet, so it is a follow-up, not a fake
 - **Running jobs from the UI** — pick a tool, an output format and a quality preset,
   choose where results go, and the staged files are queued one job each — except for
   tools that merge their inputs, which take the whole selection as a single job
@@ -142,8 +148,8 @@ failing at the moment you press Convert.
 | 7 | PDF module | done |
 | 8 | Document / ebook module | done |
 | 9 | Archive / unit / time converters | done |
-| 10 | AI upscaler (CUDA + CPU fallback) | next |
-| 11 | Settings system — presets | partial (shell settings done) |
+| 10 | AI upscaler (CUDA + CPU fallback) | done — Vulkan GPU path, no face-enhance yet |
+| 11 | Settings system — presets | next (shell settings done) |
 | 12 | Google Drive integration | |
 | 13 | Format-parity audit vs FreeConvert | |
 | 14 | QA pass against real sample files | |
