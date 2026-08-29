@@ -7,8 +7,8 @@ namespace MediaSuite.Core.Engines;
 public static class EngineSetup
 {
     /// <summary>
-    /// Registers every engine that exists today. Later build steps add document,
-    /// archive and upscaling engines here; nothing else has to change.
+    /// Registers every engine that exists today. Later build steps add archive and
+    /// upscaling engines here; nothing else has to change.
     /// </summary>
     public static EngineRegistry CreateDefaultRegistry(IProcessRunner processRunner, ToolLocator toolLocator)
     {
@@ -20,6 +20,7 @@ public static class EngineSetup
             .Register(new PngToSvgEngine(processRunner, toolLocator))
             .Register(new FFmpegEngine(processRunner, toolLocator))
             .Register(new GifEngine(processRunner, toolLocator))
-            .Register(new PdfEngine(processRunner, toolLocator));
+            .Register(new PdfEngine(processRunner, toolLocator))
+            .Register(new DocumentEngine(processRunner, toolLocator));
     }
 }

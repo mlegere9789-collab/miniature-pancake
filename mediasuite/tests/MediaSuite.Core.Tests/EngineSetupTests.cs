@@ -97,11 +97,34 @@ public class EngineSetupTests : IDisposable
     }
 
     [Fact]
+    public void Every_document_and_ebook_operation_has_an_engine_behind_it()
+    {
+        var registry = Build();
+
+        foreach (var operation in DocumentOperations.All)
+        {
+            Assert.True(registry.SupportsOperation(operation), $"no engine claims {operation}");
+        }
+    }
+
+    [Fact]
+    public void Every_document_feature_in_the_catalogue_is_now_runnable()
+    {
+        var registry = Build();
+
+        var features = FeatureCatalog.All.Where(feature => feature.BuildStep == 8).ToList();
+
+        Assert.NotEmpty(features);
+        Assert.All(features, feature =>
+            Assert.True(registry.SupportsOperation(feature.OperationId), $"no engine claims {feature.OperationId}"));
+    }
+
+    [Fact]
     public void Operations_from_later_build_steps_are_still_unclaimed()
     {
         var registry = Build();
 
-        Assert.False(registry.SupportsOperation("document.convert"));
+        Assert.False(registry.SupportsOperation("archive.convert"));
         Assert.False(registry.SupportsOperation("upscale.photo"));
     }
 

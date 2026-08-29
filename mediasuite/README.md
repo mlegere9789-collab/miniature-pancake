@@ -5,9 +5,9 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–7 of 18.** The scaffold, shell, job queue, image module,
-> video/audio module, GIF module and PDF module are in place. Document/ebook conversion
-> is next — see [Build order](#build-order).
+> **Status: build steps 1–8 of 18.** The scaffold, shell, job queue, image module,
+> video/audio module, GIF module, PDF module and document/ebook module are in place.
+> Archive, unit and time converters are next — see [Build order](#build-order).
 
 ## Layout
 
@@ -114,6 +114,10 @@ failing at the moment you press Convert.
   organise/remove/extract pages, extract embedded images, and convert to and from JPG,
   PNG and Word, driven by QPDF, Ghostscript and MuPDF (LibreOffice for PDF to Word), with
   no one binary required for the whole module — a merge only needs QPDF installed
+- **Document and ebook module** — DOCX/DOC/ODT/RTF/TXT/HTML/Markdown in any direction
+  through Pandoc, with the legacy binary DOC format routed to LibreOffice instead since
+  Pandoc can neither read nor write it; DOCX to PDF always through LibreOffice for the
+  same reason PDF to Word does; EPUB/MOBI/AZW3 and the PDF↔EPUB bridges through Calibre
 - **Running jobs from the UI** — pick a tool, an output format and a quality preset,
   choose where results go, and the staged files are queued one job each — except for
   tools that merge their inputs, which take the whole selection as a single job
@@ -129,8 +133,8 @@ failing at the moment you press Convert.
 | 5 | Video / audio module | done |
 | 6 | GIF module | done |
 | 7 | PDF module | done |
-| 8 | Document / ebook module | next |
-| 9 | Archive / unit / time converters | |
+| 8 | Document / ebook module | done |
+| 9 | Archive / unit / time converters | next |
 | 10 | AI upscaler (CUDA + CPU fallback) | |
 | 11 | Settings system — presets | partial (shell settings done) |
 | 12 | Google Drive integration | |

@@ -24,6 +24,9 @@ public class OutputFormatRulesTests
     [InlineData("pdf.to-jpg", "jpg")]
     [InlineData("image.heic-to-pdf", "pdf")]
     [InlineData("image.jpg-to-pdf", "pdf")]
+    [InlineData("pdf.to-epub", "epub")]
+    [InlineData("ebook.epub-to-pdf", "pdf")]
+    [InlineData("document.docx-to-pdf", "pdf")]
     public void A_tool_named_for_one_format_is_not_offered_a_choice(string operationId, string expected)
     {
         Assert.Equal(expected, OutputFormatRules.ForcedFormat(operationId));
@@ -34,6 +37,8 @@ public class OutputFormatRulesTests
     [InlineData("video.convert")]
     [InlineData("audio.convert")]
     [InlineData("pdf.convert")]
+    [InlineData("document.convert")]
+    [InlineData("ebook.convert")]
     public void Open_ended_tools_leave_the_format_to_the_user(string operationId)
     {
         Assert.Null(OutputFormatRules.ForcedFormat(operationId));

@@ -19,7 +19,8 @@ public static class OutputFormatRules
         ImageOperations.FixedFormatFor(operationId)
         ?? FFmpegOperations.FixedFormatFor(operationId)
         ?? GifOperations.FixedFormatFor(operationId)
-        ?? PdfOperations.FixedFormatFor(operationId);
+        ?? PdfOperations.FixedFormatFor(operationId)
+        ?? DocumentOperations.FixedFormatFor(operationId);
 
     /// <summary>True for edit-in-place tools, which keep the input's format by default.</summary>
     public static bool KeepsSourceFormat(string operationId) =>
