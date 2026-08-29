@@ -135,6 +135,13 @@ public class ModulePageViewModel : PageViewModel
             {
                 RefreshOutputFormats();
                 RefreshSavedPresets();
+
+                // A previous tool's advanced options are meaningless for a different one.
+                _selectedSavedPreset = null;
+                AdvancedOptionsText = string.Empty;
+                NewPresetName = string.Empty;
+                OnPropertyChanged(nameof(SelectedSavedPreset));
+
                 OnPropertyChanged(nameof(CanStart));
                 OnPropertyChanged(nameof(StartHint));
                 CommandManager.InvalidateRequerySuggested();
@@ -358,6 +365,8 @@ public class ModulePageViewModel : PageViewModel
         _settings.DeleteCustomPreset(SelectedFeature.OperationId, name);
         _store.Save(_settings);
         SelectedSavedPreset = null;
+        AdvancedOptionsText = string.Empty;
+        NewPresetName = string.Empty;
         RefreshSavedPresets();
 
         PresetFeedback = $"Deleted preset \"{name}\".";
