@@ -35,21 +35,27 @@ public sealed class RealToolSmokeTests : IDisposable
 
     public void Dispose() => _temp.Dispose();
 
-    public static IEnumerable<object[]> RepresentativeOperations()
+    public static IEnumerable<object?[]> RepresentativeOperations()
     {
-        yield return new object[] { "image.convert", "sample.jpg" };
-        yield return new object[] { "image.png-to-svg", "sample.png" };
-        yield return new object[] { "video.convert", "sample.mp4" };
-        yield return new object[] { "gif.mp4-to-gif", "sample.mp4" };
-        yield return new object[] { "pdf.compress", "sample.pdf" };
-        yield return new object[] { "document.convert", "sample.docx" };
-        yield return new object[] { "archive.convert", "sample.zip" };
-        yield return new object[] { "upscale.photo", "sample.jpg" };
+        yield return new object?[] { "image.convert", "sample.jpg", null };
+        yield return new object?[] { "image.png-to-svg", "sample.png", null };
+        yield return new object?[] { "video.convert", "sample.mp4", null };
+        yield return new object?[] { "gif.mp4-to-gif", "sample.mp4", null };
+        yield return new object?[] { "pdf.compress", "sample.pdf", null };
+        // document.convert has no forced format (it is the open-ended converter), and
+        // DocumentEngine resolves the requested output format before it ever checks for
+        // Pandoc or LibreOffice — an unset format throws its own, unrelated error first,
+        // so this is the one case that needs an explicit format to actually reach the
+        // missing-tool check this test exists to verify.
+        yield return new object?[] { "document.convert", "sample.docx", "pdf" };
+        yield return new object?[] { "archive.convert", "sample.zip", null };
+        yield return new object?[] { "upscale.photo", "sample.jpg", null };
     }
 
     [Theory]
     [MemberData(nameof(RepresentativeOperations))]
-    public async Task Every_registered_engine_fails_cleanly_with_no_tools_installed(string operationId, string fileName)
+    public async Task Every_registered_engine_fails_cleanly_with_no_tools_installed(
+        string operationId, string fileName, string? outputFormat)
     {
         var locator = new ToolLocator(new[] { _temp.Combine("no-tools") }, pathVariable: string.Empty);
         var engines = EngineSetup.CreateDefaultRegistry(new ProcessRunner(), locator);
@@ -65,10 +71,11 @@ public sealed class RealToolSmokeTests : IDisposable
         Assert.NotNull(feature);
         Assert.True(engines.SupportsOperation(operationId), $"No engine is registered for '{operationId}'.");
 
-        var job = Assert.Single(launcher.Launch(feature!, new[] { input }, null, QualityPreset.Balanced));
+        var job = Assert.Single(launcher.Launch(feature!, new[] { input }, outputFormat, QualityPreset.Balanced));
         await queue.WaitForIdleAsync().WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Equal(JobStatus.Failed, job.Status);
         Assert.False(string.IsNullOrWhiteSpace(job.ErrorMessage));
+        Assert.Contains("not installed", job.ErrorMessage, StringComparison.OrdinalIgnoreCase);
     }
 }
