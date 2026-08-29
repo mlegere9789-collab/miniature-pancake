@@ -3,8 +3,9 @@
 Phase 1 (MVP) scaffold: manual plant entry, check-in photo capture with a
 ghost-overlay alignment guide, a stubbed rules-based scorer (swappable later
 for the shared Plant ID & Diagnostic Engine), score history, and a single
-Garden Score home screen. Phase 2 has started: weather-driven
-environmental-fit scoring and a frost-risk dashboard banner are in.
+Garden Score home screen. Phase 2 is done: weather-driven environmental-fit
+scoring, a frost-risk dashboard banner, and a weekly Garden Report Card with
+sharing. Phase 3 has started with seasonal score recalibration.
 
 This app lives alongside the unrelated Whisper codebase at the repo root —
 it is a separate product and does not depend on anything in `modules/` or
@@ -67,7 +68,7 @@ vitals/
    Phase 2 can swap these for server-driven push once predictive/weather-aware
    alerts (spec §4.5) need a backend trigger.
 
-### Phase 2 (in progress)
+### Phase 2
 
 8. **Weather-driven environmental fit** (`backend/src/services/weatherService.ts`) —
    fetches frost/drought signals from Open-Meteo (no API key needed) for the
@@ -85,6 +86,16 @@ vitals/
     check-ins completed) with a share button using the native share sheet
     (spec §4.5/§4.6). A polished branded image card (vs. today's plain text
     share) is further design work once the visual system has real assets.
+
+### Phase 3 (in progress)
+
+11. **Seasonal score recalibration** (`backend/src/services/scoring.ts`'s
+    `isSeasonallyDormant` + the dormancy floor in `computePlantScore`) — a
+    plant's `dormancyMonths` (1-12) suppress the visual-vitality dip from
+    expected leaf drop/browning during its dormant season, so a deciduous
+    tree isn't scored as declining every winter (spec §4.7). Toggle "Dormant
+    in winter" on the Add Plant screen (currently a fixed Nov-Feb preset; a
+    real per-species/hemisphere dormancy calendar is further Phase 3 work).
 
 ## Running locally
 
@@ -108,6 +119,7 @@ npx expo start
 ## Not yet built (later phases)
 
 Auto-segmentation onboarding, a branded/image report card share asset
-(text-only sharing ships today), regional outbreak modifiers, neighborhood
-leaderboard, seasonal recalibration curves — see the top-level spec doc for
-the remaining phase 2-4 scope.
+(text-only sharing ships today), regional outbreak modifiers, a per-species/
+hemisphere dormancy calendar (today's dormancy toggle is a fixed preset),
+neighborhood leaderboard — see the top-level spec doc for the remaining
+phase 3-4 scope.

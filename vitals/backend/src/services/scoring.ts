@@ -31,6 +31,19 @@ export interface ComputeScoreInput {
   outstandingTreatmentsIgnored: boolean;
   /** Composite scores (0-100) from the plant's last up-to-3 check-ins, oldest first. */
   recentScores: number[];
+  /** Is this plant naturally dormant right now (spec §4.7)? Suppresses the visual-vitality dip from expected leaf drop/browning. */
+  isDormant?: boolean;
+}
+
+const DORMANCY_VISUAL_VITALITY_FLOOR = 70;
+
+/**
+ * Seasonal recalibration (spec §4.7): a deciduous plant losing leaves in its
+ * dormant season is healthy for that time of year, not declining. `months`
+ * is 1-12 (January = 1); `now` defaults to the current date.
+ */
+export function isSeasonallyDormant(months: number[], now: Date = new Date()): boolean {
+  return months.includes(now.getMonth() + 1);
 }
 
 const FLAG_SEVERITY_PENALTY: Record<FlagSeverity, number> = {
@@ -91,7 +104,9 @@ export function computePlantScore(input: ComputeScoreInput): {
   finalScore: number;
   breakdown: SubscoreBreakdown;
 } {
-  const visualVitality = input.engineOutput.visualVitality.score;
+  const visualVitality = input.isDormant
+    ? Math.max(input.engineOutput.visualVitality.score, DORMANCY_VISUAL_VITALITY_FLOOR)
+    : input.engineOutput.visualVitality.score;
   const diagnosticFlags = scoreDiagnosticFlags(input.engineOutput);
   const environmentalFit = input.engineOutput.environmentalFit.score;
   const careConsistency = scoreCareConsistency(input.daysLateForCheckin, input.outstandingTreatmentsIgnored);

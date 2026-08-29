@@ -10,6 +10,7 @@ export const CreatePlantSchema = z.object({
   importanceWeight: z.number().min(0).max(10).default(1),
   checkinCadenceDays: z.number().int().min(1).max(365).default(14),
   frostSensitive: z.boolean().default(false),
+  dormancyMonths: z.array(z.number().int().min(1).max(12)).default([]),
 });
 
 export type CreatePlantInput = z.infer<typeof CreatePlantSchema>;

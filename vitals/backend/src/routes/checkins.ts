@@ -2,7 +2,7 @@ import { Router } from "express";
 import { prisma } from "../db/client";
 import { CreateCheckInSchema } from "../models/checkin";
 import { runDiagnosticEngine } from "../services/diagnosticEngine";
-import { computeGardenScore, computePlantScore } from "../services/scoring";
+import { computeGardenScore, computePlantScore, isSeasonallyDormant } from "../services/scoring";
 import { applyWeatherPenalty, fetchWeatherSignals } from "../services/weatherService";
 
 export const checkinsRouter = Router();
@@ -60,6 +60,7 @@ checkinsRouter.post("/", async (req, res) => {
     daysLateForCheckin,
     outstandingTreatmentsIgnored: openTreatments.length > 0,
     recentScores: [...plant.scoreHistory].reverse().map((s) => s.score),
+    isDormant: isSeasonallyDormant(plant.dormancyMonths),
   });
 
   const checkIn = await prisma.$transaction(async (tx) => {

@@ -89,6 +89,7 @@ model Plant {
   checkinCadenceDays Int     @default(14)
   active            Boolean  @default(true)
   frostSensitive    Boolean  @default(false) // drives the frost-risk dashboard banner (spec §4.3/§4.5)
+  dormancyMonths    Int[]    @default([]) // 1-12; months this plant is naturally dormant (spec §4.7 seasonal recalibration)
 
   scoreCurrent Float    @default(100)
   createdAt    DateTime @default(now())

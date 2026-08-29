@@ -20,6 +20,7 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
   const [checkinCadenceDays, setCheckinCadenceDays] = useState("14");
   const [importanceWeight, setImportanceWeight] = useState("1");
   const [frostSensitive, setFrostSensitive] = useState(false);
+  const [dormantInWinter, setDormantInWinter] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit() {
@@ -37,6 +38,9 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
         checkinCadenceDays: Number(checkinCadenceDays) || 14,
         importanceWeight: Number(importanceWeight) || 1,
         frostSensitive,
+        // Nov-Feb preset for now (spec §4.7); a real per-species/hemisphere
+        // dormancy calendar is further Phase 3 work.
+        dormancyMonths: dormantInWinter ? [11, 12, 1, 2] : [],
       });
       onCreated(plant);
     } catch (err) {
@@ -70,6 +74,13 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
           Frost-sensitive (gets a frost-warning alert)
         </Text>
         <Switch value={frostSensitive} onValueChange={setFrostSensitive} />
+      </View>
+
+      <View style={styles.switchRow}>
+        <Text style={[styles.label, { flex: 1, marginBottom: 0 }]}>
+          Dormant in winter (e.g. deciduous trees — won't be scored as declining for expected leaf drop)
+        </Text>
+        <Switch value={dormantInWinter} onValueChange={setDormantInWinter} />
       </View>
 
       <Pressable style={styles.primaryButton} onPress={handleSubmit} disabled={submitting}>

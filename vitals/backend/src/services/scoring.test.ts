@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeGardenScore, computePlantScore } from "./scoring";
+import { computeGardenScore, computePlantScore, isSeasonallyDormant } from "./scoring";
 import { DiagnosticEngineOutput } from "../types/diagnosticEngine";
 
 function healthyEngineOutput(): DiagnosticEngineOutput {
@@ -133,5 +133,64 @@ describe("computeGardenScore", () => {
       { score: 80, importanceWeight: 1, speciesId: "basil", isOverdueForCheckin: false },
     ]);
     expect(diverse).toBeGreaterThan(monoculture);
+  });
+});
+
+describe("isSeasonallyDormant", () => {
+  it("matches the plant's dormancy months (1-indexed)", () => {
+    expect(isSeasonallyDormant([12, 1, 2], new Date("2026-01-15"))).toBe(true);
+    expect(isSeasonallyDormant([12, 1, 2], new Date("2026-06-15"))).toBe(false);
+  });
+
+  it("is never dormant for an evergreen with no dormancy months", () => {
+    expect(isSeasonallyDormant([], new Date("2026-01-15"))).toBe(false);
+  });
+});
+
+describe("computePlantScore seasonal recalibration (spec §4.7)", () => {
+  function decliningLeafDropOutput(): DiagnosticEngineOutput {
+    return {
+      visualVitality: {
+        score: 35, // heavy leaf loss/browning — looks bad in isolation
+        chlorosisPct: 40,
+        necroticCoveragePct: 20,
+        wiltingDetected: false,
+        newGrowthDetected: false,
+        growthDensityDeltaPct: -60,
+      },
+      flags: [],
+      environmentalFit: { score: 90, lightExposureMatch: true, droughtStressDetected: false, frostRiskDetected: false },
+    };
+  }
+
+  it("floors the visual-vitality subscore for a dormant plant's expected leaf drop", () => {
+    const awake = computePlantScore({
+      engineOutput: decliningLeafDropOutput(),
+      daysLateForCheckin: 0,
+      outstandingTreatmentsIgnored: false,
+      recentScores: [],
+      isDormant: false,
+    });
+    const dormant = computePlantScore({
+      engineOutput: decliningLeafDropOutput(),
+      daysLateForCheckin: 0,
+      outstandingTreatmentsIgnored: false,
+      recentScores: [],
+      isDormant: true,
+    });
+
+    expect(dormant.breakdown.visualVitality).toBeGreaterThan(awake.breakdown.visualVitality);
+    expect(dormant.finalScore).toBeGreaterThan(awake.finalScore);
+  });
+
+  it("does not lower an already-healthy visual score when dormant", () => {
+    const { breakdown } = computePlantScore({
+      engineOutput: healthyEngineOutput(),
+      daysLateForCheckin: 0,
+      outstandingTreatmentsIgnored: false,
+      recentScores: [],
+      isDormant: true,
+    });
+    expect(breakdown.visualVitality).toBe(healthyEngineOutput().visualVitality.score);
   });
 });

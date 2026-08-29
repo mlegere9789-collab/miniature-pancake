@@ -11,6 +11,7 @@ export interface Plant {
   importanceWeight: number;
   checkinCadenceDays: number;
   frostSensitive: boolean;
+  dormancyMonths: number[];
   scoreCurrent: number;
   createdAt: string;
 }
@@ -104,4 +105,5 @@ export interface CreatePlantInput {
   importanceWeight?: number;
   checkinCadenceDays?: number;
   frostSensitive?: boolean;
+  dormancyMonths?: number[];
 }
