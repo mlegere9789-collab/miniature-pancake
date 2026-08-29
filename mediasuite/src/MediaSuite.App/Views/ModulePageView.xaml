@@ -18,6 +18,15 @@
                        HorizontalAlignment="Left"
                        Margin="0,6,0,0" />
 
+            <!-- Empty state: nothing on this page can actually run yet -->
+            <Border Style="{DynamicResource Card}"
+                    Margin="0,16,0,0"
+                    Visibility="{Binding HasReadyFeatures, Converter={StaticResource BoolToVisibility}, ConverterParameter=Invert}">
+                <TextBlock Text="None of these tools are ready yet — Settings shows what's missing and where to put it."
+                           Style="{DynamicResource Text.Secondary}"
+                           TextWrapping="Wrap" />
+            </Border>
+
             <controls:DropZone Prompt="{Binding DropPrompt}"
                                Hint="{Binding DropHint}"
                                FilesDroppedCommand="{Binding AddFilesCommand}"
@@ -45,9 +54,10 @@
                                        Margin="0,2,0,0" />
                         </StackPanel>
                         <Button Grid.Column="1"
-                                Content="Clear"
+                                Content="_Clear"
                                 Style="{DynamicResource Button.Secondary}"
                                 Command="{Binding ClearFilesCommand}"
+                                ToolTip="Remove every staged file without running anything"
                                 VerticalAlignment="Center" />
                     </Grid>
 
@@ -90,6 +100,7 @@
                                   Grid.Column="4"
                                   ItemsSource="{Binding Presets}"
                                   SelectedItem="{Binding SelectedPreset, Mode=TwoWay}"
+                                  ToolTip="Quick/Balanced/Best are fixed settings per tool. Custom lets you type the raw parameters yourself below."
                                   Margin="0,4,0,0" />
                     </Grid>
 
@@ -103,11 +114,13 @@
                             </Grid.ColumnDefinitions>
                             <ComboBox ItemsSource="{Binding SavedPresets}"
                                       SelectedItem="{Binding SelectedSavedPreset, Mode=TwoWay}"
-                                      DisplayMemberPath="Name" />
+                                      DisplayMemberPath="Name"
+                                      ToolTip="A previously saved set of advanced options for this tool" />
                             <Button Grid.Column="1"
-                                    Content="Delete"
+                                    Content="_Delete"
                                     Style="{DynamicResource Button.Secondary}"
                                     Command="{Binding DeletePresetCommand}"
+                                    ToolTip="Delete the selected saved preset"
                                     Margin="8,0,0,0" />
                         </Grid>
 
@@ -119,7 +132,8 @@
                                  AcceptsReturn="True"
                                  MinLines="3"
                                  MaxLines="6"
-                                 TextWrapping="Wrap" />
+                                 TextWrapping="Wrap"
+                                 ToolTip="Raw parameters this tool reads directly, e.g. crf=20 on one line and bitrate=4000k on the next" />
 
                         <Grid Margin="0,8,0,0">
                             <Grid.ColumnDefinitions>
@@ -127,11 +141,13 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <TextBox Text="{Binding NewPresetName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                     Style="{DynamicResource Input.Text}" />
+                                     Style="{DynamicResource Input.Text}"
+                                     ToolTip="Name this set of advanced options so it can be reloaded later" />
                             <Button Grid.Column="1"
-                                    Content="Save as preset"
+                                    Content="Sa_ve as preset"
                                     Style="{DynamicResource Button.Secondary}"
                                     Command="{Binding SavePresetCommand}"
+                                    ToolTip="Save the advanced options above under this name"
                                     Margin="8,0,0,0" />
                         </Grid>
 
@@ -149,16 +165,19 @@
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
                         <TextBox Text="{Binding OutputDirectory, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
-                                 Style="{DynamicResource Input.Text}" />
+                                 Style="{DynamicResource Input.Text}"
+                                 ToolTip="Where the finished files land" />
                         <Button Grid.Column="1"
-                                Content="Browse…"
+                                Content="B_rowse…"
                                 Style="{DynamicResource Button.Secondary}"
                                 Command="{Binding BrowseOutputDirectoryCommand}"
+                                ToolTip="Choose a different save folder"
                                 Margin="8,0,0,0" />
                         <Button Grid.Column="2"
-                                Content="Start"
+                                Content="_Start"
                                 Style="{DynamicResource Button.Primary}"
                                 Command="{Binding StartCommand}"
+                                ToolTip="Queue every staged file as a job"
                                 Margin="8,0,0,0" />
                     </Grid>
 
@@ -166,7 +185,8 @@
                                 Margin="0,10,0,0">
                         <CheckBox Content="Also upload to Google Drive"
                                   Style="{DynamicResource Input.Check}"
-                                  IsChecked="{Binding UploadToGoogleDrive, Mode=TwoWay}" />
+                                  IsChecked="{Binding UploadToGoogleDrive, Mode=TwoWay}"
+                                  ToolTip="Uploads each finished file after it converts. A failed upload never fails the job — the local file is what matters." />
 
                         <StackPanel Visibility="{Binding UploadToGoogleDrive, Converter={StaticResource BoolToVisibility}}"
                                     Margin="24,6,0,0">
@@ -178,16 +198,18 @@
                                 </Grid.ColumnDefinitions>
                                 <ComboBox ItemsSource="{Binding DriveFolders}"
                                           SelectedItem="{Binding SelectedDriveFolder, Mode=TwoWay}"
-                                          DisplayMemberPath="Name" />
+                                          DisplayMemberPath="Name"
+                                          ToolTip="A folder at the top level of your Drive. Leave unset to upload to Drive's root." />
                                 <TextBox Grid.Column="1"
                                          Text="{Binding NewDriveFolderName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                          Style="{DynamicResource Input.Text}"
                                          Width="140"
                                          Margin="8,0,0,0" />
                                 <Button Grid.Column="2"
-                                        Content="New folder"
+                                        Content="_New folder"
                                         Style="{DynamicResource Button.Secondary}"
                                         Command="{Binding CreateDriveFolderCommand}"
+                                        ToolTip="Create a new folder at the top level of your Drive"
                                         Margin="8,0,0,0" />
                             </Grid>
                             <TextBlock Text="{Binding DriveFolderHint}"

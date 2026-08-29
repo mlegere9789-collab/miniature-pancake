@@ -72,9 +72,10 @@
                                Style="{DynamicResource Text.Secondary}"
                                VerticalAlignment="Center" />
                     <Button Grid.Column="1"
-                            Content="Download"
+                            Content="_Download"
                             Style="{DynamicResource Button.Secondary}"
                             Command="{Binding OpenDownloadPageCommand}"
+                            ToolTip="Opens the release page in your browser — MediaSuite never downloads or installs anything on its own"
                             Margin="8,0,0,0" />
                     <Button Grid.Column="2"
                             Content="Dismiss"
@@ -106,17 +107,20 @@
                         <Button Content="{Binding Queue.PauseResumeLabel}"
                                 Style="{DynamicResource Button.Secondary}"
                                 Command="{Binding Queue.PauseResumeCommand}"
+                                ToolTip="Pausing stops starting new jobs; jobs already running keep going"
                                 MinWidth="80"
                                 Padding="12,4" />
                         <Button Content="Cancel all"
                                 Style="{DynamicResource Button.Secondary}"
                                 Command="{Binding Queue.CancelAllCommand}"
+                                ToolTip="Cancels every running and waiting job"
                                 MinWidth="80"
                                 Padding="12,4"
                                 Margin="8,0,0,0" />
                         <Button Content="Clear finished"
                                 Style="{DynamicResource Button.Secondary}"
                                 Command="{Binding Queue.ClearFinishedCommand}"
+                                ToolTip="Removes completed, failed and canceled jobs from this list"
                                 MinWidth="80"
                                 Padding="12,4"
                                 Margin="8,0,0,0" />
@@ -144,7 +148,8 @@
                                     <StackPanel>
                                         <TextBlock Text="{Binding DisplayName}"
                                                    Style="{DynamicResource Text.Body}"
-                                                   TextTrimming="CharacterEllipsis" />
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding DisplayName}" />
                                         <ProgressBar Height="4"
                                                      Margin="0,6,0,0"
                                                      Minimum="0"
@@ -154,9 +159,13 @@
                                                      Foreground="{DynamicResource Brush.Accent}"
                                                      Background="{DynamicResource Brush.Surface.Hover}"
                                                      BorderThickness="0" />
+                                        <!-- ToolTip repeats the (possibly trimmed) status text in full,
+                                             since a failure or warning message is often longer than
+                                             the row is wide. -->
                                         <TextBlock Text="{Binding StatusText}"
                                                    Style="{DynamicResource Text.Caption}"
                                                    TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding StatusText}"
                                                    Margin="0,4,0,0" />
                                     </StackPanel>
 
@@ -167,6 +176,7 @@
                                                               RelativeSource={RelativeSource AncestorType=Window}}"
                                             CommandParameter="{Binding}"
                                             IsEnabled="{Binding CanCancel}"
+                                            ToolTip="Cancel this job"
                                             VerticalAlignment="Center"
                                             MinWidth="72"
                                             Padding="12,4"

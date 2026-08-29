@@ -33,6 +33,7 @@
                     Style="{DynamicResource Button.Secondary}"
                     HorizontalAlignment="Center"
                     Margin="0,16,0,0"
+                    ToolTip="Pick files without dragging them — folders you pick are expanded the same way a dropped folder is"
                     Click="OnBrowseClick" />
         </StackPanel>
     </Border>

@@ -5,7 +5,7 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–16 of 18.** Every conversion module from the brief is in place,
+> **Status: build steps 1–17 of 18.** Every conversion module from the brief is in place,
 > every tool has a Custom preset backed by named, savable option sets, jobs can optionally
 > upload their output to Google Drive, and the format catalogue has been audited against
 > FreeConvert's format support. [QA.md](QA.md) is the checklist for actually verifying a
@@ -13,7 +13,7 @@ limits, no server.
 > bundled tools, so no real conversion has ever been run. There is now a real,
 > CI-compiled Inno Setup installer (see [Installer](#installer)), and the app checks its
 > own GitHub releases on launch — never silently, only ever offering the download page.
-> What is left is polish. See [Build order](#build-order).
+> What is left is the final build. See [Build order](#build-order).
 
 ## Layout
 
@@ -171,6 +171,12 @@ failing at the moment you press Convert.
   A failed check (offline, GitHub unreachable) fails silently — the banner just doesn't
   appear, since a network hiccup is not something a personal, offline-first app should
   ever interrupt startup to complain about
+- **Polish** — tooltips across every non-obvious control; an actual empty state for a
+  module page where nothing is ready yet, instead of a leftover "arrives in a later
+  build step" message from before every module existed; keyboard mnemonics (Alt+letter)
+  on the primary action of every page, which needed a real fix, not just markup — the
+  custom button styles' `ContentPresenter` had no `RecognizesAccessKey`, so a `_`
+  mnemonic would have rendered as a literal underscore instead of working
 
 ## Settings and presets
 
@@ -250,7 +256,7 @@ the C# behind it compiles.
 | 14 | QA pass against real sample files | done — QA.md is the checklist for a human to run on real hardware; nothing here can execute a real conversion |
 | 15 | Inno Setup installer | done — CI actually builds it end to end, see [Installer](#installer) |
 | 16 | Update check | done — GitHub releases, check-and-prompt, never silent installs |
-| 17 | Polish — tooltips, error and empty states, keyboard nav | |
+| 17 | Polish — tooltips, error and empty states, keyboard nav | done |
 | 18 | Final build and handoff | |
 
 ## Licence note

@@ -53,11 +53,13 @@
                                 Content="Browse…"
                                 Style="{DynamicResource Button.Secondary}"
                                 Command="{Binding BrowseOutputDirectoryCommand}"
+                                ToolTip="Choose the default save folder"
                                 Margin="8,0,0,0" />
                     </Grid>
                     <CheckBox Content="Recreate the source folder structure for batches"
                               Style="{DynamicResource Input.Check}"
                               IsChecked="{Binding PreserveFolderStructure, Mode=TwoWay}"
+                              ToolTip="When a batch comes from nested folders, rebuild that same folder tree under the save folder instead of flattening everything into it"
                               Margin="0,12,0,0" />
                 </StackPanel>
             </Border>
@@ -79,6 +81,7 @@
                                 Value="{Binding MaxConcurrentJobs, Mode=TwoWay}"
                                 TickFrequency="1"
                                 IsSnapToTickEnabled="True"
+                                ToolTip="Applies immediately to jobs already running, not just new ones"
                                 VerticalAlignment="Center" />
                         <TextBlock Grid.Column="1"
                                    Text="{Binding ConcurrencyHint}"
@@ -105,6 +108,7 @@
                                 Content="Browse…"
                                 Style="{DynamicResource Button.Secondary}"
                                 Command="{Binding BrowseTempDirectoryCommand}"
+                                ToolTip="Choose a working folder for temporary files, e.g. a RAM disk"
                                 Margin="8,0,0,0" />
                     </Grid>
                 </StackPanel>
@@ -140,6 +144,7 @@
                                     Content="Browse…"
                                     Style="{DynamicResource Button.Secondary}"
                                     Command="{Binding BrowseGoogleDriveCredentialsCommand}"
+                                    ToolTip="Choose the OAuth client JSON file downloaded from Google Cloud Console"
                                     Margin="8,0,0,0" />
                         </Grid>
                         <TextBlock Text="Drive access has to come from a Google Cloud project you own — create one at console.cloud.google.com, enable the Drive API, add an OAuth client of type &quot;Desktop app&quot;, and download its JSON here."
@@ -153,16 +158,18 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Text="{Binding GoogleDriveStatus}" VerticalAlignment="Center" />
                             <Button Grid.Column="1"
-                                    Content="Sign in"
+                                    Content="Sign _in"
                                     Style="{DynamicResource Button.Secondary}"
                                     Command="{Binding SignInToGoogleDriveCommand}"
                                     Visibility="{Binding IsSignedInToGoogleDrive, Converter={StaticResource BoolToVisibility}, ConverterParameter=Invert}"
+                                    ToolTip="Opens your browser to sign in to Google Drive"
                                     Margin="8,0,0,0" />
                             <Button Grid.Column="1"
-                                    Content="Sign out"
+                                    Content="Sign _out"
                                     Style="{DynamicResource Button.Secondary}"
                                     Command="{Binding SignOutOfGoogleDriveCommand}"
                                     Visibility="{Binding IsSignedInToGoogleDrive, Converter={StaticResource BoolToVisibility}}"
+                                    ToolTip="Forgets the cached sign-in on this machine"
                                     Margin="8,0,0,0" />
                         </Grid>
                     </StackPanel>
@@ -184,9 +191,10 @@
                                        Margin="0,4,0,0" />
                         </StackPanel>
                         <Button Grid.Column="1"
-                                Content="Re-scan"
+                                Content="Re-_scan"
                                 Style="{DynamicResource Button.Secondary}"
                                 Command="{Binding RefreshToolsCommand}"
+                                ToolTip="Look again for every bundled tool without restarting the app"
                                 VerticalAlignment="Top" />
                     </Grid>
 
@@ -201,6 +209,7 @@
                                 Content="Browse…"
                                 Style="{DynamicResource Button.Secondary}"
                                 Command="{Binding BrowseToolsDirectoryCommand}"
+                                ToolTip="Point at a different folder holding the bundled tools"
                                 Margin="8,0,0,0" />
                     </Grid>
 
