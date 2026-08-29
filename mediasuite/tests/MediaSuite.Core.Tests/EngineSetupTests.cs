@@ -120,11 +120,36 @@ public class EngineSetupTests : IDisposable
     }
 
     [Fact]
+    public void Archive_convert_has_an_engine_behind_it()
+    {
+        Assert.True(Build().SupportsOperation("archive.convert"));
+    }
+
+    [Fact]
+    public void Every_step_nine_feature_is_runnable_except_the_two_pure_calculators()
+    {
+        // util.unit-convert and util.time-convert are arithmetic, not a file conversion —
+        // there is nothing for a job or an engine to do, the same way image.color-picker
+        // is a UI tool that never runs a job either.
+        var registry = Build();
+
+        var features = FeatureCatalog.All.Where(feature => feature.BuildStep == 9).ToList();
+
+        Assert.NotEmpty(features);
+
+        var unclaimed = features
+            .Where(feature => !registry.SupportsOperation(feature.OperationId))
+            .Select(feature => feature.OperationId)
+            .ToList();
+
+        Assert.Equal(new[] { "util.unit-convert", "util.time-convert" }, unclaimed);
+    }
+
+    [Fact]
     public void Operations_from_later_build_steps_are_still_unclaimed()
     {
         var registry = Build();
 
-        Assert.False(registry.SupportsOperation("archive.convert"));
         Assert.False(registry.SupportsOperation("upscale.photo"));
     }
 

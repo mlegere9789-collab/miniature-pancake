@@ -39,6 +39,7 @@ public class OutputFormatRulesTests
     [InlineData("pdf.convert")]
     [InlineData("document.convert")]
     [InlineData("ebook.convert")]
+    [InlineData("archive.convert")]
     public void Open_ended_tools_leave_the_format_to_the_user(string operationId)
     {
         Assert.Null(OutputFormatRules.ForcedFormat(operationId));

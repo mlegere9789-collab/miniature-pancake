@@ -5,9 +5,9 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–8 of 18.** The scaffold, shell, job queue, image module,
-> video/audio module, GIF module, PDF module and document/ebook module are in place.
-> Archive, unit and time converters are next — see [Build order](#build-order).
+> **Status: build steps 1–9 of 18.** The scaffold, shell, job queue, image module,
+> video/audio module, GIF module, PDF module, document/ebook module and archive/unit/time
+> converters are in place. The AI upscaler is next — see [Build order](#build-order).
 
 ## Layout
 
@@ -118,6 +118,13 @@ failing at the moment you press Convert.
   through Pandoc, with the legacy binary DOC format routed to LibreOffice instead since
   Pandoc can neither read nor write it; DOCX to PDF always through LibreOffice for the
   same reason PDF to Word does; EPUB/MOBI/AZW3 and the PDF↔EPUB bridges through Calibre
+- **Archive module** — ZIP/7Z/TAR/GZIP in any direction plus RAR as a read-only source,
+  through 7-Zip; since 7-Zip has no single "convert" command, every job extracts then
+  recreates in the target format, with a GZIP target routed through an intermediate TAR
+  first since gzip holds one stream, not several named entries
+- **Unit and time converters** — length/mass/area/volume/temperature/data/speed, and time
+  zones/Unix timestamps/durations/frame counts; pure arithmetic with no file to convert,
+  so unlike every other module these never touch the job queue at all
 - **Running jobs from the UI** — pick a tool, an output format and a quality preset,
   choose where results go, and the staged files are queued one job each — except for
   tools that merge their inputs, which take the whole selection as a single job
@@ -134,8 +141,8 @@ failing at the moment you press Convert.
 | 6 | GIF module | done |
 | 7 | PDF module | done |
 | 8 | Document / ebook module | done |
-| 9 | Archive / unit / time converters | next |
-| 10 | AI upscaler (CUDA + CPU fallback) | |
+| 9 | Archive / unit / time converters | done |
+| 10 | AI upscaler (CUDA + CPU fallback) | next |
 | 11 | Settings system — presets | partial (shell settings done) |
 | 12 | Google Drive integration | |
 | 13 | Format-parity audit vs FreeConvert | |
