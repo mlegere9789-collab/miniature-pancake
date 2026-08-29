@@ -1,0 +1,45 @@
+import { CreateCheckInResponse, Garden, Plant } from "../types/domain";
+
+// Point this at the machine running `npm run dev` in vitals/backend.
+// Use your LAN IP (not localhost) when testing on a physical device via Expo Go.
+export const API_BASE_URL = process.env.EXPO_PUBLIC_VITALS_API_URL ?? "http://localhost:4000";
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE_URL}${path}`, init);
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Vitals API ${path} failed (${res.status}): ${body}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export async function fetchGarden(gardenId: string): Promise<Garden> {
+  return request(`/gardens/${gardenId}`);
+}
+
+export async function fetchPlant(plantId: string): Promise<Plant> {
+  return request(`/plants/${plantId}`);
+}
+
+export async function uploadCheckInPhoto(localUri: string): Promise<string> {
+  const form = new FormData();
+  // React Native's fetch/FormData accepts this shape for file uploads.
+  form.append("photo", {
+    uri: localUri,
+    name: `checkin-${Date.now()}.jpg`,
+    type: "image/jpeg",
+  } as unknown as Blob);
+
+  const res = await fetch(`${API_BASE_URL}/uploads`, { method: "POST", body: form });
+  if (!res.ok) throw new Error(`photo upload failed (${res.status})`);
+  const { photoUrl } = (await res.json()) as { photoUrl: string };
+  return photoUrl;
+}
+
+export async function submitCheckIn(plantId: string, photoUrl: string): Promise<CreateCheckInResponse> {
+  return request(`/checkins`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ plantId, photoUrl }),
+  });
+}

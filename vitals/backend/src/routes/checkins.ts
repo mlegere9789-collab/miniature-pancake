@@ -1,0 +1,102 @@
+import { Router } from "express";
+import { prisma } from "../db/client";
+import { CreateCheckInSchema } from "../models/checkin";
+import { runDiagnosticEngine } from "../services/diagnosticEngine";
+import { computeGardenScore, computePlantScore } from "../services/scoring";
+
+export const checkinsRouter = Router();
+
+checkinsRouter.post("/", async (req, res) => {
+  const parsed = CreateCheckInSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.flatten() });
+  }
+  const { plantId, photoUrl } = parsed.data;
+
+  const plant = await prisma.plant.findUnique({
+    where: { id: plantId },
+    include: {
+      checkIns: { orderBy: { timestamp: "desc" }, take: 1 },
+      scoreHistory: { orderBy: { computedAt: "desc" }, take: 3 },
+    },
+  });
+  if (!plant) return res.status(404).json({ error: "plant not found" });
+
+  const lastCheckIn = plant.checkIns[0];
+  const daysSinceLast = lastCheckIn
+    ? (Date.now() - lastCheckIn.timestamp.getTime()) / (1000 * 60 * 60 * 24)
+    : plant.checkinCadenceDays; // first check-in: treat as on-schedule
+  const daysLateForCheckin = daysSinceLast - plant.checkinCadenceDays;
+
+  const openTreatments = await prisma.treatmentPlan.findMany({
+    where: { diagnosticFlag: { checkIn: { plantId } }, completed: false },
+  });
+
+  const engineOutput = await runDiagnosticEngine(photoUrl);
+
+  const { finalScore, breakdown } = computePlantScore({
+    engineOutput,
+    daysLateForCheckin,
+    outstandingTreatmentsIgnored: openTreatments.length > 0,
+    recentScores: [...plant.scoreHistory].reverse().map((s) => s.score),
+  });
+
+  const checkIn = await prisma.$transaction(async (tx) => {
+    const created = await tx.checkIn.create({
+      data: {
+        plantId,
+        photoUrl,
+        engineOutputJson: engineOutput as unknown as object,
+        computedScore: finalScore,
+        subscoreBreakdownJson: breakdown as unknown as object,
+        diagnosticFlags: {
+          create: engineOutput.flags.map((f) => ({
+            condition: f.condition,
+            confidence: f.confidence,
+            severity: f.severity,
+            urgency: f.urgency,
+            trend: f.trend,
+          })),
+        },
+      },
+      include: { diagnosticFlags: true },
+    });
+
+    await tx.plant.update({
+      where: { id: plantId },
+      data: { scoreCurrent: finalScore },
+    });
+
+    await tx.plantScoreSnapshot.create({
+      data: { plantId, score: finalScore },
+    });
+
+    return created;
+  });
+
+  await recomputeGardenScore(plant.gardenId);
+
+  res.status(201).json({ checkIn, breakdown, priorScore: lastCheckIn?.computedScore ?? null });
+});
+
+async function recomputeGardenScore(gardenId: string) {
+  const plants = await prisma.plant.findMany({ where: { gardenId, active: true } });
+
+  const now = Date.now();
+  const inputs = plants.map((p) => {
+    const dueDate = p.createdAt.getTime() + p.checkinCadenceDays * 24 * 60 * 60 * 1000;
+    return {
+      score: p.scoreCurrent,
+      importanceWeight: p.importanceWeight,
+      speciesId: p.speciesId,
+      isOverdueForCheckin: now > dueDate,
+    };
+  });
+
+  const gardenScore = computeGardenScore(inputs);
+
+  await prisma.$transaction([
+    prisma.garden.update({ where: { id: gardenId }, data: { scoreCurrent: gardenScore } }),
+    prisma.gardenScoreSnapshot.create({ data: { gardenId, score: gardenScore } }),
+  ]);
+}

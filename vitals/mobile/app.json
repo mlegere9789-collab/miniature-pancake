@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "Vitals",
+    "slug": "vitals",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Vitals uses your camera to check in on your plants and track their health over time."
+      }
+    },
+    "android": {
+      "permissions": ["CAMERA"]
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Vitals uses your camera to check in on your plants and track their health over time."
+        }
+      ]
+    ]
+  }
+}

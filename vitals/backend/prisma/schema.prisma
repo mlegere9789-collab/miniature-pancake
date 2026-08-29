@@ -1,0 +1,143 @@
+// Vitals — Phase 1 data model (spec §5.1)
+// Postgres via Prisma. Score history is stored as append-only rows on
+// ScoreSnapshot rather than a JSON array column, so it stays queryable
+// for trend charts and future TimescaleDB migration.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum FlagSeverity {
+  COSMETIC
+  MODERATE
+  URGENT
+}
+
+enum FlagUrgency {
+  MONITOR
+  THIS_WEEK
+  TREAT_TODAY
+}
+
+enum FlagStatus {
+  OPEN
+  MONITORING
+  RESOLVED
+}
+
+enum FlagTrend {
+  NEW
+  WORSENING
+  STABLE
+  RESOLVING
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  email     String   @unique
+  location  String?
+  usdaZone  String?
+  createdAt DateTime @default(now())
+
+  gardens Garden[]
+}
+
+model Garden {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  name      String
+  createdAt DateTime @default(now())
+
+  scoreCurrent Float    @default(100)
+  plants       Plant[]
+  scoreHistory GardenScoreSnapshot[]
+}
+
+// One row per computed Garden Score, so the 90-day sparkline is a plain
+// range query instead of unpacking a JSON blob.
+model GardenScoreSnapshot {
+  id        String   @id @default(uuid())
+  gardenId  String
+  garden    Garden   @relation(fields: [gardenId], references: [id])
+  score     Float
+  computedAt DateTime @default(now())
+
+  @@index([gardenId, computedAt])
+}
+
+model Plant {
+  id                String   @id @default(uuid())
+  gardenId          String
+  garden            Garden   @relation(fields: [gardenId], references: [id])
+  speciesId         String
+  speciesName       String
+  nickname          String?
+  plantedDate       DateTime?
+  locationPin       Json?    // { x, y } relative to a simple yard map image
+  importanceWeight  Float    @default(1.0) // used in Garden Score roll-up
+  checkinCadenceDays Int     @default(14)
+  active            Boolean  @default(true)
+
+  scoreCurrent Float    @default(100)
+  createdAt    DateTime @default(now())
+
+  checkIns     CheckIn[]
+  scoreHistory PlantScoreSnapshot[]
+}
+
+model PlantScoreSnapshot {
+  id        String   @id @default(uuid())
+  plantId   String
+  plant     Plant    @relation(fields: [plantId], references: [id])
+  score     Float
+  computedAt DateTime @default(now())
+
+  @@index([plantId, computedAt])
+}
+
+model CheckIn {
+  id               String   @id @default(uuid())
+  plantId          String
+  plant            Plant    @relation(fields: [plantId], references: [id])
+  timestamp        DateTime @default(now())
+  photoUrl         String
+  engineOutputJson Json     // raw diagnostic engine response for this photo
+  computedScore    Float
+  subscoreBreakdownJson Json // { visualVitality, diagnosticFlags, environmentalFit, careConsistency, trendMomentum }
+
+  diagnosticFlags DiagnosticFlag[]
+
+  @@index([plantId, timestamp])
+}
+
+model DiagnosticFlag {
+  id            String       @id @default(uuid())
+  checkinId     String
+  checkIn       CheckIn      @relation(fields: [checkinId], references: [id])
+  condition     String
+  confidence    Float
+  severity      FlagSeverity
+  urgency       FlagUrgency
+  trend         FlagTrend    @default(NEW)
+  status        FlagStatus   @default(OPEN)
+
+  treatmentPlan TreatmentPlan?
+}
+
+model TreatmentPlan {
+  id                String         @id @default(uuid())
+  diagnosticFlagId  String         @unique
+  diagnosticFlag    DiagnosticFlag @relation(fields: [diagnosticFlagId], references: [id])
+  steps             Json           // string[]
+  productsRecommended Json         // string[]
+  completed         Boolean        @default(false)
+  outcomeScoreDelta Float?         // filled in once a follow-up check-in closes the loop
+  createdAt         DateTime       @default(now())
+}
