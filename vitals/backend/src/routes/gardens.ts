@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { prisma } from "../db/client";
+import { computeWeeklyReportCard } from "../services/reportCard";
 import { fetchWeatherSignals } from "../services/weatherService";
 
 export const gardensRouter = Router();
@@ -20,6 +21,77 @@ gardensRouter.get("/:id", async (req, res) => {
 
   res.json({ ...garden, needsAttention, risingStars, weatherAlert });
 });
+
+// Weekly Garden Report Card (spec §4.5): aggregates the last 7 days of
+// score history into a headline, top-improving plants, and plants that need
+// attention. Intended as the payload for a weekly push/email recap.
+gardensRouter.get("/:id/report-card", async (req, res) => {
+  const gardenId = req.params.id;
+  const periodEnd = new Date();
+  const periodStart = new Date(periodEnd.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  const garden = await prisma.garden.findUnique({
+    where: { id: gardenId },
+    include: { plants: { where: { active: true } } },
+  });
+  if (!garden) return res.status(404).json({ error: "not found" });
+
+  const gardenScoreStart = await scoreNearOrBefore(
+    () => prisma.gardenScoreSnapshot.findFirst({ where: { gardenId, computedAt: { gte: periodStart } }, orderBy: { computedAt: "asc" } }),
+    () => prisma.gardenScoreSnapshot.findFirst({ where: { gardenId, computedAt: { lt: periodStart } }, orderBy: { computedAt: "desc" } }),
+    garden.scoreCurrent,
+  );
+
+  const plantSummaries = await Promise.all(
+    garden.plants.map(async (plant) => {
+      const scoreStart = await scoreNearOrBefore(
+        () =>
+          prisma.plantScoreSnapshot.findFirst({
+            where: { plantId: plant.id, computedAt: { gte: periodStart } },
+            orderBy: { computedAt: "asc" },
+          }),
+        () =>
+          prisma.plantScoreSnapshot.findFirst({
+            where: { plantId: plant.id, computedAt: { lt: periodStart } },
+            orderBy: { computedAt: "desc" },
+          }),
+        plant.scoreCurrent,
+      );
+      return {
+        plantId: plant.id,
+        name: plant.nickname || plant.speciesName,
+        scoreStart,
+        scoreEnd: plant.scoreCurrent,
+      };
+    }),
+  );
+
+  const checkInsCompleted = await prisma.checkIn.count({
+    where: { plant: { gardenId }, timestamp: { gte: periodStart, lte: periodEnd } },
+  });
+
+  const reportCard = computeWeeklyReportCard({
+    periodStart,
+    periodEnd,
+    gardenScoreStart,
+    gardenScoreEnd: garden.scoreCurrent,
+    plantSummaries,
+    checkInsCompleted,
+  });
+
+  res.json(reportCard);
+});
+
+async function scoreNearOrBefore(
+  findWithinPeriod: () => Promise<{ score: number } | null>,
+  findBeforePeriod: () => Promise<{ score: number } | null>,
+  fallback: number,
+): Promise<number> {
+  const withinPeriod = await findWithinPeriod();
+  if (withinPeriod) return withinPeriod.score;
+  const beforePeriod = await findBeforePeriod();
+  return beforePeriod?.score ?? fallback;
+}
 
 // Weather-aware "Frost tonight" banner (spec §4.3): null when no risk, or
 // there's no garden location on file yet.

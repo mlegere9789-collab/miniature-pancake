@@ -77,6 +77,25 @@ export interface PlantDetail extends Plant {
   checkIns: CheckIn[];
 }
 
+export interface ReportCardPlantSummary {
+  plantId: string;
+  name: string;
+  scoreEnd: number;
+  delta: number;
+}
+
+export interface WeeklyReportCard {
+  periodStart: string;
+  periodEnd: string;
+  gardenScoreStart: number;
+  gardenScoreEnd: number;
+  gardenScoreDelta: number;
+  topPlants: ReportCardPlantSummary[];
+  plantsNeedingAttention: ReportCardPlantSummary[];
+  checkInsCompleted: number;
+  headline: string;
+}
+
 export interface CreatePlantInput {
   gardenId: string;
   speciesId: string;

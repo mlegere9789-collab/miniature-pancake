@@ -24,7 +24,8 @@ vitals/
 │       ├── services/
 │       │   ├── scoring.ts   Weighted composite scoring engine (spec §3.1/§3.2)
 │       │   ├── diagnosticEngine.ts  Stubbed rules-based scorer (Idea 5 stand-in)
-│       │   └── weatherService.ts    Open-Meteo frost/drought signals (Phase 2, spec §5)
+│       │   ├── weatherService.ts    Open-Meteo frost/drought signals (Phase 2, spec §5)
+│       │   └── reportCard.ts        Weekly Garden Report Card aggregation (Phase 2, spec §4.5)
 │       ├── routes/          Express routers: plants, checkins, gardens
 │       ├── types/           Shared TS types
 │       └── server.ts        App entrypoint
@@ -35,7 +36,8 @@ vitals/
         │   ├── CheckInCameraScreen.tsx   Ghost-overlay capture flow (core differentiator)
         │   ├── GardenDashboardScreen.tsx Hero Garden Score + Needs Attention / Rising Stars
         │   ├── PlantDetailScreen.tsx     Score history sparkline + check-in log
-        │   └── AddPlantScreen.tsx        Manual plant entry (Phase 1 skips auto-segmentation)
+        │   ├── AddPlantScreen.tsx        Manual plant entry (Phase 1 skips auto-segmentation)
+        │   └── ReportCardScreen.tsx      Weekly Garden Report Card + native share sheet
         ├── components/       Sparkline, ScoreDeltaBadge, GhostOverlay
         ├── services/         api.ts (typed backend client), checkInQueue.ts (offline queue),
         │                     notifications.ts (per-plant local check-in reminders)
@@ -77,6 +79,12 @@ vitals/
    `GET /gardens/:id` now returns `weatherAlert`, populated when frost is
    forecast tonight and at least one `frostSensitive` plant is in the garden
    (spec §4.3/§4.5). Mark a plant frost-sensitive from the Add Plant screen.
+10. **Weekly Garden Report Card** (`backend/src/services/reportCard.ts`,
+    `GET /gardens/:id/report-card`, `mobile/src/screens/ReportCardScreen.tsx`) —
+    a 7-day recap (Garden Score delta, rising stars, plants needing attention,
+    check-ins completed) with a share button using the native share sheet
+    (spec §4.5/§4.6). A polished branded image card (vs. today's plain text
+    share) is further design work once the visual system has real assets.
 
 ## Running locally
 
@@ -99,6 +107,7 @@ npx expo start
 
 ## Not yet built (later phases)
 
-Auto-segmentation onboarding, weekly report card generation, sharing cards,
-regional outbreak modifiers, neighborhood leaderboard, seasonal recalibration
-curves — see the top-level spec doc for the remaining phase 2-4 scope.
+Auto-segmentation onboarding, a branded/image report card share asset
+(text-only sharing ships today), regional outbreak modifiers, neighborhood
+leaderboard, seasonal recalibration curves — see the top-level spec doc for
+the remaining phase 2-4 scope.

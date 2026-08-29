@@ -1,11 +1,12 @@
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import React, { useEffect, useState } from "react";
-import { Pressable, Text } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { AddPlantScreen } from "./src/screens/AddPlantScreen";
 import { CheckInCameraScreen } from "./src/screens/CheckInCameraScreen";
 import { GardenDashboardScreen } from "./src/screens/GardenDashboardScreen";
 import { PlantDetailScreen } from "./src/screens/PlantDetailScreen";
+import { ReportCardScreen } from "./src/screens/ReportCardScreen";
 import { API_BASE_URL, fetchGarden } from "./src/services/api";
 import { requestNotificationPermission, scheduleAllReminders, scheduleCheckInReminder } from "./src/services/notifications";
 import { theme } from "./src/theme/theme";
@@ -19,6 +20,7 @@ type RootStackParamList = {
   PlantDetail: { plantId: string };
   CheckIn: { plant: Plant | PlantDetail };
   AddPlant: undefined;
+  ReportCard: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -46,9 +48,14 @@ export default function App() {
         <Stack.Screen name="Dashboard" options={({ navigation }) => ({
           title: "Vitals",
           headerRight: () => (
-            <Pressable onPress={() => navigation.navigate("AddPlant")}>
-              <Text style={{ color: theme.color.forestGreen, fontSize: 28, marginRight: 4 }}>+</Text>
-            </Pressable>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
+              <Pressable onPress={() => navigation.navigate("ReportCard")}>
+                <Text style={{ color: theme.color.forestGreen, fontSize: 20 }}>📋</Text>
+              </Pressable>
+              <Pressable onPress={() => navigation.navigate("AddPlant")}>
+                <Text style={{ color: theme.color.forestGreen, fontSize: 28, marginRight: 4 }}>+</Text>
+              </Pressable>
+            </View>
           ),
         })}>
           {({ navigation }) => (
@@ -97,6 +104,10 @@ export default function App() {
               onCancel={() => navigation.goBack()}
             />
           )}
+        </Stack.Screen>
+
+        <Stack.Screen name="ReportCard" options={{ title: "Weekly Report" }}>
+          {() => <ReportCardScreen gardenId={DEMO_GARDEN_ID} />}
         </Stack.Screen>
       </Stack.Navigator>
     </NavigationContainer>
