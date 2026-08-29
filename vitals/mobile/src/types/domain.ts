@@ -63,3 +63,17 @@ export interface Garden {
   needsAttention: Plant[];
   risingStars: { plantId: string; delta: number }[];
 }
+
+export interface PlantDetail extends Plant {
+  scoreHistory: PlantScoreSnapshot[];
+  checkIns: CheckIn[];
+}
+
+export interface CreatePlantInput {
+  gardenId: string;
+  speciesId: string;
+  speciesName: string;
+  nickname?: string;
+  importanceWeight?: number;
+  checkinCadenceDays?: number;
+}

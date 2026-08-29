@@ -12,7 +12,7 @@
       }
     },
     "android": {
-      "permissions": ["CAMERA"]
+      "permissions": ["CAMERA", "SCHEDULE_EXACT_ALARM"]
     },
     "plugins": [
       [
@@ -20,7 +20,8 @@
         {
           "cameraPermission": "Vitals uses your camera to check in on your plants and track their health over time."
         }
-      ]
+      ],
+      "expo-notifications"
     ]
   }
 }

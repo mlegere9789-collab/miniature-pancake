@@ -1,4 +1,4 @@
-import { CreateCheckInResponse, Garden, Plant } from "../types/domain";
+import { CreateCheckInResponse, CreatePlantInput, Garden, Plant, PlantDetail } from "../types/domain";
 
 // Point this at the machine running `npm run dev` in vitals/backend.
 // Use your LAN IP (not localhost) when testing on a physical device via Expo Go.
@@ -17,8 +17,16 @@ export async function fetchGarden(gardenId: string): Promise<Garden> {
   return request(`/gardens/${gardenId}`);
 }
 
-export async function fetchPlant(plantId: string): Promise<Plant> {
+export async function fetchPlant(plantId: string): Promise<PlantDetail> {
   return request(`/plants/${plantId}`);
+}
+
+export async function createPlant(input: CreatePlantInput): Promise<Plant> {
+  return request(`/plants`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
 }
 
 export async function uploadCheckInPhoto(localUri: string): Promise<string> {

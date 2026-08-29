@@ -32,9 +32,11 @@ vitals/
         ├── screens/
         │   ├── CheckInCameraScreen.tsx   Ghost-overlay capture flow (core differentiator)
         │   ├── GardenDashboardScreen.tsx Hero Garden Score + Needs Attention / Rising Stars
-        │   └── PlantDetailScreen.tsx     Score history + photo timeline
-        ├── components/       ScoreRing, ScoreDeltaBadge, GhostOverlay, Sparkline
-        ├── services/         api.ts (typed backend client), checkInQueue.ts (offline queue)
+        │   ├── PlantDetailScreen.tsx     Score history sparkline + check-in log
+        │   └── AddPlantScreen.tsx        Manual plant entry (Phase 1 skips auto-segmentation)
+        ├── components/       Sparkline, ScoreDeltaBadge, GhostOverlay
+        ├── services/         api.ts (typed backend client), checkInQueue.ts (offline queue),
+        │                     notifications.ts (per-plant local check-in reminders)
         ├── theme/            Vitals design tokens (forest green / soil brown / gold)
         └── types/            Shared domain types mirrored from backend
 ```
@@ -52,6 +54,14 @@ vitals/
 4. **Ghost-overlay camera flow** (`mobile/src/screens/CheckInCameraScreen.tsx`) —
    the core differentiator: overlays the previous check-in photo at reduced
    opacity so the user aligns angle/framing before capture.
+5. **Manual plant entry** (`mobile/src/screens/AddPlantScreen.tsx`) — species,
+   nickname, check-in cadence, and importance weight; posts to `POST /plants`.
+6. **Score history + check-in log** (`mobile/src/screens/PlantDetailScreen.tsx`) —
+   sparkline of `PlantScoreSnapshot` history plus open diagnostic flags per check-in.
+7. **Push notification reminders** (`mobile/src/services/notifications.ts`) —
+   local, per-plant reminders on each plant's check-in cadence (Expo Notifications).
+   Phase 2 can swap these for server-driven push once predictive/weather-aware
+   alerts (spec §4.5) need a backend trigger.
 
 ## Running locally
 
