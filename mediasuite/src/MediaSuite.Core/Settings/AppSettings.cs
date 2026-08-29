@@ -52,6 +52,65 @@ public sealed class AppSettings
         set => _toolPathOverrides = value;
     }
 
+    private Dictionary<string, List<CustomPreset>>? _customPresets;
+
+    /// <summary>User-saved Custom-preset option sets, keyed by operation id (e.g. "video.compress").</summary>
+    public Dictionary<string, List<CustomPreset>> CustomPresets
+    {
+        get => _customPresets ??= new Dictionary<string, List<CustomPreset>>(StringComparer.OrdinalIgnoreCase);
+        set => _customPresets = value;
+    }
+
+    /// <summary>Saved presets for one operation, in save order. Empty when none exist.</summary>
+    public IReadOnlyList<CustomPreset> PresetsFor(string operationId) =>
+        CustomPresets.TryGetValue(operationId, out var list) ? list : Array.Empty<CustomPreset>();
+
+    /// <summary>
+    /// Saves a preset under this operation, replacing any existing preset with the same
+    /// name (case-insensitively) so re-saving under a name already in use overwrites it
+    /// instead of piling up duplicates.
+    /// </summary>
+    public void SaveCustomPreset(string operationId, CustomPreset preset)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationId);
+        ArgumentNullException.ThrowIfNull(preset);
+        ArgumentException.ThrowIfNullOrWhiteSpace(preset.Name);
+
+        if (!CustomPresets.TryGetValue(operationId, out var list))
+        {
+            list = new List<CustomPreset>();
+            CustomPresets[operationId] = list;
+        }
+
+        var index = list.FindIndex(existing => string.Equals(existing.Name, preset.Name, StringComparison.OrdinalIgnoreCase));
+        if (index >= 0)
+        {
+            list[index] = preset;
+        }
+        else
+        {
+            list.Add(preset);
+        }
+    }
+
+    /// <summary>Removes a saved preset by name. Returns whether anything was removed.</summary>
+    public bool DeleteCustomPreset(string operationId, string name)
+    {
+        if (!CustomPresets.TryGetValue(operationId, out var list))
+        {
+            return false;
+        }
+
+        var removed = list.RemoveAll(preset => string.Equals(preset.Name, name, StringComparison.OrdinalIgnoreCase)) > 0;
+
+        if (removed && list.Count == 0)
+        {
+            CustomPresets.Remove(operationId);
+        }
+
+        return removed;
+    }
+
     /// <summary>Effective output folder, with the default applied.</summary>
     public string ResolveOutputDirectory() =>
         string.IsNullOrWhiteSpace(DefaultOutputDirectory)
@@ -81,6 +140,27 @@ public sealed class AppSettings
         }
 
         MaxConcurrentJobs = Math.Clamp(MaxConcurrentJobs, 1, MaxConcurrencyLimit);
+
+        if (_customPresets is not null)
+        {
+            foreach (var operationId in _customPresets.Keys.ToList())
+            {
+                var list = _customPresets[operationId];
+                if (list is null)
+                {
+                    _customPresets.Remove(operationId);
+                    continue;
+                }
+
+                list.RemoveAll(preset =>
+                    preset is null || string.IsNullOrWhiteSpace(preset.Name) || preset.Options is null);
+
+                if (list.Count == 0)
+                {
+                    _customPresets.Remove(operationId);
+                }
+            }
+        }
 
         return this;
     }

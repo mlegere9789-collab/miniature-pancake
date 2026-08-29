@@ -33,7 +33,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "Video, audio, images including camera RAW, documents, ebooks, PDF, GIF and archives — all processed on this machine, with no size limit.",
             engines,
             launcher,
-            settings)
+            settings,
+            store)
         {
             DropPrompt = "Drop files to convert",
             DropHint = "Video, audio, images, RAW, documents, ebooks, PDF, GIF, archives.",
@@ -47,7 +48,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "Target a size or a quality level. Every compressor has Quick, Balanced and Best presets plus the raw parameters underneath.",
             engines,
             launcher,
-            settings)
+            settings,
+            store)
         {
             DropPrompt = "Drop files to compress",
             DropHint = "Video, MP3, WAV, images, PDF and GIF.",
@@ -61,7 +63,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "Crop, trim, resize, rotate and the full set of PDF page tools.",
             engines,
             launcher,
-            settings)
+            settings,
+            store)
         {
             DropPrompt = "Drop files to edit",
             DropHint = "Video, images and PDF.",
@@ -75,7 +78,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "Real-ESRGAN at 2x, 4x or 8x. Runs on the GPU through CUDA, with a CPU fallback when no supported GPU is present.",
             engines,
             launcher,
-            settings)
+            settings,
+            store)
         {
             DropPrompt = "Drop photos to upscale",
             DropHint = "JPG, PNG, WEBP, TIFF and camera RAW.",

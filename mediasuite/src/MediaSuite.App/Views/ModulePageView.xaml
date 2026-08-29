@@ -93,6 +93,54 @@
                                   Margin="0,4,0,0" />
                     </Grid>
 
+                    <StackPanel Visibility="{Binding IsCustomPreset, Converter={StaticResource BoolToVisibility}}"
+                                Margin="0,12,0,0">
+                        <TextBlock Text="Saved presets" Style="{DynamicResource Text.Caption}" />
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox ItemsSource="{Binding SavedPresets}"
+                                      SelectedItem="{Binding SelectedSavedPreset, Mode=TwoWay}"
+                                      DisplayMemberPath="Name" />
+                            <Button Grid.Column="1"
+                                    Content="Delete"
+                                    Style="{DynamicResource Button.Secondary}"
+                                    Command="{Binding DeletePresetCommand}"
+                                    Margin="8,0,0,0" />
+                        </Grid>
+
+                        <TextBlock Text="Advanced options (one key=value per line)"
+                                   Style="{DynamicResource Text.Caption}"
+                                   Margin="0,10,0,4" />
+                        <TextBox Text="{Binding AdvancedOptionsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 Style="{DynamicResource Input.Text}"
+                                 AcceptsReturn="True"
+                                 MinLines="3"
+                                 MaxLines="6"
+                                 TextWrapping="Wrap" />
+
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox Text="{Binding NewPresetName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     Style="{DynamicResource Input.Text}" />
+                            <Button Grid.Column="1"
+                                    Content="Save as preset"
+                                    Style="{DynamicResource Button.Secondary}"
+                                    Command="{Binding SavePresetCommand}"
+                                    Margin="8,0,0,0" />
+                        </Grid>
+
+                        <TextBlock Text="{Binding PresetFeedback}"
+                                   Style="{DynamicResource Text.Caption}"
+                                   Margin="0,6,0,0"
+                                   Visibility="{Binding HasPresetFeedback, Converter={StaticResource BoolToVisibility}}" />
+                    </StackPanel>
+
                     <TextBlock Text="Save to" Style="{DynamicResource Text.Caption}" Margin="0,12,0,4" />
                     <Grid>
                         <Grid.ColumnDefinitions>

@@ -5,9 +5,10 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–10 of 18.** Every conversion module from the brief is now in
-> place, ending with the AI upscaler — what is left is presets, Google Drive, the format-
-> parity audit, QA, the installer and polish. See [Build order](#build-order).
+> **Status: build steps 1–11 of 18.** Every conversion module from the brief is in place,
+> and every tool now has a Custom preset backed by named, savable option sets — what is
+> left is Google Drive, the format-parity audit, QA, the installer and polish. See
+> [Build order](#build-order).
 
 ## Layout
 
@@ -134,6 +135,22 @@ failing at the moment you press Convert.
 - **Running jobs from the UI** — pick a tool, an output format and a quality preset,
   choose where results go, and the staged files are queued one job each — except for
   tools that merge their inputs, which take the whole selection as a single job
+- **Custom preset system** — a fourth preset, alongside Quick/Balanced/Best, whose
+  parameters come entirely from advanced options instead of a built-in table; the
+  Settings-backed store lets those options be saved under a name per tool and reloaded
+  later, so a one-off "crf=20" doesn't have to be retyped next time
+
+## Settings and presets
+
+Quick/Balanced/Best map to a fixed table of values inside each engine — a compressor's
+"Best", for instance, means a specific CRF or DPI, not a formula. Custom is the escape
+hatch: every advanced option comes from the job itself rather than that table, using the
+same `key=value`-per-line options every engine already reads through `JobSpec.Options`.
+Naming and saving a Custom preset writes it into `AppSettings.CustomPresets`, keyed by
+operation id, through the same atomic JSON store the rest of Settings uses — so presets
+survive a crash mid-save the same way the theme or the concurrency limit does, and a
+hand-edited or partially corrupt entry in the file is dropped rather than crashing the
+app on load.
 
 ## Build order
 
@@ -149,7 +166,7 @@ failing at the moment you press Convert.
 | 8 | Document / ebook module | done |
 | 9 | Archive / unit / time converters | done |
 | 10 | AI upscaler (CUDA + CPU fallback) | done — Vulkan GPU path, no face-enhance yet |
-| 11 | Settings system — presets | next (shell settings done) |
+| 11 | Settings system — presets | done |
 | 12 | Google Drive integration | |
 | 13 | Format-parity audit vs FreeConvert | |
 | 14 | QA pass against real sample files | |

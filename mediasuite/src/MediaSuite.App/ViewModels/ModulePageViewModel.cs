@@ -18,6 +18,7 @@ public class ModulePageViewModel : PageViewModel
     public const string SameAsInput = "Same as input";
 
     private readonly AppSettings _settings;
+    private readonly ISettingsStore _store;
     private readonly JobLauncher _launcher;
 
     private string _dropPrompt = "Drop files here";
@@ -27,6 +28,10 @@ public class ModulePageViewModel : PageViewModel
     private QualityPreset _selectedPreset = QualityPreset.Balanced;
     private string _outputDirectory;
     private string? _lastLaunchSummary;
+    private CustomPreset? _selectedSavedPreset;
+    private string _advancedOptionsText = string.Empty;
+    private string _newPresetName = string.Empty;
+    private string? _presetFeedback;
 
     public ModulePageViewModel(
         string title,
@@ -36,7 +41,8 @@ public class ModulePageViewModel : PageViewModel
         string description,
         EngineRegistry engines,
         JobLauncher launcher,
-        AppSettings settings)
+        AppSettings settings,
+        ISettingsStore store)
         : base(title, glyph)
     {
         ArgumentNullException.ThrowIfNull(engines);
@@ -47,6 +53,7 @@ public class ModulePageViewModel : PageViewModel
 
         _launcher = launcher ?? throw new ArgumentNullException(nameof(launcher));
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        _store = store ?? throw new ArgumentNullException(nameof(store));
         _outputDirectory = settings.ResolveOutputDirectory();
 
         FeatureGroups = FeatureCatalog
@@ -63,7 +70,8 @@ public class ModulePageViewModel : PageViewModel
             .ToList();
 
         OutputFormats = new ObservableCollection<string>();
-        Presets = new[] { QualityPreset.Quick, QualityPreset.Balanced, QualityPreset.Best };
+        Presets = new[] { QualityPreset.Quick, QualityPreset.Balanced, QualityPreset.Best, QualityPreset.Custom };
+        SavedPresets = new ObservableCollection<CustomPreset>();
 
         StagedFiles = new ObservableCollection<string>();
         StagedFiles.CollectionChanged += (_, _) =>
@@ -78,6 +86,8 @@ public class ModulePageViewModel : PageViewModel
         ClearFilesCommand = new RelayCommand(() => StagedFiles.Clear(), () => StagedFiles.Count > 0);
         BrowseOutputDirectoryCommand = new RelayCommand(BrowseOutputDirectory);
         StartCommand = new RelayCommand(Start, () => CanStart);
+        SavePresetCommand = new RelayCommand(SavePreset, () => SelectedFeature is not null && NewPresetName.Trim().Length > 0);
+        DeletePresetCommand = new RelayCommand(DeletePreset, () => SelectedSavedPreset is not null);
 
         SelectedFeature = ReadyFeatures.FirstOrDefault();
     }
@@ -101,6 +111,9 @@ public class ModulePageViewModel : PageViewModel
 
     public IReadOnlyList<QualityPreset> Presets { get; }
 
+    /// <summary>Named option sets the user saved earlier for whichever tool is selected.</summary>
+    public ObservableCollection<CustomPreset> SavedPresets { get; }
+
     public ICommand AddFilesCommand { get; }
 
     public ICommand ClearFilesCommand { get; }
@@ -108,6 +121,10 @@ public class ModulePageViewModel : PageViewModel
     public ICommand BrowseOutputDirectoryCommand { get; }
 
     public ICommand StartCommand { get; }
+
+    public ICommand SavePresetCommand { get; }
+
+    public ICommand DeletePresetCommand { get; }
 
     public FeatureViewModel? SelectedFeature
     {
@@ -117,6 +134,7 @@ public class ModulePageViewModel : PageViewModel
             if (SetProperty(ref _selectedFeature, value))
             {
                 RefreshOutputFormats();
+                RefreshSavedPresets();
                 OnPropertyChanged(nameof(CanStart));
                 OnPropertyChanged(nameof(StartHint));
                 CommandManager.InvalidateRequerySuggested();
@@ -133,8 +151,69 @@ public class ModulePageViewModel : PageViewModel
     public QualityPreset SelectedPreset
     {
         get => _selectedPreset;
-        set => SetProperty(ref _selectedPreset, value);
+        set
+        {
+            if (SetProperty(ref _selectedPreset, value))
+            {
+                OnPropertyChanged(nameof(IsCustomPreset));
+            }
+        }
     }
+
+    public bool IsCustomPreset => SelectedPreset == QualityPreset.Custom;
+
+    /// <summary>"key=value" lines edited by hand, used as the job's advanced options when the Custom preset is selected.</summary>
+    public string AdvancedOptionsText
+    {
+        get => _advancedOptionsText;
+        set => SetProperty(ref _advancedOptionsText, value);
+    }
+
+    /// <summary>Name typed in before pressing "Save as preset".</summary>
+    public string NewPresetName
+    {
+        get => _newPresetName;
+        set
+        {
+            if (SetProperty(ref _newPresetName, value))
+            {
+                CommandManager.InvalidateRequerySuggested();
+            }
+        }
+    }
+
+    public CustomPreset? SelectedSavedPreset
+    {
+        get => _selectedSavedPreset;
+        set
+        {
+            if (SetProperty(ref _selectedSavedPreset, value))
+            {
+                if (value is not null)
+                {
+                    AdvancedOptionsText = OptionsTextFormat.Format(value.Options);
+                    NewPresetName = value.Name;
+                }
+
+                CommandManager.InvalidateRequerySuggested();
+            }
+        }
+    }
+
+    /// <summary>Feedback from the last preset save/delete; null before either happens.</summary>
+    public string? PresetFeedback
+    {
+        get => _presetFeedback;
+        private set
+        {
+            if (SetProperty(ref _presetFeedback, value))
+            {
+                OnPropertyChanged(nameof(HasPresetFeedback));
+            }
+        }
+    }
+
+    public bool HasPresetFeedback => !string.IsNullOrEmpty(PresetFeedback);
 
     public string OutputDirectory
     {
@@ -222,13 +301,15 @@ public class ModulePageViewModel : PageViewModel
             : SelectedOutputFormat;
 
         var files = StagedFiles.ToList();
+        var options = IsCustomPreset ? OptionsTextFormat.Parse(AdvancedOptionsText) : null;
 
         var queued = _launcher.Launch(
             SelectedFeature.Descriptor,
             files,
             format,
             SelectedPreset,
-            OutputDirectory);
+            OutputDirectory,
+            options);
 
         // Cleared on purpose: the files now live in the queue, and leaving them staged
         // invites queueing the same batch twice.
@@ -237,6 +318,64 @@ public class ModulePageViewModel : PageViewModel
         LastLaunchSummary = queued.Count == 1
             ? $"Queued 1 job — {SelectedFeature.Name}."
             : $"Queued {queued.Count} jobs — {SelectedFeature.Name}.";
+    }
+
+    private void SavePreset()
+    {
+        if (SelectedFeature is null)
+        {
+            return;
+        }
+
+        var name = NewPresetName.Trim();
+        if (name.Length == 0)
+        {
+            return;
+        }
+
+        var preset = new CustomPreset
+        {
+            Name = name,
+            Options = OptionsTextFormat.Parse(AdvancedOptionsText),
+        };
+
+        _settings.SaveCustomPreset(SelectedFeature.OperationId, preset);
+        _store.Save(_settings);
+        RefreshSavedPresets();
+        SelectedSavedPreset = SavedPresets.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase));
+
+        PresetFeedback = $"Saved preset \"{name}\".";
+    }
+
+    private void DeletePreset()
+    {
+        if (SelectedFeature is null || SelectedSavedPreset is null)
+        {
+            return;
+        }
+
+        var name = SelectedSavedPreset.Name;
+        _settings.DeleteCustomPreset(SelectedFeature.OperationId, name);
+        _store.Save(_settings);
+        SelectedSavedPreset = null;
+        RefreshSavedPresets();
+
+        PresetFeedback = $"Deleted preset \"{name}\".";
+    }
+
+    private void RefreshSavedPresets()
+    {
+        SavedPresets.Clear();
+
+        if (SelectedFeature is null)
+        {
+            return;
+        }
+
+        foreach (var preset in _settings.PresetsFor(SelectedFeature.OperationId))
+        {
+            SavedPresets.Add(preset);
+        }
     }
 
     private void RefreshOutputFormats()
