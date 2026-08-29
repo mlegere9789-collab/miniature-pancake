@@ -274,7 +274,13 @@ public class ModulePageViewModel : PageViewModel
     public string NewDriveFolderName
     {
         get => _newDriveFolderName;
-        set => SetProperty(ref _newDriveFolderName, value);
+        set
+        {
+            if (SetProperty(ref _newDriveFolderName, value))
+            {
+                CommandManager.InvalidateRequerySuggested();
+            }
+        }
     }
 
     /// <summary>Status line under the folder picker — loading, empty, an error, or null once folders are showing.</summary>

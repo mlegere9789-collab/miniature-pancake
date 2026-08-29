@@ -98,7 +98,10 @@ public sealed class GoogleDriveClient : IGoogleDriveClient, IDisposable
 
         var response = await request.ExecuteAsync(cancellationToken).ConfigureAwait(false);
 
-        return response.Files
+        // Drive omits the "files" field entirely from the response when nothing matches,
+        // rather than returning an empty list, so a brand-new account with no folders
+        // deserialises to a null Files property here.
+        return (response.Files ?? new List<DriveFile>())
             .Select(file => new GoogleDriveFolder { Id = file.Id, Name = file.Name })
             .OrderBy(folder => folder.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
