@@ -52,16 +52,26 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Publish MediaSuite.App (self-contained win-x64)
-        run: dotnet publish mediasuite/src/MediaSuite.App/MediaSuite.App.csproj -c Release -r win-x64 --self-contained true -o mediasuite/publish/MediaSuite
+        run: |
+          dotnet publish mediasuite/src/MediaSuite.App/MediaSuite.App.csproj -c Release -r win-x64 --self-contained true -o mediasuite/publish/MediaSuite
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Inno Setup
-        run: choco install innosetup --no-progress -y
+        run: |
+          choco install innosetup --no-progress -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Compile installer
-        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" mediasuite\installer\MediaSuite.iss'
+        # A native exe's own exit code does not fail a pwsh run: step on its own —
+        # GitHub Actions only fails the step on a PowerShell-level terminating error,
+        # so this is checked explicitly rather than trusted to propagate.
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" mediasuite\installer\MediaSuite.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: MediaSuite-installer
           path: mediasuite/dist/*.exe
+          if-no-files-found: error
