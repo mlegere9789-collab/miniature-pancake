@@ -29,6 +29,10 @@ public sealed class GitHubReleaseUpdateChecker : IUpdateCheckClient, IDisposable
 
     public async Task<UpdateCheckResult> CheckAsync(CancellationToken cancellationToken)
     {
+        // MediaSuite.Core's own assembly version, not MediaSuite.App's — correct today
+        // only because Directory.Build.props gives every project in the solution the
+        // same <Version>. If Core and App ever version independently, this needs to
+        // read the App assembly's version instead.
         var currentVersion = typeof(GitHubReleaseUpdateChecker).Assembly.GetName().Version ?? new Version(0, 0, 0);
         var currentVersionText = ReleaseVersionParser.Format(currentVersion);
 
@@ -40,13 +44,8 @@ public sealed class GitHubReleaseUpdateChecker : IUpdateCheckClient, IDisposable
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            var tagName = document.RootElement.TryGetProperty("tag_name", out var tagProperty)
-                ? tagProperty.GetString()
-                : null;
-
-            var downloadUrl = document.RootElement.TryGetProperty("html_url", out var urlProperty)
-                ? urlProperty.GetString()
-                : null;
+            var tagName = GetStringOrNull(document.RootElement, "tag_name");
+            var downloadUrl = GetStringOrNull(document.RootElement, "html_url");
 
             var latestVersion = ReleaseVersionParser.Parse(tagName);
 
@@ -58,7 +57,7 @@ public sealed class GitHubReleaseUpdateChecker : IUpdateCheckClient, IDisposable
                 DownloadUrl = downloadUrl,
             };
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
         {
             // Offline, GitHub unreachable, rate-limited, an unexpected response shape —
             // none of these are the user's problem. The banner just stays hidden.
@@ -70,6 +69,16 @@ public sealed class GitHubReleaseUpdateChecker : IUpdateCheckClient, IDisposable
             };
         }
     }
+
+    /// <summary>
+    /// A string property, or null when it's absent or not actually a string — GitHub's
+    /// API always types these two fields as strings, but this reads a response this app
+    /// does not control, so it is not trusted to stay that way without a check.
+    /// </summary>
+    private static string? GetStringOrNull(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var property) && property.ValueKind == JsonValueKind.String
+            ? property.GetString()
+            : null;
 
     public void Dispose()
     {
