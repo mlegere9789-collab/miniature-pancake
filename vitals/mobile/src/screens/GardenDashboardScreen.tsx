@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { fetchGarden } from "../services/api";
 import { theme, scoreColor } from "../theme/theme";
-import { Garden, Plant } from "../types/domain";
+import { Garden, Plant, WeatherAlert } from "../types/domain";
 
 interface Props {
   gardenId: string;
@@ -54,6 +54,10 @@ export function GardenDashboardScreen({ gardenId, onSelectPlant }: Props) {
             <Text style={styles.heroCaption}>Garden Score</Text>
           </View>
 
+          {garden.weatherAlert && (
+            <FrostBanner alert={garden.weatherAlert} plants={garden.plants} />
+          )}
+
           <Text style={styles.sectionTitle}>Needs Attention</Text>
         </>
       }
@@ -71,6 +75,22 @@ export function GardenDashboardScreen({ gardenId, onSelectPlant }: Props) {
         ) : null
       }
     />
+  );
+}
+
+// Weather-aware banner (spec §4.3): "Frost tonight — 3 of your plants are frost-sensitive."
+function FrostBanner({ alert, plants }: { alert: WeatherAlert; plants: Plant[] }) {
+  const names = plants
+    .filter((p) => alert.affectedPlantIds.includes(p.id))
+    .map((p) => p.nickname || p.speciesName);
+
+  return (
+    <View style={styles.frostBanner}>
+      <Text style={styles.frostBannerText}>
+        ❄️ Frost tonight ({Math.round(alert.minTempTonightC)}°C) — {alert.affectedPlantIds.length} frost-sensitive
+        plant{alert.affectedPlantIds.length === 1 ? "" : "s"}: {names.join(", ")}
+      </Text>
+    </View>
   );
 }
 
@@ -98,6 +118,13 @@ const styles = StyleSheet.create({
   heroLabel: { fontSize: theme.font.titleSize, color: theme.color.textPrimary, fontWeight: "600" },
   heroScore: { fontSize: theme.font.heroSize, fontWeight: "800" },
   heroCaption: { fontSize: theme.font.captionSize, color: theme.color.textSecondary },
+  frostBanner: {
+    backgroundColor: theme.color.forestGreen,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing(2),
+    marginBottom: theme.spacing(1),
+  },
+  frostBannerText: { color: theme.color.cream, fontSize: theme.font.captionSize, lineHeight: 18 },
   sectionTitle: {
     fontSize: theme.font.titleSize,
     fontWeight: "700",

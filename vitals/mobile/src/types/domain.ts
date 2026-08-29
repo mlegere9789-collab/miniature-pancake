@@ -10,8 +10,15 @@ export interface Plant {
   plantedDate: string | null;
   importanceWeight: number;
   checkinCadenceDays: number;
+  frostSensitive: boolean;
   scoreCurrent: number;
   createdAt: string;
+}
+
+export interface WeatherAlert {
+  type: "frost";
+  minTempTonightC: number;
+  affectedPlantIds: string[];
 }
 
 export interface PlantScoreSnapshot {
@@ -62,6 +69,7 @@ export interface Garden {
   scoreHistory: PlantScoreSnapshot[];
   needsAttention: Plant[];
   risingStars: { plantId: string; delta: number }[];
+  weatherAlert: WeatherAlert | null;
 }
 
 export interface PlantDetail extends Plant {
@@ -76,4 +84,5 @@ export interface CreatePlantInput {
   nickname?: string;
   importanceWeight?: number;
   checkinCadenceDays?: number;
+  frostSensitive?: boolean;
 }

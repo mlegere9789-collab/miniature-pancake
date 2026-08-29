@@ -55,6 +55,10 @@ model Garden {
   name      String
   createdAt DateTime @default(now())
 
+  // Used to fetch frost/drought signals for environmental-fit scoring (spec §5, weather integration).
+  latitude  Float?
+  longitude Float?
+
   scoreCurrent Float    @default(100)
   plants       Plant[]
   scoreHistory GardenScoreSnapshot[]
@@ -84,6 +88,7 @@ model Plant {
   importanceWeight  Float    @default(1.0) // used in Garden Score roll-up
   checkinCadenceDays Int     @default(14)
   active            Boolean  @default(true)
+  frostSensitive    Boolean  @default(false) // drives the frost-risk dashboard banner (spec §4.3/§4.5)
 
   scoreCurrent Float    @default(100)
   createdAt    DateTime @default(now())

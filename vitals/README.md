@@ -3,7 +3,8 @@
 Phase 1 (MVP) scaffold: manual plant entry, check-in photo capture with a
 ghost-overlay alignment guide, a stubbed rules-based scorer (swappable later
 for the shared Plant ID & Diagnostic Engine), score history, and a single
-Garden Score home screen.
+Garden Score home screen. Phase 2 has started: weather-driven
+environmental-fit scoring and a frost-risk dashboard banner are in.
 
 This app lives alongside the unrelated Whisper codebase at the repo root —
 it is a separate product and does not depend on anything in `modules/` or
@@ -22,7 +23,8 @@ vitals/
 │       ├── models/          Zod input/output schemas per resource
 │       ├── services/
 │       │   ├── scoring.ts   Weighted composite scoring engine (spec §3.1/§3.2)
-│       │   └── diagnosticEngine.ts  Stubbed rules-based scorer (Idea 5 stand-in)
+│       │   ├── diagnosticEngine.ts  Stubbed rules-based scorer (Idea 5 stand-in)
+│       │   └── weatherService.ts    Open-Meteo frost/drought signals (Phase 2, spec §5)
 │       ├── routes/          Express routers: plants, checkins, gardens
 │       ├── types/           Shared TS types
 │       └── server.ts        App entrypoint
@@ -63,6 +65,19 @@ vitals/
    Phase 2 can swap these for server-driven push once predictive/weather-aware
    alerts (spec §4.5) need a backend trigger.
 
+### Phase 2 (in progress)
+
+8. **Weather-driven environmental fit** (`backend/src/services/weatherService.ts`) —
+   fetches frost/drought signals from Open-Meteo (no API key needed) for the
+   garden's lat/lon and applies a penalty to the diagnostic engine's
+   environmental-fit sub-score (spec §3.1.3: predictive, not just reactive).
+   A `Garden` needs `latitude`/`longitude` set (see the seed script below) for
+   this to activate; it's a no-op otherwise.
+9. **Frost-risk dashboard banner** (`mobile/src/screens/GardenDashboardScreen.tsx`) —
+   `GET /gardens/:id` now returns `weatherAlert`, populated when frost is
+   forecast tonight and at least one `frostSensitive` plant is in the garden
+   (spec §4.3/§4.5). Mark a plant frost-sensitive from the Add Plant screen.
+
 ## Running locally
 
 ### Backend
@@ -71,6 +86,7 @@ cd vitals/backend
 npm install
 cp .env.example .env   # set DATABASE_URL
 npx prisma migrate dev --name init
+npx prisma db seed      # creates the demo garden the mobile app points at
 npm run dev
 ```
 
@@ -83,6 +99,6 @@ npx expo start
 
 ## Not yet built (later phases)
 
-Auto-segmentation onboarding, weather/environmental-fit integration, regional
-outbreak modifiers, neighborhood leaderboard, seasonal recalibration curves,
-weekly report card generation — see the top-level spec doc for phase 2-4 scope.
+Auto-segmentation onboarding, weekly report card generation, sharing cards,
+regional outbreak modifiers, neighborhood leaderboard, seasonal recalibration
+curves — see the top-level spec doc for the remaining phase 2-4 scope.

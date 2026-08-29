@@ -3,6 +3,7 @@ import { prisma } from "../db/client";
 import { CreateCheckInSchema } from "../models/checkin";
 import { runDiagnosticEngine } from "../services/diagnosticEngine";
 import { computeGardenScore, computePlantScore } from "../services/scoring";
+import { applyWeatherPenalty, fetchWeatherSignals } from "../services/weatherService";
 
 export const checkinsRouter = Router();
 
@@ -18,6 +19,7 @@ checkinsRouter.post("/", async (req, res) => {
     include: {
       checkIns: { orderBy: { timestamp: "desc" }, take: 1 },
       scoreHistory: { orderBy: { computedAt: "desc" }, take: 3 },
+      garden: { select: { latitude: true, longitude: true } },
     },
   });
   if (!plant) return res.status(404).json({ error: "plant not found" });
@@ -33,6 +35,25 @@ checkinsRouter.post("/", async (req, res) => {
   });
 
   const engineOutput = await runDiagnosticEngine(photoUrl);
+
+  // Environmental-fit is predictive, not just reactive (spec §3.1.3): a
+  // frost/drought mismatch drags the score down even before visible symptoms.
+  const { latitude, longitude } = plant.garden;
+  if (latitude != null && longitude != null) {
+    try {
+      const weather = await fetchWeatherSignals(latitude, longitude);
+      engineOutput.environmentalFit.score = applyWeatherPenalty(
+        engineOutput.environmentalFit.score,
+        weather,
+        plant.frostSensitive,
+      );
+      engineOutput.environmentalFit.frostRiskDetected = weather.frostRiskTonight;
+      engineOutput.environmentalFit.droughtStressDetected =
+        engineOutput.environmentalFit.droughtStressDetected || weather.droughtStressDetected;
+    } catch {
+      // Weather lookup is best-effort; scoring proceeds on the engine's own estimate if it fails.
+    }
+  }
 
   const { finalScore, breakdown } = computePlantScore({
     engineOutput,

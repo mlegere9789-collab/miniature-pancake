@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 import { createPlant } from "../services/api";
 import { theme } from "../theme/theme";
 import { Plant } from "../types/domain";
@@ -19,6 +19,7 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
   const [nickname, setNickname] = useState("");
   const [checkinCadenceDays, setCheckinCadenceDays] = useState("14");
   const [importanceWeight, setImportanceWeight] = useState("1");
+  const [frostSensitive, setFrostSensitive] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit() {
@@ -35,6 +36,7 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
         nickname: nickname.trim() || undefined,
         checkinCadenceDays: Number(checkinCadenceDays) || 14,
         importanceWeight: Number(importanceWeight) || 1,
+        frostSensitive,
       });
       onCreated(plant);
     } catch (err) {
@@ -62,6 +64,13 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
         onChangeText={setImportanceWeight}
         keyboardType="decimal-pad"
       />
+
+      <View style={styles.switchRow}>
+        <Text style={[styles.label, { flex: 1, marginBottom: 0 }]}>
+          Frost-sensitive (gets a frost-warning alert)
+        </Text>
+        <Switch value={frostSensitive} onValueChange={setFrostSensitive} />
+      </View>
 
       <Pressable style={styles.primaryButton} onPress={handleSubmit} disabled={submitting}>
         <Text style={styles.primaryButtonText}>{submitting ? "Adding…" : "Add plant"}</Text>
@@ -97,6 +106,12 @@ const styles = StyleSheet.create({
   container: { padding: theme.spacing(3), backgroundColor: theme.color.cream, flexGrow: 1 },
   title: { fontSize: theme.font.titleSize, fontWeight: "700", color: theme.color.textPrimary, marginBottom: theme.spacing(3) },
   field: { marginBottom: theme.spacing(2) },
+  switchRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: theme.spacing(2),
+  },
   label: { fontSize: theme.font.captionSize, color: theme.color.textSecondary, marginBottom: theme.spacing(1) },
   input: {
     borderWidth: StyleSheet.hairlineWidth,

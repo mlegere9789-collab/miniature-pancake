@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { prisma } from "../db/client";
+import { fetchWeatherSignals } from "../services/weatherService";
 
 export const gardensRouter = Router();
 
@@ -15,9 +16,32 @@ gardensRouter.get("/:id", async (req, res) => {
 
   const needsAttention = [...garden.plants].sort((a, b) => a.scoreCurrent - b.scoreCurrent).slice(0, 10);
   const risingStars = await risingStarsFor(garden.plants.map((p) => p.id));
+  const weatherAlert = await frostRiskAlert(garden.latitude, garden.longitude, garden.plants);
 
-  res.json({ ...garden, needsAttention, risingStars });
+  res.json({ ...garden, needsAttention, risingStars, weatherAlert });
 });
+
+// Weather-aware "Frost tonight" banner (spec §4.3): null when no risk, or
+// there's no garden location on file yet.
+async function frostRiskAlert(
+  latitude: number | null,
+  longitude: number | null,
+  plants: { id: string; frostSensitive: boolean }[],
+) {
+  if (latitude == null || longitude == null) return null;
+
+  try {
+    const weather = await fetchWeatherSignals(latitude, longitude);
+    if (!weather.frostRiskTonight) return null;
+
+    const affectedPlantIds = plants.filter((p) => p.frostSensitive).map((p) => p.id);
+    if (affectedPlantIds.length === 0) return null;
+
+    return { type: "frost", minTempTonightC: weather.minTempTonightC, affectedPlantIds };
+  } catch {
+    return null;
+  }
+}
 
 async function risingStarsFor(plantIds: string[]) {
   const rising = [];
