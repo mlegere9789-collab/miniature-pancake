@@ -36,3 +36,32 @@ jobs:
 
       - name: Test
         run: dotnet test mediasuite/MediaSuite.sln -c Release --no-build --verbosity normal
+
+  installer:
+    name: Build installer
+    runs-on: windows-latest
+    needs: build
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish MediaSuite.App (self-contained win-x64)
+        run: dotnet publish mediasuite/src/MediaSuite.App/MediaSuite.App.csproj -c Release -r win-x64 --self-contained true -o mediasuite/publish/MediaSuite
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Compile installer
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" mediasuite\installer\MediaSuite.iss'
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaSuite-installer
+          path: mediasuite/dist/*.exe

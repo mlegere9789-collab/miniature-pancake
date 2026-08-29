@@ -5,13 +5,14 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–14 of 18.** Every conversion module from the brief is in place,
+> **Status: build steps 1–15 of 18.** Every conversion module from the brief is in place,
 > every tool has a Custom preset backed by named, savable option sets, jobs can optionally
 > upload their output to Google Drive, and the format catalogue has been audited against
 > FreeConvert's format support. [QA.md](QA.md) is the checklist for actually verifying a
 > real conversion — this project was built without a Windows machine or any of the
-> bundled tools, so no real conversion has ever been run. What is left is the installer,
-> the update check and polish. See [Build order](#build-order).
+> bundled tools, so no real conversion has ever been run. There is now a real,
+> CI-compiled Inno Setup installer (see [Installer](#installer)). What is left is the
+> update check and polish. See [Build order](#build-order).
 
 ## Layout
 
@@ -159,6 +160,10 @@ failing at the moment you press Convert.
   through the real (non-fake) `ProcessRunner`, `ToolLocator` and `JobQueueManager` with
   no tools present, confirming a brand-new install fails cleanly rather than crashing —
   the one piece of real-wiring QA this environment can actually verify
+- **Installer** — a traditional Inno Setup wizard: Program Files install with an
+  elevation prompt, Start Menu shortcut, optional desktop shortcut, a proper uninstaller
+  that never touches the tools folder or user settings, self-contained so a fresh
+  Windows 11 machine does not also need the .NET runtime installed separately
 
 ## Settings and presets
 
@@ -192,6 +197,32 @@ else already in your Drive. `JobQueueManager` runs the upload after a successful
 conversion, through the same `IGoogleDriveClient` seam every engine uses for its own
 external tool, so the queue and the tests never depend on the real Google API client.
 
+## Installer
+
+`installer/MediaSuite.iss` is an [Inno Setup](https://jrsoftware.org/isinfo.php) script
+that packages a self-contained `win-x64` publish of `MediaSuite.App` — no separate .NET
+runtime install required — into a traditional wizard-style installer: Program Files
+under an elevation prompt, a Start Menu group, an optional desktop shortcut, and a real
+uninstaller. It deliberately does not touch `tools\` or the user's settings folder on
+uninstall — those are the user's own downloads and data, not something this installer
+put there.
+
+```powershell
+installer\build.ps1
+```
+
+runs `dotnet publish` and then the Inno Setup compiler, and writes the finished
+installer to `dist\`. It needs the .NET 8 SDK and Inno Setup 6 (`iscc.exe`) — the script
+falls back to Inno Setup's default install location if `iscc.exe` is not already on
+PATH.
+
+Unlike the app itself, this is something the CI in this repository can actually verify
+end to end rather than only compile-check: `.github/workflows/mediasuite-ci.yml`'s
+`installer` job runs the exact same publish-then-compile steps on `windows-latest`,
+installing Inno Setup via Chocolatey, and uploads the resulting `.exe` as a build
+artifact. A green run there means a real installer really was produced, not just that
+the C# behind it compiles.
+
 ## Build order
 
 | Step | Work | State |
@@ -210,7 +241,7 @@ external tool, so the queue and the tests never depend on the real Google API cl
 | 12 | Google Drive integration | done |
 | 13 | Format-parity audit vs FreeConvert | done — spreadsheet/presentation/PostScript formats deliberately deferred, see the FormatCatalog doc comment |
 | 14 | QA pass against real sample files | done — QA.md is the checklist for a human to run on real hardware; nothing here can execute a real conversion |
-| 15 | Inno Setup installer | |
+| 15 | Inno Setup installer | done — CI actually builds it end to end, see [Installer](#installer) |
 | 16 | Update check | |
 | 17 | Polish — tooltips, error and empty states, keyboard nav | |
 | 18 | Final build and handoff | |
