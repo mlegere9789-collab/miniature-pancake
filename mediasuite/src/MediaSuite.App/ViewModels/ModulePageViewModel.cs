@@ -338,7 +338,7 @@ public class ModulePageViewModel : PageViewModel
     public bool CanStart => HasStagedFiles && SelectedFeature is not null;
 
     public string StartHint => SelectedFeature is null
-        ? "None of these tools are ready yet — Settings shows what's missing and where to put it."
+        ? "Start stays off until a tool above is ready to run."
         : $"Runs {SelectedFeature.Name} on every staged file, one job each.";
 
     /// <summary>"12 files · 1.4 GB", shown above the staged list.</summary>

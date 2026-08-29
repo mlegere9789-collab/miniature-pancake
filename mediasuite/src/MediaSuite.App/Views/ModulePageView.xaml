@@ -117,7 +117,7 @@
                                       DisplayMemberPath="Name"
                                       ToolTip="A previously saved set of advanced options for this tool" />
                             <Button Grid.Column="1"
-                                    Content="_Delete"
+                                    Content="De_lete"
                                     Style="{DynamicResource Button.Secondary}"
                                     Command="{Binding DeletePresetCommand}"
                                     ToolTip="Delete the selected saved preset"
