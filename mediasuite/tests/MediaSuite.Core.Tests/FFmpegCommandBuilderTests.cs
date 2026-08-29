@@ -294,6 +294,7 @@ public class FFmpegCommandBuilderTests
     [InlineData("wav", "pcm_s16le")]
     [InlineData("m4a", "aac")]
     [InlineData("aiff", "pcm_s16be")]
+    [InlineData("ac3", "ac3")]
     public void Each_audio_container_gets_its_matching_encoder(string extension, string codec)
     {
         var command = Command(Spec("audio.convert"), "a.wav", $"out.{extension}");

@@ -5,10 +5,11 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–12 of 18.** Every conversion module from the brief is in place,
-> every tool has a Custom preset backed by named, savable option sets, and jobs can now
-> optionally upload their output to Google Drive — what is left is the format-parity
-> audit, QA, the installer and polish. See [Build order](#build-order).
+> **Status: build steps 1–13 of 18.** Every conversion module from the brief is in place,
+> every tool has a Custom preset backed by named, savable option sets, jobs can optionally
+> upload their output to Google Drive, and the format catalogue has been audited against
+> FreeConvert's own converter pages — what is left is QA, the installer and polish. See
+> [Build order](#build-order).
 
 ## Layout
 
@@ -144,6 +145,11 @@ failing at the moment you press Convert.
   files it uploaded itself; a failed upload never fails the job, since the converted
   file already exists locally either way, it just shows as a warning on an otherwise
   completed job
+- **Format-parity audit** — every entry in the format catalogue now has to clear two
+  bars: FreeConvert actually offers it, and the bundled tool genuinely supports it (a
+  real, unlicensed encoder always present in a standard build, not "probably works").
+  Adds AC-3 audio as a real output and recognises QuickTime's older `.qt` extension,
+  DVD `.vob`, Flash-era `.f4v`/`.f4p` and `.amr` voice recordings as read-only sources
 
 ## Settings and presets
 
@@ -193,7 +199,7 @@ external tool, so the queue and the tests never depend on the real Google API cl
 | 10 | AI upscaler (CUDA + CPU fallback) | done — Vulkan GPU path, no face-enhance yet |
 | 11 | Settings system — presets | done |
 | 12 | Google Drive integration | done |
-| 13 | Format-parity audit vs FreeConvert | |
+| 13 | Format-parity audit vs FreeConvert | done — spreadsheet/presentation/PostScript formats deliberately deferred, see the FormatCatalog doc comment |
 | 14 | QA pass against real sample files | |
 | 15 | Inno Setup installer | |
 | 16 | Update check | |

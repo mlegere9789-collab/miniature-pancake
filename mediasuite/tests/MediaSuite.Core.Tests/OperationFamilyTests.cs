@@ -47,4 +47,23 @@ public class OperationFamilyTests
     {
         Assert.Empty(OperationFamily.OutputFormatsFor("nonsense.operation"));
     }
+
+    [Fact]
+    public void The_audio_converter_offers_ac3_but_not_the_read_only_formats()
+    {
+        var extensions = OperationFamily.OutputFormatsFor("audio.convert").Select(f => f.Extension).ToList();
+
+        Assert.Contains("ac3", extensions);
+        Assert.DoesNotContain("amr", extensions);
+    }
+
+    [Fact]
+    public void The_video_converter_does_not_offer_the_read_only_source_formats()
+    {
+        var extensions = OperationFamily.OutputFormatsFor("video.convert").Select(f => f.Extension).ToList();
+
+        Assert.DoesNotContain("vob", extensions);
+        Assert.DoesNotContain("f4v", extensions);
+        Assert.DoesNotContain("qt", extensions);
+    }
 }

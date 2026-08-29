@@ -3,14 +3,28 @@ using System.Collections.Immutable;
 namespace MediaSuite.Core.Formats;
 
 /// <summary>
-/// Seed catalogue of supported formats.
+/// Catalogue of supported formats, audited against FreeConvert's published converter
+/// pages in build step 13.
 /// </summary>
 /// <remarks>
-/// This list is deliberately a starting point, not the final answer. Build step 13
-/// (format-parity audit) replaces it with a list generated from the actual tool
-/// capabilities on the machine — <c>ffmpeg -formats</c>, <c>magick -list format</c>,
-/// LibRaw's camera list — cross-checked against FreeConvert's published pages.
-/// Until then, treat anything here as "known good", not "all we support".
+/// <para>
+/// Every entry here has to clear two bars: FreeConvert has to actually offer it (checked
+/// against freeconvert.com's own converter pages, not assumed), and the bundled tool that
+/// would handle it has to genuinely support it — not "probably works", but a real,
+/// unlicensed encoder always present in a standard build. Where a FreeConvert format
+/// failed the second bar it was left out rather than added and hoped for; see the
+/// comments beside the entries below for the specific reasoning.
+/// </para>
+/// <para>
+/// A few whole categories FreeConvert supports are deliberately still missing:
+/// spreadsheet and presentation formats (XLSX, XLS, CSV, PPTX, PPT, ODS, ODP) would need
+/// a new operation category — Pandoc has no spreadsheet or presentation support at all,
+/// so these could only go through LibreOffice, which is a real capability but a different
+/// build step's worth of engine and catalogue work, not a format-list edit. PostScript
+/// (.ps) has the same shape: Ghostscript could read it, but nothing in the PDF module
+/// today accepts a non-PDF input. MIDI is left out entirely rather than narrowed to
+/// read-only, since FFmpeg does not meaningfully decode or encode it in a standard build.
+/// </para>
 /// </remarks>
 public static class FormatCatalog
 {
@@ -51,7 +65,10 @@ public static class FormatCatalog
 
         // Video
         new FileFormat("mp4", "MP4 Video", MediaKind.Video),
-        new FileFormat("mov", "QuickTime Video", MediaKind.Video),
+        // "qt" is the same QuickTime container under its older extension, not a distinct
+        // format — an alias, so it is recognised without offering a second identical
+        // choice in the output picker.
+        new FileFormat("mov", "QuickTime Video", MediaKind.Video) { Aliases = new[] { "qt" } },
         new FileFormat("mkv", "Matroska Video", MediaKind.Video),
         new FileFormat("avi", "AVI Video", MediaKind.Video),
         new FileFormat("webm", "WebM Video", MediaKind.Video),
@@ -61,6 +78,11 @@ public static class FormatCatalog
         new FileFormat("3gp", "3GPP Video", MediaKind.Video),
         new FileFormat("m4v", "iTunes Video", MediaKind.Video),
         new FileFormat("ts", "MPEG Transport Stream", MediaKind.Video),
+        // Read-only: FFmpeg demuxes these fine, but they are not containers this app
+        // should ever be asked to write — VOB is a DVD-authoring artifact, and F4V/F4P
+        // are old Flash-era MP4 variants nothing targets as an output today.
+        new FileFormat("vob", "DVD Video Object", MediaKind.Video, CanWrite: false),
+        new FileFormat("f4v", "Flash MP4 Video", MediaKind.Video, CanWrite: false) { Aliases = new[] { "f4p" } },
 
         // Audio
         new FileFormat("mp3", "MP3 Audio", MediaKind.Audio),
@@ -72,6 +94,13 @@ public static class FormatCatalog
         new FileFormat("wma", "Windows Media Audio", MediaKind.Audio),
         new FileFormat("aiff", "AIFF Audio", MediaKind.Audio) { Aliases = new[] { "aif" } },
         new FileFormat("opus", "Opus Audio", MediaKind.Audio),
+        // AC-3's encoder ships in FFmpeg's standard build with no licensing gate, unlike
+        // the optional AMR encoders below, so this one is safe to offer as an output too.
+        new FileFormat("ac3", "Dolby Digital Audio", MediaKind.Audio),
+        // Read-only: FFmpeg decodes AMR fine, but the encoders are optional, licensed
+        // components not guaranteed present in a given build, so this is not offered as
+        // an output format the way AC-3 is.
+        new FileFormat("amr", "Adaptive Multi-Rate Audio", MediaKind.Audio, CanWrite: false),
 
         // Documents
         new FileFormat("docx", "Word Document", MediaKind.Document),

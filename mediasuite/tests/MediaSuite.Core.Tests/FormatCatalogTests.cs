@@ -64,6 +64,42 @@ public class FormatCatalogTests
         Assert.False(rar.CanWrite);
     }
 
+    [Theory]
+    [InlineData("qt")]
+    [InlineData(".QT")]
+    public void Qt_is_recognised_as_the_same_container_as_mov(string extension)
+    {
+        var format = FormatCatalog.FromExtension(extension);
+
+        Assert.NotNull(format);
+        Assert.Equal("mov", format!.Extension);
+    }
+
+    [Theory]
+    [InlineData("vob")]
+    [InlineData("f4v")]
+    [InlineData("f4p")]
+    [InlineData("amr")]
+    public void Formats_ffmpeg_cannot_reliably_encode_are_read_only(string extension)
+    {
+        var format = FormatCatalog.FromExtension(extension);
+
+        Assert.NotNull(format);
+        Assert.True(format!.CanRead, $"{extension} should be readable");
+        Assert.False(format.CanWrite, $"{extension} should not be offered as an output");
+    }
+
+    [Fact]
+    public void Ac3_is_writable_since_its_encoder_has_no_licensing_gate()
+    {
+        var ac3 = FormatCatalog.FromExtension("ac3");
+
+        Assert.NotNull(ac3);
+        Assert.True(ac3!.CanRead);
+        Assert.True(ac3.CanWrite);
+        Assert.Equal(MediaKind.Audio, ac3.Kind);
+    }
+
     [Fact]
     public void Every_extension_maps_to_exactly_one_format()
     {

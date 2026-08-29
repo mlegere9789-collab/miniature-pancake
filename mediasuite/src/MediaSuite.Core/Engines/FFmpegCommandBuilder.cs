@@ -311,6 +311,7 @@ public static class FFmpegCommandBuilder
         "aiff" or "aif" => "pcm_s16be",
         "wma" => "wmav2",
         "aac" or "m4a" => "aac",
+        "ac3" => "ac3",
         "webm" => "libopus",
         _ => forVideoContainer ? "aac" : "aac",
     };
