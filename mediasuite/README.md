@@ -5,11 +5,13 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–13 of 18.** Every conversion module from the brief is in place,
+> **Status: build steps 1–14 of 18.** Every conversion module from the brief is in place,
 > every tool has a Custom preset backed by named, savable option sets, jobs can optionally
 > upload their output to Google Drive, and the format catalogue has been audited against
-> FreeConvert's format support — what is left is QA, the installer and polish. See
-> [Build order](#build-order).
+> FreeConvert's format support. [QA.md](QA.md) is the checklist for actually verifying a
+> real conversion — this project was built without a Windows machine or any of the
+> bundled tools, so no real conversion has ever been run. What is left is the installer,
+> the update check and polish. See [Build order](#build-order).
 
 ## Layout
 
@@ -150,6 +152,13 @@ failing at the moment you press Convert.
   real, unlicensed encoder always present in a standard build, not "probably works").
   Adds AC-3 audio as a real output and recognises QuickTime's older `.qt` extension,
   DVD `.vob`, Flash-era `.f4v`/`.f4p` and `.amr` voice recordings as read-only sources
+- **QA runbook** — [QA.md](QA.md) is a checklist for running real conversions on a real
+  Windows machine with the bundled tools actually installed, since nothing in this
+  sandbox could ever do that. One automated test,
+  `tests/MediaSuite.Core.Tests/Qa/RealToolSmokeTests.cs`, runs every registered engine
+  through the real (non-fake) `ProcessRunner`, `ToolLocator` and `JobQueueManager` with
+  no tools present, confirming a brand-new install fails cleanly rather than crashing —
+  the one piece of real-wiring QA this environment can actually verify
 
 ## Settings and presets
 
@@ -200,7 +209,7 @@ external tool, so the queue and the tests never depend on the real Google API cl
 | 11 | Settings system — presets | done |
 | 12 | Google Drive integration | done |
 | 13 | Format-parity audit vs FreeConvert | done — spreadsheet/presentation/PostScript formats deliberately deferred, see the FormatCatalog doc comment |
-| 14 | QA pass against real sample files | |
+| 14 | QA pass against real sample files | done — QA.md is the checklist for a human to run on real hardware; nothing here can execute a real conversion |
 | 15 | Inno Setup installer | |
 | 16 | Update check | |
 | 17 | Polish — tooltips, error and empty states, keyboard nav | |
