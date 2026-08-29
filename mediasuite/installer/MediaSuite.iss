@@ -6,7 +6,7 @@
 ; there is no automated link between the two for a project this size.
 
 #define MyAppName "MediaSuite"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "MediaSuite"
 #define MyAppExeName "MediaSuite.exe"
 #define MyPublishDir "..\publish\MediaSuite"

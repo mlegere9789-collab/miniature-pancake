@@ -5,15 +5,15 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–17 of 18.** Every conversion module from the brief is in place,
-> every tool has a Custom preset backed by named, savable option sets, jobs can optionally
-> upload their output to Google Drive, and the format catalogue has been audited against
-> FreeConvert's format support. [QA.md](QA.md) is the checklist for actually verifying a
-> real conversion — this project was built without a Windows machine or any of the
-> bundled tools, so no real conversion has ever been run. There is now a real,
+> **Status: build steps 1–18 of 18, complete.** Every conversion module from the brief is
+> in place, every tool has a Custom preset backed by named, savable option sets, jobs can
+> optionally upload their output to Google Drive, and the format catalogue has been
+> audited against FreeConvert's format support. [QA.md](QA.md) is the checklist for
+> actually verifying a real conversion — this project was built without a Windows machine
+> or any of the bundled tools, so no real conversion has ever been run. There is a real,
 > CI-compiled Inno Setup installer (see [Installer](#installer)), and the app checks its
 > own GitHub releases on launch — never silently, only ever offering the download page.
-> What is left is the final build. See [Build order](#build-order).
+> This build carries version 1.0.0. See [Build order](#build-order).
 
 ## Layout
 
@@ -177,6 +177,9 @@ failing at the moment you press Convert.
   on the primary action of every page, which needed a real fix, not just markup — the
   custom button styles' `ContentPresenter` had no `RecognizesAccessKey`, so a `_`
   mnemonic would have rendered as a literal underscore instead of working
+- **Final build** — version set to `1.0.0` in `Directory.Build.props` and kept in step in
+  `installer/MediaSuite.iss`, so the installer's file name, `AppVersion` and the running
+  app's own assembly version all agree; all 18 build steps from the brief are done
 
 ## Settings and presets
 
@@ -257,7 +260,7 @@ the C# behind it compiles.
 | 15 | Inno Setup installer | done — CI actually builds it end to end, see [Installer](#installer) |
 | 16 | Update check | done — GitHub releases, check-and-prompt, never silent installs |
 | 17 | Polish — tooltips, error and empty states, keyboard nav | done |
-| 18 | Final build and handoff | |
+| 18 | Final build and handoff | done — version bumped to 1.0.0 in `Directory.Build.props` and the installer script |
 
 ## Licence note
 
