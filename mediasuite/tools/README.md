@@ -35,7 +35,7 @@ next to `MediaSuite.exe`.
 | `ghostscript` | `gswin64c.exe` | PDF compression and flattening | AGPL-3.0 | attempted (unofficial extraction) | see note below |
 | `pandoc` | `pandoc.exe` | Document conversion | GPL-2.0-or-later | **yes** | — |
 | `libreoffice` | `soffice.exe` | High-fidelity DOCX to PDF | MPL-2.0 | attempted (version guessed, unverified) | see note below |
-| `calibre` | `ebook-convert.exe` | Ebook conversion | GPL-3.0 | not yet | https://calibre-ebook.com/download_windows |
+| `calibre` | `ebook-convert.exe` | Ebook conversion | GPL-3.0 | attempted (via Chocolatey) | see note below |
 | `7zip` | `7z.exe` | Archives, RAR extraction | LGPL-2.1 (+ unRAR licence) | **yes** | — |
 | `realesrgan` | `realesrgan-ncnn-vulkan.exe` | AI upscaling | BSD-3-Clause | **yes** | — |
 | `rsvg` | `rsvg-convert.exe` | SVG rasterising | LGPL-2.1 | attempted (inclusion unconfirmed) | see note below |
@@ -64,9 +64,12 @@ full MSI installer, no portable build — it's installed silently onto the CI ma
 itself (discarded after the job regardless) and its `program\` folder harvested. Both
 www.libreoffice.org and documentfoundation.org are unreachable from this environment, so
 the pinned version is a web-search best guess, not HTTP-confirmed — on top of being the
-slowest step in the whole script (a full office suite install), so also fail-soft.
-`calibre` has a real acquisition path identified (a silent-installable installer) but
-isn't wired into `fetch-tools.ps1` yet — tracked there as the next pass.
+slowest step in the whole script (a full office suite install), so also fail-soft. `calibre` is installed via Chocolatey instead of calibre-ebook.com
+directly — that domain is unreachable from this environment too, and the "portable"
+installer's exact silent-install behavior couldn't be confirmed, but Chocolatey is
+already proven working in this same pipeline (the Inno Setup install step uses it) and
+its Calibre package wraps the same problem with already-solved community-maintained
+flags. Still fail-soft, same as everything else in this list.
 
 Settings → Bundled tools re-scans on demand and shows exactly where each binary was found
 or where it is expected.
