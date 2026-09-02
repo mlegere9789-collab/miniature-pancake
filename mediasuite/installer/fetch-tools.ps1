@@ -167,6 +167,13 @@ $potraceArchive = Get-ToArchive -Url "https://potrace.sourceforge.net/download/1
 $potraceExtract = Expand-ToTemp -ArchivePath $potraceArchive
 Copy-BinariesToStage -ExtractDir $potraceExtract -Folder "potrace" -PrimaryExeNames @("potrace.exe")
 
+Write-Host "== libvips =="
+# Windows builds live in a separate repo from libvips/libvips itself.
+$libvipsUrl = Get-LatestReleaseAssetUrl -Repo "libvips/build-win64-mxe" -NamePattern "vips-dev-x64-web-.*\.zip$"
+$libvipsArchive = Get-ToArchive -Url $libvipsUrl
+$libvipsExtract = Expand-ToTemp -ArchivePath $libvipsArchive
+Copy-BinariesToStage -ExtractDir $libvipsExtract -Folder "libvips" -PrimaryExeNames @("vipsthumbnail.exe")
+
 Write-Host ""
 Write-Host "Tools staged under $ToolsDir :"
 Get-ChildItem $ToolsDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" }

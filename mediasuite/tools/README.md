@@ -28,7 +28,7 @@ next to `MediaSuite.exe`.
 | --- | --- | --- | --- | --- | --- |
 | `ffmpeg` | `ffmpeg.exe`, `ffprobe.exe` | Video, audio, GIF — **required** | LGPL-2.1 (shared build) | **yes** | — |
 | `imagemagick` | `magick.exe` | Images — **required** | ImageMagick License | **yes** | — |
-| `libvips` | `vipsthumbnail.exe` | Fast path for big images and batches | LGPL-2.1 | not yet | https://github.com/libvips/build-win64-mxe/releases |
+| `libvips` | `vipsthumbnail.exe` | Fast path for big images and batches | LGPL-2.1 | **yes** | — |
 | `libraw` | `dcraw_emu.exe` | Camera RAW — **required** | LGPL-2.1 / CDDL | no reliable source | https://www.libraw.org/download — see note below |
 | `mupdf` | `mutool.exe` | PDF rendering and page tools | AGPL-3.0 | not yet | https://mupdf.com/releases |
 | `qpdf` | `qpdf.exe` | Lossless PDF page operations | Apache-2.0 | **yes** | — |
