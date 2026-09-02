@@ -140,6 +140,16 @@ describe("computeGardenScore", () => {
     ]);
     expect(diverse).toBeGreaterThan(monoculture);
   });
+
+  it("does not produce NaN when every plant has importanceWeight 0", () => {
+    const score = computeGardenScore([
+      { score: 80, importanceWeight: 0, speciesId: "a", isOverdueForCheckin: false },
+      { score: 60, importanceWeight: 0, speciesId: "b", isOverdueForCheckin: false },
+    ]);
+    expect(Number.isNaN(score)).toBe(false);
+    // Plain average of (80, 60) = 70, plus the +3 diversity bonus for two distinct species.
+    expect(score).toBe(73);
+  });
 });
 
 describe("isSeasonallyDormant", () => {

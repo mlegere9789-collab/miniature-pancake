@@ -177,8 +177,13 @@ export function computeGardenScore(plants: GardenPlantInput[]): number {
   if (plants.length === 0) return 100;
 
   const totalWeight = plants.reduce((sum, p) => sum + p.importanceWeight, 0);
+  // importanceWeight is allowed to be 0 (spec §4.1's 0-10 range), so a
+  // garden where every plant is weighted 0 would otherwise divide by zero
+  // and produce a NaN Garden Score. Fall back to a plain average.
   const weightedAverage =
-    plants.reduce((sum, p) => sum + p.score * p.importanceWeight, 0) / totalWeight;
+    totalWeight === 0
+      ? plants.reduce((sum, p) => sum + p.score, 0) / plants.length
+      : plants.reduce((sum, p) => sum + p.score * p.importanceWeight, 0) / totalWeight;
 
   const overdueCount = plants.filter((p) => p.isOverdueForCheckin).length;
   const neglectPenalty = Math.min(15, overdueCount * 3);

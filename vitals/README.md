@@ -234,6 +234,12 @@ npx expo start
   (`backend/src/server.ts`) — verified by hitting an archive endpoint with
   a bad ID against an unreachable DB: the request now returns in ~60ms
   with a 500 instead of hanging.
+- **`computeGardenScore` could produce `NaN`.** It divided by the sum of
+  every plant's `importanceWeight`, which the spec §4.1 range (0-10)
+  explicitly allows to be 0 — a garden where every plant is weighted 0
+  divided by zero and would have persisted `NaN` as the Garden Score. Fixed
+  by falling back to a plain average when total weight is 0 (now unit
+  tested in `scoring.test.ts`).
 - **Plant detail screen never refreshed after check-in or edit.** It only
   loaded data on first mount; navigating to Check-In or Edit and back
   returned to the same still-mounted screen instance, so a fresh check-in's
