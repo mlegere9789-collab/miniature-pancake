@@ -56,6 +56,16 @@ jobs:
           dotnet publish mediasuite/src/MediaSuite.App/MediaSuite.App.csproj -c Release -r win-x64 --self-contained true -o mediasuite/publish/MediaSuite
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Set up MSVC dev environment
+        # No official prebuilt Windows binary exists for LibRaw's dcraw_emu — this puts
+        # cl.exe on PATH so fetch-tools.ps1 can compile it from source instead of leaving
+        # RAW support unbundled. Every other tool below is a plain download; this one is
+        # the exception, and stays isolated to a single "if cl.exe is missing, skip it and
+        # keep going" section so it can never take the rest of the fetch down with it.
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Fetch bundled tools
         # Downloads real Windows binaries for the tools MediaSuite shells out to, so the
         # installer ships self-contained instead of asking the user to find them. See

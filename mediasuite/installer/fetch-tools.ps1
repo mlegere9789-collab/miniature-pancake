@@ -167,6 +167,75 @@ $potraceArchive = Get-ToArchive -Url "https://potrace.sourceforge.net/download/1
 $potraceExtract = Expand-ToTemp -ArchivePath $potraceArchive
 Copy-BinariesToStage -ExtractDir $potraceExtract -Folder "potrace" -PrimaryExeNames @("potrace.exe")
 
+Write-Host "== libvips =="
+# Windows builds live in a separate repo from libvips/libvips itself.
+$libvipsUrl = Get-LatestReleaseAssetUrl -Repo "libvips/build-win64-mxe" -NamePattern "vips-dev-x64-web-.*\.zip$"
+$libvipsArchive = Get-ToArchive -Url $libvipsUrl
+$libvipsExtract = Expand-ToTemp -ArchivePath $libvipsArchive
+Copy-BinariesToStage -ExtractDir $libvipsExtract -Folder "libvips" -PrimaryExeNames @("vipsthumbnail.exe")
+
+Write-Host "== LibRaw (dcraw_emu, compiled from source) =="
+# No official or actively-maintained third-party prebuilt Windows binary exists for
+# dcraw_emu.exe (checked directly — LibRaw's own GitHub releases are source-only). But
+# windows-latest CI does have a real C++ toolchain and a preinstalled vcpkg, so this
+# compiles it for real: vcpkg builds the libraw library itself, then dcraw_emu.cpp — a
+# genuinely self-contained LibRaw sample verified against its own #include list, no
+# dependency on any other file in LibRaw's samples directory — is compiled directly
+# against it with cl.exe. This is meaningfully more speculative than every fetch above
+# (a from-source compile, not a known-good download), so it is written to fail soft:
+# if the MSVC dev environment isn't on PATH (see the CI workflow's own "Set up MSVC dev
+# environment" step, which must run first) or the compile itself fails, this section
+# warns and moves on rather than taking the whole fetch down — ImageMagick's own bundled
+# LibRaw delegate remains the fallback for RAW files either way.
+if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+    Write-Warning "cl.exe not on PATH — skipping the LibRaw compile. tools-staged\libraw will not exist this run."
+}
+elseif (-not $env:VCPKG_INSTALLATION_ROOT) {
+    Write-Warning "VCPKG_INSTALLATION_ROOT is not set — skipping the LibRaw compile."
+}
+else {
+    try {
+        $vcpkgExe = Join-Path $env:VCPKG_INSTALLATION_ROOT "vcpkg.exe"
+        & $vcpkgExe install "libraw:x64-windows-static"
+        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+            throw "vcpkg install libraw:x64-windows-static failed with exit code $LASTEXITCODE"
+        }
+
+        $installedDir = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\x64-windows-static"
+        $libDir = Join-Path $installedDir "lib"
+        $includeDir = Join-Path $installedDir "include"
+        $libFiles = Get-ChildItem -Path $libDir -Filter "*.lib" -ErrorAction Stop
+        if (-not $libFiles) {
+            throw "No .lib files found under $libDir after vcpkg install."
+        }
+
+        $dcrawCppPath = Join-Path ([System.IO.Path]::GetTempPath()) "dcraw_emu.cpp"
+        Invoke-WebRequest `
+            -Uri "https://raw.githubusercontent.com/LibRaw/LibRaw/0.21.4/samples/dcraw_emu.cpp" `
+            -OutFile $dcrawCppPath -Headers $webHeaders -UseBasicParsing
+
+        $librawStage = Join-Path $ToolsDir "libraw"
+        New-Item -ItemType Directory -Force -Path $librawStage | Out-Null
+        $exePath = Join-Path $librawStage "dcraw_emu.exe"
+
+        # /MT to match vcpkg's x64-windows-static triplet (static CRT) — a /MD-compiled
+        # object linking against /MT-built static libs is a hard link error, not a warning.
+        # Linking every .lib vcpkg produced for this triplet rather than guessing libraw's
+        # exact transitive dependency list (jpeg, zlib, lcms2, ...) by name.
+        & cl.exe /nologo /EHsc /O2 /MT "/I$includeDir" $dcrawCppPath "/Fe:$exePath" /link $libFiles.FullName
+        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+            throw "Compiling dcraw_emu.cpp failed with exit code $LASTEXITCODE"
+        }
+        if (-not (Test-Path $exePath)) {
+            throw "cl.exe reported success but $exePath does not exist."
+        }
+        Write-Host "  compiled libraw -> $librawStage (dcraw_emu.exe)"
+    }
+    catch {
+        Write-Warning "LibRaw compile failed, continuing without it: $_"
+    }
+}
+
 Write-Host ""
 Write-Host "Tools staged under $ToolsDir :"
 Get-ChildItem $ToolsDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" }
