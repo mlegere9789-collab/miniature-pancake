@@ -297,6 +297,38 @@ catch {
     Write-Warning "rsvg-convert fetch failed, continuing without it: $_"
 }
 
+Write-Host "== LibreOffice =="
+# LibreOffice only ships as a full MSI installer — no portable build. This installs it
+# silently (into this ephemeral CI machine, which gets discarded after the job either
+# way) and harvests the resulting program\ folder rather than trying to extract the MSI
+# without installing it. www.libreoffice.org and documentfoundation.org are both
+# unreachable from the environment this was written in, so the version pinned below is a
+# best guess from web search, not a direct HTTP check — meaningfully more likely to be
+# stale than most fetches above, on top of this being the largest, slowest step in the
+# whole script (a full office suite install). Fails soft for both reasons.
+try {
+    $libreOfficeMsi = Get-ToArchive -Url "https://download.documentfoundation.org/libreoffice/stable/26.8.0/win/x86_64/LibreOffice_26.8.0_Win_x86-64.msi"
+    $libreOfficeInstallLog = Join-Path ([System.IO.Path]::GetTempPath()) "libreoffice-install.log"
+    $msiArgs = @("/i", $libreOfficeMsi, "/qn", "/norestart", "/log", $libreOfficeInstallLog)
+    $msiProcess = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
+    if ($msiProcess.ExitCode -ne 0) {
+        throw "msiexec install of LibreOffice failed with exit code $($msiProcess.ExitCode) — see $libreOfficeInstallLog"
+    }
+    Remove-Item $libreOfficeMsi -Force
+
+    $installedProgramDir = "C:\Program Files\LibreOffice\program"
+    if (-not (Test-Path (Join-Path $installedProgramDir "soffice.exe"))) {
+        throw "msiexec reported success but soffice.exe is not at $installedProgramDir."
+    }
+    $libreOfficeStage = Join-Path $ToolsDir "libreoffice"
+    New-Item -ItemType Directory -Force -Path $libreOfficeStage | Out-Null
+    Copy-Item -Path (Join-Path $installedProgramDir "*") -Destination $libreOfficeStage -Recurse -Force
+    Write-Host "  staged libreoffice -> $libreOfficeStage (soffice.exe)"
+}
+catch {
+    Write-Warning "LibreOffice install failed, continuing without it: $_"
+}
+
 Write-Host ""
 Write-Host "Tools staged under $ToolsDir :"
 Get-ChildItem $ToolsDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" }
