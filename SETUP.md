@@ -183,7 +183,7 @@ miniature-pancake/
 │  ├─ ecommerce_dropshipping/ #   built: Shopify order sync + margin tracking
 │  ├─ deal_alert_bot/         #   built: CheapShark -> Discord deal alerts
 │  ├─ digital_products/       #   stub — no code yet
-│  └─ micro_saas/             #   stub — no code yet
+│  └─ micro_saas/             #   built: health checks + Stripe billing
 ├─ data/                  # local DB + logs (git-ignored)
 ├─ .env.example           # credentials template (copy to .env)
 └─ SETUP.md               # this file
