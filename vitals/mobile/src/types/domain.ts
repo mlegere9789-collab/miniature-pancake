@@ -110,6 +110,15 @@ export interface LeaderboardResult {
   percentile: number;
 }
 
+export type SpeciesDormancyHabit = "deciduous" | "evergreen" | "annual";
+
+export interface SpeciesDormancyLookup {
+  known: boolean;
+  habit: SpeciesDormancyHabit | null;
+  months: number[];
+  suggestDormant: boolean;
+}
+
 export interface CreatePlantInput {
   gardenId: string;
   speciesId: string;

@@ -5,6 +5,7 @@ import { computeLeaderboardRank } from "../services/comparison";
 import { computeRisingStars } from "../services/dashboard";
 import { computeWeeklyReportCard } from "../services/reportCard";
 import { defaultDormancyMonths } from "../services/scoring";
+import { lookupSpeciesDormancy } from "../services/speciesDormancy";
 import { fetchWeatherSignals } from "../services/weatherService";
 
 export const gardensRouter = Router();
@@ -86,13 +87,22 @@ gardensRouter.get("/:id/report-card", async (req, res) => {
   res.json(reportCard);
 });
 
-// Hemisphere-aware default dormancy months for the "Dormant in winter"
-// toggle on Add Plant (spec §4.7) — a real per-species calendar is further
-// work, but this at least gets the season right south of the equator.
+// Default dormancy months for the "Dormant in winter" toggle on Add Plant
+// (spec §4.7). When a `speciesId` query param matches the curated species
+// dormancy table, the response reflects that species' actual habit
+// (deciduous/evergreen/annual) and whether the toggle should default on;
+// otherwise it falls back to the hemisphere-only heuristic.
 gardensRouter.get("/:id/dormancy-defaults", async (req, res) => {
   const garden = await prisma.garden.findUnique({ where: { id: req.params.id }, select: { latitude: true } });
   if (!garden) return res.status(404).json({ error: "not found" });
-  res.json({ months: defaultDormancyMonths(garden.latitude) });
+
+  const speciesId = typeof req.query.speciesId === "string" ? req.query.speciesId : undefined;
+  if (speciesId) {
+    const lookup = lookupSpeciesDormancy(speciesId, garden.latitude);
+    return res.json(lookup);
+  }
+
+  res.json({ known: false, habit: null, months: defaultDormancyMonths(garden.latitude), suggestDormant: false });
 });
 
 const SetLeaderboardOptInSchema = z.object({ leaderboardOptIn: z.boolean() });

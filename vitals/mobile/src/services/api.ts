@@ -5,6 +5,7 @@ import {
   LeaderboardResult,
   Plant,
   PlantDetail,
+  SpeciesDormancyLookup,
   TwinComparison,
   WeeklyReportCard,
 } from "../types/domain";
@@ -48,9 +49,15 @@ export async function fetchLeaderboard(gardenId: string): Promise<LeaderboardRes
   return request(`/gardens/${gardenId}/leaderboard`);
 }
 
-export async function fetchDormancyDefaults(gardenId: string): Promise<number[]> {
-  const { months } = await request<{ months: number[] }>(`/gardens/${gardenId}/dormancy-defaults`);
-  return months;
+/**
+ * Dormancy defaults for the "Dormant in winter" toggle (spec §4.7). Passing
+ * `speciesId` checks the curated per-species dormancy table first (a real
+ * deciduous/evergreen/annual habit) and falls back to the hemisphere-only
+ * heuristic when the species isn't recognized.
+ */
+export async function fetchDormancyDefaults(gardenId: string, speciesId?: string): Promise<SpeciesDormancyLookup> {
+  const query = speciesId ? `?speciesId=${encodeURIComponent(speciesId)}` : "";
+  return request<SpeciesDormancyLookup>(`/gardens/${gardenId}/dormancy-defaults${query}`);
 }
 
 export async function setLeaderboardOptIn(gardenId: string, optIn: boolean): Promise<Garden> {

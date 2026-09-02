@@ -28,7 +28,8 @@ vitals/
 │       │   ├── weatherService.ts    Open-Meteo frost/drought signals (Phase 2, spec §5)
 │       │   ├── reportCard.ts        Weekly Garden Report Card aggregation (Phase 2, spec §4.5)
 │       │   ├── comparison.ts        Twin-plant percentile + leaderboard rank (Phase 3, spec §4.4/§4.6)
-│       │   └── dashboard.ts         Rising Stars ranking (spec §4.3), pulled out of routes/gardens.ts for testability
+│       │   ├── dashboard.ts         Rising Stars ranking (spec §4.3), pulled out of routes/gardens.ts for testability
+│       │   └── speciesDormancy.ts   Curated per-species dormancy calendar (Phase 3, spec §4.7)
 │       ├── routes/          Express routers: plants, checkins, gardens
 │       ├── types/           Shared TS types
 │       └── server.ts        App entrypoint
@@ -106,9 +107,13 @@ vitals/
     in winter" on the Add Plant screen; the preset months come from
     `GET /gardens/:id/dormancy-defaults` (`defaultDormancyMonths` in
     scoring.ts), which picks Nov-Feb or May-Aug based on the garden's
-    latitude sign, so southern-hemisphere gardens get the right season. A
-    real per-species dormancy calendar (vs. this hemisphere-only heuristic)
-    is further Phase 3 work.
+    latitude sign, so southern-hemisphere gardens get the right season.
+    Typing a species name that matches the curated table in
+    `backend/src/services/speciesDormancy.ts` (pass `?speciesId=`) instead
+    auto-detects its real habit — deciduous, evergreen, or annual — and
+    pre-sets (and explains) the toggle; an unrecognized species still falls
+    back to the hemisphere-only heuristic, and the user can always override
+    the toggle by hand.
 13. **Twin plants near you** (`backend/src/services/comparison.ts`,
     `GET /plants/:id/twin-comparison`) — an anonymized percentile comparison
     against other active plants of the same species in the same USDA zone,
@@ -141,7 +146,5 @@ npx expo start
 
 ## Not yet built (later phases)
 
-Auto-segmentation onboarding, regional outbreak modifiers, and a real
-per-species dormancy calendar (today's toggle is hemisphere-only, not
-species-specific) — see the top-level spec doc for the remaining phase 3-4
-scope.
+Auto-segmentation onboarding and regional outbreak modifiers — see the
+top-level spec doc for the remaining phase 3-4 scope.

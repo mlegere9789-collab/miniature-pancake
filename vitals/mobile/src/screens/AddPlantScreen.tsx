@@ -22,15 +22,48 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
   const [frostSensitive, setFrostSensitive] = useState(false);
   const [dormantInWinter, setDormantInWinter] = useState(false);
   const [dormancyMonths, setDormancyMonths] = useState<number[]>([11, 12, 1, 2]);
+  const [dormancyTouched, setDormancyTouched] = useState(false);
+  const [speciesDormancyNote, setSpeciesDormancyNote] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    // Hemisphere-aware default (spec §4.7): a garden south of the equator
+    // Hemisphere-aware fallback (spec §4.7): a garden south of the equator
     // gets a May-Aug preset instead of assuming everyone winters Nov-Feb.
     fetchDormancyDefaults(gardenId)
-      .then(setDormancyMonths)
+      .then((lookup) => setDormancyMonths(lookup.months))
       .catch(() => undefined);
   }, [gardenId]);
+
+  useEffect(() => {
+    const slug = speciesName.trim().toLowerCase().replace(/\s+/g, "-");
+    if (!slug) {
+      setSpeciesDormancyNote(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      fetchDormancyDefaults(gardenId, slug)
+        .then((lookup) => {
+          if (!lookup.known) {
+            setSpeciesDormancyNote(null);
+            return;
+          }
+          setDormancyMonths(lookup.months);
+          setSpeciesDormancyNote(
+            lookup.habit === "deciduous"
+              ? "Deciduous — we've turned on winter dormancy for you."
+              : lookup.habit === "evergreen"
+                ? "Evergreen — no winter dormancy needed."
+                : "Annual — no winter dormancy needed.",
+          );
+          // Only auto-apply the toggle if the user hasn't already set it by hand.
+          if (!dormancyTouched) setDormantInWinter(lookup.suggestDormant);
+        })
+        .catch(() => undefined);
+      // 500ms debounce so we're not firing a request per keystroke.
+    }, 500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speciesName, gardenId]);
 
   async function handleSubmit() {
     if (!speciesName.trim()) {
@@ -62,6 +95,7 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
       <Text style={styles.title}>Add a plant</Text>
 
       <Field label="Species (e.g. Tomato, Japanese Maple)" value={speciesName} onChangeText={setSpeciesName} />
+      {speciesDormancyNote && <Text style={styles.speciesNote}>🌱 {speciesDormancyNote}</Text>}
       <Field label="Nickname (optional)" value={nickname} onChangeText={setNickname} />
       <Field
         label="Check-in cadence (days)"
@@ -87,7 +121,13 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
         <Text style={[styles.label, { flex: 1, marginBottom: 0 }]}>
           Dormant in winter (e.g. deciduous trees — won't be scored as declining for expected leaf drop)
         </Text>
-        <Switch value={dormantInWinter} onValueChange={setDormantInWinter} />
+        <Switch
+          value={dormantInWinter}
+          onValueChange={(v) => {
+            setDormancyTouched(true);
+            setDormantInWinter(v);
+          }}
+        />
       </View>
 
       <Pressable style={styles.primaryButton} onPress={handleSubmit} disabled={submitting}>
@@ -124,6 +164,12 @@ const styles = StyleSheet.create({
   container: { padding: theme.spacing(3), backgroundColor: theme.color.cream, flexGrow: 1 },
   title: { fontSize: theme.font.titleSize, fontWeight: "700", color: theme.color.textPrimary, marginBottom: theme.spacing(3) },
   field: { marginBottom: theme.spacing(2) },
+  speciesNote: {
+    fontSize: theme.font.captionSize,
+    color: theme.color.forestGreenLight,
+    marginTop: -theme.spacing(1),
+    marginBottom: theme.spacing(2),
+  },
   switchRow: {
     flexDirection: "row",
     justifyContent: "space-between",
