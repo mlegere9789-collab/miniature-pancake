@@ -2,6 +2,7 @@ import {
   CreateCheckInResponse,
   CreatePlantInput,
   Garden,
+  LeaderboardResult,
   Plant,
   PlantDetail,
   TwinComparison,
@@ -35,6 +36,18 @@ export async function fetchWeeklyReportCard(gardenId: string): Promise<WeeklyRep
 
 export async function fetchTwinComparison(plantId: string): Promise<TwinComparison> {
   return request(`/plants/${plantId}/twin-comparison`);
+}
+
+export async function fetchLeaderboard(gardenId: string): Promise<LeaderboardResult> {
+  return request(`/gardens/${gardenId}/leaderboard`);
+}
+
+export async function setLeaderboardOptIn(gardenId: string, optIn: boolean): Promise<Garden> {
+  return request(`/gardens/${gardenId}/leaderboard-opt-in`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ leaderboardOptIn: optIn }),
+  });
 }
 
 export async function createPlant(input: CreatePlantInput): Promise<Plant> {

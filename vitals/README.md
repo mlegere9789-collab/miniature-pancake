@@ -39,7 +39,8 @@ vitals/
         │   ├── GardenDashboardScreen.tsx Hero Garden Score + Needs Attention / Rising Stars
         │   ├── PlantDetailScreen.tsx     Score history sparkline + check-in log
         │   ├── AddPlantScreen.tsx        Manual plant entry (Phase 1 skips auto-segmentation)
-        │   └── ReportCardScreen.tsx      Weekly Garden Report Card + native share sheet
+        │   ├── ReportCardScreen.tsx      Weekly Garden Report Card + native share sheet
+        │   └── LeaderboardScreen.tsx     Opt-in toggle + neighborhood leaderboard rank
         ├── components/       Sparkline, ScoreDeltaBadge, GhostOverlay
         ├── services/         api.ts (typed backend client), checkInQueue.ts (offline queue),
         │                     notifications.ts (per-plant local check-in reminders)
@@ -103,9 +104,10 @@ vitals/
     shown on the plant detail screen (spec §4.4). Only aggregate scores are
     ever exposed — never another user's garden, name, or photos.
 13. **Neighborhood leaderboard** (`GET /gardens/:id/leaderboard`,
-    `PATCH /gardens/:id/leaderboard-opt-in`) — opt-in only rank among other
-    opted-in gardens in the same USDA zone (spec §4.6). No mobile UI yet;
-    the API is ready for a settings toggle + leaderboard screen.
+    `PATCH /gardens/:id/leaderboard-opt-in`, `mobile/src/screens/LeaderboardScreen.tsx`) —
+    opt-in only rank among other opted-in gardens in the same USDA zone
+    (spec §4.6). The switch on the leaderboard screen is the entire consent
+    flow; no rank is fetched or shown until a garden opts in.
 
 ## Running locally
 
@@ -129,7 +131,6 @@ npx expo start
 ## Not yet built (later phases)
 
 Auto-segmentation onboarding, a branded/image report card share asset
-(text-only sharing ships today), regional outbreak modifiers, a per-species/
-hemisphere dormancy calendar (today's dormancy toggle is a fixed preset),
-a leaderboard opt-in toggle + screen on mobile (API only for now) — see the
-top-level spec doc for the remaining phase 3-4 scope.
+(text-only sharing ships today), regional outbreak modifiers, and a
+per-species/hemisphere dormancy calendar (today's dormancy toggle is a
+fixed preset) — see the top-level spec doc for the remaining phase 3-4 scope.

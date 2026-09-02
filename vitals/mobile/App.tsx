@@ -5,6 +5,7 @@ import { Pressable, Text, View } from "react-native";
 import { AddPlantScreen } from "./src/screens/AddPlantScreen";
 import { CheckInCameraScreen } from "./src/screens/CheckInCameraScreen";
 import { GardenDashboardScreen } from "./src/screens/GardenDashboardScreen";
+import { LeaderboardScreen } from "./src/screens/LeaderboardScreen";
 import { PlantDetailScreen } from "./src/screens/PlantDetailScreen";
 import { ReportCardScreen } from "./src/screens/ReportCardScreen";
 import { API_BASE_URL, fetchGarden } from "./src/services/api";
@@ -21,6 +22,7 @@ type RootStackParamList = {
   CheckIn: { plant: Plant | PlantDetail };
   AddPlant: undefined;
   ReportCard: undefined;
+  Leaderboard: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -49,6 +51,9 @@ export default function App() {
           title: "Vitals",
           headerRight: () => (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
+              <Pressable onPress={() => navigation.navigate("Leaderboard")}>
+                <Text style={{ color: theme.color.forestGreen, fontSize: 20 }}>🏆</Text>
+              </Pressable>
               <Pressable onPress={() => navigation.navigate("ReportCard")}>
                 <Text style={{ color: theme.color.forestGreen, fontSize: 20 }}>📋</Text>
               </Pressable>
@@ -108,6 +113,10 @@ export default function App() {
 
         <Stack.Screen name="ReportCard" options={{ title: "Weekly Report" }}>
           {() => <ReportCardScreen gardenId={DEMO_GARDEN_ID} />}
+        </Stack.Screen>
+
+        <Stack.Screen name="Leaderboard" options={{ title: "Leaderboard" }}>
+          {() => <LeaderboardScreen gardenId={DEMO_GARDEN_ID} />}
         </Stack.Screen>
       </Stack.Navigator>
     </NavigationContainer>

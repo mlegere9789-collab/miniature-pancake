@@ -71,6 +71,7 @@ export interface Garden {
   needsAttention: Plant[];
   risingStars: { plantId: string; delta: number }[];
   weatherAlert: WeatherAlert | null;
+  leaderboardOptIn: boolean;
 }
 
 export interface PlantDetail extends Plant {
@@ -101,6 +102,12 @@ export interface TwinComparison {
   percentile: number;
   cohortSize: number;
   message: string;
+}
+
+export interface LeaderboardResult {
+  rank: number;
+  totalParticipants: number;
+  percentile: number;
 }
 
 export interface CreatePlantInput {
