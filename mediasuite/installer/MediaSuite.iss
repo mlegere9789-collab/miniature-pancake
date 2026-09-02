@@ -10,6 +10,7 @@
 #define MyAppPublisher "MediaSuite"
 #define MyAppExeName "MediaSuite.exe"
 #define MyPublishDir "..\publish\MediaSuite"
+#define MyToolsStagedDir "..\tools-staged"
 
 [Setup]
 ; Generated once for this app and never reused elsewhere — Inno Setup uses it to
@@ -43,14 +44,19 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 [Files]
 ; Everything dotnet publish produced for the self-contained win-x64 build.
 Source: "{#MyPublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-; So the empty tools folder this installer creates below isn't a mystery the first time
-; someone looks inside it.
+; Third-party tool binaries fetched by fetch-tools.ps1 (see build.ps1, which runs it
+; before this script) — MediaSuite ships self-contained, no separate download needed.
+; A tool that fetch-tools.ps1 could not obtain simply has no folder here; ToolLocator
+; already treats a missing folder as "not installed" rather than erroring, so a partial
+; tools-staged directory still produces a working installer for whatever it did fetch.
+Source: "{#MyToolsStagedDir}\*"; DestDir: "{app}\tools"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 Source: "..\tools\README.md"; DestDir: "{app}\tools"; Flags: ignoreversion
 
 [Dirs]
-; Created empty on purpose — the bundled tools are third-party downloads the user adds
-; themselves (see tools\README.md), never shipped in the installer. Not deleted on
-; uninstall: see [UninstallDelete] below.
+; In case fetch-tools.ps1 found nothing at all, {app}\tools should still exist so
+; Settings has somewhere to point at. Not deleted on uninstall: see [UninstallDelete]
+; below — never take a user's own downloaded tools, presets or Google Drive sign-in
+; with it.
 Name: "{app}\tools"
 
 [Icons]

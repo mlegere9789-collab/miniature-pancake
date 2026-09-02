@@ -15,6 +15,7 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $publishDir = Join-Path $root "publish\MediaSuite"
 $appProject = Join-Path $root "src\MediaSuite.App\MediaSuite.App.csproj"
 $issScript = Join-Path $PSScriptRoot "MediaSuite.iss"
+$fetchToolsScript = Join-Path $PSScriptRoot "fetch-tools.ps1"
 
 Write-Host "Publishing MediaSuite.App (self-contained win-x64) to $publishDir ..."
 if (Test-Path $publishDir) {
@@ -24,6 +25,12 @@ if (Test-Path $publishDir) {
 dotnet publish $appProject -c Release -r win-x64 --self-contained true -o $publishDir
 if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
+}
+
+Write-Host "Fetching bundled tools ..."
+& $fetchToolsScript
+if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+    throw "fetch-tools.ps1 failed with exit code $LASTEXITCODE"
 }
 
 $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue

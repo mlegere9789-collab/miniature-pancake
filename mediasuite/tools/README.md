@@ -1,7 +1,17 @@
 # Bundled tools
 
 MediaSuite shells out to third-party binaries instead of reimplementing decades of codec
-work. They are **not** committed to git — download them and unpack them here.
+work. They are **not** committed to git — but as of the installer's `fetch-tools.ps1`
+step, most of them no longer need to be downloaded by hand either: CI fetches real
+Windows binaries for the tools marked **auto-bundled** below and ships them straight
+inside the installer, so a fresh install already has them in `tools\`. The remaining
+tools still need a manual download and drop into this folder, tracked in
+[installer/fetch-tools.ps1](../installer/fetch-tools.ps1)'s follow-up work — Settings →
+Bundled tools always shows exactly what is and isn't present on your machine either way.
+
+If you build the installer yourself with `installer\build.ps1`, it runs
+`fetch-tools.ps1` for you before compiling, so a local build also comes out
+self-contained for the auto-bundled tools.
 
 The locator checks, in order:
 
@@ -14,22 +24,31 @@ The locator checks, in order:
 `<tools>` is the folder set in Settings, then `%MEDIASUITE_TOOLS_DIR%`, then `tools\`
 next to `MediaSuite.exe`.
 
-| Folder | Binary | Used for | Licence | Download |
-| --- | --- | --- | --- | --- |
-| `ffmpeg` | `ffmpeg.exe`, `ffprobe.exe` | Video, audio, GIF — **required** | LGPL-2.1 (shared build) | https://www.gyan.dev/ffmpeg/builds/ |
-| `imagemagick` | `magick.exe` | Images — **required** | ImageMagick License | https://imagemagick.org/script/download.php |
-| `libvips` | `vipsthumbnail.exe` | Fast path for big images and batches | LGPL-2.1 | https://github.com/libvips/build-win64-mxe/releases |
-| `libraw` | `dcraw_emu.exe` | Camera RAW — **required** | LGPL-2.1 / CDDL | https://www.libraw.org/download |
-| `mupdf` | `mutool.exe` | PDF rendering and page tools | AGPL-3.0 | https://mupdf.com/releases |
-| `qpdf` | `qpdf.exe` | Lossless PDF page operations | Apache-2.0 | https://github.com/qpdf/qpdf/releases |
-| `ghostscript` | `gswin64c.exe` | PDF compression and flattening | AGPL-3.0 | https://www.ghostscript.com/releases/gsdnld.html |
-| `pandoc` | `pandoc.exe` | Document conversion | GPL-2.0-or-later | https://github.com/jgm/pandoc/releases |
-| `libreoffice` | `soffice.exe` | High-fidelity DOCX to PDF | MPL-2.0 | https://www.libreoffice.org/download/download-libreoffice/ |
-| `calibre` | `ebook-convert.exe` | Ebook conversion | GPL-3.0 | https://calibre-ebook.com/download_windows |
-| `7zip` | `7z.exe` | Archives, RAR extraction | LGPL-2.1 (+ unRAR licence) | https://www.7-zip.org/download.html |
-| `realesrgan` | `realesrgan-ncnn-vulkan.exe` | AI upscaling | BSD-3-Clause | https://github.com/xinntao/Real-ESRGAN/releases |
-| `rsvg` | `rsvg-convert.exe` | SVG rasterising | LGPL-2.1 | https://gitlab.gnome.org/GNOME/librsvg |
-| `potrace` | `potrace.exe` | PNG to SVG tracing | GPL-2.0 | https://potrace.sourceforge.net/#downloading |
+| Folder | Binary | Used for | Licence | Auto-bundled? | Download (if not) |
+| --- | --- | --- | --- | --- | --- |
+| `ffmpeg` | `ffmpeg.exe`, `ffprobe.exe` | Video, audio, GIF — **required** | LGPL-2.1 (shared build) | **yes** | — |
+| `imagemagick` | `magick.exe` | Images — **required** | ImageMagick License | **yes** | — |
+| `libvips` | `vipsthumbnail.exe` | Fast path for big images and batches | LGPL-2.1 | not yet | https://github.com/libvips/build-win64-mxe/releases |
+| `libraw` | `dcraw_emu.exe` | Camera RAW — **required** | LGPL-2.1 / CDDL | no reliable source | https://www.libraw.org/download — see note below |
+| `mupdf` | `mutool.exe` | PDF rendering and page tools | AGPL-3.0 | not yet | https://mupdf.com/releases |
+| `qpdf` | `qpdf.exe` | Lossless PDF page operations | Apache-2.0 | **yes** | — |
+| `ghostscript` | `gswin64c.exe` | PDF compression and flattening | AGPL-3.0 | not yet | https://www.ghostscript.com/releases/gsdnld.html |
+| `pandoc` | `pandoc.exe` | Document conversion | GPL-2.0-or-later | **yes** | — |
+| `libreoffice` | `soffice.exe` | High-fidelity DOCX to PDF | MPL-2.0 | not yet | https://www.libreoffice.org/download/download-libreoffice/ |
+| `calibre` | `ebook-convert.exe` | Ebook conversion | GPL-3.0 | not yet | https://calibre-ebook.com/download_windows |
+| `7zip` | `7z.exe` | Archives, RAR extraction | LGPL-2.1 (+ unRAR licence) | **yes** | — |
+| `realesrgan` | `realesrgan-ncnn-vulkan.exe` | AI upscaling | BSD-3-Clause | **yes** | — |
+| `rsvg` | `rsvg-convert.exe` | SVG rasterising | LGPL-2.1 | not yet | https://gitlab.gnome.org/GNOME/librsvg |
+| `potrace` | `potrace.exe` | PNG to SVG tracing | GPL-2.0 | **yes** | — |
+
+"Not yet" is a real gap, not a permanent one. `libraw` is the one exception worth
+calling out specially: unlike the others, there is currently no known official or
+actively-maintained prebuilt Windows binary for `dcraw_emu.exe` at all — ImageMagick's
+own bundled LibRaw delegate (`magick.exe photo.CR2 out.jpg`) is the practical fallback
+for camera RAW until that changes. `libvips`, `mupdf`, `ghostscript`, `rsvg`,
+`libreoffice` and `calibre` all have a real acquisition path identified (a portable zip,
+or a silent-installable installer) but aren't wired into `fetch-tools.ps1` yet — tracked
+there as the next pass.
 
 Settings → Bundled tools re-scans on demand and shows exactly where each binary was found
 or where it is expected.
