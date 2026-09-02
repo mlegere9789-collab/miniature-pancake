@@ -32,7 +32,7 @@ next to `MediaSuite.exe`.
 | `libraw` | `dcraw_emu.exe` | Camera RAW — **required** | LGPL-2.1 / CDDL | attempted (compiled from source) | see note below |
 | `mupdf` | `mutool.exe` | PDF rendering and page tools | AGPL-3.0 | not yet | https://mupdf.com/releases |
 | `qpdf` | `qpdf.exe` | Lossless PDF page operations | Apache-2.0 | **yes** | — |
-| `ghostscript` | `gswin64c.exe` | PDF compression and flattening | AGPL-3.0 | not yet | https://www.ghostscript.com/releases/gsdnld.html |
+| `ghostscript` | `gswin64c.exe` | PDF compression and flattening | AGPL-3.0 | attempted (unofficial extraction) | see note below |
 | `pandoc` | `pandoc.exe` | Document conversion | GPL-2.0-or-later | **yes** | — |
 | `libreoffice` | `soffice.exe` | High-fidelity DOCX to PDF | MPL-2.0 | not yet | https://www.libreoffice.org/download/download-libreoffice/ |
 | `calibre` | `ebook-convert.exe` | Ebook conversion | GPL-3.0 | not yet | https://calibre-ebook.com/download_windows |
@@ -48,10 +48,14 @@ speculative than every plain-download tool above it: it needs a working MSVC + v
 toolchain in CI (set up as a dedicated workflow step) and is written to fail soft rather
 than take the rest of the fetch down if that compile doesn't work on a given run. If it
 fails, ImageMagick's own bundled LibRaw delegate (`magick.exe photo.CR2 out.jpg`) is the
-practical fallback for camera RAW. `mupdf`, `ghostscript`, `rsvg`, `libreoffice` and
-`calibre` all have a real acquisition path identified (a portable zip, or a
-silent-installable installer) but aren't wired into `fetch-tools.ps1` yet — tracked there
-as the next pass.
+practical fallback for camera RAW. `ghostscript` is attempted the same fail-soft way, for
+a different reason: it only ships a GUI installer, and Artifex deliberately removed the
+installer's silent-install flag in 10.01.0+, so `fetch-tools.ps1` extracts the installer's
+payload directly with 7-Zip instead of running it — unofficial, since Artifex never
+blessed extracting it this way, so it's written to not take the rest of the fetch down if
+a future installer format change breaks it. `mupdf`, `rsvg`, `libreoffice` and `calibre`
+all have a real acquisition path identified (a portable zip, or a silent-installable
+installer) but aren't wired into `fetch-tools.ps1` yet — tracked there as the next pass.
 
 Settings → Bundled tools re-scans on demand and shows exactly where each binary was found
 or where it is expected.

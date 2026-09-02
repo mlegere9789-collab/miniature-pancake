@@ -236,6 +236,30 @@ else {
     }
 }
 
+Write-Host "== Ghostscript =="
+# Ghostscript only ships a GUI installer, and Artifex deliberately removed its silent
+# install flag in 10.01.0+ as a security decision — /S today just launches the GUI
+# instead of installing quietly. The installer itself is still a plain archive under the
+# hood (7-Zip's NSIS/Inno codecs can open it directly), so this extracts its payload with
+# the 7z.exe already staged above rather than running it as an installer at all. This is
+# unofficial — Artifex never blessed extracting the exe this way — so it fails soft like
+# LibRaw rather than taking the rest of the fetch down if a future installer format
+# change breaks it.
+try {
+    $ghostscriptArchive = Get-ToArchive -Url "https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10071/gs10071w64.exe"
+    $ghostscriptExtract = Join-Path ([System.IO.Path]::GetTempPath()) "mediasuite-extract-$([Guid]::NewGuid())"
+    New-Item -ItemType Directory -Force -Path $ghostscriptExtract | Out-Null
+    & $sevenZipExe "x" $ghostscriptArchive "-o$ghostscriptExtract" "-y" | Out-Null
+    if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+        throw "Extracting Ghostscript's installer payload failed with exit code $LASTEXITCODE"
+    }
+    Remove-Item $ghostscriptArchive -Force
+    Copy-BinariesToStage -ExtractDir $ghostscriptExtract -Folder "ghostscript" -PrimaryExeNames @("gswin64c.exe")
+}
+catch {
+    Write-Warning "Ghostscript extraction failed, continuing without it: $_"
+}
+
 Write-Host ""
 Write-Host "Tools staged under $ToolsDir :"
 Get-ChildItem $ToolsDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" }
