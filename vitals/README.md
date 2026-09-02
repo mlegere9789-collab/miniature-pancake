@@ -91,9 +91,10 @@ vitals/
 11. **Weekly Garden Report Card** (`backend/src/services/reportCard.ts`,
     `GET /gardens/:id/report-card`, `mobile/src/screens/ReportCardScreen.tsx`) —
     a 7-day recap (Garden Score delta, rising stars, plants needing attention,
-    check-ins completed) with a share button using the native share sheet
-    (spec §4.5/§4.6). A polished branded image card (vs. today's plain text
-    share) is further design work once the visual system has real assets.
+    check-ins completed) rendered as a branded card. The share button captures
+    that card with `react-native-view-shot` and shares it as a PNG via
+    `expo-sharing`'s native share sheet (spec §4.5/§4.6), falling back to a
+    plain-text share if image sharing isn't available on the platform.
 
 ### Phase 3 (in progress)
 
@@ -140,8 +141,7 @@ npx expo start
 
 ## Not yet built (later phases)
 
-Auto-segmentation onboarding, a branded/image report card share asset
-(text-only sharing ships today), regional outbreak modifiers, and a real
+Auto-segmentation onboarding, regional outbreak modifiers, and a real
 per-species dormancy calendar (today's toggle is hemisphere-only, not
 species-specific) — see the top-level spec doc for the remaining phase 3-4
 scope.
