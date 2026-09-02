@@ -78,6 +78,14 @@ export async function setPlantLocation(plantId: string, pin: LocationPin): Promi
   });
 }
 
+export async function setTreatmentPlanCompleted(treatmentPlanId: string, completed: boolean): Promise<void> {
+  await request(`/treatment-plans/${treatmentPlanId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ completed }),
+  });
+}
+
 export async function searchSpecies(query: string): Promise<SpeciesSuggestion[]> {
   if (!query.trim()) return [];
   return request<SpeciesSuggestion[]>(`/species/search?q=${encodeURIComponent(query.trim())}`);

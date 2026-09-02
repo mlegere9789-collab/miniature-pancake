@@ -24,7 +24,7 @@ plantsRouter.get("/:id", async (req, res) => {
       scoreHistory: { orderBy: { computedAt: "asc" } },
       checkIns: {
         orderBy: { timestamp: "desc" },
-        include: { diagnosticFlags: true },
+        include: { diagnosticFlags: { include: { treatmentPlan: true } } },
       },
     },
   });

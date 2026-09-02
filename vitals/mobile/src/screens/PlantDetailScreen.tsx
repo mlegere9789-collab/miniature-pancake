@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { Sparkline } from "../components/Sparkline";
-import { fetchPlant, fetchTwinComparison } from "../services/api";
+import { fetchPlant, fetchTwinComparison, setTreatmentPlanCompleted } from "../services/api";
 import { scoreColor, theme } from "../theme/theme";
 import { CheckIn, PlantDetail, TwinComparison } from "../types/domain";
 
@@ -42,7 +42,7 @@ export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline }: P
       contentContainerStyle={styles.list}
       data={plant.checkIns}
       keyExtractor={(c) => c.id}
-      renderItem={({ item }) => <CheckInRow checkIn={item} />}
+      renderItem={({ item }) => <CheckInRow checkIn={item} onChanged={load} />}
       ListHeaderComponent={
         <>
           <View style={styles.heroCard}>
@@ -84,8 +84,14 @@ export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline }: P
   );
 }
 
-function CheckInRow({ checkIn }: { checkIn: CheckIn }) {
+function CheckInRow({ checkIn, onChanged }: { checkIn: CheckIn; onChanged: () => void }) {
   const openFlags = checkIn.diagnosticFlags.filter((f) => f.status !== "RESOLVED");
+
+  async function handleToggleTreatment(treatmentPlanId: string, completed: boolean) {
+    await setTreatmentPlanCompleted(treatmentPlanId, completed).catch(() => undefined);
+    onChanged();
+  }
+
   return (
     <View style={styles.checkInRow}>
       <View style={styles.checkInHeader}>
@@ -95,9 +101,31 @@ function CheckInRow({ checkIn }: { checkIn: CheckIn }) {
         </Text>
       </View>
       {openFlags.map((f) => (
-        <Text key={f.id} style={styles.flagText}>
-          ⚠ {f.condition.replace(/-/g, " ")} — {f.urgency.replace(/_/g, " ").toLowerCase()}
-        </Text>
+        <View key={f.id}>
+          <Text style={styles.flagText}>
+            ⚠ {f.condition.replace(/-/g, " ")} — {f.urgency.replace(/_/g, " ").toLowerCase()}
+          </Text>
+          {f.treatmentPlan && !f.treatmentPlan.completed && (
+            <View style={styles.treatmentBox}>
+              {f.treatmentPlan.steps.map((step, i) => (
+                <Text key={i} style={styles.treatmentStep}>
+                  • {step}
+                </Text>
+              ))}
+              {f.treatmentPlan.productsRecommended.length > 0 && (
+                <Text style={styles.treatmentProducts}>
+                  Suggested: {f.treatmentPlan.productsRecommended.join(", ")}
+                </Text>
+              )}
+              <Pressable
+                style={styles.treatmentDoneButton}
+                onPress={() => handleToggleTreatment(f.treatmentPlan!.id, true)}
+              >
+                <Text style={styles.treatmentDoneButtonText}>Mark treated</Text>
+              </Pressable>
+            </View>
+          )}
+        </View>
       ))}
     </View>
   );
@@ -164,4 +192,19 @@ const styles = StyleSheet.create({
   checkInDate: { fontSize: theme.font.bodySize, color: theme.color.textPrimary },
   checkInScore: { fontSize: theme.font.bodySize, fontWeight: "700" },
   flagText: { fontSize: theme.font.captionSize, color: theme.color.danger, marginTop: theme.spacing(1) },
+  treatmentBox: {
+    backgroundColor: theme.color.cream,
+    borderRadius: theme.radius.sm,
+    padding: theme.spacing(1.5),
+    marginTop: theme.spacing(1),
+  },
+  treatmentStep: { fontSize: theme.font.captionSize, color: theme.color.textPrimary, marginBottom: theme.spacing(0.5) },
+  treatmentProducts: {
+    fontSize: theme.font.captionSize,
+    color: theme.color.textSecondary,
+    fontStyle: "italic",
+    marginTop: theme.spacing(0.5),
+  },
+  treatmentDoneButton: { marginTop: theme.spacing(1), alignSelf: "flex-start" },
+  treatmentDoneButtonText: { fontSize: theme.font.captionSize, color: theme.color.forestGreen, fontWeight: "600" },
 });

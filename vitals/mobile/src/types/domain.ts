@@ -43,6 +43,13 @@ export type FlagSeverity = "COSMETIC" | "MODERATE" | "URGENT";
 export type FlagUrgency = "MONITOR" | "THIS_WEEK" | "TREAT_TODAY";
 export type FlagStatus = "OPEN" | "MONITORING" | "RESOLVED";
 
+export interface TreatmentPlan {
+  id: string;
+  steps: string[];
+  productsRecommended: string[];
+  completed: boolean;
+}
+
 export interface DiagnosticFlag {
   id: string;
   condition: string;
@@ -50,6 +57,7 @@ export interface DiagnosticFlag {
   severity: FlagSeverity;
   urgency: FlagUrgency;
   status: FlagStatus;
+  treatmentPlan: TreatmentPlan | null;
 }
 
 export interface CheckIn {

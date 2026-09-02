@@ -31,8 +31,9 @@ vitals/
 │       │   ├── dashboard.ts         Rising Stars ranking (spec §4.3), pulled out of routes/gardens.ts for testability
 │       │   ├── speciesDormancy.ts   Curated per-species dormancy calendar (Phase 3, spec §4.7)
 │       │   ├── forecast.ts          Linear-regression score trend forecast (Phase 3/4, spec §4.3/§4.5)
-│       │   └── outbreakDetection.ts Regional outbreak alerts from shared diagnostic flags (Phase 3, spec §4.3/§4.5)
-│       ├── routes/          Express routers: plants, checkins, gardens, species
+│       │   ├── outbreakDetection.ts Regional outbreak alerts from shared diagnostic flags (Phase 3, spec §4.3/§4.5)
+│       │   └── treatmentPlans.ts    Actionable steps/products per diagnostic flag (spec §4.2)
+│       ├── routes/          Express routers: plants, checkins, gardens, species, treatment-plans
 │       ├── types/           Shared TS types
 │       └── server.ts        App entrypoint
 │
@@ -63,7 +64,14 @@ vitals/
    fit 15%, care consistency 10%, trend momentum modifier ±10) and the Garden
    Score roll-up from §3.2.
 3. **Check-in API** (`backend/src/routes/checkins.ts`) — accepts a photo +
-   plant id, calls the diagnostic engine stub, computes the score, persists it.
+   plant id, calls the diagnostic engine stub, computes the score, persists it,
+   and now also generates a `TreatmentPlan` (curated steps + recommended
+   products, `backend/src/services/treatmentPlans.ts`) for each diagnostic
+   flag (spec §4.2: a diagnosis needs a "what do I do about it"). Shown on
+   the plant detail screen under each open flag with a "Mark treated"
+   button; an incomplete plan feeds `outstandingTreatmentsIgnored` in care-
+   consistency scoring — previously always false, since nothing ever
+   created a `TreatmentPlan` despite the model existing since Phase 1.
 4. **Ghost-overlay camera flow** (`mobile/src/screens/CheckInCameraScreen.tsx`) —
    the core differentiator: overlays the previous check-in photo at reduced
    opacity so the user aligns angle/framing before capture.
@@ -205,6 +213,11 @@ npx expo start
   `backend/src/services/scoring.ts`, now unit tested).
 - **Offline check-in queue never flushed.** See "Offline check-in sync"
   above — `flushCheckInQueue` existed but nothing called it.
+- **`TreatmentPlan` model existed but nothing ever created one.** Care-
+  consistency scoring's `outstandingTreatmentsIgnored` input queried for
+  incomplete treatment plans, but no code path ever created a
+  `TreatmentPlan` row — so that scoring input was permanently dead. Fixed
+  by generating one per diagnostic flag on check-in (see "Check-in API" above).
 - **Check-in reminders silently reset on every refresh.** `App.tsx`
   rescheduled every plant's local reminder from "now" (`scheduleAllReminders`)
   on every `refreshKey` bump — any check-in, any plant add, even the offline

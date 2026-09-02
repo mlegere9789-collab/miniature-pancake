@@ -3,6 +3,7 @@ import { prisma } from "../db/client";
 import { CreateCheckInSchema } from "../models/checkin";
 import { runDiagnosticEngine } from "../services/diagnosticEngine";
 import { computeGardenScore, computePlantScore, isOverdueForCheckin, isSeasonallyDormant } from "../services/scoring";
+import { buildTreatmentPlan } from "../services/treatmentPlans";
 import { applyWeatherPenalty, fetchWeatherSignals } from "../services/weatherService";
 
 export const checkinsRouter = Router();
@@ -72,16 +73,20 @@ checkinsRouter.post("/", async (req, res) => {
         computedScore: finalScore,
         subscoreBreakdownJson: breakdown as unknown as object,
         diagnosticFlags: {
-          create: engineOutput.flags.map((f) => ({
-            condition: f.condition,
-            confidence: f.confidence,
-            severity: f.severity,
-            urgency: f.urgency,
-            trend: f.trend,
-          })),
+          create: engineOutput.flags.map((f) => {
+            const plan = buildTreatmentPlan(f.condition);
+            return {
+              condition: f.condition,
+              confidence: f.confidence,
+              severity: f.severity,
+              urgency: f.urgency,
+              trend: f.trend,
+              treatmentPlan: { create: { steps: plan.steps, productsRecommended: plan.productsRecommended } },
+            };
+          }),
         },
       },
-      include: { diagnosticFlags: true },
+      include: { diagnosticFlags: { include: { treatmentPlan: true } } },
     });
 
     await tx.plant.update({
