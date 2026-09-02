@@ -109,6 +109,11 @@ vitals/
    `GET /gardens/:id` now returns `weatherAlert`, populated when frost is
    forecast tonight and at least one `frostSensitive` plant is in the garden
    (spec §4.3/§4.5). Mark a plant frost-sensitive from the Add Plant screen.
+   The frost and regional-outbreak banners also fire a local push
+   (`notifyWeatherAlertIfNew`/`notifyOutbreakAlertsIfNew` in
+   `mobile/src/services/notifications.ts`, deduped once per day per alert)
+   the first time the dashboard sees them, so the warning isn't silent
+   until the user happens to open the app.
 11. **Weekly Garden Report Card** (`backend/src/services/reportCard.ts`,
     `GET /gardens/:id/report-card`, `mobile/src/screens/ReportCardScreen.tsx`) —
     a 7-day recap (Garden Score delta, rising stars, plants needing attention,

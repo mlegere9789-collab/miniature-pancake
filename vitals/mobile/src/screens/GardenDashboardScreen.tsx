@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { fetchGarden } from "../services/api";
 import { pendingCheckInCount } from "../services/checkInQueue";
+import { notifyOutbreakAlertsIfNew, notifyWeatherAlertIfNew } from "../services/notifications";
 import { theme, scoreColor } from "../theme/theme";
 import { Garden, OutbreakAlert, Plant, WeatherAlert } from "../types/domain";
 
@@ -17,8 +18,12 @@ export function GardenDashboardScreen({ gardenId, onSelectPlant }: Props) {
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
 
   const load = useCallback(async () => {
-    setGarden(await fetchGarden(gardenId));
+    const fetched = await fetchGarden(gardenId);
+    setGarden(fetched);
     pendingCheckInCount().then(setPendingSyncCount).catch(() => undefined);
+
+    if (fetched.weatherAlert) notifyWeatherAlertIfNew(fetched.weatherAlert).catch(() => undefined);
+    if (fetched.outbreakAlerts.length > 0) notifyOutbreakAlertsIfNew(fetched.outbreakAlerts).catch(() => undefined);
   }, [gardenId]);
 
   useEffect(() => {
