@@ -2,7 +2,7 @@ import { Router } from "express";
 import { prisma } from "../db/client";
 import { CreateCheckInSchema } from "../models/checkin";
 import { runDiagnosticEngine } from "../services/diagnosticEngine";
-import { computeGardenScore, computePlantScore, isSeasonallyDormant } from "../services/scoring";
+import { computeGardenScore, computePlantScore, isOverdueForCheckin, isSeasonallyDormant } from "../services/scoring";
 import { applyWeatherPenalty, fetchWeatherSignals } from "../services/weatherService";
 
 export const checkinsRouter = Router();
@@ -102,16 +102,18 @@ checkinsRouter.post("/", async (req, res) => {
 });
 
 async function recomputeGardenScore(gardenId: string) {
-  const plants = await prisma.plant.findMany({ where: { gardenId, active: true } });
+  const plants = await prisma.plant.findMany({
+    where: { gardenId, active: true },
+    include: { checkIns: { orderBy: { timestamp: "desc" }, take: 1 } },
+  });
 
-  const now = Date.now();
   const inputs = plants.map((p) => {
-    const dueDate = p.createdAt.getTime() + p.checkinCadenceDays * 24 * 60 * 60 * 1000;
+    const lastActivityAt = p.checkIns[0]?.timestamp ?? p.createdAt;
     return {
       score: p.scoreCurrent,
       importanceWeight: p.importanceWeight,
       speciesId: p.speciesId,
-      isOverdueForCheckin: now > dueDate,
+      isOverdueForCheckin: isOverdueForCheckin(lastActivityAt, p.checkinCadenceDays),
     };
   });
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { computeGardenScore, computePlantScore, defaultDormancyMonths, isSeasonallyDormant } from "./scoring";
+import {
+  computeGardenScore,
+  computePlantScore,
+  defaultDormancyMonths,
+  isOverdueForCheckin,
+  isSeasonallyDormant,
+} from "./scoring";
 import { DiagnosticEngineOutput } from "../types/diagnosticEngine";
 
 function healthyEngineOutput(): DiagnosticEngineOutput {
@@ -207,5 +213,25 @@ describe("defaultDormancyMonths", () => {
 
   it("uses southern-hemisphere winter for negative latitude", () => {
     expect(defaultDormancyMonths(-33.9)).toEqual([5, 6, 7, 8]);
+  });
+});
+
+describe("isOverdueForCheckin", () => {
+  it("is not overdue right after a check-in, even for a plant added long ago", () => {
+    const longAgoButJustCheckedIn = new Date("2026-01-01");
+    const now = new Date("2026-01-01T00:00:01Z");
+    expect(isOverdueForCheckin(longAgoButJustCheckedIn, 14, now)).toBe(false);
+  });
+
+  it("is overdue once more than the cadence has passed since the last activity", () => {
+    const lastActivity = new Date("2026-01-01");
+    const now = new Date("2026-01-20");
+    expect(isOverdueForCheckin(lastActivity, 14, now)).toBe(true);
+  });
+
+  it("is not overdue exactly at the cadence boundary", () => {
+    const lastActivity = new Date("2026-01-01T00:00:00Z");
+    const now = new Date("2026-01-15T00:00:00Z");
+    expect(isOverdueForCheckin(lastActivity, 14, now)).toBe(false);
   });
 });

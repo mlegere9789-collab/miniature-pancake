@@ -174,6 +174,19 @@ npm install
 npx expo start
 ```
 
+## Bug fixes
+
+- **Garden Score neglect penalty measured from the wrong date.**
+  `recomputeGardenScore` (`backend/src/routes/checkins.ts`) was flagging a
+  plant "overdue" based on `plant.createdAt` instead of its most recent
+  check-in, so any plant older than one cadence period stayed permanently
+  overdue — and kept dinging the Garden Score's neglect penalty — even
+  seconds after a fresh check-in. Fixed by measuring the cadence window from
+  the plant's last check-in (`isOverdueForCheckin` in
+  `backend/src/services/scoring.ts`, now unit tested).
+- **Offline check-in queue never flushed.** See "Offline check-in sync"
+  above — `flushCheckInQueue` existed but nothing called it.
+
 ## Not yet built (later phases)
 
 Auto-segmentation onboarding, a B2B white-label dashboard, and a full ML

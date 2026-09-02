@@ -61,6 +61,19 @@ export function defaultDormancyMonths(latitude: number | null | undefined): numb
   return NORTHERN_HEMISPHERE_WINTER_MONTHS;
 }
 
+/**
+ * A plant is overdue for its Garden Score neglect penalty when more than
+ * `cadenceDays` have passed since its most recent activity (its last
+ * check-in, or when it was added if it has never been checked in). Must be
+ * measured from that activity, not from when the plant was created —
+ * otherwise a plant older than one cadence period reads as permanently
+ * overdue even the moment after a fresh check-in.
+ */
+export function isOverdueForCheckin(lastActivityAt: Date, cadenceDays: number, now: Date = new Date()): boolean {
+  const dueDate = lastActivityAt.getTime() + cadenceDays * 24 * 60 * 60 * 1000;
+  return now.getTime() > dueDate;
+}
+
 const FLAG_SEVERITY_PENALTY: Record<FlagSeverity, number> = {
   COSMETIC: 5,
   MODERATE: 15,
