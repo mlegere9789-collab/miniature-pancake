@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeGardenScore, computePlantScore, isSeasonallyDormant } from "./scoring";
+import { computeGardenScore, computePlantScore, defaultDormancyMonths, isSeasonallyDormant } from "./scoring";
 import { DiagnosticEngineOutput } from "../types/diagnosticEngine";
 
 function healthyEngineOutput(): DiagnosticEngineOutput {
@@ -192,5 +192,20 @@ describe("computePlantScore seasonal recalibration (spec §4.7)", () => {
       isDormant: true,
     });
     expect(breakdown.visualVitality).toBe(healthyEngineOutput().visualVitality.score);
+  });
+});
+
+describe("defaultDormancyMonths", () => {
+  it("defaults to northern-hemisphere winter when no latitude is known", () => {
+    expect(defaultDormancyMonths(null)).toEqual([11, 12, 1, 2]);
+    expect(defaultDormancyMonths(undefined)).toEqual([11, 12, 1, 2]);
+  });
+
+  it("uses northern-hemisphere winter for positive latitude", () => {
+    expect(defaultDormancyMonths(45.5)).toEqual([11, 12, 1, 2]);
+  });
+
+  it("uses southern-hemisphere winter for negative latitude", () => {
+    expect(defaultDormancyMonths(-33.9)).toEqual([5, 6, 7, 8]);
   });
 });

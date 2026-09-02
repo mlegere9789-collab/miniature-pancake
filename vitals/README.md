@@ -96,8 +96,12 @@ vitals/
     plant's `dormancyMonths` (1-12) suppress the visual-vitality dip from
     expected leaf drop/browning during its dormant season, so a deciduous
     tree isn't scored as declining every winter (spec §4.7). Toggle "Dormant
-    in winter" on the Add Plant screen (currently a fixed Nov-Feb preset; a
-    real per-species/hemisphere dormancy calendar is further Phase 3 work).
+    in winter" on the Add Plant screen; the preset months come from
+    `GET /gardens/:id/dormancy-defaults` (`defaultDormancyMonths` in
+    scoring.ts), which picks Nov-Feb or May-Aug based on the garden's
+    latitude sign, so southern-hemisphere gardens get the right season. A
+    real per-species dormancy calendar (vs. this hemisphere-only heuristic)
+    is further Phase 3 work.
 12. **Twin plants near you** (`backend/src/services/comparison.ts`,
     `GET /plants/:id/twin-comparison`) — an anonymized percentile comparison
     against other active plants of the same species in the same USDA zone,
@@ -131,6 +135,7 @@ npx expo start
 ## Not yet built (later phases)
 
 Auto-segmentation onboarding, a branded/image report card share asset
-(text-only sharing ships today), regional outbreak modifiers, and a
-per-species/hemisphere dormancy calendar (today's dormancy toggle is a
-fixed preset) — see the top-level spec doc for the remaining phase 3-4 scope.
+(text-only sharing ships today), regional outbreak modifiers, and a real
+per-species dormancy calendar (today's toggle is hemisphere-only, not
+species-specific) — see the top-level spec doc for the remaining phase 3-4
+scope.

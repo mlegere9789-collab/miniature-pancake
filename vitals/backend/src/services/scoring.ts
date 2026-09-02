@@ -46,6 +46,21 @@ export function isSeasonallyDormant(months: number[], now: Date = new Date()): b
   return months.includes(now.getMonth() + 1);
 }
 
+const NORTHERN_HEMISPHERE_WINTER_MONTHS = [11, 12, 1, 2];
+const SOUTHERN_HEMISPHERE_WINTER_MONTHS = [5, 6, 7, 8];
+
+/**
+ * Default dormancy months for a "dormant in winter" plant, based on the
+ * garden's hemisphere (spec §4.7 — a real per-species dormancy calendar is
+ * further work; this at least gets the season right for southern-hemisphere
+ * gardens instead of assuming everyone is north of the equator). Falls back
+ * to the northern-hemisphere winter when no latitude is on file yet.
+ */
+export function defaultDormancyMonths(latitude: number | null | undefined): number[] {
+  if (latitude != null && latitude < 0) return SOUTHERN_HEMISPHERE_WINTER_MONTHS;
+  return NORTHERN_HEMISPHERE_WINTER_MONTHS;
+}
+
 const FLAG_SEVERITY_PENALTY: Record<FlagSeverity, number> = {
   COSMETIC: 5,
   MODERATE: 15,

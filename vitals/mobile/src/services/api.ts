@@ -42,6 +42,11 @@ export async function fetchLeaderboard(gardenId: string): Promise<LeaderboardRes
   return request(`/gardens/${gardenId}/leaderboard`);
 }
 
+export async function fetchDormancyDefaults(gardenId: string): Promise<number[]> {
+  const { months } = await request<{ months: number[] }>(`/gardens/${gardenId}/dormancy-defaults`);
+  return months;
+}
+
 export async function setLeaderboardOptIn(gardenId: string, optIn: boolean): Promise<Garden> {
   return request(`/gardens/${gardenId}/leaderboard-opt-in`, {
     method: "PATCH",

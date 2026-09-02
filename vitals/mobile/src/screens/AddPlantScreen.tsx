@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
-import { createPlant } from "../services/api";
+import { createPlant, fetchDormancyDefaults } from "../services/api";
 import { theme } from "../theme/theme";
 import { Plant } from "../types/domain";
 
@@ -21,7 +21,16 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
   const [importanceWeight, setImportanceWeight] = useState("1");
   const [frostSensitive, setFrostSensitive] = useState(false);
   const [dormantInWinter, setDormantInWinter] = useState(false);
+  const [dormancyMonths, setDormancyMonths] = useState<number[]>([11, 12, 1, 2]);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    // Hemisphere-aware default (spec §4.7): a garden south of the equator
+    // gets a May-Aug preset instead of assuming everyone winters Nov-Feb.
+    fetchDormancyDefaults(gardenId)
+      .then(setDormancyMonths)
+      .catch(() => undefined);
+  }, [gardenId]);
 
   async function handleSubmit() {
     if (!speciesName.trim()) {
@@ -38,9 +47,7 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
         checkinCadenceDays: Number(checkinCadenceDays) || 14,
         importanceWeight: Number(importanceWeight) || 1,
         frostSensitive,
-        // Nov-Feb preset for now (spec §4.7); a real per-species/hemisphere
-        // dormancy calendar is further Phase 3 work.
-        dormancyMonths: dormantInWinter ? [11, 12, 1, 2] : [],
+        dormancyMonths: dormantInWinter ? dormancyMonths : [],
       });
       onCreated(plant);
     } catch (err) {
