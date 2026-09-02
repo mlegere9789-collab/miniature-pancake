@@ -1,23 +1,35 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { listObservations, type Observation } from "@/lib/observations";
+import { listObservations } from "@/lib/observations";
+import { fetchServerObservations } from "@/lib/api-observations";
 import { MOCK_BADGES } from "@/lib/mock-badges";
 import { useMode } from "@/lib/mode-context";
+import { useAuth } from "@/lib/auth-context";
 
 export default function MePage() {
   const { mode } = useMode();
-  const [observations, setObservations] = useState<Observation[]>([]);
+  const { user, loading: authLoading, logOut } = useAuth();
+  const [taxonSlugs, setTaxonSlugs] = useState<string[]>([]);
+
+  const useServer = mode === "naturalist" && Boolean(user);
+
+  const loadStats = useCallback(async () => {
+    if (useServer) {
+      const observations = await fetchServerObservations();
+      setTaxonSlugs(observations.map((o) => o.taxonSlug));
+    } else {
+      setTaxonSlugs(listObservations().map((o) => o.taxonSlug));
+    }
+  }, [useServer]);
 
   useEffect(() => {
-    // Reading from localStorage on mount — see the same note in
-    // /observations for why this doesn't need to be avoided.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setObservations(listObservations());
-  }, []);
+    loadStats();
+  }, [loadStats]);
 
-  const speciesCount = new Set(observations.map((o) => o.taxonSlug)).size;
+  const speciesCount = new Set(taxonSlugs).size;
   const earnedBadges = MOCK_BADGES.filter((b) => b.earned);
 
   return (
@@ -27,23 +39,43 @@ export default function MePage() {
           className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full text-xl font-semibold"
           style={{ background: "var(--color-accent)", color: "var(--color-accent-contrast)" }}
         >
-          {mode === "quick-id" ? "?" : "N"}
+          {user ? user.email[0]?.toUpperCase() : "?"}
         </div>
-        <div>
-          <h1 className="font-display text-2xl font-semibold">
-            {mode === "quick-id" ? "Guest" : "Naturalist"}
+        <div className="min-w-0 flex-1">
+          <h1 className="font-display truncate text-2xl font-semibold">
+            {user ? user.email : "Guest"}
           </h1>
           <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
-            {mode === "quick-id"
-              ? "Not signed in — your collection stays on this device."
-              : "Full account — contributions can be shared with the community."}
+            {user
+              ? "Signed in — your Naturalist Mode observations sync to this account."
+              : "Not signed in — your collection stays on this device."}
           </p>
         </div>
+        {!authLoading &&
+          (user ? (
+            <button
+              onClick={logOut}
+              className="shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold"
+              style={{ borderColor: "var(--color-border)" }}
+            >
+              Sign out
+            </button>
+          ) : (
+            mode === "naturalist" && (
+              <Link
+                href="/login"
+                className="shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold"
+                style={{ background: "var(--color-accent)", color: "var(--color-accent-contrast)" }}
+              >
+                Sign in
+              </Link>
+            )
+          ))}
       </div>
 
       <div className="grid grid-cols-3 gap-3">
         {[
-          { label: "Observations", value: observations.length },
+          { label: "Observations", value: taxonSlugs.length },
           { label: "Species", value: speciesCount },
           { label: "Badges", value: `${earnedBadges.length}/${MOCK_BADGES.length}` },
         ].map((stat) => (

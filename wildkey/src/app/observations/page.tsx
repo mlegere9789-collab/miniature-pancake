@@ -1,14 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   deleteObservation,
   listObservations,
   runMockSync,
-  type Observation,
   type SyncState,
 } from "@/lib/observations";
+import {
+  deleteServerObservation,
+  fetchServerObservations,
+} from "@/lib/api-observations";
+import { useMode } from "@/lib/mode-context";
+import { useAuth } from "@/lib/auth-context";
 
 const SYNC_LABEL: Record<SyncState, string> = {
   queued: "Queued",
@@ -24,26 +29,48 @@ const SYNC_COLOR: Record<SyncState, string> = {
   failed: "var(--color-danger)",
 };
 
+type DisplayObservation = {
+  id: string;
+  createdAt: string;
+  photoDataUrl: string;
+  commonName: string;
+  scientificName: string;
+  taxonSlug: string;
+  syncState: SyncState;
+};
+
 export default function ObservationsPage() {
-  const [observations, setObservations] = useState<Observation[] | null>(null);
+  const { mode } = useMode();
+  const { user } = useAuth();
+  const useServer = mode === "naturalist" && Boolean(user);
+
+  const [observations, setObservations] = useState<DisplayObservation[] | null>(null);
+
+  const refresh = useCallback(async () => {
+    if (useServer) {
+      const serverObservations = await fetchServerObservations();
+      setObservations(serverObservations);
+    } else {
+      setObservations(listObservations());
+    }
+  }, [useServer]);
 
   useEffect(() => {
-    // Reading from localStorage on mount, not deriving state from
-    // props/state — the pattern react-hooks/set-state-in-effect warns
-    // about does not apply here.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setObservations(listObservations());
-  }, []);
-
-  const refresh = () => setObservations(listObservations());
+    refresh();
+  }, [refresh]);
 
   const retry = (id: string) => {
     runMockSync(id, () => refresh());
     refresh();
   };
 
-  const remove = (id: string) => {
-    deleteObservation(id);
+  const remove = async (id: string) => {
+    if (useServer) {
+      await deleteServerObservation(id);
+    } else {
+      deleteObservation(id);
+    }
     refresh();
   };
 
@@ -53,8 +80,9 @@ export default function ObservationsPage() {
         <div>
           <h1 className="font-display text-2xl font-semibold">My Observations</h1>
           <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
-            Local-first — saved to this device immediately, synced in the background. Nothing
-            silently vanishes.
+            {useServer
+              ? `Signed in as ${user?.email} — synced to your account.`
+              : "Local-first — saved to this device immediately, synced in the background. Nothing silently vanishes."}
           </p>
         </div>
         <Link
@@ -107,11 +135,11 @@ export default function ObservationsPage() {
               </div>
               <div className="flex shrink-0 flex-col items-end gap-1">
                 <button
-                  onClick={() => (o.syncState === "failed" ? retry(o.id) : undefined)}
+                  onClick={() => (!useServer && o.syncState === "failed" ? retry(o.id) : undefined)}
                   className="text-xs font-semibold"
                   style={{
                     color: SYNC_COLOR[o.syncState],
-                    cursor: o.syncState === "failed" ? "pointer" : "default",
+                    cursor: !useServer && o.syncState === "failed" ? "pointer" : "default",
                   }}
                 >
                   {SYNC_LABEL[o.syncState]}

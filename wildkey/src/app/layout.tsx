@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono, Source_Serif_4 } from "next/font/google";
 import "./globals.css";
 import { ModeProvider } from "@/lib/mode-context";
+import { AuthProvider } from "@/lib/auth-context";
 import { TopBar } from "@/components/top-bar";
 import { BottomNav } from "@/components/bottom-nav";
 
@@ -34,9 +35,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full flex flex-col font-sans">
         <ModeProvider>
-          <TopBar />
-          <main className="flex flex-1 flex-col">{children}</main>
-          <BottomNav />
+          <AuthProvider>
+            <TopBar />
+            <main className="flex flex-1 flex-col">{children}</main>
+            <BottomNav />
+          </AuthProvider>
         </ModeProvider>
       </body>
     </html>

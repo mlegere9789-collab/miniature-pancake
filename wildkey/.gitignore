@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local file-backed dev database (server/store.ts) — never commit real user data
+/.data

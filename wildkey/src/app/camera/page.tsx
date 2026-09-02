@@ -5,6 +5,9 @@ import Link from "next/link";
 import { IdResultCard } from "@/components/id-result-card";
 import { MOCK_SPECIES, type Species } from "@/lib/mock-species";
 import { runMockSync, saveObservation, type SyncState } from "@/lib/observations";
+import { createServerObservation } from "@/lib/api-observations";
+import { useMode } from "@/lib/mode-context";
+import { useAuth } from "@/lib/auth-context";
 
 type IdOutcome = { species: Species; confidence: number };
 
@@ -18,11 +21,14 @@ function readFileAsDataUrl(file: File): Promise<string> {
 }
 
 export default function CameraPage() {
+  const { mode } = useMode();
+  const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<IdOutcome | null>(null);
   const [isIdentifying, setIsIdentifying] = useState(false);
   const [savedSyncState, setSavedSyncState] = useState<SyncState | null>(null);
+  const useServerSync = mode === "naturalist" && Boolean(user);
 
   const handleFile = async (file: File | undefined) => {
     if (!file) return;
@@ -43,8 +49,22 @@ export default function CameraPage() {
     }, 700);
   };
 
-  const saveToObservations = () => {
+  const saveToObservations = async () => {
     if (!outcome || !previewUrl) return;
+
+    if (useServerSync) {
+      setSavedSyncState("uploading");
+      const saved = await createServerObservation({
+        photoDataUrl: previewUrl,
+        commonName: outcome.species.commonName,
+        scientificName: outcome.species.scientificName,
+        confidence: outcome.confidence,
+        taxonSlug: outcome.species.slug,
+      });
+      setSavedSyncState(saved ? "confirmed" : "failed");
+      return;
+    }
+
     const observation = saveObservation({
       photoDataUrl: previewUrl,
       commonName: outcome.species.commonName,
