@@ -33,3 +33,6 @@ mediasuite/tools/*
 # Installer build output: produced by installer/build.ps1, never committed.
 mediasuite/publish/
 mediasuite/dist/
+# Third-party tool binaries fetched by installer/fetch-tools.ps1, staged for the
+# installer to bundle — downloaded fresh on every build, never committed.
+mediasuite/tools-staged/

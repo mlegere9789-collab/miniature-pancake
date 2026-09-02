@@ -56,6 +56,16 @@ jobs:
           dotnet publish mediasuite/src/MediaSuite.App/MediaSuite.App.csproj -c Release -r win-x64 --self-contained true -o mediasuite/publish/MediaSuite
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Fetch bundled tools
+        # Downloads real Windows binaries for the tools MediaSuite shells out to, so the
+        # installer ships self-contained instead of asking the user to find them. See
+        # installer/fetch-tools.ps1 for exactly what is (and, for now, is not) covered.
+        run: |
+          & mediasuite\installer\fetch-tools.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install Inno Setup
         run: |
           choco install innosetup --no-progress -y
