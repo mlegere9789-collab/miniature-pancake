@@ -59,6 +59,11 @@ model Garden {
   latitude  Float?
   longitude Float?
 
+  // Opt-in only (spec §4.6): whether this garden's score participates in the
+  // anonymized neighborhood leaderboard among other opted-in gardens in the
+  // same USDA zone.
+  leaderboardOptIn Boolean @default(false)
+
   scoreCurrent Float    @default(100)
   plants       Plant[]
   scoreHistory GardenScoreSnapshot[]

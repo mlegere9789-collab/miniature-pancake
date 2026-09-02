@@ -26,7 +26,8 @@ vitals/
 │       │   ├── scoring.ts   Weighted composite scoring engine (spec §3.1/§3.2)
 │       │   ├── diagnosticEngine.ts  Stubbed rules-based scorer (Idea 5 stand-in)
 │       │   ├── weatherService.ts    Open-Meteo frost/drought signals (Phase 2, spec §5)
-│       │   └── reportCard.ts        Weekly Garden Report Card aggregation (Phase 2, spec §4.5)
+│       │   ├── reportCard.ts        Weekly Garden Report Card aggregation (Phase 2, spec §4.5)
+│       │   └── comparison.ts        Twin-plant percentile + leaderboard rank (Phase 3, spec §4.4/§4.6)
 │       ├── routes/          Express routers: plants, checkins, gardens
 │       ├── types/           Shared TS types
 │       └── server.ts        App entrypoint
@@ -96,6 +97,15 @@ vitals/
     tree isn't scored as declining every winter (spec §4.7). Toggle "Dormant
     in winter" on the Add Plant screen (currently a fixed Nov-Feb preset; a
     real per-species/hemisphere dormancy calendar is further Phase 3 work).
+12. **Twin plants near you** (`backend/src/services/comparison.ts`,
+    `GET /plants/:id/twin-comparison`) — an anonymized percentile comparison
+    against other active plants of the same species in the same USDA zone,
+    shown on the plant detail screen (spec §4.4). Only aggregate scores are
+    ever exposed — never another user's garden, name, or photos.
+13. **Neighborhood leaderboard** (`GET /gardens/:id/leaderboard`,
+    `PATCH /gardens/:id/leaderboard-opt-in`) — opt-in only rank among other
+    opted-in gardens in the same USDA zone (spec §4.6). No mobile UI yet;
+    the API is ready for a settings toggle + leaderboard screen.
 
 ## Running locally
 
@@ -121,5 +131,5 @@ npx expo start
 Auto-segmentation onboarding, a branded/image report card share asset
 (text-only sharing ships today), regional outbreak modifiers, a per-species/
 hemisphere dormancy calendar (today's dormancy toggle is a fixed preset),
-neighborhood leaderboard — see the top-level spec doc for the remaining
-phase 3-4 scope.
+a leaderboard opt-in toggle + screen on mobile (API only for now) — see the
+top-level spec doc for the remaining phase 3-4 scope.

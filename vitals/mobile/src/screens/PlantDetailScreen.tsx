@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { Sparkline } from "../components/Sparkline";
-import { fetchPlant } from "../services/api";
+import { fetchPlant, fetchTwinComparison } from "../services/api";
 import { scoreColor, theme } from "../theme/theme";
-import { CheckIn, PlantDetail } from "../types/domain";
+import { CheckIn, PlantDetail, TwinComparison } from "../types/domain";
 
 interface Props {
   plantId: string;
@@ -13,9 +13,11 @@ interface Props {
 /** Per-plant detail view (spec §4.4): score history + diagnostic log. */
 export function PlantDetailScreen({ plantId, onCheckIn }: Props) {
   const [plant, setPlant] = useState<PlantDetail | null>(null);
+  const [twin, setTwin] = useState<TwinComparison | null>(null);
 
   const load = useCallback(async () => {
     setPlant(await fetchPlant(plantId));
+    fetchTwinComparison(plantId).then(setTwin).catch(() => setTwin(null));
   }, [plantId]);
 
   useEffect(() => {
@@ -56,6 +58,9 @@ export function PlantDetailScreen({ plantId, onCheckIn }: Props) {
             <Pressable style={styles.primaryButton} onPress={() => onCheckIn(plant)}>
               <Text style={styles.primaryButtonText}>Check in now</Text>
             </Pressable>
+            {twin && twin.cohortSize > 0 && (
+              <Text style={styles.twinText}>🌱 {twin.message}</Text>
+            )}
           </View>
           <Text style={styles.sectionTitle}>History</Text>
         </>
@@ -108,6 +113,13 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.md,
   },
   primaryButtonText: { color: theme.color.cream, fontWeight: "600", fontSize: theme.font.bodySize },
+  twinText: {
+    marginTop: theme.spacing(2),
+    fontSize: theme.font.captionSize,
+    color: theme.color.textSecondary,
+    textAlign: "center",
+    paddingHorizontal: theme.spacing(3),
+  },
   checkInRow: {
     backgroundColor: "white",
     borderRadius: theme.radius.md,

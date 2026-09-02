@@ -97,6 +97,12 @@ export interface WeeklyReportCard {
   headline: string;
 }
 
+export interface TwinComparison {
+  percentile: number;
+  cohortSize: number;
+  message: string;
+}
+
 export interface CreatePlantInput {
   gardenId: string;
   speciesId: string;

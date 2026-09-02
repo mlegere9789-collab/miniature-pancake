@@ -1,5 +1,7 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../db/client";
+import { computeLeaderboardRank } from "../services/comparison";
 import { computeWeeklyReportCard } from "../services/reportCard";
 import { fetchWeatherSignals } from "../services/weatherService";
 
@@ -80,6 +82,49 @@ gardensRouter.get("/:id/report-card", async (req, res) => {
   });
 
   res.json(reportCard);
+});
+
+const SetLeaderboardOptInSchema = z.object({ leaderboardOptIn: z.boolean() });
+
+// Opt-in only (spec §4.6). Toggling this on/off is the entire consent flow —
+// no other setting exposes a garden's score to the leaderboard.
+gardensRouter.patch("/:id/leaderboard-opt-in", async (req, res) => {
+  const parsed = SetLeaderboardOptInSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  const garden = await prisma.garden.update({
+    where: { id: req.params.id },
+    data: { leaderboardOptIn: parsed.data.leaderboardOptIn },
+  });
+  res.json(garden);
+});
+
+// Anonymized neighborhood leaderboard (spec §4.6): rank among other
+// opted-in gardens in the same USDA zone. Requires this garden to have
+// opted in itself — you can't see the leaderboard without joining it.
+gardensRouter.get("/:id/leaderboard", async (req, res) => {
+  const garden = await prisma.garden.findUnique({
+    where: { id: req.params.id },
+    include: { user: { select: { usdaZone: true } } },
+  });
+  if (!garden) return res.status(404).json({ error: "not found" });
+  if (!garden.leaderboardOptIn) {
+    return res.status(403).json({ error: "this garden has not opted in to the leaderboard" });
+  }
+  if (!garden.user.usdaZone) {
+    return res.status(400).json({ error: "set a USDA zone to join the leaderboard" });
+  }
+
+  const others = await prisma.garden.findMany({
+    where: {
+      id: { not: garden.id },
+      leaderboardOptIn: true,
+      user: { usdaZone: garden.user.usdaZone },
+    },
+    select: { scoreCurrent: true },
+  });
+
+  res.json(computeLeaderboardRank(garden.scoreCurrent, others.map((g) => g.scoreCurrent)));
 });
 
 async function scoreNearOrBefore(
