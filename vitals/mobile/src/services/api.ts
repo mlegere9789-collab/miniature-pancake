@@ -3,6 +3,7 @@ import {
   CreatePlantInput,
   Garden,
   LeaderboardResult,
+  LocationPin,
   Plant,
   PlantDetail,
   SpeciesDormancyLookup,
@@ -59,6 +60,22 @@ export async function fetchLeaderboard(gardenId: string): Promise<LeaderboardRes
 export async function fetchDormancyDefaults(gardenId: string, speciesId?: string): Promise<SpeciesDormancyLookup> {
   const query = speciesId ? `?speciesId=${encodeURIComponent(speciesId)}` : "";
   return request<SpeciesDormancyLookup>(`/gardens/${gardenId}/dormancy-defaults${query}`);
+}
+
+export async function setYardMapPhoto(gardenId: string, photoUrl: string): Promise<Garden> {
+  return request(`/gardens/${gardenId}/yard-map`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ photoUrl }),
+  });
+}
+
+export async function setPlantLocation(plantId: string, pin: LocationPin): Promise<Plant> {
+  return request(`/plants/${plantId}/location`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(pin),
+  });
 }
 
 export async function searchSpecies(query: string): Promise<SpeciesSuggestion[]> {

@@ -107,6 +107,22 @@ gardensRouter.get("/:id/dormancy-defaults", async (req, res) => {
   res.json({ known: false, habit: null, months: defaultDormancyMonths(garden.latitude), suggestDormant: false });
 });
 
+const SetYardMapPhotoSchema = z.object({ photoUrl: z.string().min(1) });
+
+// Yard map (spec §4.1): the wide yard photo that Plant.locationPin
+// coordinates are relative to. Set once, then plants are pinned onto it
+// via PATCH /plants/:id/location.
+gardensRouter.patch("/:id/yard-map", async (req, res) => {
+  const parsed = SetYardMapPhotoSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  const garden = await prisma.garden.update({
+    where: { id: req.params.id },
+    data: { yardMapPhotoUrl: parsed.data.photoUrl },
+  });
+  res.json(garden);
+});
+
 const SetLeaderboardOptInSchema = z.object({ leaderboardOptIn: z.boolean() });
 
 // Opt-in only (spec §4.6). Toggling this on/off is the entire consent flow —

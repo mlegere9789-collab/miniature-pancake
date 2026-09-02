@@ -45,6 +45,7 @@ vitals/
         │   ├── AddPlantScreen.tsx        Manual plant entry (Phase 1 skips auto-segmentation)
         │   ├── ReportCardScreen.tsx      Weekly Garden Report Card + native share sheet
         │   ├── LeaderboardScreen.tsx     Opt-in toggle + neighborhood leaderboard rank
+        │   ├── YardMapScreen.tsx         Plants pinned onto a yard photo (spec §4.1)
         │   └── PhotoTimelineScreen.tsx   Before/after check-in photo slider (spec §4.4)
         ├── components/       Sparkline, ScoreDeltaBadge, GhostOverlay, BeforeAfterSlider
         ├── services/         api.ts (typed backend client), checkInQueue.ts (offline queue),
@@ -85,6 +86,16 @@ vitals/
    `mobile/src/screens/PhotoTimelineScreen.tsx`) — a draggable side-by-side
    slider comparing any two check-in photos (spec §4.4), reachable via
    "Compare photos" on the plant detail screen once a plant has 2+ check-ins.
+
+8b. **Yard map** (`backend/prisma/schema.prisma`'s `Garden.yardMapPhotoUrl`
+    and `Plant.locationPin`, `PATCH /gardens/:id/yard-map`,
+    `PATCH /plants/:id/location`, `mobile/src/screens/YardMapScreen.tsx`,
+    reachable via 🗺️ on the dashboard header) — pin each plant onto a wide
+    photo of the yard instead of only seeing it in a flat list. Upload a
+    yard photo once, then tap a not-yet-placed plant and tap the map to
+    drop its pin; pins are colored by the plant's current score and tap
+    through to its detail screen. Coordinates are stored relative (0-1) so
+    a pin stays correct at any display size (spec §4.1).
 
 ### Phase 2
 

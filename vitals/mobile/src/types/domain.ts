@@ -1,6 +1,11 @@
 // Mirrors vitals/backend/prisma/schema.prisma — kept in sync manually for
 // Phase 1. Once the API is stable, generate these from an OpenAPI schema.
 
+export interface LocationPin {
+  x: number;
+  y: number;
+}
+
 export interface Plant {
   id: string;
   gardenId: string;
@@ -8,6 +13,7 @@ export interface Plant {
   speciesName: string;
   nickname: string | null;
   plantedDate: string | null;
+  locationPin: LocationPin | null;
   importanceWeight: number;
   checkinCadenceDays: number;
   frostSensitive: boolean;
@@ -78,6 +84,7 @@ export interface Garden {
   weatherAlert: WeatherAlert | null;
   outbreakAlerts: OutbreakAlert[];
   leaderboardOptIn: boolean;
+  yardMapPhotoUrl: string | null;
 }
 
 export interface ScoreForecast {

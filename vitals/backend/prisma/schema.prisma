@@ -64,6 +64,11 @@ model Garden {
   // same USDA zone.
   leaderboardOptIn Boolean @default(false)
 
+  // A wide yard photo that Plant.locationPin coordinates are relative to
+  // (spec §4.1 yard map). Uploaded via the same /uploads endpoint as
+  // check-in photos.
+  yardMapPhotoUrl String?
+
   scoreCurrent Float    @default(100)
   plants       Plant[]
   scoreHistory GardenScoreSnapshot[]

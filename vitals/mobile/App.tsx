@@ -9,6 +9,7 @@ import { LeaderboardScreen } from "./src/screens/LeaderboardScreen";
 import { PhotoTimelineScreen } from "./src/screens/PhotoTimelineScreen";
 import { PlantDetailScreen } from "./src/screens/PlantDetailScreen";
 import { ReportCardScreen } from "./src/screens/ReportCardScreen";
+import { YardMapScreen } from "./src/screens/YardMapScreen";
 import { fetchGarden, toAbsoluteUrl } from "./src/services/api";
 import { flushCheckInQueue } from "./src/services/checkInQueue";
 import { requestNotificationPermission, scheduleAllReminders, scheduleCheckInReminder } from "./src/services/notifications";
@@ -25,6 +26,7 @@ type RootStackParamList = {
   AddPlant: undefined;
   ReportCard: undefined;
   Leaderboard: undefined;
+  YardMap: undefined;
   PhotoTimeline: { plantLabel: string; checkIns: CheckIn[] };
 };
 
@@ -73,6 +75,9 @@ export default function App() {
           title: "Vitals",
           headerRight: () => (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
+              <Pressable onPress={() => navigation.navigate("YardMap")}>
+                <Text style={{ color: theme.color.forestGreen, fontSize: 20 }}>🗺️</Text>
+              </Pressable>
               <Pressable onPress={() => navigation.navigate("Leaderboard")}>
                 <Text style={{ color: theme.color.forestGreen, fontSize: 20 }}>🏆</Text>
               </Pressable>
@@ -145,6 +150,15 @@ export default function App() {
 
         <Stack.Screen name="Leaderboard" options={{ title: "Leaderboard" }}>
           {() => <LeaderboardScreen gardenId={DEMO_GARDEN_ID} />}
+        </Stack.Screen>
+
+        <Stack.Screen name="YardMap" options={{ title: "Yard Map" }}>
+          {({ navigation }) => (
+            <YardMapScreen
+              gardenId={DEMO_GARDEN_ID}
+              onSelectPlant={(plant) => navigation.navigate("PlantDetail", { plantId: plant.id })}
+            />
+          )}
         </Stack.Screen>
 
         <Stack.Screen name="PhotoTimeline" options={{ title: "Photo Timeline" }}>

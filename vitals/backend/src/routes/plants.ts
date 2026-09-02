@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { z } from "zod";
 import { prisma } from "../db/client";
 import { CreatePlantSchema } from "../models/plant";
 import { computeTwinComparison } from "../services/comparison";
@@ -44,6 +45,22 @@ plantsRouter.get("/", async (req, res) => {
     orderBy: { scoreCurrent: "asc" },
   });
   res.json(plants);
+});
+
+const SetLocationPinSchema = z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) });
+
+// Yard map pin placement (spec §4.1): x/y are relative (0-1) coordinates
+// on the garden's yardMapPhotoUrl, so the pin still lines up if the image
+// is displayed at any size.
+plantsRouter.patch("/:id/location", async (req, res) => {
+  const parsed = SetLocationPinSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  const plant = await prisma.plant.update({
+    where: { id: req.params.id },
+    data: { locationPin: parsed.data },
+  });
+  res.json(plant);
 });
 
 // "Twin plants near you" (spec §4.4): anonymized percentile comparison
