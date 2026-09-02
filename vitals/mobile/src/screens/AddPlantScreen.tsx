@@ -1,34 +1,40 @@
 import React, { useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
-import { createPlant, fetchDormancyDefaults, searchSpecies } from "../services/api";
+import { createPlant, fetchDormancyDefaults, searchSpecies, updatePlant } from "../services/api";
 import { theme } from "../theme/theme";
 import { Plant, SpeciesSuggestion } from "../types/domain";
 
 interface Props {
   gardenId: string;
+  /** When set, the screen edits this plant instead of creating a new one. Species is locked once created. */
+  editingPlant?: Plant;
   onCreated: (plant: Plant) => void;
   onCancel: () => void;
 }
 
 /**
- * Manual plant entry (spec §4.1, Phase 1: "skip auto-segmentation for v1").
+ * Manual plant entry (spec §4.1, Phase 1: "skip auto-segmentation for v1")
+ * and editing (species is locked once created — changing it would silently
+ * invalidate score history comparisons and twin-plant matching).
  * Auto-segmentation from a wide yard photo is Phase 3 scope.
  */
-export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
-  const [speciesName, setSpeciesName] = useState("");
-  const [nickname, setNickname] = useState("");
-  const [checkinCadenceDays, setCheckinCadenceDays] = useState("14");
-  const [importanceWeight, setImportanceWeight] = useState("1");
-  const [frostSensitive, setFrostSensitive] = useState(false);
-  const [dormantInWinter, setDormantInWinter] = useState(false);
-  const [dormancyMonths, setDormancyMonths] = useState<number[]>([11, 12, 1, 2]);
-  const [dormancyTouched, setDormancyTouched] = useState(false);
+export function AddPlantScreen({ gardenId, editingPlant, onCreated, onCancel }: Props) {
+  const isEditing = !!editingPlant;
+  const [speciesName, setSpeciesName] = useState(editingPlant?.speciesName ?? "");
+  const [nickname, setNickname] = useState(editingPlant?.nickname ?? "");
+  const [checkinCadenceDays, setCheckinCadenceDays] = useState(String(editingPlant?.checkinCadenceDays ?? 14));
+  const [importanceWeight, setImportanceWeight] = useState(String(editingPlant?.importanceWeight ?? 1));
+  const [frostSensitive, setFrostSensitive] = useState(editingPlant?.frostSensitive ?? false);
+  const [dormantInWinter, setDormantInWinter] = useState((editingPlant?.dormancyMonths.length ?? 0) > 0);
+  const [dormancyMonths, setDormancyMonths] = useState<number[]>(editingPlant?.dormancyMonths ?? [11, 12, 1, 2]);
+  const [dormancyTouched, setDormancyTouched] = useState(isEditing);
   const [speciesDormancyNote, setSpeciesDormancyNote] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<SpeciesSuggestion[]>([]);
-  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
+  const [suggestionsDismissed, setSuggestionsDismissed] = useState(isEditing);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
+    if (isEditing) return; // species/hemisphere defaults only matter for a brand-new plant
     // Hemisphere-aware fallback (spec §4.7): a garden south of the equator
     // gets a May-Aug preset instead of assuming everyone winters Nov-Feb.
     fetchDormancyDefaults(gardenId)
@@ -37,6 +43,7 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
   }, [gardenId]);
 
   useEffect(() => {
+    if (isEditing) return;
     const slug = speciesName.trim().toLowerCase().replace(/\s+/g, "-");
     if (!slug) {
       setSpeciesDormancyNote(null);
@@ -68,7 +75,7 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
   }, [speciesName, gardenId]);
 
   useEffect(() => {
-    if (suggestionsDismissed || !speciesName.trim()) {
+    if (isEditing || suggestionsDismissed || !speciesName.trim()) {
       setSuggestions([]);
       return;
     }
@@ -93,19 +100,27 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
     }
     setSubmitting(true);
     try {
-      const plant = await createPlant({
-        gardenId,
-        speciesId: speciesName.trim().toLowerCase().replace(/\s+/g, "-"),
-        speciesName: speciesName.trim(),
-        nickname: nickname.trim() || undefined,
-        checkinCadenceDays: Number(checkinCadenceDays) || 14,
-        importanceWeight: Number(importanceWeight) || 1,
-        frostSensitive,
-        dormancyMonths: dormantInWinter ? dormancyMonths : [],
-      });
+      const plant = isEditing
+        ? await updatePlant(editingPlant!.id, {
+            nickname: nickname.trim() || null,
+            checkinCadenceDays: Number(checkinCadenceDays) || 14,
+            importanceWeight: Number(importanceWeight) || 1,
+            frostSensitive,
+            dormancyMonths: dormantInWinter ? dormancyMonths : [],
+          })
+        : await createPlant({
+            gardenId,
+            speciesId: speciesName.trim().toLowerCase().replace(/\s+/g, "-"),
+            speciesName: speciesName.trim(),
+            nickname: nickname.trim() || undefined,
+            checkinCadenceDays: Number(checkinCadenceDays) || 14,
+            importanceWeight: Number(importanceWeight) || 1,
+            frostSensitive,
+            dormancyMonths: dormantInWinter ? dormancyMonths : [],
+          });
       onCreated(plant);
     } catch (err) {
-      Alert.alert("Couldn't add plant", String(err));
+      Alert.alert(isEditing ? "Couldn't save changes" : "Couldn't add plant", String(err));
     } finally {
       setSubmitting(false);
     }
@@ -113,16 +128,23 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Add a plant</Text>
+      <Text style={styles.title}>{isEditing ? "Edit plant" : "Add a plant"}</Text>
 
-      <Field
-        label="Species (e.g. Tomato, Japanese Maple)"
-        value={speciesName}
-        onChangeText={(v) => {
-          setSpeciesName(v);
-          setSuggestionsDismissed(false);
-        }}
-      />
+      {isEditing ? (
+        <View style={styles.field}>
+          <Text style={styles.label}>Species</Text>
+          <Text style={styles.lockedSpeciesText}>{speciesName}</Text>
+        </View>
+      ) : (
+        <Field
+          label="Species (e.g. Tomato, Japanese Maple)"
+          value={speciesName}
+          onChangeText={(v) => {
+            setSpeciesName(v);
+            setSuggestionsDismissed(false);
+          }}
+        />
+      )}
       {suggestions.length > 0 && (
         <View style={styles.suggestionRow}>
           {suggestions.map((s) => (
@@ -168,7 +190,9 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
       </View>
 
       <Pressable style={styles.primaryButton} onPress={handleSubmit} disabled={submitting}>
-        <Text style={styles.primaryButtonText}>{submitting ? "Adding…" : "Add plant"}</Text>
+        <Text style={styles.primaryButtonText}>
+          {submitting ? (isEditing ? "Saving…" : "Adding…") : isEditing ? "Save changes" : "Add plant"}
+        </Text>
       </Pressable>
       <Pressable style={styles.secondaryButton} onPress={onCancel}>
         <Text style={styles.secondaryButtonText}>Cancel</Text>
@@ -201,6 +225,7 @@ const styles = StyleSheet.create({
   container: { padding: theme.spacing(3), backgroundColor: theme.color.cream, flexGrow: 1 },
   title: { fontSize: theme.font.titleSize, fontWeight: "700", color: theme.color.textPrimary, marginBottom: theme.spacing(3) },
   field: { marginBottom: theme.spacing(2) },
+  lockedSpeciesText: { fontSize: theme.font.bodySize, color: theme.color.textPrimary, paddingVertical: theme.spacing(1.5) },
   suggestionRow: {
     flexDirection: "row",
     flexWrap: "wrap",

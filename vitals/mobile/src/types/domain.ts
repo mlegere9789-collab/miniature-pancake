@@ -164,3 +164,11 @@ export interface CreatePlantInput {
   frostSensitive?: boolean;
   dormancyMonths?: number[];
 }
+
+export interface UpdatePlantInput {
+  nickname?: string | null;
+  importanceWeight?: number;
+  checkinCadenceDays?: number;
+  frostSensitive?: boolean;
+  dormancyMonths?: number[];
+}

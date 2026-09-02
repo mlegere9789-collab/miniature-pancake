@@ -9,6 +9,7 @@ import {
   SpeciesDormancyLookup,
   SpeciesSuggestion,
   TwinComparison,
+  UpdatePlantInput,
   WeeklyReportCard,
 } from "../types/domain";
 
@@ -75,6 +76,14 @@ export async function setPlantLocation(plantId: string, pin: LocationPin): Promi
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(pin),
+  });
+}
+
+export async function updatePlant(plantId: string, input: UpdatePlantInput): Promise<Plant> {
+  return request(`/plants/${plantId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
   });
 }
 

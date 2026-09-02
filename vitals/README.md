@@ -75,8 +75,13 @@ vitals/
 4. **Ghost-overlay camera flow** (`mobile/src/screens/CheckInCameraScreen.tsx`) —
    the core differentiator: overlays the previous check-in photo at reduced
    opacity so the user aligns angle/framing before capture.
-5. **Manual plant entry** (`mobile/src/screens/AddPlantScreen.tsx`) — species,
-   nickname, check-in cadence, and importance weight; posts to `POST /plants`.
+5. **Manual plant entry and editing** (`mobile/src/screens/AddPlantScreen.tsx`,
+   `PATCH /plants/:id`) — species, nickname, check-in cadence, and
+   importance weight; posts to `POST /plants`. "Edit plant" on the plant
+   detail screen reuses the same form to update everything but species
+   (locked once created — changing it would silently invalidate score
+   history comparisons and twin-plant matching) and `PATCH /plants/:id/archive`
+   removes a plant from active views (check-in history is kept).
 6. **Score history + check-in log** (`mobile/src/screens/PlantDetailScreen.tsx`) —
    sparkline of `PlantScoreSnapshot` history plus open diagnostic flags per
    check-in. The dashboard hero card shows the same sparkline for the
@@ -218,6 +223,12 @@ npx expo start
   incomplete treatment plans, but no code path ever created a
   `TreatmentPlan` row — so that scoring input was permanently dead. Fixed
   by generating one per diagnostic flag on check-in (see "Check-in API" above).
+- **Plant detail screen never refreshed after check-in or edit.** It only
+  loaded data on first mount; navigating to Check-In or Edit and back
+  returned to the same still-mounted screen instance, so a fresh check-in's
+  score or an edited nickname/cadence didn't show until leaving and
+  re-entering the screen. Fixed with `useFocusEffect` so it reloads every
+  time it regains focus.
 - **No way to remove a plant.** `Plant.active` existed and every score
   roll-up/dashboard/yard-map query already filtered on it, but nothing
   ever set it to `false` — there was no way to stop tracking a plant that

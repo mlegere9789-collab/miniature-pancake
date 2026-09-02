@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../db/client";
-import { CreatePlantSchema } from "../models/plant";
+import { CreatePlantSchema, UpdatePlantSchema } from "../models/plant";
 import { computeTwinComparison } from "../services/comparison";
 import { computeScoreForecast } from "../services/forecast";
 
@@ -36,6 +36,19 @@ plantsRouter.get("/:id", async (req, res) => {
   );
 
   res.json({ ...plant, forecast });
+});
+
+// Edit an existing plant's details (spec §4.1) — everything but species and
+// garden, which are set once at creation.
+plantsRouter.patch("/:id", async (req, res) => {
+  const parsed = UpdatePlantSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+  const plant = await prisma.plant.update({
+    where: { id: req.params.id },
+    data: parsed.data,
+  });
+  res.json(plant);
 });
 
 plantsRouter.get("/", async (req, res) => {

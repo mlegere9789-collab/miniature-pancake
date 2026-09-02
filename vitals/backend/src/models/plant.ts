@@ -14,3 +14,17 @@ export const CreatePlantSchema = z.object({
 });
 
 export type CreatePlantInput = z.infer<typeof CreatePlantSchema>;
+
+// Same editable fields as create, minus gardenId/speciesId (species is set
+// once at creation — changing it would silently invalidate score history
+// comparisons and twin-plant matching).
+export const UpdatePlantSchema = z.object({
+  speciesName: z.string().min(1).optional(),
+  nickname: z.string().nullable().optional(),
+  importanceWeight: z.number().min(0).max(10).optional(),
+  checkinCadenceDays: z.number().int().min(1).max(365).optional(),
+  frostSensitive: z.boolean().optional(),
+  dormancyMonths: z.array(z.number().int().min(1).max(12)).optional(),
+});
+
+export type UpdatePlantInput = z.infer<typeof UpdatePlantSchema>;

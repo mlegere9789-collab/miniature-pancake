@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
+import React, { useCallback, useState } from "react";
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { Sparkline } from "../components/Sparkline";
 import { archivePlant, fetchPlant, fetchTwinComparison, setTreatmentPlanCompleted } from "../services/api";
@@ -11,10 +12,11 @@ interface Props {
   onCheckIn: (plant: PlantDetail) => void;
   onViewPhotoTimeline: (plant: PlantDetail) => void;
   onArchived: () => void;
+  onEdit: (plant: PlantDetail) => void;
 }
 
 /** Per-plant detail view (spec §4.4): score history + diagnostic log. */
-export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline, onArchived }: Props) {
+export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline, onArchived, onEdit }: Props) {
   const [plant, setPlant] = useState<PlantDetail | null>(null);
   const [twin, setTwin] = useState<TwinComparison | null>(null);
   const [archiving, setArchiving] = useState(false);
@@ -24,9 +26,14 @@ export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline, onA
     fetchTwinComparison(plantId).then(setTwin).catch(() => setTwin(null));
   }, [plantId]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  // Reload every time this screen regains focus (returning from Check-In or
+  // Edit), not just on first mount — otherwise a fresh check-in or an edit
+  // doesn't show up until the user navigates away and back again.
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load]),
+  );
 
   if (!plant) {
     return (
@@ -86,6 +93,9 @@ export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline, onA
             )}
             <Pressable style={styles.primaryButton} onPress={() => onCheckIn(plant)}>
               <Text style={styles.primaryButtonText}>Check in now</Text>
+            </Pressable>
+            <Pressable style={styles.secondaryButton} onPress={() => onEdit(plant)}>
+              <Text style={styles.secondaryButtonText}>Edit plant</Text>
             </Pressable>
             {plant.checkIns.length >= 2 && (
               <Pressable style={styles.secondaryButton} onPress={() => onViewPhotoTimeline(plant)}>

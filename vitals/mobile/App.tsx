@@ -23,7 +23,7 @@ type RootStackParamList = {
   Dashboard: undefined;
   PlantDetail: { plantId: string };
   CheckIn: { plant: Plant | PlantDetail };
-  AddPlant: undefined;
+  AddPlant: { editingPlant?: PlantDetail } | undefined;
   ReportCard: undefined;
   Leaderboard: undefined;
   YardMap: undefined;
@@ -121,6 +121,7 @@ export default function App() {
                 setRefreshKey((k) => k + 1);
                 navigation.goBack();
               }}
+              onEdit={(plant) => navigation.navigate("AddPlant", { editingPlant: plant })}
             />
           )}
         </Stack.Screen>
@@ -144,10 +145,17 @@ export default function App() {
           )}
         </Stack.Screen>
 
-        <Stack.Screen name="AddPlant" options={{ title: "Add Plant", presentation: "modal" }}>
-          {({ navigation }) => (
+        <Stack.Screen
+          name="AddPlant"
+          options={({ route }) => ({
+            title: route.params?.editingPlant ? "Edit Plant" : "Add Plant",
+            presentation: "modal",
+          })}
+        >
+          {({ route, navigation }) => (
             <AddPlantScreen
               gardenId={DEMO_GARDEN_ID}
+              editingPlant={route.params?.editingPlant}
               onCreated={(plant) => {
                 scheduleCheckInReminder(plant).catch(() => undefined);
                 setRefreshKey((k) => k + 1);
