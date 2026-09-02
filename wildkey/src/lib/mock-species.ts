@@ -41,6 +41,47 @@ export const MOCK_SPECIES: Species[] = [
     seasonality: "Year-round in much of North America; more visible after spring migration.",
     observationCount: 1_204_887,
   },
+  {
+    slug: "fly-agaric",
+    commonName: "Fly Agaric",
+    scientificName: "Amanita muscaria",
+    taxonGroup: "fungus",
+    description:
+      "An iconic mushroom with a bright red cap covered in white spots, fruiting from a white stem and skirt-like ring.",
+    seasonality: "Fruits late summer through fall, often near birch or pine.",
+    observationCount: 64_552,
+    danger: "Toxic if ingested — do not eat.",
+  },
+  {
+    slug: "red-fox",
+    commonName: "Red Fox",
+    scientificName: "Vulpes vulpes",
+    taxonGroup: "mammal",
+    description:
+      "A slender canid with a rust-red coat, black legs, and a bushy white-tipped tail, adaptable to both wild and urban edges.",
+    seasonality: "Active year-round, most visible at dawn and dusk.",
+    observationCount: 312_004,
+  },
+  {
+    slug: "eastern-box-turtle",
+    commonName: "Eastern Box Turtle",
+    scientificName: "Terrapene carolina",
+    taxonGroup: "reptile",
+    description:
+      "A terrestrial turtle with a high-domed, hinged shell that lets it close up almost completely for protection.",
+    seasonality: "Active spring through fall; overwinters buried in leaf litter.",
+    observationCount: 41_887,
+  },
+  {
+    slug: "monarch-butterfly",
+    commonName: "Monarch Butterfly",
+    scientificName: "Danaus plexippus",
+    taxonGroup: "insect",
+    description:
+      "A large butterfly with bold orange-and-black wings, known for its multi-generational migration across North America.",
+    seasonality: "Breeds spring through summer; migrates south in fall.",
+    observationCount: 597_213,
+  },
 ];
 
 export function getMockSpecies(slug: string): Species | undefined {

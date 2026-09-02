@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { getMockSpecies, MOCK_SPECIES } from "@/lib/mock-species";
+import { TaxonBadge } from "@/components/taxon-badge";
 
 export function generateStaticParams() {
   return MOCK_SPECIES.map((s) => ({ taxon: s.slug }));
@@ -43,7 +44,9 @@ export default async function SpeciesPage({
       <dl className="grid grid-cols-2 gap-4 rounded-lg border p-4 text-sm" style={{ borderColor: "var(--color-border)" }}>
         <div>
           <dt style={{ color: "var(--color-text-muted)" }}>Taxon group</dt>
-          <dd className="font-medium capitalize">{species.taxonGroup}</dd>
+          <dd className="font-medium">
+            <TaxonBadge group={species.taxonGroup} />
+          </dd>
         </div>
         <div>
           <dt style={{ color: "var(--color-text-muted)" }}>Seasonality</dt>
