@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { Sparkline } from "../components/Sparkline";
-import { fetchPlant, fetchTwinComparison, setTreatmentPlanCompleted } from "../services/api";
+import { archivePlant, fetchPlant, fetchTwinComparison, setTreatmentPlanCompleted } from "../services/api";
+import { cancelCheckInReminder } from "../services/notifications";
 import { scoreColor, theme } from "../theme/theme";
 import { CheckIn, PlantDetail, TwinComparison } from "../types/domain";
 
@@ -9,12 +10,14 @@ interface Props {
   plantId: string;
   onCheckIn: (plant: PlantDetail) => void;
   onViewPhotoTimeline: (plant: PlantDetail) => void;
+  onArchived: () => void;
 }
 
 /** Per-plant detail view (spec §4.4): score history + diagnostic log. */
-export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline }: Props) {
+export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline, onArchived }: Props) {
   const [plant, setPlant] = useState<PlantDetail | null>(null);
   const [twin, setTwin] = useState<TwinComparison | null>(null);
+  const [archiving, setArchiving] = useState(false);
 
   const load = useCallback(async () => {
     setPlant(await fetchPlant(plantId));
@@ -36,6 +39,31 @@ export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline }: P
   const history = [...plant.scoreHistory].sort(
     (a, b) => new Date(a.computedAt).getTime() - new Date(b.computedAt).getTime(),
   );
+
+  function handleArchive() {
+    Alert.alert(
+      "Archive this plant?",
+      "It will drop out of your Garden Score, dashboard, and yard map. Its check-in history is kept.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Archive",
+          style: "destructive",
+          onPress: async () => {
+            setArchiving(true);
+            try {
+              await archivePlant(plantId);
+              await cancelCheckInReminder(plantId);
+              onArchived();
+            } catch (err) {
+              Alert.alert("Couldn't archive plant", String(err));
+              setArchiving(false);
+            }
+          },
+        },
+      ],
+    );
+  }
 
   return (
     <FlatList
@@ -75,6 +103,9 @@ export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline }: P
                 </Text>
               </View>
             )}
+            <Pressable style={styles.archiveButton} onPress={handleArchive} disabled={archiving}>
+              <Text style={styles.archiveButtonText}>{archiving ? "Archiving…" : "Archive plant"}</Text>
+            </Pressable>
           </View>
           <Text style={styles.sectionTitle}>History</Text>
         </>
@@ -180,6 +211,8 @@ const styles = StyleSheet.create({
     color: theme.color.danger,
     textAlign: "center",
   },
+  archiveButton: { marginTop: theme.spacing(3), paddingVertical: theme.spacing(1) },
+  archiveButtonText: { color: theme.color.danger, fontSize: theme.font.captionSize },
   checkInRow: {
     backgroundColor: "white",
     borderRadius: theme.radius.md,

@@ -78,6 +78,10 @@ export async function setPlantLocation(plantId: string, pin: LocationPin): Promi
   });
 }
 
+export async function archivePlant(plantId: string): Promise<Plant> {
+  return request(`/plants/${plantId}/archive`, { method: "PATCH" });
+}
+
 export async function setTreatmentPlanCompleted(treatmentPlanId: string, completed: boolean): Promise<void> {
   await request(`/treatment-plans/${treatmentPlanId}`, {
     method: "PATCH",

@@ -63,6 +63,18 @@ plantsRouter.patch("/:id/location", async (req, res) => {
   res.json(plant);
 });
 
+// Archive a plant (e.g. it died, or was removed from the garden) rather
+// than hard-deleting it — its check-in history and score snapshots stay
+// intact for the record, it just drops out of the active Garden Score
+// roll-up, dashboard, and yard map.
+plantsRouter.patch("/:id/archive", async (req, res) => {
+  const plant = await prisma.plant.update({
+    where: { id: req.params.id },
+    data: { active: false },
+  });
+  res.json(plant);
+});
+
 // "Twin plants near you" (spec §4.4): anonymized percentile comparison
 // against other active plants of the same species in the same USDA zone.
 // Never exposes which garden/user the cohort scores came from.

@@ -117,6 +117,10 @@ export default function App() {
                   checkIns: plant.checkIns,
                 })
               }
+              onArchived={() => {
+                setRefreshKey((k) => k + 1);
+                navigation.goBack();
+              }}
             />
           )}
         </Stack.Screen>

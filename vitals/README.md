@@ -218,6 +218,13 @@ npx expo start
   incomplete treatment plans, but no code path ever created a
   `TreatmentPlan` row — so that scoring input was permanently dead. Fixed
   by generating one per diagnostic flag on check-in (see "Check-in API" above).
+- **No way to remove a plant.** `Plant.active` existed and every score
+  roll-up/dashboard/yard-map query already filtered on it, but nothing
+  ever set it to `false` — there was no way to stop tracking a plant that
+  died or was removed. Added `PATCH /plants/:id/archive` and an "Archive
+  plant" action on the plant detail screen (with a confirmation, since it's
+  not easily undoable from the UI); its check-in history and score
+  snapshots are kept, it just drops out of the active views.
 - **Check-in reminders silently reset on every refresh.** `App.tsx`
   rescheduled every plant's local reminder from "now" (`scheduleAllReminders`)
   on every `refreshKey` bump — any check-in, any plant add, even the offline
