@@ -27,7 +27,8 @@ vitals/
 │       │   ├── diagnosticEngine.ts  Stubbed rules-based scorer (Idea 5 stand-in)
 │       │   ├── weatherService.ts    Open-Meteo frost/drought signals (Phase 2, spec §5)
 │       │   ├── reportCard.ts        Weekly Garden Report Card aggregation (Phase 2, spec §4.5)
-│       │   └── comparison.ts        Twin-plant percentile + leaderboard rank (Phase 3, spec §4.4/§4.6)
+│       │   ├── comparison.ts        Twin-plant percentile + leaderboard rank (Phase 3, spec §4.4/§4.6)
+│       │   └── dashboard.ts         Rising Stars ranking (spec §4.3), pulled out of routes/gardens.ts for testability
 │       ├── routes/          Express routers: plants, checkins, gardens
 │       ├── types/           Shared TS types
 │       └── server.ts        App entrypoint

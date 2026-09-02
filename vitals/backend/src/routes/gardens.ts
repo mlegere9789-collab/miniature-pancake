@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../db/client";
 import { computeLeaderboardRank } from "../services/comparison";
+import { computeRisingStars } from "../services/dashboard";
 import { computeWeeklyReportCard } from "../services/reportCard";
 import { defaultDormancyMonths } from "../services/scoring";
 import { fetchWeatherSignals } from "../services/weatherService";
@@ -171,16 +172,18 @@ async function frostRiskAlert(
 }
 
 async function risingStarsFor(plantIds: string[]) {
-  const rising = [];
-  for (const plantId of plantIds) {
-    const history = await prisma.plantScoreSnapshot.findMany({
-      where: { plantId },
-      orderBy: { computedAt: "desc" },
-      take: 3,
-    });
-    if (history.length >= 2 && history[0].score > history[history.length - 1].score) {
-      rising.push({ plantId, delta: history[0].score - history[history.length - 1].score });
-    }
-  }
-  return rising.sort((a, b) => b.delta - a.delta).slice(0, 5);
+  // One query per plant, but run concurrently rather than sequentially —
+  // fine at Phase-1 scale, worth revisiting with a single grouped query if
+  // gardens grow into the hundreds of plants.
+  const histories = await Promise.all(
+    plantIds.map(async (plantId) => {
+      const snapshots = await prisma.plantScoreSnapshot.findMany({
+        where: { plantId },
+        orderBy: { computedAt: "desc" },
+        take: 3,
+      });
+      return { plantId, recentScores: snapshots.map((s) => s.score) };
+    }),
+  );
+  return computeRisingStars(histories);
 }
