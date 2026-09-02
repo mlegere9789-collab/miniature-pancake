@@ -278,6 +278,25 @@ catch {
     Write-Warning "MuPDF fetch failed, continuing without it: $_"
 }
 
+Write-Host "== rsvg-convert =="
+# librsvg has no official standalone Windows build; wingtk/gvsbuild (GNOME's own
+# Windows/GTK build team) publishes a full GTK4 bundle that includes librsvg as a
+# dependency, and a librsvg build normally produces rsvg-convert.exe as an ordinary CLI
+# tool alongside the library — but that inclusion was not directly confirmed (could not
+# browse the zip's contents from the environment this was written in), only inferred.
+# Fails soft for that reason; Copy-BinariesToStage already throws cleanly if
+# rsvg-convert.exe isn't actually in there, which the catch below turns into a warning
+# instead of a broken build.
+try {
+    $rsvgUrl = Get-LatestReleaseAssetUrl -Repo "wingtk/gvsbuild" -NamePattern "GTK4_Gvsbuild_.*_x64\.zip$"
+    $rsvgArchive = Get-ToArchive -Url $rsvgUrl
+    $rsvgExtract = Expand-ToTemp -ArchivePath $rsvgArchive
+    Copy-BinariesToStage -ExtractDir $rsvgExtract -Folder "rsvg" -PrimaryExeNames @("rsvg-convert.exe")
+}
+catch {
+    Write-Warning "rsvg-convert fetch failed, continuing without it: $_"
+}
+
 Write-Host ""
 Write-Host "Tools staged under $ToolsDir :"
 Get-ChildItem $ToolsDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" }
