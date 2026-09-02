@@ -223,6 +223,17 @@ npx expo start
   incomplete treatment plans, but no code path ever created a
   `TreatmentPlan` row — so that scoring input was permanently dead. Fixed
   by generating one per diagnostic flag on check-in (see "Check-in API" above).
+- **A thrown error in any route left the request hanging forever.**
+  Express 4 doesn't forward a rejected promise from an async route handler
+  to error middleware on its own — nothing called `next(err)`, so a bad ID,
+  a Prisma error, anything thrown, just left the client waiting with no
+  response ever sent (not even a 500). Every route across the API had this
+  exposure. Fixed by requiring `express-async-errors` (patches Express's
+  router to catch async rejections automatically) plus a JSON 404 handler
+  for unmatched routes and a catch-all JSON error handler
+  (`backend/src/server.ts`) — verified by hitting an archive endpoint with
+  a bad ID against an unreachable DB: the request now returns in ~60ms
+  with a 500 instead of hanging.
 - **Plant detail screen never refreshed after check-in or edit.** It only
   loaded data on first mount; navigating to Check-In or Edit and back
   returned to the same still-mounted screen instance, so a fresh check-in's
