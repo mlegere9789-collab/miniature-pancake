@@ -35,6 +35,12 @@ DisableProgramGroupPage=yes
 ; otherwise shows Inno Setup's own generic icon instead of MediaSuite's.
 SetupIconFile={#MyAppIcon}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+; The tall left-side panel on the welcome/finished pages, and the small top-right badge
+; on every other page. Both otherwise default to Inno Setup's own generic blue/white
+; graphic — genuinely the first thing a user sees when running the installer, so worth
+; actually branding rather than leaving as a giveaway this was a stock installer.
+WizardImageFile=WizardImage.bmp
+WizardSmallImageFile=WizardSmallImage.bmp
 OutputDir=..\dist
 OutputBaseFilename=MediaSuiteSetup-{#MyAppVersion}
 Compression=lzma2
