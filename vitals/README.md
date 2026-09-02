@@ -29,7 +29,8 @@ vitals/
 │       │   ├── reportCard.ts        Weekly Garden Report Card aggregation (Phase 2, spec §4.5)
 │       │   ├── comparison.ts        Twin-plant percentile + leaderboard rank (Phase 3, spec §4.4/§4.6)
 │       │   ├── dashboard.ts         Rising Stars ranking (spec §4.3), pulled out of routes/gardens.ts for testability
-│       │   └── speciesDormancy.ts   Curated per-species dormancy calendar (Phase 3, spec §4.7)
+│       │   ├── speciesDormancy.ts   Curated per-species dormancy calendar (Phase 3, spec §4.7)
+│       │   └── forecast.ts          Linear-regression score trend forecast (Phase 3/4, spec §4.3/§4.5)
 │       ├── routes/          Express routers: plants, checkins, gardens
 │       ├── types/           Shared TS types
 │       └── server.ts        App entrypoint
@@ -124,6 +125,14 @@ vitals/
     opt-in only rank among other opted-in gardens in the same USDA zone
     (spec §4.6). The switch on the leaderboard screen is the entire consent
     flow; no rank is fetched or shown until a garden opts in.
+15. **Score trend forecast** (`backend/src/services/forecast.ts`,
+    surfaced on `mobile/src/screens/PlantDetailScreen.tsx`) — a simple
+    linear-regression projection of a plant's score history, used to flag
+    plants that are trending down and will cross the attention threshold in
+    the next couple weeks even though today's score still looks fine (spec
+    §4.3/§4.5: "predictive, not just reactive"). A full ML forecasting model
+    (Phase 4) is further work; this is a lightweight stand-in that's already
+    useful for early warning.
 
 ## Running locally
 

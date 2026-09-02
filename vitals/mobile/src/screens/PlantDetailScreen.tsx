@@ -67,6 +67,14 @@ export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline }: P
             {twin && twin.cohortSize > 0 && (
               <Text style={styles.twinText}>🌱 {twin.message}</Text>
             )}
+            {plant.forecast?.approachingAttentionThreshold && (
+              <View style={styles.forecastBanner}>
+                <Text style={styles.forecastText}>
+                  ⚠ Trending down — projected around {plant.forecast.projectedScore} in{" "}
+                  {plant.forecast.daysAhead} days if this continues. Worth a check-in soon.
+                </Text>
+              </View>
+            )}
           </View>
           <Text style={styles.sectionTitle}>History</Text>
         </>
@@ -131,6 +139,18 @@ const styles = StyleSheet.create({
     color: theme.color.textSecondary,
     textAlign: "center",
     paddingHorizontal: theme.spacing(3),
+  },
+  forecastBanner: {
+    marginTop: theme.spacing(2),
+    marginHorizontal: theme.spacing(3),
+    backgroundColor: "#FBF0E8",
+    borderRadius: theme.radius.sm,
+    padding: theme.spacing(2),
+  },
+  forecastText: {
+    fontSize: theme.font.captionSize,
+    color: theme.color.danger,
+    textAlign: "center",
   },
   checkInRow: {
     backgroundColor: "white",

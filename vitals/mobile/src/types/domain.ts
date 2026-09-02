@@ -74,9 +74,17 @@ export interface Garden {
   leaderboardOptIn: boolean;
 }
 
+export interface ScoreForecast {
+  projectedScore: number;
+  daysAhead: number;
+  trend: "improving" | "declining" | "flat";
+  approachingAttentionThreshold: boolean;
+}
+
 export interface PlantDetail extends Plant {
   scoreHistory: PlantScoreSnapshot[];
   checkIns: CheckIn[];
+  forecast: ScoreForecast | null;
 }
 
 export interface ReportCardPlantSummary {

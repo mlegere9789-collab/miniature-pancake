@@ -2,6 +2,7 @@ import { Router } from "express";
 import { prisma } from "../db/client";
 import { CreatePlantSchema } from "../models/plant";
 import { computeTwinComparison } from "../services/comparison";
+import { computeScoreForecast } from "../services/forecast";
 
 export const plantsRouter = Router();
 
@@ -28,7 +29,12 @@ plantsRouter.get("/:id", async (req, res) => {
   });
 
   if (!plant) return res.status(404).json({ error: "not found" });
-  res.json(plant);
+
+  const forecast = computeScoreForecast(
+    plant.scoreHistory.map((s) => ({ score: s.score, computedAt: s.computedAt })),
+  );
+
+  res.json({ ...plant, forecast });
 });
 
 plantsRouter.get("/", async (req, res) => {
