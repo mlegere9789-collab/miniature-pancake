@@ -20,6 +20,12 @@ AppId={{1EA2B3B5-BDE9-499E-9FA8-372CADD2BC2D}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+; The real GitHub repo this project lives in — not a placeholder domain. Same one
+; GitHubReleaseUpdateChecker checks releases against and Settings' About card links to.
+; Shows up in Windows' own "Programs and Features" list next to the uninstall button.
+AppPublisherURL=https://github.com/mlegere9789-collab/miniature-pancake
+AppSupportURL=https://github.com/mlegere9789-collab/miniature-pancake
+AppUpdatesURL=https://github.com/mlegere9789-collab/miniature-pancake/releases
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
