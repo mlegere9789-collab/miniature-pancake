@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
-import { createPlant, fetchDormancyDefaults } from "../services/api";
+import { createPlant, fetchDormancyDefaults, searchSpecies } from "../services/api";
 import { theme } from "../theme/theme";
-import { Plant } from "../types/domain";
+import { Plant, SpeciesSuggestion } from "../types/domain";
 
 interface Props {
   gardenId: string;
@@ -24,6 +24,8 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
   const [dormancyMonths, setDormancyMonths] = useState<number[]>([11, 12, 1, 2]);
   const [dormancyTouched, setDormancyTouched] = useState(false);
   const [speciesDormancyNote, setSpeciesDormancyNote] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<SpeciesSuggestion[]>([]);
+  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -65,6 +67,25 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [speciesName, gardenId]);
 
+  useEffect(() => {
+    if (suggestionsDismissed || !speciesName.trim()) {
+      setSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      searchSpecies(speciesName)
+        .then(setSuggestions)
+        .catch(() => undefined);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [speciesName, suggestionsDismissed]);
+
+  function selectSuggestion(suggestion: SpeciesSuggestion) {
+    setSpeciesName(suggestion.displayName);
+    setSuggestionsDismissed(true);
+    setSuggestions([]);
+  }
+
   async function handleSubmit() {
     if (!speciesName.trim()) {
       Alert.alert("Species required", "Enter what kind of plant this is.");
@@ -94,7 +115,23 @@ export function AddPlantScreen({ gardenId, onCreated, onCancel }: Props) {
     <ScrollView contentContainerStyle={styles.container}>
       <Text style={styles.title}>Add a plant</Text>
 
-      <Field label="Species (e.g. Tomato, Japanese Maple)" value={speciesName} onChangeText={setSpeciesName} />
+      <Field
+        label="Species (e.g. Tomato, Japanese Maple)"
+        value={speciesName}
+        onChangeText={(v) => {
+          setSpeciesName(v);
+          setSuggestionsDismissed(false);
+        }}
+      />
+      {suggestions.length > 0 && (
+        <View style={styles.suggestionRow}>
+          {suggestions.map((s) => (
+            <Pressable key={s.speciesId} style={styles.suggestionChip} onPress={() => selectSuggestion(s)}>
+              <Text style={styles.suggestionChipText}>{s.displayName}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
       {speciesDormancyNote && <Text style={styles.speciesNote}>🌱 {speciesDormancyNote}</Text>}
       <Field label="Nickname (optional)" value={nickname} onChangeText={setNickname} />
       <Field
@@ -164,6 +201,22 @@ const styles = StyleSheet.create({
   container: { padding: theme.spacing(3), backgroundColor: theme.color.cream, flexGrow: 1 },
   title: { fontSize: theme.font.titleSize, fontWeight: "700", color: theme.color.textPrimary, marginBottom: theme.spacing(3) },
   field: { marginBottom: theme.spacing(2) },
+  suggestionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.spacing(1),
+    marginTop: -theme.spacing(1),
+    marginBottom: theme.spacing(2),
+  },
+  suggestionChip: {
+    paddingHorizontal: theme.spacing(1.5),
+    paddingVertical: theme.spacing(1),
+    borderRadius: theme.radius.sm,
+    backgroundColor: "white",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.color.border,
+  },
+  suggestionChipText: { fontSize: theme.font.captionSize, color: theme.color.forestGreen, fontWeight: "600" },
   speciesNote: {
     fontSize: theme.font.captionSize,
     color: theme.color.forestGreenLight,

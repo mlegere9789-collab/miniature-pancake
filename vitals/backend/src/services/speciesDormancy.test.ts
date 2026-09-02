@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lookupSpeciesDormancy } from "./speciesDormancy";
+import { lookupSpeciesDormancy, searchSpecies } from "./speciesDormancy";
 
 describe("lookupSpeciesDormancy", () => {
   it("suggests dormancy with northern winter months for a known deciduous species north of the equator", () => {
@@ -37,5 +37,32 @@ describe("lookupSpeciesDormancy", () => {
     expect(result.habit).toBeNull();
     expect(result.suggestDormant).toBe(false);
     expect(result.months).toEqual([11, 12, 1, 2]);
+  });
+});
+
+describe("searchSpecies", () => {
+  it("matches by display-name substring, case-insensitively", () => {
+    const results = searchSpecies("jap");
+    expect(results.map((r) => r.speciesId)).toContain("japanese-maple");
+    expect(results.every((r) => r.displayName && r.habit)).toBe(true);
+  });
+
+  it("matches by slug substring", () => {
+    const results = searchSpecies("maple");
+    expect(results.map((r) => r.speciesId)).toEqual(expect.arrayContaining(["japanese-maple", "maple"]));
+  });
+
+  it("returns an empty array for a blank query", () => {
+    expect(searchSpecies("")).toEqual([]);
+    expect(searchSpecies("   ")).toEqual([]);
+  });
+
+  it("returns an empty array when nothing matches", () => {
+    expect(searchSpecies("xyzzy")).toEqual([]);
+  });
+
+  it("respects the limit", () => {
+    const results = searchSpecies("e", 3);
+    expect(results.length).toBeLessThanOrEqual(3);
   });
 });

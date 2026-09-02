@@ -101,3 +101,32 @@ export function lookupSpeciesDormancy(
   }
   return { known: false, habit: null, months: defaultDormancyMonths(latitude), suggestDormant: false };
 }
+
+export interface SpeciesSuggestion {
+  speciesId: string;
+  displayName: string;
+  habit: DormancyHabit;
+}
+
+function toDisplayName(speciesId: string): string {
+  return speciesId
+    .split("-")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+/**
+ * Autocomplete for the Add Plant species field: substring-matches the
+ * curated species table so the user can pick a recognized species (and get
+ * its dormancy habit right) instead of free-typing something that won't
+ * match the table at all.
+ */
+export function searchSpecies(query: string, limit = 8): SpeciesSuggestion[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+
+  return Object.keys(SPECIES_HABITS)
+    .filter((speciesId) => speciesId.includes(q.replace(/\s+/g, "-")) || toDisplayName(speciesId).toLowerCase().includes(q))
+    .slice(0, limit)
+    .map((speciesId) => ({ speciesId, displayName: toDisplayName(speciesId), habit: SPECIES_HABITS[speciesId] }));
+}

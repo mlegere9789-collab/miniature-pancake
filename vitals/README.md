@@ -32,7 +32,7 @@ vitals/
 │       │   ├── speciesDormancy.ts   Curated per-species dormancy calendar (Phase 3, spec §4.7)
 │       │   ├── forecast.ts          Linear-regression score trend forecast (Phase 3/4, spec §4.3/§4.5)
 │       │   └── outbreakDetection.ts Regional outbreak alerts from shared diagnostic flags (Phase 3, spec §4.3/§4.5)
-│       ├── routes/          Express routers: plants, checkins, gardens
+│       ├── routes/          Express routers: plants, checkins, gardens, species
 │       ├── types/           Shared TS types
 │       └── server.ts        App entrypoint
 │
@@ -122,7 +122,10 @@ vitals/
     auto-detects its real habit — deciduous, evergreen, or annual — and
     pre-sets (and explains) the toggle; an unrecognized species still falls
     back to the hemisphere-only heuristic, and the user can always override
-    the toggle by hand.
+    the toggle by hand. `GET /species/search?q=` (`searchSpecies` in the
+    same file) backs a species autocomplete on the Add Plant screen so
+    typing "jap" surfaces "Japanese Maple" as a tappable suggestion instead
+    of relying on the user to type a slug-matching name blind.
 13. **Twin plants near you** (`backend/src/services/comparison.ts`,
     `GET /plants/:id/twin-comparison`) — an anonymized percentile comparison
     against other active plants of the same species in the same USDA zone,

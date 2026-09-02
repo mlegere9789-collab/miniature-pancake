@@ -6,6 +6,7 @@ import {
   Plant,
   PlantDetail,
   SpeciesDormancyLookup,
+  SpeciesSuggestion,
   TwinComparison,
   WeeklyReportCard,
 } from "../types/domain";
@@ -58,6 +59,11 @@ export async function fetchLeaderboard(gardenId: string): Promise<LeaderboardRes
 export async function fetchDormancyDefaults(gardenId: string, speciesId?: string): Promise<SpeciesDormancyLookup> {
   const query = speciesId ? `?speciesId=${encodeURIComponent(speciesId)}` : "";
   return request<SpeciesDormancyLookup>(`/gardens/${gardenId}/dormancy-defaults${query}`);
+}
+
+export async function searchSpecies(query: string): Promise<SpeciesSuggestion[]> {
+  if (!query.trim()) return [];
+  return request<SpeciesSuggestion[]>(`/species/search?q=${encodeURIComponent(query.trim())}`);
 }
 
 export async function setLeaderboardOptIn(gardenId: string, optIn: boolean): Promise<Garden> {

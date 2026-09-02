@@ -126,6 +126,12 @@ export interface LeaderboardResult {
 
 export type SpeciesDormancyHabit = "deciduous" | "evergreen" | "annual";
 
+export interface SpeciesSuggestion {
+  speciesId: string;
+  displayName: string;
+  habit: SpeciesDormancyHabit;
+}
+
 export interface SpeciesDormancyLookup {
   known: boolean;
   habit: SpeciesDormancyHabit | null;
