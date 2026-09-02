@@ -178,12 +178,12 @@ miniature-pancake/
 │  ├─ dashboard.py        #   local web dashboard + review queue
 │  ├─ demo.py, cli.py     #   helpers / CLI
 │  └─ jobs.example.json   #   scheduler job templates
-├─ modules/               # the five income programs (empty stubs for now)
-│  ├─ stock_licensing/
-│  ├─ ecommerce_dropshipping/
-│  ├─ deal_alert_bot/
-│  ├─ digital_products/
-│  └─ micro_saas/
+├─ modules/               # the five income programs (built one at a time)
+│  ├─ stock_licensing/        #   stub — no code yet
+│  ├─ ecommerce_dropshipping/ #   built: Shopify order sync + margin tracking
+│  ├─ deal_alert_bot/         #   built: CheapShark -> Discord deal alerts
+│  ├─ digital_products/       #   stub — no code yet
+│  └─ micro_saas/             #   stub — no code yet
 ├─ data/                  # local DB + logs (git-ignored)
 ├─ .env.example           # credentials template (copy to .env)
 └─ SETUP.md               # this file
