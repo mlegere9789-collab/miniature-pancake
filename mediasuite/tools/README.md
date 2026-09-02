@@ -38,7 +38,7 @@ next to `MediaSuite.exe`.
 | `calibre` | `ebook-convert.exe` | Ebook conversion | GPL-3.0 | not yet | https://calibre-ebook.com/download_windows |
 | `7zip` | `7z.exe` | Archives, RAR extraction | LGPL-2.1 (+ unRAR licence) | **yes** | — |
 | `realesrgan` | `realesrgan-ncnn-vulkan.exe` | AI upscaling | BSD-3-Clause | **yes** | — |
-| `rsvg` | `rsvg-convert.exe` | SVG rasterising | LGPL-2.1 | not yet | https://gitlab.gnome.org/GNOME/librsvg |
+| `rsvg` | `rsvg-convert.exe` | SVG rasterising | LGPL-2.1 | attempted (inclusion unconfirmed) | see note below |
 | `potrace` | `potrace.exe` | PNG to SVG tracing | GPL-2.0 | **yes** | — |
 
 "Not yet" is a real gap, not a permanent one. `libraw` is the one tool with no official
@@ -56,10 +56,12 @@ blessed extracting it this way, so it's written to not take the rest of the fetc
 a future installer format change breaks it. `mupdf` is attempted too, for a third reason:
 mupdf.com is unreachable from the environment `fetch-tools.ps1` was written in, so the
 pinned version in its URL was confirmed only via web search, not a direct HTTP check —
-plausibly stale by the time this runs, hence also fail-soft. `rsvg`, `libreoffice` and
-`calibre` all have a real acquisition path identified (a portable zip, or a
-silent-installable installer) but aren't wired into `fetch-tools.ps1` yet — tracked there
-as the next pass.
+plausibly stale by the time this runs, hence also fail-soft. `rsvg` is attempted from
+`wingtk/gvsbuild`'s GTK4 bundle, which includes librsvg as a dependency and normally
+produces `rsvg-convert.exe` alongside it — but that inclusion was inferred, not confirmed
+by browsing the actual zip contents, so it's fail-soft too. `libreoffice` and `calibre`
+both have a real acquisition path identified (a silent-installable MSI/installer) but
+aren't wired into `fetch-tools.ps1` yet — tracked there as the next pass.
 
 Settings → Bundled tools re-scans on demand and shows exactly where each binary was found
 or where it is expected.
