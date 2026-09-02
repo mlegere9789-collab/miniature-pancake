@@ -260,6 +260,24 @@ catch {
     Write-Warning "Ghostscript extraction failed, continuing without it: $_"
 }
 
+Write-Host "== MuPDF =="
+# mupdf.com is unreachable from the environment this script was written in, so the exact
+# current version at mupdf.com/downloads/archive/ could only be confirmed via web search,
+# not a direct HTTP check. The first attempt at this (1.27.2, the version a search engine
+# summary called "current stable") 404'd in real CI — that filename evidently doesn't
+# exist. 1.26.2 is pinned instead because a search actually surfaced that exact filename
+# being referenced elsewhere (a malware-scan mirror site's page title), which only
+# happens for a file that was actually seen published, not an inferred "latest" guess.
+# Still fails soft, since even this is one step short of a direct HTTP confirmation.
+try {
+    $mupdfArchive = Get-ToArchive -Url "https://mupdf.com/downloads/archive/mupdf-1.26.2-windows.zip"
+    $mupdfExtract = Expand-ToTemp -ArchivePath $mupdfArchive
+    Copy-BinariesToStage -ExtractDir $mupdfExtract -Folder "mupdf" -PrimaryExeNames @("mutool.exe")
+}
+catch {
+    Write-Warning "MuPDF fetch failed, continuing without it: $_"
+}
+
 Write-Host ""
 Write-Host "Tools staged under $ToolsDir :"
 Get-ChildItem $ToolsDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" }
