@@ -8,10 +8,13 @@
     downloads.
 
     Every tool here is fetched from its own official release channel as a plain
-    zip/archive (never an interactive installer with a EULA click-through), so this can
-    run unattended in CI. Tools that only ship as a GUI installer (Ghostscript,
-    LibreOffice, Calibre, ImageMagick) are handled separately — see fetch-tools-installed.ps1
-    once that lands; this first pass covers the tools with a genuinely portable build.
+    zip/7z archive or via a fully silent, no-EULA-prompt installer flag (7-Zip only, to
+    harvest 7z.exe itself) — nothing interactive, so this runs unattended in CI. Tools
+    that only ship as a GUI/MSI installer with no portable build (Ghostscript, MuPDF,
+    libvips, rsvg-convert, LibreOffice, Calibre) aren't covered yet, and neither is
+    LibRaw's dcraw_emu.exe — it has no official or actively-maintained prebuilt Windows
+    binary at all; ImageMagick's own bundled LibRaw delegate is the practical fallback
+    until that's resolved. See tools/README.md for the current per-tool status.
 #>
 
 param(
@@ -135,10 +138,34 @@ $pandocExtract = Expand-ToTemp -ArchivePath $pandocArchive
 Copy-BinariesToStage -ExtractDir $pandocExtract -Folder "pandoc" -PrimaryExeNames @("pandoc.exe")
 
 Write-Host "== Real-ESRGAN (ncnn-vulkan) =="
-$realesrganUrl = Get-LatestReleaseAssetUrl -Repo "xinntao/Real-ESRGAN" -NamePattern "realesrgan-ncnn-vulkan-.*-windows\.zip$"
-$realesrganArchive = Get-ToArchive -Url $realesrganUrl
+# NOT fetched via "latest" — the repo's newest release (v0.3.0) dropped the portable
+# ncnn-vulkan Windows zip; v0.2.5.0 is the last (and still current/working) release that
+# has it. A "latest" lookup here would need re-verifying by hand every time upstream
+# tags a new release, same trap this pin avoids: confirmed by fetching the actual
+# releases page rather than assuming "latest" means "has every asset every older
+# release had."
+$realesrganArchive = Get-ToArchive -Url "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip"
 $realesrganExtract = Expand-ToTemp -ArchivePath $realesrganArchive
 Copy-BinariesToStage -ExtractDir $realesrganExtract -Folder "realesrgan" -PrimaryExeNames @("realesrgan-ncnn-vulkan.exe")
+
+Write-Host "== ImageMagick =="
+# Ships as .7z, not .zip — Expand-Archive can't open that, so this uses the 7z.exe we
+# just staged above rather than assuming the runner happens to have 7-Zip preinstalled.
+$imageMagickArchive = Get-ToArchive -Url "https://github.com/ImageMagick/ImageMagick/releases/download/7.1.2-30/ImageMagick-7.1.2-30-portable-Q16-x64.7z"
+$imageMagickExtract = Join-Path ([System.IO.Path]::GetTempPath()) "mediasuite-extract-$([Guid]::NewGuid())"
+New-Item -ItemType Directory -Force -Path $imageMagickExtract | Out-Null
+$sevenZipExe = Join-Path $sevenZipStage "7z.exe"
+& $sevenZipExe "x" $imageMagickArchive "-o$imageMagickExtract" "-y" | Out-Null
+if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+    throw "Extracting ImageMagick's .7z archive failed with exit code $LASTEXITCODE"
+}
+Remove-Item $imageMagickArchive -Force
+Copy-BinariesToStage -ExtractDir $imageMagickExtract -Folder "imagemagick" -PrimaryExeNames @("magick.exe")
+
+Write-Host "== Potrace =="
+$potraceArchive = Get-ToArchive -Url "https://potrace.sourceforge.net/download/1.16/potrace-1.16.win64.zip"
+$potraceExtract = Expand-ToTemp -ArchivePath $potraceArchive
+Copy-BinariesToStage -ExtractDir $potraceExtract -Folder "potrace" -PrimaryExeNames @("potrace.exe")
 
 Write-Host ""
 Write-Host "Tools staged under $ToolsDir :"

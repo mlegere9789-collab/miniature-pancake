@@ -27,9 +27,9 @@ next to `MediaSuite.exe`.
 | Folder | Binary | Used for | Licence | Auto-bundled? | Download (if not) |
 | --- | --- | --- | --- | --- | --- |
 | `ffmpeg` | `ffmpeg.exe`, `ffprobe.exe` | Video, audio, GIF — **required** | LGPL-2.1 (shared build) | **yes** | — |
-| `imagemagick` | `magick.exe` | Images — **required** | ImageMagick License | not yet | https://imagemagick.org/script/download.php |
+| `imagemagick` | `magick.exe` | Images — **required** | ImageMagick License | **yes** | — |
 | `libvips` | `vipsthumbnail.exe` | Fast path for big images and batches | LGPL-2.1 | not yet | https://github.com/libvips/build-win64-mxe/releases |
-| `libraw` | `dcraw_emu.exe` | Camera RAW — **required** | LGPL-2.1 / CDDL | not yet | https://www.libraw.org/download |
+| `libraw` | `dcraw_emu.exe` | Camera RAW — **required** | LGPL-2.1 / CDDL | no reliable source | https://www.libraw.org/download — see note below |
 | `mupdf` | `mutool.exe` | PDF rendering and page tools | AGPL-3.0 | not yet | https://mupdf.com/releases |
 | `qpdf` | `qpdf.exe` | Lossless PDF page operations | Apache-2.0 | **yes** | — |
 | `ghostscript` | `gswin64c.exe` | PDF compression and flattening | AGPL-3.0 | not yet | https://www.ghostscript.com/releases/gsdnld.html |
@@ -41,11 +41,14 @@ next to `MediaSuite.exe`.
 | `rsvg` | `rsvg-convert.exe` | SVG rasterising | LGPL-2.1 | not yet | https://gitlab.gnome.org/GNOME/librsvg |
 | `potrace` | `potrace.exe` | PNG to SVG tracing | GPL-2.0 | **yes** | — |
 
-"Not yet" is a real gap, not a permanent one — `imagemagick` and `libraw` are both
-**required** and still manual today because they need more than a plain zip download
-(a portable ImageMagick build and a Windows `dcraw_emu` binary both need verifying
-before CI can fetch them unattended); the rest ship only as GUI installers that need
-silent-install wiring. Tracked as the next pass on `installer/fetch-tools.ps1`.
+"Not yet" is a real gap, not a permanent one. `libraw` is the one exception worth
+calling out specially: unlike the others, there is currently no known official or
+actively-maintained prebuilt Windows binary for `dcraw_emu.exe` at all — ImageMagick's
+own bundled LibRaw delegate (`magick.exe photo.CR2 out.jpg`) is the practical fallback
+for camera RAW until that changes. `libvips`, `mupdf`, `ghostscript`, `rsvg`,
+`libreoffice` and `calibre` all have a real acquisition path identified (a portable zip,
+or a silent-installable installer) but aren't wired into `fetch-tools.ps1` yet — tracked
+there as the next pass.
 
 Settings → Bundled tools re-scans on demand and shows exactly where each binary was found
 or where it is expected.
