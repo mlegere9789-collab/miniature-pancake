@@ -30,7 +30,8 @@ vitals/
 │       │   ├── comparison.ts        Twin-plant percentile + leaderboard rank (Phase 3, spec §4.4/§4.6)
 │       │   ├── dashboard.ts         Rising Stars ranking (spec §4.3), pulled out of routes/gardens.ts for testability
 │       │   ├── speciesDormancy.ts   Curated per-species dormancy calendar (Phase 3, spec §4.7)
-│       │   └── forecast.ts          Linear-regression score trend forecast (Phase 3/4, spec §4.3/§4.5)
+│       │   ├── forecast.ts          Linear-regression score trend forecast (Phase 3/4, spec §4.3/§4.5)
+│       │   └── outbreakDetection.ts Regional outbreak alerts from shared diagnostic flags (Phase 3, spec §4.3/§4.5)
 │       ├── routes/          Express routers: plants, checkins, gardens
 │       ├── types/           Shared TS types
 │       └── server.ts        App entrypoint
@@ -133,6 +134,16 @@ vitals/
     §4.3/§4.5: "predictive, not just reactive"). A full ML forecasting model
     (Phase 4) is further work; this is a lightweight stand-in that's already
     useful for early warning.
+16. **Regional outbreak alerts** (`backend/src/services/outbreakDetection.ts`,
+    surfaced on `mobile/src/screens/GardenDashboardScreen.tsx`) — when the
+    same diagnostic condition (e.g. powdery mildew) is independently
+    reported by several different gardens in the same USDA zone within the
+    last 14 days, every garden in that zone sees a "reported in N nearby
+    gardens this week" banner (spec §4.3/§4.5, "Idea 4"). A dedicated
+    regional pest/disease feed (the "Blight Watch" companion app from the
+    spec) is out of scope here; this uses Vitals' own diagnostic flags as
+    the signal instead, and only ever exposes a condition name and a garden
+    count — never which gardens reported it.
 
 ## Running locally
 
@@ -155,5 +166,6 @@ npx expo start
 
 ## Not yet built (later phases)
 
-Auto-segmentation onboarding and regional outbreak modifiers — see the
-top-level spec doc for the remaining phase 3-4 scope.
+Auto-segmentation onboarding, a B2B white-label dashboard, and a full ML
+forecasting model (today's forecast is a simple linear-regression
+stand-in) — see the top-level spec doc for the remaining phase 4 scope.

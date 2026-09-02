@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { fetchGarden } from "../services/api";
 import { theme, scoreColor } from "../theme/theme";
-import { Garden, Plant, WeatherAlert } from "../types/domain";
+import { Garden, OutbreakAlert, Plant, WeatherAlert } from "../types/domain";
 
 interface Props {
   gardenId: string;
@@ -58,6 +58,8 @@ export function GardenDashboardScreen({ gardenId, onSelectPlant }: Props) {
             <FrostBanner alert={garden.weatherAlert} plants={garden.plants} />
           )}
 
+          {garden.outbreakAlerts.length > 0 && <OutbreakBanner alerts={garden.outbreakAlerts} />}
+
           <Text style={styles.sectionTitle}>Needs Attention</Text>
         </>
       }
@@ -94,6 +96,27 @@ function FrostBanner({ alert, plants }: { alert: WeatherAlert; plants: Plant[] }
   );
 }
 
+// Regional outbreak banner (spec §4.3/§4.5, "Idea 4"): a condition being
+// reported by multiple nearby gardens right now, e.g. "Powdery mildew
+// reported in 4 nearby gardens this week." Never names which gardens.
+function OutbreakBanner({ alerts }: { alerts: OutbreakAlert[] }) {
+  return (
+    <View style={styles.outbreakBanner}>
+      {alerts.map((alert) => (
+        <Text key={alert.condition} style={styles.outbreakBannerText}>
+          🦠 {formatCondition(alert.condition)} reported in {alert.gardenCount} nearby gardens this week — worth a
+          close look on your next check-in.
+        </Text>
+      ))}
+    </View>
+  );
+}
+
+function formatCondition(condition: string): string {
+  const words = condition.replace(/-/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 function PlantRow({ plant, onPress }: { plant: Plant; onPress: () => void }) {
   return (
     <View style={styles.plantRow}>
@@ -125,6 +148,13 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing(1),
   },
   frostBannerText: { color: theme.color.cream, fontSize: theme.font.captionSize, lineHeight: 18 },
+  outbreakBanner: {
+    backgroundColor: "#FBF0E8",
+    borderRadius: theme.radius.md,
+    padding: theme.spacing(2),
+    marginBottom: theme.spacing(1),
+  },
+  outbreakBannerText: { color: theme.color.danger, fontSize: theme.font.captionSize, lineHeight: 18 },
   sectionTitle: {
     fontSize: theme.font.titleSize,
     fontWeight: "700",

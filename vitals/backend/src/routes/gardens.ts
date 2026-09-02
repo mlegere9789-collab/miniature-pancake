@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../db/client";
 import { computeLeaderboardRank } from "../services/comparison";
 import { computeRisingStars } from "../services/dashboard";
+import { detectOutbreaks } from "../services/outbreakDetection";
 import { computeWeeklyReportCard } from "../services/reportCard";
 import { defaultDormancyMonths } from "../services/scoring";
 import { lookupSpeciesDormancy } from "../services/speciesDormancy";
@@ -23,8 +24,9 @@ gardensRouter.get("/:id", async (req, res) => {
   const needsAttention = [...garden.plants].sort((a, b) => a.scoreCurrent - b.scoreCurrent).slice(0, 10);
   const risingStars = await risingStarsFor(garden.plants.map((p) => p.id));
   const weatherAlert = await frostRiskAlert(garden.latitude, garden.longitude, garden.plants);
+  const outbreakAlerts = await outbreakAlertsFor(garden.id, garden.userId);
 
-  res.json({ ...garden, needsAttention, risingStars, weatherAlert });
+  res.json({ ...garden, needsAttention, risingStars, weatherAlert, outbreakAlerts });
 });
 
 // Weekly Garden Report Card (spec §4.5): aggregates the last 7 days of
@@ -179,6 +181,29 @@ async function frostRiskAlert(
   } catch {
     return null;
   }
+}
+
+// Regional outbreak alerts (spec §4.3/§4.5, "Idea 4"): flags conditions
+// independently reported by several gardens in the same USDA zone in the
+// last 14 days. Never exposes which gardens reported — only the condition
+// name and how many gardens are seeing it.
+async function outbreakAlertsFor(gardenId: string, userId: string) {
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { usdaZone: true } });
+  if (!user?.usdaZone) return [];
+
+  const since = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
+  const flags = await prisma.diagnosticFlag.findMany({
+    where: {
+      status: { in: ["OPEN", "MONITORING"] },
+      checkIn: {
+        timestamp: { gte: since },
+        plant: { garden: { user: { usdaZone: user.usdaZone } } },
+      },
+    },
+    select: { condition: true, checkIn: { select: { plant: { select: { gardenId: true } } } } },
+  });
+
+  return detectOutbreaks(flags.map((f) => ({ gardenId: f.checkIn.plant.gardenId, condition: f.condition })));
 }
 
 async function risingStarsFor(plantIds: string[]) {

@@ -22,6 +22,11 @@ export interface WeatherAlert {
   affectedPlantIds: string[];
 }
 
+export interface OutbreakAlert {
+  condition: string;
+  gardenCount: number;
+}
+
 export interface PlantScoreSnapshot {
   id: string;
   score: number;
@@ -71,6 +76,7 @@ export interface Garden {
   needsAttention: Plant[];
   risingStars: { plantId: string; delta: number }[];
   weatherAlert: WeatherAlert | null;
+  outbreakAlerts: OutbreakAlert[];
   leaderboardOptIn: boolean;
 }
 
