@@ -240,6 +240,16 @@ npx expo start
   divided by zero and would have persisted `NaN` as the Garden Score. Fixed
   by falling back to a plain average when total weight is 0 (now unit
   tested in `scoring.test.ts`).
+- **Before/after slider handle could snap on every new drag.** The drag
+  anchor was read from the touch event's `locationX`, relative to a 4px-wide
+  hit target sitting under a 28px visible knob — an unreliable anchor
+  regardless of which nested view actually caught the touch, and the
+  likely-visible symptom was the handle jumping toward the touch's start
+  position at the beginning of each drag instead of staying where it was.
+  Fixed by tracking the slider's live value via an `Animated.Value`
+  listener and driving the drag off PanResponder's own cumulative `dx`,
+  which needs no anchor at all; also widened the touch target with
+  `hitSlop` since the visible knob is much wider than the 4px handle.
 - **Plant detail screen never refreshed after check-in or edit.** It only
   loaded data on first mount; navigating to Check-In or Edit and back
   returned to the same still-mounted screen instance, so a fresh check-in's

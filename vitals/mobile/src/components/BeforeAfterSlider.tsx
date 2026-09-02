@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Animated, Image, PanResponder, StyleSheet, View } from "react-native";
 import { theme } from "../theme/theme";
 
@@ -19,19 +19,32 @@ export function BeforeAfterSlider({ beforeUri, afterUri, height = 320 }: Props) 
   const [containerWidth, setContainerWidth] = useState(0);
   const sliderX = useRef(new Animated.Value(0)).current;
   const widthRef = useRef(0);
+  // The handle's hit target is much narrower than its visible knob, so
+  // `locationX` from the touch event isn't a reliable anchor — it's
+  // relative to whichever nested view actually caught the touch. Instead,
+  // track the slider's live numeric value via a listener and drive the
+  // drag off PanResponder's own cumulative `dx`, which needs no anchor at all.
+  const currentXRef = useRef(0);
   const dragStartRef = useRef(0);
+
+  useEffect(() => {
+    const id = sliderX.addListener(({ value }) => {
+      currentXRef.current = value;
+    });
+    return () => sliderX.removeListener(id);
+  }, [sliderX]);
 
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: (evt) => {
-        dragStartRef.current = evt.nativeEvent.locationX;
+      onPanResponderGrant: () => {
+        dragStartRef.current = currentXRef.current;
       },
       onPanResponderMove: (_evt, gesture) => {
         const width = widthRef.current;
         if (width === 0) return;
-        const x = Math.max(0, Math.min(width, gesture.moveX - gesture.x0 + dragStartRef.current));
+        const x = Math.max(0, Math.min(width, dragStartRef.current + gesture.dx));
         sliderX.setValue(x);
       },
     }),
@@ -58,6 +71,7 @@ export function BeforeAfterSlider({ beforeUri, afterUri, height = 320 }: Props) 
           </Animated.View>
           <Animated.View
             {...panResponder.panHandlers}
+            hitSlop={{ left: 16, right: 16 }}
             style={[styles.handle, { height, transform: [{ translateX: Animated.subtract(sliderX, 2) }] }]}
           >
             <View style={styles.handleKnob} />
