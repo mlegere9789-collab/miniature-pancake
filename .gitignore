@@ -27,4 +27,15 @@ vitals/backend/uploads/
 vitals/mobile/.expo/
 vitals/mobile/dist/
 
-
+# --- MediaSuite (.NET) ---
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+.vs/
+# Bundled third-party binaries: downloaded per machine, never committed.
+mediasuite/tools/*
+!mediasuite/tools/README.md
+# Installer build output: produced by installer/build.ps1, never committed.
+mediasuite/publish/
+mediasuite/dist/

@@ -1,0 +1,34 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Dark palette. Keys mirror Palette.Light.xaml exactly. -->
+
+    <SolidColorBrush x:Key="Brush.Window.Background" Color="#15181C" />
+    <SolidColorBrush x:Key="Brush.Nav.Background" Color="#1B1F24" />
+    <SolidColorBrush x:Key="Brush.Surface" Color="#1E232A" />
+    <SolidColorBrush x:Key="Brush.Surface.Hover" Color="#272D35" />
+    <SolidColorBrush x:Key="Brush.Surface.Elevated" Color="#232931" />
+
+    <SolidColorBrush x:Key="Brush.Border" Color="#333B45" />
+    <SolidColorBrush x:Key="Brush.Border.Strong" Color="#4A5561" />
+
+    <SolidColorBrush x:Key="Brush.Text.Primary" Color="#EDF1F5" />
+    <SolidColorBrush x:Key="Brush.Text.Secondary" Color="#A3AEBA" />
+    <SolidColorBrush x:Key="Brush.Text.Disabled" Color="#6B7683" />
+
+    <SolidColorBrush x:Key="Brush.Accent" Color="#4C8DFF" />
+    <SolidColorBrush x:Key="Brush.Accent.Hover" Color="#6BA0FF" />
+    <SolidColorBrush x:Key="Brush.Accent.Pressed" Color="#2F6FEB" />
+    <SolidColorBrush x:Key="Brush.Accent.Foreground" Color="#0D1117" />
+    <SolidColorBrush x:Key="Brush.Accent.Subtle" Color="#1F2C42" />
+
+    <SolidColorBrush x:Key="Brush.DropZone.Background" Color="#1A1F26" />
+    <SolidColorBrush x:Key="Brush.DropZone.Border" Color="#3D4652" />
+    <SolidColorBrush x:Key="Brush.DropZone.ActiveBackground" Color="#1F2C42" />
+    <SolidColorBrush x:Key="Brush.DropZone.ActiveBorder" Color="#4C8DFF" />
+
+    <SolidColorBrush x:Key="Brush.Success" Color="#4ECB8D" />
+    <SolidColorBrush x:Key="Brush.Warning" Color="#E0A030" />
+    <SolidColorBrush x:Key="Brush.Danger" Color="#F1706A" />
+
+</ResourceDictionary>

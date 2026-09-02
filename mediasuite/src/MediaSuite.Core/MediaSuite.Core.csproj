@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>MediaSuite.Core</RootNamespace>
+    <AssemblyName>MediaSuite.Core</AssemblyName>
+    <Description>Platform-neutral domain model, engine contracts, tool discovery and settings for MediaSuite.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Argument builders and format resolution are internal to the engines but are
+         exactly what the tests need to check without the tools installed. -->
+    <InternalsVisibleTo Include="MediaSuite.Core.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Google Drive is the one integration here that is not a bundled local binary, so
+         it is the one place this project takes a NuGet dependency instead of shelling out.
+         Floating to the newest published 1.x release rather than pinning an exact version,
+         since there is no way to confirm the current newest patch from this environment. -->
+    <PackageReference Include="Google.Apis.Drive.v3" Version="1.*" />
+    <PackageReference Include="Google.Apis.Auth" Version="1.*" />
+  </ItemGroup>
+
+</Project>
