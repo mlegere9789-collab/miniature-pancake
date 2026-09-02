@@ -30,7 +30,7 @@ next to `MediaSuite.exe`.
 | `imagemagick` | `magick.exe` | Images — **required** | ImageMagick License | **yes** | — |
 | `libvips` | `vipsthumbnail.exe` | Fast path for big images and batches | LGPL-2.1 | **yes** | — |
 | `libraw` | `dcraw_emu.exe` | Camera RAW — **required** | LGPL-2.1 / CDDL | attempted (compiled from source) | see note below |
-| `mupdf` | `mutool.exe` | PDF rendering and page tools | AGPL-3.0 | not yet | https://mupdf.com/releases |
+| `mupdf` | `mutool.exe` | PDF rendering and page tools | AGPL-3.0 | attempted (pinned version, unverified) | see note below |
 | `qpdf` | `qpdf.exe` | Lossless PDF page operations | Apache-2.0 | **yes** | — |
 | `ghostscript` | `gswin64c.exe` | PDF compression and flattening | AGPL-3.0 | attempted (unofficial extraction) | see note below |
 | `pandoc` | `pandoc.exe` | Document conversion | GPL-2.0-or-later | **yes** | — |
@@ -53,9 +53,13 @@ a different reason: it only ships a GUI installer, and Artifex deliberately remo
 installer's silent-install flag in 10.01.0+, so `fetch-tools.ps1` extracts the installer's
 payload directly with 7-Zip instead of running it — unofficial, since Artifex never
 blessed extracting it this way, so it's written to not take the rest of the fetch down if
-a future installer format change breaks it. `mupdf`, `rsvg`, `libreoffice` and `calibre`
-all have a real acquisition path identified (a portable zip, or a silent-installable
-installer) but aren't wired into `fetch-tools.ps1` yet — tracked there as the next pass.
+a future installer format change breaks it. `mupdf` is attempted too, for a third reason:
+mupdf.com is unreachable from the environment `fetch-tools.ps1` was written in, so the
+pinned version in its URL was confirmed only via web search, not a direct HTTP check —
+plausibly stale by the time this runs, hence also fail-soft. `rsvg`, `libreoffice` and
+`calibre` all have a real acquisition path identified (a portable zip, or a
+silent-installable installer) but aren't wired into `fetch-tools.ps1` yet — tracked there
+as the next pass.
 
 Settings → Bundled tools re-scans on demand and shows exactly where each binary was found
 or where it is expected.

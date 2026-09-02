@@ -260,6 +260,21 @@ catch {
     Write-Warning "Ghostscript extraction failed, continuing without it: $_"
 }
 
+Write-Host "== MuPDF =="
+# mupdf.com is unreachable from the environment this script was written in, so the exact
+# current version at mupdf.com/downloads/archive/ could only be confirmed via web search,
+# not a direct HTTP check — the archive URL pattern itself (mupdf-<version>-windows.zip)
+# is well established across many past releases, but the specific version pinned below
+# could plausibly already be stale by the time this runs. Fails soft for that reason.
+try {
+    $mupdfArchive = Get-ToArchive -Url "https://mupdf.com/downloads/archive/mupdf-1.27.2-windows.zip"
+    $mupdfExtract = Expand-ToTemp -ArchivePath $mupdfArchive
+    Copy-BinariesToStage -ExtractDir $mupdfExtract -Folder "mupdf" -PrimaryExeNames @("mutool.exe")
+}
+catch {
+    Write-Warning "MuPDF fetch failed, continuing without it: $_"
+}
+
 Write-Host ""
 Write-Host "Tools staged under $ToolsDir :"
 Get-ChildItem $ToolsDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" }
