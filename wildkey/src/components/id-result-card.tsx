@@ -7,10 +7,12 @@ type IdResultCardProps = {
 };
 
 const CONFIDENT_THRESHOLD = 0.7;
+const VOWEL_SOUND = /^[aeiou]/i;
 
 export function IdResultCard({ species, confidence }: IdResultCardProps) {
   const isConfident = confidence >= CONFIDENT_THRESHOLD;
   const pct = Math.round(confidence * 100);
+  const article = VOWEL_SOUND.test(species.taxonGroup) ? "an" : "a";
 
   return (
     <div
@@ -48,7 +50,7 @@ export function IdResultCard({ species, confidence }: IdResultCardProps) {
         ) : (
           <>
             <h2 className="font-display text-2xl font-semibold">
-              Likely a {species.taxonGroup} — probably in this family
+              Likely {article} {species.taxonGroup} — probably in this family
             </h2>
             <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
               We&rsquo;re not confident enough to name an exact species. Our best guess is{" "}
