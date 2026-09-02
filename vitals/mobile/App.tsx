@@ -37,13 +37,20 @@ export default function App() {
   const appState = useRef<AppStateStatus>(AppState.currentState);
 
   useEffect(() => {
+    // Baseline every plant's reminder once per app launch — not on every
+    // refreshKey bump. Each reminder's countdown restarts from "now" it's
+    // (re)scheduled, so re-running this on every check-in/refresh would
+    // reset every OTHER plant's countdown too, pushing their reminders back
+    // indefinitely with regular app use. A single check-in only resets its
+    // own plant's reminder — see the CheckIn screen's onDone below.
     requestNotificationPermission().then((granted) => {
       if (!granted || !DEMO_GARDEN_ID) return;
       fetchGarden(DEMO_GARDEN_ID)
         .then((garden) => scheduleAllReminders(garden.plants))
         .catch(() => undefined);
     });
-  }, [refreshKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     // Flush any check-ins queued while offline (spec §4.2: "syncs when
@@ -122,7 +129,10 @@ export default function App() {
               previousPhotoUri={toAbsoluteUrl(
                 "checkIns" in route.params.plant ? route.params.plant.checkIns[0]?.photoUrl : undefined,
               )}
-              onDone={() => {
+              onDone={(result) => {
+                // Only reset this plant's own reminder countdown — other
+                // plants' reminders should be untouched by this check-in.
+                if (result) scheduleCheckInReminder(route.params.plant).catch(() => undefined);
                 setRefreshKey((k) => k + 1);
                 navigation.goBack();
               }}

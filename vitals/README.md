@@ -197,6 +197,13 @@ npx expo start
   `backend/src/services/scoring.ts`, now unit tested).
 - **Offline check-in queue never flushed.** See "Offline check-in sync"
   above — `flushCheckInQueue` existed but nothing called it.
+- **Check-in reminders silently reset on every refresh.** `App.tsx`
+  rescheduled every plant's local reminder from "now" (`scheduleAllReminders`)
+  on every `refreshKey` bump — any check-in, any plant add, even the offline
+  queue flush — which pushed back every OTHER plant's reminder countdown too.
+  Frequent app use could make reminders effectively never fire. Fixed by
+  running `scheduleAllReminders` once per app launch and only resetting the
+  specific plant's own reminder when it's actually checked in.
 
 ## Not yet built (later phases)
 
