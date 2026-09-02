@@ -6,12 +6,13 @@ import { AddPlantScreen } from "./src/screens/AddPlantScreen";
 import { CheckInCameraScreen } from "./src/screens/CheckInCameraScreen";
 import { GardenDashboardScreen } from "./src/screens/GardenDashboardScreen";
 import { LeaderboardScreen } from "./src/screens/LeaderboardScreen";
+import { PhotoTimelineScreen } from "./src/screens/PhotoTimelineScreen";
 import { PlantDetailScreen } from "./src/screens/PlantDetailScreen";
 import { ReportCardScreen } from "./src/screens/ReportCardScreen";
-import { API_BASE_URL, fetchGarden } from "./src/services/api";
+import { fetchGarden, toAbsoluteUrl } from "./src/services/api";
 import { requestNotificationPermission, scheduleAllReminders, scheduleCheckInReminder } from "./src/services/notifications";
 import { theme } from "./src/theme/theme";
-import { Plant, PlantDetail } from "./src/types/domain";
+import { CheckIn, Plant, PlantDetail } from "./src/types/domain";
 
 // Phase 1: single hardcoded garden until account/auth + onboarding land (Phase 3).
 const DEMO_GARDEN_ID = process.env.EXPO_PUBLIC_VITALS_DEMO_GARDEN_ID ?? "";
@@ -23,14 +24,10 @@ type RootStackParamList = {
   AddPlant: undefined;
   ReportCard: undefined;
   Leaderboard: undefined;
+  PhotoTimeline: { plantLabel: string; checkIns: CheckIn[] };
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
-
-function toAbsoluteUrl(photoUrl: string | undefined): string | undefined {
-  if (!photoUrl) return undefined;
-  return photoUrl.startsWith("http") ? photoUrl : `${API_BASE_URL}${photoUrl}`;
-}
 
 export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
@@ -77,6 +74,12 @@ export default function App() {
             <PlantDetailScreen
               plantId={route.params.plantId}
               onCheckIn={(plant) => navigation.navigate("CheckIn", { plant })}
+              onViewPhotoTimeline={(plant) =>
+                navigation.navigate("PhotoTimeline", {
+                  plantLabel: plant.nickname || plant.speciesName,
+                  checkIns: plant.checkIns,
+                })
+              }
             />
           )}
         </Stack.Screen>
@@ -117,6 +120,12 @@ export default function App() {
 
         <Stack.Screen name="Leaderboard" options={{ title: "Leaderboard" }}>
           {() => <LeaderboardScreen gardenId={DEMO_GARDEN_ID} />}
+        </Stack.Screen>
+
+        <Stack.Screen name="PhotoTimeline" options={{ title: "Photo Timeline" }}>
+          {({ route }) => (
+            <PhotoTimelineScreen plantLabel={route.params.plantLabel} checkIns={route.params.checkIns} />
+          )}
         </Stack.Screen>
       </Stack.Navigator>
     </NavigationContainer>

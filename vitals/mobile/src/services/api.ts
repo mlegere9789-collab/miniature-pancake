@@ -13,6 +13,12 @@ import {
 // Use your LAN IP (not localhost) when testing on a physical device via Expo Go.
 export const API_BASE_URL = process.env.EXPO_PUBLIC_VITALS_API_URL ?? "http://localhost:4000";
 
+/** Resolves a backend-relative photo path (e.g. "/uploads/x.jpg") to a full URL. */
+export function toAbsoluteUrl(photoUrl: string | undefined): string | undefined {
+  if (!photoUrl) return undefined;
+  return photoUrl.startsWith("http") ? photoUrl : `${API_BASE_URL}${photoUrl}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, init);
   if (!res.ok) {

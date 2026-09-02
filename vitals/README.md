@@ -41,8 +41,9 @@ vitals/
         │   ├── PlantDetailScreen.tsx     Score history sparkline + check-in log
         │   ├── AddPlantScreen.tsx        Manual plant entry (Phase 1 skips auto-segmentation)
         │   ├── ReportCardScreen.tsx      Weekly Garden Report Card + native share sheet
-        │   └── LeaderboardScreen.tsx     Opt-in toggle + neighborhood leaderboard rank
-        ├── components/       Sparkline, ScoreDeltaBadge, GhostOverlay
+        │   ├── LeaderboardScreen.tsx     Opt-in toggle + neighborhood leaderboard rank
+        │   └── PhotoTimelineScreen.tsx   Before/after check-in photo slider (spec §4.4)
+        ├── components/       Sparkline, ScoreDeltaBadge, GhostOverlay, BeforeAfterSlider
         ├── services/         api.ts (typed backend client), checkInQueue.ts (offline queue),
         │                     notifications.ts (per-plant local check-in reminders)
         ├── theme/            Vitals design tokens (forest green / soil brown / gold)
@@ -70,20 +71,24 @@ vitals/
    local, per-plant reminders on each plant's check-in cadence (Expo Notifications).
    Phase 2 can swap these for server-driven push once predictive/weather-aware
    alerts (spec §4.5) need a backend trigger.
+8. **Photo timeline** (`mobile/src/components/BeforeAfterSlider.tsx`,
+   `mobile/src/screens/PhotoTimelineScreen.tsx`) — a draggable side-by-side
+   slider comparing any two check-in photos (spec §4.4), reachable via
+   "Compare photos" on the plant detail screen once a plant has 2+ check-ins.
 
 ### Phase 2
 
-8. **Weather-driven environmental fit** (`backend/src/services/weatherService.ts`) —
+9. **Weather-driven environmental fit** (`backend/src/services/weatherService.ts`) —
    fetches frost/drought signals from Open-Meteo (no API key needed) for the
    garden's lat/lon and applies a penalty to the diagnostic engine's
    environmental-fit sub-score (spec §3.1.3: predictive, not just reactive).
    A `Garden` needs `latitude`/`longitude` set (see the seed script below) for
    this to activate; it's a no-op otherwise.
-9. **Frost-risk dashboard banner** (`mobile/src/screens/GardenDashboardScreen.tsx`) —
+10. **Frost-risk dashboard banner** (`mobile/src/screens/GardenDashboardScreen.tsx`) —
    `GET /gardens/:id` now returns `weatherAlert`, populated when frost is
    forecast tonight and at least one `frostSensitive` plant is in the garden
    (spec §4.3/§4.5). Mark a plant frost-sensitive from the Add Plant screen.
-10. **Weekly Garden Report Card** (`backend/src/services/reportCard.ts`,
+11. **Weekly Garden Report Card** (`backend/src/services/reportCard.ts`,
     `GET /gardens/:id/report-card`, `mobile/src/screens/ReportCardScreen.tsx`) —
     a 7-day recap (Garden Score delta, rising stars, plants needing attention,
     check-ins completed) with a share button using the native share sheet
@@ -92,7 +97,7 @@ vitals/
 
 ### Phase 3 (in progress)
 
-11. **Seasonal score recalibration** (`backend/src/services/scoring.ts`'s
+12. **Seasonal score recalibration** (`backend/src/services/scoring.ts`'s
     `isSeasonallyDormant` + the dormancy floor in `computePlantScore`) — a
     plant's `dormancyMonths` (1-12) suppress the visual-vitality dip from
     expected leaf drop/browning during its dormant season, so a deciduous
@@ -103,12 +108,12 @@ vitals/
     latitude sign, so southern-hemisphere gardens get the right season. A
     real per-species dormancy calendar (vs. this hemisphere-only heuristic)
     is further Phase 3 work.
-12. **Twin plants near you** (`backend/src/services/comparison.ts`,
+13. **Twin plants near you** (`backend/src/services/comparison.ts`,
     `GET /plants/:id/twin-comparison`) — an anonymized percentile comparison
     against other active plants of the same species in the same USDA zone,
     shown on the plant detail screen (spec §4.4). Only aggregate scores are
     ever exposed — never another user's garden, name, or photos.
-13. **Neighborhood leaderboard** (`GET /gardens/:id/leaderboard`,
+14. **Neighborhood leaderboard** (`GET /gardens/:id/leaderboard`,
     `PATCH /gardens/:id/leaderboard-opt-in`, `mobile/src/screens/LeaderboardScreen.tsx`) —
     opt-in only rank among other opted-in gardens in the same USDA zone
     (spec §4.6). The switch on the leaderboard screen is the entire consent

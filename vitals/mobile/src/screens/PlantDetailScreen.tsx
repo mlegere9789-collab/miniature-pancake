@@ -8,10 +8,11 @@ import { CheckIn, PlantDetail, TwinComparison } from "../types/domain";
 interface Props {
   plantId: string;
   onCheckIn: (plant: PlantDetail) => void;
+  onViewPhotoTimeline: (plant: PlantDetail) => void;
 }
 
 /** Per-plant detail view (spec §4.4): score history + diagnostic log. */
-export function PlantDetailScreen({ plantId, onCheckIn }: Props) {
+export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline }: Props) {
   const [plant, setPlant] = useState<PlantDetail | null>(null);
   const [twin, setTwin] = useState<TwinComparison | null>(null);
 
@@ -58,6 +59,11 @@ export function PlantDetailScreen({ plantId, onCheckIn }: Props) {
             <Pressable style={styles.primaryButton} onPress={() => onCheckIn(plant)}>
               <Text style={styles.primaryButtonText}>Check in now</Text>
             </Pressable>
+            {plant.checkIns.length >= 2 && (
+              <Pressable style={styles.secondaryButton} onPress={() => onViewPhotoTimeline(plant)}>
+                <Text style={styles.secondaryButtonText}>Compare photos</Text>
+              </Pressable>
+            )}
             {twin && twin.cohortSize > 0 && (
               <Text style={styles.twinText}>🌱 {twin.message}</Text>
             )}
@@ -113,6 +119,12 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.md,
   },
   primaryButtonText: { color: theme.color.cream, fontWeight: "600", fontSize: theme.font.bodySize },
+  secondaryButton: {
+    marginTop: theme.spacing(1.5),
+    paddingHorizontal: theme.spacing(4),
+    paddingVertical: theme.spacing(1),
+  },
+  secondaryButtonText: { color: theme.color.forestGreen, fontWeight: "600", fontSize: theme.font.captionSize },
   twinText: {
     marginTop: theme.spacing(2),
     fontSize: theme.font.captionSize,
