@@ -70,7 +70,10 @@ vitals/
 5. **Manual plant entry** (`mobile/src/screens/AddPlantScreen.tsx`) — species,
    nickname, check-in cadence, and importance weight; posts to `POST /plants`.
 6. **Score history + check-in log** (`mobile/src/screens/PlantDetailScreen.tsx`) —
-   sparkline of `PlantScoreSnapshot` history plus open diagnostic flags per check-in.
+   sparkline of `PlantScoreSnapshot` history plus open diagnostic flags per
+   check-in. The dashboard hero card shows the same sparkline for the
+   `GardenScoreSnapshot` history (the 90-day history was already being
+   fetched but never rendered there).
 6b. **Offline check-in sync** (`mobile/src/services/checkInQueue.ts`, wired up
     in `App.tsx`) — a check-in captured while offline is queued to
     `AsyncStorage` and flushed on app launch and whenever the app returns to

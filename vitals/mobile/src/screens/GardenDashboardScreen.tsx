@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
+import { Sparkline } from "../components/Sparkline";
 import { fetchGarden } from "../services/api";
 import { pendingCheckInCount } from "../services/checkInQueue";
 import { notifyOutbreakAlertsIfNew, notifyWeatherAlertIfNew } from "../services/notifications";
@@ -60,6 +61,11 @@ export function GardenDashboardScreen({ gardenId, onSelectPlant }: Props) {
               {Math.round(garden.scoreCurrent)}
             </Text>
             <Text style={styles.heroCaption}>Garden Score</Text>
+            {garden.scoreHistory.length > 1 && (
+              <View style={styles.heroSparklineWrap}>
+                <Sparkline values={garden.scoreHistory.map((h) => h.score)} color={scoreColor(garden.scoreCurrent)} />
+              </View>
+            )}
           </View>
 
           {garden.weatherAlert && (
@@ -155,6 +161,7 @@ const styles = StyleSheet.create({
   heroLabel: { fontSize: theme.font.titleSize, color: theme.color.textPrimary, fontWeight: "600" },
   heroScore: { fontSize: theme.font.heroSize, fontWeight: "800" },
   heroCaption: { fontSize: theme.font.captionSize, color: theme.color.textSecondary },
+  heroSparklineWrap: { width: "100%", paddingHorizontal: theme.spacing(6), marginTop: theme.spacing(2) },
   frostBanner: {
     backgroundColor: theme.color.forestGreen,
     borderRadius: theme.radius.md,
