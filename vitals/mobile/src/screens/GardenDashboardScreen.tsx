@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { fetchGarden } from "../services/api";
+import { pendingCheckInCount } from "../services/checkInQueue";
 import { theme, scoreColor } from "../theme/theme";
 import { Garden, OutbreakAlert, Plant, WeatherAlert } from "../types/domain";
 
@@ -13,9 +14,11 @@ interface Props {
 export function GardenDashboardScreen({ gardenId, onSelectPlant }: Props) {
   const [garden, setGarden] = useState<Garden | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
 
   const load = useCallback(async () => {
     setGarden(await fetchGarden(gardenId));
+    pendingCheckInCount().then(setPendingSyncCount).catch(() => undefined);
   }, [gardenId]);
 
   useEffect(() => {
@@ -59,6 +62,12 @@ export function GardenDashboardScreen({ gardenId, onSelectPlant }: Props) {
           )}
 
           {garden.outbreakAlerts.length > 0 && <OutbreakBanner alerts={garden.outbreakAlerts} />}
+
+          {pendingSyncCount > 0 && (
+            <Text style={styles.pendingSyncText}>
+              ⏳ {pendingSyncCount} check-in{pendingSyncCount === 1 ? "" : "s"} waiting to sync
+            </Text>
+          )}
 
           <Text style={styles.sectionTitle}>Needs Attention</Text>
         </>
@@ -155,6 +164,12 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing(1),
   },
   outbreakBannerText: { color: theme.color.danger, fontSize: theme.font.captionSize, lineHeight: 18 },
+  pendingSyncText: {
+    fontSize: theme.font.captionSize,
+    color: theme.color.textSecondary,
+    textAlign: "center",
+    marginBottom: theme.spacing(1),
+  },
   sectionTitle: {
     fontSize: theme.font.titleSize,
     fontWeight: "700",

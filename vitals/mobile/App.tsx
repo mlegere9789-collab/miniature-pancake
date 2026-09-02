@@ -1,7 +1,7 @@
 import { NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
-import React, { useEffect, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import React, { useEffect, useRef, useState } from "react";
+import { AppState, AppStateStatus, Pressable, Text, View } from "react-native";
 import { AddPlantScreen } from "./src/screens/AddPlantScreen";
 import { CheckInCameraScreen } from "./src/screens/CheckInCameraScreen";
 import { GardenDashboardScreen } from "./src/screens/GardenDashboardScreen";
@@ -10,6 +10,7 @@ import { PhotoTimelineScreen } from "./src/screens/PhotoTimelineScreen";
 import { PlantDetailScreen } from "./src/screens/PlantDetailScreen";
 import { ReportCardScreen } from "./src/screens/ReportCardScreen";
 import { fetchGarden, toAbsoluteUrl } from "./src/services/api";
+import { flushCheckInQueue } from "./src/services/checkInQueue";
 import { requestNotificationPermission, scheduleAllReminders, scheduleCheckInReminder } from "./src/services/notifications";
 import { theme } from "./src/theme/theme";
 import { CheckIn, Plant, PlantDetail } from "./src/types/domain";
@@ -31,6 +32,7 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
+  const appState = useRef<AppStateStatus>(AppState.currentState);
 
   useEffect(() => {
     requestNotificationPermission().then((granted) => {
@@ -40,6 +42,29 @@ export default function App() {
         .catch(() => undefined);
     });
   }, [refreshKey]);
+
+  useEffect(() => {
+    // Flush any check-ins queued while offline (spec §4.2: "syncs when
+    // connectivity returns") on launch and whenever the app comes back to
+    // the foreground, since that's the most reliable proxy for "we might
+    // have connectivity again" without adding a network-status dependency.
+    function trySync() {
+      flushCheckInQueue()
+        .then(({ succeeded }) => {
+          if (succeeded > 0) setRefreshKey((k) => k + 1);
+        })
+        .catch(() => undefined);
+    }
+
+    trySync();
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (appState.current.match(/inactive|background/) && nextState === "active") {
+        trySync();
+      }
+      appState.current = nextState;
+    });
+    return () => subscription.remove();
+  }, []);
 
   return (
     <NavigationContainer>

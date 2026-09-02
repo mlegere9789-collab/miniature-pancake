@@ -70,6 +70,13 @@ vitals/
    nickname, check-in cadence, and importance weight; posts to `POST /plants`.
 6. **Score history + check-in log** (`mobile/src/screens/PlantDetailScreen.tsx`) —
    sparkline of `PlantScoreSnapshot` history plus open diagnostic flags per check-in.
+6b. **Offline check-in sync** (`mobile/src/services/checkInQueue.ts`, wired up
+    in `App.tsx`) — a check-in captured while offline is queued to
+    `AsyncStorage` and flushed on app launch and whenever the app returns to
+    the foreground (the closest reliable proxy for "connectivity is back"
+    without a network-status dependency). The dashboard shows a "N check-ins
+    waiting to sync" note while any are still queued; the queue itself
+    already existed but nothing was ever calling `flushCheckInQueue`.
 7. **Push notification reminders** (`mobile/src/services/notifications.ts`) —
    local, per-plant reminders on each plant's check-in cadence (Expo Notifications).
    Phase 2 can swap these for server-driven push once predictive/weather-aware
