@@ -34,7 +34,7 @@ next to `MediaSuite.exe`.
 | `qpdf` | `qpdf.exe` | Lossless PDF page operations | Apache-2.0 | **yes** | — |
 | `ghostscript` | `gswin64c.exe` | PDF compression and flattening | AGPL-3.0 | attempted (unofficial extraction) | see note below |
 | `pandoc` | `pandoc.exe` | Document conversion | GPL-2.0-or-later | **yes** | — |
-| `libreoffice` | `soffice.exe` | High-fidelity DOCX to PDF | MPL-2.0 | not yet | https://www.libreoffice.org/download/download-libreoffice/ |
+| `libreoffice` | `soffice.exe` | High-fidelity DOCX to PDF | MPL-2.0 | attempted (version guessed, unverified) | see note below |
 | `calibre` | `ebook-convert.exe` | Ebook conversion | GPL-3.0 | not yet | https://calibre-ebook.com/download_windows |
 | `7zip` | `7z.exe` | Archives, RAR extraction | LGPL-2.1 (+ unRAR licence) | **yes** | — |
 | `realesrgan` | `realesrgan-ncnn-vulkan.exe` | AI upscaling | BSD-3-Clause | **yes** | — |
@@ -59,9 +59,14 @@ pinned version in its URL was confirmed only via web search, not a direct HTTP c
 plausibly stale by the time this runs, hence also fail-soft. `rsvg` is attempted from
 `wingtk/gvsbuild`'s GTK4 bundle, which includes librsvg as a dependency and normally
 produces `rsvg-convert.exe` alongside it — but that inclusion was inferred, not confirmed
-by browsing the actual zip contents, so it's fail-soft too. `libreoffice` and `calibre`
-both have a real acquisition path identified (a silent-installable MSI/installer) but
-aren't wired into `fetch-tools.ps1` yet — tracked there as the next pass.
+by browsing the actual zip contents, so it's fail-soft too. `libreoffice` only ships as a
+full MSI installer, no portable build — it's installed silently onto the CI machine
+itself (discarded after the job regardless) and its `program\` folder harvested. Both
+www.libreoffice.org and documentfoundation.org are unreachable from this environment, so
+the pinned version is a web-search best guess, not HTTP-confirmed — on top of being the
+slowest step in the whole script (a full office suite install), so also fail-soft.
+`calibre` has a real acquisition path identified (a silent-installable installer) but
+isn't wired into `fetch-tools.ps1` yet — tracked there as the next pass.
 
 Settings → Bundled tools re-scans on demand and shows exactly where each binary was found
 or where it is expected.
