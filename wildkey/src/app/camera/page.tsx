@@ -1,21 +1,34 @@
 "use client";
 
 import { useRef, useState } from "react";
+import Link from "next/link";
 import { IdResultCard } from "@/components/id-result-card";
 import { MOCK_SPECIES, type Species } from "@/lib/mock-species";
+import { runMockSync, saveObservation, type SyncState } from "@/lib/observations";
 
 type IdOutcome = { species: Species; confidence: number };
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function CameraPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<IdOutcome | null>(null);
   const [isIdentifying, setIsIdentifying] = useState(false);
+  const [savedSyncState, setSavedSyncState] = useState<SyncState | null>(null);
 
-  const handleFile = (file: File | undefined) => {
+  const handleFile = async (file: File | undefined) => {
     if (!file) return;
     setOutcome(null);
-    setPreviewUrl(URL.createObjectURL(file));
+    setSavedSyncState(null);
+    setPreviewUrl(await readFileAsDataUrl(file));
   };
 
   const runMockIdentify = () => {
@@ -28,6 +41,19 @@ export default function CameraPage() {
       setOutcome({ species, confidence });
       setIsIdentifying(false);
     }, 700);
+  };
+
+  const saveToObservations = () => {
+    if (!outcome || !previewUrl) return;
+    const observation = saveObservation({
+      photoDataUrl: previewUrl,
+      commonName: outcome.species.commonName,
+      scientificName: outcome.species.scientificName,
+      confidence: outcome.confidence,
+      taxonSlug: outcome.species.slug,
+    });
+    setSavedSyncState("queued");
+    runMockSync(observation.id, setSavedSyncState);
   };
 
   return (
@@ -81,7 +107,36 @@ export default function CameraPage() {
         </button>
       </div>
 
-      {outcome && <IdResultCard species={outcome.species} confidence={outcome.confidence} />}
+      {outcome && (
+        <div className="flex flex-col gap-3">
+          <IdResultCard species={outcome.species} confidence={outcome.confidence} />
+
+          {savedSyncState === null ? (
+            <button
+              onClick={saveToObservations}
+              className="rounded-full border px-4 py-3 text-sm font-semibold"
+              style={{ borderColor: "var(--color-border)" }}
+            >
+              Save to My Observations
+            </button>
+          ) : (
+            <div
+              className="flex items-center justify-between rounded-lg border px-4 py-3 text-sm"
+              style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}
+            >
+              <span className="font-medium">
+                {savedSyncState === "queued" && "Saved locally — queued to sync"}
+                {savedSyncState === "uploading" && "Syncing…"}
+                {savedSyncState === "confirmed" && "Saved and synced"}
+                {savedSyncState === "failed" && "Sync failed — will retry from My Observations"}
+              </span>
+              <Link href="/observations" className="font-semibold" style={{ color: "var(--color-accent)" }}>
+                View →
+              </Link>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
