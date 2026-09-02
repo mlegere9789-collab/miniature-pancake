@@ -329,6 +329,34 @@ catch {
     Write-Warning "LibreOffice install failed, continuing without it: $_"
 }
 
+Write-Host "== Calibre =="
+# calibre-ebook.com is unreachable from the environment this was written in, and its
+# "portable" installer's exact command-line behavior (does passing a path argument alone
+# really suppress every prompt, silently?) could not be confirmed directly — the weakest
+# link in every other approach considered for this tool. Chocolatey sidesteps all of that:
+# it's already proven working in this exact pipeline (the "Install Inno Setup" CI step
+# uses it), and its Calibre package wraps the same silent-install problem with
+# already-solved, community-maintained flags. This installs via choco and then searches
+# Program Files for the result rather than hardcoding "Calibre2" vs "calibre" — Calibre's
+# default folder name has changed between versions historically.
+try {
+    choco install calibre -y --no-progress | Out-Null
+    if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+        throw "choco install calibre failed with exit code $LASTEXITCODE"
+    }
+    $ebookConvert = Get-ChildItem -Path "C:\Program Files" -Recurse -File -Filter "ebook-convert.exe" -ErrorAction Stop | Select-Object -First 1
+    if (-not $ebookConvert) {
+        throw "choco install calibre reported success but ebook-convert.exe was not found under C:\Program Files."
+    }
+    $calibreStage = Join-Path $ToolsDir "calibre"
+    New-Item -ItemType Directory -Force -Path $calibreStage | Out-Null
+    Copy-Item -Path (Join-Path $ebookConvert.DirectoryName "*") -Destination $calibreStage -Recurse -Force
+    Write-Host "  staged calibre -> $calibreStage (ebook-convert.exe)"
+}
+catch {
+    Write-Warning "Calibre install failed, continuing without it: $_"
+}
+
 Write-Host ""
 Write-Host "Tools staged under $ToolsDir :"
 Get-ChildItem $ToolsDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" }
