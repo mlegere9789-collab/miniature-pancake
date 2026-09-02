@@ -8,6 +8,7 @@
     <AssemblyName>MediaSuite</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Description>MediaSuite desktop shell (WPF).</Description>
+    <ApplicationIcon>Assets\MediaSuite.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,6 +19,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\MediaSuite.Core\MediaSuite.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ApplicationIcon above sets the exe's own Win32 icon (Explorer, shortcuts,
+         Alt-Tab); this makes the same file available to MainWindow.xaml's Icon=
+         property too, so the title bar and taskbar match instead of falling back to
+         WPF's default. -->
+    <Resource Include="Assets\MediaSuite.ico" />
   </ItemGroup>
 
 </Project>

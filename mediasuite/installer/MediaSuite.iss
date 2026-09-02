@@ -11,6 +11,7 @@
 #define MyAppExeName "MediaSuite.exe"
 #define MyPublishDir "..\publish\MediaSuite"
 #define MyToolsStagedDir "..\tools-staged"
+#define MyAppIcon "..\src\MediaSuite.App\Assets\MediaSuite.ico"
 
 [Setup]
 ; Generated once for this app and never reused elsewhere — Inno Setup uses it to
@@ -22,6 +23,11 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+; The app's own exe already carries this icon (MediaSuite.App.csproj's ApplicationIcon),
+; so Start Menu/desktop shortcuts and UninstallDisplayIcon above pick it up automatically
+; by pointing at the exe — this line is only for the Setup.exe wizard itself, which
+; otherwise shows Inno Setup's own generic icon instead of MediaSuite's.
+SetupIconFile={#MyAppIcon}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 OutputDir=..\dist
 OutputBaseFilename=MediaSuiteSetup-{#MyAppVersion}
