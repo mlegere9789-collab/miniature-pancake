@@ -5,15 +5,19 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–18 of 18, complete.** Every conversion module from the brief is
-> in place, every tool has a Custom preset backed by named, savable option sets, jobs can
-> optionally upload their output to Google Drive, and the format catalogue has been
-> audited against FreeConvert's format support. [QA.md](QA.md) is the checklist for
-> actually verifying a real conversion — this project was built without a Windows machine
-> or any of the bundled tools, so no real conversion has ever been run. There is a real,
-> CI-compiled Inno Setup installer (see [Installer](#installer)), and the app checks its
-> own GitHub releases on launch — never silently, only ever offering the download page.
-> This build carries version 1.0.0. See [Build order](#build-order).
+> **Status: build steps 1–18 of 18, complete, plus a self-contained installer.** Every
+> conversion module from the brief is in place, every tool has a Custom preset backed by
+> named, savable option sets, jobs can optionally upload their output to Google Drive, and
+> the format catalogue has been audited against FreeConvert's format support. The
+> installer now bundles all 14 third-party tools automatically — every one CI actually
+> verified working, not just referenced — so a fresh install needs no manual downloads
+> for the full feature set; see [Bundled tools](#bundled-tools). [QA.md](QA.md)
+> is the checklist for actually verifying a real conversion — this project was built
+> without a Windows machine, so no real conversion has ever been run despite the tools
+> now being bundled. There is a real, CI-compiled Inno Setup installer (see
+> [Installer](#installer)), and the app checks its own GitHub releases on launch — never
+> silently, only ever offering the download page. This build carries version 1.0.0. See
+> [Build order](#build-order).
 
 ## Layout
 
@@ -79,13 +83,23 @@ CI (`.github/workflows/mediasuite-ci.yml`) builds and tests the whole solution o
 
 ## Bundled tools
 
-The app shells out to third-party binaries; none of them are expected on your PATH. Drop
-them into `tools/` next to `MediaSuite.exe` — see [tools/README.md](tools/README.md) for
-the exact folder names, download links and licences. Settings → Bundled tools shows what
-was found and what is missing, and lets you point at a different folder.
+The app shells out to third-party binaries, but you shouldn't need to find any of them
+yourself: `installer/fetch-tools.ps1` downloads real Windows binaries for all 14 during
+the CI build — from each tool's own official release channel wherever one exists as a
+plain zip/7z, and by other means where it doesn't (LibRaw's `dcraw_emu.exe` has no
+prebuilt binary anywhere, so it's compiled from source with vcpkg + MSVC; Ghostscript's
+installer had its silent-install flag removed upstream, so its payload is extracted
+directly with 7-Zip instead of run; LibreOffice and Calibre only ship as full installers,
+so those install silently onto the CI machine itself and the result is harvested) — and
+bundles the result straight into the installer. Every one of the 14 was confirmed
+actually working by reading the real CI log, not assumed from a green checkmark; see
+[tools/README.md](tools/README.md) for the exact method and evidence per tool.
 
-The app runs without them: features whose tools are missing stay disabled instead of
-failing at the moment you press Convert.
+You'd only need `tools/` yourself if you're running from source rather than the built
+installer, or want to override a bundled tool with your own copy — drop a folder in and
+Settings → Bundled tools shows what was found. The app runs without any of them too:
+features whose tools are missing stay disabled instead of failing at the moment you press
+Convert.
 
 ## What is done
 
@@ -165,6 +179,16 @@ failing at the moment you press Convert.
   elevation prompt, Start Menu shortcut, optional desktop shortcut, a proper uninstaller
   that never touches the tools folder or user settings, self-contained so a fresh
   Windows 11 machine does not also need the .NET runtime installed separately
+- **Self-contained tool bundling** — `installer/fetch-tools.ps1` fetches all 14
+  third-party tools during the CI build and packages them straight into the installer,
+  so a fresh install needs zero manual downloads; a plain zip/7z download where one
+  exists, and something more particular where it doesn't — LibRaw's `dcraw_emu.exe`
+  compiled from source (no prebuilt binary exists anywhere), Ghostscript's installer
+  payload extracted directly since its silent-install flag was removed upstream, and
+  LibreOffice/Calibre installed silently onto the CI machine itself and harvested. Every
+  one of the 14 was confirmed actually working from the real CI log, including two that
+  needed a real fix after an honest first failure (a stale MuPDF version pin, caught by
+  a 404 in CI and corrected) rather than being assumed to work
 - **Update check** — on launch, if the setting is on, the app checks this repository's
   own GitHub releases for a newer tagged version and shows a dismissible banner if one
   exists; it never downloads or installs anything itself, only offers the release page.
@@ -217,20 +241,24 @@ external tool, so the queue and the tests never depend on the real Google API cl
 
 `installer/MediaSuite.iss` is an [Inno Setup](https://jrsoftware.org/isinfo.php) script
 that packages a self-contained `win-x64` publish of `MediaSuite.App` — no separate .NET
-runtime install required — into a traditional wizard-style installer: Program Files
+runtime install required — plus all 14 bundled tools (see
+[Bundled tools](#bundled-tools)) into a traditional wizard-style installer: Program Files
 under an elevation prompt, a Start Menu group, an optional desktop shortcut, and a real
-uninstaller. It deliberately does not touch `tools\` or the user's settings folder on
-uninstall — those are the user's own downloads and data, not something this installer
-put there.
+uninstaller. Uninstall still deliberately leaves `tools\` and the user's settings folder
+alone — a tool you've overridden with your own copy, or presets and Google Drive sign-in,
+should never disappear just because the app did.
 
 ```powershell
 installer\build.ps1
 ```
 
-runs `dotnet publish` and then the Inno Setup compiler, and writes the finished
-installer to `dist\`. It needs the .NET 8 SDK and Inno Setup 6 (`iscc.exe`) — the script
-falls back to Inno Setup's default install location if `iscc.exe` is not already on
-PATH.
+runs `dotnet publish`, then `installer/fetch-tools.ps1` (fetching the bundled tools), then
+the Inno Setup compiler, and writes the finished installer to `dist\`. It needs the .NET 8
+SDK, Inno Setup 6 (`iscc.exe`) — the script falls back to Inno Setup's default install
+location if `iscc.exe` is not already on PATH — and, for the full tool set, an MSVC +
+vcpkg toolchain and Chocolatey (both already present on a normal Windows 11 dev machine
+with Visual Studio installed; a local build without them still succeeds, just without
+LibRaw and Calibre, the two tools that specifically need them).
 
 Unlike the app itself, this is something the CI in this repository can actually verify
 end to end rather than only compile-check: `.github/workflows/mediasuite-ci.yml`'s
