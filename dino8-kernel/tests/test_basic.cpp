@@ -4,7 +4,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "dino8/kernel/boolean.h"
@@ -835,6 +838,63 @@ void TestSubDFromControlMeshRejectsEmptyMesh() {
   Check(threw, "SubD::FromControlMesh throws on a mesh with no faces");
 }
 
+void TestMeshSaveObjRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // MakeQuadBoxMesh (defined above): 8 vertices, 6 quad faces, known exact
+  // corner coordinates - lets this test check actual written content
+  // (not just line counts) against hand-known values.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_obj_test.obj";
+  Check(box.SaveObj(path) == Result::Ok, "Mesh::SaveObj succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .obj file SaveObj wrote can be reopened for reading");
+
+  int vertex_lines = 0;
+  int face_lines = 0;
+  bool saw_quad_face = false;
+  double first_vertex[3] = {0, 0, 0};
+  bool got_first_vertex = false;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.size() >= 2 && line[0] == 'v' && line[1] == ' ') {
+      if (!got_first_vertex) {
+        std::sscanf(line.c_str(), "v %lf %lf %lf", &first_vertex[0], &first_vertex[1],
+                    &first_vertex[2]);
+        got_first_vertex = true;
+      }
+      ++vertex_lines;
+    } else if (line.size() >= 2 && line[0] == 'f' && line[1] == ' ') {
+      ++face_lines;
+      // Count whitespace-separated tokens after "f " to distinguish a
+      // written quad (5 tokens: "f" + 4 indices) from a triangle (4).
+      int token_count = 0;
+      std::istringstream tokens(line);
+      std::string token;
+      while (tokens >> token) {
+        ++token_count;
+      }
+      if (token_count == 5) {
+        saw_quad_face = true;
+      }
+    }
+  }
+
+  Check(vertex_lines == box.VertexCount(),
+        "the .obj file has exactly as many 'v' lines as the mesh has vertices (8)");
+  Check(face_lines == box.FaceCount(),
+        "the .obj file has exactly as many 'f' lines as the mesh has faces (6)");
+  Check(saw_quad_face,
+        "at least one face line has 4 indices - quad faces are written as one "
+        "quad, not split into two triangles");
+  Check(got_first_vertex && first_vertex[0] == 0.0 && first_vertex[1] == 0.0 &&
+            first_vertex[2] == 0.0,
+        "the first written vertex line matches MakeQuadBoxMesh's known first "
+        "corner (0,0,0)");
+}
+
 void TestExactClippingMatchesAreaButNotCellCounts() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -1126,6 +1186,7 @@ int main() {
   TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
+  TestMeshSaveObjRoundTrips();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestAnnulusFaceExtrudesToWatertightTube();

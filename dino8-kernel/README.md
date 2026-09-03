@@ -315,6 +315,18 @@ What this repo does instead:
   assumed to be a bug or "close enough to 8." The same Manifold-union
   watertightness proof as every other solid here passes on the subdivided
   mesh too.
+- `Mesh::SaveObj()` writes a plain-text Wavefront `.obj` file - the first
+  "other file format" alongside `.3dm`, so anything built here can
+  actually be opened and looked at in an ordinary 3D viewer (Blender,
+  MeshLab, etc.) instead of only ever being verified by its own numbers.
+  A quad face (`ON_MeshFace::IsQuad()`) is written as one 4-index `f`
+  line, not split into two triangles - OBJ supports n-gon faces natively.
+  Export only (no `LoadObj()` yet). Verified by writing a known 6-quad
+  box and re-parsing the file back: exact vertex/face line counts, at
+  least one 4-index face line present, and the first written vertex line
+  matches the box's known first corner exactly - a real round-trip check
+  on the file's actual content, not just that `SaveObj()` returned
+  `Result::Ok`.
 
 ## What's still not done (as of chunk 2)
 
@@ -360,10 +372,12 @@ What this repo does instead:
   option used), no SubD editing (adding/removing faces, extrude, etc.),
   and no SubD ↔ Brep conversion (that direction is the stubbed
   `BrepForm()`/`GetSurfaceBrep()` this section already flagged).
+- `.obj` support is export-only (`Mesh::SaveObj()`) - no `LoadObj()`, and
+  no other formats (STL, glTF, FBX, ...) at all.
 - Adaptive/curvature-aware meshing, the viewport/display engine, GPU path
-  tracer, command engine, UI shell, visual scripting, other file formats,
-  undo system, installer, and everything else in the blueprint's
-  roadmap — all unstarted.
+  tracer, command engine, UI shell, visual scripting, undo system,
+  installer, and everything else in the blueprint's roadmap — all
+  unstarted.
 
 ## Layout
 

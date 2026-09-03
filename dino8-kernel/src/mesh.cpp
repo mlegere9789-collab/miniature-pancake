@@ -1,6 +1,7 @@
 #include "dino8/kernel/mesh.h"
 
 #include <cmath>
+#include <fstream>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -54,6 +55,29 @@ double Mesh::Area() const {
     area += 0.5 * cross.Length();
   }
   return area;
+}
+
+Result Mesh::SaveObj(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& v = mesh_.m_V[i];
+    out << "v " << v.x << ' ' << v.y << ' ' << v.z << '\n';
+  }
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    // OBJ vertex indices are 1-based.
+    out << "f " << (f.vi[0] + 1) << ' ' << (f.vi[1] + 1) << ' ' << (f.vi[2] + 1);
+    if (f.IsQuad()) {
+      out << ' ' << (f.vi[3] + 1);
+    }
+    out << '\n';
+  }
+
+  return out.good() ? Result::Ok : Result::Failed;
 }
 
 Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {

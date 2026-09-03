@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include <opennurbs.h>
@@ -28,6 +29,19 @@ class Mesh {
   // Unlike Volume(), meaningful for open surfaces too - e.g. a single
   // trimmed planar face isn't closed, so Volume() doesn't apply to it.
   double Area() const;
+
+  // Writes this mesh as a plain-text Wavefront .obj file (`v x y z`
+  // vertex lines, `f i j k` / `f i j k l` 1-indexed face lines - OBJ
+  // supports quad faces natively, so a quad face is written as one
+  // 4-index line rather than split into two triangles). This is the
+  // first "other file format" this kernel writes, alongside the .3dm
+  // support in file_io.h - a deliberately simple, widely-supported format
+  // so anything built here can actually be opened and looked at in an
+  // ordinary 3D viewer (Blender, MeshLab, etc.), not just verified by its
+  // own numbers. Returns Result::Failed if the file can't be opened for
+  // writing; does not validate the mesh's own geometry (an empty mesh
+  // writes a valid, empty .obj).
+  Result SaveObj(const std::string& path) const;
 
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
