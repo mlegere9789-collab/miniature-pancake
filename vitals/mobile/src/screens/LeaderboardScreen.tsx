@@ -22,20 +22,25 @@ export function LeaderboardScreen({ gardenId }: Props) {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const garden = await fetchGarden(gardenId);
-    setOptedIn(garden.leaderboardOptIn);
-    if (garden.leaderboardOptIn) {
-      try {
-        setResult(await fetchLeaderboard(gardenId));
-        setError(null);
-      } catch (err) {
+    try {
+      const garden = await fetchGarden(gardenId);
+      setOptedIn(garden.leaderboardOptIn);
+      setError(null);
+      if (garden.leaderboardOptIn) {
+        try {
+          setResult(await fetchLeaderboard(gardenId));
+        } catch (err) {
+          setResult(null);
+          setError(String(err));
+        }
+      } else {
         setResult(null);
-        setError(String(err));
       }
-    } else {
-      setResult(null);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [gardenId]);
 
   useEffect(() => {
@@ -43,9 +48,14 @@ export function LeaderboardScreen({ gardenId }: Props) {
   }, [load]);
 
   async function handleToggle(value: boolean) {
-    setOptedIn(value);
-    await setLeaderboardOptIn(gardenId, value);
-    await load();
+    setOptedIn(value); // optimistic
+    try {
+      await setLeaderboardOptIn(gardenId, value);
+      await load();
+    } catch (err) {
+      setOptedIn(!value); // roll back on failure
+      setError(String(err));
+    }
   }
 
   return (
@@ -62,7 +72,7 @@ export function LeaderboardScreen({ gardenId }: Props) {
 
       {loading && <Text style={styles.bodyText}>Loading…</Text>}
 
-      {!loading && optedIn && result && (
+      {!loading && optedIn && result && !error && (
         <View style={styles.card}>
           <Text style={[styles.rankScore, { color: scoreColor(result.percentile) }]}>#{result.rank}</Text>
           <Text style={styles.bodyText}>
@@ -72,11 +82,9 @@ export function LeaderboardScreen({ gardenId }: Props) {
         </View>
       )}
 
-      {!loading && optedIn && error && (
-        <Text style={styles.bodyText}>{error}</Text>
-      )}
+      {!loading && error && <Text style={styles.bodyText}>{error}</Text>}
 
-      {!loading && !optedIn && (
+      {!loading && !optedIn && !error && (
         <Text style={styles.bodyText}>Opt in above to see how your Garden Score compares nearby.</Text>
       )}
     </View>

@@ -246,14 +246,17 @@ npx expo start
   by falling back to a plain average when total weight is 0 (now unit
   tested in `scoring.test.ts`).
 - **Every main data-fetching screen could get stuck on "Loading…" forever.**
-  `GardenDashboardScreen`, `PlantDetailScreen`, `YardMapScreen`, and
-  `ReportCardScreen` all called their fetch with no `.catch` (or, in
-  ReportCardScreen's case, no distinct error state) — a network error left
-  each stuck on its loading text indefinitely, with no way to recover short
-  of leaving and re-entering the screen. Worse on the dashboard: `onRefresh`
-  awaited the same unhandled rejection, so pull-to-refresh's spinner never
-  stopped either. All four now catch the error and show a "Try again"
-  retry state.
+  `GardenDashboardScreen`, `PlantDetailScreen`, `YardMapScreen`,
+  `ReportCardScreen`, and `LeaderboardScreen` all called their fetch with no
+  `.catch` (or, in ReportCardScreen's case, no distinct error state) — a
+  network error left each stuck on its loading text indefinitely, with no
+  way to recover short of leaving and re-entering the screen. Worse on the
+  dashboard: `onRefresh` awaited the same unhandled rejection, so
+  pull-to-refresh's spinner never stopped either. `LeaderboardScreen`'s
+  opt-in toggle also had no rollback — a failed `PATCH` would leave the
+  switch showing the wrong state with no error surfaced. All five now
+  catch the error, show a "Try again" retry state, and the leaderboard
+  toggle rolls back on failure.
 - **No empty state on the dashboard.** A brand-new garden with zero plants
   showed a blank "Needs Attention" section and no prompt to add anything —
   a dead end on the very first screen a new user sees, before they've ever
