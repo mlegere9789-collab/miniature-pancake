@@ -77,8 +77,19 @@ export default function App() {
     // have connectivity again" without adding a network-status dependency.
     function trySync() {
       flushCheckInQueue()
-        .then(({ succeeded }) => {
-          if (succeeded > 0) setRefreshKey((k) => k + 1);
+        .then(({ succeeded, syncedPlantIds }) => {
+          if (succeeded === 0) return;
+          setRefreshKey((k) => k + 1);
+          // Reset just the synced plants' reminder countdowns from this
+          // real check-in moment — otherwise a check-in that went through
+          // the offline queue never resets its reminder at all.
+          if (!DEMO_GARDEN_ID) return;
+          fetchGarden(DEMO_GARDEN_ID)
+            .then((garden) => {
+              const syncedPlants = garden.plants.filter((p) => syncedPlantIds.includes(p.id));
+              syncedPlants.forEach((p) => scheduleCheckInReminder(p).catch(() => undefined));
+            })
+            .catch(() => undefined);
         })
         .catch(() => undefined);
     }

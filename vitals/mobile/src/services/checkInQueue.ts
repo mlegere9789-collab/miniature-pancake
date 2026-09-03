@@ -28,25 +28,29 @@ export async function enqueueCheckIn(plantId: string, localPhotoUri: string): Pr
 /**
  * Attempt to flush every queued check-in to the backend. Call this on app
  * foreground and on network-reconnect. Failed items stay queued for the
- * next attempt; successful ones are removed.
+ * next attempt; successful ones are removed. Returns the plant ids that
+ * actually synced so the caller can reset just those plants' reminder
+ * countdowns from this real check-in moment (see App.tsx) — the plant
+ * whose check-in just landed shouldn't still be nagged on its old,
+ * pre-offline-gap schedule.
  */
-export async function flushCheckInQueue(): Promise<{ succeeded: number; remaining: number }> {
+export async function flushCheckInQueue(): Promise<{ succeeded: number; remaining: number; syncedPlantIds: string[] }> {
   const queue = await readQueue();
   const stillQueued: QueuedCheckIn[] = [];
-  let succeeded = 0;
+  const syncedPlantIds: string[] = [];
 
   for (const item of queue) {
     try {
       const photoUrl = await uploadCheckInPhoto(item.localPhotoUri);
       await submitCheckIn(item.plantId, photoUrl);
-      succeeded += 1;
+      syncedPlantIds.push(item.plantId);
     } catch {
       stillQueued.push(item);
     }
   }
 
   await writeQueue(stillQueued);
-  return { succeeded, remaining: stillQueued.length };
+  return { succeeded: syncedPlantIds.length, remaining: stillQueued.length, syncedPlantIds };
 }
 
 export async function pendingCheckInCount(): Promise<number> {

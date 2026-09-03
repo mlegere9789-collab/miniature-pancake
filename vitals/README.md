@@ -408,6 +408,14 @@ committed, since it had never existed in the repo before.
   plant" action on the plant detail screen (with a confirmation, since it's
   not easily undoable from the UI); its check-in history and score
   snapshots are kept, it just drops out of the active views.
+- **An offline-queued check-in never reset its reminder once synced.**
+  `App.tsx`'s check-in flow only called `scheduleCheckInReminder` for the
+  synchronous online path (`result` non-null); when a check-in went through
+  the offline queue instead and synced later on reconnect, nothing ever
+  reset that plant's reminder countdown from the real check-in moment —
+  the whole point of resetting on check-in. `flushCheckInQueue` now returns
+  which plant ids actually synced, and `App.tsx` reschedules just those
+  plants' reminders after a successful flush.
 - **Check-in reminders silently reset on every refresh.** `App.tsx`
   rescheduled every plant's local reminder from "now" (`scheduleAllReminders`)
   on every `refreshKey` bump — any check-in, any plant add, even the offline
