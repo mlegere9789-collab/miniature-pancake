@@ -766,6 +766,44 @@ void TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts() {
         "rather than silently misaligning bands");
 }
 
+void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  // Concave dart cross-section (same shape/coordinates as the exact-clip
+  // dart test - shoelace area 0.404), extruded straight up by 1 as two
+  // identical rings 1 apart. Since both rings are congruent and simply
+  // translated (not rotated or scaled), this is an exact prism regardless
+  // of the cross-section's shape - convex or concave - so its volume must
+  // equal area x height exactly. A real, hand-derivable check on the new
+  // ear-clipping end caps' correctness on a concave ring, not just proof
+  // that Manifold didn't reject the result (the earlier frustum test only
+  // exercised a convex ring).
+  const std::vector<Point3d> bottom = {
+      Point3d(0.1, 0.1, 0), Point3d(0.9, 0.1, 0), Point3d(0.9, 0.9, 0),
+      Point3d(0.52, 0.31, 0), Point3d(0.1, 0.9, 0),
+  };
+  std::vector<Point3d> top;
+  for (const auto& p : bottom) {
+    top.emplace_back(p.x, p.y, p.z + 1.0);
+  }
+
+  const auto prism = Mesh::LoftClosedRings({bottom, top});
+  Check(std::abs(prism.Volume() - 0.404) < 1e-6,
+        "lofting two identical concave dart rings 1 apart gives an exact "
+        "prism whose volume matches the dart's shoelace area (0.404) times "
+        "height (1)");
+
+  const auto box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const auto result = BooleanCombine(prism, box, BooleanOp::Union);
+  Check(std::abs(result.Volume() - (prism.Volume() + 1.0)) < 1e-9,
+        "union of the concave-cross-section lofted prism with a disjoint "
+        "unit box equals prism volume + 1");
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -1320,6 +1358,7 @@ int main() {
   TestRevolveProfileRejectsOffAxisEndsAndTooShortProfile();
   TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();
   TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
+  TestLoftClosedRingsConcaveEndCapsExactPrismVolume();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();

@@ -1,5 +1,6 @@
 #include "dino8/kernel/mesh.h"
 
+#include <array>
 #include <cmath>
 #include <fstream>
 #include <map>
@@ -10,6 +11,8 @@
 #include <tuple>
 #include <utility>
 #include <vector>
+
+#include "dino8/kernel/detail/polygon2d.h"
 
 namespace dino8::kernel {
 
@@ -402,6 +405,51 @@ Mesh BuildCircularDiskCap(Point3d center, Vector3d unit_axis, double radius,
   return disk.Tessellate(grid_divisions, grid_divisions).front();
 }
 
+// Triangulates a planar polygon (`ring`, convex or concave) given in 3D,
+// for LoftClosedRings()'s end caps. Returns triangles as index triples
+// into `ring` whose winding is CCW as seen looking back along the
+// polygon's own Newell normal - i.e. the "natural", not reversed,
+// orientation a front/last-ring cap needs (see LoftClosedRings()'s own
+// comment for why the first/back ring's cap needs the reverse of this).
+//
+// Newell's method (summing cross-product-like terms over every edge)
+// gives a normal consistent with `ring`'s own listed winding for any
+// simple planar polygon, convex or concave - unlike a single 3-point
+// cross product, which can pick the wrong sign or degenerate entirely if
+// those 3 points happen to be nearly collinear. Projecting onto that
+// normal's own (ex, ey) basis (ex x ey = normal, the same right-handed
+// convention this file already uses for a circular disk cap) turns this
+// into flat 2D ear-clipping, reusing dino8::kernel::detail::
+// EarClipTriangulate rather than a second triangulation implementation.
+std::vector<std::array<int, 3>> TriangulatePlanarRing(const std::vector<Point3d>& ring) {
+  const size_t n = ring.size();
+  Vector3d normal(0, 0, 0);
+  for (size_t i = 0; i < n; ++i) {
+    const Point3d& p = ring[i];
+    const Point3d& q = ring[(i + 1) % n];
+    normal.x += (p.y - q.y) * (p.z + q.z);
+    normal.y += (p.z - q.z) * (p.x + q.x);
+    normal.z += (p.x - q.x) * (p.y + q.y);
+  }
+  normal.Unitize();
+
+  const Vector3d reference =
+      (std::abs(normal.z) < 0.9) ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+  Vector3d ex = ON_CrossProduct(reference, normal);
+  ex.Unitize();
+  const Vector3d ey = ON_CrossProduct(normal, ex);
+
+  std::vector<Point2d> flat;
+  flat.reserve(n);
+  const Point3d& origin = ring[0];
+  for (const Point3d& p : ring) {
+    const Vector3d offset = p - origin;
+    flat.emplace_back(ON_DotProduct(offset, ex), ON_DotProduct(offset, ey));
+  }
+
+  return dino8::kernel::detail::EarClipTriangulate(flat);
+}
+
 }  // namespace
 
 Mesh Mesh::Cylinder(Point3d base_center, Vector3d axis, double radius, double height,
@@ -611,20 +659,21 @@ Mesh Mesh::LoftClosedRings(const std::vector<std::vector<Point3d>>& rings) {
     }
   }
 
-  // End caps: a simple fan from each ring's own vertex 0. The first
-  // ring's fan is reversed (v0, k+1, k) rather than (v0, k, k+1) so its
-  // normal points backward (away from the loft body, like Cylinder()'s
-  // base disk needing -n while the sweep goes +n) instead of forward
-  // (into the body, which the unreversed order would give per the same
-  // u_dir x v_dir rule the bands above use). The last ring's fan keeps
-  // the natural order, since forward is already outward there.
-  const int first_base = ring_start[0];
-  for (int k = 1; k + 1 < ring_size; ++k) {
-    append_tri(first_base, first_base + k + 1, first_base + k);
+  // End caps: TriangulatePlanarRing() (ear-clipping via each ring's own
+  // Newell normal) rather than a plain fan from vertex 0 - correct for a
+  // concave ring too, not just a convex one a fan would silently mishandle
+  // (self-intersecting or inverted triangles). Its triangles are wound
+  // "natural" (CCW looking back along the ring's own Newell normal); the
+  // first ring's cap needs that reversed - its normal must point
+  // backward, away from the loft body, like Cylinder()'s base disk
+  // needing -n while the sweep goes +n - while the last ring's cap keeps
+  // the natural orientation, since forward is already outward there.
+  for (const auto& tri : TriangulatePlanarRing(rings[0])) {
+    append_tri(ring_start[0] + tri[0], ring_start[0] + tri[2], ring_start[0] + tri[1]);
   }
   const int last_base = ring_start[static_cast<size_t>(m - 1)];
-  for (int k = 1; k + 1 < ring_size; ++k) {
-    append_tri(last_base, last_base + k, last_base + k + 1);
+  for (const auto& tri : TriangulatePlanarRing(rings[static_cast<size_t>(m - 1)])) {
+    append_tri(last_base + tri[0], last_base + tri[1], last_base + tri[2]);
   }
 
   return result;

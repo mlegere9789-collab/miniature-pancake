@@ -250,25 +250,17 @@ What this repo does instead:
   closed solid, generalizing `RevolveProfile()`'s bands (a special case
   where every ring happens to be a regular polygon approximating a circle)
   to rings of any shape, size, and vertex count as long as they all match
-  in count. Scoped narrower than a fully general loft: the first and last
-  rings are closed with a plain triangle fan from that ring's own vertex
-  0, which only produces correct geometry for a planar, convex ring - not
-  validated or handled for a concave one, unlike
-  `TessellateGridClippedExact()`'s dedicated concave-clipping path, since
-  a full ear-clipping cap triangulation for arbitrary 3D planar polygons
-  is a larger, separate piece of work than this chunk's scope. Throws
-  `std::invalid_argument` on fewer than 2 rings or mismatched vertex
-  counts across rings, verified directly.
+  in count. Throws `std::invalid_argument` on fewer than 2 rings or
+  mismatched vertex counts across rings, verified directly.
   Reused `RevolveProfile()`'s band-winding derivation directly rather than
   re-deriving it - that derivation only assumed "ring i is
   CCW-as-seen-from-ahead, ring i+1 is the next one along the loft
   direction," which holds for any same-vertex-count ring pair, not just
-  circular ones. The two end-cap fans needed their own derivation (a cap
-  is a different shape than a band): the first ring's fan is reversed
-  (`v0, k+1, k`) rather than the bands' natural order, so its normal
-  points backward like `Cylinder()`'s base disk needing `-n` while the
-  sweep goes `+n`; the last ring's fan keeps the natural order, since
-  forward is already outward there.
+  circular ones. The two end caps needed their own derivation (a cap is a
+  different shape than a band): the first ring's cap is wound backward
+  relative to the last ring's, so its normal points away from the loft
+  body, like `Cylinder()`'s base disk needing `-n` while the sweep goes
+  `+n`.
   Verified against a genuinely independent closed-form check, not reusing
   any other primitive's volume math: a frustum between a small square
   (area 4) and a large square (area 36), both centered on and scaled
@@ -281,6 +273,26 @@ What this repo does instead:
   a percent of the true value. Measured volume matched to `1e-9`, an
   exact-value check in the same tier as the `Box()`/annulus tests, plus
   the same Manifold-union watertightness proof as every other solid here.
+- `LoftClosedRings()`'s end caps now handle a **concave** ring too, not
+  just convex ones (the gap the previous section's chunk left open on
+  purpose). The original plain-fan-from-vertex-0 caps are replaced by
+  ear-clipping (new `TriangulatePlanarRing()` in `mesh.cpp`): compute each
+  ring's own Newell normal (valid for concave, not just convex, planar
+  polygons - unlike a single 3-point cross product, which can pick the
+  wrong sign or degenerate on nearly-collinear points), project onto that
+  normal's own 2D basis, and triangulate. Rather than a second
+  triangulator, this reuses the exact same
+  `dino8::kernel::detail::EarClipTriangulate()` `TessellateGridClippedExact()`'s
+  concave-trim path already uses - moved out of `surface.cpp` into a new
+  shared header, `include/dino8/kernel/detail/polygon2d.h`, specifically
+  so this wouldn't need a second copy of that logic. Verified with a real
+  concave test the earlier convex frustum test couldn't cover: the same
+  five-vertex concave dart used elsewhere in this file, lofted between
+  two identical, simply-translated copies - since that's a true prism
+  regardless of cross-section shape, its volume must equal the dart's
+  known shoelace area (0.404) times height (1) exactly, not just
+  approximately (measured to `1e-6`), plus the same Manifold-union
+  watertightness proof as every other solid here.
 - `dino8::kernel::SubD` (new file, `include/dino8/kernel/subd.h` /
   `src/subd.cpp`) wraps `ON_SubD` — OpenNURBS' **real, working**
   Catmull-Clark subdivision surface implementation, closing chunk 1's
@@ -364,9 +376,9 @@ What this repo does instead:
   `Mesh::ConeToApex()`/`Mesh::Cone()`/`Mesh::RevolveProfile()`/
   `Mesh::LoftClosedRings()` are the only shapes/operations here.
   `RevolveProfile()` only supports a profile that starts and ends on the
-  axis (no flat end rim); `LoftClosedRings()` only produces correct end
-  caps for planar, convex end rings (not validated, and wrong/
-  self-intersecting cap geometry for a concave one).
+  axis (no flat end rim); `LoftClosedRings()`'s end caps require each ring
+  to be planar and simple (non-self-intersecting) - not validated,
+  though concave rings are now handled correctly (see above).
 - `TessellateGridClippedExact()` now handles a concave `trim_polygon` too
   (via a general Greiner-Hormann-style clipper, see above), but that path
   is newer and more narrowly tested than the long-proven convex one: a

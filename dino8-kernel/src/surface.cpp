@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/mesh.h"
 
 namespace dino8::kernel {
@@ -314,75 +315,11 @@ std::vector<std::vector<Point2d>> ClipPolygon(const std::vector<Point2d>& subjec
   return result;
 }
 
-bool PointInTriangle(const Point2d& p, const Point2d& a, const Point2d& b, const Point2d& c) {
-  const double d1 = Cross2d(Point2d(b.x - a.x, b.y - a.y), Point2d(p.x - a.x, p.y - a.y));
-  const double d2 = Cross2d(Point2d(c.x - b.x, c.y - b.y), Point2d(p.x - b.x, p.y - b.y));
-  const double d3 = Cross2d(Point2d(a.x - c.x, a.y - c.y), Point2d(p.x - c.x, p.y - c.y));
-  const bool has_neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
-  const bool has_pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
-  return !(has_neg && has_pos);
-}
-
-// Ear-clipping triangulation of a simple polygon (convex or concave).
-// Needed because a Greiner-Hormann clip of a convex cell against a concave
-// trim polygon can itself be concave - a plain fan-from-vertex-0
-// triangulation (valid for convex output only) would emit
-// self-intersecting or inverted triangles for such a piece. Returns
-// triangles as index triples into `poly`; on numerical failure (couldn't
-// find a valid ear - a degenerate/near-zero-area input), returns whatever
-// was triangulated so far rather than looping forever.
-std::vector<std::array<int, 3>> EarClipTriangulate(const std::vector<Point2d>& poly) {
-  std::vector<std::array<int, 3>> triangles;
-  std::vector<int> order(poly.size());
-  for (size_t i = 0; i < poly.size(); ++i) {
-    order[i] = static_cast<int>(i);
-  }
-  if (SignedArea(poly) < 0.0) {
-    std::reverse(order.begin(), order.end());
-  }
-
-  while (order.size() > 3) {
-    bool ear_found = false;
-    const size_t n = order.size();
-    for (size_t i = 0; i < n; ++i) {
-      const int ia = order[(i + n - 1) % n];
-      const int ib = order[i];
-      const int ic = order[(i + 1) % n];
-      const Point2d& a = poly[static_cast<size_t>(ia)];
-      const Point2d& b = poly[static_cast<size_t>(ib)];
-      const Point2d& c = poly[static_cast<size_t>(ic)];
-      const double turn = Cross2d(Point2d(b.x - a.x, b.y - a.y), Point2d(c.x - b.x, c.y - b.y));
-      if (turn <= 1e-15) {
-        continue;  // reflex or degenerate vertex - not a valid ear tip
-      }
-      bool contains_other = false;
-      for (size_t k = 0; k < n; ++k) {
-        const int idx = order[k];
-        if (idx == ia || idx == ib || idx == ic) {
-          continue;
-        }
-        if (PointInTriangle(poly[static_cast<size_t>(idx)], a, b, c)) {
-          contains_other = true;
-          break;
-        }
-      }
-      if (contains_other) {
-        continue;
-      }
-      triangles.push_back({ia, ib, ic});
-      order.erase(order.begin() + static_cast<long>(i));
-      ear_found = true;
-      break;
-    }
-    if (!ear_found) {
-      break;
-    }
-  }
-  if (order.size() == 3) {
-    triangles.push_back({order[0], order[1], order[2]});
-  }
-  return triangles;
-}
+// EarClipTriangulate itself now lives in detail/polygon2d.h, shared with
+// mesh.cpp's loft end-cap triangulation - both need "triangulate a simple,
+// possibly-concave 2D polygon" and there's no reason to maintain two
+// copies of that logic.
+using dino8::kernel::detail::EarClipTriangulate;
 
 }  // namespace
 

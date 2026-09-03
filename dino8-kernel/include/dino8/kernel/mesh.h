@@ -179,16 +179,17 @@ class Mesh {
   // looking from beyond the last ring back toward the first (the same
   // "u_dir x v_dir = outward normal" convention this file already uses
   // everywhere else) - not validated here, since checking a ring's
-  // winding requires assuming it's planar and convex, which correctly
-  // building the two end caps below already requires. The first and last
-  // rings are closed off with a triangle fan each (from that ring's own
-  // vertex 0); each ring must be planar and convex for that fan to
-  // produce correct (non-self-intersecting) geometry - unlike
-  // TessellateGridClippedExact's concave support, this is not validated
-  // or handled, only documented, since a full ear-clipping cap
-  // triangulation for arbitrary 3D planar polygons is a larger, separate
-  // piece of work than this chunk's scope. Throws std::invalid_argument
-  // if fewer than 2 rings are given or if ring vertex counts don't match.
+  // winding requires assuming it's planar, which correctly building the
+  // two end caps below already requires. The first and last rings are
+  // closed off with an ear-clipping triangulation each (each ring's own
+  // Newell-normal-derived 2D projection, via
+  // dino8::kernel::detail::EarClipTriangulate - the same triangulator
+  // TessellateGridClippedExact() uses for a concave trim), so a ring may
+  // be concave, not just convex. Each ring must still be planar and
+  // simple (non-self-intersecting) - not validated, for the same reason
+  // TessellateGridClippedExact() doesn't validate `trim_polygon`'s
+  // simplicity either. Throws std::invalid_argument if fewer than 2
+  // rings are given or if ring vertex counts don't match.
   //
   // No MergeAndWeld() is needed: consecutive rings' vertices are shared
   // directly between the band before and after them, and each end cap's
