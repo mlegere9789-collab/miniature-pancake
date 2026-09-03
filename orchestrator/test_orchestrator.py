@@ -345,7 +345,7 @@ class TestLogger(TempDatabaseTestCase):
                 config,
                 "get",
                 side_effect=lambda k, d=None: (
-                    "http://x" if k == "REVIEW_NOTIFY_WEBHOOK_URL" else d
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
                 ),
             ),
             patch.object(notifier, "notify") as notify_mock,
@@ -361,7 +361,7 @@ class TestLogger(TempDatabaseTestCase):
                 config,
                 "get",
                 side_effect=lambda k, d=None: (
-                    "http://x" if k == "REVIEW_NOTIFY_WEBHOOK_URL" else d
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
                 ),
             ),
             patch.object(notifier, "notify", side_effect=notifier.NotifyError("boom")),
@@ -369,6 +369,58 @@ class TestLogger(TempDatabaseTestCase):
             rid = get_logger("deal_alert_bot").flag_for_review("Approve?")
         self.assertEqual(len(db.pending_reviews()), 1)
         self.assertEqual(db.pending_reviews()[0]["id"], rid)
+
+    def test_status_error_notifies_when_configured(self):
+        with (
+            patch.object(
+                config,
+                "get",
+                side_effect=lambda k, d=None: (
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
+                ),
+            ),
+            patch.object(notifier, "notify") as notify_mock,
+        ):
+            get_logger("deal_alert_bot").status("error", "Crashed: boom")
+        notify_mock.assert_called_once_with(
+            "http://x", "[deal_alert_bot] error: Crashed: boom", format="generic"
+        )
+
+    def test_status_error_does_not_notify_when_unconfigured(self):
+        with patch.object(notifier, "notify") as notify_mock:
+            get_logger("deal_alert_bot").status("error", "boom")
+        notify_mock.assert_not_called()
+
+    def test_status_ok_does_not_notify_even_when_configured(self):
+        with (
+            patch.object(
+                config,
+                "get",
+                side_effect=lambda k, d=None: (
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
+                ),
+            ),
+            patch.object(notifier, "notify") as notify_mock,
+        ):
+            get_logger("deal_alert_bot").status("ok", "all good")
+            get_logger("deal_alert_bot").status("running", "working")
+            get_logger("deal_alert_bot").status("warning", "hmm")
+        notify_mock.assert_not_called()
+
+    def test_status_error_survives_a_notify_failure(self):
+        with (
+            patch.object(
+                config,
+                "get",
+                side_effect=lambda k, d=None: (
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
+                ),
+            ),
+            patch.object(notifier, "notify", side_effect=notifier.NotifyError("boom")),
+        ):
+            get_logger("deal_alert_bot").status("error", "boom")
+        overview = {r["name"]: r for r in db.module_overview()}
+        self.assertEqual(overview["deal_alert_bot"]["state"], "error")
 
 
 class TestNotifier(unittest.TestCase):

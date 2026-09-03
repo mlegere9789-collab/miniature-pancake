@@ -1,14 +1,16 @@
-"""Push a review-queue item to an external webhook (stdlib only, optional).
+"""Push a notification to an external webhook (stdlib only, optional).
 
-Nothing currently pings you when something lands in the review queue — you
-only find out by opening the dashboard. This is an opt-in way to also get a
-push notification wherever a webhook can deliver one (Slack, Discord, ntfy,
-a generic relay), configured with one URL.
+Nothing currently pings you when something lands in the review queue, or
+when a module errors out — you only find out by opening the dashboard. This
+is an opt-in way to also get a push notification wherever a webhook can
+deliver one (Slack, Discord, ntfy, a generic relay), configured with one URL.
+See `logger.py` for where this is actually called: `flag_for_review(...)`
+and `status("error", ...)`.
 
-Unconfigured (`REVIEW_NOTIFY_WEBHOOK_URL` blank) is the default and is a
-silent no-op — nothing here ever becomes required just by existing.
+Unconfigured (`NOTIFY_WEBHOOK_URL` blank) is the default and is a silent
+no-op — nothing here ever becomes required just by existing.
 
-Payload shape is picked by `REVIEW_NOTIFY_FORMAT`:
+Payload shape is picked by `NOTIFY_FORMAT`:
     slack     {"text": "..."}      (Slack incoming webhooks)
     discord   {"content": "..."}   (Discord incoming webhooks; see also
                                     modules/deal_alert_bot/discord_notifier.py

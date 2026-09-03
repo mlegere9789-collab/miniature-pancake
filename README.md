@@ -55,10 +55,10 @@ explicitly rather than faked.
    (`python -m modules.<name>.run`), wired into that shared logger.
 3. **The dashboard** — everything a module logs shows up automatically: no
    extra wiring per program.
-4. **Optional review-queue notifications** — set `REVIEW_NOTIFY_WEBHOOK_URL`
-   in `.env` (a Slack or Discord webhook, or most other generic ones) and
-   `flag_for_review(...)` pushes a notification too, for every module, with
-   nothing to change per program.
+4. **Optional push notifications** — set `NOTIFY_WEBHOOK_URL` in `.env` (a
+   Slack or Discord webhook, or most other generic ones) and a flagged
+   review item or a module erroring out both push a notification too, for
+   every module, with nothing to change per program.
 
 ```
 orchestrator/    shared foundation (config, database, logger, scheduler, dashboard)
