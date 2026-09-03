@@ -272,6 +272,12 @@ npx expo start
   listener and driving the drag off PanResponder's own cumulative `dx`,
   which needs no anchor at all; also widened the touch target with
   `hitSlop` since the visible knob is much wider than the 4px handle.
+- **Upload errors returned a generic 500 instead of a proper 400.** A
+  too-large photo or non-image file hit multer's `fileFilter`/size-limit
+  rejection, which landed in the catch-all error handler as an
+  undifferentiated "internal server error." The error handler now
+  special-cases these into a clear 400 (verified live: "photo is too large
+  (10MB max)" and "only image uploads are allowed").
 - **Plant detail screen never refreshed after check-in or edit.** It only
   loaded data on first mount; navigating to Check-In or Edit and back
   returned to the same still-mounted screen instance, so a fresh check-in's

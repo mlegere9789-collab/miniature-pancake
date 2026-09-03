@@ -2,6 +2,7 @@ import "express-async-errors";
 
 import cors from "cors";
 import express from "express";
+import multer from "multer";
 import { checkinsRouter } from "./routes/checkins";
 import { gardensRouter } from "./routes/gardens";
 import { plantsRouter } from "./routes/plants";
@@ -36,6 +37,16 @@ app.use((_req, res) => {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
+
+  if (err instanceof multer.MulterError) {
+    const message = err.code === "LIMIT_FILE_SIZE" ? "photo is too large (10MB max)" : err.message;
+    return res.status(400).json({ error: message });
+  }
+  // multer's fileFilter rejects via a plain Error, not a MulterError.
+  if (err instanceof Error && err.message === "only image uploads are allowed") {
+    return res.status(400).json({ error: err.message });
+  }
+
   const isPrismaNotFound =
     typeof err === "object" && err !== null && "code" in err && (err as { code: unknown }).code === "P2025";
   if (isPrismaNotFound) {
