@@ -216,6 +216,27 @@ export function createObservationForUser(
   return observation;
 }
 
+/**
+ * Permanent account deletion. This is full erasure, not the anonymization
+ * option from Part D.1 (keep contribution history, drop identity) — that's
+ * a separate, still-unbuilt feature. Deleting removes the account, its
+ * sessions, every observation it owns (and comments on those, since they'd
+ * be orphaned otherwise), and every comment it authored elsewhere.
+ */
+export function deleteUserAccount(userId: string) {
+  const db = readDb();
+  const ownedObservationIds = new Set(
+    db.observations.filter((o) => o.userId === userId).map((o) => o.id),
+  );
+  db.users = db.users.filter((u) => u.id !== userId);
+  db.sessions = db.sessions.filter((s) => s.userId !== userId);
+  db.observations = db.observations.filter((o) => o.userId !== userId);
+  db.comments = db.comments.filter(
+    (c) => c.userId !== userId && !ownedObservationIds.has(c.observationId),
+  );
+  writeDb(db);
+}
+
 export function deleteObservationForUser(userId: string, id: string) {
   const db = readDb();
   db.observations = db.observations.filter((o) => !(o.id === id && o.userId === userId));
