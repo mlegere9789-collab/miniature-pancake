@@ -63,10 +63,14 @@ public class SingleInstanceGuardTests
         // A blocking Wait, not await: Mutex.ReleaseMutex (inside owner's Dispose below)
         // demands the exact OS thread that acquired it, and an awaited continuation is
         // not guaranteed to resume on that same thread. Keeping this whole test method
-        // synchronous keeps Acquire and Dispose on the one thread throughout.
+        // synchronous keeps Acquire and Dispose on the one thread throughout -- xUnit1031
+        // exists for a real reason in general, but following it here would reintroduce
+        // the exact ApplicationException this pattern was chosen to avoid.
+#pragma warning disable xUnit1031
         Assert.True(receivedFiles.Task.Wait(TimeSpan.FromSeconds(5)), "Timed out waiting for the forwarded files.");
 
         Assert.Equal(sent, receivedFiles.Task.Result);
+#pragma warning restore xUnit1031
     }
 
     [Fact]
@@ -81,8 +85,10 @@ public class SingleInstanceGuardTests
 
         // See the comment in the test above: blocking Wait, not await, to keep Acquire
         // and Dispose (via the using above) on the same OS thread.
+#pragma warning disable xUnit1031
         Assert.True(invoked.Task.Wait(TimeSpan.FromSeconds(5)), "Timed out waiting for the callback.");
 
         Assert.Empty(invoked.Task.Result);
+#pragma warning restore xUnit1031
     }
 }
