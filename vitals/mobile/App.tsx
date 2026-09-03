@@ -1,5 +1,6 @@
-import { NavigationContainer } from "@react-navigation/native";
+import { createNavigationContainerRef, NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
+import * as Notifications from "expo-notifications";
 import React, { useEffect, useRef, useState } from "react";
 import { AppState, AppStateStatus, Pressable, Text, View } from "react-native";
 import { AddPlantScreen } from "./src/screens/AddPlantScreen";
@@ -33,6 +34,21 @@ type RootStackParamList = {
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
+const navigationRef = createNavigationContainerRef<RootStackParamList>();
+// Cold-start's getLastNotificationResponseAsync() can resolve before the
+// NavigationContainer is ready to navigate; stash it here and flush once
+// onReady fires instead of dropping the tap.
+let pendingNotificationResponse: Notifications.NotificationResponse | null = null;
+
+function navigateToNotificationTarget(response: Notifications.NotificationResponse) {
+  const plantId = response.notification.request.content.data?.plantId;
+  if (typeof plantId !== "string") return;
+  if (!navigationRef.isReady()) {
+    pendingNotificationResponse = response;
+    return;
+  }
+  navigationRef.navigate("PlantDetail", { plantId });
+}
 
 export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
@@ -77,8 +93,29 @@ export default function App() {
     return () => subscription.remove();
   }, []);
 
+  useEffect(() => {
+    // Tapping a check-in reminder should jump straight to that plant, not
+    // just open the app to the dashboard — the notification carries
+    // plantId (see scheduleCheckInReminder) specifically for this. Covers
+    // both the cold-start case (app was fully closed) and tapping while
+    // already running/backgrounded.
+    Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (response) navigateToNotificationTarget(response);
+    });
+    const subscription = Notifications.addNotificationResponseReceivedListener(navigateToNotificationTarget);
+    return () => subscription.remove();
+  }, []);
+
   return (
-    <NavigationContainer>
+    <NavigationContainer
+      ref={navigationRef}
+      onReady={() => {
+        if (pendingNotificationResponse) {
+          navigateToNotificationTarget(pendingNotificationResponse);
+          pendingNotificationResponse = null;
+        }
+      }}
+    >
       <Stack.Navigator screenOptions={{ headerTintColor: theme.color.forestGreen }}>
         <Stack.Screen name="Dashboard" options={({ navigation }) => ({
           title: "Vitals",

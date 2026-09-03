@@ -114,6 +114,11 @@ vitals/
     already existed but nothing was ever calling `flushCheckInQueue`.
 7. **Push notification reminders** (`mobile/src/services/notifications.ts`) —
    local, per-plant reminders on each plant's check-in cadence (Expo Notifications).
+   Tapping a reminder now deep-links straight to that plant's detail screen
+   (`App.tsx`'s notification-response listener + `createNavigationContainerRef`)
+   instead of just opening to the dashboard — the notification's `plantId`
+   payload existed already but nothing had ever consumed it. Handles both
+   a cold start and tapping while the app is already running/backgrounded.
    Phase 2 can swap these for server-driven push once predictive/weather-aware
    alerts (spec §4.5) need a backend trigger.
 8. **Photo timeline** (`mobile/src/components/BeforeAfterSlider.tsx`,
