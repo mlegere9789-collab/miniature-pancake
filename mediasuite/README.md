@@ -124,7 +124,11 @@ Convert.
   resume, live progress, concurrency auto-tuned to the core count and adjustable while
   running, and a private scratch folder per job that is cleaned up afterwards
 - **Queue UI** — status strip plus a live panel: one row per job with its own progress
-  bar and cancel button
+  bar and cancel button. A failed row also gets a "Copy details" button carrying the
+  tool's full stderr/stdout, not just the one-line summary — `JobResult.Diagnostics`
+  was being captured in every engine's `ToolExecutionException` all along and then
+  discarded before this, which would have left a real failure with no way to see what
+  the underlying tool actually said
 - **Image module** — convert (including camera RAW via LibRaw), compress, resize, crop,
   rotate, flip, enlarge and PNG-to-SVG tracing, driven by ImageMagick and Potrace
 - **Video and audio module** — convert, compress (by quality or by target size), extract
@@ -189,6 +193,12 @@ Convert.
   instead of an empty shell you then have to feed manually. The extension list is kept in
   sync with the format catalogue by a real test (`InstallerFileAssociationTests`) that
   reads the actual `.iss` file off disk and fails the moment they drift apart
+- **Single instance** — opening a second file while MediaSuite is already running (via
+  "Open with", a dragged file, or just launching it again) hands that file to the window
+  already open and brings it to the front, instead of spawning a redundant second process
+  with its own queue, settings writer and tool discovery. A named mutex decides who is
+  first; every later launch forwards its file arguments to that instance over a local
+  named pipe and exits immediately rather than doing any startup work of its own
 - **Real GitHub release** — every push to `main` publishes the CI-built installer to this
   repo's Releases page, gated so a PR build never does it. Before this, the only way to
   get the installer was a 90-day CI artifact behind a GitHub login, which quietly broke

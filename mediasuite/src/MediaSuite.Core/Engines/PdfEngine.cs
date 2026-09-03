@@ -65,7 +65,7 @@ public sealed class PdfEngine : ExternalProcessEngine
         }
         catch (ToolExecutionException ex)
         {
-            return JobResult.Failure(ex.Message);
+            return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -310,7 +310,8 @@ public sealed class PdfEngine : ExternalProcessEngine
         if (!result.IsSuccess || !int.TryParse(result.StandardOutput.Trim(), out var pages) || pages <= 0)
         {
             throw new ToolExecutionException(
-                $"QPDF could not read the page count of '{Path.GetFileName(inputPath)}': {result.DescribeFailure()}");
+                $"QPDF could not read the page count of '{Path.GetFileName(inputPath)}': {result.DescribeFailure()}",
+                result.FullOutput());
         }
 
         return pages;
@@ -382,7 +383,8 @@ public sealed class PdfEngine : ExternalProcessEngine
         if (!result.IsSuccess)
         {
             throw new ToolExecutionException(
-                $"MuPDF could not extract images from '{Path.GetFileName(inputPath)}': {result.DescribeFailure()}");
+                $"MuPDF could not extract images from '{Path.GetFileName(inputPath)}': {result.DescribeFailure()}",
+                result.FullOutput());
         }
 
         var produced = NaturalSort(Directory.GetFiles(stepFolder));

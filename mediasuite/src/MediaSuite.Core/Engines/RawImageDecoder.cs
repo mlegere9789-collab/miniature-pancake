@@ -51,7 +51,7 @@ public sealed class RawImageDecoder
         if (!result.IsSuccess)
         {
             throw new ToolExecutionException(
-                $"Could not decode '{Path.GetFileName(rawPath)}': {result.DescribeFailure()}");
+                $"Could not decode '{Path.GetFileName(rawPath)}': {result.DescribeFailure()}", result.FullOutput());
         }
 
         return FindDecodedFile(decodeFolder, copiedRaw, rawPath);

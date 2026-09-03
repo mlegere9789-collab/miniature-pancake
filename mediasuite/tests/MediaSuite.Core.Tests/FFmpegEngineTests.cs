@@ -216,6 +216,12 @@ public class FFmpegEngineTests : IDisposable
         Assert.Equal(JobStatus.Failed, result.Status);
         Assert.Contains("Invalid data found", result.ErrorMessage!, StringComparison.Ordinal);
         Assert.Contains("broken.mp4", result.ErrorMessage!, StringComparison.Ordinal);
+
+        // ErrorMessage is deliberately one line; Diagnostics is where the queue panel's
+        // "Copy details" button gets the full stderr FFmpeg actually wrote, not just the
+        // one summarised line.
+        Assert.Contains("Invalid data found when processing input", result.Diagnostics!, StringComparison.Ordinal);
+        Assert.Contains("Exit code: 1", result.Diagnostics!, StringComparison.Ordinal);
     }
 
     [Fact]

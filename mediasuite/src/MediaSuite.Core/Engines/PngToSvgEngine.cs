@@ -44,7 +44,7 @@ public sealed class PngToSvgEngine : ExternalProcessEngine
         }
         catch (ToolExecutionException ex)
         {
-            return JobResult.Failure(ex.Message);
+            return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
         }
 
         var workingDirectory = ResolveWorkingDirectory(spec);
@@ -83,7 +83,7 @@ public sealed class PngToSvgEngine : ExternalProcessEngine
             }
             catch (ToolExecutionException ex)
             {
-                return JobResult.Failure(ex.Message);
+                return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
             }
         }
 

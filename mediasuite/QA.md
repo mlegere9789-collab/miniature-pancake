@@ -124,6 +124,17 @@ that is easy to mistake for a bug — check those first.
 - [ ] Confirm "face enhance" is not offered anywhere in the UI — it was deliberately not
   implemented (GFPGAN is not bundled) rather than faked with the general model.
 
+## Job failure diagnostics
+
+- [ ] Force a real failure (e.g. rename a tool's exe in `tools\` so it can't be found
+  mid-batch, or feed a genuinely corrupt file through a conversion) and confirm the
+  failed row in the queue panel shows a "Copy details" button. Click it, paste the
+  clipboard somewhere, and confirm it contains both the short failure message and the
+  tool's actual stderr/stdout, not just "Failed" or a bare exit code. Confirm a
+  canceled or successful job never shows this button, and that a failure with nothing
+  useful to add (e.g. "tool is not installed") doesn't show it either — there's nothing
+  a "details" button would add over the message already shown.
+
 ## Custom presets
 
 - [ ] Pick a tool, select the Custom preset, type a couple of real advanced options (an
@@ -186,6 +197,13 @@ neither of which CI or a fake process runner can see.
   shortcut, or `MediaSuite.exe` with no arguments) and confirm it opens to the Convert
   page with nothing pre-staged — the file-preload path must never leak into a normal
   launch.
+- [ ] With MediaSuite already open, launch it again from the Start Menu (or run
+  `MediaSuite.exe` a second time) and confirm no second window appears — the existing
+  window should just come to the front. Minimize it first and confirm the second launch
+  restores it rather than leaving it minimized in the background. With it already open,
+  open a supported file via "Open with" or drag one onto the exe and confirm the file
+  lands on the Convert page of the *existing* window (still just one window, one process
+  in Task Manager), not a second instance.
 
 ## Known, deliberate gaps — do not report these as bugs
 

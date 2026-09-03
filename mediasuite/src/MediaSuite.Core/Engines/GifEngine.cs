@@ -45,7 +45,7 @@ public sealed class GifEngine : ExternalProcessEngine
         }
         catch (ToolExecutionException ex)
         {
-            return JobResult.Failure(ex.Message);
+            return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
         }
 
         if (spec.InputPaths.Count == 0)
@@ -85,7 +85,7 @@ public sealed class GifEngine : ExternalProcessEngine
         }
         catch (ToolExecutionException ex)
         {
-            return JobResult.Failure(ex.Message);
+            return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -198,7 +198,8 @@ public sealed class GifEngine : ExternalProcessEngine
             {
                 throw new ToolExecutionException(
                     $"FFmpeg could not process '{label}' ({current.Description.ToLowerInvariant()}): "
-                    + result.DescribeFailure());
+                    + result.DescribeFailure(),
+                    result.FullOutput());
             }
         }
     }
