@@ -3,6 +3,8 @@
 A module gets a logger scoped to its own name and uses it to record
 activity, heartbeat status, earnings, and items needing your approval —
 all of which land in the shared SQLite database and show up on the dashboard.
+If `NOTIFY_WEBHOOK_URL` is set (see notifier.py), a review flag or a status
+of "error" also pushes a webhook notification — no per-module code needed.
 
 Example (from any script under ``modules/``)::
 
@@ -87,6 +89,8 @@ class ModuleLogger:
     def status(self, state: str, detail: str = "") -> None:
         """Set this module's current state (idle|running|ok|warning|error)."""
         db.set_status(self.module, state, detail)
+        if state == "error":
+            self._notify(f"error: {detail}" if detail else "error")
 
     # -- money -------------------------------------------------------------- #
     def earning(
@@ -122,19 +126,19 @@ class ModuleLogger:
             self.module, title, description=description, payload=payload
         )
         self._log.info("flagged for review (#%d): %s", rid, title)
-        self._notify_review(title)
+        self._notify(title)
         return rid
 
-    def _notify_review(self, title: str) -> None:
+    def _notify(self, text: str) -> None:
         """Best-effort push notification. Never raises — see notifier.py."""
-        webhook_url = config.get("REVIEW_NOTIFY_WEBHOOK_URL")
+        webhook_url = config.get("NOTIFY_WEBHOOK_URL")
         if not webhook_url:
             return
-        fmt = config.get("REVIEW_NOTIFY_FORMAT", "generic") or "generic"
+        fmt = config.get("NOTIFY_FORMAT", "generic") or "generic"
         try:
-            notifier.notify(webhook_url, f"[{self.module}] {title}", format=fmt)
+            notifier.notify(webhook_url, f"[{self.module}] {text}", format=fmt)
         except notifier.NotifyError as exc:
-            self._log.warning(f"Review notification failed: {exc}")
+            self._log.warning(f"Notification failed: {exc}")
 
 
 def get_logger(module: str) -> ModuleLogger:

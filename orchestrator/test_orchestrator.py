@@ -15,6 +15,7 @@ import csv
 import io
 import json
 import os
+import sys
 import tempfile
 import threading
 import unittest
@@ -214,6 +215,39 @@ class TestReviewQueue(TempDatabaseTestCase):
             db.resolve_review_item(rid, "approved")
         self.assertEqual(len(db.resolved_reviews(limit=2)), 2)
 
+    def test_list_resolved_reviews_empty_before_any_decision(self):
+        db.add_review_item("deal_alert_bot", "t")
+        self.assertEqual(db.list_resolved_reviews(), [])
+
+    def test_list_resolved_reviews_oldest_first_and_unlimited(self):
+        ids = [db.add_review_item("deal_alert_bot", f"item {i}") for i in range(15)]
+        for rid in ids:
+            db.resolve_review_item(rid, "approved")
+        rows = db.list_resolved_reviews()
+        self.assertEqual(len(rows), 15)
+        self.assertEqual([r["id"] for r in rows], ids)
+
+    def test_list_resolved_reviews_excludes_pending(self):
+        rid = db.add_review_item("deal_alert_bot", "t")
+        db.add_review_item("deal_alert_bot", "still pending")
+        db.resolve_review_item(rid, "approved")
+        self.assertEqual(len(db.list_resolved_reviews()), 1)
+
+    def test_list_resolved_reviews_filters_by_module(self):
+        a = db.add_review_item("deal_alert_bot", "a")
+        b = db.add_review_item("micro_saas", "b")
+        db.resolve_review_item(a, "approved")
+        db.resolve_review_item(b, "rejected")
+        rows = db.list_resolved_reviews(module="micro_saas")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["module"], "micro_saas")
+
+    def test_list_resolved_reviews_filters_by_since(self):
+        rid = db.add_review_item("deal_alert_bot", "t")
+        db.resolve_review_item(rid, "approved")
+        past_the_future = "2099-01-01"
+        self.assertEqual(db.list_resolved_reviews(since=past_the_future), [])
+
     def test_module_overview_pending_count(self):
         db.add_review_item("deal_alert_bot", "a")
         db.add_review_item("deal_alert_bot", "b")
@@ -345,7 +379,7 @@ class TestLogger(TempDatabaseTestCase):
                 config,
                 "get",
                 side_effect=lambda k, d=None: (
-                    "http://x" if k == "REVIEW_NOTIFY_WEBHOOK_URL" else d
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
                 ),
             ),
             patch.object(notifier, "notify") as notify_mock,
@@ -361,7 +395,7 @@ class TestLogger(TempDatabaseTestCase):
                 config,
                 "get",
                 side_effect=lambda k, d=None: (
-                    "http://x" if k == "REVIEW_NOTIFY_WEBHOOK_URL" else d
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
                 ),
             ),
             patch.object(notifier, "notify", side_effect=notifier.NotifyError("boom")),
@@ -369,6 +403,58 @@ class TestLogger(TempDatabaseTestCase):
             rid = get_logger("deal_alert_bot").flag_for_review("Approve?")
         self.assertEqual(len(db.pending_reviews()), 1)
         self.assertEqual(db.pending_reviews()[0]["id"], rid)
+
+    def test_status_error_notifies_when_configured(self):
+        with (
+            patch.object(
+                config,
+                "get",
+                side_effect=lambda k, d=None: (
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
+                ),
+            ),
+            patch.object(notifier, "notify") as notify_mock,
+        ):
+            get_logger("deal_alert_bot").status("error", "Crashed: boom")
+        notify_mock.assert_called_once_with(
+            "http://x", "[deal_alert_bot] error: Crashed: boom", format="generic"
+        )
+
+    def test_status_error_does_not_notify_when_unconfigured(self):
+        with patch.object(notifier, "notify") as notify_mock:
+            get_logger("deal_alert_bot").status("error", "boom")
+        notify_mock.assert_not_called()
+
+    def test_status_ok_does_not_notify_even_when_configured(self):
+        with (
+            patch.object(
+                config,
+                "get",
+                side_effect=lambda k, d=None: (
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
+                ),
+            ),
+            patch.object(notifier, "notify") as notify_mock,
+        ):
+            get_logger("deal_alert_bot").status("ok", "all good")
+            get_logger("deal_alert_bot").status("running", "working")
+            get_logger("deal_alert_bot").status("warning", "hmm")
+        notify_mock.assert_not_called()
+
+    def test_status_error_survives_a_notify_failure(self):
+        with (
+            patch.object(
+                config,
+                "get",
+                side_effect=lambda k, d=None: (
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
+                ),
+            ),
+            patch.object(notifier, "notify", side_effect=notifier.NotifyError("boom")),
+        ):
+            get_logger("deal_alert_bot").status("error", "boom")
+        overview = {r["name"]: r for r in db.module_overview()}
+        self.assertEqual(overview["deal_alert_bot"]["state"], "error")
 
 
 class TestNotifier(unittest.TestCase):
@@ -874,6 +960,54 @@ class TestCmdExportEarnings(TempDatabaseTestCase):
             self.assertEqual(len(rows), 1)
 
 
+class TestCmdExportReviews(TempDatabaseTestCase):
+    def test_writes_csv_header_when_empty(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = cli.main(["export-reviews"])
+        self.assertEqual(code, 0)
+        rows = list(csv.reader(io.StringIO(buf.getvalue())))
+        self.assertEqual(rows, [db.REVIEWS_CSV_FIELDS])
+
+    def test_writes_one_row_per_decision(self):
+        rid = db.add_review_item("deal_alert_bot", "Approve this?")
+        db.resolve_review_item(rid, "approved", note="looked fine")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = cli.main(["export-reviews"])
+        self.assertEqual(code, 0)
+        rows = list(csv.DictReader(io.StringIO(buf.getvalue())))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["module"], "deal_alert_bot")
+        self.assertEqual(rows[0]["title"], "Approve this?")
+        self.assertEqual(rows[0]["status"], "approved")
+        self.assertEqual(rows[0]["resolution_note"], "looked fine")
+
+    def test_filters_by_module(self):
+        a = db.add_review_item("deal_alert_bot", "a")
+        b = db.add_review_item("micro_saas", "b")
+        db.resolve_review_item(a, "approved")
+        db.resolve_review_item(b, "rejected")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.main(["export-reviews", "--module", "micro_saas"])
+        rows = list(csv.DictReader(io.StringIO(buf.getvalue())))
+        self.assertEqual([r["module"] for r in rows], ["micro_saas"])
+
+    def test_writes_to_file_when_out_given(self):
+        rid = db.add_review_item("deal_alert_bot", "t")
+        db.resolve_review_item(rid, "approved")
+        with tempfile.TemporaryDirectory() as d:
+            out_path = Path(d) / "reviews.csv"
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = cli.main(["export-reviews", "--out", str(out_path)])
+            self.assertEqual(code, 0)
+            self.assertIn("Wrote 1 decision(s)", buf.getvalue())
+            rows = list(csv.DictReader(out_path.open(encoding="utf-8")))
+            self.assertEqual(len(rows), 1)
+
+
 class TestDashboardHelpers(unittest.TestCase):
     def test_fmt_money(self):
         self.assertEqual(dashboard._fmt_money(1234.5), "$1,234.50")
@@ -886,6 +1020,33 @@ class TestDashboardHelpers(unittest.TestCase):
         self.assertEqual(dashboard._esc(None), "")
 
 
+class TestTriggerRun(unittest.TestCase):
+    def test_unknown_module_returns_false_and_does_not_launch(self):
+        with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
+            self.assertFalse(dashboard.trigger_run("not_a_real_module"))
+        popen_mock.assert_not_called()
+
+    def test_known_module_launches_and_returns_true(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
+                    self.assertTrue(dashboard.trigger_run("deal_alert_bot"))
+                popen_mock.assert_called_once()
+                args, kwargs = popen_mock.call_args
+                self.assertEqual(
+                    args[0],
+                    [sys.executable, "-m", "modules.deal_alert_bot.run"],
+                )
+                self.assertEqual(kwargs["cwd"], str(Path(d)))
+                self.assertTrue(
+                    (Path(d) / "data" / "logs" / "deal_alert_bot.log").exists()
+                )
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+
 class TestRenderEarningsCsv(TempDatabaseTestCase):
     def test_header_only_when_empty(self):
         rows = list(csv.reader(io.StringIO(dashboard.render_earnings_csv())))
@@ -896,6 +1057,21 @@ class TestRenderEarningsCsv(TempDatabaseTestCase):
         db.record_earning("micro_saas", 2.0, occurred_at="2026-01-01")
         rows = list(csv.DictReader(io.StringIO(dashboard.render_earnings_csv())))
         self.assertEqual([r["module"] for r in rows], ["micro_saas", "deal_alert_bot"])
+
+
+class TestRenderReviewsCsv(TempDatabaseTestCase):
+    def test_header_only_when_empty(self):
+        rows = list(csv.reader(io.StringIO(dashboard.render_reviews_csv())))
+        self.assertEqual(rows, [db.REVIEWS_CSV_FIELDS])
+
+    def test_one_row_per_decision(self):
+        rid = db.add_review_item("deal_alert_bot", "Approve?")
+        db.resolve_review_item(rid, "approved", note="fine")
+        rows = list(csv.DictReader(io.StringIO(dashboard.render_reviews_csv())))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["title"], "Approve?")
+        self.assertEqual(rows[0]["status"], "approved")
+        self.assertEqual(rows[0]["resolution_note"], "fine")
 
 
 class TestRenderPage(TempDatabaseTestCase):
@@ -930,6 +1106,21 @@ class TestRenderPage(TempDatabaseTestCase):
     def test_includes_csv_download_link(self):
         page = dashboard.render_page()
         self.assertIn('href="/export/earnings.csv"', page)
+
+    def test_includes_reviews_csv_download_link(self):
+        page = dashboard.render_page()
+        self.assertIn('href="/export/reviews.csv"', page)
+
+    def test_includes_a_run_now_button_per_module(self):
+        page = dashboard.render_page()
+        for name in MODULES:
+            self.assertIn(f'value="{name}"', page)
+        self.assertIn("Run now", page)
+
+    def test_running_module_shows_disabled_button(self):
+        db.set_status("deal_alert_bot", "running", "Scanning")
+        page = dashboard.render_page()
+        self.assertIn("Running…", page)
 
     def test_includes_resolved_decisions(self):
         rid = db.add_review_item("deal_alert_bot", "Post this deal?")
@@ -990,6 +1181,16 @@ class TestDashboardHandler(TempDatabaseTestCase):
         rows = list(csv.DictReader(io.StringIO(resp.read().decode("utf-8"))))
         self.assertEqual(rows[0]["module"], "deal_alert_bot")
 
+    def test_export_reviews_csv_returns_csv_attachment(self):
+        rid = db.add_review_item("deal_alert_bot", "Approve?")
+        db.resolve_review_item(rid, "approved")
+        resp = self._get("/export/reviews.csv")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("text/csv", resp.headers["Content-Type"])
+        self.assertIn("attachment", resp.headers["Content-Disposition"])
+        rows = list(csv.DictReader(io.StringIO(resp.read().decode("utf-8"))))
+        self.assertEqual(rows[0]["module"], "deal_alert_bot")
+
     def test_review_post_resolves_item_and_redirects(self):
         rid = db.add_review_item("deal_alert_bot", "Approve?")
         body = f"id={rid}&decision=approved".encode("ascii")
@@ -1000,6 +1201,34 @@ class TestDashboardHandler(TempDatabaseTestCase):
         opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
         opener.open(req, timeout=5)
         self.assertEqual(db.pending_reviews(), [])
+
+    def test_run_post_triggers_module_and_redirects(self):
+        body = b"module=deal_alert_bot"
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/run", data=body, method="POST"
+        )
+        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
+                    resp = opener.open(req, timeout=5)
+            finally:
+                dashboard.PROJECT_ROOT = orig
+        self.assertEqual(resp.status, 200)  # followed the redirect to "/"
+        popen_mock.assert_called_once()
+
+    def test_run_post_ignores_unknown_module(self):
+        body = b"module=not_a_real_module"
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/run", data=body, method="POST"
+        )
+        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
+        with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
+            resp = opener.open(req, timeout=5)
+        self.assertEqual(resp.status, 200)
+        popen_mock.assert_not_called()
 
 
 if __name__ == "__main__":

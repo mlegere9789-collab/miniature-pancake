@@ -83,18 +83,23 @@ Open **http://127.0.0.1:8787** in your browser. You'll see:
 - a summary strip (total earnings, items awaiting review) with a **Download
   CSV** link for the full earnings ledger (bookkeeping/taxes — also
   available as `python3 -m orchestrator export-earnings`),
-- a card per module (status, last activity, earnings, pending reviews),
+- a card per module (status, last activity, earnings, pending reviews) with
+  a **Run now** button — trigger that module immediately instead of waiting
+  for its schedule,
 - the **review queue** with working **Approve** / **Reject** buttons,
 - **Recently resolved**, an audit trail of your last few approve/reject
-  decisions (so you can see what you decided, and when),
+  decisions (so you can see what you decided, and when), with its own
+  **Download CSV** link for the complete decision log (also available as
+  `python3 -m orchestrator export-reviews`),
 - a recent-activity feed.
 
-Want a push notification the moment anything lands in the review queue,
-instead of checking the dashboard? Set `REVIEW_NOTIFY_WEBHOOK_URL` in
-`.env` to a Slack or Discord incoming webhook URL (`REVIEW_NOTIFY_FORMAT`
-picks the payload shape — `slack`, `discord`, or the default `generic`,
-which works with most other webhook receivers too). Blank = off, no
-notifications sent, same idle-by-default rule as everything else here.
+Want a push notification the moment anything lands in the review queue, or
+a module errors out, instead of checking the dashboard? Set
+`NOTIFY_WEBHOOK_URL` in `.env` to a Slack or Discord incoming webhook URL
+(`NOTIFY_FORMAT` picks the payload shape — `slack`, `discord`, or the
+default `generic`, which works with most other webhook receivers too).
+Blank = off, no notifications sent, same idle-by-default rule as everything
+else here.
 
 Stop the dashboard with **Ctrl-C**. To wipe the sample data and start clean,
 delete `data/orchestrator.db` and run `init` again.

@@ -5,6 +5,7 @@ that reads the shared SQLite database and shows:
 
 * a summary strip (total earnings, pending reviews),
 * one card per module (status, last activity, earnings, pending count),
+  with a **Run now** button to trigger that module immediately,
 * the review queue, with working **Approve** / **Reject** buttons,
 * a recent-activity feed,
 * a **Download CSV** link for the full earnings ledger (bookkeeping/taxes).
@@ -25,12 +26,16 @@ import csv
 import html
 import io
 import json
+import subprocess
+import sys
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import database as db
 from .config import config
-from .database import EARNINGS_CSV_FIELDS
+from .database import EARNINGS_CSV_FIELDS, REVIEWS_CSV_FIELDS
+from .paths import MODULES, PROJECT_ROOT
 
 _STATE_COLORS = {
     "ok": "#1a7f37",
@@ -45,6 +50,40 @@ def _fmt_money(v: float) -> str:
     return f"${v:,.2f}"
 
 
+def trigger_run(module: str) -> bool:
+    """Launch `python -m modules.<module>.run` in the background.
+
+    Returns False without doing anything for an unrecognized module name —
+    the caller (an HTTP form field) is untrusted input, and `module` ends up
+    in an argv list handed to a real subprocess, so this is the one gate
+    keeping a request from running anything other than one of the five known
+    programs. No shell involved, so there's no interpolation to exploit
+    either way, but the allowlist is the real defense.
+
+    Output is appended to the same `data/logs/<module>.log` file the
+    scheduler's own portable daemon writes to, so a manual run and a
+    scheduled one show up in the same place.
+    """
+    if module not in MODULES:
+        return False
+    log_dir = PROJECT_ROOT / "data" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logfile = log_dir / f"{module}.log"
+    with open(logfile, "a", encoding="utf-8") as fh:
+        fh.write(
+            f"\n===== manual run from dashboard "
+            f"{datetime.now(timezone.utc).isoformat()} =====\n"
+        )
+        fh.flush()
+        subprocess.Popen(
+            [sys.executable, "-m", f"modules.{module}.run"],
+            cwd=str(PROJECT_ROOT),
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+        )
+    return True
+
+
 def _esc(v: object) -> str:
     return html.escape(str(v if v is not None else ""))
 
@@ -55,6 +94,15 @@ def render_earnings_csv() -> str:
     writer.writeheader()
     for row in db.list_earnings():
         writer.writerow({field: row[field] for field in EARNINGS_CSV_FIELDS})
+    return buf.getvalue()
+
+
+def render_reviews_csv() -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=REVIEWS_CSV_FIELDS)
+    writer.writeheader()
+    for row in db.list_resolved_reviews():
+        writer.writerow({field: row[field] for field in REVIEWS_CSV_FIELDS})
     return buf.getvalue()
 
 
@@ -75,6 +123,7 @@ def render_page() -> str:
             if pending
             else ""
         )
+        running = m.get("state") == "running"
         cards.append(
             f"""
         <div class="card">
@@ -87,6 +136,12 @@ def render_page() -> str:
           <p class="last">{_esc(m.get('last_activity') or 'No activity yet')}</p>
           <p class="ts">{_esc(m.get('last_activity_at') or '')}</p>
           {badge}
+          <form method="POST" action="/run" class="run-form">
+            <input type="hidden" name="module" value="{_esc(m['name'])}">
+            <button class="run-btn"{' disabled' if running else ''}>
+              {'Running…' if running else 'Run now'}
+            </button>
+          </form>
         </div>"""
         )
 
@@ -215,6 +270,9 @@ _TEMPLATE = """<!doctype html>
   .ts {{ color: #8c959f; font-size: 11px; margin: 0; }}
   .pill {{ display: inline-block; margin-top: 10px; font-size: 12px;
            padding: 2px 8px; border-radius: 999px; }}
+  .run-form {{ margin-top: 12px; }}
+  .run-btn {{ width: 100%; background: #24292f; }}
+  .run-btn:disabled {{ background: #8c959f; cursor: default; }}
   table.review {{ width: 100%; border-collapse: collapse; background: #fff;
                   border: 1px solid #d0d7de; border-radius: 10px; overflow: hidden; }}
   table.review th, table.review td {{ text-align: left; padding: 10px 12px;
@@ -256,6 +314,7 @@ _TEMPLATE = """<!doctype html>
   {reviews}
 
   <h2>Recently resolved</h2>
+  <p class="export"><a href="/export/reviews.csv">Download full decision log (CSV)</a></p>
   {resolved}
 
   <h2>Recent activity</h2>
@@ -293,6 +352,14 @@ class Handler(BaseHTTPRequestHandler):
                     "Content-Disposition": 'attachment; filename="earnings.csv"'
                 },
             )
+        elif parsed.path == "/export/reviews.csv":
+            self._send(
+                render_reviews_csv(),
+                ctype="text/csv",
+                extra_headers={
+                    "Content-Disposition": 'attachment; filename="reviews.csv"'
+                },
+            )
         elif parsed.path == "/api/overview":
             self._send(
                 json.dumps(
@@ -310,17 +377,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
-        if parsed.path != "/review":
+        if parsed.path == "/review":
+            length = int(self.headers.get("Content-Length", 0))
+            form = parse_qs(self.rfile.read(length).decode("utf-8"))
+            try:
+                item_id = int(form.get("id", ["0"])[0])
+                decision = form.get("decision", [""])[0]
+                db.resolve_review_item(item_id, decision)
+            except (ValueError, KeyError):
+                pass
+        elif parsed.path == "/run":
+            length = int(self.headers.get("Content-Length", 0))
+            form = parse_qs(self.rfile.read(length).decode("utf-8"))
+            trigger_run(form.get("module", [""])[0])
+        else:
             self._send("<h1>404</h1>", status=404)
             return
-        length = int(self.headers.get("Content-Length", 0))
-        form = parse_qs(self.rfile.read(length).decode("utf-8"))
-        try:
-            item_id = int(form.get("id", ["0"])[0])
-            decision = form.get("decision", [""])[0]
-            db.resolve_review_item(item_id, decision)
-        except (ValueError, KeyError):
-            pass
         # Redirect back to the dashboard (Post/Redirect/Get).
         self.send_response(303)
         self.send_header("Location", "/")
