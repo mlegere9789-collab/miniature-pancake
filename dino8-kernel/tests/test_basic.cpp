@@ -353,6 +353,68 @@ void TestBrepTrimmedPlanarFace() {
         "trimmed face's physical area matches the exact scaled trim-loop area");
 }
 
+void TestWeldAcrossIndependentlyParameterizedSurfaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Every weld test so far (Box, Sphere) welds vertices that come from
+  // literally the same double-precision Point3d values, or from one
+  // surface's own self-intersection with itself - not the general case
+  // this README flags as still open: two *independently constructed*
+  // surfaces whose shared boundary is only geometrically coincident, not
+  // parametrically identical. This gets closer: two adjacent unit
+  // squares sharing the edge x=1, built as separate single-face Breps
+  // (so Tessellate() and MergeAndWeld() see them exactly as if they'd
+  // come from unrelated parts of a model), where the second square's
+  // surface is degree-elevated (bilinear -> bicubic) after construction.
+  // Degree elevation is mathematically shape-preserving but re-derives
+  // the control points/knot vector through real floating-point
+  // arithmetic, so evaluating its shared edge no longer goes through the
+  // same computation path as the first square's - a real, not
+  // artificial, test of whether MergeAndWeld's tolerance is doing its
+  // job rather than merely matching identical bit patterns.
+  const std::vector<Point3d> grid_a = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const Brep face_a = Brep::FromSurface(
+      NurbsSurface::FromControlGrid(grid_a, 2, 2, /*u_degree=*/1, /*v_degree=*/1));
+
+  const std::vector<Point3d> grid_b = {
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+      Point3d(2, 0, 0),
+      Point3d(2, 1, 0),
+  };
+  NurbsSurface surface_b =
+      NurbsSurface::FromControlGrid(grid_b, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  const Result elevate_result = surface_b.ElevateDegree(/*direction=*/0, /*new_degree=*/3);
+  Check(elevate_result == Result::Ok, "surface B's degree elevation succeeded");
+  const Brep face_b = Brep::FromSurface(surface_b);
+
+  auto meshes_a = face_a.Tessellate(/*u_divisions=*/4, /*v_divisions=*/4);
+  auto meshes_b = face_b.Tessellate(/*u_divisions=*/4, /*v_divisions=*/4);
+  std::vector<Mesh> combined;
+  combined.insert(combined.end(), meshes_a.begin(), meshes_a.end());
+  combined.insert(combined.end(), meshes_b.begin(), meshes_b.end());
+
+  const auto welded = Mesh::MergeAndWeld(combined);
+
+  // Each face's own 4x4 grid has 25 vertices; the shared edge (5 points)
+  // is duplicated between them before welding (50 raw), so a correct
+  // weld collapses exactly those 5 shared points, leaving 45.
+  Check(welded.VertexCount() == 45,
+        "welding two independently-parameterized adjacent faces "
+        "(one degree-elevated after construction) collapses exactly the shared edge");
+  Check(std::abs(welded.Area() - 2.0) < 1e-9,
+        "welded two-square area is exactly 2.0 despite the degree elevation");
+}
+
 }  // namespace
 
 int main() {
@@ -371,6 +433,7 @@ int main() {
   TestBrepSphereIsClosedAndWatertight();
   TestBrepSphereBooleanEndToEnd();
   TestBrepTrimmedPlanarFace();
+  TestWeldAcrossIndependentlyParameterizedSurfaces();
 
   ON::End();
 

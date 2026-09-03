@@ -111,12 +111,20 @@ What this repo does instead:
   (a cell is kept only if all four corners are inside), not real boundary
   clipping — a curved or diagonal trim edge will look faceted/staircased
   at low resolution, not smooth.
-- `Mesh::MergeAndWeld()`'s tolerance-based vertex snapping is validated
-  now on flat (Box) and curved (Sphere) closed primitives, but still only
-  ones built from a single Brep's own faces meeting at exactly shared
-  control points/parameterizations — not yet validated against two
-  *independently constructed* surfaces whose shared boundary curves are
-  merely geometrically coincident rather than parametrically identical.
+- `Mesh::MergeAndWeld()`'s tolerance-based vertex snapping is now also
+  validated against the specific case this section used to flag as open:
+  two *independently constructed* single-face Breps (not faces sharing
+  one Brep's own control points) — one square, and an adjacent one that's
+  degree-elevated (bilinear → bicubic) after construction, so its shared
+  edge is evaluated through different floating-point arithmetic than the
+  first square's, not merely re-reading the same literal values. Verified
+  with hand-derived exact numbers in `tests/test_basic.cpp`: two 4×4-grid
+  squares (25 raw vertices each) weld down to exactly 45 (the 5 shared
+  edge points collapsed once each), with area exactly 2.0. This still
+  doesn't cover *non-conforming* meshes (two faces tessellated at
+  different resolutions along their shared edge) — vertex-snapping can't
+  fix a genuine T-junction, only near-identical positions at matching
+  sample counts.
 - SubD modeling, adaptive/curvature-aware meshing, the viewport/display
   engine, GPU path tracer, command engine, UI shell, visual scripting,
   other file formats, undo system, installer, and everything else in the
