@@ -58,17 +58,36 @@ export default function DataSettingsPage() {
           <>
             <p className="font-semibold">Export everything</p>
             <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
-              Downloads a JSON file with your account info, every observation, and every comment
-              you&rsquo;ve posted — everything this account owns in one file.
+              Three formats, same underlying data: a full JSON file (account info, every
+              observation, every comment), a CSV of just your observations for spreadsheets, and
+              a zip of your photos as real image files.
             </p>
-            <a
-              href="/api/account/export"
-              download
-              className="mt-3 inline-block rounded-full px-4 py-2 text-sm font-semibold"
-              style={{ background: "var(--color-accent)", color: "var(--color-accent-contrast)" }}
-            >
-              Download my data
-            </a>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <a
+                href="/api/account/export"
+                download
+                className="inline-block rounded-full px-4 py-2 text-sm font-semibold"
+                style={{ background: "var(--color-accent)", color: "var(--color-accent-contrast)" }}
+              >
+                Download JSON
+              </a>
+              <a
+                href="/api/account/export/csv"
+                download
+                className="inline-block rounded-full border px-4 py-2 text-sm font-semibold"
+                style={{ borderColor: "var(--color-border)" }}
+              >
+                Download CSV
+              </a>
+              <a
+                href="/api/account/export/media"
+                download
+                className="inline-block rounded-full border px-4 py-2 text-sm font-semibold"
+                style={{ borderColor: "var(--color-border)" }}
+              >
+                Download photos (zip)
+              </a>
+            </div>
           </>
         ) : (
           <>
@@ -171,7 +190,6 @@ export default function DataSettingsPage() {
           Not built yet
         </p>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
-          <li>CSV export and a media zip (photos currently ship as inline base64 data URLs inside the JSON, not separate files)</li>
           <li>Account migration tooling for switching devices</li>
           <li>A grace period / undo window on deletion or anonymization — both above are immediate and permanent</li>
         </ul>
