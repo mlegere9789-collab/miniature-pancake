@@ -244,6 +244,11 @@ npx expo start
   divided by zero and would have persisted `NaN` as the Garden Score. Fixed
   by falling back to a plain average when total weight is 0 (now unit
   tested in `scoring.test.ts`).
+- **No empty state on the dashboard.** A brand-new garden with zero plants
+  showed a blank "Needs Attention" section and no prompt to add anything —
+  a dead end on the very first screen a new user sees, before they've ever
+  added a plant. Added a dedicated empty state with a direct "Add your
+  first plant" call to action.
 - **Before/after slider handle could snap on every new drag.** The drag
   anchor was read from the touch event's `locationX`, relative to a 4px-wide
   hit target sitting under a 28px visible knob — an unreliable anchor

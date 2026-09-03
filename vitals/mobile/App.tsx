@@ -102,6 +102,7 @@ export default function App() {
               key={refreshKey}
               gardenId={DEMO_GARDEN_ID}
               onSelectPlant={(plant) => navigation.navigate("PlantDetail", { plantId: plant.id })}
+              onAddPlant={() => navigation.navigate("AddPlant")}
             />
           )}
         </Stack.Screen>

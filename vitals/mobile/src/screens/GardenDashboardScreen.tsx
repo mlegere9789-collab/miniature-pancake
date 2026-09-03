@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
+import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { Sparkline } from "../components/Sparkline";
 import { fetchGarden } from "../services/api";
 import { pendingCheckInCount } from "../services/checkInQueue";
@@ -10,10 +10,11 @@ import { Garden, OutbreakAlert, Plant, WeatherAlert } from "../types/domain";
 interface Props {
   gardenId: string;
   onSelectPlant: (plant: Plant) => void;
+  onAddPlant: () => void;
 }
 
 /** Home screen (spec §4.3): hero Garden Score, Needs Attention, Rising Stars. */
-export function GardenDashboardScreen({ gardenId, onSelectPlant }: Props) {
+export function GardenDashboardScreen({ gardenId, onSelectPlant, onAddPlant }: Props) {
   const [garden, setGarden] = useState<Garden | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
@@ -41,6 +42,20 @@ export function GardenDashboardScreen({ gardenId, onSelectPlant }: Props) {
     return (
       <View style={styles.center}>
         <Text style={styles.bodyText}>Loading your garden…</Text>
+      </View>
+    );
+  }
+
+  if (garden.plants.length === 0) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.emptyTitle}>{garden.name}</Text>
+        <Text style={styles.emptyBody}>
+          Add your first plant to start tracking its health, get check-in reminders, and see your Garden Score.
+        </Text>
+        <Pressable style={styles.emptyButton} onPress={onAddPlant}>
+          <Text style={styles.emptyButtonText}>Add your first plant</Text>
+        </Pressable>
       </View>
     );
   }
@@ -153,7 +168,27 @@ function PlantRow({ plant, onPress }: { plant: Plant; onPress: () => void }) {
 
 const styles = StyleSheet.create({
   list: { backgroundColor: theme.color.cream, padding: theme.spacing(2), flexGrow: 1 },
-  center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.color.cream },
+  center: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.color.cream,
+    padding: theme.spacing(4),
+  },
+  emptyTitle: { fontSize: theme.font.titleSize, fontWeight: "700", color: theme.color.textPrimary, marginBottom: theme.spacing(1) },
+  emptyBody: {
+    fontSize: theme.font.bodySize,
+    color: theme.color.textSecondary,
+    textAlign: "center",
+    marginBottom: theme.spacing(3),
+  },
+  emptyButton: {
+    backgroundColor: theme.color.forestGreen,
+    paddingHorizontal: theme.spacing(4),
+    paddingVertical: theme.spacing(2),
+    borderRadius: theme.radius.md,
+  },
+  emptyButtonText: { color: theme.color.cream, fontWeight: "600", fontSize: theme.font.bodySize },
   heroCard: {
     alignItems: "center",
     paddingVertical: theme.spacing(5),
