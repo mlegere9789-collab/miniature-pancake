@@ -184,6 +184,40 @@ describe("observations + quality grade", () => {
     const gone = await owner.session.fetch(`/api/observations/${id}`);
     assert.equal(gone.status, 404);
   });
+
+  it("rejects out-of-range and non-finite confidence, and oversized text fields", async () => {
+    const user = await signUp();
+
+    const base = {
+      photoDataUrl: "x",
+      commonName: "Red Fox",
+      scientificName: "Vulpes vulpes",
+      taxonSlug: "red-fox",
+    };
+    const post = (overrides) =>
+      user.session.fetch("/api/observations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...base, ...overrides }),
+      });
+
+    // typeof NaN === "number" and typeof Infinity === "number" — both must
+    // still be rejected, not silently accepted as "a number."
+    assert.equal((await post({ confidence: NaN })).status, 400);
+    assert.equal((await post({ confidence: Infinity })).status, 400);
+    assert.equal((await post({ confidence: -0.1 })).status, 400);
+    assert.equal((await post({ confidence: 1.1 })).status, 400);
+    assert.equal((await post({ confidence: 0.5 })).status, 201);
+
+    const hugeCommonName = "a".repeat(500);
+    assert.equal((await post({ confidence: 0.5, commonName: hugeCommonName })).status, 400);
+
+    // Out-of-range lat/lng fall back to null rather than rejecting the
+    // whole observation — location is optional.
+    const badCoords = await json(await post({ confidence: 0.5, lat: 999, lng: 999 }));
+    assert.equal(badCoords.observation.lat, null);
+    assert.equal(badCoords.observation.lng, null);
+  });
 });
 
 describe("sensitive-species obscuring", () => {
@@ -372,6 +406,22 @@ describe("journal", () => {
       body: JSON.stringify({ title: "hacked", body: "hacked" }),
     });
     assert.equal(strangerEdit.status, 404);
+
+    // Oversized fields are rejected on both create and edit, not just empty ones.
+    const hugeBody = "a".repeat(25000);
+    const oversizedCreate = await author.session.fetch("/api/journal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Too long", body: hugeBody }),
+    });
+    assert.equal(oversizedCreate.status, 400);
+
+    const oversizedEdit = await author.session.fetch(`/api/journal/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Spring walk", body: hugeBody }),
+    });
+    assert.equal(oversizedEdit.status, 400);
   });
 });
 

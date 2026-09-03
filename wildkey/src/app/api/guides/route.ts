@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/server/session";
 import { createGuide, listGuides } from "@/lib/server/store";
 import { getMockSpecies } from "@/lib/mock-species";
+import { requiredString } from "@/lib/server/validate";
 
 export async function GET() {
   return NextResponse.json({ guides: listGuides() });
@@ -12,8 +13,8 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
 
   const body = await request.json().catch(() => null);
-  const title = typeof body?.title === "string" ? body.title.trim() : "";
-  const description = typeof body?.description === "string" ? body.description.trim() : "";
+  const title = requiredString(body?.title, 200) ?? "";
+  const description = requiredString(body?.description, 2000) ?? "";
   const taxonSlugs = Array.isArray(body?.taxonSlugs)
     ? body.taxonSlugs.filter((s: unknown) => typeof s === "string" && getMockSpecies(s))
     : [];

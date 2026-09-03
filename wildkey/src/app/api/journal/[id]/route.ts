@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/server/session";
 import { deleteJournalPost, getJournalPost, updateJournalPost } from "@/lib/server/store";
+import { requiredString } from "@/lib/server/validate";
 
 export async function GET(
   _request: Request,
@@ -21,10 +22,10 @@ export async function PATCH(
 
   const { id } = await params;
   const body = await request.json().catch(() => null);
-  const title = typeof body?.title === "string" ? body.title.trim() : "";
-  const postBody = typeof body?.body === "string" ? body.body.trim() : "";
+  const title = requiredString(body?.title, 200);
+  const postBody = requiredString(body?.body, 20000);
   if (!title || !postBody) {
-    return NextResponse.json({ error: "Title and body are required." }, { status: 400 });
+    return NextResponse.json({ error: "Title and body are required, and within length limits." }, { status: 400 });
   }
 
   const post = updateJournalPost(user.id, id, { title, body: postBody });
