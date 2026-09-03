@@ -80,6 +80,14 @@ jobs:
         # Downloads real Windows binaries for the tools MediaSuite shells out to, so the
         # installer ships self-contained instead of asking the user to find them. See
         # installer/fetch-tools.ps1 for exactly what is (and, for now, is not) covered.
+        # timeout-minutes here, not just the job's own default 6-hour ceiling: a genuine
+        # hang inside a fail-soft try/catch section (a network call with no response,
+        # not a real failure) would otherwise sit silently burning billed minutes for
+        # hours with no visible error at all, discovered only by a human noticing much
+        # later — this bounds that to a clear, loud step timeout instead. 45 minutes is
+        # generous against the slowest single addition so far (the Face Enhance compile's
+        # from-scratch opencv4 + ncnn vcpkg build), while still being a real ceiling.
+        timeout-minutes: 45
         run: |
           & mediasuite\installer\fetch-tools.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

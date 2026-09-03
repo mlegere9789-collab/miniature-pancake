@@ -311,9 +311,13 @@ else {
         # drive.google.com/uc endpoint requires.
         $modelsZip = Join-Path ([System.IO.Path]::GetTempPath()) "mediasuite-dl-$([Guid]::NewGuid())-gfpgan-models.zip"
         $modelsFileId = "1Lfs2fBU1ecaIKiQtMTaZW4q099PgPpA9"
+        # TimeoutSec is explicit here (unlike the rest of this script's downloads): the
+        # workflow-level step timeout would eventually catch a hang too, but that burns up
+        # to 45 minutes of billed CI time to find out. This fails fast and specifically at
+        # the one call in the whole script most likely to actually hang.
         Invoke-WebRequest `
             -Uri "https://drive.usercontent.google.com/download?id=$modelsFileId&export=download&confirm=t" `
-            -OutFile $modelsZip -Headers $webHeaders -UseBasicParsing
+            -OutFile $modelsZip -Headers $webHeaders -UseBasicParsing -TimeoutSec 300
 
         $modelsBytes = [System.IO.File]::ReadAllBytes($modelsZip)
         $looksLikeZip = $modelsBytes.Length -gt 2 -and $modelsBytes[0] -eq 0x50 -and $modelsBytes[1] -eq 0x4B
