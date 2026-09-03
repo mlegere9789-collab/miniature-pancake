@@ -512,3 +512,79 @@ export function updateJournalPost(
 export function deleteJournalPost(authorId: string, id: string) {
   db.prepare("DELETE FROM journal_posts WHERE id = ? AND author_id = ?").run(id, authorId);
 }
+
+// ---------------------------------------------------------------------
+// Guides (Part C.2)
+// ---------------------------------------------------------------------
+
+export type Guide = {
+  id: string;
+  curatorId: string;
+  curatorEmail: string;
+  title: string;
+  description: string;
+  taxonSlugs: string[];
+  createdAt: string;
+};
+
+type GuideRow = {
+  id: string;
+  curator_id: string;
+  curator_email: string;
+  title: string;
+  description: string;
+  taxon_slugs: string;
+  created_at: string;
+};
+
+function guideFromRow(row: GuideRow): Guide {
+  let taxonSlugs: string[] = [];
+  try {
+    taxonSlugs = JSON.parse(row.taxon_slugs);
+  } catch {
+    taxonSlugs = [];
+  }
+  return {
+    id: row.id,
+    curatorId: row.curator_id,
+    curatorEmail: row.curator_email,
+    title: row.title,
+    description: row.description,
+    taxonSlugs,
+    createdAt: row.created_at,
+  };
+}
+
+const GUIDE_SELECT = `
+  SELECT guides.*, users.email AS curator_email
+  FROM guides
+  JOIN users ON users.id = guides.curator_id
+`;
+
+export function listGuides(): Guide[] {
+  return db
+    .prepare<[], GuideRow>(`${GUIDE_SELECT} ORDER BY guides.created_at DESC`)
+    .all()
+    .map(guideFromRow);
+}
+
+export function getGuide(id: string): Guide | null {
+  const row = db.prepare<[string], GuideRow>(`${GUIDE_SELECT} WHERE guides.id = ?`).get(id);
+  return row ? guideFromRow(row) : null;
+}
+
+export function createGuide(
+  curatorId: string,
+  input: { title: string; description: string; taxonSlugs: string[] },
+): Guide {
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO guides (id, curator_id, title, description, taxon_slugs, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(id, curatorId, input.title, input.description, JSON.stringify(input.taxonSlugs), new Date().toISOString());
+  return getGuide(id)!;
+}
+
+export function deleteGuide(curatorId: string, id: string) {
+  db.prepare("DELETE FROM guides WHERE id = ? AND curator_id = ?").run(id, curatorId);
+}

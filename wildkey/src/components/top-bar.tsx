@@ -6,6 +6,7 @@ const NAV_LINKS = [
   { href: "/identify", label: "Identify" },
   { href: "/observations", label: "My Observations" },
   { href: "/journal", label: "Journal" },
+  { href: "/guides", label: "Guides" },
 ];
 
 export function TopBar() {

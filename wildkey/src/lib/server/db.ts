@@ -82,6 +82,16 @@ function createConnection(): Database.Database {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_journal_posts_author_id ON journal_posts(author_id);
+
+    CREATE TABLE IF NOT EXISTS guides (
+      id TEXT PRIMARY KEY,
+      curator_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      taxon_slugs TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_guides_curator_id ON guides(curator_id);
   `);
 
   return db;
