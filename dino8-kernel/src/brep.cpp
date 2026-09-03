@@ -1,5 +1,7 @@
 #include "dino8/kernel/brep.h"
 
+#include <stdexcept>
+
 #include "dino8/kernel/mesh.h"
 
 namespace dino8::kernel {
@@ -56,6 +58,26 @@ Brep Brep::Box(double x0, double y0, double z0, double x1, double y1,
     const int surface_index = brep.AddSurface(surface_copy);
     brep.NewFace(surface_index);
   }
+
+  brep.SetTrimIsoFlags();
+  return result;
+}
+
+Brep Brep::Sphere(Point3d center, double radius) {
+  Brep result;
+  ON_Brep& brep = result.brep_;
+
+  ON_Sphere sphere(center, radius);
+  auto* surface = new ON_NurbsSurface();
+  const int rc = sphere.GetNurbForm(*surface);
+  if (rc == 0) {
+    delete surface;
+    throw std::runtime_error(
+        "dino8::kernel::Brep::Sphere: ON_Sphere::GetNurbForm failed");
+  }
+
+  const int surface_index = brep.AddSurface(surface);
+  brep.NewFace(surface_index);
 
   brep.SetTrimIsoFlags();
   return result;

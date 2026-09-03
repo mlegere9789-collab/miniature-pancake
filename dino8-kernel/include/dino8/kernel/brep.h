@@ -45,6 +45,15 @@ class Brep {
   static Brep Box(double x0, double y0, double z0, double x1, double y1,
                    double z1);
 
+  // Builds a genuine closed solid from a single curved face: a sphere,
+  // via OpenNURBS' own exact rational-NURBS conversion (ON_Sphere::
+  // GetNurbForm) rather than an approximation we'd have to derive
+  // ourselves. Unlike Box() (six flat faces stitched at seams), this
+  // is one face whose own tessellation seam and poles have to be welded
+  // shut with itself - the specific case the previous chunk's README
+  // flagged as unvalidated ("not yet validated against curved surfaces").
+  static Brep Sphere(Point3d center, double radius);
+
   int FaceCount() const;
 
   // Tessellates each face into a triangle mesh via NurbsSurface's grid

@@ -66,19 +66,38 @@ What this repo does instead:
   end-to-end in `tests/test_basic.cpp`: `Brep::Box()` → tessellate → weld
   → `BooleanCombine()`, checked against the same exact volumes as the
   hand-built-mesh boolean tests.
+- `Brep::Sphere()` closes the curved-surface gap the previous section left
+  open: `Box()`'s six faces are flat, so it never exercised whether
+  `MergeAndWeld()` actually handles independently-tessellated *curved*
+  geometry, or a face welding against *its own* seam/poles rather than a
+  neighboring face. `Sphere()` builds one curved face via OpenNURBS' own
+  exact rational-NURBS sphere conversion (`ON_Sphere::GetNurbForm` — real
+  math we didn't have to derive), tessellates it, and welds its u-seam
+  (u=0 and u=2π are the same meridian) and both poles (every u value at
+  the top/bottom row collapses to one physical point) shut against
+  themselves. Verified in `tests/test_basic.cpp`: welding measurably
+  reduces the raw grid's vertex count, the resulting mesh's volume is
+  within 1% of the exact `4/3·π·r³`, and a real sphere-sphere
+  `BooleanCombine()` intersection matches the closed-form two-equal-sphere
+  lens-volume formula within 3% — checked against real geometry, not just
+  "didn't crash."
 
 ## What's still not done (as of chunk 2)
 
-- `Brep::Box()` is one hard-coded primitive (six untrimmed bilinear
-  faces), not general solid construction — no trimmed surfaces, no
-  boolean-of-arbitrary-shapes, no primitive library (sphere, cylinder,
-  etc.). It exists to prove the Brep → Tessellate → weld → boolean
-  pipeline end to end, not to be a real modeler.
-- `Mesh::MergeAndWeld()`'s tolerance-based vertex snapping is a stand-in
-  for real tolerance management (see below) — fine for axis-aligned
-  primitives with exactly-representable corners, not yet validated against
-  curved surfaces where independently-tessellated shared edges won't
-  produce bit-identical positions.
+- `Brep::Box()` and `Brep::Sphere()` are two hard-coded primitives, not
+  general solid construction — no trimmed surfaces (a disk, a cylinder
+  cap, anything with a non-rectangular/non-closed-surface boundary needs
+  real trimming, which Brep doesn't support at all), no
+  boolean-of-arbitrary-shapes, no primitive library beyond these two. They
+  exist to prove the Brep → Tessellate → weld → boolean pipeline end to
+  end on both flat and curved geometry, not to be a real modeler.
+- `Mesh::MergeAndWeld()`'s tolerance-based vertex snapping is validated
+  now on both flat (Box) and curved (Sphere) closed primitives, but still
+  only ones built from a single Brep's own faces meeting at exactly
+  shared control points/parameterizations — not yet validated against two
+  *independently constructed* surfaces whose shared boundary curves are
+  merely geometrically coincident rather than parametrically identical
+  (the general trimmed-surface case).
 - SubD modeling, adaptive/curvature-aware meshing, the viewport/display
   engine, GPU path tracer, command engine, UI shell, visual scripting,
   other file formats, undo system, installer, and everything else in the

@@ -248,6 +248,61 @@ void TestBrepBooleanEndToEnd() {
         "Brep-built difference volume equals 8 - 1 overlap");
 }
 
+void TestBrepSphereIsClosedAndWatertight() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const double radius = 2.0;
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), radius);
+  Check(sphere.FaceCount() == 1, "Brep::Sphere is a single curved face");
+
+  // A genuinely curved case, unlike Box(): the sphere's own u-seam
+  // (u=0 and u=2*pi are the same meridian) and its two poles (every u
+  // value at v_min/v_max collapses to one physical point) both have to
+  // be welded shut against *themselves*, not just against a neighboring
+  // face - exactly what the previous chunk's README flagged as
+  // unvalidated ("not yet validated against curved surfaces").
+  const int divisions = 32;
+  const auto mesh = sphere.TessellateToClosedMesh(divisions, divisions);
+
+  const int raw_vertex_count = (divisions + 1) * (divisions + 1);
+  Check(mesh.VertexCount() < raw_vertex_count,
+        "welding the sphere's own seam and poles reduces its vertex count");
+
+  const double exact_volume = (4.0 / 3.0) * M_PI * radius * radius * radius;
+  const double relative_error = std::abs(mesh.Volume() - exact_volume) / exact_volume;
+  Check(relative_error < 0.01,
+        "tessellated+welded sphere volume is within 1% of the exact 4/3*pi*r^3");
+}
+
+void TestBrepSphereBooleanEndToEnd() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  // Proves the weld pipeline's output is actually usable by Manifold, not
+  // just internally self-consistent: two overlapping spheres, same radius,
+  // centers offset by the radius along X. Exact spherical-cap overlap
+  // volume for two radius-r spheres with center distance d = r is a closed
+  // form (from the standard sphere-sphere intersection formula), so this
+  // checks against real geometry, not just "didn't crash."
+  const double r = 2.0;
+  const double d = r;
+  const auto a = Brep::Sphere(Point3d(0, 0, 0), r).TessellateToClosedMesh(32, 32);
+  const auto b = Brep::Sphere(Point3d(d, 0, 0), r).TessellateToClosedMesh(32, 32);
+
+  // Standard two-equal-sphere lens-volume formula:
+  // V = (pi * (4r + d) * (2r - d)^2) / 12
+  const double exact_lens = (M_PI * (4 * r + d) * (2 * r - d) * (2 * r - d)) / 12.0;
+
+  const auto intersection_result = BooleanCombine(a, b, BooleanOp::Intersection);
+  const double relative_error =
+      std::abs(intersection_result.Volume() - exact_lens) / exact_lens;
+  Check(relative_error < 0.03,
+        "sphere-sphere boolean intersection volume is within 3% of the exact lens formula");
+}
+
 }  // namespace
 
 int main() {
@@ -263,6 +318,8 @@ int main() {
   TestBooleanDifference();
   TestBrepBoxIsClosedAndWatertight();
   TestBrepBooleanEndToEnd();
+  TestBrepSphereIsClosedAndWatertight();
+  TestBrepSphereBooleanEndToEnd();
 
   ON::End();
 
