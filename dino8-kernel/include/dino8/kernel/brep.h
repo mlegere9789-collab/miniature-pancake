@@ -54,14 +54,29 @@ class Brep {
   // flagged as unvalidated ("not yet validated against curved surfaces").
   static Brep Sphere(Point3d center, double radius);
 
+  // Builds a one-face B-rep whose face is `surface`, trimmed to
+  // `trim_loop_uv`: a closed polygon in the surface's own (u, v)
+  // parameter space. This is real (if simplified) B-rep trimming - the
+  // gap every earlier primitive here sidestepped by only ever building
+  // whole untrimmed or whole-closed surfaces. `trim_loop_uv` is stored
+  // here rather than as genuine ON_Brep loop/trim/edge topology (a much
+  // larger API surface - vertices, edges, 2D and 3D curve pairing,
+  // orientation); what this closes is the tessellation-visible gap
+  // ("no trimmed surfaces" meant no way to produce a trimmed *shape* at
+  // all), not full topological B-rep validity. See NurbsSurface::
+  // TessellateGrid's trim_polygon parameter for how the polygon is
+  // actually applied.
+  static Brep TrimmedPlanarFace(const NurbsSurface& surface,
+                                 const std::vector<Point2d>& trim_loop_uv);
+
   int FaceCount() const;
 
   // Tessellates each face into a triangle mesh via NurbsSurface's grid
   // tessellator (see its comment for why this doesn't go through
   // OpenNURBS' own CreateMesh). One Mesh per face, in face order.
   // `u_divisions`/`v_divisions` apply to every face's own parameter
-  // domain. Only correct for untrimmed faces, which is all Brep
-  // currently constructs.
+  // domain. Faces built by TrimmedPlanarFace() are tessellated against
+  // their trim loop; every other face here is untrimmed.
   std::vector<Mesh> Tessellate(int u_divisions = 8, int v_divisions = 8) const;
 
   // Tessellate() followed by Mesh::MergeAndWeld() - the combination that
@@ -76,6 +91,10 @@ class Brep {
 
  private:
   ON_Brep brep_;
+  // Parallel to brep_.m_F: face_trim_loops_[i] is empty for an untrimmed
+  // face, or the trim polygon for a face built by TrimmedPlanarFace().
+  // Every face-adding factory must keep this in lockstep with brep_.m_F.
+  std::vector<std::vector<Point2d>> face_trim_loops_;
 };
 
 }  // namespace dino8::kernel

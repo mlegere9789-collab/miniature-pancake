@@ -9,6 +9,7 @@ namespace dino8::kernel {
 // wrapping them would just add copies for no benefit.
 using Point3d = ON_3dPoint;
 using Vector3d = ON_3dVector;
+using Point2d = ON_2dPoint;  // (u, v) parameter-space point, e.g. a trim loop vertex.
 
 // Degree elevation and similar operations return this instead of a bare
 // bool so callers can tell "no-op, already at that degree" apart from

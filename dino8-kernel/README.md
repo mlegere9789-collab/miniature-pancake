@@ -81,23 +81,42 @@ What this repo does instead:
   `BooleanCombine()` intersection matches the closed-form two-equal-sphere
   lens-volume formula within 3% — checked against real geometry, not just
   "didn't crash."
+- `Brep::TrimmedPlanarFace()` closes the "no trimmed surfaces" gap the
+  previous section called out: it's real (if simplified) B-rep trimming —
+  a face's surface plus a closed polygon in that surface's own (u, v)
+  parameter space — rather than storing genuine ON_Brep loop/trim/edge
+  topology (vertices, edges, paired 2D/3D curves), a much larger API
+  surface. `NurbsSurface::TessellateGrid()` was extended to take that
+  polygon and only emit grid cells whose four corners fall inside it,
+  dropping (not clipping) boundary cells — the trimmed edge is exactly as
+  precise as the grid resolution, not curve-fit. Verified in
+  `tests/test_basic.cpp` with a case designed to have zero floating-point
+  ambiguity: a 10×10 planar face trimmed to an inner square whose boundary
+  deliberately doesn't land on any grid line, checked against
+  hand-derived (not measured-after-the-fact) exact numbers — 49 vertices,
+  72 triangles, and a trimmed area of exactly 36 — all of which matched.
 
 ## What's still not done (as of chunk 2)
 
-- `Brep::Box()` and `Brep::Sphere()` are two hard-coded primitives, not
-  general solid construction — no trimmed surfaces (a disk, a cylinder
-  cap, anything with a non-rectangular/non-closed-surface boundary needs
-  real trimming, which Brep doesn't support at all), no
-  boolean-of-arbitrary-shapes, no primitive library beyond these two. They
-  exist to prove the Brep → Tessellate → weld → boolean pipeline end to
-  end on both flat and curved geometry, not to be a real modeler.
+- `Brep::Box()`, `Brep::Sphere()`, and `Brep::TrimmedPlanarFace()` are
+  three hard-coded shapes, not general solid construction — no primitive
+  library beyond these three, and no way to turn a trimmed face into part
+  of a *closed* solid yet (`TrimmedPlanarFace()` only proves the
+  tessellation-level trim; nothing here builds the matching edges/walls a
+  real trimmed solid — e.g. an actual cylinder with disk caps — would
+  need, so a trimmed face can't feed `BooleanCombine()` yet the way
+  `Box()`/`Sphere()` can). They exist to prove the Brep → Tessellate →
+  weld → boolean pipeline piece by piece, not to be a real modeler.
+- The trim-polygon test in `TessellateGrid()` is whole-cell in/out
+  (a cell is kept only if all four corners are inside), not real boundary
+  clipping — a curved or diagonal trim edge will look faceted/staircased
+  at low resolution, not smooth.
 - `Mesh::MergeAndWeld()`'s tolerance-based vertex snapping is validated
-  now on both flat (Box) and curved (Sphere) closed primitives, but still
-  only ones built from a single Brep's own faces meeting at exactly
-  shared control points/parameterizations — not yet validated against two
+  now on flat (Box) and curved (Sphere) closed primitives, but still only
+  ones built from a single Brep's own faces meeting at exactly shared
+  control points/parameterizations — not yet validated against two
   *independently constructed* surfaces whose shared boundary curves are
-  merely geometrically coincident rather than parametrically identical
-  (the general trimmed-surface case).
+  merely geometrically coincident rather than parametrically identical.
 - SubD modeling, adaptive/curvature-aware meshing, the viewport/display
   engine, GPU path tracer, command engine, UI shell, visual scripting,
   other file formats, undo system, installer, and everything else in the

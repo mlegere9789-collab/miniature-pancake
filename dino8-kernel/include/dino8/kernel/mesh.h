@@ -23,6 +23,11 @@ class Mesh {
   // kind BooleanCombine requires as input and produces as output.
   double Volume() const;
 
+  // Sum of triangle areas (each via half the cross-product magnitude).
+  // Unlike Volume(), meaningful for open surfaces too - e.g. a single
+  // trimmed planar face isn't closed, so Volume() doesn't apply to it.
+  double Area() const;
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 

@@ -38,6 +38,20 @@ double Mesh::Volume() const {
   return volume;
 }
 
+double Mesh::Area() const {
+  double area = 0.0;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& face = mesh_.m_F[i];
+    const ON_3fPoint& a = mesh_.m_V[face.vi[0]];
+    const ON_3fPoint& b = mesh_.m_V[face.vi[1]];
+    const ON_3fPoint& c = mesh_.m_V[face.vi[2]];
+    const ON_3dVector cross =
+        ON_3dVector::CrossProduct(ON_3dVector(b - a), ON_3dVector(c - a));
+    area += 0.5 * cross.Length();
+  }
+  return area;
+}
+
 Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
   Mesh result;
   ON_Mesh& out = result.mesh_;

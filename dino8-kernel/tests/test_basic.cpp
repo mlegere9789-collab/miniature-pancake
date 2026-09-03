@@ -303,6 +303,56 @@ void TestBrepSphereBooleanEndToEnd() {
         "sphere-sphere boolean intersection volume is within 3% of the exact lens formula");
 }
 
+void TestBrepTrimmedPlanarFace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // A 10x10 physical square, built the same bilinear way Box()'s faces
+  // are (FromControlGrid always gives a [0,1]x[0,1] parameter domain),
+  // trimmed to the inner square [0.15,0.85]^2 in UV. That boundary is
+  // deliberately off the grid lines (grid lines land on multiples of
+  // 0.1) so no grid point sits exactly on the trim edge - point-in-polygon
+  // is well-defined here, not dependent on floating-point tie-breaking at
+  // a boundary.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(10, 0, 0),
+      Point3d(10, 10, 0),
+  };
+  const NurbsSurface surface =
+      NurbsSurface::FromControlGrid(grid, /*u_count=*/2, /*v_count=*/2,
+                                     /*u_degree=*/1, /*v_degree=*/1);
+
+  const std::vector<Point2d> trim_loop = {
+      Point2d(0.15, 0.15),
+      Point2d(0.85, 0.15),
+      Point2d(0.85, 0.85),
+      Point2d(0.15, 0.85),
+  };
+  const Brep face = Brep::TrimmedPlanarFace(surface, trim_loop);
+  Check(face.FaceCount() == 1, "TrimmedPlanarFace is a single face");
+
+  // Grid points strictly inside (0.15, 0.85) at divisions=10 are
+  // u,v in {0.2, 0.3, ..., 0.8} - 7 values per axis, so 7x7=49 vertices
+  // and a 6x6 grid of fully-inside cells (12 divisions -> 72 triangles),
+  // hand-derived, not measured after the fact.
+  const auto meshes = face.Tessellate(/*u_divisions=*/10, /*v_divisions=*/10);
+  Check(meshes.size() == 1, "trimmed face tessellates to one mesh");
+  Check(meshes.front().VertexCount() == 49,
+        "trimming excludes vertices outside the trim loop, keeping exactly the interior grid");
+  Check(meshes.front().FaceCount() == 72,
+        "trimming keeps exactly the fully-inside grid cells (6x6x2 triangles)");
+
+  // Physical area: the bilinear map scales the unit param square to a
+  // 10x10 physical one uniformly, so trimmed param area 0.6x0.6=0.36
+  // maps to physical area 0.36*100=36 exactly.
+  Check(std::abs(meshes.front().Area() - 36.0) < 1e-9,
+        "trimmed face's physical area matches the exact scaled trim-loop area");
+}
+
 }  // namespace
 
 int main() {
@@ -320,6 +370,7 @@ int main() {
   TestBrepBooleanEndToEnd();
   TestBrepSphereIsClosedAndWatertight();
   TestBrepSphereBooleanEndToEnd();
+  TestBrepTrimmedPlanarFace();
 
   ON::End();
 

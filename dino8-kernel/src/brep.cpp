@@ -15,6 +15,7 @@ Brep Brep::FromSurface(const NurbsSurface& surface) {
 
   ON_BrepFace& face = brep.NewFace(surface_index);
   (void)face;
+  result.face_trim_loops_.emplace_back();  // untrimmed
 
   brep.SetTrimIsoFlags();
 
@@ -57,6 +58,7 @@ Brep Brep::Box(double x0, double y0, double z0, double x1, double y1,
     auto* surface_copy = new ON_NurbsSurface(surface.raw());
     const int surface_index = brep.AddSurface(surface_copy);
     brep.NewFace(surface_index);
+    result.face_trim_loops_.emplace_back();  // untrimmed
   }
 
   brep.SetTrimIsoFlags();
@@ -78,6 +80,21 @@ Brep Brep::Sphere(Point3d center, double radius) {
 
   const int surface_index = brep.AddSurface(surface);
   brep.NewFace(surface_index);
+  result.face_trim_loops_.emplace_back();  // untrimmed
+
+  brep.SetTrimIsoFlags();
+  return result;
+}
+
+Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
+                              const std::vector<Point2d>& trim_loop_uv) {
+  Brep result;
+  ON_Brep& brep = result.brep_;
+
+  auto* surface_copy = new ON_NurbsSurface(surface.raw());
+  const int surface_index = brep.AddSurface(surface_copy);
+  brep.NewFace(surface_index);
+  result.face_trim_loops_.push_back(trim_loop_uv);
 
   brep.SetTrimIsoFlags();
   return result;
@@ -101,7 +118,10 @@ std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
 
     NurbsSurface wrapper;
     wrapper.raw() = *nurbs_surface;
-    result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions));
+
+    const auto& trim_loop = face_trim_loops_[static_cast<size_t>(i)];
+    const std::vector<Point2d>* trim_polygon = trim_loop.empty() ? nullptr : &trim_loop;
+    result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions, trim_polygon));
   }
 
   return result;

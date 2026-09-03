@@ -36,10 +36,20 @@ class NurbsSurface {
   // declared in OpenNURBS' public headers but have no implementation in
   // the public source (verified against v8.34) — they're stubs for
   // Rhino's closed-source mesher. A real product needs a proper adaptive
-  // mesher (curvature-aware, trim-aware); this grid version only handles
-  // untrimmed surfaces and exists to unblock chunk 2's mesh-boolean work,
-  // not as the final mesher.
-  Mesh TessellateGrid(int u_divisions, int v_divisions) const;
+  // mesher (curvature-aware, trim-aware); this grid version exists to
+  // unblock chunk 2's mesh-boolean work, not as the final mesher.
+  //
+  // `trim_polygon`, if non-null, is a closed polygon in this surface's own
+  // (u, v) parameter space (not normalized 0..1 - actual surface
+  // parameter values). A grid cell is emitted only if all four of its
+  // corners fall inside the polygon; cells straddling the boundary are
+  // dropped rather than clipped, so the trimmed edge is only as accurate
+  // as the grid resolution - a real trim-aware mesher would clip the
+  // boundary cells to the actual curve instead of discarding them.
+  // Vertices that end up unused (entirely outside the trim) are not
+  // included in the output mesh.
+  Mesh TessellateGrid(int u_divisions, int v_divisions,
+                       const std::vector<Point2d>* trim_polygon = nullptr) const;
 
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }
