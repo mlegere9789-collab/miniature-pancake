@@ -21,12 +21,18 @@ const MAP_HEIGHT = 320;
  */
 export function YardMapScreen({ gardenId, onSelectPlant }: Props) {
   const [garden, setGarden] = useState<Garden | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [placingPlantId, setPlacingPlantId] = useState<string | null>(null);
   const [mapWidth, setMapWidth] = useState(0);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    setGarden(await fetchGarden(gardenId));
+    try {
+      setGarden(await fetchGarden(gardenId));
+      setLoadError(false);
+    } catch {
+      setLoadError(true);
+    }
   }, [gardenId]);
 
   useEffect(() => {
@@ -70,6 +76,17 @@ export function YardMapScreen({ gardenId, onSelectPlant }: Props) {
     } finally {
       setBusy(false);
     }
+  }
+
+  if (loadError && !garden) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.bodyText}>Couldn't load your yard map.</Text>
+        <Pressable style={styles.primaryButton} onPress={load}>
+          <Text style={styles.primaryButtonText}>Try again</Text>
+        </Pressable>
+      </View>
+    );
   }
 
   if (!garden) {

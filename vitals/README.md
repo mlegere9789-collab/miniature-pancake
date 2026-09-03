@@ -245,10 +245,15 @@ npx expo start
   divided by zero and would have persisted `NaN` as the Garden Score. Fixed
   by falling back to a plain average when total weight is 0 (now unit
   tested in `scoring.test.ts`).
-- **Report card screen stuck on "Loading…" forever on a failed fetch.**
-  There was no distinction between still-loading and failed-to-load, so a
-  network error looked identical to an infinite spinner. Added a proper
-  error state with a "Try again" retry button.
+- **Every main data-fetching screen could get stuck on "Loading…" forever.**
+  `GardenDashboardScreen`, `PlantDetailScreen`, `YardMapScreen`, and
+  `ReportCardScreen` all called their fetch with no `.catch` (or, in
+  ReportCardScreen's case, no distinct error state) — a network error left
+  each stuck on its loading text indefinitely, with no way to recover short
+  of leaving and re-entering the screen. Worse on the dashboard: `onRefresh`
+  awaited the same unhandled rejection, so pull-to-refresh's spinner never
+  stopped either. All four now catch the error and show a "Try again"
+  retry state.
 - **No empty state on the dashboard.** A brand-new garden with zero plants
   showed a blank "Needs Attention" section and no prompt to add anything —
   a dead end on the very first screen a new user sees, before they've ever

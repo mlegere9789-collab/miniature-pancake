@@ -18,12 +18,18 @@ interface Props {
 /** Per-plant detail view (spec §4.4): score history + diagnostic log. */
 export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline, onArchived, onEdit }: Props) {
   const [plant, setPlant] = useState<PlantDetail | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [twin, setTwin] = useState<TwinComparison | null>(null);
   const [archiving, setArchiving] = useState(false);
 
   const load = useCallback(async () => {
-    setPlant(await fetchPlant(plantId));
-    fetchTwinComparison(plantId).then(setTwin).catch(() => setTwin(null));
+    try {
+      setPlant(await fetchPlant(plantId));
+      setLoadError(false);
+      fetchTwinComparison(plantId).then(setTwin).catch(() => setTwin(null));
+    } catch {
+      setLoadError(true);
+    }
   }, [plantId]);
 
   // Reload every time this screen regains focus (returning from Check-In or
@@ -34,6 +40,17 @@ export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline, onA
       load();
     }, [load]),
   );
+
+  if (loadError && !plant) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.bodyText}>Couldn't load this plant.</Text>
+        <Pressable style={styles.primaryButton} onPress={load}>
+          <Text style={styles.primaryButtonText}>Try again</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   if (!plant) {
     return (

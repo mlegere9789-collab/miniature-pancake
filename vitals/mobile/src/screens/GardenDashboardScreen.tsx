@@ -16,16 +16,22 @@ interface Props {
 /** Home screen (spec §4.3): hero Garden Score, Needs Attention, Rising Stars. */
 export function GardenDashboardScreen({ gardenId, onSelectPlant, onAddPlant }: Props) {
   const [garden, setGarden] = useState<Garden | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [pendingSyncCount, setPendingSyncCount] = useState(0);
 
   const load = useCallback(async () => {
-    const fetched = await fetchGarden(gardenId);
-    setGarden(fetched);
-    pendingCheckInCount().then(setPendingSyncCount).catch(() => undefined);
+    try {
+      const fetched = await fetchGarden(gardenId);
+      setGarden(fetched);
+      setLoadError(false);
+      pendingCheckInCount().then(setPendingSyncCount).catch(() => undefined);
 
-    if (fetched.weatherAlert) notifyWeatherAlertIfNew(fetched.weatherAlert).catch(() => undefined);
-    if (fetched.outbreakAlerts.length > 0) notifyOutbreakAlertsIfNew(fetched.outbreakAlerts).catch(() => undefined);
+      if (fetched.weatherAlert) notifyWeatherAlertIfNew(fetched.weatherAlert).catch(() => undefined);
+      if (fetched.outbreakAlerts.length > 0) notifyOutbreakAlertsIfNew(fetched.outbreakAlerts).catch(() => undefined);
+    } catch {
+      setLoadError(true);
+    }
   }, [gardenId]);
 
   useEffect(() => {
@@ -36,6 +42,17 @@ export function GardenDashboardScreen({ gardenId, onSelectPlant, onAddPlant }: P
     setRefreshing(true);
     await load();
     setRefreshing(false);
+  }
+
+  if (loadError && !garden) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.bodyText}>Couldn't load your garden.</Text>
+        <Pressable style={styles.emptyButton} onPress={load}>
+          <Text style={styles.emptyButtonText}>Try again</Text>
+        </Pressable>
+      </View>
+    );
   }
 
   if (!garden) {
