@@ -1,7 +1,19 @@
-import type { ObservationComment, ObservationWithGrade, ServerObservation } from "@/lib/server/store";
+import type {
+  ActivityItem,
+  ObservationComment,
+  ObservationWithGrade,
+  ServerObservation,
+} from "@/lib/server/store";
 import type { CurrentUser } from "@/lib/auth-context";
 
-export type { ServerObservation, ObservationComment, ObservationWithGrade };
+export type { ServerObservation, ObservationComment, ObservationWithGrade, ActivityItem };
+
+export async function fetchActivity(): Promise<ActivityItem[]> {
+  const res = await fetch("/api/activity");
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.activity ?? [];
+}
 
 export async function fetchServerObservations(): Promise<ObservationWithGrade[]> {
   const res = await fetch("/api/observations");

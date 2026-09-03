@@ -244,6 +244,35 @@ export function deleteObservationForUser(userId: string, id: string) {
   writeDb(db);
 }
 
+export type ActivityItem = ObservationComment & {
+  observationCommonName: string;
+  observationTaxonSlug: string;
+};
+
+/**
+ * Notifications for the /activity screen: other people's comments and
+ * agrees on observations this user owns. Excludes the user's own
+ * comments on their own observations — that's not activity to notify
+ * them about.
+ */
+export function listActivityForUser(userId: string): ActivityItem[] {
+  const db = readDb();
+  const ownedObservations = new Map(
+    db.observations.filter((o) => o.userId === userId).map((o) => [o.id, o]),
+  );
+  return db.comments
+    .filter((c) => ownedObservations.has(c.observationId) && c.userId !== userId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((c) => {
+      const observation = ownedObservations.get(c.observationId)!;
+      return {
+        ...c,
+        observationCommonName: observation.commonName,
+        observationTaxonSlug: observation.taxonSlug,
+      };
+    });
+}
+
 export function getObservationById(id: string): ObservationWithGrade | null {
   const db = readDb();
   const observation = db.observations.find((o) => o.id === id);
