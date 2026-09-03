@@ -272,6 +272,10 @@ npx expo start
   listener and driving the drag off PanResponder's own cumulative `dx`,
   which needs no anchor at all; also widened the touch target with
   `hitSlop` since the visible knob is much wider than the 4px handle.
+- **Report card content couldn't scroll.** It sat in a plain, non-scrolling
+  `View` — on a small screen or with larger accessibility font sizes, the
+  card plus the share button below it could overflow off-screen with no
+  way to reach it. Wrapped in a `ScrollView`.
 - **Upload errors returned a generic 500 instead of a proper 400.** A
   too-large photo or non-image file hit multer's `fileFilter`/size-limit
   rejection, which landed in the catch-all error handler as an

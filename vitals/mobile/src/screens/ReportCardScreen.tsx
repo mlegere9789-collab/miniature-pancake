@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, Share, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, Share, StyleSheet, Text, View } from "react-native";
 import * as Sharing from "expo-sharing";
 import ViewShot from "react-native-view-shot";
 import { fetchWeeklyReportCard } from "../services/api";
@@ -70,7 +70,7 @@ export function ReportCardScreen({ gardenId }: Props) {
   }
 
   return (
-    <View style={styles.screen}>
+    <ScrollView contentContainerStyle={styles.screen}>
       <ViewShot ref={shotRef} options={{ format: "png", quality: 1 }} style={styles.shotWrap}>
         <View style={styles.card}>
           <Text style={styles.brand}>🌿 Vitals</Text>
@@ -109,7 +109,7 @@ export function ReportCardScreen({ gardenId }: Props) {
       <Pressable style={styles.shareButton} onPress={handleShare} disabled={sharing}>
         <Text style={styles.shareButtonText}>{sharing ? "Preparing…" : "Share this week's report"}</Text>
       </Pressable>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -135,7 +135,7 @@ function buildShareText(card: WeeklyReportCard): string {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: theme.color.cream, padding: theme.spacing(3), alignItems: "center" },
+  screen: { flexGrow: 1, backgroundColor: theme.color.cream, padding: theme.spacing(3), alignItems: "center" },
   center: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: theme.color.cream },
   shotWrap: { width: "100%" },
   card: {
