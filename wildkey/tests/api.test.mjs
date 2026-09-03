@@ -2,8 +2,16 @@ import { before, after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { startServer, stopServer, createSession, signUp } from "./server.mjs";
 
+// The very first account signed up against a fresh test database bootstraps
+// as curator (src/lib/server/store.ts createUser) — signing this one up
+// immediately after the server starts, before any other test runs,
+// guarantees it's that account, so curator-only success paths (not just the
+// 403-for-members case) are actually exercised here.
+let curator;
+
 before(async () => {
   await startServer();
+  curator = await signUp();
 }, { timeout: 35_000 });
 
 after(async () => {
@@ -422,11 +430,7 @@ describe("projects", () => {
 });
 
 describe("curator tools", () => {
-  it("enforces role checks and requires a written reason at every step", async () => {
-    // This is the first account created in this suite's server instance
-    // isn't guaranteed to be first overall — curator bootstrap is instead
-    // verified structurally: whichever account is a curator can act,
-    // members cannot, and reasons are always required.
+  it("enforces role checks, requires a written reason at every step, and lets the curator actually resolve", async () => {
     const member = await signUp();
     const reporter = await signUp();
 
@@ -472,6 +476,93 @@ describe("curator tools", () => {
       body: JSON.stringify({ action: "resolved", reason: "trying to bypass" }),
     });
     assert.equal(memberResolve.status, 403);
+
+    // The curator (this suite's guaranteed-first account) requires a
+    // reason too, then can actually resolve — the real success path.
+    const curatorEmptyReason = await curator.session.fetch(`/api/curator/flags/${flagged.flag.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "resolved", reason: "" }),
+    });
+    assert.equal(curatorEmptyReason.status, 400);
+
+    const curatorResolve = await curator.session.fetch(`/api/curator/flags/${flagged.flag.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "resolved", reason: "Checked against a field guide, ID is correct" }),
+    });
+    assert.equal(curatorResolve.status, 200);
+
+    // Already resolved — resolving again should fail.
+    const alreadyResolved = await curator.session.fetch(`/api/curator/flags/${flagged.flag.id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "resolved", reason: "double resolve" }),
+    });
+    assert.equal(alreadyResolved.status, 404);
+  });
+
+  it("real curator promote/demote flow: members can't self-promote, promotion and demotion actually change access", async () => {
+    const target = await signUp();
+
+    // A plain member can't promote themselves.
+    const selfPromote = await target.session.fetch("/api/curator/promote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: target.email, reason: "let me in" }),
+    });
+    assert.equal(selfPromote.status, 403);
+
+    // Curator promotion requires a written reason.
+    const noReason = await curator.session.fetch("/api/curator/promote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: target.email, reason: "" }),
+    });
+    assert.equal(noReason.status, 400);
+
+    const promoted = await curator.session.fetch("/api/curator/promote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: target.email, reason: "Trusted moderator, joining the curator team" }),
+    });
+    assert.equal(promoted.status, 200);
+
+    // The promoted account now really has curator access.
+    const nowCanQueue = await target.session.fetch("/api/curator/flags");
+    assert.equal(nowCanQueue.status, 200);
+
+    // Promoting an already-curator account is rejected.
+    const doublePromote = await curator.session.fetch("/api/curator/promote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: target.email, reason: "again" }),
+    });
+    assert.equal(doublePromote.status, 400);
+
+    // A curator can't remove their own access.
+    const selfDemote = await curator.session.fetch("/api/curator/demote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: curator.email, reason: "trying to self-demote" }),
+    });
+    assert.equal(selfDemote.status, 400);
+
+    const demoted = await curator.session.fetch("/api/curator/demote", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: target.email, reason: "Stepping back from moderation" }),
+    });
+    assert.equal(demoted.status, 200);
+
+    // Access is really gone now.
+    const afterDemote = await target.session.fetch("/api/curator/flags");
+    assert.equal(afterDemote.status, 403);
+
+    // The full history is visible to curators.
+    const history = await json(await curator.session.fetch("/api/curator/curators"));
+    const targetChanges = history.roleChanges.filter((rc) => rc.targetEmail === target.email);
+    assert.equal(targetChanges.length, 2);
   });
 });
 

@@ -37,7 +37,7 @@ Guide { id, curatorId, title, description, taxonSlugs[], createdAt }
 ## 4. Curator / moderation tools
 
 **Design (Part C.2, F):**
-- A `role: "member" | "curator"` field on the user record (first account created, or a seeded flag, becomes curator for demo purposes — real deployment would need an invite/vetting flow, out of scope here).
+- A `role: "member" | "curator"` field on the user record (first account created becomes curator for demo purposes, since there's no signup-time vetting). From there, `promoteToCurator`/`demoteCurator` in `src/lib/server/store.ts` (and the `/curator` page's "Curators" section) are the real invite/revoke flow — an existing curator grants or removes the role by email, each requiring a written reason and logged to a `role_changes` audit table.
 - `POST /api/observations/:id/flag` — any signed-in user can flag an observation (reason + optional note), visible only to curators.
 - `/curator` route: a queue of flagged observations with resolve/dismiss actions and a required written reason (Part F: "any account action includes a clear, appealable written reason"), stored as a new `curatorAction` record so it's auditable, not just a state flip.
 - Taxonomy correction (retargeting an observation's `taxonSlug`) is a curator-only action logged the same way.

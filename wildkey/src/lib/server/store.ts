@@ -156,8 +156,9 @@ export function createUser(email: string, password: string): User {
   const normalizedEmail = email.trim().toLowerCase();
   const passwordSalt = randomBytes(16).toString("hex");
   // Demo-only bootstrap: the very first account on a fresh database becomes
-  // a curator, since there's no invite/vetting flow to grant the role any
-  // other way here (see Part F and docs/remaining-systems-design.md).
+  // a curator, so there's always at least one curator able to use the real
+  // promote/demote flow (promoteToCurator/demoteCurator below) to grant or
+  // revoke the role for anyone else from there.
   // Every account after that starts as a plain member.
   const isFirstAccount = (db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number }).count === 0;
   const user: User = {
@@ -984,6 +985,117 @@ export function listCuratorActionsForFlag(flagId: string): CuratorAction[] {
       flagId: r.flag_id,
       curatorEmail: r.curator_email,
       action: r.action,
+      reason: r.reason,
+      createdAt: r.created_at,
+    }));
+}
+
+export type RoleChange = {
+  id: string;
+  targetEmail: string;
+  changedByEmail: string;
+  oldRole: UserRole;
+  newRole: UserRole;
+  reason: string;
+  createdAt: string;
+};
+
+/**
+ * The curator role has had exactly one way in since Part F was built: the
+ * first account on a fresh database bootstraps as curator, documented as
+ * a demo-only mechanism with "no invite flow exists yet." This is that
+ * invite flow — an existing curator can promote another account by email,
+ * with the same written-reason audit discipline as flag resolution
+ * (Part F: "any account action includes a clear, appealable written
+ * reason").
+ */
+export function promoteToCurator(
+  actingCuratorId: string,
+  targetEmail: string,
+  reason: string,
+): { ok: true } | { ok: false; error: string } {
+  const target = db
+    .prepare<[string], UserRow>("SELECT * FROM users WHERE email = ?")
+    .get(targetEmail.trim().toLowerCase());
+  if (!target) return { ok: false, error: "No account with that email." };
+  if (target.role === "curator") return { ok: false, error: "That account is already a curator." };
+
+  const transaction = db.transaction(() => {
+    db.prepare("UPDATE users SET role = 'curator' WHERE id = ?").run(target.id);
+    db.prepare(
+      `INSERT INTO role_changes (id, target_user_id, changed_by_id, old_role, new_role, reason, created_at)
+       VALUES (?, ?, ?, 'member', 'curator', ?, ?)`,
+    ).run(randomUUID(), target.id, actingCuratorId, reason, new Date().toISOString());
+  });
+  transaction();
+  return { ok: true };
+}
+
+/**
+ * The mirror of promoteToCurator, same audit discipline. A curator can't
+ * revoke their own role here (self-service demotion would let the last
+ * curator on a database lock everyone out of moderation with no recovery
+ * path) — that has to come from another curator.
+ */
+export function demoteCurator(
+  actingCuratorId: string,
+  targetEmail: string,
+  reason: string,
+): { ok: true } | { ok: false; error: string } {
+  const target = db
+    .prepare<[string], UserRow>("SELECT * FROM users WHERE email = ?")
+    .get(targetEmail.trim().toLowerCase());
+  if (!target) return { ok: false, error: "No account with that email." };
+  if (target.role !== "curator") return { ok: false, error: "That account isn't a curator." };
+  if (target.id === actingCuratorId) {
+    return { ok: false, error: "You can't remove your own curator role — ask another curator to." };
+  }
+
+  const transaction = db.transaction(() => {
+    db.prepare("UPDATE users SET role = 'member' WHERE id = ?").run(target.id);
+    db.prepare(
+      `INSERT INTO role_changes (id, target_user_id, changed_by_id, old_role, new_role, reason, created_at)
+       VALUES (?, ?, ?, 'curator', 'member', ?, ?)`,
+    ).run(randomUUID(), target.id, actingCuratorId, reason, new Date().toISOString());
+  });
+  transaction();
+  return { ok: true };
+}
+
+export function listCurators(): { id: string; email: string }[] {
+  return db
+    .prepare<[], { id: string; email: string }>("SELECT id, email FROM users WHERE role = 'curator' ORDER BY email ASC")
+    .all();
+}
+
+export function listRoleChanges(): RoleChange[] {
+  return db
+    .prepare<
+      [],
+      {
+        id: string;
+        target_email: string;
+        changed_by_email: string;
+        old_role: string;
+        new_role: string;
+        reason: string;
+        created_at: string;
+      }
+    >(
+      `SELECT role_changes.id, target.email AS target_email, changer.email AS changed_by_email,
+              role_changes.old_role, role_changes.new_role, role_changes.reason, role_changes.created_at
+       FROM role_changes
+       JOIN users AS target ON target.id = role_changes.target_user_id
+       JOIN users AS changer ON changer.id = role_changes.changed_by_id
+       ORDER BY role_changes.created_at DESC`,
+    )
+    .all()
+    .map((r) => ({
+      id: r.id,
+      targetEmail: r.target_email,
+      changedByEmail: r.changed_by_email,
+      oldRole: r.old_role as UserRole,
+      newRole: r.new_role as UserRole,
       reason: r.reason,
       createdAt: r.created_at,
     }));

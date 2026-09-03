@@ -126,6 +126,16 @@ function createConnection(): Database.Database {
       reason TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS role_changes (
+      id TEXT PRIMARY KEY,
+      target_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      changed_by_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      old_role TEXT NOT NULL,
+      new_role TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
   `);
 
   // Defensive migrations for a pre-existing .data/wildkey.sqlite3 created
@@ -158,6 +168,7 @@ function createConnection(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_observation_flags_observation_id ON observation_flags(observation_id);
     CREATE INDEX IF NOT EXISTS idx_observation_flags_status ON observation_flags(status);
     CREATE INDEX IF NOT EXISTS idx_curator_actions_flag_id ON curator_actions(flag_id);
+    CREATE INDEX IF NOT EXISTS idx_role_changes_target_user_id ON role_changes(target_user_id);
   `);
 
   return db;
