@@ -96,17 +96,33 @@ What this repo does instead:
   hand-derived (not measured-after-the-fact) exact numbers — 49 vertices,
   72 triangles, and a trimmed area of exactly 36 — all of which matched.
 
+- `Mesh::ExtrudeCappedSolid()` closes the "trimmed face can't feed
+  `BooleanCombine()`" gap the previous section left open — generally,
+  not with a one-off shape. Rather than hand-deriving matching wall
+  geometry for a specific profile (a real cylinder's disk caps, say),
+  it extracts a cap mesh's boundary loop directly from its own triangle
+  adjacency (an edge used by exactly one triangle is a boundary edge),
+  so it works on *any* cap shape — including `TrimmedPlanarFace()`'s
+  jagged, whole-cell-in/out trim boundary, not just a clean curve. Top,
+  bottom, and wall vertices at every seam reuse the cap's own vertex
+  positions exactly (no `MergeAndWeld()` tolerance involved). Verified
+  in `tests/test_basic.cpp`: an untrimmed square extruded into a solid
+  matches its exact area×height volume; the same trimmed face from the
+  section above, extruded, matches its exact trim-area×height volume;
+  and — the real proof this is watertight, not just numerically
+  close — `BooleanCombine()` accepts the extruded trimmed solid and a
+  disjoint union with it produces exactly the expected combined volume
+  (Manifold would reject a non-manifold mesh outright, not silently
+  produce a wrong answer).
+
 ## What's still not done (as of chunk 2)
 
-- `Brep::Box()`, `Brep::Sphere()`, and `Brep::TrimmedPlanarFace()` are
-  three hard-coded shapes, not general solid construction — no primitive
-  library beyond these three, and no way to turn a trimmed face into part
-  of a *closed* solid yet (`TrimmedPlanarFace()` only proves the
-  tessellation-level trim; nothing here builds the matching edges/walls a
-  real trimmed solid — e.g. an actual cylinder with disk caps — would
-  need, so a trimmed face can't feed `BooleanCombine()` yet the way
-  `Box()`/`Sphere()` can). They exist to prove the Brep → Tessellate →
-  weld → boolean pipeline piece by piece, not to be a real modeler.
+- `Brep::Box()`, `Brep::Sphere()`, and `Brep::TrimmedPlanarFace()` +
+  `Mesh::ExtrudeCappedSolid()` are the only shapes/operations here — no
+  general primitive library (a real cylinder, cone, revolve, loft), and
+  `ExtrudeCappedSolid()` only handles a single simple (non-self-
+  intersecting, no holes) boundary loop — a face with an interior hole
+  (an annulus) isn't supported.
 - The trim-polygon test in `TessellateGrid()` is whole-cell in/out
   (a cell is kept only if all four corners are inside), not real boundary
   clipping — a curved or diagonal trim edge will look faceted/staircased

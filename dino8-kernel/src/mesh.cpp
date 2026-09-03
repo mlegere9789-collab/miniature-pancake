@@ -2,7 +2,9 @@
 
 #include <cmath>
 #include <map>
+#include <set>
 #include <tuple>
+#include <utility>
 
 namespace dino8::kernel {
 
@@ -92,6 +94,82 @@ Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
       remapped.vi[3] = remap[static_cast<size_t>(face.vi[3])];
       out.m_F.Append(remapped);
     }
+  }
+
+  return result;
+}
+
+Mesh Mesh::ExtrudeCappedSolid(const Mesh& cap, Vector3d offset) {
+  Mesh result;
+  ON_Mesh& out = result.mesh_;
+  const ON_Mesh& in = cap.mesh_;
+  const int n = in.m_V.Count();
+
+  // Near end (the cap as given) at indices [0, n); far end (translated by
+  // offset) at indices [n, 2n).
+  for (int i = 0; i < n; ++i) {
+    out.m_V.Append(in.m_V[i]);
+  }
+  for (int i = 0; i < n; ++i) {
+    const ON_3dPoint far_point = ON_3dPoint(in.m_V[i]) + offset;
+    out.m_V.Append(ON_3fPoint(far_point));
+  }
+
+  // Near-end faces keep the cap's own winding/orientation.
+  for (int i = 0; i < in.m_F.Count(); ++i) {
+    const ON_MeshFace& f = in.m_F[i];
+    ON_MeshFace near_face;
+    near_face.vi[0] = f.vi[0];
+    near_face.vi[1] = f.vi[1];
+    near_face.vi[2] = f.vi[2];
+    near_face.vi[3] = f.vi[2];
+    out.m_F.Append(near_face);
+  }
+  // Far-end faces are the same triangles, translated and wound the
+  // opposite way (so their normal points away from the solid, into +offset,
+  // rather than back toward the near end).
+  for (int i = 0; i < in.m_F.Count(); ++i) {
+    const ON_MeshFace& f = in.m_F[i];
+    ON_MeshFace far_face;
+    far_face.vi[0] = f.vi[0] + n;
+    far_face.vi[1] = f.vi[2] + n;
+    far_face.vi[2] = f.vi[1] + n;
+    far_face.vi[3] = far_face.vi[2];
+    out.m_F.Append(far_face);
+  }
+
+  // Boundary-edge extraction: a directed edge (a, b) that appears in some
+  // triangle's winding is an interior edge if its reverse (b, a) also
+  // appears (from the triangle on the other side); otherwise it's on the
+  // cap's boundary loop. This works for any cap shape - including a
+  // trimmed face's jagged/staircased boundary - without needing to know
+  // the boundary's "ideal" curve.
+  std::set<std::pair<int, int>> directed_edges;
+  for (int i = 0; i < in.m_F.Count(); ++i) {
+    const ON_MeshFace& f = in.m_F[i];
+    directed_edges.insert({f.vi[0], f.vi[1]});
+    directed_edges.insert({f.vi[1], f.vi[2]});
+    directed_edges.insert({f.vi[2], f.vi[0]});
+  }
+  for (const auto& edge : directed_edges) {
+    const int a = edge.first;
+    const int b = edge.second;
+    if (directed_edges.count({b, a}) != 0) {
+      continue;  // interior edge, shared by two triangles
+    }
+    ON_MeshFace wall1;
+    wall1.vi[0] = a;
+    wall1.vi[1] = b + n;
+    wall1.vi[2] = b;
+    wall1.vi[3] = wall1.vi[2];
+    out.m_F.Append(wall1);
+
+    ON_MeshFace wall2;
+    wall2.vi[0] = a;
+    wall2.vi[1] = a + n;
+    wall2.vi[2] = b + n;
+    wall2.vi[3] = wall2.vi[2];
+    out.m_F.Append(wall2);
   }
 
   return result;

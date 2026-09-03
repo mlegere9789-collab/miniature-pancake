@@ -415,6 +415,85 @@ void TestWeldAcrossIndependentlyParameterizedSurfaces() {
         "welded two-square area is exactly 2.0 despite the degree elevation");
 }
 
+void TestExtrudeUntrimmedFaceIntoSolid() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A 2x2 square in the z=0 plane, built the same way TrimmedPlanarFace's
+  // test built its base face - u_dir x v_dir gives an outward +Z normal
+  // (see the corner-order derivation comment in Brep::Box).
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 2, 0),
+      Point3d(2, 0, 0),
+      Point3d(2, 2, 0),
+  };
+  const NurbsSurface surface =
+      NurbsSurface::FromControlGrid(grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  const Brep face = Brep::FromSurface(surface);
+  const auto cap = face.Tessellate(/*u_divisions=*/3, /*v_divisions=*/3).front();
+
+  // Extrude downward (into -Z, away from the cap's own +Z normal) by 3 -
+  // the solid should occupy z in [-3, 0], volume 2*2*3 = 12.
+  const auto solid = Mesh::ExtrudeCappedSolid(cap, Vector3d(0, 0, -3));
+
+  Check(solid.VertexCount() == 2 * cap.VertexCount(),
+        "extrusion doubles the cap's vertex count exactly (no welding needed - "
+        "near/far ends and walls all reuse the cap's own vertex positions)");
+  Check(std::abs(solid.Volume() - 12.0) < 1e-9,
+        "extruded solid's volume matches base area (4) x height (3) exactly");
+}
+
+void TestExtrudeTrimmedFaceFeedsBoolean() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Same trimmed face as TestBrepTrimmedPlanarFace (exact area 36), now
+  // extruded into an actual closed solid - proving Brep::TrimmedPlanarFace()
+  // can feed BooleanCombine() after all, closing the gap the previous
+  // chunk's README flagged ("a trimmed face can't feed BooleanCombine()
+  // yet"). ExtrudeCappedSolid()'s boundary-edge extraction has to cope
+  // with the trim's jagged/staircased boundary here, not a clean polygon -
+  // this is the real test of it, not the flat-untrimmed-square case above.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(10, 0, 0),
+      Point3d(10, 10, 0),
+  };
+  const NurbsSurface surface =
+      NurbsSurface::FromControlGrid(grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  const std::vector<Point2d> trim_loop = {
+      Point2d(0.15, 0.15),
+      Point2d(0.85, 0.15),
+      Point2d(0.85, 0.85),
+      Point2d(0.15, 0.85),
+  };
+  const Brep face = Brep::TrimmedPlanarFace(surface, trim_loop);
+  const auto cap = face.Tessellate(/*u_divisions=*/10, /*v_divisions=*/10).front();
+
+  const auto solid = Mesh::ExtrudeCappedSolid(cap, Vector3d(0, 0, -1));
+  Check(std::abs(solid.Volume() - 36.0) < 1e-9,
+        "extruded trimmed-face solid's volume matches trim area (36) x height (1) exactly");
+
+  // Union with a disjoint box far away: if the extruded solid weren't
+  // genuinely closed/watertight, Manifold::Status() would reject it and
+  // BooleanCombine() would throw rather than return a result.
+  const auto box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const auto result = BooleanCombine(solid, box, BooleanOp::Union);
+  Check(std::abs(result.Volume() - 37.0) < 1e-9,
+        "union of the extruded trimmed solid with a disjoint unit box equals 36 + 1");
+}
+
 }  // namespace
 
 int main() {
@@ -434,6 +513,8 @@ int main() {
   TestBrepSphereBooleanEndToEnd();
   TestBrepTrimmedPlanarFace();
   TestWeldAcrossIndependentlyParameterizedSurfaces();
+  TestExtrudeUntrimmedFaceIntoSolid();
+  TestExtrudeTrimmedFaceFeedsBoolean();
 
   ON::End();
 

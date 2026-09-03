@@ -5,6 +5,7 @@
 #include <opennurbs.h>
 
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/types.h"
 
 namespace dino8::kernel {
 
@@ -43,6 +44,32 @@ class Mesh {
   // into "one watertight solid."
   static Mesh MergeAndWeld(const std::vector<Mesh>& meshes,
                             double tolerance = 1e-6);
+
+  // Sweeps `cap` (any open mesh with a well-defined boundary loop - a
+  // trimmed planar face's tessellation, an untrimmed one, or any other
+  // manifold-with-boundary patch) along `offset` into a closed solid:
+  // `cap` becomes one end as-is, a copy of it translated by `offset`
+  // (with reversed winding) becomes the other end, and side walls are
+  // generated to connect them.
+  //
+  // This is the general answer to the gap earlier chunks flagged
+  // ("nothing here builds the matching edges/walls a real trimmed solid
+  // needs"): rather than hand-deriving matching wall geometry per shape
+  // (as Box() and a hypothetical Cylinder() would each need to), this
+  // extracts `cap`'s boundary loop directly from its own triangle
+  // adjacency (an edge used by exactly one triangle is a boundary edge)
+  // and builds walls from that - so it works on any cap shape, including
+  // Brep::TrimmedPlanarFace()'s jagged/staircased trim boundary, without
+  // needing the wall geometry to be constructed to match some idealized
+  // curve. No welding tolerance is involved: top, bottom, and wall
+  // vertices at the shared seams reuse `cap`'s own vertex positions
+  // exactly (translated for the far end), so the result is already a
+  // single closed mesh - it does not need MergeAndWeld().
+  //
+  // Requires `cap` to have a single, simple (non-self-intersecting)
+  // boundary loop - e.g. not already closed, and not multiply-connected
+  // (a face with a hole isn't supported here).
+  static Mesh ExtrudeCappedSolid(const Mesh& cap, Vector3d offset);
 
  private:
   friend class Brep;
