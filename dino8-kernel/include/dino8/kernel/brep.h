@@ -68,13 +68,13 @@ class Brep {
   // actually applied.
   //
   // `exact_clip`, if true, tessellates via NurbsSurface::
-  // TessellateGridClippedConvex() instead of the default whole-cell
+  // TessellateGridClippedExact() instead of the default whole-cell
   // TessellateGrid() path - real boundary clipping instead of an
-  // approximation that only improves with grid resolution, but only
-  // valid for a convex trim_loop_uv (throws otherwise). Defaults to
-  // false so existing whole-cell behavior (and the exact vertex/triangle
-  // counts tests assert against it) doesn't change under callers that
-  // don't ask for this.
+  // approximation that only improves with grid resolution. `trim_loop_uv`
+  // may be convex or concave (see that method's own comment for how each
+  // is handled). Defaults to false so existing whole-cell behavior (and
+  // the exact vertex/triangle counts tests assert against it) doesn't
+  // change under callers that don't ask for this.
   //
   // `hole_loops_uv`, if non-empty, are additional closed polygons
   // subtracted from the outer trim - an annulus/washer face (a square

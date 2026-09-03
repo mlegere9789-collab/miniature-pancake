@@ -254,10 +254,10 @@ Mesh Mesh::Cylinder(Point3d base_center, Vector3d axis, double radius, double he
                 0.5 + radius * std::cos(theta) / (2.0 * s)));
   }
 
-  // exact_clip=true: a circle's N-gon trim is convex, so this gets real
-  // boundary clipping (NurbsSurface::TessellateGridClippedConvex) rather
-  // than TessellateGrid()'s whole-cell approximation - the fix for the
-  // resolution/accuracy tradeoff the whole-cell version measured.
+  // exact_clip=true: this gets real boundary clipping (NurbsSurface::
+  // TessellateGridClippedExact) rather than TessellateGrid()'s whole-cell
+  // approximation - the fix for the resolution/accuracy tradeoff the
+  // whole-cell version measured.
   const Brep disk = Brep::TrimmedPlanarFace(surface, trim_loop, /*exact_clip=*/true);
   const Mesh cap = disk.Tessellate(grid_divisions, grid_divisions).front();
 

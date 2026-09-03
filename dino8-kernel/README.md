@@ -121,19 +121,43 @@ What this repo does instead:
   whole-cell trimming, which — verified directly, not assumed —
   systematically *under*-represents a curved boundary: 48 trim/grid
   divisions measured a real 7% volume error, 200 measured ~1.5%. That's
-  what motivated `TessellateGridClippedConvex()` below; `Cylinder()` now
+  what motivated `TessellateGridClippedExact()` below; `Cylinder()` now
   uses it and gets ~0.64% error at just 32 divisions.
-- `NurbsSurface::TessellateGridClippedConvex()` fixes the accuracy
-  problem at its root instead of trading it for resolution: real
-  Sutherland-Hodgman polygon clipping per grid cell, rather than
-  whole-cell in/out. Requires a convex trim polygon (throws
-  `std::invalid_argument` otherwise, verified in `tests/test_basic.cpp`
-  with a concave dart-shaped trim) — the earlier non-convex
-  rectangular-notch/L-shape tests still need `TessellateGrid()`'s
-  whole-cell path. `Brep::TrimmedPlanarFace()` takes an `exact_clip`
-  flag to opt into this per face; default stays `false` so existing
-  whole-cell tests and their hand-derived counts don't change under
-  them.
+- `NurbsSurface::TessellateGridClippedExact()` (originally
+  `TessellateGridClippedConvex()` — renamed once it stopped being
+  convex-only, see below) fixes the accuracy problem at its root instead
+  of trading it for resolution: real polygon clipping per grid cell,
+  rather than whole-cell in/out. A convex `trim_polygon` goes through the
+  original Sutherland-Hodgman path (what `Cylinder()`'s circular trim and
+  everything else exercising exact clipping so far actually depends on);
+  a concave one now goes through a general Greiner-Hormann-style polygon
+  intersection with ear-clipping triangulation, rather than being
+  rejected. `Brep::TrimmedPlanarFace()` takes an `exact_clip` flag to opt
+  into this per face; default stays `false` so existing whole-cell tests
+  and their hand-derived counts don't change under them.
+  **Getting the concave path right took three real bugs, each caught by
+  hand-derived expected values, not assumed correct:** (1) a trim vertex
+  landing exactly on a tessellation grid line corrupted the traced
+  boundary — worked around by choosing test coordinates off exact grid
+  lines, the same discipline other tests here already follow, and
+  documented as a known limitation of the concave path rather than fully
+  hardened against; (2) the initial always-forward polygon trace started
+  from *any* unvisited crossing rather than only from an "entry" crossing
+  (where the subject path moves from outside the clip region to inside),
+  which for an exit-started trace walked almost the entire boundary
+  instead of the small local intersection — caught by a measured area
+  many times larger than the true trim area; (3) even after fixing the
+  trace, a test extruded the resulting concave cap in the same direction
+  as its own natural outward normal (`ExtrudeCappedSolid()` requires the
+  offset to point away from the cap's normal, as
+  `TestExtrudeUntrimmedFaceIntoSolid` already documented) — the resulting
+  solid was a valid, Manifold-accepted closed mesh, just consistently
+  wound "inside out," caught by a volume that was the exact negative of
+  the expected one, not a magnitude mismatch. Verified end to end: the
+  dart's exact-clipped area matches its hand-derived shoelace-formula
+  value, the extruded solid's volume matches area × height, and
+  `BooleanCombine()` accepts it as watertight in union with a disjoint
+  box.
   **Found and fixed a real bug building this**, the kind only exercised by
   a genuinely curved, many-cell trim (a rectangle's 4 straight edges
   never hit it): clipping a grid cell near a trim-polygon vertex can
@@ -181,12 +205,15 @@ What this repo does instead:
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
   (+ `hole_loops_uv`) + `Mesh::ExtrudeCappedSolid()`/`Mesh::Cylinder()`
   are the only shapes/operations here — no cone, revolve, or loft.
-- `TessellateGridClippedConvex()` only handles convex trim polygons
-  (Sutherland-Hodgman's requirement) — a concave or multiply-connected
-  trim (the earlier L-shape/notch tests) still goes through
-  `TessellateGrid()`'s whole-cell approximation. A general polygon
-  clipper (Weiler-Atherton or similar) would remove that split, at real
-  implementation cost.
+- `TessellateGridClippedExact()` now handles a concave `trim_polygon` too
+  (via a general Greiner-Hormann-style clipper, see above), but that path
+  is newer and more narrowly tested than the long-proven convex one: a
+  trim vertex landing exactly on a tessellation grid line is a known,
+  documented, unhardened degeneracy, and only one concave shape (a
+  five-vertex dart) has actually been exercised so far — a genuinely
+  pathological concave polygon (many reflex vertices, features much
+  smaller than the grid resolution) hasn't been. `trim_polygon` must
+  still be simple (non-self-intersecting); that isn't validated.
 - The trim-polygon test in `TessellateGrid()` is whole-cell in/out
   (a cell is kept only if all four corners are inside), not real boundary
   clipping — a curved or diagonal trim edge will look faceted/staircased

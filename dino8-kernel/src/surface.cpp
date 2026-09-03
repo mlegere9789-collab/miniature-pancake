@@ -1,7 +1,10 @@
 #include "dino8/kernel/surface.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
+#include <vector>
 
 #include "dino8/kernel/mesh.h"
 
@@ -20,6 +23,27 @@ double SignedArea(const std::vector<Point2d>& polygon) {
     area += Cross2d(a, b);
   }
   return 0.5 * area;
+}
+
+// Standard even-odd ray-casting point-in-polygon test. Boundary behavior
+// is not guaranteed either way (ordinary floating-point ray-casting
+// caveat) - callers relying on an exact result should keep test points
+// off the polygon boundary.
+bool PointInPolygon(double u, double v, const std::vector<Point2d>& polygon) {
+  bool inside = false;
+  const size_t n = polygon.size();
+  for (size_t i = 0, j = n - 1; i < n; j = i++) {
+    const Point2d& pi = polygon[i];
+    const Point2d& pj = polygon[j];
+    const bool crosses = (pi.y > v) != (pj.y > v);
+    if (crosses) {
+      const double u_at_crossing = (pj.x - pi.x) * (v - pi.y) / (pj.y - pi.y) + pi.x;
+      if (u < u_at_crossing) {
+        inside = !inside;
+      }
+    }
+  }
+  return inside;
 }
 
 bool IsConvexPolygon(const std::vector<Point2d>& polygon) {
@@ -58,9 +82,11 @@ Point2d LineIntersection(const Point2d& p1, const Point2d& p2, const Point2d& a,
 }
 
 // Sutherland-Hodgman: clips `subject` against the convex polygon `clip`.
-// `orientation_sign` is +1 if `clip`'s vertices are CCW (positive signed
-// area), -1 if CW - lets the "inside" test work regardless of `clip`'s
-// winding direction.
+// Used only for a convex trim_polygon (TessellateGridClippedExact's fast,
+// long-proven path) - ClipPolygon below is the general fallback for a
+// concave trim. `orientation_sign` is +1 if `clip`'s vertices are CCW
+// (positive signed area), -1 if CW - lets the "inside" test work
+// regardless of `clip`'s winding direction.
 std::vector<Point2d> ClipConvex(std::vector<Point2d> subject,
                                  const std::vector<Point2d>& clip,
                                  double orientation_sign) {
@@ -95,25 +121,267 @@ std::vector<Point2d> ClipConvex(std::vector<Point2d> subject,
   return subject;
 }
 
-// Standard even-odd ray-casting point-in-polygon test. Boundary behavior
-// is not guaranteed either way (ordinary floating-point ray-casting
-// caveat) - callers relying on an exact result should keep test points
-// off the polygon boundary.
-bool PointInPolygon(double u, double v, const std::vector<Point2d>& polygon) {
-  bool inside = false;
-  const size_t n = polygon.size();
-  for (size_t i = 0, j = n - 1; i < n; j = i++) {
-    const Point2d& pi = polygon[i];
-    const Point2d& pj = polygon[j];
-    const bool crosses = (pi.y > v) != (pj.y > v);
-    if (crosses) {
-      const double u_at_crossing = (pj.x - pi.x) * (v - pi.y) / (pj.y - pi.y) + pi.x;
-      if (u < u_at_crossing) {
+// Greiner-Hormann polygon intersection: clips `subject` against `clip`,
+// where both are simple (non-self-intersecting) polygons and either may
+// be concave. This is TessellateGridClippedExact's fallback for a concave
+// trim_polygon - ClipConvex above stays the path for a convex one, both
+// because it's simpler and because it's the long-proven implementation
+// Mesh::Cylinder()'s circular trim (and everything else that exercises
+// exact clipping so far) already depends on; concave clipping is a newer,
+// narrower-tested addition and doesn't need to displace it. Unlike
+// Sutherland-Hodgman, this doesn't require the clip region to be convex -
+// it works by inserting every boundary-crossing point into both polygons'
+// vertex lists, tagging each subject-side crossing "entry" (the subject
+// path moves from outside `clip` to inside there) or "exit", then tracing
+// the shared boundary starting from each unvisited *entry*, always moving
+// forward (never backward - both polygons are normalized to the same CCW
+// winding below, which is what makes "always forward" valid for plain
+// intersection, unlike the fuller Greiner-Hormann/Foster algorithm's
+// forward/backward rule needed for union and difference) and switching
+// polygon at every crossing. Starting only from entries matters: starting
+// a forward-only trace from an exit instead traces the wrong (much
+// larger, effectively union-shaped) loop - a real bug an earlier version
+// of this function had, caught by a wildly-too-large measured area, not a
+// subtle one. Returns zero or more closed loops - zero if disjoint, one
+// for the ordinary case, more than one if `clip` carves `subject` (here,
+// always a single grid cell) into disjoint pieces.
+std::vector<std::vector<Point2d>> ClipPolygon(const std::vector<Point2d>& subject_in,
+                                               const std::vector<Point2d>& clip_in) {
+  struct Vertex {
+    Point2d p;
+    bool intersect = false;
+    bool entry = false;
+    bool visited = false;
+    int neighbor = -1;  // index into the *other* list (or, before fix-up, a shared id)
+  };
+  struct PendingHit {
+    double alpha;
+    Point2d p;
+    int id;
+  };
+
+  std::vector<Point2d> subject = subject_in;
+  if (SignedArea(subject) < 0.0) {
+    std::reverse(subject.begin(), subject.end());
+  }
+  std::vector<Point2d> clip = clip_in;
+  if (SignedArea(clip) < 0.0) {
+    std::reverse(clip.begin(), clip.end());
+  }
+
+  const size_t sn = subject.size();
+  const size_t cn = clip.size();
+  std::vector<std::vector<PendingHit>> subject_hits(sn);
+  std::vector<std::vector<PendingHit>> clip_hits(cn);
+  int next_id = 0;
+
+  constexpr double kEps = 1e-9;
+  for (size_t i = 0; i < sn; ++i) {
+    const Point2d& p1 = subject[i];
+    const Point2d& p2 = subject[(i + 1) % sn];
+    const double d1x = p2.x - p1.x;
+    const double d1y = p2.y - p1.y;
+    for (size_t j = 0; j < cn; ++j) {
+      const Point2d& p3 = clip[j];
+      const Point2d& p4 = clip[(j + 1) % cn];
+      const double d2x = p4.x - p3.x;
+      const double d2y = p4.y - p3.y;
+      const double denom = d1x * d2y - d1y * d2x;
+      if (std::abs(denom) < 1e-15) {
+        continue;  // parallel (or one segment is degenerate)
+      }
+      const double dx = p3.x - p1.x;
+      const double dy = p3.y - p1.y;
+      const double t = (dx * d2y - dy * d2x) / denom;
+      const double u = (dx * d1y - dy * d1x) / denom;
+      if (t < kEps || t > 1.0 - kEps || u < kEps || u > 1.0 - kEps) {
+        continue;
+      }
+      const Point2d hit(p1.x + t * d1x, p1.y + t * d1y);
+      const int id = next_id++;
+      subject_hits[i].push_back({t, hit, id});
+      clip_hits[j].push_back({u, hit, id});
+    }
+  }
+
+  auto build_list = [](const std::vector<Point2d>& poly,
+                        std::vector<std::vector<PendingHit>>& hits) {
+    std::vector<Vertex> list;
+    for (size_t i = 0; i < poly.size(); ++i) {
+      Vertex original;
+      original.p = poly[i];
+      list.push_back(original);
+      std::sort(hits[i].begin(), hits[i].end(),
+                [](const PendingHit& a, const PendingHit& b) { return a.alpha < b.alpha; });
+      for (const PendingHit& hit : hits[i]) {
+        Vertex crossing;
+        crossing.p = hit.p;
+        crossing.intersect = true;
+        crossing.neighbor = hit.id;  // temporary: fixed up to a real index below
+        list.push_back(crossing);
+      }
+    }
+    return list;
+  };
+
+  std::vector<Vertex> subject_list = build_list(subject, subject_hits);
+  std::vector<Vertex> clip_list = build_list(clip, clip_hits);
+
+  if (next_id == 0) {
+    // No boundary crossings at all: one polygon is entirely inside the
+    // other, or they're disjoint.
+    if (PointInPolygon(subject[0].x, subject[0].y, clip)) {
+      return {subject};
+    }
+    if (PointInPolygon(clip[0].x, clip[0].y, subject)) {
+      return {clip};
+    }
+    return {};
+  }
+
+  std::vector<int> id_to_subject_index(static_cast<size_t>(next_id), -1);
+  std::vector<int> id_to_clip_index(static_cast<size_t>(next_id), -1);
+  for (size_t i = 0; i < subject_list.size(); ++i) {
+    if (subject_list[i].intersect) {
+      id_to_subject_index[static_cast<size_t>(subject_list[i].neighbor)] = static_cast<int>(i);
+    }
+  }
+  for (size_t i = 0; i < clip_list.size(); ++i) {
+    if (clip_list[i].intersect) {
+      id_to_clip_index[static_cast<size_t>(clip_list[i].neighbor)] = static_cast<int>(i);
+    }
+  }
+  for (Vertex& v : subject_list) {
+    if (v.intersect) {
+      v.neighbor = id_to_clip_index[static_cast<size_t>(v.neighbor)];
+    }
+  }
+  for (Vertex& v : clip_list) {
+    if (v.intersect) {
+      v.neighbor = id_to_subject_index[static_cast<size_t>(v.neighbor)];
+    }
+  }
+
+  // Only subject_list needs entry/exit: a trace always starts at a
+  // subject-side "entry" (a crossing where the subject path moves from
+  // outside `clip` to inside it) - starting at an "exit" instead and
+  // still always moving forward traces the wrong (much larger,
+  // effectively union-shaped) loop, not the intersection. Each list's
+  // first vertex is always an original (non-crossing) polygon vertex
+  // (build_list appends it before that edge's crossings), so it's safe to
+  // seed the toggle with a direct point-in-polygon test.
+  {
+    bool inside = PointInPolygon(subject_list[0].p.x, subject_list[0].p.y, clip);
+    for (Vertex& v : subject_list) {
+      if (v.intersect) {
         inside = !inside;
+        v.entry = inside;
       }
     }
   }
-  return inside;
+
+  std::vector<std::vector<Point2d>> result;
+  for (size_t s = 0; s < subject_list.size(); ++s) {
+    if (!subject_list[s].intersect || !subject_list[s].entry || subject_list[s].visited) {
+      continue;
+    }
+    std::vector<Point2d> polygon;
+    std::vector<Vertex>* list = &subject_list;
+    std::vector<Vertex>* other = &clip_list;
+    size_t idx = s;
+    while (true) {
+      Vertex& v = (*list)[idx];
+      v.visited = true;
+      if (v.intersect && v.neighbor >= 0) {
+        (*other)[static_cast<size_t>(v.neighbor)].visited = true;
+      }
+      polygon.push_back(v.p);
+      size_t next_idx = (idx + 1) % list->size();
+      while (!(*list)[next_idx].intersect) {
+        polygon.push_back((*list)[next_idx].p);
+        next_idx = (next_idx + 1) % list->size();
+      }
+      idx = static_cast<size_t>((*list)[next_idx].neighbor);
+      std::swap(list, other);
+      if (list == &subject_list && idx == s) {
+        break;
+      }
+    }
+    if (polygon.size() >= 3) {
+      result.push_back(std::move(polygon));
+    }
+  }
+  return result;
+}
+
+bool PointInTriangle(const Point2d& p, const Point2d& a, const Point2d& b, const Point2d& c) {
+  const double d1 = Cross2d(Point2d(b.x - a.x, b.y - a.y), Point2d(p.x - a.x, p.y - a.y));
+  const double d2 = Cross2d(Point2d(c.x - b.x, c.y - b.y), Point2d(p.x - b.x, p.y - b.y));
+  const double d3 = Cross2d(Point2d(a.x - c.x, a.y - c.y), Point2d(p.x - c.x, p.y - c.y));
+  const bool has_neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+  const bool has_pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+  return !(has_neg && has_pos);
+}
+
+// Ear-clipping triangulation of a simple polygon (convex or concave).
+// Needed because a Greiner-Hormann clip of a convex cell against a concave
+// trim polygon can itself be concave - a plain fan-from-vertex-0
+// triangulation (valid for convex output only) would emit
+// self-intersecting or inverted triangles for such a piece. Returns
+// triangles as index triples into `poly`; on numerical failure (couldn't
+// find a valid ear - a degenerate/near-zero-area input), returns whatever
+// was triangulated so far rather than looping forever.
+std::vector<std::array<int, 3>> EarClipTriangulate(const std::vector<Point2d>& poly) {
+  std::vector<std::array<int, 3>> triangles;
+  std::vector<int> order(poly.size());
+  for (size_t i = 0; i < poly.size(); ++i) {
+    order[i] = static_cast<int>(i);
+  }
+  if (SignedArea(poly) < 0.0) {
+    std::reverse(order.begin(), order.end());
+  }
+
+  while (order.size() > 3) {
+    bool ear_found = false;
+    const size_t n = order.size();
+    for (size_t i = 0; i < n; ++i) {
+      const int ia = order[(i + n - 1) % n];
+      const int ib = order[i];
+      const int ic = order[(i + 1) % n];
+      const Point2d& a = poly[static_cast<size_t>(ia)];
+      const Point2d& b = poly[static_cast<size_t>(ib)];
+      const Point2d& c = poly[static_cast<size_t>(ic)];
+      const double turn = Cross2d(Point2d(b.x - a.x, b.y - a.y), Point2d(c.x - b.x, c.y - b.y));
+      if (turn <= 1e-15) {
+        continue;  // reflex or degenerate vertex - not a valid ear tip
+      }
+      bool contains_other = false;
+      for (size_t k = 0; k < n; ++k) {
+        const int idx = order[k];
+        if (idx == ia || idx == ib || idx == ic) {
+          continue;
+        }
+        if (PointInTriangle(poly[static_cast<size_t>(idx)], a, b, c)) {
+          contains_other = true;
+          break;
+        }
+      }
+      if (contains_other) {
+        continue;
+      }
+      triangles.push_back({ia, ib, ic});
+      order.erase(order.begin() + static_cast<long>(i));
+      ear_found = true;
+      break;
+    }
+    if (!ear_found) {
+      break;
+    }
+  }
+  if (order.size() == 3) {
+    triangles.push_back({order[0], order[1], order[2]});
+  }
+  return triangles;
 }
 
 }  // namespace
@@ -287,16 +555,8 @@ Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
   return mesh;
 }
 
-Mesh NurbsSurface::TessellateGridClippedConvex(int u_divisions, int v_divisions,
-                                                const std::vector<Point2d>& trim_polygon) const {
-  if (!IsConvexPolygon(trim_polygon)) {
-    throw std::invalid_argument(
-        "dino8::kernel::NurbsSurface::TessellateGridClippedConvex: trim_polygon "
-        "must be convex - use TessellateGrid()'s whole-cell trim_polygon for "
-        "non-convex boundaries");
-  }
-  const double orientation_sign = SignedArea(trim_polygon) >= 0.0 ? 1.0 : -1.0;
-
+Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
+                                               const std::vector<Point2d>& trim_polygon) const {
   Mesh mesh;
   ON_Mesh& raw = mesh.mesh_;
 
@@ -304,6 +564,24 @@ Mesh NurbsSurface::TessellateGridClippedConvex(int u_divisions, int v_divisions,
   const ON_Interval v_domain = surface_.Domain(1);
   auto u_at = [&](int i) { return u_domain.ParameterAt(static_cast<double>(i) / u_divisions); };
   auto v_at = [&](int j) { return v_domain.ParameterAt(static_cast<double>(j) / v_divisions); };
+
+  // Dispatch by convexity: ClipConvex (Sutherland-Hodgman) is the
+  // long-proven path every existing caller of exact clipping (in
+  // particular Mesh::Cylinder()'s circular trim) already exercises;
+  // ClipPolygon (Greiner-Hormann-style) is the newer, general fallback
+  // that also handles a concave trim_polygon. Keeping both rather than
+  // routing everything through the general path avoids regressing
+  // already-proven convex behavior with a less battle-tested one.
+  const bool trim_is_convex = IsConvexPolygon(trim_polygon);
+  const double orientation_sign = SignedArea(trim_polygon) >= 0.0 ? 1.0 : -1.0;
+
+  // A crossing point computed independently by two adjacent cells (or by
+  // both loops of a split cell) can land at slightly different floating
+  // point values; dedupe near-coincident consecutive points in a clipped
+  // loop before triangulating it - a zero-area sliver edge is a real
+  // topological defect (it corrupts ExtrudeCappedSolid's boundary-edge
+  // extraction), not just a rendering nit.
+  constexpr double kDuplicatePointEpsilon = 1e-9;
 
   for (int i = 0; i < u_divisions; ++i) {
     for (int j = 0; j < v_divisions; ++j) {
@@ -315,67 +593,63 @@ Mesh NurbsSurface::TessellateGridClippedConvex(int u_divisions, int v_divisions,
       const std::vector<Point2d> cell = {Point2d(u0, v0), Point2d(u1, v0), Point2d(u1, v1),
                                           Point2d(u0, v1)};
 
-      auto clipped = ClipConvex(cell, trim_polygon, orientation_sign);
-      if (clipped.size() < 3) {
-        continue;  // cell entirely outside the trim
-      }
-
-      // Sutherland-Hodgman can emit a vertex right at (or numerically
-      // indistinguishable from) the polygon's start/end when a clip edge
-      // passes through/near a cell corner. Left in, this produces
-      // zero-area "sliver" triangles below whose two non-shared vertices
-      // are the same point - not just visually negligible, but a real
-      // topological defect: that degenerate edge doesn't have a proper
-      // partner, corrupting ExtrudeCappedSolid()'s boundary-edge
-      // extraction (verified: without this, a real cylinder cap measured
-      // a mesh with an impossible edge count for its own vertex/face
-      // count, and Manifold correctly rejected the resulting solid as
-      // non-manifold rather than silently accepting it).
-      constexpr double kDuplicatePointEpsilon = 1e-9;
-      std::vector<Point2d> deduped;
-      deduped.reserve(clipped.size());
-      for (const Point2d& p : clipped) {
-        if (deduped.empty() ||
-            std::abs(p.x - deduped.back().x) > kDuplicatePointEpsilon ||
-            std::abs(p.y - deduped.back().y) > kDuplicatePointEpsilon) {
-          deduped.push_back(p);
+      // A cell straddling a concave trim boundary can clip into more than
+      // one disjoint piece (e.g. the trim polygon's boundary crosses the
+      // cell twice, cutting off two separate corners); each is
+      // triangulated independently below. A convex trim never splits a
+      // convex cell into more than one piece, so that path always
+      // produces zero or one.
+      std::vector<std::vector<Point2d>> pieces;
+      if (trim_is_convex) {
+        std::vector<Point2d> clipped = ClipConvex(cell, trim_polygon, orientation_sign);
+        if (clipped.size() >= 3) {
+          pieces.push_back(std::move(clipped));
         }
-      }
-      if (deduped.size() > 1 &&
-          std::abs(deduped.front().x - deduped.back().x) <= kDuplicatePointEpsilon &&
-          std::abs(deduped.front().y - deduped.back().y) <= kDuplicatePointEpsilon) {
-        deduped.pop_back();
-      }
-      if (deduped.size() < 3) {
-        continue;
+      } else {
+        pieces = ClipPolygon(cell, trim_polygon);
       }
 
-      std::vector<int> indices;
-      indices.reserve(deduped.size());
-      for (const Point2d& p : deduped) {
-        indices.push_back(raw.m_V.Count());
-        raw.m_V.Append(ON_3fPoint(PointAt(p.x, p.y)));
-      }
-      // Fan triangulation from indices[0]: valid because clipping a convex
-      // cell against a convex trim polygon always yields a convex result.
-      // Also skip any triangle that's still degenerate (near-zero area in
-      // parameter space) even after deduping - e.g. three
-      // near-collinear points - for the same reason as above.
-      for (size_t k = 1; k + 1 < indices.size(); ++k) {
-        const Point2d& p0 = deduped[0];
-        const Point2d& p1 = deduped[k];
-        const Point2d& p2 = deduped[k + 1];
-        const double area2 = Cross2d(Point2d(p1.x - p0.x, p1.y - p0.y),
-                                      Point2d(p2.x - p0.x, p2.y - p0.y));
-        if (std::abs(area2) <= 1e-15) {
+      for (const std::vector<Point2d>& piece : pieces) {
+        std::vector<Point2d> deduped;
+        deduped.reserve(piece.size());
+        for (const Point2d& p : piece) {
+          if (deduped.empty() ||
+              std::abs(p.x - deduped.back().x) > kDuplicatePointEpsilon ||
+              std::abs(p.y - deduped.back().y) > kDuplicatePointEpsilon) {
+            deduped.push_back(p);
+          }
+        }
+        if (deduped.size() > 1 &&
+            std::abs(deduped.front().x - deduped.back().x) <= kDuplicatePointEpsilon &&
+            std::abs(deduped.front().y - deduped.back().y) <= kDuplicatePointEpsilon) {
+          deduped.pop_back();
+        }
+        if (deduped.size() < 3) {
           continue;
         }
-        ON_MeshFace face;
-        face.vi[0] = indices[0];
-        face.vi[1] = indices[k];
-        face.vi[2] = indices[k + 1];
-        face.vi[3] = face.vi[2];
-        raw.m_F.Append(face);
+
+        std::vector<int> indices;
+        indices.reserve(deduped.size());
+        for (const Point2d& p : deduped) {
+          indices.push_back(raw.m_V.Count());
+          raw.m_V.Append(ON_3fPoint(PointAt(p.x, p.y)));
+        }
+        for (const std::array<int, 3>& tri : EarClipTriangulate(deduped)) {
+          const Point2d& p0 = deduped[static_cast<size_t>(tri[0])];
+          const Point2d& p1 = deduped[static_cast<size_t>(tri[1])];
+          const Point2d& p2 = deduped[static_cast<size_t>(tri[2])];
+          const double area2 = Cross2d(Point2d(p1.x - p0.x, p1.y - p0.y),
+                                        Point2d(p2.x - p0.x, p2.y - p0.y));
+          if (std::abs(area2) <= 1e-15) {
+            continue;  // degenerate (e.g. three near-collinear points)
+          }
+          ON_MeshFace face;
+          face.vi[0] = indices[static_cast<size_t>(tri[0])];
+          face.vi[1] = indices[static_cast<size_t>(tri[1])];
+          face.vi[2] = indices[static_cast<size_t>(tri[2])];
+          face.vi[3] = face.vi[2];
+          raw.m_F.Append(face);
+        }
       }
     }
   }

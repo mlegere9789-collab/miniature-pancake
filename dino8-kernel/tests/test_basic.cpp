@@ -507,7 +507,7 @@ void TestCylinderVolumeAndBoolean() {
   const double height = 5.0;
   // Measured, not guessed, and directly comparable to the whole-cell
   // numbers this replaced: Cylinder() now tessellates its disk cap via
-  // real boundary clipping (TessellateGridClippedConvex), not whole-cell
+  // real boundary clipping (TessellateGridClippedExact), not whole-cell
   // in/out. At the SAME 48/48 divisions that measured a 7% volume error
   // with whole-cell trimming, exact clipping measures well under 1%; at
   // just 32/32 it measures ~0.64%. 1% here is a real, tight check on
@@ -571,12 +571,19 @@ void TestExactClippingMatchesAreaButNotCellCounts() {
         "(boundary cells are clipped, not dropped or kept whole)");
 }
 
-void TestExactClippingRejectsNonConvexTrim() {
+void TestExactClippingHandlesNonConvexTrim() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point2d;
   using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
 
+  // A unit square surface: P(u, v) = (u, v, 0) exactly (bilinear identity
+  // for these control points), so a trim polygon's area in (u, v) is
+  // exactly the tessellated face's area in 3D too.
   const std::vector<Point3d> grid = {
       Point3d(0, 0, 0),
       Point3d(0, 1, 0),
@@ -586,25 +593,55 @@ void TestExactClippingRejectsNonConvexTrim() {
   const NurbsSurface surface =
       NurbsSurface::FromControlGrid(grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
 
-  // A dart/arrowhead shape - concave at (0.5, 0.3).
+  // A dart/arrowhead shape - concave at (0.52, 0.31). Every vertex is
+  // deliberately off the 8-division grid's lines (multiples of 0.125,
+  // i.e. 0, 0.125, 0.25, ...) - an earlier version of this test used
+  // (0.5, 0.3), and 0.5 sits exactly on a grid line, which corrupted the
+  // clipped boundary (a real alignment edge case, caught by
+  // ExtrudeCappedSolid's own boundary validation rather than silently
+  // producing broken geometry). Exact area by the shoelace formula: 0.404
+  // (not a whole-cell approximation - hand-derived independently of the
+  // tessellator).
   const std::vector<Point2d> non_convex_trim = {
       Point2d(0.1, 0.1),
       Point2d(0.9, 0.1),
       Point2d(0.9, 0.9),
-      Point2d(0.5, 0.3),
+      Point2d(0.52, 0.31),
       Point2d(0.1, 0.9),
   };
   const Brep face = Brep::TrimmedPlanarFace(surface, non_convex_trim, /*exact_clip=*/true);
+  const auto mesh = face.Tessellate(/*u_divisions=*/8, /*v_divisions=*/8).front();
 
-  bool threw = false;
-  try {
-    face.Tessellate(8, 8);
-  } catch (const std::invalid_argument&) {
-    threw = true;
-  }
-  Check(threw,
-        "exact clipping throws on a non-convex trim polygon instead of "
-        "silently producing wrong geometry");
+  // Tolerance is 1e-6, not this file's usual 1e-9: unlike the other exact-
+  // area tests here, 0.52/0.31 aren't exactly representable in binary
+  // floating point (the other tests' trim coordinates - 0.15, 0.85, 10,
+  // etc. - are), so ON_Mesh's single-precision vertex storage (ON_3fPoint)
+  // introduces real, expected rounding at that scale - not an algorithm
+  // defect.
+  Check(std::abs(mesh.Area() - 0.404) < 1e-6,
+        "exact clipping (Greiner-Hormann + ear-clipping) measures the "
+        "dart's true concave area instead of rejecting it");
+
+  // Prove the per-cell triangulation is actually valid geometry - not
+  // just a coincidentally-correct area sum - by extruding it and
+  // requiring both ExtrudeCappedSolid's own boundary-loop validation and
+  // Manifold's independent watertightness check to accept the result.
+  // Extrude into -Z, away from the cap's own +Z normal (u_dir x v_dir for
+  // this CCW-in-(u,v), identity-mapped surface) - same convention
+  // TestExtrudeUntrimmedFaceIntoSolid documents: the offset must point
+  // away from the cap's own outward normal, or the resulting solid comes
+  // out consistently wound "inside out" (still a valid closed manifold,
+  // which is why Manifold still accepts it below, but with negated
+  // volume).
+  const auto solid = Mesh::ExtrudeCappedSolid(mesh, Vector3d(0, 0, -1));
+  Check(std::abs(solid.Volume() - 0.404) < 1e-6,
+        "the dart-shaped solid's volume equals its cap area times unit height");
+
+  const auto box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const auto result = BooleanCombine(solid, box, BooleanOp::Union);
+  Check(std::abs(result.Volume() - (solid.Volume() + 1.0)) < 1e-9,
+        "Manifold accepts the concave-trim solid as watertight: union with "
+        "a disjoint unit box equals solid volume + 1");
 }
 
 void TestAnnulusFaceExtrudesToWatertightTube() {
@@ -758,7 +795,7 @@ int main() {
   TestExtrudeTrimmedFaceFeedsBoolean();
   TestCylinderVolumeAndBoolean();
   TestExactClippingMatchesAreaButNotCellCounts();
-  TestExactClippingRejectsNonConvexTrim();
+  TestExactClippingHandlesNonConvexTrim();
   TestAnnulusFaceExtrudesToWatertightTube();
   TestExtrudeRejectsAlreadyClosedCap();
   TestExtrudeRejectsBowtieBoundary();

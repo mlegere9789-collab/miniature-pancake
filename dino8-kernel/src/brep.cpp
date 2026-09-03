@@ -140,7 +140,7 @@ std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
       result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions));
     } else if (face_exact_clip_[static_cast<size_t>(i)]) {
       result.push_back(
-          wrapper.TessellateGridClippedConvex(u_divisions, v_divisions, trim_loop));
+          wrapper.TessellateGridClippedExact(u_divisions, v_divisions, trim_loop));
     } else {
       const auto& hole_loops = face_hole_loops_[static_cast<size_t>(i)];
       const std::vector<std::vector<Point2d>>* holes =

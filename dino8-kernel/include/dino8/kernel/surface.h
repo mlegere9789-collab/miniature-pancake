@@ -60,29 +60,37 @@ class NurbsSurface {
                        const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
 
   // Real boundary clipping, unlike TessellateGrid()'s whole-cell in/out:
-  // each grid cell is clipped against `trim_polygon` (Sutherland-Hodgman)
-  // rather than kept or dropped wholesale, so a cell straddling the trim
-  // boundary contributes its actual clipped sub-area, evaluated at the
-  // true intersection points - not approximated by the grid resolution.
-  // This is why Mesh::Cylinder() needed 200 divisions for 2% volume
-  // accuracy with TessellateGrid()'s trim_polygon, and would need far
-  // fewer here.
+  // each grid cell is clipped against `trim_polygon` rather than kept or
+  // dropped wholesale, so a cell straddling the trim boundary contributes
+  // its actual clipped sub-area, evaluated at the true intersection
+  // points - not approximated by the grid resolution. This is why
+  // Mesh::Cylinder() needed 200 divisions for 2% volume accuracy with
+  // TessellateGrid()'s trim_polygon, and would need far fewer here.
   //
-  // Requires `trim_polygon` to be convex - Sutherland-Hodgman only
-  // produces a correct result when the *clip* region is convex (the
-  // rectangle being clipped can be anything, but here it's always a grid
-  // cell, itself convex). A circle's N-gon approximation is convex; the
-  // earlier L-shaped/notched trim tests are not, so they still need
-  // TessellateGrid()'s whole-cell path. Throws std::invalid_argument if
-  // `trim_polygon` isn't convex, rather than silently producing wrong
-  // geometry.
+  // `trim_polygon` may now be concave (even self-crossing the cell
+  // boundary in a way that splits one cell into several disjoint
+  // sub-regions) - an earlier version of this method rejected any
+  // non-convex trim outright. Internally, a convex trim_polygon still
+  // goes through the original, long-proven Sutherland-Hodgman clipping +
+  // triangle-fan path (what Mesh::Cylinder()'s circular trim and every
+  // other existing caller exercises); a concave one falls back to a
+  // general (Greiner-Hormann-style) polygon intersection with
+  // ear-clipping triangulation for the (possibly non-convex) clipped
+  // pieces. `trim_polygon` must still be a simple (non-self-intersecting)
+  // polygon - this isn't validated here, since a self-intersecting trim
+  // isn't decomposable into a well-defined "inside" at all. The concave
+  // path is newer and more narrowly tested than the convex one; like
+  // PointInPolygon's own documented boundary caveat, a `trim_polygon`
+  // vertex landing exactly on a grid line, or a cell boundary crossed an
+  // unusual number of times by a highly irregular concave shape, are
+  // known-unhardened corners of it.
   //
   // The returned mesh is already welded (via Mesh::MergeAndWeld) since
   // adjacent cells independently compute the same boundary-intersection
   // points as separate vertices that need collapsing to form a single
   // consistent mesh.
-  Mesh TessellateGridClippedConvex(int u_divisions, int v_divisions,
-                                    const std::vector<Point2d>& trim_polygon) const;
+  Mesh TessellateGridClippedExact(int u_divisions, int v_divisions,
+                                   const std::vector<Point2d>& trim_polygon) const;
 
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }
