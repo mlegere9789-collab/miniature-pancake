@@ -257,7 +257,15 @@ elseif (-not $env:VCPKG_INSTALLATION_ROOT) {
 else {
     try {
         $vcpkgExe = Join-Path $env:VCPKG_INSTALLATION_ROOT "vcpkg.exe"
-        & $vcpkgExe install "opencv4:x64-windows-static" "ncnn:x64-windows-static"
+        # opencv4's vcpkg port default-features go far past what face_enhance.cpp actually
+        # calls (cv::imread/imwrite, resize, warpAffine): dnn (pulls in protobuf +
+        # flatbuffers, ~25 min alone), quirc, tiff, webp, calib3d, gapi, highgui, and the
+        # Windows GUI backends (directml/dshow/msmf/win32ui) are all on by default and were
+        # the actual cause of a 45+ minute run that still hadn't reached opencv4 itself.
+        # "core" as the first bracketed feature turns off every default feature; jpeg/png
+        # are added back explicitly since imgcodecs needs at least one real format to read
+        # and write through.
+        & $vcpkgExe install "opencv4[core,jpeg,png]:x64-windows-static" "ncnn:x64-windows-static"
         if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
             throw "vcpkg install opencv4/ncnn failed with exit code $LASTEXITCODE"
         }
