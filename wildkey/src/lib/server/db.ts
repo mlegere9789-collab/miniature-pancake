@@ -34,6 +34,7 @@ function createConnection(): Database.Database {
       email TEXT NOT NULL UNIQUE,
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'member',
       created_at TEXT NOT NULL
     );
 
@@ -111,7 +112,36 @@ function createConnection(): Database.Database {
       PRIMARY KEY (project_id, user_id)
     );
     CREATE INDEX IF NOT EXISTS idx_project_members_user_id ON project_members(user_id);
+
+    CREATE TABLE IF NOT EXISTS observation_flags (
+      id TEXT PRIMARY KEY,
+      observation_id TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+      reporter_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_observation_flags_observation_id ON observation_flags(observation_id);
+    CREATE INDEX IF NOT EXISTS idx_observation_flags_status ON observation_flags(status);
+
+    CREATE TABLE IF NOT EXISTS curator_actions (
+      id TEXT PRIMARY KEY,
+      flag_id TEXT NOT NULL REFERENCES observation_flags(id) ON DELETE CASCADE,
+      curator_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      action TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_curator_actions_flag_id ON curator_actions(flag_id);
   `);
+
+  // Defensive migration for a pre-existing .data/wildkey.sqlite3 created
+  // before the role column existed (fresh databases already have it via
+  // the CREATE TABLE above).
+  const userColumns = db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+  if (!userColumns.some((c) => c.name === "role")) {
+    db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member'");
+  }
 
   return db;
 }

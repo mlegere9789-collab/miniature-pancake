@@ -9,7 +9,12 @@ import {
   type ReactNode,
 } from "react";
 
-export type CurrentUser = { id: string; email: string; createdAt: string };
+export type CurrentUser = {
+  id: string;
+  email: string;
+  role: "member" | "curator";
+  createdAt: string;
+};
 
 type AuthContextValue = {
   user: CurrentUser | null;

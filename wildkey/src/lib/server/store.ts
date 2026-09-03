@@ -11,11 +11,14 @@ import { db } from "@/lib/server/db";
  * and db.ts.
  */
 
+export type UserRole = "member" | "curator";
+
 type User = {
   id: string;
   email: string;
   passwordHash: string;
   passwordSalt: string;
+  role: UserRole;
   createdAt: string;
 };
 
@@ -24,6 +27,7 @@ type UserRow = {
   email: string;
   password_hash: string;
   password_salt: string;
+  role: string;
   created_at: string;
 };
 
@@ -33,6 +37,7 @@ function userFromRow(row: UserRow): User {
     email: row.email,
     passwordHash: row.password_hash,
     passwordSalt: row.password_salt,
+    role: row.role as UserRole,
     createdAt: row.created_at,
   };
 }
@@ -139,22 +144,29 @@ function hashPassword(password: string, salt: string): string {
 export function createUser(email: string, password: string): User {
   const normalizedEmail = email.trim().toLowerCase();
   const passwordSalt = randomBytes(16).toString("hex");
+  // Demo-only bootstrap: the very first account on a fresh database becomes
+  // a curator, since there's no invite/vetting flow to grant the role any
+  // other way here (see Part F and docs/remaining-systems-design.md).
+  // Every account after that starts as a plain member.
+  const isFirstAccount = (db.prepare("SELECT COUNT(*) as count FROM users").get() as { count: number }).count === 0;
   const user: User = {
     id: randomUUID(),
     email: normalizedEmail,
     passwordHash: hashPassword(password, passwordSalt),
     passwordSalt,
+    role: isFirstAccount ? "curator" : "member",
     createdAt: new Date().toISOString(),
   };
   try {
     db.prepare(
-      `INSERT INTO users (id, email, password_hash, password_salt, created_at)
-       VALUES (@id, @email, @passwordHash, @passwordSalt, @createdAt)`,
+      `INSERT INTO users (id, email, password_hash, password_salt, role, created_at)
+       VALUES (@id, @email, @passwordHash, @passwordSalt, @role, @createdAt)`,
     ).run({
       id: user.id,
       email: user.email,
       passwordHash: user.passwordHash,
       passwordSalt: user.passwordSalt,
+      role: user.role,
       createdAt: user.createdAt,
     });
   } catch (err) {
@@ -206,7 +218,7 @@ export function getUserBySessionToken(token: string | undefined): User | null {
 }
 
 export function toPublicUser(user: User) {
-  return { id: user.id, email: user.email, createdAt: user.createdAt };
+  return { id: user.id, email: user.email, role: user.role, createdAt: user.createdAt };
 }
 
 export function getUserById(id: string): User | null {
@@ -738,4 +750,145 @@ export function listObservationsMatchingProject(
   return rows
     .map((row) => withQualityGrade(observationFromRow(row)))
     .map((o) => obscureLocationIfSensitive(o, viewerId));
+}
+
+// ---------------------------------------------------------------------
+// Curator / moderation tools (Part C.2, F): flagging + a documented,
+// auditable resolution — every curator action is logged with a required
+// written reason, never a silent state flip.
+// ---------------------------------------------------------------------
+
+export type FlagStatus = "open" | "resolved" | "dismissed";
+
+export type ObservationFlag = {
+  id: string;
+  observationId: string;
+  reporterId: string;
+  reporterEmail: string;
+  reason: string;
+  status: FlagStatus;
+  createdAt: string;
+  observationCommonName: string;
+  observationTaxonSlug: string;
+};
+
+type FlagRow = {
+  id: string;
+  observation_id: string;
+  reporter_id: string;
+  reporter_email: string;
+  reason: string;
+  status: string;
+  created_at: string;
+  observation_common_name: string;
+  observation_taxon_slug: string;
+};
+
+function flagFromRow(row: FlagRow): ObservationFlag {
+  return {
+    id: row.id,
+    observationId: row.observation_id,
+    reporterId: row.reporter_id,
+    reporterEmail: row.reporter_email,
+    reason: row.reason,
+    status: row.status as FlagStatus,
+    createdAt: row.created_at,
+    observationCommonName: row.observation_common_name,
+    observationTaxonSlug: row.observation_taxon_slug,
+  };
+}
+
+const FLAG_SELECT = `
+  SELECT observation_flags.*, users.email AS reporter_email,
+         observations.common_name AS observation_common_name,
+         observations.taxon_slug AS observation_taxon_slug
+  FROM observation_flags
+  JOIN users ON users.id = observation_flags.reporter_id
+  JOIN observations ON observations.id = observation_flags.observation_id
+`;
+
+export function flagObservation(
+  observationId: string,
+  reporterId: string,
+  reason: string,
+): ObservationFlag | null {
+  const exists = db.prepare("SELECT 1 FROM observations WHERE id = ?").get(observationId);
+  if (!exists) return null;
+
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO observation_flags (id, observation_id, reporter_id, reason, status, created_at)
+     VALUES (?, ?, ?, ?, 'open', ?)`,
+  ).run(id, observationId, reporterId, reason, new Date().toISOString());
+
+  const row = db.prepare<[string], FlagRow>(`${FLAG_SELECT} WHERE observation_flags.id = ?`).get(id);
+  return row ? flagFromRow(row) : null;
+}
+
+export function listOpenFlags(): ObservationFlag[] {
+  return db
+    .prepare<[], FlagRow>(`${FLAG_SELECT} WHERE observation_flags.status = 'open' ORDER BY observation_flags.created_at ASC`)
+    .all()
+    .map(flagFromRow);
+}
+
+/**
+ * Resolving or dismissing a flag always requires a written reason, logged
+ * as a curator_action row — "any account action includes a clear,
+ * appealable written reason" (Part F), not just a status flip nobody can
+ * see the justification for.
+ */
+export function resolveFlag(
+  flagId: string,
+  curatorId: string,
+  action: "resolved" | "dismissed",
+  reason: string,
+): boolean {
+  const flag = db.prepare<[string], { status: string }>(
+    "SELECT status FROM observation_flags WHERE id = ?",
+  ).get(flagId);
+  if (!flag || flag.status !== "open") return false;
+
+  const transaction = db.transaction(() => {
+    db.prepare("UPDATE observation_flags SET status = ? WHERE id = ?").run(action, flagId);
+    db.prepare(
+      `INSERT INTO curator_actions (id, flag_id, curator_id, action, reason, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(randomUUID(), flagId, curatorId, action, reason, new Date().toISOString());
+  });
+  transaction();
+  return true;
+}
+
+export type CuratorAction = {
+  id: string;
+  flagId: string;
+  curatorEmail: string;
+  action: string;
+  reason: string;
+  createdAt: string;
+};
+
+export function listCuratorActionsForFlag(flagId: string): CuratorAction[] {
+  return db
+    .prepare<
+      [string],
+      { id: string; flag_id: string; curator_email: string; action: string; reason: string; created_at: string }
+    >(
+      `SELECT curator_actions.id, curator_actions.flag_id, users.email AS curator_email,
+              curator_actions.action, curator_actions.reason, curator_actions.created_at
+       FROM curator_actions
+       JOIN users ON users.id = curator_actions.curator_id
+       WHERE curator_actions.flag_id = ?
+       ORDER BY curator_actions.created_at ASC`,
+    )
+    .all(flagId)
+    .map((r) => ({
+      id: r.id,
+      flagId: r.flag_id,
+      curatorEmail: r.curator_email,
+      action: r.action,
+      reason: r.reason,
+      createdAt: r.created_at,
+    }));
 }

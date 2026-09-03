@@ -28,6 +28,10 @@ export default function ObservationDetailPage({
   const [notFoundOrDenied, setNotFoundOrDenied] = useState(false);
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [flagReason, setFlagReason] = useState("");
+  const [flagOpen, setFlagOpen] = useState(false);
+  const [flagSubmitted, setFlagSubmitted] = useState(false);
+  const [flagSubmitting, setFlagSubmitting] = useState(false);
 
   const load = useCallback(async () => {
     const result = await fetchServerObservation(id);
@@ -92,6 +96,21 @@ export default function ObservationDetailPage({
       </div>
     );
   }
+
+  const submitFlag = async () => {
+    if (!flagReason.trim()) return;
+    setFlagSubmitting(true);
+    const res = await fetch(`/api/observations/${id}/flag`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: flagReason.trim() }),
+    });
+    setFlagSubmitting(false);
+    if (res.ok) {
+      setFlagSubmitted(true);
+      setFlagOpen(false);
+    }
+  };
 
   if (!observation) return null;
 
@@ -204,6 +223,49 @@ export default function ObservationDetailPage({
           Post
         </button>
       </form>
+
+      <div className="border-t pt-4" style={{ borderColor: "var(--color-border)" }}>
+        {flagSubmitted ? (
+          <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
+            Flagged for curator review. Thank you.
+          </p>
+        ) : flagOpen ? (
+          <div className="flex flex-col gap-2">
+            <input
+              value={flagReason}
+              onChange={(e) => setFlagReason(e.target.value)}
+              placeholder="Why should a curator look at this? (required)"
+              className="rounded border px-3 py-2 text-sm"
+              style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={submitFlag}
+                disabled={flagSubmitting || !flagReason.trim()}
+                className="rounded-full px-4 py-2 text-xs font-semibold disabled:opacity-40"
+                style={{ background: "var(--color-danger)", color: "var(--color-accent-contrast)" }}
+              >
+                {flagSubmitting ? "Submitting…" : "Submit flag"}
+              </button>
+              <button
+                onClick={() => setFlagOpen(false)}
+                className="rounded-full border px-4 py-2 text-xs font-semibold"
+                style={{ borderColor: "var(--color-border)" }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            onClick={() => setFlagOpen(true)}
+            className="text-xs font-semibold"
+            style={{ color: "var(--color-danger)" }}
+          >
+            Flag for curator review
+          </button>
+        )}
+      </div>
     </div>
   );
 }
