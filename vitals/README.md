@@ -115,7 +115,8 @@ vitals/
     yard photo once, then tap a not-yet-placed plant and tap the map to
     drop its pin; pins are colored by the plant's current score and tap
     through to its detail screen. Coordinates are stored relative (0-1) so
-    a pin stays correct at any display size (spec §4.1).
+    a pin stays correct at any display size (spec §4.1). Long-press a
+    placed pin to re-enter placing mode and move it.
 
 ### Phase 2
 

@@ -102,6 +102,9 @@ export function YardMapScreen({ gardenId, onSelectPlant }: Props) {
           <Text style={styles.placingBannerText}>Tap the map where this plant is</Text>
         </View>
       )}
+      {!placingPlantId && placedPlants.length > 0 && (
+        <Text style={styles.hintText}>Hold a pin to move it</Text>
+      )}
 
       <Pressable
         style={styles.mapWrap}
@@ -123,6 +126,7 @@ export function YardMapScreen({ gardenId, onSelectPlant }: Props) {
                 },
               ]}
               onPress={() => onSelectPlant(plant)}
+              onLongPress={() => setPlacingPlantId(plant.id)}
             />
           ))}
       </Pressable>
@@ -162,6 +166,12 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing(1),
   },
   placingBannerText: { color: theme.color.cream, fontSize: theme.font.captionSize, textAlign: "center" },
+  hintText: {
+    fontSize: theme.font.captionSize,
+    color: theme.color.textSecondary,
+    textAlign: "center",
+    marginBottom: theme.spacing(1),
+  },
   mapWrap: { width: "100%", height: MAP_HEIGHT, borderRadius: theme.radius.md, overflow: "hidden", backgroundColor: "#000" },
   mapImage: { width: "100%" },
   pin: {
