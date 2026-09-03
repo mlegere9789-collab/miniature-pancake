@@ -53,9 +53,16 @@ mediasuite/
 │                                              persistence (clamped, with the running
 │                                              queue notified), the Google Drive master
 │                                              switch, bundled-tool discovery, and Drive
-│                                              sign-in/out. Anything that does need a real
-│                                              Window still has no automated coverage, only
-│                                              Build compiling it and QA.md
+│                                              sign-in/out, and MainViewModel -- the wiring
+│                                              between Settings and the live queue/module
+│                                              pages (concurrency and the Drive switch both
+│                                              reaching an already-running queue/open
+│                                              pages without a restart), the dependency
+│                                              warning banner, "Open with" file routing,
+│                                              and the update-available banner. Anything
+│                                              that does need a real Window still has no
+│                                              automated coverage, only Build compiling it
+│                                              and QA.md
 └── tools/                                  — bundled third-party binaries (not in git)
 ```
 
