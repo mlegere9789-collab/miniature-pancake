@@ -34,7 +34,6 @@ app.use((_req, res) => {
 // rejected promise in an async route handler would never reach here on
 // Express 4 — the request would just hang forever with no response sent
 // at all, since nothing calls next(err) automatically.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
 

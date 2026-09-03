@@ -14,7 +14,7 @@ on:
 
 jobs:
   backend:
-    name: Backend typecheck + test
+    name: Backend typecheck + lint + test
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -40,11 +40,14 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Lint
+        run: npm run lint
+
       - name: Test
         run: npm test
 
   mobile:
-    name: Mobile typecheck
+    name: Mobile typecheck + lint
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -66,3 +69,6 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint

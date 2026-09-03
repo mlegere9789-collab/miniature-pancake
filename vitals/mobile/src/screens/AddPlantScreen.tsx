@@ -40,7 +40,7 @@ export function AddPlantScreen({ gardenId, editingPlant, onCreated, onCancel }: 
     fetchDormancyDefaults(gardenId)
       .then((lookup) => setDormancyMonths(lookup.months))
       .catch(() => undefined);
-  }, [gardenId]);
+  }, [gardenId, isEditing]);
 
   useEffect(() => {
     if (isEditing) return;
@@ -85,7 +85,7 @@ export function AddPlantScreen({ gardenId, editingPlant, onCreated, onCancel }: 
         .catch(() => undefined);
     }, 300);
     return () => clearTimeout(timer);
-  }, [speciesName, suggestionsDismissed]);
+  }, [speciesName, suggestionsDismissed, isEditing]);
 
   function selectSuggestion(suggestion: SpeciesSuggestion) {
     setSpeciesName(suggestion.displayName);

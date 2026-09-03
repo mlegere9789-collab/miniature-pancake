@@ -233,6 +233,14 @@ committed, since it had never existed in the repo before.
 
 ## Bug fixes
 
+- **No lint tooling at all, unlike the repo's Python module (`orchestrator/`
+  has `.flake8`/`pyproject.toml`).** Added ESLint to both packages —
+  `typescript-eslint` for the backend, `eslint-config-expo` for mobile
+  (matching Expo SDK 51's supported major version) — and wired both into
+  `vitals-ci.yml`. Zero errors on the existing codebase; two legitimate
+  `react-hooks/exhaustive-deps` warnings in `AddPlantScreen.tsx` were fixed
+  by adding the missing (intentionally-omitted-but-actually-safe-to-include)
+  dependency rather than suppressed.
 - **No CI configured for `vitals/` at all.** Every commit to this PR had
   zero automated verification on GitHub — only local `tsc`/`vitest` runs.
   Added `.github/workflows/vitals-ci.yml` (mirroring the existing
