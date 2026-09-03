@@ -3,6 +3,7 @@ using System.Windows.Threading;
 using MediaSuite.App.Services;
 using MediaSuite.App.ViewModels;
 using MediaSuite.Core.Engines;
+using MediaSuite.Core.Formats;
 using MediaSuite.Core.GoogleDrive;
 using MediaSuite.Core.Jobs;
 using MediaSuite.Core.Settings;
@@ -60,6 +61,12 @@ public partial class App : Application
         _mainViewModel = new MainViewModel(
             settings, store, _themeService, toolLocator, _queue, engines, launcher, _driveClient, _updateChecker, Dispatcher);
 
+        var openedFiles = ResolveOpenWithFiles(e.Args);
+        if (openedFiles.Count > 0)
+        {
+            _mainViewModel.OpenWithFiles(openedFiles);
+        }
+
         var window = new MainWindow(_themeService, settings, store)
         {
             DataContext = _mainViewModel,
@@ -68,6 +75,17 @@ public partial class App : Application
         this.MainWindow = window;
         window.Show();
     }
+
+    /// <summary>
+    /// Windows puts a file path on the command line for "Open with MediaSuite" (see the
+    /// installer's <c>SupportedTypes</c> registration) and for a file dragged onto the
+    /// exe or a shortcut to it — either way, this app is being told to do something with
+    /// a specific file, not just launched idle. Filters to paths the format catalogue
+    /// actually recognises, so a file passed this way that the app can never act on lands
+    /// nowhere silently rather than showing up staged for an operation it can't complete.
+    /// </summary>
+    private static IReadOnlyList<string> ResolveOpenWithFiles(string[] args) =>
+        InputCollector.Expand(args).Where(file => FormatCatalog.FromPath(file) is not null).ToList();
 
     protected override void OnExit(ExitEventArgs e)
     {

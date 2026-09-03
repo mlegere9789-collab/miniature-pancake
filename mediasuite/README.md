@@ -181,6 +181,18 @@ Convert.
   elevation prompt, Start Menu shortcut, optional desktop shortcut, a proper uninstaller
   that never touches the tools folder or user settings, self-contained so a fresh
   Windows 11 machine does not also need the .NET runtime installed separately
+- **Explorer integration** — the installer registers MediaSuite as an "Open with" choice
+  in Explorer for every extension in the format catalogue, without ever overwriting a
+  file's actual default handler (a JPG still opens in Photos by default; MediaSuite is
+  only ever offered as a choice). Opening a file this way, or dragging one onto the exe
+  or its shortcut, launches straight into the Convert page with that file already staged
+  instead of an empty shell you then have to feed manually. The extension list is kept in
+  sync with the format catalogue by a real test (`InstallerFileAssociationTests`) that
+  reads the actual `.iss` file off disk and fails the moment they drift apart
+- **Real GitHub release** — every push to `main` publishes the CI-built installer to this
+  repo's Releases page, gated so a PR build never does it. Before this, the only way to
+  get the installer was a 90-day CI artifact behind a GitHub login, which quietly broke
+  the promise the README and the in-app update checker both already made
 - **Self-contained tool bundling** — `installer/fetch-tools.ps1` fetches all 14
   third-party tools during the CI build and packages them straight into the installer,
   so a fresh install needs zero manual downloads; a plain zip/7z download where one

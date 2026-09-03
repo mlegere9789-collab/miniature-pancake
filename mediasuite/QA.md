@@ -174,6 +174,18 @@ neither of which CI or a fake process runner can see.
 - [ ] Right-click `MediaSuite.exe` → Properties → Details tab, and confirm the file
   description, product name, company and version all show something real rather than
   blank or a generic ".NET application" default.
+- [ ] Right-click a supported file (a JPG or MP4 is enough) → Open with → confirm
+  MediaSuite is offered as a choice, and that picking it launches (or reuses, if already
+  running a second instance) the app with the file already staged on the Convert page.
+  Confirm the file's actual default app is unchanged — MediaSuite must only ever be
+  offered, never take over the double-click action. Drag a file directly onto
+  `MediaSuite.exe` or its Start Menu/desktop shortcut and confirm the same thing happens.
+  Try an unsupported extension (e.g. `.xlsx`) the same way and confirm MediaSuite does
+  not launch at all rather than opening empty.
+- [ ] Close the app, then re-launch it with no file argument at all (Start Menu, desktop
+  shortcut, or `MediaSuite.exe` with no arguments) and confirm it opens to the Convert
+  page with nothing pre-staged — the file-preload path must never leak into a normal
+  launch.
 
 ## Known, deliberate gaps — do not report these as bugs
 
