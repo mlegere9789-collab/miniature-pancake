@@ -8,6 +8,7 @@ import { runMockSync, saveObservation, type SyncState } from "@/lib/observations
 import { createServerObservation } from "@/lib/api-observations";
 import { useMode } from "@/lib/mode-context";
 import { useAuth } from "@/lib/auth-context";
+import { useLocale } from "@/lib/locale-context";
 
 type IdOutcome = { species: Species; confidence: number };
 
@@ -23,6 +24,7 @@ function readFileAsDataUrl(file: File): Promise<string> {
 export default function CameraPage() {
   const { mode } = useMode();
   const { user } = useAuth();
+  const { t } = useLocale();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<IdOutcome | null>(null);
@@ -88,10 +90,9 @@ export default function CameraPage() {
   return (
     <div className="mx-auto flex w-full max-w-xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6">
       <div>
-        <h1 className="font-display text-2xl font-semibold">Identify something</h1>
+        <h1 className="font-display text-2xl font-semibold">{t("camera.title")}</h1>
         <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
-          Works fully offline. No account needed. Your photo stays on this device unless you
-          choose to save it.
+          {t("camera.subtitle")}
         </p>
       </div>
 
@@ -104,7 +105,7 @@ export default function CameraPage() {
           <img src={previewUrl} alt="Selected specimen" className="h-full w-full object-cover" />
         ) : (
           <p className="px-6 text-center text-sm" style={{ color: "var(--color-text-muted)" }}>
-            Take a photo or choose one from your library to identify.
+            {t("camera.choosePhotoPlaceholder")}
           </p>
         )}
       </div>
@@ -124,7 +125,7 @@ export default function CameraPage() {
           className="flex-1 rounded-full border px-4 py-3 text-sm font-semibold"
           style={{ borderColor: "var(--color-border)" }}
         >
-          {previewUrl ? "Choose a different photo" : "Take or choose a photo"}
+          {previewUrl ? t("camera.chooseDifferentPhoto") : t("camera.takeOrChoosePhoto")}
         </button>
         <button
           onClick={runMockIdentify}
@@ -132,7 +133,7 @@ export default function CameraPage() {
           className="flex-1 rounded-full px-4 py-3 text-sm font-semibold disabled:opacity-40"
           style={{ background: "var(--color-accent)", color: "var(--color-accent-contrast)" }}
         >
-          {isIdentifying ? "Identifying…" : "Identify"}
+          {isIdentifying ? t("camera.identifying") : t("camera.identify")}
         </button>
       </div>
 

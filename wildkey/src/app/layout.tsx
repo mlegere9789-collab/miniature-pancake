@@ -4,6 +4,7 @@ import "./globals.css";
 import { ModeProvider } from "@/lib/mode-context";
 import { AuthProvider } from "@/lib/auth-context";
 import { LiteModeProvider } from "@/lib/lite-mode-context";
+import { LocaleProvider } from "@/lib/locale-context";
 import { TopBar } from "@/components/top-bar";
 import { BottomNav } from "@/components/bottom-nav";
 
@@ -38,9 +39,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <ModeProvider>
           <AuthProvider>
             <LiteModeProvider>
-              <TopBar />
-              <main className="flex flex-1 flex-col">{children}</main>
-              <BottomNav />
+              <LocaleProvider>
+                <TopBar />
+                <main className="flex flex-1 flex-col">{children}</main>
+                <BottomNav />
+              </LocaleProvider>
             </LiteModeProvider>
           </AuthProvider>
         </ModeProvider>

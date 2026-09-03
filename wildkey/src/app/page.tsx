@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { useMode } from "@/lib/mode-context";
+import { useLocale } from "@/lib/locale-context";
 
 export default function Home() {
   const { mode } = useMode();
+  const { t } = useLocale();
   const isQuickId = mode === "quick-id";
 
   return (
@@ -14,14 +16,12 @@ export default function Home() {
           {isQuickId ? "Quick ID Mode" : "Naturalist Mode"}
         </p>
         <h1 className="font-display mt-2 text-4xl font-semibold leading-tight">
-          One app. Works everywhere.
+          {t("home.tagline1")}
           <br />
-          Never loses your data.
+          {t("home.tagline2")}
         </h1>
         <p className="mt-4 max-w-xl text-lg" style={{ color: "var(--color-text-muted)" }}>
-          {isQuickId
-            ? "Point your camera at anything wild and find out what it is — no account, no ads, fully offline. When we're not sure, we say so."
-            : "Log full observations, get community identifications, and contribute research-grade data — with a sync you can always see and trust."}
+          {isQuickId ? t("home.quickIdBody") : t("home.naturalistBody")}
         </p>
       </div>
 
@@ -31,14 +31,14 @@ export default function Home() {
           className="rounded-full px-5 py-3 text-sm font-semibold"
           style={{ background: "var(--color-accent)", color: "var(--color-accent-contrast)" }}
         >
-          {isQuickId ? "Identify something" : "Log an observation"}
+          {isQuickId ? t("home.identifySomething") : t("home.logObservation")}
         </Link>
         <Link
           href="/explore"
           className="rounded-full border px-5 py-3 text-sm font-semibold"
           style={{ borderColor: "var(--color-border)" }}
         >
-          Explore sightings near you
+          {t("home.exploreNearby")}
         </Link>
       </div>
 
