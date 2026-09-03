@@ -229,6 +229,12 @@ export function getObservationById(id: string): ObservationWithGrade | null {
   return observation ? withQualityGrade(observation, db) : null;
 }
 
+export function listCommentsByUser(userId: string): ObservationComment[] {
+  return readDb()
+    .comments.filter((c) => c.userId === userId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
 export function listCommentsForObservation(observationId: string): ObservationComment[] {
   return readDb()
     .comments.filter((c) => c.observationId === observationId)

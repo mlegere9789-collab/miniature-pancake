@@ -1,16 +1,73 @@
-import { StubPage } from "@/components/stub-page";
+"use client";
+
+import Link from "next/link";
+import { useAuth } from "@/lib/auth-context";
 
 export default function DataSettingsPage() {
+  const { user, loading } = useAuth();
+
   return (
-    <StubPage
-      title="Data & export"
-      description="Full data portability from day one — no risk of losing your history, ever."
-      planned={[
-        "One-tap export: all observations, photos, and metadata (JSON + CSV + media zip)",
-        "Account migration tooling for switching devices",
-        "Account anonymization: keep contribution history, remove personal identity",
-        "Account deletion, clearly explained and reversible for a grace period",
-      ]}
-    />
+    <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6">
+      <div>
+        <h1 className="font-display text-2xl font-semibold">Data & export</h1>
+        <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
+          Full data portability from day one — no risk of losing your history, ever.
+        </p>
+      </div>
+
+      <div
+        className="rounded-lg border p-4"
+        style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}
+      >
+        {loading ? null : user ? (
+          <>
+            <p className="font-semibold">Export everything</p>
+            <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
+              Downloads a JSON file with your account info, every observation, and every comment
+              you&rsquo;ve posted — everything this account owns in one file.
+            </p>
+            <a
+              href="/api/account/export"
+              download
+              className="mt-3 inline-block rounded-full px-4 py-2 text-sm font-semibold"
+              style={{ background: "var(--color-accent)", color: "var(--color-accent-contrast)" }}
+            >
+              Download my data
+            </a>
+          </>
+        ) : (
+          <>
+            <p className="font-semibold">Sign in to export</p>
+            <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
+              Export applies to Naturalist Mode accounts. Quick ID Mode never creates an account,
+              so there&rsquo;s nothing on a server to export — your local collection already lives
+              on this device.
+            </p>
+            <Link
+              href="/login"
+              className="mt-3 inline-block rounded-full px-4 py-2 text-sm font-semibold"
+              style={{ background: "var(--color-accent)", color: "var(--color-accent-contrast)" }}
+            >
+              Sign in
+            </Link>
+          </>
+        )}
+      </div>
+
+      <div
+        className="rounded-lg border p-4"
+        style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}
+      >
+        <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "var(--color-text-muted)" }}>
+          Not built yet
+        </p>
+        <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+          <li>CSV export and a media zip (photos currently ship as inline base64 data URLs inside the JSON, not separate files)</li>
+          <li>Account migration tooling for switching devices</li>
+          <li>Account anonymization: keep contribution history, remove personal identity</li>
+          <li>Account deletion, clearly explained and reversible for a grace period</li>
+        </ul>
+      </div>
+    </div>
   );
 }
