@@ -21,7 +21,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install lint/format tooling
-        run: pip install black isort flake8
+        # Pinned to match .pre-commit-config.yaml exactly - an unpinned
+        # install drifts to whatever's newest on the day CI happens to run,
+        # which can disagree with the formatting already in the repo.
+        run: pip install black==25.1.0 isort==6.0.0 flake8==7.1.1
 
       - name: black --check
         run: black --target-version py39 --check modules/ orchestrator/

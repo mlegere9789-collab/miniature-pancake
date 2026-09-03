@@ -228,7 +228,8 @@ def resolve_review_item(item_id: int, decision: str, note: str = "") -> bool:
 def module_overview() -> list[dict[str, Any]]:
     """One row per module with status, last activity, totals, pending count."""
     with get_connection() as conn:
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT
               m.name, m.display_name, m.enabled,
               s.state, s.detail, s.updated_at,
@@ -243,7 +244,8 @@ def module_overview() -> list[dict[str, Any]]:
             FROM modules m
             LEFT JOIN status s ON s.module = m.name
             ORDER BY m.name
-            """).fetchall()
+            """
+        ).fetchall()
         return [dict(r) for r in rows]
 
 
