@@ -17,6 +17,20 @@ plantsRouter.post("/", async (req, res) => {
   res.status(201).json(plant);
 });
 
+// Archived plants for a garden, so an accidental archive is recoverable
+// instead of a one-way gate. Must be registered before GET /:id — otherwise
+// "archived" would be captured as an :id and never reach this handler.
+plantsRouter.get("/archived", async (req, res) => {
+  const gardenId = req.query.gardenId as string | undefined;
+  if (!gardenId) return res.status(400).json({ error: "gardenId is required" });
+
+  const plants = await prisma.plant.findMany({
+    where: { gardenId, active: false },
+    orderBy: { createdAt: "desc" },
+  });
+  res.json(plants);
+});
+
 plantsRouter.get("/:id", async (req, res) => {
   const plant = await prisma.plant.findUnique({
     where: { id: req.params.id },
@@ -84,6 +98,16 @@ plantsRouter.patch("/:id/archive", async (req, res) => {
   const plant = await prisma.plant.update({
     where: { id: req.params.id },
     data: { active: false },
+  });
+  res.json(plant);
+});
+
+// Undo an archive — brings the plant back into the active Garden Score
+// roll-up, dashboard, and yard map.
+plantsRouter.patch("/:id/unarchive", async (req, res) => {
+  const plant = await prisma.plant.update({
+    where: { id: req.params.id },
+    data: { active: true },
   });
   res.json(plant);
 });

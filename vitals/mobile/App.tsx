@@ -3,6 +3,7 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import React, { useEffect, useRef, useState } from "react";
 import { AppState, AppStateStatus, Pressable, Text, View } from "react-native";
 import { AddPlantScreen } from "./src/screens/AddPlantScreen";
+import { ArchivedPlantsScreen } from "./src/screens/ArchivedPlantsScreen";
 import { CheckInCameraScreen } from "./src/screens/CheckInCameraScreen";
 import { GardenDashboardScreen } from "./src/screens/GardenDashboardScreen";
 import { LeaderboardScreen } from "./src/screens/LeaderboardScreen";
@@ -27,6 +28,7 @@ type RootStackParamList = {
   ReportCard: undefined;
   Leaderboard: undefined;
   YardMap: undefined;
+  ArchivedPlants: undefined;
   PhotoTimeline: { plantLabel: string; checkIns: CheckIn[] };
 };
 
@@ -90,6 +92,13 @@ export default function App() {
               </Pressable>
               <Pressable onPress={() => navigation.navigate("ReportCard")} accessibilityLabel="Weekly report" accessibilityRole="button">
                 <Text style={{ color: theme.color.forestGreen, fontSize: 20 }}>📋</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => navigation.navigate("ArchivedPlants")}
+                accessibilityLabel="Archived plants"
+                accessibilityRole="button"
+              >
+                <Text style={{ color: theme.color.forestGreen, fontSize: 20 }}>🗄️</Text>
               </Pressable>
               <Pressable onPress={() => navigation.navigate("AddPlant")} accessibilityLabel="Add plant" accessibilityRole="button">
                 <Text style={{ color: theme.color.forestGreen, fontSize: 28, marginRight: 4 }}>+</Text>
@@ -181,6 +190,12 @@ export default function App() {
               gardenId={DEMO_GARDEN_ID}
               onSelectPlant={(plant) => navigation.navigate("PlantDetail", { plantId: plant.id })}
             />
+          )}
+        </Stack.Screen>
+
+        <Stack.Screen name="ArchivedPlants" options={{ title: "Archived Plants" }}>
+          {() => (
+            <ArchivedPlantsScreen gardenId={DEMO_GARDEN_ID} onRestored={() => setRefreshKey((k) => k + 1)} />
           )}
         </Stack.Screen>
 

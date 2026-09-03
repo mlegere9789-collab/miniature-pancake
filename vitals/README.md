@@ -85,7 +85,10 @@ vitals/
    detail screen reuses the same form to update everything but species
    (locked once created — changing it would silently invalidate score
    history comparisons and twin-plant matching) and `PATCH /plants/:id/archive`
-   removes a plant from active views (check-in history is kept).
+   removes a plant from active views (check-in history is kept). Not a
+   one-way gate: `GET /plants/archived?gardenId=`, `PATCH /plants/:id/unarchive`,
+   and `mobile/src/screens/ArchivedPlantsScreen.tsx` (🗄️ on the dashboard
+   header) list archived plants with a "Restore" button.
 6. **Score history + check-in log** (`mobile/src/screens/PlantDetailScreen.tsx`) —
    sparkline of `PlantScoreSnapshot` history plus open diagnostic flags per
    check-in. The dashboard hero card shows the same sparkline for the
@@ -278,6 +281,13 @@ npx expo start
   listener and driving the drag off PanResponder's own cumulative `dx`,
   which needs no anchor at all; also widened the touch target with
   `hitSlop` since the visible knob is much wider than the 4px handle.
+- **`GET /plants/archived` would have been shadowed by `GET /:id`.** Caught
+  while adding it: Express matches routes in registration order, and
+  `GET /:id` was registered first, so a request for `/plants/archived`
+  would have matched `:id = "archived"` and hit the single-plant lookup
+  instead — verified live (before the fix) that the wrong handler was hit,
+  then fixed by registering the archived-plants route first and confirmed
+  again live that it now reaches the right code path.
 - **Icon-only buttons and yard-map pins had no accessibility labels.** The
   dashboard header's 🗺️/🏆/📋/+ buttons and each yard-map pin (a plain
   colored dot) had nothing for a screen reader to announce. Added

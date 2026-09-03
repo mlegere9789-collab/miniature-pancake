@@ -91,6 +91,14 @@ export async function archivePlant(plantId: string): Promise<Plant> {
   return request(`/plants/${plantId}/archive`, { method: "PATCH" });
 }
 
+export async function unarchivePlant(plantId: string): Promise<Plant> {
+  return request(`/plants/${plantId}/unarchive`, { method: "PATCH" });
+}
+
+export async function fetchArchivedPlants(gardenId: string): Promise<Plant[]> {
+  return request(`/plants/archived?gardenId=${encodeURIComponent(gardenId)}`);
+}
+
 export async function setTreatmentPlanCompleted(treatmentPlanId: string, completed: boolean): Promise<void> {
   await request(`/treatment-plans/${treatmentPlanId}`, {
     method: "PATCH",
