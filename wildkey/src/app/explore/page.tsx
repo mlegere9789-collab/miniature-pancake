@@ -1,16 +1,26 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { MOCK_SPECIES } from "@/lib/mock-species";
-import { TAXON_GROUPS, type TaxonGroup } from "@/lib/taxon";
+import { MOCK_SPECIES, getMockSpecies } from "@/lib/mock-species";
+import { TAXON_GROUPS, taxonColor, type TaxonGroup } from "@/lib/taxon";
 import { TaxonBadge } from "@/components/taxon-badge";
+import { MapView, type MapMarker } from "@/components/map-view";
+import { useAuth } from "@/lib/auth-context";
 
-type ViewMode = "grid" | "list";
+type ViewMode = "grid" | "list" | "map";
+
+type Bounds = { minLat: number; maxLat: number; minLng: number; maxLng: number };
+
+const WORLD_BOUNDS: Bounds = { minLat: -60, maxLat: 75, minLng: -170, maxLng: 170 };
 
 export default function ExplorePage() {
+  const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
   const [view, setView] = useState<ViewMode>("grid");
   const [activeGroups, setActiveGroups] = useState<Set<TaxonGroup>>(new Set());
+  const [markers, setMarkers] = useState<MapMarker[]>([]);
 
   const toggleGroup = (group: TaxonGroup) => {
     setActiveGroups((prev) => {
@@ -26,14 +36,47 @@ export default function ExplorePage() {
     return MOCK_SPECIES.filter((s) => activeGroups.has(s.taxonGroup));
   }, [activeGroups]);
 
+  const loadMapMarkers = useCallback(
+    async (bounds: Bounds) => {
+      if (!user) return;
+      const params = new URLSearchParams({
+        minLat: String(bounds.minLat),
+        maxLat: String(bounds.maxLat),
+        minLng: String(bounds.minLng),
+        maxLng: String(bounds.maxLng),
+      });
+      const res = await fetch(`/api/observations/near?${params}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setMarkers(
+        (data.observations ?? [])
+          .filter((o: { lat: number | null }) => o.lat !== null)
+          .map((o: { id: string; lat: number; lng: number; taxonSlug: string; commonName: string }) => ({
+            id: o.id,
+            lat: o.lat,
+            lng: o.lng,
+            color: taxonColor(getMockSpecies(o.taxonSlug)?.taxonGroup ?? "plant"),
+            label: o.commonName,
+          })),
+      );
+    },
+    [user],
+  );
+
+  useEffect(() => {
+    if (view === "map" && !authLoading && user) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      loadMapMarkers(WORLD_BOUNDS);
+    }
+  }, [view, authLoading, user, loadMapMarkers]);
+
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl font-semibold">Explore</h1>
           <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
-            Browse sightings by taxon group. Map view and place/date filters come next — this is
-            the grid/list layer of the Explore surface.
+            Browse sightings by taxon group, or switch to Map for real observation locations.
           </p>
         </div>
         <div
@@ -42,7 +85,7 @@ export default function ExplorePage() {
           className="inline-flex shrink-0 rounded-full border p-1 text-sm"
           style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}
         >
-          {(["grid", "list"] as const).map((mode) => (
+          {(["grid", "list", "map"] as const).map((mode) => (
             <button
               key={mode}
               role="tab"
@@ -60,28 +103,55 @@ export default function ExplorePage() {
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        {TAXON_GROUPS.map((group) => {
-          const active = activeGroups.has(group.value);
-          return (
-            <button
-              key={group.value}
-              onClick={() => toggleGroup(group.value)}
-              className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
-              style={{
-                borderColor: active ? group.color : "var(--color-border)",
-                background: active ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
-                color: active ? "var(--color-text)" : "var(--color-text-muted)",
-              }}
-            >
-              <span aria-hidden className="h-2 w-2 rounded-full" style={{ background: group.color }} />
-              {group.label}
-            </button>
-          );
-        })}
-      </div>
+      {view !== "map" && (
+        <div className="flex flex-wrap gap-2">
+          {TAXON_GROUPS.map((group) => {
+            const active = activeGroups.has(group.value);
+            return (
+              <button
+                key={group.value}
+                onClick={() => toggleGroup(group.value)}
+                className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors"
+                style={{
+                  borderColor: active ? group.color : "var(--color-border)",
+                  background: active ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+                  color: active ? "var(--color-text)" : "var(--color-text-muted)",
+                }}
+              >
+                <span aria-hidden className="h-2 w-2 rounded-full" style={{ background: group.color }} />
+                {group.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
-      {results.length === 0 ? (
+      {view === "map" ? (
+        !authLoading && !user ? (
+          <div
+            className="rounded-lg border p-8 text-center text-sm"
+            style={{ borderColor: "var(--color-border)", color: "var(--color-text-muted)" }}
+          >
+            Sign in to a Naturalist Mode account to see real observation locations on the map.{" "}
+            <Link href="/login" style={{ color: "var(--color-accent)" }}>
+              Sign in
+            </Link>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            <MapView
+              markers={markers}
+              onMoveEnd={loadMapMarkers}
+              onMarkerClick={(id) => router.push(`/observations/${id}`)}
+              className="h-[60vh] w-full overflow-hidden rounded-lg border"
+            />
+            <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+              {markers.length} observation{markers.length === 1 ? "" : "s"} in view. Sensitive
+              species show a coarse location, not their exact site.
+            </p>
+          </div>
+        )
+      ) : results.length === 0 ? (
         <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
           No species match these filters yet.
         </p>
