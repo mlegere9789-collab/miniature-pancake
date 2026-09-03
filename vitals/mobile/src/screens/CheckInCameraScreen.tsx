@@ -1,6 +1,6 @@
 import { CameraType, CameraView, useCameraPermissions } from "expo-camera";
 import React, { useRef, useState } from "react";
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { GhostOverlay } from "../components/GhostOverlay";
 import { ScoreDeltaBadge } from "../components/ScoreDeltaBadge";
 import { submitCheckIn, uploadCheckInPhoto } from "../services/api";
@@ -36,6 +36,21 @@ export function CheckInCameraScreen({ plantId, plantLabel, previousPhotoUri, onD
   }
 
   if (!permission.granted) {
+    // Once the OS has permanently denied the prompt, requestPermission()
+    // just silently returns the same denied state again on iOS — the only
+    // way back in is the system Settings app.
+    if (!permission.canAskAgain) {
+      return (
+        <View style={styles.center}>
+          <Text style={styles.bodyText}>
+            Camera access is off for Vitals. Enable it in Settings to check in on {plantLabel}.
+          </Text>
+          <Pressable style={styles.primaryButton} onPress={() => Linking.openSettings()}>
+            <Text style={styles.primaryButtonText}>Open Settings</Text>
+          </Pressable>
+        </View>
+      );
+    }
     return (
       <View style={styles.center}>
         <Text style={styles.bodyText}>Vitals needs camera access to check in on {plantLabel}.</Text>

@@ -233,6 +233,12 @@ committed, since it had never existed in the repo before.
 
 ## Bug fixes
 
+- **Camera permission screen was a dead end once permanently denied.** After
+  the OS permanently denies the camera prompt (`canAskAgain: false`),
+  `requestPermission()` on iOS just silently returns the same denied state
+  again — the "Grant camera access" button did nothing, with no way back in
+  except knowing to dig into system Settings unprompted. Detects that case
+  and shows "Open Settings" (`Linking.openSettings()`) instead.
 - **No lint tooling at all, unlike the repo's Python module (`orchestrator/`
   has `.flake8`/`pyproject.toml`).** Added ESLint to both packages —
   `typescript-eslint` for the backend, `eslint-config-expo` for mobile
