@@ -233,6 +233,13 @@ committed, since it had never existed in the repo before.
 
 ## Bug fixes
 
+- **Check-in result screen showed treatment steps but had no way to act on
+  them.** The plant detail screen's diagnostic flags have a "Mark treated"
+  button; the check-in result screen (added earlier this session,
+  surfacing new flags at the moment they're most actionable) only
+  displayed the same steps with no way to mark them done — forcing a trip
+  to plant detail for the exact action the moment was meant to enable.
+  Added the same action there.
 - **Camera permission screen was a dead end once permanently denied.** After
   the OS permanently denies the camera prompt (`canAskAgain: false`),
   `requestPermission()` on iOS just silently returns the same denied state

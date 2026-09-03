@@ -3,7 +3,7 @@ import React, { useRef, useState } from "react";
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { GhostOverlay } from "../components/GhostOverlay";
 import { ScoreDeltaBadge } from "../components/ScoreDeltaBadge";
-import { submitCheckIn, uploadCheckInPhoto } from "../services/api";
+import { setTreatmentPlanCompleted, submitCheckIn, uploadCheckInPhoto } from "../services/api";
 import { enqueueCheckIn } from "../services/checkInQueue";
 import { theme } from "../theme/theme";
 import { CreateCheckInResponse } from "../types/domain";
@@ -29,7 +29,13 @@ export function CheckInCameraScreen({ plantId, plantLabel, previousPhotoUri, onD
   const [stage, setStage] = useState<Stage>("aligning");
   const [result, setResult] = useState<CreateCheckInResponse | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [treatedIds, setTreatedIds] = useState<Set<string>>(new Set());
   const cameraRef = useRef<CameraView>(null);
+
+  async function handleMarkTreated(treatmentPlanId: string) {
+    setTreatedIds((prev) => new Set(prev).add(treatmentPlanId));
+    await setTreatmentPlanCompleted(treatmentPlanId, true).catch(() => undefined);
+  }
 
   if (!permission) {
     return <View style={styles.center} />;
@@ -104,7 +110,7 @@ export function CheckInCameraScreen({ plantId, plantLabel, previousPhotoUri, onD
                   <Text style={styles.flagCardTitle}>
                     ⚠ {f.condition.replace(/-/g, " ")} — {f.urgency.replace(/_/g, " ").toLowerCase()}
                   </Text>
-                  {f.treatmentPlan && (
+                  {f.treatmentPlan && !treatedIds.has(f.treatmentPlan.id) && (
                     <>
                       {f.treatmentPlan.steps.map((step, i) => (
                         <Text key={i} style={styles.flagCardStep}>
@@ -116,7 +122,13 @@ export function CheckInCameraScreen({ plantId, plantLabel, previousPhotoUri, onD
                           Suggested: {f.treatmentPlan.productsRecommended.join(", ")}
                         </Text>
                       )}
+                      <Pressable style={styles.flagCardDoneButton} onPress={() => handleMarkTreated(f.treatmentPlan!.id)}>
+                        <Text style={styles.flagCardDoneButtonText}>Mark treated</Text>
+                      </Pressable>
                     </>
+                  )}
+                  {f.treatmentPlan && treatedIds.has(f.treatmentPlan.id) && (
+                    <Text style={styles.flagCardDoneText}>✓ Marked treated</Text>
                   )}
                 </View>
               ))}
@@ -191,6 +203,9 @@ const styles = StyleSheet.create({
     fontStyle: "italic",
     marginTop: theme.spacing(0.5),
   },
+  flagCardDoneButton: { marginTop: theme.spacing(1), alignSelf: "flex-start" },
+  flagCardDoneButtonText: { fontSize: theme.font.captionSize, color: theme.color.forestGreen, fontWeight: "600" },
+  flagCardDoneText: { fontSize: theme.font.captionSize, color: theme.color.forestGreenLight, fontWeight: "600" },
   topBar: {
     position: "absolute",
     top: theme.spacing(8),
