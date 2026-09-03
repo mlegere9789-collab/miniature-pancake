@@ -408,6 +408,10 @@ committed, since it had never existed in the repo before.
   plant" action on the plant detail screen (with a confirmation, since it's
   not easily undoable from the UI); its check-in history and score
   snapshots are kept, it just drops out of the active views.
+- **No iOS bundle identifier or Android package name.** `app.json` had
+  neither `ios.bundleIdentifier` nor `android.package` — both required
+  before any real device or store build (`expo prebuild`/`eas build`
+  can't proceed without them). Set both to `app.vitals.mobile`.
 - **Editing a plant reset its reminder countdown even when cadence didn't
   change.** `App.tsx`'s `AddPlant` `onCreated` handler called
   `scheduleCheckInReminder` on every save, including edits that only
