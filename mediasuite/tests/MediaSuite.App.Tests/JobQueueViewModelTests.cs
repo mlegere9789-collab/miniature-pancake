@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows.Shell;
 using System.Windows.Threading;
 using MediaSuite.App.ViewModels;
