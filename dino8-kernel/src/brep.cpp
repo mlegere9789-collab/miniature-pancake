@@ -19,6 +19,48 @@ Brep Brep::FromSurface(const NurbsSurface& surface) {
   return result;
 }
 
+Brep Brep::Box(double x0, double y0, double z0, double x1, double y1,
+               double z1) {
+  Brep result;
+  ON_Brep& brep = result.brep_;
+
+  const Point3d v0(x0, y0, z0);
+  const Point3d v1(x1, y0, z0);
+  const Point3d v2(x1, y1, z0);
+  const Point3d v3(x0, y1, z0);
+  const Point3d v4(x0, y0, z1);
+  const Point3d v5(x1, y0, z1);
+  const Point3d v6(x1, y1, z1);
+  const Point3d v7(x0, y1, z1);
+
+  // Each grid is [P(u=0,v=0), P(u=0,v=1), P(u=1,v=0), P(u=1,v=1)] -
+  // NurbsSurface::FromControlGrid indexes a u_count=v_count=2 grid as
+  // u*v_count+v, so this is the order that produces exactly those four
+  // corners. Per-face corner order is chosen so u_dir x v_dir (the
+  // tessellator's triangle-winding normal - see NurbsSurface's own
+  // TessellateGrid comment) points outward for that face.
+  const std::vector<std::vector<Point3d>> face_grids = {
+      {v0, v1, v3, v2},  // bottom (-z)
+      {v4, v7, v5, v6},  // top (+z)
+      {v0, v4, v1, v5},  // front (-y)
+      {v3, v2, v7, v6},  // back (+y)
+      {v0, v3, v4, v7},  // left (-x)
+      {v1, v5, v2, v6},  // right (+x)
+  };
+
+  for (const auto& grid : face_grids) {
+    const NurbsSurface surface =
+        NurbsSurface::FromControlGrid(grid, /*u_count=*/2, /*v_count=*/2,
+                                       /*u_degree=*/1, /*v_degree=*/1);
+    auto* surface_copy = new ON_NurbsSurface(surface.raw());
+    const int surface_index = brep.AddSurface(surface_copy);
+    brep.NewFace(surface_index);
+  }
+
+  brep.SetTrimIsoFlags();
+  return result;
+}
+
 int Brep::FaceCount() const { return brep_.m_F.Count(); }
 
 std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
@@ -41,6 +83,10 @@ std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
   }
 
   return result;
+}
+
+Mesh Brep::TessellateToClosedMesh(int u_divisions, int v_divisions) const {
+  return Mesh::MergeAndWeld(Tessellate(u_divisions, v_divisions));
 }
 
 }  // namespace dino8::kernel

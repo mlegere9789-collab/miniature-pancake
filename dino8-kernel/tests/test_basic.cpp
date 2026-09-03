@@ -203,6 +203,51 @@ void TestBrepTessellation() {
         "tessellated mesh has the expected 2 triangles per grid cell");
 }
 
+void TestBrepBoxIsClosedAndWatertight() {
+  using dino8::kernel::Brep;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  Check(box.FaceCount() == 6, "Brep::Box has six faces");
+
+  // u_divisions = v_divisions = 1 means each face is exactly its 2
+  // corner-to-corner triangles (no interior subdivision), so welding
+  // should collapse the 6 faces * 4 corners = 24 raw vertices down to
+  // exactly the box's 8 unique corners.
+  const auto mesh = box.TessellateToClosedMesh(/*u_divisions=*/1, /*v_divisions=*/1);
+  Check(mesh.VertexCount() == 8,
+        "welding a tessellated Brep::Box collapses shared-edge vertices to 8 corners");
+  Check(mesh.FaceCount() == 12, "welded box mesh has 12 triangles (2 per face x 6 faces)");
+  Check(std::abs(mesh.Volume() - 8.0) < 1e-6,
+        "Brep::Box -> Tessellate -> weld volume matches the box's true volume");
+}
+
+void TestBrepBooleanEndToEnd() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  // Same scenario as TestBooleanUnion/Intersection/Difference above, but
+  // built through the real Brep -> Tessellate -> weld pipeline instead
+  // of MakeBox()'s hand-authored mesh - this is the gap the previous
+  // chunk's README flagged: "Brep only constructs untrimmed, open
+  // surfaces... can't feed BooleanCombine() yet." Box() + TessellateToClosedMesh()
+  // close it.
+  const auto a = Brep::Box(0, 0, 0, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  const auto b = Brep::Box(1, 1, 1, 3, 3, 3).TessellateToClosedMesh(1, 1);
+
+  const auto union_result = BooleanCombine(a, b, BooleanOp::Union);
+  Check(std::abs(union_result.Volume() - 15.0) < 1e-6,
+        "Brep-built union volume equals 8 + 8 - 1 overlap");
+
+  const auto intersection_result = BooleanCombine(a, b, BooleanOp::Intersection);
+  Check(std::abs(intersection_result.Volume() - 1.0) < 1e-6,
+        "Brep-built intersection volume equals the 1x1x1 overlap");
+
+  const auto difference_result = BooleanCombine(a, b, BooleanOp::Difference);
+  Check(std::abs(difference_result.Volume() - 7.0) < 1e-6,
+        "Brep-built difference volume equals 8 - 1 overlap");
+}
+
 }  // namespace
 
 int main() {
@@ -216,6 +261,8 @@ int main() {
   TestBooleanUnion();
   TestBooleanIntersection();
   TestBooleanDifference();
+  TestBrepBoxIsClosedAndWatertight();
+  TestBrepBooleanEndToEnd();
 
   ON::End();
 

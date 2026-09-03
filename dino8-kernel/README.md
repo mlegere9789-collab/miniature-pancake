@@ -53,17 +53,32 @@ What this repo does instead:
   "did it not crash."
 - Manifold requires genuinely closed/watertight input; `BooleanCombine()`
   surfaces that as a thrown `std::runtime_error` (via `Manifold::Status()`)
-  rather than silently producing garbage geometry. The grid tessellator
-  above produces *open* surfaces, so it cannot feed `BooleanCombine()`
-  directly yet — solids in the test suite are built by hand
-  (`MakeBox()` in the tests) until Brep gains real trimmed, closed-solid
-  construction.
+  rather than silently producing garbage geometry.
+- `Brep::Box()` + `Mesh::MergeAndWeld()` close the gap this section used to
+  describe as open: `Brep::Tessellate()` tessellates each face
+  independently, so two faces meeting at a shared edge each produce their
+  own copy of that edge's vertices — coincident positions, but separate
+  array entries, which is not a closed manifold as far as Manifold is
+  concerned. `MergeAndWeld()` snaps near-coincident vertices together and
+  remaps face indices, turning "six independently-tessellated open
+  patches that happen to line up" into one genuinely closed mesh.
+  `Brep::TessellateToClosedMesh()` does both steps in one call. Verified
+  end-to-end in `tests/test_basic.cpp`: `Brep::Box()` → tessellate → weld
+  → `BooleanCombine()`, checked against the same exact volumes as the
+  hand-built-mesh boolean tests.
 
 ## What's still not done (as of chunk 2)
 
-- Trimmed surfaces / closed solids from `Brep` (needed to connect
-  `Tessellate()`'s output to `BooleanCombine()` for real modeled shapes,
-  not just hand-built test boxes).
+- `Brep::Box()` is one hard-coded primitive (six untrimmed bilinear
+  faces), not general solid construction — no trimmed surfaces, no
+  boolean-of-arbitrary-shapes, no primitive library (sphere, cylinder,
+  etc.). It exists to prove the Brep → Tessellate → weld → boolean
+  pipeline end to end, not to be a real modeler.
+- `Mesh::MergeAndWeld()`'s tolerance-based vertex snapping is a stand-in
+  for real tolerance management (see below) — fine for axis-aligned
+  primitives with exactly-representable corners, not yet validated against
+  curved surfaces where independently-tessellated shared edges won't
+  produce bit-identical positions.
 - SubD modeling, adaptive/curvature-aware meshing, the viewport/display
   engine, GPU path tracer, command engine, UI shell, visual scripting,
   other file formats, undo system, installer, and everything else in the
@@ -91,10 +106,10 @@ cmake --build dino8-kernel/build
 ctest --test-dir dino8-kernel/build --output-on-failure
 ```
 
-If your OpenNURBS checkout exposes a different CMake target name than
-`opennurbs_public` (this varies across OpenNURBS releases), adjust the
-`target_link_libraries` call in `CMakeLists.txt` — the comment there marks
-the exact spot.
+OpenNURBS' actual CMake target name (`opennurbsStatic`, not the commonly
+assumed `opennurbs_public`) and a real link-order bug between it and its
+own `zlib` dependency are both handled already in `CMakeLists.txt` — see
+the comment there if a future OpenNURBS version renames its targets again.
 
 ## Why this shape
 
@@ -109,9 +124,10 @@ the exact spot.
 
 ## Known gaps / next chunk's problem
 
-- No boolean operations yet (chunk 2).
-- No SubD support yet (chunk 3) — OpenNURBS has `ON_SubD` but this chunk
-  doesn't wrap it.
+- No general solid construction — see "What's still not done" above.
+- No SubD support yet — OpenNURBS has `ON_SubD` but this chunk doesn't
+  wrap it.
 - No tolerance-management policy defined yet; wrapper calls use
-  OpenNURBS defaults, which will need revisiting once real modeling
+  OpenNURBS defaults or an ad-hoc constant (`Mesh::MergeAndWeld`'s
+  default tolerance), which will need revisiting once real modeling
   tolerances are decided.

@@ -1,5 +1,9 @@
 #include "dino8/kernel/mesh.h"
 
+#include <cmath>
+#include <map>
+#include <tuple>
+
 namespace dino8::kernel {
 
 int Mesh::VertexCount() const { return mesh_.VertexCount(); }
@@ -32,6 +36,51 @@ double Mesh::Volume() const {
     }
   }
   return volume;
+}
+
+Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
+  Mesh result;
+  ON_Mesh& out = result.mesh_;
+
+  // Snap each coordinate to a grid of `tolerance` size so two vertices
+  // within `tolerance` of each other (in particular, the same seam point
+  // computed independently by two adjacent faces) map to the same key.
+  auto snap = [tolerance](float v) {
+    return static_cast<long long>(std::lround(static_cast<double>(v) / tolerance));
+  };
+
+  std::map<std::tuple<long long, long long, long long>, int> vertex_by_position;
+
+  for (const Mesh& mesh : meshes) {
+    const ON_Mesh& in = mesh.mesh_;
+    std::vector<int> remap(static_cast<size_t>(in.m_V.Count()));
+
+    for (int i = 0; i < in.m_V.Count(); ++i) {
+      const ON_3fPoint& v = in.m_V[i];
+      const auto key = std::make_tuple(snap(v.x), snap(v.y), snap(v.z));
+      const auto it = vertex_by_position.find(key);
+      if (it != vertex_by_position.end()) {
+        remap[static_cast<size_t>(i)] = it->second;
+      } else {
+        const int new_index = out.m_V.Count();
+        out.m_V.Append(v);
+        vertex_by_position.emplace(key, new_index);
+        remap[static_cast<size_t>(i)] = new_index;
+      }
+    }
+
+    for (int i = 0; i < in.m_F.Count(); ++i) {
+      const ON_MeshFace& face = in.m_F[i];
+      ON_MeshFace remapped;
+      remapped.vi[0] = remap[static_cast<size_t>(face.vi[0])];
+      remapped.vi[1] = remap[static_cast<size_t>(face.vi[1])];
+      remapped.vi[2] = remap[static_cast<size_t>(face.vi[2])];
+      remapped.vi[3] = remap[static_cast<size_t>(face.vi[3])];
+      out.m_F.Append(remapped);
+    }
+  }
+
+  return result;
 }
 
 }  // namespace dino8::kernel

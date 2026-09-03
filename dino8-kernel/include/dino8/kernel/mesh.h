@@ -26,6 +26,19 @@ class Mesh {
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 
+  // Concatenates several independently-tessellated meshes into one and
+  // welds vertices within `tolerance` of each other into a single shared
+  // vertex. Needed because Brep::Tessellate() tessellates each face on
+  // its own: two faces meeting at a shared edge each produce their own
+  // copy of that edge's vertices, at identical (or near-identical,
+  // depending on tolerance) positions but as distinct array entries. A
+  // boolean engine like Manifold requires a genuinely closed manifold -
+  // coincident-but-separate vertices at a seam don't count - so this is
+  // the step that turns "several open patches that happen to line up"
+  // into "one watertight solid."
+  static Mesh MergeAndWeld(const std::vector<Mesh>& meshes,
+                            double tolerance = 1e-6);
+
  private:
   friend class Brep;
   friend class NurbsSurface;

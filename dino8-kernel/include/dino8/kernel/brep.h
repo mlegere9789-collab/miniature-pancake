@@ -32,6 +32,19 @@ class Brep {
   // Builds a one-face B-rep whose face is exactly `surface` (untrimmed).
   static Brep FromSurface(const NurbsSurface& surface);
 
+  // Builds a genuine closed solid: an axis-aligned box as six untrimmed
+  // bilinear NURBS faces (min corner (x0,y0,z0), max corner (x1,y1,z1)),
+  // each oriented so its tessellated triangles face outward. This is what
+  // closes the gap the previous chunk's README called out: without it,
+  // Brep only ever produced open surfaces, so nothing built through Brep
+  // could feed BooleanCombine() (which requires a closed, watertight
+  // mesh) - tests had to hand-build box meshes directly instead. Box() is
+  // deliberately narrow (one primitive, no general solid construction);
+  // it exists to prove the Brep -> Tessellate -> weld -> boolean pipeline
+  // end to end, not to be a real primitive library.
+  static Brep Box(double x0, double y0, double z0, double x1, double y1,
+                   double z1);
+
   int FaceCount() const;
 
   // Tessellates each face into a triangle mesh via NurbsSurface's grid
@@ -41,6 +54,13 @@ class Brep {
   // domain. Only correct for untrimmed faces, which is all Brep
   // currently constructs.
   std::vector<Mesh> Tessellate(int u_divisions = 8, int v_divisions = 8) const;
+
+  // Tessellate() followed by Mesh::MergeAndWeld() - the combination that
+  // actually produces a single closed, boolean-ready mesh from a closed
+  // Brep like Box(). Tessellate() alone leaves each face's tessellation
+  // as a separate mesh with its own copy of shared-edge vertices; this
+  // is what welds those seams shut.
+  Mesh TessellateToClosedMesh(int u_divisions = 8, int v_divisions = 8) const;
 
   const ON_Brep& raw() const { return brep_; }
   ON_Brep& raw() { return brep_; }
