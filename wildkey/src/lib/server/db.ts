@@ -38,7 +38,8 @@ function createConnection(): Database.Database {
       password_hash TEXT NOT NULL,
       password_salt TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'member',
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      pending_deletion_at TEXT
     );
 
     CREATE TABLE IF NOT EXISTS sessions (
@@ -145,6 +146,9 @@ function createConnection(): Database.Database {
   const userColumns = db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
   if (!userColumns.some((c) => c.name === "role")) {
     db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member'");
+  }
+  if (!userColumns.some((c) => c.name === "pending_deletion_at")) {
+    db.exec("ALTER TABLE users ADD COLUMN pending_deletion_at TEXT");
   }
   const observationColumns = db.prepare("PRAGMA table_info(observations)").all() as { name: string }[];
   if (!observationColumns.some((c) => c.name === "lat")) {

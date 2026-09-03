@@ -14,6 +14,7 @@ export type CurrentUser = {
   email: string;
   role: "member" | "curator";
   createdAt: string;
+  pendingDeletionAt: string | null;
 };
 
 type AuthContextValue = {

@@ -567,7 +567,7 @@ describe("curator tools", () => {
 });
 
 describe("account deletion", () => {
-  it("cascades to sessions, owned observations, and comments; leaves other users intact", async () => {
+  it("schedules a real 14-day grace period (cancellable) instead of deleting immediately, then actually purges once due — cascading to sessions, owned observations, and comments, leaving other users intact", async () => {
     const a = await signUp();
     const b = await signUp();
 
@@ -592,7 +592,29 @@ describe("account deletion", () => {
       body: JSON.stringify({ body: "nice fox", kind: "comment" }),
     });
 
+    const scheduled = await json(await a.session.fetch("/api/account/delete", { method: "POST" }));
+    assert.ok(scheduled.purgeAt);
+
+    // The account keeps working exactly as normal during the grace period.
+    assert.equal((await a.session.fetch("/api/observations")).status, 200);
+    const meScheduled = await json(await a.session.fetch("/api/auth/me"));
+    assert.ok(meScheduled.user.pendingDeletionAt);
+
+    // Cancelling is a real undo: the account is no longer scheduled.
+    assert.equal((await a.session.fetch("/api/account/delete/cancel", { method: "POST" })).status, 200);
+    const meCancelled = await json(await a.session.fetch("/api/auth/me"));
+    assert.equal(meCancelled.user.pendingDeletionAt, null);
+
+    // Cancelling again with nothing scheduled is rejected, not a silent no-op.
+    assert.equal((await a.session.fetch("/api/account/delete/cancel", { method: "POST" })).status, 400);
+
+    // Schedule again and let the (test-shortened) grace period actually
+    // elapse, then let any authenticated request's opportunistic sweep
+    // (getUserBySessionToken -> purgeDueAccounts in store.ts) carry out
+    // the real purge — not just flip a flag.
     await a.session.fetch("/api/account/delete", { method: "POST" });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await b.session.fetch("/api/auth/me");
 
     assert.equal((await a.session.fetch("/api/observations")).status, 401);
 

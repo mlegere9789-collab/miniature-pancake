@@ -11,6 +11,8 @@ export default function DataSettingsPage() {
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const [anonymizeConfirmText, setAnonymizeConfirmText] = useState("");
   const [anonymizing, setAnonymizing] = useState(false);
   const [anonymizeError, setAnonymizeError] = useState<string | null>(null);
@@ -19,13 +21,25 @@ export default function DataSettingsPage() {
     setDeleting(true);
     setDeleteError(null);
     const res = await fetch("/api/account/delete", { method: "POST" });
+    setDeleting(false);
     if (!res.ok) {
-      setDeleting(false);
-      setDeleteError("Something went wrong deleting your account.");
+      setDeleteError("Something went wrong scheduling your account for deletion.");
+      return;
+    }
+    setDeleteConfirmText("");
+    await refresh();
+  };
+
+  const cancelDeletion = async () => {
+    setCancelling(true);
+    setCancelError(null);
+    const res = await fetch("/api/account/delete/cancel", { method: "POST" });
+    setCancelling(false);
+    if (!res.ok) {
+      setCancelError("Something went wrong cancelling the scheduled deletion.");
       return;
     }
     await refresh();
-    router.push("/");
   };
 
   const anonymizeAccount = async () => {
@@ -145,7 +159,34 @@ export default function DataSettingsPage() {
         </div>
       )}
 
-      {!loading && user && (
+      {!loading && user && user.pendingDeletionAt && (
+        <div className="rounded-lg border p-4" style={{ borderColor: "var(--color-danger)" }}>
+          <p className="font-semibold" style={{ color: "var(--color-danger)" }}>
+            Deletion scheduled
+          </p>
+          <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
+            Your account and everything you&rsquo;ve posted will be permanently deleted on{" "}
+            <strong>{new Date(user.pendingDeletionAt).toLocaleString()}</strong>. Until then your
+            account works exactly as normal — nothing is hidden or read-only. Change your mind
+            any time before that date.
+          </p>
+          <button
+            onClick={cancelDeletion}
+            disabled={cancelling}
+            className="mt-3 rounded-full px-4 py-2 text-sm font-semibold disabled:opacity-40"
+            style={{ background: "var(--color-accent)", color: "var(--color-accent-contrast)" }}
+          >
+            {cancelling ? "Cancelling…" : "Cancel scheduled deletion"}
+          </button>
+          {cancelError && (
+            <p className="mt-2 text-sm font-medium" style={{ color: "var(--color-danger)" }}>
+              {cancelError}
+            </p>
+          )}
+        </div>
+      )}
+
+      {!loading && user && !user.pendingDeletionAt && (
         <div className="rounded-lg border p-4" style={{ borderColor: "var(--color-danger)" }}>
           <p className="font-semibold" style={{ color: "var(--color-danger)" }}>
             Delete account
@@ -153,8 +194,9 @@ export default function DataSettingsPage() {
           <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
             Permanently deletes your account, every observation you own, and every comment
             you&rsquo;ve posted — full erasure, unlike anonymizing above, which keeps your
-            contributions. This cannot be undone — there is no grace period yet, so export your
-            data first if you want to keep it. Type <strong>DELETE</strong> to confirm.
+            contributions. Deletion is scheduled 14 days out, not immediate — your account keeps
+            working normally the whole time, and you can cancel any time before then. Export your
+            data first if you want a copy regardless. Type <strong>DELETE</strong> to confirm.
           </p>
           <div className="mt-3 flex gap-2">
             <input
@@ -171,7 +213,7 @@ export default function DataSettingsPage() {
               className="rounded-full px-4 py-2 text-sm font-semibold disabled:opacity-40"
               style={{ background: "var(--color-danger)", color: "var(--color-accent-contrast)" }}
             >
-              {deleting ? "Deleting…" : "Delete my account"}
+              {deleting ? "Scheduling…" : "Delete my account"}
             </button>
           </div>
           {deleteError && (
@@ -191,7 +233,10 @@ export default function DataSettingsPage() {
         </p>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
           <li>Account migration tooling for switching devices</li>
-          <li>A grace period / undo window on deletion or anonymization — both above are immediate and permanent</li>
+          <li>
+            A grace period on anonymizing — that one really is immediate and permanent by design
+            (see above); deleting now has a real 14-day undo window instead
+          </li>
         </ul>
       </div>
     </div>

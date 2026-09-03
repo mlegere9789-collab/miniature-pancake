@@ -20,6 +20,7 @@ type User = {
   passwordSalt: string;
   role: UserRole;
   createdAt: string;
+  pendingDeletionAt: string | null;
 };
 
 type UserRow = {
@@ -29,6 +30,7 @@ type UserRow = {
   password_salt: string;
   role: string;
   created_at: string;
+  pending_deletion_at: string | null;
 };
 
 function userFromRow(row: UserRow): User {
@@ -39,6 +41,7 @@ function userFromRow(row: UserRow): User {
     passwordSalt: row.password_salt,
     role: row.role as UserRole,
     createdAt: row.created_at,
+    pendingDeletionAt: row.pending_deletion_at,
   };
 }
 
@@ -168,6 +171,7 @@ export function createUser(email: string, password: string): User {
     passwordSalt,
     role: isFirstAccount ? "curator" : "member",
     createdAt: new Date().toISOString(),
+    pendingDeletionAt: null,
   };
   try {
     db.prepare(
@@ -219,6 +223,14 @@ export function destroySession(token: string) {
 
 export function getUserBySessionToken(token: string | undefined): User | null {
   if (!token) return null;
+  // Opportunistic sweep: this runs on effectively every authenticated
+  // request, so it's the mechanism that actually carries out a deletion
+  // once its grace period elapses (see scheduleAccountDeletion below) —
+  // there's no real background job scheduler in this sandbox to run a
+  // proper cron-style purge instead. A production deploy should run
+  // purgeDueAccounts() on an actual schedule so overdue accounts are
+  // purged even with no incoming traffic.
+  purgeDueAccounts();
   const row = db
     .prepare<[string], UserRow>(
       `SELECT users.* FROM users
@@ -230,7 +242,13 @@ export function getUserBySessionToken(token: string | undefined): User | null {
 }
 
 export function toPublicUser(user: User) {
-  return { id: user.id, email: user.email, role: user.role, createdAt: user.createdAt };
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    createdAt: user.createdAt,
+    pendingDeletionAt: user.pendingDeletionAt,
+  };
 }
 
 export function getUserById(id: string): User | null {
@@ -402,15 +420,55 @@ export function createObservationForUser(
 }
 
 /**
- * Permanent account deletion. This is full erasure, not the anonymization
- * option from Part D.1 (keep contribution history, drop identity) — that's
- * a separate, still-unbuilt feature. Deleting the user row cascades (via
- * SQLite foreign keys) to their sessions, every observation they own
- * (and, transitively, comments on those observations — otherwise
- * orphaned), and every comment they authored elsewhere.
+ * Permanent, immediate account deletion — the actual erasure step behind
+ * the grace period below, and the one purgeDueAccounts() calls once a
+ * scheduled deletion comes due. Full erasure, not the anonymization option
+ * below it (keep contribution history, drop identity). Deleting the user
+ * row cascades (via SQLite foreign keys) to their sessions, every
+ * observation they own (and, transitively, comments on those observations
+ * — otherwise orphaned), and every comment they authored elsewhere.
  */
 export function deleteUserAccount(userId: string) {
   db.prepare("DELETE FROM users WHERE id = ?").run(userId);
+}
+
+// Overridable so the test suite can verify the actual purge path (see
+// tests/server.mjs) without waiting 14 real days — not something a real
+// deployment would ever set.
+const DELETION_GRACE_PERIOD_MS =
+  Number(process.env.WILDKEY_DELETION_GRACE_PERIOD_MS) || 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * The real grace-period/undo window this app previously documented as
+ * "not built yet." Deletion isn't immediate: it's scheduled 14 days out,
+ * and the account (and its data) stays fully intact and usable until then
+ * — signing back in and cancelling is the undo path. Actual erasure
+ * happens in purgeDueAccounts(), called opportunistically from
+ * getUserBySessionToken on real request traffic (see the comment there
+ * for the honest limit of that approach in this sandbox).
+ */
+export function scheduleAccountDeletion(userId: string): string {
+  const purgeAt = new Date(Date.now() + DELETION_GRACE_PERIOD_MS).toISOString();
+  db.prepare("UPDATE users SET pending_deletion_at = ? WHERE id = ?").run(purgeAt, userId);
+  return purgeAt;
+}
+
+export function cancelAccountDeletion(userId: string): boolean {
+  const result = db
+    .prepare("UPDATE users SET pending_deletion_at = NULL WHERE id = ? AND pending_deletion_at IS NOT NULL")
+    .run(userId);
+  return result.changes > 0;
+}
+
+/** Permanently erases every account whose scheduled deletion date has passed. Returns how many were purged. */
+export function purgeDueAccounts(): number {
+  const due = db
+    .prepare<[string], { id: string }>("SELECT id FROM users WHERE pending_deletion_at IS NOT NULL AND pending_deletion_at <= ?")
+    .all(new Date().toISOString());
+  for (const { id } of due) {
+    deleteUserAccount(id);
+  }
+  return due.length;
 }
 
 /**
