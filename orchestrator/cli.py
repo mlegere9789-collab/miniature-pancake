@@ -5,14 +5,18 @@ python -m orchestrator dashboard     # launch the local dashboard
 python -m orchestrator scheduler ... # manage scheduled jobs
 python -m orchestrator demo          # seed sample data to explore the UI
 python -m orchestrator doctor        # check your setup / which keys are set
+python -m orchestrator export-earnings  # write the earnings ledger as CSV
 """
 
 from __future__ import annotations
 
+import argparse
+import csv
 import sys
 
 from . import database as db
 from .config import config
+from .database import EARNINGS_CSV_FIELDS
 from .paths import DB_PATH, ENV_PATH, JOBS_PATH, MODULES
 
 
@@ -56,6 +60,35 @@ def _cmd_demo() -> int:
     return 0
 
 
+def _cmd_export_earnings(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="orchestrator export-earnings",
+        description="Write the earnings ledger as CSV, for bookkeeping/taxes.",
+    )
+    parser.add_argument("--module", default=None, help="only this module's earnings")
+    parser.add_argument(
+        "--since", default=None, help="only earnings on/after this date (YYYY-MM-DD)"
+    )
+    parser.add_argument("--out", default=None, help="file to write (default: stdout)")
+    args = parser.parse_args(argv)
+
+    rows = db.list_earnings(module=args.module, since=args.since)
+
+    def write(handle) -> None:
+        writer = csv.DictWriter(handle, fieldnames=EARNINGS_CSV_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row[field] for field in EARNINGS_CSV_FIELDS})
+
+    if args.out:
+        with open(args.out, "w", newline="", encoding="utf-8") as handle:
+            write(handle)
+        print(f"Wrote {len(rows)} earning(s) to {args.out}")
+    else:
+        write(sys.stdout)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
@@ -69,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_doctor()
     if cmd == "demo":
         return _cmd_demo()
+    if cmd == "export-earnings":
+        return _cmd_export_earnings(rest)
     if cmd == "dashboard":
         from .dashboard import main as dash_main
 

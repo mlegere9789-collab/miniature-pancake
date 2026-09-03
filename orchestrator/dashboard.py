@@ -6,7 +6,8 @@ that reads the shared SQLite database and shows:
 * a summary strip (total earnings, pending reviews),
 * one card per module (status, last activity, earnings, pending count),
 * the review queue, with working **Approve** / **Reject** buttons,
-* a recent-activity feed.
+* a recent-activity feed,
+* a **Download CSV** link for the full earnings ledger (bookkeeping/taxes).
 
 Run it::
 
@@ -20,13 +21,16 @@ DASHBOARD_PORT in `.env`, or pass --host / --port.
 from __future__ import annotations
 
 import argparse
+import csv
 import html
+import io
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import database as db
 from .config import config
+from .database import EARNINGS_CSV_FIELDS
 
 _STATE_COLORS = {
     "ok": "#1a7f37",
@@ -43,6 +47,15 @@ def _fmt_money(v: float) -> str:
 
 def _esc(v: object) -> str:
     return html.escape(str(v if v is not None else ""))
+
+
+def render_earnings_csv() -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=EARNINGS_CSV_FIELDS)
+    writer.writeheader()
+    for row in db.list_earnings():
+        writer.writerow({field: row[field] for field in EARNINGS_CSV_FIELDS})
+    return buf.getvalue()
 
 
 def render_page() -> str:
@@ -222,6 +235,8 @@ _TEMPLATE = """<!doctype html>
   ul.feed li.lvl-error {{ background: #fff0f0; }}
   ul.feed li.lvl-warning {{ background: #fffbea; }}
   .empty {{ color: #57606a; }}
+  p.export {{ margin: -12px 0 24px; font-size: 13px; }}
+  p.export a {{ color: #0969da; }}
 </style></head><body>
 <header>
   <h1>Income Orchestrator</h1>
@@ -232,6 +247,7 @@ _TEMPLATE = """<!doctype html>
     <div class="box"><b>{total_earnings}</b><span>total earnings (all modules)</span></div>
     <div class="box"><b>{pending}</b><span>items awaiting your review</span></div>
   </div>
+  <p class="export"><a href="/export/earnings.csv">Download full earnings ledger (CSV)</a></p>
 
   <h2>Modules</h2>
   <div class="grid">{cards}</div>
@@ -249,11 +265,19 @@ _TEMPLATE = """<!doctype html>
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _send(self, body: str, status: int = 200, ctype: str = "text/html") -> None:
+    def _send(
+        self,
+        body: str,
+        status: int = 200,
+        ctype: str = "text/html",
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         payload = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", f"{ctype}; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -261,6 +285,14 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path in ("/", "/index.html"):
             self._send(render_page())
+        elif parsed.path == "/export/earnings.csv":
+            self._send(
+                render_earnings_csv(),
+                ctype="text/csv",
+                extra_headers={
+                    "Content-Disposition": 'attachment; filename="earnings.csv"'
+                },
+            )
         elif parsed.path == "/api/overview":
             self._send(
                 json.dumps(

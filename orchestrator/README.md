@@ -14,7 +14,7 @@ core (config, database, logging, scheduler, dashboard).
 | `database.py` | The shared SQLite store: modules, activity log, status, earnings, review queue. Read/write helpers. |
 | `logger.py` | The API modules use: `get_logger("<module>")` → `.activity()`, `.status()`, `.earning()`, `.flag_for_review()`. |
 | `scheduler.py` | Trigger scripts on a cadence. Generates cron entries (Linux/macOS) **or** runs a portable Python daemon (any OS, incl. Windows). |
-| `dashboard.py` | A local web dashboard: per-module status, earnings, an interactive review queue (with a recently-resolved audit trail of past approve/reject decisions), and an activity feed. |
+| `dashboard.py` | A local web dashboard: per-module status, earnings (with a CSV export for bookkeeping), an interactive review queue (with a recently-resolved audit trail of past approve/reject decisions), and an activity feed. |
 | `cli.py` / `__main__.py` | `python -m orchestrator <command>`. |
 | `demo.py` | Seeds sample data so you can explore the dashboard immediately. |
 | `paths.py` | Single source of truth for file locations and the module list. |
@@ -27,6 +27,8 @@ python -m orchestrator init          # create the SQLite database + tables
 python -m orchestrator demo          # seed sample data to explore the UI
 python -m orchestrator dashboard     # launch the dashboard (http://127.0.0.1:8787)
 python -m orchestrator doctor        # check setup / which credentials are set
+python -m orchestrator export-earnings [--module NAME] [--since YYYY-MM-DD] [--out FILE]
+                                      # earnings ledger as CSV (stdout by default)
 python -m orchestrator scheduler list       # preview jobs + their cron lines
 python -m orchestrator scheduler install     # install enabled jobs into cron
 python -m orchestrator scheduler uninstall   # remove them from cron

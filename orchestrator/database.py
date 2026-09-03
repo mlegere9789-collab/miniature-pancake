@@ -283,6 +283,40 @@ def resolved_reviews(limit: int = 10) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+EARNINGS_CSV_FIELDS = [
+    "occurred_at",
+    "module",
+    "amount",
+    "currency",
+    "source",
+    "description",
+]
+
+
+def list_earnings(
+    *, module: str | None = None, since: str | None = None
+) -> list[dict[str, Any]]:
+    """Individual earning rows, oldest first — the raw ledger for export.
+
+    `since` filters on `occurred_at` (an ISO-8601 date or timestamp string;
+    lexical comparison, so any prefix of the stored format works, e.g. just
+    a date). `totals()`/`module_overview()` only ever give sums; this is
+    what a CSV export or any other row-by-row report needs instead.
+    """
+    query = "SELECT * FROM earnings WHERE 1=1"
+    params: list[Any] = []
+    if module is not None:
+        query += " AND module = ?"
+        params.append(module)
+    if since is not None:
+        query += " AND occurred_at >= ?"
+        params.append(since)
+    query += " ORDER BY occurred_at ASC, id ASC"
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+
 def totals() -> dict[str, Any]:
     with get_connection() as conn:
         earn = conn.execute(

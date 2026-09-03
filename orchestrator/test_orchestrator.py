@@ -11,6 +11,7 @@ or via the whole suite:
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import os
@@ -123,6 +124,33 @@ class TestEarnings(TempDatabaseTestCase):
         self.assertAlmostEqual(overview["deal_alert_bot"]["total_earnings"], 10.0)
         self.assertAlmostEqual(overview["micro_saas"]["total_earnings"], 5.0)
         self.assertEqual(overview["digital_products"]["total_earnings"], 0)
+
+    def test_list_earnings_empty(self):
+        self.assertEqual(db.list_earnings(), [])
+
+    def test_list_earnings_oldest_first(self):
+        db.record_earning(
+            "deal_alert_bot", 1.0, source="amazon", occurred_at="2026-01-02"
+        )
+        db.record_earning(
+            "deal_alert_bot", 2.0, source="amazon", occurred_at="2026-01-01"
+        )
+        rows = db.list_earnings()
+        self.assertEqual([r["occurred_at"] for r in rows], ["2026-01-01", "2026-01-02"])
+
+    def test_list_earnings_filters_by_module(self):
+        db.record_earning("deal_alert_bot", 1.0)
+        db.record_earning("micro_saas", 2.0)
+        rows = db.list_earnings(module="micro_saas")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["module"], "micro_saas")
+
+    def test_list_earnings_filters_by_since(self):
+        db.record_earning("deal_alert_bot", 1.0, occurred_at="2026-01-01")
+        db.record_earning("deal_alert_bot", 2.0, occurred_at="2026-06-01")
+        rows = db.list_earnings(since="2026-03-01")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["occurred_at"], "2026-06-01")
 
 
 class TestReviewQueue(TempDatabaseTestCase):
@@ -698,6 +726,56 @@ class TestCmdDoctor(unittest.TestCase):
         self.assertIn("set ", out)
 
 
+class TestCmdExportEarnings(TempDatabaseTestCase):
+    def test_writes_csv_header_when_empty(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = cli.main(["export-earnings"])
+        self.assertEqual(code, 0)
+        rows = list(csv.reader(io.StringIO(buf.getvalue())))
+        self.assertEqual(rows, [db.EARNINGS_CSV_FIELDS])
+
+    def test_writes_one_row_per_earning(self):
+        db.record_earning(
+            "deal_alert_bot",
+            4.20,
+            source="amazon",
+            description="affiliate",
+            occurred_at="2026-01-01",
+        )
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = cli.main(["export-earnings"])
+        self.assertEqual(code, 0)
+        rows = list(csv.DictReader(io.StringIO(buf.getvalue())))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["module"], "deal_alert_bot")
+        self.assertEqual(rows[0]["amount"], "4.2")
+        self.assertEqual(rows[0]["source"], "amazon")
+        self.assertEqual(rows[0]["occurred_at"], "2026-01-01")
+
+    def test_filters_by_module(self):
+        db.record_earning("deal_alert_bot", 1.0)
+        db.record_earning("micro_saas", 2.0)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.main(["export-earnings", "--module", "micro_saas"])
+        rows = list(csv.DictReader(io.StringIO(buf.getvalue())))
+        self.assertEqual([r["module"] for r in rows], ["micro_saas"])
+
+    def test_writes_to_file_when_out_given(self):
+        db.record_earning("deal_alert_bot", 1.0)
+        with tempfile.TemporaryDirectory() as d:
+            out_path = Path(d) / "earnings.csv"
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = cli.main(["export-earnings", "--out", str(out_path)])
+            self.assertEqual(code, 0)
+            self.assertIn("Wrote 1 earning(s)", buf.getvalue())
+            rows = list(csv.DictReader(out_path.open(encoding="utf-8")))
+            self.assertEqual(len(rows), 1)
+
+
 class TestDashboardHelpers(unittest.TestCase):
     def test_fmt_money(self):
         self.assertEqual(dashboard._fmt_money(1234.5), "$1,234.50")
@@ -708,6 +786,18 @@ class TestDashboardHelpers(unittest.TestCase):
 
     def test_esc_handles_none(self):
         self.assertEqual(dashboard._esc(None), "")
+
+
+class TestRenderEarningsCsv(TempDatabaseTestCase):
+    def test_header_only_when_empty(self):
+        rows = list(csv.reader(io.StringIO(dashboard.render_earnings_csv())))
+        self.assertEqual(rows, [db.EARNINGS_CSV_FIELDS])
+
+    def test_one_row_per_earning_in_order(self):
+        db.record_earning("deal_alert_bot", 1.0, occurred_at="2026-01-02")
+        db.record_earning("micro_saas", 2.0, occurred_at="2026-01-01")
+        rows = list(csv.DictReader(io.StringIO(dashboard.render_earnings_csv())))
+        self.assertEqual([r["module"] for r in rows], ["micro_saas", "deal_alert_bot"])
 
 
 class TestRenderPage(TempDatabaseTestCase):
@@ -738,6 +828,10 @@ class TestRenderPage(TempDatabaseTestCase):
         self.assertIn("Nothing awaiting review", page)
         self.assertIn("No activity logged yet", page)
         self.assertIn("No decisions yet", page)
+
+    def test_includes_csv_download_link(self):
+        page = dashboard.render_page()
+        self.assertIn('href="/export/earnings.csv"', page)
 
     def test_includes_resolved_decisions(self):
         rid = db.add_review_item("deal_alert_bot", "Post this deal?")
@@ -788,6 +882,15 @@ class TestDashboardHandler(TempDatabaseTestCase):
             self.fail("expected an HTTPError")
         except urllib.error.HTTPError as exc:
             self.assertEqual(exc.code, 404)
+
+    def test_export_earnings_csv_returns_csv_attachment(self):
+        db.record_earning("deal_alert_bot", 4.20, source="amazon")
+        resp = self._get("/export/earnings.csv")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("text/csv", resp.headers["Content-Type"])
+        self.assertIn("attachment", resp.headers["Content-Disposition"])
+        rows = list(csv.DictReader(io.StringIO(resp.read().decode("utf-8"))))
+        self.assertEqual(rows[0]["module"], "deal_alert_bot")
 
     def test_review_post_resolves_item_and_redirects(self):
         rid = db.add_review_item("deal_alert_bot", "Approve?")
