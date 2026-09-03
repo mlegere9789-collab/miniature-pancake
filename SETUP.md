@@ -1,8 +1,10 @@
 # Income Orchestrator — Setup Guide
 
-This is the shared foundation for five semi-autonomous income programs. The
-foundation is built; the individual programs come later. This guide walks you
-through everything **you** need to do to get it running locally.
+This is the shared foundation for five semi-autonomous income programs, four
+of which are already built (`deal_alert_bot`, `ecommerce_dropshipping`,
+`micro_saas`, `digital_products` — see the table in the root
+[`README.md`](README.md); `stock_licensing` is a documented stub). This guide
+walks you through everything **you** need to do to get it running locally.
 
 Estimated time: ~10 minutes. No accounts or paid services are required just to
 run the foundation — you only need API keys later, per program.
@@ -77,9 +79,13 @@ python3 -m orchestrator dashboard     # start the dashboard
 ```
 
 Open **http://127.0.0.1:8787** in your browser. You'll see:
-- a summary strip (total earnings, items awaiting review),
+- a summary strip (total earnings, items awaiting review) with a **Download
+  CSV** link for the full earnings ledger (bookkeeping/taxes — also
+  available as `python3 -m orchestrator export-earnings`),
 - a card per module (status, last activity, earnings, pending reviews),
 - the **review queue** with working **Approve** / **Reject** buttons,
+- **Recently resolved**, an audit trail of your last few approve/reject
+  decisions (so you can see what you decided, and when),
 - a recent-activity feed.
 
 Stop the dashboard with **Ctrl-C**. To wipe the sample data and start clean,
@@ -149,8 +155,10 @@ what it needs; in summary:
 | Micro-SaaS | Stripe, plus wherever the SaaS itself is hosted |
 | Any (AI copy/automation) | Anthropic API key ([console.anthropic.com](https://console.anthropic.com/)) |
 
-When you're ready to build the first program, tell me which one and I'll scaffold
-it on top of this foundation.
+Set the keys for whichever built program you want to run in `.env`, enable
+its job in `jobs.json` (step 6), and it'll pick them up automatically —
+`doctor` (step 7) confirms what's set. `stock_licensing` has no code yet
+(see its own README for why); if you want it built, say so.
 
 ---
 
