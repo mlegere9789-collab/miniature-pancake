@@ -30,6 +30,8 @@ import logging
 from typing import Any
 
 from . import database as db
+from . import notifier
+from .config import config
 from .paths import MODULES
 
 # Console logging so you also see output when running a module by hand.
@@ -120,7 +122,19 @@ class ModuleLogger:
             self.module, title, description=description, payload=payload
         )
         self._log.info("flagged for review (#%d): %s", rid, title)
+        self._notify_review(title)
         return rid
+
+    def _notify_review(self, title: str) -> None:
+        """Best-effort push notification. Never raises — see notifier.py."""
+        webhook_url = config.get("REVIEW_NOTIFY_WEBHOOK_URL")
+        if not webhook_url:
+            return
+        fmt = config.get("REVIEW_NOTIFY_FORMAT", "generic") or "generic"
+        try:
+            notifier.notify(webhook_url, f"[{self.module}] {title}", format=fmt)
+        except notifier.NotifyError as exc:
+            self._log.warning(f"Review notification failed: {exc}")
 
 
 def get_logger(module: str) -> ModuleLogger:

@@ -22,14 +22,15 @@ import urllib.error
 import urllib.request
 from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
 from . import cli, dashboard
 from . import database as db
+from . import notifier
 from . import scheduler as sch
-from .config import Config, MissingCredentialError
+from .config import Config, MissingCredentialError, config
 from .logger import ModuleLogger, get_logger
 from .paths import MODULES
 
@@ -332,6 +333,103 @@ class TestLogger(TempDatabaseTestCase):
         pending = db.pending_reviews()
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0]["title"], "Approve?")
+
+    def test_flag_for_review_does_not_notify_when_unconfigured(self):
+        with patch.object(notifier, "notify") as notify_mock:
+            get_logger("deal_alert_bot").flag_for_review("Approve?")
+        notify_mock.assert_not_called()
+
+    def test_flag_for_review_notifies_when_configured(self):
+        with (
+            patch.object(
+                config,
+                "get",
+                side_effect=lambda k, d=None: (
+                    "http://x" if k == "REVIEW_NOTIFY_WEBHOOK_URL" else d
+                ),
+            ),
+            patch.object(notifier, "notify") as notify_mock,
+        ):
+            get_logger("deal_alert_bot").flag_for_review("Approve?")
+        notify_mock.assert_called_once_with(
+            "http://x", "[deal_alert_bot] Approve?", format="generic"
+        )
+
+    def test_flag_for_review_survives_a_notify_failure(self):
+        with (
+            patch.object(
+                config,
+                "get",
+                side_effect=lambda k, d=None: (
+                    "http://x" if k == "REVIEW_NOTIFY_WEBHOOK_URL" else d
+                ),
+            ),
+            patch.object(notifier, "notify", side_effect=notifier.NotifyError("boom")),
+        ):
+            rid = get_logger("deal_alert_bot").flag_for_review("Approve?")
+        self.assertEqual(len(db.pending_reviews()), 1)
+        self.assertEqual(db.pending_reviews()[0]["id"], rid)
+
+
+class TestNotifier(unittest.TestCase):
+    def _server(self, status: int = 204):
+        received: list = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("Content-Length", 0))
+                received.append(json.loads(self.rfile.read(length)))
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+
+            def log_message(self, *args: object) -> None:
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        return f"http://127.0.0.1:{port}", received
+
+    def test_no_webhook_url_raises(self):
+        with self.assertRaises(notifier.NotifyError):
+            notifier.notify("", "hi")
+
+    def test_generic_format_posts_all_three_keys(self):
+        url, received = self._server()
+        notifier.notify(url, "hello", format="generic")
+        self.assertEqual(
+            received, [{"text": "hello", "content": "hello", "message": "hello"}]
+        )
+
+    def test_slack_format_posts_text_only(self):
+        url, received = self._server()
+        notifier.notify(url, "hello", format="slack")
+        self.assertEqual(received, [{"text": "hello"}])
+
+    def test_discord_format_posts_content_only(self):
+        url, received = self._server()
+        notifier.notify(url, "hello", format="discord")
+        self.assertEqual(received, [{"content": "hello"}])
+
+    def test_unknown_format_falls_back_to_generic(self):
+        url, received = self._server()
+        notifier.notify(url, "hello", format="bogus")
+        self.assertEqual(
+            received, [{"text": "hello", "content": "hello", "message": "hello"}]
+        )
+
+    def test_non_2xx_status_raises(self):
+        url, _ = self._server(status=500)
+        with self.assertRaises(notifier.NotifyError):
+            notifier.notify(url, "hello")
+
+    def test_unreachable_url_raises(self):
+        with self.assertRaises(notifier.NotifyError):
+            notifier.notify("http://127.0.0.1:1", "hello", timeout=2)
 
 
 class TestPaths(unittest.TestCase):
