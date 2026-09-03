@@ -30,7 +30,12 @@ mediasuite/
 │   ├── MediaSuite.Core/      net8.0        — domain model, engine contract, tools, settings
 │   └── MediaSuite.App/       net8.0-windows — WPF shell (UI only)
 ├── tests/
-│   └── MediaSuite.Core.Tests/              — xUnit tests for everything in Core
+│   ├── MediaSuite.Core.Tests/              — xUnit tests for everything in Core
+│   └── MediaSuite.App.Tests/               — xUnit tests for the App-layer code that
+│                                              has no WPF dependency of its own (currently
+│                                              SingleInstanceGuard's real mutex/pipe IPC);
+│                                              the WPF shell itself still has no automated
+│                                              tests, only Build compiling it and QA.md
 └── tools/                                  — bundled third-party binaries (not in git)
 ```
 
@@ -201,7 +206,11 @@ Convert.
   already open and brings it to the front, instead of spawning a redundant second process
   with its own queue, settings writer and tool discovery. A named mutex decides who is
   first; every later launch forwards its file arguments to that instance over a local
-  named pipe and exits immediately rather than doing any startup work of its own
+  named pipe and exits immediately rather than doing any startup work of its own. Backed
+  by a real automated test (`MediaSuite.App.Tests`, new) that runs the actual mutex and
+  named-pipe handoff — not a fake standing in for them — since "compiles" was never proof
+  this specific mechanism (a second launch racing the first instance's listener startup)
+  actually worked; that gap is exactly what caught the real startup-race bug fixed earlier
 - **Real GitHub release** — every push to `main` publishes the CI-built installer to this
   repo's Releases page, gated so a PR build never does it. Before this, the only way to
   get the installer was a 90-day CI artifact behind a GitHub login, which quietly broke
