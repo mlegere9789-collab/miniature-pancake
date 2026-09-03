@@ -135,6 +135,12 @@ function createConnection(): Database.Database {
       locked_until TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS signup_attempts (
+      id TEXT PRIMARY KEY,
+      ip TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS role_changes (
       id TEXT PRIMARY KEY,
       target_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -180,6 +186,7 @@ function createConnection(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_observation_flags_status ON observation_flags(status);
     CREATE INDEX IF NOT EXISTS idx_curator_actions_flag_id ON curator_actions(flag_id);
     CREATE INDEX IF NOT EXISTS idx_role_changes_target_user_id ON role_changes(target_user_id);
+    CREATE INDEX IF NOT EXISTS idx_signup_attempts_ip_created_at ON signup_attempts(ip, created_at);
   `);
 
   return db;

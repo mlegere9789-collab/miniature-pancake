@@ -1,6 +1,6 @@
 import { before, after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { startServer, stopServer, createSession, signUp } from "./server.mjs";
+import { startServer, stopServer, createSession, signUp, BASE_URL } from "./server.mjs";
 
 // The very first account signed up against a fresh test database bootstraps
 // as curator (src/lib/server/store.ts createUser) — signing this one up
@@ -99,6 +99,38 @@ describe("auth", () => {
       body: JSON.stringify({ email, password: "correcthorsebattery" }),
     });
     assert.equal(afterExpiry.status, 200);
+  });
+
+  it("rate-limits signups per IP without affecting a different IP", async () => {
+    // A fixed, dedicated IP not used by any other test's signUp() calls
+    // (those each get their own synthetic address — see server.mjs).
+    const attackerIp = "198.51.100.7";
+    const signupAs = (email) =>
+      fetch(`${BASE_URL}/api/auth/signup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-forwarded-for": attackerIp },
+        body: JSON.stringify({ email, password: "correcthorsebattery" }),
+      });
+
+    let lastStatus;
+    for (let i = 0; i < 10; i++) {
+      const res = await signupAs(`ratelimit-${Date.now()}-${i}@example.com`);
+      lastStatus = res.status;
+    }
+    assert.equal(lastStatus, 201);
+
+    // The 11th signup from the same IP is rejected, even with fully valid
+    // credentials — this is a rate limit, not a validation failure.
+    const eleventh = await signupAs(`ratelimit-${Date.now()}-eleventh@example.com`);
+    assert.equal(eleventh.status, 429);
+
+    // A different IP is completely unaffected.
+    const otherIp = await fetch(`${BASE_URL}/api/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-forwarded-for": "198.51.100.8" },
+      body: JSON.stringify({ email: `ratelimit-${Date.now()}-other@example.com`, password: "correcthorsebattery" }),
+    });
+    assert.equal(otherIp.status, 201);
   });
 });
 

@@ -96,13 +96,23 @@ export function createSession() {
 
 let accountCounter = 0;
 
+/**
+ * Every test signup gets its own synthetic x-forwarded-for so the suite's
+ * ~30+ signups (all from this one real loopback caller) never share a
+ * single IP bucket against the real signup-rate-limit in store.ts — that
+ * limit is exercised deliberately, on a fixed shared IP, by the "signup
+ * rate limiting" test instead.
+ */
 export async function signUp(email) {
   const session = createSession();
   accountCounter += 1;
   const uniqueEmail = email ?? `test-${Date.now()}-${accountCounter}@example.com`;
   const res = await session.fetch("/api/auth/signup", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-forwarded-for": `10.${(accountCounter >> 16) & 255}.${(accountCounter >> 8) & 255}.${accountCounter & 255}`,
+    },
     body: JSON.stringify({ email: uniqueEmail, password: "correcthorsebattery" }),
   });
   if (!res.ok) throw new Error(`Signup failed: ${res.status} ${await res.text()}`);

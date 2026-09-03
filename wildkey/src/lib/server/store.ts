@@ -266,6 +266,37 @@ export function registerLoginSuccess(email: string): void {
   db.prepare("DELETE FROM login_lockouts WHERE email = ?").run(email.trim().toLowerCase());
 }
 
+// Real signup-spam protection — previously there was no limit at all on
+// account creation, so a script could create unlimited accounts as fast as
+// scrypt could hash passwords. Keyed by caller IP rather than email, since
+// email is exactly the thing an attacker varies per attempt. Honest limit:
+// there's no reliable client IP without a trusted reverse proxy in front
+// setting it, so this is best-effort (see the route for how the IP is
+// read) — someone behind a shared IP (NAT, campus network) can be
+// collaterally caught by another user's spam, and a determined attacker
+// who can spoof or rotate IPs isn't meaningfully slowed. It still stops
+// the common case: a single script hammering the endpoint from one place.
+const SIGNUP_MAX_PER_WINDOW = 10;
+const SIGNUP_WINDOW_MS = 60 * 60 * 1000;
+
+export function isSignupRateLimited(ip: string): boolean {
+  const windowStart = new Date(Date.now() - SIGNUP_WINDOW_MS).toISOString();
+  const { count } = db
+    .prepare<[string, string], { count: number }>(
+      "SELECT COUNT(*) as count FROM signup_attempts WHERE ip = ? AND created_at >= ?",
+    )
+    .get(ip, windowStart)!;
+  return count >= SIGNUP_MAX_PER_WINDOW;
+}
+
+export function recordSignupAttempt(ip: string): void {
+  db.prepare("INSERT INTO signup_attempts (id, ip, created_at) VALUES (?, ?, ?)").run(
+    randomUUID(),
+    ip,
+    new Date().toISOString(),
+  );
+}
+
 export function createSession(userId: string): string {
   const token = randomBytes(32).toString("hex");
   db.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)").run(

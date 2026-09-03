@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
-import { createUser, createSession, toPublicUser } from "@/lib/server/store";
+import {
+  createUser,
+  createSession,
+  toPublicUser,
+  isSignupRateLimited,
+  recordSignupAttempt,
+} from "@/lib/server/store";
 import { setSessionCookie } from "@/lib/server/session";
 
 // RFC 5321's own limit on an email address, and a generous but bounded cap
@@ -8,7 +14,28 @@ import { setSessionCookie } from "@/lib/server/session";
 const MAX_EMAIL_LENGTH = 254;
 const MAX_PASSWORD_LENGTH = 256;
 
+/**
+ * Best-effort caller IP: only trustworthy behind a reverse proxy that sets
+ * this header itself (overwriting anything the client sent), which is the
+ * deployment this app assumes — see isSignupRateLimited's own honest
+ * caveat about what this can't stop.
+ */
+function callerIp(request: Request): string {
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  if (forwardedFor) return forwardedFor.split(",")[0].trim();
+  return request.headers.get("x-real-ip") ?? "unknown";
+}
+
 export async function POST(request: Request) {
+  const ip = callerIp(request);
+  if (isSignupRateLimited(ip)) {
+    return NextResponse.json(
+      { error: "Too many accounts created recently. Try again later." },
+      { status: 429 },
+    );
+  }
+  recordSignupAttempt(ip);
+
   const body = await request.json().catch(() => null);
   const email = typeof body?.email === "string" ? body.email : "";
   const password = typeof body?.password === "string" ? body.password : "";
