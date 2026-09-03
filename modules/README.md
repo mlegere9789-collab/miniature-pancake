@@ -1,17 +1,17 @@
 # Modules
 
-Each subfolder here is one **income-generating program**. They are intentionally
-empty for now (just a README describing intent) — we built the shared foundation
-in [`/orchestrator`](../orchestrator) first, and each program will be built on
-top of it, one at a time.
+Each subfolder here is one **income-generating program**, built on the shared
+foundation in [`/orchestrator`](../orchestrator). Four are built; each one's
+own README documents its exact scope, including anything deliberately left
+out (see the root [`README.md`](../README.md) for why in each case).
 
-| Folder | Program |
-|--------|---------|
-| [`stock_licensing/`](stock_licensing) | Stock asset licensing |
-| [`ecommerce_dropshipping/`](ecommerce_dropshipping) | E-commerce / dropshipping ops |
-| [`deal_alert_bot/`](deal_alert_bot) | Deal-alert bot |
-| [`digital_products/`](digital_products) | Digital product creation |
-| [`micro_saas/`](micro_saas) | Micro-SaaS tool |
+| Folder | Program | Status |
+|--------|---------|--------|
+| [`deal_alert_bot/`](deal_alert_bot) | Deal-alert bot | Built |
+| [`ecommerce_dropshipping/`](ecommerce_dropshipping) | E-commerce / dropshipping ops | Built |
+| [`micro_saas/`](micro_saas) | Micro-SaaS tool | Built |
+| [`digital_products/`](digital_products) | Digital product creation | Built |
+| [`stock_licensing/`](stock_licensing) | Stock asset licensing | Stub |
 
 ## The contract every module follows
 

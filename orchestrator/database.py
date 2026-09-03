@@ -228,7 +228,8 @@ def resolve_review_item(item_id: int, decision: str, note: str = "") -> bool:
 def module_overview() -> list[dict[str, Any]]:
     """One row per module with status, last activity, totals, pending count."""
     with get_connection() as conn:
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT
               m.name, m.display_name, m.enabled,
               s.state, s.detail, s.updated_at,
@@ -243,7 +244,8 @@ def module_overview() -> list[dict[str, Any]]:
             FROM modules m
             LEFT JOIN status s ON s.module = m.name
             ORDER BY m.name
-            """).fetchall()
+            """
+        ).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -260,6 +262,58 @@ def pending_reviews() -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM review_queue WHERE status='pending' ORDER BY created_at DESC"
         ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def resolved_reviews(limit: int = 10) -> list[dict[str, Any]]:
+    """The most recently approved/rejected review items, newest first.
+
+    An audit trail for past decisions — `pending_reviews` drops an item the
+    moment it's resolved, so without this there's no way to see what you
+    approved or rejected, or when.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT * FROM review_queue
+               WHERE status IN ('approved', 'rejected')
+               ORDER BY resolved_at DESC, id DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+EARNINGS_CSV_FIELDS = [
+    "occurred_at",
+    "module",
+    "amount",
+    "currency",
+    "source",
+    "description",
+]
+
+
+def list_earnings(
+    *, module: str | None = None, since: str | None = None
+) -> list[dict[str, Any]]:
+    """Individual earning rows, oldest first — the raw ledger for export.
+
+    `since` filters on `occurred_at` (an ISO-8601 date or timestamp string;
+    lexical comparison, so any prefix of the stored format works, e.g. just
+    a date). `totals()`/`module_overview()` only ever give sums; this is
+    what a CSV export or any other row-by-row report needs instead.
+    """
+    query = "SELECT * FROM earnings WHERE 1=1"
+    params: list[Any] = []
+    if module is not None:
+        query += " AND module = ?"
+        params.append(module)
+    if since is not None:
+        query += " AND occurred_at >= ?"
+        params.append(since)
+    query += " ORDER BY occurred_at ASC, id ASC"
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
 

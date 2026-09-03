@@ -6,7 +6,8 @@ that reads the shared SQLite database and shows:
 * a summary strip (total earnings, pending reviews),
 * one card per module (status, last activity, earnings, pending count),
 * the review queue, with working **Approve** / **Reject** buttons,
-* a recent-activity feed.
+* a recent-activity feed,
+* a **Download CSV** link for the full earnings ledger (bookkeeping/taxes).
 
 Run it::
 
@@ -20,13 +21,16 @@ DASHBOARD_PORT in `.env`, or pass --host / --port.
 from __future__ import annotations
 
 import argparse
+import csv
 import html
+import io
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import database as db
 from .config import config
+from .database import EARNINGS_CSV_FIELDS
 
 _STATE_COLORS = {
     "ok": "#1a7f37",
@@ -45,9 +49,19 @@ def _esc(v: object) -> str:
     return html.escape(str(v if v is not None else ""))
 
 
+def render_earnings_csv() -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=EARNINGS_CSV_FIELDS)
+    writer.writeheader()
+    for row in db.list_earnings():
+        writer.writerow({field: row[field] for field in EARNINGS_CSV_FIELDS})
+    return buf.getvalue()
+
+
 def render_page() -> str:
     overview = db.module_overview()
     reviews = db.pending_reviews()
+    resolved = db.resolved_reviews(limit=10)
     activity = db.recent_activity(limit=30)
     tot = db.totals()
 
@@ -61,7 +75,8 @@ def render_page() -> str:
             if pending
             else ""
         )
-        cards.append(f"""
+        cards.append(
+            f"""
         <div class="card">
           <div class="card-head">
             <h3>{_esc(m['display_name'])}</h3>
@@ -72,7 +87,8 @@ def render_page() -> str:
           <p class="last">{_esc(m.get('last_activity') or 'No activity yet')}</p>
           <p class="ts">{_esc(m.get('last_activity_at') or '')}</p>
           {badge}
-        </div>""")
+        </div>"""
+        )
 
     if reviews:
         rows = []
@@ -87,7 +103,8 @@ def render_page() -> str:
                     )
                 except (json.JSONDecodeError, TypeError):
                     payload = "<pre>" + _esc(r["payload"]) + "</pre>"
-            rows.append(f"""
+            rows.append(
+                f"""
             <tr>
               <td>{_esc(r['module'])}</td>
               <td><strong>{_esc(r['title'])}</strong><br><span class="muted">{_esc(r['description'])}</span>{payload}</td>
@@ -99,7 +116,8 @@ def render_page() -> str:
                   <button name="decision" value="rejected" class="reject">Reject</button>
                 </form>
               </td>
-            </tr>""")
+            </tr>"""
+            )
         review_html = f"""
         <table class="review">
           <thead><tr><th>Module</th><th>Item</th><th>Flagged</th><th></th></tr></thead>
@@ -108,15 +126,44 @@ def render_page() -> str:
     else:
         review_html = '<p class="empty">Nothing awaiting review. 🎉</p>'
 
+    if resolved:
+        rows = []
+        for r in resolved:
+            decision = r["status"]
+            badge_color = "#1a7f37" if decision == "approved" else "#cf222e"
+            note = (
+                f'<br><span class="muted">{_esc(r["resolution_note"])}</span>'
+                if r.get("resolution_note")
+                else ""
+            )
+            rows.append(
+                f"""
+            <tr>
+              <td>{_esc(r['module'])}</td>
+              <td><strong>{_esc(r['title'])}</strong>{note}</td>
+              <td><span class="state" style="background:{badge_color}">{_esc(decision)}</span></td>
+              <td class="ts">{_esc(r['resolved_at'])}</td>
+            </tr>"""
+            )
+        resolved_html = f"""
+        <table class="review">
+          <thead><tr><th>Module</th><th>Item</th><th>Decision</th><th>Resolved</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>"""
+    else:
+        resolved_html = '<p class="empty">No decisions yet.</p>'
+
     feed = []
     for a in activity:
         lvl = a.get("level") or "info"
-        feed.append(f"""
+        feed.append(
+            f"""
         <li class="lvl-{_esc(lvl)}">
           <span class="ts">{_esc(a['created_at'])}</span>
           <span class="mod">{_esc(a['module'])}</span>
           {_esc(a['message'])}
-        </li>""")
+        </li>"""
+        )
     feed_html = (
         f'<ul class="feed">{"".join(feed)}</ul>'
         if feed
@@ -128,6 +175,7 @@ def render_page() -> str:
         pending=tot["pending_reviews"],
         cards="".join(cards),
         reviews=review_html,
+        resolved=resolved_html,
         feed=feed_html,
     )
 
@@ -187,6 +235,8 @@ _TEMPLATE = """<!doctype html>
   ul.feed li.lvl-error {{ background: #fff0f0; }}
   ul.feed li.lvl-warning {{ background: #fffbea; }}
   .empty {{ color: #57606a; }}
+  p.export {{ margin: -12px 0 24px; font-size: 13px; }}
+  p.export a {{ color: #0969da; }}
 </style></head><body>
 <header>
   <h1>Income Orchestrator</h1>
@@ -197,12 +247,16 @@ _TEMPLATE = """<!doctype html>
     <div class="box"><b>{total_earnings}</b><span>total earnings (all modules)</span></div>
     <div class="box"><b>{pending}</b><span>items awaiting your review</span></div>
   </div>
+  <p class="export"><a href="/export/earnings.csv">Download full earnings ledger (CSV)</a></p>
 
   <h2>Modules</h2>
   <div class="grid">{cards}</div>
 
   <h2>Review queue</h2>
   {reviews}
+
+  <h2>Recently resolved</h2>
+  {resolved}
 
   <h2>Recent activity</h2>
   {feed}
@@ -211,11 +265,19 @@ _TEMPLATE = """<!doctype html>
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _send(self, body: str, status: int = 200, ctype: str = "text/html") -> None:
+    def _send(
+        self,
+        body: str,
+        status: int = 200,
+        ctype: str = "text/html",
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         payload = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", f"{ctype}; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -223,6 +285,14 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path in ("/", "/index.html"):
             self._send(render_page())
+        elif parsed.path == "/export/earnings.csv":
+            self._send(
+                render_earnings_csv(),
+                ctype="text/csv",
+                extra_headers={
+                    "Content-Disposition": 'attachment; filename="earnings.csv"'
+                },
+            )
         elif parsed.path == "/api/overview":
             self._send(
                 json.dumps(
