@@ -177,7 +177,7 @@
             </Border>
 
             <!-- Bundled tools -->
-            <Border Style="{DynamicResource Card}" Margin="0,16,0,24">
+            <Border Style="{DynamicResource Card}" Margin="0,16,0,0">
                 <StackPanel>
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -260,6 +260,28 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                 </StackPanel>
+            </Border>
+
+            <!-- About -->
+            <Border Style="{DynamicResource Card}" Margin="0,16,0,24">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="About" Style="{DynamicResource Text.Heading}" />
+                        <TextBlock Text="{Binding AppVersion, StringFormat=MediaSuite v{0}}"
+                                   Style="{DynamicResource Text.Secondary}"
+                                   Margin="0,6,0,0" />
+                    </StackPanel>
+                    <Button Grid.Column="1"
+                            Content="View on _GitHub"
+                            Style="{DynamicResource Button.Secondary}"
+                            Command="{Binding OpenProjectPageCommand}"
+                            ToolTip="{Binding ProjectUrl}"
+                            VerticalAlignment="Top" />
+                </Grid>
             </Border>
 
         </StackPanel>

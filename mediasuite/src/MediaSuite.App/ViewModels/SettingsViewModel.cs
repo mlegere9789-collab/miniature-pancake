@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
@@ -52,6 +54,8 @@ public sealed class SettingsViewModel : PageViewModel
             async () => await SignInToGoogleDriveAsync(), () => !_isSignedInToGoogleDrive);
         SignOutOfGoogleDriveCommand = new RelayCommand(
             async () => await SignOutOfGoogleDriveAsync(), () => _isSignedInToGoogleDrive);
+        OpenProjectPageCommand = new RelayCommand(
+            () => Process.Start(new ProcessStartInfo(ProjectUrl) { UseShellExecute = true }));
 
         RefreshTools();
         _ = RefreshGoogleDriveStatusAsync();
@@ -316,6 +320,22 @@ public sealed class SettingsViewModel : PageViewModel
 
         OnPropertyChanged(nameof(ToolSummary));
     }
+
+    // --- About --------------------------------------------------------------
+
+    /// <summary>
+    /// Read from this assembly rather than MediaSuite.Core's (which
+    /// <see cref="MediaSuite.Core.Updates.GitHubReleaseUpdateChecker"/> uses for its own,
+    /// separate reason — comparing against a GitHub release tag) since this is showing
+    /// the user which build of the app they are actually running. Both assemblies share
+    /// one &lt;Version&gt; in Directory.Build.props, so today they always agree regardless.
+    /// </summary>
+    public string AppVersion { get; } =
+        (typeof(SettingsViewModel).Assembly.GetName().Version ?? new Version(0, 0, 0)).ToString(3);
+
+    public string ProjectUrl { get; } = "https://github.com/mlegere9789-collab/miniature-pancake";
+
+    public ICommand OpenProjectPageCommand { get; }
 
     private void SetTheme(bool isChecked, ThemeMode mode)
     {

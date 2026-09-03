@@ -1,12 +1,15 @@
 #Requires -Version 5.1
 <#
-    Publishes MediaSuite.App as a self-contained win-x64 build, then compiles the
-    installer from it. Run from anywhere; paths below are relative to this script.
+    Publishes MediaSuite.App as a self-contained win-x64 build, fetches all 14 bundled
+    tools (see fetch-tools.ps1), then compiles the installer from both. Run from
+    anywhere; paths below are relative to this script.
 
     Needs the .NET 8 SDK and Inno Setup (iscc.exe) on PATH. Inno Setup's own installer
     puts iscc.exe in "C:\Program Files (x86)\Inno Setup 6\" and does not add it to PATH
     by default — add that folder to PATH, or run the compiler from there directly if
-    this script cannot find it.
+    this script cannot find it. Fetching every tool also needs an MSVC + vcpkg toolchain
+    (for LibRaw, compiled from source) and Chocolatey (for Calibre) — see fetch-tools.ps1
+    for exactly which tool needs which, and its fail-soft behavior when one is missing.
 #>
 
 $ErrorActionPreference = "Stop"

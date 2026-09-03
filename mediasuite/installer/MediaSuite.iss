@@ -11,6 +11,7 @@
 #define MyAppExeName "MediaSuite.exe"
 #define MyPublishDir "..\publish\MediaSuite"
 #define MyToolsStagedDir "..\tools-staged"
+#define MyAppIcon "..\src\MediaSuite.App\Assets\MediaSuite.ico"
 
 [Setup]
 ; Generated once for this app and never reused elsewhere — Inno Setup uses it to
@@ -19,10 +20,27 @@ AppId={{1EA2B3B5-BDE9-499E-9FA8-372CADD2BC2D}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
+; The real GitHub repo this project lives in — not a placeholder domain. Same one
+; GitHubReleaseUpdateChecker checks releases against and Settings' About card links to.
+; Shows up in Windows' own "Programs and Features" list next to the uninstall button.
+AppPublisherURL=https://github.com/mlegere9789-collab/miniature-pancake
+AppSupportURL=https://github.com/mlegere9789-collab/miniature-pancake
+AppUpdatesURL=https://github.com/mlegere9789-collab/miniature-pancake/releases
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+; The app's own exe already carries this icon (MediaSuite.App.csproj's ApplicationIcon),
+; so Start Menu/desktop shortcuts and UninstallDisplayIcon above pick it up automatically
+; by pointing at the exe — this line is only for the Setup.exe wizard itself, which
+; otherwise shows Inno Setup's own generic icon instead of MediaSuite's.
+SetupIconFile={#MyAppIcon}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+; The tall left-side panel on the welcome/finished pages, and the small top-right badge
+; on every other page. Both otherwise default to Inno Setup's own generic blue/white
+; graphic — genuinely the first thing a user sees when running the installer, so worth
+; actually branding rather than leaving as a giveaway this was a stock installer.
+WizardImageFile=WizardImage.bmp
+WizardSmallImageFile=WizardSmallImage.bmp
 OutputDir=..\dist
 OutputBaseFilename=MediaSuiteSetup-{#MyAppVersion}
 Compression=lzma2
