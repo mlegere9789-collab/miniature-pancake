@@ -46,8 +46,11 @@ jobs:
     # to real merges to main (same condition "Publish release" below already uses) so
     # ordinary PR development only ever pays for the fast "Build and test" job above —
     # the installer, which nothing but a release actually needs, no longer runs on every
-    # push to a PR branch.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # push to a PR branch. workflow_dispatch is the deliberate escape hatch: a PR that
+    # changes fetch-tools.ps1 or installer/native/ itself needs this job's real result
+    # before merging, not just after, so it can be triggered by hand on that PR's branch
+    # without waiting for a merge to find out whether it actually compiles.
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
 
     steps:
       - name: Check out
