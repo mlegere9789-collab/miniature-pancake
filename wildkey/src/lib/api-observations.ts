@@ -47,6 +47,15 @@ export async function fetchObservationComments(id: string): Promise<ObservationC
   return data.comments ?? [];
 }
 
+export type ObservationNeedingId = ObservationWithGrade & { observerEmail: string };
+
+export async function fetchObservationsNeedingId(): Promise<ObservationNeedingId[]> {
+  const res = await fetch("/api/observations/needs-id");
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.observations ?? [];
+}
+
 export async function postObservationComment(
   id: string,
   input: { body: string; kind: "comment" | "agree" },

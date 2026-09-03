@@ -175,6 +175,30 @@ export function listObservationsForUser(userId: string): ObservationWithGrade[] 
     .map((o) => withQualityGrade(o, db));
 }
 
+/**
+ * The real Identify queue feed (Part C.2): every observation not needing
+ * only the requesting user's own confirmation, still short of Research
+ * Grade. Powers /identify once real community observations exist, instead
+ * of the mock queue Quick ID users still see.
+ */
+export function listObservationsNeedingId(
+  excludeUserId: string,
+): (ObservationWithGrade & { observerEmail: string })[] {
+  const db = readDb();
+  const alreadyAgreedIds = new Set(
+    db.comments
+      .filter((c) => c.kind === "agree" && c.userId === excludeUserId)
+      .map((c) => c.observationId),
+  );
+  const usersById = new Map(db.users.map((u) => [u.id, u]));
+  return db.observations
+    .filter((o) => o.userId !== excludeUserId && !alreadyAgreedIds.has(o.id))
+    .map((o) => withQualityGrade(o, db))
+    .filter((o) => o.qualityGrade === "needs_id")
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .map((o) => ({ ...o, observerEmail: usersById.get(o.userId)?.email ?? "unknown" }));
+}
+
 export function createObservationForUser(
   userId: string,
   input: Omit<ServerObservation, "id" | "userId" | "createdAt" | "syncState">,
