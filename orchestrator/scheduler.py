@@ -21,12 +21,18 @@ Cadence grammar (see ``jobs.example.json``):
     weekly  at DOW HH:MM  (DOW = mon|tue|...|sun)  -> once a week
 
 All jobs ship ``"enabled": false`` so nothing runs until you opt in.
+
+The portable daemon writes a heartbeat (``data/scheduler_heartbeat.json``)
+on every poll, which the dashboard reads to show whether it's actually
+alive -- unlike cron, a long-lived process can die silently with nothing
+else to notice.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -207,6 +213,48 @@ def _save_state(state: dict[str, str]) -> None:
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
+HEARTBEAT_FILE = PROJECT_ROOT / "data" / "scheduler_heartbeat.json"
+HEARTBEAT_STALE_SECONDS = 90  # 3 missed polls at the default 30s interval
+
+
+def _write_heartbeat(poll_seconds: int) -> None:
+    ensure_data_dir()
+    HEARTBEAT_FILE.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "poll_seconds": poll_seconds,
+                "beat_at": datetime.now(timezone.utc).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def read_heartbeat() -> dict[str, Any] | None:
+    """The portable daemon's last heartbeat, or None if it has never run.
+
+    cron reports its own reliability (a missed run just doesn't happen), but
+    the portable daemon (`scheduler run` — the only option on Windows) is a
+    long-lived process that can die silently with nothing else to notice.
+    The dashboard uses this to show whether it's actually alive.
+    """
+    if not HEARTBEAT_FILE.exists():
+        return None
+    try:
+        return json.loads(HEARTBEAT_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def heartbeat_is_stale(
+    heartbeat: dict[str, Any], *, now: datetime | None = None
+) -> bool:
+    now = now or datetime.now(timezone.utc)
+    beat_at = datetime.fromisoformat(heartbeat["beat_at"])
+    return (now - beat_at).total_seconds() > HEARTBEAT_STALE_SECONDS
+
+
 def _is_due(job: dict[str, Any], now: datetime, last_run: datetime | None) -> bool:
     cadence = job["cadence"].lower().strip()
     if cadence == "every":
@@ -253,6 +301,7 @@ def cmd_run(poll_seconds: int = 30) -> int:
         f"Checking {len(load_jobs(enabled_only=True))} enabled job(s) "
         f"every {poll_seconds}s.\n"
     )
+    _write_heartbeat(poll_seconds)
     try:
         while True:
             now = datetime.now(timezone.utc)
@@ -265,6 +314,7 @@ def cmd_run(poll_seconds: int = 30) -> int:
                     state[job["name"]] = now.isoformat()
             _save_state(state)
             time.sleep(poll_seconds)
+            _write_heartbeat(poll_seconds)
     except KeyboardInterrupt:
         print("\n[scheduler] stopped.")
         return 0
