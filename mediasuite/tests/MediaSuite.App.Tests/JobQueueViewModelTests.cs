@@ -43,22 +43,41 @@ public sealed class JobQueueViewModelTests : IDisposable
         Output = new OutputTarget { Directory = @"C:\out" },
     };
 
-    /// <summary>Polls a condition instead of sleeping a fixed amount, to keep CI stable.</summary>
-    private static async Task WaitUntil(Func<bool> condition)
+    /// <summary>
+    /// Waits for <paramref name="job"/> to actually reach <see cref="JobStatus.Running"/> —
+    /// deliberately not a poll of <see cref="JobQueueManager.RunningCount"/>: that count is
+    /// booked synchronously inside <see cref="JobQueueManager.Enqueue"/>, before the
+    /// thread-pool task that calls <c>MarkRunning</c> has necessarily run, so a caller that
+    /// needs the row's own <c>Status</c>/<c>PercentComplete</c> to reflect "running" (as
+    /// opposed to just "the queue has claimed a slot for it") needs to wait for the event
+    /// the queue raises right after that call, not the slot count.
+    /// </summary>
+    private static async Task WaitForRunning(JobQueueManager queue, QueuedJob job)
     {
-        var deadline = DateTime.UtcNow + Timeout;
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        while (DateTime.UtcNow < deadline)
+        void OnStatusChanged(object? sender, QueuedJob changed)
         {
-            if (condition())
+            if (ReferenceEquals(changed, job) && changed.Status == JobStatus.Running)
             {
-                return;
+                tcs.TrySetResult();
             }
-
-            await Task.Delay(10);
         }
 
-        Assert.Fail("Timed out waiting for the queue to reach the expected state.");
+        queue.JobStatusChanged += OnStatusChanged;
+        try
+        {
+            if (job.Status == JobStatus.Running)
+            {
+                tcs.TrySetResult();
+            }
+
+            await tcs.Task.WaitAsync(Timeout);
+        }
+        finally
+        {
+            queue.JobStatusChanged -= OnStatusChanged;
+        }
     }
 
     [Fact]
@@ -98,7 +117,6 @@ public sealed class JobQueueViewModelTests : IDisposable
         using var queue = CreateQueue(FakeEngine.Instant());
         using var viewModel = new JobQueueViewModel(queue, _dispatcher);
         queue.Enqueue(Spec());
-        queue.Pause();
 
         Assert.False(viewModel.IsPaused);
         viewModel.PauseResumeCommand.Execute(null);
@@ -177,8 +195,8 @@ public sealed class JobQueueViewModelTests : IDisposable
         using var queue = CreateQueue(FakeEngine.Gated(gate));
         using var viewModel = new JobQueueViewModel(queue, _dispatcher);
 
-        queue.Enqueue(Spec());
-        await WaitUntil(() => queue.RunningCount == 1);
+        var job = queue.Enqueue(Spec());
+        await WaitForRunning(queue, job);
 
         Assert.Equal("Running — 1 of 4 slots busy.", viewModel.StatusText);
         // No progress reported yet, so the running row reads as indeterminate.
@@ -199,7 +217,7 @@ public sealed class JobQueueViewModelTests : IDisposable
         using var viewModel = new JobQueueViewModel(queue, _dispatcher);
 
         var job = queue.Enqueue(Spec());
-        await WaitUntil(() => queue.RunningCount == 1);
+        await WaitForRunning(queue, job);
 
         // Nothing else touches the job while the engine sits parked on the gate, so
         // reporting progress from the test thread here does not race the queue.
