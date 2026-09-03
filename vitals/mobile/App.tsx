@@ -1,6 +1,7 @@
 import { createNavigationContainerRef, NavigationContainer } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import * as Notifications from "expo-notifications";
+import { StatusBar } from "expo-status-bar";
 import React, { useEffect, useRef, useState } from "react";
 import { AppState, AppStateStatus, Pressable, Text, View } from "react-native";
 import { AddPlantScreen } from "./src/screens/AddPlantScreen";
@@ -118,16 +119,18 @@ export default function App() {
   }, []);
 
   return (
-    <NavigationContainer
-      ref={navigationRef}
-      onReady={() => {
-        if (pendingNotificationResponse) {
-          navigateToNotificationTarget(pendingNotificationResponse);
-          pendingNotificationResponse = null;
-        }
-      }}
-    >
-      <Stack.Navigator screenOptions={{ headerTintColor: theme.color.forestGreen }}>
+    <>
+      <StatusBar style="dark" />
+      <NavigationContainer
+        ref={navigationRef}
+        onReady={() => {
+          if (pendingNotificationResponse) {
+            navigateToNotificationTarget(pendingNotificationResponse);
+            pendingNotificationResponse = null;
+          }
+        }}
+      >
+        <Stack.Navigator screenOptions={{ headerTintColor: theme.color.forestGreen }}>
         <Stack.Screen name="Dashboard" options={({ navigation }) => ({
           title: "Vitals",
           headerRight: () => (
@@ -260,6 +263,7 @@ export default function App() {
           )}
         </Stack.Screen>
       </Stack.Navigator>
-    </NavigationContainer>
+      </NavigationContainer>
+    </>
   );
 }

@@ -422,6 +422,10 @@ committed, since it had never existed in the repo before.
   bundled successfully into a real Hermes bytecode bundle — the first time
   this session that anything actually proved the app builds, as opposed to
   just typechecking and linting cleanly.
+- **`expo-status-bar` was a dependency but never actually used.** Nothing
+  rendered `<StatusBar>`, so the status bar icon color was left to OS
+  defaults instead of matching the app's light theme. Rendered it with
+  `style="dark"`, verified the bundle still exports cleanly afterward.
 - **No iOS bundle identifier or Android package name.** `app.json` had
   neither `ios.bundleIdentifier` nor `android.package` — both required
   before any real device or store build (`expo prebuild`/`eas build`
