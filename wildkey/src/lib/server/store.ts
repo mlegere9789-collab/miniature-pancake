@@ -1,16 +1,14 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import { getMockSpecies } from "@/lib/mock-species";
+import { db } from "@/lib/server/db";
 
 /**
- * A minimal, file-backed persistence layer standing in for a real database
- * during local development. It gives Naturalist Mode a genuine server-side
- * account + observation store instead of localStorage, so the "one app,
- * two modes" split (Part A.3) actually works end to end. Swap this module
- * for a real database (e.g. Postgres) before deploying anywhere with more
- * than one server process — writes here are not safe under concurrent
- * requests across multiple instances.
+ * Real SQLite-backed persistence (see src/lib/server/db.ts for the schema
+ * and the honest boundary on what "production database" means here). This
+ * module is the only place that knows SQL — everything above it (API
+ * routes, pages) calls these functions exactly as it did against the old
+ * JSON-file store, so the swap required zero changes outside this file
+ * and db.ts.
  */
 
 type User = {
@@ -21,11 +19,23 @@ type User = {
   createdAt: string;
 };
 
-type Session = {
-  token: string;
-  userId: string;
-  createdAt: string;
+type UserRow = {
+  id: string;
+  email: string;
+  password_hash: string;
+  password_salt: string;
+  created_at: string;
 };
+
+function userFromRow(row: UserRow): User {
+  return {
+    id: row.id,
+    email: row.email,
+    passwordHash: row.password_hash,
+    passwordSalt: row.password_salt,
+    createdAt: row.created_at,
+  };
+}
 
 export type QualityGrade = "needs_id" | "research_grade";
 
@@ -45,6 +55,38 @@ export type ServerObservation = {
   locationName: string;
   notes: string;
 };
+
+type ObservationRow = {
+  id: string;
+  user_id: string;
+  created_at: string;
+  photo_data_url: string;
+  common_name: string;
+  scientific_name: string;
+  confidence: number;
+  taxon_slug: string;
+  sync_state: string;
+  is_wild: number;
+  location_name: string;
+  notes: string;
+};
+
+function observationFromRow(row: ObservationRow): ServerObservation {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    createdAt: row.created_at,
+    photoDataUrl: row.photo_data_url,
+    commonName: row.common_name,
+    scientificName: row.scientific_name,
+    confidence: row.confidence,
+    taxonSlug: row.taxon_slug,
+    syncState: row.sync_state as ServerObservation["syncState"],
+    isWild: Boolean(row.is_wild),
+    locationName: row.location_name,
+    notes: row.notes,
+  };
+}
 
 export type ObservationWithGrade = ServerObservation & {
   agreeCount: number;
@@ -68,32 +110,26 @@ export type ObservationComment = {
   createdAt: string;
 };
 
-type DbShape = {
-  users: User[];
-  sessions: Session[];
-  observations: ServerObservation[];
-  comments: ObservationComment[];
+type CommentRow = {
+  id: string;
+  observation_id: string;
+  user_id: string;
+  user_email: string;
+  body: string;
+  kind: string;
+  created_at: string;
 };
 
-const DB_PATH = path.join(process.cwd(), ".data", "db.json");
-
-function emptyDb(): DbShape {
-  return { users: [], sessions: [], observations: [], comments: [] };
-}
-
-function readDb(): DbShape {
-  if (!existsSync(DB_PATH)) return emptyDb();
-  try {
-    const parsed = JSON.parse(readFileSync(DB_PATH, "utf-8")) as Partial<DbShape>;
-    return { ...emptyDb(), ...parsed };
-  } catch {
-    return emptyDb();
-  }
-}
-
-function writeDb(db: DbShape) {
-  mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  writeFileSync(DB_PATH, JSON.stringify(db, null, 2));
+function commentFromRow(row: CommentRow): ObservationComment {
+  return {
+    id: row.id,
+    observationId: row.observation_id,
+    userId: row.user_id,
+    userEmail: row.user_email,
+    body: row.body,
+    kind: row.kind as ObservationComment["kind"],
+    createdAt: row.created_at,
+  };
 }
 
 function hashPassword(password: string, salt: string): string {
@@ -101,11 +137,7 @@ function hashPassword(password: string, salt: string): string {
 }
 
 export function createUser(email: string, password: string): User {
-  const db = readDb();
   const normalizedEmail = email.trim().toLowerCase();
-  if (db.users.some((u) => u.email === normalizedEmail)) {
-    throw new Error("An account with this email already exists.");
-  }
   const passwordSalt = randomBytes(16).toString("hex");
   const user: User = {
     id: randomUUID(),
@@ -114,15 +146,32 @@ export function createUser(email: string, password: string): User {
     passwordSalt,
     createdAt: new Date().toISOString(),
   };
-  db.users.push(user);
-  writeDb(db);
+  try {
+    db.prepare(
+      `INSERT INTO users (id, email, password_hash, password_salt, created_at)
+       VALUES (@id, @email, @passwordHash, @passwordSalt, @createdAt)`,
+    ).run({
+      id: user.id,
+      email: user.email,
+      passwordHash: user.passwordHash,
+      passwordSalt: user.passwordSalt,
+      createdAt: user.createdAt,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+      throw new Error("An account with this email already exists.");
+    }
+    throw err;
+  }
   return user;
 }
 
 export function verifyCredentials(email: string, password: string): User | null {
-  const db = readDb();
-  const user = db.users.find((u) => u.email === email.trim().toLowerCase());
-  if (!user) return null;
+  const row = db
+    .prepare<[string], UserRow>("SELECT * FROM users WHERE email = ?")
+    .get(email.trim().toLowerCase());
+  if (!row) return null;
+  const user = userFromRow(row);
   const candidateHash = hashPassword(password, user.passwordSalt);
   const a = Buffer.from(candidateHash, "hex");
   const b = Buffer.from(user.passwordHash, "hex");
@@ -131,25 +180,29 @@ export function verifyCredentials(email: string, password: string): User | null 
 }
 
 export function createSession(userId: string): string {
-  const db = readDb();
   const token = randomBytes(32).toString("hex");
-  db.sessions.push({ token, userId, createdAt: new Date().toISOString() });
-  writeDb(db);
+  db.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)").run(
+    token,
+    userId,
+    new Date().toISOString(),
+  );
   return token;
 }
 
 export function destroySession(token: string) {
-  const db = readDb();
-  db.sessions = db.sessions.filter((s) => s.token !== token);
-  writeDb(db);
+  db.prepare("DELETE FROM sessions WHERE token = ?").run(token);
 }
 
 export function getUserBySessionToken(token: string | undefined): User | null {
   if (!token) return null;
-  const db = readDb();
-  const session = db.sessions.find((s) => s.token === token);
-  if (!session) return null;
-  return db.users.find((u) => u.id === session.userId) ?? null;
+  const row = db
+    .prepare<[string], UserRow>(
+      `SELECT users.* FROM users
+       JOIN sessions ON sessions.user_id = users.id
+       WHERE sessions.token = ?`,
+    )
+    .get(token);
+  return row ? userFromRow(row) : null;
 }
 
 export function toPublicUser(user: User) {
@@ -157,15 +210,19 @@ export function toPublicUser(user: User) {
 }
 
 export function getUserById(id: string): User | null {
-  return readDb().users.find((u) => u.id === id) ?? null;
+  const row = db.prepare<[string], UserRow>("SELECT * FROM users WHERE id = ?").get(id);
+  return row ? userFromRow(row) : null;
 }
 
-function withQualityGrade(observation: ServerObservation, db: DbShape): ObservationWithGrade {
+const agreeCountStmt = db.prepare<[string, string], { count: number }>(
+  `SELECT COUNT(*) as count FROM comments
+   WHERE observation_id = ? AND kind = 'agree' AND user_id != ?`,
+);
+
+function withQualityGrade(observation: ServerObservation): ObservationWithGrade {
   // Independent confirmations only — the observer's own agree on their own
   // observation doesn't count toward Research Grade.
-  const agreeCount = db.comments.filter(
-    (c) => c.observationId === observation.id && c.kind === "agree" && c.userId !== observation.userId,
-  ).length;
+  const agreeCount = agreeCountStmt.get(observation.id, observation.userId)!.count;
   return {
     ...observation,
     agreeCount,
@@ -191,11 +248,12 @@ function obscureLocationIfSensitive<T extends { userId: string; taxonSlug: strin
 }
 
 export function listObservationsForUser(userId: string): ObservationWithGrade[] {
-  const db = readDb();
-  return db.observations
-    .filter((o) => o.userId === userId)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map((o) => withQualityGrade(o, db));
+  const rows = db
+    .prepare<[string], ObservationRow>(
+      "SELECT * FROM observations WHERE user_id = ? ORDER BY created_at DESC",
+    )
+    .all(userId);
+  return rows.map((row) => withQualityGrade(observationFromRow(row)));
 }
 
 /**
@@ -207,18 +265,27 @@ export function listObservationsForUser(userId: string): ObservationWithGrade[] 
 export function listObservationsNeedingId(
   excludeUserId: string,
 ): (ObservationWithGrade & { observerEmail: string })[] {
-  const db = readDb();
-  const alreadyAgreedIds = new Set(
-    db.comments
-      .filter((c) => c.kind === "agree" && c.userId === excludeUserId)
-      .map((c) => c.observationId),
+  const rows = db
+    .prepare<[string, string], ObservationRow>(
+      `SELECT * FROM observations
+       WHERE user_id != ?
+         AND id NOT IN (
+           SELECT observation_id FROM comments WHERE kind = 'agree' AND user_id = ?
+         )
+       ORDER BY created_at ASC`,
+    )
+    .all(excludeUserId, excludeUserId);
+
+  const usersById = new Map(
+    db
+      .prepare<[], UserRow>("SELECT * FROM users")
+      .all()
+      .map((row) => [row.id, userFromRow(row)]),
   );
-  const usersById = new Map(db.users.map((u) => [u.id, u]));
-  return db.observations
-    .filter((o) => o.userId !== excludeUserId && !alreadyAgreedIds.has(o.id))
-    .map((o) => withQualityGrade(o, db))
+
+  return rows
+    .map((row) => withQualityGrade(observationFromRow(row)))
     .filter((o) => o.qualityGrade === "needs_id")
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .map((o) => obscureLocationIfSensitive(o, excludeUserId))
     .map((o) => ({ ...o, observerEmail: usersById.get(o.userId)?.email ?? "unknown" }));
 }
@@ -227,7 +294,6 @@ export function createObservationForUser(
   userId: string,
   input: Omit<ServerObservation, "id" | "userId" | "createdAt" | "syncState">,
 ): ServerObservation {
-  const db = readDb();
   const observation: ServerObservation = {
     ...input,
     id: randomUUID(),
@@ -235,37 +301,45 @@ export function createObservationForUser(
     createdAt: new Date().toISOString(),
     syncState: "confirmed",
   };
-  db.observations.push(observation);
-  writeDb(db);
+  db.prepare(
+    `INSERT INTO observations
+       (id, user_id, created_at, photo_data_url, common_name, scientific_name,
+        confidence, taxon_slug, sync_state, is_wild, location_name, notes)
+     VALUES
+       (@id, @userId, @createdAt, @photoDataUrl, @commonName, @scientificName,
+        @confidence, @taxonSlug, @syncState, @isWild, @locationName, @notes)`,
+  ).run({
+    id: observation.id,
+    userId: observation.userId,
+    createdAt: observation.createdAt,
+    photoDataUrl: observation.photoDataUrl,
+    commonName: observation.commonName,
+    scientificName: observation.scientificName,
+    confidence: observation.confidence,
+    taxonSlug: observation.taxonSlug,
+    syncState: observation.syncState,
+    isWild: observation.isWild ? 1 : 0,
+    locationName: observation.locationName,
+    notes: observation.notes,
+  });
   return observation;
 }
 
 /**
  * Permanent account deletion. This is full erasure, not the anonymization
  * option from Part D.1 (keep contribution history, drop identity) — that's
- * a separate, still-unbuilt feature. Deleting removes the account, its
- * sessions, every observation it owns (and comments on those, since they'd
- * be orphaned otherwise), and every comment it authored elsewhere.
+ * a separate, still-unbuilt feature. Deleting the user row cascades (via
+ * SQLite foreign keys) to their sessions, every observation they own
+ * (and, transitively, comments on those observations — otherwise
+ * orphaned), and every comment they authored elsewhere.
  */
 export function deleteUserAccount(userId: string) {
-  const db = readDb();
-  const ownedObservationIds = new Set(
-    db.observations.filter((o) => o.userId === userId).map((o) => o.id),
-  );
-  db.users = db.users.filter((u) => u.id !== userId);
-  db.sessions = db.sessions.filter((s) => s.userId !== userId);
-  db.observations = db.observations.filter((o) => o.userId !== userId);
-  db.comments = db.comments.filter(
-    (c) => c.userId !== userId && !ownedObservationIds.has(c.observationId),
-  );
-  writeDb(db);
+  db.prepare("DELETE FROM users WHERE id = ?").run(userId);
 }
 
 export function deleteObservationForUser(userId: string, id: string) {
-  const db = readDb();
-  db.observations = db.observations.filter((o) => !(o.id === id && o.userId === userId));
-  db.comments = db.comments.filter((c) => c.observationId !== id);
-  writeDb(db);
+  // Comments on this observation cascade automatically via the foreign key.
+  db.prepare("DELETE FROM observations WHERE id = ? AND user_id = ?").run(id, userId);
 }
 
 export type ActivityItem = ObservationComment & {
@@ -280,40 +354,48 @@ export type ActivityItem = ObservationComment & {
  * them about.
  */
 export function listActivityForUser(userId: string): ActivityItem[] {
-  const db = readDb();
-  const ownedObservations = new Map(
-    db.observations.filter((o) => o.userId === userId).map((o) => [o.id, o]),
-  );
-  return db.comments
-    .filter((c) => ownedObservations.has(c.observationId) && c.userId !== userId)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map((c) => {
-      const observation = ownedObservations.get(c.observationId)!;
-      return {
-        ...c,
-        observationCommonName: observation.commonName,
-        observationTaxonSlug: observation.taxonSlug,
-      };
-    });
+  const rows = db
+    .prepare<
+      [string, string],
+      CommentRow & { observation_common_name: string; observation_taxon_slug: string }
+    >(
+      `SELECT comments.*,
+              observations.common_name AS observation_common_name,
+              observations.taxon_slug AS observation_taxon_slug
+       FROM comments
+       JOIN observations ON observations.id = comments.observation_id
+       WHERE observations.user_id = ? AND comments.user_id != ?
+       ORDER BY comments.created_at DESC`,
+    )
+    .all(userId, userId);
+
+  return rows.map((row) => ({
+    ...commentFromRow(row),
+    observationCommonName: row.observation_common_name,
+    observationTaxonSlug: row.observation_taxon_slug,
+  }));
 }
 
 export function getObservationById(id: string, viewerId: string | null = null): ObservationWithGrade | null {
-  const db = readDb();
-  const observation = db.observations.find((o) => o.id === id);
-  if (!observation) return null;
-  return obscureLocationIfSensitive(withQualityGrade(observation, db), viewerId);
+  const row = db.prepare<[string], ObservationRow>("SELECT * FROM observations WHERE id = ?").get(id);
+  if (!row) return null;
+  return obscureLocationIfSensitive(withQualityGrade(observationFromRow(row)), viewerId);
 }
 
 export function listCommentsByUser(userId: string): ObservationComment[] {
-  return readDb()
-    .comments.filter((c) => c.userId === userId)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return db
+    .prepare<[string], CommentRow>("SELECT * FROM comments WHERE user_id = ? ORDER BY created_at ASC")
+    .all(userId)
+    .map(commentFromRow);
 }
 
 export function listCommentsForObservation(observationId: string): ObservationComment[] {
-  return readDb()
-    .comments.filter((c) => c.observationId === observationId)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return db
+    .prepare<[string], CommentRow>(
+      "SELECT * FROM comments WHERE observation_id = ? ORDER BY created_at ASC",
+    )
+    .all(observationId)
+    .map(commentFromRow);
 }
 
 export function addCommentToObservation(
@@ -322,8 +404,10 @@ export function addCommentToObservation(
   body: string,
   kind: ObservationComment["kind"],
 ): ObservationComment | null {
-  const db = readDb();
-  if (!db.observations.some((o) => o.id === observationId)) return null;
+  const observationExists = db
+    .prepare("SELECT 1 FROM observations WHERE id = ?")
+    .get(observationId);
+  if (!observationExists) return null;
 
   const comment: ObservationComment = {
     id: randomUUID(),
@@ -334,7 +418,9 @@ export function addCommentToObservation(
     kind,
     createdAt: new Date().toISOString(),
   };
-  db.comments.push(comment);
-  writeDb(db);
+  db.prepare(
+    `INSERT INTO comments (id, observation_id, user_id, user_email, body, kind, created_at)
+     VALUES (@id, @observationId, @userId, @userEmail, @body, @kind, @createdAt)`,
+  ).run(comment);
   return comment;
 }
