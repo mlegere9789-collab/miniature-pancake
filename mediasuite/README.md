@@ -47,10 +47,15 @@ mediasuite/
 │                                              real JobLauncher/JobQueueManager (which
 │                                              features are ready, staging and starting
 │                                              files, output-format resolution, saved
-│                                              presets, Google Drive folder loading).
-│                                              Anything that does need a real Window still
-│                                              has no automated coverage, only Build
-│                                              compiling it and QA.md
+│                                              presets, Google Drive folder loading), and
+│                                              SettingsViewModel -- theme switching,
+│                                              output/temp-directory and concurrency
+│                                              persistence (clamped, with the running
+│                                              queue notified), the Google Drive master
+│                                              switch, bundled-tool discovery, and Drive
+│                                              sign-in/out. Anything that does need a real
+│                                              Window still has no automated coverage, only
+│                                              Build compiling it and QA.md
 └── tools/                                  — bundled third-party binaries (not in git)
 ```
 

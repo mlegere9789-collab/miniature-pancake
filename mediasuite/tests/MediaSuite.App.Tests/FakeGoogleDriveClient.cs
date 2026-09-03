@@ -5,10 +5,10 @@ using MediaSuite.Core.GoogleDrive;
 namespace MediaSuite.App.Tests;
 
 /// <summary>
-/// Stand-in Drive client for ModulePageViewModelTests. Every method returns an
-/// already-completed (or already-faulted) task deliberately: <c>ModulePageViewModel</c>
-/// fires its Drive calls with a bare <c>_ = ...Async()</c> (no way for a test to await
-/// them), and awaiting a task that is already complete at await-time continues
+/// Stand-in Drive client for ModulePageViewModelTests and SettingsViewModelTests. Every
+/// method returns an already-completed (or already-faulted) task deliberately: both view
+/// models fire their Drive calls with a bare <c>_ = ...Async()</c> (no way for a test to
+/// await them), and awaiting a task that is already complete at await-time continues
 /// synchronously on the calling thread rather than posting a continuation — so with these
 /// fakes, a whole refresh runs to completion inside the property setter or command that
 /// triggered it, with nothing left to race or pump a dispatcher for.
@@ -23,11 +23,30 @@ public sealed class FakeGoogleDriveClient : IGoogleDriveClient
 
     public List<(string Name, string? ParentFolderId)> CreatedFolders { get; } = new();
 
-    public Task<bool> IsSignedInAsync(CancellationToken cancellationToken) => Task.FromResult(true);
+    /// <summary>Backing state for <see cref="IsSignedInAsync"/>/<see cref="SignInAsync"/>/<see cref="SignOutAsync"/> -- false until a test signs in.</summary>
+    public bool IsSignedIn { get; set; }
 
-    public Task SignInAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    /// <summary>When set, the next <see cref="SignInAsync"/> fails with this instead of succeeding.</summary>
+    public Exception? SignInFailure { get; set; }
 
-    public Task SignOutAsync() => Task.CompletedTask;
+    public Task<bool> IsSignedInAsync(CancellationToken cancellationToken) => Task.FromResult(IsSignedIn);
+
+    public Task SignInAsync(CancellationToken cancellationToken)
+    {
+        if (SignInFailure is not null)
+        {
+            return Task.FromException(SignInFailure);
+        }
+
+        IsSignedIn = true;
+        return Task.CompletedTask;
+    }
+
+    public Task SignOutAsync()
+    {
+        IsSignedIn = false;
+        return Task.CompletedTask;
+    }
 
     public Task<IReadOnlyList<GoogleDriveFolder>> ListFoldersAsync(string? parentFolderId, CancellationToken cancellationToken) =>
         ListFoldersFailure is not null
