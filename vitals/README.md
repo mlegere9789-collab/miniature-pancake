@@ -286,12 +286,12 @@ committed, since it had never existed in the repo before.
   zero automated verification on GitHub — only local `tsc`/`vitest` runs.
   Added `.github/workflows/vitals-ci.yml` (mirroring the existing
   `mediasuite-ci.yml` pattern): backend typecheck + lint + `vitest run`,
-  mobile typecheck + lint + a real `expo export` bundle check (see the
-  babel.config.js entry below — this is the step that would have caught
-  that gap automatically), path-scoped to `vitals/**` so it doesn't run on
-  unrelated changes. Verified locally end-to-end with the exact commands
-  the workflow runs in both packages, and confirmed genuinely green on
-  GitHub itself after pushing.
+  mobile typecheck + lint + a real `expo export` bundle check for *both*
+  iOS and Android (see the babel.config.js entry below — this is the step
+  that would have caught that gap automatically), path-scoped to
+  `vitals/**` so it doesn't run on unrelated changes. Verified locally
+  end-to-end with the exact commands the workflow runs in both packages,
+  and confirmed genuinely green on GitHub itself after pushing.
 - **No easy way to get a local Postgres running.** `.env.example`'s
   `DATABASE_URL` assumed a Postgres instance the developer had to stand up
   themselves, with no guidance. Added `backend/docker-compose.yml` (matching
@@ -418,10 +418,12 @@ committed, since it had never existed in the repo before.
   `process.env.EXPO_PUBLIC_*` (which `API_BASE_URL`/`DEMO_GARDEN_ID` in
   `App.tsx`/`api.ts` depend on entirely). Added `babel.config.js` and the
   matching `babel-preset-expo@11.0.15` (Expo SDK 51's generation), then
-  verified for real with `npx expo export --platform ios`: 863 modules
-  bundled successfully into a real Hermes bytecode bundle — the first time
-  this session that anything actually proved the app builds, as opposed to
-  just typechecking and linting cleanly.
+  verified for real with `npx expo export --platform ios` and
+  `--platform android`: both bundled successfully into real Hermes
+  bytecode bundles — the first time this session that anything actually
+  proved the app builds, as opposed to just typechecking and linting
+  cleanly. CI now runs both platform exports so an Android-only bundling
+  regression can't slip through a passing iOS-only check.
 - **The check-in camera screen ignored safe-area insets.**
   `CheckInCameraScreen` runs with `headerShown: false` (full-bleed camera)
   and positioned its top bar and shutter button with fixed pixel offsets,
