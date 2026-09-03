@@ -11,14 +11,21 @@ or via the whole suite:
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import tempfile
+import threading
 import unittest
+import urllib.error
+import urllib.request
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
+from . import cli, dashboard
 from . import database as db
 from . import scheduler as sch
 from .config import Config, MissingCredentialError
@@ -566,6 +573,189 @@ class TestSchedulerState(unittest.TestCase):
                 self.assertEqual(sch._load_state(), {})
             finally:
                 sch.STATE_FILE = orig
+
+
+class TestCli(unittest.TestCase):
+    def test_no_args_prints_docstring(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = cli.main([])
+        self.assertEqual(code, 0)
+        self.assertIn("python -m orchestrator init", buf.getvalue())
+
+    def test_unknown_command(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = cli.main(["bogus"])
+        self.assertEqual(code, 1)
+        self.assertIn("Unknown command: bogus", buf.getvalue())
+
+    def test_demo_dispatches_to_seed(self):
+        with patch("orchestrator.demo.seed") as seed_mock:
+            code = cli.main(["demo"])
+        self.assertEqual(code, 0)
+        seed_mock.assert_called_once()
+
+    def test_dashboard_dispatches_with_rest_args(self):
+        with patch("orchestrator.dashboard.main", return_value=0) as dash_mock:
+            code = cli.main(["dashboard", "--port", "9999"])
+        self.assertEqual(code, 0)
+        dash_mock.assert_called_once_with(["--port", "9999"])
+
+    def test_scheduler_dispatches_with_rest_args(self):
+        with patch("orchestrator.scheduler.main", return_value=0) as sched_mock:
+            code = cli.main(["scheduler", "list"])
+        self.assertEqual(code, 0)
+        sched_mock.assert_called_once_with(["list"])
+
+
+class TestCmdInit(TempDatabaseTestCase):
+    def test_prints_db_path_and_modules(self):
+        # cli.py imports its own DB_PATH from paths at load time, separate
+        # from database.DB_PATH (already patched by TempDatabaseTestCase) -
+        # both need patching so the printed path matches where init_db()
+        # actually writes.
+        with patch.object(cli, "DB_PATH", db.DB_PATH):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = cli.main(["init"])
+        self.assertEqual(code, 0)
+        out = buf.getvalue()
+        self.assertIn(str(db.DB_PATH), out)
+        for name in MODULES:
+            self.assertIn(name, out)
+
+
+class TestCmdDoctor(unittest.TestCase):
+    def test_reports_missing_when_absent(self):
+        with tempfile.TemporaryDirectory() as d:
+            fake_env = Path(d) / ".env"
+            fake_db = Path(d) / "orchestrator.db"
+            fake_jobs = Path(d) / "jobs.json"
+            with (
+                patch.object(cli, "ENV_PATH", fake_env),
+                patch.object(cli, "DB_PATH", fake_db),
+                patch.object(cli, "JOBS_PATH", fake_jobs),
+                patch.object(cli.config, "has", return_value=False),
+            ):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = cli.main(["doctor"])
+        self.assertEqual(code, 0)
+        out = buf.getvalue()
+        self.assertIn("MISSING", out)
+        self.assertIn("not created yet", out)
+        self.assertIn("using jobs.example.json defaults", out)
+        self.assertIn("unset", out)
+
+    def test_reports_found_when_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            fake_env = Path(d) / ".env"
+            fake_env.write_text("", encoding="utf-8")
+            fake_db = Path(d) / "orchestrator.db"
+            fake_db.write_text("", encoding="utf-8")
+            fake_jobs = Path(d) / "jobs.json"
+            fake_jobs.write_text("{}", encoding="utf-8")
+            with (
+                patch.object(cli, "ENV_PATH", fake_env),
+                patch.object(cli, "DB_PATH", fake_db),
+                patch.object(cli, "JOBS_PATH", fake_jobs),
+                patch.object(cli.config, "has", return_value=True),
+            ):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = cli.main(["doctor"])
+        self.assertEqual(code, 0)
+        out = buf.getvalue()
+        self.assertIn("found", out)
+        self.assertNotIn("MISSING", out)
+        self.assertIn("set ", out)
+
+
+class TestDashboardHelpers(unittest.TestCase):
+    def test_fmt_money(self):
+        self.assertEqual(dashboard._fmt_money(1234.5), "$1,234.50")
+        self.assertEqual(dashboard._fmt_money(0), "$0.00")
+
+    def test_esc_escapes_html(self):
+        self.assertEqual(dashboard._esc("<script>"), "&lt;script&gt;")
+
+    def test_esc_handles_none(self):
+        self.assertEqual(dashboard._esc(None), "")
+
+
+class TestRenderPage(TempDatabaseTestCase):
+    def test_includes_seeded_data(self):
+        db.record_earning("deal_alert_bot", 4.20, source="amazon")
+        db.set_status("deal_alert_bot", "ok", "Scanned 214 listings")
+        db.add_review_item("micro_saas", "Refund on charge ch_1")
+        page = dashboard.render_page()
+        self.assertIn("Deal-Alert Bot", page)
+        self.assertIn("$4.20", page)
+        self.assertIn("Scanned 214 listings", page)
+        self.assertIn("Refund on charge ch_1", page)
+        self.assertIn("awaiting review", page)
+
+    def test_escapes_malicious_content(self):
+        db.add_review_item(
+            "deal_alert_bot",
+            "<script>alert(1)</script>",
+            description="<img src=x onerror=alert(2)>",
+        )
+        page = dashboard.render_page()
+        self.assertNotIn("<script>alert(1)</script>", page)
+        self.assertIn("&lt;script&gt;", page)
+        self.assertNotIn("<img src=x", page)
+
+    def test_empty_states_render(self):
+        page = dashboard.render_page()
+        self.assertIn("Nothing awaiting review", page)
+        self.assertIn("No activity logged yet", page)
+
+
+class TestDashboardHandler(TempDatabaseTestCase):
+    def setUp(self):
+        super().setUp()
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
+        self.port = self.server.server_address[1]
+        self._thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self._thread.start()
+        self.addCleanup(self.server.shutdown)
+        self.addCleanup(self.server.server_close)
+
+    def _get(self, path: str):
+        return urllib.request.urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=5)
+
+    def test_homepage_returns_200_html(self):
+        resp = self._get("/")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("text/html", resp.headers["Content-Type"])
+        self.assertIn(b"Income Orchestrator", resp.read())
+
+    def test_api_overview_returns_json(self):
+        resp = self._get("/api/overview")
+        self.assertEqual(resp.status, 200)
+        data = json.loads(resp.read())
+        self.assertEqual(len(data["modules"]), len(MODULES))
+        self.assertIn("total_earnings", data["totals"])
+
+    def test_unknown_path_is_404(self):
+        try:
+            self._get("/nope")
+            self.fail("expected an HTTPError")
+        except urllib.error.HTTPError as exc:
+            self.assertEqual(exc.code, 404)
+
+    def test_review_post_resolves_item_and_redirects(self):
+        rid = db.add_review_item("deal_alert_bot", "Approve?")
+        body = f"id={rid}&decision=approved".encode("ascii")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/review", data=body, method="POST"
+        )
+        # Don't follow the redirect automatically; just confirm the 303 + resolution.
+        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
+        opener.open(req, timeout=5)
+        self.assertEqual(db.pending_reviews(), [])
 
 
 if __name__ == "__main__":
