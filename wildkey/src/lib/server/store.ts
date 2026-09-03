@@ -424,3 +424,91 @@ export function addCommentToObservation(
   ).run(comment);
   return comment;
 }
+
+// ---------------------------------------------------------------------
+// Journals (Part C.2)
+// ---------------------------------------------------------------------
+
+export type JournalPost = {
+  id: string;
+  authorId: string;
+  authorEmail: string;
+  title: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type JournalPostRow = {
+  id: string;
+  author_id: string;
+  author_email: string;
+  title: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+};
+
+function journalPostFromRow(row: JournalPostRow): JournalPost {
+  return {
+    id: row.id,
+    authorId: row.author_id,
+    authorEmail: row.author_email,
+    title: row.title,
+    body: row.body,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+const JOURNAL_SELECT = `
+  SELECT journal_posts.*, users.email AS author_email
+  FROM journal_posts
+  JOIN users ON users.id = journal_posts.author_id
+`;
+
+export function listJournalPosts(): JournalPost[] {
+  return db
+    .prepare<[], JournalPostRow>(`${JOURNAL_SELECT} ORDER BY journal_posts.created_at DESC`)
+    .all()
+    .map(journalPostFromRow);
+}
+
+export function getJournalPost(id: string): JournalPost | null {
+  const row = db
+    .prepare<[string], JournalPostRow>(`${JOURNAL_SELECT} WHERE journal_posts.id = ?`)
+    .get(id);
+  return row ? journalPostFromRow(row) : null;
+}
+
+export function createJournalPost(
+  authorId: string,
+  input: { title: string; body: string },
+): JournalPost {
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO journal_posts (id, author_id, title, body, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(id, authorId, input.title, input.body, now, now);
+  return getJournalPost(id)!;
+}
+
+export function updateJournalPost(
+  authorId: string,
+  id: string,
+  input: { title: string; body: string },
+): JournalPost | null {
+  const result = db
+    .prepare(
+      `UPDATE journal_posts SET title = ?, body = ?, updated_at = ?
+       WHERE id = ? AND author_id = ?`,
+    )
+    .run(input.title, input.body, new Date().toISOString(), id, authorId);
+  if (result.changes === 0) return null;
+  return getJournalPost(id);
+}
+
+export function deleteJournalPost(authorId: string, id: string) {
+  db.prepare("DELETE FROM journal_posts WHERE id = ? AND author_id = ?").run(id, authorId);
+}

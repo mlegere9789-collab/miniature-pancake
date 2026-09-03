@@ -72,6 +72,16 @@ function createConnection(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_comments_observation_id ON comments(observation_id);
     CREATE INDEX IF NOT EXISTS idx_comments_user_id ON comments(user_id);
+
+    CREATE TABLE IF NOT EXISTS journal_posts (
+      id TEXT PRIMARY KEY,
+      author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_journal_posts_author_id ON journal_posts(author_id);
   `);
 
   return db;
