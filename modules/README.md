@@ -1,9 +1,9 @@
 # Modules
 
 Each subfolder here is one **income-generating program**, built on the shared
-foundation in [`/orchestrator`](../orchestrator). Four are built; each one's
-own README documents its exact scope, including anything deliberately left
-out (see the root [`README.md`](../README.md) for why in each case).
+foundation in [`/orchestrator`](../orchestrator). All five are built; each
+one's own README documents its exact scope, including anything deliberately
+left out (see the root [`README.md`](../README.md) for why in each case).
 
 | Folder | Program | Status |
 |--------|---------|--------|
@@ -11,7 +11,7 @@ out (see the root [`README.md`](../README.md) for why in each case).
 | [`ecommerce_dropshipping/`](ecommerce_dropshipping) | E-commerce / dropshipping ops | Built |
 | [`micro_saas/`](micro_saas) | Micro-SaaS tool | Built |
 | [`digital_products/`](digital_products) | Digital product creation | Built |
-| [`stock_licensing/`](stock_licensing) | Stock asset licensing | Stub |
+| [`stock_licensing/`](stock_licensing) | Stock asset licensing | Built (metadata drafting only — see its README) |
 
 ## The contract every module follows
 

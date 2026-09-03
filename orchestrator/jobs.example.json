@@ -2,7 +2,7 @@
   "_comment": "Copy this to jobs.json and edit. 'cadence' is hourly|daily|weekly|every. For daily use 'at' = 'HH:MM' (24h). For weekly use 'at' = 'mon 09:00' (day = mon|tue|wed|thu|fri|sat|sun). For 'every' set 'interval_hours' (1-23), e.g. run every 3 hours. 'command' runs from the project root. Set 'enabled': true when a module is ready. All jobs ship disabled so nothing runs until you say so.",
   "jobs": [
     {
-      "name": "stock-licensing-daily-upload",
+      "name": "stock-licensing-daily-keywording",
       "module": "stock_licensing",
       "command": "python -m modules.stock_licensing.run",
       "cadence": "daily",

@@ -1,10 +1,11 @@
 # Income Orchestrator — Setup Guide
 
-This is the shared foundation for five semi-autonomous income programs, four
-of which are already built (`deal_alert_bot`, `ecommerce_dropshipping`,
-`micro_saas`, `digital_products` — see the table in the root
-[`README.md`](README.md); `stock_licensing` is a documented stub). This guide
-walks you through everything **you** need to do to get it running locally.
+This is the shared foundation for five semi-autonomous income programs, all
+five of which are already built (see the table in the root
+[`README.md`](README.md) — each has a documented scope, and some
+deliberately stop short of live uploads/publishing where no reliable public
+API exists to build against). This guide walks you through everything
+**you** need to do to get it running locally.
 
 Estimated time: ~10 minutes. No accounts or paid services are required just to
 run the foundation — you only need API keys later, per program.
@@ -155,10 +156,9 @@ what it needs; in summary:
 | Micro-SaaS | Stripe, plus wherever the SaaS itself is hosted |
 | Any (AI copy/automation) | Anthropic API key ([console.anthropic.com](https://console.anthropic.com/)) |
 
-Set the keys for whichever built program you want to run in `.env`, enable
-its job in `jobs.json` (step 6), and it'll pick them up automatically —
-`doctor` (step 7) confirms what's set. `stock_licensing` has no code yet
-(see its own README for why); if you want it built, say so.
+Set the keys for whichever program you want to run in `.env`, enable its job
+in `jobs.json` (step 6), and it'll pick them up automatically — `doctor`
+(step 7) confirms what's set.
 
 ---
 
@@ -186,8 +186,8 @@ miniature-pancake/
 │  ├─ dashboard.py        #   local web dashboard + review queue
 │  ├─ demo.py, cli.py     #   helpers / CLI
 │  └─ jobs.example.json   #   scheduler job templates
-├─ modules/               # the five income programs (built one at a time)
-│  ├─ stock_licensing/        #   stub — no code yet
+├─ modules/               # the five income programs, all built
+│  ├─ stock_licensing/        #   built: AI metadata drafts for review
 │  ├─ ecommerce_dropshipping/ #   built: Shopify order sync + margin tracking
 │  ├─ deal_alert_bot/         #   built: CheapShark -> Discord deal alerts
 │  ├─ digital_products/       #   built: AI listing-copy drafts for review

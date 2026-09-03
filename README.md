@@ -33,16 +33,16 @@ need).
 | [`ecommerce_dropshipping`](modules/ecommerce_dropshipping) | **Built** | Syncs open Shopify orders, computes net margin from a local supplier cost book, flags problem orders (incomplete address, refunds, unknown costs, thin margin) for review. |
 | [`micro_saas`](modules/micro_saas) | **Built** | Health-checks a live service and reconciles Stripe billing — MRR, churn, collected revenue, failed charges, refunds. |
 | [`digital_products`](modules/digital_products) | **Built** | Drafts marketplace listing copy with Claude from product briefs you queue; every draft is flagged for your approval, nothing auto-publishes. |
-| [`stock_licensing`](modules/stock_licensing) | Stub | Adobe Stock and Shutterstock don't expose a public contributor API to build reliably against — documented as a stub rather than built against guessed endpoints. |
+| [`stock_licensing`](modules/stock_licensing) | **Built** | Drafts contributor title/description/keyword metadata with Claude from assets you queue; every draft is flagged for your approval, nothing auto-uploads. |
 
-Every built program follows the same rules: `.env`-driven configuration
-with no hardcoded secrets, idle (not erroring) when its credentials aren't
-set, a top-level guard so a bad run never crashes the scheduler, and an
-offline unit test suite. Each module's own README documents exactly what it
-does and does not do yet — most notably, the parts of the original spec
-that need a live paid account or a generic-API-that-doesn't-exist (supplier
-fulfillment routing, marketplace publishing) are called out explicitly
-rather than faked.
+Every program follows the same rules: `.env`-driven configuration with no
+hardcoded secrets, idle (not erroring) when its credentials aren't set, a
+top-level guard so a bad run never crashes the scheduler, and an offline
+unit test suite. Each module's own README documents exactly what it does
+and does not do yet — most notably, the parts of the original spec that
+need a live paid account or a generic-API-that-doesn't-exist (supplier
+fulfillment routing, marketplace publishing/uploading) are called out
+explicitly rather than faked.
 
 ## How it fits together
 
