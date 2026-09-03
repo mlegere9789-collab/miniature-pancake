@@ -165,15 +165,22 @@ What this repo does instead:
   computed by hand from the whole-cell grid semantics before running
   anything, not fit to the output after) and the same Manifold-acceptance
   watertightness proof as the other `ExtrudeCappedSolid()` tests.
+- `ExtrudeCappedSolid()` now validates its input instead of trusting it:
+  every boundary vertex must have exactly one outgoing and one incoming
+  boundary edge (a set of simple, disjoint closed loops) or it throws
+  `std::invalid_argument` — rejecting a self-intersecting/"bowtie"
+  boundary and an already-closed cap (nothing to sweep into walls)
+  outright, rather than silently emitting overlapping or malformed wall
+  geometry the way the previous section's gap list warned it could.
+  Verified with two deliberately bad inputs: a real bowtie mesh (two
+  triangles sharing one vertex but no edge) and `Box()`'s own already-
+  closed mesh, both correctly rejected.
 
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
   (+ `hole_loops_uv`) + `Mesh::ExtrudeCappedSolid()`/`Mesh::Cylinder()`
-  are the only shapes/operations here — no cone, revolve, or loft, and
-  `ExtrudeCappedSolid()` still assumes every boundary loop is simple
-  (non-self-intersecting) — a self-intersecting trim isn't supported and
-  isn't detected either (would silently produce wrong wall geometry).
+  are the only shapes/operations here — no cone, revolve, or loft.
 - `TessellateGridClippedConvex()` only handles convex trim polygons
   (Sutherland-Hodgman's requirement) — a concave or multiply-connected
   trim (the earlier L-shape/notch tests) still goes through

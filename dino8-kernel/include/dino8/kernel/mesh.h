@@ -66,9 +66,14 @@ class Mesh {
   // exactly (translated for the far end), so the result is already a
   // single closed mesh - it does not need MergeAndWeld().
   //
-  // Requires `cap` to have a single, simple (non-self-intersecting)
-  // boundary loop - e.g. not already closed, and not multiply-connected
-  // (a face with a hole isn't supported here).
+  // `cap`'s boundary may be multiple disjoint loops (an annulus/washer
+  // face - outer boundary plus a hole - extrudes to a tube with
+  // independently-walled outer and inner surfaces), but every loop must
+  // be simple: each boundary vertex must have exactly one boundary edge
+  // leaving it and one arriving. Throws std::invalid_argument otherwise
+  // (a self-intersecting or "bowtie" boundary, or a cap with no boundary
+  // at all - i.e. already closed) rather than emitting overlapping or
+  // malformed wall geometry.
   static Mesh ExtrudeCappedSolid(const Mesh& cap, Vector3d offset);
 
   // Builds a real cylinder: a circular disk cap (Brep::TrimmedPlanarFace()

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <map>
 #include <set>
+#include <stdexcept>
 #include <tuple>
 #include <utility>
 
@@ -151,12 +152,46 @@ Mesh Mesh::ExtrudeCappedSolid(const Mesh& cap, Vector3d offset) {
     directed_edges.insert({f.vi[1], f.vi[2]});
     directed_edges.insert({f.vi[2], f.vi[0]});
   }
+
+  std::vector<std::pair<int, int>> boundary_edges;
   for (const auto& edge : directed_edges) {
+    if (directed_edges.count({edge.second, edge.first}) == 0) {
+      boundary_edges.push_back(edge);
+    }
+  }
+  if (boundary_edges.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::ExtrudeCappedSolid: cap has no boundary (it's "
+        "already a closed mesh) - nothing to sweep into walls");
+  }
+
+  // A cap whose boundary is a set of simple, disjoint closed loops has
+  // exactly one boundary edge leaving and one arriving at each boundary
+  // vertex - that's what lets the wall quads below join up into a clean
+  // tube per loop. A self-intersecting or "bowtie" boundary (two loops
+  // touching at a shared vertex, or a figure-eight) breaks that, and
+  // would otherwise silently produce overlapping/malformed wall geometry
+  // instead of a clean solid - checked here and rejected outright,
+  // rather than trusted to "probably be fine."
+  std::map<int, int> outgoing_count;
+  std::map<int, int> incoming_count;
+  for (const auto& edge : boundary_edges) {
+    ++outgoing_count[edge.first];
+    ++incoming_count[edge.second];
+  }
+  for (const auto& [vertex, count] : outgoing_count) {
+    if (count != 1 || incoming_count[vertex] != 1) {
+      throw std::invalid_argument(
+          "dino8::kernel::Mesh::ExtrudeCappedSolid: cap's boundary is not a set "
+          "of simple, disjoint closed loops (a vertex has more than one "
+          "boundary edge) - self-intersecting or touching boundary loops "
+          "aren't supported");
+    }
+  }
+
+  for (const auto& edge : boundary_edges) {
     const int a = edge.first;
     const int b = edge.second;
-    if (directed_edges.count({b, a}) != 0) {
-      continue;  // interior edge, shared by two triangles
-    }
     ON_MeshFace wall1;
     wall1.vi[0] = a;
     wall1.vi[1] = b + n;

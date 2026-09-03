@@ -678,6 +678,63 @@ void TestAnnulusFaceExtrudesToWatertightTube() {
         "(both the outer and inner walls were genuinely closed)");
 }
 
+void TestExtrudeRejectsAlreadyClosedCap() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Vector3d;
+
+  // MakeBox() (defined above) is already a closed, boundary-free mesh -
+  // ExtrudeCappedSolid() has nothing to sweep into walls and should say
+  // so rather than silently producing two disconnected shells.
+  const auto box = MakeBox(0, 0, 0, 1, 1, 1);
+
+  bool threw = false;
+  try {
+    Mesh::ExtrudeCappedSolid(box, Vector3d(0, 0, 1));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ExtrudeCappedSolid throws on a cap with no boundary (already closed)");
+}
+
+void TestExtrudeRejectsBowtieBoundary() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Vector3d;
+
+  // Two triangles sharing exactly one vertex (index 0) and no edges - a
+  // "bowtie": two boundary loops that touch at a single point rather than
+  // being disjoint. Vertex 0 ends up with two outgoing and two incoming
+  // boundary edges, which ExtrudeCappedSolid's validation should reject
+  // rather than emit overlapping wall geometry through that shared point.
+  Mesh bowtie;
+  ON_Mesh& raw = bowtie.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0: shared vertex
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 1
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));   // 2
+  raw.m_V.Append(ON_3fPoint(-1, 0, 0));  // 3
+  raw.m_V.Append(ON_3fPoint(0, -1, 0));  // 4
+
+  auto add_tri = [&raw](int a, int b, int c) {
+    ON_MeshFace face;
+    face.vi[0] = a;
+    face.vi[1] = b;
+    face.vi[2] = c;
+    face.vi[3] = c;
+    raw.m_F.Append(face);
+  };
+  add_tri(0, 1, 2);
+  add_tri(0, 3, 4);
+
+  bool threw = false;
+  try {
+    Mesh::ExtrudeCappedSolid(bowtie, Vector3d(0, 0, 1));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "ExtrudeCappedSolid throws on a bowtie boundary (a vertex with more "
+        "than one boundary edge) instead of emitting broken wall geometry");
+}
+
 }  // namespace
 
 int main() {
@@ -703,6 +760,8 @@ int main() {
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingRejectsNonConvexTrim();
   TestAnnulusFaceExtrudesToWatertightTube();
+  TestExtrudeRejectsAlreadyClosedCap();
+  TestExtrudeRejectsBowtieBoundary();
 
   ON::End();
 
