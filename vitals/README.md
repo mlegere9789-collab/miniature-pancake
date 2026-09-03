@@ -201,7 +201,8 @@ vitals/
 ```bash
 cd vitals/backend
 npm install
-cp .env.example .env   # set DATABASE_URL
+docker compose up -d    # starts a local Postgres matching .env.example's DATABASE_URL
+cp .env.example .env    # already points at the docker-compose Postgres; edit if using your own
 npx prisma migrate dev --name init
 npx prisma db seed      # creates the demo garden the mobile app points at
 npm run dev
@@ -217,6 +218,10 @@ npx expo start
 
 ## Bug fixes
 
+- **No easy way to get a local Postgres running.** `.env.example`'s
+  `DATABASE_URL` assumed a Postgres instance the developer had to stand up
+  themselves, with no guidance. Added `backend/docker-compose.yml` (matching
+  `.env.example`'s credentials exactly) so `docker compose up -d` is enough.
 - **No `.env.example` for the mobile app, and the README never mentioned
   it.** The app reads `EXPO_PUBLIC_VITALS_API_URL` and
   `EXPO_PUBLIC_VITALS_DEMO_GARDEN_ID` (the latter required — the app has
