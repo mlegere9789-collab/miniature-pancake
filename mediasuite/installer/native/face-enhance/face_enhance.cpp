@@ -13,7 +13,13 @@
 //     upscaling the background itself — MediaSuite's own UpscaleEngine already produced
 //     that upscaled background through Real-ESRGAN before this ever runs, so this tool
 //     does not need (and does not bundle) GFPGAN-ncnn's own separate real_esrgan model.
-#include <opencv2/opencv.hpp>
+// Specific headers for what this file actually calls (Mat/Size/Vec3b ops, GaussianBlur/
+// warpAffine/erode/getStructuringElement/bitwise_and/countNonZero, imread/imwrite)
+// instead of the <opencv2/opencv.hpp> umbrella, which pulls in modules (dnn, gapi,
+// video, ...) this build never installs.
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include "face.h"
 #include "gfpgan.h"
 

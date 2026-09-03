@@ -9,7 +9,12 @@
 #include <chrono>
 #include <stdio.h>
 #include <fstream>
-#include <opencv2/opencv.hpp>
+// Only cv::Mat is actually used in this file and gfpgan.cpp — swapped the upstream
+// umbrella <opencv2/opencv.hpp> for the one real header this needs (the only deviation
+// from the vendored original; see LICENSE-THIRD-PARTY.txt and this folder's README.md
+// for where the rest of the file comes from), since the umbrella pulls in headers for
+// modules (dnn, gapi, video, ...) this build never installs.
+#include <opencv2/core.hpp>
 //ncnn
 #include "net.h"
 #include "cpu.h"
