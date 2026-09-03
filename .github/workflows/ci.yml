@@ -35,8 +35,11 @@ jobs:
       - name: flake8
         run: flake8 --max-line-length 88 --ignore E203,E501,W503,W504 modules/ orchestrator/
 
-      - name: Run tests
+      - name: Run module tests
         run: python -m unittest discover -s modules -p "test_*.py" -v
+
+      - name: Run orchestrator (foundation) tests
+        run: python -m unittest discover -s orchestrator -t . -p "test_*.py" -v
 
       - name: Orchestrator smoke test (init + doctor)
         run: |

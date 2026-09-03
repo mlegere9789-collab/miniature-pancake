@@ -67,18 +67,20 @@ SETUP.md         full first-time walkthrough
 ## Testing
 
 ```bash
-python3 -m unittest discover -s modules -p "test_*.py"
+python3 -m unittest discover -s modules -p "test_*.py"             # the five programs
+python3 -m unittest discover -s orchestrator -t . -p "test_*.py"   # the shared foundation
 ```
 
-Every built program's test suite runs fully offline — no network, no
-credentials — via faked API responses. See `.pre-commit-config.yaml` for
-the formatting/lint tooling (`black`, `isort`, `flake8`) run across
+Both suites run fully offline — no network, no credentials — via faked API
+responses and a temporary SQLite database (never the real
+`data/orchestrator.db`). See `.pre-commit-config.yaml` for the
+formatting/lint tooling (`black`, `isort`, `flake8`) run across
 `orchestrator/` and `modules/`.
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs that same
-lint + test suite, plus an `orchestrator init`/`doctor` smoke test, on
-every push to `main` and every pull request, on Python 3.9 and 3.12 (the
-range `SETUP.md` claims support for).
+lint + both test suites, plus an `orchestrator init`/`doctor` smoke test,
+on every push to `main` and every pull request, on Python 3.9 and 3.12
+(the range `SETUP.md` claims support for).
 
 ## Further reading
 
