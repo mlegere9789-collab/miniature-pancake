@@ -588,3 +588,154 @@ export function createGuide(
 export function deleteGuide(curatorId: string, id: string) {
   db.prepare("DELETE FROM guides WHERE id = ? AND curator_id = ?").run(id, curatorId);
 }
+
+// ---------------------------------------------------------------------
+// Projects (Part C.2): Collection (saved search) + Traditional (opt-in
+// membership) types.
+// ---------------------------------------------------------------------
+
+export type ProjectType = "collection" | "traditional";
+
+export type Project = {
+  id: string;
+  ownerId: string;
+  ownerEmail: string;
+  type: ProjectType;
+  title: string;
+  description: string;
+  taxonFilter: string[];
+  memberCount: number;
+  createdAt: string;
+};
+
+type ProjectRow = {
+  id: string;
+  owner_id: string;
+  owner_email: string;
+  type: string;
+  title: string;
+  description: string;
+  taxon_filter: string;
+  member_count: number;
+  created_at: string;
+};
+
+function projectFromRow(row: ProjectRow): Project {
+  let taxonFilter: string[] = [];
+  try {
+    taxonFilter = JSON.parse(row.taxon_filter);
+  } catch {
+    taxonFilter = [];
+  }
+  return {
+    id: row.id,
+    ownerId: row.owner_id,
+    ownerEmail: row.owner_email,
+    type: row.type as ProjectType,
+    title: row.title,
+    description: row.description,
+    taxonFilter,
+    memberCount: row.member_count,
+    createdAt: row.created_at,
+  };
+}
+
+const PROJECT_SELECT = `
+  SELECT projects.*, users.email AS owner_email,
+         (SELECT COUNT(*) FROM project_members WHERE project_members.project_id = projects.id) AS member_count
+  FROM projects
+  JOIN users ON users.id = projects.owner_id
+`;
+
+export function listProjects(): Project[] {
+  return db
+    .prepare<[], ProjectRow>(`${PROJECT_SELECT} ORDER BY projects.created_at DESC`)
+    .all()
+    .map(projectFromRow);
+}
+
+export function getProject(id: string): Project | null {
+  const row = db.prepare<[string], ProjectRow>(`${PROJECT_SELECT} WHERE projects.id = ?`).get(id);
+  return row ? projectFromRow(row) : null;
+}
+
+export function createProject(
+  ownerId: string,
+  input: { type: ProjectType; title: string; description: string; taxonFilter: string[] },
+): Project {
+  const id = randomUUID();
+  db.prepare(
+    `INSERT INTO projects (id, owner_id, type, title, description, taxon_filter, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, ownerId, input.type, input.title, input.description, JSON.stringify(input.taxonFilter), new Date().toISOString());
+
+  if (input.type === "traditional") {
+    db.prepare(
+      "INSERT INTO project_members (project_id, user_id, joined_at) VALUES (?, ?, ?)",
+    ).run(id, ownerId, new Date().toISOString());
+  }
+  return getProject(id)!;
+}
+
+export function deleteProject(ownerId: string, id: string) {
+  db.prepare("DELETE FROM projects WHERE id = ? AND owner_id = ?").run(id, ownerId);
+}
+
+export function isProjectMember(projectId: string, userId: string): boolean {
+  return Boolean(
+    db
+      .prepare("SELECT 1 FROM project_members WHERE project_id = ? AND user_id = ?")
+      .get(projectId, userId),
+  );
+}
+
+export function joinProject(projectId: string, userId: string) {
+  db.prepare(
+    "INSERT OR IGNORE INTO project_members (project_id, user_id, joined_at) VALUES (?, ?, ?)",
+  ).run(projectId, userId, new Date().toISOString());
+}
+
+export function leaveProject(projectId: string, userId: string) {
+  db.prepare("DELETE FROM project_members WHERE project_id = ? AND user_id = ?").run(
+    projectId,
+    userId,
+  );
+}
+
+export function listProjectMembers(projectId: string): { userId: string; email: string; joinedAt: string }[] {
+  return db
+    .prepare<
+      [string],
+      { user_id: string; email: string; joined_at: string }
+    >(
+      `SELECT project_members.user_id, users.email, project_members.joined_at
+       FROM project_members
+       JOIN users ON users.id = project_members.user_id
+       WHERE project_members.project_id = ?
+       ORDER BY project_members.joined_at ASC`,
+    )
+    .all(projectId)
+    .map((r) => ({ userId: r.user_id, email: r.email, joinedAt: r.joined_at }));
+}
+
+/**
+ * Collection-type projects are a saved search, not a static list: matching
+ * observations are whatever currently has one of the project's taxon
+ * slugs, computed live — exactly the "Collection (saved search)" spec
+ * from Part C.2, not a snapshot taken at creation time.
+ */
+export function listObservationsMatchingProject(
+  taxonFilter: string[],
+  viewerId: string | null,
+): ObservationWithGrade[] {
+  if (taxonFilter.length === 0) return [];
+  const placeholders = taxonFilter.map(() => "?").join(",");
+  const rows = db
+    .prepare<string[], ObservationRow>(
+      `SELECT * FROM observations WHERE taxon_slug IN (${placeholders}) ORDER BY created_at DESC`,
+    )
+    .all(...taxonFilter);
+  return rows
+    .map((row) => withQualityGrade(observationFromRow(row)))
+    .map((o) => obscureLocationIfSensitive(o, viewerId));
+}
