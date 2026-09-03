@@ -1,6 +1,7 @@
-import type { ServerObservation } from "@/lib/server/store";
+import type { ObservationComment, ServerObservation } from "@/lib/server/store";
+import type { CurrentUser } from "@/lib/auth-context";
 
-export type { ServerObservation };
+export type { ServerObservation, ObservationComment };
 
 export async function fetchServerObservations(): Promise<ServerObservation[]> {
   const res = await fetch("/api/observations");
@@ -29,4 +30,33 @@ export async function createServerObservation(input: {
 export async function deleteServerObservation(id: string): Promise<boolean> {
   const res = await fetch(`/api/observations/${id}`, { method: "DELETE" });
   return res.ok;
+}
+
+export async function fetchServerObservation(
+  id: string,
+): Promise<{ observation: ServerObservation; author: CurrentUser | null } | null> {
+  const res = await fetch(`/api/observations/${id}`);
+  if (!res.ok) return null;
+  return res.json();
+}
+
+export async function fetchObservationComments(id: string): Promise<ObservationComment[]> {
+  const res = await fetch(`/api/observations/${id}/comments`);
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.comments ?? [];
+}
+
+export async function postObservationComment(
+  id: string,
+  input: { body: string; kind: "comment" | "agree" },
+): Promise<ObservationComment | null> {
+  const res = await fetch(`/api/observations/${id}/comments`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.comment ?? null;
 }

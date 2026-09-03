@@ -132,6 +132,15 @@ export default function ObservationsPage() {
                 <p className="mt-1 text-xs" style={{ color: "var(--color-text-muted)" }}>
                   {new Date(o.createdAt).toLocaleString()}
                 </p>
+                {useServer && (
+                  <Link
+                    href={`/observations/${o.id}`}
+                    className="mt-1 inline-block text-xs font-semibold"
+                    style={{ color: "var(--color-accent)" }}
+                  >
+                    Discuss →
+                  </Link>
+                )}
               </div>
               <div className="flex shrink-0 flex-col items-end gap-1">
                 <button

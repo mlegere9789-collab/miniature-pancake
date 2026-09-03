@@ -38,22 +38,34 @@ export type ServerObservation = {
   syncState: "queued" | "uploading" | "confirmed" | "failed";
 };
 
+export type ObservationComment = {
+  id: string;
+  observationId: string;
+  userId: string;
+  userEmail: string;
+  body: string;
+  kind: "comment" | "agree";
+  createdAt: string;
+};
+
 type DbShape = {
   users: User[];
   sessions: Session[];
   observations: ServerObservation[];
+  comments: ObservationComment[];
 };
 
 const DB_PATH = path.join(process.cwd(), ".data", "db.json");
 
 function emptyDb(): DbShape {
-  return { users: [], sessions: [], observations: [] };
+  return { users: [], sessions: [], observations: [], comments: [] };
 }
 
 function readDb(): DbShape {
   if (!existsSync(DB_PATH)) return emptyDb();
   try {
-    return JSON.parse(readFileSync(DB_PATH, "utf-8")) as DbShape;
+    const parsed = JSON.parse(readFileSync(DB_PATH, "utf-8")) as Partial<DbShape>;
+    return { ...emptyDb(), ...parsed };
   } catch {
     return emptyDb();
   }
@@ -124,6 +136,10 @@ export function toPublicUser(user: User) {
   return { id: user.id, email: user.email, createdAt: user.createdAt };
 }
 
+export function getUserById(id: string): User | null {
+  return readDb().users.find((u) => u.id === id) ?? null;
+}
+
 export function listObservationsForUser(userId: string): ServerObservation[] {
   return readDb()
     .observations.filter((o) => o.userId === userId)
@@ -150,5 +166,39 @@ export function createObservationForUser(
 export function deleteObservationForUser(userId: string, id: string) {
   const db = readDb();
   db.observations = db.observations.filter((o) => !(o.id === id && o.userId === userId));
+  db.comments = db.comments.filter((c) => c.observationId !== id);
   writeDb(db);
+}
+
+export function getObservationById(id: string): ServerObservation | null {
+  return readDb().observations.find((o) => o.id === id) ?? null;
+}
+
+export function listCommentsForObservation(observationId: string): ObservationComment[] {
+  return readDb()
+    .comments.filter((c) => c.observationId === observationId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export function addCommentToObservation(
+  observationId: string,
+  user: Pick<User, "id" | "email">,
+  body: string,
+  kind: ObservationComment["kind"],
+): ObservationComment | null {
+  const db = readDb();
+  if (!db.observations.some((o) => o.id === observationId)) return null;
+
+  const comment: ObservationComment = {
+    id: randomUUID(),
+    observationId,
+    userId: user.id,
+    userEmail: user.email,
+    body,
+    kind,
+    createdAt: new Date().toISOString(),
+  };
+  db.comments.push(comment);
+  writeDb(db);
+  return comment;
 }
