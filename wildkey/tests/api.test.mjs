@@ -108,7 +108,11 @@ describe("auth", () => {
     const signupAs = (email) =>
       fetch(`${BASE_URL}/api/auth/signup`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-forwarded-for": attackerIp },
+        headers: {
+          "Content-Type": "application/json",
+          "x-forwarded-for": attackerIp,
+          origin: BASE_URL,
+        },
         body: JSON.stringify({ email, password: "correcthorsebattery" }),
       });
 
@@ -127,10 +131,56 @@ describe("auth", () => {
     // A different IP is completely unaffected.
     const otherIp = await fetch(`${BASE_URL}/api/auth/signup`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "x-forwarded-for": "198.51.100.8" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-forwarded-for": "198.51.100.8",
+        origin: BASE_URL,
+      },
       body: JSON.stringify({ email: `ratelimit-${Date.now()}-other@example.com`, password: "correcthorsebattery" }),
     });
     assert.equal(otherIp.status, 201);
+  });
+});
+
+describe("CSRF protection", () => {
+  it("blocks state-changing requests with a missing or cross-site Origin, but not same-origin ones or safe GETs", async () => {
+    const { session } = await signUp();
+
+    // A real cross-site attacker's request would carry no Origin at all
+    // for a fetch()/XHR call it controls, or a foreign one.
+    const noOrigin = await fetch(`${BASE_URL}/api/journal`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "csrf", body: "csrf" }),
+    });
+    assert.equal(noOrigin.status, 403);
+
+    const crossSiteOrigin = await fetch(`${BASE_URL}/api/journal`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", origin: "https://evil.example" },
+      body: JSON.stringify({ title: "csrf", body: "csrf" }),
+    });
+    assert.equal(crossSiteOrigin.status, 403);
+
+    // Nothing was actually created by either blocked attempt.
+    const posts = await json(await fetch(`${BASE_URL}/api/journal`));
+    assert.ok(!posts.posts.some((p) => p.title === "csrf"));
+
+    // A real same-origin request (what session.fetch sends by default —
+    // see server.mjs) still works normally.
+    const legit = await session.fetch("/api/journal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "Real post", body: "Not blocked." }),
+    });
+    assert.equal(legit.status, 201);
+
+    // Safe methods are never blocked, Origin or not — reading is fine
+    // cross-site, only mutation needs the check.
+    const safeGet = await fetch(`${BASE_URL}/api/journal`, {
+      headers: { origin: "https://evil.example" },
+    });
+    assert.equal(safeGet.status, 200);
   });
 });
 

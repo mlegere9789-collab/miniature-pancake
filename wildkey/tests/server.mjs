@@ -86,6 +86,11 @@ export function createSession() {
     async fetch(pathname, options = {}) {
       const headers = new Headers(options.headers ?? {});
       if (cookie) headers.set("cookie", cookie);
+      // A real browser sends Origin on every same-origin POST/PATCH/DELETE
+      // fetch — Node's fetch doesn't, so this stands in for that default,
+      // the way any legitimate client of this API would behave. The CSRF
+      // check in src/proxy.ts requires it on every state-changing request.
+      if (!headers.has("origin")) headers.set("origin", BASE_URL);
       const res = await fetch(`${BASE_URL}${pathname}`, { ...options, headers, redirect: "manual" });
       const setCookie = res.headers.get("set-cookie");
       if (setCookie) cookie = setCookie.split(";")[0];
