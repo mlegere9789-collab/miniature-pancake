@@ -89,6 +89,13 @@ Open **http://127.0.0.1:8787** in your browser. You'll see:
   decisions (so you can see what you decided, and when),
 - a recent-activity feed.
 
+Want a push notification the moment anything lands in the review queue,
+instead of checking the dashboard? Set `REVIEW_NOTIFY_WEBHOOK_URL` in
+`.env` to a Slack or Discord incoming webhook URL (`REVIEW_NOTIFY_FORMAT`
+picks the payload shape — `slack`, `discord`, or the default `generic`,
+which works with most other webhook receivers too). Blank = off, no
+notifications sent, same idle-by-default rule as everything else here.
+
 Stop the dashboard with **Ctrl-C**. To wipe the sample data and start clean,
 delete `data/orchestrator.db` and run `init` again.
 
@@ -182,6 +189,7 @@ miniature-pancake/
 │  ├─ config.py           #   secure credentials from .env
 │  ├─ database.py         #   shared SQLite store
 │  ├─ logger.py           #   get_logger(...) API for modules
+│  ├─ notifier.py         #   optional webhook push on review-flag
 │  ├─ scheduler.py        #   cron + portable daemon
 │  ├─ dashboard.py        #   local web dashboard + review queue
 │  ├─ demo.py, cli.py     #   helpers / CLI

@@ -12,7 +12,8 @@ core (config, database, logging, scheduler, dashboard).
 |------|----------------|
 | `config.py` | Secure config/credentials. Reads a git-ignored `.env`; nothing is hardcoded. `config.require("KEY")` fails loudly if a key is missing. |
 | `database.py` | The shared SQLite store: modules, activity log, status, earnings, review queue. Read/write helpers. |
-| `logger.py` | The API modules use: `get_logger("<module>")` → `.activity()`, `.status()`, `.earning()`, `.flag_for_review()`. |
+| `logger.py` | The API modules use: `get_logger("<module>")` → `.activity()`, `.status()`, `.earning()`, `.flag_for_review()` (optionally pushes a webhook notification — see `notifier.py`). |
+| `notifier.py` | Optional push notification (Slack/Discord/generic webhook) whenever any module flags something for review. Unconfigured = silent no-op. |
 | `scheduler.py` | Trigger scripts on a cadence. Generates cron entries (Linux/macOS) **or** runs a portable Python daemon (any OS, incl. Windows). |
 | `dashboard.py` | A local web dashboard: per-module status, earnings (with a CSV export for bookkeeping), an interactive review queue (with a recently-resolved audit trail of past approve/reject decisions), and an activity feed. |
 | `cli.py` / `__main__.py` | `python -m orchestrator <command>`. |
@@ -51,5 +52,9 @@ def run():
     log.flag_for_review("Post this deal?", payload={"url": "..."})
     log.status("ok", "Done")
 ```
+
+`flag_for_review(...)` above also pushes a notification if you've set
+`REVIEW_NOTIFY_WEBHOOK_URL` in `.env` — no code changes needed in any module
+to get one, it's handled once in the shared logger.
 
 See the top-level [`SETUP.md`](../SETUP.md) for the full first-time walkthrough.
