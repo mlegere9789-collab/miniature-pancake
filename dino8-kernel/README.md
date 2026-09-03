@@ -148,15 +148,32 @@ What this repo does instead:
   geometry. Fixed by deduplicating near-coincident consecutive clip
   points and skipping any resulting near-zero-area triangle; reverified
   the same parity check now holds.
+- `Brep::TrimmedPlanarFace()` gained a `hole_loops_uv` parameter, closing
+  the "a face with an interior hole isn't supported" gap from the
+  previous section — an annulus/washer face (whole-cell path only; throws
+  if combined with `exact_clip=true`, since Sutherland-Hodgman clips
+  against one convex region and has no "subtract another region" mode).
+  This was also the first real test of a claim made two chunks ago and
+  never actually exercised: that `ExtrudeCappedSolid()`'s boundary-edge
+  extraction works on "any cap shape" because it only looks at triangle
+  adjacency, with no assumption baked in about how many separate boundary
+  loops there are. It does — verified, not just asserted this time: an
+  annulus cap (outer square minus an off-grid inner square hole) extrudes
+  to a genuinely closed tube with independently-walled outer and inner
+  boundaries, checked with the same hand-derived-exact-numbers standard
+  as the rest of this file (40 vertices, 40 triangles, area 20 — all
+  computed by hand from the whole-cell grid semantics before running
+  anything, not fit to the output after) and the same Manifold-acceptance
+  watertightness proof as the other `ExtrudeCappedSolid()` tests.
 
 ## What's still not done (as of chunk 2)
 
-- `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()` +
-  `Mesh::ExtrudeCappedSolid()`/`Mesh::Cylinder()` are the only
-  shapes/operations here — no cone, revolve, or loft, and
-  `ExtrudeCappedSolid()` only handles a single simple (non-self-
-  intersecting, no holes) boundary loop — a face with an interior hole
-  (an annulus) isn't supported.
+- `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
+  (+ `hole_loops_uv`) + `Mesh::ExtrudeCappedSolid()`/`Mesh::Cylinder()`
+  are the only shapes/operations here — no cone, revolve, or loft, and
+  `ExtrudeCappedSolid()` still assumes every boundary loop is simple
+  (non-self-intersecting) — a self-intersecting trim isn't supported and
+  isn't detected either (would silently produce wrong wall geometry).
 - `TessellateGridClippedConvex()` only handles convex trim polygons
   (Sutherland-Hodgman's requirement) — a concave or multiply-connected
   trim (the earlier L-shape/notch tests) still goes through

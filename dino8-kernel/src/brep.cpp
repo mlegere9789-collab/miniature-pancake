@@ -17,6 +17,7 @@ Brep Brep::FromSurface(const NurbsSurface& surface) {
   (void)face;
   result.face_trim_loops_.emplace_back();  // untrimmed
   result.face_exact_clip_.push_back(false);
+  result.face_hole_loops_.emplace_back();
 
   brep.SetTrimIsoFlags();
 
@@ -61,6 +62,7 @@ Brep Brep::Box(double x0, double y0, double z0, double x1, double y1,
     brep.NewFace(surface_index);
     result.face_trim_loops_.emplace_back();  // untrimmed
     result.face_exact_clip_.push_back(false);
+    result.face_hole_loops_.emplace_back();
   }
 
   brep.SetTrimIsoFlags();
@@ -84,6 +86,7 @@ Brep Brep::Sphere(Point3d center, double radius) {
   brep.NewFace(surface_index);
   result.face_trim_loops_.emplace_back();  // untrimmed
   result.face_exact_clip_.push_back(false);
+  result.face_hole_loops_.emplace_back();
 
   brep.SetTrimIsoFlags();
   return result;
@@ -91,7 +94,14 @@ Brep Brep::Sphere(Point3d center, double radius) {
 
 Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
                               const std::vector<Point2d>& trim_loop_uv,
-                              bool exact_clip) {
+                              bool exact_clip,
+                              std::vector<std::vector<Point2d>> hole_loops_uv) {
+  if (exact_clip && !hole_loops_uv.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::TrimmedPlanarFace: hole_loops_uv is only "
+        "supported with exact_clip=false (whole-cell tessellation)");
+  }
+
   Brep result;
   ON_Brep& brep = result.brep_;
 
@@ -100,6 +110,7 @@ Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
   brep.NewFace(surface_index);
   result.face_trim_loops_.push_back(trim_loop_uv);
   result.face_exact_clip_.push_back(exact_clip);
+  result.face_hole_loops_.push_back(std::move(hole_loops_uv));
 
   brep.SetTrimIsoFlags();
   return result;
@@ -131,7 +142,10 @@ std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
       result.push_back(
           wrapper.TessellateGridClippedConvex(u_divisions, v_divisions, trim_loop));
     } else {
-      result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions, &trim_loop));
+      const auto& hole_loops = face_hole_loops_[static_cast<size_t>(i)];
+      const std::vector<std::vector<Point2d>>* holes =
+          hole_loops.empty() ? nullptr : &hole_loops;
+      result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions, &trim_loop, holes));
     }
   }
 

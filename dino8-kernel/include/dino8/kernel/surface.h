@@ -48,8 +48,16 @@ class NurbsSurface {
   // boundary cells to the actual curve instead of discarding them.
   // Vertices that end up unused (entirely outside the trim) are not
   // included in the output mesh.
+  //
+  // `hole_polygons`, if non-null, is a list of additional closed polygons
+  // (same parameter space) subtracted from `trim_polygon` - a cell is
+  // emitted only if all four corners are inside `trim_polygon` and
+  // outside every hole polygon, giving an annulus/washer-shaped face
+  // (still whole-cell approximated, same as the outer boundary).
+  // Meaningless if `trim_polygon` is null.
   Mesh TessellateGrid(int u_divisions, int v_divisions,
-                       const std::vector<Point2d>* trim_polygon = nullptr) const;
+                       const std::vector<Point2d>* trim_polygon = nullptr,
+                       const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
 
   // Real boundary clipping, unlike TessellateGrid()'s whole-cell in/out:
   // each grid cell is clipped against `trim_polygon` (Sutherland-Hodgman)

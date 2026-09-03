@@ -607,6 +607,77 @@ void TestExactClippingRejectsNonConvexTrim() {
         "silently producing wrong geometry");
 }
 
+void TestAnnulusFaceExtrudesToWatertightTube() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Same 10x10 surface and outer [0.15,0.85]^2 trim as
+  // TestBrepTrimmedPlanarFace (whole-cell area 36 there), now with a
+  // hole at [0.35,0.65]^2 - also deliberately off grid lines (0.35/0.65
+  // aren't multiples of 0.1) so there's no boundary-point ambiguity at
+  // the hole either.
+  //
+  // Hand-derived (not measured after the fact): outer-inside grid values
+  // are u,v in {0.2,...,0.8} (7 each, as before); hole-inside grid values
+  // are u,v in {0.4,0.5,0.6} (3 each). A cell is dropped if EITHER its
+  // outer-corner test fails OR any one of its 4 corners falls inside the
+  // hole - which happens for exactly the (i,j) in {3,4,5,6}^2 cells (16
+  // of them), since every such cell has a corner landing on a hole-inside
+  // grid point in both u and v. Of the 36 outer-retained cells (i,j in
+  // {2..7}), that leaves 36-16=20 retained cells (40 triangles), and
+  // 49-9=40 retained vertices (7x7 outer grid points minus the 3x3 that
+  // are also inside the hole). Physical area = 20 cells x (0.1*10)^2 = 20.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(10, 0, 0),
+      Point3d(10, 10, 0),
+  };
+  const NurbsSurface surface =
+      NurbsSurface::FromControlGrid(grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  const std::vector<Point2d> outer_loop = {
+      Point2d(0.15, 0.15),
+      Point2d(0.85, 0.15),
+      Point2d(0.85, 0.85),
+      Point2d(0.15, 0.85),
+  };
+  const std::vector<Point2d> hole_loop = {
+      Point2d(0.35, 0.35),
+      Point2d(0.65, 0.35),
+      Point2d(0.65, 0.65),
+      Point2d(0.35, 0.65),
+  };
+  const Brep face = Brep::TrimmedPlanarFace(surface, outer_loop, /*exact_clip=*/false,
+                                             {hole_loop});
+  const auto cap = face.Tessellate(/*u_divisions=*/10, /*v_divisions=*/10).front();
+
+  Check(cap.VertexCount() == 40, "annulus face keeps exactly the 40 outer-grid-minus-hole vertices");
+  Check(cap.FaceCount() == 40, "annulus face keeps exactly the 20 retained cells (40 triangles)");
+  Check(std::abs(cap.Area() - 20.0) < 1e-9, "annulus face's area matches the hand-derived 20 exactly");
+
+  // ExtrudeCappedSolid()'s boundary-edge extraction was documented as
+  // working on "any cap shape" via triangle adjacency alone, without
+  // ever having been tried on a cap with TWO independent boundary loops
+  // (outer + hole) - this is that test. If it silently only walled one
+  // loop, the result wouldn't be closed and BooleanCombine() would throw.
+  const double height = 2.0;
+  const auto tube = Mesh::ExtrudeCappedSolid(cap, Vector3d(0, 0, -height));
+  Check(std::abs(tube.Volume() - cap.Area() * height) < 1e-9,
+        "extruded annulus tube's volume matches area x height exactly");
+
+  const auto box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const auto result = BooleanCombine(tube, box, BooleanOp::Union);
+  Check(std::abs(result.Volume() - (tube.Volume() + 1.0)) < 1e-9,
+        "union of the extruded annulus tube with a disjoint unit box equals tube volume + 1 "
+        "(both the outer and inner walls were genuinely closed)");
+}
+
 }  // namespace
 
 int main() {
@@ -631,6 +702,7 @@ int main() {
   TestCylinderVolumeAndBoolean();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingRejectsNonConvexTrim();
+  TestAnnulusFaceExtrudesToWatertightTube();
 
   ON::End();
 

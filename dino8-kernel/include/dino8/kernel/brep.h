@@ -75,9 +75,17 @@ class Brep {
   // false so existing whole-cell behavior (and the exact vertex/triangle
   // counts tests assert against it) doesn't change under callers that
   // don't ask for this.
+  //
+  // `hole_loops_uv`, if non-empty, are additional closed polygons
+  // subtracted from the outer trim - an annulus/washer face (a square
+  // with a smaller square hole, say). Only supported on the whole-cell
+  // path: throws std::invalid_argument if combined with exact_clip=true,
+  // since Sutherland-Hodgman clips against a single convex region and
+  // doesn't have a "subtract another region" mode.
   static Brep TrimmedPlanarFace(const NurbsSurface& surface,
                                  const std::vector<Point2d>& trim_loop_uv,
-                                 bool exact_clip = false);
+                                 bool exact_clip = false,
+                                 std::vector<std::vector<Point2d>> hole_loops_uv = {});
 
   int FaceCount() const;
 
@@ -109,6 +117,10 @@ class Brep {
   // tessellated via exact convex clipping rather than whole-cell in/out.
   // Meaningless (always false) for an empty trim loop.
   std::vector<bool> face_exact_clip_;
+  // Parallel to face_trim_loops_: hole polygons for that face (empty for
+  // every face except one built by TrimmedPlanarFace() with
+  // hole_loops_uv). Meaningless for an empty trim loop.
+  std::vector<std::vector<std::vector<Point2d>>> face_hole_loops_;
 };
 
 }  // namespace dino8::kernel

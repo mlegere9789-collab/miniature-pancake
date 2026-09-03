@@ -159,7 +159,8 @@ Point3d NurbsSurface::PointAt(double u, double v) const {
 }
 
 Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
-                                   const std::vector<Point2d>* trim_polygon) const {
+                                   const std::vector<Point2d>* trim_polygon,
+                                   const std::vector<std::vector<Point2d>>* hole_polygons) const {
   Mesh mesh;
   ON_Mesh& raw = mesh.mesh_;
 
@@ -225,8 +226,18 @@ Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
   std::vector<bool> inside(static_cast<size_t>(u_points) * static_cast<size_t>(v_points));
   for (int i = 0; i < u_points; ++i) {
     for (int j = 0; j < v_points; ++j) {
-      inside[static_cast<size_t>(grid_index(i, j))] = PointInPolygon(
-          u_values[static_cast<size_t>(i)], v_values[static_cast<size_t>(j)], *trim_polygon);
+      const double u = u_values[static_cast<size_t>(i)];
+      const double v = v_values[static_cast<size_t>(j)];
+      bool point_inside = PointInPolygon(u, v, *trim_polygon);
+      if (point_inside && hole_polygons != nullptr) {
+        for (const auto& hole : *hole_polygons) {
+          if (PointInPolygon(u, v, hole)) {
+            point_inside = false;
+            break;
+          }
+        }
+      }
+      inside[static_cast<size_t>(grid_index(i, j))] = point_inside;
     }
   }
 
