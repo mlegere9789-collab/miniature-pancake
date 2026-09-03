@@ -71,6 +71,24 @@ class Mesh {
   // (a face with a hole isn't supported here).
   static Mesh ExtrudeCappedSolid(const Mesh& cap, Vector3d offset);
 
+  // Builds a real cylinder: a circular disk cap (Brep::TrimmedPlanarFace()
+  // with an N-gon trim polygon approximating a circle) swept along `axis`
+  // by `height` via ExtrudeCappedSolid(). Returns Mesh rather than Brep
+  // because it's already a closed-solid convenience, not a Brep
+  // primitive - the wall geometry comes from ExtrudeCappedSolid's
+  // boundary-edge extraction, not real trimmed-surface topology.
+  //
+  // This is the real test of ExtrudeCappedSolid() generalizing beyond a
+  // rectangular trim boundary: the circle's N-gon trim is approximated
+  // the same whole-cell-in/out way any TrimmedPlanarFace() is, so the
+  // resulting solid's volume approaches (not exactly equals) the ideal
+  // pi*r^2*h as circle_segments and the tessellation grid resolution
+  // increase - unlike Box()/the rectangular trim tests, which hit exact
+  // values by construction.
+  static Mesh Cylinder(Point3d base_center, Vector3d axis, double radius,
+                        double height, int circle_segments = 48,
+                        int grid_divisions = 48);
+
  private:
   friend class Brep;
   friend class NurbsSurface;

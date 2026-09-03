@@ -494,6 +494,43 @@ void TestExtrudeTrimmedFaceFeedsBoolean() {
         "union of the extruded trimmed solid with a disjoint unit box equals 36 + 1");
 }
 
+void TestCylinderVolumeAndBoolean() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double radius = 2.0;
+  const double height = 5.0;
+  // 200/200 measured, not guessed: whole-cell-in/out trimming
+  // systematically under-represents a curved boundary (excluded cells
+  // straddling the edge are pure loss, never partial credit), and that
+  // bias shrinks slowly (~1/divisions, since it's proportional to
+  // perimeter x average cell width). 48/48 measured a real 7% error here
+  // (failing a 2% bound); 200/200 measures ~1.5% - so this tolerance is
+  // an actual check on real behavior, not a rubber stamp loose enough to
+  // always pass.
+  const auto cylinder =
+      Mesh::Cylinder(Point3d(0, 0, 0), Vector3d(0, 0, 1), radius, height,
+                     /*circle_segments=*/200, /*grid_divisions=*/200);
+
+  const double exact_volume = ON_PI * radius * radius * height;
+  const double relative_error = std::abs(cylinder.Volume() - exact_volume) / exact_volume;
+  Check(relative_error < 0.02,
+        "cylinder volume is within 2% of the exact pi*r^2*h");
+
+  // Real proof of watertightness, same as the trimmed-face extrusion test:
+  // Manifold would reject a non-manifold mesh outright rather than return
+  // a plausible-looking wrong answer.
+  const auto box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const auto result = BooleanCombine(cylinder, box, BooleanOp::Union);
+  const double expected_union = cylinder.Volume() + 1.0;
+  Check(std::abs(result.Volume() - expected_union) < 1e-6,
+        "union of the cylinder with a disjoint unit box equals cylinder volume + 1");
+}
+
 }  // namespace
 
 int main() {
@@ -515,6 +552,7 @@ int main() {
   TestWeldAcrossIndependentlyParameterizedSurfaces();
   TestExtrudeUntrimmedFaceIntoSolid();
   TestExtrudeTrimmedFaceFeedsBoolean();
+  TestCylinderVolumeAndBoolean();
 
   ON::End();
 

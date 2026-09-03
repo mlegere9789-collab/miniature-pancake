@@ -175,4 +175,54 @@ Mesh Mesh::ExtrudeCappedSolid(const Mesh& cap, Vector3d offset) {
   return result;
 }
 
+Mesh Mesh::Cylinder(Point3d base_center, Vector3d axis, double radius, double height,
+                     int circle_segments, int grid_divisions) {
+  Vector3d n = axis;
+  n.Unitize();
+
+  // Arbitrary orthonormal in-plane basis (ex, ey) perpendicular to n -
+  // standard "pick a non-parallel reference vector, cross twice" trick.
+  const Vector3d reference =
+      (std::abs(n.z) < 0.9) ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+  Vector3d ex = ON_CrossProduct(reference, n);
+  ex.Unitize();
+  const Vector3d ey = ON_CrossProduct(n, ex);
+
+  // A square surface, big enough to contain the circle with margin, whose
+  // own u_dir x v_dir gives an outward normal of -n (see the corner-order
+  // derivation in the header comment / commit message: the cap has to
+  // face away from where ExtrudeCappedSolid's offset will sweep the
+  // solid). half_size in parameter space maps back to the physical
+  // half-width s below.
+  const double s = radius * 1.2;
+  const Point3d a = base_center - ex * s - ey * s;
+  const Point3d b = base_center + ex * s - ey * s;
+  const Point3d c = base_center - ex * s + ey * s;
+  const Point3d d = base_center + ex * s + ey * s;
+  // Grid order [a, b, c, d] assigned to (u0,v0),(u0,v1),(u1,v0),(u1,v1):
+  // u_dir = c - a = 2s*ey, v_dir = b - a = 2s*ex, so
+  // u_dir x v_dir = 4s^2 (ey x ex) = -4s^2 n - the outward -n this cap
+  // needs. P(u,v) = base_center + ex*s*(2v-1) + ey*s*(2u-1).
+  const NurbsSurface surface =
+      NurbsSurface::FromControlGrid({a, b, c, d}, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+
+  // Circle boundary, matching that same P(u,v) parameterization: a point
+  // at angle theta is base_center + radius*cos(theta)*ex +
+  // radius*sin(theta)*ey, i.e. u = 0.5 + radius*sin(theta)/(2s),
+  // v = 0.5 + radius*cos(theta)/(2s).
+  std::vector<Point2d> trim_loop;
+  trim_loop.reserve(static_cast<size_t>(circle_segments));
+  for (int i = 0; i < circle_segments; ++i) {
+    const double theta = 2.0 * ON_PI * static_cast<double>(i) / circle_segments;
+    trim_loop.push_back(
+        Point2d(0.5 + radius * std::sin(theta) / (2.0 * s),
+                0.5 + radius * std::cos(theta) / (2.0 * s)));
+  }
+
+  const Brep disk = Brep::TrimmedPlanarFace(surface, trim_loop);
+  const Mesh cap = disk.Tessellate(grid_divisions, grid_divisions).front();
+
+  return ExtrudeCappedSolid(cap, n * height);
+}
+
 }  // namespace dino8::kernel

@@ -114,15 +114,34 @@ What this repo does instead:
   disjoint union with it produces exactly the expected combined volume
   (Manifold would reject a non-manifold mesh outright, not silently
   produce a wrong answer).
+- `Mesh::Cylinder()` closes the "no general primitive library" gap using
+  the two general-purpose pieces above rather than adding a third
+  special case: a circular disk cap (`TrimmedPlanarFace()` with an N-gon
+  trim polygon) swept via `ExtrudeCappedSolid()`. Unlike `Box()`'s exact
+  volumes and the rectangular-trim tests, a polygon-approximated circle
+  trimmed via whole-cell in/out systematically *under*-represents the
+  true disk — verified directly, not assumed: 48 trim/grid divisions
+  measured a real 7% volume error (failing a 2% check), 200 measured
+  ~1.5% (passing it), confirming the error actually shrinks with
+  resolution rather than being some other bug. `tests/test_basic.cpp`
+  checks the 200-division cylinder's volume against the exact
+  `π·r²·h` within 2%, and — the real watertightness proof, same pattern
+  as the trimmed-extrusion test — unions it with a disjoint box to
+  exactly the expected combined volume.
 
 ## What's still not done (as of chunk 2)
 
-- `Brep::Box()`, `Brep::Sphere()`, and `Brep::TrimmedPlanarFace()` +
-  `Mesh::ExtrudeCappedSolid()` are the only shapes/operations here — no
-  general primitive library (a real cylinder, cone, revolve, loft), and
+- `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()` +
+  `Mesh::ExtrudeCappedSolid()`/`Mesh::Cylinder()` are the only
+  shapes/operations here — no cone, revolve, or loft, and
   `ExtrudeCappedSolid()` only handles a single simple (non-self-
   intersecting, no holes) boundary loop — a face with an interior hole
   (an annulus) isn't supported.
+- The whole-cell-in/out trim approximation's volume error for curved
+  boundaries (measured above at ~7% / 48 divisions, ~1.5% / 200) means
+  any curved primitive built this way needs a resolution/accuracy
+  tradeoff a real product shouldn't have to make — the actual fix is
+  real boundary clipping in `TessellateGrid()`, not higher divisions.
 - The trim-polygon test in `TessellateGrid()` is whole-cell in/out
   (a cell is kept only if all four corners are inside), not real boundary
   clipping — a curved or diagonal trim edge will look faceted/staircased
