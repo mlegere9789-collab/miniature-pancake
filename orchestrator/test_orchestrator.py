@@ -6,7 +6,7 @@ the real `data/orchestrator.db`. Run with:
 
     python -m unittest orchestrator.test_orchestrator
 or via the whole suite:
-    python -m unittest discover -s orchestrator -p "test_*.py"
+    python -m unittest discover -s orchestrator -t . -p "test_*.py"
 """
 
 from __future__ import annotations
@@ -15,10 +15,12 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from . import database as db
+from . import scheduler as sch
 from .config import Config, MissingCredentialError
 from .logger import ModuleLogger, get_logger
 from .paths import MODULES
@@ -291,6 +293,279 @@ class TestPaths(unittest.TestCase):
         for name in MODULES:
             self.assertIsInstance(name, str)
             self.assertTrue(name)
+
+
+class JobsFileTestCase(unittest.TestCase):
+    """Points scheduler.JOBS_PATH/JOBS_EXAMPLE_PATH at temp files."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._orig_jobs_path = sch.JOBS_PATH
+        self._orig_jobs_example_path = sch.JOBS_EXAMPLE_PATH
+        sch.JOBS_PATH = Path(self._tmpdir.name) / "jobs.json"
+        sch.JOBS_EXAMPLE_PATH = Path(self._tmpdir.name) / "jobs.example.json"
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        sch.JOBS_PATH = self._orig_jobs_path
+        sch.JOBS_EXAMPLE_PATH = self._orig_jobs_example_path
+
+    def _write_jobs(self, jobs: list, *, as_default: bool = True) -> None:
+        path = sch.JOBS_EXAMPLE_PATH if as_default else sch.JOBS_PATH
+        path.write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
+
+
+JOB_HOURLY = {
+    "name": "hourly-job",
+    "module": "deal_alert_bot",
+    "command": "python -m modules.deal_alert_bot.run",
+    "cadence": "hourly",
+    "at": "",
+    "enabled": True,
+}
+JOB_DAILY = {
+    "name": "daily-job",
+    "module": "micro_saas",
+    "command": "python -m modules.micro_saas.run",
+    "cadence": "daily",
+    "at": "06:00",
+    "enabled": False,
+}
+JOB_WEEKLY = {
+    "name": "weekly-job",
+    "module": "digital_products",
+    "command": "python -m modules.digital_products.run",
+    "cadence": "weekly",
+    "at": "mon 08:00",
+    "enabled": True,
+}
+JOB_EVERY = {
+    "name": "every-job",
+    "module": "ecommerce_dropshipping",
+    "command": "python -m modules.ecommerce_dropshipping.run",
+    "cadence": "every",
+    "interval_hours": 3,
+    "at": "",
+    "enabled": True,
+}
+
+
+class TestLoadJobs(JobsFileTestCase):
+    def test_falls_back_to_example_when_jobs_json_missing(self):
+        self._write_jobs([JOB_HOURLY])
+        jobs = sch.load_jobs()
+        self.assertEqual([j["name"] for j in jobs], ["hourly-job"])
+
+    def test_prefers_jobs_json_over_example(self):
+        self._write_jobs([JOB_HOURLY], as_default=True)
+        self._write_jobs([JOB_DAILY], as_default=False)
+        jobs = sch.load_jobs()
+        self.assertEqual([j["name"] for j in jobs], ["daily-job"])
+
+    def test_enabled_only_filters(self):
+        self._write_jobs([JOB_HOURLY, JOB_DAILY])
+        jobs = sch.load_jobs(enabled_only=True)
+        self.assertEqual([j["name"] for j in jobs], ["hourly-job"])
+
+    def test_skips_entries_without_a_name(self):
+        self._write_jobs([JOB_HOURLY, {"cadence": "daily"}, "not a dict"])
+        jobs = sch.load_jobs()
+        self.assertEqual([j["name"] for j in jobs], ["hourly-job"])
+
+
+class TestParseAt(unittest.TestCase):
+    def test_hourly_ignores_at(self):
+        self.assertEqual(sch._parse_at("hourly", ""), (0, 0, None))
+
+    def test_daily_default_midnight(self):
+        self.assertEqual(sch._parse_at("daily", ""), (0, 0, None))
+
+    def test_daily_explicit_time(self):
+        self.assertEqual(sch._parse_at("daily", "06:30"), (6, 30, None))
+
+    def test_weekly_valid(self):
+        self.assertEqual(sch._parse_at("weekly", "mon 08:00"), (8, 0, 0))
+        self.assertEqual(sch._parse_at("weekly", "sun 23:59"), (23, 59, 6))
+
+    def test_weekly_missing_day_raises(self):
+        with self.assertRaises(ValueError):
+            sch._parse_at("weekly", "08:00")
+
+    def test_weekly_bad_day_raises(self):
+        with self.assertRaises(ValueError):
+            sch._parse_at("weekly", "someday 08:00")
+
+    def test_unknown_cadence_raises(self):
+        with self.assertRaises(ValueError):
+            sch._parse_at("monthly", "")
+
+
+class TestIntervalHours(unittest.TestCase):
+    def test_default_is_one(self):
+        self.assertEqual(sch._interval_hours({}), 1)
+
+    def test_valid_range(self):
+        self.assertEqual(sch._interval_hours({"interval_hours": 23}), 23)
+
+    def test_too_low_raises(self):
+        with self.assertRaises(ValueError):
+            sch._interval_hours({"interval_hours": 0})
+
+    def test_too_high_raises(self):
+        with self.assertRaises(ValueError):
+            sch._interval_hours({"interval_hours": 24})
+
+
+class TestToCronLine(unittest.TestCase):
+    def test_hourly(self):
+        line = sch.to_cron_line(JOB_HOURLY)
+        self.assertTrue(line.startswith("0 * * * * cd "))
+        self.assertIn("data/logs/hourly-job.log", line)
+        self.assertIn(JOB_HOURLY["command"], line)
+        self.assertIn("# hourly-job", line)
+
+    def test_daily(self):
+        line = sch.to_cron_line(JOB_DAILY)
+        self.assertTrue(line.startswith("0 6 * * * cd "))
+
+    def test_weekly_monday(self):
+        line = sch.to_cron_line(JOB_WEEKLY)
+        # mon -> cron dow 1
+        self.assertTrue(line.startswith("0 8 * * 1 cd "))
+
+    def test_every_n_hours(self):
+        line = sch.to_cron_line(JOB_EVERY)
+        self.assertTrue(line.startswith("0 */3 * * * cd "))
+
+
+class TestIsDue(unittest.TestCase):
+    NOW = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)  # a Wednesday
+
+    def test_hourly_never_run_is_due(self):
+        self.assertTrue(sch._is_due(JOB_HOURLY, self.NOW, None))
+
+    def test_hourly_run_recently_not_due(self):
+        last = self.NOW - timedelta(minutes=10)
+        self.assertFalse(sch._is_due(JOB_HOURLY, self.NOW, last))
+
+    def test_hourly_run_over_an_hour_ago_is_due(self):
+        last = self.NOW - timedelta(minutes=60)
+        self.assertTrue(sch._is_due(JOB_HOURLY, self.NOW, last))
+
+    def test_every_respects_interval(self):
+        last = self.NOW - timedelta(hours=2)
+        self.assertFalse(sch._is_due(JOB_EVERY, self.NOW, last))  # needs 3h
+        last = self.NOW - timedelta(hours=3)
+        self.assertTrue(sch._is_due(JOB_EVERY, self.NOW, last))
+
+    def test_daily_before_scheduled_time_not_due(self):
+        job = {**JOB_DAILY, "enabled": True}
+        early = self.NOW.replace(hour=5, minute=0)
+        self.assertFalse(sch._is_due(job, early, None))
+
+    def test_daily_after_scheduled_time_never_run_is_due(self):
+        job = {**JOB_DAILY, "enabled": True}
+        late = self.NOW.replace(hour=7, minute=0)
+        self.assertTrue(sch._is_due(job, late, None))
+
+    def test_daily_already_run_today_not_due(self):
+        job = {**JOB_DAILY, "enabled": True}
+        late = self.NOW.replace(hour=7, minute=0)
+        last = self.NOW.replace(hour=6, minute=1)
+        self.assertFalse(sch._is_due(job, late, last))
+
+    def test_daily_run_yesterday_is_due_today(self):
+        job = {**JOB_DAILY, "enabled": True}
+        late = self.NOW.replace(hour=7, minute=0)
+        last = late - timedelta(days=1)
+        self.assertTrue(sch._is_due(job, late, last))
+
+    def test_weekly_wrong_day_not_due(self):
+        # self.NOW is a Wednesday (weekday()==2); job wants Monday (dow 0)
+        self.assertFalse(sch._is_due(JOB_WEEKLY, self.NOW, None))
+
+    def test_weekly_right_day_after_time_is_due(self):
+        monday = datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc)  # a Monday
+        self.assertTrue(sch._is_due(JOB_WEEKLY, monday, None))
+
+    def test_weekly_right_day_before_time_not_due(self):
+        monday_early = datetime(2026, 8, 31, 7, 0, tzinfo=timezone.utc)
+        self.assertFalse(sch._is_due(JOB_WEEKLY, monday_early, None))
+
+    def test_weekly_already_run_this_week_not_due(self):
+        monday = datetime(2026, 8, 31, 9, 0, tzinfo=timezone.utc)
+        last_run = monday.replace(hour=8, minute=1)
+        self.assertFalse(sch._is_due(JOB_WEEKLY, monday, last_run))
+
+
+class TestCrontabCommands(JobsFileTestCase):
+    def test_install_writes_marker_block_for_enabled_jobs_only(self):
+        self._write_jobs([JOB_HOURLY, JOB_DAILY])  # only hourly-job is enabled
+        with patch.object(sch, "_read_crontab", return_value="# existing line\n"):
+            with patch.object(sch, "_write_crontab") as write_mock:
+                self.assertEqual(sch.cmd_install(), 0)
+        written = write_mock.call_args[0][0]
+        self.assertIn("# existing line", written)
+        self.assertIn(sch.MARKER_BEGIN, written)
+        self.assertIn(sch.MARKER_END, written)
+        self.assertIn("hourly-job", written)
+        self.assertNotIn("daily-job", written)
+
+    def test_install_replaces_previous_block_not_duplicates(self):
+        self._write_jobs([JOB_HOURLY])
+        old_block = "\n".join(
+            [sch.MARKER_BEGIN, "0 * * * * old-stale-line", sch.MARKER_END]
+        )
+        with patch.object(sch, "_read_crontab", return_value=old_block):
+            with patch.object(sch, "_write_crontab") as write_mock:
+                sch.cmd_install()
+        written = write_mock.call_args[0][0]
+        self.assertNotIn("old-stale-line", written)
+        self.assertEqual(written.count(sch.MARKER_BEGIN), 1)
+
+    def test_install_with_no_enabled_jobs_returns_error_and_does_not_write(self):
+        self._write_jobs([JOB_DAILY])  # disabled
+        with patch.object(sch, "_write_crontab") as write_mock:
+            self.assertEqual(sch.cmd_install(), 1)
+        write_mock.assert_not_called()
+
+    def test_uninstall_removes_marker_block(self):
+        block = "\n".join(
+            ["# keep me", sch.MARKER_BEGIN, "0 * * * * job-line", sch.MARKER_END]
+        )
+        with patch.object(sch, "_read_crontab", return_value=block):
+            with patch.object(sch, "_write_crontab") as write_mock:
+                self.assertEqual(sch.cmd_uninstall(), 0)
+        written = write_mock.call_args[0][0]
+        self.assertIn("# keep me", written)
+        self.assertNotIn("job-line", written)
+        self.assertNotIn(sch.MARKER_BEGIN, written)
+
+
+class TestSchedulerState(unittest.TestCase):
+    def test_round_trip(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = sch.STATE_FILE
+            sch.STATE_FILE = Path(d) / "state.json"
+            try:
+                self.assertEqual(sch._load_state(), {})
+                sch._save_state({"job-a": "2026-01-01T00:00:00+00:00"})
+                self.assertEqual(
+                    sch._load_state(), {"job-a": "2026-01-01T00:00:00+00:00"}
+                )
+            finally:
+                sch.STATE_FILE = orig
+
+    def test_malformed_state_file_is_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = sch.STATE_FILE
+            sch.STATE_FILE = Path(d) / "state.json"
+            sch.STATE_FILE.write_text("not json", encoding="utf-8")
+            try:
+                self.assertEqual(sch._load_state(), {})
+            finally:
+                sch.STATE_FILE = orig
 
 
 if __name__ == "__main__":
