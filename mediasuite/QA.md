@@ -186,6 +186,13 @@ neither of which CI or a fake process runner can see.
   shortcut, or `MediaSuite.exe` with no arguments) and confirm it opens to the Convert
   page with nothing pre-staged — the file-preload path must never leak into a normal
   launch.
+- [ ] With MediaSuite already open, launch it again from the Start Menu (or run
+  `MediaSuite.exe` a second time) and confirm no second window appears — the existing
+  window should just come to the front. Minimize it first and confirm the second launch
+  restores it rather than leaving it minimized in the background. With it already open,
+  open a supported file via "Open with" or drag one onto the exe and confirm the file
+  lands on the Convert page of the *existing* window (still just one window, one process
+  in Task Manager), not a second instance.
 
 ## Known, deliberate gaps — do not report these as bugs
 
