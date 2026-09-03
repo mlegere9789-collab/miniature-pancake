@@ -1,5 +1,6 @@
 using System.Windows;
 using MediaSuite.App.Services;
+using MediaSuite.App.ViewModels;
 using MediaSuite.Core.Settings;
 
 namespace MediaSuite.App;
@@ -18,7 +19,7 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         RestoreBoundsFromSettings();
-        Closing += SaveBoundsToSettings;
+        Closing += OnClosing;
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -68,6 +69,40 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
+    /// Closing the app kills every running job's process outright (see
+    /// <c>JobQueueManager.Dispose</c>) — a video half-encoded, an upscale most of the way
+    /// through — with no way to resume it. Any other serious converter warns before
+    /// throwing that away; this never did. Confirms first when anything is still running
+    /// or queued, then saves the window's bounds either way (canceling the close doesn't
+    /// need to skip that — nothing about the window's position changed by asking).
+    /// </summary>
+    private void OnClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        if (DataContext is MainViewModel { Queue.Rows: var rows }
+            && rows.Any(row => !row.Job.IsFinished))
+        {
+            var running = rows.Count(row => !row.Job.IsFinished);
+            var noun = running == 1 ? "job is" : "jobs are";
+
+            var choice = MessageBox.Show(
+                $"{running} {noun} still running or queued. Closing MediaSuite now will cancel "
+                + "them — anything in progress will be lost.\n\nClose anyway?",
+                "MediaSuite",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning,
+                MessageBoxResult.No);
+
+            if (choice != MessageBoxResult.Yes)
+            {
+                e.Cancel = true;
+                return;
+            }
+        }
+
+        SaveBoundsToSettings();
+    }
+
+    /// <summary>
     /// <see cref="Window.Left"/>/<see cref="Window.Top"/>/<see cref="Window.Width"/>/
     /// <see cref="Window.Height"/> reflect the maximized envelope while maximized, not the
     /// size to restore to — <see cref="Window.RestoreBounds"/> is the pre-maximize
@@ -75,7 +110,7 @@ public partial class MainWindow : Window
     /// the window is currently maximized or minimized (which carries whatever it was
     /// before minimizing, same idea).
     /// </summary>
-    private void SaveBoundsToSettings(object? sender, System.ComponentModel.CancelEventArgs e)
+    private void SaveBoundsToSettings()
     {
         var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
 
