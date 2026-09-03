@@ -1069,6 +1069,49 @@ void TestMeshLoadObjRejectsMalformedFiles() {
   std::remove(pentagon_path.c_str());
 }
 
+void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
+  using dino8::kernel::Result;
+
+  // MakeQuadBoxMesh: 6 quad faces. STL is triangle-only, so SaveStl must
+  // split each quad into 2 triangles - 12 facets total, not 6 - and
+  // compute a real per-facet normal (not the placeholder "0 0 0" the
+  // format technically allows). The first face (bottom, quad
+  // (0,3,2,1)) has known outward normal (0,0,-1), matching this file's
+  // box-face-orientation convention used everywhere else (Box(), etc.).
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const std::string path = "dino8_kernel_mesh_stl_test.stl";
+  Check(box.SaveStl(path) == Result::Ok, "Mesh::SaveStl succeeds");
+
+  std::ifstream in(path);
+  Check(static_cast<bool>(in), "the .stl file SaveStl wrote can be reopened for reading");
+
+  int facet_count = 0;
+  double first_normal[3] = {0, 0, 0};
+  bool got_first_normal = false;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.compare(0, 12, "facet normal") == 0) {
+      if (!got_first_normal) {
+        std::sscanf(line.c_str(), "facet normal %lf %lf %lf", &first_normal[0], &first_normal[1],
+                    &first_normal[2]);
+        got_first_normal = true;
+      }
+      ++facet_count;
+    }
+  }
+
+  Check(facet_count == box.FaceCount() * 2,
+        "SaveStl splits each of the box's 6 quad faces into 2 triangle "
+        "facets (12 total), not one facet per quad (which the format "
+        "doesn't support)");
+  Check(got_first_normal && std::abs(first_normal[0]) < 1e-6 && std::abs(first_normal[1]) < 1e-6 &&
+            std::abs(first_normal[2] - (-1.0)) < 1e-6,
+        "the bottom face's first facet has the correct computed outward "
+        "normal (0,0,-1), not a placeholder");
+
+  std::remove(path.c_str());
+}
+
 void TestExactClippingMatchesAreaButNotCellCounts() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -1365,6 +1408,7 @@ int main() {
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestMeshSaveObjRoundTrips();
   TestMeshLoadObjRejectsMalformedFiles();
+  TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestAnnulusFaceExtrudesToWatertightTube();

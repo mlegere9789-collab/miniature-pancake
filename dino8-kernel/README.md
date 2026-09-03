@@ -368,6 +368,19 @@ What this repo does instead:
   pulls inward - the same qualitative effect behind the box's much larger
   volume shrink, here affecting only 4 vertices instead of every neighbor
   of 8 corners.
+- `Mesh::SaveStl()` writes an ASCII Wavefront `.stl` file - the second
+  "other file format" alongside `.obj`/`.3dm`, for the specific
+  tools/workflows that want STL rather than OBJ (3D printing slicers in
+  particular). STL is triangle-only and has no shared vertex list (each
+  facet repeats its own 3 positions), so a quad face
+  (`ON_MeshFace::IsQuad()`) is split into its two triangles as two
+  separate facets, and each facet's normal is computed directly from its
+  own 3 vertices rather than written as the permitted-but-useless
+  all-zero placeholder. Export only, same as `.obj` before `LoadObj()`
+  was added. Verified by writing the known 6-quad box and re-parsing the
+  file: exactly 12 facets (2 per quad, not 6), and the first facet's
+  normal matches the bottom face's known outward direction `(0,0,-1)`
+  exactly, not a placeholder or an arbitrary sign.
 
 ## What's still not done (as of chunk 2)
 
@@ -414,8 +427,9 @@ What this repo does instead:
   and no SubD ↔ Brep conversion (that direction is the stubbed
   `BrepForm()`/`GetSurfaceBrep()` this section already flagged).
 - `.obj` support (`SaveObj()`/`LoadObj()`) only round-trips geometry - no
-  normals, texture coordinates, materials, or groups - and no other
-  formats (STL, glTF, FBX, ...) at all.
+  normals, texture coordinates, materials, or groups. `.stl` support
+  (`SaveStl()`) is export-only, and both are the only formats here - no
+  glTF, FBX, etc.
 - Adaptive/curvature-aware meshing, the viewport/display engine, GPU path
   tracer, command engine, UI shell, visual scripting, undo system,
   installer, and everything else in the blueprint's roadmap — all

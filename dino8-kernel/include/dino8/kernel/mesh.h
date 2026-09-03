@@ -60,6 +60,20 @@ class Mesh {
   // partially filled and silently trusted.
   static Result LoadObj(const std::string& path, Mesh& out_mesh);
 
+  // Writes this mesh as an ASCII Wavefront `.stl` file - the second
+  // "other file format" here, aimed at the specific tools/workflows that
+  // want STL rather than OBJ (3D printing slicers in particular). Unlike
+  // `.obj`, STL is triangle-only and carries no shared vertex list - each
+  // facet repeats its own 3 vertex positions, and a quad face
+  // (`ON_MeshFace::IsQuad()`) is split into its two triangles rather than
+  // written as a single facet, since the format has no quad facet at all.
+  // Each facet's normal is computed directly from its own 3 vertices
+  // (`(v1-v0) x (v2-v0)`, normalized) rather than written as the
+  // permitted-but-not-required all-zero placeholder, so the file is
+  // actually useful to a consumer that reads facet normals. Returns
+  // Result::Failed if the file can't be opened for writing.
+  Result SaveStl(const std::string& path) const;
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 

@@ -6,3 +6,4 @@ build/
 # source.
 dino8_kernel_roundtrip_test.3dm
 dino8_kernel_mesh_obj_test.obj
+dino8_kernel_mesh_stl_test.stl

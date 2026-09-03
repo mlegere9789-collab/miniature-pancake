@@ -186,6 +186,40 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
   return Result::Ok;
 }
 
+Result Mesh::SaveStl(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  auto write_facet = [&out](const ON_3fPoint& a, const ON_3fPoint& b, const ON_3fPoint& c) {
+    ON_3dVector normal = ON_3dVector::CrossProduct(ON_3dVector(b - a), ON_3dVector(c - a));
+    normal.Unitize();
+    out << "facet normal " << normal.x << ' ' << normal.y << ' ' << normal.z << '\n';
+    out << "outer loop\n";
+    out << "vertex " << a.x << ' ' << a.y << ' ' << a.z << '\n';
+    out << "vertex " << b.x << ' ' << b.y << ' ' << b.z << '\n';
+    out << "vertex " << c.x << ' ' << c.y << ' ' << c.z << '\n';
+    out << "endloop\n";
+    out << "endfacet\n";
+  };
+
+  out << "solid dino8\n";
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    const ON_3fPoint& a = mesh_.m_V[f.vi[0]];
+    const ON_3fPoint& b = mesh_.m_V[f.vi[1]];
+    const ON_3fPoint& c = mesh_.m_V[f.vi[2]];
+    write_facet(a, b, c);
+    if (f.IsQuad()) {
+      write_facet(a, c, mesh_.m_V[f.vi[3]]);
+    }
+  }
+  out << "endsolid dino8\n";
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
 Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
   Mesh result;
   ON_Mesh& out = result.mesh_;
