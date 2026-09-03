@@ -335,6 +335,27 @@ What this repo does instead:
   silently reinterpreted) and three deliberately bad inputs (a missing
   file, a forward vertex reference, a 5-index face line), all correctly
   rejected.
+- **Found and fixed a real bug in `Mesh::Area()`**, the kind only exercised
+  by a genuinely quad-faced mesh (every tessellator in this file emits
+  triangles only, so no earlier test ever built one): `Area()` computed
+  only a face's first triangle (`vi[0], vi[1], vi[2]`) and silently
+  ignored `vi[3]` entirely for a real, non-degenerate quad - returning
+  exactly half the true area - while `Volume()` right next to it already
+  handled `IsQuad()` correctly. Surfaced while writing a SubD test that
+  needed `Area()` to work on `SubD::ToApproximateMesh()`'s genuinely-quad
+  output. Fixed to sum both triangles for a quad face, same convention
+  `Volume()` already used; verified with a single hand-built 3×2 quad
+  face whose true area (6.0) the old code would have reported as 3.0.
+  This also made a second SubD verification possible: a flat 2×2 grid of
+  quads (no extraordinary *interior* vertex - its one interior vertex has
+  the regular valence-4) stays exactly on its own plane after
+  subdivision, confirming boundary/regular-valence subdivision doesn't
+  warp flat geometry - but its area still measurably shrinks (4.0 → 3.6875,
+  measured, not assumed to stay exact), since a grid's 4 corners are
+  themselves a kind of extraordinary vertex (valence 2) that Catmull-Clark
+  pulls inward - the same qualitative effect behind the box's much larger
+  volume shrink, here affecting only 4 vertices instead of every neighbor
+  of 8 corners.
 
 ## What's still not done (as of chunk 2)
 

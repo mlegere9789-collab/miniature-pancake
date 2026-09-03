@@ -25,9 +25,11 @@ class Mesh {
   // kind BooleanCombine requires as input and produces as output.
   double Volume() const;
 
-  // Sum of triangle areas (each via half the cross-product magnitude).
-  // Unlike Volume(), meaningful for open surfaces too - e.g. a single
-  // trimmed planar face isn't closed, so Volume() doesn't apply to it.
+  // Sum of face areas (each via half the cross-product magnitude of its
+  // one or two triangles - a quad face's second triangle is included,
+  // same as Volume()'s own IsQuad() handling). Unlike Volume(), meaningful
+  // for open surfaces too - e.g. a single trimmed planar face isn't
+  // closed, so Volume() doesn't apply to it.
   double Area() const;
 
   // Writes this mesh as a plain-text Wavefront .obj file (`v x y z`

@@ -766,6 +766,36 @@ void TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts() {
         "rather than silently misaligning bands");
 }
 
+void TestMeshAreaCountsBothQuadTriangles() {
+  using dino8::kernel::Mesh;
+
+  // A single flat 2x3 quad face (not two triangles): Area() previously
+  // computed only the first triangle (vi[0],vi[1],vi[2]) and silently
+  // ignored vi[3] entirely for a real (non-degenerate) quad, returning
+  // exactly half the true area for a case like this one, where both
+  // triangles have equal area (half of 6.0 = 3.0, not the true 6.0) -
+  // found while building a SubD test that needed Area() to work
+  // correctly on SubD::ToApproximateMesh()'s genuinely-quad output,
+  // which no earlier test here exercised (every tessellator in this file
+  // emits triangles only).
+  Mesh quad;
+  ON_Mesh& raw = quad.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(3, 0, 0));
+  raw.m_V.Append(ON_3fPoint(3, 2, 0));
+  raw.m_V.Append(ON_3fPoint(0, 2, 0));
+  ON_MeshFace face;
+  face.vi[0] = 0;
+  face.vi[1] = 1;
+  face.vi[2] = 2;
+  face.vi[3] = 3;
+  raw.m_F.Append(face);
+
+  Check(std::abs(quad.Area() - 6.0) < 1e-9,
+        "Area() of a single 3x2 quad face is the true 6.0, not half of it "
+        "(the bug: only the first of the quad's two triangles was counted)");
+}
+
 void TestSubDFromBoxSubdividesToExactCatmullClarkCounts() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -836,6 +866,68 @@ void TestSubDFromControlMeshRejectsEmptyMesh() {
     threw = true;
   }
   Check(threw, "SubD::FromControlMesh throws on a mesh with no faces");
+}
+
+void TestSubDFlatQuadGridStaysFlatAndAreaExact() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // A flat 2x2 grid of quads (3x3 vertices, (0,0,0) to (2,2,0), z=0
+  // everywhere) - unlike the box, this control net has no extraordinary
+  // *interior* vertex: its one interior vertex has valence 4 (regular for
+  // a quad mesh). Worth verifying directly rather than assuming it
+  // carries over from the box test, and the actual measured result is
+  // more nuanced than a first guess: every vertex stays exactly on the
+  // z=0 plane (regular-valence interior subdivision and a straight
+  // boundary edge's own subdivision rule both keep points exactly
+  // in-plane/on-line - verified below), but the *area* still measurably
+  // shrinks (to 3.6875 from 4.0, not preserved) - the 4 boundary corners
+  // are themselves a kind of extraordinary vertex (valence 2, not a
+  // regular interior 4), and Catmull-Clark's smooth corner rule pulls
+  // them inward along the boundary, the same qualitative effect that
+  // shrank the box's volume, just far smaller here since only 4 vertices
+  // are affected instead of every vertex neighboring one of 8 corners.
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      raw.m_V.Append(ON_3fPoint(static_cast<double>(i), static_cast<double>(j), 0.0));
+    }
+  }
+  auto idx = [](int i, int j) { return i * 3 + j; };
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 2; ++j) {
+      ON_MeshFace face;
+      face.vi[0] = idx(i, j);
+      face.vi[1] = idx(i + 1, j);
+      face.vi[2] = idx(i + 1, j + 1);
+      face.vi[3] = idx(i, j + 1);
+      raw.m_F.Append(face);
+    }
+  }
+
+  Check(std::abs(grid.Area() - 4.0) < 1e-9,
+        "sanity: the flat 2x2 quad grid's own area is exactly 4 before any subdivision");
+
+  auto subd = SubD::FromControlMesh(grid);
+  subd.Subdivide(2);
+  const auto approx = subd.ToApproximateMesh();
+
+  bool all_flat = true;
+  for (int i = 0; i < approx.raw().m_V.Count(); ++i) {
+    if (std::abs(static_cast<double>(approx.raw().m_V[i].z)) > 1e-6) {
+      all_flat = false;
+      break;
+    }
+  }
+  Check(all_flat,
+        "subdividing a flat, all-regular-valence quad grid keeps every vertex "
+        "exactly on the z=0 plane (no shrinkage/warping the way the box's "
+        "extraordinary corners caused)");
+  Check(std::abs(approx.Area() - 3.6875) < 1e-6,
+        "the flat grid's area matches the measured post-subdivision value "
+        "(3.6875, not the naively-assumed exact 4) - corner-vertex shrinkage "
+        "on a much smaller scale than the box's, not a bug");
 }
 
 void TestMeshSaveObjRoundTrips() {
@@ -1228,8 +1320,10 @@ int main() {
   TestRevolveProfileRejectsOffAxisEndsAndTooShortProfile();
   TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();
   TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
+  TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
+  TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestMeshSaveObjRoundTrips();
   TestMeshLoadObjRejectsMalformedFiles();
   TestExactClippingMatchesAreaButNotCellCounts();

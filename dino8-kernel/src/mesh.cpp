@@ -84,9 +84,24 @@ double Mesh::Area() const {
     const ON_3fPoint& a = mesh_.m_V[face.vi[0]];
     const ON_3fPoint& b = mesh_.m_V[face.vi[1]];
     const ON_3fPoint& c = mesh_.m_V[face.vi[2]];
-    const ON_3dVector cross =
+    const ON_3dVector cross1 =
         ON_3dVector::CrossProduct(ON_3dVector(b - a), ON_3dVector(c - a));
-    area += 0.5 * cross.Length();
+    area += 0.5 * cross1.Length();
+    if (face.IsQuad()) {
+      // Second triangle (a, c, d) - every other quad-aware computation in
+      // this class (Volume(), ExtrudeCappedSolid()'s boundary-edge
+      // extraction treating a quad as two triangles) already accounts for
+      // both halves; Area() didn't, and silently returned exactly half
+      // the true area for any real (non-degenerate) quad face - not
+      // exercised by any earlier test here, since every tessellator in
+      // this file emits triangles only (vi[3] == vi[2]), but a real bug
+      // for the quad meshes SubD::ToApproximateMesh() and a hand-built
+      // quad mesh (MakeQuadBoxMesh in the tests) actually produce.
+      const ON_3fPoint& d = mesh_.m_V[face.vi[3]];
+      const ON_3dVector cross2 =
+          ON_3dVector::CrossProduct(ON_3dVector(c - a), ON_3dVector(d - a));
+      area += 0.5 * cross2.Length();
+    }
   }
   return area;
 }
