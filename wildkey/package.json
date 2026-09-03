@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "npm run build && node --test tests/api.test.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

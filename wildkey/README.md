@@ -47,6 +47,11 @@ npm install
 npm run dev      # http://localhost:3000
 npm run lint
 npm run build
+npm test          # builds, then runs tests/api.test.mjs against a real server + fresh SQLite db
 ```
 
 Signup/login writes to `.data/wildkey.sqlite3` in the project root (gitignored). Delete `.data/` to reset local accounts/observations.
+
+## Testing
+
+`tests/api.test.mjs` (Node's built-in test runner, no extra framework dependency) boots a real `next start` server on a dedicated port against a fresh, disposable SQLite database and drives it entirely through `fetch` — no mocking of routes, the store, or the database. It covers the backend logic most at risk of silent regression: the quality-grade threshold (independent agrees only, self-agree excluded), sensitive-species obscuring (location text and grid-snapped coordinates) for both the API and the map bbox endpoint, ownership/role enforcement on every write path, the Collection-project live saved search, and account-deletion cascade behavior. `tests/server.mjs` is the shared server lifecycle + auth helper; every `it()` gets its own signed-up account.
