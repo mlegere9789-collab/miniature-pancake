@@ -626,6 +626,26 @@ class TestLoadJobs(JobsFileTestCase):
         jobs = sch.load_jobs()
         self.assertEqual([j["name"] for j in jobs], ["hourly-job"])
 
+    def test_malformed_json_is_treated_as_no_jobs(self):
+        sch.JOBS_EXAMPLE_PATH.write_text("not valid json {", encoding="utf-8")
+        self.assertEqual(sch.load_jobs(), [])
+
+    def test_non_object_json_is_treated_as_no_jobs(self):
+        sch.JOBS_EXAMPLE_PATH.write_text(
+            json.dumps(["not", "an", "object"]), encoding="utf-8"
+        )
+        self.assertEqual(sch.load_jobs(), [])
+
+    def test_jobs_key_not_a_list_is_treated_as_no_jobs(self):
+        sch.JOBS_EXAMPLE_PATH.write_text(
+            json.dumps({"jobs": "not a list"}), encoding="utf-8"
+        )
+        self.assertEqual(sch.load_jobs(), [])
+
+    def test_missing_file_is_treated_as_no_jobs(self):
+        # Neither JOBS_PATH nor JOBS_EXAMPLE_PATH exists in this temp dir.
+        self.assertEqual(sch.load_jobs(), [])
+
 
 class TestParseAt(unittest.TestCase):
     def test_hourly_ignores_at(self):

@@ -53,9 +53,29 @@ _CRON_DOW = {"mon": 1, "tue": 2, "wed": 3, "thu": 4, "fri": 5, "sat": 6, "sun": 
 #  Job loading
 # --------------------------------------------------------------------------- #
 def load_jobs(*, enabled_only: bool = False) -> list[dict[str, Any]]:
+    """Load jobs.json (or jobs.example.json if it doesn't exist yet).
+
+    Malformed or wrong-shaped JSON is treated as "no jobs" rather than
+    raising -- every other JSON file this project reads (scheduler state,
+    the heartbeat, module briefs/asset queues) already falls back the same
+    way instead of crashing its caller. This one is also loud about it on
+    the console: unlike those, jobs.json controls whether real scheduled
+    runs happen at all, so silently going to zero jobs (e.g. `cmd_run`'s
+    poll loop would otherwise just stop running anything, forever, with no
+    sign why) deserves a warning, not just a quiet fallback.
+    """
     path = JOBS_PATH if JOBS_PATH.exists() else JOBS_EXAMPLE_PATH
-    data = json.loads(path.read_text(encoding="utf-8"))
-    jobs = [j for j in data.get("jobs", []) if isinstance(j, dict) and j.get("name")]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        print(f"[scheduler] WARNING: {path} is not readable/valid JSON ({exc}).")
+        print("[scheduler] Treating it as zero jobs until this is fixed.")
+        return []
+    if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
+        print(f'[scheduler] WARNING: {path} is not shaped like {{"jobs": [...]}}.')
+        print("[scheduler] Treating it as zero jobs until this is fixed.")
+        return []
+    jobs = [j for j in data["jobs"] if isinstance(j, dict) and j.get("name")]
     if enabled_only:
         jobs = [j for j in jobs if j.get("enabled")]
     return jobs
