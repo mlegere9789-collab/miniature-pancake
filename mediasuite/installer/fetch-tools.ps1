@@ -236,6 +236,118 @@ else {
     }
 }
 
+Write-Host "== Face Enhance (GFPGAN-ncnn, compiled from source) =="
+# Same situation as LibRaw above, one step further out: no official or actively
+# maintained prebuilt Windows binary exists anywhere for a GFPGAN face-restoration
+# pipeline over ncnn. installer/native/face-enhance/ vendors real, working source for one
+# (see its own README.md for exactly where from and why) — this compiles it for real
+# with vcpkg-built opencv4 and ncnn, the same cl.exe-against-vcpkg-libs pattern as the
+# LibRaw compile just above, just with more source files and two vcpkg packages instead
+# of one. This is more speculative still than that LibRaw compile: opencv4 and ncnn are
+# vcpkg ports this script has never exercised in CI before, so their exact port names or
+# build success are confirmed here for the first time, not assumed. Written to fail soft
+# for the same reason — the AI Photo Upscaler works exactly as it did before without
+# this, faceEnhance just has nothing to run.
+if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+    Write-Warning "cl.exe not on PATH — skipping the Face Enhance compile."
+}
+elseif (-not $env:VCPKG_INSTALLATION_ROOT) {
+    Write-Warning "VCPKG_INSTALLATION_ROOT is not set — skipping the Face Enhance compile."
+}
+else {
+    try {
+        $vcpkgExe = Join-Path $env:VCPKG_INSTALLATION_ROOT "vcpkg.exe"
+        & $vcpkgExe install "opencv4:x64-windows-static" "ncnn:x64-windows-static"
+        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+            throw "vcpkg install opencv4/ncnn failed with exit code $LASTEXITCODE"
+        }
+
+        $installedDir = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed\x64-windows-static"
+        $libDir = Join-Path $installedDir "lib"
+        $includeDir = Join-Path $installedDir "include"
+        $libFiles = Get-ChildItem -Path $libDir -Filter "*.lib" -ErrorAction Stop
+        if (-not $libFiles) {
+            throw "No .lib files found under $libDir after vcpkg install."
+        }
+
+        $faceEnhanceSrcDir = Join-Path $PSScriptRoot "native\face-enhance"
+        $faceEnhanceStage = Join-Path $ToolsDir "gfpgan"
+        New-Item -ItemType Directory -Force -Path $faceEnhanceStage | Out-Null
+        $exePath = Join-Path $faceEnhanceStage "face_enhance.exe"
+
+        $sources = @("face_enhance.cpp", "face.cpp", "gfpgan.cpp") | ForEach-Object { Join-Path $faceEnhanceSrcDir $_ }
+
+        # Both vendored source files #include bare "net.h"/"opencv2/opencv.hpp" (no
+        # "ncnn/" or package prefix), matching each library's own standard install
+        # layout (ncnn under include\ncnn\*.h; OpenCV's own opencv2\ already sits
+        # directly under include\ on every layout vcpkg has used for this port) — so
+        # both go on the include path, and the ncnn one is added only if vcpkg actually
+        # produced it, in case a future vcpkg version changes that layout.
+        $includePaths = @("/I$includeDir")
+        $ncnnIncludeDir = Join-Path $includeDir "ncnn"
+        if (Test-Path $ncnnIncludeDir) {
+            $includePaths += "/I$ncnnIncludeDir"
+        }
+
+        # /MT to match vcpkg's x64-windows-static triplet (static CRT), same reasoning as
+        # the LibRaw compile above. Linking every .lib vcpkg produced for this triplet
+        # rather than guessing opencv4's and ncnn's combined transitive dependency list
+        # (protobuf, zlib, libpng, libjpeg-turbo, ...) by name.
+        & cl.exe /nologo /EHsc /O2 /MT $includePaths $sources "/Fe:$exePath" /link $libFiles.FullName
+        if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
+            throw "Compiling face_enhance.cpp failed with exit code $LASTEXITCODE"
+        }
+        if (-not (Test-Path $exePath)) {
+            throw "cl.exe reported success but $exePath does not exist."
+        }
+        Write-Host "  compiled face-enhance -> $faceEnhanceStage (face_enhance.exe)"
+
+        # Model weights: same repository the source came from (see the README.md next to
+        # it), too large (>100 MB) for a GitHub release so hosted on Google Drive instead.
+        # A file this size trips Google Drive's "can't scan for viruses" interstitial page
+        # rather than streaming directly; drive.usercontent.google.com's download endpoint
+        # with confirm=t bypasses that for an anonymous request without needing to scrape
+        # a per-request confirm token out of a cookie the way the classic
+        # drive.google.com/uc endpoint requires.
+        $modelsZip = Join-Path ([System.IO.Path]::GetTempPath()) "mediasuite-dl-$([Guid]::NewGuid())-gfpgan-models.zip"
+        $modelsFileId = "1Lfs2fBU1ecaIKiQtMTaZW4q099PgPpA9"
+        Invoke-WebRequest `
+            -Uri "https://drive.usercontent.google.com/download?id=$modelsFileId&export=download&confirm=t" `
+            -OutFile $modelsZip -Headers $webHeaders -UseBasicParsing
+
+        $modelsBytes = [System.IO.File]::ReadAllBytes($modelsZip)
+        $looksLikeZip = $modelsBytes.Length -gt 2 -and $modelsBytes[0] -eq 0x50 -and $modelsBytes[1] -eq 0x4B
+        if (-not $looksLikeZip) {
+            $previewLength = [Math]::Min(200, $modelsBytes.Length)
+            $preview = [System.Text.Encoding]::ASCII.GetString($modelsBytes[0..($previewLength - 1)])
+            Remove-Item $modelsZip -Force
+            throw "Google Drive did not return a zip file for the GFPGAN models ($($modelsBytes.Length) bytes). Response started with: $preview"
+        }
+
+        $modelsExtract = Expand-ToTemp -ArchivePath $modelsZip
+        $modelsStage = Join-Path $faceEnhanceStage "models"
+        New-Item -ItemType Directory -Force -Path $modelsStage | Out-Null
+
+        # Only the face detector and GFPGAN itself — not the archive's own real_esrgan
+        # model pair, which face_enhance.exe never loads: it restores faces onto whatever
+        # background image it is handed, already upscaled by this app's own Real-ESRGAN
+        # pass before face_enhance.exe ever runs.
+        $neededModels = @("yolov5-blazeface.param", "yolov5-blazeface.bin", "encoder.param", "encoder.bin", "style.bin")
+        foreach ($modelFile in $neededModels) {
+            $found = Get-ChildItem -Path $modelsExtract -Recurse -File -Filter $modelFile | Select-Object -First 1
+            if (-not $found) {
+                throw "Could not find $modelFile anywhere under $modelsExtract after extracting the GFPGAN models archive."
+            }
+            Copy-Item -Path $found.FullName -Destination (Join-Path $modelsStage $modelFile) -Force
+        }
+        Remove-Item $modelsExtract -Recurse -Force
+        Write-Host "  staged gfpgan models -> $modelsStage"
+    }
+    catch {
+        Write-Warning "Face Enhance build failed, continuing without it: $_"
+    }
+}
+
 Write-Host "== Ghostscript =="
 # Ghostscript only ships a GUI installer, and Artifex deliberately removed its silent
 # install flag in 10.01.0+ as a security decision — /S today just launches the GUI

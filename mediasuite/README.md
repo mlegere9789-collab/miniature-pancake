@@ -186,12 +186,20 @@ Convert.
 - **Unit and time converters** — length/mass/area/volume/temperature/data/speed, and time
   zones/Unix timestamps/durations/frame counts; pure arithmetic with no file to convert,
   so unlike every other module these never touch the job queue at all
-- **AI upscaler** — 2x/4x/8x with general or anime models, optional denoise and sharpen,
-  through Real-ESRGAN's ncnn-vulkan build (GPU via Vulkan, with a CPU fallback); 8x is two
-  chained passes rather than trusting every build to accept a single "-s 8"; sharpening is
-  an ordinary ImageMagick unsharp pass afterwards, since Real-ESRGAN has none of its own.
-  "Face enhance" from the brief is not implemented — it needs a second bundled model
-  (GFPGAN) the tool manifest does not carry yet, so it is a follow-up, not a fake
+- **AI upscaler** — 2x/4x/8x with general or anime models, optional denoise, sharpen and
+  face enhance, through Real-ESRGAN's ncnn-vulkan build (GPU via Vulkan, with a CPU
+  fallback); 8x is two chained passes rather than trusting every build to accept a single
+  "-s 8"; sharpening is an ordinary ImageMagick unsharp pass afterwards, since Real-ESRGAN
+  has none of its own. Face enhance is an extra pass, not a third model — detects faces in
+  the already-upscaled image and restores each one through GFPGAN, the same shape the real
+  upstream `realesrgan` Python CLI's own `--face_enhance` flag has. Its tool
+  (`gfpgan/face_enhance.exe`, CPU-only) has no official prebuilt Windows binary anywhere,
+  so `fetch-tools.ps1` compiles real vendored source for it against vcpkg-built `opencv4`
+  and `ncnn` — see `installer/native/face-enhance/README.md` and `tools/README.md` for
+  exactly where that source and its models come from, and why it's the most speculative,
+  most fail-soft entry in the whole fetch: unlike everything else bundled so far, this is
+  a real from-source compile confirmed working by real CI, not a known-good download, and
+  its actual visual output quality has not been verified by a human on a real photo
 - **Running jobs from the UI** — pick a tool, an output format and a quality preset,
   choose where results go, and the staged files are queued one job each — except for
   tools that merge their inputs, which take the whole selection as a single job
