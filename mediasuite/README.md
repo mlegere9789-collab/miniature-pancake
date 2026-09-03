@@ -128,7 +128,10 @@ Convert.
   tool's full stderr/stdout, not just the one-line summary — `JobResult.Diagnostics`
   was being captured in every engine's `ToolExecutionException` all along and then
   discarded before this, which would have left a real failure with no way to see what
-  the underlying tool actually said
+  the underlying tool actually said. Closing the app while anything is still running or
+  queued asks for confirmation first — closing the window used to kill every in-flight
+  job's process outright with no warning at all, silently throwing away work that could
+  be most of the way through a long encode or upscale
 - **Image module** — convert (including camera RAW via LibRaw), compress, resize, crop,
   rotate, flip, enlarge and PNG-to-SVG tracing, driven by ImageMagick and Potrace
 - **Video and audio module** — convert, compress (by quality or by target size), extract

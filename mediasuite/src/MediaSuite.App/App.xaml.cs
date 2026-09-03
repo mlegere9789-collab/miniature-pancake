@@ -50,6 +50,13 @@ public partial class App : Application
             return;
         }
 
+        // Started this early, not after the window is up: everything below (settings
+        // load, tool discovery, engine registry, Drive client) is real I/O that can take
+        // a visible moment, and a second launch racing in during that window would
+        // otherwise find nobody listening yet. OnFilesForwardedFromAnotherLaunch already
+        // tolerates _window/_mainViewModel still being null this early.
+        singleInstance.StartListening(OnFilesForwardedFromAnotherLaunch);
+
         DispatcherUnhandledException += OnDispatcherUnhandledException;
 
         var store = new JsonSettingsStore();
@@ -92,8 +99,6 @@ public partial class App : Application
 
         this.MainWindow = _window;
         _window.Show();
-
-        singleInstance.StartListening(OnFilesForwardedFromAnotherLaunch);
     }
 
     /// <summary>

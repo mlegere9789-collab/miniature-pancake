@@ -135,6 +135,23 @@ that is easy to mistake for a bug — check those first.
   useful to add (e.g. "tool is not installed") doesn't show it either — there's nothing
   a "details" button would add over the message already shown.
 
+## Closing while a job is running
+
+- [ ] Start a real conversion job slow enough to still be running a few seconds later
+  (a video convert or an upscale), then close the window (X button, Alt+F4, or the
+  taskbar's own close). Confirm a warning appears naming how many jobs are still running
+  or queued, and that closing without confirming leaves the app open with the job still
+  running untouched. Confirm the window's title bar close button and the dialog's own
+  close (X) both count as "no" — only the explicit "Yes" should let the app actually
+  close.
+- [ ] Confirm the same warning appears for a job still *queued* behind the concurrency
+  limit, not just one actively running.
+- [ ] Choose to close anyway and confirm the running job is actually gone (its process,
+  visible in Task Manager while it ran, ends) rather than continuing in the background
+  after the window disappears.
+- [ ] Close the app with the queue empty, or with only finished (done/failed/canceled)
+  jobs in it, and confirm no warning appears at all.
+
 ## Custom presets
 
 - [ ] Pick a tool, select the Custom preset, type a couple of real advanced options (an
