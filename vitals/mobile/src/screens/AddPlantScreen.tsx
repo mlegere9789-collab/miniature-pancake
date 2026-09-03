@@ -100,11 +100,20 @@ export function AddPlantScreen({ gardenId, editingPlant, onCreated, onCancel }: 
     }
     setSubmitting(true);
     try {
+      // Number("") and Number("abc") are NaN — those should fall back to
+      // the default, but Number("0") is a legitimate 0 (spec §4.1 allows a
+      // 0-10 importance range) and must NOT be coerced back to the
+      // fallback with `|| default`, which would silently discard it.
+      const cadence = Number(checkinCadenceDays);
+      const importance = Number(importanceWeight);
+      const checkinCadenceDaysValue = Number.isNaN(cadence) ? 14 : cadence;
+      const importanceWeightValue = Number.isNaN(importance) ? 1 : importance;
+
       const plant = isEditing
         ? await updatePlant(editingPlant!.id, {
             nickname: nickname.trim() || null,
-            checkinCadenceDays: Number(checkinCadenceDays) || 14,
-            importanceWeight: Number(importanceWeight) || 1,
+            checkinCadenceDays: checkinCadenceDaysValue,
+            importanceWeight: importanceWeightValue,
             frostSensitive,
             dormancyMonths: dormantInWinter ? dormancyMonths : [],
           })
@@ -113,8 +122,8 @@ export function AddPlantScreen({ gardenId, editingPlant, onCreated, onCancel }: 
             speciesId: speciesName.trim().toLowerCase().replace(/\s+/g, "-"),
             speciesName: speciesName.trim(),
             nickname: nickname.trim() || undefined,
-            checkinCadenceDays: Number(checkinCadenceDays) || 14,
-            importanceWeight: Number(importanceWeight) || 1,
+            checkinCadenceDays: checkinCadenceDaysValue,
+            importanceWeight: importanceWeightValue,
             frostSensitive,
             dormancyMonths: dormantInWinter ? dormancyMonths : [],
           });

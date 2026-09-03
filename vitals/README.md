@@ -239,6 +239,12 @@ npx expo start
   (`backend/src/server.ts`) — verified by hitting an archive endpoint with
   a bad ID against an unreachable DB: the request now returns in ~60ms
   with a 500 instead of hanging.
+- **Add/Edit Plant form silently discarded an intentional importance of 0.**
+  `Number(importanceWeight) || 1` treats `0` as falsy, so entering `0` (a
+  legitimate value — spec §4.1's importance range is 0-10, meant for "don't
+  count this one in my Garden Score") got silently coerced back to `1` on
+  every submit. Fixed by only falling back on `NaN` (empty/invalid input),
+  not on a real `0`.
 - **`computeGardenScore` could produce `NaN`.** It divided by the sum of
   every plant's `importanceWeight`, which the spec §4.1 range (0-10)
   explicitly allows to be 0 — a garden where every plant is weighted 0
