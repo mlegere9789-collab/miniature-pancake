@@ -408,6 +408,14 @@ committed, since it had never existed in the repo before.
   plant" action on the plant detail screen (with a confirmation, since it's
   not easily undoable from the UI); its check-in history and score
   snapshots are kept, it just drops out of the active views.
+- **Editing a plant reset its reminder countdown even when cadence didn't
+  change.** `App.tsx`'s `AddPlant` `onCreated` handler called
+  `scheduleCheckInReminder` on every save, including edits that only
+  touched the nickname or importance weight — discarding whatever
+  countdown progress the existing reminder had (e.g. fixing a typo 13 days
+  into a 14-day cycle would silently push the next reminder back to 14
+  days out). Now only reschedules for a brand-new plant or when
+  `checkinCadenceDays` actually changed.
 - **An offline-queued check-in never reset its reminder once synced.**
   `App.tsx`'s check-in flow only called `scheduleCheckInReminder` for the
   synchronous online path (`result` non-null); when a check-in went through

@@ -215,7 +215,14 @@ export default function App() {
               gardenId={DEMO_GARDEN_ID}
               editingPlant={route.params?.editingPlant}
               onCreated={(plant) => {
-                scheduleCheckInReminder(plant).catch(() => undefined);
+                // Only reset the reminder countdown for a brand-new plant
+                // or when the cadence itself changed — an edit that only
+                // touches the nickname/importance/etc. shouldn't discard
+                // whatever countdown progress the existing reminder had.
+                const cadenceChanged = route.params?.editingPlant?.checkinCadenceDays !== plant.checkinCadenceDays;
+                if (!route.params?.editingPlant || cadenceChanged) {
+                  scheduleCheckInReminder(plant).catch(() => undefined);
+                }
                 setRefreshKey((k) => k + 1);
                 navigation.goBack();
               }}
