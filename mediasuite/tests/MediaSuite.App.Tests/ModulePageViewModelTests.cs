@@ -121,7 +121,7 @@ public sealed class ModulePageViewModelTests : IDisposable
 
         fixture.Page.AddFilesCommand.Execute(new[] { @"C:\videos\clip.mp4", @"C:\VIDEOS\CLIP.MP4" });
 
-        Assert.Equal(1, fixture.Page.StagedFiles.Count);
+        Assert.Single(fixture.Page.StagedFiles);
     }
 
     [Fact]
