@@ -82,16 +82,16 @@ export default function App() {
           title: "Vitals",
           headerRight: () => (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 16 }}>
-              <Pressable onPress={() => navigation.navigate("YardMap")}>
+              <Pressable onPress={() => navigation.navigate("YardMap")} accessibilityLabel="Yard map" accessibilityRole="button">
                 <Text style={{ color: theme.color.forestGreen, fontSize: 20 }}>🗺️</Text>
               </Pressable>
-              <Pressable onPress={() => navigation.navigate("Leaderboard")}>
+              <Pressable onPress={() => navigation.navigate("Leaderboard")} accessibilityLabel="Leaderboard" accessibilityRole="button">
                 <Text style={{ color: theme.color.forestGreen, fontSize: 20 }}>🏆</Text>
               </Pressable>
-              <Pressable onPress={() => navigation.navigate("ReportCard")}>
+              <Pressable onPress={() => navigation.navigate("ReportCard")} accessibilityLabel="Weekly report" accessibilityRole="button">
                 <Text style={{ color: theme.color.forestGreen, fontSize: 20 }}>📋</Text>
               </Pressable>
-              <Pressable onPress={() => navigation.navigate("AddPlant")}>
+              <Pressable onPress={() => navigation.navigate("AddPlant")} accessibilityLabel="Add plant" accessibilityRole="button">
                 <Text style={{ color: theme.color.forestGreen, fontSize: 28, marginRight: 4 }}>+</Text>
               </Pressable>
             </View>

@@ -144,6 +144,9 @@ export function YardMapScreen({ gardenId, onSelectPlant }: Props) {
               ]}
               onPress={() => onSelectPlant(plant)}
               onLongPress={() => setPlacingPlantId(plant.id)}
+              accessibilityLabel={`${plant.nickname || plant.speciesName}, score ${Math.round(plant.scoreCurrent)}`}
+              accessibilityRole="button"
+              accessibilityHint="Double tap to view. Long-press to move this pin."
             />
           ))}
       </Pressable>

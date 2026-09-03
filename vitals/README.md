@@ -278,6 +278,11 @@ npx expo start
   listener and driving the drag off PanResponder's own cumulative `dx`,
   which needs no anchor at all; also widened the touch target with
   `hitSlop` since the visible knob is much wider than the 4px handle.
+- **Icon-only buttons and yard-map pins had no accessibility labels.** The
+  dashboard header's 🗺️/🏆/📋/+ buttons and each yard-map pin (a plain
+  colored dot) had nothing for a screen reader to announce. Added
+  `accessibilityLabel`/`accessibilityRole` to all of them, plus a hint on
+  pins explaining the long-press-to-move gesture.
 - **Missing native permission config for the photo library picker.**
   `expo-image-picker` was added for the yard map's photo picker but
   `app.json` was never updated — no `NSPhotoLibraryUsageDescription` on iOS
