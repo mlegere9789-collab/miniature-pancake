@@ -15,7 +15,7 @@ core (config, database, logging, scheduler, dashboard).
 | `logger.py` | The API modules use: `get_logger("<module>")` → `.activity()`, `.status()`, `.earning()`, `.flag_for_review()` (optionally pushes a webhook notification — see `notifier.py`). |
 | `notifier.py` | Optional push notification (Slack/Discord/generic webhook) whenever any module flags something for review or errors out. Unconfigured = silent no-op. |
 | `scheduler.py` | Trigger scripts on a cadence. Generates cron entries (Linux/macOS) **or** runs a portable Python daemon (any OS, incl. Windows). |
-| `dashboard.py` | A local web dashboard: per-module status, earnings (with a CSV export for bookkeeping), an interactive review queue (with a recently-resolved audit trail of past approve/reject decisions), and an activity feed. |
+| `dashboard.py` | A local web dashboard: per-module status with a **Run now** button, earnings (with a CSV export for bookkeeping), an interactive review queue (with a recently-resolved audit trail of past approve/reject decisions), and an activity feed. |
 | `cli.py` / `__main__.py` | `python -m orchestrator <command>`. |
 | `demo.py` | Seeds sample data so you can explore the dashboard immediately. |
 | `paths.py` | Single source of truth for file locations and the module list. |

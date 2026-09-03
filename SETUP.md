@@ -83,7 +83,9 @@ Open **http://127.0.0.1:8787** in your browser. You'll see:
 - a summary strip (total earnings, items awaiting review) with a **Download
   CSV** link for the full earnings ledger (bookkeeping/taxes — also
   available as `python3 -m orchestrator export-earnings`),
-- a card per module (status, last activity, earnings, pending reviews),
+- a card per module (status, last activity, earnings, pending reviews) with
+  a **Run now** button — trigger that module immediately instead of waiting
+  for its schedule,
 - the **review queue** with working **Approve** / **Reject** buttons,
 - **Recently resolved**, an audit trail of your last few approve/reject
   decisions (so you can see what you decided, and when),

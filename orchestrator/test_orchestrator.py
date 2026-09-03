@@ -15,6 +15,7 @@ import csv
 import io
 import json
 import os
+import sys
 import tempfile
 import threading
 import unittest
@@ -938,6 +939,33 @@ class TestDashboardHelpers(unittest.TestCase):
         self.assertEqual(dashboard._esc(None), "")
 
 
+class TestTriggerRun(unittest.TestCase):
+    def test_unknown_module_returns_false_and_does_not_launch(self):
+        with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
+            self.assertFalse(dashboard.trigger_run("not_a_real_module"))
+        popen_mock.assert_not_called()
+
+    def test_known_module_launches_and_returns_true(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
+                    self.assertTrue(dashboard.trigger_run("deal_alert_bot"))
+                popen_mock.assert_called_once()
+                args, kwargs = popen_mock.call_args
+                self.assertEqual(
+                    args[0],
+                    [sys.executable, "-m", "modules.deal_alert_bot.run"],
+                )
+                self.assertEqual(kwargs["cwd"], str(Path(d)))
+                self.assertTrue(
+                    (Path(d) / "data" / "logs" / "deal_alert_bot.log").exists()
+                )
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+
 class TestRenderEarningsCsv(TempDatabaseTestCase):
     def test_header_only_when_empty(self):
         rows = list(csv.reader(io.StringIO(dashboard.render_earnings_csv())))
@@ -982,6 +1010,17 @@ class TestRenderPage(TempDatabaseTestCase):
     def test_includes_csv_download_link(self):
         page = dashboard.render_page()
         self.assertIn('href="/export/earnings.csv"', page)
+
+    def test_includes_a_run_now_button_per_module(self):
+        page = dashboard.render_page()
+        for name in MODULES:
+            self.assertIn(f'value="{name}"', page)
+        self.assertIn("Run now", page)
+
+    def test_running_module_shows_disabled_button(self):
+        db.set_status("deal_alert_bot", "running", "Scanning")
+        page = dashboard.render_page()
+        self.assertIn("Running…", page)
 
     def test_includes_resolved_decisions(self):
         rid = db.add_review_item("deal_alert_bot", "Post this deal?")
@@ -1052,6 +1091,34 @@ class TestDashboardHandler(TempDatabaseTestCase):
         opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
         opener.open(req, timeout=5)
         self.assertEqual(db.pending_reviews(), [])
+
+    def test_run_post_triggers_module_and_redirects(self):
+        body = b"module=deal_alert_bot"
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/run", data=body, method="POST"
+        )
+        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
+                    resp = opener.open(req, timeout=5)
+            finally:
+                dashboard.PROJECT_ROOT = orig
+        self.assertEqual(resp.status, 200)  # followed the redirect to "/"
+        popen_mock.assert_called_once()
+
+    def test_run_post_ignores_unknown_module(self):
+        body = b"module=not_a_real_module"
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/run", data=body, method="POST"
+        )
+        opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
+        with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
+            resp = opener.open(req, timeout=5)
+        self.assertEqual(resp.status, 200)
+        popen_mock.assert_not_called()
 
 
 if __name__ == "__main__":
