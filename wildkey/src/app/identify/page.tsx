@@ -12,6 +12,7 @@ import {
   type ObservationNeedingId,
 } from "@/lib/api-observations";
 import { getMockSpecies } from "@/lib/mock-species";
+import { LazyPhoto } from "@/components/lazy-photo";
 
 type Decision = "agreed" | "skipped";
 
@@ -144,8 +145,7 @@ function IdentifyCard({
       style={{ borderColor: "var(--color-border)", background: "var(--color-surface)", boxShadow: "var(--shadow-1)" }}
     >
       {photoUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={photoUrl} alt={commonName} className="aspect-[4/3] w-full object-cover" />
+        <LazyPhoto src={photoUrl} alt={commonName} className="aspect-[4/3] w-full object-cover" />
       ) : (
         <div
           className="flex aspect-[4/3] w-full items-center justify-center text-sm"

@@ -12,6 +12,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import type { CurrentUser } from "@/lib/auth-context";
 import { QualityGradeBadge } from "@/components/quality-grade-badge";
+import { LazyPhoto } from "@/components/lazy-photo";
 
 export default function ObservationDetailPage({
   params,
@@ -100,8 +101,7 @@ export default function ObservationDetailPage({
         className="overflow-hidden rounded-lg border"
         style={{ borderColor: "var(--color-border)", background: "var(--color-surface)", boxShadow: "var(--shadow-1)" }}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
+        <LazyPhoto
           src={observation.photoDataUrl}
           alt={observation.commonName}
           className="aspect-[4/3] w-full object-cover"

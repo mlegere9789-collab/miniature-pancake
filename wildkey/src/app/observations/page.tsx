@@ -15,6 +15,7 @@ import {
 import { useMode } from "@/lib/mode-context";
 import { useAuth } from "@/lib/auth-context";
 import { QualityGradeBadge } from "@/components/quality-grade-badge";
+import { LazyPhoto } from "@/components/lazy-photo";
 import type { QualityGrade } from "@/lib/server/store";
 
 const SYNC_LABEL: Record<SyncState, string> = {
@@ -116,8 +117,7 @@ export default function ObservationsPage() {
               className="flex items-center gap-3 rounded-lg border p-3"
               style={{ borderColor: "var(--color-border)", background: "var(--color-surface)", boxShadow: "var(--shadow-1)" }}
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
+              <LazyPhoto
                 src={o.photoDataUrl}
                 alt={o.commonName}
                 className="h-16 w-16 shrink-0 rounded-md object-cover"
