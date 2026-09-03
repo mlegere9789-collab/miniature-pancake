@@ -43,6 +43,7 @@ add_library(dino8_kernel STATIC
   src/mesh.cpp
   src/boolean.cpp
   src/file_io.cpp
+  src/subd.cpp
 )
 
 target_include_directories(dino8_kernel

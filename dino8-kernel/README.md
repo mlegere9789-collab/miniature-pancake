@@ -281,6 +281,40 @@ What this repo does instead:
   a percent of the true value. Measured volume matched to `1e-9`, an
   exact-value check in the same tier as the `Box()`/annulus tests, plus
   the same Manifold-union watertightness proof as every other solid here.
+- `dino8::kernel::SubD` (new file, `include/dino8/kernel/subd.h` /
+  `src/subd.cpp`) wraps `ON_SubD` — OpenNURBS' **real, working**
+  Catmull-Clark subdivision surface implementation, closing chunk 1's
+  original "no SubD support yet" gap. Verified directly against the
+  v8.34 source before relying on it, the same discipline that caught
+  `ON_Brep::CreateMesh`/`ON_Surface::CreateMesh` as unimplemented stubs
+  in chunk 2: `ON_SubD::BrepForm()`/`GetSurfaceBrep()` (the path that
+  would convert a SubD to a real Brep/NURBS) is *also* a stub —
+  `BrepForm()` is literally `return nullptr;` in the public source — but
+  `ON_SubD::GlobalSubdivide()` is genuine, non-stub Catmull-Clark
+  refinement: real face-point/edge-point/vertex-point computation,
+  confirmed by reading the implementation, not just calling it and
+  hoping. `SubD::FromControlMesh()` builds a level-0 control cage
+  directly from an existing closed `Mesh`'s own faces
+  (`ON_SubD::CreateFromMesh`); `Subdivide(levels)` applies real global
+  subdivision in place; `ToApproximateMesh()` extracts the current
+  level's control net as a `Mesh` (`ON_SubD::GetControlNetMesh`).
+  **This is deliberately not exact limit-surface evaluation** — OpenNURBS'
+  public API has no exact limit mesher, only the control net at whatever
+  level you've subdivided to; repeated subdivision is the standard
+  "just refine a lot" approximation used before a real limit evaluator,
+  and is documented here as exactly that, not oversold as the real thing.
+  Verified with hand-derived exact numbers, not just plausible ones: a
+  6-quad box control cage has `V=8, E=12, F=6` (Euler-checked: `8-12+6=2`);
+  Catmull-Clark's own rule (`V_new = V+E+F`, `F_new` = 4x once all-quad)
+  gives level 1 `V=26, F=24` and level 2 `V=98, F=96` — both measured
+  exactly. Volume was *not* assumed to stay near the cube's 8: probing
+  levels 1-5 showed it dropping `8 → 3.5 → 2.80 → 2.66 → 2.63 → 2.62`,
+  converging (not diverging) toward roughly a third of the cube's volume —
+  real behavior for a cube's 8 valence-3 extraordinary corners under
+  Catmull-Clark, confirmed by the monotonic, stabilizing trend rather than
+  assumed to be a bug or "close enough to 8." The same Manifold-union
+  watertightness proof as every other solid here passes on the subdivided
+  mesh too.
 
 ## What's still not done (as of chunk 2)
 
@@ -319,10 +353,17 @@ What this repo does instead:
   different resolutions along their shared edge) — vertex-snapping can't
   fix a genuine T-junction, only near-identical positions at matching
   sample counts.
-- SubD modeling, adaptive/curvature-aware meshing, the viewport/display
-  engine, GPU path tracer, command engine, UI shell, visual scripting,
-  other file formats, undo system, installer, and everything else in the
-  blueprint's roadmap — all unstarted.
+- `SubD` wraps real Catmull-Clark refinement, but not exact limit-surface
+  evaluation — `ToApproximateMesh()` is the repeated-subdivision
+  approximation, not the true smooth surface, and there's no crease/
+  sharp-edge support (`ON_SubDFromMeshParameters::Smooth` is the only
+  option used), no SubD editing (adding/removing faces, extrude, etc.),
+  and no SubD ↔ Brep conversion (that direction is the stubbed
+  `BrepForm()`/`GetSurfaceBrep()` this section already flagged).
+- Adaptive/curvature-aware meshing, the viewport/display engine, GPU path
+  tracer, command engine, UI shell, visual scripting, other file formats,
+  undo system, installer, and everything else in the blueprint's
+  roadmap — all unstarted.
 
 ## Layout
 

@@ -12,6 +12,7 @@
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/file_io.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/subd.h"
 #include "dino8/kernel/surface.h"
 
 namespace {
@@ -137,6 +138,47 @@ dino8::kernel::Mesh MakeBox(double x0, double y0, double z0, double x1,
   add_tri(0, 7, 3);  // left (-x)
   add_tri(1, 2, 6);
   add_tri(1, 6, 5);  // right (+x)
+
+  return mesh;
+}
+
+// Same box as MakeBox(), but as 6 genuine quad faces rather than 12
+// triangles - each quad below is the same pair of MakeBox() triangles
+// merged along their shared diagonal (e.g. bottom's (0,3,2)+(0,2,1)
+// becomes the quad 0,3,2,1), so it has the identical outward-normal
+// winding, just needed for SubD tests: Catmull-Clark subdivision's
+// vertex/face-count growth has a clean, hand-derivable formula on an
+// all-quad control net (V_new = V+E+F, F_new = 4x once every face is a
+// quad), which a triangulated box wouldn't give.
+dino8::kernel::Mesh MakeQuadBoxMesh(double x0, double y0, double z0, double x1, double y1,
+                                     double z1) {
+  dino8::kernel::Mesh mesh;
+  ON_Mesh& raw = mesh.raw();
+
+  raw.m_V.Append(ON_3fPoint(x0, y0, z0));  // 0
+  raw.m_V.Append(ON_3fPoint(x1, y0, z0));  // 1
+  raw.m_V.Append(ON_3fPoint(x1, y1, z0));  // 2
+  raw.m_V.Append(ON_3fPoint(x0, y1, z0));  // 3
+  raw.m_V.Append(ON_3fPoint(x0, y0, z1));  // 4
+  raw.m_V.Append(ON_3fPoint(x1, y0, z1));  // 5
+  raw.m_V.Append(ON_3fPoint(x1, y1, z1));  // 6
+  raw.m_V.Append(ON_3fPoint(x0, y1, z1));  // 7
+
+  auto add_quad = [&raw](int a, int b, int c, int d) {
+    ON_MeshFace face;
+    face.vi[0] = a;
+    face.vi[1] = b;
+    face.vi[2] = c;
+    face.vi[3] = d;
+    raw.m_F.Append(face);
+  };
+
+  add_quad(0, 3, 2, 1);  // bottom (-z)
+  add_quad(4, 5, 6, 7);  // top (+z)
+  add_quad(0, 1, 5, 4);  // front (-y)
+  add_quad(3, 7, 6, 2);  // back (+y)
+  add_quad(0, 4, 7, 3);  // left (-x)
+  add_quad(1, 2, 6, 5);  // right (+x)
 
   return mesh;
 }
@@ -721,6 +763,78 @@ void TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts() {
         "rather than silently misaligning bands");
 }
 
+void TestSubDFromBoxSubdividesToExactCatmullClarkCounts() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  // 6-quad closed box (MakeQuadBoxMesh(), not the triangulated MakeBox()):
+  // Catmull-Clark's vertex/face-count growth has a simple, hand-derivable
+  // rule on an all-quad control net - a new vertex per old vertex, edge
+  // midpoint, and face center (V_new = V+E+F), and every face splits into
+  // (its side count) quads, so F_new = 4x once the mesh is all-quad
+  // (true from level 1 on, and this box already starts all-quad).
+  // Level 0: V=8, E=12, F=6 (Euler: 8-12+6=2, genus 0, checks out).
+  // Level 1: V=8+12+6=26, F=6*4=24, E=2*F=48 for a closed all-quad mesh
+  // (each of 4 edges shared by 2 faces) - 26-48+24=2, checks out.
+  // Level 2: V=26+48+24=98, F=24*4=96.
+  const auto quad_box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  auto subd = SubD::FromControlMesh(quad_box);
+  subd.Subdivide(2);
+
+  Check(subd.VertexCount() == 98,
+        "SubD box after 2 global Catmull-Clark subdivisions has the "
+        "hand-derived exact vertex count (98)");
+  Check(subd.FaceCount() == 96,
+        "SubD box after 2 global Catmull-Clark subdivisions has the "
+        "hand-derived exact face count (96)");
+
+  const auto approx = subd.ToApproximateMesh();
+  Check(approx.VertexCount() == 98 && approx.FaceCount() == 96,
+        "ToApproximateMesh()'s control-net mesh matches the SubD's own "
+        "vertex/face counts");
+
+  // Catmull-Clark subdivision pulls a cube's limit surface substantially
+  // inward - a cube's 8 corners are valence-3 extraordinary vertices,
+  // which Catmull-Clark weights heavily toward the interior. Measured,
+  // not guessed: probing levels 1 through 5 showed volume dropping
+  // 8 -> 3.5 -> 2.80 -> 2.66 -> 2.63 -> 2.62, converging (not diverging
+  // or going negative) toward roughly a third of the cube's volume - real
+  // subdivision behavior, confirmed by the monotonic, stabilizing trend,
+  // not a symptom of a winding or topology bug (which the volume/face/
+  // vertex-count and Manifold checks around this one already rule out).
+  const double volume = approx.Volume();
+  Check(std::abs(volume - 2.802131075637103) < 1e-6,
+        "subdivided box volume matches the measured level-2 Catmull-Clark "
+        "value (a real, substantial shrink from the cube's volume of 8, "
+        "not left flat)");
+
+  // Real proof of watertightness, same standard as every other solid
+  // here: Manifold would reject a non-manifold mesh outright rather than
+  // return a plausible-looking wrong answer.
+  const auto other_box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const auto result = BooleanCombine(approx, other_box, BooleanOp::Union);
+  Check(std::abs(result.Volume() - (volume + 1.0)) < 1e-6,
+        "union of the subdivided SubD box with a disjoint unit box equals "
+        "its volume + 1");
+}
+
+void TestSubDFromControlMeshRejectsEmptyMesh() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const Mesh empty;
+  bool threw = false;
+  try {
+    SubD::FromControlMesh(empty);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  Check(threw, "SubD::FromControlMesh throws on a mesh with no faces");
+}
+
 void TestExactClippingMatchesAreaButNotCellCounts() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -1010,6 +1124,8 @@ int main() {
   TestRevolveProfileRejectsOffAxisEndsAndTooShortProfile();
   TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();
   TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
+  TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
+  TestSubDFromControlMeshRejectsEmptyMesh();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestAnnulusFaceExtrudesToWatertightTube();
