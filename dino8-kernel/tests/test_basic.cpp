@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 #include <vector>
 
 #include "dino8/kernel/boolean.h"
@@ -504,22 +505,21 @@ void TestCylinderVolumeAndBoolean() {
 
   const double radius = 2.0;
   const double height = 5.0;
-  // 200/200 measured, not guessed: whole-cell-in/out trimming
-  // systematically under-represents a curved boundary (excluded cells
-  // straddling the edge are pure loss, never partial credit), and that
-  // bias shrinks slowly (~1/divisions, since it's proportional to
-  // perimeter x average cell width). 48/48 measured a real 7% error here
-  // (failing a 2% bound); 200/200 measures ~1.5% - so this tolerance is
-  // an actual check on real behavior, not a rubber stamp loose enough to
-  // always pass.
+  // Measured, not guessed, and directly comparable to the whole-cell
+  // numbers this replaced: Cylinder() now tessellates its disk cap via
+  // real boundary clipping (TessellateGridClippedConvex), not whole-cell
+  // in/out. At the SAME 48/48 divisions that measured a 7% volume error
+  // with whole-cell trimming, exact clipping measures well under 1%; at
+  // just 32/32 it measures ~0.64%. 1% here is a real, tight check on
+  // that improvement, not a rubber stamp.
   const auto cylinder =
       Mesh::Cylinder(Point3d(0, 0, 0), Vector3d(0, 0, 1), radius, height,
-                     /*circle_segments=*/200, /*grid_divisions=*/200);
+                     /*circle_segments=*/32, /*grid_divisions=*/32);
 
   const double exact_volume = ON_PI * radius * radius * height;
   const double relative_error = std::abs(cylinder.Volume() - exact_volume) / exact_volume;
-  Check(relative_error < 0.02,
-        "cylinder volume is within 2% of the exact pi*r^2*h");
+  Check(relative_error < 0.01,
+        "cylinder volume (now via exact boundary clipping) is within 1% of pi*r^2*h");
 
   // Real proof of watertightness, same as the trimmed-face extrusion test:
   // Manifold would reject a non-manifold mesh outright rather than return
@@ -529,6 +529,82 @@ void TestCylinderVolumeAndBoolean() {
   const double expected_union = cylinder.Volume() + 1.0;
   Check(std::abs(result.Volume() - expected_union) < 1e-6,
         "union of the cylinder with a disjoint unit box equals cylinder volume + 1");
+}
+
+void TestExactClippingMatchesAreaButNotCellCounts() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // Same 10x10 surface and same [0.15,0.85]^2 trim as
+  // TestBrepTrimmedPlanarFace, but with exact_clip=true. The TRUE trim
+  // area is (0.85-0.15)^2 * 100 = 49 - that's what exact clipping should
+  // measure. Whole-cell trimming's exact area of 36 (see the other test)
+  // is a different, smaller number: it only ever keeps cells fully
+  // inside the nominal boundary, so its output is really the retained
+  // *grid-snapped* sub-square [0.2,0.8]^2, not the true [0.15,0.85]^2
+  // trim - 36 was that algorithm's systematic under-count landing on a
+  // clean number by construction, not the actual trim area. Getting 49
+  // here (not 36) is exact clipping's whole point.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(10, 0, 0),
+      Point3d(10, 10, 0),
+  };
+  const NurbsSurface surface =
+      NurbsSurface::FromControlGrid(grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  const std::vector<Point2d> trim_loop = {
+      Point2d(0.15, 0.15),
+      Point2d(0.85, 0.15),
+      Point2d(0.85, 0.85),
+      Point2d(0.15, 0.85),
+  };
+  const Brep face = Brep::TrimmedPlanarFace(surface, trim_loop, /*exact_clip=*/true);
+  const auto mesh = face.Tessellate(/*u_divisions=*/10, /*v_divisions=*/10).front();
+
+  Check(std::abs(mesh.Area() - 49.0) < 1e-9,
+        "exact-clipped area matches the true trim area (49), not whole-cell's 36");
+  Check(mesh.VertexCount() != 49 || mesh.FaceCount() != 72,
+        "exact clipping's vertex/triangle counts differ from whole-cell's "
+        "(boundary cells are clipped, not dropped or kept whole)");
+}
+
+void TestExactClippingRejectsNonConvexTrim() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface surface =
+      NurbsSurface::FromControlGrid(grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+
+  // A dart/arrowhead shape - concave at (0.5, 0.3).
+  const std::vector<Point2d> non_convex_trim = {
+      Point2d(0.1, 0.1),
+      Point2d(0.9, 0.1),
+      Point2d(0.9, 0.9),
+      Point2d(0.5, 0.3),
+      Point2d(0.1, 0.9),
+  };
+  const Brep face = Brep::TrimmedPlanarFace(surface, non_convex_trim, /*exact_clip=*/true);
+
+  bool threw = false;
+  try {
+    face.Tessellate(8, 8);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "exact clipping throws on a non-convex trim polygon instead of "
+        "silently producing wrong geometry");
 }
 
 }  // namespace
@@ -553,6 +629,8 @@ int main() {
   TestExtrudeUntrimmedFaceIntoSolid();
   TestExtrudeTrimmedFaceFeedsBoolean();
   TestCylinderVolumeAndBoolean();
+  TestExactClippingMatchesAreaButNotCellCounts();
+  TestExactClippingRejectsNonConvexTrim();
 
   ON::End();
 

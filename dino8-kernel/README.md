@@ -117,17 +117,37 @@ What this repo does instead:
 - `Mesh::Cylinder()` closes the "no general primitive library" gap using
   the two general-purpose pieces above rather than adding a third
   special case: a circular disk cap (`TrimmedPlanarFace()` with an N-gon
-  trim polygon) swept via `ExtrudeCappedSolid()`. Unlike `Box()`'s exact
-  volumes and the rectangular-trim tests, a polygon-approximated circle
-  trimmed via whole-cell in/out systematically *under*-represents the
-  true disk — verified directly, not assumed: 48 trim/grid divisions
-  measured a real 7% volume error (failing a 2% check), 200 measured
-  ~1.5% (passing it), confirming the error actually shrinks with
-  resolution rather than being some other bug. `tests/test_basic.cpp`
-  checks the 200-division cylinder's volume against the exact
-  `π·r²·h` within 2%, and — the real watertightness proof, same pattern
-  as the trimmed-extrusion test — unions it with a disjoint box to
-  exactly the expected combined volume.
+  trim polygon) swept via `ExtrudeCappedSolid()`. First built against
+  whole-cell trimming, which — verified directly, not assumed —
+  systematically *under*-represents a curved boundary: 48 trim/grid
+  divisions measured a real 7% volume error, 200 measured ~1.5%. That's
+  what motivated `TessellateGridClippedConvex()` below; `Cylinder()` now
+  uses it and gets ~0.64% error at just 32 divisions.
+- `NurbsSurface::TessellateGridClippedConvex()` fixes the accuracy
+  problem at its root instead of trading it for resolution: real
+  Sutherland-Hodgman polygon clipping per grid cell, rather than
+  whole-cell in/out. Requires a convex trim polygon (throws
+  `std::invalid_argument` otherwise, verified in `tests/test_basic.cpp`
+  with a concave dart-shaped trim) — the earlier non-convex
+  rectangular-notch/L-shape tests still need `TessellateGrid()`'s
+  whole-cell path. `Brep::TrimmedPlanarFace()` takes an `exact_clip`
+  flag to opt into this per face; default stays `false` so existing
+  whole-cell tests and their hand-derived counts don't change under
+  them.
+  **Found and fixed a real bug building this**, the kind only exercised by
+  a genuinely curved, many-cell trim (a rectangle's 4 straight edges
+  never hit it): clipping a grid cell near a trim-polygon vertex can
+  emit a vertex numerically coincident with another one already in the
+  clipped result, producing a zero-area "sliver" triangle. Left in, this
+  is not just cosmetic — it corrupts `ExtrudeCappedSolid()`'s boundary-
+  edge extraction, and was caught exactly that way: a real cylinder cap's
+  vertex/face/boundary-edge counts failed the `3·faces + boundary_edges`
+  parity every valid triangulated disk must satisfy (confirmed by hand
+  computation, not assumed), and `Manifold` correctly rejected the
+  resulting solid as non-manifold rather than silently accepting bad
+  geometry. Fixed by deduplicating near-coincident consecutive clip
+  points and skipping any resulting near-zero-area triangle; reverified
+  the same parity check now holds.
 
 ## What's still not done (as of chunk 2)
 
@@ -137,11 +157,12 @@ What this repo does instead:
   `ExtrudeCappedSolid()` only handles a single simple (non-self-
   intersecting, no holes) boundary loop — a face with an interior hole
   (an annulus) isn't supported.
-- The whole-cell-in/out trim approximation's volume error for curved
-  boundaries (measured above at ~7% / 48 divisions, ~1.5% / 200) means
-  any curved primitive built this way needs a resolution/accuracy
-  tradeoff a real product shouldn't have to make — the actual fix is
-  real boundary clipping in `TessellateGrid()`, not higher divisions.
+- `TessellateGridClippedConvex()` only handles convex trim polygons
+  (Sutherland-Hodgman's requirement) — a concave or multiply-connected
+  trim (the earlier L-shape/notch tests) still goes through
+  `TessellateGrid()`'s whole-cell approximation. A general polygon
+  clipper (Weiler-Atherton or similar) would remove that split, at real
+  implementation cost.
 - The trim-polygon test in `TessellateGrid()` is whole-cell in/out
   (a cell is kept only if all four corners are inside), not real boundary
   clipping — a curved or diagonal trim edge will look faceted/staircased

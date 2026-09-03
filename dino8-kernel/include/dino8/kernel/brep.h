@@ -66,8 +66,18 @@ class Brep {
   // all), not full topological B-rep validity. See NurbsSurface::
   // TessellateGrid's trim_polygon parameter for how the polygon is
   // actually applied.
+  //
+  // `exact_clip`, if true, tessellates via NurbsSurface::
+  // TessellateGridClippedConvex() instead of the default whole-cell
+  // TessellateGrid() path - real boundary clipping instead of an
+  // approximation that only improves with grid resolution, but only
+  // valid for a convex trim_loop_uv (throws otherwise). Defaults to
+  // false so existing whole-cell behavior (and the exact vertex/triangle
+  // counts tests assert against it) doesn't change under callers that
+  // don't ask for this.
   static Brep TrimmedPlanarFace(const NurbsSurface& surface,
-                                 const std::vector<Point2d>& trim_loop_uv);
+                                 const std::vector<Point2d>& trim_loop_uv,
+                                 bool exact_clip = false);
 
   int FaceCount() const;
 
@@ -95,6 +105,10 @@ class Brep {
   // face, or the trim polygon for a face built by TrimmedPlanarFace().
   // Every face-adding factory must keep this in lockstep with brep_.m_F.
   std::vector<std::vector<Point2d>> face_trim_loops_;
+  // Parallel to face_trim_loops_: whether that face's trim should be
+  // tessellated via exact convex clipping rather than whole-cell in/out.
+  // Meaningless (always false) for an empty trim loop.
+  std::vector<bool> face_exact_clip_;
 };
 
 }  // namespace dino8::kernel

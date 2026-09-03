@@ -51,6 +51,31 @@ class NurbsSurface {
   Mesh TessellateGrid(int u_divisions, int v_divisions,
                        const std::vector<Point2d>* trim_polygon = nullptr) const;
 
+  // Real boundary clipping, unlike TessellateGrid()'s whole-cell in/out:
+  // each grid cell is clipped against `trim_polygon` (Sutherland-Hodgman)
+  // rather than kept or dropped wholesale, so a cell straddling the trim
+  // boundary contributes its actual clipped sub-area, evaluated at the
+  // true intersection points - not approximated by the grid resolution.
+  // This is why Mesh::Cylinder() needed 200 divisions for 2% volume
+  // accuracy with TessellateGrid()'s trim_polygon, and would need far
+  // fewer here.
+  //
+  // Requires `trim_polygon` to be convex - Sutherland-Hodgman only
+  // produces a correct result when the *clip* region is convex (the
+  // rectangle being clipped can be anything, but here it's always a grid
+  // cell, itself convex). A circle's N-gon approximation is convex; the
+  // earlier L-shaped/notched trim tests are not, so they still need
+  // TessellateGrid()'s whole-cell path. Throws std::invalid_argument if
+  // `trim_polygon` isn't convex, rather than silently producing wrong
+  // geometry.
+  //
+  // The returned mesh is already welded (via Mesh::MergeAndWeld) since
+  // adjacent cells independently compute the same boundary-intersection
+  // points as separate vertices that need collapsing to form a single
+  // consistent mesh.
+  Mesh TessellateGridClippedConvex(int u_divisions, int v_divisions,
+                                    const std::vector<Point2d>& trim_polygon) const;
+
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }
 
