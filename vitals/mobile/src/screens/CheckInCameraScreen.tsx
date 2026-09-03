@@ -1,6 +1,6 @@
 import { CameraType, CameraView, useCameraPermissions } from "expo-camera";
 import React, { useRef, useState } from "react";
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { GhostOverlay } from "../components/GhostOverlay";
 import { ScoreDeltaBadge } from "../components/ScoreDeltaBadge";
 import { submitCheckIn, uploadCheckInPhoto } from "../services/api";
@@ -74,15 +74,45 @@ export function CheckInCameraScreen({ plantId, plantLabel, previousPhotoUri, onD
   }
 
   if (stage === "result" && result) {
+    const openFlags = result.checkIn.diagnosticFlags.filter((f) => f.status !== "RESOLVED");
     return (
-      <View style={styles.center}>
-        <Text style={styles.heroScore}>{result.checkIn.computedScore}</Text>
-        <ScoreDeltaBadge priorScore={result.priorScore} newScore={result.checkIn.computedScore} />
-        <Text style={[styles.bodyText, { marginTop: theme.spacing(3) }]}>{plantLabel}</Text>
-        <Pressable style={styles.primaryButton} onPress={() => onDone(result)}>
-          <Text style={styles.primaryButtonText}>Done</Text>
-        </Pressable>
-      </View>
+      <ScrollView contentContainerStyle={styles.resultScroll}>
+        <View style={styles.center}>
+          <Text style={styles.heroScore}>{result.checkIn.computedScore}</Text>
+          <ScoreDeltaBadge priorScore={result.priorScore} newScore={result.checkIn.computedScore} />
+          <Text style={[styles.bodyText, { marginTop: theme.spacing(3) }]}>{plantLabel}</Text>
+
+          {openFlags.length > 0 && (
+            <View style={styles.flagsSection}>
+              {openFlags.map((f) => (
+                <View key={f.id} style={styles.flagCard}>
+                  <Text style={styles.flagCardTitle}>
+                    ⚠ {f.condition.replace(/-/g, " ")} — {f.urgency.replace(/_/g, " ").toLowerCase()}
+                  </Text>
+                  {f.treatmentPlan && (
+                    <>
+                      {f.treatmentPlan.steps.map((step, i) => (
+                        <Text key={i} style={styles.flagCardStep}>
+                          • {step}
+                        </Text>
+                      ))}
+                      {f.treatmentPlan.productsRecommended.length > 0 && (
+                        <Text style={styles.flagCardProducts}>
+                          Suggested: {f.treatmentPlan.productsRecommended.join(", ")}
+                        </Text>
+                      )}
+                    </>
+                  )}
+                </View>
+              ))}
+            </View>
+          )}
+
+          <Pressable style={styles.primaryButton} onPress={() => onDone(result)}>
+            <Text style={styles.primaryButtonText}>Done</Text>
+          </Pressable>
+        </View>
+      </ScrollView>
     );
   }
 
@@ -121,12 +151,30 @@ export function CheckInCameraScreen({ plantId, plantLabel, previousPhotoUri, onD
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "black" },
+  resultScroll: { flexGrow: 1, backgroundColor: theme.color.cream },
   center: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
     padding: theme.spacing(4),
     backgroundColor: theme.color.cream,
+  },
+  flagsSection: { width: "100%", marginTop: theme.spacing(3) },
+  flagCard: {
+    backgroundColor: "white",
+    borderRadius: theme.radius.md,
+    padding: theme.spacing(2),
+    marginBottom: theme.spacing(1.5),
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.color.border,
+  },
+  flagCardTitle: { fontSize: theme.font.bodySize, fontWeight: "600", color: theme.color.danger, marginBottom: theme.spacing(1) },
+  flagCardStep: { fontSize: theme.font.captionSize, color: theme.color.textPrimary, marginBottom: theme.spacing(0.5) },
+  flagCardProducts: {
+    fontSize: theme.font.captionSize,
+    color: theme.color.textSecondary,
+    fontStyle: "italic",
+    marginTop: theme.spacing(0.5),
   },
   topBar: {
     position: "absolute",

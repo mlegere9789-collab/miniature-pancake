@@ -74,7 +74,11 @@ vitals/
    created a `TreatmentPlan` despite the model existing since Phase 1.
 4. **Ghost-overlay camera flow** (`mobile/src/screens/CheckInCameraScreen.tsx`) —
    the core differentiator: overlays the previous check-in photo at reduced
-   opacity so the user aligns angle/framing before capture.
+   opacity so the user aligns angle/framing before capture. The result
+   screen right after capture now also surfaces any new diagnostic flags
+   with their treatment steps and recommended products inline — previously
+   that only showed up buried in the plant's history list, well after the
+   moment it was most actionable.
 5. **Manual plant entry and editing** (`mobile/src/screens/AddPlantScreen.tsx`,
    `PATCH /plants/:id`) — species, nickname, check-in cadence, and
    importance weight; posts to `POST /plants`. "Edit plant" on the plant
