@@ -38,6 +38,11 @@ export type ServerObservation = {
   confidence: number;
   taxonSlug: string;
   syncState: "queued" | "uploading" | "confirmed" | "failed";
+  /** Data Quality flag (Part C.2): wild vs. captive/cultivated. */
+  isWild: boolean;
+  /** Free-text place name — no map/geocoding yet, see Part G. */
+  locationName: string;
+  notes: string;
 };
 
 export type ObservationWithGrade = ServerObservation & {

@@ -24,12 +24,19 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing or invalid observation fields." }, { status: 400 });
   }
 
+  const isWild = typeof body?.isWild === "boolean" ? body.isWild : true;
+  const locationName = typeof body?.locationName === "string" ? body.locationName.trim().slice(0, 200) : "";
+  const notes = typeof body?.notes === "string" ? body.notes.trim().slice(0, 2000) : "";
+
   const observation = createObservationForUser(user.id, {
     photoDataUrl,
     commonName,
     scientificName,
     confidence,
     taxonSlug,
+    isWild,
+    locationName,
+    notes,
   });
   return NextResponse.json({ observation }, { status: 201 });
 }

@@ -28,6 +28,9 @@ export async function createServerObservation(input: {
   scientificName: string;
   confidence: number;
   taxonSlug: string;
+  isWild: boolean;
+  locationName: string;
+  notes: string;
 }): Promise<ServerObservation | null> {
   const res = await fetch("/api/observations", {
     method: "POST",

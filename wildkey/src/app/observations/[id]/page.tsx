@@ -119,7 +119,19 @@ export default function ObservationDetailPage({
           <p className="mt-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
             Observed by {author?.email ?? "unknown"} ·{" "}
             {new Date(observation.createdAt).toLocaleString()}
+            {observation.locationName && ` · ${observation.locationName}`}
           </p>
+          {!observation.isWild && (
+            <span
+              className="mt-2 inline-block rounded-full px-2.5 py-1 text-xs font-semibold"
+              style={{ background: "var(--color-border)", color: "var(--color-text-muted)" }}
+            >
+              Captive / cultivated
+            </span>
+          )}
+          {observation.notes && (
+            <p className="mt-2 text-sm">{observation.notes}</p>
+          )}
         </div>
       </div>
 

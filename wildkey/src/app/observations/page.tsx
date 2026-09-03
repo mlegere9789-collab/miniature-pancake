@@ -41,6 +41,7 @@ type DisplayObservation = {
   taxonSlug: string;
   syncState: SyncState;
   qualityGrade?: QualityGrade;
+  locationName?: string;
 };
 
 export default function ObservationsPage() {
@@ -139,6 +140,7 @@ export default function ObservationsPage() {
                 )}
                 <p className="mt-1 text-xs" style={{ color: "var(--color-text-muted)" }}>
                   {new Date(o.createdAt).toLocaleString()}
+                  {o.locationName && ` · ${o.locationName}`}
                 </p>
                 {useServer && (
                   <Link

@@ -28,12 +28,18 @@ export default function CameraPage() {
   const [outcome, setOutcome] = useState<IdOutcome | null>(null);
   const [isIdentifying, setIsIdentifying] = useState(false);
   const [savedSyncState, setSavedSyncState] = useState<SyncState | null>(null);
+  const [locationName, setLocationName] = useState("");
+  const [notes, setNotes] = useState("");
+  const [isWild, setIsWild] = useState(true);
   const useServerSync = mode === "naturalist" && Boolean(user);
 
   const handleFile = async (file: File | undefined) => {
     if (!file) return;
     setOutcome(null);
     setSavedSyncState(null);
+    setLocationName("");
+    setNotes("");
+    setIsWild(true);
     setPreviewUrl(await readFileAsDataUrl(file));
   };
 
@@ -60,6 +66,9 @@ export default function CameraPage() {
         scientificName: outcome.species.scientificName,
         confidence: outcome.confidence,
         taxonSlug: outcome.species.slug,
+        isWild,
+        locationName: locationName.trim(),
+        notes: notes.trim(),
       });
       setSavedSyncState(saved ? "confirmed" : "failed");
       return;
@@ -132,13 +141,47 @@ export default function CameraPage() {
           <IdResultCard species={outcome.species} confidence={outcome.confidence} />
 
           {savedSyncState === null ? (
-            <button
-              onClick={saveToObservations}
-              className="rounded-full border px-4 py-3 text-sm font-semibold"
-              style={{ borderColor: "var(--color-border)" }}
-            >
-              Save to My Observations
-            </button>
+            <>
+              {useServerSync && (
+                <div className="flex flex-col gap-3 rounded-lg border p-4" style={{ borderColor: "var(--color-border)" }}>
+                  <label className="flex flex-col gap-1 text-sm font-medium">
+                    Location (optional)
+                    <input
+                      value={locationName}
+                      onChange={(e) => setLocationName(e.target.value)}
+                      placeholder="e.g. Cedar Ridge Park"
+                      className="rounded border px-3 py-2 text-sm font-normal"
+                      style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm font-medium">
+                    Notes (optional)
+                    <textarea
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      rows={2}
+                      className="rounded border px-3 py-2 text-sm font-normal"
+                      style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
+                    />
+                  </label>
+                  <label className="flex items-center gap-2 text-sm font-medium">
+                    <input
+                      type="checkbox"
+                      checked={!isWild}
+                      onChange={(e) => setIsWild(!e.target.checked)}
+                    />
+                    Captive / cultivated (not a wild specimen)
+                  </label>
+                </div>
+              )}
+              <button
+                onClick={saveToObservations}
+                className="rounded-full border px-4 py-3 text-sm font-semibold"
+                style={{ borderColor: "var(--color-border)" }}
+              >
+                Save to My Observations
+              </button>
+            </>
           ) : (
             <div
               className="flex items-center justify-between rounded-lg border px-4 py-3 text-sm"
