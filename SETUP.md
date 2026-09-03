@@ -91,7 +91,10 @@ Open **http://127.0.0.1:8787** in your browser. You'll see:
   decisions (so you can see what you decided, and when), with its own
   **Download CSV** link for the complete decision log (also available as
   `python3 -m orchestrator export-reviews`),
-- a recent-activity feed.
+- a recent-activity feed,
+- whether the portable scheduler daemon (below) is actually running, via
+  its heartbeat — a status cron doesn't need, since a missed cron run just
+  doesn't happen, but a long-lived process can die silently.
 
 Want a push notification the moment anything lands in the review queue, or
 a module errors out, instead of checking the dashboard? Set

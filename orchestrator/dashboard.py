@@ -9,7 +9,9 @@ that reads the shared SQLite database and shows:
   **View log** link to see its recent output,
 * the review queue, with working **Approve** / **Reject** buttons,
 * a recent-activity feed,
-* a **Download CSV** link for the full earnings ledger (bookkeeping/taxes).
+* a **Download CSV** link for the full earnings ledger (bookkeeping/taxes),
+* whether the portable scheduler daemon (``scheduler run``) is actually
+  alive, via its heartbeat.
 
 Run it::
 
@@ -34,6 +36,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import database as db
+from . import scheduler
 from .config import config
 from .database import EARNINGS_CSV_FIELDS, REVIEWS_CSV_FIELDS
 from .paths import MODULES, PROJECT_ROOT
@@ -153,6 +156,39 @@ def render_reviews_csv() -> str:
     for row in db.list_resolved_reviews():
         writer.writerow({field: row[field] for field in REVIEWS_CSV_FIELDS})
     return buf.getvalue()
+
+
+_SCHEDULER_COLORS = {
+    "running": "#1a7f37",
+    "stale": "#9a6700",
+    "never_started": "#57606a",
+}
+
+
+def scheduler_status() -> dict[str, str]:
+    """Summarize the portable daemon's heartbeat for the dashboard.
+
+    cron jobs don't need this (a missed run just doesn't happen), but
+    `scheduler run` is a long-lived process that can die silently — this is
+    the only way short of checking the OS process list to notice.
+    """
+    heartbeat = scheduler.read_heartbeat()
+    if heartbeat is None:
+        return {
+            "state": "never_started",
+            "text": "Portable scheduler (“scheduler run”) has never been started.",
+        }
+    if scheduler.heartbeat_is_stale(heartbeat):
+        return {
+            "state": "stale",
+            "text": f"Portable scheduler looks stopped — last heartbeat "
+            f"{heartbeat.get('beat_at', '?')} (pid {heartbeat.get('pid', '?')}).",
+        }
+    return {
+        "state": "running",
+        "text": f"Portable scheduler is running (last heartbeat "
+        f"{heartbeat.get('beat_at', '?')}, pid {heartbeat.get('pid', '?')}).",
+    }
 
 
 def render_page() -> str:
@@ -275,6 +311,13 @@ def render_page() -> str:
         else '<p class="empty">No activity logged yet.</p>'
     )
 
+    sched = scheduler_status()
+    scheduler_html = (
+        f'<p class="scheduler-status">'
+        f'<span class="dot" style="background:{_SCHEDULER_COLORS[sched["state"]]}">'
+        f"</span> {_esc(sched['text'])}</p>"
+    )
+
     return _TEMPLATE.format(
         total_earnings=_fmt_money(tot["total_earnings"]),
         pending=tot["pending_reviews"],
@@ -282,6 +325,7 @@ def render_page() -> str:
         reviews=review_html,
         resolved=resolved_html,
         feed=feed_html,
+        scheduler_status=scheduler_html,
     )
 
 
@@ -346,6 +390,9 @@ _TEMPLATE = """<!doctype html>
   .empty {{ color: #57606a; }}
   p.export {{ margin: -12px 0 24px; font-size: 13px; }}
   p.export a {{ color: #0969da; }}
+  p.scheduler-status {{ margin: -12px 0 24px; font-size: 13px; color: #57606a; }}
+  p.scheduler-status .dot {{ display: inline-block; width: 8px; height: 8px;
+                             border-radius: 50%; margin-right: 4px; }}
 </style></head><body>
 <header>
   <h1>Income Orchestrator</h1>
@@ -357,6 +404,7 @@ _TEMPLATE = """<!doctype html>
     <div class="box"><b>{pending}</b><span>items awaiting your review</span></div>
   </div>
   <p class="export"><a href="/export/earnings.csv">Download full earnings ledger (CSV)</a></p>
+  {scheduler_status}
 
   <h2>Modules</h2>
   <div class="grid">{cards}</div>

@@ -37,7 +37,9 @@ from .paths import MODULES
 
 
 class TempDatabaseTestCase(unittest.TestCase):
-    """Points database.DB_PATH at a fresh temp file for the test's duration."""
+    """Points database.DB_PATH (and scheduler.HEARTBEAT_FILE) at fresh temp
+    paths for the test's duration, so no test reads or writes real project
+    state."""
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -46,9 +48,15 @@ class TempDatabaseTestCase(unittest.TestCase):
         db.DB_PATH = Path(self._tmpdir.name) / "test.db"
         self.addCleanup(self._restore_db_path)
         db.init_db()
+        self._orig_heartbeat_file = sch.HEARTBEAT_FILE
+        sch.HEARTBEAT_FILE = Path(self._tmpdir.name) / "heartbeat.json"
+        self.addCleanup(self._restore_heartbeat_file)
 
     def _restore_db_path(self):
         db.DB_PATH = self._orig_db_path
+
+    def _restore_heartbeat_file(self):
+        sch.HEARTBEAT_FILE = self._orig_heartbeat_file
 
 
 class TestInitDb(TempDatabaseTestCase):
@@ -813,6 +821,51 @@ class TestSchedulerState(unittest.TestCase):
                 sch.STATE_FILE = orig
 
 
+class TestSchedulerHeartbeat(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._orig = sch.HEARTBEAT_FILE
+        sch.HEARTBEAT_FILE = Path(self._tmpdir.name) / "heartbeat.json"
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        sch.HEARTBEAT_FILE = self._orig
+
+    def test_no_heartbeat_file_returns_none(self):
+        self.assertIsNone(sch.read_heartbeat())
+
+    def test_write_then_read_round_trips(self):
+        sch._write_heartbeat(30)
+        heartbeat = sch.read_heartbeat()
+        self.assertEqual(heartbeat["poll_seconds"], 30)
+        self.assertIn("pid", heartbeat)
+        self.assertIn("beat_at", heartbeat)
+
+    def test_malformed_heartbeat_file_returns_none(self):
+        sch.HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        sch.HEARTBEAT_FILE.write_text("not json", encoding="utf-8")
+        self.assertIsNone(sch.read_heartbeat())
+
+    def test_fresh_heartbeat_is_not_stale(self):
+        sch._write_heartbeat(30)
+        heartbeat = sch.read_heartbeat()
+        self.assertFalse(sch.heartbeat_is_stale(heartbeat))
+
+    def test_old_heartbeat_is_stale(self):
+        old = datetime.now(timezone.utc) - timedelta(
+            seconds=sch.HEARTBEAT_STALE_SECONDS + 1
+        )
+        heartbeat = {"pid": 1, "poll_seconds": 30, "beat_at": old.isoformat()}
+        self.assertTrue(sch.heartbeat_is_stale(heartbeat))
+
+    def test_stale_threshold_is_exclusive_boundary(self):
+        now = datetime.now(timezone.utc)
+        just_inside = now - timedelta(seconds=sch.HEARTBEAT_STALE_SECONDS - 1)
+        heartbeat = {"pid": 1, "poll_seconds": 30, "beat_at": just_inside.isoformat()}
+        self.assertFalse(sch.heartbeat_is_stale(heartbeat, now=now))
+
+
 class TestCli(unittest.TestCase):
     def test_no_args_prints_docstring(self):
         buf = io.StringIO()
@@ -1152,7 +1205,45 @@ class TestRenderReviewsCsv(TempDatabaseTestCase):
         self.assertEqual(rows[0]["resolution_note"], "fine")
 
 
+class TestSchedulerStatusHelper(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._orig = sch.HEARTBEAT_FILE
+        sch.HEARTBEAT_FILE = Path(self._tmpdir.name) / "heartbeat.json"
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        sch.HEARTBEAT_FILE = self._orig
+
+    def test_never_started(self):
+        status = dashboard.scheduler_status()
+        self.assertEqual(status["state"], "never_started")
+
+    def test_running(self):
+        sch._write_heartbeat(30)
+        status = dashboard.scheduler_status()
+        self.assertEqual(status["state"], "running")
+
+    def test_stale(self):
+        old = datetime.now(timezone.utc) - timedelta(
+            seconds=sch.HEARTBEAT_STALE_SECONDS + 1
+        )
+        sch.HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        sch.HEARTBEAT_FILE.write_text(
+            json.dumps({"pid": 1, "poll_seconds": 30, "beat_at": old.isoformat()}),
+            encoding="utf-8",
+        )
+        status = dashboard.scheduler_status()
+        self.assertEqual(status["state"], "stale")
+
+
 class TestRenderPage(TempDatabaseTestCase):
+    def test_includes_scheduler_status(self):
+        page = dashboard.render_page()
+        self.assertIn("scheduler-status", page)
+        self.assertIn("never been started", page)
+
     def test_includes_seeded_data(self):
         db.record_earning("deal_alert_bot", 4.20, source="amazon")
         db.set_status("deal_alert_bot", "ok", "Scanned 214 listings")
