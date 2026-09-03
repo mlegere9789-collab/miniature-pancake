@@ -47,7 +47,7 @@ jobs:
         run: npm test
 
   mobile:
-    name: Mobile typecheck + lint + bundle
+    name: Mobile typecheck + lint + test + bundle
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -72,6 +72,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      - name: Test
+        run: npm test
 
       # tsc/eslint never invoke Metro/Babel, so neither one catches a
       # missing/broken babel.config.js — this is the one step that actually

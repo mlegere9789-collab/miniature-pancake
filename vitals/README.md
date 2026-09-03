@@ -249,6 +249,21 @@ committed, since it had never existed in the repo before.
 
 ## Bug fixes
 
+- **`vitals/mobile` had zero test infrastructure — no test script, no test
+  runner, no test files at all.** The QC protocol for this project is
+  typecheck + lint + test in both packages before every commit, but the
+  mobile package only ever had typecheck and lint; "test" was silently
+  never actually checked here despite the backend having full Vitest
+  coverage the whole time. Added `jest-expo` (matching Expo SDK 51) with a
+  `jest.setup.js` that wires in `@react-native-async-storage/async-storage`'s
+  official mock, a `test` script, and real tests for the two pieces of pure,
+  testable-without-a-simulator logic: `toAbsoluteUrl` (`services/api.ts`)
+  and the offline check-in queue (`services/checkInQueue.ts` — enqueue,
+  successful flush, failed flush leaving items queued, and a mixed
+  success/failure flush only removing the items that actually synced).
+  Wired `npm test` into `vitals-ci.yml` alongside the existing
+  typecheck/lint/bundle steps so this actually runs on every PR/push, not
+  just locally.
 - **Restoring an archived plant never rescheduled its check-in reminder.**
   Archiving a plant cancels its reminder (`PlantDetailScreen`'s
   `cancelCheckInReminder` call); restoring it from `ArchivedPlantsScreen`
@@ -295,7 +310,7 @@ committed, since it had never existed in the repo before.
   zero automated verification on GitHub — only local `tsc`/`vitest` runs.
   Added `.github/workflows/vitals-ci.yml` (mirroring the existing
   `mediasuite-ci.yml` pattern): backend typecheck + lint + `vitest run`,
-  mobile typecheck + lint + a real `expo export` bundle check for *both*
+  mobile typecheck + lint + `jest` + a real `expo export` bundle check for *both*
   iOS and Android (see the babel.config.js entry below — this is the step
   that would have caught that gap automatically), path-scoped to
   `vitals/**` so it doesn't run on unrelated changes. Verified locally
