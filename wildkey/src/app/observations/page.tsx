@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   deleteObservation,
@@ -44,12 +44,16 @@ type DisplayObservation = {
   locationName?: string;
 };
 
+type SortMode = "newest" | "oldest" | "name";
+
 export default function ObservationsPage() {
   const { mode } = useMode();
   const { user } = useAuth();
   const useServer = mode === "naturalist" && Boolean(user);
 
   const [observations, setObservations] = useState<DisplayObservation[] | null>(null);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<SortMode>("newest");
 
   const refresh = useCallback(async () => {
     if (useServer) {
@@ -79,6 +83,25 @@ export default function ObservationsPage() {
     refresh();
   };
 
+  const visibleObservations = useMemo(() => {
+    if (!observations) return [];
+    const normalizedQuery = query.trim().toLowerCase();
+    const filtered = normalizedQuery
+      ? observations.filter(
+          (o) =>
+            o.commonName.toLowerCase().includes(normalizedQuery) ||
+            o.scientificName.toLowerCase().includes(normalizedQuery) ||
+            (o.locationName ?? "").toLowerCase().includes(normalizedQuery),
+        )
+      : observations;
+
+    const sorted = [...filtered];
+    if (sort === "newest") sorted.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    else if (sort === "oldest") sorted.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    else sorted.sort((a, b) => a.commonName.localeCompare(b.commonName));
+    return sorted;
+  }, [observations, query, sort]);
+
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6">
       <div className="flex items-center justify-between">
@@ -99,6 +122,31 @@ export default function ObservationsPage() {
         </Link>
       </div>
 
+      {observations !== null && observations.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            type="search"
+            aria-label="Search your observations by name or location"
+            placeholder="Search by name or location…"
+            className="min-w-0 flex-1 rounded-full border px-4 py-2 text-sm"
+            style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}
+          />
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as SortMode)}
+            aria-label="Sort observations"
+            className="rounded-full border px-3 py-2 text-sm"
+            style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}
+          >
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="name">Name A–Z</option>
+          </select>
+        </div>
+      )}
+
       {observations === null ? null : observations.length === 0 ? (
         <div
           className="rounded-lg border p-8 text-center text-sm"
@@ -110,9 +158,13 @@ export default function ObservationsPage() {
           </Link>{" "}
           to start your collection.
         </div>
+      ) : visibleObservations.length === 0 ? (
+        <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>
+          No observations match &ldquo;{query}&rdquo;.
+        </p>
       ) : (
         <ul className="flex flex-col gap-3">
-          {observations.map((o) => (
+          {visibleObservations.map((o) => (
             <li
               key={o.id}
               className="flex items-center gap-3 rounded-lg border p-3"

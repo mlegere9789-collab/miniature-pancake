@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { MOCK_SPECIES, getMockSpecies } from "@/lib/mock-species";
 import { TAXON_GROUPS, taxonColor, type TaxonGroup } from "@/lib/taxon";
@@ -15,13 +15,43 @@ type Bounds = { minLat: number; maxLat: number; minLng: number; maxLng: number }
 
 const WORLD_BOUNDS: Bounds = { minLat: -60, maxLat: 75, minLng: -170, maxLng: 170 };
 
+// useSearchParams (for the URL-shareable ?q= search below) requires a
+// Suspense boundary around anything that calls it, or Next.js refuses to
+// prerender the page at all.
 export default function ExplorePage() {
+  return (
+    <Suspense fallback={null}>
+      <ExploreContent />
+    </Suspense>
+  );
+}
+
+function ExploreContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, loading: authLoading } = useAuth();
   const [view, setView] = useState<ViewMode>("grid");
   const [activeGroups, setActiveGroups] = useState<Set<TaxonGroup>>(new Set());
   const [markers, setMarkers] = useState<MapMarker[]>([]);
   const [basemap, setBasemap] = useState<BasemapKind>("street");
+  const [query, setQuery] = useState(() => searchParams.get("q") ?? "");
+
+  // URL-shareable search (Part C.3): keeps ?q= in sync so a search result
+  // can be linked or bookmarked, without fighting the browser's own
+  // back/forward history with a push on every keystroke.
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (query) params.set("q", query);
+    else params.delete("q");
+    const next = params.toString();
+    const current = searchParams.toString();
+    if (next !== current) {
+      router.replace(next ? `/explore?${next}` : "/explore", { scroll: false });
+    }
+    // Only the search box drives this sync — reacting to searchParams here
+    // too would fight the replace() call above in a loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
 
   const toggleGroup = (group: TaxonGroup) => {
     setActiveGroups((prev) => {
@@ -33,9 +63,16 @@ export default function ExplorePage() {
   };
 
   const results = useMemo(() => {
-    if (activeGroups.size === 0) return MOCK_SPECIES;
-    return MOCK_SPECIES.filter((s) => activeGroups.has(s.taxonGroup));
-  }, [activeGroups]);
+    const normalizedQuery = query.trim().toLowerCase();
+    return MOCK_SPECIES.filter((s) => {
+      if (activeGroups.size > 0 && !activeGroups.has(s.taxonGroup)) return false;
+      if (!normalizedQuery) return true;
+      return (
+        s.commonName.toLowerCase().includes(normalizedQuery) ||
+        s.scientificName.toLowerCase().includes(normalizedQuery)
+      );
+    });
+  }, [activeGroups, query]);
 
   const loadMapMarkers = useCallback(
     async (bounds: Bounds) => {
@@ -103,6 +140,18 @@ export default function ExplorePage() {
           ))}
         </div>
       </div>
+
+      {view !== "map" && (
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          type="search"
+          aria-label="Search species by common or scientific name"
+          placeholder="Search by common or scientific name…"
+          className="rounded-full border px-4 py-2 text-sm"
+          style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}
+        />
+      )}
 
       {view !== "map" && (
         <div className="flex flex-wrap gap-2">
