@@ -330,7 +330,7 @@ public class GifEngineTests : IDisposable
         Assert.Contains("choosing colours", result.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
 
         // One ffprobe and one failed pass — the encode was never attempted.
-        Assert.Single(runner.Requests.Where(r => r.FileName.Contains("ffmpeg.exe", StringComparison.OrdinalIgnoreCase)));
+        Assert.Single(runner.Requests, r => r.FileName.Contains("ffmpeg.exe", StringComparison.OrdinalIgnoreCase));
     }
 
     [Fact]
