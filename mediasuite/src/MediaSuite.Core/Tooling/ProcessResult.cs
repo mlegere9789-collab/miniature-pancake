@@ -25,6 +25,28 @@ public sealed record ProcessResult(
             : lastError;
     }
 
+    /// <summary>
+    /// Everything captured from the run, for a "Copy details" button — the exit code plus
+    /// the full stderr and stdout, not just <see cref="DescribeFailure"/>'s single summary
+    /// line. Tools often bury the actual cause several lines before the final one.
+    /// </summary>
+    public string FullOutput()
+    {
+        var sections = new List<string> { $"Exit code: {ExitCode}" };
+
+        if (!string.IsNullOrWhiteSpace(StandardError))
+        {
+            sections.Add("--- stderr ---" + Environment.NewLine + StandardError.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(StandardOutput))
+        {
+            sections.Add("--- stdout ---" + Environment.NewLine + StandardOutput.Trim());
+        }
+
+        return string.Join(Environment.NewLine + Environment.NewLine, sections);
+    }
+
     private static string? LastMeaningfulLine(string text)
     {
         if (string.IsNullOrWhiteSpace(text))

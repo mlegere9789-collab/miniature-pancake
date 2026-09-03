@@ -124,7 +124,11 @@ Convert.
   resume, live progress, concurrency auto-tuned to the core count and adjustable while
   running, and a private scratch folder per job that is cleaned up afterwards
 - **Queue UI** — status strip plus a live panel: one row per job with its own progress
-  bar and cancel button
+  bar and cancel button. A failed row also gets a "Copy details" button carrying the
+  tool's full stderr/stdout, not just the one-line summary — `JobResult.Diagnostics`
+  was being captured in every engine's `ToolExecutionException` all along and then
+  discarded before this, which would have left a real failure with no way to see what
+  the underlying tool actually said
 - **Image module** — convert (including camera RAW via LibRaw), compress, resize, crop,
   rotate, flip, enlarge and PNG-to-SVG tracing, driven by ImageMagick and Potrace
 - **Video and audio module** — convert, compress (by quality or by target size), extract

@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Runtime.InteropServices;
+using System.Windows;
 using System.Windows.Input;
 using System.Windows.Shell;
 using System.Windows.Threading;
@@ -33,6 +35,13 @@ public sealed class JobQueueViewModel : ObservableObject, IDisposable
                 _queue.Cancel(row.Job);
             }
         });
+        CopyDetailsCommand = new RelayCommand(parameter =>
+        {
+            if (parameter is JobRowViewModel { HasDiagnostics: true } row)
+            {
+                CopyDetailsToClipboard(row);
+            }
+        });
 
         _queue.JobAdded += OnJobAdded;
         _queue.JobStatusChanged += OnQueueChanged;
@@ -49,6 +58,8 @@ public sealed class JobQueueViewModel : ObservableObject, IDisposable
     public ICommand ClearFinishedCommand { get; }
 
     public ICommand CancelJobCommand { get; }
+
+    public ICommand CopyDetailsCommand { get; }
 
     public bool HasJobs => Rows.Count > 0;
 
@@ -168,6 +179,29 @@ public sealed class JobQueueViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(IsPaused));
         OnPropertyChanged(nameof(PauseResumeLabel));
         RefreshCounts();
+    }
+
+    /// <summary>
+    /// Puts the failure message plus the full diagnostics tail on the clipboard as one
+    /// block of plain text — enough to paste into a bug report or a support message
+    /// without a log panel to go dig through.
+    /// </summary>
+    private static void CopyDetailsToClipboard(JobRowViewModel row)
+    {
+        var text = string.IsNullOrEmpty(row.ErrorMessage)
+            ? row.Diagnostics
+            : $"{row.ErrorMessage}\n\n{row.Diagnostics}";
+
+        try
+        {
+            Clipboard.SetText(text ?? string.Empty);
+        }
+        catch (COMException)
+        {
+            // Another process briefly owns the clipboard (common on Windows) — nothing
+            // useful to do about it here; the button simply appears not to have worked,
+            // and the user can just click it again.
+        }
     }
 
     private void ClearFinished()

@@ -67,7 +67,7 @@ public abstract class ExternalProcessEngine : IConversionEngine
 
         if (!result.IsSuccess)
         {
-            throw new ToolExecutionException($"{toolName} failed: {result.DescribeFailure()}");
+            throw new ToolExecutionException($"{toolName} failed: {result.DescribeFailure()}", result.FullOutput());
         }
     }
 

@@ -44,7 +44,7 @@ public sealed class FFmpegEngine : ExternalProcessEngine
         }
         catch (ToolExecutionException ex)
         {
-            return JobResult.Failure(ex.Message);
+            return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
         }
 
         var ffprobe = ToolLocator.Locate(ExternalToolId.FFprobe).Path;
@@ -76,7 +76,7 @@ public sealed class FFmpegEngine : ExternalProcessEngine
             }
             catch (ToolExecutionException ex)
             {
-                return JobResult.Failure(ex.Message);
+                return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
             {
@@ -126,7 +126,8 @@ public sealed class FFmpegEngine : ExternalProcessEngine
 
         if (!result.IsSuccess)
         {
-            throw new ToolExecutionException($"FFmpeg could not convert '{fileName}': {result.DescribeFailure()}");
+            throw new ToolExecutionException(
+                $"FFmpeg could not convert '{fileName}': {result.DescribeFailure()}", result.FullOutput());
         }
 
         if (!File.Exists(outputPath))

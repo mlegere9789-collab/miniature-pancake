@@ -61,7 +61,7 @@ public sealed class ArchiveEngine : ExternalProcessEngine
         }
         catch (ToolExecutionException ex)
         {
-            return JobResult.Failure(ex.Message);
+            return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
         }
 
         var workingDirectory = ResolveWorkingDirectory(spec);
@@ -90,7 +90,7 @@ public sealed class ArchiveEngine : ExternalProcessEngine
             }
             catch (ToolExecutionException ex)
             {
-                return JobResult.Failure(ex.Message);
+                return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
             {

@@ -124,6 +124,17 @@ that is easy to mistake for a bug — check those first.
 - [ ] Confirm "face enhance" is not offered anywhere in the UI — it was deliberately not
   implemented (GFPGAN is not bundled) rather than faked with the general model.
 
+## Job failure diagnostics
+
+- [ ] Force a real failure (e.g. rename a tool's exe in `tools\` so it can't be found
+  mid-batch, or feed a genuinely corrupt file through a conversion) and confirm the
+  failed row in the queue panel shows a "Copy details" button. Click it, paste the
+  clipboard somewhere, and confirm it contains both the short failure message and the
+  tool's actual stderr/stdout, not just "Failed" or a bare exit code. Confirm a
+  canceled or successful job never shows this button, and that a failure with nothing
+  useful to add (e.g. "tool is not installed") doesn't show it either — there's nothing
+  a "details" button would add over the message already shown.
+
 ## Custom presets
 
 - [ ] Pick a tool, select the Custom preset, type a couple of real advanced options (an

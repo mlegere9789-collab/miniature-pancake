@@ -179,18 +179,29 @@
                                                    Margin="0,4,0,0" />
                                     </StackPanel>
 
-                                    <Button Grid.Column="1"
-                                            Content="Cancel"
-                                            Style="{DynamicResource Button.Secondary}"
-                                            Command="{Binding DataContext.Queue.CancelJobCommand,
-                                                              RelativeSource={RelativeSource AncestorType=Window}}"
-                                            CommandParameter="{Binding}"
-                                            IsEnabled="{Binding CanCancel}"
-                                            ToolTip="Cancel this job"
-                                            VerticalAlignment="Center"
-                                            MinWidth="72"
-                                            Padding="12,4"
-                                            Margin="16,0,0,0" />
+                                    <StackPanel Grid.Column="1"
+                                                Orientation="Horizontal"
+                                                VerticalAlignment="Center">
+                                        <Button Content="Copy details"
+                                                Style="{DynamicResource Button.Secondary}"
+                                                Command="{Binding DataContext.Queue.CopyDetailsCommand,
+                                                                  RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}"
+                                                Visibility="{Binding HasDiagnostics, Converter={StaticResource BoolToVisibility}}"
+                                                ToolTip="Copy the failure message and full tool output to the clipboard"
+                                                MinWidth="96"
+                                                Padding="12,4"
+                                                Margin="0,0,8,0" />
+                                        <Button Content="Cancel"
+                                                Style="{DynamicResource Button.Secondary}"
+                                                Command="{Binding DataContext.Queue.CancelJobCommand,
+                                                                  RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}"
+                                                IsEnabled="{Binding CanCancel}"
+                                                ToolTip="Cancel this job"
+                                                MinWidth="72"
+                                                Padding="12,4" />
+                                    </StackPanel>
                                 </Grid>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
