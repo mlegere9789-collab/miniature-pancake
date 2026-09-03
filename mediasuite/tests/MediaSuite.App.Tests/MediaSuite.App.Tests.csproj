@@ -2,14 +2,18 @@
 
   <PropertyGroup>
     <!-- Matches MediaSuite.App's own TargetFramework exactly (net8.0-windows) so the
-         ProjectReference below is an unambiguous, same-TFM reference — nothing here
-         actually touches a WPF/Windows-only API (SingleInstanceGuard is plain OS-primitive
-         code), but a mismatched net8.0 test TFM referencing a net8.0-windows app project is
-         the kind of thing that can go either way depending on SDK version, not worth risking. -->
+         ProjectReference below is an unambiguous, same-TFM reference. -->
     <TargetFramework>net8.0-windows</TargetFramework>
     <RootNamespace>MediaSuite.App.Tests</RootNamespace>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+    <!-- SingleInstanceGuard alone needed nothing WPF-specific, but JobRowViewModel's
+         constructor takes a real System.Windows.Threading.Dispatcher, and its own
+         computed properties are exactly what a real user notices regress first — worth
+         testing directly rather than only through SingleInstanceGuard's plain OS-primitive
+         surface. UseWPF pulls in the actual WindowsDesktop shared framework reference
+         (WindowsBase/PresentationCore/PresentationFramework) this project now needs. -->
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <ItemGroup>
