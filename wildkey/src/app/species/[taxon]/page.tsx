@@ -25,14 +25,24 @@ export default async function SpeciesPage({
       </div>
 
       <div>
-        {species.danger && (
-          <span
-            className="mb-2 inline-block rounded-full px-2.5 py-1 text-xs font-semibold"
-            style={{ background: "var(--color-danger)", color: "var(--color-accent-contrast)" }}
-          >
-            ⚠ {species.danger}
-          </span>
-        )}
+        <div className="mb-2 flex flex-wrap gap-2">
+          {species.danger && (
+            <span
+              className="inline-block rounded-full px-2.5 py-1 text-xs font-semibold"
+              style={{ background: "var(--color-danger)", color: "var(--color-accent-contrast)" }}
+            >
+              ⚠ {species.danger}
+            </span>
+          )}
+          {species.sensitive && (
+            <span
+              className="inline-block rounded-full px-2.5 py-1 text-xs font-semibold"
+              style={{ background: "var(--color-soil)", color: "var(--color-accent-contrast)" }}
+            >
+              Locations hidden — sensitive species
+            </span>
+          )}
+        </div>
         <h1 className="font-display text-3xl font-semibold">{species.commonName}</h1>
         <p className="text-lg italic" style={{ color: "var(--color-text-muted)" }}>
           {species.scientificName}

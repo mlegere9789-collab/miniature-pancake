@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { getMockSpecies } from "@/lib/mock-species";
 
 /**
  * A minimal, file-backed persistence layer standing in for a real database
@@ -172,6 +173,23 @@ function withQualityGrade(observation: ServerObservation, db: DbShape): Observat
   };
 }
 
+/**
+ * Part C.2 sensitive-species obscuring, enforced server-side (not just
+ * hidden in the UI) so it can't be bypassed by reading the API directly.
+ * Automatic — no per-observation opt-in — and it never obscures for the
+ * observer viewing their own observation.
+ */
+function obscureLocationIfSensitive<T extends { userId: string; taxonSlug: string; locationName: string }>(
+  observation: T,
+  viewerId: string | null,
+): T {
+  if (observation.userId === viewerId) return observation;
+  if (!observation.locationName) return observation;
+  const species = getMockSpecies(observation.taxonSlug);
+  if (!species?.sensitive) return observation;
+  return { ...observation, locationName: "Location hidden — sensitive species" };
+}
+
 export function listObservationsForUser(userId: string): ObservationWithGrade[] {
   const db = readDb();
   return db.observations
@@ -201,6 +219,7 @@ export function listObservationsNeedingId(
     .map((o) => withQualityGrade(o, db))
     .filter((o) => o.qualityGrade === "needs_id")
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .map((o) => obscureLocationIfSensitive(o, excludeUserId))
     .map((o) => ({ ...o, observerEmail: usersById.get(o.userId)?.email ?? "unknown" }));
 }
 
@@ -278,10 +297,11 @@ export function listActivityForUser(userId: string): ActivityItem[] {
     });
 }
 
-export function getObservationById(id: string): ObservationWithGrade | null {
+export function getObservationById(id: string, viewerId: string | null = null): ObservationWithGrade | null {
   const db = readDb();
   const observation = db.observations.find((o) => o.id === id);
-  return observation ? withQualityGrade(observation, db) : null;
+  if (!observation) return null;
+  return obscureLocationIfSensitive(withQualityGrade(observation, db), viewerId);
 }
 
 export function listCommentsByUser(userId: string): ObservationComment[] {

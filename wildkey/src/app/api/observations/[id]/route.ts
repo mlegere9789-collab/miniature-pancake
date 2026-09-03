@@ -15,7 +15,7 @@ export async function GET(
   if (!user) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
 
   const { id } = await params;
-  const observation = getObservationById(id);
+  const observation = getObservationById(id, user.id);
   if (!observation) return NextResponse.json({ error: "Not found." }, { status: 404 });
 
   const author = getUserById(observation.userId);

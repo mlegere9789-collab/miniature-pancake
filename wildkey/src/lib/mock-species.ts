@@ -7,6 +7,13 @@ export type Species = {
   seasonality: string;
   observationCount: number;
   danger?: string;
+  /**
+   * Part C.2: sensitive-species obscuring. True for species vulnerable to
+   * poaching/collection/disturbance if their exact location is public —
+   * the location an observation names is hidden from anyone but the
+   * observer, automatically, no per-observation opt-in needed.
+   */
+  sensitive?: boolean;
 };
 
 export const MOCK_SPECIES: Species[] = [
@@ -71,6 +78,7 @@ export const MOCK_SPECIES: Species[] = [
       "A terrestrial turtle with a high-domed, hinged shell that lets it close up almost completely for protection.",
     seasonality: "Active spring through fall; overwinters buried in leaf litter.",
     observationCount: 41_887,
+    sensitive: true,
   },
   {
     slug: "monarch-butterfly",
