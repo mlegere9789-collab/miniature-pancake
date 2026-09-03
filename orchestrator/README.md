@@ -14,7 +14,7 @@ core (config, database, logging, scheduler, dashboard).
 | `database.py` | The shared SQLite store: modules, activity log, status, earnings, review queue. Read/write helpers. |
 | `logger.py` | The API modules use: `get_logger("<module>")` → `.activity()`, `.status()`, `.earning()`, `.flag_for_review()`. |
 | `scheduler.py` | Trigger scripts on a cadence. Generates cron entries (Linux/macOS) **or** runs a portable Python daemon (any OS, incl. Windows). |
-| `dashboard.py` | A local web dashboard: per-module status, earnings, an interactive review queue, and an activity feed. |
+| `dashboard.py` | A local web dashboard: per-module status, earnings, an interactive review queue (with a recently-resolved audit trail of past approve/reject decisions), and an activity feed. |
 | `cli.py` / `__main__.py` | `python -m orchestrator <command>`. |
 | `demo.py` | Seeds sample data so you can explore the dashboard immediately. |
 | `paths.py` | Single source of truth for file locations and the module list. |

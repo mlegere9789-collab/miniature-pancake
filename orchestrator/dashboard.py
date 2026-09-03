@@ -48,6 +48,7 @@ def _esc(v: object) -> str:
 def render_page() -> str:
     overview = db.module_overview()
     reviews = db.pending_reviews()
+    resolved = db.resolved_reviews(limit=10)
     activity = db.recent_activity(limit=30)
     tot = db.totals()
 
@@ -112,6 +113,33 @@ def render_page() -> str:
     else:
         review_html = '<p class="empty">Nothing awaiting review. 🎉</p>'
 
+    if resolved:
+        rows = []
+        for r in resolved:
+            decision = r["status"]
+            badge_color = "#1a7f37" if decision == "approved" else "#cf222e"
+            note = (
+                f'<br><span class="muted">{_esc(r["resolution_note"])}</span>'
+                if r.get("resolution_note")
+                else ""
+            )
+            rows.append(
+                f"""
+            <tr>
+              <td>{_esc(r['module'])}</td>
+              <td><strong>{_esc(r['title'])}</strong>{note}</td>
+              <td><span class="state" style="background:{badge_color}">{_esc(decision)}</span></td>
+              <td class="ts">{_esc(r['resolved_at'])}</td>
+            </tr>"""
+            )
+        resolved_html = f"""
+        <table class="review">
+          <thead><tr><th>Module</th><th>Item</th><th>Decision</th><th>Resolved</th></tr></thead>
+          <tbody>{''.join(rows)}</tbody>
+        </table>"""
+    else:
+        resolved_html = '<p class="empty">No decisions yet.</p>'
+
     feed = []
     for a in activity:
         lvl = a.get("level") or "info"
@@ -134,6 +162,7 @@ def render_page() -> str:
         pending=tot["pending_reviews"],
         cards="".join(cards),
         reviews=review_html,
+        resolved=resolved_html,
         feed=feed_html,
     )
 
@@ -209,6 +238,9 @@ _TEMPLATE = """<!doctype html>
 
   <h2>Review queue</h2>
   {reviews}
+
+  <h2>Recently resolved</h2>
+  {resolved}
 
   <h2>Recent activity</h2>
   {feed}

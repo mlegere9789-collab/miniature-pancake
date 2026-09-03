@@ -265,6 +265,24 @@ def pending_reviews() -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+def resolved_reviews(limit: int = 10) -> list[dict[str, Any]]:
+    """The most recently approved/rejected review items, newest first.
+
+    An audit trail for past decisions — `pending_reviews` drops an item the
+    moment it's resolved, so without this there's no way to see what you
+    approved or rejected, or when.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT * FROM review_queue
+               WHERE status IN ('approved', 'rejected')
+               ORDER BY resolved_at DESC, id DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def totals() -> dict[str, Any]:
     with get_connection() as conn:
         earn = conn.execute(

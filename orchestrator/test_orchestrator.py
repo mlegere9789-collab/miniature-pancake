@@ -159,6 +159,32 @@ class TestReviewQueue(TempDatabaseTestCase):
         with self.assertRaises(ValueError):
             db.resolve_review_item(rid, "maybe")
 
+    def test_resolved_reviews_empty_before_any_decision(self):
+        db.add_review_item("deal_alert_bot", "t")
+        self.assertEqual(db.resolved_reviews(), [])
+
+    def test_resolved_reviews_lists_past_decisions_newest_first(self):
+        first = db.add_review_item("deal_alert_bot", "first")
+        second = db.add_review_item("deal_alert_bot", "second")
+        db.resolve_review_item(first, "approved")
+        db.resolve_review_item(second, "rejected", note="not this time")
+        resolved = db.resolved_reviews()
+        self.assertEqual([r["id"] for r in resolved], [second, first])
+        self.assertEqual(resolved[0]["status"], "rejected")
+        self.assertEqual(resolved[0]["resolution_note"], "not this time")
+
+    def test_resolved_reviews_excludes_pending(self):
+        rid = db.add_review_item("deal_alert_bot", "t")
+        db.add_review_item("deal_alert_bot", "still pending")
+        db.resolve_review_item(rid, "approved")
+        self.assertEqual(len(db.resolved_reviews()), 1)
+
+    def test_resolved_reviews_respects_limit(self):
+        for i in range(3):
+            rid = db.add_review_item("deal_alert_bot", f"item {i}")
+            db.resolve_review_item(rid, "approved")
+        self.assertEqual(len(db.resolved_reviews(limit=2)), 2)
+
     def test_module_overview_pending_count(self):
         db.add_review_item("deal_alert_bot", "a")
         db.add_review_item("deal_alert_bot", "b")
@@ -711,6 +737,23 @@ class TestRenderPage(TempDatabaseTestCase):
         page = dashboard.render_page()
         self.assertIn("Nothing awaiting review", page)
         self.assertIn("No activity logged yet", page)
+        self.assertIn("No decisions yet", page)
+
+    def test_includes_resolved_decisions(self):
+        rid = db.add_review_item("deal_alert_bot", "Post this deal?")
+        db.resolve_review_item(rid, "approved", note="looked legit")
+        page = dashboard.render_page()
+        self.assertIn("Post this deal?", page)
+        self.assertIn("looked legit", page)
+        self.assertIn("approved", page)
+        self.assertNotIn("No decisions yet", page)
+
+    def test_escapes_malicious_resolution_note(self):
+        rid = db.add_review_item("deal_alert_bot", "t")
+        db.resolve_review_item(rid, "rejected", note="<script>alert(1)</script>")
+        page = dashboard.render_page()
+        self.assertNotIn("<script>alert(1)</script>", page)
+        self.assertIn("&lt;script&gt;", page)
 
 
 class TestDashboardHandler(TempDatabaseTestCase):
