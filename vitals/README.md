@@ -211,11 +211,18 @@ npm run dev
 ```bash
 cd vitals/mobile
 npm install
+cp .env.example .env   # set EXPO_PUBLIC_VITALS_DEMO_GARDEN_ID from the backend seed output
 npx expo start
 ```
 
 ## Bug fixes
 
+- **No `.env.example` for the mobile app, and the README never mentioned
+  it.** The app reads `EXPO_PUBLIC_VITALS_API_URL` and
+  `EXPO_PUBLIC_VITALS_DEMO_GARDEN_ID` (the latter required — the app has
+  nothing to show without it), but there was no template file and the
+  "Running locally" instructions never told a new developer to set them.
+  Added `vitals/mobile/.env.example` and updated the setup steps.
 - **Garden Score neglect penalty measured from the wrong date.**
   `recomputeGardenScore` (`backend/src/routes/checkins.ts`) was flagging a
   plant "overdue" based on `plant.createdAt` instead of its most recent
