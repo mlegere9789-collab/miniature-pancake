@@ -217,13 +217,42 @@ What this repo does instead:
   surviving one's vertex order is exactly `(a, apex, b)`. Volume verified
   within 1% of the exact `(1/3)*pi*r^2*h` at the same resolution
   `Cylinder()` uses, plus the same Manifold-union watertightness proof.
+- `Mesh::RevolveProfile()` closes the "no revolve" gap: a lathe operation
+  that sweeps a 2D `(radius, height)` profile fully around an axis into a
+  closed solid, built directly from the profile's own rings and bands
+  rather than through `Brep`/`NurbsSurface` at all. Scoped narrower than a
+  fully general revolve on purpose: the profile's first and last points
+  must have radius 0 (on-axis), closed with a triangle fan to a shared
+  apex vertex the same way `ConeToApex()` closes a cap - a profile needing
+  a flat end rim instead (a plain cylinder, say) already has `Cylinder()`
+  for that shape, so this doesn't duplicate it. Throws
+  `std::invalid_argument` on an off-axis end or a profile with fewer than
+  3 points, verified directly.
+  The band winding was derived from this codebase's one standing rule
+  (`u_dir x v_dir` = outward normal, the same rule `TessellateGrid()`,
+  `Box()`, and everything else here already follows) rather than by
+  analogy to `ExtrudeCappedSolid()`'s different vertex-indexing scheme:
+  parameterizing a band between two rings by (tangential, height) and
+  checking `tangential_dir x height_dir` at a concrete point gives the
+  radially-outward direction, confirming the winding
+  `tri1=(a,a2,b2), tri2=(a,b2,b)`. At either on-axis end this same formula
+  degenerates one triangle per pair to zero area; the surviving one
+  matches `ConeToApex()`'s own `(a, apex, b)` winding, which is a
+  corroboration of the derivation, not a second independent guess.
+  Verified against a genuinely independent closed-form check - not reusing
+  `Cone()`'s own volume math - a "bicone"/football profile (on-axis apex →
+  max radius at mid-height → on-axis apex, i.e. two cones glued base to
+  base) whose exact volume, `2*(1/3)*pi*r^2*half_height`, comes from
+  separately-known geometry, plus the same Manifold-union watertightness
+  proof as every other solid here.
 
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
   (+ `hole_loops_uv`) + `Mesh::ExtrudeCappedSolid()`/`Mesh::Cylinder()`/
-  `Mesh::ConeToApex()`/`Mesh::Cone()` are the only shapes/operations here
-  — no revolve or loft yet.
+  `Mesh::ConeToApex()`/`Mesh::Cone()`/`Mesh::RevolveProfile()` are the only
+  shapes/operations here — no loft yet, and `RevolveProfile()` only
+  supports a profile that starts and ends on the axis (no flat end rim).
 - `TessellateGridClippedExact()` now handles a concave `trim_polygon` too
   (via a general Greiner-Hormann-style clipper, see above), but that path
   is newer and more narrowly tested than the long-proven convex one: a

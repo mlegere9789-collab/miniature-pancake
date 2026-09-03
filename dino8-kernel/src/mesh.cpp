@@ -338,4 +338,96 @@ Mesh Mesh::Cone(Point3d base_center, Vector3d axis, double radius, double height
   return ConeToApex(cap, apex);
 }
 
+Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_point, Vector3d axis,
+                          int revolve_segments) {
+  const int m = static_cast<int>(profile.size());
+  if (m < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::RevolveProfile: profile needs at least 3 points "
+        "(on-axis start, at least one ring, on-axis end)");
+  }
+  constexpr double kOnAxisEpsilon = 1e-9;
+  if (std::abs(profile.front().x) > kOnAxisEpsilon || std::abs(profile.back().x) > kOnAxisEpsilon) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::RevolveProfile: profile's first and last points "
+        "must have radius 0 (lie on the axis) - a profile needing a flat end "
+        "cap instead isn't supported here");
+  }
+
+  Vector3d n = axis;
+  n.Unitize();
+  const Vector3d reference = (std::abs(n.z) < 0.9) ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+  Vector3d ex = ON_CrossProduct(reference, n);
+  ex.Unitize();
+  const Vector3d ey = ON_CrossProduct(n, ex);  // ex x ey = n (ex _|_ n): a right-handed frame,
+                                                // so increasing theta below sweeps ex toward ey.
+
+  Mesh result;
+  ON_Mesh& out = result.mesh_;
+
+  // ring_start[i]: index of profile point i's first (and, for the two
+  // on-axis ends, only) vertex in the output mesh.
+  std::vector<int> ring_start(static_cast<size_t>(m));
+  for (int i = 0; i < m; ++i) {
+    ring_start[static_cast<size_t>(i)] = out.m_V.Count();
+    const double r = profile[static_cast<size_t>(i)].x;
+    const double h = profile[static_cast<size_t>(i)].y;
+    if (i == 0 || i == m - 1) {
+      out.m_V.Append(ON_3fPoint(axis_point + n * h));
+    } else {
+      for (int k = 0; k < revolve_segments; ++k) {
+        const double theta = 2.0 * ON_PI * static_cast<double>(k) / revolve_segments;
+        out.m_V.Append(ON_3fPoint(axis_point + n * h + ex * (r * std::cos(theta)) +
+                                   ey * (r * std::sin(theta))));
+      }
+    }
+  }
+
+  // Winding, derived (not guessed) from this codebase's one consistent
+  // rule for outward normals: u_dir x v_dir must equal the outward
+  // normal (see TessellateGrid's own comment). Parameterize a band
+  // between ring i (u=tangential, increasing k/theta) and ring i+1
+  // (v=height) the same way: tri1=(a,a2,b2), tri2=(a,b2,b) for corner
+  // indices (a=ring i at k, a2=ring i at k+1, b=ring i+1 at k,
+  // b2=ring i+1 at k+1) - u_dir (tangential, ~+ey at theta=0) x v_dir
+  // (height, +n) = ey x n = ex, the radially-outward direction at
+  // theta=0, confirming this is the outward-facing winding. At the two
+  // on-axis ends, the apex's single vertex makes one triangle per pair
+  // degenerate (zero area); skipping it leaves exactly ConeToApex()'s own
+  // one-triangle-per-edge fan, corroborating this derivation rather than
+  // introducing a second, independent convention for the end caps.
+  for (int i = 0; i + 1 < m; ++i) {
+    const bool i_is_apex = (i == 0);
+    const bool i1_is_apex = (i + 1 == m - 1);
+    for (int k = 0; k < revolve_segments; ++k) {
+      const int k2 = (k + 1) % revolve_segments;
+      const int a = i_is_apex ? ring_start[static_cast<size_t>(i)]
+                               : ring_start[static_cast<size_t>(i)] + k;
+      const int a2 = i_is_apex ? ring_start[static_cast<size_t>(i)]
+                                : ring_start[static_cast<size_t>(i)] + k2;
+      const int b = i1_is_apex ? ring_start[static_cast<size_t>(i + 1)]
+                                : ring_start[static_cast<size_t>(i + 1)] + k;
+      const int b2 = i1_is_apex ? ring_start[static_cast<size_t>(i + 1)]
+                                 : ring_start[static_cast<size_t>(i + 1)] + k2;
+
+      auto append_tri = [&out](int v0, int v1, int v2) {
+        ON_MeshFace face;
+        face.vi[0] = v0;
+        face.vi[1] = v1;
+        face.vi[2] = v2;
+        face.vi[3] = v2;
+        out.m_F.Append(face);
+      };
+      if (a != a2) {
+        append_tri(a, a2, b2);
+      }
+      if (b != b2) {
+        append_tri(a, b2, b);
+      }
+    }
+  }
+
+  return result;
+}
+
 }  // namespace dino8::kernel

@@ -115,6 +115,31 @@ class Mesh {
                     double height, int circle_segments = 48,
                     int grid_divisions = 48);
 
+  // Revolves a 2D profile fully around `axis` into a closed solid of
+  // revolution (a lathe operation) - the general answer to "no revolve"
+  // that Cylinder()/Cone() don't cover (constant or linearly-tapering
+  // radius only). `profile[i] = (radius, height)`: radius >= 0 measured
+  // from `axis`, height measured along `axis` from `axis_point`.
+  //
+  // `profile.front()` and `profile.back()` must have radius 0 (lie on the
+  // axis) - each end is closed with a triangle fan to a single shared
+  // apex vertex, the same way ConeToApex() closes a cap, rather than by
+  // building a flat end cap. A profile whose ends need a flat rim instead
+  // (a plain cylinder, say) isn't this method's job - Cylinder() already
+  // covers that shape. Throws std::invalid_argument if either end has
+  // nonzero radius, or if `profile` has fewer than 3 points (an on-axis
+  // start and end with nothing revolved between them isn't a solid).
+  //
+  // Every profile point strictly between the two on-axis ends becomes one
+  // `revolve_segments`-vertex ring. No MergeAndWeld() is needed: each
+  // ring's vertices are shared directly by the band before and after it
+  // (and the two end fans reuse the same apex vertex for every triangle),
+  // so the result is already a single closed mesh - same "exact shared
+  // vertices, no welding tolerance" property as ExtrudeCappedSolid() and
+  // ConeToApex().
+  static Mesh RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_point,
+                              Vector3d axis, int revolve_segments = 48);
+
  private:
   friend class Brep;
   friend class NurbsSurface;

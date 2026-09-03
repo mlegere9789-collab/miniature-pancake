@@ -564,6 +564,79 @@ void TestConeVolumeAndBoolean() {
         "union of the cone with a disjoint unit box equals cone volume + 1");
 }
 
+void TestRevolveProfileBiconeVolumeAndBoolean() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double radius = 2.0;
+  const double half_height = 5.0;
+  // A "bicone"/football: on-axis apex, out to max radius at the
+  // mid-height, back to an on-axis apex - i.e. two cones glued base to
+  // base. Exact volume is exactly twice one cone's (1/3)*pi*r^2*h, a
+  // closed form independent of RevolveProfile()'s own implementation
+  // (unlike Cone(), which this doesn't reuse - RevolveProfile() builds
+  // its bands and end fans directly from the profile).
+  const std::vector<Point2d> profile = {
+      Point2d(0.0, -half_height),
+      Point2d(radius, 0.0),
+      Point2d(0.0, half_height),
+  };
+  const auto bicone = Mesh::RevolveProfile(profile, Point3d(0, 0, 0), Vector3d(0, 0, 1),
+                                            /*revolve_segments=*/32);
+
+  const double exact_volume = 2.0 * (ON_PI * radius * radius * half_height / 3.0);
+  const double relative_error = std::abs(bicone.Volume() - exact_volume) / exact_volume;
+  Check(relative_error < 0.01,
+        "revolved bicone volume is within 1% of 2*(1/3)*pi*r^2*half_height");
+
+  // Real proof of watertightness, same as Cylinder()/Cone(): Manifold
+  // would reject a non-manifold mesh outright rather than return a
+  // plausible-looking wrong answer.
+  const auto box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const auto result = BooleanCombine(bicone, box, BooleanOp::Union);
+  const double expected_union = bicone.Volume() + 1.0;
+  Check(std::abs(result.Volume() - expected_union) < 1e-6,
+        "union of the revolved bicone with a disjoint unit box equals bicone volume + 1");
+}
+
+void TestRevolveProfileRejectsOffAxisEndsAndTooShortProfile() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  bool threw_off_axis = false;
+  try {
+    const std::vector<Point2d> bad_profile = {
+        Point2d(1.0, -1.0),  // nonzero radius at the start - not on-axis
+        Point2d(2.0, 0.0),
+        Point2d(0.0, 1.0),
+    };
+    Mesh::RevolveProfile(bad_profile, Point3d(0, 0, 0), Vector3d(0, 0, 1), 16);
+  } catch (const std::invalid_argument&) {
+    threw_off_axis = true;
+  }
+  Check(threw_off_axis,
+        "RevolveProfile throws when the profile's start isn't on the axis "
+        "(nonzero radius) rather than silently building an open/wrong shape");
+
+  bool threw_too_short = false;
+  try {
+    const std::vector<Point2d> too_short = {Point2d(0.0, -1.0), Point2d(0.0, 1.0)};
+    Mesh::RevolveProfile(too_short, Point3d(0, 0, 0), Vector3d(0, 0, 1), 16);
+  } catch (const std::invalid_argument&) {
+    threw_too_short = true;
+  }
+  Check(threw_too_short,
+        "RevolveProfile throws on a 2-point profile (nothing to revolve "
+        "between the two on-axis ends)");
+}
+
 void TestExactClippingMatchesAreaButNotCellCounts() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -849,6 +922,8 @@ int main() {
   TestExtrudeTrimmedFaceFeedsBoolean();
   TestCylinderVolumeAndBoolean();
   TestConeVolumeAndBoolean();
+  TestRevolveProfileBiconeVolumeAndBoolean();
+  TestRevolveProfileRejectsOffAxisEndsAndTooShortProfile();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestAnnulusFaceExtrudesToWatertightTube();
