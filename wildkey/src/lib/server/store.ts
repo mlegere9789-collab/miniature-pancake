@@ -412,6 +412,39 @@ export function deleteUserAccount(userId: string) {
   db.prepare("DELETE FROM users WHERE id = ?").run(userId);
 }
 
+/**
+ * Part D.1: keep the contribution history, drop the identity — the
+ * opposite tradeoff from deleteUserAccount above. Every observation,
+ * comment, journal post, guide, and project this account created stays
+ * exactly where it is, still attributed to the account, but the account
+ * itself becomes unreachable: the email is replaced with an anonymous
+ * placeholder, the password is overwritten with a random value nobody
+ * (including this server) retains, and every existing session is
+ * destroyed. There is deliberately no path back — this is irreversible
+ * from the user's side by design, same as the real thing would be.
+ */
+export function anonymizeUserAccount(userId: string): string {
+  const anonymizedEmail = `deleted-user-${userId.slice(0, 8)}@anonymized.wildkey`;
+  const passwordSalt = randomBytes(16).toString("hex");
+  const passwordHash = hashPassword(randomBytes(32).toString("hex"), passwordSalt);
+
+  const transaction = db.transaction(() => {
+    db.prepare("UPDATE users SET email = ?, password_hash = ?, password_salt = ? WHERE id = ?").run(
+      anonymizedEmail,
+      passwordHash,
+      passwordSalt,
+      userId,
+    );
+    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    // Comments denormalize the author's email for display — keep it in
+    // sync so old comments don't keep showing the real address.
+    db.prepare("UPDATE comments SET user_email = ? WHERE user_id = ?").run(anonymizedEmail, userId);
+  });
+  transaction();
+
+  return anonymizedEmail;
+}
+
 export function deleteObservationForUser(userId: string, id: string) {
   // Comments on this observation cascade automatically via the foreign key.
   db.prepare("DELETE FROM observations WHERE id = ? AND user_id = ?").run(id, userId);

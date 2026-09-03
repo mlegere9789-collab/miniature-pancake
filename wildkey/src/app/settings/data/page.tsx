@@ -8,17 +8,33 @@ import { useAuth } from "@/lib/auth-context";
 export default function DataSettingsPage() {
   const { user, loading, refresh } = useAuth();
   const router = useRouter();
-  const [confirmText, setConfirmText] = useState("");
+  const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [anonymizeConfirmText, setAnonymizeConfirmText] = useState("");
+  const [anonymizing, setAnonymizing] = useState(false);
+  const [anonymizeError, setAnonymizeError] = useState<string | null>(null);
 
   const deleteAccount = async () => {
     setDeleting(true);
-    setError(null);
+    setDeleteError(null);
     const res = await fetch("/api/account/delete", { method: "POST" });
     if (!res.ok) {
       setDeleting(false);
-      setError("Something went wrong deleting your account.");
+      setDeleteError("Something went wrong deleting your account.");
+      return;
+    }
+    await refresh();
+    router.push("/");
+  };
+
+  const anonymizeAccount = async () => {
+    setAnonymizing(true);
+    setAnonymizeError(null);
+    const res = await fetch("/api/account/anonymize", { method: "POST" });
+    if (!res.ok) {
+      setAnonymizing(false);
+      setAnonymizeError("Something went wrong anonymizing your account.");
       return;
     }
     await refresh();
@@ -74,19 +90,57 @@ export default function DataSettingsPage() {
       </div>
 
       {!loading && user && (
+        <div className="rounded-lg border p-4" style={{ borderColor: "var(--color-border)" }}>
+          <p className="font-semibold">Anonymize account</p>
+          <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
+            Keeps every observation, comment, journal post, guide, and project you&rsquo;ve made —
+            your contribution history stays exactly where it is, still credited to this account.
+            But your email and password are replaced with an anonymous, unrecoverable placeholder,
+            and you&rsquo;re signed out everywhere. There is no way back into this account
+            afterward &mdash; export your data first if you want a personal copy. Type{" "}
+            <strong>ANONYMIZE</strong> to confirm.
+          </p>
+          <div className="mt-3 flex gap-2">
+            <input
+              value={anonymizeConfirmText}
+              onChange={(e) => setAnonymizeConfirmText(e.target.value)}
+              aria-label="Type ANONYMIZE to confirm account anonymization"
+              placeholder="ANONYMIZE"
+              className="w-40 rounded border px-3 py-2 text-sm"
+              style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
+            />
+            <button
+              onClick={anonymizeAccount}
+              disabled={anonymizeConfirmText !== "ANONYMIZE" || anonymizing}
+              className="rounded-full border px-4 py-2 text-sm font-semibold disabled:opacity-40"
+              style={{ borderColor: "var(--color-border)" }}
+            >
+              {anonymizing ? "Anonymizing…" : "Anonymize my account"}
+            </button>
+          </div>
+          {anonymizeError && (
+            <p className="mt-2 text-sm font-medium" style={{ color: "var(--color-danger)" }}>
+              {anonymizeError}
+            </p>
+          )}
+        </div>
+      )}
+
+      {!loading && user && (
         <div className="rounded-lg border p-4" style={{ borderColor: "var(--color-danger)" }}>
           <p className="font-semibold" style={{ color: "var(--color-danger)" }}>
             Delete account
           </p>
           <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
             Permanently deletes your account, every observation you own, and every comment
-            you&rsquo;ve posted. This cannot be undone — there is no grace period yet, so export
-            your data first if you want to keep it. Type <strong>DELETE</strong> to confirm.
+            you&rsquo;ve posted — full erasure, unlike anonymizing above, which keeps your
+            contributions. This cannot be undone — there is no grace period yet, so export your
+            data first if you want to keep it. Type <strong>DELETE</strong> to confirm.
           </p>
           <div className="mt-3 flex gap-2">
             <input
-              value={confirmText}
-              onChange={(e) => setConfirmText(e.target.value)}
+              value={deleteConfirmText}
+              onChange={(e) => setDeleteConfirmText(e.target.value)}
               aria-label="Type DELETE to confirm account deletion"
               placeholder="DELETE"
               className="w-32 rounded border px-3 py-2 text-sm"
@@ -94,16 +148,16 @@ export default function DataSettingsPage() {
             />
             <button
               onClick={deleteAccount}
-              disabled={confirmText !== "DELETE" || deleting}
+              disabled={deleteConfirmText !== "DELETE" || deleting}
               className="rounded-full px-4 py-2 text-sm font-semibold disabled:opacity-40"
               style={{ background: "var(--color-danger)", color: "var(--color-accent-contrast)" }}
             >
               {deleting ? "Deleting…" : "Delete my account"}
             </button>
           </div>
-          {error && (
+          {deleteError && (
             <p className="mt-2 text-sm font-medium" style={{ color: "var(--color-danger)" }}>
-              {error}
+              {deleteError}
             </p>
           )}
         </div>
@@ -119,8 +173,7 @@ export default function DataSettingsPage() {
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
           <li>CSV export and a media zip (photos currently ship as inline base64 data URLs inside the JSON, not separate files)</li>
           <li>Account migration tooling for switching devices</li>
-          <li>Account anonymization: keep contribution history, remove personal identity</li>
-          <li>A grace period / undo window on deletion — deletion above is immediate and permanent</li>
+          <li>A grace period / undo window on deletion or anonymization — both above are immediate and permanent</li>
         </ul>
       </div>
     </div>

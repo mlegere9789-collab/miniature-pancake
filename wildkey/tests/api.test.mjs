@@ -516,6 +516,77 @@ describe("account deletion", () => {
   });
 });
 
+describe("account anonymization", () => {
+  it("keeps contribution history while making the account unreachable", async () => {
+    const a = await signUp();
+    const b = await signUp();
+
+    // A's own observation — should survive anonymization, reattributed.
+    const aObs = await json(
+      await a.session.fetch("/api/observations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          photoDataUrl: "x",
+          commonName: "American Robin",
+          scientificName: "Turdus migratorius",
+          confidence: 0.7,
+          taxonSlug: "american-robin",
+        }),
+      }),
+    );
+
+    // B's observation, with a comment authored by A — the comment's
+    // denormalized author email should also update on anonymization.
+    const bObs = await json(
+      await b.session.fetch("/api/observations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          photoDataUrl: "x",
+          commonName: "Common Dandelion",
+          scientificName: "Taraxacum officinale",
+          confidence: 0.9,
+          taxonSlug: "common-dandelion",
+        }),
+      }),
+    );
+    await a.session.fetch(`/api/observations/${bObs.observation.id}/comments`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body: "nice dandelion", kind: "comment" }),
+    });
+
+    const anonResult = await json(
+      await a.session.fetch("/api/account/anonymize", { method: "POST" }),
+    );
+    assert.match(anonResult.anonymizedEmail, /^deleted-user-.+@anonymized\.wildkey$/);
+
+    // Old session is dead and the original email can no longer log in.
+    assert.equal((await a.session.fetch("/api/observations")).status, 401);
+    const loginAttempt = await createSession().fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: a.email, password: "correcthorsebattery" }),
+    });
+    assert.equal(loginAttempt.status, 401);
+
+    // A's observation survives, reattributed to the anonymized email.
+    const stillThere = await json(
+      await b.session.fetch(`/api/observations/${aObs.observation.id}`),
+    );
+    assert.equal(stillThere.author.email, anonResult.anonymizedEmail);
+
+    // A's comment on B's observation still shows the anonymized email,
+    // not the real one that used to be there — and B's own observation
+    // (owned by a different, untouched account) is unaffected.
+    const comments = await json(
+      await b.session.fetch(`/api/observations/${bObs.observation.id}/comments`),
+    );
+    assert.equal(comments.comments[0].userEmail, anonResult.anonymizedEmail);
+  });
+});
+
 describe("data export", () => {
   it("returns everything the account owns as an attachment", async () => {
     const { session } = await signUp();
