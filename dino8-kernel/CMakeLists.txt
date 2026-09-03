@@ -18,11 +18,30 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(opennurbs)
 
+# Manifold provides the real mesh-boolean algorithm OpenNURBS doesn't
+# (see brep.h's comment for why). Scoped down to just the boolean engine:
+# no 2D cross-sections (skips the Clipper2 dependency), no parallel
+# backend (skips TBB), no test suite, no Python bindings, static linkage
+# to match how we link everything else here.
+set(MANIFOLD_CROSS_SECTION OFF CACHE BOOL "" FORCE)
+set(MANIFOLD_PAR OFF CACHE BOOL "" FORCE)
+set(MANIFOLD_TEST OFF CACHE BOOL "" FORCE)
+set(MANIFOLD_PYBIND OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+  manifold
+  GIT_REPOSITORY https://github.com/elalish/manifold.git
+  GIT_TAG        v3.5.2
+)
+FetchContent_MakeAvailable(manifold)
+
 add_library(dino8_kernel STATIC
   src/curve.cpp
   src/surface.cpp
   src/brep.cpp
   src/mesh.cpp
+  src/boolean.cpp
   src/file_io.cpp
 )
 
@@ -40,6 +59,7 @@ target_include_directories(dino8_kernel
 # until everything resolves, without patching the vendored CMakeLists.
 target_link_libraries(dino8_kernel PUBLIC
   "-Wl,--start-group" opennurbsStatic zlib "-Wl,--end-group"
+  manifold
 )
 
 if(DINO8_KERNEL_BUILD_TESTS)

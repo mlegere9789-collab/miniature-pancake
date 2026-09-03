@@ -14,10 +14,12 @@ viewport, command engine) builds on.
 - [x] Can open and save a `.3dm` file (round-trip)
 - [x] Can tessellate a surface/brep into a triangle mesh (own tessellator —
       see "Corrected assumptions" below)
-- [ ] Curve/surface edit operations beyond construction (left for the next
-      kernel chunk — booleans/SubD depend on this API surface existing first)
+- [x] Can perform a real boolean operation (union/intersection/difference)
+      on two closed meshes, backed by Manifold
+- [ ] Curve/surface edit operations beyond construction (left for a later
+      kernel chunk)
 
-## Corrected assumptions (read this before planning chunk 2+)
+## Corrected assumptions (read this before planning chunk 3+)
 
 The original blueprint assumed booleans and meshing could be built by
 "wrapping OpenNURBS." Verified directly against the v8.34 source — not
@@ -33,18 +35,39 @@ assumed — that's wrong on both counts:
   the header but fails at link time with an undefined reference — this
   isn't a hidden edge case, it's the very first thing chunk 2 hit.
 
-What this repo does instead, and what a real chunk 2 needs to do:
+What this repo does instead:
 
-- `NurbsSurface::TessellateGrid()` / `Brep::Tessellate()` here are a
+- `NurbsSurface::TessellateGrid()` / `Brep::Tessellate()` are a
   **from-scratch grid tessellator** we own (uniform UV sampling +
   triangulation), not OpenNURBS'. It only handles untrimmed surfaces and
-  isn't adaptive/curvature-aware — good enough to unblock mesh-boolean
-  work, not a real product's mesher.
-- A real boolean engine (the blueprint's chunk 2) needs either an
-  integrated third-party kernel (e.g. OpenCascade for exact B-rep
-  booleans) or a vetted mesh-boolean library (e.g. Manifold) layered on
-  top of a real adaptive mesher — this is genuinely new engineering, not
-  something "OpenNURBS integration" gets for free. Budget it as such.
+  isn't adaptive/curvature-aware — good enough to feed the boolean
+  engine, not a real product's mesher.
+- `BooleanCombine()` (chunk 2, `include/dino8/kernel/boolean.h`) is the
+  real boolean engine, backed by
+  [Manifold](https://github.com/elalish/manifold) (fetched via CMake,
+  pinned to v3.5.2) rather than anything from OpenNURBS. It's exercised
+  end-to-end in `tests/test_basic.cpp`: two overlapping unit cubes,
+  union/intersection/difference, each checked against the exact expected
+  volume (8 + 8 − 1, 1, and 8 − 1 respectively) via a from-scratch
+  divergence-theorem volume calculation (`Mesh::Volume()`), not just
+  "did it not crash."
+- Manifold requires genuinely closed/watertight input; `BooleanCombine()`
+  surfaces that as a thrown `std::runtime_error` (via `Manifold::Status()`)
+  rather than silently producing garbage geometry. The grid tessellator
+  above produces *open* surfaces, so it cannot feed `BooleanCombine()`
+  directly yet — solids in the test suite are built by hand
+  (`MakeBox()` in the tests) until Brep gains real trimmed, closed-solid
+  construction.
+
+## What's still not done (as of chunk 2)
+
+- Trimmed surfaces / closed solids from `Brep` (needed to connect
+  `Tessellate()`'s output to `BooleanCombine()` for real modeled shapes,
+  not just hand-built test boxes).
+- SubD modeling, adaptive/curvature-aware meshing, the viewport/display
+  engine, GPU path tracer, command engine, UI shell, visual scripting,
+  other file formats, undo system, installer, and everything else in the
+  blueprint's roadmap — all unstarted.
 
 ## Layout
 

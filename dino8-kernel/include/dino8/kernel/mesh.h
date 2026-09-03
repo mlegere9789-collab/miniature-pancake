@@ -17,6 +17,12 @@ class Mesh {
   int VertexCount() const;
   int FaceCount() const;
 
+  // Signed volume via the divergence theorem (sum of signed tetrahedron
+  // volumes from the origin to each triangle). Only meaningful for a
+  // closed, consistently-oriented (CCW from outside) mesh - exactly the
+  // kind BooleanCombine requires as input and produces as output.
+  double Volume() const;
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 

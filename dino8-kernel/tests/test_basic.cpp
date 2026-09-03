@@ -1,10 +1,12 @@
 // Minimal assert-based smoke tests for chunk 1's exit criteria. Not pulling
 // in a test framework dependency for four checks.
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
 
+#include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/file_io.h"
@@ -95,6 +97,90 @@ void TestFileRoundTrip() {
   std::remove(path.c_str());
 }
 
+// Builds a closed, consistently-oriented (CCW from outside) axis-aligned
+// box mesh directly - not via NurbsSurface::TessellateGrid, since that
+// only tessellates a single open surface, not a closed solid. Booleans
+// need actual watertight input.
+dino8::kernel::Mesh MakeBox(double x0, double y0, double z0, double x1,
+                             double y1, double z1) {
+  dino8::kernel::Mesh mesh;
+  ON_Mesh& raw = mesh.raw();
+
+  raw.m_V.Append(ON_3fPoint(x0, y0, z0));  // 0
+  raw.m_V.Append(ON_3fPoint(x1, y0, z0));  // 1
+  raw.m_V.Append(ON_3fPoint(x1, y1, z0));  // 2
+  raw.m_V.Append(ON_3fPoint(x0, y1, z0));  // 3
+  raw.m_V.Append(ON_3fPoint(x0, y0, z1));  // 4
+  raw.m_V.Append(ON_3fPoint(x1, y0, z1));  // 5
+  raw.m_V.Append(ON_3fPoint(x1, y1, z1));  // 6
+  raw.m_V.Append(ON_3fPoint(x0, y1, z1));  // 7
+
+  auto add_tri = [&raw](int a, int b, int c) {
+    ON_MeshFace face;
+    face.vi[0] = a;
+    face.vi[1] = b;
+    face.vi[2] = c;
+    face.vi[3] = c;
+    raw.m_F.Append(face);
+  };
+
+  add_tri(0, 3, 2);
+  add_tri(0, 2, 1);  // bottom (-z)
+  add_tri(4, 5, 6);
+  add_tri(4, 6, 7);  // top (+z)
+  add_tri(0, 1, 5);
+  add_tri(0, 5, 4);  // front (-y)
+  add_tri(3, 7, 6);
+  add_tri(3, 6, 2);  // back (+y)
+  add_tri(0, 4, 7);
+  add_tri(0, 7, 3);  // left (-x)
+  add_tri(1, 2, 6);
+  add_tri(1, 6, 5);  // right (+x)
+
+  return mesh;
+}
+
+void TestBoxVolume() {
+  const auto box = MakeBox(0, 0, 0, 2, 2, 2);
+  Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
+}
+
+void TestBooleanUnion() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+
+  const auto a = MakeBox(0, 0, 0, 2, 2, 2);   // volume 8
+  const auto b = MakeBox(1, 1, 1, 3, 3, 3);   // volume 8, overlaps a in [1,2]^3 (volume 1)
+
+  const auto result = BooleanCombine(a, b, BooleanOp::Union);
+  Check(std::abs(result.Volume() - 15.0) < 1e-6,
+        "union volume equals 8 + 8 - 1 overlap");
+}
+
+void TestBooleanIntersection() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+
+  const auto a = MakeBox(0, 0, 0, 2, 2, 2);
+  const auto b = MakeBox(1, 1, 1, 3, 3, 3);
+
+  const auto result = BooleanCombine(a, b, BooleanOp::Intersection);
+  Check(std::abs(result.Volume() - 1.0) < 1e-6,
+        "intersection volume equals the 1x1x1 overlap");
+}
+
+void TestBooleanDifference() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+
+  const auto a = MakeBox(0, 0, 0, 2, 2, 2);
+  const auto b = MakeBox(1, 1, 1, 3, 3, 3);
+
+  const auto result = BooleanCombine(a, b, BooleanOp::Difference);
+  Check(std::abs(result.Volume() - 7.0) < 1e-6,
+        "difference volume equals 8 - 1 overlap");
+}
+
 void TestBrepTessellation() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -126,6 +212,10 @@ int main() {
   TestSurfaceDegreeElevation();
   TestFileRoundTrip();
   TestBrepTessellation();
+  TestBoxVolume();
+  TestBooleanUnion();
+  TestBooleanIntersection();
+  TestBooleanDifference();
 
   ON::End();
 
