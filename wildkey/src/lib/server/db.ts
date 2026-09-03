@@ -128,6 +128,13 @@ function createConnection(): Database.Database {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS login_lockouts (
+      email TEXT PRIMARY KEY,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      last_failed_at TEXT,
+      locked_until TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS role_changes (
       id TEXT PRIMARY KEY,
       target_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

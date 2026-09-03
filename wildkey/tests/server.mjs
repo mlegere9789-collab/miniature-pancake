@@ -26,10 +26,17 @@ export async function startServer() {
     cwd: PROJECT_ROOT,
     stdio: "pipe",
     detached: true,
-    // Shrinks the account-deletion grace period from its real 14 days down
-    // to near-instant so the test suite can verify the actual purge path,
-    // not just the scheduling API — see store.ts's DELETION_GRACE_PERIOD_MS.
-    env: { ...process.env, WILDKEY_DELETION_GRACE_PERIOD_MS: "200" },
+    // Shrinks the account-deletion grace period from its real 14 days, and
+    // the login-lockout window/duration from their real 15 minutes, down to
+    // near-instant so the test suite can verify the actual purge/expiry
+    // paths, not just the scheduling/locking APIs — see store.ts's
+    // DELETION_GRACE_PERIOD_MS and LOGIN_LOCKOUT_MS.
+    env: {
+      ...process.env,
+      WILDKEY_DELETION_GRACE_PERIOD_MS: "200",
+      WILDKEY_LOGIN_LOCKOUT_MS: "300",
+      WILDKEY_LOGIN_ATTEMPT_WINDOW_MS: "60000",
+    },
   });
   // Never leave stdout/stderr un-drained: once the pipe buffer fills, the
   // child blocks on write() and everything downstream silently stalls —

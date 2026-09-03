@@ -57,6 +57,49 @@ describe("auth", () => {
     const res = await fetch("http://localhost:3999/api/observations");
     assert.equal(res.status, 401);
   });
+
+  it("locks out an email after repeated failed logins, then lifts the lock once it expires, without touching other accounts", async () => {
+    const { email, session: goodSession } = await signUp();
+    const otherAccount = await signUp();
+    const attacker = createSession();
+
+    let lastStatus;
+    for (let i = 0; i < 5; i++) {
+      const res = await attacker.fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password: "wrongpassword" }),
+      });
+      lastStatus = res.status;
+    }
+    assert.equal(lastStatus, 401);
+
+    // Locked out now, even with the correct password.
+    const lockedOut = await goodSession.fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "correcthorsebattery" }),
+    });
+    assert.equal(lockedOut.status, 429);
+    assert.ok(lockedOut.headers.get("retry-after"));
+
+    // A different account is entirely unaffected.
+    const otherLogin = await createSession().fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: otherAccount.email, password: "correcthorsebattery" }),
+    });
+    assert.equal(otherLogin.status, 200);
+
+    // Once the (test-shortened) lockout window elapses, the real password works again.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const afterExpiry = await goodSession.fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "correcthorsebattery" }),
+    });
+    assert.equal(afterExpiry.status, 200);
+  });
 });
 
 describe("observations + quality grade", () => {

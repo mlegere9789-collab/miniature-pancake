@@ -207,6 +207,65 @@ export function verifyCredentials(email: string, password: string): User | null 
   return user;
 }
 
+// Real brute-force protection on login — previously there was none at all:
+// an attacker could try passwords against an email address as fast as the
+// server could hash them, with no limit. Locks the *email*, not the caller
+// (no reliable client IP in every deployment target this could run
+// behind), for LOGIN_MAX_ATTEMPTS failures within LOGIN_ATTEMPT_WINDOW_MS,
+// for LOGIN_LOCKOUT_MS. Both durations are overridable via env so the test
+// suite can verify a lockout actually expires without waiting the real 15
+// minutes (same pattern as DELETION_GRACE_PERIOD_MS above) — never set
+// these in a real deployment.
+const LOGIN_MAX_ATTEMPTS = 5;
+const LOGIN_ATTEMPT_WINDOW_MS =
+  Number(process.env.WILDKEY_LOGIN_ATTEMPT_WINDOW_MS) || 15 * 60 * 1000;
+const LOGIN_LOCKOUT_MS = Number(process.env.WILDKEY_LOGIN_LOCKOUT_MS) || 15 * 60 * 1000;
+
+type LoginLockoutRow = {
+  email: string;
+  failed_count: number;
+  last_failed_at: string | null;
+  locked_until: string | null;
+};
+
+/** Returns how many seconds remain locked, or null if the email isn't currently locked out. */
+export function getLoginLockoutSeconds(email: string): number | null {
+  const normalized = email.trim().toLowerCase();
+  const row = db
+    .prepare<[string], LoginLockoutRow>("SELECT * FROM login_lockouts WHERE email = ?")
+    .get(normalized);
+  if (!row?.locked_until) return null;
+  const remainingMs = new Date(row.locked_until).getTime() - Date.now();
+  return remainingMs > 0 ? Math.ceil(remainingMs / 1000) : null;
+}
+
+export function registerLoginFailure(email: string): void {
+  const normalized = email.trim().toLowerCase();
+  const now = new Date();
+  const row = db
+    .prepare<[string], LoginLockoutRow>("SELECT * FROM login_lockouts WHERE email = ?")
+    .get(normalized);
+
+  // A failure long after the last one starts a fresh window rather than
+  // accumulating forever.
+  const withinWindow =
+    row?.last_failed_at && now.getTime() - new Date(row.last_failed_at).getTime() < LOGIN_ATTEMPT_WINDOW_MS;
+  const failedCount = (withinWindow ? (row?.failed_count ?? 0) : 0) + 1;
+  const lockedUntil =
+    failedCount >= LOGIN_MAX_ATTEMPTS ? new Date(now.getTime() + LOGIN_LOCKOUT_MS).toISOString() : null;
+
+  db.prepare(
+    `INSERT INTO login_lockouts (email, failed_count, last_failed_at, locked_until)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(email) DO UPDATE SET failed_count = excluded.failed_count,
+       last_failed_at = excluded.last_failed_at, locked_until = excluded.locked_until`,
+  ).run(normalized, failedCount, now.toISOString(), lockedUntil);
+}
+
+export function registerLoginSuccess(email: string): void {
+  db.prepare("DELETE FROM login_lockouts WHERE email = ?").run(email.trim().toLowerCase());
+}
+
 export function createSession(userId: string): string {
   const token = randomBytes(32).toString("hex");
   db.prepare("INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)").run(
