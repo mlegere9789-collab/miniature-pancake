@@ -6,7 +6,7 @@ import Link from "next/link";
 import { MOCK_SPECIES, getMockSpecies } from "@/lib/mock-species";
 import { TAXON_GROUPS, taxonColor, type TaxonGroup } from "@/lib/taxon";
 import { TaxonBadge } from "@/components/taxon-badge";
-import { MapView, type MapMarker } from "@/components/map-view";
+import { MapView, type MapMarker, type BasemapKind } from "@/components/map-view";
 import { useAuth } from "@/lib/auth-context";
 
 type ViewMode = "grid" | "list" | "map";
@@ -21,6 +21,7 @@ export default function ExplorePage() {
   const [view, setView] = useState<ViewMode>("grid");
   const [activeGroups, setActiveGroups] = useState<Set<TaxonGroup>>(new Set());
   const [markers, setMarkers] = useState<MapMarker[]>([]);
+  const [basemap, setBasemap] = useState<BasemapKind>("street");
 
   const toggleGroup = (group: TaxonGroup) => {
     setActiveGroups((prev) => {
@@ -139,8 +140,31 @@ export default function ExplorePage() {
           </div>
         ) : (
           <div className="flex flex-col gap-2">
+            <div
+              role="tablist"
+              aria-label="Basemap"
+              className="inline-flex w-fit shrink-0 rounded-full border p-1 text-xs"
+              style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}
+            >
+              {(["street", "satellite"] as const).map((kind) => (
+                <button
+                  key={kind}
+                  role="tab"
+                  aria-selected={basemap === kind}
+                  onClick={() => setBasemap(kind)}
+                  className="rounded-full px-3 py-1 font-medium capitalize transition-colors"
+                  style={{
+                    background: basemap === kind ? "var(--color-accent)" : "transparent",
+                    color: basemap === kind ? "var(--color-accent-contrast)" : "var(--color-text-muted)",
+                  }}
+                >
+                  {kind}
+                </button>
+              ))}
+            </div>
             <MapView
               markers={markers}
+              basemap={basemap}
               onMoveEnd={loadMapMarkers}
               onMarkerClick={(id) => router.push(`/observations/${id}`)}
               className="h-[60vh] w-full overflow-hidden rounded-lg border"

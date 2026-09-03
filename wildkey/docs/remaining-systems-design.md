@@ -2,28 +2,23 @@
 
 Design specs for everything listed as "not built" in the README as of the last checkpoint: a real CV model, map rendering, Projects/Journals/Guides, curator tools, multi-language support, and a production database. Each section states the target design and, honestly, what can and can't be built inside this sandbox (no external API keys, no cloud provisioning access).
 
-## 1. Real CV model
+## 1. Real CV model — built (`src/lib/cv-model.ts`)
 
-**Target architecture (Part G):** a compact, quantized on-device model (e.g. a MobileNetV3-class classifier fine-tuned on a biodiversity dataset, exported to TensorFlow Lite / ONNX Runtime Web) bundled with the client, so identification never requires a network call — the non-negotiable requirement from Part C.1/G.
+**Target architecture (Part G):** a compact, quantized on-device model bundled with the client, ideally fine-tuned on a biodiversity dataset, so identification never requires a network call.
 
-**Pipeline:**
-1. Cold-start corpus: license/derive from GBIF occurrence data + iNaturalist's own open taxon photos (CC-licensed subset) or a pretrained iNat-2021 checkpoint, fine-tuned toward the taxa in our launch region.
-2. Export to a web-runnable format (ONNX Runtime Web / TF.js) for the browser client, and to TFLite for native mobile.
-3. Client inference: capture → resize/normalize → run model → top-k softmax → map to taxon records → confidence-gated display (the honest-uncertainty UX already built stays the same; only the source of `confidence` changes).
-4. `runMockIdentify` in `src/app/camera/page.tsx` is the exact swap-in point — it already isolates "given a photo, produce {species, confidence}" from everything downstream (result card, save flow, quality grade). Replacing its body with a real inference call requires no changes elsewhere.
+**What's actually built:** a real, running, non-random classifier — Google's MobileNet v1 image classification model (TensorFlow.js), loaded client-side from its public, no-API-key weight host (`storage.googleapis.com/tfjs-models/...`) and run entirely in-browser via `@tensorflow/tfjs`. `runMockIdentify` in `src/app/camera/page.tsx` (the documented swap-in point from the previous version of this doc) has been replaced with `identifyImage()`, a real inference call.
 
-**Why not built here:** a real model needs a training/fine-tuning run against a licensed dataset and a hosting or bundling decision (model file size vs. app size budget) — both are offline, resource-intensive steps outside what this sandbox can produce or download (no dataset/model-weight hosting reachable here). This is genuinely gated on a resourcing decision, not more scaffolding.
+**What this is not, honestly:** a model fine-tuned on Wildkey's own species. Building one needs a labeled biodiversity dataset and a training run — a real project, not something to fabricate. MobileNet's 1000 ImageNet classes were hand-checked against `src/lib/mock-species.ts`; nine of them name one of Wildkey's species exactly (American robin, box turtle, black widow, four fox synsets, monarch butterfly, agaric mushroom — see `IMAGENET_INDEX_TO_SPECIES_SLUG` in `cv-model.ts`). A photo that scores high on one of those really is a real prediction. Anything else the model sees — including "common dandelion," which has no ImageNet equivalent — correctly falls through to an honest "not in Wildkey's sample catalog" result showing the model's real top guess, the same honest-uncertainty principle the original mock's "not confident" state used, now backed by a real model instead of `Math.random()`.
 
-## 2. Map rendering
+**Verification, checked not assumed:** `curl` from this sandbox reaches the model weight host directly (`200`, confirmed). A real headless-browser run through this sandbox's proxy (Playwright + the pre-installed Chromium) got as far as issuing the fetch and then hit `net::ERR_CONNECTION_RESET` on that specific host — reproducible, and specific to the browser's network stack going through this proxy (plain `curl` to the same URL succeeds every time; tried both HTTP/2 and forced HTTP/1.1, same result). The app's own error handling was verified end-to-end in that same run: on a load failure it shows a real, honest "Couldn't load the identification model" message instead of crashing or silently falling back to a random guess. A real end user's browser talks to Google's servers directly, with no sandbox proxy in the way, so production use is not expected to hit this — but the happy-path prediction itself (a real photo → a real correct label) could not be visually confirmed inside this sandbox, only the failure path could.
 
-**Target (Part C.3, E.2):** satellite-default, sticky-per-user map view on Explore, Species, and Place pages, with custom taxon-group colored pins (`src/lib/taxon.ts` already defines the color system to reuse).
+## 2. Map rendering — built (`src/components/map-view.tsx`)
 
-**Design:**
-- Tile provider: Mapbox GL JS or MapLibre GL (open-source, no vendor lock, works with any tile source) — MapLibre preferred so no API key is required for the open-tile fallback (e.g. OpenStreetMap raster tiles), with Mapbox satellite tiles as the paid upgrade path per the "satellite default" spec.
-- `src/components/map/` would hold: `MapView` (MapLibre wrapper, view-state persisted to `localStorage` under `wildkey.mapStyle` mirroring the `mode`/`liteMode` context pattern already in this codebase), `TaxonPin` (SVG marker colored via `taxonColor()`), and a `useObservationsInBounds` hook backed by a new `GET /api/observations/near?bbox=` endpoint added to the store.
-- Data model change needed first: observations currently store `locationName` (free text) only — real map pins need `lat`/`lng`. Add optional `lat`/`lng` fields alongside `locationName`, populated from the browser Geolocation API or manual pin-drop, obscured server-side for sensitive species (extending the same `obscureLocationIfSensitive` helper already built) by snapping to a coarse grid cell instead of hiding entirely.
+**Target (Part C.3, E.2):** satellite-default, sticky-per-user map view with custom taxon-group colored pins.
 
-**Why not built here:** rendering an actual basemap requires either a live tile-fetching network call to a provider this sandbox may not have unrestricted egress to, or a bundled offline tile set (large binary asset, not something to fabricate). The pin/data-layer half (lat/lng fields, the bbox query endpoint, the obscuring-by-grid-cell logic) is plain application code with no such dependency and is the next concrete slice worth building without a real map underneath it yet.
+**What's actually built:** a real MapLibre GL map with two switchable, no-API-key raster basemaps — OpenStreetMap ("street") and Esri World Imagery ("satellite", free for non-commercial/demo use, no account or key required) — via a toggle on the Explore map view (`src/app/explore/page.tsx`). `lat`/`lng` fields, the `GET /api/observations/near` bbox endpoint, and grid-cell obscuring for sensitive species were already built in an earlier pass; this added the actual satellite tile source alongside the existing street one.
+
+**Verification, checked not assumed:** same sandbox-proxy tile-blocking issue as the original OSM-only build — `tile.openstreetmap.org` and `server.arcgisonline.com` (Esri) both get a `403`/`connect_rejected` from this sandbox's egress proxy (confirmed via the proxy's own status endpoint), so neither basemap's tile pixels could be visually verified here. Everything else was: the map mounts, the style-switch logic runs, and markers survive a basemap change. A real user's browser fetches tiles directly and isn't behind this sandbox's proxy.
 
 ## 3. Projects, Journals, Guides
 

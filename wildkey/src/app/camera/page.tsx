@@ -1,16 +1,17 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { IdResultCard } from "@/components/id-result-card";
-import { MOCK_SPECIES, type Species } from "@/lib/mock-species";
+import { getMockSpecies, type Species } from "@/lib/mock-species";
 import { runMockSync, saveObservation, type SyncState } from "@/lib/observations";
 import { createServerObservation } from "@/lib/api-observations";
 import { useMode } from "@/lib/mode-context";
 import { useAuth } from "@/lib/auth-context";
 import { useLocale } from "@/lib/locale-context";
+import { identifyImage, warmUpModel, CvModelError } from "@/lib/cv-model";
 
-type IdOutcome = { species: Species; confidence: number };
+type IdOutcome = { species: Species | null; confidence: number; rawLabel: string };
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -36,7 +37,14 @@ export default function CameraPage() {
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [identifyError, setIdentifyError] = useState<string | null>(null);
   const useServerSync = mode === "naturalist" && Boolean(user);
+
+  // Kick off the model download as soon as this screen mounts so it's
+  // likely already cached by the time the user has taken/chosen a photo.
+  useEffect(() => {
+    warmUpModel();
+  }, []);
 
   const handleFile = async (file: File | undefined) => {
     if (!file) return;
@@ -47,6 +55,7 @@ export default function CameraPage() {
     setIsWild(true);
     setCoords(null);
     setLocationError(null);
+    setIdentifyError(null);
     setPreviewUrl(await readFileAsDataUrl(file));
   };
 
@@ -70,20 +79,35 @@ export default function CameraPage() {
     );
   };
 
-  const runMockIdentify = () => {
+  const runIdentify = async () => {
+    if (!previewUrl) return;
     setIsIdentifying(true);
-    // Simulates on-device inference latency. Real implementation calls the
-    // bundled on-device model — no network round trip.
-    window.setTimeout(() => {
-      const species = MOCK_SPECIES[Math.floor(Math.random() * MOCK_SPECIES.length)];
-      const confidence = 0.35 + Math.random() * 0.6;
-      setOutcome({ species, confidence });
+    setIdentifyError(null);
+    try {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("Couldn't load the photo for identification."));
+        img.src = previewUrl;
+      });
+
+      const result = await identifyImage(img);
+      const species = result.speciesSlug ? (getMockSpecies(result.speciesSlug) ?? null) : null;
+      setOutcome({ species, confidence: result.confidence, rawLabel: result.rawLabel });
+    } catch (err) {
+      const message =
+        err instanceof CvModelError
+          ? err.message
+          : "Something went wrong running the identification model.";
+      setIdentifyError(message);
+    } finally {
       setIsIdentifying(false);
-    }, 700);
+    }
   };
 
   const saveToObservations = async () => {
-    if (!outcome || !previewUrl) return;
+    if (!outcome || !outcome.species || !previewUrl) return;
 
     if (useServerSync) {
       setSavedSyncState("uploading");
@@ -155,7 +179,7 @@ export default function CameraPage() {
           {previewUrl ? t("camera.chooseDifferentPhoto") : t("camera.takeOrChoosePhoto")}
         </button>
         <button
-          onClick={runMockIdentify}
+          onClick={runIdentify}
           disabled={!previewUrl || isIdentifying}
           className="flex-1 rounded-full px-4 py-3 text-sm font-semibold disabled:opacity-40"
           style={{ background: "var(--color-accent)", color: "var(--color-accent-contrast)" }}
@@ -164,11 +188,17 @@ export default function CameraPage() {
         </button>
       </div>
 
+      {identifyError && (
+        <p className="text-sm font-medium" style={{ color: "var(--color-danger)" }}>
+          {identifyError}
+        </p>
+      )}
+
       {outcome && (
         <div className="flex flex-col gap-3">
-          <IdResultCard species={outcome.species} confidence={outcome.confidence} />
+          <IdResultCard species={outcome.species} confidence={outcome.confidence} rawLabel={outcome.rawLabel} />
 
-          {savedSyncState === null ? (
+          {savedSyncState === null && outcome.species && (
             <>
               {useServerSync && (
                 <div className="flex flex-col gap-3 rounded-lg border p-4" style={{ borderColor: "var(--color-border)" }}>
@@ -224,7 +254,8 @@ export default function CameraPage() {
                 Save to My Observations
               </button>
             </>
-          ) : (
+          )}
+          {savedSyncState !== null && (
             <div
               className="flex items-center justify-between rounded-lg border px-4 py-3 text-sm"
               style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}

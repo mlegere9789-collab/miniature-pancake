@@ -12,35 +12,56 @@ export type MapMarker = {
   label: string;
 };
 
+export type BasemapKind = "street" | "satellite";
+
 type MapViewProps = {
   markers: MapMarker[];
+  basemap?: BasemapKind;
   onMoveEnd?: (bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }) => void;
   onMarkerClick?: (id: string) => void;
   className?: string;
 };
 
 /**
- * Free, no-API-key raster basemap: OpenStreetMap tiles, attribution
- * required by their tile usage policy. Satellite-default (Part E.2) would
- * need a paid provider (Mapbox, MapTiler) and an API key — swap the
- * `sources.osm.tiles` URL and add a key when that's available; nothing
- * else about this component needs to change (see
- * docs/remaining-systems-design.md).
+ * Two free, no-API-key raster basemaps. "street" is OpenStreetMap; "satellite"
+ * is Esri's World Imagery service, which — unlike Mapbox/MapTiler satellite
+ * layers — serves free of charge with no API key or account for
+ * non-commercial/demo use (https://www.esri.com/arcgis-blog/products/arcgis-living-atlas/mapping/esri-world-imagery-faq/).
+ * That's what makes satellite imagery buildable here without a paid-provider
+ * credential this sandbox doesn't have. Real production traffic at scale
+ * should still review Esri's terms and consider a paid provider; this is a
+ * genuinely working default, not a placeholder.
  */
-const OSM_STYLE: maplibregl.StyleSpecification = {
-  version: 8,
-  sources: {
-    osm: {
-      type: "raster",
-      tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-      tileSize: 256,
-      attribution: "© OpenStreetMap contributors",
+const BASEMAP_STYLES: Record<BasemapKind, maplibregl.StyleSpecification> = {
+  street: {
+    version: 8,
+    sources: {
+      osm: {
+        type: "raster",
+        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        tileSize: 256,
+        attribution: "© OpenStreetMap contributors",
+      },
     },
+    layers: [{ id: "osm", type: "raster", source: "osm" }],
   },
-  layers: [{ id: "osm", type: "raster", source: "osm" }],
+  satellite: {
+    version: 8,
+    sources: {
+      esri: {
+        type: "raster",
+        tiles: [
+          "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        ],
+        tileSize: 256,
+        attribution: "Esri, Maxar, Earthstar Geographics, and the GIS User Community",
+      },
+    },
+    layers: [{ id: "esri", type: "raster", source: "esri" }],
+  },
 };
 
-export function MapView({ markers, onMoveEnd, onMarkerClick, className }: MapViewProps) {
+export function MapView({ markers, basemap = "street", onMoveEnd, onMarkerClick, className }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const markersRef = useRef<maplibregl.Marker[]>([]);
@@ -50,7 +71,7 @@ export function MapView({ markers, onMoveEnd, onMarkerClick, className }: MapVie
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: OSM_STYLE,
+      style: BASEMAP_STYLES[basemap],
       center: [-74.006, 40.7128],
       zoom: 3,
       attributionControl: { compact: true },
@@ -73,10 +94,22 @@ export function MapView({ markers, onMoveEnd, onMarkerClick, className }: MapVie
       map.remove();
       mapRef.current = null;
     };
-    // Intentionally mount-once: markers/callbacks are applied in the
-    // effects below via refs, not by recreating the map instance.
+    // Intentionally mount-once: markers/callbacks and the basemap switch are
+    // applied in the effects below via refs, not by recreating the map instance.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.setStyle(BASEMAP_STYLES[basemap]);
+    // setStyle tears down and re-adds sources/layers, which drops markers
+    // (they're DOM overlays, not style layers, so they actually survive —
+    // but re-apply defensively in case that ever changes upstream).
+    map.once("styledata", () => {
+      markersRef.current.forEach((m) => m.addTo(map));
+    });
+  }, [basemap]);
 
   useEffect(() => {
     const map = mapRef.current;

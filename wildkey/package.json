@@ -10,6 +10,8 @@
     "test": "npm run build && node --test tests/api.test.mjs"
   },
   "dependencies": {
+    "@tensorflow-models/mobilenet": "^2.1.1",
+    "@tensorflow/tfjs": "^4.22.0",
     "archiver": "^8.0.0",
     "better-sqlite3": "^13.0.3",
     "maplibre-gl": "^6.7.0",
