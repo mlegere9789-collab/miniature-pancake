@@ -1047,6 +1047,84 @@ class TestTriggerRun(unittest.TestCase):
                 dashboard.PROJECT_ROOT = orig
 
 
+class TestTailLog(unittest.TestCase):
+    def test_unknown_module_returns_none(self):
+        self.assertIsNone(dashboard.tail_log("not_a_real_module"))
+
+    def test_no_log_file_yet_returns_empty_string(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                self.assertEqual(dashboard.tail_log("deal_alert_bot"), "")
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+    def test_returns_log_contents(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                log_dir = Path(d) / "data" / "logs"
+                log_dir.mkdir(parents=True)
+                (log_dir / "deal_alert_bot.log").write_text(
+                    "line one\nline two\n", encoding="utf-8"
+                )
+                self.assertEqual(
+                    dashboard.tail_log("deal_alert_bot"), "line one\nline two"
+                )
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+    def test_only_returns_the_last_n_lines(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                log_dir = Path(d) / "data" / "logs"
+                log_dir.mkdir(parents=True)
+                lines = [f"line {i}" for i in range(dashboard.LOG_TAIL_LINES + 50)]
+                (log_dir / "deal_alert_bot.log").write_text(
+                    "\n".join(lines), encoding="utf-8"
+                )
+                tail = dashboard.tail_log("deal_alert_bot").splitlines()
+                self.assertEqual(len(tail), dashboard.LOG_TAIL_LINES)
+                self.assertEqual(tail[-1], lines[-1])
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+
+class TestRenderLogPage(unittest.TestCase):
+    def test_unknown_module_returns_none(self):
+        self.assertIsNone(dashboard.render_log_page("not_a_real_module"))
+
+    def test_known_module_with_no_log_shows_placeholder(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                page = dashboard.render_log_page("deal_alert_bot")
+                self.assertIn("No log output yet", page)
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+    def test_escapes_log_content(self):
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                log_dir = Path(d) / "data" / "logs"
+                log_dir.mkdir(parents=True)
+                (log_dir / "deal_alert_bot.log").write_text(
+                    "<script>alert(1)</script>", encoding="utf-8"
+                )
+                page = dashboard.render_log_page("deal_alert_bot")
+                self.assertNotIn("<script>alert(1)</script>", page)
+                self.assertIn("&lt;script&gt;", page)
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+
 class TestRenderEarningsCsv(TempDatabaseTestCase):
     def test_header_only_when_empty(self):
         rows = list(csv.reader(io.StringIO(dashboard.render_earnings_csv())))
@@ -1121,6 +1199,11 @@ class TestRenderPage(TempDatabaseTestCase):
         db.set_status("deal_alert_bot", "running", "Scanning")
         page = dashboard.render_page()
         self.assertIn("Running…", page)
+
+    def test_includes_a_view_log_link_per_module(self):
+        page = dashboard.render_page()
+        for name in MODULES:
+            self.assertIn(f'href="/log/{name}"', page)
 
     def test_includes_resolved_decisions(self):
         rid = db.add_review_item("deal_alert_bot", "Post this deal?")
@@ -1229,6 +1312,27 @@ class TestDashboardHandler(TempDatabaseTestCase):
             resp = opener.open(req, timeout=5)
         self.assertEqual(resp.status, 200)
         popen_mock.assert_not_called()
+
+    def test_log_page_returns_log_contents(self):
+        with tempfile.TemporaryDirectory() as d:
+            log_dir = Path(d) / "data" / "logs"
+            log_dir.mkdir(parents=True)
+            (log_dir / "deal_alert_bot.log").write_text("hello log", encoding="utf-8")
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                resp = self._get("/log/deal_alert_bot")
+            finally:
+                dashboard.PROJECT_ROOT = orig
+        self.assertEqual(resp.status, 200)
+        self.assertIn("hello log", resp.read().decode("utf-8"))
+
+    def test_log_page_unknown_module_is_404(self):
+        try:
+            self._get("/log/not_a_real_module")
+            self.fail("expected an HTTPError")
+        except urllib.error.HTTPError as exc:
+            self.assertEqual(exc.code, 404)
 
 
 if __name__ == "__main__":

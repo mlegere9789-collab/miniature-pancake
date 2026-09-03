@@ -85,7 +85,7 @@ Open **http://127.0.0.1:8787** in your browser. You'll see:
   available as `python3 -m orchestrator export-earnings`),
 - a card per module (status, last activity, earnings, pending reviews) with
   a **Run now** button — trigger that module immediately instead of waiting
-  for its schedule,
+  for its schedule — and a **View log** link showing its recent output,
 - the **review queue** with working **Approve** / **Reject** buttons,
 - **Recently resolved**, an audit trail of your last few approve/reject
   decisions (so you can see what you decided, and when), with its own
