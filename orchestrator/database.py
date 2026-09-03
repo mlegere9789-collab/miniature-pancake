@@ -283,6 +283,40 @@ def resolved_reviews(limit: int = 10) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+REVIEWS_CSV_FIELDS = [
+    "resolved_at",
+    "module",
+    "title",
+    "status",
+    "resolution_note",
+    "created_at",
+]
+
+
+def list_resolved_reviews(
+    *, module: str | None = None, since: str | None = None
+) -> list[dict[str, Any]]:
+    """Every approved/rejected review item, oldest first — the full audit log.
+
+    Unlike `resolved_reviews()` (capped at `limit`, for the dashboard's
+    "Recently resolved" panel), this returns everything, for a CSV export or
+    any other report that needs the complete decision history rather than
+    just the last few. `since` filters on `resolved_at`.
+    """
+    query = "SELECT * FROM review_queue WHERE status IN ('approved', 'rejected')"
+    params: list[Any] = []
+    if module is not None:
+        query += " AND module = ?"
+        params.append(module)
+    if since is not None:
+        query += " AND resolved_at >= ?"
+        params.append(since)
+    query += " ORDER BY resolved_at ASC, id ASC"
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+
 EARNINGS_CSV_FIELDS = [
     "occurred_at",
     "module",

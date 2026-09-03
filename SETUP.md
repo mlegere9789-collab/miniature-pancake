@@ -88,7 +88,9 @@ Open **http://127.0.0.1:8787** in your browser. You'll see:
   for its schedule,
 - the **review queue** with working **Approve** / **Reject** buttons,
 - **Recently resolved**, an audit trail of your last few approve/reject
-  decisions (so you can see what you decided, and when),
+  decisions (so you can see what you decided, and when), with its own
+  **Download CSV** link for the complete decision log (also available as
+  `python3 -m orchestrator export-reviews`),
 - a recent-activity feed.
 
 Want a push notification the moment anything lands in the review queue, or

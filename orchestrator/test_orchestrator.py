@@ -215,6 +215,39 @@ class TestReviewQueue(TempDatabaseTestCase):
             db.resolve_review_item(rid, "approved")
         self.assertEqual(len(db.resolved_reviews(limit=2)), 2)
 
+    def test_list_resolved_reviews_empty_before_any_decision(self):
+        db.add_review_item("deal_alert_bot", "t")
+        self.assertEqual(db.list_resolved_reviews(), [])
+
+    def test_list_resolved_reviews_oldest_first_and_unlimited(self):
+        ids = [db.add_review_item("deal_alert_bot", f"item {i}") for i in range(15)]
+        for rid in ids:
+            db.resolve_review_item(rid, "approved")
+        rows = db.list_resolved_reviews()
+        self.assertEqual(len(rows), 15)
+        self.assertEqual([r["id"] for r in rows], ids)
+
+    def test_list_resolved_reviews_excludes_pending(self):
+        rid = db.add_review_item("deal_alert_bot", "t")
+        db.add_review_item("deal_alert_bot", "still pending")
+        db.resolve_review_item(rid, "approved")
+        self.assertEqual(len(db.list_resolved_reviews()), 1)
+
+    def test_list_resolved_reviews_filters_by_module(self):
+        a = db.add_review_item("deal_alert_bot", "a")
+        b = db.add_review_item("micro_saas", "b")
+        db.resolve_review_item(a, "approved")
+        db.resolve_review_item(b, "rejected")
+        rows = db.list_resolved_reviews(module="micro_saas")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["module"], "micro_saas")
+
+    def test_list_resolved_reviews_filters_by_since(self):
+        rid = db.add_review_item("deal_alert_bot", "t")
+        db.resolve_review_item(rid, "approved")
+        past_the_future = "2099-01-01"
+        self.assertEqual(db.list_resolved_reviews(since=past_the_future), [])
+
     def test_module_overview_pending_count(self):
         db.add_review_item("deal_alert_bot", "a")
         db.add_review_item("deal_alert_bot", "b")
@@ -927,6 +960,54 @@ class TestCmdExportEarnings(TempDatabaseTestCase):
             self.assertEqual(len(rows), 1)
 
 
+class TestCmdExportReviews(TempDatabaseTestCase):
+    def test_writes_csv_header_when_empty(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = cli.main(["export-reviews"])
+        self.assertEqual(code, 0)
+        rows = list(csv.reader(io.StringIO(buf.getvalue())))
+        self.assertEqual(rows, [db.REVIEWS_CSV_FIELDS])
+
+    def test_writes_one_row_per_decision(self):
+        rid = db.add_review_item("deal_alert_bot", "Approve this?")
+        db.resolve_review_item(rid, "approved", note="looked fine")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = cli.main(["export-reviews"])
+        self.assertEqual(code, 0)
+        rows = list(csv.DictReader(io.StringIO(buf.getvalue())))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["module"], "deal_alert_bot")
+        self.assertEqual(rows[0]["title"], "Approve this?")
+        self.assertEqual(rows[0]["status"], "approved")
+        self.assertEqual(rows[0]["resolution_note"], "looked fine")
+
+    def test_filters_by_module(self):
+        a = db.add_review_item("deal_alert_bot", "a")
+        b = db.add_review_item("micro_saas", "b")
+        db.resolve_review_item(a, "approved")
+        db.resolve_review_item(b, "rejected")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.main(["export-reviews", "--module", "micro_saas"])
+        rows = list(csv.DictReader(io.StringIO(buf.getvalue())))
+        self.assertEqual([r["module"] for r in rows], ["micro_saas"])
+
+    def test_writes_to_file_when_out_given(self):
+        rid = db.add_review_item("deal_alert_bot", "t")
+        db.resolve_review_item(rid, "approved")
+        with tempfile.TemporaryDirectory() as d:
+            out_path = Path(d) / "reviews.csv"
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = cli.main(["export-reviews", "--out", str(out_path)])
+            self.assertEqual(code, 0)
+            self.assertIn("Wrote 1 decision(s)", buf.getvalue())
+            rows = list(csv.DictReader(out_path.open(encoding="utf-8")))
+            self.assertEqual(len(rows), 1)
+
+
 class TestDashboardHelpers(unittest.TestCase):
     def test_fmt_money(self):
         self.assertEqual(dashboard._fmt_money(1234.5), "$1,234.50")
@@ -978,6 +1059,21 @@ class TestRenderEarningsCsv(TempDatabaseTestCase):
         self.assertEqual([r["module"] for r in rows], ["micro_saas", "deal_alert_bot"])
 
 
+class TestRenderReviewsCsv(TempDatabaseTestCase):
+    def test_header_only_when_empty(self):
+        rows = list(csv.reader(io.StringIO(dashboard.render_reviews_csv())))
+        self.assertEqual(rows, [db.REVIEWS_CSV_FIELDS])
+
+    def test_one_row_per_decision(self):
+        rid = db.add_review_item("deal_alert_bot", "Approve?")
+        db.resolve_review_item(rid, "approved", note="fine")
+        rows = list(csv.DictReader(io.StringIO(dashboard.render_reviews_csv())))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["title"], "Approve?")
+        self.assertEqual(rows[0]["status"], "approved")
+        self.assertEqual(rows[0]["resolution_note"], "fine")
+
+
 class TestRenderPage(TempDatabaseTestCase):
     def test_includes_seeded_data(self):
         db.record_earning("deal_alert_bot", 4.20, source="amazon")
@@ -1010,6 +1106,10 @@ class TestRenderPage(TempDatabaseTestCase):
     def test_includes_csv_download_link(self):
         page = dashboard.render_page()
         self.assertIn('href="/export/earnings.csv"', page)
+
+    def test_includes_reviews_csv_download_link(self):
+        page = dashboard.render_page()
+        self.assertIn('href="/export/reviews.csv"', page)
 
     def test_includes_a_run_now_button_per_module(self):
         page = dashboard.render_page()
@@ -1075,6 +1175,16 @@ class TestDashboardHandler(TempDatabaseTestCase):
     def test_export_earnings_csv_returns_csv_attachment(self):
         db.record_earning("deal_alert_bot", 4.20, source="amazon")
         resp = self._get("/export/earnings.csv")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("text/csv", resp.headers["Content-Type"])
+        self.assertIn("attachment", resp.headers["Content-Disposition"])
+        rows = list(csv.DictReader(io.StringIO(resp.read().decode("utf-8"))))
+        self.assertEqual(rows[0]["module"], "deal_alert_bot")
+
+    def test_export_reviews_csv_returns_csv_attachment(self):
+        rid = db.add_review_item("deal_alert_bot", "Approve?")
+        db.resolve_review_item(rid, "approved")
+        resp = self._get("/export/reviews.csv")
         self.assertEqual(resp.status, 200)
         self.assertIn("text/csv", resp.headers["Content-Type"])
         self.assertIn("attachment", resp.headers["Content-Disposition"])

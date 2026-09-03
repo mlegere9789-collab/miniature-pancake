@@ -34,7 +34,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import database as db
 from .config import config
-from .database import EARNINGS_CSV_FIELDS
+from .database import EARNINGS_CSV_FIELDS, REVIEWS_CSV_FIELDS
 from .paths import MODULES, PROJECT_ROOT
 
 _STATE_COLORS = {
@@ -94,6 +94,15 @@ def render_earnings_csv() -> str:
     writer.writeheader()
     for row in db.list_earnings():
         writer.writerow({field: row[field] for field in EARNINGS_CSV_FIELDS})
+    return buf.getvalue()
+
+
+def render_reviews_csv() -> str:
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=REVIEWS_CSV_FIELDS)
+    writer.writeheader()
+    for row in db.list_resolved_reviews():
+        writer.writerow({field: row[field] for field in REVIEWS_CSV_FIELDS})
     return buf.getvalue()
 
 
@@ -305,6 +314,7 @@ _TEMPLATE = """<!doctype html>
   {reviews}
 
   <h2>Recently resolved</h2>
+  <p class="export"><a href="/export/reviews.csv">Download full decision log (CSV)</a></p>
   {resolved}
 
   <h2>Recent activity</h2>
@@ -340,6 +350,14 @@ class Handler(BaseHTTPRequestHandler):
                 ctype="text/csv",
                 extra_headers={
                     "Content-Disposition": 'attachment; filename="earnings.csv"'
+                },
+            )
+        elif parsed.path == "/export/reviews.csv":
+            self._send(
+                render_reviews_csv(),
+                ctype="text/csv",
+                extra_headers={
+                    "Content-Disposition": 'attachment; filename="reviews.csv"'
                 },
             )
         elif parsed.path == "/api/overview":

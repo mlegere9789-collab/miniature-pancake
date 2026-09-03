@@ -30,6 +30,8 @@ python -m orchestrator dashboard     # launch the dashboard (http://127.0.0.1:87
 python -m orchestrator doctor        # check setup / which credentials are set
 python -m orchestrator export-earnings [--module NAME] [--since YYYY-MM-DD] [--out FILE]
                                       # earnings ledger as CSV (stdout by default)
+python -m orchestrator export-reviews [--module NAME] [--since YYYY-MM-DD] [--out FILE]
+                                      # full approve/reject decision log as CSV
 python -m orchestrator scheduler list       # preview jobs + their cron lines
 python -m orchestrator scheduler install     # install enabled jobs into cron
 python -m orchestrator scheduler uninstall   # remove them from cron
