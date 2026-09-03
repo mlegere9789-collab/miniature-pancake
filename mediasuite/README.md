@@ -1,5 +1,7 @@
 # MediaSuite
 
+[![MediaSuite CI](https://github.com/mlegere9789-collab/miniature-pancake/actions/workflows/mediasuite-ci.yml/badge.svg?branch=main)](https://github.com/mlegere9789-collab/miniature-pancake/actions/workflows/mediasuite-ci.yml)
+
 A local, offline Windows 11 media converter, compressor and toolbox — the FreeConvert
 Convert / Compress / Tools feature set running entirely on your own machine, plus an AI
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
