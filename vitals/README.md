@@ -218,6 +218,14 @@ npx expo start
 
 ## Bug fixes
 
+- **No CI configured for `vitals/` at all.** Every commit to this PR had
+  zero automated verification on GitHub — only local `tsc`/`vitest` runs.
+  Added `.github/workflows/vitals-ci.yml` (mirroring the existing
+  `mediasuite-ci.yml` pattern): backend typecheck + `vitest run`, mobile
+  typecheck, path-scoped to `vitals/**` so it doesn't run on unrelated
+  changes. Verified locally end-to-end with the exact commands the
+  workflow runs (`npm ci`, `prisma generate`, `npm run typecheck`,
+  `npm test`) in both packages.
 - **No easy way to get a local Postgres running.** `.env.example`'s
   `DATABASE_URL` assumed a Postgres instance the developer had to stand up
   themselves, with no guidance. Added `backend/docker-compose.yml` (matching
