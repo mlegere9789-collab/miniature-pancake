@@ -29,10 +29,16 @@ This is a Phase 0/early-Phase-1 build, not a finished parity build, but every sc
 - **Activity** (`/activity`): real notifications — other users' comments/agrees on your own observations.
 - **Lite Mode** (`/settings/lite-mode`): a real, persisted toggle; on, every observation photo across the app renders as a tap-to-load placeholder instead of an `<img>` until explicitly requested — verified in an actual browser, not just by reading the code.
 - **Data export & account deletion** (`/settings/data`): one-tap JSON export of everything an account owns, and permanent, typed-confirmation account deletion with real cross-table cleanup.
+- **Journals** (`/journal`): full CRUD blog-style posts, public reads, author-scoped writes, real-account-cascade-safe.
+- **Guides** (`/guides`): curated, server-validated species collections anyone can publish.
+- **Projects** (`/projects`): Collection projects are a genuine live saved search over the observations table (no re-save needed when a new matching observation appears); Traditional projects have real opt-in membership.
+- **Curator tools** (`/curator`, Part F): any user can flag an observation with a required reason; the first account on a fresh database bootstraps as curator (documented demo-only mechanism — no invite flow exists yet) and can resolve/dismiss flags, but only with a written reason, logged and auditable.
+- **i18n** (`src/lib/locale-context.tsx`): a real, persisted locale switcher and dictionary-based `t()` function, proven end-to-end (including in an actual browser) against three hand-written languages — English, Spanish, French — covering nav/home/camera. Not the 20+ languages Part C.1 asks for; see below for why.
+- **Map data layer** (`GET /api/observations/near`): a real bounding-box query over observation coordinates, with sensitive species snapped to a coarse ~11km grid cell instead of exact coordinates for non-owner viewers. No rendered basemap consumes this yet — see below.
 
 ## What's deliberately not built yet
 
-A real CV model, map rendering, Projects/Journals/Guides, curator/moderation tools, and multi-language support are all still open — each has a concrete design in [`docs/remaining-systems-design.md`](docs/remaining-systems-design.md), including which parts are genuinely buildable here (no external credentials needed) versus gated on a real resourcing decision (a trained model, a map tile provider, professional translation). See `docs/wildkey-plan.md` Part H for the gate that must pass before Phase 1 work starts, and Part K for the full parity QA checklist.
+Two things remain genuinely gated on a real resourcing decision this environment can't make on its own — a trained CV model (identification is still a random mock over `src/lib/mock-species.ts`) and a rendered basemap (a live tile provider isn't reachable/fundable from here, though the coordinate data layer behind it is real). Multi-language support beyond the 3 proven languages is a translation-content problem now, not an engineering one. Full designs for all of this: [`docs/remaining-systems-design.md`](docs/remaining-systems-design.md). See `docs/wildkey-plan.md` Part H for the gate that must pass before Phase 1 work starts, and Part K for the full parity QA checklist.
 
 ## Development
 

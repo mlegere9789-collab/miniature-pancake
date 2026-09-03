@@ -28,6 +28,9 @@ function createConnection(): Database.Database {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
 
+  // Table shapes only here — no indexes yet. A pre-existing database from
+  // before a column was added would otherwise fail on an index over that
+  // column before the migration below has a chance to add it.
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -43,7 +46,6 @@ function createConnection(): Database.Database {
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       created_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 
     CREATE TABLE IF NOT EXISTS observations (
       id TEXT PRIMARY KEY,
@@ -57,10 +59,10 @@ function createConnection(): Database.Database {
       sync_state TEXT NOT NULL,
       is_wild INTEGER NOT NULL,
       location_name TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT ''
+      notes TEXT NOT NULL DEFAULT '',
+      lat REAL,
+      lng REAL
     );
-    CREATE INDEX IF NOT EXISTS idx_observations_user_id ON observations(user_id);
-    CREATE INDEX IF NOT EXISTS idx_observations_taxon_slug ON observations(taxon_slug);
 
     CREATE TABLE IF NOT EXISTS comments (
       id TEXT PRIMARY KEY,
@@ -71,8 +73,6 @@ function createConnection(): Database.Database {
       kind TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_comments_observation_id ON comments(observation_id);
-    CREATE INDEX IF NOT EXISTS idx_comments_user_id ON comments(user_id);
 
     CREATE TABLE IF NOT EXISTS journal_posts (
       id TEXT PRIMARY KEY,
@@ -82,7 +82,6 @@ function createConnection(): Database.Database {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_journal_posts_author_id ON journal_posts(author_id);
 
     CREATE TABLE IF NOT EXISTS guides (
       id TEXT PRIMARY KEY,
@@ -92,7 +91,6 @@ function createConnection(): Database.Database {
       taxon_slugs TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_guides_curator_id ON guides(curator_id);
 
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
@@ -103,7 +101,6 @@ function createConnection(): Database.Database {
       taxon_filter TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_projects_owner_id ON projects(owner_id);
 
     CREATE TABLE IF NOT EXISTS project_members (
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -111,7 +108,6 @@ function createConnection(): Database.Database {
       joined_at TEXT NOT NULL,
       PRIMARY KEY (project_id, user_id)
     );
-    CREATE INDEX IF NOT EXISTS idx_project_members_user_id ON project_members(user_id);
 
     CREATE TABLE IF NOT EXISTS observation_flags (
       id TEXT PRIMARY KEY,
@@ -121,8 +117,6 @@ function createConnection(): Database.Database {
       status TEXT NOT NULL DEFAULT 'open',
       created_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_observation_flags_observation_id ON observation_flags(observation_id);
-    CREATE INDEX IF NOT EXISTS idx_observation_flags_status ON observation_flags(status);
 
     CREATE TABLE IF NOT EXISTS curator_actions (
       id TEXT PRIMARY KEY,
@@ -132,16 +126,39 @@ function createConnection(): Database.Database {
       reason TEXT NOT NULL,
       created_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_curator_actions_flag_id ON curator_actions(flag_id);
   `);
 
-  // Defensive migration for a pre-existing .data/wildkey.sqlite3 created
-  // before the role column existed (fresh databases already have it via
-  // the CREATE TABLE above).
+  // Defensive migrations for a pre-existing .data/wildkey.sqlite3 created
+  // before these columns existed (fresh databases already have them via
+  // the CREATE TABLE statements above). Must run before any index touches
+  // these columns.
   const userColumns = db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
   if (!userColumns.some((c) => c.name === "role")) {
     db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member'");
   }
+  const observationColumns = db.prepare("PRAGMA table_info(observations)").all() as { name: string }[];
+  if (!observationColumns.some((c) => c.name === "lat")) {
+    db.exec("ALTER TABLE observations ADD COLUMN lat REAL");
+  }
+  if (!observationColumns.some((c) => c.name === "lng")) {
+    db.exec("ALTER TABLE observations ADD COLUMN lng REAL");
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+    CREATE INDEX IF NOT EXISTS idx_observations_user_id ON observations(user_id);
+    CREATE INDEX IF NOT EXISTS idx_observations_taxon_slug ON observations(taxon_slug);
+    CREATE INDEX IF NOT EXISTS idx_observations_lat_lng ON observations(lat, lng);
+    CREATE INDEX IF NOT EXISTS idx_comments_observation_id ON comments(observation_id);
+    CREATE INDEX IF NOT EXISTS idx_comments_user_id ON comments(user_id);
+    CREATE INDEX IF NOT EXISTS idx_journal_posts_author_id ON journal_posts(author_id);
+    CREATE INDEX IF NOT EXISTS idx_guides_curator_id ON guides(curator_id);
+    CREATE INDEX IF NOT EXISTS idx_projects_owner_id ON projects(owner_id);
+    CREATE INDEX IF NOT EXISTS idx_project_members_user_id ON project_members(user_id);
+    CREATE INDEX IF NOT EXISTS idx_observation_flags_observation_id ON observation_flags(observation_id);
+    CREATE INDEX IF NOT EXISTS idx_observation_flags_status ON observation_flags(status);
+    CREATE INDEX IF NOT EXISTS idx_curator_actions_flag_id ON curator_actions(flag_id);
+  `);
 
   return db;
 }

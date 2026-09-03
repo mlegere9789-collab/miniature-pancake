@@ -56,9 +56,16 @@ export type ServerObservation = {
   syncState: "queued" | "uploading" | "confirmed" | "failed";
   /** Data Quality flag (Part C.2): wild vs. captive/cultivated. */
   isWild: boolean;
-  /** Free-text place name — no map/geocoding yet, see Part G. */
+  /** Free-text place name — see Part G for the honest boundary on this. */
   locationName: string;
   notes: string;
+  /**
+   * Map data layer (Part G/C.3): coordinates with no rendered basemap yet
+   * — see docs/remaining-systems-design.md for why. Optional: only set
+   * when the observer granted browser geolocation on save.
+   */
+  lat: number | null;
+  lng: number | null;
 };
 
 type ObservationRow = {
@@ -74,6 +81,8 @@ type ObservationRow = {
   is_wild: number;
   location_name: string;
   notes: string;
+  lat: number | null;
+  lng: number | null;
 };
 
 function observationFromRow(row: ObservationRow): ServerObservation {
@@ -90,6 +99,8 @@ function observationFromRow(row: ObservationRow): ServerObservation {
     isWild: Boolean(row.is_wild),
     locationName: row.location_name,
     notes: row.notes,
+    lat: row.lat,
+    lng: row.lng,
   };
 }
 
@@ -259,6 +270,56 @@ function obscureLocationIfSensitive<T extends { userId: string; taxonSlug: strin
   return { ...observation, locationName: "Location hidden — sensitive species" };
 }
 
+/** ~11km grid cell at the equator — coarse enough to blur the exact site
+ *  a sensitive species was found at, precise enough to still place it on
+ *  a map region. */
+const SENSITIVE_COORDINATE_GRID = 0.1;
+
+function snapToGrid(value: number): number {
+  return Math.round(value / SENSITIVE_COORDINATE_GRID) * SENSITIVE_COORDINATE_GRID;
+}
+
+/**
+ * Coordinate counterpart to obscureLocationIfSensitive: rather than
+ * dropping coordinates entirely for a sensitive species (which would
+ * defeat the point of a map layer), snap them to a coarse grid cell so
+ * the observation still places on a map, just not precisely enough to
+ * find the specimen.
+ */
+function obscureCoordinatesIfSensitive<T extends { userId: string; taxonSlug: string; lat: number | null; lng: number | null }>(
+  observation: T,
+  viewerId: string | null,
+): T {
+  if (observation.userId === viewerId) return observation;
+  if (observation.lat === null || observation.lng === null) return observation;
+  const species = getMockSpecies(observation.taxonSlug);
+  if (!species?.sensitive) return observation;
+  return { ...observation, lat: snapToGrid(observation.lat), lng: snapToGrid(observation.lng) };
+}
+
+/**
+ * The map data layer's read path (Part G/C.3): every observation with
+ * coordinates inside a bounding box. No rendered basemap consumes this
+ * yet — see docs/remaining-systems-design.md — but the query and the
+ * grid-cell obscuring for sensitive species are real.
+ */
+export function listObservationsInBounds(
+  bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number },
+  viewerId: string | null,
+): ObservationWithGrade[] {
+  const rows = db
+    .prepare<[number, number, number, number], ObservationRow>(
+      `SELECT * FROM observations
+       WHERE lat IS NOT NULL AND lng IS NOT NULL
+         AND lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?`,
+    )
+    .all(bounds.minLat, bounds.maxLat, bounds.minLng, bounds.maxLng);
+  return rows
+    .map((row) => withQualityGrade(observationFromRow(row)))
+    .map((o) => obscureLocationIfSensitive(o, viewerId))
+    .map((o) => obscureCoordinatesIfSensitive(o, viewerId));
+}
+
 export function listObservationsForUser(userId: string): ObservationWithGrade[] {
   const rows = db
     .prepare<[string], ObservationRow>(
@@ -316,10 +377,10 @@ export function createObservationForUser(
   db.prepare(
     `INSERT INTO observations
        (id, user_id, created_at, photo_data_url, common_name, scientific_name,
-        confidence, taxon_slug, sync_state, is_wild, location_name, notes)
+        confidence, taxon_slug, sync_state, is_wild, location_name, notes, lat, lng)
      VALUES
        (@id, @userId, @createdAt, @photoDataUrl, @commonName, @scientificName,
-        @confidence, @taxonSlug, @syncState, @isWild, @locationName, @notes)`,
+        @confidence, @taxonSlug, @syncState, @isWild, @locationName, @notes, @lat, @lng)`,
   ).run({
     id: observation.id,
     userId: observation.userId,
@@ -333,6 +394,8 @@ export function createObservationForUser(
     isWild: observation.isWild ? 1 : 0,
     locationName: observation.locationName,
     notes: observation.notes,
+    lat: observation.lat,
+    lng: observation.lng,
   });
   return observation;
 }

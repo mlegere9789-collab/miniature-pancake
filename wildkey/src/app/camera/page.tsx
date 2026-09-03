@@ -33,6 +33,9 @@ export default function CameraPage() {
   const [locationName, setLocationName] = useState("");
   const [notes, setNotes] = useState("");
   const [isWild, setIsWild] = useState(true);
+  const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
   const useServerSync = mode === "naturalist" && Boolean(user);
 
   const handleFile = async (file: File | undefined) => {
@@ -42,7 +45,29 @@ export default function CameraPage() {
     setLocationName("");
     setNotes("");
     setIsWild(true);
+    setCoords(null);
+    setLocationError(null);
     setPreviewUrl(await readFileAsDataUrl(file));
+  };
+
+  const useMyLocation = () => {
+    if (!navigator.geolocation) {
+      setLocationError("Geolocation isn't available in this browser.");
+      return;
+    }
+    setLocating(true);
+    setLocationError(null);
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setCoords({ lat: position.coords.latitude, lng: position.coords.longitude });
+        setLocating(false);
+      },
+      (err) => {
+        setLocationError(err.message || "Couldn't get your location.");
+        setLocating(false);
+      },
+      { timeout: 10000 },
+    );
   };
 
   const runMockIdentify = () => {
@@ -71,6 +96,8 @@ export default function CameraPage() {
         isWild,
         locationName: locationName.trim(),
         notes: notes.trim(),
+        lat: coords?.lat ?? null,
+        lng: coords?.lng ?? null,
       });
       setSavedSyncState(saved ? "confirmed" : "failed");
       return;
@@ -155,6 +182,20 @@ export default function CameraPage() {
                       style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
                     />
                   </label>
+                  <div className="flex items-center gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={useMyLocation}
+                      disabled={locating}
+                      className="rounded-full border px-3 py-1.5 font-semibold disabled:opacity-40"
+                      style={{ borderColor: "var(--color-border)" }}
+                    >
+                      {locating ? "Locating…" : coords ? "Location attached ✓" : "Use my location"}
+                    </button>
+                    {locationError && (
+                      <span style={{ color: "var(--color-danger)" }}>{locationError}</span>
+                    )}
+                  </div>
                   <label className="flex flex-col gap-1 text-sm font-medium">
                     Notes (optional)
                     <textarea

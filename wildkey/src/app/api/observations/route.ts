@@ -27,6 +27,10 @@ export async function POST(request: Request) {
   const isWild = typeof body?.isWild === "boolean" ? body.isWild : true;
   const locationName = typeof body?.locationName === "string" ? body.locationName.trim().slice(0, 200) : "";
   const notes = typeof body?.notes === "string" ? body.notes.trim().slice(0, 2000) : "";
+  const lat =
+    typeof body?.lat === "number" && body.lat >= -90 && body.lat <= 90 ? body.lat : null;
+  const lng =
+    typeof body?.lng === "number" && body.lng >= -180 && body.lng <= 180 ? body.lng : null;
 
   const observation = createObservationForUser(user.id, {
     photoDataUrl,
@@ -37,6 +41,8 @@ export async function POST(request: Request) {
     isWild,
     locationName,
     notes,
+    lat,
+    lng,
   });
   return NextResponse.json({ observation }, { status: 201 });
 }

@@ -31,6 +31,8 @@ export async function createServerObservation(input: {
   isWild: boolean;
   locationName: string;
   notes: string;
+  lat?: number | null;
+  lng?: number | null;
 }): Promise<ServerObservation | null> {
   const res = await fetch("/api/observations", {
     method: "POST",
