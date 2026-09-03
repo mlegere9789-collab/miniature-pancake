@@ -19,12 +19,29 @@ interface Props {
  */
 export function ReportCardScreen({ gardenId }: Props) {
   const [card, setCard] = useState<WeeklyReportCard | null>(null);
+  const [loadError, setLoadError] = useState(false);
   const [sharing, setSharing] = useState(false);
   const shotRef = useRef<ViewShot>(null);
 
-  useEffect(() => {
-    fetchWeeklyReportCard(gardenId).then(setCard).catch(() => setCard(null));
-  }, [gardenId]);
+  function load() {
+    setLoadError(false);
+    fetchWeeklyReportCard(gardenId)
+      .then(setCard)
+      .catch(() => setLoadError(true));
+  }
+
+  useEffect(load, [gardenId]);
+
+  if (loadError) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.bodyText}>Couldn't load this week's report.</Text>
+        <Pressable style={styles.shareButton} onPress={load}>
+          <Text style={styles.shareButtonText}>Try again</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   if (!card) {
     return (

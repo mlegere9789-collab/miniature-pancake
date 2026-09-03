@@ -245,6 +245,10 @@ npx expo start
   divided by zero and would have persisted `NaN` as the Garden Score. Fixed
   by falling back to a plain average when total weight is 0 (now unit
   tested in `scoring.test.ts`).
+- **Report card screen stuck on "Loading…" forever on a failed fetch.**
+  There was no distinction between still-loading and failed-to-load, so a
+  network error looked identical to an infinite spinner. Added a proper
+  error state with a "Try again" retry button.
 - **No empty state on the dashboard.** A brand-new garden with zero plants
   showed a blank "Needs Attention" section and no prompt to add anything —
   a dead end on the very first screen a new user sees, before they've ever
