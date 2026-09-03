@@ -1,12 +1,13 @@
 import type {
   ActivityItem,
   ObservationComment,
+  ObservationLicense,
   ObservationWithGrade,
   ServerObservation,
 } from "@/lib/server/store";
 import type { CurrentUser } from "@/lib/auth-context";
 
-export type { ServerObservation, ObservationComment, ObservationWithGrade, ActivityItem };
+export type { ServerObservation, ObservationComment, ObservationWithGrade, ActivityItem, ObservationLicense };
 
 export async function fetchActivity(): Promise<ActivityItem[]> {
   const res = await fetch("/api/activity");
@@ -33,6 +34,7 @@ export async function createServerObservation(input: {
   notes: string;
   lat?: number | null;
   lng?: number | null;
+  license?: ObservationLicense;
 }): Promise<ServerObservation | null> {
   const res = await fetch("/api/observations", {
     method: "POST",
@@ -46,6 +48,18 @@ export async function createServerObservation(input: {
 
 export async function deleteServerObservation(id: string): Promise<boolean> {
   const res = await fetch(`/api/observations/${id}`, { method: "DELETE" });
+  return res.ok;
+}
+
+export async function updateServerObservationLicense(
+  id: string,
+  license: ObservationLicense,
+): Promise<boolean> {
+  const res = await fetch(`/api/observations/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ license }),
+  });
   return res.ok;
 }
 

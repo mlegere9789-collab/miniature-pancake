@@ -300,6 +300,66 @@ describe("observations + quality grade", () => {
     assert.equal(badCoords.observation.lat, null);
     assert.equal(badCoords.observation.lng, null);
   });
+
+  it("real per-observation CC licensing: defaults sensibly, validates the choice, and only the owner can change it", async () => {
+    const owner = await signUp();
+    const stranger = await signUp();
+
+    const create = (overrides) =>
+      owner.session.fetch("/api/observations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          photoDataUrl: "x",
+          commonName: "Red Fox",
+          scientificName: "Vulpes vulpes",
+          confidence: 0.7,
+          taxonSlug: "red-fox",
+          ...overrides,
+        }),
+      });
+
+    // No license specified — falls back to the real default, not blank/undefined.
+    const defaulted = await json(await create({}));
+    assert.equal(defaulted.observation.license, "CC-BY-NC");
+
+    // An invalid license string doesn't get silently coerced or stored as-is.
+    const invalid = await json(await create({ license: "do-whatever-you-want" }));
+    assert.equal(invalid.observation.license, "CC-BY-NC");
+
+    // An explicit, valid choice is respected.
+    const explicit = await json(await create({ license: "CC0" }));
+    assert.equal(explicit.observation.license, "CC0");
+    const id = explicit.observation.id;
+
+    // A stranger can't change someone else's license.
+    const strangerEdit = await stranger.session.fetch(`/api/observations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ license: "all-rights-reserved" }),
+    });
+    assert.equal(strangerEdit.status, 404);
+    const stillCC0 = await json(await owner.session.fetch(`/api/observations/${id}`));
+    assert.equal(stillCC0.observation.license, "CC0");
+
+    // An invalid PATCH value is rejected outright, not defaulted.
+    const badPatch = await owner.session.fetch(`/api/observations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ license: "not-a-real-license" }),
+    });
+    assert.equal(badPatch.status, 400);
+
+    // The owner can change it.
+    const ownerEdit = await owner.session.fetch(`/api/observations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ license: "CC-BY" }),
+    });
+    assert.equal(ownerEdit.status, 200);
+    const updated = await json(await owner.session.fetch(`/api/observations/${id}`));
+    assert.equal(updated.observation.license, "CC-BY");
+  });
 });
 
 describe("sensitive-species obscuring", () => {

@@ -16,6 +16,7 @@ const COLUMNS = [
   "lat",
   "lng",
   "notes",
+  "license",
 ] as const;
 
 function csvEscape(value: unknown): string {

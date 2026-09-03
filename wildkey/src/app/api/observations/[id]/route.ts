@@ -5,6 +5,9 @@ import {
   getObservationById,
   getUserById,
   toPublicUser,
+  updateObservationLicense,
+  OBSERVATION_LICENSES,
+  type ObservationLicense,
 } from "@/lib/server/store";
 
 export async function GET(
@@ -23,6 +26,28 @@ export async function GET(
     observation,
     author: author ? toPublicUser(author) : null,
   });
+}
+
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const user = await getSessionUser();
+  if (!user) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+
+  const { id } = await params;
+  const body = await request.json().catch(() => null);
+  const license = body?.license;
+  if (!(OBSERVATION_LICENSES as readonly unknown[]).includes(license)) {
+    return NextResponse.json(
+      { error: `License must be one of: ${OBSERVATION_LICENSES.join(", ")}.` },
+      { status: 400 },
+    );
+  }
+
+  const ok = updateObservationLicense(user.id, id, license as ObservationLicense);
+  if (!ok) return NextResponse.json({ error: "Not found or not yours." }, { status: 404 });
+  return NextResponse.json({ ok: true });
 }
 
 export async function DELETE(

@@ -62,7 +62,8 @@ function createConnection(): Database.Database {
       location_name TEXT NOT NULL DEFAULT '',
       notes TEXT NOT NULL DEFAULT '',
       lat REAL,
-      lng REAL
+      lng REAL,
+      license TEXT NOT NULL DEFAULT 'CC-BY-NC'
     );
 
     CREATE TABLE IF NOT EXISTS comments (
@@ -169,6 +170,9 @@ function createConnection(): Database.Database {
   }
   if (!observationColumns.some((c) => c.name === "lng")) {
     db.exec("ALTER TABLE observations ADD COLUMN lng REAL");
+  }
+  if (!observationColumns.some((c) => c.name === "license")) {
+    db.exec("ALTER TABLE observations ADD COLUMN license TEXT NOT NULL DEFAULT 'CC-BY-NC'");
   }
 
   db.exec(`

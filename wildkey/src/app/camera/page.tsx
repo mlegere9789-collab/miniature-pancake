@@ -10,6 +10,13 @@ import { useMode } from "@/lib/mode-context";
 import { useAuth } from "@/lib/auth-context";
 import { useLocale } from "@/lib/locale-context";
 import { identifyImage, warmUpModel, CvModelError } from "@/lib/cv-model";
+import {
+  OBSERVATION_LICENSES,
+  DEFAULT_OBSERVATION_LICENSE,
+  LICENSE_LABELS,
+  LICENSE_DESCRIPTIONS,
+  type ObservationLicense,
+} from "@/lib/observation-license";
 
 type IdOutcome = { species: Species | null; confidence: number; rawLabel: string };
 
@@ -34,6 +41,7 @@ export default function CameraPage() {
   const [locationName, setLocationName] = useState("");
   const [notes, setNotes] = useState("");
   const [isWild, setIsWild] = useState(true);
+  const [license, setLicense] = useState<ObservationLicense>(DEFAULT_OBSERVATION_LICENSE);
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
@@ -53,6 +61,7 @@ export default function CameraPage() {
     setLocationName("");
     setNotes("");
     setIsWild(true);
+    setLicense(DEFAULT_OBSERVATION_LICENSE);
     setCoords(null);
     setLocationError(null);
     setIdentifyError(null);
@@ -122,6 +131,7 @@ export default function CameraPage() {
         notes: notes.trim(),
         lat: coords?.lat ?? null,
         lng: coords?.lng ?? null,
+        license,
       });
       setSavedSyncState(saved ? "confirmed" : "failed");
       return;
@@ -243,6 +253,24 @@ export default function CameraPage() {
                       onChange={(e) => setIsWild(!e.target.checked)}
                     />
                     Captive / cultivated (not a wild specimen)
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm font-medium">
+                    License
+                    <select
+                      value={license}
+                      onChange={(e) => setLicense(e.target.value as ObservationLicense)}
+                      className="rounded border px-3 py-2 text-sm font-normal"
+                      style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
+                    >
+                      {OBSERVATION_LICENSES.map((l) => (
+                        <option key={l} value={l}>
+                          {LICENSE_LABELS[l]}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-xs font-normal" style={{ color: "var(--color-text-muted)" }}>
+                      {LICENSE_DESCRIPTIONS[license]}
+                    </span>
                   </label>
                 </div>
               )}

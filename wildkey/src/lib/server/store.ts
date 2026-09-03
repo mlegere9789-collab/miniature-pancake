@@ -1,6 +1,13 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { getMockSpecies } from "@/lib/mock-species";
 import { db } from "@/lib/server/db";
+import {
+  OBSERVATION_LICENSES,
+  DEFAULT_OBSERVATION_LICENSE,
+  type ObservationLicense,
+} from "@/lib/observation-license";
+
+export { OBSERVATION_LICENSES, DEFAULT_OBSERVATION_LICENSE, type ObservationLicense };
 
 /**
  * Real SQLite-backed persistence (see src/lib/server/db.ts for the schema
@@ -69,6 +76,7 @@ export type ServerObservation = {
    */
   lat: number | null;
   lng: number | null;
+  license: ObservationLicense;
 };
 
 type ObservationRow = {
@@ -86,6 +94,7 @@ type ObservationRow = {
   notes: string;
   lat: number | null;
   lng: number | null;
+  license: string;
 };
 
 function observationFromRow(row: ObservationRow): ServerObservation {
@@ -104,6 +113,9 @@ function observationFromRow(row: ObservationRow): ServerObservation {
     notes: row.notes,
     lat: row.lat,
     lng: row.lng,
+    license: (OBSERVATION_LICENSES as readonly string[]).includes(row.license)
+      ? (row.license as ObservationLicense)
+      : DEFAULT_OBSERVATION_LICENSE,
   };
 }
 
@@ -486,10 +498,10 @@ export function createObservationForUser(
   db.prepare(
     `INSERT INTO observations
        (id, user_id, created_at, photo_data_url, common_name, scientific_name,
-        confidence, taxon_slug, sync_state, is_wild, location_name, notes, lat, lng)
+        confidence, taxon_slug, sync_state, is_wild, location_name, notes, lat, lng, license)
      VALUES
        (@id, @userId, @createdAt, @photoDataUrl, @commonName, @scientificName,
-        @confidence, @taxonSlug, @syncState, @isWild, @locationName, @notes, @lat, @lng)`,
+        @confidence, @taxonSlug, @syncState, @isWild, @locationName, @notes, @lat, @lng, @license)`,
   ).run({
     id: observation.id,
     userId: observation.userId,
@@ -505,8 +517,21 @@ export function createObservationForUser(
     notes: observation.notes,
     lat: observation.lat,
     lng: observation.lng,
+    license: observation.license,
   });
   return observation;
+}
+
+/** Lets an owner change an existing observation's license after the fact — a real preference, not fixed at save time. */
+export function updateObservationLicense(
+  userId: string,
+  id: string,
+  license: ObservationLicense,
+): boolean {
+  const result = db
+    .prepare("UPDATE observations SET license = ? WHERE id = ? AND user_id = ?")
+    .run(license, id, userId);
+  return result.changes > 0;
 }
 
 /**

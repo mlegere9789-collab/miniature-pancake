@@ -1,7 +1,19 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/server/session";
-import { createObservationForUser, listObservationsForUser } from "@/lib/server/store";
+import {
+  createObservationForUser,
+  listObservationsForUser,
+  OBSERVATION_LICENSES,
+  DEFAULT_OBSERVATION_LICENSE,
+  type ObservationLicense,
+} from "@/lib/server/store";
 import { requiredString, optionalString, boundedNumber } from "@/lib/server/validate";
+
+function parseLicense(value: unknown): ObservationLicense {
+  return (OBSERVATION_LICENSES as readonly unknown[]).includes(value)
+    ? (value as ObservationLicense)
+    : DEFAULT_OBSERVATION_LICENSE;
+}
 
 export async function GET() {
   const user = await getSessionUser();
@@ -36,6 +48,7 @@ export async function POST(request: Request) {
   const notes = optionalString(body?.notes, 2000);
   const lat = boundedNumber(body?.lat, -90, 90);
   const lng = boundedNumber(body?.lng, -180, 180);
+  const license = parseLicense(body?.license);
 
   const observation = createObservationForUser(user.id, {
     photoDataUrl,
@@ -48,6 +61,7 @@ export async function POST(request: Request) {
     notes,
     lat,
     lng,
+    license,
   });
   return NextResponse.json({ observation }, { status: 201 });
 }

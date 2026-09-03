@@ -6,6 +6,7 @@ import {
   fetchObservationComments,
   fetchServerObservation,
   postObservationComment,
+  updateServerObservationLicense,
   type ObservationComment,
   type ObservationWithGrade,
 } from "@/lib/api-observations";
@@ -13,6 +14,7 @@ import { useAuth } from "@/lib/auth-context";
 import type { CurrentUser } from "@/lib/auth-context";
 import { QualityGradeBadge } from "@/components/quality-grade-badge";
 import { LazyPhoto } from "@/components/lazy-photo";
+import { OBSERVATION_LICENSES, LICENSE_LABELS, LICENSE_DESCRIPTIONS, type ObservationLicense } from "@/lib/observation-license";
 
 export default function ObservationDetailPage({
   params,
@@ -32,6 +34,7 @@ export default function ObservationDetailPage({
   const [flagOpen, setFlagOpen] = useState(false);
   const [flagSubmitted, setFlagSubmitted] = useState(false);
   const [flagSubmitting, setFlagSubmitting] = useState(false);
+  const [updatingLicense, setUpdatingLicense] = useState(false);
 
   const load = useCallback(async () => {
     const result = await fetchServerObservation(id);
@@ -51,6 +54,14 @@ export default function ObservationDetailPage({
   }, [authLoading, load]);
 
   const hasAgreed = comments.some((c) => c.kind === "agree" && c.userId === currentUser?.id);
+  const isOwner = observation?.userId === currentUser?.id;
+
+  const changeLicense = async (license: ObservationLicense) => {
+    setUpdatingLicense(true);
+    const ok = await updateServerObservationLicense(id, license);
+    setUpdatingLicense(false);
+    if (ok) setObservation((prev) => (prev ? { ...prev, license } : prev));
+  };
 
   const submitComment = async (kind: "comment" | "agree") => {
     if (kind === "comment" && draft.trim().length === 0) return;
@@ -151,6 +162,35 @@ export default function ObservationDetailPage({
           {observation.notes && (
             <p className="mt-2 text-sm">{observation.notes}</p>
           )}
+          <div className="mt-3 flex items-center gap-2">
+            {isOwner ? (
+              <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--color-text-muted)" }}>
+                License:
+                <select
+                  value={observation.license}
+                  onChange={(e) => changeLicense(e.target.value as ObservationLicense)}
+                  disabled={updatingLicense}
+                  aria-label="Change this observation's license"
+                  className="rounded border px-1.5 py-1 text-xs"
+                  style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
+                >
+                  {OBSERVATION_LICENSES.map((l) => (
+                    <option key={l} value={l}>
+                      {LICENSE_LABELS[l]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <span
+                className="text-xs"
+                style={{ color: "var(--color-text-muted)" }}
+                title={LICENSE_DESCRIPTIONS[observation.license]}
+              >
+                {LICENSE_LABELS[observation.license]}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
