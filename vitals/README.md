@@ -286,11 +286,12 @@ committed, since it had never existed in the repo before.
   zero automated verification on GitHub — only local `tsc`/`vitest` runs.
   Added `.github/workflows/vitals-ci.yml` (mirroring the existing
   `mediasuite-ci.yml` pattern): backend typecheck + lint + `vitest run`,
-  mobile typecheck + lint, path-scoped to `vitals/**` so it doesn't run on
+  mobile typecheck + lint + a real `expo export` bundle check (see the
+  babel.config.js entry below — this is the step that would have caught
+  that gap automatically), path-scoped to `vitals/**` so it doesn't run on
   unrelated changes. Verified locally end-to-end with the exact commands
-  the workflow runs (`npm ci`, `prisma generate`, `npm run typecheck`,
-  `npm run lint`, `npm test`) in both packages, and confirmed genuinely
-  green on GitHub itself after pushing.
+  the workflow runs in both packages, and confirmed genuinely green on
+  GitHub itself after pushing.
 - **No easy way to get a local Postgres running.** `.env.example`'s
   `DATABASE_URL` assumed a Postgres instance the developer had to stand up
   themselves, with no guidance. Added `backend/docker-compose.yml` (matching
@@ -408,6 +409,19 @@ committed, since it had never existed in the repo before.
   plant" action on the plant detail screen (with a confirmation, since it's
   not easily undoable from the UI); its check-in history and score
   snapshots are kept, it just drops out of the active views.
+- **The app had no `babel.config.js` and `babel-preset-expo` wasn't even
+  installed.** `tsc --noEmit` and `eslint` both pass without ever invoking
+  Metro/Babel, so this went undetected all session despite being the one
+  thing that actually determines whether the app runs at all — Metro has
+  no default transform for Expo-specific syntax without
+  `babel-preset-expo`, and that preset is also what statically inlines
+  `process.env.EXPO_PUBLIC_*` (which `API_BASE_URL`/`DEMO_GARDEN_ID` in
+  `App.tsx`/`api.ts` depend on entirely). Added `babel.config.js` and the
+  matching `babel-preset-expo@11.0.15` (Expo SDK 51's generation), then
+  verified for real with `npx expo export --platform ios`: 863 modules
+  bundled successfully into a real Hermes bytecode bundle — the first time
+  this session that anything actually proved the app builds, as opposed to
+  just typechecking and linting cleanly.
 - **No iOS bundle identifier or Android package name.** `app.json` had
   neither `ios.bundleIdentifier` nor `android.package` — both required
   before any real device or store build (`expo prebuild`/`eas build`

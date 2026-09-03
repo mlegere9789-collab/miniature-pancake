@@ -47,7 +47,7 @@ jobs:
         run: npm test
 
   mobile:
-    name: Mobile typecheck + lint
+    name: Mobile typecheck + lint + bundle
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -72,3 +72,9 @@ jobs:
 
       - name: Lint
         run: npm run lint
+
+      # tsc/eslint never invoke Metro/Babel, so neither one catches a
+      # missing/broken babel.config.js — this is the one step that actually
+      # proves the app bundles, not just that the TypeScript is well-formed.
+      - name: Verify the app actually bundles (Metro/Babel)
+        run: npx expo export --platform ios --output-dir /tmp/vitals-export
