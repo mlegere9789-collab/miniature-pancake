@@ -422,6 +422,16 @@ committed, since it had never existed in the repo before.
   bundled successfully into a real Hermes bytecode bundle — the first time
   this session that anything actually proved the app builds, as opposed to
   just typechecking and linting cleanly.
+- **The check-in camera screen ignored safe-area insets.**
+  `CheckInCameraScreen` runs with `headerShown: false` (full-bleed camera)
+  and positioned its top bar and shutter button with fixed pixel offsets,
+  no notch/Dynamic-Island/home-indicator awareness — the one screen where
+  that matters most, since there's no native header doing it for free.
+  `react-native-safe-area-context` was already an installed dependency
+  (a react-navigation peer requirement) but nothing in the app ever
+  actually used it. Wrapped the app in `SafeAreaProvider` and switched
+  the camera screen's overlay positioning to `useSafeAreaInsets()`,
+  verified the bundle still exports cleanly afterward.
 - **`expo-status-bar` was a dependency but never actually used.** Nothing
   rendered `<StatusBar>`, so the status bar icon color was left to OS
   defaults instead of matching the app's light theme. Rendered it with

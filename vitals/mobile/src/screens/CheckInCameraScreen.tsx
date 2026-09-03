@@ -1,6 +1,7 @@
 import { CameraType, CameraView, useCameraPermissions } from "expo-camera";
 import React, { useRef, useState } from "react";
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GhostOverlay } from "../components/GhostOverlay";
 import { ScoreDeltaBadge } from "../components/ScoreDeltaBadge";
 import { setTreatmentPlanCompleted, submitCheckIn, uploadCheckInPhoto } from "../services/api";
@@ -25,6 +26,7 @@ interface Props {
  * upload/scoring call fails.
  */
 export function CheckInCameraScreen({ plantId, plantLabel, previousPhotoUri, onDone }: Props) {
+  const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
   const [stage, setStage] = useState<Stage>("aligning");
   const [result, setResult] = useState<CreateCheckInResponse | null>(null);
@@ -159,13 +161,13 @@ export function CheckInCameraScreen({ plantId, plantLabel, previousPhotoUri, onD
       <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing={"back" as CameraType} />
       <GhostOverlay previousPhotoUri={previousPhotoUri} />
 
-      <View style={styles.topBar}>
+      <View style={[styles.topBar, { top: insets.top + theme.spacing(3) }]}>
         <Text style={styles.topBarText}>
           {previousPhotoUri ? "Line up with the faded outline of your last photo" : `First check-in: ${plantLabel}`}
         </Text>
       </View>
 
-      <View style={styles.bottomBar}>
+      <View style={[styles.bottomBar, { bottom: insets.bottom + theme.spacing(4) }]}>
         {stage === "aligning" ? (
           <Pressable style={styles.shutterButton} onPress={handleCapture} accessibilityLabel="Capture check-in photo" />
         ) : (
@@ -208,7 +210,6 @@ const styles = StyleSheet.create({
   flagCardDoneText: { fontSize: theme.font.captionSize, color: theme.color.forestGreenLight, fontWeight: "600" },
   topBar: {
     position: "absolute",
-    top: theme.spacing(8),
     left: theme.spacing(3),
     right: theme.spacing(3),
     alignItems: "center",
@@ -225,7 +226,6 @@ const styles = StyleSheet.create({
   },
   bottomBar: {
     position: "absolute",
-    bottom: theme.spacing(6),
     left: 0,
     right: 0,
     alignItems: "center",

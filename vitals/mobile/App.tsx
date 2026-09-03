@@ -4,6 +4,7 @@ import * as Notifications from "expo-notifications";
 import { StatusBar } from "expo-status-bar";
 import React, { useEffect, useRef, useState } from "react";
 import { AppState, AppStateStatus, Pressable, Text, View } from "react-native";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AddPlantScreen } from "./src/screens/AddPlantScreen";
 import { ArchivedPlantsScreen } from "./src/screens/ArchivedPlantsScreen";
 import { CheckInCameraScreen } from "./src/screens/CheckInCameraScreen";
@@ -119,7 +120,7 @@ export default function App() {
   }, []);
 
   return (
-    <>
+    <SafeAreaProvider>
       <StatusBar style="dark" />
       <NavigationContainer
         ref={navigationRef}
@@ -264,6 +265,6 @@ export default function App() {
         </Stack.Screen>
       </Stack.Navigator>
       </NavigationContainer>
-    </>
+    </SafeAreaProvider>
   );
 }
