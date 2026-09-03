@@ -531,6 +531,39 @@ void TestCylinderVolumeAndBoolean() {
         "union of the cylinder with a disjoint unit box equals cylinder volume + 1");
 }
 
+void TestConeVolumeAndBoolean() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double radius = 2.0;
+  const double height = 5.0;
+  // Same shape/resolution as TestCylinderVolumeAndBoolean, so the 1%
+  // tolerance is directly comparable: ConeToApex() collapses
+  // ExtrudeCappedSolid()'s wall geometry to a single triangle per
+  // boundary edge instead of two, sharing the exact same disk-cap
+  // construction (BuildCircularDiskCap) and boundary-edge validation
+  // (ExtractValidatedBoundaryEdges) as Cylinder().
+  const auto cone = Mesh::Cone(Point3d(0, 0, 0), Vector3d(0, 0, 1), radius, height,
+                                /*circle_segments=*/32, /*grid_divisions=*/32);
+
+  const double exact_volume = ON_PI * radius * radius * height / 3.0;
+  const double relative_error = std::abs(cone.Volume() - exact_volume) / exact_volume;
+  Check(relative_error < 0.01, "cone volume is within 1% of (1/3)*pi*r^2*h");
+
+  // Real proof of watertightness, same as the cylinder test: Manifold
+  // would reject a non-manifold mesh outright rather than return a
+  // plausible-looking wrong answer.
+  const auto box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const auto result = BooleanCombine(cone, box, BooleanOp::Union);
+  const double expected_union = cone.Volume() + 1.0;
+  Check(std::abs(result.Volume() - expected_union) < 1e-6,
+        "union of the cone with a disjoint unit box equals cone volume + 1");
+}
+
 void TestExactClippingMatchesAreaButNotCellCounts() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -772,6 +805,27 @@ void TestExtrudeRejectsBowtieBoundary() {
         "than one boundary edge) instead of emitting broken wall geometry");
 }
 
+void TestConeToApexSharesBoundaryValidation() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  // ConeToApex() shares ExtrudeCappedSolid()'s boundary-edge extraction
+  // and validation (Mesh::ExtractValidatedBoundaryEdges) rather than
+  // duplicating it - this is a check on that wiring, not a re-test of the
+  // validation logic itself (already covered by
+  // TestExtrudeRejectsAlreadyClosedCap/BowtieBoundary above): an
+  // already-closed cap (MakeBox()) has nothing to cone to an apex either.
+  const auto box = MakeBox(0, 0, 0, 1, 1, 1);
+  bool threw = false;
+  try {
+    Mesh::ConeToApex(box, Point3d(0.5, 0.5, 2));
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ConeToApex throws on a cap with no boundary (already closed), "
+               "same validation as ExtrudeCappedSolid");
+}
+
 }  // namespace
 
 int main() {
@@ -794,11 +848,13 @@ int main() {
   TestExtrudeUntrimmedFaceIntoSolid();
   TestExtrudeTrimmedFaceFeedsBoolean();
   TestCylinderVolumeAndBoolean();
+  TestConeVolumeAndBoolean();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestAnnulusFaceExtrudesToWatertightTube();
   TestExtrudeRejectsAlreadyClosedCap();
   TestExtrudeRejectsBowtieBoundary();
+  TestConeToApexSharesBoundaryValidation();
 
   ON::End();
 

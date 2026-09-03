@@ -4,6 +4,7 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 #include <utility>
 
@@ -100,11 +101,69 @@ Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
   return result;
 }
 
+std::vector<std::pair<int, int>> Mesh::ExtractValidatedBoundaryEdges(const ON_Mesh& cap,
+                                                                      const char* caller) {
+  // Boundary-edge extraction: a directed edge (a, b) that appears in some
+  // triangle's winding is an interior edge if its reverse (b, a) also
+  // appears (from the triangle on the other side); otherwise it's on the
+  // cap's boundary loop. This works for any cap shape - including a
+  // trimmed face's jagged/staircased boundary - without needing to know
+  // the boundary's "ideal" curve.
+  std::set<std::pair<int, int>> directed_edges;
+  for (int i = 0; i < cap.m_F.Count(); ++i) {
+    const ON_MeshFace& f = cap.m_F[i];
+    directed_edges.insert({f.vi[0], f.vi[1]});
+    directed_edges.insert({f.vi[1], f.vi[2]});
+    directed_edges.insert({f.vi[2], f.vi[0]});
+  }
+
+  std::vector<std::pair<int, int>> boundary_edges;
+  for (const auto& edge : directed_edges) {
+    if (directed_edges.count({edge.second, edge.first}) == 0) {
+      boundary_edges.push_back(edge);
+    }
+  }
+  if (boundary_edges.empty()) {
+    throw std::invalid_argument(std::string("dino8::kernel::Mesh::") + caller +
+                                 ": cap has no boundary (it's already a closed mesh) - "
+                                 "nothing to sweep into walls");
+  }
+
+  // A cap whose boundary is a set of simple, disjoint closed loops has
+  // exactly one boundary edge leaving and one arriving at each boundary
+  // vertex - that's what lets the wall geometry below join up into a
+  // clean tube (or cone) per loop. A self-intersecting or "bowtie"
+  // boundary (two loops touching at a shared vertex, or a figure-eight)
+  // breaks that, and would otherwise silently produce overlapping or
+  // malformed wall geometry instead of a clean solid - checked here and
+  // rejected outright, rather than trusted to "probably be fine."
+  std::map<int, int> outgoing_count;
+  std::map<int, int> incoming_count;
+  for (const auto& edge : boundary_edges) {
+    ++outgoing_count[edge.first];
+    ++incoming_count[edge.second];
+  }
+  for (const auto& [vertex, count] : outgoing_count) {
+    if (count != 1 || incoming_count[vertex] != 1) {
+      throw std::invalid_argument(
+          std::string("dino8::kernel::Mesh::") + caller +
+          ": cap's boundary is not a set of simple, disjoint closed loops (a "
+          "vertex has more than one boundary edge) - self-intersecting or "
+          "touching boundary loops aren't supported");
+    }
+  }
+
+  return boundary_edges;
+}
+
 Mesh Mesh::ExtrudeCappedSolid(const Mesh& cap, Vector3d offset) {
   Mesh result;
   ON_Mesh& out = result.mesh_;
   const ON_Mesh& in = cap.mesh_;
   const int n = in.m_V.Count();
+
+  const std::vector<std::pair<int, int>> boundary_edges =
+      ExtractValidatedBoundaryEdges(in, "ExtrudeCappedSolid");
 
   // Near end (the cap as given) at indices [0, n); far end (translated by
   // offset) at indices [n, 2n).
@@ -139,56 +198,6 @@ Mesh Mesh::ExtrudeCappedSolid(const Mesh& cap, Vector3d offset) {
     out.m_F.Append(far_face);
   }
 
-  // Boundary-edge extraction: a directed edge (a, b) that appears in some
-  // triangle's winding is an interior edge if its reverse (b, a) also
-  // appears (from the triangle on the other side); otherwise it's on the
-  // cap's boundary loop. This works for any cap shape - including a
-  // trimmed face's jagged/staircased boundary - without needing to know
-  // the boundary's "ideal" curve.
-  std::set<std::pair<int, int>> directed_edges;
-  for (int i = 0; i < in.m_F.Count(); ++i) {
-    const ON_MeshFace& f = in.m_F[i];
-    directed_edges.insert({f.vi[0], f.vi[1]});
-    directed_edges.insert({f.vi[1], f.vi[2]});
-    directed_edges.insert({f.vi[2], f.vi[0]});
-  }
-
-  std::vector<std::pair<int, int>> boundary_edges;
-  for (const auto& edge : directed_edges) {
-    if (directed_edges.count({edge.second, edge.first}) == 0) {
-      boundary_edges.push_back(edge);
-    }
-  }
-  if (boundary_edges.empty()) {
-    throw std::invalid_argument(
-        "dino8::kernel::Mesh::ExtrudeCappedSolid: cap has no boundary (it's "
-        "already a closed mesh) - nothing to sweep into walls");
-  }
-
-  // A cap whose boundary is a set of simple, disjoint closed loops has
-  // exactly one boundary edge leaving and one arriving at each boundary
-  // vertex - that's what lets the wall quads below join up into a clean
-  // tube per loop. A self-intersecting or "bowtie" boundary (two loops
-  // touching at a shared vertex, or a figure-eight) breaks that, and
-  // would otherwise silently produce overlapping/malformed wall geometry
-  // instead of a clean solid - checked here and rejected outright,
-  // rather than trusted to "probably be fine."
-  std::map<int, int> outgoing_count;
-  std::map<int, int> incoming_count;
-  for (const auto& edge : boundary_edges) {
-    ++outgoing_count[edge.first];
-    ++incoming_count[edge.second];
-  }
-  for (const auto& [vertex, count] : outgoing_count) {
-    if (count != 1 || incoming_count[vertex] != 1) {
-      throw std::invalid_argument(
-          "dino8::kernel::Mesh::ExtrudeCappedSolid: cap's boundary is not a set "
-          "of simple, disjoint closed loops (a vertex has more than one "
-          "boundary edge) - self-intersecting or touching boundary loops "
-          "aren't supported");
-    }
-  }
-
   for (const auto& edge : boundary_edges) {
     const int a = edge.first;
     const int b = edge.second;
@@ -210,10 +219,16 @@ Mesh Mesh::ExtrudeCappedSolid(const Mesh& cap, Vector3d offset) {
   return result;
 }
 
-Mesh Mesh::Cylinder(Point3d base_center, Vector3d axis, double radius, double height,
-                     int circle_segments, int grid_divisions) {
-  Vector3d n = axis;
-  n.Unitize();
+namespace {
+
+// Shared by Cylinder() and Cone(): builds a flat circular disk cap
+// centered at `center`, with its own u_dir x v_dir (and so its
+// tessellated triangles' outward normal) pointing along -unit_axis - the
+// orientation both ExtrudeCappedSolid() and ConeToApex() need from a cap
+// that then gets closed off along +unit_axis.
+Mesh BuildCircularDiskCap(Point3d center, Vector3d unit_axis, double radius,
+                          int circle_segments, int grid_divisions) {
+  const Vector3d& n = unit_axis;
 
   // Arbitrary orthonormal in-plane basis (ex, ey) perpendicular to n -
   // standard "pick a non-parallel reference vector, cross twice" trick.
@@ -226,25 +241,23 @@ Mesh Mesh::Cylinder(Point3d base_center, Vector3d axis, double radius, double he
   // A square surface, big enough to contain the circle with margin, whose
   // own u_dir x v_dir gives an outward normal of -n (see the corner-order
   // derivation in the header comment / commit message: the cap has to
-  // face away from where ExtrudeCappedSolid's offset will sweep the
-  // solid). half_size in parameter space maps back to the physical
-  // half-width s below.
+  // face away from where the sweep will build the solid). half_size in
+  // parameter space maps back to the physical half-width s below.
   const double s = radius * 1.2;
-  const Point3d a = base_center - ex * s - ey * s;
-  const Point3d b = base_center + ex * s - ey * s;
-  const Point3d c = base_center - ex * s + ey * s;
-  const Point3d d = base_center + ex * s + ey * s;
+  const Point3d a = center - ex * s - ey * s;
+  const Point3d b = center + ex * s - ey * s;
+  const Point3d c = center - ex * s + ey * s;
+  const Point3d d = center + ex * s + ey * s;
   // Grid order [a, b, c, d] assigned to (u0,v0),(u0,v1),(u1,v0),(u1,v1):
   // u_dir = c - a = 2s*ey, v_dir = b - a = 2s*ex, so
   // u_dir x v_dir = 4s^2 (ey x ex) = -4s^2 n - the outward -n this cap
-  // needs. P(u,v) = base_center + ex*s*(2v-1) + ey*s*(2u-1).
+  // needs. P(u,v) = center + ex*s*(2v-1) + ey*s*(2u-1).
   const NurbsSurface surface =
       NurbsSurface::FromControlGrid({a, b, c, d}, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
 
   // Circle boundary, matching that same P(u,v) parameterization: a point
-  // at angle theta is base_center + radius*cos(theta)*ex +
-  // radius*sin(theta)*ey, i.e. u = 0.5 + radius*sin(theta)/(2s),
-  // v = 0.5 + radius*cos(theta)/(2s).
+  // at angle theta is center + radius*cos(theta)*ex + radius*sin(theta)*ey,
+  // i.e. u = 0.5 + radius*sin(theta)/(2s), v = 0.5 + radius*cos(theta)/(2s).
   std::vector<Point2d> trim_loop;
   trim_loop.reserve(static_cast<size_t>(circle_segments));
   for (int i = 0; i < circle_segments; ++i) {
@@ -259,9 +272,70 @@ Mesh Mesh::Cylinder(Point3d base_center, Vector3d axis, double radius, double he
   // approximation - the fix for the resolution/accuracy tradeoff the
   // whole-cell version measured.
   const Brep disk = Brep::TrimmedPlanarFace(surface, trim_loop, /*exact_clip=*/true);
-  const Mesh cap = disk.Tessellate(grid_divisions, grid_divisions).front();
+  return disk.Tessellate(grid_divisions, grid_divisions).front();
+}
 
+}  // namespace
+
+Mesh Mesh::Cylinder(Point3d base_center, Vector3d axis, double radius, double height,
+                     int circle_segments, int grid_divisions) {
+  Vector3d n = axis;
+  n.Unitize();
+  const Mesh cap = BuildCircularDiskCap(base_center, n, radius, circle_segments, grid_divisions);
   return ExtrudeCappedSolid(cap, n * height);
+}
+
+Mesh Mesh::ConeToApex(const Mesh& cap, Point3d apex) {
+  Mesh result;
+  ON_Mesh& out = result.mesh_;
+  const ON_Mesh& in = cap.mesh_;
+  const int n = in.m_V.Count();
+
+  const std::vector<std::pair<int, int>> boundary_edges =
+      ExtractValidatedBoundaryEdges(in, "ConeToApex");
+
+  // Base (the cap as given) at indices [0, n); apex is the single new
+  // vertex at index n.
+  for (int i = 0; i < n; ++i) {
+    out.m_V.Append(in.m_V[i]);
+  }
+  out.m_V.Append(ON_3fPoint(apex));
+
+  // Base faces keep the cap's own winding/orientation.
+  for (int i = 0; i < in.m_F.Count(); ++i) {
+    const ON_MeshFace& f = in.m_F[i];
+    ON_MeshFace base_face;
+    base_face.vi[0] = f.vi[0];
+    base_face.vi[1] = f.vi[1];
+    base_face.vi[2] = f.vi[2];
+    base_face.vi[3] = f.vi[2];
+    out.m_F.Append(base_face);
+  }
+
+  // One triangle per boundary edge, to the shared apex vertex - the
+  // ExtrudeCappedSolid()-style two-quad wall collapses to a single
+  // triangle once the far end is a point instead of a translated copy.
+  // Same winding convention as ExtrudeCappedSolid()'s wall triangles
+  // (a, apex, b): outward-facing given the same boundary-edge direction.
+  for (const auto& edge : boundary_edges) {
+    ON_MeshFace wall;
+    wall.vi[0] = edge.first;
+    wall.vi[1] = n;
+    wall.vi[2] = edge.second;
+    wall.vi[3] = wall.vi[2];
+    out.m_F.Append(wall);
+  }
+
+  return result;
+}
+
+Mesh Mesh::Cone(Point3d base_center, Vector3d axis, double radius, double height,
+                int circle_segments, int grid_divisions) {
+  Vector3d n = axis;
+  n.Unitize();
+  const Mesh cap = BuildCircularDiskCap(base_center, n, radius, circle_segments, grid_divisions);
+  const Point3d apex = base_center + n * height;
+  return ConeToApex(cap, apex);
 }
 
 }  // namespace dino8::kernel

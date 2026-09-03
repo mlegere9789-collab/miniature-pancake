@@ -94,9 +94,41 @@ class Mesh {
                         double height, int circle_segments = 48,
                         int grid_divisions = 48);
 
+  // Cones `cap`'s boundary loop to a single point `apex`, closing it into
+  // a solid the way ExtrudeCappedSolid() closes it into a prism: `cap`
+  // becomes the base as-is, and each boundary edge becomes one triangle
+  // to `apex` instead of a translated-copy wall quad. Same boundary
+  // requirements as ExtrudeCappedSolid() (a set of simple, disjoint
+  // closed loops - one boundary edge leaving and one arriving at every
+  // boundary vertex), and the same "no welding needed" property (`apex`
+  // is a single new vertex all wall triangles share exactly).
+  static Mesh ConeToApex(const Mesh& cap, Point3d apex);
+
+  // Builds a real cone: a circular disk cap (Brep::TrimmedPlanarFace()
+  // with an N-gon trim polygon approximating a circle), same construction
+  // as Cylinder(), coned to a single apex point along `axis` at `height`
+  // via ConeToApex() instead of swept via ExtrudeCappedSolid(). Volume
+  // approaches (not exactly equals) the ideal (1/3)*pi*r^2*h as
+  // circle_segments and grid_divisions increase, same caveat as
+  // Cylinder().
+  static Mesh Cone(Point3d base_center, Vector3d axis, double radius,
+                    double height, int circle_segments = 48,
+                    int grid_divisions = 48);
+
  private:
   friend class Brep;
   friend class NurbsSurface;
+
+  // Shared by ExtrudeCappedSolid() and ConeToApex(): extracts `cap`'s
+  // boundary edges from triangle adjacency (an edge used by exactly one
+  // triangle is a boundary edge) and validates they form a set of simple,
+  // disjoint closed loops, throwing std::invalid_argument (naming
+  // `caller` in the message) otherwise - see ExtrudeCappedSolid()'s own
+  // comment for why an already-closed cap or a bowtie/self-intersecting
+  // boundary can't be trusted to "probably be fine."
+  static std::vector<std::pair<int, int>> ExtractValidatedBoundaryEdges(
+      const ON_Mesh& cap, const char* caller);
+
   ON_Mesh mesh_;
 };
 

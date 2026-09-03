@@ -199,12 +199,31 @@ What this repo does instead:
   Verified with two deliberately bad inputs: a real bowtie mesh (two
   triangles sharing one vertex but no edge) and `Box()`'s own already-
   closed mesh, both correctly rejected.
+- `Mesh::Cone()` closes one of the two remaining "no cone, revolve, or
+  loft" primitive gaps. Rather than a new special case, it reuses
+  `Cylinder()`'s disk-cap construction (factored out into a shared
+  `BuildCircularDiskCap()` helper) and closes it off with a new
+  `Mesh::ConeToApex()` — the cap as the base, one triangle per boundary
+  edge to a single new apex vertex instead of `ExtrudeCappedSolid()`'s
+  translated-copy wall quads. `ConeToApex()` shares
+  `ExtrudeCappedSolid()`'s boundary-edge extraction and validation
+  (factored into `Mesh::ExtractValidatedBoundaryEdges()`) instead of
+  duplicating it, so the bowtie/already-closed rejection applies here
+  too — verified directly (`TestConeToApexSharesBoundaryValidation`), not
+  just assumed to carry over from the refactor. Cone's wall-triangle
+  winding was derived, not guessed, from `ExtrudeCappedSolid()`'s own
+  already-proven wall winding: collapsing its two wall triangles per edge
+  to a single apex point degenerates one of the two to zero area, and the
+  surviving one's vertex order is exactly `(a, apex, b)`. Volume verified
+  within 1% of the exact `(1/3)*pi*r^2*h` at the same resolution
+  `Cylinder()` uses, plus the same Manifold-union watertightness proof.
 
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
-  (+ `hole_loops_uv`) + `Mesh::ExtrudeCappedSolid()`/`Mesh::Cylinder()`
-  are the only shapes/operations here — no cone, revolve, or loft.
+  (+ `hole_loops_uv`) + `Mesh::ExtrudeCappedSolid()`/`Mesh::Cylinder()`/
+  `Mesh::ConeToApex()`/`Mesh::Cone()` are the only shapes/operations here
+  — no revolve or loft yet.
 - `TessellateGridClippedExact()` now handles a concave `trim_polygon` too
   (via a general Greiner-Hormann-style clipper, see above), but that path
   is newer and more narrowly tested than the long-proven convex one: a
