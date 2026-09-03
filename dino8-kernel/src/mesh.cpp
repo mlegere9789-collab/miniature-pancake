@@ -4,12 +4,46 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace dino8::kernel {
+
+namespace {
+
+// Parses a .obj face-line token into a 1-based vertex index, accepting
+// both the plain "3" form SaveObj() writes and the "3/4/5"
+// (vertex/texture/normal) form other tools write - only the part before
+// the first '/' matters here, texture/normal indices are ignored (this
+// kernel's ON_Mesh has no per-face-corner texture/normal data to put
+// them in). Rejects anything else, including a negative (relative)
+// index - documented as unsupported in LoadObj()'s own comment - and
+// leaves `index` unchanged on failure.
+bool ParseObjFaceIndex(const std::string& token, int& index) {
+  const size_t slash = token.find('/');
+  const std::string first = (slash == std::string::npos) ? token : token.substr(0, slash);
+  if (first.empty()) {
+    return false;
+  }
+  size_t consumed = 0;
+  int value = 0;
+  try {
+    value = std::stoi(first, &consumed);
+  } catch (const std::exception&) {
+    return false;
+  }
+  if (consumed != first.size() || value <= 0) {
+    return false;
+  }
+  index = value;
+  return true;
+}
+
+}  // namespace
 
 int Mesh::VertexCount() const { return mesh_.VertexCount(); }
 
@@ -78,6 +112,60 @@ Result Mesh::SaveObj(const std::string& path) const {
   }
 
   return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path);
+  if (!in) {
+    return Result::Failed;
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  std::string line;
+  while (std::getline(in, line)) {
+    std::istringstream stream(line);
+    std::string tag;
+    stream >> tag;
+
+    if (tag == "v") {
+      double x, y, z;
+      if (!(stream >> x >> y >> z)) {
+        return Result::Failed;
+      }
+      raw.m_V.Append(ON_3fPoint(x, y, z));
+    } else if (tag == "f") {
+      std::vector<int> indices;
+      std::string token;
+      while (stream >> token) {
+        int index = 0;
+        if (!ParseObjFaceIndex(token, index)) {
+          return Result::Failed;
+        }
+        indices.push_back(index);
+      }
+      if (indices.size() < 3 || indices.size() > 4) {
+        return Result::Failed;
+      }
+      for (const int index : indices) {
+        if (index < 1 || index > raw.m_V.Count()) {
+          return Result::Failed;  // forward/unknown reference, or out of range
+        }
+      }
+      ON_MeshFace face;
+      face.vi[0] = indices[0] - 1;
+      face.vi[1] = indices[1] - 1;
+      face.vi[2] = indices[2] - 1;
+      face.vi[3] = (indices.size() == 4) ? indices[3] - 1 : indices[2] - 1;
+      raw.m_F.Append(face);
+    }
+    // Every other tag (comments, vt/vn, g/o, mtllib/usemtl, s, ...) is
+    // silently skipped - this kernel only round-trips geometry.
+  }
+
+  out_mesh = std::move(result);
+  return Result::Ok;
 }
 
 Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {

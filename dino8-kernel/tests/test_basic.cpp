@@ -893,6 +893,50 @@ void TestMeshSaveObjRoundTrips() {
             first_vertex[2] == 0.0,
         "the first written vertex line matches MakeQuadBoxMesh's known first "
         "corner (0,0,0)");
+
+  // Full round trip: LoadObj() the file SaveObj() just wrote and check the
+  // result is geometrically the same solid, not just "some mesh with the
+  // right counts" - same vertex/face counts AND the same exact volume
+  // (quad faces preserved as quads, not reinterpreted as triangles, would
+  // break Volume()'s IsQuad() handling if LoadObj() got that wrong).
+  Mesh reloaded;
+  Check(Mesh::LoadObj(path, reloaded) == Result::Ok, "Mesh::LoadObj succeeds on SaveObj()'s own output");
+  Check(reloaded.VertexCount() == box.VertexCount() && reloaded.FaceCount() == box.FaceCount(),
+        "the reloaded mesh has the same vertex/face counts as the original");
+  Check(std::abs(reloaded.Volume() - box.Volume()) < 1e-9,
+        "the reloaded mesh's volume exactly matches the original (quad faces "
+        "round-tripped as quads, not silently reinterpreted)");
+}
+
+void TestMeshLoadObjRejectsMalformedFiles() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  const std::string missing_path = "dino8_kernel_mesh_obj_test_does_not_exist.obj";
+  Mesh out;
+  Check(Mesh::LoadObj(missing_path, out) == Result::Failed,
+        "LoadObj fails on a file that doesn't exist");
+
+  const std::string forward_ref_path = "dino8_kernel_mesh_obj_test_forward_ref.obj";
+  {
+    std::ofstream bad(forward_ref_path);
+    // References vertex 2 before it's ever defined - not a valid .obj.
+    bad << "v 0 0 0\nf 1 2 3\n";
+  }
+  Check(Mesh::LoadObj(forward_ref_path, out) == Result::Failed,
+        "LoadObj fails on a face referencing a vertex index that doesn't exist");
+
+  const std::string pentagon_path = "dino8_kernel_mesh_obj_test_pentagon.obj";
+  {
+    std::ofstream bad(pentagon_path);
+    bad << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nv 0.5 2 0\nf 1 2 3 4 5\n";
+  }
+  Check(Mesh::LoadObj(pentagon_path, out) == Result::Failed,
+        "LoadObj fails on a 5-index face line rather than silently "
+        "misinterpreting it (ON_MeshFace only holds a triangle or quad)");
+
+  std::remove(forward_ref_path.c_str());
+  std::remove(pentagon_path.c_str());
 }
 
 void TestExactClippingMatchesAreaButNotCellCounts() {
@@ -1187,6 +1231,7 @@ int main() {
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
   TestMeshSaveObjRoundTrips();
+  TestMeshLoadObjRejectsMalformedFiles();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestAnnulusFaceExtrudesToWatertightTube();

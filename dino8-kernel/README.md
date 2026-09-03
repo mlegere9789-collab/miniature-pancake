@@ -321,12 +321,20 @@ What this repo does instead:
   MeshLab, etc.) instead of only ever being verified by its own numbers.
   A quad face (`ON_MeshFace::IsQuad()`) is written as one 4-index `f`
   line, not split into two triangles - OBJ supports n-gon faces natively.
-  Export only (no `LoadObj()` yet). Verified by writing a known 6-quad
-  box and re-parsing the file back: exact vertex/face line counts, at
-  least one 4-index face line present, and the first written vertex line
-  matches the box's known first corner exactly - a real round-trip check
-  on the file's actual content, not just that `SaveObj()` returned
-  `Result::Ok`.
+  `Mesh::LoadObj()` completes the round trip: reads `v`/`f` lines back
+  (accepting both plain `f 1 2 3` and `f 1/1/1 2/2/2 3/3/3`
+  vertex/texture/normal index triples, ignoring texture/normal indices -
+  this kernel's `ON_Mesh` has nowhere to put them), and deliberately
+  rejects rather than guesses at anything it can't represent exactly: a
+  face line with more than 4 or fewer than 3 indices (`ON_MeshFace` only
+  holds a triangle or quad - silently fan-triangulating a 5-gon would
+  change its meaning without telling the caller), or a face referencing a
+  vertex index that hasn't appeared yet. Verified with a full round trip
+  (write a known 6-quad box, reload it, check vertex/face counts *and*
+  volume match exactly - proving quad faces survive as quads, not
+  silently reinterpreted) and three deliberately bad inputs (a missing
+  file, a forward vertex reference, a 5-index face line), all correctly
+  rejected.
 
 ## What's still not done (as of chunk 2)
 
@@ -372,8 +380,9 @@ What this repo does instead:
   option used), no SubD editing (adding/removing faces, extrude, etc.),
   and no SubD ↔ Brep conversion (that direction is the stubbed
   `BrepForm()`/`GetSurfaceBrep()` this section already flagged).
-- `.obj` support is export-only (`Mesh::SaveObj()`) - no `LoadObj()`, and
-  no other formats (STL, glTF, FBX, ...) at all.
+- `.obj` support (`SaveObj()`/`LoadObj()`) only round-trips geometry - no
+  normals, texture coordinates, materials, or groups - and no other
+  formats (STL, glTF, FBX, ...) at all.
 - Adaptive/curvature-aware meshing, the viewport/display engine, GPU path
   tracer, command engine, UI shell, visual scripting, undo system,
   installer, and everything else in the blueprint's roadmap — all

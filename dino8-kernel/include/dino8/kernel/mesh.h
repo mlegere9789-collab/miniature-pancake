@@ -43,6 +43,21 @@ class Mesh {
   // writes a valid, empty .obj).
   Result SaveObj(const std::string& path) const;
 
+  // Reads a plain-text Wavefront .obj file written by SaveObj() (or any
+  // other reasonably well-formed .obj) into `out_mesh`. Only `v` (vertex)
+  // and `f` (face) lines are understood - no normals/texture coordinates,
+  // materials, groups, or negative (relative) indices; a face line with
+  // more than 4 indices is rejected rather than silently fan-triangulated
+  // (this kernel's own ON_MeshFace only holds a triangle or quad, so
+  // reading, say, a 5-gon would need to change its meaning without
+  // telling the caller). Returns Result::Failed if the file can't be
+  // opened, a face line references a vertex index that doesn't exist yet
+  // (must appear before any face referencing it, same requirement any
+  // valid .obj already satisfies), or a face has more than 4 or fewer
+  // than 3 indices - `out_mesh` is left unspecified in that case, not
+  // partially filled and silently trusted.
+  static Result LoadObj(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 
