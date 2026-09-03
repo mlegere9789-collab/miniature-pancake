@@ -18,6 +18,15 @@
         <converters:BoolToVisibilityConverter x:Key="BoolToVisibility" />
     </Window.Resources>
 
+    <!-- The live progress overlay on the taskbar icon itself — the same signal a real
+         file copy or download shows — so a conversion running in the background is
+         visible without switching back to the window. Driven by JobQueueViewModel,
+         which already recalculates this on every job add/status/progress change. -->
+    <Window.TaskbarItemInfo>
+        <TaskbarItemInfo ProgressState="{Binding Queue.TaskbarProgressState}"
+                         ProgressValue="{Binding Queue.TaskbarProgressValue}" />
+    </Window.TaskbarItemInfo>
+
     <Grid>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="232" />

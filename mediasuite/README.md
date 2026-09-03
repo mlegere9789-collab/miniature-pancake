@@ -1,5 +1,7 @@
 # MediaSuite
 
+[![MediaSuite CI](https://github.com/mlegere9789-collab/miniature-pancake/actions/workflows/mediasuite-ci.yml/badge.svg?branch=main)](https://github.com/mlegere9789-collab/miniature-pancake/actions/workflows/mediasuite-ci.yml)
+
 A local, offline Windows 11 media converter, compressor and toolbox — the FreeConvert
 Convert / Compress / Tools feature set running entirely on your own machine, plus an AI
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
@@ -179,6 +181,18 @@ Convert.
   elevation prompt, Start Menu shortcut, optional desktop shortcut, a proper uninstaller
   that never touches the tools folder or user settings, self-contained so a fresh
   Windows 11 machine does not also need the .NET runtime installed separately
+- **Explorer integration** — the installer registers MediaSuite as an "Open with" choice
+  in Explorer for every extension in the format catalogue, without ever overwriting a
+  file's actual default handler (a JPG still opens in Photos by default; MediaSuite is
+  only ever offered as a choice). Opening a file this way, or dragging one onto the exe
+  or its shortcut, launches straight into the Convert page with that file already staged
+  instead of an empty shell you then have to feed manually. The extension list is kept in
+  sync with the format catalogue by a real test (`InstallerFileAssociationTests`) that
+  reads the actual `.iss` file off disk and fails the moment they drift apart
+- **Real GitHub release** — every push to `main` publishes the CI-built installer to this
+  repo's Releases page, gated so a PR build never does it. Before this, the only way to
+  get the installer was a 90-day CI artifact behind a GitHub login, which quietly broke
+  the promise the README and the in-app update checker both already made
 - **Self-contained tool bundling** — `installer/fetch-tools.ps1` fetches all 14
   third-party tools during the CI build and packages them straight into the installer,
   so a fresh install needs zero manual downloads; a plain zip/7z download where one
@@ -266,6 +280,11 @@ end to end rather than only compile-check: `.github/workflows/mediasuite-ci.yml`
 installing Inno Setup via Chocolatey, and uploads the resulting `.exe` as a build
 artifact. A green run there means a real installer really was produced, not just that
 the C# behind it compiles.
+
+On every push to `main`, a third `release` job takes that same installer and publishes
+it to this repo's Releases page — the actual download link for anyone who isn't building
+from source, and the same `releases/latest` endpoint the in-app update checker (see
+[What is done](#what-is-done)) already polls.
 
 ## Build order
 

@@ -95,3 +95,34 @@ jobs:
           name: MediaSuite-installer
           path: mediasuite/dist/*.exe
           if-no-files-found: error
+
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: installer
+    # Only ever from a real push to main, never a pull request build — a PR from this
+    # workflow's own branch must not publish a release before the change is even merged.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MediaSuite-installer
+          path: dist
+
+      - name: Publish GitHub release
+        # Without this, "Build installer" only leaves the exe as a 90-day CI artifact
+        # that needs a GitHub login to even find — not the "ready to go" download page
+        # the README and the in-app update checker both already promise. Re-running this
+        # on the same tag updates that release in place rather than erroring.
+        # Keep the tag in step with <Version> in ../mediasuite/Directory.Build.props and
+        # MyAppVersion in mediasuite/installer/MediaSuite.iss — there is no automated
+        # link between the three for a project this size.
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: MediaSuite v1.0.0
+          files: dist/*.exe

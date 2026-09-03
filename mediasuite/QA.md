@@ -148,6 +148,45 @@ that is easy to mistake for a bug — check those first.
   scope — it should not be able to browse your entire Drive, only what it created plus
   what you explicitly picked through its own folder picker.
 
+## Icon, branding and taskbar
+
+Everything in this section is exactly the kind of thing nothing in this sandbox could
+ever check — it's either purely visual or depends on the real Windows taskbar/shell,
+neither of which CI or a fake process runner can see.
+
+- [ ] Confirm `MediaSuite.exe` shows the real icon (a white two-arrow exchange glyph on
+  an indigo-to-cyan gradient), not a generic default, in: the taskbar while running, the
+  title bar top-left corner, the Start Menu entry, the desktop shortcut (if created), and
+  Explorer's own icon for the exe file itself.
+- [ ] Run `installer\build.ps1` (or grab the CI-built installer) and confirm
+  `MediaSuiteSetup-1.0.0.exe` itself shows the same icon before you even run it, and that
+  the wizard's own pages (welcome, every options page, finished) show the branded panel
+  and small badge instead of Inno Setup's stock blue/white artwork.
+- [ ] Open Settings and confirm the About card at the bottom shows "MediaSuite v1.0.0"
+  and that "View on GitHub" actually opens the real project repo in your browser.
+- [ ] Start a real conversion job (anything slow enough to watch — a video convert or an
+  upscale, not an instant remux) and confirm the taskbar icon itself shows a progress
+  overlay while it runs, not just the in-window progress bar. Pause the job and confirm
+  the taskbar icon switches to a paused-looking state rather than looking stalled. Run
+  two jobs at once and confirm the taskbar progress reflects roughly their average, not
+  just one of them. Let every job finish and confirm the taskbar progress overlay clears
+  back to nothing rather than getting stuck at 100%.
+- [ ] Right-click `MediaSuite.exe` → Properties → Details tab, and confirm the file
+  description, product name, company and version all show something real rather than
+  blank or a generic ".NET application" default.
+- [ ] Right-click a supported file (a JPG or MP4 is enough) → Open with → confirm
+  MediaSuite is offered as a choice, and that picking it launches (or reuses, if already
+  running a second instance) the app with the file already staged on the Convert page.
+  Confirm the file's actual default app is unchanged — MediaSuite must only ever be
+  offered, never take over the double-click action. Drag a file directly onto
+  `MediaSuite.exe` or its Start Menu/desktop shortcut and confirm the same thing happens.
+  Try an unsupported extension (e.g. `.xlsx`) the same way and confirm MediaSuite does
+  not launch at all rather than opening empty.
+- [ ] Close the app, then re-launch it with no file argument at all (Start Menu, desktop
+  shortcut, or `MediaSuite.exe` with no arguments) and confirm it opens to the Convert
+  page with nothing pre-staged — the file-preload path must never leak into a normal
+  launch.
+
 ## Known, deliberate gaps — do not report these as bugs
 
 - **AI upscaler**: no "face enhance" model (needs GFPGAN, not bundled).
