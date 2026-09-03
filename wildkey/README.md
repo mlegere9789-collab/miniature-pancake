@@ -35,6 +35,8 @@ This is a Phase 0/early-Phase-1 build, not a finished parity build, but every sc
 - **Curator tools** (`/curator`, Part F): any user can flag an observation with a required reason; the first account on a fresh database bootstraps as curator (documented demo-only mechanism — no invite flow exists yet) and can resolve/dismiss flags, but only with a written reason, logged and auditable.
 - **i18n** (`src/lib/locale-context.tsx`): a real, persisted locale switcher and dictionary-based `t()` function, proven end-to-end (including in an actual browser) against three hand-written languages — English, Spanish, French — covering nav/home/camera. Not the 20+ languages Part C.1 asks for; see below for why.
 - **Map data layer** (`GET /api/observations/near`): a real bounding-box query over observation coordinates, with sensitive species snapped to a coarse ~11km grid cell instead of exact coordinates for non-owner viewers. No rendered basemap consumes this yet — see below.
+- **Automated test suite** (`tests/api.test.mjs`): 17 tests / 12 suites, Node's built-in test runner, against a real server and real database — see [Testing](#testing) below.
+- **Accessibility pass** (Part H gate): every color pair actually measured against WCAG AA (two real failures found and fixed — a badge background that only hit 3.92:1 with white text, and text-muted-on-border badges at 4.39:1 — not just eyeballed), every placeholder-only text input given a real `aria-label`, and `<html lang>` now tracks the active i18n locale instead of staying hardcoded to `"en"`. Not a full audit (no screen-reader walkthrough performed), but the concrete, checkable parts of the Part H gate are done.
 
 ## What's deliberately not built yet
 

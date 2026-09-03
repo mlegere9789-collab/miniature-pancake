@@ -71,6 +71,7 @@ export default function JournalPage() {
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
+              aria-label="Post title"
               placeholder="Title"
               className="rounded border px-3 py-2 text-sm font-semibold"
               style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
@@ -78,6 +79,7 @@ export default function JournalPage() {
             <textarea
               value={body}
               onChange={(e) => setBody(e.target.value)}
+              aria-label="Post body"
               placeholder="What did you see?"
               rows={4}
               className="rounded border px-3 py-2 text-sm"

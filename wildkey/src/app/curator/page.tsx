@@ -103,6 +103,7 @@ export default function CuratorPage() {
                 <input
                   value={reasons[flag.id] ?? ""}
                   onChange={(e) => setReasons((prev) => ({ ...prev, [flag.id]: e.target.value }))}
+                  aria-label={`Reason for resolving or dismissing this flag on ${flag.observationCommonName}`}
                   placeholder="Reason for resolving or dismissing (required)"
                   className="rounded border px-3 py-2 text-sm"
                   style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}

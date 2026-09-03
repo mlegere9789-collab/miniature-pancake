@@ -104,6 +104,7 @@ export default function ProjectsPage() {
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
+              aria-label="Project title"
               placeholder="Project title"
               className="rounded border px-3 py-2 text-sm font-semibold"
               style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
@@ -111,6 +112,7 @@ export default function ProjectsPage() {
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              aria-label="Project description"
               placeholder="What's this project about?"
               rows={2}
               className="rounded border px-3 py-2 text-sm"
@@ -183,7 +185,7 @@ export default function ProjectsPage() {
                   <h2 className="font-display text-lg font-semibold">{project.title}</h2>
                   <span
                     className="shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold capitalize"
-                    style={{ background: "var(--color-border)", color: "var(--color-text-muted)" }}
+                    style={{ background: "var(--color-border)", color: "var(--color-text)" }}
                   >
                     {project.type}
                   </span>

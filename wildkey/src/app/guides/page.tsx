@@ -83,6 +83,7 @@ export default function GuidesPage() {
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
+              aria-label="Guide title"
               placeholder="Guide title, e.g. Backyard Pollinators"
               className="rounded border px-3 py-2 text-sm font-semibold"
               style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
@@ -90,6 +91,7 @@ export default function GuidesPage() {
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              aria-label="Guide description"
               placeholder="What's this guide for?"
               rows={2}
               className="rounded border px-3 py-2 text-sm"

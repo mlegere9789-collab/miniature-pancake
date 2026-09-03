@@ -86,12 +86,14 @@ export default function JournalPostPage({
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
+            aria-label="Post title"
             className="rounded border px-3 py-2 text-lg font-semibold"
             style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}
           />
           <textarea
             value={body}
             onChange={(e) => setBody(e.target.value)}
+            aria-label="Post body"
             rows={8}
             className="rounded border px-3 py-2 text-sm"
             style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}

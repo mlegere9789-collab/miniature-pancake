@@ -143,7 +143,7 @@ export default function ObservationDetailPage({
           {!observation.isWild && (
             <span
               className="mt-2 inline-block rounded-full px-2.5 py-1 text-xs font-semibold"
-              style={{ background: "var(--color-border)", color: "var(--color-text-muted)" }}
+              style={{ background: "var(--color-border)", color: "var(--color-text)" }}
             >
               Captive / cultivated
             </span>
@@ -210,6 +210,7 @@ export default function ObservationDetailPage({
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
+          aria-label="Add a comment"
           placeholder="Add a comment…"
           className="flex-1 rounded border px-3 py-2 text-sm"
           style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}
@@ -234,6 +235,7 @@ export default function ObservationDetailPage({
             <input
               value={flagReason}
               onChange={(e) => setFlagReason(e.target.value)}
+              aria-label="Reason for flagging this observation"
               placeholder="Why should a curator look at this? (required)"
               className="rounded border px-3 py-2 text-sm"
               style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}

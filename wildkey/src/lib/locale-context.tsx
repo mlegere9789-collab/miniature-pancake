@@ -36,6 +36,13 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Screen readers pick pronunciation/voice from the html lang attribute —
+  // it has to track the actually-displayed language, not stay hardcoded
+  // to the server-rendered "en" from the root layout.
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+
   const setLocale = (next: Locale) => {
     setLocaleState(next);
     window.localStorage.setItem(STORAGE_KEY, next);

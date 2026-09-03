@@ -87,6 +87,7 @@ export default function DataSettingsPage() {
             <input
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
+              aria-label="Type DELETE to confirm account deletion"
               placeholder="DELETE"
               className="w-32 rounded border px-3 py-2 text-sm"
               style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
