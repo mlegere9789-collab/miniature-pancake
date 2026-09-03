@@ -1,11 +1,21 @@
 # Vitals — The Whole-Garden Health Score Dashboard
 
-Phase 1 (MVP) scaffold: manual plant entry, check-in photo capture with a
-ghost-overlay alignment guide, a stubbed rules-based scorer (swappable later
-for the shared Plant ID & Diagnostic Engine), score history, and a single
-Garden Score home screen. Phase 2 is done: weather-driven environmental-fit
+Phase 1 (MVP) is done: manual plant entry/editing/archiving, check-in photo
+capture with a ghost-overlay alignment guide, a stubbed rules-based scorer
+(swappable later for the shared Plant ID & Diagnostic Engine) that also
+generates actionable treatment plans, score history, offline check-in sync,
+local reminders, a photo timeline slider, a yard map, and a single Garden
+Score home screen. Phase 2 is done: weather-driven environmental-fit
 scoring, a frost-risk dashboard banner, and a weekly Garden Report Card with
-sharing. Phase 3 has started with seasonal score recalibration.
+sharing. Phase 3 is done: seasonal score recalibration (hemisphere- and
+species-aware), twin-plant comparison, a neighborhood leaderboard, a
+lightweight score trend forecast, and regional outbreak alerts. See "Not yet
+built" below for the Phase 4 scope that remains.
+
+Everything above has been validated end-to-end against a real local
+Postgres (not just unit tests), CI now runs on every push (typecheck + lint
++ test for the backend, typecheck + lint for mobile), and the numerous real
+bugs found along the way are documented under "Bug fixes" below.
 
 This app lives alongside the unrelated Whisper codebase at the repo root —
 it is a separate product and does not depend on anything in `modules/` or
@@ -47,6 +57,7 @@ vitals/
         │   ├── ReportCardScreen.tsx      Weekly Garden Report Card + native share sheet
         │   ├── LeaderboardScreen.tsx     Opt-in toggle + neighborhood leaderboard rank
         │   ├── YardMapScreen.tsx         Plants pinned onto a yard photo (spec §4.1)
+        │   ├── ArchivedPlantsScreen.tsx  Archived plants + restore (spec §4.1)
         │   └── PhotoTimelineScreen.tsx   Before/after check-in photo slider (spec §4.4)
         ├── components/       Sparkline, ScoreDeltaBadge, GhostOverlay, BeforeAfterSlider
         ├── services/         api.ts (typed backend client), checkInQueue.ts (offline queue),
@@ -203,7 +214,7 @@ cd vitals/backend
 npm install
 docker compose up -d    # starts a local Postgres matching .env.example's DATABASE_URL
 cp .env.example .env    # already points at the docker-compose Postgres; edit if using your own
-npx prisma migrate dev --name init
+npx prisma migrate dev  # applies the committed migration (prisma/migrations/)
 npx prisma db seed      # creates the demo garden the mobile app points at
 npm run dev
 ```
@@ -269,11 +280,12 @@ committed, since it had never existed in the repo before.
 - **No CI configured for `vitals/` at all.** Every commit to this PR had
   zero automated verification on GitHub — only local `tsc`/`vitest` runs.
   Added `.github/workflows/vitals-ci.yml` (mirroring the existing
-  `mediasuite-ci.yml` pattern): backend typecheck + `vitest run`, mobile
-  typecheck, path-scoped to `vitals/**` so it doesn't run on unrelated
-  changes. Verified locally end-to-end with the exact commands the
-  workflow runs (`npm ci`, `prisma generate`, `npm run typecheck`,
-  `npm test`) in both packages.
+  `mediasuite-ci.yml` pattern): backend typecheck + lint + `vitest run`,
+  mobile typecheck + lint, path-scoped to `vitals/**` so it doesn't run on
+  unrelated changes. Verified locally end-to-end with the exact commands
+  the workflow runs (`npm ci`, `prisma generate`, `npm run typecheck`,
+  `npm run lint`, `npm test`) in both packages, and confirmed genuinely
+  green on GitHub itself after pushing.
 - **No easy way to get a local Postgres running.** `.env.example`'s
   `DATABASE_URL` assumed a Postgres instance the developer had to stand up
   themselves, with no guidance. Added `backend/docker-compose.yml` (matching
