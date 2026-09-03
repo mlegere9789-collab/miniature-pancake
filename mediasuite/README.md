@@ -33,13 +33,17 @@ mediasuite/
 │   ├── MediaSuite.Core.Tests/              — xUnit tests for everything in Core
 │   └── MediaSuite.App.Tests/               — xUnit tests for App-layer logic that does not
 │                                              need a real Window: SingleInstanceGuard's
-│                                              real mutex/pipe IPC, and JobRowViewModel's
+│                                              real mutex/pipe IPC, JobRowViewModel's
 │                                              computed properties (StatusText, Copy
 │                                              details visibility, live updates) driven
-│                                              through a real QueuedJob. Anything that
-│                                              does need a real Window still has no
-│                                              automated coverage, only Build compiling it
-│                                              and QA.md
+│                                              through a real QueuedJob, and
+│                                              JobQueueViewModel's status strip and
+│                                              taskbar-progress state driven through a real
+│                                              JobQueueManager (pause/resume, cancel-one,
+│                                              cancel-all, clear-finished, running/progress
+│                                              state). Anything that does need a real Window
+│                                              still has no automated coverage, only Build
+│                                              compiling it and QA.md
 └── tools/                                  — bundled third-party binaries (not in git)
 ```
 
