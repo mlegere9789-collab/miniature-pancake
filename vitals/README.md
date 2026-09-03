@@ -216,6 +216,21 @@ cp .env.example .env   # set EXPO_PUBLIC_VITALS_DEMO_GARDEN_ID from the backend 
 npx expo start
 ```
 
+## End-to-end validation
+
+Every fix and feature above had only ever been tested against a fake/
+unreachable database or with `vitest`'s pure-function unit tests. This
+session also stood up a real local Postgres, ran the actual migration and
+seed flow, and exercised the live API end-to-end: create a plant (including
+`importanceWeight: 0`, verifying the `computeGardenScore` `NaN` fix for
+real), upload a photo, submit check-ins until one produced diagnostic flags,
+confirmed the nested `TreatmentPlan` creation and the Garden Score roll-up
+math against real Postgres, marked a treatment complete, archived and
+restored a plant, set a yard map photo and a pin, searched species, and
+fetched hemisphere-aware dormancy defaults — all matched expectations. The
+generated migration (`prisma/migrations/20260903084017_init/`) is now
+committed, since it had never existed in the repo before.
+
 ## Bug fixes
 
 - **No CI configured for `vitals/` at all.** Every commit to this PR had
