@@ -8,6 +8,8 @@
 
 namespace dino8::kernel {
 
+class Mesh;
+
 // Wraps ON_NurbsSurface. Same rationale as NurbsCurve: expose raw()
 // rather than mirror the whole OpenNURBS surface API.
 class NurbsSurface {
@@ -26,6 +28,18 @@ class NurbsSurface {
   Result ElevateDegree(int direction, int new_degree);
 
   Point3d PointAt(double u, double v) const;
+
+  // Tessellates the surface into a triangle mesh by evaluating a
+  // u_divisions x v_divisions grid of points across its parameter domain
+  // and triangulating each grid cell. This is a from-scratch tessellator,
+  // not OpenNURBS': ON_Brep::CreateMesh / ON_Surface::CreateMesh are
+  // declared in OpenNURBS' public headers but have no implementation in
+  // the public source (verified against v8.34) — they're stubs for
+  // Rhino's closed-source mesher. A real product needs a proper adaptive
+  // mesher (curvature-aware, trim-aware); this grid version only handles
+  // untrimmed surfaces and exists to unblock chunk 2's mesh-boolean work,
+  // not as the final mesher.
+  Mesh TessellateGrid(int u_divisions, int v_divisions) const;
 
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }

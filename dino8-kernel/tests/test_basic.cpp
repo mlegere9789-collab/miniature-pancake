@@ -8,6 +8,7 @@
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/file_io.h"
+#include "dino8/kernel/mesh.h"
 #include "dino8/kernel/surface.h"
 
 namespace {
@@ -94,6 +95,28 @@ void TestFileRoundTrip() {
   std::remove(path.c_str());
 }
 
+void TestBrepTessellation() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  std::vector<Point3d> grid;
+  for (int u = 0; u < 4; ++u) {
+    for (int v = 0; v < 4; ++v) {
+      grid.emplace_back(u, v, 0.0);
+    }
+  }
+  NurbsSurface surf = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+  Brep brep = Brep::FromSurface(surf);
+
+  const auto meshes = brep.Tessellate(/*u_divisions=*/4, /*v_divisions=*/4);
+  Check(meshes.size() == 1, "tessellation produced one mesh per face");
+  Check(!meshes.empty() && meshes.front().VertexCount() == 5 * 5,
+        "tessellated mesh has the expected (divisions+1)^2 vertex count");
+  Check(!meshes.empty() && meshes.front().FaceCount() == 4 * 4 * 2,
+        "tessellated mesh has the expected 2 triangles per grid cell");
+}
+
 }  // namespace
 
 int main() {
@@ -102,6 +125,7 @@ int main() {
   TestCurveDegreeElevation();
   TestSurfaceDegreeElevation();
   TestFileRoundTrip();
+  TestBrepTessellation();
 
   ON::End();
 

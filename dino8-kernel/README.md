@@ -12,8 +12,39 @@ viewport, command engine) builds on.
 - [x] Can construct a NURBS curve and degree-elevate it
 - [x] Can construct a NURBS surface and degree-elevate it
 - [x] Can open and save a `.3dm` file (round-trip)
+- [x] Can tessellate a surface/brep into a triangle mesh (own tessellator —
+      see "Corrected assumptions" below)
 - [ ] Curve/surface edit operations beyond construction (left for the next
       kernel chunk — booleans/SubD depend on this API surface existing first)
+
+## Corrected assumptions (read this before planning chunk 2+)
+
+The original blueprint assumed booleans and meshing could be built by
+"wrapping OpenNURBS." Verified directly against the v8.34 source — not
+assumed — that's wrong on both counts:
+
+- **No boolean operations exist in OpenNURBS at all.** There is no
+  `BooleanUnion`/`BooleanIntersection`/`BooleanDifference` anywhere in the
+  public API, for B-reps or meshes. Rhino's actual boolean engine is
+  closed-source and lives outside OpenNURBS entirely.
+- **`ON_Brep::CreateMesh` and `ON_Surface::CreateMesh` are declared but
+  have no implementation in the public source.** They're stubs for
+  Rhino's closed-source mesher. Calling them links successfully against
+  the header but fails at link time with an undefined reference — this
+  isn't a hidden edge case, it's the very first thing chunk 2 hit.
+
+What this repo does instead, and what a real chunk 2 needs to do:
+
+- `NurbsSurface::TessellateGrid()` / `Brep::Tessellate()` here are a
+  **from-scratch grid tessellator** we own (uniform UV sampling +
+  triangulation), not OpenNURBS'. It only handles untrimmed surfaces and
+  isn't adaptive/curvature-aware — good enough to unblock mesh-boolean
+  work, not a real product's mesher.
+- A real boolean engine (the blueprint's chunk 2) needs either an
+  integrated third-party kernel (e.g. OpenCascade for exact B-rep
+  booleans) or a vetted mesh-boolean library (e.g. Manifold) layered on
+  top of a real adaptive mesher — this is genuinely new engineering, not
+  something "OpenNURBS integration" gets for free. Budget it as such.
 
 ## Layout
 

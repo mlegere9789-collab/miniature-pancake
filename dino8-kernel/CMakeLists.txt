@@ -22,6 +22,7 @@ add_library(dino8_kernel STATIC
   src/curve.cpp
   src/surface.cpp
   src/brep.cpp
+  src/mesh.cpp
   src/file_io.cpp
 )
 
