@@ -41,8 +41,15 @@ mediasuite/
 │                                              taskbar-progress state driven through a real
 │                                              JobQueueManager (pause/resume, cancel-one,
 │                                              cancel-all, clear-finished, running/progress
-│                                              state). Anything that does need a real Window
-│                                              still has no automated coverage, only Build
+│                                              state), and ModulePageViewModel -- the actual
+│                                              Convert/Compress/etc. screen -- driven
+│                                              through the real feature catalogue plus a
+│                                              real JobLauncher/JobQueueManager (which
+│                                              features are ready, staging and starting
+│                                              files, output-format resolution, saved
+│                                              presets, Google Drive folder loading).
+│                                              Anything that does need a real Window still
+│                                              has no automated coverage, only Build
 │                                              compiling it and QA.md
 └── tools/                                  — bundled third-party binaries (not in git)
 ```
