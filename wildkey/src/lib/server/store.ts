@@ -26,6 +26,8 @@ type Session = {
   createdAt: string;
 };
 
+export type QualityGrade = "needs_id" | "research_grade";
+
 export type ServerObservation = {
   id: string;
   userId: string;
@@ -37,6 +39,18 @@ export type ServerObservation = {
   taxonSlug: string;
   syncState: "queued" | "uploading" | "confirmed" | "failed";
 };
+
+export type ObservationWithGrade = ServerObservation & {
+  agreeCount: number;
+  qualityGrade: QualityGrade;
+};
+
+/**
+ * Research-Grade equivalent from Part C.2: 2+ agreeing community IDs.
+ * The observer's own confidence isn't counted as an agreement — quality
+ * grade reflects independent community consensus, not self-attestation.
+ */
+const RESEARCH_GRADE_AGREE_THRESHOLD = 2;
 
 export type ObservationComment = {
   id: string;
@@ -140,10 +154,25 @@ export function getUserById(id: string): User | null {
   return readDb().users.find((u) => u.id === id) ?? null;
 }
 
-export function listObservationsForUser(userId: string): ServerObservation[] {
-  return readDb()
-    .observations.filter((o) => o.userId === userId)
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+function withQualityGrade(observation: ServerObservation, db: DbShape): ObservationWithGrade {
+  // Independent confirmations only — the observer's own agree on their own
+  // observation doesn't count toward Research Grade.
+  const agreeCount = db.comments.filter(
+    (c) => c.observationId === observation.id && c.kind === "agree" && c.userId !== observation.userId,
+  ).length;
+  return {
+    ...observation,
+    agreeCount,
+    qualityGrade: agreeCount >= RESEARCH_GRADE_AGREE_THRESHOLD ? "research_grade" : "needs_id",
+  };
+}
+
+export function listObservationsForUser(userId: string): ObservationWithGrade[] {
+  const db = readDb();
+  return db.observations
+    .filter((o) => o.userId === userId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((o) => withQualityGrade(o, db));
 }
 
 export function createObservationForUser(
@@ -170,8 +199,10 @@ export function deleteObservationForUser(userId: string, id: string) {
   writeDb(db);
 }
 
-export function getObservationById(id: string): ServerObservation | null {
-  return readDb().observations.find((o) => o.id === id) ?? null;
+export function getObservationById(id: string): ObservationWithGrade | null {
+  const db = readDb();
+  const observation = db.observations.find((o) => o.id === id);
+  return observation ? withQualityGrade(observation, db) : null;
 }
 
 export function listCommentsForObservation(observationId: string): ObservationComment[] {

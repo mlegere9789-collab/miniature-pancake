@@ -7,10 +7,11 @@ import {
   fetchServerObservation,
   postObservationComment,
   type ObservationComment,
-  type ServerObservation,
+  type ObservationWithGrade,
 } from "@/lib/api-observations";
 import { useAuth } from "@/lib/auth-context";
 import type { CurrentUser } from "@/lib/auth-context";
+import { QualityGradeBadge } from "@/components/quality-grade-badge";
 
 export default function ObservationDetailPage({
   params,
@@ -20,7 +21,7 @@ export default function ObservationDetailPage({
   const { id } = use(params);
   const { user: currentUser, loading: authLoading } = useAuth();
 
-  const [observation, setObservation] = useState<ServerObservation | null>(null);
+  const [observation, setObservation] = useState<ObservationWithGrade | null>(null);
   const [author, setAuthor] = useState<CurrentUser | null>(null);
   const [comments, setComments] = useState<ObservationComment[]>([]);
   const [notFoundOrDenied, setNotFoundOrDenied] = useState(false);
@@ -44,7 +45,6 @@ export default function ObservationDetailPage({
     load();
   }, [authLoading, load]);
 
-  const agreeCount = comments.filter((c) => c.kind === "agree").length;
   const hasAgreed = comments.some((c) => c.kind === "agree" && c.userId === currentUser?.id);
 
   const submitComment = async (kind: "comment" | "agree") => {
@@ -55,6 +55,12 @@ export default function ObservationDetailPage({
     if (comment) {
       setComments((prev) => [...prev, comment]);
       if (kind === "comment") setDraft("");
+      // Quality grade is computed server-side from agree counts — refetch
+      // the observation so the badge reflects the new consensus.
+      if (kind === "agree") {
+        const result = await fetchServerObservation(id);
+        if (result) setObservation(result.observation);
+      }
     }
   };
 
@@ -101,9 +107,12 @@ export default function ObservationDetailPage({
           className="aspect-[4/3] w-full object-cover"
         />
         <div className="p-4">
-          <Link href={`/species/${observation.taxonSlug}`} className="hover:underline">
-            <h1 className="font-display text-2xl font-semibold">{observation.commonName}</h1>
-          </Link>
+          <div className="flex items-start justify-between gap-2">
+            <Link href={`/species/${observation.taxonSlug}`} className="hover:underline">
+              <h1 className="font-display text-2xl font-semibold">{observation.commonName}</h1>
+            </Link>
+            <QualityGradeBadge grade={observation.qualityGrade} />
+          </div>
           <p className="text-sm italic" style={{ color: "var(--color-text-muted)" }}>
             {observation.scientificName}
           </p>
@@ -116,7 +125,8 @@ export default function ObservationDetailPage({
 
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold uppercase tracking-wide" style={{ color: "var(--color-text-muted)" }}>
-          Community ID ({agreeCount} agree)
+          Community ID ({observation.agreeCount} independent agree
+          {observation.agreeCount === 1 ? "" : "s"})
         </h2>
         <button
           onClick={() => submitComment("agree")}

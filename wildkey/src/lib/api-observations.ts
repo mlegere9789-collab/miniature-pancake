@@ -1,9 +1,9 @@
-import type { ObservationComment, ServerObservation } from "@/lib/server/store";
+import type { ObservationComment, ObservationWithGrade, ServerObservation } from "@/lib/server/store";
 import type { CurrentUser } from "@/lib/auth-context";
 
-export type { ServerObservation, ObservationComment };
+export type { ServerObservation, ObservationComment, ObservationWithGrade };
 
-export async function fetchServerObservations(): Promise<ServerObservation[]> {
+export async function fetchServerObservations(): Promise<ObservationWithGrade[]> {
   const res = await fetch("/api/observations");
   if (!res.ok) return [];
   const data = await res.json();
@@ -34,7 +34,7 @@ export async function deleteServerObservation(id: string): Promise<boolean> {
 
 export async function fetchServerObservation(
   id: string,
-): Promise<{ observation: ServerObservation; author: CurrentUser | null } | null> {
+): Promise<{ observation: ObservationWithGrade; author: CurrentUser | null } | null> {
   const res = await fetch(`/api/observations/${id}`);
   if (!res.ok) return null;
   return res.json();

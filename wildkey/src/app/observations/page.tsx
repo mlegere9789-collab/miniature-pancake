@@ -14,6 +14,8 @@ import {
 } from "@/lib/api-observations";
 import { useMode } from "@/lib/mode-context";
 import { useAuth } from "@/lib/auth-context";
+import { QualityGradeBadge } from "@/components/quality-grade-badge";
+import type { QualityGrade } from "@/lib/server/store";
 
 const SYNC_LABEL: Record<SyncState, string> = {
   queued: "Queued",
@@ -37,6 +39,7 @@ type DisplayObservation = {
   scientificName: string;
   taxonSlug: string;
   syncState: SyncState;
+  qualityGrade?: QualityGrade;
 };
 
 export default function ObservationsPage() {
@@ -129,6 +132,11 @@ export default function ObservationsPage() {
                 <p className="truncate text-xs italic" style={{ color: "var(--color-text-muted)" }}>
                   {o.scientificName}
                 </p>
+                {o.qualityGrade && (
+                  <div className="mt-1">
+                    <QualityGradeBadge grade={o.qualityGrade} />
+                  </div>
+                )}
                 <p className="mt-1 text-xs" style={{ color: "var(--color-text-muted)" }}>
                   {new Date(o.createdAt).toLocaleString()}
                 </p>
