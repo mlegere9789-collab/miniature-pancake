@@ -1,12 +1,18 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/server/session";
-import { listCommentsByUser, listObservationsForUser, toPublicUser } from "@/lib/server/store";
+import {
+  listCommentsByUser,
+  listExtraPhotosForObservation,
+  listObservationsForUser,
+  toPublicUser,
+} from "@/lib/server/store";
 
 /**
  * Part D.1: one-tap full data export. Everything this account owns —
  * profile, observations, and authored comments — as a single JSON file
  * the user can keep, migrate with, or audit. No partial exports: if this
- * account has data anywhere in the store, it's in here.
+ * account has data anywhere in the store, it's in here — including every
+ * extra photo beyond an observation's cover, not just the cover itself.
  */
 export async function GET() {
   const user = await getSessionUser();
@@ -15,7 +21,10 @@ export async function GET() {
   const payload = {
     exportedAt: new Date().toISOString(),
     account: toPublicUser(user),
-    observations: listObservationsForUser(user.id),
+    observations: listObservationsForUser(user.id).map((observation) => ({
+      ...observation,
+      extraPhotos: listExtraPhotosForObservation(observation.id),
+    })),
     comments: listCommentsByUser(user.id),
   };
 

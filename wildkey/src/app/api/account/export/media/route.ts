@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZipArchive } from "archiver";
 import { getSessionUser } from "@/lib/server/session";
-import { listObservationsForUser } from "@/lib/server/store";
+import { listExtraPhotosForObservation, listObservationsForUser } from "@/lib/server/store";
 
 const EXTENSION_BY_MIME: Record<string, string> = {
   "image/png": "png",
@@ -21,7 +21,8 @@ function decodeDataUrl(dataUrl: string): { buffer: Buffer; extension: string } |
  * Part D.1: a real media zip, not the JSON export's inline base64 data
  * URLs. Photos currently only exist as data URLs in the store (see
  * README) — this endpoint is the same data, decoded into real image
- * files inside a zip, one per observation.
+ * files inside a zip. Every photo on an observation is included, not
+ * just the cover — the cover gets no suffix, extras are numbered.
  */
 export async function GET() {
   const user = await getSessionUser();
@@ -38,11 +39,10 @@ export async function GET() {
   });
 
   const usedNames = new Set<string>();
-  for (const observation of observations) {
-    const decoded = decodeDataUrl(observation.photoDataUrl);
-    if (!decoded) continue;
-    const safeName = observation.commonName.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
-    let filename = `${observation.createdAt.slice(0, 10)}-${safeName}-${observation.id.slice(0, 8)}.${decoded.extension}`;
+  const appendPhoto = (dataUrl: string, baseName: string) => {
+    const decoded = decodeDataUrl(dataUrl);
+    if (!decoded) return;
+    let filename = `${baseName}.${decoded.extension}`;
     // Defensive: names are already unique via the id suffix, but guard
     // against any future change to that scheme silently colliding.
     while (usedNames.has(filename)) {
@@ -50,6 +50,15 @@ export async function GET() {
     }
     usedNames.add(filename);
     archive.append(decoded.buffer, { name: filename });
+  };
+
+  for (const observation of observations) {
+    const safeName = observation.commonName.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+    const baseName = `${observation.createdAt.slice(0, 10)}-${safeName}-${observation.id.slice(0, 8)}`;
+    appendPhoto(observation.photoDataUrl, baseName);
+    listExtraPhotosForObservation(observation.id).forEach((photo, i) => {
+      appendPhoto(photo.photoDataUrl, `${baseName}-${i + 2}`);
+    });
   }
 
   archive.finalize();

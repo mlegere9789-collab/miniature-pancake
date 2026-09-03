@@ -5,6 +5,7 @@ import {
   listObservationsForUser,
   OBSERVATION_LICENSES,
   DEFAULT_OBSERVATION_LICENSE,
+  MAX_PHOTOS_PER_OBSERVATION,
   type ObservationLicense,
 } from "@/lib/server/store";
 import { requiredString, optionalString, boundedNumber } from "@/lib/server/validate";
@@ -50,18 +51,38 @@ export async function POST(request: Request) {
   const lng = boundedNumber(body?.lng, -180, 180);
   const license = parseLicense(body?.license);
 
-  const observation = createObservationForUser(user.id, {
-    photoDataUrl,
-    commonName,
-    scientificName,
-    confidence,
-    taxonSlug,
-    isWild,
-    locationName,
-    notes,
-    lat,
-    lng,
-    license,
-  });
+  const rawExtraPhotos = Array.isArray(body?.extraPhotoDataUrls) ? body.extraPhotoDataUrls : [];
+  if (rawExtraPhotos.length > MAX_PHOTOS_PER_OBSERVATION - 1) {
+    return NextResponse.json(
+      { error: `An observation can have at most ${MAX_PHOTOS_PER_OBSERVATION} photos.` },
+      { status: 400 },
+    );
+  }
+  const extraPhotoDataUrls: string[] = [];
+  for (const raw of rawExtraPhotos) {
+    const url = requiredString(raw, MAX_PHOTO_DATA_URL_LENGTH);
+    if (url === null) {
+      return NextResponse.json({ error: "One of the additional photos is invalid." }, { status: 400 });
+    }
+    extraPhotoDataUrls.push(url);
+  }
+
+  const observation = createObservationForUser(
+    user.id,
+    {
+      photoDataUrl,
+      commonName,
+      scientificName,
+      confidence,
+      taxonSlug,
+      isWild,
+      locationName,
+      notes,
+      lat,
+      lng,
+      license,
+    },
+    extraPhotoDataUrls,
+  );
   return NextResponse.json({ observation }, { status: 201 });
 }

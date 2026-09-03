@@ -6,8 +6,10 @@ import {
   DEFAULT_OBSERVATION_LICENSE,
   type ObservationLicense,
 } from "@/lib/observation-license";
+import { MAX_PHOTOS_PER_OBSERVATION } from "@/lib/observation-limits";
 
 export { OBSERVATION_LICENSES, DEFAULT_OBSERVATION_LICENSE, type ObservationLicense };
+export { MAX_PHOTOS_PER_OBSERVATION };
 
 /**
  * Real SQLite-backed persistence (see src/lib/server/db.ts for the schema
@@ -77,6 +79,13 @@ export type ServerObservation = {
   lat: number | null;
   lng: number | null;
   license: ObservationLicense;
+};
+
+/** An observation's photo_data_url column is always its cover photo; these are the rest, in display order. */
+export type ObservationPhoto = {
+  id: string;
+  photoDataUrl: string;
+  position: number;
 };
 
 type ObservationRow = {
@@ -487,6 +496,7 @@ export function listObservationsNeedingId(
 export function createObservationForUser(
   userId: string,
   input: Omit<ServerObservation, "id" | "userId" | "createdAt" | "syncState">,
+  extraPhotoDataUrls: string[] = [],
 ): ServerObservation {
   const observation: ServerObservation = {
     ...input,
@@ -495,31 +505,134 @@ export function createObservationForUser(
     createdAt: new Date().toISOString(),
     syncState: "confirmed",
   };
-  db.prepare(
-    `INSERT INTO observations
-       (id, user_id, created_at, photo_data_url, common_name, scientific_name,
-        confidence, taxon_slug, sync_state, is_wild, location_name, notes, lat, lng, license)
-     VALUES
-       (@id, @userId, @createdAt, @photoDataUrl, @commonName, @scientificName,
-        @confidence, @taxonSlug, @syncState, @isWild, @locationName, @notes, @lat, @lng, @license)`,
-  ).run({
-    id: observation.id,
-    userId: observation.userId,
-    createdAt: observation.createdAt,
-    photoDataUrl: observation.photoDataUrl,
-    commonName: observation.commonName,
-    scientificName: observation.scientificName,
-    confidence: observation.confidence,
-    taxonSlug: observation.taxonSlug,
-    syncState: observation.syncState,
-    isWild: observation.isWild ? 1 : 0,
-    locationName: observation.locationName,
-    notes: observation.notes,
-    lat: observation.lat,
-    lng: observation.lng,
-    license: observation.license,
+  const transaction = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO observations
+         (id, user_id, created_at, photo_data_url, common_name, scientific_name,
+          confidence, taxon_slug, sync_state, is_wild, location_name, notes, lat, lng, license)
+       VALUES
+         (@id, @userId, @createdAt, @photoDataUrl, @commonName, @scientificName,
+          @confidence, @taxonSlug, @syncState, @isWild, @locationName, @notes, @lat, @lng, @license)`,
+    ).run({
+      id: observation.id,
+      userId: observation.userId,
+      createdAt: observation.createdAt,
+      photoDataUrl: observation.photoDataUrl,
+      commonName: observation.commonName,
+      scientificName: observation.scientificName,
+      confidence: observation.confidence,
+      taxonSlug: observation.taxonSlug,
+      syncState: observation.syncState,
+      isWild: observation.isWild ? 1 : 0,
+      locationName: observation.locationName,
+      notes: observation.notes,
+      lat: observation.lat,
+      lng: observation.lng,
+      license: observation.license,
+    });
+    insertExtraPhotos(observation.id, extraPhotoDataUrls.slice(0, MAX_PHOTOS_PER_OBSERVATION - 1));
   });
+  transaction();
   return observation;
+}
+
+function insertExtraPhotos(observationId: string, photoDataUrls: string[]) {
+  if (photoDataUrls.length === 0) return;
+  const nextPosition = db
+    .prepare<[string], { maxPosition: number | null }>(
+      "SELECT MAX(position) as maxPosition FROM observation_photos WHERE observation_id = ?",
+    )
+    .get(observationId)!.maxPosition;
+  const insert = db.prepare(
+    `INSERT INTO observation_photos (id, observation_id, photo_data_url, position, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  );
+  const now = new Date().toISOString();
+  photoDataUrls.forEach((url, i) => {
+    insert.run(randomUUID(), observationId, url, (nextPosition ?? -1) + 1 + i, now);
+  });
+}
+
+export function listExtraPhotosForObservation(observationId: string): ObservationPhoto[] {
+  return db
+    .prepare<[string], { id: string; photo_data_url: string; position: number }>(
+      "SELECT id, photo_data_url, position FROM observation_photos WHERE observation_id = ? ORDER BY position ASC",
+    )
+    .all(observationId)
+    .map((r) => ({ id: r.id, photoDataUrl: r.photo_data_url, position: r.position }));
+}
+
+/**
+ * Adds photos to an already-saved observation, respecting the same
+ * MAX_PHOTOS_PER_OBSERVATION cap upload does. Owner-only.
+ */
+export function addObservationPhotos(
+  userId: string,
+  observationId: string,
+  photoDataUrls: string[],
+): { ok: true } | { ok: false; reason: "not_found" | "too_many" } {
+  const owns = db
+    .prepare<[string, string], { count: number }>(
+      "SELECT COUNT(*) as count FROM observations WHERE id = ? AND user_id = ?",
+    )
+    .get(observationId, userId)!.count;
+  if (!owns) return { ok: false, reason: "not_found" };
+
+  const existingExtras = listExtraPhotosForObservation(observationId).length;
+  const totalAfter = 1 + existingExtras + photoDataUrls.length;
+  if (totalAfter > MAX_PHOTOS_PER_OBSERVATION) {
+    return { ok: false, reason: "too_many" };
+  }
+
+  insertExtraPhotos(observationId, photoDataUrls);
+  return { ok: true };
+}
+
+/** Deletes one of an observation's extra (non-cover) photos. Owner-only. The cover itself can't be deleted this way — promote a different photo to cover first. */
+export function deleteObservationPhoto(userId: string, observationId: string, photoId: string): boolean {
+  const result = db
+    .prepare(
+      `DELETE FROM observation_photos
+       WHERE id = ? AND observation_id = ?
+         AND observation_id IN (SELECT id FROM observations WHERE user_id = ?)`,
+    )
+    .run(photoId, observationId, userId);
+  return result.changes > 0;
+}
+
+/**
+ * Reorderable/cover-photo selection: swaps an extra photo into the cover
+ * slot and moves the previous cover into that same row, so the total
+ * photo set and each row's identity are preserved — just which one is
+ * the cover changes. Owner-only.
+ */
+export function setObservationCoverPhoto(userId: string, observationId: string, photoId: string): boolean {
+  const observation = db
+    .prepare<[string, string], { photo_data_url: string }>(
+      "SELECT photo_data_url FROM observations WHERE id = ? AND user_id = ?",
+    )
+    .get(observationId, userId);
+  if (!observation) return false;
+
+  const target = db
+    .prepare<[string, string], { photo_data_url: string }>(
+      "SELECT photo_data_url FROM observation_photos WHERE id = ? AND observation_id = ?",
+    )
+    .get(photoId, observationId);
+  if (!target) return false;
+
+  const transaction = db.transaction(() => {
+    db.prepare("UPDATE observations SET photo_data_url = ? WHERE id = ?").run(
+      target.photo_data_url,
+      observationId,
+    );
+    db.prepare("UPDATE observation_photos SET photo_data_url = ? WHERE id = ?").run(
+      observation.photo_data_url,
+      photoId,
+    );
+  });
+  transaction();
+  return true;
 }
 
 /** Lets an owner change an existing observation's license after the fact — a real preference, not fixed at save time. */
@@ -658,10 +771,15 @@ export function listActivityForUser(userId: string): ActivityItem[] {
   }));
 }
 
-export function getObservationById(id: string, viewerId: string | null = null): ObservationWithGrade | null {
+export type ObservationDetail = ObservationWithGrade & { extraPhotos: ObservationPhoto[] };
+
+export function getObservationById(id: string, viewerId: string | null = null): ObservationDetail | null {
   const row = db.prepare<[string], ObservationRow>("SELECT * FROM observations WHERE id = ?").get(id);
   if (!row) return null;
-  return obscureLocationIfSensitive(withQualityGrade(observationFromRow(row)), viewerId);
+  return {
+    ...obscureLocationIfSensitive(withQualityGrade(observationFromRow(row)), viewerId),
+    extraPhotos: listExtraPhotosForObservation(id),
+  };
 }
 
 export function listCommentsByUser(userId: string): ObservationComment[] {

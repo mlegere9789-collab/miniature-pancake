@@ -17,6 +17,7 @@ import {
   LICENSE_DESCRIPTIONS,
   type ObservationLicense,
 } from "@/lib/observation-license";
+import { MAX_PHOTOS_PER_OBSERVATION } from "@/lib/observation-limits";
 
 type IdOutcome = { species: Species | null; confidence: number; rawLabel: string };
 
@@ -34,7 +35,9 @@ export default function CameraPage() {
   const { user } = useAuth();
   const { t } = useLocale();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const extraFileInputRef = useRef<HTMLInputElement>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [extraPreviewUrls, setExtraPreviewUrls] = useState<string[]>([]);
   const [outcome, setOutcome] = useState<IdOutcome | null>(null);
   const [isIdentifying, setIsIdentifying] = useState(false);
   const [savedSyncState, setSavedSyncState] = useState<SyncState | null>(null);
@@ -65,7 +68,20 @@ export default function CameraPage() {
     setCoords(null);
     setLocationError(null);
     setIdentifyError(null);
+    setExtraPreviewUrls([]);
     setPreviewUrl(await readFileAsDataUrl(file));
+  };
+
+  const handleExtraFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const room = MAX_PHOTOS_PER_OBSERVATION - 1 - extraPreviewUrls.length;
+    const toAdd = Array.from(files).slice(0, Math.max(0, room));
+    const dataUrls = await Promise.all(toAdd.map(readFileAsDataUrl));
+    setExtraPreviewUrls((prev) => [...prev, ...dataUrls]);
+  };
+
+  const removeExtraPhoto = (index: number) => {
+    setExtraPreviewUrls((prev) => prev.filter((_, i) => i !== index));
   };
 
   const useMyLocation = () => {
@@ -132,6 +148,7 @@ export default function CameraPage() {
         lat: coords?.lat ?? null,
         lng: coords?.lng ?? null,
         license,
+        extraPhotoDataUrls: extraPreviewUrls,
       });
       setSavedSyncState(saved ? "confirmed" : "failed");
       return;
@@ -212,6 +229,50 @@ export default function CameraPage() {
             <>
               {useServerSync && (
                 <div className="flex flex-col gap-3 rounded-lg border p-4" style={{ borderColor: "var(--color-border)" }}>
+                  <div className="flex flex-col gap-2">
+                    <p className="text-sm font-medium">
+                      More photos (optional) — {extraPreviewUrls.length + 1} of {MAX_PHOTOS_PER_OBSERVATION}
+                    </p>
+                    {extraPreviewUrls.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {extraPreviewUrls.map((url, i) => (
+                          <div key={i} className="relative h-16 w-16 shrink-0 overflow-hidden rounded-md border" style={{ borderColor: "var(--color-border)" }}>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={url} alt={`Additional photo ${i + 1}`} className="h-full w-full object-cover" />
+                            <button
+                              type="button"
+                              onClick={() => removeExtraPhoto(i)}
+                              aria-label={`Remove additional photo ${i + 1}`}
+                              className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full text-xs font-bold"
+                              style={{ background: "var(--color-danger)", color: "var(--color-accent-contrast)" }}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <input
+                      ref={extraFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(e) => {
+                        handleExtraFiles(e.target.files);
+                        e.target.value = "";
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => extraFileInputRef.current?.click()}
+                      disabled={extraPreviewUrls.length >= MAX_PHOTOS_PER_OBSERVATION - 1}
+                      className="w-fit rounded-full border px-3 py-1.5 text-xs font-semibold disabled:opacity-40"
+                      style={{ borderColor: "var(--color-border)" }}
+                    >
+                      + Add more photos
+                    </button>
+                  </div>
                   <label className="flex flex-col gap-1 text-sm font-medium">
                     Location (optional)
                     <input

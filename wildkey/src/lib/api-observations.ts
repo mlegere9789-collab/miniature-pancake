@@ -1,13 +1,23 @@
 import type {
   ActivityItem,
   ObservationComment,
+  ObservationDetail,
   ObservationLicense,
+  ObservationPhoto,
   ObservationWithGrade,
   ServerObservation,
 } from "@/lib/server/store";
 import type { CurrentUser } from "@/lib/auth-context";
 
-export type { ServerObservation, ObservationComment, ObservationWithGrade, ActivityItem, ObservationLicense };
+export type {
+  ServerObservation,
+  ObservationComment,
+  ObservationWithGrade,
+  ObservationDetail,
+  ObservationPhoto,
+  ActivityItem,
+  ObservationLicense,
+};
 
 export async function fetchActivity(): Promise<ActivityItem[]> {
   const res = await fetch("/api/activity");
@@ -35,6 +45,7 @@ export async function createServerObservation(input: {
   lat?: number | null;
   lng?: number | null;
   license?: ObservationLicense;
+  extraPhotoDataUrls?: string[];
 }): Promise<ServerObservation | null> {
   const res = await fetch("/api/observations", {
     method: "POST",
@@ -65,10 +76,32 @@ export async function updateServerObservationLicense(
 
 export async function fetchServerObservation(
   id: string,
-): Promise<{ observation: ObservationWithGrade; author: CurrentUser | null } | null> {
+): Promise<{ observation: ObservationDetail; author: CurrentUser | null } | null> {
   const res = await fetch(`/api/observations/${id}`);
   if (!res.ok) return null;
   return res.json();
+}
+
+export async function addServerObservationPhotos(
+  id: string,
+  photoDataUrls: string[],
+): Promise<boolean> {
+  const res = await fetch(`/api/observations/${id}/photos`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ photoDataUrls }),
+  });
+  return res.ok;
+}
+
+export async function deleteServerObservationPhoto(id: string, photoId: string): Promise<boolean> {
+  const res = await fetch(`/api/observations/${id}/photos/${photoId}`, { method: "DELETE" });
+  return res.ok;
+}
+
+export async function setServerObservationCoverPhoto(id: string, photoId: string): Promise<boolean> {
+  const res = await fetch(`/api/observations/${id}/photos/${photoId}/cover`, { method: "POST" });
+  return res.ok;
 }
 
 export async function fetchObservationComments(id: string): Promise<ObservationComment[]> {

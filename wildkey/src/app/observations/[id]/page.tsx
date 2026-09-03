@@ -1,20 +1,33 @@
 "use client";
 
-import { use, useCallback, useEffect, useState } from "react";
+import { use, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
+  addServerObservationPhotos,
+  deleteServerObservationPhoto,
   fetchObservationComments,
   fetchServerObservation,
   postObservationComment,
+  setServerObservationCoverPhoto,
   updateServerObservationLicense,
   type ObservationComment,
-  type ObservationWithGrade,
+  type ObservationDetail,
 } from "@/lib/api-observations";
 import { useAuth } from "@/lib/auth-context";
 import type { CurrentUser } from "@/lib/auth-context";
 import { QualityGradeBadge } from "@/components/quality-grade-badge";
 import { LazyPhoto } from "@/components/lazy-photo";
 import { OBSERVATION_LICENSES, LICENSE_LABELS, LICENSE_DESCRIPTIONS, type ObservationLicense } from "@/lib/observation-license";
+import { MAX_PHOTOS_PER_OBSERVATION } from "@/lib/observation-limits";
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function ObservationDetailPage({
   params,
@@ -24,7 +37,7 @@ export default function ObservationDetailPage({
   const { id } = use(params);
   const { user: currentUser, loading: authLoading } = useAuth();
 
-  const [observation, setObservation] = useState<ObservationWithGrade | null>(null);
+  const [observation, setObservation] = useState<ObservationDetail | null>(null);
   const [author, setAuthor] = useState<CurrentUser | null>(null);
   const [comments, setComments] = useState<ObservationComment[]>([]);
   const [notFoundOrDenied, setNotFoundOrDenied] = useState(false);
@@ -35,6 +48,9 @@ export default function ObservationDetailPage({
   const [flagSubmitted, setFlagSubmitted] = useState(false);
   const [flagSubmitting, setFlagSubmitting] = useState(false);
   const [updatingLicense, setUpdatingLicense] = useState(false);
+  const [activePhotoUrl, setActivePhotoUrl] = useState<string | null>(null);
+  const [managingPhotos, setManagingPhotos] = useState(false);
+  const addPhotosInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     const result = await fetchServerObservation(id);
@@ -44,6 +60,7 @@ export default function ObservationDetailPage({
     }
     setObservation(result.observation);
     setAuthor(result.author);
+    setActivePhotoUrl(result.observation.photoDataUrl);
     setComments(await fetchObservationComments(id));
   }, [id]);
 
@@ -61,6 +78,34 @@ export default function ObservationDetailPage({
     const ok = await updateServerObservationLicense(id, license);
     setUpdatingLicense(false);
     if (ok) setObservation((prev) => (prev ? { ...prev, license } : prev));
+  };
+
+  const totalPhotoCount = observation ? 1 + observation.extraPhotos.length : 0;
+
+  const addPhotos = async (files: FileList | null) => {
+    if (!files || files.length === 0 || !observation) return;
+    const room = MAX_PHOTOS_PER_OBSERVATION - totalPhotoCount;
+    const toAdd = Array.from(files).slice(0, Math.max(0, room));
+    if (toAdd.length === 0) return;
+    setManagingPhotos(true);
+    const dataUrls = await Promise.all(toAdd.map(readFileAsDataUrl));
+    const ok = await addServerObservationPhotos(id, dataUrls);
+    setManagingPhotos(false);
+    if (ok) await load();
+  };
+
+  const deletePhoto = async (photoId: string) => {
+    setManagingPhotos(true);
+    const ok = await deleteServerObservationPhoto(id, photoId);
+    setManagingPhotos(false);
+    if (ok) await load();
+  };
+
+  const makeCover = async (photoId: string) => {
+    setManagingPhotos(true);
+    const ok = await setServerObservationCoverPhoto(id, photoId);
+    setManagingPhotos(false);
+    if (ok) await load();
   };
 
   const submitComment = async (kind: "comment" | "agree") => {
@@ -132,10 +177,77 @@ export default function ObservationDetailPage({
         style={{ borderColor: "var(--color-border)", background: "var(--color-surface)", boxShadow: "var(--shadow-1)" }}
       >
         <LazyPhoto
-          src={observation.photoDataUrl}
+          src={activePhotoUrl ?? observation.photoDataUrl}
           alt={observation.commonName}
           className="aspect-[4/3] w-full object-cover"
         />
+        {(totalPhotoCount > 1 || isOwner) && (
+          <div className="flex flex-wrap items-center gap-2 border-b p-3" style={{ borderColor: "var(--color-border)" }}>
+            <button
+              type="button"
+              onClick={() => setActivePhotoUrl(observation.photoDataUrl)}
+              className="relative h-14 w-14 shrink-0 overflow-hidden rounded-md border-2"
+              style={{
+                borderColor: activePhotoUrl === observation.photoDataUrl ? "var(--color-accent)" : "var(--color-border)",
+              }}
+              aria-label="View cover photo"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={observation.photoDataUrl} alt="Cover" className="h-full w-full object-cover" />
+            </button>
+            {observation.extraPhotos.map((photo) => (
+              <div key={photo.id} className="flex flex-col items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setActivePhotoUrl(photo.photoDataUrl)}
+                  className="relative h-14 w-14 shrink-0 overflow-hidden rounded-md border-2"
+                  style={{
+                    borderColor: activePhotoUrl === photo.photoDataUrl ? "var(--color-accent)" : "var(--color-border)",
+                  }}
+                  aria-label="View additional photo"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={photo.photoDataUrl} alt="Additional" className="h-full w-full object-cover" />
+                </button>
+                {isOwner && (
+                  <div className="flex gap-1 text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                    <button type="button" onClick={() => makeCover(photo.id)} disabled={managingPhotos} className="hover:underline disabled:opacity-40">
+                      Set cover
+                    </button>
+                    <button type="button" onClick={() => deletePhoto(photo.id)} disabled={managingPhotos} className="hover:underline disabled:opacity-40" style={{ color: "var(--color-danger)" }}>
+                      Delete
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+            {isOwner && totalPhotoCount < MAX_PHOTOS_PER_OBSERVATION && (
+              <>
+                <input
+                  ref={addPhotosInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    addPhotos(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => addPhotosInputRef.current?.click()}
+                  disabled={managingPhotos}
+                  className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-dashed text-xs font-semibold disabled:opacity-40"
+                  style={{ borderColor: "var(--color-border)", color: "var(--color-text-muted)" }}
+                  aria-label="Add more photos"
+                >
+                  + Add
+                </button>
+              </>
+            )}
+          </div>
+        )}
         <div className="p-4">
           <div className="flex items-start justify-between gap-2">
             <Link href={`/species/${observation.taxonSlug}`} className="hover:underline">

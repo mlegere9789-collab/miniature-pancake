@@ -66,6 +66,18 @@ function createConnection(): Database.Database {
       license TEXT NOT NULL DEFAULT 'CC-BY-NC'
     );
 
+    -- Additional photos beyond an observation's cover photo (Part C.1/E:
+    -- "multi-photo upload in one step," "reorderable/cover-photo
+    -- selection"). observations.photo_data_url stays the cover; each row
+    -- here is one more photo, in display order.
+    CREATE TABLE IF NOT EXISTS observation_photos (
+      id TEXT PRIMARY KEY,
+      observation_id TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+      photo_data_url TEXT NOT NULL,
+      position INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS comments (
       id TEXT PRIMARY KEY,
       observation_id TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
@@ -191,6 +203,7 @@ function createConnection(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_curator_actions_flag_id ON curator_actions(flag_id);
     CREATE INDEX IF NOT EXISTS idx_role_changes_target_user_id ON role_changes(target_user_id);
     CREATE INDEX IF NOT EXISTS idx_signup_attempts_ip_created_at ON signup_attempts(ip, created_at);
+    CREATE INDEX IF NOT EXISTS idx_observation_photos_observation_id ON observation_photos(observation_id);
   `);
 
   return db;

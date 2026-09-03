@@ -360,6 +360,99 @@ describe("observations + quality grade", () => {
     const updated = await json(await owner.session.fetch(`/api/observations/${id}`));
     assert.equal(updated.observation.license, "CC-BY");
   });
+
+  it("real multi-photo upload: extras at creation, adding more, reordering the cover, and deleting — all owner-only, capped at 6 total", async () => {
+    const owner = await signUp();
+    const stranger = await signUp();
+
+    // Create with a cover plus two extra photos in one step.
+    const created = await json(
+      await owner.session.fetch("/api/observations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          photoDataUrl: "cover-photo",
+          commonName: "Red Fox",
+          scientificName: "Vulpes vulpes",
+          confidence: 0.7,
+          taxonSlug: "red-fox",
+          extraPhotoDataUrls: ["extra-1", "extra-2"],
+        }),
+      }),
+    );
+    const id = created.observation.id;
+    assert.equal(created.observation.photoDataUrl, "cover-photo");
+
+    let detail = await json(await owner.session.fetch(`/api/observations/${id}`));
+    assert.equal(detail.observation.extraPhotos.length, 2);
+    assert.deepEqual(
+      detail.observation.extraPhotos.map((p) => p.photoDataUrl),
+      ["extra-1", "extra-2"],
+    );
+
+    // A stranger can't add photos to someone else's observation.
+    const strangerAdd = await stranger.session.fetch(`/api/observations/${id}/photos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ photoDataUrls: ["intruder"] }),
+    });
+    assert.equal(strangerAdd.status, 404);
+
+    // The owner can add more, up to the real cap (6 total: 1 cover + 5 extras).
+    const addMore = await owner.session.fetch(`/api/observations/${id}/photos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ photoDataUrls: ["extra-3", "extra-4"] }),
+    });
+    assert.equal(addMore.status, 201);
+
+    const overCap = await owner.session.fetch(`/api/observations/${id}/photos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ photoDataUrls: ["extra-5", "extra-6"] }),
+    });
+    assert.equal(overCap.status, 400);
+
+    detail = await json(await owner.session.fetch(`/api/observations/${id}`));
+    assert.equal(detail.observation.extraPhotos.length, 4);
+    const secondExtraId = detail.observation.extraPhotos[1].id;
+
+    // A stranger can't delete or promote a photo either.
+    assert.equal(
+      (await stranger.session.fetch(`/api/observations/${id}/photos/${secondExtraId}`, { method: "DELETE" })).status,
+      404,
+    );
+    assert.equal(
+      (
+        await stranger.session.fetch(`/api/observations/${id}/photos/${secondExtraId}/cover`, {
+          method: "POST",
+        })
+      ).status,
+      404,
+    );
+
+    // Reorderable/cover-photo selection: promoting an extra swaps it with
+    // the current cover — the old cover becomes an extra, total count
+    // unchanged.
+    const promote = await owner.session.fetch(`/api/observations/${id}/photos/${secondExtraId}/cover`, {
+      method: "POST",
+    });
+    assert.equal(promote.status, 200);
+
+    detail = await json(await owner.session.fetch(`/api/observations/${id}`));
+    assert.equal(detail.observation.photoDataUrl, "extra-2");
+    assert.equal(detail.observation.extraPhotos.length, 4);
+    assert.ok(detail.observation.extraPhotos.some((p) => p.photoDataUrl === "cover-photo"));
+
+    // Deleting an extra actually removes it, leaving the rest intact.
+    const toDelete = detail.observation.extraPhotos[0].id;
+    const del = await owner.session.fetch(`/api/observations/${id}/photos/${toDelete}`, { method: "DELETE" });
+    assert.equal(del.status, 200);
+
+    detail = await json(await owner.session.fetch(`/api/observations/${id}`));
+    assert.equal(detail.observation.extraPhotos.length, 3);
+    assert.ok(!detail.observation.extraPhotos.some((p) => p.id === toDelete));
+  });
 });
 
 describe("sensitive-species obscuring", () => {
