@@ -249,6 +249,15 @@ committed, since it had never existed in the repo before.
 
 ## Bug fixes
 
+- **Restoring an archived plant never rescheduled its check-in reminder.**
+  Archiving a plant cancels its reminder (`PlantDetailScreen`'s
+  `cancelCheckInReminder` call); restoring it from `ArchivedPlantsScreen`
+  reactivated the plant everywhere else (dashboard, Garden Score, yard map)
+  but left it with no reminder at all — the only thing that ever
+  re-schedules reminders is the once-per-launch baseline in `App.tsx`, so a
+  restored plant would silently go unnagged until the user happened to
+  relaunch the app. Fixed by scheduling the reminder immediately on
+  successful restore.
 - **Pull-to-refresh only existed on the dashboard.** `PlantDetailScreen`,
   `YardMapScreen`, and `ArchivedPlantsScreen` had no `RefreshControl` —
   the only way to force a reload was leaving and re-entering (or, on the

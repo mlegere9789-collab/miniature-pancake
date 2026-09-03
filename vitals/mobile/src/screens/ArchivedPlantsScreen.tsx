@@ -2,6 +2,7 @@ import React, { useCallback, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
 import { Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { fetchArchivedPlants, unarchivePlant } from "../services/api";
+import { scheduleCheckInReminder } from "../services/notifications";
 import { theme } from "../theme/theme";
 import { Plant } from "../types/domain";
 
@@ -46,6 +47,11 @@ export function ArchivedPlantsScreen({ gardenId, onRestored }: Props) {
     setRestoringId(plant.id);
     try {
       await unarchivePlant(plant.id);
+      // Archiving cancels the plant's reminder (see PlantDetailScreen); a
+      // restored plant is active again and needs its own reminder back, or
+      // it silently never gets check-in nudges again until the next full
+      // app launch re-baselines every plant.
+      await scheduleCheckInReminder(plant).catch(() => undefined);
       await load();
       onRestored();
     } catch (err) {
