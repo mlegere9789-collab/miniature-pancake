@@ -75,6 +75,11 @@ credentials — via faked API responses. See `.pre-commit-config.yaml` for
 the formatting/lint tooling (`black`, `isort`, `flake8`) run across
 `orchestrator/` and `modules/`.
 
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs that same
+lint + test suite, plus an `orchestrator init`/`doctor` smoke test, on
+every push to `main` and every pull request, on Python 3.9 and 3.12 (the
+range `SETUP.md` claims support for).
+
 ## Further reading
 
 - [`SETUP.md`](SETUP.md) — first-time setup walkthrough.
