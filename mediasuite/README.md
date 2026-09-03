@@ -31,11 +31,15 @@ mediasuite/
 │   └── MediaSuite.App/       net8.0-windows — WPF shell (UI only)
 ├── tests/
 │   ├── MediaSuite.Core.Tests/              — xUnit tests for everything in Core
-│   └── MediaSuite.App.Tests/               — xUnit tests for the App-layer code that
-│                                              has no WPF dependency of its own (currently
-│                                              SingleInstanceGuard's real mutex/pipe IPC);
-│                                              the WPF shell itself still has no automated
-│                                              tests, only Build compiling it and QA.md
+│   └── MediaSuite.App.Tests/               — xUnit tests for App-layer logic that does not
+│                                              need a real Window: SingleInstanceGuard's
+│                                              real mutex/pipe IPC, and JobRowViewModel's
+│                                              computed properties (StatusText, Copy
+│                                              details visibility, live updates) driven
+│                                              through a real QueuedJob. Anything that
+│                                              does need a real Window still has no
+│                                              automated coverage, only Build compiling it
+│                                              and QA.md
 └── tools/                                  — bundled third-party binaries (not in git)
 ```
 
