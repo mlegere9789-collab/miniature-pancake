@@ -1,13 +1,20 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
+import { deleteObservation, listObservations, type Observation } from "@/lib/observations";
+import { createServerObservation } from "@/lib/api-observations";
 
 export default function DataSettingsPage() {
   const { user, loading, refresh } = useAuth();
   const router = useRouter();
+  const [localObservations, setLocalObservations] = useState<Observation[]>([]);
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState(0);
+  const [importFailures, setImportFailures] = useState(0);
+  const [importDone, setImportDone] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -42,6 +49,58 @@ export default function DataSettingsPage() {
     await refresh();
   };
 
+  useEffect(() => {
+    // Reading localStorage (an external system) on mount, not deriving
+    // state from props/state — the pattern react-hooks/set-state-in-effect
+    // warns about does not apply here.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setLocalObservations(listObservations());
+  }, []);
+
+  /**
+   * Real account-migration tooling (previously listed as "not built yet"):
+   * a Quick ID Mode collection lives only in this browser's localStorage —
+   * switch devices or clear site data and it's gone. Once signed in, each
+   * local observation is uploaded through the same API a Naturalist Mode
+   * save already uses, then removed locally only after that upload really
+   * succeeds — a move, not a copy, and never a silent one: every failure
+   * stays in the local list so nothing is lost if a request fails
+   * partway through.
+   */
+  const importLocalObservations = async () => {
+    setImporting(true);
+    setImportProgress(0);
+    setImportFailures(0);
+    setImportDone(false);
+
+    const toImport = listObservations();
+    let failures = 0;
+    for (let i = 0; i < toImport.length; i++) {
+      const o = toImport[i];
+      const saved = await createServerObservation({
+        photoDataUrl: o.photoDataUrl,
+        commonName: o.commonName,
+        scientificName: o.scientificName,
+        confidence: o.confidence,
+        taxonSlug: o.taxonSlug,
+        isWild: true,
+        locationName: "",
+        notes: "",
+      });
+      if (saved) {
+        deleteObservation(o.id);
+      } else {
+        failures += 1;
+      }
+      setImportProgress(i + 1);
+      setImportFailures(failures);
+    }
+
+    setLocalObservations(listObservations());
+    setImporting(false);
+    setImportDone(true);
+  };
+
   const anonymizeAccount = async () => {
     setAnonymizing(true);
     setAnonymizeError(null);
@@ -63,6 +122,41 @@ export default function DataSettingsPage() {
           Full data portability from day one — no risk of losing your history, ever.
         </p>
       </div>
+
+      {!loading && user && (localObservations.length > 0 || importDone) && (
+        <div className="rounded-lg border p-4" style={{ borderColor: "var(--color-border)" }}>
+          <p className="font-semibold">Import local observations</p>
+          {localObservations.length > 0 && (
+            <p className="mt-1 text-sm" style={{ color: "var(--color-text-muted)" }}>
+              {localObservations.length} observation{localObservations.length === 1 ? "" : "s"} saved
+              on this device in Quick ID Mode — those live only in this browser and won&rsquo;t
+              follow you to another device. Import them into your account to make them permanent
+              and synced everywhere. Each one is removed from this device only after it&rsquo;s
+              confirmed saved to your account, so nothing is lost if an import fails partway
+              through.
+            </p>
+          )}
+          {localObservations.length > 0 && (
+            <button
+              onClick={importLocalObservations}
+              disabled={importing}
+              className="mt-3 rounded-full px-4 py-2 text-sm font-semibold disabled:opacity-40"
+              style={{ background: "var(--color-accent)", color: "var(--color-accent-contrast)" }}
+            >
+              {importing
+                ? `Importing ${importProgress} of ${localObservations.length}…`
+                : `Import ${localObservations.length} observation${localObservations.length === 1 ? "" : "s"}`}
+            </button>
+          )}
+          {importDone && (
+            <p className="mt-2 text-sm font-medium">
+              {importFailures === 0
+                ? `Imported all ${importProgress} observations.`
+                : `Imported ${importProgress - importFailures} of ${importProgress} — ${importFailures} failed and stayed on this device. Try again.`}
+            </p>
+          )}
+        </div>
+      )}
 
       <div
         className="rounded-lg border p-4"
@@ -232,7 +326,11 @@ export default function DataSettingsPage() {
           Not built yet
         </p>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
-          <li>Account migration tooling for switching devices</li>
+          <li>
+            Merging two separate accounts into one — importing local Quick ID Mode data into an
+            account (above) is the one migration path that&rsquo;s real; a Naturalist Mode account
+            itself already syncs everywhere on sign-in, nothing to migrate there
+          </li>
           <li>
             A grace period on anonymizing — that one really is immediate and permanent by design
             (see above); deleting now has a real 14-day undo window instead
