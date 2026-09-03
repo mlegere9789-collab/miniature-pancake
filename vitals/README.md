@@ -233,6 +233,11 @@ committed, since it had never existed in the repo before.
 
 ## Bug fixes
 
+- **Pull-to-refresh only existed on the dashboard.** `PlantDetailScreen`,
+  `YardMapScreen`, and `ArchivedPlantsScreen` had no `RefreshControl` —
+  the only way to force a reload was leaving and re-entering (or, on the
+  two with `useFocusEffect`, navigating away and back). Added it to all
+  three for consistency with the dashboard.
 - **Yard map went stale after visiting a plant from it.** Same class of bug
   as the earlier plant-detail-screen fix: `YardMapScreen` only loaded on
   first mount, not on refocus. Reaching a plant via a pin and archiving it

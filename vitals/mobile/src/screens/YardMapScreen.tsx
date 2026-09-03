@@ -1,7 +1,7 @@
 import { useFocusEffect } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
 import React, { useCallback, useState } from "react";
-import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, Image, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { fetchGarden, setPlantLocation, setYardMapPhoto, toAbsoluteUrl, uploadCheckInPhoto } from "../services/api";
 import { scoreColor, theme } from "../theme/theme";
 import { Garden, Plant } from "../types/domain";
@@ -26,6 +26,7 @@ export function YardMapScreen({ gardenId, onSelectPlant }: Props) {
   const [placingPlantId, setPlacingPlantId] = useState<string | null>(null);
   const [mapWidth, setMapWidth] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -35,6 +36,12 @@ export function YardMapScreen({ gardenId, onSelectPlant }: Props) {
       setLoadError(true);
     }
   }, [gardenId]);
+
+  async function onRefresh() {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }
 
   // Reload on every focus, not just first mount — returning here from a
   // plant's detail screen (e.g. after archiving it) reuses this same
@@ -119,7 +126,10 @@ export function YardMapScreen({ gardenId, onSelectPlant }: Props) {
   const mapUri = toAbsoluteUrl(garden.yardMapPhotoUrl);
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <ScrollView
+      contentContainerStyle={styles.container}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+    >
       {placingPlantId && (
         <View style={styles.placingBanner}>
           <Text style={styles.placingBannerText}>Tap the map where this plant is</Text>

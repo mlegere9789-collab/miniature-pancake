@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from "react";
 import { useFocusEffect } from "@react-navigation/native";
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { fetchArchivedPlants, unarchivePlant } from "../services/api";
 import { theme } from "../theme/theme";
 import { Plant } from "../types/domain";
@@ -19,6 +19,7 @@ export function ArchivedPlantsScreen({ gardenId, onRestored }: Props) {
   const [plants, setPlants] = useState<Plant[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [restoringId, setRestoringId] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -28,6 +29,12 @@ export function ArchivedPlantsScreen({ gardenId, onRestored }: Props) {
       setLoadError(true);
     }
   }, [gardenId]);
+
+  async function onRefresh() {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }
 
   useFocusEffect(
     useCallback(() => {
@@ -70,6 +77,7 @@ export function ArchivedPlantsScreen({ gardenId, onRestored }: Props) {
   return (
     <FlatList
       contentContainerStyle={styles.list}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       data={plants}
       keyExtractor={(p) => p.id}
       ListEmptyComponent={<Text style={styles.bodyText}>No archived plants.</Text>}

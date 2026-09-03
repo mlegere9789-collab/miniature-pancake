@@ -1,6 +1,6 @@
 import { useFocusEffect } from "@react-navigation/native";
 import React, { useCallback, useState } from "react";
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
+import { Alert, FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from "react-native";
 import { Sparkline } from "../components/Sparkline";
 import { archivePlant, fetchPlant, fetchTwinComparison, setTreatmentPlanCompleted } from "../services/api";
 import { cancelCheckInReminder } from "../services/notifications";
@@ -21,6 +21,7 @@ export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline, onA
   const [loadError, setLoadError] = useState(false);
   const [twin, setTwin] = useState<TwinComparison | null>(null);
   const [archiving, setArchiving] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -31,6 +32,12 @@ export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline, onA
       setLoadError(true);
     }
   }, [plantId]);
+
+  async function onRefresh() {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  }
 
   // Reload every time this screen regains focus (returning from Check-In or
   // Edit), not just on first mount — otherwise a fresh check-in or an edit
@@ -92,6 +99,7 @@ export function PlantDetailScreen({ plantId, onCheckIn, onViewPhotoTimeline, onA
   return (
     <FlatList
       contentContainerStyle={styles.list}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       data={plant.checkIns}
       keyExtractor={(c) => c.id}
       renderItem={({ item }) => <CheckInRow checkIn={item} onChanged={load} />}
