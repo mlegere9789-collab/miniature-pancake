@@ -140,6 +140,32 @@ class Mesh {
   static Mesh RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_point,
                               Vector3d axis, int revolve_segments = 48);
 
+  // Lofts a sequence of closed polygonal cross-sections ("rings") into a
+  // closed solid - the general answer to "no loft" that RevolveProfile()
+  // doesn't cover (a shape that changes profile shape along its length,
+  // not just radius). Every ring must have the same vertex count
+  // (>= 3) and must be listed in the same rotational order: CCW as seen
+  // looking from beyond the last ring back toward the first (the same
+  // "u_dir x v_dir = outward normal" convention this file already uses
+  // everywhere else) - not validated here, since checking a ring's
+  // winding requires assuming it's planar and convex, which correctly
+  // building the two end caps below already requires. The first and last
+  // rings are closed off with a triangle fan each (from that ring's own
+  // vertex 0); each ring must be planar and convex for that fan to
+  // produce correct (non-self-intersecting) geometry - unlike
+  // TessellateGridClippedExact's concave support, this is not validated
+  // or handled, only documented, since a full ear-clipping cap
+  // triangulation for arbitrary 3D planar polygons is a larger, separate
+  // piece of work than this chunk's scope. Throws std::invalid_argument
+  // if fewer than 2 rings are given or if ring vertex counts don't match.
+  //
+  // No MergeAndWeld() is needed: consecutive rings' vertices are shared
+  // directly between the band before and after them, and each end cap's
+  // fan reuses that ring's own vertices - same "exact shared vertices, no
+  // welding tolerance" property as ExtrudeCappedSolid(), ConeToApex(),
+  // and RevolveProfile().
+  static Mesh LoftClosedRings(const std::vector<std::vector<Point3d>>& rings);
+
  private:
   friend class Brep;
   friend class NurbsSurface;

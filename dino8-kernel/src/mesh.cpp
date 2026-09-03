@@ -430,4 +430,77 @@ Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_poin
   return result;
 }
 
+Mesh Mesh::LoftClosedRings(const std::vector<std::vector<Point3d>>& rings) {
+  const int m = static_cast<int>(rings.size());
+  if (m < 2) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::LoftClosedRings: needs at least 2 rings to loft between");
+  }
+  const int ring_size = static_cast<int>(rings.front().size());
+  if (ring_size < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::LoftClosedRings: each ring needs at least 3 vertices");
+  }
+  for (const auto& ring : rings) {
+    if (static_cast<int>(ring.size()) != ring_size) {
+      throw std::invalid_argument(
+          "dino8::kernel::Mesh::LoftClosedRings: every ring must have the same "
+          "vertex count");
+    }
+  }
+
+  Mesh result;
+  ON_Mesh& out = result.mesh_;
+
+  std::vector<int> ring_start(static_cast<size_t>(m));
+  for (int i = 0; i < m; ++i) {
+    ring_start[static_cast<size_t>(i)] = out.m_V.Count();
+    for (const Point3d& p : rings[static_cast<size_t>(i)]) {
+      out.m_V.Append(ON_3fPoint(p));
+    }
+  }
+
+  auto append_tri = [&out](int v0, int v1, int v2) {
+    ON_MeshFace face;
+    face.vi[0] = v0;
+    face.vi[1] = v1;
+    face.vi[2] = v2;
+    face.vi[3] = v2;
+    out.m_F.Append(face);
+  };
+
+  // Bands between consecutive rings: the same winding as RevolveProfile's
+  // bands (tri1=(a,a2,b2), tri2=(a,b2,b)) - that derivation only used
+  // "ring i is CCW-as-seen-from-ahead, ring i+1 is the next one along the
+  // loft direction," which holds for any same-vertex-count ring pair,
+  // not just RevolveProfile's circular ones.
+  for (int i = 0; i + 1 < m; ++i) {
+    const int base_a = ring_start[static_cast<size_t>(i)];
+    const int base_b = ring_start[static_cast<size_t>(i + 1)];
+    for (int k = 0; k < ring_size; ++k) {
+      const int k2 = (k + 1) % ring_size;
+      append_tri(base_a + k, base_a + k2, base_b + k2);
+      append_tri(base_a + k, base_b + k2, base_b + k);
+    }
+  }
+
+  // End caps: a simple fan from each ring's own vertex 0. The first
+  // ring's fan is reversed (v0, k+1, k) rather than (v0, k, k+1) so its
+  // normal points backward (away from the loft body, like Cylinder()'s
+  // base disk needing -n while the sweep goes +n) instead of forward
+  // (into the body, which the unreversed order would give per the same
+  // u_dir x v_dir rule the bands above use). The last ring's fan keeps
+  // the natural order, since forward is already outward there.
+  const int first_base = ring_start[0];
+  for (int k = 1; k + 1 < ring_size; ++k) {
+    append_tri(first_base, first_base + k + 1, first_base + k);
+  }
+  const int last_base = ring_start[static_cast<size_t>(m - 1)];
+  for (int k = 1; k + 1 < ring_size; ++k) {
+    append_tri(last_base, last_base + k, last_base + k + 1);
+  }
+
+  return result;
+}
+
 }  // namespace dino8::kernel

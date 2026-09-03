@@ -637,6 +637,90 @@ void TestRevolveProfileRejectsOffAxisEndsAndTooShortProfile() {
         "between the two on-axis ends)");
 }
 
+void TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  // A frustum between a small square (half-side 1, side 2, area 4) at
+  // z=0 and a larger square (half-side 3, side 6, area 36) at z=3,
+  // centered on and scaled uniformly about the same (0,0,z) axis - the
+  // straight-line connection between corresponding vertices is then
+  // exactly a frustum of a real pyramid (every lateral edge, extended,
+  // meets at a single apex below z=0), not an approximation the way
+  // Cylinder()/Cone()'s circular trims are. Both rings list vertices in
+  // the same CCW-as-seen-from-ahead order (matching this file's
+  // u_dir x v_dir = outward normal convention): (s,-s),(s,s),(-s,s),
+  // (-s,-s) has positive standard-2D signed area for s > 0, i.e. is CCW
+  // when viewed from +z looking down -z, per LoftClosedRings()'s own
+  // documented convention.
+  const std::vector<Point3d> bottom = {
+      Point3d(1, -1, 0),
+      Point3d(1, 1, 0),
+      Point3d(-1, 1, 0),
+      Point3d(-1, -1, 0),
+  };
+  const std::vector<Point3d> top = {
+      Point3d(3, -3, 3),
+      Point3d(3, 3, 3),
+      Point3d(-3, 3, 3),
+      Point3d(-3, -3, 3),
+  };
+  const auto frustum = Mesh::LoftClosedRings({bottom, top});
+
+  // Exact frustum-of-a-pyramid volume formula: (h/3)*(A1+A2+sqrt(A1*A2)).
+  const double height = 3.0;
+  const double area1 = 4.0;
+  const double area2 = 36.0;
+  const double exact_volume = (height / 3.0) * (area1 + area2 + std::sqrt(area1 * area2));
+  Check(std::abs(exact_volume - 52.0) < 1e-9,
+        "sanity: the hand-derived frustum formula itself evaluates to 52");
+  Check(std::abs(frustum.Volume() - exact_volume) < 1e-9,
+        "lofted square frustum's volume exactly matches the closed-form "
+        "pyramid-frustum formula (straight edges between only 2 rings - no "
+        "circular approximation involved, unlike Cylinder()/Cone())");
+
+  // Real proof of watertightness, same as every other solid here: Manifold
+  // would reject a non-manifold mesh outright rather than return a
+  // plausible-looking wrong answer.
+  const auto box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const auto result = BooleanCombine(frustum, box, BooleanOp::Union);
+  Check(std::abs(result.Volume() - (frustum.Volume() + 1.0)) < 1e-9,
+        "union of the lofted frustum with a disjoint unit box equals frustum "
+        "volume + 1");
+}
+
+void TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  bool threw_too_few = false;
+  try {
+    const std::vector<Point3d> only_ring = {Point3d(0, 0, 0), Point3d(1, 0, 0),
+                                             Point3d(0, 1, 0)};
+    Mesh::LoftClosedRings({only_ring});
+  } catch (const std::invalid_argument&) {
+    threw_too_few = true;
+  }
+  Check(threw_too_few, "LoftClosedRings throws with fewer than 2 rings");
+
+  bool threw_mismatched = false;
+  try {
+    const std::vector<Point3d> triangle = {Point3d(0, 0, 0), Point3d(1, 0, 0),
+                                            Point3d(0, 1, 0)};
+    const std::vector<Point3d> square = {Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1, 1),
+                                          Point3d(0, 1, 1)};
+    Mesh::LoftClosedRings({triangle, square});
+  } catch (const std::invalid_argument&) {
+    threw_mismatched = true;
+  }
+  Check(threw_mismatched,
+        "LoftClosedRings throws when rings have different vertex counts "
+        "rather than silently misaligning bands");
+}
+
 void TestExactClippingMatchesAreaButNotCellCounts() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -924,6 +1008,8 @@ int main() {
   TestConeVolumeAndBoolean();
   TestRevolveProfileBiconeVolumeAndBoolean();
   TestRevolveProfileRejectsOffAxisEndsAndTooShortProfile();
+  TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();
+  TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestAnnulusFaceExtrudesToWatertightTube();

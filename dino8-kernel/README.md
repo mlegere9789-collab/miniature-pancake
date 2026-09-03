@@ -245,14 +245,53 @@ What this repo does instead:
   base) whose exact volume, `2*(1/3)*pi*r^2*half_height`, comes from
   separately-known geometry, plus the same Manifold-union watertightness
   proof as every other solid here.
+- `Mesh::LoftClosedRings()` closes the "no loft" gap: skins a sequence of
+  same-vertex-count closed polygonal cross-sections ("rings") into a
+  closed solid, generalizing `RevolveProfile()`'s bands (a special case
+  where every ring happens to be a regular polygon approximating a circle)
+  to rings of any shape, size, and vertex count as long as they all match
+  in count. Scoped narrower than a fully general loft: the first and last
+  rings are closed with a plain triangle fan from that ring's own vertex
+  0, which only produces correct geometry for a planar, convex ring - not
+  validated or handled for a concave one, unlike
+  `TessellateGridClippedExact()`'s dedicated concave-clipping path, since
+  a full ear-clipping cap triangulation for arbitrary 3D planar polygons
+  is a larger, separate piece of work than this chunk's scope. Throws
+  `std::invalid_argument` on fewer than 2 rings or mismatched vertex
+  counts across rings, verified directly.
+  Reused `RevolveProfile()`'s band-winding derivation directly rather than
+  re-deriving it - that derivation only assumed "ring i is
+  CCW-as-seen-from-ahead, ring i+1 is the next one along the loft
+  direction," which holds for any same-vertex-count ring pair, not just
+  circular ones. The two end-cap fans needed their own derivation (a cap
+  is a different shape than a band): the first ring's fan is reversed
+  (`v0, k+1, k`) rather than the bands' natural order, so its normal
+  points backward like `Cylinder()`'s base disk needing `-n` while the
+  sweep goes `+n`; the last ring's fan keeps the natural order, since
+  forward is already outward there.
+  Verified against a genuinely independent closed-form check, not reusing
+  any other primitive's volume math: a frustum between a small square
+  (area 4) and a large square (area 36), both centered on and scaled
+  uniformly about the same axis - since the straight-line connection
+  between corresponding vertices of two similar, parallel, coaxial
+  polygons is exactly a frustum of a real pyramid (every lateral edge,
+  extended, meets at one common apex), the standard closed-form frustum
+  volume `(h/3)*(A1+A2+sqrt(A1*A2))` applies exactly, not approximately -
+  unlike every circular-trim test in this file, which can only get within
+  a percent of the true value. Measured volume matched to `1e-9`, an
+  exact-value check in the same tier as the `Box()`/annulus tests, plus
+  the same Manifold-union watertightness proof as every other solid here.
 
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
   (+ `hole_loops_uv`) + `Mesh::ExtrudeCappedSolid()`/`Mesh::Cylinder()`/
-  `Mesh::ConeToApex()`/`Mesh::Cone()`/`Mesh::RevolveProfile()` are the only
-  shapes/operations here — no loft yet, and `RevolveProfile()` only
-  supports a profile that starts and ends on the axis (no flat end rim).
+  `Mesh::ConeToApex()`/`Mesh::Cone()`/`Mesh::RevolveProfile()`/
+  `Mesh::LoftClosedRings()` are the only shapes/operations here.
+  `RevolveProfile()` only supports a profile that starts and ends on the
+  axis (no flat end rim); `LoftClosedRings()` only produces correct end
+  caps for planar, convex end rings (not validated, and wrong/
+  self-intersecting cap geometry for a concave one).
 - `TessellateGridClippedExact()` now handles a concave `trim_polygon` too
   (via a general Greiner-Hormann-style clipper, see above), but that path
   is newer and more narrowly tested than the long-proven convex one: a
