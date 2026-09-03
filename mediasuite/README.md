@@ -269,6 +269,11 @@ installing Inno Setup via Chocolatey, and uploads the resulting `.exe` as a buil
 artifact. A green run there means a real installer really was produced, not just that
 the C# behind it compiles.
 
+On every push to `main`, a third `release` job takes that same installer and publishes
+it to this repo's Releases page — the actual download link for anyone who isn't building
+from source, and the same `releases/latest` endpoint the in-app update checker (see
+[What is done](#what-is-done)) already polls.
+
 ## Build order
 
 | Step | Work | State |
