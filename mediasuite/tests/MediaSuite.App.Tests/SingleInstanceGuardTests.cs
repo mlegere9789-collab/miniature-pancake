@@ -45,7 +45,7 @@ public class SingleInstanceGuardTests
     }
 
     [Fact]
-    public async Task Forwarding_files_to_a_listening_instance_delivers_them()
+    public void Forwarding_files_to_a_listening_instance_delivers_them()
     {
         using var owner = SingleInstanceGuard.Acquire();
         Assert.True(owner.IsFirstInstance);
@@ -60,13 +60,17 @@ public class SingleInstanceGuardTests
         // the mutex being claimed and the listener actually being up.
         SingleInstanceGuard.ForwardToRunningInstance(sent);
 
-        var received = await receivedFiles.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // A blocking Wait, not await: Mutex.ReleaseMutex (inside owner's Dispose below)
+        // demands the exact OS thread that acquired it, and an awaited continuation is
+        // not guaranteed to resume on that same thread. Keeping this whole test method
+        // synchronous keeps Acquire and Dispose on the one thread throughout.
+        Assert.True(receivedFiles.Task.Wait(TimeSpan.FromSeconds(5)), "Timed out waiting for the forwarded files.");
 
-        Assert.Equal(sent, received);
+        Assert.Equal(sent, receivedFiles.Task.Result);
     }
 
     [Fact]
-    public async Task Forwarding_with_no_files_still_invokes_the_callback()
+    public void Forwarding_with_no_files_still_invokes_the_callback()
     {
         using var owner = SingleInstanceGuard.Acquire();
 
@@ -75,8 +79,10 @@ public class SingleInstanceGuardTests
 
         SingleInstanceGuard.ForwardToRunningInstance(Array.Empty<string>());
 
-        var received = await invoked.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // See the comment in the test above: blocking Wait, not await, to keep Acquire
+        // and Dispose (via the using above) on the same OS thread.
+        Assert.True(invoked.Task.Wait(TimeSpan.FromSeconds(5)), "Timed out waiting for the callback.");
 
-        Assert.Empty(received);
+        Assert.Empty(invoked.Task.Result);
     }
 }

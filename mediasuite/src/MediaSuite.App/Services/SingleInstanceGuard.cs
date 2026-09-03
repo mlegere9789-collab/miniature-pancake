@@ -132,11 +132,21 @@ public sealed class SingleInstanceGuard : IDisposable
         _listenerCts?.Cancel();
         _listenerCts?.Dispose();
 
-        if (IsFirstInstance)
+        // ReleaseMutex demands the exact OS thread that acquired it -- true throughout
+        // this app's real single-threaded UI-thread lifecycle, but not guaranteed for
+        // every caller (an async continuation can resume on a different thread-pool
+        // thread). Disposing the handle must happen regardless: a release failure here
+        // must never leak the mutex handle for the rest of the process's life.
+        try
         {
-            _mutex.ReleaseMutex();
+            if (IsFirstInstance)
+            {
+                _mutex.ReleaseMutex();
+            }
         }
-
-        _mutex.Dispose();
+        finally
+        {
+            _mutex.Dispose();
+        }
     }
 }
