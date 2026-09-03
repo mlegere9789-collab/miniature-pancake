@@ -1,4 +1,4 @@
-import { CameraType, CameraView, useCameraPermissions } from "expo-camera";
+import { CameraView, useCameraPermissions } from "expo-camera";
 import React, { useRef, useState } from "react";
 import { ActivityIndicator, Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -158,7 +158,7 @@ export function CheckInCameraScreen({ plantId, plantLabel, previousPhotoUri, onD
 
   return (
     <View style={styles.container}>
-      <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing={"back" as CameraType} />
+      <CameraView ref={cameraRef} style={StyleSheet.absoluteFill} facing="back" />
       <GhostOverlay previousPhotoUri={previousPhotoUri} />
 
       <View style={[styles.topBar, { top: insets.top + theme.spacing(3) }]}>
