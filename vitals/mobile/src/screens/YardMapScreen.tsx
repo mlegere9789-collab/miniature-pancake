@@ -1,5 +1,6 @@
+import { useFocusEffect } from "@react-navigation/native";
 import * as ImagePicker from "expo-image-picker";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useState } from "react";
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { fetchGarden, setPlantLocation, setYardMapPhoto, toAbsoluteUrl, uploadCheckInPhoto } from "../services/api";
 import { scoreColor, theme } from "../theme/theme";
@@ -35,9 +36,14 @@ export function YardMapScreen({ gardenId, onSelectPlant }: Props) {
     }
   }, [gardenId]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  // Reload on every focus, not just first mount — returning here from a
+  // plant's detail screen (e.g. after archiving it) reuses this same
+  // mounted instance, so a mount-only load would show stale data.
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load]),
+  );
 
   async function handlePickYardPhoto() {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();

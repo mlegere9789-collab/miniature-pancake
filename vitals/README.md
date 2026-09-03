@@ -233,6 +233,13 @@ committed, since it had never existed in the repo before.
 
 ## Bug fixes
 
+- **Yard map went stale after visiting a plant from it.** Same class of bug
+  as the earlier plant-detail-screen fix: `YardMapScreen` only loaded on
+  first mount, not on refocus. Reaching a plant via a pin and archiving it
+  there, then going back, reused the same mounted `YardMapScreen` instance
+  and still showed the archived plant pinned — the dashboard's
+  `key={refreshKey}` remount trick only covers the dashboard screen itself,
+  not screens reached through other paths. Switched to `useFocusEffect`.
 - **Check-in result screen showed treatment steps but had no way to act on
   them.** The plant detail screen's diagnostic flags have a "Mark treated"
   button; the check-in result screen (added earlier this session,
