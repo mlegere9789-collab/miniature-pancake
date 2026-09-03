@@ -60,7 +60,7 @@ public partial class App : Application
         _mainViewModel = new MainViewModel(
             settings, store, _themeService, toolLocator, _queue, engines, launcher, _driveClient, _updateChecker, Dispatcher);
 
-        var window = new MainWindow(_themeService)
+        var window = new MainWindow(_themeService, settings, store)
         {
             DataContext = _mainViewModel,
         };
