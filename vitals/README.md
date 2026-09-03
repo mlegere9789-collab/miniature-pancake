@@ -24,7 +24,7 @@ vitals/
 │       ├── models/          Zod input/output schemas per resource
 │       ├── services/
 │       │   ├── scoring.ts   Weighted composite scoring engine (spec §3.1/§3.2)
-│       │   ├── diagnosticEngine.ts  Stubbed rules-based scorer (Idea 5 stand-in)
+│       │   ├── diagnosticEngine.ts  Stubbed rules-based scorer (Idea 5 stand-in), deterministic and unit tested
 │       │   ├── weatherService.ts    Open-Meteo frost/drought signals (Phase 2, spec §5)
 │       │   ├── reportCard.ts        Weekly Garden Report Card aggregation (Phase 2, spec §4.5)
 │       │   ├── comparison.ts        Twin-plant percentile + leaderboard rank (Phase 3, spec §4.4/§4.6)
