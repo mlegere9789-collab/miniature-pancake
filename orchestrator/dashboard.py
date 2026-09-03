@@ -5,7 +5,8 @@ that reads the shared SQLite database and shows:
 
 * a summary strip (total earnings, pending reviews),
 * one card per module (status, last activity, earnings, pending count),
-  with a **Run now** button to trigger that module immediately,
+  with a **Run now** button to trigger that module immediately and a
+  **View log** link to see its recent output,
 * the review queue, with working **Approve** / **Reject** buttons,
 * a recent-activity feed,
 * a **Download CSV** link for the full earnings ledger (bookkeeping/taxes).
@@ -84,6 +85,54 @@ def trigger_run(module: str) -> bool:
     return True
 
 
+LOG_TAIL_LINES = 200
+
+
+def tail_log(module: str) -> str | None:
+    """Last LOG_TAIL_LINES lines of data/logs/<module>.log.
+
+    None for an unrecognized module (the caller should 404). Empty string
+    for a known module that hasn't produced a log yet — that's a normal
+    state (never run, or run before logging existed), not an error.
+    """
+    if module not in MODULES:
+        return None
+    logfile = PROJECT_ROOT / "data" / "logs" / f"{module}.log"
+    if not logfile.exists():
+        return ""
+    lines = logfile.read_text(encoding="utf-8", errors="replace").splitlines()
+    return "\n".join(lines[-LOG_TAIL_LINES:])
+
+
+def render_log_page(module: str) -> str | None:
+    """A minimal page showing that module's recent log output, or None (404)."""
+    text = tail_log(module)
+    if text is None:
+        return None
+    body = text or "No log output yet — this module hasn't been run."
+    return f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{_esc(MODULES[module])} — log</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  body {{ font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0;
+         background: #f6f8fa; color: #1f2328; }}
+  .wrap {{ max-width: 900px; margin: 0 auto; padding: 24px; }}
+  a {{ color: #0969da; }}
+  h1 {{ font-size: 18px; }}
+  pre {{ background: #0d1117; color: #c9d1d9; padding: 16px; border-radius: 10px;
+         overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+         font-size: 12px; line-height: 1.5; }}
+</style></head><body>
+<div class="wrap">
+  <p><a href="/">&larr; Back to dashboard</a></p>
+  <h1>{_esc(MODULES[module])} — last {LOG_TAIL_LINES} log lines</h1>
+  <pre>{_esc(body)}</pre>
+</div>
+</body></html>"""
+
+
 def _esc(v: object) -> str:
     return html.escape(str(v if v is not None else ""))
 
@@ -142,6 +191,7 @@ def render_page() -> str:
               {'Running…' if running else 'Run now'}
             </button>
           </form>
+          <a class="log-link" href="/log/{_esc(m['name'])}">View log</a>
         </div>"""
         )
 
@@ -273,6 +323,7 @@ _TEMPLATE = """<!doctype html>
   .run-form {{ margin-top: 12px; }}
   .run-btn {{ width: 100%; background: #24292f; }}
   .run-btn:disabled {{ background: #8c959f; cursor: default; }}
+  .log-link {{ display: block; text-align: center; margin-top: 8px; font-size: 12px; }}
   table.review {{ width: 100%; border-collapse: collapse; background: #fff;
                   border: 1px solid #d0d7de; border-radius: 10px; overflow: hidden; }}
   table.review th, table.review td {{ text-align: left; padding: 10px 12px;
@@ -372,6 +423,12 @@ class Handler(BaseHTTPRequestHandler):
                 ),
                 ctype="application/json",
             )
+        elif parsed.path.startswith("/log/"):
+            page = render_log_page(parsed.path[len("/log/") :])
+            if page is None:
+                self._send("<h1>404</h1>", status=404)
+            else:
+                self._send(page)
         else:
             self._send("<h1>404</h1>", status=404)
 
