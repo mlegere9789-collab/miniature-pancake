@@ -272,6 +272,13 @@ npx expo start
   listener and driving the drag off PanResponder's own cumulative `dx`,
   which needs no anchor at all; also widened the touch target with
   `hitSlop` since the visible knob is much wider than the 4px handle.
+- **Missing native permission config for the photo library picker.**
+  `expo-image-picker` was added for the yard map's photo picker but
+  `app.json` was never updated — no `NSPhotoLibraryUsageDescription` on iOS
+  (a real build would crash or silently fail to prompt when the picker is
+  launched) and no Android media-read permission. Added the
+  `expo-image-picker` config plugin plus the iOS usage description and
+  `READ_MEDIA_IMAGES`.
 - **Report card content couldn't scroll.** It sat in a plain, non-scrolling
   `View` — on a small screen or with larger accessibility font sizes, the
   card plus the share button below it could overflow off-screen with no
