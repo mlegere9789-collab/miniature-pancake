@@ -139,6 +139,58 @@ void TestCurveTangentAt() {
   }
 }
 
+void TestCurveGetTightBoundingBox() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // A straight-line curve's tight bounding box is exactly its two
+  // endpoints' min/max - hand-derivable exact, no curvature involved.
+  const std::vector<Point3d> line_pts = {Point3d(-1, 5, 2), Point3d(3, -2, 7)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  const auto line_bounds = line.GetTightBoundingBox();
+  Check(line_bounds.min.x == -1.0 && line_bounds.min.y == -2.0 && line_bounds.min.z == 2.0,
+        "a straight line's tight bounding box min corner is exactly its "
+        "own low endpoint coordinates");
+  Check(line_bounds.max.x == 3.0 && line_bounds.max.y == 5.0 && line_bounds.max.z == 7.0,
+        "a straight line's tight bounding box max corner is exactly its "
+        "own high endpoint coordinates");
+
+  // A genuinely curved case, and a real discovery: a quadratic
+  // Bezier-equivalent NURBS curve through (0,0,0), (1,1,0), (2,0,0) has
+  // P(t) = (1-t)^2*P0 + 2t(1-t)*P1 + t^2*P2, so its *true* y-extent is
+  // exactly [0, 0.5] (dy/dt = 2-4t = 0 at t=0.5, y(0.5) = 0.5 -
+  // confirmed directly via PointAt() below, not just algebra). Despite
+  // its name, `ON_Curve::GetTightBoundingBox`'s public-build
+  // implementation does *not* compute that: reading the source
+  // (opennurbs_bezier.cpp) shows `ON_BezierCurve::GetTightBoundingBox`
+  // literally calls `ON_GetPointListBoundingBox` - its own comment says
+  // "good enough for file IO needs in the public source code version" -
+  // i.e. the *control-point* bounding box, not a real extremum search.
+  // So this returns y_max = 1.0 (the middle control point's own y),
+  // exactly double the curve's true 0.5 - the same "declared for Rhino,
+  // degraded in the public build" pattern this codebase has found
+  // before (`ON_Brep::CreateMesh`, `ON_SubD::BrepForm`), just less
+  // total than those: still a real, valid (if not minimal) bound, never
+  // wrong in the sense of excluding part of the curve, just measurably
+  // not "tight" for a curve whose extremum isn't a control point.
+  const std::vector<Point3d> bulge_pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  const NurbsCurve bulge = NurbsCurve::FromControlPoints(bulge_pts, /*degree=*/2);
+  const Point3d true_midpoint = bulge.PointAt(bulge.raw().Domain().ParameterAt(0.5));
+  Check(std::abs(true_midpoint.y - 0.5) < 1e-9,
+        "the quadratic curve's own true midpoint y-coordinate is exactly "
+        "0.5, confirmed directly via PointAt() (not just the algebra)");
+  const auto bulge_bounds = bulge.GetTightBoundingBox();
+  Check(std::abs(bulge_bounds.max.y - 1.0) < 1e-9,
+        "GetTightBoundingBox()'s public-build implementation returns the "
+        "*control-point* bound (y=1.0, the middle control point's own "
+        "y), not the curve's true tight extremum (0.5) - a real, "
+        "documented degradation in the public OpenNURBS build, verified "
+        "by testing rather than assumed from the method's name");
+  Check(std::abs(bulge_bounds.min.x - 0.0) < 1e-9 && std::abs(bulge_bounds.max.x - 2.0) < 1e-9,
+        "the same curve's x-extent (2t, monotonic) is still exactly "
+        "[0, 2] either way, since the endpoints already bound it exactly");
+}
+
 void TestSurfaceNormalAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -564,6 +616,38 @@ void TestBrepGetTightBoundingBox() {
             std::abs(sphere_bounds.max.z - (center.z + radius)) < 1e-9,
         "Brep::Sphere's tight bounding box max corner is exactly center + radius "
         "on every axis");
+
+  // A genuine discovery, not assumed from the method's name: a
+  // doubly-curved bicubic surface whose true peak lies at its own
+  // interior center - not on any boundary or Greville-abscissa isocurve
+  // GetTightBoundingBox() actually samples - comes back overshot rather
+  // than exact. Tensor-product quadratic bump: z(u,v) = [2u(1-u)] *
+  // [2v(1-v)] * peak_height (each direction independently contributes
+  // its own 1D quadratic-Bezier bump, same shape as
+  // TestCurveGetTightBoundingBox's curve). True max at u=v=0.5:
+  // 0.5 * 0.5 * peak_height = 0.25 * peak_height - confirmed directly
+  // via NurbsSurface::PointAt(), not just algebra.
+  const double peak_height = 5.0;
+  std::vector<Point3d> bulge_grid;
+  for (int u = 0; u < 3; ++u) {
+    for (int v = 0; v < 3; ++v) {
+      bulge_grid.emplace_back(u, v, (u == 1 && v == 1) ? peak_height : 0.0);
+    }
+  }
+  const auto bulge_surface =
+      dino8::kernel::NurbsSurface::FromControlGrid(bulge_grid, 3, 3, 2, 2);
+  const Point3d true_peak = bulge_surface.PointAt(0.5, 0.5);
+  Check(std::abs(true_peak.z - 0.25 * peak_height) < 1e-9,
+        "the bicubic bulge surface's own true interior peak z-coordinate "
+        "is exactly 0.25*peak_height, confirmed directly via PointAt()");
+  const auto bulge_brep = Brep::FromSurface(bulge_surface);
+  const auto bulge_bounds = bulge_brep.GetTightBoundingBox();
+  Check(std::abs(bulge_bounds.max.z - 0.5 * peak_height) < 1e-6,
+        "GetTightBoundingBox() overshoots this bulge's true peak "
+        "(0.25*peak_height) to 0.5*peak_height instead - it only samples "
+        "boundary/Greville isocurves, never the genuine 2D interior "
+        "extremum, the same real public-build limitation "
+        "TestCurveGetTightBoundingBox found for a curve");
 }
 
 void TestBrepBooleanEndToEnd() {
@@ -2232,6 +2316,7 @@ int main() {
   TestCurveDegreeElevation();
   TestCurveLength();
   TestCurveTangentAt();
+  TestCurveGetTightBoundingBox();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestFileRoundTrip();

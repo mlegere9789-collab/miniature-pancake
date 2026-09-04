@@ -89,15 +89,25 @@ class Brep {
 
   int FaceCount() const;
 
-  // Exact ("tight") bounding box over the Brep's actual curved geometry,
-  // not just its control points - a real gap nothing here could answer
-  // without tessellating first (Mesh::GetBoundingBox() only sees a
-  // tessellation's sampled vertices, an approximation of the true
-  // surface). Delegates to ON_Brep::GetTightBoundingBox - verified as a
-  // real implementation (computes each face's own tight bounding box via
-  // its NURBS form and isocurves, not a stub) before relying on it.
-  // Throws std::runtime_error if OpenNURBS' own call fails (e.g. a face
-  // with an invalid surface).
+  // Bounding box over the Brep's actual curved geometry, not just its
+  // control points - a real gap nothing here could answer without
+  // tessellating first (Mesh::GetBoundingBox() only sees a tessellation's
+  // sampled vertices, an approximation of the true surface). Delegates to
+  // ON_Brep::GetTightBoundingBox, which despite its name is NOT a
+  // genuine tight/exact bound in the public OpenNURBS build for a face
+  // whose true extremum lies strictly inside its parameter domain (it
+  // only samples each face's boundary/Greville-abscissa isocurves and
+  // control points, never searches the true 2D interior - verified by
+  // testing: a doubly-curved bicubic bulge whose true peak is at its
+  // center comes back overshot, at exactly half the peak control point's
+  // height above its neighbors instead of the analytically exact value).
+  // Still always a valid, safe bound (it can overshoot, never exclude
+  // part of the surface) - exact for Box() (flat faces) and, more subtly,
+  // Sphere() (the extrema of a standard rational-NURBS sphere's meridian
+  // circles coincide exactly with points its isocurve sampling actually
+  // evaluates, not because the underlying algorithm does a real 3D
+  // extremum search). Throws std::runtime_error if OpenNURBS' own call
+  // fails (e.g. a face with an invalid surface).
   BoundingBox GetTightBoundingBox() const;
 
   // Tessellates each face into a triangle mesh via NurbsSurface's grid

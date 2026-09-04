@@ -1,5 +1,7 @@
 #include "dino8/kernel/curve.h"
 
+#include <stdexcept>
+
 namespace dino8::kernel {
 
 NurbsCurve NurbsCurve::FromControlPoints(const std::vector<Point3d>& control_points,
@@ -37,6 +39,16 @@ Point3d NurbsCurve::PointAt(double t) const {
   ON_3dPoint pt;
   curve_.EvPoint(t, pt);
   return pt;
+}
+
+BoundingBox NurbsCurve::GetTightBoundingBox() const {
+  ON_BoundingBox box;
+  if (!curve_.GetTightBoundingBox(box)) {
+    throw std::runtime_error(
+        "dino8::kernel::NurbsCurve::GetTightBoundingBox: ON_Curve::"
+        "GetTightBoundingBox failed");
+  }
+  return BoundingBox{box.Min(), box.Max()};
 }
 
 double NurbsCurve::Length(int samples) const {

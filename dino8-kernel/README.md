@@ -697,16 +697,37 @@ What this repo does instead:
   answer "roughly how big/where is this Brep" without tessellating it
   first, and even then Mesh::GetBoundingBox() only sees a tessellation's
   sampled vertices - an approximation of the true curved surface, not an
-  exact bound on it. Delegates to `ON_Brep::GetTightBoundingBox` after
-  verifying it's a real implementation (computes each face's own tight
-  bounding box from its NURBS form and isocurves, not a stub). Verified
-  with `Brep::Box()` (hand-derivable exact - the box's own corners) and,
-  more meaningfully, `Brep::Sphere()`: a sphere's NURBS control net
-  extends well outside the true surface (it has to, to represent a circle
-  with a rational NURBS curve), so a naive control-point bbox would
-  overshoot - the *tight* bbox instead comes out exactly `center ± radius`
-  on every axis, confirming this doesn't just return the control net's own
-  loose bound.
+  exact bound on it. Delegates to `ON_Brep::GetTightBoundingBox` -
+  **correction, found one chunk later by testing a genuinely
+  doubly-curved face**: despite its name, this is *not* a real tight/exact
+  bound in the public OpenNURBS build. It only samples each face's
+  boundary/Greville-abscissa isocurves and control points, never a
+  genuine 2D interior extremum search - exact for `Brep::Box()` (flat
+  faces, hand-derivable exact) and, more subtly, `Brep::Sphere()` (a
+  standard rational-NURBS sphere's meridian circles happen to have their
+  own extrema exactly at points the isocurve sampling evaluates, not
+  because the algorithm does a real search), but a doubly-curved bicubic
+  bulge surface whose true peak sits at its own interior center - proven
+  by evaluating `NurbsSurface::PointAt()` there directly - comes back
+  overshot at exactly double the true height instead. Still always a
+  valid, safe bound (never excludes real geometry, only occasionally
+  overshoots), just not the minimal one its name promises - the same
+  "declared for Rhino, degraded in the public build" pattern this
+  codebase has found before (`ON_Brep::CreateMesh`, `ON_SubD::BrepForm`),
+  found here by testing a case specifically chosen to expose it rather
+  than assumed correct from a name and a non-stub function body.
+- `NurbsCurve::GetTightBoundingBox()` is the curve-level analog, and hits
+  the identical public-build limitation, confirmed by reading OpenNURBS'
+  own source directly this time rather than discovering it by accident: `ON_BezierCurve::
+  GetTightBoundingBox` (what `ON_Curve::GetTightBoundingBox` reduces to
+  per Bezier span) literally calls `ON_GetPointListBoundingBox` - its own
+  comment says "good enough for file IO needs in the public source code
+  version." Verified with a quadratic curve whose true y-extent is
+  exactly `[0, 0.5]` (confirmed via `PointAt()`): `GetTightBoundingBox()`
+  returns `y_max = 1.0` instead, exactly the middle control point's own
+  y-coordinate - the control-point bound, not the curve's real one. Exact
+  only when a curve's true extremum happens to coincide with a control
+  point or endpoint (a straight line, certain conics).
 
 ## What's still not done (as of chunk 2)
 

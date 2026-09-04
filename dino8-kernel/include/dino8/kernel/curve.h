@@ -30,6 +30,24 @@ class NurbsCurve {
 
   Point3d PointAt(double t) const;
 
+  // Delegates to `ON_Curve::GetTightBoundingBox`. DESPITE THE NAME, this
+  // is *not* a genuine tight/exact bound for a general curve in the
+  // public OpenNURBS build - verified by reading the source
+  // (opennurbs_bezier.cpp): `ON_BezierCurve::GetTightBoundingBox`
+  // literally calls `ON_GetPointListBoundingBox` (its own comment says
+  // "good enough for file IO needs in the public source code version"),
+  // i.e. each Bezier span's own *control-point* bounding box, not a real
+  // extremum search. Confirmed by testing, not just reading: a quadratic
+  // curve whose true extremum (0.5) lies strictly inside its parameter
+  // domain gets bounded by its control point's coordinate (1.0) instead -
+  // a real, valid (never excludes part of the curve), but not minimal,
+  // bound. Exact only when the curve's true extremum happens to coincide
+  // with a control point or an endpoint (a straight line; certain
+  // standard rational-conic constructions, e.g. a NURBS circle whose
+  // control points sit on-curve at the cardinal angles). Throws
+  // std::runtime_error if OpenNURBS' own call fails.
+  BoundingBox GetTightBoundingBox() const;
+
   // Approximate arc length via polyline sampling: evaluates `samples + 1`
   // points evenly across the curve's own parameter domain and sums the
   // straight-line distance between consecutive ones. This is a
