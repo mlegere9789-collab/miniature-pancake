@@ -166,4 +166,39 @@ Mesh Brep::TessellateToClosedMesh(int u_divisions, int v_divisions) const {
   return Mesh::MergeAndWeld(Tessellate(u_divisions, v_divisions));
 }
 
+std::vector<Mesh> Brep::TessellateAdaptive(double chord_tolerance) const {
+  std::vector<Mesh> result;
+  result.reserve(static_cast<size_t>(brep_.m_F.Count()));
+
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    const ON_Surface* face_surface = brep_.m_F[i].SurfaceOf();
+    const auto* nurbs_surface = ON_NurbsSurface::Cast(face_surface);
+    if (nurbs_surface == nullptr) {
+      continue;
+    }
+
+    NurbsSurface wrapper;
+    wrapper.raw() = *nurbs_surface;
+
+    const auto& trim_loop = face_trim_loops_[static_cast<size_t>(i)];
+    if (trim_loop.empty()) {
+      result.push_back(wrapper.TessellateGridAdaptive(chord_tolerance));
+    } else if (face_exact_clip_[static_cast<size_t>(i)]) {
+      result.push_back(
+          wrapper.TessellateGridClippedExactAdaptive(chord_tolerance, trim_loop));
+    } else {
+      const auto& hole_loops = face_hole_loops_[static_cast<size_t>(i)];
+      const std::vector<std::vector<Point2d>>* holes =
+          hole_loops.empty() ? nullptr : &hole_loops;
+      result.push_back(wrapper.TessellateGridAdaptive(chord_tolerance, &trim_loop, holes));
+    }
+  }
+
+  return result;
+}
+
+Mesh Brep::TessellateToClosedMeshAdaptive(double chord_tolerance) const {
+  return Mesh::MergeAndWeld(TessellateAdaptive(chord_tolerance));
+}
+
 }  // namespace dino8::kernel

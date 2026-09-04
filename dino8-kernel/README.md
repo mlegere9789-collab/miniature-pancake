@@ -1259,6 +1259,21 @@ What this repo does instead:
   approximating it), and matches the manual `SuggestedDivisions()` +
   `TessellateGridClippedExact()` two-call equivalent exactly in vertex
   and face count.
+- `Brep::TessellateAdaptive(chord_tolerance)`/
+  `TessellateToClosedMeshAdaptive(chord_tolerance)` are the Brep-level
+  endpoint of this run of curvature-based tessellation chunks: each
+  face gets its own `NurbsSurface::SuggestedDivisions()`-derived
+  resolution instead of one fixed division count shared across every
+  face, so a flat face and a tightly curved face in the same Brep get
+  independently appropriate detail. Verified two ways: `Box()` (every
+  face flat) gets exactly the minimum 1x1 division per face at any
+  tolerance tested (12 triangles total across 6 faces) with an exactly
+  correct closed volume of 8.0 for a 2x2x2 box; `Sphere()` (real
+  curvature everywhere) shows genuine adaptation working, not just
+  running without crashing - a loose 0.5 tolerance gave 36 faces and a
+  volume far from the true analytic `4/3 * pi * r^3`, while a tight 0.01
+  tolerance gave over 10x as many faces and landed within 2% of the true
+  volume.
 
 ## What's still not done (as of chunk 2)
 
@@ -1320,14 +1335,17 @@ What this repo does instead:
   round-trips both ASCII and binary STL (see below). `.obj`/`.stl` are
   still the only formats here - no glTF, FBX, etc.
 - Adaptive/curvature-aware meshing: `NurbsSurface::CurvatureAt()`,
-  `NurbsCurve::SuggestedSamples()`, and `NurbsSurface::
-  SuggestedDivisions()` (see above) are real, curvature-based building
-  blocks now - a caller can get a genuinely curvature-informed division
-  count instead of guessing one - but there's still no actual adaptive
-  tessellator: `TessellateGrid()`/`TessellateGridClippedExact()` still
-  take a single fixed `u_divisions`/`v_divisions` for the whole surface,
-  with no per-region refinement where curvature is higher within that
-  same surface. The viewport/display
+  `NurbsCurve::SuggestedSamples()`, `NurbsSurface::SuggestedDivisions()`,
+  and the `...Adaptive()` tessellation methods all the way up through
+  `Brep::TessellateAdaptive()`/`TessellateToClosedMeshAdaptive()` (see
+  above) now give a real, per-face curvature-informed division count
+  instead of one fixed count a caller has to guess and share across
+  every face. What's still missing is per-*region* adaptivity *within* a
+  single face: `TessellateGrid()`/`TessellateGridClippedExact()`
+  themselves still take one `u_divisions`/`v_divisions` pair for the
+  whole face, so a face that's flat in one area and tightly curved in
+  another still gets the tighter area's resolution everywhere on that
+  face, not a locally-varying mesh density. The viewport/display
   engine, GPU path tracer, command engine, UI shell, visual scripting,
   undo system, installer, and everything else in the blueprint's roadmap
   remain entirely unstarted.

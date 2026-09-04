@@ -1078,6 +1078,57 @@ void TestSurfaceTessellateGridClippedExactAdaptive() {
         "by hand");
 }
 
+void TestBrepTessellateAdaptive() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  // Box(): every face is flat (zero curvature everywhere), so
+  // SuggestedDivisions() should pick the minimum 1x1 division for every
+  // face regardless of chord_tolerance - exactly 6 face meshes, 12
+  // triangles total (2 per face), and the closed, welded volume exactly
+  // 8.0 (a 2x2x2 box) - hand-derivable exact, confirmed by a debug run
+  // before finalizing these assertions.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const auto box_faces = box.TessellateAdaptive(0.01);
+  int box_total_faces = 0;
+  for (const auto& m : box_faces) {
+    box_total_faces += m.FaceCount();
+  }
+  Check(box_faces.size() == 6, "TessellateAdaptive returns one mesh per Box() face (6)");
+  Check(box_total_faces == 12,
+        "each flat Box() face needs only the minimum 1x1 division "
+        "(2 triangles) regardless of chord_tolerance, 12 triangles total");
+  const Mesh box_closed = box.TessellateToClosedMeshAdaptive(0.01);
+  Check(std::abs(box_closed.Volume() - 8.0) < 1e-9,
+        "TessellateToClosedMeshAdaptive's own volume is exactly 8.0 for "
+        "a 2x2x2 box");
+
+  // Sphere(): real curvature everywhere, so a tighter chord_tolerance
+  // must produce meaningfully more triangles and a volume meaningfully
+  // closer to the true analytic value than a loose one - this is the
+  // actual point of curvature-based adaptation, not just "it runs
+  // without crashing". Confirmed by a debug run: loose (0.5) tolerance
+  // gave 36 faces / volume ~70 (far from the true ~113.1), tight (0.01)
+  // gave 1520 faces / volume ~111.9 (within ~1% of true) - a real,
+  // substantial improvement, not a coincidence of rounding.
+  const double radius = 3.0;
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), radius);
+  const Mesh loose_sphere = sphere.TessellateToClosedMeshAdaptive(0.5);
+  const Mesh tight_sphere = sphere.TessellateToClosedMeshAdaptive(0.01);
+  const double expected_volume = (4.0 / 3.0) * ON_PI * radius * radius * radius;
+  Check(tight_sphere.FaceCount() > loose_sphere.FaceCount() * 10,
+        "a tighter chord_tolerance produces substantially more triangles "
+        "for a genuinely curved surface");
+  Check(std::abs(tight_sphere.Volume() - expected_volume) <
+            std::abs(loose_sphere.Volume() - expected_volume),
+        "the tighter chord_tolerance's volume is meaningfully closer to "
+        "the true analytic sphere volume than the loose one's");
+  Check(std::abs(tight_sphere.Volume() - expected_volume) / expected_volume < 0.02,
+        "the tight-tolerance sphere's volume is within 2% of the true "
+        "analytic value (4/3 * pi * r^3)");
+}
+
 void TestFileRoundTrip() {
   using dino8::kernel::Brep;
   using dino8::kernel::Model;
@@ -4023,6 +4074,7 @@ int main() {
   TestSurfaceSuggestedDivisions();
   TestSurfaceTessellateGridAdaptive();
   TestSurfaceTessellateGridClippedExactAdaptive();
+  TestBrepTessellateAdaptive();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();

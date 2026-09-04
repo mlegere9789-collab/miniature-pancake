@@ -142,6 +142,25 @@ class Brep {
   // is what welds those seams shut.
   Mesh TessellateToClosedMesh(int u_divisions = 8, int v_divisions = 8) const;
 
+  // Tessellate(), but picking each face's own u_divisions/v_divisions
+  // via NurbsSurface::SuggestedDivisions(chord_tolerance) instead of one
+  // fixed division count shared by every face - the Brep-level endpoint
+  // of this kernel's curvature-based tessellation building blocks
+  // (NurbsSurface::CurvatureAt/SuggestedDivisions/
+  // TessellateGridAdaptive/TessellateGridClippedExactAdaptive). Each
+  // face is tessellated at whatever resolution *that face's own
+  // geometry* needs to hit `chord_tolerance` - a flat face and a tightly
+  // curved face in the same Brep (e.g. Box() vs Sphere()) get
+  // independently appropriate divisions, not the one-size-fits-all
+  // count Tessellate() requires the caller to pick by hand. Still not a
+  // per-region adaptive mesher within a single face (see
+  // SuggestedDivisions()'s own doc comment).
+  std::vector<Mesh> TessellateAdaptive(double chord_tolerance) const;
+
+  // TessellateAdaptive() followed by Mesh::MergeAndWeld() - the
+  // adaptive counterpart to TessellateToClosedMesh().
+  Mesh TessellateToClosedMeshAdaptive(double chord_tolerance) const;
+
   const ON_Brep& raw() const { return brep_; }
   ON_Brep& raw() { return brep_; }
 
