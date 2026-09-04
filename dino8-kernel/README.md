@@ -1578,6 +1578,14 @@ What this repo does instead:
   matching `TessellateGridNonUniform()`'s own validation style) rather
   than only working around it in `ApproximateArea()`, so every other
   `TessellateGrid()` caller gets the same protection.
+- The same real gap, found by inspection once `TessellateGrid()`'s own
+  fix made it worth checking siblings for: `TessellateGridClippedExact()`
+  reaches `ParameterAt()` (and, on its concave path, an unguarded grid-
+  width division) via `u_divisions`/`v_divisions` the exact same way
+  `TessellateGrid()` used to, so a `0` or negative division count there
+  had the identical silent-`NaN` failure mode. Fixed the same way -
+  throws `std::invalid_argument` below 1, verified with a dedicated test
+  rather than assumed to follow from the sibling fix.
 
 ## What's still not done (as of chunk 2)
 

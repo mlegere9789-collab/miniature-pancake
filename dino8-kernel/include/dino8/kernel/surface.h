@@ -512,6 +512,12 @@ class NurbsSurface {
   // adjacent cells independently compute the same boundary-intersection
   // points as separate vertices that need collapsing to form a single
   // consistent mesh.
+  //
+  // Throws std::invalid_argument if either division count is less than
+  // 1 - the same real gap `TessellateGrid()` used to have (a `0`
+  // division count would otherwise reach `ParameterAt()` and the
+  // concave-path grid-width computation as an unguarded `0/0`), fixed
+  // here directly rather than left latent.
   Mesh TessellateGridClippedExact(int u_divisions, int v_divisions,
                                    const std::vector<Point2d>& trim_polygon) const;
 

@@ -825,6 +825,11 @@ Mesh NurbsSurface::TessellateGridNonUniformAdaptive(
 
 Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
                                                const std::vector<Point2d>& trim_polygon) const {
+  if (u_divisions < 1 || v_divisions < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::TessellateGridClippedExact: u_divisions "
+        "and v_divisions must be at least 1");
+  }
   if (!dino8::kernel::detail::IsSimplePolygon(trim_polygon)) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsSurface::TessellateGridClippedExact: trim_polygon "

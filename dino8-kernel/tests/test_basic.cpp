@@ -1275,6 +1275,25 @@ void TestSurfaceTessellateGridValidation() {
     threw_on_v = true;
   }
   Check(threw_on_v, "TessellateGrid throws std::invalid_argument when v_divisions is negative");
+
+  // Same real gap, same fix, in TessellateGridClippedExact() - it reaches
+  // ParameterAt() and (on the concave path) a grid-width division the
+  // same unguarded way TessellateGrid() used to.
+  using dino8::kernel::Point2d;
+  const std::vector<Point2d> trim_loop = {
+      Point2d(0.15, 0.15),
+      Point2d(0.85, 0.15),
+      Point2d(0.85, 0.85),
+      Point2d(0.15, 0.85),
+  };
+  bool threw_clipped = false;
+  try {
+    surface.TessellateGridClippedExact(0, 5, trim_loop);
+  } catch (const std::invalid_argument&) {
+    threw_clipped = true;
+  }
+  Check(threw_clipped,
+        "TessellateGridClippedExact throws std::invalid_argument when u_divisions is 0");
 }
 
 void TestSurfaceTessellateGridNonUniform() {
