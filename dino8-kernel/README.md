@@ -1303,6 +1303,20 @@ What this repo does instead:
   edges are creased either way; that flag only changes whether the one
   interior fold edge is *also* a crease (6 total without it, all 7 with
   it, out of 7 total edges).
+- `NurbsSurface::IsPlanar(tolerance)` delegates to `ON_NurbsSurface::
+  IsPlanar` (verified real - fits a plane through the surface's own
+  evaluated normal at its domain center, then checks every control
+  point's distance to that plane; genuinely sound, not just a heuristic,
+  since a non-rational NURBS surface always lies within its own control
+  points' convex hull). Verified against the same doubly-curved bicubic
+  bulge surface `TestBrepGetTightBoundingBoxOvershootsInteriorExtremum`
+  uses, and along the way found a real, non-obvious threshold rather
+  than assuming one: the fitted plane passes through the surface's own
+  *evaluated* center point (`0.25*peak_height`, not `0`), so the actual
+  planar/non-planar threshold is `0.75*peak_height` (the peak control
+  point's distance to that plane), not the naively-guessable
+  `peak_height` itself - confirmed by a debug run straddling that exact
+  value before finalizing the test.
 
 ## What's still not done (as of chunk 2)
 

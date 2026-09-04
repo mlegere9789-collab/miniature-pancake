@@ -665,6 +665,48 @@ void TestSurfaceIsClosed() {
         "questions, not just two names for the same thing");
 }
 
+void TestSurfaceIsPlanar() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+  Check(flat.IsPlanar(), "a genuinely flat surface reports planar at the default tolerance");
+
+  // Same doubly-curved bicubic bulge surface as
+  // TestBrepGetTightBoundingBoxOvershootsInteriorExtremum: a 3x3 control
+  // grid, all z=0 except the center control point at z=peak_height.
+  // NOT planar-at-tolerance-peak_height as a naive guess might assume:
+  // IsPlanar() fits its plane through the surface's own *evaluated*
+  // point at the domain center (z=0.25*peak_height, confirmed
+  // separately via PointAt() in that other test), not through z=0, so
+  // the real threshold - confirmed empirically via a debug run before
+  // finalizing these assertions, not assumed - is each control point's
+  // distance to *that* plane: 0.75*peak_height for the peak control
+  // point (5 - 1.25 = 3.75 here), the larger of the two distances
+  // actually checked.
+  const double peak_height = 5.0;
+  std::vector<Point3d> bulge_grid;
+  for (int u = 0; u < 3; ++u) {
+    for (int v = 0; v < 3; ++v) {
+      bulge_grid.emplace_back(u, v, (u == 1 && v == 1) ? peak_height : 0.0);
+    }
+  }
+  const NurbsSurface bulge = NurbsSurface::FromControlGrid(bulge_grid, 3, 3, 2, 2);
+  Check(!bulge.IsPlanar(1e-6), "the bulge surface is not planar at a tight tolerance");
+  Check(!bulge.IsPlanar(0.75 * peak_height - 0.01),
+        "the bulge surface is still not planar just below the real "
+        "threshold (0.75*peak_height), not the naively-guessed "
+        "peak_height");
+  Check(bulge.IsPlanar(0.75 * peak_height + 0.01),
+        "the bulge surface is planar just above that real threshold");
+}
+
 void TestSurfaceReverseAndTranspose() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -4096,6 +4138,7 @@ int main() {
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();
+  TestSurfaceIsPlanar();
   TestSurfaceReverseAndTranspose();
   TestSurfaceTrim();
   TestSurfaceSplit();

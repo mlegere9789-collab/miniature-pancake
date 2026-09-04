@@ -83,6 +83,29 @@ class NurbsSurface {
   // stub-vs-real verification.
   bool IsPeriodic(int direction) const;
 
+  // Whether the surface's entire shape lies within `tolerance` of some
+  // plane. Delegates to `ON_NurbsSurface::IsPlanar` after verifying it's
+  // a real implementation (fits a plane through the surface's own
+  // normal at its domain center, then checks every control point's
+  // distance to that plane - not a stub, and not just a bounding-box
+  // heuristic: since a non-rational NURBS surface always lies within the
+  // convex hull of its own control points, "every control point is
+  // within `tolerance` of the plane" genuinely guarantees the whole
+  // surface is too, not merely a plausible-looking approximation).
+  // Defaults to `ON_ZERO_TOLERANCE` (OpenNURBS' own default). Verified
+  // against a doubly-curved bicubic bulge surface (the same one
+  // `TestBrepGetTightBoundingBoxOvershootsInteriorExtremum` uses, whose
+  // single non-zero-z control point sits `peak_height` above the rest):
+  // NOT planar-at-tolerance-`peak_height` as a naive guess might assume
+  // - the fitted plane passes through the *surface's own evaluated
+  // point* at the domain center (`0.25*peak_height`, not `0`), so the
+  // real threshold, confirmed empirically rather than assumed, is each
+  // control point's distance to *that* plane: `0.75*peak_height` for the
+  // peak control point (the largest of the two distances actually
+  // checked). Reports non-planar just below that threshold and planar
+  // just above it.
+  bool IsPlanar(double tolerance = ON_ZERO_TOLERANCE) const;
+
   // Reverses the surface's parameterization in `direction` (0 = U,
   // 1 = V) in place: same 3D shape, but that direction now runs the
   // opposite way, which flips the surface's own outward normal (since
