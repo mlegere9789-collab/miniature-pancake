@@ -1603,6 +1603,24 @@ What this repo does instead:
   the corresponding vertex-generation loop simply never runs. Fixed the
   same way as `RevolveProfile()`: throws `std::invalid_argument` below 3,
   checked independently for each parameter.
+- The most serious find in this whole validation-gap sweep:
+  `Mesh::Cylinder()`/`Mesh::Cone()`'s shared `BuildCircularDiskCap()`
+  helper had no `circle_segments` check, and unlike every gap above,
+  `circle_segments=0` wasn't a clean empty-mesh or crash failure at all -
+  a debug run showed it built an *empty* trim polygon, which this
+  kernel's own `Brep::Tessellate()` treats as "no trim at all" (see its
+  own `trim_loop.empty()` branch), so the untrimmed ~1.2x-oversized
+  square cap surface got tessellated and swept whole into a real,
+  plausible-looking, but completely wrong solid (V=578, F=1152, sized
+  like the square cap, not the requested circle) - the kind of silent
+  wrong-answer bug the "debug-test-first, verify actual behavior before
+  asserting" discipline this file has followed all along exists to catch.
+  `circle_segments=1`/`2` separately threw a confusing, unrelated error
+  from deep inside `ExtrudeCappedSolid()` ("cap has no boundary") instead
+  of a clear one at the actual mistake's source. Fixed by validating
+  `circle_segments >= 3` directly in the shared helper, so both
+  `Cylinder()` and `Cone()` now throw the same clear
+  `std::invalid_argument` immediately.
 
 ## What's still not done (as of chunk 2)
 

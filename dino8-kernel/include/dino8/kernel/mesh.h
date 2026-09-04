@@ -360,6 +360,17 @@ class Mesh {
   // pi*r^2*h as circle_segments and the tessellation grid resolution
   // increase - unlike Box()/the rectangular trim tests, which hit exact
   // values by construction.
+  //
+  // Throws std::invalid_argument if `circle_segments` is less than 3 - a
+  // real, previously-missing check that turned up a genuinely serious
+  // silent-failure mode, not just an empty mesh: `circle_segments=0`
+  // built an *empty* trim polygon, and this kernel's own
+  // `Brep::Tessellate()` treats an empty trim loop as "no trim at all,"
+  // so the untrimmed ~1.2x-oversized square cap surface got tessellated
+  // and swept whole - a plausible-looking but completely wrong solid
+  // (confirmed with a debug run: `circle_segments=0` returned a real
+  // mesh with hundreds of faces, not a crash or an empty result, at
+  // roughly the square cap's own size instead of the requested circle).
   static Mesh Cylinder(Point3d base_center, Vector3d axis, double radius,
                         double height, int circle_segments = 48,
                         int grid_divisions = 48);
@@ -380,7 +391,8 @@ class Mesh {
   // via ConeToApex() instead of swept via ExtrudeCappedSolid(). Volume
   // approaches (not exactly equals) the ideal (1/3)*pi*r^2*h as
   // circle_segments and grid_divisions increase, same caveat as
-  // Cylinder().
+  // Cylinder(). Throws std::invalid_argument under the same
+  // `circle_segments < 3` condition Cylinder() does - see there.
   static Mesh Cone(Point3d base_center, Vector3d axis, double radius,
                     double height, int circle_segments = 48,
                     int grid_divisions = 48);

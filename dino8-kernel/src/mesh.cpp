@@ -1011,6 +1011,11 @@ namespace {
 // that then gets closed off along +unit_axis.
 Mesh BuildCircularDiskCap(Point3d center, Vector3d unit_axis, double radius,
                           int circle_segments, int grid_divisions) {
+  if (circle_segments < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh: circle_segments must be at least 3 (fewer "
+        "can't form a non-degenerate circular trim loop)");
+  }
   const Vector3d& n = unit_axis;
 
   // Arbitrary orthonormal in-plane basis (ex, ey) perpendicular to n -

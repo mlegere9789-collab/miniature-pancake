@@ -3127,6 +3127,40 @@ void TestExtrudeTrimmedFaceFeedsBoolean() {
         "union of the extruded trimmed solid with a disjoint unit box equals 36 + 1");
 }
 
+void TestCylinderConeRejectTooFewCircleSegments() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A real, previously-missing check that turned up a genuinely serious
+  // silent-failure mode, not just an empty mesh: a debug run showed
+  // circle_segments=0 didn't throw or return an empty result at all -
+  // it built an empty trim polygon, which this kernel's own
+  // Brep::Tessellate() treats as "no trim at all," so the untrimmed
+  // ~1.2x-oversized square cap surface got tessellated and swept whole
+  // (V=578, F=1152 - a real, plausible-looking, completely wrong solid).
+  // circle_segments=1/2 instead threw a confusing, unrelated error from
+  // deep inside ExtrudeCappedSolid() ("cap has no boundary"). Now both
+  // throw the same clear, immediate error.
+  for (const int bad_segments : {0, 1, 2}) {
+    bool cylinder_threw = false;
+    try {
+      Mesh::Cylinder(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 1.0, bad_segments, 16);
+    } catch (const std::invalid_argument&) {
+      cylinder_threw = true;
+    }
+    Check(cylinder_threw, "Cylinder throws std::invalid_argument on too few circle_segments");
+
+    bool cone_threw = false;
+    try {
+      Mesh::Cone(Point3d(0, 0, 0), Vector3d(0, 0, 1), 1.0, 1.0, bad_segments, 16);
+    } catch (const std::invalid_argument&) {
+      cone_threw = true;
+    }
+    Check(cone_threw, "Cone throws std::invalid_argument on too few circle_segments");
+  }
+}
+
 void TestCylinderVolumeAndBoolean() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -5178,6 +5212,7 @@ int main() {
   TestWeldAcrossIndependentlyParameterizedSurfaces();
   TestExtrudeUntrimmedFaceIntoSolid();
   TestExtrudeTrimmedFaceFeedsBoolean();
+  TestCylinderConeRejectTooFewCircleSegments();
   TestCylinderVolumeAndBoolean();
   TestConeVolumeAndBoolean();
   TestRevolveProfileBiconeVolumeAndBoolean();
