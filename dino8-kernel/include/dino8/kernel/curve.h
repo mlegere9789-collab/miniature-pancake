@@ -109,6 +109,39 @@ class NurbsCurve {
   // condition as `ControlPointAt()`.
   Result SetControlPointAt(int i, Point3d point);
 
+  // Number of entries in the curve's own knot vector - not the same as
+  // `ControlPointCount()`: a clamped knot vector of `order = degree + 1`
+  // has `ControlPointCount() + degree - 1` knots (the standard NURBS
+  // relationship), confirmed by a debug run rather than assumed, since
+  // this file's own knot vectors are always clamped-uniform
+  // (`MakeClampedUniformKnotVector()`) but a general knot vector's exact
+  // count still follows the same formula regardless. Delegates to
+  // `ON_NurbsCurve::KnotCount()`.
+  int KnotCount() const;
+
+  // Knot value at `i`. Delegates to `ON_NurbsCurve::Knot(i)`, whose own
+  // source (verified, not assumed) has the *opposite* safety profile
+  // from `Weight(i)`'s: `Knot(i)` indexes `m_knot[i]` directly with no
+  // bounds check at all (regardless of rational/non-rational), a genuine
+  // unchecked out-of-bounds read for any out-of-range `i` - so this
+  // method validates `i` against `KnotCount()` itself first, throwing
+  // std::out_of_range, the same discipline `ControlPointAt()` already
+  // established for the identical class of gap.
+  double KnotAt(int i) const;
+
+  // Sets knot `i` to `value` directly - a real, deliberately narrow
+  // capability: this does NOT re-validate that the resulting knot vector
+  // is still non-decreasing (a NURBS requirement `ON_NurbsCurve::
+  // SetKnot()` itself doesn't enforce either, confirmed by reading its
+  // source), so a caller reordering knots into a decreasing sequence
+  // gets undefined evaluation behavior from OpenNURBS itself, not a
+  // thrown error from this wrapper. Unlike `Knot(i)`, `ON_NurbsCurve::
+  // SetKnot()` already bounds-checks `i` internally and returns false
+  // rather than indexing out of bounds (confirmed, not assumed) -
+  // returns Result::Failed in that case, or Result::NoOpAlreadySatisfied
+  // if `value` already equals `KnotAt(i)`.
+  Result SetKnotAt(int i, double value);
+
   // Elevates the curve's degree in place. Returns NoOpAlreadySatisfied if
   // `new_degree <= Degree()`.
   Result ElevateDegree(int new_degree);

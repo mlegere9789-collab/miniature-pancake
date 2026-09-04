@@ -84,6 +84,25 @@ Result NurbsCurve::SetControlPointAt(int i, Point3d point) {
   return curve_.SetCV(i, point) ? Result::Ok : Result::Failed;
 }
 
+int NurbsCurve::KnotCount() const { return curve_.KnotCount(); }
+
+double NurbsCurve::KnotAt(int i) const {
+  if (i < 0 || i >= KnotCount()) {
+    throw std::out_of_range("dino8::kernel::NurbsCurve::KnotAt: i out of range");
+  }
+  return curve_.Knot(i);
+}
+
+Result NurbsCurve::SetKnotAt(int i, double value) {
+  if (i < 0 || i >= KnotCount()) {
+    return Result::Failed;
+  }
+  if (curve_.Knot(i) == value) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.SetKnot(i, value) ? Result::Ok : Result::Failed;
+}
+
 Result NurbsCurve::ElevateDegree(int new_degree) {
   if (new_degree <= Degree()) {
     return Result::NoOpAlreadySatisfied;

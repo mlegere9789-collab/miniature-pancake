@@ -111,6 +111,15 @@ class NurbsSurface {
   // std::out_of_range under the same condition as `ControlPointAt()`.
   Result SetControlPointAt(int i, int j, Point3d point);
 
+  // Same reasoning as `NurbsCurve::KnotCount()`/`KnotAt()`/
+  // `SetKnotAt()` - see there for the full explanation of each one's
+  // safety profile (`Knot()` unchecked, `SetKnot()` already
+  // bounds-checked). `direction` is 0 for U, 1 for V, the same
+  // convention `Domain(direction)` uses.
+  int KnotCount(int direction) const;
+  double KnotAt(int direction, int i) const;
+  Result SetKnotAt(int direction, int i, double value);
+
   // Elevates degree in the given direction (0 = U, 1 = V). Returns
   // NoOpAlreadySatisfied if the surface is already at or above that degree.
   Result ElevateDegree(int direction, int new_degree);

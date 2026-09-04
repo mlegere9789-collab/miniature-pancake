@@ -241,6 +241,52 @@ void TestCurveSetWeightAt() {
         "SetWeightAt returns Failed (not a crash) on an out-of-range index");
 }
 
+void TestCurveKnotAt() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Degree-2, 3-control-point curve: KnotCount() = cv_count + degree - 1
+  // = 3 + 2 - 1 = 4, and a single-Bezier-span clamped uniform knot
+  // vector is exactly [0, 0, 1, 1] (each end repeated `degree` times,
+  // not `order` times) - confirmed by a debug run before finalizing,
+  // not derived from the formula alone.
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  NurbsCurve curve = NurbsCurve::FromControlPoints(pts, /*degree=*/2);
+  Check(curve.KnotCount() == 4, "KnotCount() is exactly cv_count + degree - 1 = 4");
+  const std::vector<double> expected_knots = {0.0, 0.0, 1.0, 1.0};
+  bool knots_match = true;
+  for (int i = 0; i < curve.KnotCount(); ++i) {
+    if (curve.KnotAt(i) != expected_knots[static_cast<size_t>(i)]) {
+      knots_match = false;
+    }
+  }
+  Check(knots_match, "the clamped uniform knot vector is exactly [0, 0, 1, 1]");
+
+  const Result set_result = curve.SetKnotAt(1, 0.3);
+  Check(set_result == Result::Ok, "SetKnotAt returns Ok when it changes a real knot value");
+  Check(curve.KnotAt(1) == 0.3, "KnotAt(1) reflects the newly-set knot value exactly");
+  Check(curve.SetKnotAt(1, 0.3) == Result::NoOpAlreadySatisfied,
+        "SetKnotAt reports NoOpAlreadySatisfied when the value already matches");
+
+  // Unlike ControlPointAt()/SetControlPointAt() (both throw on a bad
+  // index), SetKnotAt() deliberately returns Result::Failed instead -
+  // ON_NurbsCurve::SetKnot() itself already bounds-checks internally and
+  // returns false rather than indexing unsafely (confirmed, not
+  // assumed), so this wrapper matches that real safety profile instead
+  // of adding a redundant throw. KnotAt() (the getter) has no such
+  // underlying protection, so it still throws.
+  Check(curve.SetKnotAt(999, 0.5) == Result::Failed,
+        "SetKnotAt returns Failed (not a crash) on an out-of-range index");
+  bool get_threw = false;
+  try {
+    curve.KnotAt(999);
+  } catch (const std::out_of_range&) {
+    get_threw = true;
+  }
+  Check(get_threw, "KnotAt throws std::out_of_range on an out-of-range index");
+}
+
 void TestCurveControlPointAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -1863,6 +1909,47 @@ void TestSurfaceSetWeightAt() {
         "SetWeightAt reports NoOpAlreadySatisfied when the weight already matches");
   Check(surface.SetWeightAt(99, 99, 2.0) == Result::Failed,
         "SetWeightAt returns Failed (not a crash) on an out-of-range (i, j)");
+}
+
+void TestSurfaceKnotAt() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // Non-square (5x3 control points, degree 2x1) so u and v aren't
+  // accidentally checked against the same numbers - same discipline
+  // TestSurfaceCVCount() already uses. u: KnotCount = 5 + 2 - 1 = 6,
+  // knots [0,0,1,2,3,3] (3 spans since u_count - degree = 5 - 2 = 3,
+  // matching the domain [0, 3] the clamped-uniform-knots rule already
+  // established for CVCount()/Domain() predicts). v: KnotCount =
+  // 3 + 1 - 1 = 3, knots [0,1,2]. Confirmed by a debug run before
+  // finalizing, not assumed from the formula alone.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 5; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      grid.push_back(Point3d(static_cast<double>(i), static_cast<double>(j), 0.0));
+    }
+  }
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 5, 3, /*u_degree=*/2,
+                                                              /*v_degree=*/1);
+  Check(surface.KnotCount(0) == 6, "KnotCount(0) is exactly 5 + 2 - 1 = 6");
+  const std::vector<double> expected_u = {0.0, 0.0, 1.0, 2.0, 3.0, 3.0};
+  bool u_match = true;
+  for (int i = 0; i < surface.KnotCount(0); ++i) {
+    if (surface.KnotAt(0, i) != expected_u[static_cast<size_t>(i)]) {
+      u_match = false;
+    }
+  }
+  Check(u_match, "the u-direction knot vector is exactly [0, 0, 1, 2, 3, 3]");
+
+  Check(surface.KnotCount(1) == 3, "KnotCount(1) is exactly 3 + 1 - 1 = 3");
+  const std::vector<double> expected_v = {0.0, 1.0, 2.0};
+  bool v_match = true;
+  for (int i = 0; i < surface.KnotCount(1); ++i) {
+    if (surface.KnotAt(1, i) != expected_v[static_cast<size_t>(i)]) {
+      v_match = false;
+    }
+  }
+  Check(v_match, "the v-direction knot vector is exactly [0, 1, 2]");
 }
 
 void TestSurfaceControlPointAt() {
@@ -5496,6 +5583,7 @@ int main() {
   TestCurveDivideByCount();
   TestCurveIsRational();
   TestCurveSetWeightAt();
+  TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();
   TestCurveDomain();
@@ -5534,6 +5622,7 @@ int main() {
   TestSurfaceDomain();
   TestSurfaceIsRational();
   TestSurfaceSetWeightAt();
+  TestSurfaceKnotAt();
   TestSurfaceControlPointAt();
   TestSurfaceWeightAt();
   TestSurfaceApproximateArea();

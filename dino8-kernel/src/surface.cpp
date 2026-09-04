@@ -389,6 +389,25 @@ Result NurbsSurface::SetControlPointAt(int i, int j, Point3d point) {
   return surface_.SetCV(i, j, point) ? Result::Ok : Result::Failed;
 }
 
+int NurbsSurface::KnotCount(int direction) const { return surface_.KnotCount(direction); }
+
+double NurbsSurface::KnotAt(int direction, int i) const {
+  if (i < 0 || i >= KnotCount(direction)) {
+    throw std::out_of_range("dino8::kernel::NurbsSurface::KnotAt: i out of range");
+  }
+  return surface_.Knot(direction, i);
+}
+
+Result NurbsSurface::SetKnotAt(int direction, int i, double value) {
+  if (i < 0 || i >= KnotCount(direction)) {
+    return Result::Failed;
+  }
+  if (surface_.Knot(direction, i) == value) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return surface_.SetKnot(direction, i, value) ? Result::Ok : Result::Failed;
+}
+
 Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
   if (new_degree <= surface_.Degree(direction)) {
     return Result::NoOpAlreadySatisfied;

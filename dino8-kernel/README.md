@@ -1716,6 +1716,26 @@ What this repo does instead:
   a debug run's out-of-range calls raised the exception cleanly rather
   than crashing, not merely inferred from reading `WeightAt()`'s
   known caveat.
+- `NurbsCurve::KnotCount()`/`KnotAt(i)`/`SetKnotAt(i, value)` and
+  `NurbsSurface`'s `direction`-parameterized equivalents: the last piece
+  of "full read/write access to the underlying NURBS representation"
+  this chunk's own `ControlPointAt()`/`WeightAt()` work had been
+  building toward - there was previously no way to inspect or adjust a
+  curve/surface's own knot vector at all without reaching into `raw()`.
+  Verified concrete values, not just the formula: a degree-2,
+  3-control-point curve's `KnotCount()` is exactly `cv_count + degree -
+  1 = 4`, and its clamped-uniform knot vector is exactly `[0, 0, 1, 1]`
+  (each end repeated `degree` times, not `order` times); a non-square
+  (5x3 control points, degree 2x1) surface's two directions were
+  cross-checked independently at `[0, 0, 1, 2, 3, 3]` (u) and `[0, 1,
+  2]` (v). A real, deliberate asymmetry found by reading both
+  underlying calls rather than assumed symmetric with `WeightAt()`'s own
+  pattern: `Knot(i)` has no bounds check at all (a genuine unchecked
+  out-of-bounds read this wrapper guards against by throwing
+  `std::out_of_range`), but `SetKnot(i, value)` already bounds-checks
+  internally and returns `false` safely - so `SetKnotAt()` returns
+  `Result::Failed` instead of throwing, matching that real underlying
+  safety profile rather than adding a redundant, inconsistent throw.
 
 ## What's still not done (as of chunk 2)
 
