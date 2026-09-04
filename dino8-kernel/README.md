@@ -674,6 +674,18 @@ What this repo does instead:
   are constant) and a measured one for a genuinely curved surface:
   `NormalAt()` agrees (up to sign) with a finite-difference cross product
   of the surface's own partial derivatives at several `(u, v)` values.
+- `Model::AddMesh()` closes a real gap in `.3dm` support: `Model` already
+  had `AddCurve()`/`AddBrep()`, but every closed-solid primitive and every
+  `BooleanCombine()` result here is a `Mesh`, and until now there was no
+  way to put one into a `.3dm` file at all - only to export it separately
+  via `Mesh::SaveObj()`/`SaveStl()`. Same pattern as the other two: copies
+  the mesh's underlying `ON_Mesh` into a new model geometry component.
+  Verified with a real round trip, not just "the object count went up by
+  one": saved a mesh, reloaded the file, walked the reloaded model's
+  geometry components with `ONX_ModelComponentIterator` to find the
+  actual `ON_Mesh` object inside it, and confirmed its vertex count, face
+  count, and volume all exactly match the original (quad faces preserved,
+  not reinterpreted).
 
 ## What's still not done (as of chunk 2)
 

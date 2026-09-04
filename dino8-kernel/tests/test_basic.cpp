@@ -341,6 +341,54 @@ dino8::kernel::Mesh MakeQuadBoxMesh(double x0, double y0, double z0, double x1, 
   return mesh;
 }
 
+void TestModelAddMeshRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  // AddMesh() is the missing counterpart to AddCurve()/AddBrep(): every
+  // closed-solid primitive/boolean result here is a Mesh, but until now
+  // there was no way to put one into a .3dm at all.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  Model model;
+  model.AddMesh(box);
+  Check(model.ObjectCount() == 1, "model has one object after AddMesh()");
+
+  const std::string path = "dino8_kernel_mesh_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a mesh object succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.ObjectCount() == 1, "round-tripped model has one object");
+
+  // Not just "an object exists" - dig out the actual mesh geometry and
+  // check its vertex/face counts and volume genuinely survived the
+  // round trip, not just some object of some type.
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_mesh = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const auto* mesh_geometry = dynamic_cast<const ON_Mesh*>(geometry_component->Geometry(nullptr));
+    if (mesh_geometry == nullptr) {
+      continue;
+    }
+    found_mesh = true;
+    Check(mesh_geometry->m_V.Count() == box.VertexCount(),
+          "the round-tripped mesh object has the original's vertex count (8)");
+    Check(mesh_geometry->m_F.Count() == box.FaceCount(),
+          "the round-tripped mesh object has the original's face count (6)");
+    Mesh reloaded_mesh;
+    reloaded_mesh.raw() = *mesh_geometry;
+    Check(std::abs(reloaded_mesh.Volume() - box.Volume()) < 1e-9,
+          "the round-tripped mesh's volume exactly matches the original "
+          "(quad faces preserved, not reinterpreted)");
+  }
+  Check(found_mesh, "the .3dm file's model geometry actually contains a mesh object");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -2111,6 +2159,7 @@ int main() {
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestFileRoundTrip();
+  TestModelAddMeshRoundTrips();
   TestBrepTessellation();
   TestBoxVolume();
   TestBooleanUnion();

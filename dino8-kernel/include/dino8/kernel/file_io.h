@@ -6,6 +6,7 @@
 
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/mesh.h"
 #include "dino8/kernel/types.h"
 
 namespace dino8::kernel {
@@ -19,6 +20,15 @@ class Model {
 
   void AddCurve(const NurbsCurve& curve);
   void AddBrep(const Brep& brep);
+
+  // Adds a mesh (a box, cylinder, boolean result, ...) as its own model
+  // object - the missing counterpart to AddCurve()/AddBrep() that closed
+  // a real gap: every closed-solid primitive and every BooleanCombine()
+  // result here is a Mesh, but until now there was no way to put one into
+  // a .3dm file at all, only to export it separately via
+  // Mesh::SaveObj()/SaveStl(). Same pattern as the other two: copies
+  // `mesh`'s underlying ON_Mesh into a new model geometry component.
+  void AddMesh(const Mesh& mesh);
 
   int ObjectCount() const;
 

@@ -18,6 +18,13 @@ void Model::AddBrep(const Brep& brep) {
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
+void Model::AddMesh(const Mesh& mesh) {
+  auto* geometry = new ON_Mesh(mesh.raw());
+  ON_3dmObjectAttributes attributes;
+  ON_CreateUuid(attributes.m_uuid);
+  model_.AddModelGeometryComponent(geometry, &attributes);
+}
+
 int Model::ObjectCount() const {
   return static_cast<int>(
       model_.ActiveComponentCount(ON_ModelComponent::Type::ModelGeometry));
