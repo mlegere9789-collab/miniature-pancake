@@ -224,6 +224,25 @@ class NurbsSurface {
   // artifact.
   SurfaceSize GetApproximateSize() const;
 
+  // Approximate surface area: tessellates via `TessellateGrid()` at
+  // `u_divisions x v_divisions` and sums the resulting mesh's own
+  // triangle areas (`Mesh::Area()`) - not a from-scratch numeric
+  // integration of the first fundamental form, since the tessellator
+  // already exists and a flat-triangle approximation of a smooth surface
+  // converges to the true area from below as the grid refines (same
+  // "understates via straight-line/flat-facet approximation" direction
+  // every polyline/polygon approximation in this file has), the mirror
+  // image of `GetApproximateSize()`'s "overstates via the control
+  // polygon" error direction above - genuinely exact only where the
+  // surface has no curvature for a flat facet to fall short of (a flat
+  // plane). Throws std::invalid_argument if either division count is
+  // less than 1 - `TessellateGrid()` itself has no such check (a 0
+  // division count there silently produces NaN parameter values via a
+  // 0/0 division, confirmed by reading its source, not a thrown error),
+  // so this method validates it directly rather than inheriting an
+  // undefined-behavior-adjacent failure mode.
+  double ApproximateArea(int u_divisions = 50, int v_divisions = 50) const;
+
   // Reverses the surface's parameterization in `direction` (0 = U,
   // 1 = V) in place: same 3D shape, but that direction now runs the
   // opposite way, which flips the surface's own outward normal (since

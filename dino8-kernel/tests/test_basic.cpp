@@ -1650,6 +1650,56 @@ void TestSurfaceIsRational() {
   Check(sphere.IsRational(), "a genuine sphere's NURBS form is rational");
 }
 
+void TestSurfaceApproximateArea() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // Flat 3x2 identity-mapped plane: true area is exactly 6.0, no
+  // curvature for the flat-facet tessellation to fall short of - exact
+  // at any resolution, confirmed at both a fine (10x10) and coarse (2x2)
+  // grid, not just the fine one.
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0), Point3d(0, 2, 0), Point3d(3, 0, 0), Point3d(3, 2, 0),
+  };
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+  Check(std::abs(flat.ApproximateArea(10, 10) - 6.0) < 1e-9,
+        "a flat surface's approximate area is exact (6.0) at a fine grid");
+  Check(std::abs(flat.ApproximateArea(2, 2) - 6.0) < 1e-9,
+        "a flat surface's approximate area is exact (6.0) even at a coarse 2x2 grid");
+
+  // A genuine sphere, true area 4*pi*r^2: the flat-triangle tessellation
+  // must understate the true area (confirmed, not assumed, the mirror
+  // image of GetApproximateSize()'s own overstating error) and converge
+  // toward it as the grid refines - checked as a real inequality between
+  // two resolutions plus a tight bound at the finer one, not just "it's
+  // roughly right".
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere;
+  sphere.raw() = sphere_surface;
+  const double true_area = 4.0 * ON_PI * radius * radius;
+  const double coarse_area = sphere.ApproximateArea(20, 20);
+  const double fine_area = sphere.ApproximateArea(80, 80);
+  Check(coarse_area < true_area && fine_area < true_area,
+        "a sphere's approximate area understates the true area at both a coarse and fine grid, "
+        "the flat-facet tessellation's real error direction");
+  Check(fine_area > coarse_area,
+        "the finer grid's approximate area is strictly closer to (larger than) the coarser "
+        "grid's, confirming convergence rather than a fluke");
+  Check(std::abs(fine_area - true_area) < 0.1,
+        "the 80x80 grid's approximate area is within 0.1 of the true 4*pi*r^2 area");
+
+  bool threw = false;
+  try {
+    flat.ApproximateArea(0, 5);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ApproximateArea throws std::invalid_argument when a division count is below 1");
+}
+
 void TestSurfaceCVCount() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -4983,6 +5033,7 @@ int main() {
   TestSurfaceDomain();
   TestSurfaceIsRational();
   TestSurfaceWeightAt();
+  TestSurfaceApproximateArea();
   TestSurfaceCVCount();
   TestSurfaceClosestPoint();
   TestSurfaceCurvature();

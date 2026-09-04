@@ -1559,6 +1559,23 @@ What this repo does instead:
   product of that same pattern in each direction independently -
   confirmed by a debug run printing the full grid, not assumed from the
   circle result alone.
+- `NurbsSurface::ApproximateArea(u_divisions, v_divisions)`: sums the
+  triangle areas of a `TessellateGrid()` tessellation (`Mesh::Area()`)
+  rather than numerically integrating the first fundamental form from
+  scratch, since the tessellator already exists. This is the mirror image
+  of `GetApproximateSize()`'s own error direction: a flat-triangle
+  approximation of a curved surface *understates* the true area (unlike
+  the control-polygon approach's *overstating*), converging to it from
+  below as the grid refines - verified as a real inequality between a
+  coarse and fine sphere tessellation (not just "roughly 4*pi*r^2"), with
+  the finer grid strictly closer to the true value, and exact at any
+  resolution on a flat surface (no curvature to fall short of). Also
+  turned up that `TessellateGrid()` itself has no division-count
+  validation at all - a `0` division count there silently produces `NaN`
+  parameter values via an unguarded `0/0`, confirmed by reading its
+  source rather than assumed - so `ApproximateArea()` validates its own
+  arguments directly (`std::invalid_argument` below 1) instead of
+  inheriting that failure mode.
 
 ## What's still not done (as of chunk 2)
 

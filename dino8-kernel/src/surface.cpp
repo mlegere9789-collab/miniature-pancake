@@ -389,6 +389,15 @@ SurfaceSize NurbsSurface::GetApproximateSize() const {
   return SurfaceSize{width, height};
 }
 
+double NurbsSurface::ApproximateArea(int u_divisions, int v_divisions) const {
+  if (u_divisions < 1 || v_divisions < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::ApproximateArea: u_divisions and "
+        "v_divisions must be at least 1");
+  }
+  return TessellateGrid(u_divisions, v_divisions).Area();
+}
+
 Result NurbsSurface::Reverse(int direction) {
   return surface_.Reverse(direction) ? Result::Ok : Result::Failed;
 }
