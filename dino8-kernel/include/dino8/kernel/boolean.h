@@ -91,4 +91,15 @@ Mesh MinkowskiSum(const Mesh& a, const Mesh& b);
 // MinkowskiSum().
 Mesh MinkowskiDifference(const Mesh& a, const Mesh& b);
 
+// Splits `mesh` into its disconnected pieces - one Mesh per connected
+// component - backed by Manifold's own `Manifold::Decompose`. The
+// counterpart to Mesh::MergeAndWeld() concatenating several meshes into
+// one: that operation has no way to tell the pieces apart again
+// afterward, which this closes. `mesh` must be a valid closed manifold
+// (each individual piece, not just the whole - Manifold requires every
+// component to itself be watertight), same requirement as
+// BooleanCombine(); throws std::runtime_error if Manifold's own call
+// fails. Order of the returned pieces isn't specified.
+std::vector<Mesh> Decompose(const Mesh& mesh);
+
 }  // namespace dino8::kernel

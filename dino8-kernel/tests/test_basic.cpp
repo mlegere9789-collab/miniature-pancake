@@ -731,6 +731,40 @@ void TestMinkowskiSum() {
         "size round-trip even though the erosion translates the result");
 }
 
+void TestDecompose() {
+  using dino8::kernel::Decompose;
+  using dino8::kernel::Mesh;
+
+  // MergeAndWeld() concatenates several meshes into one with no way to
+  // tell the pieces apart again afterward - two disjoint (non-touching)
+  // boxes, each with a different, individually hand-known volume, so
+  // Decompose() splitting them back apart (rather than merging them into
+  // one connected piece, since they don't overlap or touch at all) is
+  // directly checkable.
+  const auto box_a = MakeBox(0, 0, 0, 2, 2, 2);          // volume 8
+  const auto box_b = MakeBox(10, 10, 10, 11, 12, 13);    // volume 1*2*3=6
+  const auto combined = Mesh::MergeAndWeld({box_a, box_b});
+
+  const auto pieces = Decompose(combined);
+  Check(pieces.size() == 2,
+        "decomposing two disjoint boxes merged into one mesh gives back "
+        "exactly 2 disconnected pieces");
+
+  // Order isn't specified, so match by volume rather than index.
+  bool found_a = false;
+  bool found_b = false;
+  for (const auto& piece : pieces) {
+    if (std::abs(piece.Volume() - 8.0) < 1e-9) {
+      found_a = true;
+    } else if (std::abs(piece.Volume() - 6.0) < 1e-9) {
+      found_b = true;
+    }
+  }
+  Check(found_a && found_b,
+        "the two decomposed pieces have exactly the two original boxes' "
+        "own volumes (8 and 6), not merged or corrupted");
+}
+
 void TestBrepTessellation() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -2660,6 +2694,7 @@ int main() {
   TestConvexHull();
   TestSimplify();
   TestMinkowskiSum();
+  TestDecompose();
   TestBrepTessellation();
   TestBoxVolume();
   TestBooleanUnion();

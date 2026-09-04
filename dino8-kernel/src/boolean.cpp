@@ -168,4 +168,19 @@ Mesh MinkowskiDifference(const Mesh& a, const Mesh& b) {
   return FromManifold(result);
 }
 
+std::vector<Mesh> Decompose(const Mesh& mesh) {
+  const std::vector<manifold::Manifold> pieces = ToManifold(mesh).Decompose();
+  std::vector<Mesh> result;
+  result.reserve(pieces.size());
+  for (const manifold::Manifold& piece : pieces) {
+    if (piece.Status() != manifold::Manifold::Error::NoError) {
+      throw std::runtime_error(
+          "dino8::kernel::Decompose: Manifold::Decompose produced an "
+          "invalid piece (Manifold::Status() != NoError)");
+    }
+    result.push_back(FromManifold(piece));
+  }
+  return result;
+}
+
 }  // namespace dino8::kernel

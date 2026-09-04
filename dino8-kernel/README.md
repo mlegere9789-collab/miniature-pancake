@@ -838,6 +838,16 @@ What this repo does instead:
   itself centered on the origin, not a limitation of the wrapper, so the
   test asserts the size/volume invariant rather than an unfounded exact
   position.
+- `Decompose()` splits a mesh into its disconnected pieces, backed by
+  Manifold's own `Manifold::Decompose` - the missing counterpart to
+  `Mesh::MergeAndWeld()` concatenating several meshes into one with no
+  way to tell the pieces apart again afterward. Verified by merging two
+  disjoint (non-touching, non-overlapping) boxes with individually
+  hand-known volumes (8 and 6) into a single `Mesh`, then confirming
+  `Decompose()` gives back exactly 2 pieces (not merged into one
+  connected shape, since they never touch) whose volumes exactly match
+  the two originals - matched by volume rather than index, since the
+  returned order isn't specified.
 
 ## What's still not done (as of chunk 2)
 
