@@ -1426,6 +1426,26 @@ What this repo does instead:
   confirmed to match exactly, and the resulting breakpoints are
   genuinely uniformly spaced, the correct degenerate case when there's
   nothing to actually adapt to.
+- `NurbsSurface::TessellateGridNonUniform(u_values, v_values, ...)`
+  generalizes `TessellateGrid()` to an explicit, not-necessarily-uniform
+  set of parameter values in each direction instead of an even division
+  count - the genuine per-region-adaptive tessellation *primitive* this
+  kernel's own flagged "adaptive/curvature-aware meshing" gap was
+  missing (a future caller, e.g. one built on
+  `NurbsCurve::SuggestedParameterValues()`, can now pass denser
+  breakpoints only where a surface actually needs them, while the
+  result stays a crack-free complete tensor-product grid - every row
+  shares the same `u_values`, every column the same `v_values`, so
+  there's no T-junction to create in the first place). `TessellateGrid()`
+  itself is now implemented as the special case where both arrays happen
+  to be evenly spaced, sharing the same underlying grid-building code -
+  verified to produce identical vertex/face counts and area to calling
+  `TessellateGrid()` directly with the equivalent evenly-spaced arrays.
+  Also verified on a genuinely non-uniform grid (breakpoints deliberately
+  clustered near the domain edges) that the flat unit-square surface's
+  measured area is still exactly 1.0 regardless of where the (uneven)
+  grid lines fall, and that a non-2-entry or non-increasing values array
+  throws `std::invalid_argument`.
 
 ## What's still not done (as of chunk 2)
 

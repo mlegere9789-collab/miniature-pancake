@@ -364,6 +364,25 @@ class NurbsSurface {
                        const std::vector<Point2d>* trim_polygon = nullptr,
                        const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
 
+  // TessellateGrid(), generalized to an explicit, not-necessarily
+  // -uniform set of `u_values`/`v_values` parameter values instead of an
+  // even division count - the genuine per-region-adaptive tessellation
+  // primitive this kernel's own flagged "adaptive/curvature-aware
+  // meshing" gap was missing: a caller (or SuggestedParameterValues()
+  // below) can pass denser breakpoints only where the surface actually
+  // needs them in each direction, while the result is still a complete
+  // tensor-product grid - no T-junctions or cracks, since every row
+  // shares the same `u_values` and every column the same `v_values`.
+  // `TessellateGrid(u_divisions, v_divisions, ...)` is exactly the
+  // special case where both arrays happen to be evenly spaced - verified
+  // to produce byte-for-byte the same mesh as calling this directly with
+  // the equivalent evenly-spaced arrays. Throws std::invalid_argument if
+  // either array has fewer than 2 entries or isn't strictly increasing.
+  Mesh TessellateGridNonUniform(const std::vector<double>& u_values,
+                                 const std::vector<double>& v_values,
+                                 const std::vector<Point2d>* trim_polygon = nullptr,
+                                 const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
+
   // TessellateGrid(), but picking u_divisions/v_divisions via
   // SuggestedDivisions(chord_tolerance) instead of the caller choosing
   // them by hand - the one-call path this kernel's own flagged

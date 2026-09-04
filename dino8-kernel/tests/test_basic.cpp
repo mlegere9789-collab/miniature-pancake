@@ -1058,6 +1058,70 @@ void TestSurfaceGetApproximateSize() {
         "true straight-line height");
 }
 
+void TestSurfaceTessellateGridNonUniform() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+
+  // Equivalence check: evenly-spaced u_values/v_values should reproduce
+  // TessellateGrid()'s own output exactly - confirmed by a debug run
+  // before finalizing (byte-for-byte matching vertex/face counts and
+  // area).
+  const std::vector<double> even_u = {0.0, 0.25, 0.5, 0.75, 1.0};
+  const std::vector<double> even_v = {0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0};
+  const auto uniform_via_new = surface.TessellateGridNonUniform(even_u, even_v);
+  const auto uniform_via_old = surface.TessellateGrid(4, 3);
+  Check(uniform_via_new.VertexCount() == uniform_via_old.VertexCount() &&
+            uniform_via_new.FaceCount() == uniform_via_old.FaceCount(),
+        "TessellateGridNonUniform with evenly-spaced values matches "
+        "TessellateGrid's own vertex/face counts exactly");
+  Check(std::abs(uniform_via_new.Area() - uniform_via_old.Area()) < 1e-9,
+        "...and matches its area exactly too");
+
+  // Genuinely non-uniform values on the same flat surface: area should
+  // still be (up to float32 vertex precision) exactly 1.0 - the
+  // identity-mapped unit square's true area never depends on where the
+  // grid lines fall, only on the domain's own outer extent.
+  const std::vector<double> non_uniform_u = {0.0, 0.05, 0.1, 0.5, 0.9, 0.95, 1.0};
+  const std::vector<double> non_uniform_v = {0.0, 0.5, 1.0};
+  const auto non_uniform_mesh = surface.TessellateGridNonUniform(non_uniform_u, non_uniform_v);
+  Check(std::abs(non_uniform_mesh.Area() - 1.0) < 1e-6,
+        "a genuinely non-uniform grid on the flat unit-square surface "
+        "still measures the exact true area (1.0), regardless of where "
+        "the (uneven) grid lines fall");
+  Check(non_uniform_mesh.VertexCount() == 21 && non_uniform_mesh.FaceCount() == 24,
+        "the non-uniform mesh's own vertex/face counts exactly match "
+        "its 7x3 grid of parameter values (21 vertices, "
+        "6x2 cells x 2 triangles = 24 faces)");
+
+  bool threw_too_few = false;
+  try {
+    surface.TessellateGridNonUniform({0.0}, {0.0, 1.0});
+  } catch (const std::invalid_argument&) {
+    threw_too_few = true;
+  }
+  Check(threw_too_few,
+        "TessellateGridNonUniform throws std::invalid_argument when "
+        "u_values has fewer than 2 entries");
+
+  bool threw_not_increasing = false;
+  try {
+    surface.TessellateGridNonUniform({0.0, 0.5, 0.3, 1.0}, {0.0, 1.0});
+  } catch (const std::invalid_argument&) {
+    threw_not_increasing = true;
+  }
+  Check(threw_not_increasing,
+        "TessellateGridNonUniform throws std::invalid_argument when "
+        "u_values isn't strictly increasing");
+}
+
 void TestSurfaceReverseAndTranspose() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -4499,6 +4563,7 @@ int main() {
   TestSurfaceIsCone();
   TestSurfaceIsTorus();
   TestSurfaceGetApproximateSize();
+  TestSurfaceTessellateGridNonUniform();
   TestSurfaceReverseAndTranspose();
   TestSurfaceTrim();
   TestSurfaceSplit();

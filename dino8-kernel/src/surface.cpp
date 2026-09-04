@@ -583,28 +583,23 @@ SurfaceDivisions NurbsSurface::SuggestedDivisions(double chord_tolerance,
   return SurfaceDivisions{u_divisions, v_divisions};
 }
 
-Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
-                                   const std::vector<Point2d>* trim_polygon,
-                                   const std::vector<std::vector<Point2d>>* hole_polygons) const {
+namespace {
+
+// Shared body of TessellateGrid()/TessellateGridNonUniform(): builds a
+// tensor-product mesh over an explicit (not necessarily uniform)
+// u_values x v_values grid, with the same whole-cell trim/hole handling
+// both public methods document.
+Mesh TessellateFromValues(const NurbsSurface& surface, const std::vector<double>& u_values,
+                           const std::vector<double>& v_values,
+                           const std::vector<Point2d>* trim_polygon,
+                           const std::vector<std::vector<Point2d>>* hole_polygons) {
   Mesh mesh;
-  ON_Mesh& raw = mesh.mesh_;
+  ON_Mesh& raw = mesh.raw();
 
-  const ON_Interval u_domain = surface_.Domain(0);
-  const ON_Interval v_domain = surface_.Domain(1);
-
-  const int u_points = u_divisions + 1;
-  const int v_points = v_divisions + 1;
-
-  std::vector<double> u_values(static_cast<size_t>(u_points));
-  std::vector<double> v_values(static_cast<size_t>(v_points));
-  for (int i = 0; i < u_points; ++i) {
-    u_values[static_cast<size_t>(i)] =
-        u_domain.ParameterAt(static_cast<double>(i) / u_divisions);
-  }
-  for (int j = 0; j < v_points; ++j) {
-    v_values[static_cast<size_t>(j)] =
-        v_domain.ParameterAt(static_cast<double>(j) / v_divisions);
-  }
+  const int u_points = static_cast<int>(u_values.size());
+  const int v_points = static_cast<int>(v_values.size());
+  const int u_divisions = u_points - 1;
+  const int v_divisions = v_points - 1;
 
   auto grid_index = [v_points](int i, int j) { return i * v_points + j; };
 
@@ -612,8 +607,8 @@ Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
     raw.m_V.Reserve(u_points * v_points);
     for (int i = 0; i < u_points; ++i) {
       for (int j = 0; j < v_points; ++j) {
-        raw.m_V.Append(ON_3fPoint(PointAt(u_values[static_cast<size_t>(i)],
-                                           v_values[static_cast<size_t>(j)])));
+        raw.m_V.Append(ON_3fPoint(surface.PointAt(u_values[static_cast<size_t>(i)],
+                                                   v_values[static_cast<size_t>(j)])));
       }
     }
 
@@ -672,8 +667,8 @@ Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
     const int raw_index = grid_index(i, j);
     if (compacted_index[static_cast<size_t>(raw_index)] == -1) {
       compacted_index[static_cast<size_t>(raw_index)] = raw.m_V.Count();
-      raw.m_V.Append(ON_3fPoint(
-          PointAt(u_values[static_cast<size_t>(i)], v_values[static_cast<size_t>(j)])));
+      raw.m_V.Append(ON_3fPoint(surface.PointAt(u_values[static_cast<size_t>(i)],
+                                                 v_values[static_cast<size_t>(j)])));
     }
     return compacted_index[static_cast<size_t>(raw_index)];
   };
@@ -710,6 +705,52 @@ Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
   }
 
   return mesh;
+}
+
+}  // namespace
+
+Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
+                                   const std::vector<Point2d>* trim_polygon,
+                                   const std::vector<std::vector<Point2d>>* hole_polygons) const {
+  const ON_Interval u_domain = surface_.Domain(0);
+  const ON_Interval v_domain = surface_.Domain(1);
+
+  std::vector<double> u_values(static_cast<size_t>(u_divisions) + 1);
+  std::vector<double> v_values(static_cast<size_t>(v_divisions) + 1);
+  for (int i = 0; i <= u_divisions; ++i) {
+    u_values[static_cast<size_t>(i)] = u_domain.ParameterAt(static_cast<double>(i) / u_divisions);
+  }
+  for (int j = 0; j <= v_divisions; ++j) {
+    v_values[static_cast<size_t>(j)] = v_domain.ParameterAt(static_cast<double>(j) / v_divisions);
+  }
+
+  return TessellateFromValues(*this, u_values, v_values, trim_polygon, hole_polygons);
+}
+
+Mesh NurbsSurface::TessellateGridNonUniform(
+    const std::vector<double>& u_values, const std::vector<double>& v_values,
+    const std::vector<Point2d>* trim_polygon,
+    const std::vector<std::vector<Point2d>>* hole_polygons) const {
+  if (u_values.size() < 2 || v_values.size() < 2) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::TessellateGridNonUniform: u_values "
+        "and v_values must each have at least 2 entries");
+  }
+  for (size_t i = 1; i < u_values.size(); ++i) {
+    if (u_values[i] <= u_values[i - 1]) {
+      throw std::invalid_argument(
+          "dino8::kernel::NurbsSurface::TessellateGridNonUniform: u_values "
+          "must be strictly increasing");
+    }
+  }
+  for (size_t j = 1; j < v_values.size(); ++j) {
+    if (v_values[j] <= v_values[j - 1]) {
+      throw std::invalid_argument(
+          "dino8::kernel::NurbsSurface::TessellateGridNonUniform: v_values "
+          "must be strictly increasing");
+    }
+  }
+  return TessellateFromValues(*this, u_values, v_values, trim_polygon, hole_polygons);
 }
 
 Mesh NurbsSurface::TessellateGridAdaptive(
