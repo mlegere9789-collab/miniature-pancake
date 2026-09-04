@@ -91,17 +91,42 @@ public sealed class GoogleDriveClient : IGoogleDriveClient, IDisposable
         var service = await RequireServiceAsync(cancellationToken).ConfigureAwait(false);
 
         var parent = string.IsNullOrWhiteSpace(parentFolderId) ? "root" : parentFolderId;
-        var request = service.Files.List();
-        request.Q = $"'{EscapeForQuery(parent)}' in parents and mimeType = '{FolderMimeType}' and trashed = false";
-        request.Fields = "files(id, name)";
-        request.Spaces = "drive";
+        var folders = new List<DriveFile>();
+        string? pageToken = null;
 
-        var response = await request.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+        // Drive API v3 pages files.list results (100 per page if PageSize is left unset) —
+        // without looping on nextPageToken, a parent with more subfolders than one page
+        // would silently show only the first batch in the folder picker, with nothing
+        // indicating more exist. 1000 is the API's own documented maximum page size, so
+        // this is at most a handful of round trips even for a very large folder.
+        do
+        {
+            var request = service.Files.List();
+            request.Q = $"'{EscapeForQuery(parent)}' in parents and mimeType = '{FolderMimeType}' and trashed = false";
+            // nextPageToken has to be named explicitly in the partial-response mask too —
+            // Google's "fields" parameter restricts every top-level field in the response,
+            // not just the ones under "files(...)", so omitting it here would make the
+            // token always come back empty regardless of how many pages actually exist.
+            request.Fields = "nextPageToken, files(id, name)";
+            request.Spaces = "drive";
+            request.PageSize = 1000;
+            request.PageToken = pageToken;
 
-        // Drive omits the "files" field entirely from the response when nothing matches,
-        // rather than returning an empty list, so a brand-new account with no folders
-        // deserialises to a null Files property here.
-        return (response.Files ?? new List<DriveFile>())
+            var response = await request.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+
+            // Drive omits the "files" field entirely from the response when nothing matches,
+            // rather than returning an empty list, so a brand-new account with no folders
+            // deserialises to a null Files property here.
+            if (response.Files is not null)
+            {
+                folders.AddRange(response.Files);
+            }
+
+            pageToken = response.NextPageToken;
+        }
+        while (!string.IsNullOrEmpty(pageToken));
+
+        return folders
             .Select(file => new GoogleDriveFolder { Id = file.Id, Name = file.Name })
             .OrderBy(folder => folder.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
