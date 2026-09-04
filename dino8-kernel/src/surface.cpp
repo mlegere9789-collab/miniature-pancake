@@ -519,6 +519,46 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
   const bool trim_is_convex = IsConvexPolygon(trim_polygon);
   const double orientation_sign = SignedArea(trim_polygon) >= 0.0 ? 1.0 : -1.0;
 
+  // ClipPolygon's own crossing detection deliberately excludes an
+  // intersection landing within `kEps` of either segment's endpoint (see
+  // its comment) - the standard way to avoid double-registering a
+  // crossing at a shared vertex. That same exclusion misfires when a
+  // trim_polygon vertex lands exactly on a cell's grid line: the cell
+  // edge lying along that line hits the trim edge right at its endpoint,
+  // gets excluded as "not a real crossing," and the cell's clipped
+  // topology comes out wrong (a documented, previously-unhardened
+  // degeneracy). Nudging any trim_polygon vertex that's suspiciously
+  // close to a grid line off of it by a tiny fraction of one cell's
+  // width - the standard "simulation of simplicity" fix for an exact
+  // degeneracy in a numerical geometry algorithm, not a workaround for a
+  // wrong algorithm - removes the coincidence with a shape change far
+  // below this function's own kDuplicatePointEpsilon, let alone any
+  // caller's area/volume tolerance. Convex trims go through ClipConvex
+  // instead, which has no such exclusion, so this only applies to the
+  // concave path.
+  std::vector<Point2d> trim_for_clipping = trim_polygon;
+  if (!trim_is_convex) {
+    const double u_width = u_domain.Length() / u_divisions;
+    const double v_width = v_domain.Length() / v_divisions;
+    constexpr double kOnGridLineFraction = 1e-6;
+    constexpr double kNudgeFraction = 1e-6;
+    auto nudge_onto_grid_line = [](double coord, double origin, double width) {
+      if (width == 0.0) {
+        return coord;
+      }
+      const double steps = (coord - origin) / width;
+      const double nearest_line = std::round(steps);
+      if (std::abs(steps - nearest_line) < kOnGridLineFraction) {
+        return origin + (nearest_line + kNudgeFraction) * width;
+      }
+      return coord;
+    };
+    for (Point2d& p : trim_for_clipping) {
+      p.x = nudge_onto_grid_line(p.x, u_domain.Min(), u_width);
+      p.y = nudge_onto_grid_line(p.y, v_domain.Min(), v_width);
+    }
+  }
+
   // A crossing point computed independently by two adjacent cells (or by
   // both loops of a split cell) can land at slightly different floating
   // point values; dedupe near-coincident consecutive points in a clipped
@@ -550,7 +590,7 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
           pieces.push_back(std::move(clipped));
         }
       } else {
-        pieces = ClipPolygon(cell, trim_polygon);
+        pieces = ClipPolygon(cell, trim_for_clipping);
       }
 
       for (const std::vector<Point2d>& piece : pieces) {

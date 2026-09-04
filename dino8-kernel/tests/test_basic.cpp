@@ -1650,6 +1650,61 @@ void TestExactClippingHandlesNonConvexTrim() {
         "a disjoint unit box equals solid volume + 1");
 }
 
+void TestExactClippingHandlesTrimVertexOnGridLine() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // The exact case TestExactClippingHandlesNonConvexTrim's own comment
+  // used to flag as broken and work around by moving off the grid: the
+  // same dart shape, but with its reflex vertex's u coordinate (0.5)
+  // exactly on one of the 8-division grid's own lines (multiples of
+  // 0.125). ClipPolygon's crossing detection now nudges a trim vertex off
+  // an exact grid line before clipping (see TessellateGridClippedExact's
+  // own comment on why), so this should measure the dart's true area
+  // instead of producing corrupted boundary geometry.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface surface =
+      NurbsSurface::FromControlGrid(grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+
+  // Shoelace area (hand-derived, independent of the tessellator): 0.40.
+  const std::vector<Point2d> on_grid_line_trim = {
+      Point2d(0.1, 0.1),
+      Point2d(0.9, 0.1),
+      Point2d(0.9, 0.9),
+      Point2d(0.5, 0.3),  // u=0.5 is exactly on the 8-division grid's u=0.5 line
+      Point2d(0.1, 0.9),
+  };
+  const Brep face = Brep::TrimmedPlanarFace(surface, on_grid_line_trim, /*exact_clip=*/true);
+  const auto mesh = face.Tessellate(/*u_divisions=*/8, /*v_divisions=*/8).front();
+
+  Check(std::abs(mesh.Area() - 0.40) < 1e-6,
+        "exact clipping measures the true area (0.40) of a dart whose "
+        "reflex vertex sits exactly on a tessellation grid line, instead "
+        "of producing corrupted boundary geometry");
+
+  const auto solid = Mesh::ExtrudeCappedSolid(mesh, Vector3d(0, 0, -1));
+  Check(std::abs(solid.Volume() - 0.40) < 1e-6,
+        "the on-grid-line dart's extruded solid volume equals its cap "
+        "area times unit height");
+
+  const auto box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const auto result = BooleanCombine(solid, box, BooleanOp::Union);
+  Check(std::abs(result.Volume() - (solid.Volume() + 1.0)) < 1e-9,
+        "Manifold accepts the on-grid-line dart solid as watertight: union "
+        "with a disjoint unit box equals solid volume + 1");
+}
+
 void TestExactClippingRejectsSelfIntersectingTrim() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -1885,6 +1940,7 @@ int main() {
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
+  TestExactClippingHandlesTrimVertexOnGridLine();
   TestExactClippingRejectsSelfIntersectingTrim();
   TestAnnulusFaceExtrudesToWatertightTube();
   TestExtrudeRejectsAlreadyClosedCap();

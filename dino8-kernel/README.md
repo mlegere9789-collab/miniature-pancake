@@ -588,6 +588,27 @@ What this repo does instead:
   exactly that quad's own flat normal, with no neighbors to average
   against. `.obj` still carries no texture coordinates, materials, or
   groups.
+- `TessellateGridClippedExact()`'s concave path (`ClipPolygon`) closes the
+  "trim vertex on a grid line" degeneracy this section used to flag:
+  `ClipPolygon`'s own crossing detection deliberately excludes an
+  intersection landing within its own epsilon of a segment endpoint (the
+  standard way to avoid double-registering a crossing at a shared
+  vertex), but that exclusion misfired whenever a trim vertex happened to
+  land exactly on a cell's grid line - the cell edge lying along that line
+  hit the trim edge right at its endpoint and got excluded as "not a real
+  crossing," corrupting that cell's clipped topology. Fixed with the
+  standard "simulation of simplicity" technique: before clipping, nudge
+  any trim vertex within `1e-6` (relative to one cell's width) of a grid
+  line off of it by `1e-6` of that width - a shape change far below this
+  function's own duplicate-point epsilon, let alone any caller's area
+  tolerance. Only applies to the concave path (`ClipConvex`, used for a
+  convex trim, has no such exclusion). Verified by reproducing the exact
+  case `TestExactClippingHandlesNonConvexTrim`'s own comment already
+  documented as broken (a dart's reflex vertex at u=0.5, exactly on the
+  8-division grid's own u=0.5 line): confirmed this test genuinely fails
+  without the fix (wrong area, not just "didn't crash") by temporarily
+  reverting only the fix and re-running it, then confirmed it passes with
+  the fix restored - not just a fix asserted from reading the code.
 
 ## What's still not done (as of chunk 2)
 
@@ -605,11 +626,11 @@ What this repo does instead:
 - `TessellateGridClippedExact()` now handles a concave `trim_polygon` too
   (via a general Greiner-Hormann-style clipper, see above), but that path
   is newer and more narrowly tested than the long-proven convex one: a
-  trim vertex landing exactly on a tessellation grid line is a known,
-  documented, unhardened degeneracy, and only one concave shape (a
-  five-vertex dart) has actually been exercised so far — a genuinely
-  pathological concave polygon (many reflex vertices, features much
-  smaller than the grid resolution) hasn't been. `trim_polygon` must
+  trim vertex landing exactly on a tessellation grid line is now handled
+  (see above), but only two concave shapes (a five-vertex dart, in two
+  variants) have actually been exercised so far — a genuinely pathological
+  concave polygon (many reflex vertices, features much smaller than the
+  grid resolution) hasn't been. `trim_polygon` must
   still be simple (non-self-intersecting) - that *is* now validated
   (`dino8::kernel::detail::IsSimplePolygon()`, thrown as
   `std::invalid_argument`).
