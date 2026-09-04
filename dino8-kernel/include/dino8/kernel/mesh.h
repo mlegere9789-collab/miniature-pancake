@@ -73,6 +73,21 @@ class Mesh {
   // hardened against here.
   bool ContainsPoint(Point3d point) const;
 
+  // The closest point on this mesh's surface to `point` (brute force over
+  // every triangle - a quad face's own two triangles, same split
+  // Area()/Volume()/ContainsPoint() already use, each checked
+  // independently - no spatial acceleration structure). A real query
+  // nothing here could answer before: ContainsPoint() only answers
+  // "inside or not," not "how far, and to where" for a point that isn't.
+  // Per-triangle closest point uses the standard region-based algorithm
+  // (Ericson, "Real-Time Collision Detection"): classify `point`'s
+  // projection against each of the triangle's 3 vertex/3 edge/1 interior
+  // Voronoi regions in barycentric-coordinate terms, then return the
+  // corresponding vertex, clamped edge point, or interior projection -
+  // not an iterative or approximate search. Throws std::invalid_argument
+  // on a mesh with no faces (no surface to be close to).
+  Point3d ClosestPoint(Point3d point) const;
+
   // Per-vertex normals: for each vertex, the area-weighted sum of every
   // adjacent face's own flat (non-normalized) triangle normal, then
   // normalized - the standard "average of what touches this vertex,

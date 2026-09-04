@@ -1556,6 +1556,63 @@ void TestMeshContainsPoint() {
         "a point far outside the hollow box entirely is not inside it");
 }
 
+void TestMeshClosestPoint() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Both quad- and triangle-faced boxes, so both of ClosestPoint()'s
+  // per-face branches get exercised.
+  const auto quad_box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const auto tri_box = MakeBox(0, 0, 0, 2, 2, 2);
+  for (const auto& box : {quad_box, tri_box}) {
+    // Interior-face-region case: a point directly "above" the +Z face's
+    // interior (not near any edge) projects straight down onto it -
+    // hand-derivable exact.
+    const Point3d above_face(1, 1, 5);
+    const Point3d closest_to_face = box.ClosestPoint(above_face);
+    Check(std::abs(closest_to_face.x - 1.0) < 1e-9 && std::abs(closest_to_face.y - 1.0) < 1e-9 &&
+              std::abs(closest_to_face.z - 2.0) < 1e-9,
+          "closest point to a query directly above a face's interior is "
+          "exactly the straight-down projection onto that face");
+
+    // Vertex-region case: a point beyond a corner's own "outward cone"
+    // has that corner itself as its closest point, not anything on an
+    // adjacent edge or face.
+    const Point3d beyond_corner(5, 5, 5);
+    const Point3d closest_to_corner = box.ClosestPoint(beyond_corner);
+    Check(std::abs(closest_to_corner.x - 2.0) < 1e-9 &&
+              std::abs(closest_to_corner.y - 2.0) < 1e-9 &&
+              std::abs(closest_to_corner.z - 2.0) < 1e-9,
+          "closest point to a query beyond a corner is exactly that "
+          "corner (2,2,2)");
+
+    // Edge-region case: a point beyond the midpoint of a top edge (both
+    // faces meeting there are equally far, but nothing on either face's
+    // interior is closer than the edge itself) has that edge's midpoint
+    // as its closest point.
+    const Point3d beyond_edge(1, 5, 5);
+    const Point3d closest_to_edge = box.ClosestPoint(beyond_edge);
+    Check(std::abs(closest_to_edge.x - 1.0) < 1e-9 && std::abs(closest_to_edge.y - 2.0) < 1e-9 &&
+              std::abs(closest_to_edge.z - 2.0) < 1e-9,
+          "closest point to a query beyond an edge's midpoint is exactly "
+          "that point on the edge (1,2,2)");
+
+    // Distance cross-check, independent of which exact point comes back:
+    // a query point inside the box must have distance exactly 1 to its
+    // closest point, since (1,1,1) is the box's own center and every
+    // face is exactly 1 unit away - whichever face/point the algorithm
+    // picks, the distance is a hand-derivable invariant even though the
+    // specific closest point isn't unique here.
+    const Point3d center(1, 1, 1);
+    const Point3d closest_to_center = box.ClosestPoint(center);
+    const double distance = (closest_to_center - center).Length();
+    Check(std::abs(distance - 1.0) < 1e-9,
+          "closest point to the box's own center is exactly 1 unit away "
+          "(every face is equidistant from the center of a 2x2x2 cube)");
+  }
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -2403,6 +2460,7 @@ int main() {
   TestMeshFlipNormals();
   TestMeshIsClosedManifold();
   TestMeshContainsPoint();
+  TestMeshClosestPoint();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();

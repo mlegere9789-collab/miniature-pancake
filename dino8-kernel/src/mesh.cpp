@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -183,6 +184,62 @@ bool RayIntersectsTriangle(const Point3d& origin, const Vector3d& direction, con
   return t > kEpsilon;
 }
 
+// Closest point on triangle (a, b, c) to `p` - the standard region-based
+// algorithm (Ericson, "Real-Time Collision Detection" 5.1.5): classifies
+// `p`'s projection into one of the triangle's 7 barycentric Voronoi
+// regions (3 vertices, 3 edges, 1 interior face) via a handful of dot
+// products, then returns the corresponding vertex, a point clamped onto
+// an edge, or the direct interior projection. Used by ClosestPoint().
+Point3d ClosestPointOnTriangle(const Point3d& p, const Point3d& a, const Point3d& b,
+                                const Point3d& c) {
+  const Vector3d ab = b - a;
+  const Vector3d ac = c - a;
+  const Vector3d ap = p - a;
+  const double d1 = ON_DotProduct(ab, ap);
+  const double d2 = ON_DotProduct(ac, ap);
+  if (d1 <= 0.0 && d2 <= 0.0) {
+    return a;  // vertex region a
+  }
+
+  const Vector3d bp = p - b;
+  const double d3 = ON_DotProduct(ab, bp);
+  const double d4 = ON_DotProduct(ac, bp);
+  if (d3 >= 0.0 && d4 <= d3) {
+    return b;  // vertex region b
+  }
+
+  const double vc = d1 * d4 - d3 * d2;
+  if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) {
+    const double v = d1 / (d1 - d3);
+    return a + v * ab;  // edge region ab
+  }
+
+  const Vector3d cp = p - c;
+  const double d5 = ON_DotProduct(ab, cp);
+  const double d6 = ON_DotProduct(ac, cp);
+  if (d6 >= 0.0 && d5 <= d6) {
+    return c;  // vertex region c
+  }
+
+  const double vb = d5 * d2 - d1 * d6;
+  if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) {
+    const double w = d2 / (d2 - d6);
+    return a + w * ac;  // edge region ac
+  }
+
+  const double va = d3 * d6 - d5 * d4;
+  if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) {
+    const double w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+    return b + w * (c - b);  // edge region bc
+  }
+
+  // interior face region
+  const double denom = 1.0 / (va + vb + vc);
+  const double v = vb * denom;
+  const double w = vc * denom;
+  return a + ab * v + ac * w;
+}
+
 }  // namespace
 
 BoundingBox Mesh::GetBoundingBox() const {
@@ -225,6 +282,38 @@ bool Mesh::ContainsPoint(Point3d point) const {
   }
 
   return (crossing_count % 2) == 1;
+}
+
+Point3d Mesh::ClosestPoint(Point3d point) const {
+  if (mesh_.m_F.Count() == 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::ClosestPoint: mesh has no faces - there's no "
+        "surface to be close to");
+  }
+
+  Point3d best_point;
+  double best_distance_squared = std::numeric_limits<double>::infinity();
+
+  auto consider_triangle = [&](int i0, int i1, int i2) {
+    const Point3d candidate = ClosestPointOnTriangle(point, Point3d(mesh_.m_V[i0]),
+                                                       Point3d(mesh_.m_V[i1]),
+                                                       Point3d(mesh_.m_V[i2]));
+    const double distance_squared = (candidate - point).LengthSquared();
+    if (distance_squared < best_distance_squared) {
+      best_distance_squared = distance_squared;
+      best_point = candidate;
+    }
+  };
+
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    consider_triangle(f.vi[0], f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      consider_triangle(f.vi[0], f.vi[2], f.vi[3]);
+    }
+  }
+
+  return best_point;
 }
 
 std::vector<Vector3d> Mesh::ComputeVertexNormals() const {

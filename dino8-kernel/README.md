@@ -753,6 +753,23 @@ What this repo does instead:
   implementation (the degeneracy is a property of any single-ray-cast
   point-in-solid test, not a bug to code around here), confirming the
   caveat is real rather than theoretical.
+- `Mesh::ClosestPoint()` answers the query `ContainsPoint()` can't: "how
+  far, and to where" for a point that isn't inside. Brute-force over
+  every triangle (a quad face's own two triangles counted independently,
+  same split every other per-face method here uses) via the standard
+  region-based point-to-triangle algorithm (Ericson's *Real-Time
+  Collision Detection* 5.1.5: classify the query's projection into one of
+  a triangle's 7 barycentric Voronoi regions - 3 vertices, 3 edges, 1
+  interior face - via a handful of dot products, not an iterative or
+  approximate search). Verified with three hand-derivable exact cases
+  covering three different regions on a 2x2x2 box: a query directly above
+  a face's interior projects straight down onto it exactly; a query
+  beyond a corner returns exactly that corner; a query beyond an edge's
+  midpoint returns exactly that point on the edge. Also checked a
+  degenerate-but-meaningful case where the closest point genuinely isn't
+  unique: from the cube's own center, every face is exactly 1 unit away,
+  so the test only asserts the hand-derivable *distance* (1.0), not which
+  of several equally-valid points comes back.
 
 ## What's still not done (as of chunk 2)
 
