@@ -187,4 +187,14 @@ double MinGap(const Mesh& a, const Mesh& b, double search_length) {
   return ToManifold(a).MinGap(ToManifold(b), search_length);
 }
 
+Mesh RefineToLength(const Mesh& mesh, double length) {
+  const manifold::Manifold refined = ToManifold(mesh).RefineToLength(length);
+  if (refined.Status() != manifold::Manifold::Error::NoError) {
+    throw std::runtime_error(
+        "dino8::kernel::RefineToLength: Manifold::RefineToLength failed "
+        "(Manifold::Status() != NoError)");
+  }
+  return FromManifold(refined);
+}
+
 }  // namespace dino8::kernel

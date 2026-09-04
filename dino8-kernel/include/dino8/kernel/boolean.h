@@ -113,4 +113,17 @@ std::vector<Mesh> Decompose(const Mesh& mesh);
 // same requirement as BooleanCombine().
 double MinGap(const Mesh& a, const Mesh& b, double search_length);
 
+// Subdivides `mesh`'s triangles so that no resulting edge is longer than
+// `length` - the opposite direction from Simplify() (adding detail
+// rather than removing it), backed by Manifold's own
+// `Manifold::RefineToLength`. Doesn't change the underlying shape at all
+// (a flat face stays exactly flat, just with more/smaller triangles
+// covering it) - useful as a uniform-resolution pass before an operation
+// that wants a denser mesh to work with (e.g. `Mesh::ComputeVertexNormals()`
+// on a coarse mesh where per-face flat shading would otherwise be too
+// visible). `mesh` must be a valid closed manifold, same requirement as
+// BooleanCombine(); throws std::runtime_error if Manifold's own call
+// fails.
+Mesh RefineToLength(const Mesh& mesh, double length);
+
 }  // namespace dino8::kernel

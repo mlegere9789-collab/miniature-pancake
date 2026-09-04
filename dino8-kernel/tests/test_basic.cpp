@@ -792,6 +792,27 @@ void TestMinGap() {
         "exactly 0.0");
 }
 
+void TestRefineToLength() {
+  using dino8::kernel::RefineToLength;
+
+  // A 2x2x2 box's own edges are all length 2 - well above a 0.5 target,
+  // so every face must be subdivided into smaller triangles. The shape
+  // is exactly flat everywhere, so - unlike Simplify()'s test, which
+  // collapses detail without losing accuracy on a flat shape - this is
+  // the opposite direction (adding detail) but the same invariant: exact
+  // volume preservation, since refining a flat face into more triangles
+  // can't change what region it covers.
+  const auto box = MakeBox(0, 0, 0, 2, 2, 2);
+  const auto refined = RefineToLength(box, 0.5);
+  Check(refined.FaceCount() > box.FaceCount(),
+        "RefineToLength() with a target well below the box's own 2-unit "
+        "edge length increases the triangle count");
+  Check(std::abs(refined.Volume() - box.Volume()) < 1e-9,
+        "RefineToLength() preserves the (exactly flat) box's volume "
+        "exactly, since subdividing a flat face doesn't change the "
+        "region it covers");
+}
+
 void TestBrepTessellation() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -2723,6 +2744,7 @@ int main() {
   TestMinkowskiSum();
   TestDecompose();
   TestMinGap();
+  TestRefineToLength();
   TestBrepTessellation();
   TestBoxVolume();
   TestBooleanUnion();

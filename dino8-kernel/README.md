@@ -858,6 +858,15 @@ What this repo does instead:
   boxes sharing a boundary face (touching, not overlapping) also give
   exactly 0.0, confirming "touching" isn't treated as some tiny positive
   gap.
+- `RefineToLength()` wraps Manifold's own `Manifold::RefineToLength` -
+  the opposite direction from `Simplify()` (adding detail rather than
+  removing it), subdividing triangles so no edge exceeds a target length
+  without changing the underlying shape at all. Verified on the same
+  2x2x2 box `Simplify()`'s own test starts from, in the opposite
+  direction: a target length (0.5) well below the box's own 2-unit edges
+  measurably increases the triangle count, while volume is preserved
+  exactly - the shape really is flat everywhere, so subdividing a face
+  into more triangles can't change what region it covers.
 
 ## What's still not done (as of chunk 2)
 
