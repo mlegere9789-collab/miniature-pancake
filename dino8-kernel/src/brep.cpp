@@ -118,6 +118,16 @@ Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
 
 int Brep::FaceCount() const { return brep_.m_F.Count(); }
 
+BoundingBox Brep::GetTightBoundingBox() const {
+  ON_BoundingBox box;
+  if (!brep_.GetTightBoundingBox(box)) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::GetTightBoundingBox: ON_Brep::"
+        "GetTightBoundingBox failed");
+  }
+  return BoundingBox{box.Min(), box.Max()};
+}
+
 std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
   std::vector<Mesh> result;
   result.reserve(static_cast<size_t>(brep_.m_F.Count()));

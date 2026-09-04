@@ -693,6 +693,20 @@ What this repo does instead:
   SubD control cage, reloaded the file, found the actual `ON_SubD` object
   inside the reloaded model's geometry components, and confirmed its
   vertex and face counts exactly match the original.
+- `Brep::GetTightBoundingBox()` closes a real gap: nothing here could
+  answer "roughly how big/where is this Brep" without tessellating it
+  first, and even then Mesh::GetBoundingBox() only sees a tessellation's
+  sampled vertices - an approximation of the true curved surface, not an
+  exact bound on it. Delegates to `ON_Brep::GetTightBoundingBox` after
+  verifying it's a real implementation (computes each face's own tight
+  bounding box from its NURBS form and isocurves, not a stub). Verified
+  with `Brep::Box()` (hand-derivable exact - the box's own corners) and,
+  more meaningfully, `Brep::Sphere()`: a sphere's NURBS control net
+  extends well outside the true surface (it has to, to represent a circle
+  with a rational NURBS curve), so a naive control-point bbox would
+  overshoot - the *tight* bbox instead comes out exactly `center ± radius`
+  on every axis, confirming this doesn't just return the control net's own
+  loose bound.
 
 ## What's still not done (as of chunk 2)
 

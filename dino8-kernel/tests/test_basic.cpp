@@ -530,6 +530,42 @@ void TestBrepBoxIsClosedAndWatertight() {
         "Brep::Box -> Tessellate -> weld volume matches the box's true volume");
 }
 
+void TestBrepGetTightBoundingBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  // Box(): six flat faces, so the tight bounding box is exactly the box's
+  // own corners - hand-derivable exact, no tessellation involved at all.
+  const Brep box = Brep::Box(1, -2, 0.5, 4, 3, 7.5);
+  const auto box_bounds = box.GetTightBoundingBox();
+  Check(box_bounds.min.x == 1.0 && box_bounds.min.y == -2.0 && box_bounds.min.z == 0.5,
+        "Brep::Box's tight bounding box min corner matches its known low corner exactly");
+  Check(box_bounds.max.x == 4.0 && box_bounds.max.y == 3.0 && box_bounds.max.z == 7.5,
+        "Brep::Box's tight bounding box max corner matches its known high corner exactly");
+
+  // Sphere(): a curved surface, so this actually exercises the "tight",
+  // not just control-point, bounding box - a sphere's own control net
+  // (the NURBS control polygon) extends well outside the true surface
+  // (it has to, to represent a circle with a rational NURBS curve), so a
+  // naive control-point bbox would overshoot. The true tight bbox is
+  // exactly [-r, r] on every axis around the center, since a full sphere
+  // touches its own bounding box on every face.
+  const double radius = 3.0;
+  const Point3d center(10, -5, 2);
+  const Brep sphere = Brep::Sphere(center, radius);
+  const auto sphere_bounds = sphere.GetTightBoundingBox();
+  Check(std::abs(sphere_bounds.min.x - (center.x - radius)) < 1e-9 &&
+            std::abs(sphere_bounds.min.y - (center.y - radius)) < 1e-9 &&
+            std::abs(sphere_bounds.min.z - (center.z - radius)) < 1e-9,
+        "Brep::Sphere's tight bounding box min corner is exactly center - radius "
+        "on every axis, not overshot by the NURBS control net");
+  Check(std::abs(sphere_bounds.max.x - (center.x + radius)) < 1e-9 &&
+            std::abs(sphere_bounds.max.y - (center.y + radius)) < 1e-9 &&
+            std::abs(sphere_bounds.max.z - (center.z + radius)) < 1e-9,
+        "Brep::Sphere's tight bounding box max corner is exactly center + radius "
+        "on every axis");
+}
+
 void TestBrepBooleanEndToEnd() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -2208,6 +2244,7 @@ int main() {
   TestBooleanDifference();
   TestBooleanSymmetricDifference();
   TestBrepBoxIsClosedAndWatertight();
+  TestBrepGetTightBoundingBox();
   TestBrepBooleanEndToEnd();
   TestBrepSphereIsClosedAndWatertight();
   TestBrepSphereBooleanEndToEnd();

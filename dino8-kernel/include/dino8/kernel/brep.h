@@ -89,6 +89,17 @@ class Brep {
 
   int FaceCount() const;
 
+  // Exact ("tight") bounding box over the Brep's actual curved geometry,
+  // not just its control points - a real gap nothing here could answer
+  // without tessellating first (Mesh::GetBoundingBox() only sees a
+  // tessellation's sampled vertices, an approximation of the true
+  // surface). Delegates to ON_Brep::GetTightBoundingBox - verified as a
+  // real implementation (computes each face's own tight bounding box via
+  // its NURBS form and isocurves, not a stub) before relying on it.
+  // Throws std::runtime_error if OpenNURBS' own call fails (e.g. a face
+  // with an invalid surface).
+  BoundingBox GetTightBoundingBox() const;
+
   // Tessellates each face into a triangle mesh via NurbsSurface's grid
   // tessellator (see its comment for why this doesn't go through
   // OpenNURBS' own CreateMesh). One Mesh per face, in face order.
