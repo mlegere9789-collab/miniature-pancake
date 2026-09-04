@@ -6,6 +6,26 @@
 
 namespace dino8::kernel {
 
+namespace {
+
+void SubdivideForFlatness(const NurbsCurve& curve, double t0, double t1, double chord_tolerance,
+                           int depth, int max_depth, std::vector<double>& out) {
+  const Point3d p0 = curve.PointAt(t0);
+  const Point3d p1 = curve.PointAt(t1);
+  const double tm = 0.5 * (t0 + t1);
+  const Point3d pm = curve.PointAt(tm);
+  const Point3d chord_mid((p0.x + p1.x) * 0.5, (p0.y + p1.y) * 0.5, (p0.z + p1.z) * 0.5);
+  const double deviation = (pm - chord_mid).Length();
+  if (deviation > chord_tolerance && depth < max_depth) {
+    SubdivideForFlatness(curve, t0, tm, chord_tolerance, depth + 1, max_depth, out);
+    SubdivideForFlatness(curve, tm, t1, chord_tolerance, depth + 1, max_depth, out);
+  } else {
+    out.push_back(t1);
+  }
+}
+
+}  // namespace
+
 NurbsCurve NurbsCurve::FromControlPoints(const std::vector<Point3d>& control_points,
                                           int degree) {
   NurbsCurve result;
@@ -73,6 +93,21 @@ int NurbsCurve::SuggestedSamples(double chord_tolerance, int curvature_samples) 
   // radius found - the conservative approximation this method documents.
   const double total_angle = Length() / radius;
   return std::max(1, static_cast<int>(std::ceil(total_angle / max_angle_step)));
+}
+
+std::vector<double> NurbsCurve::SuggestedParameterValues(double chord_tolerance,
+                                                          int max_depth) const {
+  if (chord_tolerance <= 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::SuggestedParameterValues: chord_tolerance "
+        "must be positive");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  std::vector<double> out;
+  out.push_back(domain.Min());
+  SubdivideForFlatness(*this, domain.Min(), domain.Max(), chord_tolerance, 0, max_depth, out);
+  return out;
 }
 
 double NurbsCurve::ClosestPointParameter(Point3d point, int samples) const {

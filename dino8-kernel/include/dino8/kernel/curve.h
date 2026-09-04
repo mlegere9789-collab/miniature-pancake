@@ -253,6 +253,27 @@ class NurbsCurve {
   // std::invalid_argument if `chord_tolerance <= 0`.
   int SuggestedSamples(double chord_tolerance, int curvature_samples = 50) const;
 
+  // Returns a genuinely non-uniform, curvature-adaptive set of
+  // parameter values across the domain (always starting at
+  // `Domain().Min()`, ending at `Domain().Max()`) - denser where the
+  // curve actually bends more, sparser where it's flatter, rather than
+  // `SuggestedSamples()`'s single global count spread uniformly. This
+  // is real per-region adaptivity (unlike `SuggestedSamples()`'s
+  // "assume the whole curve is as tight as its worst point"
+  // conservative estimate), a further step toward this kernel's own
+  // flagged "adaptive/curvature-aware meshing" gap. Implemented via
+  // recursive chord-height (flatness) testing - the standard curve
+  // -flattening technique (the same idea browser/font rendering engines
+  // use to turn a Bezier into line segments): bisect `[t0, t1]` if its
+  // midpoint deviates from the straight chord between `PointAt(t0)` and
+  // `PointAt(t1)` by more than `chord_tolerance`, recursing up to
+  // `max_depth` levels (a safety cap against pathological curves, not
+  // expected to bind in ordinary use). A straight line needs no
+  // bisection at all and returns exactly `[Domain().Min(),
+  // Domain().Max()]` (2 values) - confirmed directly, not assumed.
+  // Throws std::invalid_argument if `chord_tolerance <= 0`.
+  std::vector<double> SuggestedParameterValues(double chord_tolerance, int max_depth = 12) const;
+
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }
 

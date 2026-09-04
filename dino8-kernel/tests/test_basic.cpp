@@ -627,6 +627,71 @@ void TestCurveSuggestedSamples() {
   Check(threw, "SuggestedSamples throws std::invalid_argument on a non-positive chord_tolerance");
 }
 
+void TestCurveSuggestedParameterValues() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // A straight line needs no bisection at all: the midpoint of any
+  // [t0, t1] sub-range lands exactly on the chord between its endpoints
+  // (zero deviation), so the very first flatness check already passes -
+  // exactly 2 values, the domain's own min and max. Confirmed by a
+  // debug run before finalizing.
+  const NurbsCurve line =
+      NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, /*degree=*/1);
+  const auto line_values = line.SuggestedParameterValues(0.01);
+  Check(line_values.size() == 2 && line_values[0] == 0.0 && line_values[1] == 1.0,
+        "SuggestedParameterValues for a straight line is exactly [0, 1] "
+        "- no bisection needed at all");
+
+  // A full circle has constant curvature everywhere, so the recursive
+  // bisection lands on a genuinely uniform spacing (confirmed below,
+  // not assumed) - and since it always bisects a segment exactly in
+  // half rather than choosing an arbitrary split point, the final
+  // segment count is always a power of 2: the smallest one at or above
+  // SuggestedSamples()'s own independently-computed minimum-segments
+  // threshold (50, from TestCurveSuggestedSamples), i.e. 2^ceil(log2(50))
+  // = 64 - confirmed to match exactly by a debug run before finalizing,
+  // not assumed from the formula alone.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const double chord_tolerance = 0.01;
+  const auto circle_values = circle.SuggestedParameterValues(chord_tolerance);
+  const int suggested_samples = circle.SuggestedSamples(chord_tolerance);
+  const int expected_segments =
+      static_cast<int>(std::pow(2.0, std::ceil(std::log2(static_cast<double>(suggested_samples)))));
+  Check(static_cast<int>(circle_values.size()) - 1 == expected_segments,
+        "the circle's own segment count is exactly the smallest power of "
+        "2 at or above SuggestedSamples()'s independently-computed "
+        "minimum threshold");
+
+  bool all_deltas_equal = true;
+  const double first_delta = circle_values[1] - circle_values[0];
+  for (size_t i = 1; i < circle_values.size(); ++i) {
+    if (std::abs((circle_values[i] - circle_values[i - 1]) - first_delta) > 1e-9) {
+      all_deltas_equal = false;
+      break;
+    }
+  }
+  Check(all_deltas_equal,
+        "the circle's own breakpoints are genuinely uniformly spaced, "
+        "matching its constant curvature - real adaptivity naturally "
+        "degenerates to uniform spacing when there's nothing to adapt to");
+
+  bool threw = false;
+  try {
+    circle.SuggestedParameterValues(-1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "SuggestedParameterValues throws std::invalid_argument on a "
+        "non-positive chord_tolerance");
+}
+
 void TestSurfaceNormalAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -4424,6 +4489,7 @@ int main() {
   TestCurveClosestPoint();
   TestCurveCurvature();
   TestCurveSuggestedSamples();
+  TestCurveSuggestedParameterValues();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();

@@ -1411,6 +1411,21 @@ What this repo does instead:
   flat surface (width/height match its true 3x2 size) and confirmed to
   meaningfully overstate a cylinder wall's true circumference (8.0 vs.
   the true `2*pi ~ 6.28`) rather than merely rounding-error off it.
+- `NurbsCurve::SuggestedParameterValues(chord_tolerance)` is a further,
+  more substantial step toward the flagged "adaptive/curvature-aware
+  meshing" gap than `SuggestedSamples()`'s single global count: it
+  returns a genuinely non-uniform, per-region-adaptive set of parameter
+  values (denser where the curve actually bends more), via the standard
+  recursive chord-height (flatness) bisection technique used by real
+  curve flatteners. Verified on a straight line (needs no bisection at
+  all - exactly `[Domain().Min(), Domain().Max()]`, 2 values) and a
+  full circle (constant curvature): the recursive bisection - which
+  always splits a segment exactly in half - naturally lands on the
+  smallest power-of-2 segment count at or above `SuggestedSamples()`'s
+  own independently-computed minimum threshold (64 vs. 50 here),
+  confirmed to match exactly, and the resulting breakpoints are
+  genuinely uniformly spaced, the correct degenerate case when there's
+  nothing to actually adapt to.
 
 ## What's still not done (as of chunk 2)
 
