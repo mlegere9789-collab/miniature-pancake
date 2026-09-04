@@ -1651,6 +1651,17 @@ What this repo does instead:
   empty/1-point/2-point cases (confirming a clean throw where the debug
   run had shown a crash), not just the zero-point case that was found
   first.
+- The milder sibling of that segfault, closed for completeness:
+  `TessellateGrid()`'s whole-cell path goes through `PointInPolygon()`
+  instead of the crashing `ClipPolygon()` concave path, and
+  `PointInPolygon()` itself turned out to already be safe on a too-short
+  polygon (an unsigned `n - 1` underflow that's never dereferenced, since
+  the loop bound is also 0) - so this one was "only" a silent
+  fully-empty-mesh result for a non-null `trim_polygon` with fewer than 3
+  points, confirmed by a debug run, not a crash. Still fixed the same
+  way, in the shared `TessellateFromValues()` helper so both
+  `TessellateGrid()` and `TessellateGridNonUniform()` get the same
+  `std::invalid_argument` check.
 
 ## What's still not done (as of chunk 2)
 

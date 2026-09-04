@@ -430,7 +430,11 @@ class NurbsSurface {
   // `ApproximateArea()`: without this check, a `0` division count
   // silently produced `NaN` parameter values via an unguarded `0/0`
   // division (confirmed by reading the old implementation) instead of
-  // failing loudly.
+  // failing loudly. Also throws if `trim_polygon` is non-null but has
+  // fewer than 3 points - a similar real gap: `PointInPolygon()` treats
+  // a too-short polygon as containing nothing, so this used to silently
+  // tessellate to a fully empty mesh (confirmed by a debug run) instead
+  // of failing loudly.
   Mesh TessellateGrid(int u_divisions, int v_divisions,
                        const std::vector<Point2d>* trim_polygon = nullptr,
                        const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
@@ -448,7 +452,10 @@ class NurbsSurface {
   // special case where both arrays happen to be evenly spaced - verified
   // to produce byte-for-byte the same mesh as calling this directly with
   // the equivalent evenly-spaced arrays. Throws std::invalid_argument if
-  // either array has fewer than 2 entries or isn't strictly increasing.
+  // either array has fewer than 2 entries or isn't strictly increasing,
+  // or if a non-null `trim_polygon` has fewer than 3 points (see
+  // TessellateGrid()'s own comment on that check - both delegate to the
+  // same shared helper and so share this validation).
   Mesh TessellateGridNonUniform(const std::vector<double>& u_values,
                                  const std::vector<double>& v_values,
                                  const std::vector<Point2d>* trim_polygon = nullptr,

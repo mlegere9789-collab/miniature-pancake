@@ -643,6 +643,14 @@ Mesh TessellateFromValues(const NurbsSurface& surface, const std::vector<double>
                            const std::vector<double>& v_values,
                            const std::vector<Point2d>* trim_polygon,
                            const std::vector<std::vector<Point2d>>* hole_polygons) {
+  if (trim_polygon != nullptr && trim_polygon->size() < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface: a non-null trim_polygon must have at "
+        "least 3 points (fewer isn't a closed polygon at all - and, before "
+        "this check, PointInPolygon() silently treated every point as "
+        "outside it, tessellating to a fully empty mesh instead of "
+        "failing loudly)");
+  }
   Mesh mesh;
   ON_Mesh& raw = mesh.raw();
 

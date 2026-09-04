@@ -1284,6 +1284,46 @@ void TestSurfaceTessellateGridClippedExactRejectsTooFewPoints() {
   }
 }
 
+void TestSurfaceTessellateGridRejectsTooFewTrimPoints() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // The milder sibling of the TessellateGridClippedExact() segfault
+  // fixed above: TessellateGrid()'s whole-cell path goes through
+  // PointInPolygon() instead of the crashing ClipPolygon() concave path,
+  // and PointInPolygon() itself is safe on a too-short polygon (an
+  // unsigned n-1 underflow that never gets dereferenced, since the loop
+  // bound is also 0) - so this one was "only" a silent full-empty-mesh
+  // result (V=0, F=0 for all of 0/1/2 points, confirmed by a debug run),
+  // not a crash. Still a real, previously-missing check: fixed in the
+  // shared TessellateFromValues() helper, so both TessellateGrid() and
+  // TessellateGridNonUniform() get it.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+
+  for (const int point_count : {0, 1, 2}) {
+    std::vector<Point2d> trim_polygon;
+    for (int i = 0; i < point_count; ++i) {
+      trim_polygon.push_back(Point2d(0.1 * i, 0.1 * i));
+    }
+    bool threw = false;
+    try {
+      surface.TessellateGrid(4, 4, &trim_polygon);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw,
+          "TessellateGrid throws std::invalid_argument on a non-null trim_polygon with fewer "
+          "than 3 points");
+  }
+}
+
 void TestSurfaceTessellateGridValidation() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -5246,6 +5286,7 @@ int main() {
   TestSurfaceIsTorus();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
+  TestSurfaceTessellateGridRejectsTooFewTrimPoints();
   TestSurfaceTessellateGridValidation();
   TestSurfaceTessellateGridNonUniform();
   TestSurfaceSuggestedParameterValuesAndTessellateGridNonUniformAdaptive();
