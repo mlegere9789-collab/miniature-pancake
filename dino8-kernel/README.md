@@ -1348,6 +1348,17 @@ What this repo does instead:
   shapes that must correctly report false rather than "anything curved
   is a sphere": a flat surface and a cylinder wall (curved in only one
   direction).
+- `NurbsSurface::IsCylinder(tolerance)` is `IsSphere()`'s sibling
+  classification, same inheritance situation (`ON_NurbsSurface` doesn't
+  override `ON_Surface::IsCylinder`, so it's the base class's own real
+  implementation - one isocurve direction must be a circular arc and the
+  other a straight line, consistent along the line). The two methods'
+  tests are literally each other's negative case: the cylinder wall that
+  correctly reports `IsSphere()` false now correctly reports
+  `IsCylinder()` true, and the sphere that reports `IsSphere()` true
+  correctly reports `IsCylinder()` false - together showing these are
+  real, mutually-distinguishing classifications, not "anything curved
+  reports true for everything".
 
 ## What's still not done (as of chunk 2)
 

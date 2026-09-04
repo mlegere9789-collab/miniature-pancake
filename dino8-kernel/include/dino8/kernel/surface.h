@@ -120,6 +120,20 @@ class NurbsSurface {
   // cylinder wall (report false - neither is spherical).
   bool IsSphere(double tolerance = ON_ZERO_TOLERANCE) const;
 
+  // Whether the surface is (a portion of) a right circular cylinder
+  // within `tolerance`. Same inheritance situation as IsSphere():
+  // `ON_NurbsSurface` doesn't override `ON_Surface::IsCylinder`, so this
+  // is the base class's own real implementation (verified by reading
+  // opennurbs_revsurface.cpp) - one isocurve direction must be a
+  // circular arc and the other a straight line (or vice versa), with
+  // that arc's circle consistent along the line. Verified against the
+  // same cylinder wall `IsSphere()`'s own test already builds via
+  // `ON_Cylinder::GetNurbForm` (reports true here, correctly false
+  // there) - the two methods' tests are each other's negative case,
+  // together showing this is a real distinguishing classification, not
+  // "any curved surface reports true for everything".
+  bool IsCylinder(double tolerance = ON_ZERO_TOLERANCE) const;
+
   // Reverses the surface's parameterization in `direction` (0 = U,
   // 1 = V) in place: same 3D shape, but that direction now runs the
   // opposite way, which flips the surface's own outward normal (since

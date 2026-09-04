@@ -367,6 +367,10 @@ bool NurbsSurface::IsPlanar(double tolerance) const { return surface_.IsPlanar(n
 
 bool NurbsSurface::IsSphere(double tolerance) const { return surface_.IsSphere(nullptr, tolerance); }
 
+bool NurbsSurface::IsCylinder(double tolerance) const {
+  return surface_.IsCylinder(nullptr, tolerance);
+}
+
 Result NurbsSurface::Reverse(int direction) {
   return surface_.Reverse(direction) ? Result::Ok : Result::Failed;
 }

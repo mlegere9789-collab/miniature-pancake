@@ -799,6 +799,41 @@ void TestSurfaceIsSphere() {
   Check(!wall.IsSphere(), "a cylinder wall (curved in only one direction) reports IsSphere() false");
 }
 
+void TestSurfaceIsCylinder() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // Same cylinder wall as TestSurfaceIsSphere()'s own negative case -
+  // now the positive case here, and vice versa for the sphere below:
+  // each method's test is the other's negative, together showing this
+  // is a real distinguishing classification. Confirmed by a debug run
+  // before finalizing these assertions.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  Check(wall.IsCylinder(), "a genuine cylinder wall surface reports IsCylinder() true");
+
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(1, -2, 0.5), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere;
+  sphere.raw() = sphere_surface;
+  Check(!sphere.IsCylinder(), "a sphere reports IsCylinder() false");
+
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+  Check(!flat.IsCylinder(), "a flat surface reports IsCylinder() false");
+}
+
 void TestSurfaceReverseAndTranspose() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -4234,6 +4269,7 @@ int main() {
   TestSurfaceIsClosed();
   TestSurfaceIsPlanar();
   TestSurfaceIsSphere();
+  TestSurfaceIsCylinder();
   TestSurfaceReverseAndTranspose();
   TestSurfaceTrim();
   TestSurfaceSplit();
