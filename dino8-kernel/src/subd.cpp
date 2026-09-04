@@ -44,4 +44,15 @@ int SubD::FaceCount() const { return static_cast<int>(subd_.FaceCount()); }
 int SubD::VertexCount() const { return static_cast<int>(subd_.VertexCount()); }
 int SubD::EdgeCount() const { return static_cast<int>(subd_.EdgeCount()); }
 
+int SubD::CreaseEdgeCount() const {
+  int count = 0;
+  ON_SubDEdgeIterator eit = subd_.EdgeIterator();
+  for (const ON_SubDEdge* e = eit.FirstEdge(); e != nullptr; e = eit.NextEdge()) {
+    if (e->IsCrease()) {
+      ++count;
+    }
+  }
+  return count;
+}
+
 }  // namespace dino8::kernel

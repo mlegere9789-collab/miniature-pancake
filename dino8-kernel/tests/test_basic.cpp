@@ -3051,6 +3051,26 @@ void TestSubDCreaseAtDoubleEdgeKeepsFoldStraight() {
         "both the smooth and creased SubDs weld the double-edge's "
         "coincident-but-distinct-indexed vertices into 6 shared ones");
 
+  // Confirmed by a debug run before finalizing, not assumed: an open
+  // SubD's own boundary edges are themselves always creases (a standard
+  // Catmull-Clark convention, not something crease_at_double_edges
+  // controls) - both hinge quads' 6 outer boundary edges are creased
+  // either way. The two quads share the fold as their only interior
+  // edge (2 quads x 4 edges - 1 shared = 7 total edges), so
+  // crease_at_double_edges only changes whether *that one* edge is
+  // creased too: 6 creases (boundary only) without it, all 7 (boundary
+  // + fold) with it.
+  Check(smooth.EdgeCount() == 7 && creased.EdgeCount() == 7,
+        "both SubDs have the same 7 total edges (2 quads sharing 1 "
+        "interior fold edge) - crease_at_double_edges doesn't change "
+        "the topology, only which edges are tagged as creases");
+  Check(smooth.CreaseEdgeCount() == 6,
+        "without crease_at_double_edges, only the mesh's 6 boundary "
+        "edges are creases - the interior fold edge is smooth");
+  Check(creased.CreaseEdgeCount() == 7,
+        "with crease_at_double_edges, all 7 edges are creases - the "
+        "same 6 boundary edges plus the now-creased interior fold edge");
+
   smooth.Subdivide(1);
   creased.Subdivide(1);
 

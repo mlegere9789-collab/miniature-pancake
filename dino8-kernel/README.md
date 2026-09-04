@@ -1283,6 +1283,26 @@ What this repo does instead:
   with Euler's formula `V - E + F = 2` checked directly against
   `EdgeCount()`'s own reported value, confirming it's real edge
   topology, not some other count that happened to look plausible.
+- `SubD::CreaseEdgeCount()` counts the current level's own crease edges -
+  a way to directly check how many creases exist, rather than only
+  their geometric effect (the fold-stays-straight check
+  `TestSubDCreaseAtDoubleEdgeKeepsFoldStraight()` already had). NOT a
+  wrapper around `ON_SubD::CreaseEdgeCount` despite that method existing
+  in OpenNURBS' own public header - verified by grepping the whole
+  v8.34 source tree that it's declared but never actually implemented
+  anywhere (only an unrelated class, `ON_SubDVertexSharpnessCalculator::
+  CreaseEdgeCount`, exists) - the same "declared for Rhino, not present
+  in the public build" pattern this file's own class comment already
+  flags for `ON_SubD::BrepForm`. Implemented instead via the real,
+  working `ON_SubD::EdgeIterator()` + `ON_SubDEdge::IsCrease()` (the
+  exact pattern `ON_SubD::FirstEdge()`'s own doc comment recommends).
+  Verified on the existing hinge test's own two-quad mesh, and along the
+  way discovered (by testing, not assumed) a real OpenNURBS convention:
+  an open SubD's own boundary edges are themselves always creases,
+  independent of `crease_at_double_edges` - the hinge's 6 outer boundary
+  edges are creased either way; that flag only changes whether the one
+  interior fold edge is *also* a crease (6 total without it, all 7 with
+  it, out of 7 total edges).
 
 ## What's still not done (as of chunk 2)
 

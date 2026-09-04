@@ -72,6 +72,25 @@ class SubD {
   // before). Delegates to `ON_SubD::EdgeCount`.
   int EdgeCount() const;
 
+  // Count of the current subdivision level's own crease edges (the
+  // sharp folds `FromControlMesh(mesh, crease_at_double_edges=true)`
+  // can create - see that method's own doc comment) - the only direct
+  // way this class has ever offered to check how many creases actually
+  // exist, versus only checking their geometric *effect* the way
+  // TestSubDCreaseAtDoubleEdgeKeepsFoldStraight() does. NOT a wrapper
+  // around `ON_SubD::CreaseEdgeCount` despite that method's existence in
+  // OpenNURBS' own public header - verified by grepping the whole
+  // v8.34 source tree that it's declared but never implemented
+  // anywhere (only an unrelated class, `ON_SubDVertexSharpnessCalculator
+  // ::CreaseEdgeCount`, actually exists), the same "declared for Rhino,
+  // not present in the public build" pattern this file's own class
+  // comment already documents for `ON_SubD::BrepForm`. Implemented here
+  // instead via the real, working `ON_SubD::EdgeIterator()` +
+  // `ON_SubDEdge::IsCrease()` (the exact pattern `ON_SubD::FirstEdge()`'s
+  // own doc comment recommends), counting edges whose tag is genuinely
+  // a crease.
+  int CreaseEdgeCount() const;
+
   const ON_SubD& raw() const { return subd_; }
   ON_SubD& raw() { return subd_; }
 
