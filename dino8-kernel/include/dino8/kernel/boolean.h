@@ -8,6 +8,12 @@ enum class BooleanOp {
   Union,
   Intersection,
   Difference,
+  // The region in exactly one of `a`/`b`, not both - "everything except
+  // where they overlap." Manifold itself has no direct XOR primitive
+  // (only Add/Subtract/Intersect), so this is computed as
+  // Union(a, b) - Intersection(a, b) (three underlying Manifold calls
+  // instead of one), not a special case Manifold accepts.
+  SymmetricDifference,
 };
 
 // Real mesh-boolean engine, backed by the Manifold library

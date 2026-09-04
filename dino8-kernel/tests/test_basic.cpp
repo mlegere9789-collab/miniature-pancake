@@ -227,6 +227,26 @@ void TestBooleanDifference() {
         "difference volume equals 8 - 1 overlap");
 }
 
+void TestBooleanSymmetricDifference() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+
+  // Same two boxes as the other boolean tests (volume 8 each, 1x1x1 = 1
+  // overlap). Manifold has no direct XOR op, so SymmetricDifference is
+  // computed as Union - Intersection (two extra Manifold calls) - checked
+  // against the equally-valid alternate formula (A-B)+(B-A) = 7+7=14, not
+  // just internal self-consistency with the same implementation this test
+  // is verifying.
+  const auto a = MakeBox(0, 0, 0, 2, 2, 2);
+  const auto b = MakeBox(1, 1, 1, 3, 3, 3);
+
+  const auto result = BooleanCombine(a, b, BooleanOp::SymmetricDifference);
+  Check(std::abs(result.Volume() - 14.0) < 1e-6,
+        "symmetric difference volume equals (8-1) + (8-1) = 14, matching "
+        "the union-minus-intersection formula against the independent "
+        "(A-B)+(B-A) one");
+}
+
 void TestBrepTessellation() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -1568,6 +1588,7 @@ int main() {
   TestBooleanUnion();
   TestBooleanIntersection();
   TestBooleanDifference();
+  TestBooleanSymmetricDifference();
   TestBrepBoxIsClosedAndWatertight();
   TestBrepBooleanEndToEnd();
   TestBrepSphereIsClosedAndWatertight();

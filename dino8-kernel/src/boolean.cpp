@@ -78,6 +78,8 @@ manifold::OpType ToManifoldOp(BooleanOp op) {
       return manifold::OpType::Intersect;
     case BooleanOp::Difference:
       return manifold::OpType::Subtract;
+    case BooleanOp::SymmetricDifference:
+      break;  // handled separately in BooleanCombine - not a single Manifold op
   }
   throw std::invalid_argument("dino8::kernel::BooleanCombine: unknown BooleanOp");
 }
@@ -85,6 +87,12 @@ manifold::OpType ToManifoldOp(BooleanOp op) {
 }  // namespace
 
 Mesh BooleanCombine(const Mesh& a, const Mesh& b, BooleanOp op) {
+  if (op == BooleanOp::SymmetricDifference) {
+    const Mesh union_mesh = BooleanCombine(a, b, BooleanOp::Union);
+    const Mesh intersection_mesh = BooleanCombine(a, b, BooleanOp::Intersection);
+    return BooleanCombine(union_mesh, intersection_mesh, BooleanOp::Difference);
+  }
+
   const manifold::Manifold result =
       ToManifold(a).Boolean(ToManifold(b), ToManifoldOp(op));
   if (result.Status() != manifold::Manifold::Error::NoError) {

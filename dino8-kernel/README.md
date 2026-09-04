@@ -477,6 +477,16 @@ What this repo does instead:
   box and multiplies volume by `2^3 = 8`; rotating about an arbitrary
   axis/center preserves volume exactly, a real geometric invariant, not a
   coincidence of one particular test box.
+- `BooleanOp::SymmetricDifference` adds a fourth boolean operation (the
+  region in exactly one of the two inputs, not both). Manifold itself has
+  no direct XOR primitive - only add/subtract/intersect - so this is
+  computed as `Union(a, b) - Intersection(a, b)` (three Manifold calls
+  chained through `BooleanCombine()` itself rather than a fourth
+  from-scratch implementation). Verified against the volume from an
+  independent formula for the same operation, `(A-B) + (B-A)`, not just
+  self-consistency with the implementation being tested: two boxes with
+  volume 8 each and a 1×1×1 overlap give `(8-1)+(8-1) = 14` by that
+  formula, matching what `Union - Intersection` computes.
 
 ## What's still not done (as of chunk 2)
 
