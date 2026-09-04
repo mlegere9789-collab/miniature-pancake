@@ -42,11 +42,12 @@ next to `MediaSuite.exe`.
 | `potrace` | `potrace.exe` | PNG to SVG tracing | GPL-2.0 | **yes** | — |
 | `gfpgan` | `face_enhance.exe` | AI upscaler's optional face-restoration pass | BSD-3-Clause | attempted (compiled from source, plus a Google Drive model download) | see note below |
 
-"Not yet" is a real gap, not a permanent one. `libraw` is the one tool with no official
-or actively-maintained prebuilt Windows binary at all, so `fetch-tools.ps1` compiles
-`dcraw_emu.exe` from LibRaw's own source instead — real, but meaningfully more
-speculative than every plain-download tool above it: it needs a working MSVC + vcpkg
-toolchain in CI (set up as a dedicated workflow step) and is written to fail soft rather
+"Not yet" is a real gap, not a permanent one. `libraw` and `gfpgan` are the two tools
+with no official or actively-maintained prebuilt Windows binary at all, so
+`fetch-tools.ps1` compiles `dcraw_emu.exe`/`face_enhance.exe` from source instead — real,
+but meaningfully more speculative than every plain-download tool above them: each needs a
+working MSVC + vcpkg toolchain in CI (set up as a dedicated workflow step) and is written
+to fail soft rather
 than take the rest of the fetch down if that compile doesn't work on a given run. If it
 fails, ImageMagick's own bundled LibRaw delegate (`magick.exe photo.CR2 out.jpg`) is the
 practical fallback for camera RAW. `ghostscript` is attempted the same fail-soft way, for
