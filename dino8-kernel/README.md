@@ -1176,6 +1176,29 @@ What this repo does instead:
   standard way to go from a nonzero curvature vector back to its circle's
   center) lands exactly on the known center. Also checked a straight
   line's curvature is exactly zero.
+- `NurbsSurface::CurvatureAt(u, v)` returns a new `SurfaceCurvature`
+  (Gaussian, mean, and both principal curvatures) at a point - the
+  surface-level counterpart to `NurbsCurve::CurvatureAt()`. A
+  from-scratch computation, not a wrapper: verified directly against the
+  v8.34 source that OpenNURBS' `ON_SurfaceCurvature` is just a plain data
+  holder (a "Create" factory from already-known curvature values,
+  comparison operators), not something that computes curvature from a
+  surface's own derivatives - the same "declared for Rhino data
+  interchange, not a public computation" pattern this file already found
+  for `ON_Brep::CreateMesh`. Computed from `ON_Surface::Ev2Der` (verified
+  real) via the classical first/second fundamental form formulas.
+  Verified on hand-derivable-exact cases: a flat plane's curvature is
+  exactly zero everywhere, and a sphere of known radius (via
+  `ON_Sphere::GetNurbForm`, the same construction `Brep::Sphere()` uses)
+  has Gaussian curvature exactly `1/radius^2` at every point tested
+  (sign-unambiguous, since Gaussian curvature is a product of two
+  curvatures under the same sign convention) and is an umbilic
+  everywhere (k1 == k2). The *sign* of mean/principal curvature was not
+  assumed - a debug run first showed this surface's outward-pointing
+  normal gives every sphere point a *negative* mean curvature
+  (`-1/radius`, curving away from the outward normal toward the
+  interior), and that's the behavior now documented and tested, not a
+  guessed convention.
 
 ## What's still not done (as of chunk 2)
 

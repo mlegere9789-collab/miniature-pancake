@@ -10,6 +10,30 @@ namespace dino8::kernel {
 
 class Mesh;
 
+// The four scalar curvature values at one point on a surface, from
+// classical differential geometry's first/second fundamental forms:
+// `gaussian` = k1*k2 (positive on a dome/bowl-shaped point, negative on
+// a saddle, zero on a flat or single-curved point like a cylinder),
+// `mean` = (k1+k2)/2, and `k1`/`k2` are the two principal curvatures
+// themselves (the max/min normal curvature over all tangent directions
+// at that point) - `k1 >= k2` always. `mean`/`k1`/`k2`'s sign depends on
+// which way the surface's own normal points (`NormalAt()`'s convention,
+// i.e. `du x dv`): verified empirically, not just asserted from the
+// formula, against a sphere built via `ON_Sphere::GetNurbForm` - its
+// outward-pointing normal gives every point a *negative* mean curvature
+// (`-1/radius`) and negative principal curvatures, i.e. the surface
+// curves away from its own outward normal, toward the sphere's
+// interior. `gaussian` has no such sign ambiguity (it's a product of two
+// curvatures under the same sign convention, so the signs cancel): a
+// sphere's Gaussian curvature is `+1/radius^2` regardless of which way
+// its normal points.
+struct SurfaceCurvature {
+  double gaussian;
+  double mean;
+  double k1;
+  double k2;
+};
+
 // Wraps ON_NurbsSurface. Same rationale as NurbsCurve: expose raw()
 // rather than mirror the whole OpenNURBS surface API.
 class NurbsSurface {
@@ -146,6 +170,26 @@ class NurbsSurface {
   // parallel or one is zero) rather than returning a meaningless
   // placeholder vector.
   Vector3d NormalAt(double u, double v) const;
+
+  // The four scalar curvature values (see SurfaceCurvature) at (u, v).
+  // A from-scratch computation, not a wrapper: verified directly against
+  // the v8.34 source that OpenNURBS' public API has no function that
+  // computes an ON_SurfaceCurvature from a surface's own derivatives -
+  // `ON_SurfaceCurvature` itself is just a plain data holder (a "Create"
+  // factory from already-known principal curvature values, comparison
+  // operators, etc.), not a curvature evaluator - the same "declared for
+  // Rhino data interchange, not present as a public computation" pattern
+  // this file already found for `ON_Brep::CreateMesh`. Computed from
+  // `ON_Surface::Ev2Der` (verified real: unpacks `ON_NurbsSurface::
+  // Evaluate`'s own genuine de Boor evaluation with der_count=2, not a
+  // stub) via the classical first/second fundamental form formulas:
+  // E=du.du, F=du.dv, G=dv.dv; e=duu.n, f=duv.n, g=dvv.n (n the unit
+  // normal); Gaussian K=(eg-f^2)/(EG-F^2), mean H=(eG-2fF+gE)/(2(EG-F^2)),
+  // principal curvatures k1,k2 = H +/- sqrt(H^2-K). Throws
+  // std::runtime_error if `Ev2Der` fails or the point is singular (zero
+  // or parallel partial derivatives, same condition `NormalAt()` already
+  // throws on).
+  SurfaceCurvature CurvatureAt(double u, double v) const;
 
   // Tessellates the surface into a triangle mesh by evaluating a
   // u_divisions x v_divisions grid of points across its parameter domain

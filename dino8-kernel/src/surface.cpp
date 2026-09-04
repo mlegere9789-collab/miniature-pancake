@@ -475,6 +475,43 @@ Vector3d NurbsSurface::NormalAt(double u, double v) const {
   return normal;
 }
 
+SurfaceCurvature NurbsSurface::CurvatureAt(double u, double v) const {
+  ON_3dPoint point;
+  ON_3dVector du, dv, duu, duv, dvv;
+  if (!surface_.Ev2Der(u, v, point, du, dv, duu, duv, dvv)) {
+    throw std::runtime_error(
+        "dino8::kernel::NurbsSurface::CurvatureAt: OpenNURBS couldn't "
+        "evaluate second derivatives at this (u, v)");
+  }
+  ON_3dVector normal = ON_CrossProduct(du, dv);
+  if (!normal.Unitize()) {
+    throw std::runtime_error(
+        "dino8::kernel::NurbsSurface::CurvatureAt: singular point - the "
+        "surface's two partial derivatives are parallel or zero");
+  }
+
+  const double e_coeff = du * du;
+  const double f_coeff = du * dv;
+  const double g_coeff = dv * dv;
+  const double l_coeff = duu * normal;
+  const double m_coeff = duv * normal;
+  const double n_coeff = dvv * normal;
+
+  const double denom = e_coeff * g_coeff - f_coeff * f_coeff;
+  if (std::abs(denom) < 1e-15) {
+    throw std::runtime_error(
+        "dino8::kernel::NurbsSurface::CurvatureAt: degenerate first "
+        "fundamental form at this (u, v)");
+  }
+
+  const double gaussian = (l_coeff * n_coeff - m_coeff * m_coeff) / denom;
+  const double mean =
+      (l_coeff * g_coeff - 2.0 * m_coeff * f_coeff + n_coeff * e_coeff) / (2.0 * denom);
+  const double discriminant = std::max(0.0, mean * mean - gaussian);
+  const double sqrt_discriminant = std::sqrt(discriminant);
+  return SurfaceCurvature{gaussian, mean, mean + sqrt_discriminant, mean - sqrt_discriminant};
+}
+
 Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
                                    const std::vector<Point2d>* trim_polygon,
                                    const std::vector<std::vector<Point2d>>* hole_polygons) const {

@@ -844,6 +844,73 @@ void TestSurfaceClosestPoint() {
         "past its domain");
 }
 
+void TestSurfaceCurvature() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // Flat plane: zero curvature everywhere - hand-derivable exact.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface plane = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const auto plane_k = plane.CurvatureAt(0.5, 0.5);
+  Check(std::abs(plane_k.gaussian) < 1e-9 && std::abs(plane_k.mean) < 1e-9 &&
+            std::abs(plane_k.k1) < 1e-9 && std::abs(plane_k.k2) < 1e-9,
+        "a flat plane's curvature (gaussian, mean, k1, k2) is exactly "
+        "zero everywhere");
+
+  // Sphere of known radius, via ON_Sphere::GetNurbForm (the same real
+  // construction Brep::Sphere() uses). Every point on a sphere is an
+  // umbilic (k1 == k2), so this is hand-derivable exact: Gaussian
+  // curvature is exactly 1/radius^2 (sign-unambiguous - a product of two
+  // curvatures with the same sign convention, so signs cancel), and mean
+  // curvature and both principal curvatures are exactly -1/radius given
+  // this surface's outward-pointing normal - confirmed by a debug run
+  // before finalizing these assertions, not assumed from the formula's
+  // sign in the abstract.
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), radius);
+  ON_NurbsSurface nurbs_form;
+  Check(on_sphere.GetNurbForm(nurbs_form) != 0, "ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere;
+  sphere.raw() = nurbs_form;
+  const ON_Interval u_domain = sphere.raw().Domain(0);
+  const ON_Interval v_domain = sphere.raw().Domain(1);
+
+  bool all_gaussian_exact = true;
+  bool all_mean_exact = true;
+  bool all_umbilic = true;
+  for (double u_frac : {0.25, 0.5, 0.75}) {
+    for (double v_frac : {0.25, 0.5, 0.75}) {
+      const double u = u_domain.ParameterAt(u_frac);
+      const double v = v_domain.ParameterAt(v_frac);
+      const auto k = sphere.CurvatureAt(u, v);
+      if (std::abs(k.gaussian - 1.0 / (radius * radius)) > 1e-6) {
+        all_gaussian_exact = false;
+      }
+      if (std::abs(k.mean - (-1.0 / radius)) > 1e-6) {
+        all_mean_exact = false;
+      }
+      if (std::abs(k.k1 - k.k2) > 1e-5 || std::abs(k.k1 - (-1.0 / radius)) > 1e-5) {
+        all_umbilic = false;
+      }
+    }
+  }
+  Check(all_gaussian_exact,
+        "a sphere's Gaussian curvature is exactly 1/radius^2 at every "
+        "point tested, sign-unambiguous regardless of normal direction");
+  Check(all_mean_exact,
+        "a sphere's mean curvature is exactly -1/radius at every point "
+        "tested, given this surface's outward-pointing normal");
+  Check(all_umbilic,
+        "every tested point on the sphere is an umbilic (k1 == k2 == "
+        "-1/radius), matching the fact that every point on a sphere has "
+        "the same curvature in every direction");
+}
+
 void TestFileRoundTrip() {
   using dino8::kernel::Brep;
   using dino8::kernel::Model;
@@ -3784,6 +3851,7 @@ int main() {
   TestSurfaceSplit();
   TestSurfaceExtend();
   TestSurfaceClosestPoint();
+  TestSurfaceCurvature();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
