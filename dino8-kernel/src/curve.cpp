@@ -143,6 +143,8 @@ bool NurbsCurve::IsPeriodic() const { return curve_.IsPeriodic(); }
 
 bool NurbsCurve::IsPlanar(double tolerance) const { return curve_.IsPlanar(nullptr, tolerance); }
 
+bool NurbsCurve::IsLinear(double tolerance) const { return curve_.IsLinear(tolerance); }
+
 Result NurbsCurve::Reverse() { return curve_.Reverse() ? Result::Ok : Result::Failed; }
 
 Result NurbsCurve::Trim(double t0, double t1) {

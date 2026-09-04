@@ -249,6 +249,31 @@ void TestCurveIsPlanar() {
   Check(line.IsPlanar(), "a straight line reports planar at the default tolerance");
 }
 
+void TestCurveIsLinear() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // A degree-1 curve is trivially linear - confirmed directly, not
+  // assumed.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(1, 2, 3)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  Check(line.IsLinear(), "a straight line reports linear at the default tolerance");
+
+  // Same quadratic bulge curve as TestCurveGetTightBoundingBox: it
+  // genuinely deviates from the straight line between its own endpoints
+  // (0,0,0) and (2,0,0) - confirmed by a debug run before finalizing
+  // these assertions: reports non-linear at a tight tolerance, but
+  // linear once the tolerance is generous enough to swallow that
+  // deviation.
+  const std::vector<Point3d> curved_pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  const NurbsCurve curved = NurbsCurve::FromControlPoints(curved_pts, /*degree=*/2);
+  Check(!curved.IsLinear(1e-9), "a genuinely curved curve reports non-linear at a tight tolerance");
+  Check(curved.IsLinear(100.0),
+        "...but reports linear once the tolerance is generous enough to "
+        "swallow its actual (much smaller) deviation from the "
+        "endpoint-to-endpoint line");
+}
+
 void TestCurveReverse() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -4160,6 +4185,7 @@ int main() {
   TestCurveGetTightBoundingBox();
   TestCurveIsClosed();
   TestCurveIsPlanar();
+  TestCurveIsLinear();
   TestCurveReverse();
   TestCurveTrim();
   TestCurveSplit();

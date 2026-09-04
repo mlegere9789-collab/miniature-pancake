@@ -61,6 +61,18 @@ class NurbsCurve {
   // it works) - verified directly, not assumed.
   bool IsPlanar(double tolerance = ON_ZERO_TOLERANCE) const;
 
+  // Whether the curve's entire shape lies within `tolerance` of the
+  // straight line through its own two endpoints - a stronger condition
+  // than IsPlanar() (every linear curve is planar, but a planar curve
+  // - an arc, say - need not be linear). Delegates to `ON_Curve::
+  // IsLinear` (already relied on internally by `IsPlanar()`'s own real
+  // implementation, verified there, not a stub) after the same
+  // stub-vs-real verification. Defaults to `ON_ZERO_TOLERANCE`. Useful
+  // for checking whether a curve degenerated to a straight line after
+  // an operation like Trim()/Extend() on what started as a curved
+  // segment, without needing to inspect control points by hand.
+  bool IsLinear(double tolerance = ON_ZERO_TOLERANCE) const;
+
   // Reverses the curve's parameterization in place: what was
   // `PointAt(domain.Min())` becomes `PointAt(domain.Max())` and vice
   // versa (the curve's own 3D shape is unchanged - same points, opposite

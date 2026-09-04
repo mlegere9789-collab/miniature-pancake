@@ -1326,6 +1326,15 @@ What this repo does instead:
   planar once the tolerance is generous enough to swallow its actual
   deviation), and a straight line (trivially planar, confirmed directly
   rather than assumed).
+- `NurbsCurve::IsLinear(tolerance)` - a stronger condition than
+  `IsPlanar()` (every linear curve is planar, but not every planar curve
+  is linear, e.g. an arc) - delegates to `ON_Curve::IsLinear`, the same
+  method `IsPlanar()`'s own real implementation already relies on
+  internally. Verified with a straight line (trivially linear) and the
+  same quadratic bulge curve `TestCurveGetTightBoundingBox` uses: reports
+  non-linear at a tight tolerance, linear once the tolerance is generous
+  enough to swallow its actual deviation from the endpoint-to-endpoint
+  line.
 
 ## What's still not done (as of chunk 2)
 
