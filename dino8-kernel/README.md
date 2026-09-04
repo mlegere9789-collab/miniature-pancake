@@ -686,6 +686,13 @@ What this repo does instead:
   actual `ON_Mesh` object inside it, and confirmed its vertex count, face
   count, and volume all exactly match the original (quad faces preserved,
   not reinterpreted).
+- `Model::AddSubD()` closes the same gap for `SubD` that `AddMesh()`
+  closed for `Mesh` - `ON_SubD` is also an `ON_Geometry` subclass, so the
+  same "copy the underlying OpenNURBS object into a new model geometry
+  component" pattern applies directly. Verified the same way: saved a
+  SubD control cage, reloaded the file, found the actual `ON_SubD` object
+  inside the reloaded model's geometry components, and confirmed its
+  vertex and face counts exactly match the original.
 
 ## What's still not done (as of chunk 2)
 

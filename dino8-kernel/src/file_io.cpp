@@ -25,6 +25,13 @@ void Model::AddMesh(const Mesh& mesh) {
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
+void Model::AddSubD(const SubD& subd) {
+  auto* geometry = new ON_SubD(subd.raw());
+  ON_3dmObjectAttributes attributes;
+  ON_CreateUuid(attributes.m_uuid);
+  model_.AddModelGeometryComponent(geometry, &attributes);
+}
+
 int Model::ObjectCount() const {
   return static_cast<int>(
       model_.ActiveComponentCount(ON_ModelComponent::Type::ModelGeometry));

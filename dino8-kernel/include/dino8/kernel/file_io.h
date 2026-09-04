@@ -7,6 +7,7 @@
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/subd.h"
 #include "dino8/kernel/types.h"
 
 namespace dino8::kernel {
@@ -29,6 +30,13 @@ class Model {
   // Mesh::SaveObj()/SaveStl(). Same pattern as the other two: copies
   // `mesh`'s underlying ON_Mesh into a new model geometry component.
   void AddMesh(const Mesh& mesh);
+
+  // Adds a SubD control cage/subdivision surface as its own model
+  // object - the same "no way to put this object type into a .3dm at
+  // all" gap AddMesh() closed, just for SubD instead of Mesh. Same
+  // pattern: copies the SubD's underlying ON_SubD into a new model
+  // geometry component.
+  void AddSubD(const SubD& subd);
 
   int ObjectCount() const;
 

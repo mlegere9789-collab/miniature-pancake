@@ -389,6 +389,46 @@ void TestModelAddMeshRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelAddSubDRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+  using dino8::kernel::SubD;
+
+  // AddSubD() closes the same "no way to put this into a .3dm" gap
+  // AddMesh() closed, for SubD instead of Mesh.
+  const auto quad_box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  const auto subd = SubD::FromControlMesh(quad_box);
+  Model model;
+  model.AddSubD(subd);
+  Check(model.ObjectCount() == 1, "model has one object after AddSubD()");
+
+  const std::string path = "dino8_kernel_subd_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a SubD object succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.ObjectCount() == 1, "round-tripped model has one object");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_subd = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const auto* subd_geometry = dynamic_cast<const ON_SubD*>(geometry_component->Geometry(nullptr));
+    if (subd_geometry == nullptr) {
+      continue;
+    }
+    found_subd = true;
+    Check(static_cast<int>(subd_geometry->VertexCount()) == subd.VertexCount(),
+          "the round-tripped SubD object has the original's vertex count");
+    Check(static_cast<int>(subd_geometry->FaceCount()) == subd.FaceCount(),
+          "the round-tripped SubD object has the original's face count (6)");
+  }
+  Check(found_subd, "the .3dm file's model geometry actually contains a SubD object");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -2160,6 +2200,7 @@ int main() {
   TestSurfaceDegreeElevation();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
+  TestModelAddSubDRoundTrips();
   TestBrepTessellation();
   TestBoxVolume();
   TestBooleanUnion();
