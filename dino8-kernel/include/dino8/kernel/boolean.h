@@ -126,4 +126,33 @@ double MinGap(const Mesh& a, const Mesh& b, double search_length);
 // fails.
 Mesh RefineToLength(const Mesh& mesh, double length);
 
+// Turns a faceted polyhedron (e.g. `ConvexHull()`'s flat-faced output)
+// into an approximation of a smoothly curved surface, without knowing
+// what that surface "should" be in closed form - backed by Manifold's
+// own `Manifold::SmoothOut` followed immediately by
+// `Manifold::RefineToLength`, both performed on the same live Manifold
+// object before converting back to a Mesh. That "before converting
+// back" matters and is why this is one combined function rather than
+// two separate `SmoothOut()`/`RefineToLength()`-style wrappers: SmoothOut
+// only records half-edge tangent vectors on the live Manifold - the
+// actual geometry doesn't change until a subsequent Refine call
+// interpolates new vertices from them - and those tangents live only in
+// Manifold's own internal representation, not in this kernel's Mesh/
+// ON_Mesh format, so a separate `SmoothOut()` call that round-tripped
+// through Mesh before a later, separate `RefineToLength()` call would
+// silently discard the smoothing entirely (confirmed by testing: an
+// earlier version of this API split the two calls, and a refined
+// "smoothed" octahedron came back with byte-for-byte the same volume as
+// the unsmoothed input - the smoothing had no effect at all). Combining
+// them here means it doesn't matter whether the caller notices.
+// `min_sharp_angle` (degrees) is the face-to-face angle above which an
+// edge stays a hard crease rather than being smoothed; `min_smoothness`
+// (0-1) softens even those creases into a small fillet;
+// `target_length` is the same subdivision target `RefineToLength()`
+// takes. `mesh` must be a valid closed manifold, same requirement as
+// BooleanCombine(); throws std::runtime_error if either underlying
+// Manifold call fails.
+Mesh SmoothAndRefine(const Mesh& mesh, double target_length, double min_sharp_angle = 52.5,
+                      double min_smoothness = 0.0);
+
 }  // namespace dino8::kernel

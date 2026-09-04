@@ -813,6 +813,57 @@ void TestRefineToLength() {
         "region it covers");
 }
 
+void TestSmoothAndRefine() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::ConvexHull;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SmoothAndRefine;
+  using dino8::kernel::Vector3d;
+
+  // A regular octahedron (ConvexHull of the 6 unit-axis points) has
+  // exact volume 4/3 (two unit-height square pyramids, base area 2,
+  // glued base to base: 2*(1/3)*2*1). Its vertex normals are already
+  // exactly radial (pointing straight out from the origin through each
+  // vertex), so smoothing with every edge forced smooth (min_sharp_angle
+  // = 180, well past the octahedron's own ~109.5-degree dihedral angle,
+  // which the *default* angle would instead leave faceted) should bulge
+  // the surface strictly outward from the flat facets - a real,
+  // measurable volume increase, not a no-op.
+  const std::vector<Point3d> octahedron_points = {
+      Point3d(1, 0, 0),  Point3d(-1, 0, 0), Point3d(0, 1, 0),
+      Point3d(0, -1, 0), Point3d(0, 0, 1),  Point3d(0, 0, -1),
+  };
+  const auto octahedron = ConvexHull(octahedron_points);
+  Check(std::abs(octahedron.Volume() - 4.0 / 3.0) < 1e-9,
+        "the octahedron's own volume is exactly 4/3, the hand-derivable "
+        "two-pyramid formula");
+
+  const auto smoothed =
+      SmoothAndRefine(octahedron, /*target_length=*/0.05, /*min_sharp_angle=*/180.0);
+  Check(smoothed.Volume() > octahedron.Volume() + 0.1,
+        "smoothing and refining the octahedron with every edge forced "
+        "smooth measurably increases its volume - the surface actually "
+        "bulges outward, not a no-op that just adds triangles");
+  // Sanity upper bound: every original vertex is exactly 1 unit from the
+  // origin, so the smoothed surface (which only bulges between existing
+  // vertices, never past them) can't exceed the volume of the unit
+  // sphere those vertices sit on.
+  Check(smoothed.Volume() < (4.0 / 3.0) * ON_PI,
+        "the smoothed octahedron's volume stays below the circumscribing "
+        "unit sphere's volume (4/3*pi), consistent with bulging only "
+        "between the original vertices rather than past them");
+
+  // Still a genuine watertight solid, not just a plausible volume number
+  // - proven the same way every other closed-solid operation here is.
+  const auto disjoint_box = Mesh::Cylinder(Point3d(10, 10, 10), Vector3d(0, 0, 1), 0.5, 1.0);
+  const auto union_result = BooleanCombine(smoothed, disjoint_box, BooleanOp::Union);
+  Check(std::abs(union_result.Volume() - (smoothed.Volume() + disjoint_box.Volume())) < 1e-6,
+        "the smoothed-and-refined octahedron is watertight: union with a "
+        "disjoint cylinder equals the sum of both volumes");
+}
+
 void TestBrepTessellation() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -2745,6 +2796,7 @@ int main() {
   TestDecompose();
   TestMinGap();
   TestRefineToLength();
+  TestSmoothAndRefine();
   TestBrepTessellation();
   TestBoxVolume();
   TestBooleanUnion();

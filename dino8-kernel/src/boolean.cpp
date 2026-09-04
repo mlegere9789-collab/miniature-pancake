@@ -197,4 +197,22 @@ Mesh RefineToLength(const Mesh& mesh, double length) {
   return FromManifold(refined);
 }
 
+Mesh SmoothAndRefine(const Mesh& mesh, double target_length, double min_sharp_angle,
+                      double min_smoothness) {
+  const manifold::Manifold smoothed =
+      ToManifold(mesh).SmoothOut(min_sharp_angle, min_smoothness);
+  if (smoothed.Status() != manifold::Manifold::Error::NoError) {
+    throw std::runtime_error(
+        "dino8::kernel::SmoothAndRefine: Manifold::SmoothOut failed "
+        "(Manifold::Status() != NoError)");
+  }
+  const manifold::Manifold refined = smoothed.RefineToLength(target_length);
+  if (refined.Status() != manifold::Manifold::Error::NoError) {
+    throw std::runtime_error(
+        "dino8::kernel::SmoothAndRefine: Manifold::RefineToLength failed "
+        "(Manifold::Status() != NoError)");
+  }
+  return FromManifold(refined);
+}
+
 }  // namespace dino8::kernel

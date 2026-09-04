@@ -867,6 +867,33 @@ What this repo does instead:
   measurably increases the triangle count, while volume is preserved
   exactly - the shape really is flat everywhere, so subdividing a face
   into more triangles can't change what region it covers.
+- `SmoothAndRefine()` turns a faceted polyhedron (e.g. `ConvexHull()`'s
+  flat-faced output) into an approximation of a smoothly curved surface,
+  combining `Manifold::SmoothOut` and `Manifold::RefineToLength` into one
+  function - deliberately, not as two separate wrappers matching the
+  other Manifold-backed functions' own one-call-one-wrapper pattern.
+  **A real API-design bug was caught before shipping, not just avoided by
+  luck**: `SmoothOut` only records half-edge tangent vectors on the live
+  Manifold object - the geometry doesn't actually change until a
+  subsequent Refine call interpolates new vertices from them - and those
+  tangents live only in Manifold's own internal representation, not in
+  this kernel's `Mesh`/`ON_Mesh` format. An earlier version of this
+  feature split `SmoothOut()` and `RefineToLength()` into two separate
+  calls (matching every other Manifold wrapper here); testing it against
+  a regular octahedron (`ConvexHull()` of the 6 unit-axis points, exact
+  volume 4/3) revealed the smoothed-then-refined result came back with
+  the *exact same* volume as the never-smoothed input - the intermediate
+  `Mesh` round trip had silently discarded the tangents, so smoothing had
+  no effect at all, not a subtle inaccuracy. Fixed by combining both
+  Manifold calls into one function that never converts to `Mesh` in
+  between. Verified for real this time: smoothing the same octahedron
+  with every edge forced smooth (`min_sharp_angle=180`, past its own
+  ~109.5-degree dihedral angle, which the default angle would instead
+  leave faceted) measurably increases its volume, staying below the
+  circumscribing unit sphere's volume (4/3*pi) as a sanity bound - since
+  every original vertex is exactly 1 unit from the origin, the smoothed
+  surface can bulge between vertices but never past them - and the result
+  is still proven watertight via a real Manifold union.
 
 ## What's still not done (as of chunk 2)
 
