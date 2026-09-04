@@ -29,6 +29,18 @@ class NurbsSurface {
 
   Point3d PointAt(double u, double v) const;
 
+  // Unit surface normal at parameter (u, v): `d/du x d/dv`, normalized.
+  // Delegates to `ON_Surface::EvNormal` - verified as a real
+  // implementation (computes the cross product of the two partial
+  // derivatives from `Ev1Der`, not a stub) before relying on it, the same
+  // discipline this file's own TessellateGrid() comment already applies
+  // to `ON_Brep::CreateMesh`/`ON_Surface::CreateMesh`. Throws
+  // std::runtime_error if OpenNURBS itself can't evaluate a normal there
+  // (e.g. a genuinely singular point, where the two partials are
+  // parallel or one is zero) rather than returning a meaningless
+  // placeholder vector.
+  Vector3d NormalAt(double u, double v) const;
+
   // Tessellates the surface into a triangle mesh by evaluating a
   // u_divisions x v_divisions grid of points across its parameter domain
   // and triangulating each grid cell. This is a from-scratch tessellator,

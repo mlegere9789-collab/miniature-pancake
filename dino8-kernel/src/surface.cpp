@@ -363,6 +363,18 @@ Point3d NurbsSurface::PointAt(double u, double v) const {
   return pt;
 }
 
+Vector3d NurbsSurface::NormalAt(double u, double v) const {
+  ON_3dPoint point;
+  ON_3dVector normal;
+  if (!surface_.EvNormal(u, v, point, normal)) {
+    throw std::runtime_error(
+        "dino8::kernel::NurbsSurface::NormalAt: OpenNURBS couldn't evaluate "
+        "a normal at this (u, v) - likely a singular point where the "
+        "surface's two partial derivatives are parallel or zero");
+  }
+  return normal;
+}
+
 Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
                                    const std::vector<Point2d>* trim_polygon,
                                    const std::vector<std::vector<Point2d>>* hole_polygons) const {

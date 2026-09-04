@@ -662,6 +662,18 @@ What this repo does instead:
   measured one for a genuinely curved curve: `TangentAt()` agrees with a
   central-finite-difference approximation of the curve's own derivative
   at several parameter values, not just "returns some unit vector."
+- `NurbsSurface::NormalAt()` is the surface counterpart to
+  `NurbsCurve::TangentAt()`: the unit normal (`d/du x d/dv`, normalized)
+  at a given `(u, v)`, delegating to `ON_Surface::EvNormal` after
+  verifying it's a real implementation (computes the cross product of the
+  two partials from `Ev1Der`, not a stub). Throws `std::runtime_error` if
+  OpenNURBS itself can't evaluate a normal there (a genuinely singular
+  point) rather than returning a placeholder. Verified with a
+  hand-derivable exact case (a flat `P(u,v)=(u,v,0)` surface's normal is
+  exactly `(0,0,1)` everywhere, since `d/du=(1,0,0)` and `d/dv=(0,1,0)`
+  are constant) and a measured one for a genuinely curved surface:
+  `NormalAt()` agrees (up to sign) with a finite-difference cross product
+  of the surface's own partial derivatives at several `(u, v)` values.
 
 ## What's still not done (as of chunk 2)
 

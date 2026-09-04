@@ -139,6 +139,71 @@ void TestCurveTangentAt() {
   }
 }
 
+void TestSurfaceNormalAt() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A flat unit-square surface with P(u, v) = (u, v, 0) exactly (bilinear
+  // identity for these control points, same construction
+  // TestExactClippingHandlesNonConvexTrim already relies on): d/du =
+  // (1,0,0), d/dv = (0,1,0), so the normal is exactly (1,0,0)x(0,1,0) =
+  // (0,0,1) everywhere - a hand-derivable exact case, not approximate.
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface flat =
+      NurbsSurface::FromControlGrid(flat_grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  for (const auto& uv : {std::pair(0.0, 0.0), std::pair(0.5, 0.5), std::pair(1.0, 0.0),
+                          std::pair(0.25, 0.9)}) {
+    const Vector3d normal = flat.NormalAt(uv.first, uv.second);
+    Check(std::abs(normal.x) < 1e-9 && std::abs(normal.y) < 1e-9 &&
+              std::abs(normal.z - 1.0) < 1e-9,
+          "a flat P(u,v)=(u,v,0) surface's normal is exactly (0,0,1) at "
+          "every (u,v) tested");
+  }
+
+  // A genuinely curved surface (z varies with both u and v): NormalAt()
+  // should agree with a finite-difference cross product of the surface's
+  // own partial derivatives - measured agreement, not just "returns a
+  // unit vector."
+  std::vector<Point3d> curved_grid;
+  for (int u = 0; u < 4; ++u) {
+    for (int v = 0; v < 4; ++v) {
+      const double x = u;
+      const double y = v;
+      const double z = std::sin(0.7 * u) * std::cos(0.5 * v);
+      curved_grid.emplace_back(x, y, z);
+    }
+  }
+  const NurbsSurface curved =
+      NurbsSurface::FromControlGrid(curved_grid, 4, 4, /*u_degree=*/3, /*v_degree=*/3);
+  const ON_Interval u_domain = curved.raw().Domain(0);
+  const ON_Interval v_domain = curved.raw().Domain(1);
+  constexpr double kFiniteDifferenceStep = 1e-5;
+  for (const auto& normalized_uv :
+       {std::pair(0.3, 0.3), std::pair(0.6, 0.4), std::pair(0.5, 0.8)}) {
+    const double u = u_domain.ParameterAt(normalized_uv.first);
+    const double v = v_domain.ParameterAt(normalized_uv.second);
+    const Vector3d normal = curved.NormalAt(u, v);
+    Check(std::abs(normal.Length() - 1.0) < 1e-9, "NormalAt() returns a unit vector");
+
+    Vector3d du = curved.PointAt(u + kFiniteDifferenceStep, v) -
+                  curved.PointAt(u - kFiniteDifferenceStep, v);
+    Vector3d dv = curved.PointAt(u, v + kFiniteDifferenceStep) -
+                  curved.PointAt(u, v - kFiniteDifferenceStep);
+    Vector3d finite_difference_normal = ON_CrossProduct(du, dv);
+    finite_difference_normal.Unitize();
+    const double alignment = std::abs(ON_DotProduct(normal, finite_difference_normal));
+    Check(alignment > 1.0 - 1e-6,
+          "NormalAt() agrees (up to sign) with a finite-difference cross "
+          "product of the surface's own partial derivatives");
+  }
+}
+
 void TestSurfaceDegreeElevation() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -2043,6 +2108,7 @@ int main() {
   TestCurveDegreeElevation();
   TestCurveLength();
   TestCurveTangentAt();
+  TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestFileRoundTrip();
   TestBrepTessellation();
