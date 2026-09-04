@@ -103,4 +103,16 @@ Mesh BooleanCombine(const Mesh& a, const Mesh& b, BooleanOp op) {
   return FromManifold(result);
 }
 
+std::pair<Mesh, Mesh> SplitByPlane(const Mesh& mesh, Vector3d plane_normal, double plane_offset) {
+  const auto halves = ToManifold(mesh).SplitByPlane(
+      manifold::vec3(plane_normal.x, plane_normal.y, plane_normal.z), plane_offset);
+  if (halves.first.Status() != manifold::Manifold::Error::NoError ||
+      halves.second.Status() != manifold::Manifold::Error::NoError) {
+    throw std::runtime_error(
+        "dino8::kernel::SplitByPlane: split failed (Manifold::Status() != "
+        "NoError after SplitByPlane())");
+  }
+  return {FromManifold(halves.first), FromManifold(halves.second)};
+}
+
 }  // namespace dino8::kernel

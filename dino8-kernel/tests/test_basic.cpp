@@ -542,6 +542,65 @@ void TestBooleanSymmetricDifference() {
         "(A-B)+(B-A) one");
 }
 
+void TestSplitByPlane() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SplitByPlane;
+  using dino8::kernel::Vector3d;
+
+  // A symmetric box split exactly down its own midplane: both halves
+  // must have exactly half the original volume, and (confirmed
+  // empirically, not assumed from the doc alone) the first result is on
+  // the side plane_normal points toward (x >= 1), the second on the
+  // opposite side (x <= 1).
+  const auto box = MakeBox(0, 0, 0, 2, 2, 2);
+  const auto halves = SplitByPlane(box, Vector3d(1, 0, 0), 1.0);
+  Check(std::abs(halves.first.Volume() - 4.0) < 1e-9 &&
+            std::abs(halves.second.Volume() - 4.0) < 1e-9,
+        "splitting a 2x2x2 box down its own midplane gives two exact "
+        "volume-4 halves");
+  Check(std::abs(halves.first.Volume() + halves.second.Volume() - box.Volume()) < 1e-9,
+        "the two halves' volumes sum back to exactly the original box's volume");
+
+  const auto first_bounds = halves.first.GetBoundingBox();
+  Check(std::abs(first_bounds.min.x - 1.0) < 1e-9 && std::abs(first_bounds.max.x - 2.0) < 1e-9,
+        "the first result is on the side plane_normal points toward "
+        "(x in [1, 2], the +normal side)");
+  const auto second_bounds = halves.second.GetBoundingBox();
+  Check(std::abs(second_bounds.min.x - 0.0) < 1e-9 && std::abs(second_bounds.max.x - 1.0) < 1e-9,
+        "the second result is on the opposite side (x in [0, 1])");
+
+  // Both halves are genuine closed solids, not open shells needing a
+  // separate capping step - real proof via Manifold's own watertightness
+  // check (same pattern every other closed-solid primitive here uses),
+  // not just "the volume number looked plausible."
+  const auto disjoint_box = Mesh::Cylinder(Point3d(10, 10, 10), Vector3d(0, 0, 1), 0.5, 1.0);
+  const auto union_with_first =
+      dino8::kernel::BooleanCombine(halves.first, disjoint_box, dino8::kernel::BooleanOp::Union);
+  Check(std::abs(union_with_first.Volume() - (halves.first.Volume() + disjoint_box.Volume())) <
+            1e-6,
+        "the first half is watertight: union with a disjoint cylinder "
+        "equals the sum of both volumes");
+  const auto union_with_second =
+      dino8::kernel::BooleanCombine(halves.second, disjoint_box, dino8::kernel::BooleanOp::Union);
+  Check(std::abs(union_with_second.Volume() - (halves.second.Volume() + disjoint_box.Volume())) <
+            1e-6,
+        "the second half is watertight too: union with a disjoint "
+        "cylinder equals the sum of both volumes");
+
+  // An off-center plane through a non-symmetric axis, to rule out this
+  // only working for a plane through a shape's own center of symmetry:
+  // a 4x2x2 box (total volume 16) split at x=3 gives a width-1 slab
+  // (x in [3,4], volume 1*2*2=4) and a width-3 slab (x in [0,3],
+  // volume 3*2*2=12), not an even 8/8 split.
+  const auto tall_box = MakeBox(0, 0, 0, 4, 2, 2);
+  const auto off_center_halves = SplitByPlane(tall_box, Vector3d(1, 0, 0), 3.0);
+  Check(std::abs(off_center_halves.first.Volume() - 4.0) < 1e-9 &&
+            std::abs(off_center_halves.second.Volume() - 12.0) < 1e-9,
+        "splitting a 4x2x2 box at x=3 (not its midpoint) gives volumes "
+        "4 and 12, not an assumed even split");
+}
+
 void TestBrepTessellation() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -2467,6 +2526,7 @@ int main() {
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
+  TestSplitByPlane();
   TestBrepTessellation();
   TestBoxVolume();
   TestBooleanUnion();

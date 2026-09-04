@@ -779,6 +779,24 @@ What this repo does instead:
   inside at a point deliberately chosen off the box's own center to avoid
   `ContainsPoint()`'s documented ray/diagonal degeneracy) plus a sign
   check straddling a face from both sides.
+- `SplitByPlane()` closes a real gap none of this kernel's own clipping
+  (`TessellateGridClippedExact`, the Greiner-Hormann polygon clipper) has
+  a 3D-solid equivalent of: cutting a closed solid into two closed,
+  independently-valid halves along a plane, each auto-capped with a flat
+  face at the cut - not two open shells needing a separate capping step.
+  Backed directly by Manifold's own `Manifold::SplitByPlane` (already
+  depended on for `BooleanCombine()`), not a from-scratch clipper.
+  Verified the actual `{first, second}` side convention *by testing*
+  rather than assuming it from the one-line doc comment above
+  `TrimByPlane` in Manifold's own source: splitting a box down its own
+  midplane gives exactly two volume-4 halves whose bounding boxes confirm
+  the first result is on the side `plane_normal` points toward, the
+  second on the opposite side; an off-center split (a 4x2x2 box at x=3,
+  not its midpoint) gives exact volumes 4 and 12, ruling out a test that
+  only happens to work for a symmetric split; and both halves' own
+  watertightness is proven the same way every other closed-solid
+  primitive here is - a real Manifold union with a disjoint cylinder,
+  not just "the volume number looked plausible."
 
 ## What's still not done (as of chunk 2)
 
