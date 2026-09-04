@@ -1100,6 +1100,22 @@ What this repo does instead:
   "fails on a closed curve" case at all - a 4-point closed triangle path
   was needed instead, and `NurbsCurve::IsClosed()`'s own doc comment has
   been corrected to note this real, narrower guarantee.
+- `Mesh::SaveStlBinary()` closes the last STL asymmetry: `SaveStl()`
+  only ever wrote ASCII, even though `LoadStl()` (see above) already
+  reads both. Same triangle-only, no-shared-vertex-list, real-computed
+  -normal semantics as `SaveStl()`, just the binary encoding (80-byte
+  zeroed header, little-endian uint32 triangle count, then 50-byte
+  normal/vertices/attribute-count records per triangle). Verified two
+  ways on the same 6-quad box `SaveStl()`'s own round-trip test uses:
+  the written file's exact byte size independently matches
+  `80 + 4 + 12*50` for its 12 triangles (checked directly, not just
+  inferred from a successful round-trip - confirms the real binary
+  layout was written, not merely something `LoadStl()` happens to
+  accept), and reading that file back through `LoadStl()`'s own
+  binary/ASCII auto-detection reproduces the original mesh's 12 faces,
+  36 unshared vertices, and exact volume - the first time that
+  auto-detection has been exercised against a real (not hand-written)
+  binary file.
 
 ## What's still not done (as of chunk 2)
 

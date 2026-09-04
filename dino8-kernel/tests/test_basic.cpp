@@ -3071,6 +3071,50 @@ void TestMeshLoadStlBinary() {
   std::remove(truncated_path.c_str());
 }
 
+void TestMeshSaveStlBinaryRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Same MakeQuadBoxMesh() SaveStl()'s own ASCII round-trip test uses:
+  // 6 quads, 12 triangles once split, 36 unshared vertices, hand-known
+  // volume. Writing it via SaveStlBinary() and reading it back through
+  // Mesh::LoadStl() (the same reader TestMeshLoadStlBinary() already
+  // proved against a hand-written file) exercises the writer and the
+  // reader's own binary/ASCII auto-detection together on a real
+  // (non-hand-written) binary file for the first time.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  const std::string path = "dino8_kernel_mesh_stl_save_binary_test.stl";
+  Check(box.SaveStlBinary(path) == Result::Ok, "Mesh::SaveStlBinary succeeds");
+
+  // Verify the file's own exact byte size independently of LoadStl(),
+  // since LoadStl()'s binary/ASCII detection itself depends on this
+  // formula - checking it here directly (not just trusting a successful
+  // round-trip) confirms SaveStlBinary() actually wrote the real binary
+  // layout, not something that merely happens to parse.
+  std::ifstream size_check(path, std::ios::binary | std::ios::ate);
+  const std::streamoff file_size = size_check.tellg();
+  const std::streamoff expected_size = 80 + 4 + static_cast<std::streamoff>(12) * 50;
+  Check(file_size == expected_size,
+        "the binary file's own exact size matches 80 + 4 + 12*50 bytes "
+        "for its 12 triangles, the real binary STL layout, not merely "
+        "something LoadStl() happens to accept");
+
+  Mesh loaded;
+  Check(Mesh::LoadStl(path, loaded) == Result::Ok,
+        "Mesh::LoadStl succeeds on SaveStlBinary()'s own output, auto-"
+        "detecting it as binary rather than falling back to ASCII");
+  Check(loaded.FaceCount() == box.FaceCount() * 2,
+        "the loaded binary mesh has 12 triangle faces (2 per original "
+        "quad), matching what SaveStlBinary() actually wrote");
+  Check(loaded.VertexCount() == loaded.FaceCount() * 3,
+        "the loaded binary mesh has exactly 3 unshared vertices per "
+        "facet (36 total), STL's own structure round-tripped through "
+        "the binary path");
+  Check(std::abs(loaded.Volume() - box.Volume()) < 1e-6,
+        "the loaded binary mesh's volume exactly matches the original");
+  std::remove(path.c_str());
+}
+
 void TestExactClippingMatchesAreaButNotCellCounts() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -3577,6 +3621,7 @@ int main() {
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();
+  TestMeshSaveStlBinaryRoundTrips();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestExactClippingHandlesTrimVertexOnGridLine();

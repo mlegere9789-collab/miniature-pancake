@@ -208,6 +208,18 @@ class Mesh {
   // Result::Failed if the file can't be opened for writing.
   Result SaveStl(const std::string& path) const;
 
+  // Writes this mesh as a binary `.stl` file - the format LoadStl()
+  // already reads but SaveStl() never wrote, closing that asymmetry.
+  // Same triangle-only, no-shared-vertex-list, real-computed-normal
+  // semantics as SaveStl(); only the on-disk encoding differs (an
+  // 80-byte header - left all zero, since this kernel has no metadata to
+  // put there - a little-endian uint32 triangle count, then that many
+  // 50-byte records: 3 floats normal, 3x3 floats vertices, a 2-byte
+  // attribute byte count written as 0). Assumes a little-endian host,
+  // same assumption LoadStl()'s binary reader already makes. Returns
+  // Result::Failed if the file can't be opened for writing.
+  Result SaveStlBinary(const std::string& path) const;
+
   // Reads a `.stl` file written by SaveStl() (or any other reasonably
   // well-formed STL, ASCII or binary) into `out_mesh` - closing the
   // "export-only" gap SaveStl() itself used to flag. Auto-detects which

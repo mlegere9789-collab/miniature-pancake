@@ -546,6 +546,51 @@ Result Mesh::SaveStl(const std::string& path) const {
   return out.good() ? Result::Ok : Result::Failed;
 }
 
+Result Mesh::SaveStlBinary(const std::string& path) const {
+  std::ofstream out(path, std::ios::binary);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  const char header[80] = {0};
+  out.write(header, sizeof(header));
+
+  uint32_t triangle_count = 0;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    triangle_count += mesh_.m_F[i].IsQuad() ? 2 : 1;
+  }
+  out.write(reinterpret_cast<const char*>(&triangle_count), sizeof(triangle_count));
+
+  auto write_facet = [&out](const ON_3fPoint& a, const ON_3fPoint& b, const ON_3fPoint& c) {
+    ON_3dVector normal_d = ON_3dVector::CrossProduct(ON_3dVector(b - a), ON_3dVector(c - a));
+    normal_d.Unitize();
+    const float normal[3] = {static_cast<float>(normal_d.x), static_cast<float>(normal_d.y),
+                              static_cast<float>(normal_d.z)};
+    out.write(reinterpret_cast<const char*>(normal), sizeof(normal));
+    const float pa[3] = {a.x, a.y, a.z};
+    const float pb[3] = {b.x, b.y, b.z};
+    const float pc[3] = {c.x, c.y, c.z};
+    out.write(reinterpret_cast<const char*>(pa), sizeof(pa));
+    out.write(reinterpret_cast<const char*>(pb), sizeof(pb));
+    out.write(reinterpret_cast<const char*>(pc), sizeof(pc));
+    const uint16_t attribute_byte_count = 0;
+    out.write(reinterpret_cast<const char*>(&attribute_byte_count), sizeof(attribute_byte_count));
+  };
+
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    const ON_3fPoint& a = mesh_.m_V[f.vi[0]];
+    const ON_3fPoint& b = mesh_.m_V[f.vi[1]];
+    const ON_3fPoint& c = mesh_.m_V[f.vi[2]];
+    write_facet(a, b, c);
+    if (f.IsQuad()) {
+      write_facet(a, c, mesh_.m_V[f.vi[3]]);
+    }
+  }
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
 namespace {
 
 Result LoadAsciiStl(const std::string& path, Mesh& out_mesh) {
