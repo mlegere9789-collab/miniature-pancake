@@ -53,6 +53,16 @@ bool NurbsCurve::IsRational() const { return curve_.IsRational(); }
 
 double NurbsCurve::WeightAt(int i) const { return curve_.Weight(i); }
 
+Result NurbsCurve::SetWeightAt(int i, double weight) {
+  if (i < 0 || i >= ControlPointCount()) {
+    return Result::Failed;
+  }
+  if (WeightAt(i) == weight) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.SetWeight(i, weight) ? Result::Ok : Result::Failed;
+}
+
 Result NurbsCurve::ElevateDegree(int new_degree) {
   if (new_degree <= Degree()) {
     return Result::NoOpAlreadySatisfied;

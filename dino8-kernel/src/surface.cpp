@@ -358,6 +358,16 @@ bool NurbsSurface::IsRational() const { return surface_.IsRational(); }
 
 double NurbsSurface::WeightAt(int i, int j) const { return surface_.Weight(i, j); }
 
+Result NurbsSurface::SetWeightAt(int i, int j, double weight) {
+  if (i < 0 || i >= CVCountU() || j < 0 || j >= CVCountV()) {
+    return Result::Failed;
+  }
+  if (WeightAt(i, j) == weight) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return surface_.SetWeight(i, j, weight) ? Result::Ok : Result::Failed;
+}
+
 Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
   if (new_degree <= surface_.Degree(direction)) {
     return Result::NoOpAlreadySatisfied;

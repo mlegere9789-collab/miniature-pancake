@@ -194,6 +194,53 @@ void TestCurveDivideByCount() {
   Check(threw, "DivideByCount throws std::invalid_argument on a non-positive count");
 }
 
+void TestCurveSetWeightAt() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Quadratic Bezier (3 control points, degree 2 - a single Bezier span
+  // under FromControlPoints()'s clamped uniform knots), starting
+  // non-rational. At t=0.5 the Bernstein weights are (0.25, 0.5, 0.25).
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  NurbsCurve curve = NurbsCurve::FromControlPoints(pts, /*degree=*/2);
+  Check(!curve.IsRational(), "a freshly-built curve is non-rational");
+  const Point3d before = curve.PointAt(0.5);
+  Check(std::abs(before.x - 1.0) < 1e-12 && std::abs(before.y - 0.5) < 1e-12,
+        "the ordinary (unweighted) quadratic Bezier midpoint is exactly (1.0, 0.5, 0)");
+
+  // Raising control point 1's weight to 3.0 promotes the curve to
+  // rational (verified) - but, importantly, it does NOT rescale that
+  // control point's own stored (x, y, z) to compensate: OpenNURBS
+  // evaluates (x, y, z) / w internally, and SetWeight only touches w.
+  // So the new midpoint is the exact rational-Bezier blend of the
+  // *homogeneous* (x, y, z, w) tuples - hand-derived here as
+  // (X, Y, Z, W) = (0.25*0 + 0.5*1 + 0.25*2, 0.25*0 + 0.5*1 + 0.25*0, 0,
+  // 0.25*1 + 0.5*3 + 0.25*1) = (1.0, 0.5, 0, 2.0), giving a final point
+  // of (1.0/2.0, 0.5/2.0, 0) = (0.5, 0.25, 0) - confirmed by a debug run
+  // before finalizing, not the naive "same position, more pull" a
+  // weighted-average intuition would predict.
+  const Result set_result = curve.SetWeightAt(1, 3.0);
+  Check(set_result == Result::Ok, "SetWeightAt returns Ok when it changes a real weight");
+  Check(curve.IsRational(), "the curve is rational after SetWeightAt changes a weight from 1.0");
+  Check(curve.WeightAt(1) == 3.0, "WeightAt(1) reflects the newly-set weight exactly");
+  const Point3d after = curve.PointAt(0.5);
+  Check(std::abs(after.x - 0.5) < 1e-12 && std::abs(after.y - 0.25) < 1e-12,
+        "the new midpoint matches the hand-derived homogeneous-blend result exactly, not a "
+        "naive same-position-more-influence guess");
+
+  Check(curve.SetWeightAt(1, 3.0) == Result::NoOpAlreadySatisfied,
+        "SetWeightAt reports NoOpAlreadySatisfied when the weight already matches");
+
+  // A real bug this method's own first draft had, caught by testing this
+  // directly: an out-of-range index used to reach WeightAt()'s own
+  // documented unchecked out-of-bounds read on a rational curve
+  // (confirmed via a debug run that it segfaulted) rather than failing
+  // cleanly. Now bounds-checked directly against ControlPointCount().
+  Check(curve.SetWeightAt(999, 2.0) == Result::Failed,
+        "SetWeightAt returns Failed (not a crash) on an out-of-range index");
+}
+
 void TestCurveWeightAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -1711,6 +1758,57 @@ void TestSurfaceDomain() {
         "ON_NurbsSurface::Domain(direction) exactly, for both directions");
   Check(u_domain.min == 0.0 && u_domain.max == 1.0 && v_domain.min == 0.0 && v_domain.max == 1.0,
         "a 4x4-control-point, degree-3x3 surface's domain is exactly [0, 1] in both directions");
+}
+
+void TestSurfaceSetWeightAt() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Bilinear surface (2x2 control grid, degree 1x1), all four Bernstein
+  // weights exactly 0.25 at (u,v)=(0.5,0.5). Same "stored (X,Y,Z) isn't
+  // rescaled when W changes" mechanism NurbsCurve::SetWeightAt()'s own
+  // test documents, cross-checked here on a second, independent
+  // construction (a surface, not a curve) rather than assumed to
+  // generalize. FromControlGrid()'s own SetCV(u, v, ...) mapping places
+  // control_grid[u * v_count + v] at (u, v) - confirmed by reading its
+  // source, not guessed - so index (1, 0) here is control_grid[2],
+  // point (1, 0, 5).
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 5),
+      Point3d(1, 1, 0),
+  };
+  NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const Point3d before = surface.PointAt(0.5, 0.5);
+  Check(std::abs(before.x - 0.5) < 1e-12 && std::abs(before.y - 0.5) < 1e-12 &&
+            std::abs(before.z - 1.25) < 1e-12,
+        "the ordinary (unweighted) bilinear surface midpoint is exactly the average of all 4 "
+        "corners, (0.5, 0.5, 1.25)");
+
+  // Hand-derived: numerator (X, Y, Z) = sum(0.25 * raw_corner) is
+  // UNCHANGED by the weight change (still (0.5, 0.5, 1.25), same as
+  // `before` - the raw stored coordinates aren't rescaled), while the
+  // denominator W = 0.25*(1 + 4 + 1 + 1) = 1.75 does change. Final point
+  // = (0.5, 0.5, 1.25) / 1.75 = (2/7, 2/7, 5/7).
+  const Result set_result = surface.SetWeightAt(1, 0, 4.0);
+  Check(set_result == Result::Ok, "SetWeightAt returns Ok when it changes a real weight");
+  Check(surface.IsRational(), "the surface is rational after SetWeightAt changes a weight from "
+                               "1.0");
+  Check(surface.WeightAt(1, 0) == 4.0, "WeightAt(1, 0) reflects the newly-set weight exactly");
+  const Point3d after = surface.PointAt(0.5, 0.5);
+  const double expected = 2.0 / 7.0;
+  const double expected_z = 5.0 / 7.0;
+  Check(std::abs(after.x - expected) < 1e-12 && std::abs(after.y - expected) < 1e-12 &&
+            std::abs(after.z - expected_z) < 1e-12,
+        "the new midpoint matches the hand-derived homogeneous-blend result (2/7, 2/7, 5/7) "
+        "exactly");
+
+  Check(surface.SetWeightAt(1, 0, 4.0) == Result::NoOpAlreadySatisfied,
+        "SetWeightAt reports NoOpAlreadySatisfied when the weight already matches");
+  Check(surface.SetWeightAt(99, 99, 2.0) == Result::Failed,
+        "SetWeightAt returns Failed (not a crash) on an out-of-range (i, j)");
 }
 
 void TestSurfaceWeightAt() {
@@ -5304,6 +5402,7 @@ int main() {
   TestCurveParameterAtArcLength();
   TestCurveDivideByCount();
   TestCurveIsRational();
+  TestCurveSetWeightAt();
   TestCurveWeightAt();
   TestCurveDomain();
   TestCurveTangentAt();
@@ -5340,6 +5439,7 @@ int main() {
   TestSurfaceExtend();
   TestSurfaceDomain();
   TestSurfaceIsRational();
+  TestSurfaceSetWeightAt();
   TestSurfaceWeightAt();
   TestSurfaceApproximateArea();
   TestSurfaceCVCount();

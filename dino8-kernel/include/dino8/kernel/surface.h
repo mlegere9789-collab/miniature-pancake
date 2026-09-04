@@ -86,6 +86,18 @@ class NurbsSurface {
   // on a rational one" behavior.
   double WeightAt(int i, int j) const;
 
+  // Same reasoning, same "moves that control point's own position, not
+  // just its influence" caveat, and same out-of-range-`i`/`j` safety
+  // fix as `NurbsCurve::SetWeightAt()` - see there for the full
+  // explanation (verified with a hand-derived exact rational-Bezier
+  // point, not assumed). Delegates to `ON_NurbsSurface::SetWeight(i, j,
+  // w)`. Returns Result::Failed if `i`/`j` is out of range (checked
+  // against `CVCountU()`/`CVCountV()` directly, for the same reason
+  // `NurbsCurve::SetWeightAt()` checks its own bound rather than relying
+  // on OpenNURBS' own deeper check) or Result::NoOpAlreadySatisfied if
+  // `weight` already equals `WeightAt(i, j)`.
+  Result SetWeightAt(int i, int j, double weight);
+
   // Elevates degree in the given direction (0 = U, 1 = V). Returns
   // NoOpAlreadySatisfied if the surface is already at or above that degree.
   Result ElevateDegree(int direction, int new_degree);

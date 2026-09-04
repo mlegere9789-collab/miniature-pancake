@@ -43,6 +43,46 @@ class NurbsCurve {
   // rational one (`m_cv[i * stride + dim]`, no bounds check).
   double WeightAt(int i) const;
 
+  // Sets control point `i`'s homogeneous weight, promoting a non-rational
+  // curve to a genuinely rational one on demand if needed - this is the
+  // actual construction-side counterpart to `WeightAt()`/`IsRational()`
+  // above, the real gap those two read-only accessors left: without it,
+  // this kernel could only ever *read* a rational curve someone else
+  // built (e.g. via `ON_Circle::GetNurbForm()`), never build one of its
+  // own directly through this API. Delegates to `ON_NurbsCurve::
+  // SetWeight(i, w)`, whose own source (verified, not assumed) calls
+  // `MakeRational()` automatically the first time a weight other than
+  // 1.0 is set on a non-rational curve - `FromControlPoints()`'s curves
+  // start non-rational, but aren't stuck that way.
+  //
+  // IMPORTANT, verified by debug run rather than assumed: this does NOT
+  // rescale the control point's own stored coordinates to compensate, so
+  // it also moves that control point's own represented position (its
+  // `PointAt`-style Euclidean location if it were degree 1 alone), not
+  // just its blending influence - OpenNURBS' internal representation is
+  // literally (x, y, z, w) evaluated as (x, y, z) / w, and `SetWeight`
+  // only touches the `w` component. Concretely, raising control point
+  // `i`'s weight from 1.0 to `w` moves that control point's own position
+  // to `original_position / w` (its raw x/y/z are untouched) - confirmed
+  // with a hand-derived exact rational-quadratic-Bezier midpoint
+  // (0.5, 0.25, 0), not the naive weighted-average intuition of "same
+  // position, more influence" would suggest. A caller wanting to keep a
+  // control point's position fixed while changing only its influence
+  // must also rescale its raw coordinates accordingly - this method
+  // alone doesn't do that.
+  //
+  // Returns Result::Failed if `i` is out of range (checked directly
+  // against `ControlPointCount()` here, rather than relying on
+  // `ON_NurbsCurve::SetWeight`'s own bounds check - that check happens
+  // deep inside OpenNURBS' rational-conversion path, so calling
+  // `WeightAt(i)` first to detect a no-op, as this method does, would
+  // otherwise hit `WeightAt()`'s own documented unchecked out-of-bounds
+  // read on a rational curve; a real bug this method's own first draft
+  // had, caught by testing the out-of-range case directly, not assumed
+  // safe). Returns Result::NoOpAlreadySatisfied if `weight` already
+  // equals `WeightAt(i)`.
+  Result SetWeightAt(int i, double weight);
+
   // Elevates the curve's degree in place. Returns NoOpAlreadySatisfied if
   // `new_degree <= Degree()`.
   Result ElevateDegree(int new_degree);

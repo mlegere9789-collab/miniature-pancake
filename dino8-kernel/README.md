@@ -1670,6 +1670,30 @@ What this repo does instead:
   V=49/F=72) instead of an error. Fixed in the same shared
   `TessellateFromValues()` helper, checked for every polygon in
   `hole_polygons` independently.
+- `NurbsCurve::SetWeightAt(i, weight)`/`NurbsSurface::SetWeightAt(i, j,
+  weight)`: the real construction-side gap `WeightAt()`/`IsRational()`
+  (a chunk ago) left - without it, this kernel could only ever *read* a
+  rational curve/surface someone else built (e.g. via
+  `ON_Circle::GetNurbForm()`), never build one of its own directly.
+  Delegates to `ON_NurbsCurve`/`ON_NurbsSurface::SetWeight()`, which
+  auto-promotes a non-rational object to a genuinely rational one the
+  first time a non-1.0 weight is set. A real, non-obvious behavior found
+  by a debug run rather than assumed: this does NOT rescale the control
+  point's own stored coordinates to compensate - OpenNURBS' internal
+  representation is literally `(x, y, z, w)` evaluated as `(x, y, z) /
+  w`, and `SetWeight` only touches `w` - so raising a weight also moves
+  that control point's own represented position, not just its blending
+  influence. Verified with two independent hand-derived exact
+  homogeneous-blend results (a rational-quadratic-Bezier curve midpoint,
+  and cross-checked on a bilinear surface midpoint too, not assumed to
+  generalize from the curve case alone) that contradict the naive
+  "same position, more influence" intuition. Also caught and fixed a
+  real bug in this method's own first draft: its no-op-detection check
+  called `WeightAt(i)` before validating `i`, which would have hit
+  `WeightAt()`'s own documented unchecked out-of-bounds read on a
+  rational object for a bad index - confirmed by a debug run that it
+  actually segfaulted, fixed by bounds-checking `i`/`j` directly against
+  `ControlPointCount()`/`CVCountU()`/`CVCountV()` first.
 
 ## What's still not done (as of chunk 2)
 
