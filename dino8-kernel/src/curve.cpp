@@ -65,4 +65,8 @@ double NurbsCurve::Length(int samples) const {
 
 Vector3d NurbsCurve::TangentAt(double t) const { return curve_.TangentAt(t); }
 
+bool NurbsCurve::IsClosed() const { return curve_.IsClosed(); }
+
+bool NurbsCurve::IsPeriodic() const { return curve_.IsPeriodic(); }
+
 }  // namespace dino8::kernel

@@ -28,6 +28,23 @@ class NurbsCurve {
   // `new_degree <= Degree()`.
   Result ElevateDegree(int new_degree);
 
+  // Whether the curve's start and end points coincide - either because
+  // it's genuinely periodic (its own knot vector wraps) or because a
+  // clamped curve's own two endpoints just happen to be the same point
+  // (e.g. `FromControlPoints()` given a control point list whose first
+  // and last entries match). The surface-level counterpart to
+  // `NurbsSurface::IsClosed()`. Delegates to `ON_NurbsCurve::IsClosed`
+  // after verifying it's a real implementation (falls back to an actual
+  // endpoint-coincidence check for a non-periodic curve, not a stub).
+  bool IsClosed() const;
+
+  // Whether the curve's own knot vector is genuinely periodic - a
+  // stronger condition than IsClosed() (every periodic curve is closed,
+  // but a clamped curve can be closed - matching endpoints - without
+  // being periodic at all). Delegates to `ON_NurbsCurve::IsPeriodic`
+  // after the same stub-vs-real verification.
+  bool IsPeriodic() const;
+
   Point3d PointAt(double t) const;
 
   // Delegates to `ON_Curve::GetTightBoundingBox`. DESPITE THE NAME, this

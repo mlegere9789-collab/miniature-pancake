@@ -191,6 +191,33 @@ void TestCurveGetTightBoundingBox() {
         "[0, 2] either way, since the endpoints already bound it exactly");
 }
 
+void TestCurveIsClosed() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const std::vector<Point3d> open_pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  const NurbsCurve open_curve = NurbsCurve::FromControlPoints(open_pts, 2);
+  Check(!open_curve.IsClosed() && !open_curve.IsPeriodic(),
+        "a curve whose endpoints differ is neither closed nor periodic");
+
+  // Same shape, but the control point list's first and last entries
+  // coincide - closed via ordinary endpoint coincidence, not a periodic
+  // knot vector (FromControlPoints() always builds a clamped knot
+  // vector). Confirmed by testing, not assumed: IsClosed() is true while
+  // IsPeriodic() stays false, the same "closed without being periodic"
+  // distinction NurbsSurface::IsClosed()/IsPeriodic() already
+  // demonstrated for a cylinder wall.
+  const std::vector<Point3d> closed_pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0),
+                                            Point3d(0, 0, 0)};
+  const NurbsCurve closed_curve = NurbsCurve::FromControlPoints(closed_pts, 2);
+  Check(closed_curve.IsClosed(),
+        "a curve whose first and last control points coincide is closed");
+  Check(!closed_curve.IsPeriodic(),
+        "...but not periodic, since FromControlPoints() always builds a "
+        "clamped (not periodic) knot vector - IsClosed() and "
+        "IsPeriodic() really do answer different questions here too");
+}
+
 void TestSurfaceNormalAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -3024,6 +3051,7 @@ int main() {
   TestCurveLength();
   TestCurveTangentAt();
   TestCurveGetTightBoundingBox();
+  TestCurveIsClosed();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();

@@ -968,6 +968,13 @@ What this repo does instead:
   periodic one (`IsPeriodic(0)` is `false`), showing the two methods
   really do answer different questions rather than being two names for
   the same fact.
+- `NurbsCurve::IsClosed()`/`IsPeriodic()` are the curve-level counterparts
+  to `NurbsSurface`'s, same delegation and stub-vs-real verification.
+  Verified with the same real distinction: a curve whose control points'
+  first and last entries coincide (`FromControlPoints()` always builds a
+  clamped, non-periodic knot vector) is closed but not periodic, matching
+  what the surface-level test already found for a cylinder wall - a
+  genuinely open curve is neither.
 
 ## What's still not done (as of chunk 2)
 
