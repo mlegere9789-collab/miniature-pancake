@@ -25,6 +25,20 @@ class Mesh {
   // kind BooleanCombine requires as input and produces as output.
   double Volume() const;
 
+  // Volume-weighted centroid (center of mass, assuming uniform density),
+  // via the same divergence-theorem decomposition Volume() uses: each
+  // triangle (plus the origin) forms a tetrahedron whose own centroid is
+  // the average of its 4 vertices and whose signed volume is already
+  // exactly what Volume() sums; the mesh's centroid is the volume-weighted
+  // average of those per-tetrahedron centroids. Only meaningful for a
+  // closed, consistently-oriented mesh, same requirement as Volume() (and
+  // for the same reason - GetBoundingBox() computes a plain vertex
+  // average/extent instead, which needs no such assumption). Throws
+  // std::invalid_argument if the mesh's volume is (near) zero - the
+  // centroid of an open surface or a degenerate/zero-volume solid isn't
+  // well-defined by this formula (it would divide by ~0).
+  Point3d GetCentroid() const;
+
   // Sum of face areas (each via half the cross-product magnitude of its
   // one or two triangles - a quad face's second triangle is included,
   // same as Volume()'s own IsQuad() handling). Unlike Volume(), meaningful

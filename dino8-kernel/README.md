@@ -445,6 +445,20 @@ What this repo does instead:
   way the normal points, so it doesn't need Newell's winding-consistency
   guarantee, only a valid plane. Re-verified with the same bowtie ring,
   now correctly rejected.
+- `Mesh::GetCentroid()` complements `GetBoundingBox()`: the volume-weighted
+  center of mass (uniform density assumed), computed via the same
+  divergence-theorem decomposition `Volume()` already uses - each
+  triangle (plus the origin) forms a tetrahedron whose centroid is the
+  average of its 4 vertices and whose signed volume `Volume()` already
+  sums per-triangle; the mesh centroid is the volume-weighted average of
+  those. Only meaningful for a closed, consistently-oriented mesh, the
+  same requirement `Volume()` has (`GetBoundingBox()` needs no such
+  assumption, since it's a plain vertex extent). Throws
+  `std::invalid_argument` on a mesh with near-zero volume rather than
+  dividing by it. Verified with the same asymmetric box `GetBoundingBox()`
+  used: its centroid is exactly the midpoint of each axis's extent, by
+  symmetry, giving a clean hand-derivable exact match rather than a
+  tolerance-based one.
 
 ## What's still not done (as of chunk 2)
 

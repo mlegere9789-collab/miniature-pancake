@@ -81,6 +81,46 @@ double Mesh::Volume() const {
   return volume;
 }
 
+Point3d Mesh::GetCentroid() const {
+  double volume_sum = 0.0;
+  Vector3d weighted_sum(0, 0, 0);
+
+  auto accumulate_tet = [&](const ON_3fPoint& a, const ON_3fPoint& b, const ON_3fPoint& c) {
+    // Signed volume of the tetrahedron (origin, a, b, c) - the same
+    // per-triangle term Volume() sums - and that tetrahedron's own
+    // centroid, the average of its 4 vertices ((0,0,0)+a+b+c)/4.
+    const double signed_volume =
+        (static_cast<double>(a.x) *
+             (static_cast<double>(b.y) * c.z - static_cast<double>(b.z) * c.y) -
+         static_cast<double>(a.y) *
+             (static_cast<double>(b.x) * c.z - static_cast<double>(b.z) * c.x) +
+         static_cast<double>(a.z) *
+             (static_cast<double>(b.x) * c.y - static_cast<double>(b.y) * c.x)) /
+        6.0;
+    const Vector3d tet_centroid = (Vector3d(a) + Vector3d(b) + Vector3d(c)) / 4.0;
+    volume_sum += signed_volume;
+    weighted_sum += tet_centroid * signed_volume;
+  };
+
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& face = mesh_.m_F[i];
+    const ON_3fPoint& a = mesh_.m_V[face.vi[0]];
+    const ON_3fPoint& b = mesh_.m_V[face.vi[1]];
+    const ON_3fPoint& c = mesh_.m_V[face.vi[2]];
+    accumulate_tet(a, b, c);
+    if (face.IsQuad()) {
+      accumulate_tet(a, c, mesh_.m_V[face.vi[3]]);
+    }
+  }
+
+  if (std::abs(volume_sum) <= 1e-12) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::GetCentroid: mesh volume is (near) zero - not a "
+        "closed, non-degenerate solid this formula can compute a centroid for");
+  }
+  return Point3d(weighted_sum / volume_sum);
+}
+
 double Mesh::Area() const {
   double area = 0.0;
   for (int i = 0; i < mesh_.m_F.Count(); ++i) {

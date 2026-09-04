@@ -882,6 +882,31 @@ void TestMeshGetBoundingBox() {
                "returning a misleading all-zero box");
 }
 
+void TestMeshGetCentroid() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  // Same asymmetric box as TestMeshGetBoundingBox (different extents per
+  // axis) - its centroid is exactly the midpoint of each axis's extent,
+  // by symmetry, giving a clean hand-derivable exact check.
+  const auto box = MakeQuadBoxMesh(1, -2, 0.5, 4, 3, 7.5);
+  const Point3d centroid = box.GetCentroid();
+  Check(std::abs(centroid.x - 2.5) < 1e-9 && std::abs(centroid.y - 0.5) < 1e-9 &&
+            std::abs(centroid.z - 4.0) < 1e-9,
+        "GetCentroid of an asymmetric box is exactly its per-axis midpoint "
+        "(2.5, 0.5, 4.0)");
+
+  bool threw = false;
+  try {
+    const Mesh empty;
+    empty.GetCentroid();
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "GetCentroid throws on a mesh with (near) zero volume rather "
+               "than dividing by it");
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -1522,6 +1547,7 @@ int main() {
   TestLoftClosedRingsConcaveEndCapsExactPrismVolume();
   TestTorusVolumeAndBoolean();
   TestMeshGetBoundingBox();
+  TestMeshGetCentroid();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
