@@ -134,6 +134,66 @@ void TestCurveParameterAtArcLength() {
         "geometric quarter point (0, radius, 0)");
 }
 
+void TestCurveDivideByCount() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Straight line, uniform speed: dividing by arc length is identical to
+  // dividing the raw parameter domain evenly - exactly [0, 0.25, 0.5,
+  // 0.75, 1.0] for count=4, confirmed by a debug run before finalizing.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  const auto line_values = line.DivideByCount(4);
+  const std::vector<double> expected_line_values = {0.0, 0.25, 0.5, 0.75, 1.0};
+  Check(line_values.size() == expected_line_values.size(), "DivideByCount returns count+1 values");
+  bool line_values_match = true;
+  for (size_t i = 0; i < line_values.size(); ++i) {
+    if (std::abs(line_values[i] - expected_line_values[i]) > 1e-9) {
+      line_values_match = false;
+    }
+  }
+  Check(line_values_match,
+        "dividing a straight line by count exactly matches dividing its "
+        "own parameter domain evenly (uniform speed)");
+
+  // Full circle: equal arc-length division must give genuinely equal
+  // consecutive-point chord lengths, not merely equal parameter
+  // increments (which the circle's own arc-length-vs-parameter
+  // relationship happens to make the same here since a circular NURBS
+  // form is arc-length-linear in its own parameter, but checked via the
+  // actual geometric chord lengths, not assumed from that).
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const auto circle_values = circle.DivideByCount(8);
+  Check(circle_values.size() == 9, "DivideByCount(8) on the circle returns exactly 9 values");
+  bool all_chords_equal = true;
+  const double first_chord =
+      (circle.PointAt(circle_values[1]) - circle.PointAt(circle_values[0])).Length();
+  for (size_t i = 1; i < circle_values.size(); ++i) {
+    const double chord = (circle.PointAt(circle_values[i]) - circle.PointAt(circle_values[i - 1])).Length();
+    if (std::abs(chord - first_chord) > 1e-6) {
+      all_chords_equal = false;
+      break;
+    }
+  }
+  Check(all_chords_equal,
+        "every consecutive pair of division points on the circle is "
+        "exactly the same chord length apart, confirming genuine "
+        "equal-arc-length division");
+
+  bool threw = false;
+  try {
+    line.DivideByCount(0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "DivideByCount throws std::invalid_argument on a non-positive count");
+}
+
 void TestCurveTangentAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -4685,6 +4745,7 @@ int main() {
   TestCurveDegreeElevation();
   TestCurveLength();
   TestCurveParameterAtArcLength();
+  TestCurveDivideByCount();
   TestCurveTangentAt();
   TestCurveGetTightBoundingBox();
   TestCurveIsClosed();

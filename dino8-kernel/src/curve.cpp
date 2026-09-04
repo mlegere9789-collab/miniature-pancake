@@ -198,6 +198,23 @@ double NurbsCurve::ParameterAtArcLength(double target_length, int samples) const
   return domain.Max();
 }
 
+std::vector<double> NurbsCurve::DivideByCount(int count, int samples) const {
+  if (count <= 0) {
+    throw std::invalid_argument("dino8::kernel::NurbsCurve::DivideByCount: count must be positive");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  const double total_length = Length(samples);
+  std::vector<double> values;
+  values.reserve(static_cast<size_t>(count) + 1);
+  values.push_back(domain.Min());
+  for (int i = 1; i < count; ++i) {
+    values.push_back(ParameterAtArcLength(total_length * static_cast<double>(i) / count, samples));
+  }
+  values.push_back(domain.Max());
+  return values;
+}
+
 Vector3d NurbsCurve::TangentAt(double t) const { return curve_.TangentAt(t); }
 
 bool NurbsCurve::IsClosed() const { return curve_.IsClosed(); }

@@ -1496,6 +1496,21 @@ What this repo does instead:
   exactly at its own midpoint) and exact on a full circle of known
   radius (a quarter of its own arc length lands exactly on its
   geometric quarter point).
+- `NurbsCurve::DivideByCount(count)` builds directly on
+  `ParameterAtArcLength()`: it calls that function `count - 1` times, at
+  `i/count` fractions of the curve's total `Length()`, to produce the
+  `count + 1` parameter values (including both domain endpoints) that
+  split the curve into `count` sub-segments of exactly equal arc length -
+  genuine arc-length-parametrization division, not the naive "divide the
+  raw parameter domain evenly" approach that only agrees with it when the
+  curve happens to already be arc-length-linear in its own parameter.
+  Verified exact on a straight line (uniform speed makes the two
+  approaches coincide, confirmed rather than assumed) and, more
+  meaningfully, on a full circle: every consecutive pair of division
+  points was checked to be the *same actual chord length* apart (not just
+  evenly spaced in parameter), confirming true equal-arc-length division
+  rather than an artifact of the circle's own parametrization. Throws
+  `std::invalid_argument` on a non-positive `count`.
 
 ## What's still not done (as of chunk 2)
 

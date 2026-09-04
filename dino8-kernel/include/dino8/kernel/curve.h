@@ -225,6 +225,23 @@ class NurbsCurve {
   // assumed.
   double ParameterAtArcLength(double target_length, int samples = 1000) const;
 
+  // Divides the curve into `count` sub-segments of exactly equal arc
+  // length, returning the `count + 1` parameter values at the
+  // boundaries between them (starting at `Domain().Min()`, ending at
+  // `Domain().Max()`) - "arc-length parametrization" in the sense
+  // that's actually useful for evenly spacing points/objects along a
+  // curve, unlike the curve's own raw parameter (which a non-arc-length
+  // -parametrized NURBS curve, e.g. one built with non-uniform knots,
+  // does not travel at constant speed along). Built directly on
+  // `ParameterAtArcLength()` - calls it `count - 1` times at
+  // `Length(samples) * i / count` for each interior boundary. Verified
+  // exact on a straight line (uniform speed makes this identical to
+  // dividing the parameter domain itself evenly) and on a full circle
+  // (equal arc-length divisions land at equal angular spacing, checked
+  // via equal consecutive-point chord lengths, not assumed from the
+  // formula). Throws std::invalid_argument if `count <= 0`.
+  std::vector<double> DivideByCount(int count, int samples = 1000) const;
+
   // Unit tangent direction at parameter `t` - the direction of travel
   // along the curve, not a raw (unnormalized) derivative. Delegates to
   // `ON_Curve::TangentAt` - verified as a real implementation (calls
