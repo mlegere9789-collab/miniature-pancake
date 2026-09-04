@@ -257,15 +257,18 @@ elseif (-not $env:VCPKG_INSTALLATION_ROOT) {
 else {
     try {
         $vcpkgExe = Join-Path $env:VCPKG_INSTALLATION_ROOT "vcpkg.exe"
-        # opencv4's vcpkg port default-features go far past what face_enhance.cpp actually
-        # calls (cv::imread/imwrite, resize, warpAffine): dnn (pulls in protobuf +
-        # flatbuffers, ~25 min alone), quirc, tiff, webp, calib3d, gapi, highgui, and the
-        # Windows GUI backends (directml/dshow/msmf/win32ui) are all on by default and were
-        # the actual cause of a 45+ minute run that still hadn't reached opencv4 itself.
-        # "core" as the first bracketed feature turns off every default feature; jpeg/png
-        # are added back explicitly since imgcodecs needs at least one real format to read
-        # and write through.
-        & $vcpkgExe install "opencv4[core,jpeg,png]:x64-windows-static" "ncnn:x64-windows-static"
+        # opencv4's vcpkg port default-features go far past what this build actually needs:
+        # dnn (pulls in protobuf + flatbuffers, ~25 min alone), quirc, tiff, webp, gapi, and
+        # the Windows GUI backends (directml/dshow/msmf/win32ui) are all on by default and
+        # were the actual cause of a 45+ minute run that still hadn't reached opencv4
+        # itself. "core" as the first bracketed feature turns off every default feature;
+        # jpeg/png are added back for imgcodecs (face_enhance.cpp's own imread/imwrite), and
+        # calib3d/highgui are added back because face.h — vendored verbatim, see its own
+        # header comment — hard-#includes both (a first attempt at scoping this dropped
+        # them too, which compiled vcpkg's side fine but failed cl.exe with "Cannot open
+        # include file: 'opencv2/opencv.hpp'" since that header's own transitive includes
+        # need those two modules present).
+        & $vcpkgExe install "opencv4[core,jpeg,png,calib3d,highgui]:x64-windows-static" "ncnn:x64-windows-static"
         if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
             throw "vcpkg install opencv4/ncnn failed with exit code $LASTEXITCODE"
         }
@@ -285,23 +288,67 @@ else {
 
         $sources = @("face_enhance.cpp", "face.cpp", "gfpgan.cpp") | ForEach-Object { Join-Path $faceEnhanceSrcDir $_ }
 
-        # Both vendored source files #include bare "net.h"/"opencv2/opencv.hpp" (no
-        # "ncnn/" or package prefix), matching each library's own standard install
-        # layout (ncnn under include\ncnn\*.h; OpenCV's own opencv2\ already sits
-        # directly under include\ on every layout vcpkg has used for this port) — so
-        # both go on the include path, and the ncnn one is added only if vcpkg actually
-        # produced it, in case a future vcpkg version changes that layout.
+        # All four sources #include bare "net.h"/"opencv2/..." (no "ncnn/" or package
+        # prefix), matching each library's standard install layout — ncnn under
+        # include\ncnn\*.h, and OpenCV's opencv2\ either directly under include\ or under
+        # include\opencv4\opencv2\ depending on vcpkg version/config (both are covered
+        # below), so each candidate directory is added to the include path only if vcpkg
+        # actually produced it.
         $includePaths = @("/I$includeDir")
         $ncnnIncludeDir = Join-Path $includeDir "ncnn"
         if (Test-Path $ncnnIncludeDir) {
             $includePaths += "/I$ncnnIncludeDir"
         }
+        # A second attempt still couldn't resolve opencv2/core.hpp directly under include\
+        # despite vcpkg reporting a clean opencv4 build with no errors — covering the other
+        # real possibility, a versioned include\opencv4\opencv2\ layout (the convention some
+        # OpenCV packaging uses to avoid clashing with a co-installed opencv2/opencv3), so
+        # this run can actually succeed if that's what's really there instead of only
+        # gathering diagnostics for a fourth attempt.
+        $opencv4IncludeDir = Join-Path $includeDir "opencv4"
+        if (Test-Path $opencv4IncludeDir) {
+            $includePaths += "/I$opencv4IncludeDir"
+        }
+        # Logged plainly so a future compile failure is diagnosable straight from the CI
+        # log, rather than needing to reconstruct these from vcpkg's own install output —
+        # exactly what the first attempt at this compile was missing. A second attempt
+        # still failed on "Cannot open include file: 'opencv2/core.hpp'" even though vcpkg
+        # reported building opencv4 cleanly with no errors — so this round also dumps the
+        # real installed\...\include layout instead of guessing at it a third time: either
+        # opencv2\ sits somewhere other than directly under include\ (e.g. an
+        # include\opencv4\opencv2\ versioned layout), or opencv4's own libs/headers never
+        # actually landed under $installedDir despite vcpkg's own success report.
+        Write-Host "  VCPKG_INSTALLATION_ROOT: $env:VCPKG_INSTALLATION_ROOT"
+        Write-Host "  installedDir: $installedDir (exists: $(Test-Path $installedDir))"
+        Write-Host "  includeDir: $includeDir (exists: $(Test-Path $includeDir))"
+        if (Test-Path $includeDir) {
+            $topLevel = Get-ChildItem -Path $includeDir | Select-Object -ExpandProperty Name
+            Write-Host "  includeDir top-level entries: $($topLevel -join ', ')"
+            foreach ($dir in @('opencv2', 'opencv4')) {
+                $candidate = Join-Path $includeDir $dir
+                if (Test-Path $candidate) {
+                    $nested = Get-ChildItem -Path $candidate | Select-Object -ExpandProperty Name
+                    Write-Host "  includeDir\$dir entries: $($nested -join ', ')"
+                }
+            }
+        }
+        $opencvLibs = $libFiles | Where-Object { $_.Name -like '*opencv*' } | Select-Object -ExpandProperty Name
+        Write-Host "  opencv-related .lib files found ($($opencvLibs.Count)): $($opencvLibs -join ', ')"
+        Write-Host "  opencv2/core.hpp present: $(Test-Path (Join-Path $includeDir 'opencv2\core.hpp'))"
+        Write-Host "  opencv2/highgui/highgui.hpp present: $(Test-Path (Join-Path $includeDir 'opencv2\highgui\highgui.hpp'))"
+        Write-Host "  opencv4/opencv2/core.hpp present: $(Test-Path (Join-Path $includeDir 'opencv4\opencv2\core.hpp'))"
 
         # /MT to match vcpkg's x64-windows-static triplet (static CRT), same reasoning as
         # the LibRaw compile above. Linking every .lib vcpkg produced for this triplet
         # rather than guessing opencv4's and ncnn's combined transitive dependency list
-        # (protobuf, zlib, libpng, libjpeg-turbo, ...) by name.
-        & cl.exe /nologo /EHsc /O2 /MT $includePaths $sources "/Fe:$exePath" /link $libFiles.FullName
+        # (protobuf, zlib, libpng, libjpeg-turbo, ...) by name. /DNOMINMAX because face.cpp
+        # calls std::max/std::min (e.g. "std::max(std::min(x0, ...), 0.f)"), and something
+        # in the ncnn/opencv4 header chain pulls in <windows.h> transitively, whose own
+        # max/min macros (on by default) rewrite "std::max(" into invalid syntax right
+        # after "::" — a well-known, well-documented MSVC/Windows.h gotcha, fixed by this
+        # one flag rather than touching the vendored source at all.
+        Write-Host "  cl.exe /nologo /EHsc /O2 /MT /DNOMINMAX $($includePaths -join ' ') $($sources -join ' ') /Fe:$exePath /link <$($libFiles.Count) .lib files>"
+        & cl.exe /nologo /EHsc /O2 /MT /DNOMINMAX $includePaths $sources "/Fe:$exePath" /link $libFiles.FullName
         if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
             throw "Compiling face_enhance.cpp failed with exit code $LASTEXITCODE"
         }
