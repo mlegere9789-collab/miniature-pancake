@@ -609,6 +609,23 @@ What this repo does instead:
   without the fix (wrong area, not just "didn't crash") by temporarily
   reverting only the fix and re-running it, then confirmed it passes with
   the fix restored - not just a fix asserted from reading the code.
+- `Mesh::FlipNormals()` closes a real gap nothing earlier here could
+  answer: a mesh built (or loaded) with the wrong handedness had no way to
+  correct it after the fact, since every operation here (`Volume()`,
+  `ComputeVertexNormals()`, `BooleanCombine()`) assumes CCW-from-outside
+  winding and just silently gives a sign-flipped or inside-out answer
+  otherwise. Reverses each face's own vertex loop in place (not a
+  reordering of the vertex list) - a quad's `(a,b,c,d)` becomes
+  `(d,c,b,a)`, a triangle's `(a,b,c)` becomes `(c,b,a)` while keeping the
+  `vi[3]==vi[2]` encoding `ON_MeshFace::IsQuad()` relies on to tell a
+  triangle from a quad. Verified on both a quad-faced and a
+  triangle-faced box (exercising both of the method's branches): flipping
+  exactly negates `Volume()` (same magnitude, opposite sign - the
+  divergence-theorem sum flips which side is "outward"), leaves `Area()`
+  completely unchanged (winding-independent by construction), and applied
+  twice reproduces the *exact* original volume bit-for-bit, not just an
+  equivalent one - a genuine involution, since it's the same indices
+  reversed back to their original order, not a fresh recomputation.
 
 ## What's still not done (as of chunk 2)
 
@@ -730,10 +747,14 @@ the comment there if a future OpenNURBS version renames its targets again.
 
 ## Known gaps / next chunk's problem
 
-- No general solid construction — see "What's still not done" above.
-- No SubD support yet — OpenNURBS has `ON_SubD` but this chunk doesn't
-  wrap it.
+This section is stale as of chunk 2 - "no general solid construction" and
+"no SubD support" were both true at the very start of this project but
+aren't anymore (see the narrative and "What's still not done" above for
+what's real today). Kept only for its one still-accurate point:
+
 - No tolerance-management policy defined yet; wrapper calls use
-  OpenNURBS defaults or an ad-hoc constant (`Mesh::MergeAndWeld`'s
-  default tolerance), which will need revisiting once real modeling
-  tolerances are decided.
+  OpenNURBS defaults or ad-hoc constants (`Mesh::MergeAndWeld`'s default
+  tolerance, `LoftClosedRings()`'s/`IsRingPlanar()`'s relative-tolerance
+  planarity check, `TessellateGridClippedExact()`'s grid-line nudge
+  fraction), which will need revisiting once real modeling tolerances are
+  decided.

@@ -205,6 +205,27 @@ std::vector<Vector3d> Mesh::ComputeVertexNormals() const {
   return normals;
 }
 
+Mesh Mesh::FlipNormals() const {
+  Mesh result = *this;
+  ON_Mesh& out = result.mesh_;
+  for (int i = 0; i < out.m_F.Count(); ++i) {
+    ON_MeshFace& f = out.m_F[i];
+    if (f.IsQuad()) {
+      std::swap(f.vi[0], f.vi[3]);
+      std::swap(f.vi[1], f.vi[2]);
+    } else {
+      // A triangle's IsQuad()-false encoding requires vi[3] == vi[2];
+      // reversing just vi[0]/vi[2] without also updating vi[3] would
+      // break that invariant (vi[3] would keep the *old* vi[2], now
+      // different from the *new* vi[2]) and silently turn a triangle
+      // into what IsQuad() reads as a quad.
+      std::swap(f.vi[0], f.vi[2]);
+      f.vi[3] = f.vi[2];
+    }
+  }
+  return result;
+}
+
 Mesh Mesh::Transform(const ON_Xform& xform) const {
   Mesh result = *this;
   result.mesh_.Transform(xform);

@@ -70,6 +70,18 @@ class Mesh {
   // zero vector (nothing to average).
   std::vector<Vector3d> ComputeVertexNormals() const;
 
+  // Returns a copy of this mesh with every face's winding reversed (each
+  // face's own vertex loop reversed in place, not the vertex list
+  // reordered) - flipping which side is "outward" without moving a single
+  // vertex. The missing piece for a mesh built (or loaded) with the wrong
+  // handedness: everything else here (Volume(), ComputeVertexNormals(),
+  // BooleanCombine()) assumes CCW-from-outside winding and silently gives
+  // a sign-flipped or inside-out answer otherwise, with nothing earlier
+  // to correct it after the fact. Flipping twice is an exact involution -
+  // FlipNormals().FlipNormals() reproduces the original mesh's vertex
+  // order exactly, not just an equivalent one.
+  Mesh FlipNormals() const;
+
   // Applies `xform` to a copy of this mesh and returns it - the missing
   // piece that let every primitive here be positioned/oriented only via
   // its own constructor parameters (Cylinder()'s base_center/axis, say),

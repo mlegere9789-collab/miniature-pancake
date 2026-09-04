@@ -1091,6 +1091,43 @@ void TestMeshTransform() {
         "rotating the box about an arbitrary axis/center preserves its volume");
 }
 
+void TestMeshFlipNormals() {
+  using dino8::kernel::Mesh;
+
+  // Mix of quad faces (MakeQuadBoxMesh) and triangle faces (MakeBox, a
+  // pre-existing helper that triangulates each side) so both of
+  // FlipNormals()'s branches (IsQuad() true/false) get exercised, not
+  // just one.
+  const auto quad_box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  const auto tri_box = MakeBox(0, 0, 0, 2, 3, 4);
+
+  for (const auto& box : {quad_box, tri_box}) {
+    const double original_volume = box.Volume();
+    const double original_area = box.Area();
+    const auto flipped = box.FlipNormals();
+
+    // Reversing every face's winding flips which side Volume()'s
+    // divergence-theorem sum treats as "outward" - the exact negative of
+    // the original, not just "a different number."
+    Check(std::abs(flipped.Volume() + original_volume) < 1e-9,
+          "FlipNormals() exactly negates the mesh's volume");
+    // Area doesn't care about winding direction, only magnitude - it
+    // should be completely unaffected.
+    Check(std::abs(flipped.Area() - original_area) < 1e-9,
+          "FlipNormals() doesn't change the mesh's area");
+    Check(flipped.VertexCount() == box.VertexCount() && flipped.FaceCount() == box.FaceCount(),
+          "FlipNormals() doesn't add or remove vertices/faces");
+
+    // An exact involution: flipping twice must reproduce the original
+    // volume exactly (not just "close"), since it's the same vertex
+    // indices reversed back to their original order.
+    const auto double_flipped = flipped.FlipNormals();
+    Check(double_flipped.Volume() == original_volume,
+          "FlipNormals() applied twice exactly reproduces the original "
+          "volume (an exact involution, not merely an equivalent mesh)");
+  }
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -1929,6 +1966,7 @@ int main() {
   TestMeshGetBoundingBox();
   TestMeshGetCentroid();
   TestMeshTransform();
+  TestMeshFlipNormals();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
