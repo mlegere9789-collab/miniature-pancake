@@ -274,6 +274,40 @@ void TestCurveIsLinear() {
         "endpoint-to-endpoint line");
 }
 
+void TestCurveIsArcAndIsCircle() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // A genuine full circle via ON_Circle::GetNurbForm - both IsArc() and
+  // the stronger IsCircle() should report true. Confirmed by a debug
+  // run before finalizing these assertions.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(1, 2, 0), ON_3dVector(0, 0, 1)), 5.0);
+  ON_NurbsCurve full_circle_nurbs;
+  Check(on_circle.GetNurbForm(full_circle_nurbs) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve full_circle;
+  full_circle.raw() = full_circle_nurbs;
+  Check(full_circle.IsArc(), "a genuine full circle reports IsArc() true");
+  Check(full_circle.IsCircle(), "...and also reports the stronger IsCircle() true");
+
+  // A quarter arc of the identical circle: still an arc, but NOT a full
+  // circle - this is the real distinguishing case proving IsCircle()
+  // isn't just IsArc() under a different name.
+  const ON_Arc on_arc(on_circle, ON_PI / 2.0);
+  ON_NurbsCurve partial_arc_nurbs;
+  Check(on_arc.GetNurbForm(partial_arc_nurbs) != 0, "ON_Arc::GetNurbForm succeeds");
+  NurbsCurve partial_arc;
+  partial_arc.raw() = partial_arc_nurbs;
+  Check(partial_arc.IsArc(), "a quarter arc of the same circle still reports IsArc() true");
+  Check(!partial_arc.IsCircle(),
+        "...but correctly reports IsCircle() false, since its own angle "
+        "isn't the full 2*pi");
+
+  // A straight line is neither.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(1, 2, 3)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  Check(!line.IsArc() && !line.IsCircle(), "a straight line reports both IsArc() and IsCircle() false");
+}
+
 void TestCurveReverse() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -4339,6 +4373,7 @@ int main() {
   TestCurveIsClosed();
   TestCurveIsPlanar();
   TestCurveIsLinear();
+  TestCurveIsArcAndIsCircle();
   TestCurveReverse();
   TestCurveTrim();
   TestCurveSplit();

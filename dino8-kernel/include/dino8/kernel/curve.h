@@ -73,6 +73,23 @@ class NurbsCurve {
   // segment, without needing to inspect control points by hand.
   bool IsLinear(double tolerance = ON_ZERO_TOLERANCE) const;
 
+  // Whether the curve's entire shape is (a portion of) a circular arc
+  // within `tolerance`. Delegates to `ON_Curve::IsArc` after verifying
+  // it's a real implementation (fits an actual plane and circle through
+  // sampled points, not a stub - `ON_NurbsCurve::IsArc` falls back to
+  // this same base method for the general case). Defaults to
+  // `ON_ZERO_TOLERANCE`.
+  bool IsArc(double tolerance = ON_ZERO_TOLERANCE) const;
+
+  // A stronger condition than IsArc(): whether the curve is not just an
+  // arc but a *full* circle (an arc whose own angle is exactly 2*pi -
+  // `ON_Arc::IsCircle()`'s own definition). Delegates to `IsArc()`'s
+  // same real underlying fit, then checks the fitted arc's angle -
+  // verified against both a genuine full circle (true) and a partial
+  // arc built from the identical circle (false), so this isn't just
+  // "IsArc() under a different name".
+  bool IsCircle(double tolerance = ON_ZERO_TOLERANCE) const;
+
   // Reverses the curve's parameterization in place: what was
   // `PointAt(domain.Min())` becomes `PointAt(domain.Max())` and vice
   // versa (the curve's own 3D shape is unchanged - same points, opposite

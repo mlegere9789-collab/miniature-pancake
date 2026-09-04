@@ -145,6 +145,16 @@ bool NurbsCurve::IsPlanar(double tolerance) const { return curve_.IsPlanar(nullp
 
 bool NurbsCurve::IsLinear(double tolerance) const { return curve_.IsLinear(tolerance); }
 
+bool NurbsCurve::IsArc(double tolerance) const { return curve_.IsArc(nullptr, nullptr, tolerance); }
+
+bool NurbsCurve::IsCircle(double tolerance) const {
+  ON_Arc arc;
+  if (!curve_.IsArc(nullptr, &arc, tolerance)) {
+    return false;
+  }
+  return arc.IsCircle();
+}
+
 Result NurbsCurve::Reverse() { return curve_.Reverse() ? Result::Ok : Result::Failed; }
 
 Result NurbsCurve::Trim(double t0, double t1) {

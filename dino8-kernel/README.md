@@ -1387,6 +1387,17 @@ What this repo does instead:
   construction needs. Verified against the existing sphere, cylinder
   wall, and cone too (all correctly report false at the same 1e-6
   tolerance).
+- `NurbsCurve::IsArc(tolerance)`/`IsCircle(tolerance)` are the
+  curve-level classification counterparts to the surface family above.
+  `IsArc()` delegates to `ON_Curve::IsArc` (verified real - fits an
+  actual plane and circle through sampled points; `ON_NurbsCurve::IsArc`
+  falls back to this same base method for the general case). `IsCircle()`
+  is the stronger "and its own angle is exactly 2*pi" check
+  (`ON_Arc::IsCircle()`), built on the same `IsArc()` fit. Verified with
+  a genuine full circle (both true), a quarter arc of the *identical*
+  circle (`IsArc()` true, `IsCircle()` false - the real case proving
+  `IsCircle()` isn't just `IsArc()` renamed), and a straight line (both
+  false).
 
 ## What's still not done (as of chunk 2)
 
