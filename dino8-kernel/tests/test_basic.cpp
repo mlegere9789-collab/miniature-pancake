@@ -218,6 +218,37 @@ void TestCurveIsClosed() {
         "IsPeriodic() really do answer different questions here too");
 }
 
+void TestCurveIsPlanar() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // All 4 control points lie in the z=0 plane - a genuinely planar
+  // curve, confirmed by a debug run before finalizing this assertion.
+  const std::vector<Point3d> planar_pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0),
+                                            Point3d(3, 2, 0)};
+  const NurbsCurve planar = NurbsCurve::FromControlPoints(planar_pts, /*degree=*/3);
+  Check(planar.IsPlanar(), "a curve whose control points all share z=0 reports planar");
+
+  // These 4 control points are genuinely non-coplanar (no single plane
+  // passes through all of them) - reports non-planar at a tight
+  // tolerance, but planar once the tolerance is generous enough to
+  // swallow the deviation (a large but finite tolerance, not something
+  // that would be true for literally any curve).
+  const std::vector<Point3d> skew_pts = {Point3d(0, 0, 0), Point3d(1, 0, 1), Point3d(2, 1, 0),
+                                          Point3d(0, 2, 3)};
+  const NurbsCurve skew = NurbsCurve::FromControlPoints(skew_pts, /*degree=*/3);
+  Check(!skew.IsPlanar(1e-9), "a genuinely non-coplanar curve reports non-planar at a tight tolerance");
+  Check(skew.IsPlanar(100.0),
+        "...but reports planar once the tolerance is generous enough to "
+        "swallow its actual (much smaller) deviation from some plane");
+
+  // A straight line is trivially planar - any plane containing it works
+  // - verified directly, not assumed.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(1, 2, 3)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  Check(line.IsPlanar(), "a straight line reports planar at the default tolerance");
+}
+
 void TestCurveReverse() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -4128,6 +4159,7 @@ int main() {
   TestCurveTangentAt();
   TestCurveGetTightBoundingBox();
   TestCurveIsClosed();
+  TestCurveIsPlanar();
   TestCurveReverse();
   TestCurveTrim();
   TestCurveSplit();

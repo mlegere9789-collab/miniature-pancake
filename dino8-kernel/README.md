@@ -1317,6 +1317,15 @@ What this repo does instead:
   point's distance to that plane), not the naively-guessable
   `peak_height` itself - confirmed by a debug run straddling that exact
   value before finalizing the test.
+- `NurbsCurve::IsPlanar(tolerance)` is the curve-level counterpart,
+  delegating to `ON_NurbsCurve::IsPlanar` (verified real - checks
+  `IsLinear()` first, then fits/verifies an actual plane through the
+  curve's own tangent and sampled points, not a stub). Verified with a
+  curve whose control points all share one coordinate plane (planar), a
+  genuinely non-coplanar 4-point curve (non-planar at a tight tolerance,
+  planar once the tolerance is generous enough to swallow its actual
+  deviation), and a straight line (trivially planar, confirmed directly
+  rather than assumed).
 
 ## What's still not done (as of chunk 2)
 

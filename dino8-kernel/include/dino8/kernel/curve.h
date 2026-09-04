@@ -51,6 +51,16 @@ class NurbsCurve {
   // after the same stub-vs-real verification.
   bool IsPeriodic() const;
 
+  // Whether the curve's entire shape lies within `tolerance` of some
+  // plane - the curve-level counterpart to `NurbsSurface::IsPlanar()`.
+  // Delegates to `ON_NurbsCurve::IsPlanar` after verifying it's a real
+  // implementation (checks `IsLinear()` first, then fits/verifies an
+  // actual plane through the curve's own tangent and sampled points -
+  // not a stub). Defaults to `ON_ZERO_TOLERANCE` (OpenNURBS' own
+  // default). A straight line is planar (trivially, any plane containing
+  // it works) - verified directly, not assumed.
+  bool IsPlanar(double tolerance = ON_ZERO_TOLERANCE) const;
+
   // Reverses the curve's parameterization in place: what was
   // `PointAt(domain.Min())` becomes `PointAt(domain.Max())` and vice
   // versa (the curve's own 3D shape is unchanged - same points, opposite
