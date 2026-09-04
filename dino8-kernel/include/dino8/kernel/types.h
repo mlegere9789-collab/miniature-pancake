@@ -30,4 +30,14 @@ struct BoundingBox {
   Point3d max;
 };
 
+// A closed parameter-space interval [min, max], e.g. a curve's own
+// parameter domain or one direction of a surface's. Plain struct for the
+// same reason as `BoundingBox` above - `min`/`max` are two independent
+// numbers a caller may want separately (e.g. `Domain().min` alone to seed
+// a scan from the curve's start), not just as a matched pair.
+struct Interval {
+  double min;
+  double max;
+};
+
 }  // namespace dino8::kernel

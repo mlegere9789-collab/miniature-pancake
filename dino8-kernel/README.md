@@ -1511,6 +1511,22 @@ What this repo does instead:
   evenly spaced in parameter), confirming true equal-arc-length division
   rather than an artifact of the circle's own parametrization. Throws
   `std::invalid_argument` on a non-positive `count`.
+- `NurbsCurve::Domain()` and `NurbsSurface::Domain(direction)`: a real,
+  previously-missing gap this file's own doc comments had been quietly
+  assuming away - `PointAt()`, `DivideByCount()`,
+  `SuggestedParameterValues()`, and others all reference "the curve's own
+  domain" or `Domain().Min()`/`Domain().Max()` in their documentation, but
+  there was no actual public way for a caller to *ask* a `NurbsCurve` or
+  `NurbsSurface` what its own parameter domain is - only `raw().Domain()`
+  reaching straight into the underlying `ON_NurbsCurve`/`ON_NurbsSurface`,
+  bypassing the wrapper entirely. Both new methods are a thin wrap
+  returning a new plain `Interval{min, max}` struct (`types.h`, alongside
+  `BoundingBox`, for the same "two independent numbers a caller may want
+  separately" reason). Verified to match `raw().Domain()` exactly and, on
+  a concrete degree-3/4-control-point curve and a 4x4-control-point,
+  degree-3x3 surface, confirmed by a debug run (not assumed from the
+  general "clamped uniform knots give a `[0, cv_count - degree]` domain"
+  rule) to be exactly `[0, 1]` in every direction.
 
 ## What's still not done (as of chunk 2)
 

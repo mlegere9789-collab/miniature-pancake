@@ -435,6 +435,11 @@ Result NurbsSurface::Split(int direction, double t, NurbsSurface& out_west_or_so
   return Result::Ok;
 }
 
+Interval NurbsSurface::Domain(int direction) const {
+  const ON_Interval domain = surface_.Domain(direction);
+  return Interval{domain.Min(), domain.Max()};
+}
+
 Point3d NurbsSurface::PointAt(double u, double v) const {
   ON_3dPoint pt;
   surface_.EvPoint(u, v, pt);

@@ -194,6 +194,28 @@ void TestCurveDivideByCount() {
   Check(threw, "DivideByCount throws std::invalid_argument on a non-positive count");
 }
 
+void TestCurveDomain() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // A degree-3, 4-control-point curve is a single Bezier span under
+  // `FromControlPoints()`'s clamped uniform knot vector, so its domain is
+  // exactly [0, 1] - confirmed by a debug run against the wrapper's own
+  // `raw().Domain()` before finalizing, not assumed from the general
+  // "clamped uniform knots give a [0, cv_count - degree] domain" rule
+  // (which would still give [0, 1] here, but this file's own discipline
+  // is to check the real value, not just trust the formula).
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(3, 4, 0), Point3d(6, 0, 0),
+                                          Point3d(9, 4, 0)};
+  const NurbsCurve cubic = NurbsCurve::FromControlPoints(line_pts, /*degree=*/3);
+  const auto domain = cubic.Domain();
+  const ON_Interval raw_domain = cubic.raw().Domain();
+  Check(domain.min == raw_domain.Min() && domain.max == raw_domain.Max(),
+        "NurbsCurve::Domain() matches the underlying ON_NurbsCurve::Domain() exactly");
+  Check(domain.min == 0.0 && domain.max == 1.0,
+        "a degree-3, 4-control-point curve's domain is exactly [0, 1]");
+}
+
 void TestCurveTangentAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -1470,6 +1492,34 @@ void TestSurfaceExtend() {
   Check(backwards.Extend(0, 1.0, -0.5) == Result::Failed,
         "Extend() fails on a backwards interval (t0 >= t1) rather than "
         "silently doing something undefined");
+}
+
+void TestSurfaceDomain() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // Same reasoning as `TestCurveDomain()` above, per direction: a 4x4
+  // control grid at degree 3x3 is a single Bezier span in both u and v,
+  // so both domains are exactly [0, 1] - confirmed via a debug run
+  // against the wrapper's own `raw().Domain(direction)` before
+  // finalizing.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      grid.push_back(Point3d(static_cast<double>(i), static_cast<double>(j), 0.0));
+    }
+  }
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+  const auto u_domain = surface.Domain(0);
+  const auto v_domain = surface.Domain(1);
+  const ON_Interval raw_u = surface.raw().Domain(0);
+  const ON_Interval raw_v = surface.raw().Domain(1);
+  Check(u_domain.min == raw_u.Min() && u_domain.max == raw_u.Max() &&
+            v_domain.min == raw_v.Min() && v_domain.max == raw_v.Max(),
+        "NurbsSurface::Domain(direction) matches the underlying "
+        "ON_NurbsSurface::Domain(direction) exactly, for both directions");
+  Check(u_domain.min == 0.0 && u_domain.max == 1.0 && v_domain.min == 0.0 && v_domain.max == 1.0,
+        "a 4x4-control-point, degree-3x3 surface's domain is exactly [0, 1] in both directions");
 }
 
 void TestSurfaceClosestPoint() {
@@ -4746,6 +4796,7 @@ int main() {
   TestCurveLength();
   TestCurveParameterAtArcLength();
   TestCurveDivideByCount();
+  TestCurveDomain();
   TestCurveTangentAt();
   TestCurveGetTightBoundingBox();
   TestCurveIsClosed();
@@ -4775,6 +4826,7 @@ int main() {
   TestSurfaceTrim();
   TestSurfaceSplit();
   TestSurfaceExtend();
+  TestSurfaceDomain();
   TestSurfaceClosestPoint();
   TestSurfaceCurvature();
   TestSurfaceSuggestedDivisions();

@@ -151,6 +151,16 @@ class NurbsCurve {
   // documented restriction), or OpenNURBS' own call fails.
   Result Extend(double t0, double t1);
 
+  // The curve's own parameter domain [min, max] - the valid range for
+  // `t` in `PointAt(t)`, `TangentAt(t)`, `CurvatureAt(t)`, and every
+  // other by-parameter method below. Not necessarily [0, 1]: e.g.
+  // `FromControlPoints()`'s clamped uniform knot vector gives a
+  // `cv_count - degree`-wide domain, not a normalized one - confirmed by
+  // testing, not assumed. Every doc comment in this file that references
+  // `Domain().Min()`/`Domain().Max()` means this method's own
+  // `.min`/`.max`, not a method on the return value.
+  Interval Domain() const;
+
   Point3d PointAt(double t) const;
 
   // Finds the parameter along the curve's own domain whose PointAt() is

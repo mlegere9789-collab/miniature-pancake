@@ -57,6 +57,11 @@ Result NurbsCurve::ElevateDegree(int new_degree) {
   return ok ? Result::Ok : Result::Failed;
 }
 
+Interval NurbsCurve::Domain() const {
+  const ON_Interval domain = curve_.Domain();
+  return Interval{domain.Min(), domain.Max()};
+}
+
 Point3d NurbsCurve::PointAt(double t) const {
   ON_3dPoint pt;
   curve_.EvPoint(t, pt);

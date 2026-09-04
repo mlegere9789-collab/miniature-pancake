@@ -264,6 +264,12 @@ class NurbsSurface {
   // documented restriction), or OpenNURBS' own call fails.
   Result Extend(int direction, double t0, double t1);
 
+  // The surface's own parameter domain [min, max] in `direction` (0 for
+  // u, 1 for v) - the valid range for that argument to `PointAt(u, v)`
+  // and every other by-parameter method below. Not necessarily [0, 1] -
+  // same caveat as `NurbsCurve::Domain()`.
+  Interval Domain(int direction) const;
+
   Point3d PointAt(double u, double v) const;
 
   // Finds the (u, v) parameter whose PointAt() is closest to `point`: a
