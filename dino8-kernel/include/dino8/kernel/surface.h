@@ -117,6 +117,24 @@ class NurbsSurface {
 
   Point3d PointAt(double u, double v) const;
 
+  // Finds the (u, v) parameter whose PointAt() is closest to `point`: a
+  // coarse `u_divisions` x `v_divisions` grid scan of the full domain,
+  // then several rounds of re-scanning a shrinking bracket around the
+  // best point found so far - a from-scratch multi-level grid search, the
+  // surface-level counterpart to `NurbsCurve::ClosestPointParameter()`'s
+  // golden-section search (2D makes the curve's own bracket-and-refine
+  // approach awkward, so this uses repeated grid refinement instead, same
+  // underlying idea of "sample coarsely, then narrow around the best
+  // sample"). Not a guaranteed global minimum for a pathological
+  // multi-modal distance function, same honesty
+  // `ClosestPointParameter()` documents for the curve case.
+  Point2d ClosestPointParameter(Point3d point, int u_divisions = 20, int v_divisions = 20) const;
+
+  // The actual closest point: `PointAt(ClosestPointParameter(point,
+  // u_divisions, v_divisions))`. The surface-level counterpart to
+  // `Mesh::ClosestPoint()`.
+  Point3d ClosestPoint(Point3d point, int u_divisions = 20, int v_divisions = 20) const;
+
   // Unit surface normal at parameter (u, v): `d/du x d/dv`, normalized.
   // Delegates to `ON_Surface::EvNormal` - verified as a real
   // implementation (computes the cross product of the two partial

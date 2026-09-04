@@ -1137,6 +1137,30 @@ What this repo does instead:
   none" convention for `m_S` can't represent): the reloaded mesh reports
   no texture coordinates at all rather than guessing values for the
   unreferenced vertices.
+- `NurbsCurve::ClosestPoint()`/`ClosestPointParameter()` and
+  `NurbsSurface::ClosestPoint()`/`ClosestPointParameter()` close a gap
+  `Mesh` already had (`Mesh::ClosestPoint()`) but curves/surfaces didn't:
+  finding the point on the curve/surface nearest to an arbitrary query
+  point. Both are from-scratch numeric searches, not wrappers - verified
+  directly against the v8.34 source that OpenNURBS' public `ON_Curve`/
+  `ON_Surface` API has no `GetClosestPoint()` method at all (grepped the
+  whole source tree), the same "declared for Rhino, not present in the
+  public build" gap this file already found for `Length()`'s own
+  arc-length method. The curve version coarsely samples the domain, then
+  refines the bracket around the best sample via golden-section search;
+  the surface version does the 2D analog via repeated grid refinement
+  (sample a grid, shrink the search region around the best cell, repeat).
+  Neither guarantees a true global minimum for a pathological
+  multi-modal distance function - same "approximate, not exhaustive"
+  honesty `Length()`'s own polyline sampling already documents. Verified
+  on hand-derivable-exact cases: a straight line's closest point to an
+  off-line query point matches its exact perpendicular projection (to
+  within the search's own convergence tolerance, ~4e-8 for the curve's
+  golden-section refinement), a flat plane's closest point to a point
+  above it matches its exact vertical projection (~4e-5 for the
+  surface's coarser grid refinement), and a query point far outside a
+  surface's domain correctly clamps to the domain's own boundary corner
+  rather than extrapolating past it.
 
 ## What's still not done (as of chunk 2)
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 
@@ -418,6 +419,48 @@ Point3d NurbsSurface::PointAt(double u, double v) const {
   ON_3dPoint pt;
   surface_.EvPoint(u, v, pt);
   return pt;
+}
+
+Point2d NurbsSurface::ClosestPointParameter(Point3d point, int u_divisions, int v_divisions) const {
+  const ON_Interval u_domain = surface_.Domain(0);
+  const ON_Interval v_domain = surface_.Domain(1);
+  auto distance_squared = [&](double u, double v) { return (PointAt(u, v) - point).LengthSquared(); };
+
+  double u_lo = u_domain.Min();
+  double u_hi = u_domain.Max();
+  double v_lo = v_domain.Min();
+  double v_hi = v_domain.Max();
+  double best_u = u_lo;
+  double best_v = v_lo;
+
+  constexpr int kRefinementLevels = 8;
+  for (int level = 0; level < kRefinementLevels; ++level) {
+    double best_d2 = std::numeric_limits<double>::max();
+    for (int i = 0; i <= u_divisions; ++i) {
+      const double u = u_lo + (u_hi - u_lo) * static_cast<double>(i) / u_divisions;
+      for (int j = 0; j <= v_divisions; ++j) {
+        const double v = v_lo + (v_hi - v_lo) * static_cast<double>(j) / v_divisions;
+        const double d2 = distance_squared(u, v);
+        if (d2 < best_d2) {
+          best_d2 = d2;
+          best_u = u;
+          best_v = v;
+        }
+      }
+    }
+    const double u_step = (u_hi - u_lo) / u_divisions;
+    const double v_step = (v_hi - v_lo) / v_divisions;
+    u_lo = std::max(u_domain.Min(), best_u - u_step);
+    u_hi = std::min(u_domain.Max(), best_u + u_step);
+    v_lo = std::max(v_domain.Min(), best_v - v_step);
+    v_hi = std::min(v_domain.Max(), best_v + v_step);
+  }
+  return Point2d(best_u, best_v);
+}
+
+Point3d NurbsSurface::ClosestPoint(Point3d point, int u_divisions, int v_divisions) const {
+  const Point2d uv = ClosestPointParameter(point, u_divisions, v_divisions);
+  return PointAt(uv.x, uv.y);
 }
 
 Vector3d NurbsSurface::NormalAt(double u, double v) const {

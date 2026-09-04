@@ -114,6 +114,29 @@ class NurbsCurve {
 
   Point3d PointAt(double t) const;
 
+  // Finds the parameter along the curve's own domain whose PointAt() is
+  // closest to `point`: a coarse `samples`-point scan of the domain to
+  // bracket the nearest sample, then a golden-section refinement of the
+  // distance-squared function within that bracket. This is a from-scratch
+  // numeric search, not a wrapper - verified directly against the v8.34
+  // source that OpenNURBS' public `ON_Curve` API has no
+  // `GetClosestPoint()`/closest-point method at all (grepped the whole
+  // source tree, not just this class), the same "declared for Rhino, not
+  // present in the public build" gap this file already found for
+  // `Length()`'s own arc-length method. Not a guaranteed global minimum
+  // for a pathological multi-modal distance function (e.g. a curve
+  // passing near `point` at more than one well-separated parameter) -
+  // refines only around whichever coarse sample happens to be nearest,
+  // the same "approximate, not exhaustive" honesty `Length()`'s own
+  // polyline sampling already documents. Increasing `samples` narrows the
+  // risk of missing a closer, separate local minimum, at proportional
+  // cost.
+  double ClosestPointParameter(Point3d point, int samples = 200) const;
+
+  // The actual closest point: `PointAt(ClosestPointParameter(point,
+  // samples))`. The curve-level counterpart to `Mesh::ClosestPoint()`.
+  Point3d ClosestPoint(Point3d point, int samples = 200) const;
+
   // Delegates to `ON_Curve::GetTightBoundingBox`. DESPITE THE NAME, this
   // is *not* a genuine tight/exact bound for a general curve in the
   // public OpenNURBS build - verified by reading the source

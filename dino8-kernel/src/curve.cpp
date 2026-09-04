@@ -1,5 +1,7 @@
 #include "dino8/kernel/curve.h"
 
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace dino8::kernel {
@@ -39,6 +41,44 @@ Point3d NurbsCurve::PointAt(double t) const {
   ON_3dPoint pt;
   curve_.EvPoint(t, pt);
   return pt;
+}
+
+double NurbsCurve::ClosestPointParameter(Point3d point, int samples) const {
+  const ON_Interval domain = curve_.Domain();
+  auto distance_squared = [&](double t) { return (PointAt(t) - point).LengthSquared(); };
+
+  double best_t = domain.Min();
+  double best_d2 = distance_squared(best_t);
+  for (int i = 1; i <= samples; ++i) {
+    const double t = domain.ParameterAt(static_cast<double>(i) / samples);
+    const double d2 = distance_squared(t);
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best_t = t;
+    }
+  }
+
+  const double step = domain.Length() / samples;
+  double lo = std::max(domain.Min(), best_t - step);
+  double hi = std::min(domain.Max(), best_t + step);
+
+  const double golden_ratio = (std::sqrt(5.0) - 1.0) / 2.0;
+  double c = hi - golden_ratio * (hi - lo);
+  double d = lo + golden_ratio * (hi - lo);
+  for (int iter = 0; iter < 100 && (hi - lo) > 1e-13; ++iter) {
+    if (distance_squared(c) < distance_squared(d)) {
+      hi = d;
+    } else {
+      lo = c;
+    }
+    c = hi - golden_ratio * (hi - lo);
+    d = lo + golden_ratio * (hi - lo);
+  }
+  return (lo + hi) / 2.0;
+}
+
+Point3d NurbsCurve::ClosestPoint(Point3d point, int samples) const {
+  return PointAt(ClosestPointParameter(point, samples));
 }
 
 BoundingBox NurbsCurve::GetTightBoundingBox() const {

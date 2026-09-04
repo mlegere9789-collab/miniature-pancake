@@ -409,6 +409,36 @@ void TestCurveExtend() {
         "Extend()'s own documented restriction");
 }
 
+void TestCurveClosestPoint() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Line from (0,0,0) to (10,0,0), domain [0,1], P(t)=(10t,0,0). Query
+  // point (3,4,0)'s closest point on the line is exactly its
+  // perpendicular projection (3,0,0) at t=0.3, distance 4 -
+  // hand-derivable exact, confirmed by a debug run before finalizing
+  // these assertions (the numeric search converged to within ~4e-8 of
+  // the exact answer, well inside the 1e-6 tolerance used here).
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(pts, /*degree=*/1);
+  const double t = line.ClosestPointParameter(Point3d(3, 4, 0));
+  Check(std::abs(t - 0.3) < 1e-6, "ClosestPointParameter finds t=0.3 for query point (3,4,0)");
+  const Point3d p = line.ClosestPoint(Point3d(3, 4, 0));
+  Check(std::abs(p.x - 3.0) < 1e-6 && std::abs(p.y) < 1e-6 && std::abs(p.z) < 1e-6,
+        "ClosestPoint returns exactly (3,0,0), the perpendicular "
+        "projection of (3,4,0) onto the line");
+  Check(std::abs((p - Point3d(3, 4, 0)).Length() - 4.0) < 1e-6,
+        "the distance from the query point to its closest point is "
+        "exactly 4, matching the hand-derivable perpendicular distance");
+
+  // A query point already sitting exactly on the curve should return
+  // itself (distance 0), the degenerate case of the same search.
+  const Point3d on_curve = line.ClosestPoint(Point3d(7, 0, 0));
+  Check((on_curve - Point3d(7, 0, 0)).Length() < 1e-6,
+        "a query point already on the curve is returned as its own "
+        "closest point");
+}
+
 void TestSurfaceNormalAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -723,6 +753,42 @@ void TestSurfaceExtend() {
   Check(backwards.Extend(0, 1.0, -0.5) == Result::Failed,
         "Extend() fails on a backwards interval (t0 >= t1) rather than "
         "silently doing something undefined");
+}
+
+void TestSurfaceClosestPoint() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // Flat P(u,v)=(u,v,0) surface, domain [0,1]x[0,1]. Query point
+  // (0.37, 0.62, 5)'s closest point on the plane is exactly its vertical
+  // projection (0.37, 0.62, 0), distance 5 - hand-derivable exact,
+  // confirmed by a debug run before finalizing (converged to within
+  // ~4e-5 of the exact answer, well inside the 1e-3 tolerance used here
+  // for the coarser 2D grid search).
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const Point3d p = surface.ClosestPoint(Point3d(0.37, 0.62, 5));
+  Check(std::abs(p.x - 0.37) < 1e-3 && std::abs(p.y - 0.62) < 1e-3 && std::abs(p.z) < 1e-3,
+        "ClosestPoint returns approximately (0.37, 0.62, 0), the "
+        "vertical projection of the query point onto the plane");
+  Check(std::abs((p - Point3d(0.37, 0.62, 5)).Length() - 5.0) < 1e-3,
+        "the distance from the query point to its closest point is "
+        "approximately 5, matching the hand-derivable vertical distance");
+
+  // A query point outside the domain entirely (both u and v beyond
+  // [0,1]) has its closest point clamp to the surface's own boundary
+  // corner (1,1,0), not extrapolate past the domain - confirmed by the
+  // same debug run, not assumed.
+  const Point3d p2 = surface.ClosestPoint(Point3d(5, 5, 0));
+  Check(std::abs(p2.x - 1.0) < 1e-6 && std::abs(p2.y - 1.0) < 1e-6 && std::abs(p2.z) < 1e-6,
+        "a query point far outside the domain clamps to exactly the "
+        "surface's own boundary corner (1,1,0), not an extrapolation "
+        "past its domain");
 }
 
 void TestFileRoundTrip() {
@@ -3655,6 +3721,7 @@ int main() {
   TestCurveTrim();
   TestCurveSplit();
   TestCurveExtend();
+  TestCurveClosestPoint();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();
@@ -3662,6 +3729,7 @@ int main() {
   TestSurfaceTrim();
   TestSurfaceSplit();
   TestSurfaceExtend();
+  TestSurfaceClosestPoint();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
