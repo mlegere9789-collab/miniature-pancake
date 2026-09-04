@@ -194,6 +194,41 @@ void TestCurveDivideByCount() {
   Check(threw, "DivideByCount throws std::invalid_argument on a non-positive count");
 }
 
+void TestCurveWeightAt() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Non-rational: every weight is exactly 1.0.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  Check(line.WeightAt(0) == 1.0 && line.WeightAt(1) == 1.0,
+        "a non-rational curve's control points all have weight exactly 1.0");
+
+  // A full-circle NURBS form (9 control points, 4 quadrant spans,
+  // degree 2) is the standard rational-quadratic circle construction:
+  // weights alternate exactly 1.0 (on-circle quadrant points) and
+  // sqrt(2)/2 (off-circle corner points), confirmed by a debug run
+  // before finalizing rather than assumed from the textbook formula.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  Check(circle.ControlPointCount() == 9,
+        "the standard rational-quadratic circle NURBS form has exactly 9 control points");
+  bool weights_match = true;
+  const double sqrt2_over_2 = std::sqrt(2.0) / 2.0;
+  for (int i = 0; i < circle.ControlPointCount(); ++i) {
+    const double expected = (i % 2 == 0) ? 1.0 : sqrt2_over_2;
+    if (std::abs(circle.WeightAt(i) - expected) > 1e-9) {
+      weights_match = false;
+    }
+  }
+  Check(weights_match,
+        "the circle's control point weights alternate exactly 1.0 and sqrt(2)/2, the standard "
+        "rational-quadratic circle construction");
+}
+
 void TestCurveIsRational() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -1542,6 +1577,52 @@ void TestSurfaceDomain() {
         "ON_NurbsSurface::Domain(direction) exactly, for both directions");
   Check(u_domain.min == 0.0 && u_domain.max == 1.0 && v_domain.min == 0.0 && v_domain.max == 1.0,
         "a 4x4-control-point, degree-3x3 surface's domain is exactly [0, 1] in both directions");
+}
+
+void TestSurfaceWeightAt() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // Non-rational: every weight is exactly 1.0.
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+  Check(flat.WeightAt(0, 0) == 1.0 && flat.WeightAt(1, 1) == 1.0,
+        "a non-rational surface's control points all have weight exactly 1.0");
+
+  // A genuine sphere's NURBS form (9 x 5 control points) has a weight
+  // grid that's exactly the tensor product of the same alternating
+  // 1.0/sqrt(2)/2 pattern `TestCurveWeightAt()`'s circle uses in each
+  // direction independently - confirmed by a debug run printing the
+  // full 9x5 grid before finalizing, not assumed from the circle result
+  // alone (a sphere's u and v isocurves are each circles, but the
+  // *tensor-product* weight relationship is a real fact about
+  // `ON_Sphere::GetNurbForm()`'s construction, not a given).
+  const ON_Sphere on_sphere(ON_3dPoint(1, -2, 0.5), 3.0);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere;
+  sphere.raw() = sphere_surface;
+  Check(sphere.CVCountU() == 9 && sphere.CVCountV() == 5,
+        "the sphere's NURBS form has exactly a 9x5 control grid");
+  const double sqrt2_over_2 = std::sqrt(2.0) / 2.0;
+  bool weights_match = true;
+  for (int i = 0; i < sphere.CVCountU(); ++i) {
+    const double u_weight = (i % 2 == 0) ? 1.0 : sqrt2_over_2;
+    for (int j = 0; j < sphere.CVCountV(); ++j) {
+      const double v_weight = (j % 2 == 0) ? 1.0 : sqrt2_over_2;
+      if (std::abs(sphere.WeightAt(i, j) - u_weight * v_weight) > 1e-9) {
+        weights_match = false;
+      }
+    }
+  }
+  Check(weights_match,
+        "the sphere's weight grid is exactly the tensor product of the u and v alternating "
+        "1.0/sqrt(2)/2 weight patterns");
 }
 
 void TestSurfaceIsRational() {
@@ -4868,6 +4949,7 @@ int main() {
   TestCurveParameterAtArcLength();
   TestCurveDivideByCount();
   TestCurveIsRational();
+  TestCurveWeightAt();
   TestCurveDomain();
   TestCurveTangentAt();
   TestCurveGetTightBoundingBox();
@@ -4900,6 +4982,7 @@ int main() {
   TestSurfaceExtend();
   TestSurfaceDomain();
   TestSurfaceIsRational();
+  TestSurfaceWeightAt();
   TestSurfaceCVCount();
   TestSurfaceClosestPoint();
   TestSurfaceCurvature();

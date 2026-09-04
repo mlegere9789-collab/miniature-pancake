@@ -33,6 +33,16 @@ class NurbsCurve {
   // there). Delegates to `ON_NurbsCurve::IsRational()`.
   bool IsRational() const;
 
+  // The homogeneous weight of control point `i` - 1.0 for every control
+  // point on a non-rational curve (`IsRational()` false), and whatever
+  // real per-point value was set on a rational one. Delegates to
+  // `ON_NurbsCurve::Weight(i)`, whose own source (verified by reading it,
+  // not assumed) short-circuits to a hardcoded 1.0 on a non-rational
+  // curve without ever indexing `i` at all - so an out-of-range `i` is
+  // safe there, but is a genuine unchecked out-of-bounds read on a
+  // rational one (`m_cv[i * stride + dim]`, no bounds check).
+  double WeightAt(int i) const;
+
   // Elevates the curve's degree in place. Returns NoOpAlreadySatisfied if
   // `new_degree <= Degree()`.
   Result ElevateDegree(int new_degree);

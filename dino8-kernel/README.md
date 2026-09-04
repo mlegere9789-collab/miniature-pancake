@@ -1543,6 +1543,22 @@ What this repo does instead:
   report `false`, while a genuine circle's and sphere's `GetNurbForm()`
   output (needing real non-uniform weights to trace a true circular arc
   or sphere with a NURBS parametrization) both report `true`.
+- `NurbsCurve::WeightAt(i)`/`NurbsSurface::WeightAt(i, j)`: the actual
+  per-control-point homogeneous weight, following naturally from
+  `IsRational()` above. Reading OpenNURBS' own source
+  (`ON_NurbsCurve::Weight`/`ON_NurbsSurface::Weight`) turned up a real,
+  worth-documenting asymmetry: on a non-rational object the call
+  short-circuits to a hardcoded `1.0` *without ever indexing* `i`/`j` at
+  all, so an out-of-range index is harmless there - but on a rational one
+  it indexes the raw control-vertex array with no bounds check, a genuine
+  unchecked out-of-bounds read for a bad index. Verified with real
+  numbers, not just the non-rational/rational booleans: a genuine
+  circle's 9-control-point NURBS form has weights that alternate exactly
+  `1.0` and `sqrt(2)/2` (the standard rational-quadratic circle
+  construction), and a sphere's 9x5 grid's weights are exactly the tensor
+  product of that same pattern in each direction independently -
+  confirmed by a debug run printing the full grid, not assumed from the
+  circle result alone.
 
 ## What's still not done (as of chunk 2)
 

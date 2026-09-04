@@ -356,6 +356,8 @@ int NurbsSurface::CVCountV() const { return surface_.CVCount(1); }
 
 bool NurbsSurface::IsRational() const { return surface_.IsRational(); }
 
+double NurbsSurface::WeightAt(int i, int j) const { return surface_.Weight(i, j); }
+
 Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
   if (new_degree <= surface_.Degree(direction)) {
     return Result::NoOpAlreadySatisfied;

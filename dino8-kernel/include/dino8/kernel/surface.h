@@ -79,6 +79,13 @@ class NurbsSurface {
   // Delegates to `ON_NurbsSurface::IsRational()`.
   bool IsRational() const;
 
+  // Same reasoning as `NurbsCurve::WeightAt()` above, for control point
+  // (i, j) - delegates to `ON_NurbsSurface::Weight(i, j)`, whose own
+  // source (verified, not assumed) has the same "safe 1.0 on a
+  // non-rational surface regardless of i/j, unchecked out-of-bounds read
+  // on a rational one" behavior.
+  double WeightAt(int i, int j) const;
+
   // Elevates degree in the given direction (0 = U, 1 = V). Returns
   // NoOpAlreadySatisfied if the surface is already at or above that degree.
   Result ElevateDegree(int direction, int new_degree);
