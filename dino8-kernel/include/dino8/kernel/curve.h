@@ -45,6 +45,24 @@ class NurbsCurve {
   // after the same stub-vs-real verification.
   bool IsPeriodic() const;
 
+  // Reverses the curve's parameterization in place: what was
+  // `PointAt(domain.Min())` becomes `PointAt(domain.Max())` and vice
+  // versa (the curve's own 3D shape is unchanged - same points, opposite
+  // direction of travel), so `TangentAt()` at any point flips sign too.
+  // Confirmed by testing, not assumed: the domain interval's own
+  // min/max *values* aren't necessarily preserved (a `[0, 1]` domain
+  // came back as `[-1, 0]` in one verified case) - callers walking the
+  // curve by parameter must re-fetch `raw().Domain()` after calling this
+  // rather than reusing a domain captured beforehand. A real gap nothing
+  // here could answer before: nothing in this file could flip a curve's
+  // own direction without discarding it and rebuilding from reversed
+  // control points (losing any degree elevation or other in-place edits
+  // already applied). Delegates to `ON_NurbsCurve::Reverse` after
+  // verifying it's a real implementation (reverses both the knot vector
+  // and control point list, not a stub). Returns Result::Failed if
+  // OpenNURBS' own call fails.
+  Result Reverse();
+
   Point3d PointAt(double t) const;
 
   // Delegates to `ON_Curve::GetTightBoundingBox`. DESPITE THE NAME, this

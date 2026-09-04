@@ -975,6 +975,19 @@ What this repo does instead:
   clamped, non-periodic knot vector) is closed but not periodic, matching
   what the surface-level test already found for a cylinder wall - a
   genuinely open curve is neither.
+- `NurbsCurve::Reverse()` flips a curve's own parameterization direction
+  in place (same 3D shape, opposite direction of travel) - a real gap
+  nothing here could answer before without discarding the curve and
+  rebuilding it from reversed control points, losing any degree
+  elevation or other in-place edits already applied. Delegates to
+  `ON_NurbsCurve::Reverse` after verifying it's a real implementation.
+  Verified `PointAt(t)` after reversing exactly matches the original
+  curve's `PointAt(1-t)`, with `TangentAt()` exactly negated at that same
+  point - and, a real discovery caught by the test rather than assumed,
+  the domain interval's own min/max *values* aren't necessarily preserved
+  by `Reverse()` (a `[0, 1]` domain came back as `[-1, 0]` in the verified
+  case) - documented on the method now so a caller doesn't reuse a domain
+  captured before calling it.
 
 ## What's still not done (as of chunk 2)
 

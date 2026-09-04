@@ -69,4 +69,6 @@ bool NurbsCurve::IsClosed() const { return curve_.IsClosed(); }
 
 bool NurbsCurve::IsPeriodic() const { return curve_.IsPeriodic(); }
 
+Result NurbsCurve::Reverse() { return curve_.Reverse() ? Result::Ok : Result::Failed; }
+
 }  // namespace dino8::kernel

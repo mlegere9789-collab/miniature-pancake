@@ -218,6 +218,53 @@ void TestCurveIsClosed() {
         "IsPeriodic() really do answer different questions here too");
 }
 
+void TestCurveReverse() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 3, 0), Point3d(3, 4, 0)};
+  NurbsCurve curve = NurbsCurve::FromControlPoints(pts, /*degree=*/2);
+  const ON_Interval domain = curve.raw().Domain();
+
+  // Sample a handful of points and tangents before reversing.
+  std::vector<Point3d> points_before;
+  std::vector<Vector3d> tangents_before;
+  for (const double t : {0.0, 0.25, 0.5, 0.75, 1.0}) {
+    const double param = domain.ParameterAt(t);
+    points_before.push_back(curve.PointAt(param));
+    tangents_before.push_back(curve.TangentAt(param));
+  }
+
+  Check(curve.Reverse() == Result::Ok, "NurbsCurve::Reverse() succeeds");
+  // Reverse() doesn't necessarily preserve the domain interval itself
+  // (confirmed by testing: [0,1] became [-1,0] here) - only the
+  // normalized position within it corresponds to the original curve's
+  // mirrored position, so re-fetch the domain fresh rather than reusing
+  // the pre-reversal one.
+  const ON_Interval domain_after = curve.raw().Domain();
+
+  // PointAt(t) after reversing must equal PointAt(1-t) before reversing -
+  // same 3D points, opposite direction of travel - and the tangent at
+  // that same point must point exactly the opposite way.
+  for (size_t i = 0; i < points_before.size(); ++i) {
+    const double t = static_cast<double>(i) / 4.0;
+    const double reversed_param = domain_after.ParameterAt(t);
+    const Point3d point_after = curve.PointAt(reversed_param);
+    const Point3d& expected_point = points_before[points_before.size() - 1 - i];
+    Check((point_after - expected_point).Length() < 1e-9,
+          "after Reverse(), the point at parameter t exactly matches the "
+          "original curve's point at parameter (1-t)");
+
+    const Vector3d tangent_after = curve.TangentAt(reversed_param);
+    const Vector3d& expected_tangent = tangents_before[tangents_before.size() - 1 - i];
+    Check((tangent_after + expected_tangent).Length() < 1e-9,
+          "...and the tangent there is exactly the negation of the "
+          "original curve's tangent at parameter (1-t)");
+  }
+}
+
 void TestSurfaceNormalAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -3052,6 +3099,7 @@ int main() {
   TestCurveTangentAt();
   TestCurveGetTightBoundingBox();
   TestCurveIsClosed();
+  TestCurveReverse();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();
