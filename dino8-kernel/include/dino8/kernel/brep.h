@@ -99,6 +99,18 @@ class Brep {
   // path: throws std::invalid_argument if combined with exact_clip=true,
   // since Sutherland-Hodgman clips against a single convex region and
   // doesn't have a "subtract another region" mode.
+  //
+  // Throws std::invalid_argument if `trim_loop_uv` has fewer than 3
+  // points. This closes a genuine footgun found while validating
+  // Mesh::Cylinder()/Cone(): before this check, an *empty* `trim_loop_uv`
+  // wasn't rejected at all, and this kernel's own `Tessellate()` treats
+  // an empty trim loop as "no trim at all" (see its own
+  // `trim_loop.empty()` branch) - so a caller that accidentally built an
+  // empty loop got the whole untrimmed surface silently, a real,
+  // plausible-looking wrong result rather than an error. A 1- or 2-point
+  // loop instead silently tessellated to nothing (confirmed by a debug
+  // run, not assumed) - neither is a closed polygon, so both are now
+  // rejected the same way.
   static Brep TrimmedPlanarFace(const NurbsSurface& surface,
                                  const std::vector<Point2d>& trim_loop_uv,
                                  bool exact_clip = false,

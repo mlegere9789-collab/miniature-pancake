@@ -1621,6 +1621,17 @@ What this repo does instead:
   `circle_segments >= 3` directly in the shared helper, so both
   `Cylinder()` and `Cone()` now throw the same clear
   `std::invalid_argument` immediately.
+- The same silent "empty trim means untrimmed" footgun, closed at its
+  actual source rather than only at the one call site that had tripped
+  over it: `Brep::TrimmedPlanarFace()` itself never validated
+  `trim_loop_uv`'s point count. A debug run confirmed the identical
+  behavior at the public API level - an empty `trim_loop_uv` silently
+  tessellated to the *whole untrimmed surface* (V=25, F=32 for a plain
+  5x5 grid, not the caller's intended trim), while a 1- or 2-point loop
+  silently tessellated to nothing instead. Fixed by requiring at least 3
+  points (a real minimum - fewer isn't a closed polygon at all), so every
+  current and future `TrimmedPlanarFace()` caller gets this protection
+  directly, not just `Cylinder()`/`Cone()`'s own now-fixed call site.
 
 ## What's still not done (as of chunk 2)
 

@@ -2936,6 +2936,45 @@ void TestBrepSphereBooleanEndToEnd() {
         "sphere-sphere boolean intersection volume is within 3% of the exact lens formula");
 }
 
+void TestBrepTrimmedPlanarFaceRejectsTooFewPoints() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // A genuine footgun found while validating Mesh::Cylinder()/Cone():
+  // a debug run confirmed that before this check, an empty trim_loop_uv
+  // wasn't rejected at all - Tessellate() treats an empty trim loop as
+  // "no trim at all," so it silently returned the FULL untrimmed 5x5
+  // grid (V=25, F=32) instead of an error. A 1- or 2-point loop instead
+  // silently tessellated to nothing (V=0, F=0) - neither is a closed
+  // polygon, so both are now rejected the same way, along with the
+  // already-obviously-wrong empty case.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(10, 0, 0),
+      Point3d(10, 10, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+
+  for (const int point_count : {0, 1, 2}) {
+    std::vector<Point2d> trim_loop;
+    for (int i = 0; i < point_count; ++i) {
+      trim_loop.push_back(Point2d(0.1 * i, 0.1 * i));
+    }
+    bool threw = false;
+    try {
+      Brep::TrimmedPlanarFace(surface, trim_loop);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw,
+          "TrimmedPlanarFace throws std::invalid_argument on a trim_loop_uv with fewer than 3 "
+          "points");
+  }
+}
+
 void TestBrepTrimmedPlanarFace() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -5208,6 +5247,7 @@ int main() {
   TestBrepBooleanEndToEnd();
   TestBrepSphereIsClosedAndWatertight();
   TestBrepSphereBooleanEndToEnd();
+  TestBrepTrimmedPlanarFaceRejectsTooFewPoints();
   TestBrepTrimmedPlanarFace();
   TestWeldAcrossIndependentlyParameterizedSurfaces();
   TestExtrudeUntrimmedFaceIntoSolid();

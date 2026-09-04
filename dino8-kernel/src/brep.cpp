@@ -96,6 +96,13 @@ Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
                               const std::vector<Point2d>& trim_loop_uv,
                               bool exact_clip,
                               std::vector<std::vector<Point2d>> hole_loops_uv) {
+  if (trim_loop_uv.size() < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::TrimmedPlanarFace: trim_loop_uv must have at "
+        "least 3 points (fewer isn't a closed polygon at all - and, before "
+        "this check, an empty trim_loop_uv silently meant \"no trim at "
+        "all\" to Tessellate(), a genuine footgun this closes)");
+  }
   if (exact_clip && !hole_loops_uv.empty()) {
     throw std::invalid_argument(
         "dino8::kernel::Brep::TrimmedPlanarFace: hole_loops_uv is only "
