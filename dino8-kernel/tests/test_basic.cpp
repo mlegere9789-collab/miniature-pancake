@@ -194,6 +194,28 @@ void TestCurveDivideByCount() {
   Check(threw, "DivideByCount throws std::invalid_argument on a non-positive count");
 }
 
+void TestCurveIsRational() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // FromControlPoints() always calls ON_NurbsCurve::Create() with
+  // is_rational=false, so it should never report rational - confirmed,
+  // not assumed. A genuine circle needs non-uniform per-control-point
+  // weights to trace a true circular arc with a NURBS curve, so
+  // ON_Circle::GetNurbForm()'s output should be rational - also
+  // confirmed by a debug run before finalizing, both directions.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  Check(!line.IsRational(), "a FromControlPoints() curve is never rational");
+
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  Check(circle.IsRational(), "a genuine circle's NURBS form is rational");
+}
+
 void TestCurveDomain() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -1520,6 +1542,31 @@ void TestSurfaceDomain() {
         "ON_NurbsSurface::Domain(direction) exactly, for both directions");
   Check(u_domain.min == 0.0 && u_domain.max == 1.0 && v_domain.min == 0.0 && v_domain.max == 1.0,
         "a 4x4-control-point, degree-3x3 surface's domain is exactly [0, 1] in both directions");
+}
+
+void TestSurfaceIsRational() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // Same reasoning as `TestCurveIsRational()` above: FromControlGrid()
+  // never builds a rational surface, while a genuine sphere's NURBS form
+  // needs real per-control-point weights - confirmed by a debug run
+  // before finalizing.
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+  Check(!flat.IsRational(), "a FromControlGrid() surface is never rational");
+
+  const ON_Sphere on_sphere(ON_3dPoint(1, -2, 0.5), 3.0);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere;
+  sphere.raw() = sphere_surface;
+  Check(sphere.IsRational(), "a genuine sphere's NURBS form is rational");
 }
 
 void TestSurfaceCVCount() {
@@ -4820,6 +4867,7 @@ int main() {
   TestCurveLength();
   TestCurveParameterAtArcLength();
   TestCurveDivideByCount();
+  TestCurveIsRational();
   TestCurveDomain();
   TestCurveTangentAt();
   TestCurveGetTightBoundingBox();
@@ -4851,6 +4899,7 @@ int main() {
   TestSurfaceSplit();
   TestSurfaceExtend();
   TestSurfaceDomain();
+  TestSurfaceIsRational();
   TestSurfaceCVCount();
   TestSurfaceClosestPoint();
   TestSurfaceCurvature();

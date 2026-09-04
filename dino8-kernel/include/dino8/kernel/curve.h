@@ -24,6 +24,15 @@ class NurbsCurve {
   int Degree() const;
   int ControlPointCount() const;
 
+  // Whether the curve has per-control-point weights that aren't all
+  // identical (a genuine NURBS curve, not just a polynomial B-spline in
+  // disguise) - e.g. a circle built via `ON_Circle::GetNurbForm()` is
+  // rational (its control points need non-uniform weights to trace a
+  // true circular arc), while `FromControlPoints()`'s own construction
+  // never is (`Create()` is always called with `is_rational=false`
+  // there). Delegates to `ON_NurbsCurve::IsRational()`.
+  bool IsRational() const;
+
   // Elevates the curve's degree in place. Returns NoOpAlreadySatisfied if
   // `new_degree <= Degree()`.
   Result ElevateDegree(int new_degree);

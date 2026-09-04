@@ -49,6 +49,8 @@ int NurbsCurve::Degree() const { return curve_.Degree(); }
 
 int NurbsCurve::ControlPointCount() const { return curve_.CVCount(); }
 
+bool NurbsCurve::IsRational() const { return curve_.IsRational(); }
+
 Result NurbsCurve::ElevateDegree(int new_degree) {
   if (new_degree <= Degree()) {
     return Result::NoOpAlreadySatisfied;

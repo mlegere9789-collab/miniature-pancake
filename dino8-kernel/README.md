@@ -1534,6 +1534,15 @@ What this repo does instead:
   non-square (5 x 3 control points, degree 2 x 1) surface, so U and V
   weren't accidentally checked against the same coincidental number, and
   matched exactly against the underlying `ON_NurbsSurface::CVCount(dir)`.
+- `NurbsCurve::IsRational()`/`NurbsSurface::IsRational()`: whether the
+  object's control points carry genuinely non-uniform weights, as opposed
+  to `FromControlPoints()`/`FromControlGrid()`'s own always-non-rational
+  construction (`Create()` is always called with `is_rational=false`
+  there). Verified both directions with a debug run before finalizing:
+  a `FromControlPoints()` line and a `FromControlGrid()` flat surface both
+  report `false`, while a genuine circle's and sphere's `GetNurbForm()`
+  output (needing real non-uniform weights to trace a true circular arc
+  or sphere with a NURBS parametrization) both report `true`.
 
 ## What's still not done (as of chunk 2)
 

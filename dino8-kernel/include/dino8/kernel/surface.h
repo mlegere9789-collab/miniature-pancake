@@ -71,6 +71,14 @@ class NurbsSurface {
   int CVCountU() const;
   int CVCountV() const;
 
+  // Same reasoning as `NurbsCurve::IsRational()` - whether the surface's
+  // control points carry non-uniform weights (e.g. a genuine torus/
+  // sphere/cylinder/cone NURBS form, all built via rational
+  // constructions elsewhere in this kernel), as opposed to
+  // `FromControlGrid()`'s own always-non-rational construction.
+  // Delegates to `ON_NurbsSurface::IsRational()`.
+  bool IsRational() const;
+
   // Elevates degree in the given direction (0 = U, 1 = V). Returns
   // NoOpAlreadySatisfied if the surface is already at or above that degree.
   Result ElevateDegree(int direction, int new_degree);

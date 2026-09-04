@@ -354,6 +354,8 @@ int NurbsSurface::DegreeV() const { return surface_.Degree(1); }
 int NurbsSurface::CVCountU() const { return surface_.CVCount(0); }
 int NurbsSurface::CVCountV() const { return surface_.CVCount(1); }
 
+bool NurbsSurface::IsRational() const { return surface_.IsRational(); }
+
 Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
   if (new_degree <= surface_.Degree(direction)) {
     return Result::NoOpAlreadySatisfied;
