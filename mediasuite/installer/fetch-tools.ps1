@@ -7,14 +7,18 @@
     straight into {app}\tools and ship a self-contained app that needs no manual
     downloads.
 
-    Every tool here is fetched from its own official release channel as a plain
-    zip/7z archive or via a fully silent, no-EULA-prompt installer flag (7-Zip only, to
-    harvest 7z.exe itself) — nothing interactive, so this runs unattended in CI. Tools
-    that only ship as a GUI/MSI installer with no portable build (Ghostscript, MuPDF,
-    libvips, rsvg-convert, LibreOffice, Calibre) aren't covered yet, and neither is
-    LibRaw's dcraw_emu.exe — it has no official or actively-maintained prebuilt Windows
-    binary at all; ImageMagick's own bundled LibRaw delegate is the practical fallback
-    until that's resolved. See tools/README.md for the current per-tool status.
+    Every tool here is fetched from its own official release channel — a plain zip/7z
+    archive, a fully silent no-EULA-prompt installer flag (7-Zip, Calibre via
+    Chocolatey), a silent MSI install harvested afterward (LibreOffice), an installer's
+    payload extracted directly without running it (Ghostscript), or — for LibRaw and
+    Face Enhance/GFPGAN, which have no official prebuilt Windows binary at all —
+    compiled from source against vcpkg with the MSVC toolchain the CI workflow sets up.
+    Nothing interactive, so this runs unattended in CI. The less certain fetches
+    (anything not a known-good direct download — see tools/README.md for exactly which
+    and why) fail soft rather than take the rest of the script down; the verification
+    pass at the end of this script reports exactly what did and didn't make it into
+    tools-staged\, distinguishing a real optional gap from a tool the app cannot do its
+    core work without.
 #>
 
 param(
@@ -529,5 +533,84 @@ catch {
 }
 
 Write-Host ""
-Write-Host "Tools staged under $ToolsDir :"
-Get-ChildItem $ToolsDir -Directory | ForEach-Object { Write-Host "  $($_.Name)" }
+Write-Host "== Verification =="
+# Every fail-soft block above (LibRaw, Ghostscript, MuPDF, rsvg, LibreOffice, Calibre,
+# Face Enhance) creates its stage folder before it has actually confirmed the real exe
+# landed inside — Face Enhance's own three-round debugging session (see git history on
+# this file) was exactly this: a real cl.exe failure caught by try/catch left an empty
+# "gfpgan" folder behind, Write-Warning scrolled past unnoticed in a huge log, and the
+# CI *step* still reported green, because nothing ever checked the folder's contents
+# against what ToolLocator/ToolManifest.cs actually expects to find in it. Listing
+# directory names (the old version of this summary) cannot catch that: an empty folder
+# and a correctly staged one look identical to `Get-ChildItem -Directory`. This checks
+# the real file instead, for every tool this script attempts, printed here as one clear
+# table instead of a warning buried mid-log next to a dozen other Write-Host lines.
+#
+# Keep this table's folder/exe pairs in sync with src/MediaSuite.Core/Tooling/ToolManifest.cs
+# by hand — there is no automated link between a PowerShell script and a C# assembly for
+# a project this size, the same tradeoff already noted in tools/README.md.
+#
+# Gate is deliberately NOT just "IsRequired from ToolManifest.cs copied verbatim" — that
+# flag means "the app shows a warning banner without this," a different question from
+# "should CI fail the whole installer build over it missing." Three tiers instead:
+#   hard-fail  fetched with no try/catch above (ffmpeg/ffprobe/imagemagick) -- if any of
+#              these were actually missing, the script would already have thrown and
+#              stopped well before reaching this point, so this is pure defense in depth,
+#              not a new failure mode.
+#   loud-warn  ToolManifest.cs marks IsRequired, but this script fetches it fail-soft on
+#              purpose (LibRaw: a from-source compile with no official binary, documented
+#              fallback is ImageMagick's own bundled RAW delegate) -- missing it is a real
+#              problem worth a human's attention, but turning that into a hard CI failure
+#              would silently contradict that existing, deliberate fail-soft design.
+#   optional   genuinely fine to be missing; the feature it backs just has nothing to run.
+$expectedTools = @(
+    @{ Folder = "ffmpeg"; Exe = "ffmpeg.exe"; Gate = "hard-fail" }
+    @{ Folder = "ffmpeg"; Exe = "ffprobe.exe"; Gate = "hard-fail" }
+    @{ Folder = "imagemagick"; Exe = "magick.exe"; Gate = "hard-fail" }
+    @{ Folder = "libvips"; Exe = "vipsthumbnail.exe"; Gate = "optional" }
+    @{ Folder = "libraw"; Exe = "dcraw_emu.exe"; Gate = "loud-warn" }
+    @{ Folder = "mupdf"; Exe = "mutool.exe"; Gate = "optional" }
+    @{ Folder = "qpdf"; Exe = "qpdf.exe"; Gate = "optional" }
+    @{ Folder = "ghostscript"; Exe = "gswin64c.exe"; Gate = "optional" }
+    @{ Folder = "pandoc"; Exe = "pandoc.exe"; Gate = "optional" }
+    @{ Folder = "libreoffice"; Exe = "soffice.exe"; Gate = "optional" }
+    @{ Folder = "calibre"; Exe = "ebook-convert.exe"; Gate = "optional" }
+    @{ Folder = "7zip"; Exe = "7z.exe"; Gate = "optional" }
+    @{ Folder = "realesrgan"; Exe = "realesrgan-ncnn-vulkan.exe"; Gate = "optional" }
+    @{ Folder = "rsvg"; Exe = "rsvg-convert.exe"; Gate = "optional" }
+    @{ Folder = "potrace"; Exe = "potrace.exe"; Gate = "optional" }
+    @{ Folder = "gfpgan"; Exe = "face_enhance.exe"; Gate = "optional" }
+)
+
+$missingHardFail = @()
+foreach ($tool in $expectedTools) {
+    $exePath = Join-Path (Join-Path $ToolsDir $tool.Folder) $tool.Exe
+    $present = Test-Path $exePath
+    if ($present) {
+        Write-Host "  [ok]      $($tool.Folder)\$($tool.Exe) ($($tool.Gate))"
+    }
+    elseif ($tool.Gate -eq "hard-fail") {
+        Write-Host "  [MISSING] $($tool.Folder)\$($tool.Exe) (hard-fail) <-- should have already stopped the build above; something is wrong with this check itself if it didn't"
+        $missingHardFail += "$($tool.Folder)\$($tool.Exe)"
+    }
+    elseif ($tool.Gate -eq "loud-warn") {
+        Write-Host "  [MISSING] $($tool.Folder)\$($tool.Exe) (loud-warn) <-- ToolManifest.cs marks this IsRequired; fell back / attempt failed, see the fail-soft warning above. ImageMagick's own bundled RAW delegate remains the fallback."
+    }
+    else {
+        Write-Host "  [missing] $($tool.Folder)\$($tool.Exe) (optional) -- fell back / attempt failed, see the fail-soft warning above"
+    }
+}
+
+# Every unexpected folder is also worth a look — a stale leftover, or a tool this table
+# hasn't been kept in sync with.
+$expectedFolders = $expectedTools | ForEach-Object { $_.Folder } | Select-Object -Unique
+$unexpectedFolders = Get-ChildItem $ToolsDir -Directory | Where-Object { $expectedFolders -notcontains $_.Name }
+foreach ($folder in $unexpectedFolders) {
+    Write-Host "  [??]      $($folder.Name)\ exists but isn't in this script's own expected-tools table"
+}
+
+if ($missingHardFail.Count -gt 0) {
+    throw "Tool(s) fetched with no fail-soft handling are still missing after the fetch: $($missingHardFail -join ', '). This should be unreachable -- the earlier fetch step for each of these throws on its own if it fails, so reaching this check with one of them missing means this verification itself has a bug, not just the fetch."
+}
+Write-Host ""
+Write-Host "All hard-required tools staged successfully; see [ok]/[MISSING]/[missing] above for the rest."

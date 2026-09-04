@@ -121,8 +121,15 @@ that is easy to mistake for a bug — check those first.
   job with sharpen off.
 - [ ] Try the anime model on an anime-style image and the general model on a photo, and
   confirm the difference is noticeable — they should not look interchangeable.
-- [ ] Confirm "face enhance" is not offered anywhere in the UI — it was deliberately not
-  implemented (GFPGAN is not bundled) rather than faked with the general model.
+- [ ] Face enhance: select the Custom preset on a photo with a clear human face, add
+  `faceEnhance=true` in Advanced options, and upscale. Confirm the job completes (CPU-only,
+  so expect it to be noticeably slower than a plain upscale) and the face looks visibly
+  restored/sharper than the same job with `faceEnhance` left off — not just a copy of the
+  general-model output. Confirm a photo with no face in it still completes normally (the
+  pass is designed to pass the image through unchanged when no face is detected, not fail
+  the job). If `tools\gfpgan\face_enhance.exe` is missing on this machine (see Settings →
+  Bundled tools), `faceEnhance=true` should be a silent no-op, not an error — confirm that
+  too if you can test both states.
 
 ## Job failure diagnostics
 
@@ -224,7 +231,11 @@ neither of which CI or a fake process runner can see.
 
 ## Known, deliberate gaps — do not report these as bugs
 
-- **AI upscaler**: no "face enhance" model (needs GFPGAN, not bundled).
+- **AI upscaler face enhance**: CPU-only (GFPGAN-ncnn's own Vulkan support is still an
+  open upstream TODO), and compiled from source at installer build time with no official
+  prebuilt binary to fall back to — `faceEnhance=true` silently does nothing if
+  `tools\gfpgan\face_enhance.exe` isn't present on this machine (see Settings → Bundled
+  tools), rather than failing the job.
 - **Archive**: RAR is extraction-only; creating a RAR archive needs a licensed encoder.
 - **Format catalogue**: spreadsheet and presentation formats (XLSX, PPTX, ODS, ODP,
   etc.), PostScript, and MIDI are not supported — see the doc comment on
