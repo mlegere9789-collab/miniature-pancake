@@ -27,6 +27,23 @@ class Mesh;
 // vetted library like Manifold, or a from-scratch BSP/CSG
 // implementation) is a distinct, substantial next chunk, not something
 // "wrapping OpenNURBS" gets us for free.
+//
+// A real architectural fact, checked directly (`ON_Brep::IsValid()`),
+// not assumed: every face-adding factory here (Box(), Sphere(),
+// TrimmedPlanarFace()) builds its face via `ON_Brep::NewFace(int
+// surface_index)` - the minimal, surface-only overload - rather than
+// constructing genuine `ON_Brep` vertex/edge/trim/loop topology the way
+// Rhino's own file format expects. `ON_Brep::IsValid()` checks exactly
+// that topology, so it reports every Brep this kernel builds as invalid,
+// even a perfectly good one like `Box()`. This doesn't stop a Brep built
+// here from being fully usable through this kernel's own pipeline, which
+// never calls `IsValid()` and doesn't need the topology it checks for:
+// `Tessellate()` reads each face's surface directly, and
+// `TessellateToClosedMesh()`'s own vertex-welding step is what actually
+// closes the seams between faces, not shared `ON_Brep` vertex/edge
+// records. Still, a `.3dm` file saved via `Model::AddBrep()` may not
+// round-trip cleanly through other OpenNURBS-based tools that validate
+// topology on load.
 class Brep {
  public:
   // Builds a one-face B-rep whose face is exactly `surface` (untrimmed).

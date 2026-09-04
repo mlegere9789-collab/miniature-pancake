@@ -937,6 +937,21 @@ What this repo does instead:
   degeneracy that was ever present in the input" - documented precisely
   as that narrower guarantee rather than the broader one the name alone
   might suggest.
+- A real architectural fact about `Brep` surfaced by checking
+  `ON_Brep::IsValid()` directly, not assumed: every face-adding factory
+  here (`Box()`, `Sphere()`, `TrimmedPlanarFace()`) builds its face via
+  `ON_Brep::NewFace(int surface_index)` - the minimal, surface-only
+  overload - rather than constructing genuine `ON_Brep` vertex/edge/trim/
+  loop topology, so `IsValid()` reports every `Brep` this kernel builds
+  as invalid, even a perfectly good one like `Box()`. Confirmed this
+  doesn't stop a `Brep` from being fully usable through this kernel's own
+  pipeline (`Tessellate()`/`TessellateToClosedMesh()` never call
+  `IsValid()` and don't need the topology it checks for) with a real
+  test: `Box().raw().IsValid()` is `false`, but the same `Brep` still
+  tessellates and welds into an exactly-volume-8 watertight solid.
+  Documented directly on the `Brep` class now, since it's the kind of
+  fact a future maintainer extending file I/O or Brep construction needs
+  to know before assuming `IsValid()` means what it usually would.
 
 ## What's still not done (as of chunk 2)
 

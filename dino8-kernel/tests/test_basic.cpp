@@ -935,6 +935,39 @@ void TestBrepBoxIsClosedAndWatertight() {
         "Brep::Box -> Tessellate -> weld volume matches the box's true volume");
 }
 
+void TestBrepLacksFullOpenNurbsTopologyButStillUsable() {
+  using dino8::kernel::Brep;
+
+  // A real, previously-undocumented architectural fact, checked directly
+  // rather than assumed: this kernel's own Brep-building factories
+  // (Box(), Sphere(), TrimmedPlanarFace()) call ON_Brep::NewFace(int) -
+  // the minimal, surface-only overload - rather than building genuine
+  // ON_Brep vertex/edge/trim/loop topology the way Rhino's own file
+  // format expects. ON_Brep::IsValid() checks exactly that topology, so
+  // it reports every Brep this kernel builds as invalid, even a
+  // perfectly good one like Box().
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  ON_TextLog discard_log;
+  Check(!box.raw().IsValid(&discard_log),
+        "ON_Brep::IsValid() reports Brep::Box() as invalid, since this "
+        "kernel builds faces via the minimal NewFace(surface) overload "
+        "rather than genuine vertex/edge/trim/loop topology - a real, "
+        "checked fact, not a bug being newly introduced here");
+
+  // That doesn't stop it from being fully usable through this kernel's
+  // own pipeline, which never calls ON_Brep::IsValid() and doesn't need
+  // the topology it checks for - Tessellate() reads each face's surface
+  // directly, and TessellateToClosedMesh()'s own welding step is what
+  // actually closes the seams, not shared ON_Brep vertex/edge records.
+  const auto mesh = box.TessellateToClosedMesh(1, 1);
+  Check(std::abs(mesh.Volume() - 8.0) < 1e-9,
+        "despite IsValid()==false, the same Brep tessellates and welds "
+        "into a genuinely correct, watertight solid through this "
+        "kernel's own pipeline - the missing topology only matters to "
+        "ON_Brep::IsValid() itself, not to how this kernel actually uses "
+        "a Brep");
+}
+
 void TestBrepGetTightBoundingBox() {
   using dino8::kernel::Brep;
   using dino8::kernel::Point3d;
@@ -2970,6 +3003,7 @@ int main() {
   TestBooleanDifference();
   TestBooleanSymmetricDifference();
   TestBrepBoxIsClosedAndWatertight();
+  TestBrepLacksFullOpenNurbsTopologyButStillUsable();
   TestBrepGetTightBoundingBox();
   TestBrepBooleanEndToEnd();
   TestBrepSphereIsClosedAndWatertight();
