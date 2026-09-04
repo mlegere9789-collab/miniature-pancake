@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using MediaSuite.App.Services;
 using MediaSuite.App.ViewModels;
 using MediaSuite.Core.Settings;
@@ -206,5 +207,28 @@ public sealed class SettingsViewModelTests
 
         Assert.False(fixture.Settings.IsSignedInToGoogleDrive);
         Assert.Equal("Sign-in failed: no browser available", fixture.Settings.GoogleDriveStatus);
+    }
+
+    [Fact]
+    public void SignInToGoogleDriveCommand_cannot_fire_a_second_time_while_the_first_call_is_still_in_flight()
+    {
+        // CanExecute only re-queries on the usual WPF input events, not the instant the
+        // command's own async work starts -- without an explicit busy guard, a double-click
+        // on "Sign in" while the OAuth round trip is still pending would start a second
+        // sign-in flow.
+        using var fixture = CreateSettings();
+        var pending = new TaskCompletionSource();
+        fixture.Drive.PendingSignIn = pending;
+
+        Assert.True(fixture.Settings.SignInToGoogleDriveCommand.CanExecute(null));
+        fixture.Settings.SignInToGoogleDriveCommand.Execute(null);
+
+        Assert.False(fixture.Settings.SignInToGoogleDriveCommand.CanExecute(null));
+        Assert.False(fixture.Settings.IsSignedInToGoogleDrive);
+
+        pending.SetResult();
+
+        Assert.True(fixture.Settings.IsSignedInToGoogleDrive);
+        Assert.True(fixture.Settings.SignOutOfGoogleDriveCommand.CanExecute(null));
     }
 }
