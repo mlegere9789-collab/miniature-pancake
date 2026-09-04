@@ -289,22 +289,54 @@ else {
         $sources = @("face_enhance.cpp", "face.cpp", "gfpgan.cpp") | ForEach-Object { Join-Path $faceEnhanceSrcDir $_ }
 
         # All four sources #include bare "net.h"/"opencv2/..." (no "ncnn/" or package
-        # prefix), matching each library's own standard install layout (ncnn under
-        # include\ncnn\*.h; OpenCV's own opencv2\ already sits directly under include\ on
-        # every layout vcpkg has used for this port) — so both go on the include path, and
-        # the ncnn one is added only if vcpkg actually produced it, in case a future vcpkg
-        # version changes that layout.
+        # prefix), matching each library's standard install layout — ncnn under
+        # include\ncnn\*.h, and OpenCV's opencv2\ either directly under include\ or under
+        # include\opencv4\opencv2\ depending on vcpkg version/config (both are covered
+        # below), so each candidate directory is added to the include path only if vcpkg
+        # actually produced it.
         $includePaths = @("/I$includeDir")
         $ncnnIncludeDir = Join-Path $includeDir "ncnn"
         if (Test-Path $ncnnIncludeDir) {
             $includePaths += "/I$ncnnIncludeDir"
         }
+        # A second attempt still couldn't resolve opencv2/core.hpp directly under include\
+        # despite vcpkg reporting a clean opencv4 build with no errors — covering the other
+        # real possibility, a versioned include\opencv4\opencv2\ layout (the convention some
+        # OpenCV packaging uses to avoid clashing with a co-installed opencv2/opencv3), so
+        # this run can actually succeed if that's what's really there instead of only
+        # gathering diagnostics for a fourth attempt.
+        $opencv4IncludeDir = Join-Path $includeDir "opencv4"
+        if (Test-Path $opencv4IncludeDir) {
+            $includePaths += "/I$opencv4IncludeDir"
+        }
         # Logged plainly so a future compile failure is diagnosable straight from the CI
         # log, rather than needing to reconstruct these from vcpkg's own install output —
-        # exactly what the first attempt at this compile was missing.
-        Write-Host "  face-enhance include paths: $($includePaths -join ' ')"
+        # exactly what the first attempt at this compile was missing. A second attempt
+        # still failed on "Cannot open include file: 'opencv2/core.hpp'" even though vcpkg
+        # reported building opencv4 cleanly with no errors — so this round also dumps the
+        # real installed\...\include layout instead of guessing at it a third time: either
+        # opencv2\ sits somewhere other than directly under include\ (e.g. an
+        # include\opencv4\opencv2\ versioned layout), or opencv4's own libs/headers never
+        # actually landed under $installedDir despite vcpkg's own success report.
+        Write-Host "  VCPKG_INSTALLATION_ROOT: $env:VCPKG_INSTALLATION_ROOT"
+        Write-Host "  installedDir: $installedDir (exists: $(Test-Path $installedDir))"
+        Write-Host "  includeDir: $includeDir (exists: $(Test-Path $includeDir))"
+        if (Test-Path $includeDir) {
+            $topLevel = Get-ChildItem -Path $includeDir | Select-Object -ExpandProperty Name
+            Write-Host "  includeDir top-level entries: $($topLevel -join ', ')"
+            foreach ($dir in @('opencv2', 'opencv4')) {
+                $candidate = Join-Path $includeDir $dir
+                if (Test-Path $candidate) {
+                    $nested = Get-ChildItem -Path $candidate | Select-Object -ExpandProperty Name
+                    Write-Host "  includeDir\$dir entries: $($nested -join ', ')"
+                }
+            }
+        }
+        $opencvLibs = $libFiles | Where-Object { $_.Name -like '*opencv*' } | Select-Object -ExpandProperty Name
+        Write-Host "  opencv-related .lib files found ($($opencvLibs.Count)): $($opencvLibs -join ', ')"
         Write-Host "  opencv2/core.hpp present: $(Test-Path (Join-Path $includeDir 'opencv2\core.hpp'))"
         Write-Host "  opencv2/highgui/highgui.hpp present: $(Test-Path (Join-Path $includeDir 'opencv2\highgui\highgui.hpp'))"
+        Write-Host "  opencv4/opencv2/core.hpp present: $(Test-Path (Join-Path $includeDir 'opencv4\opencv2\core.hpp'))"
 
         # /MT to match vcpkg's x64-windows-static triplet (static CRT), same reasoning as
         # the LibRaw compile above. Linking every .lib vcpkg produced for this triplet
