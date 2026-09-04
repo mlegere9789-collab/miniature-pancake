@@ -514,6 +514,22 @@ What this repo does instead:
   indices into the same 6 SubD vertices either way - the flag only changes
   that edge's tag (smooth vs. creased), not whether the mesh recognizes
   the coincident points as one topological vertex.
+- `NurbsCurve::Length()` is a from-scratch arc-length approximation
+  (polyline sampling over the curve's own parameter domain), not a
+  wrapper - verified directly against the v8.34 source, not assumed, that
+  OpenNURBS' public `ON_Curve` API has no `GetLength()`/arc-length method
+  at all (grepped the whole source tree, not just this one class), the
+  same "declared for Rhino, not present in the public build" pattern
+  chunk 2 found for `ON_Brep::CreateMesh` and this file found for
+  `ON_SubD::BrepForm`. A polyline's chords always understate a smooth
+  curve's true length, so it converges to the true length from below as
+  the sample count increases; for a straight-line curve (no curvature to
+  approximate away) it's exact at any sample count. Verified with a
+  straight-line curve giving the exact 3-4-5 distance (5.0) at both a
+  small and a large sample count, and with a genuinely curved curve's
+  measured convergence: length increases monotonically (never decreases
+  or oscillates) as sample count grows 10x at a time, and the increase
+  per step shrinks each time - a real converging trend, not assumed.
 
 ## What's still not done (as of chunk 2)
 

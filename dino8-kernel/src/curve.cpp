@@ -39,4 +39,16 @@ Point3d NurbsCurve::PointAt(double t) const {
   return pt;
 }
 
+double NurbsCurve::Length(int samples) const {
+  const ON_Interval domain = curve_.Domain();
+  Point3d previous = PointAt(domain.ParameterAt(0.0));
+  double length = 0.0;
+  for (int i = 1; i <= samples; ++i) {
+    const Point3d current = PointAt(domain.ParameterAt(static_cast<double>(i) / samples));
+    length += (current - previous).Length();
+    previous = current;
+  }
+  return length;
+}
+
 }  // namespace dino8::kernel

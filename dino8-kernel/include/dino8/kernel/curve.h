@@ -30,6 +30,21 @@ class NurbsCurve {
 
   Point3d PointAt(double t) const;
 
+  // Approximate arc length via polyline sampling: evaluates `samples + 1`
+  // points evenly across the curve's own parameter domain and sums the
+  // straight-line distance between consecutive ones. This is a
+  // from-scratch implementation, not a wrapper - verified directly
+  // against the v8.34 source that OpenNURBS' public `ON_Curve` API has no
+  // `GetLength()`/arc-length method at all (grepped the whole source
+  // tree, not just this class), the same "declared for Rhino, not present
+  // in the public build" pattern chunk 2 found for `ON_Brep::CreateMesh`
+  // and this chunk found for `ON_SubD::BrepForm`. A polyline's chord
+  // length always understates a smooth curve's true arc length, so this
+  // converges to the true length from below as `samples` increases - for
+  // a straight-line curve (no curvature to approximate) it's exact at any
+  // sample count.
+  double Length(int samples = 1000) const;
+
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }
 

@@ -49,6 +49,45 @@ void TestCurveDegreeElevation() {
   Check(curve.Degree() == 5, "curve degree increased to 5");
 }
 
+void TestCurveLength() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // A degree-1 (straight-line) curve has no curvature for polyline
+  // sampling to approximate away - Length() should be exact (the true
+  // 3-4-5 distance, 5.0) at any sample count, not just a large one.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(3, 4, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  Check(std::abs(line.Length(4) - 5.0) < 1e-9,
+        "a straight-line curve's length is exact (5.0, the 3-4-5 "
+        "distance) even at a small sample count");
+  Check(std::abs(line.Length(1000) - 5.0) < 1e-9,
+        "...and stays exact at a large sample count too");
+
+  // A genuinely curved case: measure convergence directly rather than
+  // assuming it, the same discipline used for SubD's volume-shrink
+  // measurements. A polyline's chords always understate a smooth curve's
+  // true length, so Length() should increase monotonically (not
+  // decrease, not oscillate) as sample count grows, and the increments
+  // should shrink (approaching some limit), not diverge.
+  const std::vector<Point3d> curved_pts = {
+      Point3d(0, 0, 0),
+      Point3d(1, 3, 0),
+      Point3d(2, -3, 0),
+      Point3d(3, 0, 0),
+  };
+  const NurbsCurve curved = NurbsCurve::FromControlPoints(curved_pts, /*degree=*/3);
+  const double length_10 = curved.Length(10);
+  const double length_100 = curved.Length(100);
+  const double length_1000 = curved.Length(1000);
+  Check(length_10 <= length_100 + 1e-12 && length_100 <= length_1000 + 1e-12,
+        "a curved curve's approximated length increases monotonically "
+        "with sample count (chords underestimate the true arc length)");
+  Check((length_1000 - length_100) < (length_100 - length_10),
+        "the increase per 10x more samples shrinks - converging toward a "
+        "limit, not diverging");
+}
+
 void TestSurfaceDegreeElevation() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -1661,6 +1700,7 @@ int main() {
   ON::Begin();
 
   TestCurveDegreeElevation();
+  TestCurveLength();
   TestSurfaceDegreeElevation();
   TestFileRoundTrip();
   TestBrepTessellation();
