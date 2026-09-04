@@ -63,6 +63,19 @@ class NurbsCurve {
   // OpenNURBS' own call fails.
   Result Reverse();
 
+  // Shortens the curve in place to just the sub-domain `[t0, t1]`
+  // (`t0 < t1`, both within the curve's current domain) - the curve's
+  // own shape outside that range is discarded, not just hidden, and its
+  // new domain becomes exactly `[t0, t1]`. A real gap nothing here could
+  // answer before: nothing in this file could cut a curve down to part
+  // of itself without re-sampling points and rebuilding a brand new
+  // curve through them (an approximation, not the exact same underlying
+  // curve restricted to a smaller range). Delegates to
+  // `ON_NurbsCurve::Trim` after verifying it's a real implementation (a
+  // genuine de Boor knot-insertion algorithm, not a stub). Returns
+  // Result::Failed if `t0 >= t1` or OpenNURBS' own call fails.
+  Result Trim(double t0, double t1);
+
   Point3d PointAt(double t) const;
 
   // Delegates to `ON_Curve::GetTightBoundingBox`. DESPITE THE NAME, this

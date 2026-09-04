@@ -71,4 +71,11 @@ bool NurbsCurve::IsPeriodic() const { return curve_.IsPeriodic(); }
 
 Result NurbsCurve::Reverse() { return curve_.Reverse() ? Result::Ok : Result::Failed; }
 
+Result NurbsCurve::Trim(double t0, double t1) {
+  if (t0 >= t1) {
+    return Result::Failed;
+  }
+  return curve_.Trim(ON_Interval(t0, t1)) ? Result::Ok : Result::Failed;
+}
+
 }  // namespace dino8::kernel

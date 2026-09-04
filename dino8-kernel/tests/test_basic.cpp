@@ -265,6 +265,47 @@ void TestCurveReverse() {
   }
 }
 
+void TestCurveTrim() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A straight line from (0,0,0) to (10,0,0) with domain [0,1]:
+  // P(t) = (10t, 0, 0), so trimming to [0.2, 0.7] should keep exactly
+  // the sub-segment from (2,0,0) to (7,0,0) - hand-derivable exact,
+  // since a line has no curvature for a knot-insertion-based trim to
+  // approximate away.
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  NurbsCurve line = NurbsCurve::FromControlPoints(pts, /*degree=*/1);
+  Check(line.Trim(0.2, 0.7) == Result::Ok, "NurbsCurve::Trim() succeeds");
+
+  // Confirmed by testing, not assumed: the new domain is exactly the
+  // trimmed interval [0.2, 0.7], not, say, renormalized back to [0,1].
+  const ON_Interval domain_after = line.raw().Domain();
+  Check(std::abs(domain_after.Min() - 0.2) < 1e-9 && std::abs(domain_after.Max() - 0.7) < 1e-9,
+        "the trimmed curve's own domain is exactly [0.2, 0.7], the "
+        "interval it was trimmed to");
+
+  const Point3d start = line.PointAt(domain_after.Min());
+  const Point3d end = line.PointAt(domain_after.Max());
+  Check(std::abs(start.x - 2.0) < 1e-9 && std::abs(start.y) < 1e-9 && std::abs(start.z) < 1e-9,
+        "the trimmed line's start point is exactly (2,0,0)");
+  Check(std::abs(end.x - 7.0) < 1e-9 && std::abs(end.y) < 1e-9 && std::abs(end.z) < 1e-9,
+        "the trimmed line's end point is exactly (7,0,0)");
+  Check(std::abs(line.Length() - 5.0) < 1e-9,
+        "the trimmed line's own length is exactly 5.0 (7-2), not the "
+        "original untrimmed length of 10");
+
+  bool threw_or_failed = false;
+  NurbsCurve backwards = NurbsCurve::FromControlPoints(pts, 1);
+  if (backwards.Trim(0.7, 0.2) == Result::Failed) {
+    threw_or_failed = true;
+  }
+  Check(threw_or_failed,
+        "Trim() fails on a backwards interval (t0 >= t1) rather than "
+        "silently doing something undefined");
+}
+
 void TestSurfaceNormalAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -3147,6 +3188,7 @@ int main() {
   TestCurveGetTightBoundingBox();
   TestCurveIsClosed();
   TestCurveReverse();
+  TestCurveTrim();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();

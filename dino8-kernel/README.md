@@ -998,6 +998,21 @@ What this repo does instead:
   exactly `(0,0,1)`: both `Reverse(0)` and `Transpose()` flip it to
   exactly `(0,0,-1)`, checked separately rather than assuming they behave
   the same way just because both involve "reversing something".
+- `NurbsCurve::Trim()` shortens a curve in place to a sub-domain,
+  delegating to `ON_NurbsCurve::Trim` (a genuine de Boor knot-insertion
+  algorithm, verified as real rather than assumed) after checking `t0 <
+  t1`. A real gap nothing here could answer before: cutting a curve down
+  to part of itself previously meant re-sampling points and building a
+  brand new approximating curve, not keeping the exact same underlying
+  curve restricted to a smaller range. Verified on a straight line from
+  `(0,0,0)` to `(10,0,0)` (no curvature for a knot-insertion trim to
+  approximate away, so every check is hand-derivable exact): trimming to
+  `[0.2, 0.7]` gives a curve whose own domain is exactly that interval
+  (confirmed by testing, not assumed to renormalize back to `[0,1]`),
+  whose endpoints are exactly `(2,0,0)` and `(7,0,0)`, and whose own
+  `Length()` is exactly `5.0`, not the original `10.0`. Also checked
+  `Trim()` fails outright on a backwards interval (`t0 >= t1`) rather
+  than doing something undefined.
 
 ## What's still not done (as of chunk 2)
 
