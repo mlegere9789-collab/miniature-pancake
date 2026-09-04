@@ -571,6 +571,23 @@ What this repo does instead:
   `LoftClosedRings()` now throws `std::invalid_argument` on it instead of
   silently ear-clipping a Newell-normal projection that wouldn't reflect
   the ring's actual 3D shape.
+- `Mesh::ComputeVertexNormals()` closes part of the ".obj has no normals"
+  gap this section used to flag: a real per-vertex smoothing normal (the
+  area-weighted sum of every adjacent face's own flat triangle normal,
+  normalized - not a placeholder or a plain unweighted average), and
+  `SaveObj()` now writes one `vn` line per vertex and references it from
+  every face corner in `v//vn` form, so a viewer gets actual smooth
+  shading instead of falling back to its own flat per-facet normals.
+  `LoadObj()` still only reads `v`/`f` lines - a face's geometry is
+  already fully determined by its vertex indices alone, so round-tripping
+  through `SaveObj()`/`LoadObj()` reproduces the same geometry (and the
+  same normals, recomputed from it) but not necessarily the same file
+  bytes. Verified with two hand-derivable exact cases: a unit-cube
+  corner's normal (three adjacent unit-square faces, so equal-weighted)
+  is exactly `(-1,-1,-1)/sqrt(3)`; every corner of a single flat quad gets
+  exactly that quad's own flat normal, with no neighbors to average
+  against. `.obj` still carries no texture coordinates, materials, or
+  groups.
 
 ## What's still not done (as of chunk 2)
 
@@ -621,10 +638,11 @@ What this repo does instead:
   (adding/removing faces, extrude, etc.), and no SubD ↔ Brep conversion
   (that direction is the stubbed `BrepForm()`/`GetSurfaceBrep()` this
   section already flagged).
-- `.obj` support (`SaveObj()`/`LoadObj()`) only round-trips geometry - no
-  normals, texture coordinates, materials, or groups. `.stl` support
-  (`SaveStl()`) is export-only, and both are the only formats here - no
-  glTF, FBX, etc.
+- `.obj` support (`SaveObj()`/`LoadObj()`) round-trips geometry and now
+  writes real per-vertex normals (see above), but still no texture
+  coordinates, materials, or groups, and `LoadObj()` still only reads
+  `v`/`f` lines. `.stl` support (`SaveStl()`) is export-only, and both are
+  the only formats here - no glTF, FBX, etc.
 - Adaptive/curvature-aware meshing, the viewport/display engine, GPU path
   tracer, command engine, UI shell, visual scripting, undo system,
   installer, and everything else in the blueprint's roadmap — all

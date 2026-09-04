@@ -171,6 +171,40 @@ BoundingBox Mesh::GetBoundingBox() const {
   return BoundingBox{box_min, box_max};
 }
 
+std::vector<Vector3d> Mesh::ComputeVertexNormals() const {
+  std::vector<Vector3d> normals(static_cast<size_t>(mesh_.m_V.Count()), Vector3d(0, 0, 0));
+
+  // Accumulates a triangle's un-normalized cross product (its length is
+  // twice the triangle's area) into each of its 3 vertices - summing that
+  // directly, rather than a triangle normal already normalized to unit
+  // length, is exactly what makes the eventual per-vertex sum
+  // area-weighted instead of a plain unweighted average of directions.
+  auto accumulate_triangle = [&](int i0, int i1, int i2) {
+    const Point3d a(mesh_.m_V[i0]);
+    const Point3d b(mesh_.m_V[i1]);
+    const Point3d c(mesh_.m_V[i2]);
+    const Vector3d weighted_normal = ON_CrossProduct(b - a, c - a);
+    normals[static_cast<size_t>(i0)] += weighted_normal;
+    normals[static_cast<size_t>(i1)] += weighted_normal;
+    normals[static_cast<size_t>(i2)] += weighted_normal;
+  };
+
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    accumulate_triangle(f.vi[0], f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      accumulate_triangle(f.vi[0], f.vi[2], f.vi[3]);
+    }
+  }
+
+  for (Vector3d& n : normals) {
+    if (n.Length() > 1e-12) {
+      n.Unitize();
+    }
+  }
+  return normals;
+}
+
 Mesh Mesh::Transform(const ON_Xform& xform) const {
   Mesh result = *this;
   result.mesh_.Transform(xform);
@@ -187,12 +221,25 @@ Result Mesh::SaveObj(const std::string& path) const {
     const ON_3fPoint& v = mesh_.m_V[i];
     out << "v " << v.x << ' ' << v.y << ' ' << v.z << '\n';
   }
+  const std::vector<Vector3d> normals = ComputeVertexNormals();
+  for (const Vector3d& n : normals) {
+    out << "vn " << n.x << ' ' << n.y << ' ' << n.z << '\n';
+  }
   for (int i = 0; i < mesh_.m_F.Count(); ++i) {
     const ON_MeshFace& f = mesh_.m_F[i];
-    // OBJ vertex indices are 1-based.
-    out << "f " << (f.vi[0] + 1) << ' ' << (f.vi[1] + 1) << ' ' << (f.vi[2] + 1);
+    // OBJ vertex indices are 1-based. "v//vn" form: no texture
+    // coordinates, so the middle (vt) slot between the two slashes is
+    // left empty, per OBJ's own convention for "no vt".
+    auto write_corner = [&out](int vi) { out << (vi + 1) << "//" << (vi + 1); };
+    out << "f ";
+    write_corner(f.vi[0]);
+    out << ' ';
+    write_corner(f.vi[1]);
+    out << ' ';
+    write_corner(f.vi[2]);
     if (f.IsQuad()) {
-      out << ' ' << (f.vi[3] + 1);
+      out << ' ';
+      write_corner(f.vi[3]);
     }
     out << '\n';
   }

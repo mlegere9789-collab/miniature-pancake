@@ -56,6 +56,20 @@ class Mesh {
   // point-sized mesh at the origin.
   BoundingBox GetBoundingBox() const;
 
+  // Per-vertex normals: for each vertex, the area-weighted sum of every
+  // adjacent face's own flat (non-normalized) triangle normal, then
+  // normalized - the standard "average of what touches this vertex,
+  // weighted by how much surface each neighbor actually covers" smoothing
+  // normal, not a placeholder or a plain unweighted average. A quad
+  // face's own two triangles (the same diagonal split Area()/Volume()
+  // already use) are summed separately rather than treating the quad as
+  // one unit, so a vertex on a non-planar quad still gets a real
+  // per-triangle contribution instead of one undefined "quad normal".
+  // Returns one entry per vertex, in vertex-index order, aligned with
+  // Mesh's own vertex indices; a vertex with no adjacent faces gets the
+  // zero vector (nothing to average).
+  std::vector<Vector3d> ComputeVertexNormals() const;
+
   // Applies `xform` to a copy of this mesh and returns it - the missing
   // piece that let every primitive here be positioned/oriented only via
   // its own constructor parameters (Cylinder()'s base_center/axis, say),
@@ -74,20 +88,30 @@ class Mesh {
   // Writes this mesh as a plain-text Wavefront .obj file (`v x y z`
   // vertex lines, `f i j k` / `f i j k l` 1-indexed face lines - OBJ
   // supports quad faces natively, so a quad face is written as one
-  // 4-index line rather than split into two triangles). This is the
-  // first "other file format" this kernel writes, alongside the .3dm
-  // support in file_io.h - a deliberately simple, widely-supported format
-  // so anything built here can actually be opened and looked at in an
-  // ordinary 3D viewer (Blender, MeshLab, etc.), not just verified by its
-  // own numbers. Returns Result::Failed if the file can't be opened for
-  // writing; does not validate the mesh's own geometry (an empty mesh
-  // writes a valid, empty .obj).
+  // 4-index line rather than split into two triangles). Also writes each
+  // vertex's own `vn` line, via ComputeVertexNormals(), and references it
+  // from every face line in `v//vn` form (no texture coordinates, so the
+  // middle slot is left empty, same as OBJ's own convention for "no vt"),
+  // so a viewer gets real smooth-shading normals instead of falling back
+  // to its own flat per-facet ones. This is the first "other file format"
+  // this kernel writes, alongside the .3dm support in file_io.h - a
+  // deliberately simple, widely-supported format so anything built here
+  // can actually be opened and looked at in an ordinary 3D viewer
+  // (Blender, MeshLab, etc.), not just verified by its own numbers.
+  // Returns Result::Failed if the file can't be opened for writing; does
+  // not validate the mesh's own geometry (an empty mesh writes a valid,
+  // empty .obj).
   Result SaveObj(const std::string& path) const;
 
   // Reads a plain-text Wavefront .obj file written by SaveObj() (or any
   // other reasonably well-formed .obj) into `out_mesh`. Only `v` (vertex)
-  // and `f` (face) lines are understood - no normals/texture coordinates,
-  // materials, groups, or negative (relative) indices; a face line with
+  // and `f` (face) lines are understood - `vn` (including the ones
+  // SaveObj() itself now writes), texture coordinates, materials, groups,
+  // and negative (relative) indices are all silently skipped, since a
+  // face's geometry is already fully determined by its vertex indices
+  // alone; round-tripping through SaveObj()/LoadObj() reproduces the same
+  // geometry (and the same normals, recomputed from it) but not
+  // necessarily the same file bytes. A face line with
   // more than 4 indices is rejected rather than silently fan-triangulated
   // (this kernel's own ON_MeshFace only holds a triangle or quad, so
   // reading, say, a 5-gon would need to change its meaning without

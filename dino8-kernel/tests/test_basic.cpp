@@ -1335,6 +1335,52 @@ void TestSubDFlatQuadGridStaysFlatAndAreaExact() {
         "on a much smaller scale than the box's, not a bug");
 }
 
+void TestMeshComputeVertexNormals() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Vector3d;
+
+  // MakeQuadBoxMesh's vertex 0 = (0,0,0) is shared by exactly 3 faces:
+  // bottom (-z), front (-y), left (-x) - each a single unit-square quad,
+  // so each contributes an equal-magnitude unit normal along its own
+  // axis. Their area-weighted sum, normalized, is exactly
+  // (-1,-1,-1)/sqrt(3) - a hand-derivable exact value, not just "some
+  // vector that looks plausible."
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const std::vector<Vector3d> normals = box.ComputeVertexNormals();
+  Check(static_cast<int>(normals.size()) == box.VertexCount(),
+        "ComputeVertexNormals returns exactly one normal per vertex");
+
+  const double expected = -1.0 / std::sqrt(3.0);
+  const Vector3d& n0 = normals[0];
+  Check(std::abs(n0.x - expected) < 1e-9 && std::abs(n0.y - expected) < 1e-9 &&
+            std::abs(n0.z - expected) < 1e-9,
+        "vertex 0's normal is exactly (-1,-1,-1)/sqrt(3), the area-weighted "
+        "average of its 3 adjacent unit-square faces' normals");
+  Check(std::abs(n0.Length() - 1.0) < 1e-9, "vertex 0's normal is unit length");
+
+  // A flat single quad: every corner's normal must equal the quad's own
+  // single flat normal exactly - no neighbors to average against, so
+  // area-weighting can't change anything here.
+  Mesh flat;
+  ON_Mesh& raw = flat.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace face;
+  face.vi[0] = 0;
+  face.vi[1] = 1;
+  face.vi[2] = 2;
+  face.vi[3] = 3;
+  raw.m_F.Append(face);
+  const std::vector<Vector3d> flat_normals = flat.ComputeVertexNormals();
+  for (const Vector3d& n : flat_normals) {
+    Check(std::abs(n.x) < 1e-9 && std::abs(n.y) < 1e-9 && std::abs(n.z - 1.0) < 1e-9,
+          "every corner of a single flat quad in the z=0 plane (CCW from "
+          "+z) gets exactly the normal (0,0,1)");
+  }
+}
+
 void TestMeshSaveObjRoundTrips() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -1350,8 +1396,10 @@ void TestMeshSaveObjRoundTrips() {
   Check(static_cast<bool>(in), "the .obj file SaveObj wrote can be reopened for reading");
 
   int vertex_lines = 0;
+  int normal_lines = 0;
   int face_lines = 0;
   bool saw_quad_face = false;
+  bool saw_slash_slash_reference = false;
   double first_vertex[3] = {0, 0, 0};
   bool got_first_vertex = false;
   std::string line;
@@ -1363,6 +1411,8 @@ void TestMeshSaveObjRoundTrips() {
         got_first_vertex = true;
       }
       ++vertex_lines;
+    } else if (line.size() >= 3 && line[0] == 'v' && line[1] == 'n' && line[2] == ' ') {
+      ++normal_lines;
     } else if (line.size() >= 2 && line[0] == 'f' && line[1] == ' ') {
       ++face_lines;
       // Count whitespace-separated tokens after "f " to distinguish a
@@ -1376,16 +1426,24 @@ void TestMeshSaveObjRoundTrips() {
       if (token_count == 5) {
         saw_quad_face = true;
       }
+      if (line.find("//") != std::string::npos) {
+        saw_slash_slash_reference = true;
+      }
     }
   }
 
   Check(vertex_lines == box.VertexCount(),
         "the .obj file has exactly as many 'v' lines as the mesh has vertices (8)");
+  Check(normal_lines == box.VertexCount(),
+        "the .obj file has exactly as many 'vn' lines as the mesh has vertices (8)");
   Check(face_lines == box.FaceCount(),
         "the .obj file has exactly as many 'f' lines as the mesh has faces (6)");
   Check(saw_quad_face,
         "at least one face line has 4 indices - quad faces are written as one "
         "quad, not split into two triangles");
+  Check(saw_slash_slash_reference,
+        "face lines reference a normal via 'v//vn' form, not just bare "
+        "vertex indices");
   Check(got_first_vertex && first_vertex[0] == 0.0 && first_vertex[1] == 0.0 &&
             first_vertex[2] == 0.0,
         "the first written vertex line matches MakeQuadBoxMesh's known first "
@@ -1821,6 +1879,7 @@ int main() {
   TestSubDFromControlMeshRejectsEmptyMesh();
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
+  TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshLoadObjRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
