@@ -1370,6 +1370,23 @@ What this repo does instead:
   existing cylinder wall and sphere (both correctly report false - a
   cylinder's parallel isocurves never converge, and a sphere has no
   straight-line isocurve in either direction at all).
+- `NurbsSurface::IsTorus(tolerance)` is the fourth and last of this
+  quadric-classification family, same inheritance situation
+  (`ON_NurbsSurface` inherits `ON_Surface::IsTorus`'s real base
+  implementation) - both isocurve directions must be circular arcs whose
+  fitted tori agree with each other, unlike `IsCone()`/`IsCylinder()`'s
+  one-arc-one-line requirement. A real discovery here, not assumed: a
+  genuine torus via `ON_Torus::GetNurbForm` reports `IsTorus()` *false*
+  at the default tolerance (`ON_ZERO_TOLERANCE`, ~2.3e-10) -
+  `GetNurbForm`'s own rational biquadratic construction has
+  floating-point round-off just outside that extremely tight bound -
+  but reports true at a still-tight 1e-6 tolerance. This isn't a bug in
+  `IsTorus()` itself or the whole classification family (the sphere/
+  cylinder/cone cases all passed at the default tolerance in their own
+  tests), just the real precision this specific rational NURBS
+  construction needs. Verified against the existing sphere, cylinder
+  wall, and cone too (all correctly report false at the same 1e-6
+  tolerance).
 
 ## What's still not done (as of chunk 2)
 

@@ -866,6 +866,56 @@ void TestSurfaceIsCone() {
   Check(!sphere.IsCone(), "a sphere (no straight-line isocurve at all) reports IsCone() false");
 }
 
+void TestSurfaceIsTorus() {
+  using dino8::kernel::NurbsSurface;
+
+  // A genuine torus via ON_Torus::GetNurbForm. A real discovery here,
+  // confirmed by a debug run rather than assumed: at the *default*
+  // tolerance (ON_ZERO_TOLERANCE, ~2.3e-10) this reports false - the
+  // rational biquadratic NURBS form's own floating-point round-off from
+  // GetNurbForm's construction is just outside that extremely tight
+  // bound for ON_Curve::IsArc's internal fit-check, unlike the sphere/
+  // cylinder/cone cases above which all passed at the default tolerance.
+  // A still-tight but slightly looser 1e-6 tolerance reports true, which
+  // is the tolerance used below - not a workaround for a wrong
+  // implementation, just the real precision this construction needs.
+  const ON_Torus on_torus(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), /*major_radius=*/5.0,
+                          /*minor_radius=*/1.0);
+  ON_NurbsSurface torus_surface;
+  Check(on_torus.GetNurbForm(torus_surface) != 0, "ON_Torus::GetNurbForm succeeds");
+  NurbsSurface torus;
+  torus.raw() = torus_surface;
+  Check(!torus.IsTorus(),
+        "a genuine torus surface reports IsTorus() false at the "
+        "default (extremely tight) tolerance, due to GetNurbForm's own "
+        "floating-point round-off - not assumed, discovered by testing");
+  Check(torus.IsTorus(1e-6),
+        "...but reports true at a still-tight 1e-6 tolerance, which "
+        "comfortably covers that real round-off");
+
+  const ON_Sphere on_sphere(ON_3dPoint(1, -2, 0.5), 3.0);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere;
+  sphere.raw() = sphere_surface;
+  Check(!sphere.IsTorus(1e-6), "a sphere reports IsTorus() false");
+
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  Check(!wall.IsTorus(1e-6), "a cylinder wall reports IsTorus() false");
+
+  const ON_Cone on_cone(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0, 1.0);
+  ON_NurbsSurface cone_surface;
+  Check(on_cone.GetNurbForm(cone_surface) != 0, "ON_Cone::GetNurbForm succeeds");
+  NurbsSurface cone;
+  cone.raw() = cone_surface;
+  Check(!cone.IsTorus(1e-6), "a cone reports IsTorus() false");
+}
+
 void TestSurfaceReverseAndTranspose() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -4303,6 +4353,7 @@ int main() {
   TestSurfaceIsSphere();
   TestSurfaceIsCylinder();
   TestSurfaceIsCone();
+  TestSurfaceIsTorus();
   TestSurfaceReverseAndTranspose();
   TestSurfaceTrim();
   TestSurfaceSplit();
