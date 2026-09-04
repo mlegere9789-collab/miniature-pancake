@@ -103,6 +103,21 @@ Result NurbsCurve::SetKnotAt(int i, double value) {
   return curve_.SetKnot(i, value) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsCurve::InsertKnotAt(double knot_value, int multiplicity) {
+  const Interval domain = Domain();
+  if (knot_value <= domain.min || knot_value >= domain.max) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::InsertKnotAt: knot_value must be "
+        "strictly inside the curve's own domain");
+  }
+  if (multiplicity < 1 || multiplicity > Degree()) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::InsertKnotAt: multiplicity must be "
+        "between 1 and Degree() inclusive");
+  }
+  return curve_.InsertKnot(knot_value, multiplicity) ? Result::Ok : Result::Failed;
+}
+
 Result NurbsCurve::ElevateDegree(int new_degree) {
   if (new_degree <= Degree()) {
     return Result::NoOpAlreadySatisfied;

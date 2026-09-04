@@ -142,6 +142,31 @@ class NurbsCurve {
   // if `value` already equals `KnotAt(i)`.
   Result SetKnotAt(int i, double value);
 
+  // Inserts a new knot at `knot_value` with the given `multiplicity`,
+  // via real Boehm's-algorithm knot refinement (`ON_NurbsCurve::
+  // InsertKnot`) - genuinely adds control points without changing the
+  // curve's own shape at all: same `PointAt(t)` for every `t` before and
+  // after (to a tight numerical tolerance - confirmed by testing several
+  // parameter values, not just trusting the documented "does not change
+  // parameterization or locus" guarantee; a real floating-point wrinkle
+  // found in that testing is that exact bit-for-bit equality does NOT
+  // hold, since the refined control net evaluates the same true shape
+  // through a different arithmetic path, rounding differently in the
+  // last couple of ULPs). `knot_value` must be strictly interior to the
+  // curve's own domain (`Domain().min < knot_value < Domain().max`,
+  // OpenNURBS' own documented requirement - a value at or outside either
+  // end isn't a valid insertion point since the end knots already have
+  // full multiplicity), and `multiplicity` must be between 1 and
+  // `Degree()` inclusive (inserting more than `Degree()` copies would
+  // exceed the maximum multiplicity a knot can have and introduce a
+  // discontinuity this method doesn't exist to create). Throws
+  // std::invalid_argument outside those ranges - checked directly here
+  // rather than relying on `InsertKnot()`'s own bool return, so a
+  // caller gets a clear reason rather than an unexplained
+  // Result::Failed. Returns Result::Failed if OpenNURBS' own call fails
+  // for some other reason.
+  Result InsertKnotAt(double knot_value, int multiplicity = 1);
+
   // Elevates the curve's degree in place. Returns NoOpAlreadySatisfied if
   // `new_degree <= Degree()`.
   Result ElevateDegree(int new_degree);

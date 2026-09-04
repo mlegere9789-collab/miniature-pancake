@@ -1736,6 +1736,21 @@ What this repo does instead:
   internally and returns `false` safely - so `SetKnotAt()` returns
   `Result::Failed` instead of throwing, matching that real underlying
   safety profile rather than adding a redundant, inconsistent throw.
+- `NurbsCurve::InsertKnotAt(knot_value, multiplicity)`: real Boehm's-
+  algorithm knot refinement via `ON_NurbsCurve::InsertKnot` - genuinely
+  adds control points (and knots) without changing the curve's own
+  shape at all. Validates `knot_value` is strictly interior to the
+  domain and `multiplicity` is between 1 and `Degree()`, throwing
+  `std::invalid_argument` otherwise (checked directly rather than
+  trusting the underlying bool return, so a caller gets a clear reason).
+  A real floating-point wrinkle found by testing rather than assumed: an
+  initial draft of this method's own test asserted exact bit-for-bit
+  equality of `PointAt(t)` before and after insertion, and that
+  assertion genuinely **failed** - the refined control net evaluates the
+  same true shape through a different arithmetic path, rounding
+  differently in the last couple of ULPs, so the test (and the method's
+  own doc comment) now correctly describes this as "unchanged to a
+  tight numerical tolerance," not exact equality.
 
 ## What's still not done (as of chunk 2)
 

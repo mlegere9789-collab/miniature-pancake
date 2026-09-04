@@ -241,6 +241,70 @@ void TestCurveSetWeightAt() {
         "SetWeightAt returns Failed (not a crash) on an out-of-range index");
 }
 
+void TestCurveInsertKnotAt() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Cubic curve, 4 control points.
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 3, 0), Point3d(2, -3, 0),
+                                     Point3d(3, 0, 0)};
+  NurbsCurve curve = NurbsCurve::FromControlPoints(pts, /*degree=*/3);
+  Check(curve.ControlPointCount() == 4 && curve.KnotCount() == 6,
+        "the curve starts with 4 control points and 6 knots");
+  std::vector<Point3d> before_points;
+  for (double t : {0.1, 0.3, 0.5, 0.7, 0.9}) {
+    before_points.push_back(curve.PointAt(t));
+  }
+
+  const Result result = curve.InsertKnotAt(0.5, /*multiplicity=*/1);
+  Check(result == Result::Ok, "InsertKnotAt returns Ok on a valid interior knot value");
+  Check(curve.ControlPointCount() == 5,
+        "InsertKnotAt adds exactly `multiplicity` (1) new control points");
+  Check(curve.KnotCount() == 7, "InsertKnotAt adds exactly `multiplicity` (1) new knots");
+
+  // The actual point this method exists to prove: real Boehm knot
+  // refinement changes the control net without changing the curve's own
+  // shape at all - checked at 5 different parameter values, not just
+  // one. A real floating-point wrinkle caught by testing rather than
+  // assumed: exact bit-for-bit equality actually FAILS here (confirmed
+  // by a failing first draft of this check) - InsertKnot()'s Boehm
+  // refinement evaluates the curve through a different arithmetic path
+  // (new control points, new knot spans) than the original one did, so
+  // rounding differs in the last couple of ULPs even though the curve's
+  // true mathematical shape is unchanged. A tight (1e-9) tolerance is
+  // the honest way to check "shape unchanged", not exact equality.
+  bool shape_unchanged = true;
+  size_t idx = 0;
+  for (double t : {0.1, 0.3, 0.5, 0.7, 0.9}) {
+    if ((curve.PointAt(t) - before_points[idx++]).Length() > 1e-9) {
+      shape_unchanged = false;
+    }
+  }
+  Check(shape_unchanged,
+        "PointAt() matches before and after InsertKnotAt to within 1e-9 at 5 different "
+        "parameter values - the curve's shape genuinely didn't change");
+
+  bool boundary_threw = false;
+  try {
+    curve.InsertKnotAt(curve.Domain().min, 1);
+  } catch (const std::invalid_argument&) {
+    boundary_threw = true;
+  }
+  Check(boundary_threw,
+        "InsertKnotAt throws std::invalid_argument at the domain's own boundary (not strictly "
+        "interior)");
+
+  bool multiplicity_threw = false;
+  try {
+    curve.InsertKnotAt(0.5, curve.Degree() + 2);
+  } catch (const std::invalid_argument&) {
+    multiplicity_threw = true;
+  }
+  Check(multiplicity_threw,
+        "InsertKnotAt throws std::invalid_argument when multiplicity exceeds Degree()");
+}
+
 void TestCurveKnotAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -5583,6 +5647,7 @@ int main() {
   TestCurveDivideByCount();
   TestCurveIsRational();
   TestCurveSetWeightAt();
+  TestCurveInsertKnotAt();
   TestCurveKnotAt();
   TestCurveControlPointAt();
   TestCurveWeightAt();
