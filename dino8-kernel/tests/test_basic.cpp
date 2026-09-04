@@ -571,6 +571,58 @@ void TestSurfaceTrim() {
         "silently doing something undefined");
 }
 
+void TestSurfaceSplit() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Same flat P(u,v)=(u,v,0) surface as TestSurfaceTrim(). Splitting
+  // direction 0 (U) at t=0.4 should give a west half covering u in
+  // [0, 0.4] and an east half covering [0.4, 1], both sharing v's domain
+  // [0,1] unchanged, and the two halves should meet exactly at u=0.4 -
+  // confirmed by a debug run before finalizing these assertions.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  NurbsSurface west, east;
+  Check(surface.Split(0, 0.4, west, east) == Result::Ok, "NurbsSurface::Split(0, ...) succeeds");
+
+  const ON_Interval wu = west.raw().Domain(0);
+  const ON_Interval wv = west.raw().Domain(1);
+  const ON_Interval eu = east.raw().Domain(0);
+  const ON_Interval ev = east.raw().Domain(1);
+  Check(std::abs(wu.Min() - 0.0) < 1e-9 && std::abs(wu.Max() - 0.4) < 1e-9,
+        "the west half's own domain(0) is exactly [0, 0.4]");
+  Check(std::abs(eu.Min() - 0.4) < 1e-9 && std::abs(eu.Max() - 1.0) < 1e-9,
+        "the east half's own domain(0) is exactly [0.4, 1]");
+  Check(std::abs(wv.Min()) < 1e-9 && std::abs(wv.Max() - 1.0) < 1e-9 &&
+            std::abs(ev.Min()) < 1e-9 && std::abs(ev.Max() - 1.0) < 1e-9,
+        "both halves keep direction 1's domain [0,1] unchanged");
+
+  const Point3d w_hi = west.PointAt(wu.Max(), wv.Min());
+  const Point3d e_lo = east.PointAt(eu.Min(), ev.Min());
+  Check(std::abs(w_hi.x - 0.4) < 1e-9 && std::abs(w_hi.y) < 1e-9 && std::abs(w_hi.z) < 1e-9,
+        "the west half's own u_max edge lands exactly at (0.4, 0, 0)");
+  Check(std::abs(e_lo.x - 0.4) < 1e-9 && std::abs(e_lo.y) < 1e-9 && std::abs(e_lo.z) < 1e-9,
+        "the east half's own u_min edge lands at the same exact point "
+        "(0.4, 0, 0), so the two halves share the split line with no "
+        "gap or overlap");
+
+  bool failed = false;
+  NurbsSurface endpoint_source = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  NurbsSurface endpoint_west, endpoint_east;
+  if (endpoint_source.Split(0, 0.0, endpoint_west, endpoint_east) == Result::Failed) {
+    failed = true;
+  }
+  Check(failed,
+        "Split() fails when t sits exactly at a domain endpoint rather "
+        "than strictly inside it");
+}
+
 void TestFileRoundTrip() {
   using dino8::kernel::Brep;
   using dino8::kernel::Model;
@@ -3285,6 +3337,7 @@ int main() {
   TestSurfaceIsClosed();
   TestSurfaceReverseAndTranspose();
   TestSurfaceTrim();
+  TestSurfaceSplit();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();

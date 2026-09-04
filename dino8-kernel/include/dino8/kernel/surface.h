@@ -84,6 +84,21 @@ class NurbsSurface {
   // Result::Failed if `t0 >= t1` or OpenNURBS' own call fails.
   Result Trim(int direction, double t0, double t1);
 
+  // Splits the surface at parameter `t` in `direction` (0 = U, 1 = V)
+  // into two independent surfaces written to `out_west_or_south` (the
+  // west/south side, i.e. the sub-range below `t`) and
+  // `out_east_or_north` (the east/north side, above `t`) - the
+  // surface-level counterpart to `NurbsCurve::Split()`, same "keep both
+  // halves instead of discarding one" idea `Trim()` doesn't offer.
+  // Delegates to `ON_Surface::Split` through its old-style `ON_Surface*&`
+  // output-parameter API, casting back to `ON_NurbsSurface`. The other
+  // direction's domain is left unchanged in both halves, same as
+  // `Trim()`. Returns Result::Failed if `t` doesn't strictly split the
+  // domain (e.g. it sits at an endpoint) or OpenNURBS' own call fails or
+  // doesn't hand back genuine NURBS surfaces.
+  Result Split(int direction, double t, NurbsSurface& out_west_or_south,
+               NurbsSurface& out_east_or_north) const;
+
   Point3d PointAt(double u, double v) const;
 
   // Unit surface normal at parameter (u, v): `d/du x d/dv`, normalized.

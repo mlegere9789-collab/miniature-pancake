@@ -374,6 +374,32 @@ Result NurbsSurface::Trim(int direction, double t0, double t1) {
   return surface_.Trim(direction, ON_Interval(t0, t1)) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsSurface::Split(int direction, double t, NurbsSurface& out_west_or_south,
+                            NurbsSurface& out_east_or_north) const {
+  ON_Surface* west_or_south = nullptr;
+  ON_Surface* east_or_north = nullptr;
+  const bool ok = surface_.Split(direction, t, west_or_south, east_or_north);
+  if (!ok) {
+    delete west_or_south;
+    delete east_or_north;
+    return Result::Failed;
+  }
+
+  ON_NurbsSurface* west_or_south_nurbs = ON_NurbsSurface::Cast(west_or_south);
+  ON_NurbsSurface* east_or_north_nurbs = ON_NurbsSurface::Cast(east_or_north);
+  if (west_or_south_nurbs == nullptr || east_or_north_nurbs == nullptr) {
+    delete west_or_south;
+    delete east_or_north;
+    return Result::Failed;
+  }
+
+  out_west_or_south.surface_ = *west_or_south_nurbs;
+  out_east_or_north.surface_ = *east_or_north_nurbs;
+  delete west_or_south;
+  delete east_or_north;
+  return Result::Ok;
+}
+
 Point3d NurbsSurface::PointAt(double u, double v) const {
   ON_3dPoint pt;
   surface_.EvPoint(u, v, pt);

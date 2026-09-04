@@ -1038,6 +1038,19 @@ What this repo does instead:
   finalizing the assertions, not assumed from the curve-level behavior.
   Also checked `Trim()` fails on a backwards interval (`t0 >= t1`) rather
   than silently doing something undefined.
+- `NurbsSurface::Split(direction, t, out_west_or_south, out_east_or_north)`
+  is `Trim()`'s complement, mirroring `NurbsCurve::Split()`: keeps both
+  halves as two independent surfaces instead of discarding one. Delegates
+  to `ON_Surface::Split` through its old-style `ON_Surface*&`
+  output-parameter API, casting back to `ON_NurbsSurface`. Verified on the
+  same flat `P(u,v)=(u,v,0)` surface: splitting direction 0 at `t=0.4`
+  gives a west half with `domain(0)` exactly `[0, 0.4]` and an east half
+  with `domain(0)` exactly `[0.4, 1]`, both keeping direction 1's domain
+  `[0, 1]` unchanged, and the west half's `u_max` edge and the east half's
+  `u_min` edge land at the exact same point `(0.4, 0, 0)` - no gap or
+  overlap at the split line, confirmed by a debug run before finalizing
+  the assertions. Also checked `Split()` fails when `t` sits exactly at a
+  domain endpoint rather than strictly inside it.
 
 ## What's still not done (as of chunk 2)
 
