@@ -56,6 +56,16 @@ public partial class MainWindow : Window
             return;
         }
 
+        // The same "docked to a second screen last time" case above can leave the corner
+        // still on-screen while the size itself no longer fits — a size saved against a
+        // wide external monitor, reopened on just the laptop's own display, would otherwise
+        // still apply at its old, now oversized dimensions rather than shrinking to what is
+        // actually there. AppSettings.Normalize() only floors this (no size smaller than the
+        // window's own XAML minimums survives a save); flooring is all it can do without
+        // knowing the real screen size, which only exists here, at restore time.
+        width = Math.Min(width, virtualScreen.Width);
+        height = Math.Min(height, virtualScreen.Height);
+
         WindowStartupLocation = WindowStartupLocation.Manual;
         Left = left;
         Top = top;
