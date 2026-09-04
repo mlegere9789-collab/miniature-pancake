@@ -764,6 +764,27 @@ void TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts() {
   Check(threw_mismatched,
         "LoftClosedRings throws when rings have different vertex counts "
         "rather than silently misaligning bands");
+
+  bool threw_self_intersecting = false;
+  try {
+    // A bowtie quadrilateral (corners in crossed order), planar in z=0 -
+    // same self-intersection shape as
+    // TestExactClippingRejectsSelfIntersectingTrim, just as a 3D ring.
+    const std::vector<Point3d> bowtie = {
+        Point3d(0, 0, 0),
+        Point3d(1, 1, 0),
+        Point3d(1, 0, 0),
+        Point3d(0, 1, 0),
+    };
+    const std::vector<Point3d> square = {Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1, 1),
+                                          Point3d(0, 1, 1)};
+    Mesh::LoftClosedRings({bowtie, square});
+  } catch (const std::invalid_argument&) {
+    threw_self_intersecting = true;
+  }
+  Check(threw_self_intersecting,
+        "LoftClosedRings throws when the first ring is self-intersecting "
+        "(a bowtie), since it can't be closed into a well-defined end cap");
 }
 
 void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {

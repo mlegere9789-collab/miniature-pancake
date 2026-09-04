@@ -425,6 +425,26 @@ What this repo does instead:
   regression by re-running the full suite, since every trim polygon any
   earlier test used (rectangles, the dart, the annulus's outer/hole
   loops, `Cylinder()`'s circle) is already simple.
+- `LoftClosedRings()`'s first and last rings get the same simplicity
+  check, since they're each ear-clipped into an end cap the same way
+  `TessellateGridClippedExact()`'s `trim_polygon` is. **A first attempt at
+  this reused `TriangulatePlanarRing()`'s existing Newell-normal
+  projection for the check and it silently failed to catch anything** -
+  measured, not assumed correct: a hand-built bowtie ring test still
+  passed validation. The bug: a self-intersecting polygon's two "lobes"
+  wind in opposite senses, so their Newell-method contributions can
+  cancel to exactly zero (confirmed by hand for the specific bowtie used)
+  - projecting onto a degenerate zero normal produces garbage 2D
+  coordinates the simplicity check trivially passes. Fixed with a
+  separate, cruder normal specifically for this check
+  (`IsPlanarRingSimple()`): scan consecutive point triples for the first
+  with a non-negligible cross product (any two non-parallel edges), since
+  self-intersection is preserved under projection onto any plane
+  containing the points, regardless of which of the two normal directions
+  is picked - unlike triangulation winding, this check doesn't care which
+  way the normal points, so it doesn't need Newell's winding-consistency
+  guarantee, only a valid plane. Re-verified with the same bowtie ring,
+  now correctly rejected.
 
 ## What's still not done (as of chunk 2)
 

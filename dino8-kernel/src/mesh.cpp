@@ -461,23 +461,41 @@ Mesh BuildCircularDiskCap(Point3d center, Vector3d unit_axis, double radius,
   return disk.Tessellate(grid_divisions, grid_divisions).front();
 }
 
-// Triangulates a planar polygon (`ring`, convex or concave) given in 3D,
-// for LoftClosedRings()'s end caps. Returns triangles as index triples
-// into `ring` whose winding is CCW as seen looking back along the
-// polygon's own Newell normal - i.e. the "natural", not reversed,
-// orientation a front/last-ring cap needs (see LoftClosedRings()'s own
-// comment for why the first/back ring's cap needs the reverse of this).
-//
+// Projects `ring` onto the plane through `origin` with the given
+// `normal`, using an arbitrary right-handed (ex, ey) in-plane basis
+// (ex x ey = normal, the same convention this file already uses for a
+// circular disk cap). Shared by both TriangulatePlanarRing() and the
+// simplicity check below - whichever normal each computes, actually
+// flattening the ring to 2D is the same operation either way.
+std::vector<Point2d> ProjectOntoPlane(const std::vector<Point3d>& ring, const Point3d& origin,
+                                       Vector3d normal) {
+  normal.Unitize();
+  const Vector3d reference =
+      (std::abs(normal.z) < 0.9) ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+  Vector3d ex = ON_CrossProduct(reference, normal);
+  ex.Unitize();
+  const Vector3d ey = ON_CrossProduct(normal, ex);
+
+  std::vector<Point2d> flat;
+  flat.reserve(ring.size());
+  for (const Point3d& p : ring) {
+    const Vector3d offset = p - origin;
+    flat.emplace_back(ON_DotProduct(offset, ex), ON_DotProduct(offset, ey));
+  }
+  return flat;
+}
+
 // Newell's method (summing cross-product-like terms over every edge)
 // gives a normal consistent with `ring`'s own listed winding for any
-// simple planar polygon, convex or concave - unlike a single 3-point
+// *simple* planar polygon, convex or concave - unlike a single 3-point
 // cross product, which can pick the wrong sign or degenerate entirely if
-// those 3 points happen to be nearly collinear. Projecting onto that
-// normal's own (ex, ey) basis (ex x ey = normal, the same right-handed
-// convention this file already uses for a circular disk cap) turns this
-// into flat 2D ear-clipping, reusing dino8::kernel::detail::
-// EarClipTriangulate rather than a second triangulation implementation.
-std::vector<std::array<int, 3>> TriangulatePlanarRing(const std::vector<Point3d>& ring) {
+// those 3 points happen to be nearly collinear. Only valid to call on a
+// ring already known to be simple: a self-intersecting polygon's two
+// "lobes" wind in opposite senses, so their Newell contributions can
+// cancel to exactly zero (verified: a bowtie's does) - the wrong
+// direction to detect that very self-intersection, which is exactly why
+// IsPlanarRingSimple() below uses a different, cruder normal instead.
+Vector3d NewellNormal(const std::vector<Point3d>& ring) {
   const size_t n = ring.size();
   Vector3d normal(0, 0, 0);
   for (size_t i = 0; i < n; ++i) {
@@ -487,23 +505,51 @@ std::vector<std::array<int, 3>> TriangulatePlanarRing(const std::vector<Point3d>
     normal.y += (p.z - q.z) * (p.x + q.x);
     normal.z += (p.x - q.x) * (p.y + q.y);
   }
-  normal.Unitize();
+  return normal;
+}
 
-  const Vector3d reference =
-      (std::abs(normal.z) < 0.9) ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
-  Vector3d ex = ON_CrossProduct(reference, normal);
-  ex.Unitize();
-  const Vector3d ey = ON_CrossProduct(normal, ex);
+// Triangulates a planar polygon (`ring`, convex or concave) given in 3D,
+// for LoftClosedRings()'s end caps. Returns triangles as index triples
+// into `ring` whose winding is CCW as seen looking back along the
+// polygon's own Newell normal - i.e. the "natural", not reversed,
+// orientation a front/last-ring cap needs (see LoftClosedRings()'s own
+// comment for why the first/back ring's cap needs the reverse of this).
+// Only meaningful on a ring already validated as simple - see
+// NewellNormal()'s own comment.
+std::vector<std::array<int, 3>> TriangulatePlanarRing(const std::vector<Point3d>& ring) {
+  return dino8::kernel::detail::EarClipTriangulate(
+      ProjectOntoPlane(ring, ring[0], NewellNormal(ring)));
+}
 
-  std::vector<Point2d> flat;
-  flat.reserve(n);
-  const Point3d& origin = ring[0];
-  for (const Point3d& p : ring) {
-    const Vector3d offset = p - origin;
-    flat.emplace_back(ON_DotProduct(offset, ex), ON_DotProduct(offset, ey));
+// Whether `ring` is a simple (non-self-intersecting) planar polygon -
+// LoftClosedRings()'s validation for its two end rings, which get
+// ear-clipped into caps. Deliberately doesn't use NewellNormal() (see its
+// own comment on why that degenerates for exactly the self-intersecting
+// input this needs to detect); instead scans consecutive point triples
+// for the first with a non-negligible cross product, i.e. any two
+// non-parallel edges from the ring's own point set. Self-intersection is
+// preserved under projection onto any plane containing the (assumed
+// planar) points, regardless of which of the two possible normal
+// directions is picked - unlike triangulation winding, this check doesn't
+// care which way the normal points.
+bool IsPlanarRingSimple(const std::vector<Point3d>& ring) {
+  const size_t n = ring.size();
+  Vector3d normal(0, 0, 0);
+  for (size_t i = 0; i < n; ++i) {
+    const Vector3d e1 = ring[(i + 1) % n] - ring[i];
+    const Vector3d e2 = ring[(i + 2) % n] - ring[i];
+    normal = ON_CrossProduct(e1, e2);
+    if (normal.Length() > 1e-9) {
+      break;
+    }
   }
-
-  return dino8::kernel::detail::EarClipTriangulate(flat);
+  if (normal.Length() <= 1e-9) {
+    // Every triple tried was collinear/degenerate - not planar-polygon
+    // shaped at all; leave that to fail elsewhere (or trivially "pass"
+    // here) rather than misclassify a degenerate ring as self-intersecting.
+    return true;
+  }
+  return dino8::kernel::detail::IsSimplePolygon(ProjectOntoPlane(ring, ring[0], normal));
 }
 
 }  // namespace
@@ -678,6 +724,19 @@ Mesh Mesh::LoftClosedRings(const std::vector<std::vector<Point3d>>& rings) {
           "dino8::kernel::Mesh::LoftClosedRings: every ring must have the same "
           "vertex count");
     }
+  }
+  // Only the two end rings need to be simple (non-self-intersecting):
+  // they're the ones ear-clipped into end caps below, and a
+  // self-intersecting ring isn't decomposable into a well-defined
+  // "inside" for that - the same requirement and check
+  // TessellateGridClippedExact() applies to its trim_polygon. Interior
+  // rings only feed the bands between them, which don't have that
+  // requirement.
+  if (!IsPlanarRingSimple(rings.front()) || !IsPlanarRingSimple(rings.back())) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::LoftClosedRings: the first and last rings must be "
+        "simple (non-self-intersecting) polygons - they're each closed into an "
+        "end cap, which isn't well-defined for a self-intersecting ring");
   }
 
   Mesh result;
