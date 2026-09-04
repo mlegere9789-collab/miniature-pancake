@@ -351,6 +351,9 @@ NurbsSurface NurbsSurface::FromControlGrid(const std::vector<Point3d>& control_g
 int NurbsSurface::DegreeU() const { return surface_.Degree(0); }
 int NurbsSurface::DegreeV() const { return surface_.Degree(1); }
 
+int NurbsSurface::CVCountU() const { return surface_.CVCount(0); }
+int NurbsSurface::CVCountV() const { return surface_.CVCount(1); }
+
 Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
   if (new_degree <= surface_.Degree(direction)) {
     return Result::NoOpAlreadySatisfied;

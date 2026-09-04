@@ -1527,6 +1527,13 @@ What this repo does instead:
   degree-3x3 surface, confirmed by a debug run (not assumed from the
   general "clamped uniform knots give a `[0, cv_count - degree]` domain"
   rule) to be exactly `[0, 1]` in every direction.
+- `NurbsSurface::CVCountU()`/`CVCountV()`: the surface-level counterpart
+  to `NurbsCurve::ControlPointCount()`, another real gap alongside
+  `Domain()` above - `DegreeU()`/`DegreeV()` already existed, but nothing
+  exposed the control grid's own dimensions. Verified on a deliberately
+  non-square (5 x 3 control points, degree 2 x 1) surface, so U and V
+  weren't accidentally checked against the same coincidental number, and
+  matched exactly against the underlying `ON_NurbsSurface::CVCount(dir)`.
 
 ## What's still not done (as of chunk 2)
 

@@ -1522,6 +1522,30 @@ void TestSurfaceDomain() {
         "a 4x4-control-point, degree-3x3 surface's domain is exactly [0, 1] in both directions");
 }
 
+void TestSurfaceCVCount() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // Deliberately non-square (5 x 3 control points, degree 2 x 1) so U and
+  // V aren't accidentally the same number - a real cross-check that
+  // CVCountU()/CVCountV() aren't just returning the same value for both
+  // directions by coincidence. Confirmed exact (5 and 3) via a debug run
+  // before finalizing, matching what was actually passed to
+  // FromControlGrid() and the raw ON_NurbsSurface::CVCount(dir) values.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 5; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      grid.push_back(Point3d(static_cast<double>(i), static_cast<double>(j), 0.0));
+    }
+  }
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 5, 3, 2, 1);
+  Check(surface.CVCountU() == 5, "CVCountU() returns exactly the 5 control points passed in U");
+  Check(surface.CVCountV() == 3, "CVCountV() returns exactly the 3 control points passed in V");
+  Check(surface.CVCountU() == surface.raw().CVCount(0) &&
+            surface.CVCountV() == surface.raw().CVCount(1),
+        "CVCountU()/CVCountV() match the underlying ON_NurbsSurface::CVCount(dir) exactly");
+}
+
 void TestSurfaceClosestPoint() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -4827,6 +4851,7 @@ int main() {
   TestSurfaceSplit();
   TestSurfaceExtend();
   TestSurfaceDomain();
+  TestSurfaceCVCount();
   TestSurfaceClosestPoint();
   TestSurfaceCurvature();
   TestSurfaceSuggestedDivisions();

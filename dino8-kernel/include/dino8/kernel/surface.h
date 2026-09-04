@@ -62,6 +62,15 @@ class NurbsSurface {
   int DegreeU() const;
   int DegreeV() const;
 
+  // Number of control points in each direction - the surface-level
+  // counterpart to `NurbsCurve::ControlPointCount()`, a real gap this
+  // file had never filled (only `DegreeU()`/`DegreeV()` existed; nothing
+  // exposed the control grid's own dimensions, e.g. to iterate
+  // `ControlPointAt(i, j)`-style access via `raw()` without reaching in
+  // just to find out how far `i`/`j` may range).
+  int CVCountU() const;
+  int CVCountV() const;
+
   // Elevates degree in the given direction (0 = U, 1 = V). Returns
   // NoOpAlreadySatisfied if the surface is already at or above that degree.
   Result ElevateDegree(int direction, int new_degree);
