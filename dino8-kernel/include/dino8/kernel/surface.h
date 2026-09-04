@@ -51,6 +51,28 @@ class NurbsSurface {
   // stub-vs-real verification.
   bool IsPeriodic(int direction) const;
 
+  // Reverses the surface's parameterization in `direction` (0 = U,
+  // 1 = V) in place: same 3D shape, but that direction now runs the
+  // opposite way, which flips the surface's own outward normal (since
+  // `u_dir x v_dir` negates when either direction reverses) - the
+  // surface-level counterpart to `NurbsCurve::Reverse()`, with the same
+  // caveat confirmed there: the domain interval's own min/max values
+  // aren't necessarily preserved, so re-fetch `raw().Domain(direction)`
+  // afterward rather than reusing one captured before calling this.
+  // Delegates to `ON_NurbsSurface::Reverse` after verifying it's a real
+  // implementation. Returns Result::Failed if OpenNURBS' own call fails.
+  Result Reverse(int direction);
+
+  // Swaps the surface's U and V parameterizations in place: what was
+  // `PointAt(u, v)` becomes `PointAt(v, u)`. Also flips the outward
+  // normal (`u_dir x v_dir` becomes `v_dir x u_dir = -(u_dir x v_dir)`),
+  // same as Reverse(). Delegates to `ON_NurbsSurface::Transpose` after
+  // verifying it's a real implementation (swaps the actual control point
+  // grid and knot vectors, not a stub). Always succeeds (matching
+  // `ON_NurbsSurface::Transpose`'s own unconditional `true`), so returns
+  // void rather than a `Result` a caller would never see fail.
+  void Transpose();
+
   Point3d PointAt(double u, double v) const;
 
   // Unit surface normal at parameter (u, v): `d/du x d/dv`, normalized.

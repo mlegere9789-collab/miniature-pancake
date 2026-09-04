@@ -393,6 +393,53 @@ void TestSurfaceIsClosed() {
         "questions, not just two names for the same thing");
 }
 
+void TestSurfaceReverseAndTranspose() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Same flat P(u,v)=(u,v,0) surface TestSurfaceNormalAt() already
+  // established has normal exactly (0,0,1) everywhere.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+
+  // Reverse(0) (U) flips the outward normal exactly, since u_dir x v_dir
+  // negates when u_dir reverses direction - confirmed here rather than
+  // just asserted from the cross-product algebra.
+  NurbsSurface reversed = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  Check(reversed.Reverse(0) == dino8::kernel::Result::Ok, "NurbsSurface::Reverse(0) succeeds");
+  // Same domain-not-preserved caveat NurbsCurve::Reverse() has - a [0,1]
+  // domain came back as [-1,0] here too - so re-fetch fresh rather than
+  // reusing a captured one.
+  const ON_Interval u_after = reversed.raw().Domain(0);
+  const ON_Interval v_after = reversed.raw().Domain(1);
+  const Vector3d normal_after_reverse =
+      reversed.NormalAt(u_after.ParameterAt(0.5), v_after.ParameterAt(0.5));
+  Check(std::abs(normal_after_reverse.x) < 1e-9 && std::abs(normal_after_reverse.y) < 1e-9 &&
+            std::abs(normal_after_reverse.z - (-1.0)) < 1e-9,
+        "Reverse(0) flips the flat surface's normal from (0,0,1) to "
+        "exactly (0,0,-1)");
+
+  // Transpose() swaps U and V entirely, which has the same normal-
+  // flipping effect (v_dir x u_dir = -(u_dir x v_dir)) as Reverse() -
+  // independently confirmed, not assumed to behave the same way just
+  // because both involve "reversing something".
+  NurbsSurface transposed = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  transposed.Transpose();
+  const ON_Interval tu = transposed.raw().Domain(0);
+  const ON_Interval tv = transposed.raw().Domain(1);
+  const Vector3d normal_after_transpose =
+      transposed.NormalAt(tu.ParameterAt(0.5), tv.ParameterAt(0.5));
+  Check(std::abs(normal_after_transpose.x) < 1e-9 && std::abs(normal_after_transpose.y) < 1e-9 &&
+            std::abs(normal_after_transpose.z - (-1.0)) < 1e-9,
+        "Transpose() also flips the flat surface's normal to exactly "
+        "(0,0,-1)");
+}
+
 void TestFileRoundTrip() {
   using dino8::kernel::Brep;
   using dino8::kernel::Model;
@@ -3103,6 +3150,7 @@ int main() {
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();
+  TestSurfaceReverseAndTranspose();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();

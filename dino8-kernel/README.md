@@ -988,6 +988,16 @@ What this repo does instead:
   by `Reverse()` (a `[0, 1]` domain came back as `[-1, 0]` in the verified
   case) - documented on the method now so a caller doesn't reuse a domain
   captured before calling it.
+- `NurbsSurface::Reverse(direction)`/`Transpose()` are the surface-level
+  counterparts, with the same domain-not-preserved caveat confirmed again
+  for `Reverse()`. Both flip the surface's own outward normal - `Reverse()`
+  because `u_dir x v_dir` negates when either direction reverses,
+  `Transpose()` because swapping U and V gives `v_dir x u_dir =
+  -(u_dir x v_dir)` - verified independently for each on the same flat
+  `P(u,v)=(u,v,0)` surface `TestSurfaceNormalAt()` established has normal
+  exactly `(0,0,1)`: both `Reverse(0)` and `Transpose()` flip it to
+  exactly `(0,0,-1)`, checked separately rather than assuming they behave
+  the same way just because both involve "reversing something".
 
 ## What's still not done (as of chunk 2)
 

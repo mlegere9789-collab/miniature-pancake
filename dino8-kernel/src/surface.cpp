@@ -361,6 +361,12 @@ bool NurbsSurface::IsClosed(int direction) const { return surface_.IsClosed(dire
 
 bool NurbsSurface::IsPeriodic(int direction) const { return surface_.IsPeriodic(direction); }
 
+Result NurbsSurface::Reverse(int direction) {
+  return surface_.Reverse(direction) ? Result::Ok : Result::Failed;
+}
+
+void NurbsSurface::Transpose() { surface_.Transpose(); }
+
 Point3d NurbsSurface::PointAt(double u, double v) const {
   ON_3dPoint pt;
   surface_.EvPoint(u, v, pt);
