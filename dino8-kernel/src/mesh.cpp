@@ -545,6 +545,58 @@ Result Mesh::SaveStl(const std::string& path) const {
   return out.good() ? Result::Ok : Result::Failed;
 }
 
+Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path);
+  if (!in) {
+    return Result::Failed;
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.mesh_;
+
+  // Accumulates the current facet's 3 vertices (x,y,z flattened) between
+  // "outer loop" and "endloop" - checked for exactly 9 values at
+  // "endfacet" rather than trusting the file's own structure.
+  std::vector<double> pending_vertices;
+
+  std::string line;
+  while (std::getline(in, line)) {
+    std::istringstream stream(line);
+    std::string tag;
+    stream >> tag;
+
+    if (tag == "vertex") {
+      double x, y, z;
+      if (!(stream >> x >> y >> z)) {
+        return Result::Failed;
+      }
+      pending_vertices.push_back(x);
+      pending_vertices.push_back(y);
+      pending_vertices.push_back(z);
+    } else if (tag == "endfacet") {
+      if (pending_vertices.size() != 9) {
+        return Result::Failed;  // not exactly 3 vertices for this facet
+      }
+      ON_MeshFace face;
+      for (int i = 0; i < 3; ++i) {
+        face.vi[i] = raw.m_V.Count();
+        raw.m_V.Append(ON_3fPoint(pending_vertices[static_cast<size_t>(i) * 3 + 0],
+                                   pending_vertices[static_cast<size_t>(i) * 3 + 1],
+                                   pending_vertices[static_cast<size_t>(i) * 3 + 2]));
+      }
+      face.vi[3] = face.vi[2];
+      raw.m_F.Append(face);
+      pending_vertices.clear();
+    }
+    // "solid ...", "endsolid ...", "facet normal ..." (its own values
+    // discarded - see LoadStl()'s own comment on why), "outer loop", and
+    // "endloop" are all silently skipped.
+  }
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
 Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
   Mesh result;
   ON_Mesh& out = result.mesh_;

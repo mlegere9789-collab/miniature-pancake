@@ -894,6 +894,19 @@ What this repo does instead:
   every original vertex is exactly 1 unit from the origin, the smoothed
   surface can bulge between vertices but never past them - and the result
   is still proven watertight via a real Manifold union.
+- `Mesh::LoadStl()` closes the "export-only" gap `SaveStl()` itself used
+  to flag: reads a plain-text ASCII `.stl` file's `facet`/`vertex` blocks
+  back into a `Mesh`, faithful to the format's own "no shared vertex
+  list" nature (3 new, unshared vertices per facet, not deduplicated -
+  `MergeAndWeld({loaded})` is the way back to a welded mesh, same as any
+  other independently-tessellated source). Verified with a real round
+  trip: `SaveStl()` a 6-quad box (12 triangle facets), reload it, and
+  confirm the loaded mesh has exactly those 12 faces and 36 (3-per-facet)
+  vertices, exactly the original volume despite the unshared vertices,
+  and welds back down to exactly the box's 8 unique corners. Also checked
+  `LoadStl()` fails (rather than silently misinterpreting) a facet with
+  fewer than 3 vertices. Doesn't attempt to detect or reject a binary
+  `.stl` file - a different format entirely that needs a separate parser.
 
 ## What's still not done (as of chunk 2)
 
@@ -947,8 +960,9 @@ What this repo does instead:
 - `.obj` support (`SaveObj()`/`LoadObj()`) round-trips geometry and now
   writes real per-vertex normals (see above), but still no texture
   coordinates, materials, or groups, and `LoadObj()` still only reads
-  `v`/`f` lines. `.stl` support (`SaveStl()`) is export-only, and both are
-  the only formats here - no glTF, FBX, etc.
+  `v`/`f` lines. `.stl` now round-trips too (`LoadStl()`, see above), but
+  only ASCII STL - no binary STL parser. `.obj`/`.stl` are still the only
+  formats here - no glTF, FBX, etc.
 - Adaptive/curvature-aware meshing, the viewport/display engine, GPU path
   tracer, command engine, UI shell, visual scripting, undo system,
   installer, and everything else in the blueprint's roadmap — all

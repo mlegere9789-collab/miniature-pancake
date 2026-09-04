@@ -208,6 +208,31 @@ class Mesh {
   // Result::Failed if the file can't be opened for writing.
   Result SaveStl(const std::string& path) const;
 
+  // Reads a plain-text ASCII `.stl` file written by SaveStl() (or any
+  // other reasonably well-formed ASCII STL) into `out_mesh` - closing the
+  // "export-only" gap SaveStl() itself used to flag. Parses `facet
+  // normal ... outer loop / vertex x y z (x3) / endloop / endfacet`
+  // blocks; the `facet normal` line's own values are read but discarded
+  // (recomputing per-facet normals here would just reproduce SaveStl()'s
+  // own logic, and this kernel's Mesh has nowhere to store a facet normal
+  // distinct from the vertex positions it's derived from anyway).
+  // Deliberately doesn't attempt to detect or reject a binary `.stl` file
+  // (a different format entirely, starting with an 80-byte header rather
+  // than the text `solid`) - callers with binary STL files need a
+  // separate parser this kernel doesn't provide. Faithful to STL's own
+  // "no shared vertex list" nature: 3 new vertices are appended per
+  // facet, exactly as the file stores them, not deduplicated against
+  // each other the way `Mesh::MergeAndWeld()` would - a caller wanting a
+  // welded mesh (fewer vertices, adjacency-aware operations like
+  // `ComputeVertexNormals()` giving a real smoothing average rather than
+  // each vertex only ever "sharing" its own single facet) can call
+  // `MergeAndWeld({loaded_mesh})` afterward. Returns Result::Failed if
+  // the file can't be opened or a `vertex`/`facet`/`endfacet` line is
+  // malformed (wrong token count, unparsable number) - `out_mesh` is
+  // left unspecified in that case, not partially filled and silently
+  // trusted.
+  static Result LoadStl(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
 

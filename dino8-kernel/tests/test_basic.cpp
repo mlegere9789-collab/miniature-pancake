@@ -2418,6 +2418,68 @@ void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
   std::remove(path.c_str());
 }
 
+void TestMeshLoadStlRoundTrips() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // SaveStl() splits each of MakeQuadBoxMesh's 6 quads into 2 triangles
+  // (12 facets), each with its own 3 unshared vertices (36 raw vertices
+  // total) - LoadStl() should read that back faithfully, not weld
+  // anything, so the reloaded mesh's own vertex/face counts reflect the
+  // file's actual structure rather than the original pre-export mesh's.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  const std::string path = "dino8_kernel_mesh_stl_load_test.stl";
+  Check(box.SaveStl(path) == Result::Ok, "Mesh::SaveStl succeeds");
+
+  Mesh loaded;
+  Check(Mesh::LoadStl(path, loaded) == Result::Ok, "Mesh::LoadStl succeeds on SaveStl()'s own output");
+  Check(loaded.FaceCount() == box.FaceCount() * 2,
+        "the loaded mesh has 12 triangle faces (2 per original quad), "
+        "matching what SaveStl() actually wrote");
+  Check(loaded.VertexCount() == loaded.FaceCount() * 3,
+        "the loaded mesh has exactly 3 unshared vertices per facet (36 "
+        "total) - STL's own 'no shared vertex list' structure, not "
+        "deduplicated");
+  Check(std::abs(loaded.Volume() - box.Volume()) < 1e-6,
+        "the loaded mesh's volume exactly matches the original despite "
+        "having unshared vertices - Volume() doesn't care about vertex "
+        "sharing");
+
+  // Welding it back with MergeAndWeld() should collapse the 36 unshared
+  // vertices down to the original 8 unique corners, same as any other
+  // independently-tessellated-then-welded mesh here.
+  const auto welded = Mesh::MergeAndWeld({loaded});
+  Check(welded.VertexCount() == 8,
+        "welding the loaded mesh collapses its 36 unshared vertices back "
+        "down to the box's 8 unique corners");
+
+  std::remove(path.c_str());
+
+  Mesh missing;
+  Check(Mesh::LoadStl("dino8_kernel_mesh_stl_load_test_does_not_exist.stl", missing) ==
+            Result::Failed,
+        "LoadStl fails on a file that doesn't exist");
+
+  const std::string malformed_path = "dino8_kernel_mesh_stl_load_test_malformed.stl";
+  {
+    std::ofstream out(malformed_path);
+    out << "solid dino8\n";
+    out << "facet normal 0 0 1\n";
+    out << "outer loop\n";
+    out << "vertex 0 0 0\n";
+    out << "vertex 1 0 0\n";
+    // Missing the third vertex - only 2 for this facet.
+    out << "endloop\n";
+    out << "endfacet\n";
+    out << "endsolid dino8\n";
+  }
+  Mesh malformed;
+  Check(Mesh::LoadStl(malformed_path, malformed) == Result::Failed,
+        "LoadStl fails on a facet with fewer than 3 vertices rather than "
+        "silently misinterpreting it");
+  std::remove(malformed_path.c_str());
+}
+
 void TestExactClippingMatchesAreaButNotCellCounts() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -2838,6 +2900,7 @@ int main() {
   TestMeshSaveObjRoundTrips();
   TestMeshLoadObjRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
+  TestMeshLoadStlRoundTrips();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestExactClippingHandlesTrimVertexOnGridLine();
