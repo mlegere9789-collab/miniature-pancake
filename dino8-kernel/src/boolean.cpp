@@ -183,4 +183,8 @@ std::vector<Mesh> Decompose(const Mesh& mesh) {
   return result;
 }
 
+double MinGap(const Mesh& a, const Mesh& b, double search_length) {
+  return ToManifold(a).MinGap(ToManifold(b), search_length);
+}
+
 }  // namespace dino8::kernel

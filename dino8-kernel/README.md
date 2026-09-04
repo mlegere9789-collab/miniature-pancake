@@ -848,6 +848,16 @@ What this repo does instead:
   connected shape, since they never touch) whose volumes exactly match
   the two originals - matched by volume rather than index, since the
   returned order isn't specified.
+- `MinGap()` wraps Manifold's own `Manifold::MinGap`: the two-solid
+  counterpart to `Mesh::SignedDistance()` (one mesh, one point) - the
+  minimum distance between two whole solids' surfaces, 0 if they overlap
+  or touch at all. Verified with three hand-derivable exact cases: two
+  boxes separated by exactly 3 units along one axis give a gap of exactly
+  3.0; two overlapping boxes give exactly 0.0 (via Manifold's own real
+  intersection check, not a coincidentally-small search result); and two
+  boxes sharing a boundary face (touching, not overlapping) also give
+  exactly 0.0, confirming "touching" isn't treated as some tiny positive
+  gap.
 
 ## What's still not done (as of chunk 2)
 

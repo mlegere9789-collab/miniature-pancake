@@ -102,4 +102,15 @@ Mesh MinkowskiDifference(const Mesh& a, const Mesh& b);
 // fails. Order of the returned pieces isn't specified.
 std::vector<Mesh> Decompose(const Mesh& mesh);
 
+// The minimum distance between `a` and `b`'s surfaces - 0 if they
+// overlap or touch at all (checked directly via a real intersection
+// test, not just "assume nonzero"), otherwise the true minimum gap,
+// searched up to `search_length` away. Backed by Manifold's own
+// `Manifold::MinGap`. The two-solid counterpart to
+// `Mesh::SignedDistance()` (one mesh, one point) - useful for a
+// clearance/collision check between two whole solids rather than a
+// solid and a single point. Both inputs must be valid closed manifolds,
+// same requirement as BooleanCombine().
+double MinGap(const Mesh& a, const Mesh& b, double search_length);
+
 }  // namespace dino8::kernel

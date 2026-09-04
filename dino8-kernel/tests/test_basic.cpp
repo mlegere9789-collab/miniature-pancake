@@ -765,6 +765,33 @@ void TestDecompose() {
         "own volumes (8 and 6), not merged or corrupted");
 }
 
+void TestMinGap() {
+  using dino8::kernel::MinGap;
+
+  // Two boxes separated by a known, hand-derivable gap along X: box A
+  // spans x in [0,2], box B spans x in [5,7] (same y/z range, so the
+  // true minimum gap is exactly the x-axis separation, 5-2=3).
+  const auto a = MakeBox(0, 0, 0, 2, 2, 2);
+  const auto b = MakeBox(5, 0, 0, 7, 2, 2);
+  Check(std::abs(MinGap(a, b, /*search_length=*/10.0) - 3.0) < 1e-6,
+        "the minimum gap between two boxes separated by exactly 3 units "
+        "along X is exactly 3.0");
+
+  // Overlapping boxes: gap is exactly 0, checked via a real intersection
+  // test (Manifold::MinGap's own short-circuit), not a coincidentally
+  // small search result.
+  const auto c = MakeBox(1, 1, 1, 3, 3, 3);  // overlaps `a` in [1,2]^3
+  Check(MinGap(a, c, /*search_length=*/10.0) == 0.0,
+        "the minimum gap between two overlapping boxes is exactly 0.0");
+
+  // Touching (but not overlapping) boxes: gap is also exactly 0 - boxes
+  // sharing a boundary face count as touching, not "a tiny positive gap."
+  const auto d = MakeBox(2, 0, 0, 4, 2, 2);  // shares the x=2 face with `a`
+  Check(MinGap(a, d, /*search_length=*/10.0) == 0.0,
+        "the minimum gap between two boxes sharing a boundary face is "
+        "exactly 0.0");
+}
+
 void TestBrepTessellation() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -2695,6 +2722,7 @@ int main() {
   TestSimplify();
   TestMinkowskiSum();
   TestDecompose();
+  TestMinGap();
   TestBrepTessellation();
   TestBoxVolume();
   TestBooleanUnion();
