@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <utility>
 #include <vector>
 
@@ -154,5 +155,19 @@ Mesh RefineToLength(const Mesh& mesh, double length);
 // Manifold call fails.
 Mesh SmoothAndRefine(const Mesh& mesh, double target_length, double min_sharp_angle = 52.5,
                       double min_smoothness = 0.0);
+
+// The number of `mesh`'s triangles that are degenerate (collinear/
+// zero-area) to within Manifold's own internal precision, *after*
+// Manifold's own mesh construction - backed by
+// `Manifold::NumDegenerateTris`, whose own doc comment says the library
+// "attempts to remove all of these" as part of building the Manifold in
+// the first place. Confirmed by testing, not just quoting the doc:
+// deliberately collapsing one triangle to a straight line before calling
+// this still reports 0, because that degeneracy gets cleaned up before
+// NumDegenerateTris() is ever asked about it - so a nonzero result means
+// a degeneracy the library specifically *couldn't* clean up, not "any
+// degeneracy that was ever present in the input." `mesh` must be a valid
+// closed manifold, same requirement as BooleanCombine().
+size_t CountDegenerateTriangles(const Mesh& mesh);
 
 }  // namespace dino8::kernel

@@ -864,6 +864,37 @@ void TestSmoothAndRefine() {
         "disjoint cylinder equals the sum of both volumes");
 }
 
+void TestCountDegenerateTriangles() {
+  using dino8::kernel::CountDegenerateTriangles;
+  using dino8::kernel::Mesh;
+
+  // A normal, cleanly-constructed box (both quad- and triangle-faced)
+  // has no degenerate triangles - the baseline every one of this
+  // kernel's own primitives should meet.
+  Check(CountDegenerateTriangles(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2)) == 0,
+        "a normal quad-faced box has 0 degenerate triangles");
+  Check(CountDegenerateTriangles(MakeBox(0, 0, 0, 2, 2, 2)) == 0,
+        "a normal triangle-faced box has 0 degenerate triangles");
+
+  // Deliberately collapsing one triangle to a straight line (moving a
+  // shared vertex onto the line between two others of the same
+  // triangle) doesn't actually produce a nonzero count here, checked
+  // directly rather than assumed: Manifold's own mesh construction
+  // "attempts to remove all of these" (per its own doc comment) as part
+  // of building the Manifold in the first place, so a straightforward
+  // collapsed triangle like this gets cleaned up before
+  // NumDegenerateTris() is ever asked about it. This is consistent with
+  // its own documented purpose - reporting a degeneracy the library
+  // *couldn't* clean up, which a simple single-collapsed-triangle case
+  // isn't - rather than every degeneracy that was ever fed in.
+  Mesh degenerate_box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  degenerate_box.raw().m_V[1] = ON_3fPoint(1, 1, 0);  // collapses one bottom-face triangle
+  Check(CountDegenerateTriangles(degenerate_box) == 0,
+        "Manifold's own construction removes a straightforwardly "
+        "collapsed triangle before CountDegenerateTriangles() sees it - "
+        "confirmed directly, not assumed from the doc comment alone");
+}
+
 void TestBrepTessellation() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -2931,6 +2962,7 @@ int main() {
   TestMinGap();
   TestRefineToLength();
   TestSmoothAndRefine();
+  TestCountDegenerateTriangles();
   TestBrepTessellation();
   TestBoxVolume();
   TestBooleanUnion();

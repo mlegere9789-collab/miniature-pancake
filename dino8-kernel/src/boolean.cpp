@@ -215,4 +215,6 @@ Mesh SmoothAndRefine(const Mesh& mesh, double target_length, double min_sharp_an
   return FromManifold(refined);
 }
 
+size_t CountDegenerateTriangles(const Mesh& mesh) { return ToManifold(mesh).NumDegenerateTris(); }
+
 }  // namespace dino8::kernel

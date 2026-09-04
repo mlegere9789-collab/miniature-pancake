@@ -921,6 +921,22 @@ What this repo does instead:
   here uses. Passed on the first attempt - the concave clipper's earlier
   fixes (entry-only tracing, the grid-line nudge) hold up under this
   harder case too, not just the dart it was originally tested against.
+- `CountDegenerateTriangles()` wraps Manifold's own
+  `Manifold::NumDegenerateTris` - a diagnostic for a mesh built by some
+  process this kernel doesn't fully control (a hand-authored mesh, or one
+  loaded from a file), since none of this kernel's own primitives are
+  expected to ever produce a degenerate triangle. A real discovery while
+  testing it, not just quoted from the doc comment: `NumDegenerateTris`'s
+  own doc says the library "attempts to remove all of these," and this
+  confirmed it directly - deliberately collapsing one triangle to a
+  straight line (moving a shared vertex onto the line between two others
+  of the same triangle) still reports 0, because Manifold's own mesh
+  construction cleans that straightforward case up before
+  `NumDegenerateTris()` is ever asked about it. So a nonzero result means
+  a degeneracy the library specifically *couldn't* clean up, not "any
+  degeneracy that was ever present in the input" - documented precisely
+  as that narrower guarantee rather than the broader one the name alone
+  might suggest.
 
 ## What's still not done (as of chunk 2)
 
