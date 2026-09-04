@@ -1026,6 +1026,18 @@ What this repo does instead:
   their lengths sum back to exactly the original line's own length. Also
   checked `Split()` fails when `t` sits at either domain endpoint rather
   than strictly inside it.
+- `NurbsSurface::Trim(direction, t0, t1)` is the surface-level counterpart
+  to `NurbsCurve::Trim()`: shortens the surface in place to `[t0, t1]` in
+  just one direction (0 = U, 1 = V), leaving the other direction's domain
+  untouched. Delegates to `ON_NurbsSurface::Trim`. Verified on the same
+  flat `P(u,v)=(u,v,0)` surface `TestSurfaceReverseAndTranspose()` uses:
+  trimming direction 0 to `[0.2, 0.7]` gives that direction's own new
+  domain exactly `[0.2, 0.7]` while direction 1's domain stays exactly
+  `[0, 1]`, and evaluating the trimmed domain's own corners lands exactly
+  on `(0.2, 0, 0)` and `(0.7, 1, 0)` - confirmed by a debug run before
+  finalizing the assertions, not assumed from the curve-level behavior.
+  Also checked `Trim()` fails on a backwards interval (`t0 >= t1`) rather
+  than silently doing something undefined.
 
 ## What's still not done (as of chunk 2)
 

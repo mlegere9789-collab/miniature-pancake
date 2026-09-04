@@ -367,6 +367,13 @@ Result NurbsSurface::Reverse(int direction) {
 
 void NurbsSurface::Transpose() { surface_.Transpose(); }
 
+Result NurbsSurface::Trim(int direction, double t0, double t1) {
+  if (t0 >= t1) {
+    return Result::Failed;
+  }
+  return surface_.Trim(direction, ON_Interval(t0, t1)) ? Result::Ok : Result::Failed;
+}
+
 Point3d NurbsSurface::PointAt(double u, double v) const {
   ON_3dPoint pt;
   surface_.EvPoint(u, v, pt);

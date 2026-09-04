@@ -526,6 +526,51 @@ void TestSurfaceReverseAndTranspose() {
         "(0,0,-1)");
 }
 
+void TestSurfaceTrim() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Same flat P(u,v)=(u,v,0) surface as TestSurfaceReverseAndTranspose().
+  // Trimming only the U direction to [0.2, 0.7] should leave V's domain
+  // [0,1] untouched and, since the surface is an identity mapping, should
+  // make the new U-domain's own endpoints land exactly at u=0.2 and
+  // u=0.7 - confirmed by a debug run before writing these assertions,
+  // not assumed.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  Check(surface.Trim(0, 0.2, 0.7) == Result::Ok, "NurbsSurface::Trim(0, ...) succeeds");
+
+  const ON_Interval u_after = surface.raw().Domain(0);
+  const ON_Interval v_after = surface.raw().Domain(1);
+  Check(std::abs(u_after.Min() - 0.2) < 1e-9 && std::abs(u_after.Max() - 0.7) < 1e-9,
+        "trimming direction 0 sets that direction's domain to exactly "
+        "[0.2, 0.7]");
+  Check(std::abs(v_after.Min() - 0.0) < 1e-9 && std::abs(v_after.Max() - 1.0) < 1e-9,
+        "trimming direction 0 leaves direction 1's domain [0,1] unchanged");
+
+  const Point3d p_lo = surface.PointAt(u_after.Min(), v_after.Min());
+  const Point3d p_hi = surface.PointAt(u_after.Max(), v_after.Max());
+  Check(std::abs(p_lo.x - 0.2) < 1e-9 && std::abs(p_lo.y) < 1e-9 && std::abs(p_lo.z) < 1e-9,
+        "PointAt the trimmed domain's low corner is exactly (0.2, 0, 0)");
+  Check(std::abs(p_hi.x - 0.7) < 1e-9 && std::abs(p_hi.y - 1.0) < 1e-9 && std::abs(p_hi.z) < 1e-9,
+        "PointAt the trimmed domain's high corner is exactly (0.7, 1, 0)");
+
+  bool failed = false;
+  NurbsSurface backwards = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  if (backwards.Trim(0, 0.7, 0.2) == Result::Failed) {
+    failed = true;
+  }
+  Check(failed,
+        "Trim() fails on a backwards interval (t0 >= t1) rather than "
+        "silently doing something undefined");
+}
+
 void TestFileRoundTrip() {
   using dino8::kernel::Brep;
   using dino8::kernel::Model;
@@ -3239,6 +3284,7 @@ int main() {
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();
   TestSurfaceReverseAndTranspose();
+  TestSurfaceTrim();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();

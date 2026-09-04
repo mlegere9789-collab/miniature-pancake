@@ -73,6 +73,17 @@ class NurbsSurface {
   // void rather than a `Result` a caller would never see fail.
   void Transpose();
 
+  // Shortens the surface in place to the sub-range `[t0, t1]` in
+  // `direction` (0 = U, 1 = V), leaving the other direction's domain
+  // unchanged - the surface-level counterpart to `NurbsCurve::Trim()`,
+  // same underlying idea (a genuine restriction of the existing surface,
+  // not a re-sampled approximation). Delegates to `ON_NurbsSurface::Trim`
+  // after verifying it's a real implementation (converts that direction
+  // to an isocurve, trims it via the same algorithm `NurbsCurve::Trim()`
+  // uses, and writes the result back - not a stub). Returns
+  // Result::Failed if `t0 >= t1` or OpenNURBS' own call fails.
+  Result Trim(int direction, double t0, double t1);
+
   Point3d PointAt(double u, double v) const;
 
   // Unit surface normal at parameter (u, v): `d/du x d/dv`, normalized.
