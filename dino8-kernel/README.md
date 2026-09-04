@@ -557,6 +557,20 @@ What this repo does instead:
   completely different cap implementations. All three also confirmed
   watertight via a real Manifold union, same as every other closed-solid
   primitive here.
+- `LoftClosedRings()` closes the other half of the gap this section used
+  to flag for its end rings: planarity, alongside the simplicity check it
+  already had. `IsRingPlanar()` finds a normal the same way
+  `IsPlanarRingSimple()` does (scanning consecutive point triples for the
+  first non-degenerate cross product - three points from the ring itself
+  already pin down the only plane a genuinely planar ring could lie in),
+  then rejects any ring with a point whose out-of-plane distance exceeds a
+  tolerance scaled by the ring's own size (relative, not absolute, the
+  same reasoning `MergeAndWeld()`'s tolerance already uses). Verified with
+  a square ring with one corner pulled 0.3 units out of its own plane
+  (against a ~1.4-unit diagonal, far past the 1e-6-relative tolerance) -
+  `LoftClosedRings()` now throws `std::invalid_argument` on it instead of
+  silently ear-clipping a Newell-normal projection that wouldn't reflect
+  the ring's actual 3D shape.
 
 ## What's still not done (as of chunk 2)
 
@@ -566,12 +580,11 @@ What this repo does instead:
   `Mesh::LoftClosedRings()`/`Mesh::Torus()` are the only shapes/operations
   here.
   `RevolveProfile()` now supports a flat end rim too (see below);
-  `LoftClosedRings()`'s end caps require each ring
-  to be planar (not validated - a non-planar ring's cap triangulation is
-  undefined) and simple (non-self-intersecting) - the simplicity part *is*
-  now validated (`IsPlanarRingSimple()`, thrown as `std::invalid_argument`
-  on the first/last ring), though concave rings are now handled correctly
-  (see above).
+  `LoftClosedRings()`'s end caps require each ring to be planar and
+  simple (non-self-intersecting) - both are now validated
+  (`IsRingPlanar()`/`IsPlanarRingSimple()`, thrown as
+  `std::invalid_argument` on the first/last ring), and concave rings are
+  handled correctly (see above).
 - `TessellateGridClippedExact()` now handles a concave `trim_polygon` too
   (via a general Greiner-Hormann-style clipper, see above), but that path
   is newer and more narrowly tested than the long-proven convex one: a

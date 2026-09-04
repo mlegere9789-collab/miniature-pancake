@@ -598,6 +598,58 @@ bool IsPlanarRingSimple(const std::vector<Point3d>& ring) {
   return dino8::kernel::detail::IsSimplePolygon(ProjectOntoPlane(ring, ring[0], normal));
 }
 
+// Whether every point of `ring` lies in a single plane, to a tolerance
+// scaled by the ring's own size - LoftClosedRings()'s other end-ring
+// validation (see IsPlanarRingSimple() above for the self-intersection
+// one, which this deliberately doesn't replace: a ring can fail either
+// check independently of the other). Reuses the same "scan consecutive
+// triples for the first non-degenerate cross product" normal
+// IsPlanarRingSimple() computes, rather than a least-squares fit - three
+// points from the ring itself already pin down the only plane a genuinely
+// planar ring could lie in.
+bool IsRingPlanar(const std::vector<Point3d>& ring) {
+  const size_t n = ring.size();
+  Vector3d normal(0, 0, 0);
+  size_t origin_index = 0;
+  for (size_t i = 0; i < n; ++i) {
+    const Vector3d e1 = ring[(i + 1) % n] - ring[i];
+    const Vector3d e2 = ring[(i + 2) % n] - ring[i];
+    normal = ON_CrossProduct(e1, e2);
+    if (normal.Length() > 1e-9) {
+      origin_index = i;
+      break;
+    }
+  }
+  if (normal.Length() <= 1e-9) {
+    // Every triple tried was collinear/degenerate - not planar-polygon
+    // shaped at all; leave that to fail elsewhere rather than misclassify
+    // a degenerate ring as non-planar.
+    return true;
+  }
+  normal.Unitize();
+  const Point3d& origin = ring[origin_index];
+
+  double scale = 0.0;
+  for (const Point3d& p : ring) {
+    scale = std::max(scale, (p - origin).Length());
+  }
+  if (scale <= 1e-12) {
+    return true;
+  }
+
+  // Relative, not absolute, tolerance: a ring's own coordinates set the
+  // scale a "how far out of plane" check has to be judged against, the
+  // same reasoning MergeAndWeld()'s own tolerance already uses.
+  constexpr double kRelativeTolerance = 1e-6;
+  const double tolerance = scale * kRelativeTolerance;
+  for (const Point3d& p : ring) {
+    if (std::abs(ON_DotProduct(p - origin, normal)) > tolerance) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 Mesh Mesh::Cylinder(Point3d base_center, Vector3d axis, double radius, double height,
@@ -808,6 +860,16 @@ Mesh Mesh::LoftClosedRings(const std::vector<std::vector<Point3d>>& rings) {
         "dino8::kernel::Mesh::LoftClosedRings: the first and last rings must be "
         "simple (non-self-intersecting) polygons - they're each closed into an "
         "end cap, which isn't well-defined for a self-intersecting ring");
+  }
+  // Same reasoning, for planarity instead of simplicity: TriangulatePlanarRing()
+  // projects a ring onto its own Newell-normal plane before ear-clipping it,
+  // which is only a faithful triangulation of the ring's actual 3D shape if
+  // that ring is genuinely planar to begin with.
+  if (!IsRingPlanar(rings.front()) || !IsRingPlanar(rings.back())) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::LoftClosedRings: the first and last rings must be "
+        "planar - a non-planar ring's cap triangulation (projected onto a "
+        "single plane) isn't well-defined");
   }
 
   Mesh result;

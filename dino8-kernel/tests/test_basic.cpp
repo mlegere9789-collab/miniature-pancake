@@ -914,6 +914,23 @@ void TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts() {
   Check(threw_self_intersecting,
         "LoftClosedRings throws when the first ring is self-intersecting "
         "(a bowtie), since it can't be closed into a well-defined end cap");
+
+  bool threw_non_planar = false;
+  try {
+    // Same square as above, but with one corner pulled well out of the
+    // z=0 plane - relative to the ring's own ~1.4-unit diagonal, 0.3 is
+    // far past the check's 1e-6-relative tolerance, not a borderline case.
+    const std::vector<Point3d> warped_square = {Point3d(0, 0, 0), Point3d(1, 0, 0),
+                                                 Point3d(1, 1, 0.3), Point3d(0, 1, 0)};
+    const std::vector<Point3d> square = {Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1, 1),
+                                          Point3d(0, 1, 1)};
+    Mesh::LoftClosedRings({warped_square, square});
+  } catch (const std::invalid_argument&) {
+    threw_non_planar = true;
+  }
+  Check(threw_non_planar,
+        "LoftClosedRings throws when the first ring is non-planar, since its "
+        "cap triangulation (projected onto a single plane) isn't well-defined");
 }
 
 void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {

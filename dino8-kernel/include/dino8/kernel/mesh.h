@@ -241,13 +241,16 @@ class Mesh {
   // dino8::kernel::detail::EarClipTriangulate - the same triangulator
   // TessellateGridClippedExact() uses for a concave trim), so a ring may
   // be concave, not just convex. The first and last rings must still be
-  // planar (not checked) and simple/non-self-intersecting (checked, via
+  // planar and simple/non-self-intersecting - both now checked (planarity
+  // via a relative-tolerance out-of-plane distance against a normal found
+  // from the ring's own points; simplicity via
   // dino8::kernel::detail::IsSimplePolygon on that ring's own 2D
   // projection - the same check and requirement
   // TessellateGridClippedExact() applies to its trim_polygon); interior
   // rings only feed bands and aren't checked either way. Throws
   // std::invalid_argument if fewer than 2 rings are given, ring vertex
-  // counts don't match, or the first/last ring is self-intersecting.
+  // counts don't match, or the first/last ring is non-planar or
+  // self-intersecting.
   //
   // No MergeAndWeld() is needed: consecutive rings' vertices are shared
   // directly between the band before and after them, and each end cap's
