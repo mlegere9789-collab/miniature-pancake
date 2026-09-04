@@ -38,8 +38,9 @@ that is easy to mistake for a bug — check those first.
   confirm the traced result is recognisable.
 - [ ] Resize with "keep aspect" on and off, and with "only shrink" on a file already
   smaller than the target — confirm it is left alone rather than enlarged.
-- [ ] Compress a JPG at Quick, Balanced and Best — confirm the file size actually drops
-  in that order and Best still looks acceptable.
+- [ ] Compress a JPG at Quick, Balanced and Best — confirm the file size actually grows
+  in that order (Quick uses the lowest JPEG quality, Best the highest) and Best still
+  looks noticeably better than Quick.
 
 ## Video and audio module
 
@@ -82,8 +83,9 @@ that is easy to mistake for a bug — check those first.
   count and remaining page order are right.
 - [ ] Crop a PDF and confirm the margins are trimmed uniformly across every page, not
   just the first.
-- [ ] Compress at Quick, Balanced and Best and confirm the file size drops in that order
-  (screen/ebook/prepress Ghostscript presets).
+- [ ] Compress at Quick, Balanced and Best and confirm the file size grows in that order
+  (screen/ebook/prepress Ghostscript presets — Quick is the smallest, most-compressed
+  output, Best the largest and highest-fidelity).
 - [ ] Protect a PDF with a password, then unlock it with the same password, and confirm
   the unlocked copy opens with no password prompt.
 
