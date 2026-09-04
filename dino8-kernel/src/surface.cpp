@@ -390,11 +390,6 @@ SurfaceSize NurbsSurface::GetApproximateSize() const {
 }
 
 double NurbsSurface::ApproximateArea(int u_divisions, int v_divisions) const {
-  if (u_divisions < 1 || v_divisions < 1) {
-    throw std::invalid_argument(
-        "dino8::kernel::NurbsSurface::ApproximateArea: u_divisions and "
-        "v_divisions must be at least 1");
-  }
   return TessellateGrid(u_divisions, v_divisions).Area();
 }
 
@@ -767,6 +762,11 @@ Mesh TessellateFromValues(const NurbsSurface& surface, const std::vector<double>
 Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
                                    const std::vector<Point2d>* trim_polygon,
                                    const std::vector<std::vector<Point2d>>* hole_polygons) const {
+  if (u_divisions < 1 || v_divisions < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::TessellateGrid: u_divisions and "
+        "v_divisions must be at least 1");
+  }
   const ON_Interval u_domain = surface_.Domain(0);
   const ON_Interval v_domain = surface_.Domain(1);
 

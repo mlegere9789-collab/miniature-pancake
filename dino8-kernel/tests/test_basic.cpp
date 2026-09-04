@@ -1243,6 +1243,40 @@ void TestSurfaceGetApproximateSize() {
         "true straight-line height");
 }
 
+void TestSurfaceTessellateGridValidation() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // A real gap found while adding ApproximateArea(): TessellateGrid()
+  // used to have no division-count validation at all, silently producing
+  // NaN parameter values via an unguarded 0/0 division on a 0 division
+  // count (confirmed by reading the old implementation) instead of
+  // failing loudly. Now fixed directly in TessellateGrid() itself.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+
+  bool threw_on_u = false;
+  try {
+    surface.TessellateGrid(0, 5);
+  } catch (const std::invalid_argument&) {
+    threw_on_u = true;
+  }
+  Check(threw_on_u, "TessellateGrid throws std::invalid_argument when u_divisions is 0");
+
+  bool threw_on_v = false;
+  try {
+    surface.TessellateGrid(5, -1);
+  } catch (const std::invalid_argument&) {
+    threw_on_v = true;
+  }
+  Check(threw_on_v, "TessellateGrid throws std::invalid_argument when v_divisions is negative");
+}
+
 void TestSurfaceTessellateGridNonUniform() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -5024,6 +5058,7 @@ int main() {
   TestSurfaceIsCone();
   TestSurfaceIsTorus();
   TestSurfaceGetApproximateSize();
+  TestSurfaceTessellateGridValidation();
   TestSurfaceTessellateGridNonUniform();
   TestSurfaceSuggestedParameterValuesAndTessellateGridNonUniformAdaptive();
   TestSurfaceReverseAndTranspose();

@@ -236,11 +236,7 @@ class NurbsSurface {
   // polygon" error direction above - genuinely exact only where the
   // surface has no curvature for a flat facet to fall short of (a flat
   // plane). Throws std::invalid_argument if either division count is
-  // less than 1 - `TessellateGrid()` itself has no such check (a 0
-  // division count there silently produces NaN parameter values via a
-  // 0/0 division, confirmed by reading its source, not a thrown error),
-  // so this method validates it directly rather than inheriting an
-  // undefined-behavior-adjacent failure mode.
+  // less than 1 (`TessellateGrid()`'s own validation - see there).
   double ApproximateArea(int u_divisions = 50, int v_divisions = 50) const;
 
   // Reverses the surface's parameterization in `direction` (0 = U,
@@ -428,6 +424,13 @@ class NurbsSurface {
   // outside every hole polygon, giving an annulus/washer-shaped face
   // (still whole-cell approximated, same as the outer boundary).
   // Meaningless if `trim_polygon` is null.
+  //
+  // Throws std::invalid_argument if either division count is less than
+  // 1 - a real gap this method used to have, found while adding
+  // `ApproximateArea()`: without this check, a `0` division count
+  // silently produced `NaN` parameter values via an unguarded `0/0`
+  // division (confirmed by reading the old implementation) instead of
+  // failing loudly.
   Mesh TessellateGrid(int u_divisions, int v_divisions,
                        const std::vector<Point2d>* trim_polygon = nullptr,
                        const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;

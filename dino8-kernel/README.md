@@ -1570,12 +1570,14 @@ What this repo does instead:
   coarse and fine sphere tessellation (not just "roughly 4*pi*r^2"), with
   the finer grid strictly closer to the true value, and exact at any
   resolution on a flat surface (no curvature to fall short of). Also
-  turned up that `TessellateGrid()` itself has no division-count
-  validation at all - a `0` division count there silently produces `NaN`
-  parameter values via an unguarded `0/0`, confirmed by reading its
-  source rather than assumed - so `ApproximateArea()` validates its own
-  arguments directly (`std::invalid_argument` below 1) instead of
-  inheriting that failure mode.
+  turned up that `TessellateGrid()` itself had no division-count
+  validation at all - a `0` division count there used to silently
+  produce `NaN` parameter values via an unguarded `0/0`, confirmed by
+  reading its source rather than assumed. Fixed directly in
+  `TessellateGrid()` itself (now throws `std::invalid_argument` below 1,
+  matching `TessellateGridNonUniform()`'s own validation style) rather
+  than only working around it in `ApproximateArea()`, so every other
+  `TessellateGrid()` caller gets the same protection.
 
 ## What's still not done (as of chunk 2)
 
