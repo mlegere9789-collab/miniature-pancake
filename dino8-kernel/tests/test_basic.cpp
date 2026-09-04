@@ -1122,6 +1122,62 @@ void TestSurfaceTessellateGridNonUniform() {
         "u_values isn't strictly increasing");
 }
 
+void TestSurfaceSuggestedParameterValuesAndTessellateGridNonUniformAdaptive() {
+  using dino8::kernel::NurbsSurface;
+
+  // Same cylinder wall used throughout this file: U is the circular
+  // direction (real curvature everywhere), V is the straight height
+  // (zero curvature). Confirmed by a debug run before finalizing:
+  // direction 0 needs real (non-trivial) bisection - its own segment
+  // count (32) is, as with the earlier circle-curve test, the smallest
+  // power of 2 at or above the independently-computed SuggestedDivisions
+  // count (23) - while direction 1 needs none at all, landing on exactly
+  // its domain's own 2 endpoints [0, 1], matching SuggestedDivisions.v's
+  // own value of 1.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+
+  const double chord_tolerance = 0.01;
+  const auto u_values = wall.SuggestedParameterValues(0, chord_tolerance);
+  const auto v_values = wall.SuggestedParameterValues(1, chord_tolerance);
+  const auto divisions = wall.SuggestedDivisions(chord_tolerance);
+  const int expected_u_segments = static_cast<int>(
+      std::pow(2.0, std::ceil(std::log2(static_cast<double>(divisions.u)))));
+  Check(static_cast<int>(u_values.size()) - 1 == expected_u_segments,
+        "direction 0's own segment count matches the smallest power of "
+        "2 at or above SuggestedDivisions()'s independently-computed "
+        "minimum threshold, the same relationship the curve-level test "
+        "already established");
+  Check(v_values.size() == 2 && v_values.front() == 0.0 && v_values.back() == 1.0,
+        "direction 1 (zero curvature) needs no bisection at all - "
+        "exactly its domain's own [0, 1] endpoints");
+
+  // Wiring check: TessellateGridNonUniformAdaptive() must produce
+  // exactly the same mesh as calling SuggestedParameterValues() for
+  // both directions and TessellateGridNonUniform() by hand.
+  const auto adaptive_mesh = wall.TessellateGridNonUniformAdaptive(chord_tolerance);
+  const auto manual_mesh = wall.TessellateGridNonUniform(u_values, v_values);
+  Check(adaptive_mesh.VertexCount() == manual_mesh.VertexCount() &&
+            adaptive_mesh.FaceCount() == manual_mesh.FaceCount(),
+        "TessellateGridNonUniformAdaptive produces the exact same mesh "
+        "as calling SuggestedParameterValues() (both directions) then "
+        "TessellateGridNonUniform() by hand");
+
+  bool threw = false;
+  try {
+    wall.SuggestedParameterValues(0, -1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "SuggestedParameterValues throws std::invalid_argument on a "
+        "non-positive chord_tolerance");
+}
+
 void TestSurfaceReverseAndTranspose() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -4564,6 +4620,7 @@ int main() {
   TestSurfaceIsTorus();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridNonUniform();
+  TestSurfaceSuggestedParameterValuesAndTessellateGridNonUniformAdaptive();
   TestSurfaceReverseAndTranspose();
   TestSurfaceTrim();
   TestSurfaceSplit();

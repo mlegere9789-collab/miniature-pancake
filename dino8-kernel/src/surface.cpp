@@ -583,6 +583,40 @@ SurfaceDivisions NurbsSurface::SuggestedDivisions(double chord_tolerance,
   return SurfaceDivisions{u_divisions, v_divisions};
 }
 
+std::vector<double> NurbsSurface::SuggestedParameterValues(int direction, double chord_tolerance,
+                                                            int isocurve_samples) const {
+  if (chord_tolerance <= 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::SuggestedParameterValues: "
+        "chord_tolerance must be positive");
+  }
+
+  const ON_Interval other_domain = surface_.Domain(1 - direction);
+  std::vector<double> best_values;
+  for (int i = 0; i <= isocurve_samples; ++i) {
+    const double c = other_domain.ParameterAt(static_cast<double>(i) / isocurve_samples);
+    ON_Curve* iso = surface_.IsoCurve(direction, c);
+    if (iso == nullptr) {
+      continue;
+    }
+    if (ON_NurbsCurve* nurbs_iso = ON_NurbsCurve::Cast(iso)) {
+      NurbsCurve wrapped;
+      wrapped.raw() = *nurbs_iso;
+      std::vector<double> values = wrapped.SuggestedParameterValues(chord_tolerance);
+      if (values.size() > best_values.size()) {
+        best_values = std::move(values);
+      }
+    }
+    delete iso;
+  }
+
+  if (best_values.size() < 2) {
+    const ON_Interval domain = surface_.Domain(direction);
+    best_values = {domain.Min(), domain.Max()};
+  }
+  return best_values;
+}
+
 namespace {
 
 // Shared body of TessellateGrid()/TessellateGridNonUniform(): builds a
@@ -758,6 +792,14 @@ Mesh NurbsSurface::TessellateGridAdaptive(
     const std::vector<std::vector<Point2d>>* hole_polygons) const {
   const SurfaceDivisions divisions = SuggestedDivisions(chord_tolerance);
   return TessellateGrid(divisions.u, divisions.v, trim_polygon, hole_polygons);
+}
+
+Mesh NurbsSurface::TessellateGridNonUniformAdaptive(
+    double chord_tolerance, const std::vector<Point2d>* trim_polygon,
+    const std::vector<std::vector<Point2d>>* hole_polygons) const {
+  const std::vector<double> u_values = SuggestedParameterValues(0, chord_tolerance);
+  const std::vector<double> v_values = SuggestedParameterValues(1, chord_tolerance);
+  return TessellateGridNonUniform(u_values, v_values, trim_polygon, hole_polygons);
 }
 
 Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,

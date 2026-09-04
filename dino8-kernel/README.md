@@ -1446,6 +1446,24 @@ What this repo does instead:
   measured area is still exactly 1.0 regardless of where the (uneven)
   grid lines fall, and that a non-2-entry or non-increasing values array
   throws `std::invalid_argument`.
+- `NurbsSurface::SuggestedParameterValues(direction, chord_tolerance)`
+  and `TessellateGridNonUniformAdaptive(chord_tolerance)` complete the
+  surface-level genuine per-region adaptivity story: the former mirrors
+  `SuggestedDivisions()`'s isocurve-sampling structure but keeps whichever
+  sampled isocurve's own `NurbsCurve::SuggestedParameterValues()` result
+  is richest (same "worst case wins" philosophy, but now returning real
+  non-uniform breakpoints instead of one count); the latter is the
+  one-call path combining both directions with `TessellateGridNonUniform()`.
+  Verified on the same cylinder wall used throughout: direction 0 (the
+  circular, genuinely curved direction) needs real bisection, landing on
+  the same "smallest power of 2 at or above `SuggestedDivisions()`'s
+  threshold" relationship the curve-level test already established (32
+  vs. 23 here); direction 1 (the straight height, zero curvature) needs
+  none at all, landing on exactly its domain's own 2 endpoints, matching
+  `SuggestedDivisions()`'s own `v=1`. Also verified the one-call adaptive
+  path produces byte-identical vertex/face counts to calling both
+  `SuggestedParameterValues()` calls and `TessellateGridNonUniform()` by
+  hand.
 
 ## What's still not done (as of chunk 2)
 
@@ -1506,18 +1524,25 @@ What this repo does instead:
   discarded, since normals here are always geometry-derived). `.stl` now
   round-trips both ASCII and binary STL (see below). `.obj`/`.stl` are
   still the only formats here - no glTF, FBX, etc.
-- Adaptive/curvature-aware meshing: `NurbsSurface::CurvatureAt()`,
-  `NurbsCurve::SuggestedSamples()`, `NurbsSurface::SuggestedDivisions()`,
-  and the `...Adaptive()` tessellation methods all the way up through
-  `Brep::TessellateAdaptive()`/`TessellateToClosedMeshAdaptive()` (see
-  above) now give a real, per-face curvature-informed division count
-  instead of one fixed count a caller has to guess and share across
-  every face. What's still missing is per-*region* adaptivity *within* a
-  single face: `TessellateGrid()`/`TessellateGridClippedExact()`
-  themselves still take one `u_divisions`/`v_divisions` pair for the
-  whole face, so a face that's flat in one area and tightly curved in
-  another still gets the tighter area's resolution everywhere on that
-  face, not a locally-varying mesh density. The viewport/display
+- Adaptive/curvature-aware meshing: this gap now has two real layers.
+  `NurbsSurface::CurvatureAt()`, `NurbsCurve::SuggestedSamples()`,
+  `NurbsSurface::SuggestedDivisions()`, and the uniform-division
+  `...Adaptive()` methods up through `Brep::TessellateAdaptive()`/
+  `TessellateToClosedMeshAdaptive()` give a per-face curvature-informed
+  *division count*. On top of that, `NurbsCurve::
+  SuggestedParameterValues()`, `NurbsSurface::TessellateGridNonUniform()`
+  /`SuggestedParameterValues()`/`TessellateGridNonUniformAdaptive()` (see
+  above) now add genuine per-*region* adaptivity *within* a single
+  face's own tensor grid: each direction gets non-uniformly-spaced
+  breakpoints, denser only where that direction actually bends more, not
+  one resolution smeared across the whole face - the earlier
+  cylinder-wall example needed 32 uniform breakpoints in its curved
+  direction but only 2 in its flat one, rather than 32 in both. What's
+  still missing beyond that: true 2D per-*cell* refinement (a quadtree
+  -style mesh where density can vary independently in both directions at
+  once within one region, rather than a full row/column of the tensor
+  grid all sharing the same breakpoint), which would need real
+  T-junction handling this kernel doesn't have. The viewport/display
   engine, GPU path tracer, command engine, UI shell, visual scripting,
   undo system, installer, and everything else in the blueprint's roadmap
   remain entirely unstarted.

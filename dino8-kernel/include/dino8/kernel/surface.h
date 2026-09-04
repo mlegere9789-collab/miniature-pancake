@@ -334,6 +334,25 @@ class NurbsSurface {
   // if `chord_tolerance <= 0`.
   SurfaceDivisions SuggestedDivisions(double chord_tolerance, int isocurve_samples = 5) const;
 
+  // Returns a genuinely non-uniform, curvature-adaptive set of
+  // parameter values in `direction` (0 = U, 1 = V), for use with
+  // TessellateGridNonUniform() - real per-region adaptivity in that one
+  // direction, unlike SuggestedDivisions()'s single global count.
+  // Samples `isocurve_samples` isocurves running in `direction` (each at
+  // a different fixed value of the *other* direction, same sampling
+  // `SuggestedDivisions()` already does) via `ON_Surface::IsoCurve`,
+  // wraps each as a `NurbsCurve`, calls its own
+  // `SuggestedParameterValues(chord_tolerance)`, and keeps whichever
+  // isocurve produced the most breakpoints - the same "worst case wins"
+  // philosophy `SuggestedDivisions()` uses, since the tightest curvature
+  // anywhere along any sampled isocurve in that direction needs to be
+  // accounted for, and every isocurve in a given direction shares that
+  // direction's own domain, so one isocurve's breakpoints are always
+  // valid parameter values for every other row/column. Throws
+  // std::invalid_argument if `chord_tolerance <= 0`.
+  std::vector<double> SuggestedParameterValues(int direction, double chord_tolerance,
+                                                int isocurve_samples = 5) const;
+
   // Tessellates the surface into a triangle mesh by evaluating a
   // u_divisions x v_divisions grid of points across its parameter domain
   // and triangulating each grid cell. This is a from-scratch tessellator,
@@ -395,6 +414,18 @@ class NurbsSurface {
   Mesh TessellateGridAdaptive(double chord_tolerance,
                                const std::vector<Point2d>* trim_polygon = nullptr,
                                const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
+
+  // TessellateGridNonUniform(), but picking each direction's own
+  // parameter values via SuggestedParameterValues(direction,
+  // chord_tolerance) instead of the caller choosing them by hand - this
+  // kernel's actual genuine per-region-adaptive one-call tessellation
+  // path (unlike TessellateGridAdaptive()'s single division count per
+  // direction, this one has denser breakpoints wherever the surface
+  // itself bends more in each direction, while remaining a crack-free
+  // tensor grid).
+  Mesh TessellateGridNonUniformAdaptive(
+      double chord_tolerance, const std::vector<Point2d>* trim_polygon = nullptr,
+      const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
 
   // Real boundary clipping, unlike TessellateGrid()'s whole-cell in/out:
   // each grid cell is clipped against `trim_polygon` rather than kept or
