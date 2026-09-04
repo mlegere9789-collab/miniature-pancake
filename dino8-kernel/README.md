@@ -770,6 +770,15 @@ What this repo does instead:
   unique: from the cube's own center, every face is exactly 1 unit away,
   so the test only asserts the hand-derivable *distance* (1.0), not which
   of several equally-valid points comes back.
+- `Mesh::SignedDistance()` combines the two: negative if `ContainsPoint()`
+  says inside, positive otherwise, magnitude from `ClosestPoint()` - the
+  "how far, which side" answer a CSG or offset-surface operation needs
+  that neither query alone gives. Not new geometry math, just a
+  composition of two already-verified primitives, so its own tests
+  cross-check against hand-derived face distances (3.0 outside, 0.7
+  inside at a point deliberately chosen off the box's own center to avoid
+  `ContainsPoint()`'s documented ray/diagonal degeneracy) plus a sign
+  check straddling a face from both sides.
 
 ## What's still not done (as of chunk 2)
 

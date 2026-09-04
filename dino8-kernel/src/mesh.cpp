@@ -316,6 +316,11 @@ Point3d Mesh::ClosestPoint(Point3d point) const {
   return best_point;
 }
 
+double Mesh::SignedDistance(Point3d point) const {
+  const double distance = (ClosestPoint(point) - point).Length();
+  return ContainsPoint(point) ? -distance : distance;
+}
+
 std::vector<Vector3d> Mesh::ComputeVertexNormals() const {
   std::vector<Vector3d> normals(static_cast<size_t>(mesh_.m_V.Count()), Vector3d(0, 0, 0));
 

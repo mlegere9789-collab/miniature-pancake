@@ -1613,6 +1613,43 @@ void TestMeshClosestPoint() {
   }
 }
 
+void TestMeshSignedDistance() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+
+  // Outside: positive, and exactly the same magnitude ClosestPoint()
+  // would give directly - this is a combination of two already-verified
+  // primitives, not independent new geometry math, so the cross-check is
+  // against those, not a fresh hand derivation.
+  const Point3d outside(1, 1, 5);
+  Check(std::abs(box.SignedDistance(outside) - 3.0) < 1e-9,
+        "a point 3 units above the box's +Z face has signed distance "
+        "exactly +3.0");
+
+  // Inside: negative, same magnitude as the nearest-face distance. Off-
+  // center coordinates (not the box's own exact center, and not on the
+  // +X face's diagonal split - see TestMeshContainsPoint's own comment
+  // on that degeneracy, which SignedDistance() inherits via
+  // ContainsPoint()): distances to the 6 faces are 0.7, 1.3, 1.3, 0.7,
+  // 0.9, 1.1 - minimum 0.7, from the x=0 and y=2 faces (a tie).
+  const Point3d inside(0.7, 1.3, 0.9);
+  Check(std::abs(box.SignedDistance(inside) - (-0.7)) < 1e-9,
+        "an interior point 0.7 units from its nearest face(s) has signed "
+        "distance exactly -0.7 (negative, since it's inside)");
+
+  // Sign flips exactly at the boundary between inside and outside for
+  // points straddling a face along its own normal - not just "some
+  // positive number outside, some negative number inside" but the same
+  // magnitude decreasing to (near) zero as the query approaches the
+  // surface from either side.
+  Check(box.SignedDistance(Point3d(1, 1, 1.9)) < 0.0,
+        "just inside the +Z face (z=1.9 of 2.0) is still negative");
+  Check(box.SignedDistance(Point3d(1, 1, 2.1)) > 0.0,
+        "just outside the +Z face (z=2.1 of 2.0) is positive");
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -2461,6 +2498,7 @@ int main() {
   TestMeshIsClosedManifold();
   TestMeshContainsPoint();
   TestMeshClosestPoint();
+  TestMeshSignedDistance();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();

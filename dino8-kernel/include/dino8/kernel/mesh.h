@@ -88,6 +88,19 @@ class Mesh {
   // on a mesh with no faces (no surface to be close to).
   Point3d ClosestPoint(Point3d point) const;
 
+  // Signed distance from `point` to this mesh's surface: negative if
+  // `point` is inside, positive if outside, computed as
+  // `+/- (ClosestPoint(point) - point).Length()` with the sign from
+  // ContainsPoint() - the combination neither query alone gives (an
+  // "inside/outside plus how far" answer a CSG or offset-surface
+  // operation would need). Only meaningful under the same
+  // "closed, consistently-oriented mesh" requirement ContainsPoint()
+  // and Volume() already have. Not a true signed-distance-*field*
+  // (no interpolation/gradient, no acceleration structure) - just this
+  // one query, exactly as expensive as one ClosestPoint() call plus one
+  // ContainsPoint() call.
+  double SignedDistance(Point3d point) const;
+
   // Per-vertex normals: for each vertex, the area-weighted sum of every
   // adjacent face's own flat (non-normalized) triangle normal, then
   // normalized - the standard "average of what touches this vertex,
