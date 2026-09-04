@@ -808,6 +808,18 @@ What this repo does instead:
   interior points are correctly ignored rather than accidentally
   influencing the hull - the property that makes "hull of everything, no
   pre-filtering needed" actually true rather than just claimed.
+- `Simplify()` wraps Manifold's own `Manifold::Simplify`, a real
+  quadric-error-style decimation algorithm, to reduce a mesh's triangle
+  count while keeping every point within a given tolerance of the
+  original surface. Verified with a genuinely dramatic, hand-derivable
+  exact case rather than a vague "it got smaller": a box tessellated at
+  20x20 per face (4800 redundant coplanar triangles - a bilinear surface
+  tessellated finely is still exactly flat, so those triangles carry no
+  actual shape information beyond the original 12) simplifies down to
+  *exactly* 8 vertices and 12 triangles - the box's own true minimal
+  representation - with volume preserved exactly, not approximately,
+  since the true surface really was flat and a real decimation algorithm
+  should introduce no error there.
 
 ## What's still not done (as of chunk 2)
 

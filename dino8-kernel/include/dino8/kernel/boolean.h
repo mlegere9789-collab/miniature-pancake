@@ -55,4 +55,17 @@ std::pair<Mesh, Mesh> SplitByPlane(const Mesh& mesh, Vector3d plane_normal, doub
 // coplanar, so no 3D hull exists).
 Mesh ConvexHull(const std::vector<Point3d>& points);
 
+// Reduces the number of triangles in `mesh` while keeping every point of
+// the result within `tolerance` of the original surface - backed by
+// Manifold's own `Manifold::Simplify`, a real quadric-error-style
+// decimation algorithm, not a naive "merge nearby vertices" pass. Most
+// useful for an over-tessellated mesh with many redundant near-coplanar
+// triangles (e.g. a flat Brep face tessellated at a much finer resolution
+// than its actual geometry needs); a mesh that's already minimally
+// tessellated for its own shape (a plain box's 12 triangles) may not
+// shrink further at all. `mesh` must be a valid closed manifold, same
+// requirement as BooleanCombine(); throws std::runtime_error if
+// Manifold's own call fails.
+Mesh Simplify(const Mesh& mesh, double tolerance);
+
 }  // namespace dino8::kernel

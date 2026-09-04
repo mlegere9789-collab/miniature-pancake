@@ -651,6 +651,32 @@ void TestConvexHull() {
         "nonzero 3D volume)");
 }
 
+void TestSimplify() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Simplify;
+
+  // A box tessellated at 20x20 per face - each face is still exactly
+  // flat (a bilinear surface tessellated finely is still planar, just
+  // redundantly so), giving thousands of coplanar triangles that carry
+  // no actual shape information beyond the original 12. Simplify() with
+  // a tight tolerance should collapse it back down to exactly that
+  // minimal representation, and volume must survive exactly (not just
+  // "close"), since the true surface really is flat - there's no
+  // approximation error a real decimation algorithm should introduce
+  // here.
+  const auto fine_box = Brep::Box(0, 0, 0, 2, 2, 2).TessellateToClosedMesh(20, 20);
+  Check(fine_box.FaceCount() == 4800,
+        "the 20x20-per-face tessellated box has 4800 triangles (6 faces "
+        "x 20x20 cells x 2 triangles) before simplification");
+  const auto simplified = Simplify(fine_box, 1e-6);
+  Check(simplified.VertexCount() == 8 && simplified.FaceCount() == 12,
+        "Simplify() collapses the over-tessellated flat box down to "
+        "exactly its minimal 8-vertex, 12-triangle representation");
+  Check(std::abs(simplified.Volume() - fine_box.Volume()) < 1e-9,
+        "Simplify() preserves the (exactly flat) box's volume exactly, "
+        "not just approximately");
+}
+
 void TestBrepTessellation() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -2578,6 +2604,7 @@ int main() {
   TestModelAddSubDRoundTrips();
   TestSplitByPlane();
   TestConvexHull();
+  TestSimplify();
   TestBrepTessellation();
   TestBoxVolume();
   TestBooleanUnion();

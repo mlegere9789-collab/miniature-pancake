@@ -138,4 +138,14 @@ Mesh ConvexHull(const std::vector<Point3d>& points) {
   return FromManifold(hull);
 }
 
+Mesh Simplify(const Mesh& mesh, double tolerance) {
+  const manifold::Manifold simplified = ToManifold(mesh).Simplify(tolerance);
+  if (simplified.Status() != manifold::Manifold::Error::NoError) {
+    throw std::runtime_error(
+        "dino8::kernel::Simplify: Manifold::Simplify failed (Manifold::"
+        "Status() != NoError)");
+  }
+  return FromManifold(simplified);
+}
+
 }  // namespace dino8::kernel
