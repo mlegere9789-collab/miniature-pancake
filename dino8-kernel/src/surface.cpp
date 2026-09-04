@@ -368,6 +368,27 @@ Result NurbsSurface::SetWeightAt(int i, int j, double weight) {
   return surface_.SetWeight(i, j, weight) ? Result::Ok : Result::Failed;
 }
 
+Point3d NurbsSurface::ControlPointAt(int i, int j) const {
+  if (i < 0 || i >= CVCountU() || j < 0 || j >= CVCountV()) {
+    throw std::out_of_range(
+        "dino8::kernel::NurbsSurface::ControlPointAt: i or j out of range");
+  }
+  ON_3dPoint point;
+  surface_.GetCV(i, j, point);
+  return point;
+}
+
+Result NurbsSurface::SetControlPointAt(int i, int j, Point3d point) {
+  if (i < 0 || i >= CVCountU() || j < 0 || j >= CVCountV()) {
+    throw std::out_of_range(
+        "dino8::kernel::NurbsSurface::SetControlPointAt: i or j out of range");
+  }
+  if (ControlPointAt(i, j) == point) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return surface_.SetCV(i, j, point) ? Result::Ok : Result::Failed;
+}
+
 Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
   if (new_degree <= surface_.Degree(direction)) {
     return Result::NoOpAlreadySatisfied;

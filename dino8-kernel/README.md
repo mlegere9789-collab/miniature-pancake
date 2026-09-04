@@ -1694,6 +1694,28 @@ What this repo does instead:
   rational object for a bad index - confirmed by a debug run that it
   actually segfaulted, fixed by bounds-checking `i`/`j` directly against
   `ControlPointCount()`/`CVCountU()`/`CVCountV()` first.
+- `NurbsCurve::ControlPointAt(i)`/`SetControlPointAt(i, point)` and
+  `NurbsSurface`'s equivalents: the real gap `SetWeightAt()`'s own
+  position-shifting behavior made sharp - without a way to *read* a
+  control point's actual current Euclidean position, a caller had no way
+  to know where a control point ended up after changing its weight.
+  `ControlPointAt()` delegates to `ON_NurbsCurve`/`ON_NurbsSurface::
+  GetCV(..., ON_3dPoint&)`, which divides out the weight on a rational
+  object - confirmed by a debug run to return exactly
+  `original_point / new_weight` after a `SetWeightAt()` call, the
+  reader-side mirror of that method's own finding. `SetControlPointAt()`
+  has its own real, verified caveat: `ON_NurbsCurve`/`ON_NurbsSurface::
+  SetCV(..., const ON_3dPoint&)`'s own documentation says it resets a
+  rational object's weight at that index to 1.0 as a side effect -
+  confirmed by a debug run, not assumed - so it doesn't compose with
+  `SetWeightAt()` on the same control point the way two independent
+  setters normally would. Both getters/setters bounds-check `i`/`j`
+  directly (throwing `std::out_of_range`) rather than trusting
+  `GetCV()`/`CV()`'s own unchecked indexing - the same
+  `SetWeightAt()`-derived discipline, verified this time by confirming
+  a debug run's out-of-range calls raised the exception cleanly rather
+  than crashing, not merely inferred from reading `WeightAt()`'s
+  known caveat.
 
 ## What's still not done (as of chunk 2)
 

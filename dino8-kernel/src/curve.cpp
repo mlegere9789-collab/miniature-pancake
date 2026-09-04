@@ -63,6 +63,27 @@ Result NurbsCurve::SetWeightAt(int i, double weight) {
   return curve_.SetWeight(i, weight) ? Result::Ok : Result::Failed;
 }
 
+Point3d NurbsCurve::ControlPointAt(int i) const {
+  if (i < 0 || i >= ControlPointCount()) {
+    throw std::out_of_range(
+        "dino8::kernel::NurbsCurve::ControlPointAt: i out of range");
+  }
+  ON_3dPoint point;
+  curve_.GetCV(i, point);
+  return point;
+}
+
+Result NurbsCurve::SetControlPointAt(int i, Point3d point) {
+  if (i < 0 || i >= ControlPointCount()) {
+    throw std::out_of_range(
+        "dino8::kernel::NurbsCurve::SetControlPointAt: i out of range");
+  }
+  if (ControlPointAt(i) == point) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.SetCV(i, point) ? Result::Ok : Result::Failed;
+}
+
 Result NurbsCurve::ElevateDegree(int new_degree) {
   if (new_degree <= Degree()) {
     return Result::NoOpAlreadySatisfied;

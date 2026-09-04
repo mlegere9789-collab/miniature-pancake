@@ -83,6 +83,32 @@ class NurbsCurve {
   // equals `WeightAt(i)`.
   Result SetWeightAt(int i, double weight);
 
+  // Control point `i`'s actual Euclidean position - the real gap this
+  // file's own `CVCountU()`/`CVCountV()` comment (on the surface side)
+  // already flagged existed, and `SetWeightAt()` makes sharper: after
+  // raising a weight, `WeightAt()` alone can't tell a caller where that
+  // control point now actually sits. Delegates to `ON_NurbsCurve::
+  // GetCV(i, ON_3dPoint&)`, whose own source (verified, not assumed)
+  // divides out the weight on a rational curve - i.e. this returns the
+  // real (x, y, z) location, not the raw, weight-entangled stored
+  // coordinate `SetWeightAt()`'s own doc comment describes. Throws
+  // std::out_of_range if `i` is outside `[0, ControlPointCount())`
+  // (checked directly here, the same discipline `SetWeightAt()`'s own
+  // fix established, rather than trusting `GetCV()`'s bool return alone
+  // - `ON_NurbsCurve::CV(i)`'s own indexing has no bounds check).
+  Point3d ControlPointAt(int i) const;
+
+  // Sets control point `i`'s Euclidean position directly. A real,
+  // verified caveat found by testing this against `SetWeightAt()`
+  // rather than assumed independent of it: `ON_NurbsCurve::SetCV(i,
+  // const ON_3dPoint&)`'s own documentation says a rational curve's
+  // weight at `i` gets reset to 1.0 as a side effect - so calling this
+  // after `SetWeightAt()` on the same control point undoes the weight
+  // change, it doesn't compose with it the way one might assume two
+  // independent setters would. Throws std::out_of_range under the same
+  // condition as `ControlPointAt()`.
+  Result SetControlPointAt(int i, Point3d point);
+
   // Elevates the curve's degree in place. Returns NoOpAlreadySatisfied if
   // `new_degree <= Degree()`.
   Result ElevateDegree(int new_degree);

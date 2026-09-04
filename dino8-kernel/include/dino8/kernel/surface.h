@@ -98,6 +98,19 @@ class NurbsSurface {
   // `weight` already equals `WeightAt(i, j)`.
   Result SetWeightAt(int i, int j, double weight);
 
+  // Same reasoning as `NurbsCurve::ControlPointAt()` - control point
+  // (i, j)'s actual Euclidean position, weight already divided out on a
+  // rational surface. Delegates to `ON_NurbsSurface::GetCV(i, j,
+  // ON_3dPoint&)`. Throws std::out_of_range if `i`/`j` is outside
+  // `[0, CVCountU())`/`[0, CVCountV())` (checked directly here, not left
+  // to `GetCV()`'s own unchecked indexing).
+  Point3d ControlPointAt(int i, int j) const;
+
+  // Same reasoning, and the same real weight-reset caveat, as
+  // `NurbsCurve::SetControlPointAt()` - see there. Throws
+  // std::out_of_range under the same condition as `ControlPointAt()`.
+  Result SetControlPointAt(int i, int j, Point3d point);
+
   // Elevates degree in the given direction (0 = U, 1 = V). Returns
   // NoOpAlreadySatisfied if the surface is already at or above that degree.
   Result ElevateDegree(int direction, int new_degree);

@@ -241,6 +241,60 @@ void TestCurveSetWeightAt() {
         "SetWeightAt returns Failed (not a crash) on an out-of-range index");
 }
 
+void TestCurveControlPointAt() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  NurbsCurve curve = NurbsCurve::FromControlPoints(pts, /*degree=*/2);
+  Check(curve.ControlPointAt(1) == Point3d(1, 1, 0),
+        "ControlPointAt(1) is exactly the original construction point");
+
+  // Confirms the same "raw coordinates aren't rescaled" mechanism
+  // SetWeightAt()'s own test derives independently, from the reader's
+  // side this time: since GetCV() divides the (unchanged) raw stored
+  // coordinate by the new weight, ControlPointAt(1) after
+  // SetWeightAt(1, 3.0) must be exactly the original point / 3, i.e.
+  // (1/3, 1/3, 0) - confirmed by a debug run, not re-derived from
+  // scratch.
+  curve.SetWeightAt(1, 3.0);
+  const Point3d after_weight = curve.ControlPointAt(1);
+  Check(std::abs(after_weight.x - 1.0 / 3.0) < 1e-12 &&
+            std::abs(after_weight.y - 1.0 / 3.0) < 1e-12,
+        "ControlPointAt(1) after SetWeightAt(1, 3.0) is exactly the original point divided by "
+        "the new weight, (1/3, 1/3, 0)");
+
+  // SetControlPointAt()'s own documented weight-reset side effect,
+  // confirmed by a debug run: setting the position directly resets the
+  // weight to 1.0, so the new ControlPointAt() is exactly the new point
+  // with no further division.
+  const Result set_result = curve.SetControlPointAt(1, Point3d(5, 5, 0));
+  Check(set_result == Result::Ok, "SetControlPointAt returns Ok when it changes the position");
+  Check(curve.WeightAt(1) == 1.0, "SetControlPointAt resets the weight to 1.0 as documented");
+  Check(curve.ControlPointAt(1) == Point3d(5, 5, 0),
+        "ControlPointAt(1) after SetControlPointAt is exactly the new point, undivided");
+
+  Check(curve.SetControlPointAt(1, Point3d(5, 5, 0)) == Result::NoOpAlreadySatisfied,
+        "SetControlPointAt reports NoOpAlreadySatisfied when the position already matches");
+
+  bool get_threw = false;
+  try {
+    curve.ControlPointAt(999);
+  } catch (const std::out_of_range&) {
+    get_threw = true;
+  }
+  Check(get_threw, "ControlPointAt throws std::out_of_range on an out-of-range index");
+
+  bool set_threw = false;
+  try {
+    curve.SetControlPointAt(999, Point3d(0, 0, 0));
+  } catch (const std::out_of_range&) {
+    set_threw = true;
+  }
+  Check(set_threw, "SetControlPointAt throws std::out_of_range on an out-of-range index");
+}
+
 void TestCurveWeightAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -1809,6 +1863,45 @@ void TestSurfaceSetWeightAt() {
         "SetWeightAt reports NoOpAlreadySatisfied when the weight already matches");
   Check(surface.SetWeightAt(99, 99, 2.0) == Result::Failed,
         "SetWeightAt returns Failed (not a crash) on an out-of-range (i, j)");
+}
+
+void TestSurfaceControlPointAt() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 5),
+      Point3d(1, 1, 0),
+  };
+  NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  Check(surface.ControlPointAt(1, 0) == Point3d(1, 0, 5),
+        "ControlPointAt(1, 0) is exactly the original construction point");
+
+  // Same "divide the unchanged raw coordinate by the new weight"
+  // mechanism as the curve case, cross-checked independently here:
+  // (1, 0, 5) / 4 = (0.25, 0, 1.25).
+  surface.SetWeightAt(1, 0, 4.0);
+  const Point3d after_weight = surface.ControlPointAt(1, 0);
+  Check(std::abs(after_weight.x - 0.25) < 1e-12 && std::abs(after_weight.z - 1.25) < 1e-12,
+        "ControlPointAt(1, 0) after SetWeightAt(1, 0, 4.0) is exactly the original point divided "
+        "by the new weight, (0.25, 0, 1.25)");
+
+  const Result set_result = surface.SetControlPointAt(1, 0, Point3d(9, 9, 9));
+  Check(set_result == Result::Ok, "SetControlPointAt returns Ok when it changes the position");
+  Check(surface.WeightAt(1, 0) == 1.0, "SetControlPointAt resets the weight to 1.0 as documented");
+  Check(surface.ControlPointAt(1, 0) == Point3d(9, 9, 9),
+        "ControlPointAt(1, 0) after SetControlPointAt is exactly the new point, undivided");
+
+  bool get_threw = false;
+  try {
+    surface.ControlPointAt(99, 99);
+  } catch (const std::out_of_range&) {
+    get_threw = true;
+  }
+  Check(get_threw, "ControlPointAt throws std::out_of_range on an out-of-range (i, j)");
 }
 
 void TestSurfaceWeightAt() {
@@ -5403,6 +5496,7 @@ int main() {
   TestCurveDivideByCount();
   TestCurveIsRational();
   TestCurveSetWeightAt();
+  TestCurveControlPointAt();
   TestCurveWeightAt();
   TestCurveDomain();
   TestCurveTangentAt();
@@ -5440,6 +5534,7 @@ int main() {
   TestSurfaceDomain();
   TestSurfaceIsRational();
   TestSurfaceSetWeightAt();
+  TestSurfaceControlPointAt();
   TestSurfaceWeightAt();
   TestSurfaceApproximateArea();
   TestSurfaceCVCount();
