@@ -1,6 +1,7 @@
 #pragma once
 
 #include <utility>
+#include <vector>
 
 #include "dino8/kernel/mesh.h"
 
@@ -41,5 +42,17 @@ Mesh BooleanCombine(const Mesh& a, const Mesh& b, BooleanOp op);
 // std::runtime_error if `mesh` isn't a valid closed manifold, same
 // requirement/failure mode as BooleanCombine().
 std::pair<Mesh, Mesh> SplitByPlane(const Mesh& mesh, Vector3d plane_normal, double plane_offset);
+
+// The convex hull of `points`, as a closed watertight solid - backed by
+// Manifold's own `Manifold::Hull(const std::vector<vec3>&)`, a genuine
+// computational-geometry algorithm (quickhull-family), not something
+// this kernel derives itself. A point strictly inside the hull of the
+// others contributes nothing to the result (only points that are
+// themselves hull vertices survive), so callers don't need to filter
+// interior points out first. Throws std::invalid_argument if `points`
+// has fewer than 4 entries (fewer can't bound a nonzero 3D volume) or
+// std::runtime_error if Manifold's own call fails (e.g. every point
+// coplanar, so no 3D hull exists).
+Mesh ConvexHull(const std::vector<Point3d>& points);
 
 }  // namespace dino8::kernel

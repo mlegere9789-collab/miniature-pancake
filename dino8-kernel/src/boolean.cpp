@@ -115,4 +115,27 @@ std::pair<Mesh, Mesh> SplitByPlane(const Mesh& mesh, Vector3d plane_normal, doub
   return {FromManifold(halves.first), FromManifold(halves.second)};
 }
 
+Mesh ConvexHull(const std::vector<Point3d>& points) {
+  if (points.size() < 4) {
+    throw std::invalid_argument(
+        "dino8::kernel::ConvexHull: needs at least 4 points - fewer can't "
+        "bound a nonzero 3D volume");
+  }
+
+  std::vector<manifold::vec3> manifold_points;
+  manifold_points.reserve(points.size());
+  for (const Point3d& p : points) {
+    manifold_points.emplace_back(p.x, p.y, p.z);
+  }
+
+  const manifold::Manifold hull = manifold::Manifold::Hull(manifold_points);
+  if (hull.Status() != manifold::Manifold::Error::NoError) {
+    throw std::runtime_error(
+        "dino8::kernel::ConvexHull: Manifold::Hull failed (Manifold::"
+        "Status() != NoError) - e.g. every point coplanar, so no 3D hull "
+        "exists");
+  }
+  return FromManifold(hull);
+}
+
 }  // namespace dino8::kernel

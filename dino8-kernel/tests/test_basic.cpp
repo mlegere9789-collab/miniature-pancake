@@ -601,6 +601,56 @@ void TestSplitByPlane() {
         "4 and 12, not an assumed even split");
 }
 
+void TestConvexHull() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::ConvexHull;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // The hull of exactly a cube's own 8 corners must be that same cube -
+  // hand-derivable exact volume, and a real watertight solid (not just a
+  // triangle soup that happens to have the right volume number),
+  // verified the same way every other closed-solid primitive here is.
+  const std::vector<Point3d> cube_corners = {
+      Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0),
+      Point3d(0, 0, 2), Point3d(2, 0, 2), Point3d(2, 2, 2), Point3d(0, 2, 2),
+  };
+  const auto hull = ConvexHull(cube_corners);
+  Check(std::abs(hull.Volume() - 8.0) < 1e-9,
+        "the convex hull of a cube's 8 corners has exactly volume 8, the "
+        "cube's own volume");
+  const auto disjoint_box = Mesh::Cylinder(Point3d(10, 10, 10), Vector3d(0, 0, 1), 0.5, 1.0);
+  const auto union_result = BooleanCombine(hull, disjoint_box, BooleanOp::Union);
+  Check(std::abs(union_result.Volume() - (hull.Volume() + disjoint_box.Volume())) < 1e-6,
+        "the cube hull is watertight: union with a disjoint cylinder "
+        "equals the sum of both volumes");
+
+  // Adding points strictly inside the hull of the others (the cube's own
+  // center, and a point on one face's own interior) must not change the
+  // result at all - only points that are themselves hull vertices affect
+  // a convex hull, exactly the property that makes "hull of everything"
+  // a useful bounding operation without pre-filtering the input first.
+  std::vector<Point3d> with_interior_points = cube_corners;
+  with_interior_points.push_back(Point3d(1, 1, 1));  // cube's own center
+  with_interior_points.push_back(Point3d(1, 1, 0));  // center of the z=0 face
+  const auto hull_with_interior = ConvexHull(with_interior_points);
+  Check(std::abs(hull_with_interior.Volume() - 8.0) < 1e-9,
+        "adding points strictly inside the cube's own hull doesn't "
+        "change the resulting hull's volume at all");
+
+  bool threw_too_few = false;
+  try {
+    ConvexHull({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(0, 1, 0)});
+  } catch (const std::invalid_argument&) {
+    threw_too_few = true;
+  }
+  Check(threw_too_few,
+        "ConvexHull throws on fewer than 4 points (can't bound a "
+        "nonzero 3D volume)");
+}
+
 void TestBrepTessellation() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -2527,6 +2577,7 @@ int main() {
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
   TestSplitByPlane();
+  TestConvexHull();
   TestBrepTessellation();
   TestBoxVolume();
   TestBooleanUnion();

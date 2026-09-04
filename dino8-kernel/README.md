@@ -797,6 +797,17 @@ What this repo does instead:
   watertightness is proven the same way every other closed-solid
   primitive here is - a real Manifold union with a disjoint cylinder,
   not just "the volume number looked plausible."
+- `ConvexHull()` wraps Manifold's own `Manifold::Hull(const
+  std::vector<vec3>&)` - a real quickhull-family algorithm, not something
+  derived here - to build a closed watertight solid directly from a point
+  cloud. Verified with a cube's own 8 corners (hand-derivable exact
+  volume 8, watertightness proven the same way every other closed-solid
+  primitive here is) and, more meaningfully, with extra points added
+  strictly *inside* that hull (the cube's own center, and the center of
+  one face): the result's volume doesn't change at all, confirming
+  interior points are correctly ignored rather than accidentally
+  influencing the hull - the property that makes "hull of everything, no
+  pre-filtering needed" actually true rather than just claimed.
 
 ## What's still not done (as of chunk 2)
 
