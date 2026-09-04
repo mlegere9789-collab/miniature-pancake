@@ -45,6 +45,36 @@ Point3d NurbsCurve::PointAt(double t) const {
 
 Vector3d NurbsCurve::CurvatureAt(double t) const { return curve_.CurvatureAt(t); }
 
+int NurbsCurve::SuggestedSamples(double chord_tolerance, int curvature_samples) const {
+  if (chord_tolerance <= 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsCurve::SuggestedSamples: chord_tolerance must "
+        "be positive");
+  }
+
+  const ON_Interval domain = curve_.Domain();
+  double max_kappa = 0.0;
+  for (int i = 0; i <= curvature_samples; ++i) {
+    const double t = domain.ParameterAt(static_cast<double>(i) / curvature_samples);
+    max_kappa = std::max(max_kappa, CurvatureAt(t).Length());
+  }
+
+  if (max_kappa < 1e-12) {
+    return 1;  // negligible curvature everywhere - a straight line needs one segment
+  }
+
+  const double radius = 1.0 / max_kappa;
+  // Chord-height (sagitta) formula for a circular arc of radius R:
+  // sagitta = R * (1 - cos(half_angle)). Solve for the largest angular
+  // step whose sagitta stays within chord_tolerance.
+  const double clamped_ratio = std::min(1.0, chord_tolerance / radius);
+  const double max_angle_step = 2.0 * std::acos(1.0 - clamped_ratio);
+  // Total turning angle assuming the whole curve turns at the tightest
+  // radius found - the conservative approximation this method documents.
+  const double total_angle = Length() / radius;
+  return std::max(1, static_cast<int>(std::ceil(total_angle / max_angle_step)));
+}
+
 double NurbsCurve::ClosestPointParameter(Point3d point, int samples) const {
   const ON_Interval domain = curve_.Domain();
   auto distance_squared = [&](double t) { return (PointAt(t) - point).LengthSquared(); };

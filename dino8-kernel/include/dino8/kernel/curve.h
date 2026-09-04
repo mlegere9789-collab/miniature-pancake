@@ -194,6 +194,26 @@ class NurbsCurve {
   // nonzero curvature vector) lands exactly on the circle's known center.
   Vector3d CurvatureAt(double t) const;
 
+  // Suggests how many polyline samples a sampler like Length() would
+  // need to keep each sampled chord's deviation from the true curve
+  // under `chord_tolerance` - a first, modest, curvature-informed step
+  // toward this kernel's own flagged "adaptive/curvature-aware meshing"
+  // gap (see README), not a full adaptive re-tessellation (this returns
+  // one number for the whole curve, not a per-region sample density).
+  // Samples CurvatureAt() at `curvature_samples` points across the
+  // domain, takes the single largest curvature magnitude found (the
+  // tightest local radius of curvature, `R = 1/kappa_max`), and applies
+  // the standard circular-arc chord-height (sagitta) formula assuming
+  // the *entire* curve turns at that tightest radius - a deliberately
+  // conservative (never under-samples a genuinely varying curve) but not
+  // tight estimate, exact only when curvature really is constant
+  // (verified on a full circle, whose known circumference/radius gives
+  // an exact expected turning angle to compare against, not an
+  // approximation on both sides of the check). A curve with negligible
+  // curvature everywhere (a straight line) returns 1. Throws
+  // std::invalid_argument if `chord_tolerance <= 0`.
+  int SuggestedSamples(double chord_tolerance, int curvature_samples = 50) const;
+
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }
 

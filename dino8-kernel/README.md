@@ -1199,6 +1199,26 @@ What this repo does instead:
   (`-1/radius`, curving away from the outward normal toward the
   interior), and that's the behavior now documented and tested, not a
   guessed convention.
+- `NurbsCurve::SuggestedSamples(chord_tolerance)` is a first, modest step
+  toward this section's own long-flagged "adaptive/curvature-aware
+  meshing... unstarted" gap (see below) - not the full feature, but a
+  genuinely curvature-informed number a caller can now get instead of
+  guessing a sample count for `Length()` or similar polyline samplers.
+  Samples `CurvatureAt()` (see above) across the domain, takes the
+  tightest radius of curvature found, and applies the standard circular
+  -arc chord-height (sagitta) formula assuming the whole curve turns at
+  that tightest radius - a deliberately conservative estimate for a
+  curve whose curvature actually varies, but exact for one whose
+  curvature is genuinely constant. Verified on a full circle of known
+  radius (the one case where "assume constant curvature" is exactly
+  true, not just a safe approximation): the suggested count exactly
+  matches an independently hand-computed application of the same
+  chord-height formula, using the circle's own exact total turning angle
+  (`2*pi`) rather than this method's `Length()/radius` approximation of
+  it - which for a full circle is itself exact, since `Length()`
+  converges to the true circumference. Also checked a straight line
+  (zero curvature everywhere) always returns exactly 1, and that a
+  non-positive `chord_tolerance` throws `std::invalid_argument`.
 
 ## What's still not done (as of chunk 2)
 
@@ -1259,10 +1279,15 @@ What this repo does instead:
   discarded, since normals here are always geometry-derived). `.stl` now
   round-trips both ASCII and binary STL (see below). `.obj`/`.stl` are
   still the only formats here - no glTF, FBX, etc.
-- Adaptive/curvature-aware meshing, the viewport/display engine, GPU path
-  tracer, command engine, UI shell, visual scripting, undo system,
-  installer, and everything else in the blueprint's roadmap — all
-  unstarted.
+- Adaptive/curvature-aware meshing: `NurbsSurface::CurvatureAt()` and
+  `NurbsCurve::SuggestedSamples()` (see above) are real, curvature-based
+  building blocks now, but there's still no actual adaptive tessellator -
+  `TessellateGrid()`/`TessellateGridClippedExact()` still take a single
+  fixed `u_divisions`/`v_divisions` for the whole surface, with no
+  per-region refinement where curvature is higher. The viewport/display
+  engine, GPU path tracer, command engine, UI shell, visual scripting,
+  undo system, installer, and everything else in the blueprint's roadmap
+  remain entirely unstarted.
 
 ## Layout
 

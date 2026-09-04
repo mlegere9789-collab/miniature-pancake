@@ -492,6 +492,51 @@ void TestCurveCurvature() {
   Check(line_k.Length() < 1e-9, "a straight line's curvature vector is exactly zero");
 }
 
+void TestCurveSuggestedSamples() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // A full circle of known radius is the one case where this method's
+  // own "assume the whole curve turns at the tightest radius found"
+  // approximation is exact, not just conservative - curvature really is
+  // constant everywhere on a circle. That makes the expected sample
+  // count independently computable from the same chord-height formula
+  // (with the circle's own exact total turning angle, 2*pi, rather than
+  // the method's Length()/radius approximation of it - which for a full
+  // circle is itself exact, since Length() converges to the true
+  // circumference 2*pi*radius) - confirmed to match exactly by a debug
+  // run before finalizing this assertion.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+
+  const double chord_tolerance = 0.01;
+  const int suggested = circle.SuggestedSamples(chord_tolerance);
+  const double expected_angle_step = 2.0 * std::acos(1.0 - chord_tolerance / radius);
+  const int expected = static_cast<int>(std::ceil((2.0 * ON_PI) / expected_angle_step));
+  Check(suggested == expected,
+        "SuggestedSamples for a full circle exactly matches the "
+        "independently hand-computed chord-height formula");
+
+  // A straight line has zero curvature everywhere, so one segment always
+  // suffices regardless of the requested tolerance.
+  const NurbsCurve line =
+      NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, /*degree=*/1);
+  Check(line.SuggestedSamples(chord_tolerance) == 1,
+        "SuggestedSamples for a straight line is exactly 1");
+
+  bool threw = false;
+  try {
+    circle.SuggestedSamples(-1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SuggestedSamples throws std::invalid_argument on a non-positive chord_tolerance");
+}
+
 void TestSurfaceNormalAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -3843,6 +3888,7 @@ int main() {
   TestCurveExtend();
   TestCurveClosestPoint();
   TestCurveCurvature();
+  TestCurveSuggestedSamples();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();
