@@ -27,6 +27,30 @@ class NurbsSurface {
   // NoOpAlreadySatisfied if the surface is already at or above that degree.
   Result ElevateDegree(int direction, int new_degree);
 
+  // Whether the surface wraps seamlessly onto itself in `direction`
+  // (0 = U, 1 = V) - the boundary curves at the two ends of that
+  // parameter coincide exactly, either because the surface is periodic
+  // (its own knot vector wraps, e.g. a full cylinder or sphere built via
+  // ON_Cylinder::GetNurbForm/ON_Sphere::GetNurbForm) or because a clamped
+  // surface's own two edge curves just happen to be coincident. A real
+  // gap nothing here could answer before: `TessellateGrid()`'s own
+  // regular-grid tessellation has no way to know a periodic surface's
+  // `u=0` and `u=2pi` boundaries are the same curve, so a caller building
+  // a cylindrical/spherical Brep face by hand (see `Brep::Sphere()`) has
+  // to know this independently of anything this wrapper exposed until
+  // now. Delegates to `ON_NurbsSurface::IsClosed` after verifying it's a
+  // real implementation (checks the knot vector and actual coincident
+  // control points, not a stub).
+  bool IsClosed(int direction) const;
+
+  // Whether the surface's own knot vector in `direction` (0 = U, 1 = V)
+  // is genuinely periodic - a stronger condition than IsClosed()
+  // (every periodic surface is closed, but a clamped surface can be
+  // closed - matching end curves - without being periodic at all).
+  // Delegates to `ON_NurbsSurface::IsPeriodic` after the same
+  // stub-vs-real verification.
+  bool IsPeriodic(int direction) const;
+
   Point3d PointAt(double u, double v) const;
 
   // Unit surface normal at parameter (u, v): `d/du x d/dv`, normalized.

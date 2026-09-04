@@ -357,6 +357,10 @@ Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
   return ok ? Result::Ok : Result::Failed;
 }
 
+bool NurbsSurface::IsClosed(int direction) const { return surface_.IsClosed(direction); }
+
+bool NurbsSurface::IsPeriodic(int direction) const { return surface_.IsPeriodic(direction); }
+
 Point3d NurbsSurface::PointAt(double u, double v) const {
   ON_3dPoint pt;
   surface_.EvPoint(u, v, pt);

@@ -277,6 +277,48 @@ void TestSurfaceDegreeElevation() {
   Check(surf.DegreeU() == 4, "surface U degree increased to 4");
 }
 
+void TestSurfaceIsClosed() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // A flat bilinear surface is open in both directions - no wraparound
+  // at all.
+  std::vector<Point3d> grid;
+  for (int u = 0; u < 2; ++u) {
+    for (int v = 0; v < 2; ++v) {
+      grid.emplace_back(u, v, 0);
+    }
+  }
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  Check(!flat.IsClosed(0) && !flat.IsClosed(1),
+        "a flat bilinear surface is open in both U and V");
+  Check(!flat.IsPeriodic(0) && !flat.IsPeriodic(1),
+        "...and not periodic in either direction either");
+
+  // A real cylinder wall via ON_Cylinder::GetNurbForm: closed in U (the
+  // circular direction wraps back onto itself), open in V (height).
+  // Confirmed by testing, not assumed: this closed-in-U surface is
+  // *clamped*, not periodic (IsPeriodic(0) is false) - exactly the
+  // "closed without being periodic" distinction this wrapper's own doc
+  // comment describes, not a hypothetical.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0,
+        "ON_Cylinder::GetNurbForm succeeds building the wall surface");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  Check(wall.IsClosed(0) && !wall.IsClosed(1),
+        "a cylinder wall surface is closed in U (wraps around the "
+        "circle) and open in V (the height direction has two distinct "
+        "ends)");
+  Check(!wall.IsPeriodic(0),
+        "the cylinder wall's U closure is via a clamped knot vector "
+        "with coincident end curves, not a genuinely periodic knot "
+        "vector - IsClosed() and IsPeriodic() really do answer different "
+        "questions, not just two names for the same thing");
+}
+
 void TestFileRoundTrip() {
   using dino8::kernel::Brep;
   using dino8::kernel::Model;
@@ -2984,6 +3026,7 @@ int main() {
   TestCurveGetTightBoundingBox();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
+  TestSurfaceIsClosed();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();

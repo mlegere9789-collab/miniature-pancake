@@ -952,6 +952,22 @@ What this repo does instead:
   Documented directly on the `Brep` class now, since it's the kind of
   fact a future maintainer extending file I/O or Brep construction needs
   to know before assuming `IsValid()` means what it usually would.
+- `NurbsSurface::IsClosed()`/`IsPeriodic()` answer a real gap nothing
+  here could before: whether a surface wraps seamlessly onto itself in a
+  given parameter direction (needed to know before building a
+  cylindrical/spherical Brep face by hand, the way `Brep::Sphere()`
+  already does). Delegates to `ON_NurbsSurface::IsClosed`/`IsPeriodic`
+  after verifying both are real implementations (check the actual knot
+  vector and coincident control points, not stubs). Verified with a real,
+  informative distinction, not just two boolean checks that happen to
+  both work: a flat bilinear surface is open (and non-periodic) in both
+  directions, while a real cylinder wall (`ON_Cylinder::GetNurbForm`) is
+  closed in U (the circular direction) and open in V (height) - but,
+  confirmed by testing rather than assumed, its U closure comes from a
+  *clamped* knot vector with coincident end curves, not a genuinely
+  periodic one (`IsPeriodic(0)` is `false`), showing the two methods
+  really do answer different questions rather than being two names for
+  the same fact.
 
 ## What's still not done (as of chunk 2)
 
