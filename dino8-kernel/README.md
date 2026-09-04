@@ -1632,6 +1632,25 @@ What this repo does instead:
   points (a real minimum - fewer isn't a closed polygon at all), so every
   current and future `TrimmedPlanarFace()` caller gets this protection
   directly, not just `Cylinder()`/`Cone()`'s own now-fixed call site.
+- The most serious finding in this whole validation-gap sweep, and the
+  reason it kept going one layer further than the previous fix: checking
+  whether `NurbsSurface::TessellateGridClippedExact()` itself (one layer
+  below `TrimmedPlanarFace()`, and directly callable on its own) had the
+  same gap turned up that an empty `trim_polygon` there doesn't just
+  tessellate wrong - a debug run showed it **segfaults**. Root-caused by
+  reading the crash site: the concave-clipping path's `ClipPolygon()` has
+  a "no boundary crossings at all" fallback that unconditionally
+  dereferences `clip[0]` to test which polygon contains the other - a
+  real out-of-bounds vector access when `clip` (the `trim_polygon`) is
+  empty, not merely a logic bug. `IsSimplePolygon()`'s existing check
+  couldn't have caught this even in principle (it passes a too-short
+  polygon vacuously, since there's nothing for it to find a crossing
+  between). Fixed the same way as every gap above: `trim_polygon.size() <
+  3` now throws `std::invalid_argument` before any of that code runs,
+  verified with a dedicated test across all three of `trim_polygon`'s
+  empty/1-point/2-point cases (confirming a clean throw where the debug
+  run had shown a crash), not just the zero-point case that was found
+  first.
 
 ## What's still not done (as of chunk 2)
 

@@ -830,6 +830,14 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
         "dino8::kernel::NurbsSurface::TessellateGridClippedExact: u_divisions "
         "and v_divisions must be at least 1");
   }
+  if (trim_polygon.size() < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::TessellateGridClippedExact: trim_polygon "
+        "must have at least 3 points (fewer isn't a closed polygon at all - "
+        "and, before this check, an empty trim_polygon segfaulted via an "
+        "out-of-bounds clip[0] access deep in the concave-clipping path, "
+        "confirmed by a debug run, not merely a silent wrong result)");
+  }
   if (!dino8::kernel::detail::IsSimplePolygon(trim_polygon)) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsSurface::TessellateGridClippedExact: trim_polygon "

@@ -1243,6 +1243,47 @@ void TestSurfaceGetApproximateSize() {
         "true straight-line height");
 }
 
+void TestSurfaceTessellateGridClippedExactRejectsTooFewPoints() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // The most serious finding in this whole validation-gap sweep: unlike
+  // every other "silently wrong result" gap found so far, a debug run
+  // showed an *empty* trim_polygon here doesn't just tessellate wrong -
+  // it SEGFAULTS. Root cause (found by reading the crash site): the
+  // concave-clipping path's ClipPolygon() has a "no boundary crossings
+  // at all" fallback that unconditionally dereferences clip[0] to test
+  // which polygon contains the other - an out-of-bounds vector access
+  // when clip (the trim_polygon) is empty. A 1- or 2-point polygon isn't
+  // a real closed polygon either, so all three are rejected the same
+  // way, checked before the (necessarily insufficient for this case)
+  // IsSimplePolygon check below it.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+
+  for (const int point_count : {0, 1, 2}) {
+    std::vector<Point2d> trim_polygon;
+    for (int i = 0; i < point_count; ++i) {
+      trim_polygon.push_back(Point2d(0.1 * i, 0.1 * i));
+    }
+    bool threw = false;
+    try {
+      surface.TessellateGridClippedExact(4, 4, trim_polygon);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw,
+          "TessellateGridClippedExact throws std::invalid_argument (rather than segfaulting or "
+          "misbehaving) on a trim_polygon with fewer than 3 points");
+  }
+}
+
 void TestSurfaceTessellateGridValidation() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -5204,6 +5245,7 @@ int main() {
   TestSurfaceIsCone();
   TestSurfaceIsTorus();
   TestSurfaceGetApproximateSize();
+  TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridValidation();
   TestSurfaceTessellateGridNonUniform();
   TestSurfaceSuggestedParameterValuesAndTessellateGridNonUniformAdaptive();

@@ -508,6 +508,16 @@ class NurbsSurface {
   // boundary crossed an unusual number of times by a highly irregular
   // concave shape, are known-unhardened corners of it.
   //
+  // Also throws std::invalid_argument if `trim_polygon` has fewer than 3
+  // points - checked before the simplicity check above, since
+  // `IsSimplePolygon()` itself passes a too-short polygon vacuously
+  // (nothing to find a crossing between). This isn't just a stricter
+  // rule for its own sake: a debug run showed an *empty* `trim_polygon`
+  // actually segfaulted, not merely tessellated wrong - the concave
+  // clipping path's own "no boundary crossings at all" fallback
+  // dereferences `clip[0]` unconditionally, an out-of-bounds access on
+  // an empty vector.
+  //
   // The returned mesh is already welded (via Mesh::MergeAndWeld) since
   // adjacent cells independently compute the same boundary-intersection
   // points as separate vertices that need collapsing to form a single
