@@ -106,6 +106,20 @@ class NurbsSurface {
   // just above it.
   bool IsPlanar(double tolerance = ON_ZERO_TOLERANCE) const;
 
+  // Whether the surface is (a portion of) a sphere within `tolerance`.
+  // Delegates to `ON_Surface::IsSphere` - `ON_NurbsSurface` doesn't
+  // override this, so it inherits the base class's own real
+  // implementation (verified by reading opennurbs_revsurface.cpp, not
+  // assumed): takes two isocurves through the domain's own midlines,
+  // checks each is genuinely a circular arc (`ON_Curve::IsArc`), then
+  // verifies both arcs' fitted spheres agree with each other and with
+  // sampled points elsewhere on the surface - a real geometric
+  // classification, not a stub or a name-based guess. Verified against
+  // `Brep::Sphere()`'s own underlying surface (reports true, matching
+  // its known construction) and against both a flat surface and a
+  // cylinder wall (report false - neither is spherical).
+  bool IsSphere(double tolerance = ON_ZERO_TOLERANCE) const;
+
   // Reverses the surface's parameterization in `direction` (0 = U,
   // 1 = V) in place: same 3D shape, but that direction now runs the
   // opposite way, which flips the surface's own outward normal (since

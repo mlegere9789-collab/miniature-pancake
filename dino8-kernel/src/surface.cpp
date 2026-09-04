@@ -365,6 +365,8 @@ bool NurbsSurface::IsPeriodic(int direction) const { return surface_.IsPeriodic(
 
 bool NurbsSurface::IsPlanar(double tolerance) const { return surface_.IsPlanar(nullptr, tolerance); }
 
+bool NurbsSurface::IsSphere(double tolerance) const { return surface_.IsSphere(nullptr, tolerance); }
+
 Result NurbsSurface::Reverse(int direction) {
   return surface_.Reverse(direction) ? Result::Ok : Result::Failed;
 }

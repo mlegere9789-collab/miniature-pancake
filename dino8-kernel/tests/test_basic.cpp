@@ -763,6 +763,42 @@ void TestSurfaceIsPlanar() {
         "the bulge surface is planar just above that real threshold");
 }
 
+void TestSurfaceIsSphere() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // A genuine sphere via ON_Sphere::GetNurbForm (the same real
+  // construction Brep::Sphere() uses) - confirmed by a debug run before
+  // finalizing these assertions.
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(ON_3dPoint(1, -2, 0.5), radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere;
+  sphere.raw() = sphere_surface;
+  Check(sphere.IsSphere(), "a genuine sphere surface reports IsSphere() true");
+
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+  Check(!flat.IsSphere(), "a flat surface reports IsSphere() false");
+
+  // A cylinder wall is curved in one direction but flat in the other -
+  // a real, non-spherical shape this classification must correctly
+  // reject, not just "anything curved reports true".
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  Check(!wall.IsSphere(), "a cylinder wall (curved in only one direction) reports IsSphere() false");
+}
+
 void TestSurfaceReverseAndTranspose() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -4197,6 +4233,7 @@ int main() {
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();
   TestSurfaceIsPlanar();
+  TestSurfaceIsSphere();
   TestSurfaceReverseAndTranspose();
   TestSurfaceTrim();
   TestSurfaceSplit();

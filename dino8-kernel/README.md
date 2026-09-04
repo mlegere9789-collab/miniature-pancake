@@ -1335,6 +1335,19 @@ What this repo does instead:
   non-linear at a tight tolerance, linear once the tolerance is generous
   enough to swallow its actual deviation from the endpoint-to-endpoint
   line.
+- `NurbsSurface::IsSphere(tolerance)` classifies whether a surface is (a
+  portion of) a sphere. `ON_NurbsSurface` doesn't override
+  `ON_Surface::IsSphere`, so this inherits the base class's own real
+  implementation (verified by reading opennurbs_revsurface.cpp, not
+  assumed): takes two isocurves through the domain's midlines, checks
+  each is genuinely a circular arc, then verifies both arcs' fitted
+  spheres agree with each other and with sampled points elsewhere on the
+  surface - a real geometric classification, not a name-based guess.
+  Verified against `ON_Sphere::GetNurbForm`'s own construction (the same
+  one `Brep::Sphere()` uses, reports true) and, importantly, against
+  shapes that must correctly report false rather than "anything curved
+  is a sphere": a flat surface and a cylinder wall (curved in only one
+  direction).
 
 ## What's still not done (as of chunk 2)
 
