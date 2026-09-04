@@ -1219,6 +1219,25 @@ What this repo does instead:
   converges to the true circumference. Also checked a straight line
   (zero curvature everywhere) always returns exactly 1, and that a
   non-positive `chord_tolerance` throws `std::invalid_argument`.
+- `NurbsSurface::SuggestedDivisions(chord_tolerance)` is the
+  surface-level counterpart to `NurbsCurve::SuggestedSamples()` - a
+  suggested u/v division count for `TessellateGrid()`/
+  `TessellateGridClippedExact()`, still one number per direction for the
+  whole surface (not a per-region adaptive tessellator), but now a real
+  building block toward the "adaptive/curvature-aware meshing" gap
+  rather than nothing at all. Computes each direction independently via
+  `ON_Surface::IsoCurve` (verified real - builds a genuine `ON_NurbsCurve`
+  by slicing the control net, not a stub): samples several isocurves
+  running the *other* direction, wraps each as a `NurbsCurve`, and takes
+  the worst-case `SuggestedSamples()` result found. Verified on the same
+  cylinder wall `TestSurfaceIsClosed()` uses (U the circular direction,
+  V the straight height direction): the U division count exactly matches
+  an independently hand-computed chord-height formula for the wall's
+  unit-radius circular cross-section (every U-isocurve is that same
+  exact circle regardless of V), and the V division count is exactly 1
+  (every V-isocurve is a straight line with zero curvature). Also
+  checked a non-positive `chord_tolerance` throws
+  `std::invalid_argument`.
 
 ## What's still not done (as of chunk 2)
 
@@ -1279,12 +1298,15 @@ What this repo does instead:
   discarded, since normals here are always geometry-derived). `.stl` now
   round-trips both ASCII and binary STL (see below). `.obj`/`.stl` are
   still the only formats here - no glTF, FBX, etc.
-- Adaptive/curvature-aware meshing: `NurbsSurface::CurvatureAt()` and
-  `NurbsCurve::SuggestedSamples()` (see above) are real, curvature-based
-  building blocks now, but there's still no actual adaptive tessellator -
-  `TessellateGrid()`/`TessellateGridClippedExact()` still take a single
-  fixed `u_divisions`/`v_divisions` for the whole surface, with no
-  per-region refinement where curvature is higher. The viewport/display
+- Adaptive/curvature-aware meshing: `NurbsSurface::CurvatureAt()`,
+  `NurbsCurve::SuggestedSamples()`, and `NurbsSurface::
+  SuggestedDivisions()` (see above) are real, curvature-based building
+  blocks now - a caller can get a genuinely curvature-informed division
+  count instead of guessing one - but there's still no actual adaptive
+  tessellator: `TessellateGrid()`/`TessellateGridClippedExact()` still
+  take a single fixed `u_divisions`/`v_divisions` for the whole surface,
+  with no per-region refinement where curvature is higher within that
+  same surface. The viewport/display
   engine, GPU path tracer, command engine, UI shell, visual scripting,
   undo system, installer, and everything else in the blueprint's roadmap
   remain entirely unstarted.

@@ -34,6 +34,14 @@ struct SurfaceCurvature {
   double k2;
 };
 
+// A suggested u/v division count for TessellateGrid()/
+// TessellateGridClippedExact(), returned by NurbsSurface::
+// SuggestedDivisions().
+struct SurfaceDivisions {
+  int u;
+  int v;
+};
+
 // Wraps ON_NurbsSurface. Same rationale as NurbsCurve: expose raw()
 // rather than mirror the whole OpenNURBS surface API.
 class NurbsSurface {
@@ -190,6 +198,24 @@ class NurbsSurface {
   // or parallel partial derivatives, same condition `NormalAt()` already
   // throws on).
   SurfaceCurvature CurvatureAt(double u, double v) const;
+
+  // Suggests u/v division counts for TessellateGrid()/
+  // TessellateGridClippedExact() that keep chord deviation under
+  // `chord_tolerance` in each direction - the surface-level counterpart
+  // to `NurbsCurve::SuggestedSamples()`, and, like it, a first, modest
+  // step toward this kernel's own flagged "adaptive/curvature-aware
+  // meshing" gap rather than a full per-region adaptive tessellator
+  // (still one number per direction for the whole surface, not a
+  // varying density across it). Computes each direction independently
+  // via `ON_Surface::IsoCurve` (verified real - `ON_NurbsSurface::
+  // IsoCurve` builds a genuine `ON_NurbsCurve` by slicing the control net
+  // at the given isoparameter, not a stub): samples `isocurve_samples`
+  // isocurves running in the *other* direction, wraps each as a
+  // `NurbsCurve`, and takes the largest `SuggestedSamples()` result found
+  // - since the tightest curvature anywhere along any sampled isocurve in
+  // that direction needs to be accounted for. Throws std::invalid_argument
+  // if `chord_tolerance <= 0`.
+  SurfaceDivisions SuggestedDivisions(double chord_tolerance, int isocurve_samples = 5) const;
 
   // Tessellates the surface into a triangle mesh by evaluating a
   // u_divisions x v_divisions grid of points across its parameter domain

@@ -956,6 +956,46 @@ void TestSurfaceCurvature() {
         "the same curvature in every direction");
 }
 
+void TestSurfaceSuggestedDivisions() {
+  using dino8::kernel::NurbsSurface;
+
+  // Same cylinder wall as TestSurfaceIsClosed(): U is the circular
+  // direction (radius 1), V is the straight height direction. Every
+  // U-isocurve is the exact same unit circle regardless of which V it's
+  // sampled at (so this is hand-derivable exact, same as
+  // TestCurveSuggestedSamples()'s full-circle case), and every
+  // V-isocurve is a straight vertical line (zero curvature) - confirmed
+  // by a debug run before finalizing these assertions.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+
+  const double chord_tolerance = 0.01;
+  const auto divisions = wall.SuggestedDivisions(chord_tolerance);
+  const double expected_angle_step = 2.0 * std::acos(1.0 - chord_tolerance / 1.0);
+  const int expected_u = static_cast<int>(std::ceil((2.0 * ON_PI) / expected_angle_step));
+  Check(divisions.u == expected_u,
+        "SuggestedDivisions' U count for the cylinder wall exactly "
+        "matches the independently hand-computed chord-height formula "
+        "for its unit-radius circular cross-section");
+  Check(divisions.v == 1,
+        "SuggestedDivisions' V count is exactly 1, since every V-isocurve "
+        "is a straight vertical line with zero curvature");
+
+  bool threw = false;
+  try {
+    wall.SuggestedDivisions(0.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "SuggestedDivisions throws std::invalid_argument on a "
+        "non-positive chord_tolerance");
+}
+
 void TestFileRoundTrip() {
   using dino8::kernel::Brep;
   using dino8::kernel::Model;
@@ -3898,6 +3938,7 @@ int main() {
   TestSurfaceExtend();
   TestSurfaceClosestPoint();
   TestSurfaceCurvature();
+  TestSurfaceSuggestedDivisions();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();

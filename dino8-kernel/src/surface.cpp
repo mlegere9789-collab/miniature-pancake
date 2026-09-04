@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "dino8/kernel/curve.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/mesh.h"
 
@@ -510,6 +511,57 @@ SurfaceCurvature NurbsSurface::CurvatureAt(double u, double v) const {
   const double discriminant = std::max(0.0, mean * mean - gaussian);
   const double sqrt_discriminant = std::sqrt(discriminant);
   return SurfaceCurvature{gaussian, mean, mean + sqrt_discriminant, mean - sqrt_discriminant};
+}
+
+SurfaceDivisions NurbsSurface::SuggestedDivisions(double chord_tolerance,
+                                                   int isocurve_samples) const {
+  if (chord_tolerance <= 0.0) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::SuggestedDivisions: chord_tolerance "
+        "must be positive");
+  }
+
+  const ON_Interval u_domain = surface_.Domain(0);
+  const ON_Interval v_domain = surface_.Domain(1);
+
+  // dir=0: first parameter (u) varies, second (v) is held constant - an
+  // isocurve running in the U direction. Sampling several of these
+  // (at different fixed v) and taking the worst-case suggested sample
+  // count accounts for a surface whose U-direction curvature varies
+  // across v.
+  int u_divisions = 1;
+  for (int i = 0; i <= isocurve_samples; ++i) {
+    const double v = v_domain.ParameterAt(static_cast<double>(i) / isocurve_samples);
+    ON_Curve* iso = surface_.IsoCurve(0, v);
+    if (iso == nullptr) {
+      continue;
+    }
+    if (ON_NurbsCurve* nurbs_iso = ON_NurbsCurve::Cast(iso)) {
+      NurbsCurve wrapped;
+      wrapped.raw() = *nurbs_iso;
+      u_divisions = std::max(u_divisions, wrapped.SuggestedSamples(chord_tolerance));
+    }
+    delete iso;
+  }
+
+  // dir=1: second parameter (v) varies, first (u) is held constant - the
+  // V-direction counterpart, sampled the same way.
+  int v_divisions = 1;
+  for (int i = 0; i <= isocurve_samples; ++i) {
+    const double u = u_domain.ParameterAt(static_cast<double>(i) / isocurve_samples);
+    ON_Curve* iso = surface_.IsoCurve(1, u);
+    if (iso == nullptr) {
+      continue;
+    }
+    if (ON_NurbsCurve* nurbs_iso = ON_NurbsCurve::Cast(iso)) {
+      NurbsCurve wrapped;
+      wrapped.raw() = *nurbs_iso;
+      v_divisions = std::max(v_divisions, wrapped.SuggestedSamples(chord_tolerance));
+    }
+    delete iso;
+  }
+
+  return SurfaceDivisions{u_divisions, v_divisions};
 }
 
 Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
