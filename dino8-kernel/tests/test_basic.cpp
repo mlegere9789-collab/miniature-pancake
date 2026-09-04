@@ -88,6 +88,52 @@ void TestCurveLength() {
         "limit, not diverging");
 }
 
+void TestCurveParameterAtArcLength() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Same 3-4-5 line as TestCurveLength(), total length exactly 5.0.
+  // Uniform speed along a straight line makes ParameterAtArcLength()
+  // exact at any sample count - confirmed by a debug run before
+  // finalizing: half the arc length (2.5) lands exactly at t=0.5, the
+  // line's own exact midpoint (1.5, 2, 0).
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(3, 4, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  const double t_half = line.ParameterAtArcLength(2.5);
+  Check(std::abs(t_half - 0.5) < 1e-9, "half the line's arc length lands exactly at t=0.5");
+  const Point3d p_half = line.PointAt(t_half);
+  Check(std::abs(p_half.x - 1.5) < 1e-9 && std::abs(p_half.y - 2.0) < 1e-9,
+        "...which is exactly the line's own midpoint (1.5, 2, 0)");
+
+  Check(line.ParameterAtArcLength(0.0) == 0.0,
+        "an arc length of exactly 0 returns exactly the domain's own start");
+  Check(std::abs(line.ParameterAtArcLength(5.0) - 1.0) < 1e-9,
+        "an arc length of exactly the curve's own total length returns "
+        "exactly the domain's own end");
+  Check(line.ParameterAtArcLength(-1.0) == 0.0,
+        "a negative arc length clamps to the domain's own start rather "
+        "than extrapolating past it");
+  Check(std::abs(line.ParameterAtArcLength(100.0) - 1.0) < 1e-9,
+        "an arc length past the curve's own total length clamps to the "
+        "domain's own end rather than extrapolating past it");
+
+  // A full circle of known radius: its own quarter-arc-length point
+  // (circumference/4) must land exactly on the geometric quarter point
+  // (0, radius, 0) for a circle centered at the origin starting at
+  // (radius, 0, 0) - hand-derivable exact, confirmed by a debug run.
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  const double circumference = circle.Length();
+  const Point3d p_quarter = circle.PointAt(circle.ParameterAtArcLength(circumference / 4.0));
+  Check(std::abs(p_quarter.x) < 1e-6 && std::abs(p_quarter.y - radius) < 1e-6,
+        "a quarter of the circle's own arc length lands exactly on its "
+        "geometric quarter point (0, radius, 0)");
+}
+
 void TestCurveTangentAt() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -4638,6 +4684,7 @@ int main() {
 
   TestCurveDegreeElevation();
   TestCurveLength();
+  TestCurveParameterAtArcLength();
   TestCurveTangentAt();
   TestCurveGetTightBoundingBox();
   TestCurveIsClosed();

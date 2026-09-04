@@ -209,6 +209,22 @@ class NurbsCurve {
   // sample count.
   double Length(int samples = 1000) const;
 
+  // Finds the parameter `t` at which the curve has traveled
+  // `target_length` of its own arc length from `Domain().Min()` -
+  // the inverse of `Length()`: walking the same `samples`-point polyline
+  // `Length()` itself builds, finding which polyline segment contains
+  // `target_length`, and linearly interpolating `t` within that segment
+  // (the standard approach for arc-length reparametrization when only a
+  // polyline approximation - not a closed-form arc-length function - is
+  // available, which is the real situation here per `Length()`'s own
+  // documented "no such method in the public build" gap). Clamps to
+  // `Domain().Min()`/`Domain().Max()` for a `target_length` outside
+  // `[0, Length(samples)]` rather than extrapolating past the curve.
+  // Exact for a straight line (uniform speed makes the linear
+  // interpolation exact at any sample count) - verified directly, not
+  // assumed.
+  double ParameterAtArcLength(double target_length, int samples = 1000) const;
+
   // Unit tangent direction at parameter `t` - the direction of travel
   // along the curve, not a raw (unnormalized) derivative. Delegates to
   // `ON_Curve::TangentAt` - verified as a real implementation (calls

@@ -1483,6 +1483,19 @@ What this repo does instead:
   *varies* across it (the cylinder-wall case above), not one that's the
   same everywhere. Both still hit the same real 2%-of-true-volume
   accuracy target.
+- `NurbsCurve::ParameterAtArcLength(target_length)` is `Length()`'s
+  inverse: finds the parameter at which the curve has traveled a given
+  arc length from its own domain start, by walking the same polyline
+  `Length()` itself builds and linearly interpolating within whichever
+  segment contains `target_length` - the standard approach when only a
+  polyline approximation of arc length is available (confirmed, not
+  assumed, that OpenNURBS' public build has no closed-form arc-length
+  function to invert instead). Clamps to the domain's own start/end for
+  an out-of-range `target_length` rather than extrapolating past the
+  curve. Verified exact on a 3-4-5 line (half its arc length lands
+  exactly at its own midpoint) and exact on a full circle of known
+  radius (a quarter of its own arc length lands exactly on its
+  geometric quarter point).
 
 ## What's still not done (as of chunk 2)
 

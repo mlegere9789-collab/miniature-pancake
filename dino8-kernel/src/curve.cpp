@@ -170,6 +170,34 @@ double NurbsCurve::Length(int samples) const {
   return length;
 }
 
+double NurbsCurve::ParameterAtArcLength(double target_length, int samples) const {
+  const ON_Interval domain = curve_.Domain();
+  if (target_length <= 0.0) {
+    return domain.Min();
+  }
+
+  double previous_length = 0.0;
+  Point3d previous_point = PointAt(domain.Min());
+  double previous_t = domain.Min();
+  for (int i = 1; i <= samples; ++i) {
+    const double t = domain.ParameterAt(static_cast<double>(i) / samples);
+    const Point3d point = PointAt(t);
+    const double segment_length = (point - previous_point).Length();
+    const double cumulative_length = previous_length + segment_length;
+    if (cumulative_length >= target_length) {
+      if (segment_length < 1e-15) {
+        return t;
+      }
+      const double fraction = (target_length - previous_length) / segment_length;
+      return previous_t + fraction * (t - previous_t);
+    }
+    previous_length = cumulative_length;
+    previous_point = point;
+    previous_t = t;
+  }
+  return domain.Max();
+}
+
 Vector3d NurbsCurve::TangentAt(double t) const { return curve_.TangentAt(t); }
 
 bool NurbsCurve::IsClosed() const { return curve_.IsClosed(); }
