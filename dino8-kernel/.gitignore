@@ -7,3 +7,8 @@ build/
 dino8_kernel_roundtrip_test.3dm
 dino8_kernel_mesh_obj_test.obj
 dino8_kernel_mesh_stl_test.stl
+
+# Written by examples/build_demo_model.cpp when run manually from this
+# folder - a generated demo output, not source.
+dino8_demo_trophy.obj
+dino8_demo_trophy.stl

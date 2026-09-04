@@ -5,6 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 option(DINO8_KERNEL_BUILD_TESTS "Build dino8-kernel tests" ON)
+option(DINO8_KERNEL_BUILD_EXAMPLES "Build dino8-kernel example programs" ON)
 
 include(FetchContent)
 
@@ -66,4 +67,8 @@ target_link_libraries(dino8_kernel PUBLIC
 if(DINO8_KERNEL_BUILD_TESTS)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+if(DINO8_KERNEL_BUILD_EXAMPLES)
+  add_subdirectory(examples)
 endif()

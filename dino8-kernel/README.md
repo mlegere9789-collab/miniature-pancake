@@ -593,6 +593,27 @@ dino8-kernel/
   include/dino8/kernel/   public wrapper headers
   src/                    wrapper implementation
   tests/                  round-trip + smoke tests
+  examples/               small end-to-end demo program(s)
+```
+
+## Example
+
+`examples/build_demo_model.cpp` (built as `dino8_demo_trophy`, on by
+default - set `-DDINO8_KERNEL_BUILD_EXAMPLES=OFF` to skip it) combines
+several primitives - `Cylinder()`, `Torus()`, `Cone()` - through three
+chained `BooleanCombine()` calls into one solid, then exports it as both
+`.obj` and `.stl`. Every piece it uses is already covered by
+`tests/test_basic.cpp` with hand-derived exact numbers, but nothing there
+exercises them *together* - a bug in how, say, `Cylinder()`'s and
+`Torus()`'s output interact under a boolean wouldn't necessarily show up
+in either primitive's own isolated test. Running it confirmed the
+pipeline actually composes: the union's measured volume (~36.57) is
+exactly the naive sum of the four pieces' individual volumes (~37.01)
+minus the deliberate stem/ring overlap - not an isolated per-primitive
+number, a real cross-check on the combined result.
+
+```
+./dino8-kernel/build/examples/dino8_demo_trophy
 ```
 
 ## Building
