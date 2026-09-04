@@ -296,6 +296,13 @@ class NurbsSurface {
   Mesh TessellateGridClippedExact(int u_divisions, int v_divisions,
                                    const std::vector<Point2d>& trim_polygon) const;
 
+  // TessellateGridClippedExact(), but picking u_divisions/v_divisions via
+  // SuggestedDivisions(chord_tolerance) instead of the caller choosing
+  // them by hand - the exact-clip counterpart to
+  // TessellateGridAdaptive(), same "one call instead of two" convenience.
+  Mesh TessellateGridClippedExactAdaptive(double chord_tolerance,
+                                           const std::vector<Point2d>& trim_polygon) const;
+
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }
 

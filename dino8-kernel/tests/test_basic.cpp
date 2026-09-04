@@ -1030,6 +1030,54 @@ void TestSurfaceTessellateGridAdaptive() {
         "SuggestedDivisions() then TessellateGrid() by hand");
 }
 
+void TestSurfaceTessellateGridClippedExactAdaptive() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // Same 10x10 flat surface and [0.15,0.85]^2 trim
+  // TestExactClippingMatchesAreaButNotCellCounts uses - true trim area is
+  // exactly (0.85-0.15)^2 * 100 = 49, independent of tessellation
+  // resolution since exact clipping measures the real boundary rather
+  // than approximating it with the grid. This is a thin, deterministic
+  // composition of two already-verified pieces (SuggestedDivisions()
+  // then TessellateGridClippedExact()), so the test confirms both that
+  // it wires them together (matches the manual two-call equivalent
+  // exactly) and that the result is still the true trim area regardless
+  // of which divisions SuggestedDivisions() happens to pick for a flat
+  // surface with zero curvature.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(10, 0, 0),
+      Point3d(10, 10, 0),
+  };
+  const NurbsSurface surface =
+      NurbsSurface::FromControlGrid(grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  const std::vector<Point2d> trim_loop = {
+      Point2d(0.15, 0.15),
+      Point2d(0.85, 0.15),
+      Point2d(0.85, 0.85),
+      Point2d(0.15, 0.85),
+  };
+
+  const double chord_tolerance = 0.05;
+  const auto adaptive_mesh = surface.TessellateGridClippedExactAdaptive(chord_tolerance, trim_loop);
+  Check(std::abs(adaptive_mesh.Area() - 49.0) < 1e-9,
+        "TessellateGridClippedExactAdaptive's own area is exactly 49, "
+        "the true trim area, regardless of which divisions "
+        "SuggestedDivisions() picked for this flat (zero-curvature) "
+        "surface");
+
+  const auto divisions = surface.SuggestedDivisions(chord_tolerance);
+  const auto manual_mesh = surface.TessellateGridClippedExact(divisions.u, divisions.v, trim_loop);
+  Check(adaptive_mesh.VertexCount() == manual_mesh.VertexCount() &&
+            adaptive_mesh.FaceCount() == manual_mesh.FaceCount(),
+        "TessellateGridClippedExactAdaptive produces the exact same mesh "
+        "as calling SuggestedDivisions() then TessellateGridClippedExact() "
+        "by hand");
+}
+
 void TestFileRoundTrip() {
   using dino8::kernel::Brep;
   using dino8::kernel::Model;
@@ -3974,6 +4022,7 @@ int main() {
   TestSurfaceCurvature();
   TestSurfaceSuggestedDivisions();
   TestSurfaceTessellateGridAdaptive();
+  TestSurfaceTessellateGridClippedExactAdaptive();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();

@@ -1248,6 +1248,17 @@ What this repo does instead:
   `TessellateGridAdaptive()` produces exactly the same face count,
   vertex count, and area as calling `SuggestedDivisions()` then
   `TessellateGrid()` by hand.
+- `NurbsSurface::TessellateGridClippedExactAdaptive(chord_tolerance,
+  trim_polygon)` is `TessellateGridAdaptive()`'s exact-clip counterpart,
+  same "one call instead of two" convenience over
+  `SuggestedDivisions()` + `TessellateGridClippedExact()`. Verified on
+  the same 10x10 flat surface and `[0.15,0.85]^2` trim
+  `TestExactClippingMatchesAreaButNotCellCounts` uses: the resulting
+  mesh's area is exactly 49 (the true trim area, independent of grid
+  resolution since exact clipping measures the real boundary rather than
+  approximating it), and matches the manual `SuggestedDivisions()` +
+  `TessellateGridClippedExact()` two-call equivalent exactly in vertex
+  and face count.
 
 ## What's still not done (as of chunk 2)
 

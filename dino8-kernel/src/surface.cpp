@@ -851,4 +851,10 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
   return Mesh::MergeAndWeld({mesh});
 }
 
+Mesh NurbsSurface::TessellateGridClippedExactAdaptive(double chord_tolerance,
+                                                        const std::vector<Point2d>& trim_polygon) const {
+  const SurfaceDivisions divisions = SuggestedDivisions(chord_tolerance);
+  return TessellateGridClippedExact(divisions.u, divisions.v, trim_polygon);
+}
+
 }  // namespace dino8::kernel
