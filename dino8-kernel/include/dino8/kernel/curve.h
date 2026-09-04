@@ -178,6 +178,22 @@ class NurbsCurve {
   // this file already applied to `Length()`.
   Vector3d TangentAt(double t) const;
 
+  // Curvature vector at parameter `t`: points from the curve toward its
+  // local center of curvature, with magnitude `kappa = 1/R` (R the local
+  // radius of curvature) - the zero vector wherever the curve is locally
+  // straight (a line segment; an inflection point). Delegates to
+  // `ON_Curve::CurvatureAt` after verifying it's a real implementation
+  // (calls through to `EvCurvature`/`Ev2Der`, an actual second-derivative
+  // computation, not a stub) - same standing discipline this file already
+  // applies to `Length()`/`TangentAt()`. Verified against a NURBS circle
+  // built via `ON_Circle::GetNurbForm`: at every parameter tested, the
+  // curvature vector's own magnitude equals exactly `1/radius`, and
+  // `point + curvature_vector / curvature_vector.LengthSquared()`
+  // (the point offset by `R` along the curvature direction - the
+  // standard way to recover the osculating circle's center from a
+  // nonzero curvature vector) lands exactly on the circle's known center.
+  Vector3d CurvatureAt(double t) const;
+
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }
 

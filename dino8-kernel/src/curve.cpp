@@ -43,6 +43,8 @@ Point3d NurbsCurve::PointAt(double t) const {
   return pt;
 }
 
+Vector3d NurbsCurve::CurvatureAt(double t) const { return curve_.CurvatureAt(t); }
+
 double NurbsCurve::ClosestPointParameter(Point3d point, int samples) const {
   const ON_Interval domain = curve_.Domain();
   auto distance_squared = [&](double t) { return (PointAt(t) - point).LengthSquared(); };

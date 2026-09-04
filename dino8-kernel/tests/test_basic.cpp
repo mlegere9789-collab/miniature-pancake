@@ -439,6 +439,59 @@ void TestCurveClosestPoint() {
         "closest point");
 }
 
+void TestCurveCurvature() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A NURBS circle of known center and radius via ON_Circle::GetNurbForm
+  // (the same real, non-approximate construction TestSurfaceIsClosed's
+  // cylinder test already relies on): its curvature is hand-derivable
+  // exactly - magnitude 1/radius everywhere, always pointing toward the
+  // known center. Confirmed by a debug run before finalizing these
+  // assertions.
+  const Point3d center(2, 3, 0);
+  const double radius = 5.0;
+  const ON_Circle on_circle(ON_Plane(center, ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+
+  const ON_Interval domain = circle.raw().Domain();
+  bool all_kappa_exact = true;
+  bool all_centers_match = true;
+  for (double frac : {0.0, 0.25, 0.5, 0.75}) {
+    const double t = domain.ParameterAt(frac);
+    const Point3d point = circle.PointAt(t);
+    const Vector3d k = circle.CurvatureAt(t);
+    if (std::abs(k.Length() - 1.0 / radius) > 1e-9) {
+      all_kappa_exact = false;
+    }
+    // Standard way to recover the osculating circle's center from a
+    // nonzero curvature vector: offset the point by R = 1/kappa along
+    // the curvature direction, i.e. by k / |k|^2.
+    const Point3d recovered_center = point + k / k.LengthSquared();
+    if ((recovered_center - center).Length() > 1e-9) {
+      all_centers_match = false;
+    }
+  }
+  Check(all_kappa_exact,
+        "the circle's curvature vector has magnitude exactly 1/radius "
+        "(0.2) at every parameter tested");
+  Check(all_centers_match,
+        "the osculating circle's center, recovered from the curvature "
+        "vector at each point, matches the known center (2,3,0) exactly "
+        "at every parameter tested");
+
+  // A straight line has zero curvature everywhere - no local center of
+  // curvature to speak of.
+  const NurbsCurve line =
+      NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(10, 0, 0)}, /*degree=*/1);
+  const Vector3d line_k = line.CurvatureAt(0.5);
+  Check(line_k.Length() < 1e-9, "a straight line's curvature vector is exactly zero");
+}
+
 void TestSurfaceNormalAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -3722,6 +3775,7 @@ int main() {
   TestCurveSplit();
   TestCurveExtend();
   TestCurveClosestPoint();
+  TestCurveCurvature();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();

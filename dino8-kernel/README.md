@@ -1161,6 +1161,21 @@ What this repo does instead:
   surface's coarser grid refinement), and a query point far outside a
   surface's domain correctly clamps to the domain's own boundary corner
   rather than extrapolating past it.
+- `NurbsCurve::CurvatureAt(t)` returns the curve's curvature vector
+  (magnitude `1/R`, pointing toward the local center of curvature; zero
+  where the curve is locally straight). Delegates to `ON_Curve::
+  CurvatureAt` after verifying it's a real implementation (calls through
+  to `EvCurvature`/`Ev2Der`, an actual second-derivative computation, not
+  a stub - same standing discipline this file already applies to
+  `Length()`/`TangentAt()`). Verified against a NURBS circle of known
+  center and radius built via `ON_Circle::GetNurbForm` (the same
+  construction the cylinder-wall test already relies on): at every
+  parameter tested, the curvature vector's magnitude is exactly `1/R`,
+  and recovering the osculating circle's center from it
+  (`point + curvature_vector / curvature_vector.LengthSquared()`, the
+  standard way to go from a nonzero curvature vector back to its circle's
+  center) lands exactly on the known center. Also checked a straight
+  line's curvature is exactly zero.
 
 ## What's still not done (as of chunk 2)
 
