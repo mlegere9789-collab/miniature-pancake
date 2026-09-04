@@ -32,6 +32,16 @@ class Mesh {
   // closed, so Volume() doesn't apply to it.
   double Area() const;
 
+  // Axis-aligned bounding box over every vertex, regardless of whether
+  // it's actually used by a face - a real, if narrow, gap: nothing
+  // earlier in this file could answer "roughly how big/where is this,"
+  // which any future viewport (camera framing) or spatial query (a
+  // coarse overlap test before a real boolean) needs. Throws
+  // std::invalid_argument on a mesh with no vertices, rather than
+  // returning a degenerate all-zero box that would look like a valid
+  // point-sized mesh at the origin.
+  BoundingBox GetBoundingBox() const;
+
   // Writes this mesh as a plain-text Wavefront .obj file (`v x y z`
   // vertex lines, `f i j k` / `f i j k l` 1-indexed face lines - OBJ
   // supports quad faces natively, so a quad face is written as one

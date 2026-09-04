@@ -837,6 +837,30 @@ void TestTorusVolumeAndBoolean() {
         "union of the torus with a disjoint unit box equals torus volume + 1");
 }
 
+void TestMeshGetBoundingBox() {
+  using dino8::kernel::Mesh;
+
+  // MakeQuadBoxMesh's 8 corners span exactly [x0,x1]x[y0,y1]x[z0,z1] - an
+  // asymmetric box (different extents per axis, not a cube) so a bug
+  // that mixed up which axis fed which component would be caught.
+  const auto box = MakeQuadBoxMesh(1, -2, 0.5, 4, 3, 7.5);
+  const auto bounds = box.GetBoundingBox();
+  Check(bounds.min.x == 1.0 && bounds.min.y == -2.0 && bounds.min.z == 0.5,
+        "GetBoundingBox's min corner matches the box's known low corner exactly");
+  Check(bounds.max.x == 4.0 && bounds.max.y == 3.0 && bounds.max.z == 7.5,
+        "GetBoundingBox's max corner matches the box's known high corner exactly");
+
+  bool threw = false;
+  try {
+    const Mesh empty;
+    empty.GetBoundingBox();
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "GetBoundingBox throws on a mesh with no vertices rather than "
+               "returning a misleading all-zero box");
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -1436,6 +1460,7 @@ int main() {
   TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
   TestLoftClosedRingsConcaveEndCapsExactPrismVolume();
   TestTorusVolumeAndBoolean();
+  TestMeshGetBoundingBox();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();

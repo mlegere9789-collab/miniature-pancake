@@ -400,6 +400,15 @@ What this repo does instead:
   other solid here - a meaningful check specifically because a
   both-directions-wrapping grid has more ways to end up non-manifold than
   a grid with a boundary does.
+- `Mesh::GetBoundingBox()` (new `BoundingBox` struct in `types.h`) closes
+  a real, if narrow, gap: nothing earlier here could answer "roughly how
+  big/where is this," which any future viewport (camera framing) or
+  spatial query (a coarse overlap test before a real boolean) needs.
+  Throws `std::invalid_argument` on a mesh with no vertices rather than
+  returning a misleading all-zero box that would look like a valid
+  point-sized mesh at the origin. Verified with an asymmetric box (a
+  different extent on each axis, so a bug mixing up which axis feeds
+  which output component would be caught) and the empty-mesh rejection.
 
 ## What's still not done (as of chunk 2)
 

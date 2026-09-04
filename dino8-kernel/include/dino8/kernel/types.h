@@ -20,4 +20,14 @@ enum class Result {
   Failed,
 };
 
+// Axis-aligned bounding box: the component-wise min/max corners. A plain
+// struct, not a class with invariants to maintain - `min` and `max` are
+// two independent points a caller may need on their own (e.g. `max - min`
+// for a diagonal, `min` alone as a coarse "is this to the left of X"
+// test), not just as a matched pair.
+struct BoundingBox {
+  Point3d min;
+  Point3d max;
+};
+
 }  // namespace dino8::kernel

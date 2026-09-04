@@ -1,5 +1,6 @@
 #include "dino8/kernel/mesh.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <fstream>
@@ -107,6 +108,27 @@ double Mesh::Area() const {
     }
   }
   return area;
+}
+
+BoundingBox Mesh::GetBoundingBox() const {
+  if (mesh_.m_V.Count() == 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::GetBoundingBox: mesh has no vertices - there's "
+        "no box to compute");
+  }
+
+  Point3d box_min(mesh_.m_V[0]);
+  Point3d box_max(mesh_.m_V[0]);
+  for (int i = 1; i < mesh_.m_V.Count(); ++i) {
+    const Point3d p(mesh_.m_V[i]);
+    box_min.x = std::min(box_min.x, p.x);
+    box_min.y = std::min(box_min.y, p.y);
+    box_min.z = std::min(box_min.z, p.z);
+    box_max.x = std::max(box_max.x, p.x);
+    box_max.y = std::max(box_max.y, p.y);
+    box_max.z = std::max(box_max.z, p.z);
+  }
+  return BoundingBox{box_min, box_max};
 }
 
 Result Mesh::SaveObj(const std::string& path) const {
