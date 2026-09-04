@@ -65,6 +65,13 @@ class SubD {
   int FaceCount() const;
   int VertexCount() const;
 
+  // Count of the current subdivision level's own edges - the third
+  // topology count alongside FaceCount()/VertexCount(), closing a small
+  // gap this class left open (a caller wanting Euler-characteristic-style
+  // topology checks, e.g. V - E + F, had no way to get an edge count
+  // before). Delegates to `ON_SubD::EdgeCount`.
+  int EdgeCount() const;
+
   const ON_SubD& raw() const { return subd_; }
   ON_SubD& raw() { return subd_; }
 

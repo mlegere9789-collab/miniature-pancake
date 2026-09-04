@@ -2937,6 +2937,9 @@ void TestSubDFromBoxSubdividesToExactCatmullClarkCounts() {
   // Level 2: V=26+48+24=98, F=24*4=96.
   const auto quad_box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
   auto subd = SubD::FromControlMesh(quad_box);
+  Check(subd.VertexCount() == 8 && subd.EdgeCount() == 12 && subd.FaceCount() == 6,
+        "SubD box at level 0 (before any subdivision) has the cube's own "
+        "exact topology counts (V=8, E=12, F=6)");
   subd.Subdivide(2);
 
   Check(subd.VertexCount() == 98,
@@ -2945,6 +2948,14 @@ void TestSubDFromBoxSubdividesToExactCatmullClarkCounts() {
   Check(subd.FaceCount() == 96,
         "SubD box after 2 global Catmull-Clark subdivisions has the "
         "hand-derived exact face count (96)");
+  Check(subd.EdgeCount() == 192,
+        "SubD box after 2 global Catmull-Clark subdivisions has the "
+        "hand-derived exact edge count (192, matching this comment's own "
+        "E=2*F rule for a closed all-quad mesh)");
+  Check(subd.VertexCount() - subd.EdgeCount() + subd.FaceCount() == 2,
+        "Euler's formula V - E + F = 2 holds for the subdivided box's "
+        "own reported topology counts, confirming EdgeCount() reports "
+        "real edge topology rather than some other count");
 
   const auto approx = subd.ToApproximateMesh();
   Check(approx.VertexCount() == 98 && approx.FaceCount() == 96,

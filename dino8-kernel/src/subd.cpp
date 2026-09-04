@@ -42,5 +42,6 @@ Mesh SubD::ToApproximateMesh() const {
 
 int SubD::FaceCount() const { return static_cast<int>(subd_.FaceCount()); }
 int SubD::VertexCount() const { return static_cast<int>(subd_.VertexCount()); }
+int SubD::EdgeCount() const { return static_cast<int>(subd_.EdgeCount()); }
 
 }  // namespace dino8::kernel

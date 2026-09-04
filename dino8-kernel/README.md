@@ -1274,6 +1274,15 @@ What this repo does instead:
   volume far from the true analytic `4/3 * pi * r^3`, while a tight 0.01
   tolerance gave over 10x as many faces and landed within 2% of the true
   volume.
+- `SubD::EdgeCount()` adds the third topology count alongside the
+  existing `FaceCount()`/`VertexCount()` - a small gap (no way to get an
+  edge count at all before) closed via `ON_SubD::EdgeCount`. Verified
+  against a 6-quad box control mesh: exactly the cube's own known
+  topology at level 0 (V=8, E=12, F=6), and after 2 global Catmull-Clark
+  subdivisions, exactly the hand-derived counts (V=98, E=192, F=96) -
+  with Euler's formula `V - E + F = 2` checked directly against
+  `EdgeCount()`'s own reported value, confirming it's real edge
+  topology, not some other count that happened to look plausible.
 
 ## What's still not done (as of chunk 2)
 
