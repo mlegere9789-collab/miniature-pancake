@@ -1359,6 +1359,17 @@ What this repo does instead:
   correctly reports `IsCylinder()` false - together showing these are
   real, mutually-distinguishing classifications, not "anything curved
   reports true for everything".
+- `NurbsSurface::IsCone(tolerance)` completes the quadric-classification
+  trio alongside `IsSphere()`/`IsCylinder()`, same inheritance situation
+  (`ON_NurbsSurface` inherits `ON_Surface::IsCone`'s real base
+  implementation) - structurally almost identical to `IsCylinder()`'s
+  check (one isocurve a circular arc, the other a straight line), but a
+  cone's line isocurves converge to a single apex rather than staying
+  parallel, which is the actual distinguishing test. Verified against a
+  genuine cone (`ON_Cone::GetNurbForm`, reports true) and against the
+  existing cylinder wall and sphere (both correctly report false - a
+  cylinder's parallel isocurves never converge, and a sphere has no
+  straight-line isocurve in either direction at all).
 
 ## What's still not done (as of chunk 2)
 

@@ -134,6 +134,21 @@ class NurbsSurface {
   // "any curved surface reports true for everything".
   bool IsCylinder(double tolerance = ON_ZERO_TOLERANCE) const;
 
+  // Whether the surface is (a portion of) a right circular cone within
+  // `tolerance`. Same inheritance situation as IsSphere()/IsCylinder():
+  // `ON_NurbsSurface` doesn't override `ON_Surface::IsCone`, so this is
+  // the base class's own real implementation (verified by reading
+  // opennurbs_revsurface.cpp) - structurally almost identical to
+  // IsCylinder()'s own check (one isocurve direction a circular arc, the
+  // other a straight line), but a cone's line isocurves converge toward
+  // a single apex point rather than staying parallel, which is what
+  // actually distinguishes the two shapes. Verified against a genuine
+  // cone via `ON_Cone::GetNurbForm` (reports true), and against the
+  // existing cylinder wall and sphere (both correctly report false -
+  // a cylinder's parallel line isocurves never converge to an apex, and
+  // a sphere has no straight-line isocurve in either direction at all).
+  bool IsCone(double tolerance = ON_ZERO_TOLERANCE) const;
+
   // Reverses the surface's parameterization in `direction` (0 = U,
   // 1 = V) in place: same 3D shape, but that direction now runs the
   // opposite way, which flips the surface's own outward normal (since

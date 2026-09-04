@@ -834,6 +834,38 @@ void TestSurfaceIsCylinder() {
   Check(!flat.IsCylinder(), "a flat surface reports IsCylinder() false");
 }
 
+void TestSurfaceIsCone() {
+  using dino8::kernel::NurbsSurface;
+
+  // A genuine right circular cone via ON_Cone::GetNurbForm - confirmed
+  // by a debug run before finalizing these assertions.
+  const ON_Cone on_cone(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), /*height=*/2.0,
+                        /*radius=*/1.0);
+  ON_NurbsSurface cone_surface;
+  Check(on_cone.GetNurbForm(cone_surface) != 0, "ON_Cone::GetNurbForm succeeds");
+  NurbsSurface cone;
+  cone.raw() = cone_surface;
+  Check(cone.IsCone(), "a genuine cone surface reports IsCone() true");
+
+  // A cylinder's line isocurves are parallel, never converging to an
+  // apex the way a cone's do - the real distinguishing case between the
+  // two structurally-similar checks.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  Check(!wall.IsCone(), "a cylinder wall (parallel, not converging, line isocurves) reports IsCone() false");
+
+  const ON_Sphere on_sphere(ON_3dPoint(1, -2, 0.5), 3.0);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere;
+  sphere.raw() = sphere_surface;
+  Check(!sphere.IsCone(), "a sphere (no straight-line isocurve at all) reports IsCone() false");
+}
+
 void TestSurfaceReverseAndTranspose() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -4270,6 +4302,7 @@ int main() {
   TestSurfaceIsPlanar();
   TestSurfaceIsSphere();
   TestSurfaceIsCylinder();
+  TestSurfaceIsCone();
   TestSurfaceReverseAndTranspose();
   TestSurfaceTrim();
   TestSurfaceSplit();
