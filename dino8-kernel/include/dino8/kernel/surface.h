@@ -434,7 +434,10 @@ class NurbsSurface {
   // fewer than 3 points - a similar real gap: `PointInPolygon()` treats
   // a too-short polygon as containing nothing, so this used to silently
   // tessellate to a fully empty mesh (confirmed by a debug run) instead
-  // of failing loudly.
+  // of failing loudly. Same check applies to every polygon in
+  // `hole_polygons`, for the same reason - a too-short hole polygon used
+  // to be silently ignored entirely (every point reported "outside" it,
+  // so it excluded nothing) rather than failing loudly.
   Mesh TessellateGrid(int u_divisions, int v_divisions,
                        const std::vector<Point2d>* trim_polygon = nullptr,
                        const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;

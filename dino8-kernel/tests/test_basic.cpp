@@ -5101,6 +5101,50 @@ void TestExactClippingRejectsSelfIntersectingTrim() {
         "trim_polygon instead of silently clipping against it");
 }
 
+void TestSurfaceTessellateGridRejectsTooFewHolePoints() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  // Same real gap as trim_polygon above, one parameter over: a debug run
+  // confirmed a too-short hole polygon (0, 1, or 2 points) was silently
+  // ignored entirely rather than rejected - PointInPolygon() reports
+  // every point "outside" it, so it excludes nothing, and the outer loop
+  // alone determined the result (V=49, F=72, the full un-holed outer
+  // 7x7 grid) instead of an error. Now fixed in the same shared
+  // TessellateFromValues() helper.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 10, 0),
+      Point3d(10, 0, 0),
+      Point3d(10, 10, 0),
+  };
+  const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  const std::vector<Point2d> outer_loop = {
+      Point2d(0.15, 0.15),
+      Point2d(0.85, 0.15),
+      Point2d(0.85, 0.85),
+      Point2d(0.15, 0.85),
+  };
+
+  for (const int point_count : {0, 1, 2}) {
+    std::vector<Point2d> bad_hole;
+    for (int i = 0; i < point_count; ++i) {
+      bad_hole.push_back(Point2d(0.4 + 0.01 * i, 0.4 + 0.01 * i));
+    }
+    const std::vector<std::vector<Point2d>> holes = {bad_hole};
+    bool threw = false;
+    try {
+      surface.TessellateGrid(10, 10, &outer_loop, &holes);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw,
+          "TessellateGrid throws std::invalid_argument on a hole polygon with fewer than 3 "
+          "points");
+  }
+}
+
 void TestAnnulusFaceExtrudesToWatertightTube() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -5373,6 +5417,7 @@ int main() {
   TestExactClippingHandlesTrimVertexOnGridLine();
   TestExactClippingHandlesManyReflexVertexComb();
   TestExactClippingRejectsSelfIntersectingTrim();
+  TestSurfaceTessellateGridRejectsTooFewHolePoints();
   TestAnnulusFaceExtrudesToWatertightTube();
   TestExtrudeRejectsAlreadyClosedCap();
   TestExtrudeRejectsBowtieBoundary();

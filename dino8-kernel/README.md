@@ -1662,6 +1662,14 @@ What this repo does instead:
   way, in the shared `TessellateFromValues()` helper so both
   `TessellateGrid()` and `TessellateGridNonUniform()` get the same
   `std::invalid_argument` check.
+- The same gap, one parameter over: a too-short polygon in
+  `hole_polygons` was silently ignored entirely rather than rejected -
+  `PointInPolygon()` reports every point "outside" it, so a hole with
+  fewer than 3 points excludes nothing, and a debug run confirmed the
+  outer trim alone determined the result (the full un-holed grid,
+  V=49/F=72) instead of an error. Fixed in the same shared
+  `TessellateFromValues()` helper, checked for every polygon in
+  `hole_polygons` independently.
 
 ## What's still not done (as of chunk 2)
 
