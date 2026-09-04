@@ -1128,6 +1128,59 @@ void TestMeshFlipNormals() {
   }
 }
 
+void TestMeshIsClosedManifold() {
+  using dino8::kernel::Mesh;
+
+  // Closed, well-formed meshes - both quad-faced and triangle-faced, so
+  // both of IsClosedManifold()'s edge-extraction branches get exercised -
+  // must report true.
+  const auto quad_box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  Check(quad_box.IsClosedManifold(), "a closed quad-faced box is a closed manifold");
+  const auto tri_box = MakeBox(0, 0, 0, 2, 2, 2);
+  Check(tri_box.IsClosedManifold(), "a closed triangle-faced box is a closed manifold");
+
+  // Delete one face from an otherwise-closed box: its 4 edges now each
+  // border only 1 face instead of 2 - a real hole, not a manifold defect
+  // of a different kind, so this specifically exercises the "count != 2"
+  // (boundary edge) rejection path.
+  {
+    Mesh open_box = quad_box;
+    ON_Mesh& raw = open_box.raw();
+    raw.m_F.Remove(0);
+    Check(!open_box.IsClosedManifold(),
+          "a box with one face removed (an open hole) is not a closed manifold");
+  }
+
+  // Reverse a single face's own winding (the same per-face reversal
+  // FlipNormals() does, but applied to only one face instead of all of
+  // them) rather than the whole mesh: every edge that face shares with a
+  // neighbor now gets walked the same direction by both faces instead of
+  // opposite directions - every edge still borders exactly 2 faces (still
+  // "closed" by that count), so this specifically exercises the
+  // orientation-consistency check, not the edge-count one.
+  {
+    Mesh inconsistent = quad_box;
+    ON_Mesh& raw = inconsistent.raw();
+    ON_MeshFace& f = raw.m_F[0];
+    std::swap(f.vi[0], f.vi[3]);
+    std::swap(f.vi[1], f.vi[2]);
+    Check(!inconsistent.IsClosedManifold(),
+          "a box with a single face's winding reversed (inconsistent "
+          "orientation with its neighbors) is not a closed manifold, even "
+          "though every edge still borders exactly 2 faces");
+  }
+
+  // Flipping *every* face's winding (FlipNormals(), not just one) keeps
+  // every neighbor pair pointing opposite ways relative to each other,
+  // same as before the flip - still a closed manifold, just globally
+  // reversed (inside out), which IsClosedManifold() can't and shouldn't
+  // distinguish from "right side out" (Volume()'s sign is what carries
+  // that information).
+  Check(quad_box.FlipNormals().IsClosedManifold(),
+        "flipping every face's winding still leaves a closed manifold "
+        "(globally inside-out, not orientation-inconsistent)");
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -1967,6 +2020,7 @@ int main() {
   TestMeshGetCentroid();
   TestMeshTransform();
   TestMeshFlipNormals();
+  TestMeshIsClosedManifold();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();

@@ -226,6 +226,45 @@ Mesh Mesh::FlipNormals() const {
   return result;
 }
 
+bool Mesh::IsClosedManifold() const {
+  std::map<std::pair<int, int>, int> undirected_edge_count;
+  std::set<std::pair<int, int>> directed_edges_seen;
+  bool orientation_consistent = true;
+
+  auto visit_edge = [&](int a, int b) {
+    ++undirected_edge_count[std::minmax(a, b)];
+    if (!directed_edges_seen.insert({a, b}).second) {
+      // The same directed edge walked twice means two faces sharing this
+      // edge both "walk" it the same way - a real orientation conflict
+      // between neighbors, not just a coincidence.
+      orientation_consistent = false;
+    }
+  };
+
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    visit_edge(f.vi[0], f.vi[1]);
+    visit_edge(f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      visit_edge(f.vi[2], f.vi[3]);
+      visit_edge(f.vi[3], f.vi[0]);
+    } else {
+      visit_edge(f.vi[2], f.vi[0]);
+    }
+  }
+
+  if (!orientation_consistent) {
+    return false;
+  }
+  for (const auto& [edge, count] : undirected_edge_count) {
+    if (count != 2) {
+      return false;  // a boundary edge (count 1) or a non-manifold edge
+                      // shared by 3+ faces (count > 2)
+    }
+  }
+  return true;
+}
+
 Mesh Mesh::Transform(const ON_Xform& xform) const {
   Mesh result = *this;
   result.mesh_.Transform(xform);

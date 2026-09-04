@@ -82,6 +82,20 @@ class Mesh {
   // order exactly, not just an equivalent one.
   Mesh FlipNormals() const;
 
+  // Whether this mesh is a closed, consistently-oriented 2-manifold - the
+  // exact precondition Volume()/GetCentroid()/BooleanCombine() all
+  // silently assume rather than check. Two independent conditions, both
+  // required: every edge borders exactly 2 faces (closed - no boundary,
+  // and no non-manifold edge shared by 3+ faces), and no directed edge
+  // (a, b) appears twice (consistent orientation - two adjacent faces
+  // that both "walk" a shared edge the same way, rather than opposite
+  // ways, means one of them is wound backwards relative to the other).
+  // Built directly from this mesh's own face list rather than by running
+  // a boolean and checking whether Manifold accepted it - a real
+  // diagnostic that answers the question directly, not a side effect of
+  // an unrelated operation.
+  bool IsClosedManifold() const;
+
   // Applies `xform` to a copy of this mesh and returns it - the missing
   // piece that let every primitive here be positioned/oriented only via
   // its own constructor parameters (Cylinder()'s base_center/axis, say),

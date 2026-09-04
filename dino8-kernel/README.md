@@ -626,6 +626,30 @@ What this repo does instead:
   twice reproduces the *exact* original volume bit-for-bit, not just an
   equivalent one - a genuine involution, since it's the same indices
   reversed back to their original order, not a fresh recomputation.
+- `Mesh::IsClosedManifold()` is the first direct answer to "is this mesh
+  actually a valid closed solid?" - previously the only way to find out
+  was to run a boolean and see whether Manifold accepted the result,
+  a side effect of an unrelated operation rather than a diagnostic in its
+  own right, and one that (like every other closed-mesh operation here)
+  gives no information about *why* a bad mesh is bad. Checks two
+  independent conditions from the mesh's own face list alone: every edge
+  borders exactly 2 faces (closed - catches both an open boundary, count
+  1, and a non-manifold edge shared by 3+ faces, count > 2), and no
+  directed edge is walked twice (consistent orientation - two faces
+  sharing an edge but both "walking" it the same direction, rather than
+  opposite ways, means one is wound backwards relative to the other).
+  Verified with four cases distinguishing what actually broke: a closed
+  box (quad- and triangle-faced, exercising both edge-extraction
+  branches) reports true; the same box with one face deleted (a real
+  hole) reports false via the edge-count condition; the same box with
+  *one* face's own winding reversed (not the whole mesh) reports false
+  via the orientation condition specifically, even though every edge
+  still borders exactly 2 faces; and flipping *every* face
+  (`FlipNormals()`) still reports true, since a globally inside-out mesh
+  is still closed and consistently oriented relative to its own
+  neighbors - `IsClosedManifold()` can't and shouldn't distinguish that
+  from "right side out" (`Volume()`'s sign is what carries that
+  information).
 
 ## What's still not done (as of chunk 2)
 
