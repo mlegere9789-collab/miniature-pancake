@@ -56,6 +56,21 @@ class Mesh {
   // point-sized mesh at the origin.
   BoundingBox GetBoundingBox() const;
 
+  // Applies `xform` to a copy of this mesh and returns it - the missing
+  // piece that let every primitive here be positioned/oriented only via
+  // its own constructor parameters (Cylinder()'s base_center/axis, say),
+  // with no way to move, rotate, or scale a mesh already built. Delegates
+  // directly to ON_Mesh::Transform (verified as a real, working
+  // implementation, not a stub like ON_Brep::CreateMesh) rather than
+  // reimplementing per-vertex transformation here. Callers build `xform`
+  // from OpenNURBS' own factories (already available via the <opennurbs.h>
+  // this header already includes) - e.g.
+  // ON_Xform::TranslationTransformation(offset) or an ON_Xform whose
+  // Rotation(angle_radians, axis, center) member sets a rotation - rather
+  // than this class adding narrower Translate()/Rotate()/Scale() wrappers
+  // around the same thing.
+  Mesh Transform(const ON_Xform& xform) const;
+
   // Writes this mesh as a plain-text Wavefront .obj file (`v x y z`
   // vertex lines, `f i j k` / `f i j k l` 1-indexed face lines - OBJ
   // supports quad faces natively, so a quad face is written as one

@@ -171,6 +171,12 @@ BoundingBox Mesh::GetBoundingBox() const {
   return BoundingBox{box_min, box_max};
 }
 
+Mesh Mesh::Transform(const ON_Xform& xform) const {
+  Mesh result = *this;
+  result.mesh_.Transform(xform);
+  return result;
+}
+
 Result Mesh::SaveObj(const std::string& path) const {
   std::ofstream out(path);
   if (!out) {

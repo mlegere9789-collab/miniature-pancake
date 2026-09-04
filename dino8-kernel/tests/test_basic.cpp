@@ -907,6 +907,44 @@ void TestMeshGetCentroid() {
                "than dividing by it");
 }
 
+void TestMeshTransform() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+
+  // Translation: the bounding box should shift by exactly the offset,
+  // volume unchanged.
+  const auto translated =
+      box.Transform(ON_Xform::TranslationTransformation(Vector3d(5, -3, 10)));
+  const auto translated_bounds = translated.GetBoundingBox();
+  Check(translated_bounds.min.x == 5.0 && translated_bounds.min.y == -3.0 &&
+            translated_bounds.min.z == 10.0 && translated_bounds.max.x == 7.0 &&
+            translated_bounds.max.y == -1.0 && translated_bounds.max.z == 12.0,
+        "translating the box shifts its bounding box by exactly the offset");
+  Check(std::abs(translated.Volume() - 8.0) < 1e-9,
+        "translation doesn't change the box's volume");
+
+  // Uniform scale by 2 about the origin: bounding box doubles, volume
+  // scales by 2^3 = 8 exactly (both hand-derivable, not approximate).
+  const auto scaled = box.Transform(ON_Xform::ScaleTransformation(Point3d(0, 0, 0), 2.0));
+  const auto scaled_bounds = scaled.GetBoundingBox();
+  Check(scaled_bounds.max.x == 4.0 && scaled_bounds.max.y == 4.0 && scaled_bounds.max.z == 4.0,
+        "scaling the box by 2 about the origin doubles its bounding box");
+  Check(std::abs(scaled.Volume() - 64.0) < 1e-9,
+        "scaling the box by 2 multiplies its volume by 2^3 = 8, giving 64");
+
+  // Rotation is volume-preserving regardless of angle/axis/center - a
+  // real invariant, not a coincidence of this particular box.
+  Vector3d rotation_axis(0.3, 0.6, 0.74162);
+  rotation_axis.Unitize();
+  ON_Xform rotation;
+  rotation.Rotation(/*angle_radians=*/0.7, rotation_axis, Point3d(0.5, -1.0, 2.0));
+  const auto rotated = box.Transform(rotation);
+  Check(std::abs(rotated.Volume() - 8.0) < 1e-6,
+        "rotating the box about an arbitrary axis/center preserves its volume");
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -1548,6 +1586,7 @@ int main() {
   TestTorusVolumeAndBoolean();
   TestMeshGetBoundingBox();
   TestMeshGetCentroid();
+  TestMeshTransform();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();

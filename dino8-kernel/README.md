@@ -459,6 +459,24 @@ What this repo does instead:
   used: its centroid is exactly the midpoint of each axis's extent, by
   symmetry, giving a clean hand-derivable exact match rather than a
   tolerance-based one.
+- `Mesh::Transform()` closes a real gap every earlier primitive had:
+  nothing here could move, rotate, or scale a mesh once built - each
+  primitive could only be positioned via its own constructor parameters
+  (`Cylinder()`'s `base_center`/`axis`, say), with no general way to
+  reposition the result afterward. Delegates directly to `ON_Mesh::
+  Transform` - verified as a real, working implementation (not a stub
+  like `ON_Brep::CreateMesh`) before relying on it - rather than
+  reimplementing per-vertex transformation here. Deliberately just one
+  method taking an `ON_Xform`, not separate `Translate()`/`Rotate()`/
+  `Scale()` wrappers: OpenNURBS' own `ON_Xform::TranslationTransformation`/
+  `ON_Xform::ScaleTransformation`/`ON_Xform::Rotation` already build
+  exactly those, and this header already includes `<opennurbs.h>` to use
+  them. Verified with hand-derivable exact results for all three:
+  translating shifts the bounding box by exactly the offset (volume
+  unchanged); scaling by 2 about the origin exactly doubles the bounding
+  box and multiplies volume by `2^3 = 8`; rotating about an arbitrary
+  axis/center preserves volume exactly, a real geometric invariant, not a
+  coincidence of one particular test box.
 
 ## What's still not done (as of chunk 2)
 
