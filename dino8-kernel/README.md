@@ -487,6 +487,33 @@ What this repo does instead:
   self-consistency with the implementation being tested: two boxes with
   volume 8 each and a 1×1×1 overlap give `(8-1)+(8-1) = 14` by that
   formula, matching what `Union - Intersection` computes.
+- `SubD::FromControlMesh()` gained a `crease_at_double_edges` parameter,
+  closing part of the "no crease support" gap this section had flagged.
+  OpenNURBS defines an interior SubD crease at a mesh "double edge": an
+  interior edge where two adjacent faces reference *distinct* vertex
+  indices at coincident 3D locations, rather than sharing one vertex
+  index (verified directly against the v8.34 source's own definition of
+  `ON_SubDFromMeshParameters::InteriorCreaseOption::AtMeshDoubleEdge`,
+  not guessed at from the name) - passing `true` switches
+  `ON_SubD::CreateFromMesh`'s parameters from `Smooth` to
+  `InteriorCreases`, which detects exactly that pattern. A caller wanting
+  a sharp fold along some edge duplicates that edge's two vertices on one
+  of the two faces meeting there; ordinary shared-index construction (as
+  every other primitive in this kernel builds) never produces a double
+  edge, so this is opt-in with no effect on existing meshes.
+  Verified with a real, measured behavioral difference, not just "it
+  didn't crash": a two-quad "hinge" mesh (two 1×1 quads folded 90° along a
+  shared edge, that edge double-vertexed) subdivided once with
+  `crease_at_double_edges=true` puts a genuine new subdivision point
+  exactly at the fold's straight-line midpoint `(0.5, 0, 0)` - the same
+  "creases/boundaries subdivide to stay exactly on their own line" rule
+  already verified for real mesh boundaries - while the same mesh without
+  the flag treats that edge as smooth and Catmull-Clark visibly rounds the
+  fold, pulling that point measurably off the line instead. Both cases
+  first confirmed to weld the double edge's coincident-but-distinct
+  indices into the same 6 SubD vertices either way - the flag only changes
+  that edge's tag (smooth vs. creased), not whether the mesh recognizes
+  the coincident points as one topological vertex.
 
 ## What's still not done (as of chunk 2)
 
@@ -528,11 +555,11 @@ What this repo does instead:
   sample counts.
 - `SubD` wraps real Catmull-Clark refinement, but not exact limit-surface
   evaluation — `ToApproximateMesh()` is the repeated-subdivision
-  approximation, not the true smooth surface, and there's no crease/
-  sharp-edge support (`ON_SubDFromMeshParameters::Smooth` is the only
-  option used), no SubD editing (adding/removing faces, extrude, etc.),
-  and no SubD ↔ Brep conversion (that direction is the stubbed
-  `BrepForm()`/`GetSurfaceBrep()` this section already flagged).
+  approximation, not the true smooth surface. Interior creases are now
+  supported (see below) but only that one crease option; no SubD editing
+  (adding/removing faces, extrude, etc.), and no SubD ↔ Brep conversion
+  (that direction is the stubbed `BrepForm()`/`GetSurfaceBrep()` this
+  section already flagged).
 - `.obj` support (`SaveObj()`/`LoadObj()`) only round-trips geometry - no
   normals, texture coordinates, materials, or groups. `.stl` support
   (`SaveStl()`) is export-only, and both are the only formats here - no

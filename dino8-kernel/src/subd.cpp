@@ -4,10 +4,12 @@
 
 namespace dino8::kernel {
 
-SubD SubD::FromControlMesh(const Mesh& control_mesh) {
+SubD SubD::FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges) {
   SubD result;
-  const ON_SubD* built = ON_SubD::CreateFromMesh(&control_mesh.raw(),
-                                                  &ON_SubDFromMeshParameters::Smooth, &result.subd_);
+  const ON_SubDFromMeshParameters& params = crease_at_double_edges
+                                                 ? ON_SubDFromMeshParameters::InteriorCreases
+                                                 : ON_SubDFromMeshParameters::Smooth;
+  const ON_SubD* built = ON_SubD::CreateFromMesh(&control_mesh.raw(), &params, &result.subd_);
   if (built == nullptr) {
     throw std::runtime_error(
         "dino8::kernel::SubD::FromControlMesh: ON_SubD::CreateFromMesh failed "

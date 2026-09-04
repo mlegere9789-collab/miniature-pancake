@@ -1067,6 +1067,86 @@ void TestSubDFromControlMeshRejectsEmptyMesh() {
   Check(threw, "SubD::FromControlMesh throws on a mesh with no faces");
 }
 
+// Builds two 1x1 quads hinged along the segment from (0,0,0) to (1,0,0):
+// quad A in the y=0 plane (extending in +z), quad B in the z=0 plane
+// (extending in +y). Quad B's two hinge-edge vertices are separate array
+// entries from quad A's, at the identical two locations - a genuine
+// "mesh double edge" (ON_SubDFromMeshParameters::InteriorCreaseOption::
+// AtMeshDoubleEdge's own definition), the construction
+// SubD::FromControlMesh(mesh, /*crease_at_double_edges=*/true)'s own
+// documentation asks for.
+dino8::kernel::Mesh MakeHingedDoubleEdgeMesh() {
+  dino8::kernel::Mesh hinge;
+  ON_Mesh& raw = hinge.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));  // 0
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));  // 1
+  raw.m_V.Append(ON_3fPoint(1, 0, 1));  // 2
+  raw.m_V.Append(ON_3fPoint(0, 0, 1));  // 3
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));  // 4: duplicate of 0's location
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));  // 5: duplicate of 1's location
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));  // 6
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));  // 7
+  auto add_quad = [&raw](int a, int b, int c, int d) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = d;
+    raw.m_F.Append(f);
+  };
+  add_quad(0, 1, 2, 3);
+  add_quad(4, 5, 6, 7);
+  return hinge;
+}
+
+void TestSubDCreaseAtDoubleEdgeKeepsFoldStraight() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const auto hinge = MakeHingedDoubleEdgeMesh();
+
+  // Both faces' double-edge vertices (distinct indices, same locations)
+  // still weld to the same 6 SubD vertices either way - the
+  // crease_at_double_edges flag only changes that edge's tag (smooth vs.
+  // creased), not whether the coincident points are recognized as one
+  // topological vertex.
+  auto smooth = SubD::FromControlMesh(hinge, /*crease_at_double_edges=*/false);
+  auto creased = SubD::FromControlMesh(hinge, /*crease_at_double_edges=*/true);
+  Check(smooth.VertexCount() == 6 && creased.VertexCount() == 6,
+        "both the smooth and creased SubDs weld the double-edge's "
+        "coincident-but-distinct-indexed vertices into 6 shared ones");
+
+  smooth.Subdivide(1);
+  creased.Subdivide(1);
+
+  // After one subdivision, the fold edge (0,0,0)-(1,0,0) gets a new
+  // subdivision point at its midpoint. For a genuine crease, that point
+  // must land exactly on the fold's original straight line - the same
+  // "boundary/crease edges subdivide to stay exactly on their own line"
+  // rule already verified for actual mesh boundaries. For a smooth edge,
+  // Catmull-Clark instead pulls it toward the two adjacent faces' interior
+  // (both faces here are perpendicular to each other), rounding the fold -
+  // provably NOT landing on that same point.
+  auto closest_to_fold_midpoint = [](const Mesh& mesh) {
+    const Point3d target(0.5, 0, 0);
+    double best_dist = 1e30;
+    for (int i = 0; i < mesh.raw().m_V.Count(); ++i) {
+      const double dist = (Point3d(mesh.raw().m_V[i]) - target).Length();
+      best_dist = std::min(best_dist, dist);
+    }
+    return best_dist;
+  };
+
+  Check(closest_to_fold_midpoint(creased.ToApproximateMesh()) < 1e-6,
+        "with crease_at_double_edges, the fold gets a real subdivision "
+        "point exactly at its straight-line midpoint (0.5, 0, 0)");
+  Check(closest_to_fold_midpoint(smooth.ToApproximateMesh()) > 0.05,
+        "without it, the same edge is treated as smooth and its "
+        "subdivision point is measurably pulled off that line instead - "
+        "proving the crease flag does something real, not a no-op");
+}
+
 void TestSubDFlatQuadGridStaysFlatAndAreaExact() {
   using dino8::kernel::Mesh;
   using dino8::kernel::SubD;
@@ -1611,6 +1691,7 @@ int main() {
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
+  TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestMeshSaveObjRoundTrips();
   TestMeshLoadObjRejectsMalformedFiles();

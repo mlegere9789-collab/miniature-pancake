@@ -29,7 +29,22 @@ class SubD {
   // each mesh face (triangle, quad, or n-gon) becomes one SubD face at
   // level 0. Throws std::runtime_error if OpenNURBS' own
   // ON_SubD::CreateFromMesh rejects the input (e.g. a mesh with no faces).
-  static SubD FromControlMesh(const Mesh& control_mesh);
+  //
+  // `crease_at_double_edges`, if true, creates an interior SubD crease
+  // (a sharp fold, not smoothed away by subdivision) at every "mesh
+  // double edge": an interior edge where two adjacent faces reference
+  // *distinct* vertex indices at coincident locations, rather than
+  // sharing the same vertex index (verified directly against the v8.34
+  // source's own definition of ON_SubDFromMeshParameters::
+  // InteriorCreaseOption::AtMeshDoubleEdge, not guessed). A caller wanting
+  // a crease along some edge must therefore duplicate that edge's two
+  // vertices (same 3D position, different array indices) in
+  // `control_mesh` on at least one of the two faces meeting there -
+  // ordinary shared-index construction (as every other primitive in this
+  // kernel builds) never produces a double edge, so this is opt-in and
+  // doesn't change behavior for existing meshes. Defaults to false
+  // (`ON_SubDFromMeshParameters::Smooth`, this class's original behavior).
+  static SubD FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges = false);
 
   // Applies `levels` rounds of real Catmull-Clark global subdivision in
   // place. Each round refines every face, edge, and vertex of the
