@@ -1116,6 +1116,27 @@ What this repo does instead:
   36 unshared vertices, and exact volume - the first time that
   auto-detection has been exercised against a real (not hand-written)
   binary file.
+- `Mesh::SetTextureCoordinates()`/`HasTextureCoordinates()`/
+  `TextureCoordinateAt()` add real per-vertex (u, v) texture coordinate
+  storage, backed by `ON_Mesh::m_S` - not the deprecated `m_T` OpenNURBS'
+  own header explicitly flags as superseded by `m_S` (confirmed by
+  reading `opennurbs_mesh.h`, not assumed). Same per-vertex-only
+  granularity as every other piece of data here (one position, one
+  computed normal per vertex) - there's no per-face-corner UV storage, so
+  a genuine UV seam can't be represented. `SaveObj()`/`LoadObj()` are
+  wired to this: `SaveObj()` writes a `vt` line per vertex and switches
+  face lines to `v/vt/vn` form whenever `HasTextureCoordinates()` is
+  true (unchanged `v//vn` form otherwise); `LoadObj()` reads `vt` lines
+  and any `v/vt`/`v/vt/vn` face references, storing each corner's texture
+  coordinate against that corner's *vertex*. Verified on the same 8
+  -vertex box `SaveObj()`'s own test uses: a full round trip through
+  `SaveObj()`/`LoadObj()` reproduces every vertex's exact texture
+  coordinate. Also verified the deliberately-chosen behavior for a file
+  where only some vertices are ever referenced with a `vt` (a legitimate
+  but partial-coverage `.obj`, which `ON_Mesh`'s own "every vertex or
+  none" convention for `m_S` can't represent): the reloaded mesh reports
+  no texture coordinates at all rather than guessing values for the
+  unreferenced vertices.
 
 ## What's still not done (as of chunk 2)
 
@@ -1169,12 +1190,13 @@ What this repo does instead:
   (adding/removing faces, extrude, etc.), and no SubD ↔ Brep conversion
   (that direction is the stubbed `BrepForm()`/`GetSurfaceBrep()` this
   section already flagged).
-- `.obj` support (`SaveObj()`/`LoadObj()`) round-trips geometry and now
-  writes real per-vertex normals (see above), but still no texture
-  coordinates, materials, or groups, and `LoadObj()` still only reads
-  `v`/`f` lines. `.stl` now round-trips both ASCII and binary STL (see
-  below). `.obj`/`.stl` are still the only formats here - no glTF, FBX,
-  etc.
+- `.obj` support (`SaveObj()`/`LoadObj()`) round-trips geometry, writes
+  real per-vertex normals, and now round-trips per-vertex texture
+  coordinates too (see below) - but still no materials or groups, and
+  `LoadObj()` still only reads `v`/`vt`/`f` lines (`vn` is read but
+  discarded, since normals here are always geometry-derived). `.stl` now
+  round-trips both ASCII and binary STL (see below). `.obj`/`.stl` are
+  still the only formats here - no glTF, FBX, etc.
 - Adaptive/curvature-aware meshing, the viewport/display engine, GPU path
   tracer, command engine, UI shell, visual scripting, undo system,
   installer, and everything else in the blueprint's roadmap — all

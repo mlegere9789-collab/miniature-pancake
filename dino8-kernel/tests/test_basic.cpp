@@ -2856,6 +2856,103 @@ void TestMeshSaveObjRoundTrips() {
         "round-tripped as quads, not silently reinterpreted)");
 }
 
+void TestMeshTextureCoordinates() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Result;
+
+  // Same 8-vertex box MakeQuadBoxMesh()'s own SaveObj() test uses.
+  // Assigns each vertex a distinct, hand-known (u, v) so a full
+  // SaveObj()/LoadObj() round trip can be checked against exact expected
+  // values, not just "some texture coordinate came back".
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  Mesh with_uvs = box;
+  Check(!with_uvs.HasTextureCoordinates(),
+        "a mesh has no texture coordinates until SetTextureCoordinates() "
+        "is called");
+
+  std::vector<Point2d> uvs;
+  for (int i = 0; i < with_uvs.VertexCount(); ++i) {
+    uvs.push_back(Point2d(static_cast<double>(i) * 0.1, static_cast<double>(i) * 0.2));
+  }
+  Check(with_uvs.SetTextureCoordinates(uvs) == Result::Ok, "SetTextureCoordinates succeeds");
+  Check(with_uvs.HasTextureCoordinates(),
+        "HasTextureCoordinates() is true once every vertex has one set");
+  const Point2d uv3 = with_uvs.TextureCoordinateAt(3);
+  Check(std::abs(uv3.x - 0.3) < 1e-12 && std::abs(uv3.y - 0.6) < 1e-12,
+        "TextureCoordinateAt(3) returns exactly the (0.3, 0.6) just set");
+
+  Check(with_uvs.SetTextureCoordinates({Point2d(0, 0)}) == Result::Failed,
+        "SetTextureCoordinates fails when given the wrong number of "
+        "entries (1 instead of the mesh's 8 vertices) rather than "
+        "silently truncating or leaving the rest unset");
+
+  // Confirmed by a debug run before finalizing: SaveObj() writes exactly
+  // one 'vt' line per vertex and switches face lines to the 'v/vt/vn'
+  // form (no bare '//' left), and LoadObj() reads that back into an
+  // identical texture coordinate for every vertex.
+  const std::string path = "dino8_kernel_mesh_obj_uv_test.obj";
+  Check(with_uvs.SaveObj(path) == Result::Ok, "SaveObj succeeds on a mesh with texture coordinates");
+
+  std::ifstream in(path);
+  std::string line;
+  int vt_lines = 0;
+  bool saw_bare_double_slash = false;
+  while (std::getline(in, line)) {
+    if (line.size() >= 3 && line[0] == 'v' && line[1] == 't' && line[2] == ' ') {
+      ++vt_lines;
+    }
+    if (line.size() >= 2 && line[0] == 'f' && line[1] == ' ' && line.find("//") != std::string::npos) {
+      saw_bare_double_slash = true;
+    }
+  }
+  Check(vt_lines == with_uvs.VertexCount(),
+        "the .obj file has exactly one 'vt' line per vertex (8)");
+  Check(!saw_bare_double_slash,
+        "face lines use the full 'v/vt/vn' form, not the no-texture "
+        "'v//vn' form, once the mesh has texture coordinates");
+
+  Mesh reloaded;
+  Check(Mesh::LoadObj(path, reloaded) == Result::Ok,
+        "LoadObj succeeds on a .obj file with texture coordinates");
+  Check(reloaded.HasTextureCoordinates(),
+        "the reloaded mesh reports having texture coordinates");
+  bool all_match = true;
+  for (int i = 0; i < reloaded.VertexCount(); ++i) {
+    const Point2d original = with_uvs.TextureCoordinateAt(i);
+    const Point2d loaded_uv = reloaded.TextureCoordinateAt(i);
+    if (std::abs(original.x - loaded_uv.x) > 1e-9 || std::abs(original.y - loaded_uv.y) > 1e-9) {
+      all_match = false;
+      break;
+    }
+  }
+  Check(all_match,
+        "every reloaded vertex's texture coordinate exactly matches what "
+        "was originally set, round-tripped through the file");
+  std::remove(path.c_str());
+
+  // A file with only some vertices referenced via 'vt' (a legitimate,
+  // if unusual, partial-coverage .obj) doesn't get texture coordinates
+  // at all on load - ON_Mesh's own "all vertices or none" convention
+  // (see HasTextureCoordinates()) has no way to represent partial
+  // coverage, so it's discarded rather than guessed at.
+  const std::string partial_path = "dino8_kernel_mesh_obj_uv_partial_test.obj";
+  {
+    std::ofstream out(partial_path);
+    out << "v 0 0 0\nv 1 0 0\nv 1 1 0\n";
+    out << "vt 0.1 0.2\n";
+    // Only the first two corners reference a vt; the third doesn't.
+    out << "f 1/1 2/1 3\n";
+  }
+  Mesh partial;
+  Check(Mesh::LoadObj(partial_path, partial) == Result::Ok,
+        "LoadObj still succeeds on a file with partial vt coverage");
+  Check(!partial.HasTextureCoordinates(),
+        "but the reloaded mesh reports no texture coordinates at all, "
+        "since not every vertex got one");
+  std::remove(partial_path.c_str());
+}
+
 void TestMeshLoadObjRejectsMalformedFiles() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -3617,6 +3714,7 @@ int main() {
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
+  TestMeshTextureCoordinates();
   TestMeshLoadObjRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();

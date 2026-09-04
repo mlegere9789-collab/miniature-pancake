@@ -21,31 +21,63 @@ namespace dino8::kernel {
 
 namespace {
 
-// Parses a .obj face-line token into a 1-based vertex index, accepting
-// both the plain "3" form SaveObj() writes and the "3/4/5"
-// (vertex/texture/normal) form other tools write - only the part before
-// the first '/' matters here, texture/normal indices are ignored (this
-// kernel's ON_Mesh has no per-face-corner texture/normal data to put
-// them in). Rejects anything else, including a negative (relative)
-// index - documented as unsupported in LoadObj()'s own comment - and
-// leaves `index` unchanged on failure.
-bool ParseObjFaceIndex(const std::string& token, int& index) {
-  const size_t slash = token.find('/');
-  const std::string first = (slash == std::string::npos) ? token : token.substr(0, slash);
-  if (first.empty()) {
+// Parses one '/'-separated field of a .obj face-line token into a
+// positive 1-based index. Empty (both slashes present but nothing
+// between them, e.g. the "v//vn" form's middle field) is treated as
+// "absent", not a parse failure - the caller distinguishes the two via
+// the returned bool.
+bool ParseObjIndexField(const std::string& field, int& value) {
+  if (field.empty()) {
     return false;
   }
   size_t consumed = 0;
-  int value = 0;
+  int parsed = 0;
   try {
-    value = std::stoi(first, &consumed);
+    parsed = std::stoi(field, &consumed);
   } catch (const std::exception&) {
     return false;
   }
-  if (consumed != first.size() || value <= 0) {
+  if (consumed != field.size() || parsed <= 0) {
     return false;
   }
-  index = value;
+  value = parsed;
+  return true;
+}
+
+// Parses a .obj face-line token into its 1-based vertex index (`v_index`,
+// required) and, if present, its 1-based texture-coordinate index
+// (`vt_index`, `has_vt` set true) - accepting the plain "3" form, the
+// "3/4" (vertex/texture) form, and the "3/4/5" (vertex/texture/normal)
+// and "3//5" (vertex/normal only) forms other tools write. The normal
+// index, when present, is parsed away but discarded - this kernel's
+// ON_Mesh has no per-face-corner normal data to put it in (vertex normals
+// here are always geometry-derived via ComputeVertexNormals(), never
+// stored independently). Rejects a malformed or non-positive vertex
+// index, including a negative (relative) one - documented as unsupported
+// in LoadObj()'s own comment. A malformed (non-empty but unparsable)
+// texture-coordinate field is also rejected, but its true *absence*
+// (the "v//vn" form) is not.
+bool ParseObjFaceIndex(const std::string& token, int& v_index, int& vt_index, bool& has_vt) {
+  has_vt = false;
+  const size_t first_slash = token.find('/');
+  const std::string first = (first_slash == std::string::npos) ? token : token.substr(0, first_slash);
+  if (!ParseObjIndexField(first, v_index)) {
+    return false;
+  }
+  if (first_slash == std::string::npos) {
+    return true;
+  }
+  const size_t second_slash = token.find('/', first_slash + 1);
+  const std::string second = (second_slash == std::string::npos)
+                                  ? token.substr(first_slash + 1)
+                                  : token.substr(first_slash + 1, second_slash - first_slash - 1);
+  if (second.empty()) {
+    return true;  // "v//vn" form - no texture coordinate for this corner
+  }
+  if (!ParseObjIndexField(second, vt_index)) {
+    return false;
+  }
+  has_vt = true;
   return true;
 }
 
@@ -356,6 +388,27 @@ std::vector<Vector3d> Mesh::ComputeVertexNormals() const {
   return normals;
 }
 
+Result Mesh::SetTextureCoordinates(const std::vector<Point2d>& uvs) {
+  if (static_cast<int>(uvs.size()) != mesh_.m_V.Count()) {
+    return Result::Failed;
+  }
+  mesh_.m_S.SetCount(0);
+  mesh_.m_S.Reserve(static_cast<int>(uvs.size()));
+  for (const Point2d& uv : uvs) {
+    mesh_.m_S.Append(ON_2dPoint(uv.x, uv.y));
+  }
+  return Result::Ok;
+}
+
+bool Mesh::HasTextureCoordinates() const {
+  return mesh_.m_V.Count() > 0 && mesh_.m_S.Count() == mesh_.m_V.Count();
+}
+
+Point2d Mesh::TextureCoordinateAt(int vertex_index) const {
+  const ON_2dPoint& s = mesh_.m_S[vertex_index];
+  return Point2d(s.x, s.y);
+}
+
 Mesh Mesh::FlipNormals() const {
   Mesh result = *this;
   ON_Mesh& out = result.mesh_;
@@ -436,12 +489,27 @@ Result Mesh::SaveObj(const std::string& path) const {
   for (const Vector3d& n : normals) {
     out << "vn " << n.x << ' ' << n.y << ' ' << n.z << '\n';
   }
+  const bool has_uvs = HasTextureCoordinates();
+  if (has_uvs) {
+    for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+      const Point2d uv = TextureCoordinateAt(i);
+      out << "vt " << uv.x << ' ' << uv.y << '\n';
+    }
+  }
   for (int i = 0; i < mesh_.m_F.Count(); ++i) {
     const ON_MeshFace& f = mesh_.m_F[i];
-    // OBJ vertex indices are 1-based. "v//vn" form: no texture
-    // coordinates, so the middle (vt) slot between the two slashes is
-    // left empty, per OBJ's own convention for "no vt".
-    auto write_corner = [&out](int vi) { out << (vi + 1) << "//" << (vi + 1); };
+    // OBJ vertex indices are 1-based. Without texture coordinates, "v//vn"
+    // form leaves the middle (vt) slot empty, per OBJ's own convention
+    // for "no vt"; with them, "v/vt/vn" form references the same vertex
+    // index for all three (this kernel has no per-face-corner UV data, so
+    // vt and v always coincide here).
+    auto write_corner = [&out, has_uvs](int vi) {
+      if (has_uvs) {
+        out << (vi + 1) << '/' << (vi + 1) << '/' << (vi + 1);
+      } else {
+        out << (vi + 1) << "//" << (vi + 1);
+      }
+    };
     out << "f ";
     write_corner(f.vi[0]);
     out << ' ';
@@ -467,6 +535,14 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
   Mesh result;
   ON_Mesh& raw = result.mesh_;
 
+  std::vector<Point2d> texture_coords;
+  // Vertex index (0-based) -> texture coordinate, populated only for
+  // vertices actually referenced with a `vt` in some face corner. Last
+  // write wins if two corners sharing a vertex reference different `vt`
+  // entries - see LoadObj()'s own doc comment on why (per-vertex-only
+  // storage can't represent a genuine UV seam).
+  std::map<int, Point2d> vertex_uv_by_index;
+
   std::string line;
   while (std::getline(in, line)) {
     std::istringstream stream(line);
@@ -479,15 +555,25 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
         return Result::Failed;
       }
       raw.m_V.Append(ON_3fPoint(x, y, z));
+    } else if (tag == "vt") {
+      double u, v;
+      if (!(stream >> u >> v)) {
+        return Result::Failed;
+      }
+      texture_coords.push_back(Point2d(u, v));
     } else if (tag == "f") {
       std::vector<int> indices;
+      std::vector<int> vt_indices;  // -1 for a corner with no vt reference
       std::string token;
       while (stream >> token) {
-        int index = 0;
-        if (!ParseObjFaceIndex(token, index)) {
+        int v_index = 0;
+        int vt_index = 0;
+        bool has_vt = false;
+        if (!ParseObjFaceIndex(token, v_index, vt_index, has_vt)) {
           return Result::Failed;
         }
-        indices.push_back(index);
+        indices.push_back(v_index);
+        vt_indices.push_back(has_vt ? vt_index : -1);
       }
       if (indices.size() < 3 || indices.size() > 4) {
         return Result::Failed;
@@ -497,6 +583,17 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
           return Result::Failed;  // forward/unknown reference, or out of range
         }
       }
+      for (const int vt_index : vt_indices) {
+        if (vt_index != -1 && (vt_index < 1 || vt_index > static_cast<int>(texture_coords.size()))) {
+          return Result::Failed;  // forward/unknown vt reference, or out of range
+        }
+      }
+      for (size_t i = 0; i < indices.size(); ++i) {
+        if (vt_indices[i] != -1) {
+          vertex_uv_by_index[indices[i] - 1] =
+              texture_coords[static_cast<size_t>(vt_indices[i]) - 1];
+        }
+      }
       ON_MeshFace face;
       face.vi[0] = indices[0] - 1;
       face.vi[1] = indices[1] - 1;
@@ -504,8 +601,24 @@ Result Mesh::LoadObj(const std::string& path, Mesh& out_mesh) {
       face.vi[3] = (indices.size() == 4) ? indices[3] - 1 : indices[2] - 1;
       raw.m_F.Append(face);
     }
-    // Every other tag (comments, vt/vn, g/o, mtllib/usemtl, s, ...) is
-    // silently skipped - this kernel only round-trips geometry.
+    // Every other tag (comments, vn, g/o, mtllib/usemtl, s, ...) is
+    // silently skipped - this kernel only round-trips geometry (and, now,
+    // per-vertex texture coordinates).
+  }
+
+  // Only store texture coordinates if every vertex ended up with one -
+  // ON_Mesh's own "m_S.Count() == m_V.Count() or ignore it entirely"
+  // convention (see HasTextureCoordinates()) has no way to represent
+  // "some vertices have a UV, others don't", so a partial set (some
+  // referenced with `vt`, some never referenced at all) is discarded
+  // rather than guessing placeholder values for the rest.
+  if (!vertex_uv_by_index.empty() &&
+      static_cast<int>(vertex_uv_by_index.size()) == raw.m_V.Count()) {
+    std::vector<Point2d> uvs(static_cast<size_t>(raw.m_V.Count()));
+    for (const auto& [index, uv] : vertex_uv_by_index) {
+      uvs[static_cast<size_t>(index)] = uv;
+    }
+    result.SetTextureCoordinates(uvs);
   }
 
   out_mesh = std::move(result);

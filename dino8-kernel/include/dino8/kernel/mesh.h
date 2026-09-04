@@ -115,6 +115,36 @@ class Mesh {
   // zero vector (nothing to average).
   std::vector<Vector3d> ComputeVertexNormals() const;
 
+  // Sets one (u, v) texture coordinate per vertex, stored in ON_Mesh's own
+  // `m_S` array (not the deprecated `m_T` - OpenNURBS' own header flags
+  // `m_T` "DEPRECATED... use m_S instead", confirmed by reading
+  // opennurbs_mesh.h rather than assumed). Same per-vertex-only
+  // granularity every other piece of data here has (one position, one
+  // computed normal per vertex) - there's no per-face-corner UV storage,
+  // so a genuine UV seam (the same vertex needing different texture
+  // coordinates depending on which face is looking at it, e.g. wrapping a
+  // texture around a cylinder's seam) can't be represented; the caller
+  // gets one shared value for that vertex across every face touching it.
+  // Returns Result::Failed if `uvs.size()` doesn't exactly equal
+  // `VertexCount()` rather than silently truncating or leaving vertices
+  // unset.
+  Result SetTextureCoordinates(const std::vector<Point2d>& uvs);
+
+  // Whether this mesh currently has a texture coordinate for every vertex
+  // - true only if SetTextureCoordinates() was called with exactly
+  // VertexCount() many entries (ON_Mesh's own convention: `m_S.Count() ==
+  // m_V.Count()` means "has texture coordinates", any other count means
+  // "ignore m_S entirely", so a partially-set or stale `m_S` from before a
+  // vertex-count-changing operation is correctly reported as "no texture
+  // coordinates" rather than misread).
+  bool HasTextureCoordinates() const;
+
+  // The texture coordinate at `vertex_index`, previously set via
+  // SetTextureCoordinates(). Caller must check HasTextureCoordinates()
+  // first; behavior is whatever ON_Mesh's own `m_S[]` array indexing does
+  // if it doesn't (out-of-range access), not a checked exception.
+  Point2d TextureCoordinateAt(int vertex_index) const;
+
   // Returns a copy of this mesh with every face's winding reversed (each
   // face's own vertex loop reversed in place, not the vertex list
   // reordered) - flipping which side is "outward" without moving a single
@@ -160,35 +190,45 @@ class Mesh {
   // vertex lines, `f i j k` / `f i j k l` 1-indexed face lines - OBJ
   // supports quad faces natively, so a quad face is written as one
   // 4-index line rather than split into two triangles). Also writes each
-  // vertex's own `vn` line, via ComputeVertexNormals(), and references it
-  // from every face line in `v//vn` form (no texture coordinates, so the
-  // middle slot is left empty, same as OBJ's own convention for "no vt"),
-  // so a viewer gets real smooth-shading normals instead of falling back
-  // to its own flat per-facet ones. This is the first "other file format"
-  // this kernel writes, alongside the .3dm support in file_io.h - a
-  // deliberately simple, widely-supported format so anything built here
-  // can actually be opened and looked at in an ordinary 3D viewer
-  // (Blender, MeshLab, etc.), not just verified by its own numbers.
-  // Returns Result::Failed if the file can't be opened for writing; does
-  // not validate the mesh's own geometry (an empty mesh writes a valid,
-  // empty .obj).
+  // vertex's own `vn` line, via ComputeVertexNormals(), so a viewer gets
+  // real smooth-shading normals instead of falling back to its own flat
+  // per-facet ones. If HasTextureCoordinates() is true, also writes each
+  // vertex's own `vt` line and references it from every face line in
+  // `v/vt/vn` form; otherwise face lines use `v//vn` (the middle slot
+  // left empty, OBJ's own convention for "no vt") - same as before this
+  // texture-coordinate support existed. This is the first "other file
+  // format" this kernel writes, alongside the .3dm support in
+  // file_io.h - a deliberately simple, widely-supported format so
+  // anything built here can actually be opened and looked at in an
+  // ordinary 3D viewer (Blender, MeshLab, etc.), not just verified by its
+  // own numbers. Returns Result::Failed if the file can't be opened for
+  // writing; does not validate the mesh's own geometry (an empty mesh
+  // writes a valid, empty .obj).
   Result SaveObj(const std::string& path) const;
 
   // Reads a plain-text Wavefront .obj file written by SaveObj() (or any
-  // other reasonably well-formed .obj) into `out_mesh`. Only `v` (vertex)
-  // and `f` (face) lines are understood - `vn` (including the ones
-  // SaveObj() itself now writes), texture coordinates, materials, groups,
-  // and negative (relative) indices are all silently skipped, since a
-  // face's geometry is already fully determined by its vertex indices
-  // alone; round-tripping through SaveObj()/LoadObj() reproduces the same
-  // geometry (and the same normals, recomputed from it) but not
-  // necessarily the same file bytes. A face line with
-  // more than 4 indices is rejected rather than silently fan-triangulated
-  // (this kernel's own ON_MeshFace only holds a triangle or quad, so
-  // reading, say, a 5-gon would need to change its meaning without
-  // telling the caller). Returns Result::Failed if the file can't be
-  // opened, a face line references a vertex index that doesn't exist yet
-  // (must appear before any face referencing it, same requirement any
+  // other reasonably well-formed .obj) into `out_mesh`. `v` (vertex), `f`
+  // (face), and now `vt` (texture coordinate) lines are understood; `vn`
+  // (including the ones SaveObj() itself writes - vertex normals here are
+  // always geometry-derived via ComputeVertexNormals(), never stored
+  // independently), materials, groups, and negative (relative) indices
+  // are all silently skipped. If any face line carries a `vt` reference
+  // (the `v/vt` or `v/vt/vn` forms), the referenced texture coordinate is
+  // stored for that corner's *vertex* (SetTextureCoordinates()'s own
+  // per-vertex granularity, not per-corner) - if two different face
+  // corners sharing a vertex reference different `vt` entries (a
+  // legitimate general-OBJ construct for a UV seam, which this kernel's
+  // per-vertex-only texture coordinates can't represent), whichever face
+  // is read last silently wins for that vertex, not an error. Loading a
+  // file with no `vt` references at all leaves HasTextureCoordinates()
+  // false on the result, same as a mesh that never had
+  // SetTextureCoordinates() called. A face line with more than 4 indices
+  // is rejected rather than silently fan-triangulated (this kernel's own
+  // ON_MeshFace only holds a triangle or quad, so reading, say, a 5-gon
+  // would need to change its meaning without telling the caller).
+  // Returns Result::Failed if the file can't be opened, a face line
+  // references a vertex or texture-coordinate index that doesn't exist
+  // yet (must appear before any face referencing it, same requirement any
   // valid .obj already satisfies), or a face has more than 4 or fewer
   // than 3 indices - `out_mesh` is left unspecified in that case, not
   // partially filled and silently trusted.
