@@ -1485,6 +1485,11 @@ Mesh Mesh::LoftClosedRings(const std::vector<std::vector<Point3d>>& rings) {
 
 Mesh Mesh::Torus(Point3d center, Vector3d axis, double major_radius, double minor_radius,
                  int major_segments, int minor_segments) {
+  if (major_segments < 3 || minor_segments < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::Torus: major_segments and minor_segments must "
+        "each be at least 3");
+  }
   Vector3d n = axis;
   n.Unitize();
 

@@ -1596,6 +1596,13 @@ What this repo does instead:
   throwing `std::invalid_argument` below 3 (the minimum for a
   non-degenerate ring), verified across four values (`0`, `1`, `2`, and a
   negative count) rather than just the one zero case.
+- The same pattern again, one function over: `Mesh::Torus()`'s
+  `major_segments`/`minor_segments` had the identical unvalidated gap -
+  a debug run confirmed a `0` value for either produces a fully empty
+  (0 vertices, 0 faces) mesh rather than a crash or thrown error, since
+  the corresponding vertex-generation loop simply never runs. Fixed the
+  same way as `RevolveProfile()`: throws `std::invalid_argument` below 3,
+  checked independently for each parameter.
 
 ## What's still not done (as of chunk 2)
 

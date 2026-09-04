@@ -3524,6 +3524,35 @@ void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
         "unit box equals prism volume + 1");
 }
 
+void TestTorusRejectsTooFewSegments() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Same real gap and fix as RevolveProfile()'s revolve_segments: a
+  // debug run confirmed the old, unguarded behavior at
+  // major_segments=0/minor_segments=0 wasn't a crash, just a silently
+  // empty mesh (V=0, F=0 in both cases, since the corresponding
+  // vertex-generation loop simply never ran). Now throws below 3.
+  bool threw_on_major = false;
+  try {
+    Mesh::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 3.0, 1.0, /*major_segments=*/0,
+                /*minor_segments=*/16);
+  } catch (const std::invalid_argument&) {
+    threw_on_major = true;
+  }
+  Check(threw_on_major, "Torus throws std::invalid_argument when major_segments is below 3");
+
+  bool threw_on_minor = false;
+  try {
+    Mesh::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 3.0, 1.0, /*major_segments=*/16,
+                /*minor_segments=*/2);
+  } catch (const std::invalid_argument&) {
+    threw_on_minor = true;
+  }
+  Check(threw_on_minor, "Torus throws std::invalid_argument when minor_segments is below 3");
+}
+
 void TestTorusVolumeAndBoolean() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -5158,6 +5187,7 @@ int main() {
   TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();
   TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
   TestLoftClosedRingsConcaveEndCapsExactPrismVolume();
+  TestTorusRejectsTooFewSegments();
   TestTorusVolumeAndBoolean();
   TestMeshGetBoundingBox();
   TestMeshGetCentroid();

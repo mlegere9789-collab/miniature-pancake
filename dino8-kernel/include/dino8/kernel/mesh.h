@@ -479,6 +479,14 @@ class Mesh {
   // 2*pi^2*major_radius*minor_radius^2 as `major_segments`/
   // `minor_segments` increase, same caveat as Cylinder()/Cone()'s
   // circular approximation.
+  //
+  // Throws std::invalid_argument if either segment count is less than
+  // 3 - the same real, previously-missing validation
+  // `RevolveProfile()`'s own `revolve_segments` just got: a debug run
+  // confirmed a `0` count here has the identical silent-failure pattern
+  // (a `major_segments`/`minor_segments` value of 0 makes the
+  // corresponding vertex-generation loop simply never run, producing a
+  // fully empty, faceless mesh instead of a thrown error).
   static Mesh Torus(Point3d center, Vector3d axis, double major_radius, double minor_radius,
                      int major_segments = 48, int minor_segments = 24);
 
