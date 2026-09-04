@@ -804,6 +804,39 @@ void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
         "unit box equals prism volume + 1");
 }
 
+void TestTorusVolumeAndBoolean() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double major_radius = 3.0;
+  const double minor_radius = 1.0;
+  // A shape neither RevolveProfile() (profile must touch the axis) nor
+  // any earlier primitive can build - a genuinely new case, not a
+  // reparameterization of one already tested. Its winding was derived
+  // independently (see Torus()'s own header comment), so this needs its
+  // own real verification, not a "should be fine, it's similar to X."
+  const auto torus = Mesh::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), major_radius, minor_radius,
+                                  /*major_segments=*/48, /*minor_segments=*/32);
+
+  const double exact_volume = 2.0 * ON_PI * ON_PI * major_radius * minor_radius * minor_radius;
+  const double relative_error = std::abs(torus.Volume() - exact_volume) / exact_volume;
+  Check(relative_error < 0.01,
+        "torus volume is within 1% of the exact 2*pi^2*major_radius*minor_radius^2");
+
+  // Real proof of watertightness, same standard as every other solid
+  // here: Manifold would reject a non-manifold mesh outright rather than
+  // return a plausible-looking wrong answer - a meaningful check for a
+  // grid that wraps in both directions with no explicit end caps at all.
+  const auto box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const auto result = BooleanCombine(torus, box, BooleanOp::Union);
+  Check(std::abs(result.Volume() - (torus.Volume() + 1.0)) < 1e-6,
+        "union of the torus with a disjoint unit box equals torus volume + 1");
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -1402,6 +1435,7 @@ int main() {
   TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();
   TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
   TestLoftClosedRingsConcaveEndCapsExactPrismVolume();
+  TestTorusVolumeAndBoolean();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();

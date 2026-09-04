@@ -212,6 +212,35 @@ class Mesh {
   // and RevolveProfile().
   static Mesh LoftClosedRings(const std::vector<std::vector<Point3d>>& rings);
 
+  // Builds a real torus: a circular tube of `minor_radius`, swept around
+  // `axis` at `major_radius` from `center`. Doesn't fit any earlier
+  // primitive's shape: RevolveProfile()'s profile must start and end on
+  // the axis, but a torus's circular cross-section never touches the
+  // axis at all (it's a full loop offset from it) - a genuinely different
+  // case, not a special case of RevolveProfile() with different
+  // parameters. Built directly as a `major_segments` x `minor_segments`
+  // quad grid that wraps in *both* directions (unlike Cylinder()/Cone(),
+  // there's no boundary anywhere on a torus, so no end caps or
+  // ExtrudeCappedSolid()/ConeToApex() call is needed - the grid is
+  // already a closed manifold by construction).
+  //
+  // The winding was derived independently from Cylinder()'s/
+  // RevolveProfile()'s (a torus isn't built from either), but checks
+  // against the same standing rule this file always uses: parameterizing
+  // by (major angle, minor angle) and evaluating (d/d-major-angle) x
+  // (d/d-minor-angle) at the tube's outer equator gives the radially
+  // outward direction, confirming grid cell winding
+  // tri1=(v(i,j),v(i+1,j),v(i+1,j+1)), tri2=(v(i,j),v(i+1,j+1),v(i,j+1))
+  // (the same cell-winding convention TessellateGrid() uses) is correct
+  // here too.
+  //
+  // Volume approaches (not exactly equals) the ideal
+  // 2*pi^2*major_radius*minor_radius^2 as `major_segments`/
+  // `minor_segments` increase, same caveat as Cylinder()/Cone()'s
+  // circular approximation.
+  static Mesh Torus(Point3d center, Vector3d axis, double major_radius, double minor_radius,
+                     int major_segments = 48, int minor_segments = 24);
+
  private:
   friend class Brep;
   friend class NurbsSurface;

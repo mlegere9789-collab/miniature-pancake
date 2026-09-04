@@ -381,13 +381,33 @@ What this repo does instead:
   file: exactly 12 facets (2 per quad, not 6), and the first facet's
   normal matches the bottom face's known outward direction `(0,0,-1)`
   exactly, not a placeholder or an arbitrary sign.
+- `Mesh::Torus()` is a genuinely new primitive shape, not a
+  reparameterization of an existing one: `RevolveProfile()`'s profile
+  must start and end on the axis, but a torus's circular cross-section
+  never touches the axis at all, so it doesn't fit that method's scope.
+  Built directly as a `major_segments` x `minor_segments` quad grid that
+  wraps in *both* directions - unlike `Cylinder()`/`Cone()`, a torus has
+  no boundary anywhere, so no end caps or `ExtrudeCappedSolid()`/
+  `ConeToApex()` call is needed at all; the grid is already closed by
+  construction. The winding was derived independently (parameterizing by
+  major/minor angle and evaluating the two tangent directions' cross
+  product at the tube's outer equator gives the radially outward
+  direction, confirming the same cell-winding convention
+  `TessellateGrid()` already uses), not copied from Cylinder's or
+  RevolveProfile's derivation, since neither actually applies here.
+  Verified within 1% of the exact `2*pi^2*major_radius*minor_radius^2`
+  volume, plus the same Manifold-union watertightness proof as every
+  other solid here - a meaningful check specifically because a
+  both-directions-wrapping grid has more ways to end up non-manifold than
+  a grid with a boundary does.
 
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
   (+ `hole_loops_uv`) + `Mesh::ExtrudeCappedSolid()`/`Mesh::Cylinder()`/
   `Mesh::ConeToApex()`/`Mesh::Cone()`/`Mesh::RevolveProfile()`/
-  `Mesh::LoftClosedRings()` are the only shapes/operations here.
+  `Mesh::LoftClosedRings()`/`Mesh::Torus()` are the only shapes/operations
+  here.
   `RevolveProfile()` only supports a profile that starts and ends on the
   axis (no flat end rim); `LoftClosedRings()`'s end caps require each ring
   to be planar and simple (non-self-intersecting) - not validated,

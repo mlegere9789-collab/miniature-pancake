@@ -713,4 +713,65 @@ Mesh Mesh::LoftClosedRings(const std::vector<std::vector<Point3d>>& rings) {
   return result;
 }
 
+Mesh Mesh::Torus(Point3d center, Vector3d axis, double major_radius, double minor_radius,
+                 int major_segments, int minor_segments) {
+  Vector3d n = axis;
+  n.Unitize();
+
+  // Arbitrary orthonormal in-plane basis (ex, ey) perpendicular to n -
+  // the same "pick a non-parallel reference vector, cross twice" trick
+  // used everywhere else in this file (Cylinder(), RevolveProfile()).
+  const Vector3d reference = (std::abs(n.z) < 0.9) ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+  Vector3d ex = ON_CrossProduct(reference, n);
+  ex.Unitize();
+  const Vector3d ey = ON_CrossProduct(n, ex);
+
+  Mesh result;
+  ON_Mesh& out = result.mesh_;
+
+  // Grid indexed [major][minor], row-major, matching this file's other
+  // grid_index() helpers (see NurbsSurface::TessellateGrid).
+  auto grid_index = [minor_segments](int i, int j) { return i * minor_segments + j; };
+
+  out.m_V.Reserve(major_segments * minor_segments);
+  for (int i = 0; i < major_segments; ++i) {
+    const double phi = 2.0 * ON_PI * static_cast<double>(i) / major_segments;
+    const Vector3d radial = ex * std::cos(phi) + ey * std::sin(phi);
+    for (int j = 0; j < minor_segments; ++j) {
+      const double theta = 2.0 * ON_PI * static_cast<double>(j) / minor_segments;
+      const Point3d p = center + radial * (major_radius + minor_radius * std::cos(theta)) +
+                         n * (minor_radius * std::sin(theta));
+      out.m_V.Append(ON_3fPoint(p));
+    }
+  }
+
+  out.m_F.Reserve(major_segments * minor_segments * 2);
+  for (int i = 0; i < major_segments; ++i) {
+    const int i2 = (i + 1) % major_segments;
+    for (int j = 0; j < minor_segments; ++j) {
+      const int j2 = (j + 1) % minor_segments;
+      const int v00 = grid_index(i, j);
+      const int v10 = grid_index(i2, j);
+      const int v11 = grid_index(i2, j2);
+      const int v01 = grid_index(i, j2);
+
+      ON_MeshFace tri1;
+      tri1.vi[0] = v00;
+      tri1.vi[1] = v10;
+      tri1.vi[2] = v11;
+      tri1.vi[3] = v11;
+      out.m_F.Append(tri1);
+
+      ON_MeshFace tri2;
+      tri2.vi[0] = v00;
+      tri2.vi[1] = v11;
+      tri2.vi[2] = v01;
+      tri2.vi[3] = v01;
+      out.m_F.Append(tri2);
+    }
+  }
+
+  return result;
+}
+
 }  // namespace dino8::kernel
