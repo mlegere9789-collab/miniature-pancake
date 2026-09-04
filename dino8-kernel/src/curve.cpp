@@ -51,4 +51,6 @@ double NurbsCurve::Length(int samples) const {
   return length;
 }
 
+Vector3d NurbsCurve::TangentAt(double t) const { return curve_.TangentAt(t); }
+
 }  // namespace dino8::kernel

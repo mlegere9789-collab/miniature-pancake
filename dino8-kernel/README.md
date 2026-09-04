@@ -650,6 +650,18 @@ What this repo does instead:
   neighbors - `IsClosedManifold()` can't and shouldn't distinguish that
   from "right side out" (`Volume()`'s sign is what carries that
   information).
+- `NurbsCurve::TangentAt()` fills a small gap next to `Length()`: the unit
+  direction of travel along the curve at a given parameter, delegating
+  directly to `ON_Curve::TangentAt` after verifying (by reading the v8.34
+  source) that it's a real implementation calling through to
+  `Ev1Der`/`EvTangent`, not a stub - the same discipline `Length()`
+  already applied when it found `ON_Curve` had no arc-length method at
+  all. Verified with a hand-derivable exact case (a straight-line curve's
+  tangent is exactly its own unit direction, `(3/5, 4/5, 0)`, at every
+  parameter value tested, with no curvature to introduce variation) and a
+  measured one for a genuinely curved curve: `TangentAt()` agrees with a
+  central-finite-difference approximation of the curve's own derivative
+  at several parameter values, not just "returns some unit vector."
 
 ## What's still not done (as of chunk 2)
 

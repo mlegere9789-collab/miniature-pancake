@@ -45,6 +45,14 @@ class NurbsCurve {
   // sample count.
   double Length(int samples = 1000) const;
 
+  // Unit tangent direction at parameter `t` - the direction of travel
+  // along the curve, not a raw (unnormalized) derivative. Delegates to
+  // `ON_Curve::TangentAt` - verified as a real implementation (calls
+  // through to `Ev1Der`/`EvTangent`, not a stub like `ON_Brep::CreateMesh`
+  // or `ON_SubD::BrepForm`) before relying on it, same standing discipline
+  // this file already applied to `Length()`.
+  Vector3d TangentAt(double t) const;
+
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }
 

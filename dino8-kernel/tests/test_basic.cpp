@@ -88,6 +88,57 @@ void TestCurveLength() {
         "limit, not diverging");
 }
 
+void TestCurveTangentAt() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A straight-line curve's tangent is exactly the line's own unit
+  // direction at every parameter value - no curvature to introduce any
+  // variation, so this is hand-derivable exact rather than approximate.
+  const std::vector<Point3d> line_pts = {Point3d(0, 0, 0), Point3d(3, 4, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  const ON_Interval line_domain = line.raw().Domain();
+  const Vector3d expected_direction(3.0 / 5.0, 4.0 / 5.0, 0.0);
+  for (const double normalized_t : {0.0, 0.25, 0.5, 0.75, 1.0}) {
+    const double t = line_domain.ParameterAt(normalized_t);
+    const Vector3d tangent = line.TangentAt(t);
+    Check(std::abs(tangent.x - expected_direction.x) < 1e-9 &&
+              std::abs(tangent.y - expected_direction.y) < 1e-9 &&
+              std::abs(tangent.z - expected_direction.z) < 1e-9,
+          "a straight-line curve's tangent is exactly its own unit "
+          "direction (3/5, 4/5, 0) at every parameter value");
+  }
+
+  // A genuinely curved case: TangentAt() should point the same way as a
+  // central-finite-difference approximation of the derivative at the
+  // same parameter - measured agreement, not just "it returns a unit
+  // vector."
+  const std::vector<Point3d> curved_pts = {
+      Point3d(0, 0, 0),
+      Point3d(1, 3, 0),
+      Point3d(2, -3, 0),
+      Point3d(3, 0, 0),
+  };
+  const NurbsCurve curved = NurbsCurve::FromControlPoints(curved_pts, /*degree=*/3);
+  const ON_Interval curved_domain = curved.raw().Domain();
+  constexpr double kFiniteDifferenceStep = 1e-5;
+  for (const double normalized_t : {0.2, 0.4, 0.6, 0.8}) {
+    const double t = curved_domain.ParameterAt(normalized_t);
+    const Vector3d tangent = curved.TangentAt(t);
+    Check(std::abs(tangent.Length() - 1.0) < 1e-9, "TangentAt() returns a unit vector");
+
+    const Point3d before = curved.PointAt(t - kFiniteDifferenceStep);
+    const Point3d after = curved.PointAt(t + kFiniteDifferenceStep);
+    Vector3d finite_difference = after - before;
+    finite_difference.Unitize();
+    const double alignment = ON_DotProduct(tangent, finite_difference);
+    Check(alignment > 1.0 - 1e-6,
+          "TangentAt() points the same way as a central-finite-difference "
+          "approximation of the curve's own derivative");
+  }
+}
+
 void TestSurfaceDegreeElevation() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -1991,6 +2042,7 @@ int main() {
 
   TestCurveDegreeElevation();
   TestCurveLength();
+  TestCurveTangentAt();
   TestSurfaceDegreeElevation();
   TestFileRoundTrip();
   TestBrepTessellation();
