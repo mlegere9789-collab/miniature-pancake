@@ -2648,6 +2648,78 @@ void TestExactClippingHandlesTrimVertexOnGridLine() {
         "with a disjoint unit box equals solid volume + 1");
 }
 
+void TestExactClippingHandlesManyReflexVertexComb() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A genuinely pathological concave trim the README's own "what's still
+  // not done" section flagged as unexercised: a "comb" with many reflex
+  // vertices (2 per tooth, 12 total for 6 teeth), whose tooth/gap widths
+  // are only a few tessellation cells wide - not just one dart's single
+  // reflex vertex. Built parametrically (not one hand-typed vertex list)
+  // so its area can be derived from the same tooth_count/tooth_width/
+  // base_height/tooth_top values that generate the vertices, rather than
+  // computed by hand off the coordinates and risking a transcription
+  // error - the same "trust the formula, not arithmetic on hardcoded
+  // numbers" approach the annulus test elsewhere in this file already
+  // uses (outer area minus inner area, computed programmatically).
+  const int tooth_count = 6;
+  const double base_height = 0.15;
+  const double tooth_top = 0.9;
+  const double tooth_width = 0.09;
+  const double total_tooth_width = tooth_count * tooth_width;
+  const double gap_width = (1.0 - total_tooth_width) / (tooth_count + 1);
+
+  std::vector<Point2d> comb = {Point2d(0.0, 0.0), Point2d(1.0, 0.0), Point2d(1.0, base_height)};
+  double x = 1.0 - gap_width;
+  for (int i = 0; i < tooth_count; ++i) {
+    const double tooth_right = x;
+    const double tooth_left = tooth_right - tooth_width;
+    comb.push_back(Point2d(tooth_right, base_height));
+    comb.push_back(Point2d(tooth_right, tooth_top));
+    comb.push_back(Point2d(tooth_left, tooth_top));
+    comb.push_back(Point2d(tooth_left, base_height));
+    x = tooth_left - gap_width;
+  }
+  comb.push_back(Point2d(0.0, base_height));
+
+  const double expected_area =
+      base_height * 1.0 + static_cast<double>(tooth_count) * tooth_width * (tooth_top - base_height);
+
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface surface =
+      NurbsSurface::FromControlGrid(grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  const Brep face = Brep::TrimmedPlanarFace(surface, comb, /*exact_clip=*/true);
+  const auto mesh = face.Tessellate(/*u_divisions=*/32, /*v_divisions=*/32).front();
+
+  Check(std::abs(mesh.Area() - expected_area) < 1e-6,
+        "exact clipping measures a many-reflex-vertex comb's true area "
+        "exactly, even with tooth/gap widths only a few tessellation "
+        "cells wide");
+
+  const auto solid = Mesh::ExtrudeCappedSolid(mesh, Vector3d(0, 0, -1));
+  Check(std::abs(solid.Volume() - expected_area) < 1e-6,
+        "the comb solid's volume equals its cap area times unit height");
+
+  const auto box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const auto result = BooleanCombine(solid, box, BooleanOp::Union);
+  Check(std::abs(result.Volume() - (solid.Volume() + 1.0)) < 1e-9,
+        "Manifold accepts the comb solid as watertight even with its many "
+        "reflex vertices and narrow teeth: union with a disjoint unit "
+        "box equals solid volume + 1");
+}
+
 void TestExactClippingRejectsSelfIntersectingTrim() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -2904,6 +2976,7 @@ int main() {
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestExactClippingHandlesTrimVertexOnGridLine();
+  TestExactClippingHandlesManyReflexVertexComb();
   TestExactClippingRejectsSelfIntersectingTrim();
   TestAnnulusFaceExtrudesToWatertightTube();
   TestExtrudeRejectsAlreadyClosedCap();

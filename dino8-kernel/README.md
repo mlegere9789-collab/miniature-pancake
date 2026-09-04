@@ -907,6 +907,20 @@ What this repo does instead:
   `LoadStl()` fails (rather than silently misinterpreting) a facet with
   fewer than 3 vertices. Doesn't attempt to detect or reject a binary
   `.stl` file - a different format entirely that needs a separate parser.
+- `TessellateGridClippedExact()`'s concave path closes the last gap this
+  section used to flag: a genuinely pathological many-reflex-vertex trim,
+  not just the single-reflex-vertex dart every earlier concave test here
+  used. A parametrically-built 6-tooth "comb" (12 reflex vertices,
+  tooth/gap widths only a few tessellation cells wide at 32x32 divisions)
+  measures its exact hand-derivable area - computed from the same
+  `tooth_count`/`tooth_width`/`base_height`/`tooth_top` values that
+  generated the vertex list, not eyeballed off hardcoded coordinates, the
+  same "trust the formula" approach the annulus test elsewhere in this
+  file already uses - and, extruded, is proven a genuine watertight solid
+  via a real Manifold union, same rigor every earlier concave-trim test
+  here uses. Passed on the first attempt - the concave clipper's earlier
+  fixes (entry-only tracing, the grid-line nudge) hold up under this
+  harder case too, not just the dart it was originally tested against.
 
 ## What's still not done (as of chunk 2)
 
@@ -925,10 +939,13 @@ What this repo does instead:
   (via a general Greiner-Hormann-style clipper, see above), but that path
   is newer and more narrowly tested than the long-proven convex one: a
   trim vertex landing exactly on a tessellation grid line is now handled
-  (see above), but only two concave shapes (a five-vertex dart, in two
-  variants) have actually been exercised so far — a genuinely pathological
-  concave polygon (many reflex vertices, features much smaller than the
-  grid resolution) hasn't been. `trim_polygon` must
+  (see above), and a genuinely pathological many-reflex-vertex case has
+  now been exercised too - a parametrically-built 6-tooth "comb" (12
+  reflex vertices, tooth/gap widths only a few tessellation cells wide at
+  32x32 divisions) clipped to its exact hand-derivable area (computed
+  from the same parameters that built the vertex list, not eyeballed off
+  coordinates), extruded, and proven watertight via a real Manifold
+  union, same rigor every earlier concave-trim test here uses. `trim_polygon` must
   still be simple (non-self-intersecting) - that *is* now validated
   (`dino8::kernel::detail::IsSimplePolygon()`, thrown as
   `std::invalid_argument`).
