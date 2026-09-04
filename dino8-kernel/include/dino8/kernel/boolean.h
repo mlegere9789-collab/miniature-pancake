@@ -68,4 +68,27 @@ Mesh ConvexHull(const std::vector<Point3d>& points);
 // Manifold's own call fails.
 Mesh Simplify(const Mesh& mesh, double tolerance);
 
+// The Minkowski sum of `a` and `b` - `{p + q : p in a, q in b}` - backed
+// by Manifold's own `Manifold::MinkowskiSum`. The standard use is
+// "growing" or "rounding" a solid by another (e.g. summing with a small
+// sphere rounds every edge/corner by that sphere's radius; summing with
+// a small box gives a uniform margin, useful for a collision/clearance
+// envelope), not something this kernel would derive from more basic
+// operations. Both inputs must be valid closed manifolds, same
+// requirement as BooleanCombine(); throws std::runtime_error if
+// Manifold's own call fails.
+Mesh MinkowskiSum(const Mesh& a, const Mesh& b);
+
+// The Minkowski difference (erosion) of `a` and `b` - the complement
+// operation to MinkowskiSum() (shrinking `a` by `b` rather than growing
+// it), backed by Manifold's own `Manifold::MinkowskiDifference`.
+// `MinkowskiDifference(MinkowskiSum(a, b), b)` recovers a shape congruent
+// to `a` (same dimensions and volume, confirmed by testing) but not
+// necessarily at `a`'s own original position - erosion for a `b` that
+// isn't itself centered on the origin translates the result by `b`'s own
+// extent, a real (if non-obvious) property of the operation itself, not
+// a limitation of this wrapper. Same requirements and failure mode as
+// MinkowskiSum().
+Mesh MinkowskiDifference(const Mesh& a, const Mesh& b);
+
 }  // namespace dino8::kernel

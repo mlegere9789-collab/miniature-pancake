@@ -820,6 +820,24 @@ What this repo does instead:
   representation - with volume preserved exactly, not approximately,
   since the true surface really was flat and a real decimation algorithm
   should introduce no error there.
+- `MinkowskiSum()`/`MinkowskiDifference()` wrap Manifold's own real
+  Minkowski-sum/erosion algorithms - growing or shrinking a solid by
+  another, useful for rounding corners (summing with a small sphere) or a
+  uniform collision/clearance margin, not something derivable from this
+  kernel's existing booleans. Verified `MinkowskiSum()` with a
+  hand-derivable exact case straight from the definition
+  `A+B = {a+b : a in A, b in B}`: two axis-aligned boxes sum to a third
+  box whose min/max corners are each input's own corners added
+  component-wise (`[0,2]x[0,3]x[0,4] + [0,1]^3 = [0,3]x[0,4]x[0,5]`,
+  volume 60 - not the wrong "sum of the two volumes" answer, 25). A
+  real, non-obvious discovery while testing the round trip
+  `MinkowskiDifference(MinkowskiSum(a, b), b)`: it recovers a box
+  congruent to `a` (exactly `a`'s own dimensions and volume) but
+  translated by `b`'s own extent, not repositioned back to `a`'s exact
+  original location - a genuine property of erosion for a `b` that isn't
+  itself centered on the origin, not a limitation of the wrapper, so the
+  test asserts the size/volume invariant rather than an unfounded exact
+  position.
 
 ## What's still not done (as of chunk 2)
 

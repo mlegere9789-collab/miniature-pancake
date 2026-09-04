@@ -677,6 +677,60 @@ void TestSimplify() {
         "not just approximately");
 }
 
+void TestMinkowskiSum() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::MinkowskiSum;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // The Minkowski sum of two axis-aligned boxes is exactly a third box
+  // whose min/max corners are each input's own corners added
+  // component-wise - a hand-derivable exact case straight from the
+  // definition A+B = {a+b : a in A, b in B}, not something needing
+  // Manifold-specific knowledge to predict. [0,2]x[0,3]x[0,4] + [0,1]^3 =
+  // [0,3]x[0,4]x[0,5], volume 3*4*5=60 (not 2*3*4 + 1 = 25, the wrong
+  // answer a "just add the volumes" guess would give).
+  const auto a = MakeBox(0, 0, 0, 2, 3, 4);
+  const auto b = MakeBox(0, 0, 0, 1, 1, 1);
+  const auto sum = MinkowskiSum(a, b);
+  const auto bounds = sum.GetBoundingBox();
+  Check(bounds.min.x == 0.0 && bounds.min.y == 0.0 && bounds.min.z == 0.0,
+        "the Minkowski sum's min corner is exactly (0,0,0) (both inputs' "
+        "own min corners, both already at the origin)");
+  Check(bounds.max.x == 3.0 && bounds.max.y == 4.0 && bounds.max.z == 5.0,
+        "the Minkowski sum's max corner is exactly the component-wise "
+        "sum of both inputs' own max corners (2+1, 3+1, 4+1)");
+  Check(std::abs(sum.Volume() - 60.0) < 1e-9,
+        "the Minkowski sum's volume is exactly 3*4*5=60, not the wrong "
+        "'sum of the two volumes' answer (25)");
+
+  // MinkowskiDifference() is the complement operation - shrinking rather
+  // than growing. Summing A with B and then taking the difference with B
+  // again is a real round-trip check, not just "it runs without
+  // throwing" - but empirically (checked directly, not assumed from the
+  // name) Manifold's erosion recovers a box *congruent* to A (exactly
+  // A's own 2x3x4 dimensions and volume 24) translated by B's own max
+  // corner (1,1,1), not literally repositioned back to A's exact
+  // original location - a real, non-obvious detail of how erosion is
+  // defined for a B that isn't itself centered on the origin, not a
+  // limitation of this wrapper. Asserting the size/volume invariant
+  // (robust regardless of that translation) rather than an absolute
+  // position this class's own comment can't derive from first
+  // principles.
+  const auto shrunk_back = dino8::kernel::MinkowskiDifference(sum, b);
+  const auto shrunk_bounds = shrunk_back.GetBoundingBox();
+  const Vector3d shrunk_extent = shrunk_bounds.max - shrunk_bounds.min;
+  Check(std::abs(shrunk_extent.x - 2.0) < 1e-6 && std::abs(shrunk_extent.y - 3.0) < 1e-6 &&
+            std::abs(shrunk_extent.z - 4.0) < 1e-6,
+        "MinkowskiSum() followed by MinkowskiDifference() with the same "
+        "shape recovers a box with exactly A's own 2x3x4 dimensions");
+  Check(std::abs(shrunk_back.Volume() - 24.0) < 1e-6,
+        "...and exactly A's own volume (24), confirming a real "
+        "size round-trip even though the erosion translates the result");
+}
+
 void TestBrepTessellation() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -2605,6 +2659,7 @@ int main() {
   TestSplitByPlane();
   TestConvexHull();
   TestSimplify();
+  TestMinkowskiSum();
   TestBrepTessellation();
   TestBoxVolume();
   TestBooleanUnion();

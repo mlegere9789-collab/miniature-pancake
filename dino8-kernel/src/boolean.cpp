@@ -148,4 +148,24 @@ Mesh Simplify(const Mesh& mesh, double tolerance) {
   return FromManifold(simplified);
 }
 
+Mesh MinkowskiSum(const Mesh& a, const Mesh& b) {
+  const manifold::Manifold result = ToManifold(a).MinkowskiSum(ToManifold(b));
+  if (result.Status() != manifold::Manifold::Error::NoError) {
+    throw std::runtime_error(
+        "dino8::kernel::MinkowskiSum: Manifold::MinkowskiSum failed "
+        "(Manifold::Status() != NoError)");
+  }
+  return FromManifold(result);
+}
+
+Mesh MinkowskiDifference(const Mesh& a, const Mesh& b) {
+  const manifold::Manifold result = ToManifold(a).MinkowskiDifference(ToManifold(b));
+  if (result.Status() != manifold::Manifold::Error::NoError) {
+    throw std::runtime_error(
+        "dino8::kernel::MinkowskiDifference: Manifold::MinkowskiDifference "
+        "failed (Manifold::Status() != NoError)");
+  }
+  return FromManifold(result);
+}
+
 }  // namespace dino8::kernel
