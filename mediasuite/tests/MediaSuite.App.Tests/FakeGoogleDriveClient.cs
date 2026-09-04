@@ -23,11 +23,28 @@ public sealed class FakeGoogleDriveClient : IGoogleDriveClient
 
     public List<(string Name, string? ParentFolderId)> CreatedFolders { get; } = new();
 
+    /// <summary>
+    /// When set, <see cref="CreateFolderAsync"/> returns this task instead of an
+    /// already-completed one, so a test can hold a call in flight (assert on state while it
+    /// is still pending) and then complete it on demand — the one place these fakes need
+    /// real async behavior rather than the "everything finishes synchronously" pattern the
+    /// rest of this class follows.
+    /// </summary>
+    public TaskCompletionSource<string>? PendingCreateFolder { get; set; }
+
     /// <summary>Backing state for <see cref="IsSignedInAsync"/>/<see cref="SignInAsync"/>/<see cref="SignOutAsync"/> -- false until a test signs in.</summary>
     public bool IsSignedIn { get; set; }
 
     /// <summary>When set, the next <see cref="SignInAsync"/> fails with this instead of succeeding.</summary>
     public Exception? SignInFailure { get; set; }
+
+    /// <summary>
+    /// When set, <see cref="SignInAsync"/> returns this task instead of an already-completed
+    /// one — see <see cref="PendingCreateFolder"/> for why. The caller (SettingsViewModel)
+    /// already sets <c>IsSignedInToGoogleDrive</c> itself once the awaited call returns, so
+    /// this does not need to touch <see cref="IsSignedIn"/> on completion.
+    /// </summary>
+    public TaskCompletionSource? PendingSignIn { get; set; }
 
     public Task<bool> IsSignedInAsync(CancellationToken cancellationToken) => Task.FromResult(IsSignedIn);
 
@@ -36,6 +53,11 @@ public sealed class FakeGoogleDriveClient : IGoogleDriveClient
         if (SignInFailure is not null)
         {
             return Task.FromException(SignInFailure);
+        }
+
+        if (PendingSignIn is not null)
+        {
+            return PendingSignIn.Task;
         }
 
         IsSignedIn = true;
@@ -56,7 +78,7 @@ public sealed class FakeGoogleDriveClient : IGoogleDriveClient
     public Task<string> CreateFolderAsync(string name, string? parentFolderId, CancellationToken cancellationToken)
     {
         CreatedFolders.Add((name, parentFolderId));
-        return Task.FromResult((_nextFolderId++).ToString());
+        return PendingCreateFolder?.Task ?? Task.FromResult((_nextFolderId++).ToString());
     }
 
     public Task<GoogleDriveUploadResult> UploadFileAsync(

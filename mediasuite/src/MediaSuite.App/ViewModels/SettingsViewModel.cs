@@ -27,6 +27,7 @@ public sealed class SettingsViewModel : PageViewModel
     private readonly IGoogleDriveClient _driveClient;
 
     private bool _isSignedInToGoogleDrive;
+    private bool _isGoogleDriveSignInOrOutInProgress;
     private string _googleDriveStatus = "Checking\u2026";
 
     public SettingsViewModel(
@@ -51,9 +52,11 @@ public sealed class SettingsViewModel : PageViewModel
         RefreshToolsCommand = new RelayCommand(RefreshTools);
         BrowseGoogleDriveCredentialsCommand = new RelayCommand(BrowseGoogleDriveCredentials);
         SignInToGoogleDriveCommand = new RelayCommand(
-            async () => await SignInToGoogleDriveAsync(), () => !_isSignedInToGoogleDrive);
+            async () => await SignInToGoogleDriveAsync(),
+            () => !_isSignedInToGoogleDrive && !_isGoogleDriveSignInOrOutInProgress);
         SignOutOfGoogleDriveCommand = new RelayCommand(
-            async () => await SignOutOfGoogleDriveAsync(), () => _isSignedInToGoogleDrive);
+            async () => await SignOutOfGoogleDriveAsync(),
+            () => _isSignedInToGoogleDrive && !_isGoogleDriveSignInOrOutInProgress);
         OpenProjectPageCommand = new RelayCommand(
             () => Process.Start(new ProcessStartInfo(ProjectUrl) { UseShellExecute = true }));
 
@@ -399,6 +402,15 @@ public sealed class SettingsViewModel : PageViewModel
 
     private async Task SignInToGoogleDriveAsync()
     {
+        // SignInToGoogleDriveCommand's CanExecute only re-queries on the usual WPF input
+        // events (focus/mouse/keyboard), not automatically the instant a field it reads
+        // changes — a user double-clicking "Sign in" before the OAuth round trip finishes
+        // would otherwise start a second sign-in flow. This flag plus the explicit
+        // InvalidateRequerySuggested calls close that window the same way IsSignedInToGoogleDrive's
+        // own setter already does for the ordinary signed-in/out toggle.
+        _isGoogleDriveSignInOrOutInProgress = true;
+        CommandManager.InvalidateRequerySuggested();
+
         GoogleDriveStatus = "Signing in — check your browser…";
 
         try
@@ -414,13 +426,29 @@ public sealed class SettingsViewModel : PageViewModel
             IsSignedInToGoogleDrive = false;
             GoogleDriveStatus = $"Sign-in failed: {ex.Message}";
         }
+        finally
+        {
+            _isGoogleDriveSignInOrOutInProgress = false;
+            CommandManager.InvalidateRequerySuggested();
+        }
     }
 
     private async Task SignOutOfGoogleDriveAsync()
     {
-        await _driveClient.SignOutAsync();
-        IsSignedInToGoogleDrive = false;
-        GoogleDriveStatus = "Not signed in.";
+        _isGoogleDriveSignInOrOutInProgress = true;
+        CommandManager.InvalidateRequerySuggested();
+
+        try
+        {
+            await _driveClient.SignOutAsync();
+            IsSignedInToGoogleDrive = false;
+            GoogleDriveStatus = "Not signed in.";
+        }
+        finally
+        {
+            _isGoogleDriveSignInOrOutInProgress = false;
+            CommandManager.InvalidateRequerySuggested();
+        }
     }
 
     private async Task RefreshGoogleDriveStatusAsync()

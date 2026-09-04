@@ -1,4 +1,5 @@
 using System.IO;
+using System.Threading.Tasks;
 using MediaSuite.App.ViewModels;
 using MediaSuite.Core.Features;
 using MediaSuite.Core.GoogleDrive;
@@ -286,6 +287,29 @@ public sealed class ModulePageViewModelTests : IDisposable
         Assert.Equal("New Exports", created.Name);
         Assert.Equal("New Exports", Assert.Single(fixture.Page.DriveFolders).Name);
         Assert.Same(fixture.Page.DriveFolders[0], fixture.Page.SelectedDriveFolder);
+        Assert.Equal(string.Empty, fixture.Page.NewDriveFolderName);
+    }
+
+    [Fact]
+    public void CreateDriveFolderCommand_cannot_fire_a_second_time_while_the_first_call_is_still_in_flight()
+    {
+        // CanExecute only re-queries on the usual WPF input events, not the instant
+        // NewDriveFolderName changes -- and it only clears on success, after the awaited
+        // Drive call returns. Without an explicit busy guard, a double-click on "New folder"
+        // would fire CreateFolderAsync twice concurrently and create two identical folders.
+        using var fixture = CreateModulePage(FakeEngine.HandlesOnly("video.convert"), googleDriveEnabled: true);
+        fixture.Page.NewDriveFolderName = "Vacation Photos";
+        var pending = new TaskCompletionSource<string>();
+        fixture.Drive.PendingCreateFolder = pending;
+
+        Assert.True(fixture.Page.CreateDriveFolderCommand.CanExecute(null));
+        fixture.Page.CreateDriveFolderCommand.Execute(null);
+
+        Assert.False(fixture.Page.CreateDriveFolderCommand.CanExecute(null));
+
+        pending.SetResult("folder-id");
+
+        Assert.Single(fixture.Drive.CreatedFolders);
         Assert.Equal(string.Empty, fixture.Page.NewDriveFolderName);
     }
 }
