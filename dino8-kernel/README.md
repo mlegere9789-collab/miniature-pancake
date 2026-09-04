@@ -530,6 +530,33 @@ What this repo does instead:
   measured convergence: length increases monotonically (never decreases
   or oscillates) as sample count grows 10x at a time, and the increase
   per step shrinks each time - a real converging trend, not assumed.
+- `RevolveProfile()` closes the "no flat end rim" gap this section used to
+  flag: an end whose radius is 0 still gets the original on-axis apex fan,
+  but an end with nonzero radius now gets a flat circular disc cap instead
+  of being rejected outright. The cap is a plain center-vertex fan (not a
+  reuse of `BuildCircularDiskCap()`'s NURBS-surface-trimmed disc that
+  `Cylinder()`/`Cone()` use), oriented by the same derivation this file
+  always uses for winding: a fan triangle `(center, k, k+1)` in increasing-
+  theta order has normal `+axis` (from `(ring[k]-center) x (ring[k+1]-
+  center) = r^2*sin(dtheta)*(ex x ey)`, `ex x ey = axis`, `dtheta > 0`), so
+  the *end* cap uses that order directly and the *start* cap reverses it
+  to get the `-axis` outward normal a start cap needs. Also lowered the
+  minimum profile length from 3 points to 2, since a flat-capped profile
+  no longer needs an on-axis point to force a fan at all - the smallest
+  useful shape is now a single band between two flat-capped rings.
+  Verified with three independent closed-form/cross-check volumes, not
+  just "it builds a watertight solid": a base-first flat-capped cone
+  (built in the *opposite* order from `Cone()`'s own apex-last
+  construction, so this genuinely re-derives the cap's orientation rather
+  than reusing it) measurably converges toward `(1/3)*pi*r^2*h` as
+  `revolve_segments` increases; a frustum with both ends off-axis and at
+  different radii matches `(pi*h/3)*(r1^2+r1*r2+r2^2)` to within 1%; and
+  the degenerate case `r1 == r2` (a cylinder built via two flat-capped
+  rings instead of `ExtrudeCappedSolid()`) matches `Mesh::Cylinder()`'s
+  own independently-built volume to within 0.1%, despite the two using
+  completely different cap implementations. All three also confirmed
+  watertight via a real Manifold union, same as every other closed-solid
+  primitive here.
 
 ## What's still not done (as of chunk 2)
 
@@ -538,10 +565,13 @@ What this repo does instead:
   `Mesh::ConeToApex()`/`Mesh::Cone()`/`Mesh::RevolveProfile()`/
   `Mesh::LoftClosedRings()`/`Mesh::Torus()` are the only shapes/operations
   here.
-  `RevolveProfile()` only supports a profile that starts and ends on the
-  axis (no flat end rim); `LoftClosedRings()`'s end caps require each ring
-  to be planar and simple (non-self-intersecting) - not validated,
-  though concave rings are now handled correctly (see above).
+  `RevolveProfile()` now supports a flat end rim too (see below);
+  `LoftClosedRings()`'s end caps require each ring
+  to be planar (not validated - a non-planar ring's cap triangulation is
+  undefined) and simple (non-self-intersecting) - the simplicity part *is*
+  now validated (`IsPlanarRingSimple()`, thrown as `std::invalid_argument`
+  on the first/last ring), though concave rings are now handled correctly
+  (see above).
 - `TessellateGridClippedExact()` now handles a concave `trim_polygon` too
   (via a general Greiner-Hormann-style clipper, see above), but that path
   is newer and more narrowly tested than the long-proven convex one: a
@@ -550,7 +580,9 @@ What this repo does instead:
   five-vertex dart) has actually been exercised so far — a genuinely
   pathological concave polygon (many reflex vertices, features much
   smaller than the grid resolution) hasn't been. `trim_polygon` must
-  still be simple (non-self-intersecting); that isn't validated.
+  still be simple (non-self-intersecting) - that *is* now validated
+  (`dino8::kernel::detail::IsSimplePolygon()`, thrown as
+  `std::invalid_argument`).
 - The trim-polygon test in `TessellateGrid()` is whole-cell in/out
   (a cell is kept only if all four corners are inside), not real boundary
   clipping — a curved or diagonal trim edge will look faceted/staircased

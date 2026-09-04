@@ -664,18 +664,14 @@ Mesh Mesh::Cone(Point3d base_center, Vector3d axis, double radius, double height
 Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_point, Vector3d axis,
                           int revolve_segments) {
   const int m = static_cast<int>(profile.size());
-  if (m < 3) {
+  if (m < 2) {
     throw std::invalid_argument(
-        "dino8::kernel::Mesh::RevolveProfile: profile needs at least 3 points "
-        "(on-axis start, at least one ring, on-axis end)");
+        "dino8::kernel::Mesh::RevolveProfile: profile needs at least 2 points "
+        "(nothing to revolve into a solid otherwise)");
   }
   constexpr double kOnAxisEpsilon = 1e-9;
-  if (std::abs(profile.front().x) > kOnAxisEpsilon || std::abs(profile.back().x) > kOnAxisEpsilon) {
-    throw std::invalid_argument(
-        "dino8::kernel::Mesh::RevolveProfile: profile's first and last points "
-        "must have radius 0 (lie on the axis) - a profile needing a flat end "
-        "cap instead isn't supported here");
-  }
+  const bool front_is_apex = std::abs(profile.front().x) <= kOnAxisEpsilon;
+  const bool back_is_apex = std::abs(profile.back().x) <= kOnAxisEpsilon;
 
   Vector3d n = axis;
   n.Unitize();
@@ -688,14 +684,15 @@ Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_poin
   Mesh result;
   ON_Mesh& out = result.mesh_;
 
-  // ring_start[i]: index of profile point i's first (and, for the two
-  // on-axis ends, only) vertex in the output mesh.
+  // ring_start[i]: index of profile point i's first (and, for an on-axis
+  // end, only) vertex in the output mesh.
   std::vector<int> ring_start(static_cast<size_t>(m));
   for (int i = 0; i < m; ++i) {
     ring_start[static_cast<size_t>(i)] = out.m_V.Count();
     const double r = profile[static_cast<size_t>(i)].x;
     const double h = profile[static_cast<size_t>(i)].y;
-    if (i == 0 || i == m - 1) {
+    const bool is_apex = (i == 0 && front_is_apex) || (i == m - 1 && back_is_apex);
+    if (is_apex) {
       out.m_V.Append(ON_3fPoint(axis_point + n * h));
     } else {
       for (int k = 0; k < revolve_segments; ++k) {
@@ -720,8 +717,8 @@ Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_poin
   // one-triangle-per-edge fan, corroborating this derivation rather than
   // introducing a second, independent convention for the end caps.
   for (int i = 0; i + 1 < m; ++i) {
-    const bool i_is_apex = (i == 0);
-    const bool i1_is_apex = (i + 1 == m - 1);
+    const bool i_is_apex = (i == 0 && front_is_apex);
+    const bool i1_is_apex = (i + 1 == m - 1 && back_is_apex);
     for (int k = 0; k < revolve_segments; ++k) {
       const int k2 = (k + 1) % revolve_segments;
       const int a = i_is_apex ? ring_start[static_cast<size_t>(i)]
@@ -748,6 +745,34 @@ Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_poin
         append_tri(a, b2, b);
       }
     }
+  }
+
+  // Flat disc cap for an off-axis end: a new center vertex plus a fan to
+  // that end's ring. Fan triangle (center, k, k+1) has normal
+  // (ring[k]-center) x (ring[k+1]-center) = r^2*sin(dtheta)*(ex x ey) =
+  // +n (dtheta > 0, ex x ey = n) - the outward direction for the *back*
+  // end. The front end's outward direction is -n, so its fan uses the
+  // reverse order (center, k+1, k) instead.
+  auto append_cap = [&out](int center, int ring_base, int segments, bool reverse) {
+    for (int k = 0; k < segments; ++k) {
+      const int k2 = (k + 1) % segments;
+      ON_MeshFace face;
+      face.vi[0] = center;
+      face.vi[1] = reverse ? ring_base + k2 : ring_base + k;
+      face.vi[2] = reverse ? ring_base + k : ring_base + k2;
+      face.vi[3] = face.vi[2];
+      out.m_F.Append(face);
+    }
+  };
+  if (!front_is_apex) {
+    const int center = out.m_V.Count();
+    out.m_V.Append(ON_3fPoint(axis_point + n * profile.front().y));
+    append_cap(center, ring_start.front(), revolve_segments, /*reverse=*/true);
+  }
+  if (!back_is_apex) {
+    const int center = out.m_V.Count();
+    out.m_V.Append(ON_3fPoint(axis_point + n * profile.back().y));
+    append_cap(center, ring_start.back(), revolve_segments, /*reverse=*/false);
   }
 
   return result;

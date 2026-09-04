@@ -205,22 +205,24 @@ class Mesh {
   // radius only). `profile[i] = (radius, height)`: radius >= 0 measured
   // from `axis`, height measured along `axis` from `axis_point`.
   //
-  // `profile.front()` and `profile.back()` must have radius 0 (lie on the
-  // axis) - each end is closed with a triangle fan to a single shared
-  // apex vertex, the same way ConeToApex() closes a cap, rather than by
-  // building a flat end cap. A profile whose ends need a flat rim instead
-  // (a plain cylinder, say) isn't this method's job - Cylinder() already
-  // covers that shape. Throws std::invalid_argument if either end has
-  // nonzero radius, or if `profile` has fewer than 3 points (an on-axis
-  // start and end with nothing revolved between them isn't a solid).
+  // An end whose radius is 0 (lies on the axis) is closed with a triangle
+  // fan to a single shared apex vertex, the same way ConeToApex() closes
+  // a cap; an end with nonzero radius instead gets a flat circular disc
+  // cap (a center vertex plus a fan to that end's ring, oriented outward:
+  // -axis at the start, +axis at the end - the same orientation
+  // ExtrudeCappedSolid()'s own caps use). Mixing the two is fine (e.g. an
+  // on-axis start tapering to an off-axis end, closed with a flat disc
+  // there). Throws std::invalid_argument if `profile` has fewer than 2
+  // points (fewer leaves nothing to revolve into a solid).
   //
-  // Every profile point strictly between the two on-axis ends becomes one
-  // `revolve_segments`-vertex ring. No MergeAndWeld() is needed: each
-  // ring's vertices are shared directly by the band before and after it
-  // (and the two end fans reuse the same apex vertex for every triangle),
-  // so the result is already a single closed mesh - same "exact shared
-  // vertices, no welding tolerance" property as ExtrudeCappedSolid() and
-  // ConeToApex().
+  // Every profile point becomes either a single apex vertex (on-axis end)
+  // or a `revolve_segments`-vertex ring (everywhere else, including an
+  // off-axis end). No MergeAndWeld() is needed: each ring's vertices are
+  // shared directly by the band before/after it and by that end's own cap
+  // fan if it has one (an on-axis end's fan reuses the same apex vertex
+  // for every triangle), so the result is already a single closed mesh -
+  // same "exact shared vertices, no welding tolerance" property as
+  // ExtrudeCappedSolid() and ConeToApex().
   static Mesh RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_point,
                               Vector3d axis, int revolve_segments = 48);
 

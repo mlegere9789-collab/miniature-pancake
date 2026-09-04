@@ -708,37 +708,107 @@ void TestRevolveProfileBiconeVolumeAndBoolean() {
         "union of the revolved bicone with a disjoint unit box equals bicone volume + 1");
 }
 
-void TestRevolveProfileRejectsOffAxisEndsAndTooShortProfile() {
+void TestRevolveProfileRejectsTooShortProfile() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point2d;
   using dino8::kernel::Point3d;
   using dino8::kernel::Vector3d;
 
-  bool threw_off_axis = false;
-  try {
-    const std::vector<Point2d> bad_profile = {
-        Point2d(1.0, -1.0),  // nonzero radius at the start - not on-axis
-        Point2d(2.0, 0.0),
-        Point2d(0.0, 1.0),
-    };
-    Mesh::RevolveProfile(bad_profile, Point3d(0, 0, 0), Vector3d(0, 0, 1), 16);
-  } catch (const std::invalid_argument&) {
-    threw_off_axis = true;
-  }
-  Check(threw_off_axis,
-        "RevolveProfile throws when the profile's start isn't on the axis "
-        "(nonzero radius) rather than silently building an open/wrong shape");
-
   bool threw_too_short = false;
   try {
-    const std::vector<Point2d> too_short = {Point2d(0.0, -1.0), Point2d(0.0, 1.0)};
+    const std::vector<Point2d> too_short = {Point2d(0.0, -1.0)};
     Mesh::RevolveProfile(too_short, Point3d(0, 0, 0), Vector3d(0, 0, 1), 16);
   } catch (const std::invalid_argument&) {
     threw_too_short = true;
   }
   Check(threw_too_short,
-        "RevolveProfile throws on a 2-point profile (nothing to revolve "
-        "between the two on-axis ends)");
+        "RevolveProfile throws on a 1-point profile (nothing to revolve into "
+        "a solid)");
+}
+
+// An off-axis profile end used to be rejected outright; RevolveProfile()
+// now closes it with a flat disc cap instead (see the header comment).
+// This checks that capability against three independent closed-form
+// volumes, using the smallest possible profile (m=2, no interior rings)
+// so each test isolates exactly the new end-cap code path plus one band.
+void TestRevolveProfileFlatEndCaps() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const Point3d origin(0, 0, 0);
+  const Vector3d up(0, 0, 1);
+
+  // Cone built base-first (off-axis flat-capped base tapering to an
+  // on-axis apex) - the reverse construction order from Mesh::Cone(), so
+  // this is a genuine independent check of the new cap's orientation, not
+  // just a call-through. Exact volume: (1/3)*pi*r^2*h.
+  {
+    const double radius = 3.0;
+    const double height = 5.0;
+    const std::vector<Point2d> profile = {Point2d(radius, 0.0), Point2d(0.0, height)};
+    double previous_error = 1e9;
+    for (const int segments : {8, 32, 128}) {
+      const auto cone = Mesh::RevolveProfile(profile, origin, up, segments);
+      const double exact_volume = ON_PI * radius * radius * height / 3.0;
+      const double error = std::abs(cone.Volume() - exact_volume);
+      Check(error < previous_error || error < 1e-6,
+            "base-first flat-capped cone volume error shrinks as "
+            "revolve_segments increases");
+      previous_error = error;
+    }
+    const auto cone = Mesh::RevolveProfile(profile, origin, up, 64);
+    const double exact_volume = ON_PI * radius * radius * height / 3.0;
+    Check(std::abs(cone.Volume() - exact_volume) / exact_volume < 0.01,
+          "base-first flat-capped cone volume is within 1% of (1/3)*pi*r^2*h");
+
+    // Watertightness proof, same pattern as every other primitive here:
+    // Manifold rejects a non-manifold mesh (an unclosed cap would leave a
+    // hole) rather than silently returning a wrong-but-plausible answer.
+    const auto box =
+        Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+    const auto result = BooleanCombine(cone, box, BooleanOp::Union);
+    Check(std::abs(result.Volume() - (cone.Volume() + 1.0)) < 1e-6,
+          "union of the base-first flat-capped cone with a disjoint unit box "
+          "equals cone volume + 1");
+  }
+
+  // Frustum: both ends off-axis and at different radii, so both get flat
+  // disc caps. Exact volume: (pi*h/3)*(r1^2 + r1*r2 + r2^2).
+  {
+    const double r1 = 2.0;
+    const double r2 = 5.0;
+    const double height = 4.0;
+    const std::vector<Point2d> profile = {Point2d(r1, 0.0), Point2d(r2, height)};
+    const auto frustum = Mesh::RevolveProfile(profile, origin, up, 64);
+    const double exact_volume =
+        ON_PI * height * (r1 * r1 + r1 * r2 + r2 * r2) / 3.0;
+    Check(std::abs(frustum.Volume() - exact_volume) / exact_volume < 0.01,
+          "flat-double-capped frustum volume is within 1% of "
+          "(pi*h/3)*(r1^2+r1*r2+r2^2)");
+  }
+
+  // Degenerate frustum with r1 == r2 is just a cylinder: cross-check
+  // against Mesh::Cylinder()'s own (independently implemented) volume,
+  // not just a closed form, since the two build caps completely
+  // differently (ExtrudeCappedSolid()'s NURBS-surface-trimmed disc vs.
+  // this end's plain center-vertex fan).
+  {
+    const double radius = 2.5;
+    const double height = 6.0;
+    const std::vector<Point2d> profile = {Point2d(radius, 0.0), Point2d(radius, height)};
+    const auto via_revolve = Mesh::RevolveProfile(profile, origin, up, 64);
+    const auto via_cylinder = Mesh::Cylinder(origin, up, radius, height, 64, 8);
+    const double relative_diff =
+        std::abs(via_revolve.Volume() - via_cylinder.Volume()) / via_cylinder.Volume();
+    Check(relative_diff < 1e-3,
+          "flat-double-capped cylinder-shaped revolve matches Mesh::Cylinder()'s "
+          "volume to within 0.1%");
+  }
 }
 
 void TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean() {
@@ -1720,7 +1790,8 @@ int main() {
   TestCylinderVolumeAndBoolean();
   TestConeVolumeAndBoolean();
   TestRevolveProfileBiconeVolumeAndBoolean();
-  TestRevolveProfileRejectsOffAxisEndsAndTooShortProfile();
+  TestRevolveProfileRejectsTooShortProfile();
+  TestRevolveProfileFlatEndCaps();
   TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();
   TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
   TestLoftClosedRingsConcaveEndCapsExactPrismVolume();
