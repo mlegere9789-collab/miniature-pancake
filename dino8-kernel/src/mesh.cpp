@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -545,14 +546,16 @@ Result Mesh::SaveStl(const std::string& path) const {
   return out.good() ? Result::Ok : Result::Failed;
 }
 
-Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
+namespace {
+
+Result LoadAsciiStl(const std::string& path, Mesh& out_mesh) {
   std::ifstream in(path);
   if (!in) {
     return Result::Failed;
   }
 
   Mesh result;
-  ON_Mesh& raw = result.mesh_;
+  ON_Mesh& raw = result.raw();
 
   // Accumulates the current facet's 3 vertices (x,y,z flattened) between
   // "outer loop" and "endloop" - checked for exactly 9 values at
@@ -595,6 +598,87 @@ Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
 
   out_mesh = std::move(result);
   return Result::Ok;
+}
+
+// Binary STL: an 80-byte header (arbitrary content, not parsed), a
+// little-endian uint32 triangle count, then that many 50-byte records
+// (3 floats facet normal - discarded, same reason the ASCII parser
+// discards "facet normal" - then 3x3 floats for the triangle's vertices,
+// then a 2-byte "attribute byte count" almost universally zero and
+// discarded here too, since this kernel's ON_Mesh has nowhere to put
+// per-facet attribute data). Assumes a little-endian host (reads the
+// on-disk bytes directly into a float/uint32_t) - true for every
+// platform this kernel is actually built on (x86_64, aarch64), and
+// matches every other binary-format assumption already made elsewhere
+// in this codebase (none of which handle big-endian either).
+Result LoadBinaryStl(const std::string& path, uint32_t triangle_count, Mesh& out_mesh) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return Result::Failed;
+  }
+  in.seekg(84, std::ios::beg);
+
+  Mesh result;
+  ON_Mesh& raw = result.raw();
+  raw.m_V.Reserve(static_cast<int>(triangle_count) * 3);
+  raw.m_F.Reserve(static_cast<int>(triangle_count));
+
+  for (uint32_t t = 0; t < triangle_count; ++t) {
+    float normal[3];
+    if (!in.read(reinterpret_cast<char*>(normal), sizeof(normal))) {
+      return Result::Failed;
+    }
+    ON_MeshFace face;
+    for (int i = 0; i < 3; ++i) {
+      float xyz[3];
+      if (!in.read(reinterpret_cast<char*>(xyz), sizeof(xyz))) {
+        return Result::Failed;
+      }
+      face.vi[i] = raw.m_V.Count();
+      raw.m_V.Append(ON_3fPoint(xyz[0], xyz[1], xyz[2]));
+    }
+    face.vi[3] = face.vi[2];
+    raw.m_F.Append(face);
+
+    uint16_t attribute_byte_count = 0;
+    if (!in.read(reinterpret_cast<char*>(&attribute_byte_count), sizeof(attribute_byte_count))) {
+      return Result::Failed;
+    }
+  }
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
+
+}  // namespace
+
+Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
+  // Distinguishes binary from ASCII the same way most real-world STL
+  // readers do: an ASCII file's own text can start with "solid" and
+  // still be ASCII (or, per the spec, a binary file's 80-byte header
+  // can *also* start with the bytes "solid" - that keyword alone isn't a
+  // reliable discriminator either way). What's actually reliable is the
+  // binary format's exact, self-describing size: header (80) + count (4)
+  // + count*50 bytes, nothing more and nothing less. If the file's real
+  // size matches that formula for the triangle count its own header
+  // claims, it's binary; otherwise, fall back to the ASCII parser.
+  std::ifstream size_probe(path, std::ios::binary | std::ios::ate);
+  if (!size_probe) {
+    return Result::Failed;
+  }
+  const std::streamoff file_size = size_probe.tellg();
+  if (file_size >= 84) {
+    size_probe.seekg(80, std::ios::beg);
+    uint32_t triangle_count = 0;
+    if (size_probe.read(reinterpret_cast<char*>(&triangle_count), sizeof(triangle_count))) {
+      const std::streamoff expected_size =
+          84 + static_cast<std::streamoff>(triangle_count) * 50;
+      if (expected_size == file_size) {
+        return LoadBinaryStl(path, triangle_count, out_mesh);
+      }
+    }
+  }
+  return LoadAsciiStl(path, out_mesh);
 }
 
 Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {

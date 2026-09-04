@@ -1051,6 +1051,29 @@ What this repo does instead:
   overlap at the split line, confirmed by a debug run before finalizing
   the assertions. Also checked `Split()` fails when `t` sits exactly at a
   domain endpoint rather than strictly inside it.
+- `Mesh::LoadStl()` now reads binary `.stl` files too, closing the gap
+  this section used to flag - it previously only handled ASCII. Detects
+  which of the two genuinely different formats a file actually is by its
+  exact size rather than by sniffing for the text `solid` (a binary
+  file's own 80-byte header can start with those bytes too, per the
+  spec, so that keyword alone was never a reliable discriminator): a
+  binary STL's total size is always exactly `80 + 4 + count*50` bytes for
+  the triangle count its own header claims, so a file matching that
+  formula is parsed as binary; anything else falls back to the existing
+  ASCII parser. Verified against a minimal 2-triangle binary STL file
+  written byte-for-byte by hand (not round-tripped through this kernel's
+  own writer on both ends, since `SaveStl()` only ever writes ASCII): the
+  loaded mesh has exactly the 2 written triangles, 6 unshared vertices
+  (STL's own "no shared vertex list" structure, same as the ASCII path),
+  and an area of exactly 1.0 matching the hand-written unit-square
+  triangles. Also discovered (by testing, not assumed) what actually
+  happens to a file whose 84-byte binary-looking header claims a
+  triangle count that doesn't match its real remaining size: it fails
+  the binary size check, falls through to the ASCII parser, which finds
+  no recognizable ASCII tokens in the raw header bytes at all and
+  returns an empty mesh with `Result::Ok` rather than `Result::Failed` -
+  a narrower, now-documented real guarantee rather than an assumed
+  outright failure.
 
 ## What's still not done (as of chunk 2)
 
@@ -1107,9 +1130,9 @@ What this repo does instead:
 - `.obj` support (`SaveObj()`/`LoadObj()`) round-trips geometry and now
   writes real per-vertex normals (see above), but still no texture
   coordinates, materials, or groups, and `LoadObj()` still only reads
-  `v`/`f` lines. `.stl` now round-trips too (`LoadStl()`, see above), but
-  only ASCII STL - no binary STL parser. `.obj`/`.stl` are still the only
-  formats here - no glTF, FBX, etc.
+  `v`/`f` lines. `.stl` now round-trips both ASCII and binary STL (see
+  below). `.obj`/`.stl` are still the only formats here - no glTF, FBX,
+  etc.
 - Adaptive/curvature-aware meshing, the viewport/display engine, GPU path
   tracer, command engine, UI shell, visual scripting, undo system,
   installer, and everything else in the blueprint's roadmap — all

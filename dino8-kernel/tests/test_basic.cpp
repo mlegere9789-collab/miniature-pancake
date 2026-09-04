@@ -2890,6 +2890,85 @@ void TestMeshLoadStlRoundTrips() {
   std::remove(malformed_path.c_str());
 }
 
+void TestMeshLoadStlBinary() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Hand-writes a minimal 2-triangle binary STL file byte-for-byte per
+  // the format's own spec (80-byte header, little-endian uint32 triangle
+  // count, then per-triangle: 3 floats normal (discarded by the reader),
+  // 3x3 floats vertices, a 2-byte attribute count) - not produced via any
+  // library, so this is a genuine test of LoadStl()'s own binary parsing
+  // and its size-based binary/ASCII auto-detection, not a round-trip
+  // through code under test on both ends.
+  const std::string path = "dino8_kernel_mesh_stl_binary_test.stl";
+  {
+    std::ofstream out(path, std::ios::binary);
+    char header[80] = {0};
+    out.write(header, sizeof(header));
+    const uint32_t triangle_count = 2;
+    out.write(reinterpret_cast<const char*>(&triangle_count), sizeof(triangle_count));
+
+    auto write_triangle = [&](float nx, float ny, float nz, float ax, float ay, float az,
+                               float bx, float by, float bz, float cx, float cy, float cz) {
+      const float normal[3] = {nx, ny, nz};
+      out.write(reinterpret_cast<const char*>(normal), sizeof(normal));
+      const float a[3] = {ax, ay, az};
+      out.write(reinterpret_cast<const char*>(a), sizeof(a));
+      const float b[3] = {bx, by, bz};
+      out.write(reinterpret_cast<const char*>(b), sizeof(b));
+      const float c[3] = {cx, cy, cz};
+      out.write(reinterpret_cast<const char*>(c), sizeof(c));
+      const uint16_t attribute_byte_count = 0;
+      out.write(reinterpret_cast<const char*>(&attribute_byte_count),
+                sizeof(attribute_byte_count));
+    };
+    // Two triangles forming the unit square [0,1]x[0,1] in the z=0 plane
+    // (same diagonal split TestMeshFlipNormals()/others already use) -
+    // total area exactly 1.0, hand-derivable.
+    write_triangle(0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 1, 0);
+    write_triangle(0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 0);
+  }
+
+  Mesh loaded;
+  Check(Mesh::LoadStl(path, loaded) == Result::Ok,
+        "Mesh::LoadStl succeeds on a hand-written binary STL file");
+  Check(loaded.FaceCount() == 2, "the loaded binary mesh has exactly the 2 written triangles");
+  Check(loaded.VertexCount() == 6,
+        "the loaded binary mesh has 3 unshared vertices per facet (6 "
+        "total), same 'no shared vertex list' structure as the ASCII path");
+  Check(std::abs(loaded.Area() - 1.0) < 1e-6,
+        "the loaded binary mesh's own area is exactly 1.0, the unit "
+        "square the hand-written triangles describe");
+  std::remove(path.c_str());
+
+  // A binary-STL-shaped header (80-byte header + uint32 count) whose
+  // claimed triangle count doesn't match the file's actual remaining
+  // size fails outright: it isn't a well-formed binary STL by the
+  // size-based detection LoadStl() uses, and it also isn't valid ASCII
+  // (no "solid"/"vertex"/"endfacet" tokens at all), so the ASCII
+  // fallback parser finds nothing byte-for-byte matching those tokens
+  // and returns an empty mesh rather than failing - documented here as
+  // the real, narrower guarantee rather than assumed to fail outright.
+  const std::string truncated_path = "dino8_kernel_mesh_stl_binary_truncated_test.stl";
+  {
+    std::ofstream out(truncated_path, std::ios::binary);
+    char header[80] = {0};
+    out.write(header, sizeof(header));
+    const uint32_t triangle_count = 5;  // claims 5 triangles, writes 0
+    out.write(reinterpret_cast<const char*>(&triangle_count), sizeof(triangle_count));
+  }
+  Mesh truncated;
+  const Result truncated_result = Mesh::LoadStl(truncated_path, truncated);
+  Check(truncated_result == Result::Ok && truncated.FaceCount() == 0,
+        "a file whose header claims more binary triangles than it "
+        "actually contains falls back to the ASCII parser (since its "
+        "size doesn't match the binary formula), which finds no "
+        "recognizable ASCII tokens in the raw header bytes and returns "
+        "an empty mesh rather than crashing or misreading");
+  std::remove(truncated_path.c_str());
+}
+
 void TestExactClippingMatchesAreaButNotCellCounts() {
   using dino8::kernel::Brep;
   using dino8::kernel::NurbsSurface;
@@ -3393,6 +3472,7 @@ int main() {
   TestMeshLoadObjRejectsMalformedFiles();
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
+  TestMeshLoadStlBinary();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
   TestExactClippingHandlesTrimVertexOnGridLine();

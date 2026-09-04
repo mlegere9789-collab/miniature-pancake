@@ -208,29 +208,43 @@ class Mesh {
   // Result::Failed if the file can't be opened for writing.
   Result SaveStl(const std::string& path) const;
 
-  // Reads a plain-text ASCII `.stl` file written by SaveStl() (or any
-  // other reasonably well-formed ASCII STL) into `out_mesh` - closing the
-  // "export-only" gap SaveStl() itself used to flag. Parses `facet
-  // normal ... outer loop / vertex x y z (x3) / endloop / endfacet`
-  // blocks; the `facet normal` line's own values are read but discarded
-  // (recomputing per-facet normals here would just reproduce SaveStl()'s
-  // own logic, and this kernel's Mesh has nowhere to store a facet normal
-  // distinct from the vertex positions it's derived from anyway).
-  // Deliberately doesn't attempt to detect or reject a binary `.stl` file
-  // (a different format entirely, starting with an 80-byte header rather
-  // than the text `solid`) - callers with binary STL files need a
-  // separate parser this kernel doesn't provide. Faithful to STL's own
-  // "no shared vertex list" nature: 3 new vertices are appended per
-  // facet, exactly as the file stores them, not deduplicated against
-  // each other the way `Mesh::MergeAndWeld()` would - a caller wanting a
-  // welded mesh (fewer vertices, adjacency-aware operations like
-  // `ComputeVertexNormals()` giving a real smoothing average rather than
-  // each vertex only ever "sharing" its own single facet) can call
-  // `MergeAndWeld({loaded_mesh})` afterward. Returns Result::Failed if
-  // the file can't be opened or a `vertex`/`facet`/`endfacet` line is
-  // malformed (wrong token count, unparsable number) - `out_mesh` is
-  // left unspecified in that case, not partially filled and silently
-  // trusted.
+  // Reads a `.stl` file written by SaveStl() (or any other reasonably
+  // well-formed STL, ASCII or binary) into `out_mesh` - closing the
+  // "export-only" gap SaveStl() itself used to flag. Auto-detects which
+  // of the two genuinely different STL formats the file actually is by
+  // its exact size, not by sniffing for the text `solid` (which a binary
+  // file's own 80-byte header can start with too, per the spec, so that
+  // keyword alone isn't a reliable discriminator): a binary STL's total
+  // size is always exactly `80 + 4 + count*50` bytes for the triangle
+  // count its own header claims, so a file matching that formula is
+  // parsed as binary; anything else falls back to the ASCII parser.
+  //
+  // ASCII path: parses `facet normal ... outer loop / vertex x y z (x3) /
+  // endloop / endfacet` blocks; the `facet normal` line's own values are
+  // read but discarded (recomputing per-facet normals here would just
+  // reproduce SaveStl()'s own logic, and this kernel's Mesh has nowhere
+  // to store a facet normal distinct from the vertex positions it's
+  // derived from anyway).
+  //
+  // Binary path: reads the little-endian 80-byte header (discarded),
+  // uint32 triangle count, then that many 50-byte records (3 floats facet
+  // normal - discarded, same reason as the ASCII path; 3x3 floats vertex
+  // positions; a 2-byte attribute byte count - also discarded, nowhere
+  // in this kernel's Mesh to put it). Assumes a little-endian host, true
+  // for every platform this kernel is actually built on.
+  //
+  // Both paths are faithful to STL's own "no shared vertex list" nature:
+  // 3 new vertices are appended per facet, exactly as the file stores
+  // them, not deduplicated against each other the way
+  // `Mesh::MergeAndWeld()` would - a caller wanting a welded mesh (fewer
+  // vertices, adjacency-aware operations like `ComputeVertexNormals()`
+  // giving a real smoothing average rather than each vertex only ever
+  // "sharing" its own single facet) can call `MergeAndWeld({loaded_mesh})`
+  // afterward. Returns Result::Failed if the file can't be opened, an
+  // ASCII `vertex`/`facet`/`endfacet` line is malformed (wrong token
+  // count, unparsable number), or a binary file is truncated mid-record -
+  // `out_mesh` is left unspecified in that case, not partially filled and
+  // silently trusted.
   static Result LoadStl(const std::string& path, Mesh& out_mesh);
 
   const ON_Mesh& raw() const { return mesh_; }
