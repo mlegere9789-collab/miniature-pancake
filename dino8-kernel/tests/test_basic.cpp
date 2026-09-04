@@ -1505,6 +1505,57 @@ void TestMeshIsClosedManifold() {
         "(globally inside-out, not orientation-inconsistent)");
 }
 
+void TestMeshContainsPoint() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  // Both quad-faced and triangle-faced boxes, so both of
+  // ContainsPoint()'s per-face branches (IsQuad() true/false) get
+  // exercised, not just one.
+  const auto quad_box = MakeQuadBoxMesh(0, 0, 0, 2, 2, 2);
+  const auto tri_box = MakeBox(0, 0, 0, 2, 2, 2);
+  // Off-center, off-diagonal coordinates throughout (never y == z == the
+  // box's own mid-value): the box's +X/-X faces are each split into two
+  // triangles along a diagonal that passes exactly through the face's
+  // center, so a +X-direction ray from a point whose (y, z) sits exactly
+  // at that center would hit precisely the shared edge between the two
+  // triangles - the documented, unhandled degenerate case - rather than
+  // cleanly testing the ordinary crossing-count logic this test means to
+  // check.
+  for (const auto& box : {quad_box, tri_box}) {
+    Check(box.ContainsPoint(Point3d(0.7, 1.3, 0.9)), "a point inside the box is inside it");
+    Check(box.ContainsPoint(Point3d(0.2, 0.15, 0.3)),
+          "a point just inside a corner is inside the box");
+    Check(!box.ContainsPoint(Point3d(3, 1.3, 0.9)),
+          "a point clearly outside on the +X side is not inside the box");
+    Check(!box.ContainsPoint(Point3d(-1, 1.3, 0.9)),
+          "a point clearly outside on the -X side is not inside the box "
+          "(exercises a ray that starts behind every face along +X, not "
+          "just one that starts already past some of them)");
+    Check(!box.ContainsPoint(Point3d(0.7, 1.3, 5)),
+          "a point far outside along a different axis (+Z) is not inside the box");
+  }
+
+  // A shape with a genuine hole (not just a convex solid): a box with a
+  // narrower box subtracted out its middle via a real boolean, so a point
+  // in the hollowed-out cavity must read as outside despite being well
+  // inside the *outer* box's own bounding box - a real test of the
+  // ray-cast actually counting crossings through both the outer wall and
+  // the inner cavity wall, not just "is this near the object."
+  const auto outer = MakeBox(0, 0, 0, 4, 4, 4);
+  const auto inner = MakeBox(1, 1, 1, 3, 3, 3);
+  const auto hollow = BooleanCombine(outer, inner, BooleanOp::Difference);
+  Check(hollow.ContainsPoint(Point3d(0.5, 1.7, 2.3)),
+        "a point in the hollow box's solid wall is inside it");
+  Check(!hollow.ContainsPoint(Point3d(2, 1.7, 2.3)),
+        "a point in the hollow box's empty cavity is not inside it, even "
+        "though it's well within the outer box's own bounding box");
+  Check(!hollow.ContainsPoint(Point3d(10, 10, 10)),
+        "a point far outside the hollow box entirely is not inside it");
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -2351,6 +2402,7 @@ int main() {
   TestMeshTransform();
   TestMeshFlipNormals();
   TestMeshIsClosedManifold();
+  TestMeshContainsPoint();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();

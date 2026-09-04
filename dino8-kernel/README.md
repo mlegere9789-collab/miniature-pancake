@@ -728,6 +728,31 @@ What this repo does instead:
   y-coordinate - the control-point bound, not the curve's real one. Exact
   only when a curve's true extremum happens to coincide with a control
   point or endpoint (a straight line, certain conics).
+- `Mesh::ContainsPoint()` is a real, previously-missing point-membership
+  query: every earlier query here (`Volume()`, `GetCentroid()`,
+  `GetBoundingBox()`) describes the solid as a whole, not a specific
+  point's relationship to it. Standard ray-casting: casts a ray from the
+  point in the fixed `+X` direction and counts triangle crossings (via a
+  textbook Moller-Trumbore ray-triangle intersection, a quad face's own
+  two triangles counted independently, same split `Area()`/`Volume()`
+  already use) - odd means inside. Verified on both a quad- and a
+  triangle-faced box, and - more meaningfully than a plain convex solid -
+  on a genuinely hollow shape built via a real `BooleanCombine()`
+  difference (a box with a narrower box subtracted from its middle): a
+  point in the hollow cavity correctly reads as outside despite sitting
+  well inside the *outer* box's own bounding box, a real check that the
+  ray-cast counts crossings through both walls rather than just doing a
+  bounding-box test in disguise.
+  A real degeneracy was hit and fixed while writing this test, not
+  just anticipated: a test point whose (y, z) coordinates landed exactly
+  at a box face's own center made the ray hit precisely the shared edge
+  between that face's two split triangles - the doc comment's own
+  documented "ray passes exactly through an edge" caveat - miscounting
+  the crossing and failing the test. Fixed by choosing off-center,
+  off-diagonal test coordinates instead of by changing the
+  implementation (the degeneracy is a property of any single-ray-cast
+  point-in-solid test, not a bug to code around here), confirming the
+  caveat is real rather than theoretical.
 
 ## What's still not done (as of chunk 2)
 

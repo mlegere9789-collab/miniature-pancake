@@ -56,6 +56,23 @@ class Mesh {
   // point-sized mesh at the origin.
   BoundingBox GetBoundingBox() const;
 
+  // Whether `point` lies inside this mesh - a real "is this point part
+  // of the solid" query nothing here could answer before (every existing
+  // query - Volume(), GetCentroid(), GetBoundingBox() - describes the
+  // solid as a whole, not a specific point's relationship to it). Uses
+  // the standard ray-casting rule: casts a ray from `point` in the fixed
+  // +X direction and counts how many of the mesh's triangles it crosses
+  // (a quad face's own two triangles, same split Area()/Volume() already
+  // use, each counted independently) - an odd count means `point` is
+  // inside. Only meaningful for a closed, consistently-oriented mesh
+  // (IsClosedManifold()), the same requirement Volume() already has, for
+  // the same reason: an open surface has no well-defined "inside" at
+  // all. `point` exactly on the boundary, or a ray that happens to pass
+  // exactly through an edge or vertex, is an unhandled degenerate case
+  // (the standard caveat any single-direction ray-cast test has) - not
+  // hardened against here.
+  bool ContainsPoint(Point3d point) const;
+
   // Per-vertex normals: for each vertex, the area-weighted sum of every
   // adjacent face's own flat (non-normalized) triangle normal, then
   // normalized - the standard "average of what touches this vertex,

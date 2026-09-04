@@ -150,6 +150,41 @@ double Mesh::Area() const {
   return area;
 }
 
+namespace {
+
+// Moller-Trumbore ray-triangle intersection: whether the ray
+// `origin + t*direction` (t > kEpsilon, i.e. strictly ahead of origin,
+// not behind it or exactly at it) crosses triangle (a, b, c). Used by
+// ContainsPoint()'s ray-casting test - a standard, well-known
+// intersection formula, not something needing independent derivation the
+// way this file's own winding conventions did.
+bool RayIntersectsTriangle(const Point3d& origin, const Vector3d& direction, const Point3d& a,
+                            const Point3d& b, const Point3d& c) {
+  constexpr double kEpsilon = 1e-12;
+  const Vector3d edge1 = b - a;
+  const Vector3d edge2 = c - a;
+  const Vector3d h = ON_CrossProduct(direction, edge2);
+  const double det = ON_DotProduct(edge1, h);
+  if (std::abs(det) < kEpsilon) {
+    return false;  // ray parallel to the triangle's plane
+  }
+  const double inv_det = 1.0 / det;
+  const Vector3d s = origin - a;
+  const double u = inv_det * ON_DotProduct(s, h);
+  if (u < 0.0 || u > 1.0) {
+    return false;
+  }
+  const Vector3d q = ON_CrossProduct(s, edge1);
+  const double v = inv_det * ON_DotProduct(direction, q);
+  if (v < 0.0 || u + v > 1.0) {
+    return false;
+  }
+  const double t = inv_det * ON_DotProduct(edge2, q);
+  return t > kEpsilon;
+}
+
+}  // namespace
+
 BoundingBox Mesh::GetBoundingBox() const {
   if (mesh_.m_V.Count() == 0) {
     throw std::invalid_argument(
@@ -169,6 +204,27 @@ BoundingBox Mesh::GetBoundingBox() const {
     box_max.z = std::max(box_max.z, p.z);
   }
   return BoundingBox{box_min, box_max};
+}
+
+bool Mesh::ContainsPoint(Point3d point) const {
+  const Vector3d direction(1.0, 0.0, 0.0);
+  int crossing_count = 0;
+
+  auto count_triangle = [&](int i0, int i1, int i2) {
+    if (RayIntersectsTriangle(point, direction, mesh_.m_V[i0], mesh_.m_V[i1], mesh_.m_V[i2])) {
+      ++crossing_count;
+    }
+  };
+
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    count_triangle(f.vi[0], f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      count_triangle(f.vi[0], f.vi[2], f.vi[3]);
+    }
+  }
+
+  return (crossing_count % 2) == 1;
 }
 
 std::vector<Vector3d> Mesh::ComputeVertexNormals() const {
