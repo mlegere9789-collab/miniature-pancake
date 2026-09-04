@@ -341,9 +341,14 @@ else {
         # /MT to match vcpkg's x64-windows-static triplet (static CRT), same reasoning as
         # the LibRaw compile above. Linking every .lib vcpkg produced for this triplet
         # rather than guessing opencv4's and ncnn's combined transitive dependency list
-        # (protobuf, zlib, libpng, libjpeg-turbo, ...) by name.
-        Write-Host "  cl.exe /nologo /EHsc /O2 /MT $($includePaths -join ' ') $($sources -join ' ') /Fe:$exePath /link <$($libFiles.Count) .lib files>"
-        & cl.exe /nologo /EHsc /O2 /MT $includePaths $sources "/Fe:$exePath" /link $libFiles.FullName
+        # (protobuf, zlib, libpng, libjpeg-turbo, ...) by name. /DNOMINMAX because face.cpp
+        # calls std::max/std::min (e.g. "std::max(std::min(x0, ...), 0.f)"), and something
+        # in the ncnn/opencv4 header chain pulls in <windows.h> transitively, whose own
+        # max/min macros (on by default) rewrite "std::max(" into invalid syntax right
+        # after "::" — a well-known, well-documented MSVC/Windows.h gotcha, fixed by this
+        # one flag rather than touching the vendored source at all.
+        Write-Host "  cl.exe /nologo /EHsc /O2 /MT /DNOMINMAX $($includePaths -join ' ') $($sources -join ' ') /Fe:$exePath /link <$($libFiles.Count) .lib files>"
+        & cl.exe /nologo /EHsc /O2 /MT /DNOMINMAX $includePaths $sources "/Fe:$exePath" /link $libFiles.FullName
         if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
             throw "Compiling face_enhance.cpp failed with exit code $LASTEXITCODE"
         }
