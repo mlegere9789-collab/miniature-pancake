@@ -3236,6 +3236,31 @@ void TestRevolveProfileBiconeVolumeAndBoolean() {
         "union of the revolved bicone with a disjoint unit box equals bicone volume + 1");
 }
 
+void TestRevolveProfileRejectsTooFewSegments() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A real gap found by checking whether revolve_segments had validation
+  // to match profile's own: it didn't. A debug run confirmed the old,
+  // unguarded behavior at revolve_segments=0 wasn't even a clean crash -
+  // it silently produced a near-empty, faceless mesh (VertexCount=2,
+  // FaceCount=0) instead of failing loudly, since each ring's per-segment
+  // vertex loop simply never ran. Now fixed: throws below 3 (the minimum
+  // for a non-degenerate ring).
+  const std::vector<Point2d> profile = {Point2d(1.0, -1.0), Point2d(1.0, 1.0)};
+  for (const int bad_segments : {0, 1, 2, -5}) {
+    bool threw = false;
+    try {
+      Mesh::RevolveProfile(profile, Point3d(0, 0, 0), Vector3d(0, 0, 1), bad_segments);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "RevolveProfile throws std::invalid_argument on too few revolve_segments");
+  }
+}
+
 void TestRevolveProfileRejectsTooShortProfile() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point2d;
@@ -5127,6 +5152,7 @@ int main() {
   TestCylinderVolumeAndBoolean();
   TestConeVolumeAndBoolean();
   TestRevolveProfileBiconeVolumeAndBoolean();
+  TestRevolveProfileRejectsTooFewSegments();
   TestRevolveProfileRejectsTooShortProfile();
   TestRevolveProfileFlatEndCaps();
   TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();

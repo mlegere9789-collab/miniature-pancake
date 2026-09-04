@@ -1272,6 +1272,11 @@ Mesh Mesh::RevolveProfile(const std::vector<Point2d>& profile, Point3d axis_poin
         "dino8::kernel::Mesh::RevolveProfile: profile needs at least 2 points "
         "(nothing to revolve into a solid otherwise)");
   }
+  if (revolve_segments < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::RevolveProfile: revolve_segments must be at "
+        "least 3 (fewer can't form a non-degenerate ring)");
+  }
   constexpr double kOnAxisEpsilon = 1e-9;
   const bool front_is_apex = std::abs(profile.front().x) <= kOnAxisEpsilon;
   const bool back_is_apex = std::abs(profile.back().x) <= kOnAxisEpsilon;

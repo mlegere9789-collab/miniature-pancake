@@ -1586,6 +1586,16 @@ What this repo does instead:
   had the identical silent-`NaN` failure mode. Fixed the same way -
   throws `std::invalid_argument` below 1, verified with a dedicated test
   rather than assumed to follow from the sibling fix.
+- The same pattern of gap, this time in `Mesh::RevolveProfile()`:
+  `profile` had its own validation, but the sibling `revolve_segments`
+  parameter didn't - and unlike the `TessellateGrid()` family's `NaN`
+  failure mode, a debug run showed this one wasn't even a clean crash.
+  `revolve_segments=0` silently produced a near-empty, faceless mesh
+  (`VertexCount=2`, `FaceCount=0`) instead of failing loudly, since each
+  ring's per-segment vertex loop simply never ran at that count. Fixed by
+  throwing `std::invalid_argument` below 3 (the minimum for a
+  non-degenerate ring), verified across four values (`0`, `1`, `2`, and a
+  negative count) rather than just the one zero case.
 
 ## What's still not done (as of chunk 2)
 

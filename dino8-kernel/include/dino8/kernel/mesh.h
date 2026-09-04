@@ -399,7 +399,15 @@ class Mesh {
   // ExtrudeCappedSolid()'s own caps use). Mixing the two is fine (e.g. an
   // on-axis start tapering to an off-axis end, closed with a flat disc
   // there). Throws std::invalid_argument if `profile` has fewer than 2
-  // points (fewer leaves nothing to revolve into a solid).
+  // points (fewer leaves nothing to revolve into a solid). Also throws
+  // std::invalid_argument if `revolve_segments` is less than 3 - a real
+  // gap found by checking whether `profile`'s own validation had a
+  // sibling for this parameter (it didn't): fewer than 3 segments can't
+  // form a non-degenerate ring at all, and a debug run confirmed the old,
+  // unguarded behavior wasn't even a clean crash - `revolve_segments=0`
+  // silently produced a near-empty, faceless mesh (each ring's per-
+  // segment vertex loop simply never running) rather than failing
+  // loudly.
   //
   // Every profile point becomes either a single apex vertex (on-axis end)
   // or a `revolve_segments`-vertex ring (everywhere else, including an
