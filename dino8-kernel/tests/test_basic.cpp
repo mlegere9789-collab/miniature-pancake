@@ -1282,6 +1282,46 @@ void TestExactClippingHandlesNonConvexTrim() {
         "a disjoint unit box equals solid volume + 1");
 }
 
+void TestExactClippingRejectsSelfIntersectingTrim() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface surface =
+      NurbsSurface::FromControlGrid(grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+
+  // A "bowtie" quadrilateral: listing the 4 corners of a square in
+  // crossed order (0,0)->(1,1)->(1,0)->(0,1) makes edges 0 and 2 cross
+  // through the middle - a self-intersecting "polygon" with no
+  // well-defined inside, which TessellateGridClippedExact() now detects
+  // via dino8::kernel::detail::IsSimplePolygon() and rejects outright,
+  // rather than producing whatever ClipPolygon/ClipConvex happens to
+  // compute against an ill-formed input.
+  const std::vector<Point2d> bowtie_trim = {
+      Point2d(0.1, 0.1),
+      Point2d(0.9, 0.9),
+      Point2d(0.9, 0.1),
+      Point2d(0.1, 0.9),
+  };
+
+  bool threw = false;
+  try {
+    Brep::TrimmedPlanarFace(surface, bowtie_trim, /*exact_clip=*/true).Tessellate(8, 8);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "TessellateGridClippedExact throws on a self-intersecting (bowtie) "
+        "trim_polygon instead of silently clipping against it");
+}
+
 void TestAnnulusFaceExtrudesToWatertightTube() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -1470,6 +1510,7 @@ int main() {
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
+  TestExactClippingRejectsSelfIntersectingTrim();
   TestAnnulusFaceExtrudesToWatertightTube();
   TestExtrudeRejectsAlreadyClosedCap();
   TestExtrudeRejectsBowtieBoundary();

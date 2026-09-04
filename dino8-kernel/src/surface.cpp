@@ -494,6 +494,13 @@ Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
 
 Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
                                                const std::vector<Point2d>& trim_polygon) const {
+  if (!dino8::kernel::detail::IsSimplePolygon(trim_polygon)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::TessellateGridClippedExact: trim_polygon "
+        "must be simple (non-self-intersecting) - a self-intersecting trim "
+        "isn't decomposable into a well-defined \"inside\" at all");
+  }
+
   Mesh mesh;
   ON_Mesh& raw = mesh.mesh_;
 

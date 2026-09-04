@@ -409,6 +409,22 @@ What this repo does instead:
   point-sized mesh at the origin. Verified with an asymmetric box (a
   different extent on each axis, so a bug mixing up which axis feeds
   which output component would be caught) and the empty-mesh rejection.
+- `TessellateGridClippedExact()` now actually validates that
+  `trim_polygon` is simple (non-self-intersecting) - a requirement this
+  file documented since the concave-clipping chunk but never checked
+  until now. New `dino8::kernel::detail::IsSimplePolygon()` (and its
+  `SegmentsProperlyIntersect()` helper) in `polygon2d.h` tests every pair
+  of non-adjacent edges for a genuine crossing - a deliberately narrower
+  check than "these two segments share any point," so it catches a real
+  self-intersecting polygon without also flagging the ordinary case of
+  adjacent edges sharing an endpoint. `TessellateGridClippedExact()` now
+  throws `std::invalid_argument` up front rather than clipping against an
+  ill-formed input and returning whatever the clipper happened to
+  compute. Verified with a genuine bowtie trim (a quadrilateral's 4
+  corners listed in crossed order) being correctly rejected; confirmed no
+  regression by re-running the full suite, since every trim polygon any
+  earlier test used (rectangles, the dart, the annulus's outer/hole
+  loops, `Cylinder()`'s circle) is already simple.
 
 ## What's still not done (as of chunk 2)
 

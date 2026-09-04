@@ -76,14 +76,17 @@ class NurbsSurface {
   // other existing caller exercises); a concave one falls back to a
   // general (Greiner-Hormann-style) polygon intersection with
   // ear-clipping triangulation for the (possibly non-convex) clipped
-  // pieces. `trim_polygon` must still be a simple (non-self-intersecting)
-  // polygon - this isn't validated here, since a self-intersecting trim
-  // isn't decomposable into a well-defined "inside" at all. The concave
-  // path is newer and more narrowly tested than the convex one; like
-  // PointInPolygon's own documented boundary caveat, a `trim_polygon`
-  // vertex landing exactly on a grid line, or a cell boundary crossed an
-  // unusual number of times by a highly irregular concave shape, are
-  // known-unhardened corners of it.
+  // pieces. `trim_polygon` must be a simple (non-self-intersecting)
+  // polygon - checked (dino8::kernel::detail::IsSimplePolygon), throwing
+  // std::invalid_argument otherwise, since a self-intersecting trim isn't
+  // decomposable into a well-defined "inside" at all. That check only
+  // catches genuine edge-edge crossings, not every possible degeneracy
+  // (e.g. an edge passing exactly through a non-adjacent vertex). The
+  // concave path is newer and more narrowly tested than the convex one;
+  // like PointInPolygon's own documented boundary caveat, a
+  // `trim_polygon` vertex landing exactly on a grid line, or a cell
+  // boundary crossed an unusual number of times by a highly irregular
+  // concave shape, are known-unhardened corners of it.
   //
   // The returned mesh is already welded (via Mesh::MergeAndWeld) since
   // adjacent cells independently compute the same boundary-intersection

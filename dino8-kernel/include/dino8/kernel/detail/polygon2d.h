@@ -95,4 +95,49 @@ inline std::vector<std::array<int, 3>> EarClipTriangulate(const std::vector<Poin
   return triangles;
 }
 
+// True if segments (p1,p2) and (p3,p4) cross at an interior point of
+// both (a "proper" intersection) - shared endpoints, touching, and
+// collinear overlap are NOT reported as crossings here. That's a
+// deliberate, narrower check than "these two segments have any point in
+// common": it's enough to catch a genuinely self-intersecting polygon
+// (two non-adjacent edges crossing through each other) without also
+// rejecting the ordinary case of adjacent edges sharing an endpoint, and
+// it mirrors this file's existing epsilon-based, not exhaustively
+// robust, approach to degenerate cases (see PointInPolygon's own
+// documented boundary caveat elsewhere in this codebase).
+inline bool SegmentsProperlyIntersect(const Point2d& p1, const Point2d& p2, const Point2d& p3,
+                                       const Point2d& p4) {
+  auto sign = [](double v) { return (v > 1e-12) ? 1 : ((v < -1e-12) ? -1 : 0); };
+  const int d1 = sign(Cross2d(Point2d(p4.x - p3.x, p4.y - p3.y), Point2d(p1.x - p3.x, p1.y - p3.y)));
+  const int d2 = sign(Cross2d(Point2d(p4.x - p3.x, p4.y - p3.y), Point2d(p2.x - p3.x, p2.y - p3.y)));
+  const int d3 = sign(Cross2d(Point2d(p2.x - p1.x, p2.y - p1.y), Point2d(p3.x - p1.x, p3.y - p1.y)));
+  const int d4 = sign(Cross2d(Point2d(p2.x - p1.x, p2.y - p1.y), Point2d(p4.x - p1.x, p4.y - p1.y)));
+  return d1 != 0 && d2 != 0 && d1 != d2 && d3 != 0 && d4 != 0 && d3 != d4;
+}
+
+// True if `poly` is a simple polygon: no two non-adjacent edges properly
+// cross (see SegmentsProperlyIntersect's own caveats - this doesn't catch
+// every possible degeneracy, e.g. an edge passing exactly through a
+// non-adjacent vertex, only genuine edge-edge crossings). O(n^2) in the
+// vertex count, fine for the modestly-sized trim/ring polygons this is
+// meant for.
+inline bool IsSimplePolygon(const std::vector<Point2d>& poly) {
+  const size_t n = poly.size();
+  for (size_t i = 0; i < n; ++i) {
+    const Point2d& a1 = poly[i];
+    const Point2d& a2 = poly[(i + 1) % n];
+    for (size_t j = i + 1; j < n; ++j) {
+      if (j == i + 1 || (j + 1) % n == i) {
+        continue;  // adjacent edges share a vertex, not a crossing
+      }
+      const Point2d& b1 = poly[j];
+      const Point2d& b2 = poly[(j + 1) % n];
+      if (SegmentsProperlyIntersect(a1, a2, b1, b2)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 }  // namespace dino8::kernel::detail
