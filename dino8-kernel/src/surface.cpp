@@ -374,6 +374,20 @@ Result NurbsSurface::Trim(int direction, double t0, double t1) {
   return surface_.Trim(direction, ON_Interval(t0, t1)) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsSurface::Extend(int direction, double t0, double t1) {
+  if (t0 >= t1) {
+    return Result::Failed;
+  }
+  if (surface_.IsClosed(direction)) {
+    return Result::Failed;
+  }
+  const ON_Interval current = surface_.Domain(direction);
+  if (t0 >= current.Min() && t1 <= current.Max()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return surface_.Extend(direction, ON_Interval(t0, t1)) ? Result::Ok : Result::Failed;
+}
+
 Result NurbsSurface::Split(int direction, double t, NurbsSurface& out_west_or_south,
                             NurbsSurface& out_east_or_north) const {
   ON_Surface* west_or_south = nullptr;

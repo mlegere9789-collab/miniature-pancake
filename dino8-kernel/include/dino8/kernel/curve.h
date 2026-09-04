@@ -36,6 +36,12 @@ class NurbsCurve {
   // `NurbsSurface::IsClosed()`. Delegates to `ON_NurbsCurve::IsClosed`
   // after verifying it's a real implementation (falls back to an actual
   // endpoint-coincidence check for a non-periodic curve, not a stub).
+  // Confirmed by testing, not just reading the source: `ON_NurbsCurve::
+  // IsClosed` unconditionally requires at least 4 control points before
+  // it even looks at endpoint positions, so a 3-point coincident
+  // -endpoint polyline (a perfectly valid, genuinely closed-looking
+  // triangle-wedge shape) reports false here - a real, narrower
+  // guarantee than "any coincident-endpoint curve reports closed".
   bool IsClosed() const;
 
   // Whether the curve's own knot vector is genuinely periodic - a
@@ -88,6 +94,23 @@ class NurbsCurve {
   // stub). Returns Result::Failed if `t` isn't strictly inside the
   // curve's domain or if OpenNURBS' own call fails.
   Result Split(double t, NurbsCurve& out_left, NurbsCurve& out_right) const;
+
+  // Extends the curve in place so its domain includes `[t0, t1]` -
+  // Trim()'s opposite: instead of cutting the curve down, this
+  // analytically extrapolates it outward past whichever end(s) of
+  // `[t0, t1]` fall outside the curve's current domain, leaving the
+  // curve's own existing shape over its original domain completely
+  // unchanged (this is the curve's own documented guarantee, not just an
+  // assumption: `ON_NurbsCurve::Extend` only moves the affected end's
+  // knots/control points via a De Boor extrapolation, the same
+  // underlying curve-representation machinery `Trim()`/`Split()` use).
+  // Only extends whichever end(s) `[t0, t1]` actually reach past - if it
+  // already sits entirely within the current domain, returns
+  // NoOpAlreadySatisfied rather than calling into OpenNURBS at all.
+  // Returns Result::Failed if `t0 >= t1`, the curve is closed (extending
+  // a closed curve is undefined - matches `ON_NurbsCurve::Extend`'s own
+  // documented restriction), or OpenNURBS' own call fails.
+  Result Extend(double t0, double t1);
 
   Point3d PointAt(double t) const;
 

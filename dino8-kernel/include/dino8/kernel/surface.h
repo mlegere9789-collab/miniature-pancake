@@ -99,6 +99,22 @@ class NurbsSurface {
   Result Split(int direction, double t, NurbsSurface& out_west_or_south,
                NurbsSurface& out_east_or_north) const;
 
+  // Extends the surface in place in `direction` (0 = U, 1 = V) so that
+  // direction's domain includes `[t0, t1]` - the surface-level
+  // counterpart to `NurbsCurve::Extend()`, `Trim()`'s opposite. Only
+  // extends whichever end(s) of `[t0, t1]` actually fall outside the
+  // current domain in that direction; the other direction's domain is
+  // always left unchanged. Delegates to `ON_NurbsSurface::Extend` after
+  // verifying it's a real implementation (converts that direction to an
+  // isocurve, extends it via the same `ON_NurbsCurve::Extend` extrapolation
+  // `NurbsCurve::Extend()` uses, and writes the result back - not a
+  // stub). If `[t0, t1]` already sits entirely within the current domain
+  // in `direction`, returns NoOpAlreadySatisfied rather than calling into
+  // OpenNURBS at all. Returns Result::Failed if `t0 >= t1`, the surface
+  // is closed in `direction` (matches `ON_NurbsSurface::Extend`'s own
+  // documented restriction), or OpenNURBS' own call fails.
+  Result Extend(int direction, double t0, double t1);
+
   Point3d PointAt(double u, double v) const;
 
   // Unit surface normal at parameter (u, v): `d/du x d/dv`, normalized.

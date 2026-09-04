@@ -78,6 +78,20 @@ Result NurbsCurve::Trim(double t0, double t1) {
   return curve_.Trim(ON_Interval(t0, t1)) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsCurve::Extend(double t0, double t1) {
+  if (t0 >= t1) {
+    return Result::Failed;
+  }
+  if (curve_.IsClosed()) {
+    return Result::Failed;
+  }
+  const ON_Interval current = curve_.Domain();
+  if (t0 >= current.Min() && t1 <= current.Max()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.Extend(ON_Interval(t0, t1)) ? Result::Ok : Result::Failed;
+}
+
 Result NurbsCurve::Split(double t, NurbsCurve& out_left, NurbsCurve& out_right) const {
   ON_Curve* left_curve = nullptr;
   ON_Curve* right_curve = nullptr;

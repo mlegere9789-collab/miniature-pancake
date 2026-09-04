@@ -351,6 +351,64 @@ void TestCurveSplit() {
         "strictly inside it");
 }
 
+void TestCurveExtend() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Same line as TestCurveSplit(): (0,0,0) to (10,0,0), domain [0,1],
+  // P(t) = (10t, 0, 0). Extending to [-0.5, 1.5] should analytically
+  // extrapolate the same straight line rather than approximate it, so
+  // the extended curve's own evaluated endpoints land exactly on the
+  // line's own equation - confirmed by a debug run before finalizing
+  // these assertions, not assumed.
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  NurbsCurve line = NurbsCurve::FromControlPoints(pts, /*degree=*/1);
+  Check(line.Extend(-0.5, 1.5) == Result::Ok, "NurbsCurve::Extend() succeeds");
+
+  const ON_Interval domain_after = line.raw().Domain();
+  Check(std::abs(domain_after.Min() - (-0.5)) < 1e-9 && std::abs(domain_after.Max() - 1.5) < 1e-9,
+        "the extended curve's own domain is exactly [-0.5, 1.5]");
+  const Point3d p_lo = line.PointAt(domain_after.Min());
+  const Point3d p_hi = line.PointAt(domain_after.Max());
+  Check(std::abs(p_lo.x - (-5.0)) < 1e-9 && std::abs(p_lo.y) < 1e-9 && std::abs(p_lo.z) < 1e-9,
+        "the extended curve's new start point is exactly (-5,0,0), the "
+        "same line P(t)=(10t,0,0) extrapolated to t=-0.5, not a "
+        "different curve or a clamped-at-the-original-endpoint result");
+  Check(std::abs(p_hi.x - 15.0) < 1e-9 && std::abs(p_hi.y) < 1e-9 && std::abs(p_hi.z) < 1e-9,
+        "the extended curve's new end point is exactly (15,0,0), the "
+        "same line extrapolated to t=1.5");
+
+  // A request already contained within the current domain is a no-op,
+  // not an error - the curve is not modified and OpenNURBS' own Extend
+  // (which would otherwise indistinguishably return false for this case
+  // and for a genuine failure) is never even called.
+  NurbsCurve unchanged = NurbsCurve::FromControlPoints(pts, /*degree=*/1);
+  Check(unchanged.Extend(0.2, 0.8) == Result::NoOpAlreadySatisfied,
+        "Extend() to a sub-range already inside the current domain "
+        "reports NoOpAlreadySatisfied rather than Ok or Failed");
+  Check(std::abs(unchanged.raw().Domain().Min() - 0.0) < 1e-9 &&
+            std::abs(unchanged.raw().Domain().Max() - 1.0) < 1e-9,
+        "and leaves the curve's own domain genuinely untouched at [0,1]");
+
+  Check(line.Extend(1.5, 0.5) == Result::Failed,
+        "Extend() fails on a backwards interval (t0 >= t1) rather than "
+        "silently doing something undefined");
+
+  // ON_NurbsCurve::IsClosed() requires at least 4 control points
+  // (confirmed by reading opennurbs_nurbscurve.cpp, then by testing: a
+  // 3-point coincident-endpoint polyline reported IsClosed() false
+  // regardless of the coincidence, since it fails that minimum-CV-count
+  // check before ever looking at endpoint positions) - so this needs a
+  // 4-point closed triangle path instead to genuinely exercise IsClosed().
+  NurbsCurve loop = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(0, 1, 0), Point3d(0, 0, 0)}, /*degree=*/1);
+  Check(loop.IsClosed(), "the 4-point coincident-endpoint triangle path is genuinely closed");
+  Check(loop.Extend(-1.0, 2.0) == Result::Failed,
+        "Extend() fails on a closed curve, matching ON_NurbsCurve::"
+        "Extend()'s own documented restriction");
+}
+
 void TestSurfaceNormalAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -621,6 +679,50 @@ void TestSurfaceSplit() {
   Check(failed,
         "Split() fails when t sits exactly at a domain endpoint rather "
         "than strictly inside it");
+}
+
+void TestSurfaceExtend() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Same flat P(u,v)=(u,v,0) surface as TestSurfaceSplit(). Extending
+  // direction 0 to [-0.5, 1.0] should analytically extrapolate the
+  // identity mapping rather than approximate it, leaving direction 1's
+  // domain untouched - confirmed by a debug run before finalizing these
+  // assertions.
+  const std::vector<Point3d> grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  Check(surface.Extend(0, -0.5, 1.0) == Result::Ok, "NurbsSurface::Extend(0, ...) succeeds");
+
+  const ON_Interval u_after = surface.raw().Domain(0);
+  const ON_Interval v_after = surface.raw().Domain(1);
+  Check(std::abs(u_after.Min() - (-0.5)) < 1e-9 && std::abs(u_after.Max() - 1.0) < 1e-9,
+        "extending direction 0 sets that direction's domain to exactly "
+        "[-0.5, 1.0]");
+  Check(std::abs(v_after.Min()) < 1e-9 && std::abs(v_after.Max() - 1.0) < 1e-9,
+        "extending direction 0 leaves direction 1's domain [0,1] unchanged");
+
+  const Point3d p = surface.PointAt(u_after.Min(), 0.5);
+  Check(std::abs(p.x - (-0.5)) < 1e-9 && std::abs(p.y - 0.5) < 1e-9 && std::abs(p.z) < 1e-9,
+        "PointAt the extended domain's new u_min edge lands exactly on "
+        "(-0.5, 0.5, 0), the same identity mapping extrapolated, not a "
+        "different surface");
+
+  NurbsSurface unchanged = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  Check(unchanged.Extend(0, 0.2, 0.8) == Result::NoOpAlreadySatisfied,
+        "Extend() to a sub-range already inside the current domain "
+        "reports NoOpAlreadySatisfied rather than Ok or Failed");
+
+  NurbsSurface backwards = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  Check(backwards.Extend(0, 1.0, -0.5) == Result::Failed,
+        "Extend() fails on a backwards interval (t0 >= t1) rather than "
+        "silently doing something undefined");
 }
 
 void TestFileRoundTrip() {
@@ -3411,12 +3513,14 @@ int main() {
   TestCurveReverse();
   TestCurveTrim();
   TestCurveSplit();
+  TestCurveExtend();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();
   TestSurfaceReverseAndTranspose();
   TestSurfaceTrim();
   TestSurfaceSplit();
+  TestSurfaceExtend();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();

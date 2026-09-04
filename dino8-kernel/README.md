@@ -1074,6 +1074,32 @@ What this repo does instead:
   returns an empty mesh with `Result::Ok` rather than `Result::Failed` -
   a narrower, now-documented real guarantee rather than an assumed
   outright failure.
+- `NurbsCurve::Extend(t0, t1)` and `NurbsSurface::Extend(direction, t0,
+  t1)` are `Trim()`'s opposite: instead of cutting a curve/surface down,
+  they analytically extrapolate it outward to include `[t0, t1]`,
+  delegating to `ON_NurbsCurve::Extend`/`ON_NurbsSurface::Extend` (the
+  surface version converts the given direction to an isocurve, extends
+  that via the same curve-level algorithm, and writes it back - the same
+  "real, not a stub" pattern `Trim()`/`Split()` already established for
+  both). A request already contained within the current domain is
+  intercepted before ever calling into OpenNURBS and reported as
+  `NoOpAlreadySatisfied`, since OpenNURBS' own `Extend` would otherwise
+  return the same `false` for that case as for a genuine failure (e.g. a
+  closed curve/surface), making the two indistinguishable from its
+  return value alone. Verified on the same straight-line curve and flat
+  `P(u,v)=(u,v,0)` surface used elsewhere: extending a `[0,1]`-domain
+  line to `[-0.5, 1.5]` gives new endpoints at exactly `(-5,0,0)` and
+  `(15,0,0)` - the same `P(t)=(10t,0,0)` equation extrapolated, not a
+  different curve - and extending the surface's direction 0 to `[-0.5,
+  1.0]` leaves direction 1's domain untouched and evaluates its new edge
+  at exactly `(-0.5, 0.5, 0)`. Also discovered, by testing rather than
+  just reading OpenNURBS' own source: `ON_NurbsCurve::IsClosed()`
+  unconditionally requires at least 4 control points before it even
+  looks at endpoint positions, so a 3-point coincident-endpoint polyline
+  (tried first) reports `IsClosed()` false and doesn't exercise the
+  "fails on a closed curve" case at all - a 4-point closed triangle path
+  was needed instead, and `NurbsCurve::IsClosed()`'s own doc comment has
+  been corrected to note this real, narrower guarantee.
 
 ## What's still not done (as of chunk 2)
 
