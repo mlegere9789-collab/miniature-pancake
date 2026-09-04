@@ -1398,6 +1398,19 @@ What this repo does instead:
   circle (`IsArc()` true, `IsCircle()` false - the real case proving
   `IsCircle()` isn't just `IsArc()` renamed), and a straight line (both
   false).
+- `NurbsSurface::GetApproximateSize()` returns an approximate
+  width/height for a surface's own domain, delegating to
+  `ON_NurbsSurface::GetSurfaceSize` after verifying it's real but
+  genuinely approximate by its own source comment (`// TODO - get
+  lengths of polygon`): each direction is the *control polygon length*
+  (straight-line distances between consecutive control points), not the
+  true arc length of an isocurve - exact for a flat/straight direction,
+  an overstatement for a curved one, the same direction of error
+  `NurbsCurve::Length()`'s own polyline sampling has, just from one
+  coarse pass rather than a convergent fine one. Verified exactly on a
+  flat surface (width/height match its true 3x2 size) and confirmed to
+  meaningfully overstate a cylinder wall's true circumference (8.0 vs.
+  the true `2*pi ~ 6.28`) rather than merely rounding-error off it.
 
 ## What's still not done (as of chunk 2)
 

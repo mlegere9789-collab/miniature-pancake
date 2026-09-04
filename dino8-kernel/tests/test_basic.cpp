@@ -950,6 +950,49 @@ void TestSurfaceIsTorus() {
   Check(!cone.IsTorus(1e-6), "a cone reports IsTorus() false");
 }
 
+void TestSurfaceGetApproximateSize() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // Flat P(u,v)=(u,v,0) surface over domain [0,3]x[0,2] (control grid at
+  // integer spacing) - no curvature at all, so the control-polygon
+  // -length approximation is exact here: hand-derivable width=3,
+  // height=2, confirmed by a debug run before finalizing.
+  std::vector<Point3d> grid;
+  for (int u = 0; u <= 3; ++u) {
+    for (int v = 0; v <= 2; ++v) {
+      grid.emplace_back(u, v, 0);
+    }
+  }
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(grid, 4, 3, 1, 1);
+  const auto flat_size = flat.GetApproximateSize();
+  Check(std::abs(flat_size.width - 3.0) < 1e-9 && std::abs(flat_size.height - 2.0) < 1e-9,
+        "a flat surface's approximate size is exactly its true size "
+        "(3 x 2), since there's no curvature for the control-polygon "
+        "approximation to overstate");
+
+  // Cylinder wall, radius 1: U wraps the unit circle (true circumference
+  // 2*pi ~ 6.283), V is the straight height (1.0, exact - a line has no
+  // curvature either). Confirmed by the same debug run: this overstates
+  // the true circumference substantially (8.0, not merely a rounding
+  // difference from 6.283), the real, non-negligible gap this
+  // control-polygon approximation has for a genuinely curved direction.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  Check(cylinder.GetNurbForm(cylinder_surface) != 0, "ON_Cylinder::GetNurbForm succeeds");
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+  const auto wall_size = wall.GetApproximateSize();
+  Check(wall_size.width > 2.0 * ON_PI,
+        "the cylinder wall's approximate width overstates the true "
+        "circumference (2*pi), matching the control-polygon "
+        "approximation's own documented direction of error");
+  Check(std::abs(wall_size.height - 1.0) < 1e-9,
+        "the cylinder wall's approximate height is exactly 1.0, the "
+        "true straight-line height");
+}
+
 void TestSurfaceReverseAndTranspose() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -4389,6 +4432,7 @@ int main() {
   TestSurfaceIsCylinder();
   TestSurfaceIsCone();
   TestSurfaceIsTorus();
+  TestSurfaceGetApproximateSize();
   TestSurfaceReverseAndTranspose();
   TestSurfaceTrim();
   TestSurfaceSplit();

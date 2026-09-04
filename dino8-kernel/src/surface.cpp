@@ -375,6 +375,13 @@ bool NurbsSurface::IsCone(double tolerance) const { return surface_.IsCone(nullp
 
 bool NurbsSurface::IsTorus(double tolerance) const { return surface_.IsTorus(nullptr, tolerance); }
 
+SurfaceSize NurbsSurface::GetApproximateSize() const {
+  double width = 0.0;
+  double height = 0.0;
+  surface_.GetSurfaceSize(&width, &height);
+  return SurfaceSize{width, height};
+}
+
 Result NurbsSurface::Reverse(int direction) {
   return surface_.Reverse(direction) ? Result::Ok : Result::Failed;
 }

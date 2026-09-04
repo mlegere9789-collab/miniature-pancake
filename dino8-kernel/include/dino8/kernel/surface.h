@@ -42,6 +42,13 @@ struct SurfaceDivisions {
   int v;
 };
 
+// An approximate physical width/height of a surface's own domain,
+// returned by NurbsSurface::GetApproximateSize().
+struct SurfaceSize {
+  double width;   // approximate size in the U direction
+  double height;  // approximate size in the V direction
+};
+
 // Wraps ON_NurbsSurface. Same rationale as NurbsCurve: expose raw()
 // rather than mirror the whole OpenNURBS surface API.
 class NurbsSurface {
@@ -172,6 +179,26 @@ class NurbsSurface {
   // family). Verified against the existing sphere, cylinder wall, and
   // cone too (all correctly report false at the same 1e-6 tolerance).
   bool IsTorus(double tolerance = ON_ZERO_TOLERANCE) const;
+
+  // An approximate physical width (U direction) and height (V direction)
+  // of the surface. Delegates to `ON_NurbsSurface::GetSurfaceSize` after
+  // verifying it's a real implementation - but a genuinely approximate
+  // one, by the method's own source comment (`// TODO - get lengths of
+  // polygon`): it returns each direction's *control polygon length*
+  // (the sum of straight-line distances between consecutive control
+  // points), not the true arc length of an isocurve through that
+  // direction. For a straight/flat surface these coincide exactly (no
+  // curvature for a polyline-through-control-points to overstate); for
+  // a genuinely curved surface, this overstates the true size, the same
+  // direction of error `NurbsCurve::Length()`'s own polyline-sampling
+  // approximation has, but from a single coarse 2-point-per-span
+  // estimate rather than a convergent fine sampling. Verified exactly
+  // on a flat identity-mapped surface, and confirmed to overstate (not
+  // understate) a cylinder wall's true circumference (8.0 vs. the
+  // true 2*pi ~ 6.28 for a unit-radius circle) - a real, substantial gap
+  // from the control polygon's own coarser vertex count, not a rounding
+  // artifact.
+  SurfaceSize GetApproximateSize() const;
 
   // Reverses the surface's parameterization in `direction` (0 = U,
   // 1 = V) in place: same 3D shape, but that direction now runs the
