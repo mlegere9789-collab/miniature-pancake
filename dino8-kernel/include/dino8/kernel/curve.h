@@ -165,6 +165,17 @@ class NurbsCurve {
   // caller gets a clear reason rather than an unexplained
   // Result::Failed. Returns Result::Failed if OpenNURBS' own call fails
   // for some other reason.
+  //
+  // A real, easy-to-misread API nuance, confirmed by testing rather
+  // than assumed from the parameter name alone: `multiplicity` means
+  // "ensure `knot_value` ends up with at least this multiplicity," not
+  // "always insert this many new copies." If `knot_value` already
+  // exists in the knot vector with multiplicity >= the requested value,
+  // this is a genuine no-op - no new control points or knots are added
+  // - but it still returns Result::Ok (OpenNURBS' own `InsertKnot`
+  // returns true, since the postcondition is already satisfied), not
+  // Result::NoOpAlreadySatisfied, since detecting that case in advance
+  // would require duplicating OpenNURBS' own knot-multiplicity search.
   Result InsertKnotAt(double knot_value, int multiplicity = 1);
 
   // Elevates the curve's degree in place. Returns NoOpAlreadySatisfied if

@@ -285,6 +285,20 @@ void TestCurveInsertKnotAt() {
         "PointAt() matches before and after InsertKnotAt to within 1e-9 at 5 different "
         "parameter values - the curve's shape genuinely didn't change");
 
+  // A real, easy-to-misread API nuance found while testing the surface
+  // equivalent of this method and confirmed here too: `multiplicity`
+  // means "ensure the knot ends up with at least this multiplicity,"
+  // not "always insert this many new copies." 0.5 now already has
+  // multiplicity 1 (just inserted above), so inserting it again at
+  // multiplicity 1 is a genuine no-op - OpenNURBS' own InsertKnot()
+  // still returns true (the postcondition is already satisfied), but
+  // adds no control points or knots at all.
+  const Result already_present_result = curve.InsertKnotAt(0.5, 1);
+  Check(already_present_result == Result::Ok,
+        "InsertKnotAt still returns Ok when the requested multiplicity is already satisfied");
+  Check(curve.ControlPointCount() == 5 && curve.KnotCount() == 7,
+        "...but adds no new control points or knots, since 0.5 already has multiplicity 1");
+
   bool boundary_threw = false;
   try {
     curve.InsertKnotAt(curve.Domain().min, 1);
@@ -1973,6 +1987,84 @@ void TestSurfaceSetWeightAt() {
         "SetWeightAt reports NoOpAlreadySatisfied when the weight already matches");
   Check(surface.SetWeightAt(99, 99, 2.0) == Result::Failed,
         "SetWeightAt returns Failed (not a crash) on an out-of-range (i, j)");
+}
+
+void TestSurfaceInsertKnotAt() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // 4x2 control grid, degree 2 in u (domain [0,2]) / degree 1 in v
+  // (domain [0,1]), with z varying by u index so the surface is
+  // genuinely curved in u (not flat) - a real shape for InsertKnotAt to
+  // (not) change. Confirmed by a debug run that the default
+  // clamped-uniform u-knot vector is [0,0,1,2,2] - so 1.0 is already an
+  // existing interior knot, which is exactly what exposed the
+  // `multiplicity` no-op nuance `NurbsCurve::InsertKnotAt()`'s own doc
+  // comment now describes; 0.5 is a genuinely new value, used here for
+  // the main "shape unchanged, control points added" assertions.
+  std::vector<Point3d> grid;
+  const std::vector<double> z_by_u = {0.0, 3.0, -2.0, 1.0};
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 2; ++j) {
+      grid.push_back(
+          Point3d(static_cast<double>(i), static_cast<double>(j), z_by_u[static_cast<size_t>(i)]));
+    }
+  }
+  NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 4, 2, /*u_degree=*/2, /*v_degree=*/1);
+  Check(surface.CVCountU() == 4 && surface.KnotCount(0) == 5,
+        "the surface starts with 4 u-control-points and 5 u-knots");
+  std::vector<Point3d> before_points;
+  for (double u : {0.3, 0.9, 1.0, 1.5, 1.8}) {
+    before_points.push_back(surface.PointAt(u, 0.5));
+  }
+
+  const Result result = surface.InsertKnotAt(0, 0.5, /*multiplicity=*/1);
+  Check(result == Result::Ok, "InsertKnotAt returns Ok on a valid interior knot value");
+  Check(surface.CVCountU() == 5 && surface.KnotCount(0) == 6,
+        "InsertKnotAt adds exactly one new u-control-point and one new u-knot for a genuinely "
+        "new knot value");
+
+  bool shape_unchanged = true;
+  size_t idx = 0;
+  for (double u : {0.3, 0.9, 1.0, 1.5, 1.8}) {
+    if ((surface.PointAt(u, 0.5) - before_points[idx++]).Length() > 1e-9) {
+      shape_unchanged = false;
+    }
+  }
+  Check(shape_unchanged,
+        "PointAt() matches before and after InsertKnotAt to within 1e-9 at 5 different u "
+        "values - the surface's shape genuinely didn't change");
+
+  // The same real `multiplicity` no-op nuance NurbsCurve::InsertKnotAt()
+  // documents, cross-checked here independently: 1.0 already exists in
+  // the u-knot vector with multiplicity 1, so inserting it again at
+  // multiplicity 1 is a genuine no-op.
+  const Result already_present_result = surface.InsertKnotAt(0, 1.0, 1);
+  Check(already_present_result == Result::Ok,
+        "InsertKnotAt still returns Ok when the requested multiplicity is already satisfied");
+  Check(surface.CVCountU() == 5 && surface.KnotCount(0) == 6,
+        "...but adds no new control points or knots, since 1.0 already has multiplicity 1");
+
+  bool boundary_threw = false;
+  try {
+    surface.InsertKnotAt(0, 2.0, 1);
+  } catch (const std::invalid_argument&) {
+    boundary_threw = true;
+  }
+  Check(boundary_threw,
+        "InsertKnotAt throws std::invalid_argument at the domain's own boundary (not strictly "
+        "interior)");
+
+  bool multiplicity_threw = false;
+  try {
+    surface.InsertKnotAt(0, 1.0, 5);
+  } catch (const std::invalid_argument&) {
+    multiplicity_threw = true;
+  }
+  Check(multiplicity_threw,
+        "InsertKnotAt throws std::invalid_argument when multiplicity exceeds the degree in that "
+        "direction");
 }
 
 void TestSurfaceKnotAt() {
@@ -5687,6 +5779,7 @@ int main() {
   TestSurfaceDomain();
   TestSurfaceIsRational();
   TestSurfaceSetWeightAt();
+  TestSurfaceInsertKnotAt();
   TestSurfaceKnotAt();
   TestSurfaceControlPointAt();
   TestSurfaceWeightAt();

@@ -408,6 +408,22 @@ Result NurbsSurface::SetKnotAt(int direction, int i, double value) {
   return surface_.SetKnot(direction, i, value) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsSurface::InsertKnotAt(int direction, double knot_value, int multiplicity) {
+  const Interval domain = Domain(direction);
+  if (knot_value <= domain.min || knot_value >= domain.max) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::InsertKnotAt: knot_value must be "
+        "strictly inside the surface's own domain in that direction");
+  }
+  const int degree = surface_.Degree(direction);
+  if (multiplicity < 1 || multiplicity > degree) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::InsertKnotAt: multiplicity must be "
+        "between 1 and the degree in that direction, inclusive");
+  }
+  return surface_.InsertKnot(direction, knot_value, multiplicity) ? Result::Ok : Result::Failed;
+}
+
 Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
   if (new_degree <= surface_.Degree(direction)) {
     return Result::NoOpAlreadySatisfied;

@@ -1751,6 +1751,20 @@ What this repo does instead:
   differently in the last couple of ULPs, so the test (and the method's
   own doc comment) now correctly describes this as "unchanged to a
   tight numerical tolerance," not exact equality.
+- `NurbsSurface::InsertKnotAt(direction, knot_value, multiplicity)`:
+  same real Boehm refinement as the curve version, `direction`-
+  parameterized. Testing it turned up a second real, easy-to-misread
+  API nuance, confirmed rather than assumed: `multiplicity` means
+  "ensure the knot ends up with at least this multiplicity," not
+  "always insert this many new copies" - inserting an already-existing
+  knot value at a multiplicity it already has is a genuine no-op (no
+  new control points or knots), yet `ON_NurbsCurve`/`ON_NurbsSurface::
+  InsertKnot` still return `true` since their own postcondition is
+  already satisfied. Found by literally hitting this case by accident
+  (the surface's own default clamped-uniform knot vector already had an
+  interior knot at the first value tried) rather than going looking for
+  it, then confirmed and documented on both `NurbsCurve::InsertKnotAt()`
+  and this method with a dedicated test each.
 
 ## What's still not done (as of chunk 2)
 

@@ -120,6 +120,16 @@ class NurbsSurface {
   double KnotAt(int direction, int i) const;
   Result SetKnotAt(int direction, int i, double value);
 
+  // Same reasoning as `NurbsCurve::InsertKnotAt()` - see there for the
+  // full explanation, including the real floating-point caveat that
+  // exact bit-for-bit equality does NOT hold before/after (only equal
+  // to a tight numerical tolerance, confirmed by testing). `direction`
+  // is 0 for U, 1 for V, the same convention `Domain(direction)` uses.
+  // Validates `knot_value` is strictly interior to `Domain(direction)`
+  // and `multiplicity` is between 1 and the degree in that direction,
+  // throwing std::invalid_argument otherwise.
+  Result InsertKnotAt(int direction, double knot_value, int multiplicity = 1);
+
   // Elevates degree in the given direction (0 = U, 1 = V). Returns
   // NoOpAlreadySatisfied if the surface is already at or above that degree.
   Result ElevateDegree(int direction, int new_degree);
