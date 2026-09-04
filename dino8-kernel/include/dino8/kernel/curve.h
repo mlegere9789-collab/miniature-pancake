@@ -76,6 +76,19 @@ class NurbsCurve {
   // Result::Failed if `t0 >= t1` or OpenNURBS' own call fails.
   Result Trim(double t0, double t1);
 
+  // Splits the curve at parameter `t` (strictly inside the curve's
+  // current domain, not at either end) into two independent curves
+  // written to `out_left`/`out_right` - `out_left` covering the original
+  // domain's start up to `t`, `out_right` covering `t` to the original
+  // end - without modifying `*this`. The complement to Trim(): Trim()
+  // keeps one sub-range and discards the rest, Split() keeps both
+  // halves as separate curves. Delegates to `ON_NurbsCurve::Split` after
+  // verifying it's a real implementation (genuine knot insertion at `t`
+  // for each half, the same underlying algorithm Trim() uses, not a
+  // stub). Returns Result::Failed if `t` isn't strictly inside the
+  // curve's domain or if OpenNURBS' own call fails.
+  Result Split(double t, NurbsCurve& out_left, NurbsCurve& out_right) const;
+
   Point3d PointAt(double t) const;
 
   // Delegates to `ON_Curve::GetTightBoundingBox`. DESPITE THE NAME, this

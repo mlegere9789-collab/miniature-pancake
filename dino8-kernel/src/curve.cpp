@@ -78,4 +78,29 @@ Result NurbsCurve::Trim(double t0, double t1) {
   return curve_.Trim(ON_Interval(t0, t1)) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsCurve::Split(double t, NurbsCurve& out_left, NurbsCurve& out_right) const {
+  ON_Curve* left_curve = nullptr;
+  ON_Curve* right_curve = nullptr;
+  const bool ok = curve_.Split(t, left_curve, right_curve);
+  if (!ok) {
+    delete left_curve;
+    delete right_curve;
+    return Result::Failed;
+  }
+
+  ON_NurbsCurve* left_nurbs = ON_NurbsCurve::Cast(left_curve);
+  ON_NurbsCurve* right_nurbs = ON_NurbsCurve::Cast(right_curve);
+  if (left_nurbs == nullptr || right_nurbs == nullptr) {
+    delete left_curve;
+    delete right_curve;
+    return Result::Failed;
+  }
+
+  out_left.curve_ = *left_nurbs;
+  out_right.curve_ = *right_nurbs;
+  delete left_curve;
+  delete right_curve;
+  return Result::Ok;
+}
+
 }  // namespace dino8::kernel

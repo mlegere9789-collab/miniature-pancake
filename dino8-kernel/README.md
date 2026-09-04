@@ -1013,6 +1013,19 @@ What this repo does instead:
   `Length()` is exactly `5.0`, not the original `10.0`. Also checked
   `Trim()` fails outright on a backwards interval (`t0 >= t1`) rather
   than doing something undefined.
+- `NurbsCurve::Split()` is `Trim()`'s complement: instead of keeping one
+  sub-range and discarding the rest, it keeps both halves as two
+  independent curves. Delegates to `ON_NurbsCurve::Split` (the same
+  underlying knot-insertion algorithm `Trim()` uses, verified real)
+  through its old-style `ON_Curve*&` output-parameter API, casting back
+  to `ON_NurbsCurve` and copying into the two output curves. Verified on
+  the same line `TestCurveTrim()` uses: splitting at `t=0.4` gives a left
+  half running exactly `(0,0,0)` to `(4,0,0)` over domain `[0, 0.4]` and a
+  right half running exactly `(4,0,0)` to `(10,0,0)` over `[0.4, 1]` - the
+  two halves share the exact same split point (no gap or overlap) and
+  their lengths sum back to exactly the original line's own length. Also
+  checked `Split()` fails when `t` sits at either domain endpoint rather
+  than strictly inside it.
 
 ## What's still not done (as of chunk 2)
 

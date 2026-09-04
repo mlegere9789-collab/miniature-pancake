@@ -306,6 +306,51 @@ void TestCurveTrim() {
         "silently doing something undefined");
 }
 
+void TestCurveSplit() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Same line as TestCurveTrim(): (0,0,0) to (10,0,0), domain [0,1],
+  // P(t) = (10t, 0, 0). Splitting at t=0.4 should give a left half
+  // covering [0, 0.4] -> (0,0,0)-(4,0,0) and a right half covering
+  // [0.4, 1] -> (4,0,0)-(10,0,0), sharing the exact split point - all
+  // hand-derivable exact since a line has no curvature to approximate.
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(10, 0, 0)};
+  const NurbsCurve line = NurbsCurve::FromControlPoints(pts, /*degree=*/1);
+  NurbsCurve left, right;
+  Check(line.Split(0.4, left, right) == Result::Ok, "NurbsCurve::Split() succeeds");
+
+  const ON_Interval left_domain = left.raw().Domain();
+  const ON_Interval right_domain = right.raw().Domain();
+  Check(std::abs(left_domain.Min() - 0.0) < 1e-9 && std::abs(left_domain.Max() - 0.4) < 1e-9,
+        "the left half's domain is exactly [0, 0.4]");
+  Check(std::abs(right_domain.Min() - 0.4) < 1e-9 && std::abs(right_domain.Max() - 1.0) < 1e-9,
+        "the right half's domain is exactly [0.4, 1]");
+
+  const Point3d left_start = left.PointAt(left_domain.Min());
+  const Point3d left_end = left.PointAt(left_domain.Max());
+  const Point3d right_start = right.PointAt(right_domain.Min());
+  const Point3d right_end = right.PointAt(right_domain.Max());
+  Check(std::abs(left_start.x) < 1e-9 && std::abs(left_end.x - 4.0) < 1e-9,
+        "the left half runs exactly from (0,0,0) to (4,0,0)");
+  Check(std::abs(right_start.x - 4.0) < 1e-9 && std::abs(right_end.x - 10.0) < 1e-9,
+        "the right half runs exactly from (4,0,0) to (10,0,0)");
+  Check((left_end - right_start).Length() < 1e-9,
+        "the two halves share the exact same split point, with no gap "
+        "or overlap");
+  Check(std::abs(left.Length() + right.Length() - line.Length()) < 1e-9,
+        "the two halves' lengths sum back to exactly the original "
+        "line's own length");
+
+  Check(line.Split(0.0, left, right) == Result::Failed,
+        "Split() fails when t is at the domain's own start rather than "
+        "strictly inside it");
+  Check(line.Split(1.0, left, right) == Result::Failed,
+        "Split() fails when t is at the domain's own end rather than "
+        "strictly inside it");
+}
+
 void TestSurfaceNormalAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -3189,6 +3234,7 @@ int main() {
   TestCurveIsClosed();
   TestCurveReverse();
   TestCurveTrim();
+  TestCurveSplit();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();
