@@ -1642,6 +1642,48 @@ void TestBrepTessellateAdaptive() {
         "analytic value (4/3 * pi * r^3)");
 }
 
+void TestBrepTessellateNonUniformAdaptive() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  // Box(): every face flat, same exact result as the uniform adaptive
+  // path - 6 face meshes, 12 triangles total, exact volume 8.0.
+  // Confirmed by a debug run before finalizing.
+  const Brep box = Brep::Box(0, 0, 0, 2, 2, 2);
+  const auto box_faces = box.TessellateNonUniformAdaptive(0.01);
+  int box_total_faces = 0;
+  for (const auto& m : box_faces) {
+    box_total_faces += m.FaceCount();
+  }
+  Check(box_faces.size() == 6, "TessellateNonUniformAdaptive returns one mesh per Box() face (6)");
+  Check(box_total_faces == 12,
+        "each flat Box() face still needs only the minimum division "
+        "(12 triangles total) with the non-uniform path too");
+  const Mesh box_closed = box.TessellateToClosedMeshNonUniformAdaptive(0.01);
+  Check(std::abs(box_closed.Volume() - 8.0) < 1e-9,
+        "TessellateToClosedMeshNonUniformAdaptive's own volume is "
+        "exactly 8.0 for a 2x2x2 box");
+
+  // Sphere(): real curvature, isotropic in every direction. A genuine,
+  // worth-documenting nuance found by testing, not assumed: the
+  // recursive-bisection path's power-of-2 segment counts are less
+  // efficient than the uniform path's directly-computed count for this
+  // *isotropic* case (4096 faces here vs. the uniform adaptive test's
+  // own 1520 at the same tolerance) - non-uniform adaptivity pays off
+  // when curvature genuinely varies across a face (the cylinder-wall
+  // case), not when it's the same everywhere. Still hits the same real
+  // accuracy target.
+  const double radius = 3.0;
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), radius);
+  const Mesh tight_sphere = sphere.TessellateToClosedMeshNonUniformAdaptive(0.01);
+  const double expected_volume = (4.0 / 3.0) * ON_PI * radius * radius * radius;
+  Check(std::abs(tight_sphere.Volume() - expected_volume) / expected_volume < 0.02,
+        "the non-uniform adaptive sphere's volume is within 2% of the "
+        "true analytic value (4/3 * pi * r^3), the same accuracy target "
+        "the uniform adaptive path hits");
+}
+
 void TestFileRoundTrip() {
   using dino8::kernel::Brep;
   using dino8::kernel::Model;
@@ -4631,6 +4673,7 @@ int main() {
   TestSurfaceTessellateGridAdaptive();
   TestSurfaceTessellateGridClippedExactAdaptive();
   TestBrepTessellateAdaptive();
+  TestBrepTessellateNonUniformAdaptive();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();

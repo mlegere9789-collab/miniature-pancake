@@ -161,6 +161,28 @@ class Brep {
   // adaptive counterpart to TessellateToClosedMesh().
   Mesh TessellateToClosedMeshAdaptive(double chord_tolerance) const;
 
+  // TessellateAdaptive(), but using NurbsSurface::
+  // TessellateGridNonUniformAdaptive() per face instead of the uniform
+  // TessellateGridAdaptive() - the Brep-level endpoint of this kernel's
+  // genuine per-region tessellation building blocks (NurbsCurve::
+  // SuggestedParameterValues/NurbsSurface::TessellateGridNonUniform/
+  // SuggestedParameterValues/TessellateGridNonUniformAdaptive). Each
+  // untrimmed or whole-cell-trimmed face gets independently
+  // non-uniform, curvature-adaptive breakpoints in both directions
+  // (denser only where that direction of that face actually bends more,
+  // not a single resolution smeared across it - the gap
+  // `TessellateAdaptive()`'s own doc comment still flags). A face built
+  // with `exact_clip=true` has no non-uniform exact-clip tessellator yet
+  // (`TessellateGridClippedExactAdaptive()`'s own uniform-grid algorithm
+  // doesn't generalize to arbitrary breakpoints the way the whole-cell
+  // path does), so those faces still fall back to the uniform
+  // `TessellateGridClippedExactAdaptive()` - a real, narrower scope for
+  // this method, not silently ignored.
+  std::vector<Mesh> TessellateNonUniformAdaptive(double chord_tolerance) const;
+
+  // TessellateNonUniformAdaptive() followed by Mesh::MergeAndWeld().
+  Mesh TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) const;
+
   const ON_Brep& raw() const { return brep_; }
   ON_Brep& raw() { return brep_; }
 

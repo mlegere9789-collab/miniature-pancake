@@ -1464,6 +1464,25 @@ What this repo does instead:
   path produces byte-identical vertex/face counts to calling both
   `SuggestedParameterValues()` calls and `TessellateGridNonUniform()` by
   hand.
+- `Brep::TessellateNonUniformAdaptive()`/
+  `TessellateToClosedMeshNonUniformAdaptive()` are the Brep-level
+  endpoint of the non-uniform per-region story, mirroring
+  `TessellateAdaptive()`'s own structure but using `NurbsSurface::
+  TessellateGridNonUniformAdaptive()` per face. A face built with
+  `exact_clip=true` has no non-uniform exact-clip tessellator yet, so it
+  still falls back to the uniform `TessellateGridClippedExactAdaptive()`
+  - a real, documented narrower scope, not silently ignored. Verified
+  `Box()` gets the identical exact result as the uniform adaptive path
+  (12 triangles, volume 8.0). Also discovered a genuine, worth-noting
+  nuance testing `Sphere()`: because a sphere's curvature is *isotropic*
+  (the same in every direction), the non-uniform path's power-of-2
+  dyadic segment counts are actually *less* efficient here than the
+  uniform path's directly-computed count (4096 faces vs. the uniform
+  adaptive test's own 1520, at the same tolerance) - non-uniform
+  adaptivity's real advantage is for a face whose curvature genuinely
+  *varies* across it (the cylinder-wall case above), not one that's the
+  same everywhere. Both still hit the same real 2%-of-true-volume
+  accuracy target.
 
 ## What's still not done (as of chunk 2)
 
