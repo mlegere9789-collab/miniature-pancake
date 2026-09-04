@@ -247,6 +247,19 @@ class NurbsSurface {
                        const std::vector<Point2d>* trim_polygon = nullptr,
                        const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
 
+  // TessellateGrid(), but picking u_divisions/v_divisions via
+  // SuggestedDivisions(chord_tolerance) instead of the caller choosing
+  // them by hand - the one-call path this kernel's own flagged
+  // "adaptive/curvature-aware meshing" gap has been missing until now.
+  // Still not a true adaptive mesher (SuggestedDivisions() itself is one
+  // division count per direction for the whole surface, not a
+  // per-region-varying one), but it's the difference between a caller
+  // having to know how to call SuggestedDivisions() at all and just
+  // asking for a tolerance directly.
+  Mesh TessellateGridAdaptive(double chord_tolerance,
+                               const std::vector<Point2d>* trim_polygon = nullptr,
+                               const std::vector<std::vector<Point2d>>* hole_polygons = nullptr) const;
+
   // Real boundary clipping, unlike TessellateGrid()'s whole-cell in/out:
   // each grid cell is clipped against `trim_polygon` rather than kept or
   // dropped wholesale, so a cell straddling the trim boundary contributes

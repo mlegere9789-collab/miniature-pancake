@@ -996,6 +996,40 @@ void TestSurfaceSuggestedDivisions() {
         "non-positive chord_tolerance");
 }
 
+void TestSurfaceTessellateGridAdaptive() {
+  using dino8::kernel::NurbsSurface;
+
+  // Same cylinder wall as TestSurfaceSuggestedDivisions(). This is a
+  // thin, deterministic composition of two already-verified pieces
+  // (SuggestedDivisions() then TessellateGrid()), so the test just
+  // confirms it actually wires them together rather than using some
+  // fixed default: the untrimmed TessellateGrid() path always emits
+  // exactly u_divisions * v_divisions * 2 triangles, so if
+  // TessellateGridAdaptive() truly used SuggestedDivisions()'s own
+  // return values, calling both separately and comparing face counts
+  // must agree exactly.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
+  const ON_Cylinder cylinder(circle, 1.0);
+  ON_NurbsSurface cylinder_surface;
+  cylinder.GetNurbForm(cylinder_surface);
+  NurbsSurface wall;
+  wall.raw() = cylinder_surface;
+
+  const double chord_tolerance = 0.01;
+  const auto divisions = wall.SuggestedDivisions(chord_tolerance);
+  const auto adaptive_mesh = wall.TessellateGridAdaptive(chord_tolerance);
+  Check(adaptive_mesh.FaceCount() == divisions.u * divisions.v * 2,
+        "TessellateGridAdaptive's own face count exactly matches "
+        "u_divisions * v_divisions * 2 for the same SuggestedDivisions() "
+        "result computed independently");
+
+  const auto manual_mesh = wall.TessellateGrid(divisions.u, divisions.v);
+  Check(adaptive_mesh.VertexCount() == manual_mesh.VertexCount() &&
+            std::abs(adaptive_mesh.Area() - manual_mesh.Area()) < 1e-9,
+        "TessellateGridAdaptive produces the exact same mesh as calling "
+        "SuggestedDivisions() then TessellateGrid() by hand");
+}
+
 void TestFileRoundTrip() {
   using dino8::kernel::Brep;
   using dino8::kernel::Model;
@@ -3939,6 +3973,7 @@ int main() {
   TestSurfaceClosestPoint();
   TestSurfaceCurvature();
   TestSurfaceSuggestedDivisions();
+  TestSurfaceTessellateGridAdaptive();
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();

@@ -693,6 +693,13 @@ Mesh NurbsSurface::TessellateGrid(int u_divisions, int v_divisions,
   return mesh;
 }
 
+Mesh NurbsSurface::TessellateGridAdaptive(
+    double chord_tolerance, const std::vector<Point2d>* trim_polygon,
+    const std::vector<std::vector<Point2d>>* hole_polygons) const {
+  const SurfaceDivisions divisions = SuggestedDivisions(chord_tolerance);
+  return TessellateGrid(divisions.u, divisions.v, trim_polygon, hole_polygons);
+}
+
 Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
                                                const std::vector<Point2d>& trim_polygon) const {
   if (!dino8::kernel::detail::IsSimplePolygon(trim_polygon)) {

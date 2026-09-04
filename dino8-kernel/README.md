@@ -1238,6 +1238,16 @@ What this repo does instead:
   (every V-isocurve is a straight line with zero curvature). Also
   checked a non-positive `chord_tolerance` throws
   `std::invalid_argument`.
+- `NurbsSurface::TessellateGridAdaptive(chord_tolerance)` closes the loop
+  on the last few chunks' curvature-based building blocks: a one-call
+  path that picks `u_divisions`/`v_divisions` via `SuggestedDivisions()`
+  and tessellates via `TessellateGrid()`, instead of a caller having to
+  know to call `SuggestedDivisions()` itself first. A thin, deterministic
+  composition of two already-verified pieces, so its own test just
+  confirms the wiring: the same cylinder wall tessellated through
+  `TessellateGridAdaptive()` produces exactly the same face count,
+  vertex count, and area as calling `SuggestedDivisions()` then
+  `TessellateGrid()` by hand.
 
 ## What's still not done (as of chunk 2)
 
