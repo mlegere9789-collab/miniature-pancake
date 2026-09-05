@@ -9,6 +9,7 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "io/File3dm.h"
+#include "io/FileExchange.h"
 #include "ui/Panels.h"
 #include "ui/Theme.h"
 #include "app/Settings.h"
@@ -315,6 +316,10 @@ bool Application::OpenDocument(const std::string& path, std::string& error) {
   if (ext == ".3dm") ok = Load3dm(fresh, path, error);
   else if (ext == ".obj" || ext == ".stl") {
     ok = ImportMeshFile(fresh, path, error);
+  } else if (ext == ".ply") {
+    ok = ImportPly(fresh, path, error);
+  } else if (ext == ".dxf") {
+    ok = ImportDxf(fresh, path, error);
   } else {
     error = "Unsupported file type: " + ext;
   }
@@ -325,6 +330,8 @@ bool Application::OpenDocument(const std::string& path, std::string& error) {
   AddRecentFile(path);
   ZoomExtentsAll();
   Notify("Opened " + path + " (" + std::to_string(doc_.ObjectCount()) + " objects)");
+  if (!error.empty()) Notify(error);  // reader summary / skipped-entity note
+  error.clear();
   return true;
 }
 
@@ -344,6 +351,14 @@ bool Application::SaveDocument(const std::string& path, std::string& error) {
   } else if (ext == ".obj" || ext == ".stl") {
     ok = ExportMeshFile(doc_, path, false, error);
     if (ok) Notify("Exported " + path);
+  } else if (ext == ".ply") {
+    ok = ExportPly(doc_, path, false, error);
+    if (ok) Notify("Exported " + path);
+  } else if (ext == ".dxf") {
+    ok = ExportDxf(doc_, path, false, error);
+    if (ok) Notify("Exported " + path);
+  } else if (ext == ".svg" || ext == ".pdf") {
+    ok = ExportDrawing(path, false, 0.0, error);
   } else {
     error = "Unsupported file type: " + ext;
   }
@@ -365,10 +380,18 @@ bool Application::ImportFile(const std::string& path, std::string& error) {
     }
   } else if (ext == ".obj" || ext == ".stl") {
     ok = ImportMeshFile(doc_, path, error);
+  } else if (ext == ".ply") {
+    ok = ImportPly(doc_, path, error);
+  } else if (ext == ".dxf") {
+    ok = ImportDxf(doc_, path, error);
   } else {
     error = "Unsupported file type: " + ext;
   }
-  if (ok) Notify("Imported " + path);
+  if (ok) {
+    Notify("Imported " + path);
+    if (!error.empty()) Notify(error);
+    error.clear();
+  }
   return ok;
 }
 
@@ -382,7 +405,26 @@ bool Application::ExportSelected(const std::string& path, std::string& error) {
     sub.Layers() = doc_.Layers();
     return Save3dm(sub, path, error);
   }
+  if (ext == ".dxf") return ExportDxf(doc_, path, true, error);
+  if (ext == ".ply") return ExportPly(doc_, path, true, error);
+  if (ext == ".svg" || ext == ".pdf") return ExportDrawing(path, true, 0.0, error);
   return ExportMeshFile(doc_, path, true, error);
+}
+
+bool Application::ExportDrawing(const std::string& path, bool selected_only, double scale, std::string& error) {
+  const std::string ext = ToLower(fs::path(path).extension().string());
+  DrawingOptions opts;
+  opts.scale = scale;
+  // Print through the active viewport; fall back to a Top view when none is
+  // active (headless / no viewports).
+  const Viewport* view = ActiveViewport();
+  if (!view) view = FindViewport("Top");
+  bool ok = false;
+  if (ext == ".svg") ok = ExportSvg(doc_, view, path, selected_only, opts, error);
+  else if (ext == ".pdf") ok = ExportPdf(doc_, view, path, selected_only, opts, error);
+  else error = "Unsupported drawing format: " + ext;
+  if (ok) Notify((ext == ".pdf" ? "Printed " : "Exported ") + path + (view ? " (" + view->Name() + " view" + (scale > 0 ? ", scale " + std::to_string(scale).substr(0, 4) : "") + ")" : ""));
+  return ok;
 }
 
 // ---------------------------------------------------------------------------

@@ -108,6 +108,9 @@ class Application {
   bool SaveDocument(const std::string& path, std::string& error);
   bool ImportFile(const std::string& path, std::string& error);
   bool ExportSelected(const std::string& path, std::string& error);
+  // Vector line-art output (.svg / .pdf) of the active view. `scale` = page
+  // millimetres per document unit, 0 = fit to page.
+  bool ExportDrawing(const std::string& path, bool selected_only, double scale, std::string& error);
 
   // Surface analysis (Zebra / EMap / CurvatureAnalysis / DraftAngleAnalysis):
   // `analysis_defaults` remembers the options between command runs, and

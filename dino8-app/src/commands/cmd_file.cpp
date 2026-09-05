@@ -2,11 +2,14 @@
 #include "commands/cmd_common.h"
 #include "io/File3dm.h"
 
+#include <cctype>
+
 namespace dino8::app {
 
 namespace {
 
-const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl"};
+const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl", ".ply", ".dxf"};
+const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".svg", ".pdf"};
 
 void SaveTo(CommandContext& ctx, const std::string& path) {
   std::string err;
@@ -32,7 +35,7 @@ void RegisterFileCommands(CommandEngine& e) {
   Reg(e, "SaveAs", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
         if (auto p = ctx.Engine().TakePendingInput()) { SaveTo(ctx, *p); return; }
-        app.ShowFileDialog("Save model as", {".3dm", ".obj", ".stl"}, true, [&app](const std::string& path) { std::string err; if (!app.SaveDocument(path, err)) app.Notify(err); });
+        app.ShowFileDialog("Save model as", kExportExts, true, [&app](const std::string& path) { std::string err; if (!app.SaveDocument(path, err)) app.Notify(err); });
       }));
   Reg(e, "SaveSmall", Immediate([](CommandContext& ctx) { if (ctx.Doc().Path().empty()) ctx.Engine().Execute("SaveAs"); else SaveTo(ctx, ctx.Doc().Path()); }), CommandStatus::Partial, "Dino 8 never stores render meshes, so every save is already small.");
   Reg(e, "IncrementalSave", Immediate([](CommandContext& ctx) {
@@ -56,12 +59,12 @@ void RegisterFileCommands(CommandEngine& e) {
         Application& app = ctx.App();
         for (ObjectId id : ids) ctx.Doc().Select(id, true);
         if (auto p = ctx.Engine().TakePendingInput()) { std::string err; if (!app.ExportSelected(*p, err)) ctx.Warn(err); else ctx.Print("Exported " + *p); return; }
-        app.ShowFileDialog("Export selected", {".3dm", ".obj", ".stl"}, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });
+        app.ShowFileDialog("Export selected", kExportExts, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });
       }));
   Reg(e, "ExportSelected", OnSelection("Select objects to export", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         Application& app = ctx.App();
         for (ObjectId id : ids) ctx.Doc().Select(id, true);
-        app.ShowFileDialog("Export selected", {".3dm", ".obj", ".stl"}, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });
+        app.ShowFileDialog("Export selected", kExportExts, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });
       }));
   Reg(e, "ExportWithOrigin", OnSelection("Select objects to export", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         for (ObjectId id : ids) ctx.Doc().Select(id, true);
@@ -79,7 +82,21 @@ void RegisterFileCommands(CommandEngine& e) {
           else app.Notify(err);
         });
       }));
-  Reg(e, "Print", Immediate([](CommandContext& ctx) { ctx.Print("Print: export to OBJ/STL or capture the viewport; direct printing is planned."); }), CommandStatus::Partial);
+  // Print: vector PDF of the active view. "Print file.pdf" and an optional
+  // "Scale=1" token (page mm per document unit; 0 = fit to page) can be
+  // given on the command line; otherwise a save dialog asks for the file.
+  Reg(e, "Print", Immediate([](CommandContext& ctx) {
+        Application& app = ctx.App();
+        double scale = 0.0;
+        std::optional<std::string> path;
+        while (auto t = ctx.Engine().TakePendingInput()) {
+          const std::string lower = [&] { std::string s = *t; for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return s; }();
+          if (lower.rfind("scale=", 0) == 0) scale = std::atof(t->c_str() + 6);
+          else if (!path) path = *t;
+        }
+        if (path) { std::string err; if (!app.ExportDrawing(*path, false, scale, err)) ctx.Warn(err); return; }
+        app.ShowFileDialog("Print to PDF", {".pdf", ".svg"}, true, [&app, scale](const std::string& p) { std::string err; if (!app.ExportDrawing(p, false, scale, err)) app.Notify(err); });
+      }), CommandStatus::Implemented, "Writes a vector PDF (or SVG) of the active view; Scale=<mm per unit> forces a print scale.");
 }
 
 }  // namespace dino8::app

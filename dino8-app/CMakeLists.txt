@@ -96,6 +96,7 @@ set(DINO8_SOURCES
   src/commands/cmd_file.cpp
   src/commands/cmd_misc.cpp
   src/io/File3dm.cpp
+  src/io/FileExchange.cpp
   src/geom/BrepMesher.cpp
   src/util/json_mini.cpp
 )
