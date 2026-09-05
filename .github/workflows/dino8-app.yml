@@ -56,7 +56,7 @@ jobs:
       - name: Version check
         run: dino8-app\build\Dino8.exe --version
       - name: Install tree
-        run: cmake --install dino8-app/build --prefix dino8-app/build/install
+        run: cmake --install dino8-app/build --prefix dino8-app/build/install --component app
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
       - name: Compile installer
