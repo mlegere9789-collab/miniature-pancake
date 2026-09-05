@@ -110,7 +110,12 @@ class DimLinearCommand : public Command {
       // Horizontal or vertical (CPlane axes) depending on the offset point.
       double ua, va, ub, vb, ul, vl;
       pl.ClosestPointTo(a, &ua, &va); pl.ClosestPointTo(b, &ub, &vb); pl.ClosestPointTo(loc, &ul, &vl);
-      const bool horizontal = std::fabs(vl - (va + vb) / 2) > std::fabs(ul - (ua + ub) / 2);
+      // Horizontal when the offset point lies farther outside the points' vertical span than their horizontal span.
+      const double dx_out = std::max(0.0, std::fabs(ul - (ua + ub) / 2) - std::fabs(ub - ua) / 2);
+      const double dy_out = std::max(0.0, std::fabs(vl - (va + vb) / 2) - std::fabs(vb - va) / 2);
+      bool horizontal = dy_out >= dx_out;
+      if (horizontal && std::fabs(ub - ua) < 1e-9) horizontal = false;
+      if (!horizontal && std::fabs(vb - va) < 1e-9) horizontal = true;
       if (horizontal) { a = pl.PointAt(ua, vl); b = pl.PointAt(ub, vl); }
       else { a = pl.PointAt(ul, va); b = pl.PointAt(ul, vb); }
       dir = b - a;
