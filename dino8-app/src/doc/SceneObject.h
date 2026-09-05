@@ -106,7 +106,7 @@ class SceneObject {
 
   ObjectId id = kNoObject;
   std::string name;
-  int layer_index = 0;
+  int layer_index = -1;  // -1: use the current layer when added to a document
   ObjectKind kind = ObjectKind::Point;
   Color color;
   bool color_by_layer = true;
