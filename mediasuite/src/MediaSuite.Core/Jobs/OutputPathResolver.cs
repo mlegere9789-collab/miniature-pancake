@@ -6,6 +6,28 @@ namespace MediaSuite.Core.Jobs;
 /// </summary>
 public static class OutputPathResolver
 {
+    // JobLauncher turns a multi-file batch into one JobSpec per input file, specifically so
+    // JobQueueManager can run several of them at once (MaxConcurrentJobs defaults to
+    // Environment.ProcessorCount) -- and every engine calls Resolve() from inside its own
+    // job execution, at the moment that job starts, not once up front for the whole batch.
+    // A plain File.Exists check is a real TOCTOU race there: two jobs whose inputs would
+    // produce the same output name (same filename from different subfolders with folder
+    // structure off, or two different extensions converting to the same target extension)
+    // can both see "nothing there yet" before either has actually written its file, both
+    // get handed the identical path, and one process's output silently clobbers or
+    // corrupts the other's -- exactly what OverwritePolicy.Rename exists to prevent, just
+    // not fast enough against real concurrency. This reservation set closes that window by
+    // making the naming decision itself atomic, in-process, with no per-call-site changes
+    // needed anywhere. It is deliberately never pruned: the one cost is that a name whose
+    // job later failed or was cancelled before writing anything stays "reserved" for the
+    // rest of the app's run, so a subsequent unrelated conversion to that exact same path
+    // gets a needlessly incremented "(1)" instead of reusing the genuinely free slot --
+    // strictly more conservative than today's behavior, never a data-loss risk, and the
+    // same "would rather rename than gamble" philosophy Rename already embodies as the
+    // default policy.
+    private static readonly object ReservationLock = new();
+    private static readonly HashSet<string> ReservedPaths = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Resolves the output path for one input file and creates the folder it lives in.
     /// </summary>
@@ -113,24 +135,31 @@ public static class OutputPathResolver
 
     private static string ApplyOverwritePolicy(string candidate, OverwritePolicy policy)
     {
-        if (!File.Exists(candidate))
+        // Overwrite is a deliberate "yes, last write wins" choice, so two colliding jobs
+        // both legitimately targeting the same path under this policy is the user's own
+        // call, not something to guard against here.
+        if (policy == OverwritePolicy.Overwrite)
         {
             return candidate;
         }
 
-        switch (policy)
+        lock (ReservationLock)
         {
-            case OverwritePolicy.Overwrite:
+            if (!File.Exists(candidate) && ReservedPaths.Add(candidate))
+            {
                 return candidate;
+            }
 
-            case OverwritePolicy.Fail:
+            if (policy == OverwritePolicy.Fail)
+            {
                 throw new IOException($"'{Path.GetFileName(candidate)}' already exists in the output folder.");
+            }
 
-            default:
-                return NextFreeName(candidate);
+            return NextFreeName(candidate);
         }
     }
 
+    /// <summary>Must be called while holding <see cref="ReservationLock"/>.</summary>
     private static string NextFreeName(string candidate)
     {
         var directory = Path.GetDirectoryName(candidate) ?? string.Empty;
@@ -141,7 +170,7 @@ public static class OutputPathResolver
         {
             var attempt = Path.Combine(directory, $"{name} ({suffix}){extension}");
 
-            if (!File.Exists(attempt))
+            if (!File.Exists(attempt) && ReservedPaths.Add(attempt))
             {
                 return attempt;
             }
