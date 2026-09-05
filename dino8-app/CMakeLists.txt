@@ -68,6 +68,8 @@ set(DINO8_SOURCES
   src/app/Application.cpp
   src/app/Settings.cpp
   src/ui/Gumball.cpp
+  src/geom/TextOutline.cpp
+  src/commands/cmd_annotate.cpp
   src/ui/Theme.cpp
   src/ui/Panels.cpp
   src/ui/MenuBar.cpp
@@ -109,7 +111,9 @@ else()
   add_executable(Dino8 ${DINO8_SOURCES})
 endif()
 
-target_include_directories(Dino8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# FreeType (bundled with OpenNURBS) for text outlines.
+FetchContent_GetProperties(opennurbs)
+target_include_directories(Dino8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${opennurbs_SOURCE_DIR}/freetype263/include)
 target_compile_definitions(Dino8 PRIVATE
   DINO8_VERSION="${PROJECT_VERSION}"
   GL_SILENCE_DEPRECATION
