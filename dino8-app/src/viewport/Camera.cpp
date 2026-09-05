@@ -203,14 +203,35 @@ void Camera::ZoomExtents(const kernel::BoundingBox& box, double aspect) {
                        (box.min.z + box.max.z) / 2);
   const double radius = std::max(0.5 * (box.max - box.min).Length(), 1e-3);
   const Vector3d dir = Forward();
+  const Vector3d r = Right(), u = Up();
+  // Exact extents of the box in the view plane (tighter than the bounding sphere).
+  double half_w = 0, half_h = 0;
+  for (int c = 0; c < 8; ++c) {
+    const Point3d p((c & 1) ? box.max.x : box.min.x, (c & 2) ? box.max.y : box.min.y, (c & 4) ? box.max.z : box.min.z);
+    const Vector3d d = p - center;
+    half_w = std::max(half_w, std::fabs(ON_DotProduct(d, r)));
+    half_h = std::max(half_h, std::fabs(ON_DotProduct(d, u)));
+  }
+  half_w = std::max(half_w, 1e-3);
+  half_h = std::max(half_h, 1e-3);
   state_.target = center;
   if (state_.perspective) {
     const double fov = 2.0 * std::atan(18.0 / state_.lens_mm);  // 36mm sensor
-    const double half = std::min(fov / 2.0, fov / 2.0 * aspect);
-    const double distance = radius / std::sin(std::max(half, 0.1)) * 1.05;
+    const double tan_v = std::tan(fov / 2.0), tan_h = tan_v * std::max(aspect, 0.1);
+    // Smallest eye distance along -dir from the center so every box corner is inside the frustum.
+    double distance = 1e-3;
+    for (int c = 0; c < 8; ++c) {
+      const Point3d p((c & 1) ? box.max.x : box.min.x, (c & 2) ? box.max.y : box.min.y, (c & 4) ? box.max.z : box.min.z);
+      const Vector3d d = p - center;
+      const double dz = ON_DotProduct(d, dir);
+      distance = std::max(distance, std::fabs(ON_DotProduct(d, r)) / tan_h - dz);
+      distance = std::max(distance, std::fabs(ON_DotProduct(d, u)) / tan_v - dz);
+    }
+    distance = std::max(distance * 1.08, radius * 0.5);
     state_.eye = center - dir * distance;
   } else {
-    state_.ortho_height = 2.2 * radius / std::min(1.0, aspect);
+    const double a = std::max(aspect, 0.1);
+    state_.ortho_height = 2.0 * std::max(half_h, half_w / a) * 1.1;
     state_.eye = center - dir * std::max(radius * 4.0, 10.0);
   }
 }

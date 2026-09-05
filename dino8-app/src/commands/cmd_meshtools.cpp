@@ -815,18 +815,18 @@ void OffsetMesh(CommandContext& ctx, const std::vector<ObjectId>& ids, const Too
 }
 
 // Fan-triangulates the naked loops of `r` (all of them, or the one whose
-// centre is nearest `near`). Returns the number of holes filled.
-int FillHoles(RawMesh& r, const std::optional<Point3d>& near) {
+// centre is nearest `near_pt`). Returns the number of holes filled.
+int FillHoles(RawMesh& r, const std::optional<Point3d>& near_pt) {
   std::vector<Chain> loops;
   for (Chain& c : NakedChains(r)) if (c.closed && c.v.size() >= 3) loops.push_back(std::move(c));
   if (loops.empty()) return 0;
-  if (near) {
+  if (near_pt) {
     size_t best = 0;
     double bd = 0;
     for (size_t i = 0; i < loops.size(); ++i) {
       Vector3d s(0, 0, 0);
       for (int vi : loops[i].v) s += r.v[vi] - Point3d::Origin;
-      const double d = (Point3d::Origin + s / static_cast<double>(loops[i].v.size()) - *near).Length();
+      const double d = (Point3d::Origin + s / static_cast<double>(loops[i].v.size()) - *near_pt).Length();
       if (i == 0 || d < bd) { best = i; bd = d; }
     }
     loops = {loops[best]};
@@ -844,14 +844,14 @@ int FillHoles(RawMesh& r, const std::optional<Point3d>& near) {
   return static_cast<int>(loops.size());
 }
 
-void FillMeshHoles(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::optional<Point3d>& near) {
+void FillMeshHoles(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::optional<Point3d>& near_pt) {
   std::vector<Target> ts = Targets(ctx, ids, "FillMeshHoles");
   if (ts.empty()) return;
   ctx.Doc().BeginChange("FillMeshHoles");
   int total = 0;
   for (const Target& t : ts) {
     RawMesh r = Unpack(t.mesh.raw());
-    const int n = FillHoles(r, near);
+    const int n = FillHoles(r, near_pt);
     if (n) Commit(ctx, t.id, Pack(r));
     total += n;
   }
@@ -1067,7 +1067,7 @@ void ExtractByMetric(CommandContext& ctx, const std::vector<ObjectId>& ids, cons
 double LongestEdge(const RawMesh& r, const Face& f) { double m = 0; const int n = RawMesh::Corners(f); for (int k = 0; k < n; ++k) m = std::max(m, (r.v[f[(k + 1) % n]] - r.v[f[k]]).Length()); return m; }
 double ShortestEdge(const RawMesh& r, const Face& f) { double m = 1e300; const int n = RawMesh::Corners(f); for (int k = 0; k < n; ++k) m = std::min(m, (r.v[f[(k + 1) % n]] - r.v[f[k]]).Length()); return m; }
 
-void ExtractEdgeCurves(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* label, int mode, const std::optional<Point3d>& near) {
+void ExtractEdgeCurves(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* label, int mode, const std::optional<Point3d>& near_pt) {
   // mode 0: naked chains and loops, 1: closed loops only, 2: non-manifold edges
   std::vector<Target> ts = Targets(ctx, ids, label);
   if (ts.empty()) return;
@@ -1080,13 +1080,13 @@ void ExtractEdgeCurves(CommandContext& ctx, const std::vector<ObjectId>& ids, co
       continue;
     }
     std::vector<Chain> chains = NakedChains(r);
-    if (near) {
+    if (near_pt) {
       // Keep the chain nearest the pick.
       int best = -1; double bd = 0;
       for (size_t i = 0; i < chains.size(); ++i) {
         const std::vector<int>& v = chains[i].v;
         for (size_t k = 0; k + 1 < v.size() + (chains[i].closed ? 1 : 0); ++k) {
-          const double d = PointToSegment(*near, r.v[v[k]], r.v[v[(k + 1) % v.size()]]);
+          const double d = PointToSegment(*near_pt, r.v[v[k]], r.v[v[(k + 1) % v.size()]]);
           if (best < 0 || d < bd) { best = static_cast<int>(i); bd = d; }
         }
       }
