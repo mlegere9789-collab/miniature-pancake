@@ -70,6 +70,7 @@ set(DINO8_SOURCES
   src/ui/Gumball.cpp
   src/geom/TextOutline.cpp
   src/commands/cmd_annotate.cpp
+  src/commands/cmd_drafting.cpp
   src/ui/Theme.cpp
   src/ui/Panels.cpp
   src/ui/MenuBar.cpp

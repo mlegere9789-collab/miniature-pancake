@@ -35,6 +35,7 @@ void RegisterLayerCommands(CommandEngine&);
 void RegisterFileCommands(CommandEngine&);
 void RegisterMiscCommands(CommandEngine&);
 void RegisterAnnotateCommands(CommandEngine&);
+void RegisterDraftingCommands(CommandEngine&);
 void RegisterCurveEditCommands(CommandEngine&);
 
 Application::Application() = default;
@@ -96,6 +97,7 @@ void Application::RegisterCommands() {
   RegisterFileCommands(*engine_);
   RegisterMiscCommands(*engine_);
   RegisterAnnotateCommands(*engine_);
+  RegisterDraftingCommands(*engine_);
   RegisterCurveEditCommands(*engine_);  // last: replaces the solid-only Intersect/Split registrations
 }
 

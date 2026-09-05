@@ -30,6 +30,15 @@ struct Layer {
   bool expanded = true;
 };
 
+// A block definition: a named set of objects with a base point. Instances
+// are grouped copies tagged with the block name (see cmd_drafting.cpp).
+struct BlockDefinition {
+  std::string name;
+  kernel::Point3d base{0, 0, 0};
+  std::vector<SceneObject> objects;
+  std::string description;
+};
+
 struct Group {
   int id = -1;
   std::string name;
@@ -111,6 +120,8 @@ class Document {
 
   // ---- named views / user text / notes ---------------------------------
   std::vector<NamedView>& NamedViews() { return named_views_; }
+  std::vector<BlockDefinition>& Blocks() { return blocks_; }
+  BlockDefinition* FindBlock(const std::string& name) { for (BlockDefinition& b : blocks_) if (b.name == name) return &b; return nullptr; }
   std::map<std::string, std::string>& UserText() { return user_text_; }
   std::string& Notes() { return notes_; }
   DocumentSettings& Settings() { return settings_; }
@@ -157,6 +168,7 @@ class Document {
   int current_layer_ = 0;
   std::vector<Group> groups_;
   std::vector<NamedView> named_views_;
+  std::vector<BlockDefinition> blocks_;
   std::map<std::string, std::string> user_text_;
   std::string notes_;
   DocumentSettings settings_;
