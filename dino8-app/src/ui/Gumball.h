@@ -22,13 +22,15 @@ class Gumball {
   bool Dragging() const { return dragging_; }
 
  private:
-  enum class Handle { None, X, Y, Z, Free };
+  enum class Handle { None, X, Y, Z, Free, RotX, RotY, RotZ, ScaleX, ScaleY, ScaleZ };
   Handle hover_ = Handle::None;
   bool dragging_ = false;
   Handle drag_handle_ = Handle::None;
   kernel::Point3d center_{0, 0, 0};
   double axis_len_ = 1.0;
   double start_param_ = 0.0;
+  double start_angle_ = 0.0;
+  ON_Xform last_xform_ = ON_Xform::IdentityTransformation;
   kernel::Point3d start_free_{0, 0, 0};
   std::vector<std::pair<ObjectId, SceneObject>> originals_;
   int drag_viewport_ = -1;
