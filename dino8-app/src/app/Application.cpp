@@ -216,7 +216,61 @@ void Application::AddRecentFile(const std::string& path) {
   if (recent_files_.size() > 10) recent_files_.pop_back();
 }
 
-bool Application::NewDocument(bool /*confirm_discard*/) {
+void Application::ConfirmDiscard(std::function<void()> then) {
+  if (!doc_.Modified() || doc_.ObjectCount() == 0) {
+    if (then) then();
+    return;
+  }
+  pending_after_confirm_ = std::move(then);
+  confirm_open_ = true;
+}
+
+void Application::DrawConfirmDiscard() {
+  if (confirm_open_) {
+    ImGui::OpenPopup("Save changes?");
+    confirm_open_ = false;
+  }
+  ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (ImGui::BeginPopupModal("Save changes?", nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDocking)) {
+    const std::string name = doc_.Path().empty() ? std::string("Untitled") : fs::path(doc_.Path()).filename().string();
+    ImGui::Text("%s has unsaved changes.", name.c_str());
+    ImGui::Spacing();
+    if (ImGui::Button("Save", ImVec2(110, 0))) {
+      std::function<void()> then = pending_after_confirm_;
+      pending_after_confirm_ = nullptr;
+      ImGui::CloseCurrentPopup();
+      if (!doc_.Path().empty()) {
+        std::string err;
+        if (SaveDocument(doc_.Path(), err)) { if (then) then(); } else Notify(err);
+      } else {
+        ShowFileDialog("Save model", {".3dm"}, true, [this, then](const std::string& path) {
+          std::string err;
+          if (SaveDocument(path, err)) { if (then) then(); } else Notify(err);
+        });
+      }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Don't Save", ImVec2(110, 0))) {
+      std::function<void()> then = pending_after_confirm_;
+      pending_after_confirm_ = nullptr;
+      ImGui::CloseCurrentPopup();
+      doc_.SetModified(false);
+      if (then) then();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(110, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+      pending_after_confirm_ = nullptr;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+}
+
+bool Application::NewDocument(bool confirm_discard) {
+  if (confirm_discard) {
+    ConfirmDiscard([this]() { NewDocument(false); });
+    return true;
+  }
   doc_.Clear();
   for (auto& vp : viewports_) vp->SetStandardView(vp->StandardView());
   engine_->Print("New document.");
@@ -312,6 +366,7 @@ void Application::Frame() {
   DrawCommandLine();
   DrawStatusBar();
   DrawFileDialog();
+  DrawConfirmDiscard();
   DrawNotifications();
 }
 

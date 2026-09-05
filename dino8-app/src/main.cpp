@@ -136,8 +136,13 @@ int main(int argc, char** argv) {
 
   int frame = 0;
   int exit_code = 0;
-  while (!glfwWindowShouldClose(window) && !app.WantsQuit()) {
+  while (!app.WantsQuit()) {
     glfwPollEvents();
+    if (glfwWindowShouldClose(window)) {
+      // Route the window close button through the unsaved-changes prompt.
+      glfwSetWindowShouldClose(window, GLFW_FALSE);
+      app.RequestQuit();
+    }
     if (glfwGetWindowAttrib(window, GLFW_ICONIFIED)) {
       glfwWaitEventsTimeout(0.1);
       continue;

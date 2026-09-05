@@ -80,7 +80,9 @@ class Application {
   SnapSettings& Snaps() { return snaps_; }
   PanelState& Panels() { return panels_; }
   bool WantsQuit() const { return quit_; }
-  void RequestQuit() { quit_ = true; }
+  // Asks "Save changes?" when the document is modified, then runs `then`.
+  void ConfirmDiscard(std::function<void()> then);
+  void RequestQuit() { ConfirmDiscard([this]() { quit_ = true; }); }
   const std::string& ExeDir() const { return exe_dir_; }
 
   void ShowHelpFor(const std::string& command_name);
@@ -120,6 +122,7 @@ class Application {
   float StatusBarHeight() const;
   void DrawFileDialog();
   void DrawNotifications();
+  void DrawConfirmDiscard();
   void HandleShortcuts();
   void ProcessViewportEvents(Viewport& vp, const ViewportEvents& ev);
   void BuildDefaultLayout(unsigned dockspace_id);
@@ -157,6 +160,8 @@ class Application {
   std::string calc_input_;
   std::string calc_result_;
   std::string last_saved_path_;
+  std::function<void()> pending_after_confirm_;
+  bool confirm_open_ = false;
 };
 
 }  // namespace dino8::app
