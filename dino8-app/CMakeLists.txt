@@ -71,6 +71,7 @@ set(DINO8_SOURCES
   src/geom/TextOutline.cpp
   src/commands/cmd_annotate.cpp
   src/commands/cmd_drafting.cpp
+  src/commands/cmd_curves2.cpp
   src/ui/Theme.cpp
   src/ui/Panels.cpp
   src/ui/MenuBar.cpp

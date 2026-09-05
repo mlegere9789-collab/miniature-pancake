@@ -36,6 +36,7 @@ void RegisterFileCommands(CommandEngine&);
 void RegisterMiscCommands(CommandEngine&);
 void RegisterAnnotateCommands(CommandEngine&);
 void RegisterDraftingCommands(CommandEngine&);
+void RegisterCurves2Commands(CommandEngine&);
 void RegisterCurveEditCommands(CommandEngine&);
 
 Application::Application() = default;
@@ -98,6 +99,7 @@ void Application::RegisterCommands() {
   RegisterMiscCommands(*engine_);
   RegisterAnnotateCommands(*engine_);
   RegisterDraftingCommands(*engine_);
+  RegisterCurves2Commands(*engine_);
   RegisterCurveEditCommands(*engine_);  // last: replaces the solid-only Intersect/Split registrations
 }
 

@@ -89,4 +89,28 @@ cecheck "FilletCorners: rounded 4 corners on 1 curve" "FilletCorners rounded the
 cecheck "intersection at 305,0,0" "Intersect found the circle/line crossing"
 cecheck "Split into 2 piece(s)" "Split still delegates solids to the plane split"
 cecheck "smoke: frames=150 objects=17" "curve-edit script produced the expected object count"
+
+# Curve tools: conics, catenary, CloseCrv, ReducePolyline, SubCrv, Contour, Section, Align, Distribute, TweenCurves, ArrayCrv, fits (see curves2_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  C2="$("$BIN" --smoke 150 --script "$HERE/curves2_script.txt" 2>&1)" || { echo "$C2"; echo "FAIL: curve-tools script exited non-zero"; exit 1; }
+else
+  C2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/curves2_script.txt" 2>&1)" || { echo "$C2"; echo "FAIL: curve-tools script exited non-zero"; exit 1; }
+fi
+c2check() { if echo "$C2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+c2check "Conic: rho = 0.4" "Conic passed through the shoulder point"
+c2check "Parabola: focal length 5" "Parabola built from vertex and focus"
+c2check "Hyperbola: a = 5" "Hyperbola built from center and vertex"
+c2check "Catenary: length 50" "Catenary solved for the cable length"
+c2check "CloseCrv: 1 curve(s) closed" "CloseCrv closed the polyline"
+c2check "ReducePolyline: 1 polyline(s) reduced" "ReducePolyline dropped collinear vertices"
+c2check "CV\[0\] 120,0,0" "SubCrv kept the picked span"
+c2check "Contour: 3 curve(s) from 5 plane(s)" "Contour sliced the sphere"
+c2check "Section: 1 curve(s)" "Section cut the sphere"
+c2check "aligned Bottom" "Align moved the boxes"
+c2check "spaced evenly along X" "Distribute spaced the boxes"
+c2check "TweenCurves: 3 curve(s) created" "TweenCurves interpolated between the lines"
+c2check "ArrayCrv: 6 object(s) placed" "ArrayCrv placed copies along the circle"
+c2check "best-fit line through 4 points" "LineThroughPt fitted a line"
+c2check "best-fit plane through 4 points" "PlaneThroughPt fitted a plane"
+c2check "^ok   expect_objects 34" "curve-tools script produced the expected object count"
 exit $fail
