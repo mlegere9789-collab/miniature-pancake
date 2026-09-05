@@ -1,0 +1,68 @@
+# Annotation, linetype, hatch and block tools QC (see smoke.sh).
+# --- DimArea on a circle, DimCurveLength on a line
+Circle 0,0,0 10
+SelLast
+DimArea
+20,20,0
+SelNone
+Line 0,-30,0 40,-30,0
+SelLast
+DimCurveLength
+20,-40,0
+SelNone
+# --- Centermark, RevCloud (rectangle 30 x 20 with 4-unit arcs)
+Circle 60,0,0 5
+SelLast
+Centermark
+SelNone
+RevCloud Rectangle=Yes ArcLength=4 100,0,0 130,20,0
+SelNone
+# --- Text, then edit it through TextProperties and find it again
+Text Hello 0,50,0
+SelText
+TextProperties Text=World Height=5
+SelNone
+FindText Text=World
+SelNone
+# --- Dot -> ConvertDots
+Dot Note 0,-100,0
+ConvertDots
+SelNone
+# --- Hatch, then HatchScale rebuilds it from its boundary
+Rectangle 0,-80,0 40,-60,0
+SelLast
+Hatch
+SelNone
+SelHatch
+HatchScale Factor=2
+SelNone
+# --- Linetypes: custom pattern, assign, extract the dashes, persist in 3dm
+SetCustomLinetype Name=Foo Pattern=5,5
+Line 0,80,0 100,80,0
+SelLast
+SetLinetype Name=Foo
+ExtractLineTypeSegments
+SelNone
+SetLayerLinetype Name=Dashed
+Linetypes
+Save @TMP@/annotate2.3dm
+New
+Open @TMP@/annotate2.3dm
+SelLinetype Name=Foo
+SelNone
+# --- Blocks: define A and B, insert A, replace every A by B
+Box 200,0,0 210,10,0 10
+SelLast
+Block 200,0,0 A
+Sphere 250,0,0 5
+SelLast
+Block 250,0,0 B
+Insert A 300,0,0
+Enter
+SelBlockInstanceNamed Name=A
+ReplaceBlock Name=B
+SelNone
+SelBlockInstanceNamed Name=B
+CreateUniqueBlock Name=C
+SelNone
+RescueBlockOrphans

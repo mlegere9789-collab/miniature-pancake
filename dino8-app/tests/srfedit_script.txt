@@ -1,0 +1,89 @@
+# Surface editing QC: ExtractSrf, DeleteFaces, DupBorder, DupEdge, DupFaceBorder, Untrim, ExtractIsocurve,
+# ExtractWireframe, ExtendSrf, UnrollSrf, Silhouette, RailRevolve, Fin, Ribbon, 3DFace, SrfControlPtGrid.
+# --- ExtractSrf the top face of a box (click above the box centre), then DeleteFaces the bottom
+Box 0,0,0 10,10,0 10
+ExtractSrf
+5,5,10
+Enter
+SelAll
+List
+DeleteFaces
+5,5,0
+Enter
+# --- DupBorder on the now-open box (one border loop), DupEdge of one edge
+SelPolysrf
+DupBorder
+DupEdge
+5,0,0
+Enter
+DupFaceBorder
+5,5,10
+Enter
+# --- Untrim a trimmed planar surface
+SelAll
+Hide
+Circle 50,0,0 5
+SelLast
+PlanarSrf
+Untrim
+50,0,0
+Enter
+SelPolysrf
+List
+# --- Isocurves and wireframe of a cylinder
+SelAll
+Hide
+Cylinder 100,0,0 5 10
+ExtractIsocurve Direction=Both
+105,0,5
+Enter
+SelPolysrf
+ExtractWireframe
+# --- ExtendSrf a plane by 10 (click near its +X edge)
+SelAll
+Hide
+Plane 200,0,0 210,10,0
+ExtendSrf
+209,5,0
+10
+SelSrf
+BoundingBox
+# --- UnrollSrf half a cylinder (developable): area is preserved
+SelAll
+Hide
+Cylinder 300,0,0 5 10
+SelPolysrf
+UnrollSrf
+# --- Silhouette of a sphere in the Top view
+SelAll
+Hide
+Sphere 400,0,0 5
+SelPolysrf
+Silhouette
+# --- RailRevolve, Fin, Ribbon, 3DFace, SrfControlPtGrid
+SelAll
+Hide
+Line 520,0,0 500,0,10
+Circle 500,0,0 20
+SelCrv
+RailRevolve
+500,0,0
+500,0,1
+SelAll
+Hide
+Line 600,0,0 620,0,0
+SelCrv
+Ribbon
+5
+SelAll
+Hide
+3DFace 700,0,0 710,0,0 710,10,0 700,10,0
+Point 800,0,0
+Point 810,0,0
+Point 800,10,0
+Point 810,10,5
+SelPt
+SrfControlPtGrid
+2
+SelNone
+@expect_objects 42

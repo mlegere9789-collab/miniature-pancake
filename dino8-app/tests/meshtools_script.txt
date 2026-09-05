@@ -1,0 +1,137 @@
+# Mesh tools QC: deformations, mesh editing and mesh primitives.
+# Object counts are checked with @expect_objects after each section.
+# --- Twist a mesh cylinder 90 degrees about its own axis
+MeshCylinder 0,0,0 5 20
+SelAll
+Twist
+0,0,0
+0,0,20
+90
+@expect_objects 1
+# --- Bend a box: a polysurface is converted to a mesh first
+SelNone
+Box 30,0,0 40,10,0 30
+SelLast
+Bend
+35,5,0
+35,5,30
+50,5,30
+@expect_objects 2
+# --- Taper a mesh box from 5 to 2 along its height
+SelNone
+MeshBox 60,0,0 70,10,0 20
+SelLast
+Taper
+65,5,0
+65,5,20
+5
+2
+@expect_objects 3
+# --- Stretch / Shear / Maelstrom / SoftMove / Smooth on a line and a mesh
+SelNone
+Line 80,0,0 80,0,20
+SelLast
+Stretch
+80,0,0
+80,0,20
+80,0,30
+SelLast
+Shear
+80,0,0
+80,0,30
+90,0,30
+SelLast
+Maelstrom
+80,0,0
+0
+20
+45
+SelNone
+MeshSphere 90,0,0 4
+SelLast
+SoftMove
+Radius=5
+90,0,4
+90,0,8
+SelLast
+Smooth
+0.5
+@expect_objects 5
+# --- ExtrudeMesh: an open mesh plane becomes a closed 10x10x3 solid
+SelNone
+MeshPlane 100,0,0 110,10,0
+SelLast
+ExtrudeMesh
+3
+SelLast
+Volume
+@expect_objects 6
+# --- OffsetMesh with Solid=Yes keeps the input and adds a shell
+SelNone
+MeshSphere 130,0,0 5
+SelLast
+OffsetMesh
+Solid=Yes
+1
+@expect_objects 8
+# --- FillMeshHoles closes the single naked loop of a mesh plane
+SelNone
+MeshPlane 150,0,0 160,10,0
+SelLast
+FillMeshHoles
+@expect_objects 9
+# --- Weld / Unweld / MeshRepair on the sphere
+SelNone
+SelID 7
+Unweld
+30
+SelID 7
+Weld
+180
+SelID 7
+MeshRepair
+@expect_objects 9
+# --- Mesh primitives
+MeshEllipsoid 200,0,0 10 7 5
+TruncatedCone 230,0,0 10 10 5
+MeshTruncatedCone 250,0,0 10 10 5
+TruncatedPyramid 270,0,0 10 10 5
+Paraboloid 290,0,0 10 10
+@expect_objects 14
+# --- PlanarMesh from a closed curve, Slab from a rectangle
+Circle 320,0,0 5
+SelLast
+PlanarMesh
+SelNone
+Rectangle 340,0,0 350,10,0
+SelLast
+Slab
+1
+5
+@expect_objects 18
+# --- ExtractMeshPart (whole box, replaces it), then MeshIntersect of two overlapping mesh boxes
+SelAll
+Hide
+MeshBox 400,0,0 410,10,0 10
+MeshBox 405,5,0 415,15,0 8
+SelLast
+ExtractMeshPart
+412,12,4
+SelAll
+MeshIntersect
+@expect_objects 22
+# --- MeshPatch, MeshOutline, Heightfield, Drape
+SelNone
+Point 500,0,0
+Point 510,0,0
+Point 505,10,0
+Point 505,5,3
+SelPt
+MeshPatch
+SelLast
+MeshOutline
+Heightfield 600,0,0 620,20,0
+Drape 395,-5,0 420,20,0
+@expect_objects 30
+Show
+SelAll

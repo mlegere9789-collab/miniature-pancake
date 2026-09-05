@@ -36,3 +36,7 @@ mediasuite/dist/
 # Third-party tool binaries fetched by installer/fetch-tools.ps1, staged for the
 # installer to bundle — downloaded fresh on every build, never committed.
 mediasuite/tools-staged/
+
+# CMake build trees
+build/
+dino8-app/dist/

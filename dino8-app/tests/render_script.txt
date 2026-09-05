@@ -1,0 +1,54 @@
+# Rendering QC: materials, texture mapping, lights, ground plane, Render, SaveRenderWindowAs.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Box 0,0,0 20,20,0 10
+Sphere 35,10,8 8
+Cylinder -20,10,0 6 14
+SelAll
+RenderAssignMaterialToObjects Plastic Color=220,60,50 Gloss=0.7
+SelNone
+SelID 2
+RenderAssignMaterialToObjects Glass Color=200,225,240 Transparency=0.6 Reflectivity=0.3 Gloss=0.9
+SelNone
+SelID 3
+RenderAssignMaterialToObjects Brass Color=205,170,80 Gloss=0.8 Reflectivity=0.4
+ApplyCylindricalMapping Scale=2
+SelNone
+SelID 1
+AssignBlankTexture
+SelNone
+Box 60,0,0 70,10,0 5
+SelLast
+SynchronizeRenderColors
+RenderMergeIdenticalMaterials
+SelNone
+PointLight 10,-30,40 Intensity=1.5
+Spotlight 10,10,10 8 -30,-30,40
+DirectionalLight 0,0,50 10,10,0
+Sun Azimuth=200 Altitude=50
+GroundPlane On Color=150,158,168
+Environments Sky
+RenderedViewport
+Perspective
+ZoomExtents
+Render 320 240
+SaveRenderWindowAs @TMP@/render.bmp
+RenderArctic
+SaveRenderWindowAs @TMP@/arctic.ppm
+RenderPreview
+PolygonCount
+RenderReportImageFiles
+RenderReportMissingImageFiles
+SelAll
+ExtractRenderMesh
+SelLight
+SetSpotlightToView
+Save @TMP@/render.3dm
+New
+Open @TMP@/render.3dm
+RenderReportImageFiles
+SelLight
+Materials
+Lights
+Rendering
+GradientView
+SetCurrentRenderPlugIn

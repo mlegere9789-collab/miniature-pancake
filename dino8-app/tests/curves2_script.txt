@@ -1,0 +1,85 @@
+# Curve tools QC: conics, catenary, closing, reducing, sub-curves, slicing, arrays, alignment, tweening.
+Conic 0,0,0 20,0,0 10,10,0 10,4,0
+Parabola 0,0,0 0,5,0 10,5,0
+Hyperbola 0,0,0 5,0,0 10,8,0
+Catenary 0,0,0 40,0,0 50
+SelAll
+Hide
+# --- CloseCrv on a polyline, ReducePolyline on a wiggly polyline
+Polyline 0,0,0 10,0,0 10,10,0 0,10,0
+Enter
+SelAll
+CloseCrv
+List
+SelNone
+Polyline 20,0,0 25,0.001,0 30,0,0 35,0,0 40,10,0
+Enter
+SelLast
+ReducePolyline
+List
+# --- SubCrv keeps the picked span of a line
+SelAll
+Hide
+Line 100,0,0 200,0,0
+SubCrv
+120,0,0
+180,0,0
+SelAll
+List
+# --- Contour a sphere every 5 units along Z
+SelAll
+Hide
+Sphere 0,0,0 10
+SelAll
+Contour
+0,0,-10
+0,0,10
+5
+# --- Section through the sphere
+SelSrf
+SelPolysrf
+Section
+-20,0,0
+20,0,0
+# --- Align and Distribute three boxes
+SelAll
+Hide
+Box 0,0,0 10,10,0 10
+Box 30,5,0 40,15,0 10
+Box 70,-3,0 80,7,0 10
+SelAll
+Align
+Bottom
+SelAll
+Distribute
+X
+# --- TweenCurves between two lines, ArrayCrv of a point along a circle
+SelAll
+Hide
+Line 0,0,0 50,0,0
+Line 0,20,0 50,20,0
+SelAll
+TweenCurves
+3
+SelAll
+Hide
+Point 0,0,0
+Circle 0,0,0 30
+SelPt
+ArrayCrv
+SelCrv
+Enter
+6
+# --- LineThroughPt and PlaneThroughPt
+SelAll
+Hide
+Point 0,0,0
+Point 10,1,0
+Point 20,-1,0
+Point 30,0,1
+SelPt
+LineThroughPt
+SelPt
+PlaneThroughPt
+SelNone
+@expect_objects 34

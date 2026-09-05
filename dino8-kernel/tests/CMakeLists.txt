@@ -1,0 +1,4 @@
+add_executable(dino8_kernel_tests test_basic.cpp)
+target_link_libraries(dino8_kernel_tests PRIVATE dino8_kernel)
+
+add_test(NAME dino8_kernel_smoke COMMAND dino8_kernel_tests)
