@@ -315,4 +315,30 @@ assert max(px) > 0 and min(px) < 255, 'image is flat'
 assert len(set(px[i:i + 3] for i in range(0, len(px) - 3, 3 * 97))) > 8, 'too few colours'
 PY
 head -c 2 "$TMP/arctic.ppm" | grep -q "P6" && echo "ok   arctic.ppm is a binary PPM" || { echo "FAIL arctic.ppm"; fail=1; }
+# Annotation, linetype, hatch and block tools (see annotate2_script.txt).
+sed "s|@TMP@|$TMP|g" "$HERE/annotate2_script.txt" > "$TMP/annotate2_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  A2="$("$BIN" --smoke 150 --script "$TMP/annotate2_script.txt" 2>&1)" || { echo "$A2"; echo "FAIL: annotate2 script exited non-zero"; exit 1; }
+else
+  A2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/annotate2_script.txt" 2>&1)" || { echo "$A2"; echo "FAIL: annotate2 script exited non-zero"; exit 1; }
+fi
+a2check() { if echo "$A2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+a2check "DimArea: Area = 314 square" "DimArea measured the circle (pi * 100)"
+a2check "DimCurveLength: Length = 40" "DimCurveLength measured the line"
+a2check "Centermark: 1 center mark(s)" "Centermark marked the circle"
+a2check "RevCloud: 26 arc(s), closed curve" "RevCloud built a closed cloud of 26 arcs around the 30x20 rectangle"
+a2check "TextProperties: 1 annotation(s) updated to \"World\", height 5" "TextProperties rebuilt the text with new content and height"
+a2check "FindText: 1 annotation(s) containing \"World\" selected" "FindText found the edited text"
+a2check "ConvertDots: 1 dot(s) converted to text" "ConvertDots turned the dot into text"
+a2check "HatchScale: 1 hatch(es) rebuilt" "HatchScale rebuilt the hatch from its boundary"
+a2check "SetCustomLinetype: Foo = 5,5" "SetCustomLinetype stored the pattern"
+a2check "SetLinetype: 1 object(s) set to Foo" "SetLinetype assigned the custom linetype"
+a2check "ExtractLineTypeSegments: 10 segment(s) from 1 curve(s)" "ExtractLineTypeSegments split the 100-unit line into 10 dashes"
+a2check "SetLayerLinetype: layer Default uses Dashed" "SetLayerLinetype changed the layer linetype"
+a2check "Linetype Foo: 5,5" "Linetypes lists the custom linetype"
+a2check "1 curve(s) with linetype Foo selected" "linetype table and object linetype survived the 3dm round-trip"
+a2check "ReplaceBlock: 2 instance(s) now 'B'" "ReplaceBlock swapped both A instances for B"
+a2check "3 object(s) in instances of 'B' selected" "SelBlockInstanceNamed found the replaced instances"
+a2check "CreateUniqueBlock: 'C' copied from 'B', 3 instance(s) switched" "CreateUniqueBlock copied the definition"
+a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 exit $fail

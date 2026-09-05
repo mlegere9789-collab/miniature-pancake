@@ -19,6 +19,8 @@ void Document::Clear() {
   render_ = RenderSettings{};
   next_light_id_ = 1;
   named_views_.clear();
+  linetypes_ = DefaultLinetypes();
+  annotation_styles_ = {AnnotationStyle{}};
   user_text_.clear();
   notes_.clear();
   settings_ = DocumentSettings{};
@@ -305,6 +307,65 @@ std::vector<ObjectId> Document::GroupMembers(int group_id) const {
     if (o.group_id == group_id) ids.push_back(o.id);
   }
   return ids;
+}
+
+std::vector<Linetype> Document::DefaultLinetypes() {
+  return {{"Continuous", {}},
+          {"Dashed", {5, 2}},
+          {"Dots", {0.5, 1.5}},
+          {"DashDot", {5, 2, 0.5, 2}},
+          {"Center", {10, 2, 2, 2}},
+          {"Hidden", {2, 2}},
+          {"Border", {5, 2, 5, 2, 0.5, 2}}};
+}
+
+const Linetype* Document::FindLinetype(const std::string& name) const {
+  for (const Linetype& l : linetypes_) if (l.name == name) return &l;
+  return nullptr;
+}
+
+Linetype* Document::FindLinetype(const std::string& name) {
+  for (Linetype& l : linetypes_) if (l.name == name) return &l;
+  return nullptr;
+}
+
+int Document::SetLinetype(const std::string& name, const std::vector<double>& pattern) {
+  for (size_t i = 0; i < linetypes_.size(); ++i) {
+    if (linetypes_[i].name == name) { linetypes_[i].pattern = pattern; Touch(); return static_cast<int>(i); }
+  }
+  linetypes_.push_back({name, pattern});
+  Touch();
+  return static_cast<int>(linetypes_.size()) - 1;
+}
+
+std::string Document::EffectiveLinetype(const SceneObject& o) const {
+  if (!o.linetype.empty() && o.linetype != "ByLayer") return o.linetype;
+  if (o.layer_index >= 0 && o.layer_index < static_cast<int>(layers_.size())) {
+    const std::string& l = layers_[static_cast<size_t>(o.layer_index)].linetype;
+    if (!l.empty()) return l;
+  }
+  return "Continuous";
+}
+
+std::vector<double> Document::EffectiveDashes(const SceneObject& o) const {
+  if (!settings_.linetype_display || o.kind != ObjectKind::Curve) return {};
+  const Linetype* lt = FindLinetype(EffectiveLinetype(o));
+  if (!lt || lt->pattern.empty()) return {};
+  std::vector<double> out;
+  const double s = settings_.linetype_scale > 0 ? settings_.linetype_scale : 1.0;
+  for (double d : lt->pattern) out.push_back(d * s);
+  return out;
+}
+
+AnnotationStyle* Document::FindAnnotationStyle(const std::string& name) {
+  for (AnnotationStyle& a : annotation_styles_) if (a.name == name) return &a;
+  return nullptr;
+}
+
+const AnnotationStyle& Document::CurrentAnnotationStyle() const {
+  for (const AnnotationStyle& a : annotation_styles_) if (a.name == settings_.annotation_style) return a;
+  static const AnnotationStyle kDefault;
+  return annotation_styles_.empty() ? kDefault : annotation_styles_.front();
 }
 
 Document::Snapshot Document::Capture(const std::string& label) const {

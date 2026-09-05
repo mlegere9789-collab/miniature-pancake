@@ -32,6 +32,7 @@ void DrawCalculatorPanel(Application& app, std::string& input, std::string& resu
 void DrawAboutWindow(Application& app);
 void DrawOptionsWindow(Application& app);
 void DrawDocumentPropertiesWindow(Application& app);
+void DrawLinetypesPanel(Application& app);
 void DrawBoxEditPanel(Application& app);
 void DrawUndoMultipleWindow(Application& app, bool redo);
 void DrawLayerStateManager(Application& app);

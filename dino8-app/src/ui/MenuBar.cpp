@@ -209,6 +209,7 @@ void DrawMenuBar(Application& app) {
     ImGui::MenuItem("Named Views", "", &p.named_views);
     ImGui::MenuItem("Notes", "", &p.notes);
     ImGui::MenuItem("Document User Text", "", &p.document_user_text);
+    ImGui::MenuItem("Linetypes", "", &p.linetypes);
     ImGui::MenuItem("Materials", "", &p.materials);
     ImGui::MenuItem("Display", "", &p.display);
     ImGui::MenuItem("Object Snaps", "", &p.object_snaps);

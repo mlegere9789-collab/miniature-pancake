@@ -138,6 +138,7 @@ class SceneObject {
   // Per-object texture mapping override (Default = the material's mapping).
   TextureMapping mapping = TextureMapping::Default;
   float mapping_scale = 1.0f;
+  std::string linetype = "ByLayer";  // linetype name, or "ByLayer"
   std::map<std::string, std::string> user_text;
 
   // Exactly one of these is non-null / meaningful, matching `kind`.
@@ -159,6 +160,12 @@ class SceneObject {
   // surface tessellation, in model units.
   void EnsureDisplay(double curve_tolerance, double surface_tolerance) const;
   void InvalidateDisplay() { cache_.dirty = true; cache_.colors_valid = false; }
+  // Dash pattern (dash, gap... in model units, already scaled) the display
+  // polylines of a curve are split with; empty draws continuous. Set by the
+  // viewport from Document::EffectiveDashes before EnsureDisplay; a change
+  // invalidates the display cache.
+  void SetDisplayDashes(const std::vector<double>& dashes) const;
+  const std::vector<double>& DisplayDashes() const { return display_dashes_; }
   const DisplayCache& Display() const { return cache_; }
 
   // Fills Display().colors for a Curvature / DraftAngle analysis (no-op for
@@ -177,7 +184,14 @@ class SceneObject {
 
  private:
   mutable DisplayCache cache_;
+  mutable std::vector<double> display_dashes_;
   void CopyFrom(const SceneObject& other);
 };
+
+// Splits a polyline into the visible dashes of a (dash, gap, ...) pattern,
+// measured along the polyline in model units. An empty or all-zero pattern
+// returns the polyline unchanged.
+std::vector<std::vector<kernel::Point3d>> DashPolyline(const std::vector<kernel::Point3d>& points,
+                                                       const std::vector<double>& pattern);
 
 }  // namespace dino8::app

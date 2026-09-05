@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <sstream>
 #include <unordered_map>
@@ -88,6 +89,7 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   material_name = other.material_name;
   mapping = other.mapping;
   mapping_scale = other.mapping_scale;
+  linetype = other.linetype;
   user_text = other.user_text;
   point = other.point;
   curve = other.curve ? std::make_unique<kernel::NurbsCurve>(*other.curve) : nullptr;
@@ -96,6 +98,63 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   mesh = other.mesh ? std::make_unique<kernel::Mesh>(*other.mesh) : nullptr;
   subd = other.subd ? std::make_unique<kernel::SubD>(*other.subd) : nullptr;
   cache_ = other.cache_;
+  display_dashes_ = other.display_dashes_;
+}
+
+void SceneObject::SetDisplayDashes(const std::vector<double>& dashes) const {
+  if (dashes == display_dashes_) return;
+  display_dashes_ = dashes;
+  cache_.dirty = true;
+}
+
+std::vector<std::vector<kernel::Point3d>> DashPolyline(const std::vector<kernel::Point3d>& points,
+                                                       const std::vector<double>& pattern) {
+  std::vector<std::vector<kernel::Point3d>> out;
+  double total = 0;
+  for (double d : pattern) total += std::max(0.0, d);
+  if (points.size() < 2 || pattern.empty() || total <= 1e-9) {
+    if (points.size() >= 2) out.push_back(points);
+    return out;
+  }
+  // Walk the polyline, consuming pattern elements (even = dash, odd = gap).
+  size_t idx = 0;
+  double left = std::max(0.0, pattern[0]);
+  bool on = true;
+  std::vector<kernel::Point3d> run;
+  run.push_back(points[0]);
+  auto flush = [&]() {
+    if (on && run.size() >= 2) out.push_back(run);
+    run.clear();
+  };
+  auto next_element = [&](kernel::Point3d at) {
+    flush();
+    idx = (idx + 1) % pattern.size();
+    on = (idx % 2) == 0;
+    left = std::max(0.0, pattern[idx]);
+    run.push_back(at);
+  };
+  for (size_t i = 1; i < points.size(); ++i) {
+    kernel::Point3d a = points[i - 1];
+    const kernel::Point3d b = points[i];
+    double seg = a.DistanceTo(b);
+    int guard = 0;
+    while (seg > 1e-12 && guard++ < 100000) {
+      if (left <= 1e-12) { next_element(a); continue; }
+      if (seg <= left) {
+        run.push_back(b);
+        left -= seg;
+        seg = 0;
+      } else {
+        const kernel::Point3d m = a + (b - a) * (left / seg);
+        run.push_back(m);
+        seg -= left;
+        left = 0;
+        a = m;
+      }
+    }
+  }
+  flush();
+  return out;
 }
 
 SceneObject SceneObject::MakePoint(kernel::Point3d p) {
@@ -148,6 +207,17 @@ void SceneObject::Transform(const ON_Xform& xform) {
     case ObjectKind::Brep: brep->raw().Transform(xform); break;
     case ObjectKind::Mesh: *mesh = mesh->Transform(xform); break;
     case ObjectKind::SubD: subd->raw().Transform(xform); break;
+  }
+  // Block instances remember their insertion point (see cmd_drafting.cpp).
+  auto it = user_text.find("BlockInsert");
+  if (it != user_text.end()) {
+    double x = 0, y = 0, z = 0;
+    if (std::sscanf(it->second.c_str(), "%lf,%lf,%lf", &x, &y, &z) == 3) {
+      const kernel::Point3d p = xform * kernel::Point3d(x, y, z);
+      char buf[128];
+      std::snprintf(buf, sizeof(buf), "%g,%g,%g", p.x, p.y, p.z);
+      it->second = buf;
+    }
   }
   cache_.dirty = true;
 }
@@ -480,7 +550,26 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
       ExpandBox(cache_.bbox, cache_.has_bbox, point);
       break;
     case ObjectKind::Curve: {
-      AppendCurvePolyline(*curve, curve_tolerance, cache_.lines, cache_.bbox, cache_.has_bbox);
+      if (display_dashes_.empty()) {
+        AppendCurvePolyline(*curve, curve_tolerance, cache_.lines, cache_.bbox, cache_.has_bbox);
+      } else {
+        // Dashed linetype: sample the curve, then keep only the dashes.
+        std::vector<float> full;
+        AppendCurvePolyline(*curve, curve_tolerance, full, cache_.bbox, cache_.has_bbox);
+        std::vector<kernel::Point3d> pts;
+        for (size_t i = 0; i + 5 < full.size(); i += 6) {
+          if (pts.empty()) pts.emplace_back(full[i], full[i + 1], full[i + 2]);
+          pts.emplace_back(full[i + 3], full[i + 4], full[i + 5]);
+        }
+        for (const std::vector<kernel::Point3d>& dash : DashPolyline(pts, display_dashes_)) {
+          for (size_t i = 1; i < dash.size(); ++i) {
+            const kernel::Point3d& p = dash[i - 1];
+            const kernel::Point3d& q = dash[i];
+            cache_.lines.push_back(static_cast<float>(p.x)); cache_.lines.push_back(static_cast<float>(p.y)); cache_.lines.push_back(static_cast<float>(p.z));
+            cache_.lines.push_back(static_cast<float>(q.x)); cache_.lines.push_back(static_cast<float>(q.y)); cache_.lines.push_back(static_cast<float>(q.z));
+          }
+        }
+      }
       if (show_control_points) {
         for (int i = 0; i < curve->ControlPointCount(); ++i) {
           const kernel::Point3d p = curve->ControlPointAt(i);
@@ -799,6 +888,7 @@ std::string SceneObject::Describe() const {
   out << ObjectKindName(kind);
   if (!name.empty()) out << " \"" << name << "\"";
   out << "\n  ID: " << id << "\n  Layer index: " << layer_index;
+  if (linetype != "ByLayer") out << "\n  Linetype: " << linetype;
   switch (kind) {
     case ObjectKind::Point:
       out << "\n  Location: " << point.x << ", " << point.y << ", " << point.z;

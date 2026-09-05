@@ -361,6 +361,12 @@ void DrawPropertiesPanel(Application& app) {
       for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) { o->show_control_points = cps; o->InvalidateDisplay(); }
     }
     if (first->group_id >= 0) ImGui::Text("Group: %d", first->group_id);
+    if (ImGui::BeginCombo("Linetype", first->linetype.c_str())) {
+      auto pick = [&](const std::string& lt) { doc.BeginChange("Linetype"); for (ObjectId id : sel) if (SceneObject* o = doc.Find(id)) { o->linetype = lt; o->InvalidateDisplay(); } };
+      if (ImGui::Selectable("ByLayer", first->linetype == "ByLayer")) pick("ByLayer");
+      for (const Linetype& lt : doc.Linetypes()) if (ImGui::Selectable(lt.name.c_str(), lt.name == first->linetype)) pick(lt.name);
+      ImGui::EndCombo();
+    }
     std::string mat = first->material_name;
     if (InputString("Material", mat, ImGuiInputTextFlags_EnterReturnsTrue)) {
       doc.BeginChange("Material");
@@ -777,9 +783,93 @@ void DrawDocumentPropertiesWindow(Application& app) {
   if (InputString("Author", s.author)) app.Doc().Touch();
   if (InputString("Comments", s.comments)) app.Doc().Touch();
   ImGui::Separator();
+  ImGui::Text("Annotation styles");
+  {
+    Document& doc = app.Doc();
+    std::vector<AnnotationStyle>& styles = doc.AnnotationStyles();
+    if (ImGui::BeginCombo("Current style", s.annotation_style.c_str())) {
+      for (const AnnotationStyle& st : styles) if (ImGui::Selectable(st.name.c_str(), st.name == s.annotation_style)) { s.annotation_style = st.name; doc.Touch(); }
+      ImGui::EndCombo();
+    }
+    for (size_t i = 0; i < styles.size(); ++i) {
+      AnnotationStyle& st = styles[i];
+      ImGui::PushID(static_cast<int>(i));
+      if (ImGui::TreeNode(st.name.c_str())) {
+        double h = st.text_height, a = st.arrow_size;
+        if (ImGui::InputDouble("Text height (0 = auto)", &h)) { st.text_height = std::max(0.0, h); doc.Touch(); }
+        if (ImGui::InputDouble("Arrow size (0 = text height)", &a)) { st.arrow_size = std::max(0.0, a); doc.Touch(); }
+        if (InputString("Font", st.font)) doc.Touch();
+        if (ImGui::SmallButton("Duplicate")) { AnnotationStyle copy = st; copy.name = st.name + " copy"; styles.push_back(copy); doc.Touch(); ImGui::TreePop(); ImGui::PopID(); break; }
+        if (styles.size() > 1 && st.name != s.annotation_style) { ImGui::SameLine(); if (ImGui::SmallButton("Delete")) { styles.erase(styles.begin() + static_cast<long>(i)); doc.Touch(); ImGui::TreePop(); ImGui::PopID(); break; } }
+        ImGui::TreePop();
+      }
+      ImGui::PopID();
+    }
+    static char new_style[64] = "";
+    ImGui::SetNextItemWidth(160);
+    ImGui::InputTextWithHint("##newstyle", "new style name", new_style, sizeof(new_style));
+    ImGui::SameLine();
+    if (ImGui::Button("Add style") && new_style[0] && !doc.FindAnnotationStyle(new_style)) { styles.push_back(AnnotationStyle{new_style, 0, 0, ""}); doc.Touch(); new_style[0] = 0; }
+  }
+  ImGui::Separator();
+  ImGui::Text("Linetypes");
+  double lts = s.linetype_scale;
+  if (ImGui::InputDouble("Linetype scale", &lts)) { s.linetype_scale = std::max(1e-6, lts); app.Doc().Touch(); }
+  if (ImGui::Checkbox("Display linetypes", &s.linetype_display)) app.Doc().Touch();
+  if (ImGui::Button("Linetypes panel")) app.Panels().linetypes = true;
+  ImGui::Separator();
+  if (InputString("Dimension layer (empty = current)", s.dimension_layer)) app.Doc().Touch();
+  ImGui::Separator();
   ImGui::Text("File: %s", app.Doc().Path().empty() ? "(unsaved)" : app.Doc().Path().c_str());
   ImGui::Text("Objects: %zu   Layers: %zu   Revision: %llu", app.Doc().ObjectCount(), app.Doc().Layers().size(),
               static_cast<unsigned long long>(app.Doc().Revision()));
+  ImGui::End();
+}
+
+void DrawLinetypesPanel(Application& app) {
+  Document& doc = app.Doc();
+  ImGui::SetNextWindowSize(ImVec2(420, 320), ImGuiCond_Appearing);
+  if (!ImGui::Begin("Linetypes", &app.Panels().linetypes)) { ImGui::End(); return; }
+  DocumentSettings& s = doc.Settings();
+  double lts = s.linetype_scale;
+  ImGui::SetNextItemWidth(120);
+  if (ImGui::InputDouble("Scale", &lts)) { s.linetype_scale = std::max(1e-6, lts); doc.Touch(); }
+  ImGui::SameLine();
+  if (ImGui::Checkbox("Display", &s.linetype_display)) doc.Touch();
+  ImGui::Separator();
+  static int selected = -1;
+  if (ImGui::BeginTable("linetypes", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY, ImVec2(0, 160))) {
+    ImGui::TableSetupColumn("Name");
+    ImGui::TableSetupColumn("Pattern (dash, gap, ...)");
+    ImGui::TableHeadersRow();
+    for (size_t i = 0; i < doc.Linetypes().size(); ++i) {
+      const Linetype& lt = doc.Linetypes()[i];
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      if (ImGui::Selectable(lt.name.c_str(), selected == static_cast<int>(i), ImGuiSelectableFlags_SpanAllColumns)) selected = static_cast<int>(i);
+      ImGui::TableSetColumnIndex(1);
+      std::string p;
+      for (double d : lt.pattern) p += (p.empty() ? "" : ", ") + FormatNumber(d);
+      ImGui::TextUnformatted(p.empty() ? "continuous" : p.c_str());
+    }
+    ImGui::EndTable();
+  }
+  static char name[64] = "", pattern[128] = "5,2";
+  ImGui::SetNextItemWidth(120);
+  ImGui::InputTextWithHint("##ltname", "name", name, sizeof(name));
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(140);
+  ImGui::InputTextWithHint("##ltpattern", "5,2,1,2", pattern, sizeof(pattern));
+  ImGui::SameLine();
+  if (ImGui::Button("Add / update") && name[0]) app.Engine().Execute(std::string("SetCustomLinetype Name=") + name + " Pattern=" + pattern);
+  if (selected >= 0 && selected < static_cast<int>(doc.Linetypes().size())) {
+    const std::string lt = doc.Linetypes()[static_cast<size_t>(selected)].name;
+    if (ImGui::Button("Apply to selected objects")) app.Engine().Execute("SetLinetype Name=" + lt);
+    ImGui::SameLine();
+    if (ImGui::Button("Apply to current layer")) app.Engine().Execute("SetLayerLinetype Name=" + lt);
+    ImGui::SameLine();
+    if (ImGui::Button("Select curves")) app.Engine().Execute("SelLinetype Name=" + lt);
+  }
   ImGui::End();
 }
 

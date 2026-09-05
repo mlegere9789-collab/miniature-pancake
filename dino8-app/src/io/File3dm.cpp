@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 
@@ -223,6 +225,34 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       if (lm != layer_map.end() && mm != material_map.end()) doc.Layers()[static_cast<size_t>(lm->second)].material = mm->second;
     }
   }
+  // Linetypes: the file's table (index -> name) merged into the document's.
+  std::map<int, std::string> linetype_by_index;
+  {
+    ONX_ModelComponentIterator lit(model, ON_ModelComponent::Type::LinePattern);
+    for (const ON_ModelComponent* c = lit.FirstComponent(); c; c = lit.NextComponent()) {
+      const ON_Linetype* lt = ON_Linetype::Cast(c);
+      if (!lt) continue;
+      std::string name = FromWide(lt->Name());
+      if (name.empty()) continue;
+      std::vector<double> pattern;
+      for (int i = 0; i < lt->SegmentCount(); ++i) pattern.push_back(lt->Segment(i).m_length);
+      // A pattern of a single dash is continuous.
+      bool any_gap = false;
+      for (int i = 0; i < lt->SegmentCount(); ++i) if (lt->Segment(i).m_seg_type == ON_LinetypeSegment::eSegType::stSpace) any_gap = true;
+      if (!any_gap) pattern.clear();
+      if (!doc.FindLinetype(name)) doc.SetLinetype(name, pattern);
+      else if (!pattern.empty()) doc.FindLinetype(name)->pattern = pattern;
+      linetype_by_index[lt->Index()] = name;
+    }
+    ONX_ModelComponentIterator lyr(model, ON_ModelComponent::Type::Layer);
+    for (const ON_ModelComponent* c = lyr.FirstComponent(); c; c = lyr.NextComponent()) {
+      const ON_Layer* layer = ON_Layer::Cast(c);
+      if (!layer) continue;
+      auto me = layer_by_id.find(layer->Id());
+      auto lt = linetype_by_index.find(layer->LinetypeIndex());
+      if (me != layer_by_id.end() && lt != linetype_by_index.end()) doc.Layers()[static_cast<size_t>(me->second)].linetype = lt->second;
+    }
+  }
 
   int skipped = 0;
   ONX_ModelComponentIterator it(model, ON_ModelComponent::Type::ModelGeometry);
@@ -309,6 +339,9 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       if (attr->MaterialSource() == ON::material_from_object) {
         auto mm = material_map.find(attr->m_material_index);
         if (mm != material_map.end()) obj.material_name = mm->second;
+      if (attr->LinetypeSource() == ON::linetype_from_object) {
+        auto lt = linetype_by_index.find(attr->m_linetype_index);
+        if (lt != linetype_by_index.end()) obj.linetype = lt->second;
       }
       // Attribute user strings.
       ON_ClassArray<ON_UserString> strings;
@@ -340,6 +373,14 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     ON_wString v;
     if (model.GetDocumentUserString(L"Dino8.Title", v)) doc.Settings().title = FromWide(v);
     if (model.GetDocumentUserString(L"Dino8.Comments", v)) doc.Settings().comments = FromWide(v);
+    if (model.GetDocumentUserString(L"Dino8.LinetypeScale", v)) doc.Settings().linetype_scale = std::max(1e-6, std::atof(FromWide(v).c_str()));
+    if (model.GetDocumentUserString(L"Dino8.LinetypeDisplay", v)) doc.Settings().linetype_display = FromWide(v) != "0";
+    if (model.GetDocumentUserString(L"Dino8.DimensionLayer", v)) doc.Settings().dimension_layer = FromWide(v);
+    if (model.GetDocumentUserString(L"Dino8.AnnotationStyle", v)) doc.Settings().annotation_style = FromWide(v);
+    if (model.GetDocumentUserString(L"Dino8.HatchBase", v)) {
+      double x = 0, y = 0, z = 0;
+      if (std::sscanf(FromWide(v).c_str(), "%lf,%lf,%lf", &x, &y, &z) == 3) doc.Settings().hatch_base = kernel::Point3d(x, y, z);
+    }
   }
   {
     ON_ClassArray<ON_UserString> strings;
@@ -348,8 +389,20 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     for (int i = 0; i < strings.Count(); ++i) {
       const std::string key = FromWide(strings[i].m_key);
       if (key.compare(0, 13, "Dino8.Render.") == 0) { render_strings[key] = FromWide(strings[i].m_string_value); continue; }
-      if (key == "Dino8.Title" || key == "Dino8.Comments") continue;
-      doc.UserText()[key] = FromWide(strings[i].m_string_value);
+      const std::string value = FromWide(strings[i].m_string_value);
+      const std::string style_prefix = "Dino8.AnnotationStyle.";
+      if (key.compare(0, style_prefix.size(), style_prefix) == 0) {
+        // "height;arrow;font"
+        AnnotationStyle st;
+        st.name = key.substr(style_prefix.size());
+        char font[256] = "";
+        std::sscanf(value.c_str(), "%lf;%lf;%255[^\n]", &st.text_height, &st.arrow_size, font);
+        st.font = font;
+        if (AnnotationStyle* existing = doc.FindAnnotationStyle(st.name)) *existing = st; else doc.AnnotationStyles().push_back(st);
+        continue;
+      }
+      if (key.compare(0, 6, "Dino8.") == 0) continue;  // settings, handled above
+      doc.UserText()[key] = value;
     }
     ReadRenderSettings(render_strings, doc.Render());
   }
@@ -395,6 +448,41 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
   if (!doc.Settings().title.empty()) model.SetDocumentUserString(L"Dino8.Title", ON_wString(doc.Settings().title.c_str()));
   if (!doc.Settings().comments.empty()) model.SetDocumentUserString(L"Dino8.Comments", ON_wString(doc.Settings().comments.c_str()));
   WriteRenderSettings(model, doc.Render());
+  {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "%g", doc.Settings().linetype_scale);
+    model.SetDocumentUserString(L"Dino8.LinetypeScale", ON_wString(buf));
+    model.SetDocumentUserString(L"Dino8.LinetypeDisplay", doc.Settings().linetype_display ? L"1" : L"0");
+    if (!doc.Settings().dimension_layer.empty()) model.SetDocumentUserString(L"Dino8.DimensionLayer", ON_wString(doc.Settings().dimension_layer.c_str()));
+    model.SetDocumentUserString(L"Dino8.AnnotationStyle", ON_wString(doc.Settings().annotation_style.c_str()));
+    const kernel::Point3d hb = doc.Settings().hatch_base;
+    std::snprintf(buf, sizeof(buf), "%g,%g,%g", hb.x, hb.y, hb.z);
+    model.SetDocumentUserString(L"Dino8.HatchBase", ON_wString(buf));
+    for (const AnnotationStyle& st : doc.AnnotationStyles()) {
+      std::snprintf(buf, sizeof(buf), "%g;%g;%s", st.text_height, st.arrow_size, st.font.c_str());
+      model.SetDocumentUserString(ON_wString(("Dino8.AnnotationStyle." + st.name).c_str()), ON_wString(buf));
+    }
+  }
+
+  // Linetype table (name -> index in the file).
+  std::map<std::string, int> file_linetype_index;
+  for (const Linetype& lt : doc.Linetypes()) {
+    ON_Linetype olt;
+    olt.SetName(ON_wString(lt.name.c_str()));
+    if (lt.pattern.empty()) {
+      olt.AppendSegment(ON_LinetypeSegment(1.0, ON_LinetypeSegment::eSegType::stLine));
+    } else {
+      for (size_t i = 0; i < lt.pattern.size(); ++i) {
+        olt.AppendSegment(ON_LinetypeSegment(lt.pattern[i], i % 2 == 0 ? ON_LinetypeSegment::eSegType::stLine : ON_LinetypeSegment::eSegType::stSpace));
+      }
+    }
+    ON_ModelComponentReference ref = model.AddModelComponent(olt, true);
+    if (const ON_ModelComponent* mc = ref.ModelComponent()) file_linetype_index[lt.name] = mc->Index();
+  }
+  auto linetype_index = [&](const std::string& name) {
+    auto it = file_linetype_index.find(name);
+    return it == file_linetype_index.end() ? -1 : it->second;
+  };
   model.m_properties.m_RevisionHistory.m_sCreatedBy = ON_wString(doc.Settings().author.c_str());
   model.m_properties.m_RevisionHistory.m_sLastEditedBy = ON_wString(doc.Settings().author.c_str());
   model.m_properties.m_RevisionHistory.m_revision_count += 1;
@@ -453,6 +541,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
       stored->SetVisible(L.visible);
       stored->SetLocked(L.locked);
       if (!L.material.empty() && material_index.count(L.material)) stored->SetRenderMaterialIndex(material_index[L.material]);
+      if (linetype_index(L.linetype) >= 0) stored->SetLinetypeIndex(linetype_index(L.linetype));
       if (L.parent >= 0 && static_cast<size_t>(L.parent) < i) {
         ON_ModelComponentReference pref = model.LayerFromIndex(file_layer_index[static_cast<size_t>(L.parent)]);
         if (const ON_Layer* pl = ON_Layer::Cast(pref.ModelComponent())) stored->SetParentLayerId(pl->Id());
@@ -488,6 +577,10 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
     }
     attr.SetVisible(o.visible);
     attr.SetMode(o.locked ? ON::locked_object : ON::normal_object);
+    if (o.linetype != "ByLayer" && linetype_index(o.linetype) >= 0) {
+      attr.SetLinetypeSource(ON::linetype_from_object);
+      attr.m_linetype_index = linetype_index(o.linetype);
+    }
     for (const auto& [k, v] : o.user_text) attr.SetUserString(ON_wString(k.c_str()), ON_wString(v.c_str()));
     if (!o.material_name.empty() && material_index.count(o.material_name)) {
       attr.m_material_index = material_index[o.material_name];

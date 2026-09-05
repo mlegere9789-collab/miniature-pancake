@@ -1,41 +1,12 @@
 // Drafting helpers: Hatch, Make2D, and Blocks (definitions + instances).
 #include "commands/cmd_common.h"
+#include "commands/hatch_common.h"
 
 #include <algorithm>
 
 namespace dino8::app {
 
 namespace {
-
-// Clips an infinite family of parallel lines to a closed polygon (even-odd).
-void HatchLines(const std::vector<Point3d>& poly, const ON_Plane& pl, double angle_deg, double spacing, std::vector<kernel::NurbsCurve>& out) {
-  if (poly.size() < 3 || spacing <= 0) return;
-  const double a = angle_deg * ON_PI / 180.0;
-  const Vector3d dir = pl.xaxis * std::cos(a) + pl.yaxis * std::sin(a);
-  const Vector3d perp = ON_CrossProduct(pl.zaxis, dir);
-  // Polygon in (s, t) coordinates: s along dir, t along perp.
-  std::vector<std::pair<double, double>> p2;
-  double tmin = 1e300, tmax = -1e300;
-  for (const Point3d& p : poly) {
-    const Vector3d d = p - pl.origin;
-    p2.push_back({ON_DotProduct(d, dir), ON_DotProduct(d, perp)});
-    tmin = std::min(tmin, p2.back().second);
-    tmax = std::max(tmax, p2.back().second);
-  }
-  for (double t = std::floor(tmin / spacing) * spacing; t <= tmax; t += spacing) {
-    std::vector<double> xs;
-    for (size_t i = 0; i < p2.size(); ++i) {
-      const auto& p = p2[i];
-      const auto& q = p2[(i + 1) % p2.size()];
-      if ((p.second > t) != (q.second > t)) xs.push_back(p.first + (q.first - p.first) * (t - p.second) / (q.second - p.second));
-    }
-    std::sort(xs.begin(), xs.end());
-    for (size_t i = 0; i + 1 < xs.size(); i += 2) {
-      const Point3d a0 = pl.origin + dir * xs[i] + perp * t, a1 = pl.origin + dir * xs[i + 1] + perp * t;
-      if (a0.DistanceTo(a1) > 1e-9) out.push_back(PolylineCurve({a0, a1}));
-    }
-  }
-}
 
 class HatchCommand : public Command {
  public:
@@ -50,28 +21,14 @@ class HatchCommand : public Command {
     if (n == "Rotation") { rotation_ = std::atof(v.c_str()); options[2].value = FormatNumber(rotation_); }
   }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
-    std::vector<std::pair<kernel::NurbsCurve, int>> curves;
-    for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve && o->curve->IsClosed()) curves.push_back({*o->curve, o->layer_index}); }
+    struct Boundary { kernel::NurbsCurve curve; ObjectId id; int layer; };
+    std::vector<Boundary> curves;
+    for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve && o->curve->IsClosed()) curves.push_back({*o->curve, o->id, o->layer_index}); }
     if (curves.empty()) { ctx.Warn("Select closed planar curves"); Finish(); return; }
     ctx.Doc().BeginChange("Hatch");
     int made = 0;
-    for (auto& [c, layer] : curves) {
-      ON_Plane pl;
-      if (!c.raw().IsPlanar(&pl, ctx.Settings().absolute_tolerance)) continue;
-      std::vector<ObjectId> ids_out;
-      if (pattern_ == 0) {
-        if (ON_Brep* b = ON_BrepTrimmedPlane(pl, c.raw())) { kernel::Brep k; k.raw() = *b; delete b; SceneObject s = SceneObject::MakeBrep(k); s.layer_index = layer; s.name = "Hatch Solid"; ids_out.push_back(ctx.Doc().Add(std::move(s))); }
-      } else {
-        std::vector<Point3d> poly;
-        for (double t : c.SuggestedParameterValues(0.005)) poly.push_back(c.PointAt(t));
-        if (poly.size() > 1 && poly.front().DistanceTo(poly.back()) < 1e-9) poly.pop_back();
-        std::vector<kernel::NurbsCurve> lines;
-        HatchLines(poly, pl, rotation_, spacing_, lines);
-        if (pattern_ == 2) HatchLines(poly, pl, rotation_ + 90, spacing_, lines);
-        if (pattern_ == 3) HatchLines(poly, pl, rotation_ + 90, spacing_ * 2, lines);
-        for (const kernel::NurbsCurve& l : lines) { SceneObject s = SceneObject::MakeCurve(l); s.layer_index = layer; ids_out.push_back(ctx.Doc().Add(std::move(s))); }
-      }
-      if (!ids_out.empty()) { ctx.Doc().CreateGroup(ids_out, "Hatch"); ++made; }
+    for (const Boundary& b : curves) {
+      if (AddHatch(ctx, b.curve, b.id, b.layer, pattern_, spacing_, rotation_) > 0) ++made;
     }
     ctx.Print("Hatch: " + std::to_string(made) + " boundary(ies) hatched");
     Finish();
@@ -131,7 +88,7 @@ class BlockCommand : public Command {
     BlockDefinition def;
     def.name = name;
     def.base = base_;
-    for (ObjectId id : ids_) if (const SceneObject* o = ctx.Doc().Find(id)) { SceneObject c = *o; c.selected = false; c.group_id = -1; c.user_text.erase("Block"); def.objects.push_back(c); }
+    for (ObjectId id : ids_) if (const SceneObject* o = ctx.Doc().Find(id)) { SceneObject c = *o; c.selected = false; c.group_id = -1; c.user_text.erase("Block"); c.user_text.erase("BlockInsert"); def.objects.push_back(c); }
     if (BlockDefinition* existing = ctx.Doc().FindBlock(name)) *existing = def; else ctx.Doc().Blocks().push_back(def);
     // Replace the source objects by an instance at the same place.
     for (ObjectId id : ids_) ctx.Doc().Remove(id);
@@ -139,20 +96,7 @@ class BlockCommand : public Command {
     ctx.Print("Block '" + name + "' defined with " + std::to_string(def.objects.size()) + " object(s)");
     Finish();
   }
-  static int Instantiate(CommandContext& ctx, const std::string& name, Point3d at) {
-    BlockDefinition* def = ctx.Doc().FindBlock(name);
-    if (!def) return -1;
-    const ON_Xform xf = ON_Xform::TranslationTransformation(at - def->base);
-    std::vector<ObjectId> ids;
-    for (const SceneObject& o : def->objects) {
-      SceneObject c = o;
-      c.id = kNoObject;
-      c.Transform(xf);
-      c.user_text["Block"] = name;
-      ids.push_back(ctx.Doc().Add(std::move(c)));
-    }
-    return ctx.Doc().CreateGroup(ids, name);
-  }
+  static int Instantiate(CommandContext& ctx, const std::string& name, Point3d at) { return InstantiateBlock(ctx, name, at); }
   std::vector<ObjectId> ids_;
   Point3d base_;
 };
@@ -188,12 +132,30 @@ class InsertCommand : public Command {
 
 }  // namespace
 
+int InstantiateBlock(CommandContext& ctx, const std::string& name, Point3d at) {
+  BlockDefinition* def = ctx.Doc().FindBlock(name);
+  if (!def) return -1;
+  const ON_Xform xf = ON_Xform::TranslationTransformation(at - def->base);
+  std::vector<ObjectId> ids;
+  for (const SceneObject& o : def->objects) {
+    SceneObject c = o;
+    c.id = kNoObject;
+    c.selected = false;
+    c.Transform(xf);
+    c.user_text["Block"] = name;
+    // The insertion point travels with the instance (SceneObject::Transform keeps it current).
+    c.user_text["BlockInsert"] = FormatPoint(at);
+    ids.push_back(ctx.Doc().Add(std::move(c)));
+  }
+  return ctx.Doc().CreateGroup(ids, name);
+}
+
 void RegisterDraftingCommands(CommandEngine& e) {
   Reg(e, "Hatch", Make<HatchCommand>(), CommandStatus::Partial, "Solid fills become planar surfaces; line patterns are curve groups.");
   Reg(e, "Make2D", OnSelection("Select objects to draw in 2D", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Make2D(ctx, ids); }), CommandStatus::Partial, "Projects visible wire geometry; hidden-line removal is planned.");
   Reg(e, "Block", Make<BlockCommand>(), CommandStatus::Partial, "Instances are grouped copies tagged with the block name (not linked).");
   Reg(e, "Insert", Make<InsertCommand>(), CommandStatus::Partial, "Inserts a block definition, or imports a file when none exist.");
-  Reg(e, "ExplodeBlock", OnSelection("Select block instances to explode", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ctx.Doc().BeginChange("ExplodeBlock"); ctx.Doc().Ungroup(ids); for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) o->user_text.erase("Block"); }));
+  Reg(e, "ExplodeBlock", OnSelection("Select block instances to explode", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ctx.Doc().BeginChange("ExplodeBlock"); ctx.Doc().Ungroup(ids); for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->user_text.erase("Block"); o->user_text.erase("BlockInsert"); } }));
   Reg(e, "BlockManager", Immediate([](CommandContext& ctx) {
         if (ctx.Doc().Blocks().empty()) { ctx.Print("No block definitions. Use Block to create one."); return; }
         for (const BlockDefinition& b : ctx.Doc().Blocks()) {

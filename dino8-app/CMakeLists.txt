@@ -70,6 +70,7 @@ set(DINO8_SOURCES
   src/ui/Gumball.cpp
   src/geom/TextOutline.cpp
   src/commands/cmd_annotate.cpp
+  src/commands/cmd_annotate2.cpp
   src/commands/cmd_drafting.cpp
   src/commands/cmd_curves2.cpp
   src/commands/cmd_srfedit.cpp

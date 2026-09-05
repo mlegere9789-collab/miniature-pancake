@@ -62,6 +62,7 @@ struct RenderImage {
   std::string last_saved_path;
   double seconds = 0;
   bool Valid() const { return width > 0 && height > 0 && rgb.size() == static_cast<size_t>(width) * height * 3; }
+  bool linetypes = false;
 };
 
 struct FileDialogState {

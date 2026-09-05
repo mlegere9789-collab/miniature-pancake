@@ -1,0 +1,17 @@
+# Screenshot script: a dashed curve and a dimension in the Top view.
+SetCustomLinetype Name=Foo Pattern=6,3
+Circle 0,0,0 20
+SelLast
+SetLinetype Name=Foo
+SelNone
+Line -30,-30,0 30,-30,0
+SelLast
+SetLinetype Name=Dashed
+SelNone
+DimLinear -20,0,0 20,0,0 0,30,0
+Circle 0,0,0 20
+SelLast
+DimArea
+30,30,0
+SelNone
+ZoomExtentsAll

@@ -247,6 +247,10 @@ inline int JoinNakedEdges(ON_Brep& b, double tol) {
   return joined;
 }
 
+// Inserts an instance of block `name` at `at` (a grouped copy tagged
+// Block / BlockInsert); defined in cmd_drafting.cpp. Returns the group id or -1.
+int InstantiateBlock(CommandContext& ctx, const std::string& name, Point3d at);
+
 inline void Reg(CommandEngine& e, const char* name, CommandFactory f, CommandStatus s = CommandStatus::Implemented,
                 const char* note = "") {
   e.Register(name, std::move(f), s, note);

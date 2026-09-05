@@ -39,6 +39,7 @@ void RegisterFileCommands(CommandEngine&);
 void RegisterMiscCommands(CommandEngine&);
 void RegisterAnnotateCommands(CommandEngine&);
 void RegisterDraftingCommands(CommandEngine&);
+void RegisterAnnotate2Commands(CommandEngine&);
 void RegisterCurves2Commands(CommandEngine&);
 void RegisterSrfEditCommands(CommandEngine&);
 void RegisterCurveEditCommands(CommandEngine&);
@@ -161,6 +162,7 @@ void Application::RegisterCommands() {
   RegisterMiscCommands(*engine_);
   RegisterAnnotateCommands(*engine_);
   RegisterDraftingCommands(*engine_);
+  RegisterAnnotate2Commands(*engine_);  // dimensions, linetypes, hatch and block extras
   RegisterCurves2Commands(*engine_);
   RegisterSrfEditCommands(*engine_);
   RegisterMeshToolsCommands(*engine_);  // after Transform/Boolean: replaces the simpler Shear/Weld
@@ -1116,6 +1118,7 @@ void Application::DrawPanels() {
   if (panels_.about) DrawAboutWindow(*this);
   if (panels_.options) DrawOptionsWindow(*this);
   if (panels_.document_properties) DrawDocumentPropertiesWindow(*this);
+  if (panels_.linetypes) DrawLinetypesPanel(*this);
   if (panels_.box_edit) DrawBoxEditPanel(*this);
   if (panels_.undo_multiple) DrawUndoMultipleWindow(*this, false);
   if (panels_.redo_multiple) DrawUndoMultipleWindow(*this, true);

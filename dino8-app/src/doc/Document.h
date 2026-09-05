@@ -113,6 +113,21 @@ struct RenderSettings {
   int render_height = 720;
   int render_quality = 2;         // supersampling factor 1..4
   std::string environment_image;  // Partial: shown in the panel only
+// A linetype: a name and a dash pattern (dash, gap, dash, gap... lengths in
+// model units, multiplied by DocumentSettings::linetype_scale for display).
+// An empty pattern draws continuous.
+struct Linetype {
+  std::string name = "Continuous";
+  std::vector<double> pattern;
+};
+
+// An annotation style: defaults for the text / dimension commands. Every
+// annotation group records the style it was made with (user text "Style").
+struct AnnotationStyle {
+  std::string name = "Default";
+  double text_height = 0;   // 0: twice the grid spacing (the legacy default)
+  double arrow_size = 0;    // 0: the text height
+  std::string font;         // empty: the first system sans-serif font found
 };
 
 // A camera description that lives in the document (named views) without
@@ -144,6 +159,14 @@ struct DocumentSettings {
   bool planar = false;
   bool show_grid = true;
   bool show_axes = true;
+  // Linetypes (see Linetype): global display scale and on/off switch.
+  double linetype_scale = 1.0;
+  bool linetype_display = true;
+  // Base point for hatch patterns (HatchBase) and the layer new dimensions
+  // go on (SetDimensionLayer; empty = the current layer).
+  kernel::Point3d hatch_base{0, 0, 0};
+  std::string dimension_layer;
+  std::string annotation_style = "Default";
 };
 
 class Document {
@@ -211,6 +234,24 @@ class Document {
 
   // ---- named views / user text / notes ---------------------------------
   std::vector<NamedView>& NamedViews() { return named_views_; }
+
+  // ---- linetypes / annotation styles -------------------------------------
+  std::vector<Linetype>& Linetypes() { return linetypes_; }
+  const std::vector<Linetype>& Linetypes() const { return linetypes_; }
+  const Linetype* FindLinetype(const std::string& name) const;
+  Linetype* FindLinetype(const std::string& name);
+  // Adds or replaces a linetype; returns its index.
+  int SetLinetype(const std::string& name, const std::vector<double>& pattern);
+  // The linetype name an object draws with ("ByLayer" resolves through the layer).
+  std::string EffectiveLinetype(const SceneObject& o) const;
+  // Its dash pattern scaled for display; empty when continuous or when
+  // linetype display is off.
+  std::vector<double> EffectiveDashes(const SceneObject& o) const;
+  static std::vector<Linetype> DefaultLinetypes();
+  std::vector<AnnotationStyle>& AnnotationStyles() { return annotation_styles_; }
+  const std::vector<AnnotationStyle>& AnnotationStyles() const { return annotation_styles_; }
+  AnnotationStyle* FindAnnotationStyle(const std::string& name);
+  const AnnotationStyle& CurrentAnnotationStyle() const;
   std::vector<BlockDefinition>& Blocks() { return blocks_; }
   BlockDefinition* FindBlock(const std::string& name) { for (BlockDefinition& b : blocks_) if (b.name == name) return &b; return nullptr; }
   std::map<std::string, std::string>& UserText() { return user_text_; }
@@ -267,6 +308,8 @@ class Document {
   int next_light_id_ = 1;
   std::vector<NamedView> named_views_;
   std::vector<BlockDefinition> blocks_;
+  std::vector<Linetype> linetypes_;
+  std::vector<AnnotationStyle> annotation_styles_;
   std::map<std::string, std::string> user_text_;
   std::string notes_;
   DocumentSettings settings_;

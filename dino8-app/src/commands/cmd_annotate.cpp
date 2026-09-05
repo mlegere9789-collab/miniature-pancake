@@ -1,5 +1,6 @@
 // Annotation: text and dimensions as curve groups (the text is real font
 // outline geometry, so it prints, exports and Booleans like any curve).
+#include "commands/annotate_common.h"
 #include "commands/cmd_common.h"
 #include "geom/TextOutline.h"
 
@@ -12,26 +13,36 @@ namespace {
 
 // Adds text curves as a group; returns the group id or -1.
 int AddTextCurves(CommandContext& ctx, const std::string& text, double height, const ON_Plane& plane, const std::string& label, bool make_surfaces) {
-  std::vector<kernel::NurbsCurve> curves;
-  std::string font;
-  if (!TextToCurves(text, height, plane, curves, font)) {
-    ctx.Warn("No TrueType font found for text outlines (looked for the system sans-serif fonts)");
-    return -1;
-  }
   ctx.Doc().BeginChange(label);
   std::vector<ObjectId> ids;
-  for (const kernel::NurbsCurve& c : curves) {
-    if (make_surfaces) {
-      if (ON_Brep* b = ON_BrepTrimmedPlane(plane, c.raw())) { kernel::Brep k; k.raw() = *b; delete b; ids.push_back(ctx.Doc().Add(SceneObject::MakeBrep(k))); continue; }
+  std::string font;
+  const std::string style = ctx.Settings().annotation_style;
+  if (make_surfaces) {
+    std::vector<kernel::NurbsCurve> curves;
+    if (!TextToCurves(text, height, plane, curves, font)) {
+      ctx.Warn("No TrueType font found for text outlines (looked for the system sans-serif fonts)");
+      return -1;
     }
-    ids.push_back(ctx.Doc().Add(SceneObject::MakeCurve(c)));
+    for (const kernel::NurbsCurve& c : curves) {
+      SceneObject s;
+      if (ON_Brep* b = ON_BrepTrimmedPlane(plane, c.raw())) { kernel::Brep k; k.raw() = *b; delete b; s = SceneObject::MakeBrep(k); }
+      else s = SceneObject::MakeCurve(c);
+      TagAnnotation(s, label, style);
+      s.user_text["Text"] = text;
+      ids.push_back(ctx.Doc().Add(std::move(s)));
+    }
+  } else {
+    GlyphSpec g;
+    g.text = text; g.height = height; g.plane = plane; g.center = false;
+    ids = AddGlyphCurves(ctx, g, ctx.Doc().CurrentLayer(), -1, {{"Annotation", label}, {"Style", style}}, &font);
+    if (ids.empty()) return -1;
   }
   const int g = ctx.Doc().CreateGroup(ids, label);
   ctx.Print(label + ": " + std::to_string(ids.size()) + " curve(s) from " + std::filesystem::path(font).filename().string());
   return g;
 }
 
-double Height(CommandContext& ctx) { return std::max(ctx.Settings().grid_spacing * 2.0, 1e-6); }
+double Height(CommandContext& ctx) { return AnnotationTextHeight(ctx); }
 
 class TextCommand : public Command {
  public:
@@ -73,19 +84,9 @@ std::string Fmt(double v) { return FormatNumber(v); }
 
 void AddDimension(CommandContext& ctx, const std::string& label, std::vector<kernel::NurbsCurve>& curves, const std::string& text, Point3d text_pos, const ON_Plane& pl, double text_h) {
   ctx.Doc().BeginChange(label);
-  std::vector<ObjectId> ids;
-  for (const kernel::NurbsCurve& c : curves) ids.push_back(ctx.Doc().Add(SceneObject::MakeCurve(c)));
-  std::vector<kernel::NurbsCurve> glyphs;
-  std::string font;
-  double width = 0;
-  ON_Plane tp = pl;
-  tp.SetOrigin(text_pos);
-  if (TextToCurves(text, text_h, tp, glyphs, font, &width)) {
-    // Centre the text on text_pos.
-    const ON_Xform shift = ON_Xform::TranslationTransformation(-pl.xaxis * (width / 2));
-    for (kernel::NurbsCurve& g : glyphs) { g.raw().Transform(shift); ids.push_back(ctx.Doc().Add(SceneObject::MakeCurve(g))); }
-  }
-  ctx.Doc().CreateGroup(ids, label);
+  GlyphSpec g;
+  g.text = text; g.height = text_h; g.plane = pl; g.plane.SetOrigin(text_pos); g.center = true;
+  AddAnnotationGroup(ctx, label, curves, g);
   ctx.Print(label + " " + text);
 }
 
@@ -234,14 +235,11 @@ class LeaderCommand : public Command {
     Vector3d dir = pts_.back() - pts_[pts_.size() - 2];
     dir.Unitize();
     ctx.Doc().BeginChange("Leader");
-    std::vector<ObjectId> ids;
-    for (const kernel::NurbsCurve& c : curves) ids.push_back(ctx.Doc().Add(SceneObject::MakeCurve(c)));
-    ON_Plane tp = pl;
-    tp.SetOrigin(pts_.back() + pl.xaxis * (h * 0.4) - pl.yaxis * (h * 0.5));
-    std::vector<kernel::NurbsCurve> glyphs;
-    std::string font;
-    if (TextToCurves(t, h, tp, glyphs, font)) for (const kernel::NurbsCurve& g : glyphs) ids.push_back(ctx.Doc().Add(SceneObject::MakeCurve(g)));
-    ctx.Doc().CreateGroup(ids, "Leader");
+    GlyphSpec g;
+    g.text = t; g.height = h; g.plane = pl; g.center = false;
+    g.plane.SetOrigin(pts_.back() + pl.xaxis * (h * 0.4) - pl.yaxis * (h * 0.5));
+    AddAnnotationGroup(ctx, "Leader", curves, g);
+    ctx.Print("Leader " + t);
     Finish();
   }
   void OnHover(CommandContext& ctx, Point3d h) override { ctx.ClearPreview(); if (!pts_.empty()) { std::vector<Point3d> pv = pts_; pv.push_back(h); ctx.AddPreviewPolyline(pv); } }

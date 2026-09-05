@@ -585,6 +585,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
   if (!style.depth_lines) renderer.EnableDepthTest(false);
   for (const SceneObject& o : doc.Objects()) {
     if (!doc.IsObjectVisible(o)) continue;
+    if (o.kind == ObjectKind::Curve) o.SetDisplayDashes(doc.EffectiveDashes(o));
     o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
     const DisplayCache& d = o.Display();
     const bool is_curve_like = o.kind == ObjectKind::Curve;
