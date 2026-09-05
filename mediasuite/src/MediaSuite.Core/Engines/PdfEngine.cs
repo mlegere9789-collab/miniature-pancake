@@ -642,10 +642,34 @@ public sealed class PdfEngine : ExternalProcessEngine
         return pages;
     }
 
-    private static int ParsePageNumber(string token, int totalPages) =>
-        string.Equals(token.Trim(), "z", StringComparison.OrdinalIgnoreCase)
-            ? totalPages
-            : int.TryParse(token.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var page) && page > 0
-                ? page
-                : throw new ArgumentException($"'{token}' is not a valid page number.", nameof(token));
+    /// <summary>
+    /// Recognises the same page-number syntax qpdf's own <c>--pages</c> understands
+    /// natively — "z" for the last page, and "rN" counting from the end ("r1" is the last
+    /// page, "r2" the second-to-last, and so on. "remove" is the one PDF feature that
+    /// pre-resolves its page list itself rather than handing qpdf's own --pages syntax
+    /// straight through the way organize/extract-pages/rotate/split-ranges all do (see
+    /// <see cref="PdfCommandBuilder.SelectPages"/>) — without this, a user typing "r1" into
+    /// "remove" got a confusing "not a valid page number" error even though the exact same
+    /// token already works in every other PDF page-selection field.
+    /// </summary>
+    private static int ParsePageNumber(string token, int totalPages)
+    {
+        var trimmed = token.Trim();
+
+        if (string.Equals(trimmed, "z", StringComparison.OrdinalIgnoreCase))
+        {
+            return totalPages;
+        }
+
+        if (trimmed.Length > 1 && (trimmed[0] == 'r' || trimmed[0] == 'R')
+            && int.TryParse(trimmed.AsSpan(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out var fromEnd)
+            && fromEnd > 0)
+        {
+            return totalPages - fromEnd + 1;
+        }
+
+        return int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var page) && page > 0
+            ? page
+            : throw new ArgumentException($"'{token}' is not a valid page number.", nameof(token));
+    }
 }
