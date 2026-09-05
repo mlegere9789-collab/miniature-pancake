@@ -443,10 +443,6 @@ void RegisterSelect2Commands(CommandEngine& e) {
   Reg(e, "SelNonManifold", SelWhere([](CommandContext&, const SceneObject& o) { return o.kind == ObjectKind::Mesh && HasNonManifoldEdge(*o.mesh); }), CommandStatus::Partial, "Selects whole meshes that have non-manifold edges.");
 
   // Blocks.
-  Reg(e, "SelBlockInstanceNamed", Make<TextArgCommand>("Block name", [](CommandContext& ctx, const std::string& name) {
-        ctx.Doc().SelectWhere([&](const SceneObject& o) { auto it = o.user_text.find("Block"); return Selectable(ctx, o) && it != o.user_text.end() && Lower(it->second) == Lower(name); }, true);
-        ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) of block '" + name + "' selected");
-      }));
   Reg(e, "SelMirroredBlocks", SelWhere([](CommandContext&, const SceneObject& o) { return o.user_text.count("Block") > 0 && o.user_text.count("Mirrored") > 0; }), CommandStatus::Partial, "Block instances are not tracked as mirrored yet; selects instances tagged Mirrored.");
   Reg(e, "SelObjectsWithHistory", Immediate([](CommandContext& ctx) { ctx.Print("0 objects selected (Dino 8 keeps no construction history; every edit is undoable instead)"); }));
 
@@ -460,15 +456,6 @@ void RegisterSelect2Commands(CommandEngine& e) {
       }));
   Reg(e, "SelMaterialName", Make<TextArgCommand>("Material name", [](CommandContext& ctx, const std::string& name) {
         ctx.Doc().SelectWhere([&](const SceneObject& o) { return Selectable(ctx, o) && Lower(o.material_name) == Lower(name); }, true);
-        Report(ctx);
-      }));
-  Reg(e, "SelLinetype", Make<TextArgCommand>("Linetype name", [](CommandContext& ctx, const std::string& name) {
-        ctx.Doc().SelectWhere([&](const SceneObject& o) {
-          if (!Selectable(ctx, o)) return false;
-          auto it = o.user_text.find("Linetype");
-          if (it != o.user_text.end()) return Lower(it->second) == Lower(name);
-          return o.layer_index >= 0 && o.layer_index < static_cast<int>(ctx.Doc().Layers().size()) && Lower(ctx.Doc().Layers()[static_cast<size_t>(o.layer_index)].linetype) == Lower(name);
-        }, true);
         Report(ctx);
       }));
   Reg(e, "SelFontUse", SelGroupNamed({"Text", "TextObject", "Leader", "DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter"}), CommandStatus::Partial, "Selects all annotation (one font is used).");

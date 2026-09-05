@@ -482,7 +482,6 @@ void RegisterStateCommands(CommandEngine& e) {
   Reg(e, "RememberCopyOptions", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().remember_copy_options; }, "Remember copy options"), CommandStatus::Partial, "Stored flag.");
 
   // ---- panels / UI -----------------------------------------------------
-  Reg(e, "ToggleLeftSidebar", Immediate([](CommandContext& ctx) { AppState& s = ctx.App().State(); s.left_sidebar = !s.left_sidebar; ctx.App().Panels().toolbars = s.left_sidebar; ctx.Print(std::string("Left sidebar (toolbar) ") + (s.left_sidebar ? "shown" : "hidden")); }));
   Reg(e, "ToggleRightSidebar", Immediate([](CommandContext& ctx) { AppState& s = ctx.App().State(); s.right_sidebar = !s.right_sidebar; ctx.App().Panels().layers = s.right_sidebar; ctx.App().Panels().properties = s.right_sidebar; ctx.Print(std::string("Right sidebar (Layers, Properties) ") + (s.right_sidebar ? "shown" : "hidden")); }));
   Reg(e, "ShowToolbar", Immediate([](CommandContext& ctx) { ctx.App().Panels().toolbars = true; ctx.Print("Toolbar shown"); }));
   Reg(e, "ToolbarLock", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().toolbar_lock; }, "Toolbar lock"), CommandStatus::Partial, "Stored flag; the toolbar is docked.");
