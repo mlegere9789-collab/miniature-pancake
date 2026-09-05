@@ -103,6 +103,7 @@ void Application::Shutdown() {
 }
 
 Viewport::FrameContext Application::MakeFrameContext() {
+  Viewport::SetLightTheme(light_theme);
   Viewport::FrameContext ctx;
   ctx.doc = &doc_;
   ctx.preview_lines = &engine_->PreviewLines();

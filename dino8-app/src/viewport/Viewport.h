@@ -105,6 +105,9 @@ class Viewport {
   // Renders the scene into this viewport's framebuffer. `preview_lines`
   // and `preview_points` are transient command feedback (rubber-band lines,
   // dynamic preview) drawn on top.
+  // Light UI theme: modelling viewports get a light background too.
+  static void SetLightTheme(bool light);
+
   struct FrameContext {
     const Document* doc = nullptr;
     const std::vector<float>* preview_lines = nullptr;

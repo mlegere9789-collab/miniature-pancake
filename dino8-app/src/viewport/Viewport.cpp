@@ -127,10 +127,20 @@ const Color kNakedEdgeColor = Color::FromBytes(255, 40, 40);       // ShowEdges:
 
 // Background colours for a display mode, honouring the document's render
 // environment (Rendered mode) and the GradientView toggle.
+bool g_light_theme = false;
+
+void Viewport::SetLightTheme(bool light) { g_light_theme = light; }
+
 void BackgroundFor(DisplayMode mode, const Document* doc, bool arctic, Color& top, Color& bottom) {
   const ModeStyle style = StyleFor(mode);
   top = style.bg_top;
   bottom = style.bg_bottom;
+  // Light UI theme: light viewport backgrounds for the modelling modes (Rhino's light scheme).
+  if (g_light_theme && mode != DisplayMode::Rendered && mode != DisplayMode::Pen && mode != DisplayMode::Arctic &&
+      mode != DisplayMode::Technical && mode != DisplayMode::Artistic) {
+    top = Color::FromBytes(226, 230, 236);
+    bottom = Color::FromBytes(246, 247, 249);
+  }
   if (!doc) return;
   const RenderSettings& r = doc->Render();
   if (arctic) { top = bottom = Color::FromBytes(250, 250, 250); return; }
@@ -471,10 +481,10 @@ void Viewport::DrawGrid(GlRenderer& renderer, const DocumentSettings& s, Display
   }
   bool light = mode == DisplayMode::Pen || mode == DisplayMode::Arctic ||
                mode == DisplayMode::Technical || mode == DisplayMode::Artistic;
-  if (mode == DisplayMode::Rendered) {
+  {
     Color top, bottom;
     BackgroundFor(mode, doc_for_grid_, false, top, bottom);
-    light = 0.299f * bottom.r + 0.587f * bottom.g + 0.114f * bottom.b > 0.5f;
+    light = light || (0.299f * bottom.r + 0.587f * bottom.g + 0.114f * bottom.b > 0.5f);
   }
   renderer.DrawLines(minor, light ? Color::FromBytes(215, 215, 215) : Color::FromBytes(58, 62, 70));
   renderer.DrawLines(major, light ? Color::FromBytes(190, 190, 190) : Color::FromBytes(78, 83, 92));
@@ -678,7 +688,9 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     // Rhino's default layer colour is black, which vanishes on a dark
     // background: lift near-black wire colours so curves stay readable.
     {
-      const float bg_lum = 0.299f * style.bg_bottom.r + 0.587f * style.bg_bottom.g + 0.114f * style.bg_bottom.b;
+      Color bg_top, bg_bottom;
+      BackgroundFor(mode, &doc, ctx.arctic, bg_top, bg_bottom);
+      const float bg_lum = 0.299f * bg_bottom.r + 0.587f * bg_bottom.g + 0.114f * bg_bottom.b;
       const float lum = 0.299f * line_color.r + 0.587f * line_color.g + 0.114f * line_color.b;
       if (bg_lum < 0.45f && lum < 0.25f && !style.fill) line_color = Color::FromBytes(222, 225, 230);
       else if (bg_lum < 0.45f && lum < 0.25f && is_curve_like) line_color = Color::FromBytes(222, 225, 230);
