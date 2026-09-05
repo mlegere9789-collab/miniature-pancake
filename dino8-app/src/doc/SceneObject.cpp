@@ -1,5 +1,7 @@
 #include "doc/SceneObject.h"
 
+#include "geom/BrepMesher.h"
+
 #include <algorithm>
 #include <cmath>
 #include <sstream>
@@ -311,9 +313,11 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
     case ObjectKind::Brep: {
       std::vector<kernel::Mesh> meshes;
       try {
-        meshes = brep->TessellateAdaptive(surface_tolerance);
+        BrepMeshOptions opt;
+        opt.chord_tolerance = surface_tolerance;
+        meshes = MeshBrepFaces(brep->raw(), opt);
       } catch (...) {
-        meshes = brep->Tessellate(16, 16);
+        meshes.clear();
       }
       for (const kernel::Mesh& m : meshes) {
         AppendMeshTriangles(m, cache_.triangles, cache_.bbox, cache_.has_bbox);

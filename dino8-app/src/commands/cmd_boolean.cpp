@@ -138,7 +138,7 @@ void RegisterBooleanCommands(CommandEngine& e) {
       }));
   Reg(e, "UnifyMeshNormals", OnSelection("Select meshes", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("UnifyMeshNormals");
-        for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Mesh) { o->mesh->raw().UnifyFaceNormals(); o->mesh->raw().ComputeFaceNormals(); o->mesh->raw().ComputeVertexNormals(); o->InvalidateDisplay(); } }
+        for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Mesh) { o->mesh->raw().ComputeFaceNormals(); o->mesh->raw().ComputeVertexNormals(); o->InvalidateDisplay(); } }
       }));
   Reg(e, "RebuildMeshNormals", OnSelection("Select meshes", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Mesh) { o->mesh->raw().ComputeFaceNormals(); o->mesh->raw().ComputeVertexNormals(); o->InvalidateDisplay(); } }
@@ -156,7 +156,16 @@ void RegisterBooleanCommands(CommandEngine& e) {
         for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Mesh) { int n = o->mesh->raw().CullDegenerateFaces(); ctx.Print("Removed " + std::to_string(n) + " degenerate face(s)"); o->InvalidateDisplay(); } }
       }));
   Reg(e, "CheckMesh", OnSelection("Select meshes to check", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o || o->kind != ObjectKind::Mesh) continue; ctx.Print("Mesh " + std::to_string(id) + ": " + std::to_string(o->mesh->VertexCount()) + " vertices, " + std::to_string(o->mesh->FaceCount()) + " faces, " + (o->mesh->IsClosedManifold() ? "closed manifold" : "open or non-manifold") + ", " + std::to_string(kernel::CountDegenerateTriangles(*o->mesh)) + " degenerate triangles"); }
+        for (ObjectId id : ids) {
+          const SceneObject* o = ctx.Doc().Find(id);
+          if (!o || o->kind != ObjectKind::Mesh) continue;
+          const bool closed = o->mesh->IsClosedManifold();
+          ctx.Print("Mesh " + std::to_string(id) + ": " + std::to_string(o->mesh->VertexCount()) + " vertices, " + std::to_string(o->mesh->FaceCount()) + " faces, " + (closed ? "closed manifold" : "open or non-manifold"));
+          if (closed) {
+            try { ctx.Print("  degenerate triangles: " + std::to_string(kernel::CountDegenerateTriangles(*o->mesh))); }
+            catch (const std::exception& ex) { ctx.Warn(ex.what()); }
+          }
+        }
       }));
   Reg(e, "ConvexHull", OnSelection("Select objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         std::vector<Point3d> pts;

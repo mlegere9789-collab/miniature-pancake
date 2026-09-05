@@ -323,7 +323,8 @@ class ExtrudeCommand : public Command {
         if (ExtrudeCurve(ctx, *o->curve, v, shift)) ++made;
       } else if (o->kind == ObjectKind::Surface) {
         ON_Brep* b = ON_Brep::New();
-        b->Create(new ON_NurbsSurface(o->surface->raw()));
+        ON_NurbsSurface* srf = new ON_NurbsSurface(o->surface->raw());
+        b->Create(srf);
         if (shift != Point3d(0, 0, 0)) b->Translate(shift);
         ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + v));
         if (ON_BrepExtrudeFace(*b, 0, path, solid_) >= 0) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ++made; }
@@ -537,7 +538,7 @@ void RegisterSolidCommands(CommandEngine& e) {
           if (!o) continue;
           if (o->kind == ObjectKind::SubD) {
             ON_SubD copy = o->subd->raw();
-            ON_Brep* b = copy.GetSurfaceBrep(ON_SubDToBrepParameters::Default, nullptr);
+            ON_Brep* b = copy.BrepForm(nullptr);
             if (b) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ++made; }
           } else if (o->kind == ObjectKind::Mesh) {
             ON_Brep* b = ON_BrepFromMesh(o->mesh->raw().Topology());
@@ -586,7 +587,7 @@ void RegisterSolidCommands(CommandEngine& e) {
           if (!pl.IsClosed(ctx.Settings().absolute_tolerance)) pl.Append(pl[0]);
           ON_PolylineCurve pc(pl);
           if (pc.IsPlanar(&plane, ctx.Settings().absolute_tolerance * 10)) {
-            if (ON_Brep* cap = ON_BrepTrimmedPlane(plane, pc)) { b.Append(*cap); delete cap; b.JoinNakedEdges(ctx.Settings().absolute_tolerance * 10); o->InvalidateDisplay(); ++capped; }
+            if (ON_Brep* cap = ON_BrepTrimmedPlane(plane, pc)) { b.Append(*cap); delete cap; JoinNakedEdges(b, ctx.Settings().absolute_tolerance * 10); o->InvalidateDisplay(); ++capped; }
           }
         }
         ctx.Print("Capped " + std::to_string(capped) + " object(s)");

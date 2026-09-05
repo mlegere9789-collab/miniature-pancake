@@ -4,6 +4,7 @@
 // Command line:
 //   --smoke N     render N frames and exit (used by headless QC under Xvfb)
 //   --script FILE run each line of FILE as a command after start-up
+//   --screenshot FILE.ppm   save the final frame (used with --smoke)
 //   FILE.3dm      open a model on start-up
 
 #include <cstdio>
@@ -43,9 +44,11 @@ int main(int argc, char** argv) {
   int smoke_frames = -1;
   std::string script_path;
   std::string open_path;
+  std::string screenshot_path;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--smoke") == 0 && i + 1 < argc) smoke_frames = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--script") == 0 && i + 1 < argc) script_path = argv[++i];
+    else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) screenshot_path = argv[++i];
     else if (std::strcmp(argv[i], "--version") == 0) { std::printf("Dino 8 %s\n", DINO8_VERSION); return 0; }
     else if (argv[i][0] != '-') open_path = argv[i];
   }
@@ -73,7 +76,7 @@ int main(int argc, char** argv) {
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
   if (!dino8::gl::Load()) {
-    std::fprintf(stderr, "Could not load OpenGL functions: %s\n", dino8::gl::LastError().c_str());
+    std::fprintf(stderr, "Could not load OpenGL functions: %s\n", dino8::gl::LastError());
     return 1;
   }
   glfwMaximizeWindow(window);
@@ -141,6 +144,17 @@ int main(int argc, char** argv) {
     glClearColor(0.11f, 0.12f, 0.14f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    const bool last_smoke_frame = smoke_frames >= 0 && frame + 1 >= smoke_frames && script_cursor >= script_lines.size();
+    if (last_smoke_frame && !screenshot_path.empty()) {
+      std::vector<unsigned char> pixels(static_cast<size_t>(w) * h * 3);
+      glPixelStorei(GL_PACK_ALIGNMENT, 1);
+      glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+      if (FILE* f = std::fopen(screenshot_path.c_str(), "wb")) {
+        std::fprintf(f, "P6\n%d %d\n255\n", w, h);
+        for (int y = h - 1; y >= 0; --y) std::fwrite(&pixels[static_cast<size_t>(y) * w * 3], 1, static_cast<size_t>(w) * 3, f);
+        std::fclose(f);
+      }
+    }
     glfwSwapBuffers(window);
 
     ++frame;

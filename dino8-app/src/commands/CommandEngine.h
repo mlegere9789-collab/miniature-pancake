@@ -85,9 +85,19 @@ class CommandEngine {
   void ClearPreview() { preview_lines_.clear(); preview_points_.clear(); }
 
   CommandCatalog& Catalog() { return catalog_; }
+  // Extra tokens typed after a command name ("Save file.3dm", "SelID 4"):
+  // a command may consume them in Begin() instead of prompting.
+  std::deque<std::string>& PendingInputs() { return pending_inputs_; }
+  std::optional<std::string> TakePendingInput() {
+    if (pending_inputs_.empty()) return std::nullopt;
+    std::string t = pending_inputs_.front();
+    pending_inputs_.pop_front();
+    return t;
+  }
 
  private:
   void StartPendingInputs();
+  void HandleCommandException(const std::string& what);
   void AfterCallback();
   bool TryParsePoint(const std::string& text, kernel::Point3d& out);
   bool TryOption(const std::string& text);

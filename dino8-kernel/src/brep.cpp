@@ -1,10 +1,117 @@
 #include "dino8/kernel/brep.h"
 
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 #include "dino8/kernel/mesh.h"
 
 namespace dino8::kernel {
+
+namespace {
+
+// Resolved geometry for one face: its NURBS form plus, for a face whose
+// trim loops come from genuine ON_Brep topology (a box from ON_BrepBox, a
+// file loaded from .3dm, a boolean result), the outer loop and hole loops
+// sampled into (u, v) polygons. Breps built by this class's own
+// constructors carry their trim polygons in the side tables instead.
+struct FaceGeometry {
+  ON_NurbsSurface surface;
+  std::vector<Point2d> outer;              // empty => untrimmed
+  std::vector<std::vector<Point2d>> holes;
+  bool exact_clip = false;
+};
+
+// Samples a loop's 2D trim curves into a closed (u, v) polygon.
+std::vector<Point2d> SampleLoop(const ON_Brep& brep, const ON_BrepLoop& loop) {
+  std::vector<Point2d> poly;
+  for (int k = 0; k < loop.m_ti.Count(); ++k) {
+    const int ti = loop.m_ti[k];
+    if (ti < 0 || ti >= brep.m_T.Count()) continue;
+    const ON_BrepTrim& trim = brep.m_T[ti];
+    const ON_Curve* c2 = trim.TrimCurveOf();
+    if (!c2) continue;
+    const ON_Interval d = trim.Domain();
+    int samples = 1;
+    if (!c2->IsLinear()) {
+      // Curved trims (circle seams, fillets): sample by span count.
+      samples = std::max(8, 4 * c2->SpanCount());
+    }
+    for (int i = 0; i < samples; ++i) {
+      const ON_3dPoint p = c2->PointAt(d.ParameterAt(static_cast<double>(i) / samples));
+      poly.emplace_back(p.x, p.y);
+    }
+  }
+  // Drop duplicate closing vertex if the sampling produced one.
+  if (poly.size() > 1) {
+    const Point2d& a = poly.front();
+    const Point2d& b = poly.back();
+    if (std::fabs(a.x - b.x) < 1e-12 && std::fabs(a.y - b.y) < 1e-12) poly.pop_back();
+  }
+  return poly;
+}
+
+// True when the loop is just the surface's full rectangular domain.
+bool LoopIsFullDomain(const std::vector<Point2d>& poly, const ON_NurbsSurface& srf) {
+  if (poly.size() != 4) return false;
+  const ON_Interval du = srf.Domain(0), dv = srf.Domain(1);
+  double umin = 1e300, umax = -1e300, vmin = 1e300, vmax = -1e300;
+  for (const Point2d& p : poly) {
+    umin = std::min(umin, p.x); umax = std::max(umax, p.x);
+    vmin = std::min(vmin, p.y); vmax = std::max(vmax, p.y);
+    // Every vertex must sit on a domain corner.
+    const bool on_u = std::fabs(p.x - du.Min()) < 1e-9 * (1 + std::fabs(du.Min())) || std::fabs(p.x - du.Max()) < 1e-9 * (1 + std::fabs(du.Max()));
+    const bool on_v = std::fabs(p.y - dv.Min()) < 1e-9 * (1 + std::fabs(dv.Min())) || std::fabs(p.y - dv.Max()) < 1e-9 * (1 + std::fabs(dv.Max()));
+    if (!on_u || !on_v) return false;
+  }
+  return std::fabs(umin - du.Min()) < 1e-9 && std::fabs(umax - du.Max()) < 1e-9 &&
+         std::fabs(vmin - dv.Min()) < 1e-9 && std::fabs(vmax - dv.Max()) < 1e-9;
+}
+
+bool ResolveFace(const ON_Brep& brep, int face_index,
+                 const std::vector<std::vector<Point2d>>& side_trims,
+                 const std::vector<bool>& side_exact,
+                 const std::vector<std::vector<std::vector<Point2d>>>& side_holes,
+                 FaceGeometry& out) {
+  const ON_BrepFace& face = brep.m_F[face_index];
+  const ON_Surface* face_surface = face.SurfaceOf();
+  if (!face_surface) return false;
+  if (const auto* ns = ON_NurbsSurface::Cast(face_surface)) {
+    out.surface = *ns;
+  } else if (face_surface->GetNurbForm(out.surface) <= 0) {
+    return false;
+  }
+  // Side tables win when this Brep built the face itself.
+  const size_t fi = static_cast<size_t>(face_index);
+  if (fi < side_trims.size()) {
+    out.outer = side_trims[fi];
+    out.exact_clip = fi < side_exact.size() ? side_exact[fi] : false;
+    if (fi < side_holes.size()) out.holes = side_holes[fi];
+    return true;
+  }
+  // Otherwise derive trims from the brep's own loops.
+  for (int li = 0; li < face.m_li.Count(); ++li) {
+    const int loop_index = face.m_li[li];
+    if (loop_index < 0 || loop_index >= brep.m_L.Count()) continue;
+    const ON_BrepLoop& loop = brep.m_L[loop_index];
+    std::vector<Point2d> poly = SampleLoop(brep, loop);
+    if (poly.size() < 3) continue;
+    if (loop.m_type == ON_BrepLoop::outer) {
+      if (!LoopIsFullDomain(poly, out.surface)) out.outer = std::move(poly);
+    } else if (loop.m_type == ON_BrepLoop::inner) {
+      out.holes.push_back(std::move(poly));
+    }
+  }
+  if (!out.holes.empty() && out.outer.empty()) {
+    // Holes in an otherwise-untrimmed face: use the full domain as outer.
+    const ON_Interval du = out.surface.Domain(0), dv = out.surface.Domain(1);
+    out.outer = {Point2d(du.Min(), dv.Min()), Point2d(du.Max(), dv.Min()), Point2d(du.Max(), dv.Max()), Point2d(du.Min(), dv.Max())};
+  }
+  out.exact_clip = !out.outer.empty() && out.holes.empty();
+  return true;
+}
+
+}  // namespace
 
 Brep Brep::FromSurface(const NurbsSurface& surface) {
   Brep result;
@@ -138,34 +245,21 @@ BoundingBox Brep::GetTightBoundingBox() const {
 std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
   std::vector<Mesh> result;
   result.reserve(static_cast<size_t>(brep_.m_F.Count()));
-
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
-    const ON_Surface* face_surface = brep_.m_F[i].SurfaceOf();
-    const auto* nurbs_surface = ON_NurbsSurface::Cast(face_surface);
-    if (nurbs_surface == nullptr) {
-      // Every face this chunk's Brep::FromSurface constructs stores a
-      // genuine ON_NurbsSurface, so this only trips if Brep grows a way
-      // to hold other surface types without updating the tessellator.
-      continue;
-    }
-
+    FaceGeometry fg;
+    if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
     NurbsSurface wrapper;
-    wrapper.raw() = *nurbs_surface;
-
-    const auto& trim_loop = face_trim_loops_[static_cast<size_t>(i)];
-    if (trim_loop.empty()) {
+    wrapper.raw() = fg.surface;
+    if (fg.outer.empty()) {
       result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions));
-    } else if (face_exact_clip_[static_cast<size_t>(i)]) {
-      result.push_back(
-          wrapper.TessellateGridClippedExact(u_divisions, v_divisions, trim_loop));
+    } else if (fg.exact_clip) {
+      result.push_back(wrapper.TessellateGridClippedExact(u_divisions, v_divisions, fg.outer));
     } else {
-      const auto& hole_loops = face_hole_loops_[static_cast<size_t>(i)];
-      const std::vector<std::vector<Point2d>>* holes =
-          hole_loops.empty() ? nullptr : &hole_loops;
-      result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions, &trim_loop, holes));
+      const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
+      result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions, &fg.outer, holes));
     }
+    if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
   }
-
   return result;
 }
 
@@ -176,31 +270,21 @@ Mesh Brep::TessellateToClosedMesh(int u_divisions, int v_divisions) const {
 std::vector<Mesh> Brep::TessellateAdaptive(double chord_tolerance) const {
   std::vector<Mesh> result;
   result.reserve(static_cast<size_t>(brep_.m_F.Count()));
-
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
-    const ON_Surface* face_surface = brep_.m_F[i].SurfaceOf();
-    const auto* nurbs_surface = ON_NurbsSurface::Cast(face_surface);
-    if (nurbs_surface == nullptr) {
-      continue;
-    }
-
+    FaceGeometry fg;
+    if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
     NurbsSurface wrapper;
-    wrapper.raw() = *nurbs_surface;
-
-    const auto& trim_loop = face_trim_loops_[static_cast<size_t>(i)];
-    if (trim_loop.empty()) {
+    wrapper.raw() = fg.surface;
+    if (fg.outer.empty()) {
       result.push_back(wrapper.TessellateGridAdaptive(chord_tolerance));
-    } else if (face_exact_clip_[static_cast<size_t>(i)]) {
-      result.push_back(
-          wrapper.TessellateGridClippedExactAdaptive(chord_tolerance, trim_loop));
+    } else if (fg.exact_clip) {
+      result.push_back(wrapper.TessellateGridClippedExactAdaptive(chord_tolerance, fg.outer));
     } else {
-      const auto& hole_loops = face_hole_loops_[static_cast<size_t>(i)];
-      const std::vector<std::vector<Point2d>>* holes =
-          hole_loops.empty() ? nullptr : &hole_loops;
-      result.push_back(wrapper.TessellateGridAdaptive(chord_tolerance, &trim_loop, holes));
+      const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
+      result.push_back(wrapper.TessellateGridAdaptive(chord_tolerance, &fg.outer, holes));
     }
+    if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
   }
-
   return result;
 }
 
@@ -211,35 +295,21 @@ Mesh Brep::TessellateToClosedMeshAdaptive(double chord_tolerance) const {
 std::vector<Mesh> Brep::TessellateNonUniformAdaptive(double chord_tolerance) const {
   std::vector<Mesh> result;
   result.reserve(static_cast<size_t>(brep_.m_F.Count()));
-
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
-    const ON_Surface* face_surface = brep_.m_F[i].SurfaceOf();
-    const auto* nurbs_surface = ON_NurbsSurface::Cast(face_surface);
-    if (nurbs_surface == nullptr) {
-      continue;
-    }
-
+    FaceGeometry fg;
+    if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
     NurbsSurface wrapper;
-    wrapper.raw() = *nurbs_surface;
-
-    const auto& trim_loop = face_trim_loops_[static_cast<size_t>(i)];
-    if (trim_loop.empty()) {
+    wrapper.raw() = fg.surface;
+    if (fg.outer.empty()) {
       result.push_back(wrapper.TessellateGridNonUniformAdaptive(chord_tolerance));
-    } else if (face_exact_clip_[static_cast<size_t>(i)]) {
-      // No non-uniform exact-clip tessellator exists yet - fall back to
-      // the uniform adaptive one for this face, a real narrower scope
-      // documented on this method's own declaration.
-      result.push_back(
-          wrapper.TessellateGridClippedExactAdaptive(chord_tolerance, trim_loop));
+    } else if (fg.exact_clip) {
+      result.push_back(wrapper.TessellateGridClippedExactAdaptive(chord_tolerance, fg.outer));
     } else {
-      const auto& hole_loops = face_hole_loops_[static_cast<size_t>(i)];
-      const std::vector<std::vector<Point2d>>* holes =
-          hole_loops.empty() ? nullptr : &hole_loops;
-      result.push_back(
-          wrapper.TessellateGridNonUniformAdaptive(chord_tolerance, &trim_loop, holes));
+      const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
+      result.push_back(wrapper.TessellateGridNonUniformAdaptive(chord_tolerance, &fg.outer, holes));
     }
+    if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
   }
-
   return result;
 }
 

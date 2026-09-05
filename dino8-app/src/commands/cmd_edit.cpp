@@ -107,9 +107,9 @@ void RegisterEditCommands(CommandEngine& e) {
           ON_Brep* b = new ON_Brep();
           for (const SceneObject* o : breps) {
             if (o->kind == ObjectKind::Brep) b->Append(o->brep->raw());
-            else { ON_Brep tmp; tmp.Create(new ON_NurbsSurface(o->surface->raw())); b->Append(tmp); }
+            else { ON_Brep tmp; ON_NurbsSurface* srf = new ON_NurbsSurface(o->surface->raw()); tmp.Create(srf); b->Append(tmp); }
           }
-          b->JoinNakedEdges(ctx.Settings().absolute_tolerance * 10);
+          JoinNakedEdges(*b, ctx.Settings().absolute_tolerance * 10);
           kernel::Brep k; k.raw() = *b; delete b;
           SceneObject n = SceneObject::MakeBrep(k);
           n.layer_index = breps[0]->layer_index;

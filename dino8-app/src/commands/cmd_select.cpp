@@ -120,7 +120,16 @@ void RegisterSelectCommands(CommandEngine& e) {
   Reg(e, "SelCrossing", Make<SelWindowCommand>(true));
   Reg(e, "SelBox", Make<SelWindowCommand>(false), CommandStatus::Partial, "Window selection in the active view.");
   Reg(e, "SelectionFilter", Immediate([](CommandContext& ctx) { ctx.App().Panels().selection_filter = true; }));
-  Reg(e, "SelID", Immediate([](CommandContext& ctx) { for (ObjectId id : ctx.Doc().SelectedIds()) ctx.Print("Object id " + std::to_string(id)); }), CommandStatus::Partial, "Lists the ids of selected objects; typed-id selection is planned.");
+  Reg(e, "SelID", Immediate([](CommandContext& ctx) {
+        // "SelID 3 5" selects those ids; bare SelID lists the selection's ids.
+        bool any = false;
+        while (std::optional<std::string> tok = ctx.Engine().TakePendingInput()) {
+          ObjectId id = static_cast<ObjectId>(std::strtoull(tok->c_str(), nullptr, 10));
+          if (ctx.Doc().Find(id)) { ctx.Doc().Select(id, true); any = true; }
+          else ctx.Warn("No object with id " + *tok);
+        }
+        if (!any) for (ObjectId id : ctx.Doc().SelectedIds()) ctx.Print("Object id " + std::to_string(id));
+      }));
   Reg(e, "SelBoundary", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->IsClosed(); }); }), CommandStatus::Partial, "Selects closed curves.");
   Reg(e, "SelChain", Immediate([](CommandContext& ctx) {
         std::vector<ObjectId> sel = ctx.Doc().SelectedIds();

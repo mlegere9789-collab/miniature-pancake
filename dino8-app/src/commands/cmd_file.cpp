@@ -11,7 +11,6 @@ const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl"};
 void SaveTo(CommandContext& ctx, const std::string& path) {
   std::string err;
   if (!ctx.App().SaveDocument(path, err)) ctx.Warn(err);
-  else ctx.Print("Saved " + path);
 }
 
 }  // namespace
@@ -20,16 +19,19 @@ void RegisterFileCommands(CommandEngine& e) {
   Reg(e, "New", Immediate([](CommandContext& ctx) { ctx.App().NewDocument(true); }));
   Reg(e, "Open", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
+        if (auto p = ctx.Engine().TakePendingInput()) { std::string err; if (!app.OpenDocument(*p, err)) ctx.Warn(err); return; }
         app.ShowFileDialog("Open model", kModelExts, false, [&app](const std::string& path) { std::string err; if (!app.OpenDocument(path, err)) app.Notify(err); });
       }));
   Reg(e, "Revert", Immediate([](CommandContext& ctx) { std::string p = ctx.Doc().Path(); if (p.empty()) { ctx.Warn("Document has never been saved"); return; } std::string err; if (!ctx.App().OpenDocument(p, err)) ctx.Warn(err); }));
   Reg(e, "Save", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
+        if (auto p = ctx.Engine().TakePendingInput()) { SaveTo(ctx, *p); return; }
         if (!ctx.Doc().Path().empty()) { SaveTo(ctx, ctx.Doc().Path()); return; }
         app.ShowFileDialog("Save model", {".3dm"}, true, [&app](const std::string& path) { std::string err; if (!app.SaveDocument(path, err)) app.Notify(err); });
       }));
   Reg(e, "SaveAs", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
+        if (auto p = ctx.Engine().TakePendingInput()) { SaveTo(ctx, *p); return; }
         app.ShowFileDialog("Save model as", {".3dm", ".obj", ".stl"}, true, [&app](const std::string& path) { std::string err; if (!app.SaveDocument(path, err)) app.Notify(err); });
       }));
   Reg(e, "SaveSmall", Immediate([](CommandContext& ctx) { if (ctx.Doc().Path().empty()) ctx.Engine().Execute("SaveAs"); else SaveTo(ctx, ctx.Doc().Path()); }), CommandStatus::Partial, "Dino 8 never stores render meshes, so every save is already small.");
@@ -46,12 +48,14 @@ void RegisterFileCommands(CommandEngine& e) {
       }), CommandStatus::Partial, "Saves a normal .3dm you can open as a starting point.");
   Reg(e, "Import", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
+        if (auto p = ctx.Engine().TakePendingInput()) { std::string err; if (!app.ImportFile(*p, err)) ctx.Warn(err); else ctx.Print("Imported " + *p); return; }
         app.ShowFileDialog("Import", kModelExts, false, [&app](const std::string& path) { std::string err; if (!app.ImportFile(path, err)) app.Notify(err); });
       }));
   Reg(e, "Insert", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Import"); }), CommandStatus::Partial, "Imports the file's objects; block instances are planned.");
   Reg(e, "Export", OnSelection("Select objects to export", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         Application& app = ctx.App();
         for (ObjectId id : ids) ctx.Doc().Select(id, true);
+        if (auto p = ctx.Engine().TakePendingInput()) { std::string err; if (!app.ExportSelected(*p, err)) ctx.Warn(err); else ctx.Print("Exported " + *p); return; }
         app.ShowFileDialog("Export selected", {".3dm", ".obj", ".stl"}, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });
       }));
   Reg(e, "ExportSelected", OnSelection("Select objects to export", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {

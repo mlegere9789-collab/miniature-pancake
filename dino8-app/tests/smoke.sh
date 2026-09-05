@@ -10,13 +10,17 @@ trap 'rm -rf "$TMP"' EXIT
 cat > "$TMP/script.txt" <<EOS
 Box 0,0,0 20,20,0 10
 Sphere 10,10,10 8
-SelAll
+SelNone
+SelID 1
 BooleanDifference
+SelID 2
+Enter
 SelAll
 Volume
 SelNone
 Circle 40,0,0 5
-ExtrudeCrv 0,0,0 12
+SelCrv
+ExtrudeCrv 12
 SelAll
 Save $TMP/test.3dm
 New
@@ -30,11 +34,17 @@ SelCrv
 Length
 SelAll
 Export $TMP/test.obj
+SelNone
+Cylinder 60,0,0 5 15
+SelLast
+What
 EOS
 
-RUNNER=""
-if ! xset q >/dev/null 2>&1; then RUNNER="xvfb-run -a -s -screen 0 1600x900x24"; fi
-OUT="$($RUNNER "$BIN" --smoke 200 --script "$TMP/script.txt" 2>&1)" || { echo "$OUT"; echo "FAIL: app exited non-zero"; exit 1; }
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  OUT="$("$BIN" --smoke 200 --script "$TMP/script.txt" 2>&1)" || { echo "$OUT"; echo "FAIL: app exited non-zero"; exit 1; }
+else
+  OUT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/script.txt" 2>&1)" || { echo "$OUT"; echo "FAIL: app exited non-zero"; exit 1; }
+fi
 echo "$OUT" | grep "^smoke:" || { echo "$OUT"; echo "FAIL: no smoke line"; exit 1; }
 fail=0
 check() { if echo "$OUT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
@@ -42,7 +52,12 @@ check "1055 commands loaded" "catalog has all 1055 commands"
 check "BooleanDifference:" "boolean difference ran"
 check "Volume = " "volume measured"
 check "Extruded 1 object" "extrusion created a solid"
-check "history: Command: Save" "save command ran"
+check "Saved " "save wrote a .3dm"
+check "Opened " "open re-read the .3dm"
+check "Exported " "OBJ export wrote a file"
+check "length = 14.14" "line length measured"
+test -s "$TMP/test.3dm" && echo "ok   test.3dm exists" || { echo "FAIL test.3dm missing"; fail=1; }
+test -s "$TMP/test.obj" && echo "ok   test.obj exists" || { echo "FAIL test.obj missing"; fail=1; }
 check "gl_error=0" "no OpenGL errors"
-echo "$OUT" | grep -E "^(smoke|history)" | tail -40
+echo "$OUT" | grep -E "^(smoke|history)" | tail -120
 exit $fail

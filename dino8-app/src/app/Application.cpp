@@ -131,7 +131,8 @@ void Application::SetViewportLayout(int count) {
     reuse("Right", "Right");
   }
   for (auto& v : viewports_) v->SetActive(false);
-  viewports_.back()->SetActive(true);
+  Viewport* persp = FindViewport("Perspective");
+  (persp ? persp : viewports_.back().get())->SetActive(true);
   layout_built_ = false;
 }
 

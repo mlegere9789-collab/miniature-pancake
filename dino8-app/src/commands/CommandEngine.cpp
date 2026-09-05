@@ -10,6 +10,15 @@
 
 namespace dino8::app {
 
+// Kernel/OpenNURBS failures inside a command must never take the app down:
+// report them on the command line and end the command cleanly.
+#define DINO8_GUARD(expr)                                        \
+  try {                                                          \
+    expr;                                                        \
+  } catch (const std::exception& ex) {                           \
+    HandleCommandException(ex.what());                           \
+  }
+
 using kernel::Point3d;
 using kernel::Vector3d;
 
@@ -164,6 +173,11 @@ std::string CommandEngine::ResolveName(const std::string& typed) const {
   return t;
 }
 
+void CommandEngine::HandleCommandException(const std::string& what) {
+  Print("! " + (active_name_.empty() ? std::string("Command") : active_name_) + " failed: " + what);
+  if (active_) active_->finished = true;
+}
+
 void CommandEngine::Print(const std::string& line) {
   history_.push_back(line);
   while (history_.size() > 2000) history_.pop_front();
@@ -178,8 +192,18 @@ void CommandEngine::Execute(const std::string& raw_input) {
   input.erase(0, start);
 
   if (active_) {
-    if (input.empty()) FeedEnter();
-    else FeedText(input);
+    if (input.empty() || ToLower(input) == "enter" || input == "_Enter") FeedEnter();
+    else {
+      // A typed line may carry several tokens ("SelID 3" while an object
+      // prompt is up): feed them one by one.
+      std::istringstream ss(input);
+      std::string tok;
+      std::vector<std::string> toks;
+      while (ss >> tok) toks.push_back(tok);
+      if (toks.empty()) { FeedEnter(); return; }
+      for (size_t i = 1; i < toks.size(); ++i) pending_inputs_.push_back(toks[i]);
+      FeedText(toks[0]);
+    }
     return;
   }
   if (input.empty()) {
@@ -231,7 +255,7 @@ void CommandEngine::RunCommand(const std::string& name, bool script_mode) {
   recent_.insert(recent_.begin(), r->name);
   if (recent_.size() > 30) recent_.pop_back();
   CommandContext ctx(app_, doc_, *this);
-  active_->Begin(ctx);
+  DINO8_GUARD(active_->Begin(ctx));
   AfterCallback();
 }
 
@@ -252,7 +276,7 @@ void CommandEngine::AfterCallback() {
     if (static_cast<int>(sel.size()) >= active_->min_objects) {
       active_->accept_preselection = false;
       CommandContext ctx(app_, doc_, *this);
-      active_->OnObjects(ctx, sel);
+      DINO8_GUARD(active_->OnObjects(ctx, sel));
       AfterCallback();
       return;
     }
@@ -273,7 +297,7 @@ void CommandEngine::StartPendingInputs() {
 void CommandEngine::Cancel() {
   if (active_) {
     CommandContext ctx(app_, doc_, *this);
-    active_->OnCancel(ctx);
+    DINO8_GUARD(active_->OnCancel(ctx));
     Print("Command cancelled: " + active_name_);
   }
   active_.reset();
@@ -294,7 +318,7 @@ void CommandEngine::FeedPoint(Point3d p) {
   if (!active_) return;
   if (active_->want != Want::Point) return;
   CommandContext ctx(app_, doc_, *this);
-  active_->OnPoint(ctx, p);
+  DINO8_GUARD(active_->OnPoint(ctx, p));
   last_point_ = p;
   AfterCallback();
 }
@@ -308,18 +332,18 @@ void CommandEngine::FeedEnter() {
   if (active_->want == Want::Objects) {
     const std::vector<ObjectId> sel = doc_.SelectedIds();
     if (static_cast<int>(sel.size()) >= active_->min_objects) {
-      active_->OnObjects(ctx, sel);
+      DINO8_GUARD(active_->OnObjects(ctx, sel));
     } else if (sel.empty() && active_->min_objects > 0) {
-      active_->OnEnter(ctx);
+      DINO8_GUARD(active_->OnEnter(ctx));
     } else {
-      active_->OnObjects(ctx, sel);
+      DINO8_GUARD(active_->OnObjects(ctx, sel));
     }
   } else if (active_->want == Want::Number && active_->default_number) {
-    active_->OnNumber(ctx, *active_->default_number);
+    DINO8_GUARD(active_->OnNumber(ctx, *active_->default_number));
   } else if (active_->want == Want::Text && active_->default_text) {
-    active_->OnText(ctx, *active_->default_text);
+    DINO8_GUARD(active_->OnText(ctx, *active_->default_text));
   } else {
-    active_->OnEnter(ctx);
+    DINO8_GUARD(active_->OnEnter(ctx));
   }
   AfterCallback();
 }
@@ -327,7 +351,7 @@ void CommandEngine::FeedEnter() {
 void CommandEngine::FeedObjects(const std::vector<ObjectId>& ids) {
   if (!active_ || active_->want != Want::Objects) return;
   CommandContext ctx(app_, doc_, *this);
-  active_->OnObjects(ctx, ids);
+  DINO8_GUARD(active_->OnObjects(ctx, ids));
   AfterCallback();
 }
 
@@ -338,16 +362,16 @@ void CommandEngine::FeedOption(const std::string& name) {
     if (ToLower(o.name) == ToLower(name)) {
       if (o.toggle) {
         const std::string next = (ToLower(o.value) == "yes") ? "No" : "Yes";
-        active_->OnOption(ctx, o.name, next);
+        DINO8_GUARD(active_->OnOption(ctx, o.name, next));
       } else if (!o.choices.empty()) {
         // Cycle to the next choice.
         size_t idx = 0;
         for (size_t i = 0; i < o.choices.size(); ++i) {
           if (ToLower(o.choices[i]) == ToLower(o.value)) idx = (i + 1) % o.choices.size();
         }
-        active_->OnOption(ctx, o.name, o.choices[idx]);
+        DINO8_GUARD(active_->OnOption(ctx, o.name, o.choices[idx]));
       } else {
-        active_->OnOption(ctx, o.name, "");
+        DINO8_GUARD(active_->OnOption(ctx, o.name, ""));
       }
       AfterCallback();
       return;
@@ -359,7 +383,7 @@ void CommandEngine::FeedHover(std::optional<Point3d> p) {
   hover_point_ = p;
   if (!active_ || !p) return;
   CommandContext ctx(app_, doc_, *this);
-  active_->OnHover(ctx, *p);
+  DINO8_GUARD(active_->OnHover(ctx, *p));
 }
 
 bool CommandEngine::TryParsePoint(const std::string& text, Point3d& out) {
@@ -428,17 +452,17 @@ bool CommandEngine::TryOption(const std::string& text) {
   if (!match || prefix_matches != 1) return false;
   CommandContext ctx(app_, doc_, *this);
   if (!value.empty()) {
-    active_->OnOption(ctx, match->name, value);
+    DINO8_GUARD(active_->OnOption(ctx, match->name, value));
   } else if (match->toggle) {
-    active_->OnOption(ctx, match->name, ToLower(match->value) == "yes" ? "No" : "Yes");
+    DINO8_GUARD(active_->OnOption(ctx, match->name, ToLower(match->value) == "yes" ? "No" : "Yes"));
   } else if (!match->choices.empty()) {
     size_t idx = 0;
     for (size_t i = 0; i < match->choices.size(); ++i) {
       if (ToLower(match->choices[i]) == ToLower(match->value)) idx = (i + 1) % match->choices.size();
     }
-    active_->OnOption(ctx, match->name, match->choices[idx]);
+    DINO8_GUARD(active_->OnOption(ctx, match->name, match->choices[idx]));
   } else {
-    active_->OnOption(ctx, match->name, "");
+    DINO8_GUARD(active_->OnOption(ctx, match->name, ""));
   }
   return true;
 }
@@ -461,7 +485,7 @@ void CommandEngine::FeedText(const std::string& text) {
       double number = 0;
       if (TryParsePoint(text, p)) {
         Print(FormatPoint(p));
-        active_->OnPoint(ctx, p);
+        DINO8_GUARD(active_->OnPoint(ctx, p));
         last_point_ = p;
       } else if (std::sscanf(text.c_str(), "%lf", &number) == 1 && last_point_ && hover_point_) {
         // Distance constraint: a number places the point `number` units
@@ -471,17 +495,17 @@ void CommandEngine::FeedText(const std::string& text) {
         dir.Unitize();
         p = *last_point_ + dir * number;
         Print(FormatPoint(p));
-        active_->OnPoint(ctx, p);
+        DINO8_GUARD(active_->OnPoint(ctx, p));
         last_point_ = p;
       } else {
-        active_->OnText(ctx, text);
+        DINO8_GUARD(active_->OnText(ctx, text));
       }
       break;
     }
     case Want::Number: {
       double number = 0;
       if (std::sscanf(text.c_str(), "%lf", &number) == 1) {
-        active_->OnNumber(ctx, number);
+        DINO8_GUARD(active_->OnNumber(ctx, number));
       } else {
         Print("Invalid number: " + text);
       }
@@ -493,18 +517,18 @@ void CommandEngine::FeedText(const std::string& text) {
       const RegisteredCommand* r = Find(name);
       if (r && r->factory && ToLower(name).compare(0, 3, "sel") == 0) {
         std::unique_ptr<Command> nested = r->factory();
-        nested->Begin(ctx);
+        DINO8_GUARD(nested->Begin(ctx));
       } else {
-        active_->OnText(ctx, text);
+        DINO8_GUARD(active_->OnText(ctx, text));
       }
       break;
     }
     case Want::Text:
-      active_->OnText(ctx, text);
+      DINO8_GUARD(active_->OnText(ctx, text));
       break;
     case Want::Enter:
     case Want::Nothing:
-      active_->OnText(ctx, text);
+      DINO8_GUARD(active_->OnText(ctx, text));
       break;
   }
   AfterCallback();

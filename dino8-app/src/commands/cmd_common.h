@@ -13,6 +13,7 @@
 #include "commands/Command.h"
 #include "commands/CommandEngine.h"
 #include "dino8/kernel/boolean.h"
+#include "geom/BrepMesher.h"
 
 namespace dino8::app {
 
@@ -56,7 +57,7 @@ inline ObjectId AddCurve(CommandContext& ctx, const kernel::NurbsCurve& c, const
 inline std::optional<kernel::Mesh> MeshOf(const SceneObject& o, double tol = 0.01) {
   switch (o.kind) {
     case ObjectKind::Mesh: if (o.mesh) return *o.mesh; break;
-    case ObjectKind::Brep: if (o.brep) return o.brep->TessellateToClosedMeshAdaptive(tol); break;
+    case ObjectKind::Brep: if (o.brep) { BrepMeshOptions opt; opt.chord_tolerance = tol; return MeshBrepClosed(o.brep->raw(), opt); } break;
     case ObjectKind::Surface: if (o.surface) return o.surface->TessellateGridAdaptive(tol); break;
     case ObjectKind::SubD: if (o.subd) return o.subd->ToApproximateMesh(); break;
     default: break;
@@ -164,6 +165,28 @@ class PointThenDistanceCommand : public Command {
   Build build_;
   double default_;
 };
+
+// Joins coincident naked edges of a brep (OpenNURBS ships no JoinEdges).
+inline int JoinNakedEdges(ON_Brep& b, double tol) {
+  int joined = 0;
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    ON_BrepEdge& e0 = b.m_E[i];
+    if (e0.m_edge_index < 0 || e0.TrimCount() != 1) continue;
+    ON_3dPoint a0 = e0.PointAtStart(), a1 = e0.PointAtEnd();
+    for (int j = i + 1; j < b.m_E.Count(); ++j) {
+      ON_BrepEdge& e1 = b.m_E[j];
+      if (e1.m_edge_index < 0 || e1.TrimCount() != 1) continue;
+      ON_3dPoint b0 = e1.PointAtStart(), b1 = e1.PointAtEnd();
+      const bool same = (a0.DistanceTo(b0) <= tol && a1.DistanceTo(b1) <= tol) || (a0.DistanceTo(b1) <= tol && a1.DistanceTo(b0) <= tol);
+      if (!same) continue;
+      ON_3dPoint m0 = e0.PointAt(e0.Domain().Mid()), m1 = e1.PointAt(e1.Domain().Mid());
+      if (m0.DistanceTo(m1) > tol * 10) continue;
+      if (b.CombineCoincidentEdges(e0, e1)) { ++joined; break; }
+    }
+  }
+  if (joined) { b.SetTolerancesBoxesAndFlags(); }
+  return joined;
+}
 
 inline void Reg(CommandEngine& e, const char* name, CommandFactory f, CommandStatus s = CommandStatus::Implemented,
                 const char* note = "") {

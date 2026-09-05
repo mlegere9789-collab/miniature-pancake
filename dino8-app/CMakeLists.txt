@@ -89,6 +89,7 @@ set(DINO8_SOURCES
   src/commands/cmd_file.cpp
   src/commands/cmd_misc.cpp
   src/io/File3dm.cpp
+  src/geom/BrepMesher.cpp
   src/util/json_mini.cpp
 )
 
@@ -131,6 +132,18 @@ add_custom_command(TARGET Dino8 POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Dino8>/data
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DINO8_DATA_FILES} $<TARGET_FILE_DIR:Dino8>/data/
   COMMENT "Copying Dino8 data files next to the executable")
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+option(DINO8_BUILD_TESTS "Build Dino 8 unit tests" ON)
+if(DINO8_BUILD_TESTS)
+  enable_testing()
+  add_executable(dino8_test_brep_mesher tests/test_brep_mesher.cpp src/geom/BrepMesher.cpp)
+  target_include_directories(dino8_test_brep_mesher PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_brep_mesher PRIVATE dino8_kernel)
+  add_test(NAME dino8_brep_mesher COMMAND dino8_test_brep_mesher)
+endif()
 
 # ---------------------------------------------------------------------------
 # Install + packaging

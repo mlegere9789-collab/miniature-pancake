@@ -1,5 +1,7 @@
 #include "io/File3dm.h"
 
+#include "geom/BrepMesher.h"
+
 #include <opennurbs.h>
 
 #include <algorithm>
@@ -176,7 +178,7 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
   doc.Notes() = FromWide(model.m_properties.m_Notes.m_notes);
   {
     ON_ClassArray<ON_UserString> strings;
-    model.GetUserStrings(strings);
+    model.GetDocumentUserStrings(strings);
     for (int i = 0; i < strings.Count(); ++i) {
       doc.UserText()[FromWide(strings[i].m_key)] = FromWide(strings[i].m_string_value);
     }
@@ -191,7 +193,7 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     nv.camera.up = v.m_vp.CameraUp();
     nv.camera.perspective = v.m_vp.IsPerspectiveProjection();
     double l, r, b, t;
-    if (v.m_vp.GetFrustumLeftRightBottomTop(&l, &r, &b, &t) && !nv.camera.perspective) nv.camera.ortho_height = t - b;
+    if (v.m_vp.GetFrustum(&l, &r, &b, &t) && !nv.camera.perspective) nv.camera.ortho_height = t - b;
     doc.NamedViews().push_back(nv);
   }
   // Units / tolerances.
@@ -215,10 +217,10 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
   model.m_sStartSectionComments = "Dino 8 - free NURBS modeler";
   model.m_properties.m_Application.m_application_name = L"Dino 8";
   model.m_properties.m_Application.m_application_URL = L"https://github.com/mlegere9789-collab/miniature-pancake";
-  model.m_properties.m_Notes.m_notes = ON_wString(doc.Notes().c_str());
-  model.m_properties.m_Notes.m_bVisible = !doc.Notes().empty();
+  model.m_properties.m_Notes.m_notes = ON_wString(const_cast<Document&>(doc).Notes().c_str());
+  model.m_properties.m_Notes.m_bVisible = !const_cast<Document&>(doc).Notes().empty();
   for (const auto& [k, v] : const_cast<Document&>(doc).UserText()) {
-    model.SetUserString(ON_wString(k.c_str()), ON_wString(v.c_str()));
+    model.SetDocumentUserString(ON_wString(k.c_str()), ON_wString(v.c_str()));
   }
 
   // Units.
@@ -257,7 +259,10 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
       }
     }
   }
-  if (!doc.Layers().empty()) model.m_settings.m_current_layer_index = file_layer_index[static_cast<size_t>(std::max(0, doc.CurrentLayer()))];
+  if (!doc.Layers().empty()) {
+    ON_ModelComponentReference cur = model.LayerFromIndex(file_layer_index[static_cast<size_t>(std::max(0, doc.CurrentLayer()))]);
+    if (const ON_Layer* cl = ON_Layer::Cast(cur.ModelComponent())) model.m_settings.SetCurrentLayerId(cl->Id());
+  }
 
   // Named views.
   for (const NamedView& nv : const_cast<Document&>(doc).NamedViews()) {
@@ -341,7 +346,7 @@ bool ExportMeshFile(const Document& doc, const std::string& path, bool selected_
     if (o.kind == ObjectKind::Mesh && o.mesh) {
       meshes.push_back(*o.mesh);
     } else if (o.kind == ObjectKind::Brep && o.brep) {
-      meshes.push_back(o.brep->TessellateToClosedMeshAdaptive(0.01));
+      BrepMeshOptions opt; opt.chord_tolerance = 0.01; meshes.push_back(MeshBrepClosed(o.brep->raw(), opt));
     } else if (o.kind == ObjectKind::Surface && o.surface) {
       meshes.push_back(o.surface->TessellateGridAdaptive(0.01));
     } else if (o.kind == ObjectKind::SubD && o.subd) {
