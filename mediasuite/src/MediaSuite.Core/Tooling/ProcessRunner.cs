@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text;
 
 namespace MediaSuite.Core.Tooling;
 
@@ -20,6 +21,18 @@ public sealed class ProcessRunner : IProcessRunner
             RedirectStandardInput = false,
             UseShellExecute = false,
             CreateNoWindow = true,
+            // Left unset, .NET decodes a redirected stream using Console.OutputEncoding --
+            // on a real Windows machine, the system's legacy ANSI/OEM code page, not UTF-8.
+            // FFmpeg, ImageMagick, QPDF and the other bundled tools all write UTF-8 to
+            // stdout/stderr by default on modern Windows builds, so a non-ASCII byte (an
+            // accented or non-Latin character in an input file's own name, echoed back in a
+            // progress line or, worse, a tool's own failure message) would get mis-decoded
+            // into mojibake instead of the readable text it actually is. ArchiveCommandBuilder
+            // passes 7-Zip its own -sccUTF-8 switch for the same reason, since 7-Zip's
+            // Windows build otherwise writes its console output in the OEM code page
+            // regardless of this setting.
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
 
         foreach (var argument in request.Arguments)

@@ -110,6 +110,42 @@ public class ProcessRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task Non_ascii_standard_output_is_decoded_as_UTF8_not_the_legacy_console_code_page()
+    {
+        // Left unset, .NET decodes a redirected stream using the console's legacy code
+        // page, not UTF-8 -- FFmpeg and the other bundled tools write UTF-8 by default on
+        // modern Windows builds, so an accented character (in an echoed input file's own
+        // name, for instance) would otherwise come back as mojibake. "chcp 65001" switches
+        // the console -- and, since cmd re-reads the rest of this very script line by
+        // line, this script's own remaining commands too -- to UTF-8 first, so what cmd
+        // actually writes to stdout here is genuine UTF-8 bytes, the same as a real tool
+        // like FFmpeg already produces regardless of the console's own code page.
+        var lines = OperatingSystem.IsWindows()
+            ? new[] { "chcp 65001 > nul", "echo café" }
+            : new[] { "echo café" };
+
+        var result = await RunScriptAsync(lines);
+
+        Assert.Contains("café", result.StandardOutput, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Non_ascii_failure_text_surfaces_correctly_through_DescribeFailure()
+    {
+        // The practically important path: ExternalProcessEngine.RunToolAsync puts exactly
+        // this text -- the tool's own last stderr line -- into the exception message a
+        // user actually sees for a failed job, e.g. a real FFmpeg error naming an accented
+        // input file it could not open.
+        var lines = OperatingSystem.IsWindows()
+            ? new[] { "chcp 65001 > nul", "echo error opening café.mp4 1>&2", "exit 1" }
+            : new[] { "echo error opening café.mp4 1>&2", "exit 1" };
+
+        var result = await RunScriptAsync(lines);
+
+        Assert.Contains("café.mp4", result.DescribeFailure(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Cancelling_stops_waiting_on_a_long_running_tool()
     {
         using var cancellation = new CancellationTokenSource();
