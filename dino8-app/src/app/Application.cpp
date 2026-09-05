@@ -495,6 +495,7 @@ void Application::DrawViewports() {
   ctx.show_control_points_for_selected = show_control_points_for_selected;
   ctx.curve_tolerance = curve_display_tolerance;
   ctx.surface_tolerance = surface_display_tolerance;
+  ctx.fallback_analysis = &analysis_fallback;
   if (want_point && pending_hover_) ctx.cursor_marker = pending_hover_;
 
   bool request_focus = false;

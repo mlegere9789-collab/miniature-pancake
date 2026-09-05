@@ -109,6 +109,13 @@ class Application {
   bool ImportFile(const std::string& path, std::string& error);
   bool ExportSelected(const std::string& path, std::string& error);
 
+  // Surface analysis (Zebra / EMap / CurvatureAnalysis / DraftAngleAnalysis):
+  // `analysis_defaults` remembers the options between command runs, and
+  // `analysis_fallback` is the app-wide mode applied to every surface that
+  // has no per-object analysis (set by running a command with nothing selected).
+  AnalysisSettings analysis_defaults;
+  AnalysisSettings analysis_fallback;
+
   // Display settings.
   bool show_control_points_for_selected = false;
   double curve_display_tolerance = 0.02;

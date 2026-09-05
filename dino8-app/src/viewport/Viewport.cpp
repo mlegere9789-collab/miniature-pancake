@@ -106,6 +106,8 @@ const Color kSelectionColor = Color::FromBytes(255, 210, 0);
 const Color kLockedColor = Color::FromBytes(120, 120, 120);
 const Color kControlPointColor = Color::FromBytes(255, 255, 255);
 const Color kControlPolygonColor = Color::FromBytes(160, 160, 160);
+const Color kEdgeHighlightColor = Color::FromBytes(255, 70, 220);  // ShowEdges: all edges (magenta)
+const Color kNakedEdgeColor = Color::FromBytes(255, 40, 40);       // ShowEdges: naked edges (red)
 
 }  // namespace
 
@@ -210,6 +212,35 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx) {
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
       if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
       c.a = style.fill_alpha;
+      // Surface analysis: the object's own setting wins, else the app-wide
+      // fallback (Zebra/EMap with nothing selected applies to every surface).
+      const AnalysisSettings* analysis = nullptr;
+      if (o.analysis.mode != AnalysisMode::None) analysis = &o.analysis;
+      else if (ctx.fallback_analysis && ctx.fallback_analysis->mode != AnalysisMode::None) analysis = ctx.fallback_analysis;
+      if (analysis) {
+        switch (analysis->mode) {
+          case AnalysisMode::Zebra:
+            renderer.DrawTrianglesZebra(d.triangles, analysis->zebra_direction == ZebraDirection::Vertical,
+                                        analysis->zebra_density, style.fill_alpha);
+            continue;
+          case AnalysisMode::EMap: {
+            Color tint = Color::FromBytes(255, 255, 255);
+            if (o.selected) tint = Mix(tint, kSelectionColor, 0.2f);
+            tint.a = style.fill_alpha;
+            renderer.DrawTrianglesEMap(d.triangles, tint);
+            continue;
+          }
+          case AnalysisMode::Curvature:
+          case AnalysisMode::DraftAngle:
+            o.EnsureAnalysisColors(*analysis);
+            if (!d.colors.empty()) {
+              renderer.DrawTriangles(d.triangles, d.colors, style.fill_alpha);
+              continue;
+            }
+            break;
+          case AnalysisMode::None: break;
+        }
+      }
       renderer.DrawTriangles(d.triangles, c, style.lit);
     }
     renderer.EnablePolygonOffset(false);
@@ -250,6 +281,11 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx) {
       renderer.DrawLines(d.control_polygon, kControlPolygonColor);
       renderer.DrawPoints(d.control_points, kControlPointColor, 5.0f);
       renderer.EnableDepthTest(style.depth_lines);
+    }
+    if (o.highlight_edges && !d.edges.empty()) {
+      // ShowEdges: every edge thick, naked edges on top in a second colour.
+      renderer.DrawLines(d.edges, kEdgeHighlightColor, 3.0f);
+      if (!d.naked_edges.empty()) renderer.DrawLines(d.naked_edges, kNakedEdgeColor, 4.0f);
     }
   }
   renderer.EnableDepthTest(true);

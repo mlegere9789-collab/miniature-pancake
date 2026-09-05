@@ -97,6 +97,7 @@ namespace dino8::gl {
   X(void, DeleteVertexArrays, GLsizei, const GLuint*)                                       \
   X(void, BindVertexArray, GLuint)                                                          \
   X(void, EnableVertexAttribArray, GLuint)                                                  \
+  X(void, DisableVertexAttribArray, GLuint)                                                 \
   X(void, VertexAttribPointer, GLuint, GLint, GLenum, GLboolean, GLsizei, const void*)      \
   X(GLuint, CreateShader, GLenum)                                                           \
   X(void, ShaderSource, GLuint, GLsizei, const GLchar* const*, const GLint*)                \
@@ -115,6 +116,7 @@ namespace dino8::gl {
   X(void, UniformMatrix4fv, GLint, GLsizei, GLboolean, const GLfloat*)                      \
   X(void, Uniform1f, GLint, GLfloat)                                                        \
   X(void, Uniform1i, GLint, GLint)                                                          \
+  X(void, Uniform2f, GLint, GLfloat, GLfloat)                                               \
   X(void, Uniform3f, GLint, GLfloat, GLfloat, GLfloat)                                      \
   X(void, Uniform4f, GLint, GLfloat, GLfloat, GLfloat, GLfloat)                             \
   X(void, GenFramebuffers, GLsizei, GLuint*)                                                \
@@ -152,6 +154,7 @@ const char* LastError();
 #define glDeleteVertexArrays dino8::gl::DeleteVertexArrays
 #define glBindVertexArray dino8::gl::BindVertexArray
 #define glEnableVertexAttribArray dino8::gl::EnableVertexAttribArray
+#define glDisableVertexAttribArray dino8::gl::DisableVertexAttribArray
 #define glVertexAttribPointer dino8::gl::VertexAttribPointer
 #define glCreateShader dino8::gl::CreateShader
 #define glShaderSource dino8::gl::ShaderSource
@@ -170,6 +173,7 @@ const char* LastError();
 #define glUniformMatrix4fv dino8::gl::UniformMatrix4fv
 #define glUniform1f dino8::gl::Uniform1f
 #define glUniform1i dino8::gl::Uniform1i
+#define glUniform2f dino8::gl::Uniform2f
 #define glUniform3f dino8::gl::Uniform3f
 #define glUniform4f dino8::gl::Uniform4f
 #define glGenFramebuffers dino8::gl::GenFramebuffers

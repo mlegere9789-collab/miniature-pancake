@@ -97,6 +97,9 @@ class Viewport {
     bool show_control_points_for_selected = false;
     double curve_tolerance = 0.02;
     double surface_tolerance = 0.05;
+    // App-wide surface analysis applied to objects whose own `analysis`
+    // mode is None (null or mode None = plain shading).
+    const AnalysisSettings* fallback_analysis = nullptr;
   };
   void Render(GlRenderer& renderer, const FrameContext& ctx);
 

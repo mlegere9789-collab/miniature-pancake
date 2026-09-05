@@ -25,6 +25,126 @@ double ObjectVolume(const SceneObject& o, bool& closed) {
   return closed ? std::fabs(m->Volume()) : 0;
 }
 
+// ---------------------------------------------------------------------------
+// Surface analysis display modes (Zebra / EMap / CurvatureAnalysis /
+// DraftAngleAnalysis). Like Rhino, the mode is stored per object; running a
+// command with nothing selected applies it to every surface through the
+// app-wide fallback. Options come from the command line, e.g.
+// "Zebra Direction=Vertical Density=12", so scripts and macros work.
+// ---------------------------------------------------------------------------
+
+bool SurfaceLike(const SceneObject& o) {
+  return o.kind == ObjectKind::Surface || o.kind == ObjectKind::Brep || o.kind == ObjectKind::Mesh || o.kind == ObjectKind::SubD;
+}
+
+bool ParseDouble(const std::string& t, double& out) {
+  char* end = nullptr;
+  out = std::strtod(t.c_str(), &end);
+  return end && *end == 0 && !t.empty();
+}
+
+// Consumes "Name=Value" tokens left on the command line into `s`. Unknown
+// options are reported and ignored.
+void ParseAnalysisOptions(CommandContext& ctx, AnalysisSettings& s) {
+  while (auto tok = ctx.Engine().TakePendingInput()) {
+    const std::string& t = *tok;
+    const size_t eq = t.find('=');
+    const std::string name = ToLower(eq == std::string::npos ? t : t.substr(0, eq));
+    const std::string value = eq == std::string::npos ? "" : t.substr(eq + 1);
+    const std::string lv = ToLower(value);
+    double d = 0;
+    if (name == "direction" && s.mode == AnalysisMode::Zebra) {
+      if (lv == "vertical" || lv == "v") s.zebra_direction = ZebraDirection::Vertical;
+      else if (lv == "horizontal" || lv == "h") s.zebra_direction = ZebraDirection::Horizontal;
+      else s.zebra_direction = s.zebra_direction == ZebraDirection::Horizontal ? ZebraDirection::Vertical : ZebraDirection::Horizontal;
+    } else if (name == "density" && ParseDouble(value, d)) {
+      s.zebra_density = static_cast<float>(std::clamp(d, 1.0, 64.0));
+    } else if (name == "style") {
+      if (lv == "mean" || lv == "m") s.curvature_style = CurvatureStyle::Mean;
+      else if (lv == "gaussian" || lv == "g") s.curvature_style = CurvatureStyle::Gaussian;
+      else s.curvature_style = s.curvature_style == CurvatureStyle::Gaussian ? CurvatureStyle::Mean : CurvatureStyle::Gaussian;
+    } else if (name == "autorange") {
+      s.auto_range = lv.empty() ? !s.auto_range : (lv == "yes" || lv == "y" || lv == "true" || lv == "1");
+    } else if ((name == "min" || name == "minangle") && ParseDouble(value, d)) {
+      if (s.mode == AnalysisMode::DraftAngle) s.draft_min = d; else { s.range_min = d; s.auto_range = false; }
+    } else if ((name == "max" || name == "maxangle") && ParseDouble(value, d)) {
+      if (s.mode == AnalysisMode::DraftAngle) s.draft_max = d; else { s.range_max = d; s.auto_range = false; }
+    } else if (name == "direction" || name == "pulldirection") {
+      if (lv == "cplane" || lv == "c") s.draft_direction = ActiveNormal(ctx);
+      else if (lv == "world" || lv == "w" || lv == "z") s.draft_direction = Vector3d(0, 0, 1);
+      else if (lv == "-z" || lv == "-world") s.draft_direction = Vector3d(0, 0, -1);
+      else {
+        double x = 0, y = 0, z = 0;
+        if (std::sscanf(value.c_str(), "%lf,%lf,%lf", &x, &y, &z) == 3) s.draft_direction = Vector3d(x, y, z);
+        else ctx.Warn("Direction: expected CPlane, World or x,y,z");
+      }
+    } else {
+      ctx.Warn("Unknown option: " + t);
+    }
+  }
+  if (s.range_max < s.range_min) std::swap(s.range_min, s.range_max);
+  if (s.draft_max < s.draft_min) std::swap(s.draft_min, s.draft_max);
+}
+
+std::string DescribeAnalysis(const AnalysisSettings& s) {
+  switch (s.mode) {
+    case AnalysisMode::Zebra:
+      return std::string("Direction=") + (s.zebra_direction == ZebraDirection::Vertical ? "Vertical" : "Horizontal") + " Density=" + FormatNumber(s.zebra_density);
+    case AnalysisMode::Curvature:
+      return std::string("Style=") + (s.curvature_style == CurvatureStyle::Mean ? "Mean" : "Gaussian") + " AutoRange=" + (s.auto_range ? "Yes" : "No") +
+             (s.auto_range ? "" : " Min=" + FormatNumber(s.range_min) + " Max=" + FormatNumber(s.range_max));
+    case AnalysisMode::DraftAngle:
+      return "Direction=" + FormatPoint(Point3d(s.draft_direction.x, s.draft_direction.y, s.draft_direction.z)) + " MinAngle=" + FormatNumber(s.draft_min) + " MaxAngle=" + FormatNumber(s.draft_max);
+    default: return "";
+  }
+}
+
+// Turns `mode` on for the selected surfaces, or for every surface (via the
+// app-wide fallback) when nothing is selected.
+CommandFactory AnalysisOn(AnalysisMode mode) {
+  return Immediate([mode](CommandContext& ctx) {
+    AnalysisSettings s = ctx.App().analysis_defaults;
+    s.mode = mode;
+    ParseAnalysisOptions(ctx, s);
+    ctx.App().analysis_defaults = s;
+    std::vector<SceneObject*> targets;
+    for (ObjectId id : ctx.Selected()) if (SceneObject* o = ctx.Doc().Find(id)) if (SurfaceLike(*o)) targets.push_back(o);
+    size_t count = targets.size();
+    if (targets.empty()) {
+      ctx.App().analysis_fallback = s;
+      count = 0;
+      for (SceneObject& o : ctx.Doc().Objects()) {
+        o.analysis.mode = AnalysisMode::None;  // the fallback now applies everywhere
+        if (SurfaceLike(o)) { ++count; targets.push_back(&o); }
+      }
+    } else {
+      for (SceneObject* o : targets) o->analysis = s;
+    }
+    std::string msg = std::string(AnalysisModeName(mode)) + " on " + std::to_string(count) + " object(s)";
+    const std::string opts = DescribeAnalysis(s);
+    if (!opts.empty()) msg += "  " + opts;
+    if (mode == AnalysisMode::Curvature && !targets.empty()) {
+      const SceneObject& o = *targets.front();
+      o.EnsureDisplay(ctx.App().curve_display_tolerance, ctx.App().surface_display_tolerance);
+      o.EnsureAnalysisColors(s);
+      msg += "  range " + FormatNumber(o.Display().colors_min) + " (blue) .. " + FormatNumber(o.Display().colors_max) + " (red)";
+    }
+    if (count == 0) ctx.Warn("No surfaces, polysurfaces or meshes to analyze");
+    ctx.Print(msg);
+    ctx.RequestRedraw();
+  });
+}
+
+CommandFactory AnalysisOff(AnalysisMode mode) {
+  return Immediate([mode](CommandContext& ctx) {
+    size_t count = 0;
+    if (ctx.App().analysis_fallback.mode == mode) { ctx.App().analysis_fallback.mode = AnalysisMode::None; ++count; }
+    for (SceneObject& o : ctx.Doc().Objects()) if (o.analysis.mode == mode) { o.analysis.mode = AnalysisMode::None; ++count; }
+    ctx.Print(std::string(AnalysisModeName(mode)) + " off" + (count ? "" : " (was not on)"));
+    ctx.RequestRedraw();
+  });
+}
+
 }  // namespace
 
 void RegisterAnalyzeCommands(CommandEngine& e) {
@@ -130,6 +250,39 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
         ctx.Doc().BeginChange("CurvatureGraph");
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o || o->kind != ObjectKind::Curve) continue; kernel::Interval d = o->curve->Domain(); std::vector<Point3d> pts; for (int i = 0; i <= 60; ++i) { double t = d.min + (d.max - d.min) * i / 60.0; Vector3d k = o->curve->CurvatureAt(t); pts.push_back(o->curve->PointAt(t) - k * 20.0); } SceneObject g = SceneObject::MakeCurve(PolylineCurve(pts)); g.name = "CurvatureGraph"; g.color = Color::FromBytes(255, 120, 40); g.color_by_layer = false; ctx.Doc().Add(std::move(g)); }
       }), CommandStatus::Partial, "Draws the graph as a curve object; delete it when done.");
+  Reg(e, "Zebra", AnalysisOn(AnalysisMode::Zebra));
+  Reg(e, "ZebraOff", AnalysisOff(AnalysisMode::Zebra));
+  Reg(e, "EMap", AnalysisOn(AnalysisMode::EMap));
+  Reg(e, "EMapOff", AnalysisOff(AnalysisMode::EMap));
+  Reg(e, "CurvatureAnalysis", AnalysisOn(AnalysisMode::Curvature));
+  Reg(e, "CurvatureAnalysisOff", AnalysisOff(AnalysisMode::Curvature));
+  Reg(e, "DraftAngleAnalysis", AnalysisOn(AnalysisMode::DraftAngle));
+  Reg(e, "DraftAngleAnalysisOff", AnalysisOff(AnalysisMode::DraftAngle));
+  Reg(e, "ShowEdges", OnSelection("Select surfaces, polysurfaces or meshes to show edges", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        size_t objects = 0, edges = 0, naked = 0;
+        for (ObjectId id : ids) {
+          SceneObject* o = ctx.Doc().Find(id);
+          if (!o || !SurfaceLike(*o)) continue;
+          o->highlight_edges = true;
+          ++objects;
+          if (o->kind == ObjectKind::Brep) {
+            const ON_Brep& b = o->brep->raw();
+            for (int i = 0; i < b.m_E.Count(); ++i) { if (b.m_E[i].m_edge_index < 0) continue; ++edges; if (b.m_E[i].TrimCount() == 1) ++naked; }
+          } else if (o->kind == ObjectKind::Surface) { edges += 4; naked += 4; }
+          else {
+            o->EnsureDisplay(ctx.App().curve_display_tolerance, ctx.App().surface_display_tolerance);
+            edges += o->Display().edges.size() / 6; naked += o->Display().naked_edges.size() / 6;
+          }
+        }
+        ctx.Print("ShowEdges: " + std::to_string(objects) + " object(s), " + std::to_string(edges) + " edge(s), " + std::to_string(naked) + " naked edge(s) (magenta = edges, red = naked edges)");
+        ctx.RequestRedraw();
+      }));
+  Reg(e, "ShowEdgesOff", Immediate([](CommandContext& ctx) {
+        size_t n = 0;
+        for (SceneObject& o : ctx.Doc().Objects()) if (o.highlight_edges) { o.highlight_edges = false; ++n; }
+        ctx.Print("ShowEdges off (" + std::to_string(n) + " object(s))");
+        ctx.RequestRedraw();
+      }));
   Reg(e, "CrvDeviation", OnSelection("Select two curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         if (ids.size() < 2) return;
         const SceneObject* a = ctx.Doc().Find(ids[0]); const SceneObject* b = ctx.Doc().Find(ids[1]);

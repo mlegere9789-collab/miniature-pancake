@@ -4,9 +4,22 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <sstream>
+#include <unordered_map>
 
 namespace dino8::app {
+
+const char* AnalysisModeName(AnalysisMode mode) {
+  switch (mode) {
+    case AnalysisMode::None: return "None";
+    case AnalysisMode::Zebra: return "Zebra";
+    case AnalysisMode::EMap: return "EMap";
+    case AnalysisMode::Curvature: return "CurvatureAnalysis";
+    case AnalysisMode::DraftAngle: return "DraftAngleAnalysis";
+  }
+  return "None";
+}
 
 const char* ObjectKindName(ObjectKind kind) {
   switch (kind) {
@@ -43,6 +56,8 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   locked = other.locked;
   selected = other.selected;
   show_control_points = other.show_control_points;
+  highlight_edges = other.highlight_edges;
+  analysis = other.analysis;
   group_id = other.group_id;
   material_name = other.material_name;
   user_text = other.user_text;
@@ -232,17 +247,76 @@ void AppendSurfaceIsocurves(const kernel::NurbsSurface& s, std::vector<float>& o
   }
 }
 
-void AppendBrepEdges(const kernel::Brep& brep, std::vector<float>& out) {
+// The four boundary curves of an (untrimmed) surface.
+void AppendSurfaceBoundary(const kernel::NurbsSurface& s, std::vector<float>& out) {
+  const kernel::Interval du = s.Domain(0);
+  const kernel::Interval dv = s.Domain(1);
+  const int samples = 32;
+  auto add_line = [&](kernel::Point3d a, kernel::Point3d b) {
+    out.push_back(static_cast<float>(a.x)); out.push_back(static_cast<float>(a.y)); out.push_back(static_cast<float>(a.z));
+    out.push_back(static_cast<float>(b.x)); out.push_back(static_cast<float>(b.y)); out.push_back(static_cast<float>(b.z));
+  };
+  for (int side = 0; side < 4; ++side) {
+    auto at = [&](double t) {
+      switch (side) {
+        case 0: return s.PointAt(du.min + (du.max - du.min) * t, dv.min);
+        case 1: return s.PointAt(du.min + (du.max - du.min) * t, dv.max);
+        case 2: return s.PointAt(du.min, dv.min + (dv.max - dv.min) * t);
+        default: return s.PointAt(du.max, dv.min + (dv.max - dv.min) * t);
+      }
+    };
+    kernel::Point3d prev = at(0);
+    for (int k = 1; k <= samples; ++k) {
+      const kernel::Point3d p = at(static_cast<double>(k) / samples);
+      add_line(prev, p);
+      prev = p;
+    }
+  }
+}
+
+// Mesh edges: every edge once into `edges`, edges used by a single face
+// into `naked`.
+void AppendMeshNakedEdges(const kernel::Mesh& mesh, std::vector<float>& edges, std::vector<float>& naked) {
+  const ON_Mesh& raw = mesh.raw();
+  std::unordered_map<std::uint64_t, int> use_count;
+  auto key = [](int a, int b) {
+    if (a > b) std::swap(a, b);
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(a)) << 32) | static_cast<std::uint32_t>(b);
+  };
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_MeshFace& f = raw.m_F[i];
+    const int n = f.IsQuad() ? 4 : 3;
+    for (int k = 0; k < n; ++k) use_count[key(f.vi[k], f.vi[(k + 1) % n])]++;
+  }
+  for (const auto& [k, count] : use_count) {
+    const int a = static_cast<int>(k >> 32), b = static_cast<int>(k & 0xffffffffu);
+    if (a == b || a >= raw.m_V.Count() || b >= raw.m_V.Count()) continue;
+    const ON_3fPoint pa = raw.m_V[a], pb = raw.m_V[b];
+    const float seg[6] = {pa.x, pa.y, pa.z, pb.x, pb.y, pb.z};
+    edges.insert(edges.end(), seg, seg + 6);
+    if (count == 1) naked.insert(naked.end(), seg, seg + 6);
+  }
+}
+
+// Appends the brep's edge polylines to `out` (wires) and, sorted by
+// topology, to `edges` (all) and `naked` (edges with a single trim).
+void AppendBrepEdges(const kernel::Brep& brep, std::vector<float>& out, std::vector<float>& edges,
+                     std::vector<float>& naked) {
   const ON_Brep& raw = brep.raw();
   for (int i = 0; i < raw.m_E.Count(); ++i) {
     const ON_BrepEdge& e = raw.m_E[i];
+    if (e.m_edge_index < 0) continue;
     const ON_Interval d = e.Domain();
     const int samples = 32;
+    const bool is_naked = e.TrimCount() == 1;
     ON_3dPoint prev = e.PointAt(d.Min());
     for (int k = 1; k <= samples; ++k) {
       const ON_3dPoint p = e.PointAt(d.ParameterAt(static_cast<double>(k) / samples));
-      out.push_back(static_cast<float>(prev.x)); out.push_back(static_cast<float>(prev.y)); out.push_back(static_cast<float>(prev.z));
-      out.push_back(static_cast<float>(p.x)); out.push_back(static_cast<float>(p.y)); out.push_back(static_cast<float>(p.z));
+      const float seg[6] = {static_cast<float>(prev.x), static_cast<float>(prev.y), static_cast<float>(prev.z),
+                            static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)};
+      out.insert(out.end(), seg, seg + 6);
+      edges.insert(edges.end(), seg, seg + 6);
+      if (is_naked) naked.insert(naked.end(), seg, seg + 6);
       prev = p;
     }
   }
@@ -298,6 +372,10 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
   cache_.points.clear();
   cache_.control_polygon.clear();
   cache_.control_points.clear();
+  cache_.edges.clear();
+  cache_.naked_edges.clear();
+  cache_.colors.clear();
+  cache_.colors_valid = false;
   cache_.has_bbox = false;
   switch (kind) {
     case ObjectKind::Point:
@@ -328,6 +406,8 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
       const kernel::Mesh m = surface->TessellateGrid(u, v);
       AppendMeshTriangles(m, cache_.triangles, cache_.bbox, cache_.has_bbox);
       AppendSurfaceIsocurves(*surface, cache_.lines);
+      AppendSurfaceBoundary(*surface, cache_.edges);
+      cache_.naked_edges = cache_.edges;  // an untrimmed surface's edges are all naked
       if (show_control_points) {
         for (int i = 0; i < surface->CVCountU(); ++i) {
           for (int j = 0; j < surface->CVCountV(); ++j) {
@@ -352,21 +432,202 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
       for (const kernel::Mesh& m : meshes) {
         AppendMeshTriangles(m, cache_.triangles, cache_.bbox, cache_.has_bbox);
       }
-      AppendBrepEdges(*brep, cache_.lines);
+      AppendBrepEdges(*brep, cache_.lines, cache_.edges, cache_.naked_edges);
       break;
     }
     case ObjectKind::Mesh:
       AppendMeshTriangles(*mesh, cache_.triangles, cache_.bbox, cache_.has_bbox);
       AppendMeshEdges(*mesh, cache_.lines);
+      AppendMeshNakedEdges(*mesh, cache_.edges, cache_.naked_edges);
       break;
     case ObjectKind::SubD: {
       const kernel::Mesh m = subd->ToApproximateMesh();
       AppendMeshTriangles(m, cache_.triangles, cache_.bbox, cache_.has_bbox);
       AppendMeshEdges(m, cache_.lines);
+      AppendMeshNakedEdges(m, cache_.edges, cache_.naked_edges);
       break;
     }
   }
   cache_.dirty = false;
+}
+
+namespace {
+
+// Rhino-style analysis ramp: blue -> cyan -> green -> yellow -> red.
+void RampColor(double t, float& r, float& g, float& b) {
+  t = std::clamp(t, 0.0, 1.0);
+  struct Stop { double t; float r, g, b; };
+  static const Stop stops[] = {{0.0, 0.0f, 0.0f, 1.0f}, {0.25, 0.0f, 1.0f, 1.0f}, {0.5, 0.0f, 1.0f, 0.0f},
+                               {0.75, 1.0f, 1.0f, 0.0f}, {1.0, 1.0f, 0.0f, 0.0f}};
+  for (int i = 0; i < 4; ++i) {
+    if (t <= stops[i + 1].t) {
+      const double f = (t - stops[i].t) / (stops[i + 1].t - stops[i].t);
+      r = static_cast<float>(stops[i].r + (stops[i + 1].r - stops[i].r) * f);
+      g = static_cast<float>(stops[i].g + (stops[i + 1].g - stops[i].g) * f);
+      b = static_cast<float>(stops[i].b + (stops[i + 1].b - stops[i].b) * f);
+      return;
+    }
+  }
+  r = 1.0f; g = 0.0f; b = 0.0f;
+}
+
+struct VertexKey {
+  float x, y, z;
+  bool operator==(const VertexKey& o) const { return x == o.x && y == o.y && z == o.z; }
+};
+struct VertexKeyHash {
+  size_t operator()(const VertexKey& k) const {
+    std::uint32_t a, b, c;
+    std::memcpy(&a, &k.x, 4); std::memcpy(&b, &k.y, 4); std::memcpy(&c, &k.z, 4);
+    return (static_cast<size_t>(a) * 73856093u) ^ (static_cast<size_t>(b) * 19349663u) ^ (static_cast<size_t>(c) * 83492791u);
+  }
+};
+
+// Discrete curvature on the (unindexed) display triangles: vertices are
+// welded by exact position, Gaussian curvature is the angle deficit divided
+// by the barycentric vertex area, mean curvature comes from the cotangent
+// Laplacian of the position. Boundary vertices, where neither formula
+// holds, take the average of their interior neighbours.
+std::vector<double> DiscreteCurvature(const std::vector<float>& tri, bool gaussian) {
+  const size_t n_verts = tri.size() / 6;
+  std::vector<int> index(n_verts);
+  std::vector<kernel::Point3d> pos;
+  std::vector<kernel::Vector3d> nrm;
+  std::unordered_map<VertexKey, int, VertexKeyHash> weld;
+  for (size_t i = 0; i < n_verts; ++i) {
+    const VertexKey k{tri[i * 6], tri[i * 6 + 1], tri[i * 6 + 2]};
+    auto it = weld.find(k);
+    if (it == weld.end()) {
+      it = weld.emplace(k, static_cast<int>(pos.size())).first;
+      pos.emplace_back(k.x, k.y, k.z);
+      nrm.emplace_back(tri[i * 6 + 3], tri[i * 6 + 4], tri[i * 6 + 5]);
+    }
+    index[i] = it->second;
+  }
+  const size_t n = pos.size();
+  std::vector<double> angle_sum(n, 0.0), area(n, 0.0);
+  std::vector<kernel::Vector3d> lap(n, kernel::Vector3d(0, 0, 0));
+  std::unordered_map<std::uint64_t, int> edge_uses;
+  auto ekey = [](int a, int b) {
+    if (a > b) std::swap(a, b);
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(a)) << 32) | static_cast<std::uint32_t>(b);
+  };
+  auto cot = [](const kernel::Vector3d& u, const kernel::Vector3d& v) {
+    const double c = ON_CrossProduct(u, v).Length();
+    return c > 1e-18 ? ON_DotProduct(u, v) / c : 0.0;
+  };
+  for (size_t t = 0; t + 2 < n_verts; t += 3) {
+    const int i0 = index[t], i1 = index[t + 1], i2 = index[t + 2];
+    if (i0 == i1 || i1 == i2 || i0 == i2) continue;
+    const kernel::Point3d& p0 = pos[i0]; const kernel::Point3d& p1 = pos[i1]; const kernel::Point3d& p2 = pos[i2];
+    const double a = ON_CrossProduct(p1 - p0, p2 - p0).Length() * 0.5;
+    if (a < 1e-18) continue;
+    const int idx[3] = {i0, i1, i2};
+    const kernel::Point3d* pp[3] = {&p0, &p1, &p2};
+    for (int k = 0; k < 3; ++k) {
+      const kernel::Vector3d u = *pp[(k + 1) % 3] - *pp[k];
+      const kernel::Vector3d v = *pp[(k + 2) % 3] - *pp[k];
+      angle_sum[idx[k]] += ON_3dVector::Angle(u, v);
+      area[idx[k]] += a / 3.0;
+      // Cotangent weights: the angle at vertex k is opposite the edge (k+1, k+2).
+      const double w = cot(u, v);
+      const int ia = idx[(k + 1) % 3], ib = idx[(k + 2) % 3];
+      lap[ia] += (*pp[(k + 2) % 3] - *pp[(k + 1) % 3]) * w;
+      lap[ib] += (*pp[(k + 1) % 3] - *pp[(k + 2) % 3]) * w;
+      edge_uses[ekey(ia, ib)]++;
+    }
+  }
+  std::vector<bool> boundary(n, false);
+  std::vector<std::vector<int>> nbrs(n);
+  for (const auto& [k, uses] : edge_uses) {
+    const int a = static_cast<int>(k >> 32), b = static_cast<int>(k & 0xffffffffu);
+    nbrs[a].push_back(b); nbrs[b].push_back(a);
+    if (uses == 1) { boundary[a] = true; boundary[b] = true; }
+  }
+  std::vector<double> value(n, 0.0);
+  for (size_t i = 0; i < n; ++i) {
+    if (boundary[i] || area[i] <= 1e-18) continue;
+    if (gaussian) {
+      value[i] = (2.0 * ON_PI - angle_sum[i]) / area[i];
+    } else {
+      // Laplace-Beltrami of the position is -2 H n (outward normal, convex positive).
+      const kernel::Vector3d d = lap[i] / (2.0 * area[i]);
+      value[i] = -0.5 * ON_DotProduct(d, nrm[i]);
+    }
+  }
+  for (size_t i = 0; i < n; ++i) {
+    if (!boundary[i]) continue;
+    double sum = 0; int cnt = 0;
+    for (int j : nbrs[i]) if (!boundary[j]) { sum += value[j]; ++cnt; }
+    if (cnt == 0) for (int j : nbrs[i]) for (int k : nbrs[j]) if (!boundary[k]) { sum += value[k]; ++cnt; }
+    value[i] = cnt ? sum / cnt : 0.0;
+  }
+  // Two passes of neighbour averaging: discrete curvature on an uneven
+  // display tessellation is noisy vertex to vertex, and Rhino's analysis
+  // mesh is smoother than ours.
+  for (int pass = 0; pass < 2; ++pass) {
+    std::vector<double> smoothed(n);
+    for (size_t i = 0; i < n; ++i) {
+      double sum = value[i]; int cnt = 1;
+      for (int j : nbrs[i]) { sum += value[j]; ++cnt; }
+      smoothed[i] = sum / cnt;
+    }
+    value.swap(smoothed);
+  }
+  std::vector<double> out(n_verts);
+  for (size_t i = 0; i < n_verts; ++i) out[i] = value[index[i]];
+  return out;
+}
+
+}  // namespace
+
+void SceneObject::EnsureAnalysisColors(const AnalysisSettings& settings) const {
+  const bool wants_colors = settings.mode == AnalysisMode::Curvature || settings.mode == AnalysisMode::DraftAngle;
+  if (!wants_colors) {
+    cache_.colors.clear();
+    cache_.colors_valid = false;
+    return;
+  }
+  if (cache_.colors_valid && cache_.colors_settings.SameColoring(settings) &&
+      cache_.colors.size() == cache_.triangles.size() / 2) return;
+  const size_t n_verts = cache_.triangles.size() / 6;
+  std::vector<double> values(n_verts, 0.0);
+  double lo = settings.range_min, hi = settings.range_max;
+  if (settings.mode == AnalysisMode::Curvature) {
+    values = DiscreteCurvature(cache_.triangles, settings.curvature_style == CurvatureStyle::Gaussian);
+    if (settings.auto_range && !values.empty()) {
+      // Robust range: 5th .. 95th percentile so a few noisy vertices do not
+      // wash out the ramp.
+      std::vector<double> sorted = values;
+      std::sort(sorted.begin(), sorted.end());
+      lo = sorted[static_cast<size_t>(sorted.size() * 0.05)];
+      hi = sorted[std::min(sorted.size() - 1, static_cast<size_t>(sorted.size() * 0.95))];
+    }
+  } else {
+    kernel::Vector3d pull = settings.draft_direction;
+    if (!pull.Unitize()) pull = kernel::Vector3d(0, 0, 1);
+    for (size_t i = 0; i < n_verts; ++i) {
+      kernel::Vector3d nv(cache_.triangles[i * 6 + 3], cache_.triangles[i * 6 + 4], cache_.triangles[i * 6 + 5]);
+      const double ang = ON_3dVector::Angle(nv, pull);  // 0 .. pi
+      values[i] = 90.0 - ang * 180.0 / ON_PI;
+    }
+    lo = settings.draft_min; hi = settings.draft_max;
+  }
+  if (hi - lo < 1e-12) {
+    const double mid = (hi + lo) * 0.5;
+    const double half = std::max(std::fabs(mid) * 0.5, 1e-9);
+    lo = mid - half; hi = mid + half;
+  }
+  cache_.colors.resize(n_verts * 3);
+  for (size_t i = 0; i < n_verts; ++i) {
+    float r, g, b;
+    RampColor((values[i] - lo) / (hi - lo), r, g, b);
+    cache_.colors[i * 3] = r; cache_.colors[i * 3 + 1] = g; cache_.colors[i * 3 + 2] = b;
+  }
+  cache_.colors_min = lo;
+  cache_.colors_max = hi;
+  cache_.colors_settings = settings;
+  cache_.colors_valid = true;
 }
 
 kernel::BoundingBox SceneObject::BoundingBox() const {
