@@ -34,6 +34,7 @@ void RegisterViewCommands(CommandEngine&);
 void RegisterLayerCommands(CommandEngine&);
 void RegisterFileCommands(CommandEngine&);
 void RegisterMiscCommands(CommandEngine&);
+void RegisterCurveEditCommands(CommandEngine&);
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -93,6 +94,7 @@ void Application::RegisterCommands() {
   RegisterLayerCommands(*engine_);
   RegisterFileCommands(*engine_);
   RegisterMiscCommands(*engine_);
+  RegisterCurveEditCommands(*engine_);  // last: replaces the solid-only Intersect/Split registrations
 }
 
 Viewport* Application::ActiveViewport() {

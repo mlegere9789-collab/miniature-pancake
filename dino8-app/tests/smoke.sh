@@ -70,4 +70,23 @@ fi
 echo "$UI" | grep -E "^(ok|FAIL)"
 if echo "$UI" | grep -q "^FAIL"; then fail=1; fi
 echo "$UI" | grep -q "^ok   expect_objects 1" || { echo "FAIL ui script produced no checks"; fail=1; }
+
+# Curve editing: Intersect, Split, Trim, Fillet, Chamfer, FilletCorners (see curveedit_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  CE="$("$BIN" --smoke 150 --script "$HERE/curveedit_script.txt" 2>&1)" || { echo "$CE"; echo "FAIL: curve-edit script exited non-zero"; exit 1; }
+else
+  CE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/curveedit_script.txt" 2>&1)" || { echo "$CE"; echo "FAIL: curve-edit script exited non-zero"; exit 1; }
+fi
+cecheck() { if echo "$CE" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+cecheck "intersection at 10,0,0" "Intersect found the line/line crossing"
+cecheck "Split 1 curve into 2 pieces" "Split cut the line at the crossing"
+cecheck "Trimmed curve 6" "Trim removed the clicked portion"
+cecheck "CV\[1\] 40,0,0" "Trim kept the piece up to the cutter"
+cecheck "Fillet: Radius=5, arc added" "Fillet built a tangent arc"
+cecheck "CV\[1\] 75,0,0" "Fillet trimmed the first line to the tangent point"
+cecheck "Chamfer: joined result, Distance=4" "Chamfer joined the pieces into one curve"
+cecheck "FilletCorners: rounded 4 corners on 1 curve" "FilletCorners rounded the rectangle"
+cecheck "intersection at 305,0,0" "Intersect found the circle/line crossing"
+cecheck "Split into 2 piece(s)" "Split still delegates solids to the plane split"
+cecheck "smoke: frames=150 objects=17" "curve-edit script produced the expected object count"
 exit $fail

@@ -115,7 +115,7 @@ void RegisterBooleanCommands(CommandEngine& e) {
   Reg(e, "MeshBooleanUnion", Make<BooleanCommand>(kernel::BooleanOp::Union, "MeshBooleanUnion", false));
   Reg(e, "MeshBooleanDifference", Make<BooleanCommand>(kernel::BooleanOp::Difference, "MeshBooleanDifference", true));
   Reg(e, "MeshBooleanIntersection", Make<BooleanCommand>(kernel::BooleanOp::Intersection, "MeshBooleanIntersection", true));
-  Reg(e, "Split", Make<SplitPlaneCommand>(), CommandStatus::Partial, "Splits closed solids with a plane through two points; curve/surface cutters are planned.");
+  // "Split" itself lives in cmd_curveedit.cpp (curves by curves); it delegates solids to BooleanSplit.
   Reg(e, "BooleanSplit", Make<SplitPlaneCommand>(), CommandStatus::Partial, "Plane split.");
   Reg(e, "MeshSplit", Make<SplitPlaneCommand>(), CommandStatus::Partial, "Plane split.");
   Reg(e, "MeshBooleanSplit", Make<SplitPlaneCommand>(), CommandStatus::Partial, "Plane split.");

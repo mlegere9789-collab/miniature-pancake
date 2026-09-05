@@ -146,13 +146,7 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
         if (!m) return;
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Point) ctx.Print("Point " + FormatPoint(o->point) + " deviation " + FormatNumber((m->ClosestPoint(o->point) - o->point).Length())); }
       }, 2));
-  Reg(e, "Intersect", OnSelection("Select two closed solids", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        if (ids.size() < 2) return;
-        const SceneObject* a = ctx.Doc().Find(ids[0]); const SceneObject* b = ctx.Doc().Find(ids[1]);
-        std::optional<kernel::Mesh> ma = a ? MeshOf(*a, 0.005) : std::nullopt, mb = b ? MeshOf(*b, 0.005) : std::nullopt;
-        if (!ma || !mb || !ma->IsClosedManifold() || !mb->IsClosedManifold()) { ctx.Warn("Intersect currently needs two closed solids"); return; }
-        try { kernel::Mesh r = kernel::BooleanCombine(*ma, *mb, kernel::BooleanOp::Intersection); if (r.FaceCount() == 0) { ctx.Print("No intersection"); return; } AddObject(ctx, SceneObject::MakeMesh(r), "Intersect"); ctx.Print("Intersection volume " + FormatNumber(std::fabs(r.Volume()))); } catch (const std::exception& ex) { ctx.Warn(ex.what()); }
-      }, 2), CommandStatus::Partial, "Solid/solid intersection volume; curve intersections are planned.");
+  // "Intersect" lives in cmd_curveedit.cpp (curve/curve, with the solid/solid volume as fallback).
   Reg(e, "Audit", Immediate([](CommandContext& ctx) {
         int bad = 0;
         for (const SceneObject& o : ctx.Doc().Objects()) { bool ok = true; if (o.kind == ObjectKind::Curve) ok = o.curve->raw().IsValid(); else if (o.kind == ObjectKind::Surface) ok = o.surface->raw().IsValid(); else if (o.kind == ObjectKind::Brep) ok = o.brep->raw().IsValid(); else if (o.kind == ObjectKind::Mesh) ok = o.mesh->raw().IsValid(); if (!ok) ++bad; }
