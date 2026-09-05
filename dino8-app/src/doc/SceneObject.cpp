@@ -56,6 +56,7 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   locked = other.locked;
   selected = other.selected;
   show_control_points = other.show_control_points;
+  show_control_net = other.show_control_net;
   highlight_edges = other.highlight_edges;
   analysis = other.analysis;
   group_id = other.group_id;
@@ -363,6 +364,21 @@ void AppendBrepEdges(const kernel::Brep& brep, std::vector<float>& out, std::vec
   }
 }
 
+// Smooth display of a SubD: Catmull-Clark subdivides a copy (up to two
+// levels, bounded by the resulting face count) and shows that control net.
+kernel::Mesh SmoothSubDMesh(const kernel::SubD& subd, const kernel::Mesh& net) {
+  int faces = subd.FaceCount(), levels = 0;
+  while (levels < 2 && faces > 0 && faces * 4 <= 24000) { faces *= 4; ++levels; }
+  if (levels == 0) return net;
+  try {
+    kernel::SubD copy = subd;
+    copy.Subdivide(levels);
+    return copy.ToApproximateMesh();
+  } catch (...) {
+    return net;
+  }
+}
+
 }  // namespace
 
 void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance) const {
@@ -441,10 +457,20 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
       AppendMeshNakedEdges(*mesh, cache_.edges, cache_.naked_edges);
       break;
     case ObjectKind::SubD: {
-      const kernel::Mesh m = subd->ToApproximateMesh();
+      const kernel::Mesh net = subd->ToApproximateMesh();
+      const kernel::Mesh m = show_control_net ? net : SmoothSubDMesh(*subd, net);
       AppendMeshTriangles(m, cache_.triangles, cache_.bbox, cache_.has_bbox);
-      AppendMeshEdges(m, cache_.lines);
+      AppendMeshEdges(show_control_net ? net : m, cache_.lines);
       AppendMeshNakedEdges(m, cache_.edges, cache_.naked_edges);
+      if (show_control_points) {
+        // The control net doubles as the control polygon.
+        const ON_Mesh& raw = net.raw();
+        for (int i = 0; i < raw.VertexCount(); ++i) {
+          const ON_3dPoint p = raw.Vertex(i);
+          cache_.control_points.push_back(static_cast<float>(p.x)); cache_.control_points.push_back(static_cast<float>(p.y)); cache_.control_points.push_back(static_cast<float>(p.z));
+        }
+        AppendMeshEdges(net, cache_.control_polygon);
+      }
       break;
     }
   }

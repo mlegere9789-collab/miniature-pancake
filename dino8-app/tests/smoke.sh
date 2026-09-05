@@ -238,4 +238,33 @@ mtcheck "Drape: 20x20 grid draped over" "Drape hit the visible meshes"
 echo "$MT" | grep -E "^(ok|FAIL)"
 if echo "$MT" | grep -q "^FAIL"; then fail=1; fi
 mtcheck "smoke: frames=1[0-9][0-9] objects=30" "mesh-tools script produced the expected object count"
+
+# SubD editing: Crease, ExtrudeSubD, Inset, Bridge, OffsetSubD, RepairSubD, InsertEdge,
+# DivideAlongCreases, Fill, AutomaticSubDFromMesh, SubDTruncatedCone, ShrinkWrap (see subd_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  SD="$("$BIN" --smoke 150 --script "$HERE/subd_script.txt" 2>&1)" || { echo "$SD"; echo "FAIL: subd script exited non-zero"; exit 1; }
+else
+  SD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/subd_script.txt" 2>&1)" || { echo "$SD"; echo "FAIL: subd script exited non-zero"; exit 1; }
+fi
+sdcheck() { if echo "$SD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+sdcheck "Crease: 2 edge(s) creased on 1 SubD(s)" "Crease tagged the two picked edges"
+sdcheck "Crease edges: 2" "What reports the crease edges on the control net"
+sdcheck "ExtrudeSubD: extruded 1 face(s) by 3 on 1 SubD(s), 4 side face(s) added" "ExtrudeSubD extruded the top face with four side faces"
+sdcheck "Inset: 1 face(s) inset by 1" "Inset built an inner face and ring"
+sdcheck "Bridge: joined 2 faces with a tube of 4 quads, 2 SubDs merged" "Bridge joined the two boxes"
+sdcheck "Faces: 22" "the bridged SubD has 22 control faces (6+4+5 for the boxes and tube, plus the inset)"
+sdcheck "OffsetSubD: solid shell, distance 1, 1 SubD(s)" "OffsetSubD Solid=Yes built a shell"
+sdcheck "44 face(s) (was 44), 0 naked edge(s), 0 non-manifold edge(s), closed" "RepairSubD reports the offset shell closed"
+sdcheck "InsertEdge: 4 edge(s) inserted at 0.5 along the ring" "InsertEdge inserted an edge loop around the box"
+sdcheck "Crease: 6 edge(s) creased on 1 SubD(s)" "Crease tagged the loop around the split top face"
+sdcheck "DivideAlongCreases: 1 SubD(s) divided into 2 piece(s)" "DivideAlongCreases split the box at the crease loop"
+sdcheck "Fill: 1 hole(s) filled with a face" "Fill closed the naked loop"
+sdcheck "AutomaticSubDFromMesh: SubD with 6 face(s), 12 crease edge(s) sharper than 30 degrees" "AutomaticSubDFromMesh creased the box edges"
+sdcheck "SubDTruncatedCone: base radius 5, top radius 2.5, height 10, 32 faces" "SubDTruncatedCone built its control net"
+sdcheck "SubDDisplayToggle: 4 SubD(s) show the control polygon" "SubDDisplayToggle switched the closed SubDs to the control polygon"
+sdcheck "ShrinkWrap: convex hull with 64 faces around 141 points" "ShrinkWrap built the 3D convex hull"
+sdcheck "gl_error=0" "subd script ran without OpenGL errors"
+echo "$SD" | grep -E "^(ok|FAIL)"
+if echo "$SD" | grep -q "^FAIL"; then fail=1; fi
+sdcheck "smoke: frames=150 objects=6" "subd script produced the expected object count"
 exit $fail

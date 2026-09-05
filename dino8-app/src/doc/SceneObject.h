@@ -114,6 +114,7 @@ class SceneObject {
   bool locked = false;
   bool selected = false;
   bool show_control_points = false;
+  bool show_control_net = false;  // SubD: draw the control polygon instead of the smoothed surface
   bool highlight_edges = false;  // ShowEdges: draw brep/mesh edges thick, naked edges in a second colour
   AnalysisSettings analysis;     // per-object surface analysis (None = use the app-wide fallback)
   int group_id = -1;

@@ -42,6 +42,7 @@ void RegisterSrfEditCommands(CommandEngine&);
 void RegisterCurveEditCommands(CommandEngine&);
 void RegisterSurfaceCommands(CommandEngine&);
 void RegisterMeshToolsCommands(CommandEngine&);
+void RegisterSubDCommands(CommandEngine&);
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -106,6 +107,7 @@ void Application::RegisterCommands() {
   RegisterCurves2Commands(*engine_);
   RegisterSrfEditCommands(*engine_);
   RegisterMeshToolsCommands(*engine_);  // after Transform/Boolean: replaces the simpler Shear/Weld
+  RegisterSubDCommands(*engine_);       // SubD editing (creases, ExtrudeSubD, Inset, Bridge...); replaces the Slide stub
   RegisterCurveEditCommands(*engine_);  // replaces the solid-only Intersect/Split registrations
   RegisterSurfaceCommands(*engine_);    // last: Sweep/Pipe/OffsetSrf/Project... (approximate NURBS/mesh results)
 }

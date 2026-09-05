@@ -1,0 +1,79 @@
+# SubD editing QC: creases, control-net editing, repair, conversions.
+# Sub-objects are picked by points: edge midpoints and face centroids of the
+# control net. Object counts are checked with @expect_objects.
+# --- A SubD box, two bottom edges creased (picked by their midpoints)
+SubDBox 0,0,0 10,10,0 10
+SelLast
+Crease
+5,0,0
+5,10,0
+Enter
+SelLast
+What
+@expect_objects 1
+# --- Extrude the top face (picked by its centroid) by 3, then inset it by 1
+SelLast
+ExtrudeSubD
+5,5,10
+Enter
+3
+SelLast
+Inset
+5,5,13
+Enter
+1
+@expect_objects 1
+# --- Bridge the right face of the first box with the left face of a second box
+SubDBox 20,0,0 30,10,0 10
+SelAll
+Bridge
+10,5,5
+20,5,5
+@expect_objects 1
+SelLast
+What
+# --- OffsetSubD Solid=Yes builds an inner shell; RepairSubD reports a closed result
+SelLast
+OffsetSubD
+Solid=Yes
+1
+SelLast
+RepairSubD
+@expect_objects 1
+# --- InsertEdge (an edge loop around the box), a crease loop around the top, DivideAlongCreases, Fill
+SubDBox 50,0,0 60,10,0 10
+SelLast
+InsertEdge
+55,0,0
+Enter
+SelLast
+Crease
+52.5,0,10
+57.5,0,10
+52.5,10,10
+57.5,10,10
+50,5,10
+60,5,10
+Enter
+SelLast
+DivideAlongCreases
+@expect_objects 3
+SelLast
+Fill
+Enter
+SelLast
+What
+# --- Mesh -> SubD with creases at the sharp edges
+MeshBox 70,0,0 80,10,0 10
+SelLast
+AutomaticSubDFromMesh
+@expect_objects 4
+# --- SubD truncated cone, selection / display helpers, convex hull of everything
+SubDTruncatedCone 90,0,0 5 2.5 10
+SelClosedSubD
+SubDDisplayToggle
+SelAll
+ShrinkWrap
+@expect_objects 6
+SelLast
+Volume
