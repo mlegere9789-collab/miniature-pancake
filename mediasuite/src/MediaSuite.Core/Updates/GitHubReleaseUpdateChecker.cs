@@ -57,10 +57,17 @@ public sealed class GitHubReleaseUpdateChecker : IUpdateCheckClient, IDisposable
                 DownloadUrl = downloadUrl,
             };
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException
+            or InvalidOperationException or IOException)
         {
-            // Offline, GitHub unreachable, rate-limited, an unexpected response shape —
-            // none of these are the user's problem. The banner just stays hidden.
+            // Offline, GitHub unreachable, rate-limited, an unexpected response shape, or the
+            // connection dropping mid-download (ReadAsStreamAsync/JsonDocument.ParseAsync throw
+            // a plain IOException for that, not HttpRequestException) — none of these are the
+            // user's problem. The banner just stays hidden. This is also this app's only real
+            // defense against that IOException: CheckForUpdateAsync calls CheckAsync fire-and-
+            // forget from MainViewModel's constructor with no try/catch of its own, since an
+            // update check is never supposed to be able to fail loudly — an exception escaping
+            // here would become a silent unobserved task exception instead.
             return new UpdateCheckResult
             {
                 HasUpdate = false,

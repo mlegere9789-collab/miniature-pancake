@@ -19,6 +19,26 @@ public sealed class FakeHttpMessageHandler : HttpMessageHandler
 }
 
 /// <summary>
+/// An <see cref="HttpContent"/> whose body throws <see cref="IOException"/> as soon as
+/// something tries to read it — standing in for a connection dropping mid-download, which
+/// surfaces as a plain IOException rather than an HttpRequestException.
+/// </summary>
+public sealed class ThrowingContent : HttpContent
+{
+    protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+        throw new IOException("simulated connection reset mid-download");
+
+    protected override bool TryComputeLength(out long length)
+    {
+        length = 0;
+        return false;
+    }
+
+    protected override Task<Stream> CreateContentReadStreamAsync() =>
+        throw new IOException("simulated connection reset mid-download");
+}
+
+/// <summary>
 /// Exercises the real response handling in <see cref="GitHubReleaseUpdateChecker"/> — the
 /// JSON parsing, the fail-soft catch around a broad set of exception types, and how a
 /// missing/malformed field turns into a result rather than an unhandled throw — through a
@@ -132,6 +152,28 @@ public class GitHubReleaseUpdateCheckerTests
     public async Task A_cancelled_request_is_caught_and_reported_as_a_failed_check()
     {
         var handler = new FakeHttpMessageHandler(() => throw new TaskCanceledException("simulated timeout"));
+        using var checker = MakeChecker(handler);
+
+        var result = await checker.CheckAsync(CancellationToken.None);
+
+        Assert.False(result.HasUpdate);
+        Assert.NotNull(result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task A_connection_dropped_mid_download_is_caught_and_reported_as_a_failed_check()
+    {
+        // Simulates a real network hiccup partway through the response body: GetAsync itself
+        // succeeds, but reading the content stream (ReadAsStreamAsync/JsonDocument.ParseAsync)
+        // throws IOException rather than HttpRequestException. Before this was added to the
+        // catch filter, that IOException escaped CheckAsync uncaught — and since CheckAsync is
+        // invoked fire-and-forget from MainViewModel's constructor with no try/catch of its
+        // own, it would have become a silent unobserved task exception instead of just hiding
+        // the update banner like every other failure mode here does.
+        var handler = new FakeHttpMessageHandler(() => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ThrowingContent(),
+        });
         using var checker = MakeChecker(handler);
 
         var result = await checker.CheckAsync(CancellationToken.None);
