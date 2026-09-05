@@ -344,4 +344,31 @@ a2check "ReplaceBlock: 2 instance(s) now 'B'" "ReplaceBlock swapped both A insta
 a2check "3 object(s) in instances of 'B' selected" "SelBlockInstanceNamed found the replaced instances"
 a2check "CreateUniqueBlock: 'C' copied from 'B', 3 instance(s) switched" "CreateUniqueBlock copied the definition"
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
+# Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  ST="$("$BIN" --smoke 150 --script "$HERE/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
+else
+  ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
+fi
+stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+stcheck "RoundHole: radius 3, through, cut 1 solid(s)" "RoundHole cut the box"
+stcheck "Volume = 37[12][0-9] cubic" "box minus a r=3 through hole has volume ~ 4000 - 90*pi"
+stcheck "CurveBoolean: Union of 2 region(s) -> 1 closed curve(s)" "CurveBoolean united two overlapping circles into one curve"
+stcheck "degree 1, [0-9]* control points, non-rational, closed" "the union outline is a closed polyline"
+stcheck "Clash: objects 6 and 7 intersect" "Clash found the overlapping spheres"
+stcheck "Clash: 1 clashing pair(s) among 2 object(s)" "Clash reported one pair"
+stcheck "Cage: object 9, 2 x 2 x 2 divisions (27 control points)" "Cage built a 3x3x3 lattice"
+stcheck "CageEdit: 1 object(s) (14 points) bound to cage 9" "CageEdit bound the box (as a mesh) to the cage"
+stcheck "Bounding box min 300,-\?0,5 max 310,10,15" "moving the cage moved the captive"
+stcheck "Bounding box min 305,5,5 max 325,25,25" "scaling the cage scaled the captive"
+stcheck "Flow: base length 20 -> target length 31.42 (stretched to fit)" "Flow measured both curves"
+stcheck "Flow: deformed 1 object(s)" "Flow deformed the line"
+stcheck "CV\[0\] 610,0,0" "the flowed line starts at the arc start"
+stcheck "CV\[23\] 590,0,0" "the flowed line ends at the arc end"
+stcheck "length = 31.[34]" "the flowed line follows the arc length"
+stcheck "ScaleByPlane: factor 2 along the normal of the plane through 400,0,0" "ScaleByPlane read its plane and factor"
+stcheck "Bounding box min 400,0,0 max 410,10,20" "ScaleByPlane doubled the height about z=0"
+echo "$ST" | grep -E "^(ok|FAIL)"
+if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
+stcheck "smoke: frames=1[0-9][0-9] objects=14" "solid-tools script produced the expected object count"
 exit $fail

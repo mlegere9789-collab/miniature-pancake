@@ -1,0 +1,74 @@
+# Solid tools QC: holes, planar curve booleans, Clash, cage editing, Flow, ScaleByPlane.
+# Object counts are checked with @expect_objects after each section.
+# --- RoundHole through a 20x20x10 box: volume 4000 - pi*9*10 = 3717.3 (the result mesh takes a new id: 2)
+Box 0,0,0 20,20,0 10
+SelLast
+RoundHole
+10,10,10
+3
+10
+SelLast
+Volume
+@expect_objects 1
+# --- CurveBoolean union of two overlapping circles: one closed curve
+SelNone
+Circle 50,0,0 5
+Circle 56,0,0 5
+SelID 3
+SelID 4
+CurveBoolean
+SelLast
+List
+@expect_objects 4
+# --- Clash between two overlapping spheres
+SelNone
+Sphere 200,0,0 10
+Sphere 212,0,0 10
+SelID 6
+SelID 7
+Clash
+@expect_objects 6
+# --- Cage + CageEdit, then move and scale the cage: the captive follows
+SelNone
+Box 300,0,0 310,10,0 10
+Cage 295,-5,0 315,15,0 15
+SelID 8
+CageEdit
+SelID 9
+Enter
+SelControls
+Move 295,-5,0 295,-5,5
+SelCaptives
+BoundingBox
+SelControls
+Scale 295,-5,5 2
+SelCaptives
+BoundingBox
+@expect_objects 10
+# --- Flow a line onto a half-circle arc (stretched to fit)
+SelNone
+Line 500,0,0 520,0,0
+Arc 600,0,0 610,0,0 590,0,0
+SelID 13
+Flow
+Stretch=Yes
+SelID 13
+Enter
+SelID 14
+Enter
+SelID 13
+Length
+SelID 13
+List
+@expect_objects 12
+# --- ScaleByPlane: scale a mesh box by 2 along Z about the plane z=0
+SelNone
+MeshBox 400,0,0 410,10,0 10
+SelLast
+ScaleByPlane
+400,0,0
+400,0,1
+2
+SelID 15
+BoundingBox
+@expect_objects 14

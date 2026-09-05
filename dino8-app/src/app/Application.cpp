@@ -47,6 +47,8 @@ void RegisterSurfaceCommands(CommandEngine&);
 void RegisterMeshToolsCommands(CommandEngine&);
 void RegisterSubDCommands(CommandEngine&);
 void RegisterRenderCommands(CommandEngine&);
+void RegisterSolidToolsCommands(CommandEngine&);
+void UpdateCageCaptives(Document&);  // cmd_solidtools.cpp: re-deforms CageEdit captives when a cage moved
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -167,6 +169,7 @@ void Application::RegisterCommands() {
   RegisterSrfEditCommands(*engine_);
   RegisterMeshToolsCommands(*engine_);  // after Transform/Boolean: replaces the simpler Shear/Weld
   RegisterSubDCommands(*engine_);       // SubD editing (creases, ExtrudeSubD, Inset, Bridge...); replaces the Slide stub
+  RegisterSolidToolsCommands(*engine_); // holes, curve booleans, cage editing, Flow (replaces the CurveBoolean stub)
   RegisterCurveEditCommands(*engine_);  // replaces the solid-only Intersect/Split registrations
   RegisterSurfaceCommands(*engine_);    // Sweep/Pipe/OffsetSrf/Project... (approximate NURBS/mesh results)
   RegisterRenderCommands(*engine_);     // last: replaces the Render/RenderPreview/Materials placeholders
@@ -501,6 +504,7 @@ bool Application::ExportDrawing(const std::string& path, bool selected_only, dou
 
 void Application::Frame() {
   if (std::getenv("DINO8_UI_DEBUG") && (ImGui::GetFrameCount() == 5 || ImGui::GetFrameCount() == 90)) { const ImVec4& w = ImGui::GetStyle().Colors[ImGuiCol_WindowBg]; std::fprintf(stderr, "[theme] light=%d WindowBg=%.2f %.2f %.2f a=%.2f\n", light_theme ? 1 : 0, w.x, w.y, w.z, w.w); }
+  UpdateCageCaptives(doc_);
   HandleShortcuts();
   DrawDockspace();
   DrawViewports();

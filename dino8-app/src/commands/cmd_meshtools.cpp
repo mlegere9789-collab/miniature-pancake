@@ -1913,7 +1913,6 @@ void RegisterMeshToolsCommands(CommandEngine& e) {
                         [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) {
                           SmoothObjects(ctx, ids, std::max(0.0, std::min(1.0, in.N(0, 0.2))), std::max(1, static_cast<int>(in.OptNum("Iterations", 1))), in.Yes("FixBoundaries"));
                         }));
-  for (const char* n : {"Splop", "Flow", "FlowAlongSrf"}) Reg(e, n, Stub(n), CommandStatus::Partial, "Not yet available in this build.");
 
   // ---- mesh editing ----------------------------------------------------------
   Reg(e, "ExtrudeMesh", Tool("Select meshes to extrude", {NumberStep("Extrusion distance", 1)}, {Toggle("DeleteInput", true)}, ExtrudeMesh));
