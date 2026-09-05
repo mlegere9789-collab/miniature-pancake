@@ -210,6 +210,27 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public void A_failed_sign_out_leaves_a_clear_message_instead_of_crashing_the_screen()
+    {
+        // GoogleDriveClient.SignOutAsync deletes the token folder on disk, which can throw
+        // (a locked file, antivirus scanning it) -- SignOutOfGoogleDriveCommand's execute
+        // delegate is effectively an async void lambda, so without a local catch this would
+        // only be caught by the app's generic unhandled-exception dialog instead of the same
+        // inline feedback SignInToGoogleDriveAsync already gives on its own failures.
+        using var fixture = CreateSettings();
+        fixture.Settings.SignInToGoogleDriveCommand.Execute(null);
+        fixture.Drive.SignOutFailure = new InvalidOperationException("token file is in use");
+
+        fixture.Settings.SignOutOfGoogleDriveCommand.Execute(null);
+
+        Assert.Equal("Sign-out failed: token file is in use", fixture.Settings.GoogleDriveStatus);
+        // Still considered signed in -- the failure happened before SignOutAsync's caller
+        // would have flipped this, so the screen must not claim a sign-out that didn't happen.
+        Assert.True(fixture.Settings.IsSignedInToGoogleDrive);
+        Assert.True(fixture.Settings.SignOutOfGoogleDriveCommand.CanExecute(null));
+    }
+
+    [Fact]
     public void SignInToGoogleDriveCommand_cannot_fire_a_second_time_while_the_first_call_is_still_in_flight()
     {
         // CanExecute only re-queries on the usual WPF input events, not the instant the

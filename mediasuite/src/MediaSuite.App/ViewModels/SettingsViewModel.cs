@@ -444,6 +444,18 @@ public sealed class SettingsViewModel : PageViewModel
             IsSignedInToGoogleDrive = false;
             GoogleDriveStatus = "Not signed in.";
         }
+        catch (Exception ex)
+        {
+            // GoogleDriveClient.SignOutAsync deletes the token folder on disk — a locked
+            // file (antivirus scanning it, an open handle) can throw IOException or
+            // UnauthorizedAccessException. SignOutOfGoogleDriveCommand's execute delegate is
+            // `async () => await SignOutOfGoogleDriveAsync()`, which RelayCommand's Action
+            // parameter makes an async void lambda: without this catch, that exception would
+            // propagate out as an async void hazard, caught only by App.xaml.cs's generic
+            // DispatcherUnhandledException handler (a "Something went wrong" MessageBox) —
+            // worse UX than SignInToGoogleDriveAsync's own inline feedback right below.
+            GoogleDriveStatus = $"Sign-out failed: {ex.Message}";
+        }
         finally
         {
             _isGoogleDriveSignInOrOutInProgress = false;
