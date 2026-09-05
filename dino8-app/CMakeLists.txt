@@ -1,0 +1,167 @@
+cmake_minimum_required(VERSION 3.20)
+project(Dino8 VERSION 0.1.0 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
+endif()
+
+# ---------------------------------------------------------------------------
+# Geometry kernel (same repo). The app never builds the kernel's own test
+# suite or demo programs - CI runs those from the kernel directory directly.
+# ---------------------------------------------------------------------------
+set(DINO8_KERNEL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(DINO8_KERNEL_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../dino8-kernel ${CMAKE_BINARY_DIR}/dino8-kernel)
+
+# ---------------------------------------------------------------------------
+# Third-party UI stack: GLFW (window/input) + Dear ImGui docking branch.
+# Both pinned to exact tags so builds are reproducible.
+# ---------------------------------------------------------------------------
+include(FetchContent)
+
+FetchContent_Declare(
+  glfw
+  GIT_REPOSITORY https://github.com/glfw/glfw.git
+  GIT_TAG        3.4
+)
+# Wayland needs wayland-scanner at build time; X11 (with XWayland) covers Linux desktops.
+set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_X11 ON CACHE BOOL "" FORCE)
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(glfw)
+
+FetchContent_Declare(
+  imgui
+  GIT_REPOSITORY https://github.com/ocornut/imgui.git
+  GIT_TAG        v1.92.9b-docking
+)
+FetchContent_MakeAvailable(imgui)
+
+add_library(imgui STATIC
+  ${imgui_SOURCE_DIR}/imgui.cpp
+  ${imgui_SOURCE_DIR}/imgui_draw.cpp
+  ${imgui_SOURCE_DIR}/imgui_tables.cpp
+  ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+  ${imgui_SOURCE_DIR}/imgui_demo.cpp
+  ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
+  ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(imgui PUBLIC ${imgui_SOURCE_DIR} ${imgui_SOURCE_DIR}/backends)
+target_link_libraries(imgui PUBLIC glfw)
+target_compile_definitions(imgui PUBLIC IMGUI_DEFINE_MATH_OPERATORS)
+
+find_package(OpenGL REQUIRED)
+
+# ---------------------------------------------------------------------------
+# The application
+# ---------------------------------------------------------------------------
+set(DINO8_SOURCES
+  src/main.cpp
+  src/gl/gl_loader.cpp
+  src/app/Application.cpp
+  src/ui/Theme.cpp
+  src/ui/Panels.cpp
+  src/ui/MenuBar.cpp
+  src/ui/Toolbars.cpp
+  src/doc/Document.cpp
+  src/doc/SceneObject.cpp
+  src/viewport/Camera.cpp
+  src/viewport/Viewport.cpp
+  src/render/GlRenderer.cpp
+  src/commands/CommandEngine.cpp
+  src/commands/CommandCatalog.cpp
+  src/commands/cmd_create.cpp
+  src/commands/cmd_solids.cpp
+  src/commands/cmd_transform.cpp
+  src/commands/cmd_edit.cpp
+  src/commands/cmd_boolean.cpp
+  src/commands/cmd_analyze.cpp
+  src/commands/cmd_select.cpp
+  src/commands/cmd_view.cpp
+  src/commands/cmd_layer.cpp
+  src/commands/cmd_file.cpp
+  src/commands/cmd_misc.cpp
+  src/io/File3dm.cpp
+  src/util/json_mini.cpp
+)
+
+if(WIN32)
+  add_executable(Dino8 WIN32 ${DINO8_SOURCES} resources/dino8.rc)
+elseif(APPLE)
+  add_executable(Dino8 MACOSX_BUNDLE ${DINO8_SOURCES})
+  set_target_properties(Dino8 PROPERTIES
+    MACOSX_BUNDLE_BUNDLE_NAME "Dino 8"
+    MACOSX_BUNDLE_GUI_IDENTIFIER "org.dino8.app"
+    MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
+else()
+  add_executable(Dino8 ${DINO8_SOURCES})
+endif()
+
+target_include_directories(Dino8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_definitions(Dino8 PRIVATE
+  DINO8_VERSION="${PROJECT_VERSION}"
+  GL_SILENCE_DEPRECATION
+  $<$<PLATFORM_ID:Windows>:NOMINMAX>
+  $<$<PLATFORM_ID:Windows>:WIN32_LEAN_AND_MEAN>
+  $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS>
+)
+target_link_libraries(Dino8 PRIVATE dino8_kernel imgui glfw OpenGL::GL)
+
+if(MSVC)
+  target_compile_options(Dino8 PRIVATE /W3 /EHsc /bigobj)
+  # WIN32 subsystem still needs a main(): tell the linker to use it.
+  target_link_options(Dino8 PRIVATE /ENTRY:mainCRTStartup)
+else()
+  target_compile_options(Dino8 PRIVATE -Wall -Wextra)
+endif()
+
+# The command catalog (all 1055 Rhino 8 commands with help text) ships next
+# to the binary; the app also looks for it relative to the source tree when
+# run from a build directory.
+set(DINO8_DATA_FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/commands.json)
+add_custom_command(TARGET Dino8 POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Dino8>/data
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DINO8_DATA_FILES} $<TARGET_FILE_DIR:Dino8>/data/
+  COMMENT "Copying Dino8 data files next to the executable")
+
+# ---------------------------------------------------------------------------
+# Install + packaging
+# ---------------------------------------------------------------------------
+include(GNUInstallDirs)
+if(APPLE)
+  install(TARGETS Dino8 BUNDLE DESTINATION .)
+  install(FILES ${DINO8_DATA_FILES} DESTINATION "Dino8.app/Contents/Resources/data")
+elseif(WIN32)
+  install(TARGETS Dino8 RUNTIME DESTINATION .)
+  install(FILES ${DINO8_DATA_FILES} DESTINATION data)
+else()
+  install(TARGETS Dino8 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+  install(FILES ${DINO8_DATA_FILES} DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data)
+  install(FILES packaging/linux/dino8.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+endif()
+
+set(CPACK_PACKAGE_NAME "Dino8")
+set(CPACK_PACKAGE_VENDOR "Dino 8 Project")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Dino 8 - free NURBS/SubD/mesh 3D modeler")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "Dino8")
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/../LICENSE")
+if(WIN32)
+  set(CPACK_GENERATOR "ZIP")
+elseif(APPLE)
+  set(CPACK_GENERATOR "DragNDrop")
+else()
+  set(CPACK_GENERATOR "DEB;TGZ")
+  set(CPACK_DEBIAN_PACKAGE_MAINTAINER "Dino 8 Project")
+  set(CPACK_DEBIAN_PACKAGE_DEPENDS "libgl1, libx11-6")
+  set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+endif()
+include(CPack)

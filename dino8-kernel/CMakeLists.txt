@@ -59,10 +59,16 @@ target_include_directories(dino8_kernel
 # call. A plain linker pass never revisits an earlier archive, so the
 # symbols go unresolved. Wrapping both in a linker group lets ld rescan
 # until everything resolves, without patching the vendored CMakeLists.
-target_link_libraries(dino8_kernel PUBLIC
-  "-Wl,--start-group" opennurbsStatic zlib "-Wl,--end-group"
-  manifold
-)
+# --start-group is a GNU ld feature; Apple's ld64 and MSVC's link.exe
+# already rescan archives, so they get the plain list.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT APPLE AND NOT MSVC AND NOT WIN32)
+  target_link_libraries(dino8_kernel PUBLIC
+    "-Wl,--start-group" opennurbsStatic zlib "-Wl,--end-group"
+    manifold
+  )
+else()
+  target_link_libraries(dino8_kernel PUBLIC opennurbsStatic zlib manifold)
+endif()
 
 if(DINO8_KERNEL_BUILD_TESTS)
   enable_testing()

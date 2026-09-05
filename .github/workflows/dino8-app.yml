@@ -1,0 +1,90 @@
+name: Dino 8 App
+
+on:
+  push:
+    branches: [main]
+    paths: ['dino8-app/**', 'dino8-kernel/**', '.github/workflows/dino8-app.yml']
+  pull_request:
+    paths: ['dino8-app/**', 'dino8-kernel/**', '.github/workflows/dino8-app.yml']
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  linux:
+    name: Linux (build, smoke test, .deb)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils
+      - name: Configure
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE
+      - name: Build
+        run: cmake --build dino8-app/build
+      - name: Smoke test (headless)
+        run: dino8-app/tests/smoke.sh dino8-app/build/Dino8
+      - name: Package
+        run: cd dino8-app/build && cpack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-linux
+          path: |
+            dino8-app/build/*.deb
+            dino8-app/build/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows (build, installer .exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure
+        run: cmake -S dino8-app -B dino8-app/build -G "Visual Studio 17 2022" -A x64
+      - name: Build
+        run: cmake --build dino8-app/build --config Release --parallel
+      - name: Version check
+        run: dino8-app\build\Release\Dino8.exe --version
+      - name: Install tree
+        run: cmake --install dino8-app/build --config Release --prefix dino8-app/build/install
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Compile installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" dino8-app\packaging\windows\Dino8.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Portable zip
+        run: cd dino8-app/build && cpack -C Release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-windows-installer
+          path: dino8-app/dist/*.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-windows-portable
+          path: dino8-app/build/*.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS (build, .dmg)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S dino8-app -B dino8-app/build -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+      - name: Build
+        run: cmake --build dino8-app/build --parallel
+      - name: Package
+        run: cd dino8-app/build && cpack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-macos
+          path: dino8-app/build/*.dmg
+          if-no-files-found: error
