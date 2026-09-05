@@ -112,6 +112,8 @@ int main(int argc, char** argv) {
   dino8::app::Application app;
   app.ui_scale = ui_scale;
   app.has_saved_layout = has_layout;
+  app.native_window = window;
+  app.headless = smoke_frames >= 0;
   std::string error;
   if (!app.Init(ExeDir(argv[0]), error)) {
     std::fprintf(stderr, "%s\n", error.c_str());

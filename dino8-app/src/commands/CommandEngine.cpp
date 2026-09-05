@@ -195,6 +195,7 @@ void CommandEngine::Execute(const std::string& raw_input) {
 
   if (active_) {
     if (input.empty() || ToLower(input) == "enter" || input == "_Enter") FeedEnter();
+    else if (ToLower(input) == "cancel" || ToLower(input) == "_cancel" || ToLower(input) == "!cancel") Cancel();
     else {
       // A typed line may carry several tokens ("SelID 3" while an object
       // prompt is up): feed them one by one.

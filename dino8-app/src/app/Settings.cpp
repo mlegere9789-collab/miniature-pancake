@@ -56,7 +56,15 @@ bool Bool(const json::Value& v, bool fallback) {
 }  // namespace
 
 bool LoadSettings(Application& app, float& ui_scale) {
-  const fs::path path = fs::path(ConfigDirectory()) / "settings.json";
+  return LoadSettingsFrom((fs::path(ConfigDirectory()) / "settings.json").string(), app, ui_scale);
+}
+
+bool SaveSettings(const Application& app, float ui_scale) {
+  return SaveSettingsTo((fs::path(ConfigDirectory()) / "settings.json").string(), app, ui_scale);
+}
+
+bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_scale) {
+  const fs::path path = path_str;
   std::ifstream in(path);
   if (!in) return false;
   std::stringstream buf;
@@ -91,14 +99,15 @@ bool LoadSettings(Application& app, float& ui_scale) {
   app.gumball_enabled = Bool(root["gumball"], app.gumball_enabled);
   const json::Value& tb = root["toolbar"];
   if (tb.IsArray() && tb.Size() > 0) { app.toolbar_commands.clear(); for (size_t i = 0; i < tb.Size(); ++i) app.toolbar_commands.push_back(tb[i].AsString()); }
+  if (root["working_folder"].IsString()) app.State().working_folder = root["working_folder"].AsString();
   app.curve_display_tolerance = Num(root["curve_display_tolerance"], app.curve_display_tolerance);
   app.surface_display_tolerance = Num(root["surface_display_tolerance"], app.surface_display_tolerance);
   return true;
 }
 
-bool SaveSettings(const Application& app, float ui_scale) {
+bool SaveSettingsTo(const std::string& path_str, const Application& app, float ui_scale) {
   Application& a = const_cast<Application&>(app);
-  const fs::path path = fs::path(ConfigDirectory()) / "settings.json";
+  const fs::path path = path_str;
   std::ofstream out(path);
   if (!out) return false;
   out << "{\n";
@@ -108,6 +117,7 @@ bool SaveSettings(const Application& app, float ui_scale) {
   out << "  \"toolbar\": [";
   for (size_t i = 0; i < a.toolbar_commands.size(); ++i) out << (i ? ", " : "") << "\"" << Escape(a.toolbar_commands[i]) << "\"";
   out << "],\n";
+  out << "  \"working_folder\": \"" << Escape(a.State().working_folder) << "\",\n";
   out << "  \"curve_display_tolerance\": " << a.curve_display_tolerance << ",\n";
   out << "  \"surface_display_tolerance\": " << a.surface_display_tolerance << ",\n";
   out << "  \"recent_files\": [";

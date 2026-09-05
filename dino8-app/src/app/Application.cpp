@@ -49,6 +49,8 @@ void RegisterSubDCommands(CommandEngine&);
 void RegisterRenderCommands(CommandEngine&);
 void RegisterSolidToolsCommands(CommandEngine&);
 void UpdateCageCaptives(Document&);  // cmd_solidtools.cpp: re-deforms CageEdit captives when a cage moved
+void RegisterSelect2Commands(CommandEngine&);
+void RegisterStateCommands(CommandEngine&);
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -165,6 +167,8 @@ void Application::RegisterCommands() {
   RegisterAnnotateCommands(*engine_);
   RegisterDraftingCommands(*engine_);
   RegisterAnnotate2Commands(*engine_);  // dimensions, linetypes, hatch and block extras
+  RegisterSelect2Commands(*engine_);
+  RegisterStateCommands(*engine_);
   RegisterCurves2Commands(*engine_);
   RegisterSrfEditCommands(*engine_);
   RegisterMeshToolsCommands(*engine_);  // after Transform/Boolean: replaces the simpler Shear/Weld

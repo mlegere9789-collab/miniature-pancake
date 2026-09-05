@@ -148,6 +148,20 @@ struct NamedView {
   CameraState camera;
 };
 
+// A saved selection set (NamedSelections) and a saved construction plane
+// (NamedCPlane). Kept as plain data so the document stays free of viewport code.
+struct NamedSelection {
+  std::string name;
+  std::vector<ObjectId> ids;
+};
+
+struct NamedCPlane {
+  std::string name;
+  kernel::Point3d origin{0, 0, 0};
+  kernel::Vector3d x_axis{1, 0, 0};
+  kernel::Vector3d y_axis{0, 1, 0};
+};
+
 struct DocumentSettings {
   std::string unit_system = "Millimeters";
   std::string title, author, comments;  // file metadata (saved in the .3dm)
@@ -232,6 +246,8 @@ class Document {
   int CreateGroup(const std::vector<ObjectId>& ids, const std::string& name = "");
   void Ungroup(const std::vector<ObjectId>& ids);
   const std::vector<Group>& Groups() const { return groups_; }
+  std::vector<Group>& Groups() { return groups_; }
+  Group* FindGroup(int group_id) { for (Group& g : groups_) if (g.id == group_id) return &g; return nullptr; }
   std::vector<ObjectId> GroupMembers(int group_id) const;
 
   // ---- named views / user text / notes ---------------------------------
@@ -254,6 +270,8 @@ class Document {
   const std::vector<AnnotationStyle>& AnnotationStyles() const { return annotation_styles_; }
   AnnotationStyle* FindAnnotationStyle(const std::string& name);
   const AnnotationStyle& CurrentAnnotationStyle() const;
+  std::vector<NamedSelection>& NamedSelections() { return named_selections_; }
+  std::vector<NamedCPlane>& NamedCPlanes() { return named_cplanes_; }
   std::vector<BlockDefinition>& Blocks() { return blocks_; }
   BlockDefinition* FindBlock(const std::string& name) { for (BlockDefinition& b : blocks_) if (b.name == name) return &b; return nullptr; }
   std::map<std::string, std::string>& UserText() { return user_text_; }
@@ -309,6 +327,8 @@ class Document {
   RenderSettings render_;
   int next_light_id_ = 1;
   std::vector<NamedView> named_views_;
+  std::vector<NamedSelection> named_selections_;
+  std::vector<NamedCPlane> named_cplanes_;
   std::vector<BlockDefinition> blocks_;
   std::vector<Linetype> linetypes_;
   std::vector<AnnotationStyle> annotation_styles_;

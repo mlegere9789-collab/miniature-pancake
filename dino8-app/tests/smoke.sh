@@ -371,4 +371,29 @@ stcheck "Bounding box min 400,0,0 max 410,10,20" "ScaleByPlane doubled the heigh
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
 stcheck "smoke: frames=1[0-9][0-9] objects=14" "solid-tools script produced the expected object count"
+# Extended selection and state commands: SelDupAll, SelShortCrv, SelKeyValue, SelVolumeSphere, Dot, Camera, SetActiveViewport, licence rule (see state_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  ST="$("$BIN" --smoke 120 --script "$HERE/state_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: state script exited non-zero"; exit 1; }
+else
+  ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 120 --script "$HERE/state_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: state script exited non-zero"; exit 1; }
+fi
+stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+stcheck "SelDupAll: 2 duplicate object(s) selected" "SelDupAll found the two identical lines"
+stcheck "SelShortCrv: 1 curve(s) shorter than 5 selected" "SelShortCrv picked the 2-unit line"
+stcheck "Hyperlink 'https://example.org/dino8' set on 1 object(s)" "Hyperlink stored user text"
+stcheck "SelKeyValue: 1 object(s) with Hyperlink=https://example.org/dino8 selected" "SelKeyValue matched the user text"
+stcheck "SelVolumeSphere: radius 15, 2 object(s) selected" "SelVolumeSphere selected the objects near the origin"
+stcheck "Dot 'Hello' at 5,5,0 (object 5)" "Dot created a text dot"
+stcheck "Named selection 'dots' restored: 1 object(s) selected" "NamedSelections saved and restored a set"
+stcheck "Camera (Perspective): location" "Camera reported the perspective camera"
+stcheck "Active viewport: Top" "SetActiveViewport switched to Top"
+stcheck "Camera (Top): location .*parallel projection" "Camera reported the Top (parallel) camera"
+stcheck "Perspective angle 60 deg" "PerspectiveAngle set the lens"
+stcheck "Dino 8 is free software: no licenses, accounts or subscriptions." "CheckOutLicense/Login print the no-licence rule"
+stcheck "Selection filter edges on" "SelectionFilterEdges toggled the filter"
+stcheck "Document user text Project = Dino" "SetDocumentUserText stored a key"
+stcheck "Gumball: on, alignment CPlane" "GumballSettings reported the widget state"
+echo "$ST" | grep -E "^(ok|FAIL)"
+if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
+stcheck "^ok   expect_selected 5" "state script ended with every object selected"
 exit $fail

@@ -17,5 +17,8 @@ std::string ConfigDirectory();
 
 bool LoadSettings(Application& app, float& ui_scale);
 bool SaveSettings(const Application& app, float ui_scale);
+// The same JSON, to/from an explicit file (OptionsExport / OptionsImport).
+bool LoadSettingsFrom(const std::string& path, Application& app, float& ui_scale);
+bool SaveSettingsTo(const std::string& path, const Application& app, float ui_scale);
 
 }  // namespace dino8::app

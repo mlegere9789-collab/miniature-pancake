@@ -99,6 +99,8 @@ set(DINO8_SOURCES
   src/commands/cmd_boolean.cpp
   src/commands/cmd_analyze.cpp
   src/commands/cmd_select.cpp
+  src/commands/cmd_select2.cpp
+  src/commands/cmd_state.cpp
   src/commands/cmd_view.cpp
   src/commands/cmd_layer.cpp
   src/commands/cmd_file.cpp

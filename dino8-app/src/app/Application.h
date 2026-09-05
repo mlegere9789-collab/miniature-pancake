@@ -65,6 +65,35 @@ struct RenderImage {
   bool Valid() const { return width > 0 && height > 0 && rgb.size() == static_cast<size_t>(width) * height * 3; }
 };
 
+// Small app-wide switches set by commands (SelectionFilter*, Echo, DragMode,
+// SetRedrawOff, SetWorkingFolder...). Plain data so cmd_state.cpp and
+// cmd_select2.cpp can read and toggle them without UI code.
+struct AppState {
+  // Sub-object selection filter (SelectionFilterEdges/Faces/Vertices/...).
+  bool filter_enabled = true;
+  bool filter_edges = false, filter_faces = false, filter_vertices = false;
+  bool echo = true;              // Echo / NoEcho: print script commands to the history
+  bool redraw = true;            // SetRedrawOn / SetRedrawOff
+  bool command_prompt = true;    // CommandPrompt / DisplayCommandPrompt
+  bool viewport_tabs = false;    // ViewportTabs
+  bool toolbar_lock = false;     // ToolbarLock
+  bool left_sidebar = true, right_sidebar = true;
+  bool alerter = false;          // Alerter: beep when a command finishes
+  std::string drag_mode = "CPlane";  // DragMode: CPlane / World / UVN / View / ControlPolygon
+  double drag_strength = 100.0;  // DragStrength percent
+  bool drag_copy = false;        // DragCopy
+  bool remember_copy_options = false;
+  double ortho_angle = 90.0;     // OrthoAngle degrees
+  bool ortho_snap_to_cplane_z = false;
+  bool snap_to_locked = true, snap_to_occluded = true, snap_to_meshes = true, snap_to_mesh_object = true, snap_to_subd_object = true;
+  double zoom_extents_border = 1.1;  // SetZoomExtentsBorder factor
+  double perspective_angle = 0;      // PerspectiveAngle (0 = derived from the lens)
+  bool lock_viewport = false;        // LockViewport: ignore view changes from the mouse
+  std::string working_folder;        // SetWorkingFolder
+  bool message_boxes_reset = false;
+  bool camera_shown = false;         // Camera Show: draw the active camera frustum
+};
+
 struct FileDialogState {
   bool open = false;
   bool save = false;
@@ -98,6 +127,14 @@ class Application {
   Viewport* FindViewport(const std::string& name);
   SnapSettings& Snaps() { return snaps_; }
   PanelState& Panels() { return panels_; }
+  AppState& State() { return state_; }
+  Gumball& GetGumball() { return gumball_; }
+  // The GLFW window (as an opaque pointer so headers stay GLFW-free); set by
+  // main() so Fullscreen/Maximize/Minimize/Restore can drive the OS window.
+  void* native_window = nullptr;
+  // True in --smoke runs (hidden window): commands must not open browsers
+  // or minimise the window.
+  bool headless = false;
   bool WantsQuit() const { return quit_; }
   // Asks "Save changes?" when the document is modified, then runs `then`.
   void ConfirmDiscard(std::function<void()> then);
@@ -179,6 +216,7 @@ class Application {
   int active_viewport_ = 3;
   SnapSettings snaps_;
   PanelState panels_;
+  AppState state_;
   FileDialogState file_dialog_;
   std::deque<Notification> notifications_;
   std::vector<std::string> recent_files_;
