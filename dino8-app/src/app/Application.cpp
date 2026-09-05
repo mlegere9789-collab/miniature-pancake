@@ -326,7 +326,7 @@ void Application::DrawDockspace() {
   const ImGuiViewport* vp = ImGui::GetMainViewport();
   // Reserve space for the command line (top) and status bar (bottom).
   const float command_h = ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f;
-  const float status_h = ImGui::GetFrameHeightWithSpacing() + 4.0f;
+  const float status_h = StatusBarHeight();
   const float toolbar_h = panels_.toolbars ? 38.0f : 0.0f;
   ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y + command_h + toolbar_h));
   ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, vp->WorkSize.y - command_h - status_h - toolbar_h));
@@ -629,9 +629,14 @@ void Application::DrawCommandLine() {
   ImGui::PopStyleVar(2);
 }
 
+float Application::StatusBarHeight() const {
+  const float row = ImGui::GetFrameHeightWithSpacing();
+  return (panels_.object_snaps ? 2.0f * row : row) + 4.0f;
+}
+
 void Application::DrawStatusBar() {
   const ImGuiViewport* vp = ImGui::GetMainViewport();
-  const float h = ImGui::GetFrameHeightWithSpacing() + 4.0f;
+  const float h = StatusBarHeight();
   ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y + vp->WorkSize.y - h));
   ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, h));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -641,6 +646,23 @@ void Application::DrawStatusBar() {
                                  ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
                                  ImGuiWindowFlags_NoBringToFrontOnFocus;
   ImGui::Begin("##StatusBar", nullptr, flags);
+  // Row 1: persistent object snaps (Rhino's osnap toolbar, docked).
+  if (panels_.object_snaps) {
+    auto osnap = [&](const char* label, bool& value) {
+      ImGui::PushStyleColor(ImGuiCol_Button, value ? ImVec4(0.22f, 0.45f, 0.75f, 1) : ImVec4(0.18f, 0.19f, 0.22f, 1));
+      if (ImGui::SmallButton(label)) value = !value;
+      ImGui::PopStyleColor();
+      ImGui::SameLine(0, 4);
+    };
+    ImGui::TextDisabled("Osnap");
+    ImGui::SameLine(0, 8);
+    osnap("End", snaps_.end); osnap("Near", snaps_.near_); osnap("Point", snaps_.point); osnap("Mid", snaps_.mid);
+    osnap("Cen", snaps_.cen); osnap("Int", snaps_.int_); osnap("Perp", snaps_.perp); osnap("Tan", snaps_.tan);
+    osnap("Quad", snaps_.quad); osnap("Vertex", snaps_.vertex);
+    ImGui::SameLine(0, 12);
+    osnap("Disable", snaps_.disable_all);
+    ImGui::NewLine();
+  }
   // Cursor coordinates.
   if (pending_hover_) {
     ImGui::Text("%s", FormatPoint(*pending_hover_).c_str());
@@ -680,8 +702,7 @@ void Application::DrawStatusBar() {
   ImGui::End();
   ImGui::PopStyleVar(2);
 
-  // Object snap toolbar (its own small window).
-  if (panels_.object_snaps) {
+  if (false) {
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y + vp->WorkSize.y - h - 30), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowBgAlpha(0.85f);
     if (ImGui::Begin("Object Snaps", &panels_.object_snaps, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDocking)) {

@@ -246,6 +246,36 @@ void AppendBrepEdges(const kernel::Brep& brep, std::vector<float>& out) {
       prev = p;
     }
   }
+  // Isocurves on untrimmed, non-planar faces (a sphere is otherwise just
+  // its seam in wireframe). Trimmed faces keep edges only so no isocurve
+  // strays outside the trim.
+  for (int fi = 0; fi < raw.m_F.Count(); ++fi) {
+    const ON_BrepFace& f = raw.m_F[fi];
+    if (f.m_face_index < 0 || f.m_li.Count() != 1) continue;
+    const ON_Surface* srf = f.SurfaceOf();
+    if (!srf || srf->IsPlanar(nullptr, 1e-6)) continue;
+    const ON_BrepLoop& loop = raw.m_L[f.m_li[0]];
+    const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+    const ON_BoundingBox pb = loop.m_pbox;
+    const double eu = 1e-6 * (1 + du.Length()), ev = 1e-6 * (1 + dv.Length());
+    if (!pb.IsValid() || std::fabs(pb.m_min.x - du.Min()) > eu || std::fabs(pb.m_max.x - du.Max()) > eu ||
+        std::fabs(pb.m_min.y - dv.Min()) > ev || std::fabs(pb.m_max.y - dv.Max()) > ev) continue;
+    const int samples = 48;
+    auto emit = [&](bool along_u, double fixed) {
+      ON_3dPoint prev = along_u ? srf->PointAt(du.Min(), fixed) : srf->PointAt(fixed, dv.Min());
+      for (int k = 1; k <= samples; ++k) {
+        const double t = static_cast<double>(k) / samples;
+        const ON_3dPoint p = along_u ? srf->PointAt(du.ParameterAt(t), fixed) : srf->PointAt(fixed, dv.ParameterAt(t));
+        out.push_back(static_cast<float>(prev.x)); out.push_back(static_cast<float>(prev.y)); out.push_back(static_cast<float>(prev.z));
+        out.push_back(static_cast<float>(p.x)); out.push_back(static_cast<float>(p.y)); out.push_back(static_cast<float>(p.z));
+        prev = p;
+      }
+    };
+    for (double q : {0.25, 0.5, 0.75}) {
+      emit(true, dv.ParameterAt(q));
+      emit(false, du.ParameterAt(q));
+    }
+  }
   // Breps built by the kernel's own primitives may carry no edge topology
   // yet (they store trim loops separately); fall back to surface isocurves.
   if (raw.m_E.Count() == 0) {

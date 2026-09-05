@@ -112,6 +112,7 @@ class Application {
   void DrawPanels();
   void DrawCommandLine();
   void DrawStatusBar();
+  float StatusBarHeight() const;
   void DrawFileDialog();
   void DrawNotifications();
   void HandleShortcuts();

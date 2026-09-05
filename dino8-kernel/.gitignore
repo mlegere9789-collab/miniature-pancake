@@ -16,3 +16,4 @@ dino8_kernel_mesh_stl_load_test_malformed.stl
 # folder - a generated demo output, not source.
 dino8_demo_trophy.obj
 dino8_demo_trophy.stl
+build-qc/

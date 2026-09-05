@@ -199,7 +199,11 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx) {
       o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
-      Color c = doc.EffectiveColor(o);
+      // Shaded/Ghosted/X-Ray fill with one light material like Rhino's
+      // default, unless the object carries a material; Rendered uses the
+      // object/layer colour.
+      Color c = Color::FromBytes(205, 207, 212);
+      if (mode_ == DisplayMode::Rendered || !o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
       if (style.force_white) c = Color::FromBytes(245, 245, 245);
       else if (style.monochrome) c = Color::FromBytes(200, 200, 205);
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
@@ -217,6 +221,14 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx) {
     const DisplayCache& d = o.Display();
     const bool is_curve_like = o.kind == ObjectKind::Curve;
     Color line_color = doc.EffectiveColor(o);
+    // Rhino's default layer colour is black, which vanishes on a dark
+    // background: lift near-black wire colours so curves stay readable.
+    {
+      const float bg_lum = 0.299f * style.bg_bottom.r + 0.587f * style.bg_bottom.g + 0.114f * style.bg_bottom.b;
+      const float lum = 0.299f * line_color.r + 0.587f * line_color.g + 0.114f * line_color.b;
+      if (bg_lum < 0.45f && lum < 0.25f && !style.fill) line_color = Color::FromBytes(222, 225, 230);
+      else if (bg_lum < 0.45f && lum < 0.25f && is_curve_like) line_color = Color::FromBytes(222, 225, 230);
+    }
     if (!is_curve_like) {
       if (style.fill) line_color = style.monochrome || style.force_white ? style.edge_color : Mix(line_color, style.edge_color, 0.55f);
       if (!style.edges && !style.isocurves && !o.selected) {
