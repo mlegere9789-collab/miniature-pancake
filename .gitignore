@@ -20,6 +20,12 @@ data/*
 # Your live job config (jobs.example.json IS tracked as the template).
 orchestrator/jobs.json
 
+# --- Vitals (React Native + Node/Postgres app) ---
+vitals/**/node_modules/
+vitals/backend/dist/
+vitals/backend/uploads/
+vitals/mobile/.expo/
+vitals/mobile/dist/
 
 # --- MediaSuite (.NET) ---
 [Bb]in/

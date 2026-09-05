@@ -1,0 +1,174 @@
+// Mirrors vitals/backend/prisma/schema.prisma — kept in sync manually for
+// Phase 1. Once the API is stable, generate these from an OpenAPI schema.
+
+export interface LocationPin {
+  x: number;
+  y: number;
+}
+
+export interface Plant {
+  id: string;
+  gardenId: string;
+  speciesId: string;
+  speciesName: string;
+  nickname: string | null;
+  plantedDate: string | null;
+  locationPin: LocationPin | null;
+  importanceWeight: number;
+  checkinCadenceDays: number;
+  frostSensitive: boolean;
+  dormancyMonths: number[];
+  scoreCurrent: number;
+  createdAt: string;
+}
+
+export interface WeatherAlert {
+  type: "frost";
+  minTempTonightC: number;
+  affectedPlantIds: string[];
+}
+
+export interface OutbreakAlert {
+  condition: string;
+  gardenCount: number;
+}
+
+export interface PlantScoreSnapshot {
+  id: string;
+  score: number;
+  computedAt: string;
+}
+
+export type FlagSeverity = "COSMETIC" | "MODERATE" | "URGENT";
+export type FlagUrgency = "MONITOR" | "THIS_WEEK" | "TREAT_TODAY";
+export type FlagStatus = "OPEN" | "MONITORING" | "RESOLVED";
+
+export interface TreatmentPlan {
+  id: string;
+  steps: string[];
+  productsRecommended: string[];
+  completed: boolean;
+}
+
+export interface DiagnosticFlag {
+  id: string;
+  condition: string;
+  confidence: number;
+  severity: FlagSeverity;
+  urgency: FlagUrgency;
+  status: FlagStatus;
+  treatmentPlan: TreatmentPlan | null;
+}
+
+export interface CheckIn {
+  id: string;
+  plantId: string;
+  timestamp: string;
+  photoUrl: string;
+  computedScore: number;
+  subscoreBreakdownJson: {
+    visualVitality: number;
+    diagnosticFlags: number;
+    environmentalFit: number;
+    careConsistency: number;
+    trendMomentum: number;
+  };
+  diagnosticFlags: DiagnosticFlag[];
+}
+
+export interface CreateCheckInResponse {
+  checkIn: CheckIn;
+  priorScore: number | null;
+}
+
+export interface Garden {
+  id: string;
+  name: string;
+  scoreCurrent: number;
+  plants: Plant[];
+  scoreHistory: PlantScoreSnapshot[];
+  needsAttention: Plant[];
+  risingStars: { plantId: string; delta: number }[];
+  weatherAlert: WeatherAlert | null;
+  outbreakAlerts: OutbreakAlert[];
+  leaderboardOptIn: boolean;
+  yardMapPhotoUrl: string | null;
+}
+
+export interface ScoreForecast {
+  projectedScore: number;
+  daysAhead: number;
+  trend: "improving" | "declining" | "flat";
+  approachingAttentionThreshold: boolean;
+}
+
+export interface PlantDetail extends Plant {
+  scoreHistory: PlantScoreSnapshot[];
+  checkIns: CheckIn[];
+  forecast: ScoreForecast | null;
+}
+
+export interface ReportCardPlantSummary {
+  plantId: string;
+  name: string;
+  scoreEnd: number;
+  delta: number;
+}
+
+export interface WeeklyReportCard {
+  periodStart: string;
+  periodEnd: string;
+  gardenScoreStart: number;
+  gardenScoreEnd: number;
+  gardenScoreDelta: number;
+  topPlants: ReportCardPlantSummary[];
+  plantsNeedingAttention: ReportCardPlantSummary[];
+  checkInsCompleted: number;
+  headline: string;
+}
+
+export interface TwinComparison {
+  percentile: number;
+  cohortSize: number;
+  message: string;
+}
+
+export interface LeaderboardResult {
+  rank: number;
+  totalParticipants: number;
+  percentile: number;
+}
+
+export type SpeciesDormancyHabit = "deciduous" | "evergreen" | "annual";
+
+export interface SpeciesSuggestion {
+  speciesId: string;
+  displayName: string;
+  habit: SpeciesDormancyHabit;
+}
+
+export interface SpeciesDormancyLookup {
+  known: boolean;
+  habit: SpeciesDormancyHabit | null;
+  months: number[];
+  suggestDormant: boolean;
+}
+
+export interface CreatePlantInput {
+  gardenId: string;
+  speciesId: string;
+  speciesName: string;
+  nickname?: string;
+  importanceWeight?: number;
+  checkinCadenceDays?: number;
+  frostSensitive?: boolean;
+  dormancyMonths?: number[];
+}
+
+export interface UpdatePlantInput {
+  nickname?: string | null;
+  importanceWeight?: number;
+  checkinCadenceDays?: number;
+  frostSensitive?: boolean;
+  dormancyMonths?: number[];
+}

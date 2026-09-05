@@ -1,0 +1,287 @@
+import React, { useEffect, useState } from "react";
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { createPlant, fetchDormancyDefaults, searchSpecies, updatePlant } from "../services/api";
+import { theme } from "../theme/theme";
+import { Plant, SpeciesSuggestion } from "../types/domain";
+
+interface Props {
+  gardenId: string;
+  /** When set, the screen edits this plant instead of creating a new one. Species is locked once created. */
+  editingPlant?: Plant;
+  onCreated: (plant: Plant) => void;
+  onCancel: () => void;
+}
+
+/**
+ * Manual plant entry (spec §4.1, Phase 1: "skip auto-segmentation for v1")
+ * and editing (species is locked once created — changing it would silently
+ * invalidate score history comparisons and twin-plant matching).
+ * Auto-segmentation from a wide yard photo is Phase 3 scope.
+ */
+export function AddPlantScreen({ gardenId, editingPlant, onCreated, onCancel }: Props) {
+  const isEditing = !!editingPlant;
+  const [speciesName, setSpeciesName] = useState(editingPlant?.speciesName ?? "");
+  const [nickname, setNickname] = useState(editingPlant?.nickname ?? "");
+  const [checkinCadenceDays, setCheckinCadenceDays] = useState(String(editingPlant?.checkinCadenceDays ?? 14));
+  const [importanceWeight, setImportanceWeight] = useState(String(editingPlant?.importanceWeight ?? 1));
+  const [frostSensitive, setFrostSensitive] = useState(editingPlant?.frostSensitive ?? false);
+  const [dormantInWinter, setDormantInWinter] = useState((editingPlant?.dormancyMonths.length ?? 0) > 0);
+  const [dormancyMonths, setDormancyMonths] = useState<number[]>(editingPlant?.dormancyMonths ?? [11, 12, 1, 2]);
+  const [dormancyTouched, setDormancyTouched] = useState(isEditing);
+  const [speciesDormancyNote, setSpeciesDormancyNote] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<SpeciesSuggestion[]>([]);
+  const [suggestionsDismissed, setSuggestionsDismissed] = useState(isEditing);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (isEditing) return; // species/hemisphere defaults only matter for a brand-new plant
+    // Hemisphere-aware fallback (spec §4.7): a garden south of the equator
+    // gets a May-Aug preset instead of assuming everyone winters Nov-Feb.
+    fetchDormancyDefaults(gardenId)
+      .then((lookup) => setDormancyMonths(lookup.months))
+      .catch(() => undefined);
+  }, [gardenId, isEditing]);
+
+  useEffect(() => {
+    if (isEditing) return;
+    const slug = speciesName.trim().toLowerCase().replace(/\s+/g, "-");
+    if (!slug) {
+      setSpeciesDormancyNote(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      fetchDormancyDefaults(gardenId, slug)
+        .then((lookup) => {
+          if (!lookup.known) {
+            setSpeciesDormancyNote(null);
+            return;
+          }
+          setDormancyMonths(lookup.months);
+          setSpeciesDormancyNote(
+            lookup.habit === "deciduous"
+              ? "Deciduous — we've turned on winter dormancy for you."
+              : lookup.habit === "evergreen"
+                ? "Evergreen — no winter dormancy needed."
+                : "Annual — no winter dormancy needed.",
+          );
+          // Only auto-apply the toggle if the user hasn't already set it by hand.
+          if (!dormancyTouched) setDormantInWinter(lookup.suggestDormant);
+        })
+        .catch(() => undefined);
+      // 500ms debounce so we're not firing a request per keystroke.
+    }, 500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speciesName, gardenId]);
+
+  useEffect(() => {
+    if (isEditing || suggestionsDismissed || !speciesName.trim()) {
+      setSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      searchSpecies(speciesName)
+        .then(setSuggestions)
+        .catch(() => undefined);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [speciesName, suggestionsDismissed, isEditing]);
+
+  function selectSuggestion(suggestion: SpeciesSuggestion) {
+    setSpeciesName(suggestion.displayName);
+    setSuggestionsDismissed(true);
+    setSuggestions([]);
+  }
+
+  async function handleSubmit() {
+    if (!speciesName.trim()) {
+      Alert.alert("Species required", "Enter what kind of plant this is.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      // Number("") and Number("abc") are NaN — those should fall back to
+      // the default, but Number("0") is a legitimate 0 (spec §4.1 allows a
+      // 0-10 importance range) and must NOT be coerced back to the
+      // fallback with `|| default`, which would silently discard it.
+      const cadence = Number(checkinCadenceDays);
+      const importance = Number(importanceWeight);
+      const checkinCadenceDaysValue = Number.isNaN(cadence) ? 14 : cadence;
+      const importanceWeightValue = Number.isNaN(importance) ? 1 : importance;
+
+      const plant = isEditing
+        ? await updatePlant(editingPlant!.id, {
+            nickname: nickname.trim() || null,
+            checkinCadenceDays: checkinCadenceDaysValue,
+            importanceWeight: importanceWeightValue,
+            frostSensitive,
+            dormancyMonths: dormantInWinter ? dormancyMonths : [],
+          })
+        : await createPlant({
+            gardenId,
+            speciesId: speciesName.trim().toLowerCase().replace(/\s+/g, "-"),
+            speciesName: speciesName.trim(),
+            nickname: nickname.trim() || undefined,
+            checkinCadenceDays: checkinCadenceDaysValue,
+            importanceWeight: importanceWeightValue,
+            frostSensitive,
+            dormancyMonths: dormantInWinter ? dormancyMonths : [],
+          });
+      onCreated(plant);
+    } catch (err) {
+      Alert.alert(isEditing ? "Couldn't save changes" : "Couldn't add plant", String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <ScrollView contentContainerStyle={styles.container}>
+      <Text style={styles.title}>{isEditing ? "Edit plant" : "Add a plant"}</Text>
+
+      {isEditing ? (
+        <View style={styles.field}>
+          <Text style={styles.label}>Species</Text>
+          <Text style={styles.lockedSpeciesText}>{speciesName}</Text>
+        </View>
+      ) : (
+        <Field
+          label="Species (e.g. Tomato, Japanese Maple)"
+          value={speciesName}
+          onChangeText={(v) => {
+            setSpeciesName(v);
+            setSuggestionsDismissed(false);
+          }}
+        />
+      )}
+      {suggestions.length > 0 && (
+        <View style={styles.suggestionRow}>
+          {suggestions.map((s) => (
+            <Pressable key={s.speciesId} style={styles.suggestionChip} onPress={() => selectSuggestion(s)}>
+              <Text style={styles.suggestionChipText}>{s.displayName}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+      {speciesDormancyNote && <Text style={styles.speciesNote}>🌱 {speciesDormancyNote}</Text>}
+      <Field label="Nickname (optional)" value={nickname} onChangeText={setNickname} />
+      <Field
+        label="Check-in cadence (days)"
+        value={checkinCadenceDays}
+        onChangeText={setCheckinCadenceDays}
+        keyboardType="number-pad"
+      />
+      <Field
+        label="Importance (0–10, how much this plant matters to your Garden Score)"
+        value={importanceWeight}
+        onChangeText={setImportanceWeight}
+        keyboardType="decimal-pad"
+      />
+
+      <View style={styles.switchRow}>
+        <Text style={[styles.label, { flex: 1, marginBottom: 0 }]}>
+          Frost-sensitive (gets a frost-warning alert)
+        </Text>
+        <Switch value={frostSensitive} onValueChange={setFrostSensitive} />
+      </View>
+
+      <View style={styles.switchRow}>
+        <Text style={[styles.label, { flex: 1, marginBottom: 0 }]}>
+          Dormant in winter (e.g. deciduous trees — won't be scored as declining for expected leaf drop)
+        </Text>
+        <Switch
+          value={dormantInWinter}
+          onValueChange={(v) => {
+            setDormancyTouched(true);
+            setDormantInWinter(v);
+          }}
+        />
+      </View>
+
+      <Pressable style={styles.primaryButton} onPress={handleSubmit} disabled={submitting}>
+        <Text style={styles.primaryButtonText}>
+          {submitting ? (isEditing ? "Saving…" : "Adding…") : isEditing ? "Save changes" : "Add plant"}
+        </Text>
+      </Pressable>
+      <Pressable style={styles.secondaryButton} onPress={onCancel}>
+        <Text style={styles.secondaryButtonText}>Cancel</Text>
+      </Pressable>
+    </ScrollView>
+  );
+}
+
+function Field(props: {
+  label: string;
+  value: string;
+  onChangeText: (v: string) => void;
+  keyboardType?: "default" | "number-pad" | "decimal-pad";
+}) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.label}>{props.label}</Text>
+      <TextInput
+        style={styles.input}
+        value={props.value}
+        onChangeText={props.onChangeText}
+        keyboardType={props.keyboardType ?? "default"}
+        placeholderTextColor={theme.color.textSecondary}
+      />
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { padding: theme.spacing(3), backgroundColor: theme.color.cream, flexGrow: 1 },
+  title: { fontSize: theme.font.titleSize, fontWeight: "700", color: theme.color.textPrimary, marginBottom: theme.spacing(3) },
+  field: { marginBottom: theme.spacing(2) },
+  lockedSpeciesText: { fontSize: theme.font.bodySize, color: theme.color.textPrimary, paddingVertical: theme.spacing(1.5) },
+  suggestionRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.spacing(1),
+    marginTop: -theme.spacing(1),
+    marginBottom: theme.spacing(2),
+  },
+  suggestionChip: {
+    paddingHorizontal: theme.spacing(1.5),
+    paddingVertical: theme.spacing(1),
+    borderRadius: theme.radius.sm,
+    backgroundColor: "white",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.color.border,
+  },
+  suggestionChipText: { fontSize: theme.font.captionSize, color: theme.color.forestGreen, fontWeight: "600" },
+  speciesNote: {
+    fontSize: theme.font.captionSize,
+    color: theme.color.forestGreenLight,
+    marginTop: -theme.spacing(1),
+    marginBottom: theme.spacing(2),
+  },
+  switchRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: theme.spacing(2),
+  },
+  label: { fontSize: theme.font.captionSize, color: theme.color.textSecondary, marginBottom: theme.spacing(1) },
+  input: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: theme.color.border,
+    borderRadius: theme.radius.sm,
+    paddingHorizontal: theme.spacing(2),
+    paddingVertical: theme.spacing(1.5),
+    fontSize: theme.font.bodySize,
+    backgroundColor: "white",
+    color: theme.color.textPrimary,
+  },
+  primaryButton: {
+    marginTop: theme.spacing(2),
+    backgroundColor: theme.color.forestGreen,
+    paddingVertical: theme.spacing(2),
+    borderRadius: theme.radius.md,
+    alignItems: "center",
+  },
+  primaryButtonText: { color: theme.color.cream, fontWeight: "600", fontSize: theme.font.bodySize },
+  secondaryButton: { marginTop: theme.spacing(2), paddingVertical: theme.spacing(1), alignItems: "center" },
+  secondaryButtonText: { color: theme.color.textSecondary, fontSize: theme.font.bodySize },
+});

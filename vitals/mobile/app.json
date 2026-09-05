@@ -1,0 +1,36 @@
+{
+  "expo": {
+    "name": "Vitals",
+    "slug": "vitals",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "app.vitals.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Vitals uses your camera to check in on your plants and track their health over time.",
+        "NSPhotoLibraryUsageDescription": "Vitals needs photo library access to set a photo of your yard for the yard map."
+      }
+    },
+    "android": {
+      "package": "app.vitals.mobile",
+      "permissions": ["CAMERA", "SCHEDULE_EXACT_ALARM", "READ_MEDIA_IMAGES"]
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Vitals uses your camera to check in on your plants and track their health over time."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Vitals needs photo library access to set a photo of your yard for the yard map."
+        }
+      ],
+      "expo-notifications"
+    ]
+  }
+}

@@ -1,0 +1,86 @@
+name: Vitals CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'vitals/**'
+      - '.github/workflows/vitals-ci.yml'
+  pull_request:
+    paths:
+      - 'vitals/**'
+      - '.github/workflows/vitals-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  backend:
+    name: Backend typecheck + lint + test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vitals/backend
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: vitals/backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+  mobile:
+    name: Mobile typecheck + lint + test + bundle
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vitals/mobile
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: vitals/mobile/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      # tsc/eslint never invoke Metro/Babel, so neither one catches a
+      # missing/broken babel.config.js — this is the one step that actually
+      # proves the app bundles, not just that the TypeScript is well-formed.
+      - name: Verify the app actually bundles for iOS (Metro/Babel)
+        run: npx expo export --platform ios --output-dir /tmp/vitals-export-ios
+
+      - name: Verify the app actually bundles for Android (Metro/Babel)
+        run: npx expo export --platform android --output-dir /tmp/vitals-export-android
