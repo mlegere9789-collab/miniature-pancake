@@ -177,4 +177,28 @@ sfcheck "CV\[1\] 240,20,0" "Project landed the line on the plane"
 sfcheck "Pull: 0 curve(s), 1 point(s)" "Pull produced one point"
 sfcheck "  225,5,0" "Pull moved the point onto the plane"
 sfcheck "smoke: frames=200 objects=39" "surface script produced the expected object count"
+# Surface editing: ExtractSrf, DeleteFaces, DupBorder/DupEdge, Untrim, isocurves, ExtendSrf, UnrollSrf, Silhouette, RailRevolve, Fin/Ribbon, grids (see srfedit_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  SE="$("$BIN" --smoke 150 --script "$HERE/srfedit_script.txt" 2>&1)" || { echo "$SE"; echo "FAIL: surface-edit script exited non-zero"; exit 1; }
+else
+  SE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/srfedit_script.txt" 2>&1)" || { echo "$SE"; echo "FAIL: surface-edit script exited non-zero"; exit 1; }
+fi
+secheck() { if echo "$SE" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+secheck "ExtractSrf: face 5 extracted from object 1" "ExtractSrf pulled the top face off the box"
+secheck "5 faces, 12 edges, open" "ExtractSrf left a 5-face open polysurface"
+secheck "DeleteFaces: face 4 deleted, 4 face(s) left" "DeleteFaces removed the bottom face"
+secheck "DupBorder: 3 border curve(s)" "DupBorder found the naked edge loops"
+secheck "DupEdge: edge 0 of object 1 duplicated" "DupEdge copied an edge"
+secheck "DupFaceBorder: 1 curve(s)" "DupFaceBorder copied the face loop"
+secheck "Untrim: face 0 replaced by its untrimmed surface" "Untrim removed the circular trim"
+secheck "ExtractIsocurve: 2 curve(s)" "ExtractIsocurve extracted U and V isocurves"
+secheck "ExtractWireframe: 6 curve(s)" "ExtractWireframe extracted the cylinder wires"
+secheck "Bounding box min 200,0,0 max 220,10,0" "ExtendSrf grew the plane by 10"
+secheck "UnrollSrf: face 0 flattened, area 313" "UnrollSrf preserved the cylinder wall area"
+secheck "Silhouette: [0-9]* curve(s)" "Silhouette produced outline curves"
+secheck "RailRevolve: surface created" "RailRevolve built a surface"
+secheck "Ribbon: 1 ribbon surface(s), width 5" "Ribbon built a ribbon surface"
+secheck "SrfControlPtGrid: surface from 2 x 2 points" "SrfControlPtGrid built a surface from points"
+secheck "^ok   expect_objects 42" "surface-edit script produced the expected object count"
+
 exit $fail
