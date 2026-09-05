@@ -1765,6 +1765,31 @@ What this repo does instead:
   interior knot at the first value tried) rather than going looking for
   it, then confirmed and documented on both `NurbsCurve::InsertKnotAt()`
   and this method with a dedicated test each.
+- `NurbsCurve`/`NurbsSurface::MakeRational()`/`MakeNonRational()`: thin
+  wraps of `ON_NurbsCurve`/`ON_NurbsSurface::MakeRational()`/
+  `MakeNonRational()`, with `Result::NoOpAlreadySatisfied` when already
+  in the requested state. `MakeRational()` is genuinely shape-preserving
+  (confirmed by testing, not assumed) - every control point simply gets
+  an explicit weight of 1.0, the same implicit weighting a non-rational
+  object already had.
+  `MakeNonRational()` is the surprising one, and the most significant
+  finding of this chunk: it does **not** generally preserve shape,
+  despite each individual control point ending up at its own
+  geometrically "correct" Euclidean position (`ON_NurbsCurve`/
+  `ON_NurbsSurface::MakeNonRational()` divides each control point's raw
+  coordinates by its own weight to get there). The reason is that
+  forcing every weight to 1.0 afterward blends those now-corrected
+  points with ordinary polynomial basis functions instead of the
+  original rational ones - a mathematically different curve/surface
+  whenever the original weights varied. Verified concretely, not just
+  argued: a genuine radius-5 circle's own radius after `MakeNonRational()`
+  is no longer constant (exactly 5.0 only at points that already had
+  weight 1.0, up to ~5.28 elsewhere), and a genuine radius-3 sphere's
+  distance from center likewise varies by more than 0.1 across a sampled
+  grid instead of staying exactly 3.0 - it stops being a circle/sphere
+  at all, not just a slightly-off approximation of one. Only genuinely
+  shape-preserving when every weight was already equal (the mirror-image
+  condition of `MakeRational()`'s own guarantee).
 
 ## What's still not done (as of chunk 2)
 

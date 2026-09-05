@@ -130,6 +130,20 @@ class NurbsSurface {
   // throwing std::invalid_argument otherwise.
   Result InsertKnotAt(int direction, double knot_value, int multiplicity = 1);
 
+  // Same reasoning and guarantee as `NurbsCurve::MakeRational()` - see
+  // there. Delegates to `ON_NurbsSurface::MakeRational()`.
+  Result MakeRational();
+
+  // Same reasoning as `NurbsCurve::MakeNonRational()`, and the same real
+  // surprising finding cross-checked independently here on a genuine
+  // sphere rather than assumed to generalize from the circle case: this
+  // does NOT preserve the surface's own shape unless every weight was
+  // already equal (forcing uniform weighting onto now-Euclidean-correct
+  // control points blends them with ordinary polynomial basis functions
+  // instead of the surface's own rational ones). Delegates to
+  // `ON_NurbsSurface::MakeNonRational()`.
+  Result MakeNonRational();
+
   // Elevates degree in the given direction (0 = U, 1 = V). Returns
   // NoOpAlreadySatisfied if the surface is already at or above that degree.
   Result ElevateDegree(int direction, int new_degree);

@@ -118,6 +118,20 @@ Result NurbsCurve::InsertKnotAt(double knot_value, int multiplicity) {
   return curve_.InsertKnot(knot_value, multiplicity) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsCurve::MakeRational() {
+  if (curve_.IsRational()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.MakeRational() ? Result::Ok : Result::Failed;
+}
+
+Result NurbsCurve::MakeNonRational() {
+  if (!curve_.IsRational()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return curve_.MakeNonRational() ? Result::Ok : Result::Failed;
+}
+
 Result NurbsCurve::ElevateDegree(int new_degree) {
   if (new_degree <= Degree()) {
     return Result::NoOpAlreadySatisfied;

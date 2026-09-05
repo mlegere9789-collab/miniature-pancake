@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -239,6 +240,64 @@ void TestCurveSetWeightAt() {
   // cleanly. Now bounds-checked directly against ControlPointCount().
   Check(curve.SetWeightAt(999, 2.0) == Result::Failed,
         "SetWeightAt returns Failed (not a crash) on an out-of-range index");
+}
+
+void TestCurveMakeRationalAndNonRational() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // MakeRational() on an already-non-rational curve: genuinely
+  // shape-preserving (every weight becomes 1.0, exactly the implicit
+  // weighting it already had).
+  const std::vector<Point3d> pts = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  NurbsCurve line = NurbsCurve::FromControlPoints(pts, /*degree=*/2);
+  Check(!line.IsRational(), "the curve starts non-rational");
+  const Point3d before_line = line.PointAt(0.5);
+  Check(line.MakeRational() == Result::Ok, "MakeRational returns Ok when it changes the curve");
+  Check(line.IsRational(), "the curve is rational after MakeRational");
+  Check(line.PointAt(0.5) == before_line,
+        "MakeRational is exactly shape-preserving on a curve with uniform weights");
+  Check(line.MakeRational() == Result::NoOpAlreadySatisfied,
+        "MakeRational reports NoOpAlreadySatisfied when already rational");
+
+  // MakeNonRational() on a genuine circle: a real, significant,
+  // surprising finding from testing this rather than assuming it's
+  // safe just because each control point individually ends up at its
+  // geometrically "correct" Euclidean position. Forcing uniform weight
+  // onto those now-corrected points blends them with ordinary
+  // polynomial basis functions instead of the circle's own rational
+  // ones - a mathematically different curve. Confirmed by measuring
+  // this radius-5 circle's own radius after the call: it's no longer
+  // constant (varies between exactly 5.0, at the on-circle control
+  // points sampled here, and measurably larger elsewhere) - it stops
+  // being a circle at all, not just a slightly-off approximation.
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 5.0);
+  ON_NurbsCurve nurbs_form;
+  Check(on_circle.GetNurbForm(nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = nurbs_form;
+  Check(circle.IsRational(), "the genuine circle starts rational");
+  Check(circle.MakeNonRational() == Result::Ok,
+        "MakeNonRational returns Ok when it changes the curve");
+  Check(!circle.IsRational(), "the curve is non-rational after MakeNonRational");
+
+  bool radius_matches_at_domain_center = std::abs(circle.PointAt(circle.Domain().max * 0.5)
+                                                       .DistanceTo(ON_3dPoint(0, 0, 0)) -
+                                                   5.0) < 1e-9;
+  Check(radius_matches_at_domain_center,
+        "the domain-center point (an original on-circle control point, weight 1) still sits "
+        "exactly at radius 5 after MakeNonRational");
+  bool radius_actually_changed_elsewhere =
+      std::abs(circle.PointAt(circle.Domain().max * 0.1).DistanceTo(ON_3dPoint(0, 0, 0)) - 5.0) >
+      0.1;
+  Check(radius_actually_changed_elsewhere,
+        "MakeNonRational genuinely breaks the circle's shape elsewhere - the point at 10% "
+        "along the domain is measurably NOT at radius 5 anymore, confirming this is a real "
+        "shape change, not just floating-point noise");
+
+  Check(circle.MakeNonRational() == Result::NoOpAlreadySatisfied,
+        "MakeNonRational reports NoOpAlreadySatisfied when already non-rational");
 }
 
 void TestCurveInsertKnotAt() {
@@ -1987,6 +2046,66 @@ void TestSurfaceSetWeightAt() {
         "SetWeightAt reports NoOpAlreadySatisfied when the weight already matches");
   Check(surface.SetWeightAt(99, 99, 2.0) == Result::Failed,
         "SetWeightAt returns Failed (not a crash) on an out-of-range (i, j)");
+}
+
+void TestSurfaceMakeRationalAndNonRational() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // MakeRational() on a flat (already-non-rational) surface: genuinely
+  // shape-preserving, same guarantee as the curve case.
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, 1, 1);
+  Check(!flat.IsRational(), "the surface starts non-rational");
+  const Point3d before_flat = flat.PointAt(0.5, 0.5);
+  Check(flat.MakeRational() == Result::Ok, "MakeRational returns Ok when it changes the surface");
+  Check(flat.IsRational(), "the surface is rational after MakeRational");
+  Check(flat.PointAt(0.5, 0.5) == before_flat,
+        "MakeRational is exactly shape-preserving on a surface with uniform weights");
+  Check(flat.MakeRational() == Result::NoOpAlreadySatisfied,
+        "MakeRational reports NoOpAlreadySatisfied when already rational");
+
+  // MakeNonRational() on a genuine sphere: the same real shape-breaking
+  // finding as the circle case, cross-checked independently rather than
+  // assumed to generalize. A radius-3 sphere's distance from center
+  // should stay exactly 3.0 everywhere; after forcing non-rational, a
+  // debug run showed it instead varies between ~3.02 and ~3.27 across a
+  // grid of sampled (u, v) values - confirming a real, measurable shape
+  // change, not floating-point noise.
+  const ON_Sphere on_sphere(ON_3dPoint(0, 0, 0), 3.0);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere;
+  sphere.raw() = sphere_surface;
+  Check(sphere.IsRational(), "the genuine sphere starts rational");
+  Check(sphere.MakeNonRational() == Result::Ok,
+        "MakeNonRational returns Ok when it changes the surface");
+  Check(!sphere.IsRational(), "the surface is non-rational after MakeNonRational");
+
+  double min_dist = std::numeric_limits<double>::max();
+  double max_dist = std::numeric_limits<double>::lowest();
+  for (double u : {0.1, 0.3, 0.5, 0.7, 0.9}) {
+    for (double v : {0.1, 0.5, 0.9}) {
+      const double dist =
+          sphere.PointAt(u * sphere.Domain(0).max, v * sphere.Domain(1).max)
+              .DistanceTo(ON_3dPoint(0, 0, 0));
+      min_dist = std::min(min_dist, dist);
+      max_dist = std::max(max_dist, dist);
+    }
+  }
+  Check(max_dist - min_dist > 0.1,
+        "MakeNonRational genuinely breaks the sphere's shape - sampled distances from center "
+        "vary by more than 0.1 instead of staying at a constant radius, confirming this is a "
+        "real shape change");
+
+  Check(sphere.MakeNonRational() == Result::NoOpAlreadySatisfied,
+        "MakeNonRational reports NoOpAlreadySatisfied when already non-rational");
 }
 
 void TestSurfaceInsertKnotAt() {
@@ -5739,6 +5858,7 @@ int main() {
   TestCurveDivideByCount();
   TestCurveIsRational();
   TestCurveSetWeightAt();
+  TestCurveMakeRationalAndNonRational();
   TestCurveInsertKnotAt();
   TestCurveKnotAt();
   TestCurveControlPointAt();
@@ -5779,6 +5899,7 @@ int main() {
   TestSurfaceDomain();
   TestSurfaceIsRational();
   TestSurfaceSetWeightAt();
+  TestSurfaceMakeRationalAndNonRational();
   TestSurfaceInsertKnotAt();
   TestSurfaceKnotAt();
   TestSurfaceControlPointAt();

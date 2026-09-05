@@ -424,6 +424,20 @@ Result NurbsSurface::InsertKnotAt(int direction, double knot_value, int multipli
   return surface_.InsertKnot(direction, knot_value, multiplicity) ? Result::Ok : Result::Failed;
 }
 
+Result NurbsSurface::MakeRational() {
+  if (surface_.IsRational()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return surface_.MakeRational() ? Result::Ok : Result::Failed;
+}
+
+Result NurbsSurface::MakeNonRational() {
+  if (!surface_.IsRational()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  return surface_.MakeNonRational() ? Result::Ok : Result::Failed;
+}
+
 Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
   if (new_degree <= surface_.Degree(direction)) {
     return Result::NoOpAlreadySatisfied;

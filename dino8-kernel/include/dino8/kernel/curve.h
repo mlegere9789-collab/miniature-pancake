@@ -178,6 +178,37 @@ class NurbsCurve {
   // would require duplicating OpenNURBS' own knot-multiplicity search.
   Result InsertKnotAt(double knot_value, int multiplicity = 1);
 
+  // Promotes the curve to rational (every control point gets an
+  // explicit weight of 1.0) if it isn't already - delegates to
+  // `ON_NurbsCurve::MakeRational()`. Genuinely shape-preserving: giving
+  // every control point weight 1.0 is exactly the implicit weighting a
+  // non-rational curve already had, confirmed by testing rather than
+  // assumed (`PointAt(t)` identical before and after, not just close).
+  // Returns Result::NoOpAlreadySatisfied if `IsRational()` is already
+  // true.
+  Result MakeRational();
+
+  // Demotes the curve to non-rational, dividing each control point's
+  // own raw coordinates by its weight to preserve that CONTROL POINT's
+  // own Euclidean position - delegates to `ON_NurbsCurve::
+  // MakeNonRational()`. A real, significant, surprising finding from
+  // testing this against a genuine circle (not assumed safe just
+  // because each individual control point ends up in the geometrically
+  // "correct" place): this does NOT preserve the CURVE's own shape
+  // unless every weight was already equal. Forcing uniform (1.0)
+  // weighting onto now-Euclidean-correct control points blends them
+  // with ordinary polynomial (not rational) basis functions, which is a
+  // mathematically different curve whenever the original weights
+  // varied - confirmed by measuring a genuine radius-5 circle's own
+  // radius after this call actually varying (5.0 to ~5.28) rather than
+  // staying constant, i.e. it stops being a circle at all, not just a
+  // slightly-off approximation of one. Only genuinely shape-preserving
+  // when every control point already shared the same weight (the
+  // mirror-image condition of `MakeRational()`'s own guarantee).
+  // Returns Result::NoOpAlreadySatisfied if `IsRational()` is already
+  // false.
+  Result MakeNonRational();
+
   // Elevates the curve's degree in place. Returns NoOpAlreadySatisfied if
   // `new_degree <= Degree()`.
   Result ElevateDegree(int new_degree);
