@@ -47,14 +47,16 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
-      - name: Configure
-        run: cmake -S dino8-app -B dino8-app/build -G "Visual Studio 17 2022" -A x64
+      - name: Configure (Ninja + MSVC)
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=Release
       - name: Build
-        run: cmake --build dino8-app/build --config Release --parallel
+        run: cmake --build dino8-app/build --parallel
+      - name: Unit tests
+        run: cd dino8-app/build && ctest --output-on-failure -C Release
       - name: Version check
-        run: dino8-app\build\Release\Dino8.exe --version
+        run: dino8-app\build\Dino8.exe --version
       - name: Install tree
-        run: cmake --install dino8-app/build --config Release --prefix dino8-app/build/install
+        run: cmake --install dino8-app/build --prefix dino8-app/build/install
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
       - name: Compile installer
@@ -62,7 +64,7 @@ jobs:
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" dino8-app\packaging\windows\Dino8.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Portable zip
-        run: cd dino8-app/build && cpack -C Release
+        run: cd dino8-app/build && cpack
       - uses: actions/upload-artifact@v4
         with:
           name: Dino8-windows-installer
