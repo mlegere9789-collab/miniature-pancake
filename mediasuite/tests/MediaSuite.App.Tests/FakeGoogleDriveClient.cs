@@ -38,6 +38,9 @@ public sealed class FakeGoogleDriveClient : IGoogleDriveClient
     /// <summary>When set, the next <see cref="SignInAsync"/> fails with this instead of succeeding.</summary>
     public Exception? SignInFailure { get; set; }
 
+    /// <summary>When set, the next <see cref="SignOutAsync"/> fails with this instead of succeeding.</summary>
+    public Exception? SignOutFailure { get; set; }
+
     /// <summary>
     /// When set, <see cref="SignInAsync"/> returns this task instead of an already-completed
     /// one — see <see cref="PendingCreateFolder"/> for why. The caller (SettingsViewModel)
@@ -66,6 +69,11 @@ public sealed class FakeGoogleDriveClient : IGoogleDriveClient
 
     public Task SignOutAsync()
     {
+        if (SignOutFailure is not null)
+        {
+            return Task.FromException(SignOutFailure);
+        }
+
         IsSignedIn = false;
         return Task.CompletedTask;
     }
