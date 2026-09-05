@@ -136,6 +136,144 @@ class CircleCommand : public PointThenDistanceCommand {
   bool diameter_ = false;
 };
 
+
+// Polygon / star with a NumSides option, centre and corner (or edge) picks.
+class PolygonCommand : public Command {
+ public:
+  explicit PolygonCommand(bool star) : star_(star) {}
+  void Begin(CommandContext&) override {
+    WantPoint("Center of polygon");
+    options = {{"NumSides", std::to_string(sides_), {}, true, false}, {"Edge", "", {}, false, false}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "NumSides") { int k = std::atoi(v.c_str()); if (k >= 3 && k <= 360) sides_ = k; options[0].value = std::to_string(sides_); }
+    if (n == "Edge") edge_mode_ = true;
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (!center_) { int k = std::atoi(t.c_str()); if (k >= 3 && k <= 360) { sides_ = k; options[0].value = std::to_string(sides_); ctx.Print("NumSides=" + std::to_string(sides_)); } }
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    if (!center_) { center_ = p; WantPoint(star_ ? "Corner of star" : (edge_mode_ ? "End of edge" : "Corner of polygon")); return; }
+    ctx.ClearPreview();
+    std::vector<Point3d> pts = Build(ctx, p, true);
+    if (pts.size() >= 4) AddCurve(ctx, PolylineCurve(pts), star_ ? "PolygonStar" : "Polygon");
+    Finish();
+  }
+  std::vector<Point3d> Build(CommandContext& ctx, Point3d p, bool close) {
+    ON_Plane pl = ActivePlane(ctx);
+    pl.SetOrigin(*center_);
+    double r = (p - *center_).Length();
+    if (r <= 0) return {};
+    double a0 = std::atan2(ON_DotProduct(p - *center_, pl.yaxis), ON_DotProduct(p - *center_, pl.xaxis));
+    if (edge_mode_ && !star_) {
+      // p is an edge endpoint: circumradius from the edge length.
+      const double half = ON_PI / sides_;
+      r = r / std::cos(half);
+      a0 += half;
+    }
+    std::vector<Point3d> pts;
+    const int n = star_ ? sides_ * 2 : sides_;
+    for (int i = 0; i < n + (close ? 1 : 0); ++i) {
+      const double rr = (star_ && (i % 2 == 1)) ? r * 0.5 : r;
+      const double a = a0 + 2 * ON_PI * i / n;
+      pts.push_back(pl.PointAt(rr * std::cos(a), rr * std::sin(a)));
+    }
+    return pts;
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (!center_) return;
+    ctx.ClearPreview();
+    std::vector<Point3d> pts = Build(ctx, h, false);
+    if (!pts.empty()) ctx.AddPreviewPolyline(pts, true);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  bool star_;
+  bool edge_mode_ = false;
+  int sides_ = 6;
+  std::optional<Point3d> center_;
+};
+
+// Select curves, then a count: Divide / Rebuild.
+class CurveCountCommand : public Command {
+ public:
+  CurveCountCommand(std::string prompt, std::string count_prompt, int def, std::function<void(CommandContext&, ObjectId, int)> apply, std::string label)
+      : prompt_(std::move(prompt)), count_prompt_(std::move(count_prompt)), def_(def), apply_(std::move(apply)), label_(std::move(label)) {}
+  void Begin(CommandContext&) override { WantObjects(prompt_); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantNumber(count_prompt_, def_); }
+  void OnNumber(CommandContext& ctx, double v) override {
+    ctx.Doc().BeginChange(label_);
+    for (ObjectId id : ids_) apply_(ctx, id, static_cast<int>(v));
+    Finish();
+  }
+  std::string prompt_, count_prompt_;
+  int def_;
+  std::function<void(CommandContext&, ObjectId, int)> apply_;
+  std::string label_;
+  std::vector<ObjectId> ids_;
+};
+
+// Helix / spiral with Turns and Radius options.
+class HelixCommand : public Command {
+ public:
+  explicit HelixCommand(bool spiral) : spiral_(spiral) {}
+  void Begin(CommandContext&) override {
+    WantPoint("Start of axis");
+    options = {{"Turns", FormatNumber(turns_), {}, true, false}, {"Pitch", "", {}, true, false}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Turns") { double t = std::atof(v.c_str()); if (t > 0) turns_ = t; options[0].value = FormatNumber(turns_); }
+    if (n == "Pitch") { double p = std::atof(v.c_str()); if (p > 0) pitch_ = p; }
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    pts_.push_back(p);
+    if (pts_.size() == 1) { WantPoint("End of axis"); return; }
+    if (pts_.size() == 2) { WantPoint(spiral_ ? "First radius" : "Radius"); return; }
+    if (spiral_ && pts_.size() == 3) { WantPoint("Second radius"); return; }
+    Build(ctx, pts_.size() == 4 ? (pts_[3] - pts_[1]).Length() : (pts_[2] - pts_[1]).Length() * (spiral_ ? 0.2 : 1.0));
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    char* e; double v = std::strtod(t.c_str(), &e);
+    if (e && !*e && pts_.size() >= 2) {
+      if (pts_.size() == 2) { pts_.push_back(pts_[1] + Vector3d(v, 0, 0)); if (spiral_) { WantPoint("Second radius"); return; } Build(ctx, v); }
+      else Build(ctx, v);
+    }
+  }
+  void Build(CommandContext& ctx, double r2) {
+    ctx.ClearPreview();
+    Vector3d axis = pts_[1] - pts_[0];
+    const double h = axis.Length();
+    const double r1 = (pts_[2] - pts_[1]).Length();
+    if (h <= 0 || r1 <= 0) { ctx.Warn("Axis and radius must be non-zero"); Finish(); return; }
+    axis.Unitize();
+    double turns = turns_;
+    if (pitch_ > 0) turns = h / pitch_;
+    ON_Plane pl(pts_[0], axis);
+    const int per = 24;
+    const int n = std::max(8, static_cast<int>(turns * per));
+    std::vector<Point3d> pts;
+    for (int i = 0; i <= n; ++i) {
+      const double t = static_cast<double>(i) / n;
+      const double a = 2 * ON_PI * turns * t;
+      const double rr = r1 + (r2 - r1) * t;
+      pts.push_back(pl.PointAt(rr * std::cos(a), rr * std::sin(a)) + axis * (h * t));
+    }
+    AddCurve(ctx, kernel::NurbsCurve::FromControlPoints(pts, 3), spiral_ ? "Spiral" : "Helix");
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (pts_.empty()) return;
+    ctx.ClearPreview();
+    ctx.AddPreviewLine(pts_.back(), h);
+    if (pts_.size() >= 2) { ON_Plane pl = ActivePlane(ctx); pl.SetOrigin(pts_[1]); ctx.AddPreviewPolyline(CirclePoints(ON_Circle(ON_Plane(pts_[1], pts_[1] - pts_[0]), (h - pts_[1]).Length()))); }
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  bool spiral_;
+  double turns_ = 5, pitch_ = 0;
+  std::vector<Point3d> pts_;
+};
+
 }  // namespace
 
 void RegisterCreateCommands(CommandEngine& e) {
@@ -246,35 +384,8 @@ void RegisterCreateCommands(CommandEngine& e) {
                                                e2 *= ON_DotProduct(h - p[1], e2);
                                                ctx.AddPreviewPolyline({p[0], p[1], p[1] + e2, p[0] + e2}, true);
                                              }));
-  auto polygon = [](int sides, bool star) {
-    return Make<PointsCommand>(std::vector<std::string>{"Center of polygon", "Corner of polygon"},
-                               [sides, star](CommandContext& ctx, const std::vector<Point3d>& p) {
-                                 ON_Plane pl = ActivePlane(ctx);
-                                 pl.SetOrigin(p[0]);
-                                 double r = (p[1] - p[0]).Length();
-                                 if (r <= 0) return;
-                                 double a0 = std::atan2(ON_DotProduct(p[1] - p[0], pl.yaxis), ON_DotProduct(p[1] - p[0], pl.xaxis));
-                                 std::vector<Point3d> pts;
-                                 int n = star ? sides * 2 : sides;
-                                 for (int i = 0; i <= n; ++i) {
-                                   double rr = (star && (i % 2 == 1)) ? r * 0.5 : r;
-                                   double a = a0 + 2 * ON_PI * i / n;
-                                   pts.push_back(pl.PointAt(rr * std::cos(a), rr * std::sin(a)));
-                                 }
-                                 AddCurve(ctx, PolylineCurve(pts), star ? "PolygonStar" : "Polygon");
-                               },
-                               [sides, star](CommandContext& ctx, const std::vector<Point3d>& p, Point3d h) {
-                                 ON_Plane pl = ActivePlane(ctx); pl.SetOrigin(p[0]);
-                                 double r = (h - p[0]).Length();
-                                 double a0 = std::atan2(ON_DotProduct(h - p[0], pl.yaxis), ON_DotProduct(h - p[0], pl.xaxis));
-                                 std::vector<Point3d> pts;
-                                 int n = star ? sides * 2 : sides;
-                                 for (int i = 0; i < n; ++i) { double rr = (star && (i % 2 == 1)) ? r * 0.5 : r; double a = a0 + 2 * ON_PI * i / n; pts.push_back(pl.PointAt(rr * std::cos(a), rr * std::sin(a))); }
-                                 ctx.AddPreviewPolyline(pts, true);
-                               });
-  };
-  Reg(e, "Polygon", polygon(6, false), CommandStatus::Partial, "Six sides; NumSides option is planned.");
-  Reg(e, "PolygonStar", polygon(5, true), CommandStatus::Partial, "Five points; NumSides option is planned.");
+  Reg(e, "Polygon", Make<PolygonCommand>(false));
+  Reg(e, "PolygonStar", Make<PolygonCommand>(true));
   Reg(e, "Ellipse", Make<PointsCommand>(std::vector<std::string>{"Ellipse center", "End of first axis", "End of second axis"},
                                         [](CommandContext& ctx, const std::vector<Point3d>& p) {
                                           ON_Plane pl = ActivePlane(ctx);
@@ -301,44 +412,8 @@ void RegisterCreateCommands(CommandEngine& e) {
                                           for (int i = 0; i < 64; ++i) { double t = 2 * ON_PI * i / 64; pts.push_back(p[0] + x * (a * std::cos(t)) + y * (b * std::sin(t))); }
                                           ctx.AddPreviewPolyline(pts, true);
                                         }));
-  Reg(e, "Helix", Make<PointsCommand>(std::vector<std::string>{"Start of axis", "End of axis", "Radius"},
-                                      [](CommandContext& ctx, const std::vector<Point3d>& p) {
-                                        Vector3d axis = p[1] - p[0];
-                                        double h = axis.Length();
-                                        if (h <= 0) return;
-                                        axis.Unitize();
-                                        double r = (p[2] - p[1]).Length();
-                                        if (r <= 0) return;
-                                        ON_Plane pl(p[0], axis);
-                                        const int turns = 5, per = 32;
-                                        std::vector<Point3d> pts;
-                                        for (int i = 0; i <= turns * per; ++i) {
-                                          double t = static_cast<double>(i) / (turns * per);
-                                          double a = 2 * ON_PI * turns * t;
-                                          pts.push_back(pl.PointAt(r * std::cos(a), r * std::sin(a)) + axis * (h * t));
-                                        }
-                                        AddCurve(ctx, kernel::NurbsCurve::FromControlPoints(pts, 3), "Helix");
-                                      }),
-      CommandStatus::Partial, "Five turns; Turns/Pitch options are planned.");
-  Reg(e, "Spiral", Make<PointsCommand>(std::vector<std::string>{"Start of axis", "End of axis", "First radius"},
-                                       [](CommandContext& ctx, const std::vector<Point3d>& p) {
-                                         Vector3d axis = p[1] - p[0];
-                                         double h = axis.Length();
-                                         if (h <= 0) return;
-                                         axis.Unitize();
-                                         double r = (p[2] - p[1]).Length();
-                                         ON_Plane pl(p[0], axis);
-                                         const int turns = 5, per = 32;
-                                         std::vector<Point3d> pts;
-                                         for (int i = 0; i <= turns * per; ++i) {
-                                           double t = static_cast<double>(i) / (turns * per);
-                                           double a = 2 * ON_PI * turns * t;
-                                           double rr = r * (1.0 - 0.8 * t);
-                                           pts.push_back(pl.PointAt(rr * std::cos(a), rr * std::sin(a)) + axis * (h * t));
-                                         }
-                                         AddCurve(ctx, kernel::NurbsCurve::FromControlPoints(pts, 3), "Spiral");
-                                       }),
-      CommandStatus::Partial, "Five turns tapering to 20%; options are planned.");
+  Reg(e, "Helix", Make<HelixCommand>(false));
+  Reg(e, "Spiral", Make<HelixCommand>(true));
   Reg(e, "PointGrid", Make<PointsCommand>(std::vector<std::string>{"First corner of grid", "Other corner"},
                                           [](CommandContext& ctx, const std::vector<Point3d>& p) {
                                             ctx.Doc().BeginChange("PointGrid");
@@ -348,16 +423,13 @@ void RegisterCreateCommands(CommandEngine& e) {
                                                 ctx.Doc().Add(SceneObject::MakePoint(Point3d(p[0].x + (p[1].x - p[0].x) * i / (n - 1), p[0].y + (p[1].y - p[0].y) * j / (n - 1), p[0].z)));
                                           }),
       CommandStatus::Partial, "5 x 5 grid; count options are planned.");
-  Reg(e, "Divide", OnSelection("Select curves to divide", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("Divide");
-        int made = 0;
-        for (ObjectId id : ids) {
-          const SceneObject* o = ctx.Doc().Find(id);
-          if (!o || o->kind != ObjectKind::Curve) continue;
-          for (double t : o->curve->DivideByCount(10)) { ctx.Doc().Add(SceneObject::MakePoint(o->curve->PointAt(t))); ++made; }
-        }
-        ctx.Print("Created " + std::to_string(made) + " points");
-      }), CommandStatus::Partial, "Divides into 10 segments; count/length options are planned.");
+  Reg(e, "Divide", Make<CurveCountCommand>("Select curves to divide", "Number of segments", 10,
+                                           [](CommandContext& ctx, ObjectId id, int n) {
+                                             const SceneObject* o = ctx.Doc().Find(id);
+                                             if (!o || o->kind != ObjectKind::Curve || n < 1) return;
+                                             const kernel::NurbsCurve curve = *o->curve;  // Add() may reallocate objects
+                                             for (double t : curve.DivideByCount(n)) ctx.Doc().Add(SceneObject::MakePoint(curve.PointAt(t)));
+                                           }, "Divide"));
   Reg(e, "ClosestPt", Make<PointsCommand>(std::vector<std::string>{"Point to test"},
                                           [](CommandContext& ctx, const std::vector<Point3d>& p) {
                                             double best = 1e300; Point3d bp = p[0];

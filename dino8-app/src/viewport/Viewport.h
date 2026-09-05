@@ -120,6 +120,9 @@ class Viewport {
   bool WorldToPixel(kernel::Point3d p, double& px, double& py) const;
   Ray PixelRay(double px, double py) const;
 
+  // Writes the last rendered frame of this viewport as a 24-bit BMP.
+  bool CaptureToFile(const std::string& path, std::string& error) const;
+
   void ZoomExtents(const Document& doc, bool selected_only);
   void ZoomTo(const kernel::BoundingBox& box);
 

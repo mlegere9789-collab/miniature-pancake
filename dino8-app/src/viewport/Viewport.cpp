@@ -745,3 +745,38 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
 }
 
 }  // namespace dino8::app
+
+namespace dino8::app {
+
+bool Viewport::CaptureToFile(const std::string& path, std::string& error) const {
+  const int w = target_.Width(), h = target_.Height();
+  if (w <= 0 || h <= 0 || target_.Texture() == 0) { error = "Viewport has not been rendered yet"; return false; }
+  std::vector<unsigned char> rgb(static_cast<size_t>(w) * h * 3);
+  target_.Bind();
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
+  RenderTarget::Unbind();
+  FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) { error = "Cannot write " + path; return false; }
+  const int row = (w * 3 + 3) & ~3;
+  const unsigned int data_size = static_cast<unsigned int>(row) * h;
+  const unsigned int file_size = 54 + data_size;
+  unsigned char hdr[54] = {'B', 'M'};
+  auto put32 = [&](int at, unsigned int v) { for (int i = 0; i < 4; ++i) hdr[at + i] = static_cast<unsigned char>((v >> (8 * i)) & 0xff); };
+  auto put16 = [&](int at, unsigned int v) { hdr[at] = static_cast<unsigned char>(v & 0xff); hdr[at + 1] = static_cast<unsigned char>((v >> 8) & 0xff); };
+  put32(2, file_size); put32(10, 54); put32(14, 40); put32(18, static_cast<unsigned int>(w)); put32(22, static_cast<unsigned int>(h));
+  put16(26, 1); put16(28, 24); put32(34, data_size);
+  std::fwrite(hdr, 1, 54, f);
+  std::vector<unsigned char> line(static_cast<size_t>(row), 0);
+  for (int y = 0; y < h; ++y) {  // BMP rows are bottom-up, which matches GL
+    for (int x = 0; x < w; ++x) {
+      const unsigned char* p = &rgb[(static_cast<size_t>(y) * w + x) * 3];
+      line[static_cast<size_t>(x) * 3] = p[2]; line[static_cast<size_t>(x) * 3 + 1] = p[1]; line[static_cast<size_t>(x) * 3 + 2] = p[0];
+    }
+    std::fwrite(line.data(), 1, line.size(), f);
+  }
+  std::fclose(f);
+  return true;
+}
+
+}  // namespace dino8::app

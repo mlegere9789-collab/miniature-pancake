@@ -169,7 +169,19 @@ void RegisterViewCommands(CommandEngine& e) {
         ctx.Warn("No planar object found");
       }));
   Reg(e, "ViewportProperties", Immediate([](CommandContext& ctx) { ctx.App().Panels().display = true; }));
-  Reg(e, "ViewCaptureToFile", Immediate([](CommandContext& ctx) { ctx.Print("ViewCaptureToFile: use your OS screenshot tool for now; direct PNG capture is planned."); }), CommandStatus::Partial);
+  Reg(e, "ViewCaptureToFile", Immediate([](CommandContext& ctx) {
+        Viewport* vp = ctx.ActiveViewport();
+        if (!vp) return;
+        auto save = [vp, &ctx](const std::string& path) {
+          std::string p = path;
+          if (p.size() < 4 || ToLower(p.substr(p.size() - 4)) != ".bmp") p += ".bmp";
+          std::string err;
+          if (vp->CaptureToFile(p, err)) ctx.App().Notify("Saved " + p); else ctx.App().Notify(err);
+        };
+        if (auto p = ctx.Engine().TakePendingInput()) { save(*p); return; }
+        ctx.App().ShowFileDialog("Save viewport image", {".bmp"}, true, save);
+      }));
+  Reg(e, "ScreenCaptureToFile", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("ViewCaptureToFile"); }), CommandStatus::Partial, "Captures the active viewport.");
   Reg(e, "ClippingPlane", Immediate([](CommandContext& ctx) { ctx.Print("ClippingPlane: use Split to cut solids; live clipping is planned."); }), CommandStatus::Partial);
 }
 

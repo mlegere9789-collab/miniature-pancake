@@ -3,6 +3,8 @@
 #include "commands/cmd_common.h"
 #include "io/File3dm.h"
 
+#include <filesystem>
+
 namespace dino8::app {
 
 namespace {
@@ -11,6 +13,131 @@ void HideShow(CommandContext& ctx, const std::vector<ObjectId>& ids, bool visibl
   ctx.Doc().BeginChange(label);
   for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->visible = visible; if (!visible) o->selected = false; }
 }
+
+
+// Rebuild with a point count and degree.
+class RebuildCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves or surfaces to rebuild"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    WantNumber("Point count", 16);
+    options = {{"Degree", std::to_string(degree_), {}, true, false}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Degree") { int d = std::atoi(v.c_str()); if (d >= 1 && d <= 11) degree_ = d; options[0].value = std::to_string(degree_); } }
+  void OnNumber(CommandContext& ctx, double v) override {
+    const int n = std::max(2, static_cast<int>(v));
+    ctx.Doc().BeginChange("Rebuild");
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      const int deg = std::min(degree_, n - 1);
+      if (o->kind == ObjectKind::Curve) {
+        std::vector<Point3d> pts;
+        kernel::Interval d = o->curve->Domain();
+        const bool closed = o->curve->IsClosed();
+        for (int i = 0; i < n; ++i) pts.push_back(o->curve->PointAt(d.min + (d.max - d.min) * i / (closed ? n : n - 1.0)));
+        if (closed) pts.push_back(pts.front());
+        *o->curve = kernel::NurbsCurve::FromControlPoints(pts, deg);
+        o->InvalidateDisplay();
+      } else if (o->kind == ObjectKind::Surface) {
+        std::vector<Point3d> grid;
+        kernel::Interval du = o->surface->Domain(0), dv = o->surface->Domain(1);
+        for (int j = 0; j < n; ++j) for (int i = 0; i < n; ++i) grid.push_back(o->surface->PointAt(du.min + (du.max - du.min) * i / (n - 1.0), dv.min + (dv.max - dv.min) * j / (n - 1.0)));
+        *o->surface = kernel::NurbsSurface::FromControlGrid(grid, n, n, deg, deg);
+        o->InvalidateDisplay();
+      }
+    }
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  int degree_ = 3;
+};
+
+// Offset curves by a typed distance or a picked side point.
+class OffsetCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves to offset"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) ids_.push_back(id); }
+    if (ids_.empty()) { ctx.Warn("Select curves"); Finish(); return; }
+    WantPoint("Side to offset, or type a distance");
+    options = {{"Distance", FormatNumber(distance_), {}, true, false}, {"BothSides", "No", {"Yes", "No"}, false, true}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Distance") { double d = std::atof(v.c_str()); if (d > 0) distance_ = d; options[0].value = FormatNumber(distance_); }
+    if (n == "BothSides") { both_ = !both_; options[1].value = both_ ? "Yes" : "No"; }
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    char* e; double v = std::strtod(t.c_str(), &e);
+    if (e && !*e && v > 0) { distance_ = v; options[0].value = FormatNumber(distance_); ctx.Print("Distance=" + FormatNumber(v) + ". Pick the side."); }
+  }
+  void OnPoint(CommandContext& ctx, Point3d side) override {
+    ctx.ClearPreview();
+    ctx.Doc().BeginChange("Offset");
+    for (ObjectId id : ids_) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      const int sign = SideSign(ctx, *o->curve, side);
+      Make(ctx, *o->curve, distance_ * sign, o->layer_index);
+      if (both_) Make(ctx, *o->curve, -distance_ * sign, o->layer_index);
+    }
+    Finish();
+  }
+  int SideSign(CommandContext& ctx, const kernel::NurbsCurve& c, Point3d side) {
+    const double t = c.ClosestPointParameter(side);
+    Vector3d tan = c.TangentAt(t);
+    Vector3d n = ON_CrossProduct(tan, ActiveNormal(ctx));
+    return ON_DotProduct(side - c.PointAt(t), n) >= 0 ? 1 : -1;
+  }
+  void Make(CommandContext& ctx, const kernel::NurbsCurve& c, double d, int layer) {
+    std::vector<Point3d> pts;
+    Vector3d up = ActiveNormal(ctx);
+    if (c.IsLinear()) {
+      kernel::Interval dom = c.Domain();
+      Vector3d tan = c.TangentAt(dom.min); Vector3d s = ON_CrossProduct(tan, up); s.Unitize();
+      SceneObject n = SceneObject::MakeCurve(PolylineCurve({c.PointAt(dom.min) + s * d, c.PointAt(dom.max) + s * d}));
+      n.layer_index = layer; ctx.Doc().Add(std::move(n));
+      return;
+    }
+    if (c.IsCircle()) {
+      // Exact: a concentric circle.
+      ON_Arc arc;
+      if (c.raw().IsArc(nullptr, &arc)) {
+        ON_Circle circ = arc;
+        kernel::Interval dom = c.Domain();
+        Vector3d tan = c.TangentAt(dom.min); Vector3d s = ON_CrossProduct(tan, up); s.Unitize();
+        const double newr = circ.radius + (ON_DotProduct(s, c.PointAt(dom.min) - circ.Center()) > 0 ? d : -d);
+        if (newr > 0) { ON_ArcCurve ac(ON_Circle(circ.plane, newr)); kernel::NurbsCurve k; if (CurveFromON(ac, k)) { SceneObject n = SceneObject::MakeCurve(k); n.layer_index = layer; ctx.Doc().Add(std::move(n)); } }
+        return;
+      }
+    }
+    for (double t : c.SuggestedParameterValues(0.005)) {
+      Vector3d tan = c.TangentAt(t); Vector3d s = ON_CrossProduct(tan, up); s.Unitize();
+      pts.push_back(c.PointAt(t) + s * d);
+    }
+    if (pts.size() < 2) return;
+    SceneObject n = SceneObject::MakeCurve(c.Degree() == 1 ? PolylineCurve(pts) : kernel::NurbsCurve::FromControlPoints(pts, std::min(3, static_cast<int>(pts.size()) - 1)));
+    n.layer_index = layer;
+    ctx.Doc().Add(std::move(n));
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    ctx.ClearPreview();
+    for (ObjectId id : ids_) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      const int sign = SideSign(ctx, *o->curve, h);
+      std::vector<Point3d> pts;
+      Vector3d up = ActiveNormal(ctx);
+      for (double t : o->curve->SuggestedParameterValues(0.02)) { Vector3d tan = o->curve->TangentAt(t); Vector3d s = ON_CrossProduct(tan, up); s.Unitize(); pts.push_back(o->curve->PointAt(t) + s * (distance_ * sign)); }
+      ctx.AddPreviewPolyline(pts, o->curve->IsClosed());
+    }
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  std::vector<ObjectId> ids_;
+  double distance_ = 1.0;
+  bool both_ = false;
+};
 
 }  // namespace
 
@@ -62,19 +189,22 @@ void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "LockSwap", Immediate([](CommandContext& ctx) { ctx.Doc().BeginChange("LockSwap"); for (SceneObject& o : ctx.Doc().Objects()) { o.locked = !o.locked; o.selected = false; } }));
   Reg(e, "Join", OnSelection("Select objects to join", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         // Curves: chain end-to-end into one polycurve (NURBS form). Surfaces/breps: append into one polysurface. Meshes: merge.
-        std::vector<const SceneObject*> curves, breps, meshes;
+        // Copies, not pointers: Add()/Remove() below reallocate the object vector.
+        std::vector<SceneObject> curves, breps, meshes;
         for (ObjectId id : ids) {
           const SceneObject* o = ctx.Doc().Find(id);
           if (!o) continue;
-          if (o->kind == ObjectKind::Curve) curves.push_back(o);
-          else if (o->kind == ObjectKind::Brep || o->kind == ObjectKind::Surface) breps.push_back(o);
-          else if (o->kind == ObjectKind::Mesh) meshes.push_back(o);
+          if (o->kind == ObjectKind::Curve) curves.push_back(*o);
+          else if (o->kind == ObjectKind::Brep || o->kind == ObjectKind::Surface) breps.push_back(*o);
+          else if (o->kind == ObjectKind::Mesh) meshes.push_back(*o);
         }
         ctx.Doc().BeginChange("Join");
         if (curves.size() >= 2) {
           ON_PolyCurve pc;
-          std::vector<const SceneObject*> remaining = curves;
+          std::vector<const SceneObject*> remaining;
+          for (const SceneObject& c : curves) remaining.push_back(&c);
           pc.Append(new ON_NurbsCurve(remaining[0]->curve->raw()));
+          std::vector<ObjectId> joined_ids = {remaining[0]->id};
           remaining.erase(remaining.begin());
           const double tol = ctx.Settings().absolute_tolerance * 10;
           bool progress = true;
@@ -87,6 +217,7 @@ void RegisterEditCommands(CommandEngine& e) {
               else if (c.PointAtEnd().DistanceTo(pc.PointAtStart()) <= tol) { pc.Prepend(new ON_NurbsCurve(c)); }
               else if (c.PointAtStart().DistanceTo(pc.PointAtStart()) <= tol) { c.Reverse(); pc.Prepend(new ON_NurbsCurve(c)); }
               else continue;
+              joined_ids.push_back(remaining[i]->id);
               remaining.erase(remaining.begin() + static_cast<long>(i));
               progress = true;
               break;
@@ -96,8 +227,8 @@ void RegisterEditCommands(CommandEngine& e) {
             kernel::NurbsCurve k;
             if (CurveFromON(pc, k)) {
               SceneObject n = SceneObject::MakeCurve(k);
-              n.layer_index = curves[0]->layer_index;
-              for (const SceneObject* o : curves) if (std::find(remaining.begin(), remaining.end(), o) == remaining.end()) ctx.Doc().Remove(o->id);
+              n.layer_index = curves[0].layer_index;
+              for (ObjectId jid : joined_ids) ctx.Doc().Remove(jid);
               ctx.Doc().Add(std::move(n));
               ctx.Print("Joined " + std::to_string(pc.Count()) + " curves into one");
             }
@@ -105,24 +236,24 @@ void RegisterEditCommands(CommandEngine& e) {
         }
         if (breps.size() >= 2) {
           ON_Brep* b = new ON_Brep();
-          for (const SceneObject* o : breps) {
-            if (o->kind == ObjectKind::Brep) b->Append(o->brep->raw());
-            else { ON_Brep tmp; ON_NurbsSurface* srf = new ON_NurbsSurface(o->surface->raw()); tmp.Create(srf); b->Append(tmp); }
+          for (const SceneObject& o : breps) {
+            if (o.kind == ObjectKind::Brep) b->Append(o.brep->raw());
+            else { ON_Brep tmp; ON_NurbsSurface* srf = new ON_NurbsSurface(o.surface->raw()); tmp.Create(srf); b->Append(tmp); }
           }
           JoinNakedEdges(*b, ctx.Settings().absolute_tolerance * 10);
           kernel::Brep k; k.raw() = *b; delete b;
           SceneObject n = SceneObject::MakeBrep(k);
-          n.layer_index = breps[0]->layer_index;
-          for (const SceneObject* o : breps) ctx.Doc().Remove(o->id);
+          n.layer_index = breps[0].layer_index;
+          for (const SceneObject& o : breps) ctx.Doc().Remove(o.id);
           ctx.Doc().Add(std::move(n));
           ctx.Print("Joined " + std::to_string(breps.size()) + " surfaces into one polysurface");
         }
         if (meshes.size() >= 2) {
           std::vector<kernel::Mesh> ms;
-          for (const SceneObject* o : meshes) ms.push_back(*o->mesh);
+          for (const SceneObject& o : meshes) ms.push_back(*o.mesh);
           SceneObject n = SceneObject::MakeMesh(kernel::Mesh::MergeAndWeld(ms, ctx.Settings().absolute_tolerance));
-          n.layer_index = meshes[0]->layer_index;
-          for (const SceneObject* o : meshes) ctx.Doc().Remove(o->id);
+          n.layer_index = meshes[0].layer_index;
+          for (const SceneObject& o : meshes) ctx.Doc().Remove(o.id);
           ctx.Doc().Add(std::move(n));
           ctx.Print("Joined " + std::to_string(meshes.size()) + " meshes");
         }
@@ -135,7 +266,7 @@ void RegisterEditCommands(CommandEngine& e) {
           if (!o) continue;
           const int layer = o->layer_index;
           if (o->kind == ObjectKind::Brep) {
-            const ON_Brep& b = o->brep->raw();
+            const ON_Brep b = o->brep->raw();  // copy: Add() may reallocate objects
             for (int f = 0; f < b.m_F.Count(); ++f) {
               ON_Brep* face = b.DuplicateFace(f, true);
               if (!face) continue;
@@ -145,7 +276,7 @@ void RegisterEditCommands(CommandEngine& e) {
             ctx.Doc().Remove(id);
           } else if (o->kind == ObjectKind::Curve) {
             // Split at kinks / polyline vertices.
-            const ON_NurbsCurve& c = o->curve->raw();
+            const ON_NurbsCurve c = o->curve->raw();  // copy: Add() may reallocate objects
             ON_SimpleArray<double> kinks;
             const int span = c.SpanCount();
             ON_SimpleArray<double> knots(span + 1);
@@ -166,34 +297,14 @@ void RegisterEditCommands(CommandEngine& e) {
             }
             ctx.Doc().Remove(id);
           } else if (o->kind == ObjectKind::Mesh) {
-            for (const kernel::Mesh& part : kernel::Decompose(*o->mesh)) { SceneObject n = SceneObject::MakeMesh(part); n.layer_index = layer; ctx.Doc().Add(std::move(n)); ++made; }
+            const std::vector<kernel::Mesh> parts = kernel::Decompose(*o->mesh);
+            for (const kernel::Mesh& part : parts) { SceneObject n = SceneObject::MakeMesh(part); n.layer_index = layer; ctx.Doc().Add(std::move(n)); ++made; }
             ctx.Doc().Remove(id);
           }
         }
         ctx.Print("Exploded into " + std::to_string(made) + " object(s)");
       }));
-  Reg(e, "Rebuild", OnSelection("Select curves or surfaces to rebuild", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("Rebuild");
-        for (ObjectId id : ids) {
-          SceneObject* o = ctx.Doc().Find(id);
-          if (!o) continue;
-          if (o->kind == ObjectKind::Curve) {
-            std::vector<Point3d> pts;
-            const int n = 16;
-            kernel::Interval d = o->curve->Domain();
-            for (int i = 0; i < n; ++i) pts.push_back(o->curve->PointAt(d.min + (d.max - d.min) * i / (n - 1.0)));
-            *o->curve = kernel::NurbsCurve::FromControlPoints(pts, 3);
-            o->InvalidateDisplay();
-          } else if (o->kind == ObjectKind::Surface) {
-            std::vector<Point3d> grid;
-            const int n = 12;
-            kernel::Interval du = o->surface->Domain(0), dv = o->surface->Domain(1);
-            for (int j = 0; j < n; ++j) for (int i = 0; i < n; ++i) grid.push_back(o->surface->PointAt(du.min + (du.max - du.min) * i / (n - 1.0), dv.min + (dv.max - dv.min) * j / (n - 1.0)));
-            *o->surface = kernel::NurbsSurface::FromControlGrid(grid, n, n, 3, 3);
-            o->InvalidateDisplay();
-          }
-        }
-      }), CommandStatus::Partial, "Rebuilds to 16 points (curves) / 12x12 (surfaces) degree 3; count options are planned.");
+  Reg(e, "Rebuild", Make<RebuildCommand>());
   Reg(e, "ChangeDegree", OnSelection("Select curves or surfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("ChangeDegree");
         for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (!o) continue; if (o->kind == ObjectKind::Curve) { o->curve->ElevateDegree(o->curve->Degree() + 1); o->InvalidateDisplay(); } else if (o->kind == ObjectKind::Surface) { o->surface->ElevateDegree(0, o->surface->DegreeU() + 1); o->surface->ElevateDegree(1, o->surface->DegreeV() + 1); o->InvalidateDisplay(); } }
@@ -206,18 +317,7 @@ void RegisterEditCommands(CommandEngine& e) {
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o) continue; if (o->kind == ObjectKind::Curve) { kernel::Interval d = o->curve->Domain(); ctx.Print("Curve " + std::to_string(id) + ": start " + FormatPoint(o->curve->PointAt(d.min)) + " tangent " + FormatPoint(Point3d(o->curve->TangentAt(d.min)))); } else if (o->kind == ObjectKind::Surface) { ctx.Print("Surface " + std::to_string(id) + ": normal at centre " + FormatPoint(Point3d(o->surface->NormalAt((o->surface->Domain(0).min + o->surface->Domain(0).max) / 2, (o->surface->Domain(1).min + o->surface->Domain(1).max) / 2)))); } }
         ctx.Print("Use Flip to reverse direction.");
       }), CommandStatus::Partial, "Reports direction; interactive flip arrows are planned.");
-  Reg(e, "Offset", OnSelection("Select curves to offset", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("Offset");
-        const double d = ctx.Settings().grid_spacing;
-        for (ObjectId id : ids) {
-          const SceneObject* o = ctx.Doc().Find(id);
-          if (!o || o->kind != ObjectKind::Curve) continue;
-          std::vector<Point3d> pts;
-          Vector3d n = ActiveNormal(ctx);
-          for (double t : o->curve->SuggestedParameterValues(0.01)) { Vector3d tan = o->curve->TangentAt(t); Vector3d side = ON_CrossProduct(tan, n); side.Unitize(); pts.push_back(o->curve->PointAt(t) + side * d); }
-          if (pts.size() >= 2) ctx.Doc().Add(SceneObject::MakeCurve(o->curve->IsLinear() ? PolylineCurve({pts.front(), pts.back()}) : kernel::NurbsCurve::FromControlPoints(pts, std::min(3, static_cast<int>(pts.size()) - 1))));
-        }
-      }), CommandStatus::Partial, "Offsets by one grid unit toward the CPlane right side; distance/side picking is planned.");
+  Reg(e, "Offset", Make<OffsetCommand>());
   Reg(e, "Extend", OnSelection("Select curves to extend", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Extend");
         for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) { kernel::Interval d = o->curve->Domain(); double len = d.max - d.min; o->curve->Extend(d.min - len * 0.1, d.max + len * 0.1); o->InvalidateDisplay(); } }
@@ -251,7 +351,7 @@ void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "Properties", Immediate([](CommandContext& ctx) { ctx.App().Panels().properties = true; }));
   Reg(e, "ObjectProperties", Immediate([](CommandContext& ctx) { ctx.App().Panels().properties = true; }));
   Reg(e, "CopyToClipboard", OnSelection("Select objects to copy", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        std::string path = ctx.App().ExeDir() + "/dino8_clipboard.3dm";
+        std::string path = (std::filesystem::temp_directory_path() / "dino8_clipboard.3dm").string();
         Document sub;
         for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) sub.Add(*o);
         sub.Layers() = ctx.Doc().Layers();
@@ -259,7 +359,7 @@ void RegisterEditCommands(CommandEngine& e) {
         if (Save3dm(sub, path, err)) ctx.Print("Copied " + std::to_string(ids.size()) + " object(s) to the clipboard"); else ctx.Warn(err);
       }));
   Reg(e, "Cut", OnSelection("Select objects to cut", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        std::string path = ctx.App().ExeDir() + "/dino8_clipboard.3dm";
+        std::string path = (std::filesystem::temp_directory_path() / "dino8_clipboard.3dm").string();
         Document sub;
         for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) sub.Add(*o);
         sub.Layers() = ctx.Doc().Layers();
@@ -269,7 +369,7 @@ void RegisterEditCommands(CommandEngine& e) {
         for (ObjectId id : ids) ctx.Doc().Remove(id);
       }));
   Reg(e, "Paste", Immediate([](CommandContext& ctx) {
-        std::string path = ctx.App().ExeDir() + "/dino8_clipboard.3dm";
+        std::string path = (std::filesystem::temp_directory_path() / "dino8_clipboard.3dm").string();
         std::string err;
         if (!ctx.App().ImportFile(path, err)) ctx.Warn("Clipboard is empty");
       }));
