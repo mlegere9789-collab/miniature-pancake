@@ -94,12 +94,27 @@ public class PdfCommandBuilderTests
     public void Protecting_falls_back_to_the_user_password_when_no_owner_password_is_given()
     {
         // qpdf's --encrypt always needs both; without this the command would be malformed.
-        var arguments = PdfCommandBuilder.Protect("in.pdf", "out.pdf", "userpw", null, true, true).ToList();
-        var encryptIndex = arguments.IndexOf("--encrypt");
+        var arguments = PdfCommandBuilder.Protect("in.pdf", "out.pdf", "userpw", null, true, true);
 
-        Assert.Equal("userpw", arguments[encryptIndex + 1]);
-        Assert.Equal("userpw", arguments[encryptIndex + 2]);
-        Assert.Equal("256", arguments[encryptIndex + 3]);
+        Assert.Contains("--user-password=userpw", arguments);
+        Assert.Contains("--owner-password=userpw", arguments);
+        Assert.Contains("--bits=256", arguments);
+    }
+
+    [Fact]
+    public void A_password_beginning_with_a_dash_is_passed_as_a_flag_value_not_a_bare_argument()
+    {
+        // qpdf's original "--encrypt user-password owner-password key-length" syntax takes
+        // both passwords as bare positional values -- a password beginning with '-' (a real
+        // password someone might genuinely choose) would make qpdf's own argument parser
+        // mistake it for an unrecognized option instead of the password value, failing the
+        // whole job. --user-password=/--owner-password= are immune to this regardless of
+        // what the password's first character happens to be.
+        var arguments = PdfCommandBuilder.Protect("in.pdf", "out.pdf", "-secret123", "-secret123", true, true);
+
+        Assert.Contains("--user-password=-secret123", arguments);
+        Assert.Contains("--owner-password=-secret123", arguments);
+        Assert.DoesNotContain("-secret123", arguments);
     }
 
     [Fact]
