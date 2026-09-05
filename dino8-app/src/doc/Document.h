@@ -53,6 +53,7 @@ struct NamedView {
 
 struct DocumentSettings {
   std::string unit_system = "Millimeters";
+  std::string title, author, comments;  // file metadata (saved in the .3dm)
   double absolute_tolerance = 0.001;
   double angle_tolerance_degrees = 1.0;
   double grid_spacing = 1.0;

@@ -227,6 +227,29 @@ void Application::ConfirmDiscard(std::function<void()> then) {
   confirm_open_ = true;
 }
 
+void Application::DrawPopupToolbar() {
+  if (open_popup_toolbar_) {
+    ImGui::OpenPopup("##mmb_toolbar");
+    ImGui::SetNextWindowPos(popup_toolbar_pos_, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    open_popup_toolbar_ = false;
+  }
+  if (ImGui::BeginPopup("##mmb_toolbar")) {
+    ImGui::TextDisabled("Popup toolbar");
+    ImGui::Separator();
+    const char* rows[][6] = {{"Move", "Copy", "Rotate", "Scale", "Mirror", "Delete"},
+                             {"Line", "Polyline", "Circle", "Rectangle", "Box", "Sphere"},
+                             {"Join", "Explode", "Trim", "Split", "Extend", "Offset"},
+                             {"Undo", "Redo", "Hide", "Show", "ZoomExtents", "SelAll"}};
+    for (auto& row : rows) {
+      for (int i = 0; i < 6; ++i) {
+        if (i) ImGui::SameLine();
+        if (ImGui::Button(row[i], ImVec2(86, 0))) { engine_->Execute(row[i]); ImGui::CloseCurrentPopup(); }
+      }
+    }
+    ImGui::EndPopup();
+  }
+}
+
 void Application::DrawConfirmDiscard() {
   if (confirm_open_) {
     ImGui::OpenPopup("Save changes?");
@@ -369,6 +392,7 @@ void Application::Frame() {
   DrawStatusBar();
   DrawFileDialog();
   DrawConfirmDiscard();
+  DrawPopupToolbar();
   DrawNotifications();
 }
 
@@ -557,6 +581,11 @@ void Application::ProcessViewportEvents(Viewport& vp, const ViewportEvents& ev) 
     // Right click = Enter (Rhino convention).
     engine_->FeedEnter();
   }
+  if (ev.middle_clicked) {
+    // Rhino's middle-mouse popup toolbar.
+    popup_toolbar_pos_ = ImGui::GetMousePos();
+    open_popup_toolbar_ = true;
+  }
 }
 
 void Application::HandleShortcuts() {
@@ -583,9 +612,16 @@ void Application::HandleShortcuts() {
     if (ImGui::IsKeyPressed(ImGuiKey_V) && !engine_->IsRunning()) engine_->Execute("Paste");
     if (ImGui::IsKeyPressed(ImGuiKey_X) && !engine_->IsRunning()) engine_->Execute("Cut");
   }
-  if (ImGui::IsKeyPressed(ImGuiKey_F1)) panels_.command_list = !panels_.command_list;
+  // Rhino defaults: F1 help, F2 command history, F3 properties, F4 layers.
+  if (ImGui::IsKeyPressed(ImGuiKey_F1)) {
+    if (io.KeyCtrl) panels_.command_list = !panels_.command_list;
+    else if (engine_->IsRunning()) ShowHelpFor(engine_->ActiveName());
+    else if (!engine_->RecentCommands().empty()) ShowHelpFor(engine_->RecentCommands().front());
+    else panels_.help = !panels_.help;
+  }
   if (ImGui::IsKeyPressed(ImGuiKey_F2)) panels_.command_history = !panels_.command_history;
   if (ImGui::IsKeyPressed(ImGuiKey_F3)) panels_.properties = !panels_.properties;
+  if (ImGui::IsKeyPressed(ImGuiKey_F4)) panels_.layers = !panels_.layers;
   if (ImGui::IsKeyPressed(ImGuiKey_F7)) doc_.Settings().show_grid = !doc_.Settings().show_grid;
   if (ImGui::IsKeyPressed(ImGuiKey_F8)) snaps_.ortho = !snaps_.ortho;
   if (ImGui::IsKeyPressed(ImGuiKey_F9)) snaps_.grid_snap = !snaps_.grid_snap;

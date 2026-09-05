@@ -775,6 +775,11 @@ void DrawDocumentPropertiesWindow(Application& app) {
   ImGui::InputInt("Major every", &s.grid_major_every);
   ImGui::InputInt("Extents", &s.grid_extents);
   ImGui::Separator();
+  ImGui::Text("Metadata (saved in the .3dm)");
+  if (InputString("Title", s.title)) app.Doc().Touch();
+  if (InputString("Author", s.author)) app.Doc().Touch();
+  if (InputString("Comments", s.comments)) app.Doc().Touch();
+  ImGui::Separator();
   ImGui::Text("File: %s", app.Doc().Path().empty() ? "(unsaved)" : app.Doc().Path().c_str());
   ImGui::Text("Objects: %zu   Layers: %zu   Revision: %llu", app.Doc().ObjectCount(), app.Doc().Layers().size(),
               static_cast<unsigned long long>(app.Doc().Revision()));

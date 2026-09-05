@@ -637,7 +637,7 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
                       active_ ? IM_COL32(70, 130, 220, 200) : IM_COL32(30, 32, 38, 170), 4.0f);
     dl->AddText(p0, IM_COL32(255, 255, 255, 255), label);
     ImGui::SetCursorScreenPos(ImVec2(p0.x - 4, p0.y - 2));
-    if (ImGui::InvisibleButton(("##title_" + name_).c_str(), ImVec2(sz.x + 12, sz.y + 4))) {
+    if (ImGui::InvisibleButton(("##title_" + name_).c_str(), ImVec2(sz.x + 12, sz.y + 4)) || ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
       ImGui::OpenPopup(("##vpmenu_" + name_).c_str());
     }
     if (ImGui::BeginPopup(("##vpmenu_" + name_).c_str())) {
@@ -739,6 +739,8 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
         }
       } else if (drag_button_ == 1 && !drag_moved_) {
         ev.right_clicked = true;
+      } else if (drag_button_ == 2 && !drag_moved_) {
+        ev.middle_clicked = true;
       }
       drag_button_ = -1;
     }

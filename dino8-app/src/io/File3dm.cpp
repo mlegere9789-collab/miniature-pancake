@@ -174,8 +174,14 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     doc.Add(std::move(obj));
   }
 
-  // Document notes and user text.
+  // Document notes, metadata and user text.
   doc.Notes() = FromWide(model.m_properties.m_Notes.m_notes);
+  doc.Settings().author = FromWide(model.m_properties.m_RevisionHistory.m_sCreatedBy);
+  {
+    ON_wString v;
+    if (model.GetDocumentUserString(L"Dino8.Title", v)) doc.Settings().title = FromWide(v);
+    if (model.GetDocumentUserString(L"Dino8.Comments", v)) doc.Settings().comments = FromWide(v);
+  }
   {
     ON_ClassArray<ON_UserString> strings;
     model.GetDocumentUserStrings(strings);
@@ -222,6 +228,11 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
   for (const auto& [k, v] : const_cast<Document&>(doc).UserText()) {
     model.SetDocumentUserString(ON_wString(k.c_str()), ON_wString(v.c_str()));
   }
+  if (!doc.Settings().title.empty()) model.SetDocumentUserString(L"Dino8.Title", ON_wString(doc.Settings().title.c_str()));
+  if (!doc.Settings().comments.empty()) model.SetDocumentUserString(L"Dino8.Comments", ON_wString(doc.Settings().comments.c_str()));
+  model.m_properties.m_RevisionHistory.m_sCreatedBy = ON_wString(doc.Settings().author.c_str());
+  model.m_properties.m_RevisionHistory.m_sLastEditedBy = ON_wString(doc.Settings().author.c_str());
+  model.m_properties.m_RevisionHistory.m_revision_count += 1;
 
   // Units.
   ON::LengthUnitSystem us = ON::LengthUnitSystem::Millimeters;

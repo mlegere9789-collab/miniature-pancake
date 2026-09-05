@@ -200,10 +200,10 @@ void DrawMenuBar(Application& app) {
     ImGui::EndMenu();
   }
   if (ImGui::BeginMenu("Panels")) {
-    ImGui::MenuItem("Layers", "", &p.layers);
+    ImGui::MenuItem("Layers", "F4", &p.layers);
     ImGui::MenuItem("Properties", "F3", &p.properties);
     ImGui::MenuItem("Command History", "F2", &p.command_history);
-    ImGui::MenuItem("Command List (all 1055)", "F1", &p.command_list);
+    ImGui::MenuItem("Command List (all 1055)", "Ctrl+F1", &p.command_list);
     ImGui::MenuItem("Help", "", &p.help);
     ImGui::MenuItem("Notifications", "", &p.notifications);
     ImGui::MenuItem("Named Views", "", &p.named_views);
@@ -225,7 +225,7 @@ void DrawMenuBar(Application& app) {
   }
   if (ImGui::BeginMenu("Help")) {
     Item(app, "Command Help", "Help", "F1");
-    if (ImGui::MenuItem("Command List / Feature Coverage")) p.command_list = true;
+    if (ImGui::MenuItem("Command List / Feature Coverage", "Ctrl+F1")) p.command_list = true;
     Items(app, {"CommandHelp", "LearnRhino", "Tutorials", "WhatsNew", "CheckForUpdates", "SystemInfo", "TechSupport", "Licenses"});
     ImGui::Separator();
     if (ImGui::MenuItem("About Dino 8")) p.about = true;

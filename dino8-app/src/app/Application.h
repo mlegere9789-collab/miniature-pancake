@@ -15,6 +15,7 @@
 #include "doc/Document.h"
 #include "render/GlRenderer.h"
 #include "ui/Gumball.h"
+#include "imgui.h"
 #include "viewport/Viewport.h"
 
 namespace dino8::app {
@@ -123,6 +124,7 @@ class Application {
   void DrawFileDialog();
   void DrawNotifications();
   void DrawConfirmDiscard();
+  void DrawPopupToolbar();
   void HandleShortcuts();
   void ProcessViewportEvents(Viewport& vp, const ViewportEvents& ev);
   void BuildDefaultLayout(unsigned dockspace_id);
@@ -162,6 +164,8 @@ class Application {
   std::string last_saved_path_;
   std::function<void()> pending_after_confirm_;
   bool confirm_open_ = false;
+  bool open_popup_toolbar_ = false;
+  ImVec2 popup_toolbar_pos_;
 };
 
 }  // namespace dino8::app
