@@ -984,8 +984,10 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
   if (!trim_is_convex) {
     const double u_width = u_domain.Length() / u_divisions;
     const double v_width = v_domain.Length() / v_divisions;
-    constexpr double kOnGridLineFraction = 1e-6;
-    constexpr double kNudgeFraction = 1e-6;
+    // static: MSVC will not let a lambda use a non-static constexpr local
+    // without an explicit capture.
+    static constexpr double kOnGridLineFraction = 1e-6;
+    static constexpr double kNudgeFraction = 1e-6;
     auto nudge_onto_grid_line = [](double coord, double origin, double width) {
       if (width == 0.0) {
         return coord;

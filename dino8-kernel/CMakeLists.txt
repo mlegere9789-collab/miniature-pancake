@@ -37,6 +37,12 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(manifold)
 
+# OpenNURBS' CMakeLists always builds a shared library/framework next to
+# the static one we link; skip it to halve the dependency build.
+if(TARGET OpenNURBS)
+  set_target_properties(OpenNURBS PROPERTIES EXCLUDE_FROM_ALL TRUE)
+endif()
+
 add_library(dino8_kernel STATIC
   src/curve.cpp
   src/surface.cpp
@@ -47,6 +53,12 @@ add_library(dino8_kernel STATIC
   src/subd.cpp
 )
 
+# windows.h (pulled in by opennurbs.h) defines min/max macros that break
+# std::min/std::max in every consumer; NOMINMAX is therefore PUBLIC.
+target_compile_definitions(dino8_kernel PUBLIC
+  $<$<PLATFORM_ID:Windows>:NOMINMAX>
+  $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS>
+)
 target_include_directories(dino8_kernel
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
