@@ -1,0 +1,149 @@
+# Surface QC: Pipe, OffsetSrf, Shell, Sweep1/2, NetworkSrf, Patch, ExtrudeCrvAlongCrv,
+# ExtrudeCrvTapered, Project, Pull. Each section hides what came before so
+# SelCrv/SelSrf only see its own objects.
+# --- Pipe radius 1 along a 10-long line: closed mesh, volume ~ pi*10
+Line 0,0,0 10,0,0
+SelLast
+Pipe
+Enter
+SelLast
+Volume
+# --- Pipe without caps: periodic NURBS surface, area ~ 2*pi*10
+SelNone
+SelCrv
+Pipe
+Cap=No
+1
+SelLast
+Area
+SelLast
+List
+# --- OffsetSrf of a plane by 2: exact parallel plane at z=2
+SelAll
+Hide
+Plane 20,0,0 30,10,0
+SelLast
+OffsetSrf
+2
+SelLast
+BoundingBox
+# --- OffsetSrf Solid=Yes: 10x10x2 slab mesh
+SelNone
+SelID 4
+OffsetSrf
+Solid=Yes
+2
+SelLast
+Volume
+# --- Shell a 20x20x10 box by 1: 4000 - 18*18*8 = 1408
+SelAll
+Hide
+Box 40,0,0 60,20,0 10
+SelLast
+Shell
+1
+SelLast
+List
+# --- ExtrudeCrvAlongCrv: exact sum surface, 10 x 5 rectangle
+SelAll
+Hide
+Line 70,0,0 80,0,0
+Line 70,0,0 70,5,0
+SelID 10
+ExtrudeCrvAlongCrv
+SelID 11
+Enter
+SelSrf
+Area
+# --- Sweep1: circle radius 2 along a vertical 10-long rail -> cylinder-like
+SelAll
+Hide
+Line 90,0,0 90,0,10
+Circle 90,0,0 2
+SelID 13
+Sweep1
+SelID 14
+Enter
+SelSrf
+Area
+# --- Sweep2: two parallel rails and a cross line -> 10 x 5 rectangle
+SelAll
+Hide
+Line 100,0,0 110,0,0
+Line 100,5,0 110,5,0
+Line 100,0,0 100,5,0
+SelID 16
+Sweep2
+SelID 17
+Enter
+SelID 18
+Enter
+SelSrf
+Area
+# --- NetworkSrf from 4 lines around a 10x10 square (selected out of order)
+SelAll
+Hide
+Line 120,0,0 130,0,0
+Line 130,10,0 120,10,0
+Line 130,0,0 130,10,0
+Line 120,10,0 120,0,0
+SelCrv
+NetworkSrf
+SelSrf
+Area
+# --- NetworkSrf from 2 curves: exact ruled surface
+SelAll
+Hide
+Line 140,0,0 150,0,0
+Line 140,10,0 150,10,0
+SelCrv
+NetworkSrf
+SelSrf
+Area
+# --- Patch through a closed planar circle: trimmed plane
+SelAll
+Hide
+Circle 160,0,0 5
+SelCrv
+Patch
+SelPolysrf
+Area
+# --- Patch through three points: fitted rectangle
+SelAll
+Hide
+Point 170,0,0
+Point 180,0,0
+Point 170,10,1
+SelPt
+Patch
+# --- ExtrudeCrvTapered: circle r=10, distance 5, draft 10 -> closed solid
+SelAll
+Hide
+Circle 200,0,0 10
+SelCrv
+ExtrudeCrvTapered
+5
+SelPolysrf
+List
+# --- Project a line below a plane onto it (along the CPlane normal)
+SelAll
+Hide
+Plane 220,0,0 240,20,0
+Line 220,0,-5 240,20,-5
+SelCrv
+Project
+SelSrf
+Enter
+SelLast
+List
+# --- Pull a point to the plane
+Point 225,5,-3
+SelNone
+SelPt
+Pull
+SelSrf
+Enter
+SelLast
+List
+Show
+SelAll

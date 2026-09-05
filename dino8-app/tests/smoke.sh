@@ -146,4 +146,35 @@ PDFOFF="$(grep -a -A1 "^startxref$" "$TMP/exchange.pdf" | tail -1)"
 grep -aq "^h$" "$TMP/exchange.pdf" && echo "ok   exchange.pdf closes paths with h" || { echo "FAIL exchange.pdf closed paths"; fail=1; }
 if command -v qpdf >/dev/null 2>&1; then qpdf --check "$TMP/exchange.pdf" >/dev/null 2>&1 && echo "ok   qpdf --check passes" || { echo "FAIL qpdf --check"; fail=1; }; fi
 head -1 "$TMP/exchange.ply" | grep -q "^ply" && grep -q "^element face 6" "$TMP/exchange.ply" && echo "ok   exchange.ply is an ASCII PLY with 6 faces" || { echo "FAIL exchange.ply"; fail=1; }
+# Surfaces: Pipe, OffsetSrf, Shell, Sweep1/2, NetworkSrf, Patch, ExtrudeCrvAlongCrv,
+# ExtrudeCrvTapered, Project, Pull (see surface_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  SF="$("$BIN" --smoke 200 --script "$HERE/surface_script.txt" 2>&1)" || { echo "$SF"; echo "FAIL: surface script exited non-zero"; exit 1; }
+else
+  SF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/surface_script.txt" 2>&1)" || { echo "$SF"; echo "FAIL: surface script exited non-zero"; exit 1; }
+fi
+sfcheck() { if echo "$SF" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+sfcheck "Pipe: radius 1, 1 pipe(s) (capped mesh)" "Pipe built a capped mesh"
+sfcheck "Volume = 31.06 cubic" "Pipe r=1 along 10 units has volume ~ pi*10"
+sfcheck "Area = 62.79 square" "uncapped Pipe surface area ~ 2*pi*10"
+sfcheck "degree 3 x 1, CVs 27 x 2" "uncapped Pipe is a periodic NURBS tube"
+sfcheck "Bounding box min 20,0,-2 max 30,10,-2" "OffsetSrf moved the plane by 2 along its normal"
+sfcheck "Volume = 200 cubic" "OffsetSrf Solid=Yes closed a 10x10x2 slab"
+sfcheck "Shell: thickness 1, volume 1408" "Shell hollowed the box (4000 - 18*18*8)"
+sfcheck "ExtrudeCrvAlongCrv: 1 surface(s)" "ExtrudeCrvAlongCrv built a sum surface"
+sfcheck "Sweep1: 1 section(s) along 2 rail stations" "Sweep1 swept the circle along the line"
+sfcheck "Area = 124.2 square" "Sweep1 area ~ 2*pi*2*10 (cubic circle approximation)"
+sfcheck "Sweep2: 1 section(s) along 2 rail stations" "Sweep2 spanned the two rails"
+sfcheck "NetworkSrf: Coons patch through 4 curves" "NetworkSrf sorted 4 curves into a loop"
+sfcheck "NetworkSrf: ruled surface between 2 curves" "NetworkSrf ruled two curves"
+sfcheck "Patch: planar face bounded by the closed curve" "Patch trimmed a plane with the circle"
+sfcheck "Area = 78.51 square" "Patch disc area ~ pi*25"
+sfcheck "Patch: least-squares plane through 0 curve(s) and 3 point(s)" "Patch fitted a plane through points"
+sfcheck "ExtrudeCrvTapered: distance 5, draft 10 deg, 1 object(s)" "ExtrudeCrvTapered ran"
+sfcheck "3 faces, 5 edges, closed solid" "ExtrudeCrvTapered capped and joined into a closed solid"
+sfcheck "Project: 1 curve(s), 0 point(s)" "Project produced one curve"
+sfcheck "CV\[1\] 240,20,0" "Project landed the line on the plane"
+sfcheck "Pull: 0 curve(s), 1 point(s)" "Pull produced one point"
+sfcheck "  225,5,0" "Pull moved the point onto the plane"
+sfcheck "smoke: frames=200 objects=39" "surface script produced the expected object count"
 exit $fail

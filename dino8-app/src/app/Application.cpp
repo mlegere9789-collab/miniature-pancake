@@ -39,6 +39,7 @@ void RegisterAnnotateCommands(CommandEngine&);
 void RegisterDraftingCommands(CommandEngine&);
 void RegisterCurves2Commands(CommandEngine&);
 void RegisterCurveEditCommands(CommandEngine&);
+void RegisterSurfaceCommands(CommandEngine&);
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -101,7 +102,8 @@ void Application::RegisterCommands() {
   RegisterAnnotateCommands(*engine_);
   RegisterDraftingCommands(*engine_);
   RegisterCurves2Commands(*engine_);
-  RegisterCurveEditCommands(*engine_);  // last: replaces the solid-only Intersect/Split registrations
+  RegisterCurveEditCommands(*engine_);  // replaces the solid-only Intersect/Split registrations
+  RegisterSurfaceCommands(*engine_);    // last: Sweep/Pipe/OffsetSrf/Project... (approximate NURBS/mesh results)
 }
 
 Viewport* Application::ActiveViewport() {

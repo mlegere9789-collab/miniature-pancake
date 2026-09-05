@@ -166,7 +166,50 @@ class PointThenDistanceCommand : public Command {
   double default_;
 };
 
-// Joins coincident naked edges of a brep (OpenNURBS ships no JoinEdges).
+// Makes face orientations consistent across shared edges (breadth-first from
+// each unvisited face), so a topologically closed brep also passes
+// ON_Brep::IsSolid()'s orientation test. Returns the number of faces flipped.
+inline int OrientBrepFaces(ON_Brep& b) {
+  std::vector<char> done(static_cast<size_t>(b.m_F.Count()), 0);
+  int flipped = 0;
+  for (int seed = 0; seed < b.m_F.Count(); ++seed) {
+    if (done[static_cast<size_t>(seed)] || b.m_F[seed].m_face_index < 0) continue;
+    std::vector<int> queue = {seed};
+    done[static_cast<size_t>(seed)] = 1;
+    while (!queue.empty()) {
+      const int fi = queue.back();
+      queue.pop_back();
+      const ON_BrepFace& f = b.m_F[fi];
+      for (int li = 0; li < f.m_li.Count(); ++li) {
+        const ON_BrepLoop& loop = b.m_L[f.m_li[li]];
+        for (int k = 0; k < loop.m_ti.Count(); ++k) {
+          const int ti = loop.m_ti[k];
+          const ON_BrepTrim& t = b.m_T[ti];
+          if (t.m_ei < 0) continue;
+          const ON_BrepEdge& e = b.m_E[t.m_ei];
+          if (e.m_ti.Count() != 2) continue;
+          const int oti = e.m_ti[0] == ti ? e.m_ti[1] : e.m_ti[0];
+          const ON_BrepTrim& ot = b.m_T[oti];
+          const int ofi = ot.FaceIndexOf();
+          if (ofi < 0 || done[static_cast<size_t>(ofi)]) continue;
+          ON_BrepFace& of = b.m_F[ofi];
+          // Each face must traverse the shared edge in the opposite direction
+          // (a clockwise loop, e.g. from ON_BrepTrimmedPlane on a clockwise
+          // boundary, walks its edges the other way round).
+          const bool cw0 = b.LoopDirection(loop) < 0, cw1 = b.LoopDirection(b.m_L[ot.m_li]) < 0;
+          const bool d0 = (t.m_bRev3d != f.m_bRev) != cw0, d1 = (ot.m_bRev3d != of.m_bRev) != cw1;
+          if (d0 == d1) { b.FlipFace(of); ++flipped; }
+          done[static_cast<size_t>(ofi)] = 1;
+          queue.push_back(ofi);
+        }
+      }
+    }
+  }
+  return flipped;
+}
+
+// Joins coincident naked edges of a brep (OpenNURBS ships no JoinEdges) and
+// orients the faces consistently afterwards.
 inline int JoinNakedEdges(ON_Brep& b, double tol) {
   int joined = 0;
   for (int i = 0; i < b.m_E.Count(); ++i) {
@@ -177,14 +220,29 @@ inline int JoinNakedEdges(ON_Brep& b, double tol) {
       ON_BrepEdge& e1 = b.m_E[j];
       if (e1.m_edge_index < 0 || e1.TrimCount() != 1) continue;
       ON_3dPoint b0 = e1.PointAtStart(), b1 = e1.PointAtEnd();
-      const bool same = (a0.DistanceTo(b0) <= tol && a1.DistanceTo(b1) <= tol) || (a0.DistanceTo(b1) <= tol && a1.DistanceTo(b0) <= tol);
-      if (!same) continue;
+      bool forward = a0.DistanceTo(b0) <= tol && a1.DistanceTo(b1) <= tol;
+      bool reversed = !forward && a0.DistanceTo(b1) <= tol && a1.DistanceTo(b0) <= tol;
+      if (forward && a0.DistanceTo(a1) <= tol) {
+        // Closed edges: the endpoints say nothing about direction; compare tangents.
+        forward = ON_DotProduct(e0.TangentAt(e0.Domain().Min()), e1.TangentAt(e1.Domain().Min())) > 0;
+        reversed = !forward;
+      }
+      if (!forward && !reversed) continue;
       ON_3dPoint m0 = e0.PointAt(e0.Domain().Mid()), m1 = e1.PointAt(e1.Domain().Mid());
       if (m0.DistanceTo(m1) > tol * 10) continue;
+      if (reversed && !e1.Reverse()) continue;
+      // CombineCoincidentEdges needs the two edges to share their vertices.
+      for (int k = 0; k < 2; ++k) {
+        if (e0.m_vi[k] == e1.m_vi[k]) continue;
+        if (!b.CombineCoincidentVertices(b.m_V[e0.m_vi[k]], b.m_V[e1.m_vi[k]])) break;
+      }
       if (b.CombineCoincidentEdges(e0, e1)) { ++joined; break; }
     }
   }
-  if (joined) { b.SetTolerancesBoxesAndFlags(); }
+  if (joined) {
+    OrientBrepFaces(b);
+    b.SetTolerancesBoxesAndFlags();
+  }
   return joined;
 }
 
