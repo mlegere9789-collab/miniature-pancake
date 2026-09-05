@@ -168,6 +168,9 @@ else()
 endif()
 
 set(CPACK_COMPONENTS_ALL app)
+# Install only the app component when packaging (dependency subprojects
+# would otherwise try to install libraries that are never built).
+set(CPACK_INSTALL_CMAKE_PROJECTS "${CMAKE_BINARY_DIR};Dino8;app;/")
 set(CPACK_COMPONENT_APP_DISPLAY_NAME "Dino 8")
 set(CPACK_MONOLITHIC_INSTALL OFF)
 set(CPACK_DEB_COMPONENT_INSTALL OFF)
