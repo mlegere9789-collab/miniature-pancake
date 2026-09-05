@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+:root {
+  /* Nature-toned neutral base */
+  --color-bg: #faf9f6;
+  --color-surface: #ffffff;
+  --color-border: #e3ddd2;
+  --color-text: #24211c;
+  --color-text-muted: #6b6355;
+
+  /* soil / bark / moss / sky, used sparingly (never decorative) */
+  --color-soil: #6f5b41;
+  --color-bark: #4a3d2f;
+  --color-moss: #5c7a4f;
+  --color-sky: #3f6f8f;
+
+  /* single confident accent — primary actions + confidence indicators only */
+  --color-accent: #2f6b46;
+  --color-accent-contrast: #ffffff;
+
+  --color-danger: #a3402c;
+  /* #8a5f22, not the lighter #a9772c the palette started with — white
+     text on the original only hit 3.92:1, short of WCAG AA's 4.5:1 for
+     small text (checked, not assumed: see accessibility pass notes). */
+  --color-warning: #8a5f22;
+
+  /* spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* radius */
+  --radius-card: 8px;
+  --radius-control: 4px;
+
+  --shadow-1: 0 1px 2px rgba(36, 33, 28, 0.08), 0 1px 1px rgba(36, 33, 28, 0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #16150f;
+    --color-surface: #201e17;
+    --color-border: #3a352a;
+    --color-text: #f1ede4;
+    --color-text-muted: #a89e8a;
+
+    --color-soil: #b79a72;
+    --color-bark: #8a7256;
+    --color-moss: #8fb37c;
+    --color-sky: #7fb1d1;
+
+    --color-accent: #5aa87a;
+    --color-accent-contrast: #0f1a13;
+
+    --color-danger: #d97a63;
+    --color-warning: #d9a463;
+
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 1px rgba(0, 0, 0, 0.3);
+  }
+}
+
+@theme inline {
+  --color-background: var(--color-bg);
+  --color-foreground: var(--color-text);
+  --font-sans: var(--font-geist-sans);
+  --font-serif: var(--font-source-serif);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.font-display {
+  font-family: var(--font-source-serif), Georgia, serif;
+}
