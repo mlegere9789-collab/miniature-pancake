@@ -2,7 +2,7 @@ name: Dino 8 App
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'claude/pdf-audit-i2bvwm']
     paths: ['dino8-app/**', 'dino8-kernel/**', '.github/workflows/dino8-app.yml']
   pull_request:
     paths: ['dino8-app/**', 'dino8-kernel/**', '.github/workflows/dino8-app.yml']
@@ -10,6 +10,9 @@ on:
 
 env:
   BUILD_TYPE: Release
+
+permissions:
+  contents: write
 
 jobs:
   linux:
@@ -96,3 +99,38 @@ jobs:
           name: Dino8-macos
           path: dino8-app/build/*.dmg
           if-no-files-found: error
+
+  release:
+    name: Publish beta pre-release
+    # Every push to the development branch (or a manual run) that builds on
+    # all three platforms publishes a downloadable pre-release with the
+    # installers attached. Free software: no licence keys involved.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: List files
+        run: find dist -type f | sort
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dino8-beta-${{ github.run_number }}
+          name: "Dino 8 beta build ${{ github.run_number }}"
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          body: |
+            Dino 8 beta test build from commit ${{ github.sha }}.
+
+            * **Windows**: `Dino8Setup-0.1.0.exe` (installer) or the portable `Dino8-0.1.0-win64.zip`
+            * **Linux**: `dino8_0.1.0_amd64.deb` or `Dino8-0.1.0-Linux.tar.gz`
+            * **macOS** (Apple Silicon): `Dino8-0.1.0-Darwin.dmg`
+
+            Totally free. No subscription, no payment, no licence keys, no accounts.
+          files: |
+            dist/Dino8-windows-installer/*.exe
+            dist/Dino8-windows-portable/*.zip
+            dist/Dino8-linux/*.deb
+            dist/Dino8-linux/*.tar.gz
+            dist/Dino8-macos/*.dmg
