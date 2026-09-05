@@ -1,6 +1,8 @@
 #include "viewport/Viewport.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -32,6 +34,17 @@ std::vector<DisplayMode> AllDisplayModes() {
   return {DisplayMode::Wireframe, DisplayMode::Shaded, DisplayMode::Rendered, DisplayMode::Ghosted,
           DisplayMode::XRay, DisplayMode::Technical, DisplayMode::Artistic, DisplayMode::Pen,
           DisplayMode::Arctic, DisplayMode::Monochrome};
+}
+
+DisplayMode DisplayModeFromName(const std::string& name) {
+  std::string n;
+  for (char c : name) if (c != '-' && c != ' ' && c != '_') n.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  for (DisplayMode m : AllDisplayModes()) {
+    std::string mn;
+    for (const char* c = DisplayModeName(m); *c; ++c) if (*c != '-' && *c != ' ') mn.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(*c))));
+    if (mn == n) return m;
+  }
+  return DisplayMode::Shaded;
 }
 
 Viewport::Viewport(const std::string& name, const std::string& standard_view) : name_(name) {
@@ -140,7 +153,8 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   renderer.ClearGradient(top, bottom);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
-  DrawScene(renderer, ctx, mode_, Aspect());
+  if (page_) DrawPage(renderer);
+  else DrawScene(renderer, ctx, mode_, Aspect());
   // Command preview geometry (rubber bands, dynamic previews).
   renderer.EnableDepthTest(false);
   if (ctx.preview_lines) renderer.DrawLines(*ctx.preview_lines, Color::FromBytes(255, 255, 255));
@@ -215,7 +229,20 @@ void Viewport::DrawScene(GlRenderer& renderer, const FrameContext& ctx, DisplayM
     SetupLights(renderer, ctx);
     DrawGroundPlane(renderer, ctx);
   }
+  // Clipping planes that clip this viewport cut the model (not the grid).
+  std::vector<std::array<float, 4>> clip;
+  for (const ClippingPlane& cp : ctx.doc->ClippingPlanes()) {
+    if (!cp.enabled || !cp.ClipsViewport(name_)) continue;
+    Vector3d n = cp.Normal();
+    if (!n.Unitize()) continue;
+    // Keep the half-space behind the plane: -(n . (p - origin)) >= 0.
+    clip.push_back({static_cast<float>(-n.x), static_cast<float>(-n.y), static_cast<float>(-n.z),
+                    static_cast<float>(ON_DotProduct(n, cp.origin))});
+  }
+  if (!clip.empty()) renderer.SetClipPlanes(clip);
   DrawObjects(renderer, ctx, mode);
+  if (!clip.empty()) renderer.ClearClipPlanes();
+  if (!ctx.for_render && ctx.show_clipping_planes) DrawClippingPlanes(renderer, *ctx.doc);
   if (!ctx.for_render) DrawLightWidgets(renderer, *ctx.doc);
 }
 
@@ -461,6 +488,55 @@ void Viewport::DrawGrid(GlRenderer& renderer, const DocumentSettings& s, Display
   }
 }
 
+void Viewport::DrawPage(GlRenderer& renderer) {
+  // A white sheet with a drop shadow on the neutral background; the page
+  // lies in the world XY plane (1 unit = 1 mm) so picks give page coordinates.
+  auto quad = [](std::vector<float>& v, double x0, double y0, double x1, double y1, double z) {
+    const float pts[6][3] = {{static_cast<float>(x0), static_cast<float>(y0), static_cast<float>(z)}, {static_cast<float>(x1), static_cast<float>(y0), static_cast<float>(z)}, {static_cast<float>(x1), static_cast<float>(y1), static_cast<float>(z)},
+                             {static_cast<float>(x0), static_cast<float>(y0), static_cast<float>(z)}, {static_cast<float>(x1), static_cast<float>(y1), static_cast<float>(z)}, {static_cast<float>(x0), static_cast<float>(y1), static_cast<float>(z)}};
+    for (auto& p : pts) { v.insert(v.end(), {p[0], p[1], p[2], 0.f, 0.f, 1.f}); }
+  };
+  std::vector<float> shadow, sheet;
+  const double sh = std::max(page_w_, page_h_) * 0.01;
+  quad(shadow, sh, -sh, page_w_ + sh, page_h_ - sh, -0.02);
+  quad(sheet, 0, 0, page_w_, page_h_, -0.01);
+  renderer.EnableDepthTest(false);
+  renderer.DrawTriangles(shadow, Color{0.f, 0.f, 0.f, 0.35f}, false);
+  renderer.DrawTriangles(sheet, Color::FromBytes(255, 255, 255), false);
+  const float w = static_cast<float>(page_w_), h = static_cast<float>(page_h_);
+  std::vector<float> border = {0, 0, 0, w, 0, 0, w, 0, 0, w, h, 0, w, h, 0, 0, h, 0, 0, h, 0, 0, 0, 0};
+  renderer.DrawLines(border, Color::FromBytes(120, 120, 120));
+  renderer.EnableDepthTest(true);
+}
+
+void Viewport::DrawClippingPlanes(GlRenderer& renderer, const Document& doc) {
+  for (const ClippingPlane& cp : doc.ClippingPlanes()) {
+    Vector3d x = cp.x_axis, y = cp.y_axis;
+    if (!x.Unitize() || !y.Unitize()) continue;
+    const Vector3d n = ON_CrossProduct(x, y);
+    const Point3d c = cp.origin;
+    const Point3d p00 = c - x * (cp.width / 2) - y * (cp.height / 2), p10 = c + x * (cp.width / 2) - y * (cp.height / 2);
+    const Point3d p11 = c + x * (cp.width / 2) + y * (cp.height / 2), p01 = c - x * (cp.width / 2) + y * (cp.height / 2);
+    std::vector<float> tri;
+    for (const Point3d* p : {&p00, &p10, &p11, &p00, &p11, &p01}) {
+      tri.insert(tri.end(), {static_cast<float>(p->x), static_cast<float>(p->y), static_cast<float>(p->z), static_cast<float>(n.x), static_cast<float>(n.y), static_cast<float>(n.z)});
+    }
+    const Color fill = cp.selected ? Color{1.f, 0.82f, 0.f, 0.35f} : (cp.enabled ? Color{0.35f, 0.65f, 1.f, 0.22f} : Color{0.6f, 0.6f, 0.6f, 0.15f});
+    renderer.DrawTriangles(tri, fill, false);
+    std::vector<float> lines;
+    auto push = [&](Point3d a, Point3d b) { lines.insert(lines.end(), {static_cast<float>(a.x), static_cast<float>(a.y), static_cast<float>(a.z), static_cast<float>(b.x), static_cast<float>(b.y), static_cast<float>(b.z)}); };
+    push(p00, p10); push(p10, p11); push(p11, p01); push(p01, p00);
+    // Normal arrow (the side that gets cut away).
+    const double len = 0.25 * std::max(cp.width, cp.height);
+    const Point3d tip = c + n * len;
+    push(c, tip);
+    push(tip, tip - n * (len * 0.2) + x * (len * 0.08));
+    push(tip, tip - n * (len * 0.2) - x * (len * 0.08));
+    const Color edge = cp.selected ? kSelectionColor : (cp.enabled ? Color::FromBytes(90, 150, 240) : Color::FromBytes(140, 140, 140));
+    renderer.DrawLines(lines, edge, cp.selected ? 2.0f : 1.0f);
+  }
+}
+
 void Viewport::DrawAxesGizmo(GlRenderer& renderer) {
   // Small world-axis indicator in the lower-left corner, drawn in a tiny
   // orthographic projection so it never scales with zoom.
@@ -513,11 +589,18 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     }
     renderer.DrawTrianglesRendered(d.triangles, uvs, rm);
   };
+  auto shown = [&](const SceneObject& o) {
+    if (!doc.IsObjectVisible(o)) return false;
+    if (ctx.hidden_layers && std::find(ctx.hidden_layers->begin(), ctx.hidden_layers->end(), o.layer_index) != ctx.hidden_layers->end()) return false;
+    if (ctx.hidden_objects && std::find(ctx.hidden_objects->begin(), ctx.hidden_objects->end(), o.id) != ctx.hidden_objects->end()) return false;
+    return true;
+  };
+  const float curve_width = ctx.print_display ? 2.5f : 1.0f;
   // Pass 1: fills (with polygon offset so edges win the depth test).
   if (style.fill) {
     renderer.EnablePolygonOffset(true);
     for (const SceneObject& o : doc.Objects()) {
-      if (!doc.IsObjectVisible(o)) continue;
+      if (!shown(o)) continue;
       o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;
@@ -586,6 +669,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
   for (const SceneObject& o : doc.Objects()) {
     if (!doc.IsObjectVisible(o)) continue;
     if (o.kind == ObjectKind::Curve) o.SetDisplayDashes(doc.EffectiveDashes(o));
+    if (!shown(o)) continue;
     o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
     const DisplayCache& d = o.Display();
     const bool is_curve_like = o.kind == ObjectKind::Curve;
@@ -608,7 +692,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     if (doc.IsObjectLocked(o)) line_color = Mix(line_color, kLockedColor, 0.7f);
     if (o.selected) line_color = kSelectionColor;
     if (!d.lines.empty() && (is_curve_like || style.edges || style.isocurves || o.selected)) {
-      renderer.DrawLines(d.lines, line_color);
+      renderer.DrawLines(d.lines, line_color, is_curve_like ? curve_width : 1.0f);
     }
     if (!d.points.empty()) {
       renderer.DrawPoints(d.points, o.selected ? kSelectionColor : line_color, 6.0f);
@@ -679,6 +763,7 @@ bool RayTriangle(const Ray& ray, Point3d a, Point3d b, Point3d c, double& t_out)
 }  // namespace
 
 ObjectId Viewport::PickObject(const Document& doc, double px, double py, double pixel_radius) const {
+  if (page_) return kNoObject;
   ObjectId best_wire = kNoObject;
   double best_wire_dist = pixel_radius;
   ObjectId best_face = kNoObject;
@@ -734,6 +819,7 @@ std::vector<ObjectId> Viewport::ObjectsInWindow(const Document& doc, double x0, 
   const double left = std::min(x0, x1), right = std::max(x0, x1);
   const double top = std::min(y0, y1), bottom = std::max(y0, y1);
   std::vector<ObjectId> result;
+  if (page_) return result;
   for (const SceneObject& o : doc.Objects()) {
     if (!doc.IsObjectVisible(o) || doc.IsObjectLocked(o)) continue;
     o.EnsureDisplay(0.02, 0.05);
@@ -1019,7 +1105,6 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
                                 double grid_spacing, bool& request_focus_command_line) {
   ViewportEvents ev;
   if (!visible_) return ev;
-  ImGuiIO& io = ImGui::GetIO();
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   const std::string title = name_ + "###vp_" + name_;
   bool open = true;
@@ -1033,6 +1118,28 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
   const ImVec2 avail = ImGui::GetContentRegionAvail();
   width_ = std::max(1, static_cast<int>(avail.x));
   height_ = std::max(1, static_cast<int>(avail.y));
+  ev = DrawContent(doc, snaps, want_point, want_objects, ortho_base, grid_spacing, request_focus_command_line, false);
+  ImGui::End();
+  ImGui::PopStyleVar();
+  return ev;
+}
+
+ViewportEvents Viewport::DrawEmbedded(const Document& doc, const SnapSettings& snaps, bool want_point,
+                                      bool want_objects, std::optional<Point3d> ortho_base,
+                                      double grid_spacing, bool& request_focus_command_line, int width, int height) {
+  width_ = std::max(1, width);
+  height_ = std::max(1, height);
+  ImGui::PushID(name_.c_str());
+  ViewportEvents ev = DrawContent(doc, snaps, want_point, want_objects, ortho_base, grid_spacing, request_focus_command_line, true);
+  ImGui::PopID();
+  return ev;
+}
+
+ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& snaps, bool want_point,
+                                     bool want_objects, std::optional<Point3d> ortho_base,
+                                     double grid_spacing, bool& request_focus_command_line, bool embedded) {
+  ViewportEvents ev;
+  ImGuiIO& io = ImGui::GetIO();
   const ImVec2 cursor = ImGui::GetCursorScreenPos();
   screen_x_ = cursor.x;
   screen_y_ = cursor.y;
@@ -1081,7 +1188,7 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
         }
         ImGui::EndMenu();
       }
-      if (ImGui::MenuItem(maximized_ ? "Restore Viewports" : "Maximize Viewport")) maximized_ = !maximized_;
+      if (!embedded && ImGui::MenuItem(maximized_ ? "Restore Viewports" : "Maximize Viewport")) maximized_ = !maximized_;
       if (ImGui::MenuItem("Zoom Extents")) ZoomExtents(doc, false);
       if (ImGui::MenuItem("Zoom Selected")) ZoomExtents(doc, true);
       ImGui::EndPopup();
@@ -1115,7 +1222,7 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
 
   // Mouse buttons.
   const double now = ImGui::GetTime();
-  if (hovered && !dragging_) {
+  if (hovered && !dragging_ && !all_input_locked_) {
     for (int b = 0; b < 3; ++b) {
       if (b == 0 && input_locked_) continue;
       if (ImGui::IsMouseClicked(b)) {
@@ -1174,12 +1281,11 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
     }
   }
   // Wheel zoom about the cursor.
-  if (hovered && std::abs(io.MouseWheel) > 0.0f) {
+  if (hovered && !all_input_locked_ && std::abs(io.MouseWheel) > 0.0f) {
     PickResult under = PickPoint(doc, snaps, mx, my, std::nullopt, grid_spacing, false);
     camera_.DollyToward(io.MouseWheel, under.point);
   }
-  ImGui::End();
-  ImGui::PopStyleVar();
+  if (embedded) ImGui::SetCursorScreenPos(cursor);
   return ev;
 }
 

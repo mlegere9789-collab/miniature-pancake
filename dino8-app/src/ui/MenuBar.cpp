@@ -219,6 +219,10 @@ void DrawMenuBar(Application& app) {
     ImGui::MenuItem("Layer State Manager", "", &p.layer_state_manager);
     ImGui::MenuItem("Selection Filter", "", &p.selection_filter);
     ImGui::MenuItem("Macro Editor", "", &p.macro_editor);
+    ImGui::MenuItem("Clipping Planes", "", &p.clipping_planes);
+    ImGui::MenuItem("Layouts", "", &p.layouts);
+    ImGui::MenuItem("Named CPlanes", "", &p.named_cplanes);
+    ImGui::MenuItem("Viewport Tabs", "", &app.show_viewport_tabs);
     ImGui::Separator();
     if (ImGui::MenuItem("Reset Window Layout")) app.SetViewportLayout(4);
     ImGui::MenuItem("ImGui Demo (developer)", "", &p.imgui_demo);

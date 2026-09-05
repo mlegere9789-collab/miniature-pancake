@@ -1,0 +1,61 @@
+# View tools QC: clipping planes + sections, layouts + details, named CPlanes, animation.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Sphere 0,0,0 10
+# --- clipping plane through the sphere's equator (CPlane XY in Perspective): clips the top half
+ClippingPlane -20,-20,0 20,20,0
+ClippingSections
+SelCrv
+List
+SelNone
+ClearClippingSections
+DisableClippingPlane
+EnableClippingPlane
+ClippingPlane Viewports=Active Name=Upper -20,-20,5 20,20,5
+SelClippingPlane
+SaveClippingSectionCPlanes
+SaveClippingSectionViews
+ExportClippingSectionInfo @TMP@/clipping.txt
+ClippingSections
+ClearClippingSections
+# --- named CPlanes
+CPlane Elevation=7
+NamedCPlane Save Deck
+CPlane World
+NamedCPlane Restore Deck
+CPlanePrevious
+CPlaneNext
+CPlane Rotate=45
+CopyCPlaneToAll
+NamedCPlane List
+# --- layouts and details (page coordinates are millimetres)
+Layout Name=Sheet1 Width=297 Height=210
+Detail 20,20 150,120
+Detail View=Perspective Name=Iso 170,20 280,190
+Layouts
+SelDetail Iso
+HideLayersInDetail Default
+ShowLayersInDetail Default
+CopyDetailToViewport Perspective
+CopyViewportToDetail Perspective
+CopyLayout
+LayoutProperties Name=Sheet2 Width=420 Height=297
+Layouts Model
+# --- animation: turntable, stepping, playback, recording
+SetTurntableAnimation Frames=6 Degrees=360
+ViewFrameNumber 3
+ViewNextFrame
+ViewLastFrame
+ViewFirstFrame
+PlayAnimation
+@wait 8
+RecordAnimation Folder=@TMP@/frames
+@wait 10
+SplitViewportHorizontal
+CloseViewport
+Save @TMP@/viewtools.3dm
+New
+Open @TMP@/viewtools.3dm
+Layouts
+NamedCPlane List
+SelClippingPlane
+@expect_objects 1

@@ -5,6 +5,7 @@
 
 #include <map>
 #include <set>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -72,6 +73,14 @@ class GlRenderer {
   // ambient term (sky light).
   void SetLights(const std::vector<GpuLight>& lights, Color ambient);
 
+  // Clipping planes (world-space plane equations a,b,c,d; a fragment is
+  // kept where a*x+b*y+c*z+d >= 0). Up to kMaxClipPlanes are honoured by
+  // every mesh/line/point draw until cleared; the matching
+  // GL_CLIP_DISTANCEi states are enabled/disabled here.
+  static constexpr int kMaxClipPlanes = 6;
+  void SetClipPlanes(const std::vector<std::array<float, 4>>& planes);
+  void ClearClipPlanes() { SetClipPlanes({}); }
+
   void ClearGradient(Color top, Color bottom);
   // Triangles: interleaved x,y,z,nx,ny,nz. `lit` = shaded, otherwise flat color.
   void DrawTriangles(const std::vector<float>& data, Color color, bool lit = true);
@@ -134,6 +143,10 @@ class GlRenderer {
         mesh_u_reflectivity_ = -1, mesh_u_use_texture_ = -1, mesh_u_texture_ = -1, mesh_u_blob_count_ = -1,
         mesh_u_blobs_ = -1, mesh_u_blob_strength_ = -1, mesh_u_ground_ = -1;
   GLint line_u_mvp_ = -1, line_u_color_ = -1, line_u_size_ = -1, line_u_offset_ = -1;
+  GLint mesh_u_clip_[kMaxClipPlanes] = {-1, -1, -1, -1, -1, -1}, mesh_u_clip_count_ = -1;
+  GLint line_u_clip_[kMaxClipPlanes] = {-1, -1, -1, -1, -1, -1}, line_u_clip_count_ = -1;
+  std::vector<std::array<float, 4>> clip_planes_;
+  void ApplyClipUniforms(const GLint* locations, GLint count_location);
   GLint bg_u_top_ = -1, bg_u_bottom_ = -1;
   std::map<std::string, GLuint> textures_;
   std::set<std::string> missing_textures_;

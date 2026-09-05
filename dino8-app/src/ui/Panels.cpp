@@ -994,4 +994,170 @@ void DrawMacroEditor(Application& app) {
   ImGui::End();
 }
 
+// ---------------------------------------------------------------------------
+// Clipping planes / layouts / named CPlanes (see cmd_viewtools.cpp)
+// ---------------------------------------------------------------------------
+
+void DrawClippingPlanesPanel(Application& app) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin("Clipping Planes", &app.Panels().clipping_planes)) { ImGui::End(); return; }
+  if (ImGui::Button("New (ClippingPlane)")) app.Engine().Execute("ClippingPlane");
+  ImGui::SameLine();
+  if (ImGui::Button("Sections")) app.Engine().Execute("ClippingSections");
+  ImGui::SameLine();
+  if (ImGui::Button("Clear sections")) app.Engine().Execute("ClearClippingSections");
+  ImGui::Separator();
+  if (doc.ClippingPlanes().empty()) ImGui::TextDisabled("No clipping planes. Run ClippingPlane and pick two corners.");
+  int remove = -1;
+  for (size_t i = 0; i < doc.ClippingPlanes().size(); ++i) {
+    ClippingPlane& cp = doc.ClippingPlanes()[i];
+    ImGui::PushID(static_cast<int>(i));
+    if (ImGui::Checkbox("##on", &cp.enabled)) doc.Touch();
+    ImGui::SameLine();
+    if (ImGui::Selectable(cp.name.c_str(), cp.selected, ImGuiSelectableFlags_AllowOverlap)) {
+      if (!ImGui::GetIO().KeyCtrl) for (ClippingPlane& o : doc.ClippingPlanes()) o.selected = false;
+      cp.selected = !cp.selected || !ImGui::GetIO().KeyCtrl;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("origin %s  normal %s\n%s", FormatPoint(cp.origin).c_str(), FormatPoint(kernel::Point3d(cp.Normal())).c_str(), cp.viewports.empty() ? "clips every viewport" : "clips selected viewports");
+    if (cp.selected) {
+      ImGui::Indent();
+      float o[3] = {static_cast<float>(cp.origin.x), static_cast<float>(cp.origin.y), static_cast<float>(cp.origin.z)};
+      if (ImGui::DragFloat3("Origin", o, 0.5f)) { cp.origin = kernel::Point3d(o[0], o[1], o[2]); doc.Touch(); }
+      float sz[2] = {static_cast<float>(cp.width), static_cast<float>(cp.height)};
+      if (ImGui::DragFloat2("Size", sz, 0.5f, 0.1f, 1e6f)) { cp.width = sz[0]; cp.height = sz[1]; doc.Touch(); }
+      if (ImGui::Button("Flip")) { cp.x_axis = -cp.x_axis; doc.Touch(); }
+      ImGui::SameLine();
+      if (ImGui::Button("Delete")) remove = static_cast<int>(i);
+      ImGui::TextDisabled("Clips:");
+      ImGui::SameLine();
+      bool all = cp.viewports.empty();
+      if (ImGui::Checkbox("All viewports", &all)) { cp.viewports.clear(); if (!all) for (auto& vp : app.Viewports()) if (vp->IsActive()) cp.viewports.push_back(vp->Name()); doc.Touch(); }
+      if (!all) {
+        for (auto& vp : app.Viewports()) {
+          bool on = cp.ClipsViewport(vp->Name());
+          if (ImGui::Checkbox(vp->Name().c_str(), &on)) {
+            if (on) cp.viewports.push_back(vp->Name());
+            else cp.viewports.erase(std::remove(cp.viewports.begin(), cp.viewports.end(), vp->Name()), cp.viewports.end());
+            doc.Touch();
+          }
+        }
+      }
+      ImGui::Unindent();
+    }
+    ImGui::PopID();
+  }
+  if (remove >= 0) {
+    doc.BeginChange("Delete clipping plane");
+    doc.ClippingPlanes().erase(doc.ClippingPlanes().begin() + remove);
+    doc.Touch();
+  }
+  ImGui::End();
+}
+
+void DrawLayoutsPanel(Application& app) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin("Layouts", &app.Panels().layouts)) { ImGui::End(); return; }
+  if (ImGui::Button("New layout")) app.Engine().Execute("Layout");
+  ImGui::SameLine();
+  if (ImGui::Button("Add detail")) app.Engine().Execute("Detail");
+  ImGui::SameLine();
+  if (ImGui::Button("Copy layout")) app.Engine().Execute("CopyLayout");
+  ImGui::Separator();
+  if (ImGui::Selectable("Model", app.ActiveLayoutIndex() < 0)) app.SetActiveLayout(-1);
+  int remove = -1;
+  for (size_t i = 0; i < doc.Layouts().size(); ++i) {
+    Layout& L = doc.Layouts()[i];
+    ImGui::PushID(static_cast<int>(i));
+    const bool current = static_cast<int>(i) == app.ActiveLayoutIndex();
+    if (ImGui::Selectable(L.name.c_str(), current)) app.SetActiveLayout(static_cast<int>(i));
+    if (current) {
+      ImGui::Indent();
+      if (InputString("Name", L.name)) doc.Touch();
+      float size[2] = {static_cast<float>(L.width_mm), static_cast<float>(L.height_mm)};
+      if (ImGui::DragFloat2("Page (mm)", size, 1.0f, 10.0f, 5000.0f)) { L.width_mm = size[0]; L.height_mm = size[1]; doc.Touch(); }
+      if (ImGui::Button("A4 landscape")) { L.width_mm = 297; L.height_mm = 210; doc.Touch(); }
+      ImGui::SameLine();
+      if (ImGui::Button("A3 landscape")) { L.width_mm = 420; L.height_mm = 297; doc.Touch(); }
+      ImGui::SameLine();
+      if (ImGui::Button("Letter")) { L.width_mm = 279.4; L.height_mm = 215.9; doc.Touch(); }
+      ImGui::SameLine();
+      if (ImGui::Button("Delete layout")) remove = static_cast<int>(i);
+      ImGui::TextDisabled("Details (%zu)", L.details.size());
+      for (size_t j = 0; j < L.details.size(); ++j) {
+        LayoutDetail& d = L.details[j];
+        ImGui::PushID(static_cast<int>(j));
+        const bool active = static_cast<int>(j) == app.ActiveDetailIndex();
+        if (ImGui::Selectable(d.name.c_str(), d.selected || active)) {
+          for (LayoutDetail& o : L.details) o.selected = false;
+          d.selected = true;
+          app.SetActiveDetail(active ? -1 : static_cast<int>(j));
+        }
+        if (d.selected || active) {
+          ImGui::Indent();
+          float rect[4] = {static_cast<float>(d.x), static_cast<float>(d.y), static_cast<float>(d.width), static_cast<float>(d.height)};
+          if (ImGui::DragFloat4("X Y W H", rect, 1.0f)) { d.x = rect[0]; d.y = rect[1]; d.width = std::max(1.0f, rect[2]); d.height = std::max(1.0f, rect[3]); doc.Touch(); }
+          float scale = static_cast<float>(d.scale);
+          if (ImGui::InputFloat("Scale (mm/unit, 0 = free)", &scale)) { d.scale = std::max(0.0f, scale); doc.Touch(); }
+          if (ImGui::Checkbox("Locked", &d.locked)) doc.Touch();
+          ImGui::SameLine();
+          ImGui::Text("%s, %s", d.display_mode.c_str(), d.camera.perspective ? "perspective" : "parallel");
+          if (ImGui::Button("Zoom extents")) { if (Viewport* vp = app.DetailViewport(static_cast<int>(j))) vp->ZoomExtents(doc, false); }
+          ImGui::SameLine();
+          if (ImGui::Button("Delete detail")) {
+            doc.BeginChange("Delete detail");
+            L.details.erase(L.details.begin() + static_cast<long>(j));
+            app.SetActiveDetail(-1);
+            app.SyncDetailViewports();
+            ImGui::Unindent();
+            ImGui::PopID();
+            break;
+          }
+          ImGui::Unindent();
+        }
+        ImGui::PopID();
+      }
+      ImGui::Unindent();
+    }
+    ImGui::PopID();
+  }
+  if (remove >= 0) {
+    doc.BeginChange("Delete layout");
+    doc.Layouts().erase(doc.Layouts().begin() + remove);
+    app.SetActiveLayout(-1);
+    doc.Touch();
+  }
+  ImGui::End();
+}
+
+void DrawNamedCPlanesPanel(Application& app) {
+  Document& doc = app.Doc();
+  if (!ImGui::Begin("Named CPlanes", &app.Panels().named_cplanes)) { ImGui::End(); return; }
+  static char name[128] = "";
+  ImGui::InputTextWithHint("##ncp", "cplane name", name, sizeof(name));
+  ImGui::SameLine();
+  if (ImGui::Button("Save current") && app.ActiveViewport()) {
+    const ConstructionPlane& cp = app.ActiveViewport()->CPlane();
+    NamedCPlane n;
+    n.name = std::strlen(name) ? name : "CPlane " + std::to_string(doc.NamedCPlanes().size() + 1);
+    n.origin = cp.origin; n.x_axis = cp.x_axis; n.y_axis = cp.y_axis;
+    if (NamedCPlane* existing = doc.FindNamedCPlane(n.name)) *existing = n; else doc.NamedCPlanes().push_back(n);
+    doc.Touch();
+    name[0] = 0;
+  }
+  ImGui::Separator();
+  if (doc.NamedCPlanes().empty()) ImGui::TextDisabled("No named CPlanes. Use NamedCPlane Save <name>.");
+  for (size_t i = 0; i < doc.NamedCPlanes().size(); ++i) {
+    const NamedCPlane& n = doc.NamedCPlanes()[i];
+    ImGui::PushID(static_cast<int>(i));
+    if (ImGui::Selectable(n.name.c_str())) {
+      if (Viewport* vp = app.ActiveViewport()) { vp->CPlane().origin = n.origin; vp->CPlane().x_axis = n.x_axis; vp->CPlane().y_axis = n.y_axis; }
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("origin %s\nx %s\ny %s", FormatPoint(n.origin).c_str(), FormatPoint(kernel::Point3d(n.x_axis)).c_str(), FormatPoint(kernel::Point3d(n.y_axis)).c_str());
+    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20);
+    if (ImGui::SmallButton("x")) { doc.NamedCPlanes().erase(doc.NamedCPlanes().begin() + static_cast<long>(i)); doc.Touch(); ImGui::PopID(); break; }
+    ImGui::PopID();
+  }
+  ImGui::End();
+}
+
 }  // namespace dino8::app

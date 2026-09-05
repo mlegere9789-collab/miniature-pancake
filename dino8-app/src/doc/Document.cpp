@@ -21,6 +21,11 @@ void Document::Clear() {
   named_views_.clear();
   linetypes_ = DefaultLinetypes();
   annotation_styles_ = {AnnotationStyle{}};
+  named_cplanes_.clear();
+  clipping_planes_.clear();
+  next_clipping_plane_id_ = 1;
+  layouts_.clear();
+  animation_ = Animation{};
   user_text_.clear();
   notes_.clear();
   settings_ = DocumentSettings{};
@@ -368,6 +373,29 @@ const AnnotationStyle& Document::CurrentAnnotationStyle() const {
   return annotation_styles_.empty() ? kDefault : annotation_styles_.front();
 }
 
+NamedCPlane* Document::FindNamedCPlane(const std::string& name) {
+  for (NamedCPlane& c : named_cplanes_) if (c.name == name) return &c;
+  return nullptr;
+}
+
+int Document::AddClippingPlane(ClippingPlane plane) {
+  plane.id = next_clipping_plane_id_++;
+  if (plane.name.empty()) plane.name = "Clipping Plane " + std::to_string(plane.id);
+  clipping_planes_.push_back(std::move(plane));
+  Touch();
+  return clipping_planes_.back().id;
+}
+
+ClippingPlane* Document::FindClippingPlane(int id) {
+  for (ClippingPlane& c : clipping_planes_) if (c.id == id) return &c;
+  return nullptr;
+}
+
+Layout* Document::FindLayout(const std::string& name) {
+  for (Layout& l : layouts_) if (l.name == name) return &l;
+  return nullptr;
+}
+
 Document::Snapshot Document::Capture(const std::string& label) const {
   Snapshot s;
   s.label = label;
@@ -377,6 +405,8 @@ Document::Snapshot Document::Capture(const std::string& label) const {
   s.groups = groups_;
   s.materials = materials_;
   s.lights = lights_;
+  s.clipping_planes = clipping_planes_;
+  s.layouts = layouts_;
   s.next_id = next_id_;
   s.next_group_id = next_group_id_;
   s.next_light_id = next_light_id_;
@@ -390,6 +420,8 @@ void Document::Restore(const Snapshot& s) {
   groups_ = s.groups;
   materials_ = s.materials;
   lights_ = s.lights;
+  clipping_planes_ = s.clipping_planes;
+  layouts_ = s.layouts;
   next_id_ = s.next_id;
   next_group_id_ = s.next_group_id;
   next_light_id_ = s.next_light_id;

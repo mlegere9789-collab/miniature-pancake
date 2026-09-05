@@ -198,6 +198,8 @@ void Camera::RotateAboutViewAxis(double degrees) {
   (void)f;
 }
 
+double Camera::zoom_extents_border = 1.05;
+
 void Camera::ZoomExtents(const kernel::BoundingBox& box, double aspect) {
   const Point3d center((box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2,
                        (box.min.z + box.max.z) / 2);
@@ -227,11 +229,11 @@ void Camera::ZoomExtents(const kernel::BoundingBox& box, double aspect) {
       distance = std::max(distance, std::fabs(ON_DotProduct(d, r)) / tan_h - dz);
       distance = std::max(distance, std::fabs(ON_DotProduct(d, u)) / tan_v - dz);
     }
-    distance = std::max(distance * 1.08, radius * 0.5);
+    distance = std::max(distance * zoom_extents_border, radius * 0.5);
     state_.eye = center - dir * distance;
   } else {
     const double a = std::max(aspect, 0.1);
-    state_.ortho_height = 2.0 * std::max(half_h, half_w / a) * 1.1;
+    state_.ortho_height = 2.0 * std::max(half_h, half_w / a) * zoom_extents_border;
     state_.eye = center - dir * std::max(radius * 4.0, 10.0);
   }
 }

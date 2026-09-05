@@ -38,6 +38,9 @@ void DrawUndoMultipleWindow(Application& app, bool redo);
 void DrawLayerStateManager(Application& app);
 void DrawSelectionFilterPanel(Application& app);
 void DrawMacroEditor(Application& app);
+void DrawClippingPlanesPanel(Application& app);
+void DrawLayoutsPanel(Application& app);
+void DrawNamedCPlanesPanel(Application& app);
 
 // Small shared widgets.
 bool ColorEdit(const char* label, struct Color& color);

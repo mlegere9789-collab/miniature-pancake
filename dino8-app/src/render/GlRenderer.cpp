@@ -17,6 +17,8 @@ layout(location = 2) in vec3 a_col;
 layout(location = 3) in vec2 a_uv;
 uniform mat4 u_mvp;
 uniform mat4 u_view;
+uniform vec4 u_clip[6];
+uniform int u_clip_count;
 out vec3 v_nrm_view;
 out vec3 v_nrm_world;
 out vec3 v_pos_view;
@@ -31,6 +33,13 @@ void main() {
   v_pos_world = a_pos;
   v_col = a_col;
   v_uv = a_uv;
+  vec4 wp = vec4(a_pos, 1.0);
+  gl_ClipDistance[0] = (u_clip_count > 0) ? dot(u_clip[0], wp) : 1.0;
+  gl_ClipDistance[1] = (u_clip_count > 1) ? dot(u_clip[1], wp) : 1.0;
+  gl_ClipDistance[2] = (u_clip_count > 2) ? dot(u_clip[2], wp) : 1.0;
+  gl_ClipDistance[3] = (u_clip_count > 3) ? dot(u_clip[3], wp) : 1.0;
+  gl_ClipDistance[4] = (u_clip_count > 4) ? dot(u_clip[4], wp) : 1.0;
+  gl_ClipDistance[5] = (u_clip_count > 5) ? dot(u_clip[5], wp) : 1.0;
 }
 )";
 
@@ -177,11 +186,20 @@ layout(location = 0) in vec3 a_pos;
 uniform mat4 u_mvp;
 uniform float u_size;
 uniform vec2 u_offset;  // screen-space offset in NDC units (thick lines)
+uniform vec4 u_clip[6];
+uniform int u_clip_count;
 void main() {
   vec4 p = u_mvp * vec4(a_pos, 1.0);
   p.xy += u_offset * p.w;
   gl_Position = p;
   gl_PointSize = u_size;
+  vec4 wp = vec4(a_pos, 1.0);
+  gl_ClipDistance[0] = (u_clip_count > 0) ? dot(u_clip[0], wp) : 1.0;
+  gl_ClipDistance[1] = (u_clip_count > 1) ? dot(u_clip[1], wp) : 1.0;
+  gl_ClipDistance[2] = (u_clip_count > 2) ? dot(u_clip[2], wp) : 1.0;
+  gl_ClipDistance[3] = (u_clip_count > 3) ? dot(u_clip[3], wp) : 1.0;
+  gl_ClipDistance[4] = (u_clip_count > 4) ? dot(u_clip[4], wp) : 1.0;
+  gl_ClipDistance[5] = (u_clip_count > 5) ? dot(u_clip[5], wp) : 1.0;
 }
 )";
 
@@ -353,6 +371,13 @@ bool GlRenderer::Init(std::string& error) {
   line_u_color_ = glGetUniformLocation(line_program_, "u_color");
   line_u_size_ = glGetUniformLocation(line_program_, "u_size");
   line_u_offset_ = glGetUniformLocation(line_program_, "u_offset");
+  for (int i = 0; i < kMaxClipPlanes; ++i) {
+    const std::string name = "u_clip[" + std::to_string(i) + "]";
+    mesh_u_clip_[i] = glGetUniformLocation(mesh_program_, name.c_str());
+    line_u_clip_[i] = glGetUniformLocation(line_program_, name.c_str());
+  }
+  mesh_u_clip_count_ = glGetUniformLocation(mesh_program_, "u_clip_count");
+  line_u_clip_count_ = glGetUniformLocation(line_program_, "u_clip_count");
   bg_u_top_ = glGetUniformLocation(bg_program_, "u_top");
   bg_u_bottom_ = glGetUniformLocation(bg_program_, "u_bottom");
   glGenVertexArrays(1, &vao_);
@@ -435,6 +460,26 @@ void GlRenderer::UploadLights() {
   glUniform3f(mesh_u_ambient_, ambient_.r, ambient_.g, ambient_.b);
 }
 
+#ifndef GL_CLIP_DISTANCE0
+#define GL_CLIP_DISTANCE0 0x3000
+#endif
+
+void GlRenderer::SetClipPlanes(const std::vector<std::array<float, 4>>& planes) {
+  clip_planes_.assign(planes.begin(), planes.begin() + std::min<size_t>(planes.size(), kMaxClipPlanes));
+  for (int i = 0; i < kMaxClipPlanes; ++i) {
+    if (i < static_cast<int>(clip_planes_.size())) glEnable(GL_CLIP_DISTANCE0 + i);
+    else glDisable(GL_CLIP_DISTANCE0 + i);
+  }
+}
+
+void GlRenderer::ApplyClipUniforms(const GLint* locations, GLint count_location) {
+  glUniform1i(count_location, static_cast<int>(clip_planes_.size()));
+  for (size_t i = 0; i < clip_planes_.size(); ++i) {
+    const std::array<float, 4>& p = clip_planes_[i];
+    glUniform4f(locations[i], p[0], p[1], p[2], p[3]);
+  }
+}
+
 void GlRenderer::ClearGradient(Color top, Color bottom) {
   glDisable(GL_DEPTH_TEST);
   glClearColor(bottom.r, bottom.g, bottom.b, 1.0f);
@@ -493,6 +538,7 @@ void GlRenderer::DrawMesh(const std::vector<float>& data, const std::vector<floa
       glUniform4f(mesh_u_ground_, ground_params_[0], ground_params_[1], ground_params_[2], ground_params_[3]);
     }
   }
+  ApplyClipUniforms(mesh_u_clip_, mesh_u_clip_count_);
   glBindVertexArray(vao_);
   glBindBuffer(GL_ARRAY_BUFFER, vbo_);
   glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(data.size() * sizeof(float)), data.data(), GL_DYNAMIC_DRAW);
@@ -588,6 +634,7 @@ void GlRenderer::DrawLines(const std::vector<float>& data, Color color, float wi
   glUniform4f(line_u_color_, color.r, color.g, color.b, color.a);
   glUniform1f(line_u_size_, 1.0f);
   glUniform2f(line_u_offset_, 0.f, 0.f);
+  ApplyClipUniforms(line_u_clip_, line_u_clip_count_);
   glBindVertexArray(vao_);
   glBindBuffer(GL_ARRAY_BUFFER, vbo_);
   glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(data.size() * sizeof(float)), data.data(), GL_DYNAMIC_DRAW);
@@ -627,6 +674,7 @@ void GlRenderer::DrawPoints(const std::vector<float>& data, Color color, float s
   glUniform4f(line_u_color_, color.r, color.g, color.b, color.a);
   glUniform1f(line_u_size_, size);
   glUniform2f(line_u_offset_, 0.f, 0.f);
+  ApplyClipUniforms(line_u_clip_, line_u_clip_count_);
   glBindVertexArray(vao_);
   glBindBuffer(GL_ARRAY_BUFFER, vbo_);
   glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(data.size() * sizeof(float)), data.data(), GL_DYNAMIC_DRAW);

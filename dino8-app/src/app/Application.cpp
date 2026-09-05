@@ -51,6 +51,7 @@ void RegisterSolidToolsCommands(CommandEngine&);
 void UpdateCageCaptives(Document&);  // cmd_solidtools.cpp: re-deforms CageEdit captives when a cage moved
 void RegisterSelect2Commands(CommandEngine&);
 void RegisterStateCommands(CommandEngine&);
+void RegisterViewToolsCommands(CommandEngine&);
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -174,12 +175,17 @@ void Application::RegisterCommands() {
   RegisterMeshToolsCommands(*engine_);  // after Transform/Boolean: replaces the simpler Shear/Weld
   RegisterSubDCommands(*engine_);       // SubD editing (creases, ExtrudeSubD, Inset, Bridge...); replaces the Slide stub
   RegisterSolidToolsCommands(*engine_); // holes, curve booleans, cage editing, Flow (replaces the CurveBoolean stub)
+  RegisterViewToolsCommands(*engine_);  // clipping planes, layouts, named CPlanes, animation (extends CPlane/ClippingPlane)
   RegisterCurveEditCommands(*engine_);  // replaces the solid-only Intersect/Split registrations
   RegisterSurfaceCommands(*engine_);    // Sweep/Pipe/OffsetSrf/Project... (approximate NURBS/mesh results)
   RegisterRenderCommands(*engine_);     // last: replaces the Render/RenderPreview/Materials placeholders
 }
 
 Viewport* Application::ActiveViewport() {
+  if (active_layout_ >= 0) {
+    if (Viewport* d = DetailViewport(active_detail_)) return d;
+    if (page_viewport_) return page_viewport_.get();
+  }
   for (auto& vp : viewports_) {
     if (vp->IsActive()) return vp.get();
   }
@@ -196,7 +202,102 @@ Viewport* Application::FindViewport(const std::string& name) {
   for (auto& vp : viewports_) {
     if (ToLower(vp->Name()) == ToLower(name)) return vp.get();
   }
+  if (page_viewport_ && ToLower(page_viewport_->Name()) == ToLower(name)) return page_viewport_.get();
+  for (auto& vp : detail_viewports_) {
+    if (ToLower(vp->Name()) == ToLower(name)) return vp.get();
+  }
   return nullptr;
+}
+
+Viewport* Application::AddViewport(const std::string& name, const std::string& standard_view, bool floating) {
+  std::string unique = name;
+  for (int i = 2; FindViewport(unique); ++i) unique = name + " " + std::to_string(i);
+  viewports_.push_back(std::make_unique<Viewport>(unique, standard_view));
+  viewports_.back()->SetFloating(floating);
+  for (auto& v : viewports_) v->SetActive(false);
+  viewports_.back()->SetActive(true);
+  active_viewport_ = static_cast<int>(viewports_.size()) - 1;
+  layout_built_ = false;
+  return viewports_.back().get();
+}
+
+bool Application::RemoveViewport(const std::string& name) {
+  if (viewports_.size() <= 1) return false;
+  for (size_t i = 0; i < viewports_.size(); ++i) {
+    if (ToLower(viewports_[i]->Name()) != ToLower(name)) continue;
+    const bool was_active = viewports_[i]->IsActive();
+    viewports_.erase(viewports_.begin() + static_cast<long>(i));
+    active_viewport_ = std::clamp(active_viewport_, 0, static_cast<int>(viewports_.size()) - 1);
+    if (was_active) viewports_[static_cast<size_t>(std::min<int>(static_cast<int>(i), static_cast<int>(viewports_.size()) - 1))]->SetActive(true);
+    layout_built_ = false;
+    return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Layouts
+// ---------------------------------------------------------------------------
+
+Layout* Application::ActiveLayout() {
+  if (active_layout_ < 0 || active_layout_ >= static_cast<int>(doc_.Layouts().size())) return nullptr;
+  return &doc_.Layouts()[static_cast<size_t>(active_layout_)];
+}
+
+Viewport* Application::DetailViewport(int index) {
+  if (index < 0 || index >= static_cast<int>(detail_viewports_.size())) return nullptr;
+  return detail_viewports_[static_cast<size_t>(index)].get();
+}
+
+bool Application::SetActiveLayout(int index) {
+  if (index >= static_cast<int>(doc_.Layouts().size())) return false;
+  if (index < 0) index = -1;
+  if (index == active_layout_ && (index < 0 || page_viewport_)) return true;
+  active_layout_ = index;
+  active_detail_ = -1;
+  page_viewport_.reset();
+  detail_viewports_.clear();
+  if (Layout* L = ActiveLayout()) {
+    page_viewport_ = std::make_unique<Viewport>(L->name, "Top");
+    page_viewport_->SetPage(L->width_mm, L->height_mm);
+    page_viewport_->SetMode(DisplayMode::Shaded);
+    page_viewport_->ZoomTo(kernel::BoundingBox{kernel::Point3d(-L->width_mm * 0.05, -L->height_mm * 0.05, -1),
+                                               kernel::Point3d(L->width_mm * 1.05, L->height_mm * 1.05, 1)});
+    // Fit the sheet to a typical (wide) page window rather than its diagonal.
+    page_viewport_->GetCamera().State().ortho_height = std::max(L->height_mm, L->width_mm / 2.0) * 1.15;
+    page_viewport_->SetActive(true);
+    SyncDetailViewports();
+  }
+  layout_built_ = false;  // the dock layout swaps between the viewport grid and the page
+  return true;
+}
+
+bool Application::SetActiveLayoutByName(const std::string& name) {
+  if (ToLower(name) == "model") return SetActiveLayout(-1);
+  for (size_t i = 0; i < doc_.Layouts().size(); ++i) {
+    if (ToLower(doc_.Layouts()[i].name) == ToLower(name)) return SetActiveLayout(static_cast<int>(i));
+  }
+  return false;
+}
+
+void Application::SyncDetailViewports() {
+  Layout* L = ActiveLayout();
+  if (!L) { detail_viewports_.clear(); active_detail_ = -1; return; }
+  std::vector<std::unique_ptr<Viewport>> old = std::move(detail_viewports_);
+  detail_viewports_.clear();
+  for (LayoutDetail& d : L->details) {
+    std::unique_ptr<Viewport> vp;
+    for (auto& o : old) {
+      if (o && o->Name() == d.name) { vp = std::move(o); break; }
+    }
+    if (!vp) {
+      vp = std::make_unique<Viewport>(d.name, d.standard_view);
+      vp->GetCamera().SetState(d.camera);
+      vp->SetMode(DisplayModeFromName(d.display_mode));
+    }
+    detail_viewports_.push_back(std::move(vp));
+  }
+  if (active_detail_ >= static_cast<int>(detail_viewports_.size())) active_detail_ = -1;
 }
 
 void Application::SetViewportLayout(int count) {
@@ -379,6 +480,7 @@ bool Application::NewDocument(bool confirm_discard) {
     return true;
   }
   doc_.Clear();
+  SetActiveLayout(-1);
   for (auto& vp : viewports_) vp->SetStandardView(vp->StandardView());
   engine_->Print("New document.");
   return true;
@@ -399,6 +501,7 @@ bool Application::OpenDocument(const std::string& path, std::string& error) {
     error = "Unsupported file type: " + ext;
   }
   if (!ok) return false;
+  SetActiveLayout(-1);
   doc_ = std::move(fresh);
   doc_.SetPath(path);
   doc_.SetModified(false);
@@ -510,11 +613,13 @@ void Application::Frame() {
   if (std::getenv("DINO8_UI_DEBUG") && (ImGui::GetFrameCount() == 5 || ImGui::GetFrameCount() == 90)) { const ImVec4& w = ImGui::GetStyle().Colors[ImGuiCol_WindowBg]; std::fprintf(stderr, "[theme] light=%d WindowBg=%.2f %.2f %.2f a=%.2f\n", light_theme ? 1 : 0, w.x, w.y, w.z, w.w); }
   UpdateCageCaptives(doc_);
   HandleShortcuts();
+  ViewToolsFrame(*this);
   DrawDockspace();
   DrawViewports();
   DrawPanels();
   DrawCommandLine();
   DrawStatusBar();
+  DrawViewportTabs();
   DrawFileDialog();
   DrawConfirmDiscard();
   DrawPopupToolbar();
@@ -533,6 +638,9 @@ void Application::BuildDefaultLayout(unsigned dockspace_id) {
 
   ImGui::DockBuilderDockWindow("Layers", right_id);
   ImGui::DockBuilderDockWindow("Named Views", right_id);
+  ImGui::DockBuilderDockWindow("Layouts", right_id);
+  ImGui::DockBuilderDockWindow("Clipping Planes", right_id);
+  ImGui::DockBuilderDockWindow("Named CPlanes", right_id);
   ImGui::DockBuilderDockWindow("Materials", right_id);
   ImGui::DockBuilderDockWindow("Lights", right_id);
   ImGui::DockBuilderDockWindow("Rendering", right_id);
@@ -547,8 +655,43 @@ void Application::BuildDefaultLayout(unsigned dockspace_id) {
   ImGui::DockBuilderDockWindow("Command List", bottom_id);
   ImGui::DockBuilderDockWindow("Notifications", bottom_id);
 
-  // Viewport grid.
-  if (viewports_.size() == 4) {
+  // Viewport grid (or the layout page while a layout is active).
+  std::vector<Viewport*> docked;
+  for (auto& vp : viewports_) if (!vp->Floating()) docked.push_back(vp.get());
+  if (active_layout_ >= 0 && page_viewport_) {
+    const std::string title = "Layout: " + page_viewport_->Name() + "###vp_page";
+    ImGui::DockBuilderDockWindow(title.c_str(), main_id);
+  } else if (docked.size() != viewports_.size() || (viewports_.size() != 4 && viewports_.size() != 3)) {
+    // Generic grid for any number of docked viewports: ceil(sqrt(n)) columns.
+    const int n = static_cast<int>(docked.size());
+    const int cols = std::max(1, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(n)))));
+    const int rows = std::max(1, (n + cols - 1) / cols);
+    std::vector<ImGuiID> col_ids;
+    ImGuiID rest = main_id;
+    for (int c = 0; c < cols; ++c) {
+      if (c == cols - 1) { col_ids.push_back(rest); break; }
+      ImGuiID left = 0;
+      ImGuiID right = ImGui::DockBuilderSplitNode(rest, ImGuiDir_Right, 1.0f - 1.0f / static_cast<float>(cols - c), nullptr, &left);
+      col_ids.push_back(left);
+      rest = right;
+    }
+    int k = 0;
+    for (int c = 0; c < cols && k < n; ++c) {
+      const int in_col = std::min(rows, n - c * rows);
+      ImGuiID node = col_ids[static_cast<size_t>(c)];
+      for (int r = 0; r < in_col && k < n; ++r, ++k) {
+        ImGuiID slot = node;
+        if (r < in_col - 1) {
+          ImGuiID top = 0;
+          ImGuiID bottom = ImGui::DockBuilderSplitNode(node, ImGuiDir_Down, 1.0f - 1.0f / static_cast<float>(in_col - r), nullptr, &top);
+          slot = top;
+          node = bottom;
+        }
+        const std::string title = docked[static_cast<size_t>(k)]->Name() + "###vp_" + docked[static_cast<size_t>(k)]->Name();
+        ImGui::DockBuilderDockWindow(title.c_str(), slot);
+      }
+    }
+  } else if (viewports_.size() == 4) {
     ImGuiID left_col = main_id;
     ImGuiID right_col = ImGui::DockBuilderSplitNode(left_col, ImGuiDir_Right, 0.5f, nullptr, &left_col);
     ImGuiID left_bottom = ImGui::DockBuilderSplitNode(left_col, ImGuiDir_Down, 0.5f, nullptr, &left_col);
@@ -580,7 +723,7 @@ void Application::DrawDockspace() {
   const ImGuiViewport* vp = ImGui::GetMainViewport();
   // Reserve space for the command line (top) and status bar (bottom).
   const float command_h = ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f;
-  const float status_h = StatusBarHeight();
+  const float status_h = StatusBarHeight() + ViewportTabsHeight();
   const float toolbar_h = panels_.toolbars ? 38.0f : 0.0f;
   ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y + command_h + toolbar_h));
   ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, vp->WorkSize.y - command_h - status_h - toolbar_h));
@@ -610,9 +753,14 @@ void Application::DrawViewports() {
   std::optional<kernel::Point3d> ortho_base = engine_->LastPoint();
   bool maximized_any = false;
   for (auto& vp : viewports_) maximized_any = maximized_any || vp->Maximized();
+  if (active_layout_ >= 0) {
+    if (ActiveLayout()) { DrawLayoutPage(); return; }
+    SetActiveLayout(-1);  // the layout was deleted (Undo / New)
+  }
 
   // Render every visible viewport into its texture first.
   Viewport::FrameContext ctx = MakeFrameContext();
+  ctx.print_display = viewtools.print_display;
   if (want_point && pending_hover_) ctx.cursor_marker = pending_hover_;
 
   bool request_focus = false;
@@ -622,6 +770,10 @@ void Application::DrawViewports() {
     const bool show = !maximized_any || vp.Maximized();
     vp.SetVisible(show);
     if (!show) continue;
+    if (!bring_to_top_.empty() && ToLower(bring_to_top_) == ToLower(vp.Name())) {
+      ImGui::SetWindowFocus((vp.Name() + "###vp_" + vp.Name()).c_str());
+      bring_to_top_.clear();
+    }
     vp.Render(renderer_, ctx);
     // The gumball hit-tests against last frame's image rectangle and locks
     // the viewport's left button while it owns the mouse.
@@ -651,6 +803,179 @@ void Application::DrawViewports() {
   pending_hover_ = hover;
   engine_->FeedHover(hover);
   if (request_focus) focus_command_line_ = true;
+}
+
+void Application::DrawLayoutPage() {
+  Layout* L = ActiveLayout();
+  if (!L || !page_viewport_) return;
+  const Want want = engine_->CurrentWant();
+  const bool want_point = want == Want::Point;
+  const bool want_objects = want == Want::Objects;
+  std::optional<kernel::Point3d> ortho_base = engine_->LastPoint();
+  page_viewport_->SetName(L->name);
+  page_viewport_->SetPage(L->width_mm, L->height_mm);
+  SyncDetailViewports();
+
+  Viewport::FrameContext ctx;
+  ctx.doc = &doc_;
+  ctx.preview_lines = &engine_->PreviewLines();
+  ctx.preview_points = &engine_->PreviewPoints();
+  ctx.show_control_points_for_selected = show_control_points_for_selected;
+  ctx.curve_tolerance = curve_display_tolerance;
+  ctx.surface_tolerance = surface_display_tolerance;
+  ctx.fallback_analysis = &analysis_fallback;
+  ctx.print_display = viewtools.print_display;
+  ctx.show_clipping_planes = false;
+  if (want_point && pending_hover_) ctx.cursor_marker = pending_hover_;
+
+  // Details render with their own cameras and per-detail hiding.
+  for (size_t i = 0; i < L->details.size() && i < detail_viewports_.size(); ++i) {
+    LayoutDetail& d = L->details[i];
+    Viewport& dv = *detail_viewports_[i];
+    CameraState& cam = dv.GetCamera().State();
+    if (d.scale > 0 && !cam.perspective) cam.ortho_height = d.height / d.scale;
+    Viewport::FrameContext dctx = ctx;
+    dctx.hidden_layers = &d.hidden_layers;
+    dctx.hidden_objects = &d.hidden_objects;
+    dctx.show_clipping_planes = true;
+    dctx.cursor_marker.reset();
+    if (static_cast<int>(i) == active_detail_ && want_point && pending_hover_) dctx.cursor_marker = pending_hover_;
+    dv.Render(renderer_, dctx);
+  }
+  Viewport::FrameContext pctx = ctx;
+  pctx.preview_lines = active_detail_ < 0 ? ctx.preview_lines : nullptr;
+  pctx.preview_points = active_detail_ < 0 ? ctx.preview_points : nullptr;
+  if (active_detail_ >= 0) pctx.cursor_marker.reset();
+  page_viewport_->Render(renderer_, pctx);
+
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  const std::string title = "Layout: " + L->name + "###vp_page";
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse;
+  bool request_focus = false;
+  std::optional<kernel::Point3d> hover;
+  if (ImGui::Begin(title.c_str(), nullptr, flags)) {
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const int w = std::max(1, static_cast<int>(avail.x)), h = std::max(1, static_cast<int>(avail.y));
+    // Detail rectangles in screen pixels (from the page camera).
+    struct Rect { float x0, y0, x1, y1; };
+    std::vector<Rect> rects;
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    int hovered_detail = -1;
+    for (size_t i = 0; i < L->details.size(); ++i) {
+      const LayoutDetail& d = L->details[i];
+      double ax, ay, bx, by;
+      Rect r{0, 0, 0, 0};
+      if (page_viewport_->WorldToPixel(kernel::Point3d(d.x, d.y, 0), ax, ay) &&
+          page_viewport_->WorldToPixel(kernel::Point3d(d.x + d.width, d.y + d.height, 0), bx, by)) {
+        r = Rect{static_cast<float>(origin.x + std::min(ax, bx)), static_cast<float>(origin.y + std::min(ay, by)),
+                 static_cast<float>(origin.x + std::max(ax, bx)), static_cast<float>(origin.y + std::max(ay, by))};
+      }
+      rects.push_back(r);
+      if (mouse.x >= r.x0 && mouse.x <= r.x1 && mouse.y >= r.y0 && mouse.y <= r.y1) hovered_detail = static_cast<int>(i);
+    }
+    // The page: pan/zoom with the usual mouse buttons, point picks in page mm.
+    page_viewport_->SetAllInputLocked(active_detail_ >= 0 && hovered_detail == active_detail_);
+    page_viewport_->SetVisible(true);
+    ViewportEvents pev = page_viewport_->DrawEmbedded(doc_, snaps_, want_point, want_objects, ortho_base, 1.0, request_focus, w, h);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    for (size_t i = 0; i < L->details.size() && i < detail_viewports_.size(); ++i) {
+      LayoutDetail& d = L->details[i];
+      Viewport& dv = *detail_viewports_[i];
+      const Rect& r = rects[i];
+      const int rw = std::max(1, static_cast<int>(r.x1 - r.x0)), rh = std::max(1, static_cast<int>(r.y1 - r.y0));
+      const bool active = static_cast<int>(i) == active_detail_;
+      dl->PushClipRect(ImVec2(std::max(r.x0, origin.x), std::max(r.y0, origin.y)), ImVec2(std::min(r.x1, origin.x + w), std::min(r.y1, origin.y + h)), true);
+      if (active) {
+        ImGui::SetCursorScreenPos(ImVec2(r.x0, r.y0));
+        dv.SetVisible(true);
+        dv.SetAllInputLocked(d.locked);
+        ViewportEvents dev = dv.DrawEmbedded(doc_, snaps_, want_point, want_objects, ortho_base, doc_.Settings().grid_spacing, request_focus, rw, rh);
+        if (dev.hovered && dev.hover_pick) hover = dev.hover_pick->point;
+        ProcessViewportEvents(dv, dev);
+      } else {
+        dv.SetAllInputLocked(true);
+        dv.SetVisible(true);
+        ImGui::SetCursorScreenPos(ImVec2(r.x0, r.y0));
+        dv.DrawEmbedded(doc_, snaps_, false, false, std::nullopt, doc_.Settings().grid_spacing, request_focus, rw, rh);
+      }
+      dl->PopClipRect();
+      const ImU32 border = d.selected ? IM_COL32(255, 210, 0, 255) : (active ? IM_COL32(70, 130, 220, 255) : IM_COL32(60, 60, 60, 255));
+      dl->AddRect(ImVec2(r.x0, r.y0), ImVec2(r.x1, r.y1), border, 0.0f, 0, d.selected || active ? 2.5f : 1.0f);
+      d.camera = dv.GetCamera().State();
+      d.display_mode = DisplayModeName(dv.Mode());
+    }
+    ImGui::SetCursorScreenPos(origin);
+    if (pev.hovered && pev.hover_pick && hovered_detail != active_detail_) hover = pev.hover_pick->point;
+    if (pev.clicked) {
+      if (want_point && pev.click_pick && hovered_detail != active_detail_) {
+        engine_->FeedPoint(pev.click_pick->point);
+      } else if (hovered_detail >= 0 && hovered_detail != active_detail_) {
+        if (pev.double_clicked) {
+          active_detail_ = hovered_detail;
+        } else {
+          for (size_t i = 0; i < L->details.size(); ++i) {
+            if (pev.shift || pev.ctrl) { if (static_cast<int>(i) == hovered_detail) L->details[i].selected = pev.ctrl ? !L->details[i].selected : true; }
+            else L->details[i].selected = static_cast<int>(i) == hovered_detail;
+          }
+          active_detail_ = -1;
+        }
+      } else if (hovered_detail < 0) {
+        if (active_detail_ >= 0) active_detail_ = -1;
+        else if (!pev.shift && !pev.ctrl) for (LayoutDetail& d : L->details) d.selected = false;
+        if (want != Want::Objects && !pev.shift && !pev.ctrl) doc_.SelectNone();
+      }
+    } else if (pev.double_clicked && hovered_detail < 0) {
+      active_detail_ = -1;
+    }
+    if (pev.right_clicked && hovered_detail != active_detail_) engine_->FeedEnter();
+    // Page title / hint.
+    char label[160];
+    std::snprintf(label, sizeof(label), "%s  %.0f x %.0f mm  %s", L->name.c_str(), L->width_mm, L->height_mm,
+                  active_detail_ >= 0 ? "(detail active: double-click the page to return)" : "(double-click a detail to activate it)");
+    dl->AddText(ImVec2(origin.x + 8, origin.y + h - ImGui::GetTextLineHeight() - 6), IM_COL32(230, 230, 230, 220), label);
+  }
+  ImGui::End();
+  ImGui::PopStyleVar();
+  pending_hover_ = hover;
+  engine_->FeedHover(hover);
+  if (request_focus) focus_command_line_ = true;
+}
+
+float Application::ViewportTabsHeight() const {
+  return show_viewport_tabs ? ImGui::GetFrameHeight() + 6.0f : 0.0f;
+}
+
+void Application::DrawViewportTabs() {
+  if (!show_viewport_tabs) return;
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const float h = ViewportTabsHeight();
+  const float status_h = StatusBarHeight();
+  ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y + vp->WorkSize.y - status_h - h));
+  ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, h));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 3));
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+  ImGui::Begin("##ViewportTabs", nullptr, flags);
+  auto tab = [&](const char* name, bool current, int index) {
+    ImGui::PushStyleColor(ImGuiCol_Button, current ? ImVec4(0.22f, 0.45f, 0.75f, 1) : ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
+    if (ImGui::SmallButton(name)) SetActiveLayout(index);
+    ImGui::PopStyleColor();
+    ImGui::SameLine(0, 4);
+  };
+  tab("Model", active_layout_ < 0, -1);
+  for (size_t i = 0; i < doc_.Layouts().size(); ++i) {
+    ImGui::PushID(static_cast<int>(i));
+    tab(doc_.Layouts()[i].name.c_str(), static_cast<int>(i) == active_layout_, static_cast<int>(i));
+    ImGui::PopID();
+  }
+  if (ImGui::SmallButton("+")) engine_->Execute("Layout");
+  ImGui::SameLine(0, 12);
+  ImGui::TextDisabled(active_layout_ < 0 ? "Model space" : "Layout (paper space, mm)");
+  ImGui::End();
+  ImGui::PopStyleVar(2);
 }
 
 void Application::ProcessViewportEvents(Viewport& vp, const ViewportEvents& ev) {
@@ -1133,6 +1458,9 @@ void Application::DrawPanels() {
   if (panels_.layer_state_manager) DrawLayerStateManager(*this);
   if (panels_.selection_filter) DrawSelectionFilterPanel(*this);
   if (panels_.macro_editor) DrawMacroEditor(*this);
+  if (panels_.clipping_planes) DrawClippingPlanesPanel(*this);
+  if (panels_.layouts) DrawLayoutsPanel(*this);
+  if (panels_.named_cplanes) DrawNamedCPlanesPanel(*this);
   if (panels_.imgui_demo) ImGui::ShowDemoWindow(&panels_.imgui_demo);
 }
 

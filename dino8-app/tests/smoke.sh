@@ -396,4 +396,55 @@ stcheck "Gumball: on, alignment CPlane" "GumballSettings reported the widget sta
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
 stcheck "^ok   expect_selected 5" "state script ended with every object selected"
+# View tools: clipping planes + sections, layouts + details, named CPlanes, animation playback/recording (see viewtools_script.txt).
+mkdir -p "$TMP/vt"
+sed "s|@TMP@|$TMP/vt|g" "$HERE/viewtools_script.txt" > "$TMP/viewtools_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  VT="$("$BIN" --smoke 150 --script "$TMP/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
+else
+  VT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
+fi
+vtcheck() { if echo "$VT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+vtcheck "ClippingPlane: created Clipping Plane 1 (40 x 40, normal 0,0,1, clips all viewports)" "ClippingPlane built a plane from two corners"
+vtcheck "ClippingSections: 1 curve(s) from 1 plane(s)" "ClippingSections cut the sphere's equator"
+vtcheck "degree 1, [0-9]* control points, non-rational, closed" "the section is a closed polyline"
+vtcheck "ClearClippingSections: removed 1 section curve(s)" "ClearClippingSections removed the section"
+vtcheck "DisableClippingPlane: 1 plane(s) disabled" "DisableClippingPlane"
+vtcheck "EnableClippingPlane: 1 plane(s) enabled" "EnableClippingPlane"
+vtcheck "ClippingPlane: created Upper (40 x 40, normal 0,0,1, clips Perspective)" "ClippingPlane honoured Name= and Viewports=Active"
+vtcheck "SaveClippingSectionCPlanes: 2 named CPlane(s) saved" "SaveClippingSectionCPlanes"
+vtcheck "SaveClippingSectionViews: 2 named view(s) saved" "SaveClippingSectionViews"
+vtcheck "ClippingSections: 2 curve(s) from 2 plane(s)" "ClippingSections handled two planes"
+vtcheck "CPlane Perspective: elevation 7 (origin 0,0,7" "CPlane Elevation= moved the CPlane"
+vtcheck "NamedCPlane: saved Deck (origin 0,0,7" "NamedCPlane Save"
+vtcheck "NamedCPlane: restored Deck in Perspective (origin 0,0,7" "NamedCPlane Restore"
+vtcheck "CPlanePrevious: origin 0,0,0" "CPlanePrevious stepped back through the CPlane history"
+vtcheck "CPlaneNext: origin 0,0,7" "CPlaneNext stepped forward again"
+vtcheck "CPlane Perspective: rotated 45 degrees (origin 0,0,7 x 0.7071,0.7071,0" "CPlane Rotate="
+vtcheck "CopyCPlaneToAll: CPlane of Perspective copied to 3 viewport(s)" "CopyCPlaneToAll"
+vtcheck "Layout: created Sheet1 (297 x 210 mm)" "Layout created a page"
+vtcheck "Detail: added Detail 1 (130 x 100 mm, Top) to Sheet1" "Detail added a Top detail from two page corners"
+vtcheck "Detail: added Iso (110 x 170 mm, Perspective) to Sheet1" "Detail honoured View= and Name="
+vtcheck "SelDetail: 1 detail(s) selected" "SelDetail selected the named detail"
+vtcheck "HideLayersInDetail: 1 layer(s) in 1 detail(s)" "HideLayersInDetail"
+vtcheck "CopyDetailToViewport: Iso -> Perspective" "CopyDetailToViewport"
+vtcheck "CopyLayout: created Sheet1 Copy with 2 detail(s)" "CopyLayout duplicated the page"
+vtcheck "LayoutProperties: Sheet2 420 x 297 mm" "LayoutProperties renamed and resized the page"
+vtcheck "Layouts: switched to Model" "Layouts Model switched back to model space"
+vtcheck "SetTurntableAnimation: 6 frames over 360 degrees in Perspective" "SetTurntableAnimation"
+vtcheck "ViewFrameNumber: frame 3 of 6" "ViewFrameNumber"
+vtcheck "ViewLastFrame: frame 6 of 6" "ViewLastFrame"
+vtcheck "PlayAnimation: finished 6 frames" "PlayAnimation stepped through every frame without blocking"
+vtcheck "RecordAnimation: wrote 6 frames to $TMP/vt/frames" "RecordAnimation wrote every frame"
+vtcheck "SplitViewportHorizontal: added Perspective 2 (5 viewports)" "SplitViewportHorizontal added a viewport"
+vtcheck "CloseViewport: closed Perspective 2 (4 left)" "CloseViewport removed it"
+vtcheck "Layouts: 2 layout(s); active: Model" "layouts survived the .3dm round-trip"
+vtcheck "NamedCPlane: 3 named CPlane(s)" "named CPlanes survived the .3dm round-trip"
+vtcheck "SelClippingPlane: 2 clipping plane(s) selected" "clipping planes survived the .3dm round-trip"
+vtcheck "^ok   expect_objects 1" "view-tools script ended with the sphere only"
+vtcheck "gl_error=0" "view-tools script: no OpenGL errors (clip distances)"
+FRAMES="$(ls "$TMP/vt/frames"/frame_*.bmp 2>/dev/null | wc -l)"
+[ "$FRAMES" -ge 3 ] && echo "ok   RecordAnimation wrote $FRAMES BMP frames" || { echo "FAIL RecordAnimation frames ($FRAMES)"; fail=1; }
+[ -s "$TMP/vt/frames/frame_0001.bmp" ] && [ "$(head -c 2 "$TMP/vt/frames/frame_0001.bmp")" = "BM" ] && echo "ok   frame_0001.bmp is a BMP" || { echo "FAIL frame_0001.bmp"; fail=1; }
+grep -q "^Upper" "$TMP/vt/clipping.txt" && echo "ok   ExportClippingSectionInfo listed the Upper plane" || { echo "FAIL clipping.txt"; fail=1; }
 exit $fail

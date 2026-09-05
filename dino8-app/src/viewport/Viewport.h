@@ -18,6 +18,8 @@ enum class DisplayMode {
 };
 const char* DisplayModeName(DisplayMode mode);
 std::vector<DisplayMode> AllDisplayModes();
+// Inverse of DisplayModeName (case-insensitive, "X-Ray"/"XRay"); Shaded when unknown.
+DisplayMode DisplayModeFromName(const std::string& name);
 
 struct ConstructionPlane {
   kernel::Point3d origin{0, 0, 0};
@@ -78,8 +80,21 @@ class Viewport {
   void SetMaximized(bool m) { maximized_ = m; }
   bool Visible() const { return visible_; }
   void SetVisible(bool v) { visible_ = v; }
+  // Floating viewports are not docked into the viewport grid (NewFloatingViewport).
+  bool Floating() const { return floating_; }
+  void SetFloating(bool f) { floating_ = f; }
+  // Layout page mode: the viewport shows a white sheet `w` x `h` (page
+  // millimetres, lower-left corner at the origin) instead of the model.
+  // Details are composited over it by the application.
+  void SetPage(double width_mm, double height_mm) { page_ = true; page_w_ = width_mm; page_h_ = height_mm; }
+  bool IsPage() const { return page_; }
+  double PageWidth() const { return page_w_; }
+  double PageHeight() const { return page_h_; }
   // While true the viewport ignores left-button clicks (a widget owns the mouse).
   void SetInputLocked(bool locked) { input_locked_ = locked; }
+  // While true the viewport ignores every mouse button and the wheel
+  // (locked layout details, the page under an active detail).
+  void SetAllInputLocked(bool locked) { all_input_locked_ = locked; }
   void SetStandardView(const std::string& view);  // Top/Bottom/Front/Back/Right/Left/Perspective/Isometric
   std::string StandardView() const { return standard_view_; }
   int Width() const { return width_; }
@@ -104,6 +119,13 @@ class Viewport {
     // or command preview; `arctic` swaps every material for white matte.
     bool for_render = false;
     bool arctic = false;
+    // Per-detail hiding (HideInDetail / HideLayersInDetail): null = nothing extra hidden.
+    const std::vector<int>* hidden_layers = nullptr;
+    const std::vector<ObjectId>* hidden_objects = nullptr;
+    // PrintDisplay: preview print line widths (curves drawn thicker).
+    bool print_display = false;
+    // Draw the document's clipping planes as translucent rectangles.
+    bool show_clipping_planes = true;
   };
   void Render(GlRenderer& renderer, const FrameContext& ctx);
 
@@ -120,6 +142,11 @@ class Viewport {
   ViewportEvents DrawUI(const Document& doc, const SnapSettings& snaps, bool want_point,
                         bool want_objects, std::optional<kernel::Point3d> ortho_base,
                         double grid_spacing, bool& request_focus_command_line);
+  // Same as DrawUI but inside the caller's ImGui window, at the current
+  // cursor position with the given pixel size (layout details).
+  ViewportEvents DrawEmbedded(const Document& doc, const SnapSettings& snaps, bool want_point,
+                              bool want_objects, std::optional<kernel::Point3d> ortho_base,
+                              double grid_spacing, bool& request_focus_command_line, int width, int height);
 
   // Hit tests against the document's display geometry. Returns the
   // closest object within `pixel_radius` of the given pixel position.
@@ -156,6 +183,11 @@ class Viewport {
   void DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx);
   void DrawLightWidgets(GlRenderer& renderer, const Document& doc);
   void DrawAxesGizmo(GlRenderer& renderer);
+  void DrawPage(GlRenderer& renderer);
+  void DrawClippingPlanes(GlRenderer& renderer, const Document& doc);
+  ViewportEvents DrawContent(const Document& doc, const SnapSettings& snaps, bool want_point,
+                             bool want_objects, std::optional<kernel::Point3d> ortho_base,
+                             double grid_spacing, bool& request_focus_command_line, bool embedded);
 
   std::string name_;
   std::string standard_view_;
@@ -164,11 +196,15 @@ class Viewport {
   RenderTarget target_;
   double screen_x_ = 0, screen_y_ = 0;
   bool input_locked_ = false;
+  bool all_input_locked_ = false;
   DisplayMode mode_ = DisplayMode::Wireframe;
   ConstructionPlane cplane_;
   bool active_ = false;
   bool maximized_ = false;
   bool visible_ = true;
+  bool floating_ = false;
+  bool page_ = false;
+  double page_w_ = 297, page_h_ = 210;
   int width_ = 1, height_ = 1;
   // Image rectangle in screen pixels, updated every DrawUI.
   double img_x_ = 0, img_y_ = 0;

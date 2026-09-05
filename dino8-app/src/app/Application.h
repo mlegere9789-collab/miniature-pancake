@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "app/ViewTools.h"
 #include "commands/CommandCatalog.h"
 #include "commands/CommandEngine.h"
 #include "doc/Document.h"
@@ -51,6 +52,9 @@ struct PanelState {
   bool textures = false;
   bool render_window = false;
   bool linetypes = false;
+  bool clipping_planes = false;
+  bool layouts = false;
+  bool named_cplanes = false;
 };
 
 // The last image produced by Render / RenderPreview, shown in the Render
@@ -123,8 +127,31 @@ class Application {
   CommandEngine& Engine() { return *engine_; }
   CommandCatalog& Catalog() { return catalog_; }
   std::vector<std::unique_ptr<Viewport>>& Viewports() { return viewports_; }
+  // The viewport commands act on: a model viewport, or - while a layout is
+  // active - the active detail (or the page itself).
   Viewport* ActiveViewport();
+  // Finds a model viewport, the active layout page or one of its details.
   Viewport* FindViewport(const std::string& name);
+  // Model viewport list management (SplitViewport*, NewFloatingViewport, CloseViewport).
+  Viewport* AddViewport(const std::string& name, const std::string& standard_view, bool floating = false);
+  bool RemoveViewport(const std::string& name);
+  void BringViewportToTop(const std::string& name) { bring_to_top_ = name; }
+  void RebuildLayout() { layout_built_ = false; }
+
+  // ---- layouts (paper space) ----
+  // -1 = Model; otherwise an index into Doc().Layouts().
+  int ActiveLayoutIndex() const { return active_layout_; }
+  Layout* ActiveLayout();
+  bool SetActiveLayout(int index);
+  bool SetActiveLayoutByName(const std::string& name);  // "Model" switches back
+  int ActiveDetailIndex() const { return active_detail_; }
+  void SetActiveDetail(int index) { active_detail_ = index; }
+  Viewport* PageViewport() { return page_viewport_.get(); }
+  Viewport* DetailViewport(int index);
+  // Creates/removes the per-detail viewports so they match the active layout.
+  void SyncDetailViewports();
+  bool show_viewport_tabs = true;  // the Model / layout tab strip (ViewportTabs)
+  ViewToolsState viewtools;
   SnapSettings& Snaps() { return snaps_; }
   PanelState& Panels() { return panels_; }
   AppState& State() { return state_; }
@@ -194,6 +221,9 @@ class Application {
   void RegisterCommands();
   void DrawDockspace();
   void DrawViewports();
+  void DrawLayoutPage();
+  void DrawViewportTabs();
+  float ViewportTabsHeight() const;
   void DrawPanels();
   void DrawCommandLine();
   void DrawStatusBar();
@@ -214,6 +244,11 @@ class Application {
   GlRenderer renderer_;
   std::vector<std::unique_ptr<Viewport>> viewports_;
   int active_viewport_ = 3;
+  int active_layout_ = -1;
+  int active_detail_ = -1;
+  std::unique_ptr<Viewport> page_viewport_;
+  std::vector<std::unique_ptr<Viewport>> detail_viewports_;
+  std::string bring_to_top_;
   SnapSettings snaps_;
   PanelState panels_;
   AppState state_;

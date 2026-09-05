@@ -155,11 +155,63 @@ struct NamedSelection {
   std::vector<ObjectId> ids;
 };
 
+// A construction plane saved by name (NamedCPlane). Mirrors
+// ConstructionPlane in viewport/Viewport.h without pulling it in here.
 struct NamedCPlane {
   std::string name;
   kernel::Point3d origin{0, 0, 0};
   kernel::Vector3d x_axis{1, 0, 0};
   kernel::Vector3d y_axis{0, 1, 0};
+};
+
+// A clipping plane: everything on the side the normal (x cross y) points
+// to is cut away in the viewports it clips (all when `viewports` is empty).
+// Drawn as a translucent rectangle `width` x `height` around `origin`.
+struct ClippingPlane {
+  int id = 0;
+  std::string name;
+  kernel::Point3d origin{0, 0, 0};
+  kernel::Vector3d x_axis{1, 0, 0};
+  kernel::Vector3d y_axis{0, 1, 0};
+  double width = 10, height = 10;
+  std::vector<std::string> viewports;  // viewport names; empty = every viewport
+  bool enabled = true;
+  bool selected = false;
+  kernel::Vector3d Normal() const { return ON_CrossProduct(x_axis, y_axis); }
+  bool ClipsViewport(const std::string& viewport_name) const {
+    if (viewports.empty()) return true;
+    for (const std::string& v : viewports) if (v == viewport_name) return true;
+    return false;
+  }
+};
+
+// A detail on a layout page: a rectangle (page millimetres, origin at the
+// lower-left page corner) showing the model through its own camera.
+struct LayoutDetail {
+  std::string name;
+  double x = 10, y = 10, width = 100, height = 80;  // page mm
+  CameraState camera;
+  std::string standard_view = "Perspective";
+  std::string display_mode = "Shaded";
+  double scale = 0;  // page mm per model unit; 0 = free zoom
+  bool locked = false;
+  bool selected = false;
+  std::vector<int> hidden_layers;         // layer indices hidden in this detail only
+  std::vector<ObjectId> hidden_objects;   // objects hidden in this detail only
+};
+
+struct Layout {
+  std::string name;
+  double width_mm = 297, height_mm = 210;  // A4 landscape
+  std::vector<LayoutDetail> details;
+};
+
+// A camera animation (turntable, path, fly-through): the frames are
+// precomputed camera states the view commands step through.
+struct Animation {
+  std::string kind;  // "Turntable", "Path", "Flythrough", ""
+  std::vector<CameraState> frames;
+  std::string viewport;  // viewport the animation was set up in
 };
 
 struct DocumentSettings {
@@ -272,6 +324,19 @@ class Document {
   const AnnotationStyle& CurrentAnnotationStyle() const;
   std::vector<NamedSelection>& NamedSelections() { return named_selections_; }
   std::vector<NamedCPlane>& NamedCPlanes() { return named_cplanes_; }
+  const std::vector<NamedCPlane>& NamedCPlanes() const { return named_cplanes_; }
+  NamedCPlane* FindNamedCPlane(const std::string& name);
+
+  // ---- clipping planes / layouts / animation ---------------------------
+  std::vector<ClippingPlane>& ClippingPlanes() { return clipping_planes_; }
+  const std::vector<ClippingPlane>& ClippingPlanes() const { return clipping_planes_; }
+  int AddClippingPlane(ClippingPlane plane);  // assigns id, returns it
+  ClippingPlane* FindClippingPlane(int id);
+  std::vector<Layout>& Layouts() { return layouts_; }
+  const std::vector<Layout>& Layouts() const { return layouts_; }
+  Layout* FindLayout(const std::string& name);
+  Animation& GetAnimation() { return animation_; }
+  const Animation& GetAnimation() const { return animation_; }
   std::vector<BlockDefinition>& Blocks() { return blocks_; }
   BlockDefinition* FindBlock(const std::string& name) { for (BlockDefinition& b : blocks_) if (b.name == name) return &b; return nullptr; }
   std::map<std::string, std::string>& UserText() { return user_text_; }
@@ -311,6 +376,8 @@ class Document {
     std::vector<Group> groups;
     std::vector<Material> materials;
     std::vector<Light> lights;
+    std::vector<ClippingPlane> clipping_planes;
+    std::vector<Layout> layouts;
     ObjectId next_id = 1;
     int next_group_id = 1;
     int next_light_id = 1;
@@ -329,6 +396,10 @@ class Document {
   std::vector<NamedView> named_views_;
   std::vector<NamedSelection> named_selections_;
   std::vector<NamedCPlane> named_cplanes_;
+  std::vector<ClippingPlane> clipping_planes_;
+  int next_clipping_plane_id_ = 1;
+  std::vector<Layout> layouts_;
+  Animation animation_;
   std::vector<BlockDefinition> blocks_;
   std::vector<Linetype> linetypes_;
   std::vector<AnnotationStyle> annotation_styles_;

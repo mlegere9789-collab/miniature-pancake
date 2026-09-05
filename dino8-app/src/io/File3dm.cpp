@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <map>
+#include <sstream>
 
 namespace dino8::app {
 
@@ -123,6 +124,65 @@ void AddLightFromOn(Document& doc, const ON_Light& light_ref, const ON_3dmObject
     if (L.type == LightType::Rectangular) { L.position = light->Location() + light->Length() * 0.5 + light->Width() * 0.5; }
   }
   doc.AddLight(L);
+}
+
+bool UuidLess(const ON_UUID& a, const ON_UUID& b) { return ON_UuidCompare(a, b) < 0; }
+using UuidMap = std::map<ON_UUID, int, bool (*)(const ON_UUID&, const ON_UUID&)>;
+
+void CameraToViewport(const CameraState& c, ON_Viewport& vp) {
+  vp.SetProjection(c.perspective ? ON::perspective_view : ON::parallel_view);
+  vp.SetCameraLocation(c.eye);
+  vp.SetCameraDirection(c.target - c.eye);
+  vp.SetCameraUp(c.up);
+  vp.SetTargetPoint(c.target);
+  if (!c.perspective) vp.SetFrustum(-c.ortho_height / 2, c.ortho_height / 2, -c.ortho_height / 2, c.ortho_height / 2, 1, 1e6);
+}
+
+CameraState ViewportToCamera(const ON_Viewport& vp) {
+  CameraState c;
+  c.eye = vp.CameraLocation();
+  c.target = vp.TargetPoint();
+  c.up = vp.CameraUp();
+  c.perspective = vp.IsPerspectiveProjection();
+  double l, r, b, t;
+  if (vp.GetFrustum(&l, &r, &b, &t) && !c.perspective && t - b > 0) c.ortho_height = t - b;
+  return c;
+}
+
+std::string UuidString(const ON_UUID& id) { char buf[64] = {}; ON_UuidToString(id, buf); return buf; }
+
+// Animation frames <-> one document user string.
+std::string AnimationToString(const Animation& a) {
+  std::ostringstream out;
+  out << a.kind << "|" << a.viewport << "|";
+  for (size_t i = 0; i < a.frames.size(); ++i) {
+    const CameraState& c = a.frames[i];
+    if (i) out << ";";
+    out << c.eye.x << "," << c.eye.y << "," << c.eye.z << "," << c.target.x << "," << c.target.y << "," << c.target.z << ","
+        << c.up.x << "," << c.up.y << "," << c.up.z << "," << (c.perspective ? 1 : 0) << "," << c.ortho_height << "," << c.lens_mm;
+  }
+  return out.str();
+}
+
+Animation AnimationFromString(const std::string& text) {
+  Animation a;
+  const size_t p1 = text.find('|');
+  if (p1 == std::string::npos) return a;
+  const size_t p2 = text.find('|', p1 + 1);
+  if (p2 == std::string::npos) return a;
+  a.kind = text.substr(0, p1);
+  a.viewport = text.substr(p1 + 1, p2 - p1 - 1);
+  std::istringstream in(text.substr(p2 + 1));
+  std::string frame;
+  while (std::getline(in, frame, ';')) {
+    double v[12] = {};
+    if (std::sscanf(frame.c_str(), "%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf,%lf", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9], &v[10], &v[11]) != 12) continue;
+    CameraState c;
+    c.eye = kernel::Point3d(v[0], v[1], v[2]); c.target = kernel::Point3d(v[3], v[4], v[5]); c.up = kernel::Vector3d(v[6], v[7], v[8]);
+    c.perspective = v[9] != 0; c.ortho_height = v[10]; c.lens_mm = v[11];
+    a.frames.push_back(c);
+  }
+  return a;
 }
 
 }  // namespace
@@ -253,6 +313,27 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       if (me != layer_by_id.end() && lt != linetype_by_index.end()) doc.Layers()[static_cast<size_t>(me->second)].linetype = lt->second;
     }
   }
+  // Viewports and layout pages: model views give clipping planes their
+  // viewport names, page views become layouts.
+  std::map<ON_UUID, std::string, bool (*)(const ON_UUID&, const ON_UUID&)> view_names(UuidLess);
+  UuidMap page_layout(UuidLess);
+  for (int i = 0; i < model.m_settings.m_views.Count(); ++i) {
+    const ON_3dmView& v = model.m_settings.m_views[i];
+    if (v.m_view_type == ON::page_view_type) {
+      Layout L;
+      L.name = FromWide(v.m_name);
+      if (L.name.empty()) L.name = "Layout " + std::to_string(doc.Layouts().size() + 1);
+      if (v.m_page_settings.m_width_mm > 0) L.width_mm = v.m_page_settings.m_width_mm;
+      if (v.m_page_settings.m_height_mm > 0) L.height_mm = v.m_page_settings.m_height_mm;
+      page_layout[v.m_vp.ViewportId()] = static_cast<int>(doc.Layouts().size());
+      doc.Layouts().push_back(L);
+    } else {
+      view_names[v.m_vp.ViewportId()] = FromWide(v.m_name);
+    }
+  }
+  struct PendingDetail { int layout; size_t detail; std::string hidden_objects; };
+  std::vector<PendingDetail> pending_details;
+  UuidMap object_ids(UuidLess);  // object uuid -> document id (as int)
 
   int skipped = 0;
   ONX_ModelComponentIterator it(model, ON_ModelComponent::Type::ModelGeometry);
@@ -266,6 +347,59 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     bool made = false;
     if (const ON_Light* light = ON_Light::Cast(g)) {
       AddLightFromOn(doc, *light, attr);
+      continue;
+    }
+    if (const ON_ClippingPlaneSurface* cps = ON_ClippingPlaneSurface::Cast(g)) {
+      ClippingPlane cp;
+      cp.origin = cps->m_plane.origin;
+      cp.x_axis = cps->m_plane.xaxis;
+      cp.y_axis = cps->m_plane.yaxis;
+      cp.width = std::max(cps->Extents(0).Length(), 0.1);
+      cp.height = std::max(cps->Extents(1).Length(), 0.1);
+      cp.enabled = cps->m_clipping_plane.m_bEnabled;
+      for (int i = 0; i < cps->m_clipping_plane.m_viewport_ids.Count(); ++i) {
+        auto vn = view_names.find(cps->m_clipping_plane.m_viewport_ids.Array()[i]);
+        if (vn != view_names.end() && !vn->second.empty()) cp.viewports.push_back(vn->second);
+      }
+      if (attr) cp.name = FromWide(attr->Name());
+      doc.AddClippingPlane(cp);
+      continue;
+    }
+    if (const ON_DetailView* dv = ON_DetailView::Cast(g)) {
+      int layout = -1;
+      if (attr) {
+        auto pl = page_layout.find(attr->m_viewport_id);
+        if (pl != page_layout.end()) layout = pl->second;
+      }
+      if (layout < 0 && !doc.Layouts().empty()) layout = 0;
+      if (layout < 0) { ++skipped; continue; }
+      Layout& L = doc.Layouts()[static_cast<size_t>(layout)];
+      LayoutDetail d;
+      d.name = FromWide(dv->m_view.m_name);
+      if (d.name.empty() && attr) d.name = FromWide(attr->Name());
+      if (d.name.empty()) d.name = "Detail " + std::to_string(L.details.size() + 1);
+      d.camera = ViewportToCamera(dv->m_view.m_vp);
+      ON_BoundingBox bb;
+      if (dv->m_boundary.GetBoundingBox(bb)) { d.x = bb.m_min.x; d.y = bb.m_min.y; d.width = std::max(bb.m_max.x - bb.m_min.x, 1.0); d.height = std::max(bb.m_max.y - bb.m_min.y, 1.0); }
+      d.scale = dv->m_page_per_model_ratio > 0 ? dv->m_page_per_model_ratio : 0;
+      std::string hidden;
+      if (attr) {
+        ON_wString v;
+        if (attr->GetUserString(L"Dino8.DetailLocked", v)) d.locked = FromWide(v) == "1";
+        if (attr->GetUserString(L"Dino8.DetailMode", v)) d.display_mode = FromWide(v);
+        if (attr->GetUserString(L"Dino8.DetailView", v)) d.standard_view = FromWide(v);
+        if (attr->GetUserString(L"Dino8.HiddenObjects", v)) hidden = FromWide(v);
+      }
+      const ON_UUID detail_id = dv->m_view.m_vp.ViewportId();
+      ONX_ModelComponentIterator lit(model, ON_ModelComponent::Type::Layer);
+      for (const ON_ModelComponent* lc = lit.FirstComponent(); lc; lc = lit.NextComponent()) {
+        const ON_Layer* layer = ON_Layer::Cast(lc);
+        if (!layer || layer->PerViewportIsVisible(detail_id)) continue;
+        auto lm = layer_map.find(layer->Index());
+        if (lm != layer_map.end()) d.hidden_layers.push_back(lm->second);
+      }
+      L.details.push_back(d);
+      pending_details.push_back({layout, L.details.size() - 1, hidden});
       continue;
     }
     if (const ON_Point* p = ON_Point::Cast(g)) {
@@ -354,7 +488,28 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
         obj.user_text[key] = val;
       }
     }
-    doc.Add(std::move(obj));
+    const ObjectId added = doc.Add(std::move(obj));
+    if (attr) object_ids[attr->m_uuid] = static_cast<int>(added);
+  }
+  // Per-detail hidden objects (saved as object uuids).
+  for (const PendingDetail& pd : pending_details) {
+    LayoutDetail& d = doc.Layouts()[static_cast<size_t>(pd.layout)].details[pd.detail];
+    std::istringstream in(pd.hidden_objects);
+    std::string tok;
+    while (std::getline(in, tok, ';')) {
+      if (tok.empty()) continue;
+      auto oi = object_ids.find(ON_UuidFromString(tok.c_str()));
+      if (oi != object_ids.end()) d.hidden_objects.push_back(static_cast<ObjectId>(oi->second));
+    }
+  }
+  // Named construction planes.
+  for (int i = 0; i < model.m_settings.m_named_cplanes.Count(); ++i) {
+    const ON_3dmConstructionPlane& c = model.m_settings.m_named_cplanes[i];
+    NamedCPlane n;
+    n.name = FromWide(c.m_name);
+    if (n.name.empty()) n.name = "CPlane " + std::to_string(i + 1);
+    n.origin = c.m_plane.origin; n.x_axis = c.m_plane.xaxis; n.y_axis = c.m_plane.yaxis;
+    doc.NamedCPlanes().push_back(n);
   }
 
   // Render lights live in their own table.
@@ -382,6 +537,7 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       double x = 0, y = 0, z = 0;
       if (std::sscanf(FromWide(v).c_str(), "%lf,%lf,%lf", &x, &y, &z) == 3) doc.Settings().hatch_base = kernel::Point3d(x, y, z);
     }
+    if (model.GetDocumentUserString(L"Dino8.Animation", v)) doc.GetAnimation() = AnimationFromString(FromWide(v));
   }
   {
     ON_ClassArray<ON_UserString> strings;
@@ -487,6 +643,44 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
   model.m_properties.m_RevisionHistory.m_sCreatedBy = ON_wString(doc.Settings().author.c_str());
   model.m_properties.m_RevisionHistory.m_sLastEditedBy = ON_wString(doc.Settings().author.c_str());
   model.m_properties.m_RevisionHistory.m_revision_count += 1;
+  if (!doc.GetAnimation().frames.empty()) model.SetDocumentUserString(L"Dino8.Animation", ON_wString(AnimationToString(doc.GetAnimation()).c_str()));
+
+  // Viewport ids: model views referenced by clipping planes, one page view
+  // per layout and one viewport id per detail (used for per-detail layer
+  // visibility and as the detail's own viewport id).
+  std::map<std::string, ON_UUID> model_view_ids;
+  for (const char* n : {"Top", "Perspective", "Front", "Right"}) { ON_UUID id; ON_CreateUuid(id); model_view_ids[n] = id; }
+  for (const ClippingPlane& cp : doc.ClippingPlanes()) {
+    for (const std::string& v : cp.viewports) if (!model_view_ids.count(v)) { ON_UUID id; ON_CreateUuid(id); model_view_ids[v] = id; }
+  }
+  for (const auto& [name, id] : model_view_ids) {
+    ON_3dmView v;
+    v.m_name = ON_wString(name.c_str());
+    v.m_view_type = ON::model_view_type;
+    v.m_vp.SetViewportId(id);
+    if (name == "Top") { v.m_vp.SetProjection(ON::parallel_view); v.m_vp.SetCameraLocation(ON_3dPoint(0, 0, 100)); v.m_vp.SetCameraDirection(ON_3dVector(0, 0, -1)); v.m_vp.SetCameraUp(ON_3dVector(0, 1, 0)); }
+    model.m_settings.m_views.Append(v);
+  }
+  std::vector<ON_UUID> page_ids;
+  std::vector<std::vector<ON_UUID>> detail_ids;
+  for (const Layout& L : doc.Layouts()) {
+    ON_UUID id; ON_CreateUuid(id);
+    page_ids.push_back(id);
+    ON_3dmView v;
+    v.m_name = ON_wString(L.name.c_str());
+    v.m_view_type = ON::page_view_type;
+    v.m_page_settings.m_width_mm = L.width_mm;
+    v.m_page_settings.m_height_mm = L.height_mm;
+    v.m_page_settings.m_page_number = static_cast<int>(page_ids.size());
+    v.m_vp.SetViewportId(id);
+    v.m_vp.SetProjection(ON::parallel_view);
+    v.m_vp.SetCameraLocation(ON_3dPoint(L.width_mm / 2, L.height_mm / 2, 100));
+    v.m_vp.SetCameraDirection(ON_3dVector(0, 0, -1));
+    v.m_vp.SetCameraUp(ON_3dVector(0, 1, 0));
+    model.m_settings.m_views.Append(v);
+    detail_ids.emplace_back();
+    for (size_t i = 0; i < L.details.size(); ++i) { ON_UUID d; ON_CreateUuid(d); detail_ids.back().push_back(d); }
+  }
 
   // Units.
   ON::LengthUnitSystem us = ON::LengthUnitSystem::Millimeters;
@@ -543,6 +737,13 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
       stored->SetLocked(L.locked);
       if (!L.material.empty() && material_index.count(L.material)) stored->SetRenderMaterialIndex(material_index[L.material]);
       if (linetype_index(L.linetype) >= 0) stored->SetLinetypeIndex(linetype_index(L.linetype));
+      for (size_t li = 0; li < doc.Layouts().size(); ++li) {
+        const Layout& lay = doc.Layouts()[li];
+        for (size_t di = 0; di < lay.details.size(); ++di) {
+          const std::vector<int>& hidden = lay.details[di].hidden_layers;
+          if (std::find(hidden.begin(), hidden.end(), static_cast<int>(i)) != hidden.end()) stored->SetPerViewportVisible(detail_ids[li][di], false);
+        }
+      }
       if (L.parent >= 0 && static_cast<size_t>(L.parent) < i) {
         ON_ModelComponentReference pref = model.LayerFromIndex(file_layer_index[static_cast<size_t>(L.parent)]);
         if (const ON_Layer* pl = ON_Layer::Cast(pref.ModelComponent())) stored->SetParentLayerId(pl->Id());
@@ -566,10 +767,20 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
     model.m_settings.m_named_views.Append(v);
   }
 
+  // Named construction planes.
+  for (const NamedCPlane& n : doc.NamedCPlanes()) {
+    ON_3dmConstructionPlane c;
+    c.m_plane = ON_Plane(n.origin, n.x_axis, n.y_axis);
+    c.m_name = ON_wString(n.name.c_str());
+    model.m_settings.m_named_cplanes.Append(c);
+  }
+
   int written = 0;
+  std::map<ObjectId, ON_UUID> object_uuids;
   for (const SceneObject& o : doc.Objects()) {
     ON_3dmObjectAttributes attr;
     ON_CreateUuid(attr.m_uuid);
+    object_uuids[o.id] = attr.m_uuid;
     attr.SetName(ON_wString(o.name.c_str()), true);
     attr.m_layer_index = file_layer_index[static_cast<size_t>(std::clamp(o.layer_index, 0, static_cast<int>(doc.Layers().size()) - 1))];
     if (!o.color_by_layer) {
@@ -643,6 +854,59 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
     ON_CreateUuid(attr.m_uuid);
     attr.SetName(ON_wString(L.name.c_str()), true);
     model.AddModelGeometryComponent(light, &attr);
+  }
+  // Clipping planes.
+  for (const ClippingPlane& cp : doc.ClippingPlanes()) {
+    ON_Plane plane(cp.origin, cp.x_axis, cp.y_axis);
+    ON_ClippingPlaneSurface* cps = new ON_ClippingPlaneSurface(plane);
+    cps->SetExtents(0, ON_Interval(-cp.width / 2, cp.width / 2), true);
+    cps->SetExtents(1, ON_Interval(-cp.height / 2, cp.height / 2), true);
+    cps->m_clipping_plane.m_plane = plane;
+    cps->m_clipping_plane.m_bEnabled = cp.enabled;
+    ON_CreateUuid(cps->m_clipping_plane.m_plane_id);
+    for (const std::string& v : cp.viewports) {
+      auto id = model_view_ids.find(v);
+      if (id != model_view_ids.end()) cps->m_clipping_plane.m_viewport_ids.AddUuid(id->second);
+    }
+    ON_3dmObjectAttributes attr;
+    ON_CreateUuid(attr.m_uuid);
+    attr.SetName(ON_wString(cp.name.c_str()), true);
+    attr.m_layer_index = file_layer_index.empty() ? 0 : file_layer_index[0];
+    model.AddModelGeometryComponent(cps, &attr);
+  }
+
+  // Layout details (page views were written with the settings above).
+  for (size_t li = 0; li < doc.Layouts().size(); ++li) {
+    const Layout& L = doc.Layouts()[li];
+    for (size_t di = 0; di < L.details.size(); ++di) {
+      const LayoutDetail& d = L.details[di];
+      ON_DetailView* dv = new ON_DetailView();
+      dv->m_view.m_name = ON_wString(d.name.c_str());
+      dv->m_view.m_view_type = ON::nested_view_type;
+      CameraToViewport(d.camera, dv->m_view.m_vp);
+      dv->m_view.m_vp.SetViewportId(detail_ids[li][di]);
+      dv->m_page_per_model_ratio = d.scale;
+      ON_Polyline rect;
+      rect.Append(ON_3dPoint(d.x, d.y, 0)); rect.Append(ON_3dPoint(d.x + d.width, d.y, 0));
+      rect.Append(ON_3dPoint(d.x + d.width, d.y + d.height, 0)); rect.Append(ON_3dPoint(d.x, d.y + d.height, 0)); rect.Append(ON_3dPoint(d.x, d.y, 0));
+      ON_PolylineCurve pc(rect);
+      pc.GetNurbForm(dv->m_boundary);
+      ON_3dmObjectAttributes attr;
+      ON_CreateUuid(attr.m_uuid);
+      attr.SetName(ON_wString(d.name.c_str()), true);
+      attr.m_viewport_id = page_ids[li];
+      attr.m_layer_index = file_layer_index.empty() ? 0 : file_layer_index[0];
+      attr.SetUserString(L"Dino8.DetailLocked", d.locked ? L"1" : L"0");
+      attr.SetUserString(L"Dino8.DetailMode", ON_wString(d.display_mode.c_str()));
+      attr.SetUserString(L"Dino8.DetailView", ON_wString(d.standard_view.c_str()));
+      std::string hidden;
+      for (ObjectId id : d.hidden_objects) {
+        auto u = object_uuids.find(id);
+        if (u != object_uuids.end()) hidden += UuidString(u->second) + ";";
+      }
+      if (!hidden.empty()) attr.SetUserString(L"Dino8.HiddenObjects", ON_wString(hidden.c_str()));
+      model.AddModelGeometryComponent(dv, &attr);
+    }
   }
 
   ON_TextLog log;

@@ -71,6 +71,10 @@ class Camera {
   // Size in world units of one pixel at the target distance.
   double PixelSize(int viewport_height) const;
 
+  // Padding factor ZoomExtents leaves around the geometry (1 = tight;
+  // SetZoomExtentsBorder changes it for every viewport).
+  static double zoom_extents_border;
+
  private:
   CameraState state_;
 };
