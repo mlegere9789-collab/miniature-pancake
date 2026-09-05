@@ -113,6 +113,8 @@ struct RenderSettings {
   int render_height = 720;
   int render_quality = 2;         // supersampling factor 1..4
   std::string environment_image;  // Partial: shown in the panel only
+};
+
 // A linetype: a name and a dash pattern (dash, gap, dash, gap... lengths in
 // model units, multiplied by DocumentSettings::linetype_scale for display).
 // An empty pattern draws continuous.

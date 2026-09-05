@@ -5,6 +5,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN="${1:-$HERE/../build/Dino8}"
 TMP="$(mktemp -d)"
+# Isolate settings so persisted toggles (Ortho, snaps, theme) from earlier runs cannot leak into the checks.
+export XDG_CONFIG_HOME="$TMP/config"
+mkdir -p "$XDG_CONFIG_HOME"
 trap 'rm -rf "$TMP"' EXIT
 
 cat > "$TMP/script.txt" <<EOS

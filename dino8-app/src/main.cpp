@@ -186,6 +186,7 @@ int main(int argc, char** argv) {
           double px = 0, py = 0;
           if (vp && vp->WorldToPixel(dino8::kernel::Point3d(x, y, z), px, py)) {
             const double sx = vp->ScreenX() + px, sy = vp->ScreenY() + py;
+            if (std::getenv("DINO8_UI_DEBUG")) std::fprintf(stderr, "[script] %s %s %g,%g,%g -> vp(%g,%g) px(%g,%g)\n", cmd.c_str(), view.c_str(), x, y, z, vp->ScreenX(), vp->ScreenY(), px, py);
             if (cmd == "world") expand({"@move " + std::to_string(sx) + " " + std::to_string(sy), "@wait 1"});
             else expand({"@click " + std::to_string(sx) + " " + std::to_string(sy) + " 0"});
           } else {

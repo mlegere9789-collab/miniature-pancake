@@ -50,6 +50,7 @@ struct PanelState {
   bool environments = false;
   bool textures = false;
   bool render_window = false;
+  bool linetypes = false;
 };
 
 // The last image produced by Render / RenderPreview, shown in the Render
@@ -62,7 +63,6 @@ struct RenderImage {
   std::string last_saved_path;
   double seconds = 0;
   bool Valid() const { return width > 0 && height > 0 && rgb.size() == static_cast<size_t>(width) * height * 3; }
-  bool linetypes = false;
 };
 
 struct FileDialogState {

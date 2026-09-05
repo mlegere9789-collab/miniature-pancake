@@ -339,6 +339,7 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       if (attr->MaterialSource() == ON::material_from_object) {
         auto mm = material_map.find(attr->m_material_index);
         if (mm != material_map.end()) obj.material_name = mm->second;
+      }
       if (attr->LinetypeSource() == ON::linetype_from_object) {
         auto lt = linetype_by_index.find(attr->m_linetype_index);
         if (lt != linetype_by_index.end()) obj.linetype = lt->second;
