@@ -215,4 +215,35 @@ public class OutputPathResolverTests : IDisposable
         Assert.All(Path.GetInvalidFileNameChars(), invalid => Assert.DoesNotContain(invalid, name));
         Assert.EndsWith(".png", name, StringComparison.Ordinal);
     }
+
+    [Theory]
+    [InlineData("con.jpg")]
+    [InlineData("NUL.jpg")]
+    [InlineData("com1.jpg")]
+    [InlineData("LPT3.jpg")]
+    public void A_source_named_after_a_reserved_Windows_device_does_not_produce_a_reserved_output_name(string sourceName)
+    {
+        // CON, NUL, COM1, LPT3 etc. are reserved on Windows regardless of any extension --
+        // "con.png" is exactly as reserved as "con" itself. Real tools writing to a path
+        // ending in one of these either fail outright or get silently redirected to the
+        // actual device instead of a real file.
+        var resolved = OutputPathResolver.Resolve(_temp.CreateFile(sourceName), Target());
+
+        var baseName = Path.GetFileNameWithoutExtension(resolved);
+        Assert.NotEqual(Path.GetFileNameWithoutExtension(sourceName), baseName, StringComparer.OrdinalIgnoreCase);
+        Assert.EndsWith(".png", resolved, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_extensionless_source_kept_at_its_own_format_does_not_end_in_a_trailing_dot()
+    {
+        // With no target Format ("same as input") and a source that itself has no
+        // extension, BuildFileName's "{name}.{ext}" template substitutes an empty {ext},
+        // leaving a literal trailing dot -- which Windows would silently strip at file
+        // creation time, so the resolver must not let one survive its own naming decisions.
+        var resolved = OutputPathResolver.Resolve(_temp.CreateFile("Report"), Target(format: null));
+
+        Assert.False(Path.GetFileName(resolved).EndsWith('.'), $"'{resolved}' ends with a trailing dot");
+        Assert.Equal("Report", Path.GetFileName(resolved));
+    }
 }
