@@ -76,7 +76,9 @@ public sealed class PngToSvgEngine : ExternalProcessEngine
                 var target = spec.Output with { Format = "svg" };
                 var outputPath = OutputPathResolver.Resolve(inputPath, target, index + 1, batchRoot);
 
-                await RunToolAsync(potrace, BuildTraceArguments(spec, bitmap, outputPath), "Potrace", cancellationToken)
+                await RunToolAsync(
+                    potrace, BuildTraceArguments(spec, bitmap, outputPath), "Potrace", cancellationToken,
+                    outputPathToDeleteOnCancel: outputPath)
                     .ConfigureAwait(false);
 
                 outputs.Add(outputPath);

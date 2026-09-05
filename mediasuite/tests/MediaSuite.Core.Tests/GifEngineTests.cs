@@ -103,6 +103,72 @@ public class GifEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task Cancelling_the_palette_pass_never_touches_a_pre_existing_final_output()
+    {
+        // The palette pass writes its own scratch file, not the final output -- an existing
+        // file already sitting at the output path (OverwritePolicy.Overwrite reusing it)
+        // must survive a cancellation that this pass never reached.
+        var input = _temp.CreateFile("clip.mp4");
+        var outputPath = Path.Combine(_temp.Combine("out"), "clip.gif");
+        Directory.CreateDirectory(_temp.Combine("out"));
+        File.WriteAllText(outputPath, "a pre-existing file the cancelled palette pass never touched");
+
+        var runner = new FakeProcessRunner(request =>
+        {
+            if (request.FileName.Contains("ffprobe", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ProcessResult(0, ProbeJson, string.Empty, TimeSpan.Zero);
+            }
+
+            File.WriteAllText(request.Arguments[^1], "a truncated palette");
+            throw new OperationCanceledException();
+        });
+
+        var engine = new GifEngine(runner, Tools());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Run(engine, Spec("gif.from-video", new[] { input })));
+
+        Assert.Equal(
+            "a pre-existing file the cancelled palette pass never touched", File.ReadAllText(outputPath));
+    }
+
+    [Fact]
+    public async Task Cancelling_the_encode_pass_deletes_the_truncated_final_output()
+    {
+        var input = _temp.CreateFile("clip.mp4");
+        var outputPath = Path.Combine(_temp.Combine("out"), "clip.gif");
+        var ffmpegCalls = 0;
+
+        var runner = new FakeProcessRunner(request =>
+        {
+            if (request.FileName.Contains("ffprobe", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ProcessResult(0, ProbeJson, string.Empty, TimeSpan.Zero);
+            }
+
+            ffmpegCalls++;
+
+            if (ffmpegCalls == 1)
+            {
+                // The palette pass completes normally so the encode pass is the one cancelled.
+                File.WriteAllText(request.Arguments[^1], "palette");
+                return new ProcessResult(0, string.Empty, string.Empty, TimeSpan.Zero);
+            }
+
+            File.WriteAllText(request.Arguments[^1], "a truncated gif");
+            throw new OperationCanceledException();
+        });
+
+        var engine = new GifEngine(runner, Tools());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Run(engine, Spec("gif.from-video", new[] { input })));
+
+        Assert.False(File.Exists(outputPath), "a cancelled job must not leave a truncated file at the final output path");
+    }
+
+    [Fact]
     public async Task A_format_chosen_in_the_picker_cannot_override_what_the_tool_writes()
     {
         // Every GIF tool has exactly one possible output; letting a stale picker value

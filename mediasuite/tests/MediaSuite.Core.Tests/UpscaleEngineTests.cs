@@ -203,6 +203,49 @@ public class UpscaleEngineTests : IDisposable
         Assert.Empty(_runner.Requests);
     }
 
+    [Fact]
+    public async Task Cancelling_the_raw_upscale_pass_never_touches_a_pre_existing_final_output()
+    {
+        // With sharpen on, the raw Real-ESRGAN pass (call 1) writes to its own scratch
+        // file, not outputPath -- an existing file already sitting at outputPath
+        // (OverwritePolicy.Overwrite reusing it) must survive a cancellation that this
+        // pass never reached.
+        var input = _temp.CreateFile("a.png");
+        var outputPath = Path.Combine(_temp.Combine("out"), "a.png");
+        Directory.CreateDirectory(_temp.Combine("out"));
+        File.WriteAllText(outputPath, "a pre-existing file this cancelled pass never touched");
+
+        _runner.CancelOnCallNumber = 1;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Run(
+            new UpscaleEngine(_runner, Tools()),
+            Spec("upscale.photo", new[] { input }, options: ("sharpen", "true"))));
+
+        Assert.Single(_runner.RequestsFor("realesrgan"));
+        Assert.Empty(_runner.RequestsFor("magick"));
+        Assert.Equal("a pre-existing file this cancelled pass never touched", File.ReadAllText(outputPath));
+    }
+
+    [Fact]
+    public async Task Cancelling_the_sharpen_pass_deletes_the_truncated_final_output()
+    {
+        // Sharpen is the last stage here (no face-enhance), so its call (call 2, after
+        // Real-ESRGAN's call 1) writes outputPath directly -- this is the pass whose
+        // cancellation must actually clean it up.
+        var input = _temp.CreateFile("a.png");
+        var outputPath = Path.Combine(_temp.Combine("out"), "a.png");
+
+        _runner.CancelOnCallNumber = 2;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Run(
+            new UpscaleEngine(_runner, Tools()),
+            Spec("upscale.photo", new[] { input }, options: ("sharpen", "true"))));
+
+        Assert.Single(_runner.RequestsFor("realesrgan"));
+        Assert.Single(_runner.RequestsFor("magick"));
+        Assert.False(File.Exists(outputPath), "a cancelled job must not leave a truncated file at the final output path");
+    }
+
     // --- Face enhance --------------------------------------------------------------------
 
     [Fact]

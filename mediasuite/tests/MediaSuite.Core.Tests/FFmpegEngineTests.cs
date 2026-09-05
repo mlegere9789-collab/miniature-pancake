@@ -278,6 +278,34 @@ public class FFmpegEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task Cancelling_mid_encode_deletes_the_truncated_output_file()
+    {
+        var input = _temp.CreateFile("holiday.mov");
+        var outputPath = Path.Combine(_temp.Combine("out"), "holiday.mp4");
+
+        var runner = new FakeProcessRunner(request =>
+        {
+            if (request.FileName.Contains("ffprobe", StringComparison.OrdinalIgnoreCase))
+            {
+                return new ProcessResult(0, ProbeJson, string.Empty, TimeSpan.Zero);
+            }
+
+            // Mirrors what the real ProcessRunner sees: WaitForExitAsync's cancellation
+            // lands after the OS process has already written some of the output file, so
+            // the file on disk is real by the time it gets killed -- just truncated.
+            File.WriteAllText(request.Arguments[^1], "a truncated, half-encoded file");
+            throw new OperationCanceledException();
+        });
+
+        var engine = new FFmpegEngine(runner, Tools());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => Run(engine, Spec("video.convert", new[] { input }, format: "mp4")));
+
+        Assert.False(File.Exists(outputPath), "a cancelled job must not leave a truncated file at the final output path");
+    }
+
+    [Fact]
     public async Task A_size_target_reaches_the_command_line_using_the_probed_duration()
     {
         var input = _temp.CreateFile("clip.mp4");

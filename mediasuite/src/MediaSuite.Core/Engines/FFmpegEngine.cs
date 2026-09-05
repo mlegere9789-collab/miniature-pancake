@@ -115,14 +115,24 @@ public sealed class FFmpegEngine : ExternalProcessEngine
         var expected = ExpectedOutputDuration(spec, probe);
         var stage = StageFor(spec.OperationId);
 
-        var result = await ProcessRunner.RunAsync(
-            new ProcessRequest
-            {
-                FileName = ffmpeg,
-                Arguments = arguments,
-                OnStandardOutputLine = line => ReportProgress(line, progress, expected, index, total, stage, fileName),
-            },
-            cancellationToken).ConfigureAwait(false);
+        ProcessResult result;
+
+        try
+        {
+            result = await ProcessRunner.RunAsync(
+                new ProcessRequest
+                {
+                    FileName = ffmpeg,
+                    Arguments = arguments,
+                    OnStandardOutputLine = line => ReportProgress(line, progress, expected, index, total, stage, fileName),
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            DeletePartialOutput(outputPath);
+            throw;
+        }
 
         if (!result.IsSuccess)
         {

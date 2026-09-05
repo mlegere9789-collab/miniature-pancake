@@ -152,7 +152,8 @@ public sealed class DocumentEngine : ExternalProcessEngine
 
         var pandoc = RequireTool(ExternalToolId.Pandoc);
         var arguments = DocumentCommandBuilder.Convert(inputPath, outputPath, fromExtension, targetFormat);
-        await RunToolAsync(pandoc, arguments, "Pandoc", cancellationToken).ConfigureAwait(false);
+        await RunToolAsync(pandoc, arguments, "Pandoc", cancellationToken, outputPathToDeleteOnCancel: outputPath)
+            .ConfigureAwait(false);
     }
 
     private async Task RunLibreOfficeAsync(
@@ -188,7 +189,8 @@ public sealed class DocumentEngine : ExternalProcessEngine
     {
         var ebookConvert = RequireTool(ExternalToolId.Calibre);
         var arguments = DocumentCommandBuilder.ConvertEbook(inputPath, outputPath);
-        await RunToolAsync(ebookConvert, arguments, "Calibre", cancellationToken).ConfigureAwait(false);
+        await RunToolAsync(ebookConvert, arguments, "Calibre", cancellationToken, outputPathToDeleteOnCancel: outputPath)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
