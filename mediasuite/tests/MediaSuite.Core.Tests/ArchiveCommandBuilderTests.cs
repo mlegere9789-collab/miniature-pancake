@@ -39,6 +39,18 @@ public class ArchiveCommandBuilderTests
     }
 
     [Fact]
+    public void Extracting_forces_7zips_own_console_output_to_UTF8()
+    {
+        // 7-Zip's Windows build otherwise writes console output (a file name in an error
+        // message, say) in the system's legacy OEM code page regardless of how the .NET
+        // side decodes it -- this is what makes ProcessRunner's own UTF-8 decoding correct
+        // rather than just consistently applied to the wrong encoding.
+        var arguments = ArchiveCommandBuilder.Extract("archive.zip", @"C:\work\out");
+
+        Assert.Contains("-sccUTF-8", arguments);
+    }
+
+    [Fact]
     public void Creating_an_archive_names_the_type_explicitly_and_lists_every_source()
     {
         var arguments = ArchiveCommandBuilder.CreateArchive("out.zip", new[] { "a.txt", "b.txt" }, "zip").ToList();
@@ -48,7 +60,8 @@ public class ArchiveCommandBuilderTests
         Assert.Equal("out.zip", arguments[2]);
         Assert.Contains("a.txt", arguments);
         Assert.Contains("b.txt", arguments);
-        Assert.Equal("-y", arguments[^1]);
+        Assert.Contains("-y", arguments);
+        Assert.Contains("-sccUTF-8", arguments);
     }
 
     [Fact]
