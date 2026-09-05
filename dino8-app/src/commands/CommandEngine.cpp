@@ -1,6 +1,8 @@
 #include "commands/CommandEngine.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -295,6 +297,7 @@ void CommandEngine::StartPendingInputs() {
 }
 
 void CommandEngine::Cancel() {
+  if (std::getenv("DINO8_UI_DEBUG")) std::fprintf(stderr, "[engine] Cancel active=%s\n", active_name_.c_str());
   if (active_) {
     CommandContext ctx(app_, doc_, *this);
     DINO8_GUARD(active_->OnCancel(ctx));
@@ -315,6 +318,7 @@ void CommandEngine::RepeatLast() {
 }
 
 void CommandEngine::FeedPoint(Point3d p) {
+  if (std::getenv("DINO8_UI_DEBUG")) std::fprintf(stderr, "[engine] FeedPoint %s active=%s want=%d\n", FormatPoint(p).c_str(), active_name_.c_str(), active_ ? static_cast<int>(active_->want) : -1);
   if (!active_) return;
   if (active_->want != Want::Point) return;
   CommandContext ctx(app_, doc_, *this);
@@ -468,6 +472,7 @@ bool CommandEngine::TryOption(const std::string& text) {
 }
 
 void CommandEngine::FeedText(const std::string& text) {
+  if (std::getenv("DINO8_UI_DEBUG")) std::fprintf(stderr, "[engine] FeedText '%s' active=%s\n", text.c_str(), active_name_.c_str());
   if (!active_) {
     Execute(text);
     return;

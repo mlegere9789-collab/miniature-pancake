@@ -1,0 +1,27 @@
+# Interactive UI test: typed commands, viewport picks, selection, delete, undo.
+@wait 5
+@text Box
+@wait 1
+@key Enter
+@wait 2
+@clickworld Top 0 0 0
+@wait 2
+@clickworld Top 20 20 0
+@wait 2
+@text 10
+@wait 1
+@key Enter
+@wait 3
+@expect_objects 1
+@clickworld Top 10 0 0
+@wait 3
+@expect_selected 1
+@key Delete
+@wait 3
+@expect_objects 0
+Undo
+@wait 2
+@expect_objects 1
+SelNone
+@wait 1
+@expect_selected 0

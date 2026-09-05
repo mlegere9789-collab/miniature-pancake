@@ -5,6 +5,13 @@
 //   --smoke N     render N frames and exit (used by headless QC under Xvfb)
 //   --script FILE run each line of FILE as a command after start-up
 //   --screenshot FILE.ppm   save the final frame (used with --smoke)
+//
+// Script lines starting with '@' are synthetic input for UI tests:
+//   @move X Y | @down [button] | @up [button] | @click X Y [button]
+//   @world VIEW X Y Z      move the mouse to a world point in a viewport
+//   @clickworld VIEW X Y Z click a world point in a viewport
+//   @drag X0 Y0 X1 Y1      left-drag (window/crossing select)
+//   @key NAME | @text STR | @wait N | @expect_selected N | @expect_objects N
 //   FILE.3dm      open a model on start-up
 
 #include <cstdio>
@@ -12,6 +19,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -118,6 +126,7 @@ int main(int argc, char** argv) {
     }
   }
   size_t script_cursor = 0;
+  int wait_frames = 0;
 
   int frame = 0;
   int exit_code = 0;
@@ -127,14 +136,62 @@ int main(int argc, char** argv) {
       glfwWaitEventsTimeout(0.1);
       continue;
     }
+    // A hidden smoke-test window never receives OS focus; tell ImGui it
+    // is focused so synthetic keyboard input is not discarded.
+    if (smoke_frames >= 0) io.AddFocusEvent(true);
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 
     // Feed one script line per frame after the UI has settled.
-    if (frame > 2 && script_cursor < script_lines.size()) {
-      app.Engine().Execute(script_lines[script_cursor++]);
+    if (frame > 2 && script_cursor < script_lines.size() && wait_frames == 0) {
+      const std::string line = script_lines[script_cursor++];
+      if (!line.empty() && line[0] == '@') {
+        std::istringstream ss(line.substr(1));
+        std::string cmd;
+        ss >> cmd;
+        auto key_of = [](const std::string& n) {
+          if (n == "Enter") return ImGuiKey_Enter;
+          if (n == "Escape") return ImGuiKey_Escape;
+          if (n == "Delete") return ImGuiKey_Delete;
+          if (n == "Tab") return ImGuiKey_Tab;
+          if (n == "Backspace") return ImGuiKey_Backspace;
+          if (n == "Space") return ImGuiKey_Space;
+          if (n == "F1") return ImGuiKey_F1;
+          if (n == "Z") return ImGuiKey_Z;
+          return ImGuiKey_None;
+        };
+        auto expand = [&](std::initializer_list<std::string> lines) {
+          script_lines.insert(script_lines.begin() + static_cast<long>(script_cursor), lines.begin(), lines.end());
+        };
+        if (cmd == "move") { float x, y; ss >> x >> y; io.AddMousePosEvent(x, y); }
+        else if (cmd == "down") { int b = 0; ss >> b; io.AddMouseButtonEvent(b, true); }
+        else if (cmd == "up") { int b = 0; ss >> b; io.AddMouseButtonEvent(b, false); }
+        else if (cmd == "click") { float x, y; int b = 0; ss >> x >> y >> b; expand({"@move " + std::to_string(x) + " " + std::to_string(y), "@wait 1", "@down " + std::to_string(b), "@wait 1", "@up " + std::to_string(b), "@wait 1"}); }
+        else if (cmd == "world" || cmd == "clickworld") {
+          std::string view; double x, y, z; ss >> view >> x >> y >> z;
+          dino8::app::Viewport* vp = app.FindViewport(view);
+          double px = 0, py = 0;
+          if (vp && vp->WorldToPixel(dino8::kernel::Point3d(x, y, z), px, py)) {
+            const double sx = vp->ScreenX() + px, sy = vp->ScreenY() + py;
+            if (cmd == "world") expand({"@move " + std::to_string(sx) + " " + std::to_string(sy), "@wait 1"});
+            else expand({"@click " + std::to_string(sx) + " " + std::to_string(sy) + " 0"});
+          } else {
+            std::fprintf(stderr, "script: viewport %s not found or point off-screen\n", view.c_str());
+          }
+        }
+        else if (cmd == "drag") { float x0, y0, x1, y1; ss >> x0 >> y0 >> x1 >> y1; expand({"@move " + std::to_string(x0) + " " + std::to_string(y0), "@wait 1", "@down 0", "@wait 1", "@move " + std::to_string((x0 + x1) / 2) + " " + std::to_string((y0 + y1) / 2), "@wait 1", "@move " + std::to_string(x1) + " " + std::to_string(y1), "@wait 2", "@up 0", "@wait 1"}); }
+        else if (cmd == "key") { std::string n; ss >> n; io.AddKeyEvent(key_of(n), true); expand({"@keyup " + n}); }
+        else if (cmd == "keyup") { std::string n; ss >> n; io.AddKeyEvent(key_of(n), false); }
+        else if (cmd == "text") { std::string rest; std::getline(ss, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1); io.AddInputCharactersUTF8(rest.c_str()); }
+        else if (cmd == "wait") { ss >> wait_frames; }
+        else if (cmd == "expect_selected") { size_t n; ss >> n; const size_t got = app.Doc().SelectedCount(); std::printf("%s expect_selected %zu (got %zu)\n", got == n ? "ok  " : "FAIL", n, got); if (got != n) exit_code = 2; }
+        else if (cmd == "expect_objects") { size_t n; ss >> n; const size_t got = app.Doc().ObjectCount(); std::printf("%s expect_objects %zu (got %zu)\n", got == n ? "ok  " : "FAIL", n, got); if (got != n) exit_code = 2; }
+      } else {
+        app.Engine().Execute(line);
+      }
     }
+    if (wait_frames > 0) --wait_frames;
     app.Frame();
 
     ImGui::Render();

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 
@@ -543,6 +544,9 @@ void Application::DrawCommandLine() {
   buf[sizeof(buf) - 1] = 0;
   ImGuiIO& io = ImGui::GetIO();
   // Typing while a viewport is hovered: route the characters here.
+  // Rhino behaviour: typing anywhere goes to the command line.
+  if (!focus_command_line_ && !io.WantTextInput && io.InputQueueCharacters.Size > 0) focus_command_line_ = true;
+  const bool focus_requested = focus_command_line_;
   if (focus_command_line_) {
     ImGui::SetKeyboardFocusHere();
     focus_command_line_ = false;
@@ -575,9 +579,19 @@ void Application::DrawCommandLine() {
       return 0;
     }
   };
-  const bool entered = ImGui::InputText("##cmdinput", buf, sizeof(buf), in_flags, HistoryCb::Call, this);
+  const int chars_before = io.InputQueueCharacters.Size;
+  bool entered = ImGui::InputText("##cmdinput", buf, sizeof(buf), in_flags, HistoryCb::Call, this);
   command_input_ = buf;
   const bool input_active = ImGui::IsItemActive();
+  // ImGui ignores an Enter that lands on the first frame after the field was
+  // focused programmatically; treat it as submitted anyway.
+  if (!entered && input_active && ImGui::IsKeyPressed(ImGuiKey_Enter, false)) entered = true;
+  // Focus can fail on the very first frames (layout not settled): retry.
+  if (focus_requested && !input_active && focus_retries_ < 8) { focus_command_line_ = true; ++focus_retries_; }
+  if (input_active) focus_retries_ = 0;
+  if (std::getenv("DINO8_UI_DEBUG")) {
+    std::fprintf(stderr, "[ui] frame %d active=%d entered=%d chars=%d want_text=%d buf='%s' enter_down=%d\n", ImGui::GetFrameCount(), input_active ? 1 : 0, entered ? 1 : 0, chars_before, io.WantTextInput ? 1 : 0, buf, ImGui::IsKeyDown(ImGuiKey_Enter) ? 1 : 0);
+  }
   if (entered) {
     const std::string text = command_input_;
     command_input_.clear();

@@ -135,6 +135,7 @@ class Application {
   std::vector<std::string> command_line_history_;
   int history_cursor_ = -1;
   bool focus_command_line_ = true;
+  int focus_retries_ = 0;
   bool quit_ = false;
   bool layout_built_ = false;
   bool renderer_ok_ = false;

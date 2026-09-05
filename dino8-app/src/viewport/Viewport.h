@@ -118,6 +118,10 @@ class Viewport {
 
   // World -> pixel projection in this viewport's current image rectangle.
   bool WorldToPixel(kernel::Point3d p, double& px, double& py) const;
+  // Screen position of the viewport image's top-left corner (for tests
+  // that drive the UI with synthetic mouse input).
+  double ScreenX() const { return screen_x_; }
+  double ScreenY() const { return screen_y_; }
   Ray PixelRay(double px, double py) const;
 
   // Writes the last rendered frame of this viewport as a 24-bit BMP.
@@ -135,6 +139,7 @@ class Viewport {
   std::string standard_view_;
   Camera camera_;
   RenderTarget target_;
+  double screen_x_ = 0, screen_y_ = 0;
   DisplayMode mode_ = DisplayMode::Wireframe;
   ConstructionPlane cplane_;
   bool active_ = false;

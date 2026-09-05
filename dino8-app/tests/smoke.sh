@@ -60,4 +60,14 @@ test -s "$TMP/test.3dm" && echo "ok   test.3dm exists" || { echo "FAIL test.3dm 
 test -s "$TMP/test.obj" && echo "ok   test.obj exists" || { echo "FAIL test.obj missing"; fail=1; }
 check "gl_error=0" "no OpenGL errors"
 echo "$OUT" | grep -E "^(smoke|history)" | tail -120
+
+# Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  UI="$("$BIN" --smoke 80 --script "$HERE/ui_script.txt" 2>&1)" || true
+else
+  UI="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 80 --script "$HERE/ui_script.txt" 2>&1)" || true
+fi
+echo "$UI" | grep -E "^(ok|FAIL)"
+if echo "$UI" | grep -q "^FAIL"; then fail=1; fi
+echo "$UI" | grep -q "^ok   expect_objects 1" || { echo "FAIL ui script produced no checks"; fail=1; }
 exit $fail

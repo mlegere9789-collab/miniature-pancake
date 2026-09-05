@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 #include "imgui.h"
 
@@ -605,6 +606,8 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
   width_ = std::max(1, static_cast<int>(avail.x));
   height_ = std::max(1, static_cast<int>(avail.y));
   const ImVec2 cursor = ImGui::GetCursorScreenPos();
+  screen_x_ = cursor.x;
+  screen_y_ = cursor.y;
   img_x_ = cursor.x;
   img_y_ = cursor.y;
   if (target_.Texture()) {
@@ -614,6 +617,11 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
   }
   const bool hovered = ImGui::IsItemHovered();
   ev.hovered = hovered;
+  if (std::getenv("DINO8_UI_DEBUG")) {
+    const ImVec2 mp = ImGui::GetIO().MousePos;
+    if (mp.x >= img_x_ && mp.x <= img_x_ + width_ && mp.y >= img_y_ && mp.y <= img_y_ + height_)
+      std::fprintf(stderr, "[vp] %s frame %d mouse %.0f,%.0f in rect (%.0f,%.0f %dx%d) hovered=%d down0=%d dragging=%d\n", name_.c_str(), ImGui::GetFrameCount(), mp.x, mp.y, img_x_, img_y_, width_, height_, hovered ? 1 : 0, ImGui::IsMouseDown(0) ? 1 : 0, dragging_ ? 1 : 0);
+  }
   const double mx = io.MousePos.x - img_x_;
   const double my = io.MousePos.y - img_y_;
   ev.shift = io.KeyShift;
