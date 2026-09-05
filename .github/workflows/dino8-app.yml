@@ -79,6 +79,28 @@ jobs:
           path: dino8-app/build/*.zip
           if-no-files-found: error
 
+  windows-arm:
+    name: Windows on ARM (build, portable zip)
+    runs-on: windows-11-arm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: Configure (Ninja + MSVC arm64)
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCPACK_SYSTEM_NAME=win-arm64
+      - name: Build
+        run: cmake --build dino8-app/build --parallel
+      - name: Version check
+        run: dino8-app\build\Dino8.exe --version
+      - name: Portable zip
+        run: cd dino8-app/build && cpack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-windows-arm64
+          path: dino8-app/build/*.zip
+          if-no-files-found: error
   macos:
     name: macOS (build, .dmg)
     runs-on: macos-14
@@ -106,7 +128,7 @@ jobs:
     # all three platforms publishes a downloadable pre-release with the
     # installers attached. Free software: no licence keys involved.
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    needs: [linux, windows, macos]
+    needs: [linux, windows, windows-arm, macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -124,6 +146,7 @@ jobs:
             Dino 8 beta test build from commit ${{ github.sha }}.
 
             * **Windows**: `Dino8Setup-0.1.0.exe` (installer) or the portable `Dino8-0.1.0-win64.zip`
+            * **Windows on ARM**: portable `Dino8-0.1.0-win-arm64.zip` (when the ARM runner is available)
             * **Linux**: `dino8_0.1.0_amd64.deb` or `Dino8-0.1.0-Linux.tar.gz`
             * **macOS** (Apple Silicon): `Dino8-0.1.0-Darwin.dmg`
 
@@ -131,6 +154,7 @@ jobs:
           files: |
             dist/Dino8-windows-installer/*.exe
             dist/Dino8-windows-portable/*.zip
+            dist/Dino8-windows-arm64/*.zip
             dist/Dino8-linux/*.deb
             dist/Dino8-linux/*.tar.gz
             dist/Dino8-macos/*.dmg
