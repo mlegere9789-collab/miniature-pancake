@@ -42,6 +42,14 @@ enum class CurvatureStyle { Gaussian, Mean };
 
 const char* AnalysisModeName(AnalysisMode mode);
 
+// How a material's texture is projected onto an object. `Default` on an
+// object means "use the material's own mapping"; Surface uses the mesh's
+// own texture coordinates (NURBS parameter space for surfaces) and falls
+// back to Box when there are none.
+enum class TextureMapping { Default, Surface, Planar, Box, Cylindrical, Spherical, Custom };
+const char* TextureMappingName(TextureMapping m);
+bool ParseTextureMapping(const std::string& text, TextureMapping& out);
+
 struct AnalysisSettings {
   AnalysisMode mode = AnalysisMode::None;
   // Zebra
@@ -82,6 +90,14 @@ struct DisplayCache {
   bool colors_valid = false;
   // Value range the colours were normalised over (for the command report).
   double colors_min = 0, colors_max = 0;
+  // Texture coordinates the geometry itself carries (u,v per triangle
+  // vertex, aligned with `triangles`); empty when the mesh has none.
+  std::vector<float> uvs;
+  // Projected texture coordinates for the last requested mapping (see
+  // EnsureMappedUVs), u,v per triangle vertex.
+  std::vector<float> mapped_uvs;
+  TextureMapping mapped_type = TextureMapping::Default;
+  float mapped_scale = 0.f;
   kernel::BoundingBox bbox{};
   bool has_bbox = false;
   bool dirty = true;
@@ -119,6 +135,9 @@ class SceneObject {
   AnalysisSettings analysis;     // per-object surface analysis (None = use the app-wide fallback)
   int group_id = -1;
   std::string material_name;
+  // Per-object texture mapping override (Default = the material's mapping).
+  TextureMapping mapping = TextureMapping::Default;
+  float mapping_scale = 1.0f;
   std::map<std::string, std::string> user_text;
 
   // Exactly one of these is non-null / meaningful, matching `kind`.
@@ -147,6 +166,11 @@ class SceneObject {
   // from the last computation or the display mesh was rebuilt. Call after
   // EnsureDisplay().
   void EnsureAnalysisColors(const AnalysisSettings& settings) const;
+
+  // Fills Display().mapped_uvs for the given projection (Surface uses the
+  // geometry's own uvs when present, else Box). `scale` tiles the texture.
+  // Call after EnsureDisplay(); recomputes only when the request changes.
+  void EnsureMappedUVs(TextureMapping mapping, float scale) const;
 
   // Human-readable summary used by What/List/Properties.
   std::string Describe() const;

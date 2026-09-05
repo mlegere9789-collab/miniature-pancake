@@ -129,7 +129,12 @@ namespace dino8::gl {
   X(void, RenderbufferStorage, GLenum, GLenum, GLsizei, GLsizei)                            \
   X(void, FramebufferRenderbuffer, GLenum, GLenum, GLenum, GLuint)                          \
   X(GLenum, CheckFramebufferStatus, GLenum)                                                 \
-  X(void, ActiveTexture, GLenum)
+  X(void, ActiveTexture, GLenum)                                                            \
+  X(void, Uniform1fv, GLint, GLsizei, const GLfloat*)                                       \
+  X(void, Uniform2fv, GLint, GLsizei, const GLfloat*)                                       \
+  X(void, Uniform3fv, GLint, GLsizei, const GLfloat*)                                       \
+  X(void, Uniform4fv, GLint, GLsizei, const GLfloat*)                                       \
+  X(void, GenerateMipmap, GLenum)
 
 #define DINO8_GL_DECLARE(ret, name, ...) \
   typedef ret(APIENTRY* PFN_##name)(__VA_ARGS__); \
@@ -187,3 +192,8 @@ const char* LastError();
 #define glFramebufferRenderbuffer dino8::gl::FramebufferRenderbuffer
 #define glCheckFramebufferStatus dino8::gl::CheckFramebufferStatus
 #define glActiveTexture dino8::gl::ActiveTexture
+#define glUniform1fv dino8::gl::Uniform1fv
+#define glUniform2fv dino8::gl::Uniform2fv
+#define glUniform3fv dino8::gl::Uniform3fv
+#define glUniform4fv dino8::gl::Uniform4fv
+#define glGenerateMipmap dino8::gl::GenerateMipmap

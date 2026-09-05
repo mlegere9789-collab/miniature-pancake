@@ -111,18 +111,36 @@ const Color kNakedEdgeColor = Color::FromBytes(255, 40, 40);       // ShowEdges:
 
 }  // namespace
 
+// Background colours for a display mode, honouring the document's render
+// environment (Rendered mode) and the GradientView toggle.
+void BackgroundFor(DisplayMode mode, const Document* doc, bool arctic, Color& top, Color& bottom) {
+  const ModeStyle style = StyleFor(mode);
+  top = style.bg_top;
+  bottom = style.bg_bottom;
+  if (!doc) return;
+  const RenderSettings& r = doc->Render();
+  if (arctic) { top = bottom = Color::FromBytes(250, 250, 250); return; }
+  if (mode == DisplayMode::Rendered) {
+    switch (r.background) {
+      case RenderSettings::Background::Solid: top = bottom = r.background_color; break;
+      case RenderSettings::Background::Gradient: top = r.gradient_top; bottom = r.gradient_bottom; break;
+      case RenderSettings::Background::Sky: top = Color::FromBytes(96, 138, 200); bottom = Color::FromBytes(222, 230, 240); break;
+    }
+    return;
+  }
+  if (!r.gradient_view) top = bottom;
+}
+
 void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   if (!target_.Resize(std::max(width_, 1), std::max(height_, 1))) return;
   target_.Bind();
-  const ModeStyle style = StyleFor(mode_);
+  Color top, bottom;
+  BackgroundFor(mode_, ctx.doc, false, top, bottom);
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(Aspect()));
-  renderer.ClearGradient(style.bg_top, style.bg_bottom);
+  renderer.ClearGradient(top, bottom);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
-  if (ctx.doc) {
-    DrawGrid(renderer, ctx.doc->Settings());
-    DrawObjects(renderer, ctx);
-  }
+  DrawScene(renderer, ctx, mode_, Aspect());
   // Command preview geometry (rubber bands, dynamic previews).
   renderer.EnableDepthTest(false);
   if (ctx.preview_lines) renderer.DrawLines(*ctx.preview_lines, Color::FromBytes(255, 255, 255));
@@ -137,7 +155,274 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   RenderTarget::Unbind();
 }
 
-void Viewport::DrawGrid(GlRenderer& renderer, const DocumentSettings& s) {
+bool Viewport::RenderToImage(GlRenderer& renderer, const FrameContext& base, int w, int h, int supersample,
+                             bool arctic, std::vector<unsigned char>& rgb, std::string& error) {
+  w = std::clamp(w, 1, 8192);
+  h = std::clamp(h, 1, 8192);
+  supersample = std::clamp(supersample, 1, 4);
+  while (supersample > 1 && (w * supersample > 8192 || h * supersample > 8192)) --supersample;
+  RenderTarget rt;
+  if (!rt.Resize(w * supersample, h * supersample)) { error = "Could not create a render buffer of " + std::to_string(w) + " x " + std::to_string(h); return false; }
+  FrameContext ctx = base;
+  ctx.for_render = true;
+  ctx.arctic = arctic;
+  ctx.preview_lines = nullptr;
+  ctx.preview_points = nullptr;
+  ctx.cursor_marker.reset();
+  const double aspect = static_cast<double>(w) / h;
+  rt.Bind();
+  Color top, bottom;
+  BackgroundFor(DisplayMode::Rendered, ctx.doc, arctic, top, bottom);
+  renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(aspect));
+  renderer.ClearGradient(top, bottom);
+  renderer.EnableDepthTest(true);
+  renderer.EnableBlend(true);
+  DrawScene(renderer, ctx, DisplayMode::Rendered, aspect);
+  renderer.EnableDepthTest(true);
+  std::vector<unsigned char> big;
+  rt.ReadPixels(big);
+  RenderTarget::Unbind();
+  // Box-filter the supersampled image down.
+  rgb.assign(static_cast<size_t>(w) * h * 3, 0);
+  const int W = w * supersample;
+  const int n = supersample * supersample;
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      int acc[3] = {0, 0, 0};
+      for (int sy = 0; sy < supersample; ++sy) {
+        for (int sx = 0; sx < supersample; ++sx) {
+          const unsigned char* p = &big[(static_cast<size_t>(y * supersample + sy) * W + static_cast<size_t>(x * supersample + sx)) * 3];
+          acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2];
+        }
+      }
+      unsigned char* o = &rgb[(static_cast<size_t>(y) * w + x) * 3];
+      o[0] = static_cast<unsigned char>(acc[0] / n); o[1] = static_cast<unsigned char>(acc[1] / n); o[2] = static_cast<unsigned char>(acc[2] / n);
+    }
+  }
+  // Restore this viewport's own projection for anything drawn afterwards.
+  renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(Aspect()));
+  return true;
+}
+
+void Viewport::DrawScene(GlRenderer& renderer, const FrameContext& ctx, DisplayMode mode, double aspect) {
+  (void)aspect;
+  if (!ctx.doc) return;
+  doc_for_grid_ = ctx.doc;
+  // The ground plane replaces the grid in Rendered mode (as in Rhino).
+  const bool ground = mode == DisplayMode::Rendered && ctx.doc->Render().ground_plane;
+  if (!ctx.for_render && !ground) DrawGrid(renderer, ctx.doc->Settings(), mode);
+  if (mode == DisplayMode::Rendered) {
+    SetupLights(renderer, ctx);
+    DrawGroundPlane(renderer, ctx);
+  }
+  DrawObjects(renderer, ctx, mode);
+  if (!ctx.for_render) DrawLightWidgets(renderer, *ctx.doc);
+}
+
+void Viewport::SetupLights(GlRenderer& renderer, const FrameContext& ctx) {
+  const Document& doc = *ctx.doc;
+  const RenderSettings& r = doc.Render();
+  std::vector<GpuLight> lights;
+  for (const Light& L : doc.Lights()) {
+    if (!L.enabled || lights.size() >= static_cast<size_t>(kMaxGpuLights)) continue;
+    GpuLight g;
+    g.r = L.color.r * L.intensity; g.g = L.color.g * L.intensity; g.b = L.color.b * L.intensity;
+    g.direction = L.direction;
+    switch (L.type) {
+      case LightType::Point: g.kind = GpuLight::Point; g.position = L.position; break;
+      case LightType::Directional: g.kind = GpuLight::Directional; break;
+      case LightType::Spot: {
+        g.kind = GpuLight::Spot;
+        g.position = L.position;
+        const double outer = std::clamp(static_cast<double>(L.spot_angle), 1.0, 89.0) * ON_PI / 180.0;
+        const double inner = outer * (0.35 + 0.6 * std::clamp(L.spot_hardness, 0.f, 1.f));
+        g.cos_outer = static_cast<float>(std::cos(outer));
+        g.cos_inner = static_cast<float>(std::cos(inner));
+        break;
+      }
+      case LightType::Rectangular: {
+        // Area light approximated by a wide spot at its centre.
+        g.kind = GpuLight::Spot;
+        g.position = L.position;
+        g.cos_outer = static_cast<float>(std::cos(85.0 * ON_PI / 180.0));
+        g.cos_inner = static_cast<float>(std::cos(45.0 * ON_PI / 180.0));
+        break;
+      }
+      case LightType::Linear: {
+        g.kind = GpuLight::Point;
+        g.position = L.position + L.x_axis * (L.length * 0.5);
+        break;
+      }
+    }
+    lights.push_back(g);
+  }
+  if (r.sun && lights.size() < static_cast<size_t>(kMaxGpuLights)) {
+    GpuLight g;
+    g.kind = GpuLight::Directional;
+    const double az = r.sun_azimuth * ON_PI / 180.0, alt = r.sun_altitude * ON_PI / 180.0;
+    const Vector3d towards_sun(std::cos(alt) * std::sin(az), std::cos(alt) * std::cos(az), std::sin(alt));
+    g.direction = -towards_sun;
+    g.r = r.sun_color.r * r.sun_intensity; g.g = r.sun_color.g * r.sun_intensity; g.b = r.sun_color.b * r.sun_intensity;
+    lights.push_back(g);
+  }
+  if (lights.empty()) {
+    // Rhino's default lighting: a key light over the camera's left
+    // shoulder and a dimmer fill from the right, both following the view.
+    const Vector3d f = camera_.Forward(), rgt = camera_.Right(), up = camera_.Up();
+    GpuLight key;
+    key.kind = GpuLight::Directional;
+    key.direction = f * 0.7 - up * 0.55 + rgt * 0.35;
+    key.r = key.g = key.b = 0.95f;
+    GpuLight fill;
+    fill.kind = GpuLight::Directional;
+    fill.direction = f * 0.6 - up * 0.1 - rgt * 0.7;
+    fill.r = 0.42f; fill.g = 0.43f; fill.b = 0.46f;
+    lights = {key, fill};
+  }
+  Color ambient = r.skylight ? Color::FromBytes(84, 90, 100) : Color::FromBytes(40, 40, 42);
+  if (ctx.arctic) {
+    ambient = Color::FromBytes(150, 150, 152);
+    for (GpuLight& g : lights) { g.r *= 0.7f; g.g *= 0.7f; g.b *= 0.7f; }
+  }
+  renderer.SetLights(lights, ambient);
+}
+
+void Viewport::DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx) {
+  const Document& doc = *ctx.doc;
+  const RenderSettings& r = doc.Render();
+  if (!r.ground_plane) return;
+  kernel::BoundingBox box;
+  const bool has = doc.VisibleBoundingBox(box);
+  if (!has) { box.min = Point3d(-10, -10, 0); box.max = Point3d(10, 10, 0); }
+  const double z = r.ground_auto_height ? box.min.z : r.ground_height;
+  const double cx = (box.min.x + box.max.x) / 2, cy = (box.min.y + box.max.y) / 2;
+  const double radius = std::max({box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z, 1.0}) / 2;
+  const double half = std::max(radius * 60, 100.0);
+  const double fade = std::max(radius * 14, 25.0);
+  std::vector<ShadowBlob> blobs;
+  if (r.ground_shadows) {
+    for (const SceneObject& o : doc.Objects()) {
+      if (!doc.IsObjectVisible(o) || blobs.size() >= static_cast<size_t>(kMaxShadowBlobs)) continue;
+      o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+      const DisplayCache& d = o.Display();
+      if (d.triangles.empty() || !d.has_bbox) continue;
+      ShadowBlob b;
+      b.cx = static_cast<float>((d.bbox.min.x + d.bbox.max.x) / 2);
+      b.cy = static_cast<float>((d.bbox.min.y + d.bbox.max.y) / 2);
+      const double sx = d.bbox.max.x - d.bbox.min.x, sy = d.bbox.max.y - d.bbox.min.y;
+      b.rx = static_cast<float>(std::max(sx * 0.62, radius * 0.03));
+      b.ry = static_cast<float>(std::max(sy * 0.62, radius * 0.03));
+      const double gap = (d.bbox.min.z - z) / std::max(radius, 1e-9);
+      b.strength = static_cast<float>(std::clamp(1.0 - gap * 1.2, 0.0, 1.0)) * (ctx.arctic ? 0.55f : 0.9f);
+      if (b.strength > 0.01f) blobs.push_back(b);
+    }
+  }
+  Color color = ctx.arctic ? Color::FromBytes(246, 246, 246) : r.ground_color;
+  color.a = 1.f;
+  renderer.DrawGroundPlane(cx, cy, z - radius * 2e-4, half, fade, color, blobs);
+}
+
+void Viewport::DrawLightWidgets(GlRenderer& renderer, const Document& doc) {
+  if (doc.Lights().empty()) return;
+  const double px = camera_.PixelSize(std::max(height_, 1));
+  const double s = px * 10;  // widget size in world units
+  std::vector<float> lines, sel_lines;
+  auto seg = [&](std::vector<float>& v, Point3d a, Point3d b) {
+    v.push_back(static_cast<float>(a.x)); v.push_back(static_cast<float>(a.y)); v.push_back(static_cast<float>(a.z));
+    v.push_back(static_cast<float>(b.x)); v.push_back(static_cast<float>(b.y)); v.push_back(static_cast<float>(b.z));
+  };
+  auto frame = [](Vector3d d, Vector3d& u, Vector3d& v) {
+    if (!d.Unitize()) d = Vector3d(0, 0, -1);
+    Vector3d ref = std::fabs(d.z) < 0.9 ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+    u = ON_CrossProduct(d, ref); u.Unitize();
+    v = ON_CrossProduct(d, u); v.Unitize();
+  };
+  std::vector<float> disabled;
+  for (const Light& L : doc.Lights()) {
+    std::vector<float>& out = L.selected ? sel_lines : (L.enabled ? lines : disabled);
+    const Point3d p = L.position;
+    Vector3d d = L.direction;
+    if (!d.Unitize()) d = Vector3d(0, 0, -1);
+    switch (L.type) {
+      case LightType::Point: {
+        // A small star: three axes plus the four space diagonals.
+        seg(out, p + Vector3d(-s, 0, 0), p + Vector3d(s, 0, 0));
+        seg(out, p + Vector3d(0, -s, 0), p + Vector3d(0, s, 0));
+        seg(out, p + Vector3d(0, 0, -s), p + Vector3d(0, 0, s));
+        const double t = s * 0.6;
+        seg(out, p + Vector3d(-t, -t, -t), p + Vector3d(t, t, t));
+        seg(out, p + Vector3d(-t, t, -t), p + Vector3d(t, -t, t));
+        seg(out, p + Vector3d(t, -t, -t), p + Vector3d(-t, t, t));
+        seg(out, p + Vector3d(t, t, -t), p + Vector3d(-t, -t, t));
+        break;
+      }
+      case LightType::Spot: {
+        const double len = L.length > 0 ? L.length : s * 6;
+        const double rad = len * std::tan(std::clamp(static_cast<double>(L.spot_angle), 1.0, 89.0) * ON_PI / 180.0);
+        Vector3d u, v;
+        frame(d, u, v);
+        const Point3d base = p + d * len;
+        const int n = 16;
+        Point3d prev = base + u * rad;
+        for (int i = 1; i <= n; ++i) {
+          const double a = 2 * ON_PI * i / n;
+          const Point3d q = base + u * (rad * std::cos(a)) + v * (rad * std::sin(a));
+          seg(out, prev, q);
+          if (i % 4 == 0) seg(out, p, q);
+          prev = q;
+        }
+        seg(out, p + Vector3d(-s, 0, 0), p + Vector3d(s, 0, 0));
+        seg(out, p + Vector3d(0, -s, 0), p + Vector3d(0, s, 0));
+        seg(out, p + Vector3d(0, 0, -s), p + Vector3d(0, 0, s));
+        break;
+      }
+      case LightType::Directional: {
+        Vector3d u, v;
+        frame(d, u, v);
+        const double len = s * 5;
+        const Point3d tip = p + d * len;
+        seg(out, p, tip);
+        seg(out, tip, tip - d * (s * 1.2) + u * (s * 0.6));
+        seg(out, tip, tip - d * (s * 1.2) - u * (s * 0.6));
+        seg(out, tip, tip - d * (s * 1.2) + v * (s * 0.6));
+        seg(out, tip, tip - d * (s * 1.2) - v * (s * 0.6));
+        // Three parallel rays show it lights everything the same way.
+        seg(out, p + u * s, p + u * s + d * (len * 0.7));
+        seg(out, p - u * s, p - u * s + d * (len * 0.7));
+        break;
+      }
+      case LightType::Rectangular: {
+        Vector3d x = L.x_axis;
+        if (!x.Unitize()) x = Vector3d(1, 0, 0);
+        Vector3d y = ON_CrossProduct(d, x);
+        if (!y.Unitize()) y = Vector3d(0, 1, 0);
+        const double hl = L.length / 2, hw = L.width / 2;
+        const Point3d c0 = p - x * hl - y * hw, c1 = p + x * hl - y * hw, c2 = p + x * hl + y * hw, c3 = p - x * hl + y * hw;
+        seg(out, c0, c1); seg(out, c1, c2); seg(out, c2, c3); seg(out, c3, c0);
+        seg(out, c0, c2); seg(out, c1, c3);
+        seg(out, p, p + d * std::max(hl, hw));
+        break;
+      }
+      case LightType::Linear: {
+        Vector3d x = L.x_axis;
+        if (!x.Unitize()) x = Vector3d(1, 0, 0);
+        const Point3d q = p + x * L.length;
+        seg(out, p, q);
+        Vector3d u, v;
+        frame(x, u, v);
+        seg(out, p - u * s, p + u * s); seg(out, q - u * s, q + u * s);
+        seg(out, p - v * s, p + v * s); seg(out, q - v * s, q + v * s);
+        seg(out, p + d * s, q + d * s);
+        break;
+      }
+    }
+  }
+  renderer.DrawLines(lines, Color::FromBytes(255, 214, 90));
+  renderer.DrawLines(disabled, Color::FromBytes(130, 130, 130));
+  renderer.DrawLines(sel_lines, kSelectionColor, 2.0f);
+}
+
+void Viewport::DrawGrid(GlRenderer& renderer, const DocumentSettings& s, DisplayMode mode) {
   if (!s.show_grid && !s.show_axes) return;
   const int n = std::max(1, s.grid_extents);
   const double sp = std::max(s.grid_spacing, 1e-6);
@@ -156,8 +441,13 @@ void Viewport::DrawGrid(GlRenderer& renderer, const DocumentSettings& s) {
       push(dst, cplane_.ToWorld(-ext, t), cplane_.ToWorld(ext, t));
     }
   }
-  const bool light = mode_ == DisplayMode::Pen || mode_ == DisplayMode::Arctic ||
-                     mode_ == DisplayMode::Technical || mode_ == DisplayMode::Artistic;
+  bool light = mode == DisplayMode::Pen || mode == DisplayMode::Arctic ||
+               mode == DisplayMode::Technical || mode == DisplayMode::Artistic;
+  if (mode == DisplayMode::Rendered) {
+    Color top, bottom;
+    BackgroundFor(mode, doc_for_grid_, false, top, bottom);
+    light = 0.299f * bottom.r + 0.587f * bottom.g + 0.114f * bottom.b > 0.5f;
+  }
   renderer.DrawLines(minor, light ? Color::FromBytes(215, 215, 215) : Color::FromBytes(58, 62, 70));
   renderer.DrawLines(major, light ? Color::FromBytes(190, 190, 190) : Color::FromBytes(78, 83, 92));
   if (s.show_axes) {
@@ -191,9 +481,38 @@ void Viewport::DrawAxesGizmo(GlRenderer& renderer) {
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(aspect));
 }
 
-void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx) {
+void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, DisplayMode mode) {
   const Document& doc = *ctx.doc;
-  const ModeStyle style = StyleFor(mode_);
+  const ModeStyle style = StyleFor(mode);
+  const bool rendered = mode == DisplayMode::Rendered;
+  // Rendered mode draws every opaque object first, then the transparent
+  // ones back to front with depth writes off so glass composites properly.
+  std::vector<std::pair<double, const SceneObject*>> transparent;
+  auto draw_rendered = [&](const SceneObject& o, const Material& m) {
+    const DisplayCache& d = o.Display();
+    RenderMaterial rm;
+    rm.diffuse = m.diffuse;
+    if (ctx.arctic) { rm.diffuse = Color::FromBytes(240, 240, 240); rm.specular = Color::FromBytes(40, 40, 40); rm.shininess = 6.f; rm.reflectivity = 0.f; }
+    else {
+      const float gloss = std::clamp(m.gloss, 0.f, 1.f);
+      rm.specular = Color{m.specular.r * (0.15f + 0.85f * gloss), m.specular.g * (0.15f + 0.85f * gloss), m.specular.b * (0.15f + 0.85f * gloss), 1.f};
+      rm.shininess = 4.f * std::pow(2.f, gloss * 6.f);
+      rm.reflectivity = std::clamp(m.reflectivity, 0.f, 1.f);
+      rm.emission = m.emission;
+      if (!m.texture_path.empty()) rm.texture = renderer.TextureFor(m.texture_path);
+    }
+    if (doc.IsObjectLocked(o)) rm.diffuse = Mix(rm.diffuse, kLockedColor, 0.6f);
+    if (o.selected && !ctx.for_render) rm.diffuse = Mix(rm.diffuse, kSelectionColor, 0.55f);
+    rm.diffuse.a = std::clamp(1.f - m.transparency, 0.f, 1.f) * style.fill_alpha;
+    const std::vector<float>* uvs = nullptr;
+    if (rm.texture) {
+      const TextureMapping mapping = o.mapping != TextureMapping::Default ? o.mapping : m.mapping;
+      const float scale = o.mapping != TextureMapping::Default ? o.mapping_scale : m.mapping_scale;
+      o.EnsureMappedUVs(mapping, scale);
+      uvs = &d.mapped_uvs;
+    }
+    renderer.DrawTrianglesRendered(d.triangles, uvs, rm);
+  };
   // Pass 1: fills (with polygon offset so edges win the depth test).
   if (style.fill) {
     renderer.EnablePolygonOffset(true);
@@ -206,7 +525,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx) {
       // default, unless the object carries a material; Rendered uses the
       // object/layer colour.
       Color c = Color::FromBytes(205, 207, 212);
-      if (mode_ == DisplayMode::Rendered || !o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
+      if (rendered || !o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
       if (style.force_white) c = Color::FromBytes(245, 245, 245);
       else if (style.monochrome) c = Color::FromBytes(200, 200, 205);
       if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
@@ -241,7 +560,24 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx) {
           case AnalysisMode::None: break;
         }
       }
+      if (rendered) {
+        const Material m = doc.MaterialFor(o);
+        if (m.transparency > 0.001f && !ctx.arctic) {
+          // Sort key: view-space depth of the bounding-box centre.
+          const Point3d centre = d.has_bbox ? Point3d((d.bbox.min.x + d.bbox.max.x) / 2, (d.bbox.min.y + d.bbox.max.y) / 2, (d.bbox.min.z + d.bbox.max.z) / 2) : Point3d(0, 0, 0);
+          transparent.emplace_back((centre - camera_.State().eye) * camera_.Forward(), &o);
+          continue;
+        }
+        draw_rendered(o, m);
+        continue;
+      }
       renderer.DrawTriangles(d.triangles, c, style.lit);
+    }
+    if (!transparent.empty()) {
+      std::sort(transparent.begin(), transparent.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+      renderer.EnableDepthWrite(false);
+      for (const auto& [depth, o] : transparent) draw_rendered(*o, doc.MaterialFor(*o));
+      renderer.EnableDepthWrite(true);
     }
     renderer.EnablePolygonOffset(false);
   }

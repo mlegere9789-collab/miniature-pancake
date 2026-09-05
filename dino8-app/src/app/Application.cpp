@@ -1,6 +1,7 @@
 #include "app/Application.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -10,6 +11,7 @@
 #include "imgui_internal.h"
 #include "io/File3dm.h"
 #include "io/FileExchange.h"
+#include "render/ImageIO.h"
 #include "ui/Panels.h"
 #include "ui/Theme.h"
 #include "app/Settings.h"
@@ -43,6 +45,7 @@ void RegisterCurveEditCommands(CommandEngine&);
 void RegisterSurfaceCommands(CommandEngine&);
 void RegisterMeshToolsCommands(CommandEngine&);
 void RegisterSubDCommands(CommandEngine&);
+void RegisterRenderCommands(CommandEngine&);
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -87,8 +90,62 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
 void Application::Shutdown() {
   SaveSettings(*this, ui_scale);
   viewports_.clear();
+  if (last_render_.texture) renderer_.DeleteTexture(last_render_.texture);
+  last_render_ = RenderImage{};
   renderer_.Shutdown();
 }
+
+Viewport::FrameContext Application::MakeFrameContext() {
+  Viewport::FrameContext ctx;
+  ctx.doc = &doc_;
+  ctx.preview_lines = &engine_->PreviewLines();
+  ctx.preview_points = &engine_->PreviewPoints();
+  ctx.show_control_points_for_selected = show_control_points_for_selected;
+  ctx.curve_tolerance = curve_display_tolerance;
+  ctx.surface_tolerance = surface_display_tolerance;
+  ctx.fallback_analysis = &analysis_fallback;
+  return ctx;
+}
+
+bool Application::RenderView(Viewport* vp, int width, int height, int supersample, bool arctic, std::string& error) {
+  if (!vp) vp = ActiveViewport();
+  if (!vp) { error = "No active viewport"; return false; }
+  if (!renderer_ok_) { error = "Renderer not initialised"; return false; }
+  if (width <= 0) width = doc_.Render().render_width;
+  if (height <= 0) height = doc_.Render().render_height;
+  if (supersample <= 0) supersample = doc_.Render().render_quality;
+  Viewport::FrameContext ctx = MakeFrameContext();
+  ctx.preview_lines = nullptr;
+  ctx.preview_points = nullptr;
+  // The Render command's own image has finer tessellation than the viewport.
+  ctx.surface_tolerance = std::min(surface_display_tolerance, 0.02);
+  ctx.curve_tolerance = std::min(curve_display_tolerance, 0.01);
+  const auto t0 = std::chrono::steady_clock::now();
+  std::vector<unsigned char> rgb;
+  if (!vp->RenderToImage(renderer_, ctx, width, height, supersample, arctic, rgb, error)) return false;
+  // The display meshes were rebuilt at the finer tolerance; drop them so
+  // the viewports come back at their own setting.
+  for (SceneObject& o : doc_.Objects()) o.InvalidateDisplay();
+  if (last_render_.texture) renderer_.DeleteTexture(last_render_.texture);
+  last_render_ = RenderImage{};
+  last_render_.width = width;
+  last_render_.height = height;
+  last_render_.rgb = std::move(rgb);
+  last_render_.view_name = vp->Name();
+  last_render_.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  last_render_.texture = renderer_.CreateTexture(width, height, last_render_.rgb.data(), 3);
+  panels_.render_window = true;
+  return true;
+}
+
+bool Application::SaveLastRender(const std::string& path, std::string& error) {
+  if (!last_render_.Valid()) { error = "Nothing has been rendered yet (run Render first)"; return false; }
+  if (!SaveImageRGB(path, last_render_.width, last_render_.height, last_render_.rgb, error)) return false;
+  last_render_.last_saved_path = path;
+  return true;
+}
+
+void Application::CloseRenderWindow() { panels_.render_window = false; }
 
 void Application::RegisterCommands() {
   RegisterCreateCommands(*engine_);
@@ -109,7 +166,8 @@ void Application::RegisterCommands() {
   RegisterMeshToolsCommands(*engine_);  // after Transform/Boolean: replaces the simpler Shear/Weld
   RegisterSubDCommands(*engine_);       // SubD editing (creases, ExtrudeSubD, Inset, Bridge...); replaces the Slide stub
   RegisterCurveEditCommands(*engine_);  // replaces the solid-only Intersect/Split registrations
-  RegisterSurfaceCommands(*engine_);    // last: Sweep/Pipe/OffsetSrf/Project... (approximate NURBS/mesh results)
+  RegisterSurfaceCommands(*engine_);    // Sweep/Pipe/OffsetSrf/Project... (approximate NURBS/mesh results)
+  RegisterRenderCommands(*engine_);     // last: replaces the Render/RenderPreview/Materials placeholders
 }
 
 Viewport* Application::ActiveViewport() {
@@ -466,6 +524,10 @@ void Application::BuildDefaultLayout(unsigned dockspace_id) {
   ImGui::DockBuilderDockWindow("Layers", right_id);
   ImGui::DockBuilderDockWindow("Named Views", right_id);
   ImGui::DockBuilderDockWindow("Materials", right_id);
+  ImGui::DockBuilderDockWindow("Lights", right_id);
+  ImGui::DockBuilderDockWindow("Rendering", right_id);
+  ImGui::DockBuilderDockWindow("Environments", right_id);
+  ImGui::DockBuilderDockWindow("Textures", right_id);
   ImGui::DockBuilderDockWindow("Display", right_id);
   ImGui::DockBuilderDockWindow("Properties", right_bottom);
   ImGui::DockBuilderDockWindow("Help", right_bottom);
@@ -540,14 +602,7 @@ void Application::DrawViewports() {
   for (auto& vp : viewports_) maximized_any = maximized_any || vp->Maximized();
 
   // Render every visible viewport into its texture first.
-  Viewport::FrameContext ctx;
-  ctx.doc = &doc_;
-  ctx.preview_lines = &engine_->PreviewLines();
-  ctx.preview_points = &engine_->PreviewPoints();
-  ctx.show_control_points_for_selected = show_control_points_for_selected;
-  ctx.curve_tolerance = curve_display_tolerance;
-  ctx.surface_tolerance = surface_display_tolerance;
-  ctx.fallback_analysis = &analysis_fallback;
+  Viewport::FrameContext ctx = MakeFrameContext();
   if (want_point && pending_hover_) ctx.cursor_marker = pending_hover_;
 
   bool request_focus = false;
@@ -1051,6 +1106,11 @@ void Application::DrawPanels() {
   if (panels_.notes) DrawNotesPanel(*this, notes_buffer_, sizeof(notes_buffer_));
   if (panels_.document_user_text) DrawDocumentUserTextPanel(*this);
   if (panels_.materials) DrawMaterialsPanel(*this);
+  if (panels_.lights) DrawLightsPanel(*this);
+  if (panels_.rendering) DrawRenderingPanel(*this);
+  if (panels_.environments) DrawEnvironmentsPanel(*this);
+  if (panels_.textures) DrawTexturesPanel(*this);
+  if (panels_.render_window) DrawRenderWindow(*this);
   if (panels_.display) DrawDisplayPanel(*this);
   if (panels_.calculator) DrawCalculatorPanel(*this, calc_input_, calc_result_);
   if (panels_.about) DrawAboutWindow(*this);

@@ -44,6 +44,77 @@ struct Group {
   std::string name;
 };
 
+// A render material (Rhino's basic material): Blinn-Phong colour and
+// specular terms plus one optional diffuse texture and its projection.
+struct Material {
+  std::string name = "Default";
+  Color diffuse = Color::FromBytes(200, 200, 200);
+  Color specular = Color::FromBytes(255, 255, 255);
+  float gloss = 0.35f;         // 0 = matte, 1 = mirror-tight highlight
+  float reflectivity = 0.0f;   // 0..1, blends the procedural environment in
+  float transparency = 0.0f;   // 0 = opaque, 1 = invisible
+  Color emission = Color::FromBytes(0, 0, 0);
+  std::string texture_path;    // BMP / PPM / PNG image, empty = none
+  TextureMapping mapping = TextureMapping::Surface;
+  float mapping_scale = 1.0f;  // texture repeats across the object
+
+  bool SameAppearance(const Material& o) const {
+    auto eq = [](const Color& a, const Color& b) { return a.r == b.r && a.g == b.g && a.b == b.b; };
+    return eq(diffuse, o.diffuse) && eq(specular, o.specular) && gloss == o.gloss && reflectivity == o.reflectivity &&
+           transparency == o.transparency && eq(emission, o.emission) && texture_path == o.texture_path &&
+           mapping == o.mapping && mapping_scale == o.mapping_scale;
+  }
+};
+
+enum class LightType { Point, Spot, Directional, Rectangular, Linear };
+const char* LightTypeName(LightType t);
+
+// A document light. `direction` points from the light into the scene
+// (spot axis, directional light travel direction, rectangular light normal).
+// `length` is the spot cone length / linear light length; `width` the
+// rectangular light's second edge length.
+struct Light {
+  int id = -1;
+  std::string name;
+  LightType type = LightType::Point;
+  kernel::Point3d position{0, 0, 0};
+  kernel::Vector3d direction{0, 0, -1};
+  Color color = Color::FromBytes(255, 255, 255);
+  float intensity = 1.0f;
+  float spot_angle = 30.0f;    // half angle in degrees (spot)
+  float spot_hardness = 0.5f;  // 0 = soft edge, 1 = hard edge
+  double length = 10.0;
+  double width = 10.0;
+  kernel::Vector3d x_axis{1, 0, 0};  // rectangular/linear light edge direction
+  bool enabled = true;
+  bool selected = false;
+};
+
+// Render environment: background, ground plane and sun.
+struct RenderSettings {
+  enum class Background { Solid, Gradient, Sky };
+  Background background = Background::Sky;
+  Color background_color = Color::FromBytes(235, 238, 242);
+  Color gradient_top = Color::FromBytes(120, 140, 175);
+  Color gradient_bottom = Color::FromBytes(236, 238, 242);
+  bool gradient_view = true;      // gradient background in the modelling display modes
+  bool ground_plane = false;
+  bool ground_auto_height = true;
+  double ground_height = 0.0;
+  Color ground_color = Color::FromBytes(168, 171, 176);
+  bool ground_shadows = true;
+  bool sun = false;
+  double sun_azimuth = 135.0;     // degrees clockwise from north (+Y)
+  double sun_altitude = 45.0;     // degrees above the horizon
+  float sun_intensity = 1.0f;
+  Color sun_color = Color::FromBytes(255, 248, 232);
+  bool skylight = true;           // ambient sky term in Rendered mode
+  int render_width = 1280;
+  int render_height = 720;
+  int render_quality = 2;         // supersampling factor 1..4
+  std::string environment_image;  // Partial: shown in the panel only
+};
+
 // A camera description that lives in the document (named views) without
 // dragging viewport/GL code into the document layer.
 struct CameraState {
@@ -112,6 +183,26 @@ class Document {
   void SetCurrentLayer(int index);
   std::string LayerFullPath(int index) const;
 
+  // ---- materials / lights ----------------------------------------------
+  std::vector<Material>& Materials() { return materials_; }
+  const std::vector<Material>& Materials() const { return materials_; }
+  Material* FindMaterial(const std::string& name);
+  const Material* FindMaterial(const std::string& name) const;
+  // Adds (or replaces, when a material of the same name exists) and
+  // returns the stored material's name.
+  std::string AddMaterial(Material m);
+  bool RemoveMaterial(const std::string& name);
+  // The material that shades an object: its own, else its layer's, else
+  // a default built from the object's display colour.
+  Material MaterialFor(const SceneObject& o) const;
+  std::vector<Light>& Lights() { return lights_; }
+  const std::vector<Light>& Lights() const { return lights_; }
+  int AddLight(Light light);
+  bool RemoveLight(int id);
+  Light* FindLight(int id);
+  RenderSettings& Render() { return render_; }
+  const RenderSettings& Render() const { return render_; }
+
   // ---- groups ----------------------------------------------------------
   int CreateGroup(const std::vector<ObjectId>& ids, const std::string& name = "");
   void Ungroup(const std::vector<ObjectId>& ids);
@@ -157,8 +248,11 @@ class Document {
     std::vector<Layer> layers;
     int current_layer = 0;
     std::vector<Group> groups;
+    std::vector<Material> materials;
+    std::vector<Light> lights;
     ObjectId next_id = 1;
     int next_group_id = 1;
+    int next_light_id = 1;
   };
   Snapshot Capture(const std::string& label) const;
   void Restore(const Snapshot& snapshot);
@@ -167,6 +261,10 @@ class Document {
   std::vector<Layer> layers_;
   int current_layer_ = 0;
   std::vector<Group> groups_;
+  std::vector<Material> materials_;
+  std::vector<Light> lights_;
+  RenderSettings render_;
+  int next_light_id_ = 1;
   std::vector<NamedView> named_views_;
   std::vector<BlockDefinition> blocks_;
   std::map<std::string, std::string> user_text_;

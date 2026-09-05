@@ -45,6 +45,23 @@ struct PanelState {
   bool selection_filter = false;
   bool macro_editor = false;
   bool document_properties = false;
+  bool lights = false;
+  bool rendering = false;
+  bool environments = false;
+  bool textures = false;
+  bool render_window = false;
+};
+
+// The last image produced by Render / RenderPreview, shown in the Render
+// Window panel and written by SaveRenderWindowAs.
+struct RenderImage {
+  int width = 0, height = 0;
+  std::vector<unsigned char> rgb;  // top-down rows
+  unsigned texture = 0;            // GL texture for the panel (owned)
+  std::string view_name;
+  std::string last_saved_path;
+  double seconds = 0;
+  bool Valid() const { return width > 0 && height > 0 && rgb.size() == static_cast<size_t>(width) * height * 3; }
 };
 
 struct FileDialogState {
@@ -112,6 +129,16 @@ class Application {
   // millimetres per document unit, 0 = fit to page.
   bool ExportDrawing(const std::string& path, bool selected_only, double scale, std::string& error);
 
+  // Built-in renderer: renders `vp` (the active viewport when null) in
+  // Rendered mode into the render window image. `supersample` <= 0 uses
+  // the document's render quality; `arctic` renders white matte.
+  bool RenderView(Viewport* vp, int width, int height, int supersample, bool arctic, std::string& error);
+  RenderImage& LastRender() { return last_render_; }
+  bool SaveLastRender(const std::string& path, std::string& error);
+  void CloseRenderWindow();
+  GlRenderer& Renderer() { return renderer_; }
+  Viewport::FrameContext MakeFrameContext();
+
   // Surface analysis (Zebra / EMap / CurvatureAnalysis / DraftAngleAnalysis):
   // `analysis_defaults` remembers the options between command runs, and
   // `analysis_fallback` is the app-wide mode applied to every surface that
@@ -178,6 +205,7 @@ class Application {
   bool confirm_open_ = false;
   bool open_popup_toolbar_ = false;
   ImVec2 popup_toolbar_pos_;
+  RenderImage last_render_;
 };
 
 }  // namespace dino8::app

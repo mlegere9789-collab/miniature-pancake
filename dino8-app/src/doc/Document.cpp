@@ -14,6 +14,10 @@ void Document::Clear() {
   layers_.push_back(def);
   current_layer_ = 0;
   groups_.clear();
+  materials_.clear();
+  lights_.clear();
+  render_ = RenderSettings{};
+  next_light_id_ = 1;
   named_views_.clear();
   user_text_.clear();
   notes_.clear();
@@ -88,6 +92,7 @@ void Document::SelectAll() {
 
 void Document::SelectNone() {
   for (SceneObject& o : objects_) o.selected = false;
+  for (Light& l : lights_) l.selected = false;
 }
 
 void Document::InvertSelection() {
@@ -126,6 +131,85 @@ bool Document::IsObjectLocked(const SceneObject& o) const {
     layer = layers_[layer].parent;
   }
   return false;
+}
+
+const char* LightTypeName(LightType t) {
+  switch (t) {
+    case LightType::Point: return "Point";
+    case LightType::Spot: return "Spot";
+    case LightType::Directional: return "Directional";
+    case LightType::Rectangular: return "Rectangular";
+    case LightType::Linear: return "Linear";
+  }
+  return "Point";
+}
+
+Material* Document::FindMaterial(const std::string& name) {
+  for (Material& m : materials_) if (m.name == name) return &m;
+  return nullptr;
+}
+
+const Material* Document::FindMaterial(const std::string& name) const {
+  for (const Material& m : materials_) if (m.name == name) return &m;
+  return nullptr;
+}
+
+std::string Document::AddMaterial(Material m) {
+  if (m.name.empty()) m.name = "Material";
+  if (Material* existing = FindMaterial(m.name)) {
+    *existing = m;
+  } else {
+    materials_.push_back(m);
+  }
+  Touch();
+  return m.name;
+}
+
+bool Document::RemoveMaterial(const std::string& name) {
+  const auto it = std::find_if(materials_.begin(), materials_.end(), [&](const Material& m) { return m.name == name; });
+  if (it == materials_.end()) return false;
+  materials_.erase(it);
+  for (SceneObject& o : objects_) if (o.material_name == name) o.material_name.clear();
+  for (Layer& l : layers_) if (l.material == name) l.material.clear();
+  Touch();
+  return true;
+}
+
+Material Document::MaterialFor(const SceneObject& o) const {
+  if (!o.material_name.empty()) {
+    if (const Material* m = FindMaterial(o.material_name)) return *m;
+  }
+  if (o.layer_index >= 0 && o.layer_index < static_cast<int>(layers_.size()) && !layers_[static_cast<size_t>(o.layer_index)].material.empty()) {
+    if (const Material* m = FindMaterial(layers_[static_cast<size_t>(o.layer_index)].material)) return *m;
+  }
+  Material m;
+  m.name.clear();
+  m.diffuse = EffectiveColor(o);
+  // Rhino's default layer colour is black; a black render material looks
+  // like a hole, so plain objects get the neutral default material.
+  if (m.diffuse.r + m.diffuse.g + m.diffuse.b < 0.05f && o.color_by_layer) m.diffuse = Color::FromBytes(200, 200, 200);
+  return m;
+}
+
+int Document::AddLight(Light light) {
+  light.id = next_light_id_++;
+  if (light.name.empty()) light.name = std::string(LightTypeName(light.type)) + " light " + std::to_string(light.id);
+  lights_.push_back(light);
+  Touch();
+  return lights_.back().id;
+}
+
+bool Document::RemoveLight(int id) {
+  const auto it = std::find_if(lights_.begin(), lights_.end(), [id](const Light& l) { return l.id == id; });
+  if (it == lights_.end()) return false;
+  lights_.erase(it);
+  Touch();
+  return true;
+}
+
+Light* Document::FindLight(int id) {
+  for (Light& l : lights_) if (l.id == id) return &l;
+  return nullptr;
 }
 
 Color Document::EffectiveColor(const SceneObject& o) const {
@@ -230,8 +314,11 @@ Document::Snapshot Document::Capture(const std::string& label) const {
   s.layers = layers_;
   s.current_layer = current_layer_;
   s.groups = groups_;
+  s.materials = materials_;
+  s.lights = lights_;
   s.next_id = next_id_;
   s.next_group_id = next_group_id_;
+  s.next_light_id = next_light_id_;
   return s;
 }
 
@@ -240,8 +327,11 @@ void Document::Restore(const Snapshot& s) {
   layers_ = s.layers;
   current_layer_ = s.current_layer;
   groups_ = s.groups;
+  materials_ = s.materials;
+  lights_ = s.lights;
   next_id_ = s.next_id;
   next_group_id_ = s.next_group_id;
+  next_light_id_ = s.next_light_id;
   for (SceneObject& o : objects_) o.InvalidateDisplay();
   Touch();
 }

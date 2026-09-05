@@ -100,8 +100,18 @@ class Viewport {
     // App-wide surface analysis applied to objects whose own `analysis`
     // mode is None (null or mode None = plain shading).
     const AnalysisSettings* fallback_analysis = nullptr;
+    // Offscreen rendering (Render command): no grid, gizmo, light widgets
+    // or command preview; `arctic` swaps every material for white matte.
+    bool for_render = false;
+    bool arctic = false;
   };
   void Render(GlRenderer& renderer, const FrameContext& ctx);
+
+  // Renders the scene through this viewport's camera in Rendered mode into
+  // an offscreen image of w x h pixels (top-down RGB rows), supersampled
+  // `supersample` times per axis. Works without a visible window.
+  bool RenderToImage(GlRenderer& renderer, const FrameContext& ctx, int w, int h, int supersample, bool arctic,
+                     std::vector<unsigned char>& rgb, std::string& error);
 
   // Draws the ImGui window that shows this viewport and handles its input.
   // Returns the events that occurred. `want_point` / `want_objects` tell
@@ -137,12 +147,19 @@ class Viewport {
   void ZoomTo(const kernel::BoundingBox& box);
 
  private:
-  void DrawGrid(GlRenderer& renderer, const DocumentSettings& settings);
-  void DrawObjects(GlRenderer& renderer, const FrameContext& ctx);
+  void DrawGrid(GlRenderer& renderer, const DocumentSettings& settings, DisplayMode mode);
+  // Everything between the background and the overlays: grid, ground
+  // plane, objects, light widgets. `mode` may differ from mode_ (Render).
+  void DrawScene(GlRenderer& renderer, const FrameContext& ctx, DisplayMode mode, double aspect);
+  void DrawObjects(GlRenderer& renderer, const FrameContext& ctx, DisplayMode mode);
+  void SetupLights(GlRenderer& renderer, const FrameContext& ctx);
+  void DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx);
+  void DrawLightWidgets(GlRenderer& renderer, const Document& doc);
   void DrawAxesGizmo(GlRenderer& renderer);
 
   std::string name_;
   std::string standard_view_;
+  const Document* doc_for_grid_ = nullptr;  // document of the frame being drawn (grid colours)
   Camera camera_;
   RenderTarget target_;
   double screen_x_ = 0, screen_y_ = 0;

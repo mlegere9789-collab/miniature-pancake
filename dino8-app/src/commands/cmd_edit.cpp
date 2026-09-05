@@ -145,7 +145,10 @@ void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "Delete", OnSelection("Select objects to delete", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Delete");
         for (ObjectId id : ids) ctx.Doc().Remove(id);
-        ctx.Print("Deleted " + std::to_string(ids.size()) + " object(s)");
+        std::vector<int> lights;
+        for (const Light& l : ctx.Doc().Lights()) if (l.selected) lights.push_back(l.id);
+        for (int id : lights) ctx.Doc().RemoveLight(id);
+        ctx.Print("Deleted " + std::to_string(ids.size()) + " object(s)" + (lights.empty() ? "" : " and " + std::to_string(lights.size()) + " light(s)"));
       }));
   Reg(e, "Undo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Undo()) ctx.Print("Nothing to undo"); }));
   Reg(e, "Redo", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Redo()) ctx.Print("Nothing to redo"); }));

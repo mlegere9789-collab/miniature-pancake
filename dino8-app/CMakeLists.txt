@@ -82,6 +82,8 @@ set(DINO8_SOURCES
   src/viewport/Camera.cpp
   src/viewport/Viewport.cpp
   src/render/GlRenderer.cpp
+  src/render/ImageIO.cpp
+  src/ui/RenderPanels.cpp
   src/commands/CommandEngine.cpp
   src/commands/CommandCatalog.cpp
   src/commands/cmd_create.cpp
@@ -99,6 +101,7 @@ set(DINO8_SOURCES
   src/commands/cmd_layer.cpp
   src/commands/cmd_file.cpp
   src/commands/cmd_misc.cpp
+  src/commands/cmd_render.cpp
   src/io/File3dm.cpp
   src/io/FileExchange.cpp
   src/geom/BrepMesher.cpp

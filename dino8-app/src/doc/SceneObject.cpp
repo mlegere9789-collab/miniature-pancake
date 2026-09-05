@@ -3,6 +3,7 @@
 #include "geom/BrepMesher.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <sstream>
@@ -19,6 +20,30 @@ const char* AnalysisModeName(AnalysisMode mode) {
     case AnalysisMode::DraftAngle: return "DraftAngleAnalysis";
   }
   return "None";
+}
+
+const char* TextureMappingName(TextureMapping m) {
+  switch (m) {
+    case TextureMapping::Default: return "Default";
+    case TextureMapping::Surface: return "Surface";
+    case TextureMapping::Planar: return "Planar";
+    case TextureMapping::Box: return "Box";
+    case TextureMapping::Cylindrical: return "Cylindrical";
+    case TextureMapping::Spherical: return "Spherical";
+    case TextureMapping::Custom: return "Custom";
+  }
+  return "Default";
+}
+
+bool ParseTextureMapping(const std::string& text, TextureMapping& out) {
+  std::string t;
+  for (char c : text) t.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  static const std::pair<const char*, TextureMapping> names[] = {
+      {"default", TextureMapping::Default}, {"surface", TextureMapping::Surface}, {"planar", TextureMapping::Planar},
+      {"box", TextureMapping::Box}, {"cylindrical", TextureMapping::Cylindrical}, {"spherical", TextureMapping::Spherical},
+      {"custom", TextureMapping::Custom}};
+  for (const auto& [n, m] : names) if (t == n) { out = m; return true; }
+  return false;
 }
 
 const char* ObjectKindName(ObjectKind kind) {
@@ -61,6 +86,8 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   analysis = other.analysis;
   group_id = other.group_id;
   material_name = other.material_name;
+  mapping = other.mapping;
+  mapping_scale = other.mapping_scale;
   user_text = other.user_text;
   point = other.point;
   curve = other.curve ? std::make_unique<kernel::NurbsCurve>(*other.curve) : nullptr;
@@ -142,14 +169,23 @@ void ExpandBox(kernel::BoundingBox& box, bool& has, const kernel::Point3d& p) {
 }
 
 void AppendMeshTriangles(const kernel::Mesh& mesh, std::vector<float>& out,
-                         kernel::BoundingBox& box, bool& has_box) {
+                         kernel::BoundingBox& box, bool& has_box, std::vector<float>* uvs = nullptr) {
   const ON_Mesh& raw = mesh.raw();
   const int face_count = raw.m_F.Count();
   std::vector<kernel::Vector3d> normals = mesh.ComputeVertexNormals();
+  // Texture coordinates: ON_Mesh keeps them in m_S (surface parameters,
+  // what the kernel writes) or the older m_T array (what Rhino files carry).
+  const bool has_s = raw.m_S.Count() == raw.m_V.Count() && raw.m_V.Count() > 0;
+  const bool has_t = !has_s && raw.m_T.Count() == raw.m_V.Count() && raw.m_V.Count() > 0;
+  if (uvs && !has_s && !has_t) uvs = nullptr;
   auto push = [&](int vi, const ON_3fPoint& p, const ON_3fVector& fn) {
     out.push_back(p.x);
     out.push_back(p.y);
     out.push_back(p.z);
+    if (uvs) {
+      if (has_s) { uvs->push_back(static_cast<float>(raw.m_S[vi].x)); uvs->push_back(static_cast<float>(raw.m_S[vi].y)); }
+      else { uvs->push_back(raw.m_T[vi].x); uvs->push_back(raw.m_T[vi].y); }
+    }
     // Prefer smooth vertex normals; fall back to the face normal.
     if (vi >= 0 && vi < static_cast<int>(normals.size()) && normals[vi].Length() > 0.5) {
       out.push_back(static_cast<float>(normals[vi].x));
@@ -177,6 +213,47 @@ void AppendMeshTriangles(const kernel::Mesh& mesh, std::vector<float>& out,
       push(f.vi[0], a, fn);
       push(f.vi[2], c, fn);
       push(f.vi[3], d, fn);
+    }
+  }
+}
+
+// Tessellates a NURBS surface on a u x v grid, emitting normalised
+// parameter-space texture coordinates alongside the triangles.
+void AppendSurfaceGrid(const kernel::NurbsSurface& srf, int nu, int nv, std::vector<float>& out,
+                       std::vector<float>& uvs, kernel::BoundingBox& box, bool& has_box) {
+  const kernel::Interval du = srf.Domain(0), dv = srf.Domain(1);
+  const int cols = nu + 1, rows = nv + 1;
+  std::vector<kernel::Point3d> pts(static_cast<size_t>(cols) * rows);
+  std::vector<kernel::Vector3d> nrm(static_cast<size_t>(cols) * rows);
+  for (int i = 0; i < cols; ++i) {
+    for (int j = 0; j < rows; ++j) {
+      const double u = du.min + (du.max - du.min) * i / nu, v = dv.min + (dv.max - dv.min) * j / nv;
+      pts[static_cast<size_t>(i) * rows + j] = srf.PointAt(u, v);
+      kernel::Vector3d n = srf.NormalAt(u, v);
+      if (!n.Unitize()) n = kernel::Vector3d(0, 0, 0);
+      nrm[static_cast<size_t>(i) * rows + j] = n;
+    }
+  }
+  auto emit = [&](int i, int j, const kernel::Vector3d& fallback) {
+    const kernel::Point3d& p = pts[static_cast<size_t>(i) * rows + j];
+    kernel::Vector3d n = nrm[static_cast<size_t>(i) * rows + j];
+    if (n.Length() < 0.5) n = fallback;
+    out.push_back(static_cast<float>(p.x)); out.push_back(static_cast<float>(p.y)); out.push_back(static_cast<float>(p.z));
+    out.push_back(static_cast<float>(n.x)); out.push_back(static_cast<float>(n.y)); out.push_back(static_cast<float>(n.z));
+    uvs.push_back(static_cast<float>(i) / nu); uvs.push_back(static_cast<float>(j) / nv);
+    ExpandBox(box, has_box, p);
+  };
+  for (int i = 0; i < nu; ++i) {
+    for (int j = 0; j < nv; ++j) {
+      const kernel::Point3d& a = pts[static_cast<size_t>(i) * rows + j];
+      const kernel::Point3d& b = pts[static_cast<size_t>(i + 1) * rows + j];
+      const kernel::Point3d& c = pts[static_cast<size_t>(i + 1) * rows + j + 1];
+      const kernel::Point3d& d = pts[static_cast<size_t>(i) * rows + j + 1];
+      kernel::Vector3d fn = ON_CrossProduct(c - a, d - b);
+      if (!fn.Unitize()) fn = kernel::Vector3d(0, 0, 1);
+      // Degenerate grid cells (poles) collapse to one triangle.
+      if ((b - a).Length() > 1e-12 || (c - b).Length() > 1e-12) { emit(i, j, fn); emit(i + 1, j, fn); emit(i + 1, j + 1, fn); }
+      if ((d - c).Length() > 1e-12 || (a - d).Length() > 1e-12) { emit(i, j, fn); emit(i + 1, j + 1, fn); emit(i, j + 1, fn); }
     }
   }
 }
@@ -392,6 +469,10 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
   cache_.naked_edges.clear();
   cache_.colors.clear();
   cache_.colors_valid = false;
+  cache_.uvs.clear();
+  cache_.mapped_uvs.clear();
+  cache_.mapped_type = TextureMapping::Default;
+  cache_.mapped_scale = 0.f;
   cache_.has_bbox = false;
   switch (kind) {
     case ObjectKind::Point:
@@ -419,8 +500,7 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
       const kernel::SurfaceDivisions div = surface->SuggestedDivisions(surface_tolerance);
       const int u = std::clamp(div.u, 4, 96);
       const int v = std::clamp(div.v, 4, 96);
-      const kernel::Mesh m = surface->TessellateGrid(u, v);
-      AppendMeshTriangles(m, cache_.triangles, cache_.bbox, cache_.has_bbox);
+      AppendSurfaceGrid(*surface, u, v, cache_.triangles, cache_.uvs, cache_.bbox, cache_.has_bbox);
       AppendSurfaceIsocurves(*surface, cache_.lines);
       AppendSurfaceBoundary(*surface, cache_.edges);
       cache_.naked_edges = cache_.edges;  // an untrimmed surface's edges are all naked
@@ -452,7 +532,7 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
       break;
     }
     case ObjectKind::Mesh:
-      AppendMeshTriangles(*mesh, cache_.triangles, cache_.bbox, cache_.has_bbox);
+      AppendMeshTriangles(*mesh, cache_.triangles, cache_.bbox, cache_.has_bbox, &cache_.uvs);
       AppendMeshEdges(*mesh, cache_.lines);
       AppendMeshNakedEdges(*mesh, cache_.edges, cache_.naked_edges);
       break;
@@ -475,6 +555,58 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
     }
   }
   cache_.dirty = false;
+}
+
+void SceneObject::EnsureMappedUVs(TextureMapping mapping, float scale) const {
+  if (mapping == TextureMapping::Default) mapping = TextureMapping::Surface;
+  if (scale <= 0.f) scale = 1.f;
+  const size_t n = cache_.triangles.size() / 6;
+  if (!cache_.mapped_uvs.empty() && cache_.mapped_type == mapping && cache_.mapped_scale == scale &&
+      cache_.mapped_uvs.size() == n * 2) return;
+  cache_.mapped_type = mapping;
+  cache_.mapped_scale = scale;
+  cache_.mapped_uvs.assign(n * 2, 0.f);
+  if (mapping == TextureMapping::Surface && cache_.uvs.size() == n * 2) {
+    for (size_t i = 0; i < n * 2; ++i) cache_.mapped_uvs[i] = cache_.uvs[i] * scale;
+    return;
+  }
+  if (mapping == TextureMapping::Surface) mapping = TextureMapping::Box;
+  // Bounding-box space: every projection is expressed in the object's
+  // own box so a texture tiles once across the object at scale 1.
+  const kernel::Point3d mn = cache_.has_bbox ? cache_.bbox.min : kernel::Point3d(0, 0, 0);
+  const kernel::Point3d mx = cache_.has_bbox ? cache_.bbox.max : kernel::Point3d(1, 1, 1);
+  const double sx = std::max(mx.x - mn.x, 1e-9), sy = std::max(mx.y - mn.y, 1e-9), sz = std::max(mx.z - mn.z, 1e-9);
+  const kernel::Point3d c((mn.x + mx.x) / 2, (mn.y + mx.y) / 2, (mn.z + mx.z) / 2);
+  for (size_t i = 0; i < n; ++i) {
+    const float* v = &cache_.triangles[i * 6];
+    const double x = v[0], y = v[1], z = v[2];
+    double u = 0, w = 0;
+    switch (mapping) {
+      case TextureMapping::Planar:
+      case TextureMapping::Custom:
+        u = (x - mn.x) / sx; w = (y - mn.y) / sy;
+        break;
+      case TextureMapping::Box: {
+        const double ax = std::fabs(v[3]), ay = std::fabs(v[4]), az = std::fabs(v[5]);
+        if (az >= ax && az >= ay) { u = (x - mn.x) / sx; w = (y - mn.y) / sy; }
+        else if (ax >= ay) { u = (y - mn.y) / sy; w = (z - mn.z) / sz; }
+        else { u = (x - mn.x) / sx; w = (z - mn.z) / sz; }
+        break;
+      }
+      case TextureMapping::Cylindrical:
+        u = std::atan2(y - c.y, x - c.x) / (2 * ON_PI) + 0.5; w = (z - mn.z) / sz;
+        break;
+      case TextureMapping::Spherical: {
+        kernel::Vector3d d(x - c.x, y - c.y, z - c.z);
+        if (!d.Unitize()) d = kernel::Vector3d(0, 0, 1);
+        u = std::atan2(d.y, d.x) / (2 * ON_PI) + 0.5; w = 1.0 - std::acos(std::clamp(d.z, -1.0, 1.0)) / ON_PI;
+        break;
+      }
+      default: break;
+    }
+    cache_.mapped_uvs[i * 2] = static_cast<float>(u * scale);
+    cache_.mapped_uvs[i * 2 + 1] = static_cast<float>(w * scale);
+  }
 }
 
 namespace {

@@ -592,40 +592,6 @@ void DrawDocumentUserTextPanel(Application& app) {
   ImGui::End();
 }
 
-void DrawMaterialsPanel(Application& app) {
-  Document& doc = app.Doc();
-  if (!ImGui::Begin("Materials", &app.Panels().materials)) { ImGui::End(); return; }
-  static std::map<std::string, Color> materials = {
-      {"Default", Color::FromBytes(200, 200, 200)}, {"Plastic Red", Color::FromBytes(220, 60, 50)},
-      {"Plastic Blue", Color::FromBytes(60, 110, 220)}, {"Steel", Color::FromBytes(150, 155, 165)},
-      {"Brass", Color::FromBytes(205, 170, 80)}, {"Glass", Color::FromBytes(180, 220, 240)},
-      {"Wood", Color::FromBytes(160, 110, 60)}, {"Rubber Black", Color::FromBytes(35, 35, 38)}};
-  static char new_mat[64] = "";
-  ImGui::InputTextWithHint("##nm", "new material name", new_mat, sizeof(new_mat));
-  ImGui::SameLine();
-  if (ImGui::Button("Add") && new_mat[0]) { materials[new_mat] = Color::FromBytes(180, 180, 180); new_mat[0] = 0; }
-  ImGui::Separator();
-  for (auto& [name, color] : materials) {
-    ImGui::PushID(name.c_str());
-    ColorEdit("##c", color);
-    ImGui::SameLine();
-    ImGui::Text("%s", name.c_str());
-    ImGui::SameLine(ImGui::GetContentRegionAvail().x - 110);
-    if (ImGui::SmallButton("Assign to selection")) {
-      doc.BeginChange("Assign material");
-      for (SceneObject& o : doc.Objects()) {
-        if (!o.selected) continue;
-        o.material_name = name;
-        o.color = color;
-        o.color_by_layer = false;
-        o.InvalidateDisplay();
-      }
-    }
-    ImGui::PopID();
-  }
-  ImGui::End();
-}
-
 void DrawDisplayPanel(Application& app) {
   if (!ImGui::Begin("Display", &app.Panels().display)) { ImGui::End(); return; }
   Viewport* vp = app.ActiveViewport();

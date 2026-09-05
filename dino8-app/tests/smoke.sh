@@ -267,4 +267,52 @@ sdcheck "gl_error=0" "subd script ran without OpenGL errors"
 echo "$SD" | grep -E "^(ok|FAIL)"
 if echo "$SD" | grep -q "^FAIL"; then fail=1; fi
 sdcheck "smoke: frames=150 objects=6" "subd script produced the expected object count"
+# Rendering: materials (scripted options), texture mapping, lights, sun, ground plane,
+# Render / RenderArctic / SaveRenderWindowAs, ExtractRenderMesh, .3dm round-trip (see render_script.txt).
+sed "s|@TMP@|$TMP|g" "$HERE/render_script.txt" > "$TMP/render_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  RN="$("$BIN" --smoke 200 --script "$TMP/render_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: render script exited non-zero"; exit 1; }
+else
+  RN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/render_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: render script exited non-zero"; exit 1; }
+fi
+rncheck() { if echo "$RN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+rncheck "Created material Plastic" "RenderAssignMaterialToObjects created a material"
+rncheck "Material Glass: color=200,225,240 transparency=0.6 reflectivity=0.3 gloss=0.9" "material options were applied"
+rncheck "Material Brass assigned to 1 object(s)" "material assigned to the cylinder"
+rncheck "Cylindrical mapping applied to 1 object(s), Scale=2" "ApplyCylindricalMapping set the mapping and scale"
+rncheck "AssignBlankTexture: .*blank_texture.ppm assigned to 1 object(s)" "AssignBlankTexture wrote and assigned a checker texture"
+rncheck "SynchronizeRenderColors: 1 material(s)" "SynchronizeRenderColors made a material from the display colour"
+rncheck "Point light 1: Point light at 10,-30,40, Intensity=1.5" "PointLight took its point and Intensity option"
+rncheck "Spot light 2: Spot light at -30,-30,40, cone angle 7.12" "Spotlight built its cone from base, radius and end"
+rncheck "Directional light 3: Directional light direction" "DirectionalLight ran"
+rncheck "Sun on: Azimuth=200 Altitude=50" "Sun options applied"
+rncheck "GroundPlane on: Height=Automatic Color=150,158,168 Shadows=Yes" "GroundPlane options applied"
+rncheck "Environment: background Sky" "Environments switched to the sky background"
+rncheck "Render: rendered Perspective at 320 x 240" "Render produced an offscreen image"
+rncheck "Saved rendering $TMP/render.bmp (320 x 240)" "SaveRenderWindowAs wrote the BMP"
+rncheck "RenderArctic: rendered Perspective at 1280 x 720" "RenderArctic rendered at the document size"
+rncheck "Saved rendering $TMP/arctic.ppm (1280 x 720)" "SaveRenderWindowAs wrote a PPM"
+rncheck "RenderPreview: rendered Perspective" "RenderPreview rendered at viewport size"
+rncheck "PolygonCount: [0-9]* triangles in 4 visible object(s)" "PolygonCount counted the display meshes"
+rncheck "RenderReportMissingImageFiles: 0 missing image file(s)" "RenderReportMissingImageFiles found every texture"
+rncheck "ExtractRenderMesh: 4 mesh(es)" "ExtractRenderMesh added the display meshes"
+rncheck "SetSpotlightToView: 1 spotlight(s) moved" "SetSpotlightToView moved the spotlight"
+rncheck "Opened $TMP/render.3dm (8 objects)" "the .3dm with materials and lights re-opened"
+rncheck "RenderReportImageFiles: 1 image file(s) referenced" "material textures survived the .3dm round-trip"
+rncheck "^history: 3 light(s) selected" "lights survived the .3dm round-trip"
+rncheck "Current renderer: Dino 8 built-in renderer" "SetCurrentRenderPlugIn reports the built-in renderer"
+rncheck "gl_error=0" "no OpenGL errors in the render script"
+python3 - "$TMP/render.bmp" <<'PY' && echo "ok   render.bmp is a valid, non-black 24-bit BMP" || { echo "FAIL render.bmp invalid or black"; fail=1; }
+import struct, sys
+d = open(sys.argv[1], 'rb').read()
+assert d[:2] == b'BM', 'signature'
+size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+assert size == len(d) and hdr == 40 and w == 320 and h == 240 and planes == 1 and bpp == 24, (size, len(d), w, h, bpp)
+px = d[off:]
+assert len(px) == ((w * 3 + 3) & ~3) * h, 'pixel data size'
+assert max(px) > 0 and min(px) < 255, 'image is flat'
+# The rendering must contain more than one colour (background + shaded objects).
+assert len(set(px[i:i + 3] for i in range(0, len(px) - 3, 3 * 97))) > 8, 'too few colours'
+PY
+head -c 2 "$TMP/arctic.ppm" | grep -q "P6" && echo "ok   arctic.ppm is a binary PPM" || { echo "FAIL arctic.ppm"; fail=1; }
 exit $fail

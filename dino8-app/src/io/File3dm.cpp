@@ -30,6 +30,99 @@ ON_Color ToOnColor(const Color& c) {
 
 Color FromOnColor(const ON_Color& c) { return Color::FromBytes(c.Red(), c.Green(), c.Blue()); }
 
+std::string ColorKey(const Color& c) {
+  return std::to_string(static_cast<int>(c.r * 255 + 0.5f)) + "," + std::to_string(static_cast<int>(c.g * 255 + 0.5f)) + "," + std::to_string(static_cast<int>(c.b * 255 + 0.5f));
+}
+
+bool ColorFromKey(const std::string& t, Color& out) {
+  int r, g, b;
+  if (std::sscanf(t.c_str(), "%d,%d,%d", &r, &g, &b) != 3) return false;
+  out = Color::FromBytes(r, g, b);
+  return true;
+}
+
+// Render settings travel as document user strings (Dino8.Render.*).
+void WriteRenderSettings(ONX_Model& model, const RenderSettings& r) {
+  auto set = [&](const char* key, const std::string& v) { model.SetDocumentUserString(ON_wString(key), ON_wString(v.c_str())); };
+  set("Dino8.Render.Background", std::to_string(static_cast<int>(r.background)));
+  set("Dino8.Render.BackgroundColor", ColorKey(r.background_color));
+  set("Dino8.Render.GradientTop", ColorKey(r.gradient_top));
+  set("Dino8.Render.GradientBottom", ColorKey(r.gradient_bottom));
+  set("Dino8.Render.GradientView", r.gradient_view ? "1" : "0");
+  set("Dino8.Render.GroundPlane", r.ground_plane ? "1" : "0");
+  set("Dino8.Render.GroundAutoHeight", r.ground_auto_height ? "1" : "0");
+  set("Dino8.Render.GroundHeight", std::to_string(r.ground_height));
+  set("Dino8.Render.GroundColor", ColorKey(r.ground_color));
+  set("Dino8.Render.GroundShadows", r.ground_shadows ? "1" : "0");
+  set("Dino8.Render.Sun", r.sun ? "1" : "0");
+  set("Dino8.Render.SunAzimuth", std::to_string(r.sun_azimuth));
+  set("Dino8.Render.SunAltitude", std::to_string(r.sun_altitude));
+  set("Dino8.Render.SunIntensity", std::to_string(r.sun_intensity));
+  set("Dino8.Render.SunColor", ColorKey(r.sun_color));
+  set("Dino8.Render.Skylight", r.skylight ? "1" : "0");
+  set("Dino8.Render.Width", std::to_string(r.render_width));
+  set("Dino8.Render.Height", std::to_string(r.render_height));
+  set("Dino8.Render.Quality", std::to_string(r.render_quality));
+  if (!r.environment_image.empty()) set("Dino8.Render.EnvironmentImage", r.environment_image);
+}
+
+void ReadRenderSettings(const std::map<std::string, std::string>& strings, RenderSettings& r) {
+  auto get = [&](const char* key) -> const std::string* { auto it = strings.find(key); return it == strings.end() ? nullptr : &it->second; };
+  auto num = [&](const char* key, double& v) { if (const std::string* t = get(key)) v = std::atof(t->c_str()); };
+  auto flag = [&](const char* key, bool& v) { if (const std::string* t = get(key)) v = *t == "1"; };
+  auto col = [&](const char* key, Color& v) { if (const std::string* t = get(key)) ColorFromKey(*t, v); };
+  if (const std::string* t = get("Dino8.Render.Background")) r.background = static_cast<RenderSettings::Background>(std::clamp(std::atoi(t->c_str()), 0, 2));
+  col("Dino8.Render.BackgroundColor", r.background_color);
+  col("Dino8.Render.GradientTop", r.gradient_top);
+  col("Dino8.Render.GradientBottom", r.gradient_bottom);
+  flag("Dino8.Render.GradientView", r.gradient_view);
+  flag("Dino8.Render.GroundPlane", r.ground_plane);
+  flag("Dino8.Render.GroundAutoHeight", r.ground_auto_height);
+  num("Dino8.Render.GroundHeight", r.ground_height);
+  col("Dino8.Render.GroundColor", r.ground_color);
+  flag("Dino8.Render.GroundShadows", r.ground_shadows);
+  flag("Dino8.Render.Sun", r.sun);
+  num("Dino8.Render.SunAzimuth", r.sun_azimuth);
+  num("Dino8.Render.SunAltitude", r.sun_altitude);
+  double d = r.sun_intensity; num("Dino8.Render.SunIntensity", d); r.sun_intensity = static_cast<float>(d);
+  col("Dino8.Render.SunColor", r.sun_color);
+  flag("Dino8.Render.Skylight", r.skylight);
+  d = r.render_width; num("Dino8.Render.Width", d); r.render_width = std::clamp(static_cast<int>(d), 16, 8192);
+  d = r.render_height; num("Dino8.Render.Height", d); r.render_height = std::clamp(static_cast<int>(d), 16, 8192);
+  d = r.render_quality; num("Dino8.Render.Quality", d); r.render_quality = std::clamp(static_cast<int>(d), 1, 4);
+  if (const std::string* t = get("Dino8.Render.EnvironmentImage")) r.environment_image = *t;
+}
+
+void AddLightFromOn(Document& doc, const ON_Light& light_ref, const ON_3dmObjectAttributes* attr) {
+  const ON_Light* light = &light_ref;
+  Light L;
+  L.name = FromWide(light->LightName());
+  if (L.name.empty() && attr) L.name = FromWide(attr->Name());
+  switch (light->Style()) {
+    case ON::world_spot_light: case ON::camera_spot_light: L.type = LightType::Spot; break;
+    case ON::world_directional_light: case ON::camera_directional_light: L.type = LightType::Directional; break;
+    case ON::world_linear_light: L.type = LightType::Linear; break;
+    case ON::world_rectangular_light: L.type = LightType::Rectangular; break;
+    default: L.type = LightType::Point; break;
+  }
+  L.position = light->Location();
+  L.direction = light->Direction();
+  if (!L.direction.Unitize()) L.direction = kernel::Vector3d(0, 0, -1);
+  L.color = FromOnColor(light->Diffuse());
+  L.intensity = static_cast<float>(light->Intensity());
+  L.spot_angle = static_cast<float>(std::clamp(light->SpotAngleDegrees(), 1.0, 89.0));
+  L.enabled = light->IsEnabled();
+  if (L.type == LightType::Spot) { L.length = light->Direction().Length(); if (L.length <= 0) L.length = 10; }
+  if (L.type == LightType::Rectangular || L.type == LightType::Linear) {
+    L.x_axis = light->Length();
+    L.length = L.x_axis.Length();
+    if (!L.x_axis.Unitize()) L.x_axis = kernel::Vector3d(1, 0, 0);
+    L.width = light->Width().Length();
+    if (L.type == LightType::Rectangular) { L.position = light->Location() + light->Length() * 0.5 + light->Width() * 0.5; }
+  }
+  doc.AddLight(L);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -86,6 +179,51 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     }
   }
 
+  // Materials: file index -> document material name.
+  std::map<int, std::string> material_map;
+  {
+    ONX_ModelComponentIterator mit(model, ON_ModelComponent::Type::RenderMaterial);
+    for (const ON_ModelComponent* c = mit.FirstComponent(); c; c = mit.NextComponent()) {
+      const ON_Material* om = ON_Material::Cast(c);
+      if (!om) continue;
+      Material m;
+      m.name = FromWide(om->Name());
+      if (m.name.empty()) m.name = "Material " + std::to_string(om->Index());
+      m.diffuse = FromOnColor(om->Diffuse());
+      m.specular = FromOnColor(om->Specular());
+      m.emission = FromOnColor(om->Emission());
+      m.gloss = static_cast<float>(std::clamp(om->Shine() / ON_Material::MaxShine, 0.0, 1.0));
+      m.transparency = static_cast<float>(std::clamp(om->Transparency(), 0.0, 1.0));
+      m.reflectivity = static_cast<float>(std::clamp(om->Reflectivity(), 0.0, 1.0));
+      for (int t = 0; t < om->m_textures.Count(); ++t) {
+        const ON_Texture& tx = om->m_textures[t];
+        if (tx.m_type != ON_Texture::TYPE::bitmap_texture && tx.m_type != ON_Texture::TYPE::pbr_base_color_texture) continue;
+        m.texture_path = FromWide(tx.m_image_file_reference.FullPath());
+        if (m.texture_path.empty()) m.texture_path = FromWide(tx.m_image_file_reference.RelativePath());
+        break;
+      }
+      ON_wString v;
+      if (om->GetUserString(L"Dino8.Mapping", v)) ParseTextureMapping(FromWide(v), m.mapping);
+      if (om->GetUserString(L"Dino8.MappingScale", v)) m.mapping_scale = static_cast<float>(std::atof(FromWide(v).c_str()));
+      if (m.mapping == TextureMapping::Default) m.mapping = TextureMapping::Surface;
+      // Names collide? Keep the first; later ones get a suffix.
+      std::string base = m.name;
+      for (int k = 2; doc.FindMaterial(m.name); ++k) m.name = base + " " + std::to_string(k);
+      material_map[om->Index()] = doc.AddMaterial(m);
+    }
+  }
+  // Layer render materials.
+  {
+    ONX_ModelComponentIterator lit(model, ON_ModelComponent::Type::Layer);
+    for (const ON_ModelComponent* c = lit.FirstComponent(); c; c = lit.NextComponent()) {
+      const ON_Layer* layer = ON_Layer::Cast(c);
+      if (!layer) continue;
+      auto lm = layer_map.find(layer->Index());
+      auto mm = material_map.find(layer->RenderMaterialIndex());
+      if (lm != layer_map.end() && mm != material_map.end()) doc.Layers()[static_cast<size_t>(lm->second)].material = mm->second;
+    }
+  }
+
   int skipped = 0;
   ONX_ModelComponentIterator it(model, ON_ModelComponent::Type::ModelGeometry);
   for (const ON_ModelComponent* c = it.FirstComponent(); c; c = it.NextComponent()) {
@@ -96,6 +234,10 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     if (!g) continue;
     SceneObject obj;
     bool made = false;
+    if (const ON_Light* light = ON_Light::Cast(g)) {
+      AddLightFromOn(doc, *light, attr);
+      continue;
+    }
     if (const ON_Point* p = ON_Point::Cast(g)) {
       obj = SceneObject::MakePoint(p->point);
       made = true;
@@ -164,14 +306,31 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
       }
       obj.visible = attr->IsVisible();
       obj.locked = attr->Mode() == ON::locked_object;
+      if (attr->MaterialSource() == ON::material_from_object) {
+        auto mm = material_map.find(attr->m_material_index);
+        if (mm != material_map.end()) obj.material_name = mm->second;
+      }
       // Attribute user strings.
       ON_ClassArray<ON_UserString> strings;
       attr->GetUserStrings(strings);
       for (int i = 0; i < strings.Count(); ++i) {
-        obj.user_text[FromWide(strings[i].m_key)] = FromWide(strings[i].m_string_value);
+        const std::string key = FromWide(strings[i].m_key), val = FromWide(strings[i].m_string_value);
+        if (key == "Dino8.Mapping") { ParseTextureMapping(val, obj.mapping); continue; }
+        if (key == "Dino8.MappingScale") { obj.mapping_scale = static_cast<float>(std::atof(val.c_str())); continue; }
+        obj.user_text[key] = val;
       }
     }
     doc.Add(std::move(obj));
+  }
+
+  // Render lights live in their own table.
+  {
+    ONX_ModelComponentIterator lit(model, ON_ModelComponent::Type::RenderLight);
+    for (const ON_ModelComponent* c = lit.FirstComponent(); c; c = lit.NextComponent()) {
+      const ON_ModelGeometryComponent* mg = ON_ModelGeometryComponent::Cast(c);
+      if (!mg) continue;
+      if (const ON_Light* light = ON_Light::Cast(mg->Geometry(nullptr))) AddLightFromOn(doc, *light, mg->Attributes(nullptr));
+    }
   }
 
   // Document notes, metadata and user text.
@@ -185,9 +344,14 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
   {
     ON_ClassArray<ON_UserString> strings;
     model.GetDocumentUserStrings(strings);
+    std::map<std::string, std::string> render_strings;
     for (int i = 0; i < strings.Count(); ++i) {
-      doc.UserText()[FromWide(strings[i].m_key)] = FromWide(strings[i].m_string_value);
+      const std::string key = FromWide(strings[i].m_key);
+      if (key.compare(0, 13, "Dino8.Render.") == 0) { render_strings[key] = FromWide(strings[i].m_string_value); continue; }
+      if (key == "Dino8.Title" || key == "Dino8.Comments") continue;
+      doc.UserText()[key] = FromWide(strings[i].m_string_value);
     }
+    ReadRenderSettings(render_strings, doc.Render());
   }
   // Named views.
   for (int i = 0; i < model.m_settings.m_named_views.Count(); ++i) {
@@ -230,6 +394,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
   }
   if (!doc.Settings().title.empty()) model.SetDocumentUserString(L"Dino8.Title", ON_wString(doc.Settings().title.c_str()));
   if (!doc.Settings().comments.empty()) model.SetDocumentUserString(L"Dino8.Comments", ON_wString(doc.Settings().comments.c_str()));
+  WriteRenderSettings(model, doc.Render());
   model.m_properties.m_RevisionHistory.m_sCreatedBy = ON_wString(doc.Settings().author.c_str());
   model.m_properties.m_RevisionHistory.m_sLastEditedBy = ON_wString(doc.Settings().author.c_str());
   model.m_properties.m_RevisionHistory.m_revision_count += 1;
@@ -244,6 +409,29 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
   model.m_settings.m_ModelUnitsAndTolerances.m_unit_system = ON_UnitSystem(us);
   model.m_settings.m_ModelUnitsAndTolerances.m_absolute_tolerance = doc.Settings().absolute_tolerance;
   model.m_settings.m_ModelUnitsAndTolerances.m_angle_tolerance = doc.Settings().angle_tolerance_degrees * ON_PI / 180.0;
+
+  // Materials.
+  std::map<std::string, int> material_index;
+  for (const Material& m : doc.Materials()) {
+    ON_Material om;
+    om.SetName(ON_wString(m.name.c_str()));
+    om.SetDiffuse(ToOnColor(m.diffuse));
+    om.SetSpecular(ToOnColor(m.specular));
+    om.SetEmission(ToOnColor(m.emission));
+    om.SetShine(std::clamp(static_cast<double>(m.gloss), 0.0, 1.0) * ON_Material::MaxShine);
+    om.SetTransparency(std::clamp(static_cast<double>(m.transparency), 0.0, 1.0));
+    om.SetReflectivity(std::clamp(static_cast<double>(m.reflectivity), 0.0, 1.0));
+    if (!m.texture_path.empty()) {
+      ON_Texture tx;
+      tx.m_image_file_reference.SetFullPath(m.texture_path.c_str(), false);
+      tx.m_type = ON_Texture::TYPE::bitmap_texture;
+      om.AddTexture(tx);
+    }
+    om.SetUserString(L"Dino8.Mapping", ON_wString(TextureMappingName(m.mapping)));
+    om.SetUserString(L"Dino8.MappingScale", ON_wString(std::to_string(m.mapping_scale).c_str()));
+    ON_ModelComponentReference ref = model.AddModelComponent(om, true);
+    if (const ON_Material* stored = ON_Material::Cast(ref.ModelComponent())) material_index[m.name] = stored->Index();
+  }
 
   // Layers.
   std::vector<int> file_layer_index(doc.Layers().size(), 0);
@@ -264,6 +452,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
     if (ON_Layer* stored = const_cast<ON_Layer*>(ON_Layer::Cast(ref.ModelComponent()))) {
       stored->SetVisible(L.visible);
       stored->SetLocked(L.locked);
+      if (!L.material.empty() && material_index.count(L.material)) stored->SetRenderMaterialIndex(material_index[L.material]);
       if (L.parent >= 0 && static_cast<size_t>(L.parent) < i) {
         ON_ModelComponentReference pref = model.LayerFromIndex(file_layer_index[static_cast<size_t>(L.parent)]);
         if (const ON_Layer* pl = ON_Layer::Cast(pref.ModelComponent())) stored->SetParentLayerId(pl->Id());
@@ -300,6 +489,14 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
     attr.SetVisible(o.visible);
     attr.SetMode(o.locked ? ON::locked_object : ON::normal_object);
     for (const auto& [k, v] : o.user_text) attr.SetUserString(ON_wString(k.c_str()), ON_wString(v.c_str()));
+    if (!o.material_name.empty() && material_index.count(o.material_name)) {
+      attr.m_material_index = material_index[o.material_name];
+      attr.SetMaterialSource(ON::material_from_object);
+    }
+    if (o.mapping != TextureMapping::Default) {
+      attr.SetUserString(L"Dino8.Mapping", ON_wString(TextureMappingName(o.mapping)));
+      attr.SetUserString(L"Dino8.MappingScale", ON_wString(std::to_string(o.mapping_scale).c_str()));
+    }
 
     ON_Geometry* g = nullptr;
     switch (o.kind) {
@@ -313,6 +510,45 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
     if (!g) continue;
     model.AddModelGeometryComponent(g, &attr);
     ++written;
+  }
+
+  // Lights are geometry components in the 3dm.
+  for (const Light& L : doc.Lights()) {
+    ON_Light* light = new ON_Light();
+    light->SetLightName(L.name.c_str());
+    switch (L.type) {
+      case LightType::Point: light->SetStyle(ON::world_point_light); light->SetLocation(L.position); break;
+      case LightType::Spot:
+        light->SetStyle(ON::world_spot_light);
+        light->SetLocation(L.position);
+        light->SetDirection(L.direction * (L.length > 0 ? L.length : 10.0));
+        light->SetSpotAngleDegrees(L.spot_angle);
+        break;
+      case LightType::Directional: light->SetStyle(ON::world_directional_light); light->SetLocation(L.position); light->SetDirection(L.direction); break;
+      case LightType::Rectangular: {
+        light->SetStyle(ON::world_rectangular_light);
+        kernel::Vector3d y = ON_CrossProduct(L.direction, L.x_axis);
+        y.Unitize();
+        light->SetLocation(L.position - L.x_axis * (L.length / 2) - y * (L.width / 2));
+        light->SetDirection(L.direction);
+        light->SetLength(L.x_axis * L.length);
+        light->SetWidth(y * L.width);
+        break;
+      }
+      case LightType::Linear:
+        light->SetStyle(ON::world_linear_light);
+        light->SetLocation(L.position);
+        light->SetDirection(L.direction);
+        light->SetLength(L.x_axis * L.length);
+        break;
+    }
+    light->SetDiffuse(ToOnColor(L.color));
+    light->SetIntensity(L.intensity);
+    light->Enable(L.enabled);
+    ON_3dmObjectAttributes attr;
+    ON_CreateUuid(attr.m_uuid);
+    attr.SetName(ON_wString(L.name.c_str()), true);
+    model.AddModelGeometryComponent(light, &attr);
   }
 
   ON_TextLog log;
