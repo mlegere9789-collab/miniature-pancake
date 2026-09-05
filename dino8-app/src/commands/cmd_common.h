@@ -1,6 +1,7 @@
 // Helpers shared by the cmd_*.cpp files.
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <functional>

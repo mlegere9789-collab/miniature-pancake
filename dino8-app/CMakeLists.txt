@@ -127,7 +127,15 @@ target_compile_definitions(Dino8 PRIVATE
   $<$<PLATFORM_ID:Windows>:WIN32_LEAN_AND_MEAN>
   $<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS>
 )
-target_link_libraries(Dino8 PRIVATE dino8_kernel imgui glfw OpenGL::GL)
+# OpenNURBS only builds its bundled FreeType on Linux/Android; build it
+# ourselves elsewhere (macOS, Windows) so TextObject works everywhere.
+if(NOT TARGET opennurbs_public_freetype)
+  add_subdirectory(${opennurbs_SOURCE_DIR}/freetype263 ${CMAKE_BINARY_DIR}/freetype263 EXCLUDE_FROM_ALL)
+  if(MSVC)
+    target_compile_options(opennurbs_public_freetype PRIVATE /w)
+  endif()
+endif()
+target_link_libraries(Dino8 PRIVATE dino8_kernel imgui glfw OpenGL::GL opennurbs_public_freetype)
 
 if(MSVC)
   target_compile_options(Dino8 PRIVATE /W3 /EHsc /bigobj)
