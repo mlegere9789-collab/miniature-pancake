@@ -384,6 +384,7 @@ bool Application::ExportSelected(const std::string& path, std::string& error) {
 // ---------------------------------------------------------------------------
 
 void Application::Frame() {
+  if (std::getenv("DINO8_UI_DEBUG") && (ImGui::GetFrameCount() == 5 || ImGui::GetFrameCount() == 90)) { const ImVec4& w = ImGui::GetStyle().Colors[ImGuiCol_WindowBg]; std::fprintf(stderr, "[theme] light=%d WindowBg=%.2f %.2f %.2f a=%.2f\n", light_theme ? 1 : 0, w.x, w.y, w.z, w.w); }
   HandleShortcuts();
   DrawDockspace();
   DrawViewports();
@@ -806,7 +807,7 @@ void Application::DrawStatusBar() {
   // Row 1: persistent object snaps (Rhino's osnap toolbar, docked).
   if (panels_.object_snaps) {
     auto osnap = [&](const char* label, bool& value) {
-      ImGui::PushStyleColor(ImGuiCol_Button, value ? ImVec4(0.22f, 0.45f, 0.75f, 1) : ImVec4(0.18f, 0.19f, 0.22f, 1));
+      ImGui::PushStyleColor(ImGuiCol_Button, value ? ImVec4(0.22f, 0.45f, 0.75f, 1) : ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
       if (ImGui::SmallButton(label)) value = !value;
       ImGui::PopStyleColor();
       ImGui::SameLine(0, 4);
@@ -838,7 +839,7 @@ void Application::DrawStatusBar() {
   ImGui::SameLine(0, 18);
   // Snap toggles.
   auto toggle = [&](const char* label, bool& value, const char* tip) {
-    ImGui::PushStyleColor(ImGuiCol_Button, value ? ImVec4(0.22f, 0.45f, 0.75f, 1) : ImVec4(0.18f, 0.19f, 0.22f, 1));
+    ImGui::PushStyleColor(ImGuiCol_Button, value ? ImVec4(0.22f, 0.45f, 0.75f, 1) : ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
     if (ImGui::SmallButton(label)) value = !value;
     ImGui::PopStyleColor();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);

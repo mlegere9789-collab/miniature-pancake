@@ -4,7 +4,7 @@
 
 namespace dino8::app {
 
-void ApplyDinoTheme(float ui_scale);
+void ApplyDinoTheme(float ui_scale, bool light = false);
 
 // Accent colour used by toolbars, status toggles and selection highlights.
 struct ThemeColors {

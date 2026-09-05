@@ -97,6 +97,8 @@ class Application {
   void AddRecentFile(const std::string& path);
   float ui_scale = 1.0f;
   bool gumball_enabled = true;
+  bool light_theme = false;
+  std::vector<std::string> toolbar_commands;  // customizable toolbar (empty = default set)
   // True when a saved ImGui layout exists, so the default dock layout is not rebuilt over it.
   bool has_saved_layout = false;
 

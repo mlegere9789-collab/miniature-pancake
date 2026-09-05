@@ -705,7 +705,10 @@ void DrawOptionsWindow(Application& app) {
   if (ImGui::BeginTabBar("opts")) {
     if (ImGui::BeginTabItem("General")) {
       ImGui::TextWrapped("Dino 8 has no licence, update-check or account settings: there is nothing to configure here that could ever lock you out.");
-      if (ImGui::SliderFloat("UI scale", &app.ui_scale, 0.75f, 2.0f)) { ApplyDinoTheme(app.ui_scale); }
+      if (ImGui::SliderFloat("UI scale", &app.ui_scale, 0.75f, 2.0f)) { ApplyDinoTheme(app.ui_scale, app.light_theme); }
+      int theme = app.light_theme ? 1 : 0;
+      if (ImGui::Combo("Theme", &theme, "Dark\0Light\0")) { app.light_theme = theme == 1; ApplyDinoTheme(app.ui_scale, app.light_theme); }
+      ImGui::Checkbox("Gumball", &app.gumball_enabled);
       ImGui::Checkbox("Show toolbars", &app.Panels().toolbars);
       ImGui::EndTabItem();
     }
@@ -743,6 +746,34 @@ void DrawOptionsWindow(Application& app) {
         ImGui::PopID();
         if (del) it = app.Engine().Aliases().erase(it); else ++it;
       }
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Toolbar")) {
+      ImGui::TextWrapped("Buttons on the main toolbar, in order. Remove with the x, add any command below; the list is saved with your settings. Right-click a toolbar button to remove it there.");
+      std::vector<std::string>& tb = app.toolbar_commands;
+      if (tb.empty()) tb = DefaultToolbarCommands();
+      for (size_t i = 0; i < tb.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Text("%s", tb[i].c_str());
+        ImGui::SameLine(200);
+        if (ImGui::SmallButton("up") && i > 0) std::swap(tb[i], tb[i - 1]);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("down") && i + 1 < tb.size()) std::swap(tb[i], tb[i + 1]);
+        ImGui::SameLine();
+        const bool del = ImGui::SmallButton("x");
+        ImGui::PopID();
+        if (del) { tb.erase(tb.begin() + static_cast<long>(i)); break; }
+      }
+      static char add[64] = "";
+      ImGui::SetNextItemWidth(180);
+      ImGui::InputTextWithHint("##addcmd", "command name", add, sizeof(add));
+      ImGui::SameLine();
+      if (ImGui::Button("Add button") && add[0]) {
+        if (const RegisteredCommand* rc = app.Engine().Find(add)) tb.push_back(rc->name); else app.Notify(std::string("Unknown command: ") + add);
+        add[0] = 0;
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Reset to default")) tb = DefaultToolbarCommands();
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Keyboard")) {

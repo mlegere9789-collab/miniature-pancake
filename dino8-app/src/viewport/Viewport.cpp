@@ -478,6 +478,61 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
               consider(arc.Center() - pl.yaxis * r, "Quad");
             }
           }
+          if (snaps.perp && ortho_base) {
+            consider(c.ClosestPoint(*ortho_base), "Perp");
+          }
+          if (snaps.tan && ortho_base) {
+            // Tangent from the previous point: minimise the angle between
+            // (C(t) - base) and the curve tangent, then refine locally.
+            const int n = 64;
+            double best_t = dom.min, best_v = 1e300;
+            auto score = [&](double t) {
+              Vector3d d = c.PointAt(t) - *ortho_base;
+              Vector3d tg = c.TangentAt(t);
+              if (!d.Unitize()) return 1e300;
+              return 1.0 - std::fabs(ON_DotProduct(d, tg));
+            };
+            for (int i = 0; i <= n; ++i) {
+              const double t = dom.min + (dom.max - dom.min) * i / n;
+              const double v = score(t);
+              if (v < best_v) { best_v = v; best_t = t; }
+            }
+            double lo = std::max(dom.min, best_t - (dom.max - dom.min) / n), hi = std::min(dom.max, best_t + (dom.max - dom.min) / n);
+            for (int it = 0; it < 30; ++it) {
+              const double m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
+              if (score(m1) < score(m2)) hi = m2; else lo = m1;
+            }
+            best_t = (lo + hi) / 2;
+            if (score(best_t) < 0.01) consider(c.PointAt(best_t), "Tan");
+          }
+          if (snaps.int_) {
+            // Intersections with other visible curves near the cursor, from
+            // the display polylines (screen-space test, 3D result).
+            const DisplayCache& d = o.Display();
+            for (const SceneObject& other : doc.Objects()) {
+              if (&other == &o || other.kind != ObjectKind::Curve || !doc.IsObjectVisible(other) || other.id < o.id) continue;
+              const DisplayCache& e = other.Display();
+              for (size_t i = 0; i + 5 < d.lines.size(); i += 6) {
+                double ax, ay, bx, by, tt;
+                const Point3d a(d.lines[i], d.lines[i + 1], d.lines[i + 2]), b(d.lines[i + 3], d.lines[i + 4], d.lines[i + 5]);
+                if (!WorldToPixel(a, ax, ay) || !WorldToPixel(b, bx, by)) continue;
+                if (PointSegmentDistance2D(px, py, ax, ay, bx, by, tt) > snap_radius * 2) continue;
+                for (size_t j = 0; j + 5 < e.lines.size(); j += 6) {
+                  double cx, cy, dx, dy, t2;
+                  const Point3d p(e.lines[j], e.lines[j + 1], e.lines[j + 2]), q(e.lines[j + 3], e.lines[j + 4], e.lines[j + 5]);
+                  if (!WorldToPixel(p, cx, cy) || !WorldToPixel(q, dx, dy)) continue;
+                  if (PointSegmentDistance2D(px, py, cx, cy, dx, dy, t2) > snap_radius * 2) continue;
+                  const double r1x = bx - ax, r1y = by - ay, r2x = dx - cx, r2y = dy - cy;
+                  const double den = r1x * r2y - r1y * r2x;
+                  if (std::fabs(den) < 1e-9) continue;
+                  const double u = ((cx - ax) * r2y - (cy - ay) * r2x) / den;
+                  const double v = ((cx - ax) * r1y - (cy - ay) * r1x) / den;
+                  if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+                  consider(a + (b - a) * u, "Int");
+                }
+              }
+            }
+          }
           if (snaps.near_) {
             const DisplayCache& d = o.Display();
             for (size_t i = 0; i + 5 < d.lines.size(); i += 6) {

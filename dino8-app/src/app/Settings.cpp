@@ -87,6 +87,10 @@ bool LoadSettings(Application& app, float& ui_scale) {
   p.display = Bool(panels["display"], p.display); p.object_snaps = Bool(panels["object_snaps"], p.object_snaps);
   p.toolbars = Bool(panels["toolbars"], p.toolbars);
 
+  app.light_theme = Bool(root["light_theme"], app.light_theme);
+  app.gumball_enabled = Bool(root["gumball"], app.gumball_enabled);
+  const json::Value& tb = root["toolbar"];
+  if (tb.IsArray() && tb.Size() > 0) { app.toolbar_commands.clear(); for (size_t i = 0; i < tb.Size(); ++i) app.toolbar_commands.push_back(tb[i].AsString()); }
   app.curve_display_tolerance = Num(root["curve_display_tolerance"], app.curve_display_tolerance);
   app.surface_display_tolerance = Num(root["surface_display_tolerance"], app.surface_display_tolerance);
   return true;
@@ -99,6 +103,11 @@ bool SaveSettings(const Application& app, float ui_scale) {
   if (!out) return false;
   out << "{\n";
   out << "  \"ui_scale\": " << ui_scale << ",\n";
+  out << "  \"light_theme\": " << (a.light_theme ? "true" : "false") << ",\n";
+  out << "  \"gumball\": " << (a.gumball_enabled ? "true" : "false") << ",\n";
+  out << "  \"toolbar\": [";
+  for (size_t i = 0; i < a.toolbar_commands.size(); ++i) out << (i ? ", " : "") << "\"" << Escape(a.toolbar_commands[i]) << "\"";
+  out << "],\n";
   out << "  \"curve_display_tolerance\": " << a.curve_display_tolerance << ",\n";
   out << "  \"surface_display_tolerance\": " << a.surface_display_tolerance << ",\n";
   out << "  \"recent_files\": [";

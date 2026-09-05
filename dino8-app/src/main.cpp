@@ -117,6 +117,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "%s\n", error.c_str());
     return 1;
   }
+  if (app.light_theme || app.ui_scale != ui_scale) dino8::app::ApplyDinoTheme(app.ui_scale, app.light_theme);
   if (!error.empty()) std::fprintf(stderr, "warning: %s\n", error.c_str());
 
   if (!open_path.empty()) {
@@ -204,6 +205,12 @@ int main(int argc, char** argv) {
         else if (cmd == "keyup") { std::string n; ss >> n; io.AddKeyEvent(key_of(n), false); }
         else if (cmd == "text") { std::string rest; std::getline(ss, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1); io.AddInputCharactersUTF8(rest.c_str()); }
         else if (cmd == "wait") { ss >> wait_frames; }
+        else if (cmd == "snap") {
+          std::string name; int on = 1; ss >> name >> on;
+          dino8::app::SnapSettings& sn = app.Snaps();
+          bool* flag = name == "end" ? &sn.end : name == "mid" ? &sn.mid : name == "cen" ? &sn.cen : name == "point" ? &sn.point : name == "near" ? &sn.near_ : name == "vertex" ? &sn.vertex : name == "int" ? &sn.int_ : name == "perp" ? &sn.perp : name == "tan" ? &sn.tan : name == "quad" ? &sn.quad : name == "grid" ? &sn.grid_snap : name == "ortho" ? &sn.ortho : nullptr;
+          if (flag) *flag = on != 0;
+        }
         else if (cmd == "expect_selected") { size_t n; ss >> n; const size_t got = app.Doc().SelectedCount(); std::printf("%s expect_selected %zu (got %zu)\n", got == n ? "ok  " : "FAIL", n, got); if (got != n) exit_code = 2; }
         else if (cmd == "expect_objects") { size_t n; ss >> n; const size_t got = app.Doc().ObjectCount(); std::printf("%s expect_objects %zu (got %zu)\n", got == n ? "ok  " : "FAIL", n, got); if (got != n) exit_code = 2; }
       } else {
@@ -217,7 +224,8 @@ int main(int argc, char** argv) {
     int w, h;
     glfwGetFramebufferSize(window, &w, &h);
     glViewport(0, 0, w, h);
-    glClearColor(0.11f, 0.12f, 0.14f, 1.0f);
+    const ImVec4 clear = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+    glClearColor(clear.x, clear.y, clear.z, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     const bool last_smoke_frame = smoke_frames >= 0 && frame + 1 >= smoke_frames && script_cursor >= script_lines.size();

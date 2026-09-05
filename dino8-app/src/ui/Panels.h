@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace dino8::app {
 
@@ -34,6 +35,8 @@ void DrawMacroEditor(Application& app);
 
 // Small shared widgets.
 bool ColorEdit(const char* label, struct Color& color);
+// The default main-toolbar command list ("|" is a separator).
+std::vector<std::string> DefaultToolbarCommands();
 // Evaluates a simple arithmetic expression ("2*(3+4)/5", sqrt, sin...).
 bool EvaluateExpression(const std::string& text, double& out, std::string& error);
 
