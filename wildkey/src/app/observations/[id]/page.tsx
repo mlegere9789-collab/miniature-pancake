@@ -9,9 +9,13 @@ import {
   fetchServerObservation,
   postObservationComment,
   setServerObservationCoverPhoto,
+  updateServerObservationAnnotations,
   updateServerObservationLicense,
+  type LifeStage,
   type ObservationComment,
   type ObservationDetail,
+  type Phenology,
+  type Sex,
 } from "@/lib/api-observations";
 import { useAuth } from "@/lib/auth-context";
 import type { CurrentUser } from "@/lib/auth-context";
@@ -19,6 +23,16 @@ import { QualityGradeBadge } from "@/components/quality-grade-badge";
 import { LazyPhoto } from "@/components/lazy-photo";
 import { OBSERVATION_LICENSES, LICENSE_LABELS, LICENSE_DESCRIPTIONS, type ObservationLicense } from "@/lib/observation-license";
 import { MAX_PHOTOS_PER_OBSERVATION } from "@/lib/observation-limits";
+import {
+  LIFE_STAGES,
+  SEXES,
+  PHENOLOGIES,
+  LIFE_STAGE_LABELS,
+  SEX_LABELS,
+  PHENOLOGY_LABELS,
+  annotationsApplicableFor,
+} from "@/lib/observation-annotations";
+import { getMockSpecies } from "@/lib/mock-species";
 
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -48,6 +62,7 @@ export default function ObservationDetailPage({
   const [flagSubmitted, setFlagSubmitted] = useState(false);
   const [flagSubmitting, setFlagSubmitting] = useState(false);
   const [updatingLicense, setUpdatingLicense] = useState(false);
+  const [updatingAnnotations, setUpdatingAnnotations] = useState(false);
   const [activePhotoUrl, setActivePhotoUrl] = useState<string | null>(null);
   const [managingPhotos, setManagingPhotos] = useState(false);
   const addPhotosInputRef = useRef<HTMLInputElement>(null);
@@ -78,6 +93,17 @@ export default function ObservationDetailPage({
     const ok = await updateServerObservationLicense(id, license);
     setUpdatingLicense(false);
     if (ok) setObservation((prev) => (prev ? { ...prev, license } : prev));
+  };
+
+  const changeAnnotation = async (updates: {
+    lifeStage?: LifeStage | null;
+    sex?: Sex | null;
+    phenology?: Phenology | null;
+  }) => {
+    setUpdatingAnnotations(true);
+    const ok = await updateServerObservationAnnotations(id, updates);
+    setUpdatingAnnotations(false);
+    if (ok) setObservation((prev) => (prev ? { ...prev, ...updates } : prev));
   };
 
   const totalPhotoCount = observation ? 1 + observation.extraPhotos.length : 0;
@@ -303,6 +329,59 @@ export default function ObservationDetailPage({
               </span>
             )}
           </div>
+          {(() => {
+            const taxonGroup = getMockSpecies(observation.taxonSlug)?.taxonGroup;
+            if (!taxonGroup) return null;
+            const applicable = annotationsApplicableFor(taxonGroup);
+            if (!applicable.lifeStage && !applicable.sex && !applicable.phenology) return null;
+
+            const renderField = <T extends string>(
+              label: string,
+              value: T | null,
+              options: readonly T[],
+              labels: Record<T, string>,
+              onChange: (v: T | null) => void,
+            ) =>
+              isOwner ? (
+                <label className="flex items-center gap-1.5 text-xs" style={{ color: "var(--color-text-muted)" }}>
+                  {label}:
+                  <select
+                    value={value ?? ""}
+                    onChange={(e) => onChange((e.target.value || null) as T | null)}
+                    disabled={updatingAnnotations}
+                    aria-label={`Change this observation's ${label.toLowerCase()}`}
+                    className="rounded border px-1.5 py-1 text-xs"
+                    style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
+                  >
+                    <option value="">Not specified</option>
+                    {options.map((o) => (
+                      <option key={o} value={o}>
+                        {labels[o]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : value ? (
+                <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                  {label}: {labels[value]}
+                </span>
+              ) : null;
+
+            return (
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                {applicable.lifeStage &&
+                  renderField("Life stage", observation.lifeStage, LIFE_STAGES, LIFE_STAGE_LABELS, (v) =>
+                    changeAnnotation({ lifeStage: v }),
+                  )}
+                {applicable.sex &&
+                  renderField("Sex", observation.sex, SEXES, SEX_LABELS, (v) => changeAnnotation({ sex: v }))}
+                {applicable.phenology &&
+                  renderField("Phenology", observation.phenology, PHENOLOGIES, PHENOLOGY_LABELS, (v) =>
+                    changeAnnotation({ phenology: v }),
+                  )}
+              </div>
+            );
+          })()}
         </div>
       </div>
 

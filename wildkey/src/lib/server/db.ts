@@ -63,7 +63,10 @@ function createConnection(): Database.Database {
       notes TEXT NOT NULL DEFAULT '',
       lat REAL,
       lng REAL,
-      license TEXT NOT NULL DEFAULT 'CC-BY-NC'
+      license TEXT NOT NULL DEFAULT 'CC-BY-NC',
+      life_stage TEXT,
+      sex TEXT,
+      phenology TEXT
     );
 
     -- Additional photos beyond an observation's cover photo (Part C.1/E:
@@ -185,6 +188,15 @@ function createConnection(): Database.Database {
   }
   if (!observationColumns.some((c) => c.name === "license")) {
     db.exec("ALTER TABLE observations ADD COLUMN license TEXT NOT NULL DEFAULT 'CC-BY-NC'");
+  }
+  if (!observationColumns.some((c) => c.name === "life_stage")) {
+    db.exec("ALTER TABLE observations ADD COLUMN life_stage TEXT");
+  }
+  if (!observationColumns.some((c) => c.name === "sex")) {
+    db.exec("ALTER TABLE observations ADD COLUMN sex TEXT");
+  }
+  if (!observationColumns.some((c) => c.name === "phenology")) {
+    db.exec("ALTER TABLE observations ADD COLUMN phenology TEXT");
   }
 
   db.exec(`

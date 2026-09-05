@@ -18,6 +18,18 @@ import {
   type ObservationLicense,
 } from "@/lib/observation-license";
 import { MAX_PHOTOS_PER_OBSERVATION } from "@/lib/observation-limits";
+import {
+  LIFE_STAGES,
+  SEXES,
+  PHENOLOGIES,
+  LIFE_STAGE_LABELS,
+  SEX_LABELS,
+  PHENOLOGY_LABELS,
+  annotationsApplicableFor,
+  type LifeStage,
+  type Sex,
+  type Phenology,
+} from "@/lib/observation-annotations";
 
 type IdOutcome = { species: Species | null; confidence: number; rawLabel: string };
 
@@ -45,6 +57,9 @@ export default function CameraPage() {
   const [notes, setNotes] = useState("");
   const [isWild, setIsWild] = useState(true);
   const [license, setLicense] = useState<ObservationLicense>(DEFAULT_OBSERVATION_LICENSE);
+  const [lifeStage, setLifeStage] = useState<LifeStage | "">("");
+  const [sex, setSex] = useState<Sex | "">("");
+  const [phenology, setPhenology] = useState<Phenology | "">("");
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [locating, setLocating] = useState(false);
   const [locationError, setLocationError] = useState<string | null>(null);
@@ -65,6 +80,9 @@ export default function CameraPage() {
     setNotes("");
     setIsWild(true);
     setLicense(DEFAULT_OBSERVATION_LICENSE);
+    setLifeStage("");
+    setSex("");
+    setPhenology("");
     setCoords(null);
     setLocationError(null);
     setIdentifyError(null);
@@ -149,6 +167,9 @@ export default function CameraPage() {
         lng: coords?.lng ?? null,
         license,
         extraPhotoDataUrls: extraPreviewUrls,
+        lifeStage: lifeStage || null,
+        sex: sex || null,
+        phenology: phenology || null,
       });
       setSavedSyncState(saved ? "confirmed" : "failed");
       return;
@@ -333,6 +354,71 @@ export default function CameraPage() {
                       {LICENSE_DESCRIPTIONS[license]}
                     </span>
                   </label>
+                  {(() => {
+                    const applicable = annotationsApplicableFor(outcome.species!.taxonGroup);
+                    if (!applicable.lifeStage && !applicable.sex && !applicable.phenology) return null;
+                    return (
+                      <div className="flex flex-col gap-3">
+                        <p className="text-sm font-medium">Annotations (optional)</p>
+                        <div className="flex flex-wrap gap-3">
+                          {applicable.lifeStage && (
+                            <label className="flex flex-col gap-1 text-xs font-medium">
+                              Life stage
+                              <select
+                                value={lifeStage}
+                                onChange={(e) => setLifeStage(e.target.value as LifeStage | "")}
+                                className="rounded border px-2 py-1.5 text-sm font-normal"
+                                style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
+                              >
+                                <option value="">Not specified</option>
+                                {LIFE_STAGES.map((s) => (
+                                  <option key={s} value={s}>
+                                    {LIFE_STAGE_LABELS[s]}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
+                          {applicable.sex && (
+                            <label className="flex flex-col gap-1 text-xs font-medium">
+                              Sex
+                              <select
+                                value={sex}
+                                onChange={(e) => setSex(e.target.value as Sex | "")}
+                                className="rounded border px-2 py-1.5 text-sm font-normal"
+                                style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
+                              >
+                                <option value="">Not specified</option>
+                                {SEXES.map((s) => (
+                                  <option key={s} value={s}>
+                                    {SEX_LABELS[s]}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
+                          {applicable.phenology && (
+                            <label className="flex flex-col gap-1 text-xs font-medium">
+                              Phenology
+                              <select
+                                value={phenology}
+                                onChange={(e) => setPhenology(e.target.value as Phenology | "")}
+                                className="rounded border px-2 py-1.5 text-sm font-normal"
+                                style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
+                              >
+                                <option value="">Not specified</option>
+                                {PHENOLOGIES.map((p) => (
+                                  <option key={p} value={p}>
+                                    {PHENOLOGY_LABELS[p]}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
               <button

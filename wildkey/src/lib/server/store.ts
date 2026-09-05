@@ -7,9 +7,18 @@ import {
   type ObservationLicense,
 } from "@/lib/observation-license";
 import { MAX_PHOTOS_PER_OBSERVATION } from "@/lib/observation-limits";
+import {
+  LIFE_STAGES,
+  SEXES,
+  PHENOLOGIES,
+  type LifeStage,
+  type Sex,
+  type Phenology,
+} from "@/lib/observation-annotations";
 
 export { OBSERVATION_LICENSES, DEFAULT_OBSERVATION_LICENSE, type ObservationLicense };
 export { MAX_PHOTOS_PER_OBSERVATION };
+export { LIFE_STAGES, SEXES, PHENOLOGIES, type LifeStage, type Sex, type Phenology };
 
 /**
  * Real SQLite-backed persistence (see src/lib/server/db.ts for the schema
@@ -79,6 +88,10 @@ export type ServerObservation = {
   lat: number | null;
   lng: number | null;
   license: ObservationLicense;
+  /** Annotations (Part C.2/Part K): all optional, null means "not specified." */
+  lifeStage: LifeStage | null;
+  sex: Sex | null;
+  phenology: Phenology | null;
 };
 
 /** An observation's photo_data_url column is always its cover photo; these are the rest, in display order. */
@@ -104,6 +117,9 @@ type ObservationRow = {
   lat: number | null;
   lng: number | null;
   license: string;
+  life_stage: string | null;
+  sex: string | null;
+  phenology: string | null;
 };
 
 function observationFromRow(row: ObservationRow): ServerObservation {
@@ -125,6 +141,13 @@ function observationFromRow(row: ObservationRow): ServerObservation {
     license: (OBSERVATION_LICENSES as readonly string[]).includes(row.license)
       ? (row.license as ObservationLicense)
       : DEFAULT_OBSERVATION_LICENSE,
+    lifeStage: (LIFE_STAGES as readonly string[]).includes(row.life_stage ?? "")
+      ? (row.life_stage as LifeStage)
+      : null,
+    sex: (SEXES as readonly string[]).includes(row.sex ?? "") ? (row.sex as Sex) : null,
+    phenology: (PHENOLOGIES as readonly string[]).includes(row.phenology ?? "")
+      ? (row.phenology as Phenology)
+      : null,
   };
 }
 
@@ -509,10 +532,12 @@ export function createObservationForUser(
     db.prepare(
       `INSERT INTO observations
          (id, user_id, created_at, photo_data_url, common_name, scientific_name,
-          confidence, taxon_slug, sync_state, is_wild, location_name, notes, lat, lng, license)
+          confidence, taxon_slug, sync_state, is_wild, location_name, notes, lat, lng, license,
+          life_stage, sex, phenology)
        VALUES
          (@id, @userId, @createdAt, @photoDataUrl, @commonName, @scientificName,
-          @confidence, @taxonSlug, @syncState, @isWild, @locationName, @notes, @lat, @lng, @license)`,
+          @confidence, @taxonSlug, @syncState, @isWild, @locationName, @notes, @lat, @lng, @license,
+          @lifeStage, @sex, @phenology)`,
     ).run({
       id: observation.id,
       userId: observation.userId,
@@ -529,6 +554,9 @@ export function createObservationForUser(
       lat: observation.lat,
       lng: observation.lng,
       license: observation.license,
+      lifeStage: observation.lifeStage,
+      sex: observation.sex,
+      phenology: observation.phenology,
     });
     insertExtraPhotos(observation.id, extraPhotoDataUrls.slice(0, MAX_PHOTOS_PER_OBSERVATION - 1));
   });
@@ -644,6 +672,39 @@ export function updateObservationLicense(
   const result = db
     .prepare("UPDATE observations SET license = ? WHERE id = ? AND user_id = ?")
     .run(license, id, userId);
+  return result.changes > 0;
+}
+
+/**
+ * Annotations, owner-only for now (see docs/remaining-systems-design.md
+ * for why real iNaturalist's fuller community-voted annotation model is
+ * out of scope here). `undefined` for a field leaves it unchanged;
+ * `null` explicitly clears it back to "not specified."
+ */
+export function updateObservationAnnotations(
+  userId: string,
+  id: string,
+  updates: { lifeStage?: LifeStage | null; sex?: Sex | null; phenology?: Phenology | null },
+): boolean {
+  const sets: string[] = [];
+  const values: (string | null)[] = [];
+  if (updates.lifeStage !== undefined) {
+    sets.push("life_stage = ?");
+    values.push(updates.lifeStage);
+  }
+  if (updates.sex !== undefined) {
+    sets.push("sex = ?");
+    values.push(updates.sex);
+  }
+  if (updates.phenology !== undefined) {
+    sets.push("phenology = ?");
+    values.push(updates.phenology);
+  }
+  if (sets.length === 0) return false;
+
+  const result = db
+    .prepare(`UPDATE observations SET ${sets.join(", ")} WHERE id = ? AND user_id = ?`)
+    .run(...values, id, userId);
   return result.changes > 0;
 }
 

@@ -1,11 +1,14 @@
 import type {
   ActivityItem,
+  LifeStage,
   ObservationComment,
   ObservationDetail,
   ObservationLicense,
   ObservationPhoto,
   ObservationWithGrade,
+  Phenology,
   ServerObservation,
+  Sex,
 } from "@/lib/server/store";
 import type { CurrentUser } from "@/lib/auth-context";
 
@@ -17,6 +20,9 @@ export type {
   ObservationPhoto,
   ActivityItem,
   ObservationLicense,
+  LifeStage,
+  Sex,
+  Phenology,
 };
 
 export async function fetchActivity(): Promise<ActivityItem[]> {
@@ -46,6 +52,9 @@ export async function createServerObservation(input: {
   lng?: number | null;
   license?: ObservationLicense;
   extraPhotoDataUrls?: string[];
+  lifeStage?: LifeStage | null;
+  sex?: Sex | null;
+  phenology?: Phenology | null;
 }): Promise<ServerObservation | null> {
   const res = await fetch("/api/observations", {
     method: "POST",
@@ -70,6 +79,18 @@ export async function updateServerObservationLicense(
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ license }),
+  });
+  return res.ok;
+}
+
+export async function updateServerObservationAnnotations(
+  id: string,
+  updates: { lifeStage?: LifeStage | null; sex?: Sex | null; phenology?: Phenology | null },
+): Promise<boolean> {
+  const res = await fetch(`/api/observations/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
   });
   return res.ok;
 }

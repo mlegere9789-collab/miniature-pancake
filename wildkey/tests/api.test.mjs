@@ -453,6 +453,116 @@ describe("observations + quality grade", () => {
     assert.equal(detail.observation.extraPhotos.length, 3);
     assert.ok(!detail.observation.extraPhotos.some((p) => p.id === toDelete));
   });
+
+  it("real annotations (life stage, sex, phenology): settable at creation, validated, owner-only, clearable back to unspecified", async () => {
+    const owner = await signUp();
+    const stranger = await signUp();
+
+    // An animal observation accepts life stage + sex.
+    const fox = await json(
+      await owner.session.fetch("/api/observations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          photoDataUrl: "x",
+          commonName: "Red Fox",
+          scientificName: "Vulpes vulpes",
+          confidence: 0.7,
+          taxonSlug: "red-fox",
+          lifeStage: "juvenile",
+          sex: "female",
+          phenology: "flowering", // not applicable to an animal — should be silently ignored, not stored
+        }),
+      }),
+    );
+    assert.equal(fox.observation.lifeStage, "juvenile");
+    assert.equal(fox.observation.sex, "female");
+    assert.equal(fox.observation.phenology, null);
+
+    // An invalid value falls back to "not specified" rather than being stored as-is.
+    const invalidValue = await json(
+      await owner.session.fetch("/api/observations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          photoDataUrl: "x",
+          commonName: "Red Fox",
+          scientificName: "Vulpes vulpes",
+          confidence: 0.7,
+          taxonSlug: "red-fox",
+          sex: "not-a-real-value",
+        }),
+      }),
+    );
+    assert.equal(invalidValue.observation.sex, null);
+
+    const id = fox.observation.id;
+
+    // A stranger can't change someone else's annotations.
+    const strangerEdit = await stranger.session.fetch(`/api/observations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lifeStage: "adult" }),
+    });
+    assert.equal(strangerEdit.status, 404);
+
+    // An invalid PATCH value is rejected outright, not silently dropped.
+    const badPatch = await owner.session.fetch(`/api/observations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sex: "not-a-real-value" }),
+    });
+    assert.equal(badPatch.status, 400);
+
+    // A PATCH with no recognized fields at all is rejected, not a silent no-op 200.
+    const emptyPatch = await owner.session.fetch(`/api/observations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(emptyPatch.status, 400);
+
+    // The owner can update one field, leaving the other untouched.
+    const ownerEdit = await owner.session.fetch(`/api/observations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lifeStage: "adult" }),
+    });
+    assert.equal(ownerEdit.status, 200);
+    let updated = await json(await owner.session.fetch(`/api/observations/${id}`));
+    assert.equal(updated.observation.lifeStage, "adult");
+    assert.equal(updated.observation.sex, "female");
+
+    // Explicitly clearing a field back to null works.
+    const clear = await owner.session.fetch(`/api/observations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sex: null }),
+    });
+    assert.equal(clear.status, 200);
+    updated = await json(await owner.session.fetch(`/api/observations/${id}`));
+    assert.equal(updated.observation.sex, null);
+    assert.equal(updated.observation.lifeStage, "adult");
+
+    // A plant observation accepts phenology, not life stage/sex.
+    const dandelion = await json(
+      await owner.session.fetch("/api/observations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          photoDataUrl: "x",
+          commonName: "Common Dandelion",
+          scientificName: "Taraxacum officinale",
+          confidence: 0.9,
+          taxonSlug: "common-dandelion",
+          phenology: "fruiting",
+          lifeStage: "adult", // not applicable to a plant — ignored
+        }),
+      }),
+    );
+    assert.equal(dandelion.observation.phenology, "fruiting");
+    assert.equal(dandelion.observation.lifeStage, null);
+  });
 });
 
 describe("sensitive-species obscuring", () => {

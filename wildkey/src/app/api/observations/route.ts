@@ -6,14 +6,27 @@ import {
   OBSERVATION_LICENSES,
   DEFAULT_OBSERVATION_LICENSE,
   MAX_PHOTOS_PER_OBSERVATION,
+  LIFE_STAGES,
+  SEXES,
+  PHENOLOGIES,
   type ObservationLicense,
+  type LifeStage,
+  type Sex,
+  type Phenology,
 } from "@/lib/server/store";
 import { requiredString, optionalString, boundedNumber } from "@/lib/server/validate";
+import { getMockSpecies } from "@/lib/mock-species";
+import { annotationsApplicableFor } from "@/lib/observation-annotations";
 
 function parseLicense(value: unknown): ObservationLicense {
   return (OBSERVATION_LICENSES as readonly unknown[]).includes(value)
     ? (value as ObservationLicense)
     : DEFAULT_OBSERVATION_LICENSE;
+}
+
+function parseAnnotation<T extends string>(value: unknown, allowed: readonly T[], applicable: boolean): T | null {
+  if (!applicable) return null;
+  return (allowed as readonly unknown[]).includes(value) ? (value as T) : null;
 }
 
 export async function GET() {
@@ -50,6 +63,13 @@ export async function POST(request: Request) {
   const lat = boundedNumber(body?.lat, -90, 90);
   const lng = boundedNumber(body?.lng, -180, 180);
   const license = parseLicense(body?.license);
+  const taxonGroup = getMockSpecies(taxonSlug)?.taxonGroup;
+  const applicable = taxonGroup
+    ? annotationsApplicableFor(taxonGroup)
+    : { lifeStage: false, sex: false, phenology: false };
+  const lifeStage = parseAnnotation<LifeStage>(body?.lifeStage, LIFE_STAGES, applicable.lifeStage);
+  const sex = parseAnnotation<Sex>(body?.sex, SEXES, applicable.sex);
+  const phenology = parseAnnotation<Phenology>(body?.phenology, PHENOLOGIES, applicable.phenology);
 
   const rawExtraPhotos = Array.isArray(body?.extraPhotoDataUrls) ? body.extraPhotoDataUrls : [];
   if (rawExtraPhotos.length > MAX_PHOTOS_PER_OBSERVATION - 1) {
@@ -81,6 +101,9 @@ export async function POST(request: Request) {
       lat,
       lng,
       license,
+      lifeStage,
+      sex,
+      phenology,
     },
     extraPhotoDataUrls,
   );

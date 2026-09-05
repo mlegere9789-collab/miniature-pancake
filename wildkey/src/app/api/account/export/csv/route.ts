@@ -17,6 +17,9 @@ const COLUMNS = [
   "lng",
   "notes",
   "license",
+  "lifeStage",
+  "sex",
+  "phenology",
 ] as const;
 
 function csvEscape(value: unknown): string {
