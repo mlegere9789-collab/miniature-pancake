@@ -179,12 +179,47 @@ public static class OutputPathResolver
         throw new IOException($"Could not find a free name for '{Path.GetFileName(candidate)}'.");
     }
 
+    // Reserved for legacy DOS devices on Windows regardless of any extension -- "con.png" is
+    // exactly as reserved as "con" itself. A source file innocently named "com1.jpg" or
+    // "nul.png" (an old scan, a placeholder someone named literally) is plausible on a real
+    // machine, and without this check the resolver would hand the tool an output path that
+    // either fails outright to create or gets silently redirected to the actual device
+    // instead of a real file.
+    private static readonly HashSet<string> ReservedDeviceNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CON", "PRN", "AUX", "NUL",
+        "COM0", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT0", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+
     private static string Sanitize(string fileName)
     {
         var invalid = Path.GetInvalidFileNameChars();
         var cleaned = new string(fileName.Select(c => invalid.Contains(c) ? '_' : c).ToArray()).Trim();
 
-        return cleaned.Length == 0 ? "output" : cleaned;
+        // Windows strips trailing dots and spaces from a filename at the point it is
+        // actually created (CreateFileW's own path normalization, outside .NET's control) --
+        // an extension-less "same as input" conversion (target.Format left null for a source
+        // file that itself has no extension) leaves BuildFileName's "{name}.{ext}" template
+        // with nothing after that final dot, e.g. "Report." rather than "Report". Stripping
+        // it here too means every decision this resolver makes from here on (the File.Exists
+        // collision check, the in-process ReservedPaths set) is made against the exact string
+        // Windows will actually use on disk, rather than risking the two disagreeing.
+        cleaned = cleaned.TrimEnd('.', ' ');
+
+        if (cleaned.Length == 0)
+        {
+            return "output";
+        }
+
+        var baseName = Path.GetFileNameWithoutExtension(cleaned);
+
+        if (ReservedDeviceNames.Contains(baseName))
+        {
+            cleaned = $"{baseName}_{Path.GetExtension(cleaned)}";
+        }
+
+        return cleaned;
     }
 
     private static string CommonPrefix(string first, string second)
