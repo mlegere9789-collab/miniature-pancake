@@ -9,6 +9,15 @@ public sealed class UpscaleFakeToolRunner : IProcessRunner
 
     public string? NextFailure { get; set; }
 
+    /// <summary>
+    /// 1-based: the call with this number among all calls to this runner writes its output
+    /// file as usual (mirroring a real tool killed mid/after-write, not one that never got
+    /// that far) and then throws instead of returning, standing in for
+    /// <see cref="ProcessRunner"/> re-throwing after killing a cancelled process. Null means
+    /// no call is cancelled.
+    /// </summary>
+    public int? CancelOnCallNumber { get; set; }
+
     public IReadOnlyList<ProcessRequest> RequestsFor(string executableFragment) =>
         Requests.Where(r => r.FileName.Contains(executableFragment, StringComparison.OrdinalIgnoreCase)).ToList();
 
@@ -16,9 +25,12 @@ public sealed class UpscaleFakeToolRunner : IProcessRunner
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        int callNumber;
+
         lock (Requests)
         {
             Requests.Add(request);
+            callNumber = Requests.Count;
         }
 
         if (NextFailure is { } failure)
@@ -34,6 +46,11 @@ public sealed class UpscaleFakeToolRunner : IProcessRunner
         // in this codebase, is positional and just ends with the output path.
         var outputFlagIndex = args.ToList().IndexOf("-o");
         Write(outputFlagIndex >= 0 && outputFlagIndex + 1 < args.Count ? args[outputFlagIndex + 1] : args[^1]);
+
+        if (callNumber == CancelOnCallNumber)
+        {
+            throw new OperationCanceledException();
+        }
 
         return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty, TimeSpan.FromMilliseconds(1)));
     }

@@ -89,7 +89,9 @@ public sealed class PdfEngine : ExternalProcessEngine
         if (operation == "pdf.merge")
         {
             var qpdf = RequireTool(ExternalToolId.QPdf);
-            await RunToolAsync(qpdf, PdfCommandBuilder.Merge(spec.InputPaths, outputPath), "QPDF", cancellationToken)
+            await RunToolAsync(
+                qpdf, PdfCommandBuilder.Merge(spec.InputPaths, outputPath), "QPDF", cancellationToken,
+                outputPathToDeleteOnCancel: outputPath)
                 .ConfigureAwait(false);
         }
         else
@@ -100,7 +102,8 @@ public sealed class PdfEngine : ExternalProcessEngine
 
             var mutool = RequireTool(ExternalToolId.MuPdf);
             await RunToolAsync(
-                mutool, PdfCommandBuilder.ImagesToPdf(imagePaths, outputPath), "MuPDF", cancellationToken)
+                mutool, PdfCommandBuilder.ImagesToPdf(imagePaths, outputPath), "MuPDF", cancellationToken,
+                outputPathToDeleteOnCancel: outputPath)
                 .ConfigureAwait(false);
         }
 
@@ -265,7 +268,9 @@ public sealed class PdfEngine : ExternalProcessEngine
 
         var toolId = PdfCommandBuilder.ToolFor(operation);
         var tool = RequireTool(toolId);
-        await RunToolAsync(tool, arguments, ToolManifest.Get(toolId).DisplayName, cancellationToken).ConfigureAwait(false);
+        await RunToolAsync(
+            tool, arguments, ToolManifest.Get(toolId).DisplayName, cancellationToken, outputPathToDeleteOnCancel: outputPath)
+            .ConfigureAwait(false);
         RequireOutput(outputPath, Path.GetFileName(inputPath));
         return outputPath;
     }
@@ -294,7 +299,9 @@ public sealed class PdfEngine : ExternalProcessEngine
         var outputPath = ResolveOutputPath(spec, inputPath, index, batchRoot);
         var pageList = string.Join(",", kept.Select(page => page.ToString(CultureInfo.InvariantCulture)));
 
-        await RunToolAsync(qpdf, PdfCommandBuilder.SelectPages(inputPath, outputPath, pageList), "QPDF", cancellationToken)
+        await RunToolAsync(
+            qpdf, PdfCommandBuilder.SelectPages(inputPath, outputPath, pageList), "QPDF", cancellationToken,
+            outputPathToDeleteOnCancel: outputPath)
             .ConfigureAwait(false);
 
         RequireOutput(outputPath, Path.GetFileName(inputPath));
@@ -479,7 +486,8 @@ public sealed class PdfEngine : ExternalProcessEngine
                 inputPath, spec.Output with { Format = "pdf" }, index, batchRoot);
 
             await RunToolAsync(
-                mutool, PdfCommandBuilder.ImagesToPdf(new[] { inputPath }, outputPath), "MuPDF", cancellationToken)
+                mutool, PdfCommandBuilder.ImagesToPdf(new[] { inputPath }, outputPath), "MuPDF", cancellationToken,
+                outputPathToDeleteOnCancel: outputPath)
                 .ConfigureAwait(false);
 
             RequireOutput(outputPath, Path.GetFileName(inputPath));
@@ -492,7 +500,8 @@ public sealed class PdfEngine : ExternalProcessEngine
             inputPath, spec.Output with { Format = "pdf" }, index, batchRoot);
 
         await RunToolAsync(
-            qpdf, PdfCommandBuilder.PassThrough(inputPath, rewrittenPath), "QPDF", cancellationToken)
+            qpdf, PdfCommandBuilder.PassThrough(inputPath, rewrittenPath), "QPDF", cancellationToken,
+            outputPathToDeleteOnCancel: rewrittenPath)
             .ConfigureAwait(false);
 
         RequireOutput(rewrittenPath, Path.GetFileName(inputPath));

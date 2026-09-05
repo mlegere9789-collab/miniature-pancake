@@ -185,7 +185,15 @@ public sealed class UpscaleEngine : ExternalProcessEngine
             var arguments = UpscaleCommandBuilder.Build(
                 currentInput, passOutput, passScales[pass], modelName, modelsFolder, targetFormat, forceCpu);
 
-            await RunToolAsync(realEsrgan, arguments, "Real-ESRGAN", cancellationToken).ConfigureAwait(false);
+            // passOutput only equals outputPath on the pass that writes the real, final file
+            // directly (the last pass with no sharpen/face-enhance to follow) -- every other
+            // pass writes to its own scratch file in stepFolder, so passing outputPath there
+            // too would risk deleting a pre-existing file under OverwritePolicy.Overwrite
+            // that this particular pass never touched.
+            await RunToolAsync(
+                realEsrgan, arguments, "Real-ESRGAN", cancellationToken,
+                outputPathToDeleteOnCancel: passOutput == outputPath ? outputPath : null)
+                .ConfigureAwait(false);
             RequireOutput(passOutput, Path.GetFileName(inputPath));
 
             currentInput = passOutput;
@@ -198,7 +206,8 @@ public sealed class UpscaleEngine : ExternalProcessEngine
             var sharpenOutput = faceEnhance ? Path.Combine(stepFolder, $"sharpened.{targetFormat}") : outputPath;
 
             await RunToolAsync(
-                magick!, UpscaleCommandBuilder.Sharpen(currentPath, sharpenOutput), "ImageMagick", cancellationToken)
+                magick!, UpscaleCommandBuilder.Sharpen(currentPath, sharpenOutput), "ImageMagick", cancellationToken,
+                outputPathToDeleteOnCancel: sharpenOutput == outputPath ? outputPath : null)
                 .ConfigureAwait(false);
             RequireOutput(sharpenOutput, Path.GetFileName(inputPath));
 
@@ -211,7 +220,8 @@ public sealed class UpscaleEngine : ExternalProcessEngine
                 faceEnhanceExe!,
                 UpscaleCommandBuilder.FaceEnhance(currentPath, outputPath, faceEnhanceModelsFolder!),
                 "Face Enhance",
-                cancellationToken)
+                cancellationToken,
+                outputPathToDeleteOnCancel: outputPath)
                 .ConfigureAwait(false);
             RequireOutput(outputPath, Path.GetFileName(inputPath));
         }

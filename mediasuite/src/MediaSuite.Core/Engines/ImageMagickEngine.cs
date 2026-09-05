@@ -120,7 +120,8 @@ public sealed class ImageMagickEngine : ExternalProcessEngine
         var outputPath = OutputPathResolver.Resolve(inputPath, target, index, batchRoot);
         var arguments = ImageCommandBuilder.Build(spec, sourcePath, outputPath);
 
-        await RunToolAsync(magick, arguments, "ImageMagick", cancellationToken).ConfigureAwait(false);
+        await RunToolAsync(magick, arguments, "ImageMagick", cancellationToken, outputPathToDeleteOnCancel: outputPath)
+            .ConfigureAwait(false);
 
         if (!File.Exists(outputPath))
         {

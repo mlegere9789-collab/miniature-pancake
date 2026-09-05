@@ -136,7 +136,8 @@ public sealed class ArchiveEngine : ExternalProcessEngine
         else
         {
             await RunToolAsync(
-                sevenZip, ArchiveCommandBuilder.CreateArchive(outputPath, entries, archiveType), "7-Zip", cancellationToken)
+                sevenZip, ArchiveCommandBuilder.CreateArchive(outputPath, entries, archiveType), "7-Zip", cancellationToken,
+                outputPathToDeleteOnCancel: outputPath)
                 .ConfigureAwait(false);
         }
 
@@ -172,7 +173,8 @@ public sealed class ArchiveEngine : ExternalProcessEngine
         }
 
         await RunToolAsync(
-            sevenZip, ArchiveCommandBuilder.CreateArchive(outputPath, new[] { tarPath }, "gzip"), "7-Zip", cancellationToken)
+            sevenZip, ArchiveCommandBuilder.CreateArchive(outputPath, new[] { tarPath }, "gzip"), "7-Zip", cancellationToken,
+            outputPathToDeleteOnCancel: outputPath)
             .ConfigureAwait(false);
     }
 

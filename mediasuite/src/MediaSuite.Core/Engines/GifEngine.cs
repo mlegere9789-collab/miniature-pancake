@@ -126,7 +126,7 @@ public sealed class GifEngine : ExternalProcessEngine
 
             await RunPlanAsync(
                 plan, ffmpeg, ExpectedDuration(spec, probe.Duration), index, total, fileName,
-                progress, cancellationToken).ConfigureAwait(false);
+                outputPath, progress, cancellationToken).ConfigureAwait(false);
 
             RequireOutput(outputPath, fileName);
             outputs.Add(outputPath);
@@ -160,7 +160,7 @@ public sealed class GifEngine : ExternalProcessEngine
         var expected = frameDuration * spec.InputPaths.Count;
         var label = $"{spec.InputPaths.Count} images";
 
-        await RunPlanAsync(plan, ffmpeg, expected, 0, 1, label, progress, cancellationToken).ConfigureAwait(false);
+        await RunPlanAsync(plan, ffmpeg, expected, 0, 1, label, outputPath, progress, cancellationToken).ConfigureAwait(false);
 
         RequireOutput(outputPath, label);
         return outputPath;
@@ -173,6 +173,7 @@ public sealed class GifEngine : ExternalProcessEngine
         int index,
         int total,
         string label,
+        string outputPath,
         IProgress<JobProgress> progress,
         CancellationToken cancellationToken)
     {
@@ -183,16 +184,32 @@ public sealed class GifEngine : ExternalProcessEngine
             var current = plan.Steps[step];
             var stepIndex = step;
 
-            var result = await ProcessRunner.RunAsync(
-                new ProcessRequest
-                {
-                    FileName = ffmpeg,
-                    Arguments = current.Arguments,
-                    OnStandardOutputLine = line => ReportProgress(
-                        line, progress, expectedDuration, index, total, stepIndex, plan.Steps.Count,
-                        current.Description, label),
-                },
-                cancellationToken).ConfigureAwait(false);
+            // Every GifPlan's last step is the one that writes outputPath itself (an
+            // earlier palette pass only ever writes a scratch file in the job's own
+            // workspace) -- the "when" filter means an earlier step's cancellation is
+            // never even considered for cleanup here, so it cannot delete a pre-existing
+            // file at outputPath that this cancelled step never touched.
+            var isFinalStep = step == plan.Steps.Count - 1;
+            ProcessResult result;
+
+            try
+            {
+                result = await ProcessRunner.RunAsync(
+                    new ProcessRequest
+                    {
+                        FileName = ffmpeg,
+                        Arguments = current.Arguments,
+                        OnStandardOutputLine = line => ReportProgress(
+                            line, progress, expectedDuration, index, total, stepIndex, plan.Steps.Count,
+                            current.Description, label),
+                    },
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (isFinalStep)
+            {
+                DeletePartialOutput(outputPath);
+                throw;
+            }
 
             if (!result.IsSuccess)
             {

@@ -49,25 +49,73 @@ public abstract class ExternalProcessEngine : IConversionEngine
     }
 
     /// <summary>Runs a tool and throws a readable error if it fails.</summary>
+    /// <param name="outputPathToDeleteOnCancel">
+    /// The real, final destination this specific call writes to directly — never a scratch
+    /// file later moved/relocated into place, and never passed just because a path happens
+    /// to be in scope. <see cref="ProcessRunner"/> already kills the tool on cancellation,
+    /// but the tool can have written a truncated file up to that instant; without this, that
+    /// truncated file is left sitting at the user's chosen output path with no indication
+    /// it is incomplete, and a later run under <see cref="OverwritePolicy.Rename"/> would
+    /// count it as "already there" and rename around it instead of ever cleaning it up.
+    /// Left null for calls that only ever write to a workspace scratch path (cleaned up
+    /// wholesale when the job's workspace is disposed) — passing the real output path from
+    /// a call that does not actually target it would risk deleting a pre-existing file at
+    /// that path under <see cref="OverwritePolicy.Overwrite"/> that this call never touched.
+    /// </param>
     protected async Task RunToolAsync(
         string executable,
         IReadOnlyList<string> arguments,
         string toolName,
         CancellationToken cancellationToken,
-        string? workingDirectory = null)
+        string? workingDirectory = null,
+        string? outputPathToDeleteOnCancel = null)
     {
-        var result = await ProcessRunner.RunAsync(
-            new ProcessRequest
-            {
-                FileName = executable,
-                Arguments = arguments,
-                WorkingDirectory = workingDirectory,
-            },
-            cancellationToken).ConfigureAwait(false);
+        ProcessResult result;
+
+        try
+        {
+            result = await ProcessRunner.RunAsync(
+                new ProcessRequest
+                {
+                    FileName = executable,
+                    Arguments = arguments,
+                    WorkingDirectory = workingDirectory,
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            DeletePartialOutput(outputPathToDeleteOnCancel);
+            throw;
+        }
 
         if (!result.IsSuccess)
         {
             throw new ToolExecutionException($"{toolName} failed: {result.DescribeFailure()}", result.FullOutput());
+        }
+    }
+
+    /// <summary>
+    /// Best-effort delete of a file a killed tool was mid-write on. <see cref="File.Delete"/>
+    /// is already a silent no-op when nothing is there, so callers that pass a path the
+    /// cancelled step never actually reached (an earlier pass in a multi-step pipeline) need
+    /// no guard of their own.
+    /// </summary>
+    protected static void DeletePartialOutput(string? outputPath)
+    {
+        if (string.IsNullOrEmpty(outputPath))
+        {
+            return;
+        }
+
+        try
+        {
+            File.Delete(outputPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Locked by another process, or permissions -- the job is already ending as
+            // Canceled either way; failing cleanup is not worth turning that into a Failure.
         }
     }
 
