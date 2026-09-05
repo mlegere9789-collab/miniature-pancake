@@ -705,8 +705,7 @@ void DrawOptionsWindow(Application& app) {
   if (ImGui::BeginTabBar("opts")) {
     if (ImGui::BeginTabItem("General")) {
       ImGui::TextWrapped("Dino 8 has no licence, update-check or account settings: there is nothing to configure here that could ever lock you out.");
-      static float scale = 1.0f;
-      if (ImGui::SliderFloat("UI scale", &scale, 0.75f, 2.0f)) { ApplyDinoTheme(scale); }
+      if (ImGui::SliderFloat("UI scale", &app.ui_scale, 0.75f, 2.0f)) { ApplyDinoTheme(app.ui_scale); }
       ImGui::Checkbox("Show toolbars", &app.Panels().toolbars);
       ImGui::EndTabItem();
     }

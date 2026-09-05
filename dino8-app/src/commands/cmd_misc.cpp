@@ -93,7 +93,7 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "SmartTrack", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().smart_track; }, "SmartTrack"));
   Reg(e, "DisableOsnap", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().disable_all; }, "Osnaps disabled"));
   Reg(e, "Osnap", Immediate([](CommandContext& ctx) { ctx.App().Panels().object_snaps = true; }));
-  Reg(e, "Gumball", Immediate([](CommandContext& ctx) { ctx.App().Panels().box_edit = true; ctx.Print("Gumball: use BoxEdit for numeric transforms and Move/Rotate/Scale for interactive ones; the on-screen widget is planned."); }), CommandStatus::Partial);
+  Reg(e, "Gumball", Immediate([](CommandContext& ctx) { ctx.App().gumball_enabled = !ctx.App().gumball_enabled; ctx.Print(std::string("Gumball ") + (ctx.App().gumball_enabled ? "on" : "off")); }), CommandStatus::Partial, "Move handles; rotate/scale handles are planned.");
   Reg(e, "Materials", Immediate([](CommandContext& ctx) { ctx.App().Panels().materials = true; }));
   Reg(e, "MaterialEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().materials = true; }));
   Reg(e, "Notifications", Immediate([](CommandContext& ctx) { ctx.App().Panels().notifications = true; }));

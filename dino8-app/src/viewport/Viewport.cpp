@@ -689,6 +689,7 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
   const double now = ImGui::GetTime();
   if (hovered && !dragging_) {
     for (int b = 0; b < 3; ++b) {
+      if (b == 0 && input_locked_) continue;
       if (ImGui::IsMouseClicked(b)) {
         dragging_ = true;
         drag_button_ = b;

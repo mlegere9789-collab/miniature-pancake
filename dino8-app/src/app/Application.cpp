@@ -11,6 +11,12 @@
 #include "io/File3dm.h"
 #include "ui/Panels.h"
 #include "ui/Theme.h"
+#include "app/Settings.h"
+
+#if defined(_WIN32)
+#include <windows.h>
+#include <commdlg.h>
+#endif
 
 namespace dino8::app {
 
@@ -58,6 +64,8 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
     return false;
   }
   SetViewportLayout(4);
+  LoadSettings(*this, ui_scale);
+  if (has_saved_layout) layout_built_ = true;
   engine_->Print("Dino 8 " DINO8_VERSION " - free NURBS / SubD / mesh modeler");
   engine_->Print("Command catalog: " + std::to_string(catalog_.Size()) + " commands loaded (" +
                  std::to_string(engine_->CountWithStatus(CommandStatus::Implemented)) + " implemented, " +
@@ -68,6 +76,7 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
 }
 
 void Application::Shutdown() {
+  SaveSettings(*this, ui_scale);
   viewports_.clear();
   renderer_.Shutdown();
 }
@@ -153,6 +162,40 @@ void Application::Notify(const std::string& text) {
 
 void Application::ShowFileDialog(const std::string& title, const std::vector<std::string>& extensions,
                                  bool save, std::function<void(const std::string&)> callback) {
+#if defined(_WIN32)
+  // Native Windows dialog: what testers expect on that platform.
+  {
+    std::string filter;
+    std::string all;
+    for (const std::string& e : extensions) all += (all.empty() ? "*" : ";*") + e;
+    filter += "Supported files (" + all + ")";
+    filter.push_back('\0');
+    filter += all;
+    filter.push_back('\0');
+    filter += "All files (*.*)";
+    filter.push_back('\0');
+    filter += "*.*";
+    filter.push_back('\0');
+    filter.push_back('\0');
+    char file[MAX_PATH] = {};
+    if (save) {
+      std::string def = !doc_.Path().empty() ? fs::path(doc_.Path()).filename().string() : "Untitled" + (extensions.empty() ? std::string(".3dm") : extensions.front());
+      std::snprintf(file, sizeof(file), "%s", def.c_str());
+    }
+    OPENFILENAMEA ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = filter.c_str();
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrTitle = title.c_str();
+    std::string def_ext = extensions.empty() ? "3dm" : extensions.front().substr(1);
+    ofn.lpstrDefExt = def_ext.c_str();
+    ofn.Flags = OFN_EXPLORER | OFN_NOCHANGEDIR | (save ? OFN_OVERWRITEPROMPT : (OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST));
+    const BOOL ok = save ? GetSaveFileNameA(&ofn) : GetOpenFileNameA(&ofn);
+    if (ok && callback) callback(file);
+    return;
+  }
+#endif
   file_dialog_.open = true;
   file_dialog_.save = save;
   file_dialog_.title = title;
@@ -376,6 +419,13 @@ void Application::DrawViewports() {
     vp.SetVisible(show);
     if (!show) continue;
     vp.Render(renderer_, ctx);
+    // The gumball hit-tests against last frame's image rectangle and locks
+    // the viewport's left button while it owns the mouse.
+    const bool gumball_wants_mouse = gumball_enabled && !engine_->IsRunning() &&
+                                     gumball_.Update(*this, vp, ImGui::IsMouseHoveringRect(
+                                         ImVec2(static_cast<float>(vp.ScreenX()), static_cast<float>(vp.ScreenY())),
+                                         ImVec2(static_cast<float>(vp.ScreenX() + vp.Width()), static_cast<float>(vp.ScreenY() + vp.Height()))));
+    vp.SetInputLocked(gumball_wants_mouse);
     ViewportEvents ev = vp.DrawUI(doc_, snaps_, want_point, want_objects, ortho_base,
                                   doc_.Settings().grid_spacing, request_focus);
     if (ev.hovered) {
@@ -706,7 +756,7 @@ void Application::DrawStatusBar() {
   toggle("Planar", snaps_.planar, "Keep picks at the elevation of the previous point");
   toggle("Osnap", panels_.object_snaps, "Show the object snap toolbar");
   toggle("SmartTrack", snaps_.smart_track, "SmartTrack tracking lines");
-  toggle("Gumball", show_control_points_for_selected, "Show control points of selected objects (F10)");
+  toggle("Gumball", gumball_enabled, "Drag selected objects with the on-screen gumball");
   ImGui::SameLine(0, 18);
   ImGui::TextDisabled("%zu objects, %zu selected", doc_.ObjectCount(), doc_.SelectedCount());
   if (doc_.Modified()) {

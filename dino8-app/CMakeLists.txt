@@ -66,6 +66,8 @@ set(DINO8_SOURCES
   src/main.cpp
   src/gl/gl_loader.cpp
   src/app/Application.cpp
+  src/app/Settings.cpp
+  src/ui/Gumball.cpp
   src/ui/Theme.cpp
   src/ui/Panels.cpp
   src/ui/MenuBar.cpp

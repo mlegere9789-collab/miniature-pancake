@@ -77,6 +77,8 @@ class Viewport {
   void SetMaximized(bool m) { maximized_ = m; }
   bool Visible() const { return visible_; }
   void SetVisible(bool v) { visible_ = v; }
+  // While true the viewport ignores left-button clicks (a widget owns the mouse).
+  void SetInputLocked(bool locked) { input_locked_ = locked; }
   void SetStandardView(const std::string& view);  // Top/Bottom/Front/Back/Right/Left/Perspective/Isometric
   std::string StandardView() const { return standard_view_; }
   int Width() const { return width_; }
@@ -140,6 +142,7 @@ class Viewport {
   Camera camera_;
   RenderTarget target_;
   double screen_x_ = 0, screen_y_ = 0;
+  bool input_locked_ = false;
   DisplayMode mode_ = DisplayMode::Wireframe;
   ConstructionPlane cplane_;
   bool active_ = false;

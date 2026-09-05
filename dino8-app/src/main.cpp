@@ -31,6 +31,7 @@
 #include "imgui_impl_opengl3.h"
 
 #include "app/Application.h"
+#include "app/Settings.h"
 #include "ui/Theme.h"
 
 namespace {
@@ -94,10 +95,13 @@ int main(int argc, char** argv) {
   ImGuiIO& io = ImGui::GetIO();
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigWindowsMoveFromTitleBarOnly = true;
-  io.IniFilename = nullptr;  // layout is rebuilt deterministically; no stray .ini files
+  // Window layout persists in the user's config directory (not in smoke runs).
+  const std::string ini_path = dino8::app::ConfigDirectory() + "/layout.ini";
+  const bool has_layout = smoke_frames < 0 && std::filesystem::exists(ini_path);
+  io.IniFilename = smoke_frames < 0 ? ini_path.c_str() : nullptr;
   float xscale = 1.0f, yscale = 1.0f;
   glfwGetWindowContentScale(window, &xscale, &yscale);
-  const float ui_scale = xscale > 0 ? xscale : 1.0f;
+  float ui_scale = xscale > 0 ? xscale : 1.0f;
   dino8::app::ApplyDinoTheme(ui_scale);
   ImFontConfig font_cfg;
   font_cfg.SizePixels = 16.0f * ui_scale;
@@ -106,6 +110,8 @@ int main(int argc, char** argv) {
   ImGui_ImplOpenGL3_Init("#version 330 core");
 
   dino8::app::Application app;
+  app.ui_scale = ui_scale;
+  app.has_saved_layout = has_layout;
   std::string error;
   if (!app.Init(ExeDir(argv[0]), error)) {
     std::fprintf(stderr, "%s\n", error.c_str());
@@ -178,6 +184,14 @@ int main(int argc, char** argv) {
             else expand({"@click " + std::to_string(sx) + " " + std::to_string(sy) + " 0"});
           } else {
             std::fprintf(stderr, "script: viewport %s not found or point off-screen\n", view.c_str());
+          }
+        }
+        else if (cmd == "dragworld") {
+          std::string view; double x0, y0, z0, x1, y1, z1; ss >> view >> x0 >> y0 >> z0 >> x1 >> y1 >> z1;
+          dino8::app::Viewport* vp = app.FindViewport(view);
+          double ax, ay, bx, by;
+          if (vp && vp->WorldToPixel(dino8::kernel::Point3d(x0, y0, z0), ax, ay) && vp->WorldToPixel(dino8::kernel::Point3d(x1, y1, z1), bx, by)) {
+            expand({"@drag " + std::to_string(vp->ScreenX() + ax) + " " + std::to_string(vp->ScreenY() + ay) + " " + std::to_string(vp->ScreenX() + bx) + " " + std::to_string(vp->ScreenY() + by)});
           }
         }
         else if (cmd == "drag") { float x0, y0, x1, y1; ss >> x0 >> y0 >> x1 >> y1; expand({"@move " + std::to_string(x0) + " " + std::to_string(y0), "@wait 1", "@down 0", "@wait 1", "@move " + std::to_string((x0 + x1) / 2) + " " + std::to_string((y0 + y1) / 2), "@wait 1", "@move " + std::to_string(x1) + " " + std::to_string(y1), "@wait 2", "@up 0", "@wait 1"}); }

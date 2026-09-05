@@ -14,6 +14,7 @@
 #include "commands/CommandEngine.h"
 #include "doc/Document.h"
 #include "render/GlRenderer.h"
+#include "ui/Gumball.h"
 #include "viewport/Viewport.h"
 
 namespace dino8::app {
@@ -91,6 +92,10 @@ class Application {
                       std::function<void(const std::string&)> callback);
   std::vector<std::string>& RecentFiles() { return recent_files_; }
   void AddRecentFile(const std::string& path);
+  float ui_scale = 1.0f;
+  bool gumball_enabled = true;
+  // True when a saved ImGui layout exists, so the default dock layout is not rebuilt over it.
+  bool has_saved_layout = false;
 
   // Document-level operations used by both menus and commands.
   bool NewDocument(bool confirm_discard);
@@ -123,6 +128,7 @@ class Application {
   Document doc_;
   CommandCatalog catalog_;
   std::unique_ptr<CommandEngine> engine_;
+  Gumball gumball_;
   GlRenderer renderer_;
   std::vector<std::unique_ptr<Viewport>> viewports_;
   int active_viewport_ = 3;
