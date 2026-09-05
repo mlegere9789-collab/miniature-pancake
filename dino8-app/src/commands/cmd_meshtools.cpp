@@ -1913,7 +1913,7 @@ void RegisterMeshToolsCommands(CommandEngine& e) {
                         [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) {
                           SmoothObjects(ctx, ids, std::max(0.0, std::min(1.0, in.N(0, 0.2))), std::max(1, static_cast<int>(in.OptNum("Iterations", 1))), in.Yes("FixBoundaries"));
                         }));
-  for (const char* n : {"Splop", "Flow", "FlowAlongSrf", "Smash", "Squish"}) Reg(e, n, Stub(n), CommandStatus::Partial, "Not yet available in this build.");
+  for (const char* n : {"Splop", "Flow", "FlowAlongSrf"}) Reg(e, n, Stub(n), CommandStatus::Partial, "Not yet available in this build.");
 
   // ---- mesh editing ----------------------------------------------------------
   Reg(e, "ExtrudeMesh", Tool("Select meshes to extrude", {NumberStep("Extrusion distance", 1)}, {Toggle("DeleteInput", true)}, ExtrudeMesh));
@@ -2009,7 +2009,6 @@ void RegisterMeshToolsCommands(CommandEngine& e) {
                                   [](CommandContext& ctx, const std::vector<ObjectId>&, const ToolInput& in) { TruncatedSolid(ctx, in, 0, "TruncatedPyramid"); }, 0));
   Reg(e, "Paraboloid", Tool("", {PointStep("Vertex of paraboloid"), NumberStep("Radius at the open end", 10), NumberStep("Height", 10)}, {Toggle("Cap", true)}, Paraboloid, 0), CommandStatus::Partial, "Mesh output; a NURBS paraboloid is planned.");
   Reg(e, "Slab", Tool("Select closed planar curves", {NumberStep("Offset distance", 1), NumberStep("Height", 5)}, {}, [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) { Slab(ctx, ids, in, true); }));
-  Reg(e, "Ribbon", Tool("Select closed planar curves", {NumberStep("Offset distance", 1)}, {}, [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) { Slab(ctx, ids, in, false); }), CommandStatus::Partial, "Flat mesh ring between a closed planar curve and its miter offset.");
   Reg(e, "Heightfield", Tool("", {PointStep("First corner"), PointStep("Other corner")}, {Numeric("Resolution", 24), Numeric("Amplitude", 5), Numeric("Waves", 2)}, Heightfield, 0), CommandStatus::Partial, "Grid mesh from a sine-wave function; image input is planned.");
   Reg(e, "Drape", Tool("", {PointStep("First corner"), PointStep("Other corner")}, {Numeric("Resolution", 20)}, Drape, 0), CommandStatus::Partial, "Drapes a grid mesh over the visible objects along the CPlane normal.");
 }
