@@ -201,4 +201,41 @@ secheck "Ribbon: 1 ribbon surface(s), width 5" "Ribbon built a ribbon surface"
 secheck "SrfControlPtGrid: surface from 2 x 2 points" "SrfControlPtGrid built a surface from points"
 secheck "^ok   expect_objects 42" "surface-edit script produced the expected object count"
 
+# Mesh tools: deformations, mesh editing and mesh primitives (see meshtools_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  MT="$("$BIN" --smoke 150 --script "$HERE/meshtools_script.txt" 2>&1)" || { echo "$MT"; echo "FAIL: mesh-tools script exited non-zero"; exit 1; }
+else
+  MT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/meshtools_script.txt" 2>&1)" || { echo "$MT"; echo "FAIL: mesh-tools script exited non-zero"; exit 1; }
+fi
+mtcheck() { if echo "$MT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+mtcheck "Twist: 90 degrees over 20 units" "Twist read its axis and angle"
+mtcheck "Twist: deformed 1 object(s)" "Twist deformed the mesh cylinder"
+mtcheck "Bend: deformed 1 object(s) (1 converted to meshes)" "Bend converted the box to a mesh and bent it"
+mtcheck "Taper: 5 -> 2" "Taper read both distances"
+mtcheck "Stretch: 20 -> 30" "Stretch lengthened the line"
+mtcheck "Shear: deformed 1 object(s)" "Shear ran with three points"
+mtcheck "Maelstrom: deformed 1 object(s)" "Maelstrom ran"
+mtcheck "SoftMove: 4 units with falloff radius 5" "SoftMove took its Radius option"
+mtcheck "Smooth: smoothed 1 object(s), factor 0.5" "Smooth ran on the mesh sphere"
+mtcheck "ExtrudeMesh: extruded open mesh into a closed solid" "ExtrudeMesh closed the open mesh plane"
+mtcheck "Volume = 300" "the extruded 10x10x3 mesh has volume 300"
+mtcheck "OffsetMesh: solid shell" "OffsetMesh built a solid shell"
+mtcheck "FillMeshHoles: filled 1 hole(s)" "FillMeshHoles closed the naked loop"
+mtcheck "Unweld: added 72 vertex copy(ies)" "Unweld split the sharp edges"
+mtcheck "Weld: merged 72 vertex(es)" "Weld merged them back"
+mtcheck "0 naked edge(s), 0 non-manifold edge(s), closed" "MeshRepair reports a closed mesh"
+mtcheck "MeshEllipsoid: radii 10, 7, 5" "MeshEllipsoid built"
+mtcheck "MeshTruncatedCone: 96 faces, closed" "MeshTruncatedCone is closed"
+mtcheck "TruncatedPyramid: 12 faces, closed" "TruncatedPyramid is closed"
+mtcheck "Paraboloid: 544 faces, closed" "Paraboloid is closed"
+mtcheck "PlanarMesh: created 1 mesh(es)" "PlanarMesh triangulated the circle"
+mtcheck "Slab: created 1 mesh(es)" "Slab thickened the rectangle"
+mtcheck "ExtractMeshPart: all 6 faces extracted" "ExtractMeshPart extracted the box"
+mtcheck "MeshIntersect: 14 segment(s) in 2 polyline(s)" "MeshIntersect found the box/box intersection"
+mtcheck "MeshPatch: 3 triangles from 4 points" "MeshPatch triangulated the points"
+mtcheck "MeshOutline: created 1 outline curve(s)" "MeshOutline built the outline"
+mtcheck "Drape: 20x20 grid draped over" "Drape hit the visible meshes"
+echo "$MT" | grep -E "^(ok|FAIL)"
+if echo "$MT" | grep -q "^FAIL"; then fail=1; fi
+mtcheck "smoke: frames=1[0-9][0-9] objects=30" "mesh-tools script produced the expected object count"
 exit $fail
