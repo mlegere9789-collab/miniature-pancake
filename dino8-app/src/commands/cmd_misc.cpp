@@ -72,6 +72,7 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "CommandHistory", Immediate([](CommandContext& ctx) { ctx.App().Panels().command_history = true; }));
   Reg(e, "CommandPaste", Immediate([](CommandContext& ctx) { ctx.App().Panels().macro_editor = true; }));
   Reg(e, "Options", Immediate([](CommandContext& ctx) { ctx.App().Panels().options = true; }));
+  Reg(e, "ToggleLeftSidebar", Immediate([](CommandContext& ctx) { ctx.App().show_left_sidebar = !ctx.App().show_left_sidebar; ctx.Print(std::string("Left sidebar ") + (ctx.App().show_left_sidebar ? "shown." : "hidden.")); }));
   Reg(e, "Toolbar", Immediate([](CommandContext& ctx) { ctx.App().Panels().toolbars = !ctx.App().Panels().toolbars; }));
   Reg(e, "ToolbarReset", Immediate([](CommandContext& ctx) { ctx.App().Panels().toolbars = true; ctx.App().SetViewportLayout(4); }));
   Reg(e, "Alias", Make<AliasCommand>());

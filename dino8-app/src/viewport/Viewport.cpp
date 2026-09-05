@@ -8,6 +8,7 @@
 #include <cstdlib>
 
 #include "imgui.h"
+#include "ui/Theme.h"
 
 namespace dino8::app {
 
@@ -1168,9 +1169,11 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
     const ImVec2 p0(cursor.x + 6, cursor.y + 4);
     const char* label = name_.c_str();
     const ImVec2 sz = ImGui::CalcTextSize(label);
-    dl->AddRectFilled(ImVec2(p0.x - 4, p0.y - 2), ImVec2(p0.x + sz.x + 8, p0.y + sz.y + 2),
-                      active_ ? IM_COL32(70, 130, 220, 200) : IM_COL32(30, 32, 38, 170), 4.0f);
-    dl->AddText(p0, IM_COL32(255, 255, 255, 255), label);
+    const ImVec4 acc = ImVec4(ThemeColors::kAccent[0], ThemeColors::kAccent[1], ThemeColors::kAccent[2], 1.0f);
+    const ImU32 pill = active_ ? ImGui::GetColorU32(ImVec4(acc.x, acc.y, acc.z, 0.85f)) : IM_COL32(30, 32, 38, 150);
+    dl->AddRectFilled(ImVec2(p0.x - 4, p0.y - 2), ImVec2(p0.x + sz.x + 8, p0.y + sz.y + 2), pill, 4.0f);
+    if (!active_) dl->AddRect(ImVec2(p0.x - 4, p0.y - 2), ImVec2(p0.x + sz.x + 8, p0.y + sz.y + 2), IM_COL32(255, 255, 255, 40), 4.0f);
+    dl->AddText(p0, IM_COL32(255, 255, 255, active_ ? 255 : 215), label);
     ImGui::SetCursorScreenPos(ImVec2(p0.x - 4, p0.y - 2));
     if (ImGui::InvisibleButton(("##title_" + name_).c_str(), ImVec2(sz.x + 12, sz.y + 4)) || ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
       ImGui::OpenPopup(("##vpmenu_" + name_).c_str());
@@ -1274,6 +1277,7 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
         }
       } else if (drag_button_ == 1 && !drag_moved_) {
         ev.right_clicked = true;
+        ev.right_click_object = PickObject(doc, mx, my);
       } else if (drag_button_ == 2 && !drag_moved_) {
         ev.middle_clicked = true;
       }

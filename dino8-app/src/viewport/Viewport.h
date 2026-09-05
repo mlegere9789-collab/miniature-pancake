@@ -51,7 +51,8 @@ struct PickResult {
 struct ViewportEvents {
   bool clicked = false;               // left click (down+up without drag)
   bool double_clicked = false;
-  bool right_clicked = false;         // right click without drag = Enter
+  bool right_clicked = false;         // right click without drag = Enter / context menu
+  ObjectId right_click_object = kNoObject;      // object under cursor at a right click
   bool middle_clicked = false;        // middle click without drag = popup toolbar
   bool shift = false, ctrl = false;
   std::optional<PickResult> click_pick;         // world point under cursor

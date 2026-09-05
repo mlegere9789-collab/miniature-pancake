@@ -100,6 +100,14 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
   const json::Value& tb = root["toolbar"];
   if (tb.IsArray() && tb.Size() > 0) { app.toolbar_commands.clear(); for (size_t i = 0; i < tb.Size(); ++i) app.toolbar_commands.push_back(tb[i].AsString()); }
   if (root["working_folder"].IsString()) app.State().working_folder = root["working_folder"].AsString();
+  app.toolbar_icon_size = static_cast<int>(Num(root["toolbar_icon_size"], app.toolbar_icon_size));
+  if (app.toolbar_icon_size != 24 && app.toolbar_icon_size != 32 && app.toolbar_icon_size != 40) app.toolbar_icon_size = 24;
+  app.toolbar_labels = Bool(root["toolbar_labels"], app.toolbar_labels);
+  app.toolbar_tab = static_cast<int>(Num(root["toolbar_tab"], app.toolbar_tab));
+  app.show_left_sidebar = Bool(root["left_sidebar"], app.show_left_sidebar);
+  app.welcome_dismissed = Bool(root["welcome_dismissed"], app.welcome_dismissed);
+  const json::Value& accent = root["accent_color"];
+  if (accent.IsArray() && accent.Size() >= 3) for (size_t i = 0; i < 3; ++i) app.accent_color[i] = static_cast<float>(Num(accent[i], app.accent_color[i]));
   app.curve_display_tolerance = Num(root["curve_display_tolerance"], app.curve_display_tolerance);
   app.surface_display_tolerance = Num(root["surface_display_tolerance"], app.surface_display_tolerance);
   return true;
@@ -118,6 +126,12 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
   for (size_t i = 0; i < a.toolbar_commands.size(); ++i) out << (i ? ", " : "") << "\"" << Escape(a.toolbar_commands[i]) << "\"";
   out << "],\n";
   out << "  \"working_folder\": \"" << Escape(a.State().working_folder) << "\",\n";
+  out << "  \"toolbar_icon_size\": " << a.toolbar_icon_size << ",\n";
+  out << "  \"toolbar_labels\": " << (a.toolbar_labels ? "true" : "false") << ",\n";
+  out << "  \"toolbar_tab\": " << a.toolbar_tab << ",\n";
+  out << "  \"left_sidebar\": " << (a.show_left_sidebar ? "true" : "false") << ",\n";
+  out << "  \"welcome_dismissed\": " << (a.welcome_dismissed ? "true" : "false") << ",\n";
+  out << "  \"accent_color\": [" << a.accent_color[0] << ", " << a.accent_color[1] << ", " << a.accent_color[2] << "],\n";
   out << "  \"curve_display_tolerance\": " << a.curve_display_tolerance << ",\n";
   out << "  \"surface_display_tolerance\": " << a.surface_display_tolerance << ",\n";
   out << "  \"recent_files\": [";

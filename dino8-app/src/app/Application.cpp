@@ -12,6 +12,7 @@
 #include "io/File3dm.h"
 #include "io/FileExchange.h"
 #include "render/ImageIO.h"
+#include "ui/Icons.h"
 #include "ui/Panels.h"
 #include "ui/Theme.h"
 #include "app/Settings.h"
@@ -342,6 +343,7 @@ void Application::ZoomExtentsAll() {
 
 void Application::Notify(const std::string& text) {
   notifications_.push_back({text, ImGui::GetTime()});
+  if (!panels_.notifications) ++unread_notifications;
   engine_->Print(text);
 }
 
@@ -417,20 +419,170 @@ void Application::DrawPopupToolbar() {
     open_popup_toolbar_ = false;
   }
   if (ImGui::BeginPopup("##mmb_toolbar")) {
-    ImGui::TextDisabled("Popup toolbar");
-    ImGui::Separator();
-    const char* rows[][6] = {{"Move", "Copy", "Rotate", "Scale", "Mirror", "Delete"},
-                             {"Line", "Polyline", "Circle", "Rectangle", "Box", "Sphere"},
-                             {"Join", "Explode", "Trim", "Split", "Extend", "Offset"},
-                             {"Undo", "Redo", "Hide", "Show", "ZoomExtents", "SelAll"}};
-    for (auto& row : rows) {
-      for (int i = 0; i < 6; ++i) {
-        if (i) ImGui::SameLine();
-        if (ImGui::Button(row[i], ImVec2(86, 0))) { engine_->Execute(row[i]); ImGui::CloseCurrentPopup(); }
-      }
-    }
+    DrawPopupToolbarGrid();
     ImGui::EndPopup();
   }
+}
+
+// The middle-mouse popup: the most recently used commands first (Rhino's
+// "recent commands" popup), then a fixed grid of everyday tools.
+void Application::DrawPopupToolbarGrid() {
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2, 2));
+  const bool saved_labels = toolbar_labels;
+  toolbar_labels = true;
+  std::vector<std::string> recent;
+  for (const std::string& r : engine_->RecentCommands()) {
+    if (std::find(recent.begin(), recent.end(), r) == recent.end()) recent.push_back(r);
+    if (recent.size() >= 6) break;
+  }
+  auto row = [&](const std::vector<std::string>& cmds) {
+    for (size_t i = 0; i < cmds.size(); ++i) {
+      if (i) ImGui::SameLine();
+      const char* label = ToolbarButtonLabel(cmds[i]);
+      IconButtonResult r = IconButton(*this, cmds[i].c_str(), label ? label : cmds[i].c_str(), true, false);
+      if (r.left) { engine_->Execute(cmds[i]); ImGui::CloseCurrentPopup(); }
+    }
+  };
+  if (!recent.empty()) {
+    ImGui::TextDisabled("Recent");
+    row(recent);
+    ImGui::Separator();
+  }
+  row({"Move", "Copy", "Rotate", "Scale", "Mirror", "Delete"});
+  row({"Line", "Polyline", "Circle", "Rectangle", "Box", "Sphere"});
+  row({"Join", "Explode", "Trim", "Split", "Extend", "Offset"});
+  row({"Undo", "Redo", "Hide", "Show", "ZoomExtents", "SelAll"});
+  toolbar_labels = saved_labels;
+  ImGui::PopStyleVar();
+}
+
+// Right-click menu in a viewport: on an object, or on empty space.
+void Application::DrawContextMenu() {
+  if (open_context_menu_) {
+    ImGui::OpenPopup("##vp_context");
+    ImGui::SetNextWindowPos(context_menu_pos_, ImGuiCond_Always);
+    open_context_menu_ = false;
+  }
+  if (!ImGui::BeginPopup("##vp_context")) return;
+  auto item = [&](const char* label, const char* command, const char* shortcut = nullptr) {
+    ImGui::PushID(command);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float ih = ImGui::GetTextLineHeight();
+    ImGui::Dummy(ImVec2(ih + 4, ih));
+    ImGui::SameLine(0, 0);
+    DrawIcon(ImGui::GetWindowDrawList(), command, ImVec2(p.x, p.y), ih, ImGui::GetColorU32(ImGuiCol_Text), ThemeColors::AccentU32());
+    const bool hit = ImGui::MenuItem(label, shortcut);
+    ImGui::PopID();
+    if (hit) engine_->Execute(command);
+  };
+  SceneObject* obj = context_menu_object_ != kNoObject ? doc_.Find(context_menu_object_) : nullptr;
+  if (obj) {
+    const std::string name = obj->name.empty() ? std::string("Object ") + std::to_string(static_cast<long long>(context_menu_object_)) : obj->name;
+    ImGui::TextColored(ThemeColors::Accent(), "%s", name.c_str());
+    ImGui::Separator();
+    item("Hide", "Hide", "Ctrl+H");
+    item("Lock", "Lock");
+    item("Delete", "Delete", "Del");
+    ImGui::Separator();
+    item("Copy", "CopyToClipboard", "Ctrl+C");
+    item("Paste", "Paste", "Ctrl+V");
+    ImGui::Separator();
+    if (obj->group_id >= 0) item("Ungroup", "Ungroup"); else item("Group", "Group", "Ctrl+G");
+    item("Isolate", "Isolate");
+    item("Properties", "Properties", "F3");
+    item("Zoom Selected", "ZoomSelected");
+    if (ImGui::BeginMenu("Object display mode")) {
+      Viewport* vp = ActiveViewport();
+      for (DisplayMode m : AllDisplayModes()) {
+        if (ImGui::MenuItem(DisplayModeName(m), nullptr, vp && vp->Mode() == m) && vp) vp->SetMode(m);
+      }
+      ImGui::EndMenu();
+    }
+  } else {
+    if (!engine_->LastCommand().empty()) {
+      const std::string label = "Repeat " + engine_->LastCommand();
+      if (ImGui::MenuItem(label.c_str(), "Enter")) engine_->RepeatLast();
+      ImGui::Separator();
+    }
+    item("Undo", "Undo", "Ctrl+Z");
+    item("Redo", "Redo", "Ctrl+Y");
+    item("Paste", "Paste", "Ctrl+V");
+    item("Select All", "SelAll", "Ctrl+A");
+    item("Zoom Extents", "ZoomExtents");
+    ImGui::Separator();
+    DrawPopupToolbarGrid();
+  }
+  ImGui::EndPopup();
+}
+
+// First-run welcome card on an empty document.
+void Application::DrawWelcomeOverlay() {
+  // Never in headless smoke runs (it would sit over scripted viewport picks)
+  // unless a screenshot run asks for it explicitly.
+  if (smoke_mode && !std::getenv("DINO8_SHOW_WELCOME")) return;
+  if (welcome_dismissed || welcome_closed_this_session_) return;
+  if (doc_.ObjectCount() > 0 || !doc_.Path().empty() || engine_->IsRunning()) return;
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const float left = LeftSidebarWidth(*this);
+  const float top = ToolbarHeight(*this) + CommandLineHeight();
+  const ImVec2 centre(vp->WorkPos.x + left + (vp->WorkSize.x - left) * 0.40f, vp->WorkPos.y + top + (vp->WorkSize.y - top - StatusBarHeight()) * 0.45f);
+  ImGui::SetNextWindowPos(centre, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSize(ImVec2(560, 0));
+  ImGui::SetNextWindowBgAlpha(0.97f);
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                 ImGuiWindowFlags_NoNav | ImGuiWindowFlags_AlwaysAutoResize;
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 16));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+  if (ImGui::Begin("##welcome", nullptr, flags)) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    DrawIcon(dl, "Box", p, 40.0f, ImGui::GetColorU32(ImGuiCol_Text), ThemeColors::AccentU32());
+    ImGui::Dummy(ImVec2(46, 40));
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    ImGui::PushFont(nullptr, 22.0f * ImGui::GetStyle().FontScaleMain);
+    ImGui::TextColored(ThemeColors::Accent(), "Welcome to Dino 8");
+    ImGui::PopFont();
+    ImGui::TextDisabled("Free NURBS / SubD / mesh modeler, version " DINO8_VERSION);
+    ImGui::EndGroup();
+    ImGui::SameLine(ImGui::GetWindowWidth() - 44);
+    if (ImGui::SmallButton("x")) welcome_closed_this_session_ = true;
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Close (shows again on the next empty document)");
+    ImGui::Spacing();
+    const ImVec2 bsz(254, 0);
+    if (ImGui::Button("New model", bsz)) welcome_closed_this_session_ = true;
+    ImGui::SameLine();
+    if (ImGui::Button("Open...", bsz)) { welcome_closed_this_session_ = true; engine_->Execute("Open"); }
+    if (ImGui::Button("Learn  (F1)", bsz)) { welcome_closed_this_session_ = true; panels_.help = true; }
+    ImGui::SameLine();
+    if (ImGui::Button("Command list  (Ctrl+F1)", bsz)) { welcome_closed_this_session_ = true; panels_.command_list = true; }
+    if (!recent_files_.empty()) {
+      ImGui::Spacing();
+      ImGui::TextDisabled("Recent files");
+      int shown = 0;
+      for (const std::string& f : recent_files_) {
+        if (shown++ >= 5) break;
+        const std::string name = fs::path(f).filename().string();
+        ImGui::PushID(f.c_str());
+        if (ImGui::Selectable(name.c_str())) {
+          std::string e;
+          welcome_closed_this_session_ = true;
+          if (!OpenDocument(f, e)) Notify(e);
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", f.c_str());
+        ImGui::PopID();
+      }
+    }
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::TextWrapped("Dino 8 is free software. No accounts, licenses or subscriptions, ever.");
+    ImGui::TextDisabled("Start typing a command, or pick a tool from the toolbars.");
+    bool dont = welcome_dismissed;
+    if (ImGui::Checkbox("Don't show this again", &dont)) welcome_dismissed = dont;
+  }
+  ImGui::End();
+  ImGui::PopStyleVar(2);
 }
 
 void Application::DrawConfirmDiscard() {
@@ -623,6 +775,8 @@ void Application::Frame() {
   DrawFileDialog();
   DrawConfirmDiscard();
   DrawPopupToolbar();
+  DrawContextMenu();
+  DrawWelcomeOverlay();
   DrawNotifications();
 }
 
@@ -721,12 +875,14 @@ void Application::BuildDefaultLayout(unsigned dockspace_id) {
 
 void Application::DrawDockspace() {
   const ImGuiViewport* vp = ImGui::GetMainViewport();
-  // Reserve space for the command line (top) and status bar (bottom).
-  const float command_h = ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f;
+  // Reserve space for the toolbar + command line (top), the sidebar (left)
+  // and the status bar (bottom).
+  const float command_h = CommandLineHeight();
   const float status_h = StatusBarHeight() + ViewportTabsHeight();
-  const float toolbar_h = panels_.toolbars ? 38.0f : 0.0f;
-  ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y + command_h + toolbar_h));
-  ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, vp->WorkSize.y - command_h - status_h - toolbar_h));
+  const float toolbar_h = ToolbarHeight(*this);
+  const float sidebar_w = LeftSidebarWidth(*this);
+  ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + sidebar_w, vp->WorkPos.y + command_h + toolbar_h));
+  ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x - sidebar_w, vp->WorkSize.y - command_h - status_h - toolbar_h));
   ImGui::SetNextWindowViewport(vp->ID);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -1026,8 +1182,19 @@ void Application::ProcessViewportEvents(Viewport& vp, const ViewportEvents& ev) 
     return;
   }
   if (ev.right_clicked) {
-    // Right click = Enter (Rhino convention).
-    engine_->FeedEnter();
+    if (engine_->IsRunning()) {
+      // Right click = Enter while a command runs (Rhino convention).
+      engine_->FeedEnter();
+    } else {
+      // Otherwise a context menu: for the object under the cursor (which
+      // becomes selected), or for empty space.
+      context_menu_object_ = ev.right_click_object;
+      if (SceneObject* o = context_menu_object_ != kNoObject ? doc_.Find(context_menu_object_) : nullptr) {
+        if (!o->selected) { doc_.SelectNone(); o->selected = true; }
+      }
+      context_menu_pos_ = ImGui::GetMousePos();
+      open_context_menu_ = true;
+    }
   }
   if (ev.middle_clicked) {
     // Rhino's middle-mouse popup toolbar.
@@ -1088,10 +1255,14 @@ void Application::HandleShortcuts() {
   }
 }
 
+float Application::CommandLineHeight() const {
+  return ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f;
+}
+
 void Application::DrawCommandLine() {
   const ImGuiViewport* vp = ImGui::GetMainViewport();
-  const float toolbar_h = panels_.toolbars ? 38.0f : 0.0f;
-  const float h = ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f;
+  const float toolbar_h = ToolbarHeight(*this);
+  const float h = CommandLineHeight();
   ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y + toolbar_h));
   ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, h));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -1104,7 +1275,7 @@ void Application::DrawCommandLine() {
 
   // Last few history lines (Rhino shows a two-line history above the prompt).
   const auto& hist = engine_->History();
-  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.74f, 0.78f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
   const size_t n = hist.size();
   const std::string line1 = n >= 1 ? hist[n - 1] : "";
   ImGui::TextUnformatted(line1.c_str());
@@ -1113,20 +1284,39 @@ void Application::DrawCommandLine() {
   // Prompt + options + input.
   const std::string prompt = engine_->Prompt();
   ImGui::AlignTextToFramePadding();
-  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_Text, engine_->IsRunning() ? ThemeColors::Accent() : ImGui::GetStyleColorVec4(ImGuiCol_Text));
   ImGui::TextUnformatted(prompt.c_str());
   ImGui::PopStyleColor();
   if (const std::vector<OptionSpec>* opts = engine_->CurrentOptions()) {
+    // Option chips: name in muted text, current value in the accent colour.
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 10.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 2));
     for (const OptionSpec& o : *opts) {
-      ImGui::SameLine();
+      ImGui::SameLine(0, 6);
       std::string label = o.name;
       if (!o.value.empty()) label += "=" + o.value;
-      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.30f, 0.48f, 0.9f));
-      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.28f, 0.42f, 0.66f, 1.0f));
-      if (ImGui::SmallButton((label + "##opt_" + o.name).c_str())) engine_->FeedOption(o.name);
-      ImGui::PopStyleColor(2);
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Option: %s (or type its name)", o.name.c_str());
+      ImGui::PushStyleColor(ImGuiCol_Button, ThemeColors::Accent(0.18f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ThemeColors::Accent(0.40f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, ThemeColors::Accent(0.60f));
+      ImGui::PushStyleColor(ImGuiCol_Border, ThemeColors::Accent(0.6f));
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+      const ImVec2 p = ImGui::GetCursorScreenPos();
+      if (ImGui::Button((label + "##opt_" + o.name).c_str())) engine_->FeedOption(o.name);
+      if (!o.value.empty()) {
+        // Recolour the value part of the chip.
+        const ImVec2 name_sz = ImGui::CalcTextSize((o.name + "=").c_str());
+        ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + 8 + name_sz.x, p.y + 2), ThemeColors::AccentU32(), o.value.c_str());
+      }
+      ImGui::PopStyleVar();
+      ImGui::PopStyleColor(4);
+      if (ImGui::IsItemHovered()) {
+        if (o.toggle) ImGui::SetTooltip("%s: click to toggle (or type %s)", o.name.c_str(), o.name.c_str());
+        else if (!o.choices.empty()) ImGui::SetTooltip("%s: click to cycle (or type %s)", o.name.c_str(), o.name.c_str());
+        else if (o.numeric) ImGui::SetTooltip("%s: click, then type a new value", o.name.c_str());
+        else ImGui::SetTooltip("Option: %s (or type its name)", o.name.c_str());
+      }
     }
+    ImGui::PopStyleVar(2);
   }
   ImGui::SameLine();
   ImGui::SetNextItemWidth(-1);
@@ -1155,6 +1345,13 @@ void Application::DrawCommandLine() {
     static int Call(ImGuiInputTextCallbackData* data) {
       Application* self = static_cast<Application*>(data->UserData);
       if (data->EventFlag == ImGuiInputTextFlags_CallbackHistory) {
+        if (self->autocomplete_count_ > 0) {
+          // Autocomplete popup open: Up/Down move the highlight instead.
+          const int n = self->autocomplete_count_;
+          if (data->EventKey == ImGuiKey_DownArrow) self->autocomplete_index_ = (self->autocomplete_index_ + 1) % n;
+          else if (data->EventKey == ImGuiKey_UpArrow) self->autocomplete_index_ = self->autocomplete_index_ <= 0 ? n - 1 : self->autocomplete_index_ - 1;
+          return 0;
+        }
         const auto& h = self->command_line_history_;
         if (h.empty()) return 0;
         if (data->EventKey == ImGuiKey_UpArrow) {
@@ -1184,6 +1381,13 @@ void Application::DrawCommandLine() {
     std::fprintf(stderr, "[ui] frame %d active=%d entered=%d chars=%d want_text=%d buf='%s' enter_down=%d\n", ImGui::GetFrameCount(), input_active ? 1 : 0, entered ? 1 : 0, chars_before, io.WantTextInput ? 1 : 0, buf, ImGui::IsKeyDown(ImGuiKey_Enter) ? 1 : 0);
   }
   if (entered) {
+    // Enter with an autocomplete row highlighted runs that command.
+    if (autocomplete_index_ >= 0 && autocomplete_count_ > 0 && !engine_->IsRunning()) {
+      std::vector<const CommandInfo*> m = catalog_.WithPrefix(autocomplete_prefix_, 12);
+      if (autocomplete_index_ < static_cast<int>(m.size())) command_input_ = m[static_cast<size_t>(autocomplete_index_)]->name;
+    }
+    autocomplete_index_ = -1;
+    autocomplete_count_ = 0;
     const std::string text = command_input_;
     command_input_.clear();
     if (!text.empty()) {
@@ -1194,42 +1398,78 @@ void Application::DrawCommandLine() {
     engine_->Execute(text);
     focus_command_line_ = true;
   }
-  // Autocomplete popup while typing a command name.
+  // Autocomplete popup while typing a command name: status badge, first
+  // help line, Up/Down to move, Tab to complete, Enter to run.
+  bool showing = false;
   if (input_active && !engine_->IsRunning() && !command_input_.empty() && command_input_.find(' ') == std::string::npos) {
     std::string prefix = command_input_;
     while (!prefix.empty() && (prefix.front() == '_' || prefix.front() == '-' || prefix.front() == '!')) prefix.erase(prefix.begin());
     std::vector<const CommandInfo*> matches = catalog_.WithPrefix(prefix, 12);
     if (!matches.empty() && !prefix.empty()) {
+      showing = true;
+      if (prefix != autocomplete_prefix_) autocomplete_index_ = -1;
+      autocomplete_prefix_ = prefix;
+      autocomplete_count_ = static_cast<int>(matches.size());
+      if (autocomplete_index_ >= autocomplete_count_) autocomplete_index_ = -1;
       const ImVec2 pos = ImGui::GetItemRectMin();
       const ImVec2 size = ImGui::GetItemRectSize();
       ImGui::SetNextWindowPos(ImVec2(pos.x, pos.y + size.y + 2));
-      ImGui::SetNextWindowSize(ImVec2(std::min(size.x, 560.0f), 0));
+      ImGui::SetNextWindowSize(ImVec2(std::min(size.x, 760.0f), 0));
       const ImGuiWindowFlags pflags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                                      ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize;
+                                      ImGuiWindowFlags_Tooltip | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDocking;
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6, 6));
+      ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(6, 2));
       ImGui::Begin("##autocomplete", nullptr, pflags);
-      for (const CommandInfo* c : matches) {
-        const RegisteredCommand* r = engine_->Find(c->name);
-        const CommandStatus st = r ? r->status : CommandStatus::Planned;
-        ImVec4 col = st == CommandStatus::Implemented ? ImVec4(0.85f, 0.95f, 0.85f, 1) :
-                     st == CommandStatus::Partial ? ImVec4(0.95f, 0.9f, 0.7f, 1) : ImVec4(0.6f, 0.6f, 0.65f, 1);
-        ImGui::PushStyleColor(ImGuiCol_Text, col);
-        if (ImGui::Selectable(c->name.c_str())) {
-          command_input_ = c->name;
-          focus_command_line_ = true;
+      if (ImGui::BeginTable("ac", 3, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoPadOuterX)) {
+        ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthFixed, 190.0f);
+        ImGui::TableSetupColumn("status", ImGuiTableColumnFlags_WidthFixed, 108.0f);
+        ImGui::TableSetupColumn("desc", ImGuiTableColumnFlags_WidthStretch);
+        for (int i = 0; i < static_cast<int>(matches.size()); ++i) {
+          const CommandInfo* c = matches[static_cast<size_t>(i)];
+          const RegisteredCommand* r = engine_->Find(c->name);
+          const CommandStatus st = r ? r->status : CommandStatus::Planned;
+          const ImVec4 col = st == CommandStatus::Implemented ? ImVec4(ThemeColors::kOk[0], ThemeColors::kOk[1], ThemeColors::kOk[2], 1) :
+                             st == CommandStatus::Partial ? ImVec4(ThemeColors::kWarn[0], ThemeColors::kWarn[1], ThemeColors::kWarn[2], 1) :
+                             ImVec4(ThemeColors::kMuted[0], ThemeColors::kMuted[1], ThemeColors::kMuted[2], 1);
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::PushID(i);
+          const ImVec2 p = ImGui::GetCursorScreenPos();
+          const float ih = ImGui::GetTextLineHeight();
+          ImGui::Dummy(ImVec2(ih + 6, ih));
+          ImGui::SameLine(0, 0);
+          DrawIcon(ImGui::GetWindowDrawList(), c->name.c_str(), p, ih, ImGui::GetColorU32(ImGuiCol_Text), ThemeColors::AccentU32());
+          if (ImGui::Selectable(c->name.c_str(), autocomplete_index_ == i, ImGuiSelectableFlags_SpanAllColumns)) {
+            command_input_ = c->name;
+            autocomplete_index_ = -1;
+            focus_command_line_ = true;
+          }
+          ImGui::PopID();
+          ImGui::TableNextColumn();
+          StatusBadge(CommandStatusName(st), col);
+          ImGui::TableNextColumn();
+          std::string desc = c->description;
+          const size_t nl = desc.find('\n');
+          if (nl != std::string::npos) desc.erase(nl);
+          if (desc.size() > 52) desc = desc.substr(0, 49) + "...";
+          ImGui::TextDisabled("%s", desc.c_str());
         }
-        ImGui::PopStyleColor();
-        ImGui::SameLine();
-        ImGui::TextDisabled("  %s", c->description.c_str());
+        ImGui::EndTable();
       }
+      ImGui::TextDisabled("Up/Down select   Tab complete   Enter run");
       ImGui::End();
-      // Tab completes to the first match.
+      ImGui::PopStyleVar(2);
+      // Tab completes to the highlighted (or first) match.
       if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
-        command_input_ = matches.front()->name;
+        const int pick = autocomplete_index_ >= 0 ? autocomplete_index_ : 0;
+        command_input_ = matches[static_cast<size_t>(pick)]->name;
+        autocomplete_index_ = -1;
         focus_command_line_ = true;
       }
     }
   }
+  if (!showing) { autocomplete_count_ = 0; autocomplete_index_ = -1; autocomplete_prefix_.clear(); }
   ImGui::End();
   ImGui::PopStyleVar(2);
 }
@@ -1254,9 +1494,11 @@ void Application::DrawStatusBar() {
   // Row 1: persistent object snaps (Rhino's osnap toolbar, docked).
   if (panels_.object_snaps) {
     auto osnap = [&](const char* label, bool& value) {
-      ImGui::PushStyleColor(ImGuiCol_Button, value ? ImVec4(0.22f, 0.45f, 0.75f, 1) : ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
+      ImGui::PushStyleColor(ImGuiCol_Button, value ? ThemeColors::Accent(0.85f) : ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, value ? ThemeColors::Accent(1.0f) : ImGui::GetStyle().Colors[ImGuiCol_FrameBgHovered]);
+      ImGui::PushStyleColor(ImGuiCol_Text, value ? ImVec4(1, 1, 1, 1) : ImGui::GetStyle().Colors[ImGuiCol_Text]);
       if (ImGui::SmallButton(label)) value = !value;
-      ImGui::PopStyleColor();
+      ImGui::PopStyleColor(3);
       ImGui::SameLine(0, 4);
     };
     ImGui::TextDisabled("Osnap");
@@ -1268,27 +1510,50 @@ void Application::DrawStatusBar() {
     osnap("Disable", snaps_.disable_all);
     ImGui::NewLine();
   }
-  // Cursor coordinates.
-  if (pending_hover_) {
-    ImGui::Text("%s", FormatPoint(*pending_hover_).c_str());
-  } else {
-    ImGui::TextDisabled("x,y,z");
+  // Cursor coordinates (live), units, current layer, snap toggles, hint, bell.
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  {
+    const std::string coords = pending_hover_ ? FormatPoint(*pending_hover_) : std::string("x, y, z");
+    ImGui::PushStyleColor(ImGuiCol_Text, pending_hover_ ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+    const float w = std::max(150.0f, ImGui::CalcTextSize(coords.c_str()).x);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(coords.c_str());
+    ImGui::PopStyleColor();
+    ImGui::SameLine(0, w - ImGui::CalcTextSize(coords.c_str()).x + 12);
   }
-  ImGui::SameLine(0, 18);
   ImGui::TextDisabled("%s", doc_.Settings().unit_system.c_str());
-  ImGui::SameLine(0, 18);
-  // Current layer.
-  const int cur = doc_.CurrentLayer();
-  const Layer& layer = doc_.Layers()[static_cast<size_t>(cur)];
-  ImGui::ColorButton("##curlayer", ImVec4(layer.color.r, layer.color.g, layer.color.b, 1), ImGuiColorEditFlags_NoTooltip, ImVec2(12, 12));
-  ImGui::SameLine(0, 4);
-  ImGui::TextUnformatted(doc_.LayerFullPath(cur).c_str());
-  ImGui::SameLine(0, 18);
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Document units (Document Properties > Units)");
+  ImGui::SameLine(0, 14);
+  // Current layer: swatch + combo to change it.
+  {
+    const int cur = doc_.CurrentLayer();
+    const Layer& layer = doc_.Layers()[static_cast<size_t>(cur)];
+    ImGui::ColorButton("##curlayer", ImVec4(layer.color.r, layer.color.g, layer.color.b, 1), ImGuiColorEditFlags_NoTooltip, ImVec2(12, 12));
+    ImGui::SameLine(0, 4);
+    ImGui::SetNextItemWidth(std::max(120.0f, ImGui::CalcTextSize(doc_.LayerFullPath(cur).c_str()).x + 36.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6, 1));
+    if (ImGui::BeginCombo("##layercombo", doc_.LayerFullPath(cur).c_str(), ImGuiComboFlags_HeightLarge)) {
+      for (size_t i = 0; i < doc_.Layers().size(); ++i) {
+        const Layer& l = doc_.Layers()[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::ColorButton("##c", ImVec4(l.color.r, l.color.g, l.color.b, 1), ImGuiColorEditFlags_NoTooltip, ImVec2(12, 12));
+        ImGui::SameLine();
+        if (ImGui::Selectable(doc_.LayerFullPath(static_cast<int>(i)).c_str(), static_cast<int>(i) == cur)) doc_.SetCurrentLayer(static_cast<int>(i));
+        ImGui::PopID();
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::PopStyleVar();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Current layer: new objects go here. Click to change.");
+  }
+  ImGui::SameLine(0, 14);
   // Snap toggles.
   auto toggle = [&](const char* label, bool& value, const char* tip) {
-    ImGui::PushStyleColor(ImGuiCol_Button, value ? ImVec4(0.22f, 0.45f, 0.75f, 1) : ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
+    ImGui::PushStyleColor(ImGuiCol_Button, value ? ThemeColors::Accent(0.85f) : ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, value ? ThemeColors::Accent(1.0f) : ImGui::GetStyle().Colors[ImGuiCol_FrameBgHovered]);
+    ImGui::PushStyleColor(ImGuiCol_Text, value ? ImVec4(1, 1, 1, 1) : ImGui::GetStyle().Colors[ImGuiCol_Text]);
     if (ImGui::SmallButton(label)) value = !value;
-    ImGui::PopStyleColor();
+    ImGui::PopStyleColor(3);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
     ImGui::SameLine(0, 4);
   };
@@ -1298,11 +1563,58 @@ void Application::DrawStatusBar() {
   toggle("Osnap", panels_.object_snaps, "Show the object snap toolbar");
   toggle("SmartTrack", snaps_.smart_track, "SmartTrack tracking lines");
   toggle("Gumball", gumball_enabled, "Drag selected objects with the on-screen gumball");
-  ImGui::SameLine(0, 18);
+  ImGui::SameLine(0, 14);
   ImGui::TextDisabled("%zu objects, %zu selected", doc_.ObjectCount(), doc_.SelectedCount());
   if (doc_.Modified()) {
-    ImGui::SameLine(0, 12);
+    ImGui::SameLine(0, 8);
     ImGui::TextDisabled("(modified)");
+  }
+  ImGui::SameLine(0, 14);
+  // Right side: active-command hint and the notifications bell.
+  {
+    const float bell_w = 30.0f;
+    std::string hint;
+    if (engine_->IsRunning()) hint = engine_->ActiveName() + ": " + engine_->Prompt();
+    else if (!engine_->History().empty()) hint = engine_->History().back();
+    const float avail = ImGui::GetWindowWidth() - ImGui::GetCursorPosX() - bell_w - 24.0f;
+    if (!hint.empty() && avail > 120.0f) {
+      float hw = ImGui::CalcTextSize(hint.c_str()).x;
+      while (hw > avail && hint.size() > 8) { hint = hint.substr(0, hint.size() - 4) + "..."; hw = ImGui::CalcTextSize(hint.c_str()).x; }
+      ImGui::SameLine(ImGui::GetWindowWidth() - bell_w - 16.0f - hw);
+      if (engine_->IsRunning()) ImGui::TextColored(ThemeColors::Accent(), "%s", hint.c_str());
+      else ImGui::TextDisabled("%s", hint.c_str());
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", engine_->IsRunning() ? "The active command's prompt" : "Last command-line message (F2 for the full history)");
+    }
+    ImGui::SameLine(ImGui::GetWindowWidth() - bell_w - 6.0f);
+    const ImVec2 bp = ImGui::GetCursorScreenPos();
+    const float bh = ImGui::GetFrameHeight();
+    if (ImGui::InvisibleButton("##bell", ImVec2(bell_w, bh))) {
+      panels_.notifications = !panels_.notifications;
+      unread_notifications = 0;
+    }
+    const bool bell_hover = ImGui::IsItemHovered();
+    if (bell_hover) {
+      ImGui::SetTooltip("Notifications (%d unread)", unread_notifications);
+      dl->AddRectFilled(bp, ImVec2(bp.x + bell_w, bp.y + bh), ImGui::GetColorU32(ImGuiCol_ButtonHovered), 4.0f);
+    }
+    // Bell glyph.
+    const ImU32 bc = ImGui::GetColorU32(unread_notifications > 0 ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+    const float cx = bp.x + bell_w * 0.5f, cy = bp.y + bh * 0.5f;
+    const float r = bh * 0.26f;
+    dl->PathArcTo(ImVec2(cx, cy - r * 0.2f), r, 3.14159f, 6.28318f);
+    dl->PathLineTo(ImVec2(cx + r, cy + r * 0.8f));
+    dl->PathLineTo(ImVec2(cx + r * 1.3f, cy + r * 1.1f));
+    dl->PathLineTo(ImVec2(cx - r * 1.3f, cy + r * 1.1f));
+    dl->PathLineTo(ImVec2(cx - r, cy + r * 0.8f));
+    dl->PathStroke(bc, ImDrawFlags_Closed, 1.5f);
+    dl->AddCircleFilled(ImVec2(cx, cy + r * 1.5f), r * 0.32f, bc);
+    if (unread_notifications > 0) {
+      const std::string n = std::to_string(std::min(unread_notifications, 99));
+      const ImVec2 ts = ImGui::CalcTextSize(n.c_str());
+      const ImVec2 c(cx + r * 1.2f, cy - r * 0.9f);
+      dl->AddCircleFilled(c, std::max(ts.x, ts.y) * 0.62f, IM_COL32(225, 70, 70, 255));
+      dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), IM_COL32_WHITE, n.c_str());
+    }
   }
   ImGui::End();
   ImGui::PopStyleVar(2);
@@ -1430,13 +1742,13 @@ void Application::DrawNotifications() {
 
 void Application::DrawPanels() {
   DrawMenuBar(*this);
-  if (panels_.toolbars) DrawToolbars(*this);
+  if (panels_.toolbars) { DrawToolbars(*this); DrawLeftSidebar(*this); }
   if (panels_.layers) DrawLayersPanel(*this);
   if (panels_.properties) DrawPropertiesPanel(*this);
   if (panels_.command_history) DrawCommandHistoryPanel(*this);
   if (panels_.command_list) DrawCommandListPanel(*this, command_list_filter_, command_list_status_filter_);
   if (panels_.help) DrawHelpPanel(*this, help_search_);
-  if (panels_.notifications) DrawNotificationsPanel(*this);
+  if (panels_.notifications) { unread_notifications = 0; DrawNotificationsPanel(*this); }
   if (panels_.named_views) DrawNamedViewsPanel(*this);
   if (panels_.notes) DrawNotesPanel(*this, notes_buffer_, sizeof(notes_buffer_));
   if (panels_.document_user_text) DrawDocumentUserTextPanel(*this);

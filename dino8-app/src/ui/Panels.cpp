@@ -677,9 +677,15 @@ void DrawOptionsWindow(Application& app) {
   if (ImGui::BeginTabBar("opts")) {
     if (ImGui::BeginTabItem("General")) {
       ImGui::TextWrapped("Dino 8 has no licence, update-check or account settings: there is nothing to configure here that could ever lock you out.");
-      if (ImGui::SliderFloat("UI scale", &app.ui_scale, 0.75f, 2.0f)) { ApplyDinoTheme(app.ui_scale, app.light_theme); }
+      if (ImGui::SliderFloat("UI scale", &app.ui_scale, 0.75f, 2.0f)) { ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
       int theme = app.light_theme ? 1 : 0;
-      if (ImGui::Combo("Theme", &theme, "Dark\0Light\0")) { app.light_theme = theme == 1; ApplyDinoTheme(app.ui_scale, app.light_theme); }
+      if (ImGui::Combo("Theme", &theme, "Dark\0Light\0")) { app.light_theme = theme == 1; ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
+      if (ImGui::ColorEdit3("Accent colour", app.accent_color, ImGuiColorEditFlags_NoInputs)) ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color);
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Dino teal")) { app.accent_color[0] = 0.184f; app.accent_color[1] = 0.655f; app.accent_color[2] = 0.627f; ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Rhino blue")) { app.accent_color[0] = 0.30f; app.accent_color[1] = 0.62f; app.accent_color[2] = 0.95f; ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
+      { bool show_welcome = !app.welcome_dismissed; if (ImGui::Checkbox("Show the welcome card on empty documents", &show_welcome)) app.welcome_dismissed = !show_welcome; }
       ImGui::Checkbox("Gumball", &app.gumball_enabled);
       ImGui::Checkbox("Show toolbars", &app.Panels().toolbars);
       ImGui::EndTabItem();
@@ -721,7 +727,20 @@ void DrawOptionsWindow(Application& app) {
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Toolbar")) {
-      ImGui::TextWrapped("Buttons on the main toolbar, in order. Remove with the x, add any command below; the list is saved with your settings. Right-click a toolbar button to remove it there.");
+      int size_index = app.toolbar_icon_size == 40 ? 2 : app.toolbar_icon_size == 32 ? 1 : 0;
+      ImGui::SetNextItemWidth(120);
+      if (ImGui::Combo("Icon size", &size_index, "24 px\0" "32 px\0" "40 px\0")) app.toolbar_icon_size = size_index == 2 ? 40 : size_index == 1 ? 32 : 24;
+      ImGui::SameLine();
+      ImGui::Checkbox("Labels under icons", &app.toolbar_labels);
+      ImGui::SameLine();
+      ImGui::Checkbox("Left sidebar", &app.show_left_sidebar);
+      ImGui::SetNextItemWidth(160);
+      if (ImGui::BeginCombo("Active tab", ToolbarTabName(app.toolbar_tab))) {
+        for (int t = 0; t < ToolbarTabCount(); ++t) if (ImGui::Selectable(ToolbarTabName(t), t == app.toolbar_tab)) app.toolbar_tab = t;
+        ImGui::EndCombo();
+      }
+      ImGui::Separator();
+      ImGui::TextWrapped("Buttons on the Standard tab, in order. Remove with the x, add any command below; the list is saved with your settings. Ctrl+right-click a toolbar button to remove it there (a plain right click runs the button's alternate command).");
       std::vector<std::string>& tb = app.toolbar_commands;
       if (tb.empty()) tb = DefaultToolbarCommands();
       for (size_t i = 0; i < tb.size(); ++i) {

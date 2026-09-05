@@ -42,6 +42,21 @@ void DrawClippingPlanesPanel(Application& app);
 void DrawLayoutsPanel(Application& app);
 void DrawNamedCPlanesPanel(Application& app);
 
+// Toolbars (Toolbars.cpp): tabbed icon toolbar + left sidebar.
+struct IconButtonResult {
+  bool left = false;     // run the command
+  bool right = false;    // run the alternate command
+  bool context = false;  // open the customize menu
+};
+// Draws one icon button for `command` (caption optional); the caller runs the commands.
+IconButtonResult IconButton(Application& app, const char* command, const char* label, bool show_label, bool customizable);
+void DrawLeftSidebar(Application& app);
+float ToolbarHeight(const Application& app);      // 0 when toolbars are hidden
+float LeftSidebarWidth(const Application& app);   // 0 when the sidebar is hidden
+int ToolbarTabCount();
+const char* ToolbarTabName(int index);
+const char* ToolbarButtonLabel(const std::string& command);  // nullptr when unknown
+
 // Small shared widgets.
 bool ColorEdit(const char* label, struct Color& color);
 // The default main-toolbar command list ("|" is a separator).

@@ -114,12 +114,13 @@ int main(int argc, char** argv) {
   app.has_saved_layout = has_layout;
   app.native_window = window;
   app.headless = smoke_frames >= 0;
+  app.smoke_mode = smoke_frames >= 0;
   std::string error;
   if (!app.Init(ExeDir(argv[0]), error)) {
     std::fprintf(stderr, "%s\n", error.c_str());
     return 1;
   }
-  if (app.light_theme || app.ui_scale != ui_scale) dino8::app::ApplyDinoTheme(app.ui_scale, app.light_theme);
+  dino8::app::ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color);
   if (!error.empty()) std::fprintf(stderr, "warning: %s\n", error.c_str());
 
   if (!open_path.empty()) {
@@ -172,6 +173,8 @@ int main(int argc, char** argv) {
           if (n == "Backspace") return ImGuiKey_Backspace;
           if (n == "Space") return ImGuiKey_Space;
           if (n == "F1") return ImGuiKey_F1;
+          if (n == "Up") return ImGuiKey_UpArrow;
+          if (n == "Down") return ImGuiKey_DownArrow;
           if (n == "Z") return ImGuiKey_Z;
           return ImGuiKey_None;
         };
@@ -184,13 +187,14 @@ int main(int argc, char** argv) {
         else if (cmd == "click") { float x, y; int b = 0; ss >> x >> y >> b; expand({"@move " + std::to_string(x) + " " + std::to_string(y), "@wait 1", "@down " + std::to_string(b), "@wait 1", "@up " + std::to_string(b), "@wait 1"}); }
         else if (cmd == "world" || cmd == "clickworld") {
           std::string view; double x, y, z; ss >> view >> x >> y >> z;
+          int btn = 0; ss >> btn;  // optional mouse button for clickworld (0 left, 1 right, 2 middle)
           dino8::app::Viewport* vp = app.FindViewport(view);
           double px = 0, py = 0;
           if (vp && vp->WorldToPixel(dino8::kernel::Point3d(x, y, z), px, py)) {
             const double sx = vp->ScreenX() + px, sy = vp->ScreenY() + py;
             if (std::getenv("DINO8_UI_DEBUG")) std::fprintf(stderr, "[script] %s %s %g,%g,%g -> vp(%g,%g) px(%g,%g)\n", cmd.c_str(), view.c_str(), x, y, z, vp->ScreenX(), vp->ScreenY(), px, py);
             if (cmd == "world") expand({"@move " + std::to_string(sx) + " " + std::to_string(sy), "@wait 1"});
-            else expand({"@click " + std::to_string(sx) + " " + std::to_string(sy) + " 0"});
+            else expand({"@click " + std::to_string(sx) + " " + std::to_string(sy) + " " + std::to_string(btn)});
           } else {
             std::fprintf(stderr, "script: viewport %s not found or point off-screen\n", view.c_str());
           }

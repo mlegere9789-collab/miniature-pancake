@@ -162,6 +162,10 @@ class Application {
   // True in --smoke runs (hidden window): commands must not open browsers
   // or minimise the window.
   bool headless = false;
+  const PanelState& Panels() const { return panels_; }
+  // Heights of the fixed chrome (command line under the toolbar, status bar).
+  float CommandLineHeight() const;
+  float StatusBarHeight() const;
   bool WantsQuit() const { return quit_; }
   // Asks "Save changes?" when the document is modified, then runs `then`.
   void ConfirmDiscard(std::function<void()> then);
@@ -180,7 +184,20 @@ class Application {
   float ui_scale = 1.0f;
   bool gumball_enabled = true;
   bool light_theme = false;
-  std::vector<std::string> toolbar_commands;  // customizable toolbar (empty = default set)
+  std::vector<std::string> toolbar_commands;  // customizable Standard toolbar (empty = default set)
+  // Toolbar appearance (Options > Toolbar), persisted in Settings.
+  int toolbar_icon_size = 24;        // 24, 32 or 40 px
+  bool toolbar_labels = true;        // small caption under each icon
+  int toolbar_tab = 0;               // active toolbar group tab
+  bool show_left_sidebar = true;     // Rhino-style vertical tool column on the left
+  // Theme accent colour (Options > General), RGB 0..1.
+  float accent_color[3] = {0.184f, 0.655f, 0.627f};
+  // First-run welcome overlay: "don't show again" is persisted.
+  bool welcome_dismissed = false;
+  // True when running headless (--smoke): no welcome overlay, no focus games.
+  bool smoke_mode = false;
+  // Notifications the user has not looked at yet (status bar bell badge).
+  int unread_notifications = 0;
   // True when a saved ImGui layout exists, so the default dock layout is not rebuilt over it.
   bool has_saved_layout = false;
 
@@ -227,11 +244,13 @@ class Application {
   void DrawPanels();
   void DrawCommandLine();
   void DrawStatusBar();
-  float StatusBarHeight() const;
   void DrawFileDialog();
   void DrawNotifications();
   void DrawConfirmDiscard();
   void DrawPopupToolbar();
+  void DrawContextMenu();
+  void DrawWelcomeOverlay();
+  void DrawPopupToolbarGrid();  // icon grid shared by the MMB popup and the context menu
   void HandleShortcuts();
   void ProcessViewportEvents(Viewport& vp, const ViewportEvents& ev);
   void BuildDefaultLayout(unsigned dockspace_id);
@@ -280,6 +299,15 @@ class Application {
   bool open_popup_toolbar_ = false;
   ImVec2 popup_toolbar_pos_;
   RenderImage last_render_;
+  // Right-click context menu (object or empty space) in a viewport.
+  bool open_context_menu_ = false;
+  ImVec2 context_menu_pos_;
+  ObjectId context_menu_object_ = kNoObject;
+  bool welcome_closed_this_session_ = false;
+  // Command-line autocomplete: highlighted row (-1 = none) and row count.
+  int autocomplete_index_ = -1;
+  int autocomplete_count_ = 0;
+  std::string autocomplete_prefix_;
 };
 
 }  // namespace dino8::app

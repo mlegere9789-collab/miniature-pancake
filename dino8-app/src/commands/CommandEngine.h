@@ -71,6 +71,7 @@ class CommandEngine {
   void Print(const std::string& line);
   const std::deque<std::string>& History() const { return history_; }
   const std::vector<std::string>& RecentCommands() const { return recent_; }
+  const std::string& LastCommand() const { return last_command_; }
   void ClearHistory() { history_.clear(); }
 
   // Point state shared with viewports (ortho base, relative coordinates).
