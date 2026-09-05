@@ -26,6 +26,19 @@ public sealed class GoogleDriveClient : IGoogleDriveClient, IDisposable
     private readonly AppSettings _settings;
     private readonly string _tokenDirectory;
 
+    // JobQueueManager shares one GoogleDriveClient across every job in a batch, and runs
+    // several of them at once (MaxConcurrentJobs defaults to Environment.ProcessorCount).
+    // _service is a plain mutable field with no lock of its own; guards every place that
+    // reads-then-decides or reads-then-replaces it, the same shape of bug
+    // OutputPathResolver had for output filenames. Without this, two jobs finishing an
+    // upload around the same moment (or one job uploading while the user clicks Sign
+    // in/out from Settings) could both see _service as null and both sign in, with
+    // whichever SignInAsync call finishes last disposing the DriveService the other one
+    // is still actively using mid-upload — a real ObjectDisposedException on an unrelated
+    // job's request, not just its own. A plain `lock` can't wrap the awaits inside
+    // sign-in, hence SemaphoreSlim rather than the `object`+`lock` OutputPathResolver uses.
+    private readonly SemaphoreSlim _serviceLock = new(1, 1);
+
     private DriveService? _service;
 
     public GoogleDriveClient(AppSettings settings, string? tokenDirectory = null)
@@ -42,6 +55,26 @@ public sealed class GoogleDriveClient : IGoogleDriveClient, IDisposable
     }
 
     public async Task SignInAsync(CancellationToken cancellationToken)
+    {
+        await _serviceLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await SignInCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _serviceLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// The real sign-in work, with no locking of its own — callers must already hold
+    /// <see cref="_serviceLock"/>. Split out so <see cref="RequireServiceAsync"/> can do
+    /// its null-check and this under a single lock acquisition rather than calling the
+    /// public, self-locking <see cref="SignInAsync"/> and deadlocking on the non-reentrant
+    /// semaphore.
+    /// </summary>
+    private async Task SignInCoreAsync(CancellationToken cancellationToken)
     {
         var credentialsPath = _settings.ResolveGoogleDriveCredentialsPath();
         if (!File.Exists(credentialsPath))
@@ -74,12 +107,20 @@ public sealed class GoogleDriveClient : IGoogleDriveClient, IDisposable
 
     public Task SignOutAsync()
     {
-        _service?.Dispose();
-        _service = null;
-
-        if (Directory.Exists(_tokenDirectory))
+        _serviceLock.Wait();
+        try
         {
-            Directory.Delete(_tokenDirectory, recursive: true);
+            _service?.Dispose();
+            _service = null;
+
+            if (Directory.Exists(_tokenDirectory))
+            {
+                Directory.Delete(_tokenDirectory, recursive: true);
+            }
+        }
+        finally
+        {
+            _serviceLock.Release();
         }
 
         return Task.CompletedTask;
@@ -192,6 +233,7 @@ public sealed class GoogleDriveClient : IGoogleDriveClient, IDisposable
     {
         _service?.Dispose();
         _service = null;
+        _serviceLock.Dispose();
     }
 
     /// <summary>
@@ -201,18 +243,26 @@ public sealed class GoogleDriveClient : IGoogleDriveClient, IDisposable
     /// </summary>
     private async Task<DriveService> RequireServiceAsync(CancellationToken cancellationToken)
     {
-        if (_service is not null)
+        await _serviceLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            return _service;
-        }
+            if (_service is not null)
+            {
+                return _service;
+            }
 
-        if (!await IsSignedInAsync(cancellationToken).ConfigureAwait(false))
+            if (!await IsSignedInAsync(cancellationToken).ConfigureAwait(false))
+            {
+                throw new GoogleDriveNotSignedInException();
+            }
+
+            await SignInCoreAsync(cancellationToken).ConfigureAwait(false);
+            return _service!;
+        }
+        finally
         {
-            throw new GoogleDriveNotSignedInException();
+            _serviceLock.Release();
         }
-
-        await SignInAsync(cancellationToken).ConfigureAwait(false);
-        return _service!;
     }
 
     private static string EscapeForQuery(string value) => value.Replace("'", "\\'");
