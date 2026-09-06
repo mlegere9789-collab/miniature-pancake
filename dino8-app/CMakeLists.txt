@@ -144,6 +144,8 @@ set(DINO8_SOURCES
   src/commands/cmd_surface.cpp
   src/commands/cmd_meshtools.cpp
   src/commands/cmd_subd.cpp
+  src/commands/cmd_remesh.cpp
+  src/geom/Remesh.cpp
   src/commands/cmd_solidtools.cpp
   src/commands/cmd_boolean.cpp
   src/commands/cmd_analyze.cpp

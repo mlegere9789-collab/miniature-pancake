@@ -58,6 +58,7 @@ void RegisterRemainingCommands(CommandEngine&);
 void RegisterSurfaceCommands(CommandEngine&);
 void RegisterMeshToolsCommands(CommandEngine&);
 void RegisterSubDCommands(CommandEngine&);
+void RegisterRemeshCommands(CommandEngine&);
 void RegisterRenderCommands(CommandEngine&);
 void RegisterRaytraceCommands(CommandEngine&);
 void RegisterSolidToolsCommands(CommandEngine&);
@@ -291,6 +292,7 @@ void Application::RegisterCommands() {
   RegisterSrfEditCommands(*engine_);
   RegisterMeshToolsCommands(*engine_);  // after Transform/Boolean: replaces the simpler Shear/Weld
   RegisterSubDCommands(*engine_);       // SubD editing (creases, ExtrudeSubD, Inset, Bridge...); replaces the Slide stub
+  RegisterRemeshCommands(*engine_);     // real ShrinkWrap/QuadRemesh/ReduceMesh/Heightfield/Drape; replaces the SubD/mesh-tools/boolean placeholders
   RegisterSolidToolsCommands(*engine_); // holes, curve booleans, cage editing, Flow (replaces the CurveBoolean stub)
   RegisterViewToolsCommands(*engine_);  // clipping planes, layouts, named CPlanes, animation (extends CPlane/ClippingPlane)
   RegisterRemainingCommands(*engine_);  // the last Planned catalogue commands (Convert, TweenSurfaces, ThicknessAnalysis, MatchProperties...)
