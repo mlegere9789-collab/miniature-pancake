@@ -179,6 +179,16 @@ struct NamedCPlane {
   kernel::Vector3d y_axis{0, 1, 0};
 };
 
+// A guide line (AddGuide/RemoveGuide): stored as a two-point segment rather
+// than Rhino's true infinite construction line. Kept as document data, like
+// NamedCPlane above; not drawn in the viewport and not consulted by object
+// snaps yet, so it is a real place to hang a construction reference but not
+// a full replacement for Rhino's guide feature.
+struct Guide {
+  kernel::Point3d a{0, 0, 0};
+  kernel::Point3d b{1, 0, 0};
+};
+
 // A clipping plane: everything on the side the normal (x cross y) points
 // to is cut away in the viewports it clips (all when `viewports` is empty).
 // Drawn as a translucent rectangle `width` x `height` around `origin`.
@@ -387,6 +397,8 @@ class Document {
   std::vector<NamedCPlane>& NamedCPlanes() { return named_cplanes_; }
   const std::vector<NamedCPlane>& NamedCPlanes() const { return named_cplanes_; }
   NamedCPlane* FindNamedCPlane(const std::string& name);
+  std::vector<Guide>& Guides() { return guides_; }
+  const std::vector<Guide>& Guides() const { return guides_; }
 
   // ---- clipping planes / layouts / animation ---------------------------
   std::vector<ClippingPlane>& ClippingPlanes() { return clipping_planes_; }
@@ -480,6 +492,7 @@ class Document {
   std::vector<NamedSelection> named_selections_;
   std::vector<NamedPosition> named_positions_;
   std::vector<NamedCPlane> named_cplanes_;
+  std::vector<Guide> guides_;
   std::vector<ClippingPlane> clipping_planes_;
   int next_clipping_plane_id_ = 1;
   std::vector<Layout> layouts_;

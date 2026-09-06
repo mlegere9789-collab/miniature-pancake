@@ -102,3 +102,23 @@ Enter
 SelLast
 What
 @expect_objects 7
+# --- PackSubDFaces (face count only, no texture atlas), SubDFaceEdgeVertexToggle
+# (cycles the real app-wide sub-object pick filter shared with SelectionFilter*),
+# AddGuide/RemoveGuide (document-stored two-point guide lines; no scene objects).
+SelLast
+PackSubDFaces
+SubDFaceEdgeVertexToggle
+SubDFaceEdgeVertexToggle
+SubDFaceEdgeVertexToggle
+SubDFaceEdgeVertexToggle
+AddGuide
+0,0,0
+50,0,0
+AddGuide
+0,50,0
+50,50,0
+RemoveGuide
+25,0,0
+RemoveGuide
+Enter
+@expect_objects 7

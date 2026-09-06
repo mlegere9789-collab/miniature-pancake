@@ -22,6 +22,7 @@ void Document::Clear() {
   linetypes_ = DefaultLinetypes();
   annotation_styles_ = {AnnotationStyle{}};
   named_cplanes_.clear();
+  guides_.clear();
   clipping_planes_.clear();
   next_clipping_plane_id_ = 1;
   layouts_.clear();

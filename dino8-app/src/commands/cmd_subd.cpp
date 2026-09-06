@@ -1098,8 +1098,11 @@ void DivideAlongCreasesAction(CommandContext& ctx, const std::vector<ObjectId>& 
   ctx.Print("DivideAlongCreases: " + std::to_string(divided) + " SubD(s) divided into " + std::to_string(created) + " piece(s)");
 }
 
-// Cycles the sub-object selection filter (faces / edges / vertices / whole objects).
-int g_subd_filter = 0;
+// Names for the four positions SubDFaceEdgeVertexToggle cycles through in
+// the real, app-wide sub-object pick filter (AppState::filter_faces/edges/
+// vertices - the same flags SelectionFilterFaces/Edges/Vertices set in
+// cmd_select2.cpp, applied to every viewport's interactive picking each
+// frame via Application::CurrentSubObjectFilter).
 const char* kFilterNames[] = {"Objects", "Faces", "Edges", "Vertices"};
 
 void MakeFriendlyAction(CommandContext& ctx, const std::vector<ObjectId>& ids, bool friendly) {
@@ -1342,9 +1345,14 @@ void RegisterSubDCommands(CommandEngine& e) {
   // ---- display / selection ------------------------------------------------------
   Reg(e, "SubDDisplayToggle", Immediate([](CommandContext& ctx) { ToggleDisplay(ctx, ctx.Selected()); }));
   Reg(e, "SubDFaceEdgeVertexToggle", Immediate([](CommandContext& ctx) {
-        g_subd_filter = (g_subd_filter + 1) % 4;
-        ctx.Print(std::string("SubD selection filter: ") + kFilterNames[g_subd_filter] + " (sub-object picking is by point in this build)");
-      }), CommandStatus::Partial, "Cycles a display-only filter flag; every SubD command here already picks its own sub-objects by clicked point, so no picking behavior actually changes.");
+        AppState& s = ctx.App().State();
+        int idx = s.filter_faces ? 1 : s.filter_edges ? 2 : s.filter_vertices ? 3 : 0;
+        idx = (idx + 1) % 4;
+        s.filter_faces = (idx == 1);
+        s.filter_edges = (idx == 2);
+        s.filter_vertices = (idx == 3);
+        ctx.Print(std::string("SubD selection filter: ") + kFilterNames[idx] + " (same app-wide sub-object pick filter as SelectionFilterFaces/Edges/Vertices)");
+      }), CommandStatus::Implemented, "Cycles the same app-wide sub-object pick filter as SelectionFilterFaces/Edges/Vertices (AppState::filter_faces/edges/vertices, applied to every viewport's interactive picking each frame); the SubD tools registered in this file still pick their own sub-objects by clicked point regardless of the filter, but the filter itself is real and shared, not a local display-only flag.");
   // SelSubDEdges (real, crease edges as sub-objects) is registered by
   // RegisterSelect2Commands; this call would just overwrite it with the
   // old whole-object placeholder, so it has been removed from here.
@@ -1366,10 +1374,45 @@ void RegisterSubDCommands(CommandEngine& e) {
   Reg(e, "SubDSpinEdge", SubDTool(kSelectSubD, "Pick edges to spin", -1, {}, {Choice("Direction", {"CW", "CCW"})}, SpinEdgeAction),
       CommandStatus::Implemented, "Spins the edge one corner, clockwise or counter-clockwise, around the two faces sharing it.");
   Reg(e, "Fill", SubDTool(kSelectSubD, "Pick naked edges of the holes to fill (Enter for all)", -1, {}, {}, FillAction));
-  Reg(e, "AddGuide", Immediate([](CommandContext& ctx) { ctx.Print("AddGuide: guide curves are not stored in this build; use Slide and InsertEdge to shape the control net."); }),
-      CommandStatus::Partial, "Guide curves are not stored.");
-  Reg(e, "RemoveGuide", Immediate([](CommandContext& ctx) { ctx.Print("RemoveGuide: no guide curves are stored in this build."); }),
-      CommandStatus::Partial, "Guide curves are not stored.");
+  Reg(e, "AddGuide", Make<PointsCommand>(std::vector<std::string>{"Guide line start point", "Guide line end point"},
+      [](CommandContext& ctx, const std::vector<Point3d>& pts) {
+        Document& doc = ctx.Doc();
+        doc.Guides().push_back(Guide{pts[0], pts[1]});
+        ctx.Print("AddGuide: guide line added (" + std::to_string(doc.Guides().size()) + " total)");
+      }), CommandStatus::Implemented,
+      "Stores a two-point guide line on the document (Document::Guides); not drawn in the viewport and not consulted by object snaps yet, so it is real document data rather than a drawn/snappable construction line.");
+  Reg(e, "RemoveGuide", [] () -> std::unique_ptr<Command> {
+        class C : public Command {
+          void Begin(CommandContext& ctx) override {
+            if (ctx.Doc().Guides().empty()) { ctx.Print("RemoveGuide: no guides to remove"); Finish(); return; }
+            WantPoint("Point near the guide to remove (Enter to remove all)");
+          }
+          void OnPoint(CommandContext& ctx, Point3d p) override {
+            std::vector<Guide>& guides = ctx.Doc().Guides();
+            size_t best = 0;
+            double best_dist = -1;
+            for (size_t i = 0; i < guides.size(); ++i) {
+              const Vector3d ab = guides[i].b - guides[i].a;
+              const double len2 = ab.LengthSquared();
+              double t = len2 > 1e-12 ? ON_DotProduct(p - guides[i].a, ab) / len2 : 0.0;
+              t = std::clamp(t, 0.0, 1.0);
+              const double d = p.DistanceTo(guides[i].a + ab * t);
+              if (best_dist < 0 || d < best_dist) { best_dist = d; best = i; }
+            }
+            guides.erase(guides.begin() + static_cast<long>(best));
+            ctx.Print("RemoveGuide: 1 guide removed (" + std::to_string(guides.size()) + " remaining)");
+            Finish();
+          }
+          void OnEnter(CommandContext& ctx) override {
+            const size_t n = ctx.Doc().Guides().size();
+            ctx.Doc().Guides().clear();
+            ctx.Print("RemoveGuide: " + std::to_string(n) + " guide(s) removed");
+            Finish();
+          }
+        };
+        return std::make_unique<C>();
+      }, CommandStatus::Implemented,
+      "Removes the guide line nearest a picked point, or every guide on Enter with none picked; guides are the same document-stored data AddGuide creates.");
 
   // ---- creation / conversion -------------------------------------------------------
   Reg(e, "SubDTruncatedCone", SubDTool("", "Base point", 1, {{"Base radius", 5}, {"Top radius", 2.5}, {"Height", 10}}, {}, TruncatedConeAction, 0));
