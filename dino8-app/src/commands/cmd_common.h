@@ -251,6 +251,11 @@ inline int JoinNakedEdges(ON_Brep& b, double tol) {
 // Block / BlockInsert); defined in cmd_drafting.cpp. Returns the group id or -1.
 int InstantiateBlock(CommandContext& ctx, const std::string& name, Point3d at);
 
+// Curve/curve intersection (points) or closed-solid/closed-solid intersection
+// (mesh boolean); defined in cmd_curveedit.cpp. cmd_fillet.cpp's Intersect
+// wrapper delegates to this when the selection has no surfaces/breps.
+void CurveOrSolidIntersect(CommandContext& ctx, const std::vector<ObjectId>& ids);
+
 inline void Reg(CommandEngine& e, const char* name, CommandFactory f, CommandStatus s = CommandStatus::Implemented,
                 const char* note = "") {
   e.Register(name, std::move(f), s, note);

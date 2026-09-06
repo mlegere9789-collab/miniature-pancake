@@ -111,6 +111,8 @@ set(DINO8_SOURCES
   src/io/File3dm.cpp
   src/io/FileExchange.cpp
   src/geom/BrepMesher.cpp
+  src/geom/SurfaceIntersect.cpp
+  src/commands/cmd_fillet.cpp
   src/util/json_mini.cpp
 )
 

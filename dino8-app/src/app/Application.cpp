@@ -43,6 +43,7 @@ void RegisterDraftingCommands(CommandEngine&);
 void RegisterAnnotate2Commands(CommandEngine&);
 void RegisterCurves2Commands(CommandEngine&);
 void RegisterSrfEditCommands(CommandEngine&);
+void RegisterFilletCommands(CommandEngine&);
 void RegisterCurveEditCommands(CommandEngine&);
 void RegisterSurfaceCommands(CommandEngine&);
 void RegisterMeshToolsCommands(CommandEngine&);
@@ -179,6 +180,7 @@ void Application::RegisterCommands() {
   RegisterSolidToolsCommands(*engine_); // holes, curve booleans, cage editing, Flow (replaces the CurveBoolean stub)
   RegisterViewToolsCommands(*engine_);  // clipping planes, layouts, named CPlanes, animation (extends CPlane/ClippingPlane)
   RegisterCurveEditCommands(*engine_);  // replaces the solid-only Intersect/Split registrations
+  RegisterFilletCommands(*engine_);     // real fillet/chamfer/blend/match/SSX family; after SrfEdit and CurveEdit so it wins both
   RegisterSurfaceCommands(*engine_);    // Sweep/Pipe/OffsetSrf/Project... (approximate NURBS/mesh results)
   RegisterRenderCommands(*engine_);     // last: replaces the Render/RenderPreview/Materials placeholders
 }

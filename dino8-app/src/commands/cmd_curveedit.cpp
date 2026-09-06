@@ -720,6 +720,11 @@ class FilletCornersCommand : public Command {
 
 }  // namespace
 
+// Exposed so cmd_fillet.cpp's Intersect wrapper can delegate pure-curve (and
+// closed-solid) selections to the existing curve/curve intersector instead
+// of duplicating it.
+void CurveOrSolidIntersect(CommandContext& ctx, const std::vector<ObjectId>& ids) { IntersectObjects(ctx, ids); }
+
 void RegisterCurveEditCommands(CommandEngine& e) {
   Reg(e, "Intersect", OnSelection("Select objects to intersect", IntersectObjects, 1), CommandStatus::Implemented,
       "Curve/curve intersections as point objects (a single curve is self-intersected); two closed solids give the intersection volume.");
