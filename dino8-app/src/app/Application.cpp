@@ -167,7 +167,6 @@ void Application::OpenPopupToolbar() {
   open_popup_toolbar_ = true;
   popup_toolbar_pos_ = ImGui::GetCurrentContext() ? ImGui::GetMousePos() : ImVec2(400, 300);
 }
-}
 
 bool Application::RenderView(Viewport* vp, int width, int height, int supersample, bool arctic, std::string& error) {
   if (!vp) vp = ActiveViewport();
