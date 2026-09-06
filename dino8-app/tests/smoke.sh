@@ -115,7 +115,11 @@ c2check "TweenCurves: 3 curve(s) created" "TweenCurves interpolated between the 
 c2check "ArrayCrv: 6 object(s) placed" "ArrayCrv placed copies along the circle"
 c2check "best-fit line through 4 points" "LineThroughPt fitted a line"
 c2check "best-fit plane through 4 points" "PlaneThroughPt fitted a plane"
-c2check "^ok   expect_objects 34" "curve-tools script produced the expected object count"
+c2check "MarkFoci: 1 point(s) added" "MarkFoci added the parabola's focus"
+c2check "0,5,0" "MarkFoci found the parabola focus (0,5,0) from curve geometry alone"
+c2check "MarkFoci: 2 point(s) added" "MarkFoci added both hyperbola foci"
+c2check "6.807" "MarkFoci found the analytic hyperbola focus distance (c=6.807 for a=5, b^2=64/3)"
+c2check "^ok   expect_objects 39" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMP|g" "$HERE/exchange_script.txt" > "$TMP/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then

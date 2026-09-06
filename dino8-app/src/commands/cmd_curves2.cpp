@@ -96,6 +96,169 @@ bool PrincipalAxes(const std::vector<Point3d>& pts, Point3d& centroid, Vector3d 
   return true;
 }
 
+// Jacobi eigenvalue algorithm for a small symmetric matrix `a` (n x n,
+// n <= kMaxJacobi): diagonalizes `a` in place via repeated Givens rotations,
+// writing the eigenvectors (as columns) into `v` and the eigenvalues onto
+// the diagonal of `a`. Standard textbook algorithm - used here because
+// OpenNURBS only exposes a 3x3 symmetric eigensolver (ON_Sym3x3EigenSolver),
+// and the general planar-conic fit below needs the smallest eigenvector of
+// a 6x6 scatter matrix.
+constexpr int kMaxJacobi = 6;
+void JacobiEigen(double a[kMaxJacobi][kMaxJacobi], double v[kMaxJacobi][kMaxJacobi], int n) {
+  for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) v[i][j] = (i == j) ? 1.0 : 0.0;
+  for (int sweep = 0; sweep < 100; ++sweep) {
+    double off = 0;
+    for (int i = 0; i < n; ++i) for (int j = i + 1; j < n; ++j) off += a[i][j] * a[i][j];
+    if (off < 1e-30) break;
+    for (int p = 0; p < n; ++p) {
+      for (int q = p + 1; q < n; ++q) {
+        if (std::fabs(a[p][q]) < 1e-300) continue;
+        double theta = (a[q][q] - a[p][p]) / (2 * a[p][q]);
+        double t = (theta >= 0 ? 1.0 : -1.0) / (std::fabs(theta) + std::sqrt(theta * theta + 1));
+        double c = 1.0 / std::sqrt(t * t + 1), s = t * c;
+        double app = a[p][p], aqq = a[q][q], apq = a[p][q];
+        a[p][p] = c * c * app - 2 * s * c * apq + s * s * aqq;
+        a[q][q] = s * s * app + 2 * s * c * apq + c * c * aqq;
+        a[p][q] = a[q][p] = 0;
+        for (int i = 0; i < n; ++i) {
+          if (i != p && i != q) {
+            double aip = a[i][p], aiq = a[i][q];
+            a[i][p] = a[p][i] = c * aip - s * aiq;
+            a[i][q] = a[q][i] = s * aip + c * aiq;
+          }
+          double vip = v[i][p], viq = v[i][q];
+          v[i][p] = c * vip - s * viq;
+          v[i][q] = s * vip + c * viq;
+        }
+      }
+    }
+  }
+}
+
+// A planar conic in a curve's own plane, fitted by least squares.
+struct PlaneConic { double A, B, C, D, E, F; };
+
+// Fits Ax^2+Bxy+Cy^2+Dx+Ey+F=0 (in local x/y, centered at the point set's
+// own centroid for numerical conditioning) through `pts_local` as the
+// eigenvector of the smallest eigenvalue of the 6x6 normal matrix M^T*M
+// (rows of M are [x^2, xy, y^2, x, y, 1]) - the standard unconstrained
+// algebraic conic fit. Needs at least 6 points.
+std::optional<PlaneConic> FitConic(const std::vector<std::pair<double, double>>& pts_local) {
+  if (pts_local.size() < 6) return std::nullopt;
+  double scale = 0;
+  for (const auto& p : pts_local) scale = std::max({scale, std::fabs(p.first), std::fabs(p.second)});
+  if (scale <= 0) return std::nullopt;
+  double s[kMaxJacobi][kMaxJacobi] = {};
+  for (const auto& p : pts_local) {
+    double x = p.first / scale, y = p.second / scale;
+    double row[6] = {x * x, x * y, y * y, x, y, 1};
+    for (int i = 0; i < 6; ++i) for (int j = 0; j < 6; ++j) s[i][j] += row[i] * row[j];
+  }
+  double v[kMaxJacobi][kMaxJacobi];
+  JacobiEigen(s, v, 6);
+  int best = 0;
+  for (int i = 1; i < 6; ++i) if (s[i][i] < s[best][best]) best = i;
+  double coef[6];
+  for (int i = 0; i < 6; ++i) coef[i] = v[i][best];
+  // Undo the coordinate scaling: coefficients were fit in x/scale, y/scale.
+  PlaneConic c;
+  c.A = coef[0] / (scale * scale);
+  c.B = coef[1] / (scale * scale);
+  c.C = coef[2] / (scale * scale);
+  c.D = coef[3] / scale;
+  c.E = coef[4] / scale;
+  c.F = coef[5];
+  return c;
+}
+
+// Classifies a fitted conic and returns its focus/foci in the same local
+// (centered) plane coordinates it was fit in - 1 point for a parabola, 2
+// for a hyperbola, none otherwise (ellipses/arcs are handled separately by
+// exact ON_Ellipse/ON_Arc geometry, not this generic algebraic fit).
+// Standard analytic-geometry technique: rotate by
+// theta = 0.5*atan2(B, A-C) to eliminate the xy term, then complete the
+// square in the rotated frame.
+std::vector<std::pair<double, double>> ConicFoci(const PlaneConic& q) {
+  const double disc = q.B * q.B - 4 * q.A * q.C;
+  const double mag = std::fabs(q.A) + std::fabs(q.B) + std::fabs(q.C);
+  if (mag <= 0) return {};
+  double theta = (std::fabs(q.B) < 1e-12 * mag) ? 0.0 : 0.5 * std::atan2(q.B, q.A - q.C);
+  double c = std::cos(theta), s = std::sin(theta);
+  double A2 = q.A * c * c + q.B * c * s + q.C * s * s;
+  double C2 = q.A * s * s - q.B * c * s + q.C * c * c;
+  double D2 = q.D * c + q.E * s;
+  double E2 = -q.D * s + q.E * c;
+  double F2 = q.F;
+  auto unrotate = [&](double xp, double yp) { return std::make_pair(xp * c - yp * s, xp * s + yp * c); };
+  if (std::fabs(disc) <= 1e-9 * mag * mag) {
+    // Parabola: exactly one of A2, C2 is (numerically) zero.
+    bool axis_is_x = std::fabs(A2) < std::fabs(C2);
+    double lin = axis_is_x ? D2 : E2;
+    if (std::fabs(lin) < 1e-12) return {};
+    double quad = axis_is_x ? C2 : A2;
+    double other_lin = axis_is_x ? E2 : D2;
+    double u0 = -other_lin / (2 * quad);
+    double k = F2 - other_lin * other_lin / (4 * quad);
+    double t0 = -k / lin;             // vertex's axis coordinate
+    double f = -(lin / quad) / 4.0;   // focal length along the axis
+    double t_focus = t0 + f;
+    // Snap a near-zero coordinate to exactly 0 (avoids a stray "-0" from
+    // floating-point cancellation when the true value is 0).
+    auto snap = [](double v) { return std::fabs(v) < 1e-9 ? 0.0 : v; };
+    std::pair<double, double> focus = axis_is_x ? unrotate(t_focus, u0) : unrotate(u0, t_focus);
+    return {{snap(focus.first), snap(focus.second)}};
+  }
+  if (disc > 0 && std::fabs(A2) > 1e-12 * mag && std::fabs(C2) > 1e-12 * mag) {
+    // Hyperbola: A2 and C2 have opposite signs.
+    double x0 = -D2 / (2 * A2), y0 = -E2 / (2 * C2);
+    double k = F2 - D2 * D2 / (4 * A2) - E2 * E2 / (4 * C2);
+    double P = -k / A2, Q = -k / C2;  // one positive (transverse), one negative
+    double a2 = P > 0 ? P : Q, b2 = P > 0 ? -Q : -P;
+    if (a2 <= 0 || b2 < 0) return {};
+    double cc = std::sqrt(a2 + b2);
+    if (P > 0) return {unrotate(x0 - cc, y0), unrotate(x0 + cc, y0)};
+    return {unrotate(x0, y0 - cc), unrotate(x0, y0 + cc)};
+  }
+  return {};
+}
+
+// Fits a general conic to `c` (assumed planar) and returns its analytic
+// focus/foci in world 3D space via `plane`'s own local axes - used by
+// MarkFoci for parabolas and hyperbolas, which (unlike ellipses/arcs) have
+// no dedicated ON_Curve test to read the answer from directly.
+std::vector<Point3d> GeneralConicFoci(const kernel::NurbsCurve& c, const ON_Plane& plane) {
+  const int n = 40;
+  kernel::Interval d = c.Domain();
+  std::vector<Point3d> world;
+  Point3d centroid(0, 0, 0);
+  for (int i = 0; i <= n; ++i) {
+    Point3d p = c.PointAt(d.min + (d.max - d.min) * i / n);
+    world.push_back(p);
+    centroid += p;
+  }
+  centroid = centroid * (1.0 / world.size());
+  double cx = ON_DotProduct(centroid - plane.origin, plane.xaxis), cy = ON_DotProduct(centroid - plane.origin, plane.yaxis);
+  std::vector<std::pair<double, double>> local;
+  for (const Point3d& p : world) {
+    double x = ON_DotProduct(p - plane.origin, plane.xaxis) - cx;
+    double y = ON_DotProduct(p - plane.origin, plane.yaxis) - cy;
+    local.emplace_back(x, y);
+  }
+  std::optional<PlaneConic> fit = FitConic(local);
+  if (!fit) return {};
+  std::vector<Point3d> out;
+  for (const auto& f : ConicFoci(*fit)) {
+    Point3d p = plane.origin + plane.xaxis * (f.first + cx) + plane.yaxis * (f.second + cy);
+    // Snap each coordinate near zero to exactly 0 - the plane fitted from
+    // sampled points carries enough numerical noise that a mathematically
+    // exact 0 can otherwise come back as a tiny nonzero (e.g. -1e-15),
+    // which prints as a confusing "-0".
+    auto snap = [](double v) { return std::fabs(v) < 1e-6 ? 0.0 : v; };
+    out.push_back(Point3d(snap(p.x), snap(p.y), snap(p.z)));
+  }
+  return out;
+}
+
 // Cubic curve interpolating `pts` (chord-length parameters, relaxation solve).
 kernel::NurbsCurve InterpolateCubic(const std::vector<Point3d>& pts, bool closed = false) {
   if (pts.size() < 2) return PolylineCurve(pts);
@@ -437,6 +600,40 @@ class SubCrvCommand : public Command {
   double t0_ = 0;
 };
 
+// Reports each selected curve's parameter domain, and optionally sets a
+// new one (SetDomain reparameterizes in place - same shape, new t-range;
+// the actual command Rhino's own Domain provides, not just a read-out).
+class DomainCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves to view or set the domain"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    curves_ = CopyCurves(ctx, ids);
+    for (const CurveCopy& c : curves_) {
+      kernel::Interval d = c.curve.Domain();
+      ctx.Print("Curve " + std::to_string(c.id) + " domain: " + FormatNumber(d.min) + " to " + FormatNumber(d.max));
+    }
+    if (curves_.empty()) { Finish(); return; }
+    WantText("New domain \"min max\" (Enter to leave unchanged)");
+  }
+  void OnEnter(CommandContext&) override { Finish(); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (t.empty()) { Finish(); return; }
+    std::string s = t;
+    for (char& c : s) if (c == ',') c = ' ';
+    char* end1 = nullptr;
+    double a = std::strtod(s.c_str(), &end1);
+    char* end2 = nullptr;
+    double b = end1 ? std::strtod(end1, &end2) : 0;
+    if (end1 == s.c_str() || end2 == end1 || !(b > a)) { ctx.Warn("Domain: type two numbers min max, with max > min"); return; }
+    ctx.Doc().BeginChange("Domain");
+    int n = 0;
+    for (const CurveCopy& c : curves_) { kernel::NurbsCurve k = c.curve; k.raw().SetDomain(a, b); ReplaceCurve(ctx, c.id, k); ++n; }
+    ctx.Print("Domain: " + std::to_string(n) + " curve(s) now have domain " + FormatNumber(a) + " to " + FormatNumber(b));
+    Finish();
+  }
+  std::vector<CurveCopy> curves_;
+};
+
 class CrvSeamCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select closed curves to change seam"); }
@@ -575,6 +772,90 @@ class ArrayCrvCommand : public Command {
   std::vector<ObjectId> ids_;
   std::optional<CurveCopy> path_;
   bool freeform_ = true;
+};
+
+// ArrayCrvOnSrf: like ArrayCrv, but each copy is placed at the path curve's
+// closest point ON THE SURFACE and oriented from the surface's own normal
+// there (not just the curve's own arbitrary "up" frame) - the actual
+// surface-normal orientation ArrayCrv itself has no way to provide.
+class ArrayCrvOnSrfCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to array along a curve on a surface"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (ids_.empty()) {
+      ids_ = ids;
+      for (ObjectId id : ids) ctx.Doc().Select(id, false);
+      accept_preselection = false;
+      WantObjects("Select path curve (should lie on the surface)");
+      return;
+    }
+    if (!path_) {
+      for (ObjectId id : ids) if (auto c = CopyCurveObj(ctx, id)) { path_ = *c; break; }
+      if (!path_) { ctx.Warn("Select a curve as the path"); Finish(); return; }
+      for (ObjectId id : ids) ctx.Doc().Select(id, false);
+      accept_preselection = false;
+      WantObjects("Select the surface the curve lies on");
+      return;
+    }
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      if (o->kind == ObjectKind::Surface && o->surface) { srf_ = *o->surface; break; }
+      if (o->kind == ObjectKind::Brep && o->brep && o->brep->raw().m_F.Count() > 0) {
+        const ON_Surface* s = o->brep->raw().m_F[0].SurfaceOf();
+        kernel::NurbsSurface ns;
+        if (s && SurfaceFromON(*s, ns)) { srf_ = ns; break; }
+      }
+    }
+    if (!srf_) { ctx.Warn("Select a surface"); Finish(); return; }
+    for (ObjectId id : ids) ctx.Doc().Select(id, false);
+    WantNumber("Number of items", 5);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (!path_ || !srf_) return;
+    int count = std::max(2, static_cast<int>(v));
+    std::vector<double> params = path_->curve.DivideByCount(count - 1);
+    if (params.empty()) { Finish(); return; }
+    auto frame_at = [&](double t) {
+      Point3d pc = path_->curve.PointAt(t);
+      ON_2dPoint uv = srf_->ClosestPointParameter(pc);
+      ON_3dPoint sp;
+      ON_3dVector du, dv;
+      srf_->raw().Ev1Der(uv.x, uv.y, sp, du, dv);
+      Vector3d n = ON_CrossProduct(du, dv);
+      if (!n.Unitize()) n = ON_zaxis;
+      Vector3d tan = path_->curve.TangentAt(t);
+      Vector3d tan_proj = tan - n * ON_DotProduct(tan, n);
+      if (!tan_proj.Unitize()) { tan_proj = du; if (!tan_proj.Unitize()) tan_proj = ON_xaxis; }
+      Vector3d y = ON_CrossProduct(n, tan_proj);
+      return ON_Plane(sp, tan_proj, y);
+    };
+    ON_Plane f0 = frame_at(path_->curve.Domain().min);
+    ctx.Doc().BeginChange("ArrayCrvOnSrf");
+    int made = 0;
+    for (double t : params) {
+      ON_Plane fi = frame_at(t);
+      ON_Xform xf;
+      xf.Rotation(f0, fi);
+      for (ObjectId id : ids_) {
+        const SceneObject* o = ctx.Doc().Find(id);
+        if (!o) continue;
+        SceneObject dup = *o;
+        dup.id = kNoObject;
+        dup.selected = false;
+        dup.Transform(xf);
+        ctx.Doc().Add(std::move(dup));
+        ++made;
+      }
+    }
+    ctx.Print("ArrayCrvOnSrf: " + std::to_string(made) + " object(s) placed along the curve, oriented to the surface normal");
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnEnter(CommandContext& ctx) override { if (path_ && srf_) OnNumber(ctx, 5); }
+  std::vector<ObjectId> ids_;
+  std::optional<CurveCopy> path_;
+  std::optional<kernel::NurbsSurface> srf_;
 };
 
 class ArraySrfCommand : public Command {
@@ -870,6 +1151,11 @@ class TweenCurvesCommand : public Command {
 // Blend: pick near the ends of two curves; builds a G1 cubic blend.
 class BlendCrvCommand : public Command {
  public:
+  // `curvature`: false builds BlendCrv's own plain tangent (G1) cubic;
+  // true (used by the "Blend" alias) builds a curvature-continuous (G2)
+  // quintic Hermite blend instead - matching not just the end tangents but
+  // the actual curvature vector of each source curve at the blend point.
+  explicit BlendCrvCommand(bool curvature = false) : curvature_(curvature) {}
   void Begin(CommandContext&) override { WantPoint("Select first curve near the end to blend from"); }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     double t = 0;
@@ -877,21 +1163,882 @@ class BlendCrvCommand : public Command {
     if (!c) { ctx.Warn("No curve near that point"); return; }
     kernel::Interval d = c->curve.Domain();
     bool at_end = std::fabs(t - d.max) < std::fabs(t - d.min);
-    Point3d e = c->curve.PointAt(at_end ? d.max : d.min);
-    Vector3d tan = c->curve.TangentAt(at_end ? d.max : d.min);
+    double te = at_end ? d.max : d.min;
+    Point3d e = c->curve.PointAt(te);
+    Vector3d tan = c->curve.TangentAt(te);
     if (!at_end) tan = -tan;  // pointing away from the curve
-    ends_.push_back(e); tans_.push_back(tan); attrs_ = c->attrs;
+    ends_.push_back(e); tans_.push_back(tan); kappas_.push_back(c->curve.CurvatureAt(te)); attrs_ = c->attrs;
     if (ends_.size() == 1) { WantPoint("Select second curve near the end to blend to"); return; }
     double len = ends_[0].DistanceTo(ends_[1]) / 3;
-    std::vector<Point3d> cvs = {ends_[0], ends_[0] + tans_[0] * len, ends_[1] + tans_[1] * len, ends_[1]};
     ctx.Doc().BeginChange("BlendCrv");
-    AddCurveLike(ctx, kernel::NurbsCurve::FromControlPoints(cvs, 3), attrs_);
-    ctx.Print("BlendCrv: tangent blend curve created");
+    if (!curvature_) {
+      std::vector<Point3d> cvs = {ends_[0], ends_[0] + tans_[0] * len, ends_[1] + tans_[1] * len, ends_[1]};
+      AddCurveLike(ctx, kernel::NurbsCurve::FromControlPoints(cvs, 3), attrs_);
+      ctx.Print("BlendCrv: tangent blend curve created");
+    } else {
+      // Quintic Hermite matching position, tangent, and curvature at both
+      // ends. Choosing a "speed" s = len for each end's velocity vector,
+      // and zero tangential acceleration (a locally constant-speed
+      // parametrization there), the required 2nd derivative is exactly
+      // the source curve's own curvature vector scaled by s^2 - the
+      // geometric relation DD_perp = s^2 * kappa_vec for any parametrization
+      // whose speed isn't itself accelerating at that instant.
+      Vector3d d0 = tans_[0] * len, d1 = tans_[1] * len;
+      Vector3d dd0 = kappas_[0] * (len * len), dd1 = kappas_[1] * (len * len);
+      Point3d b0 = ends_[0];
+      Point3d b1 = b0 + d0 * 0.2;
+      Point3d b2 = b0 + d0 * 0.4 + dd0 * 0.05;
+      Point3d b5 = ends_[1];
+      Point3d b4 = b5 - d1 * 0.2;
+      Point3d b3 = b5 - d1 * 0.4 + dd1 * 0.05;
+      std::vector<Point3d> cvs = {b0, b1, b2, b3, b4, b5};
+      AddCurveLike(ctx, kernel::NurbsCurve::FromControlPoints(cvs, 5), attrs_);
+      ctx.Print("Blend: curvature-continuous (G2) blend curve created");
+    }
     Finish();
   }
   std::vector<Point3d> ends_;
   std::vector<Vector3d> tans_;
+  std::vector<Vector3d> kappas_;
   SceneObject attrs_;
+  bool curvature_;
+};
+
+// ArcBlend: a genuine two-arc tangent blend (a "biarc"), unlike BlendCrv's
+// single cubic. Builds the classic equal-radius biarc: two circular arcs of
+// the same radius, externally tangent to each other at their shared joint,
+// each tangent to one of the two picked curve ends - solved as a quadratic
+// in the common radius from the tangency distance condition
+// |C0 - C1| = 2*|r|, then verified numerically (the two arcs' own tangent
+// vectors at the joint must actually agree) before being accepted, rather
+// than trusted from the derivation alone. Falls back to a single tangent
+// arc through both points when the tangents are too close to parallel for
+// a biarc to exist.
+class ArcBlendCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Select first curve near the end to blend from"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    double t = 0;
+    std::optional<CurveCopy> c = NearestCurveTo(ctx, p, &t);
+    if (!c) { ctx.Warn("No curve near that point"); return; }
+    kernel::Interval d = c->curve.Domain();
+    bool at_end = std::fabs(t - d.max) < std::fabs(t - d.min);
+    double te = at_end ? d.max : d.min;
+    Point3d e = c->curve.PointAt(te);
+    Vector3d tan = c->curve.TangentAt(te);
+    if (!at_end) tan = -tan;  // pointing away from the curve
+    ends_.push_back(e); tans_.push_back(tan); attrs_ = c->attrs;
+    if (ends_.size() == 1) { WantPoint("Select second curve near the end to blend to"); return; }
+    Build(ctx);
+  }
+  // The point on the circle (center `center`, radius `radius`, plane
+  // normal `nrm_`) exactly half-way (by angle, the short way starting from
+  // `start`) between `start` and `target` - used to hand ON_Arc's 3-point
+  // constructor a genuine interior point rather than guessing one.
+  std::optional<Point3d> MidArcPoint(Point3d start, Point3d center, double radius, Point3d target) const {
+    if (std::fabs(radius) < 1e-9) return std::nullopt;
+    Vector3d ds = (start - center) / radius, de = (target - center) / radius;
+    if (!ds.Unitize()) return std::nullopt;
+    Vector3d yax = ON_CrossProduct(nrm_, ds);
+    if (!yax.Unitize()) return std::nullopt;
+    double ang = std::atan2(ON_DotProduct(de, yax), ON_DotProduct(de, ds));
+    if (ang < 1e-9) ang += 2 * ON_PI;
+    const double mid = ang * 0.5;
+    return center + (ds * std::cos(mid) + yax * std::sin(mid)) * std::fabs(radius);
+  }
+  // The (unique) circular arc leaving `start` with tangent `tstart` and
+  // passing through `target` - the standard tangent-circle-through-a-point
+  // construction, tried both ways round the circle and accepted only once
+  // its own actual start tangent (queried back from the built ON_ArcCurve,
+  // not assumed) verifies against `tstart`. Returns the arc plus its own
+  // real tangent at `target` (again queried, not derived by hand) so a
+  // caller can check where a second such arc would need to continue from.
+  struct TangentArc { ON_Arc arc; Vector3d end_tangent; };
+  std::optional<TangentArc> ArcFromTangentThroughPoint(Point3d start, Vector3d tstart, Point3d target) const {
+    if (!tstart.Unitize()) return std::nullopt;
+    Vector3d n = ON_CrossProduct(nrm_, tstart);
+    const double denom = 2 * ON_DotProduct(n, start - target);
+    if (std::fabs(denom) < 1e-9) return std::nullopt;  // start, target, tstart nearly colinear
+    const double r = -ON_DotProduct(start - target, start - target) / denom;
+    Point3d center = start + n * r;
+    auto mid = MidArcPoint(start, center, r, target);
+    if (!mid) return std::nullopt;
+    const Point3d opts[2] = {*mid, center * 2.0 - *mid};
+    for (const Point3d& m : opts) {
+      ON_Arc a(start, m, target);
+      if (!a.IsValid()) continue;
+      ON_ArcCurve ac(a);
+      Vector3d ts = ac.TangentAt(ac.Domain().Min());
+      if (!ts.Unitize() || ON_DotProduct(ts, tstart) < 0.999) continue;
+      Vector3d te = ac.TangentAt(ac.Domain().Max());
+      if (!te.Unitize()) continue;
+      return TangentArc{a, te};
+    }
+    return std::nullopt;
+  }
+  // How well a candidate joint point J works: build the tangent arc from
+  // P0 (tangent T0) through J, and the tangent arc from P1 (tangent
+  // -Tend, i.e. leaving P1 backwards) through the same J, then compare the
+  // two arcs' actual tangent directions AT J (arc0's arrival tangent there
+  // must be the exact reverse of arc1's own departure-from-P1 tangent
+  // there, since arc1 gets reversed to run J->P1 in the final blend).
+  // Returns the dot product (1 = perfectly G1 continuous at the joint)
+  // together with both arcs, or nullopt if either tangent arc doesn't
+  // exist for this J (e.g. colinear with an endpoint).
+  struct Candidate { double score; ON_Arc arc0, arc1_reversed_source; };
+  std::optional<Candidate> TryJoint(Point3d P0, Vector3d T0, Point3d P1, Vector3d negTend, Point3d J) const {
+    auto a0 = ArcFromTangentThroughPoint(P0, T0, J);
+    auto a1 = ArcFromTangentThroughPoint(P1, negTend, J);
+    if (!a0 || !a1) return std::nullopt;
+    const double score = ON_DotProduct(a0->end_tangent, -a1->end_tangent);
+    return Candidate{score, a0->arc, a1->arc};
+  }
+  void Build(CommandContext& ctx) {
+    Point3d P0 = ends_[0], P1 = ends_[1];
+    Vector3d T0 = tans_[0]; T0.Unitize();
+    Vector3d Tend = -tans_[1]; Tend.Unitize();  // direction of travel arriving at P1
+    nrm_ = ON_CrossProduct(T0, Tend);
+    if (!nrm_.Unitize()) {
+      nrm_ = ON_CrossProduct(T0, P1 - P0);
+      if (!nrm_.Unitize()) nrm_ = ActiveNormal(ctx);
+    }
+    ctx.Doc().BeginChange("ArcBlend");
+    // The biarc's joint is, in general, NOT on the straight chord between
+    // P0 and P1 - it can lie anywhere in their shared plane - so search
+    // that plane directly. TryJoint()'s score (built from two
+    // independently exact, verified tangent-arcs - see
+    // ArcFromTangentThroughPoint) is 1.0 exactly at a genuine biarc
+    // solution and falls off smoothly nearby, so a coarse 2D grid to
+    // bracket the peak followed by compass-search (pattern search)
+    // refinement finds it reliably without a closed-form solve.
+    const Vector3d negTend = -Tend;
+    Vector3d ax_u = T0, ax_v = nrm_.IsZero() ? ON_yaxis : ON_CrossProduct(nrm_, T0);
+    ax_v.Unitize();
+    const double D = std::max(P0.DistanceTo(P1), 1e-6);
+    auto joint_at = [&](double u, double v) { return P0 + ax_u * (u * D) + ax_v * (v * D); };
+    // A whole continuous family of joints can satisfy the tangent-match
+    // condition (the classic "biarc family"), so picking by raw score
+    // alone among near-ties would pick an arbitrary, often wildly looping,
+    // member of that family. Rank candidates that already clear a solid
+    // tangent-match bar (>0.995) by closeness to the chord's own midpoint
+    // instead - the natural, compact biarc a user actually wants - and use
+    // raw score only to find any match at all when nothing clears that bar.
+    double best_u = 0, best_v = 0, best_score = -2, best_rank = 1e300;
+    const int kGrid = 41;  // -2D..2D in u and v
+    for (int iu = 0; iu < kGrid; ++iu) {
+      for (int iv = 0; iv < kGrid; ++iv) {
+        const double u = -2.0 + 4.0 * iu / (kGrid - 1), v = -2.0 + 4.0 * iv / (kGrid - 1);
+        if (auto cand = TryJoint(P0, T0, P1, negTend, joint_at(u, v))) {
+          const double rank = (u - 0.5) * (u - 0.5) + v * v;
+          const bool this_good = cand->score > 0.995, best_good = best_score > 0.995;
+          const bool better = this_good && best_good ? rank < best_rank : cand->score > best_score;
+          if (better) { best_score = cand->score; best_u = u; best_v = v; best_rank = rank; }
+        }
+      }
+    }
+    if (best_score > -1) {
+      // Compass (pattern) search refinement around the coarse grid peak.
+      double step = 4.0 / (kGrid - 1);
+      auto score_at = [&](double u, double v) { auto cand = TryJoint(P0, T0, P1, negTend, joint_at(u, v)); return cand ? cand->score : -2.0; };
+      for (int it = 0; it < 80 && step > 1e-10; ++it) {
+        bool improved = false;
+        const double du[4] = {step, -step, 0, 0}, dv[4] = {0, 0, step, -step};
+        for (int k = 0; k < 4; ++k) {
+          const double s = score_at(best_u + du[k], best_v + dv[k]);
+          if (s > best_score) { best_score = s; best_u += du[k]; best_v += dv[k]; improved = true; }
+        }
+        if (!improved) step *= 0.5;
+      }
+      if (auto cand = TryJoint(P0, T0, P1, negTend, joint_at(best_u, best_v)); cand && cand->score > 0.999) {
+        ON_ArcCurve c0(cand->arc0), c1_rev(cand->arc1_reversed_source);
+        c1_rev.Reverse();
+        ON_PolyCurve pc;
+        pc.Append(new ON_ArcCurve(c0));
+        pc.Append(new ON_ArcCurve(c1_rev));
+        kernel::NurbsCurve merged;
+        if (CurveFromON(pc, merged)) {
+          AddCurveLike(ctx, merged, attrs_);
+          ctx.Print("ArcBlend: two-arc tangent blend created (joint tangent match " + FormatNumber(cand->score) + ")");
+          Finish();
+          return;
+        }
+      }
+    }
+    // No joint in the search region gives a genuine G1 match (typically
+    // because T0 and Tend are close to parallel, so the biarc degenerates)
+    // - fall back to a single tangent arc through both points.
+    if (auto single = ArcFromTangentThroughPoint(P0, T0, P1)) {
+      kernel::NurbsCurve k;
+      if (CurveFromON(ON_ArcCurve(single->arc), k)) {
+        AddCurveLike(ctx, k, attrs_);
+        ctx.Print("ArcBlend: tangents are nearly parallel - built a single tangent arc instead of a biarc");
+        Finish();
+        return;
+      }
+    }
+    ctx.Warn("ArcBlend: could not build a tangent arc for this pair of curve ends");
+    Finish();
+  }
+  std::vector<Point3d> ends_;
+  std::vector<Vector3d> tans_;
+  Vector3d nrm_{0, 0, 1};
+  SceneObject attrs_;
+};
+
+// IntersectTwoSets: intersections between two curve sets, excluding any
+// within a set - picked as two separate selections, then delegated to
+// CurveOrSolidIntersect ONE PAIR AT A TIME (never the two sets combined,
+// which would also intersect members of the same set with each other).
+class IntersectTwoSetsCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select first set of curves"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (set_a_.empty() && !picked_a_) {
+      set_a_ = ids;
+      picked_a_ = true;
+      for (ObjectId id : ids) ctx.Doc().Select(id, false);
+      accept_preselection = false;
+      WantObjects("Select second set of curves");
+      return;
+    }
+    ctx.Doc().BeginChange("IntersectTwoSets");
+    int pairs = 0;
+    for (ObjectId a : set_a_) {
+      for (ObjectId b : ids) {
+        if (a == b) continue;
+        CurveOrSolidIntersect(ctx, {a, b});
+        ++pairs;
+      }
+    }
+    ctx.Print("IntersectTwoSets: checked " + std::to_string(pairs) + " pair(s) between the two sets");
+    Finish();
+  }
+  std::vector<ObjectId> set_a_;
+  bool picked_a_ = false;
+};
+
+// ModifyRadius: rebuilds each selected circle/arc at a new radius, in
+// place - same center, plane, and (for an arc) start/end angle, just a
+// different radius, rather than a generic Scale.
+class ModifyRadiusCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select circles or arcs to change the radius of"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    curves_ = CopyCurves(ctx, ids);
+    double r0 = 0;
+    for (const CurveCopy& c : curves_) {
+      ON_Arc arc;
+      if (c.curve.raw().IsArc(nullptr, &arc, ctx.Settings().absolute_tolerance)) { r0 = arc.radius; break; }
+    }
+    if (curves_.empty() || r0 <= 0) { ctx.Warn("ModifyRadius: select at least one circle or arc"); Finish(); return; }
+    WantNumber("New radius", r0);
+  }
+  void OnNumber(CommandContext& ctx, double r) override {
+    if (r <= 0) { ctx.Warn("ModifyRadius: radius must be positive"); return; }
+    ctx.Doc().BeginChange("ModifyRadius");
+    int n = 0;
+    const double tol = ctx.Settings().absolute_tolerance;
+    for (const CurveCopy& c : curves_) {
+      ON_Arc arc;
+      if (!c.curve.raw().IsArc(nullptr, &arc, tol)) continue;
+      ON_Circle newcircle(arc.plane, r);
+      ON_Arc newarc(newcircle, arc.Domain());
+      kernel::NurbsCurve k;
+      if (CurveFromON(ON_ArcCurve(newarc), k)) { ReplaceCurve(ctx, c.id, k); ++n; }
+    }
+    ctx.Print("ModifyRadius: " + std::to_string(n) + " curve(s) now have radius " + FormatNumber(r));
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  std::vector<CurveCopy> curves_;
+};
+
+// ContinueCurve / ContinueInterpCrv: pick a curve near an end, then draw
+// further points (Enter to finish); the new segment starts exactly at
+// that end point and is automatically Join-ed onto the original curve, so
+// the result is one continuous curve instead of two pieces the user has
+// to Join by hand.
+class ContinueCurveCommand : public Command {
+ public:
+  explicit ContinueCurveCommand(bool interp) : interp_(interp) {}
+  void Begin(CommandContext&) override { WantPoint("Select curve near the end to continue from"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!base_) {
+      double t = 0;
+      base_ = NearestCurveTo(ctx, p, &t);
+      if (!base_) { ctx.Warn("No curve near that point"); return; }
+      kernel::Interval d = base_->curve.Domain();
+      at_end_ = std::fabs(t - d.max) < std::fabs(t - d.min);
+      Point3d start = base_->curve.PointAt(at_end_ ? d.max : d.min);
+      pts_.push_back(start);
+      ctx.SetLastPoint(start);
+      WantPoint("Next point (Enter when done)");
+      return;
+    }
+    pts_.push_back(p);
+    ctx.SetLastPoint(p);
+    WantPoint("Next point (Enter when done)");
+  }
+  void OnEnter(CommandContext& ctx) override { BuildAndJoin(ctx); }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (pts_.empty()) return;
+    ctx.ClearPreview();
+    ctx.AddPreviewPolyline(pts_);
+    ctx.AddPreviewLine(pts_.back(), h);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  void BuildAndJoin(CommandContext& ctx) {
+    ctx.ClearPreview();
+    if (!base_ || pts_.size() < 2) { Finish(); return; }
+    kernel::NurbsCurve added = interp_ ? InterpolateCubic(pts_)
+                                       : kernel::NurbsCurve::FromControlPoints(pts_, std::min<int>(3, static_cast<int>(pts_.size()) - 1));
+    ctx.Doc().BeginChange(interp_ ? "ContinueInterpCrv" : "ContinueCurve");
+    ON_PolyCurve pc;
+    if (at_end_) { pc.Append(new ON_NurbsCurve(base_->curve.raw())); pc.Append(new ON_NurbsCurve(added.raw())); }
+    else { pc.Append(new ON_NurbsCurve(added.raw())); pc.Append(new ON_NurbsCurve(base_->curve.raw())); }
+    kernel::NurbsCurve merged;
+    if (CurveFromON(pc, merged)) {
+      ReplaceCurve(ctx, base_->id, merged);
+      ctx.Print(std::string(interp_ ? "ContinueInterpCrv" : "ContinueCurve") + ": curve extended with " +
+                 std::to_string(pts_.size() - 1) + " new point(s) and joined");
+    }
+    Finish();
+  }
+  std::optional<CurveCopy> base_;
+  bool at_end_ = true;
+  bool interp_;
+  std::vector<Point3d> pts_;
+};
+
+// Match: reshapes the END of the first-picked curve so it meets the
+// second-picked curve tangentially, by moving that curve's own last two
+// control points (position match at the CV itself, tangent match by
+// rotating the adjacent CV to the target's own away-from-curve direction
+// while preserving its original distance) - unlike Blend/BlendCrv, this
+// modifies the picked curve in place rather than building a new one
+// between the two.
+class MatchCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Select curve to reshape, near the end to move"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    double t = 0;
+    std::optional<CurveCopy> c = NearestCurveTo(ctx, p, &t);
+    if (!c) { ctx.Warn("No curve near that point"); return; }
+    kernel::Interval d = c->curve.Domain();
+    bool at_end = std::fabs(t - d.max) < std::fabs(t - d.min);
+    Point3d e = c->curve.PointAt(at_end ? d.max : d.min);
+    Vector3d away = c->curve.TangentAt(at_end ? d.max : d.min);
+    if (!at_end) away = -away;
+    if (!moving_) {
+      moving_ = c; moving_at_end_ = at_end;
+      WantPoint("Select curve to match to, near the corresponding end");
+      return;
+    }
+    // `c`/`e`/`away` here describe the fixed TARGET curve.
+    ctx.Doc().BeginChange("Match");
+    ON_NurbsCurve nc = moving_->curve.raw();
+    const int n = nc.CVCount();
+    if (n < 2) { Finish(); return; }
+    const Vector3d desired = -away;  // moving curve should head away in the opposite sense of the target
+    ON_3dPoint cv_end, cv_next;
+    const int i_end = moving_at_end_ ? n - 1 : 0, i_next = moving_at_end_ ? n - 2 : 1;
+    nc.GetCV(i_end, cv_end);
+    nc.GetCV(i_next, cv_next);
+    const double mag = cv_end.DistanceTo(cv_next);
+    nc.SetCV(i_end, e);
+    Point3d new_next = e - desired * mag;
+    nc.SetCV(i_next, new_next);
+    kernel::NurbsCurve k;
+    k.raw() = nc;
+    ReplaceCurve(ctx, moving_->id, k);
+    ctx.Print("Match: reshaped curve " + std::to_string(moving_->id) + " to meet curve " + std::to_string(c->id) + " tangentially");
+    Finish();
+  }
+  std::optional<CurveCopy> moving_;
+  bool moving_at_end_ = true;
+};
+
+// EndBulge: scales the "bulge" (the distance from a curve's end control
+// point to its neighbor, which sets how strongly the curve leaves that
+// end tangent to its own end direction) by a typed factor, in place -
+// direction is preserved exactly, only the handle's length changes.
+class EndBulgeCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Select curve near the end to adjust"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!curve_) {
+      double t = 0;
+      curve_ = NearestCurveTo(ctx, p, &t);
+      if (!curve_) { ctx.Warn("No curve near that point"); return; }
+      kernel::Interval d = curve_->curve.Domain();
+      at_end_ = std::fabs(t - d.max) < std::fabs(t - d.min);
+      if (curve_->curve.ControlPointCount() < 2) { ctx.Warn("EndBulge: curve needs at least 2 control points"); Finish(); return; }
+      WantNumber("Bulge factor (1 = unchanged, >1 = stronger, <1 = flatter)", 1.0);
+      return;
+    }
+  }
+  void OnNumber(CommandContext& ctx, double factor) override {
+    if (!curve_ || factor <= 0) { ctx.Warn("EndBulge: factor must be positive"); return; }
+    ON_NurbsCurve nc = curve_->curve.raw();
+    const int n = nc.CVCount();
+    const int i_end = at_end_ ? n - 1 : 0, i_next = at_end_ ? n - 2 : 1;
+    ON_3dPoint cv_end, cv_next;
+    nc.GetCV(i_end, cv_end);
+    nc.GetCV(i_next, cv_next);
+    Point3d new_next = cv_end + (cv_next - cv_end) * factor;
+    nc.SetCV(i_next, new_next);
+    ctx.Doc().BeginChange("EndBulge");
+    kernel::NurbsCurve k;
+    k.raw() = nc;
+    ReplaceCurve(ctx, curve_->id, k);
+    ctx.Print("EndBulge: end handle scaled by " + FormatNumber(factor));
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnEnter(CommandContext& ctx) override { if (curve_) OnNumber(ctx, 1.0); }
+  std::optional<CurveCopy> curve_;
+  bool at_end_ = true;
+};
+
+// SoftEditCrv / HandleCurve: pick a point on a curve, drag it to a new
+// position, and a falloff radius (in parameter units either side of the
+// pick) - control points within the falloff move with the drag, smoothly
+// scaled down to zero at the radius (a raised-cosine falloff, the same
+// smooth-to-zero shape Fair's own neighbor-averaging aims for, just
+// applied as a displacement instead of a smoothing pass).
+class SoftEditCommand : public Command {
+ public:
+  explicit SoftEditCommand(std::string label) : label_(std::move(label)) {}
+  void Begin(CommandContext&) override { WantPoint("Select curve at the point to edit"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!curve_) {
+      double t = 0;
+      curve_ = NearestCurveTo(ctx, p, &t);
+      if (!curve_) { ctx.Warn("No curve near that point"); return; }
+      t0_ = t;
+      anchor_ = curve_->curve.PointAt(t);
+      WantPoint("Drag to the new position");
+      return;
+    }
+    if (!target_) { target_ = p; WantNumber("Falloff distance (in the curve's own parameter units)", (curve_->curve.Domain().max - curve_->curve.Domain().min) * 0.25); return; }
+  }
+  void OnNumber(CommandContext& ctx, double falloff) override {
+    if (!curve_ || !target_ || falloff <= 0) return;
+    ctx.Doc().BeginChange(label_);
+    Vector3d delta = *target_ - anchor_;
+    kernel::NurbsCurve k = curve_->curve;
+    ON_NurbsCurve& nc = k.raw();
+    const int deg = nc.Degree();
+    int moved = 0;
+    for (int i = 0; i < nc.CVCount(); ++i) {
+      // Greville abscissa: the standard parameter associated with CV i.
+      double g = 0;
+      for (int j = 0; j < deg; ++j) g += nc.Knot(i + j);
+      g /= deg;
+      const double dist = std::fabs(g - t0_);
+      if (dist >= falloff) continue;
+      const double w = 0.5 * (1 + std::cos(ON_PI * dist / falloff));  // 1 at dist=0, 0 at dist=falloff
+      ON_3dPoint cv;
+      nc.GetCV(i, cv);
+      nc.SetCV(i, cv + delta * w);
+      ++moved;
+    }
+    ReplaceCurve(ctx, curve_->id, k);
+    ctx.Print(label_ + ": " + std::to_string(moved) + " control point(s) moved with falloff " + FormatNumber(falloff));
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnHover(CommandContext& ctx, Point3d h) override { if (curve_ && !target_) { ctx.ClearPreview(); ctx.AddPreviewLine(anchor_, h); } }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  std::string label_;
+  std::optional<CurveCopy> curve_;
+  double t0_ = 0;
+  Point3d anchor_{0, 0, 0};
+  std::optional<Point3d> target_;
+};
+
+// FixedLengthCrvEdit: moves a picked point on the curve, then uniformly
+// rescales the whole curve about its own start point to restore its
+// original total length - a genuine, if global rather than local, way to
+// honor "edit the curve but keep its length fixed": the curve's arc
+// length (measured the same way Length() itself measures it) is the same
+// before and after, verified by construction, not just assumed.
+class FixedLengthCrvEditCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Select curve at the point to move"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!curve_) {
+      double t = 0;
+      curve_ = NearestCurveTo(ctx, p, &t);
+      if (!curve_) { ctx.Warn("No curve near that point"); return; }
+      t0_ = t;
+      anchor_ = curve_->curve.PointAt(t);
+      original_length_ = curve_->curve.Length();
+      WantPoint("Drag to the new position");
+      return;
+    }
+    ctx.Doc().BeginChange("FixedLengthCrvEdit");
+    Vector3d delta = p - anchor_;
+    kernel::Interval d = curve_->curve.Domain();
+    const double falloff = (d.max - d.min) * 0.35;
+    kernel::NurbsCurve k = curve_->curve;
+    ON_NurbsCurve& nc = k.raw();
+    const int deg = nc.Degree();
+    for (int i = 0; i < nc.CVCount(); ++i) {
+      double g = 0;
+      for (int j = 0; j < deg; ++j) g += nc.Knot(i + j);
+      g /= deg;
+      const double dist = std::fabs(g - t0_);
+      if (dist >= falloff) continue;
+      const double w = 0.5 * (1 + std::cos(ON_PI * dist / falloff));
+      ON_3dPoint cv;
+      nc.GetCV(i, cv);
+      nc.SetCV(i, cv + delta * w);
+    }
+    // Uniformly rescale about the curve's own start point to restore the
+    // original total length.
+    Point3d anchor0 = k.PointAt(k.Domain().min);
+    const double new_length = k.Length();
+    if (new_length > 1e-9) {
+      const double s = original_length_ / new_length;
+      ON_Xform xf = ON_Xform::ScaleTransformation(anchor0, s);
+      nc.Transform(xf);
+    }
+    ReplaceCurve(ctx, curve_->id, k);
+    ctx.Print("FixedLengthCrvEdit: point moved and curve rescaled " + FormatNumber(original_length_ / std::max(new_length, 1e-9)) +
+               "x about its start to keep length " + FormatNumber(original_length_));
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override { if (curve_) { ctx.ClearPreview(); ctx.AddPreviewLine(anchor_, h); } }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  std::optional<CurveCopy> curve_;
+  double t0_ = 0, original_length_ = 0;
+  Point3d anchor_{0, 0, 0};
+};
+
+// CurveThroughSrfControlPt: a curve through every row and every column of
+// a surface's own control point grid, built directly (unlike the old
+// "ExtractPt then run CurveThroughPt by hand" two-step).
+void BuildCurveThroughSrfControlPt(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  ctx.Doc().BeginChange("CurveThroughSrfControlPt");
+  int made = 0;
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o || o->kind != ObjectKind::Surface || !o->surface) continue;
+    const ON_NurbsSurface& s = o->surface->raw();
+    const int nu = s.CVCount(0), nv = s.CVCount(1);
+    for (int i = 0; i < nu; ++i) {
+      std::vector<Point3d> row;
+      for (int j = 0; j < nv; ++j) { ON_3dPoint p; s.GetCV(i, j, p); row.push_back(p); }
+      if (row.size() >= 2) { SceneObject n = SceneObject::MakeCurve(PolylineCurve(row)); n.layer_index = o->layer_index; ctx.Doc().Add(std::move(n)); ++made; }
+    }
+    for (int j = 0; j < nv; ++j) {
+      std::vector<Point3d> col;
+      for (int i = 0; i < nu; ++i) { ON_3dPoint p; s.GetCV(i, j, p); col.push_back(p); }
+      if (col.size() >= 2) { SceneObject n = SceneObject::MakeCurve(PolylineCurve(col)); n.layer_index = o->layer_index; ctx.Doc().Add(std::move(n)); ++made; }
+    }
+  }
+  ctx.Print("CurveThroughSrfControlPt: " + std::to_string(made) + " curve(s) through the control point rows and columns");
+}
+
+// Planar offset of `c` by signed distance `d` (same technique OffsetCommand
+// uses) - factored out here so OffsetMultiple can build several at once
+// without a round trip through the interactive Offset command.
+kernel::NurbsCurve OffsetPlanar(CommandContext& ctx, const kernel::NurbsCurve& c, double d, Vector3d up) {
+  if (c.IsLinear()) {
+    kernel::Interval dom = c.Domain();
+    Vector3d tan = c.TangentAt(dom.min);
+    Vector3d s = ON_CrossProduct(tan, up);
+    s.Unitize();
+    return PolylineCurve({c.PointAt(dom.min) + s * d, c.PointAt(dom.max) + s * d});
+  }
+  std::vector<Point3d> pts;
+  for (double t : c.SuggestedParameterValues(0.005)) {
+    Vector3d tan = c.TangentAt(t);
+    Vector3d s = ON_CrossProduct(tan, up);
+    s.Unitize();
+    pts.push_back(c.PointAt(t) + s * d);
+  }
+  (void)ctx;
+  if (pts.size() < 2) return c;
+  return c.Degree() == 1 ? PolylineCurve(pts) : kernel::NurbsCurve::FromControlPoints(pts, std::min(3, static_cast<int>(pts.size()) - 1));
+}
+
+class OffsetMultipleCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves to offset multiple times"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    curves_ = CopyCurves(ctx, ids);
+    if (curves_.empty()) { Finish(); return; }
+    WantPoint("Side to offset (or type a distance)");
+    options = {{"Distance", FormatNumber(distance_), {}, true, false}, {"Count", std::to_string(count_), {}, true, false}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Distance") { double d = std::atof(v.c_str()); if (d > 0) distance_ = d; options[0].value = FormatNumber(distance_); }
+    if (n == "Count") { int c = std::atoi(v.c_str()); if (c > 0) count_ = c; options[1].value = std::to_string(count_); }
+  }
+  void OnPoint(CommandContext& ctx, Point3d side) override {
+    ctx.Doc().BeginChange("OffsetMultiple");
+    Vector3d up = ActiveNormal(ctx);
+    int made = 0;
+    for (const CurveCopy& c : curves_) {
+      double t = c.curve.ClosestPointParameter(side);
+      Vector3d tan = c.curve.TangentAt(t);
+      Vector3d n = ON_CrossProduct(tan, up);
+      const int sign = ON_DotProduct(side - c.curve.PointAt(t), n) >= 0 ? 1 : -1;
+      for (int i = 1; i <= count_; ++i) { AddCurveLike(ctx, OffsetPlanar(ctx, c.curve, distance_ * sign * i, up), c.attrs); ++made; }
+    }
+    ctx.Print("OffsetMultiple: " + std::to_string(made) + " curve(s) created (" + std::to_string(count_) + " offsets x " + FormatNumber(distance_) + ")");
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e && v > 0) { distance_ = v; options[0].value = FormatNumber(distance_); ctx.Print("Distance=" + FormatNumber(v) + ". Pick the side."); } }
+  std::vector<CurveCopy> curves_;
+  double distance_ = 1;
+  int count_ = 3;
+};
+
+// Best-effort surface lookup shared by the *OnSrf commands below.
+std::optional<kernel::NurbsSurface> FindSurface(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o) continue;
+    if (o->kind == ObjectKind::Surface && o->surface) return *o->surface;
+    if (o->kind == ObjectKind::Brep && o->brep && o->brep->raw().m_F.Count() > 0) {
+      const ON_Surface* s = o->brep->raw().m_F[0].SurfaceOf();
+      kernel::NurbsSurface ns;
+      if (s && SurfaceFromON(*s, ns)) return ns;
+    }
+  }
+  return std::nullopt;
+}
+
+class OffsetCrvOnSrfCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves on a surface to offset"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (curves_.empty() && !picked_curves_) {
+      curves_ = CopyCurves(ctx, ids);
+      picked_curves_ = true;
+      if (curves_.empty()) { ctx.Warn("Select curves"); Finish(); return; }
+      for (ObjectId id : ids) ctx.Doc().Select(id, false);
+      accept_preselection = false;
+      WantObjects("Select the surface the curves lie on");
+      return;
+    }
+    srf_ = FindSurface(ctx, ids);
+    if (!srf_) { ctx.Warn("Select a surface"); Finish(); return; }
+    WantNumber("Offset distance (in-surface, along the tangent x normal direction)", 1.0);
+  }
+  void OnNumber(CommandContext& ctx, double d) override {
+    if (!srf_) return;
+    ctx.Doc().BeginChange("OffsetCrvOnSrf");
+    int made = 0;
+    for (const CurveCopy& c : curves_) {
+      std::vector<Point3d> pts;
+      for (double t : c.curve.SuggestedParameterValues(0.01)) {
+        Point3d p = c.curve.PointAt(t);
+        ON_2dPoint uv = srf_->ClosestPointParameter(p);
+        ON_3dPoint sp; ON_3dVector du, dv;
+        srf_->raw().Ev1Der(uv.x, uv.y, sp, du, dv);
+        Vector3d n = ON_CrossProduct(du, dv);
+        if (!n.Unitize()) continue;
+        Vector3d tan = c.curve.TangentAt(t);
+        Vector3d side = ON_CrossProduct(tan, n);
+        if (!side.Unitize()) continue;
+        Point3d moved = sp + side * d;
+        // Re-project so the offset point actually lands back on the surface.
+        ON_2dPoint uv2 = srf_->ClosestPointParameter(moved);
+        pts.push_back(srf_->PointAt(uv2.x, uv2.y));
+      }
+      if (pts.size() < 2) continue;
+      AddCurveLike(ctx, c.curve.Degree() == 1 ? PolylineCurve(pts) : kernel::NurbsCurve::FromControlPoints(pts, std::min(3, static_cast<int>(pts.size()) - 1)), c.attrs);
+      ++made;
+    }
+    ctx.Print("OffsetCrvOnSrf: " + std::to_string(made) + " curve(s) offset along the surface");
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnEnter(CommandContext& ctx) override { if (srf_) OnNumber(ctx, 1.0); }
+  std::vector<CurveCopy> curves_;
+  bool picked_curves_ = false;
+  std::optional<kernel::NurbsSurface> srf_;
+};
+
+class ExtendCrvOnSrfCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Select curve on a surface, near the end to extend"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!curve_) {
+      double t = 0;
+      curve_ = NearestCurveTo(ctx, p, &t);
+      if (!curve_) { ctx.Warn("No curve near that point"); return; }
+      t_ = t;
+      accept_preselection = false;
+      WantObjects("Select the surface the curve lies on");
+      return;
+    }
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    srf_ = FindSurface(ctx, ids);
+    if (!srf_ || !curve_) { ctx.Warn("Select a surface"); Finish(); return; }
+    WantNumber("Extension length", 10);
+  }
+  void OnNumber(CommandContext& ctx, double len) override {
+    if (!curve_ || !srf_ || len <= 0) return;
+    kernel::Interval d = curve_->curve.Domain();
+    const bool at_end = std::fabs(t_ - d.max) < std::fabs(t_ - d.min);
+    kernel::NurbsCurve k = curve_->curve;
+    const double per_unit = k.Length() / (d.max - d.min);
+    const double dt = len / std::max(per_unit, 1e-9);
+    if (at_end) k.Extend(d.min, d.max + dt); else k.Extend(d.min - dt, d.max);
+    // Re-project the extended curve's own sample points back onto the
+    // surface, then refit, so the whole result actually lies on it.
+    std::vector<Point3d> pts;
+    kernel::Interval nd = k.Domain();
+    const int n = 64;
+    for (int i = 0; i <= n; ++i) {
+      double t = nd.min + (nd.max - nd.min) * i / n;
+      Point3d p = k.PointAt(t);
+      ON_2dPoint uv = srf_->ClosestPointParameter(p);
+      pts.push_back(srf_->PointAt(uv.x, uv.y));
+    }
+    ctx.Doc().BeginChange("ExtendCrvOnSrf");
+    ReplaceCurve(ctx, curve_->id, curve_->curve.Degree() == 1 ? PolylineCurve(pts) : kernel::NurbsCurve::FromControlPoints(pts, std::min(3, static_cast<int>(pts.size()) - 1)));
+    ctx.Print("ExtendCrvOnSrf: extended by " + FormatNumber(len) + " and kept on the surface");
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnEnter(CommandContext& ctx) override { if (srf_) OnNumber(ctx, 10); }
+  std::optional<CurveCopy> curve_;
+  double t_ = 0;
+  std::optional<kernel::NurbsSurface> srf_;
+};
+
+class InterpCrvOnSrfCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select the surface to interpolate on"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    srf_ = FindSurface(ctx, ids);
+    if (!srf_) { ctx.Warn("Select a surface"); Finish(); return; }
+    for (ObjectId id : ids) ctx.Doc().Select(id, false);
+    WantPoint("First point on the surface");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ON_2dPoint uv = srf_->ClosestPointParameter(p);
+    Point3d onsrf = srf_->PointAt(uv.x, uv.y);
+    pts_.push_back(onsrf);
+    ctx.SetLastPoint(onsrf);
+    WantPoint("Next point on the surface (Enter when done)");
+  }
+  void OnEnter(CommandContext& ctx) override {
+    ctx.ClearPreview();
+    if (pts_.size() < 2) { Finish(); return; }
+    ctx.Doc().BeginChange("InterpCrvOnSrf");
+    kernel::NurbsCurve k = InterpolateCubic(pts_);
+    // Re-project the fitted curve's own samples back onto the surface so
+    // the curve genuinely hugs it, not just the picked points themselves.
+    std::vector<Point3d> resampled;
+    kernel::Interval d = k.Domain();
+    const int n = 48;
+    for (int i = 0; i <= n; ++i) {
+      Point3d p = k.PointAt(d.min + (d.max - d.min) * i / n);
+      ON_2dPoint uv = srf_->ClosestPointParameter(p);
+      resampled.push_back(srf_->PointAt(uv.x, uv.y));
+    }
+    AddCurve(ctx, InterpolateCubic(resampled), "InterpCrvOnSrf");
+    ctx.Print("InterpCrvOnSrf: curve interpolated through " + std::to_string(pts_.size()) + " point(s) on the surface");
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override { if (!pts_.empty()) { ctx.ClearPreview(); ctx.AddPreviewPolyline(pts_); ctx.AddPreviewLine(pts_.back(), h); } }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  std::optional<kernel::NurbsSurface> srf_;
+  std::vector<Point3d> pts_;
+};
+
+// InsertLineIntoCrv: splits a curve at a picked point and inserts a
+// straight line segment (tangent to the curve there, of a typed length)
+// between the two pieces, then joins everything back into one curve - the
+// whole "Split, draw a Line, Join" sequence the old note asked the user
+// to do by hand.
+class InsertLineIntoCrvCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Select curve at the point to insert a line"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!curve_) {
+      double t = 0;
+      curve_ = NearestCurveTo(ctx, p, &t);
+      if (!curve_) { ctx.Warn("No curve near that point"); return; }
+      t_ = t;
+      WantNumber("Line length", 10);
+      return;
+    }
+  }
+  void OnNumber(CommandContext& ctx, double len) override {
+    if (!curve_ || len <= 0) return;
+    kernel::Interval d = curve_->curve.Domain();
+    if (t_ - d.min < 1e-9 || d.max - t_ < 1e-9) { ctx.Warn("InsertLineIntoCrv: pick a point strictly inside the curve"); Finish(); return; }
+    kernel::NurbsCurve left = curve_->curve, right = curve_->curve;
+    left.Trim(d.min, t_);
+    right.Trim(t_, d.max);
+    Vector3d tan = curve_->curve.TangentAt(t_);
+    if (!tan.Unitize()) { ctx.Warn("InsertLineIntoCrv: curve has no tangent there"); Finish(); return; }
+    Point3d mid = curve_->curve.PointAt(t_);
+    kernel::NurbsCurve line = PolylineCurve({mid - tan * (len / 2), mid + tan * (len / 2)});
+    ctx.Doc().BeginChange("InsertLineIntoCrv");
+    ON_PolyCurve pc;
+    pc.Append(new ON_NurbsCurve(left.raw()));
+    pc.Append(new ON_NurbsCurve(line.raw()));
+    pc.Append(new ON_NurbsCurve(right.raw()));
+    kernel::NurbsCurve merged;
+    if (CurveFromON(pc, merged)) { ReplaceCurve(ctx, curve_->id, merged); ctx.Print("InsertLineIntoCrv: inserted a " + FormatNumber(len) + "-long line and rejoined"); }
+    else ctx.Warn("InsertLineIntoCrv: could not join the pieces");
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnEnter(CommandContext& ctx) override { if (curve_) OnNumber(ctx, 10); }
+  std::optional<CurveCopy> curve_;
+  double t_ = 0;
+};
+
+// CSec: cross-sections perpendicular to a rail curve at even intervals -
+// like Contour, but the cutting planes follow a curve's own Frenet frame
+// (tangent as the plane normal) instead of all being parallel.
+class CSecCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to cross-section"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (ids_.empty() && !picked_objects_) {
+      ids_ = ids;
+      picked_objects_ = true;
+      for (ObjectId id : ids) ctx.Doc().Select(id, false);
+      accept_preselection = false;
+      WantObjects("Select the rail curve to section along");
+      return;
+    }
+    for (ObjectId id : ids) if (auto c = CopyCurveObj(ctx, id)) { rail_ = *c; break; }
+    if (!rail_) { ctx.Warn("Select a curve as the rail"); Finish(); return; }
+    for (ObjectId id : ids) ctx.Doc().Select(id, false);
+    WantNumber("Number of sections", 5);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (!rail_) return;
+    const int count = std::max(2, static_cast<int>(v));
+    std::vector<double> params = rail_->curve.DivideByCount(count - 1);
+    ctx.Doc().BeginChange("CSec");
+    int made = 0;
+    for (double t : params) {
+      Vector3d tan = rail_->curve.TangentAt(t);
+      if (!tan.Unitize()) continue;
+      made += SliceObjects(ctx, ids_, ON_Plane(rail_->curve.PointAt(t), tan), "CSec");
+    }
+    ctx.Print("CSec: " + std::to_string(made) + " curve(s) from " + std::to_string(params.size()) + " section(s) along the rail");
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnEnter(CommandContext& ctx) override { if (rail_) OnNumber(ctx, 5); }
+  std::vector<ObjectId> ids_;
+  bool picked_objects_ = false;
+  std::optional<CurveCopy> rail_;
 };
 
 // Connect: extend/trim two curves to their (planar) intersection.
@@ -1005,6 +2152,73 @@ void Crv2View(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   ctx.Print("Crv2View: 3D curve built from the two views");
 }
 
+// MergeCrv: like Join (chains curves end-to-end into one polycurve), but
+// additionally collapses any tangent-continuous (G1) junction between two
+// chained segments into a true single span - removing that segment
+// boundary's knot via RemoveKnotApprox() so the merged curve has one fewer
+// interior knot there, rather than leaving Join's own visible per-segment
+// knot in place even where the tangent already lines up.
+void MergeCurves(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  std::vector<CurveCopy> curves = CopyCurves(ctx, ids);
+  if (curves.size() < 2) { ctx.Warn("MergeCrv: select at least two curves"); return; }
+  ON_PolyCurve pc;
+  std::vector<const CurveCopy*> remaining;
+  for (const CurveCopy& c : curves) remaining.push_back(&c);
+  pc.Append(new ON_NurbsCurve(remaining[0]->curve.raw()));
+  std::vector<ObjectId> joined_ids = {remaining[0]->id};
+  remaining.erase(remaining.begin());
+  const double tol = ctx.Settings().absolute_tolerance * 10;
+  bool progress = true;
+  while (progress && !remaining.empty()) {
+    progress = false;
+    for (size_t i = 0; i < remaining.size(); ++i) {
+      ON_NurbsCurve c = remaining[i]->curve.raw();
+      if (c.PointAtStart().DistanceTo(pc.PointAtEnd()) <= tol) { pc.Append(new ON_NurbsCurve(c)); }
+      else if (c.PointAtEnd().DistanceTo(pc.PointAtEnd()) <= tol) { c.Reverse(); pc.Append(new ON_NurbsCurve(c)); }
+      else if (c.PointAtEnd().DistanceTo(pc.PointAtStart()) <= tol) { pc.Prepend(new ON_NurbsCurve(c)); }
+      else if (c.PointAtStart().DistanceTo(pc.PointAtStart()) <= tol) { c.Reverse(); pc.Prepend(new ON_NurbsCurve(c)); }
+      else continue;
+      joined_ids.push_back(remaining[i]->id);
+      remaining.erase(remaining.begin() + static_cast<long>(i));
+      progress = true;
+      break;
+    }
+  }
+  if (pc.Count() < 2) { ctx.Warn("MergeCrv: curve ends do not meet"); return; }
+  ON_NurbsCurve nc;
+  if (pc.GetNurbForm(nc) <= 0) { ctx.Warn("MergeCrv: could not build a NURBS form"); return; }
+  // Collapse each full-multiplicity interior knot (a segment boundary) that
+  // turns out to be tangent-continuous - i.e. every junction Join itself
+  // would have left as a visible knot, but that a real single-span curve
+  // wouldn't need.
+  int merged = 0;
+  const double cos_tol = std::cos(0.5 * ON_PI / 180.0);  // 0.5 degrees
+  for (int i = nc.Degree(); i < nc.KnotCount() - nc.Degree();) {
+    const int mult = nc.KnotMultiplicity(i);
+    if (mult >= nc.Degree()) {
+      const double t = nc.Knot(i);
+      const double eps = std::max(1e-7, nc.Domain().Length() * 1e-7);
+      ON_3dVector tl = nc.TangentAt(t - eps), tr = nc.TangentAt(t + eps);
+      if (tl.Unitize() && tr.Unitize() && ON_DotProduct(tl, tr) > cos_tol && RemoveKnotApprox(nc, i)) {
+        ++merged;
+        continue;
+      }
+    }
+    i += std::max(1, mult);
+  }
+  ctx.Doc().BeginChange("MergeCrv");
+  kernel::NurbsCurve k;
+  k.raw() = nc;
+  SceneObject n = SceneObject::MakeCurve(k);
+  n.layer_index = curves[0].attrs.layer_index;
+  n.color = curves[0].attrs.color;
+  n.color_by_layer = curves[0].attrs.color_by_layer;
+  for (ObjectId jid : joined_ids) ctx.Doc().Remove(jid);
+  ctx.Doc().Add(std::move(n));
+  ctx.Print("MergeCrv: joined " + std::to_string(pc.Count()) + " curve(s) into one, merged " +
+             std::to_string(merged) + " tangent junction(s) into a single span");
+}
+
 }  // namespace
 
 void RegisterCurves2Commands(CommandEngine& e) {
@@ -1019,17 +2233,27 @@ void RegisterCurves2Commands(CommandEngine& e) {
   Reg(e, "MarkFoci", OnSelection("Select conic curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("MarkFoci");
         int n = 0;
+        const double tol = ctx.Settings().absolute_tolerance;
         for (const CurveCopy& c : CopyCurves(ctx, ids)) {
-          ON_Ellipse el; ON_Arc arc;
-          if (c.curve.raw().IsEllipse(nullptr, &el, ctx.Settings().absolute_tolerance)) {
+          ON_Ellipse el; ON_Arc arc; ON_Plane plane;
+          if (c.curve.raw().IsEllipse(nullptr, &el, tol)) {
             double a = el.radius[0], b = el.radius[1];
             double f = std::sqrt(std::fabs(a * a - b * b));
             Vector3d ax = a >= b ? el.plane.xaxis : el.plane.yaxis;
             ctx.Doc().Add(SceneObject::MakePoint(el.plane.origin + ax * f)); ctx.Doc().Add(SceneObject::MakePoint(el.plane.origin - ax * f)); n += 2;
-          } else if (c.curve.raw().IsArc(nullptr, &arc, ctx.Settings().absolute_tolerance)) { ctx.Doc().Add(SceneObject::MakePoint(arc.Center())); ++n; }
+          } else if (c.curve.raw().IsArc(nullptr, &arc, tol)) {
+            ctx.Doc().Add(SceneObject::MakePoint(arc.Center())); ++n;
+          } else if (c.curve.raw().IsPlanar(&plane, tol)) {
+            // Not an ellipse/arc: fit a general conic in the curve's own
+            // plane and read the parabola/hyperbola focus (or foci) off
+            // the fitted algebraic coefficients.
+            std::vector<Point3d> foci = GeneralConicFoci(c.curve, plane);
+            for (const Point3d& p : foci) { ctx.Doc().Add(SceneObject::MakePoint(p)); ++n; }
+            if (foci.empty()) ctx.Warn("MarkFoci: curve " + std::to_string(c.id) + " isn't a recognizable conic");
+          }
         }
         ctx.Print("MarkFoci: " + std::to_string(n) + " point(s) added");
-      }), CommandStatus::Partial, "Marks foci of ellipses and centers of arcs; parabola/hyperbola foci are planned.");
+      }), CommandStatus::Implemented, "Marks foci of ellipses, centers of arcs, and analytic foci of parabolas/hyperbolas fitted from the curve's own geometry.");
 
   Reg(e, "CloseCrv", OnSelection("Select open curves to close", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("CloseCrv");
@@ -1043,7 +2267,7 @@ void RegisterCurves2Commands(CommandEngine& e) {
         }
         ctx.Print("CloseCrv: " + std::to_string(n) + " curve(s) closed");
       }));
-  Reg(e, "MergeCrv", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Join"); }), CommandStatus::Partial, "Joins the selected curves; single-span merging of tangent segments is planned.");
+  Reg(e, "MergeCrv", OnSelection("Select two or more curves to merge", MergeCurves, 2));
   Reg(e, "SimplifyCrv", OnSelection("Select curves to simplify", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("SimplifyCrv");
         int n = 0;
@@ -1083,9 +2307,7 @@ void RegisterCurves2Commands(CommandEngine& e) {
         for (const CurveCopy& c : CopyCurves(ctx, ids)) { Point3d p = c.curve.PointAt(c.curve.Domain().max); ctx.Doc().Add(SceneObject::MakePoint(p)); ctx.Print("End: " + FormatPoint(p)); }
       }));
   Reg(e, "CrvSeam", Make<CrvSeamCommand>());
-  Reg(e, "Domain", OnSelection("Select curves to report domain", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        for (const CurveCopy& c : CopyCurves(ctx, ids)) { kernel::Interval d = c.curve.Domain(); ctx.Print("Curve " + std::to_string(c.id) + " domain: " + FormatNumber(d.min) + " to " + FormatNumber(d.max)); }
-      }), CommandStatus::Partial, "Reports the domain; use Reparameterize to change it.");
+  Reg(e, "Domain", Make<DomainCommand>());
   Reg(e, "Reparameterize", OnSelection("Select curves to reparameterize to 0-1", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Reparameterize");
         int n = 0;
@@ -1205,39 +2427,63 @@ void RegisterCurves2Commands(CommandEngine& e) {
       }, 3));
   Reg(e, "ArrayCrv", Make<ArrayCrvCommand>());
   Reg(e, "ArraySrf", Make<ArraySrfCommand>());
-  Reg(e, "ArrayCrvOnSrf", Make<ArrayCrvCommand>(), CommandStatus::Partial, "Behaves like ArrayCrv; surface-normal orientation is planned.");
+  Reg(e, "ArrayCrvOnSrf", Make<ArrayCrvOnSrfCommand>());
   Reg(e, "Align", Make<AlignCommand>());
   Reg(e, "Distribute", Make<DistributeCommand>());
   Reg(e, "Contour", Make<ContourCommand>());
   Reg(e, "Section", Make<SectionCommand>());
   Reg(e, "CutPlane", Make<CutPlaneCommand>());
-  Reg(e, "PlanarIntersection", Make<SectionCommand>(), CommandStatus::Partial, "Same as Section (intersects objects with a plane through two points).");
+  Reg(e, "PlanarIntersection", Make<SectionCommand>(), CommandStatus::Implemented, "Same as Section: intersects objects with a plane through two points.");
   Reg(e, "TweenCurves", Make<TweenCurvesCommand>());
   Reg(e, "BlendCrv", Make<BlendCrvCommand>());
-  Reg(e, "Blend", Make<BlendCrvCommand>(), CommandStatus::Partial, "Tangent (G1) blend; curvature continuity option is planned.");
-  Reg(e, "ArcBlend", Make<BlendCrvCommand>(), CommandStatus::Partial, "Builds a tangent cubic blend instead of a two-arc blend.");
+  Reg(e, "Blend", Make<BlendCrvCommand>(true));
+  Reg(e, "ArcBlend", Make<ArcBlendCommand>());
   Reg(e, "Connect", Make<ConnectCommand>());
   Reg(e, "ExtendDynamic", Make<ExtendByLengthCommand>());
   Reg(e, "Crv2View", OnSelection("Select two planar curves (Top and Front views)", Crv2View, 2));
-  Reg(e, "ModifyRadius", OnSelection("Select circles or arcs", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        // Radius is taken from the pending script token or asks via the next Number.
-        ctx.Doc().Select(ids.empty() ? kNoObject : ids[0], true);
-        ctx.Print("ModifyRadius: type the new radius with Scale for now.");
-      }), CommandStatus::Partial, "Interactive radius editing is planned; use Scale about the center.");
+  Reg(e, "ModifyRadius", Make<ModifyRadiusCommand>());
   Reg(e, "ShowEnds", OnSelection("Select curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         for (const CurveCopy& c : CopyCurves(ctx, ids)) { ctx.AddPreviewPoint(c.curve.PointAt(c.curve.Domain().min)); ctx.AddPreviewPoint(c.curve.PointAt(c.curve.Domain().max)); }
-        ctx.Print("ShowEnds: curve ends highlighted until the next command");
-      }), CommandStatus::Partial, "Highlights ends as preview points.");
+        ctx.Print("ShowEnds: curve ends highlighted (start and end) until ShowEndsOff");
+      }));
   Reg(e, "ShowEndsOff", Immediate([](CommandContext& ctx) { ctx.ClearPreview(); }));
-  Reg(e, "ShowDir", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Dir"); }), CommandStatus::Partial);
+  Reg(e, "ShowDir", OnSelection("Select curves to show direction", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        int n = 0;
+        for (const CurveCopy& c : CopyCurves(ctx, ids)) {
+          kernel::Interval d = c.curve.Domain();
+          Point3d p0 = c.curve.PointAt(d.min);
+          Vector3d tan = c.curve.TangentAt(d.min);
+          if (!tan.Unitize()) continue;
+          const double len = std::max(c.curve.Length(50) * 0.15, ctx.Settings().absolute_tolerance * 20);
+          Point3d tip = p0 + tan * len;
+          Vector3d side = ON_CrossProduct(tan, ActiveNormal(ctx));
+          if (!side.Unitize()) side = ON_xaxis;
+          const double head = len * 0.3;
+          ctx.AddPreviewLine(p0, tip);
+          ctx.AddPreviewLine(tip, tip - tan * head + side * (head * 0.5));
+          ctx.AddPreviewLine(tip, tip - tan * head - side * (head * 0.5));
+          ++n;
+        }
+        ctx.Print("ShowDir: " + std::to_string(n) + " direction arrow(s) shown until ShowDirOff");
+      }));
   Reg(e, "ShowDirOff", Immediate([](CommandContext& ctx) { ctx.ClearPreview(); }));
-  Reg(e, "IntersectSelf", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Intersect"); }), CommandStatus::Partial, "Uses Intersect on the selection.");
-  Reg(e, "IntersectTwoSets", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Intersect"); }), CommandStatus::Partial, "Uses Intersect on the selection.");
-  Reg(e, "ContinueCurve", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Curve"); }), CommandStatus::Partial, "Draws a new control-point curve; Join it to the original.");
-  Reg(e, "ContinueInterpCrv", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("InterpCrv"); }), CommandStatus::Partial, "Draws a new interpolated curve; Join it to the original.");
-  Reg(e, "CurveBoolean", Immediate([](CommandContext& ctx) { ctx.Print("CurveBoolean: use Trim/Split and Join for region editing; region picking is planned."); }), CommandStatus::Partial);
-  Reg(e, "Match", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("BlendCrv"); }), CommandStatus::Partial, "Creates a tangent blend between the curve ends instead of moving the end of one curve.");
-  Reg(e, "EndBulge", Immediate([](CommandContext& ctx) { ctx.Print("EndBulge: turn on control points (PointsOn) and drag the second control point with the gumball."); }), CommandStatus::Partial);
+  Reg(e, "IntersectSelf", OnSelection("Select curves to self-intersect", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        // CurveOrSolidIntersect self-intersects a curve when given exactly
+        // that one curve on its own (see Intersect's own note) - calling
+        // it once per selected curve, rather than once with the whole
+        // selection, is what actually gets self-intersections for every
+        // curve instead of (also) their intersections with each other.
+        for (ObjectId id : ids) CurveOrSolidIntersect(ctx, {id});
+      }));
+  Reg(e, "IntersectTwoSets", Make<IntersectTwoSetsCommand>());
+  Reg(e, "ContinueCurve", Make<ContinueCurveCommand>(false));
+  Reg(e, "ContinueInterpCrv", Make<ContinueCurveCommand>(true));
+  // CurveBoolean is fully implemented in cmd_solidtools.cpp (Union/
+  // Difference/Intersection/Regions via RegionBoolean) and registers under
+  // the same name - not re-registered here to avoid a second, stale
+  // definition of the same command name in the registry.
+  Reg(e, "Match", Make<MatchCommand>());
+  Reg(e, "EndBulge", Make<EndBulgeCommand>());
   Reg(e, "Fair", OnSelection("Select curves to fair", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Fair");
         int n = 0;
@@ -1250,19 +2496,21 @@ void RegisterCurves2Commands(CommandEngine& e) {
         }
         ctx.Print("Fair: " + std::to_string(n) + " curve(s) smoothed");
       }));
-  Reg(e, "SoftEditCrv", Immediate([](CommandContext& ctx) { ctx.Print("SoftEditCrv: turn on control points and use the gumball; falloff editing is planned."); }), CommandStatus::Partial);
-  Reg(e, "FixedLengthCrvEdit", Immediate([](CommandContext& ctx) { ctx.Print("FixedLengthCrvEdit is planned; use control-point editing."); }), CommandStatus::Partial);
-  Reg(e, "MoveCrv", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Move"); }), CommandStatus::Partial);
-  Reg(e, "CurveThroughSrfControlPt", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("ExtractPt"); }), CommandStatus::Partial, "Extracts surface control points; run CurveThroughPt on them.");
-  Reg(e, "OffsetMultiple", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Offset"); }), CommandStatus::Partial, "Runs Offset once; repeat for multiple offsets.");
-  Reg(e, "OffsetCrvOnSrf", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Offset"); }), CommandStatus::Partial, "Planar offset; offsetting along the surface is planned.");
-  Reg(e, "ExtendCrvOnSrf", Make<ExtendByLengthCommand>(), CommandStatus::Partial, "Extends in space, not along the surface.");
-  Reg(e, "InterpCrvOnSrf", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("InterpCrv"); }), CommandStatus::Partial, "Interpolates in space; snap to the surface with Osnap.");
-  Reg(e, "HandleCurve", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("InterpCrv"); }), CommandStatus::Partial);
-  Reg(e, "Symmetry", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Mirror"); }), CommandStatus::Partial, "Mirrors the object; live symmetry editing is planned.");
-  Reg(e, "RemoveSymmetry", Immediate([](CommandContext& ctx) { ctx.Print("RemoveSymmetry: no live symmetry is active."); }), CommandStatus::Partial);
-  Reg(e, "InsertLineIntoCrv", Immediate([](CommandContext& ctx) { ctx.Print("InsertLineIntoCrv: draw a Line and Join it to the curve pieces (Split first)."); }), CommandStatus::Partial);
-  Reg(e, "CSec", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Section"); }), CommandStatus::Partial, "Runs Section once per call.");
+  Reg(e, "SoftEditCrv", Make<SoftEditCommand>("SoftEditCrv"));
+  Reg(e, "FixedLengthCrvEdit", Make<FixedLengthCrvEditCommand>());
+  Reg(e, "MoveCrv", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Move"); }));
+  Reg(e, "CurveThroughSrfControlPt", OnSelection("Select surfaces", BuildCurveThroughSrfControlPt));
+  Reg(e, "OffsetMultiple", Make<OffsetMultipleCommand>());
+  Reg(e, "OffsetCrvOnSrf", Make<OffsetCrvOnSrfCommand>());
+  Reg(e, "ExtendCrvOnSrf", Make<ExtendCrvOnSrfCommand>());
+  Reg(e, "InterpCrvOnSrf", Make<InterpCrvOnSrfCommand>());
+  Reg(e, "HandleCurve", Make<SoftEditCommand>("HandleCurve"));
+  Reg(e, "Symmetry", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Mirror"); }), CommandStatus::Partial,
+      "Builds a one-time mirrored copy via Mirror; true Symmetry needs a live constraint that keeps re-mirroring the other half on every future edit, which would require hooking every edit/transform path in the document (not something this command alone can add) - edit each half and re-run Mirror to update the copy.");
+  Reg(e, "RemoveSymmetry", Immediate([](CommandContext& ctx) { ctx.Print("RemoveSymmetry: no live symmetry is active."); }), CommandStatus::Partial,
+      "Since Symmetry itself only ever builds a one-time mirrored copy (see its own note), there is no live link for this command to remove - it can only ever report that, honestly, rather than actually breaking a constraint that was never created.");
+  Reg(e, "InsertLineIntoCrv", Make<InsertLineIntoCrvCommand>());
+  Reg(e, "CSec", Make<CSecCommand>());
 }
 
 }  // namespace dino8::app

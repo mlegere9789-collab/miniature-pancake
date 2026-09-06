@@ -82,4 +82,22 @@ LineThroughPt
 SelPt
 PlaneThroughPt
 SelNone
-@expect_objects 34
+# --- MarkFoci: parabola/hyperbola foci match known analytic geometry
+SelAll
+Hide
+Parabola 0,0,0 0,5,0 10,5,0
+SelLast
+MarkFoci
+SelNone
+SelPt
+List
+SelAll
+Hide
+Hyperbola 0,0,0 5,0,0 10,8,0
+SelLast
+MarkFoci
+SelNone
+SelPt
+List
+SelNone
+@expect_objects 39
