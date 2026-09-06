@@ -580,7 +580,11 @@ std::vector<unsigned char> PathTracer::Render(const PathTraceSettings& settings,
           unsigned rot_seed_x = base_seed, rot_seed_y = base_seed ^ 0x9e3779b9u;
           const double rot_x = NextFloat(rot_seed_x), rot_y = NextFloat(rot_seed_y);
           const double px = x + std::fmod(jx + rot_x, 1.0), py = y + std::fmod(jy + rot_y, 1.0);
-          const double ndc_x = (2.0 * px / w - 1.0), ndc_y = 1.0 - 2.0 * py / h;
+          // Full-view NDC in [-1,1], then remapped into the blowup sub-rectangle
+          // (identity when blowup_ is the default {-1,-1,1,1}).
+          const double fx = px / w, fy = py / h;
+          const double ndc_x = blowup_[0] + (blowup_[2] - blowup_[0]) * fx;
+          const double ndc_y = blowup_[3] - (blowup_[3] - blowup_[1]) * fy;
           const Ray ray = cam.ScreenRay(ndc_x, ndc_y, static_cast<double>(w) / h);
           Vector3d first_albedo(0, 0, 0), first_normal(0, 0, 1);
           Vector3d c = TracePath(ray.origin, ray.direction, rng, bounces, settings.arctic, &first_albedo, &first_normal);

@@ -5,6 +5,31 @@ namespace dino8::app {
 
 namespace {
 
+// Global cubic interpolation through `pts` (OpenNURBS' clamped-uniform NURBS
+// as a starting shape, then a fixed-point relaxation that nudges control
+// points until the curve actually passes through every input point at its
+// chord-length parameter). Shared by MultiPointCurveCommand's Interpolated
+// kind (InterpCrv/Sketch, picked points) and CurveThroughPt (existing point
+// objects). Returns false (curve left untouched) if OpenNURBS can't build a
+// clamped-uniform NURBS for this point count (e.g. fewer than 2 points).
+bool InterpolatedNurbs(const std::vector<Point3d>& pts, kernel::NurbsCurve& out) {
+  ON_3dPointArray arr;
+  for (const Point3d& p : pts) arr.Append(p);
+  ON_NurbsCurve nc;
+  if (!nc.CreateClampedUniformNurbs(3, 3, arr.Count(), arr.Array())) return false;
+  out.raw() = nc;
+  for (int iter = 0; iter < 30; ++iter) {
+    for (int i = 0; i < arr.Count(); ++i) {
+      double t = out.raw().Domain().ParameterAt(static_cast<double>(i) / (arr.Count() - 1));
+      Point3d on = out.raw().PointAt(t);
+      Point3d cv;
+      out.raw().GetCV(i, cv);
+      out.raw().SetCV(i, cv + (arr[i] - on));
+    }
+  }
+  return true;
+}
+
 // Polyline / control-point curve / interpolated curve: pick points until Enter.
 class MultiPointCurveCommand : public Command {
  public:
@@ -41,27 +66,9 @@ class MultiPointCurveCommand : public Command {
         int deg = std::min(degree_, static_cast<int>(pts.size()) - 1);
         AddCurve(ctx, kernel::NurbsCurve::FromControlPoints(pts, deg), "Curve");
       } else {
-        // Interpolated: use OpenNURBS' cubic interpolation through the points.
-        ON_3dPointArray arr;
-        for (const Point3d& p : pts) arr.Append(p);
-        ON_NurbsCurve nc;
-        bool ok = nc.CreateClampedUniformNurbs(3, 3, arr.Count(), arr.Array()) != 0;
-        if (ok) {
-          // Solve so the curve passes through the points (global interpolation, chord-length parameters).
-          kernel::NurbsCurve k;
-          k.raw() = nc;
-          // Refine: move CVs so the curve interpolates (simple fixed-point relaxation).
-          for (int iter = 0; iter < 30; ++iter) {
-            for (int i = 0; i < arr.Count(); ++i) {
-              double t = k.raw().Domain().ParameterAt(static_cast<double>(i) / (arr.Count() - 1));
-              Point3d on = k.raw().PointAt(t);
-              Point3d cv;
-              k.raw().GetCV(i, cv);
-              k.raw().SetCV(i, cv + (arr[i] - on));
-            }
-          }
-          AddCurve(ctx, k, "InterpCrv");
-        }
+        // Interpolated: global cubic interpolation through the points.
+        kernel::NurbsCurve k;
+        if (InterpolatedNurbs(pts, k)) AddCurve(ctx, k, "InterpCrv");
       }
     }
     Finish();
@@ -86,6 +93,33 @@ class MultiPointCurveCommand : public Command {
   int degree_;
   bool closed_ = false;
   std::vector<Point3d> pts_;
+};
+
+// CurveThroughPt: interpolate a curve through selected point OBJECTS (real
+// Rhino semantics), not through freshly-picked locations -- that's InterpCrv.
+// Points are ordered by object id (creation order) since there's no separate
+// "pick order" recorded for a selection.
+class CurveThroughPtCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select point objects to interpolate a curve through", 2); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    std::vector<ObjectId> sorted = ids;
+    std::sort(sorted.begin(), sorted.end());
+    std::vector<Point3d> pts;
+    for (ObjectId id : sorted) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (o && o->kind == ObjectKind::Point) pts.push_back(o->point);
+    }
+    if (pts.size() < 2) { ctx.Warn("CurveThroughPt: select at least 2 point objects"); Finish(); return; }
+    kernel::NurbsCurve k;
+    if (InterpolatedNurbs(pts, k)) {
+      AddCurve(ctx, k, "CurveThroughPt");
+      ctx.Print("CurveThroughPt: interpolated a curve through " + std::to_string(pts.size()) + " point object(s)");
+    } else {
+      ctx.Warn("CurveThroughPt: could not build a curve through the selected points");
+    }
+    Finish();
+  }
 };
 
 class PointsCommandMany : public Command {
@@ -287,8 +321,26 @@ void RegisterCreateCommands(CommandEngine& e) {
   Reg(e, "Polyline", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::Polyline));
   Reg(e, "Curve", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::ControlPoint));
   Reg(e, "InterpCrv", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::Interpolated));
-  Reg(e, "CurveThroughPt", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::Interpolated), CommandStatus::Partial, "Picks points instead of selecting point objects.");
-  Reg(e, "Sketch", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::Interpolated), CommandStatus::Partial, "Click points; freehand drag sketching is planned.");
+  Reg(e, "CurveThroughPt", Make<CurveThroughPtCommand>(), CommandStatus::Implemented,
+      "Interpolates a curve through the selected point objects (ordered by object id), via the same global cubic "
+      "interpolation as InterpCrv.");
+  // Investigated: real Rhino Sketch is a continuous mouse-drag-to-polyline
+  // capture (button down, drag, release), sampling many points per second.
+  // No command in this codebase has that input path - Viewport.cpp's mouse
+  // handling only feeds discrete per-click points into Command::OnPoint (see
+  // Want::Point in CommandEngine.cpp) or drives non-command UI drags (Gumball
+  // control-point dragging, the window/crossing selection box); "Lasso" (see
+  // cmd_select2.cpp's SelFenceCommand), the closest existing freehand-shaped
+  // tool, is also click-a-polygon, not drag-capture. Adding one would mean
+  // new Viewport/CommandEngine plumbing (an OnDrag callback streaming mouse
+  // deltas to the active command while a mouse button is held) that no other
+  // command relies on, and it would be unverifiable by this text-script smoke
+  // harness (no scripted line simulates a held-button mouse drag), so it's
+  // left Partial rather than faked. Click points instead; the interpolation
+  // itself is real and identical to InterpCrv/CurveThroughPt.
+  Reg(e, "Sketch", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::Interpolated), CommandStatus::Partial,
+      "Click points instead of a continuous mouse-drag capture; no command in this codebase has drag-to-polyline "
+      "input (confirmed absent in Viewport.cpp/CommandEngine.cpp), and it wouldn't be scriptable/testable here even if added.");
   Reg(e, "Circle", Make<CircleCommand>());
   Reg(e, "Circle3Pt", Make<PointsCommand>(std::vector<std::string>{"First point on circle", "Second point on circle", "Third point on circle"},
                                           [](CommandContext& ctx, const std::vector<Point3d>& p) {

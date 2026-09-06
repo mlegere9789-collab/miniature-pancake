@@ -434,7 +434,7 @@ rncheck "PackTextures: 1 image(s) copied into .*render_textures" "PackTextures c
 rncheck "UnpackTextures: 1 image(s) copied to .*unpacked_textures" "UnpackTextures copied it back out to a chosen folder"
 rncheck "Environment: background Image (.*render.bmp)" "Environments Background=Image set the image background"
 rncheck "BackgroundBitmap: .*render.bmp (on)" "BackgroundBitmap set the modelling-aid picture"
-rncheck "RenderBlowup: 64 x 20 region rendered" "RenderBlowup rendered the picked region"
+rncheck "RenderBlowup: .* region rendered as a true optical zoom" "RenderBlowup rendered the picked region as a real optical zoom (full viewport resolution, off-axis frustum), not a crop"
 rncheck "Bake: baked 1 procedural texture" "Bake rasterized the procedural texture to a file"
 rncheck "BakeMapping: baked the current mapping into mesh UVs for 1 object" "BakeMapping froze the mapping into mesh UVs"
 rncheck "MappingWidget: this app has no draggable 3D mapping gizmo" "MappingWidget explains the real limitation"
@@ -479,6 +479,8 @@ a2check "1 curve(s) with linetype Foo selected" "linetype table and object linet
 a2check "ReplaceBlock: 2 instance(s) now 'B'" "ReplaceBlock swapped both A instances for B"
 a2check "3 object(s) in instances of 'B' selected" "SelBlockInstanceNamed found the replaced instances"
 a2check "CreateUniqueBlock: 'C' copied from 'B', 3 instance(s) switched" "CreateUniqueBlock copied the definition"
+a2check "BlockEdit: editing 'D'" "BlockEdit placed an editable copy of the block instance"
+a2check "BlockEdit: block 'D' redefined with 1 object(s), 2 instance(s) updated" "BlockEdit's redefinition propagated to every instance of the block (real linked instancing)"
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
@@ -1002,6 +1004,7 @@ rtcheck "Render: rendered Perspective at 96 x 64 .* \[Raytraced Samples=4 Bounce
 rtcheck "Saved rendering $TMP/rt/raytrace.bmp (96 x 64)" "SaveRenderWindowAs wrote the raytraced BMP"
 rtcheck "RenderArctic: rendered Perspective at 1280 x 720 .* \[Raytraced" "RenderArctic ran the path tracer at the document size"
 rtcheck "RenderPreview: rendered Perspective .* \[Raytraced" "RenderPreview ran the path tracer at viewport size"
+rtcheck "RenderBlowup:.*region rendered as a true optical zoom.*\[Raytraced\]" "RenderBlowup did a real optical zoom with the path tracer too, not a crop"
 rtcheck "Saved $TMP/rt/raytrace.3dm" "the raytraced scene saved to a .3dm"
 rtcheck "gl_error=0" "no OpenGL errors while the viewport was in RayTracedViewport mode"
 python3 - "$TMP/rt/raytrace.bmp" <<'PY' && echo "ok   raytrace.bmp is a valid, non-flat 24-bit BMP" || { echo "FAIL raytrace.bmp invalid or flat"; fail=1; }

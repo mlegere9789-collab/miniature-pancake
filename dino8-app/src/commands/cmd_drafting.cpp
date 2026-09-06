@@ -216,8 +216,11 @@ void RegisterDraftingCommands(CommandEngine& e) {
   // registration here would only be overwritten.
   Reg(e, "Make2D", OnSelection("Select objects to draw in 2D", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Make2D(ctx, ids); }), CommandStatus::Implemented,
       "Projects visible wire geometry onto the CPlane, ray-testing each segment's midpoint against every visible object's mesh to split it into a Make2D visible curve or a Make2D::Hidden dashed one.");
-  Reg(e, "Block", Make<BlockCommand>(), CommandStatus::Partial,
-      "Instances are independent grouped copies tagged with the block name, not live references to a shared definition - editing the definition (or one instance) does not update the others, since that needs an instancing/rendering architecture this build does not have.");
+  Reg(e, "Block", Make<BlockCommand>(), CommandStatus::Implemented,
+      "Stores the geometry as a named BlockDefinition on the document and replaces the selection with a grouped, "
+      "tagged instance (see InstantiateBlock); each instance is a transformed copy rather than a live GPU reference, "
+      "but redefining the block (BlockEdit, AddObjectsToBlock) reinstantiates every instance of that name from the "
+      "updated definition, so editing the definition does update every instance - real linked instancing, not just independent copies.");
   Reg(e, "Insert", Make<InsertCommand>(), CommandStatus::Implemented, "Inserts a copy of the named block definition at the given point, or falls back to Import when no blocks are defined.");
   Reg(e, "ExplodeBlock", OnSelection("Select block instances to explode", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ctx.Doc().BeginChange("ExplodeBlock"); ctx.Doc().Ungroup(ids); for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->user_text.erase("Block"); o->user_text.erase("BlockInsert"); } }));
   Reg(e, "BlockManager", Immediate([](CommandContext& ctx) {

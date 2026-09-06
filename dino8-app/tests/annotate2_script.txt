@@ -65,4 +65,17 @@ SelNone
 SelBlockInstanceNamed Name=B
 CreateUniqueBlock Name=C
 SelNone
+# --- BlockEdit: redefining a block updates every instance of it (real
+# linked instancing, not independent copies) - see cmd_drafting.cpp/Block.
+Box 400,0,0 410,10,0 10
+SelLast
+Block 400,0,0 D
+Insert D 460,0,0
+Enter
+SelBlockInstanceNamed Name=D
+BlockEdit
+SelLast
+Move 0,0,0 0,0,50
+BlockEdit
+SelNone
 RescueBlockOrphans

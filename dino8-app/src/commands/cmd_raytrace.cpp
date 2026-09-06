@@ -9,6 +9,7 @@
 // (Application::RenderView) whenever Quality= isn't "Raytraced".
 #include "commands/cmd_common.h"
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -97,13 +98,18 @@ QualityArgs ParseQualityArgs(const Args& a) {
 
 // Renders `vp`'s view (rasteriser or path tracer, per `q`) into
 // Application::LastRender(). `seconds_out` is always filled on success.
+// `blowup` is the [x0,y0,x1,y1] NDC sub-rectangle of the full view to fill
+// the output with (see Application::RenderView / Camera::BlowupProjectionMatrix
+// and PathTracer::SetBlowup) -- the default {-1,-1,1,1} renders the ordinary
+// full view; RenderBlowup passes the picked region so both the rasteriser and
+// the path tracer do a true optical zoom rather than a post-hoc crop.
 bool RenderFullFrame(CommandContext& ctx, Viewport* vp, int w, int h, const QualityArgs& q, bool arctic,
-                     std::string& error, double& seconds_out) {
+                     std::string& error, double& seconds_out, std::array<double, 4> blowup = {-1, -1, 1, 1}) {
   Application& app = ctx.App();
   if (!vp) vp = ctx.ActiveViewport();
   if (!vp) { error = "No active viewport"; return false; }
   if (!q.raytraced) {
-    if (!app.RenderView(vp, w, h, static_cast<int>(q.legacy_supersample), arctic, error)) return false;
+    if (!app.RenderView(vp, w, h, static_cast<int>(q.legacy_supersample), arctic, error, blowup)) return false;
     seconds_out = app.LastRender().seconds;
     return true;
   }
@@ -112,6 +118,7 @@ bool RenderFullFrame(CommandContext& ctx, Viewport* vp, int w, int h, const Qual
   w = std::clamp(w, 16, 4096);
   h = std::clamp(h, 16, 4096);
   PathTracer tracer;
+  tracer.SetBlowup(blowup);
   const auto t0 = std::chrono::steady_clock::now();
   tracer.Prepare(ctx.Doc(), vp->GetCamera().State(), static_cast<double>(w) / h,
                  std::min(app.curve_display_tolerance, 0.01), std::min(app.surface_display_tolerance, 0.02));
@@ -142,9 +149,15 @@ void PrintRenderResult(CommandContext& ctx, const char* label, double seconds, c
   ctx.Print(msg);
 }
 
-// RenderBlowup: pick a window in the viewport, render the full view (at
-// whichever Quality= the line carried), crop. Re-registers cmd_render.cpp's
-// RenderBlowup so Quality= reaches it too.
+// RenderBlowup: pick a window in the viewport, render it as a true optical
+// zoom (an off-axis frustum -- see Camera::BlowupProjectionMatrix and
+// PathTracer::SetBlowup), at whichever Quality= the line carried. Re-registers
+// cmd_render.cpp's RenderBlowup (registered after it) so Quality=/Samples=/
+// Bounces=/Denoise= reach it too, without losing cmd_render.cpp's real zoom:
+// both the rasteriser (Application::RenderView's `blowup` param) and the path
+// tracer (PathTracer::SetBlowup) sample primary rays only within the picked
+// sub-rectangle of the full frustum, so the picked region comes out at full
+// output resolution instead of being cropped from a full-view render.
 class RaytraceAwareRenderBlowupCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -159,18 +172,17 @@ class RaytraceAwareRenderBlowupCommand : public Command {
     double x0, y0, x1, y1;
     if (!vp->WorldToPixel(pts_[0], x0, y0) || !vp->WorldToPixel(pts_[1], x1, y1)) { ctx.Warn("Region is off screen"); Finish(); return; }
     const int w = std::max(vp->Width(), 1), h = std::max(vp->Height(), 1);
+    // Pixel -> normalized device coordinates, matching Viewport::PixelRay's
+    // own convention (y flipped: pixel row 0 is the top, NDC +1 is up).
+    auto ndc_x = [w](double px) { return (px / w) * 2.0 - 1.0; };
+    auto ndc_y = [h](double py) { return 1.0 - (py / h) * 2.0; };
+    const double nx0 = ndc_x(std::min(x0, x1)), nx1 = ndc_x(std::max(x0, x1));
+    const double ny0 = ndc_y(std::max(y0, y1)), ny1 = ndc_y(std::min(y0, y1));
+    if (nx1 - nx0 < 1e-6 || ny1 - ny0 < 1e-6) { ctx.Warn("RenderBlowup: the picked region has zero size"); Finish(); return; }
     std::string err; double seconds = 0;
-    if (!RenderFullFrame(ctx, vp, w, h, quality_, false, err, seconds)) { ctx.Warn(err); Finish(); return; }
-    RenderImage& img = ctx.App().LastRender();
-    const int ax = std::clamp(static_cast<int>(std::min(x0, x1)), 0, w - 1), bx = std::clamp(static_cast<int>(std::max(x0, x1)), 1, w);
-    const int ay = std::clamp(static_cast<int>(std::min(y0, y1)), 0, h - 1), by = std::clamp(static_cast<int>(std::max(y0, y1)), 1, h);
-    const int cw = std::max(bx - ax, 1), ch = std::max(by - ay, 1);
-    std::vector<unsigned char> crop(static_cast<size_t>(cw) * ch * 3);
-    for (int y = 0; y < ch; ++y) std::memcpy(&crop[static_cast<size_t>(y) * cw * 3], &img.rgb[(static_cast<size_t>(ay + y) * w + ax) * 3], static_cast<size_t>(cw) * 3);
-    if (img.texture) ctx.App().Renderer().DeleteTexture(img.texture);
-    img.width = cw; img.height = ch; img.rgb = std::move(crop);
-    img.texture = ctx.App().Renderer().CreateTexture(cw, ch, img.rgb.data(), 3);
-    std::string msg = "RenderBlowup: " + std::to_string(cw) + " x " + std::to_string(ch) + " region rendered (Partial: cropped from a full-view render)";
+    if (!RenderFullFrame(ctx, vp, w, h, quality_, false, err, seconds, {nx0, ny0, nx1, ny1})) { ctx.Warn(err); Finish(); return; }
+    std::string msg = "RenderBlowup: " + std::to_string(w) + " x " + std::to_string(h) +
+                      " region rendered as a true optical zoom into the picked rectangle (an off-axis frustum), not a post-hoc crop";
     if (quality_.raytraced) msg += " [Raytraced]";
     ctx.Print(msg);
     Finish();
@@ -311,8 +323,10 @@ void RegisterRaytraceCommands(CommandEngine& e) {
         if (!RenderFullFrame(ctx, nullptr, 0, 0, q, true, err, seconds)) { ctx.Warn(std::string("RenderArctic: ") + err); return; }
         PrintRenderResult(ctx, "RenderArctic", seconds, q);
       }));
-  Reg(e, "RenderBlowup", Make<RaytraceAwareRenderBlowupCommand>(), CommandStatus::Partial,
-      "Crops a full-view render to the picked region; honours Quality=Raytraced.");
+  Reg(e, "RenderBlowup", Make<RaytraceAwareRenderBlowupCommand>(), CommandStatus::Implemented,
+      "Renders the picked region as a real optical zoom (an off-axis frustum for the rasteriser, or the matching "
+      "PathTracer::SetBlowup sub-rectangle of primary rays for Quality=Raytraced), so it comes out at full output "
+      "resolution rather than being cropped from a full-view render; also honours Samples=/Bounces=/Denoise=.");
   Reg(e, "BatchRenderNamedViews", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
         Viewport* vp = ctx.ActiveViewport();

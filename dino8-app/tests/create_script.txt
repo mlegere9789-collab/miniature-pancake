@@ -25,11 +25,17 @@ Enter
 SelLast
 List
 Delete
-CurveThroughPt 0,0,0 10,5,0 20,0,0
-Enter
-@expect_objects 1
+Point 0,0,0
+Point 10,5,0
+Point 20,0,0
+SelAll
+CurveThroughPt
+@expect_objects 4
 SelLast
 Delete
+SelAll
+Delete
+@expect_objects 0
 Sketch 0,0,0 10,5,0 20,0,0
 Enter
 @expect_objects 1

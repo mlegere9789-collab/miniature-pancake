@@ -652,10 +652,12 @@ class SetMeshSurfaceParametersCommand : public Command {
 //
 // NOTE: cmd_raytrace.cpp registers its own "RenderBlowup" (as
 // RaytraceAwareRenderBlowupCommand, to add Quality=/Samples=/Bounces=)
-// *after* this file, so its crop-based copy is what actually runs; this
-// class currently only matters if that override is ever removed. The two
-// should eventually be unified (RaytraceAwareRenderBlowupCommand could
-// call Application::RenderView's own `blowup` parameter the same way).
+// *after* this file, so that copy is what actually runs; this class is dead
+// code kept for reference. RaytraceAwareRenderBlowupCommand now shares the
+// same real optical-zoom approach (Application::RenderView's `blowup` param
+// for the rasteriser, PathTracer::SetBlowup for Quality=Raytraced) instead
+// of the crop it used to do, so the two are unified in behaviour even though
+// this class itself is unreachable.
 
 class RenderBlowupCommand : public Command {
  public:

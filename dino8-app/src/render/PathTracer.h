@@ -8,6 +8,7 @@
 // ACES tonemapping and an edge-aware bilateral denoise pass.
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <functional>
 #include <string>
@@ -34,6 +35,14 @@ class PathTracer {
   // `curve_tol`/`surface_tol` control the tessellation fed to EnsureDisplay
   // (finer than the viewport's own, matching Application::RenderView).
   void Prepare(const Document& doc, const CameraState& camera, double aspect, double curve_tol, double surface_tol);
+
+  // Restricts Render() to an off-axis sub-rectangle of the full view, given
+  // as [ndc_x0, ndc_y0, ndc_x1, ndc_y1] in the same convention as
+  // Camera::BlowupProjectionMatrix (RenderBlowup's true optical zoom: the
+  // output still fills `settings.width x settings.height`, it just samples
+  // primary rays only within this sub-rectangle of the full frustum instead
+  // of a post-hoc crop). The default {-1,-1,1,1} is the ordinary full view.
+  void SetBlowup(std::array<double, 4> ndc_rect) { blowup_ = ndc_rect; }
 
   // Renders `settings.samples` spp in one call and returns a tonemapped,
   // gamma-corrected RGB8 image (width*height*3, top-down rows). Runs
@@ -104,6 +113,7 @@ class PathTracer {
   RenderSettings render_settings_;
   CameraState camera_;
   double aspect_ = 1.0;
+  std::array<double, 4> blowup_ = {-1, -1, 1, 1};
 
   // Small local texture cache: proc:// specs and file paths -> decoded RGBA + size.
   struct TexCache { int w = 0, h = 0; std::vector<unsigned char> rgba; };
