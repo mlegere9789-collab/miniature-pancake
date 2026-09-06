@@ -466,9 +466,9 @@ a2check "CreateUniqueBlock: 'C' copied from 'B', 3 instance(s) switched" "Create
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
-  ST="$("$BIN" --smoke 150 --script "$HERE/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
+  ST="$("$BIN" --smoke 220 --script "$HERE/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
 else
-  ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
+  ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 220 --script "$HERE/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
 fi
 stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 stcheck "RoundHole: radius 3, through, cut 1 solid(s)" "RoundHole cut the box"
@@ -500,9 +500,15 @@ stcheck "RotateHole: object [0-9]* re-cut at the new placement" "RotateHole rota
 stcheck "MirrorHole: copied object [0-9]* to object [0-9]*" "MirrorHole mirrored the hole feature into a copy"
 stcheck "CutVolume: 1 cut volume(s) as meshes, total volume 785.3" "CutVolume measured pi*5^2*10 = 785.4 of the box inside the circle's extrusion"
 stcheck "Bounce: polyline with 1 bounce(s)" "Bounce traced a ray straight down off the box top and back up"
+stcheck "CreateSolid: 1 surface(s) joined into a closed mesh solid" "CreateSolid welded a single closed Brep's own faces into a closed mesh solid"
+stcheck "Splop: placed 1 copy(ies) at 1 point(s)" "Splop placed a copy at the picked surface point"
+stcheck "Reflect: mirrored across the plane through 1005,0,0 and welded original . mirror image into one symmetric mesh" "Reflect mirrored and welded the mesh into one symmetric solid"
+stcheck "Radiate: baked diffuse.specular vertex colours from 1 light(s)/sun onto 1 mesh(es)" "Radiate baked vertex colours from the Sun onto the mesh"
+stcheck "RadiateFind: 0 enabled light source(s) selected (the Sun also lights Radiate" "RadiateFind reported the Sun as Radiate's only light source"
+stcheck "OrientCrvToEdge: placed 1 copy(ies) at 1 point(s)" "OrientCrvToEdge picked the box edge directly and oriented a copy onto it"
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
-stcheck "smoke: frames=1[0-9][0-9] objects=26" "solid-tools script produced the expected object count"
+stcheck "smoke: frames=[12][0-9][0-9] objects=35" "solid-tools script produced the expected object count"
 
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface
@@ -559,9 +565,9 @@ stcheck "^ok   expect_selected 5" "state script ended with every object selected
 mkdir -p "$TMP/vt"
 sed "s|@TMP@|$TMP/vt|g" "$HERE/viewtools_script.txt" > "$TMP/viewtools_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
-  VT="$("$BIN" --smoke 150 --script "$TMP/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
+  VT="$("$BIN" --smoke 190 --script "$TMP/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
 else
-  VT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
+  VT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 190 --script "$TMP/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
 fi
 vtcheck() { if echo "$VT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 vtcheck "ClippingPlane: created Clipping Plane 1 (40 x 40, normal 0,0,1, clips all viewports)" "ClippingPlane built a plane from two corners"
@@ -573,6 +579,10 @@ vtcheck "EnableClippingPlane: 1 plane(s) enabled" "EnableClippingPlane"
 vtcheck "ClippingPlane: created Upper (40 x 40, normal 0,0,1, clips Perspective)" "ClippingPlane honoured Name= and Viewports=Active"
 vtcheck "SaveClippingSectionCPlanes: 2 named CPlane(s) saved" "SaveClippingSectionCPlanes"
 vtcheck "SaveClippingSectionViews: 2 named view(s) saved" "SaveClippingSectionViews"
+vtcheck "ClippingDrawings: 2 drawing curve(s) on layer 'Clipping Drawings' from 2 plane(s)" "ClippingDrawings drew section curves onto a dedicated layer"
+vtcheck "UpdateClippingDrawings: 2 drawing curve(s) on layer 'Clipping Drawings' from 2 plane(s)" "UpdateClippingDrawings regenerated them"
+vtcheck "EditClippingDrawings: 2 drawing curve(s) selected for editing" "EditClippingDrawings selected the drawing curves"
+vtcheck "ExportClippingDrawings: wrote 2 drawing curve(s) to $TMP/vt/drawings.3dm" "ExportClippingDrawings wrote them to a file"
 vtcheck "ClippingSections: 2 curve(s) from 2 plane(s)" "ClippingSections handled two planes"
 vtcheck "ExtractClippingSlices: 2 planar slice surface(s) from 2 plane(s)" "ExtractClippingSlices built trimmed planar faces, not just outline curves"
 vtcheck "1 faces, 1 edges, open" "a clipping slice is a single trimmed planar face"
@@ -604,6 +614,13 @@ vtcheck "ViewFrameNumber: frame 3 of 6" "ViewFrameNumber"
 vtcheck "ViewLastFrame: frame 6 of 6" "ViewLastFrame"
 vtcheck "PlayAnimation: finished 6 frames" "PlayAnimation stepped through every frame without blocking"
 vtcheck "RecordAnimation: wrote 6 frames to $TMP/vt/frames" "RecordAnimation wrote every frame"
+vtcheck "SetOneDaySunAnimation: 4 frame(s); PlayAnimation/RecordAnimation will sweep the Sun (Altitude -5 to 60)" "SetOneDaySunAnimation built a sun-only animation"
+vtcheck "ViewFirstFrame: frame 1 of 4" "ViewFirstFrame stepped into the one-day sun animation"
+vtcheck "Azimuth=70 Altitude=-5" "the one-day animation's first frame is sunrise (low altitude, easterly azimuth)"
+vtcheck "ViewLastFrame: frame 4 of 4" "ViewLastFrame stepped to the animation's last frame"
+vtcheck "Azimuth=290 Altitude=-5" "the one-day animation's last frame is sunset (low altitude again, westerly azimuth)"
+vtcheck "SetSeasonalSunAnimation: 4 frame(s); PlayAnimation/RecordAnimation will sweep the Sun (Altitude -10 to 65)" "SetSeasonalSunAnimation built a sun-only animation"
+vtcheck "Azimuth=180 Altitude=-10" "the seasonal animation's first and last frames are both winter (fixed solar-noon azimuth, lowest altitude)"
 vtcheck "SplitViewportHorizontal: added Perspective 2 (5 viewports)" "SplitViewportHorizontal added a viewport"
 vtcheck "CloseViewport: closed Perspective 2 (4 left)" "CloseViewport removed it"
 vtcheck "Layouts: 2 layout(s); active: Model" "layouts survived the .3dm round-trip"
@@ -855,7 +872,8 @@ s2check "HistoryPurge: no construction history is recorded; nothing to purge" "H
 s2check "HistoryUpdate: no construction history is recorded; nothing to update" "HistoryUpdate"
 s2check "[0-9]* attached reference model" "Worksession (cmd_session.cpp's real implementation, no longer shadowed)"
 s2check "LimitReferenceModel: 0 object(s) removed from 'nonexistent.3dm'" "LimitReferenceModel (cmd_session.cpp's real implementation, no longer shadowed)"
-s2check "ContentFilter: the Materials/Textures/Environments panels have no filtering UI" "ContentFilter"
+s2check "ContentFilter: 'Wood' (Materials and Textures panels; ContentFilter Clear to remove)" "ContentFilter set a name filter"
+s2check "ContentFilter: off (showing every entry)" "ContentFilter Clear removed it"
 s2check "Dino 8 is free software. No licence keys" "Licenses"
 s2check "Dino 8 does not phone home" "CheckForUpdates"
 s2check "Support: open an issue at " "TechSupport"

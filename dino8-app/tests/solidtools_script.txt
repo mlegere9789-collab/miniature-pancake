@@ -169,3 +169,49 @@ Bounce
 10,10,0
 5
 @expect_objects 26
+# --- CreateSolid: joins/welds a single closed Brep's own surfaces into a closed mesh solid
+SelNone
+Box 800,0,0 810,10,0 10
+SelLast
+CreateSolid
+@expect_objects 27
+# --- Splop: places an oriented copy at a picked point on a target surface
+SelNone
+Plane 900,0,0 910,10,0
+SelLast
+SetObjectName SplopSrf
+Sphere 905,5,20 1
+SelLast
+Splop
+SelName SplopSrf
+Enter
+905,5,0
+Enter
+@expect_objects 30
+# --- Reflect: mirrors the selection across a plane and welds original + mirror into one symmetric mesh
+SelNone
+MeshBox 1000,0,0 1005,10,0 10
+SelLast
+Reflect
+1005,0,0
+1005,10,0
+@expect_objects 31
+# --- Radiate / RadiateFind: bake vertex colours from the Sun, then find the lights used
+SelNone
+MeshSphere 1100,0,0 5
+SelLast
+Sun On
+Radiate
+RadiateFind
+@expect_objects 32
+# --- OrientCrvToEdge: orients a copy directly onto a picked polysurface edge, no DupEdge needed
+SelNone
+Box 1200,0,0 1210,10,0 10
+MeshBox 1250,0,0 1251,1,0 1
+SelLast
+OrientCrvToEdge
+1250,0,0
+1200,0,5
+1200,0,3
+Enter
+@expect_objects 35

