@@ -92,12 +92,12 @@ Volume
 SelNone
 Rectangle 0,0,0 4,4,0
 SelLast
-SetObjectName
+SetObjectName ProfileRect
 SelNone
 Box 0,0,0 40,40,0 10
 SelLast
 ArrayHole
-SelName "Object 1"
+SelName ProfileRect
 Enter
 5,5,10
 2
