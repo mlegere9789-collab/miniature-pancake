@@ -447,4 +447,50 @@ FRAMES="$(ls "$TMP/vt/frames"/frame_*.bmp 2>/dev/null | wc -l)"
 [ "$FRAMES" -ge 3 ] && echo "ok   RecordAnimation wrote $FRAMES BMP frames" || { echo "FAIL RecordAnimation frames ($FRAMES)"; fail=1; }
 [ -s "$TMP/vt/frames/frame_0001.bmp" ] && [ "$(head -c 2 "$TMP/vt/frames/frame_0001.bmp")" = "BM" ] && echo "ok   frame_0001.bmp is a BMP" || { echo "FAIL frame_0001.bmp"; fail=1; }
 grep -q "^Upper" "$TMP/vt/clipping.txt" && echo "ok   ExportClippingSectionInfo listed the Upper plane" || { echo "FAIL clipping.txt"; fail=1; }
+
+# Lua scripting: RunScript/rs.* API, "= expr" inline evaluation, rs.GetPoint
+# fed by a trailing script token (see script_script.txt).
+cat > "$TMP/t.lua" <<'LUA'
+-- Builds a box and a sphere, unions them, tags and files the result, then
+-- reports its bounding box and volume before picking up a marker point.
+rs.AddLayer("Parts")
+local box = rs.AddBox({0, 0, 0}, {10, 10, 10})
+local sphere = rs.AddSphere({5, 5, 12}, 4)
+rs.MoveObject(sphere, {0, 0, -3})
+local made = rs.BooleanUnion({box, sphere})
+if not made or #made == 0 then error("BooleanUnion produced nothing") end
+local widget = made[1]
+rs.ObjectName(widget, "Widget")
+rs.ObjectLayer(widget, "Parts")
+local bb = rs.BoundingBox(widget)
+print(string.format("bbox min %.0f,%.0f,%.0f", bb[1].x, bb[1].y, bb[1].z))
+print(string.format("bbox max %.0f,%.0f,%.0f", bb[7].x, bb[7].y, bb[7].z))
+local vol = rs.SurfaceVolume(widget)
+print(string.format("widget volume %.2f", vol))
+if vol < 1000 or vol > 1268 then error("volume out of expected range: " .. tostring(vol)) end
+local p = rs.GetPoint("Pick a marker point")
+rs.AddPoint(p.x, p.y, p.z)
+print(string.format("picked point %.0f,%.0f,%.0f", p.x, p.y, p.z))
+rs.UnselectAllObjects()
+rs.SelectObject(widget)
+print("selected by name lookup: " .. tostring(#rs.ObjectsByName("Widget")))
+LUA
+sed "s|@TMP@|$TMP|g" "$HERE/script_script.txt" > "$TMP/script_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  SC="$("$BIN" --smoke 100 --script "$TMP/script_script.txt" 2>&1)" || { echo "$SC"; echo "FAIL: script script exited non-zero"; exit 1; }
+else
+  SC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/script_script.txt" 2>&1)" || { echo "$SC"; echo "FAIL: script script exited non-zero"; exit 1; }
+fi
+echo "$SC" | grep -E "^(ok|FAIL)"
+if echo "$SC" | grep -q "^FAIL"; then fail=1; fi
+sccheck() { if echo "$SC" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+sccheck "history: inline curve length 5.00" "the \"= expr\" command line ran Lua inline (3-4-5 triangle)"
+sccheck "history: bbox min 0,0,0" "RunScript's rs.BoundingBox reported the box's own corner"
+sccheck "history: bbox max 10,10,13" "RunScript's rs.BoundingBox included the raised, unioned sphere"
+sccheck "history: widget volume" "RunScript's rs.SurfaceVolume reported the unioned solid's volume"
+sccheck "history: picked point 20,20,20" "rs.GetPoint was fed by the trailing script token"
+sccheck "^ok   expect_objects 1" "the inline Lua expression added exactly the one line"
+sccheck "^ok   expect_objects 3" "RunScript left the union, its point marker, and the earlier line"
+sccheck "selected by name lookup: 1" "rs.ObjectsByName found the object rs.ObjectName renamed to Widget"
+grep -q "! Script error" <<<"$SC" && { echo "FAIL script.txt printed a script error"; fail=1; } || echo "ok   no Lua script errors"
 exit $fail

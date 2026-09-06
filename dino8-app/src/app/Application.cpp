@@ -77,6 +77,7 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
     // Keep going: the app still works, just without the reference list.
   }
   engine_ = std::make_unique<CommandEngine>(*this, doc_, catalog_);
+  lua_ = std::make_unique<LuaEngine>(*this);
   RegisterCommands();
   engine_->RegisterCatalogPlaceholders();
   engine_->InstallDefaultAliases();
@@ -95,7 +96,44 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
                  std::to_string(engine_->CountWithStatus(CommandStatus::Partial)) + " partial, " +
                  std::to_string(engine_->CountWithStatus(CommandStatus::Planned)) + " planned)");
   engine_->Print("Type a command name, or press F1 for the command list.");
+  if (!startup_script.empty()) {
+    engine_->Print("Startup script: " + startup_script);
+    engine_->Execute("-RunScript \"" + startup_script + "\"");
+  }
   return true;
+}
+
+std::string Application::ScriptsDirectory() const {
+  const std::string dir = ConfigDirectory() + "/scripts";
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  return dir;
+}
+
+void Application::ShowMessageBox(const std::string& title, const std::string& text) {
+  if (headless) return;
+  message_boxes_.push_back({title, text});
+}
+
+void Application::DrawMessageBox() {
+  if (message_boxes_.empty()) return;
+  const char* popup = "Script message##dino8_msgbox";
+  if (!ImGui::IsPopupOpen(popup)) ImGui::OpenPopup(popup);
+  ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (ImGui::BeginPopupModal(popup, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const auto& [title, text] = message_boxes_.front();
+    ImGui::TextUnformatted(title.c_str());
+    ImGui::Separator();
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+    ImGui::TextUnformatted(text.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+    if (ImGui::Button("OK", ImVec2(120, 0)) || ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+      message_boxes_.pop_front();
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
 }
 
 void Application::Shutdown() {
@@ -830,6 +868,7 @@ void Application::Frame() {
   DrawViewportTabs();
   DrawFileDialog();
   DrawConfirmDiscard();
+  DrawMessageBox();
   DrawPopupToolbar();
   DrawContextMenu();
   DrawWelcomeOverlay();
@@ -1900,6 +1939,8 @@ void Application::DrawPanels() {
   if (panels_.clipping_planes) DrawClippingPlanesPanel(*this);
   if (panels_.layouts) DrawLayoutsPanel(*this);
   if (panels_.named_cplanes) DrawNamedCPlanesPanel(*this);
+  if (panels_.script_editor) DrawScriptEditor(*this);
+  if (panels_.scripting_reference) DrawScriptingReference(*this);
   if (panels_.imgui_demo) ImGui::ShowDemoWindow(&panels_.imgui_demo);
 }
 

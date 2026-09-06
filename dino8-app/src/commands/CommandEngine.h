@@ -48,6 +48,13 @@ class CommandEngine {
   // Runs a typed command line: "Box", "_Line", "-Circle", "!", "Box 0 10".
   void Execute(const std::string& input);
   void RunCommand(const std::string& name, bool script_mode = false);
+  // Runs a complete command line from inside a running command (rs.Command
+  // in a Lua script): the active command is set aside, the line runs to
+  // completion, and the active command is restored. Returns false when the
+  // command was unknown, failed, or needed input the line did not supply.
+  bool RunNested(const std::string& line);
+  // Splits a command line into tokens; double-quoted text stays one token.
+  static std::vector<std::string> Tokenize(const std::string& line);
   bool IsRunning() const { return active_ != nullptr; }
   const std::string& ActiveName() const { return active_name_; }
   Command* Active() { return active_.get(); }
@@ -103,6 +110,7 @@ class CommandEngine {
   bool TryParsePoint(const std::string& text, kernel::Point3d& out);
   bool TryOption(const std::string& text);
   std::string ResolveName(const std::string& typed) const;
+  void RunLuaLine(const std::string& code);
 
   Application& app_;
   Document& doc_;
@@ -119,6 +127,8 @@ class CommandEngine {
   std::deque<std::string> history_;
   std::vector<std::string> recent_;
   std::string last_command_;
+  bool command_failed_ = false;   // set by HandleCommandException / unknown command (for RunNested)
+  int nested_depth_ = 0;
   std::optional<kernel::Point3d> last_point_;
   std::optional<kernel::Point3d> hover_point_;
   std::vector<float> preview_lines_;

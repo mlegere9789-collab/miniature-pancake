@@ -101,6 +101,7 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
   const json::Value& tb = root["toolbar"];
   if (tb.IsArray() && tb.Size() > 0) { app.toolbar_commands.clear(); for (size_t i = 0; i < tb.Size(); ++i) app.toolbar_commands.push_back(tb[i].AsString()); }
   if (root["working_folder"].IsString()) app.State().working_folder = root["working_folder"].AsString();
+  if (root["startup_script"].IsString()) app.startup_script = root["startup_script"].AsString();
   app.toolbar_icon_size = static_cast<int>(Num(root["toolbar_icon_size"], app.toolbar_icon_size));
   if (app.toolbar_icon_size != 24 && app.toolbar_icon_size != 32 && app.toolbar_icon_size != 40) app.toolbar_icon_size = 24;
   app.toolbar_labels = Bool(root["toolbar_labels"], app.toolbar_labels);
@@ -127,6 +128,7 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
   for (size_t i = 0; i < a.toolbar_commands.size(); ++i) out << (i ? ", " : "") << "\"" << Escape(a.toolbar_commands[i]) << "\"";
   out << "],\n";
   out << "  \"working_folder\": \"" << Escape(a.State().working_folder) << "\",\n";
+  out << "  \"startup_script\": \"" << Escape(a.startup_script) << "\",\n";
   out << "  \"toolbar_icon_size\": " << a.toolbar_icon_size << ",\n";
   out << "  \"toolbar_labels\": " << (a.toolbar_labels ? "true" : "false") << ",\n";
   out << "  \"toolbar_tab\": " << a.toolbar_tab << ",\n";

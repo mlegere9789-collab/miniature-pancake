@@ -41,6 +41,10 @@ void DrawMacroEditor(Application& app);
 void DrawClippingPlanesPanel(Application& app);
 void DrawLayoutsPanel(Application& app);
 void DrawNamedCPlanesPanel(Application& app);
+void DrawScriptEditor(Application& app);
+void DrawScriptingReference(Application& app);
+// Loads a script file into the Script Editor panel (and opens it).
+bool OpenInScriptEditor(Application& app, const std::string& path);
 
 // Toolbars (Toolbars.cpp): tabbed icon toolbar + left sidebar.
 struct IconButtonResult {

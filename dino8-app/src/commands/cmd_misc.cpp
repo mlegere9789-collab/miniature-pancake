@@ -1,9 +1,12 @@
-// Miscellaneous commands: help, options, aliases, snaps, macros, calculators.
+// Miscellaneous commands: help, options, aliases, snaps, macros, calculators,
+// scripting (RunScript / LoadScript / EditScript / ScriptEditor).
 #include "commands/cmd_common.h"
 
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
+#include "script/LuaEngine.h"
 #include "ui/Panels.h"
 
 namespace dino8::app {
@@ -63,6 +66,90 @@ CommandFactory Toggle(std::function<bool&(CommandContext&)> get, const char* lab
   return Immediate([get, label](CommandContext& ctx) { bool& b = get(ctx); b = !b; ctx.Print(std::string(label) + (b ? " on" : " off")); });
 }
 
+// ---------------------------------------------------------------------------
+// Scripting: RunScript / LoadScript run a Lua file (or a queued Script
+// Editor / "= expr" chunk) through the shared LuaEngine, staying interactive
+// while it's suspended on rs.GetPoint / rs.GetObject / rs.GetString / rs.GetReal
+// / rs.GetInteger - exactly like any other command's Want* prompt, so script
+// tokens on the command line ("RunScript t.lua 5,5,5") feed them the same
+// way. A ".txt"/".dino"/".cmd" file still runs as a plain command script
+// (ReadCommandFile's behaviour), for scripts written before Lua existed.
+class ScriptCommand : public Command {
+ public:
+  explicit ScriptCommand(std::string label) : label_(std::move(label)) {}
+
+  void Begin(CommandContext& ctx) override {
+    Application& app = ctx.App();
+    std::string code, chunk;
+    bool expr = false;
+    if (app.TakeQueuedScript(code, chunk, expr)) {
+      if (expr ? app.Lua().StartExpression(code) : app.Lua().Start(code, chunk)) Pump(ctx);
+      else Finish();
+      return;
+    }
+    if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) {
+      RunPath(ctx, *path);
+      return;
+    }
+    if (ctx.ScriptMode() || app.headless) {
+      ctx.Warn(label_ + ": no script file given");
+      Finish();
+      return;
+    }
+    app.ShowFileDialog(label_, {".lua", ".txt", ".dino", ".cmd"}, false, [&app, label = label_](const std::string& path) {
+      app.Engine().Execute("-" + label + " \"" + path + "\"");
+    });
+    Finish();
+  }
+
+  void OnPoint(CommandContext& ctx, Point3d p) override { ctx.App().Lua().ResumePoint(p); Pump(ctx); }
+  void OnNumber(CommandContext& ctx, double v) override { ctx.App().Lua().ResumeNumber(v); Pump(ctx); }
+  void OnText(CommandContext& ctx, const std::string& t) override { ctx.App().Lua().ResumeText(t); Pump(ctx); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override { ctx.App().Lua().ResumeObjects(ids); Pump(ctx); }
+  void OnEnter(CommandContext& ctx) override {
+    if (want == Want::Objects) ctx.App().Lua().ResumeObjects({});
+    else ctx.App().Lua().ResumeNil();
+    Pump(ctx);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.App().Lua().Abort(); }
+
+ private:
+  void RunPath(CommandContext& ctx, const std::string& raw_path) {
+    Application& app = ctx.App();
+    const std::string ext = ToLower(std::filesystem::path(raw_path).extension().string());
+    if (ext == ".txt" || ext == ".dino" || ext == ".cmd") {
+      std::ifstream in(raw_path);
+      if (!in) { ctx.Warn(label_ + ": cannot open " + raw_path); Finish(); return; }
+      // RunNested keeps this command's own state intact while each line
+      // runs (and finishes) as an ordinary top-level command in between.
+      std::string line;
+      while (std::getline(in, line)) if (!line.empty() && line[0] != '#') ctx.Engine().RunNested(line);
+      Finish();
+      return;
+    }
+    if (app.Lua().StartFile(raw_path)) Pump(ctx);
+    else Finish();
+  }
+
+  // Reflects the running script's current rs.Get* prompt (or finishes the
+  // command once the script itself has finished or failed).
+  void Pump(CommandContext& ctx) {
+    LuaEngine& lua = ctx.App().Lua();
+    if (!lua.Running()) { Finish(); return; }
+    const ScriptRequest& r = lua.Request();
+    switch (r.want) {
+      case ScriptWant::Point: WantPoint(r.prompt); break;
+      case ScriptWant::Objects: WantObjects(r.prompt, std::max(0, r.min_objects)); accept_preselection = true; break;
+      case ScriptWant::Text: WantText(r.prompt, r.default_text); break;
+      case ScriptWant::Number:
+      case ScriptWant::Integer: WantNumber(r.prompt, r.default_number); break;
+      case ScriptWant::Nothing: default: Finish(); break;
+    }
+  }
+
+  std::string label_;
+};
+
 }  // namespace
 
 void RegisterMiscCommands(CommandEngine& e) {
@@ -110,10 +197,25 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "Dragmode", Immediate([](CommandContext& ctx) { ctx.Print("Drag mode: CPlane (objects drag along the construction plane)."); }), CommandStatus::Partial);
   Reg(e, "History", Immediate([](CommandContext& ctx) { ctx.Print("History: not recorded. Every edit is captured by the snapshot undo instead."); }), CommandStatus::Partial);
   Reg(e, "RecordHistory", Immediate([](CommandContext& ctx) { ctx.Print("RecordHistory: not needed; undo snapshots cover every change."); }), CommandStatus::Partial);
-  Reg(e, "Grasshopper", Immediate([](CommandContext& ctx) { ctx.Print("Grasshopper: visual scripting is planned; use Macro / ReadCommandFile for automation today."); ctx.App().Panels().macro_editor = true; }), CommandStatus::Partial);
-  Reg(e, "RunScript", Make<MacroRunCommand>(), CommandStatus::Partial, "Runs command macros; Python scripting is planned.");
-  Reg(e, "RunPythonScript", Make<MacroRunCommand>(), CommandStatus::Partial, "Runs command macros; Python scripting is planned.");
-  Reg(e, "ScriptEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().macro_editor = true; }), CommandStatus::Partial);
+  Reg(e, "Grasshopper", Immediate([](CommandContext& ctx) { ctx.Print("Grasshopper: visual scripting is planned; use RunScript (Lua) or Macro / ReadCommandFile for automation today."); ctx.App().Panels().script_editor = true; }), CommandStatus::Partial);
+  Reg(e, "RunScript", Make<ScriptCommand>("RunScript"),
+      CommandStatus::Implemented, "Runs a .lua script (embedded Lua 5.4, rhinoscriptsyntax-like rs.* API) or a .txt command file.");
+  Reg(e, "LoadScript", Make<ScriptCommand>("LoadScript"),
+      CommandStatus::Implemented, "Runs a .lua script; its top-level functions stay callable afterwards (Lua globals persist for the session).");
+  Reg(e, "EditScript", Immediate([](CommandContext& ctx) {
+        if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) OpenInScriptEditor(ctx.App(), *path);
+        ctx.App().Panels().script_editor = true;
+      }), CommandStatus::Implemented, "Opens the Lua Script Editor.");
+  Reg(e, "RunPythonScript", Immediate([](CommandContext& ctx) {
+        ctx.Print("Dino 8 has no bundled Python interpreter (no CPython in a small offline installer); use RunScript with Lua's rs.* API instead - it covers the same rhinoscriptsyntax surface.");
+        ctx.App().Panels().script_editor = true;
+      }), CommandStatus::Partial, "Python is not bundled; opens the Lua Script Editor instead.");
+  Reg(e, "EditPythonScript", Immediate([](CommandContext& ctx) {
+        ctx.Print("Dino 8 has no bundled Python interpreter; use EditScript / the Script Editor to write Lua instead.");
+        ctx.App().Panels().script_editor = true;
+      }), CommandStatus::Partial, "Python is not bundled; opens the Lua Script Editor instead.");
+  Reg(e, "ScriptEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().script_editor = true; }));
+  Reg(e, "ScriptingReference", Immediate([](CommandContext& ctx) { ctx.App().Panels().scripting_reference = true; }));
   Reg(e, "PackageManager", Immediate([](CommandContext& ctx) { ctx.Print("PackageManager: plug-ins are planned. Everything built in is free."); }), CommandStatus::Partial);
   Reg(e, "PluginManager", Immediate([](CommandContext& ctx) { ctx.Print("PluginManager: plug-ins are planned."); }), CommandStatus::Partial);
 }

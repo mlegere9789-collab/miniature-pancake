@@ -188,6 +188,11 @@ void DrawMenuBar(Application& app) {
     ImGui::EndMenu();
   }
   if (ImGui::BeginMenu("Tools")) {
+    Item(app, "Script Editor (Lua)", "ScriptEditor");
+    Item(app, "Run Script...", "RunScript");
+    Item(app, "Load Script...", "LoadScript");
+    if (ImGui::MenuItem("Scripting Reference (rs API)")) p.scripting_reference = true;
+    ImGui::Separator();
     Items(app, {"Options", "DocumentProperties", "Toolbar", "ToolbarReset", "Alias", "Macro", "MacroEditor", "ReadCommandFile", "CommandHistory", "CommandList", "CommandPaste", "Calc", "CalcRPN", "Units", "Snap", "Osnap", "Ortho", "Planar", "SmartTrack", "ProjectOsnap", "PersistentOnCrv", "PersistentOnSrf", "PersistentOnMesh", "PersistentOnPolysrf", "DisableOsnap", "Gumball", "PointsOn", "PointsOff", "Layer", "LayerStateManager", "Repeat", "ScriptEditor", "RunScript", "RunPythonScript", "EditPythonScript", "Grasshopper", "GrasshopperPlayer", "PackageManager", "PluginManager", "Audit", "Audit3dmFile", "SystemInfo", "Notes", "Check", "SelBadObjects", "Purge", "ClearUndo", "ClearAllMeshes", "Lock", "Unlock", "Hide", "Show", "Isolate", "Unisolate", "Zoo", "Zoom"});
     ImGui::EndMenu();
   }
@@ -219,6 +224,8 @@ void DrawMenuBar(Application& app) {
     ImGui::MenuItem("Layer State Manager", "", &p.layer_state_manager);
     ImGui::MenuItem("Selection Filter", "", &p.selection_filter);
     ImGui::MenuItem("Macro Editor", "", &p.macro_editor);
+    ImGui::MenuItem("Script Editor", "", &p.script_editor);
+    ImGui::MenuItem("Scripting Reference", "", &p.scripting_reference);
     ImGui::MenuItem("Clipping Planes", "", &p.clipping_planes);
     ImGui::MenuItem("Layouts", "", &p.layouts);
     ImGui::MenuItem("Named CPlanes", "", &p.named_cplanes);
@@ -231,6 +238,7 @@ void DrawMenuBar(Application& app) {
   if (ImGui::BeginMenu("Help")) {
     Item(app, "Command Help", "Help", "F1");
     if (ImGui::MenuItem("Command List / Feature Coverage", "Ctrl+F1")) p.command_list = true;
+    if (ImGui::MenuItem("Scripting Reference (rs API)")) p.scripting_reference = true;
     Items(app, {"CommandHelp", "LearnRhino", "Tutorials", "WhatsNew", "CheckForUpdates", "SystemInfo", "TechSupport", "Licenses"});
     ImGui::Separator();
     if (ImGui::MenuItem("About Dino 8")) p.about = true;

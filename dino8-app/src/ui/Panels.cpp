@@ -5,6 +5,8 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <sstream>
@@ -12,6 +14,7 @@
 
 #include "app/Application.h"
 #include "imgui.h"
+#include "script/LuaEngine.h"
 #include "ui/Theme.h"
 
 namespace dino8::app {
@@ -690,6 +693,22 @@ void DrawOptionsWindow(Application& app) {
       { bool show_welcome = !app.welcome_dismissed; if (ImGui::Checkbox("Show the welcome card on empty documents", &show_welcome)) app.welcome_dismissed = !show_welcome; }
       ImGui::Checkbox("Gumball", &app.gumball_enabled);
       ImGui::Checkbox("Show toolbars", &app.Panels().toolbars);
+      ImGui::Separator();
+      ImGui::TextDisabled("Scripting");
+      {
+        static char startup[1024] = {};
+        static bool synced = false;
+        if (!synced) { std::snprintf(startup, sizeof(startup), "%s", app.startup_script.c_str()); synced = true; }
+        if (ImGui::InputText("Startup script (.lua)", startup, sizeof(startup))) app.startup_script = startup;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Browse...")) {
+          app.ShowFileDialog("Startup script", {".lua"}, false, [&app](const std::string& path) { app.startup_script = path; synced = false; });
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A Lua script run once when Dino 8 starts (RunScript). Leave empty for none.");
+        if (ImGui::SmallButton("Open Script Editor")) app.Panels().script_editor = true;
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Scripting reference")) app.Panels().scripting_reference = true;
+      }
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("Modeling Aids")) {
@@ -1013,6 +1032,164 @@ void DrawMacroEditor(Application& app) {
   }
   ImGui::SameLine();
   if (ImGui::Button("Copy")) ImGui::SetClipboardText(text);
+  ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
+// Script Editor (Lua): the RunScript / LoadScript / EditScript surface. A
+// multi-line editor, a persisted list of scripts in the config directory's
+// scripts/ folder, and an output pane fed by the shared LuaEngine's
+// print()/error output.
+// ---------------------------------------------------------------------------
+
+namespace {
+int ScriptEditorTextCallback(ImGuiInputTextCallbackData* data) {
+  auto* out = static_cast<std::string*>(data->UserData);
+  if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+    out->resize(static_cast<size_t>(data->BufTextLen));
+    data->Buf = out->data();
+  }
+  return 0;
+}
+
+void RefreshScriptList(Application& app) {
+  ScriptEditorState& s = app.ScriptEditor();
+  s.files.clear();
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(app.ScriptsDirectory(), ec)) {
+    if (ec) break;
+    if (entry.is_regular_file() && entry.path().extension() == ".lua" && entry.path().filename() != "_last.lua") s.files.push_back(entry.path().filename().string());
+  }
+  std::sort(s.files.begin(), s.files.end());
+  s.files_dirty = false;
+}
+}  // namespace
+
+bool OpenInScriptEditor(Application& app, const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  ScriptEditorState& s = app.ScriptEditor();
+  s.text = ss.str();
+  s.path = path;
+  s.file_name = std::filesystem::path(path).filename().string();
+  s.loaded = true;
+  s.dirty = false;
+  app.Panels().script_editor = true;
+  return true;
+}
+
+void DrawScriptEditor(Application& app) {
+  ScriptEditorState& s = app.ScriptEditor();
+  if (!s.loaded) {
+    // First open this session: restore whatever was last edited.
+    const std::string last = app.ScriptsDirectory() + "/_last.lua";
+    std::ifstream in(last, std::ios::binary);
+    if (in) { std::ostringstream ss; ss << in.rdbuf(); s.text = ss.str(); }
+    else s.text = "-- Dino 8 Lua script. rs.* mirrors rhinoscriptsyntax; see Help > Scripting Reference.\nlocal id = rs.AddPoint(0, 0, 0)\nprint(\"created point \" .. tostring(id))\n";
+    s.loaded = true;
+  }
+  ImGui::SetNextWindowSize(ImVec2(760, 520), ImGuiCond_Appearing);
+  if (!ImGui::Begin("Script Editor", &app.Panels().script_editor)) { ImGui::End(); return; }
+
+  if (ImGui::Button("New")) { s.text.clear(); s.path.clear(); s.file_name.clear(); s.dirty = false; }
+  ImGui::SameLine();
+  if (ImGui::Button("Open...")) {
+    app.ShowFileDialog("Open script", {".lua"}, false, [&app](const std::string& path) { OpenInScriptEditor(app, path); });
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Save")) {
+    if (s.path.empty()) {
+      app.ShowFileDialog("Save script", {".lua"}, true, [&app](const std::string& path) {
+        ScriptEditorState& st = app.ScriptEditor();
+        std::ofstream out(path, std::ios::binary);
+        out << st.text;
+        st.path = path;
+        st.file_name = std::filesystem::path(path).filename().string();
+        st.dirty = false;
+        st.files_dirty = true;
+      });
+    } else {
+      std::ofstream out(s.path, std::ios::binary);
+      out << s.text;
+      s.dirty = false;
+      s.files_dirty = true;
+    }
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("%s%s", s.file_name.empty() ? "(untitled)" : s.file_name.c_str(), s.dirty ? " *" : "");
+
+  ImGui::Checkbox("Run as command macro (one command per line) instead of Lua", &s.as_macro);
+  ImGui::SameLine();
+  ImGui::TextDisabled("(?)");
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: the text runs as Lua through rs.*, exactly like a .lua file passed to RunScript.\nOn: each line runs as a Dino 8 command, exactly like the Macro Editor.");
+
+  const bool running = app.Lua().Running();
+  ImGui::BeginDisabled(running && !app.Lua().Suspended());
+  if (ImGui::Button(running ? "Continue" : "Run") && !running) {
+    // Persist immediately so a crash mid-script doesn't lose the text.
+    { std::ofstream out(app.ScriptsDirectory() + "/_last.lua", std::ios::binary); out << s.text; }
+    if (s.as_macro) {
+      std::istringstream in(s.text);
+      std::string line;
+      while (std::getline(in, line)) if (!line.empty() && line[0] != '#') app.Engine().Execute(line);
+    } else {
+      app.QueueScript(s.text, s.file_name.empty() ? "Script Editor" : s.file_name, false);
+      app.Engine().Execute("-RunScript");
+    }
+  }
+  ImGui::EndDisabled();
+  if (running) { ImGui::SameLine(); ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1), app.Lua().Suspended() ? "Waiting for input in a viewport / the command line..." : "Running..."); }
+
+  ImGui::Separator();
+  ImGui::Columns(2, "script_cols", true);
+  if (ImGui::GetColumnWidth(0) > 220) ImGui::SetColumnWidth(0, 180);
+
+  ImGui::BeginChild("script_files", ImVec2(0, -1));
+  ImGui::TextDisabled("Scripts (%s)", app.ScriptsDirectory().c_str());
+  if (s.files_dirty) RefreshScriptList(app);
+  for (const std::string& f : s.files) {
+    if (ImGui::Selectable(f.c_str(), s.file_name == f)) OpenInScriptEditor(app, app.ScriptsDirectory() + "/" + f);
+  }
+  if (s.files.empty()) ImGui::TextDisabled("(none yet - Save writes here)");
+  ImGui::EndChild();
+
+  ImGui::NextColumn();
+  ImGui::BeginChild("script_main", ImVec2(0, -1));
+  const float output_h = ImGui::GetTextLineHeightWithSpacing() * 7.0f;
+  if (ImGui::InputTextMultiline("##script_text", s.text.data(), s.text.capacity() + 1,
+                                ImVec2(-1, -output_h - ImGui::GetFrameHeightWithSpacing()),
+                                ImGuiInputTextFlags_CallbackResize | ImGuiInputTextFlags_AllowTabInput,
+                                ScriptEditorTextCallback, &s.text)) {
+    s.dirty = true;
+  }
+  ImGui::TextDisabled("Output");
+  ImGui::BeginChild("script_output", ImVec2(-1, output_h), true);
+  for (const std::string& line : app.Lua().LastOutput()) ImGui::TextWrapped("%s", line.c_str());
+  if (app.Lua().LastOutput().empty()) ImGui::TextDisabled("(nothing printed yet)");
+  ImGui::EndChild();
+  ImGui::EndChild();
+  ImGui::Columns(1);
+  ImGui::End();
+}
+
+void DrawScriptingReference(Application& app) {
+  ImGui::SetNextWindowSize(ImVec2(700, 560), ImGuiCond_Appearing);
+  if (!ImGui::Begin("Scripting Reference", &app.Panels().scripting_reference)) { ImGui::End(); return; }
+  ImGui::TextWrapped("Every rs.* function Dino 8's embedded Lua 5.4 provides. RunScript/LoadScript run a .lua file; EditScript/ScriptEditor edit one; \"= expr\" on the command line runs a one-line Lua expression.");
+  static char filter[128] = {};
+  ImGui::InputTextWithHint("##rsfilter", "Filter (e.g. curve, layer, get)...", filter, sizeof(filter));
+  ImGui::Separator();
+  ImGui::BeginChild("rsdocs");
+  const std::string needle = ToLower(filter);
+  for (const RsFunctionDoc& d : LuaEngine::ApiDocs()) {
+    if (!needle.empty() && ToLower(d.name).find(needle) == std::string::npos && ToLower(d.doc).find(needle) == std::string::npos) continue;
+    ImGui::TextColored(ImVec4(0.4f, 0.75f, 0.95f, 1), "%s", d.signature);
+    ImGui::TextWrapped("  %s", d.doc);
+    ImGui::Spacing();
+  }
+  ImGui::EndChild();
   ImGui::End();
 }
 

@@ -1,0 +1,10 @@
+# Lua scripting QC: an inline "= expr" command, then a .lua file run
+# through RunScript that builds solids via the rs.* API, unions them,
+# tags the result, and picks up a point fed as a trailing script token
+# (rs.GetPoint suspending the interactive RunScript command).
+# smoke.sh substitutes @TMP@ with a scratch directory and writes @TMP@/t.lua
+# before running this.
+= print(string.format("inline curve length %.2f", rs.CurveLength(rs.AddLine({0,0,0},{3,4,0}))))
+@expect_objects 1
+RunScript @TMP@/t.lua 20,20,20
+@expect_objects 3

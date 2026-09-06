@@ -44,6 +44,39 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(imgui)
 
+# Lua 5.4 - the scripting engine behind RunScript / the Script Editor (see
+# src/script/LuaEngine.*). Rhino ships RhinoScript and Python; a small,
+# offline installer can't carry CPython, so Dino 8 embeds Lua instead: it's
+# ~30 plain-C files (no platform-specific code, builds identically on
+# Windows/macOS/Linux) and gets the same "type rs.AddBox(...) and go"
+# scripting experience via the rs.* module LuaEngine registers.
+FetchContent_Declare(
+  lua
+  GIT_REPOSITORY https://github.com/lua/lua.git
+  GIT_TAG        v5.4.7
+)
+FetchContent_MakeAvailable(lua)
+# Upstream ships no CMakeLists (it's built via a plain Makefile); list the
+# interpreter's library sources ourselves (lua.c/luac.c are the standalone
+# executables' own main()s and don't belong in the embedded library).
+file(GLOB DINO8_LUA_SOURCES ${lua_SOURCE_DIR}/*.c)
+# lua.c/luac.c are the standalone executables' own main()s; onelua.c is the
+# alternate amalgamated single-file build (it #includes every other .c
+# itself, including lua.c's main) - compiling it alongside the individual
+# files duplicates every symbol.
+list(REMOVE_ITEM DINO8_LUA_SOURCES ${lua_SOURCE_DIR}/lua.c ${lua_SOURCE_DIR}/luac.c ${lua_SOURCE_DIR}/onelua.c)
+add_library(dino8_lua STATIC ${DINO8_LUA_SOURCES})
+target_include_directories(dino8_lua PUBLIC ${lua_SOURCE_DIR})
+target_compile_definitions(dino8_lua PRIVATE LUA_USE_C89)  # no platform-specific dlopen/posix path assumptions
+if(UNIX AND NOT APPLE)
+  target_link_libraries(dino8_lua PUBLIC m)
+endif()
+if(MSVC)
+  target_compile_options(dino8_lua PRIVATE /w)
+else()
+  target_compile_options(dino8_lua PRIVATE -w)
+endif()
+
 add_library(imgui STATIC
   ${imgui_SOURCE_DIR}/imgui.cpp
   ${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -110,6 +143,7 @@ set(DINO8_SOURCES
   src/commands/cmd_file.cpp
   src/commands/cmd_misc.cpp
   src/commands/cmd_render.cpp
+  src/script/LuaEngine.cpp
   src/io/File3dm.cpp
   src/io/FileExchange.cpp
   src/geom/BrepMesher.cpp
@@ -149,7 +183,7 @@ if(NOT TARGET opennurbs_public_freetype)
     target_compile_options(opennurbs_public_freetype PRIVATE /w)
   endif()
 endif()
-target_link_libraries(Dino8 PRIVATE dino8_kernel imgui glfw OpenGL::GL opennurbs_public_freetype)
+target_link_libraries(Dino8 PRIVATE dino8_kernel imgui glfw OpenGL::GL opennurbs_public_freetype dino8_lua)
 
 if(MSVC)
   target_compile_options(Dino8 PRIVATE /W3 /EHsc /bigobj)

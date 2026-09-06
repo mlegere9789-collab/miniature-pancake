@@ -16,6 +16,7 @@
 #include "doc/Document.h"
 #include "render/GlRenderer.h"
 #include "doc/SubObject.h"
+#include "script/LuaEngine.h"
 #include "ui/Gumball.h"
 #include "imgui.h"
 #include "viewport/Viewport.h"
@@ -56,6 +57,21 @@ struct PanelState {
   bool clipping_planes = false;
   bool layouts = false;
   bool named_cplanes = false;
+  bool script_editor = false;
+  bool scripting_reference = false;
+};
+
+// The Script Editor panel's state (persisted: the last script text lives in
+// the config directory's scripts/ folder as _last.lua).
+struct ScriptEditorState {
+  std::string text;
+  std::string file_name;        // "part.lua" inside the scripts folder, or empty
+  std::string path;             // absolute path when loaded from elsewhere
+  bool as_macro = false;        // run the text as command lines instead of Lua
+  bool loaded = false;          // the persisted last script has been read
+  bool dirty = false;
+  std::vector<std::string> files;  // cached scripts/ listing
+  bool files_dirty = true;
 };
 
 // The last image produced by Render / RenderPreview, shown in the Render
@@ -131,7 +147,26 @@ class Application {
   // ---- accessors used by commands and panels ----
   Document& Doc() { return doc_; }
   CommandEngine& Engine() { return *engine_; }
+  LuaEngine& Lua() { return *lua_; }
   CommandCatalog& Catalog() { return catalog_; }
+  // Scripting: RunScript reads the queued code (from "= expr" lines and the
+  // Script Editor's Run button) instead of a file when one is waiting.
+  void QueueScript(const std::string& code, const std::string& chunk_name, bool expression) {
+    queued_script_ = code; queued_script_name_ = chunk_name; queued_script_is_expression_ = expression; has_queued_script_ = true;
+  }
+  bool TakeQueuedScript(std::string& code, std::string& chunk_name, bool& expression) {
+    if (!has_queued_script_) return false;
+    code = queued_script_; chunk_name = queued_script_name_; expression = queued_script_is_expression_;
+    has_queued_script_ = false; queued_script_.clear();
+    return true;
+  }
+  ScriptEditorState& ScriptEditor() { return script_editor_; }
+  // Folder for user scripts (<config dir>/scripts), created on demand.
+  std::string ScriptsDirectory() const;
+  // Options > General: a Lua file run once at start-up (persisted).
+  std::string startup_script;
+  // rs.MessageBox: a modal message (skipped when headless).
+  void ShowMessageBox(const std::string& title, const std::string& text);
   std::vector<std::unique_ptr<Viewport>>& Viewports() { return viewports_; }
   // The viewport commands act on: a model viewport, or - while a layout is
   // active - the active detail (or the page itself).
@@ -267,6 +302,7 @@ class Application {
   void DrawFileDialog();
   void DrawNotifications();
   void DrawConfirmDiscard();
+  void DrawMessageBox();
   void DrawPopupToolbar();
   void DrawContextMenu();
   void DrawWelcomeOverlay();
@@ -279,6 +315,12 @@ class Application {
   Document doc_;
   CommandCatalog catalog_;
   std::unique_ptr<CommandEngine> engine_;
+  std::unique_ptr<LuaEngine> lua_;
+  std::string queued_script_, queued_script_name_;
+  bool queued_script_is_expression_ = false;
+  bool has_queued_script_ = false;
+  ScriptEditorState script_editor_;
+  std::deque<std::pair<std::string, std::string>> message_boxes_;  // title, text
   Gumball gumball_;
   SubObjectSelection sub_selection_;
   // Direct control-point drag in progress (originals restored + moved each frame).

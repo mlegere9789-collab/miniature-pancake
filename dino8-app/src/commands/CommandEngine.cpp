@@ -182,7 +182,68 @@ std::string CommandEngine::ResolveName(const std::string& typed) const {
 
 void CommandEngine::HandleCommandException(const std::string& what) {
   Print("! " + (active_name_.empty() ? std::string("Command") : active_name_) + " failed: " + what);
+  command_failed_ = true;
   if (active_) active_->finished = true;
+}
+
+std::vector<std::string> CommandEngine::Tokenize(const std::string& line) {
+  std::vector<std::string> toks;
+  std::string cur;
+  bool in_quote = false, have = false;
+  for (char c : line) {
+    if (c == '"') { in_quote = !in_quote; have = true; continue; }
+    if (!in_quote && std::isspace(static_cast<unsigned char>(c))) {
+      if (have) { toks.push_back(cur); cur.clear(); have = false; }
+      continue;
+    }
+    cur += c;
+    have = true;
+  }
+  if (have) toks.push_back(cur);
+  return toks;
+}
+
+void CommandEngine::RunLuaLine(const std::string& code) {
+  std::string c = code;
+  size_t start = 0;
+  while (start < c.size() && std::isspace(static_cast<unsigned char>(c[start]))) ++start;
+  c.erase(0, start);
+  if (c.empty()) return;
+  // Runs through the RunScript command so rs.GetPoint & co. can prompt.
+  pending_inputs_.clear();
+  app_.QueueScript(c, "=command line", true);
+  RunCommand("RunScript", true);
+}
+
+bool CommandEngine::RunNested(const std::string& line) {
+  if (nested_depth_ > 8) { Print("! rs.Command: nesting too deep"); return false; }
+  std::unique_ptr<Command> saved_active = std::move(active_);
+  const std::string saved_name = active_name_;
+  const std::deque<std::string> saved_pending = pending_inputs_;
+  const bool saved_script = script_mode_;
+  const std::optional<Point3d> saved_last_point = last_point_;
+  const std::string saved_last_command = last_command_;
+  active_.reset();
+  active_name_.clear();
+  pending_inputs_.clear();
+  command_failed_ = false;
+  ++nested_depth_;
+  Execute(line);
+  bool ok = !command_failed_;
+  if (active_) {
+    Print("! " + active_name_ + " is waiting for input rs.Command did not supply; cancelled");
+    Cancel();
+    ok = false;
+  }
+  --nested_depth_;
+  active_ = std::move(saved_active);
+  active_name_ = saved_name;
+  pending_inputs_ = saved_pending;
+  script_mode_ = saved_script;
+  last_point_ = saved_last_point;
+  last_command_ = saved_last_command;
+  command_failed_ = false;
+  return ok;
 }
 
 void CommandEngine::Print(const std::string& line) {
@@ -201,13 +262,11 @@ void CommandEngine::Execute(const std::string& raw_input) {
   if (active_) {
     if (input.empty() || ToLower(input) == "enter" || input == "_Enter") FeedEnter();
     else if (ToLower(input) == "cancel" || ToLower(input) == "_cancel" || ToLower(input) == "!cancel") Cancel();
+    else if (active_->want == Want::Text && input.size() > 1 && input.front() == '"' && input.back() == '"') FeedText(input.substr(1, input.size() - 2));
     else {
       // A typed line may carry several tokens ("SelID 3" while an object
       // prompt is up): feed them one by one.
-      std::istringstream ss(input);
-      std::string tok;
-      std::vector<std::string> toks;
-      while (ss >> tok) toks.push_back(tok);
+      std::vector<std::string> toks = Tokenize(input);
       if (toks.empty()) { FeedEnter(); return; }
       for (size_t i = 1; i < toks.size(); ++i) pending_inputs_.push_back(toks[i]);
       FeedText(toks[0]);
@@ -218,13 +277,19 @@ void CommandEngine::Execute(const std::string& raw_input) {
     RepeatLast();
     return;
   }
-  // Tokenise: first token is the command, the rest are queued inputs.
-  std::istringstream ss(input);
-  std::string first;
-  ss >> first;
-  std::vector<std::string> rest;
-  std::string tok;
-  while (ss >> tok) rest.push_back(tok);
+  // "= <lua>" evaluates a Lua expression or statement ("= rs.AddPoint(1,2,3)").
+  // "!" stays Rhino's cancel, so Lua gets its own prefix.
+  if (input.front() == '=') {
+    Print("Command: " + input);
+    RunLuaLine(input.substr(1));
+    return;
+  }
+  // Tokenise: first token is the command, the rest are queued inputs
+  // (double-quoted text stays one token: SetObjectName "my part").
+  std::vector<std::string> all_tokens = Tokenize(input);
+  if (all_tokens.empty()) { RepeatLast(); return; }
+  std::string first = all_tokens.front();
+  std::vector<std::string> rest(all_tokens.begin() + 1, all_tokens.end());
   if (first == "!") {
     Cancel();
     return;
@@ -245,11 +310,13 @@ void CommandEngine::RunCommand(const std::string& name, bool script_mode) {
   const RegisteredCommand* r = Find(name);
   if (!r) {
     Print("Unknown command: " + name);
+    command_failed_ = true;
     pending_inputs_.clear();
     return;
   }
   if (!r->factory) {
     Print(r->name + " is " + ToLower(CommandStatusName(r->status)) + " in this build: " + r->note);
+    command_failed_ = true;
     app_.ShowHelpFor(r->name);
     pending_inputs_.clear();
     return;
