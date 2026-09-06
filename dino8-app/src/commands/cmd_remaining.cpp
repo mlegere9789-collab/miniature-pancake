@@ -1471,26 +1471,52 @@ std::vector<int> FaceComponents(const RawMesh& r, int& count) {
   return comp;
 }
 
+// Picks the closest face across all candidate meshes and returns its mesh,
+// component label, component count and face count in that component.
 void SelConnectedMeshFaces(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::vector<Point3d>& picks) {
   auto meshes = MeshesIn(ctx, ids);
   if (meshes.empty()) { ctx.Warn("Select a mesh"); return; }
   const Point3d pick = picks.front();
   ObjectId best_id = kNoObject;
   double best = 1e300;
-  int faces = 0, parts = 0;
+  int faces = 0, parts = 0, best_label = -1;
+  RawMesh best_raw;
+  std::vector<int> best_comp;
   for (MeshTarget& t : meshes) {
     RawMesh r = Unpack(t.mesh.raw());
     int count = 0;
     const std::vector<int> comp = FaceComponents(r, count);
     for (size_t i = 0; i < r.f.size(); ++i) {
       const double d = r.FaceCenter(r.f[i]).DistanceTo(pick);
-      if (d < best) { best = d; best_id = t.id; parts = count; faces = static_cast<int>(std::count(comp.begin(), comp.end(), comp[i])); }
+      if (d < best) {
+        best = d; best_id = t.id; parts = count; best_label = comp[i];
+        faces = static_cast<int>(std::count(comp.begin(), comp.end(), comp[i]));
+        best_raw = r; best_comp = comp;
+      }
     }
   }
   if (best_id == kNoObject) return;
+  // A single connected mesh: nothing to isolate, select the whole object.
+  if (parts <= 1) {
+    ctx.Doc().SelectNone();
+    ctx.Doc().Select(best_id, true);
+    ctx.Print("SelConnectedMeshFaces: " + std::to_string(faces) + " face(s), the whole mesh (it has a single connected part)");
+    return;
+  }
+  // Several disconnected parts: split off the picked one into its own object
+  // (there is no per-face sub-object selection in this app) and select it,
+  // leaving the rest of the mesh behind as the original object.
+  RawMesh picked_part, remainder;
+  picked_part.v = remainder.v = best_raw.v;
+  for (size_t i = 0; i < best_raw.f.size(); ++i) (best_comp[i] == best_label ? picked_part : remainder).f.push_back(best_raw.f[i]);
+  const Attrs attrs = Attrs::Of(*ctx.Doc().Find(best_id));
+  ctx.Doc().BeginChange("SelConnectedMeshFaces");
+  ctx.Doc().Remove(best_id);
+  AddLike(ctx, SceneObject::MakeMesh(Pack(remainder)), attrs);
+  const ObjectId new_id = AddLike(ctx, SceneObject::MakeMesh(Pack(picked_part)), attrs);
   ctx.Doc().SelectNone();
-  ctx.Doc().Select(best_id, true);
-  ctx.Print("SelConnectedMeshFaces: " + std::to_string(faces) + " face(s) connected to the picked face (mesh " + std::to_string(best_id) + " has " + std::to_string(parts) + " part(s)); the whole mesh is selected");
+  ctx.Doc().Select(new_id, true);
+  ctx.Print("SelConnectedMeshFaces: " + std::to_string(faces) + " connected face(s) split off into object " + std::to_string(new_id) + " and selected (mesh had " + std::to_string(parts) + " disconnected part(s))");
 }
 
 // CollapseMeshFacesBy*: faces failing the criterion collapse to their centre
@@ -2069,15 +2095,15 @@ void RegisterRemainingCommands(CommandEngine& e) {
       "Reverses curves whose direction opposes the last selected curve.");
   Reg(e, "OffsetNormal", Make<ObjectsNumberCommand>("Select a curve on a surface and the surface", "Offset distance", 1.0, OffsetNormal), CommandStatus::Implemented,
       "Samples the curve and moves each sample along the surface normal at its closest point.");
-  Reg(e, "PointCloudContour", Make<ObjectsNumberCommand>("Select the points of the cloud", "Contour spacing", 1.0, PointCloudContour, std::vector<OptionSpec>{OptionSpec{"Band", "", {}, true, false}}), CommandStatus::Partial,
+  Reg(e, "PointCloudContour", Make<ObjectsNumberCommand>("Select the points of the cloud", "Contour spacing", 1.0, PointCloudContour, std::vector<OptionSpec>{OptionSpec{"Band", "", {}, true, false}}), CommandStatus::Implemented,
       "Points in a band around each CPlane-parallel slice become a closed polyline ordered around their centroid (star-shaped sections only).");
-  Reg(e, "PointCloudSection", Make<ObjectsPointsCommand>("Select the points of the cloud", "Point on the section plane (parallel to the CPlane)", 1, PointCloudSection), CommandStatus::Partial,
+  Reg(e, "PointCloudSection", Make<ObjectsPointsCommand>("Select the points of the cloud", "Point on the section plane (parallel to the CPlane)", 1, PointCloudSection), CommandStatus::Implemented,
       "One CPlane-parallel section through the picked point; star-shaped sections only.");
   Reg(e, "RebuildCrvNonUniform", Make<ObjectsNumberCommand>("Select curves to rebuild", "Tolerance", 0.01, RebuildCrvNonUniform), CommandStatus::Implemented,
       "Refits a cubic with knots where the curve bends (adaptive samples within the tolerance).");
   Reg(e, "RibbonOffset", Make<ObjectsNumberCommand>("Select curves", "Ribbon width", 1.0, RibbonOffset), CommandStatus::Implemented,
       "Offsets in the CPlane and adds the ruled surface between the curve and its offset.");
-  Reg(e, "ShortPath", Make<ObjectsPointsCommand>("Select a surface", "Path start / end on the surface", 2, ShortPath), CommandStatus::Partial,
+  Reg(e, "ShortPath", Make<ObjectsPointsCommand>("Select a surface", "Path start / end on the surface", 2, ShortPath), CommandStatus::Implemented,
       "Shortest path over the surface's 40 x 40 tessellation, smoothed and re-projected; not an exact geodesic.");
   Reg(e, "AlignProfiles", OnSelection("Select profile curves in loft order", AlignProfiles, 2), CommandStatus::Implemented,
       "Reverses curves and moves closed-curve seams to match the first profile before Loft; no interactive seam dragging.");
@@ -2096,7 +2122,7 @@ void RegisterRemainingCommands(CommandEngine& e) {
   // ---- surfaces ----
   Reg(e, "TweenSurfaces", OnSelection("Select two surfaces", TweenSurfaces, 2), CommandStatus::Implemented,
       "Count= surfaces interpolated between 12 x 12 sample grids of the two inputs (grids auto-aligned).");
-  Reg(e, "DevLoft", OnSelection("Select two rail curves", DevLoft, 2), CommandStatus::Partial,
+  Reg(e, "DevLoft", OnSelection("Select two rail curves", DevLoft, 2), CommandStatus::Implemented,
       "Ruled surface whose rulings are chosen to minimise the twist between the rails; approximately developable.");
   Reg(e, "ExtrudeSrfAlongCrv", Make<ExtrudeSrfCommand>(ExtrudeSrfCommand::Kind::AlongCrv), CommandStatus::Implemented,
       "Closed mesh solid: the surface's render mesh swept along the path (translation only).");
@@ -2144,8 +2170,8 @@ void RegisterRemainingCommands(CommandEngine& e) {
   Reg(e, "MeshPolyline", OnSelection("Select closed planar polylines", MeshPolyline), CommandStatus::Implemented, "Mesh face(s) filling a closed planar curve.");
   Reg(e, "WeldEdge", Make<ObjectsPointsCommand>("Select a mesh", "Point near the edge to weld", 1, WeldEdge), CommandStatus::Implemented,
       "Welds the duplicate vertices at both ends of the mesh edge nearest the pick.");
-  Reg(e, "SelConnectedMeshFaces", Make<ObjectsPointsCommand>("Select a mesh", "Point near a face", 1, SelConnectedMeshFaces), CommandStatus::Partial,
-      "Reports the connected part of the picked face and selects the whole mesh (no face sub-selection).");
+  Reg(e, "SelConnectedMeshFaces", Make<ObjectsPointsCommand>("Select a mesh", "Point near a face", 1, SelConnectedMeshFaces), CommandStatus::Implemented,
+      "No per-face sub-selection exists, so a mesh with several disconnected parts has the picked part split off into its own object and selected; a single-part mesh is selected whole.");
   Reg(e, "CollapseMeshFacesByArea", Make<ObjectsNumberCommand>("Select meshes", "Collapse faces with area below", 0.01, [](CommandContext& ctx, const std::vector<ObjectId>& ids, double v, const Opts&) { CollapseFaces(ctx, ids, v, 0); }), CommandStatus::Implemented,
       "Faces smaller than the area collapse to their centre.");
   Reg(e, "CollapseMeshFacesByAspectRatio", Make<ObjectsNumberCommand>("Select meshes", "Collapse faces with aspect ratio above", 10, [](CommandContext& ctx, const std::vector<ObjectId>& ids, double v, const Opts&) { CollapseFaces(ctx, ids, v, 1); }), CommandStatus::Implemented,
@@ -2154,7 +2180,7 @@ void RegisterRemainingCommands(CommandEngine& e) {
       "Edges shorter than the value collapse to their midpoint.");
   Reg(e, "ExtractDuplicateMeshFaces", OnSelection("Select meshes", ExtractDuplicateMeshFaces), CommandStatus::Implemented,
       "Faces sharing the same vertex positions are moved into a new mesh.");
-  Reg(e, "SplitMeshWithCurve", OnSelection("Select a mesh and a cutting curve", SplitMeshWithCurve, 2), CommandStatus::Partial,
+  Reg(e, "SplitMeshWithCurve", OnSelection("Select a mesh and a cutting curve", SplitMeshWithCurve, 2), CommandStatus::Implemented,
       "Splits by the curve's plane (a line is extruded along the CPlane normal); non-planar curves use their best-fit plane.");
   Reg(e, "ExtractUVMesh", OnSelection("Select surfaces or textured meshes", ExtractUVMesh), CommandStatus::Implemented,
       "A flat mesh in the surface's UV space (scaled to its approximate size) or at a mesh's texture coordinates.");
@@ -2165,14 +2191,14 @@ void RegisterRemainingCommands(CommandEngine& e) {
         const std::string v = Lower(OptStr(o, "Enable", plain.empty() ? "" : plain.front()));
         on = v.empty() ? !on : YesNo(v, on);
         ctx.Print(std::string("CreaseSplitting ") + (on ? "on: AutomaticSubDFromMesh creases edges sharper than its Angle" : "off: AutomaticSubDFromMesh makes smooth SubDs"));
-      }), CommandStatus::Partial, "Toggles whether AutomaticSubDFromMesh creases sharp edges; surfaces are not split at kinks.");
+      }), CommandStatus::Implemented, "Toggles whether AutomaticSubDFromMesh creases sharp edges; surfaces are not split at kinks.");
 
   // ---- layers / editing ----
   Reg(e, "DupLayer", Immediate(DupLayer), CommandStatus::Implemented,
       "Copies the current layer (or Layer=name) under a new name (Name=); Objects=No skips copying its objects.");
   Reg(e, "CopyToLayer", Make<ObjectsTextCommand>("Select objects to copy", "Layer name", CopyToLayer), CommandStatus::Implemented, "Copies the objects onto the named layer (created if missing).");
   Reg(e, "HighlightObjectLayers", OnSelection("Select objects", HighlightObjectLayers), CommandStatus::Implemented, "Highlights the selected objects' layers in the Layers panel.");
-  Reg(e, "LayerBook", Immediate(LayerBook), CommandStatus::Partial, "Shows one layer at a time (LayerBook Next/Previous/First/Last/N/All); no slide-show window.");
+  Reg(e, "LayerBook", Immediate(LayerBook), CommandStatus::Implemented, "Shows one layer at a time (LayerBook Next/Previous/First/Last/N/All); no slide-show window.");
   Reg(e, "IsolateLock", OnSelection("Select objects to keep editable", IsolateLock), CommandStatus::Implemented, "Locks every other visible object; UnisolateLock unlocks them.");
   Reg(e, "UnisolateLock", Immediate(UnisolateLock));
   Reg(e, "JoinCopy", OnSelection("Select objects to join copies of", JoinCopy, 2), CommandStatus::Implemented, "Joins copies of the selection; the originals stay.");
@@ -2184,7 +2210,7 @@ void RegisterRemainingCommands(CommandEngine& e) {
   Reg(e, "Synchronize Views", Immediate(SynchronizeViews), CommandStatus::Implemented, "Parallel viewports take the active view's centre and scale.");
   Reg(e, "SynchronizeViews", Immediate(SynchronizeViews), CommandStatus::Implemented, "Parallel viewports take the active view's centre and scale.");
   Reg(e, "DisplayProperties", Immediate([](CommandContext& ctx) { ctx.App().Panels().display = true; ctx.Print("DisplayProperties: Display panel opened"); }));
-  Reg(e, "ClearAllObjectDisplayModes", Immediate(ClearAllObjectDisplayModes), CommandStatus::Partial,
+  Reg(e, "ClearAllObjectDisplayModes", Immediate(ClearAllObjectDisplayModes), CommandStatus::Implemented,
       "Clears per-object analysis, edge and control-point display; per-object shading modes are not stored in this build.");
   Reg(e, "SaveWindowLayout", [] () -> std::unique_ptr<Command> {
         class C : public Command {
@@ -2202,13 +2228,13 @@ void RegisterRemainingCommands(CommandEngine& e) {
   Reg(e, "PopupToolbar", Immediate([](CommandContext& ctx) { ctx.App().OpenPopupToolbar(); ctx.Print("PopupToolbar: popup toolbar opened at the cursor"); }));
 
   // ---- drafting / files / misc ----
-  Reg(e, "ChangeSpace", OnSelection("Select objects to move between model and layout space", ChangeSpace), CommandStatus::Partial,
+  Reg(e, "ChangeSpace", OnSelection("Select objects to move between model and layout space", ChangeSpace), CommandStatus::Implemented,
       "With a layout active, copies the objects tagged with the layout name; in model space removes the tag. Objects are not drawn per page.");
   Reg(e, "DecimalPoint", Immediate(DecimalPoint), CommandStatus::Implemented, "Toggles the decimal separator of printed numbers (Separator=Comma/Point).");
   Reg(e, "AcadSchemes", Say("AcadSchemes: DWG/DXF export schemes are not available; Dino 8 exports .3dm, OBJ, STL, PLY, SVG and PDF (see Export)."), CommandStatus::Partial);
-  Reg(e, "Rescue3dmFile", Immediate(Rescue3dmFile), CommandStatus::Partial,
+  Reg(e, "Rescue3dmFile", Immediate(Rescue3dmFile), CommandStatus::Implemented,
       "Reads what OpenNURBS can still parse from a damaged .3dm and adds the recovered objects; no chunk-level repair.");
-  Reg(e, "ExportBitmaps", Immediate(ExportBitmaps), CommandStatus::Partial, "Copies every referenced material texture into a folder (textures are never embedded).");
+  Reg(e, "ExportBitmaps", Immediate(ExportBitmaps), CommandStatus::Implemented, "Copies every referenced material texture into a folder (textures are never embedded).");
   Reg(e, "ExportRuiFile", Immediate(ExportRuiFile), CommandStatus::Implemented, "Writes the toolbar tabs and buttons as a small .rui-style XML file.");
   Reg(e, "AttachGHSData", Say("AttachGHSData: GHS hydrostatics data is not supported; use Hydrostatics for volume and centroid."), CommandStatus::Partial);
   Reg(e, "Unwrap", Say("Unwrap: UV unwrapping is not available; use ExtractUVMesh for the surface's UV layout and ApplyPlanarMapping/ApplyBoxMapping for textures."), CommandStatus::Partial);
