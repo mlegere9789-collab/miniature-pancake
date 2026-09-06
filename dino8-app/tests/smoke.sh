@@ -493,4 +493,24 @@ sccheck "^ok   expect_objects 1" "the inline Lua expression added exactly the on
 sccheck "^ok   expect_objects 3" "RunScript left the union, its point marker, and the earlier line"
 sccheck "selected by name lookup: 1" "rs.ObjectsByName found the object rs.ObjectName renamed to Widget"
 grep -q "! Script error" <<<"$SC" && { echo "FAIL script.txt printed a script error"; fail=1; } || echo "ok   no Lua script errors"
+
+# Dino Flow + plug-ins: node editor, the HelloDino sample plug-in (command +
+# Dino Flow node), and GrasshopperPlayer headless solve/bake (see flow_script.txt).
+sed "s|@FLOWFILE@|$HERE/flow_graph.dflow|g" "$HERE/flow_script.txt" > "$TMP/flow_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  FL="$("$BIN" --smoke 100 --script "$TMP/flow_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: flow script exited non-zero"; exit 1; }
+else
+  FL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/flow_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: flow script exited non-zero"; exit 1; }
+fi
+flcheck() { if echo "$FL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+flcheck "Dino Flow: opened the node editor" "Grasshopper opened the Dino Flow panel"
+flcheck "GrasshopperPluginList: 1 plug-in(s) found" "the plug-in loader found the HelloDino sample plug-in"
+flcheck "HelloDino 1.0.0 - 1 command(s), 1 node(s)" "HelloDino loaded its command and Dino Flow node"
+flcheck "HelloDino: hello from the sample plug-in!" "the HelloDino command ran"
+flcheck "GrasshopperPlayer: solved 4 node(s)" "GrasshopperPlayer solved the sample graph"
+flcheck "gl_error=0" "flow script ran without OpenGL errors"
+echo "$FL" | grep -E "^(ok|FAIL)"
+if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
+flcheck "^ok   expect_objects 2" "GrasshopperPlayer baked the Line into the document"
+
 exit $fail

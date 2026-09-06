@@ -352,7 +352,12 @@ bool Manager::LoadFile(Application& app, const std::string& path, std::string& e
   if (auto desc_fn = reinterpret_cast<NameFn>(DoSymbol(handle, "dino8_plugin_description"))) p.description = desc_fn();
   if (p.name.empty()) p.name = fs::path(path).stem().string();
 
-  const Dino8PluginApi api = BuildApi(app::ConfigDirectory());
+  // Plug-ins are expected to keep this pointer for the whole session (they
+  // call back through it from command callbacks and node evaluators long
+  // after this function returns), so it must not be a stack local - static
+  // keeps it alive for the process lifetime rather than dangling once
+  // LoadFolder() returns.
+  static const Dino8PluginApi api = BuildApi(app::ConfigDirectory());
   g_loading = &p;
   const int rc = init_fn(&api);
   g_loading = nullptr;

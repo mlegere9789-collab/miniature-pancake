@@ -1,0 +1,11 @@
+# Dino Flow QC: the node editor opens, the plug-in loader finds the HelloDino
+# sample plug-in (command + Dino Flow node), and GrasshopperPlayer solves and
+# bakes a small graph headlessly (see flow_graph.dflow).
+Grasshopper
+GrasshopperPluginList
+HelloDino
+@expect_objects 1
+GrasshopperPlayer @FLOWFILE@ Bake=Yes
+@expect_objects 2
+SelAll
+List
