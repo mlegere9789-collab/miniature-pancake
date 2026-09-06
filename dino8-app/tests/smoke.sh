@@ -116,9 +116,9 @@ cecheck "smoke: frames=150 objects=17" "curve-edit script produced the expected 
 
 # Curve tools: conics, catenary, CloseCrv, ReducePolyline, SubCrv, Contour, Section, Align, Distribute, TweenCurves, ArrayCrv, fits (see curves2_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
-  C2="$("$BIN" --smoke 150 --script "$HERE/curves2_script.txt" 2>&1)" || { echo "$C2"; echo "FAIL: curve-tools script exited non-zero"; exit 1; }
+  C2="$("$BIN" --smoke 400 --script "$HERE/curves2_script.txt" 2>&1)" || { echo "$C2"; echo "FAIL: curve-tools script exited non-zero"; exit 1; }
 else
-  C2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/curves2_script.txt" 2>&1)" || { echo "$C2"; echo "FAIL: curve-tools script exited non-zero"; exit 1; }
+  C2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 400 --script "$HERE/curves2_script.txt" 2>&1)" || { echo "$C2"; echo "FAIL: curve-tools script exited non-zero"; exit 1; }
 fi
 c2check() { if echo "$C2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 c2check "Conic: rho = 0.4" "Conic passed through the shoulder point"
@@ -140,7 +140,23 @@ c2check "MarkFoci: 1 point(s) added" "MarkFoci added the parabola's focus"
 c2check "0,5,0" "MarkFoci found the parabola focus (0,5,0) from curve geometry alone"
 c2check "MarkFoci: 2 point(s) added" "MarkFoci added both hyperbola foci"
 c2check "6.807" "MarkFoci found the analytic hyperbola focus distance (c=6.807 for a=5, b^2=64/3)"
-c2check "^ok   expect_objects 39" "curve-tools script produced the expected object count"
+c2check "MergeCrv: joined 2 curve(s) into one, merged 1 tangent junction(s) into a single span" "MergeCrv collapsed a tangent joint into one span"
+c2check "Blend: curvature-continuous (G2) blend curve created" "Blend built a real G2 quintic blend"
+c2check "ArcBlend: two-arc tangent blend created (joint tangent match 1)" "ArcBlend found a genuine two-arc biarc, tangent-verified"
+c2check "Domain: 1 curve(s) now have domain 0 to 5" "Domain actually set a new domain, not just reported it"
+c2check "ModifyRadius: 1 curve(s) now have radius 12" "ModifyRadius rebuilt the circle in place"
+c2check "Match: reshaped curve .* to meet curve .* tangentially" "Match reshaped one curve's end to meet another"
+c2check "Curve does not self-intersect" "IntersectSelf ran a genuine self-intersection check"
+c2check "SoftEditCrv: 4 control point(s) moved with falloff 5" "SoftEditCrv applied a real falloff drag"
+c2check "FixedLengthCrvEdit: point moved and curve rescaled .* to keep length 30" "FixedLengthCrvEdit preserved the curve's total length"
+c2check "CurveThroughSrfControlPt: 4 curve(s) through the control point rows and columns" "CurveThroughSrfControlPt built curves through the CV grid directly"
+c2check "OffsetMultiple: 3 curve(s) created (3 offsets x 1)" "OffsetMultiple created several offsets in one command"
+c2check "InsertLineIntoCrv: inserted a 5-long line and rejoined" "InsertLineIntoCrv split, inserted, and rejoined automatically"
+c2check "CSec: 1 curve(s) from 5 section(s) along the rail" "CSec sectioned perpendicular to a rail curve"
+c2check "ContinueCurve: curve extended with 2 new point(s) and joined" "ContinueCurve extended and auto-joined a curve"
+c2check "EndBulge: end handle scaled by 2" "EndBulge scaled the end tangent handle"
+c2check "InterpCrvOnSrf: curve interpolated through 3 point(s) on the surface" "InterpCrvOnSrf projected points onto the surface before interpolating"
+c2check "^ok   expect_objects 70" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMP|g" "$HERE/exchange_script.txt" > "$TMP/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then

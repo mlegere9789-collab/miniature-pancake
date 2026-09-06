@@ -100,4 +100,185 @@ SelNone
 SelPt
 List
 SelNone
-@expect_objects 39
+# --- MergeCrv: two tangent lines merge into a true single span
+SelAll
+Hide
+Line 100,0,0 110,0,0
+Line 110,0,0 120,0,0
+SelAll
+MergeCrv
+SelLast
+List
+SelNone
+# --- Blend (curvature-continuous option) and ArcBlend (two-arc biarc)
+SelAll
+Hide
+Arc 0,0,0 10,0,0 10,10,0
+Arc 30,10,0 30,20,0 20,20,0
+Blend
+10,10,0
+30,20,0
+SelLast
+List
+SelNone
+SelAll
+Hide
+Arc 0,0,0 10,0,0 10,10,0
+Arc 30,10,0 30,20,0 20,20,0
+ArcBlend
+10,10,0
+30,20,0
+SelLast
+List
+SelNone
+# --- Domain: report, then actually set a new domain
+SelAll
+Hide
+Line 0,0,0 10,0,0
+SelLast
+Domain
+"0 5"
+SelLast
+List
+SelNone
+# --- ModifyRadius rebuilds a circle at a new radius in place
+SelAll
+Hide
+Circle 0,0,0 5
+SelLast
+ModifyRadius
+12
+SelLast
+List
+SelNone
+# --- Match reshapes one curve's end to meet another tangentially
+SelAll
+Hide
+Line 0,0,0 10,0,0
+Line 20,10,0 20,20,0
+Match
+10,0,0
+20,10,0
+SelAll
+List
+SelNone
+# --- IntersectSelf on a single curve (reuses Intersect's own self-intersect mode)
+SelAll
+Hide
+Curve 0,0,0 10,10,0 0,10,0 10,0,0
+Enter
+SelLast
+IntersectSelf
+SelAll
+List
+SelNone
+# --- SoftEditCrv: falloff-limited control point drag
+SelAll
+Hide
+Curve 0,0,0 10,0,0 20,0,0 30,0,0
+Enter
+SelLast
+SoftEditCrv
+15,0,0
+15,8,0
+5
+SelLast
+List
+SelNone
+# --- FixedLengthCrvEdit: edit a point, total length stays fixed
+SelAll
+Hide
+Curve 0,0,0 10,0,0 20,0,0 30,0,0
+Enter
+SelLast
+Length
+SelLast
+FixedLengthCrvEdit
+10,0,0
+10,8,0
+SelLast
+Length
+SelNone
+# --- CurveThroughSrfControlPt: curves through a surface's own CV grid
+SelAll
+Hide
+Plane 0,0,0 10,10,0
+SelLast
+CurveThroughSrfControlPt
+SelAll
+List
+SelNone
+# --- OffsetMultiple: several offsets from one pick
+SelAll
+Hide
+Line 0,0,0 10,0,0
+SelLast
+OffsetMultiple
+0,5,0
+SelAll
+List
+SelNone
+# --- InsertLineIntoCrv: split, insert a line, rejoin - all one command
+SelAll
+Hide
+Line 0,0,0 20,0,0
+SelLast
+InsertLineIntoCrv
+10,0,0
+5
+SelLast
+List
+SelNone
+# --- CSec: cross-sections perpendicular to a rail curve
+SelAll
+Hide
+Line -5,5,5 15,5,5
+Box 0,0,0 10,10,0 10
+SelLast
+CSec
+SelCrv
+Enter
+5
+SelAll
+List
+SelNone
+# --- ContinueCurve: extends a curve and Joins it in one step
+SelAll
+Hide
+Line 0,0,0 10,0,0
+ContinueCurve
+10,0,0
+20,5,0
+30,0,0
+Enter
+SelLast
+List
+SelNone
+# --- EndBulge: scales the end tangent handle length in place
+SelAll
+Hide
+Curve 0,0,0 10,0,0 20,5,0 30,0,0
+Enter
+SelLast
+EndBulge
+0,0,0
+2
+SelLast
+List
+SelNone
+# --- InterpCrvOnSrf: points projected onto a surface before interpolating
+SelAll
+Hide
+Sphere 0,0,0 10
+SelSrf
+SelPolysrf
+InterpCrvOnSrf
+8.66,0,5
+0,8.66,5
+-8.66,0,5
+Enter
+SelLast
+List
+SelNone
+SelNone
+@expect_objects 70
