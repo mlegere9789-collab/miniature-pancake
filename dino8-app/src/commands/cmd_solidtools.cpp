@@ -725,6 +725,23 @@ std::optional<kernel::Mesh> CylinderCutter(CommandContext& ctx, const kernel::Me
   return ClosedMeshOfBrep(ON_BrepCylinder(cyl, true, true), tol);
 }
 
+// Cutter shaped like a closed planar profile curve, placed on the solid at
+// `center` the way PlaceHole places it: `from` (the profile's own plane,
+// centred on its bounding box) is rotated onto the hit normal there.
+std::optional<kernel::Mesh> ProfileCutter(const ON_Curve& profile, const ON_Plane& from, const kernel::Mesh& solid, Point3d center, double depth, bool through, double tol) {
+  const SurfaceHit hit = NearestOnMesh(solid, center);
+  const double diag = Diagonal(solid);
+  const double lift = through ? diag : std::max(depth * 0.05, tol * 10);
+  ON_Plane to(hit.point + hit.normal * lift, hit.normal);
+  ON_Xform xf;
+  xf.Rotation(from, to);
+  ON_NurbsCurve c;
+  const ON_NurbsCurve* src = ON_NurbsCurve::Cast(&profile);
+  if (src) c = *src; else profile.GetNurbForm(c);
+  c.Transform(xf);
+  return RegionSlab(to, c, -hit.normal * (through ? 2 * diag : depth + lift), tol);
+}
+
 void RoundHole(CommandContext& ctx, const Input& in) {
   const double radius = std::fabs(in.N(2, 2)), depth = std::fabs(in.N(3, 10));
   const bool through = in.Yes("Through");
@@ -870,8 +887,36 @@ void RevolvedHole(CommandContext& ctx, const Input& in) {
 // cutter, which is what CopyHole/MirrorHole/MoveHole/RotateHole replay as
 // a single rigid hole feature - the whole array moves/copies/mirrors/
 // rotates together, matching "ArrayHole ... multiple tools" as one tool.
-void HoleArray(CommandContext& ctx, const Input& in, const std::vector<Point3d>& centers, double radius, double depth, const std::string& label) {
-  std::vector<Solid> solids = Solids(ctx, in.O(0), label);
+// Profile curve for an array of holes: the first closed planar curve in
+// `ids`, plus its plane centred on its own bounding box (as PlaceHole uses
+// it). Empty `ids` (the profile step left at Enter) means "round holes".
+struct ArrayProfile {
+  const SceneObject* obj = nullptr;
+  ON_Plane from;
+};
+
+ArrayProfile ResolveArrayProfile(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::string& label) {
+  if (ids.empty()) return ArrayProfile{};
+  const SceneObject* prof = ctx.Doc().Find(ids.front());
+  std::optional<ON_Plane> pl = prof ? ClosedPlanarCurvePlane(ctx, *prof) : std::nullopt;
+  if (!prof || !pl) { ctx.Warn(label + ": the profile is not a closed planar curve; using round holes instead"); return ArrayProfile{}; }
+  ArrayProfile ap;
+  ap.obj = prof;
+  ap.from = *pl;
+  const kernel::BoundingBox cb = prof->curve->GetTightBoundingBox();
+  ap.from.SetOrigin((cb.min + cb.max) * 0.5);
+  return ap;
+}
+
+// RoundHole (or, with a profile curve selected, PlaceHole) repeated at a set
+// of centres. Every centre's cutter is built against the solid's *original*
+// mesh (not the progressively-cut one, so per-hole hit normals don't drift)
+// and unioned into one equivalent cutter, which is what CopyHole/MirrorHole/
+// MoveHole/RotateHole replay as a single rigid hole feature - the whole
+// array moves/copies/mirrors/rotates together, matching "ArrayHole ...
+// multiple tools" as one tool.
+void HoleArray(CommandContext& ctx, const Input& in, const std::vector<ObjectId>& solid_ids, const std::vector<Point3d>& centers, double radius, double depth, const ArrayProfile& profile, const std::string& label) {
+  std::vector<Solid> solids = Solids(ctx, solid_ids, label);
   if (solids.empty()) return;
   const bool through = in.Yes("Through");
   const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-4);
@@ -883,7 +928,9 @@ void HoleArray(CommandContext& ctx, const Input& in, const std::vector<Point3d>&
     const kernel::Mesh pre = s.mesh;
     std::optional<kernel::Mesh> merged;
     for (const Point3d& c : centers) {
-      std::optional<kernel::Mesh> cutter = CylinderCutter(ctx, pre, c, radius, depth, through, false, tol);
+      std::optional<kernel::Mesh> cutter = profile.obj
+          ? ProfileCutter(profile.obj->curve->raw(), profile.from, pre, c, depth, through, tol)
+          : CylinderCutter(ctx, pre, c, radius, depth, through, false, tol);
       if (!cutter) continue;
       if (!merged) { merged = *cutter; continue; }
       try { merged = kernel::BooleanCombine(*merged, *cutter, kernel::BooleanOp::Union); }
@@ -897,30 +944,33 @@ void HoleArray(CommandContext& ctx, const Input& in, const std::vector<Point3d>&
     cutter_used[si] = *merged;
     ++cut;
   }
-  ctx.Print(label + ": " + std::to_string(centers.size()) + " hole position(s), radius " + FormatNumber(radius) + ", " + std::to_string(cut) + " solid(s) cut (mesh boolean; results are meshes)");
+  ctx.Print(label + ": " + std::to_string(centers.size()) + " hole position(s), " + (profile.obj ? "profile " + Id(profile.obj->id) : "radius " + FormatNumber(radius)) +
+            ", " + std::to_string(cut) + " solid(s) cut (mesh boolean; results are meshes)");
   CommitSolidsWithHole(ctx, solids, label, pre_cut, cutter_used);
 }
 
 void ArrayHole(CommandContext& ctx, const Input& in) {
-  const double radius = std::fabs(in.N(2, 2)), depth = std::fabs(in.N(3, 10));
-  const int nx = std::max(1, static_cast<int>(in.N(4, 3))), ny = std::max(1, static_cast<int>(in.N(5, 2)));
-  const double sx = in.N(6, 10), sy = in.N(7, 10);
+  const ArrayProfile profile = ResolveArrayProfile(ctx, in.O(1), "ArrayHole");
+  const double radius = std::fabs(in.N(3, 2)), depth = std::fabs(in.N(4, 10));
+  const int nx = std::max(1, static_cast<int>(in.N(5, 3))), ny = std::max(1, static_cast<int>(in.N(6, 2)));
+  const double sx = in.N(7, 10), sy = in.N(8, 10);
   const ON_Plane pl = ActivePlane(ctx);
   std::vector<Point3d> centers;
-  for (int j = 0; j < ny; ++j) for (int i = 0; i < nx; ++i) centers.push_back(in.P(1) + pl.xaxis * (sx * i) + pl.yaxis * (sy * j));
-  HoleArray(ctx, in, centers, radius, depth, "ArrayHole");
+  for (int j = 0; j < ny; ++j) for (int i = 0; i < nx; ++i) centers.push_back(in.P(2) + pl.xaxis * (sx * i) + pl.yaxis * (sy * j));
+  HoleArray(ctx, in, in.O(0), centers, radius, depth, profile, "ArrayHole");
 }
 
 void ArrayHolePolar(CommandContext& ctx, const Input& in) {
-  const double radius = std::fabs(in.N(2, 2)), depth = std::fabs(in.N(3, 10));
-  const int count = std::max(1, static_cast<int>(in.N(5, 6)));
+  const ArrayProfile profile = ResolveArrayProfile(ctx, in.O(1), "ArrayHolePolar");
+  const double radius = std::fabs(in.N(3, 2)), depth = std::fabs(in.N(4, 10));
+  const int count = std::max(1, static_cast<int>(in.N(6, 6)));
   std::vector<Point3d> centers;
   for (int i = 0; i < count; ++i) {
     ON_Xform rot;
-    rot.Rotation(2 * ON_PI * i / count, ActiveNormal(ctx), in.P(4));
-    centers.push_back(rot * in.P(1));
+    rot.Rotation(2 * ON_PI * i / count, ActiveNormal(ctx), in.P(5));
+    centers.push_back(rot * in.P(2));
   }
-  HoleArray(ctx, in, centers, radius, depth, "ArrayHolePolar");
+  HoleArray(ctx, in, in.O(0), centers, radius, depth, profile, "ArrayHolePolar");
 }
 
 // Re-runs a hole feature's boolean at a new placement (Move/Copy/Mirror/
@@ -1766,24 +1816,17 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
                            {Toggle("Through", false)}, Guarded("PlaceHole", PlaceHole)));
   Reg(e, "RevolvedHole", Tool({ObjectsStep("Select the profile curve"), ObjectsStep("Select solids to cut"), PointStep("Start of revolve axis"), PointStep("End of revolve axis")},
                               {Toggle("DeleteInput", false)}, Guarded("RevolvedHole", RevolvedHole)));
-  Reg(e, "ArrayHole", Tool({ObjectsStep("Select solids to cut"), PointStep("Center of first hole"), NumberStep("Radius", 2), NumberStep("Depth", 10), NumberStep("Number in X direction", 3), NumberStep("Number in Y direction", 2), NumberStep("Spacing in X", 10), NumberStep("Spacing in Y", 10)},
-                           {Toggle("Through", true)}, Guarded("ArrayHole", ArrayHole)),
-      CommandStatus::Partial, "Rectangular grid of round holes along the CPlane axes; profile holes are planned.");
-  Reg(e, "ArrayHolePolar", Tool({ObjectsStep("Select solids to cut"), PointStep("Center of first hole"), NumberStep("Radius", 2), NumberStep("Depth", 10), PointStep("Center of polar array"), NumberStep("Number of holes", 6)},
-                                {Toggle("Through", true)}, Guarded("ArrayHolePolar", ArrayHolePolar)),
-      CommandStatus::Partial, "Polar array of round holes about the CPlane normal; profile holes are planned.");
-  Reg(e, "MoveHole", Tool({ObjectsStep("Select hole features to move"), PointStep("Point to move from"), PointStep("Point to move to")}, {}, Guarded("MoveHole", MoveHole)),
-      CommandStatus::Partial, "Re-cuts the hole's stored cutter at the new placement against the solid as it was before this hole; only holes cut by RoundHole/PlaceHole/RevolvedHole/ArrayHole* are editable features.");
-  Reg(e, "CopyHole", Tool({ObjectsStep("Select hole features to copy"), PointStep("Point to copy from"), PointStep("Point to copy to")}, {}, Guarded("CopyHole", CopyHole)),
-      CommandStatus::Partial, "Cuts a second copy of the hole into a duplicate of the solid; only holes cut by RoundHole/PlaceHole/RevolvedHole/ArrayHole* are editable features.");
+  Reg(e, "ArrayHole", Tool({ObjectsStep("Select solids to cut"), ObjectsStep("Select a closed planar profile curve for the hole shape, or Enter for round holes", 0), PointStep("Center of first hole"), NumberStep("Radius (round holes only)", 2), NumberStep("Depth", 10), NumberStep("Number in X direction", 3), NumberStep("Number in Y direction", 2), NumberStep("Spacing in X", 10), NumberStep("Spacing in Y", 10)},
+                           {Toggle("Through", true)}, Guarded("ArrayHole", ArrayHole)));
+  Reg(e, "ArrayHolePolar", Tool({ObjectsStep("Select solids to cut"), ObjectsStep("Select a closed planar profile curve for the hole shape, or Enter for round holes", 0), PointStep("Center of first hole"), NumberStep("Radius (round holes only)", 2), NumberStep("Depth", 10), PointStep("Center of polar array"), NumberStep("Number of holes", 6)},
+                                {Toggle("Through", true)}, Guarded("ArrayHolePolar", ArrayHolePolar)));
+  Reg(e, "MoveHole", Tool({ObjectsStep("Select hole features to move"), PointStep("Point to move from"), PointStep("Point to move to")}, {}, Guarded("MoveHole", MoveHole)));
+  Reg(e, "CopyHole", Tool({ObjectsStep("Select hole features to copy"), PointStep("Point to copy from"), PointStep("Point to copy to")}, {}, Guarded("CopyHole", CopyHole)));
   Reg(e, "RotateHole", Tool({ObjectsStep("Select hole features to rotate"), PointStep("Center of rotation"), NumberStep("Rotation angle in degrees", 90)},
-                            {Toggle("Copy", false)}, Guarded("RotateHole", RotateHole)),
-      CommandStatus::Partial, "Rotates the hole's cutter about the CPlane normal and re-cuts; only holes cut by RoundHole/PlaceHole/RevolvedHole/ArrayHole* are editable features.");
+                            {Toggle("Copy", false)}, Guarded("RotateHole", RotateHole)));
   Reg(e, "MirrorHole", Tool({ObjectsStep("Select hole features to mirror"), PointStep("Start of mirror plane"), PointStep("End of mirror plane")},
-                            {Toggle("Copy", true)}, Guarded("MirrorHole", MirrorHole)),
-      CommandStatus::Partial, "Mirrors the hole's cutter about a plane through the two points (perpendicular to the CPlane) and re-cuts; the solid itself is not mirrored.");
-  Reg(e, "CutVolume", Tool({ObjectsStep("Select closed planar curves"), ObjectsStep("Select solids")}, {}, Guarded("CutVolume", CutVolume)),
-      CommandStatus::Partial, "Intersects the curves' extrusion with the solids and reports the volume (mesh result).");
+                            {Toggle("Copy", true)}, Guarded("MirrorHole", MirrorHole)));
+  Reg(e, "CutVolume", Tool({ObjectsStep("Select closed planar curves"), ObjectsStep("Select solids")}, {}, Guarded("CutVolume", CutVolume)));
   Reg(e, "CreateSolid", OnSelection("Select surfaces, polysurfaces or meshes that enclose a volume", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         try { CreateSolid(ctx, ids); } catch (const std::exception& ex) { ctx.Warn(std::string("CreateSolid failed: ") + ex.what()); }
       }), CommandStatus::Partial, "Joins and welds the surface meshes into a closed mesh solid; overlapping surfaces are not trimmed.");
@@ -1823,8 +1866,7 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
                               {Toggle("Copy", false)}, Guarded("FlowAlongSrf", FlowAlongSrf)));
   Reg(e, "Splop", Tool({ObjectsStep("Select objects to splop"), ObjectsStep("Select target surface"), PointsStep("Points on the surface")}, {}, Guarded("Splop", Splop)),
       CommandStatus::Partial, "Places oriented copies at the picked surface points; the spherical mapping is planned.");
-  Reg(e, "Bounce", Tool({PointStep("Start of ray"), PointStep("Direction"), NumberStep("Number of bounces", 10)}, {}, Guarded("Bounce", Bounce)),
-      CommandStatus::Partial, "Bounces a ray off the visible meshes and surfaces (as meshes).");
+  Reg(e, "Bounce", Tool({PointStep("Start of ray"), PointStep("Direction"), NumberStep("Number of bounces", 10)}, {}, Guarded("Bounce", Bounce)));
   Reg(e, "Radiate", Immediate([](CommandContext& ctx) { ctx.Print("Radiate: paints diffuse and specular vertex colours on meshes in Rhino; the display does not show vertex colours yet."); }), CommandStatus::Partial, "Prints guidance.");
   Reg(e, "RadiateFind", Immediate([](CommandContext& ctx) { ctx.Print("RadiateFind: finds Radiate light sources; Radiate is not available in this build."); }), CommandStatus::Partial, "Prints guidance.");
   Reg(e, "Reflect", Immediate([](CommandContext& ctx) { ctx.Print("Reflect: use Mirror to reflect objects across a plane; the symmetric SubD editing mode is planned."); }), CommandStatus::Partial, "Prints guidance.");

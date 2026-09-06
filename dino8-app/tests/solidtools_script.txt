@@ -72,3 +72,101 @@ ScaleByPlane
 SelID 15
 BoundingBox
 @expect_objects 14
+# --- ArrayHole: a 2x2 grid of round holes through a 40x40x10 box
+SelNone
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHole
+Enter
+10,10,10
+2
+10
+2
+2
+20
+20
+SelLast
+Volume
+@expect_objects 15
+# --- ArrayHole with a profile curve: a 1x3 row of 4x4 square holes
+SelNone
+Rectangle 0,0,0 4,4,0
+SelLast
+SelPrev
+SelNone
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHole
+SelNone
+SelPrev
+Enter
+5,5,10
+2
+10
+1
+3
+0
+10
+SelLast
+Volume
+@expect_objects 17
+# --- ArrayHolePolar: 4 round holes on a circle about the CPlane normal
+SelNone
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHolePolar
+Enter
+10,10,10
+2
+10
+10,20,0
+4
+SelLast
+Volume
+@expect_objects 18
+# --- MoveHole / CopyHole / RotateHole / MirrorHole on a RoundHole feature
+SelNone
+Box 0,0,0 20,20,0 10
+SelLast
+RoundHole
+5,5,10
+2
+10
+SelLast
+MoveHole
+5,5,0
+8,5,0
+SelLast
+List
+SelLast
+CopyHole
+8,5,0
+15,15,0
+SelLast
+RotateHole
+10,10,0
+90
+SelLast
+MirrorHole
+10,0,0
+10,20,0
+@expect_objects 21
+# --- CutVolume: a r=5 cylinder's worth of a box, volume pi*25*10 = 785.4
+SelNone
+Circle 10,10,0 5
+SelLast
+Box 0,0,0 20,20,0 10
+CutVolume
+SelLast
+Enter
+SelLast
+Volume
+@expect_objects 24
+# --- Bounce: a ray straight down off a box top bounces straight back up
+SelNone
+Box 0,0,0 20,20,0 5
+Bounce
+10,10,20
+10,10,0
+5
+@expect_objects 26

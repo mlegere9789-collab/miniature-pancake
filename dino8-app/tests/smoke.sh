@@ -467,9 +467,21 @@ stcheck "CV\[23\] 590,0,0" "the flowed line ends at the arc end"
 stcheck "length = 31.[34]" "the flowed line follows the arc length"
 stcheck "ScaleByPlane: factor 2 along the normal of the plane through 400,0,0" "ScaleByPlane read its plane and factor"
 stcheck "Bounding box min 400,0,0 max 410,10,20" "ScaleByPlane doubled the height about z=0"
+stcheck "ArrayHole: 4 hole position(s), radius 2, 1 solid(s) cut" "ArrayHole cut a round-hole grid"
+stcheck "ArrayHole: object [0-9]* replaced by a mesh solid with 4260 faces, volume 1.551e+04" "ArrayHole's 2x2 grid removed the expected volume"
+stcheck "ArrayHole: 3 hole position(s), profile [0-9]*, 1 solid(s) cut" "ArrayHole used a profile curve instead of round holes"
+stcheck "ArrayHole: object [0-9]* replaced by a mesh solid with 152 faces, volume 15520" "ArrayHole's profile row removed the expected 3 x 4x4x10 volume exactly"
+stcheck "ArrayHolePolar: 4 hole position(s), radius 2, 1 solid(s) cut" "ArrayHolePolar cut 4 round holes on a circle"
+stcheck "ArrayHolePolar: object [0-9]* replaced by a mesh solid with 5280 faces, volume 1.541e+04" "ArrayHolePolar removed the expected volume"
+stcheck "MoveHole: object [0-9]* re-cut at the new placement" "MoveHole re-cut the RoundHole feature at its new placement"
+stcheck "CopyHole: copied object [0-9]* to object [0-9]*" "CopyHole cut a second copy of the hole"
+stcheck "RotateHole: object [0-9]* re-cut at the new placement" "RotateHole rotated the hole feature and re-cut it"
+stcheck "MirrorHole: copied object [0-9]* to object [0-9]*" "MirrorHole mirrored the hole feature into a copy"
+stcheck "CutVolume: 1 cut volume(s) as meshes, total volume 785.3" "CutVolume measured pi*5^2*10 = 785.4 of the box inside the circle's extrusion"
+stcheck "Bounce: polyline with 1 bounce(s)" "Bounce traced a ray straight down off the box top and back up"
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
-stcheck "smoke: frames=1[0-9][0-9] objects=14" "solid-tools script produced the expected object count"
+stcheck "smoke: frames=1[0-9][0-9] objects=26" "solid-tools script produced the expected object count"
 
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface
