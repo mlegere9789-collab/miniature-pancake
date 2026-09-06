@@ -10,12 +10,13 @@
 #include "doc/Document.h"
 #include "doc/SubObject.h"
 #include "render/GlRenderer.h"
+#include "render/PathTracer.h"
 #include "viewport/Camera.h"
 
 namespace dino8::app {
 
 enum class DisplayMode {
-  Wireframe, Shaded, Rendered, Ghosted, XRay, Technical, Artistic, Pen, Arctic, Monochrome
+  Wireframe, Shaded, Rendered, Ghosted, XRay, Technical, Artistic, Pen, Arctic, Monochrome, RayTraced
 };
 const char* DisplayModeName(DisplayMode mode);
 std::vector<DisplayMode> AllDisplayModes();
@@ -277,6 +278,16 @@ class Viewport {
   // Control points of one object that are currently visible (hidden /
   // culled ones removed), with their indices.
   void VisibleControlPoints(const SceneObject& o, std::vector<int>& indices, std::vector<float>* xyz) const;
+
+  // RayTraced display mode (progressive path tracing at reduced
+  // resolution, accumulating while the camera and document are still;
+  // see cmd_raytrace.cpp's RayTracedViewport and DoRaytraceViewportFrame).
+  PathTracer raytrace_;
+  GLuint raytrace_tex_ = 0;
+  int raytrace_w_ = 0, raytrace_h_ = 0;
+  CameraState raytrace_camera_{};
+  bool raytrace_have_state_ = false;
+  std::uint64_t raytrace_revision_ = 0;
 };
 
 }  // namespace dino8::app

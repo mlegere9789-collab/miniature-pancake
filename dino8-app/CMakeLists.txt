@@ -124,6 +124,9 @@ set(DINO8_SOURCES
   src/viewport/Viewport.cpp
   src/render/GlRenderer.cpp
   src/render/ImageIO.cpp
+  src/render/Bvh.cpp
+  src/render/MaterialLibrary.cpp
+  src/render/PathTracer.cpp
   src/ui/RenderPanels.cpp
   src/commands/CommandEngine.cpp
   src/commands/CommandCatalog.cpp
@@ -149,6 +152,7 @@ set(DINO8_SOURCES
   src/commands/cmd_misc.cpp
   src/commands/cmd_render.cpp
   src/script/LuaEngine.cpp
+  src/commands/cmd_raytrace.cpp
   src/io/File3dm.cpp
   src/io/FileExchange.cpp
   src/geom/BrepMesher.cpp

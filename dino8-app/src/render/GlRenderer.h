@@ -111,8 +111,15 @@ class GlRenderer {
   void EnablePolygonOffset(bool on);  // push faces back so edges draw on top
   void EnableBlend(bool on);
 
+  // Blits a GL texture over the whole current viewport, unlit and
+  // unfiltered by depth - used by the RayTracedViewport display mode to
+  // present the path tracer's progressive accumulation texture.
+  void DrawFullscreenTexture(GLuint texture);
+
   // Texture cache: loads an image file into a GL texture (0 when the file
-  // cannot be read; the failure is remembered until RefreshTextures).
+  // cannot be read; the failure is remembered until RefreshTextures). A
+  // "proc:<kind>:<seed>" path (MaterialLibrary::IsProceduralTexture) is
+  // generated at 256x256 instead of read from disk.
   GLuint TextureFor(const std::string& path);
   // Uploads an RGB(A) image as a texture the caller owns (render window).
   GLuint CreateTexture(int width, int height, const unsigned char* rgb, int channels);
@@ -127,7 +134,8 @@ class GlRenderer {
   void DrawMesh(const std::vector<float>& data, const std::vector<float>* colors, const std::vector<float>* uvs,
                 MeshMode mode, Color color, float param0, float param1);
   void UploadLights();
-  GLuint mesh_program_ = 0, line_program_ = 0, bg_program_ = 0;
+  GLuint mesh_program_ = 0, line_program_ = 0, bg_program_ = 0, tex_program_ = 0;
+  GLint tex_u_sampler_ = -1;
   GLuint vao_ = 0, vbo_ = 0, color_vbo_ = 0, uv_vbo_ = 0, bg_vao_ = 0;
   Mat4 view_ = Mat4::Identity(), proj_ = Mat4::Identity();
   kernel::Vector3d light_{0.3, 0.5, 1.0};

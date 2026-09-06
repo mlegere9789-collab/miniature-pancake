@@ -57,6 +57,7 @@ void RegisterSurfaceCommands(CommandEngine&);
 void RegisterMeshToolsCommands(CommandEngine&);
 void RegisterSubDCommands(CommandEngine&);
 void RegisterRenderCommands(CommandEngine&);
+void RegisterRaytraceCommands(CommandEngine&);
 void RegisterSolidToolsCommands(CommandEngine&);
 void UpdateCageCaptives(Document&);  // cmd_solidtools.cpp: re-deforms CageEdit captives when a cage moved
 void RegisterSelect2Commands(CommandEngine&);
@@ -288,6 +289,7 @@ void Application::RegisterCommands() {
   RegisterFilletCommands(*engine_);     // real fillet/chamfer/blend/match/SSX family; after SrfEdit and CurveEdit so it wins both
   RegisterSurfaceCommands(*engine_);    // Sweep/Pipe/OffsetSrf/Project... (approximate NURBS/mesh results)
   RegisterRenderCommands(*engine_);     // last: replaces the Render/RenderPreview/Materials placeholders
+  RegisterRaytraceCommands(*engine_);   // after: takes over Render/RenderPreview/etc. for Quality=Raytraced
   RegisterFlowCommands(*engine_);       // very last: Dino Flow + plug-ins, replaces the Grasshopper/plug-in stubs
 }
 

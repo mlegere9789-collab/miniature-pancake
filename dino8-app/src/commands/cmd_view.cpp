@@ -180,7 +180,9 @@ void RegisterViewCommands(CommandEngine& e) {
   Reg(e, "PenViewport", SetMode(DisplayMode::Pen));
   Reg(e, "ArcticViewport", SetMode(DisplayMode::Arctic));
   Reg(e, "MonochromeViewport", SetMode(DisplayMode::Monochrome));
-  Reg(e, "RayTracedViewport", SetMode(DisplayMode::Rendered), CommandStatus::Partial, "Uses the Rendered mode; path tracing is planned.");
+  Reg(e, "RayTracedViewport", SetMode(DisplayMode::RayTraced), CommandStatus::Implemented,
+      "Progressive CPU path tracer at 1/4 viewport resolution, accumulating while the camera is still.");
+  Reg(e, "Render", SetMode(DisplayMode::Rendered), CommandStatus::Partial, "Switches the viewport to Rendered mode; RegisterRaytraceCommands replaces this with the real offline path tracer.");
   Reg(e, "RenderPreview", SetMode(DisplayMode::Rendered), CommandStatus::Partial);
   Reg(e, "RefreshShade", Immediate([](CommandContext& ctx) { for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay(); }));
   Reg(e, "ClearAllMeshes", Immediate([](CommandContext& ctx) { for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay(); }));

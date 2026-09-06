@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "render/ImageIO.h"
+#include "render/MaterialLibrary.h"
 
 namespace dino8::app {
 
@@ -227,6 +228,23 @@ out vec4 frag;
 void main() { frag = mix(u_bottom, u_top, clamp(v_t, 0.0, 1.0)); }
 )";
 
+// Fullscreen-triangle texture blit (RayTracedViewport's progressive image).
+const char* kTexVS = R"(#version 330 core
+out vec2 v_uv;
+void main() {
+  vec2 p = vec2((gl_VertexID == 1) ? 3.0 : -1.0, (gl_VertexID == 2) ? 3.0 : -1.0);
+  gl_Position = vec4(p, 0.0, 1.0);
+  v_uv = vec2((p.x + 1.0) * 0.5, 1.0 - (p.y + 1.0) * 0.5);
+}
+)";
+
+const char* kTexFS = R"(#version 330 core
+in vec2 v_uv;
+uniform sampler2D u_tex;
+out vec4 frag;
+void main() { frag = vec4(texture(u_tex, v_uv).rgb, 1.0); }
+)";
+
 GLuint CompileShader(GLenum type, const char* src, std::string& error) {
   GLuint shader = glCreateShader(type);
   glShaderSource(shader, 1, &src, nullptr);
@@ -345,6 +363,9 @@ bool GlRenderer::Init(std::string& error) {
   if (!line_program_) return false;
   bg_program_ = CompileProgram(kBgVS, kBgFS, error);
   if (!bg_program_) return false;
+  tex_program_ = CompileProgram(kTexVS, kTexFS, error);
+  if (!tex_program_) return false;
+  tex_u_sampler_ = glGetUniformLocation(tex_program_, "u_tex");
   mesh_u_mvp_ = glGetUniformLocation(mesh_program_, "u_mvp");
   mesh_u_view_ = glGetUniformLocation(mesh_program_, "u_view");
   mesh_u_color_ = glGetUniformLocation(mesh_program_, "u_color");
@@ -392,6 +413,7 @@ void GlRenderer::Shutdown() {
   if (mesh_program_) glDeleteProgram(mesh_program_);
   if (line_program_) glDeleteProgram(line_program_);
   if (bg_program_) glDeleteProgram(bg_program_);
+  if (tex_program_) glDeleteProgram(tex_program_);
   if (vbo_) glDeleteBuffers(1, &vbo_);
   if (color_vbo_) glDeleteBuffers(1, &color_vbo_);
   if (uv_vbo_) glDeleteBuffers(1, &uv_vbo_);
@@ -400,7 +422,7 @@ void GlRenderer::Shutdown() {
   for (auto& [path, tex] : textures_) if (tex) glDeleteTextures(1, &tex);
   textures_.clear();
   missing_textures_.clear();
-  mesh_program_ = line_program_ = bg_program_ = vao_ = vbo_ = color_vbo_ = uv_vbo_ = bg_vao_ = 0;
+  mesh_program_ = line_program_ = bg_program_ = tex_program_ = vao_ = vbo_ = color_vbo_ = uv_vbo_ = bg_vao_ = 0;
 }
 
 void GlRenderer::SetMatrices(const Mat4& view, const Mat4& projection) {
@@ -716,6 +738,13 @@ GLuint GlRenderer::TextureFor(const std::string& path) {
   const auto it = textures_.find(path);
   if (it != textures_.end()) return it->second;
   if (missing_textures_.count(path)) return 0;
+  if (IsProceduralTexture(path)) {
+    std::vector<unsigned char> rgba;
+    if (!GenerateProceduralTexture(path, 256, 256, rgba)) { missing_textures_.insert(path); return 0; }
+    const GLuint tex = CreateTexture(256, 256, rgba.data(), 4);
+    textures_[path] = tex;
+    return tex;
+  }
   Image img;
   std::string error;
   if (!LoadImageFile(path, img, error) || !img.Valid()) {
@@ -725,6 +754,20 @@ GLuint GlRenderer::TextureFor(const std::string& path) {
   const GLuint tex = CreateTexture(img.width, img.height, img.rgba.data(), 4);
   textures_[path] = tex;
   return tex;
+}
+
+void GlRenderer::DrawFullscreenTexture(GLuint texture) {
+  if (!texture || !tex_program_) return;
+  glDisable(GL_DEPTH_TEST);
+  glUseProgram(tex_program_);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, texture);
+  glUniform1i(tex_u_sampler_, 0);
+  glBindVertexArray(bg_vao_);
+  glDrawArrays(GL_TRIANGLES, 0, 3);
+  glBindVertexArray(0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glEnable(GL_DEPTH_TEST);
 }
 
 GLuint GlRenderer::CreateTexture(int width, int height, const unsigned char* pixels, int channels) {

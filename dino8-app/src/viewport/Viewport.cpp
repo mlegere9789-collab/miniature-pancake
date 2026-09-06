@@ -29,6 +29,7 @@ const char* DisplayModeName(DisplayMode mode) {
     case DisplayMode::Pen: return "Pen";
     case DisplayMode::Arctic: return "Arctic";
     case DisplayMode::Monochrome: return "Monochrome";
+    case DisplayMode::RayTraced: return "Raytraced";
   }
   return "Wireframe";
 }
@@ -36,7 +37,7 @@ const char* DisplayModeName(DisplayMode mode) {
 std::vector<DisplayMode> AllDisplayModes() {
   return {DisplayMode::Wireframe, DisplayMode::Shaded, DisplayMode::Rendered, DisplayMode::Ghosted,
           DisplayMode::XRay, DisplayMode::Technical, DisplayMode::Artistic, DisplayMode::Pen,
-          DisplayMode::Arctic, DisplayMode::Monochrome};
+          DisplayMode::Arctic, DisplayMode::Monochrome, DisplayMode::RayTraced};
 }
 
 DisplayMode DisplayModeFromName(const std::string& name) {
@@ -110,6 +111,7 @@ ModeStyle StyleFor(DisplayMode mode) {
     case DisplayMode::Pen: s.force_white = true; s.lit = false; s.isocurves = false; s.bg_top = s.bg_bottom = Color::FromBytes(255, 255, 255); s.edge_color = Color::FromBytes(0, 0, 0); break;
     case DisplayMode::Arctic: s.force_white = true; s.isocurves = false; s.bg_top = s.bg_bottom = Color::FromBytes(250, 250, 250); s.edge_color = Color::FromBytes(150, 150, 150); break;
     case DisplayMode::Monochrome: s.monochrome = true; s.isocurves = false; break;
+    case DisplayMode::RayTraced: s.isocurves = false; s.edges = false; s.bg_top = s.bg_bottom = Color::FromBytes(20, 20, 22); break;
   }
   return s;
 }
@@ -166,8 +168,44 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   renderer.ClearGradient(top, bottom);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
-  if (page_) DrawPage(renderer);
-  else DrawScene(renderer, ctx, mode_, Aspect());
+  if (mode_ == DisplayMode::RayTraced && !page_ && ctx.doc) {
+    // Progressive path-traced preview: render at 1/4 the viewport
+    // resolution and accumulate more samples each frame the camera and
+    // document stay still, restarting whenever either changes.
+    const int rw = std::max(width_ / 4, 4), rh = std::max(height_ / 4, 4);
+    const CameraState cam = camera_.State();
+    auto same_camera = [](const CameraState& a, const CameraState& b) {
+      return (a.eye - b.eye).Length() < 1e-6 && (a.target - b.target).Length() < 1e-6 && (a.up - b.up).Length() < 1e-6 &&
+             a.perspective == b.perspective && std::fabs(a.ortho_height - b.ortho_height) < 1e-6 &&
+             std::fabs(a.lens_mm - b.lens_mm) < 1e-6;
+    };
+    const bool stale = !raytrace_have_state_ || rw != raytrace_w_ || rh != raytrace_h_ ||
+                       !same_camera(cam, raytrace_camera_) || ctx.doc->Revision() != raytrace_revision_;
+    if (stale) {
+      raytrace_.Prepare(*ctx.doc, cam, static_cast<double>(rw) / rh, ctx.curve_tolerance, ctx.surface_tolerance);
+      raytrace_.ResetAccumulation(rw, rh);
+      raytrace_camera_ = cam;
+      raytrace_w_ = rw; raytrace_h_ = rh;
+      raytrace_revision_ = ctx.doc->Revision();
+      raytrace_have_state_ = true;
+    }
+    std::vector<unsigned char> rgb;
+    raytrace_.Accumulate(1, 4, rgb);
+    if (rgb.size() == static_cast<size_t>(rw) * rh * 3) {
+      if (raytrace_tex_) renderer.DeleteTexture(raytrace_tex_);
+      raytrace_tex_ = renderer.CreateTexture(rw, rh, rgb.data(), 3);
+    }
+    renderer.EnableDepthTest(false);
+    renderer.DrawFullscreenTexture(raytrace_tex_);
+    renderer.EnableDepthTest(true);
+    ImGui::GetForegroundDrawList()->AddText(ImVec2(static_cast<float>(screen_x_) + 8, static_cast<float>(screen_y_) + 8),
+                                            IM_COL32(255, 255, 255, 235),
+                                            ("samples: " + std::to_string(raytrace_.AccumulatedSamples())).c_str());
+  } else if (page_) {
+    DrawPage(renderer);
+  } else {
+    DrawScene(renderer, ctx, mode_, Aspect());
+  }
   // Command preview geometry (rubber bands, dynamic previews).
   renderer.EnableDepthTest(false);
   if (ctx.preview_lines) renderer.DrawLines(*ctx.preview_lines, Color::FromBytes(255, 255, 255));
