@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_map>
 
 namespace dino8::app {
@@ -303,7 +304,13 @@ void AppendSurfaceGrid(const kernel::NurbsSurface& srf, int nu, int nv, std::vec
     for (int j = 0; j < rows; ++j) {
       const double u = du.min + (du.max - du.min) * i / nu, v = dv.min + (dv.max - dv.min) * j / nv;
       pts[static_cast<size_t>(i) * rows + j] = srf.PointAt(u, v);
-      kernel::Vector3d n = srf.NormalAt(u, v);
+      kernel::Vector3d n(0, 0, 0);
+      // A grid sample can land exactly on a singular point (parallel or
+      // zero partial derivatives -- e.g. a degenerate corner of a fitted
+      // blend/loft surface); NormalAt() throws there rather than guessing,
+      // so fall back to a zero normal (patched from a neighbour below) the
+      // same way an unrelated near-zero normal already is.
+      try { n = srf.NormalAt(u, v); } catch (const std::exception&) {}
       if (!n.Unitize()) n = kernel::Vector3d(0, 0, 0);
       nrm[static_cast<size_t>(i) * rows + j] = n;
     }

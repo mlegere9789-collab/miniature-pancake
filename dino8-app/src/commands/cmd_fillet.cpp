@@ -718,12 +718,14 @@ class FilletTwoSurfacesCommand : public Command {
     ON_Curve* cc = contact.DuplicateCurve();
     if (cc->PointAtEnd().DistanceTo(ordered.front()) > cc->PointAtStart().DistanceTo(ordered.front())) cc->Reverse();
     boundary.Append(cc);
-    for (size_t i = 0; i < ordered.size(); ++i) {
-      const Point3d& a2 = ordered[i];
-      const Point3d& b2 = ordered[(i + 1) % ordered.size()];
-      if (i + 1 == ordered.size()) continue;  // last edge closes back to the contact curve start, added implicitly by NewPlanarFaceLoop's wraparound
-      boundary.Append(new ON_LineCurve(a2, b2));
-    }
+    // cc->PointAtEnd() sits near ordered.front() and cc->PointAtStart() near
+    // ordered.back() (that's what the Reverse() above arranged), but neither
+    // is exactly there -- ON_BrepTrimmedPlane's NewPlanarFaceLoop pairs each
+    // curve's OWN start point to the next curve as its vertex without ever
+    // checking the curves actually meet, so a real connecting edge is
+    // needed at both ends, not just relied on implicitly.
+    boundary.Append(new ON_LineCurve(cc->PointAtEnd(), ordered.front()));
+    for (size_t i = 0; i + 1 < ordered.size(); ++i) boundary.Append(new ON_LineCurve(ordered[i], ordered[i + 1]));
     boundary.Append(new ON_LineCurve(ordered.back(), cc->PointAtStart()));
     ON_Brep* nb = ON_BrepTrimmedPlane(plane, boundary, true);
     for (int i = 0; i < boundary.Count(); ++i) delete boundary[i];
@@ -733,7 +735,7 @@ class FilletTwoSurfacesCommand : public Command {
     // See TrimPlanarFace: ON_Brep::SetEdgeTolerance's recompute breaks this
     // loop shape, so keep ON_BrepTrimmedPlane's own edge tolerances.
     result.SetTolerancesBoxesAndFlags(false, true, false, true, true, true, true, true);
-    if (!result.IsValid(nullptr)) { return false; }
+    if (!result.IsValid(nullptr)) return false;
     if (SceneObject* orig = ctx.Doc().Find(id)) {
       orig->kind = ObjectKind::Brep;
       if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();

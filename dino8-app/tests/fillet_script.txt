@@ -18,21 +18,24 @@ Radius=3
 Enter
 SelAll
 Volume
-# --- FilletSrf: two independently-picked planar surfaces (extracted from a box corner)
-SelAll
-Hide
+# --- FilletSrf: two independently-picked planar surfaces (extracted from a box corner).
+# Each ExtractSrf leaves the 5-face remainder box behind at the same id it started
+# from (3, then 5); delete those right away so they don't sit at the same physical
+# location as the extracted faces and confuse the next PickFace click.
 Box 100,0,0 110,10,0 10
 ExtractSrf
 110,5,5
 Enter
-SelAll
-Hide
+SelNone
+SelID 3
+Delete
 Box 100,0,0 110,10,0 10
 ExtractSrf
 105,10,5
 Enter
-SelAll
-Show
+SelNone
+SelID 5
+Delete
 FilletSrf
 Radius=2
 110,5,5
@@ -57,48 +60,44 @@ MatchSrf
 210,5,5
 SelSrf
 List
-# --- SplitFace: split a plane's surface where a line crosses it
+# --- SplitFace: split a plane's surface where a real 3D curve pierces it twice
+# (a straight line can only cross a flat plane once, so the cutter is a
+# V-shaped polyline that dips below z=0 and back above it, at x=255 y=1
+# and y=7, both inside the plane's own [0,10] y domain).
 SelAll
 Hide
 Plane 250,0,0 260,10,0
-Line 255,-5,0 255,15,0
+Polyline 255,-2,-3 255,4,3 255,10,-3
+Enter
 SplitFace
 255,5,0
-255,5,0
+255,4,0
 SelSrf
 List
-# --- MergeFaces: recombine two split-off coplanar faces of a box
+# --- MergeFaces: two adjacent planes joined into one polysurface, then their
+# shared-edge faces recombined into a single planar face (area 10x10 = 100)
 SelAll
 Hide
-Box 300,0,0 310,10,0 10
-ExtractSrf
-310,5,5
-Enter
+Plane 300,0,0 305,10,0
+Plane 305,0,0 310,10,0
 SelAll
-Hide
-Box 300,0,0 310,10,0 10
-ExtractSrf
-305,10,5
-Enter
-SelAll
-Hide
-Box 300,0,0 310,10,0 10
-DeleteFaces
-310,5,5
-Enter
-DeleteFaces
-305,10,5
-Enter
-MergeFaces
-300,5,10
-305,0,5
-Enter
+Join
+SelPolysrf
 List
-# --- ConnectSrf: extend two planes to their real SSX join curve
+MergeFaces
+302,5,0
+307,5,0
+Enter
+SelPolysrf
+List
+Area
+# --- ConnectSrf: extend two planes to their real SSX join curve. Plane always
+# builds in the active (world XY) CPlane, so the vertical second plane needs
+# Plane3Pt (arbitrary edge + width vectors) instead.
 SelAll
 Hide
 Plane 400,0,0 410,10,0
-Plane 410,0,0 410,10,10
+Plane3Pt 410,0,0 410,10,0 410,10,10
 SelAll
 ConnectSrf
 SelCrv
@@ -107,7 +106,7 @@ List
 SelAll
 Hide
 Plane 450,-5,0 460,5,0
-Plane 455,-5,-5 455,5,5
+Plane3Pt 455,-5,-5 455,5,-5 455,5,5
 SelAll
 Intersect
 SelCrv
@@ -121,4 +120,4 @@ Intersect
 SelPt
 List
 SelNone
-@expect_objects 44
+@expect_objects 24
