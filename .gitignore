@@ -39,4 +39,5 @@ mediasuite/tools-staged/
 
 # CMake build trees
 build/
+build-agent/
 dino8-app/dist/
