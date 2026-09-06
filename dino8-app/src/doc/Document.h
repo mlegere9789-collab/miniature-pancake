@@ -224,9 +224,14 @@ struct Layout {
 // A camera animation (turntable, path, fly-through): the frames are
 // precomputed camera states the view commands step through.
 struct Animation {
-  std::string kind;  // "Turntable", "Path", "Flythrough", ""
+  std::string kind;  // "Turntable", "Path", "Flythrough", "OneDaySun", "SeasonalSun", ""
   std::vector<CameraState> frames;
   std::string viewport;  // viewport the animation was set up in
+  // Sun-driven animations (SetOneDaySunAnimation / SetSeasonalSunAnimation)
+  // additionally vary RenderSettings::sun_azimuth/sun_altitude per frame,
+  // with the camera held still; empty when the animation is camera-only.
+  std::vector<double> sun_azimuth;
+  std::vector<double> sun_altitude;
 };
 
 // A reference model attached through Worksession: another .3dm's objects,

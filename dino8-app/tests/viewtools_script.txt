@@ -15,6 +15,11 @@ SelClippingPlane
 SaveClippingSectionCPlanes
 SaveClippingSectionViews
 ExportClippingSectionInfo @TMP@/clipping.txt
+ClippingDrawings
+UpdateClippingDrawings
+EditClippingDrawings
+ExportClippingDrawings @TMP@/drawings.3dm
+Delete
 ClippingSections
 ClearClippingSections
 # --- ExtractClippingSlices (planar slice surfaces), MPlane orientation
@@ -73,6 +78,17 @@ PlayAnimation
 @wait 8
 RecordAnimation Folder=@TMP@/frames
 @wait 10
+# --- sun animations: camera stays put, the Sun sweeps instead
+SetOneDaySunAnimation Frames=4
+ViewFirstFrame
+Sun
+ViewLastFrame
+Sun
+SetSeasonalSunAnimation Frames=4
+ViewFirstFrame
+Sun
+ViewLastFrame
+Sun
 SplitViewportHorizontal
 CloseViewport
 Save @TMP@/viewtools.3dm

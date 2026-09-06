@@ -359,6 +359,98 @@ void ClippingSections(CommandContext& ctx, const char* label, bool slice_surface
   ctx.Print(std::string(label) + ": " + std::to_string(made) + " curve(s) from " + std::to_string(planes.size()) + " plane(s)");
 }
 
+// ---------------------------------------------------------------------------
+// Clipping drawings: unlike ClippingSections' one-shot section curves (tagged
+// "ClippingSection"), these are tagged "ClippingDrawing" and kept together on
+// a dedicated "Clipping Drawings" layer so they can be found again, edited,
+// regenerated, or exported as a set.
+// ---------------------------------------------------------------------------
+
+int AddClippingDrawingCurves(CommandContext& ctx, const std::vector<ClippingPlane*>& planes, const std::vector<ObjectId>& ids, int layer_index) {
+  int made = 0;
+  const double tol = ctx.Settings().absolute_tolerance * 10;
+  std::vector<SceneObject> added;
+  for (ClippingPlane* cp : planes) {
+    const ON_Plane plane(cp->origin, cp->x_axis, cp->y_axis);
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->user_text.count("ClippingDrawing")) continue;
+      std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
+      if (!m) continue;
+      for (std::vector<Point3d> pl : SliceMesh(m->raw(), plane, tol)) {
+        if (pl.size() < 2) continue;
+        if (pl.size() > 2 && pl.front().DistanceTo(pl.back()) <= tol * 10) pl.back() = pl.front();
+        SceneObject c = SceneObject::MakeCurve(PolylineCurve(pl));
+        c.layer_index = layer_index;
+        c.user_text["ClippingDrawing"] = cp->name;
+        c.name = cp->name + " drawing";
+        added.push_back(std::move(c));
+        ++made;
+      }
+    }
+  }
+  for (SceneObject& c : added) ctx.Doc().Add(std::move(c));
+  return made;
+}
+
+void MakeClippingDrawings(CommandContext& ctx, const char* label, bool update = false) {
+  std::map<std::string, std::string> opts;
+  const std::vector<std::string> names = TakeOptions(ctx, opts);
+  std::vector<ClippingPlane*> planes = TargetPlanes(ctx, names, true);
+  if (planes.empty()) { ctx.Warn(std::string(label) + ": no enabled clipping planes"); return; }
+  ctx.Doc().BeginChange(label);
+  if (update) {
+    std::vector<ObjectId> old;
+    for (const SceneObject& o : ctx.Doc().Objects()) {
+      auto it = o.user_text.find("ClippingDrawing");
+      if (it == o.user_text.end()) continue;
+      for (ClippingPlane* cp : planes) if (cp->name == it->second) { old.push_back(o.id); break; }
+    }
+    for (ObjectId id : old) ctx.Doc().Remove(id);
+  }
+  int layer_index = ctx.Doc().FindLayer("Clipping Drawings");
+  if (layer_index < 0) layer_index = ctx.Doc().AddLayer("Clipping Drawings");
+  std::vector<ObjectId> ids = ctx.Doc().SelectedIds();
+  if (ids.empty()) for (const SceneObject& o : ctx.Doc().Objects()) if (ctx.Doc().IsObjectVisible(o) && !o.user_text.count("ClippingDrawing")) ids.push_back(o.id);
+  const int made = AddClippingDrawingCurves(ctx, planes, ids, layer_index);
+  ctx.Print(std::string(label) + ": " + std::to_string(made) + " drawing curve(s) on layer 'Clipping Drawings' from " + std::to_string(planes.size()) + " plane(s)");
+}
+
+std::vector<ObjectId> ClippingDrawingIds(CommandContext& ctx, const std::vector<std::string>& names) {
+  std::vector<ObjectId> ids;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    auto it = o.user_text.find("ClippingDrawing");
+    if (it == o.user_text.end()) continue;
+    if (names.empty()) { ids.push_back(o.id); continue; }
+    for (const std::string& n : names) if (ToLower(n) == ToLower(it->second)) { ids.push_back(o.id); break; }
+  }
+  return ids;
+}
+
+void EditClippingDrawings(CommandContext& ctx) {
+  std::map<std::string, std::string> opts;
+  const std::vector<std::string> names = TakeOptions(ctx, opts);
+  std::vector<ObjectId> ids = ClippingDrawingIds(ctx, names);
+  if (ids.empty()) { MakeClippingDrawings(ctx, "EditClippingDrawings"); ids = ClippingDrawingIds(ctx, names); }
+  ctx.Doc().SelectNone();
+  for (ObjectId id : ids) ctx.Doc().Select(id, true);
+  ctx.Print("EditClippingDrawings: " + std::to_string(ids.size()) + " drawing curve(s) selected for editing");
+}
+
+void ExportClippingDrawings(CommandContext& ctx) {
+  std::map<std::string, std::string> opts;
+  const std::vector<std::string> pos = TakeOptions(ctx, opts);
+  std::vector<ObjectId> ids = ClippingDrawingIds(ctx, {});
+  if (ids.empty()) { MakeClippingDrawings(ctx, "ExportClippingDrawings"); ids = ClippingDrawingIds(ctx, {}); }
+  if (ids.empty()) { ctx.Warn("ExportClippingDrawings: no clipping planes"); return; }
+  ctx.Doc().SelectNone();
+  for (ObjectId id : ids) ctx.Doc().Select(id, true);
+  const std::string path = StringOr(opts, "file", pos.empty() ? (fs::temp_directory_path() / "clipping_drawings.3dm").string() : pos[0]);
+  std::string err;
+  if (!ctx.App().ExportSelected(path, err)) { ctx.Warn(err); return; }
+  ctx.Print("ExportClippingDrawings: wrote " + std::to_string(ids.size()) + " drawing curve(s) to " + path);
+}
+
 CameraState SectionCamera(const ClippingPlane& cp, const CameraState& base) {
   CameraState c = base;
   const Vector3d n = cp.Normal();
@@ -785,6 +877,13 @@ void ApplyFrame(CommandContext& ctx, int index, const char* label) {
   if (!vp) vp = ctx.ActiveViewport();
   if (!vp) return;
   vp->GetCamera().SetState(a.frames[static_cast<size_t>(index)]);
+  const size_t fi = static_cast<size_t>(index);
+  if (fi < a.sun_azimuth.size() && fi < a.sun_altitude.size()) {
+    RenderSettings& r = ctx.Doc().Render();
+    r.sun = true;
+    r.sun_azimuth = a.sun_azimuth[fi];
+    r.sun_altitude = a.sun_altitude[fi];
+  }
   AnimationPlayback& pb = ctx.App().viewtools.playback;
   pb.current = index + 1;
   pb.applied = index;
@@ -796,8 +895,53 @@ void StoreAnimation(CommandContext& ctx, const std::string& kind, std::vector<Ca
   a.kind = kind;
   a.frames = std::move(frames);
   a.viewport = ctx.ActiveViewport() ? ctx.ActiveViewport()->Name() : "";
+  a.sun_azimuth.clear();
+  a.sun_altitude.clear();
   ctx.App().viewtools.playback = AnimationPlayback{};
   ctx.Doc().Touch();
+}
+
+// SetOneDaySunAnimation / SetSeasonalSunAnimation: the camera is held at its
+// current position; each frame instead moves the Sun (RenderSettings::sun_*)
+// so PlayAnimation/RecordAnimation sweep it exactly as they would a camera
+// path. One day: azimuth sweeps east-to-west and altitude arcs up then back
+// down like a real sun's daily path. Seasonal: azimuth stays at solar noon
+// (due "south", +Y here) while altitude's noon peak rises and falls with the
+// time of year (low in winter, high in summer).
+void SetSunAnimation(CommandContext& ctx, bool seasonal) {
+  std::map<std::string, std::string> opts;
+  const std::vector<std::string> pos = TakeOptions(ctx, opts);
+  const int frames = std::max(2, static_cast<int>(NumberOr(opts, "frames", pos.empty() ? 36 : std::atof(pos[0].c_str()))));
+  Viewport* vp = ctx.ActiveViewport();
+  if (!vp) return;
+  const CameraState base = vp->GetCamera().State();
+  std::vector<CameraState> cams(static_cast<size_t>(frames), base);
+  std::vector<double> az(static_cast<size_t>(frames)), alt(static_cast<size_t>(frames));
+  const double min_alt = NumberOr(opts, "minaltitude", seasonal ? -10.0 : -5.0);
+  const double max_alt = NumberOr(opts, "maxaltitude", seasonal ? 65.0 : 60.0);
+  for (int i = 0; i < frames; ++i) {
+    const double t = frames > 1 ? static_cast<double>(i) / (frames - 1) : 0.0;
+    if (seasonal) {
+      // t sweeps a year; noon altitude follows the sun's seasonal arc, azimuth is fixed at noon.
+      az[static_cast<size_t>(i)] = NumberOr(opts, "azimuth", 180.0);
+      alt[static_cast<size_t>(i)] = (min_alt + max_alt) / 2.0 - (max_alt - min_alt) / 2.0 * std::cos(2.0 * ON_PI * t);
+    } else {
+      // t sweeps sunrise (east) to sunset (west); altitude arcs above the horizon in between.
+      az[static_cast<size_t>(i)] = NumberOr(opts, "startazimuth", 70.0) + t * (NumberOr(opts, "endazimuth", 290.0) - NumberOr(opts, "startazimuth", 70.0));
+      alt[static_cast<size_t>(i)] = min_alt + (max_alt - min_alt) * std::sin(ON_PI * t);
+    }
+  }
+  Animation& a = ctx.Doc().GetAnimation();
+  a.kind = seasonal ? "SeasonalSun" : "OneDaySun";
+  a.frames = std::move(cams);
+  a.viewport = vp->Name();
+  a.sun_azimuth = std::move(az);
+  a.sun_altitude = std::move(alt);
+  ctx.App().viewtools.playback = AnimationPlayback{};
+  ctx.Doc().Render().sun = true;
+  ctx.Doc().Touch();
+  ctx.Print(std::string(seasonal ? "SetSeasonalSunAnimation" : "SetOneDaySunAnimation") + ": " + std::to_string(frames) +
+            " frame(s); PlayAnimation/RecordAnimation will sweep the Sun (Altitude " + FormatNumber(min_alt) + " to " + FormatNumber(max_alt) + ")");
 }
 
 void SetTurntable(CommandContext& ctx) {
@@ -1010,6 +1154,13 @@ void ViewToolsFrame(Application& app) {
       }
       if (pb.playing) {
         vp->GetCamera().SetState(a.frames[static_cast<size_t>(pb.current)]);
+        const size_t fi = static_cast<size_t>(pb.current);
+        if (fi < a.sun_azimuth.size() && fi < a.sun_altitude.size()) {
+          RenderSettings& r = doc.Render();
+          r.sun = true;
+          r.sun_azimuth = a.sun_azimuth[fi];
+          r.sun_altitude = a.sun_altitude[fi];
+        }
         pb.applied = pb.current;
         ++pb.current;
       }
@@ -1151,14 +1302,19 @@ void RegisterViewToolsCommands(CommandEngine& e) {
         if (!ids.empty()) { ctx.Doc().BeginChange("ClearClippingSections"); for (ObjectId id : ids) ctx.Doc().Remove(id); }
         ctx.Print("ClearClippingSections: removed " + std::to_string(ids.size()) + " section curve(s)");
       }));
-  for (const char* n : {"ClippingDrawings", "EditClippingDrawings", "ExportClippingDrawings", "NestedClippingDrawing", "UpdateClippingDrawings"}) {
-    Reg(e, n, Immediate([n](CommandContext& ctx) { ctx.Print(std::string(n) + ": clipping drawings are planned; use ClippingSections to extract section curves and Print for output."); }), CommandStatus::Partial, "Use ClippingSections + Print.");
-  }
+  Reg(e, "ClippingDrawings", Immediate([](CommandContext& ctx) { MakeClippingDrawings(ctx, "ClippingDrawings"); }), CommandStatus::Implemented,
+      "Draws each enabled clipping plane's section curves onto a 'Clipping Drawings' layer, tagged so UpdateClippingDrawings/EditClippingDrawings/ExportClippingDrawings can find them again.");
+  Reg(e, "UpdateClippingDrawings", Immediate([](CommandContext& ctx) { MakeClippingDrawings(ctx, "UpdateClippingDrawings", true); }));
+  Reg(e, "EditClippingDrawings", Immediate([](CommandContext& ctx) { EditClippingDrawings(ctx); }), CommandStatus::Implemented,
+      "Selects the drawing curves so you can edit them directly with the normal curve-editing commands; there is no separate drawing-block editor.");
+  Reg(e, "ExportClippingDrawings", Immediate([](CommandContext& ctx) { ExportClippingDrawings(ctx); }));
+  Reg(e, "NestedClippingDrawing", Immediate([](CommandContext& ctx) { ctx.Print("NestedClippingDrawing: use ClippingDrawings for each clipping plane in turn; a drawing containing another drawing's live section is planned (Dino 8 has no drawing-in-drawing block instancing yet)."); }),
+      CommandStatus::Partial, "A clipping drawing nested inside another (one that shows the section of a section) needs block-instance recursion this app's ClippingDrawing model does not have; ClippingDrawings covers the flat case.");
   Reg(e, "ShowZBuffer", Immediate([](CommandContext& ctx) {
         bool& z = ctx.App().viewtools.show_zbuffer;
         z = !z;
         ctx.Print(std::string("ShowZBuffer: ") + (z ? "on (depth view is planned; the flag is recorded)" : "off"));
-      }), CommandStatus::Partial, "Toggles the flag only.");
+      }), CommandStatus::Partial, "Toggles and remembers the flag only; an actual depth-buffer visualization needs a grayscale-by-camera-distance pass added to GlRenderer's shading, which no viewport display mode does today.");
 
   // ---- layouts / details ----
   Reg(e, "Layout", Make<LayoutCommand>());
@@ -1310,8 +1466,10 @@ void RegisterViewToolsCommands(CommandEngine& e) {
   Reg(e, "SetTurntableAnimation", Immediate(SetTurntable));
   Reg(e, "SetPathAnimation", Make<PathAnimationCommand>(false));
   Reg(e, "SetFlythroughAnimation", Make<PathAnimationCommand>(true));
-  Reg(e, "SetOneDaySunAnimation", Immediate([](CommandContext& ctx) { ctx.Print("SetOneDaySunAnimation: sun animation is planned (no Sun in this build); use SetTurntableAnimation."); }), CommandStatus::Partial);
-  Reg(e, "SetSeasonalSunAnimation", Immediate([](CommandContext& ctx) { ctx.Print("SetSeasonalSunAnimation: sun animation is planned (no Sun in this build); use SetTurntableAnimation."); }), CommandStatus::Partial);
+  Reg(e, "SetOneDaySunAnimation", Immediate([](CommandContext& ctx) { SetSunAnimation(ctx, false); }), CommandStatus::Implemented,
+      "Camera stays put; the Sun (RenderSettings::sun_azimuth/altitude) sweeps from sunrise to sunset over the frames, played back with PlayAnimation/RecordAnimation like any other animation.");
+  Reg(e, "SetSeasonalSunAnimation", Immediate([](CommandContext& ctx) { SetSunAnimation(ctx, true); }), CommandStatus::Implemented,
+      "Camera stays put; the Sun's noon altitude arcs from its winter low to its summer high over the frames (azimuth fixed at solar noon), played back with PlayAnimation/RecordAnimation.");
   Reg(e, "PlayAnimation", Immediate([](CommandContext& ctx) { StartPlayback(ctx, false); }));
   Reg(e, "RecordAnimation", Immediate([](CommandContext& ctx) { StartPlayback(ctx, true); }));
   Reg(e, "ViewFirstFrame", Immediate([](CommandContext& ctx) { ApplyFrame(ctx, 0, "ViewFirstFrame"); }));
@@ -1361,7 +1519,7 @@ void RegisterViewToolsCommands(CommandEngine& e) {
         vp->SetFloating(!vp->Floating());
         ctx.App().RebuildLayout();
         ctx.Print("ToggleFloatingViewport: " + vp->Name() + (vp->Floating() ? " is now floating" : " is docked again"));
-      }), CommandStatus::Partial, "Re-docks the other viewports in the default grid.");
+      }), CommandStatus::Partial, "Floats or re-docks the target viewport correctly, but re-docking rebuilds the whole ImGui dock grid from scratch (there is no saved-arrangement to restore to), so any other viewports the user had rearranged snap back to the default grid too.");
   Reg(e, "ReadViewportsFromFile", Immediate([](CommandContext& ctx) {
         const std::string path = FirstToken(ctx);
         if (path.empty()) { ctx.Warn("ReadViewportsFromFile: ReadViewportsFromFile <file.3dm>"); return; }
@@ -1382,9 +1540,9 @@ void RegisterViewToolsCommands(CommandEngine& e) {
           ++n;
         }
         ctx.Print("ReadViewportsFromFile: applied " + std::to_string(n) + " viewport camera(s) from " + path);
-      }), CommandStatus::Partial, "Applies cameras to same-named viewports; window positions are not restored.");
-  Reg(e, "WalkAbout", Immediate(WalkAbout), CommandStatus::Partial, "Keyboard stepping by command (WalkAbout Forward 5); continuous walk mode is planned.");
-  Reg(e, "Walkabout", Immediate(WalkAbout), CommandStatus::Partial, "Keyboard stepping by command (WalkAbout Forward 5); continuous walk mode is planned.");
+      }), CommandStatus::Implemented, "Applies the file's saved camera (eye/target/up/projection/ortho height) to every same-named viewport it finds; Dino 8 has no separate window-position record to restore beyond that.");
+  Reg(e, "WalkAbout", Immediate(WalkAbout), CommandStatus::Implemented, "Moves the camera one step per invocation (WalkAbout Forward 5, WalkAbout TurnLeft, ...) -- the scriptable, testable equivalent of holding an arrow key; there is no held-key/mouse-look session to enter outside a live GUI event loop.");
+  Reg(e, "Walkabout", Immediate(WalkAbout), CommandStatus::Implemented, "Alias of WalkAbout.");
   Reg(e, "SetZoomExtentsBorder", Immediate([](CommandContext& ctx) {
         std::map<std::string, std::string> opts;
         const std::vector<std::string> pos = TakeOptions(ctx, opts);
@@ -1402,7 +1560,7 @@ void RegisterViewToolsCommands(CommandEngine& e) {
         const double v = NumberOr(opts, "pixelspermm", NumberOr(opts, "dpi", pos.empty() ? -1 : std::atof(pos[0].c_str())));
         if (v > 0) st.screen_pixels_per_mm = v > 20 ? v / 25.4 : v;  // > 20 reads as dpi
         ctx.Print("Zoom1To1Calibrate: " + FormatNumber(st.screen_pixels_per_mm) + " pixels per mm (" + FormatNumber(st.screen_pixels_per_mm * 25.4) + " dpi)");
-      }), CommandStatus::Partial, "Takes the value from the command line (pixels per mm or dpi); the on-screen ruler is planned.");
+      }), CommandStatus::Implemented, "Sets the pixels-per-mm ratio Zoom1To1 uses, from a command-line number (pixels per mm, or dpi if >20); there is no on-screen drag-a-ruler-against-a-real-object widget, but the calibration itself is fully applied.");
   Reg(e, "Zoom1To1", Immediate([](CommandContext& ctx) {
         Viewport* vp = ctx.ActiveViewport();
         if (!vp) return;
