@@ -86,4 +86,124 @@ SelPt
 SrfControlPtGrid
 2
 SelNone
-@expect_objects 42
+# --- UntrimBorder keeps the border-only untrim behavior honest (no holes on this disk, but
+# the outer trim really is removed and replaced with a full-surface loop)
+SelAll
+Hide
+Circle 900,0,0 5
+SelLast
+PlanarSrf
+UntrimBorder
+900,0,0
+Enter
+SelPolysrf
+List
+# --- JoinEdge forces two just-touching planes into one polysurface
+SelAll
+Hide
+Plane 1000,0,0 1010,10,0
+Plane 1010,0,0 1020,10,0
+SelAll
+JoinEdge
+# --- MoveFace: raise a box's top face by 5
+SelAll
+Hide
+Box 1100,0,0 1110,10,0 10
+MoveFace
+1105,5,10
+Enter
+1105,5,10
+1105,5,15
+SelPolysrf
+BoundingBox
+# --- MoveEdge: raise one top edge of a box by 5 (the far corner stays put, roofing the box)
+SelAll
+Hide
+Box 1200,0,0 1210,10,0 10
+MoveEdge
+1205,0,10
+Enter
+1205,0,10
+1205,0,15
+SelPolysrf
+BoundingBox
+# --- MoveUntrimmedFace: same as MoveFace, restricted to (and here, a valid pick of) an untrimmed face
+SelAll
+Hide
+Box 1300,0,0 1310,10,0 10
+MoveUntrimmedFace
+1305,5,10
+Enter
+1305,5,10
+1305,5,20
+SelPolysrf
+BoundingBox
+# --- MoveUntrimmedEdge: same as MoveEdge, restricted to an iso-boundary edge
+SelAll
+Hide
+Box 1400,0,0 1410,10,0 10
+MoveUntrimmedEdge
+1405,0,10
+Enter
+1405,0,10
+1405,0,25
+SelPolysrf
+BoundingBox
+# --- MoveUVN: move a single control point of a plain surface along its local normal
+SelAll
+Hide
+Plane 1500,0,0 1510,10,0
+MoveUVN
+1500,0,0
+0,0,7
+# --- FoldFace: fold a box's top face 30 degrees about its front-bottom hinge edge
+SelAll
+Hide
+Box 1600,0,0 1610,10,0 10
+FoldFace
+1605,0,0
+1605,5,10
+30
+SelPolysrf
+BoundingBox
+# --- SetPlanar: flatten two off-plane points onto the construction plane
+SelAll
+Hide
+Point 1700,0,5
+Point 1710,0,8
+SelPt
+SetPlanar
+BoundingBox
+# --- VolumeMoments / AreaMoments / Hydrostatics: real second-moment and waterline numbers
+SelAll
+Hide
+Box 1800,0,0 1810,10,0 10
+SelPolysrf
+VolumeMoments
+SelAll
+Hide
+Plane 1900,0,0 1910,10,0
+SelSrf
+AreaMoments
+SelAll
+Hide
+Sphere 2000,0,0 5
+SelPolysrf
+Hydrostatics
+# --- ExtractBadSrf / RemoveAllNakedMicroEdges: real checks that find nothing wrong with a good box
+SelAll
+Hide
+Box 2100,0,0 2110,10,0 10
+SelPolysrf
+ExtractBadSrf
+RemoveAllNakedMicroEdges
+# --- ShrinkTrimmedSrfToEdge on a trimmed disk
+SelAll
+Hide
+Circle 2200,0,0 5
+SelLast
+PlanarSrf
+SelPolysrf
+ShrinkTrimmedSrfToEdge
+SelNone
+@expect_objects 65
