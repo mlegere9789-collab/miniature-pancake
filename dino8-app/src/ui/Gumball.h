@@ -3,6 +3,7 @@
 // top of a viewport image; drags snapshot the document once (undoable).
 #pragma once
 
+#include <array>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,8 +44,10 @@ class Gumball {
   enum class Handle { None, X, Y, Z, Free, RotX, RotY, RotZ, ScaleX, ScaleY, ScaleZ };
   Handle hover_ = Handle::None;
   bool dragging_ = false;
+  bool relocating_ = false;  // GumballDynamicRelocate: Ctrl-drag on the centre moves the widget, not the selection
   Handle drag_handle_ = Handle::None;
   kernel::Point3d center_{0, 0, 0};
+  std::array<kernel::Vector3d, 3> axes_{kernel::Vector3d(1, 0, 0), kernel::Vector3d(0, 1, 0), kernel::Vector3d(0, 0, 1)};
   double axis_len_ = 1.0;
   double start_param_ = 0.0;
   double start_angle_ = 0.0;

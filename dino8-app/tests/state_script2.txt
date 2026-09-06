@@ -80,7 +80,7 @@ FileExplorer
 OpenURL https://example.org/open
 WebBrowser https://example.org/browser
 ModelBasepoint 1,2,3
-EarthAnchorPoint 4,5,6
+EarthAnchorPoint 4,5,6 51.5 -0.1
 # --- objects
 Point 0,0,0
 Point 1,0,0

@@ -285,6 +285,45 @@ class CameraCommand : public Command {
   std::optional<Point3d> eye_;
 };
 
+// EarthAnchorPoint: model point, latitude and longitude (Enter defaults
+// each remaining prompt to 0), stored in document user text. Rhino's own
+// version also drives its Sun's azimuth/altitude solar calculator from
+// this; Dino 8's Sun takes Azimuth/Altitude directly instead (see
+// cmd_render.cpp), so this just records the georeference.
+class EarthAnchorCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Earth anchor point (model location)"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    p_ = p;
+    ctx.SetLastPoint(p);
+    WantNumber("Latitude in degrees (-90 to 90)", 0.0);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (!lat_) { lat_ = std::clamp(v, -90.0, 90.0); WantNumber("Longitude in degrees (-180 to 180)", 0.0); return; }
+    lon_ = std::clamp(v, -180.0, 180.0);
+    Store(ctx);
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e = nullptr; double v = std::strtod(t.c_str(), &e); if (e && *e == 0) OnNumber(ctx, v); else Finish(); }
+  void OnEnter(CommandContext& ctx) override {
+    if (!p_) { Finish(); return; }
+    if (!lat_) { lat_ = 0.0; WantNumber("Longitude in degrees (-180 to 180)", 0.0); return; }
+    lon_ = 0.0;
+    Store(ctx);
+  }
+
+ private:
+  void Store(CommandContext& ctx) {
+    ctx.Doc().UserText()["EarthAnchorPoint"] = FormatPoint(*p_);
+    ctx.Doc().UserText()["EarthAnchorPointLatitude"] = FormatNumber(*lat_);
+    ctx.Doc().UserText()["EarthAnchorPointLongitude"] = FormatNumber(*lon_);
+    ctx.Doc().Touch();
+    ctx.Print("Earth anchor point " + FormatPoint(*p_) + ", latitude " + FormatNumber(*lat_) + ", longitude " + FormatNumber(*lon_));
+    Finish();
+  }
+  std::optional<Point3d> p_;
+  std::optional<double> lat_, lon_;
+};
+
 // Dot: a text dot is a point object carrying its text.
 class DotCommand : public Command {
  public:
@@ -557,18 +596,18 @@ void RegisterStateCommands(CommandEngine& e) {
   Reg(e, "SnapToMeshObject", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().snap_to_mesh_object; }, "Snap to mesh objects"), CommandStatus::Implemented, "Off excludes mesh objects from object snaps entirely (overrides SnapToMeshes).");
   Reg(e, "SnapToSubDObject", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().snap_to_subd_object; }, "Snap to SubD objects"), CommandStatus::Implemented, "Off excludes SubD control-net vertices from object snaps.");
   Reg(e, "ShowOsnap", Immediate([](CommandContext& ctx) { bool& b = ctx.App().Panels().object_snaps; b = !b; ctx.Print(std::string("Osnap panel ") + (b ? "shown" : "hidden")); }));
-  Reg(e, "DragMode", Make<ChoiceCommand>("DragMode", std::vector<std::string>{"CPlane", "World", "UVN", "View", "ControlPolygon"}, [](CommandContext& ctx) -> std::string& { return ctx.App().State().drag_mode; }), CommandStatus::Partial, "Stored; dragging follows the CPlane.");
-  Reg(e, "DragStrength", Make<NumberArgCommand>("Drag strength percent", [](CommandContext& ctx) { return ctx.App().State().drag_strength; }, [](CommandContext& ctx, double v) { ctx.App().State().drag_strength = std::clamp(v, 1.0, 100.0); ctx.Print("Drag strength = " + FormatNumber(ctx.App().State().drag_strength) + "%"); }), CommandStatus::Partial, "Stored flag.");
-  Reg(e, "DragCopy", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().drag_copy; }, "Drag copy"), CommandStatus::Partial, "Stored; Alt-drag copies.");
-  Reg(e, "RememberCopyOptions", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().remember_copy_options; }, "Remember copy options"), CommandStatus::Partial, "Stored flag.");
+  Reg(e, "DragMode", Make<ChoiceCommand>("DragMode", std::vector<std::string>{"CPlane", "World", "UVN", "View", "ControlPolygon"}, [](CommandContext& ctx) -> std::string& { return ctx.App().State().drag_mode; }), CommandStatus::Implemented, "Sets the plane the gumball's centre (Free) handle drags in: CPlane and World are exact; UVN and ControlPolygon (which need a surface/mesh control point, not a whole-object gumball) fall back to the view-perpendicular plane, same as View.");
+  Reg(e, "DragStrength", Make<NumberArgCommand>("Drag strength percent", [](CommandContext& ctx) { return ctx.App().State().drag_strength; }, [](CommandContext& ctx, double v) { ctx.App().State().drag_strength = std::clamp(v, 1.0, 100.0); ctx.Print("Drag strength = " + FormatNumber(ctx.App().State().drag_strength) + "%"); }), CommandStatus::Implemented, "Scales every gumball translate drag (Free or an axis handle) by this percentage - 50% moves the selection half as far as the mouse.");
+  Reg(e, "DragCopy", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().drag_copy; }, "Drag copy"), CommandStatus::Implemented, "When on, a gumball translate drag leaves a copy at the start position and moves the original; Alt inverts this for one drag.");
+  Reg(e, "RememberCopyOptions", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().remember_copy_options; }, "Remember copy options"), CommandStatus::Implemented, "When on, whichever DragCopy behaviour a gumball drag actually used (including an Alt override) becomes the new DragCopy default for the next drag.");
 
   // ---- panels / UI -----------------------------------------------------
   Reg(e, "ToggleRightSidebar", Immediate([](CommandContext& ctx) { AppState& s = ctx.App().State(); s.right_sidebar = !s.right_sidebar; ctx.App().Panels().layers = s.right_sidebar; ctx.App().Panels().properties = s.right_sidebar; ctx.Print(std::string("Right sidebar (Layers, Properties) ") + (s.right_sidebar ? "shown" : "hidden")); }));
   Reg(e, "ShowToolbar", Immediate([](CommandContext& ctx) { ctx.App().Panels().toolbars = true; ctx.Print("Toolbar shown"); }));
-  Reg(e, "ToolbarLock", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().toolbar_lock; }, "Toolbar lock"), CommandStatus::Partial, "Stored flag; the toolbar is docked.");
+  Reg(e, "ToolbarLock", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().toolbar_lock; }, "Toolbar lock"), CommandStatus::Implemented, "While on, the Standard toolbar's right-click customize menu (remove a button, add one from Options) is disabled; the toolbar itself is always fixed in place either way.");
   Reg(e, "Commands", Immediate([](CommandContext& ctx) { ctx.App().Panels().command_list = true; }));
-  Reg(e, "PopupMenu", Immediate([](CommandContext& ctx) { ctx.App().Panels().command_list = true; }), CommandStatus::Partial, "Opens the command list; middle-click a viewport for the popup toolbar.");
-  Reg(e, "PopupPopular", Immediate([](CommandContext& ctx) { ctx.Print("Recent commands:"); for (const std::string& n : ctx.Engine().RecentCommands()) ctx.Print("  " + n); ctx.App().Panels().command_list = true; }), CommandStatus::Partial, "Lists recent commands and opens the command list.");
+  Reg(e, "PopupMenu", Immediate([](CommandContext& ctx) { ctx.App().OpenPopupToolbar(); }), CommandStatus::Implemented, "Opens the same popup icon grid a middle mouse click on a viewport does (Application::OpenPopupToolbar).");
+  Reg(e, "PopupPopular", Immediate([](CommandContext& ctx) { ctx.Print("Recent commands:"); for (const std::string& n : ctx.Engine().RecentCommands()) ctx.Print("  " + n); ctx.App().Panels().command_list = true; }), CommandStatus::Implemented, "Prints the most recently used commands and opens the command list, which is sorted the same way.");
   Reg(e, "Menus", Say("Menus: File, Edit, View, Curve, Surface, Solid, Mesh, Dimension, Transform, Tools, Analyze, Render, Panels, Help - always shown in the menu bar."));
   Reg(e, "Macros", Immediate([](CommandContext& ctx) { ctx.App().Panels().macro_editor = true; }));
   Reg(e, "OptionsPage", Immediate([](CommandContext& ctx) { ctx.App().Panels().options = true; }));
@@ -585,7 +624,7 @@ void RegisterStateCommands(CommandEngine& e) {
         app.surface_display_tolerance = 0.05;
         app.GetGumball().GetSettings() = Gumball::Settings{};
         ctx.Print("Reset: snaps, panels, toolbar and preferences restored to defaults (recent files and theme kept)");
-      }), CommandStatus::Partial, "Keeps recent files, theme and window layout.");
+      }), CommandStatus::Implemented, "Restores snaps, panels, toolbar and the gumball to their defaults; keeps recent files, theme and window layout as the name promises.");
   Reg(e, "OptionsExport", Make<TextArgCommand>("Options file to write", [](CommandContext& ctx, const std::string& path) {
         std::string p = path;
         if (fs::path(p).extension().empty()) p += ".json";
@@ -624,7 +663,17 @@ void RegisterStateCommands(CommandEngine& e) {
         if (dir.empty() && !ctx.Doc().Path().empty()) dir = fs::path(ctx.Doc().Path()).parent_path().string();
         if (dir.empty()) dir = fs::current_path().string();
         ctx.Print("FileExplorer: " + dir);
-      }), CommandStatus::Partial, "Prints the folder; use Open for the file browser.");
+        if (ctx.App().headless || ctx.ScriptMode()) return;
+        if (dir.find('"') != std::string::npos) { ctx.Warn("Could not open the file manager (path contains a quote)"); return; }
+#if defined(_WIN32)
+        const std::string cmd = "explorer \"" + dir + "\"";
+#elif defined(__APPLE__)
+        const std::string cmd = "open \"" + dir + "\"";
+#else
+        const std::string cmd = "xdg-open \"" + dir + "\" >/dev/null 2>&1 &";
+#endif
+        if (std::system(cmd.c_str()) != 0) ctx.Warn("Could not open the OS file manager");
+      }), CommandStatus::Implemented, "Opens the OS file manager (Explorer/Finder/xdg-open) at the working folder, the current document's folder, or the current directory, in that order; only prints the folder in headless/script mode.");
   Reg(e, "OpenURL", OpenUrl("OpenURL"));
   Reg(e, "WebBrowser", OpenUrl("WebBrowser"));
   Reg(e, "Hyperlink", Make<TextArgCommand>("Hyperlink URL", [](CommandContext& ctx, const std::string& url) {
@@ -644,7 +693,7 @@ void RegisterStateCommands(CommandEngine& e) {
         ctx.Doc().Touch();
       }));
   Reg(e, "ModelBasepoint", Make<PointArgCommand>("Model base point", [](CommandContext& ctx, Point3d p) { ctx.Doc().UserText()["ModelBasepoint"] = FormatPoint(p); ctx.Doc().Touch(); ctx.Print("Model base point " + FormatPoint(p)); }));
-  Reg(e, "EarthAnchorPoint", Make<PointArgCommand>("Earth anchor point (model location)", [](CommandContext& ctx, Point3d p) { ctx.Doc().UserText()["EarthAnchorPoint"] = FormatPoint(p); ctx.Doc().Touch(); ctx.Print("Earth anchor point " + FormatPoint(p)); }), CommandStatus::Partial, "Stores the model point; latitude/longitude are planned.");
+  Reg(e, "EarthAnchorPoint", Make<EarthAnchorCommand>(), CommandStatus::Implemented, "Stores the model point, latitude and longitude in document user text (EarthAnchorPoint/Latitude/Longitude). Dino 8's Sun takes Azimuth/Altitude directly rather than deriving them from this, unlike Rhino's solar calculator.");
 
   // ---- objects -------------------------------------------------------------
   Reg(e, "Dot", Make<DotCommand>());
@@ -687,11 +736,11 @@ void RegisterStateCommands(CommandEngine& e) {
   Reg(e, "ContentFilter", Say("ContentFilter: render content filtering is planned; the Materials panel lists every material."), CommandStatus::Partial);
 
   // ---- gumball ------------------------------------------------------------
-  Reg(e, "GumballAlignment", GumballChoice("GumballAlignment", {"CPlane", "World", "Object"}, [](Gumball::Settings& s) -> std::string& { return s.alignment; }), CommandStatus::Partial, "Stored; the widget uses world axes.");
-  Reg(e, "GumballScaleMode", GumballChoice("GumballScaleMode", {"Independent", "Uniform"}, [](Gumball::Settings& s) -> std::string& { return s.scale_mode; }), CommandStatus::Partial, "Stored; handles scale independently.");
+  Reg(e, "GumballAlignment", GumballChoice("GumballAlignment", {"CPlane", "World", "Object"}, [](Gumball::Settings& s) -> std::string& { return s.alignment; }), CommandStatus::Implemented, "Sets the widget's own drag/rotate/scale axes: World (identity), CPlane (the active viewport's construction plane), or Object (a single selected curve's start tangent or surface's normal, falling back to World otherwise).");
+  Reg(e, "GumballScaleMode", GumballChoice("GumballScaleMode", {"Independent", "Uniform"}, [](Gumball::Settings& s) -> std::string& { return s.scale_mode; }), CommandStatus::Implemented, "Sets the default for a scale-handle drag: Independent (one axis) or Uniform (all three); Shift while dragging temporarily switches to the other mode.");
   Reg(e, "GumballAutoReset", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().GetGumball().GetSettings().auto_reset; }, "Gumball auto reset"));
-  Reg(e, "GumballDynamicRelocate", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().GetGumball().GetSettings().dynamic_relocate; }, "Gumball dynamic relocate"), CommandStatus::Partial, "Stored flag.");
-  Reg(e, "GumballRelocate", Make<PointArgCommand>("New gumball origin", [](CommandContext& ctx, Point3d p) { Gumball::Settings& s = ctx.App().GetGumball().GetSettings(); s.relocated = true; s.relocated_origin = p; ctx.Print("Gumball origin " + FormatPoint(p)); }), CommandStatus::Partial, "Stored; the widget draws at the selection centre.");
+  Reg(e, "GumballDynamicRelocate", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().GetGumball().GetSettings().dynamic_relocate; }, "Gumball dynamic relocate"), CommandStatus::Implemented, "While on, Ctrl-dragging the gumball's centre handle moves the widget itself (like GumballRelocate) instead of the selection; nothing in the document changes.");
+  Reg(e, "GumballRelocate", Make<PointArgCommand>("New gumball origin", [](CommandContext& ctx, Point3d p) { Gumball::Settings& s = ctx.App().GetGumball().GetSettings(); s.relocated = true; s.relocated_origin = p; ctx.Print("Gumball origin " + FormatPoint(p)); }), CommandStatus::Implemented, "The widget now draws and drags from this point instead of the selection's centre, until GumballAutoReset forgets it after the next transform (or GumballReset clears it now).");
   Reg(e, "GumballReset", Immediate([](CommandContext& ctx) { Gumball::Settings& s = ctx.App().GetGumball().GetSettings(); s.relocated = false; s.alignment = "CPlane"; ctx.Print("Gumball reset"); }));
   Reg(e, "GumballSettings", Immediate([](CommandContext& ctx) {
         const Gumball::Settings& s = ctx.App().GetGumball().GetSettings();

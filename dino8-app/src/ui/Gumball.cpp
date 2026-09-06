@@ -1,5 +1,6 @@
 #include "ui/Gumball.h"
 
+#include <array>
 #include <cmath>
 #include <string>
 
@@ -15,8 +16,41 @@ namespace {
 using kernel::Point3d;
 using kernel::Vector3d;
 
-Vector3d AxisDir(int axis) {
-  return axis == 0 ? Vector3d(1, 0, 0) : axis == 1 ? Vector3d(0, 1, 0) : Vector3d(0, 0, 1);
+// GumballAlignment: the widget's own X/Y/Z axes. "World" is the identity;
+// "CPlane" uses the active viewport's construction plane; "Object" uses a
+// natural frame off the single selected object (a curve's start tangent,
+// or a surface's normal at its domain centre) when one is available, and
+// falls back to World otherwise (multiple objects, or a kind with no
+// obvious natural frame - Brep/Mesh/SubD/Point).
+std::array<Vector3d, 3> GumballAxes(const Gumball::Settings& s, Viewport& vp, Document& doc, bool sub_mode, const std::vector<ObjectId>& sel) {
+  const std::array<Vector3d, 3> world = {Vector3d(1, 0, 0), Vector3d(0, 1, 0), Vector3d(0, 0, 1)};
+  if (s.alignment == "CPlane") {
+    ConstructionPlane& cp = vp.CPlane();
+    return {cp.x_axis, cp.y_axis, cp.Normal()};
+  }
+  if (s.alignment == "Object" && !sub_mode && sel.size() == 1) {
+    if (const SceneObject* o = doc.Find(sel[0])) {
+      if (o->kind == ObjectKind::Curve && o->curve) {
+        Vector3d x = o->curve->TangentAt(o->curve->Domain().min);
+        Vector3d up(0, 0, 1);
+        if (x.Unitize() && std::fabs(ON_DotProduct(x, up)) < 0.98) {
+          Vector3d z = ON_CrossProduct(x, up); z.Unitize();
+          Vector3d y = ON_CrossProduct(z, x); y.Unitize();
+          return {x, y, z};
+        }
+      } else if (o->kind == ObjectKind::Surface && o->surface) {
+        const kernel::Interval du = o->surface->Domain(0), dv = o->surface->Domain(1);
+        Vector3d z = o->surface->NormalAt((du.min + du.max) / 2, (dv.min + dv.max) / 2);
+        Vector3d up(1, 0, 0);
+        if (z.Unitize() && std::fabs(ON_DotProduct(z, up)) < 0.98) {
+          Vector3d x = ON_CrossProduct(up, z); x.Unitize();
+          Vector3d y = ON_CrossProduct(z, x); y.Unitize();
+          return {x, y, z};
+        }
+      }
+    }
+  }
+  return world;
 }
 
 // Parameter along the line (origin, dir) closest to the ray.
@@ -52,6 +86,7 @@ bool Gumball::Update(Application& app, Viewport& vp, bool viewport_hovered) {
   Document& doc = app.Doc();
   ImGuiIO& io = ImGui::GetIO();
   const int vp_index = [&]() { int i = 0; for (auto& v : app.Viewports()) { if (v.get() == &vp) return i; ++i; } return -1; }();
+  std::vector<ObjectId> sel;
 
   if (!dragging_) {
     const SubObjectSelection& sub = app.SubSelection();
@@ -68,15 +103,21 @@ bool Gumball::Update(Application& app, Viewport& vp, bool viewport_hovered) {
       if (n == 0) { hover_ = Handle::None; return false; }
       center_ = Point3d(sum.x / n, sum.y / n, sum.z / n);
     } else {
-      std::vector<ObjectId> sel = doc.SelectedIds();
+      sel = doc.SelectedIds();
       kernel::BoundingBox bb;
       if (sel.empty() || !doc.BoundingBoxOf(sel, bb)) { hover_ = Handle::None; return false; }
       center_ = Point3d((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2);
     }
+    // GumballRelocate: draw and drag from the relocated origin instead of
+    // the selection's own centre/centroid.
+    if (settings_.relocated) center_ = settings_.relocated_origin;
     axis_len_ = 70.0 * vp.GetCamera().PixelSize(vp.Height());
+    axes_ = GumballAxes(settings_, vp, doc, sub_mode_, sel);
   } else if (vp_index != drag_viewport_) {
     return false;
   }
+  const std::array<Vector3d, 3>& axes = axes_;
+  auto AxisDir = [&](int a) { return axes[static_cast<size_t>(a)]; };
 
   // Screen positions.
   double cx, cy;
@@ -152,19 +193,28 @@ bool Gumball::Update(Application& app, Viewport& vp, bool viewport_hovered) {
       dragging_ = true;
       drag_handle_ = hover_;
       drag_viewport_ = vp_index;
+      // GumballDynamicRelocate: Ctrl-dragging the centre handle moves the
+      // widget itself (like GumballRelocate) instead of the selection.
+      relocating_ = settings_.dynamic_relocate && drag_handle_ == Handle::Free && io.KeyCtrl;
       originals_.clear();
       sub_refs_.clear();
-      if (sub_mode_) {
+      const Ray ray = vp.PixelRay(m.x - origin.x, m.y - origin.y);
+      if (relocating_) {
+        RayPlane(ray, center_, vp.GetCamera().Forward(), start_free_);
+      } else if (sub_mode_) {
         sub_refs_ = app.SubSelection().Items();
         for (ObjectId id : app.SubSelection().ObjectIds()) if (const SceneObject* o = doc.Find(id)) originals_.push_back({id, *o});
       } else {
         for (const SceneObject& o : doc.Objects()) if (o.selected) originals_.push_back({o.id, o});
       }
-      doc.BeginChange(sub_mode_ ? "Gumball (sub-objects)" : "Gumball");
-      const Ray ray = vp.PixelRay(m.x - origin.x, m.y - origin.y);
+      if (!relocating_) doc.BeginChange(sub_mode_ ? "Gumball (sub-objects)" : "Gumball");
       const int h = static_cast<int>(drag_handle_);
-      if (drag_handle_ == Handle::Free) {
-        RayPlane(ray, center_, vp.GetCamera().Forward(), start_free_);
+      if (relocating_) {
+        // Handled above; nothing else to seed.
+      } else if (drag_handle_ == Handle::Free) {
+        const std::string& mode = app.State().drag_mode;
+        const Vector3d plane_n = mode == "CPlane" ? vp.CPlane().Normal() : mode == "World" ? Vector3d(0, 0, 1) : vp.GetCamera().Forward();
+        RayPlane(ray, center_, plane_n, start_free_);
       } else if (h >= static_cast<int>(Handle::RotX) && h <= static_cast<int>(Handle::RotZ)) {
         Point3d p;
         const int axis = h - static_cast<int>(Handle::RotX);
@@ -180,15 +230,35 @@ bool Gumball::Update(Application& app, Viewport& vp, bool viewport_hovered) {
   }
 
   // Drag.
-  if (dragging_) {
+  if (dragging_ && relocating_) {
+    // GumballDynamicRelocate (Ctrl-drag): move the widget only, nothing in
+    // the document changes.
+    const Ray ray = vp.PixelRay(m.x - origin.x, m.y - origin.y);
+    Point3d now;
+    if (RayPlane(ray, center_, vp.GetCamera().Forward(), now)) center_ = now;
+    if (!ImGui::IsMouseDown(0)) {
+      dragging_ = false;
+      relocating_ = false;
+      settings_.relocated = true;
+      settings_.relocated_origin = center_;
+      app.Engine().Print("Gumball relocated to " + FormatPoint(center_));
+    }
+  } else if (dragging_) {
     const Ray ray = vp.PixelRay(m.x - origin.x, m.y - origin.y);
     ON_Xform xf = ON_Xform::IdentityTransformation;
     const int h = static_cast<int>(drag_handle_);
     std::string what;
     if (drag_handle_ == Handle::Free) {
+      // DragMode: CPlane and World give an exact drag plane; UVN and
+      // ControlPolygon have no meaning for a whole-object gumball drag (they
+      // only apply to a surface/mesh control point) so they fall back to
+      // the view-perpendicular plane, same as View.
+      const std::string& mode = app.State().drag_mode;
+      const Vector3d plane_n = mode == "CPlane" ? vp.CPlane().Normal() : mode == "World" ? Vector3d(0, 0, 1) : vp.GetCamera().Forward();
       Point3d now;
       Vector3d delta(0, 0, 0);
-      if (RayPlane(ray, center_, vp.GetCamera().Forward(), now)) delta = now - start_free_;
+      if (RayPlane(ray, center_, plane_n, now)) delta = now - start_free_;
+      delta = delta * std::clamp(app.State().drag_strength, 1.0, 100.0) / 100.0;
       if (app.Snaps().grid_snap) { const double g = doc.Settings().grid_spacing; delta = Vector3d(std::round(delta.x / g) * g, std::round(delta.y / g) * g, std::round(delta.z / g) * g); }
       xf = ON_Xform::TranslationTransformation(delta);
       what = "moved " + FormatPoint(Point3d(delta.x, delta.y, delta.z));
@@ -205,13 +275,17 @@ bool Gumball::Update(Application& app, Viewport& vp, bool viewport_hovered) {
       const double now = ClosestParamOnLine(ray, center_, AxisDir(axis));
       double f = (std::fabs(start_param_) > 1e-9) ? now / start_param_ : 1.0;
       if (!std::isfinite(f) || std::fabs(f) < 1e-3) f = 1e-3;
-      ON_Plane pl(center_, ON_xaxis, ON_yaxis);
-      if (io.KeyShift) xf = ON_Xform::ScaleTransformation(pl, f, f, f);
+      // GumballScaleMode: "Uniform" scales all three axes together by
+      // default; Shift temporarily switches to the other mode either way.
+      const bool uniform = (settings_.scale_mode == "Uniform") != io.KeyShift;
+      ON_Plane pl(center_, axes[0], axes[1]);
+      if (uniform) xf = ON_Xform::ScaleTransformation(pl, f, f, f);
       else xf = ON_Xform::ScaleTransformation(pl, axis == 0 ? f : 1.0, axis == 1 ? f : 1.0, axis == 2 ? f : 1.0);
-      what = std::string("scaled ") + (io.KeyShift ? "uniformly " : "") + "by " + FormatNumber(f);
+      what = std::string("scaled ") + (uniform ? "uniformly " : "") + "by " + FormatNumber(f);
     } else {
       const Vector3d dir = AxisDir(h - 1);
       Vector3d delta = dir * (ClosestParamOnLine(ray, center_, dir) - start_param_);
+      delta = delta * std::clamp(app.State().drag_strength, 1.0, 100.0) / 100.0;
       if (app.Snaps().grid_snap) { const double g = doc.Settings().grid_spacing; delta = Vector3d(std::round(delta.x / g) * g, std::round(delta.y / g) * g, std::round(delta.z / g) * g); }
       xf = ON_Xform::TranslationTransformation(delta);
       what = "moved " + FormatPoint(Point3d(delta.x, delta.y, delta.z));
@@ -232,10 +306,31 @@ bool Gumball::Update(Application& app, Viewport& vp, bool viewport_hovered) {
     }
     if (!ImGui::IsMouseDown(0)) {
       dragging_ = false;
+      // DragCopy: a translate (Free or an axis handle) leaves a copy at the
+      // original position, keeping the dragged instance at the new one.
+      // Alt inverts the current setting for this one drag; RememberCopyOptions
+      // makes whichever choice was actually used (including an Alt override)
+      // the new default for the next drag.
+      const bool translated = drag_handle_ == Handle::Free || (h >= 1 && h <= 3);
+      if (translated && !sub_mode_ && !originals_.empty()) {
+        const bool do_copy = app.State().drag_copy != io.KeyAlt;
+        if (do_copy) {
+          for (auto& [id, original] : originals_) {
+            SceneObject copy = original;
+            copy.selected = false;
+            doc.Add(std::move(copy));
+          }
+          what += " (copy left at the original position)";
+        }
+        if (app.State().remember_copy_options) app.State().drag_copy = do_copy;
+      }
       originals_.clear();
       app.Engine().Print(std::string(sub_mode_ ? "Gumball (" + std::to_string(sub_refs_.size()) + " sub-object(s)): " : "Gumball: ") + what);
       sub_refs_.clear();
       doc.Touch();
+      // GumballAutoReset: forget a relocated origin after each transform,
+      // so the widget goes back to tracking the selection's own centre.
+      if (settings_.auto_reset && settings_.relocated) settings_.relocated = false;
     }
   }
 

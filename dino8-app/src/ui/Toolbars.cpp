@@ -456,7 +456,7 @@ void DrawToolbars(Application& app) {
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::GetIO().MouseWheel != 0.0f)
       ImGui::SetScrollX(ImGui::GetScrollX() - ImGui::GetIO().MouseWheel * 60.0f);
     if (app.toolbar_tab == 0) {
-      const int remove_index = DrawButtonRow(app, app.toolbar_commands, true, app.toolbar_labels);
+      const int remove_index = DrawButtonRow(app, app.toolbar_commands, !app.State().toolbar_lock, app.toolbar_labels);
       if (remove_index >= 0) app.toolbar_commands.erase(app.toolbar_commands.begin() + remove_index);
     } else {
       std::vector<std::string> cmds;
