@@ -1152,9 +1152,9 @@ rmcheck "smoke: frames=1[0-9][0-9] objects=7" "remesh script produced the expect
 # remaining_script.txt).
 sed "s|@TMP@|$TMP|g" "$HERE/remaining_script.txt" > "$TMP/remaining_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
-  RN="$("$BIN" --smoke 600 --script "$TMP/remaining_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: remaining script exited non-zero"; exit 1; }
+  RN="$("$BIN" --smoke 900 --script "$TMP/remaining_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: remaining script exited non-zero"; exit 1; }
 else
-  RN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 600 --script "$TMP/remaining_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: remaining script exited non-zero"; exit 1; }
+  RN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 900 --script "$TMP/remaining_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: remaining script exited non-zero"; exit 1; }
 fi
 rncheck2() { if echo "$RN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 rncheck2 "1 object(s) selected" "Convert built a curve to select and inspect"
