@@ -130,7 +130,7 @@ AlignVertices
 0.01
 SelAll
 Hide
-MeshBox 0,0,0 10,10,10
+MeshBox 0,0,0 10,10,0 10
 SelLast
 WeldEdge
 5,0,5
@@ -142,7 +142,7 @@ CollapseMeshFacesByArea
 1000
 SelAll
 Hide
-MeshBox 30,0,0 40,10,10
+MeshBox 30,0,0 40,10,0 10
 SelLast
 ExtractDuplicateMeshFaces
 # --- ExtractUVMesh on a plane
@@ -151,28 +151,30 @@ Hide
 Plane 0,0,0 10,20,0
 SelLast
 ExtractUVMesh
-# --- Layer / edit utilities
+# --- Layer / edit utilities. Object ids keep climbing across this whole
+# script (nothing is ever Deleted, only Hidden), so SelID with a small
+# literal id would hit the wrong object; SelPrev (remember/restore the
+# selection while it is empty) reselects "the box" reliably instead.
 SelAll
 Hide
 Box 0,0,0 5,5,0 5
 SelLast
+SelPrev
 DupLayer Name=Copies Objects=Yes
-SelID 1
 CopyToLayer
 Targets
-SelID 1
 HighlightObjectLayers
 LayerBook Next
 LayerBook All
-SelID 1
 IsolateLock
 UnisolateLock
 SelAll
 JoinCopy
 Box 60,0,0 65,5,0 5
-SelID 1
+SelLast
 MatchProperties
-SelID 2
+SelNone
+SelPrev
 Enter
 # --- View / window utilities
 SelAll
@@ -194,5 +196,88 @@ Unwrap
 IgesImportOptions
 STEPTree
 EditScript
+# --- PointCloudContour / PointCloudSection: 8 points evenly spaced around a
+# radius-5 circle in the CPlane; both produce the same closed 8-gon.
+SelAll
+Hide
+Point 5,0,0
+Point 3.5355,3.5355,0
+Point 0,5,0
+Point -3.5355,3.5355,0
+Point -5,0,0
+Point -3.5355,-3.5355,0
+Point 0,-5,0
+Point 3.5355,-3.5355,0
+SelAll
+PointCloudContour 10 Band=5
+SelLast
+List
+SelAll
+PointCloudSection
+0,0,0
+SelLast
+List
+# --- ShortPath: on a flat plane the surface path matches the straight-line diagonal
+SelAll
+Hide
+Plane 0,0,0 20,20,0
+SelSrf
+ShortPath
+0,0,0
+20,20,0
+# --- DevLoft: ruled surface between two straight parallel rails is already
+# developable, so the reported mean twist should be essentially zero.
+SelAll
+Hide
+Line 0,0,0 0,0,10
+Line 10,0,0 10,0,10
+SelAll
+DevLoft
+SelLast
+List
+# --- SplitMeshWithCurve: a mesh box split by a diagonal line's plane
+SelAll
+Hide
+MeshBox 0,0,0 10,10,0 10
+Line 5,-5,-5 5,15,15
+SelAll
+SplitMeshWithCurve
+# --- SelConnectedMeshFaces: two disjoint mesh boxes merged into one mesh
+# object; picking a face on one splits it back off into its own object.
+SelAll
+Hide
+MeshBox 0,0,0 5,5,0 5
+MeshBox 20,0,0 25,5,0 5
+SelAll
+JoinCopy
+SelLast
+SelConnectedMeshFaces
+2,2,2
+# --- CreaseSplitting toggle
+CreaseSplitting On
+CreaseSplitting Off
+# --- ChangeSpace with no layout active: removes the Space tag
+SelAll
+Hide
+Box 0,0,0 5,5,0 5
+SelLast
+ChangeSpace
+# --- Rescue3dmFile: reads back everything from an intact .3dm. Show+SelAll+
+# Delete (not New) empties the scene of everything hidden by earlier
+# sections too, since New's discard-confirm dialog needs a click a script
+# can't give it while the document is still modified.
+Show
+SelAll
+Delete
+Box 0,0,0 5,5,0 5
+Sphere 20,0,0 3
+SelAll
+Save @TMP@/rescue_src.3dm
+SelAll
+Delete
+Rescue3dmFile @TMP@/rescue_src.3dm
+@expect_objects 2
+# --- ExportBitmaps: no textures assigned, reports zero copied without crashing
+ExportBitmaps @TMP@/bitmaps_out
 SelAll
 SelNone

@@ -1146,4 +1146,65 @@ echo "$RM" | grep -E "^(ok|FAIL)"
 if echo "$RM" | grep -q "^FAIL"; then fail=1; fi
 rmcheck "smoke: frames=1[0-9][0-9] objects=7" "remesh script produced the expected object count"
 
+# Remaining-command QC: curve conversion, tween/extruded/developable surfaces,
+# thickness/continuity analysis, mesh clean-up incl. connected-face isolation
+# and curve splitting, layer/window/point-cloud/file-recovery utilities (see
+# remaining_script.txt).
+sed "s|@TMP@|$TMP|g" "$HERE/remaining_script.txt" > "$TMP/remaining_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  RN="$("$BIN" --smoke 600 --script "$TMP/remaining_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: remaining script exited non-zero"; exit 1; }
+else
+  RN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 600 --script "$TMP/remaining_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: remaining script exited non-zero"; exit 1; }
+fi
+rncheck2() { if echo "$RN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+rncheck2 "1 object(s) selected" "Convert built a curve to select and inspect"
+rncheck2 "degree 1, 5 control points, non-rational, closed" "Convert Output=Lines kept the 4-point polyline exact (closed 5-CV polyline)"
+rncheck2 "RibbonOffset: 1 ribbon(s) of width 2" "RibbonOffset built one ribbon"
+rncheck2 "TweenSurfaces: 1 surface(s) between the two inputs" "TweenSurfaces built the midway surface"
+rncheck2 "MultiPipe: " "MultiPipe ran on two separate lines"
+rncheck2 "CheckNewObjects on: every object a command adds is validated" "CheckNewObjects toggled on"
+rncheck2 "ClearAnalysisMeshes: " "ClearAnalysisMeshes ran"
+rncheck2 "DupLayer: " "DupLayer copied the current layer"
+rncheck2 "LayerBook: page 1 of [0-9]*: Default shown alone" "LayerBook Next showed a single page"
+rncheck2 "LayerBook: all [0-9]* layer(s) on" "LayerBook All turned every layer back on"
+rncheck2 "IsolateLock: " "IsolateLock locked the rest of the scene"
+rncheck2 "JoinCopy: " "JoinCopy joined copies of the selection"
+rncheck2 "MatchProperties: layer, color, material, linetype" "MatchProperties copied properties across"
+rncheck2 "MoveTargetToObjects: " "MoveTargetToObjects moved the camera target"
+rncheck2 "ClearAllObjectDisplayModes: " "ClearAllObjectDisplayModes ran"
+rncheck2 "SaveWindowLayout: saved QCLayout" "SaveWindowLayout wrote a layout"
+rncheck2 "WindowLayout: restored QCLayout" "WindowLayout restored it"
+rncheck2 "AcadSchemes: DWG/DXF export schemes are not available" "AcadSchemes explains the real limitation"
+rncheck2 "Unwrap: UV unwrapping is not available" "Unwrap explains the real limitation"
+# IgesImportOptions/STEPTree open a file dialog (owned by cmd_exchange2.cpp,
+# not this file) and EditScript opens the Lua Script Editor panel silently
+# (owned by cmd_misc.cpp); none of the three print text in script mode, so
+# this just exercises that the catalog still resolves them to those real
+# commands and not to a shadowing stub (see cmd_remaining.cpp's removal of
+# its old, dead duplicate registrations for all three).
+rncheck2 "PointCloudContour: 1 contour(s) from 1 plane(s) 10 apart (band 5)" "PointCloudContour built one contour from the flat 8-point circle"
+rncheck2 "degree 1, 9 control points, non-rational, closed" "PointCloudContour's contour is a closed 8-gon (8 points + seam)"
+rncheck2 "PointCloudSection: 1 section curve(s) through 0,0,0" "PointCloudSection sliced the same cloud through the origin"
+rncheck2 "ShortPath: [0-9]* point(s), length 28.2[0-9]* (straight-line distance 28.2[0-9]*)" "ShortPath on a flat plane matches the straight-line diagonal"
+rncheck2 "DevLoft: ruled surface with 40 adjusted rulings (mean twist [0-9.e-]*)" "DevLoft built a ruled surface between the two straight rails"
+SP_LEN="$(echo "$RN" | sed -n 's/.*ShortPath: [0-9]* point(s), length \([0-9.]*\).*/\1/p' | head -1)"
+python3 -c "import sys; v=float('$SP_LEN'); sys.exit(0 if abs(v-28.284) < 0.05 else 1)" \
+  && echo "ok   ShortPath length ($SP_LEN) matches the exact diagonal of a 20x20 square (28.284)" \
+  || { echo "FAIL ShortPath length ($SP_LEN) does not match the expected diagonal 28.284"; fail=1; }
+DL_TWIST="$(echo "$RN" | sed -n 's/.*mean twist \([0-9.eE+-]*\)).*/\1/p' | head -1)"
+python3 -c "import sys; v=float('$DL_TWIST'); sys.exit(0 if v < 1e-3 else 1)" \
+  && echo "ok   DevLoft mean twist ($DL_TWIST) is essentially zero for two straight parallel rails (already developable)" \
+  || { echo "FAIL DevLoft mean twist ($DL_TWIST) is not near zero"; fail=1; }
+rncheck2 "SplitMeshWithCurve: 2 mesh piece(s) (split by the curve's plane)" "SplitMeshWithCurve split the mesh box into two pieces"
+rncheck2 "SelConnectedMeshFaces: 6 connected face(s) split off into object [0-9]* and selected (mesh had 2 disconnected part(s))" "SelConnectedMeshFaces split the picked box out of the two-box mesh"
+rncheck2 "CreaseSplitting on: AutomaticSubDFromMesh creases edges sharper than its Angle" "CreaseSplitting On"
+rncheck2 "CreaseSplitting off: AutomaticSubDFromMesh makes smooth SubDs" "CreaseSplitting Off"
+rncheck2 "ChangeSpace: 0 object(s) moved back to model space (Space tag removed)" "ChangeSpace with no layout active found no Space tag to remove on a plain object"
+rncheck2 "Rescue3dmFile: recovered 2 object(s) from $TMP/rescue_src.3dm" "Rescue3dmFile recovered exactly the box and the sphere"
+rncheck2 "^ok   expect_objects 2" "Rescue3dmFile left the document with exactly those 2 recovered objects"
+rncheck2 "ExportBitmaps: 0 texture file(s) copied to $TMP/bitmaps_out" "ExportBitmaps ran cleanly with no textures assigned"
+echo "$RN" | grep -E "^(ok|FAIL)"
+if echo "$RN" | grep -q "^FAIL"; then fail=1; fi
+rncheck2 "gl_error=0" "remaining script ran without OpenGL errors"
+
 exit $fail

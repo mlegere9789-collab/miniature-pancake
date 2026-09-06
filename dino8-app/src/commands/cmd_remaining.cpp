@@ -725,7 +725,9 @@ void PointCloudContour(CommandContext& ctx, const std::vector<ObjectId>& ids, do
   const double band = OptNum(o, "Band", spacing / 2);
   ctx.Doc().BeginChange("PointCloudContour");
   int made = 0, planes = 0;
-  for (double h = lo + band; h <= hi + 1e-9; h += spacing) {
+  // Start the first plane at the lowest point (so an exactly flat cloud
+  // still produces one contour) and step every `spacing` up to the top.
+  for (double h = lo; h <= hi + 1e-9; h += spacing) {
     ON_Plane pl = ActivePlane(ctx);
     pl.SetOrigin(Point3d::Origin + n * h);
     made += ContourPoints(ctx, pts, pl, band, like);
@@ -2236,17 +2238,26 @@ void RegisterRemainingCommands(CommandEngine& e) {
       "Reads what OpenNURBS can still parse from a damaged .3dm and adds the recovered objects; no chunk-level repair.");
   Reg(e, "ExportBitmaps", Immediate(ExportBitmaps), CommandStatus::Implemented, "Copies every referenced material texture into a folder (textures are never embedded).");
   Reg(e, "ExportRuiFile", Immediate(ExportRuiFile), CommandStatus::Implemented, "Writes the toolbar tabs and buttons as a small .rui-style XML file.");
-  Reg(e, "AttachGHSData", Say("AttachGHSData: GHS hydrostatics data is not supported; use Hydrostatics for volume and centroid."), CommandStatus::Partial);
+  // AttachGHSData is registered for real in cmd_flow.cpp (it attaches Dino
+  // Flow graph data to objects, not naval-architecture GHS hydrostatics);
+  // RegisterFlowCommands runs after this file, so that stub never took
+  // effect either and is removed rather than duplicated.
   Reg(e, "Unwrap", Say("Unwrap: UV unwrapping is not available; use ExtractUVMesh for the surface's UV layout and ApplyPlanarMapping/ApplyBoxMapping for textures."), CommandStatus::Partial);
   Reg(e, "UVEditor", Say("UVEditor: there is no UV editor; mapping is set per object with ApplyPlanarMapping, ApplyBoxMapping, ApplyCylindricalMapping and ApplySphericalMapping."), CommandStatus::Partial);
   Reg(e, "ApplyOcsMapping", Say("ApplyOcsMapping: object-coordinate-system mapping is not available; ApplyPlanarMapping uses the object's bounding box."), CommandStatus::Partial);
   Reg(e, "ExtractCustomMappingObject", Say("ExtractCustomMappingObject: custom mapping objects do not exist in this build; mappings are bounding-box projections."), CommandStatus::Partial);
-  for (const char* n : {"IgesImportOptions", "IGESStudy", "ReadEveryIGESEntity", "SetIgesLayerLevelMap"})
-    Reg(e, n, Say("IGES is not supported: Dino 8 has no IGES reader or writer. Exchange geometry as .3dm, OBJ, STL or PLY."), CommandStatus::Partial);
-  for (const char* n : {"STEPTree", "StepUnitsAndTolerance"})
-    Reg(e, n, Say("STEP is not supported: Dino 8 has no STEP reader or writer. Exchange geometry as .3dm, OBJ, STL or PLY."), CommandStatus::Partial);
-  for (const char* n : {"EditPythonScript", "EditScript", "LoadScript"})
-    Reg(e, n, Immediate([n](CommandContext& ctx) { TakeOptions(ctx); ctx.App().Panels().macro_editor = true; ctx.Print(std::string(n) + ": there is no Python/RhinoScript engine; the Macro editor runs command scripts (see Macro, ReadCommandFile)."); }), CommandStatus::Partial);
+  // IgesImportOptions/IGESStudy/ReadEveryIGESEntity/SetIgesLayerLevelMap and
+  // STEPTree/StepUnitsAndTolerance are registered for real in
+  // cmd_exchange2.cpp (Dino 8 does have IGES/STEP readers and writers, see
+  // io/FileIgesStep) — this file used to shadow them with a stale "not
+  // supported" stub that (since RegisterExchange2Commands runs after
+  // RegisterRemainingCommands) never actually took effect, so it is removed
+  // rather than duplicated. Likewise EditPythonScript/EditScript/LoadScript
+  // are registered for real in cmd_misc.cpp (there is a Lua scripting
+  // engine); that block ran *before* this file's, so its stale
+  // "no Python/RhinoScript engine" stub was actively winning and shadowing
+  // the real Lua-backed EditScript/LoadScript — removing the duplicate here
+  // fixes that regression rather than just relabeling it.
 }
 
 }  // namespace dino8::app
