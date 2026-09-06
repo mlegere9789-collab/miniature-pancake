@@ -244,7 +244,8 @@ void ExpandBox(kernel::BoundingBox& box, bool& has, const kernel::Point3d& p) {
 }
 
 void AppendMeshTriangles(const kernel::Mesh& mesh, std::vector<float>& out,
-                         kernel::BoundingBox& box, bool& has_box, std::vector<float>* uvs = nullptr) {
+                         kernel::BoundingBox& box, bool& has_box, std::vector<float>* uvs = nullptr,
+                         std::vector<float>* colors_out = nullptr) {
   const ON_Mesh& raw = mesh.raw();
   const int face_count = raw.m_F.Count();
   std::vector<kernel::Vector3d> normals = mesh.ComputeVertexNormals();
@@ -253,6 +254,8 @@ void AppendMeshTriangles(const kernel::Mesh& mesh, std::vector<float>& out,
   const bool has_s = raw.m_S.Count() == raw.m_V.Count() && raw.m_V.Count() > 0;
   const bool has_t = !has_s && raw.m_T.Count() == raw.m_V.Count() && raw.m_V.Count() > 0;
   if (uvs && !has_s && !has_t) uvs = nullptr;
+  const bool has_c = raw.m_C.Count() == raw.m_V.Count() && raw.m_V.Count() > 0;
+  if (colors_out && !has_c) colors_out = nullptr;
   auto push = [&](int vi, const ON_3fPoint& p, const ON_3fVector& fn) {
     out.push_back(p.x);
     out.push_back(p.y);
@@ -260,6 +263,12 @@ void AppendMeshTriangles(const kernel::Mesh& mesh, std::vector<float>& out,
     if (uvs) {
       if (has_s) { uvs->push_back(static_cast<float>(raw.m_S[vi].x)); uvs->push_back(static_cast<float>(raw.m_S[vi].y)); }
       else { uvs->push_back(raw.m_T[vi].x); uvs->push_back(raw.m_T[vi].y); }
+    }
+    if (colors_out) {
+      const ON_Color& col = raw.m_C[vi];
+      colors_out->push_back(static_cast<float>(col.Red()) / 255.f);
+      colors_out->push_back(static_cast<float>(col.Green()) / 255.f);
+      colors_out->push_back(static_cast<float>(col.Blue()) / 255.f);
     }
     // Prefer smooth vertex normals; fall back to the face normal.
     if (vi >= 0 && vi < static_cast<int>(normals.size()) && normals[vi].Length() > 0.5) {
@@ -551,6 +560,7 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
   cache_.naked_edges.clear();
   cache_.colors.clear();
   cache_.colors_valid = false;
+  cache_.mesh_vertex_colors.clear();
   cache_.uvs.clear();
   cache_.mapped_uvs.clear();
   cache_.mapped_type = TextureMapping::Default;
@@ -651,7 +661,7 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
       break;
     }
     case ObjectKind::Mesh: {
-      AppendMeshTriangles(*mesh, cache_.triangles, cache_.bbox, cache_.has_bbox, &cache_.uvs);
+      AppendMeshTriangles(*mesh, cache_.triangles, cache_.bbox, cache_.has_bbox, &cache_.uvs, &cache_.mesh_vertex_colors);
       AppendMeshEdges(*mesh, cache_.lines);
       AppendMeshNakedEdges(*mesh, cache_.edges, cache_.naked_edges);
       // One entry per display triangle: quads produce two triangles.

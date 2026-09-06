@@ -696,6 +696,13 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
           case AnalysisMode::None: break;
         }
       }
+      // No analysis override: honour vertex colours stored on the mesh
+      // itself (e.g. from ComputeVertexColors) before falling back to a
+      // flat per-object colour.
+      if (!analysis && !d.mesh_vertex_colors.empty() && d.mesh_vertex_colors.size() == d.triangles.size() / 2) {
+        renderer.DrawTriangles(d.triangles, d.mesh_vertex_colors, style.fill_alpha);
+        continue;
+      }
       if (rendered) {
         const Material m = doc.MaterialFor(o);
         if (m.transparency > 0.001f && !ctx.arctic) {

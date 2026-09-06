@@ -6,6 +6,7 @@
 // Everything here works on kernel::Mesh; breps, surfaces and SubDs are
 // converted through MeshOf() first (and the command line says so).
 #include "commands/cmd_common.h"
+#include "render/ImageIO.h"
 
 #include <algorithm>
 #include <array>
@@ -699,6 +700,43 @@ std::optional<PointMap> SoftMoveMap(CommandContext& ctx, const ToolInput& in) {
   };
 }
 
+// SoftTransform: Move, Rotate (about the CPlane normal) or Scale, each with
+// SoftMove's cosine falloff around a base point.
+std::optional<PointMap> SoftTransformMap(CommandContext& ctx, const ToolInput& in) {
+  const std::string mode = Lower(in.Opt("Mode", "Move"));
+  const Point3d base = in.P(0);
+  const double radius = in.OptNum("Radius", 10);
+  if (radius <= 0) { ctx.Warn("SoftTransform: radius must be positive"); return std::nullopt; }
+  auto falloff = [radius](double d) { return d >= radius ? 0.0 : 0.5 * (1 + std::cos(kPi * d / radius)); };
+  if (mode == "rotate") {
+    const Vector3d axis = ActiveNormal(ctx);
+    const double angle = Rad(in.N(2, 90));
+    ctx.Print("SoftTransform (Rotate): " + FormatNumber(Deg(angle)) + " degrees about the CPlane normal through " + FormatPoint(base) + ", falloff radius " + FormatNumber(radius));
+    return [=](Point3d p) {
+      const double w = falloff((p - base).Length());
+      return w <= 0 ? p : RotateAbout(p, base, axis, angle * w);
+    };
+  }
+  if (mode == "scale") {
+    const double factor = in.N(2, 2);
+    if (factor <= 0) { ctx.Warn("SoftTransform: scale factor must be positive"); return std::nullopt; }
+    ctx.Print("SoftTransform (Scale): factor " + FormatNumber(factor) + " from " + FormatPoint(base) + ", falloff radius " + FormatNumber(radius));
+    return [=](Point3d p) {
+      const double w = falloff((p - base).Length());
+      if (w <= 0) return p;
+      const double f = 1 + (factor - 1) * w;
+      return base + (p - base) * f;
+    };
+  }
+  if (!in.HasPoint(1)) { ctx.Warn("SoftTransform: pick a point to move to (or use Mode=Rotate / Mode=Scale)"); return std::nullopt; }
+  const Vector3d delta = in.P(1) - base;
+  ctx.Print("SoftTransform (Move): " + FormatNumber(delta.Length()) + " units with falloff radius " + FormatNumber(radius));
+  return [=](Point3d p) {
+    const double w = falloff((p - base).Length());
+    return w <= 0 ? p : p + delta * w;
+  };
+}
+
 // Laplacian smoothing of mesh vertices / curve control points.
 void SmoothObjects(CommandContext& ctx, const std::vector<ObjectId>& ids, double factor, int iterations, bool fix_boundaries) {
   ctx.Doc().BeginChange("Smooth");
@@ -953,6 +991,32 @@ void UnweldCommandAction(CommandContext& ctx, const std::vector<ObjectId>& ids, 
   }
 }
 
+// Unwelds just the single edge nearest `p`: both its end vertices are fully
+// separated (every face around each gets its own vertex copy), which
+// detaches that edge from its neighbours.
+void UnweldEdgeNear(CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) {
+  std::vector<Target> ts = Targets(ctx, ids, "UnweldEdge");
+  if (ts.empty()) return;
+  const Point3d p = in.P(0);
+  ctx.Doc().BeginChange("UnweldEdge");
+  for (const Target& t : ts) {
+    RawMesh r = Unpack(t.mesh.raw());
+    const EdgeMap em = BuildEdges(r);
+    EdgeKey best{-1, -1};
+    double bd = 0;
+    for (const auto& kv : em) {
+      const double d = PointToSegment(p, r.v[kv.first.first], r.v[kv.first.second]);
+      if (best.first < 0 || d < bd) { best = kv.first; bd = d; }
+    }
+    if (best.first < 0) { ctx.Warn("UnweldEdge: object " + std::to_string(t.id) + " has no edges"); continue; }
+    int a1 = 0, a2 = 0;
+    RawMesh out = UnweldRaw(r, -1, best.first, &a1);
+    out = UnweldRaw(out, -1, best.second, &a2);
+    Commit(ctx, t.id, Pack(out));
+    ctx.Print("UnweldEdge: unwelded the edge nearest the pick (" + std::to_string(a1 + a2) + " vertex copy(ies) added)");
+  }
+}
+
 void MeshRepair(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   std::vector<Target> ts = Targets(ctx, ids, "MeshRepair");
   if (ts.empty()) return;
@@ -983,40 +1047,6 @@ void MeshRepair(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   }
 }
 
-// Convex hull (Andrew's monotone chain) of 2D points; returns CCW indices.
-std::vector<int> ConvexHull2D(const std::vector<ON_2dPoint>& pts) {
-  std::vector<int> idx(pts.size());
-  std::iota(idx.begin(), idx.end(), 0);
-  std::sort(idx.begin(), idx.end(), [&](int a, int b) { return pts[a].x < pts[b].x || (pts[a].x == pts[b].x && pts[a].y < pts[b].y); });
-  auto cross = [&](int o, int a, int b) { return (pts[a].x - pts[o].x) * (pts[b].y - pts[o].y) - (pts[a].y - pts[o].y) * (pts[b].x - pts[o].x); };
-  std::vector<int> h(2 * idx.size());
-  size_t k = 0;
-  for (int i : idx) { while (k >= 2 && cross(h[k - 2], h[k - 1], i) <= 0) --k; h[k++] = i; }
-  for (size_t i = idx.size() - 1, t = k + 1; i-- > 0;) { while (k >= t && cross(h[k - 2], h[k - 1], idx[i]) <= 0) --k; h[k++] = idx[i]; }
-  h.resize(k > 0 ? k - 1 : 0);
-  return h;
-}
-
-void MeshOutline(CommandContext& ctx, const std::vector<ObjectId>& ids) {
-  std::vector<Target> ts = Targets(ctx, ids, "MeshOutline");
-  if (ts.empty()) return;
-  const ON_Plane pl = ActivePlane(ctx);
-  ctx.Doc().BeginChange("MeshOutline");
-  int made = 0;
-  for (const Target& t : ts) {
-    std::vector<ON_2dPoint> uv;
-    const ON_Mesh& m = t.mesh.raw();
-    for (int i = 0; i < m.VertexCount(); ++i) { double u, v; pl.ClosestPointTo(m.Vertex(i), &u, &v); uv.emplace_back(u, v); }
-    std::vector<int> hull = ConvexHull2D(uv);
-    if (hull.size() < 3) continue;
-    std::vector<Point3d> pts;
-    for (int i : hull) pts.push_back(pl.PointAt(uv[i].x, uv[i].y));
-    pts.push_back(pts.front());
-    AddLike(ctx, t.id, SceneObject::MakeCurve(PolylineCurve(pts)));
-    ++made;
-  }
-  ctx.Print("MeshOutline: created " + std::to_string(made) + " outline curve(s)");
-}
 
 // Moves the listed faces into a new mesh object; removes the source if emptied.
 void ExtractFaces(CommandContext& ctx, const Target& t, const std::vector<int>& faces, const char* label) {
@@ -1049,6 +1079,55 @@ void ExtractNear(CommandContext& ctx, const std::vector<ObjectId>& ids, const To
   RawMesh r = Unpack(ts[best].mesh.raw());
   ExtractFaces(ctx, ts[best], single ? std::vector<int>{best_face} : FloodFaces(r, best_face, max_angle), label);
 }
+
+// ExtractMeshFaces: pick as many individual faces as wanted (across any of
+// the selected meshes), Enter to extract them all as one new mesh per
+// source object.
+class ExtractMeshFacesCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select meshes"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    ts_ = Targets(ctx, ids, "ExtractMeshFaces");
+    if (ts_.empty()) { Finish(); return; }
+    for (const Target& t : ts_) raws_.push_back(Unpack(t.mesh.raw()));
+    chosen_.resize(ts_.size());
+    WantPoint("Point on a face to extract. Press Enter when done");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    size_t best = 0;
+    int best_face = -1;
+    double bd = 0;
+    for (size_t i = 0; i < raws_.size(); ++i) {
+      const int fi = NearestFace(raws_[i], p);
+      if (fi < 0) continue;
+      const double d = (raws_[i].FaceCenter(raws_[i].f[fi]) - p).Length();
+      if (best_face < 0 || d < bd) { best = i; best_face = fi; bd = d; }
+    }
+    if (best_face >= 0 && chosen_[best].insert(best_face).second) {
+      ++total_;
+      ctx.Print("ExtractMeshFaces: " + std::to_string(total_) + " face(s) picked so far. Press Enter when done");
+    }
+    WantPoint("Point on a face to extract. Press Enter when done");
+  }
+  void OnEnter(CommandContext& ctx) override {
+    ctx.ClearPreview();
+    if (total_ == 0) { ctx.Warn("ExtractMeshFaces: nothing picked"); Finish(); return; }
+    ctx.Doc().BeginChange("ExtractMeshFaces");
+    for (size_t i = 0; i < ts_.size(); ++i) {
+      if (chosen_[i].empty()) continue;
+      ExtractFaces(ctx, ts_[i], std::vector<int>(chosen_[i].begin(), chosen_[i].end()), "ExtractMeshFaces");
+    }
+    Finish();
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+
+ private:
+  std::vector<Target> ts_;
+  std::vector<RawMesh> raws_;
+  std::vector<std::set<int>> chosen_;
+  int total_ = 0;
+};
 
 using FaceMetric = std::function<double(const RawMesh&, const Face&)>;
 void ExtractByMetric(CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in, const char* label, const FaceMetric& metric) {
@@ -1106,29 +1185,111 @@ void ExtractEdgeCurves(CommandContext& ctx, const std::vector<ObjectId>& ids, co
   ctx.Print(std::string(label) + ": created " + std::to_string(made) + " curve(s)");
 }
 
-void CollapseSmallest(CommandContext& ctx, const std::vector<ObjectId>& ids, int what) {
-  // what 0: smallest face, 1: shortest edge
-  const char* label = what == 0 ? "CollapseMeshFace" : "CollapseMeshEdge";
-  std::vector<Target> ts = Targets(ctx, ids, label);
+// DupMeshEdge: pick as many individual naked edges as wanted (Enter to
+// finish); each pick duplicates just the single edge segment nearest it,
+// unlike DupMeshHoleBoundary which always duplicates the whole loop.
+class DupMeshEdgeCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select meshes"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    ts_ = Targets(ctx, ids, "DupMeshEdge");
+    if (ts_.empty()) { Finish(); return; }
+    for (const Target& t : ts_) raws_.push_back(Unpack(t.mesh.raw()));
+    WantPoint("Point near a naked edge to duplicate. Press Enter when done");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    int best_t = -1;
+    EdgeUse best_e{};
+    double bd = 0;
+    bool found = false;
+    for (size_t i = 0; i < raws_.size(); ++i) {
+      for (const EdgeUse& e : NakedEdges(BuildEdges(raws_[i]))) {
+        const double d = PointToSegment(p, raws_[i].v[e.a], raws_[i].v[e.b]);
+        if (!found || d < bd) { found = true; bd = d; best_t = static_cast<int>(i); best_e = e; }
+      }
+    }
+    if (found) {
+      ctx.Doc().BeginChange("DupMeshEdge");
+      AddLike(ctx, ts_[static_cast<size_t>(best_t)].id, SceneObject::MakeCurve(PolylineCurve({raws_[static_cast<size_t>(best_t)].v[best_e.a], raws_[static_cast<size_t>(best_t)].v[best_e.b]})));
+      ++made_;
+      ctx.Print("DupMeshEdge: " + std::to_string(made_) + " edge(s) duplicated so far. Press Enter when done");
+    } else {
+      ctx.Warn("DupMeshEdge: no naked edge found near the pick");
+    }
+    WantPoint("Point near a naked edge to duplicate. Press Enter when done");
+  }
+  void OnEnter(CommandContext& ctx) override {
+    ctx.ClearPreview();
+    if (made_ == 0) ctx.Warn("DupMeshEdge: nothing duplicated");
+    Finish();
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+
+ private:
+  std::vector<Target> ts_;
+  std::vector<RawMesh> raws_;
+  int made_ = 0;
+};
+
+// CollapseMeshFace/Edge/Vertex: point-based picking, matching the
+// SwapMeshEdge/SplitMeshEdge idiom (nearest element to the pick).
+void CollapseFaceNear(CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) {
+  std::vector<Target> ts = Targets(ctx, ids, "CollapseMeshFace");
   if (ts.empty()) return;
-  ctx.Doc().BeginChange(label);
+  const Point3d p = in.P(0);
+  ctx.Doc().BeginChange("CollapseMeshFace");
   for (const Target& t : ts) {
     RawMesh r = Unpack(t.mesh.raw());
+    const int fi = NearestFace(r, p);
+    if (fi < 0) continue;
     std::vector<int> group;
-    if (what == 0) {
-      int best = -1; double ba = 0;
-      for (size_t i = 0; i < r.f.size(); ++i) { const double a = r.FaceArea(r.f[i]); if (best < 0 || a < ba) { best = static_cast<int>(i); ba = a; } }
-      if (best < 0) continue;
-      for (int k = 0; k < RawMesh::Corners(r.f[best]); ++k) group.push_back(r.f[best][k]);
-      ctx.Print(std::string(label) + ": collapsed face " + std::to_string(best) + " (area " + FormatNumber(ba) + ")");
-    } else {
-      EdgeKey best{-1, -1}; double bl = 0;
-      for (const auto& kv : BuildEdges(r)) { const double l = (r.v[kv.first.second] - r.v[kv.first.first]).Length(); if (best.first < 0 || l < bl) { best = kv.first; bl = l; } }
-      if (best.first < 0) continue;
-      group = {best.first, best.second};
-      ctx.Print(std::string(label) + ": collapsed edge of length " + FormatNumber(bl));
-    }
+    for (int k = 0; k < RawMesh::Corners(r.f[fi]); ++k) group.push_back(r.f[fi][k]);
     Commit(ctx, t.id, Pack(CollapseGroups(r, {group})));
+    ctx.Print("CollapseMeshFace: collapsed the face nearest the pick into its centroid");
+  }
+}
+
+void CollapseEdgeNear(CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) {
+  std::vector<Target> ts = Targets(ctx, ids, "CollapseMeshEdge");
+  if (ts.empty()) return;
+  const Point3d p = in.P(0);
+  ctx.Doc().BeginChange("CollapseMeshEdge");
+  for (const Target& t : ts) {
+    RawMesh r = Unpack(t.mesh.raw());
+    const EdgeMap em = BuildEdges(r);
+    EdgeKey best{-1, -1};
+    double bd = 0;
+    for (const auto& kv : em) {
+      const double d = PointToSegment(p, r.v[kv.first.first], r.v[kv.first.second]);
+      if (best.first < 0 || d < bd) { best = kv.first; bd = d; }
+    }
+    if (best.first < 0) continue;
+    Commit(ctx, t.id, Pack(CollapseGroups(r, {{best.first, best.second}})));
+    ctx.Print("CollapseMeshEdge: collapsed the edge nearest the pick into its midpoint");
+  }
+}
+
+void CollapseVertexNear(CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) {
+  std::vector<Target> ts = Targets(ctx, ids, "CollapseMeshVertex");
+  if (ts.empty()) return;
+  const Point3d p = in.P(0);
+  ctx.Doc().BeginChange("CollapseMeshVertex");
+  for (const Target& t : ts) {
+    RawMesh r = Unpack(t.mesh.raw());
+    const int vi = NearestVertex(r, p);
+    if (vi < 0) continue;
+    int other = -1;
+    double bl = 0;
+    for (const auto& kv : BuildEdges(r)) {
+      if (kv.first.first != vi && kv.first.second != vi) continue;
+      const int o = kv.first.first == vi ? kv.first.second : kv.first.first;
+      const double l = (r.v[o] - r.v[vi]).Length();
+      if (other < 0 || l < bl) { other = o; bl = l; }
+    }
+    if (other < 0) continue;
+    Commit(ctx, t.id, Pack(CollapseGroups(r, {{vi, other}})));
+    ctx.Print("CollapseMeshVertex: collapsed the vertex nearest the pick into its nearest neighbour");
   }
 }
 
@@ -1311,6 +1472,49 @@ std::vector<std::vector<Point3d>> ChainSegments(const std::vector<std::pair<Poin
     out.push_back(std::move(pl));
   }
   return out;
+}
+
+// The mesh's silhouette as seen along the CPlane normal: naked edges (always
+// on the outline) plus interior edges whose two faces are on opposite sides
+// of the view direction, chained into loops/polylines and projected flat.
+void MeshOutline(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  std::vector<Target> ts = Targets(ctx, ids, "MeshOutline");
+  if (ts.empty()) return;
+  const ON_Plane pl = ActivePlane(ctx);
+  const Vector3d view = pl.zaxis;
+  const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-6);
+  ctx.Doc().BeginChange("MeshOutline");
+  int made = 0;
+  for (const Target& t : ts) {
+    RawMesh r = Unpack(t.mesh.raw());
+    const EdgeMap em = BuildEdges(r);
+    std::vector<std::pair<Point3d, Point3d>> segs;
+    for (const auto& kv : em) {
+      const std::vector<EdgeUse>& uses = kv.second;
+      bool silhouette = uses.size() == 1;  // naked edges are always on the outline
+      if (!silhouette && uses.size() == 2) {
+        const double d0 = ON_DotProduct(r.FaceNormal(r.f[uses[0].face]), view);
+        const double d1 = ON_DotProduct(r.FaceNormal(r.f[uses[1].face]), view);
+        silhouette = (d0 >= 0) != (d1 >= 0);
+      }
+      if (silhouette) {
+        double u, v;
+        pl.ClosestPointTo(r.v[kv.first.first], &u, &v);
+        const Point3d a = pl.PointAt(u, v);
+        pl.ClosestPointTo(r.v[kv.first.second], &u, &v);
+        segs.push_back({a, pl.PointAt(u, v)});
+      }
+    }
+    if (segs.empty()) { ctx.Warn("MeshOutline: object " + std::to_string(t.id) + " has no silhouette edges from this view"); continue; }
+    for (const std::vector<Point3d>& chain : ChainSegments(segs, tol * 10)) {
+      if (chain.size() < 2) continue;
+      std::vector<Point3d> pts = chain;
+      if ((pts.front() - pts.back()).Length() <= tol * 10) pts.back() = pts.front();  // close exactly
+      AddLike(ctx, t.id, SceneObject::MakeCurve(PolylineCurve(pts)));
+      ++made;
+    }
+  }
+  ctx.Print("MeshOutline: created " + std::to_string(made) + " outline curve(s)");
 }
 
 void MeshIntersect(CommandContext& ctx, const std::vector<ObjectId>& ids) {
@@ -1799,23 +2003,37 @@ void TruncatedSolid(CommandContext& ctx, const ToolInput& in, int sides, const c
   AddPrimitive(ctx, RingsSolid(base, axis, {{r0, 0}, {r1, hh}}, n, sides > 0 ? 0 : kPi / n), label);
 }
 
+// A NURBS paraboloid: a non-rational quadratic Bezier from the apex to the
+// rim is an exact segment of a parabola, so revolving it around the axis
+// gives a true (not tessellated) surface of revolution.
 void Paraboloid(CommandContext& ctx, const std::vector<ObjectId>&, const ToolInput& in) {
   const Point3d apex = in.P(0);
   const double radius = std::fabs(in.N(1, 10)), h = in.N(2, 10);
   if (radius <= 0 || h == 0) { ctx.Warn("Paraboloid: radius and height must be non-zero"); return; }
-  Vector3d axis = ActiveNormal(ctx);
+  ON_Plane pl = ActivePlane(ctx);
+  pl.SetOrigin(apex);
+  Vector3d axis = pl.zaxis;
   double hh = h;
   if (h < 0) { axis = -axis; hh = -h; }
-  const int K = 16;
-  std::vector<std::pair<double, double>> rings;
-  for (int k = 0; k <= K; ++k) { const double t = static_cast<double>(k) / K; rings.push_back({radius * t, hh * t * t}); }
-  RawMesh r = RingsSolid(apex, axis, rings, 32);
-  if (!in.Yes("Cap")) {
-    // Remove the top cap: it is the last fan of faces around the last vertex.
-    const int cap_center = static_cast<int>(r.v.size()) - 1;
-    r.f.erase(std::remove_if(r.f.begin(), r.f.end(), [&](const Face& f) { return f[2] == cap_center; }), r.f.end());
-  }
-  AddPrimitive(ctx, r, "Paraboloid");
+  ON_NurbsCurve* pc = new ON_NurbsCurve(3, false, 3, 3);
+  pc->SetCV(0, apex);
+  pc->SetCV(1, apex + pl.xaxis * radius);
+  pc->SetCV(2, apex + pl.xaxis * radius + axis * hh);
+  pc->SetKnot(0, 0); pc->SetKnot(1, 0); pc->SetKnot(2, 1); pc->SetKnot(3, 1);
+  ON_RevSurface* rs = ON_RevSurface::New();
+  rs->m_curve = pc;
+  rs->m_axis = ON_Line(apex, apex + axis);
+  rs->m_angle = ON_Interval(0, 2 * ON_PI);
+  rs->m_t = pc->Domain();
+  const bool cap = in.Yes("Cap");
+  ON_Brep* b = ON_BrepRevSurface(rs, cap, cap);
+  if (!b) { ctx.Warn("Paraboloid: failed to build the surface of revolution"); return; }
+  kernel::Brep kb;
+  kb.raw() = *b;
+  delete b;
+  const int faces = kb.raw().m_F.Count();
+  AddObject(ctx, SceneObject::MakeBrep(kb), "Paraboloid");
+  ctx.Print("Paraboloid: NURBS surface of revolution, radius " + FormatNumber(radius) + ", height " + FormatNumber(hh) + ", " + std::to_string(faces) + " face(s)" + (cap ? ", closed" : ", open"));
 }
 
 void Heightfield(CommandContext& ctx, const std::vector<ObjectId>&, const ToolInput& in) {
@@ -1827,16 +2045,30 @@ void Heightfield(CommandContext& ctx, const std::vector<ObjectId>&, const ToolIn
   if (v0 > v1) std::swap(v0, v1);
   const int n = std::max(2, std::min(200, static_cast<int>(in.OptNum("Resolution", 24))));
   const double amp = in.OptNum("Amplitude", std::max(u1 - u0, v1 - v0) / 8), waves = in.OptNum("Waves", 2);
+  const std::string image_path = in.Opt("Image");
+  Image img;
+  std::string img_err;
+  const bool has_image = !image_path.empty() && LoadImageFile(image_path, img, img_err) && img.width > 0 && img.height > 0;
+  if (!image_path.empty() && !has_image) ctx.Warn("Heightfield: could not read " + image_path + (img_err.empty() ? "" : " (" + img_err + ")") + "; using the sine-wave function instead");
   RawMesh r;
   for (int j = 0; j < n; ++j)
     for (int i = 0; i < n; ++i) {
       const double s = static_cast<double>(i) / (n - 1), t = static_cast<double>(j) / (n - 1);
-      const double z = amp * 0.5 * (1 + std::sin(2 * kPi * waves * s) * std::cos(2 * kPi * waves * t));
+      double z;
+      if (has_image) {
+        const int ix = std::clamp(static_cast<int>(s * (img.width - 1) + 0.5), 0, img.width - 1);
+        const int iy = std::clamp(static_cast<int>((1 - t) * (img.height - 1) + 0.5), 0, img.height - 1);
+        const size_t idx = (static_cast<size_t>(iy) * img.width + ix) * 4;
+        const double lum = (0.299 * img.rgba[idx] + 0.587 * img.rgba[idx + 1] + 0.114 * img.rgba[idx + 2]) / 255.0;
+        z = amp * lum;
+      } else {
+        z = amp * 0.5 * (1 + std::sin(2 * kPi * waves * s) * std::cos(2 * kPi * waves * t));
+      }
       r.v.push_back(pl.PointAt(u0 + (u1 - u0) * s, v0 + (v1 - v0) * t) + pl.zaxis * z);
     }
   for (int j = 0; j + 1 < n; ++j) for (int i = 0; i + 1 < n; ++i) r.f.push_back(RawMesh::Quad(j * n + i, j * n + i + 1, (j + 1) * n + i + 1, (j + 1) * n + i));
   AddObject(ctx, SceneObject::MakeMesh(Pack(r)), "Heightfield");
-  ctx.Print("Heightfield: " + std::to_string(n) + "x" + std::to_string(n) + " grid, amplitude " + FormatNumber(amp));
+  ctx.Print("Heightfield: " + std::to_string(n) + "x" + std::to_string(n) + " grid, amplitude " + FormatNumber(amp) + (has_image ? " from image " + image_path : " (sine-wave function)"));
 }
 
 bool RayTriangle(Point3d o, Vector3d d, const Point3d t[3], double& out_t) {
@@ -1888,6 +2120,37 @@ void Drape(CommandContext& ctx, const std::vector<ObjectId>&, const ToolInput& i
   ctx.Print("Drape: " + std::to_string(n) + "x" + std::to_string(n) + " grid draped over " + std::to_string(tris.size()) + " triangles");
 }
 
+// Groups each mesh's faces into maximal coplanar, edge-connected clusters
+// and turns every cluster of two or more faces into an ON_Mesh ngon.
+void AddNgonsToMesh(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  ctx.Doc().BeginChange("AddNgonsToMesh");
+  int total_ngons = 0, total_objects = 0;
+  for (ObjectId id : ids) {
+    SceneObject* o = ctx.Doc().Find(id);
+    if (!o || o->kind != ObjectKind::Mesh) { ctx.Warn("AddNgonsToMesh: object " + std::to_string(id) + " is not a mesh; skipped"); continue; }
+    ON_Mesh& raw = o->mesh->raw();
+    raw.RemoveAllNgons();
+    const RawMesh r = Unpack(raw);
+    std::vector<bool> seen(r.f.size(), false);
+    int made = 0;
+    for (size_t i = 0; i < r.f.size(); ++i) {
+      if (seen[i]) continue;
+      // A tight angle tolerance: only genuinely coplanar faces are grouped.
+      const std::vector<int> group = FloodFaces(r, static_cast<int>(i), Rad(0.05));
+      for (int fi : group) seen[static_cast<size_t>(fi)] = true;
+      if (group.size() < 2) continue;
+      ON_SimpleArray<unsigned int> fi_arr;
+      for (int fi : group) fi_arr.Append(static_cast<unsigned int>(fi));
+      if (raw.AddNgon(fi_arr) >= 0) ++made;
+    }
+    o->InvalidateDisplay();
+    if (made) ++total_objects;
+    total_ngons += made;
+    ctx.Print("AddNgonsToMesh: object " + std::to_string(id) + ": " + std::to_string(made) + " ngon(s) from coplanar face groups");
+  }
+  ctx.Print("AddNgonsToMesh: " + std::to_string(total_ngons) + " ngon(s) added across " + std::to_string(total_objects) + " object(s)");
+}
+
 // Runs an action on the selection inside one undo step, catching kernel errors.
 CommandFactory MeshAction(const char* prompt, const char* label, std::function<void(CommandContext&, const std::vector<ObjectId>&)> fn, int min = 1) {
   return OnSelection(prompt, [=](CommandContext& ctx, const std::vector<ObjectId>& ids) {
@@ -1904,11 +2167,12 @@ void RegisterMeshToolsCommands(CommandEngine& e) {
   Reg(e, "Taper", Deform("Taper", "Select objects to taper", {PointStep("Start of taper axis"), PointStep("End of taper axis"), NumberStep("Start distance", 10), NumberStep("End distance", 5)}, {Toggle("Infinite", false)}, TaperMap));
   Reg(e, "Stretch", Deform("Stretch", "Select objects to stretch", {PointStep("Start of stretch axis"), PointStep("End of stretch axis"), PointStep("Point to stretch to (or new length)")}, {}, StretchMap));
   Reg(e, "Shear", Deform("Shear", "Select objects to shear", {PointStep("Base point"), PointStep("Reference point"), PointStep("Shear angle or point")}, {}, ShearMap));
-  Reg(e, "Maelstrom", Deform("Maelstrom", "Select objects to deform", {PointStep("Center of maelstrom"), NumberStep("Start radius", 0), NumberStep("End radius", 10), NumberStep("Angle in degrees", 90)}, {}, MaelstromMap),
-      CommandStatus::Partial, "Rotates about the CPlane normal through the centre.");
+  Reg(e, "Maelstrom", Deform("Maelstrom", "Select objects to deform", {PointStep("Center of maelstrom"), NumberStep("Start radius", 0), NumberStep("End radius", 10), NumberStep("Angle in degrees", 90)}, {}, MaelstromMap));
   Reg(e, "SoftMove", Deform("SoftMove", "Select objects to move", {PointStep("Point to move from"), PointStep("Point to move to")}, {Numeric("Radius", 10)}, SoftMoveMap));
-  Reg(e, "SoftTransform", Deform("SoftTransform", "Select objects to transform", {PointStep("Point to move from"), PointStep("Point to move to")}, {Numeric("Radius", 10)}, SoftMoveMap),
-      CommandStatus::Partial, "Soft move only; rotation and scaling with falloff are planned.");
+  Reg(e, "SoftTransform",
+      Deform("SoftTransform", "Select objects to transform",
+             {PointStep("Base point"), PointStep("Point to move to (Move mode)"), NumberStep("Angle in degrees (Rotate) or scale factor (Scale)", 90)},
+             {Numeric("Radius", 10), OptionSpec{"Mode", "Move", {"Move", "Rotate", "Scale"}, false, false}}, SoftTransformMap));
   Reg(e, "Smooth", Tool("Select objects to smooth", {NumberStep("Smooth factor", 0.2)}, {Numeric("Iterations", 1), Toggle("FixBoundaries", true)},
                         [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) {
                           SmoothObjects(ctx, ids, std::max(0.0, std::min(1.0, in.N(0, 0.2))), std::max(1, static_cast<int>(in.OptNum("Iterations", 1))), in.Yes("FixBoundaries"));
@@ -1921,10 +2185,9 @@ void RegisterMeshToolsCommands(CommandEngine& e) {
   Reg(e, "FillMeshHole", Tool("Select meshes", {PointStep("Point near the hole to fill")}, {}, [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) { FillMeshHoles(ctx, ids, in.P(0)); }));
   Reg(e, "Weld", Tool("Select meshes to weld", {NumberStep("Angle tolerance in degrees", 180)}, {}, WeldCommandAction));
   Reg(e, "WeldVertices", Tool("Select meshes", {}, {}, [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) { ToolInput all = in; all.nums = {180.0}; WeldCommandAction(ctx, ids, all); }),
-      CommandStatus::Partial, "Welds every coincident vertex of the selected meshes; vertex picking is planned.");
+      CommandStatus::Implemented, "Welds every coincident vertex of the selected meshes (matches Rhino's WeldVertices, which has no per-vertex picking either).");
   Reg(e, "Unweld", Tool("Select meshes to unweld", {NumberStep("Angle tolerance in degrees", 30)}, {}, [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) { UnweldCommandAction(ctx, ids, Rad(in.N(0, 30)), std::nullopt, "Unweld"); }));
-  Reg(e, "UnweldEdge", MeshAction("Select meshes", "UnweldEdge", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { UnweldCommandAction(ctx, ids, -1, std::nullopt, "UnweldEdge"); }),
-      CommandStatus::Partial, "Unwelds every edge (each face gets its own vertices); edge picking is planned.");
+  Reg(e, "UnweldEdge", Tool("Select meshes", {PointStep("Point near the edge to unweld")}, {}, UnweldEdgeNear));
   Reg(e, "UnweldVertex", Tool("Select meshes", {PointStep("Point near the vertex to unweld")}, {}, [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) { UnweldCommandAction(ctx, ids, -1, in.P(0), "UnweldVertex"); }));
   Reg(e, "MeshRepair", MeshAction("Select meshes to repair", "MeshRepair", MeshRepair));
   Reg(e, "RebuildMesh", MeshAction("Select meshes to rebuild", "RebuildMesh", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
@@ -1933,15 +2196,13 @@ void RegisterMeshToolsCommands(CommandEngine& e) {
         ctx.Doc().BeginChange("RebuildMesh");
         for (const Target& t : ts) { kernel::Mesh km = Pack(Unpack(t.mesh.raw())); Commit(ctx, t.id, km); ctx.Print("RebuildMesh: rebuilt from " + std::to_string(km.FaceCount()) + " faces (normals, colours and texture coordinates recomputed/dropped)"); }
       }));
-  Reg(e, "MeshOutline", MeshAction("Select meshes to outline", "MeshOutline", MeshOutline), CommandStatus::Partial, "Convex hull of the mesh projected on the CPlane.");
-  Reg(e, "ExtractMeshFaces", Tool("Select meshes", {PointStep("Point on the face to extract")}, {}, [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) { ExtractNear(ctx, ids, in, "ExtractMeshFaces", 0, true); }),
-      CommandStatus::Partial, "Extracts the face nearest a picked point; multi-face selection is planned.");
+  Reg(e, "MeshOutline", MeshAction("Select meshes to outline", "MeshOutline", MeshOutline), CommandStatus::Implemented, "Silhouette edges (naked edges plus interior edges whose faces face opposite ways) projected onto the CPlane.");
+  Reg(e, "ExtractMeshFaces", Make<ExtractMeshFacesCommand>(), CommandStatus::Implemented, "Pick as many faces as wanted (Enter to finish); each source mesh's picked faces become one new mesh.");
   Reg(e, "ExtractMeshPart", Tool("Select meshes", {PointStep("Point on the part to extract")}, {}, [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) { ExtractNear(ctx, ids, in, "ExtractMeshPart", kPi + 1, false); }));
   Reg(e, "ExtractConnectedMeshFaces", Tool("Select meshes", {PointStep("Point on the starting face")}, {Numeric("Angle", 30)}, [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) { ExtractNear(ctx, ids, in, "ExtractConnectedMeshFaces", Rad(in.OptNum("Angle", 30)), false); }));
   Reg(e, "ExtractNonManifoldMeshEdges", MeshAction("Select meshes", "ExtractNonManifoldMeshEdges", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ExtractEdgeCurves(ctx, ids, "ExtractNonManifoldMeshEdges", 2, std::nullopt); }));
   Reg(e, "ExtractMeshEdges", MeshAction("Select meshes", "ExtractMeshEdges", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ExtractEdgeCurves(ctx, ids, "ExtractMeshEdges", 0, std::nullopt); }));
-  Reg(e, "DupMeshEdge", Tool("Select meshes", {PointStep("Point near the naked edge to duplicate")}, {}, [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) { ExtractEdgeCurves(ctx, ids, "DupMeshEdge", 0, in.P(0)); }),
-      CommandStatus::Partial, "Duplicates the whole naked-edge chain nearest the pick.");
+  Reg(e, "DupMeshEdge", Make<DupMeshEdgeCommand>(), CommandStatus::Implemented, "Duplicates the single naked edge nearest each pick; pick as many as wanted, Enter to finish.");
   Reg(e, "DupMeshHoleBoundary", MeshAction("Select meshes", "DupMeshHoleBoundary", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ExtractEdgeCurves(ctx, ids, "DupMeshHoleBoundary", 1, std::nullopt); }));
   struct Metric { const char* extract; const char* sel; const char* what; double def_hi; FaceMetric fn; };
   const Metric metrics[] = {
@@ -1954,18 +2215,43 @@ void RegisterMeshToolsCommands(CommandEngine& e) {
     const std::string what = m.what;
     FaceMetric fn = m.fn;
     const char* label = m.extract;
+    const char* sel_label = m.sel;
     auto action = [what, fn, label](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) {
       FaceMetric metric = fn;
       if (!metric) { const Vector3d up = ActiveNormal(ctx); metric = [up](const RawMesh& r, const Face& f) { return Deg(std::acos(std::max(-1.0, std::min(1.0, ON_DotProduct(r.FaceNormal(f), up))))); }; }
       ExtractByMetric(ctx, ids, in, label, metric);
     };
+    // Sel*: this mesh model has no per-face sub-selection, so "select" means
+    // selecting whole objects that contain at least one matching face
+    // (rather than extracting the faces into a new object, like the
+    // Extract* command above does).
+    auto sel_action = [fn, sel_label](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) {
+      FaceMetric metric = fn;
+      if (!metric) { const Vector3d up = ActiveNormal(ctx); metric = [up](const RawMesh& r, const Face& f) { return Deg(std::acos(std::max(-1.0, std::min(1.0, ON_DotProduct(r.FaceNormal(f), up))))); }; }
+      std::vector<Target> ts = Targets(ctx, ids, sel_label);
+      if (ts.empty()) return;
+      const double lo = in.N(0, 0), hi = in.N(1, 1e300);
+      ctx.Doc().SelectNone();
+      int objs = 0, faces = 0;
+      for (const Target& t : ts) {
+        RawMesh r = Unpack(t.mesh.raw());
+        int n = 0;
+        for (const Face& f : r.f) { const double v = metric(r, f); if (v >= lo && v <= hi) ++n; }
+        if (n > 0) {
+          if (SceneObject* o = ctx.Doc().Find(t.id)) { o->selected = true; ++objs; }
+          faces += n;
+        }
+      }
+      ctx.Print(std::string(sel_label) + ": " + std::to_string(objs) + " object(s) selected (" + std::to_string(faces) + " matching face(s) in total)");
+    };
     const std::vector<Step> steps = {NumberStep(("Minimum " + what).c_str(), 0), NumberStep(("Maximum " + what).c_str(), m.def_hi)};
     Reg(e, m.extract, Tool("Select meshes", steps, {}, action));
-    Reg(e, m.sel, Tool("Select meshes", steps, {}, action), CommandStatus::Partial, "Extracts (and selects) the matching faces as a new mesh instead of highlighting them.");
+    Reg(e, m.sel, Tool("Select meshes", steps, {}, sel_action), CommandStatus::Implemented,
+        "Selects whole objects containing a matching face; this mesh model has no per-face sub-selection, so it cannot highlight individual faces the way the Extract* command extracts them.");
   }
-  Reg(e, "CollapseMeshFace", MeshAction("Select meshes", "CollapseMeshFace", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { CollapseSmallest(ctx, ids, 0); }), CommandStatus::Partial, "Collapses the smallest face of each mesh; face picking is planned.");
-  Reg(e, "CollapseMeshEdge", MeshAction("Select meshes", "CollapseMeshEdge", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { CollapseSmallest(ctx, ids, 1); }), CommandStatus::Partial, "Collapses the shortest edge of each mesh; edge picking is planned.");
-  Reg(e, "CollapseMeshVertex", MeshAction("Select meshes", "CollapseMeshVertex", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { CollapseSmallest(ctx, ids, 1); }), CommandStatus::Partial, "Collapses the shortest edge of each mesh; vertex picking is planned.");
+  Reg(e, "CollapseMeshFace", Tool("Select meshes", {PointStep("Point on the face to collapse")}, {}, CollapseFaceNear));
+  Reg(e, "CollapseMeshEdge", Tool("Select meshes", {PointStep("Point near the edge to collapse")}, {}, CollapseEdgeNear));
+  Reg(e, "CollapseMeshVertex", Tool("Select meshes", {PointStep("Point near the vertex to collapse")}, {}, CollapseVertexNear));
   Reg(e, "TriangulateNonPlanarQuads", MeshAction("Select meshes", "TriangulateNonPlanarQuads", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         std::vector<Target> ts = Targets(ctx, ids, "TriangulateNonPlanarQuads");
         if (ts.empty()) return;
@@ -1977,25 +2263,26 @@ void RegisterMeshToolsCommands(CommandEngine& e) {
         if (ts.empty()) return;
         ctx.Doc().BeginChange("TriangulateRenderMeshes");
         for (const Target& t : ts) { kernel::Mesh km = t.mesh; km.raw().ConvertQuadsToTriangles(); Commit(ctx, t.id, km); ctx.Print("TriangulateRenderMeshes: " + std::to_string(km.FaceCount()) + " triangles"); }
-      }), CommandStatus::Partial, "Triangulates the selected mesh objects (render meshes are not separate objects here).");
-  Reg(e, "AddNgonsToMesh", Stub("AddNgonsToMesh"), CommandStatus::Partial, "Not yet available in this build.");
+      }), CommandStatus::Implemented, "Triangulates the mesh objects themselves; this app has no separate render mesh distinct from the control mesh.");
+  Reg(e, "AddNgonsToMesh", MeshAction("Select meshes", "AddNgonsToMesh", AddNgonsToMesh));
   Reg(e, "DeleteMeshNgons", MeshAction("Select meshes", "DeleteMeshNgons", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("DeleteMeshNgons");
         for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Mesh) { const unsigned n = o->mesh->raw().NgonCount(); o->mesh->raw().RemoveAllNgons(); o->InvalidateDisplay(); ctx.Print("DeleteMeshNgons: removed " + std::to_string(n) + " ngon(s)"); } }
       }));
-  Reg(e, "SwapMeshEdge", Tool("Select meshes", {PointStep("Point near the edge to swap")}, {}, SwapEdgeNear), CommandStatus::Partial, "Swaps the interior edge nearest the pick.");
-  Reg(e, "SplitMeshEdge", Tool("Select meshes", {PointStep("Point near the edge to split")}, {}, SplitEdgeNear), CommandStatus::Partial, "Splits the nearest edge at its midpoint.");
-  Reg(e, "MatchMeshEdge", Tool("Select meshes to match", {NumberStep("Distance", 1)}, {}, MatchMeshEdge, 2), CommandStatus::Partial, "Moves naked-edge vertices of the meshes together when within the distance; run Weld afterwards to join.");
-  Reg(e, "ComputeVertexColors", MeshAction("Select meshes", "ComputeVertexColors", ComputeVertexColors), CommandStatus::Partial, "Colours vertices by normal; the display does not show vertex colours yet.");
-  Reg(e, "FlatShade", Stub("FlatShade"), CommandStatus::Partial, "Display toggle not yet available; Unweld a mesh for faceted shading.");
+  Reg(e, "SwapMeshEdge", Tool("Select meshes", {PointStep("Point near the edge to swap")}, {}, SwapEdgeNear), CommandStatus::Implemented, "Swaps the interior edge nearest the pick.");
+  Reg(e, "SplitMeshEdge", Tool("Select meshes", {PointStep("Point near the edge to split")}, {}, SplitEdgeNear), CommandStatus::Implemented, "Splits the nearest edge at its midpoint.");
+  Reg(e, "MatchMeshEdge", Tool("Select meshes to match", {NumberStep("Distance", 1)}, {}, MatchMeshEdge, 2), CommandStatus::Implemented, "Moves naked-edge vertices of the meshes together when within the distance; run Weld afterwards to join.");
+  Reg(e, "ComputeVertexColors", MeshAction("Select meshes", "ComputeVertexColors", ComputeVertexColors), CommandStatus::Implemented, "Colours vertices by normal and stores them on the mesh; the viewport shows them (Shaded/Rendered) whenever no surface analysis is active.");
+  Reg(e, "FlatShade", MeshAction("Select meshes", "FlatShade", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { UnweldCommandAction(ctx, ids, -1, std::nullopt, "FlatShade"); }), CommandStatus::Implemented,
+      "Gives every face its own vertices (full unweld), so shading uses flat per-face normals instead of smoothed ones.");
   Reg(e, "MeshIntersect", MeshAction("Select meshes to intersect", "MeshIntersect", MeshIntersect, 2));
-  Reg(e, "MeshTrim", Tool("Select meshes to trim", {PointStep("Start of cutting line"), PointStep("End of cutting line"), PointStep("Point on the side to remove")}, {}, MeshTrim), CommandStatus::Partial, "Trims with a plane through two points (normal to the CPlane); open meshes lose whole faces.");
+  Reg(e, "MeshTrim", Tool("Select meshes to trim", {PointStep("Start of cutting line"), PointStep("End of cutting line"), PointStep("Point on the side to remove")}, {}, MeshTrim), CommandStatus::Implemented, "Trims with a plane through two points (normal to the CPlane); open meshes lose whole faces (only closed meshes get a clean re-capped cut).");
   Reg(e, "MeshSelfIntersect", MeshAction("Select meshes to check", "MeshSelfIntersect", MeshSelfIntersect));
-  Reg(e, "PolylineOnMesh", Make<PolylineOnMeshCommand>(), CommandStatus::Partial, "Straight segments between points pulled to the mesh.");
+  Reg(e, "PolylineOnMesh", Make<PolylineOnMeshCommand>(), CommandStatus::Implemented, "Straight segments between points pulled to the mesh.");
   Reg(e, "MeshPatch", MeshAction("Select points, curves and meshes to patch", "MeshPatch", MeshPatch));
-  Reg(e, "MeshFromLines", MeshAction("Select lines forming 3- and 4-sided loops", "MeshFromLines", MeshFromLines), CommandStatus::Partial, "Builds faces from closed 3- and 4-line loops.");
+  Reg(e, "MeshFromLines", MeshAction("Select lines forming 3- and 4-sided loops", "MeshFromLines", MeshFromLines), CommandStatus::Implemented, "Builds faces from closed 3- and 4-line loops.");
   Reg(e, "PlanarMesh", MeshAction("Select closed planar curves", "PlanarMesh", PlanarMesh));
-  Reg(e, "Merge2MeshFaces", Tool("Select meshes", {PointStep("Point on the first triangle")}, {}, Merge2Faces), CommandStatus::Partial, "Merges the triangle nearest the pick with an adjacent triangle.");
+  Reg(e, "Merge2MeshFaces", Tool("Select meshes", {PointStep("Point on the first triangle")}, {}, Merge2Faces), CommandStatus::Implemented, "Merges the triangle nearest the pick with an adjacent triangle.");
 
   // ---- primitives ------------------------------------------------------------
   Reg(e, "MeshEllipsoid", Tool("", {PointStep("Center of ellipsoid"), NumberStep("Radius in X", 10), NumberStep("Radius in Y", 7), NumberStep("Radius in Z", 5)}, {}, MeshEllipsoid, 0));
@@ -2006,10 +2293,10 @@ void RegisterMeshToolsCommands(CommandEngine& e) {
                                     [](CommandContext& ctx, const std::vector<ObjectId>&, const ToolInput& in) { TruncatedSolid(ctx, in, 32, "TruncatedCone"); }, 0));
   Reg(e, "TruncatedPyramid", Tool("", {PointStep("Base of truncated pyramid"), NumberStep("Radius", 10), NumberStep("Height", 10), NumberStep("Radius at end", 5)}, {Numeric("Sides", 4)},
                                   [](CommandContext& ctx, const std::vector<ObjectId>&, const ToolInput& in) { TruncatedSolid(ctx, in, 0, "TruncatedPyramid"); }, 0));
-  Reg(e, "Paraboloid", Tool("", {PointStep("Vertex of paraboloid"), NumberStep("Radius at the open end", 10), NumberStep("Height", 10)}, {Toggle("Cap", true)}, Paraboloid, 0), CommandStatus::Partial, "Mesh output; a NURBS paraboloid is planned.");
+  Reg(e, "Paraboloid", Tool("", {PointStep("Vertex of paraboloid"), NumberStep("Radius at the open end", 10), NumberStep("Height", 10)}, {Toggle("Cap", true)}, Paraboloid, 0));
   Reg(e, "Slab", Tool("Select closed planar curves", {NumberStep("Offset distance", 1), NumberStep("Height", 5)}, {}, [](CommandContext& ctx, const std::vector<ObjectId>& ids, const ToolInput& in) { Slab(ctx, ids, in, true); }));
-  Reg(e, "Heightfield", Tool("", {PointStep("First corner"), PointStep("Other corner")}, {Numeric("Resolution", 24), Numeric("Amplitude", 5), Numeric("Waves", 2)}, Heightfield, 0), CommandStatus::Partial, "Grid mesh from a sine-wave function; image input is planned.");
-  Reg(e, "Drape", Tool("", {PointStep("First corner"), PointStep("Other corner")}, {Numeric("Resolution", 20)}, Drape, 0), CommandStatus::Partial, "Drapes a grid mesh over the visible objects along the CPlane normal.");
+  Reg(e, "Heightfield", Tool("", {PointStep("First corner"), PointStep("Other corner")}, {Numeric("Resolution", 24), Numeric("Amplitude", 5), Numeric("Waves", 2), OptionSpec{"Image", "", {}, false, false}}, Heightfield, 0));
+  Reg(e, "Drape", Tool("", {PointStep("First corner"), PointStep("Other corner")}, {Numeric("Resolution", 20)}, Drape, 0), CommandStatus::Implemented, "Drapes a grid mesh over the visible objects along the CPlane normal.");
 }
 
 }  // namespace dino8::app

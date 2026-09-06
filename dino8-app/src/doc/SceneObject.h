@@ -98,6 +98,12 @@ struct DisplayCache {
   bool colors_valid = false;
   // Value range the colours were normalised over (for the command report).
   double colors_min = 0, colors_max = 0;
+  // Per-vertex colours (r,g,b per triangle vertex, aligned with `triangles`)
+  // taken straight from a mesh's own ON_Mesh::m_C array (e.g. set by
+  // ComputeVertexColors); empty when the mesh carries no vertex colours.
+  // Independent of `colors` above, which holds an active surface analysis
+  // ramp and takes priority when both are present.
+  std::vector<float> mesh_vertex_colors;
   // Texture coordinates the geometry itself carries (u,v per triangle
   // vertex, aligned with `triangles`); empty when the mesh has none.
   std::vector<float> uvs;

@@ -56,6 +56,18 @@ Radius=5
 SelLast
 Smooth
 0.5
+SelLast
+SoftTransform
+Mode=Rotate
+90,0,4
+0,0,1
+45
+SelLast
+SoftTransform
+Mode=Scale
+90,0,4
+0,0,1
+1.5
 @expect_objects 5
 # --- ExtrudeMesh: an open mesh plane becomes a closed 10x10x3 solid
 SelNone
@@ -133,5 +145,61 @@ MeshOutline
 Heightfield 600,0,0 620,20,0
 Drape 395,-5,0 420,20,0
 @expect_objects 30
+# --- AddNgonsToMesh, ComputeVertexColors, UnweldEdge, Collapse*, DupMeshEdge, ExtractMeshFaces, FlatShade
+SelNone
+MeshBox 700,0,0 710,10,0 10
+SelLast
+TriangulateRenderMeshes
+SelLast
+AddNgonsToMesh
+@expect_objects 31
+SelNone
+MeshBox 720,0,0 730,10,0 10
+SelLast
+ComputeVertexColors
+@expect_objects 32
+SelNone
+MeshBox 740,0,0 750,10,0 10
+SelLast
+UnweldEdge
+745,5,10
+@expect_objects 33
+SelNone
+MeshBox 760,0,0 770,10,0 10
+SelLast
+CollapseMeshVertex
+760,0,0
+@expect_objects 34
+SelNone
+MeshBox 850,0,0 860,10,0 10
+SelLast
+CollapseMeshFace
+855,5,10
+@expect_objects 35
+SelNone
+MeshBox 870,0,0 880,10,0 10
+SelLast
+CollapseMeshEdge
+875,5,10
+@expect_objects 36
+SelNone
+MeshPlane 780,0,0 790,10,0
+SelLast
+DupMeshEdge
+780,5,0
+Enter
+@expect_objects 38
+SelNone
+MeshBox 800,0,0 810,10,0 10
+SelLast
+ExtractMeshFaces
+805,5,10
+Enter
+@expect_objects 40
+SelNone
+MeshBox 830,0,0 840,10,0 10
+SelLast
+FlatShade
+@expect_objects 41
 Show
 SelAll
