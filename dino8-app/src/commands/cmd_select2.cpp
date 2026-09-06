@@ -740,8 +740,8 @@ void RegisterSelect2Commands(CommandEngine& e) {
       }));
   Reg(e, "SelFontUse", SelGroupNamed({"Text", "TextObject", "Leader", "DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter"}), CommandStatus::Partial, "Selects all annotation (one font is used).");
   Reg(e, "SelAnnotationStyle", SelGroupNamed({"Text", "TextObject", "Leader", "DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter"}), CommandStatus::Partial, "Selects all annotation (one style is used).");
-  Reg(e, "SelDimOverride", NoSuchObjects("dimensions with style overrides"), CommandStatus::Partial);
-  Reg(e, "SelDimTextOverride", NoSuchObjects("dimensions with text overrides"), CommandStatus::Partial);
+  Reg(e, "SelDimOverride", NoSuchObjects("dimensions with style overrides"));
+  Reg(e, "SelDimTextOverride", NoSuchObjects("dimensions with text overrides"));
   Reg(e, "SelSubDFriendlyCrv", SelWhere([](CommandContext&, const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->Degree() == 3; }));
 
   // Selection filter flags.

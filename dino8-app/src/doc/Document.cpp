@@ -26,6 +26,8 @@ void Document::Clear() {
   next_clipping_plane_id_ = 1;
   layouts_.clear();
   animation_ = Animation{};
+  reference_models_.clear();
+  hole_features_.clear();
   user_text_.clear();
   notes_.clear();
   settings_ = DocumentSettings{};
@@ -53,6 +55,7 @@ bool Document::Remove(ObjectId id) {
                                [id](const SceneObject& o) { return o.id == id; });
   if (it == objects_.end()) return false;
   objects_.erase(it);
+  hole_features_.erase(id);
   Touch();
   return true;
 }

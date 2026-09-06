@@ -692,6 +692,25 @@ void CommitSolids(CommandContext& ctx, const std::vector<Solid>& solids, const s
   }
 }
 
+// Like CommitSolids, but also tags each cut result as an editable hole
+// feature (see TagHoleFeature, cmd_session.cpp) when both a pre-cut copy
+// of the solid and the cutter that made the hole are supplied for it -
+// CopyHole/MirrorHole/MoveHole/RotateHole re-run the boolean from these.
+void CommitSolidsWithHole(CommandContext& ctx, const std::vector<Solid>& solids, const std::string& label,
+                          const std::vector<std::optional<kernel::Mesh>>& pre_cut,
+                          const std::vector<std::optional<kernel::Mesh>>& cutters) {
+  for (size_t i = 0; i < solids.size(); ++i) {
+    const Solid& s = solids[i];
+    const SceneObject* o = ctx.Doc().Find(s.id);
+    const bool was_mesh = o && o->kind == ObjectKind::Mesh;
+    const ObjectId final_id = ReplaceWithMesh(ctx, s.id, s.mesh);
+    ctx.Print(label + ": object " + Id(s.id) + (was_mesh ? " is now " : " replaced by a mesh solid with ") + MeshSummary(s.mesh));
+    if (i < pre_cut.size() && i < cutters.size() && pre_cut[i] && cutters[i] && final_id != kNoObject) {
+      TagHoleFeature(ctx, final_id, *pre_cut[i], *cutters[i]);
+    }
+  }
+}
+
 // Cylinder cutter through/into the solid at a picked point.
 std::optional<kernel::Mesh> CylinderCutter(CommandContext& ctx, const kernel::Mesh& solid, Point3d center, double radius, double depth, bool through, bool cplane_dir, double tol) {
   const SurfaceHit hit = NearestOnMesh(solid, center);
@@ -715,16 +734,21 @@ void RoundHole(CommandContext& ctx, const Input& in) {
   const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-4);
   ctx.Doc().BeginChange("RoundHole");
   int cut = 0;
-  for (Solid& s : solids) {
+  std::vector<std::optional<kernel::Mesh>> pre_cut(solids.size()), cutter_used(solids.size());
+  for (size_t i = 0; i < solids.size(); ++i) {
+    Solid& s = solids[i];
+    const kernel::Mesh pre = s.mesh;
     std::optional<kernel::Mesh> cutter = CylinderCutter(ctx, s.mesh, in.P(1), radius, depth, through, Lower(in.Opt("Direction")) == "cplane", tol);
     if (!cutter) { ctx.Warn("RoundHole: could not build the cutter"); continue; }
     std::optional<kernel::Mesh> r = Combine(ctx, s.mesh, *cutter, kernel::BooleanOp::Difference, "RoundHole");
     if (!r || r->FaceCount() == 0) continue;
     s.mesh = *r;
+    pre_cut[i] = pre;
+    cutter_used[i] = *cutter;
     ++cut;
   }
   ctx.Print("RoundHole: radius " + FormatNumber(radius) + (through ? ", through" : ", depth " + FormatNumber(depth)) + ", cut " + std::to_string(cut) + " solid(s) (mesh boolean; results are meshes)");
-  CommitSolids(ctx, solids, "RoundHole");
+  CommitSolidsWithHole(ctx, solids, "RoundHole", pre_cut, cutter_used);
 }
 
 // Hole from closed planar profile curves, extruded along their plane normal.
@@ -782,7 +806,10 @@ void PlaceHole(CommandContext& ctx, const Input& in) {
   from.SetOrigin((cb.min + cb.max) * 0.5);
   ctx.Doc().BeginChange("PlaceHole");
   int cut = 0;
-  for (Solid& s : solids) {
+  std::vector<std::optional<kernel::Mesh>> pre_cut(solids.size()), cutter_used(solids.size());
+  for (size_t i = 0; i < solids.size(); ++i) {
+    Solid& s = solids[i];
+    const kernel::Mesh pre = s.mesh;
     const SurfaceHit hit = NearestOnMesh(s.mesh, in.P(2));
     const double diag = Diagonal(s.mesh);
     const double lift = through ? diag : std::max(depth * 0.05, tol * 10);
@@ -796,10 +823,12 @@ void PlaceHole(CommandContext& ctx, const Input& in) {
     std::optional<kernel::Mesh> r = Combine(ctx, s.mesh, *slab, kernel::BooleanOp::Difference, "PlaceHole");
     if (!r || r->FaceCount() == 0) continue;
     s.mesh = *r;
+    pre_cut[i] = pre;
+    cutter_used[i] = *slab;
     ++cut;
   }
   ctx.Print("PlaceHole: profile " + Id(prof->id) + " placed at " + FormatPoint(in.P(2)) + ", " + (through ? "through" : "depth " + FormatNumber(depth)) + ", cut " + std::to_string(cut) + " solid(s) (mesh boolean; results are meshes)");
-  CommitSolids(ctx, solids, "PlaceHole");
+  CommitSolidsWithHole(ctx, solids, "PlaceHole", pre_cut, cutter_used);
 }
 
 void RevolvedHole(CommandContext& ctx, const Input& in) {
@@ -818,13 +847,29 @@ void RevolvedHole(CommandContext& ctx, const Input& in) {
   std::optional<kernel::Mesh> cutter = ClosedMeshOfBrep(ON_BrepRevSurface(rs, true, true), tol);
   if (!cutter) { ctx.Warn("RevolvedHole: the revolved profile is not a closed solid (close the profile or end it on the axis)"); return; }
   ctx.Doc().BeginChange("RevolvedHole");
-  const int cut = CutSolids(ctx, solids, *cutter, "RevolvedHole");
+  std::vector<std::optional<kernel::Mesh>> pre_cut(solids.size()), cutter_used(solids.size());
+  int cut = 0;
+  for (size_t i = 0; i < solids.size(); ++i) {
+    Solid& s = solids[i];
+    const kernel::Mesh pre = s.mesh;
+    std::optional<kernel::Mesh> r = Combine(ctx, s.mesh, *cutter, kernel::BooleanOp::Difference, "RevolvedHole");
+    if (!r || r->FaceCount() == 0) { ctx.Warn("RevolvedHole: object " + Id(s.id) + " was not cut"); continue; }
+    s.mesh = *r;
+    pre_cut[i] = pre;
+    cutter_used[i] = *cutter;
+    ++cut;
+  }
   if (in.Yes("DeleteInput")) ctx.Doc().Remove(prof->id);
   ctx.Print("RevolvedHole: profile revolved about " + FormatPoint(a) + " -> " + FormatPoint(b) + ", cut " + std::to_string(cut) + " solid(s) (mesh boolean; results are meshes)");
-  CommitSolids(ctx, solids, "RevolvedHole");
+  CommitSolidsWithHole(ctx, solids, "RevolvedHole", pre_cut, cutter_used);
 }
 
-// RoundHole repeated at a set of centres.
+// RoundHole repeated at a set of centres. Every centre's cutter is built
+// against the solid's *original* mesh (not the progressively-cut one, so
+// per-hole hit normals don't drift) and unioned into one equivalent
+// cutter, which is what CopyHole/MirrorHole/MoveHole/RotateHole replay as
+// a single rigid hole feature - the whole array moves/copies/mirrors/
+// rotates together, matching "ArrayHole ... multiple tools" as one tool.
 void HoleArray(CommandContext& ctx, const Input& in, const std::vector<Point3d>& centers, double radius, double depth, const std::string& label) {
   std::vector<Solid> solids = Solids(ctx, in.O(0), label);
   if (solids.empty()) return;
@@ -832,18 +877,28 @@ void HoleArray(CommandContext& ctx, const Input& in, const std::vector<Point3d>&
   const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-4);
   ctx.Doc().BeginChange(label);
   int cut = 0;
-  for (Solid& s : solids) {
+  std::vector<std::optional<kernel::Mesh>> pre_cut(solids.size()), cutter_used(solids.size());
+  for (size_t si = 0; si < solids.size(); ++si) {
+    Solid& s = solids[si];
+    const kernel::Mesh pre = s.mesh;
+    std::optional<kernel::Mesh> merged;
     for (const Point3d& c : centers) {
-      std::optional<kernel::Mesh> cutter = CylinderCutter(ctx, s.mesh, c, radius, depth, through, false, tol);
+      std::optional<kernel::Mesh> cutter = CylinderCutter(ctx, pre, c, radius, depth, through, false, tol);
       if (!cutter) continue;
-      std::optional<kernel::Mesh> r = Combine(ctx, s.mesh, *cutter, kernel::BooleanOp::Difference, label);
-      if (!r || r->FaceCount() == 0) continue;
-      s.mesh = *r;
-      ++cut;
+      if (!merged) { merged = *cutter; continue; }
+      try { merged = kernel::BooleanCombine(*merged, *cutter, kernel::BooleanOp::Union); }
+      catch (const std::exception&) { /* keep the previous union; one bad centre shouldn't lose the rest */ }
     }
+    if (!merged) continue;
+    std::optional<kernel::Mesh> r = Combine(ctx, pre, *merged, kernel::BooleanOp::Difference, label);
+    if (!r || r->FaceCount() == 0) continue;
+    s.mesh = *r;
+    pre_cut[si] = pre;
+    cutter_used[si] = *merged;
+    ++cut;
   }
-  ctx.Print(label + ": " + std::to_string(centers.size()) + " hole position(s), radius " + FormatNumber(radius) + ", " + std::to_string(cut) + " cut(s) (mesh boolean; results are meshes)");
-  CommitSolids(ctx, solids, label);
+  ctx.Print(label + ": " + std::to_string(centers.size()) + " hole position(s), radius " + FormatNumber(radius) + ", " + std::to_string(cut) + " solid(s) cut (mesh boolean; results are meshes)");
+  CommitSolidsWithHole(ctx, solids, label, pre_cut, cutter_used);
 }
 
 void ArrayHole(CommandContext& ctx, const Input& in) {
@@ -1622,6 +1677,21 @@ void ScalePositions(CommandContext& ctx, const Input& in) {
 }
 
 }  // namespace
+
+// Records `result_id` as an editable hole feature: `pre_cut_parent` (the
+// solid as it was before this hole) and `cutter` (the tool that made it)
+// go into Document's hole-feature side table (keyed by `result_id`, not
+// written to the .3dm, not part of the object list - see HoleFeature in
+// Document.h), and the result is tagged "Hole.Feature" = 1 in its own user
+// text so selection/List can point the user at CopyHole/MirrorHole/
+// MoveHole/RotateHole (below), which look the table entry up to replay
+// the boolean at a new placement instead of only printing guidance.
+void TagHoleFeature(CommandContext& ctx, ObjectId result_id, const kernel::Mesh& pre_cut_parent, const kernel::Mesh& cutter) {
+  SceneObject* result = ctx.Doc().Find(result_id);
+  if (!result) return;
+  result->user_text["Hole.Feature"] = "1";
+  ctx.Doc().SetHoleFeature(result_id, pre_cut_parent, cutter);
+}
 
 void UpdateCageCaptives(Document& doc) { UpdateCages(doc); }
 

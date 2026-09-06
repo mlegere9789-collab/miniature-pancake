@@ -798,7 +798,7 @@ bool Application::SaveDocument(const std::string& path, std::string& error) {
   if (ext == ".3dm" || ext.empty()) {
     std::string p = path;
     if (ext.empty()) p += ".3dm";
-    ok = Save3dm(doc_, p, error);
+    ok = Save3dm(doc_, p, error, /*include_reference_objects=*/false);
     if (ok) {
       doc_.SetPath(p);
       doc_.SetModified(false);

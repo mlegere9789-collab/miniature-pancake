@@ -256,6 +256,15 @@ int InstantiateBlock(CommandContext& ctx, const std::string& name, Point3d at);
 // wrapper delegates to this when the selection has no surfaces/breps.
 void CurveOrSolidIntersect(CommandContext& ctx, const std::vector<ObjectId>& ids);
 
+// Tags `result_id` as an editable hole feature: stores `pre_cut_parent`
+// (the solid as it was before this hole) and `cutter` (the tool that made
+// it) in the document's hole-feature side table (see HoleFeature,
+// Document.h) and marks the result with "Hole.Feature" user text, so
+// CopyHole/MirrorHole/MoveHole/RotateHole (cmd_solidtools.cpp) can re-run
+// the boolean at a new placement instead of only printing guidance.
+// Defined in cmd_solidtools.cpp.
+void TagHoleFeature(CommandContext& ctx, ObjectId result_id, const kernel::Mesh& pre_cut_parent, const kernel::Mesh& cutter);
+
 inline void Reg(CommandEngine& e, const char* name, CommandFactory f, CommandStatus s = CommandStatus::Implemented,
                 const char* note = "") {
   e.Register(name, std::move(f), s, note);

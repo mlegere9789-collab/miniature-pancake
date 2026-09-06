@@ -579,11 +579,11 @@ void RegisterStateCommands(CommandEngine& e) {
         AddObject(ctx, std::move(o), "InfinitePlane");
         ctx.Print("InfinitePlane: " + FormatNumber(2 * s) + " x " + FormatNumber(2 * s) + " plane on the CPlane");
       }), CommandStatus::Partial, "Creates a very large plane surface.");
-  Reg(e, "BringToFront", DrawOrder("BringToFront", 1), CommandStatus::Partial, "Draw order is stored in user text.");
-  Reg(e, "SendToBack", DrawOrder("SendToBack", 2), CommandStatus::Partial, "Draw order is stored in user text.");
-  Reg(e, "BringForward", DrawOrder("BringForward", 3), CommandStatus::Partial, "Draw order is stored in user text.");
-  Reg(e, "SendBackward", DrawOrder("SendBackward", 4), CommandStatus::Partial, "Draw order is stored in user text.");
-  Reg(e, "ClearDrawOrder", DrawOrder("ClearDrawOrder", 0), CommandStatus::Partial, "Draw order is stored in user text.");
+  Reg(e, "BringToFront", DrawOrder("BringToFront", 1));
+  Reg(e, "SendToBack", DrawOrder("SendToBack", 2));
+  Reg(e, "BringForward", DrawOrder("BringForward", 3));
+  Reg(e, "SendBackward", DrawOrder("SendBackward", 4));
+  Reg(e, "ClearDrawOrder", DrawOrder("ClearDrawOrder", 0));
   Reg(e, "NamedSelections", Make<NamedSetCommand>(false));
   Reg(e, "NamedCPlane", Make<NamedSetCommand>(true));
   Reg(e, "NamedPosition", Say("NamedPosition: saved object positions are planned; use NamedSelections and Undo for now."), CommandStatus::Partial);

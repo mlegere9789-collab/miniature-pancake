@@ -214,6 +214,39 @@ struct Animation {
   std::string viewport;  // viewport the animation was set up in
 };
 
+// A reference model attached through Worksession: another .3dm's objects,
+// copied in locked (greyed, per the existing IsObjectLocked display tint)
+// and tagged "Dino8.Reference" = its source path so Save skips them again
+// unless explicitly exported (see File3dm.cpp Save3dm's include_reference
+// flag). Kept here as plain session state - not written into the .3dm
+// itself, same as Rhino's own worksessions (see cmd_session.cpp / the
+// Worksession command's Save=/Load= .rws file for that).
+struct ReferenceModel {
+  std::string path;
+  std::string alias;                 // filename by default; the Worksession panel label
+  std::vector<ObjectId> object_ids;  // this model's objects in the current document
+  bool has_limit_box = false;        // LimitReferenceModel restricted which objects loaded
+  kernel::Point3d limit_min{0, 0, 0}, limit_max{0, 0, 0};
+};
+
+// The data behind an editable hole feature (RoundHole/PlaceHole/
+// RevolvedHole/ArrayHole*'s result): the solid as it was before this hole
+// (`pre_cut_parent`) and the tool that cut it (`cutter`), both in world
+// space. CopyHole/MirrorHole/MoveHole/RotateHole (cmd_solidtools.cpp) look
+// this up by the hole object's id, transform `cutter` (and, for Move/
+// Rotate, replay the boolean against the unchanged `pre_cut_parent`) and
+// commit the new mesh - so a hole is a real, repositionable feature
+// instead of a one-shot mesh edit. Kept in a side table rather than on
+// SceneObject itself so ordinary objects, Save3dm, ObjectCount() and the
+// object list are untouched by it; like ReferenceModel, it is session
+// state only - not written to the .3dm and not restored by Undo/Redo (an
+// Undo past the cut leaves a harmless orphaned entry, cleared whenever the
+// object itself is removed).
+struct HoleFeature {
+  kernel::Mesh pre_cut_parent;
+  kernel::Mesh cutter;
+};
+
 struct DocumentSettings {
   std::string unit_system = "Millimeters";
   std::string title, author, comments;  // file metadata (saved in the .3dm)
@@ -339,6 +372,16 @@ class Document {
   const Animation& GetAnimation() const { return animation_; }
   std::vector<BlockDefinition>& Blocks() { return blocks_; }
   BlockDefinition* FindBlock(const std::string& name) { for (BlockDefinition& b : blocks_) if (b.name == name) return &b; return nullptr; }
+  std::vector<ReferenceModel>& ReferenceModels() { return reference_models_; }
+  const std::vector<ReferenceModel>& ReferenceModels() const { return reference_models_; }
+  void SetHoleFeature(ObjectId id, kernel::Mesh pre_cut_parent, kernel::Mesh cutter) {
+    hole_features_[id] = HoleFeature{std::move(pre_cut_parent), std::move(cutter)};
+  }
+  const HoleFeature* FindHoleFeature(ObjectId id) const {
+    const auto it = hole_features_.find(id);
+    return it == hole_features_.end() ? nullptr : &it->second;
+  }
+  void ClearHoleFeature(ObjectId id) { hole_features_.erase(id); }
   std::map<std::string, std::string>& UserText() { return user_text_; }
   std::string& Notes() { return notes_; }
   DocumentSettings& Settings() { return settings_; }
@@ -403,6 +446,8 @@ class Document {
   std::vector<BlockDefinition> blocks_;
   std::vector<Linetype> linetypes_;
   std::vector<AnnotationStyle> annotation_styles_;
+  std::vector<ReferenceModel> reference_models_;
+  std::map<ObjectId, HoleFeature> hole_features_;
   std::map<std::string, std::string> user_text_;
   std::string notes_;
   DocumentSettings settings_;

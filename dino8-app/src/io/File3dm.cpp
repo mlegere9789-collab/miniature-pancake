@@ -592,7 +592,7 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
   return true;
 }
 
-bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
+bool Save3dm(const Document& doc, const std::string& path, std::string& error, bool include_reference_objects) {
   ONX_Model model;
   model.m_sStartSectionComments = "Dino 8 - free NURBS modeler";
   model.m_properties.m_Application.m_application_name = L"Dino 8";
@@ -778,6 +778,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error) {
   int written = 0;
   std::map<ObjectId, ON_UUID> object_uuids;
   for (const SceneObject& o : doc.Objects()) {
+    if (!include_reference_objects && o.user_text.count("Dino8.Reference")) continue;
     ON_3dmObjectAttributes attr;
     ON_CreateUuid(attr.m_uuid);
     object_uuids[o.id] = attr.m_uuid;

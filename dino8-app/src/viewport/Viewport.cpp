@@ -718,8 +718,26 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     renderer.EnablePolygonOffset(false);
   }
   // Pass 2: curves, edges, isocurves, points, control points.
+  // Draw order (BringToFront/SendToBack/...) is stored per-object as the
+  // "DrawOrder" user text (higher draws later, i.e. on top). It only ever
+  // matters for coincident 2D-ish geometry (curves/points/hatches) where
+  // depth testing can't already resolve which one is "on top" - so this is
+  // a stable sort of the object list by that value, applied to every mode;
+  // it is a no-op when depth testing decides the outcome instead (3D shaded
+  // views) and the only real effect is in Wireframe / Top / other parallel,
+  // depth-off-for-lines views where curves actually overlap on screen.
+  std::vector<size_t> order(doc.Objects().size());
+  for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    auto draw_order_of = [&](const SceneObject& o) {
+      auto it = o.user_text.find("DrawOrder");
+      return it != o.user_text.end() ? std::atoi(it->second.c_str()) : 0;
+    };
+    return draw_order_of(doc.Objects()[a]) < draw_order_of(doc.Objects()[b]);
+  });
   if (!style.depth_lines) renderer.EnableDepthTest(false);
-  for (const SceneObject& o : doc.Objects()) {
+  for (size_t oi : order) {
+    const SceneObject& o = doc.Objects()[oi];
     if (!doc.IsObjectVisible(o)) continue;
     if (o.kind == ObjectKind::Curve) o.SetDisplayDashes(doc.EffectiveDashes(o));
     if (!shown(o)) continue;
