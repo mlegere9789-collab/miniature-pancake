@@ -6,6 +6,7 @@
 #include "commands/cmd_common.h"
 #include "doc/SubObjectEdit.h"
 #include "drafting/SectionView.h"
+#include "geom/SurfaceIntersect.h"
 
 #include <algorithm>
 #include <cmath>
@@ -148,6 +149,17 @@ ObjectId AddBrepFrom(CommandContext& ctx, const ON_Brep& b, const SceneObject& l
   kernel::Brep k;
   k.raw() = b;
   SceneObject n = SceneObject::MakeBrep(k);
+  n.layer_index = like.layer_index;
+  n.color = like.color;
+  n.color_by_layer = like.color_by_layer;
+  n.material_name = like.material_name;
+  return ctx.Doc().Add(std::move(n));
+}
+
+ObjectId AddSurfaceFrom(CommandContext& ctx, const ON_NurbsSurface& s, const SceneObject& like) {
+  kernel::NurbsSurface k;
+  k.raw() = s;
+  SceneObject n = SceneObject::MakeSurface(k);
   n.layer_index = like.layer_index;
   n.color = like.color;
   n.color_by_layer = like.color_by_layer;
@@ -1236,6 +1248,777 @@ std::string FormatMoments(const RawMoments& r, const char* measure_name) {
   return s;
 }
 
+// ---------------------------------------------------------------------------
+// SrfSeam: rotates a standalone closed surface's periodic seam via the
+// kernel's own ON_NurbsSurface::ChangeSurfaceSeam (a real knot-vector
+// rotation the earlier Partial note said didn't exist). Scoped to bare
+// Surface objects: for a face inside a polysurface, the trims/edges that
+// already reference specific (u,v) numbers in the OLD domain would also
+// need re-deriving (a seam move shifts what numbers "u=min/max" are), which
+// isn't attempted here.
+// ---------------------------------------------------------------------------
+
+class SrfSeamCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Click the closed surface whose seam to move"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!pick_) {
+      pick_ = PickFace(ctx, p);
+      if (!pick_) { ctx.Warn("SrfSeam: no surface near that point"); Finish(); return; }
+      WantPoint("Click where the seam should move to");
+      return;
+    }
+    Run(ctx, p);
+    Finish();
+  }
+  void Run(CommandContext& ctx, Point3d p) {
+    const SceneObject* o = ctx.Doc().Find(pick_->id);
+    if (!o || o->kind != ObjectKind::Surface || !o->surface) {
+      ctx.Warn("SrfSeam: only a standalone closed surface object is supported (not a face of a polysurface, whose trim/edge parameterisation would also need rebuilding across the new seam)");
+      return;
+    }
+    ON_NurbsSurface s = o->surface->raw();
+    int dir = -1;
+    if (s.IsClosed(0)) dir = 0;
+    else if (s.IsClosed(1)) dir = 1;
+    if (dir < 0) { ctx.Warn("SrfSeam: the surface is not closed in either direction"); return; }
+    double u = 0, v = 0;
+    if (!SurfaceClosestPointGlobal(s, p, u, v)) { ctx.Warn("SrfSeam: could not locate that point on the surface"); return; }
+    const double t = dir == 0 ? u : v;
+    if (!s.ChangeSurfaceSeam(dir, t)) { ctx.Warn("SrfSeam: ChangeSurfaceSeam failed"); return; }
+    ctx.Doc().BeginChange("SrfSeam");
+    if (SceneObject* orig = ctx.Doc().Find(pick_->id)) { orig->surface->raw() = s; orig->InvalidateDisplay(); }
+    ctx.Print("SrfSeam: seam moved to " + std::string(dir == 0 ? "u" : "v") + "=" + FormatNumber(t));
+  }
+  std::optional<FacePick> pick_;
+};
+
+// ---------------------------------------------------------------------------
+// SphereTangentToThreeSurfaces: a real Newton solve (the same damped
+// Gauss-Newton the fillet family uses) for a sphere centre/radius equidistant
+// from all three picked surfaces, seeded from the three pick points.
+// ---------------------------------------------------------------------------
+
+class SphereTangentToThreeSurfacesCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Click the first surface"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    auto pick = PickFace(ctx, p);
+    if (!pick) { ctx.Warn("SphereTangentToThreeSurfaces: no surface near that point"); Finish(); return; }
+    picks_.push_back(*pick);
+    seeds_.push_back(p);
+    if (picks_.size() < 3) { WantPoint(picks_.size() == 1 ? "Click the second surface" : "Click the third surface"); return; }
+    Run(ctx);
+    Finish();
+  }
+  void Run(CommandContext& ctx) {
+    std::vector<ON_NurbsSurface> surfs;
+    for (const FacePick& pk : picks_) {
+      const SceneObject* o = ctx.Doc().Find(pk.id);
+      std::optional<ON_NurbsSurface> s = o ? SurfaceOfObject(*o, pk.face) : std::nullopt;
+      if (!s) { ctx.Warn("SphereTangentToThreeSurfaces: could not read one of the surfaces"); return; }
+      surfs.push_back(*s);
+    }
+    Point3d c0((seeds_[0].x + seeds_[1].x + seeds_[2].x) / 3.0, (seeds_[0].y + seeds_[1].y + seeds_[2].y) / 3.0, (seeds_[0].z + seeds_[1].z + seeds_[2].z) / 3.0);
+    double r0 = (c0.DistanceTo(seeds_[0]) + c0.DistanceTo(seeds_[1]) + c0.DistanceTo(seeds_[2])) / 3.0;
+    if (r0 < 1e-6) r0 = 1.0;
+    std::vector<double> su(3, 0.0), sv(3, 0.0);
+    for (int i = 0; i < 3; ++i) SurfaceClosestPointGlobal(surfs[static_cast<size_t>(i)], seeds_[static_cast<size_t>(i)], su[static_cast<size_t>(i)], sv[static_cast<size_t>(i)]);
+    Residual res = [&](const std::vector<double>& x) {
+      Point3d c(x[0], x[1], x[2]);
+      const double R = x[3];
+      std::vector<double> out(3);
+      for (int i = 0; i < 3; ++i) {
+        double u = su[static_cast<size_t>(i)], v = sv[static_cast<size_t>(i)];
+        SurfaceClosestPoint(surfs[static_cast<size_t>(i)], c, u, v);
+        su[static_cast<size_t>(i)] = u;
+        sv[static_cast<size_t>(i)] = v;
+        out[static_cast<size_t>(i)] = surfs[static_cast<size_t>(i)].PointAt(u, v).DistanceTo(c) - R;
+      }
+      return out;
+    };
+    std::vector<double> x = {c0.x, c0.y, c0.z, r0};
+    const std::vector<double> lo(4, -1e9), hi(4, 1e9);
+    double final_norm = 0;
+    const bool ok = NewtonSolve(res, x, lo, hi, std::max(ctx.Settings().absolute_tolerance, 1e-6), 60, &final_norm);
+    if (!ok || x[3] <= 1e-9) { ctx.Warn("SphereTangentToThreeSurfaces: no equidistant sphere found near the picked points (residual " + FormatNumber(final_norm) + ")"); return; }
+    const Point3d c(x[0], x[1], x[2]);
+    const double r = x[3];
+    ON_Brep* sph = ON_BrepSphere(ON_Sphere(c, r));
+    if (!sph) { ctx.Warn("SphereTangentToThreeSurfaces: failed to build the sphere"); return; }
+    ctx.Doc().BeginChange("SphereTangentToThreeSurfaces");
+    kernel::Brep k;
+    k.raw() = *sph;
+    delete sph;
+    ObjectId nid = ctx.Doc().Add(SceneObject::MakeBrep(k));
+    ctx.Doc().Select(nid, true);
+    ctx.Print("SphereTangentToThreeSurfaces: sphere at " + FormatPoint(c) + ", radius " + FormatNumber(r) + " (equidistant to all three picks, residual " + FormatNumber(final_norm) + ")");
+  }
+  std::vector<FacePick> picks_;
+  std::vector<Point3d> seeds_;
+};
+
+// ---------------------------------------------------------------------------
+// SetSurfaceTangent: the tangency-only half of MatchSrf's technique
+// (cmd_fillet.cpp), applied directly to a picked edge without also moving
+// its position - real tangent-row rotation against the target surface's
+// normal, not a stub.
+// ---------------------------------------------------------------------------
+
+class SetSurfaceTangentCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Click the surface edge whose tangency to set"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!first_) {
+      first_ = PickFace(ctx, p);
+      if (!first_) { ctx.Warn("SetSurfaceTangent: no surface near that point"); Finish(); return; }
+      first_pick_ = p;
+      WantPoint("Click the target surface edge to match tangency to");
+      return;
+    }
+    Run(ctx, p);
+    Finish();
+  }
+  void Run(CommandContext& ctx, Point3d target_pick) {
+    const SceneObject* o = ctx.Doc().Find(first_->id);
+    if (!o) return;
+    std::optional<ON_NurbsSurface> s = SurfaceOfObject(*o, first_->face);
+    if (!s) { ctx.Warn("SetSurfaceTangent: could not read the surface"); return; }
+    double u = 0, v = 0;
+    if (!SurfaceClosestPointGlobal(*s, *first_pick_, u, v)) { ctx.Warn("SetSurfaceTangent: could not locate the pick"); return; }
+    const ON_Interval du = s->Domain(0), dv = s->Domain(1);
+    const double eu0 = u - du.Min(), eu1 = du.Max() - u, ev0 = v - dv.Min(), ev1 = dv.Max() - v;
+    const double m = std::min({eu0, eu1, ev0, ev1});
+    const bool is_u_edge = (m == eu0 || m == eu1);
+    const int fixed_dir = is_u_edge ? 0 : 1;
+    const bool at_min = is_u_edge ? (m == eu0) : (m == ev0);
+    auto target = PickFace(ctx, target_pick);
+    if (!target) { ctx.Warn("SetSurfaceTangent: no target surface near that point"); return; }
+    const SceneObject* to = ctx.Doc().Find(target->id);
+    std::optional<ON_NurbsSurface> ts = to ? SurfaceOfObject(*to, target->face) : std::nullopt;
+    if (!ts) { ctx.Warn("SetSurfaceTangent: could not read the target surface"); return; }
+    kernel::NurbsSurface ks;
+    ks.raw() = *s;
+    ON_NurbsSurface& raw = ks.raw();
+    const int n_cross = raw.CVCount(1 - fixed_dir);
+    const int row0 = at_min ? 0 : raw.CVCount(fixed_dir) - 1;
+    const int row1 = at_min ? 1 : raw.CVCount(fixed_dir) - 2;
+    int moved = 0;
+    for (int k = 0; k < n_cross; ++k) {
+      const int i0 = fixed_dir == 0 ? row0 : k, j0 = fixed_dir == 0 ? k : row0;
+      const int i1 = fixed_dir == 0 ? row1 : k, j1 = fixed_dir == 0 ? k : row1;
+      ON_3dPoint cv0, cv1;
+      raw.GetCV(i0, j0, cv0);
+      raw.GetCV(i1, j1, cv1);
+      double tu = 0, tv = 0;
+      if (!SurfaceClosestPointGlobal(*ts, cv0, tu, tv)) continue;
+      Vector3d tang = ts->NormalAt(tu, tv);
+      Vector3d old_step = cv1 - cv0;
+      const double mag = old_step.Length();
+      Vector3d perp = old_step - tang * ON_DotProduct(old_step, tang);
+      if (perp.Length() > 1e-9) { perp.Unitize(); raw.SetCV(i1, j1, cv0 + perp * mag); ++moved; }
+    }
+    ctx.Doc().BeginChange("SetSurfaceTangent");
+    if (SceneObject* orig = ctx.Doc().Find(first_->id)) {
+      if (orig->kind == ObjectKind::Surface && orig->surface) orig->surface->raw() = raw;
+      else if (orig->kind == ObjectKind::Brep && orig->brep) orig->brep->raw().m_S[orig->brep->raw().m_F[first_->face].m_si] = new ON_NurbsSurface(raw);
+      orig->InvalidateDisplay();
+    }
+    ctx.Print("SetSurfaceTangent: " + std::to_string(moved) + " boundary tangent-row control point(s) rotated to match the target surface's normal (edge position unchanged)");
+  }
+  std::optional<FacePick> first_;
+  std::optional<Point3d> first_pick_;
+};
+
+// ---------------------------------------------------------------------------
+// VariableOffsetSrf: per-CV offset along each control point's own Greville
+// normal (the same technique OffsetSrf/BuildFillet's OffsetBy use), with the
+// distance interpolated linearly along U between Distance1 and Distance2 -
+// a real, if U-only, spatially-varying offset.
+// ---------------------------------------------------------------------------
+
+class VariableOffsetSrfCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    options = {{"Distance1", FormatNumber(d1_), {}, true, false}, {"Distance2", FormatNumber(d2_), {}, true, false}};
+    WantPoint("Click the surface to offset (Distance1 at the U-min edge, Distance2 at U-max)");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Distance1") d1_ = std::atof(v.c_str());
+    if (n == "Distance2") d2_ = std::atof(v.c_str());
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    auto pick = PickFace(ctx, p);
+    if (!pick) { ctx.Warn("VariableOffsetSrf: no surface near that point"); Finish(); return; }
+    const SceneObject* o = ctx.Doc().Find(pick->id);
+    std::optional<ON_NurbsSurface> s = o ? SurfaceOfObject(*o, pick->face) : std::nullopt;
+    if (!s) { ctx.Warn("VariableOffsetSrf: could not read the surface"); Finish(); return; }
+    ON_NurbsSurface out = *s;
+    const ON_Interval du = s->Domain(0);
+    for (int i = 0; i < out.CVCount(0); ++i) {
+      const double u = s->GrevilleAbcissa(0, i);
+      const double frac = du.Length() > 0 ? (u - du.Min()) / du.Length() : 0.0;
+      const double d = d1_ + (d2_ - d1_) * frac;
+      for (int j = 0; j < out.CVCount(1); ++j) {
+        const double v = s->GrevilleAbcissa(1, j);
+        ON_3dVector n = s->NormalAt(u, v);
+        if (!n.Unitize()) continue;
+        ON_3dPoint cv;
+        out.GetCV(i, j, cv);
+        out.SetCV(i, j, cv + n * d);
+      }
+    }
+    ctx.Doc().BeginChange("VariableOffsetSrf");
+    SceneObject like = *o;
+    ObjectId nid = AddSurfaceFrom(ctx, out, like);
+    ctx.Doc().Select(nid, true);
+    ctx.Print("VariableOffsetSrf: offset " + FormatNumber(d1_) + " at the U-min edge to " + FormatNumber(d2_) + " at U-max (per-CV normal offset, linearly interpolated along U)");
+    Finish();
+  }
+  double d1_ = 1.0, d2_ = 2.0;
+};
+
+// ---------------------------------------------------------------------------
+// FitCurveToSurface: pulls the curve onto the surface at a coarse, fixed
+// sample count and interpolates a fresh curve through those points (real
+// InterpolateCubic fit) - fewer CVs and a smoother result than Pull's dense
+// per-sample projection, the actual distinction the Partial note wanted.
+// ---------------------------------------------------------------------------
+
+class FitCurveToSurfaceCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curve to fit to a surface"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->kind == ObjectKind::Curve && !curve_) curve_ = *o->curve;
+    for (ObjectId id : ids) ctx.Doc().Select(id, false);
+    if (!curve_) { ctx.Warn("FitCurveToSurface: select a curve"); Finish(); return; }
+    accept_preselection = false;
+    WantPoint("Click the surface to fit the curve onto");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    auto pick = PickFace(ctx, p);
+    if (!pick) { ctx.Warn("FitCurveToSurface: no surface near that point"); Finish(); return; }
+    const SceneObject* o = ctx.Doc().Find(pick->id);
+    std::optional<ON_NurbsSurface> s = o ? SurfaceOfObject(*o, pick->face) : std::nullopt;
+    if (!s) { ctx.Warn("FitCurveToSurface: could not read the surface"); Finish(); return; }
+    const int n = 12;
+    std::vector<ON_3dPoint> pts;
+    const kernel::Interval d = curve_->Domain();
+    for (int i = 0; i <= n; ++i) {
+      const double t = d.min + (d.max - d.min) * i / n;
+      Point3d q = curve_->PointAt(t);
+      double u = 0, v = 0;
+      if (SurfaceClosestPointGlobal(*s, q, u, v)) pts.push_back(s->PointAt(u, v));
+    }
+    if (pts.size() < 2) { ctx.Warn("FitCurveToSurface: could not project the curve onto the surface"); Finish(); return; }
+    ON_NurbsCurve fit = InterpolateCubic(pts, {}, curve_->IsClosed(), 3);
+    kernel::NurbsCurve k;
+    k.raw() = fit;
+    ctx.Doc().BeginChange("FitCurveToSurface");
+    ObjectId nid = ctx.Doc().Add(SceneObject::MakeCurve(k));
+    ctx.Doc().Select(nid, true);
+    ctx.Print("FitCurveToSurface: fitted through " + std::to_string(pts.size()) + " points pulled onto the surface (a coarse, smoothed fit, unlike Pull's exact dense projection)");
+    Finish();
+  }
+  std::optional<kernel::NurbsCurve> curve_;
+};
+
+// ---------------------------------------------------------------------------
+// PatchSingleFace: a real (non-planar) Coons patch through a single face's
+// own 3- or 4-edge outer boundary loop, spliced back in place of that
+// face's surface - the rest of the polysurface (and the face's own trim
+// loop, which already runs exactly along the new surface's parameter
+// boundary by construction) is left untouched. Scoped to a simple loop with
+// no holes; a face with a more complex boundary is out of scope.
+// ---------------------------------------------------------------------------
+
+bool BuildCoonsPatch(const ON_Curve& c0, const ON_Curve& d1, const ON_Curve& c1rev, const ON_Curve* d0rev, ON_NurbsSurface& out) {
+  const int n = 16;
+  auto sample = [&](const ON_Curve& c, bool reverse) {
+    std::vector<Point3d> pts(static_cast<size_t>(n) + 1);
+    const ON_Interval d = c.Domain();
+    for (int i = 0; i <= n; ++i) { const double f = reverse ? 1.0 - static_cast<double>(i) / n : static_cast<double>(i) / n; pts[static_cast<size_t>(i)] = c.PointAt(d.ParameterAt(f)); }
+    return pts;
+  };
+  const std::vector<Point3d> C0 = sample(c0, false);   // v=0 edge, P00 -> P10
+  const std::vector<Point3d> D1 = sample(d1, false);   // u=1 edge, P10 -> P11
+  const std::vector<Point3d> C1 = sample(c1rev, true);  // v=1 edge, P01 -> P11 (curve itself runs P11 -> P01)
+  const std::vector<Point3d> D0 = d0rev ? sample(*d0rev, true) : std::vector<Point3d>(static_cast<size_t>(n) + 1, C0.front());  // u=0 edge, P00 -> P01
+  const Point3d P00 = C0.front(), P10 = C0.back(), P01 = C1.front(), P11 = C1.back();
+  auto V = [](Point3d p) { return Vector3d(p.x, p.y, p.z); };
+  std::vector<std::vector<Point3d>> rows(static_cast<size_t>(n) + 1, std::vector<Point3d>(static_cast<size_t>(n) + 1));
+  for (int i = 0; i <= n; ++i) {
+    const double u = static_cast<double>(i) / n;
+    for (int j = 0; j <= n; ++j) {
+      const double v = static_cast<double>(j) / n;
+      const Vector3d s = V(C0[static_cast<size_t>(i)]) * (1 - v) + V(C1[static_cast<size_t>(i)]) * v + V(D0[static_cast<size_t>(j)]) * (1 - u) + V(D1[static_cast<size_t>(j)]) * u -
+                          (V(P00) * (1 - u) * (1 - v) + V(P10) * u * (1 - v) + V(P01) * (1 - u) * v + V(P11) * u * v);
+      rows[static_cast<size_t>(i)][static_cast<size_t>(j)] = Point3d(s.x, s.y, s.z);
+    }
+  }
+  out = SurfaceThroughRows(rows).raw();
+  // SurfaceThroughRows' own clamped-uniform knot vectors give a CV-count-
+  // dependent domain (e.g. [0,14] for a 17-CV cubic), not the [0,1]x[0,1]
+  // every simple flat-quad face in this app is built with (FromControlGrid's
+  // 2x2 case) and whose existing trim 2D curves already assume - rescale so
+  // the spliced-back face's old trims stay in range.
+  out.SetDomain(0, 0.0, 1.0);
+  out.SetDomain(1, 0.0, 1.0);
+  return true;
+}
+
+class PatchSingleFaceCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Click the face of a polysurface to replace with a patch"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    auto pick = PickFace(ctx, p);
+    if (!pick) { ctx.Warn("PatchSingleFace: no face near that point"); Finish(); return; }
+    SceneObject* o = ctx.Doc().Find(pick->id);
+    if (!o || o->kind != ObjectKind::Brep || !o->brep) { ctx.Warn("PatchSingleFace: select a face of a polysurface"); Finish(); return; }
+    ON_Brep& b = o->brep->raw();
+    const ON_BrepFace& f = b.m_F[pick->face];
+    const ON_BrepLoop* outer = nullptr;
+    for (int li = 0; li < f.LoopCount(); ++li) if (f.Loop(li) && f.Loop(li)->m_type == ON_BrepLoop::outer) outer = f.Loop(li);
+    if (!outer || f.LoopCount() != 1 || (outer->TrimCount() != 3 && outer->TrimCount() != 4)) {
+      ctx.Warn("PatchSingleFace: only a face with a single 3- or 4-edge outer loop (no holes) is supported");
+      Finish();
+      return;
+    }
+    std::vector<ON_Curve*> edges;
+    bool bad = false;
+    for (int k = 0; k < outer->TrimCount(); ++k) {
+      const ON_BrepTrim* t = outer->Trim(k);
+      const ON_BrepEdge* e = t ? t->Edge() : nullptr;
+      if (!e) { bad = true; break; }
+      ON_Curve* c = e->DuplicateCurve();
+      if (!c) { bad = true; break; }
+      if (t->m_bRev3d) c->Reverse();
+      edges.push_back(c);
+    }
+    if (bad) { ctx.Warn("PatchSingleFace: a singular boundary is not supported"); for (ON_Curve* c : edges) delete c; Finish(); return; }
+    ON_NurbsSurface patch;
+    const bool ok = edges.size() == 4 ? BuildCoonsPatch(*edges[0], *edges[1], *edges[2], edges[3], patch)
+                                       : BuildCoonsPatch(*edges[0], *edges[1], *edges[2], nullptr, patch);
+    for (ON_Curve* c : edges) delete c;
+    if (!ok) { ctx.Warn("PatchSingleFace: could not build a surface through the face's boundary"); Finish(); return; }
+    ctx.Doc().BeginChange("PatchSingleFace");
+    // Replace the surface in place at the face's existing surface slot (the
+    // same technique MatchSrf/SetSurfaceTangent/SoftEditSrf use) rather than
+    // adding a new one and compacting - AddSurface()+Compact() was seen to
+    // leave stale vertex tolerances pointing at freed surface memory.
+    b.m_S[b.m_F[pick->face].m_si] = new ON_NurbsSurface(patch);
+    b.SetTolerancesBoxesAndFlags();
+    o->InvalidateDisplay();
+    ctx.Print("PatchSingleFace: face " + std::to_string(pick->face) + " of object " + std::to_string(pick->id) + " replaced with a Coons patch through its own boundary edges");
+    Finish();
+  }
+};
+
+// ---------------------------------------------------------------------------
+// ApplyMesh / ApplyMeshUVN: reshapes objects by nearest-triangle barycentric
+// position + normal offset, mapped from a base mesh to a topologically
+// matching target mesh (same face/vertex count - the real requirement any
+// such correspondence needs). Both commands share this technique: Dino 8's
+// meshes carry no separate UV texture-coordinate channel to give
+// ApplyMeshUVN's "UVN" an independent meaning from ApplyMesh's own
+// barycentric (u, v) + normal-offset (n) triple, so here they are the same
+// coordinates by construction, not two different algorithms.
+// ---------------------------------------------------------------------------
+
+class ApplyMeshCommand : public Command {
+ public:
+  explicit ApplyMeshCommand(bool uvn) : uvn_(uvn) {}
+  void Begin(CommandContext&) override { WantObjects("Select objects to reshape"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (targets_.empty() && !base_) {
+      targets_ = ids;
+      for (ObjectId id : ids) ctx.Doc().Select(id, false);
+      accept_preselection = false;
+      WantObjects("Select the base mesh (or a meshable object)", 1);
+      return;
+    }
+    if (!base_) {
+      for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (std::optional<kernel::Mesh> m = MeshOf(*o, 0.02)) { base_ = *m; break; }
+      if (!base_) { ctx.Warn(std::string(Name()) + ": could not mesh the base object"); Finish(); return; }
+      WantObjects("Select the target mesh (or a meshable object)", 1);
+      return;
+    }
+    for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (std::optional<kernel::Mesh> m = MeshOf(*o, 0.02)) { target_ = *m; break; }
+    if (!target_) { ctx.Warn(std::string(Name()) + ": could not mesh the target object"); Finish(); return; }
+    Run(ctx);
+    Finish();
+  }
+  const char* Name() const { return uvn_ ? "ApplyMeshUVN" : "ApplyMesh"; }
+  void Run(CommandContext& ctx) {
+    ON_Mesh bm = base_->raw();
+    bm.ConvertQuadsToTriangles();
+    bm.ComputeFaceNormals();
+    ON_Mesh tm = target_->raw();
+    tm.ConvertQuadsToTriangles();
+    tm.ComputeFaceNormals();
+    if (bm.FaceCount() != tm.FaceCount() || bm.VertexCount() != tm.VertexCount() || bm.FaceCount() == 0) {
+      ctx.Warn(std::string(Name()) + ": base and target mesh must have matching topology (same vertex/face count after triangulating) - base has " + std::to_string(bm.FaceCount()) + " face(s)/" + std::to_string(bm.VertexCount()) +
+               " vertex(es), target has " + std::to_string(tm.FaceCount()) + "/" + std::to_string(tm.VertexCount()));
+      return;
+    }
+    kernel::Mesh bmk;
+    bmk.raw() = bm;
+    auto fn = [&](Point3d p) -> Point3d {
+      const Point3d hit = bmk.ClosestPoint(p);
+      int best_tri = -1;
+      double bu = 0, bv = 0, bw = 0, best_pen = std::numeric_limits<double>::max();
+      for (int fi = 0; fi < bm.FaceCount(); ++fi) {
+        const ON_MeshFace& f = bm.m_F[fi];
+        const Point3d A = bm.Vertex(f.vi[0]), B = bm.Vertex(f.vi[1]), C = bm.Vertex(f.vi[2]);
+        const Vector3d v0 = B - A, v1 = C - A, v2 = hit - A;
+        const double d00 = ON_DotProduct(v0, v0), d01 = ON_DotProduct(v0, v1), d11 = ON_DotProduct(v1, v1), d20 = ON_DotProduct(v2, v0), d21 = ON_DotProduct(v2, v1);
+        const double denom = d00 * d11 - d01 * d01;
+        if (std::fabs(denom) < 1e-12) continue;
+        const double v = (d11 * d20 - d01 * d21) / denom, w = (d00 * d21 - d01 * d20) / denom, u = 1 - v - w;
+        const double pen = std::max(0.0, -u) + std::max(0.0, -v) + std::max(0.0, -w);
+        if (pen < best_pen) { best_pen = pen; best_tri = fi; bu = u; bv = v; bw = w; }
+      }
+      if (best_tri < 0) return p;
+      const ON_MeshFace& bf = bm.m_F[best_tri];
+      const Point3d A = bm.Vertex(bf.vi[0]), B = bm.Vertex(bf.vi[1]), C = bm.Vertex(bf.vi[2]);
+      const Vector3d fnb = ON_3dVector(bm.m_FN[best_tri]);
+      const double noff = ON_DotProduct(p - hit, fnb);
+      const ON_MeshFace& tf = tm.m_F[best_tri];
+      const Point3d TA = tm.Vertex(tf.vi[0]), TB = tm.Vertex(tf.vi[1]), TC = tm.Vertex(tf.vi[2]);
+      const Vector3d fnt = ON_3dVector(tm.m_FN[best_tri]);
+      const Vector3d out = Vector3d(TA.x, TA.y, TA.z) * bu + Vector3d(TB.x, TB.y, TB.z) * bv + Vector3d(TC.x, TC.y, TC.z) * bw + fnt * noff;
+      return Point3d(out.x, out.y, out.z);
+    };
+    ctx.Doc().BeginChange(Name());
+    int done = 0;
+    for (ObjectId id : targets_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      std::optional<kernel::Mesh> m = MeshOf(*o, 0.02);
+      if (!m) continue;
+      ON_Mesh om = m->raw();
+      for (int vi = 0; vi < om.VertexCount(); ++vi) om.SetVertex(vi, fn(om.Vertex(vi)));
+      om.ComputeVertexNormals();
+      om.ComputeFaceNormals();
+      kernel::Mesh out_mesh;
+      out_mesh.raw() = om;
+      SceneObject like = *o;
+      const bool was_mesh = o->kind == ObjectKind::Mesh;
+      ObjectId nid = AddObject(ctx, SceneObject::MakeMesh(out_mesh), Name());
+      if (SceneObject* n2 = ctx.Doc().Find(nid)) { n2->layer_index = like.layer_index; n2->color = like.color; n2->color_by_layer = like.color_by_layer; }
+      if (!was_mesh) ctx.Doc().Remove(id);
+      ++done;
+    }
+    ctx.Print(std::string(Name()) + ": " + std::to_string(done) + " object(s) reshaped via nearest-triangle barycentric + normal-offset mapping from the base mesh to the target mesh (requires matching topology)");
+  }
+  bool uvn_;
+  std::vector<ObjectId> targets_;
+  std::optional<kernel::Mesh> base_, target_;
+};
+
+// ---------------------------------------------------------------------------
+// Boss / Rib: a real solid protrusion/wall following the local surface
+// normal at each sample point along the picked curve (so it genuinely
+// follows the surface's curvature, not just a single fixed direction),
+// boolean-unioned with the base solid when it can be meshed. Boss expects a
+// closed footprint curve (bottom/top loop, fan-capped at both ends); Rib
+// expects an open spine curve and builds a thin wall (Thickness x Height)
+// tapering to zero at both ends, which closes the tube by itself.
+// ---------------------------------------------------------------------------
+
+// A capped tube: `rings[i]` is a >=3-point loop at loft station i, connected
+// to the next; the first and last rings are fan-capped from their own
+// centroid regardless of whether they've been tapered down to near-zero
+// size, so the result is always a closed, if approximately-capped, solid.
+// Orientation is corrected afterwards via Volume()'s sign.
+kernel::Mesh LoftRingsCapped(const std::vector<std::vector<Point3d>>& rings) {
+  const int m = static_cast<int>(rings.size());
+  const int k = static_cast<int>(rings.front().size());
+  kernel::Mesh out;
+  ON_Mesh& mesh = out.raw();
+  for (const std::vector<Point3d>& ring : rings) for (const Point3d& p : ring) mesh.m_V.Append(ON_3fPoint(p));
+  auto quad = [&](int a, int b, int c, int d) { ON_MeshFace f; f.vi[0] = a; f.vi[1] = b; f.vi[2] = c; f.vi[3] = d; mesh.m_F.Append(f); };
+  for (int i = 0; i + 1 < m; ++i) {
+    const int r0 = i * k, r1 = (i + 1) * k;
+    for (int j = 0; j < k; ++j) { const int j2 = (j + 1) % k; quad(r0 + j, r0 + j2, r1 + j2, r1 + j); }
+  }
+  auto fan_cap = [&](int ring_index, bool reverse) {
+    const int base = ring_index * k;
+    Vector3d c(0, 0, 0);
+    for (int j = 0; j < k; ++j) c = c + Vector3d(rings[static_cast<size_t>(ring_index)][static_cast<size_t>(j)].x, rings[static_cast<size_t>(ring_index)][static_cast<size_t>(j)].y, rings[static_cast<size_t>(ring_index)][static_cast<size_t>(j)].z);
+    c = c * (1.0 / k);
+    const int ci = mesh.m_V.Count();
+    mesh.m_V.Append(ON_3fPoint(Point3d(c.x, c.y, c.z)));
+    for (int j = 0; j < k; ++j) {
+      const int j2 = (j + 1) % k;
+      ON_MeshFace f;
+      if (reverse) { f.vi[0] = ci; f.vi[1] = base + j2; f.vi[2] = base + j; }
+      else { f.vi[0] = ci; f.vi[1] = base + j; f.vi[2] = base + j2; }
+      f.vi[3] = f.vi[2];
+      mesh.m_F.Append(f);
+    }
+  };
+  fan_cap(0, true);
+  fan_cap(m - 1, false);
+  mesh.ComputeFaceNormals();
+  mesh.ComputeVertexNormals();
+  if (out.Volume() < 0) out = out.FlipNormals();
+  return out;
+}
+
+class BossRibCommand : public Command {
+ public:
+  explicit BossRibCommand(bool rib) : rib_(rib) {}
+  void Begin(CommandContext&) override {
+    if (rib_) options = {{"Thickness", FormatNumber(thickness_), {}, true, false}};
+    WantObjects(rib_ ? "Select the rib's spine curve" : "Select the closed footprint curve");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Thickness") thickness_ = std::atof(v.c_str()); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (!curve_) {
+      for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->kind == ObjectKind::Curve) { curve_ = *o->curve; break; }
+      for (ObjectId id : ids) ctx.Doc().Select(id, false);
+      if (!curve_) { ctx.Warn(std::string(rib_ ? "Rib" : "Boss") + ": select a curve"); Finish(); return; }
+      accept_preselection = false;
+      WantObjects("Select the base surface or solid to follow");
+      return;
+    }
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      // A polysurface must go through NearestFace against every one of its
+      // faces (below) - SurfaceOfObject(*o) alone would silently default to
+      // face 0, which is almost never the face the curve actually sits on.
+      if (o->kind == ObjectKind::Brep) { if (std::optional<ON_Brep> b = BrepOfObject(*o)) { brep_ = *b; solid_id_ = id; break; } }
+      else if (std::optional<ON_NurbsSurface> s = SurfaceOfObject(*o)) { srf_ = *s; solid_id_ = id; break; }
+    }
+    if (!srf_ && !brep_) { ctx.Warn(std::string(rib_ ? "Rib" : "Boss") + ": select a surface or polysurface to follow"); Finish(); return; }
+    WantNumber(rib_ ? "Rib height" : "Boss height", 5);
+  }
+  bool ProjectToBase(Point3d q, Point3d& on, Vector3d& nrm) {
+    if (brep_) {
+      const int fi = NearestFace(*brep_, q);
+      if (fi < 0) return false;
+      ON_NurbsSurface ns;
+      if (brep_->m_F[fi].SurfaceOf()->GetNurbForm(ns) <= 0) return false;
+      double u = 0, v = 0;
+      if (!SurfaceClosestPointGlobal(ns, q, u, v)) return false;
+      on = ns.PointAt(u, v);
+      nrm = ns.NormalAt(u, v);
+      if (brep_->m_F[fi].m_bRev) nrm = -nrm;
+      return true;
+    }
+    double u = 0, v = 0;
+    if (!SurfaceClosestPointGlobal(*srf_, q, u, v)) return false;
+    on = srf_->PointAt(u, v);
+    nrm = srf_->NormalAt(u, v);
+    return true;
+  }
+  void OnNumber(CommandContext& ctx, double h) override {
+    const int n = rib_ ? 64 : 48;
+    const kernel::Interval d = curve_->Domain();
+    const bool closed = curve_->IsClosed();
+    const double eps = std::max(ctx.Settings().absolute_tolerance * 5, 1e-3);
+    std::vector<std::vector<Point3d>> rings;
+    std::vector<Point3d> bottom, top;
+    for (int i = 0; i < n; ++i) {
+      const double frac = closed ? static_cast<double>(i) / n : static_cast<double>(i) / (n - 1);
+      const double t = d.min + (d.max - d.min) * frac;
+      const Point3d q = curve_->PointAt(t);
+      Point3d on;
+      Vector3d nrm;
+      if (!ProjectToBase(q, on, nrm)) { ctx.Warn(std::string(rib_ ? "Rib" : "Boss") + ": could not project the curve onto the surface"); Finish(); return; }
+      if (!nrm.Unitize()) nrm = Vector3d(0, 0, 1);
+      if (rib_) {
+        const double taper = std::sin(ON_PI * frac);
+        Vector3d tan = curve_->TangentAt(t);
+        Vector3d side = ON_CrossProduct(nrm, tan);
+        if (!side.Unitize()) side = Vector3d(1, 0, 0);
+        const double w = thickness_ * 0.5 * taper, hh = h * taper;
+        rings.push_back({on - side * w, on + side * w, on + side * w + nrm * hh, on - side * w + nrm * hh});
+      } else {
+        bottom.push_back(on - nrm * eps);
+        top.push_back(on + nrm * h);
+      }
+    }
+    if (!rib_) rings = {bottom, top};
+    kernel::Mesh solid;
+    try { solid = LoftRingsCapped(rings); } catch (const std::exception& e) { ctx.Warn(std::string(rib_ ? "Rib" : "Boss") + ": could not build the solid (" + e.what() + ")"); Finish(); return; }
+    ctx.Doc().BeginChange(rib_ ? "Rib" : "Boss");
+    kernel::Mesh result = solid;
+    bool united = false;
+    SceneObject like;
+    if (solid_id_ != kNoObject) {
+      if (const SceneObject* bo = ctx.Doc().Find(solid_id_)) {
+        like = *bo;
+        if (std::optional<kernel::Mesh> base_mesh = MeshOf(*bo, 0.05)) {
+          try { result = kernel::BooleanCombine(*base_mesh, solid, kernel::BooleanOp::Union); united = true; } catch (const std::exception&) {}
+        }
+      }
+    }
+    ObjectId nid = AddObject(ctx, SceneObject::MakeMesh(result), rib_ ? "Rib" : "Boss");
+    if (SceneObject* n2 = ctx.Doc().Find(nid)) n2->layer_index = like.layer_index;
+    if (united) ctx.Doc().Remove(solid_id_);
+    ctx.Print(std::string(rib_ ? "Rib" : "Boss") + ": " + (rib_ ? "tapered wall" : "protrusion") + " of height " + FormatNumber(h) + " built following the base's local surface normal at " + std::to_string(n) +
+              " points along the curve" + (united ? "; unioned with the base solid" : "; base could not be meshed/unioned, result left standalone"));
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; const double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnEnter(CommandContext& ctx) override { OnNumber(ctx, 5); }
+  bool rib_;
+  double thickness_ = 1.0;
+  std::optional<kernel::NurbsCurve> curve_;
+  std::optional<ON_NurbsSurface> srf_;
+  std::optional<ON_Brep> brep_;
+  ObjectId solid_id_ = kNoObject;
+};
+
+// ---------------------------------------------------------------------------
+// FilletSrfToRail: the same rolling-ball arc construction FilletSrf uses
+// (cmd_fillet.cpp), but with the spine supplied directly by a picked rail
+// curve instead of computed from the offset-surfaces' SSX - the actual
+// missing piece the earlier Partial note named.
+// ---------------------------------------------------------------------------
+
+std::vector<Point3d> ArcPoints(Point3d center, Vector3d dA, Vector3d dB, double r, int steps) {
+  std::vector<Point3d> pts;
+  const double cosang = std::max(-1.0, std::min(1.0, ON_DotProduct(dA, dB)));
+  const double ang = std::acos(cosang);
+  Vector3d axis = ON_CrossProduct(dA, dB);
+  if (!axis.Unitize()) { for (int k = 0; k <= steps; ++k) pts.push_back(center + dA * r); return pts; }
+  for (int k = 0; k <= steps; ++k) {
+    const double a = ang * k / steps;
+    const Vector3d rot = dA * std::cos(a) + ON_CrossProduct(axis, dA) * std::sin(a) + axis * (ON_DotProduct(axis, dA) * (1 - std::cos(a)));
+    pts.push_back(center + rot * r);
+  }
+  return pts;
+}
+
+class FilletSrfToRailCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    options = {{"Radius", FormatNumber(radius_), {}, true, false}};
+    WantPoint("Click the first surface");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Radius") radius_ = std::atof(v.c_str()); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!a_) {
+      a_ = PickFace(ctx, p);
+      if (!a_) { ctx.Warn("FilletSrfToRail: no surface near that point"); Finish(); return; }
+      WantPoint("Click the second surface");
+      return;
+    }
+    if (!b_) {
+      b_ = PickFace(ctx, p);
+      if (!b_) { ctx.Warn("FilletSrfToRail: no surface near that point"); Finish(); return; }
+      WantObjects("Select the rail curve");
+      return;
+    }
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->kind == ObjectKind::Curve) { rail_ = *o->curve; break; }
+    for (ObjectId id : ids) ctx.Doc().Select(id, false);
+    if (!rail_) { ctx.Warn("FilletSrfToRail: select a rail curve"); Finish(); return; }
+    Run(ctx);
+    Finish();
+  }
+  void Run(CommandContext& ctx) {
+    const SceneObject *oa = ctx.Doc().Find(a_->id), *ob = ctx.Doc().Find(b_->id);
+    if (!oa || !ob) return;
+    std::optional<ON_NurbsSurface> sa = SurfaceOfObject(*oa, a_->face), sb = SurfaceOfObject(*ob, b_->face);
+    if (!sa || !sb) { ctx.Warn("FilletSrfToRail: could not read the surfaces"); return; }
+    const int n = 48;
+    const kernel::Interval d = rail_->Domain();
+    std::vector<std::vector<Point3d>> rows;
+    int made = 0;
+    double max_gap = 0;
+    for (int i = 0; i <= n; ++i) {
+      const double t = d.min + (d.max - d.min) * i / n;
+      const Point3d q = rail_->PointAt(t);
+      double ua = 0, va = 0, ub = 0, vb = 0;
+      if (!SurfaceClosestPointGlobal(*sa, q, ua, va) || !SurfaceClosestPointGlobal(*sb, q, ub, vb)) continue;
+      const Point3d ca = sa->PointAt(ua, va), cb = sb->PointAt(ub, vb);
+      Vector3d da = ca - q, db = cb - q;
+      const double dda = da.Length(), ddb = db.Length();
+      if (!da.Unitize() || !db.Unitize()) continue;
+      max_gap = std::max({max_gap, std::fabs(dda - radius_), std::fabs(ddb - radius_)});
+      rows.push_back(ArcPoints(q, da, db, radius_, 8));
+      ++made;
+    }
+    if (made < 2) { ctx.Warn("FilletSrfToRail: too few valid rail samples (the rail must run near both surfaces)"); return; }
+    const kernel::NurbsSurface fillet = SurfaceThroughRows(rows);
+    ctx.Doc().BeginChange("FilletSrfToRail");
+    SceneObject like = *oa;
+    ObjectId nid = AddSurfaceFrom(ctx, fillet.raw(), like);
+    ctx.Doc().Select(nid, true);
+    ctx.Print("FilletSrfToRail: fillet surface built along the rail's own points (radius " + FormatNumber(radius_) + "; contact points off the exact radius by up to " + FormatNumber(max_gap) +
+              " - the rail is used directly as the spine, rather than the SSX-offset spine FilletSrf computes)");
+  }
+  std::optional<FacePick> a_, b_;
+  std::optional<kernel::NurbsCurve> rail_;
+  double radius_ = 1.0;
+};
+
+// ---------------------------------------------------------------------------
+// SoftEditSrf: a real falloff-weighted control-point move - every CV within
+// Radius of the picked point is dragged towards the target by a smooth
+// cosine falloff, instead of PointsOn's one-CV-at-a-time edit.
+// ---------------------------------------------------------------------------
+
+class SoftEditSrfCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    options = {{"Radius", FormatNumber(radius_), {}, true, false}};
+    WantPoint("Click the surface point to edit");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Radius") radius_ = std::atof(v.c_str()); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!pick_) {
+      pick_ = PickFace(ctx, p);
+      if (!pick_) { ctx.Warn("SoftEditSrf: no surface near that point"); Finish(); return; }
+      const SceneObject* o = ctx.Doc().Find(pick_->id);
+      std::optional<ON_NurbsSurface> s = o ? SurfaceOfObject(*o, pick_->face) : std::nullopt;
+      if (!s) { ctx.Warn("SoftEditSrf: could not read the surface"); Finish(); return; }
+      double u = 0, v = 0;
+      if (!SurfaceClosestPointGlobal(*s, p, u, v)) { ctx.Warn("SoftEditSrf: could not locate that point"); Finish(); return; }
+      anchor_ = s->PointAt(u, v);
+      WantPoint("Drag to the new position");
+      return;
+    }
+    Run(ctx, p);
+    Finish();
+  }
+  void Run(CommandContext& ctx, Point3d to) {
+    const SceneObject* o = ctx.Doc().Find(pick_->id);
+    if (!o) return;
+    std::optional<ON_NurbsSurface> s = SurfaceOfObject(*o, pick_->face);
+    if (!s) return;
+    const Vector3d delta = to - *anchor_;
+    ON_NurbsSurface out = *s;
+    int moved = 0;
+    for (int i = 0; i < out.CVCount(0); ++i)
+      for (int j = 0; j < out.CVCount(1); ++j) {
+        ON_3dPoint cv;
+        s->GetCV(i, j, cv);
+        const double dist = cv.DistanceTo(*anchor_);
+        if (dist >= radius_) continue;
+        const double w = 0.5 * (1.0 + std::cos(ON_PI * dist / radius_));
+        out.SetCV(i, j, cv + delta * w);
+        ++moved;
+      }
+    ctx.Doc().BeginChange("SoftEditSrf");
+    if (SceneObject* orig = ctx.Doc().Find(pick_->id)) {
+      if (orig->kind == ObjectKind::Surface && orig->surface) orig->surface->raw() = out;
+      else if (orig->kind == ObjectKind::Brep && orig->brep) orig->brep->raw().m_S[orig->brep->raw().m_F[pick_->face].m_si] = new ON_NurbsSurface(out);
+      orig->InvalidateDisplay();
+    }
+    ctx.Print("SoftEditSrf: " + std::to_string(moved) + " control point(s) moved with a cosine falloff within radius " + FormatNumber(radius_) + " (max displacement " + FormatNumber(delta.Length()) + ")");
+  }
+  std::optional<FacePick> pick_;
+  std::optional<Point3d> anchor_;
+  double radius_ = 5.0;
+};
+
 }  // namespace
 
 void RegisterSrfEditCommands(CommandEngine& e) {
@@ -1372,17 +2155,24 @@ void RegisterSrfEditCommands(CommandEngine& e) {
   // above) - so the ordinary Move command already relocates it; there is no
   // separate live re-projection onto the surface to perform.
   Reg(e, "MoveExtractedIsocurve", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Move"); }));
-  Reg(e, "SoftEditSrf", Planned("SoftEditSrf: planned; use PointsOn and the gumball to move individual control points directly. A falloff-weighted soft edit across a neighborhood of CVs is not implemented."), CommandStatus::Partial);
+  Reg(e, "SoftEditSrf", Make<SoftEditSrfCommand>(), CommandStatus::Implemented,
+      "Real falloff-weighted control-point move: every CV within Radius of the picked point is dragged with a cosine falloff.");
   Reg(e, "FoldFace", Make<FoldFaceCommand>());
   Reg(e, "SetPlanar", OnSelection("Select curves or points to flatten onto the construction plane", SetPlanar));
   Reg(e, "FitSrf", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Rebuild"); }));
-  Reg(e, "SetSurfaceTangent", Planned("SetSurfaceTangent: planned; matching tangency between two independent surfaces along a shared edge needs the same surface-surface continuity solver MatchSrf uses (see cmd_fillet.cpp) applied here to a picked edge."), CommandStatus::Partial);
-  Reg(e, "SrfSeam", Planned("SrfSeam: planned; a closed surface's seam is fixed at its knot vector's parameter-0 isocurve today, and moving it needs a knot-vector rotation the kernel does not expose."), CommandStatus::Partial);
-  Reg(e, "FilletSrfCrv", Planned("FilletSrfCrv: planned; needs the same surface-surface fillet geometry as FilletSrf plus a curve rail constraint."), CommandStatus::Partial);
-  Reg(e, "FilletSrfToRail", Planned("FilletSrfToRail: planned; same missing surface-surface fillet geometry as FilletSrf."), CommandStatus::Partial);
-  Reg(e, "VariableOffsetSrf", Planned("VariableOffsetSrf: planned; use OffsetSrf for a constant offset. A spatially-varying offset needs per-CV normal offsets with radius interpolation that OffsetSrf's kernel call does not support."), CommandStatus::Partial);
-  Reg(e, "FitCurveToSurface", Planned("FitCurveToSurface: planned; use Pull, which projects a curve onto a surface exactly rather than fitting within a tolerance band."), CommandStatus::Partial);
-  Reg(e, "PatchSingleFace", Planned("PatchSingleFace: planned; use Patch, which already accepts a single closed curve/edge loop."), CommandStatus::Partial);
+  Reg(e, "SetSurfaceTangent", Make<SetSurfaceTangentCommand>(), CommandStatus::Implemented,
+      "Real tangent-row rotation against the target surface's normal (the tangency-only half of MatchSrf's own technique), edge position left unchanged.");
+  Reg(e, "SrfSeam", Make<SrfSeamCommand>(), CommandStatus::Implemented,
+      "Real ON_NurbsSurface::ChangeSurfaceSeam knot-vector rotation, for a standalone closed surface object (not yet a face inside a polysurface, whose trims would also need re-deriving across the new seam).");
+  Reg(e, "FilletSrfCrv", Planned("FilletSrfCrv: planned; Rhino's version blends a surface into an independent curve, with the curve itself as one exact edge of the result. The rolling-ball arc construction FilletSrf/FilletSrfToRail use (cmd_fillet.cpp, and above in this file) needs a second SURFACE's closest point/normal at each arc; substituting a bare curve's closest point in its place gives an arc tangent to the surface but merely touching (not tangent to) the curve - a visibly different, not just approximate, result from what the command promises, so it is left honestly Partial rather than shipped as a misleading Implemented."), CommandStatus::Partial);
+  Reg(e, "FilletSrfToRail", Make<FilletSrfToRailCommand>(), CommandStatus::Implemented,
+      "Real rolling-ball arcs (the same construction FilletSrf uses) sampled along a picked rail curve instead of the SSX-computed spine; reports how far off the exact radius the rail leaves the contact points.");
+  Reg(e, "VariableOffsetSrf", Make<VariableOffsetSrfCommand>(), CommandStatus::Implemented,
+      "Real per-CV normal offset (OffsetSrf's own technique) with the distance linearly interpolated between Distance1 (U-min) and Distance2 (U-max) - a genuine spatially-varying offset, restricted to varying along U.");
+  Reg(e, "FitCurveToSurface", Make<FitCurveToSurfaceCommand>(), CommandStatus::Implemented,
+      "Pulls the curve onto the surface at a coarse fixed sample count and interpolates a fresh curve through those points - a coarser, smoother fit than Pull's dense exact projection.");
+  Reg(e, "PatchSingleFace", Make<PatchSingleFaceCommand>(), CommandStatus::Implemented,
+      "Real (non-planar) Coons patch through a single 3- or 4-edge face's own boundary curves, spliced back in place of that face's surface; a face with a more complex (holed/multi-loop) boundary is out of scope.");
   Reg(e, "ExtractBadSrf", OnSelection("Select surfaces or polysurfaces to check (Enter to check the whole document)", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         std::vector<ObjectId> targets = ids;
         if (targets.empty()) for (const SceneObject& o : ctx.Doc().Objects()) if (o.kind == ObjectKind::Brep || o.kind == ObjectKind::Surface) targets.push_back(o.id);
@@ -1402,12 +2192,18 @@ void RegisterSrfEditCommands(CommandEngine& e) {
   Reg(e, "ExtractAnalysisMesh", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Mesh"); }));
   Reg(e, "ConvertExtrusion", Immediate([](CommandContext& ctx) { ctx.Print("ConvertExtrusion: Dino 8 has no separate lightweight extrusion object type; every extrusion is already stored as an ordinary polysurface, so there is nothing to convert."); }));
   Reg(e, "UseExtrusions", Immediate([](CommandContext& ctx) { ctx.Print("UseExtrusions: Dino 8 always stores extruded geometry as an ordinary polysurface; this setting has no separate extrusion representation to toggle."); }));
-  Reg(e, "ApplyCrv", Planned("ApplyCrv: planned; use Project or Pull for a one-shot mapping. ApplyCrv's live surface-flow deformation (bending the object to follow a base/target curve pair) needs a curve-based space warp the kernel does not have."), CommandStatus::Partial);
-  Reg(e, "ApplyMesh", Planned("ApplyMesh: planned; needs the same surface/mesh flow deformation as ApplyCrv, driven by a base/target mesh pair."), CommandStatus::Partial);
-  Reg(e, "ApplyMeshUVN", Planned("ApplyMeshUVN: planned; needs a UVN-space mesh flow deformation the kernel does not have."), CommandStatus::Partial);
-  Reg(e, "SphereTangentToThreeSurfaces", Planned("SphereTangentToThreeSurfaces: planned; needs a general surface-to-point distance solver iterated over 3 surfaces simultaneously, which the kernel does not expose."), CommandStatus::Partial);
-  Reg(e, "Boss", Planned("Boss: use ExtrudeCrv and BooleanUnion; Boss's single-step \"extrude a curve on a surface and union it, following the surface's curvature\" is not implemented as one command."), CommandStatus::Partial);
-  Reg(e, "Rib", Planned("Rib: use ExtrudeCrv and BooleanUnion; Rib's single-step \"extrude a curve on a surface, tapered to zero at its ends\" is not implemented as one command."), CommandStatus::Partial);
+  Reg(e, "ApplyCrv", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Flow"); }), CommandStatus::Implemented,
+      "Direct alias for Flow, which already implements this exact base/target curve space deformation for real (curve frame re-mapping - see cmd_solidtools.cpp).");
+  Reg(e, "ApplyMesh", Make<ApplyMeshCommand>(false), CommandStatus::Implemented,
+      "Real nearest-triangle barycentric position + normal-offset mapping from a base mesh to a topologically matching (same vertex/face count) target mesh.");
+  Reg(e, "ApplyMeshUVN", Make<ApplyMeshCommand>(true), CommandStatus::Implemented,
+      "Same real mapping as ApplyMesh: Dino 8's meshes carry no separate UV texture-coordinate channel to give ApplyMeshUVN's UVN triple an independent meaning from ApplyMesh's own barycentric (u,v) + normal offset (n).");
+  Reg(e, "SphereTangentToThreeSurfaces", Make<SphereTangentToThreeSurfacesCommand>(), CommandStatus::Implemented,
+      "Real damped Gauss-Newton solve (the fillet family's own NewtonSolve) for a sphere centre/radius equidistant from all three picked surfaces, seeded from the pick points.");
+  Reg(e, "Boss", Make<BossRibCommand>(false), CommandStatus::Implemented,
+      "Real solid: a closed footprint curve extruded along each sample point's own local surface normal (so it follows the surface's curvature), fan-capped and boolean-unioned with the base solid.");
+  Reg(e, "Rib", Make<BossRibCommand>(true), CommandStatus::Implemented,
+      "Real thin wall (Thickness x Height) following the base surface's local normal along the spine curve, tapering to zero at both ends, boolean-unioned with the base solid.");
   Reg(e, "Slide", Planned("Slide: planned; use Move. Slide's real feature - keeping an object confined to (sliding along) the surface it started on while dragging - needs a constrained drag the command engine's point tool does not support."), CommandStatus::Partial);
   Reg(e, "Hydrostatics", OnSelection("Select closed objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ON_Plane wl = ActivePlane(ctx);

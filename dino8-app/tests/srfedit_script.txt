@@ -205,5 +205,143 @@ SelLast
 PlanarSrf
 SelPolysrf
 ShrinkTrimmedSrfToEdge
+# --- SrfSeam: move the seam of a real closed (periodic) surface (Sweep1 of a
+# closed circle profile along a straight rail). Both curves must exist before
+# Sweep1 starts (typing a new curve-creation command mid-selection doesn't
+# work - it's swallowed as a bogus option token), so they're created first
+# and picked by their known object IDs (68, 69: this script has created
+# exactly 67 objects by this point).
+SelAll
+Hide
+Line 2300,0,0 2300,0,10
+Circle 2300,0,0 4
+SelID 68
+Sweep1
+SelID 69
+Enter
+SrfSeam
+2304,0,5
+2300,4,5
+# --- SphereTangentToThreeSurfaces: a sphere nestled into a box's corner,
+# equidistant from all three mutually-perpendicular faces
+SelAll
+Hide
+Box 2400,0,0 2410,10,0 10
+SphereTangentToThreeSurfaces
+2400,5,5
+2405,0,5
+2405,5,0
+# --- SetSurfaceTangent: rotate a flat plane's far edge to match a tilted
+# neighbour sharing its near edge
+SelAll
+Hide
+SrfPt 2500,0,0 2510,0,0 2500,10,0 2510,10,0
+SrfPt 2500,0,0 2510,0,5 2500,10,0 2510,10,5
+SetSurfaceTangent
+2505,0,0
+2505,5,2.5
+# --- VariableOffsetSrf: offset a plane 1 unit at U-min growing to 3 at U-max
+SelAll
+Hide
+Plane 2600,0,0 2610,10,0
+VariableOffsetSrf Distance1=1 Distance2=3
+2605,5,0
+# --- FitCurveToSurface: pull an elevated line onto a plane with a coarse fit
+SelAll
+Hide
+Plane 2700,0,0 2710,10,0
+Line 2700,3,2 2710,7,2
+SelLast
+FitCurveToSurface
+2705,5,0
+# --- PatchSingleFace: replace a box's top face with a Coons patch through its
+# own 4 edges (volume must stay exact - the same box, still flat)
+SelAll
+Hide
+Box 2800,0,0 2810,10,0 10
+PatchSingleFace
+2805,5,10
+SelPolysrf
+Volume
+# --- ApplyCrv: an alias for Flow's own base/target curve deformation (both
+# curves pre-created and picked by ID, same reason as the Sweep1 block above)
+SelAll
+Hide
+Line 2900,0,0 2900,10,0
+Arc 2950,0,0 2950,15,5 2950,30,0
+SelID 81
+ApplyCrv
+SelID 81
+Enter
+SelID 82
+Enter
+# --- ApplyMesh / ApplyMeshUVN: reshape a mesh sphere onto a same-topology
+# bigger mesh sphere (identical tessellation regardless of radius); both
+# meshes pre-created and picked by ID, same reason as above
+SelAll
+Hide
+MeshSphere 3000,0,0 5
+MeshSphere 3000,0,0 8
+SelID 83
+ApplyMesh
+SelID 83
+Enter
+SelID 84
+Enter
+SelAll
+Hide
+MeshSphere 3100,0,0 5
+MeshSphere 3100,0,0 9
+SelID 86
+ApplyMeshUVN
+SelID 86
+Enter
+SelID 87
+Enter
+# --- Boss: a closed circle footprint on a box's top face, extruded upward
+# following the (flat) surface normal and unioned with the box (curve
+# created last so SelLast picks it; SelPolysrf then re-picks the box alone)
+SelAll
+Hide
+Box 3200,0,0 3210,10,0 10
+Circle 3205,5,10 2
+SelLast
+Boss
+SelPolysrf
+Enter
+5
+SelMesh
+Volume
+# --- Rib: an open spine on the box's top face, a thin wall tapering to zero
+# at both ends, unioned with the box
+SelAll
+Hide
+Box 3300,0,0 3310,10,0 10
+Line 3305,2,10 3305,8,10
+SelLast
+Rib
+SelPolysrf
+Enter
+2
+SelMesh
+Volume
+# --- FilletSrfToRail: rolling-ball arcs sampled along a rail running down a
+# box corner (two perpendicular planes)
+SelAll
+Hide
+SrfPt 3400,0,0 3410,0,0 3400,0,10 3410,0,10
+SrfPt 3400,0,0 3400,10,0 3400,0,10 3400,10,10
+Line 3400,0,2 3400,0,8
+SelLast
+FilletSrfToRail Radius=1
+3405,0,5
+3400,5,5
+# --- SoftEditSrf: falloff-weighted control point drag on a flat plane
+SelAll
+Hide
+Plane 3500,0,0 3510,10,0
+SoftEditSrf Radius=8
+3505,5,0
+3505,5,3
 SelNone
-@expect_objects 65
+@expect_objects 95
