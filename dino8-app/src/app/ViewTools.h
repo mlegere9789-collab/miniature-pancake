@@ -36,10 +36,12 @@ struct ViewToolsState {
   bool suppress_cplane_history = false;  // set while NextCPlane/PrevCPlane restore a plane
   bool auto_align_cplane = false;
   std::vector<ObjectId> last_selection;
-  // MPlane: the active CPlane follows this object's bounding-box centre.
+  // MPlane: the active CPlane follows this object's bounding-box centre
+  // (and, when tracking orientation, the object's own best plane).
   ObjectId mplane_object = kNoObject;
   std::string mplane_viewport;
   kernel::Vector3d mplane_offset{0, 0, 0};
+  bool mplane_track_orientation = false;
   bool print_display = false;
   bool show_zbuffer = false;
   double screen_pixels_per_mm = 96.0 / 25.4;  // Zoom1To1 / Zoom1To1Calibrate

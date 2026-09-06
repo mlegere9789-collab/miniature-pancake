@@ -17,6 +17,29 @@ SaveClippingSectionViews
 ExportClippingSectionInfo @TMP@/clipping.txt
 ClippingSections
 ClearClippingSections
+# --- ExtractClippingSlices (planar slice surfaces), MPlane orientation
+# tracking, OrientCameraToSrf (picked point), Zoom1To1
+ExtractClippingSlices
+SelLast
+List
+ClearClippingSections
+SelNone
+Box 50,0,0 60,10,0 5
+SelLast
+Rotate 55,5,0 45
+SelLast
+MPlane
+SelNone
+MPlane
+CPlane World
+Plane 70,0,0 90,20,0
+SelLast
+OrientCameraToSrf
+80,10,0
+Camera
+Enter
+Zoom1To1Calibrate 96
+Zoom1To1
 # --- named CPlanes
 CPlane Elevation=7
 NamedCPlane Save Deck
@@ -58,4 +81,4 @@ Open @TMP@/viewtools.3dm
 Layouts
 NamedCPlane List
 SelClippingPlane
-@expect_objects 1
+@expect_objects 5

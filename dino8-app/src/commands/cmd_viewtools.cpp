@@ -116,6 +116,38 @@ bool PlaneOfObject(const SceneObject& o, ON_Plane& out, std::optional<Vector3d> 
   return false;
 }
 
+// Tangent plane of a surface or polysurface at the point on it nearest
+// `pick` (OrientCameraToSrf picking a point, rather than always using the
+// object's centre).
+bool PlaneAtPointOnObject(const SceneObject& o, Point3d pick, ON_Plane& out) {
+  if (o.kind == ObjectKind::Surface && o.surface) {
+    const kernel::Point2d uv = o.surface->ClosestPointParameter(pick, 40, 40);
+    out = ON_Plane(o.surface->PointAt(uv.x, uv.y), o.surface->NormalAt(uv.x, uv.y));
+    return true;
+  }
+  if (o.kind == ObjectKind::Brep && o.brep) {
+    const ON_Brep& b = o.brep->raw();
+    bool found = false;
+    double best = 0;
+    for (int i = 0; i < b.m_F.Count(); ++i) {
+      const ON_Surface* s = b.m_F[i].SurfaceOf();
+      kernel::NurbsSurface k;
+      if (!s || !SurfaceFromON(*s, k)) continue;
+      const kernel::Point2d uv = k.ClosestPointParameter(pick, 20, 20);
+      const Point3d p = k.PointAt(uv.x, uv.y);
+      const double d = p.DistanceTo(pick);
+      if (found && d >= best) continue;
+      Vector3d n = k.NormalAt(uv.x, uv.y);
+      if (b.m_F[i].m_bRev) n = -n;
+      out = ON_Plane(p, n);
+      best = d;
+      found = true;
+    }
+    return found;
+  }
+  return false;
+}
+
 // Copied from cmd_curves2.cpp (file-local there): slices a mesh with a
 // plane and chains the segments into polylines.
 std::vector<std::vector<Point3d>> SliceMesh(const ON_Mesh& m, const ON_Plane& plane, double tol) {
@@ -273,7 +305,44 @@ int AddSections(CommandContext& ctx, const std::vector<ClippingPlane*>& planes, 
   return made;
 }
 
-void ClippingSections(CommandContext& ctx, const char* label) {
+// Flat capping surfaces for the closed section loops of the visible (or
+// selected) objects with each plane (ExtractClippingSlices): the same
+// mesh slice as AddSections, but only the loops that come back to their
+// start (an open slice through an open surface can't bound a region) are
+// built into a trimmed planar face with ON_BrepTrimmedPlane.
+int AddSliceSurfaces(CommandContext& ctx, const std::vector<ClippingPlane*>& planes, const std::vector<ObjectId>& ids) {
+  int made = 0;
+  const double tol = ctx.Settings().absolute_tolerance * 10;
+  std::vector<SceneObject> added;
+  for (ClippingPlane* cp : planes) {
+    const ON_Plane plane(cp->origin, cp->x_axis, cp->y_axis);
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->user_text.count("ClippingSection") || o->user_text.count("ClippingSlice")) continue;
+      std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
+      if (!m) continue;
+      for (std::vector<Point3d> pl : SliceMesh(m->raw(), plane, tol)) {
+        if (pl.size() < 4 || pl.front().DistanceTo(pl.back()) > tol * 10) continue;  // not a closed loop
+        pl.back() = pl.front();
+        ON_Brep* b = ON_BrepTrimmedPlane(plane, PolylineCurve(pl).raw());
+        if (!b) continue;
+        kernel::Brep k;
+        k.raw() = *b;
+        delete b;
+        SceneObject s = SceneObject::MakeBrep(k);
+        s.layer_index = o->layer_index;
+        s.user_text["ClippingSlice"] = cp->name;
+        s.name = cp->name + " slice";
+        added.push_back(std::move(s));
+        ++made;
+      }
+    }
+  }
+  for (SceneObject& s : added) ctx.Doc().Add(std::move(s));
+  return made;
+}
+
+void ClippingSections(CommandContext& ctx, const char* label, bool slice_surfaces = false) {
   std::map<std::string, std::string> opts;
   const std::vector<std::string> names = TakeOptions(ctx, opts);
   std::vector<ClippingPlane*> planes = TargetPlanes(ctx, names, true);
@@ -281,6 +350,11 @@ void ClippingSections(CommandContext& ctx, const char* label) {
   std::vector<ObjectId> ids = ctx.Doc().SelectedIds();
   if (ids.empty()) for (const SceneObject& o : ctx.Doc().Objects()) if (ctx.Doc().IsObjectVisible(o)) ids.push_back(o.id);
   ctx.Doc().BeginChange(label);
+  if (slice_surfaces) {
+    const int made = AddSliceSurfaces(ctx, planes, ids);
+    ctx.Print(std::string(label) + ": " + std::to_string(made) + " planar slice surface(s) from " + std::to_string(planes.size()) + " plane(s)");
+    return;
+  }
   const int made = AddSections(ctx, planes, ids);
   ctx.Print(std::string(label) + ": " + std::to_string(made) + " curve(s) from " + std::to_string(planes.size()) + " plane(s)");
 }
@@ -626,6 +700,40 @@ void CPlaneStep(CommandContext& ctx, bool next) {
   ctx.Print(std::string(next ? "CPlaneNext" : "CPlanePrevious") + ": " + Describe(vp->CPlane()));
 }
 
+// Orients the active camera to look straight at a surface or polysurface,
+// either at the point the user picks on it or (Enter) its own best plane.
+class OrientCameraToSrfCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select a surface or polysurface to look at"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (o && (o->kind == ObjectKind::Surface || o->kind == ObjectKind::Brep)) { id_ = id; break; }
+    }
+    if (id_ == kNoObject) { ctx.Warn("OrientCameraToSrf: select a surface or polysurface"); Finish(); return; }
+    WantPoint("Point on the surface to look at, or Enter for its centre");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override { Apply(ctx, &p); }
+  void OnEnter(CommandContext& ctx) override { Apply(ctx, nullptr); }
+  void Apply(CommandContext& ctx, const Point3d* pick) {
+    Viewport* vp = ctx.ActiveViewport();
+    const SceneObject* o = ctx.Doc().Find(id_);
+    if (!vp || !o) { Finish(); return; }
+    ON_Plane pl;
+    bool ok = pick && PlaneAtPointOnObject(*o, *pick, pl);
+    if (!ok) ok = PlaneOfObject(*o, pl, -vp->GetCamera().Forward());
+    if (!ok) { ctx.Warn("OrientCameraToSrf: could not evaluate object " + std::to_string(id_)); Finish(); return; }
+    CameraState& c = vp->GetCamera().State();
+    const double dist = vp->GetCamera().Distance();
+    c.target = pl.origin;
+    c.eye = pl.origin + pl.zaxis * dist;
+    c.up = std::fabs(ON_DotProduct(pl.zaxis, Vector3d(0, 0, 1))) > 0.99 ? Vector3d(0, 1, 0) : Vector3d(0, 0, 1);
+    ctx.Print("OrientCameraToSrf: camera looks along the normal of object " + std::to_string(id_) + " at " + FormatPoint(pl.origin) + (pick ? " (picked point)" : " (surface centre)"));
+    Finish();
+  }
+  ObjectId id_ = kNoObject;
+};
+
 class NamedCPlaneCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -908,16 +1016,24 @@ void ViewToolsFrame(Application& app) {
     }
   }
 
-  // MPlane: the CPlane follows its object.
+  // MPlane: the CPlane follows its object (origin always; with
+  // TrackOrientation=Yes, the object's own best plane too, so a rotated
+  // object keeps a CPlane aligned to it, not just centred on it).
   if (st.mplane_object != kNoObject) {
     const SceneObject* o = doc.Find(st.mplane_object);
     Viewport* vp = app.FindViewport(st.mplane_viewport);
     if (!o || !vp) {
       st.mplane_object = kNoObject;
     } else {
-      const kernel::BoundingBox bb = o->BoundingBox();
-      const Point3d c((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2);
-      vp->CPlane().origin = c + st.mplane_offset;
+      ON_Plane pl;
+      if (st.mplane_track_orientation && PlaneOfObject(*o, pl, -vp->GetCamera().Forward())) {
+        vp->CPlane() = CPlaneFromPlane(pl);
+        vp->CPlane().origin = vp->CPlane().origin + st.mplane_offset;
+      } else {
+        const kernel::BoundingBox bb = o->BoundingBox();
+        const Point3d c((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2);
+        vp->CPlane().origin = c + st.mplane_offset;
+      }
       st.cplane_history[vp->Name()].last = vp->CPlane();
     }
   }
@@ -984,7 +1100,7 @@ void RegisterViewToolsCommands(CommandEngine& e) {
       }));
   Reg(e, "ClippingSections", Immediate([](CommandContext& ctx) { ClippingSections(ctx, "ClippingSections"); }));
   Reg(e, "ExtractClippingSections", Immediate([](CommandContext& ctx) { ClippingSections(ctx, "ExtractClippingSections"); }));
-  Reg(e, "ExtractClippingSlices", Immediate([](CommandContext& ctx) { ClippingSections(ctx, "ExtractClippingSlices"); }), CommandStatus::Partial, "Extracts the section curves; planar slice surfaces are planned.");
+  Reg(e, "ExtractClippingSlices", Immediate([](CommandContext& ctx) { ClippingSections(ctx, "ExtractClippingSlices", true); }));
   Reg(e, "SaveClippingSectionCPlanes", Immediate([](CommandContext& ctx) {
         std::map<std::string, std::string> opts;
         std::vector<ClippingPlane*> planes = TargetPlanes(ctx, TakeOptions(ctx, opts));
@@ -1166,34 +1282,28 @@ void RegisterViewToolsCommands(CommandEngine& e) {
   Reg(e, "MPlane", OnSelection("Select the object the CPlane should follow", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         Viewport* vp = ctx.ActiveViewport();
         ViewToolsState& st = ctx.App().viewtools;
+        std::map<std::string, std::string> opts;
+        const std::vector<std::string> pos = TakeOptions(ctx, opts);
+        const bool track = IsYes(StringOr(opts, "trackorientation", pos.empty() ? "Yes" : pos[0]));
         if (!vp || ids.empty()) { st.mplane_object = kNoObject; ctx.Print("MPlane: detached"); return; }
         const SceneObject* o = ctx.Doc().Find(ids.front());
         if (!o) return;
-        const kernel::BoundingBox bb = o->BoundingBox();
-        const Point3d c((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2);
         st.mplane_object = o->id;
         st.mplane_viewport = vp->Name();
         st.mplane_offset = Vector3d(0, 0, 0);
-        vp->CPlane().origin = c;
-        ctx.Print("MPlane: CPlane of " + vp->Name() + " follows object " + std::to_string(o->id) + " (origin " + FormatPoint(c) + ")");
-      }), CommandStatus::Partial, "Follows the object's bounding-box centre; orientation tracking is planned.");
-  Reg(e, "OrientCameraToSrf", OnSelection("Select a surface to look at", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        Viewport* vp = ctx.ActiveViewport();
-        if (!vp) return;
-        for (ObjectId id : ids) {
-          const SceneObject* o = ctx.Doc().Find(id);
-          ON_Plane pl;
-          if (!o || (o->kind != ObjectKind::Surface && o->kind != ObjectKind::Brep) || !PlaneOfObject(*o, pl, -vp->GetCamera().Forward())) continue;
-          CameraState& c = vp->GetCamera().State();
-          const double dist = vp->GetCamera().Distance();
-          c.target = pl.origin;
-          c.eye = pl.origin + pl.zaxis * dist;
-          c.up = std::fabs(ON_DotProduct(pl.zaxis, Vector3d(0, 0, 1))) > 0.99 ? Vector3d(0, 1, 0) : Vector3d(0, 0, 1);
-          ctx.Print("OrientCameraToSrf: camera looks along the normal of object " + std::to_string(id) + " at " + FormatPoint(pl.origin));
-          return;
+        st.mplane_track_orientation = track;
+        ON_Plane pl;
+        if (track && PlaneOfObject(*o, pl, -vp->GetCamera().Forward())) {
+          vp->CPlane() = CPlaneFromPlane(pl);
+          ctx.Print("MPlane: CPlane of " + vp->Name() + " follows object " + std::to_string(o->id) + ", tracking its orientation (" + Describe(vp->CPlane()) + ")");
+        } else {
+          const kernel::BoundingBox bb = o->BoundingBox();
+          const Point3d c((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2);
+          vp->CPlane().origin = c;
+          ctx.Print("MPlane: CPlane of " + vp->Name() + " follows object " + std::to_string(o->id) + " (origin " + FormatPoint(c) + ")");
         }
-        ctx.Warn("Select a surface or polysurface");
-      }), CommandStatus::Partial, "Uses the surface centre; picking a point on the surface is planned.");
+      }, 0));
+  Reg(e, "OrientCameraToSrf", Make<OrientCameraToSrfCommand>());
   Reg(e, "PerspectiveMatch", Immediate([](CommandContext& ctx) { ctx.Print("PerspectiveMatch: matching a camera to a background image is planned."); }), CommandStatus::Partial);
 
   // ---- animation ----
@@ -1300,7 +1410,7 @@ void RegisterViewToolsCommands(CommandEngine& e) {
         c.perspective = false;
         c.ortho_height = vp->Height() / ctx.App().viewtools.screen_pixels_per_mm * UnitsPerMillimetre(ctx.Settings().unit_system);
         ctx.Print("Zoom1To1: " + vp->Name() + " shows " + FormatNumber(c.ortho_height) + " " + ctx.Settings().unit_system + " over " + std::to_string(vp->Height()) + " px");
-      }), CommandStatus::Partial, "Uses the Zoom1To1Calibrate value (default 96 dpi).");
+      }));
 }
 
 }  // namespace dino8::app
