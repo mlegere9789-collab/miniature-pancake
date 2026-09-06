@@ -1029,11 +1029,23 @@ cat > "$TMP/sess/dig_points.txt" <<'EOP'
 1, 2, 3
 4.5 5.5 6.5 1
 EOP
+cat > "$TMP/sess/dig_points2.txt" <<'EOP'
+10,0,0
+0,0,50
+0,0,0
+20,0,0
+30,0,0
+40,0,0
+50,0,0
+51,1,0
+52,0,0
+53,1,0
+EOP
 sed "s|@TMP@|$TMP/sess|g" "$HERE/session_script.txt" > "$TMP/sess/session_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
-  SS="$("$BIN" --smoke 150 --script "$TMP/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
+  SS="$("$BIN" --smoke 200 --script "$TMP/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
 else
-  SS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
+  SS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
 fi
 sscheck() { if echo "$SS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 sscheck "Digitizer: connected, protocol File, file $TMP/sess/dig_points.txt" "DigConnect opened the fixture file"
@@ -1043,6 +1055,16 @@ sscheck "DigPoint: no point available" "DigPoint warns once the fixture file is 
 sscheck "DigScale: scale set to 25.4" "DigScale set the unit scale"
 sscheck "DigDisconnect: disconnected" "DigDisconnect"
 sscheck "Digitizer: not connected" "DigStatus reports disconnected after DigDisconnect"
+sscheck "DigScale: scale set to 1" "DigScale reset to 1 for the second connection"
+sscheck "Digitize: digitized 10,0,0" "Digitize read a real point off the digitizer"
+sscheck "DigCamera: camera set from two digitized points" "DigCamera read an eye and target point"
+sscheck "DigClick: digitized 20,0,0" "DigClick read and printed a point"
+sscheck "DigLine: line digitized" "DigLine read two points and built a line"
+sscheck "CV\[0\] 30,0,0" "the DigLine curve starts at the first digitized point"
+sscheck "CV\[1\] 40,0,0" "the DigLine curve ends at the second digitized point"
+sscheck "DigBeep on" "DigBeep toggled on"
+sscheck "Digitize: digitized 50,0,0" "Digitize still works with DigBeep on"
+sscheck "DigSection: 3 point(s) digitized into a curve" "DigSection read the remaining points into a curve"
 sscheck "BringToFront: " "BringToFront ran on the overlapping circles"
 sscheck "Worksession: attached $TMP/sess/ref.3dm (1 object" "Worksession Attach copied the box in"
 sscheck "Worksession: 1 attached reference model" "Worksession List shows the attached model"

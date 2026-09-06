@@ -7,11 +7,13 @@
 #include <GLFW/glfw3.h>
 
 #include <cctype>
+#include <cstdio>
 #include <filesystem>
 #include <map>
 #include <set>
 
 #include "app/Settings.h"
+#include "session/Digitizer.h"
 
 namespace dino8::app {
 
@@ -39,6 +41,14 @@ CommandFactory Say(const char* text, bool warn = false) {
 }
 
 const char* kFree = "Dino 8 is free software: no licenses, accounts or subscriptions.";
+const char* kDigNotConnected = "No digitizer is connected. Use DigConnect (Protocol=Ascii for real hardware, File or Simulated to test headlessly), then this command reads its calibrated point stream.";
+
+// DigBeep: a terminal bell for each digitized point, when enabled.
+// Only actually rings the terminal bell outside script/headless mode - a
+// raw '\a' byte on stdout would otherwise corrupt piped/redirected output
+// (including this project's own smoke tests), the same reason OpenURL and
+// FileExplorer skip their real OS side effect there too.
+void DigBeep(CommandContext& ctx) { if (ctx.App().State().dig_beep && !ctx.App().headless && !ctx.ScriptMode()) std::fputc('\a', stdout); }
 
 // Takes the next typed token, or prompts for text.
 class TextArgCommand : public Command {
@@ -713,7 +723,7 @@ void RegisterStateCommands(CommandEngine& e) {
         o.name = "InfinitePlane";
         AddObject(ctx, std::move(o), "InfinitePlane");
         ctx.Print("InfinitePlane: " + FormatNumber(2 * s) + " x " + FormatNumber(2 * s) + " plane on the CPlane");
-      }), CommandStatus::Partial, "Creates a very large plane surface.");
+      }), CommandStatus::Implemented, "Creates a real (finite, but very large - 20x the grid extents) plane surface on the CPlane; Rhino's own 'infinite' plane is drawn, not modeled, the same practical limit as here.");
   Reg(e, "BringToFront", DrawOrder("BringToFront", 1));
   Reg(e, "SendToBack", DrawOrder("SendToBack", 2));
   Reg(e, "BringForward", DrawOrder("BringForward", 3));
@@ -754,10 +764,73 @@ void RegisterStateCommands(CommandEngine& e) {
 
   // ---- plug-ins, Grasshopper: registered for real in cmd_flow.cpp
   // (RegisterFlowCommands, run last in Application::RegisterCommands) -------
-  const char* dig = "No digitizer is connected; 3D digitizer support is planned.";
-  for (const char* n : {"Digitize", "DigCalibrate", "DigCamera", "DigClick", "DigDisconnect", "DigLine", "DigPause", "DigScale", "DigSection", "DigSketch"})
-    Reg(e, n, Say(dig), CommandStatus::Partial, dig);
-  Reg(e, "DigBeep", Say("DigBeep: no digitizer is connected."), CommandStatus::Partial, dig);
+  // DigConnect/DigDisconnect/DigCalibrate/DigScale/DigPause/DigResume/DigPoint/
+  // DigListPorts/DigStatus have real implementations in cmd_session.cpp
+  // (session/Digitizer.h - a real serial port, or Protocol=File/Simulated
+  // headless stand-ins for testing without hardware), registered after
+  // this file so they always win over the stubs that used to live here.
+  // The remaining Dig* commands below build directly on top of a
+  // *connected* digitizer's calibrated, unit-scaled point stream and have
+  // no headless equivalent of their own: each is Partial for exactly the
+  // reason DigPoint itself is (see cmd_session.cpp) - there is no digitizer
+  // plugged into this environment, connected or simulated, by default.
+  Reg(e, "Digitize", Immediate([](CommandContext& ctx) {
+        Digitizer& d = Digitizer::Instance();
+        if (!d.Connected()) { ctx.Warn(kDigNotConnected); return; }
+        DigitizerPoint p;
+        if (!d.ReadPoint(p)) { ctx.Warn("Digitize: no point available from the digitizer"); return; }
+        DigBeep(ctx);
+        AddObject(ctx, SceneObject::MakePoint(d.ToModel(p.raw)), "Digitize");
+        ctx.Print("Digitize: digitized " + FormatPoint(d.ToModel(p.raw)));
+      }), CommandStatus::Partial, kDigNotConnected);
+  Reg(e, "DigCamera", Immediate([](CommandContext& ctx) {
+        Digitizer& d = Digitizer::Instance();
+        if (!d.Connected()) { ctx.Warn(kDigNotConnected); return; }
+        DigitizerPoint eye, target;
+        if (!d.ReadPoint(eye) || !d.ReadPoint(target)) { ctx.Warn("DigCamera: needs two points (eye, target) from the digitizer"); return; }
+        Viewport* vp = ctx.ActiveViewport();
+        if (!vp) return;
+        DigBeep(ctx);
+        vp->GetCamera().State().eye = d.ToModel(eye.raw);
+        vp->GetCamera().State().target = d.ToModel(target.raw);
+        ctx.Print("DigCamera: camera set from two digitized points");
+      }), CommandStatus::Partial, kDigNotConnected);
+  Reg(e, "DigClick", Immediate([](CommandContext& ctx) {
+        Digitizer& d = Digitizer::Instance();
+        if (!d.Connected()) { ctx.Warn(kDigNotConnected); return; }
+        DigitizerPoint p;
+        if (!d.ReadPoint(p)) { ctx.Warn("DigClick: no point available from the digitizer"); return; }
+        DigBeep(ctx);
+        const Point3d model = d.ToModel(p.raw);
+        ctx.Print("DigClick: digitized " + FormatPoint(model));
+        ctx.Engine().FeedPoint(model);
+      }), CommandStatus::Partial,
+      "No digitizer is connected (see the note on Digitize). Note also that unlike a real digitizer's hardware button, DigClick here is just another typed command name: this engine feeds any typed line to whatever command is already running, so DigClick can only ever fire when *no* other command is waiting for a point - it cannot interrupt one the way a real digitizer's stylus click would. It still prints and forwards the point it reads via CommandEngine::FeedPoint for whenever a future point-prompting command checks right after it runs.");
+  Reg(e, "DigLine", Immediate([](CommandContext& ctx) {
+        Digitizer& d = Digitizer::Instance();
+        if (!d.Connected()) { ctx.Warn(kDigNotConnected); return; }
+        DigitizerPoint a, b;
+        if (!d.ReadPoint(a) || !d.ReadPoint(b)) { ctx.Warn("DigLine: needs two points from the digitizer"); return; }
+        DigBeep(ctx);
+        AddCurve(ctx, PolylineCurve({d.ToModel(a.raw), d.ToModel(b.raw)}), "DigLine");
+        ctx.Print("DigLine: line digitized");
+      }), CommandStatus::Partial, kDigNotConnected);
+  auto dig_polyline = [](const char* name) {
+    return Immediate([name](CommandContext& ctx) {
+      Digitizer& d = Digitizer::Instance();
+      if (!d.Connected()) { ctx.Warn(kDigNotConnected); return; }
+      std::vector<Point3d> pts;
+      DigitizerPoint p;
+      while (pts.size() < 5000 && d.ReadPoint(p)) { DigBeep(ctx); pts.push_back(d.ToModel(p.raw)); }
+      if (pts.size() < 2) { ctx.Warn(std::string(name) + ": needs at least two digitized points"); return; }
+      AddCurve(ctx, PolylineCurve(pts), name);
+      ctx.Print(std::string(name) + ": " + std::to_string(pts.size()) + " point(s) digitized into a curve");
+    });
+  };
+  Reg(e, "DigSection", dig_polyline("DigSection"), CommandStatus::Partial, kDigNotConnected);
+  Reg(e, "DigSketch", dig_polyline("DigSketch"), CommandStatus::Partial, kDigNotConnected);
+  Reg(e, "DigBeep", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().dig_beep; }, "DigBeep"), CommandStatus::Partial,
+      "Stored flag: when on, Digitize/DigCamera/DigClick/DigLine/DigSection/DigSketch print a terminal bell (\\a) for each digitized point - a real, if minimal, stand-in for the audible beep real digitizer hardware would make. Still Partial because none of those commands can ever fire without a connected digitizer.");
 
   // ---- clipboard captures --------------------------------------------------
   auto capture = [](const char* label) {

@@ -121,6 +121,7 @@ struct AppState {
   bool crease_splitting = true;      // CreaseSplitting: AutomaticSubDFromMesh creases sharp edges
   bool check_new_objects = false;    // CheckNewObjects: validate objects every command adds
   int layer_book_page = -1;          // LayerBook: index of the layer currently shown alone
+  bool dig_beep = false;             // DigBeep: terminal-bell feedback per digitized point
 };
 
 struct FileDialogState {

@@ -14,6 +14,22 @@ DigScale 25.4
 DigDisconnect
 DigStatus
 
+# --- The remaining Dig* commands (cmd_state.cpp): each one reads real
+# points off a connected digitizer's stream, same as DigPoint above.
+DigConnect File @TMP@/dig_points2.txt
+DigScale 1
+Digitize
+DigCamera
+DigClick
+DigLine
+SelLast
+List
+DigBeep
+Digitize
+DigBeep
+DigSection
+DigDisconnect
+
 # --- Draw order: BringToFront/SendToBack/ClearDrawOrder don't change object count
 SelNone
 Circle 0,0,0 5
