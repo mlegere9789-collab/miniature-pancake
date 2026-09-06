@@ -15,6 +15,7 @@
 #include "imgui_internal.h"
 #include "io/File3dm.h"
 #include "io/FileExchange.h"
+#include "io/FileIgesStep.h"
 #include "render/ImageIO.h"
 #include "ui/Icons.h"
 #include "ui/Panels.h"
@@ -65,6 +66,7 @@ void RegisterStateCommands(CommandEngine&);
 void RegisterViewToolsCommands(CommandEngine&);
 void RegisterFlowCommands(CommandEngine&);
 void RegisterDrafting2Commands(CommandEngine&);  // hatch library, tables, BoM, GD&T, multi-leaders, section views
+void RegisterExchange2Commands(CommandEngine&);
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -290,6 +292,7 @@ void Application::RegisterCommands() {
   RegisterSurfaceCommands(*engine_);    // Sweep/Pipe/OffsetSrf/Project... (approximate NURBS/mesh results)
   RegisterRenderCommands(*engine_);     // last: replaces the Render/RenderPreview/Materials placeholders
   RegisterRaytraceCommands(*engine_);   // after: takes over Render/RenderPreview/etc. for Quality=Raytraced
+  RegisterExchange2Commands(*engine_);  // IGES/STEP option and inspection commands (readers/writers in io/FileIgesStep)
   RegisterFlowCommands(*engine_);       // very last: Dino Flow + plug-ins, replaces the Grasshopper/plug-in stubs
 }
 
@@ -760,6 +763,10 @@ bool Application::OpenDocument(const std::string& path, std::string& error) {
     ok = ImportPly(fresh, path, error);
   } else if (ext == ".dxf") {
     ok = ImportDxf(fresh, path, error);
+  } else if (ext == ".igs" || ext == ".iges") {
+    ok = ImportIges(fresh, path, error);
+  } else if (ext == ".stp" || ext == ".step") {
+    ok = ImportStep(fresh, path, error);
   } else {
     error = "Unsupported file type: " + ext;
   }
@@ -798,6 +805,12 @@ bool Application::SaveDocument(const std::string& path, std::string& error) {
   } else if (ext == ".dxf") {
     ok = ExportDxf(doc_, path, false, error);
     if (ok) Notify("Exported " + path);
+  } else if (ext == ".igs" || ext == ".iges") {
+    ok = ExportIges(doc_, path, false, error);
+    if (ok) Notify("Exported " + path);
+  } else if (ext == ".stp" || ext == ".step") {
+    ok = ExportStep(doc_, path, false, error);
+    if (ok) Notify("Exported " + path);
   } else if (ext == ".svg" || ext == ".pdf") {
     ok = ExportDrawing(path, false, 0.0, error);
   } else {
@@ -825,6 +838,10 @@ bool Application::ImportFile(const std::string& path, std::string& error) {
     ok = ImportPly(doc_, path, error);
   } else if (ext == ".dxf") {
     ok = ImportDxf(doc_, path, error);
+  } else if (ext == ".igs" || ext == ".iges") {
+    ok = ImportIges(doc_, path, error);
+  } else if (ext == ".stp" || ext == ".step") {
+    ok = ImportStep(doc_, path, error);
   } else {
     error = "Unsupported file type: " + ext;
   }
@@ -848,6 +865,8 @@ bool Application::ExportSelected(const std::string& path, std::string& error) {
   }
   if (ext == ".dxf") return ExportDxf(doc_, path, true, error);
   if (ext == ".ply") return ExportPly(doc_, path, true, error);
+  if (ext == ".igs" || ext == ".iges") return ExportIges(doc_, path, true, error);
+  if (ext == ".stp" || ext == ".step") return ExportStep(doc_, path, true, error);
   if (ext == ".svg" || ext == ".pdf") return ExportDrawing(path, true, 0.0, error);
   return ExportMeshFile(doc_, path, true, error);
 }

@@ -816,4 +816,29 @@ assert len(px) == ((w * 3 + 3) & ~3) * h, 'pixel data size'
 assert max(px) > 0 and min(px) < 255, 'image is flat'
 PY
 
+# IGES / STEP round-trip: Box, Sphere, Cylinder, a trimmed planar surface,
+# a free NURBS curve, a point, and a hand-written STEP fixture (see
+# igesstep_script.txt and step_plane_face.stp).
+sed "s|@TMP@|$TMP|g" "$HERE/igesstep_script.txt" > "$TMP/igesstep_script.txt"
+cp "$HERE/step_plane_face.stp" "$TMP/step_plane_face.stp"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  IS="$("$BIN" --smoke 200 --script "$TMP/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
+else
+  IS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
+fi
+ischeck() { if echo "$IS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+ischeck "Exported $TMP/box.igs" "IGES export wrote a file"
+ischeck "Exported $TMP/box.stp" "STEP export wrote a file"
+ischeck "Volume = 1000" "box volume survived an IGES and a STEP round-trip"
+ischeck "IGES: .*[1-9][0-9]* brep" "IGES import rebuilt at least one brep from the combined scene"
+ischeck "STEP: [1-9][0-9]* brep" "STEP import rebuilt at least one brep from the combined scene"
+ischeck "STEP: .*[1-9][0-9]* curve" "STEP import read the free NURBS curve back"
+ischeck "IGES: .*[1-9][0-9]* curve" "IGES import read the free NURBS curve back"
+ischeck "STEP: .*[1-9][0-9]* point" "STEP import read the point back"
+ischeck "IGES: .*[1-9][0-9]* point" "IGES import read the point back"
+ischeck "STEP: 1 brep (1 trimmed face), 1 curve, 0 points" "the hand-written STEP fixture (PLANE face + CIRCLE) imported as 2 objects"
+grep -qE "^ {5}128" "$TMP/t.igs" && grep -qE "^ {5}144" "$TMP/t.igs" && echo "ok   t.igs uses 128 (surface) and 144 (trimmed surface) entities" || { echo "FAIL t.igs entity types"; fail=1; }
+grep -q "=ADVANCED_FACE(" "$TMP/t.stp" && grep -q "B_SPLINE_SURFACE_WITH_KNOTS(" "$TMP/t.stp" && echo "ok   t.stp uses ADVANCED_FACE and B_SPLINE_SURFACE_WITH_KNOTS entities" || { echo "FAIL t.stp entity types"; fail=1; }
+grep -q "^ISO-10303-21;$" "$TMP/t.stp" && grep -q "^END-ISO-10303-21;$" "$TMP/t.stp" && echo "ok   t.stp is a complete Part 21 file" || { echo "FAIL t.stp malformed"; fail=1; }
+
 exit $fail

@@ -8,8 +8,8 @@ namespace dino8::app {
 
 namespace {
 
-const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl", ".ply", ".dxf"};
-const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".svg", ".pdf"};
+const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".igs", ".iges", ".stp", ".step"};
+const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".svg", ".pdf", ".igs", ".iges", ".stp", ".step"};
 
 void SaveTo(CommandContext& ctx, const std::string& path) {
   std::string err;

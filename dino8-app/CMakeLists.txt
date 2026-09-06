@@ -153,8 +153,10 @@ set(DINO8_SOURCES
   src/commands/cmd_render.cpp
   src/script/LuaEngine.cpp
   src/commands/cmd_raytrace.cpp
+  src/commands/cmd_exchange2.cpp
   src/io/File3dm.cpp
   src/io/FileExchange.cpp
+  src/io/FileIgesStep.cpp
   src/geom/BrepMesher.cpp
   src/geom/SurfaceIntersect.cpp
   src/commands/cmd_fillet.cpp

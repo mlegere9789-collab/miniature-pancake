@@ -1,0 +1,38 @@
+# IGES / STEP round-trip QC.
+# --- A box alone: round-trip and check the reimported solid's volume.
+Box 0,0,0 10,10,0 10
+SelAll
+Export @TMP@/box.igs
+Export @TMP@/box.stp
+Open @TMP@/box.igs
+SelPolysrf
+Volume
+Open @TMP@/box.stp
+SelPolysrf
+Volume
+# --- Everything together: Box, Sphere, Cylinder, a trimmed planar surface
+# (Circle -> PlanarSrf), a free NURBS curve and a point.
+New
+Box 0,0,0 10,10,0 10
+Sphere 30,0,0 5
+Cylinder 50,0,0 5 10
+Circle 70,0,0 5
+SelLast
+PlanarSrf
+Curve 90,0,0 95,5,0 100,0,0
+Enter
+Point 110,0,0
+SelAll
+Export @TMP@/t.igs
+Export @TMP@/t.stp
+Open @TMP@/t.igs
+SelAll
+List
+Open @TMP@/t.stp
+SelAll
+List
+# --- A hand-written STEP file: a PLANE-bounded ADVANCED_FACE square and a
+# free CIRCLE.
+Open @TMP@/step_plane_face.stp
+SelAll
+List
