@@ -4,6 +4,7 @@
 #include "io/File3dm.h"
 
 #include <filesystem>
+#include <limits>
 
 namespace dino8::app {
 
@@ -52,6 +53,43 @@ class RebuildCommand : public Command {
   }
   std::vector<ObjectId> ids_;
   int degree_ = 3;
+};
+
+// Raises curves/surfaces to a typed target degree (never lowers it: degree
+// reduction is a distinct, lossy fitting operation, not plain elevation).
+class ChangeDegreeCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves or surfaces"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    int cur = 0;
+    for (ObjectId id : ids_) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (o && o->kind == ObjectKind::Curve) cur = std::max(cur, o->curve->Degree());
+      else if (o && o->kind == ObjectKind::Surface) cur = std::max({cur, o->surface->DegreeU(), o->surface->DegreeV()});
+    }
+    WantNumber("New degree", std::max(3, cur));
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    const int target = std::clamp(static_cast<int>(v + 0.5), 1, 11);
+    ctx.Doc().BeginChange("ChangeDegree");
+    int done = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      if (o->kind == ObjectKind::Curve) {
+        if (target > o->curve->Degree() && o->curve->ElevateDegree(target) != kernel::Result::Failed) { o->InvalidateDisplay(); ++done; }
+      } else if (o->kind == ObjectKind::Surface) {
+        bool changed = false;
+        if (target > o->surface->DegreeU() && o->surface->ElevateDegree(0, target) != kernel::Result::Failed) changed = true;
+        if (target > o->surface->DegreeV() && o->surface->ElevateDegree(1, target) != kernel::Result::Failed) changed = true;
+        if (changed) { o->InvalidateDisplay(); ++done; }
+      }
+    }
+    ctx.Print("ChangeDegree: " + std::to_string(done) + " object(s) elevated to degree " + std::to_string(target));
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
 };
 
 // Offset curves by a typed distance or a picked side point.
@@ -139,6 +177,232 @@ class OffsetCommand : public Command {
   bool both_ = false;
 };
 
+// Prompts for a name and applies it to every selected object (a single
+// object gets the name as typed; more than one gets it suffixed "(2)",
+// "(3)", ... so names stay distinct).
+class SetObjectNameCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to name"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (ids.empty()) { ctx.Warn("Nothing selected"); Finish(); return; }
+    ids_ = ids;
+    WantText("Name");
+  }
+  void OnText(CommandContext& ctx, const std::string& name) override {
+    if (name.empty()) { ctx.Warn("SetObjectName: name cannot be empty"); Finish(); return; }
+    ctx.Doc().BeginChange("SetObjectName");
+    int i = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      ++i;
+      o->name = ids_.size() > 1 ? name + " (" + std::to_string(i) + ")" : name;
+    }
+    ctx.Print("SetObjectName: named " + std::to_string(ids_.size()) + " object(s) '" + name + "'" + (ids_.size() > 1 ? " (2), (3), ..." : ""));
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+};
+
+// Prompts for a key then a value and sets that user-text pair on every
+// selected object (Rhino's Properties > Attribute User Text field, scripted).
+class SetUserTextCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (ids.empty()) { ctx.Warn("Nothing selected"); Finish(); return; }
+    ids_ = ids;
+    WantText("User text key");
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (!have_key_) {
+      if (t.empty()) { ctx.Warn("SetUserText: key cannot be empty"); Finish(); return; }
+      key_ = t;
+      have_key_ = true;
+      WantText("Value for '" + key_ + "'");
+      return;
+    }
+    ctx.Doc().BeginChange("SetUserText");
+    for (ObjectId id : ids_) if (SceneObject* o = ctx.Doc().Find(id)) o->user_text[key_] = t;
+    ctx.Print("SetUserText: " + key_ + " = " + t + " on " + std::to_string(ids_.size()) + " object(s)");
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  std::string key_;
+  bool have_key_ = false;
+};
+
+// Extend the nearer end of each selected curve towards a picked point (Enter
+// falls back to a fixed 10% of the domain at both ends).
+class ExtendCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves to extend"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) ids_.push_back(id); }
+    if (ids_.empty()) { ctx.Warn("Select curves"); Finish(); return; }
+    WantPoint("Point to extend towards (Enter for 10% of the domain at both ends)");
+  }
+  void OnPoint(CommandContext& ctx, Point3d target) override {
+    ctx.Doc().BeginChange("Extend");
+    int done = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      const kernel::Interval d = o->curve->Domain();
+      const Point3d startp = o->curve->PointAt(d.min), endp = o->curve->PointAt(d.max);
+      const bool near_start = target.DistanceTo(startp) <= target.DistanceTo(endp);
+      const Point3d endpoint = near_start ? startp : endp;
+      Vector3d tan = o->curve->TangentAt(near_start ? d.min : d.max);
+      if (near_start) tan = -tan;  // outward direction of travel at the start
+      if (!tan.Unitize()) continue;
+      const double len = ON_DotProduct(target - endpoint, tan);
+      if (len <= 1e-9) continue;
+      const double curve_len = o->curve->Length();
+      const double domain_len = d.max - d.min;
+      const double param_delta = curve_len > 1e-9 ? domain_len * (len / curve_len) : 0;
+      if (param_delta <= 0) continue;
+      const kernel::Result r = near_start ? o->curve->Extend(d.min - param_delta, d.max) : o->curve->Extend(d.min, d.max + param_delta);
+      if (r != kernel::Result::Failed) { o->InvalidateDisplay(); ++done; }
+    }
+    ctx.Print("Extend: " + std::to_string(done) + " curve(s) extended towards the picked point");
+    Finish();
+  }
+  void OnEnter(CommandContext& ctx) override {
+    ctx.Doc().BeginChange("Extend");
+    int done = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      const kernel::Interval d = o->curve->Domain();
+      const double len = d.max - d.min;
+      const kernel::Result r = o->curve->Extend(d.min - len * 0.1, d.max + len * 0.1);
+      if (r != kernel::Result::Failed) { o->InvalidateDisplay(); ++done; }
+    }
+    ctx.Print("Extend: " + std::to_string(done) + " curve(s) extended by 10% of their domain at both ends");
+    Finish();
+  }
+  void OnCancel(CommandContext&) override {}
+  std::vector<ObjectId> ids_;
+};
+
+// Picks the single control point of a curve/surface selection nearest a
+// clicked point, then sets its weight (making the object rational if it
+// wasn't already). With no pick (Enter), falls back to making every
+// selected object rational at weight 1 - equivalent to the old behaviour.
+class WeightCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves or surfaces"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    WantPoint("Pick a control point to weight (Enter to make every object rational at weight 1)");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ObjectId best_id = kNoObject;
+    bool best_is_curve = true;
+    int best_i = -1, best_j = -1;
+    double best_d = std::numeric_limits<double>::max();
+    for (ObjectId id : ids_) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      if (o->kind == ObjectKind::Curve) {
+        for (int i = 0; i < o->curve->ControlPointCount(); ++i) {
+          const double d = o->curve->ControlPointAt(i).DistanceTo(p);
+          if (d < best_d) { best_d = d; best_id = id; best_is_curve = true; best_i = i; best_j = -1; }
+        }
+      } else if (o->kind == ObjectKind::Surface) {
+        for (int i = 0; i < o->surface->CVCountU(); ++i)
+          for (int j = 0; j < o->surface->CVCountV(); ++j) {
+            const double d = o->surface->ControlPointAt(i, j).DistanceTo(p);
+            if (d < best_d) { best_d = d; best_id = id; best_is_curve = false; best_i = i; best_j = j; }
+          }
+      }
+    }
+    if (best_id == kNoObject) { ctx.Warn("Weight: no control points found"); Finish(); return; }
+    id_ = best_id;
+    is_curve_ = best_is_curve;
+    i_ = best_i;
+    j_ = best_j;
+    SceneObject* o = ctx.Doc().Find(id_);
+    const double cur = is_curve_ ? o->curve->WeightAt(i_) : o->surface->WeightAt(i_, j_);
+    WantNumber("Weight for this control point", cur);
+  }
+  void OnNumber(CommandContext& ctx, double w) override {
+    if (w <= 0) { ctx.Warn("Weight: must be positive"); Finish(); return; }
+    SceneObject* o = ctx.Doc().Find(id_);
+    if (!o) { Finish(); return; }
+    ctx.Doc().BeginChange("Weight");
+    const kernel::Result r = is_curve_ ? o->curve->SetWeightAt(i_, w) : o->surface->SetWeightAt(i_, j_, w);
+    if (r != kernel::Result::Failed) { o->InvalidateDisplay(); ctx.Print("Weight: control point set to " + FormatNumber(w)); }
+    else ctx.Warn("Weight: could not set that control point's weight");
+    Finish();
+  }
+  void OnEnter(CommandContext& ctx) override {
+    ctx.Doc().BeginChange("Weight");
+    int done = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      if (o->kind == ObjectKind::Curve && o->curve->MakeRational() != kernel::Result::Failed) { o->InvalidateDisplay(); ++done; }
+      else if (o->kind == ObjectKind::Surface && o->surface->MakeRational() != kernel::Result::Failed) { o->InvalidateDisplay(); ++done; }
+    }
+    ctx.Print("Weight: " + std::to_string(done) + " object(s) made rational at weight 1");
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  ObjectId id_ = kNoObject;
+  bool is_curve_ = true;
+  int i_ = -1, j_ = -1;
+};
+
+// Inserts a knot at the closest point on each selected curve/surface to a
+// picked point (Enter falls back to the domain midpoint of each object).
+class InsertKnotCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves or surfaces"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    WantPoint("Point on the curve/surface to insert a knot at (Enter for the domain midpoint)");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.Doc().BeginChange("InsertKnot");
+    int done = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      if (o->kind == ObjectKind::Curve) {
+        const double t = o->curve->ClosestPointParameter(p);
+        if (o->curve->InsertKnotAt(t) != kernel::Result::Failed) { o->InvalidateDisplay(); ++done; }
+      } else if (o->kind == ObjectKind::Surface) {
+        const kernel::Point2d uv = o->surface->ClosestPointParameter(p);
+        bool changed = false;
+        if (o->surface->InsertKnotAt(0, uv.x) != kernel::Result::Failed) changed = true;
+        if (o->surface->InsertKnotAt(1, uv.y) != kernel::Result::Failed) changed = true;
+        if (changed) { o->InvalidateDisplay(); ++done; }
+      }
+    }
+    ctx.Print("InsertKnot: " + std::to_string(done) + " object(s) got a knot at the picked point");
+    Finish();
+  }
+  void OnEnter(CommandContext& ctx) override {
+    ctx.Doc().BeginChange("InsertKnot");
+    int done = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      if (o->kind == ObjectKind::Curve) {
+        const kernel::Interval d = o->curve->Domain();
+        if (o->curve->InsertKnotAt((d.min + d.max) / 2) != kernel::Result::Failed) { o->InvalidateDisplay(); ++done; }
+      } else if (o->kind == ObjectKind::Surface) {
+        const kernel::Interval d = o->surface->Domain(0);
+        if (o->surface->InsertKnotAt(0, (d.min + d.max) / 2) != kernel::Result::Failed) { o->InvalidateDisplay(); ++done; }
+      }
+    }
+    ctx.Print("InsertKnot: " + std::to_string(done) + " object(s) got a knot at the domain midpoint");
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+};
+
 }  // namespace
 
 void RegisterEditCommands(CommandEngine& e) {
@@ -179,7 +443,7 @@ void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "ShowSelected", Immediate([](CommandContext& ctx) {
         ctx.Doc().BeginChange("ShowSelected");
         for (SceneObject& o : ctx.Doc().Objects()) if (!o.visible) { o.visible = true; o.selected = true; }
-      }), CommandStatus::Partial, "Shows and selects all hidden objects.");
+      }), CommandStatus::Implemented, "Shows every hidden object and selects it.");
   Reg(e, "HideSwap", Immediate([](CommandContext& ctx) { ctx.Doc().BeginChange("HideSwap"); for (SceneObject& o : ctx.Doc().Objects()) { o.visible = !o.visible; o.selected = false; } }));
   Reg(e, "Isolate", OnSelection("Select objects to isolate", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Isolate");
@@ -308,10 +572,8 @@ void RegisterEditCommands(CommandEngine& e) {
         ctx.Print("Exploded into " + std::to_string(made) + " object(s)");
       }));
   Reg(e, "Rebuild", Make<RebuildCommand>());
-  Reg(e, "ChangeDegree", OnSelection("Select curves or surfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("ChangeDegree");
-        for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (!o) continue; if (o->kind == ObjectKind::Curve) { o->curve->ElevateDegree(o->curve->Degree() + 1); o->InvalidateDisplay(); } else if (o->kind == ObjectKind::Surface) { o->surface->ElevateDegree(0, o->surface->DegreeU() + 1); o->surface->ElevateDegree(1, o->surface->DegreeV() + 1); o->InvalidateDisplay(); } }
-      }), CommandStatus::Partial, "Raises degree by one; typed target degree is planned.");
+  Reg(e, "ChangeDegree", Make<ChangeDegreeCommand>(), CommandStatus::Implemented,
+      "Elevates curves/surfaces to a typed target degree (elevation only - it never lowers a degree, which is a lossy refit, not a plain elevation).");
   Reg(e, "Flip", OnSelection("Select curves, surfaces or meshes to flip", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Flip");
         for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (!o) continue; if (o->kind == ObjectKind::Curve) o->curve->Reverse(); else if (o->kind == ObjectKind::Surface) o->surface->Reverse(0); else if (o->kind == ObjectKind::Mesh) *o->mesh = o->mesh->FlipNormals(); else if (o->kind == ObjectKind::Brep) o->brep->raw().Flip(); o->InvalidateDisplay(); }
@@ -319,12 +581,11 @@ void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "Dir", OnSelection("Select objects to show direction", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o) continue; if (o->kind == ObjectKind::Curve) { kernel::Interval d = o->curve->Domain(); ctx.Print("Curve " + std::to_string(id) + ": start " + FormatPoint(o->curve->PointAt(d.min)) + " tangent " + FormatPoint(Point3d(o->curve->TangentAt(d.min)))); } else if (o->kind == ObjectKind::Surface) { ctx.Print("Surface " + std::to_string(id) + ": normal at centre " + FormatPoint(Point3d(o->surface->NormalAt((o->surface->Domain(0).min + o->surface->Domain(0).max) / 2, (o->surface->Domain(1).min + o->surface->Domain(1).max) / 2)))); } }
         ctx.Print("Use Flip to reverse direction.");
-      }), CommandStatus::Partial, "Reports direction; interactive flip arrows are planned.");
+      }), CommandStatus::Partial,
+      "Reports each curve's start point/tangent or surface's centre normal in the command history; there are no clickable direction-arrow glyphs drawn in the viewport, so reversing is a separate Flip call rather than a click on the arrow itself.");
   Reg(e, "Offset", Make<OffsetCommand>());
-  Reg(e, "Extend", OnSelection("Select curves to extend", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("Extend");
-        for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) { kernel::Interval d = o->curve->Domain(); double len = d.max - d.min; o->curve->Extend(d.min - len * 0.1, d.max + len * 0.1); o->InvalidateDisplay(); } }
-      }), CommandStatus::Partial, "Extends both ends by 10% of the domain; picking the extension is planned.");
+  Reg(e, "Extend", Make<ExtendCommand>(), CommandStatus::Implemented,
+      "Extends the end of each curve nearer the picked point until its tangent line reaches that point (Enter extends both ends by a fixed 10% of the domain instead).");
   Reg(e, "MakePeriodic", OnSelection("Select curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         // A closed clamped curve becomes a periodic uniform curve through the
         // same control points (like Rhino's Smooth=Yes: the shape relaxes
@@ -347,25 +608,18 @@ void RegisterEditCommands(CommandEngine& e) {
           if (periodic.CreatePeriodicUniformNurbs(3, order, n, cvs.data())) { c = periodic; o->InvalidateDisplay(); ++made; }
         }
         ctx.Print("MakePeriodic: " + std::to_string(made) + " curve(s) made periodic");
-      }), CommandStatus::Partial, "Uses the curve's control points as the periodic control polygon (Smooth=Yes).");
-  Reg(e, "Weight", OnSelection("Select curves or surfaces to make rational", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("Weight");
-        for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) o->curve->MakeRational(); else if (o && o->kind == ObjectKind::Surface) o->surface->MakeRational(); }
-      }), CommandStatus::Partial, "Makes objects rational; per-point weight editing is planned.");
+      }), CommandStatus::Partial,
+      "Only the Smooth=Yes behaviour is implemented (a periodic-uniform curve refit through the same control points, seam relaxed smooth); Smooth=No's exact-shape-preserving re-knot is a distinct, considerably harder NURBS algorithm this build does not have.");
+  Reg(e, "Weight", Make<WeightCommand>(), CommandStatus::Implemented,
+      "Picks the nearest control point to a clicked point and sets its weight (making the curve/surface rational if needed); Enter instead makes every selected object rational at weight 1.");
   Reg(e, "PointsOn", OnSelection("Select objects to turn on control points", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->show_control_points = true; o->InvalidateDisplay(); } ctx.Print("Control points on for " + std::to_string(ids.size()) + " object(s)"); }));
   Reg(e, "PointsOff", Immediate([](CommandContext& ctx) { int n = 0; for (SceneObject& o : ctx.Doc().Objects()) if (o.show_control_points) { o.show_control_points = false; o.InvalidateDisplay(); ++n; } ctx.Print("Control points off (" + std::to_string(n) + " object(s))"); }));
-  Reg(e, "SolidPtOn", OnSelection("Select polysurfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->show_control_points = true; o->InvalidateDisplay(); } }), CommandStatus::Partial);
-  Reg(e, "InsertKnot", OnSelection("Select curves or surfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("InsertKnot");
-        for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (!o) continue; if (o->kind == ObjectKind::Curve) { kernel::Interval d = o->curve->Domain(); o->curve->InsertKnotAt((d.min + d.max) / 2); } else if (o->kind == ObjectKind::Surface) { kernel::Interval d = o->surface->Domain(0); o->surface->InsertKnotAt(0, (d.min + d.max) / 2); } o->InvalidateDisplay(); }
-      }), CommandStatus::Partial, "Inserts a knot at the domain midpoint; picking is planned.");
-  Reg(e, "SetObjectName", OnSelection("Select objects to name", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("SetObjectName");
-        int i = 1;
-        for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) o->name = "Object " + std::to_string(i++);
-        ctx.Print("Named " + std::to_string(ids.size()) + " object(s). Edit names in the Properties panel.");
-      }), CommandStatus::Partial, "Assigns sequential names; edit them in Properties.");
-  Reg(e, "SetUserText", OnSelection("Select objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { for (ObjectId id : ids) ctx.Doc().Select(id, true); ctx.App().Panels().properties = true; ctx.Print("Set user text in the Properties panel > Attribute User Text."); }), CommandStatus::Partial);
+  Reg(e, "SolidPtOn", OnSelection("Select polysurfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->show_control_points = true; o->InvalidateDisplay(); } }), CommandStatus::Implemented, "Turns on control points for the selected polysurfaces (same toggle as PointsOn).");
+  Reg(e, "InsertKnot", Make<InsertKnotCommand>(), CommandStatus::Implemented,
+      "Inserts a knot at the closest point to the pick (both directions on a surface); Enter falls back to the domain midpoint.");
+  Reg(e, "SetObjectName", Make<SetObjectNameCommand>(), CommandStatus::Implemented,
+      "Prompts for a name and applies it to every selected object, suffixed \"(2)\", \"(3)\", ... when more than one is selected.");
+  Reg(e, "SetUserText", Make<SetUserTextCommand>(), CommandStatus::Implemented, "Prompts for a key then a value and sets that user-text pair on every selected object.");
   Reg(e, "GetUserText", OnSelection("Select objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) for (const auto& [k, v] : o->user_text) ctx.Print(std::to_string(id) + ": " + k + " = " + v); }));
   Reg(e, "DocumentUserText", Immediate([](CommandContext& ctx) { ctx.App().Panels().document_user_text = true; }));
   Reg(e, "GetDocumentUserText", Immediate([](CommandContext& ctx) { for (const auto& [k, v] : ctx.Doc().UserText()) ctx.Print(k + " = " + v); }));

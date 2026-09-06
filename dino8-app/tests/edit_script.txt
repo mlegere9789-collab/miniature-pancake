@@ -32,19 +32,24 @@ Rebuild Degree=2 12
 SelLast
 List
 Delete
-# --- ChangeDegree raises a line to degree 2, Weight makes it rational, InsertKnot adds a CV at the middle
+# --- ChangeDegree raises a line to degree 3, Weight sets a control point's weight (making it rational), InsertKnot adds a knot at the picked point
 Line 0,0,0 10,0,0
 SelLast
 ChangeDegree
+3
 SelLast
 List
+SelLast
 Weight
+0,0,0
+2
 SelLast
 List
 Delete
 Line 0,0,0 10,0,0
 SelLast
 InsertKnot
+5,0,0
 SelLast
 List
 Delete
@@ -74,6 +79,7 @@ Delete
 Line 0,0,0 10,0,0
 SelLast
 Extend
+Enter
 SelLast
 List
 Dir
@@ -93,6 +99,7 @@ Line 0,5,0 10,5,0
 Point 20,20,0
 SelAll
 SetObjectName
+MyName
 SelNone
 SelPt
 SelName
@@ -228,6 +235,9 @@ SelAll
 Hyperlink https://example.org/edit
 GetUserText
 SetUserText
+QC
+Passed
+GetUserText
 SetDocumentUserText Project QC
 GetDocumentUserText
 DocumentUserText
