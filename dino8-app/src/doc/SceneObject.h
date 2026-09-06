@@ -148,12 +148,26 @@ class SceneObject {
   std::vector<int> hidden_control_points;
   bool show_control_net = false;  // SubD: draw the control polygon instead of the smoothed surface
   bool highlight_edges = false;  // ShowEdges: draw brep/mesh edges thick, naked edges in a second colour
+  bool force_shaded = false;     // ShadeSelected: filled even in a display mode that otherwise draws no fills
+  bool show_render_mesh_wires = false;  // ToggleRenderMesh/ShowRenderMesh: overlay the tessellation's triangle edges
+  // Per-object display tolerance override for surface/brep/SubD tessellation
+  // (SetMeshSurfaceParameters); <= 0 means "use the app-wide setting".
+  double custom_mesh_tolerance = 0.0;
   AnalysisSettings analysis;     // per-object surface analysis (None = use the app-wide fallback)
   int group_id = -1;
   std::string material_name;
   // Per-object texture mapping override (Default = the material's mapping).
   TextureMapping mapping = TextureMapping::Default;
   float mapping_scale = 1.0f;
+  // ApplyCustomMapping's reference frame (world space): a plane placed
+  // anywhere in the scene rather than the object's own bounding box, used
+  // only when `mapping` (or the material's) is TextureMapping::Custom.
+  // Falls back to the same bounding-box projection as Planar when unset.
+  bool has_custom_mapping_frame = false;
+  kernel::Point3d custom_mapping_origin{0, 0, 0};
+  kernel::Vector3d custom_mapping_x{1, 0, 0};
+  kernel::Vector3d custom_mapping_y{0, 1, 0};
+  double custom_mapping_size = 1.0;  // world-space size of one tile before Scale
   std::string linetype = "ByLayer";  // linetype name, or "ByLayer"
   std::map<std::string, std::string> user_text;
 

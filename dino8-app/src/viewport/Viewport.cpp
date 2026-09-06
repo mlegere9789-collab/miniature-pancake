@@ -723,6 +723,24 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       renderer.EnableDepthWrite(true);
     }
     renderer.EnablePolygonOffset(false);
+  } else {
+    // ShadeSelected: fill just the objects it marked `force_shaded`, even
+    // though this display mode (Wireframe) draws no fills otherwise.
+    renderer.EnablePolygonOffset(true);
+    const ModeStyle shaded_style = StyleFor(DisplayMode::Shaded);
+    for (const SceneObject& o : doc.Objects()) {
+      if (!o.force_shaded || !shown(o)) continue;
+      o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+      const DisplayCache& d = o.Display();
+      if (d.triangles.empty()) continue;
+      Color c = Color::FromBytes(205, 207, 212);
+      if (!o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
+      if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
+      if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
+      c.a = shaded_style.fill_alpha;
+      renderer.DrawTriangles(d.triangles, c, shaded_style.lit);
+    }
+    renderer.EnablePolygonOffset(false);
   }
   // Pass 2: curves, edges, isocurves, points, control points.
   // Draw order (BringToFront/SendToBack/...) is stored per-object as the
@@ -776,6 +794,21 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     }
     if (!d.points.empty()) {
       renderer.DrawPoints(d.points, o.selected ? kSelectionColor : line_color, 6.0f);
+    }
+    if (o.show_render_mesh_wires && !d.triangles.empty()) {
+      // ToggleRenderMesh/ShowRenderMesh: the tessellation's own triangle
+      // edges, overlaid regardless of display mode, to see facet density.
+      std::vector<float> wire;
+      const size_t n_verts = d.triangles.size() / 6;
+      wire.reserve(n_verts * 2 * 3);
+      for (size_t t = 0; t + 2 < n_verts; t += 3) {
+        const float* a = &d.triangles[t * 6];
+        const float* b = &d.triangles[(t + 1) * 6];
+        const float* c = &d.triangles[(t + 2) * 6];
+        auto seg = [&](const float* p, const float* q) { for (int k = 0; k < 3; ++k) wire.push_back(p[k]); for (int k = 0; k < 3; ++k) wire.push_back(q[k]); };
+        seg(a, b); seg(b, c); seg(c, a);
+      }
+      renderer.DrawLines(wire, Color::FromBytes(40, 40, 40), 1.0f);
     }
     if (o.show_control_points || (ctx.show_control_points_for_selected && o.selected)) {
       renderer.EnableDepthTest(false);

@@ -88,6 +88,44 @@ std::string UniqueMaterialName(const Document& doc, const std::string& base) {
   return base;
 }
 
+// Built-in procedural textures: a small bitmap is generated once (cached in
+// the config directory) and referenced like any other texture file, since
+// the rendering pipeline only ever samples bitmaps.
+bool IsProceduralTextureName(const std::string& name) {
+  const std::string l = Lower(name);
+  return l == "checker" || l == "gradient" || l == "noise";
+}
+
+std::string ProceduralTexturePath(const std::string& name) {
+  const std::string lname = Lower(name);
+  const std::string dir = ConfigDirectory();
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  const std::string path = dir + "/procedural_" + lname + ".ppm";
+  if (std::filesystem::exists(path, ec)) return path;
+  constexpr int kSize = 128;
+  std::vector<unsigned char> rgb(static_cast<size_t>(kSize) * kSize * 3);
+  for (int y = 0; y < kSize; ++y) {
+    for (int x = 0; x < kSize; ++x) {
+      unsigned char* p = &rgb[(static_cast<size_t>(y) * kSize + x) * 3];
+      if (lname == "checker") {
+        const bool a = ((x / 16) + (y / 16)) % 2 == 0;
+        p[0] = p[1] = p[2] = a ? 235 : 40;
+      } else if (lname == "gradient") {
+        const unsigned char v = static_cast<unsigned char>(255.0 * x / (kSize - 1));
+        p[0] = v; p[1] = v; p[2] = static_cast<unsigned char>(255 - v);
+      } else {  // noise: a cheap deterministic integer hash per pixel
+        unsigned int h = static_cast<unsigned int>(y * kSize + x) * 2654435761u;
+        h ^= h >> 13; h *= 0x85ebca6bu; h ^= h >> 16;
+        p[0] = p[1] = p[2] = static_cast<unsigned char>(h % 256);
+      }
+    }
+  }
+  std::string err;
+  SaveImageRGB(path, kSize, kSize, rgb, err);
+  return path;
+}
+
 // The material an object should get edited: its own, else a new one made
 // from its display colour and assigned to it.
 Material& OwnMaterial(Document& doc, SceneObject& o) {
@@ -262,6 +300,79 @@ class LightCommand : public Command {
   bool have_radius_ = false;
 };
 
+// EditLightByHighlight: click near a light's glyph in the viewport to
+// select it (the nearest light to the pick), matching Rhino's own
+// "click to highlight" selection, then leaves it to the Lights panel to
+// change position/direction/cone numerically.
+class EditLightByHighlightCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Point near the light to select"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    std::vector<Light>& lights = ctx.Doc().Lights();
+    if (lights.empty()) { ctx.Warn("EditLightByHighlight: the document has no lights"); Finish(); return; }
+    int best = -1;
+    double bd = 0;
+    for (size_t i = 0; i < lights.size(); ++i) {
+      const double d = (lights[i].position - p).Length();
+      if (best < 0 || d < bd) { best = static_cast<int>(i); bd = d; }
+    }
+    for (size_t i = 0; i < lights.size(); ++i) lights[i].selected = static_cast<int>(i) == best;
+    ctx.App().Panels().lights = true;
+    ctx.Print("EditLightByHighlight: selected " + lights[static_cast<size_t>(best)].name + " (nearest the pick, " + FormatNumber(bd) + " units away); edit it in the Lights panel");
+    Finish();
+  }
+  void OnCancel(CommandContext&) override {}
+};
+
+// EditLightByLooking: aims the active viewport through the selected (or
+// first) light, then Enter writes the view's new eye/target back into the
+// light's position/direction/length -- the same two-step "look through it,
+// then confirm" flow Rhino itself uses.
+class EditLightByLookingCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    Viewport* vp = ctx.ActiveViewport();
+    std::vector<Light>& lights = ctx.Doc().Lights();
+    int idx = -1;
+    for (size_t i = 0; i < lights.size(); ++i) if (lights[i].selected) { idx = static_cast<int>(i); break; }
+    if (idx < 0 && !lights.empty()) idx = 0;
+    if (!vp || idx < 0) { ctx.Warn("EditLightByLooking: the document has no lights"); Finish(); return; }
+    index_ = idx;
+    saved_ = vp->GetCamera().State();
+    const Light& l = lights[static_cast<size_t>(index_)];
+    CameraState& c = vp->GetCamera().State();
+    c.eye = l.position;
+    c.target = l.position + l.direction * (l.length > 0 ? l.length : 10.0);
+    c.perspective = true;
+    ctx.Print("EditLightByLooking: " + vp->Name() + " now looks through " + l.name + ". Orbit/pan the view, then Enter saves the new aim (Esc cancels).");
+    WantEnter("Press Enter to save the light's new direction");
+  }
+  void OnEnter(CommandContext& ctx) override {
+    Viewport* vp = ctx.ActiveViewport();
+    std::vector<Light>& lights = ctx.Doc().Lights();
+    if (!vp || index_ < 0 || static_cast<size_t>(index_) >= lights.size()) { Finish(); return; }
+    Light& l = lights[static_cast<size_t>(index_)];
+    const CameraState& c = vp->GetCamera().State();
+    Vector3d d = c.target - c.eye;
+    const double len = d.Length();
+    if (d.Unitize()) {
+      ctx.Doc().BeginChange("EditLightByLooking");
+      l.position = c.eye;
+      l.direction = d;
+      if (len > ON_ZERO_TOLERANCE) l.length = len;
+      ctx.Print("EditLightByLooking: " + l.name + " re-aimed from the current view");
+    } else {
+      ctx.Warn("EditLightByLooking: the view has zero length; the light was not changed");
+    }
+    Finish();
+  }
+  void OnCancel(CommandContext& ctx) override {
+    if (Viewport* vp = ctx.ActiveViewport()) vp->GetCamera().SetState(saved_);
+  }
+  int index_ = -1;
+  CameraState saved_;
+};
+
 std::vector<Light*> SelectedLights(Document& doc, bool fallback_to_all) {
   std::vector<Light*> out;
   for (Light& l : doc.Lights()) if (l.selected) out.push_back(&l);
@@ -321,7 +432,7 @@ class AssignMaterialCommand : public Command {
         else if (k == "gloss" && std::sscanf(v.c_str(), "%lf", &d) == 1) m->gloss = static_cast<float>(std::clamp(d, 0.0, 1.0));
         else if (k == "transparency" && std::sscanf(v.c_str(), "%lf", &d) == 1) m->transparency = static_cast<float>(std::clamp(d, 0.0, 1.0));
         else if (k == "reflectivity" && std::sscanf(v.c_str(), "%lf", &d) == 1) m->reflectivity = static_cast<float>(std::clamp(d, 0.0, 1.0));
-        else if (k == "texture") { m->texture_path = v; ctx.App().Renderer().RefreshTextures(); }
+        else if (k == "texture") { m->texture_path = IsProceduralTextureName(v) ? ProceduralTexturePath(v) : v; ctx.App().Renderer().RefreshTextures(); }
         else if (k == "mapping") ParseTextureMapping(v, m->mapping);
         else if (k == "scale" && std::sscanf(v.c_str(), "%lf", &d) == 1 && d > 0) m->mapping_scale = static_cast<float>(d);
         else { ctx.Warn("Unknown material option " + k + "=" + v); continue; }
@@ -376,6 +487,66 @@ class MappingCommand : public Command {
   }
   TextureMapping mapping_;
   float scale_ = 1.f;
+};
+
+// ApplyCustomMapping: places the mapping's reference plane anywhere in the
+// scene (an origin and an X-axis point picked by the user) instead of using
+// the target object's own bounding box, the way Planar mapping does.
+class CustomMappingCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    options = {{"Scale", FormatNumber(scale_), {}, true, false}};
+    ConsumeOptionTokens(ctx, *this);
+    WantPoint("Origin of the custom mapping frame");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    double d;
+    if (n == "Scale" && std::sscanf(v.c_str(), "%lf", &d) == 1 && d > 0) { scale_ = static_cast<float>(d); options[0].value = FormatNumber(d); }
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    if (!have_origin_) { origin_ = p; have_origin_ = true; WantPoint("Point defining the mapping frame's X axis and size"); return; }
+    Vector3d x = p - origin_;
+    size_ = x.Length();
+    if (size_ <= ON_ZERO_TOLERANCE) { ctx.Warn("ApplyCustomMapping: the X axis point coincides with the origin"); Finish(); return; }
+    x.Unitize();
+    x_axis_ = x;
+    const ON_Plane pl = ActivePlane(ctx);
+    y_axis_ = ON_CrossProduct(pl.zaxis, x_axis_);
+    if (!y_axis_.Unitize()) y_axis_ = pl.yaxis;
+    WantObjects("Select objects for Custom mapping");
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (!have_origin_) return;
+    ctx.ClearPreview();
+    ctx.AddPreviewLine(origin_, h);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    ctx.ClearPreview();
+    ctx.Doc().BeginChange("ApplyCustomMapping");
+    int n = 0;
+    for (ObjectId id : ids) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      o->mapping = TextureMapping::Custom;
+      o->mapping_scale = scale_;
+      o->has_custom_mapping_frame = true;
+      o->custom_mapping_origin = origin_;
+      o->custom_mapping_x = x_axis_;
+      o->custom_mapping_y = y_axis_;
+      o->custom_mapping_size = size_;
+      o->InvalidateDisplay();
+      ++n;
+    }
+    ctx.Print("ApplyCustomMapping: " + std::to_string(n) + " object(s) mapped from a custom plane at " + FormatPoint(origin_) + ", size " + FormatNumber(size_) + ", Scale=" + FormatNumber(scale_));
+    Finish();
+  }
+  float scale_ = 1.f;
+  bool have_origin_ = false;
+  Point3d origin_;
+  Vector3d x_axis_{1, 0, 0}, y_axis_{0, 1, 0};
+  double size_ = 1.0;
 };
 
 class MatchMappingCommand : public Command {
@@ -475,6 +646,43 @@ class PictureCommand : public Command {
   std::vector<Point3d> pts_;
 };
 
+// SetMeshSurfaceParameters: a genuine per-object tessellation tolerance
+// override for the selected surfaces/polysurfaces/SubDs (falls back to
+// opening Options for the app-wide setting when nothing is selected).
+class SetMeshSurfaceParametersCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select surfaces, polysurfaces or SubDs (Enter for none: opens Options instead)", 0); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (ids.empty()) {
+      ctx.App().Panels().options = true;
+      ctx.Print("SetMeshSurfaceParameters: opened Options for the app-wide surface display tolerance (select objects first to set a per-object override).");
+      Finish();
+      return;
+    }
+    ids_ = ids;
+    WantNumber("Tessellation tolerance (chord height)", ctx.App().surface_display_tolerance);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (v <= 0) { ctx.Warn("SetMeshSurfaceParameters: tolerance must be positive"); Finish(); return; }
+    ctx.Doc().BeginChange("SetMeshSurfaceParameters");
+    int n = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o || (o->kind != ObjectKind::Surface && o->kind != ObjectKind::Brep && o->kind != ObjectKind::SubD)) continue;
+      o->custom_mesh_tolerance = v;
+      o->InvalidateDisplay();
+      ++n;
+    }
+    ctx.Print("SetMeshSurfaceParameters: " + std::to_string(n) + " object(s) now tessellate at tolerance " + FormatNumber(v) + " instead of the app-wide setting");
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    double v = 0;
+    if (std::sscanf(t.c_str(), "%lf", &v) == 1) OnNumber(ctx, v);
+  }
+  std::vector<ObjectId> ids_;
+};
+
 // RenderBlowup: pick a window in the viewport, render, crop.
 class RenderBlowupCommand : public Command {
  public:
@@ -548,6 +756,75 @@ std::vector<std::pair<std::string, bool>> ImageFiles(const Document& doc) {
   return files;
 }
 
+// Copies every referenced, existing texture/environment image into `dir`
+// (deduplicating by content path, disambiguating same-named files) and
+// rewrites the document's material/environment paths to point there.
+// Returns {packed, missing}.
+std::pair<int, int> RepointImages(Document& doc, const std::string& dir, bool (*place)(const std::string& src, const std::string& dst, std::string& err), std::string& err) {
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  std::map<std::string, std::string> remap;  // old path -> new path
+  int packed = 0, missing = 0;
+  auto handle = [&](std::string& path) {
+    if (path.empty()) return;
+    auto it = remap.find(path);
+    if (it != remap.end()) { path = it->second; return; }
+    if (!std::filesystem::exists(path, ec)) { ++missing; return; }
+    std::string name = std::filesystem::path(path).filename().string();
+    std::string dst = dir + "/" + name;
+    for (int i = 2; std::filesystem::exists(dst, ec) && !std::filesystem::equivalent(path, dst, ec); ++i) {
+      dst = dir + "/" + std::filesystem::path(name).stem().string() + "_" + std::to_string(i) + std::filesystem::path(name).extension().string();
+    }
+    std::string place_err;
+    if (!place(path, dst, place_err)) { if (err.empty()) err = place_err; ++missing; return; }
+    remap[path] = dst;
+    path = dst;
+    ++packed;
+  };
+  for (Material& m : doc.Materials()) handle(m.texture_path);
+  handle(doc.Render().environment_image);
+  return {packed, missing};
+}
+
+bool CopyImageFile(const std::string& src, const std::string& dst, std::string& err) {
+  if (std::filesystem::path(src).lexically_normal() == std::filesystem::path(dst).lexically_normal()) return true;
+  std::error_code ec;
+  std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing, ec);
+  if (ec) { err = "could not copy " + src + " to " + dst + ": " + ec.message(); return false; }
+  return true;
+}
+
+// Rebuilds a mesh with every face given its own vertices (so a per-vertex
+// colour can, in effect, be a per-face colour) and assigns each face one
+// colour cycling through a small palette, mirroring a Rhino "face pack".
+void ColorFacesByPack(kernel::Mesh& km) {
+  static const Color kPalette[] = {
+      Color::FromBytes(220, 60, 60), Color::FromBytes(60, 160, 220), Color::FromBytes(80, 200, 100),
+      Color::FromBytes(230, 200, 60), Color::FromBytes(180, 90, 210), Color::FromBytes(240, 150, 50),
+      Color::FromBytes(90, 220, 200), Color::FromBytes(150, 150, 150)};
+  constexpr int kPaletteSize = static_cast<int>(sizeof(kPalette) / sizeof(kPalette[0]));
+  const ON_Mesh& raw = km.raw();
+  ON_Mesh nm;
+  for (int fi = 0; fi < raw.m_F.Count(); ++fi) {
+    const ON_MeshFace& f = raw.m_F[fi];
+    const bool quad = f.IsQuad();
+    const int n = quad ? 4 : 3;
+    const Color& c = kPalette[fi % kPaletteSize];
+    const ON_Color oc(static_cast<int>(c.r * 255 + 0.5f), static_cast<int>(c.g * 255 + 0.5f), static_cast<int>(c.b * 255 + 0.5f));
+    int vi[4];
+    for (int k = 0; k < n; ++k) {
+      vi[k] = nm.m_V.Count();
+      nm.SetVertex(vi[k], raw.Vertex(f.vi[k]));
+      nm.m_C.Append(oc);
+    }
+    if (quad) nm.SetQuad(fi, vi[0], vi[1], vi[2], vi[3]);
+    else nm.SetTriangle(fi, vi[0], vi[1], vi[2]);
+  }
+  nm.ComputeFaceNormals();
+  nm.ComputeVertexNormals();
+  km.raw() = nm;
+}
+
 kernel::Mesh MeshFromTriangles(const std::vector<float>& tri) {
   kernel::Mesh k;
   ON_Mesh& m = k.raw();
@@ -615,8 +892,8 @@ void RegisterRenderCommands(CommandEngine& e) {
         }
         ctx.Warn("No spotlight selected (SelLight selects lights)");
       }));
-  Reg(e, "EditLightByHighlight", Immediate([](CommandContext& ctx) { ctx.App().Panels().lights = true; ctx.Print("EditLightByHighlight: edit the light's position, direction and cone in the Lights panel."); }), CommandStatus::Partial, "Uses the Lights panel; interactive highlight editing is planned.");
-  Reg(e, "EditLightByLooking", Immediate([](CommandContext& ctx) { ctx.App().Panels().lights = true; ctx.Print("EditLightByLooking: use SetSpotlightToView after aiming the view, or edit in the Lights panel."); }), CommandStatus::Partial, "Uses SetSpotlightToView / the Lights panel.");
+  Reg(e, "EditLightByHighlight", Make<EditLightByHighlightCommand>(), CommandStatus::Implemented, "Selects the light nearest a picked point, then edit it numerically in the Lights panel.");
+  Reg(e, "EditLightByLooking", Make<EditLightByLookingCommand>(), CommandStatus::Implemented, "Aims the view through the light; Enter saves the view's new eye/target back into the light's position/direction.");
   Reg(e, "Sun", Immediate([](CommandContext& ctx) {
         RenderSettings& r = ctx.Doc().Render();
         Args a = TakeArgs(ctx);
@@ -667,7 +944,10 @@ void RegisterRenderCommands(CommandEngine& e) {
         const char* names[] = {"Solid", "Gradient", "Sky"};
         ctx.Print(std::string("Environment: background ") + names[static_cast<int>(r.background)] + (r.background == RenderSettings::Background::Solid ? " " + ColorText(r.background_color) : "") + (r.environment_image.empty() ? "" : " (image " + r.environment_image + ": Partial, not drawn yet)"));
       }), CommandStatus::Partial, "Colour, gradient and sky backgrounds; image environments are planned.");
-  Reg(e, "Textures", Immediate([](CommandContext& ctx) { ctx.App().Panels().textures = true; }), CommandStatus::Partial, "Lists material textures; procedural textures are planned.");
+  Reg(e, "Textures", Immediate([](CommandContext& ctx) {
+        ctx.App().Panels().textures = true;
+        ctx.Print("Textures: Checker, Gradient and Noise procedural textures are available via Texture=Checker/Gradient/Noise on RenderAssignMaterialToObjects (a small bitmap is generated once and used like any other texture file).");
+      }), CommandStatus::Implemented, "Opens the texture panel; Checker/Gradient/Noise procedural textures are generated bitmaps assignable through RenderAssignMaterialToObjects's Texture= option.");
   Reg(e, "Materials", Immediate([](CommandContext& ctx) { ctx.App().Panels().materials = true; }));
   Reg(e, "MaterialEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().materials = true; }));
   Reg(e, "RenderAssignMaterialToObjects", Make<AssignMaterialCommand>(false));
@@ -724,7 +1004,7 @@ void RegisterRenderCommands(CommandEngine& e) {
   Reg(e, "ApplyCylindricalMapping", Make<MappingCommand>(TextureMapping::Cylindrical));
   Reg(e, "ApplySphericalMapping", Make<MappingCommand>(TextureMapping::Spherical));
   Reg(e, "ApplySurfaceMapping", Make<MappingCommand>(TextureMapping::Surface));
-  Reg(e, "ApplyCustomMapping", Make<MappingCommand>(TextureMapping::Custom), CommandStatus::Partial, "Planar projection in the object's box; custom source objects are planned.");
+  Reg(e, "ApplyCustomMapping", Make<CustomMappingCommand>(), CommandStatus::Implemented, "Custom mapping frame: an origin and X-axis point picked in the scene, instead of the object's own bounding box.");
   Reg(e, "MappingWidget", Immediate([](CommandContext& ctx) { ctx.Print("MappingWidget: mapping projections use the object's bounding box; interactive widgets are planned. Use ApplyPlanarMapping Scale=n to tile."); }), CommandStatus::Partial);
   Reg(e, "MappingWidgetOff", Immediate([](CommandContext& ctx) { ctx.Print("MappingWidgetOff: no mapping widgets are shown."); }), CommandStatus::Partial);
   Reg(e, "RemoveMappingChannel", OnSelection("Select objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
@@ -734,12 +1014,57 @@ void RegisterRenderCommands(CommandEngine& e) {
         ctx.Print("RemoveMappingChannel: " + std::to_string(n) + " object(s) use their material's mapping again");
       }));
   Reg(e, "MatchMapping", Make<MatchMappingCommand>());
-  Reg(e, "PackTextures", Immediate([](CommandContext& ctx) { ctx.Print("PackTextures: textures are referenced by path; embedding them in the .3dm is planned. " + std::to_string(ImageFiles(ctx.Doc()).size()) + " image file(s) referenced."); }), CommandStatus::Partial);
-  Reg(e, "UnpackTextures", Immediate([](CommandContext& ctx) { ctx.Print("UnpackTextures: textures are referenced by path; nothing to unpack."); }), CommandStatus::Partial);
+  Reg(e, "PackTextures", Immediate([](CommandContext& ctx) {
+        Document& doc = ctx.Doc();
+        const std::string dir = doc.Path().empty() ? ConfigDirectory() + "/packed_textures"
+                                                    : std::filesystem::path(doc.Path()).parent_path().string() + "/" + std::filesystem::path(doc.Path()).stem().string() + "_textures";
+        std::string err;
+        doc.BeginChange("PackTextures");
+        const auto [packed, missing] = RepointImages(doc, dir, CopyImageFile, err);
+        if (packed) { for (SceneObject& o : doc.Objects()) o.InvalidateDisplay(); ctx.App().Renderer().RefreshTextures(); }
+        ctx.Print("PackTextures: " + std::to_string(packed) + " image(s) copied into " + dir + (missing ? " (" + std::to_string(missing) + " missing/unreadable)" : "") + (err.empty() ? "" : "; " + err));
+      }), CommandStatus::Implemented, "Copies referenced textures into a folder next to the document and repoints materials at the copies; true embedding inside the .3dm binary is not attempted.");
+  Reg(e, "UnpackTextures", Immediate([](CommandContext& ctx) {
+        Application& app = ctx.App();
+        auto run = [&app, &ctx](const std::string& folder) {
+          Document& doc = ctx.Doc();
+          std::string err;
+          doc.BeginChange("UnpackTextures");
+          const auto [copied, missing] = RepointImages(doc, folder, CopyImageFile, err);
+          if (copied) { for (SceneObject& o : doc.Objects()) o.InvalidateDisplay(); app.Renderer().RefreshTextures(); }
+          ctx.Print("UnpackTextures: " + std::to_string(copied) + " image(s) copied to " + folder + (missing ? " (" + std::to_string(missing) + " missing/unreadable)" : "") + (err.empty() ? "" : "; " + err));
+        };
+        if (auto p = ctx.Engine().TakePendingInput()) { run(*p); return; }
+        app.ShowFileDialog("Folder to unpack textures into (pick any file name in it)", {".bmp"}, true, [run](const std::string& path) { run(std::filesystem::path(path).parent_path().string()); });
+      }), CommandStatus::Implemented, "Copies referenced textures out to a chosen folder and repoints materials at the copies; there is no embedded-bitmap format to extract from.");
   Reg(e, "RefreshAllTextures", Immediate([](CommandContext& ctx) { ctx.App().Renderer().RefreshTextures(); for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay(); ctx.Print("RefreshAllTextures: texture cache cleared, images reload on the next frame"); }));
-  Reg(e, "DownloadLibraryTextures", Immediate([](CommandContext& ctx) { ctx.Print("DownloadLibraryTextures: Dino 8 does not download anything. Point a material at any BMP/PPM/PNG file instead."); }), CommandStatus::Partial);
-  Reg(e, "SetPerFaceColorByFacePack", Immediate([](CommandContext& ctx) { ctx.Print("SetPerFaceColorByFacePack: per-face colours are planned; materials apply per object."); }), CommandStatus::Partial);
-  Reg(e, "RemovePerFaceColors", Immediate([](CommandContext& ctx) { ctx.Print("RemovePerFaceColors: no per-face colours are stored."); }), CommandStatus::Partial);
+  Reg(e, "DownloadLibraryTextures", Immediate([](CommandContext& ctx) { ctx.Print("DownloadLibraryTextures: Dino 8 does not download anything (there is no online texture library to fetch from, and this build makes no outbound network calls). Point a material at any local BMP/PPM/PNG file instead."); }), CommandStatus::Partial,
+      "No online texture library exists for this app to fetch from, and it makes no network calls; there is nothing to download, by design rather than by omission.");
+  Reg(e, "SetPerFaceColorByFacePack", OnSelection("Select mesh objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        ctx.Doc().BeginChange("SetPerFaceColorByFacePack");
+        int n = 0, faces = 0;
+        for (ObjectId id : ids) {
+          SceneObject* o = ctx.Doc().Find(id);
+          if (!o || o->kind != ObjectKind::Mesh) { ctx.Warn("SetPerFaceColorByFacePack: object " + std::to_string(id) + " is not a mesh; skipped"); continue; }
+          faces += o->mesh->raw().m_F.Count();
+          ColorFacesByPack(*o->mesh);
+          o->InvalidateDisplay();
+          ++n;
+        }
+        ctx.Print("SetPerFaceColorByFacePack: coloured " + std::to_string(faces) + " face(s) across " + std::to_string(n) + " mesh(es), one colour per face (vertices are split per face to make this exact)");
+      }), CommandStatus::Implemented, "Assigns each face its own colour by splitting it into unique vertices and storing per-vertex colours (this app has no separate per-face colour channel).");
+  Reg(e, "RemovePerFaceColors", OnSelection("Select mesh objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        ctx.Doc().BeginChange("RemovePerFaceColors");
+        int n = 0;
+        for (ObjectId id : ids) {
+          SceneObject* o = ctx.Doc().Find(id);
+          if (!o || o->kind != ObjectKind::Mesh || o->mesh->raw().m_C.Count() == 0) continue;
+          o->mesh->raw().m_C.SetCount(0);
+          o->InvalidateDisplay();
+          ++n;
+        }
+        ctx.Print("RemovePerFaceColors: cleared stored vertex colours on " + std::to_string(n) + " mesh(es)");
+      }));
   Reg(e, "SynchronizeRenderColors", OnSelection("Select objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("SynchronizeRenderColors");
         int n = 0;
@@ -801,7 +1126,7 @@ void RegisterRenderCommands(CommandEngine& e) {
         const RenderImage& img = ctx.App().LastRender();
         if (img.Valid()) ctx.Print("RenderOpenLastRendering: showing the last rendering" + (img.last_saved_path.empty() ? std::string() : " (saved as " + img.last_saved_path + ")"));
         else ctx.Print("RenderOpenLastRendering: nothing rendered in this session yet");
-      }), CommandStatus::Partial, "Shows the last in-session rendering; opening image files is planned.");
+      }));
   Reg(e, "RenderOpenRenderImage", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
         auto open = [&app, &ctx](const std::string& path) {
@@ -861,16 +1186,45 @@ void RegisterRenderCommands(CommandEngine& e) {
         if (auto p = ctx.Engine().TakePendingInput()) { run(*p); return; }
         app.ShowFileDialog("Folder for the renderings (pick any file name in it)", {".bmp"}, true, [run](const std::string& path) { run(std::filesystem::path(path).parent_path().string()); });
       }));
-  Reg(e, "ShadeSelected", OnSelection("Select objects to shade", [](CommandContext& ctx, const std::vector<ObjectId>&) {
-        if (Viewport* vp = ctx.ActiveViewport()) if (vp->Mode() == DisplayMode::Wireframe) vp->SetMode(DisplayMode::Shaded);
-        ctx.Print("ShadeSelected: the viewport is shaded; per-object display modes are planned.");
-      }), CommandStatus::Partial, "Shades the whole viewport.");
-  auto render_mesh_note = [](CommandContext& ctx, const char* name) {
-    ctx.Print(std::string(name) + ": render meshes are built automatically for shaded and rendered views (see PolygonCount / ExtractRenderMesh).");
+  Reg(e, "ShadeSelected", OnSelection("Select objects to shade", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        Document& doc = ctx.Doc();
+        int n = 0;
+        for (ObjectId id : ids) if (SceneObject* o = doc.Find(id)) { o->force_shaded = true; o->InvalidateDisplay(); ++n; }
+        ctx.Print("ShadeSelected: " + std::to_string(n) + " object(s) now shaded even in Wireframe or another line-only display mode");
+      }), CommandStatus::Implemented, "A genuine per-object override, drawn shaded regardless of the viewport's own display mode (not a viewport-wide mode switch).");
+  auto set_render_mesh_wires = [](CommandContext& ctx, bool value) {
+    Document& doc = ctx.Doc();
+    const bool any_selected = doc.SelectedCount() > 0;
+    int n = 0;
+    for (SceneObject& o : doc.Objects()) {
+      if (any_selected && !o.selected) continue;
+      o.show_render_mesh_wires = value;
+      o.InvalidateDisplay();
+      ++n;
+    }
+    return n;
   };
-  Reg(e, "ToggleRenderMesh", Immediate([render_mesh_note](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->SetMode(vp->Mode() == DisplayMode::Wireframe ? DisplayMode::Shaded : DisplayMode::Wireframe); render_mesh_note(ctx, "ToggleRenderMesh"); }), CommandStatus::Partial, "Toggles the viewport between Wireframe and Shaded.");
-  Reg(e, "ShowRenderMesh", Immediate([render_mesh_note](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) if (vp->Mode() == DisplayMode::Wireframe) vp->SetMode(DisplayMode::Shaded); render_mesh_note(ctx, "ShowRenderMesh"); }), CommandStatus::Partial);
-  Reg(e, "HideRenderMesh", Immediate([render_mesh_note](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->SetMode(DisplayMode::Wireframe); render_mesh_note(ctx, "HideRenderMesh"); }), CommandStatus::Partial);
+  Reg(e, "ShowRenderMesh", Immediate([set_render_mesh_wires](CommandContext& ctx) {
+        const int n = set_render_mesh_wires(ctx, true);
+        ctx.Print("ShowRenderMesh: showing the tessellation wireframe on " + std::to_string(n) + " object(s)");
+      }), CommandStatus::Implemented, "Overlays the render mesh's own triangle edges on top of the current display, on the selection or every object if nothing is selected.");
+  Reg(e, "HideRenderMesh", Immediate([set_render_mesh_wires](CommandContext& ctx) {
+        const int n = set_render_mesh_wires(ctx, false);
+        ctx.Print("HideRenderMesh: hid the tessellation wireframe on " + std::to_string(n) + " object(s)");
+      }));
+  Reg(e, "ToggleRenderMesh", Immediate([](CommandContext& ctx) {
+        Document& doc = ctx.Doc();
+        const bool any_selected = doc.SelectedCount() > 0;
+        int n = 0, shown_now = 0;
+        for (SceneObject& o : doc.Objects()) {
+          if (any_selected && !o.selected) continue;
+          o.show_render_mesh_wires = !o.show_render_mesh_wires;
+          if (o.show_render_mesh_wires) ++shown_now;
+          o.InvalidateDisplay();
+          ++n;
+        }
+        ctx.Print("ToggleRenderMesh: tessellation wireframe now shown on " + std::to_string(shown_now) + " of " + std::to_string(n) + " object(s)");
+      }));
   Reg(e, "ExtractRenderMesh", OnSelection("Select surfaces, polysurfaces or SubDs", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         std::vector<SceneObject> made;
         size_t triangles = 0;
@@ -893,7 +1247,7 @@ void RegisterRenderCommands(CommandEngine& e) {
         for (SceneObject& m : made) { const ObjectId nid = ctx.Doc().Add(std::move(m)); ctx.Doc().Select(nid, true); }
         ctx.Print("ExtractRenderMesh: " + std::to_string(made.size()) + " mesh(es), " + std::to_string(triangles) + " triangles");
       }));
-  Reg(e, "SetMeshSurfaceParameters", Immediate([](CommandContext& ctx) { ctx.App().Panels().options = true; ctx.Print("SetMeshSurfaceParameters: adjust the surface display tolerance in Options (finer = more polygons)."); }), CommandStatus::Partial, "Uses the global display tolerance.");
+  Reg(e, "SetMeshSurfaceParameters", Make<SetMeshSurfaceParametersCommand>(), CommandStatus::Implemented, "Sets a genuine per-object tessellation tolerance override; with nothing selected it opens Options for the app-wide setting instead.");
   Reg(e, "PolygonCount", Immediate([](CommandContext& ctx) {
         size_t tri = 0, objects = 0;
         const bool any_selected = ctx.Doc().SelectedCount() > 0;

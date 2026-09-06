@@ -89,11 +89,19 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   hidden_control_points = other.hidden_control_points;
   show_control_net = other.show_control_net;
   highlight_edges = other.highlight_edges;
+  force_shaded = other.force_shaded;
+  show_render_mesh_wires = other.show_render_mesh_wires;
+  custom_mesh_tolerance = other.custom_mesh_tolerance;
   analysis = other.analysis;
   group_id = other.group_id;
   material_name = other.material_name;
   mapping = other.mapping;
   mapping_scale = other.mapping_scale;
+  has_custom_mapping_frame = other.has_custom_mapping_frame;
+  custom_mapping_origin = other.custom_mapping_origin;
+  custom_mapping_x = other.custom_mapping_x;
+  custom_mapping_y = other.custom_mapping_y;
+  custom_mapping_size = other.custom_mapping_size;
   linetype = other.linetype;
   user_text = other.user_text;
   point = other.point;
@@ -550,6 +558,7 @@ kernel::Mesh SmoothSubDMesh(const kernel::SubD& subd, const kernel::Mesh& net) {
 
 void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance) const {
   if (!cache_.dirty) return;
+  if (custom_mesh_tolerance > 0.0) surface_tolerance = custom_mesh_tolerance;  // SetMeshSurfaceParameters override
   cache_.triangles.clear();
   cache_.lines.clear();
   cache_.points.clear();
@@ -726,8 +735,17 @@ void SceneObject::EnsureMappedUVs(TextureMapping mapping, float scale) const {
     double u = 0, w = 0;
     switch (mapping) {
       case TextureMapping::Planar:
-      case TextureMapping::Custom:
         u = (x - mn.x) / sx; w = (y - mn.y) / sy;
+        break;
+      case TextureMapping::Custom:
+        if (has_custom_mapping_frame) {
+          const kernel::Vector3d rel(x - custom_mapping_origin.x, y - custom_mapping_origin.y, z - custom_mapping_origin.z);
+          const double s = std::max(custom_mapping_size, 1e-9);
+          u = ON_DotProduct(rel, custom_mapping_x) / s;
+          w = ON_DotProduct(rel, custom_mapping_y) / s;
+        } else {
+          u = (x - mn.x) / sx; w = (y - mn.y) / sy;
+        }
         break;
       case TextureMapping::Box: {
         const double ax = std::fabs(v[3]), ay = std::fabs(v[4]), az = std::fabs(v[5]);
