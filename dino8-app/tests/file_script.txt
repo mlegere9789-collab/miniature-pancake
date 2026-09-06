@@ -42,15 +42,21 @@ Delete
 @expect_objects 0
 Open @TMP@/file2.3dm
 @expect_objects 2
-# --- Export (typed path writes the file); ExportSelected / ExportWithOrigin
-# have no typed-path form in this build (they always open the save dialog,
-# which is a no-op headless) - just exercise them without hanging.
+# --- Export (typed path writes the file); ExportSelected has no typed-path
+# form in this build (it always opens the save dialog, which is a no-op
+# headless) - just exercise it without hanging. ExportWithOrigin is modal
+# (it asks for a re-basing point after the selection), so the point must be
+# fed on the same line right where the prompt comes up - a typed path after
+# it exercises the export, a bare point (no path) exercises the no-op dialog
+# fallback without hanging.
 SelAll
 Export @TMP@/export1.obj
 SelAll
 ExportSelected
 SelAll
-ExportWithOrigin
+ExportWithOrigin 5,5,0 @TMP@/exportorigin.obj
+SelAll
+ExportWithOrigin 1,1,0
 # --- document panels and audit (headless: dialogs only, verify no hang)
 Notes
 DocumentProperties

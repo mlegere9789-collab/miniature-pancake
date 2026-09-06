@@ -221,6 +221,23 @@ sfcheck "CV\[1\] 240,20,0" "Project landed the line on the plane"
 sfcheck "Pull: 0 curve(s), 1 point(s)" "Pull produced one point"
 sfcheck "  225,5,0" "Pull moved the point onto the plane"
 sfcheck "smoke: frames=200 objects=39" "surface script produced the expected object count"
+# Solids: Ellipsoid/SubDEllipsoid (real axis picking), Pyramid (NumSides=),
+# Loft (Normal vs Style=Straight), Cap (multiple separate openings) (see solids_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  SO="$("$BIN" --smoke 150 --script "$HERE/solids_script.txt" 2>&1)" || { echo "$SO"; echo "FAIL: solids script exited non-zero"; exit 1; }
+else
+  SO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/solids_script.txt" 2>&1)" || { echo "$SO"; echo "FAIL: solids script exited non-zero"; exit 1; }
+fi
+socheck() { if echo "$SO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+socheck "Volume = 132 cubic" "Ellipsoid volume is close to the analytic 4/3*pi*5*3*2 (~125.7)"
+socheck "48 faces, 72 edges, 26 vertices, 0 creases" "SubDEllipsoid built a SubD from the same three axes"
+socheck "7 vertices, 10 faces" "Pyramid NumSides=6 built a 7-vertex hexagonal-base mesh"
+socheck "degree 3 x 2, CVs 24 x 3" "Loft (Normal) fit a cubic-through-control-points v-direction for 3 sections"
+socheck "degree 3 x 1, CVs 24 x 3" "Loft Style=Straight dropped to a linear (ruled) v-direction"
+socheck "4 faces, 12 edges, open" "DeleteFaces removed the box's top and bottom (two separate naked-edge loops)"
+socheck "Capped 1 object(s), 2 opening(s)" "Cap closed both separate openings in one call"
+socheck "6 faces, 76 edges, open" "Cap added both cap faces back (4 sides + 2 caps)"
+socheck "smoke: frames=150 objects=12" "solids script produced the expected object count"
 # Surface editing: ExtractSrf, DeleteFaces, DupBorder/DupEdge, Untrim, isocurves, ExtendSrf, UnrollSrf, Silhouette, RailRevolve, Fin/Ribbon, grids (see srfedit_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
   SE="$("$BIN" --smoke 150 --script "$HERE/srfedit_script.txt" 2>&1)" || { echo "$SE"; echo "FAIL: surface-edit script exited non-zero"; exit 1; }
@@ -874,6 +891,9 @@ test -s "$TMP/file/file2.3dm" && echo "ok   file2.3dm exists" || { echo "FAIL fi
 test -s "$TMP/file/file2_1.3dm" && echo "ok   IncrementalSave wrote file2_1.3dm" || { echo "FAIL file2_1.3dm missing"; fail=1; }
 test -s "$TMP/file/file2_1_2.3dm" && echo "ok   IncrementalSave wrote file2_1_2.3dm" || { echo "FAIL file2_1_2.3dm missing"; fail=1; }
 test -s "$TMP/file/export1.obj" && echo "ok   export1.obj exists" || { echo "FAIL export1.obj missing"; fail=1; }
+flcheck "Exported $TMP/file/exportorigin.obj (origin at 5,5,0)" "ExportWithOrigin re-based to the picked point"
+test -s "$TMP/file/exportorigin.obj" && echo "ok   exportorigin.obj exists" || { echo "FAIL exportorigin.obj missing"; fail=1; }
+grep -q "^v -5 -5 0$" "$TMP/file/exportorigin.obj" && echo "ok   ExportWithOrigin translated the box corner to -5,-5,0" || { echo "FAIL ExportWithOrigin did not re-base the geometry"; fail=1; }
 
 # Creation: Points/Lines/InterpCrv/CurveThroughPt/Sketch/Circle3Pt/CircleD/Arc3Pt/
 # Rectangle3Pt/Polygon/PolygonStar/Ellipse/Helix/Spiral/PointGrid/Divide/ClosestPt/

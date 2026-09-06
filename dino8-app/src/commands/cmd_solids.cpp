@@ -1,6 +1,8 @@
 // Surface, solid, mesh and SubD creation commands.
 #include "commands/cmd_common.h"
 
+#include <unordered_map>
+
 namespace dino8::app {
 
 namespace {
@@ -115,12 +117,87 @@ CommandFactory SphereLike(const char* label, std::function<void(CommandContext&,
   };
 }
 
+// Ellipsoid: center, then the three semi-axis end points, matching Rhino's
+// own Center/End of first axis/End of second axis/End of third axis flow
+// (real axis picking, not a fixed 1:0.7:0.5 ratio). The second axis point is
+// projected perpendicular to the first so the three axes stay an orthogonal
+// frame; the third axis length is the picked point's distance along
+// axis1 x axis2 (its position off that plane doesn't otherwise matter).
+class EllipsoidCommand : public Command {
+ public:
+  explicit EllipsoidCommand(bool to_subd) : to_subd_(to_subd) {}
+  void Begin(CommandContext&) override { WantPoint("Center of ellipsoid"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    if (stage_ == 0) { center_ = p; stage_ = 1; WantPoint("End of first axis"); return; }
+    if (stage_ == 1) {
+      dir1_ = p - center_;
+      ra_ = dir1_.Length();
+      if (ra_ <= 0 || !dir1_.Unitize()) { ctx.Warn("Ellipsoid: axis must have length"); Finish(); return; }
+      stage_ = 2;
+      WantPoint("End of second axis");
+      return;
+    }
+    if (stage_ == 2) {
+      Vector3d v = p - center_;
+      v = v - dir1_ * ON_DotProduct(v, dir1_);  // component perpendicular to axis 1
+      rb_ = v.Length();
+      if (rb_ <= 0 || !v.Unitize()) { ctx.Warn("Ellipsoid: second axis must be off the first"); Finish(); return; }
+      dir2_ = v;
+      dir3_ = ON_CrossProduct(dir1_, dir2_);
+      dir3_.Unitize();
+      stage_ = 3;
+      WantPoint("End of third axis");
+      return;
+    }
+    rc_ = std::fabs(ON_DotProduct(p - center_, dir3_));
+    Build(ctx);
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnNumber(CommandContext& ctx, double v) override { if (stage_ == 3) { rc_ = std::fabs(v); Build(ctx); } }
+  void Build(CommandContext& ctx) {
+    if (rc_ <= 0) { ctx.Warn("Ellipsoid: third axis must have length"); Finish(); return; }
+    ON_Xform xf = ON_Xform::IdentityTransformation;
+    for (int r = 0; r < 3; ++r) {
+      xf.m_xform[r][0] = ra_ * dir1_[r];
+      xf.m_xform[r][1] = rb_ * dir2_[r];
+      xf.m_xform[r][2] = rc_ * dir3_[r];
+      xf.m_xform[r][3] = center_[r];
+    }
+    if (to_subd_) {
+      kernel::Mesh m = kernel::Brep::Sphere(ON_3dPoint::Origin, 1).TessellateToClosedMesh(8, 4);
+      m = m.Transform(xf);
+      AddObject(ctx, SceneObject::MakeSubD(kernel::SubD::FromControlMesh(m)), "SubDEllipsoid");
+    } else if (ON_Brep* b = ON_BrepSphere(ON_Sphere(ON_3dPoint::Origin, 1))) {
+      b->Transform(xf);
+      AddBrep(ctx, b, "Ellipsoid");
+    }
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    ctx.ClearPreview();
+    if (stage_ == 1) { ctx.AddPreviewLine(center_, h); return; }
+    if (stage_ >= 2) ctx.AddPreviewLine(center_, center_ + dir1_ * ra_);
+    if (stage_ == 2) ctx.AddPreviewLine(center_, h);
+    if (stage_ == 3) ctx.AddPreviewLine(center_, center_ + dir2_ * rb_);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  bool to_subd_;
+  int stage_ = 0;
+  Point3d center_;
+  Vector3d dir1_, dir2_, dir3_;
+  double ra_ = 0, rb_ = 0, rc_ = 0;
+};
+
 // Base circle then height (cylinder / cone / tube...).
 class CylinderCommand : public Command {
  public:
   enum class Kind { Cylinder, Cone, TCone, Tube, Pyramid, MeshCylinder, MeshCone, SubDCylinder, SubDCone };
   explicit CylinderCommand(Kind k) : kind_(k) {}
-  void Begin(CommandContext&) override { WantPoint("Base of " + Name()); }
+  void Begin(CommandContext&) override {
+    if (kind_ == Kind::Pyramid) options = {{"NumSides", std::to_string(sides_), {}, true, false}};
+    WantPoint("Base of " + Name());
+  }
   std::string Name() const {
     switch (kind_) { case Kind::Cylinder: return "cylinder"; case Kind::Cone: return "cone"; case Kind::TCone: return "truncated cone"; case Kind::Tube: return "tube"; case Kind::Pyramid: return "pyramid"; case Kind::MeshCylinder: return "mesh cylinder"; case Kind::MeshCone: return "mesh cone"; case Kind::SubDCylinder: return "SubD cylinder"; default: return "SubD cone"; }
   }
@@ -132,6 +209,13 @@ class CylinderCommand : public Command {
     else { OnNumber(ctx, ON_DotProduct(p - base_, ActiveNormal(ctx))); }
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    if (n != "NumSides") return;
+    int s = std::atoi(v.c_str());
+    if (s < 3) { ctx.Warn("NumSides must be at least 3"); return; }
+    sides_ = s;
+    options[0].value = std::to_string(sides_);
+  }
   void OnNumber(CommandContext& ctx, double v) override {
     if (stage_ == 1) { radius_ = std::fabs(v); if (radius_ <= 0) return; stage_ = 2; WantPoint(kind_ == Kind::Tube ? "Second radius" : "End of " + Name()); }
     else if (stage_ == 2 && kind_ == Kind::Tube) { radius2_ = std::fabs(v); stage_ = 3; WantPoint("End of tube"); }
@@ -207,7 +291,7 @@ class CylinderCommand : public Command {
         break;
       }
       case Kind::Pyramid:
-        AddObject(ctx, SceneObject::MakeMesh(kernel::Mesh::Cone(base_, axis, radius_, h, 4, 1)), "Pyramid");
+        AddObject(ctx, SceneObject::MakeMesh(kernel::Mesh::Cone(base_, axis, radius_, h, sides_, 1)), "Pyramid");
         break;
       case Kind::MeshCylinder:
         AddObject(ctx, SceneObject::MakeMesh(kernel::Mesh::Cylinder(base_, axis, radius_, h)), "MeshCylinder");
@@ -227,6 +311,7 @@ class CylinderCommand : public Command {
   void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
   Kind kind_;
   int stage_ = 0;
+  int sides_ = 4;  // Pyramid only: NumSides= option
   Point3d base_;
   double radius_ = 0, radius2_ = 0, height_ = 0;
 };
@@ -432,8 +517,16 @@ class RevolveCommand : public Command {
   std::optional<Point3d> a_;
 };
 
-// Loft: surface through the selected curves (in selection order).
-void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd) {
+// Loft: surface through the selected curves (in selection order). `straight`
+// (Style=Straight) drops the v-direction to degree 1: a B-spline of degree 1
+// interpolates its control points exactly, so this gives a real ruled loft
+// with a sharp (C0) edge at every section, instead of the cubic-through-
+// control-points fit the default (Normal) style uses. Loose/Tight aren't
+// offered: both still interpolate every section like Normal and differ from
+// it only in end-tangent/fairing detail this control-point construction has
+// no way to express - claiming them as distinct styles here would not be
+// honest, so Straight is the only alternate style.
+void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool straight = false) {
   std::vector<const kernel::NurbsCurve*> curves;
   for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) curves.push_back(o->curve.get()); }
   if (curves.size() < 2) { ctx.Warn("Select at least two curves"); return; }
@@ -455,8 +548,20 @@ void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd) {
       return;
     }
   }
-  int vdeg = std::min(3, static_cast<int>(curves.size()) - 1);
+  int vdeg = straight ? 1 : std::min(3, static_cast<int>(curves.size()) - 1);
   ctx.Doc().Add(SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, n, static_cast<int>(curves.size()), 3, vdeg)));
+}
+
+// Pulls "Style=Straight"/"Style=Normal" off the command's remaining typed
+// tokens (Loose/Tight aren't offered - see Loft() above).
+bool TakeLoftStyle(CommandContext& ctx) {
+  while (auto t = ctx.Engine().TakePendingInput()) {
+    std::string s = *t;
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (s == "style=straight") return true;
+    if (s == "style=normal") return false;
+  }
+  return false;
 }
 
 void MeshFromSelection(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* label, bool to_subd) {
@@ -485,22 +590,13 @@ void RegisterSolidCommands(CommandEngine& e) {
   Reg(e, "Sphere", SphereLike("Sphere", [](CommandContext& ctx, Point3d c, double r) { AddBrep(ctx, ON_BrepSphere(ON_Sphere(c, r)), "Sphere"); }));
   Reg(e, "MeshSphere", SphereLike("MeshSphere", [](CommandContext& ctx, Point3d c, double r) { AddObject(ctx, SceneObject::MakeMesh(kernel::Brep::Sphere(c, r).TessellateToClosedMesh(24, 12)), "MeshSphere"); }));
   Reg(e, "SubDSphere", SphereLike("SubDSphere", [](CommandContext& ctx, Point3d c, double r) { AddObject(ctx, SceneObject::MakeSubD(kernel::SubD::FromControlMesh(kernel::Brep::Sphere(c, r).TessellateToClosedMesh(8, 4))), "SubDSphere"); }));
-  Reg(e, "Ellipsoid", SphereLike("Ellipsoid", [](CommandContext& ctx, Point3d c, double r) {
-        ON_Brep* b = ON_BrepSphere(ON_Sphere(c, r));
-        if (b) { ON_Xform s = ON_Xform::DiagonalTransformation(1.0, 0.7, 0.5); ON_Xform t0 = ON_Xform::TranslationTransformation(ON_3dPoint::Origin - c); ON_Xform t1 = ON_Xform::TranslationTransformation(c - ON_3dPoint::Origin); b->Transform(t1 * s * t0); }
-        AddBrep(ctx, b, "Ellipsoid");
-      }), CommandStatus::Partial, "Axis ratios 1 : 0.7 : 0.5; axis picking is planned.");
-  Reg(e, "SubDEllipsoid", SphereLike("SubDEllipsoid", [](CommandContext& ctx, Point3d c, double r) {
-        kernel::Mesh m = kernel::Brep::Sphere(c, r).TessellateToClosedMesh(8, 4);
-        ON_Xform s = ON_Xform::DiagonalTransformation(1.0, 0.7, 0.5);
-        m = m.Transform(ON_Xform::TranslationTransformation(c - ON_3dPoint::Origin) * s * ON_Xform::TranslationTransformation(ON_3dPoint::Origin - c));
-        AddObject(ctx, SceneObject::MakeSubD(kernel::SubD::FromControlMesh(m)), "SubDEllipsoid");
-      }), CommandStatus::Partial, "Axis ratios 1 : 0.7 : 0.5.");
+  Reg(e, "Ellipsoid", Make<EllipsoidCommand>(false), CommandStatus::Implemented, "Center, then the three semi-axis end points (real axis picking, any orientation).");
+  Reg(e, "SubDEllipsoid", Make<EllipsoidCommand>(true), CommandStatus::Implemented, "Center, then the three semi-axis end points (real axis picking, any orientation).");
   Reg(e, "Cylinder", Make<CylinderCommand>(CylinderCommand::Kind::Cylinder));
   Reg(e, "Cone", Make<CylinderCommand>(CylinderCommand::Kind::Cone));
   Reg(e, "TCone", Make<CylinderCommand>(CylinderCommand::Kind::TCone));
   Reg(e, "Tube", Make<CylinderCommand>(CylinderCommand::Kind::Tube));
-  Reg(e, "Pyramid", Make<CylinderCommand>(CylinderCommand::Kind::Pyramid), CommandStatus::Partial, "Four-sided mesh pyramid.");
+  Reg(e, "Pyramid", Make<CylinderCommand>(CylinderCommand::Kind::Pyramid), CommandStatus::Implemented, "Mesh pyramid; NumSides= sets the base polygon's side count (4 by default).");
   Reg(e, "MeshCylinder", Make<CylinderCommand>(CylinderCommand::Kind::MeshCylinder));
   Reg(e, "MeshCone", Make<CylinderCommand>(CylinderCommand::Kind::MeshCone));
   Reg(e, "SubDCylinder", Make<CylinderCommand>(CylinderCommand::Kind::SubDCylinder));
@@ -513,7 +609,7 @@ void RegisterSolidCommands(CommandEngine& e) {
   Reg(e, "ExtrudeSrf", Make<ExtrudeCommand>(ExtrudeCommand::Kind::Surface));
   Reg(e, "ExtrudeCrvToPoint", Make<ExtrudeCommand>(ExtrudeCommand::Kind::ToPoint));
   Reg(e, "Revolve", Make<RevolveCommand>());
-  Reg(e, "Loft", OnSelection("Select curves to loft in order", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Loft(ctx, ids, false); }, 2), CommandStatus::Partial, "Normal loft; Loose/Tight/Straight styles are planned.");
+  Reg(e, "Loft", OnSelection("Select curves to loft in order", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Loft(ctx, ids, false, TakeLoftStyle(ctx)); }, 2), CommandStatus::Implemented, "Normal (cubic through control points) and Style=Straight (linear, sharp at every section); Loose/Tight aren't distinguishable in this construction and aren't offered.");
   Reg(e, "SubDLoft", OnSelection("Select curves to loft in order", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Loft(ctx, ids, true); }, 2));
   Reg(e, "PlanarSrf", OnSelection("Select planar closed curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("PlanarSrf");
@@ -571,27 +667,67 @@ void RegisterSolidCommands(CommandEngine& e) {
                                           }));
   Reg(e, "Cap", OnSelection("Select open surfaces to cap", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Cap");
-        int capped = 0;
+        int capped = 0, openings = 0;
         for (ObjectId id : ids) {
           SceneObject* o = ctx.Doc().Find(id);
           if (!o || o->kind != ObjectKind::Brep) continue;
           ON_Brep& b = o->brep->raw();
           if (b.IsSolid()) continue;
-          // Cap every planar closed naked-edge loop.
-          ON_SimpleArray<int> naked;
-          for (int ei = 0; ei < b.m_E.Count(); ++ei) if (b.m_E[ei].TrimCount() == 1) naked.Append(ei);
-          if (naked.Count() == 0) continue;
-          ON_Polyline pl;
-          for (int i = 0; i < naked.Count(); ++i) { const ON_BrepEdge& ed = b.m_E[naked[i]]; for (int s = 0; s < 8; ++s) pl.Append(ed.PointAt(ed.Domain().ParameterAt(s / 8.0))); }
-          ON_Plane plane;
-          if (!pl.IsClosed(ctx.Settings().absolute_tolerance)) pl.Append(pl[0]);
-          ON_PolylineCurve pc(pl);
-          if (pc.IsPlanar(&plane, ctx.Settings().absolute_tolerance * 10)) {
-            if (ON_Brep* cap = ON_BrepTrimmedPlane(plane, pc)) { b.Append(*cap); delete cap; JoinNakedEdges(b, ctx.Settings().absolute_tolerance * 10); o->InvalidateDisplay(); ++capped; }
+          std::vector<int> naked;
+          for (int ei = 0; ei < b.m_E.Count(); ++ei) if (b.m_E[ei].TrimCount() == 1) naked.push_back(ei);
+          if (naked.empty()) continue;
+          // Group the naked edges into their separate closed loops by shared
+          // vertices (a polysurface can have more than one hole to cap), then
+          // walk each loop tip-to-tail so its polyline is in order instead of
+          // just concatenating edges in array order (which only happened to
+          // work when there was exactly one loop).
+          std::vector<bool> used(naked.size(), false);
+          std::unordered_map<int, std::vector<int>> by_vertex;  // vertex index -> positions in naked[]
+          for (size_t i = 0; i < naked.size(); ++i) {
+            const ON_BrepEdge& ed = b.m_E[naked[i]];
+            by_vertex[ed.m_vi[0]].push_back(static_cast<int>(i));
+            by_vertex[ed.m_vi[1]].push_back(static_cast<int>(i));
           }
+          int caps_here = 0;
+          for (size_t start = 0; start < naked.size(); ++start) {
+            if (used[start]) continue;
+            std::vector<int> loop_idx{static_cast<int>(start)};
+            std::vector<bool> loop_rev{false};
+            used[start] = true;
+            const ON_BrepEdge& first = b.m_E[naked[start]];
+            const int loop_start_vertex = first.m_vi[0];
+            int end_vertex = first.m_vi[1];
+            while (end_vertex != loop_start_vertex) {
+              int next = -1;
+              for (int cand : by_vertex[end_vertex]) if (!used[cand]) { next = cand; break; }
+              if (next < 0) break;  // dangling chain: not a closed loop
+              used[next] = true;
+              const ON_BrepEdge& ne = b.m_E[naked[next]];
+              const bool rev = (ne.m_vi[0] != end_vertex);
+              loop_idx.push_back(next);
+              loop_rev.push_back(rev);
+              end_vertex = rev ? ne.m_vi[0] : ne.m_vi[1];
+            }
+            if (end_vertex != loop_start_vertex) continue;  // open chain, can't cap
+            ON_Polyline pl;
+            for (size_t k = 0; k < loop_idx.size(); ++k) {
+              const ON_BrepEdge& ed = b.m_E[naked[loop_idx[k]]];
+              for (int s = 0; s < 8; ++s) {
+                const double t = loop_rev[k] ? (1.0 - s / 8.0) : (s / 8.0);
+                pl.Append(ed.PointAt(ed.Domain().ParameterAt(t)));
+              }
+            }
+            ON_Plane plane;
+            if (!pl.IsClosed(ctx.Settings().absolute_tolerance)) pl.Append(pl[0]);
+            ON_PolylineCurve pc(pl);
+            if (pc.IsPlanar(&plane, ctx.Settings().absolute_tolerance * 10)) {
+              if (ON_Brep* cap = ON_BrepTrimmedPlane(plane, pc)) { b.Append(*cap); delete cap; ++caps_here; }
+            }
+          }
+          if (caps_here > 0) { JoinNakedEdges(b, ctx.Settings().absolute_tolerance * 10); o->InvalidateDisplay(); ++capped; openings += caps_here; }
         }
-        ctx.Print("Capped " + std::to_string(capped) + " object(s)");
-      }), CommandStatus::Partial, "Caps a single planar opening per polysurface.");
+        ctx.Print("Capped " + std::to_string(capped) + " object(s), " + std::to_string(openings) + " opening(s)");
+      }), CommandStatus::Implemented, "Caps every planar closed naked-edge loop on each selected polysurface (one call handles multiple separate holes).");
 }
 
 }  // namespace dino8::app
