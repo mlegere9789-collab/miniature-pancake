@@ -92,13 +92,12 @@ Volume
 SelNone
 Rectangle 0,0,0 4,4,0
 SelLast
-SelPrev
+SetObjectName
 SelNone
 Box 0,0,0 40,40,0 10
 SelLast
 ArrayHole
-SelNone
-SelPrev
+SelName "Object 1"
 Enter
 5,5,10
 2
