@@ -841,4 +841,100 @@ grep -qE "^ {5}128" "$TMP/t.igs" && grep -qE "^ {5}144" "$TMP/t.igs" && echo "ok
 grep -q "=ADVANCED_FACE(" "$TMP/t.stp" && grep -q "B_SPLINE_SURFACE_WITH_KNOTS(" "$TMP/t.stp" && echo "ok   t.stp uses ADVANCED_FACE and B_SPLINE_SURFACE_WITH_KNOTS entities" || { echo "FAIL t.stp entity types"; fail=1; }
 grep -q "^ISO-10303-21;$" "$TMP/t.stp" && grep -q "^END-ISO-10303-21;$" "$TMP/t.stp" && echo "ok   t.stp is a complete Part 21 file" || { echo "FAIL t.stp malformed"; fail=1; }
 
+# SpaceMouse / 3Dconnexion: Protocol=File replay drives a real background
+# thread (see input/SpaceMouse.cpp) that Application::Frame() drains every
+# frame, so @wait gives it real wall-clock time before each check below.
+cat > "$TMP/spacemouse_deltas.txt" <<'EOS'
+BUTTON 1
+0 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+1 0 0 0 0 0
+EOS
+sed "s|@TMP@|$TMP|g" "$HERE/spacemouse_script.txt" > "$TMP/spacemouse_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  SM="$("$BIN" --smoke 250 --script "$TMP/spacemouse_script.txt" 2>&1)" || { echo "$SM"; echo "FAIL: spacemouse script exited non-zero"; exit 1; }
+else
+  SM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 250 --script "$TMP/spacemouse_script.txt" 2>&1)" || { echo "$SM"; echo "FAIL: spacemouse script exited non-zero"; exit 1; }
+fi
+smcheck() { if echo "$SM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+smcheck "SpaceMouse protocol set to File" "SpaceMouseProtocol switched to the File protocol"
+smcheck "connected (File:" "SpaceMouse connected over the File protocol"
+smcheck "^history: Command: Top$" "a button carried on a motion sample still fired its mapped command (button 1 default -> Top)"
+smcheck "SpaceMouse mode set to Camera" "SpaceMouseMode set Camera mode"
+smcheck "SpaceMouse mode set to Object" "SpaceMouseMode set Object mode"
+# Camera mode's own pan/dolly/orbit is driven by the same drained-delta path
+# Object mode exercises below, so it is not re-asserted numerically here:
+# a Camera::Pan() screen-space shift depends on how many of the 15 File
+# samples land in a single frame's drain, which is a real race against the
+# background thread's 15ms-per-sample pacing - deterministic in Object
+# mode (a flat per-sample point offset) but not worth pinning down to the
+# pixel for Camera mode too.
+if echo "$SM" | grep -q "Bounding box min 0,0,0 max 10,10,10"; then echo "FAIL: SpaceMouse Object mode did not move the selected box"; fail=1; else echo "ok   SpaceMouse Object mode moved the selected box (30 units along +tx: 15 samples x sensitivity 1 x scale 2)"; fi
+smcheck "Bounding box min 30,0,0 max 40,10,10" "the box moved by exactly 15 x 2 = 30 units in Object mode"
+echo "$SM" | grep -E "^(ok|FAIL)"
+if echo "$SM" | grep -q "^FAIL"; then fail=1; fi
+
+# Parametric 2D sketch constraints: Coincident/Horizontal/Vertical/Distance/
+# Radius/Perpendicular/Parallel/Fixed/Midpoint, auto re-solve, glyph overlay.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  CN="$("$BIN" --smoke 120 --script "$HERE/constraints_script.txt" 2>&1)" || { echo "$CN"; echo "FAIL: constraints script exited non-zero"; exit 1; }
+else
+  CN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 120 --script "$HERE/constraints_script.txt" 2>&1)" || { echo "$CN"; echo "FAIL: constraints script exited non-zero"; exit 1; }
+fi
+cncheck() { if echo "$CN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+cncheck "Coincident constraint #1 added." "Constrain built a Coincident constraint"
+cncheck "^history: Coincident #1: ok$" "Coincident solved"
+cncheck "Horizontal constraint #2 added." "Constrain built a Horizontal constraint"
+cncheck "Vertical constraint #3 added." "Constrain built a Vertical constraint"
+cncheck "Distance constraint #4 added." "Constrain built a Distance constraint"
+cncheck "Distance #4: length 10" "Distance solved to exactly 10"
+cncheck "Radius constraint #5 added." "Constrain built a Radius constraint"
+cncheck "Radius #5: radius 5" "Radius solved to exactly 5"
+cncheck "Perpendicular constraint #6 added." "Constrain built a Perpendicular constraint"
+cncheck "Perpendicular #6: angle 90" "Perpendicular solved to exactly 90 degrees"
+cncheck "Parallel constraint #7 added." "Constrain built a Parallel constraint"
+cncheck "Fixed constraint #8 added." "Constrain built a Fixed constraint"
+cncheck "Midpoint constraint #9 added." "Constrain built a Midpoint constraint"
+cncheck "ConstraintsShow: glyphs on (9 constraint(s))" "ConstraintsShow toggled the glyph overlay"
+cncheck "ConstraintDelete: removed every constraint" "ConstraintDelete All cleared the list"
+echo "$CN" | grep -E "^(ok|FAIL)"
+if echo "$CN" | grep -q "^FAIL"; then fail=1; fi
+
+# Parametric architectural components: Wall/Door/Window/Slab/Roof/Stair/
+# Column/Beam, ArchEdit rebuild, ArchDelete, ArchSchedule.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  AR="$("$BIN" --smoke 150 --script "$HERE/arch_script.txt" 2>&1)" || { echo "$AR"; echo "FAIL: arch script exited non-zero"; exit 1; }
+else
+  AR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/arch_script.txt" 2>&1)" || { echo "$AR"; echo "FAIL: arch script exited non-zero"; exit 1; }
+fi
+archeck() { if echo "$AR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+archeck "Wall #1 added." "Wall command built a wall"
+archeck "Door #2 added." "Door command cut an opening into the wall"
+archeck "Window #3 added." "Window command cut a second opening into the wall"
+archeck "ArchSlab #4 added." "ArchSlab command built a slab"
+archeck "Roof #5 added." "Roof command built a gable roof"
+archeck "Stair #6 added." "Stair command built a 3-riser stair"
+archeck "Column #7 added." "Column command built a column"
+archeck "Column #7 rebuilt (Height = 5.000000)." "ArchEdit rebuilt the column at a new height"
+archeck "Beam #8 added." "Beam command built a beam"
+archeck "ArchDelete: removed 1 component(s)" "ArchDelete removed the beam"
+archeck "Architectural schedule (8 component(s)):" "ArchSchedule counted every component before the delete"
+archeck "Architectural schedule (7 component(s)):" "ArchSchedule counted every component after the delete"
+archeck "Object 3 (mesh) layer Default name 'Wall'" "the wall survived two boolean cuts as one mesh object"
+echo "$AR" | grep -E "^(ok|FAIL)"
+if echo "$AR" | grep -q "^FAIL"; then fail=1; fi
+
 exit $fail

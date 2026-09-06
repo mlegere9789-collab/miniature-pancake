@@ -100,6 +100,11 @@ set(DINO8_SOURCES
   src/gl/gl_loader.cpp
   src/app/Application.cpp
   src/app/Settings.cpp
+  src/input/SpaceMouse.cpp
+  src/sketch/Constraints.cpp
+  src/commands/cmd_constraints.cpp
+  src/arch/ArchComponents.cpp
+  src/commands/cmd_arch.cpp
   src/ui/Gumball.cpp
   src/geom/TextOutline.cpp
   src/commands/cmd_annotate.cpp

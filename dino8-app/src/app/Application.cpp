@@ -16,6 +16,7 @@
 #include "io/File3dm.h"
 #include "io/FileExchange.h"
 #include "io/FileIgesStep.h"
+#include "input/SpaceMouse.h"
 #include "render/ImageIO.h"
 #include "ui/Icons.h"
 #include "ui/Panels.h"
@@ -67,6 +68,9 @@ void RegisterViewToolsCommands(CommandEngine&);
 void RegisterFlowCommands(CommandEngine&);
 void RegisterDrafting2Commands(CommandEngine&);  // hatch library, tables, BoM, GD&T, multi-leaders, section views
 void RegisterExchange2Commands(CommandEngine&);
+void RegisterConstraintCommands(CommandEngine&);  // cmd_constraints.cpp
+void ConstraintsFrame(Application&);              // cmd_constraints.cpp: auto re-solve + glyph overlay
+void RegisterArchCommands(CommandEngine&);        // cmd_arch.cpp
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -116,6 +120,7 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
     engine_->Print("Startup script: " + startup_script);
     engine_->Execute("-RunScript \"" + startup_script + "\"");
   }
+  dino8::input::Init(*this);  // SpaceMouse / 3Dconnexion background polling thread
   return true;
 }
 
@@ -153,6 +158,7 @@ void Application::DrawMessageBox() {
 }
 
 void Application::Shutdown() {
+  dino8::input::Shutdown();
   SaveSettings(*this, ui_scale);
   viewports_.clear();
   if (last_render_.texture) renderer_.DeleteTexture(last_render_.texture);
@@ -293,6 +299,9 @@ void Application::RegisterCommands() {
   RegisterRenderCommands(*engine_);     // last: replaces the Render/RenderPreview/Materials placeholders
   RegisterRaytraceCommands(*engine_);   // after: takes over Render/RenderPreview/etc. for Quality=Raytraced
   RegisterExchange2Commands(*engine_);  // IGES/STEP option and inspection commands (readers/writers in io/FileIgesStep)
+  dino8::input::RegisterSpaceMouseCommands(*engine_);   // SpaceMouse, SpaceMouseOptions, 3DconnexionOptions
+  dino8::app::RegisterConstraintCommands(*engine_);     // Constrain, ConstraintSolve, ConstraintDelete, ConstraintsShow
+  dino8::app::RegisterArchCommands(*engine_);           // Wall, Door, Window, Slab, Roof, Stair, Column, Beam, ArchEdit, ArchSchedule
   RegisterFlowCommands(*engine_);       // very last: Dino Flow + plug-ins, replaces the Grasshopper/plug-in stubs
 }
 
@@ -896,6 +905,8 @@ void Application::Frame() {
   UpdateCageCaptives(doc_);
   HandleShortcuts();
   ViewToolsFrame(*this);
+  dino8::input::Frame(*this);  // SpaceMouse: apply queued 6-DOF deltas, draw its options page
+  ConstraintsFrame(*this);     // sketch constraints: auto re-solve + ConstraintsShow glyph overlay
   DrawDockspace();
   DrawViewports();
   DrawPanels();
