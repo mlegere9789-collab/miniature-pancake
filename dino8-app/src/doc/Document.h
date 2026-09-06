@@ -160,6 +160,16 @@ struct NamedSelection {
   std::vector<ObjectId> ids;
 };
 
+// A named position (NamedPosition): full copies of the selected objects'
+// geometry at Save time, keyed by their own object id, restored in place
+// (an object deleted since Save is skipped; an object added since Save is
+// untouched) - a lighter-weight, selection-scoped cousin of the full-
+// document Snapshots below, independent of Undo/Redo like they are.
+struct NamedPosition {
+  std::string name;
+  std::vector<SceneObject> objects;
+};
+
 // A construction plane saved by name (NamedCPlane). Mirrors
 // ConstructionPlane in viewport/Viewport.h without pulling it in here.
 struct NamedCPlane {
@@ -361,6 +371,7 @@ class Document {
   AnnotationStyle* FindAnnotationStyle(const std::string& name);
   const AnnotationStyle& CurrentAnnotationStyle() const;
   std::vector<NamedSelection>& NamedSelections() { return named_selections_; }
+  std::vector<NamedPosition>& NamedPositions() { return named_positions_; }
   std::vector<NamedCPlane>& NamedCPlanes() { return named_cplanes_; }
   const std::vector<NamedCPlane>& NamedCPlanes() const { return named_cplanes_; }
   NamedCPlane* FindNamedCPlane(const std::string& name);
@@ -454,6 +465,7 @@ class Document {
   int next_light_id_ = 1;
   std::vector<NamedView> named_views_;
   std::vector<NamedSelection> named_selections_;
+  std::vector<NamedPosition> named_positions_;
   std::vector<NamedCPlane> named_cplanes_;
   std::vector<ClippingPlane> clipping_planes_;
   int next_clipping_plane_id_ = 1;

@@ -406,6 +406,60 @@ class NamedSetCommand : public Command {
   std::string action_;
 };
 
+// NamedPosition: "NamedPosition Save name" saves the current selection's
+// geometry by object id; "Restore name" puts every still-existing one of
+// those objects back exactly as it was, independent of Undo/Redo.
+class NamedPositionCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    options = {{"Save", "", {}, false, false}, {"Restore", "", {}, false, false}, {"Delete", "", {}, false, false}, {"List", "", {}, false, false}};
+    if (auto t = ctx.Engine().TakePendingInput()) { OnOption(ctx, *t, ""); return; }
+    WantEnter("Named positions (Save/Restore/Delete/List)");
+  }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string&) override {
+    const std::string l = Lower(n);
+    if (l == "list") { List(ctx); Finish(); return; }
+    if (l != "save" && l != "restore" && l != "delete") { ctx.Warn("Unknown option '" + n + "'"); Finish(); return; }
+    action_ = l;
+    if (auto t = ctx.Engine().TakePendingInput()) { OnText(ctx, *t); return; }
+    WantText("Name");
+  }
+  void OnText(CommandContext& ctx, const std::string& name) override {
+    if (action_.empty()) { OnOption(ctx, name, ""); return; }
+    Document& doc = ctx.Doc();
+    auto& list = doc.NamedPositions();
+    auto it = std::find_if(list.begin(), list.end(), [&](const NamedPosition& p) { return p.name == name; });
+    if (action_ == "save") {
+      NamedPosition p{name, {}};
+      for (ObjectId id : doc.SelectedIds()) if (const SceneObject* o = doc.Find(id)) p.objects.push_back(*o);
+      if (p.objects.empty()) { ctx.Warn("NamedPosition Save: select objects first"); Finish(); return; }
+      const size_t n = p.objects.size();
+      if (it != list.end()) *it = std::move(p); else list.push_back(std::move(p));
+      doc.Touch();
+      ctx.Print("Named position '" + name + "' saved (" + std::to_string(n) + " object(s))");
+    } else if (action_ == "restore") {
+      if (it == list.end()) { ctx.Warn("No named position '" + name + "'"); Finish(); return; }
+      int restored = 0;
+      for (const SceneObject& saved : it->objects) if (SceneObject* o = doc.Find(saved.id)) { *o = saved; ++restored; }
+      doc.Touch();
+      ctx.Print("Named position '" + name + "' restored: " + std::to_string(restored) + " of " + std::to_string(it->objects.size()) + " object(s) still exist");
+    } else if (action_ == "delete") {
+      if (it == list.end()) ctx.Warn("No named position '" + name + "'");
+      else { list.erase(it); doc.Touch(); ctx.Print("Named position '" + name + "' deleted"); }
+    }
+    Finish();
+  }
+  void OnEnter(CommandContext& ctx) override { List(ctx); Finish(); }
+
+ private:
+  void List(CommandContext& ctx) {
+    auto& l = ctx.Doc().NamedPositions();
+    ctx.Print(std::to_string(l.size()) + " named position(s)");
+    for (auto& p : l) ctx.Print("  " + p.name + ": " + std::to_string(p.objects.size()) + " object(s)");
+  }
+  std::string action_;
+};
+
 // Draw order lives in user text; the renderer draws objects in document order.
 CommandFactory DrawOrder(const char* label, int mode) {  // 0 clear, 1 front, 2 back, 3 forward, 4 backward
   return OnSelection("Select objects to change draw order", [label, mode](CommandContext& ctx, const std::vector<ObjectId>& ids) {
@@ -731,7 +785,7 @@ void RegisterStateCommands(CommandEngine& e) {
   Reg(e, "ClearDrawOrder", DrawOrder("ClearDrawOrder", 0));
   Reg(e, "NamedSelections", Make<NamedSetCommand>(false));
   Reg(e, "NamedCPlane", Make<NamedSetCommand>(true));
-  Reg(e, "NamedPosition", Say("NamedPosition: saved object positions are planned; use NamedSelections and Undo for now."), CommandStatus::Partial);
+  Reg(e, "NamedPosition", Make<NamedPositionCommand>(), CommandStatus::Implemented, "Save/Restore/Delete/List named snapshots of the current selection's own geometry, by object id - independent of Undo/Redo, like Snapshots but scoped to the selection instead of the whole document.");
   // Snapshots, Worksession/LimitReferenceModel and the Dig* digitizer
   // commands are registered by RegisterSessionCommands (cmd_session.cpp),
   // called after this function.

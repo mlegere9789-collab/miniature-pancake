@@ -89,6 +89,20 @@ PointCloud
 SelNone
 InfinitePlane
 @expect_objects 3
+# NamedPosition: save a box's geometry, move it, then put it back.
+Box 60,0,0 70,10,0 10
+SelLast
+NamedPosition Save Pos1
+Move 60,0,0 160,0,0
+SelLast
+What
+NamedPosition Restore Pos1
+SelLast
+What
+@expect_objects 4
+SelLast
+Delete
+@expect_objects 3
 Box 20,0,0 30,10,0 10
 Box 40,0,0 50,10,0 10
 SelAll
@@ -104,7 +118,8 @@ ClearDrawOrder
 SelAll
 Delete
 @expect_objects 0
-NamedPosition
+NamedPosition List
+NamedPosition Delete Pos1
 Snapshots List
 HistoryPurge
 HistoryUpdate
