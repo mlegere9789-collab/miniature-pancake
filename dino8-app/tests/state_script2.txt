@@ -105,11 +105,13 @@ SelAll
 Delete
 @expect_objects 0
 NamedPosition
-Snapshots
+Snapshots List
 HistoryPurge
 HistoryUpdate
-Worksession
-LimitReferenceModel
+Worksession List
+LimitReferenceModel nonexistent.3dm
+0,0,0
+1,1,1
 # Bounce is actually cmd_solidtools's real ray-bounce tool (a stale
 # cmd_state.cpp placeholder used to shadow it - removed): give it a ray so
 # it does not sit waiting for more picks.
