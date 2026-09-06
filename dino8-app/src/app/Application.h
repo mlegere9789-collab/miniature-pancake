@@ -59,6 +59,9 @@ struct PanelState {
   bool named_cplanes = false;
   bool script_editor = false;
   bool scripting_reference = false;
+  bool dino_flow = false;        // Grasshopper: the Dino Flow node editor
+  bool plugin_manager = false;   // PlugInManager / GrasshopperPluginList
+  bool package_manager = false;  // PackageManager
 };
 
 // The Script Editor panel's state (persisted: the last script text lives in

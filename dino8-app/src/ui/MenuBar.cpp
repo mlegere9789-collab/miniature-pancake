@@ -229,6 +229,9 @@ void DrawMenuBar(Application& app) {
     ImGui::MenuItem("Clipping Planes", "", &p.clipping_planes);
     ImGui::MenuItem("Layouts", "", &p.layouts);
     ImGui::MenuItem("Named CPlanes", "", &p.named_cplanes);
+    ImGui::MenuItem("Dino Flow", "", &p.dino_flow);
+    ImGui::MenuItem("Plug-in Manager", "", &p.plugin_manager);
+    ImGui::MenuItem("Package Manager", "", &p.package_manager);
     ImGui::MenuItem("Viewport Tabs", "", &app.show_viewport_tabs);
     ImGui::Separator();
     if (ImGui::MenuItem("Reset Window Layout")) app.SetViewportLayout(4);

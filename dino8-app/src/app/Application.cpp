@@ -18,6 +18,9 @@
 #include "ui/Panels.h"
 #include "ui/Theme.h"
 #include "app/Settings.h"
+#include "flow/FlowEditor.h"
+#include "plugins/PluginManager.h"
+#include "plugins/PluginPanel.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -57,6 +60,7 @@ void UpdateCageCaptives(Document&);  // cmd_solidtools.cpp: re-deforms CageEdit 
 void RegisterSelect2Commands(CommandEngine&);
 void RegisterStateCommands(CommandEngine&);
 void RegisterViewToolsCommands(CommandEngine&);
+void RegisterFlowCommands(CommandEngine&);
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -90,6 +94,7 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
   SetViewportLayout(4);
   LoadSettings(*this, ui_scale);
   if (has_saved_layout) layout_built_ = true;
+  plugins::Manager::Get().ScanDefaultFolders(*this);
   engine_->Print("Dino 8 " DINO8_VERSION " - free NURBS / SubD / mesh modeler");
   engine_->Print("Command catalog: " + std::to_string(catalog_.Size()) + " commands loaded (" +
                  std::to_string(engine_->CountWithStatus(CommandStatus::Implemented)) + " implemented, " +
@@ -274,6 +279,7 @@ void Application::RegisterCommands() {
   RegisterFilletCommands(*engine_);     // real fillet/chamfer/blend/match/SSX family; after SrfEdit and CurveEdit so it wins both
   RegisterSurfaceCommands(*engine_);    // Sweep/Pipe/OffsetSrf/Project... (approximate NURBS/mesh results)
   RegisterRenderCommands(*engine_);     // last: replaces the Render/RenderPreview/Materials placeholders
+  RegisterFlowCommands(*engine_);       // very last: Dino Flow + plug-ins, replaces the Grasshopper/plug-in stubs
 }
 
 Viewport* Application::ActiveViewport() {
@@ -1942,6 +1948,11 @@ void Application::DrawPanels() {
   if (panels_.script_editor) DrawScriptEditor(*this);
   if (panels_.scripting_reference) DrawScriptingReference(*this);
   if (panels_.imgui_demo) ImGui::ShowDemoWindow(&panels_.imgui_demo);
+  flow::Editor::Get().open = panels_.dino_flow;
+  flow::Editor::Get().Draw(*this);
+  panels_.dino_flow = flow::Editor::Get().open;
+  plugins::DrawPlugInManagerPanel(*this, panels_.plugin_manager);
+  plugins::DrawPackageManagerPanel(*this, panels_.package_manager);
 }
 
 }  // namespace dino8::app

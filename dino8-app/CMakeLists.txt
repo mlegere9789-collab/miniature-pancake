@@ -150,6 +150,18 @@ set(DINO8_SOURCES
   src/geom/SurfaceIntersect.cpp
   src/commands/cmd_fillet.cpp
   src/util/json_mini.cpp
+  src/flow/FlowData.cpp
+  src/flow/FlowGraph.cpp
+  src/flow/FlowNodesCore.cpp
+  src/flow/FlowNodesVector.cpp
+  src/flow/FlowNodesCurve.cpp
+  src/flow/FlowNodesSurface.cpp
+  src/flow/FlowNodesOutput.cpp
+  src/flow/FlowEditor.cpp
+  src/flow/FlowPreview.cpp
+  src/plugins/PluginManager.cpp
+  src/plugins/PluginPanel.cpp
+  src/commands/cmd_flow.cpp
 )
 
 if(WIN32)
@@ -167,7 +179,7 @@ endif()
 
 # FreeType (bundled with OpenNURBS) for text outlines.
 FetchContent_GetProperties(opennurbs)
-target_include_directories(Dino8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${opennurbs_SOURCE_DIR}/freetype263/include)
+target_include_directories(Dino8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include ${opennurbs_SOURCE_DIR}/freetype263/include)
 target_compile_definitions(Dino8 PRIVATE
   DINO8_VERSION="${PROJECT_VERSION}"
   GL_SILENCE_DEPRECATION
@@ -183,7 +195,7 @@ if(NOT TARGET opennurbs_public_freetype)
     target_compile_options(opennurbs_public_freetype PRIVATE /w)
   endif()
 endif()
-target_link_libraries(Dino8 PRIVATE dino8_kernel imgui glfw OpenGL::GL opennurbs_public_freetype dino8_lua)
+target_link_libraries(Dino8 PRIVATE dino8_kernel imgui glfw OpenGL::GL opennurbs_public_freetype dino8_lua ${CMAKE_DL_LIBS})
 
 if(MSVC)
   target_compile_options(Dino8 PRIVATE /W3 /EHsc /bigobj)
@@ -205,6 +217,11 @@ add_custom_command(TARGET Dino8 POST_BUILD
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+option(DINO8_BUILD_SAMPLE_PLUGIN "Build the HelloDino sample plug-in (plugins/sample)" ON)
+if(DINO8_BUILD_SAMPLE_PLUGIN)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/plugins/sample ${CMAKE_BINARY_DIR}/plugins/sample)
+endif()
+
 option(DINO8_BUILD_TESTS "Build Dino 8 unit tests" ON)
 if(DINO8_BUILD_TESTS)
   enable_testing()

@@ -617,11 +617,8 @@ void RegisterStateCommands(CommandEngine& e) {
   // ---- no licences, accounts or subscriptions (product rule) ------------
   for (const char* n : {"CheckInLicense", "CheckOutLicense", "Login", "Logout", "Libraries", "DownloadLibraryTextures"}) Reg(e, n, Say(kFree));
 
-  // ---- plug-ins, Grasshopper, digitizers ----------------------------------
-  const char* plugins = "Plug-ins and Grasshopper are not yet available in Dino 8.";
-  for (const char* n : {"MigratePlugins", "PlugInManager", "GrasshopperDeveloperSettings", "GrasshopperFolders", "GrasshopperGetSDKDocumentation", "GrasshopperIgnorePlugin",
-                        "GrasshopperLoadOneByOne", "GrasshopperPlayer", "GrasshopperPluginList"})
-    Reg(e, n, Say(plugins), CommandStatus::Partial, plugins);
+  // ---- plug-ins, Grasshopper: registered for real in cmd_flow.cpp
+  // (RegisterFlowCommands, run last in Application::RegisterCommands) -------
   const char* dig = "No digitizer is connected; 3D digitizer support is planned.";
   for (const char* n : {"Digitize", "DigCalibrate", "DigCamera", "DigClick", "DigDisconnect", "DigLine", "DigPause", "DigScale", "DigSection", "DigSketch"})
     Reg(e, n, Say(dig), CommandStatus::Partial, dig);
