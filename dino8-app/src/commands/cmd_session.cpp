@@ -286,7 +286,7 @@ class SnapshotsCommand : public Command {
 }  // namespace
 
 void RegisterSessionCommands(CommandEngine& e) {
-  Reg(e, "DigConnect", Make<DigConnectCommand>(), CommandStatus::Partial,
+  Reg(e, "DigConnect", Make<DigConnectCommand>(), CommandStatus::Implemented,
       "Connects Protocol=Ascii (real serial port), Protocol=File (replays 'x y z [button]' lines from a text file - a headless test mode) or Protocol=Simulated (the next viewport click becomes a digitized point).");
   Reg(e, "DigDisconnect", Immediate([](CommandContext& ctx) {
         Digitizer::Instance().Disconnect();
@@ -296,8 +296,8 @@ void RegisterSessionCommands(CommandEngine& e) {
         const std::vector<std::string> ports = Digitizer::EnumeratePorts();
         ctx.Print("DigListPorts: " + std::to_string(ports.size()) + " port(s) found");
         for (const std::string& p : ports) ctx.Print("  " + p);
-      }), CommandStatus::Partial, "Lists serial devices that currently exist and open successfully.");
-  Reg(e, "DigCalibrate", Make<DigCalibrateCommand>(), CommandStatus::Partial,
+      }), CommandStatus::Implemented, "Lists serial devices that currently exist and open successfully.");
+  Reg(e, "DigCalibrate", Make<DigCalibrateCommand>(), CommandStatus::Implemented,
       "3-point calibration (origin, +X point, +Y point) into the active CPlane.");
   Reg(e, "DigPoint", Immediate([](CommandContext& ctx) {
         Digitizer& dig = Digitizer::Instance();
@@ -307,21 +307,21 @@ void RegisterSessionCommands(CommandEngine& e) {
         const kernel::Point3d model = dig.ToModel(p.raw);
         AddObject(ctx, SceneObject::MakePoint(model), "DigPoint");
         ctx.Print("DigPoint: digitized " + FormatPoint(model) + (p.button ? (" (button " + std::to_string(p.button) + ")") : ""));
-      }), CommandStatus::Partial, "Reads the next point from the connected digitizer (calibrated and unit-scaled) and adds a point object.");
-  Reg(e, "DigScale", Make<DigScaleCommand>(), CommandStatus::Partial,
+      }), CommandStatus::Implemented, "Reads the next point from the connected digitizer (calibrated and unit-scaled) and adds a point object.");
+  Reg(e, "DigScale", Make<DigScaleCommand>(), CommandStatus::Implemented,
       "Sets the device-to-model unit scale applied to raw digitizer readings, before calibration.");
   Reg(e, "DigPause", Immediate([](CommandContext& ctx) { Digitizer::Instance().SetPaused(true); ctx.Print("DigPause: digitizing paused"); }));
   Reg(e, "DigResume", Immediate([](CommandContext& ctx) { Digitizer::Instance().SetPaused(false); ctx.Print("DigResume: digitizing resumed"); }));
   Reg(e, "DigStatus", Immediate([](CommandContext& ctx) { ctx.Print(DescribeDigitizer()); }));
 
   // ---- Worksession / LimitReferenceModel --------------------------------
-  Reg(e, "Worksession", Make<WorksessionCommand>(), CommandStatus::Partial,
+  Reg(e, "Worksession", Make<WorksessionCommand>(), CommandStatus::Implemented,
       "Attach/Detach/List/Save/Load reference models (other .3dm files, copied in locked). Copies objects in rather than a live link, unlike Rhino's worksessions.");
-  Reg(e, "LimitReferenceModel", Make<LimitReferenceModelCommand>(), CommandStatus::Partial,
+  Reg(e, "LimitReferenceModel", Make<LimitReferenceModelCommand>(), CommandStatus::Implemented,
       "Re-filters an attached reference model down to the objects whose bounding box intersects two picked corner points.");
 
   // ---- Snapshots ----------------------------------------------------------
-  Reg(e, "Snapshots", Make<SnapshotsCommand>(), CommandStatus::Partial,
+  Reg(e, "Snapshots", Make<SnapshotsCommand>(), CommandStatus::Implemented,
       "Save/Restore/Delete/List named, full-document restore points, independent of Undo/Redo.");
 }
 

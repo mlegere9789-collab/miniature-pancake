@@ -181,8 +181,13 @@ LearnRhino
 Tutorials
 Box 0,0,0 5,5,0 5
 SelAll
-SetRenderColor
-SetObjectDisplayMode
+SetRenderColor 200,200,200
+SelAll
+SetObjectDisplayMode Shaded
+SelAll
+SetObjectDisplayMode Wireframe
+SelAll
+SetObjectDisplayMode UseViewport
 History
 RecordHistory
 # Text is actually cmd_annotate's real text-curve command (a stale
@@ -194,6 +199,7 @@ List
 Grasshopper
 RunScript SelAll
 RunPythonScript SelAll
+EditPythonScript
 ScriptEditor
 PackageManager
 PluginManager
