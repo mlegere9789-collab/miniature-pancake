@@ -289,37 +289,52 @@ bool Bvh::Closest(Point3d p, double max_dist, Point3d& out, double& dist, size_t
   double best = max_dist > 0 ? max_dist : std::numeric_limits<double>::max();
   Point3d bestPt = p;
   size_t bestIdx = static_cast<size_t>(-1);
+  // Ring r's true surface has O(r^2) cells; visiting the whole (2r+1)^3 cube
+  // and filtering (as this used to) is O(r^3) per ring, so the cap below -
+  // reached whenever the grid's own cell size is small relative to
+  // max_dist, e.g. a finely-tessellated source - turned an already-bounded
+  // search into an O(max_ring^4) blowup (some 1.6e9 iterations). Visiting
+  // only the 6 true shell faces keeps every ring O(r^2), so the whole
+  // search is a harmless O(max_ring^3) even in the worst case.
+  auto visit = [&](int i, int j, int k) {
+    auto it = impl_->grid.find(Impl::Key(i, j, k));
+    if (it == impl_->grid.end()) return;
+    for (uint32_t idx : it->second) {
+      const Primitive& prim = impl_->prims[idx];
+      Point3d cp;
+      double bary[3];
+      if (prim.kind == 0) cp = ClosestOnTriangle(p, prim.p, bary);
+      else if (prim.kind == 1) cp = ClosestOnSegment(p, prim.p[0], prim.p[1]);
+      else cp = prim.p[0];
+      const double d = (cp - p).Length();
+      if (d < best) { best = d; bestPt = cp; bestIdx = idx; }
+    }
+  };
   const int max_ring = 200;
   for (int r = 0; r <= max_ring; ++r) {
-    bool any_cell = false;
-    for (int i = ci - r; i <= ci + r; ++i)
-      for (int j = cj - r; j <= cj + r; ++j)
-        for (int k = ck - r; k <= ck + r; ++k) {
-          if (std::max({std::abs(i - ci), std::abs(j - cj), std::abs(k - ck)}) != r) continue;  // shell only
-          any_cell = true;
-          auto it = impl_->grid.find(Impl::Key(i, j, k));
-          if (it == impl_->grid.end()) continue;
-          for (uint32_t idx : it->second) {
-            const Primitive& prim = impl_->prims[idx];
-            Point3d cp;
-            double bary[3];
-            if (prim.kind == 0) cp = ClosestOnTriangle(p, prim.p, bary);
-            else if (prim.kind == 1) cp = ClosestOnSegment(p, prim.p[0], prim.p[1]);
-            else cp = prim.p[0];
-            const double d = (cp - p).Length();
-            if (d < best) { best = d; bestPt = cp; bestIdx = idx; }
-          }
-        }
+    if (r == 0) {
+      visit(ci, cj, ck);
+    } else {
+      for (int k : {ck - r, ck + r})
+        for (int i = ci - r; i <= ci + r; ++i)
+          for (int j = cj - r; j <= cj + r; ++j) visit(i, j, k);
+      for (int j : {cj - r, cj + r})
+        for (int i = ci - r; i <= ci + r; ++i)
+          for (int k = ck - r + 1; k <= ck + r - 1; ++k) visit(i, j, k);
+      for (int i : {ci - r, ci + r})
+        for (int j = cj - r + 1; j <= cj + r - 1; ++j)
+          for (int k = ck - r + 1; k <= ck + r - 1; ++k) visit(i, j, k);
+    }
     // Any primitive in a farther ring is at least r*cell away, so stop once
     // that bound exceeds `best` - which starts at max_dist even when nothing
     // has been found yet, so a query with no primitive within max_dist stops
     // at the ring where the search radius first exceeds it, instead of
-    // scanning every ring up to max_ring regardless of `max_dist` (the
+    // scanning every ring up to max_ring regardless of `max_dist` (a
     // previous `bestIdx != -1 &&` guard here defeated the whole point of the
     // max_dist cutoff whenever a source had nothing nearby - the common case
-    // for a multi-source ShrinkWrap grid point far from a particular source).
+    // for a multi-source ShrinkWrap grid point far from a particular
+    // source).
     if (static_cast<double>(r) * impl_->cell > best) break;
-    if (!any_cell && r > 0) break;
   }
   if (bestIdx == static_cast<size_t>(-1)) return false;
   out = bestPt;
@@ -470,9 +485,20 @@ double SdfGrid::Sample(Point3d p) const {
 
 Vector3d SdfGrid::Gradient(Point3d p) const {
   const double e = h * 0.5;
-  const double dx = Sample(p + Vector3d(e, 0, 0)) - Sample(p - Vector3d(e, 0, 0));
-  const double dy = Sample(p + Vector3d(0, e, 0)) - Sample(p - Vector3d(0, e, 0));
-  const double dz = Sample(p + Vector3d(0, 0, e)) - Sample(p - Vector3d(0, 0, e));
+  // Central difference df/dx ~= (f(x+e) - f(x-e)) / (2e) - the /(2e) here is
+  // not optional: without it this returns the un-normalized numerator, off
+  // from the true (unit-ish, for a real signed-distance field) gradient by
+  // a factor of h. ProjectToIso's Newton step divides its step size by
+  // gl*gl, so an undersized `gl` (h~0.25 gives a ~16x gl^2 shrink) turns a
+  // one-voxel correction into a many-voxel overshoot that compounds every
+  // iteration - confirmed by a concave ShrinkWrap regression test whose
+  // wrap mesh exploded from a ~20-unit bounding box to several thousand
+  // units the moment Smooth (which always runs ProjectToIso afterward)
+  // was greater than zero, i.e. on every default-settings ShrinkWrap.
+  const double inv2e = 1.0 / (2.0 * e);
+  const double dx = (Sample(p + Vector3d(e, 0, 0)) - Sample(p - Vector3d(e, 0, 0))) * inv2e;
+  const double dy = (Sample(p + Vector3d(0, e, 0)) - Sample(p - Vector3d(0, e, 0))) * inv2e;
+  const double dz = (Sample(p + Vector3d(0, 0, e)) - Sample(p - Vector3d(0, 0, e))) * inv2e;
   Vector3d g(dx, dy, dz);
   if (g.Length() < 1e-12) return Vector3d(0, 0, 1);
   return g;

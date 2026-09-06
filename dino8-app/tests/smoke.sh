@@ -978,4 +978,27 @@ sscheck "CopyHole: copied object .* to object .*" "CopyHole added a second hole 
 sscheck "RotateHole: object .* re-cut at the new placement" "RotateHole replayed the boolean"
 sscheck "MirrorHole: copied object .* to object .*" "MirrorHole added a mirrored hole into a duplicate"
 
+# Volumetric remesh tools: ShrinkWrap (signed-distance + marching cubes, incl.
+# a concave L-shaped union), QuadRemesh (surface UV grid + dual contouring),
+# ReduceMesh (quadric-error decimation) (see remesh_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  RM="$("$BIN" --smoke 150 --script "$HERE/remesh_script.txt" 2>&1)" || { echo "$RM"; echo "FAIL: remesh script exited non-zero"; exit 1; }
+else
+  RM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/remesh_script.txt" 2>&1)" || { echo "$RM"; echo "FAIL: remesh script exited non-zero"; exit 1; }
+fi
+rmcheck() { if echo "$RM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+rmcheck "BooleanUnion: 54 faces, volume 3000" "BooleanUnion built the L-shaped union (2000 + 2000 - 1000 overlap)"
+rmcheck "ShrinkWrap: signed-distance wrap with [0-9]* vertices, [0-9]* faces (closed)" "ShrinkWrap wrapped the L-shape into a closed mesh"
+rmcheck "Volume = 2[0-9][0-9][0-9] cubic" "ShrinkWrap volume stays close to the L-shape's own volume (3000)"
+SW_VOL="$(echo "$RM" | sed -n 's/.*ShrinkWrap: .*volume \([0-9.eE+]*\)$/\1/p' | head -1)"
+python3 -c "import sys; v=float('$SW_VOL'); sys.exit(0 if v < 3500 else 1)" \
+  && echo "ok   ShrinkWrap volume ($SW_VOL) is well under the convex hull volume (3500) - concavity preserved, not convex-hulled" \
+  || { echo "FAIL ShrinkWrap volume ($SW_VOL) is not below the convex hull volume (3500) - looks convex-hulled"; fail=1; }
+rmcheck "QuadRemesh: [0-9]* quad(s)" "QuadRemesh ran"
+rmcheck "QuadRemesh: 1 object(s) remeshed" "QuadRemesh remeshed the surface"
+rmcheck "ReduceMesh: object 9: 576 -> 288 faces" "ReduceMesh halved the mesh sphere's faces"
+echo "$RM" | grep -E "^(ok|FAIL)"
+if echo "$RM" | grep -q "^FAIL"; then fail=1; fi
+rmcheck "smoke: frames=1[0-9][0-9] objects=7" "remesh script produced the expected object count"
+
 exit $fail
