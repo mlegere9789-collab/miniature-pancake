@@ -79,11 +79,19 @@ void RegisterSelectCommands(CommandEngine& e) {
   Reg(e, "SelGroup", SelWhere([](const SceneObject& o) { return o.group_id >= 0; }));
   Reg(e, "SelName", Immediate([](CommandContext& ctx) {
         std::string name;
-        for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected && !o.name.empty()) { name = o.name; break; }
-        if (name.empty()) { ctx.Warn("Select a named object first"); return; }
+        if (auto tok = ctx.Engine().TakePendingInput()) name = *tok;
+        if (name.empty()) for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected && !o.name.empty()) { name = o.name; break; }
+        if (name.empty()) {
+          std::vector<std::string> names;
+          for (const SceneObject& o : ctx.Doc().Objects()) if (!o.name.empty() && std::find(names.begin(), names.end(), o.name) == names.end()) names.push_back(o.name);
+          if (names.empty()) { ctx.Warn("SelName: the document has no named objects"); return; }
+          ctx.Print("SelName: named objects in the document (type one, or select a named object first):");
+          for (const std::string& n : names) ctx.Print("  " + n);
+          return;
+        }
         ctx.Doc().SelectWhere([&](const SceneObject& o) { return o.name == name; });
         ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) named '" + name + "' selected");
-      }), CommandStatus::Partial, "Selects objects sharing the first selected object's name.");
+      }));
   Reg(e, "SelLayer", Immediate([](CommandContext& ctx) {
         int layer = ctx.Doc().CurrentLayer();
         for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected) { layer = o.layer_index; break; }
@@ -98,7 +106,10 @@ void RegisterSelectCommands(CommandEngine& e) {
         ctx.Doc().SelectWhere([&](const SceneObject& o) { Color oc = ctx.Doc().EffectiveColor(o); return std::fabs(oc.r - c.r) < 0.01 && std::fabs(oc.g - c.g) < 0.01 && std::fabs(oc.b - c.b) < 0.01; });
       }));
   Reg(e, "SelLast", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Objects().empty()) { ctx.Doc().SelectNone(); ctx.Doc().Select(ctx.Doc().Objects().back().id, true); } }));
-  Reg(e, "SelPrev", Immediate([](CommandContext& ctx) { static std::vector<ObjectId> prev; std::vector<ObjectId> cur = ctx.Doc().SelectedIds(); if (!cur.empty()) prev = cur; else for (ObjectId id : prev) ctx.Doc().Select(id, true); }), CommandStatus::Partial);
+  Reg(e, "SelPrev", Immediate([](CommandContext& ctx) {
+        if (ctx.Doc().RestorePreviousSelection()) ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected (previous selection)");
+        else ctx.Warn("SelPrev: no previous selection to restore");
+      }));
   Reg(e, "SelDup", Immediate([](CommandContext& ctx) {
         ctx.Doc().SelectNone();
         const auto& objs = ctx.Doc().Objects();
@@ -120,10 +131,11 @@ void RegisterSelectCommands(CommandEngine& e) {
         ctx.Print(std::to_string(n) + " duplicate(s) selected");
       }));
   Reg(e, "SelSmall", Immediate([](CommandContext& ctx) {
-        const double lim = ctx.Settings().grid_spacing;
+        double lim = ctx.Settings().grid_spacing;
+        if (auto tok = ctx.Engine().TakePendingInput()) { const double v = std::strtod(tok->c_str(), nullptr); if (v > 0) lim = v; }
         ctx.Doc().SelectWhere([&](const SceneObject& o) { kernel::BoundingBox b = o.BoundingBox(); return o.kind != ObjectKind::Point && (b.max - b.min).Length() < lim; });
-        ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " small object(s) selected");
-      }), CommandStatus::Partial, "Threshold is one grid unit.");
+        ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " small object(s) selected (bounding box diagonal < " + FormatNumber(lim) + ")");
+      }), CommandStatus::Implemented, "Defaults to one grid unit; pass a number to set the size threshold.");
   Reg(e, "SelVisible", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([&](const SceneObject& o) { return ctx.Doc().IsObjectVisible(o); }); }));
   // Document::SelectWhere only ever selects visible, unlocked objects, so
   // these two set the flag directly (they exist so Show/Unlock/Delete can
@@ -132,7 +144,7 @@ void RegisterSelectCommands(CommandEngine& e) {
   Reg(e, "SelHidden", Immediate([](CommandContext& ctx) { int n = 0; for (SceneObject& o : ctx.Doc().Objects()) { o.selected = !o.visible; if (o.selected) ++n; } ctx.Print(std::to_string(n) + " hidden object(s) selected"); }));
   Reg(e, "SelWindow", Make<SelWindowCommand>(false));
   Reg(e, "SelCrossing", Make<SelWindowCommand>(true));
-  Reg(e, "SelBox", Make<SelWindowCommand>(false), CommandStatus::Partial, "Window selection in the active view.");
+  Reg(e, "SelBox", Make<SelWindowCommand>(false));
   Reg(e, "SelectionFilter", Immediate([](CommandContext& ctx) { ctx.App().Panels().selection_filter = true; }));
   Reg(e, "SelID", Immediate([](CommandContext& ctx) {
         // "SelID 3 5" selects those ids; bare SelID lists the selection's ids.
@@ -144,7 +156,7 @@ void RegisterSelectCommands(CommandEngine& e) {
         }
         if (!any) for (ObjectId id : ctx.Doc().SelectedIds()) ctx.Print("Object id " + std::to_string(id));
       }));
-  Reg(e, "SelBoundary", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->IsClosed(); }); }), CommandStatus::Partial, "Selects closed curves.");
+  Reg(e, "SelBoundary", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([](const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->IsClosed(); }); ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " closed boundary curve(s) selected"); }));
   Reg(e, "SelChain", Immediate([](CommandContext& ctx) {
         std::vector<ObjectId> sel = ctx.Doc().SelectedIds();
         if (sel.empty()) { ctx.Warn("Select a curve first"); return; }

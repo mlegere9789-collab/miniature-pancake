@@ -129,8 +129,17 @@ SelNone
 SelCircular 0,0,0 20,0,0
 @expect_selected 2
 SelNone
+# SelBrush: center, radius point (stamps once, exactly like SelCircular
+# above), Enter to finish (no further stroke points here, to keep the
+# object count unambiguous).
 SelBrush 0,0,0 20,0,0
+Enter
 @expect_selected 2
+SelNone
+# SelBrushPoints: same single stamp, but over control points instead of
+# whole objects (Line 0,0,0-10,0,0's two end CVs land inside it).
+SelBrushPoints 0,0,0 20,0,0
+Enter
 SelNone
 # The fence rectangle spans x in [-5,25], y in [-5,10]: both lines' centers
 # fall inside it, but the point at 0,-10,0 does not.
@@ -201,7 +210,10 @@ SelNonManifold
 SelLast
 @expect_selected 1
 SelNone
+# SelPrev restores the selection SelNone just cleared (SelLast's object).
 SelPrev
+@expect_selected 1
+SelNone
 SelID 1
 SelChain
 @expect_selected 1

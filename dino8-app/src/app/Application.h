@@ -234,6 +234,13 @@ class Application {
                       std::function<void(const std::string&)> callback);
   std::vector<std::string>& RecentFiles() { return recent_files_; }
   void AddRecentFile(const std::string& path);
+  // ScreenCaptureToFile: captures the whole application window (every
+  // viewport and panel as composited by ImGui), not just one viewport's own
+  // render target - only main.cpp's frame loop has the default framebuffer
+  // after compositing, so the command just leaves a request here and main.cpp
+  // services it once, right after drawing, then clears it.
+  void RequestWindowCapture(const std::string& path) { pending_window_capture_ = path; }
+  std::optional<std::string> TakeWindowCaptureRequest() { std::optional<std::string> p = pending_window_capture_; pending_window_capture_.reset(); return p; }
   float ui_scale = 1.0f;
   bool gumball_enabled = true;
   bool light_theme = false;
@@ -348,6 +355,7 @@ class Application {
   FileDialogState file_dialog_;
   std::deque<Notification> notifications_;
   std::vector<std::string> recent_files_;
+  std::optional<std::string> pending_window_capture_;  // ScreenCaptureToFile
   std::string command_input_;
   std::vector<std::string> command_line_history_;
   int history_cursor_ = -1;

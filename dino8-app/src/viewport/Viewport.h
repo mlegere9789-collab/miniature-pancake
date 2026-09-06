@@ -244,6 +244,14 @@ class Viewport {
   void ZoomExtents(const Document& doc, bool selected_only);
   void ZoomTo(const kernel::BoundingBox& box);
 
+  // UndoView/RedoView: a small history of camera states, pushed by the view
+  // commands that change the camera (Top/Front/.../Zoom*/Pan/RotateView/...)
+  // before they act. Does not see camera changes made by dragging the mouse
+  // directly in the viewport (those have no single command to hook).
+  void PushViewHistory();
+  bool UndoView();  // false: nothing to undo
+  bool RedoView();  // false: nothing to redo
+
  private:
   void DrawGrid(GlRenderer& renderer, const DocumentSettings& settings, DisplayMode mode);
   // Everything between the background and the overlays: grid, ground
@@ -299,6 +307,9 @@ class Viewport {
   // Control points of one object that are currently visible (hidden /
   // culled ones removed), with their indices.
   void VisibleControlPoints(const SceneObject& o, std::vector<int>& indices, std::vector<float>* xyz) const;
+
+  // UndoView / RedoView (see the public methods above).
+  std::vector<CameraState> view_undo_, view_redo_;
 
   // RayTraced display mode (progressive path tracing at reduced
   // resolution, accumulating while the camera and document are still;

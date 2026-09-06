@@ -213,6 +213,42 @@ int PointCount(const SceneObject& o) {
   return 0;
 }
 
+// Moller-Trumbore ray/triangle test (DrapePt). Small and self-contained here
+// rather than shared with cmd_surface.cpp's own copy (used by Project/Pull),
+// which is private to that file's anonymous namespace.
+bool RayTriangleHit(Point3d o, Vector3d d, Point3d a, Point3d b, Point3d c, double& t) {
+  const Vector3d e1 = b - a, e2 = c - a;
+  const Vector3d p = ON_CrossProduct(d, e2);
+  const double det = ON_DotProduct(e1, p);
+  if (std::fabs(det) < 1e-12) return false;
+  const double inv = 1 / det;
+  const Vector3d s = o - a;
+  const double u = ON_DotProduct(s, p) * inv;
+  if (u < -1e-9 || u > 1 + 1e-9) return false;
+  const Vector3d q = ON_CrossProduct(s, e1);
+  const double v = ON_DotProduct(d, q) * inv;
+  if (v < -1e-9 || u + v > 1 + 1e-9) return false;
+  t = ON_DotProduct(e2, q) * inv;
+  return true;
+}
+
+// Nearest intersection of the ray p + t*d (t >= 0 only - DrapePt drops
+// points straight down onto whatever is below them) with the mesh.
+std::optional<Point3d> RayHitMesh(const kernel::Mesh& m, Point3d p, Vector3d d) {
+  const ON_Mesh& r = m.raw();
+  double best = std::numeric_limits<double>::max();
+  bool hit = false;
+  for (int f = 0; f < r.FaceCount(); ++f) {
+    const ON_MeshFace& face = r.m_F[f];
+    const Point3d v0 = r.Vertex(face.vi[0]), v1 = r.Vertex(face.vi[1]), v2 = r.Vertex(face.vi[2]);
+    double t;
+    if (RayTriangleHit(p, d, v0, v1, v2, t) && t > 1e-9 && t < best) { best = t; hit = true; }
+    if (!face.IsTriangle() && RayTriangleHit(p, d, v0, v2, r.Vertex(face.vi[3]), t) && t > 1e-9 && t < best) { best = t; hit = true; }
+  }
+  if (!hit) return std::nullopt;
+  return p + d * best;
+}
+
 // Polyline sampling of a curve for the self-intersection test.
 std::vector<Point3d> Sample(const kernel::NurbsCurve& c, int n) {
   std::vector<Point3d> pts;
@@ -222,7 +258,7 @@ std::vector<Point3d> Sample(const kernel::NurbsCurve& c, int n) {
 }
 
 bool SelfIntersects(const kernel::NurbsCurve& c, double tol) {
-  const int n = std::max(32, c.ControlPointCount() * 8);
+  const int n = std::max(64, c.ControlPointCount() * 12);
   const std::vector<Point3d> pts = Sample(c, n);
   const bool closed = c.IsClosed();
   for (size_t i = 0; i + 1 < pts.size(); ++i) {
@@ -232,23 +268,6 @@ bool SelfIntersects(const kernel::NurbsCurve& c, double tol) {
       double ta = 0, tb = 0;
       if (!ON_IntersectLineLine(a, b, &ta, &tb, tol, true)) continue;
       if (a.PointAt(ta).DistanceTo(b.PointAt(tb)) <= tol) return true;
-    }
-  }
-  return false;
-}
-
-// Non-manifold edge test on a mesh: any edge shared by more than two faces.
-bool HasNonManifoldEdge(const kernel::Mesh& m) {
-  std::map<std::pair<int, int>, int> edges;
-  const ON_Mesh& raw = m.raw();
-  for (int fi = 0; fi < raw.m_F.Count(); ++fi) {
-    const ON_MeshFace& f = raw.m_F[fi];
-    const int n = f.IsQuad() ? 4 : 3;
-    for (int k = 0; k < n; ++k) {
-      int a = f.vi[k], b = f.vi[(k + 1) % n];
-      if (a == b) continue;
-      if (a > b) std::swap(a, b);
-      if (++edges[{a, b}] > 2) return true;
     }
   }
   return false;
@@ -399,6 +418,86 @@ class SelCircularCommand : public Command {
   std::optional<Point3d> c_;
 };
 
+// SelBrush / SelBrushPoints: center, then a radius point (same first two
+// picks as SelCircular - the first stamp lands as soon as the radius is
+// set), then repeated clicks continue the stroke at that same radius until
+// Enter, each one stamping on the spot like a brush. SelBrushPoints stamps
+// control points (turning PointsOn on as needed and adding to the
+// sub-object selection, like SelControlPointRegion's rectangle but per
+// circular stamp) instead of whole objects.
+class SelBrushCommand : public Command {
+ public:
+  explicit SelBrushCommand(bool points) : points_(points) {}
+  void Begin(CommandContext&) override { WantPoint("Center of brush stroke"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!center_) { center_ = p; ctx.SetLastPoint(p); WantPoint("Radius point (sets the brush size and stamps once)"); return; }
+    if (!have_radius_) {
+      radius_ = std::max((p - *center_).Length(), 1e-6);
+      have_radius_ = true;
+      Stamp(ctx, *center_);
+    } else {
+      Stamp(ctx, p);
+    }
+    ctx.SetLastPoint(p);
+    WantPoint("Next point along the brush stroke, Enter when done");
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    ctx.ClearPreview();
+    const double r = have_radius_ ? radius_ : (center_ ? (h - *center_).Length() : 0.0);
+    const Point3d c = have_radius_ ? h : (center_ ? *center_ : h);
+    if (!center_ || r <= 0) return;
+    ON_Circle circle(ActivePlane(ctx), c, r);
+    if (circle.IsValid()) ctx.AddPreviewPolyline(CirclePoints(circle), true);
+  }
+  void OnEnter(CommandContext& ctx) override {
+    ctx.ClearPreview();
+    if (points_) ReportSub(ctx, "SelBrushPoints", added_);
+    else ctx.Print("SelBrush: " + std::to_string(ctx.Doc().SelectedCount()) + " object(s) selected");
+    Finish();
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+
+ private:
+  std::optional<Point3d> center_;
+  bool have_radius_ = false;
+  void Stamp(CommandContext& ctx, Point3d center) {
+    Viewport* vp = ctx.ActiveViewport();
+    if (!vp) return;
+    double cx, cy;
+    if (!vp->WorldToPixel(center, cx, cy)) return;
+    ON_Plane pl = ActivePlane(ctx);
+    double u, v;
+    pl.ClosestPointTo(center, &u, &v);
+    double ex, ey;
+    if (!vp->WorldToPixel(pl.PointAt(u + radius_, v), ex, ey)) return;
+    const double r2 = (ex - cx) * (ex - cx) + (ey - cy) * (ey - cy);
+    if (points_) {
+      for (SceneObject& o : ctx.Doc().Objects()) {
+        if (!Selectable(ctx, o)) continue;
+        const int n = ControlPointCount(o);
+        for (int i = 0; i < n; ++i) {
+          Point3d cp;
+          double x, y;
+          if (!ControlPointPosition(o, i, cp) || !vp->WorldToPixel(cp, x, y)) continue;
+          if ((x - cx) * (x - cx) + (y - cy) * (y - cy) > r2) continue;
+          if (!o.show_control_points) { o.show_control_points = true; o.InvalidateDisplay(); }
+          SubObjectRef r = SubObjectRef::Vertex(o.id, i);
+          if (!Sub(ctx).Contains(r)) { Sub(ctx).Add(r); ++added_; }
+        }
+      }
+    } else {
+      for (SceneObject& o : ctx.Doc().Objects()) {
+        if (!Selectable(ctx, o) || o.selected) continue;
+        double x, y;
+        if (vp->WorldToPixel(Center(o), x, y) && (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r2) o.selected = true;
+      }
+    }
+  }
+  bool points_;
+  double radius_ = 0;
+  size_t added_ = 0;
+};
+
 // SelVolumePipe: two axis points and a radius; selects objects whose
 // bounding-box centre lies inside the cylinder.
 class SelVolumePipeCommand : public Command {
@@ -486,8 +585,8 @@ void RegisterSelect2Commands(CommandEngine& e) {
   Reg(e, "Lasso", Make<SelFenceCommand>());
   Reg(e, "SelCircular", Make<SelCircularCommand>());
   Reg(e, "SelRectangular", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("SelWindow"); }));
-  Reg(e, "SelBrush", Make<SelCircularCommand>(), CommandStatus::Partial, "Selects inside one circle; painting a brush stroke is planned.");
-  Reg(e, "SelBrushPoints", Make<SelCircularCommand>(), CommandStatus::Partial, "Selects whole objects inside one circle.");
+  Reg(e, "SelBrush", Make<SelBrushCommand>(false), CommandStatus::Implemented, "Paints a stroke of circular stamps (one per click along the path) instead of just one circle.");
+  Reg(e, "SelBrushPoints", Make<SelBrushCommand>(true), CommandStatus::Implemented, "Paints a stroke that adds the control points (not whole objects) under it to the sub-object selection, turning PointsOn as needed.");
 
   // Annotation, hatch and other tagged groups.
   Reg(e, "SelText", SelGroupNamed({"Text", "TextObject"}));
@@ -514,7 +613,7 @@ void RegisterSelect2Commands(CommandEngine& e) {
         int n = 0;
         for (SceneObject& o : ctx.Doc().Objects()) if (o.kind == ObjectKind::Curve && Selectable(ctx, o) && SelfIntersects(*o.curve, tol)) { o.selected = true; ++n; }
         ctx.Print("SelSelfIntersectingCrv: " + std::to_string(n) + " curve(s) selected");
-      }), CommandStatus::Partial, "Tests a polyline sampling of each curve.");
+      }), CommandStatus::Implemented, "Tests a dense polyline sampling of each curve (at least 64 points, or 12 per control point) for segment/segment intersections within tolerance.");
   Reg(e, "SelValue", Make<TextArgCommand>("User text value", [](CommandContext& ctx, const std::string& v) {
         ctx.Doc().SelectWhere([&](const SceneObject& o) { if (!Selectable(ctx, o)) return false; for (const auto& kv : o.user_text) if (kv.second == v) return true; return false; }, true);
         Report(ctx);
@@ -720,7 +819,19 @@ void RegisterSelect2Commands(CommandEngine& e) {
         if (objs == 0) ctx.Warn("Select meshes or SubDs first");
         else ReportSub(ctx, "SelNakedMeshEdgePt", added);
       }), CommandStatus::Implemented, "Selects the vertices of naked (boundary) mesh / SubD edges as points.");
-  Reg(e, "SelNonManifold", SelWhere([](CommandContext&, const SceneObject& o) { return o.kind == ObjectKind::Mesh && HasNonManifoldEdge(*o.mesh); }), CommandStatus::Partial, "Selects whole meshes that have non-manifold edges.");
+  Reg(e, "SelNonManifold", Immediate([](CommandContext& ctx) {
+        size_t added = 0;
+        int objs = 0;
+        for (const SceneObject& o : ctx.Doc().Objects()) {
+          if ((o.kind != ObjectKind::Mesh && o.kind != ObjectKind::SubD) || !Selectable(ctx, o)) continue;
+          std::vector<SubObjectRef> nm = NonManifoldEdges(o);
+          if (nm.empty()) continue;
+          ++objs;
+          for (const SubObjectRef& r : nm) { if (!Sub(ctx).Contains(r)) ++added; Sub(ctx).Add(r); }
+        }
+        if (objs == 0) ctx.Print("SelNonManifold: no non-manifold edges found");
+        else ReportSub(ctx, "SelNonManifold", added);
+      }), CommandStatus::Implemented, "Selects the individual edges shared by more than two faces, as sub-objects (not whole meshes).");
 
   // Blocks.
   Reg(e, "SelMirroredBlocks", SelWhere([](CommandContext&, const SceneObject& o) { return o.user_text.count("Block") > 0 && o.user_text.count("Mirrored") > 0; }), CommandStatus::Partial, "Block instances are not tracked as mirrored yet; selects instances tagged Mirrored.");
@@ -738,8 +849,10 @@ void RegisterSelect2Commands(CommandEngine& e) {
         ctx.Doc().SelectWhere([&](const SceneObject& o) { return Selectable(ctx, o) && Lower(o.material_name) == Lower(name); }, true);
         Report(ctx);
       }));
-  Reg(e, "SelFontUse", SelGroupNamed({"Text", "TextObject", "Leader", "DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter"}), CommandStatus::Partial, "Selects all annotation (one font is used).");
-  Reg(e, "SelAnnotationStyle", SelGroupNamed({"Text", "TextObject", "Leader", "DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter"}), CommandStatus::Partial, "Selects all annotation (one style is used).");
+  Reg(e, "SelFontUse", SelGroupNamed({"Text", "TextObject", "Leader", "DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter"}), CommandStatus::Implemented,
+      "Selects every annotation object: the document has one font setting (Document Properties > Text), so every annotation uses it.");
+  Reg(e, "SelAnnotationStyle", SelGroupNamed({"Text", "TextObject", "Leader", "DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter"}), CommandStatus::Implemented,
+      "Selects every annotation object: there is one dimension/text style for the whole document, so every annotation uses it.");
   Reg(e, "SelDimOverride", NoSuchObjects("dimensions with style overrides"));
   Reg(e, "SelDimTextOverride", NoSuchObjects("dimensions with text overrides"));
   Reg(e, "SelSubDFriendlyCrv", SelWhere([](CommandContext&, const SceneObject& o) { return o.kind == ObjectKind::Curve && o.curve->Degree() == 3; }));
@@ -907,7 +1020,33 @@ void RegisterSelect2Commands(CommandEngine& e) {
 
   // ---- misc point-edit --------------------------------------------------
   Reg(e, "HBar", Immediate([](CommandContext& ctx) { ctx.Print("HBar: turn on control points (PointsOn), select a control point, then use the Gumball to drag it - the two-sided Bezier handlebar UI is planned."); }), CommandStatus::Partial, "Handlebar-style dragging is not drawn; PointsOn + Gumball reaches the same result one CV at a time.");
-  Reg(e, "DrapePt", Immediate([](CommandContext& ctx) { ctx.Print("DrapePt: use the Drape command (drapes a surface) then PointsOn + SelControlPoint to get the points; a dedicated point-only drape is planned."); }), CommandStatus::Partial, "Point-only drape (no surface) is not implemented; Drape + SelControlPoint covers the same result.");
+  Reg(e, "DrapePt", OnSelection("Select points to drape onto the objects below them", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        std::vector<ObjectId> pts;
+        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Point) pts.push_back(id); }
+        if (pts.empty()) { ctx.Warn("DrapePt: select point objects"); return; }
+        std::vector<kernel::Mesh> targets;
+        for (const SceneObject& o : ctx.Doc().Objects()) {
+          if (std::find(pts.begin(), pts.end(), o.id) != pts.end() || !ctx.Doc().IsObjectVisible(o)) continue;
+          if (std::optional<kernel::Mesh> m = MeshOf(o, 0.01)) targets.push_back(std::move(*m));
+        }
+        if (targets.empty()) { ctx.Warn("DrapePt: no surfaces, polysurfaces, meshes or SubDs to drape onto"); return; }
+        ctx.Doc().BeginChange("DrapePt");
+        const Vector3d down(0, 0, -1);
+        int n = 0;
+        for (ObjectId id : pts) {
+          SceneObject* o = ctx.Doc().Find(id);
+          if (!o) continue;
+          std::optional<Point3d> best;
+          for (const kernel::Mesh& m : targets) {
+            if (std::optional<Point3d> q = RayHitMesh(m, o->point, down)) {
+              if (!best || o->point.DistanceTo(*q) < o->point.DistanceTo(*best)) best = q;
+            }
+          }
+          if (best) { o->point = *best; o->InvalidateDisplay(); ++n; }
+        }
+        ctx.Doc().Touch();
+        ctx.Print("DrapePt: " + std::to_string(n) + " of " + std::to_string(pts.size()) + " point(s) draped onto the object(s) below them");
+      }), CommandStatus::Implemented, "Drops the selected points straight down (world -Z) onto the nearest surface/polysurface/mesh/SubD below them.");
 }
 
 }  // namespace dino8::app

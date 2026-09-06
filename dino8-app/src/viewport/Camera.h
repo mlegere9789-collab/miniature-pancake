@@ -47,6 +47,14 @@ class Camera {
 
   // Navigation (deltas in pixels; the camera converts to world units).
   void Orbit(double dx_pixels, double dy_pixels);
+  // Same rotation as Orbit, but in exact degrees (RotateView / Spin / Turntable
+  // single-step callers that want a precise angle rather than a mouse delta).
+  void OrbitDegrees(double yaw_degrees, double pitch_degrees);
+  // Turns the camera about the fixed eye point (RotateCamera): the look
+  // direction changes and the target moves to keep the same distance, but
+  // the eye itself does not move (unlike Orbit/OrbitDegrees, which keep the
+  // target fixed and move the eye around it).
+  void TurnInPlace(double yaw_degrees, double pitch_degrees);
   void Pan(double dx_pixels, double dy_pixels, int viewport_width, int viewport_height);
   void Dolly(double wheel_steps);             // zoom toward target
   void DollyToward(double wheel_steps, kernel::Point3d world_point);  // zoom about cursor

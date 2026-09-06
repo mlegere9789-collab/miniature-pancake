@@ -1588,6 +1588,28 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
 
 void Viewport::ZoomTo(const kernel::BoundingBox& box) { camera_.ZoomExtents(box, Aspect()); }
 
+void Viewport::PushViewHistory() {
+  view_undo_.push_back(camera_.State());
+  if (view_undo_.size() > 50) view_undo_.erase(view_undo_.begin());
+  view_redo_.clear();
+}
+
+bool Viewport::UndoView() {
+  if (view_undo_.empty()) return false;
+  view_redo_.push_back(camera_.State());
+  camera_.SetState(view_undo_.back());
+  view_undo_.pop_back();
+  return true;
+}
+
+bool Viewport::RedoView() {
+  if (view_redo_.empty()) return false;
+  view_undo_.push_back(camera_.State());
+  camera_.SetState(view_redo_.back());
+  view_redo_.pop_back();
+  return true;
+}
+
 void Viewport::ZoomExtents(const Document& doc, bool selected_only) {
   kernel::BoundingBox box;
   bool has = selected_only ? doc.BoundingBoxOf(doc.SelectedIds(), box) : doc.VisibleBoundingBox(box);

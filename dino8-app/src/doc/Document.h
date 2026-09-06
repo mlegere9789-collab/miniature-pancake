@@ -306,6 +306,13 @@ class Document {
   void SelectNone();
   void InvertSelection();
   void SelectWhere(const std::function<bool(const SceneObject&)>& predicate, bool add = false);
+  // SelPrev: swaps in the selection that was active before the last
+  // SelectNone/InvertSelection/SelectWhere/SelectAll (Select() on individual
+  // ids is too fine-grained to record - a window/click select still leaves
+  // whatever the selection was before that command as the one restored here).
+  // Calling it again swaps back. Returns false when there is nothing to
+  // restore (nothing selected anything yet).
+  bool RestorePreviousSelection();
 
   // ---- visibility / lock -----------------------------------------------
   bool IsObjectVisible(const SceneObject& o) const;   // object + layer
@@ -456,6 +463,7 @@ class Document {
   void Restore(const Snapshot& snapshot);
 
   std::vector<SceneObject> objects_;
+  std::vector<ObjectId> prev_selection_;  // SelPrev / RestorePreviousSelection
   std::vector<Layer> layers_;
   int current_layer_ = 0;
   std::vector<Group> groups_;

@@ -47,6 +47,34 @@ std::string ExeDir(const char* argv0) {
   return p.parent_path().string();
 }
 
+// ScreenCaptureToFile: writes the whole default framebuffer (every viewport
+// and panel, as just composited by ImGui) as a 24-bit BMP. `rgb` is w*h*3
+// bytes, bottom-up (matching glReadPixels), which is also how BMP rows are
+// ordered, so no flip is needed here.
+bool WriteWindowCaptureBmp(const std::string& path, int w, int h, const std::vector<unsigned char>& rgb) {
+  FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) return false;
+  const int row = (w * 3 + 3) & ~3;
+  const unsigned int data_size = static_cast<unsigned int>(row) * static_cast<unsigned int>(h);
+  const unsigned int file_size = 54 + data_size;
+  unsigned char hdr[54] = {'B', 'M'};
+  auto put32 = [&](int at, unsigned int v) { for (int i = 0; i < 4; ++i) hdr[at + i] = static_cast<unsigned char>((v >> (8 * i)) & 0xff); };
+  auto put16 = [&](int at, unsigned int v) { hdr[at] = static_cast<unsigned char>(v & 0xff); hdr[at + 1] = static_cast<unsigned char>((v >> 8) & 0xff); };
+  put32(2, file_size); put32(10, 54); put32(14, 40); put32(18, static_cast<unsigned int>(w)); put32(22, static_cast<unsigned int>(h));
+  put16(26, 1); put16(28, 24); put32(34, data_size);
+  std::fwrite(hdr, 1, 54, f);
+  std::vector<unsigned char> line(static_cast<size_t>(row), 0);
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      const unsigned char* p = &rgb[(static_cast<size_t>(y) * w + x) * 3];
+      line[static_cast<size_t>(x) * 3] = p[2]; line[static_cast<size_t>(x) * 3 + 1] = p[1]; line[static_cast<size_t>(x) * 3 + 2] = p[0];
+    }
+    std::fwrite(line.data(), 1, line.size(), f);
+  }
+  std::fclose(f);
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -240,6 +268,13 @@ int main(int argc, char** argv) {
     glClearColor(clear.x, clear.y, clear.z, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    if (auto cap = app.TakeWindowCaptureRequest()) {
+      std::vector<unsigned char> pixels(static_cast<size_t>(w) * h * 3);
+      glPixelStorei(GL_PACK_ALIGNMENT, 1);
+      glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+      if (WriteWindowCaptureBmp(*cap, w, h, pixels)) app.Notify("Saved " + *cap);
+      else app.Notify("Cannot write " + *cap);
+    }
     const bool last_smoke_frame = smoke_frames >= 0 && frame + 1 >= smoke_frames && script_cursor >= script_lines.size();
     if (last_smoke_frame && !screenshot_path.empty()) {
       std::vector<unsigned char> pixels(static_cast<size_t>(w) * h * 3);

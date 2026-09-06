@@ -101,9 +101,15 @@ UndoView
 Camera
 Enter
 RedoView
-Pan
-RotateView
-RotateCamera
+Pan 0,0,0 5,5,0
+Camera
+Enter
+RotateView 30
+Camera
+Enter
+RotateCamera 30
+Camera
+Enter
 # --- viewport layout and cycling
 3View
 SetActiveViewport Nope

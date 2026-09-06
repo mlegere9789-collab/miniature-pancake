@@ -877,6 +877,15 @@ std::vector<SubObjectRef> NakedEdges(const SceneObject& o) {
   return out;
 }
 
+std::vector<SubObjectRef> NonManifoldEdges(const SceneObject& o) {
+  std::vector<SubObjectRef> out;
+  kernel::Mesh scratch;
+  const ON_Mesh* m = TopologyMesh(o, scratch);
+  if (!m) return out;
+  for (const auto& [k, faces] : EdgeFaces(*m)) if (faces.size() > 2) out.push_back(SubObjectRef::MeshEdge(o.id, k.first, k.second));
+  return out;
+}
+
 std::vector<SubObjectRef> NakedEdgeVertices(const SceneObject& o) {
   std::vector<SubObjectRef> out;
   std::set<int> verts;

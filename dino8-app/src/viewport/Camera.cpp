@@ -136,35 +136,58 @@ Vector3d Camera::Up() const {
   return u;
 }
 
+namespace {
+// Rotates `v` by `yaw` (about world Z) then `pitch` (about the axis
+// perpendicular to both world Z and v, clamped so the result never flips
+// over the pole). Shared by Camera::Orbit (eye orbiting the target) and
+// Camera::TurnInPlace (the look direction turning about a fixed eye) - both
+// are "yaw about Z, then pitch about the local right axis" rotations of a
+// vector, just applied to a different vector (offset vs. forward).
+Vector3d YawPitchRotate(Vector3d v, double yaw, double pitch) {
+  {
+    const double c = std::cos(yaw), s = std::sin(yaw);
+    v = Vector3d(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
+  }
+  Vector3d right = ON_CrossProduct(Vector3d(0, 0, 1), v);
+  if (right.Length() < 1e-9) right = Vector3d(1, 0, 0);
+  right.Unitize();
+  const double len = v.Length();
+  if (len < 1e-12) return v;
+  Vector3d dir = v / len;
+  const double current_pitch = std::asin(std::clamp(dir.z, -1.0, 1.0));
+  const double new_pitch = std::clamp(current_pitch + pitch, -1.55, 1.55);
+  const double delta = new_pitch - current_pitch;
+  const double c = std::cos(delta), s = std::sin(delta);
+  Vector3d rotated = dir * c + ON_CrossProduct(right, dir) * s + right * (ON_DotProduct(right, dir) * (1 - c));
+  return rotated * len;
+}
+}  // namespace
+
 void Camera::Orbit(double dx, double dy) {
   // Rhino orbits around the world Z axis for horizontal drags and around
   // the view's own right axis for vertical drags, keeping Z "up".
-  const double yaw = -dx * 0.008;
-  const double pitch = -dy * 0.008;
-  Vector3d offset = state_.eye - state_.target;
-  // Yaw about world Z.
-  {
-    const double c = std::cos(yaw), s = std::sin(yaw);
-    offset = Vector3d(offset.x * c - offset.y * s, offset.x * s + offset.y * c, offset.z);
-  }
-  // Pitch about the right axis, clamped so we never flip over the pole.
-  {
-    Vector3d right = ON_CrossProduct(Vector3d(0, 0, 1), offset);
-    if (right.Length() < 1e-9) right = Vector3d(1, 0, 0);
-    right.Unitize();
-    const double len = offset.Length();
-    Vector3d dir = offset / len;
-    const double current_pitch = std::asin(std::clamp(dir.z, -1.0, 1.0));
-    const double new_pitch = std::clamp(current_pitch + pitch, -1.55, 1.55);
-    const double delta = new_pitch - current_pitch;
-    // Rodrigues rotation of dir about `right` by delta.
-    const double c = std::cos(delta), s = std::sin(delta);
-    Vector3d rotated = dir * c + ON_CrossProduct(right, dir) * s + right * (ON_DotProduct(right, dir) * (1 - c));
-    offset = rotated * len;
-  }
+  OrbitDegrees(-dx * 0.008 * 180.0 / ON_PI, -dy * 0.008 * 180.0 / ON_PI);
+}
+
+void Camera::OrbitDegrees(double yaw_degrees, double pitch_degrees) {
+  const double yaw = yaw_degrees * ON_PI / 180.0;
+  const double pitch = pitch_degrees * ON_PI / 180.0;
+  Vector3d offset = YawPitchRotate(state_.eye - state_.target, yaw, pitch);
   state_.eye = state_.target + offset;
   state_.up = Vector3d(0, 0, 1);
-  state_.perspective = state_.perspective;  // orbiting a parallel view keeps it parallel
+}
+
+void Camera::TurnInPlace(double yaw_degrees, double pitch_degrees) {
+  // Same rotation as Orbit, applied to the look direction instead of the
+  // eye offset: the eye stays put and the target moves to keep the
+  // distance, so the camera turns like a head, not an orbiting satellite.
+  const double yaw = yaw_degrees * ON_PI / 180.0;
+  const double pitch = pitch_degrees * ON_PI / 180.0;
+  const double dist = std::max(Distance(), 0.01);
+  Vector3d f = YawPitchRotate(Forward(), yaw, pitch);
+  if (!f.Unitize()) return;
+  state_.target = state_.eye + f * dist;
+  state_.up = Vector3d(0, 0, 1);
 }
 
 void Camera::Pan(double dx, double dy, int w, int h) {

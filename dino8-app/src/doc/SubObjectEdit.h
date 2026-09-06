@@ -70,6 +70,8 @@ std::vector<SubObjectRef> FacesToBoundary(const SceneObject& o, const std::vecto
 std::vector<SubObjectRef> AllEdges(const SceneObject& o);
 std::vector<SubObjectRef> NakedEdges(const SceneObject& o);
 std::vector<SubObjectRef> NakedEdgeVertices(const SceneObject& o);
+// Mesh / SubD control-net edges shared by more than two faces (SelNonManifold).
+std::vector<SubObjectRef> NonManifoldEdges(const SceneObject& o);
 // SubD crease edges as control-net edges.
 std::vector<SubObjectRef> SubDCreaseEdges(const SceneObject& o);
 // Faces of the topology mesh adjacent to a vertex / edge.

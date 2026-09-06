@@ -96,23 +96,39 @@ void Document::Select(ObjectId id, bool selected) {
 }
 
 void Document::SelectAll() {
+  prev_selection_ = SelectedIds();
   for (SceneObject& o : objects_) {
     o.selected = IsObjectVisible(o) && !IsObjectLocked(o);
   }
 }
 
 void Document::SelectNone() {
+  prev_selection_ = SelectedIds();
   for (SceneObject& o : objects_) o.selected = false;
   for (Light& l : lights_) l.selected = false;
 }
 
 void Document::InvertSelection() {
+  prev_selection_ = SelectedIds();
   for (SceneObject& o : objects_) {
     if (IsObjectVisible(o) && !IsObjectLocked(o)) o.selected = !o.selected;
   }
 }
 
+bool Document::RestorePreviousSelection() {
+  const std::vector<ObjectId> cur = SelectedIds();
+  if (prev_selection_.empty() && cur.empty()) return false;
+  for (SceneObject& o : objects_) o.selected = false;
+  for (ObjectId id : prev_selection_) {
+    SceneObject* o = Find(id);
+    if (o && IsObjectVisible(*o) && !IsObjectLocked(*o)) o->selected = true;
+  }
+  prev_selection_ = cur;
+  return true;
+}
+
 void Document::SelectWhere(const std::function<bool(const SceneObject&)>& predicate, bool add) {
+  prev_selection_ = SelectedIds();
   for (SceneObject& o : objects_) {
     const bool eligible = IsObjectVisible(o) && !IsObjectLocked(o);
     const bool match = eligible && predicate(o);
