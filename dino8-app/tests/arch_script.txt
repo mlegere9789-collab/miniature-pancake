@@ -30,9 +30,10 @@ ArchEdit
 5
 # --- Beam: spans between two points, then ArchDelete removes it again
 Beam 80,0,3 85,0,3 0.2 0.3
+# --- ArchSchedule before and after the delete
+ArchSchedule
 SelLast
 ArchDelete
-# --- ArchSchedule before and after the delete
 ArchSchedule
 SelAll
 List

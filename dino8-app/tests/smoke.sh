@@ -884,7 +884,7 @@ smcheck "SpaceMouse mode set to Object" "SpaceMouseMode set Object mode"
 # pixel for Camera mode too.
 if echo "$SM" | grep -q "Bounding box min 0,0,0 max 10,10,10"; then echo "FAIL: SpaceMouse Object mode did not move the selected box"; fail=1; else echo "ok   SpaceMouse Object mode moved the selected box (30 units along +tx: 15 samples x sensitivity 1 x scale 2)"; fi
 smcheck "Bounding box min 30,0,0 max 40,10,10" "the box moved by exactly 15 x 2 = 30 units in Object mode"
-echo "$SM" | grep -E "^(ok|FAIL)"
+echo "$SM" | grep -E "^(ok|FAIL)" || true
 if echo "$SM" | grep -q "^FAIL"; then fail=1; fi
 
 # Parametric 2D sketch constraints: Coincident/Horizontal/Vertical/Distance/
@@ -910,7 +910,7 @@ cncheck "Fixed constraint #8 added." "Constrain built a Fixed constraint"
 cncheck "Midpoint constraint #9 added." "Constrain built a Midpoint constraint"
 cncheck "ConstraintsShow: glyphs on (9 constraint(s))" "ConstraintsShow toggled the glyph overlay"
 cncheck "ConstraintDelete: removed every constraint" "ConstraintDelete All cleared the list"
-echo "$CN" | grep -E "^(ok|FAIL)"
+echo "$CN" | grep -E "^(ok|FAIL)" || true
 if echo "$CN" | grep -q "^FAIL"; then fail=1; fi
 
 # Parametric architectural components: Wall/Door/Window/Slab/Roof/Stair/
@@ -934,7 +934,7 @@ archeck "ArchDelete: removed 1 component(s)" "ArchDelete removed the beam"
 archeck "Architectural schedule (8 component(s)):" "ArchSchedule counted every component before the delete"
 archeck "Architectural schedule (7 component(s)):" "ArchSchedule counted every component after the delete"
 archeck "Object 3 (mesh) layer Default name 'Wall'" "the wall survived two boolean cuts as one mesh object"
-echo "$AR" | grep -E "^(ok|FAIL)"
+echo "$AR" | grep -E "^(ok|FAIL)" || true
 if echo "$AR" | grep -q "^FAIL"; then fail=1; fi
 
 exit $fail
