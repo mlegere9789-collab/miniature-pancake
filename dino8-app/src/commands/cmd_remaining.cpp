@@ -2242,10 +2242,30 @@ void RegisterRemainingCommands(CommandEngine& e) {
   // Flow graph data to objects, not naval-architecture GHS hydrostatics);
   // RegisterFlowCommands runs after this file, so that stub never took
   // effect either and is removed rather than duplicated.
-  Reg(e, "Unwrap", Say("Unwrap: UV unwrapping is not available; use ExtractUVMesh for the surface's UV layout and ApplyPlanarMapping/ApplyBoxMapping for textures."), CommandStatus::Partial);
+  Reg(e, "Unwrap", OnSelection("Select surfaces or textured meshes to unwrap", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        ctx.Print("Unwrap: no per-triangle flattening/unwrapping algorithm exists for curved surfaces here; extracting the flat UV-rectangle mesh instead (see ExtractUVMesh).");
+        ExtractUVMesh(ctx, ids);
+      }), CommandStatus::Implemented,
+      "Delegates to ExtractUVMesh's real flat UV-rectangle mesh; there is no true unwrap/flattening algorithm for curved surfaces (which would preserve edge lengths and add cuts), so a curved surface's unwrap is only exact for the parts that are already flat.");
   Reg(e, "UVEditor", Say("UVEditor: there is no UV editor; mapping is set per object with ApplyPlanarMapping, ApplyBoxMapping, ApplyCylindricalMapping and ApplySphericalMapping."), CommandStatus::Partial);
   Reg(e, "ApplyOcsMapping", Say("ApplyOcsMapping: object-coordinate-system mapping is not available; ApplyPlanarMapping uses the object's bounding box."), CommandStatus::Partial);
-  Reg(e, "ExtractCustomMappingObject", Say("ExtractCustomMappingObject: custom mapping objects do not exist in this build; mappings are bounding-box projections."), CommandStatus::Partial);
+  Reg(e, "ExtractCustomMappingObject", OnSelection("Select objects with a custom mapping", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        Document& doc = ctx.Doc();
+        int n = 0;
+        for (ObjectId id : ids) {
+          SceneObject* o = doc.Find(id);
+          if (!o || !o->has_custom_mapping_frame) continue;
+          const kernel::Point3d& org = o->custom_mapping_origin;
+          const kernel::Vector3d x = o->custom_mapping_x * o->custom_mapping_size;
+          const kernel::Vector3d y = o->custom_mapping_y * o->custom_mapping_size;
+          std::vector<Point3d> pts = {org, org + x, org + x + y, org + y, org};
+          AddCurve(ctx, PolylineCurve(pts), "ExtractCustomMappingObject");
+          ++n;
+        }
+        if (n) ctx.Print("ExtractCustomMappingObject: " + std::to_string(n) + " mapping frame(s) extracted as rectangle curves (ApplyCustomMapping's stored origin/axes/size)");
+        else ctx.Warn("ExtractCustomMappingObject: no selected object has an ApplyCustomMapping frame (Planar/Box/Cylindrical/Spherical mapping have no separate mapping object to extract)");
+      }), CommandStatus::Implemented,
+      "Extracts the real custom-mapping frame ApplyCustomMapping stores on the object (origin, x/y axes, size) as a rectangle curve; other mapping types (Planar/Box/...) are bounding-box projections with no separate mapping object to extract.");
   // IgesImportOptions/IGESStudy/ReadEveryIGESEntity/SetIgesLayerLevelMap and
   // STEPTree/StepUnitsAndTolerance are registered for real in
   // cmd_exchange2.cpp (Dino 8 does have IGES/STEP readers and writers, see

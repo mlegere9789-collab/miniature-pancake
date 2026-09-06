@@ -149,6 +149,7 @@ class SceneObject {
   bool show_control_net = false;  // SubD: draw the control polygon instead of the smoothed surface
   bool highlight_edges = false;  // ShowEdges: draw brep/mesh edges thick, naked edges in a second colour
   bool force_shaded = false;     // ShadeSelected: filled even in a display mode that otherwise draws no fills
+  bool force_wireframe = false;  // SetObjectDisplayMode Wireframe: never filled, even in a shaded/rendered viewport
   bool show_render_mesh_wires = false;  // ToggleRenderMesh/ShowRenderMesh: overlay the tessellation's triangle edges
   // Per-object display tolerance override for surface/brep/SubD tessellation
   // (SetMeshSurfaceParameters); <= 0 means "use the app-wide setting".

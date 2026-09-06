@@ -65,6 +65,8 @@ ApplyCustomMapping Scale=2
 0,0,0
 5,0,0
 SelID 1
+ExtractCustomMappingObject
+SelID 1
 ShadeSelected
 ShowRenderMesh
 HideRenderMesh

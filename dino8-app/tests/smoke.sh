@@ -1234,7 +1234,7 @@ rncheck2 "ClearAllObjectDisplayModes: " "ClearAllObjectDisplayModes ran"
 rncheck2 "SaveWindowLayout: saved QCLayout" "SaveWindowLayout wrote a layout"
 rncheck2 "WindowLayout: restored QCLayout" "WindowLayout restored it"
 rncheck2 "AcadSchemes: DWG/DXF export schemes are not available" "AcadSchemes explains the real limitation"
-rncheck2 "Unwrap: UV unwrapping is not available" "Unwrap explains the real limitation"
+rncheck2 "Unwrap: no per-triangle flattening/unwrapping algorithm exists" "Unwrap explains the real limitation and extracts a UV mesh"
 # IgesImportOptions/STEPTree open a file dialog (owned by cmd_exchange2.cpp,
 # not this file) and EditScript opens the Lua Script Editor panel silently
 # (owned by cmd_misc.cpp); none of the three print text in script mode, so

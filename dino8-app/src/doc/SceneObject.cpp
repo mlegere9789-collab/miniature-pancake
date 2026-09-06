@@ -90,6 +90,7 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   show_control_net = other.show_control_net;
   highlight_edges = other.highlight_edges;
   force_shaded = other.force_shaded;
+  force_wireframe = other.force_wireframe;
   show_render_mesh_wires = other.show_render_mesh_wires;
   custom_mesh_tolerance = other.custom_mesh_tolerance;
   analysis = other.analysis;
