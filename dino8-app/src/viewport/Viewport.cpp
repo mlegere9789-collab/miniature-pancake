@@ -153,10 +153,31 @@ void BackgroundFor(DisplayMode mode, const Document* doc, bool arctic, Color& to
       case RenderSettings::Background::Solid: top = bottom = r.background_color; break;
       case RenderSettings::Background::Gradient: top = r.gradient_top; bottom = r.gradient_bottom; break;
       case RenderSettings::Background::Sky: top = Color::FromBytes(96, 138, 200); bottom = Color::FromBytes(222, 230, 240); break;
+      case RenderSettings::Background::Image: top = bottom = Color::FromBytes(40, 40, 40); break;  // shown only if the image fails to load
     }
     return;
   }
   if (!r.gradient_view) top = bottom;
+}
+
+// A full-viewport textured quad drawn over the gradient clear, stretched to
+// fill (letterboxing/UV fitting is not attempted): Rendered mode's Image
+// background (part of the actual render, `for_render` or not), or
+// BackgroundBitmap's modelling-aid picture (every mode, interactive only --
+// never part of a final render). A no-op if neither applies or the file
+// fails to load.
+void DrawBackgroundImage(GlRenderer& renderer, const Document* doc, DisplayMode mode, bool arctic, bool for_render) {
+  if (!doc || arctic) return;
+  const RenderSettings& r = doc->Render();
+  std::string path;
+  if (mode == DisplayMode::Rendered && r.background == RenderSettings::Background::Image && !r.environment_image.empty()) path = r.environment_image;
+  else if (!for_render && r.background_bitmap_enabled && !r.background_bitmap.empty()) path = r.background_bitmap;
+  if (path.empty()) return;
+  const GLuint tex = renderer.TextureFor(path);
+  if (!tex) return;
+  renderer.EnableDepthTest(false);
+  renderer.DrawFullscreenTexture(tex);
+  renderer.EnableDepthTest(true);
 }
 
 void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
@@ -166,6 +187,7 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   BackgroundFor(mode_, ctx.doc, false, top, bottom);
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(Aspect()));
   renderer.ClearGradient(top, bottom);
+  DrawBackgroundImage(renderer, ctx.doc, mode_, false, false);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
   if (mode_ == DisplayMode::RayTraced && !page_ && ctx.doc) {
@@ -241,6 +263,7 @@ bool Viewport::RenderToImage(GlRenderer& renderer, const FrameContext& base, int
   BackgroundFor(DisplayMode::Rendered, ctx.doc, arctic, top, bottom);
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(aspect));
   renderer.ClearGradient(top, bottom);
+  DrawBackgroundImage(renderer, ctx.doc, DisplayMode::Rendered, arctic, true);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
   DrawScene(renderer, ctx, DisplayMode::Rendered, aspect);

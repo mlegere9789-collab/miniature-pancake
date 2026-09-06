@@ -92,7 +92,7 @@ struct Light {
 
 // Render environment: background, ground plane and sun.
 struct RenderSettings {
-  enum class Background { Solid, Gradient, Sky };
+  enum class Background { Solid, Gradient, Sky, Image };
   Background background = Background::Sky;
   Color background_color = Color::FromBytes(235, 238, 242);
   Color gradient_top = Color::FromBytes(120, 140, 175);
@@ -112,7 +112,12 @@ struct RenderSettings {
   int render_width = 1280;
   int render_height = 720;
   int render_quality = 2;         // supersampling factor 1..4
-  std::string environment_image;  // Partial: shown in the panel only
+  std::string environment_image;  // used as the background when background == Image
+  // BackgroundBitmap: a picture shown behind the model in every viewport as
+  // a modelling aid (not part of a final Render, which uses `background`
+  // Image above instead).
+  std::string background_bitmap;
+  bool background_bitmap_enabled = false;
 };
 
 // A linetype: a name and a dash pattern (dash, gap, dash, gap... lengths in

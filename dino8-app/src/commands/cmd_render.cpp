@@ -88,44 +88,6 @@ std::string UniqueMaterialName(const Document& doc, const std::string& base) {
   return base;
 }
 
-// Built-in procedural textures: a small bitmap is generated once (cached in
-// the config directory) and referenced like any other texture file, since
-// the rendering pipeline only ever samples bitmaps.
-bool IsProceduralTextureName(const std::string& name) {
-  const std::string l = Lower(name);
-  return l == "checker" || l == "gradient" || l == "noise";
-}
-
-std::string ProceduralTexturePath(const std::string& name) {
-  const std::string lname = Lower(name);
-  const std::string dir = ConfigDirectory();
-  std::error_code ec;
-  std::filesystem::create_directories(dir, ec);
-  const std::string path = dir + "/procedural_" + lname + ".ppm";
-  if (std::filesystem::exists(path, ec)) return path;
-  constexpr int kSize = 128;
-  std::vector<unsigned char> rgb(static_cast<size_t>(kSize) * kSize * 3);
-  for (int y = 0; y < kSize; ++y) {
-    for (int x = 0; x < kSize; ++x) {
-      unsigned char* p = &rgb[(static_cast<size_t>(y) * kSize + x) * 3];
-      if (lname == "checker") {
-        const bool a = ((x / 16) + (y / 16)) % 2 == 0;
-        p[0] = p[1] = p[2] = a ? 235 : 40;
-      } else if (lname == "gradient") {
-        const unsigned char v = static_cast<unsigned char>(255.0 * x / (kSize - 1));
-        p[0] = v; p[1] = v; p[2] = static_cast<unsigned char>(255 - v);
-      } else {  // noise: a cheap deterministic integer hash per pixel
-        unsigned int h = static_cast<unsigned int>(y * kSize + x) * 2654435761u;
-        h ^= h >> 13; h *= 0x85ebca6bu; h ^= h >> 16;
-        p[0] = p[1] = p[2] = static_cast<unsigned char>(h % 256);
-      }
-    }
-  }
-  std::string err;
-  SaveImageRGB(path, kSize, kSize, rgb, err);
-  return path;
-}
-
 // The material an object should get edited: its own, else a new one made
 // from its display colour and assigned to it.
 Material& OwnMaterial(Document& doc, SceneObject& o) {
@@ -432,7 +394,7 @@ class AssignMaterialCommand : public Command {
         else if (k == "gloss" && std::sscanf(v.c_str(), "%lf", &d) == 1) m->gloss = static_cast<float>(std::clamp(d, 0.0, 1.0));
         else if (k == "transparency" && std::sscanf(v.c_str(), "%lf", &d) == 1) m->transparency = static_cast<float>(std::clamp(d, 0.0, 1.0));
         else if (k == "reflectivity" && std::sscanf(v.c_str(), "%lf", &d) == 1) m->reflectivity = static_cast<float>(std::clamp(d, 0.0, 1.0));
-        else if (k == "texture") { m->texture_path = IsProceduralTextureName(v) ? ProceduralTexturePath(v) : v; ctx.App().Renderer().RefreshTextures(); }
+        else if (k == "texture") { m->texture_path = v; ctx.App().Renderer().RefreshTextures(); }
         else if (k == "mapping") ParseTextureMapping(v, m->mapping);
         else if (k == "scale" && std::sscanf(v.c_str(), "%lf", &d) == 1 && d > 0) m->mapping_scale = static_cast<float>(d);
         else { ctx.Warn("Unknown material option " + k + "=" + v); continue; }
@@ -930,24 +892,32 @@ void RegisterRenderCommands(CommandEngine& e) {
         RenderSettings& r = ctx.Doc().Render();
         Args a = TakeArgs(ctx);
         const std::string first = a.rest.empty() ? "" : Lower(a.rest[0]);
-        if (first == "solid" || first == "gradient" || first == "sky" || a.Has("Background")) {
+        if (first == "solid" || first == "gradient" || first == "sky" || first == "image" || a.Has("Background")) {
           const std::string b = a.Has("Background") ? Lower(a.Get("Background")) : first;
           if (b == "solid") r.background = RenderSettings::Background::Solid;
           else if (b == "gradient") r.background = RenderSettings::Background::Gradient;
           else if (b == "sky") r.background = RenderSettings::Background::Sky;
+          else if (b == "image") r.background = RenderSettings::Background::Image;
           else if (b == "none") { r.background = RenderSettings::Background::Solid; r.background_color = Color::FromBytes(255, 255, 255); }
         }
         if (a.Has("Color")) { Color c; if (ParseColor(a.Get("Color"), c)) { r.background_color = c; r.background = RenderSettings::Background::Solid; } }
-        if (a.Has("Image")) r.environment_image = a.Get("Image");
+        if (a.Has("Image")) { r.environment_image = a.Get("Image"); r.background = RenderSettings::Background::Image; }
         ctx.Doc().Touch();
         if (a.kv.empty() && a.rest.empty()) ctx.App().Panels().environments = true;
-        const char* names[] = {"Solid", "Gradient", "Sky"};
-        ctx.Print(std::string("Environment: background ") + names[static_cast<int>(r.background)] + (r.background == RenderSettings::Background::Solid ? " " + ColorText(r.background_color) : "") + (r.environment_image.empty() ? "" : " (image " + r.environment_image + ": Partial, not drawn yet)"));
-      }), CommandStatus::Partial, "Colour, gradient and sky backgrounds; image environments are planned.");
+        const char* names[] = {"Solid", "Gradient", "Sky", "Image"};
+        std::string image_note;
+        if (r.background == RenderSettings::Background::Image) {
+          std::error_code ec;
+          image_note = " (" + r.environment_image + (r.environment_image.empty() ? "no image set" : (std::filesystem::exists(r.environment_image, ec) ? "" : ": file not found")) + ")";
+        } else if (!r.environment_image.empty()) {
+          image_note = " (image " + r.environment_image + " on file, set Background=Image to use it)";
+        }
+        ctx.Print(std::string("Environment: background ") + names[static_cast<int>(r.background)] + (r.background == RenderSettings::Background::Solid ? " " + ColorText(r.background_color) : "") + image_note);
+      }), CommandStatus::Implemented, "Solid/Gradient/Sky/Image backgrounds; Image is drawn as a full-viewport texture in Rendered mode (stretched to fill, no reflection/lighting contribution).");
   Reg(e, "Textures", Immediate([](CommandContext& ctx) {
         ctx.App().Panels().textures = true;
-        ctx.Print("Textures: Checker, Gradient and Noise procedural textures are available via Texture=Checker/Gradient/Noise on RenderAssignMaterialToObjects (a small bitmap is generated once and used like any other texture file).");
-      }), CommandStatus::Implemented, "Opens the texture panel; Checker/Gradient/Noise procedural textures are generated bitmaps assignable through RenderAssignMaterialToObjects's Texture= option.");
+        ctx.Print("Textures: procedural wood/marble/stone/concrete/brick textures are already available -- set Texture=proc:<kind>:<seed> (e.g. proc:wood:2) on RenderAssignMaterialToObjects, or use a material preset from MaterialLibrary, which already uses them.");
+      }), CommandStatus::Implemented, "Lists material textures; the app's real procedural textures are proc:<kind>:<seed> paths (MaterialLibrary::GenerateProceduralTexture), sampled live by both the viewport and the path tracer.");
   Reg(e, "Materials", Immediate([](CommandContext& ctx) { ctx.App().Panels().materials = true; }));
   Reg(e, "MaterialEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().materials = true; }));
   Reg(e, "RenderAssignMaterialToObjects", Make<AssignMaterialCommand>(false));
@@ -1269,7 +1239,22 @@ void RegisterRenderCommands(CommandEngine& e) {
         ctx.Doc().Touch();
         ctx.Print(std::string("GradientView ") + (r.gradient_view ? "on" : "off"));
       }));
-  Reg(e, "BackgroundBitmap", Immediate([](CommandContext& ctx) { ctx.Print("BackgroundBitmap: viewport background images are planned; use Picture to place an image as a textured plane."); }), CommandStatus::Partial);
+  Reg(e, "BackgroundBitmap", Immediate([](CommandContext& ctx) {
+        RenderSettings& r = ctx.Doc().Render();
+        Args a = TakeArgs(ctx);
+        const std::string first = a.rest.empty() ? "" : Lower(a.rest[0]);
+        if (first == "remove") { r.background_bitmap.clear(); r.background_bitmap_enabled = false; }
+        else if (first == "off" || (a.Has("On") && !a.Yes("On", true))) r.background_bitmap_enabled = false;
+        else if (first == "on") { if (!r.background_bitmap.empty()) r.background_bitmap_enabled = true; else { Application& app = ctx.App(); app.ShowFileDialog("Background bitmap image", {".bmp", ".ppm", ".pgm", ".png"}, false, [&app](const std::string& path) { app.Engine().Execute("BackgroundBitmap " + path); }); } }
+        else if (!a.rest.empty()) { r.background_bitmap = a.rest[0]; r.background_bitmap_enabled = true; }
+        else if (a.kv.empty() && a.rest.empty() && !ctx.ScriptMode()) {
+          Application& app = ctx.App();
+          app.ShowFileDialog("Background bitmap image", {".bmp", ".ppm", ".pgm", ".png"}, false, [&app](const std::string& path) { app.Engine().Execute("BackgroundBitmap " + path); });
+          return;
+        }
+        ctx.Doc().Touch();
+        ctx.Print(std::string("BackgroundBitmap: ") + (r.background_bitmap.empty() ? "none set" : (r.background_bitmap + (r.background_bitmap_enabled ? " (on)" : " (off)"))) + " -- shown behind the model in every viewport, but not part of a final Render (use Environments Background=Image for that)");
+      }));
   Reg(e, "Picture", Make<PictureCommand>(), CommandStatus::Partial, "Places a BMP/PPM/PNG image on a plane; PictureFrame options are planned.");
   Reg(e, "Bake", Immediate([](CommandContext& ctx) { ctx.Print("Bake: baking textures is planned."); }), CommandStatus::Partial);
   Reg(e, "BakeMapping", Immediate([](CommandContext& ctx) { ctx.Print("BakeMapping: baking mappings is planned; use ExtractRenderMesh for the display mesh."); }), CommandStatus::Partial);
