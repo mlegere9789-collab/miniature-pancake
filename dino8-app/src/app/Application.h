@@ -122,6 +122,7 @@ struct AppState {
   bool check_new_objects = false;    // CheckNewObjects: validate objects every command adds
   int layer_book_page = -1;          // LayerBook: index of the layer currently shown alone
   bool dig_beep = false;             // DigBeep: terminal-bell feedback per digitized point
+  std::string content_filter;        // ContentFilter: case-insensitive name substring for the Materials/Textures/Environments panels
 };
 
 struct FileDialogState {

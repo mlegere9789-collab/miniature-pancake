@@ -797,7 +797,12 @@ void RegisterStateCommands(CommandEngine& e) {
   // Bounce: superseded by cmd_solidtools.cpp's real ray-bounce implementation
   // (RegisterSolidToolsCommands runs after this file, so it always won here
   // anyway; this stub was dead code that misreported Bounce as unimplemented).
-  Reg(e, "ContentFilter", Say("ContentFilter: the Materials/Textures/Environments panels have no filtering UI (by usage, by type, or by search) - they simply list every entry in the document."), CommandStatus::Partial, "The Materials/Textures/Environments panels (RenderPanels.cpp) have no filter control to wire this into; it would need a real UI addition there, not just a stored flag.");
+  Reg(e, "ContentFilter", Immediate([](CommandContext& ctx) {
+        std::string& f = ctx.App().State().content_filter;
+        if (auto p = ctx.Engine().TakePendingInput()) f = (*p == "\"\"" || Lower(*p) == "clear") ? std::string() : *p;
+        ctx.App().Panels().materials = true;
+        ctx.Print(std::string("ContentFilter: ") + (f.empty() ? "off (showing every entry)" : ("'" + f + "' (Materials and Textures panels; ContentFilter Clear to remove)")));
+      }), CommandStatus::Implemented, "Filters the Materials and Textures panels' lists to names containing this text (case-insensitive); the Environments panel is a single set of document-wide settings, not a list, so there is nothing there to filter by name.");
 
   // ---- gumball ------------------------------------------------------------
   Reg(e, "GumballAlignment", GumballChoice("GumballAlignment", {"CPlane", "World", "Object"}, [](Gumball::Settings& s) -> std::string& { return s.alignment; }), CommandStatus::Implemented, "Sets the widget's own drag/rotate/scale axes: World (identity), CPlane (the active viewport's construction plane), or Object (a single selected curve's start tangent or surface's normal, falling back to World otherwise).");

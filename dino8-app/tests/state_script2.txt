@@ -135,7 +135,8 @@ Bounce -5,5,5 5,5,5 3
 SelAll
 Delete
 @expect_objects 0
-ContentFilter
+ContentFilter Wood
+ContentFilter Clear
 # --- gumball
 GumballAlignment World
 GumballScaleMode Uniform

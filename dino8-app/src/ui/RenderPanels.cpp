@@ -3,6 +3,7 @@
 #include "ui/Panels.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -39,6 +40,23 @@ bool MappingCombo(const char* label, TextureMapping& mapping, bool allow_default
     ImGui::EndCombo();
   }
   return changed;
+}
+
+// ContentFilter: a case-insensitive name substring shared by the Materials,
+// Textures and Environments panels below (Application::State().content_filter).
+bool PassesContentFilter(Application& app, const std::string& name) {
+  const std::string& f = app.State().content_filter;
+  if (f.empty()) return true;
+  auto lower = [](std::string s) { std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); }); return s; };
+  return lower(name).find(lower(f)) != std::string::npos;
+}
+
+void DrawContentFilterBox(Application& app) {
+  std::string& f = app.State().content_filter;
+  char buf[128];
+  std::snprintf(buf, sizeof(buf), "%s", f.c_str());
+  if (ImGui::InputTextWithHint("##content_filter", "Filter by name (ContentFilter)", buf, sizeof(buf))) f = buf;
+  if (!f.empty()) { ImGui::SameLine(); if (ImGui::SmallButton("Clear##content_filter")) f.clear(); }
 }
 
 std::string UniqueMaterialName(const Document& doc, const std::string& base) {
@@ -103,16 +121,21 @@ void DrawMaterialsPanel(Application& app) {
     ImGui::EndPopup();
   }
   ImGui::Separator();
+  DrawContentFilterBox(app);
   if (doc.Materials().empty()) ImGui::TextDisabled("No materials. Objects use their display colour.");
   const float list_height = std::min(180.0f, 22.0f * static_cast<float>(std::max<size_t>(doc.Materials().size(), 1)) + 8.0f);
   if (ImGui::BeginListBox("##materials", ImVec2(-1, list_height))) {
+    int shown = 0;
     for (const Material& m : doc.Materials()) {
+      if (!PassesContentFilter(app, m.name)) continue;
+      ++shown;
       ImGui::PushID(m.name.c_str());
       ImGui::ColorButton("##swatch", ImVec4(m.diffuse.r, m.diffuse.g, m.diffuse.b, 1.f), ImGuiColorEditFlags_NoTooltip, ImVec2(16, 16));
       ImGui::SameLine();
       if (ImGui::Selectable(m.name.c_str(), selected == m.name)) selected = m.name;
       ImGui::PopID();
     }
+    if (shown == 0 && !doc.Materials().empty()) ImGui::TextDisabled("No material matches the filter.");
     ImGui::EndListBox();
   }
   Material* m = doc.FindMaterial(selected);
@@ -359,9 +382,10 @@ void DrawTexturesPanel(Application& app) {
   ImGui::TextWrapped("Textures are image files (BMP, PPM/PGM, PNG) referenced by materials. Assign one in the Materials panel or with the Picture command.");
   if (ImGui::SmallButton("Reload all")) app.Renderer().RefreshTextures();
   ImGui::Separator();
+  DrawContentFilterBox(app);
   int count = 0;
   for (Material& m : doc.Materials()) {
-    if (m.texture_path.empty()) continue;
+    if (m.texture_path.empty() || !PassesContentFilter(app, m.name)) continue;
     ++count;
     ImGui::PushID(m.name.c_str());
     std::error_code ec;
