@@ -603,12 +603,12 @@ class FilletTwoSurfacesCommand : public Command {
     if (!along.Unitize()) return false;
     Vector3d perp = ON_CrossProduct(plane.zaxis, along);
     const double side_ref = ON_DotProduct(f.SurfaceOf()->PointAt(du.Mid(), dv.Mid()) - c0, perp);
-    std::vector<Point3d> far;
-    for (const Point3d& c : corners) if (ON_DotProduct(c - c0, perp) * side_ref > 0) far.push_back(c);
-    if (far.size() < 2) return false;
+    std::vector<Point3d> far_corners;
+    for (const Point3d& c : corners) if (ON_DotProduct(c - c0, perp) * side_ref > 0) far_corners.push_back(c);
+    if (far_corners.size() < 2) return false;
     // Order the far corners by walking the original rectangle boundary.
     std::vector<Point3d> ordered;
-    for (int i = 0; i < 4; ++i) if (std::find(far.begin(), far.end(), corners[static_cast<size_t>(i)]) != far.end()) ordered.push_back(corners[static_cast<size_t>(i)]);
+    for (int i = 0; i < 4; ++i) if (std::find(far_corners.begin(), far_corners.end(), corners[static_cast<size_t>(i)]) != far_corners.end()) ordered.push_back(corners[static_cast<size_t>(i)]);
     ON_SimpleArray<ON_Curve*> boundary;
     ON_Curve* cc = contact.DuplicateCurve();
     if (cc->PointAtEnd().DistanceTo(ordered.front()) > cc->PointAtStart().DistanceTo(ordered.front())) cc->Reverse();

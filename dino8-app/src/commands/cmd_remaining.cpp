@@ -431,7 +431,7 @@ std::optional<kernel::NurbsSurface> SurfaceOf(const SceneObject& o) {
 }
 
 // The curve of a curve object; for a brep/surface the naked/first edge nearest `near`.
-std::optional<kernel::NurbsCurve> CurveOf(const SceneObject& o, const Point3d* near = nullptr) {
+std::optional<kernel::NurbsCurve> CurveOf(const SceneObject& o, const Point3d* near_pt = nullptr) {
   if (o.kind == ObjectKind::Curve && o.curve) return *o.curve;
   if (o.kind == ObjectKind::Brep && o.brep) {
     const ON_Brep& b = o.brep->raw();
@@ -442,8 +442,8 @@ std::optional<kernel::NurbsCurve> CurveOf(const SceneObject& o, const Point3d* n
       if (e.m_edge_index < 0) continue;
       kernel::NurbsCurve k;
       if (!CurveFromON(e, k)) continue;
-      const double d = near ? k.ClosestPoint(*near, 40).DistanceTo(*near) : 0;
-      if (d < best) { best = d; out = k; if (!near) break; }
+      const double d = near_pt ? k.ClosestPoint(*near_pt, 40).DistanceTo(*near_pt) : 0;
+      if (d < best) { best = d; out = k; if (!near_pt) break; }
     }
     return out;
   }
@@ -461,8 +461,8 @@ std::optional<kernel::NurbsCurve> CurveOf(const SceneObject& o, const Point3d* n
       const bool ok = CurveFromON(*iso, k);
       delete iso;
       if (!ok) continue;
-      const double d = near ? k.ClosestPoint(*near, 40).DistanceTo(*near) : 0;
-      if (d < best) { best = d; out = k; if (!near) break; }
+      const double d = near_pt ? k.ClosestPoint(*near_pt, 40).DistanceTo(*near_pt) : 0;
+      if (d < best) { best = d; out = k; if (!near_pt) break; }
     }
     return out;
   }

@@ -867,9 +867,9 @@ std::vector<double> DiscreteCurvature(const std::vector<float>& tri, bool gaussi
 // vertex to the first triangle hit on the far side (Moeller-Trumbore over
 // the display triangles), or `far` when nothing is hit. A tiny start
 // offset skips the triangles the vertex itself belongs to.
-std::vector<double> RayThickness(const std::vector<float>& tris, double far) {
+std::vector<double> RayThickness(const std::vector<float>& tris, double far_dist) {
   const size_t n_verts = tris.size() / 6, n_tris = n_verts / 3;
-  std::vector<double> out(n_verts, far);
+  std::vector<double> out(n_verts, far_dist);
   if (n_tris == 0) return out;
   // Bounding box diagonal sets the skip epsilon.
   double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
@@ -891,10 +891,10 @@ std::vector<double> RayThickness(const std::vector<float>& tris, double far) {
     auto it = memo.find(key);
     if (it != memo.end()) { out[i] = it->second; continue; }
     ON_3dVector n(tris[i * 6 + 3], tris[i * 6 + 4], tris[i * 6 + 5]);
-    if (!n.Unitize()) { memo[key] = far; continue; }
+    if (!n.Unitize()) { memo[key] = far_dist; continue; }
     const ON_3dVector d = -n;
     const ON_3dPoint o = ON_3dPoint(tris[i * 6], tris[i * 6 + 1], tris[i * 6 + 2]) + d * eps;
-    double best = far;
+    double best = far_dist;
     for (size_t t = 0; t < n_tris; ++t) {
       const ON_3dVector e1 = b[t] - a[t], e2 = c[t] - a[t];
       const ON_3dVector p = ON_CrossProduct(d, e2);
@@ -910,7 +910,7 @@ std::vector<double> RayThickness(const std::vector<float>& tris, double far) {
       const double dist = ON_DotProduct(e2, q) * inv;
       if (dist > eps && dist < best) best = dist;
     }
-    out[i] = best + (best < far ? eps : 0.0);
+    out[i] = best + (best < far_dist ? eps : 0.0);
     memo[key] = out[i];
   }
   return out;
