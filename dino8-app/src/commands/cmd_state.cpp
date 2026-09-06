@@ -768,7 +768,7 @@ void RegisterStateCommands(CommandEngine& e) {
         ctx.Doc().BeginChange("PointCloud");
         ctx.Doc().CreateGroup(pts, "PointCloud");
         ctx.Print("PointCloud: " + std::to_string(pts.size()) + " point(s) grouped");
-      }), CommandStatus::Partial, "Groups the points; a dedicated point-cloud object is planned.");
+      }), CommandStatus::Partial, "Dino 8's ObjectKind enum has no distinct point-cloud kind (only Point/Curve/Surface/Brep/Mesh/SubD), so there is no per-point-color/density point-cloud object to build here - this groups the selected Point objects instead, the closest honest approximation with the data model as it stands.");
   Reg(e, "InfinitePlane", Immediate([](CommandContext& ctx) {
         ON_Plane pl = ActivePlane(ctx);
         const double s = std::max(1.0, ctx.Settings().grid_spacing * ctx.Settings().grid_extents) * 20.0;
@@ -797,7 +797,7 @@ void RegisterStateCommands(CommandEngine& e) {
   // Bounce: superseded by cmd_solidtools.cpp's real ray-bounce implementation
   // (RegisterSolidToolsCommands runs after this file, so it always won here
   // anyway; this stub was dead code that misreported Bounce as unimplemented).
-  Reg(e, "ContentFilter", Say("ContentFilter: render content filtering is planned; the Materials panel lists every material."), CommandStatus::Partial);
+  Reg(e, "ContentFilter", Say("ContentFilter: the Materials/Textures/Environments panels have no filtering UI (by usage, by type, or by search) - they simply list every entry in the document."), CommandStatus::Partial, "The Materials/Textures/Environments panels (RenderPanels.cpp) have no filter control to wire this into; it would need a real UI addition there, not just a stored flag.");
 
   // ---- gumball ------------------------------------------------------------
   Reg(e, "GumballAlignment", GumballChoice("GumballAlignment", {"CPlane", "World", "Object"}, [](Gumball::Settings& s) -> std::string& { return s.alignment; }), CommandStatus::Implemented, "Sets the widget's own drag/rotate/scale axes: World (identity), CPlane (the active viewport's construction plane), or Object (a single selected curve's start tangent or surface's normal, falling back to World otherwise).");
@@ -896,8 +896,8 @@ void RegisterStateCommands(CommandEngine& e) {
       if (vp->CaptureToFile(p, err)) ctx.Print(std::string(label) + ": image written to " + p + " (system clipboard images are planned)"); else ctx.Warn(err);
     });
   };
-  Reg(e, "ViewCaptureToClipboard", capture("ViewCaptureToClipboard"), CommandStatus::Partial, "Writes the capture to a file next to the settings.");
-  Reg(e, "ScreenCaptureToClipboard", capture("ScreenCaptureToClipboard"), CommandStatus::Partial, "Captures the active viewport to a file next to the settings.");
+  Reg(e, "ViewCaptureToClipboard", capture("ViewCaptureToClipboard"), CommandStatus::Partial, "There is no real system-clipboard image write here (that needs a platform-specific API - X11/Wayland selection ownership, the Win32 or Cocoa clipboard - which this GLFW-based app doesn't wire up, and X11's async selection protocol in particular doesn't survive a script exiting right after this command runs). Writes the capture to clipboard.bmp next to the settings instead.");
+  Reg(e, "ScreenCaptureToClipboard", capture("ScreenCaptureToClipboard"), CommandStatus::Partial, "Same limitation as ViewCaptureToClipboard: no real system-clipboard image write, so it captures the active viewport to a file next to the settings instead.");
 }
 
 }  // namespace dino8::app

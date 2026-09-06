@@ -785,7 +785,7 @@ s2check "HistoryPurge: no construction history is recorded; nothing to purge" "H
 s2check "HistoryUpdate: no construction history is recorded; nothing to update" "HistoryUpdate"
 s2check "[0-9]* attached reference model" "Worksession (cmd_session.cpp's real implementation, no longer shadowed)"
 s2check "LimitReferenceModel: 0 object(s) removed from 'nonexistent.3dm'" "LimitReferenceModel (cmd_session.cpp's real implementation, no longer shadowed)"
-s2check "ContentFilter: render content filtering is planned" "ContentFilter"
+s2check "ContentFilter: the Materials/Textures/Environments panels have no filtering UI" "ContentFilter"
 s2check "Dino 8 is free software. No licence keys" "Licenses"
 s2check "Dino 8 does not phone home" "CheckForUpdates"
 s2check "Support: open an issue at " "TechSupport"
