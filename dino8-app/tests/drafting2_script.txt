@@ -30,6 +30,12 @@ SurfaceFinish Value=1.6
 WeldSymbol Type=Fillet Side=Above
 30,30,0
 40,30,0
+WeldSymbol Type=Groove Side=Below
+50,30,0
+60,30,0
+WeldSymbol Type=Spot Side=Above
+70,30,0
+80,30,0
 # --- MultiLeader: two arrows, one landing, then text
 MultiLeader
 0,40,0
@@ -46,6 +52,10 @@ DimLinear
 0,-65,0
 SelLast
 DimTolerance Type=Symmetric Value=0.02
+SelLast
+DimTolerance Type=Symmetric Value=0.03
+SelLast
+GetUserText
 SelNone
 # --- BillOfMaterials over every real (non-annotation) object so far
 Box 0,-40,0 10,-30,0 5

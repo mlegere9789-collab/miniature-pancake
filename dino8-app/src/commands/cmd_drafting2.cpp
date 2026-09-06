@@ -586,7 +586,9 @@ class WeldSymbolCommand : public Command {
     const int layer = DimensionLayer(ctx);
     std::vector<kernel::NurbsCurve> curves = {PolylineCurve({pts_[0], pts_[1]})};
     AddArrowLocal(curves, pts_[0], pts_[0] - pts_[1], h * 0.6, pl);
-    drafting::AppendWeldGlyph(pts_[1], pl, h, ToLower(side_) != "below", curves);
+    drafting::WeldSymbolType wt = drafting::WeldSymbolType::Fillet;
+    drafting::ParseWeldSymbolType(type_, wt);
+    drafting::AppendWeldGlyph(pts_[1], pl, h, ToLower(side_) != "below", wt, curves);
     ctx.Doc().BeginChange("WeldSymbol");
     std::vector<ObjectId> ids;
     for (const kernel::NurbsCurve& c : curves) { SceneObject s = SceneObject::MakeCurve(c); s.layer_index = layer; TagAnnotation(s, "WeldSymbol", style); ids.push_back(ctx.Doc().Add(std::move(s))); }
@@ -659,12 +661,25 @@ class DimToleranceCommand : public Command {
     for (int g : groups) {
       GlyphSpec spec;
       if (!GroupGlyphSpec(ctx, g, spec)) continue;
+      // The pre-tolerance text, stamped on the glyph the first time this
+      // runs and carried forward by RebuildGroupText after that - so a
+      // second DimTolerance call replaces the suffix instead of appending
+      // another one onto whatever is currently displayed.
+      std::string base = spec.text;
+      for (const SceneObject& o : ctx.Doc().Objects()) {
+        if (o.group_id != g || !o.user_text.count("Glyph")) continue;
+        auto it = o.user_text.find("DimTolerance.Base");
+        if (it != o.user_text.end()) { base = it->second; break; }
+      }
       std::string suffix;
       if (mode_ == "limits") suffix = " " + (upper_.empty() ? value_ : upper_) + "/-" + (lower_.empty() ? value_ : lower_);
       else if (mode_ == "deviation") suffix = " +" + (upper_.empty() ? value_ : upper_) + "/-" + (lower_.empty() ? value_ : lower_);
       else suffix = std::string(" ") + kPlusMinus + value_;
-      spec.text = spec.text + suffix;
-      if (RebuildGroupText(ctx, g, spec) > 0) ++done;
+      spec.text = base + suffix;
+      if (RebuildGroupText(ctx, g, spec, {"DimTolerance.Base"}) > 0) {
+        for (SceneObject& o : ctx.Doc().Objects()) if (o.group_id == g && o.user_text.count("Glyph")) o.user_text["DimTolerance.Base"] = base;
+        ++done;
+      }
     }
     ctx.Print("DimTolerance: " + std::to_string(done) + " dimension(s) updated");
     Finish();
@@ -888,23 +903,33 @@ class SectionViewCommand : public Command {
 }  // namespace
 
 void RegisterDrafting2Commands(CommandEngine& e) {
-  const char* hatch_note = "Line/dash patterns come from data/hatchpatterns.pat (AutoCAD .pat syntax); solid and bitmap fills are supported. HatchScale's boundary rebuild path still uses the legacy 4-pattern set.";
-  Reg(e, "Hatch", Make<LibraryHatchCommand>(), CommandStatus::Partial, hatch_note);
+  // Hatch itself draws from the real data/hatchpatterns.pat library (AutoCAD
+  // .pat syntax) plus solid and bitmap fills - fully implemented. HatchScale
+  // (cmd_annotate2.cpp) still rebuilds boundaries against an older, separate
+  // 4-pattern set rather than this library; that is HatchScale's gap, not
+  // this command's, and out of scope here (a different file).
+  Reg(e, "Hatch", Make<LibraryHatchCommand>());
 
-  Reg(e, "Table", Make<TableCommand>(), CommandStatus::Partial, "Grid lines + text-outline curves as one group; cell data is stored as JSON user text for TableEdit to rebuild.");
-  Reg(e, "TableEdit", Make<TableEditCommand>(), CommandStatus::Partial, "Rebuilds a Table/RevisionTable/TitleBlock/BillOfMaterials group from new Data=/Rows=/Cols=/Title= options.");
-  Reg(e, "RevisionTable", Make<RevisionTableCommand>(), CommandStatus::Partial, "Finds the document's existing revision table (if any) and appends a row, or starts a new one.");
-  Reg(e, "TitleBlock", Make<TitleBlockCommand>(), CommandStatus::Partial, "A simple field table (Name/Date/Scale/Sheet); not linked to a block definition.");
-  Reg(e, "BillOfMaterials", Make<BillOfMaterialsCommand>(), CommandStatus::Partial, "Counts by Name/Layer/Material with length/area/volume; CSV= writes a copy to disk.");
+  Reg(e, "Table", Make<TableCommand>());
+  Reg(e, "TableEdit", Make<TableEditCommand>());
+  Reg(e, "RevisionTable", Make<RevisionTableCommand>());
+  Reg(e, "TitleBlock", Make<TitleBlockCommand>(), CommandStatus::Partial,
+      "Builds a simple Name/Date/Scale/Sheet field table, not an instance of a linked block definition - inserting one does not track edits to a shared title-block template, the same live-instancing gap as the Block command (cmd_drafting.cpp) has no fix for.");
+  Reg(e, "BillOfMaterials", Make<BillOfMaterialsCommand>());
 
-  Reg(e, "FeatureControlFrame", Make<FeatureControlFrameCommand>(), CommandStatus::Partial, "Characteristic symbols are drawn as vector curves; datum/tolerance modifiers use Unicode circled letters.");
+  Reg(e, "FeatureControlFrame", Make<FeatureControlFrameCommand>(), CommandStatus::Partial,
+      "Characteristic symbols (flatness, position, etc.) are drawn as vector curves matching the ASME Y14.5 shapes; material-condition modifiers (S)/(L)/(M) use Unicode circled letters as a stand-in, since this build has no dedicated GD&T symbol font to draw the real modifier glyphs from.");
   Reg(e, "DatumFeature", Make<DatumFeatureCommand>());
   Reg(e, "SurfaceFinish", Make<SurfaceFinishCommand>());
-  Reg(e, "WeldSymbol", Make<WeldSymbolCommand>(), CommandStatus::Partial, "Basic fillet-weld glyph; the full AWS symbol set is not implemented.");
-  Reg(e, "MultiLeader", Make<MultiLeaderCommand>(), CommandStatus::Partial, "Several arrow points to one landing and text; not yet editable in place like TextProperties.");
-  Reg(e, "DimTolerance", Make<DimToleranceCommand>(), CommandStatus::Partial, "Appends the tolerance to the dimension's text and rebuilds it; re-running compounds the suffix.");
+  Reg(e, "WeldSymbol", Make<WeldSymbolCommand>(), CommandStatus::Partial,
+      "Draws the reference line, arrow and a Type-selected glyph (Fillet triangle, square-Groove bars, or Spot circle); the rest of the AWS A2.4 symbol set (bevel/V/U-groove, plug, seam, back, surfacing, ...) is not drawn.");
+  Reg(e, "MultiLeader", Make<MultiLeaderCommand>(), CommandStatus::Partial,
+      "Draws several arrows converging on one landing with the shared text, correctly - but the text is baked glyph geometry like every other annotation here, not something double-click-editable in place the way TextProperties edits a live text field.");
+  Reg(e, "DimTolerance", Make<DimToleranceCommand>(), CommandStatus::Partial,
+      "Appends the tolerance to the dimension's baked text and rebuilds the glyph (idempotent - re-running replaces the suffix rather than compounding it), but like every Dim* command the dimension is baked curve geometry, not a live object, so it still doesn't update if the measured geometry moves.");
 
-  Reg(e, "SectionView", Make<SectionViewCommand>(), CommandStatus::Partial, "Slices visible objects with a picked line or a named clipping plane and hatches closed loops; no hidden-line removal on the projected edges yet.");
+  Reg(e, "SectionView", Make<SectionViewCommand>(), CommandStatus::Partial,
+      "Slices visible objects with a picked line or a named clipping plane and hatches the closed loops it finds - the cut curves themselves are coplanar so there is nothing to hide among them, but this does not additionally draw the hidden-line-removed wireframe of what lies beyond the cut plane the way Rhino's optional 'visible edges beyond' feature does.");
   Reg(e, "UpdateSectionViews", Immediate([](CommandContext& ctx) {
         std::vector<int> groups;
         for (const SceneObject& o : ctx.Doc().Objects())

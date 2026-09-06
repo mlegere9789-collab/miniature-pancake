@@ -35,9 +35,15 @@ void AppendGdtGlyph(GdtSymbol symbol, kernel::Point3d origin, const ON_Plane& pl
 // only draws the circle) at `origin`, `size` tall.
 void AppendModifierCircle(kernel::Point3d origin, const ON_Plane& plane, double size, std::vector<kernel::NurbsCurve>& out);
 
-// Basic weld symbol glyph (fillet weld triangle) sitting on the reference
-// line, `size` tall, above (`above=true`) or below the line.
-void AppendWeldGlyph(kernel::Point3d origin, const ON_Plane& plane, double size, bool above, std::vector<kernel::NurbsCurve>& out);
+// Weld symbol type: which AWS A2.4-style glyph sits on the reference line.
+enum class WeldSymbolType { Fillet, Groove, Spot };
+bool ParseWeldSymbolType(const std::string& text, WeldSymbolType& out);
+
+// Weld symbol glyph (fillet triangle / square-groove rectangle / spot
+// circle) sitting on the reference line, `size` tall, above (`above=true`)
+// or below the line.
+void AppendWeldGlyph(kernel::Point3d origin, const ON_Plane& plane, double size, bool above, WeldSymbolType type,
+                     std::vector<kernel::NurbsCurve>& out);
 
 // Surface-finish (machining) checkmark glyph, `size` tall, apex at `origin`.
 void AppendSurfaceFinishGlyph(kernel::Point3d origin, const ON_Plane& plane, double size, std::vector<kernel::NurbsCurve>& out);

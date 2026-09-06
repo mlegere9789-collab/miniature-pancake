@@ -906,8 +906,13 @@ d2check "FeatureControlFrame: Position 0.1 | A,B" "FeatureControlFrame built a f
 d2check "DatumFeature: 'A'" "DatumFeature labelled the datum"
 d2check "SurfaceFinish: Ra 1.6" "SurfaceFinish recorded the roughness value"
 d2check "WeldSymbol: Fillet (Above)" "WeldSymbol drew the fillet glyph"
+d2check "WeldSymbol: Groove (Below)" "WeldSymbol drew the groove glyph"
+d2check "WeldSymbol: Spot (Above)" "WeldSymbol drew the spot glyph"
 d2check "MultiLeader: 2 arrow(s), \"Note\"" "MultiLeader built two arrows to one landing"
-d2check "DimTolerance: 1 dimension(s) updated" "DimTolerance appended a tolerance to the dimension"
+D2_DIMTOL_COUNT=$(echo "$D2" | grep -c "DimTolerance: 1 dimension(s) updated")
+if [ "$D2_DIMTOL_COUNT" = "2" ]; then echo "ok   DimTolerance ran twice, each updating the dimension"; else echo "FAIL DimTolerance ran twice, each updating the dimension"; fail=1; fi
+d2check "Text = .*0\.03" "the rebuilt dimension text carries the second (0.03) tolerance"
+if echo "$D2" | grep -q "Text = .*0\.02.*0\.03\|Text = .*0\.03.*0\.02.*0\.02"; then echo "FAIL DimTolerance compounded the suffix on the second run"; fail=1; else echo "ok   DimTolerance did not compound the suffix on the second run"; fi
 d2check "BillOfMaterials: " "BillOfMaterials built a table over the scene objects"
 d2check "SectionView: " "SectionView sliced the box"
 d2check "UpdateSectionViews: 1 section view(s) regenerated" "UpdateSectionViews rebuilt the section from its stored plane"

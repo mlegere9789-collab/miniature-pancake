@@ -146,8 +146,13 @@ inline int AddAnnotationGroup(CommandContext& ctx, const std::string& kind, cons
 }
 
 // Replaces the glyph curves of an annotation group with a rebuilt text.
+// `extra_keys` names additional user_text keys to carry over unchanged from
+// the old glyph to the new one (beyond "Annotation"/"Style", always kept) -
+// e.g. a command that stamps its own state onto the glyph (DimTolerance's
+// pre-tolerance base text) so a second run can read it back instead of
+// compounding onto whatever text is currently displayed.
 // Returns the number of glyph curves made.
-inline int RebuildGroupText(CommandContext& ctx, int group_id, const GlyphSpec& g) {
+inline int RebuildGroupText(CommandContext& ctx, int group_id, const GlyphSpec& g, const std::vector<std::string>& extra_keys = {}) {
   std::vector<ObjectId> old;
   int layer = -1;
   std::map<std::string, std::string> tags;
@@ -156,6 +161,7 @@ inline int RebuildGroupText(CommandContext& ctx, int group_id, const GlyphSpec& 
     old.push_back(o.id);
     layer = o.layer_index;
     for (const char* k : {"Annotation", "Style"}) { auto it = o.user_text.find(k); if (it != o.user_text.end()) tags[k] = it->second; }
+    for (const std::string& k : extra_keys) { auto it = o.user_text.find(k); if (it != o.user_text.end()) tags[k] = it->second; }
   }
   if (old.empty()) return 0;
   for (ObjectId id : old) ctx.Doc().Remove(id);

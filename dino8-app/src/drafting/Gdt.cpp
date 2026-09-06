@@ -177,9 +177,36 @@ void AppendModifierCircle(kernel::Point3d origin, const ON_Plane& plane, double 
   out.push_back(Arc(origin, size * 0.55, 0, 360, plane));
 }
 
-void AppendWeldGlyph(kernel::Point3d origin, const ON_Plane& plane, double size, bool above, std::vector<kernel::NurbsCurve>& out) {
+bool ParseWeldSymbolType(const std::string& text, WeldSymbolType& out) {
+  std::string t = text;
+  for (char& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  if (t == "fillet") { out = WeldSymbolType::Fillet; return true; }
+  if (t == "groove" || t == "squaregroove" || t == "square") { out = WeldSymbolType::Groove; return true; }
+  if (t == "spot" || t == "plug") { out = WeldSymbolType::Spot; return true; }
+  return false;
+}
+
+void AppendWeldGlyph(kernel::Point3d origin, const ON_Plane& plane, double size, bool above, WeldSymbolType type,
+                     std::vector<kernel::NurbsCurve>& out) {
   const double s = above ? 1.0 : -1.0;
-  out.push_back(Poly({origin, origin + plane.xaxis * size, origin + plane.yaxis * (size * s), origin}));
+  switch (type) {
+    case WeldSymbolType::Fillet:
+      // AWS A2.4 fillet weld: a right triangle, vertical leg on the reference line.
+      out.push_back(Poly({origin, origin + plane.xaxis * size, origin + plane.yaxis * (size * s), origin}));
+      break;
+    case WeldSymbolType::Groove: {
+      // Square-groove weld: two parallel bars square to the reference line.
+      const kernel::Point3d a = origin, b = origin + plane.yaxis * (size * s);
+      out.push_back(Poly({a, b}));
+      const kernel::Point3d a2 = origin + plane.xaxis * (size * 0.3), b2 = a2 + plane.yaxis * (size * s);
+      out.push_back(Poly({a2, b2}));
+      break;
+    }
+    case WeldSymbolType::Spot:
+      // Spot/plug weld: a circle straddling the reference line.
+      out.push_back(Arc(origin + plane.yaxis * (size * 0.5 * s), size * 0.5, 0, 360, plane));
+      break;
+  }
 }
 
 void AppendSurfaceFinishGlyph(kernel::Point3d origin, const ON_Plane& plane, double size, std::vector<kernel::NurbsCurve>& out) {
