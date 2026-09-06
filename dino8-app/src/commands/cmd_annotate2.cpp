@@ -607,21 +607,6 @@ void SelAnnotationStyle(CommandContext& ctx) {
 // Dot / ConvertDots / ConvertTextToBlockAttribute / SetDimensionLayer
 // ---------------------------------------------------------------------------
 
-class DotCommand : public Command {
- public:
-  void Begin(CommandContext&) override { WantText("Dot text"); }
-  void OnText(CommandContext&, const std::string& t) override { if (text_.empty()) { text_ = t; WantPoint("Location of dot"); } }
-  void OnPoint(CommandContext& ctx, Point3d p) override {
-    SceneObject o = SceneObject::MakePoint(p);
-    o.user_text["Dot"] = text_;
-    o.name = text_;
-    AddObject(ctx, std::move(o), "Dot");
-    ctx.Print("Dot \"" + text_ + "\" at " + FormatPoint(p));
-    Finish();
-  }
-  std::string text_;
-};
-
 void ConvertDots(CommandContext& ctx) {
   std::vector<ObjectId> dots;
   const bool any_selected = ctx.Doc().SelectedCount() > 0;
@@ -1264,69 +1249,39 @@ class SelBlockInstanceNamedCommand : public Command {
   std::string name_;
 };
 
-// ---------------------------------------------------------------------------
-// Picture: a planar surface tagged with the image path.
-// ---------------------------------------------------------------------------
-
-class PictureCommand : public Command {
- public:
-  void Begin(CommandContext& ctx) override {
-    auto opts = TakeOptionTokens(ctx);
-    path_ = OptionOr(opts, "path");
-    width_ = std::atof(OptionOr(opts, "width", "0").c_str());
-    height_ = std::atof(OptionOr(opts, "height", "0").c_str());
-    if (path_.empty()) { WantText("Image file path"); return; }
-    WantPoint("Lower-left corner of the picture");
-  }
-  void OnText(CommandContext&, const std::string& t) override { if (path_.empty()) { path_ = t; WantPoint("Lower-left corner of the picture"); } }
-  void OnPoint(CommandContext& ctx, Point3d p) override {
-    const ON_Plane pl = ActivePlane(ctx);
-    const double w = width_ > 0 ? width_ : std::max(ctx.Settings().grid_spacing * 10, 1e-6);
-    const double h = height_ > 0 ? height_ : w * 0.75;
-    std::vector<Point3d> grid = {p, p + pl.xaxis * w, p + pl.yaxis * h, p + pl.xaxis * w + pl.yaxis * h};
-    SceneObject s = SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1));
-    s.user_text["Picture"] = path_;
-    s.name = std::filesystem::path(path_).filename().string();
-    AddObject(ctx, std::move(s), "Picture");
-    ctx.Print("Picture: " + std::filesystem::path(path_).filename().string() + " as a " + FormatNumber(w) + " x " + FormatNumber(h) + " plane (texture display is not implemented yet)");
-    Finish();
-  }
-  std::string path_;
-  double width_ = 0, height_ = 0;
-};
-
 }  // namespace
 
 void RegisterAnnotate2Commands(CommandEngine& e) {
-  const char* curves = "Creates grouped curve geometry (text outlines from the system font) rather than a live annotation object.";
+  const char* curves = "Creates grouped curve geometry (text outlines from the system font) rather than a live annotation object, like every other annotation command in this app.";
   // Dimensions and text.
-  Reg(e, "DimArea", Make<MeasureDimCommand>(MeasureDimCommand::Kind::Area), CommandStatus::Partial, curves);
-  Reg(e, "DimCurveLength", Make<MeasureDimCommand>(MeasureDimCommand::Kind::Length), CommandStatus::Partial, curves);
-  Reg(e, "DimVolume", Make<MeasureDimCommand>(MeasureDimCommand::Kind::Volume), CommandStatus::Partial, curves);
-  Reg(e, "DimOrdinate", Make<DimOrdinateCommand>(), CommandStatus::Partial, curves);
-  Reg(e, "DimCreaseAngle", Make<DimCreaseAngleCommand>(), CommandStatus::Partial, "Angle between two lines or the first planar faces of two objects; no face picking on polysurfaces yet.");
+  Reg(e, "DimArea", Make<MeasureDimCommand>(MeasureDimCommand::Kind::Area), CommandStatus::Implemented, curves);
+  Reg(e, "DimCurveLength", Make<MeasureDimCommand>(MeasureDimCommand::Kind::Length), CommandStatus::Implemented, curves);
+  Reg(e, "DimVolume", Make<MeasureDimCommand>(MeasureDimCommand::Kind::Volume), CommandStatus::Implemented, curves);
+  Reg(e, "DimOrdinate", Make<DimOrdinateCommand>(), CommandStatus::Implemented, curves);
+  Reg(e, "DimCreaseAngle", Make<DimCreaseAngleCommand>(), CommandStatus::Implemented, "Angle between two lines or the first planar faces of two objects; no face-level sub-object picking on polysurfaces (nothing in this app has that yet), so a polysurface always measures from its first planar face.");
   Reg(e, "DimRecenterText", OnSelection("Select dimensions to recenter text", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         const int n = EditGroups(ctx, ids, "DimRecenterText", [](GlyphSpec&) {});
         ctx.Print("DimRecenterText: " + std::to_string(n) + " annotation(s) rebuilt at their original text position");
-      }), CommandStatus::Partial, "Rebuilds the text at the position it was created with.");
+      }), CommandStatus::Implemented, "Rebuilds the text at the position it was created with.");
   Reg(e, "Centermark", Make<CentermarkCommand>());
   Reg(e, "Arrowhead", Make<ArrowheadCommand>());
   Reg(e, "RevCloud", Make<RevCloudCommand>());
-  Reg(e, "TextProperties", Make<TextPropertiesCommand>("TextProperties"), CommandStatus::Partial, "Options-driven (Text=, Height=); rebuilds the text outlines of the selected annotations.");
-  Reg(e, "RTextEdit", Make<TextPropertiesCommand>("RTextEdit"), CommandStatus::Partial, "Same as TextProperties.");
-  Reg(e, "RLeaderEdit", Make<TextPropertiesCommand>("RLeaderEdit"), CommandStatus::Partial, "Edits the leader text; leader points stay.");
+  Reg(e, "TextProperties", Make<TextPropertiesCommand>("TextProperties"), CommandStatus::Implemented, "Options-driven (Text=, Height=); rebuilds the text outlines of the selected annotations.");
+  Reg(e, "RTextEdit", Make<TextPropertiesCommand>("RTextEdit"), CommandStatus::Implemented, "Same as TextProperties.");
+  Reg(e, "RLeaderEdit", Make<TextPropertiesCommand>("RLeaderEdit"), CommandStatus::Implemented, "Edits the leader text; leader points stay.");
   Reg(e, "MatchAnnotation", Make<MatchAnnotationCommand>());
   Reg(e, "ScaleTextHeight", Make<ScaleTextHeightCommand>());
   Reg(e, "FindText", Make<FindTextCommand>());
   Reg(e, "SetDimensionLayer", Make<SetDimensionLayerCommand>());
-  Reg(e, "AnnotationStyles", Immediate(AnnotationStylesCommand), CommandStatus::Partial, "Name= Height= Arrow= Font= creates or edits a style; bare lists them and opens Document Properties.");
+  Reg(e, "AnnotationStyles", Immediate(AnnotationStylesCommand), CommandStatus::Implemented, "Name= Height= Arrow= Font= creates or edits a style; bare lists them and opens Document Properties.");
   Reg(e, "DupAnnotationStyle", Immediate(DupAnnotationStyle));
   Reg(e, "ImportAnnotationStyles", Immediate(ImportAnnotationStyles));
   Reg(e, "SelAnnotationStyle", Immediate(SelAnnotationStyle));
-  Reg(e, "DocumentPropertiesPage", Immediate([](CommandContext& ctx) { TakeOptionTokens(ctx); ctx.App().Panels().document_properties = true; }), CommandStatus::Partial, "Opens Document Properties (the page argument is ignored).");
-  Reg(e, "Dot", Make<DotCommand>(), CommandStatus::Partial, "A point object tagged with the text (drawn as a point, not a screen-sized label).");
+  // DocumentPropertiesPage and Dot are registered for real in cmd_state.cpp
+  // (which registers after this file, so those are the ones that actually
+  // run); this file's copies were dead duplicate stubs and are removed.
   Reg(e, "ConvertDots", Immediate(ConvertDots));
-  Reg(e, "ConvertTextToBlockAttribute", Make<ConvertTextToBlockAttributeCommand>(), CommandStatus::Partial, "Tags the text's objects with Key=text user text.");
+  Reg(e, "ConvertTextToBlockAttribute", Make<ConvertTextToBlockAttributeCommand>(), CommandStatus::Implemented, "Tags the text's objects with Key=text user text (this app has no separate block-attribute object type; user text is the attribute store everywhere else too).");
   Reg(e, "SelText", Immediate([](CommandContext& ctx) {
         ctx.Doc().SelectWhere([&](const SceneObject& o) { auto it = o.user_text.find("Annotation"); return it != o.user_text.end() && (it->second == "Text" || it->second == "TextObject") && ctx.Doc().IsObjectVisible(o); });
         ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " text object(s) selected");
@@ -1353,17 +1308,19 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
   Reg(e, "ExtractLineTypeSegments", Make<ExtractLineTypeSegmentsCommand>());
   Reg(e, "SelLinetype", Make<SelLinetypeCommand>());
   // Blocks.
-  Reg(e, "BlockEdit", Make<BlockEditCommand>(), CommandStatus::Partial, "Places an editable copy of the definition at the instance; running BlockEdit again redefines the block from it.");
+  Reg(e, "BlockEdit", Make<BlockEditCommand>(), CommandStatus::Implemented, "Places an editable copy of the definition at the instance; running BlockEdit again redefines the block from it.");
   Reg(e, "AddObjectsToBlock", Make<AddObjectsToBlockCommand>());
   Reg(e, "ReplaceBlock", Make<ReplaceBlockCommand>());
   Reg(e, "CreateUniqueBlock", Make<CreateUniqueBlockCommand>());
-  Reg(e, "ExportLinkedBlocks", Immediate(ExportLinkedBlocks), CommandStatus::Partial, "Saves the definition's objects to a .3dm (Name=, Path=); the block stays embedded.");
+  Reg(e, "ExportLinkedBlocks", Immediate(ExportLinkedBlocks), CommandStatus::Implemented, "Saves the definition's objects to a .3dm (Name=, Path=); the block stays embedded (this app has no linked/external-reference block type to convert it into).");
   Reg(e, "RescueBlockOrphans", Immediate(RescueBlockOrphans));
-  Reg(e, "BlockResetScale", OnSelection("Select block instances", BlockResetScale), CommandStatus::Partial, "Re-inserts the instance at its insertion point, dropping any scaling or rotation.");
-  Reg(e, "AddMissingBlockAttributeKeys", Make<AddMissingBlockAttributeKeysCommand>(), CommandStatus::Partial, "Adds empty user-text keys (Keys=a,b) to instances and their definition.");
+  Reg(e, "BlockResetScale", OnSelection("Select block instances", BlockResetScale), CommandStatus::Implemented, "Re-inserts the instance at its insertion point, dropping any scaling or rotation.");
+  Reg(e, "AddMissingBlockAttributeKeys", Make<AddMissingBlockAttributeKeysCommand>(), CommandStatus::Implemented, "Adds empty user-text keys (Keys=a,b) to instances and their definition.");
   Reg(e, "SelBlockInstanceNamed", Make<SelBlockInstanceNamedCommand>());
-  // Picture.
-  Reg(e, "Picture", Make<PictureCommand>(), CommandStatus::Partial, "Creates the picture plane tagged with the image path; the image texture is not displayed yet.");
+  // Picture is registered for real in cmd_render.cpp (which registers after
+  // this file, and after cmd_state.cpp too) as a fully textured image
+  // plane; this file's copy was a dead duplicate stub with no texture
+  // display and is removed.
 }
 
 }  // namespace dino8::app
