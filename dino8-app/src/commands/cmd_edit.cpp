@@ -326,15 +326,34 @@ void RegisterEditCommands(CommandEngine& e) {
         for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) { kernel::Interval d = o->curve->Domain(); double len = d.max - d.min; o->curve->Extend(d.min - len * 0.1, d.max + len * 0.1); o->InvalidateDisplay(); } }
       }), CommandStatus::Partial, "Extends both ends by 10% of the domain; picking the extension is planned.");
   Reg(e, "MakePeriodic", OnSelection("Select curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        // A closed clamped curve becomes a periodic uniform curve through the
+        // same control points (like Rhino's Smooth=Yes: the shape relaxes
+        // slightly but the seam becomes smooth). Only re-knotting the clamped
+        // CVs, as before, tore the curve open at the seam.
         ctx.Doc().BeginChange("MakePeriodic");
-        for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) { o->curve->raw().MakePeriodicUniformKnotVector(); o->InvalidateDisplay(); } }
-      }), CommandStatus::Partial);
+        int made = 0;
+        for (ObjectId id : ids) {
+          SceneObject* o = ctx.Doc().Find(id);
+          if (!o || o->kind != ObjectKind::Curve) continue;
+          ON_NurbsCurve& c = o->curve->raw();
+          if (c.IsPeriodic()) { ++made; continue; }
+          const int order = c.Order();
+          int n = c.CVCount();
+          if (c.IsClosed() && n > order) --n;  // the duplicated seam CV
+          if (n < order) continue;
+          std::vector<ON_3dPoint> cvs;
+          for (int i = 0; i < n; ++i) { ON_3dPoint p; c.GetCV(i, p); cvs.push_back(p); }
+          ON_NurbsCurve periodic;
+          if (periodic.CreatePeriodicUniformNurbs(3, order, n, cvs.data())) { c = periodic; o->InvalidateDisplay(); ++made; }
+        }
+        ctx.Print("MakePeriodic: " + std::to_string(made) + " curve(s) made periodic");
+      }), CommandStatus::Partial, "Uses the curve's control points as the periodic control polygon (Smooth=Yes).");
   Reg(e, "Weight", OnSelection("Select curves or surfaces to make rational", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Weight");
         for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) o->curve->MakeRational(); else if (o && o->kind == ObjectKind::Surface) o->surface->MakeRational(); }
       }), CommandStatus::Partial, "Makes objects rational; per-point weight editing is planned.");
-  Reg(e, "PointsOn", OnSelection("Select objects to turn on control points", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->show_control_points = true; o->InvalidateDisplay(); } }));
-  Reg(e, "PointsOff", Immediate([](CommandContext& ctx) { for (SceneObject& o : ctx.Doc().Objects()) if (o.show_control_points) { o.show_control_points = false; o.InvalidateDisplay(); } }));
+  Reg(e, "PointsOn", OnSelection("Select objects to turn on control points", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->show_control_points = true; o->InvalidateDisplay(); } ctx.Print("Control points on for " + std::to_string(ids.size()) + " object(s)"); }));
+  Reg(e, "PointsOff", Immediate([](CommandContext& ctx) { int n = 0; for (SceneObject& o : ctx.Doc().Objects()) if (o.show_control_points) { o.show_control_points = false; o.InvalidateDisplay(); ++n; } ctx.Print("Control points off (" + std::to_string(n) + " object(s))"); }));
   Reg(e, "SolidPtOn", OnSelection("Select polysurfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->show_control_points = true; o->InvalidateDisplay(); } }), CommandStatus::Partial);
   Reg(e, "InsertKnot", OnSelection("Select curves or surfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("InsertKnot");

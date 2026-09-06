@@ -45,7 +45,10 @@ class MacroRunCommand : public Command {
   void Begin(CommandContext&) override { WantText("Macro (commands separated by ';')"); }
   void OnText(CommandContext& ctx, const std::string& t) override {
     Finish();
-    std::istringstream in(t);
+    // "Macro Line 0,0,0 10,0,0;SelAll": the rest of the typed line belongs to the macro too.
+    std::string text = t;
+    while (auto tok = ctx.Engine().TakePendingInput()) text += " " + *tok;
+    std::istringstream in(text);
     std::string part;
     while (std::getline(in, part, ';')) if (!part.empty()) ctx.Engine().Execute(part);
   }
@@ -174,7 +177,8 @@ void RegisterMiscCommands(CommandEngine& e) {
           while (std::getline(in, line)) if (!line.empty() && line[0] != '#') app.Engine().Execute(line);
         });
       }));
-  Reg(e, "Repeat", Immediate([](CommandContext& ctx) { ctx.Engine().RepeatLast(); }));
+  // Runs after Repeat itself has finished (Execute defers while a command runs); Repeat is never recorded as the last command.
+  Reg(e, "Repeat", Immediate([](CommandContext& ctx) { if (!ctx.Engine().LastCommand().empty()) ctx.Engine().Execute(ctx.Engine().LastCommand()); }));
   Reg(e, "Snap", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().grid_snap; }, "Grid snap"));
   Reg(e, "Ortho", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().ortho; }, "Ortho"));
   Reg(e, "Planar", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().planar; }, "Planar"));

@@ -1,0 +1,237 @@
+# Editing QC: Join/Explode/Rebuild/ChangeDegree/Offset/Extend/Flip/Dir/MakePeriodic/
+# Weight/InsertKnot/PointsOn/SetObjectName/Group/Hide/Lock/clipboard/Undo (see smoke.sh).
+SetActiveViewport Top
+# --- Join two lines that meet at 10,0,0 into one polycurve, then Explode it again
+Line 0,0,0 10,0,0
+Line 10,0,0 10,10,0
+SelAll
+Join
+@expect_objects 1
+SelAll
+List
+Explode
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0
+# --- Join three surfaces of an exploded box back into a polysurface
+Box 0,0,0 10,10,0 10
+SelAll
+Explode
+@expect_objects 6
+SelAll
+Join
+@expect_objects 1
+SelAll
+List
+Delete
+# --- Rebuild a circle with 12 points of degree 2 (the Degree option is typed before the count)
+Circle 0,0,0 10
+SelLast
+Rebuild Degree=2 12
+SelLast
+List
+Delete
+# --- ChangeDegree raises a line to degree 2, Weight makes it rational, InsertKnot adds a CV at the middle
+Line 0,0,0 10,0,0
+SelLast
+ChangeDegree
+SelLast
+List
+Weight
+SelLast
+List
+Delete
+Line 0,0,0 10,0,0
+SelLast
+InsertKnot
+SelLast
+List
+Delete
+# --- Offset a line towards a side point and a circle inwards (concentric)
+Line 0,0,0 10,0,0
+SelLast
+Offset Distance=2 0,5,0
+@expect_objects 2
+SelLast
+List
+SelAll
+Delete
+Circle 50,0,0 5
+SelLast
+Offset Distance=2 50,0,0
+SelLast
+List
+SelAll
+Delete
+Line 0,0,0 10,0,0
+SelLast
+Offset Distance=3 BothSides=Yes 0,5,0
+@expect_objects 3
+SelAll
+Delete
+# --- Extend grows both ends by 10%, Flip reverses (Dir reports start and tangent), MakePeriodic on a closed curve
+Line 0,0,0 10,0,0
+SelLast
+Extend
+SelLast
+List
+Dir
+Flip
+SelLast
+Dir
+Delete
+Circle 0,0,0 10
+SelLast
+MakePeriodic
+SelLast
+List
+Delete
+# --- SetObjectName + SelName, PointsOn / PointsOff / SolidPtOn
+Line 0,0,0 10,0,0
+Line 0,5,0 10,5,0
+Point 20,20,0
+SelAll
+SetObjectName
+SelNone
+SelPt
+SelName
+@expect_selected 1
+SelNone
+SelCrv
+PointsOn
+PointsOff
+SelNone
+SelAll
+SolidPtOn
+PointsOff
+SelNone
+# --- Groups: Group, SelGroup, AddToGroup, RemoveFromGroup, Ungroup
+SelCrv
+Group
+SelNone
+SelGroup
+@expect_selected 2
+SelPt
+AddToGroup
+SelNone
+SelGroup
+@expect_selected 3
+SelNone
+SelPt
+RemoveFromGroup
+SelNone
+SelGroup
+@expect_selected 2
+Ungroup
+SelNone
+SelGroup
+@expect_selected 0
+# --- Hide / Show / ShowSelected / HideSwap / Isolate / Unisolate
+SelNone
+SelPt
+Hide
+SelAll
+@expect_selected 2
+SelNone
+SelHidden
+@expect_selected 1
+SelNone
+Show
+SelAll
+@expect_selected 3
+SelNone
+SelPt
+Hide
+ShowSelected
+@expect_selected 1
+SelNone
+SelPt
+Hide
+HideSwap
+SelAll
+@expect_selected 1
+SelNone
+HideSwap
+SelAll
+@expect_selected 2
+SelNone
+Show
+SelNone
+SelPt
+Isolate
+SelAll
+@expect_selected 1
+SelNone
+Unisolate
+SelAll
+@expect_selected 3
+SelNone
+# --- Lock / Unlock / UnlockSelected / LockSwap / SelLocked
+SelPt
+Lock
+SelAll
+@expect_selected 2
+SelNone
+SelLocked
+@expect_selected 1
+SelNone
+Unlock
+SelAll
+@expect_selected 3
+SelNone
+SelPt
+Lock
+SelNone
+UnlockSelected
+@expect_selected 1
+SelNone
+SelPt
+Lock
+LockSwap
+SelAll
+@expect_selected 1
+SelNone
+Unlock
+SelNone
+# --- Clipboard: CopyToClipboard + Paste adds a copy, Cut removes and Paste restores
+SelPt
+CopyToClipboard
+Paste
+@expect_objects 4
+SelNone
+SelPt
+@expect_selected 2
+Delete
+@expect_objects 2
+SelCrv
+Cut
+@expect_objects 0
+Paste
+@expect_objects 2
+# --- Undo / Redo / UndoMultiple / RedoMultiple / ClearUndo
+SelAll
+Delete
+@expect_objects 0
+Undo
+@expect_objects 2
+Redo
+@expect_objects 0
+Undo
+UndoMultiple
+RedoMultiple
+ClearUndo
+Undo
+@expect_objects 2
+# --- user text and document user text
+SelAll
+Hyperlink https://example.org/edit
+GetUserText
+SetUserText
+SetDocumentUserText Project QC
+GetDocumentUserText
+DocumentUserText
+BoxEdit
+Properties
+ObjectProperties
+@expect_objects 2

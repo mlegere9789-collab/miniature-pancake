@@ -15,10 +15,13 @@ namespace dino8::app {
 // Kernel/OpenNURBS failures inside a command must never take the app down:
 // report them on the command line and end the command cleanly.
 #define DINO8_GUARD(expr)                                        \
-  try {                                                          \
-    expr;                                                        \
-  } catch (const std::exception& ex) {                           \
-    HandleCommandException(ex.what());                           \
+  {                                                              \
+    CallbackScope guard_scope_(*this);                           \
+    try {                                                        \
+      expr;                                                      \
+    } catch (const std::exception& ex) {                         \
+      HandleCommandException(ex.what());                         \
+    }                                                            \
   }
 
 using kernel::Point3d;
@@ -259,6 +262,19 @@ void CommandEngine::Execute(const std::string& raw_input) {
   while (start < input.size() && std::isspace(static_cast<unsigned char>(input[start]))) ++start;
   input.erase(0, start);
 
+  // A command that starts another command from inside one of its callbacks
+  // (Macro, SelRectangular, Insert, Circle's 3Point option...) must not have
+  // that line fed to itself as typed text (which used to make Macro recurse
+  // until the stack overflowed): queue it, with the tokens still pending for
+  // the current command, and run it once the callback has returned.
+  if (callback_depth_ > 0) {
+    std::string line = input;
+    for (const std::string& tok : pending_inputs_) line += " " + tok;
+    pending_inputs_.clear();
+    deferred_.push_back(line);
+    return;
+  }
+
   if (active_) {
     if (input.empty() || ToLower(input) == "enter" || input == "_Enter") FeedEnter();
     else if (ToLower(input) == "cancel" || ToLower(input) == "_cancel" || ToLower(input) == "!cancel") Cancel();
@@ -327,7 +343,7 @@ void CommandEngine::RunCommand(const std::string& name, bool script_mode) {
   ids_before_.clear();
   if (app_.State().check_new_objects) for (const SceneObject& o : doc_.Objects()) ids_before_.push_back(o.id);
   script_mode_ = script_mode;
-  last_command_ = r->name;
+  if (r->name != "Repeat") last_command_ = r->name;
   recent_.erase(std::remove(recent_.begin(), recent_.end(), r->name), recent_.end());
   recent_.insert(recent_.begin(), r->name);
   if (recent_.size() > 30) recent_.pop_back();
@@ -336,8 +352,26 @@ void CommandEngine::RunCommand(const std::string& name, bool script_mode) {
   AfterCallback();
 }
 
+void CommandEngine::RunDeferred() {
+  if (callback_depth_ > 0 || deferred_.empty()) return;
+  if (active_) {
+    // The running command handed over to the one it started (Circle 3Point
+    // -> Circle3Pt): end it quietly.
+    CommandContext ctx(app_, doc_, *this);
+    DINO8_GUARD(active_->OnCancel(ctx));
+    active_.reset();
+    active_name_.clear();
+    ClearPreview();
+    last_point_.reset();
+    pending_inputs_.clear();
+  }
+  std::vector<std::string> lines;
+  lines.swap(deferred_);
+  for (const std::string& line : lines) Execute(line);
+}
+
 void CommandEngine::AfterCallback() {
-  if (!active_) return;
+  if (!active_) { RunDeferred(); return; }
   if (active_->finished) {
     if (app_.State().check_new_objects && active_name_ != "CheckNewObjects") CheckNewObjects();
     active_.reset();
@@ -345,6 +379,7 @@ void CommandEngine::AfterCallback() {
     ClearPreview();
     last_point_.reset();
     pending_inputs_.clear();
+    RunDeferred();
     return;
   }
   // Pre-selection: a command asking for objects with objects already
@@ -361,6 +396,7 @@ void CommandEngine::AfterCallback() {
     active_->accept_preselection = false;
   }
   StartPendingInputs();
+  RunDeferred();
 }
 
 // CheckNewObjects: after a command finishes, validate every object it added

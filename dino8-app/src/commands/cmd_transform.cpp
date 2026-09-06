@@ -24,6 +24,14 @@ void ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_
   if (copy) ctx.Print("Copied " + std::to_string(made.size()) + " object(s)");
 }
 
+// "Copy=Yes" / "Copy=No" set the flag; a bare "Copy" (or a click) toggles it.
+bool CopyValue(const std::string& v, bool current) {
+  const std::string l = ToLower(v);
+  if (l == "yes" || l == "y" || l == "true" || l == "1") return true;
+  if (l == "no" || l == "n" || l == "false" || l == "0") return false;
+  return !current;
+}
+
 void PreviewXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Xform& xf) {
   ctx.ClearPreview();
   for (ObjectId id : ids) {
@@ -85,7 +93,7 @@ class RotateCommand : public Command {
     WantPoint("Center of rotation");
     options = {{"Copy", "No", {"Yes", "No"}, false, true}};
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string&) override { if (n == "Copy") { copy_ = !copy_; options[0].value = copy_ ? "Yes" : "No"; } }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Copy") { copy_ = CopyValue(v, copy_); options[0].value = copy_ ? "Yes" : "No"; } }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.SetLastPoint(p);
     if (!center_) { center_ = p; WantPoint("Angle or first reference point"); return; }
@@ -134,7 +142,7 @@ class ScaleCommand : public Command {
     WantPoint("Origin point");
     options = {{"Copy", "No", {"Yes", "No"}, false, true}};
   }
-  void OnOption(CommandContext&, const std::string& n, const std::string&) override { if (n == "Copy") { copy_ = !copy_; options[0].value = copy_ ? "Yes" : "No"; } }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Copy") { copy_ = CopyValue(v, copy_); options[0].value = copy_ ? "Yes" : "No"; } }
   void OnPoint(CommandContext& ctx, Point3d p) override {
     ctx.SetLastPoint(p);
     if (!origin_) { origin_ = p; WantPoint("Scale factor or first reference point"); return; }
@@ -144,7 +152,11 @@ class ScaleCommand : public Command {
     Apply(ctx, (p - *origin_).Length() / d0, p);
   }
   void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
-  void OnNumber(CommandContext& ctx, double f) override { if (origin_ && !ref_) Apply(ctx, f, *origin_ + Vector3d(1, 0, 0)); }
+  // Scale1D's default axis (no reference point picked) must be the active
+  // CPlane's X axis, not world X: in a Front/Right viewport those differ, and
+  // using world X silently no-ops the scale whenever the point lies on the
+  // CPlane's own X axis (as it does after Move/typed input in that view).
+  void OnNumber(CommandContext& ctx, double f) override { if (origin_ && !ref_) Apply(ctx, f, *origin_ + ActivePlane(ctx).xaxis); }
   ON_Xform Xform(CommandContext& ctx, double f, Point3d dir_point) {
     ON_Plane pl = ActivePlane(ctx);
     ON_Xform xf = ON_Xform::IdentityTransformation;
@@ -192,8 +204,8 @@ class MirrorCommand : public Command {
     WantPoint("Start of mirror plane");
     options = {{"Copy", "Yes", {"Yes", "No"}, false, true}, {"XAxis", "", {}, false, false}, {"YAxis", "", {}, false, false}};
   }
-  void OnOption(CommandContext& ctx, const std::string& n, const std::string&) override {
-    if (n == "Copy") { copy_ = !copy_; options[0].value = copy_ ? "Yes" : "No"; }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
+    if (n == "Copy") { copy_ = CopyValue(v, copy_); options[0].value = copy_ ? "Yes" : "No"; }
     if (n == "XAxis") { ON_Plane pl = ActivePlane(ctx); Apply(ctx, pl.origin, pl.origin + pl.xaxis); }
     if (n == "YAxis") { ON_Plane pl = ActivePlane(ctx); Apply(ctx, pl.origin, pl.origin + pl.yaxis); }
   }

@@ -1,0 +1,211 @@
+# Selection QC: every Sel* in cmd_select.cpp and cmd_select2.cpp (see smoke.sh).
+SetActiveViewport Top
+Line 0,0,0 10,0,0
+Line 20,0,0 20,5,0
+Circle 40,0,0 5
+Arc 60,0,0 60,5,0 65,0,0
+Box 0,20,0 10,30,0 10
+Sphere 40,20,10 5
+MeshBox 60,20,0 70,30,0 10
+Point 0,-10,0
+SelAll
+@expect_selected 8
+SelNone
+Invert
+@expect_selected 8
+SelNone
+SelPt
+@expect_selected 1
+SelNone
+SelCrv
+@expect_selected 4
+SelNone
+SelSrf
+@expect_selected 0
+SelNone
+SelPolysrf
+@expect_selected 2
+SelNone
+SelMesh
+@expect_selected 1
+SelNone
+SelClosedCrv
+@expect_selected 1
+SelNone
+SelOpenCrv
+@expect_selected 3
+SelNone
+SelClosedPolysrf
+@expect_selected 2
+SelNone
+SelOpenPolysrf
+@expect_selected 0
+SelNone
+SelClosedMesh
+@expect_selected 1
+SelNone
+SelOpenMesh
+@expect_selected 0
+SelNone
+SelLine
+@expect_selected 2
+SelNone
+SelPolyline
+@expect_selected 2
+SelNone
+SelCircle
+@expect_selected 1
+SelNone
+SelArc
+@expect_selected 1
+SelNone
+SelPlanarCrv
+@expect_selected 4
+SelNone
+SelPlanarSrf
+@expect_selected 0
+SelNone
+# --- name / id / layer / color
+SelID 1
+@expect_selected 1
+SelID
+SetObjectName
+SelName
+@expect_selected 1
+SelNone
+SelLayer
+@expect_selected 8
+SelNone
+NewLayer Extra
+Point 90,0,0
+SelLast
+SelLayerNumber 1
+@expect_selected 1
+SelNone
+SetLayer Default
+SelID 2
+SelColor
+@expect_selected 9
+SelNone
+# --- duplicates: two identical lines
+Line 100,0,0 110,0,0
+Line 100,0,0 110,0,0
+SelDup
+@expect_selected 1
+SelNone
+SelDupAll
+@expect_selected 2
+SelNone
+# --- visibility / lock
+SelID 1
+Hide
+SelHidden
+@expect_selected 1
+SelNone
+Show
+SelID 1
+Lock
+SelLocked
+@expect_selected 1
+SelNone
+Unlock
+SelNone
+# --- window / crossing select in the Top viewport
+SelWindow -1,-1,0 11,1,0
+@expect_selected 1
+SelNone
+SelCrossing -1,-1,0 11,1,0
+@expect_selected 1
+SelNone
+SelBox -1,-1,0 11,1,0
+@expect_selected 1
+SelNone
+SelRectangular -1,-1,0 11,1,0
+@expect_selected 1
+SelNone
+# Only Line 0,0,0-10,0,0 (center 5,0,0) and Point 0,-10,0 lie within 20 world
+# units of the origin; everything else (Line2 at ~20,2.5,0, and beyond) is
+# just outside or further away.
+SelCircular 0,0,0 20,0,0
+@expect_selected 2
+SelNone
+SelBrush 0,0,0 20,0,0
+@expect_selected 2
+SelNone
+# The fence rectangle spans x in [-5,25], y in [-5,10]: both lines' centers
+# fall inside it, but the point at 0,-10,0 does not.
+SelFence -5,-5,0 25,-5,0 25,10,0 -5,10,0
+Enter
+@expect_selected 2
+SelNone
+# --- group and chain selection
+SelID 1
+SelID 3
+Group
+SelNone
+SelGroup
+@expect_selected 2
+SelNone
+SelGroup
+Ungroup
+SelNone
+SelGroup
+@expect_selected 0
+SelNone
+# --- small / visible / boundary / selection filter
+SelSmall
+SelNone
+SelVisible
+SelNone
+SelBoundary
+@expect_selected 1
+SelNone
+SelectionFilter
+Cancel
+# --- volume selections
+SelVolumeSphere 0,0,0 15
+@expect_selected 2
+SelNone
+SelVolumePipe 0,0,0 15,0,0 3
+@expect_selected 1
+SelNone
+Point 40,20,10
+SelID 6
+SelVolumeObject
+@expect_selected 1
+SelNone
+# --- key/value user text
+SelID 1
+Hyperlink https://dino8.example/select
+SelNone
+SelKey Hyperlink
+@expect_selected 1
+SelNone
+SelValue https://dino8.example/select
+@expect_selected 1
+SelNone
+SelKeyValue Hyperlink https://dino8.example/select
+@expect_selected 1
+SelNone
+# --- selection filter toggles and sub-object placeholders
+SelectionFilterEdges
+SelectionFilterFaces
+SelectionFilterVertices
+SelectionFilterEnable
+SelectionFilterToggle
+SelectionFilterNone
+SelControlPoint
+SelEdgeLoop
+SelNonManifold
+# --- misc: SelLast, SelPrev, chain
+SelLast
+@expect_selected 1
+SelNone
+SelPrev
+SelID 1
+SelChain
+@expect_selected 1
+SelNone
+UngroupAll
+SelectionFilter
+Cancel

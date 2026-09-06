@@ -1,0 +1,144 @@
+# View QC: standard views, Zoom variants, display modes, NamedView Save/Restore,
+# 4View/3View/MaxViewport, CPlane commands, viewport cycling (see smoke.sh).
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Box 0,0,0 10,10,0 10
+SetActiveViewport Perspective
+Camera
+Enter
+# --- standard views set the projection and the CPlane of the active viewport
+Top
+Camera
+Enter
+Front
+Camera
+Enter
+Right
+Camera
+Enter
+Back
+Bottom
+Left
+Isometric
+Camera
+Enter
+Perspective
+Camera
+Enter
+Plan
+Camera
+Enter
+SetView
+TwoPointPerspective
+Camera
+Enter
+# --- Zoom: Extents / Selected / All / In / Out / Target / window; ZoomExtents* aliases
+SelAll
+ZoomSelected
+Camera
+Enter
+ZoomSelectedAll
+ZoomExtents
+ZoomExtentsAll
+Zoom In
+Camera
+Enter
+Zoom Out
+Camera
+Enter
+Zoom Target 20,20,0
+Camera
+Enter
+ZoomWindow 0,0,0 10,10,0
+Camera
+Enter
+Zoom Extents
+Zoom Selected
+Zoom All
+ZoomTarget 5,5,5
+Camera
+Enter
+SelNone
+# --- display modes (each prints the viewport's mode)
+Wireframe
+Shade
+ShadedViewport
+RenderedViewport
+GhostedViewport
+XRayViewport
+TechnicalViewport
+ArtisticViewport
+PenViewport
+ArcticViewport
+MonochromeViewport
+RayTracedViewport
+RenderPreview
+Wireframe
+RefreshShade
+ClearAllMeshes
+SetDisplayMode
+ViewportProperties
+# --- NamedView: save the current perspective, move the camera, restore it
+Perspective
+ZoomExtents
+Camera
+Enter
+NamedView Save Hero
+Top
+NamedView Restore Hero
+Camera
+Enter
+NamedView List
+NamedView Delete Hero
+NamedView List
+NamedView Restore Hero
+# --- camera moves: TiltView / Spin / Turntable / UndoView / RedoView / Pan / RotateView / RotateCamera
+TiltView
+Spin
+Camera
+Enter
+Turntable
+UndoView
+Camera
+Enter
+RedoView
+Pan
+RotateView
+RotateCamera
+# --- viewport layout and cycling
+3View
+SetActiveViewport Nope
+4View
+SetActiveViewport Nope
+NewViewport
+SetActiveViewport Top
+NextViewport
+SetActiveViewport Nope
+PrevViewport
+SetActiveViewport Nope
+MaxViewport
+MaxViewport
+# --- CPlane commands: typed coordinates go through the active CPlane
+SetActiveViewport Perspective
+CPlaneThroughPoint 0,0,5
+Point 0,0,0
+SelLast
+List
+CPlaneToWorld
+Point 0,0,0
+SelLast
+List
+Circle 0,0,20 5
+SelLast
+CPlaneToObject
+Point 0,0,0
+SelLast
+List
+CPlaneToWorld
+CPlaneToView
+Grid
+Grid
+GridOptions
+SelNone
+ViewCaptureToFile @TMP@/view.bmp
+ScreenCaptureToFile @TMP@/screen.bmp
+@expect_objects 5

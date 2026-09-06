@@ -1,6 +1,8 @@
 // Selection commands.
 #include "commands/cmd_common.h"
 
+#include <sstream>
+
 namespace dino8::app {
 
 namespace {
@@ -101,10 +103,19 @@ void RegisterSelectCommands(CommandEngine& e) {
         ctx.Doc().SelectNone();
         const auto& objs = ctx.Doc().Objects();
         int n = 0;
+        // Describe() embeds "ID: <n>", which is unique per object by
+        // construction, so comparing full descriptions never found a
+        // duplicate; drop that one line before comparing shape.
+        auto shape = [](const SceneObject& o) {
+          std::istringstream in(o.Describe());
+          std::string out, line;
+          while (std::getline(in, line)) if (line.find("ID:") == std::string::npos) out += line + "\n";
+          return out;
+        };
         for (size_t i = 0; i < objs.size(); ++i) for (size_t j = 0; j < i; ++j) {
           if (objs[i].kind != objs[j].kind) continue;
           kernel::BoundingBox a = objs[i].BoundingBox(), b = objs[j].BoundingBox();
-          if ((a.min - b.min).Length() < 1e-6 && (a.max - b.max).Length() < 1e-6 && objs[i].Describe() == objs[j].Describe()) { ctx.Doc().Select(objs[i].id, true); ++n; break; }
+          if ((a.min - b.min).Length() < 1e-6 && (a.max - b.max).Length() < 1e-6 && shape(objs[i]) == shape(objs[j])) { ctx.Doc().Select(objs[i].id, true); ++n; break; }
         }
         ctx.Print(std::to_string(n) + " duplicate(s) selected");
       }));
@@ -114,8 +125,11 @@ void RegisterSelectCommands(CommandEngine& e) {
         ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " small object(s) selected");
       }), CommandStatus::Partial, "Threshold is one grid unit.");
   Reg(e, "SelVisible", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([&](const SceneObject& o) { return ctx.Doc().IsObjectVisible(o); }); }));
-  Reg(e, "SelLocked", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([&](const SceneObject& o) { return ctx.Doc().IsObjectLocked(o); }); }));
-  Reg(e, "SelHidden", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([&](const SceneObject& o) { return !o.visible; }); }));
+  // Document::SelectWhere only ever selects visible, unlocked objects, so
+  // these two set the flag directly (they exist so Show/Unlock/Delete can
+  // act on a subset of the hidden or locked objects).
+  Reg(e, "SelLocked", Immediate([](CommandContext& ctx) { int n = 0; for (SceneObject& o : ctx.Doc().Objects()) { o.selected = ctx.Doc().IsObjectLocked(o); if (o.selected) ++n; } ctx.Print(std::to_string(n) + " locked object(s) selected"); }));
+  Reg(e, "SelHidden", Immediate([](CommandContext& ctx) { int n = 0; for (SceneObject& o : ctx.Doc().Objects()) { o.selected = !o.visible; if (o.selected) ++n; } ctx.Print(std::to_string(n) + " hidden object(s) selected"); }));
   Reg(e, "SelWindow", Make<SelWindowCommand>(false));
   Reg(e, "SelCrossing", Make<SelWindowCommand>(true));
   Reg(e, "SelBox", Make<SelWindowCommand>(false), CommandStatus::Partial, "Window selection in the active view.");

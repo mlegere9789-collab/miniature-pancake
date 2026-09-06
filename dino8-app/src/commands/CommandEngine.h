@@ -107,6 +107,15 @@ class CommandEngine {
   void StartPendingInputs();
   void HandleCommandException(const std::string& what);
   void AfterCallback();
+  void RunDeferred();
+  // Counts nesting into command callbacks so Execute() calls made by a
+  // running command (Macro, SelRectangular -> SelWindow, Circle 3Point ->
+  // Circle3Pt, ...) are deferred until that command has returned.
+  struct CallbackScope {
+    explicit CallbackScope(CommandEngine& e) : engine(e) { ++engine.callback_depth_; }
+    ~CallbackScope() { --engine.callback_depth_; }
+    CommandEngine& engine;
+  };
   bool TryParsePoint(const std::string& text, kernel::Point3d& out);
   bool TryOption(const std::string& text);
   std::string ResolveName(const std::string& typed) const;
@@ -124,6 +133,8 @@ class CommandEngine {
   std::vector<ObjectId> ids_before_;
   void CheckNewObjects();
   std::deque<std::string> pending_inputs_;  // extra tokens from a macro line
+  int callback_depth_ = 0;
+  std::vector<std::string> deferred_;       // command lines to run once the active command returns
   std::deque<std::string> history_;
   std::vector<std::string> recent_;
   std::string last_command_;

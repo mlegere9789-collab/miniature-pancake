@@ -10,8 +10,45 @@ CommandFactory SetView(const char* view) {
 }
 
 CommandFactory SetMode(DisplayMode mode) {
-  return Immediate([mode](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->SetMode(mode); });
+  return Immediate([mode](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) { vp->SetMode(mode); ctx.Print(vp->Name() + " display mode: " + DisplayModeName(mode)); } });
 }
+
+// NamedView: "NamedView Save name" / "Restore name" / "Delete name" / "List"
+// from the command line; with nothing typed it opens the Named Views panel.
+class NamedViewCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    auto action = ctx.Engine().TakePendingInput();
+    if (!action) { ctx.App().Panels().named_views = true; Finish(); return; }
+    const std::string a = ToLower(*action);
+    std::vector<NamedView>& views = ctx.Doc().NamedViews();
+    if (a == "list") {
+      ctx.Print(std::to_string(views.size()) + " named view(s)");
+      for (const NamedView& v : views) ctx.Print("  " + v.name + ": location " + FormatPoint(v.camera.eye) + ", target " + FormatPoint(v.camera.target));
+      Finish();
+      return;
+    }
+    auto name = ctx.Engine().TakePendingInput();
+    Viewport* vp = ctx.ActiveViewport();
+    if (!name || !vp) { ctx.Warn("NamedView: use Save <name>, Restore <name>, Delete <name> or List"); Finish(); return; }
+    auto it = std::find_if(views.begin(), views.end(), [&](const NamedView& v) { return v.name == *name; });
+    if (a == "save") {
+      NamedView nv{*name, vp->GetCamera().State()};
+      if (it != views.end()) *it = nv; else views.push_back(nv);
+      ctx.Doc().Touch();
+      ctx.Print("Named view '" + *name + "' saved from " + vp->Name());
+    } else if (a == "restore") {
+      if (it == views.end()) ctx.Warn("No named view '" + *name + "'");
+      else { vp->GetCamera().SetState(it->camera); ctx.Print("Named view '" + *name + "' restored in " + vp->Name()); }
+    } else if (a == "delete") {
+      if (it == views.end()) ctx.Warn("No named view '" + *name + "'");
+      else { views.erase(it); ctx.Doc().Touch(); ctx.Print("Named view '" + *name + "' deleted"); }
+    } else {
+      ctx.Warn("NamedView: unknown option '" + *action + "'");
+    }
+    Finish();
+  }
+};
 
 class ZoomCommand : public Command {
  public:
@@ -125,12 +162,12 @@ void RegisterViewCommands(CommandEngine& e) {
   Reg(e, "Turntable", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->GetCamera().Orbit(60, 0); }), CommandStatus::Partial);
   Reg(e, "4View", Immediate([](CommandContext& ctx) { ctx.App().SetViewportLayout(4); }));
   Reg(e, "3View", Immediate([](CommandContext& ctx) { ctx.App().SetViewportLayout(3); }));
-  Reg(e, "MaxViewport", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->SetMaximized(!vp->Maximized()); }));
+  Reg(e, "MaxViewport", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) { vp->SetMaximized(!vp->Maximized()); ctx.Print(vp->Name() + (vp->Maximized() ? " maximized" : " restored")); } }));
   Reg(e, "NewViewport", Immediate([](CommandContext& ctx) { ctx.App().SetViewportLayout(4); }), CommandStatus::Partial, "Restores the 4-viewport layout; ad-hoc viewports are planned.");
   Reg(e, "NextViewport", Immediate([](CommandContext& ctx) { auto& v = ctx.Viewports(); for (size_t i = 0; i < v.size(); ++i) if (v[i]->IsActive()) { v[i]->SetActive(false); v[(i + 1) % v.size()]->SetActive(true); return; } }));
   Reg(e, "PrevViewport", Immediate([](CommandContext& ctx) { auto& v = ctx.Viewports(); for (size_t i = 0; i < v.size(); ++i) if (v[i]->IsActive()) { v[i]->SetActive(false); v[(i + v.size() - 1) % v.size()]->SetActive(true); return; } }));
   Reg(e, "SetView", SetView("Perspective"), CommandStatus::Partial, "Use Top/Front/Right/Perspective or the viewport title menu.");
-  Reg(e, "NamedView", Immediate([](CommandContext& ctx) { ctx.App().Panels().named_views = true; }));
+  Reg(e, "NamedView", Make<NamedViewCommand>());
   Reg(e, "SetDisplayMode", Immediate([](CommandContext& ctx) { ctx.App().Panels().display = true; }));
   Reg(e, "Wireframe", SetMode(DisplayMode::Wireframe));
   Reg(e, "Shade", SetMode(DisplayMode::Shaded));
@@ -147,7 +184,7 @@ void RegisterViewCommands(CommandEngine& e) {
   Reg(e, "RenderPreview", SetMode(DisplayMode::Rendered), CommandStatus::Partial);
   Reg(e, "RefreshShade", Immediate([](CommandContext& ctx) { for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay(); }));
   Reg(e, "ClearAllMeshes", Immediate([](CommandContext& ctx) { for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay(); }));
-  Reg(e, "Grid", Immediate([](CommandContext& ctx) { ctx.Settings().show_grid = !ctx.Settings().show_grid; }));
+  Reg(e, "Grid", Immediate([](CommandContext& ctx) { ctx.Settings().show_grid = !ctx.Settings().show_grid; ctx.Print(std::string("Grid ") + (ctx.Settings().show_grid ? "on" : "off")); }));
   Reg(e, "GridOptions", Immediate([](CommandContext& ctx) { ctx.App().Panels().document_properties = true; }));
   Reg(e, "CPlane", Make<CPlaneCommand>());
   Reg(e, "CPlaneToWorld", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->CPlane() = ConstructionPlane{}; }));

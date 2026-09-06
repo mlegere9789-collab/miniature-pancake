@@ -297,7 +297,18 @@ BoundingBox Mesh::GetBoundingBox() const {
 }
 
 bool Mesh::ContainsPoint(Point3d point) const {
-  const Vector3d direction(1.0, 0.0, 0.0);
+  // A ray along a world axis reliably grazes vertices of any axis-aligned,
+  // axis-symmetric or UV-parametrized mesh (spheres, cylinders, revolves,
+  // boxes...) whenever the query point sits on that mesh's own axis or
+  // symmetry plane - which is exactly where callers most often test (e.g.
+  // "is this the sphere's own center inside it", from SelVolumeObject).
+  // Those grazing hits are numerically unstable: floating-point noise from
+  // translating the same mesh away from the origin flips the parity count
+  // (observed: a sphere at the world origin reported its center as
+  // contained, the identical sphere translated to (40,20,10) did not). A
+  // direction with no axis-aligned or rational-fraction component doesn't
+  // line up with these seams, so it isn't sensitive to translation.
+  const Vector3d direction(0.6532814824, 0.2705980501, 0.7071067812);
   int crossing_count = 0;
 
   auto count_triangle = [&](int i0, int i1, int i2) {
