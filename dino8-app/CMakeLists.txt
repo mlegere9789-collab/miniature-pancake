@@ -81,6 +81,7 @@ set(DINO8_SOURCES
   src/ui/Toolbars.cpp
   src/doc/Document.cpp
   src/doc/SceneObject.cpp
+  src/doc/SubObjectEdit.cpp
   src/viewport/Camera.cpp
   src/viewport/Viewport.cpp
   src/render/GlRenderer.cpp

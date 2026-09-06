@@ -85,6 +85,7 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
   s.int_ = Bool(snaps["int"], s.int_); s.perp = Bool(snaps["perp"], s.perp); s.tan = Bool(snaps["tan"], s.tan);
   s.quad = Bool(snaps["quad"], s.quad); s.grid_snap = Bool(snaps["grid_snap"], s.grid_snap);
   s.ortho = Bool(snaps["ortho"], s.ortho); s.planar = Bool(snaps["planar"], s.planar); s.smart_track = Bool(snaps["smart_track"], s.smart_track);
+  s.knot = Bool(snaps["knot"], s.knot); s.project = Bool(snaps["project"], s.project);
 
   PanelState& p = app.Panels();
   const json::Value& panels = root["panels"];
@@ -142,7 +143,8 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
   out << "  \"snaps\": {\"end\": " << b(s.end) << ", \"mid\": " << b(s.mid) << ", \"cen\": " << b(s.cen) << ", \"point\": " << b(s.point)
       << ", \"near\": " << b(s.near_) << ", \"vertex\": " << b(s.vertex) << ", \"int\": " << b(s.int_) << ", \"perp\": " << b(s.perp)
       << ", \"tan\": " << b(s.tan) << ", \"quad\": " << b(s.quad) << ", \"grid_snap\": " << b(s.grid_snap) << ", \"ortho\": " << b(s.ortho)
-      << ", \"planar\": " << b(s.planar) << ", \"smart_track\": " << b(s.smart_track) << "},\n";
+      << ", \"planar\": " << b(s.planar) << ", \"smart_track\": " << b(s.smart_track)
+      << ", \"knot\": " << b(s.knot) << ", \"project\": " << b(s.project) << "},\n";
   const PanelState& p = a.Panels();
   out << "  \"panels\": {\"layers\": " << b(p.layers) << ", \"properties\": " << b(p.properties) << ", \"command_history\": " << b(p.command_history)
       << ", \"command_list\": " << b(p.command_list) << ", \"help\": " << b(p.help) << ", \"named_views\": " << b(p.named_views)

@@ -82,6 +82,7 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   locked = other.locked;
   selected = other.selected;
   show_control_points = other.show_control_points;
+  hidden_control_points = other.hidden_control_points;
   show_control_net = other.show_control_net;
   highlight_edges = other.highlight_edges;
   analysis = other.analysis;
@@ -535,6 +536,7 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
   cache_.points.clear();
   cache_.control_polygon.clear();
   cache_.control_points.clear();
+  cache_.triangle_face.clear();
   cache_.edges.clear();
   cache_.naked_edges.clear();
   cache_.colors.clear();
@@ -600,6 +602,13 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
             cache_.control_points.push_back(static_cast<float>(p.x));
             cache_.control_points.push_back(static_cast<float>(p.y));
             cache_.control_points.push_back(static_cast<float>(p.z));
+            // Control polygon: grid lines to the previous CV in each direction.
+            auto seg = [&](const kernel::Point3d& q) {
+              cache_.control_polygon.push_back(static_cast<float>(q.x)); cache_.control_polygon.push_back(static_cast<float>(q.y)); cache_.control_polygon.push_back(static_cast<float>(q.z));
+              cache_.control_polygon.push_back(static_cast<float>(p.x)); cache_.control_polygon.push_back(static_cast<float>(p.y)); cache_.control_polygon.push_back(static_cast<float>(p.z));
+            };
+            if (i > 0) seg(surface->ControlPointAt(i - 1, j));
+            if (j > 0) seg(surface->ControlPointAt(i, j - 1));
           }
         }
       }
@@ -614,17 +623,42 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
       } catch (...) {
         meshes.clear();
       }
-      for (const kernel::Mesh& m : meshes) {
-        AppendMeshTriangles(m, cache_.triangles, cache_.bbox, cache_.has_bbox);
+      for (size_t fi = 0; fi < meshes.size(); ++fi) {
+        const size_t before = cache_.triangles.size() / 18;
+        AppendMeshTriangles(meshes[fi], cache_.triangles, cache_.bbox, cache_.has_bbox);
+        cache_.triangle_face.resize(cache_.triangles.size() / 18, static_cast<int>(fi));
+        (void)before;
       }
       AppendBrepEdges(*brep, cache_.lines, cache_.edges, cache_.naked_edges);
+      if (show_control_points) {
+        // SolidPtOn: the brep vertices are the grips.
+        const ON_Brep& raw = brep->raw();
+        for (int i = 0; i < raw.m_V.Count(); ++i) {
+          const ON_3dPoint p = raw.m_V[i].point;
+          cache_.control_points.push_back(static_cast<float>(p.x)); cache_.control_points.push_back(static_cast<float>(p.y)); cache_.control_points.push_back(static_cast<float>(p.z));
+        }
+      }
       break;
     }
-    case ObjectKind::Mesh:
+    case ObjectKind::Mesh: {
       AppendMeshTriangles(*mesh, cache_.triangles, cache_.bbox, cache_.has_bbox, &cache_.uvs);
       AppendMeshEdges(*mesh, cache_.lines);
       AppendMeshNakedEdges(*mesh, cache_.edges, cache_.naked_edges);
+      // One entry per display triangle: quads produce two triangles.
+      const ON_Mesh& raw = mesh->raw();
+      for (int fi = 0; fi < raw.m_F.Count(); ++fi) {
+        cache_.triangle_face.push_back(fi);
+        if (raw.m_F[fi].IsQuad()) cache_.triangle_face.push_back(fi);
+      }
+      if (cache_.triangle_face.size() != cache_.triangles.size() / 18) cache_.triangle_face.clear();
+      if (show_control_points) {
+        for (int i = 0; i < raw.VertexCount(); ++i) {
+          const ON_3dPoint p = raw.Vertex(i);
+          cache_.control_points.push_back(static_cast<float>(p.x)); cache_.control_points.push_back(static_cast<float>(p.y)); cache_.control_points.push_back(static_cast<float>(p.z));
+        }
+      }
       break;
+    }
     case ObjectKind::SubD: {
       const kernel::Mesh net = subd->ToApproximateMesh();
       const kernel::Mesh m = show_control_net ? net : SmoothSubDMesh(*subd, net);

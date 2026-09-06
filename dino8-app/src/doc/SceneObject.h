@@ -79,6 +79,10 @@ struct DisplayCache {
   std::vector<float> points;     // x,y,z per point
   std::vector<float> control_polygon;  // x,y,z per vertex, 2 per segment (when shown)
   std::vector<float> control_points;   // x,y,z per control point (when shown)
+  // Brep / mesh: the face index each display triangle came from (one entry
+  // per triangle; brep faces are ON_Brep::m_F indices, mesh faces m_F
+  // indices). Empty for other kinds.
+  std::vector<int> triangle_face;
   // Brep / surface / mesh edges for ShowEdges: all edges, and the naked
   // ones (brep edges with a single trim, mesh edges with a single face).
   std::vector<float> edges;        // x,y,z pairs
@@ -130,6 +134,8 @@ class SceneObject {
   bool locked = false;
   bool selected = false;
   bool show_control_points = false;
+  // Control points hidden with HidePt (indices as in SubObjectRef); cleared by ShowPt.
+  std::vector<int> hidden_control_points;
   bool show_control_net = false;  // SubD: draw the control polygon instead of the smoothed surface
   bool highlight_edges = false;  // ShowEdges: draw brep/mesh edges thick, naked edges in a second colour
   AnalysisSettings analysis;     // per-object surface analysis (None = use the app-wide fallback)

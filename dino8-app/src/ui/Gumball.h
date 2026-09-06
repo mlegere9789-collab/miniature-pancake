@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "doc/SceneObject.h"
+#include "doc/SubObject.h"
 
 namespace dino8::app {
 
@@ -50,6 +51,10 @@ class Gumball {
   ON_Xform last_xform_ = ON_Xform::IdentityTransformation;
   kernel::Point3d start_free_{0, 0, 0};
   std::vector<std::pair<ObjectId, SceneObject>> originals_;
+  // Sub-object mode: the widget sits on the selected control points /
+  // edges / faces and drags only those.
+  bool sub_mode_ = false;
+  std::vector<SubObjectRef> sub_refs_;
   int drag_viewport_ = -1;
   Settings settings_;
 };

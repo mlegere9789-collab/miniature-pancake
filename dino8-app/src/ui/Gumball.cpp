@@ -4,6 +4,7 @@
 #include <string>
 
 #include "app/Application.h"
+#include "doc/SubObjectEdit.h"
 #include "imgui.h"
 #include "viewport/Viewport.h"
 
@@ -53,10 +54,25 @@ bool Gumball::Update(Application& app, Viewport& vp, bool viewport_hovered) {
   const int vp_index = [&]() { int i = 0; for (auto& v : app.Viewports()) { if (v.get() == &vp) return i; ++i; } return -1; }();
 
   if (!dragging_) {
-    std::vector<ObjectId> sel = doc.SelectedIds();
-    kernel::BoundingBox bb;
-    if (sel.empty() || !doc.BoundingBoxOf(sel, bb)) { hover_ = Handle::None; return false; }
-    center_ = Point3d((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2);
+    const SubObjectSelection& sub = app.SubSelection();
+    sub_mode_ = !sub.Empty();
+    if (sub_mode_) {
+      // Centroid of the selected sub-objects.
+      Point3d sum(0, 0, 0);
+      int n = 0;
+      for (const SubObjectRef& r : sub.Items()) {
+        const SceneObject* o = doc.Find(r.id);
+        if (!o || !doc.IsObjectVisible(*o)) continue;
+        for (const Point3d& p : SubObjectPoints(*o, r)) { sum += p; ++n; }
+      }
+      if (n == 0) { hover_ = Handle::None; return false; }
+      center_ = Point3d(sum.x / n, sum.y / n, sum.z / n);
+    } else {
+      std::vector<ObjectId> sel = doc.SelectedIds();
+      kernel::BoundingBox bb;
+      if (sel.empty() || !doc.BoundingBoxOf(sel, bb)) { hover_ = Handle::None; return false; }
+      center_ = Point3d((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2);
+    }
     axis_len_ = 70.0 * vp.GetCamera().PixelSize(vp.Height());
   } else if (vp_index != drag_viewport_) {
     return false;
@@ -137,8 +153,14 @@ bool Gumball::Update(Application& app, Viewport& vp, bool viewport_hovered) {
       drag_handle_ = hover_;
       drag_viewport_ = vp_index;
       originals_.clear();
-      for (const SceneObject& o : doc.Objects()) if (o.selected) originals_.push_back({o.id, o});
-      doc.BeginChange("Gumball");
+      sub_refs_.clear();
+      if (sub_mode_) {
+        sub_refs_ = app.SubSelection().Items();
+        for (ObjectId id : app.SubSelection().ObjectIds()) if (const SceneObject* o = doc.Find(id)) originals_.push_back({id, *o});
+      } else {
+        for (const SceneObject& o : doc.Objects()) if (o.selected) originals_.push_back({o.id, o});
+      }
+      doc.BeginChange(sub_mode_ ? "Gumball (sub-objects)" : "Gumball");
       const Ray ray = vp.PixelRay(m.x - origin.x, m.y - origin.y);
       const int h = static_cast<int>(drag_handle_);
       if (drag_handle_ == Handle::Free) {
@@ -197,15 +219,22 @@ bool Gumball::Update(Application& app, Viewport& vp, bool viewport_hovered) {
     for (auto& [id, original] : originals_) {
       if (SceneObject* o = doc.Find(id)) {
         SceneObject moved = original;
-        moved.Transform(xf);
-        moved.selected = true;
+        if (sub_mode_) {
+          std::vector<SubObjectRef> refs;
+          for (const SubObjectRef& r : sub_refs_) if (r.id == id) refs.push_back(r);
+          TransformSubObjects(moved, refs, xf);
+        } else {
+          moved.Transform(xf);
+          moved.selected = true;
+        }
         *o = moved;
       }
     }
     if (!ImGui::IsMouseDown(0)) {
       dragging_ = false;
       originals_.clear();
-      app.Engine().Print("Gumball: " + what);
+      app.Engine().Print(std::string(sub_mode_ ? "Gumball (" + std::to_string(sub_refs_.size()) + " sub-object(s)): " : "Gumball: ") + what);
+      sub_refs_.clear();
       doc.Touch();
     }
   }

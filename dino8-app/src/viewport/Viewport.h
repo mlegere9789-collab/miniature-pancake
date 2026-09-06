@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "doc/Document.h"
+#include "doc/SubObject.h"
 #include "render/GlRenderer.h"
 #include "viewport/Camera.h"
 
@@ -34,6 +35,8 @@ struct ConstructionPlane {
 // Object snaps the status bar toggles (persistent osnaps, Rhino-style).
 struct SnapSettings {
   bool end = true, mid = false, cen = false, point = true, near_ = false, vertex = false, int_ = false, perp = false, tan = false, quad = false;
+  bool knot = false;     // curve knots and surface knot-line intersections
+  bool project = false;  // project every pick onto the CPlane
   bool grid_snap = false;
   bool ortho = false;
   bool planar = false;
@@ -45,6 +48,23 @@ struct PickResult {
   kernel::Point3d point;
   std::string snap_label;  // "End", "Mid", "Cen", "Grid", "" when free
   bool snapped = false;
+  // SmartTrack: the tracking lines (tracking point -> snapped point) that
+  // produced this pick, for the dashed preview.
+  std::vector<std::pair<kernel::Point3d, kernel::Point3d>> track_lines;
+};
+
+// A control point / vertex / edge / face under the cursor.
+struct SubObjectPick {
+  SubObjectRef ref;
+  kernel::Point3d point;   // where it was hit (control point position, point on the edge / face)
+  double pixel_dist = 0;   // screen distance for points and edges
+};
+
+// Which sub-objects the viewport picks (SelectionFilter* and CullControlPolygon).
+struct SubObjectPickFilter {
+  bool vertices = false, edges = false, faces = false;  // when all false: everything with Ctrl+Shift only
+  bool cull_control_polygon = false;                    // only unoccluded control points
+  bool Any() const { return vertices || edges || faces; }
 };
 
 // What happened in a viewport this frame, for the application to act on.
@@ -62,6 +82,13 @@ struct ViewportEvents {
   bool hovered = false;
   std::optional<PickResult> hover_pick;         // live cursor position on CPlane
   ObjectId hover_object = kNoObject;
+  // Sub-objects: the control point / vertex-edge-face under a click.
+  std::optional<SubObjectPick> clicked_control_point;
+  std::optional<SubObjectPick> clicked_sub_object;
+  // Direct drag of a selected control point (no gumball): begin on the
+  // mouse-down frame, update every frame with the total delta, end on release.
+  bool cp_drag_begin = false, cp_drag_update = false, cp_drag_end = false;
+  kernel::Vector3d cp_drag_delta{0, 0, 0};
 };
 
 class Viewport {
@@ -130,6 +157,8 @@ class Viewport {
     bool print_display = false;
     // Draw the document's clipping planes as translucent rectangles.
     bool show_clipping_planes = true;
+    // Selected sub-objects (control points, edges, faces) drawn highlighted.
+    const SubObjectSelection* sub_selection = nullptr;
   };
   void Render(GlRenderer& renderer, const FrameContext& ctx);
 
@@ -157,6 +186,21 @@ class Viewport {
   ObjectId PickObject(const Document& doc, double px, double py, double pixel_radius = 6.0) const;
   std::vector<ObjectId> ObjectsInWindow(const Document& doc, double x0, double y0, double x1, double y1,
                                         bool crossing) const;
+  // Sub-object picking. Control points are those of objects with
+  // PointsOn (hidden and, with the cull flag, occluded ones excluded).
+  // `filter` limits PickSubObject to the enabled kinds (none = all kinds).
+  std::optional<SubObjectPick> PickControlPoint(const Document& doc, double px, double py, double pixel_radius = 7.0) const;
+  std::vector<SubObjectRef> ControlPointsInWindow(const Document& doc, double x0, double y0, double x1, double y1) const;
+  std::optional<SubObjectPick> PickSubObject(const Document& doc, double px, double py, const SubObjectPickFilter& filter,
+                                             double pixel_radius = 6.0) const;
+  // The current sub-object selection, drawn highlighted and draggable; the
+  // pick filter (SelectionFilter* / CullControlPolygon); both set every frame.
+  void SetSubObjectSelection(const SubObjectSelection* sel) { sub_selection_ = sel; }
+  void SetSubObjectFilter(const SubObjectPickFilter& f) { sub_filter_ = f; }
+  // SmartTrack tracking points collected while hovering snaps (cleared
+  // when a command stops asking for points).
+  const std::vector<kernel::Point3d>& TrackingPoints() const { return track_points_; }
+  void ClearTrackingPoints() { track_points_.clear(); }
 
   // Converts a pixel position to a world point on the CPlane, applying snaps.
   PickResult PickPoint(const Document& doc, const SnapSettings& snaps, double px, double py,
@@ -219,6 +263,18 @@ class Viewport {
   double last_x_ = 0, last_y_ = 0;
   bool drag_moved_ = false;
   double last_click_time_ = -10.0;
+  // Sub-object state.
+  const SubObjectSelection* sub_selection_ = nullptr;
+  SubObjectPickFilter sub_filter_;
+  bool cp_dragging_ = false;
+  kernel::Point3d cp_drag_start_{0, 0, 0};
+  // SmartTrack.
+  std::vector<kernel::Point3d> track_points_;
+  std::optional<kernel::Point3d> track_candidate_;
+  double track_candidate_since_ = 0;
+  // Control points of one object that are currently visible (hidden /
+  // culled ones removed), with their indices.
+  void VisibleControlPoints(const SceneObject& o, std::vector<int>& indices, std::vector<float>* xyz) const;
 };
 
 }  // namespace dino8::app

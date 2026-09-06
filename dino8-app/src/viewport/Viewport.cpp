@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 
+#include "doc/SubObjectEdit.h"
 #include "imgui.h"
 #include "ui/Theme.h"
 
@@ -713,7 +715,14 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     if (o.show_control_points || (ctx.show_control_points_for_selected && o.selected)) {
       renderer.EnableDepthTest(false);
       renderer.DrawLines(d.control_polygon, kControlPolygonColor);
-      renderer.DrawPoints(d.control_points, kControlPointColor, 5.0f);
+      if (o.hidden_control_points.empty() && !sub_filter_.cull_control_polygon) {
+        renderer.DrawPoints(d.control_points, kControlPointColor, 5.0f);
+      } else {
+        std::vector<int> idx;
+        std::vector<float> xyz;
+        VisibleControlPoints(o, idx, &xyz);
+        renderer.DrawPoints(xyz, kControlPointColor, 5.0f);
+      }
       renderer.EnableDepthTest(style.depth_lines);
     }
     if (o.highlight_edges && !d.edges.empty()) {
@@ -721,6 +730,43 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       renderer.DrawLines(d.edges, kEdgeHighlightColor, 3.0f);
       if (!d.naked_edges.empty()) renderer.DrawLines(d.naked_edges, kNakedEdgeColor, 4.0f);
     }
+  }
+  // Selected sub-objects: control points as big dots, edges thick, faces tinted.
+  if (ctx.sub_selection && !ctx.sub_selection->Empty() && !ctx.for_render) {
+    std::vector<float> pts, lines, tris;
+    for (const SubObjectRef& r : ctx.sub_selection->Items()) {
+      const SceneObject* o = doc.Find(r.id);
+      if (!o || !shown(*o)) continue;
+      o->EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+      const DisplayCache& d = o->Display();
+      if (r.kind == SubObjectKind::Face && o->kind == ObjectKind::Surface) {
+        tris.insert(tris.end(), d.triangles.begin(), d.triangles.end());
+        lines.insert(lines.end(), d.edges.begin(), d.edges.end());
+        continue;
+      }
+      if (r.kind == SubObjectKind::Face && !d.triangle_face.empty() && (o->kind == ObjectKind::Brep || o->kind == ObjectKind::Mesh)) {
+        for (size_t t = 0; t < d.triangle_face.size() && (t + 1) * 18 <= d.triangles.size(); ++t) {
+          if (d.triangle_face[t] == r.index) tris.insert(tris.end(), d.triangles.begin() + static_cast<long>(t * 18), d.triangles.begin() + static_cast<long>((t + 1) * 18));
+        }
+        if (o->kind == ObjectKind::Brep) {
+          std::vector<float> dummy_tris;
+          AppendSubObjectDisplay(*o, r, pts, lines, dummy_tris);  // boundary only; the fill came from the cache
+        }
+        continue;
+      }
+      AppendSubObjectDisplay(*o, r, pts, lines, tris);
+    }
+    if (!tris.empty()) {
+      renderer.EnableDepthTest(true);
+      renderer.EnablePolygonOffset(true);
+      Color fill = kSelectionColor;
+      fill.a = 0.55f;
+      renderer.DrawTriangles(tris, fill, false);
+      renderer.EnablePolygonOffset(false);
+    }
+    renderer.EnableDepthTest(false);
+    if (!lines.empty()) renderer.DrawLines(lines, kSelectionColor, 3.0f);
+    if (!pts.empty()) renderer.DrawPoints(pts, kSelectionColor, 9.0f);
   }
   renderer.EnableDepthTest(true);
 }
@@ -860,10 +906,190 @@ std::vector<ObjectId> Viewport::ObjectsInWindow(const Document& doc, double x0, 
   return result;
 }
 
+// ---------------------------------------------------------------------------
+// Sub-object picking
+// ---------------------------------------------------------------------------
+
+void Viewport::VisibleControlPoints(const SceneObject& o, std::vector<int>& indices, std::vector<float>* xyz) const {
+  indices.clear();
+  if (xyz) xyz->clear();
+  o.EnsureDisplay(0.02, 0.05);
+  const DisplayCache& d = o.Display();
+  const size_t n = d.control_points.size() / 3;
+  const bool cull = sub_filter_.cull_control_polygon && !d.triangles.empty();
+  for (size_t i = 0; i < n; ++i) {
+    if (!o.hidden_control_points.empty() &&
+        std::find(o.hidden_control_points.begin(), o.hidden_control_points.end(), static_cast<int>(i)) != o.hidden_control_points.end()) continue;
+    const Point3d p(d.control_points[i * 3], d.control_points[i * 3 + 1], d.control_points[i * 3 + 2]);
+    if (cull) {
+      // CullControlPolygon: hidden when the object's own display mesh lies
+      // between the camera and the control point.
+      double sx, sy;
+      if (WorldToPixel(p, sx, sy)) {
+        const Ray ray = PixelRay(sx, sy);
+        const double tp = ON_DotProduct(p - ray.origin, ray.direction);
+        const double eps = 1e-3 * std::max(1.0, tp);
+        bool occluded = false;
+        for (size_t k = 0; k + 17 < d.triangles.size() && !occluded; k += 18) {
+          double t;
+          if (RayTriangle(ray, Point3d(d.triangles[k], d.triangles[k + 1], d.triangles[k + 2]),
+                          Point3d(d.triangles[k + 6], d.triangles[k + 7], d.triangles[k + 8]),
+                          Point3d(d.triangles[k + 12], d.triangles[k + 13], d.triangles[k + 14]), t) && t < tp - eps) occluded = true;
+        }
+        if (occluded) continue;
+      }
+    }
+    indices.push_back(static_cast<int>(i));
+    if (xyz) { xyz->push_back(d.control_points[i * 3]); xyz->push_back(d.control_points[i * 3 + 1]); xyz->push_back(d.control_points[i * 3 + 2]); }
+  }
+}
+
+std::optional<SubObjectPick> Viewport::PickControlPoint(const Document& doc, double px, double py, double pixel_radius) const {
+  std::optional<SubObjectPick> best;
+  if (page_) return best;
+  for (const SceneObject& o : doc.Objects()) {
+    if (!o.show_control_points || !doc.IsObjectVisible(o) || doc.IsObjectLocked(o)) continue;
+    std::vector<int> idx;
+    std::vector<float> xyz;
+    VisibleControlPoints(o, idx, &xyz);
+    for (size_t k = 0; k < idx.size(); ++k) {
+      const Point3d p(xyz[k * 3], xyz[k * 3 + 1], xyz[k * 3 + 2]);
+      double sx, sy;
+      if (!WorldToPixel(p, sx, sy)) continue;
+      const double dist = std::hypot(sx - px, sy - py);
+      if (dist <= pixel_radius && (!best || dist < best->pixel_dist)) best = SubObjectPick{SubObjectRef::Vertex(o.id, idx[k]), p, dist};
+    }
+  }
+  return best;
+}
+
+std::vector<SubObjectRef> Viewport::ControlPointsInWindow(const Document& doc, double x0, double y0, double x1, double y1) const {
+  std::vector<SubObjectRef> out;
+  if (page_) return out;
+  const double left = std::min(x0, x1), right = std::max(x0, x1), top = std::min(y0, y1), bottom = std::max(y0, y1);
+  for (const SceneObject& o : doc.Objects()) {
+    if (!o.show_control_points || !doc.IsObjectVisible(o) || doc.IsObjectLocked(o)) continue;
+    std::vector<int> idx;
+    std::vector<float> xyz;
+    VisibleControlPoints(o, idx, &xyz);
+    for (size_t k = 0; k < idx.size(); ++k) {
+      double sx, sy;
+      if (!WorldToPixel(Point3d(xyz[k * 3], xyz[k * 3 + 1], xyz[k * 3 + 2]), sx, sy)) continue;
+      if (sx >= left && sx <= right && sy >= top && sy <= bottom) out.push_back(SubObjectRef::Vertex(o.id, idx[k]));
+    }
+  }
+  return out;
+}
+
+std::optional<SubObjectPick> Viewport::PickSubObject(const Document& doc, double px, double py, const SubObjectPickFilter& filter,
+                                                     double pixel_radius) const {
+  std::optional<SubObjectPick> best_vertex, best_edge, best_face;
+  double best_face_t = 1e300;
+  if (page_) return std::nullopt;
+  const bool allow_v = !filter.Any() || filter.vertices;
+  const bool allow_e = !filter.Any() || filter.edges;
+  const bool allow_f = !filter.Any() || filter.faces;
+  const Ray ray = PixelRay(px, py);
+  auto seg_dist = [&](Point3d a, Point3d b, double& t) {
+    double ax, ay, bx, by;
+    if (!WorldToPixel(a, ax, ay) || !WorldToPixel(b, bx, by)) return 1e300;
+    return PointSegmentDistance2D(px, py, ax, ay, bx, by, t);
+  };
+  auto consider_edge = [&](const SubObjectRef& r, const std::vector<Point3d>& pl) {
+    for (size_t k = 1; k < pl.size(); ++k) {
+      double t;
+      const double d = seg_dist(pl[k - 1], pl[k], t);
+      if (d <= pixel_radius && (!best_edge || d < best_edge->pixel_dist)) best_edge = SubObjectPick{r, pl[k - 1] + (pl[k] - pl[k - 1]) * t, d};
+    }
+  };
+  for (const SceneObject& o : doc.Objects()) {
+    if (!doc.IsObjectVisible(o) || doc.IsObjectLocked(o)) continue;
+    o.EnsureDisplay(0.02, 0.05);
+    const DisplayCache& d = o.Display();
+    kernel::Mesh scratch;
+    const ON_Mesh* net = TopologyMesh(o, scratch);
+    if (allow_v && net) {
+      for (int i = 0; i < net->VertexCount(); ++i) {
+        const ON_3dPoint v = net->Vertex(i);
+        double sx, sy;
+        if (!WorldToPixel(Point3d(v.x, v.y, v.z), sx, sy)) continue;
+        const double dist = std::hypot(sx - px, sy - py);
+        if (dist <= pixel_radius && (!best_vertex || dist < best_vertex->pixel_dist)) best_vertex = SubObjectPick{SubObjectRef::Vertex(o.id, i), Point3d(v.x, v.y, v.z), dist};
+      }
+    }
+    if (allow_e) {
+      if (o.kind == ObjectKind::Brep && o.brep) {
+        const ON_Brep& b = o.brep->raw();
+        for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+          if (b.m_E[ei].m_edge_index < 0) continue;
+          consider_edge(SubObjectRef::BrepEdge(o.id, ei), BrepEdgePolyline(b, ei, 16));
+        }
+      } else if (o.kind == ObjectKind::Surface) {
+        for (int k = 0; k < 4; ++k) consider_edge(SubObjectRef{o.id, SubObjectKind::Edge, k, -1}, SubObjectPoints(o, SubObjectRef{o.id, SubObjectKind::Edge, k, -1}));
+      } else if (net) {
+        std::set<std::pair<int, int>> seen;
+        for (int fi = 0; fi < net->m_F.Count(); ++fi) {
+          const ON_MeshFace& f = net->m_F[fi];
+          const int n = f.IsQuad() ? 4 : 3;
+          for (int k = 0; k < n; ++k) {
+            const int a = f.vi[k], c = f.vi[(k + 1) % n];
+            if (!seen.insert({std::min(a, c), std::max(a, c)}).second) continue;
+            const ON_3dPoint pa = net->Vertex(a), pc = net->Vertex(c);
+            consider_edge(SubObjectRef::MeshEdge(o.id, a, c), {Point3d(pa.x, pa.y, pa.z), Point3d(pc.x, pc.y, pc.z)});
+          }
+        }
+      }
+    }
+    if (allow_f) {
+      if (o.kind == ObjectKind::SubD && net) {
+        // Faces of the control net (the smooth surface follows them).
+        for (int fi = 0; fi < net->m_F.Count(); ++fi) {
+          const ON_MeshFace& f = net->m_F[fi];
+          const int n = f.IsQuad() ? 4 : 3;
+          std::vector<Point3d> poly;
+          for (int k = 0; k < n; ++k) { const ON_3dPoint v = net->Vertex(f.vi[k]); poly.emplace_back(v.x, v.y, v.z); }
+          for (size_t k = 1; k + 1 < poly.size(); ++k) {
+            double t;
+            if (RayTriangle(ray, poly[0], poly[k], poly[k + 1], t) && t < best_face_t) { best_face_t = t; best_face = SubObjectPick{SubObjectRef::Face(o.id, fi), ray.origin + ray.direction * t, 0}; }
+          }
+        }
+      } else if (!d.triangles.empty() && (o.kind == ObjectKind::Brep || o.kind == ObjectKind::Mesh || o.kind == ObjectKind::Surface)) {
+        for (size_t i = 0; i + 17 < d.triangles.size(); i += 18) {
+          double t;
+          if (RayTriangle(ray, Point3d(d.triangles[i], d.triangles[i + 1], d.triangles[i + 2]),
+                          Point3d(d.triangles[i + 6], d.triangles[i + 7], d.triangles[i + 8]),
+                          Point3d(d.triangles[i + 12], d.triangles[i + 13], d.triangles[i + 14]), t) && t < best_face_t) {
+            const size_t ti = i / 18;
+            const int fi = o.kind == ObjectKind::Surface ? 0 : (ti < d.triangle_face.size() ? d.triangle_face[ti] : -1);
+            if (fi < 0) continue;
+            best_face_t = t;
+            best_face = SubObjectPick{SubObjectRef::Face(o.id, fi), ray.origin + ray.direction * t, 0};
+          }
+        }
+      }
+    }
+  }
+  if (best_vertex) return best_vertex;
+  if (best_edge) return best_edge;
+  return best_face;
+}
+
 PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, double px, double py,
                                std::optional<Point3d> ortho_base, double grid_spacing,
                                bool want_point) const {
   PickResult result;
+  // Project osnap: the final point drops onto the CPlane.
+  auto finish = [&](PickResult r) {
+    if (snaps.project && want_point) {
+      const Vector3d nn = cplane_.Normal();
+      const double w = ON_DotProduct(r.point - cplane_.origin, nn);
+      if (std::fabs(w) > 1e-9) {
+        r.point = r.point - nn * w;
+        r.snap_label = r.snap_label.empty() ? "Project" : r.snap_label + " Project";
+      }
+    }
+    return r;
+  };
   const Ray ray = PixelRay(px, py);
   // Free point: ray/CPlane intersection (fallback: a plane through the
   // target perpendicular to the view when the ray is parallel to CPlane).
@@ -950,6 +1176,10 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
               consider(arc.Center() - pl.yaxis * r, "Quad");
             }
           }
+          if (snaps.knot) {
+            std::vector<double> spans(static_cast<size_t>(std::max(c.raw().SpanCount(), 0)) + 1);
+            if (spans.size() > 1 && c.raw().GetSpanVector(spans.data())) for (double k : spans) consider(c.PointAt(k), "Knot");
+          }
           if (snaps.perp && ortho_base) {
             consider(c.ClosestPoint(*ortho_base), "Perp");
           }
@@ -1032,12 +1262,30 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
             consider(s.PointAt(du.min, dv.max), "End");
             consider(s.PointAt(du.max, dv.max), "End");
           }
+          if (snaps.knot) {
+            const ON_NurbsSurface& raw = o.surface->raw();
+            std::vector<double> su(static_cast<size_t>(std::max(raw.SpanCount(0), 0)) + 1), sv(static_cast<size_t>(std::max(raw.SpanCount(1), 0)) + 1);
+            if (su.size() > 1 && sv.size() > 1 && su.size() * sv.size() <= 4096 && raw.GetSpanVector(0, su.data()) && raw.GetSpanVector(1, sv.data())) {
+              for (double ku : su) for (double kv : sv) consider(raw.PointAt(ku, kv), "Knot");
+            }
+          }
           break;
         }
         case ObjectKind::Brep: {
+          const ON_Brep& b = o.brep->raw();
           if (snaps.end) {
-            const ON_Brep& b = o.brep->raw();
             for (int i = 0; i < b.m_V.Count(); ++i) consider(b.m_V[i].Point(), "End");
+          }
+          if (snaps.knot) {
+            // Knot-line intersections of every face's surface (untrimmed extent).
+            for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+              const ON_Surface* srf = b.m_F[fi].SurfaceOf();
+              if (!srf) continue;
+              std::vector<double> su(static_cast<size_t>(std::max(srf->SpanCount(0), 0)) + 1), sv(static_cast<size_t>(std::max(srf->SpanCount(1), 0)) + 1);
+              if (su.size() < 2 || sv.size() < 2 || su.size() * sv.size() > 1024) continue;
+              if (!srf->GetSpanVector(0, su.data()) || !srf->GetSpanVector(1, sv.data())) continue;
+              for (double ku : su) for (double kv : sv) consider(srf->PointAt(ku, kv), "Knot");
+            }
           }
           break;
         }
@@ -1057,7 +1305,65 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
       }
     }
   }
-  if (result.snapped) return result;
+  if (result.snapped) return finish(result);
+
+  // SmartTrack: lines through the tracking points along the CPlane axes,
+  // and the intersections of two such lines.
+  if (snaps.smart_track && !track_points_.empty() && !snaps.disable_all) {
+    const double tol = 8.0;
+    const Vector3d ax = cplane_.x_axis, ay = cplane_.y_axis;
+    bool have = false, have_cross = false;
+    double best_d = tol;
+    Point3d best_p;
+    std::vector<std::pair<Point3d, Point3d>> best_lines;
+    auto screen_dist = [&](Point3d p, double& dist) {
+      double sx, sy;
+      if (!WorldToPixel(p, sx, sy)) return false;
+      dist = std::hypot(sx - px, sy - py);
+      return true;
+    };
+    // Closest point on the line (T, dir) to the cursor ray.
+    auto line_point = [&](Point3d t, Vector3d dir) {
+      const Vector3d w0 = t - ray.origin;
+      const double a = ON_DotProduct(ray.direction, ray.direction), b = ON_DotProduct(ray.direction, dir), c = ON_DotProduct(dir, dir);
+      const double d = ON_DotProduct(ray.direction, w0), e = ON_DotProduct(dir, w0);
+      const double denom = a * c - b * b;
+      const double s = std::fabs(denom) < 1e-12 ? 0.0 : (a * e - b * d) / denom * -1.0;
+      return t + dir * s;
+    };
+    for (size_t i = 0; i < track_points_.size(); ++i) {
+      for (size_t j = 0; j < track_points_.size(); ++j) {
+        if (i == j) continue;
+        // x-line of T_i meets y-line of T_j.
+        const Point3d ti = track_points_[i], tj = track_points_[j];
+        const double ui = ON_DotProduct(ti - cplane_.origin, ax), vi = ON_DotProduct(ti - cplane_.origin, ay), wi = ON_DotProduct(ti - cplane_.origin, n);
+        const double uj = ON_DotProduct(tj - cplane_.origin, ax);
+        if (std::fabs(uj - ui) < 1e-9) continue;
+        const Point3d cross = cplane_.ToWorld(uj, vi, wi);
+        double dist;
+        if (screen_dist(cross, dist) && dist <= tol && (!have_cross || dist < best_d)) {
+          have = have_cross = true; best_d = dist; best_p = cross;
+          best_lines = {{ti, cross}, {tj, cross}};
+        }
+      }
+    }
+    if (!have_cross) {
+      for (const Point3d& t : track_points_) {
+        for (const Vector3d& dir : {ax, ay}) {
+          const Point3d p = line_point(t, dir);
+          double dist;
+          if (screen_dist(p, dist) && dist <= tol && dist < best_d) { have = true; best_d = dist; best_p = p; best_lines = {{t, p}}; }
+        }
+      }
+    }
+    if (have) {
+      result.point = best_p;
+      result.snap_label = "SmartTrack";
+      result.snapped = true;
+      result.track_lines = best_lines;
+      return finish(result);
+    }
+  }
 
   // Ortho / planar constraints relative to the previous point.
   Point3d p = free_point;
@@ -1088,7 +1394,7 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
     if (result.snap_label.empty()) result.snap_label = "Grid";
   }
   result.point = p;
-  return result;
+  return finish(result);
 }
 
 void Viewport::ZoomTo(const kernel::BoundingBox& box) { camera_.ZoomExtents(box, Aspect()); }
@@ -1218,12 +1524,60 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
   }
 
   // Hover feedback.
+  if (!want_point && !cp_dragging_) {
+    track_points_.clear();
+    track_candidate_.reset();
+  }
+  auto dashed = [&](Point3d a, Point3d b, ImU32 col) {
+    double ax, ay, bx, by;
+    if (!WorldToPixel(a, ax, ay) || !WorldToPixel(b, bx, by)) return;
+    const double len = std::hypot(bx - ax, by - ay);
+    if (len < 1e-6) return;
+    const double ux = (bx - ax) / len, uy = (by - ay) / len;
+    for (double t = 0; t < len; t += 10.0) {
+      const double t2 = std::min(len, t + 6.0);
+      dl->AddLine(ImVec2(static_cast<float>(img_x_ + ax + ux * t), static_cast<float>(img_y_ + ay + uy * t)),
+                  ImVec2(static_cast<float>(img_x_ + ax + ux * t2), static_cast<float>(img_y_ + ay + uy * t2)), col, 1.0f);
+    }
+  };
+  if (want_point && snaps.smart_track) {
+    // Tracking point markers.
+    for (const Point3d& t : track_points_) {
+      double sx, sy;
+      if (!WorldToPixel(t, sx, sy)) continue;
+      const ImVec2 c(static_cast<float>(img_x_ + sx), static_cast<float>(img_y_ + sy));
+      dl->AddLine(ImVec2(c.x - 5, c.y), ImVec2(c.x + 5, c.y), IM_COL32(255, 255, 255, 200), 1.0f);
+      dl->AddLine(ImVec2(c.x, c.y - 5), ImVec2(c.x, c.y + 5), IM_COL32(255, 255, 255, 200), 1.0f);
+    }
+  }
   if (hovered) {
     if (want_point) {
       ev.hover_pick = PickPoint(doc, snaps, mx, my, ortho_base, grid_spacing, true);
       if (ev.hover_pick->snapped || !ev.hover_pick->snap_label.empty()) {
         const std::string& lbl = ev.hover_pick->snap_label;
         dl->AddText(ImVec2(io.MousePos.x + 14, io.MousePos.y + 10), IM_COL32(255, 255, 255, 230), lbl.c_str());
+      }
+      for (const auto& [a, b] : ev.hover_pick->track_lines) dashed(a, b, IM_COL32(255, 255, 255, 190));
+      // SmartTrack: a snap hovered for half a second becomes a tracking point.
+      if (snaps.smart_track) {
+        const std::string& lbl = ev.hover_pick->snap_label;
+        const bool trackable = ev.hover_pick->snapped && (lbl == "End" || lbl == "Mid" || lbl == "Cen" || lbl == "Point" || lbl == "Vertex" || lbl == "Knot" || lbl == "Quad" || lbl == "Int");
+        const double now_t = ImGui::GetTime();
+        if (!trackable) {
+          track_candidate_.reset();
+        } else if (track_candidate_ && (*track_candidate_ - ev.hover_pick->point).Length() < 1e-9) {
+          if (now_t - track_candidate_since_ >= 0.5) {
+            bool known = false;
+            for (const Point3d& t : track_points_) known = known || (t - *track_candidate_).Length() < 1e-9;
+            if (!known) {
+              track_points_.push_back(*track_candidate_);
+              if (track_points_.size() > 6) track_points_.erase(track_points_.begin());
+            }
+          }
+        } else {
+          track_candidate_ = ev.hover_pick->point;
+          track_candidate_since_ = now_t;
+        }
       }
     } else {
       PickResult free = PickPoint(doc, snaps, mx, my, std::nullopt, grid_spacing, false);
@@ -1247,6 +1601,16 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
         drag_start_y_ = last_y_ = my;
         drag_moved_ = false;
         active_ = true;
+        // Pressing on a selected control point starts a direct drag of the
+        // selected points instead of a window (Rhino behaviour).
+        if (b == 0 && !want_point && sub_selection_ && !sub_selection_->Empty() && !io.KeyCtrl && !io.KeyShift) {
+          std::optional<SubObjectPick> cp = PickControlPoint(doc, mx, my);
+          if (cp && sub_selection_->Contains(cp->ref)) {
+            cp_dragging_ = true;
+            cp_drag_start_ = cp->point;
+            ev.cp_drag_begin = true;
+          }
+        }
       }
     }
     if (hovered) active_ = active_ || ImGui::IsMouseClicked(0);
@@ -1264,6 +1628,29 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
           camera_.Orbit(dx, dy);
         }
       }
+    } else if (drag_button_ == 0 && cp_dragging_) {
+      if (drag_moved_) {
+        // Target: an object snap under the cursor, else the point on the
+        // view-parallel plane through the dragged control point.
+        Point3d target = cp_drag_start_;
+        PickResult pr = PickPoint(doc, snaps, mx, my, std::nullopt, grid_spacing, true);
+        if (pr.snapped) {
+          target = pr.point;
+          dl->AddText(ImVec2(io.MousePos.x + 14, io.MousePos.y + 10), IM_COL32(255, 255, 255, 230), pr.snap_label.c_str());
+        } else {
+          const Ray r = PixelRay(mx, my);
+          const Vector3d f = camera_.Forward();
+          const double denom = ON_DotProduct(f, r.direction);
+          if (std::fabs(denom) > 1e-12) target = r.origin + r.direction * (ON_DotProduct(f, cp_drag_start_ - r.origin) / denom);
+          if (snaps.grid_snap && grid_spacing > 0) {
+            Vector3d dlt = target - cp_drag_start_;
+            dlt = Vector3d(std::round(dlt.x / grid_spacing) * grid_spacing, std::round(dlt.y / grid_spacing) * grid_spacing, std::round(dlt.z / grid_spacing) * grid_spacing);
+            target = cp_drag_start_ + dlt;
+          }
+        }
+        ev.cp_drag_update = true;
+        ev.cp_drag_delta = target - cp_drag_start_;
+      }
     } else if (drag_button_ == 0 && drag_moved_) {
       // Rubber-band selection rectangle.
       const ImVec2 a(static_cast<float>(img_x_ + drag_start_x_), static_cast<float>(img_y_ + drag_start_y_));
@@ -1277,15 +1664,23 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
     if (!ImGui::IsMouseDown(drag_button_)) {
       dragging_ = false;
       if (drag_button_ == 0) {
-        if (drag_moved_) {
+        if (cp_dragging_) {
+          cp_dragging_ = false;
+          ev.cp_drag_end = true;
+        }
+        if (drag_moved_ && !ev.cp_drag_end) {
           ev.window = std::array<double, 4>{drag_start_x_, drag_start_y_, mx, my};
           ev.window_is_crossing = mx < drag_start_x_;
-        } else {
+        } else if (!drag_moved_) {
           ev.clicked = true;
           ev.double_clicked = (now - last_click_time_) < 0.35;
           last_click_time_ = now;
           ev.click_pick = PickPoint(doc, snaps, mx, my, ortho_base, grid_spacing, want_point);
           ev.clicked_object = PickObject(doc, mx, my);
+          if (!want_point) {
+            ev.clicked_control_point = PickControlPoint(doc, mx, my);
+            if ((io.KeyCtrl && io.KeyShift) || sub_filter_.Any()) ev.clicked_sub_object = PickSubObject(doc, mx, my, sub_filter_);
+          }
         }
       } else if (drag_button_ == 1 && !drag_moved_) {
         ev.right_clicked = true;

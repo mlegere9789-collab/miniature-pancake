@@ -1497,11 +1497,9 @@ void RegisterSubDCommands(CommandEngine& e) {
         g_subd_filter = (g_subd_filter + 1) % 4;
         ctx.Print(std::string("SubD selection filter: ") + kFilterNames[g_subd_filter] + " (sub-object picking is by point in this build)");
       }), CommandStatus::Partial, "Cycles a selection filter flag; sub-objects are picked by point.");
-  Reg(e, "SelSubDEdges", Immediate([](CommandContext& ctx) {
-        int subds = 0, creases = 0;
-        ctx.Doc().SelectWhere([&](const SceneObject& o) { if (o.kind != ObjectKind::SubD || !o.subd) return false; ++subds; creases += o.subd->CreaseEdgeCount(); return true; }, true);
-        ctx.Print("SelSubDEdges: " + std::to_string(subds) + " SubD(s) selected with " + std::to_string(creases) + " crease edge(s); edge sub-object selection is not available in this build");
-      }), CommandStatus::Partial, "Selects the SubDs; edges cannot be selected as sub-objects.");
+  // SelSubDEdges (real, crease edges as sub-objects) is registered by
+  // RegisterSelect2Commands; this call would just overwrite it with the
+  // old whole-object placeholder, so it has been removed from here.
   Reg(e, "SelClosedSubD", SelWhere([](const SceneObject& o) { return IsClosedSubD(o); }));
   Reg(e, "SelOpenSubD", SelWhere([](const SceneObject& o) { return o.kind == ObjectKind::SubD && !IsClosedSubD(o); }));
 

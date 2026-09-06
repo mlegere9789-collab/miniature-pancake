@@ -7,6 +7,8 @@
 #include <cstring>
 #include <filesystem>
 
+#include "commands/Command.h"
+#include "doc/SubObjectEdit.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "io/File3dm.h"
@@ -113,7 +115,50 @@ Viewport::FrameContext Application::MakeFrameContext() {
   ctx.curve_tolerance = curve_display_tolerance;
   ctx.surface_tolerance = surface_display_tolerance;
   ctx.fallback_analysis = &analysis_fallback;
+  ctx.sub_selection = &sub_selection_;
   return ctx;
+}
+
+SubObjectPickFilter Application::CurrentSubObjectFilter() const {
+  SubObjectPickFilter f;
+  if (state_.filter_enabled) {
+    f.vertices = state_.filter_vertices;
+    f.edges = state_.filter_edges;
+    f.faces = state_.filter_faces;
+  }
+  f.cull_control_polygon = state_.cull_control_polygon;
+  return f;
+}
+
+void Application::DeleteSubObjectSelection() {
+  if (sub_selection_.Empty()) return;
+  doc_.BeginChange("Delete sub-objects");
+  int deleted = 0, removed = 0;
+  std::string first_error;
+  for (ObjectId id : sub_selection_.ObjectIds()) {
+    SceneObject* o = doc_.Find(id);
+    if (!o) continue;
+    const std::vector<SubObjectRef> refs = sub_selection_.ItemsOf(id);
+    bool remove = false;
+    std::string message;
+    if (!DeleteSubObjects(*o, refs, remove, message)) {
+      if (first_error.empty()) first_error = message;
+      continue;
+    }
+    deleted += static_cast<int>(refs.size());
+    if (remove) { doc_.Remove(id); ++removed; }
+  }
+  sub_selection_.Clear();
+  if (deleted == 0) {
+    doc_.Undo();
+    engine_->Print("Delete: " + (first_error.empty() ? std::string("nothing to delete") : first_error));
+    return;
+  }
+  std::string msg = "Deleted " + std::to_string(deleted) + " sub-object(s)";
+  if (removed) msg += ", " + std::to_string(removed) + " object(s) removed entirely";
+  if (!first_error.empty()) msg += " (" + first_error + ")";
+  engine_->Print(msg);
+  doc_.Touch();
 }
 
 bool Application::RenderView(Viewport* vp, int width, int height, int supersample, bool arctic, std::string& error) {
@@ -917,6 +962,15 @@ void Application::DrawViewports() {
     SetActiveLayout(-1);  // the layout was deleted (Undo / New)
   }
 
+  // Drop sub-object references to objects that no longer exist (Undo,
+  // Delete) or whose control points were turned off.
+  for (ObjectId id : sub_selection_.ObjectIds()) {
+    const SceneObject* o = doc_.Find(id);
+    if (!o) { sub_selection_.RemoveObject(id); continue; }
+    for (const SubObjectRef& r : sub_selection_.ItemsOf(id)) {
+      if (r.kind == SubObjectKind::Vertex && !o->show_control_points && o->kind != ObjectKind::Mesh && o->kind != ObjectKind::SubD) sub_selection_.Remove(r);
+    }
+  }
   // Render every visible viewport into its texture first.
   Viewport::FrameContext ctx = MakeFrameContext();
   ctx.print_display = viewtools.print_display;
@@ -941,6 +995,8 @@ void Application::DrawViewports() {
                                          ImVec2(static_cast<float>(vp.ScreenX()), static_cast<float>(vp.ScreenY())),
                                          ImVec2(static_cast<float>(vp.ScreenX() + vp.Width()), static_cast<float>(vp.ScreenY() + vp.Height()))));
     vp.SetInputLocked(gumball_wants_mouse);
+    vp.SetSubObjectSelection(&sub_selection_);
+    vp.SetSubObjectFilter(CurrentSubObjectFilter());
     ViewportEvents ev = vp.DrawUI(doc_, snaps_, want_point, want_objects, ortho_base,
                                   doc_.Settings().grid_spacing, request_focus);
     if (ev.hovered) {
@@ -1139,12 +1195,54 @@ void Application::DrawViewportTabs() {
 
 void Application::ProcessViewportEvents(Viewport& vp, const ViewportEvents& ev) {
   const Want want = engine_->CurrentWant();
+  // Direct drag of the selected control points (no gumball).
+  if (ev.cp_drag_begin) {
+    cp_drag_originals_.clear();
+    cp_drag_changed_ = false;
+    for (ObjectId id : sub_selection_.ObjectIds()) if (const SceneObject* o = doc_.Find(id)) cp_drag_originals_.push_back({id, *o});
+  }
+  if (ev.cp_drag_update && !cp_drag_originals_.empty()) {
+    if (!cp_drag_changed_) { doc_.BeginChange("Move control points"); cp_drag_changed_ = true; }
+    const ON_Xform xf = ON_Xform::TranslationTransformation(ev.cp_drag_delta);
+    for (auto& [id, original] : cp_drag_originals_) {
+      if (SceneObject* o = doc_.Find(id)) {
+        SceneObject moved = original;
+        TransformSubObjects(moved, sub_selection_.ItemsOf(id), xf);
+        *o = moved;
+      }
+    }
+  }
+  if (ev.cp_drag_end) {
+    if (cp_drag_changed_) {
+      engine_->Print("Moved " + std::to_string(sub_selection_.Size()) + " control point(s) by " + FormatPoint(kernel::Point3d(ev.cp_drag_delta.x, ev.cp_drag_delta.y, ev.cp_drag_delta.z)));
+      doc_.Touch();
+    }
+    cp_drag_originals_.clear();
+    cp_drag_changed_ = false;
+  }
   if (ev.clicked) {
     for (auto& other : viewports_) other->SetActive(other.get() == &vp);
     if (want == Want::Point && ev.click_pick) {
       engine_->FeedPoint(ev.click_pick->point);
       return;
     }
+    // Sub-objects: a control point of an object with PointsOn, or (with
+    // Ctrl+Shift / an active selection filter) a vertex, edge or face.
+    if (ev.clicked_control_point || ev.clicked_sub_object) {
+      const SubObjectRef r = ev.clicked_control_point ? ev.clicked_control_point->ref : ev.clicked_sub_object->ref;
+      if (ev.ctrl) sub_selection_.Toggle(r);
+      else if (ev.shift) sub_selection_.Add(r);
+      else { sub_selection_.Clear(); sub_selection_.Add(r); }
+      if (!ev.ctrl && !ev.shift && want != Want::Objects) doc_.SelectNone();
+      if (ev.clicked_sub_object) {
+        const SceneObject* o = doc_.Find(r.id);
+        engine_->Print(std::string(sub_selection_.Contains(r) ? "Selected " : "Deselected ") + SubObjectKindName(r.kind) + " " + std::to_string(r.index) +
+                       (r.index2 >= 0 ? "-" + std::to_string(r.index2) : "") + " of " + (o ? ObjectKindName(o->kind) : "object") + " " + std::to_string(r.id) +
+                       " (" + std::to_string(sub_selection_.Size()) + " sub-object(s) selected)");
+      }
+      return;
+    }
+    if (!ev.ctrl && !ev.shift) sub_selection_.Clear();
     // Selection (either free, or while a command asks for objects).
     if (ev.clicked_object != kNoObject) {
       SceneObject* o = doc_.Find(ev.clicked_object);
@@ -1173,6 +1271,17 @@ void Application::ProcessViewportEvents(Viewport& vp, const ViewportEvents& ev) 
   }
   if (ev.window) {
     const auto& w = *ev.window;
+    // Control points inside the window win over objects (PointsOn editing).
+    if (want != Want::Objects) {
+      const std::vector<SubObjectRef> cps = vp.ControlPointsInWindow(doc_, w[0], w[1], w[2], w[3]);
+      if (!cps.empty()) {
+        if (!ev.ctrl && !ev.shift) { sub_selection_.Clear(); doc_.SelectNone(); }
+        for (const SubObjectRef& r : cps) { if (ev.ctrl) sub_selection_.Toggle(r); else sub_selection_.Add(r); }
+        engine_->Print(std::to_string(sub_selection_.Size()) + " control point(s) selected");
+        return;
+      }
+      if (!ev.ctrl && !ev.shift) sub_selection_.Clear();
+    }
     const std::vector<ObjectId> ids = vp.ObjectsInWindow(doc_, w[0], w[1], w[2], w[3], ev.window_is_crossing);
     if (!ev.ctrl && !ev.shift && want != Want::Objects) doc_.SelectNone();
     for (ObjectId id : ids) {
@@ -1211,11 +1320,15 @@ void Application::HandleShortcuts() {
   const bool text_active = io.WantTextInput;
   if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
     if (engine_->IsRunning()) engine_->Cancel();
+    else if (!sub_selection_.Empty()) sub_selection_.Clear();
     else doc_.SelectNone();
     command_input_.clear();
   }
   if (!text_active || engine_->IsRunning()) {
-    if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !engine_->IsRunning()) engine_->Execute("Delete");
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete) && !engine_->IsRunning()) {
+      if (!sub_selection_.Empty()) DeleteSubObjectSelection();
+      else engine_->Execute("Delete");
+    }
   }
   if (io.KeyCtrl && !text_active) {
     if (ImGui::IsKeyPressed(ImGuiKey_Z)) engine_->Execute("Undo");
@@ -1509,6 +1622,7 @@ void Application::DrawStatusBar() {
     osnap("End", snaps_.end); osnap("Near", snaps_.near_); osnap("Point", snaps_.point); osnap("Mid", snaps_.mid);
     osnap("Cen", snaps_.cen); osnap("Int", snaps_.int_); osnap("Perp", snaps_.perp); osnap("Tan", snaps_.tan);
     osnap("Quad", snaps_.quad); osnap("Vertex", snaps_.vertex);
+    osnap("Knot", snaps_.knot); osnap("Project", snaps_.project);
     ImGui::SameLine(0, 12);
     osnap("Disable", snaps_.disable_all);
     ImGui::NewLine();
@@ -1636,6 +1750,8 @@ void Application::DrawStatusBar() {
       ImGui::Checkbox("Tan", &snaps_.tan); ImGui::SameLine();
       ImGui::Checkbox("Quad", &snaps_.quad); ImGui::SameLine();
       ImGui::Checkbox("Vertex", &snaps_.vertex); ImGui::SameLine();
+      ImGui::Checkbox("Knot", &snaps_.knot); ImGui::SameLine();
+      ImGui::Checkbox("Project", &snaps_.project); ImGui::SameLine();
       ImGui::Checkbox("Disable", &snaps_.disable_all);
     }
     ImGui::End();

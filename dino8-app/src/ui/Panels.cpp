@@ -701,7 +701,8 @@ void DrawOptionsWindow(Application& app) {
       ImGui::Checkbox("End", &s.end); ImGui::SameLine(); ImGui::Checkbox("Near", &s.near_); ImGui::SameLine(); ImGui::Checkbox("Point", &s.point);
       ImGui::Checkbox("Mid", &s.mid); ImGui::SameLine(); ImGui::Checkbox("Cen", &s.cen); ImGui::SameLine(); ImGui::Checkbox("Int", &s.int_);
       ImGui::Checkbox("Perp", &s.perp); ImGui::SameLine(); ImGui::Checkbox("Tan", &s.tan); ImGui::SameLine(); ImGui::Checkbox("Quad", &s.quad);
-      ImGui::Checkbox("Vertex", &s.vertex); ImGui::SameLine(); ImGui::Checkbox("Disable all", &s.disable_all);
+      ImGui::Checkbox("Vertex", &s.vertex); ImGui::SameLine(); ImGui::Checkbox("Knot", &s.knot); ImGui::SameLine(); ImGui::Checkbox("Project", &s.project);
+      ImGui::Checkbox("Disable all", &s.disable_all);
       ImGui::EndTabItem();
     }
     if (ImGui::BeginTabItem("View")) {

@@ -15,6 +15,7 @@
 #include "commands/CommandEngine.h"
 #include "doc/Document.h"
 #include "render/GlRenderer.h"
+#include "doc/SubObject.h"
 #include "ui/Gumball.h"
 #include "imgui.h"
 #include "viewport/Viewport.h"
@@ -76,6 +77,7 @@ struct AppState {
   // Sub-object selection filter (SelectionFilterEdges/Faces/Vertices/...).
   bool filter_enabled = true;
   bool filter_edges = false, filter_faces = false, filter_vertices = false;
+  bool cull_control_polygon = false;  // CullControlPolygon: only unoccluded control points are pickable
   bool echo = true;              // Echo / NoEcho: print script commands to the history
   bool redraw = true;            // SetRedrawOn / SetRedrawOff
   bool command_prompt = true;    // CommandPrompt / DisplayCommandPrompt
@@ -156,6 +158,14 @@ class Application {
   PanelState& Panels() { return panels_; }
   AppState& State() { return state_; }
   Gumball& GetGumball() { return gumball_; }
+  // Selected control points / vertices / edges / faces (on top of the
+  // whole-object selection). The gumball and the Delete key act on it.
+  SubObjectSelection& SubSelection() { return sub_selection_; }
+  const SubObjectSelection& SubSelection() const { return sub_selection_; }
+  // Deletes the selected sub-objects (Delete key with a sub-object selection).
+  void DeleteSubObjectSelection();
+  // The pick filter the viewports use this frame (SelectionFilter* flags).
+  SubObjectPickFilter CurrentSubObjectFilter() const;
   // The GLFW window (as an opaque pointer so headers stay GLFW-free); set by
   // main() so Fullscreen/Maximize/Minimize/Restore can drive the OS window.
   void* native_window = nullptr;
@@ -260,6 +270,10 @@ class Application {
   CommandCatalog catalog_;
   std::unique_ptr<CommandEngine> engine_;
   Gumball gumball_;
+  SubObjectSelection sub_selection_;
+  // Direct control-point drag in progress (originals restored + moved each frame).
+  std::vector<std::pair<ObjectId, SceneObject>> cp_drag_originals_;
+  bool cp_drag_changed_ = false;
   GlRenderer renderer_;
   std::vector<std::unique_ptr<Viewport>> viewports_;
   int active_viewport_ = 3;
