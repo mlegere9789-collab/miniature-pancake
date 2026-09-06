@@ -62,6 +62,8 @@ struct PanelState {
   bool dino_flow = false;        // Grasshopper: the Dino Flow node editor
   bool plugin_manager = false;   // PlugInManager / GrasshopperPluginList
   bool package_manager = false;  // PackageManager
+  bool hatch_patterns = false;  // Hatch pattern library thumbnails (cmd_drafting2.cpp)
+  bool table_editor = false;    // Table / RevisionTable / TitleBlock / BillOfMaterials editor
 };
 
 // The Script Editor panel's state (persisted: the last script text lives in

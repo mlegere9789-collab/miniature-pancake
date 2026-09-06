@@ -232,6 +232,8 @@ void DrawMenuBar(Application& app) {
     ImGui::MenuItem("Dino Flow", "", &p.dino_flow);
     ImGui::MenuItem("Plug-in Manager", "", &p.plugin_manager);
     ImGui::MenuItem("Package Manager", "", &p.package_manager);
+    ImGui::MenuItem("Hatch Patterns", "", &p.hatch_patterns);
+    ImGui::MenuItem("Table Editor", "", &p.table_editor);
     ImGui::MenuItem("Viewport Tabs", "", &app.show_viewport_tabs);
     ImGui::Separator();
     if (ImGui::MenuItem("Reset Window Layout")) app.SetViewportLayout(4);

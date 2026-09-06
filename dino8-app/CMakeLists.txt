@@ -105,6 +105,11 @@ set(DINO8_SOURCES
   src/commands/cmd_annotate.cpp
   src/commands/cmd_annotate2.cpp
   src/commands/cmd_drafting.cpp
+  src/commands/cmd_drafting2.cpp
+  src/drafting/HatchLibrary.cpp
+  src/drafting/Table.cpp
+  src/drafting/Gdt.cpp
+  src/drafting/SectionView.cpp
   src/commands/cmd_curves2.cpp
   src/commands/cmd_srfedit.cpp
   src/ui/Theme.cpp
@@ -208,7 +213,7 @@ endif()
 # The command catalog (all 1055 Rhino 8 commands with help text) ships next
 # to the binary; the app also looks for it relative to the source tree when
 # run from a build directory.
-set(DINO8_DATA_FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/commands.json)
+set(DINO8_DATA_FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/commands.json ${CMAKE_CURRENT_SOURCE_DIR}/data/hatchpatterns.pat)
 add_custom_command(TARGET Dino8 POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Dino8>/data
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DINO8_DATA_FILES} $<TARGET_FILE_DIR:Dino8>/data/

@@ -126,7 +126,14 @@ bool TextToCurves(const std::string& text, double height, const ON_Plane& plane,
   d.x_offset = 0;
   d.out = &out;
   FT_Outline_Funcs funcs = {Decomposer::MoveTo, Decomposer::LineTo, Decomposer::ConicTo, Decomposer::CubicTo, 0, 0};
-  for (unsigned char ch : text) {
+  // Decode UTF-8 so symbols such as the plus-minus and diameter signs load as one glyph.
+  for (size_t i = 0; i < text.size(); ++i) {
+    unsigned long ch = static_cast<unsigned char>(text[i]);
+    int extra = (ch & 0xE0) == 0xC0 ? 1 : (ch & 0xF0) == 0xE0 ? 2 : (ch & 0xF8) == 0xF0 ? 3 : 0;
+    if (extra) {
+      ch &= (0x3F >> extra);
+      for (int k = 0; k < extra && i + 1 < text.size() && (static_cast<unsigned char>(text[i + 1]) & 0xC0) == 0x80; ++k) ch = (ch << 6) | (static_cast<unsigned char>(text[++i]) & 0x3F);
+    }
     if (ch == ' ') { d.x_offset += face->units_per_EM * 0.3 * scale; continue; }
     if (FT_Load_Char(face, ch, FT_LOAD_NO_BITMAP | FT_LOAD_NO_SCALE)) continue;
     FT_Outline_Decompose(&face->glyph->outline, &funcs, &d);

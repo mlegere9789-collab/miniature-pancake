@@ -45,6 +45,8 @@ void DrawScriptEditor(Application& app);
 void DrawScriptingReference(Application& app);
 // Loads a script file into the Script Editor panel (and opens it).
 bool OpenInScriptEditor(Application& app, const std::string& path);
+void DrawHatchPatternsPanel(Application& app);  // defined in cmd_drafting2.cpp
+void DrawTableEditorPanel(Application& app);    // defined in cmd_drafting2.cpp
 
 // Toolbars (Toolbars.cpp): tabbed icon toolbar + left sidebar.
 struct IconButtonResult {

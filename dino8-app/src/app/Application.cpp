@@ -1,5 +1,7 @@
 #include "app/Application.h"
 
+#include "drafting/HatchLibrary.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -61,6 +63,7 @@ void RegisterSelect2Commands(CommandEngine&);
 void RegisterStateCommands(CommandEngine&);
 void RegisterViewToolsCommands(CommandEngine&);
 void RegisterFlowCommands(CommandEngine&);
+void RegisterDrafting2Commands(CommandEngine&);  // hatch library, tables, BoM, GD&T, multi-leaders, section views
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -80,6 +83,11 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
     error = "Could not load the command catalog: " + catalog_error;
     // Keep going: the app still works, just without the reference list.
   }
+  // Same search order as commands.json, minus the entries with no "/data" suffix.
+  drafting::HatchLibrary::Instance().Load({
+      exe_dir + "/data", exe_dir + "/../Resources/data", exe_dir + "/../share/dino8/data",
+      exe_dir + "/../../data", exe_dir + "/../../../dino8-app/data", "data",
+  });
   engine_ = std::make_unique<CommandEngine>(*this, doc_, catalog_);
   lua_ = std::make_unique<LuaEngine>(*this);
   RegisterCommands();
@@ -266,6 +274,7 @@ void Application::RegisterCommands() {
   RegisterAnnotateCommands(*engine_);
   RegisterDraftingCommands(*engine_);
   RegisterAnnotate2Commands(*engine_);  // dimensions, linetypes, hatch and block extras
+  RegisterDrafting2Commands(*engine_);  // re-registers Hatch against the pattern library; adds tables/BoM/GD&T/leaders/sections
   RegisterSelect2Commands(*engine_);
   RegisterStateCommands(*engine_);
   RegisterCurves2Commands(*engine_);
@@ -1947,6 +1956,8 @@ void Application::DrawPanels() {
   if (panels_.named_cplanes) DrawNamedCPlanesPanel(*this);
   if (panels_.script_editor) DrawScriptEditor(*this);
   if (panels_.scripting_reference) DrawScriptingReference(*this);
+  if (panels_.hatch_patterns) DrawHatchPatternsPanel(*this);
+  if (panels_.table_editor) DrawTableEditorPanel(*this);
   if (panels_.imgui_demo) ImGui::ShowDemoWindow(&panels_.imgui_demo);
   flow::Editor::Get().open = panels_.dino_flow;
   flow::Editor::Get().Draw(*this);
