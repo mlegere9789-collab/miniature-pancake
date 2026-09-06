@@ -133,6 +133,27 @@ class DigCalibrateCommand : public Command {
   bool have_origin_ = false, have_x_ = false;
 };
 
+// DigScale [value]: sets the device-to-model unit scale applied to raw
+// digitizer readings before calibration (e.g. a caliper-style digitizer
+// reporting inches into a millimetre model).
+class DigScaleCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (auto t = ctx.Engine().TakePendingInput()) { OnText(ctx, *t); return; }
+    WantText("New scale <" + FormatNumber(Digitizer::Instance().UnitScale()) + ">", FormatNumber(Digitizer::Instance().UnitScale()));
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    char* end = nullptr;
+    const double v = std::strtod(t.c_str(), &end);
+    if (!end || *end != 0 || v <= 0) { ctx.Warn("DigScale: '" + t + "' is not a positive number"); Finish(); return; }
+    Digitizer::Instance().SetUnitScale(v);
+    ctx.Print("DigScale: scale set to " + FormatNumber(Digitizer::Instance().UnitScale()));
+    Finish();
+  }
+  void OnNumber(CommandContext& ctx, double v) override { OnText(ctx, FormatNumber(v)); }
+  void OnEnter(CommandContext& ctx) override { ctx.Print("DigScale: current scale " + FormatNumber(Digitizer::Instance().UnitScale())); Finish(); }
+};
+
 // ---------------------------------------------------------------------------
 // Worksession: Attach/Detach/List/Save/Load. Objects are copied in (locked,
 // tagged "Dino8.Reference") rather than kept as a live link to the source
@@ -287,9 +308,8 @@ void RegisterSessionCommands(CommandEngine& e) {
         AddObject(ctx, SceneObject::MakePoint(model), "DigPoint");
         ctx.Print("DigPoint: digitized " + FormatPoint(model) + (p.button ? (" (button " + std::to_string(p.button) + ")") : ""));
       }), CommandStatus::Partial, "Reads the next point from the connected digitizer (calibrated and unit-scaled) and adds a point object.");
-  Reg(e, "DigScale", Immediate([](CommandContext& ctx) {
-        ctx.Print("DigScale: current scale " + FormatNumber(Digitizer::Instance().UnitScale()) + ". Type a new value.");
-      }), CommandStatus::Partial, "Sets the device-to-model unit scale applied to raw digitizer readings.");
+  Reg(e, "DigScale", Make<DigScaleCommand>(), CommandStatus::Partial,
+      "Sets the device-to-model unit scale applied to raw digitizer readings, before calibration.");
   Reg(e, "DigPause", Immediate([](CommandContext& ctx) { Digitizer::Instance().SetPaused(true); ctx.Print("DigPause: digitizing paused"); }));
   Reg(e, "DigResume", Immediate([](CommandContext& ctx) { Digitizer::Instance().SetPaused(false); ctx.Print("DigResume: digitizing resumed"); }));
   Reg(e, "DigStatus", Immediate([](CommandContext& ctx) { ctx.Print(DescribeDigitizer()); }));

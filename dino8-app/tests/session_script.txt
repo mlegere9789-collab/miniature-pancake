@@ -10,6 +10,7 @@ DigPoint
 DigPoint
 DigPoint
 DigListPorts
+DigScale 25.4
 DigDisconnect
 DigStatus
 

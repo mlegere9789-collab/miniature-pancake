@@ -957,6 +957,7 @@ sscheck "Digitizer: connected, protocol File, file $TMP/sess/dig_points.txt" "Di
 sscheck "DigPoint: digitized 1,2,3" "DigPoint read the first fixture point"
 sscheck "DigPoint: digitized 4.5,5.5,6.5 (button 1)" "DigPoint read the second point and its button"
 sscheck "DigPoint: no point available" "DigPoint warns once the fixture file is exhausted"
+sscheck "DigScale: scale set to 25.4" "DigScale set the unit scale"
 sscheck "DigDisconnect: disconnected" "DigDisconnect"
 sscheck "Digitizer: not connected" "DigStatus reports disconnected after DigDisconnect"
 sscheck "BringToFront: " "BringToFront ran on the overlapping circles"
