@@ -37,6 +37,7 @@ void Document::Clear() {
   next_group_id_ = 1;
   undo_.clear();
   redo_.clear();
+  named_snapshots_.clear();
   ++revision_;
 }
 
@@ -430,6 +431,39 @@ void Document::Restore(const Snapshot& s) {
   next_light_id_ = s.next_light_id;
   for (SceneObject& o : objects_) o.InvalidateDisplay();
   Touch();
+}
+
+bool Document::SaveNamedSnapshot(const std::string& name) {
+  Snapshot s = Capture(name);
+  for (auto& [n, snap] : named_snapshots_) {
+    if (n == name) { snap = std::move(s); return true; }
+  }
+  named_snapshots_.emplace_back(name, std::move(s));
+  return true;
+}
+
+bool Document::RestoreNamedSnapshot(const std::string& name) {
+  for (const auto& [n, snap] : named_snapshots_) {
+    if (n != name) continue;
+    Restore(snap);
+    return true;
+  }
+  return false;
+}
+
+bool Document::DeleteNamedSnapshot(const std::string& name) {
+  const auto it = std::find_if(named_snapshots_.begin(), named_snapshots_.end(),
+                               [&](const auto& p) { return p.first == name; });
+  if (it == named_snapshots_.end()) return false;
+  named_snapshots_.erase(it);
+  return true;
+}
+
+std::vector<std::string> Document::NamedSnapshotNames() const {
+  std::vector<std::string> names;
+  names.reserve(named_snapshots_.size());
+  for (const auto& [n, snap] : named_snapshots_) names.push_back(n);
+  return names;
 }
 
 void Document::BeginChange(const std::string& label) {

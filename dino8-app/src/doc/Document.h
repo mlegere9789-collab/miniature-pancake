@@ -410,6 +410,17 @@ class Document {
   void Touch() { modified_ = true; ++revision_; }
   std::uint64_t Revision() const { return revision_; }
 
+  // Named Snapshots (Rhino's Snapshots panel): a full document capture
+  // under a user-given name, independent of the Undo/Redo stack - it
+  // survives further edits and Undo/Redo, so a named snapshot is a
+  // stable "restore point" rather than a step in the edit history. Not
+  // written to the .3dm (session state only, same as ReferenceModel and
+  // HoleFeature above).
+  bool SaveNamedSnapshot(const std::string& name);              // captures now; overwrites an existing snapshot of the same name
+  bool RestoreNamedSnapshot(const std::string& name);           // false if no snapshot has that name
+  bool DeleteNamedSnapshot(const std::string& name);            // false if no snapshot has that name
+  std::vector<std::string> NamedSnapshotNames() const;
+
  private:
   struct Snapshot {
     std::string label;
@@ -459,6 +470,7 @@ class Document {
   std::vector<Snapshot> undo_;
   std::vector<Snapshot> redo_;
   size_t max_undo_ = 100;
+  std::vector<std::pair<std::string, Snapshot>> named_snapshots_;
 };
 
 }  // namespace dino8::app

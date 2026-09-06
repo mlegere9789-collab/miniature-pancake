@@ -923,10 +923,71 @@ void ArrayHolePolar(CommandContext& ctx, const Input& in) {
   HoleArray(ctx, in, centers, radius, depth, "ArrayHolePolar");
 }
 
-CommandFactory HoleFeatureStub(const char* name) {
-  return Immediate([name](CommandContext& ctx) {
-    ctx.Print(std::string(name) + ": holes cut in Dino 8 are part of the mesh solid, not editable features. Cut another one with RoundHole, PlaceHole or ArrayHole/ArrayHolePolar, or Undo and re-run the hole command at the new position.");
-  });
+// Re-runs a hole feature's boolean at a new placement (Move/Copy/Mirror/
+// RotateHole below). `xf` transforms the *cutter* only. When `copy` is
+// false (Move/Rotate) the cutter is subtracted from the feature's stored,
+// unmodified `pre_cut_parent` and the result replaces the object in
+// place - the hole moves, the solid it's cut into does not. When `copy`
+// is true (Copy/mirroring with Copy=Yes) the transformed cutter is
+// subtracted from the object's *current* mesh instead, adding a second
+// hole into a duplicate of the object, so the original is left untouched.
+void ApplyHoleXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Xform& xf, bool copy, const std::string& label) {
+  ctx.Doc().BeginChange(label);
+  int done = 0;
+  for (ObjectId id : ids) {
+    const HoleFeature* hf = ctx.Doc().FindHoleFeature(id);
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!hf || !o || !o->mesh) {
+      ctx.Warn(label + ": object " + Id(id) + " is not an editable hole feature (cut with RoundHole, PlaceHole, RevolvedHole or an ArrayHole)");
+      continue;
+    }
+    const kernel::Mesh pre_cut_parent = hf->pre_cut_parent;  // copy: Doc().Add() below may reallocate
+    const kernel::Mesh new_cutter = hf->cutter.Transform(xf);
+    const kernel::Mesh base = copy ? *o->mesh : pre_cut_parent;
+    std::optional<kernel::Mesh> r = Combine(ctx, base, new_cutter, kernel::BooleanOp::Difference, label);
+    if (!r || r->FaceCount() == 0) { ctx.Warn(label + ": object " + Id(id) + " could not be re-cut at the new placement"); continue; }
+    if (copy) {
+      SceneObject dup = *o;
+      dup.id = kNoObject;
+      dup.selected = false;
+      *dup.mesh = *r;
+      dup.InvalidateDisplay();
+      const ObjectId new_id = ctx.Doc().Add(std::move(dup));
+      ctx.Doc().SetHoleFeature(new_id, base, new_cutter);
+      SceneObject* n = ctx.Doc().Find(new_id);
+      if (n) n->user_text["Hole.Feature"] = "1";
+      ctx.Print(label + ": copied object " + Id(id) + " to object " + Id(new_id) + " (mesh boolean; results are meshes)");
+    } else {
+      const ObjectId final_id = ReplaceWithMesh(ctx, id, *r);
+      if (final_id != kNoObject) ctx.Doc().SetHoleFeature(final_id, pre_cut_parent, new_cutter);
+      ctx.Print(label + ": object " + Id(id) + " re-cut at the new placement (mesh boolean; results are meshes)");
+    }
+    ++done;
+  }
+  if (done == 0) ctx.Warn(label + ": nothing was changed");
+}
+
+void MoveHole(CommandContext& ctx, const Input& in) {
+  ApplyHoleXform(ctx, in.O(0), ON_Xform::TranslationTransformation(in.P(2) - in.P(1)), false, "MoveHole");
+}
+
+void CopyHole(CommandContext& ctx, const Input& in) {
+  ApplyHoleXform(ctx, in.O(0), ON_Xform::TranslationTransformation(in.P(2) - in.P(1)), true, "CopyHole");
+}
+
+void RotateHole(CommandContext& ctx, const Input& in) {
+  ON_Xform xf;
+  xf.Rotation(in.N(2, 90) * ON_PI / 180.0, ActiveNormal(ctx), in.P(1));
+  ApplyHoleXform(ctx, in.O(0), xf, in.Yes("Copy"), "RotateHole");
+}
+
+void MirrorHole(CommandContext& ctx, const Input& in) {
+  const Vector3d dir = in.P(2) - in.P(1);
+  Vector3d n = ON_CrossProduct(dir, ActiveNormal(ctx));
+  if (n.Length() <= 0) n = ActivePlane(ctx).yaxis;
+  n.Unitize();
+  const ON_Xform xf = ON_Xform::MirrorTransformation(ON_PlaneEquation(n.x, n.y, n.z, -ON_DotProduct(n, in.P(1))));
+  ApplyHoleXform(ctx, in.O(0), xf, in.Yes("Copy"), "MirrorHole");
 }
 
 // Volume of the solids inside the extrusion of closed planar curves.
@@ -1711,7 +1772,16 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
   Reg(e, "ArrayHolePolar", Tool({ObjectsStep("Select solids to cut"), PointStep("Center of first hole"), NumberStep("Radius", 2), NumberStep("Depth", 10), PointStep("Center of polar array"), NumberStep("Number of holes", 6)},
                                 {Toggle("Through", true)}, Guarded("ArrayHolePolar", ArrayHolePolar)),
       CommandStatus::Partial, "Polar array of round holes about the CPlane normal; profile holes are planned.");
-  for (const char* n : {"CopyHole", "MirrorHole", "MoveHole", "RotateHole"}) Reg(e, n, HoleFeatureStub(n), CommandStatus::Partial, "Holes are not feature objects in this build; prints guidance.");
+  Reg(e, "MoveHole", Tool({ObjectsStep("Select hole features to move"), PointStep("Point to move from"), PointStep("Point to move to")}, {}, Guarded("MoveHole", MoveHole)),
+      CommandStatus::Partial, "Re-cuts the hole's stored cutter at the new placement against the solid as it was before this hole; only holes cut by RoundHole/PlaceHole/RevolvedHole/ArrayHole* are editable features.");
+  Reg(e, "CopyHole", Tool({ObjectsStep("Select hole features to copy"), PointStep("Point to copy from"), PointStep("Point to copy to")}, {}, Guarded("CopyHole", CopyHole)),
+      CommandStatus::Partial, "Cuts a second copy of the hole into a duplicate of the solid; only holes cut by RoundHole/PlaceHole/RevolvedHole/ArrayHole* are editable features.");
+  Reg(e, "RotateHole", Tool({ObjectsStep("Select hole features to rotate"), PointStep("Center of rotation"), NumberStep("Rotation angle in degrees", 90)},
+                            {Toggle("Copy", false)}, Guarded("RotateHole", RotateHole)),
+      CommandStatus::Partial, "Rotates the hole's cutter about the CPlane normal and re-cuts; only holes cut by RoundHole/PlaceHole/RevolvedHole/ArrayHole* are editable features.");
+  Reg(e, "MirrorHole", Tool({ObjectsStep("Select hole features to mirror"), PointStep("Start of mirror plane"), PointStep("End of mirror plane")},
+                            {Toggle("Copy", true)}, Guarded("MirrorHole", MirrorHole)),
+      CommandStatus::Partial, "Mirrors the hole's cutter about a plane through the two points (perpendicular to the CPlane) and re-cuts; the solid itself is not mirrored.");
   Reg(e, "CutVolume", Tool({ObjectsStep("Select closed planar curves"), ObjectsStep("Select solids")}, {}, Guarded("CutVolume", CutVolume)),
       CommandStatus::Partial, "Intersects the curves' extrusion with the solids and reports the volume (mesh result).");
   Reg(e, "CreateSolid", OnSelection("Select surfaces, polysurfaces or meshes that enclose a volume", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {

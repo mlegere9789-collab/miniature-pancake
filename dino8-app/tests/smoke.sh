@@ -937,4 +937,43 @@ archeck "Object 3 (mesh) layer Default name 'Wall'" "the wall survived two boole
 echo "$AR" | grep -E "^(ok|FAIL)" || true
 if echo "$AR" | grep -q "^FAIL"; then fail=1; fi
 
+# Session: 3D digitizer (Dig*, Protocol=File test mode), Worksession /
+# LimitReferenceModel, Snapshots, draw order, and real hole features
+# (Move/Copy/Rotate/MirrorHole) (see session_script.txt).
+mkdir -p "$TMP/sess"
+cat > "$TMP/sess/dig_points.txt" <<'EOP'
+# comments and blank lines are ignored
+1, 2, 3
+4.5 5.5 6.5 1
+EOP
+sed "s|@TMP@|$TMP/sess|g" "$HERE/session_script.txt" > "$TMP/sess/session_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  SS="$("$BIN" --smoke 150 --script "$TMP/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
+else
+  SS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
+fi
+sscheck() { if echo "$SS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+sscheck "Digitizer: connected, protocol File, file $TMP/sess/dig_points.txt" "DigConnect opened the fixture file"
+sscheck "DigPoint: digitized 1,2,3" "DigPoint read the first fixture point"
+sscheck "DigPoint: digitized 4.5,5.5,6.5 (button 1)" "DigPoint read the second point and its button"
+sscheck "DigPoint: no point available" "DigPoint warns once the fixture file is exhausted"
+sscheck "DigDisconnect: disconnected" "DigDisconnect"
+sscheck "Digitizer: not connected" "DigStatus reports disconnected after DigDisconnect"
+sscheck "BringToFront: " "BringToFront ran on the overlapping circles"
+sscheck "Worksession: attached $TMP/sess/ref.3dm (1 object" "Worksession Attach copied the box in"
+sscheck "Worksession: 1 attached reference model" "Worksession List shows the attached model"
+sscheck "LimitReferenceModel: 0 object(s) removed" "LimitReferenceModel kept the box inside the limit box"
+sscheck "Worksession: saved $TMP/sess/session.rws" "Worksession Save wrote the .rws file"
+sscheck "Worksession: detached 1 object" "Worksession Detach removed the reference objects"
+sscheck "Worksession: attached 1 model(s) from $TMP/sess/session.rws" "Worksession Load re-attached from the .rws file"
+sscheck "Snapshot 'Before' saved" "Snapshots Save captured the sphere-only state"
+sscheck "Snapshot 'Before' restored" "Snapshots Restore reverted the later Box"
+sscheck "^ok   expect_objects 1" "Snapshots Restore actually removed the Box"
+sscheck "Snapshot 'Before' deleted" "Snapshots Delete"
+sscheck "RoundHole: object .* replaced by a mesh solid" "RoundHole cut the box and tagged it a hole feature"
+sscheck "MoveHole: object .* re-cut at the new placement" "MoveHole replayed the boolean at the new position"
+sscheck "CopyHole: copied object .* to object .*" "CopyHole added a second hole into a duplicate"
+sscheck "RotateHole: object .* re-cut at the new placement" "RotateHole replayed the boolean"
+sscheck "MirrorHole: copied object .* to object .*" "MirrorHole added a mirrored hole into a duplicate"
+
 exit $fail

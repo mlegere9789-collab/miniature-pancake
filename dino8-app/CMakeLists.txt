@@ -178,6 +178,9 @@ set(DINO8_SOURCES
   src/plugins/PluginManager.cpp
   src/plugins/PluginPanel.cpp
   src/commands/cmd_flow.cpp
+  src/session/Digitizer.cpp
+  src/session/Worksession.cpp
+  src/commands/cmd_session.cpp
 )
 
 if(WIN32)

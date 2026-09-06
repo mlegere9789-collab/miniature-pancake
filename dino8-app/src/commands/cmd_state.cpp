@@ -587,11 +587,14 @@ void RegisterStateCommands(CommandEngine& e) {
   Reg(e, "NamedSelections", Make<NamedSetCommand>(false));
   Reg(e, "NamedCPlane", Make<NamedSetCommand>(true));
   Reg(e, "NamedPosition", Say("NamedPosition: saved object positions are planned; use NamedSelections and Undo for now."), CommandStatus::Partial);
-  Reg(e, "Snapshots", Say("Snapshots: saved model states are planned; NamedView, NamedSelections and Undo cover the common cases."), CommandStatus::Partial);
+  // Snapshots, Worksession/LimitReferenceModel and the Dig* digitizer
+  // commands are registered by RegisterSessionCommands (cmd_session.cpp),
+  // called after this function.
   Reg(e, "HistoryPurge", Say("HistoryPurge: no construction history is recorded; nothing to purge."));
   Reg(e, "HistoryUpdate", Say("HistoryUpdate: no construction history is recorded; nothing to update."));
-  Reg(e, "Worksession", Say("Worksession: reference models are planned; Import brings another file's objects in."), CommandStatus::Partial);
-  Reg(e, "LimitReferenceModel", Say("LimitReferenceModel: reference models are planned."), CommandStatus::Partial);
+  // Worksession/LimitReferenceModel: superseded by cmd_session.cpp's real
+  // implementations (RegisterSessionCommands runs after this file, so it
+  // always wins here anyway; these stubs were dead code).
   // Bounce: superseded by cmd_solidtools.cpp's real ray-bounce implementation
   // (RegisterSolidToolsCommands runs after this file, so it always won here
   // anyway; this stub was dead code that misreported Bounce as unimplemented).

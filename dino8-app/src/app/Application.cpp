@@ -71,6 +71,7 @@ void RegisterExchange2Commands(CommandEngine&);
 void RegisterConstraintCommands(CommandEngine&);  // cmd_constraints.cpp
 void ConstraintsFrame(Application&);              // cmd_constraints.cpp: auto re-solve + glyph overlay
 void RegisterArchCommands(CommandEngine&);        // cmd_arch.cpp
+void RegisterSessionCommands(CommandEngine&);  // Dig* digitizer, Worksession/LimitReferenceModel, Snapshots
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -302,6 +303,7 @@ void Application::RegisterCommands() {
   dino8::input::RegisterSpaceMouseCommands(*engine_);   // SpaceMouse, SpaceMouseOptions, 3DconnexionOptions
   dino8::app::RegisterConstraintCommands(*engine_);     // Constrain, ConstraintSolve, ConstraintDelete, ConstraintsShow
   dino8::app::RegisterArchCommands(*engine_);           // Wall, Door, Window, Slab, Roof, Stair, Column, Beam, ArchEdit, ArchSchedule
+  RegisterSessionCommands(*engine_);    // Dig* digitizer, Worksession/LimitReferenceModel, Snapshots
   RegisterFlowCommands(*engine_);       // very last: Dino Flow + plug-ins, replaces the Grasshopper/plug-in stubs
 }
 
