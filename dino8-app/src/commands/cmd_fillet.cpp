@@ -190,7 +190,9 @@ bool SolveGlobalInterpolation(const std::vector<double>& params, int order, std:
   const int bw = 2 * p + 1;
   std::vector<double> A(static_cast<size_t>(n) * bw, 0);
   auto at = [&](int r, int c) -> double& { return A[static_cast<size_t>(r) * bw + (c - r + p)]; };
-  std::vector<double> N(static_cast<size_t>(order));
+  // See SurfaceIntersect.cpp's InterpolateCubic: ON_EvaluateNurbsBasis needs
+  // an order*order scratch buffer, not just `order`, or it overflows.
+  std::vector<double> N(static_cast<size_t>(order) * static_cast<size_t>(order));
   for (int k = 0; k < n; ++k) {
     const double t = params[static_cast<size_t>(k)];
     const int span = ON_NurbsSpanIndex(order, n, knot.data(), t, 0, 0);
@@ -416,11 +418,13 @@ bool ReplaceLoopSegmentWithCurve(const ON_Brep& b, const ON_BrepFace& f, int tri
   for (int li = 0; li < f.LoopCount(); ++li) if (f.Loop(li) && f.Loop(li)->m_type == ON_BrepLoop::outer) outer = f.Loop(li);
   if (!outer) return false;
   bool found = false;
+  int replaced_at = -1;
   for (int k = 0; k < outer->TrimCount(); ++k) {
     const ON_BrepTrim* trim = outer->Trim(k);
     if (!trim) continue;
     if (trim->m_trim_index == trim_index_to_replace) {
       found = true;
+      replaced_at = boundary.Count();
       ON_Curve* c = contact_3d.DuplicateCurve();
       if (reversed) c->Reverse();
       boundary.Append(c);
@@ -433,7 +437,28 @@ bool ReplaceLoopSegmentWithCurve(const ON_Brep& b, const ON_BrepFace& f, int tri
     if (trim->m_bRev3d) c->Reverse();
     boundary.Append(c);
   }
-  return found;
+  if (!found) return false;
+  // The contact curve's own endpoints are set back from the replaced edge's
+  // original corners (it runs between the two OTHER contact points at the
+  // fillet radius, not the original vertices), so the immediate neighbours
+  // in the loop no longer reach it: shorten each to end at the closest
+  // point to the contact curve's near endpoint instead of the old corner.
+  const int n = boundary.Count();
+  if (n >= 3) {
+    const int prev_i = (replaced_at - 1 + n) % n, next_i = (replaced_at + 1) % n;
+    ON_Curve* contact = boundary[replaced_at];
+    ON_Curve* prev = boundary[prev_i];
+    ON_Curve* next = boundary[next_i];
+    if (prev != contact) {
+      const double t = CurveClosestParamGlobal(*prev, contact->PointAtStart());
+      prev->Trim(ON_Interval(prev->Domain().Min(), t));
+    }
+    if (next != contact && next != prev) {
+      const double t = CurveClosestParamGlobal(*next, contact->PointAtEnd());
+      next->Trim(ON_Interval(t, next->Domain().Max()));
+    }
+  }
+  return true;
 }
 
 // Trims `like`'s face `fi` at the loop trim `trim_index`, splicing in
@@ -453,9 +478,89 @@ std::optional<ON_Brep> TrimPlanarFace(const ON_Brep& b, int fi, int trim_index, 
   if (!nb) return std::nullopt;
   ON_Brep result = *nb;
   delete nb;
-  result.SetTolerancesBoxesAndFlags();
+  // ON_BrepTrimmedPlane already computes sound edge tolerances as part of
+  // building the loop; ON_Brep::SetEdgeTolerance's own recompute chokes on
+  // this face (a straight ON_LineCurve loop mixed with a many-CV NURBS
+  // contact curve on a plane whose domain NewPlanarFaceLoop just resized to
+  // the loop's own bounding box) and resets every edge tolerance to
+  // ON_UNSET_VALUE, which then fails IsValid() outright. Recompute
+  // everything else, but leave the edge tolerances ON_BrepTrimmedPlane
+  // already set alone.
+  result.SetTolerancesBoxesAndFlags(false, true, false, true, true, true, true, true);
   if (!result.IsValid()) return std::nullopt;
   return result;
+}
+
+// Rounds planar face `fi`'s corner at `vertex` by splicing `arc` (the
+// fillet surface's own boundary at that end of the spine) into the outer
+// loop between the two trims that meet there, shortening each to the
+// closest point to the arc's near end first -- the same technique
+// ReplaceLoopSegmentWithCurve uses to shorten the fillet's own side
+// neighbours, just inserting a curve instead of replacing one. Needed
+// because a box-corner edge fillet also clips the corner of the two other
+// faces that share the filleted edge's end vertices (the fillet is a
+// rounded solid corner, not just a rounded seam between the two picked
+// faces). Tries both arc directions and keeps whichever produces a valid
+// brep; returns nullopt if the face isn't planar, has no corner there, or
+// neither direction rebuilds cleanly.
+std::optional<ON_Brep> RoundFaceCorner(const ON_Brep& b, int fi, Point3d vertex, const ON_Curve& arc, double tol) {
+  const ON_BrepFace& f = b.m_F[fi];
+  ON_Plane plane;
+  if (!f.SurfaceOf() || !f.SurfaceOf()->IsPlanar(&plane, std::max(tol * 10, 1e-4))) return std::nullopt;
+  const ON_BrepLoop* outer = nullptr;
+  for (int li = 0; li < f.LoopCount(); ++li) if (f.Loop(li) && f.Loop(li)->m_type == ON_BrepLoop::outer) outer = f.Loop(li);
+  if (!outer) return std::nullopt;
+  ON_SimpleArray<ON_Curve*> boundary;
+  int corner_at = -1;  // index whose END sits at `vertex`
+  const double near = std::max(tol * 200, 1e-3);
+  for (int k = 0; k < outer->TrimCount(); ++k) {
+    const ON_BrepTrim* trim = outer->Trim(k);
+    if (!trim) continue;
+    const ON_BrepEdge* e = trim->Edge();
+    if (!e) continue;
+    ON_Curve* c = e->DuplicateCurve();
+    if (!c) continue;
+    if (trim->m_bRev3d) c->Reverse();
+    if (c->PointAtEnd().DistanceTo(vertex) <= near) corner_at = boundary.Count();
+    boundary.Append(c);
+  }
+  const int n = boundary.Count();
+  if (corner_at < 0 || n < 2) { for (int i = 0; i < n; ++i) delete boundary[i]; return std::nullopt; }
+  const int next_i = (corner_at + 1) % n;
+  std::optional<ON_Brep> best;
+  for (bool rev : {false, true}) {
+    ON_SimpleArray<ON_Curve*> trial;
+    ON_Curve* a = arc.DuplicateCurve();
+    if (rev) a->Reverse();
+    for (int k = 0; k < n; ++k) {
+      if (k == corner_at) {
+        ON_Curve* pv = boundary[k]->DuplicateCurve();
+        const double t = CurveClosestParamGlobal(*pv, a->PointAtStart());
+        pv->Trim(ON_Interval(pv->Domain().Min(), t));
+        trial.Append(pv);
+        trial.Append(a->DuplicateCurve());
+        continue;
+      }
+      if (k == next_i) {
+        ON_Curve* nx = boundary[k]->DuplicateCurve();
+        const double t = CurveClosestParamGlobal(*nx, a->PointAtEnd());
+        nx->Trim(ON_Interval(t, nx->Domain().Max()));
+        trial.Append(nx);
+        continue;
+      }
+      trial.Append(boundary[k]->DuplicateCurve());
+    }
+    delete a;
+    ON_Brep* nb = ON_BrepTrimmedPlane(plane, trial, true);
+    for (int i = 0; i < trial.Count(); ++i) delete trial[i];
+    if (!nb) continue;
+    ON_Brep result = *nb;
+    delete nb;
+    result.SetTolerancesBoxesAndFlags(false, true, false, true, true, true, true, true);
+    if (result.IsValid()) { best = result; break; }
+  }
+  for (int i = 0; i < n; ++i) delete boundary[i];
+  return best;
 }
 
 // Finds the outer-loop trim of face `fi` whose edge is `edge_index`, if any.
@@ -625,7 +730,9 @@ class FilletTwoSurfacesCommand : public Command {
     if (!nb) return false;
     ON_Brep result = *nb;
     delete nb;
-    result.SetTolerancesBoxesAndFlags();
+    // See TrimPlanarFace: ON_Brep::SetEdgeTolerance's recompute breaks this
+    // loop shape, so keep ON_BrepTrimmedPlane's own edge tolerances.
+    result.SetTolerancesBoxesAndFlags(false, true, false, true, true, true, true, true);
     if (!result.IsValid(nullptr)) { return false; }
     if (SceneObject* orig = ctx.Doc().Find(id)) {
       orig->kind = ObjectKind::Brep;
@@ -804,8 +911,10 @@ class FilletEdgeCommand : public Command {
       std::optional<ON_Brep> ra, rb;
       if (trim_idx0 >= 0) { ra = TrimPlanarFace(*b, fi0, trim_idx0, ca, false, tol); if (!ra) ra = TrimPlanarFace(*b, fi0, trim_idx0, ca, true, tol); }
       if (trim_idx1 >= 0) { rb = TrimPlanarFace(*b, fi1, trim_idx1, cb, false, tol); if (!rb) rb = TrimPlanarFace(*b, fi1, trim_idx1, cb, true, tol); }
+      bool exact_ok = false;
+      ON_Brep remainder;
       if (ra && rb) {
-        ON_Brep remainder = *b;
+        remainder = *b;
         // Delete the higher index first so the lower index stays valid.
         int hi = std::max(fi0, fi1), lo = std::min(fi0, fi1);
         remainder.DeleteFace(remainder.m_F[hi], true);
@@ -813,15 +922,67 @@ class FilletEdgeCommand : public Command {
         // Re-resolve lo's index after compaction (DeleteFace/Compact renumber).
         remainder.DeleteFace(remainder.m_F[lo < hi ? lo : lo - 1], true);
         remainder.Compact();
+        const int ra_index = remainder.m_F.Count();
         remainder.Append(*ra);
+        const int rb_index = remainder.m_F.Count();
         remainder.Append(*rb);
         ON_Brep fillet_brep;
         ON_NurbsSurface* fillet_srf = new ON_NurbsSurface(built);
         fillet_brep.Create(fillet_srf);
+        const int fillet_index = remainder.m_F.Count();
         remainder.Append(fillet_brep);
+        // The filleted edge's own two end vertices are usually shared with a
+        // THIRD face too (any box/polysurface corner): that face's own
+        // corner needs rounding as well, using the fillet surface's own
+        // boundary arc at that end of the spine (the fillet is a rounded
+        // solid corner, not just a rounded seam between the two picked
+        // faces). Match each end vertex to whichever of the surface's two
+        // v-boundary isocurves sits near it, then round every OTHER face
+        // (not ra/rb/the fillet itself) whose own outer loop has a corner
+        // there.
+        const Point3d v0 = edge.PointAtStart(), v1 = edge.PointAtEnd();
+        ON_Curve* iso_min = built.IsoCurve(0, built.Domain(1).Min());
+        ON_Curve* iso_max = built.IsoCurve(0, built.Domain(1).Max());
+        auto arc_for = [&](Point3d v) -> ON_Curve* {
+          if (!iso_min || !iso_max) return nullptr;
+          const double dmin = iso_min->PointAt(iso_min->Domain().Mid()).DistanceTo(v);
+          const double dmax = iso_max->PointAt(iso_max->Domain().Mid()).DistanceTo(v);
+          return dmin <= dmax ? iso_min : iso_max;
+        };
+        for (Point3d v : {v0, v1}) {
+          ON_Curve* arc = arc_for(v);
+          if (!arc) continue;
+          for (int fi = 0; fi < remainder.m_F.Count(); ++fi) {
+            if (fi == ra_index || fi == rb_index || fi == fillet_index || remainder.m_F[fi].m_face_index < 0) continue;
+            std::optional<ON_Brep> rounded = RoundFaceCorner(remainder, fi, v, *arc, tol);
+            if (!rounded) continue;
+            // Mark the old face deleted but don't Compact() yet: that would
+            // renumber remaining faces and invalidate ra_index/rb_index/
+            // fillet_index (and `fi` itself) for the still-to-come second
+            // vertex's search below. DeleteFace just flags m_face_index<0,
+            // which the "skip deleted" check above already accounts for.
+            remainder.DeleteFace(remainder.m_F[fi], true);
+            remainder.Append(*rounded);
+            break;  // a vertex has at most one other face on a manifold brep
+          }
+        }
+        remainder.Compact();
+        delete iso_min;
+        delete iso_max;
         JoinNakedEdges(remainder, std::max(tol * 20, 1e-4));
         remainder.Compact();
         remainder.SetTolerancesBoxesAndFlags();
+        // Safety net: never hand back a polysurface with naked edges under
+        // the "exact" label -- if the corner rounding above didn't fully
+        // close it (a shape RoundFaceCorner can't handle), fall through to
+        // the mesh path instead of reporting a broken result as exact.
+        exact_ok = true;
+        for (int ei = 0; ei < remainder.m_E.Count() && exact_ok; ++ei) {
+          const ON_BrepEdge& e = remainder.m_E[ei];
+          if (e.m_edge_index >= 0 && e.TrimCount() == 1) exact_ok = false;
+        }
+      }
+      if (exact_ok) {
         if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
           orig->kind = ObjectKind::Brep;
           if (!orig->brep) orig->brep = std::make_unique<kernel::Brep>();

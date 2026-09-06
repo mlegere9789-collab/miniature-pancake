@@ -1,0 +1,124 @@
+# Fillet/chamfer/blend/match/connect/split/merge family QC (see cmd_fillet.cpp).
+# Each section hides what came before so SelAll only sees its own objects.
+# --- FilletEdge: exact rolling-ball fillet trimmed into a box's own two planar faces
+Box 0,0,0 10,10,0 10
+FilletEdge
+Radius=2
+10,10,5
+Enter
+SelAll
+Volume
+# --- ChamferEdge: exact ruled chamfer on a different box, same construction
+SelAll
+Hide
+Box 50,0,0 60,10,0 10
+ChamferEdge
+Radius=3
+60,10,5
+Enter
+SelAll
+Volume
+# --- FilletSrf: two independently-picked planar surfaces (extracted from a box corner)
+SelAll
+Hide
+Box 100,0,0 110,10,0 10
+ExtractSrf
+110,5,5
+Enter
+SelAll
+Hide
+Box 100,0,0 110,10,0 10
+ExtractSrf
+105,10,5
+Enter
+SelAll
+Show
+FilletSrf
+Radius=2
+110,5,5
+105,10,5
+Area
+# --- BlendEdge: a G1 blend surface added between the two faces at a box edge (not stitched in)
+SelAll
+Hide
+Box 150,0,0 160,10,0 10
+BlendEdge
+160,10,5
+Enter
+SelLast
+List
+# --- MatchSrf: move a plane's near edge onto a target line
+SelAll
+Hide
+Plane 200,0,0 210,10,0
+Line 210,0,5 210,10,5
+MatchSrf
+210,5,0
+210,5,5
+SelSrf
+List
+# --- SplitFace: split a plane's surface where a line crosses it
+SelAll
+Hide
+Plane 250,0,0 260,10,0
+Line 255,-5,0 255,15,0
+SplitFace
+255,5,0
+255,5,0
+SelSrf
+List
+# --- MergeFaces: recombine two split-off coplanar faces of a box
+SelAll
+Hide
+Box 300,0,0 310,10,0 10
+ExtractSrf
+310,5,5
+Enter
+SelAll
+Hide
+Box 300,0,0 310,10,0 10
+ExtractSrf
+305,10,5
+Enter
+SelAll
+Hide
+Box 300,0,0 310,10,0 10
+DeleteFaces
+310,5,5
+Enter
+DeleteFaces
+305,10,5
+Enter
+MergeFaces
+300,5,10
+305,0,5
+Enter
+List
+# --- ConnectSrf: extend two planes to their real SSX join curve
+SelAll
+Hide
+Plane 400,0,0 410,10,0
+Plane 410,0,0 410,10,10
+SelAll
+ConnectSrf
+SelCrv
+List
+# --- Intersect: SSX (two crossing planes -> a line) and CSX (a line through a plane -> a point)
+SelAll
+Hide
+Plane 450,-5,0 460,5,0
+Plane 455,-5,-5 455,5,5
+SelAll
+Intersect
+SelCrv
+List
+SelAll
+Hide
+Plane 500,-5,0 510,5,0
+Line 505,0,-5 505,0,5
+SelAll
+Intersect
+SelPt
+List
+SelNone
+@expect_objects 44

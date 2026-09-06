@@ -541,7 +541,11 @@ ON_NurbsCurve InterpolateCubic(const std::vector<ON_3dPoint>& in_pts, std::vecto
   auto at = [&](int r, int c) -> double& { return A[static_cast<size_t>(r) * bw + (c - r + p)]; };
   std::vector<double> rhs[3];
   for (int d = 0; d < 3; ++d) rhs[d].assign(static_cast<size_t>(n), 0);
-  std::vector<double> N(static_cast<size_t>(order));
+  // ON_EvaluateNurbsBasis fills an implicit order x order triangular scratch
+  // table (see its header comment: N[d-k][i] for 0<=k<=d), not just the
+  // final `order`-length result row, so the buffer must be order*order or
+  // it overflows and corrupts the heap.
+  std::vector<double> N(static_cast<size_t>(order) * static_cast<size_t>(order));
   for (int k = 0; k < n; ++k) {
     const double t = params[static_cast<size_t>(k)];
     int span = ON_NurbsSpanIndex(order, n, knot, t, 0, 0);
