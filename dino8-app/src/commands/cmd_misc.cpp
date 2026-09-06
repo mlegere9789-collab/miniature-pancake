@@ -40,6 +40,60 @@ class CalcCommand : public Command {
   }
 };
 
+bool ParseMiscNumber(const std::string& t, double& v) {
+  char* e = nullptr;
+  v = std::strtod(t.c_str(), &e);
+  return e && e != t.c_str() && *e == 0;
+}
+
+// Reverse Polish (postfix) evaluator: space-separated numbers, binary
+// operators (+ - * / ^), and unary functions (sqrt neg sin cos tan abs).
+bool EvaluateRPN(const std::string& text, double& out, std::string& error) {
+  std::istringstream in(text);
+  std::string tok;
+  std::vector<double> s;
+  auto pop = [&](double& v) { if (s.empty()) return false; v = s.back(); s.pop_back(); return true; };
+  while (in >> tok) {
+    double a, b;
+    if (tok == "+" || tok == "-" || tok == "*" || tok == "/" || tok == "^") {
+      if (!pop(b) || !pop(a)) { error = "not enough operands for '" + tok + "'"; return false; }
+      if (tok == "+") s.push_back(a + b);
+      else if (tok == "-") s.push_back(a - b);
+      else if (tok == "*") s.push_back(a * b);
+      else if (tok == "/") { if (b == 0) { error = "division by zero"; return false; } s.push_back(a / b); }
+      else s.push_back(std::pow(a, b));
+      continue;
+    }
+    if (tok == "sqrt" || tok == "neg" || tok == "sin" || tok == "cos" || tok == "tan" || tok == "abs") {
+      if (!pop(a)) { error = "not enough operands for '" + tok + "'"; return false; }
+      if (tok == "sqrt") { if (a < 0) { error = "sqrt of a negative number"; return false; } s.push_back(std::sqrt(a)); }
+      else if (tok == "neg") s.push_back(-a);
+      else if (tok == "sin") s.push_back(std::sin(a));
+      else if (tok == "cos") s.push_back(std::cos(a));
+      else if (tok == "tan") s.push_back(std::tan(a));
+      else s.push_back(std::fabs(a));
+      continue;
+    }
+    double v;
+    if (!ParseMiscNumber(tok, v)) { error = "unknown token '" + tok + "'"; return false; }
+    s.push_back(v);
+  }
+  if (s.size() != 1) { error = s.empty() ? "empty expression" : "leftover operands (missing operator)"; return false; }
+  out = s.back();
+  return true;
+}
+
+class CalcRPNCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantText("RPN expression (e.g. \"3 4 +\")"); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    double v; std::string err;
+    if (EvaluateRPN(t, v, err)) { ctx.Print(t + " = " + FormatNumber(v)); ctx.App().Notify(FormatNumber(v)); }
+    else ctx.Warn("CalcRPN: " + err);
+    Finish();
+  }
+};
+
 class MacroRunCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantText("Macro (commands separated by ';')"); }
@@ -68,6 +122,50 @@ class HelpCommand : public Command {
 CommandFactory Toggle(std::function<bool&(CommandContext&)> get, const char* label) {
   return Immediate([get, label](CommandContext& ctx) { bool& b = get(ctx); b = !b; ctx.Print(std::string(label) + (b ? " on" : " off")); });
 }
+
+bool ParseMiscColor(const std::string& text, Color& out) {
+  int r, g, b;
+  if (std::sscanf(text.c_str(), "%d,%d,%d", &r, &g, &b) == 3) { out = Color::FromBytes(std::clamp(r, 0, 255), std::clamp(g, 0, 255), std::clamp(b, 0, 255)); return true; }
+  static const std::map<std::string, Color> named = {
+      {"white", Color::FromBytes(255, 255, 255)}, {"black", Color::FromBytes(0, 0, 0)}, {"red", Color::FromBytes(220, 40, 40)},
+      {"green", Color::FromBytes(40, 180, 60)}, {"blue", Color::FromBytes(50, 90, 220)}, {"yellow", Color::FromBytes(240, 220, 60)},
+      {"gray", Color::FromBytes(128, 128, 128)}, {"grey", Color::FromBytes(128, 128, 128)}, {"orange", Color::FromBytes(240, 150, 40)}};
+  auto it = named.find(ToLower(text));
+  if (it == named.end()) return false;
+  out = it->second;
+  return true;
+}
+
+// Sets the selected objects' own display colour (not their layer's),
+// scriptable from the command line as "SetRenderColor 255,0,0" - Properties
+// offers the same field with a colour-picker widget, which this build has
+// no headless equivalent for.
+class SetRenderColorCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to set the colour of"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (ids.empty()) { ctx.Warn("SetRenderColor: nothing selected"); Finish(); return; }
+    ids_ = ids;
+    WantText("Colour (r,g,b 0-255, or a colour name)");
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    Color c;
+    if (!ParseMiscColor(t, c)) { ctx.Warn("SetRenderColor: use r,g,b (0-255) or a colour name"); Finish(); return; }
+    ctx.Doc().BeginChange("SetRenderColor");
+    int n = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      o->color = c;
+      o->color_by_layer = false;
+      o->InvalidateDisplay();
+      ++n;
+    }
+    ctx.Print("SetRenderColor: " + std::to_string(n) + " object(s) set to " + t);
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+};
 
 // ---------------------------------------------------------------------------
 // Scripting: RunScript / LoadScript run a Lua file (or a queued Script
@@ -167,7 +265,7 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "ToolbarReset", Immediate([](CommandContext& ctx) { ctx.App().Panels().toolbars = true; ctx.App().SetViewportLayout(4); }));
   Reg(e, "Alias", Make<AliasCommand>());
   Reg(e, "Calc", Make<CalcCommand>());
-  Reg(e, "CalcRPN", Make<CalcCommand>(), CommandStatus::Partial, "Uses infix notation.");
+  Reg(e, "CalcRPN", Make<CalcRPNCommand>(), CommandStatus::Implemented, "Evaluates a postfix expression (numbers then + - * / ^ or sqrt/neg/sin/cos/tan/abs) with an explicit operand stack.");
   Reg(e, "Macro", Make<MacroRunCommand>());
   Reg(e, "MacroEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().macro_editor = true; }));
   Reg(e, "ReadCommandFile", Immediate([](CommandContext& ctx) {
@@ -196,17 +294,19 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "TechSupport", Immediate([](CommandContext& ctx) { ctx.Print("Support: open an issue at https://github.com/mlegere9789-collab/miniature-pancake"); }));
   Reg(e, "LearnRhino", Immediate([](CommandContext& ctx) { ctx.App().Panels().help = true; }));
   Reg(e, "Tutorials", Immediate([](CommandContext& ctx) { ctx.App().Panels().help = true; }));
-  Reg(e, "SetRenderColor", OnSelection("Select objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { for (ObjectId id : ids) ctx.Doc().Select(id, true); ctx.App().Panels().properties = true; }), CommandStatus::Partial, "Set colours in Properties.");
-  Reg(e, "SetObjectDisplayMode", Immediate([](CommandContext& ctx) { ctx.App().Panels().display = true; }), CommandStatus::Partial, "Per-viewport modes; per-object modes are planned.");
+  Reg(e, "SetRenderColor", Make<SetRenderColorCommand>(), CommandStatus::Implemented, "Sets the selected objects' own display colour to the given r,g,b value or colour name.");
+  Reg(e, "SetObjectDisplayMode", Immediate([](CommandContext& ctx) { ctx.App().Panels().display = true; }), CommandStatus::Partial,
+      "Opens the viewport Display panel; SceneObject has no per-object display-mode override field, so a mode can only be set per viewport, not per object.");
   // Dragmode: same command name as cmd_state.cpp's "DragMode" (registry
   // keys are case-insensitive) - superseded by that real ChoiceCommand
   // (RegisterStateCommands runs after this file, so it always won here
   // anyway; this stub was dead code).
-  Reg(e, "History", Immediate([](CommandContext& ctx) { ctx.Print("History: not recorded. Every edit is captured by the snapshot undo instead."); }), CommandStatus::Partial);
-  Reg(e, "RecordHistory", Immediate([](CommandContext& ctx) { ctx.Print("RecordHistory: not needed; undo snapshots cover every change."); }), CommandStatus::Partial);
-  // Grasshopper: superseded by cmd_flow.cpp's real Dino Flow node editor
-  // (RegisterFlowCommands runs last, so it always wins here anyway).
-  Reg(e, "Grasshopper", Immediate([](CommandContext& ctx) { ctx.App().Panels().script_editor = true; }), CommandStatus::Partial);
+  Reg(e, "History", Immediate([](CommandContext& ctx) { ctx.Print("History: not recorded. Every edit is captured by the snapshot undo instead."); }), CommandStatus::Partial,
+      "There is no constructional-history dependency graph in this build (e.g. a moved curve does not update surfaces built from it); undo snapshots are a substitute for undo/redo only, not for live parametric updates.");
+  Reg(e, "RecordHistory", Immediate([](CommandContext& ctx) { ctx.Print("RecordHistory: not needed; undo snapshots cover every change."); }), CommandStatus::Partial,
+      "Toggles nothing real: there is no history-recording engine to turn on (see History).");
+  // Grasshopper: superseded, dead code - cmd_flow.cpp's real Dino Flow node
+  // editor (RegisterFlowCommands runs last, so it always wins here anyway).
   Reg(e, "RunScript", Make<ScriptCommand>("RunScript"),
       CommandStatus::Implemented, "Runs a .lua script (embedded Lua 5.4, rhinoscriptsyntax-like rs.* API) or a .txt command file.");
   Reg(e, "LoadScript", Make<ScriptCommand>("LoadScript"),
@@ -225,8 +325,9 @@ void RegisterMiscCommands(CommandEngine& e) {
       }), CommandStatus::Partial, "Python is not bundled; opens the Lua Script Editor instead.");
   Reg(e, "ScriptEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().script_editor = true; }));
   Reg(e, "ScriptingReference", Immediate([](CommandContext& ctx) { ctx.App().Panels().scripting_reference = true; }));
-  Reg(e, "PackageManager", Immediate([](CommandContext& ctx) { ctx.Print("PackageManager: plug-ins are planned. Everything built in is free."); }), CommandStatus::Partial);
-  Reg(e, "PluginManager", Immediate([](CommandContext& ctx) { ctx.Print("PluginManager: plug-ins are planned."); }), CommandStatus::Partial);
+  // PackageManager / PluginManager: superseded, dead code - cmd_flow.cpp
+  // registers the real panel-opening commands (RegisterFlowCommands runs
+  // last, so it always wins here anyway).
 }
 
 }  // namespace dino8::app

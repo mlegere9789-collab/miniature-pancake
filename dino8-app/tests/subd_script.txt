@@ -77,3 +77,28 @@ ShrinkWrap
 @expect_objects 6
 SelLast
 Volume
+# --- SubDSpinEdge, InsertPoint, Slide and SubDExpandEdges on their own box
+# (SpinEdge and InsertPoint run first, on edges/faces the later picks don't touch,
+# so each command sees the plain-quad topology its pick point assumes)
+SubDBox 100,0,0 110,10,0 10
+SelLast
+SubDSpinEdge
+Direction=CCW
+105,0,10
+Enter
+SelLast
+InsertPoint
+110,10,5
+Enter
+SelLast
+Slide
+100,0,0
+105,0,0
+SelLast
+SubDExpandEdges
+110,5,0
+Enter
+1
+SelLast
+What
+@expect_objects 7

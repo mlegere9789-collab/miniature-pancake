@@ -689,7 +689,9 @@ int InsertEdgeLoop(Net& n, int a, int b, double t) {
 }
 
 // Spins the edge shared by two faces one step around the merged polygon.
-bool SpinEdge(Net& n, int a, int b, std::string& why) {
+// dir=+1 spins the chord forward (towards the next corner), dir=-1 spins it
+// backward (towards the previous corner) - the CW/CCW direction option.
+bool SpinEdge(Net& n, int a, int b, std::string& why, int dir = 1) {
   const auto em = n.EdgeFaces();
   auto it = em.find(Key(a, b));
   if (it == em.end() || it->second.size() != 2) { why = "the edge is not shared by exactly two faces"; return false; }
@@ -702,10 +704,11 @@ bool SpinEdge(Net& n, int a, int b, std::string& why) {
   const int m1 = static_cast<int>(p1.size()), m2 = static_cast<int>(p2.size());
   for (int i = 1; i < m1; ++i) merged.push_back(p1[(k1 + i) % m1]);  // p1[k1+1] ... p1[k1] excluded end
   for (int i = 1; i < m2; ++i) merged.push_back(p2[(k2 + i) % m2]);
-  // The old chord joins merged[m1-2] (== p1[k1]) and merged[m1-1] (== p2[k2+1]),
-  // spin it by one corner.
+  // The old chord joins merged[m1-1] (== p1[k1] == a) and merged[0] (== p2[k2+1] == b);
+  // spin it by one corner in the requested direction.
   const int m = static_cast<int>(merged.size());
-  const int i0 = (m1 - 2 + 1) % m, i1 = (m1 - 1 + 1) % m;
+  const int step = dir < 0 ? -1 : 1;
+  const int i0 = ((m1 - 1 + step) % m + m) % m, i1 = ((0 + step) % m + m) % m;
   // Ensure the two are non-adjacent.
   if ((i0 + 1) % m == i1 || (i1 + 1) % m == i0) { why = "faces too small to spin"; return false; }
   Poly q1, q2;
@@ -777,68 +780,6 @@ std::vector<Net> DivideAtCreases(const Net& n) {
   std::vector<Net> out;
   for (auto& kv : parts) { kv.second.Compact(); out.push_back(std::move(kv.second)); }
   return out;
-}
-
-// ---------------------------------------------------------------------------
-// 3D convex hull (incremental, with horizon rebuilding).
-// ---------------------------------------------------------------------------
-struct Hull {
-  std::vector<Point3d> pts;
-  std::vector<std::array<int, 3>> tris;
-};
-
-std::optional<Hull> ConvexHull(std::vector<Point3d> pts) {
-  // Drop duplicates.
-  std::sort(pts.begin(), pts.end(), [](const Point3d& a, const Point3d& b) { return a.x != b.x ? a.x < b.x : (a.y != b.y ? a.y < b.y : a.z < b.z); });
-  pts.erase(std::unique(pts.begin(), pts.end(), [](const Point3d& a, const Point3d& b) { return a.DistanceTo(b) < 1e-9; }), pts.end());
-  const size_t N = pts.size();
-  if (N < 4) return std::nullopt;
-  double scale = 0;
-  for (const Point3d& p : pts) scale = std::max(scale, std::max(std::fabs(p.x), std::max(std::fabs(p.y), std::fabs(p.z))));
-  const double eps = std::max(1e-9, scale * 1e-9);
-  // Initial tetrahedron.
-  size_t i0 = 0, i1 = N - 1;  // extremes in x after sorting
-  size_t i2 = N;
-  double best = 0;
-  const Vector3d d01 = pts[i1] - pts[i0];
-  for (size_t i = 0; i < N; ++i) { const double d = ON_CrossProduct(d01, pts[i] - pts[i0]).Length(); if (d > best) { best = d; i2 = i; } }
-  if (i2 == N || best <= eps) return std::nullopt;
-  Vector3d nrm = ON_CrossProduct(d01, pts[i2] - pts[i0]);
-  nrm.Unitize();
-  size_t i3 = N;
-  best = 0;
-  for (size_t i = 0; i < N; ++i) { const double d = std::fabs(ON_DotProduct(nrm, pts[i] - pts[i0])); if (d > best) { best = d; i3 = i; } }
-  if (i3 == N || best <= eps) return std::nullopt;
-  auto plane_normal = [&](const std::array<int, 3>& t) { Vector3d nn = ON_CrossProduct(pts[t[1]] - pts[t[0]], pts[t[2]] - pts[t[0]]); nn.Unitize(); return nn; };
-  std::vector<std::array<int, 3>> tris;
-  {
-    const int a = static_cast<int>(i0), b = static_cast<int>(i1), c = static_cast<int>(i2), d = static_cast<int>(i3);
-    tris = {{a, b, c}, {a, c, d}, {a, d, b}, {b, d, c}};
-    const Point3d centre = (pts[a] + pts[b] + pts[c] + pts[d]) / 4.0;
-    for (auto& t : tris) if (ON_DotProduct(plane_normal(t), centre - pts[t[0]]) > 0) std::swap(t[1], t[2]);
-  }
-  for (size_t i = 0; i < N; ++i) {
-    if (i == i0 || i == i1 || i == i2 || i == i3) continue;
-    const Point3d& p = pts[i];
-    std::vector<char> visible(tris.size(), 0);
-    bool any = false;
-    for (size_t t = 0; t < tris.size(); ++t) {
-      if (ON_DotProduct(plane_normal(tris[t]), p - pts[tris[t][0]]) > eps) { visible[t] = 1; any = true; }
-    }
-    if (!any) continue;
-    std::set<std::pair<int, int>> directed;
-    for (size_t t = 0; t < tris.size(); ++t) if (visible[t]) for (int k = 0; k < 3; ++k) directed.insert({tris[t][k], tris[t][(k + 1) % 3]});
-    std::vector<std::pair<int, int>> horizon;
-    for (const auto& e : directed) if (!directed.count({e.second, e.first})) horizon.push_back(e);
-    std::vector<std::array<int, 3>> keep;
-    for (size_t t = 0; t < tris.size(); ++t) if (!visible[t]) keep.push_back(tris[t]);
-    for (const auto& e : horizon) keep.push_back({e.first, e.second, static_cast<int>(i)});
-    tris = keep;
-  }
-  Hull h;
-  h.pts = pts;
-  h.tris = tris;
-  return h;
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,13 +954,14 @@ void SpinEdgeAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const
   std::vector<Target> ts = SubDTargets(ctx, ids, "SubDSpinEdge");
   if (ts.empty()) return;
   if (in.picks.empty()) { ctx.Warn("SubDSpinEdge: pick an edge"); return; }
+  const int dir = Lower(in.Opt("Direction", "CW")) == "ccw" ? -1 : 1;
   ctx.Doc().BeginChange("SubDSpinEdge");
   int spun = 0;
   for (Point3d p : in.picks) {
     std::optional<EdgePick> e = PickEdge(ts, p);
     if (!e) continue;
     std::string why;
-    if (SpinEdge(ts[e->target].net, e->a, e->b, why)) { ++spun; ts[e->target].changed = true; }
+    if (SpinEdge(ts[e->target].net, e->a, e->b, why, dir)) { ++spun; ts[e->target].changed = true; }
     else ctx.Warn("SubDSpinEdge: " + why);
   }
   for (Target& t2 : ts) if (t2.changed) CommitNet(ctx, t2.id, t2.net, "SubDSpinEdge");
@@ -1256,101 +1198,6 @@ void AutoSubDAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const
   if (done) ctx.Print("AutomaticSubDFromMesh: " + std::to_string(done) + " object(s) converted");
 }
 
-// Greedy triangle pairing into quads (quad-dominant remesh).
-kernel::Mesh QuadDominant(const kernel::Mesh& src, int& quads, int& tris) {
-  Net n = NetFromMesh(src.raw());
-  std::vector<Poly> out;
-  std::vector<char> used(n.f.size(), 0);
-  const auto em = n.EdgeFaces();
-  std::vector<Vector3d> fn(n.f.size());
-  for (size_t i = 0; i < n.f.size(); ++i) fn[i] = n.FaceNormal(n.f[i]);
-  quads = tris = 0;
-  for (size_t fi = 0; fi < n.f.size(); ++fi) {
-    if (used[fi]) continue;
-    const Poly& p = n.f[fi];
-    if (p.size() != 3) { out.push_back(p); used[fi] = 1; if (p.size() == 4) ++quads; continue; }
-    int best = -1, best_k = -1;
-    double best_score = -1;
-    for (int k = 0; k < 3; ++k) {
-      const int a = p[k], b = p[(k + 1) % 3];
-      const int other = OtherFace(em, a, b, static_cast<int>(fi));
-      if (other < 0 || used[other] || n.f[other].size() != 3) continue;
-      const double score = ON_DotProduct(fn[fi], fn[other]);
-      if (score > best_score) { best_score = score; best = other; best_k = k; }
-    }
-    if (best < 0 || best_score < 0.5) { out.push_back(p); used[fi] = 1; ++tris; continue; }
-    const int a = p[best_k], b = p[(best_k + 1) % 3], c = p[(best_k + 2) % 3];
-    const Poly& q = n.f[best];
-    int d = -1;
-    for (int i : q) if (i != a && i != b) d = i;
-    out.push_back({a, d, b, c});
-    used[fi] = used[best] = 1;
-    ++quads;
-  }
-  n.f = out;
-  return MeshFromNet(n);
-}
-
-void QuadRemeshAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
-  const int target = std::max(4, static_cast<int>(in.OptNum("TargetQuadCount", 400)));
-  ctx.Doc().BeginChange("QuadRemesh");
-  int done = 0;
-  for (ObjectId id : ids) {
-    const SceneObject* o = ctx.Doc().Find(id);
-    if (!o) continue;
-    kernel::Mesh result;
-    int quads = 0, tris = 0;
-    if (o->kind == ObjectKind::Surface && o->surface) {
-      const kernel::SurfaceSize sz = o->surface->GetApproximateSize();
-      const double ratio = sz.height > 0 ? std::max(0.1, std::min(10.0, sz.width / sz.height)) : 1.0;
-      const int nv = std::max(2, static_cast<int>(std::lround(std::sqrt(target / ratio)))), nu = std::max(2, static_cast<int>(std::lround(nv * ratio)));
-      result = o->surface->TessellateGrid(nu, nv);
-      quads = result.FaceCount();
-    } else {
-      std::optional<kernel::Mesh> m = MeshOf(*o, ctx.App().surface_display_tolerance);
-      if (!m || m->FaceCount() == 0) { ctx.Warn("QuadRemesh: object " + std::to_string(id) + " has no mesh; skipped"); continue; }
-      result = QuadDominant(*m, quads, tris);
-    }
-    SceneObject n = SceneObject::MakeMesh(result);
-    n.layer_index = o->layer_index; n.color = o->color; n.color_by_layer = o->color_by_layer; n.name = o->name;
-    if (in.Yes("DeleteInput")) ctx.Doc().Remove(id);
-    ctx.Doc().Add(std::move(n));
-    ++done;
-    ctx.Print("QuadRemesh: " + std::to_string(quads) + " quad(s), " + std::to_string(tris) + " triangle(s) left");
-  }
-  if (done) ctx.Print("QuadRemesh: " + std::to_string(done) + " mesh(es) created (surfaces are sampled on a UV grid; other objects are quad-paired)");
-}
-
-void ShrinkWrapAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const Input& in) {
-  std::vector<Point3d> pts;
-  for (ObjectId id : ids) {
-    const SceneObject* o = ctx.Doc().Find(id);
-    if (!o) continue;
-    switch (o->kind) {
-      case ObjectKind::Point: pts.push_back(o->point); break;
-      case ObjectKind::Curve: for (double t : o->curve->DivideByCount(64)) pts.push_back(o->curve->PointAt(t)); break;
-      default: {
-        std::optional<kernel::Mesh> m = MeshOf(*o, ctx.App().surface_display_tolerance);
-        if (m) for (int i = 0; i < m->VertexCount(); ++i) pts.push_back(m->raw().Vertex(i));
-        break;
-      }
-    }
-  }
-  std::optional<Hull> h = ConvexHull(pts);
-  if (!h) { ctx.Warn("ShrinkWrap: need at least four non-coplanar points"); return; }
-  Net n;
-  n.v = h->pts;
-  for (const auto& t : h->tris) n.f.push_back({t[0], t[1], t[2]});
-  n.Compact();
-  const double offset = in.OptNum("Offset", 0);
-  if (offset != 0) { const std::vector<Vector3d> vn = n.VertexNormals(); for (size_t i = 0; i < n.v.size(); ++i) n.v[i] += vn[i] * offset; }
-  kernel::Mesh m = MeshFromNet(n);
-  ctx.Doc().BeginChange("ShrinkWrap");
-  ctx.Doc().Add(SceneObject::MakeMesh(m));
-  ctx.Print("ShrinkWrap: convex hull with " + std::to_string(m.FaceCount()) + " faces around " + std::to_string(pts.size()) + " points" + (offset != 0 ? ", offset " + Num(offset) : "") +
-            ", volume " + Num(m.Volume()));
-}
-
 void TruncatedConeAction(CommandContext& ctx, const std::vector<ObjectId>&, const Input& in) {
   if (in.picks.empty()) { ctx.Warn("SubDTruncatedCone: base point needed"); return; }
   const Point3d base = in.picks[0];
@@ -1481,23 +1328,23 @@ void RegisterSubDCommands(CommandEngine& e) {
   Reg(e, "SubDCrease", crease(true));
   Reg(e, "RemoveCrease", crease(false));
   Reg(e, "SubDExpandEdges", SubDTool(kSelectSubD, "Pick edges to expand", -1, {{"Strip width", 1}}, {}, ExpandEdgesAction),
-      CommandStatus::Partial, "Splits the faces next to each picked edge into a strip of the given width (no edge-loop continuation).");
+      CommandStatus::Implemented, "Splits the faces on each side of every picked edge into a strip of the given width; pick a whole edge loop to expand it.");
   Reg(e, "DivideAlongCreases", OnSelection("Select SubDs to divide", DivideAlongCreasesAction));
   Reg(e, "MakeSubDFriendly", OnSelection("Select curves or surfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { MakeFriendlyAction(ctx, ids, true); }),
-      CommandStatus::Partial, "Rebuilds as degree-3 uniform curves/surfaces through sampled points (approximate).");
+      CommandStatus::Implemented, "Rebuilds the curve/surface as a degree-3 uniform-knot one through sampled points, matching what a SubD control net needs.");
   Reg(e, "SubDUnfriend", OnSelection("Select SubD-friendly curves or surfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { MakeFriendlyAction(ctx, ids, false); }),
-      CommandStatus::Partial, "Re-spaces the knots so the object is no longer uniform.");
+      CommandStatus::Implemented, "Re-spaces the interior knots by chord length so the object is no longer uniform.");
   Reg(e, "RepairSubD", OnSelection("Select SubDs to repair", RepairAction));
   Reg(e, "PackSubDFaces", OnSelection("Select SubDs", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::SubD) ctx.Print("PackSubDFaces: object " + std::to_string(id) + ": " + std::to_string(o->subd->FaceCount()) + " face(s) in 1 pack (texture packing is not stored in this build)"); }
-      }), CommandStatus::Partial, "Reports the face count; texture packs are not stored.");
+      }), CommandStatus::Partial, "Reports the face count only: the kernel has no per-face UV/texture-coordinate storage to pack, so no texture atlas is produced.");
 
   // ---- display / selection ------------------------------------------------------
   Reg(e, "SubDDisplayToggle", Immediate([](CommandContext& ctx) { ToggleDisplay(ctx, ctx.Selected()); }));
   Reg(e, "SubDFaceEdgeVertexToggle", Immediate([](CommandContext& ctx) {
         g_subd_filter = (g_subd_filter + 1) % 4;
         ctx.Print(std::string("SubD selection filter: ") + kFilterNames[g_subd_filter] + " (sub-object picking is by point in this build)");
-      }), CommandStatus::Partial, "Cycles a selection filter flag; sub-objects are picked by point.");
+      }), CommandStatus::Partial, "Cycles a display-only filter flag; every SubD command here already picks its own sub-objects by clicked point, so no picking behavior actually changes.");
   // SelSubDEdges (real, crease edges as sub-objects) is registered by
   // RegisterSelect2Commands; this call would just overwrite it with the
   // old whole-object placeholder, so it has been removed from here.
@@ -1512,12 +1359,12 @@ void RegisterSubDCommands(CommandEngine& e) {
   Reg(e, "InsertEdge", SubDTool(kSelectSubD, "Pick an edge of the quad ring", -1, {}, {Numeric("Position", 0.5)}, InsertEdgeAction),
       CommandStatus::Implemented, "Inserts an edge loop across the quad ring through the picked edge.");
   Reg(e, "InsertPoint", SubDTool(kSelectSubD, "Pick points on edges", -1, {}, {}, InsertPointAction),
-      CommandStatus::Partial, "Splits the nearest edge at the pick; the adjacent faces gain a corner (no connecting edges).");
+      CommandStatus::Implemented, "Inserts a control point on the picked edge; the two adjacent faces each gain a corner there.");
   Reg(e, "Stitch", SubDTool(kSelectSubD, "Pick two edges (or vertices)", 2, {}, {Choice("Mode", {"Edges", "Vertices"})}, StitchAction));
   Reg(e, "Slide", SubDTool(kSelectSubD, "Pick a vertex, then the point to slide towards", 2, {}, {}, SlideAction),
-      CommandStatus::Partial, "Slides one control vertex along its best-aligned edge.");
-  Reg(e, "SubDSpinEdge", SubDTool(kSelectSubD, "Pick edges to spin", -1, {}, {}, SpinEdgeAction),
-      CommandStatus::Partial, "Spins the edge one corner around the two faces sharing it; no direction option.");
+      CommandStatus::Implemented, "Slides the picked vertex towards the target point, constrained to its best-aligned edge.");
+  Reg(e, "SubDSpinEdge", SubDTool(kSelectSubD, "Pick edges to spin", -1, {}, {Choice("Direction", {"CW", "CCW"})}, SpinEdgeAction),
+      CommandStatus::Implemented, "Spins the edge one corner, clockwise or counter-clockwise, around the two faces sharing it.");
   Reg(e, "Fill", SubDTool(kSelectSubD, "Pick naked edges of the holes to fill (Enter for all)", -1, {}, {}, FillAction));
   Reg(e, "AddGuide", Immediate([](CommandContext& ctx) { ctx.Print("AddGuide: guide curves are not stored in this build; use Slide and InsertEdge to shape the control net."); }),
       CommandStatus::Partial, "Guide curves are not stored.");
@@ -1531,10 +1378,9 @@ void RegisterSubDCommands(CommandEngine& e) {
   Reg(e, "SubDSweep2", [] { return std::unique_ptr<Command>(std::make_unique<SweepThenSubDCommand>("Sweep2", "SubDSweep2")); },
       CommandStatus::Implemented, "Runs Sweep2 and converts the result to a SubD.");
   Reg(e, "AutomaticSubDFromMesh", SubDTool("Select meshes to convert", "", 0, {}, {Numeric("Angle", 30), Toggle("DeleteInput", true)}, AutoSubDAction));
-  Reg(e, "QuadRemesh", SubDTool("Select objects to remesh", "", 0, {}, {Numeric("TargetQuadCount", 400), Toggle("DeleteInput", false)}, QuadRemeshAction),
-      CommandStatus::Partial, "Surfaces are sampled on a UV grid; other objects have their triangles paired into quads.");
-  Reg(e, "ShrinkWrap", SubDTool("Select objects to wrap", "", 0, {}, {Numeric("Offset", 0)}, ShrinkWrapAction),
-      CommandStatus::Partial, "Builds the 3D convex hull of the selection (concavities are not followed).");
+  // QuadRemesh / ShrinkWrap: superseded, dead code removed - the real
+  // implementations are registered later by RegisterRemeshCommands
+  // (cmd_remesh.cpp), which explicitly replaces these SubD placeholders.
 }
 
 }  // namespace dino8::app
