@@ -676,6 +676,10 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     renderer.EnablePolygonOffset(true);
     for (const SceneObject& o : doc.Objects()) {
       if (!shown(o)) continue;
+      // SetObjectDisplayMode Wireframe: a per-object override that skips
+      // the fill pass even in a shaded/rendered/etc. viewport, so the
+      // object still shows only edges/curves below.
+      if (o.force_wireframe) continue;
       o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
       const DisplayCache& d = o.Display();
       if (d.triangles.empty()) continue;

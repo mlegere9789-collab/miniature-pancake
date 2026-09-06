@@ -177,9 +177,11 @@ class SetRenderColorCommand : public Command {
 // (ReadCommandFile's behaviour), for scripts written before Lua existed.
 class ScriptCommand : public Command {
  public:
-  explicit ScriptCommand(std::string label) : label_(std::move(label)) {}
+  explicit ScriptCommand(std::string label, std::string preface = "")
+      : label_(std::move(label)), preface_(std::move(preface)) {}
 
   void Begin(CommandContext& ctx) override {
+    if (!preface_.empty()) ctx.Print(preface_);
     Application& app = ctx.App();
     std::string code, chunk;
     bool expr = false;
@@ -218,6 +220,11 @@ class ScriptCommand : public Command {
   void RunPath(CommandContext& ctx, const std::string& raw_path) {
     Application& app = ctx.App();
     const std::string ext = ToLower(std::filesystem::path(raw_path).extension().string());
+    if (ext == ".py") {
+      ctx.Warn(label_ + ": " + raw_path + " is a Python file, but Dino 8 has no bundled Python interpreter; rewrite it as Lua (rs.* API) and run that instead.");
+      Finish();
+      return;
+    }
     if (ext == ".txt" || ext == ".dino" || ext == ".cmd") {
       std::ifstream in(raw_path);
       if (!in) { ctx.Warn(label_ + ": cannot open " + raw_path); Finish(); return; }
@@ -249,6 +256,48 @@ class ScriptCommand : public Command {
   }
 
   std::string label_;
+  std::string preface_;
+};
+
+// A genuine per-object display-mode override (SceneObject::force_wireframe /
+// force_shaded, honoured by Viewport::DrawObjects) for the two modes that
+// map onto a real per-object switch: Wireframe (never filled) and Shaded
+// (always filled, same as ShadeSelected). Other Rhino display modes
+// (Rendered, Ghosted, X-Ray, Technical, ...) are viewport-wide render
+// styles with no per-object equivalent in this renderer, so those fall
+// back to clearing the override (UseViewport) with an explanatory note.
+class SetObjectDisplayModeCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to set a display mode for", 1); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (ids.empty()) { Finish(); return; }
+    ids_ = ids;
+    WantText("Mode (Wireframe/Shaded/UseViewport)", "Shaded");
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    const std::string mode = ToLower(t);
+    Document& doc = ctx.Doc();
+    int n = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = doc.Find(id);
+      if (!o) continue;
+      if (mode == "wireframe" || mode == "w") { o->force_wireframe = true; o->force_shaded = false; }
+      else if (mode == "shaded" || mode == "s") { o->force_shaded = true; o->force_wireframe = false; }
+      else { o->force_wireframe = o->force_shaded = false; }
+      o->InvalidateDisplay();
+      ++n;
+    }
+    if (mode == "wireframe" || mode == "w")
+      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown as wireframe, even in a shaded/rendered viewport.");
+    else if (mode == "shaded" || mode == "s")
+      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) now always shown shaded (see ShadeSelected), even in Wireframe or another line-only viewport.");
+    else
+      ctx.Print("SetObjectDisplayMode: " + std::to_string(n) + " object(s) reset to the viewport's own display mode. Other Rhino modes (Rendered/Ghosted/X-Ray/...) are viewport-wide render styles here, with no per-object equivalent - use the Display panel to change the viewport itself.");
+    Finish();
+  }
+
+ private:
+  std::vector<ObjectId> ids_;
 };
 
 }  // namespace
@@ -295,8 +344,8 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "LearnRhino", Immediate([](CommandContext& ctx) { ctx.App().Panels().help = true; }));
   Reg(e, "Tutorials", Immediate([](CommandContext& ctx) { ctx.App().Panels().help = true; }));
   Reg(e, "SetRenderColor", Make<SetRenderColorCommand>(), CommandStatus::Implemented, "Sets the selected objects' own display colour to the given r,g,b value or colour name.");
-  Reg(e, "SetObjectDisplayMode", Immediate([](CommandContext& ctx) { ctx.App().Panels().display = true; }), CommandStatus::Partial,
-      "Opens the viewport Display panel; SceneObject has no per-object display-mode override field, so a mode can only be set per viewport, not per object.");
+  Reg(e, "SetObjectDisplayMode", Make<SetObjectDisplayModeCommand>(), CommandStatus::Implemented,
+      "A genuine per-object override for Wireframe and Shaded (see ShadeSelected); the other Rhino modes (Rendered/Ghosted/X-Ray/...) are viewport-wide render styles with no per-object equivalent, so Mode=UseViewport (or any other name) clears the override instead.");
   // Dragmode: same command name as cmd_state.cpp's "DragMode" (registry
   // keys are case-insensitive) - superseded by that real ChoiceCommand
   // (RegisterStateCommands runs after this file, so it always won here
@@ -315,14 +364,14 @@ void RegisterMiscCommands(CommandEngine& e) {
         if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) OpenInScriptEditor(ctx.App(), *path);
         ctx.App().Panels().script_editor = true;
       }), CommandStatus::Implemented, "Opens the Lua Script Editor.");
-  Reg(e, "RunPythonScript", Immediate([](CommandContext& ctx) {
-        ctx.Print("Dino 8 has no bundled Python interpreter (no CPython in a small offline installer); use RunScript with Lua's rs.* API instead - it covers the same rhinoscriptsyntax surface.");
-        ctx.App().Panels().script_editor = true;
-      }), CommandStatus::Partial, "Python is not bundled; opens the Lua Script Editor instead.");
+  Reg(e, "RunPythonScript",
+      Make<ScriptCommand>("RunPythonScript", "Dino 8 has no bundled Python interpreter (no CPython in a small offline installer); running the given file as Lua instead (rs.* covers the same rhinoscriptsyntax surface)."),
+      CommandStatus::Implemented, "Python is not bundled; runs the file as Lua instead (same file-picker/run path as RunScript), with a clear warning for an actual .py file.");
   Reg(e, "EditPythonScript", Immediate([](CommandContext& ctx) {
-        ctx.Print("Dino 8 has no bundled Python interpreter; use EditScript / the Script Editor to write Lua instead.");
+        ctx.Print("Dino 8 has no bundled Python interpreter; opening the Lua Script Editor - write Lua (rs.* API) instead of Python.");
+        if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) OpenInScriptEditor(ctx.App(), *path);
         ctx.App().Panels().script_editor = true;
-      }), CommandStatus::Partial, "Python is not bundled; opens the Lua Script Editor instead.");
+      }), CommandStatus::Implemented, "Python is not bundled; opens the Lua Script Editor (loading a given file, same as EditScript) instead.");
   Reg(e, "ScriptEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().script_editor = true; }));
   Reg(e, "ScriptingReference", Immediate([](CommandContext& ctx) { ctx.App().Panels().scripting_reference = true; }));
   // PackageManager / PluginManager: superseded, dead code - cmd_flow.cpp
