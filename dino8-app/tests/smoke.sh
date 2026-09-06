@@ -66,13 +66,34 @@ echo "$OUT" | grep -E "^(smoke|history)" | tail -120
 
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
-  UI="$("$BIN" --smoke 80 --script "$HERE/ui_script.txt" 2>&1)" || true
+  UI="$("$BIN" --smoke 320 --script "$HERE/ui_script.txt" 2>&1)" || true
 else
-  UI="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 80 --script "$HERE/ui_script.txt" 2>&1)" || true
+  UI="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 320 --script "$HERE/ui_script.txt" 2>&1)" || true
 fi
 echo "$UI" | grep -E "^(ok|FAIL)"
 if echo "$UI" | grep -q "^FAIL"; then fail=1; fi
 echo "$UI" | grep -q "^ok   expect_objects 1" || { echo "FAIL ui script produced no checks"; fail=1; }
+# LockViewport: the second Camera printout (after a locked middle-drag) must
+# match the first exactly; the third (after unlocking and dragging again)
+# must differ.
+LV1="$(echo "$UI" | grep "^history: Camera (Top): location" | sed -n '1p')"
+LV2="$(echo "$UI" | grep "^history: Camera (Top): location" | sed -n '2p')"
+LV3="$(echo "$UI" | grep "^history: Camera (Top): location" | sed -n '3p')"
+if [ -n "$LV1" ] && [ "$LV1" = "$LV2" ]; then echo "ok   LockViewport blocked a middle-button drag pan"; else echo "FAIL LockViewport did not block the pan ('$LV1' vs '$LV2')"; fail=1; fi
+if [ -n "$LV3" ] && [ "$LV2" != "$LV3" ]; then echo "ok   toggling LockViewport off let the next drag pan the camera"; else echo "FAIL camera did not move after LockViewport was toggled back off ('$LV2' vs '$LV3')"; fail=1; fi
+# OrthoAngle 45: a clicked line end near (12,5,0) from a (0,0,0) start must
+# land exactly on a 45-degree ray (equal X and Y offsets), not on the
+# world-axis-only 90-degree snap.
+UI_CV1="$(echo "$UI" | grep -A1 'CV\[0\]' | grep 'CV\[1\]' | head -1)"
+X0="$(echo "$UI" | grep 'CV\[0\]' | head -1 | grep -oE '[-0-9.]+,[-0-9.]+,[-0-9.]+' | cut -d, -f1)"
+Y0="$(echo "$UI" | grep 'CV\[0\]' | head -1 | grep -oE '[-0-9.]+,[-0-9.]+,[-0-9.]+' | cut -d, -f2)"
+X1="$(echo "$UI_CV1" | grep -oE '[-0-9.]+,[-0-9.]+,[-0-9.]+' | cut -d, -f1)"
+Y1="$(echo "$UI_CV1" | grep -oE '[-0-9.]+,[-0-9.]+,[-0-9.]+' | cut -d, -f2)"
+if [ -n "$X0" ] && [ -n "$X1" ] && python3 -c "import sys; dx=$X1-($X0); dy=$Y1-($Y0); sys.exit(0 if dx>1 and abs(dx-dy)<0.05*dx else 1)"; then
+  echo "ok   OrthoAngle 45 constrained the clicked line end to an exact 45-degree ray"
+else
+  echo "FAIL OrthoAngle 45 did not constrain the line to 45 degrees (CV[0] $X0,$Y0 CV[1] $X1,$Y1)"; fail=1
+fi
 
 # Curve editing: Intersect, Split, Trim, Fillet, Chamfer, FilletCorners (see curveedit_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then

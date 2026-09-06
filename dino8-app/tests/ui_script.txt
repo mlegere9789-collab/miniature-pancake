@@ -33,3 +33,56 @@ SelNone
 @wait 3
 BoundingBox
 @wait 2
+# LockViewport: freezes the active viewport's camera against a middle-drag
+# pan; unlocking lets it move again.
+SetActiveViewport Top
+@wait 1
+Camera
+Enter
+@wait 1
+LockViewport
+@dragworld Top -30 -30 0 30 30 0 2
+@wait 3
+Camera
+Enter
+@wait 1
+LockViewport
+@dragworld Top -30 -30 0 60 60 0 2
+@wait 3
+Camera
+Enter
+@wait 1
+# OrthoAngle: with the document cleared, Top resets to a fixed default
+# camera (fitting the empty-scene fallback box), so world coordinates are
+# reproducible again. A 45-degree step constrains a clicked line end to
+# the nearest 45-degree ray from the start point, not just the world axes.
+SelAll
+@wait 1
+Delete
+@wait 2
+@expect_objects 0
+SetActiveViewport Top
+Top
+@wait 2
+SetOrtho
+OrthoAngle 45
+@wait 1
+@text x
+@wait 2
+@key Enter
+@wait 2
+@text Line
+@wait 1
+@key Enter
+@wait 2
+@clickworld Top 0 0 0
+@wait 2
+@clickworld Top 12 5 0
+@wait 3
+SelLast
+@wait 1
+List
+@wait 1
+Ortho
+OrthoAngle 90
+@wait 1

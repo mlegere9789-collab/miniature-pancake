@@ -111,12 +111,9 @@ struct AppState {
   double drag_strength = 100.0;  // DragStrength percent
   bool drag_copy = false;        // DragCopy
   bool remember_copy_options = false;
-  double ortho_angle = 90.0;     // OrthoAngle degrees
-  bool ortho_snap_to_cplane_z = false;
-  bool snap_to_locked = true, snap_to_occluded = true, snap_to_meshes = true, snap_to_mesh_object = true, snap_to_subd_object = true;
+  double ortho_angle = 90.0;     // OrthoAngle degrees (mirrored onto SnapSettings::ortho_angle_deg for the pick code)
   double zoom_extents_border = 1.1;  // SetZoomExtentsBorder factor
   double perspective_angle = 0;      // PerspectiveAngle (0 = derived from the lens)
-  bool lock_viewport = false;        // LockViewport: ignore view changes from the mouse
   std::string working_folder;        // SetWorkingFolder
   bool message_boxes_reset = false;
   bool camera_shown = false;         // Camera Show: draw the active camera frustum

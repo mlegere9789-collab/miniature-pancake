@@ -41,9 +41,18 @@ struct SnapSettings {
   bool project = false;  // project every pick onto the CPlane
   bool grid_snap = false;
   bool ortho = false;
+  double ortho_angle_deg = 90.0;      // OrthoAngle: step between constrained directions
+  bool ortho_snap_to_cplane_z = false;  // OrthoSnapToCPlaneZ: also allow the CPlane's vertical axis
   bool planar = false;
   bool smart_track = false;
   bool disable_all = false;
+  // Object-snap candidate filters (SnapToLocked/Occluded/Meshes/MeshObject/
+  // SubDObject). All default on, matching the previous unconditional behaviour.
+  bool snap_to_locked = true;
+  bool snap_to_occluded = true;
+  bool snap_to_meshes = true;
+  bool snap_to_mesh_object = true;
+  bool snap_to_subd_object = true;
 };
 
 struct PickResult {
@@ -125,6 +134,12 @@ class Viewport {
   // While true the viewport ignores every mouse button and the wheel
   // (locked layout details, the page under an active detail).
   void SetAllInputLocked(bool locked) { all_input_locked_ = locked; }
+  // LockViewport: this viewport's camera (pan/orbit/dolly and wheel zoom)
+  // cannot be changed with the mouse, but clicking and selecting objects
+  // still works - unlike SetAllInputLocked, which a locked layout detail
+  // uses to freeze the whole viewport.
+  bool ViewLocked() const { return view_locked_; }
+  void SetViewLocked(bool locked) { view_locked_ = locked; }
   void SetStandardView(const std::string& view);  // Top/Bottom/Front/Back/Right/Left/Perspective/Isometric
   std::string StandardView() const { return standard_view_; }
   int Width() const { return width_; }
@@ -253,6 +268,7 @@ class Viewport {
   double screen_x_ = 0, screen_y_ = 0;
   bool input_locked_ = false;
   bool all_input_locked_ = false;
+  bool view_locked_ = false;
   DisplayMode mode_ = DisplayMode::Wireframe;
   ConstructionPlane cplane_;
   bool active_ = false;

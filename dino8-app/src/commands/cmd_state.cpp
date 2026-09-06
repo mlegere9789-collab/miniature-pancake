@@ -8,6 +8,7 @@
 
 #include <cctype>
 #include <filesystem>
+#include <map>
 #include <set>
 
 #include "app/Settings.h"
@@ -137,20 +138,74 @@ void ActivateNext(CommandContext& ctx, const std::function<bool(const Viewport&)
   ctx.Print(std::string("No ") + what + " viewport");
 }
 
-std::string UniqueViewportName(CommandContext& ctx, const std::string& base) {
-  if (!ctx.App().FindViewport(base)) return base;
-  for (int i = 2;; ++i) { std::string n = base + " " + std::to_string(i); if (!ctx.App().FindViewport(n)) return n; }
+void GrowBox(kernel::BoundingBox& box, bool& has, const Point3d& p) {
+  if (!has) { box.min = box.max = p; has = true; return; }
+  box.min.x = std::min(box.min.x, p.x); box.min.y = std::min(box.min.y, p.y); box.min.z = std::min(box.min.z, p.z);
+  box.max.x = std::max(box.max.x, p.x); box.max.y = std::max(box.max.y, p.y); box.max.z = std::max(box.max.z, p.z);
 }
 
-// Adds a viewport that copies the active one's camera, mode and CPlane.
-Viewport* AddViewportLike(CommandContext& ctx, Viewport* src) {
-  const std::string name = UniqueViewportName(ctx, src ? src->StandardView() : "Perspective");
-  auto vp = std::make_unique<Viewport>(name, src ? src->StandardView() : "Perspective");
-  if (src) { vp->GetCamera().SetState(src->GetCamera().State()); vp->SetMode(src->Mode()); vp->CPlane() = src->CPlane(); }
-  Viewport* out = vp.get();
-  ctx.Viewports().push_back(std::move(vp));
-  return out;
+// ZoomEnds: naked curve end points - curve endpoints that don't coincide
+// with the endpoint of another curve (an unjoined end).
+bool NakedCurveEndsBox(const Document& doc, kernel::BoundingBox& box) {
+  std::vector<Point3d> ends;
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.kind != ObjectKind::Curve || !doc.IsObjectVisible(o) || !o.curve) continue;
+    const kernel::Interval dom = o.curve->Domain();
+    ends.push_back(o.curve->PointAt(dom.min));
+    if (!o.curve->raw().IsClosed()) ends.push_back(o.curve->PointAt(dom.max));
+  }
+  const double tol = 1e-6;
+  bool has = false;
+  for (size_t i = 0; i < ends.size(); ++i) {
+    int coincident = 0;
+    for (size_t j = 0; j < ends.size(); ++j) if (i != j && (ends[i] - ends[j]).Length() < tol) ++coincident;
+    if (coincident == 0) GrowBox(box, has, ends[i]);
+  }
+  return has;
 }
+
+// ZoomNaked: naked (unjoined, single-sided) surface/mesh edges, already
+// computed for display in DisplayCache::naked_edges.
+bool NakedEdgesBox(const Document& doc, kernel::BoundingBox& box) {
+  bool has = false;
+  for (const SceneObject& o : doc.Objects()) {
+    if (!doc.IsObjectVisible(o)) continue;
+    const std::vector<float>& e = o.Display().naked_edges;
+    for (size_t i = 0; i + 2 < e.size(); i += 3) GrowBox(box, has, Point3d(e[i], e[i + 1], e[i + 2]));
+  }
+  return has;
+}
+
+// Non-manifold edge test on a mesh: any edge shared by more than two faces
+// (mirrors cmd_select2.cpp's SelNonManifold test).
+bool HasNonManifoldMeshEdge(const kernel::Mesh& m) {
+  std::map<std::pair<int, int>, int> edges;
+  const ON_Mesh& raw = m.raw();
+  for (int fi = 0; fi < raw.m_F.Count(); ++fi) {
+    const ON_MeshFace& f = raw.m_F[fi];
+    const int n = f.IsQuad() ? 4 : 3;
+    for (int k = 0; k < n; ++k) {
+      int a = f.vi[k], b = f.vi[(k + 1) % n];
+      if (a == b) continue;
+      if (a > b) std::swap(a, b);
+      if (++edges[{a, b}] > 2) return true;
+    }
+  }
+  return false;
+}
+
+// ZoomNonManifold: mesh objects that have at least one non-manifold edge.
+bool NonManifoldMeshesBox(const Document& doc, kernel::BoundingBox& box) {
+  bool has = false;
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.kind != ObjectKind::Mesh || !doc.IsObjectVisible(o) || !o.mesh || !HasNonManifoldMeshEdge(*o.mesh)) continue;
+    const kernel::BoundingBox bb = o.BoundingBox();
+    GrowBox(box, has, bb.min);
+    GrowBox(box, has, bb.max);
+  }
+  return has;
+}
+
 
 // Saves the document to `path` without changing its path or modified state.
 void SaveCopy(CommandContext& ctx, const std::string& path) {
@@ -355,9 +410,9 @@ void RegisterStateCommands(CommandEngine& e) {
   Reg(e, "SetRedrawOn", SetFlag([](CommandContext& ctx) -> bool& { return ctx.App().State().redraw; }, true, "Redraw"));
   Reg(e, "SetRedrawOff", SetFlag([](CommandContext& ctx) -> bool& { return ctx.App().State().redraw; }, false, "Redraw"));
   Reg(e, "Alerter", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().alerter; }, "Alerter (beep when a command finishes)"));
-  Reg(e, "CommandPrompt", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().command_prompt; }, "Command prompt"), CommandStatus::Partial, "Stored; the command line stays visible so you can always type.");
-  Reg(e, "DisplayCommandPrompt", SetFlag([](CommandContext& ctx) -> bool& { return ctx.App().State().command_prompt; }, true, "Command prompt"), CommandStatus::Partial, "The command line is always shown.");
-  Reg(e, "Run", Immediate([](CommandContext& ctx) { ctx.Engine().PendingInputs().clear(); ctx.Warn("Run: Dino 8 does not execute external programs from the command line."); }), CommandStatus::Partial, "External programs are never run; use your shell.");
+  Reg(e, "CommandPrompt", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().command_prompt; }, "Command prompt"), CommandStatus::Implemented, "Shows or hides the command-line window and reclaims its space for the viewports; commands still run from menus, toolbars, macros and scripts while hidden.");
+  Reg(e, "DisplayCommandPrompt", SetFlag([](CommandContext& ctx) -> bool& { return ctx.App().State().command_prompt; }, true, "Command prompt"), CommandStatus::Implemented, "Shows the command-line window (see CommandPrompt).");
+  Reg(e, "Run", Immediate([](CommandContext& ctx) { ctx.Engine().PendingInputs().clear(); ctx.Warn("Run: Dino 8 does not execute external programs from the command line."); }), CommandStatus::Partial, "Deliberately never implemented: Dino 8 does not launch arbitrary external programs from a typed command (a real Rhino Run would exec() whatever the user typed with no sandboxing). Run Lua via RunScript/\"= expr\", or a shell command from your own terminal.");
   Reg(e, "GetIssueState", Say("GetIssueState: ok - no issues reported"));
   Reg(e, "ResetMessageBoxes", Immediate([](CommandContext& ctx) { ctx.App().State().message_boxes_reset = true; ctx.Print("ResetMessageBoxes: all 'do not show again' choices cleared"); }));
 
@@ -397,11 +452,12 @@ void RegisterStateCommands(CommandEngine& e) {
           return;
         }
       }));
-  Reg(e, "NewFloatingViewport", Immediate([](CommandContext& ctx) { Viewport* vp = AddViewportLike(ctx, ctx.ActiveViewport()); Activate(ctx, vp); }), CommandStatus::Partial, "Adds a docked viewport; drag its tab out to float it.");
-  Reg(e, "SplitViewportHorizontal", Immediate([](CommandContext& ctx) { Viewport* vp = AddViewportLike(ctx, ctx.ActiveViewport()); ctx.Print("Added viewport " + vp->Name()); }), CommandStatus::Partial, "Adds a copy of the active viewport; dock it beside the original.");
-  // SplitViewportVertical: the real implementation lives in cmd_viewtools.cpp
-  // (RegisterViewToolsCommands runs after this file, so it always won here
-  // anyway; this stub was dead code).
+  // NewFloatingViewport, SplitViewportHorizontal, SplitViewportVertical: the
+  // real implementations live in cmd_viewtools.cpp (RegisterViewToolsCommands
+  // runs after this file, so it always won here anyway; these stubs were
+  // dead code - NewFloatingViewport really does float via Application::
+  // AddViewport(..., /*floating=*/true), and Split* really docks a new
+  // viewport beside the active one).
   Reg(e, "NextViewportToTop", Immediate([](CommandContext& ctx) { ActivateNext(ctx, [](const Viewport&) { return true; }, "other"); }));
   // BringViewportToTop: superseded by cmd_viewtools.cpp's implementation (see above).
   Reg(e, "PushViewportToBack", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("PrevViewport"); }));
@@ -418,15 +474,41 @@ void RegisterStateCommands(CommandEngine& e) {
         a.GetCamera().SetState(cb); b.GetCamera().SetState(ca);
         DisplayMode ma = a.Mode(); a.SetMode(b.Mode()); b.SetMode(ma);
         ctx.Print("Swapped views of " + a.Name() + " and " + b.Name());
-      }), CommandStatus::Partial, "Swaps the active viewport's view with the next one.");
+      }), CommandStatus::Implemented, "Swaps the camera and display mode of the active viewport with the next one.");
   Reg(e, "OneView", Immediate([](CommandContext& ctx) { ctx.App().SetViewportLayout(1); ctx.Print("Single viewport layout"); }));
   // ToggleFloatingViewport: superseded by cmd_viewtools.cpp's implementation.
-  Reg(e, "LockViewport", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().lock_viewport; }, "Viewport lock"), CommandStatus::Partial, "Records the lock; mouse navigation still works.");
+  Reg(e, "LockViewport", Immediate([](CommandContext& ctx) {
+        Viewport* vp = ctx.ActiveViewport();
+        if (!vp) return;
+        vp->SetViewLocked(!vp->ViewLocked());
+        ctx.Print(std::string("Viewport lock ") + (vp->ViewLocked() ? "on" : "off") + " (" + vp->Name() + ")");
+      }), CommandStatus::Implemented, "Freezes the active viewport's camera: mouse pan/orbit/dolly, the wheel and the arrow-key/Page Up/Down shortcuts stop changing it, but clicking and selecting objects still works. Per viewport, like Rhino's.");
   // SetMaximizedViewport: superseded by cmd_viewtools.cpp's implementation.
   // ViewportTabs: superseded by cmd_viewtools.cpp's implementation.
-  Reg(e, "ZoomEnds", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->ZoomExtents(ctx.Doc(), ctx.Doc().SelectedCount() > 0); }), CommandStatus::Partial, "Zooms to the selected curves.");
-  Reg(e, "ZoomNaked", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->ZoomExtents(ctx.Doc(), ctx.Doc().SelectedCount() > 0); }), CommandStatus::Partial, "Zooms to the selection; see ShowEdges for naked edges.");
-  Reg(e, "ZoomNonManifold", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->ZoomExtents(ctx.Doc(), ctx.Doc().SelectedCount() > 0); }), CommandStatus::Partial, "Zooms to the selection; SelNonManifold finds the meshes.");
+  Reg(e, "ZoomEnds", Immediate([](CommandContext& ctx) {
+        Viewport* vp = ctx.ActiveViewport();
+        if (!vp) return;
+        kernel::BoundingBox box;
+        if (!NakedCurveEndsBox(ctx.Doc(), box)) { ctx.Warn("ZoomEnds: no naked curve ends found"); return; }
+        vp->ZoomTo(box);
+        ctx.Print("ZoomEnds: zoomed to every unjoined curve end point");
+      }), CommandStatus::Implemented, "Zooms to curve endpoints that don't coincide with another curve's endpoint (unjoined ends).");
+  Reg(e, "ZoomNaked", Immediate([](CommandContext& ctx) {
+        Viewport* vp = ctx.ActiveViewport();
+        if (!vp) return;
+        kernel::BoundingBox box;
+        if (!NakedEdgesBox(ctx.Doc(), box)) { ctx.Warn("ZoomNaked: no naked edges found"); return; }
+        vp->ZoomTo(box);
+        ctx.Print("ZoomNaked: zoomed to every naked surface/mesh edge (see ShowEdges)");
+      }), CommandStatus::Implemented, "Zooms to every naked (single-sided) surface/mesh/polysurface edge.");
+  Reg(e, "ZoomNonManifold", Immediate([](CommandContext& ctx) {
+        Viewport* vp = ctx.ActiveViewport();
+        if (!vp) return;
+        kernel::BoundingBox box;
+        if (!NonManifoldMeshesBox(ctx.Doc(), box)) { ctx.Warn("ZoomNonManifold: no non-manifold meshes found"); return; }
+        vp->ZoomTo(box);
+        ctx.Print("ZoomNonManifold: zoomed to every mesh with a non-manifold edge (see SelNonManifold)");
+      }), CommandStatus::Implemented, "Zooms to meshes that have at least one edge shared by more than two faces.");
   // Zoom1To1Calibrate, SetZoomExtentsBorder: superseded by cmd_viewtools.cpp's implementations.
 
   // ---- camera / lens ---------------------------------------------------
@@ -457,19 +539,23 @@ void RegisterStateCommands(CommandEngine& e) {
         c.eye = c.target + d;
         c.lens_mm = mm;
         ctx.Print("DollyZoom: lens " + FormatNumber(mm) + " mm, distance " + FormatNumber(d.Length()));
-      }), CommandStatus::Partial, "Type the lens length; interactive dragging is planned.");
+      }), CommandStatus::Implemented, "Type the new lens length; recomputes the camera distance so the target keeps its on-screen size (the 'Vertigo' effect).");
 
   // ---- snaps / drag ----------------------------------------------------
   Reg(e, "SetOrtho", Immediate([](CommandContext& ctx) { ctx.Snaps().ortho = true; ctx.Settings().ortho = true; ctx.Print("Ortho on (angle " + FormatNumber(ctx.App().State().ortho_angle) + " deg)"); }));
-  Reg(e, "OrthoAngle", Make<NumberArgCommand>("Ortho angle in degrees", [](CommandContext& ctx) { return ctx.App().State().ortho_angle; }, [](CommandContext& ctx, double v) { ctx.App().State().ortho_angle = std::clamp(v, 1.0, 180.0); ctx.Print("Ortho angle = " + FormatNumber(ctx.App().State().ortho_angle) + " deg"); }), CommandStatus::Partial, "Stored; ortho constrains to 90 degree steps.");
+  Reg(e, "OrthoAngle", Make<NumberArgCommand>("Ortho angle in degrees", [](CommandContext& ctx) { return ctx.App().State().ortho_angle; }, [](CommandContext& ctx, double v) {
+        ctx.App().State().ortho_angle = std::clamp(v, 1.0, 180.0);
+        ctx.Snaps().ortho_angle_deg = ctx.App().State().ortho_angle;
+        ctx.Print("Ortho angle = " + FormatNumber(ctx.App().State().ortho_angle) + " deg");
+      }), CommandStatus::Implemented, "Sets the angle step Ortho constrains to (default every 90 degrees); any step from 1 to 180 works.");
   Reg(e, "SnapSize", Make<NumberArgCommand>("Grid snap size", [](CommandContext& ctx) { return ctx.Settings().grid_spacing; }, [](CommandContext& ctx, double v) { if (v > 0) { ctx.Settings().grid_spacing = v; ctx.Print("Grid snap size = " + FormatNumber(v)); } }));
   Reg(e, "SetSnap", Make<NumberArgCommand>("Grid snap size", [](CommandContext& ctx) { return ctx.Settings().grid_spacing; }, [](CommandContext& ctx, double v) { if (v > 0) { ctx.Settings().grid_spacing = v; ctx.Snaps().grid_snap = true; ctx.Print("Grid snap on, size = " + FormatNumber(v)); } }));
-  Reg(e, "OrthoSnapToCPlaneZ", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().ortho_snap_to_cplane_z; }, "Ortho snap to CPlane Z"), CommandStatus::Partial, "Stored flag.");
-  Reg(e, "SnapToLocked", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().snap_to_locked; }, "Snap to locked objects"), CommandStatus::Partial, "Stored flag; snaps consider every visible object.");
-  Reg(e, "SnapToOccluded", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().snap_to_occluded; }, "Snap to occluded objects"), CommandStatus::Partial, "Stored flag; snaps consider every visible object.");
-  Reg(e, "SnapToMeshes", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().snap_to_meshes; }, "Snap to meshes"), CommandStatus::Partial, "Stored flag.");
-  Reg(e, "SnapToMeshObject", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().snap_to_mesh_object; }, "Snap to mesh objects"), CommandStatus::Partial, "Stored flag.");
-  Reg(e, "SnapToSubDObject", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().snap_to_subd_object; }, "Snap to SubD objects"), CommandStatus::Partial, "Stored flag.");
+  Reg(e, "OrthoSnapToCPlaneZ", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().ortho_snap_to_cplane_z; }, "Ortho snap to CPlane Z"), CommandStatus::Implemented, "While Ortho is on, also offers the CPlane's vertical (Z) direction from the last point as a constraint, alongside the in-plane ortho directions.");
+  Reg(e, "SnapToLocked", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().snap_to_locked; }, "Snap to locked objects"), CommandStatus::Implemented, "Off excludes locked objects from every object snap.");
+  Reg(e, "SnapToOccluded", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().snap_to_occluded; }, "Snap to occluded objects"), CommandStatus::Implemented, "Off excludes snap candidates that are hidden behind another object along the line of sight (a real depth test against every visible object's bounding box).");
+  Reg(e, "SnapToMeshes", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().snap_to_meshes; }, "Snap to meshes"), CommandStatus::Implemented, "Off excludes mesh vertices and edges from End/Vertex/Near object snaps.");
+  Reg(e, "SnapToMeshObject", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().snap_to_mesh_object; }, "Snap to mesh objects"), CommandStatus::Implemented, "Off excludes mesh objects from object snaps entirely (overrides SnapToMeshes).");
+  Reg(e, "SnapToSubDObject", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().snap_to_subd_object; }, "Snap to SubD objects"), CommandStatus::Implemented, "Off excludes SubD control-net vertices from object snaps.");
   Reg(e, "ShowOsnap", Immediate([](CommandContext& ctx) { bool& b = ctx.App().Panels().object_snaps; b = !b; ctx.Print(std::string("Osnap panel ") + (b ? "shown" : "hidden")); }));
   Reg(e, "DragMode", Make<ChoiceCommand>("DragMode", std::vector<std::string>{"CPlane", "World", "UVN", "View", "ControlPolygon"}, [](CommandContext& ctx) -> std::string& { return ctx.App().State().drag_mode; }), CommandStatus::Partial, "Stored; dragging follows the CPlane.");
   Reg(e, "DragStrength", Make<NumberArgCommand>("Drag strength percent", [](CommandContext& ctx) { return ctx.App().State().drag_strength; }, [](CommandContext& ctx, double v) { ctx.App().State().drag_strength = std::clamp(v, 1.0, 100.0); ctx.Print("Drag strength = " + FormatNumber(ctx.App().State().drag_strength) + "%"); }), CommandStatus::Partial, "Stored flag.");

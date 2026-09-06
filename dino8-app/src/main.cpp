@@ -201,13 +201,18 @@ int main(int argc, char** argv) {
         }
         else if (cmd == "dragworld") {
           std::string view; double x0, y0, z0, x1, y1, z1; ss >> view >> x0 >> y0 >> z0 >> x1 >> y1 >> z1;
+          int btn = 0; ss >> btn;  // optional mouse button (0 left, 1 right, 2 middle - right/middle drag the camera)
           dino8::app::Viewport* vp = app.FindViewport(view);
           double ax, ay, bx, by;
           if (vp && vp->WorldToPixel(dino8::kernel::Point3d(x0, y0, z0), ax, ay) && vp->WorldToPixel(dino8::kernel::Point3d(x1, y1, z1), bx, by)) {
-            expand({"@drag " + std::to_string(vp->ScreenX() + ax) + " " + std::to_string(vp->ScreenY() + ay) + " " + std::to_string(vp->ScreenX() + bx) + " " + std::to_string(vp->ScreenY() + by)});
+            expand({"@drag " + std::to_string(vp->ScreenX() + ax) + " " + std::to_string(vp->ScreenY() + ay) + " " + std::to_string(vp->ScreenX() + bx) + " " + std::to_string(vp->ScreenY() + by) + " " + std::to_string(btn)});
           }
         }
-        else if (cmd == "drag") { float x0, y0, x1, y1; ss >> x0 >> y0 >> x1 >> y1; expand({"@move " + std::to_string(x0) + " " + std::to_string(y0), "@wait 1", "@down 0", "@wait 1", "@move " + std::to_string((x0 + x1) / 2) + " " + std::to_string((y0 + y1) / 2), "@wait 1", "@move " + std::to_string(x1) + " " + std::to_string(y1), "@wait 2", "@up 0", "@wait 1"}); }
+        else if (cmd == "drag") {
+          float x0, y0, x1, y1; ss >> x0 >> y0 >> x1 >> y1;
+          int btn = 0; ss >> btn;  // optional mouse button, default left (0)
+          expand({"@move " + std::to_string(x0) + " " + std::to_string(y0), "@wait 1", "@down " + std::to_string(btn), "@wait 1", "@move " + std::to_string((x0 + x1) / 2) + " " + std::to_string((y0 + y1) / 2), "@wait 1", "@move " + std::to_string(x1) + " " + std::to_string(y1), "@wait 2", "@up " + std::to_string(btn), "@wait 1"});
+        }
         else if (cmd == "key") { std::string n; ss >> n; io.AddKeyEvent(key_of(n), true); expand({"@keyup " + n}); }
         else if (cmd == "keyup") { std::string n; ss >> n; io.AddKeyEvent(key_of(n), false); }
         else if (cmd == "text") { std::string rest; std::getline(ss, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1); io.AddInputCharactersUTF8(rest.c_str()); }

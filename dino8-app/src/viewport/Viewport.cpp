@@ -1232,7 +1232,31 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
   // Object snaps: nearest candidate within a pixel radius.
   const double snap_radius = 10.0;
   double best = snap_radius;
+  // SnapToOccluded: when off, a candidate point is rejected if some other
+  // visible object's bounding box lies between the camera and it along the
+  // pick ray (a real, if approximate, depth test - exact per-triangle
+  // occlusion would need a full render-side z-buffer readback).
+  const SceneObject* current_obj = nullptr;
+  auto is_occluded_by_others = [&](Point3d p) {
+    const double d_self = ON_DotProduct(p - ray.origin, ray.direction);
+    for (const SceneObject& other : doc.Objects()) {
+      if (&other == current_obj || !doc.IsObjectVisible(other)) continue;
+      const kernel::BoundingBox obb = other.BoundingBox();
+      const Point3d ctr((obb.min.x + obb.max.x) / 2, (obb.min.y + obb.max.y) / 2, (obb.min.z + obb.max.z) / 2);
+      const double d_other = ON_DotProduct(ctr - ray.origin, ray.direction);
+      if (d_other >= d_self - 1e-6) continue;  // not nearer to the camera
+      double sx, sy;
+      if (!WorldToPixel(ctr, sx, sy)) continue;
+      const double r = 0.5 * (std::hypot(obb.max.x - obb.min.x, std::hypot(obb.max.y - obb.min.y, obb.max.z - obb.min.z)));
+      double ex, ey;
+      WorldToPixel(ctr + Vector3d(r, 0, 0), ex, ey);
+      const double screen_r = std::max(1.0, std::hypot(ex - sx, ey - sy));
+      if (std::hypot(sx - px, sy - py) < screen_r) return true;
+    }
+    return false;
+  };
   auto consider = [&](Point3d p, const char* label) {
+    if (!snaps.snap_to_occluded && is_occluded_by_others(p)) return;
     double sx, sy;
     if (!WorldToPixel(p, sx, sy)) return;
     const double dist = std::hypot(sx - px, sy - py);
@@ -1246,6 +1270,10 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
   if (!snaps.disable_all) {
     for (const SceneObject& o : doc.Objects()) {
       if (!doc.IsObjectVisible(o)) continue;
+      if (!snaps.snap_to_locked && doc.IsObjectLocked(o)) continue;
+      if (!snaps.snap_to_mesh_object && o.kind == ObjectKind::Mesh) continue;
+      if (!snaps.snap_to_subd_object && o.kind == ObjectKind::SubD) continue;
+      current_obj = &o;
       // Quick reject: bounding box far from the cursor.
       const kernel::BoundingBox bb = o.BoundingBox();
       double bx0, by0, bx1, by1;
@@ -1410,15 +1438,25 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
           }
           break;
         }
-        case ObjectKind::Mesh:
+        case ObjectKind::Mesh: {
+          if ((snaps.vertex || snaps.end) && snaps.snap_to_meshes) {
+            const ON_Mesh& m = o.mesh->raw();
+            for (int i = 0; i < m.m_V.Count(); ++i) {
+              const ON_3fPoint& v = m.m_V[i];
+              consider(Point3d(v.x, v.y, v.z), snaps.vertex ? "Vertex" : "End");
+            }
+          }
+          break;
+        }
         case ObjectKind::SubD: {
-          if (snaps.vertex || snaps.end) {
-            const ON_Mesh* m = o.kind == ObjectKind::Mesh ? &o.mesh->raw() : nullptr;
-            if (m) {
-              for (int i = 0; i < m->m_V.Count(); ++i) {
-                const ON_3fPoint& v = m->m_V[i];
-                consider(Point3d(v.x, v.y, v.z), snaps.vertex ? "Vertex" : "End");
-              }
+          // The control-net vertices double as the SubD's snap points -
+          // there is no separate limit-surface evaluator here.
+          if ((snaps.vertex || snaps.end) && o.subd) {
+            const kernel::Mesh net = o.subd->ToApproximateMesh();
+            const ON_Mesh& m = net.raw();
+            for (int i = 0; i < m.m_V.Count(); ++i) {
+              const ON_3fPoint& v = m.m_V[i];
+              consider(Point3d(v.x, v.y, v.z), snaps.vertex ? "Vertex" : "End");
             }
           }
           break;
@@ -1497,13 +1535,43 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
       p = p + n * (w - pw);
     }
     if (snaps.ortho) {
+      // Constrain to the nearest multiple of OrthoAngle degrees from the
+      // base point, measured in the CPlane (this reduces to the classic
+      // axis-aligned snap when the angle is 90 degrees).
       const Vector3d rel = p - base;
       const double u = ON_DotProduct(rel, cplane_.x_axis);
       const double v = ON_DotProduct(rel, cplane_.y_axis);
       const double w = ON_DotProduct(rel, n);
-      if (std::abs(u) >= std::abs(v)) p = base + cplane_.x_axis * u + n * w;
-      else p = base + cplane_.y_axis * v + n * w;
+      const double r = std::sqrt(u * u + v * v);
+      Point3d p_planar;
+      if (r > 1e-9) {
+        const double step = std::clamp(snaps.ortho_angle_deg, 1.0, 180.0) * ON_PI / 180.0;
+        const double ang = std::round(std::atan2(v, u) / step) * step;
+        p_planar = base + cplane_.x_axis * (r * std::cos(ang)) + cplane_.y_axis * (r * std::sin(ang)) + n * w;
+      } else {
+        p_planar = base + n * w;
+      }
+      p = p_planar;
       result.snap_label = "Ortho";
+      if (snaps.ortho_snap_to_cplane_z) {
+        // OrthoSnapToCPlaneZ: also offer the CPlane's vertical line through
+        // the base point (closest point on that line to the pick ray),
+        // and use it instead when it is closer on screen to the cursor.
+        const Vector3d r0 = ray.origin - base;
+        const double a = ON_DotProduct(ray.direction, ray.direction), b = ON_DotProduct(ray.direction, n), c = ON_DotProduct(n, n);
+        const double dd = ON_DotProduct(ray.direction, r0), ee = ON_DotProduct(n, r0);
+        const double denom = a * c - b * b;
+        if (std::fabs(denom) > 1e-9) {
+          const double t = (a * ee - b * dd) / denom;
+          const Point3d p_vert = base + n * t;
+          double sx1, sy1, sx2, sy2;
+          if (WorldToPixel(p_vert, sx1, sy1) && WorldToPixel(p_planar, sx2, sy2) &&
+              std::hypot(sx1 - px, sy1 - py) < std::hypot(sx2 - px, sy2 - py)) {
+            p = p_vert;
+            result.snap_label = "Ortho (CPlane Z)";
+          }
+        }
+      }
     }
   }
   if (snaps.grid_snap && grid_spacing > 0) {
@@ -1740,7 +1808,7 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
     const double dx = mx - last_x_, dy = my - last_y_;
     if (std::hypot(mx - drag_start_x_, my - drag_start_y_) > 3.0) drag_moved_ = true;
     if (drag_button_ == 1 || drag_button_ == 2) {
-      if (drag_moved_) {
+      if (drag_moved_ && !view_locked_) {
         if (io.KeyShift || drag_button_ == 2 || !camera_.State().perspective) {
           camera_.Pan(dx, dy, width_, height_);
         } else if (io.KeyCtrl) {
@@ -1813,7 +1881,7 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
     }
   }
   // Wheel zoom about the cursor.
-  if (hovered && !all_input_locked_ && std::abs(io.MouseWheel) > 0.0f) {
+  if (hovered && !all_input_locked_ && !view_locked_ && std::abs(io.MouseWheel) > 0.0f) {
     PickResult under = PickPoint(doc, snaps, mx, my, std::nullopt, grid_spacing, false);
     camera_.DollyToward(io.MouseWheel, under.point);
   }

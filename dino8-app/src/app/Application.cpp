@@ -1459,9 +1459,9 @@ void Application::HandleShortcuts() {
   if (ImGui::IsKeyPressed(ImGuiKey_F11)) show_control_points_for_selected = false;
   if (!text_active) {
     if (ImGui::IsKeyPressed(ImGuiKey_Home)) engine_->Execute("UndoView");
-    if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) { if (Viewport* v = ActiveViewport()) v->GetCamera().Dolly(1.0); }
-    if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) { if (Viewport* v = ActiveViewport()) v->GetCamera().Dolly(-1.0); }
-    if (Viewport* v = ActiveViewport()) {
+    if (Viewport* v = ActiveViewport(); v && !v->ViewLocked()) {
+      if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) v->GetCamera().Dolly(1.0);
+      if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) v->GetCamera().Dolly(-1.0);
       if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) v->GetCamera().Orbit(-40, 0);
       if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) v->GetCamera().Orbit(40, 0);
       if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) v->GetCamera().Orbit(0, -40);
@@ -1471,10 +1471,16 @@ void Application::HandleShortcuts() {
 }
 
 float Application::CommandLineHeight() const {
+  // CommandPrompt / DisplayCommandPrompt: hiding the prompt reclaims its
+  // strip of screen for the viewports. Commands still run from menus,
+  // toolbars, macros and scripts either way - only the visible text field
+  // and history lines go away.
+  if (!state_.command_prompt) return 0.0f;
   return ImGui::GetFrameHeightWithSpacing() * 2.0f + 8.0f;
 }
 
 void Application::DrawCommandLine() {
+  if (!state_.command_prompt) return;
   const ImGuiViewport* vp = ImGui::GetMainViewport();
   const float toolbar_h = ToolbarHeight(*this);
   const float h = CommandLineHeight();
