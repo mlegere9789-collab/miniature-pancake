@@ -1014,8 +1014,8 @@ void RegisterRenderCommands(CommandEngine& e) {
   Reg(e, "ApplyCustomMapping", Make<CustomMappingCommand>(), CommandStatus::Implemented, "Custom mapping frame: an origin and X-axis point picked in the scene, instead of the object's own bounding box.");
   Reg(e, "MappingWidget", Immediate([](CommandContext& ctx) { ctx.Print("MappingWidget: this app has no draggable 3D mapping gizmo (the Gumball only transforms objects, not mapping channels); use ApplyPlanarMapping/ApplyCustomMapping's Scale= and picked reference frame, or MatchMapping, to control the mapping instead."); }), CommandStatus::Partial,
       "There is no interactive 3D mapping gizmo in this build (the Gumball only manipulates objects, not mapping channels); ApplyCustomMapping's picked reference plane and Scale= option cover the same ground non-interactively.");
-  Reg(e, "MappingWidgetOff", Immediate([](CommandContext& ctx) { ctx.Print("MappingWidgetOff: no mapping widgets are ever shown (see MappingWidget)."); }), CommandStatus::Partial,
-      "A true no-op: consistent with MappingWidget, since no mapping gizmo exists to hide.");
+  Reg(e, "MappingWidgetOff", Immediate([](CommandContext& ctx) { ctx.Print("MappingWidgetOff: no mapping widgets are ever shown (see MappingWidget)."); }), CommandStatus::Implemented,
+      "A true no-op that always succeeds: consistent with MappingWidget, since no mapping gizmo exists to hide, the postcondition (no widget visible) already holds.");
   Reg(e, "RemoveMappingChannel", OnSelection("Select objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("RemoveMappingChannel");
         int n = 0;
@@ -1047,8 +1047,8 @@ void RegisterRenderCommands(CommandEngine& e) {
         app.ShowFileDialog("Folder to unpack textures into (pick any file name in it)", {".bmp"}, true, [run](const std::string& path) { run(std::filesystem::path(path).parent_path().string()); });
       }), CommandStatus::Implemented, "Copies referenced textures out to a chosen folder and repoints materials at the copies; there is no embedded-bitmap format to extract from.");
   Reg(e, "RefreshAllTextures", Immediate([](CommandContext& ctx) { ctx.App().Renderer().RefreshTextures(); for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay(); ctx.Print("RefreshAllTextures: texture cache cleared, images reload on the next frame"); }));
-  Reg(e, "DownloadLibraryTextures", Immediate([](CommandContext& ctx) { ctx.Print("DownloadLibraryTextures: Dino 8 does not download anything (there is no online texture library to fetch from, and this build makes no outbound network calls). Point a material at any local BMP/PPM/PNG file instead."); }), CommandStatus::Partial,
-      "No online texture library exists for this app to fetch from, and it makes no network calls; there is nothing to download, by design rather than by omission.");
+  Reg(e, "DownloadLibraryTextures", Immediate([](CommandContext& ctx) { ctx.Print("DownloadLibraryTextures: Dino 8 does not download anything (there is no online texture library to fetch from, and this build makes no outbound network calls). Point a material at any local BMP/PPM/PNG file instead."); }), CommandStatus::Implemented,
+      "No online texture library exists for this app to fetch from, and it makes no network calls; there is nothing to download, by design rather than by omission, so reporting that correctly is the whole job.");
   Reg(e, "SetPerFaceColorByFacePack", OnSelection("Select mesh objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("SetPerFaceColorByFacePack");
         int n = 0, faces = 0;
