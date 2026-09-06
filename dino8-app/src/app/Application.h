@@ -3,6 +3,7 @@
 // time from main().
 #pragma once
 
+#include <array>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -268,7 +269,11 @@ class Application {
   // Built-in renderer: renders `vp` (the active viewport when null) in
   // Rendered mode into the render window image. `supersample` <= 0 uses
   // the document's render quality; `arctic` renders white matte.
-  bool RenderView(Viewport* vp, int width, int height, int supersample, bool arctic, std::string& error);
+  // `blowup` is the [x0,y0,x1,y1] NDC sub-rectangle of the viewport's
+  // current full view to fill the output with (RenderBlowup); the default
+  // {-1,-1,1,1} renders the ordinary full view.
+  bool RenderView(Viewport* vp, int width, int height, int supersample, bool arctic, std::string& error,
+                  std::array<double, 4> blowup = {-1, -1, 1, 1});
   RenderImage& LastRender() { return last_render_; }
   bool SaveLastRender(const std::string& path, std::string& error);
   void CloseRenderWindow();

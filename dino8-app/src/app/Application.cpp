@@ -230,7 +230,8 @@ void Application::OpenPopupToolbar() {
   popup_toolbar_pos_ = ImGui::GetCurrentContext() ? ImGui::GetMousePos() : ImVec2(400, 300);
 }
 
-bool Application::RenderView(Viewport* vp, int width, int height, int supersample, bool arctic, std::string& error) {
+bool Application::RenderView(Viewport* vp, int width, int height, int supersample, bool arctic, std::string& error,
+                             std::array<double, 4> blowup) {
   if (!vp) vp = ActiveViewport();
   if (!vp) { error = "No active viewport"; return false; }
   if (!renderer_ok_) { error = "Renderer not initialised"; return false; }
@@ -245,7 +246,7 @@ bool Application::RenderView(Viewport* vp, int width, int height, int supersampl
   ctx.curve_tolerance = std::min(curve_display_tolerance, 0.01);
   const auto t0 = std::chrono::steady_clock::now();
   std::vector<unsigned char> rgb;
-  if (!vp->RenderToImage(renderer_, ctx, width, height, supersample, arctic, rgb, error)) return false;
+  if (!vp->RenderToImage(renderer_, ctx, width, height, supersample, arctic, rgb, error, blowup)) return false;
   // The display meshes were rebuilt at the finer tolerance; drop them so
   // the viewports come back at their own setting.
   for (SceneObject& o : doc_.Objects()) o.InvalidateDisplay();

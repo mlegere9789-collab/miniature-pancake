@@ -3,6 +3,7 @@
 // into navigation, point picks, and object selection.
 #pragma once
 
+#include <array>
 #include <optional>
 #include <string>
 #include <vector>
@@ -168,8 +169,12 @@ class Viewport {
   // Renders the scene through this viewport's camera in Rendered mode into
   // an offscreen image of w x h pixels (top-down RGB rows), supersampled
   // `supersample` times per axis. Works without a visible window.
+  // `blowup` is the [x0,y0,x1,y1] normalized-device-coordinate sub-rectangle
+  // (of the current full view) to fill the whole output with -- a true
+  // optical zoom (RenderBlowup), not a post-hoc crop. Pass {-1,-1,1,1} (the
+  // default) for the ordinary full view.
   bool RenderToImage(GlRenderer& renderer, const FrameContext& ctx, int w, int h, int supersample, bool arctic,
-                     std::vector<unsigned char>& rgb, std::string& error);
+                     std::vector<unsigned char>& rgb, std::string& error, std::array<double, 4> blowup = {-1, -1, 1, 1});
 
   // Draws the ImGui window that shows this viewport and handles its input.
   // Returns the events that occurred. `want_point` / `want_objects` tell

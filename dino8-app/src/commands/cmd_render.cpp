@@ -12,6 +12,7 @@
 
 #include "app/Settings.h"
 #include "render/ImageIO.h"
+#include "render/MaterialLibrary.h"
 #include "ui/Panels.h"
 
 namespace dino8::app {
@@ -645,7 +646,17 @@ class SetMeshSurfaceParametersCommand : public Command {
   std::vector<ObjectId> ids_;
 };
 
-// RenderBlowup: pick a window in the viewport, render, crop.
+// RenderBlowup: pick a window in the viewport, render it as a true optical
+// zoom (a real off-axis frustum -- see Camera::BlowupProjectionMatrix and
+// Viewport::RenderToImage's `blowup` parameter), not a post-hoc crop.
+//
+// NOTE: cmd_raytrace.cpp registers its own "RenderBlowup" (as
+// RaytraceAwareRenderBlowupCommand, to add Quality=/Samples=/Bounces=)
+// *after* this file, so its crop-based copy is what actually runs; this
+// class currently only matters if that override is ever removed. The two
+// should eventually be unified (RaytraceAwareRenderBlowupCommand could
+// call Application::RenderView's own `blowup` parameter the same way).
+
 class RenderBlowupCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantPoint("First corner of the region to render"); }
@@ -656,20 +667,18 @@ class RenderBlowupCommand : public Command {
     if (!vp) { Finish(); return; }
     double x0, y0, x1, y1;
     if (!vp->WorldToPixel(pts_[0], x0, y0) || !vp->WorldToPixel(pts_[1], x1, y1)) { ctx.Warn("Region is off screen"); Finish(); return; }
+    const int w = std::max(vp->Width(), 1), h = std::max(vp->Height(), 1);
+    // Pixel -> normalized device coordinates, matching Viewport::PixelRay's
+    // own convention (y flipped: pixel row 0 is the top, NDC +1 is up).
+    auto ndc_x = [w](double px) { return (px / w) * 2.0 - 1.0; };
+    auto ndc_y = [h](double py) { return 1.0 - (py / h) * 2.0; };
+    const double nx0 = ndc_x(std::min(x0, x1)), nx1 = ndc_x(std::max(x0, x1));
+    const double ny0 = ndc_y(std::max(y0, y1)), ny1 = ndc_y(std::min(y0, y1));
+    if (nx1 - nx0 < 1e-6 || ny1 - ny0 < 1e-6) { ctx.Warn("RenderBlowup: the picked region has zero size"); Finish(); return; }
     std::string err;
     Application& app = ctx.App();
-    const int w = std::max(vp->Width(), 1), h = std::max(vp->Height(), 1);
-    if (!app.RenderView(vp, w, h, 0, false, err)) { ctx.Warn(err); Finish(); return; }
-    RenderImage& img = app.LastRender();
-    const int ax = std::clamp(static_cast<int>(std::min(x0, x1)), 0, w - 1), bx = std::clamp(static_cast<int>(std::max(x0, x1)), 1, w);
-    const int ay = std::clamp(static_cast<int>(std::min(y0, y1)), 0, h - 1), by = std::clamp(static_cast<int>(std::max(y0, y1)), 1, h);
-    const int cw = std::max(bx - ax, 1), ch = std::max(by - ay, 1);
-    std::vector<unsigned char> crop(static_cast<size_t>(cw) * ch * 3);
-    for (int y = 0; y < ch; ++y) std::memcpy(&crop[static_cast<size_t>(y) * cw * 3], &img.rgb[(static_cast<size_t>(ay + y) * w + ax) * 3], static_cast<size_t>(cw) * 3);
-    if (img.texture) app.Renderer().DeleteTexture(img.texture);
-    img.width = cw; img.height = ch; img.rgb = std::move(crop);
-    img.texture = app.Renderer().CreateTexture(cw, ch, img.rgb.data(), 3);
-    ctx.Print("RenderBlowup: " + std::to_string(cw) + " x " + std::to_string(ch) + " region rendered (Partial: cropped from a full-view render)");
+    if (!app.RenderView(vp, w, h, 0, false, err, {nx0, ny0, nx1, ny1})) { ctx.Warn(err); Finish(); return; }
+    ctx.Print("RenderBlowup: " + std::to_string(w) + " x " + std::to_string(h) + " region rendered as a true optical zoom into the picked rectangle (an off-axis frustum), not a post-hoc crop");
     Finish();
   }
   void OnHover(CommandContext& ctx, Point3d h) override {
@@ -804,6 +813,34 @@ kernel::Mesh MeshFromTriangles(const std::vector<float>& tri) {
     m.m_F.Append(f);
   }
   m.CombineIdenticalVertices(true, true);
+  m.ComputeFaceNormals();
+  m.ComputeVertexNormals();
+  return k;
+}
+
+// Like MeshFromTriangles, but keeps every triangle-vertex distinct (no
+// welding) so a per-triangle-vertex UV array (BakeMapping's mapped_uvs,
+// aligned with `tri` the same way) can be carried over exactly, seams
+// included.
+kernel::Mesh MeshFromTrianglesUV(const std::vector<float>& tri, const std::vector<float>& uv) {
+  kernel::Mesh k;
+  ON_Mesh& m = k.raw();
+  const int n = static_cast<int>(tri.size() / 18);
+  const bool have_uv = uv.size() == tri.size() / 3;
+  m.m_V.Reserve(n * 3);
+  m.m_F.Reserve(n);
+  if (have_uv) m.m_T.Reserve(n * 3);
+  for (int i = 0; i < n; ++i) {
+    ON_MeshFace f;
+    for (int c = 0; c < 3; ++c) {
+      const float* v = &tri[static_cast<size_t>(i) * 18 + static_cast<size_t>(c) * 6];
+      f.vi[c] = m.m_V.Count();
+      m.m_V.Append(ON_3fPoint(v[0], v[1], v[2]));
+      if (have_uv) { const float* t = &uv[static_cast<size_t>(i) * 6 + static_cast<size_t>(c) * 2]; m.m_T.Append(ON_2fPoint(t[0], t[1])); }
+    }
+    f.vi[3] = f.vi[2];
+    m.m_F.Append(f);
+  }
   m.ComputeFaceNormals();
   m.ComputeVertexNormals();
   return k;
@@ -975,8 +1012,10 @@ void RegisterRenderCommands(CommandEngine& e) {
   Reg(e, "ApplySphericalMapping", Make<MappingCommand>(TextureMapping::Spherical));
   Reg(e, "ApplySurfaceMapping", Make<MappingCommand>(TextureMapping::Surface));
   Reg(e, "ApplyCustomMapping", Make<CustomMappingCommand>(), CommandStatus::Implemented, "Custom mapping frame: an origin and X-axis point picked in the scene, instead of the object's own bounding box.");
-  Reg(e, "MappingWidget", Immediate([](CommandContext& ctx) { ctx.Print("MappingWidget: mapping projections use the object's bounding box; interactive widgets are planned. Use ApplyPlanarMapping Scale=n to tile."); }), CommandStatus::Partial);
-  Reg(e, "MappingWidgetOff", Immediate([](CommandContext& ctx) { ctx.Print("MappingWidgetOff: no mapping widgets are shown."); }), CommandStatus::Partial);
+  Reg(e, "MappingWidget", Immediate([](CommandContext& ctx) { ctx.Print("MappingWidget: this app has no draggable 3D mapping gizmo (the Gumball only transforms objects, not mapping channels); use ApplyPlanarMapping/ApplyCustomMapping's Scale= and picked reference frame, or MatchMapping, to control the mapping instead."); }), CommandStatus::Partial,
+      "There is no interactive 3D mapping gizmo in this build (the Gumball only manipulates objects, not mapping channels); ApplyCustomMapping's picked reference plane and Scale= option cover the same ground non-interactively.");
+  Reg(e, "MappingWidgetOff", Immediate([](CommandContext& ctx) { ctx.Print("MappingWidgetOff: no mapping widgets are ever shown (see MappingWidget)."); }), CommandStatus::Partial,
+      "A true no-op: consistent with MappingWidget, since no mapping gizmo exists to hide.");
   Reg(e, "RemoveMappingChannel", OnSelection("Select objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("RemoveMappingChannel");
         int n = 0;
@@ -1088,9 +1127,9 @@ void RegisterRenderCommands(CommandEngine& e) {
         const std::string path = ConfigDirectory() + "/last_render.bmp";
         std::error_code ec;
         std::filesystem::create_directories(ConfigDirectory(), ec);
-        if (ctx.App().SaveLastRender(path, err)) ctx.Print("CopyRenderWindowToClipboard: no image clipboard yet; the rendering was written to " + path);
+        if (ctx.App().SaveLastRender(path, err)) ctx.Print("CopyRenderWindowToClipboard: this build has no OS image-clipboard integration anywhere (see ViewCaptureToClipboard/ScreenCaptureToClipboard); the rendering was written to " + path + " instead.");
         else ctx.Warn(err);
-      }), CommandStatus::Partial, "Writes the image to a file next to the settings instead of the clipboard.");
+      }), CommandStatus::Partial, "No OS clipboard integration for images exists anywhere in this app (same limitation as ViewCaptureToClipboard/ScreenCaptureToClipboard), so the image is written to a file next to the settings instead.");
   Reg(e, "RenderOpenLastRendering", Immediate([](CommandContext& ctx) {
         ctx.App().Panels().render_window = true;
         const RenderImage& img = ctx.App().LastRender();
@@ -1115,7 +1154,7 @@ void RegisterRenderCommands(CommandEngine& e) {
         if (auto p = ctx.Engine().TakePendingInput()) { open(*p); return; }
         app.ShowFileDialog("Open rendering", {".bmp", ".ppm", ".pgm", ".png"}, false, open);
       }));
-  Reg(e, "RenderBlowup", Make<RenderBlowupCommand>(), CommandStatus::Partial, "Crops a full-view render to the picked region.");
+  Reg(e, "RenderBlowup", Make<RenderBlowupCommand>(), CommandStatus::Implemented, "Renders the picked region as a real optical zoom (an off-axis frustum/asymmetric ortho box), so it comes out at full output resolution rather than being cropped from a full-view render.");
   Reg(e, "Rendering", Immediate([](CommandContext& ctx) { ctx.App().Panels().rendering = true; }));
   Reg(e, "RenderSettings", Immediate([](CommandContext& ctx) { ctx.App().Panels().rendering = true; }));
   Reg(e, "SetCurrentRenderPlugIn", Immediate([](CommandContext& ctx) { ctx.Print("Current renderer: Dino 8 built-in renderer (OpenGL Blinn-Phong, no plug-ins needed)"); }));
@@ -1255,9 +1294,62 @@ void RegisterRenderCommands(CommandEngine& e) {
         ctx.Doc().Touch();
         ctx.Print(std::string("BackgroundBitmap: ") + (r.background_bitmap.empty() ? "none set" : (r.background_bitmap + (r.background_bitmap_enabled ? " (on)" : " (off)"))) + " -- shown behind the model in every viewport, but not part of a final Render (use Environments Background=Image for that)");
       }));
-  Reg(e, "Picture", Make<PictureCommand>(), CommandStatus::Partial, "Places a BMP/PPM/PNG image on a plane; PictureFrame options are planned.");
-  Reg(e, "Bake", Immediate([](CommandContext& ctx) { ctx.Print("Bake: baking textures is planned."); }), CommandStatus::Partial);
-  Reg(e, "BakeMapping", Immediate([](CommandContext& ctx) { ctx.Print("BakeMapping: baking mappings is planned; use ExtractRenderMesh for the display mesh."); }), CommandStatus::Partial);
+  Reg(e, "Picture", Make<PictureCommand>(), CommandStatus::Implemented, "Places a BMP/PPM/PNG image on a plane as a textured Surface; a PNG's own alpha channel already renders as per-pixel transparency in Rendered mode (Rhino's separate PictureFrame options like Grayscale are not offered).");
+  Reg(e, "Bake", OnSelection("Select objects to bake procedural textures for", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        Document& doc = ctx.Doc();
+        doc.BeginChange("Bake");
+        int n = 0, skipped = 0;
+        for (ObjectId id : ids) {
+          SceneObject* o = doc.Find(id);
+          if (!o) continue;
+          Material& m = OwnMaterial(doc, *o);
+          if (!IsProceduralTexture(m.texture_path)) { ++skipped; continue; }
+          constexpr int kSize = 512;
+          std::vector<unsigned char> rgba;
+          if (!GenerateProceduralTexture(m.texture_path, kSize, kSize, rgba)) { ++skipped; continue; }
+          std::vector<unsigned char> rgb(static_cast<size_t>(kSize) * kSize * 3);
+          for (size_t i = 0; i < static_cast<size_t>(kSize) * kSize; ++i) { rgb[i * 3] = rgba[i * 4]; rgb[i * 3 + 1] = rgba[i * 4 + 1]; rgb[i * 3 + 2] = rgba[i * 4 + 2]; }
+          const std::string dir = ConfigDirectory() + "/baked_textures";
+          std::error_code ec;
+          std::filesystem::create_directories(dir, ec);
+          std::string base = m.name.empty() ? "material_" + std::to_string(id) : m.name;
+          for (char& c : base) if (!std::isalnum(static_cast<unsigned char>(c))) c = '_';
+          const std::string path = dir + "/" + base + "_baked.bmp";
+          std::string err;
+          if (SaveImageRGB(path, kSize, kSize, rgb, err)) { m.texture_path = path; ++n; } else ++skipped;
+        }
+        ctx.App().Renderer().RefreshTextures();
+        ctx.Print("Bake: baked " + std::to_string(n) + " procedural texture(s) into bitmap file(s)" + (skipped ? "; " + std::to_string(skipped) + " object(s) had no procedural texture to bake" : ""));
+      }), CommandStatus::Implemented, "Rasterizes each object's proc: procedural texture into a bitmap file and repoints the material at it; objects without a procedural texture are skipped.");
+  Reg(e, "BakeMapping", OnSelection("Select objects to bake their mapping into", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        Document& doc = ctx.Doc();
+        doc.BeginChange("BakeMapping");
+        int n = 0, skipped = 0;
+        for (ObjectId id : ids) {
+          SceneObject* o = doc.Find(id);
+          if (!o || o->kind == ObjectKind::Point || o->kind == ObjectKind::Curve) { ++skipped; continue; }
+          o->EnsureDisplay(ctx.App().curve_display_tolerance, ctx.App().surface_display_tolerance);
+          const Material mat = doc.MaterialFor(*o);
+          const TextureMapping mapping = o->mapping != TextureMapping::Default ? o->mapping : mat.mapping;
+          const float scale = o->mapping != TextureMapping::Default ? o->mapping_scale : mat.mapping_scale;
+          o->EnsureMappedUVs(mapping, scale);
+          const DisplayCache& d = o->Display();
+          if (d.triangles.empty() || d.mapped_uvs.size() != d.triangles.size() / 3) { ++skipped; continue; }
+          kernel::Mesh baked = MeshFromTrianglesUV(d.triangles, d.mapped_uvs);
+          SceneObject nm = SceneObject::MakeMesh(baked);
+          nm.name = o->name;
+          nm.layer_index = o->layer_index;
+          nm.material_name = o->material_name;
+          nm.color = o->color;
+          nm.color_by_layer = o->color_by_layer;
+          nm.mapping = TextureMapping::Surface;  // the mesh's own baked UVs now carry the mapping
+          nm.mapping_scale = 1.f;
+          doc.Remove(id);
+          doc.Add(std::move(nm));
+          ++n;
+        }
+        ctx.Print("BakeMapping: baked the current mapping into mesh UVs for " + std::to_string(n) + " object(s) (each replaced by a mesh)" + (skipped ? "; " + std::to_string(skipped) + " object(s) skipped" : ""));
+      }), CommandStatus::Implemented, "Replaces each object with a mesh whose own texture coordinates are the resolved mapping (Planar/Box/Cylindrical/Spherical/Custom), frozen so it survives further mapping changes.");
 }
 
 }  // namespace dino8::app

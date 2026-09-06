@@ -52,3 +52,50 @@ Lights
 Rendering
 GradientView
 SetCurrentRenderPlugIn
+# --- Newly-implemented commands: light picking, custom mapping, per-object
+# display overrides, real image backgrounds, RenderBlowup, Bake/BakeMapping.
+SelNone
+EditLightByHighlight
+10,-30,40
+EditLightByLooking
+Enter
+SelNone
+SelID 1
+ApplyCustomMapping Scale=2
+0,0,0
+5,0,0
+SelID 1
+ShadeSelected
+ShowRenderMesh
+HideRenderMesh
+ToggleRenderMesh
+SelID 1
+SetMeshSurfaceParameters
+0.05
+SelID 5
+SetPerFaceColorByFacePack
+SelID 5
+RemovePerFaceColors
+Textures
+PackTextures
+UnpackTextures @TMP@/unpacked_textures
+Environments Background=Image Image=@TMP@/render.bmp
+BackgroundBitmap @TMP@/render.bmp
+Perspective
+ZoomExtents
+RenderPreview
+RenderBlowup
+0,0,0
+20,20,10
+SelNone
+SelID 1
+RenderAssignMaterialToObjects WoodMat Texture=proc:wood:1
+SelNone
+SelID 1
+Bake
+SelID 1
+BakeMapping
+MappingWidget
+MappingWidgetOff
+DownloadLibraryTextures
+CopyRenderWindowToClipboard

@@ -244,7 +244,7 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
 }
 
 bool Viewport::RenderToImage(GlRenderer& renderer, const FrameContext& base, int w, int h, int supersample,
-                             bool arctic, std::vector<unsigned char>& rgb, std::string& error) {
+                             bool arctic, std::vector<unsigned char>& rgb, std::string& error, std::array<double, 4> blowup) {
   w = std::clamp(w, 1, 8192);
   h = std::clamp(h, 1, 8192);
   supersample = std::clamp(supersample, 1, 4);
@@ -261,7 +261,7 @@ bool Viewport::RenderToImage(GlRenderer& renderer, const FrameContext& base, int
   rt.Bind();
   Color top, bottom;
   BackgroundFor(DisplayMode::Rendered, ctx.doc, arctic, top, bottom);
-  renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(aspect));
+  renderer.SetMatrices(camera_.ViewMatrix(), camera_.BlowupProjectionMatrix(aspect, blowup[0], blowup[1], blowup[2], blowup[3]));
   renderer.ClearGradient(top, bottom);
   DrawBackgroundImage(renderer, ctx.doc, DisplayMode::Rendered, arctic, true);
   renderer.EnableDepthTest(true);

@@ -24,6 +24,15 @@ Mat4 Mat4::Perspective(double fov_y, double aspect, double n, double f) {
   return r;
 }
 
+Mat4 Mat4::Frustum(double l, double r, double b, double t, double n, double f) {
+  Mat4 m;
+  m.m = {static_cast<float>(2 * n / (r - l)), 0, 0, 0,
+         0, static_cast<float>(2 * n / (t - b)), 0, 0,
+         static_cast<float>((r + l) / (r - l)), static_cast<float>((t + b) / (t - b)), static_cast<float>(-(f + n) / (f - n)), -1,
+         0, 0, static_cast<float>(-2 * f * n / (f - n)), 0};
+  return m;
+}
+
 Mat4 Mat4::Ortho(double l, double rr, double b, double t, double n, double f) {
   Mat4 r;
   r.m = {static_cast<float>(2 / (rr - l)), 0, 0, 0,
@@ -256,6 +265,20 @@ Mat4 Camera::ProjectionMatrix(double aspect) const {
   const double h = state_.ortho_height / 2.0;
   const double w = h * aspect;
   return Mat4::Ortho(-w, w, -h, h, -far_z, far_z);
+}
+
+Mat4 Camera::BlowupProjectionMatrix(double aspect, double ndc_x0, double ndc_y0, double ndc_x1, double ndc_y1) const {
+  double far_z;
+  const double near_z = NearFar(far_z);
+  if (state_.perspective) {
+    const double fov = 2.0 * std::atan(18.0 / state_.lens_mm);
+    const double ty = std::tan(fov / 2.0) * near_z;
+    const double tx = ty * aspect;
+    return Mat4::Frustum(tx * ndc_x0, tx * ndc_x1, ty * ndc_y0, ty * ndc_y1, near_z, far_z);
+  }
+  const double h = state_.ortho_height / 2.0;
+  const double w = h * aspect;
+  return Mat4::Ortho(w * ndc_x0, w * ndc_x1, h * ndc_y0, h * ndc_y1, -far_z, far_z);
 }
 
 Ray Camera::ScreenRay(double ndc_x, double ndc_y, double aspect) const {

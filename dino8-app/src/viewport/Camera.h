@@ -16,6 +16,7 @@ struct Mat4 {
   static Mat4 Identity();
   static Mat4 Perspective(double fov_y_radians, double aspect, double near_z, double far_z);
   static Mat4 Ortho(double left, double right, double bottom, double top, double near_z, double far_z);
+  static Mat4 Frustum(double left, double right, double bottom, double top, double near_z, double far_z);
   static Mat4 LookAt(kernel::Point3d eye, kernel::Point3d target, kernel::Vector3d up);
   Mat4 operator*(const Mat4& other) const;
   const float* Data() const { return m.data(); }
@@ -56,6 +57,12 @@ class Camera {
   Mat4 ViewMatrix() const;
   Mat4 ProjectionMatrix(double aspect) const;
   double NearFar(double& far_z) const;
+  // RenderBlowup: a projection that maps just the sub-rectangle
+  // [ndc_x0,ndc_x1] x [ndc_y0,ndc_y1] of the ORIGINAL full view (normalized
+  // device coordinates, -1..1, y up) to the whole output frame -- a true
+  // optical zoom into that region (an off-axis frustum in perspective, an
+  // asymmetric ortho box in parallel projection), not a post-hoc crop.
+  Mat4 BlowupProjectionMatrix(double aspect, double ndc_x0, double ndc_y0, double ndc_x1, double ndc_y1) const;
 
   // Basis vectors of the view.
   kernel::Vector3d Forward() const;
