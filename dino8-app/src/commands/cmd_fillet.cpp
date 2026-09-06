@@ -512,7 +512,7 @@ std::optional<ON_Brep> RoundFaceCorner(const ON_Brep& b, int fi, Point3d vertex,
   if (!outer) return std::nullopt;
   ON_SimpleArray<ON_Curve*> boundary;
   int corner_at = -1;  // index whose END sits at `vertex`
-  const double near = std::max(tol * 200, 1e-3);
+  const double near_tol = std::max(tol * 200, 1e-3);
   for (int k = 0; k < outer->TrimCount(); ++k) {
     const ON_BrepTrim* trim = outer->Trim(k);
     if (!trim) continue;
@@ -521,7 +521,7 @@ std::optional<ON_Brep> RoundFaceCorner(const ON_Brep& b, int fi, Point3d vertex,
     ON_Curve* c = e->DuplicateCurve();
     if (!c) continue;
     if (trim->m_bRev3d) c->Reverse();
-    if (c->PointAtEnd().DistanceTo(vertex) <= near) corner_at = boundary.Count();
+    if (c->PointAtEnd().DistanceTo(vertex) <= near_tol) corner_at = boundary.Count();
     boundary.Append(c);
   }
   const int n = boundary.Count();
