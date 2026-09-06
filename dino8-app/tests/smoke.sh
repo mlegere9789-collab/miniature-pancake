@@ -732,4 +732,30 @@ crcheck "degree 1, 13 control points, non-rational, closed" "PolygonStar NumSide
 crcheck "Closest point 5,0,0 distance 5" "ClosestPt found the nearest point on the line"
 crcheck "degree 1 x 1, CVs 2 x 2" "Plane3Pt/SrfPt built flat 4-CV surfaces"
 
+# Second-wave drafting tools: hatch library, tables, GD&T, multi-leaders,
+# live section views (see drafting2_script.txt).
+sed "s|@TMP@|$TMP|g" "$HERE/drafting2_script.txt" > "$TMP/drafting2_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  D2="$("$BIN" --smoke 150 --script "$TMP/drafting2_script.txt" 2>&1)" || { echo "$D2"; echo "FAIL: drafting2 script exited non-zero"; exit 1; }
+else
+  D2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/drafting2_script.txt" 2>&1)" || { echo "$D2"; echo "FAIL: drafting2 script exited non-zero"; exit 1; }
+fi
+d2check() { if echo "$D2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+d2check "Hatch: 1 boundary(ies) hatched (ANSI31)" "Hatch used the ANSI31 library pattern"
+d2check "Table: 2x2 table created" "Table built a 2x2 grid"
+d2check "TableEdit: table rebuilt (2x2)" "TableEdit rebuilt the table in place"
+d2check "RevisionTable: 0 revision" "RevisionTable started with a header only"
+d2check "RevisionTable: 1 revision" "RevisionTable appended a row"
+d2check "TitleBlock: Widget (Sheet A1, Scale 1:2)" "TitleBlock recorded name/sheet/scale"
+d2check "FeatureControlFrame: Position 0.1 | A,B" "FeatureControlFrame built a frame with datums"
+d2check "DatumFeature: 'A'" "DatumFeature labelled the datum"
+d2check "SurfaceFinish: Ra 1.6" "SurfaceFinish recorded the roughness value"
+d2check "WeldSymbol: Fillet (Above)" "WeldSymbol drew the fillet glyph"
+d2check "MultiLeader: 2 arrow(s), \"Note\"" "MultiLeader built two arrows to one landing"
+d2check "DimTolerance: 1 dimension(s) updated" "DimTolerance appended a tolerance to the dimension"
+d2check "BillOfMaterials: " "BillOfMaterials built a table over the scene objects"
+d2check "SectionView: " "SectionView sliced the box"
+d2check "UpdateSectionViews: 1 section view(s) regenerated" "UpdateSectionViews rebuilt the section from its stored plane"
+d2check "gl_error=0" "drafting2 script ran without OpenGL errors"
+
 exit $fail

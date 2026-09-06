@@ -1,0 +1,63 @@
+# Second wave of 2D drafting tools: hatch pattern library, tables, GD&T,
+# multi-leaders, live section views (see smoke.sh).
+# --- Hatch from the ANSI31 pattern library
+Rectangle 0,0,0 20,10,0
+SelLast
+Hatch Pattern=ANSI31 Scale=1 Rotation=45
+SelNone
+# --- Table, then TableEdit rebuilds it in place
+Table Rows=2 Cols=2 Data=A,B;C,D
+40,0,0
+SelAll
+TableEdit Data=X,Y;Z,W
+SelNone
+# --- RevisionTable: create, then append a row
+RevisionTable
+80,0,0
+RevisionTable Add=1,2026-09-06,Fixed
+Enter
+# --- TitleBlock
+TitleBlock Name=Widget Date=2026-09-06 Scale=1:2 Sheet=A1
+120,0,0
+# --- GD&T: FeatureControlFrame, DatumFeature, SurfaceFinish, WeldSymbol
+FeatureControlFrame Symbol=Position Tolerance=0.1 Datums=A,B
+0,20,0
+10,25,0
+DatumFeature Letter=A
+0,30,0
+SurfaceFinish Value=1.6
+20,30,0
+WeldSymbol Type=Fillet Side=Above
+30,30,0
+40,30,0
+# --- MultiLeader: two arrows, one landing, then text
+MultiLeader
+0,40,0
+10,40,0
+Enter
+20,40,0
+Note
+# --- DimTolerance appends a tolerance to an existing dimension
+Line 0,-60,0 20,-60,0
+SelLast
+DimLinear
+0,-60,0
+20,-60,0
+0,-65,0
+SelLast
+DimTolerance Type=Symmetric Value=0.02
+SelNone
+# --- BillOfMaterials over every real (non-annotation) object so far
+Box 0,-40,0 10,-30,0 5
+SelAll
+BillOfMaterials By=Layer
+SelNone
+# --- SectionView through a fresh box, then UpdateSectionViews regenerates it
+Box 200,0,0 220,20,0 10
+SectionView
+210,-5,0
+210,25,0
+UpdateSectionViews
+Save @TMP@/drafting2.3dm
+New
+Open @TMP@/drafting2.3dm
