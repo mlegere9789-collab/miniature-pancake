@@ -55,6 +55,8 @@ float ToolbarHeight(const Application& app);      // 0 when toolbars are hidden
 float LeftSidebarWidth(const Application& app);   // 0 when the sidebar is hidden
 int ToolbarTabCount();
 const char* ToolbarTabName(int index);
+// Commands of one toolbar tab ("|" = separator); tab 0 is the customizable Standard toolbar.
+std::vector<std::string> ToolbarTabCommands(const Application& app, int index);
 const char* ToolbarButtonLabel(const std::string& command);  // nullptr when unknown
 
 // Small shared widgets.

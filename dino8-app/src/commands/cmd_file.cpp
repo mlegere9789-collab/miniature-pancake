@@ -54,7 +54,6 @@ void RegisterFileCommands(CommandEngine& e) {
         if (auto p = ctx.Engine().TakePendingInput()) { std::string err; if (!app.ImportFile(*p, err)) ctx.Warn(err); else ctx.Print("Imported " + *p); return; }
         app.ShowFileDialog("Import", kModelExts, false, [&app](const std::string& path) { std::string err; if (!app.ImportFile(path, err)) app.Notify(err); });
       }));
-  Reg(e, "Insert", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Import"); }), CommandStatus::Partial, "Imports the file's objects; block instances are planned.");
   Reg(e, "Export", OnSelection("Select objects to export", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         Application& app = ctx.App();
         for (ObjectId id : ids) ctx.Doc().Select(id, true);

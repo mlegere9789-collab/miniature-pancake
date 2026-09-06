@@ -289,6 +289,13 @@ const char* ToolbarTabName(int index) {
   return kTabs[index].name;
 }
 int ToolbarTabCount() { return kTabCount; }
+std::vector<std::string> ToolbarTabCommands(const Application& app, int index) {
+  std::vector<std::string> out;
+  if (index < 0 || index >= kTabCount) return out;
+  if (index == 0) return app.toolbar_commands.empty() ? DefaultToolbarCommands() : app.toolbar_commands;
+  for (const char* c : kTabs[index].commands) out.push_back(c);
+  return out;
+}
 
 const char* ToolbarButtonLabel(const std::string& command) {
   const ToolButton* b = FindButton(command);

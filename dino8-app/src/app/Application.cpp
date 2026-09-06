@@ -47,6 +47,7 @@ void RegisterCurves2Commands(CommandEngine&);
 void RegisterSrfEditCommands(CommandEngine&);
 void RegisterFilletCommands(CommandEngine&);
 void RegisterCurveEditCommands(CommandEngine&);
+void RegisterRemainingCommands(CommandEngine&);
 void RegisterSurfaceCommands(CommandEngine&);
 void RegisterMeshToolsCommands(CommandEngine&);
 void RegisterSubDCommands(CommandEngine&);
@@ -116,6 +117,7 @@ Viewport::FrameContext Application::MakeFrameContext() {
   ctx.surface_tolerance = surface_display_tolerance;
   ctx.fallback_analysis = &analysis_fallback;
   ctx.sub_selection = &sub_selection_;
+  ctx.overlay_lines = &overlay_lines;
   return ctx;
 }
 
@@ -159,6 +161,12 @@ void Application::DeleteSubObjectSelection() {
   if (!first_error.empty()) msg += " (" + first_error + ")";
   engine_->Print(msg);
   doc_.Touch();
+}
+
+void Application::OpenPopupToolbar() {
+  open_popup_toolbar_ = true;
+  popup_toolbar_pos_ = ImGui::GetCurrentContext() ? ImGui::GetMousePos() : ImVec2(400, 300);
+}
 }
 
 bool Application::RenderView(Viewport* vp, int width, int height, int supersample, bool arctic, std::string& error) {
@@ -224,6 +232,7 @@ void Application::RegisterCommands() {
   RegisterSubDCommands(*engine_);       // SubD editing (creases, ExtrudeSubD, Inset, Bridge...); replaces the Slide stub
   RegisterSolidToolsCommands(*engine_); // holes, curve booleans, cage editing, Flow (replaces the CurveBoolean stub)
   RegisterViewToolsCommands(*engine_);  // clipping planes, layouts, named CPlanes, animation (extends CPlane/ClippingPlane)
+  RegisterRemainingCommands(*engine_);  // the last Planned catalogue commands (Convert, TweenSurfaces, ThicknessAnalysis, MatchProperties...)
   RegisterCurveEditCommands(*engine_);  // replaces the solid-only Intersect/Split registrations
   RegisterFilletCommands(*engine_);     // real fillet/chamfer/blend/match/SSX family; after SrfEdit and CurveEdit so it wins both
   RegisterSurfaceCommands(*engine_);    // Sweep/Pipe/OffsetSrf/Project... (approximate NURBS/mesh results)

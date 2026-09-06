@@ -144,7 +144,6 @@ void RegisterViewCommands(CommandEngine& e) {
   Reg(e, "ArcticViewport", SetMode(DisplayMode::Arctic));
   Reg(e, "MonochromeViewport", SetMode(DisplayMode::Monochrome));
   Reg(e, "RayTracedViewport", SetMode(DisplayMode::Rendered), CommandStatus::Partial, "Uses the Rendered mode; path tracing is planned.");
-  Reg(e, "Render", SetMode(DisplayMode::Rendered), CommandStatus::Partial, "Switches the viewport to Rendered mode; offline rendering is planned.");
   Reg(e, "RenderPreview", SetMode(DisplayMode::Rendered), CommandStatus::Partial);
   Reg(e, "RefreshShade", Immediate([](CommandContext& ctx) { for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay(); }));
   Reg(e, "ClearAllMeshes", Immediate([](CommandContext& ctx) { for (SceneObject& o : ctx.Doc().Objects()) o.InvalidateDisplay(); }));
@@ -182,7 +181,6 @@ void RegisterViewCommands(CommandEngine& e) {
         ctx.App().ShowFileDialog("Save viewport image", {".bmp"}, true, save);
       }));
   Reg(e, "ScreenCaptureToFile", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("ViewCaptureToFile"); }), CommandStatus::Partial, "Captures the active viewport.");
-  Reg(e, "ClippingPlane", Immediate([](CommandContext& ctx) { ctx.Print("ClippingPlane: use Split to cut solids; live clipping is planned."); }), CommandStatus::Partial);
 }
 
 }  // namespace dino8::app

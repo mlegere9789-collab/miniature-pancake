@@ -154,5 +154,8 @@ class SelectThenActCommand : public Command {
 // Small helpers shared by many commands.
 std::string FormatPoint(kernel::Point3d p);
 std::string FormatNumber(double v);
+// DecimalPoint: print numbers with a decimal comma instead of a point.
+void SetDecimalComma(bool comma);
+bool DecimalComma();
 
 }  // namespace dino8::app

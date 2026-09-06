@@ -3,6 +3,8 @@
 #include "geom/BrepMesher.h"
 
 #include <algorithm>
+#include <array>
+#include <map>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -19,6 +21,7 @@ const char* AnalysisModeName(AnalysisMode mode) {
     case AnalysisMode::EMap: return "EMap";
     case AnalysisMode::Curvature: return "CurvatureAnalysis";
     case AnalysisMode::DraftAngle: return "DraftAngleAnalysis";
+    case AnalysisMode::Thickness: return "ThicknessAnalysis";
   }
   return "None";
 }
@@ -860,10 +863,64 @@ std::vector<double> DiscreteCurvature(const std::vector<float>& tri, bool gaussi
   return out;
 }
 
+// Thickness at every display vertex: the distance along -normal from the
+// vertex to the first triangle hit on the far side (Moeller-Trumbore over
+// the display triangles), or `far` when nothing is hit. A tiny start
+// offset skips the triangles the vertex itself belongs to.
+std::vector<double> RayThickness(const std::vector<float>& tris, double far) {
+  const size_t n_verts = tris.size() / 6, n_tris = n_verts / 3;
+  std::vector<double> out(n_verts, far);
+  if (n_tris == 0) return out;
+  // Bounding box diagonal sets the skip epsilon.
+  double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
+  for (size_t i = 0; i < n_verts; ++i) for (int k = 0; k < 3; ++k) { lo[k] = std::min(lo[k], static_cast<double>(tris[i * 6 + k])); hi[k] = std::max(hi[k], static_cast<double>(tris[i * 6 + k])); }
+  const double diag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) + (hi[2] - lo[2]) * (hi[2] - lo[2]));
+  const double eps = std::max(diag * 1e-5, 1e-9);
+  // Per-triangle data.
+  std::vector<ON_3dPoint> a(n_tris), b(n_tris), c(n_tris);
+  for (size_t t = 0; t < n_tris; ++t) {
+    a[t] = ON_3dPoint(tris[t * 18], tris[t * 18 + 1], tris[t * 18 + 2]);
+    b[t] = ON_3dPoint(tris[t * 18 + 6], tris[t * 18 + 7], tris[t * 18 + 8]);
+    c[t] = ON_3dPoint(tris[t * 18 + 12], tris[t * 18 + 13], tris[t * 18 + 14]);
+  }
+  // Deduplicate rays by vertex position + normal so shared corners are cast once.
+  std::map<std::array<float, 6>, double> memo;
+  for (size_t i = 0; i < n_verts; ++i) {
+    std::array<float, 6> key;
+    for (int k = 0; k < 6; ++k) key[static_cast<size_t>(k)] = tris[i * 6 + k];
+    auto it = memo.find(key);
+    if (it != memo.end()) { out[i] = it->second; continue; }
+    ON_3dVector n(tris[i * 6 + 3], tris[i * 6 + 4], tris[i * 6 + 5]);
+    if (!n.Unitize()) { memo[key] = far; continue; }
+    const ON_3dVector d = -n;
+    const ON_3dPoint o = ON_3dPoint(tris[i * 6], tris[i * 6 + 1], tris[i * 6 + 2]) + d * eps;
+    double best = far;
+    for (size_t t = 0; t < n_tris; ++t) {
+      const ON_3dVector e1 = b[t] - a[t], e2 = c[t] - a[t];
+      const ON_3dVector p = ON_CrossProduct(d, e2);
+      const double det = ON_DotProduct(e1, p);
+      if (std::fabs(det) < 1e-12) continue;
+      const double inv = 1.0 / det;
+      const ON_3dVector s = o - a[t];
+      const double u = ON_DotProduct(s, p) * inv;
+      if (u < -1e-9 || u > 1 + 1e-9) continue;
+      const ON_3dVector q = ON_CrossProduct(s, e1);
+      const double v = ON_DotProduct(d, q) * inv;
+      if (v < -1e-9 || u + v > 1 + 1e-9) continue;
+      const double dist = ON_DotProduct(e2, q) * inv;
+      if (dist > eps && dist < best) best = dist;
+    }
+    out[i] = best + (best < far ? eps : 0.0);
+    memo[key] = out[i];
+  }
+  return out;
+}
+
 }  // namespace
 
 void SceneObject::EnsureAnalysisColors(const AnalysisSettings& settings) const {
-  const bool wants_colors = settings.mode == AnalysisMode::Curvature || settings.mode == AnalysisMode::DraftAngle;
+  const bool wants_colors = settings.mode == AnalysisMode::Curvature || settings.mode == AnalysisMode::DraftAngle ||
+                            settings.mode == AnalysisMode::Thickness;
   if (!wants_colors) {
     cache_.colors.clear();
     cache_.colors_valid = false;
@@ -884,6 +941,11 @@ void SceneObject::EnsureAnalysisColors(const AnalysisSettings& settings) const {
       lo = sorted[static_cast<size_t>(sorted.size() * 0.05)];
       hi = sorted[std::min(sorted.size() - 1, static_cast<size_t>(sorted.size() * 0.95))];
     }
+  } else if (settings.mode == AnalysisMode::Thickness) {
+    values = RayThickness(cache_.triangles, settings.thickness_max);
+    lo = settings.thickness_min; hi = settings.thickness_max;
+    // Thin = red, thick = blue (Rhino's convention), so invert the ramp.
+    for (double& v : values) v = hi + lo - v;
   } else {
     kernel::Vector3d pull = settings.draft_direction;
     if (!pull.Unitize()) pull = kernel::Vector3d(0, 0, 1);

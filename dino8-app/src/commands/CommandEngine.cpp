@@ -33,10 +33,15 @@ const char* CommandStatusName(CommandStatus s) {
   return "";
 }
 
+static bool g_decimal_comma = false;
+void SetDecimalComma(bool comma) { g_decimal_comma = comma; }
+bool DecimalComma() { return g_decimal_comma; }
+
 std::string FormatNumber(double v) {
   char buf[64];
   if (std::abs(v - std::round(v)) < 1e-9) std::snprintf(buf, sizeof(buf), "%.0f", v);
   else std::snprintf(buf, sizeof(buf), "%.4g", v);
+  if (g_decimal_comma) for (char* c = buf; *c; ++c) if (*c == '.') *c = ',';
   return buf;
 }
 
@@ -252,6 +257,8 @@ void CommandEngine::RunCommand(const std::string& name, bool script_mode) {
   if (active_) Cancel();
   active_ = r->factory();
   active_name_ = r->name;
+  ids_before_.clear();
+  if (app_.State().check_new_objects) for (const SceneObject& o : doc_.Objects()) ids_before_.push_back(o.id);
   script_mode_ = script_mode;
   last_command_ = r->name;
   recent_.erase(std::remove(recent_.begin(), recent_.end(), r->name), recent_.end());
@@ -265,6 +272,7 @@ void CommandEngine::RunCommand(const std::string& name, bool script_mode) {
 void CommandEngine::AfterCallback() {
   if (!active_) return;
   if (active_->finished) {
+    if (app_.State().check_new_objects && active_name_ != "CheckNewObjects") CheckNewObjects();
     active_.reset();
     active_name_.clear();
     ClearPreview();
@@ -286,6 +294,27 @@ void CommandEngine::AfterCallback() {
     active_->accept_preselection = false;
   }
   StartPendingInputs();
+}
+
+// CheckNewObjects: after a command finishes, validate every object it added
+// (Rhino runs Check on new objects and reports the bad ones).
+void CommandEngine::CheckNewObjects() {
+  int added = 0, bad = 0;
+  for (const SceneObject& o : doc_.Objects()) {
+    if (std::find(ids_before_.begin(), ids_before_.end(), o.id) != ids_before_.end()) continue;
+    ++added;
+    bool ok = true;
+    switch (o.kind) {
+      case ObjectKind::Curve: ok = o.curve && o.curve->raw().IsValid(); break;
+      case ObjectKind::Surface: ok = o.surface && o.surface->raw().IsValid(); break;
+      case ObjectKind::Brep: ok = o.brep && o.brep->raw().IsValid(); break;
+      case ObjectKind::Mesh: ok = o.mesh && o.mesh->raw().IsValid(); break;
+      case ObjectKind::SubD: ok = o.subd && o.subd->raw().IsValid(); break;
+      default: break;
+    }
+    if (!ok) { ++bad; Print("CheckNewObjects: object " + std::to_string(o.id) + " (" + ObjectKindName(o.kind) + ") is INVALID"); }
+  }
+  if (added) Print("CheckNewObjects: " + std::to_string(added) + " new object(s), " + std::to_string(bad) + " invalid");
 }
 
 void CommandEngine::StartPendingInputs() {

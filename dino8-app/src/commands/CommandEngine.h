@@ -112,6 +112,9 @@ class CommandEngine {
   std::unique_ptr<Command> active_;
   std::string active_name_;
   bool script_mode_ = false;
+  // Object ids that existed when the active command started (CheckNewObjects).
+  std::vector<ObjectId> ids_before_;
+  void CheckNewObjects();
   std::deque<std::string> pending_inputs_;  // extra tokens from a macro line
   std::deque<std::string> history_;
   std::vector<std::string> recent_;

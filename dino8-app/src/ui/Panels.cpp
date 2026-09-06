@@ -228,6 +228,8 @@ void DrawLayersPanel(Application& app) {
         ImGuiTreeNodeFlags tf = ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_DefaultOpen;
         if (!has_children) tf |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
         if (i == doc.CurrentLayer()) tf |= ImGuiTreeNodeFlags_Selected;
+        const bool highlighted = std::find(app.highlight_layers.begin(), app.highlight_layers.end(), i) != app.highlight_layers.end();
+        if (highlighted) ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImVec4(1.0f, 0.75f, 0.2f, 0.35f)));
         const bool open = ImGui::TreeNodeEx("##node", tf, "%s", L.name.c_str());
         if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) doc.SetCurrentLayer(i);
         if (ImGui::BeginPopupContextItem("layer_ctx")) {

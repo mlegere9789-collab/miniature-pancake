@@ -139,6 +139,8 @@ class Viewport {
     const Document* doc = nullptr;
     const std::vector<float>* preview_lines = nullptr;
     const std::vector<float>* preview_points = nullptr;
+    // Persistent analysis overlay (CurvatureGraph combs, EdgeContinuity hairs).
+    const std::vector<float>* overlay_lines = nullptr;
     std::optional<kernel::Point3d> cursor_marker;
     bool show_control_points_for_selected = false;
     double curve_tolerance = 0.02;

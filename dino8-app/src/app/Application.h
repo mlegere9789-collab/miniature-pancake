@@ -98,6 +98,10 @@ struct AppState {
   std::string working_folder;        // SetWorkingFolder
   bool message_boxes_reset = false;
   bool camera_shown = false;         // Camera Show: draw the active camera frustum
+  bool decimal_comma = false;        // DecimalPoint: print numbers with a decimal comma
+  bool crease_splitting = true;      // CreaseSplitting: AutomaticSubDFromMesh creases sharp edges
+  bool check_new_objects = false;    // CheckNewObjects: validate objects every command adds
+  int layer_book_page = -1;          // LayerBook: index of the layer currently shown alone
 };
 
 struct FileDialogState {
@@ -237,6 +241,12 @@ class Application {
   // has no per-object analysis (set by running a command with nothing selected).
   AnalysisSettings analysis_defaults;
   AnalysisSettings analysis_fallback;
+  // Persistent overlay lines (CurvatureGraph / EdgeContinuity), x,y,z pairs.
+  std::vector<float> overlay_lines;
+  // Layers the Layers panel highlights (HighlightObjectLayers).
+  std::vector<int> highlight_layers;
+  // Opens the middle-mouse popup toolbar at the cursor (PopupToolbar).
+  void OpenPopupToolbar();
 
   // Display settings.
   bool show_control_points_for_selected = false;

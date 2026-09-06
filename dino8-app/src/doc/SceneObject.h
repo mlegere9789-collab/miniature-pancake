@@ -36,7 +36,7 @@ struct Color {
 // Surface-analysis display (Rhino's Zebra / EMap / CurvatureAnalysis /
 // DraftAngleAnalysis). Zebra and EMap are pure shader effects; Curvature
 // and DraftAngle colour the display mesh per vertex (DisplayCache::colors).
-enum class AnalysisMode { None, Zebra, EMap, Curvature, DraftAngle };
+enum class AnalysisMode { None, Zebra, EMap, Curvature, DraftAngle, Thickness };
 enum class ZebraDirection { Horizontal, Vertical };
 enum class CurvatureStyle { Gaussian, Mean };
 
@@ -63,11 +63,15 @@ struct AnalysisSettings {
   // so a vertical wall is 0, a cap facing the pull is +90, an undercut < 0.
   kernel::Vector3d draft_direction{0, 0, 1};
   double draft_min = -5.0, draft_max = 5.0;  // degrees, blue .. red
+  // ThicknessAnalysis: distance from each display vertex through the
+  // object along -normal to the far side (red = thin .. blue = thick).
+  double thickness_min = 0.0, thickness_max = 1.0;
 
   bool SameColoring(const AnalysisSettings& o) const {
     return mode == o.mode && curvature_style == o.curvature_style && auto_range == o.auto_range &&
            range_min == o.range_min && range_max == o.range_max && draft_direction == o.draft_direction &&
-           draft_min == o.draft_min && draft_max == o.draft_max;
+           draft_min == o.draft_min && draft_max == o.draft_max && thickness_min == o.thickness_min &&
+           thickness_max == o.thickness_max;
   }
 };
 

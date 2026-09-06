@@ -245,7 +245,7 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
       }), CommandStatus::Partial);
   Reg(e, "Curvature", OnSelection("Select a curve", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o || o->kind != ObjectKind::Curve) continue; kernel::Interval d = o->curve->Domain(); for (int i = 0; i <= 10; ++i) { double t = d.min + (d.max - d.min) * i / 10.0; ctx.Print("t=" + FormatNumber(t) + " curvature " + FormatNumber(o->curve->CurvatureAt(t).Length())); } }
-      }), CommandStatus::Partial, "Prints curvature at 11 samples; the on-screen graph is planned.");
+      }), CommandStatus::Partial, "Prints curvature at 11 samples; CurvatureGraph draws the on-screen comb.");
   Reg(e, "CurvatureGraph", OnSelection("Select curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("CurvatureGraph");
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o || o->kind != ObjectKind::Curve) continue; kernel::Interval d = o->curve->Domain(); std::vector<Point3d> pts; for (int i = 0; i <= 60; ++i) { double t = d.min + (d.max - d.min) * i / 60.0; Vector3d k = o->curve->CurvatureAt(t); pts.push_back(o->curve->PointAt(t) - k * 20.0); } SceneObject g = SceneObject::MakeCurve(PolylineCurve(pts)); g.name = "CurvatureGraph"; g.color = Color::FromBytes(255, 120, 40); g.color_by_layer = false; ctx.Doc().Add(std::move(g)); }

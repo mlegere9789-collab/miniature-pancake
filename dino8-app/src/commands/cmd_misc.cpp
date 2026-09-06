@@ -94,7 +94,7 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "SmartTrack", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().smart_track; }, "SmartTrack"));
   Reg(e, "DisableOsnap", Toggle([](CommandContext& ctx) -> bool& { return ctx.Snaps().disable_all; }, "Osnaps disabled"));
   Reg(e, "Osnap", Immediate([](CommandContext& ctx) { ctx.App().Panels().object_snaps = true; }));
-  Reg(e, "Gumball", Immediate([](CommandContext& ctx) { ctx.App().gumball_enabled = !ctx.App().gumball_enabled; ctx.Print(std::string("Gumball ") + (ctx.App().gumball_enabled ? "on" : "off")); }), CommandStatus::Partial, "Move handles; rotate/scale handles are planned.");
+  Reg(e, "Gumball", Immediate([](CommandContext& ctx) { ctx.App().gumball_enabled = !ctx.App().gumball_enabled; ctx.Print(std::string("Gumball ") + (ctx.App().gumball_enabled ? "on" : "off")); }), CommandStatus::Implemented, "Toggles the gumball widget (move, rotate and scale handles; see GumballSettings).");
   Reg(e, "Materials", Immediate([](CommandContext& ctx) { ctx.App().Panels().materials = true; }));
   Reg(e, "MaterialEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().materials = true; }));
   Reg(e, "Notifications", Immediate([](CommandContext& ctx) { ctx.App().Panels().notifications = true; }));
@@ -110,7 +110,6 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "Dragmode", Immediate([](CommandContext& ctx) { ctx.Print("Drag mode: CPlane (objects drag along the construction plane)."); }), CommandStatus::Partial);
   Reg(e, "History", Immediate([](CommandContext& ctx) { ctx.Print("History: not recorded. Every edit is captured by the snapshot undo instead."); }), CommandStatus::Partial);
   Reg(e, "RecordHistory", Immediate([](CommandContext& ctx) { ctx.Print("RecordHistory: not needed; undo snapshots cover every change."); }), CommandStatus::Partial);
-  Reg(e, "Text", Immediate([](CommandContext& ctx) { ctx.Print("Text: use the Notes panel for document text; 3D text objects are planned."); ctx.App().Panels().notes = true; }), CommandStatus::Partial);
   Reg(e, "Grasshopper", Immediate([](CommandContext& ctx) { ctx.Print("Grasshopper: visual scripting is planned; use Macro / ReadCommandFile for automation today."); ctx.App().Panels().macro_editor = true; }), CommandStatus::Partial);
   Reg(e, "RunScript", Make<MacroRunCommand>(), CommandStatus::Partial, "Runs command macros; Python scripting is planned.");
   Reg(e, "RunPythonScript", Make<MacroRunCommand>(), CommandStatus::Partial, "Runs command macros; Python scripting is planned.");

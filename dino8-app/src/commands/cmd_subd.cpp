@@ -1241,6 +1241,7 @@ void AutoSubDAction(CommandContext& ctx, const std::vector<ObjectId>& ids, const
     for (size_t i = 0; i < n.f.size(); ++i) fn[i] = n.FaceNormal(n.f[i]);
     int creases = 0;
     for (const auto& kv : n.EdgeFaces()) {
+      if (!ctx.App().State().crease_splitting) break;  // CreaseSplitting=Off: smooth everywhere
       if (kv.second.size() != 2) continue;
       const double dot = std::max(-1.0, std::min(1.0, ON_DotProduct(fn[kv.second[0]], fn[kv.second[1]])));
       if (std::acos(dot) > angle) { n.crease.insert(kv.first); ++creases; }

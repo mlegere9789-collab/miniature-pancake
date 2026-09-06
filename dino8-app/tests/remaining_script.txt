@@ -1,0 +1,198 @@
+# Remaining-command QC: the last Planned commands (curve conversion, tween
+# and extruded surfaces, thickness/continuity analysis, mesh clean-up,
+# layer/window utilities). Each section hides what came before.
+# --- Convert: a 4-point polyline degree-1 curve stays exact as lines
+Polyline 0,0,0 10,0,0 10,10,0 0,10,0 0,0,0
+Enter
+SelLast
+Convert Output=Lines
+SelLast
+List
+# --- MatchCrvDir: two lines, opposite directions, second is reversed
+SelAll
+Hide
+Line 0,0,0 10,0,0
+Line 20,0,0 10,0,0
+SelAll
+MatchCrvDir
+# --- RebuildCrvNonUniform on a line
+SelAll
+Hide
+Line 0,0,0 20,0,0
+SelLast
+RebuildCrvNonUniform
+0.01
+# --- RibbonOffset: a 10-long line offset by 2 plus the ruled ribbon
+SelAll
+Hide
+Line 0,0,0 10,0,0
+SelLast
+RibbonOffset
+2
+# --- TweenSurfaces: two parallel planes 10 apart, one surface exactly midway
+SelAll
+Hide
+Plane 0,0,0 10,10,0
+Plane 0,0,10 10,10,10
+SelAll
+TweenSurfaces Count=1
+# --- ExtrudeSrfAlongCrv: a plane extruded along a straight path
+SelAll
+Hide
+Plane 30,0,0 40,10,0
+Line 30,0,0 30,0,5
+SelSrf
+ExtrudeSrfAlongCrv
+SelCrv
+Enter
+SelMesh
+Volume
+# --- ExtrudeSrfTapered: a plane extruded 5 up with 0 draft (a straight prism)
+SelAll
+Hide
+Plane 50,0,0 60,10,0
+SelLast
+ExtrudeSrfTapered DraftAngle=0
+5
+SelLast
+Volume
+# --- ExtrudeSrfToPoint: a plane coned to an apex
+SelAll
+Hide
+Plane 70,0,0 80,10,0
+SelLast
+ExtrudeSrfToPoint
+75,5,10
+SelLast
+List
+# --- MultiPipe: two separate lines, radius 1, joined mesh
+SelAll
+Hide
+Line 0,0,0 10,0,0
+Line 0,20,0 10,20,0
+SelAll
+MultiPipe
+1
+# --- ThicknessAnalysis on/off (message check only)
+SelAll
+Hide
+Box 0,0,0 10,10,0 10
+SelLast
+ThicknessAnalysis Min=0 Max=10
+ThicknessAnalysisOff
+# --- EdgeContinuity / GCon: two lines sharing an endpoint, tangent-continuous
+SelAll
+Hide
+Line 0,0,0 10,0,0
+Line 10,0,0 20,0,0
+SelAll
+EdgeContinuity
+SelAll
+GCon
+# --- EvaluateUVPt / PointsFromUV on a 10x10 plane
+SelAll
+Hide
+Plane 0,0,0 10,10,0
+SelSrf
+EvaluateUVPt Normalized=Yes
+0.5,0.5
+SelSrf
+PointsFromUV Normalized=Yes
+0,0
+1,1
+Enter
+# --- CurvatureGraph / Off / ExtractCurvatureGraph on a circle
+SelAll
+Hide
+Circle 0,0,0 5
+SelLast
+CurvatureGraph
+CurvatureGraphOff
+SelLast
+ExtractCurvatureGraph
+# --- CheckNewObjects: on, then create a valid object
+SelAll
+Hide
+CheckNewObjects On
+Box 0,0,0 5,5,0 5
+CheckNewObjects Off
+# --- ClearAnalysisMeshes
+ClearAnalysisMeshes
+# --- Mesh clean-up: AlignVertices, MeshPolyline, WeldEdge, Collapse*, ExtractDuplicateMeshFaces
+SelAll
+Hide
+Polyline 0,0,0 10,0,0 10,10,0 0,10,0 0,0,0
+Enter
+SelLast
+MeshPolyline
+SelLast
+AlignVertices
+0.01
+SelAll
+Hide
+MeshBox 0,0,0 10,10,10
+SelLast
+WeldEdge
+5,0,5
+SelAll
+Hide
+MeshSphere 0,0,0 5
+SelLast
+CollapseMeshFacesByArea
+1000
+SelAll
+Hide
+MeshBox 30,0,0 40,10,10
+SelLast
+ExtractDuplicateMeshFaces
+# --- ExtractUVMesh on a plane
+SelAll
+Hide
+Plane 0,0,0 10,20,0
+SelLast
+ExtractUVMesh
+# --- Layer / edit utilities
+SelAll
+Hide
+Box 0,0,0 5,5,0 5
+SelLast
+DupLayer Name=Copies Objects=Yes
+SelID 1
+CopyToLayer
+Targets
+SelID 1
+HighlightObjectLayers
+LayerBook Next
+LayerBook All
+SelID 1
+IsolateLock
+UnisolateLock
+SelAll
+JoinCopy
+Box 60,0,0 65,5,0 5
+SelID 1
+MatchProperties
+SelID 2
+Enter
+# --- View / window utilities
+SelAll
+Hide
+Box 0,0,0 5,5,0 5
+SelLast
+MoveTargetToObjects
+SynchronizeViews
+DisplayProperties
+ClearAllObjectDisplayModes
+SaveWindowLayout QCLayout
+WindowLayout QCLayout
+PopupToolbar
+# --- Drafting / misc
+DecimalPoint Comma
+DecimalPoint Point
+AcadSchemes
+Unwrap
+IgesImportOptions
+STEPTree
+EditScript
+SelAll
+SelNone

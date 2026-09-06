@@ -171,6 +171,7 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   // Command preview geometry (rubber bands, dynamic previews).
   renderer.EnableDepthTest(false);
   if (ctx.preview_lines) renderer.DrawLines(*ctx.preview_lines, Color::FromBytes(255, 255, 255));
+  if (ctx.overlay_lines && !ctx.overlay_lines->empty()) renderer.DrawLines(*ctx.overlay_lines, Color::FromBytes(255, 120, 40));
   if (ctx.preview_points) renderer.DrawPoints(*ctx.preview_points, Color::FromBytes(255, 255, 255), 7.0f);
   if (ctx.cursor_marker) {
     const Point3d& p = *ctx.cursor_marker;
@@ -647,6 +648,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
           }
           case AnalysisMode::Curvature:
           case AnalysisMode::DraftAngle:
+          case AnalysisMode::Thickness:
             o.EnsureAnalysisColors(*analysis);
             if (!d.colors.empty()) {
               renderer.DrawTriangles(d.triangles, d.colors, style.fill_alpha);

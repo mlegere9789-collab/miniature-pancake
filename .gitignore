@@ -41,3 +41,4 @@ mediasuite/tools-staged/
 build/
 build-agent/
 dino8-app/dist/
+dino8-app/build-agent/

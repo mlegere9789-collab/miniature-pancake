@@ -94,6 +94,7 @@ set(DINO8_SOURCES
   src/commands/cmd_transform.cpp
   src/commands/cmd_edit.cpp
   src/commands/cmd_curveedit.cpp
+  src/commands/cmd_remaining.cpp
   src/commands/cmd_surface.cpp
   src/commands/cmd_meshtools.cpp
   src/commands/cmd_subd.cpp
