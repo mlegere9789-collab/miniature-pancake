@@ -1,0 +1,92 @@
+# Boolean QC: BooleanUnion/BooleanIntersection, Boolean2Objects (Result
+# cycling through Union/Intersection/A-B/B-A/SymmetricDifference),
+# BooleanSplit/MeshSplit/MeshBooleanSplit (both pieces kept), WireCut (one
+# side kept, the other discarded), MeshSmooth (see smoke.sh). Two-set
+# booleans need both objects created BEFORE the command starts (like
+# BooleanDifference in smoke.sh's own inline script) - creating the second
+# object WHILE the command is mid-selection would feed it to the command as
+# text instead of running it, so ids are picked with explicit SelID/SelNone
+# once both objects already exist (ids are assigned in creation order,
+# 1-based, and are never reused even across an in-script Delete).
+SetActiveViewport Top
+# --- BooleanUnion (single-stage: id 1, id 2 -> id 3) leaves exactly 1 solid
+Box 0,0,0 10,10,0 10
+Box 5,0,0 15,10,0 10
+SelAll
+BooleanUnion
+@expect_objects 1
+SelAll
+Delete
+# --- BooleanIntersection (two-stage: id 4, id 5 -> id 6) leaves 1 solid
+Box 0,0,0 10,10,0 10
+Box 5,0,0 15,10,0 10
+SelNone
+SelID 4
+BooleanIntersection
+SelID 5
+Enter
+@expect_objects 1
+SelAll
+Delete
+# --- Boolean2Objects: default Result=Union (id 7, id 8 -> id 9)
+Box 0,0,0 10,10,0 10
+Box 5,0,0 15,10,0 10
+SelNone
+SelID 7
+Boolean2Objects
+SelID 8
+Enter
+Enter
+@expect_objects 1
+SelAll
+Delete
+# --- Boolean2Objects: cycling Result twice (Union -> Intersection -> A-B)
+# then committing exercises the option cycle and the Difference path
+# (id 10, id 11 -> id 12)
+Box 0,0,0 10,10,0 10
+Box 5,0,0 15,10,0 10
+SelNone
+SelID 10
+Boolean2Objects
+SelID 11
+Enter
+Result
+Result
+Enter
+@expect_objects 1
+SelAll
+Delete
+# --- BooleanSplit/MeshSplit/MeshBooleanSplit each split a box into 2 pieces
+Box 0,0,0 10,10,0 10
+SelLast
+BooleanSplit 5,-5,0 5,15,0
+@expect_objects 2
+SelAll
+Delete
+Box 0,0,0 10,10,0 10
+SelLast
+MeshSplit 5,-5,0 5,15,0
+@expect_objects 2
+SelAll
+Delete
+Box 0,0,0 10,10,0 10
+SelLast
+MeshBooleanSplit 5,-5,0 5,15,0
+@expect_objects 2
+SelAll
+Delete
+# --- WireCut keeps only one side of the cut, unlike Split which keeps both
+Box 0,0,0 10,10,0 10
+SelLast
+WireCut 5,-5,0 5,15,0
+@expect_objects 1
+SelAll
+Delete
+# --- MeshSmooth runs on a mesh sphere without error or changing object count
+MeshSphere 0,0,0 8
+SelLast
+MeshSmooth
+@expect_objects 1
+SelAll
+Delete
+@expect_objects 0

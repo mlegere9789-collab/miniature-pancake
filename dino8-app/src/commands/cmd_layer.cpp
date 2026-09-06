@@ -68,10 +68,57 @@ void RegisterLayerCommands(CommandEngine& e) {
   Reg(e, "OneLayerOn", Immediate([](CommandContext& ctx) { for (Layer& L : ctx.Doc().Layers()) L.visible = false; ctx.Doc().Layers()[static_cast<size_t>(ctx.Doc().CurrentLayer())].visible = true; }));
   Reg(e, "OneLayerOff", Immediate([](CommandContext& ctx) { ctx.Doc().Layers()[static_cast<size_t>(ctx.Doc().CurrentLayer())].visible = false; }));
   Reg(e, "AllLayersOn", Immediate([](CommandContext& ctx) { for (Layer& L : ctx.Doc().Layers()) L.visible = true; }));
-  Reg(e, "LayerOn", Immediate([](CommandContext& ctx) { ctx.Doc().Layers()[static_cast<size_t>(ctx.Doc().CurrentLayer())].visible = true; }), CommandStatus::Partial, "Turns on the current layer; toggle others in the Layers panel.");
-  Reg(e, "LayerOff", Immediate([](CommandContext& ctx) { for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected) ctx.Doc().Layers()[static_cast<size_t>(o.layer_index)].visible = false; }), CommandStatus::Partial, "Turns off the layers of selected objects.");
-  Reg(e, "LayerLock", Immediate([](CommandContext& ctx) { for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected) ctx.Doc().Layers()[static_cast<size_t>(o.layer_index)].locked = true; }), CommandStatus::Partial);
-  Reg(e, "LayerUnlock", Immediate([](CommandContext& ctx) { for (Layer& L : ctx.Doc().Layers()) L.locked = false; }), CommandStatus::Partial, "Unlocks all layers.");
+  // LayerOn/LayerOff/LayerLock/LayerUnlock take an optional layer-name
+  // argument (e.g. "LayerOn Walls") read from any token already queued on
+  // the command line (TakePendingInput), so they can target any layer by
+  // name from a script or the command line, not only through the Layers
+  // panel; called bare they fall back to their previous fixed behavior, so
+  // no interactive prompt is introduced (which would otherwise swallow
+  // whatever script line follows as if it were the layer name).
+  Reg(e, "LayerOn", Immediate([](CommandContext& ctx) {
+        int idx = ctx.Doc().CurrentLayer();
+        if (auto name = ctx.Engine().TakePendingInput()) {
+          idx = ctx.Doc().FindLayer(*name);
+          if (idx < 0) { ctx.Warn("No layer named '" + *name + "'"); return; }
+        }
+        ctx.Doc().Layers()[static_cast<size_t>(idx)].visible = true;
+        ctx.Print("Layer '" + ctx.Doc().LayerFullPath(idx) + "' turned on");
+      }));
+  Reg(e, "LayerOff", Immediate([](CommandContext& ctx) {
+        if (auto name = ctx.Engine().TakePendingInput()) {
+          int idx = ctx.Doc().FindLayer(*name);
+          if (idx < 0) { ctx.Warn("No layer named '" + *name + "'"); return; }
+          ctx.Doc().Layers()[static_cast<size_t>(idx)].visible = false;
+          ctx.Print("Layer '" + ctx.Doc().LayerFullPath(idx) + "' turned off");
+          return;
+        }
+        std::vector<ObjectId> sel = ctx.Doc().SelectedIds();
+        if (!sel.empty()) { for (ObjectId id : sel) if (SceneObject* o = ctx.Doc().Find(id)) ctx.Doc().Layers()[static_cast<size_t>(o->layer_index)].visible = false; return; }
+        ctx.Doc().Layers()[static_cast<size_t>(ctx.Doc().CurrentLayer())].visible = false;
+      }));
+  Reg(e, "LayerLock", Immediate([](CommandContext& ctx) {
+        if (auto name = ctx.Engine().TakePendingInput()) {
+          int idx = ctx.Doc().FindLayer(*name);
+          if (idx < 0) { ctx.Warn("No layer named '" + *name + "'"); return; }
+          ctx.Doc().Layers()[static_cast<size_t>(idx)].locked = true;
+          ctx.Print("Layer '" + ctx.Doc().LayerFullPath(idx) + "' locked");
+          return;
+        }
+        std::vector<ObjectId> sel = ctx.Doc().SelectedIds();
+        if (!sel.empty()) { for (ObjectId id : sel) if (SceneObject* o = ctx.Doc().Find(id)) ctx.Doc().Layers()[static_cast<size_t>(o->layer_index)].locked = true; return; }
+        ctx.Doc().Layers()[static_cast<size_t>(ctx.Doc().CurrentLayer())].locked = true;
+      }));
+  Reg(e, "LayerUnlock", Immediate([](CommandContext& ctx) {
+        if (auto name = ctx.Engine().TakePendingInput()) {
+          int idx = ctx.Doc().FindLayer(*name);
+          if (idx < 0) { ctx.Warn("No layer named '" + *name + "'"); return; }
+          ctx.Doc().Layers()[static_cast<size_t>(idx)].locked = false;
+          ctx.Print("Layer '" + ctx.Doc().LayerFullPath(idx) + "' unlocked");
+          return;
+        }
+        for (Layer& L : ctx.Doc().Layers()) L.locked = false;
+        ctx.Print("All layers unlocked");
+      }));
   Reg(e, "LayerStateManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().layer_state_manager = true; }));
   Reg(e, "Purge", Immediate([](CommandContext& ctx) {
         ctx.Doc().BeginChange("Purge");

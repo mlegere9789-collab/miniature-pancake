@@ -25,6 +25,28 @@ double ObjectVolume(const SceneObject& o, bool& closed) {
   return closed ? std::fabs(m->Volume()) : 0;
 }
 
+// Real area-weighted centroid (each triangle's own centroid weighted by its
+// area), unlike a bounding-box midpoint: correct for an L-shaped or
+// off-center surface where the bbox center needn't even lie on the surface.
+std::optional<Point3d> AreaWeightedCentroid(const kernel::Mesh& m) {
+  const ON_Mesh& raw = m.raw();
+  Vector3d weighted(0, 0, 0);
+  double area_sum = 0;
+  auto accumulate = [&](Point3d a, Point3d b, Point3d c) {
+    const double area = ON_CrossProduct(b - a, c - a).Length() * 0.5;
+    weighted += Vector3d((a + b + c) / 3.0) * area;
+    area_sum += area;
+  };
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_MeshFace& f = raw.m_F[i];
+    Point3d a = raw.m_V[f.vi[0]], b = raw.m_V[f.vi[1]], c = raw.m_V[f.vi[2]];
+    accumulate(a, b, c);
+    if (f.IsQuad()) accumulate(a, c, raw.m_V[f.vi[3]]);
+  }
+  if (area_sum <= 1e-12) return std::nullopt;
+  return Point3d(weighted / area_sum);
+}
+
 // ---------------------------------------------------------------------------
 // Surface analysis display modes (Zebra / EMap / CurvatureAnalysis /
 // DraftAngleAnalysis). Like Rhino, the mode is stored per object; running a
@@ -145,6 +167,45 @@ CommandFactory AnalysisOff(AnalysisMode mode) {
   });
 }
 
+// Radius/Diameter: reports the radius of curvature at a picked point on a
+// curve, defaulting to the midpoint on Enter or on any other non-point
+// input (which is then re-run as its own command, so a following script
+// line or click still works instead of leaving this modal).
+class RadiusCommand : public Command {
+ public:
+  explicit RadiusCommand(bool diameter) : diameter_(diameter) {}
+  void Begin(CommandContext&) override { WantObjects("Select a curve"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) { id_ = id; break; } }
+    if (!id_) { ctx.Warn("Select a curve"); Finish(); return; }
+    WantPoint(std::string(diameter_ ? "Diameter" : "Radius") + " at point (Enter for midpoint)");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override { Report(ctx, p); }
+  void OnEnter(CommandContext& ctx) override { ReportAtMidpoint(ctx); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    ReportAtMidpoint(ctx);
+    ctx.Engine().Execute(t);
+  }
+  void ReportAtMidpoint(CommandContext& ctx) {
+    const SceneObject* o = ctx.Doc().Find(*id_);
+    if (!o) { Finish(); return; }
+    kernel::Interval d = o->curve->Domain();
+    Report(ctx, o->curve->PointAt((d.min + d.max) / 2));
+  }
+  void Report(CommandContext& ctx, Point3d p) {
+    const SceneObject* o = ctx.Doc().Find(*id_);
+    if (!o) { Finish(); return; }
+    const double t = o->curve->ClosestPointParameter(p);
+    const double kk = o->curve->CurvatureAt(t).Length();
+    const char* label = diameter_ ? "Diameter" : "Radius";
+    if (kk > 1e-12) ctx.Print(std::string(label) + " at picked point = " + FormatNumber((diameter_ ? 2.0 : 1.0) / kk));
+    else ctx.Print("Curve is straight at the picked point");
+    Finish();
+  }
+  std::optional<ObjectId> id_;
+  bool diameter_;
+};
+
 }  // namespace
 
 void RegisterAnalyzeCommands(CommandEngine& e) {
@@ -181,8 +242,17 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o) continue; std::optional<kernel::Mesh> m = MeshOf(*o, 0.005); if (!m) continue; Point3d c = m->GetCentroid(); ctx.Print("Centroid " + FormatPoint(c)); AddObject(ctx, SceneObject::MakePoint(c), "VolumeCentroid"); }
       }));
   Reg(e, "AreaCentroid", OnSelection("Select surfaces or meshes", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o) continue; std::optional<kernel::Mesh> m = MeshOf(*o, 0.01); if (!m) continue; kernel::BoundingBox bb = m->GetBoundingBox(); Point3d c = (bb.min + bb.max) / 2.0; ctx.Print("Area centroid (bounding-box estimate) " + FormatPoint(c)); AddObject(ctx, SceneObject::MakePoint(c), "AreaCentroid"); }
-      }), CommandStatus::Partial, "Bounding-box centroid estimate.");
+        for (ObjectId id : ids) {
+          const SceneObject* o = ctx.Doc().Find(id);
+          if (!o) continue;
+          std::optional<kernel::Mesh> m = MeshOf(*o, 0.01);
+          if (!m) continue;
+          std::optional<Point3d> c = AreaWeightedCentroid(*m);
+          if (!c) { ctx.Warn("Object " + std::to_string(id) + " has zero area"); continue; }
+          ctx.Print("Area centroid " + FormatPoint(*c));
+          AddObject(ctx, SceneObject::MakePoint(*c), "AreaCentroid");
+        }
+      }));
   Reg(e, "BoundingBox", OnSelection("Select objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         kernel::BoundingBox bb;
         if (!ctx.Doc().BoundingBoxOf(ids, bb)) return;
@@ -237,19 +307,28 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
         ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " bad object(s) selected");
       }));
   Reg(e, "EvaluatePt", Make<PointsCommand>(std::vector<std::string>{"Point to evaluate"}, [](CommandContext& ctx, const std::vector<Point3d>& p) { ctx.Print("Point " + FormatPoint(p[0])); ctx.App().Notify(FormatPoint(p[0])); }));
-  Reg(e, "Radius", OnSelection("Select a curve", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o || o->kind != ObjectKind::Curve) continue; kernel::Interval d = o->curve->Domain(); Vector3d k = o->curve->CurvatureAt((d.min + d.max) / 2); double kk = k.Length(); ctx.Print(kk > 1e-12 ? "Radius at curve midpoint = " + FormatNumber(1.0 / kk) : "Curve is straight at its midpoint"); }
-      }), CommandStatus::Partial, "Reports the radius at the curve midpoint; picking a point is planned.");
-  Reg(e, "Diameter", OnSelection("Select a curve", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o || o->kind != ObjectKind::Curve) continue; kernel::Interval d = o->curve->Domain(); double kk = o->curve->CurvatureAt((d.min + d.max) / 2).Length(); ctx.Print(kk > 1e-12 ? "Diameter at curve midpoint = " + FormatNumber(2.0 / kk) : "Curve is straight at its midpoint"); }
-      }), CommandStatus::Partial);
+  Reg(e, "Radius", Make<RadiusCommand>(false));
+  Reg(e, "Diameter", Make<RadiusCommand>(true));
   Reg(e, "Curvature", OnSelection("Select a curve", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o || o->kind != ObjectKind::Curve) continue; kernel::Interval d = o->curve->Domain(); for (int i = 0; i <= 10; ++i) { double t = d.min + (d.max - d.min) * i / 10.0; ctx.Print("t=" + FormatNumber(t) + " curvature " + FormatNumber(o->curve->CurvatureAt(t).Length())); } }
-      }), CommandStatus::Partial, "Prints curvature at 11 samples; CurvatureGraph draws the on-screen comb.");
+        for (ObjectId id : ids) {
+          const SceneObject* o = ctx.Doc().Find(id);
+          if (!o || o->kind != ObjectKind::Curve) continue;
+          kernel::Interval d = o->curve->Domain();
+          for (int i = 0; i <= 10; ++i) {
+            double t = d.min + (d.max - d.min) * i / 10.0;
+            double kk = o->curve->CurvatureAt(t).Length();
+            std::string line = "t=" + FormatNumber(t) + " curvature " + FormatNumber(kk);
+            if (kk > 1e-12) line += " radius " + FormatNumber(1.0 / kk);
+            ctx.Print(line);
+          }
+        }
+      }));
+  // CurvatureGraph draws the on-screen comb as a temporary curve object;
+  // Curvature (above) prints the same data as numbers instead.
   Reg(e, "CurvatureGraph", OnSelection("Select curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("CurvatureGraph");
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o || o->kind != ObjectKind::Curve) continue; kernel::Interval d = o->curve->Domain(); std::vector<Point3d> pts; for (int i = 0; i <= 60; ++i) { double t = d.min + (d.max - d.min) * i / 60.0; Vector3d k = o->curve->CurvatureAt(t); pts.push_back(o->curve->PointAt(t) - k * 20.0); } SceneObject g = SceneObject::MakeCurve(PolylineCurve(pts)); g.name = "CurvatureGraph"; g.color = Color::FromBytes(255, 120, 40); g.color_by_layer = false; ctx.Doc().Add(std::move(g)); }
-      }), CommandStatus::Partial, "Draws the graph as a curve object; delete it when done.");
+      }));
   Reg(e, "Zebra", AnalysisOn(AnalysisMode::Zebra));
   Reg(e, "ZebraOff", AnalysisOff(AnalysisMode::Zebra));
   Reg(e, "EMap", AnalysisOn(AnalysisMode::EMap));

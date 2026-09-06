@@ -132,6 +132,66 @@ class RotateCommand : public Command {
   bool copy_ = false;
 };
 
+// Rotate3D: rotates about an arbitrary axis (two picked points), unlike
+// Rotate which always spins about the CPlane normal through a single center.
+class Rotate3DCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to rotate"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    WantPoint("Start of rotation axis");
+    options = {{"Copy", "No", {"Yes", "No"}, false, true}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Copy") { copy_ = CopyValue(v, copy_); options[0].value = copy_ ? "Yes" : "No"; } }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    if (!axis_start_) { axis_start_ = p; WantPoint("End of rotation axis"); return; }
+    if (!axis_end_) {
+      axis_end_ = p;
+      axis_dir_ = *axis_end_ - *axis_start_;
+      if (axis_dir_.Length() <= 1e-9) { ctx.Warn("Rotate3D: axis start and end coincide"); Finish(); return; }
+      axis_dir_.Unitize();
+      basis_ = ON_Plane(*axis_start_, axis_dir_);
+      WantPoint("Angle or first reference point");
+      return;
+    }
+    if (!ref_) { ref_ = p; WantPoint("Second reference point"); return; }
+    Apply(ctx, AngleBetween(*ref_, p));
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnNumber(CommandContext& ctx, double deg) override { if (axis_end_ && !ref_) Apply(ctx, deg * ON_PI / 180.0); }
+  double AngleBetween(Point3d a, Point3d b) {
+    Vector3d va = a - *axis_start_, vb = b - *axis_start_;
+    double a0 = std::atan2(ON_DotProduct(va, basis_.yaxis), ON_DotProduct(va, basis_.xaxis));
+    double a1 = std::atan2(ON_DotProduct(vb, basis_.yaxis), ON_DotProduct(vb, basis_.xaxis));
+    return a1 - a0;
+  }
+  void Apply(CommandContext& ctx, double radians) {
+    ON_Xform xf;
+    xf.Rotation(radians, axis_dir_, *axis_start_);
+    ApplyXform(ctx, ids_, xf, copy_, "Rotate3D");
+    ctx.ClearPreview();
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (!axis_start_) return;
+    ctx.ClearPreview();
+    if (!axis_end_) { ctx.AddPreviewLine(*axis_start_, h); return; }
+    if (!ref_) { ctx.AddPreviewLine(*axis_start_, *axis_end_); ctx.AddPreviewLine(*axis_start_, h); return; }
+    ON_Xform xf; xf.Rotation(AngleBetween(*ref_, h), axis_dir_, *axis_start_);
+    PreviewXform(ctx, ids_, xf);
+    ctx.AddPreviewLine(*axis_start_, *axis_end_);
+    ctx.AddPreviewLine(*axis_start_, *ref_);
+    ctx.AddPreviewLine(*axis_start_, h);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  std::vector<ObjectId> ids_;
+  std::optional<Point3d> axis_start_, axis_end_, ref_;
+  Vector3d axis_dir_;
+  ON_Plane basis_;
+  bool copy_ = false;
+};
+
 class ScaleCommand : public Command {
  public:
   enum class Kind { Uniform, OneD, TwoD, NonUniform };
@@ -193,6 +253,46 @@ class ScaleCommand : public Command {
   Kind kind_;
   std::vector<ObjectId> ids_;
   std::optional<Point3d> origin_, ref_;
+  bool copy_ = false;
+};
+
+// ScaleNU: non-uniform scale with three independently-typed factors along
+// the CPlane X/Y axes and its normal (unlike ScaleCommand's NonUniform kind,
+// which only ever scales along CPlane X).
+class ScaleNUCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to scale"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    WantPoint("Origin point");
+    options = {{"Copy", "No", {"Yes", "No"}, false, true}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Copy") { copy_ = CopyValue(v, copy_); options[0].value = copy_ ? "Yes" : "No"; } }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    if (!origin_) { origin_ = p; WantNumber("X scale factor", 1.0); }
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (!origin_) return;
+    if (stage_ == 0) { fx_ = v; ++stage_; WantNumber("Y scale factor", 1.0); return; }
+    if (stage_ == 1) { fy_ = v; ++stage_; WantNumber("Z scale factor", 1.0); return; }
+    fz_ = v;
+    Apply(ctx);
+  }
+  void Apply(CommandContext& ctx) {
+    ON_Plane pl = ActivePlane(ctx);
+    pl.SetOrigin(*origin_);
+    ON_Xform xf = ON_Xform::ScaleTransformation(pl, fx_, fy_, fz_);
+    ApplyXform(ctx, ids_, xf, copy_, "ScaleNU");
+    ctx.ClearPreview();
+    Finish();
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  std::vector<ObjectId> ids_;
+  std::optional<Point3d> origin_;
+  int stage_ = 0;
+  double fx_ = 1, fy_ = 1, fz_ = 1;
   bool copy_ = false;
 };
 
@@ -293,6 +393,51 @@ class ArrayCommand : public Command {
   Point3d base_;
 };
 
+// Rhino's real ArrayLinear: a count plus a single direction/spacing vector
+// (given as two points), unlike the rectangular Array's per-axis counts.
+class ArrayLinearCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to array"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantNumber("Number of items", 3); }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e; double v = std::strtod(t.c_str(), &e); if (e && !*e) OnNumber(ctx, v); }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (!count_) { count_ = std::max(2, static_cast<int>(v)); WantPoint("Direction start point (spacing between items)"); }
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    if (!start_) { start_ = p; WantPoint("Direction end point"); return; }
+    Apply(ctx, p - *start_);
+  }
+  void Apply(CommandContext& ctx, Vector3d spacing) {
+    ctx.Doc().BeginChange("ArrayLinear");
+    int made = 0;
+    for (int i = 1; i < *count_; ++i) {
+      ON_Xform xf = ON_Xform::TranslationTransformation(spacing * i);
+      for (ObjectId id : ids_) {
+        SceneObject* o = ctx.Doc().Find(id);
+        if (!o) continue;
+        SceneObject dup = *o; dup.id = kNoObject; dup.selected = false; dup.Transform(xf);
+        ctx.Doc().Add(std::move(dup));
+        ++made;
+      }
+    }
+    ctx.Print("ArrayLinear created " + std::to_string(made) + " object(s)");
+    ctx.ClearPreview();
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (!count_ || !start_) return;
+    ctx.ClearPreview();
+    Vector3d spacing = h - *start_;
+    for (int i = 1; i < *count_; ++i) PreviewXform(ctx, ids_, ON_Xform::TranslationTransformation(spacing * i));
+    ctx.AddPreviewLine(*start_, h);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  std::vector<ObjectId> ids_;
+  std::optional<int> count_;
+  std::optional<Point3d> start_;
+};
+
 class ArrayPolarCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select objects to array"); }
@@ -337,40 +482,142 @@ class Orient3PtCommand : public Command {
   std::vector<Point3d> pts_;
 };
 
+// Rhino's real Orient: two reference points (base + direction/scale) mapped
+// to two target points, unlike Orient3Pt's plane-to-plane (3+3 point) form.
+class OrientCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to orient"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantPoint("Reference point 1"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    pts_.push_back(p);
+    ctx.SetLastPoint(p);
+    const char* prompts[] = {"Reference point 1", "Reference point 2", "Target point 1", "Target point 2"};
+    if (pts_.size() < 4) { WantPoint(prompts[pts_.size()]); return; }
+    Point3d r1 = pts_[0], r2 = pts_[1], t1 = pts_[2], t2 = pts_[3];
+    Vector3d vr = r2 - r1, vt = t2 - t1;
+    double lr = vr.Length();
+    if (lr <= 1e-9) { ctx.Warn("Orient: reference points coincide"); Finish(); return; }
+    double lt = vt.Length();
+    double scale = lt > 1e-9 ? lt / lr : 1.0;
+    ON_Plane pl = ActivePlane(ctx);
+    double a0 = std::atan2(ON_DotProduct(vr, pl.yaxis), ON_DotProduct(vr, pl.xaxis));
+    double a1 = lt > 1e-9 ? std::atan2(ON_DotProduct(vt, pl.yaxis), ON_DotProduct(vt, pl.xaxis)) : a0;
+    ON_Xform r; r.Rotation(a1 - a0, pl.zaxis, r1);
+    ON_Xform s = ON_Xform::ScaleTransformation(r1, scale);
+    ON_Xform t = ON_Xform::TranslationTransformation(t1 - r1);
+    ApplyXform(ctx, ids_, t * r * s, false, "Orient");
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  std::vector<Point3d> pts_;
+};
+
+// SetPt: real Rhino asks which world coordinates to set and to what value in
+// a dialog; here the same choice is made with command-line options (SetX/
+// SetY/SetZ pick the axes, X/Y/Z their target values), applied immediately
+// on selection. Defaults (SetZ=Yes, target 0) match the previous fixed
+// behavior of dropping the selection's base to the CPlane.
+class SetPtCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    options = {
+        {"SetX", "No", {"Yes", "No"}, false, true},
+        {"SetY", "No", {"Yes", "No"}, false, true},
+        {"SetZ", "Yes", {"Yes", "No"}, false, true},
+        {"X", "0", {}, true, false},
+        {"Y", "0", {}, true, false},
+        {"Z", "0", {}, true, false},
+    };
+    WantObjects("Select objects to set points (SetX/SetY/SetZ pick axes, X/Y/Z their values)");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    auto set = [&](const char* name, const std::string& val) { for (OptionSpec& o : options) if (o.name == name) o.value = val; };
+    if (n == "SetX") { set_x_ = ToLower(v) == "yes"; set("SetX", set_x_ ? "Yes" : "No"); return; }
+    if (n == "SetY") { set_y_ = ToLower(v) == "yes"; set("SetY", set_y_ ? "Yes" : "No"); return; }
+    if (n == "SetZ") { set_z_ = ToLower(v) == "yes"; set("SetZ", set_z_ ? "Yes" : "No"); return; }
+    char* e = nullptr;
+    double d = std::strtod(v.c_str(), &e);
+    if (!e || *e) return;
+    if (n == "X") { x_ = d; set("X", FormatNumber(d)); }
+    else if (n == "Y") { y_ = d; set("Y", FormatNumber(d)); }
+    else if (n == "Z") { z_ = d; set("Z", FormatNumber(d)); }
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (!set_x_ && !set_y_ && !set_z_) { ctx.Warn("SetPt: no coordinate selected (SetX/SetY/SetZ)"); Finish(); return; }
+    ctx.Doc().BeginChange("SetPt");
+    int done = 0;
+    for (ObjectId id : ids) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      kernel::BoundingBox bb = o->BoundingBox();
+      Vector3d d(0, 0, 0);
+      if (set_x_) d.x = x_ - bb.min.x;
+      if (set_y_) d.y = y_ - bb.min.y;
+      if (set_z_) d.z = z_ - bb.min.z;
+      o->Transform(ON_Xform::TranslationTransformation(d));
+      ++done;
+    }
+    ctx.Print("SetPt: set " + std::to_string(done) + " object(s)");
+    Finish();
+  }
+  bool set_x_ = false, set_y_ = false, set_z_ = true;
+  double x_ = 0, y_ = 0, z_ = 0;
+};
+
+// Nudge: moves the selection one grid unit along a chosen CPlane direction
+// (defaults to +X, matching the previous fixed behavior).
+class NudgeCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    options = {{"Direction", "+X", {"+X", "-X", "+Y", "-Y", "+Z", "-Z"}, false, false}};
+    WantObjects("Select objects to nudge");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "Direction") return;
+    dir_ = v;
+    for (OptionSpec& o : options) if (o.name == "Direction") o.value = v;
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    ON_Plane pl = ActivePlane(ctx);
+    Vector3d step = pl.xaxis;
+    if (dir_ == "-X") step = -pl.xaxis;
+    else if (dir_ == "+Y") step = pl.yaxis;
+    else if (dir_ == "-Y") step = -pl.yaxis;
+    else if (dir_ == "+Z") step = pl.zaxis;
+    else if (dir_ == "-Z") step = -pl.zaxis;
+    ApplyXform(ctx, ids, ON_Xform::TranslationTransformation(step * ctx.Settings().grid_spacing), false, "Nudge");
+    Finish();
+  }
+  std::string dir_ = "+X";
+};
+
 }  // namespace
 
 void RegisterTransformCommands(CommandEngine& e) {
   Reg(e, "Move", Make<MoveCommand>(false));
   Reg(e, "Copy", Make<MoveCommand>(true));
   Reg(e, "Rotate", Make<RotateCommand>());
-  Reg(e, "Rotate3D", Make<RotateCommand>(), CommandStatus::Partial, "Rotates about the CPlane normal; arbitrary axis picking is planned.");
+  Reg(e, "Rotate3D", Make<Rotate3DCommand>());
   Reg(e, "Scale", Make<ScaleCommand>(ScaleCommand::Kind::Uniform));
   Reg(e, "Scale1D", Make<ScaleCommand>(ScaleCommand::Kind::OneD));
   Reg(e, "Scale2D", Make<ScaleCommand>(ScaleCommand::Kind::TwoD));
-  Reg(e, "ScaleNU", Make<ScaleCommand>(ScaleCommand::Kind::NonUniform), CommandStatus::Partial, "Scales along the CPlane X axis; per-axis factors are planned.");
+  Reg(e, "ScaleNU", Make<ScaleNUCommand>());
   Reg(e, "Mirror", Make<MirrorCommand>());
   Reg(e, "Array", Make<ArrayCommand>());
-  Reg(e, "ArrayLinear", Make<ArrayCommand>(), CommandStatus::Partial, "Uses the rectangular array with Y and Z counts of 1.");
+  Reg(e, "ArrayLinear", Make<ArrayLinearCommand>());
   Reg(e, "ArrayPolar", Make<ArrayPolarCommand>());
   Reg(e, "Orient3Pt", Make<Orient3PtCommand>());
-  Reg(e, "Orient", Make<Orient3PtCommand>(), CommandStatus::Partial, "Uses three reference / target points.");
+  Reg(e, "Orient", Make<OrientCommand>());
   Reg(e, "ProjectToCPlane", OnSelection("Select objects to project", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ON_Plane pl = ActivePlane(ctx);
         ON_Xform xf = ON_Xform::IdentityTransformation;
         xf.PlanarProjection(pl);
         ApplyXform(ctx, ids, xf, false, "ProjectToCPlane");
       }));
-  Reg(e, "SetPt", OnSelection("Select objects to set points on", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("SetPt");
-        for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (o) { kernel::BoundingBox bb = o->BoundingBox(); o->Transform(ON_Xform::TranslationTransformation(Vector3d(0, 0, -bb.min.z))); } }
-      }), CommandStatus::Partial, "Sets Z of the selection's base to 0; X/Y/Z choice dialog is planned.");
-  Reg(e, "Shear", OnSelection("Select objects to shear", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ON_Plane pl = ActivePlane(ctx);
-        ApplyXform(ctx, ids, ON_Xform::ShearTransformation(pl, pl.xaxis, pl.yaxis + pl.xaxis * 0.5, pl.zaxis), false, "Shear");
-      }), CommandStatus::Partial, "Shears by 0.5 along CPlane X; interactive angle is planned.");
-  Reg(e, "Nudge", OnSelection("Select objects to nudge", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ApplyXform(ctx, ids, ON_Xform::TranslationTransformation(ActivePlane(ctx).xaxis * ctx.Settings().grid_spacing), false, "Nudge");
-      }), CommandStatus::Partial, "Nudges one grid unit along CPlane X.");
+  Reg(e, "SetPt", Make<SetPtCommand>());
+  // Shear: superseded, dead code (RegisterMeshToolsCommands registers the
+  // real interactive Shear afterwards; see Application::RegisterCommands).
+  Reg(e, "Nudge", Make<NudgeCommand>());
 }
 
 }  // namespace dino8::app

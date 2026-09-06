@@ -707,6 +707,18 @@ echo "$TR" | grep -E "^(ok|FAIL)"
 if echo "$TR" | grep -q "^FAIL"; then fail=1; fi
 echo "$TR" | grep -q "^smoke:" || { echo "$TR"; echo "FAIL: transform script produced no smoke line"; fail=1; }
 
+# Booleans: BooleanUnion/BooleanIntersection, Boolean2Objects (Result
+# cycling), BooleanSplit/MeshSplit/MeshBooleanSplit, WireCut, MeshSmooth
+# (see boolean_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  BO="$("$BIN" --smoke 200 --script "$HERE/boolean_script.txt" 2>&1)" || { echo "$BO"; echo "FAIL: boolean script exited non-zero"; exit 1; }
+else
+  BO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/boolean_script.txt" 2>&1)" || { echo "$BO"; echo "FAIL: boolean script exited non-zero"; exit 1; }
+fi
+echo "$BO" | grep -E "^(ok|FAIL)"
+if echo "$BO" | grep -q "^FAIL"; then fail=1; fi
+echo "$BO" | grep -q "^smoke:" || { echo "$BO"; echo "FAIL: boolean script produced no smoke line"; fail=1; }
+
 # Analysis: Distance/Length/Area/Volume/AreaCentroid/VolumeCentroid/What/List/BoundingBox/
 # Dir/Check/SelBadObjects/Angle/Radius/Diameter/Curvature/CurvatureGraph/Zebra/EMap/
 # CurvatureAnalysis/DraftAngleAnalysis/ShowEdges/CrvDeviation/PointDeviation/Audit/SystemInfo

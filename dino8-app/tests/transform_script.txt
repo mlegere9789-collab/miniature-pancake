@@ -40,7 +40,7 @@ SelAll
 Delete
 Point 10,0,0
 SelLast
-Rotate3D 0,0,0 45
+Rotate3D 0,0,0 0,0,1 45
 SelLast
 List
 Delete
@@ -62,7 +62,7 @@ List
 Scale2D 0,0,0 2
 SelLast
 List
-ScaleNU 0,0,0 0.5
+ScaleNU 0,0,0 0.5 2 1.5
 SelLast
 List
 Scale Copy=Yes 0,0,0 3
@@ -101,7 +101,7 @@ SelAll
 Delete
 Point 0,0,0
 SelLast
-ArrayLinear 2 1 1 7
+ArrayLinear 2 0,0,0 7,0,0
 @expect_objects 2
 SelLast
 List
@@ -129,7 +129,7 @@ SelLast
 Orient3Pt 0,0,0 1,0,0 0,1,0 10,10,0 10,11,0 9,10,0
 SelLast
 List
-Orient 10,10,0 10,11,0 9,10,0 0,0,0 1,0,0 0,1,0
+Orient 0,0,0 1,0,0 10,10,0 10,11,0
 SelLast
 List
 Delete
