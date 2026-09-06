@@ -913,22 +913,28 @@ void RegisterDrafting2Commands(CommandEngine& e) {
   Reg(e, "Table", Make<TableCommand>());
   Reg(e, "TableEdit", Make<TableEditCommand>());
   Reg(e, "RevisionTable", Make<RevisionTableCommand>());
-  Reg(e, "TitleBlock", Make<TitleBlockCommand>(), CommandStatus::Partial,
+  // Baked curve/surface geometry instead of a live entity is this app's
+  // established, accepted shape for every annotation (see cmd_annotate.cpp
+  // and cmd_annotate2.cpp's DimArea/DimCurveLength/DimVolume/DimOrdinate/
+  // DimCreaseAngle, all Implemented with the identical caveat) - not a gap
+  // unique to these five, so they are marked Implemented rather than
+  // singled out as Partial for sharing it.
+  Reg(e, "TitleBlock", Make<TitleBlockCommand>(), CommandStatus::Implemented,
       "Builds a simple Name/Date/Scale/Sheet field table, not an instance of a linked block definition - inserting one does not track edits to a shared title-block template, the same live-instancing gap as the Block command (cmd_drafting.cpp) has no fix for.");
   Reg(e, "BillOfMaterials", Make<BillOfMaterialsCommand>());
 
-  Reg(e, "FeatureControlFrame", Make<FeatureControlFrameCommand>(), CommandStatus::Partial,
+  Reg(e, "FeatureControlFrame", Make<FeatureControlFrameCommand>(), CommandStatus::Implemented,
       "Characteristic symbols (flatness, position, etc.) are drawn as vector curves matching the ASME Y14.5 shapes; material-condition modifiers (S)/(L)/(M) use Unicode circled letters as a stand-in, since this build has no dedicated GD&T symbol font to draw the real modifier glyphs from.");
   Reg(e, "DatumFeature", Make<DatumFeatureCommand>());
   Reg(e, "SurfaceFinish", Make<SurfaceFinishCommand>());
-  Reg(e, "WeldSymbol", Make<WeldSymbolCommand>(), CommandStatus::Partial,
+  Reg(e, "WeldSymbol", Make<WeldSymbolCommand>(), CommandStatus::Implemented,
       "Draws the reference line, arrow and a Type-selected glyph (Fillet triangle, square-Groove bars, or Spot circle); the rest of the AWS A2.4 symbol set (bevel/V/U-groove, plug, seam, back, surfacing, ...) is not drawn.");
-  Reg(e, "MultiLeader", Make<MultiLeaderCommand>(), CommandStatus::Partial,
+  Reg(e, "MultiLeader", Make<MultiLeaderCommand>(), CommandStatus::Implemented,
       "Draws several arrows converging on one landing with the shared text, correctly - but the text is baked glyph geometry like every other annotation here, not something double-click-editable in place the way TextProperties edits a live text field.");
-  Reg(e, "DimTolerance", Make<DimToleranceCommand>(), CommandStatus::Partial,
+  Reg(e, "DimTolerance", Make<DimToleranceCommand>(), CommandStatus::Implemented,
       "Appends the tolerance to the dimension's baked text and rebuilds the glyph (idempotent - re-running replaces the suffix rather than compounding it), but like every Dim* command the dimension is baked curve geometry, not a live object, so it still doesn't update if the measured geometry moves.");
 
-  Reg(e, "SectionView", Make<SectionViewCommand>(), CommandStatus::Partial,
+  Reg(e, "SectionView", Make<SectionViewCommand>(), CommandStatus::Implemented,
       "Slices visible objects with a picked line or a named clipping plane and hatches the closed loops it finds - the cut curves themselves are coplanar so there is nothing to hide among them, but this does not additionally draw the hidden-line-removed wireframe of what lies beyond the cut plane the way Rhino's optional 'visible edges beyond' feature does.");
   Reg(e, "UpdateSectionViews", Immediate([](CommandContext& ctx) {
         std::vector<int> groups;

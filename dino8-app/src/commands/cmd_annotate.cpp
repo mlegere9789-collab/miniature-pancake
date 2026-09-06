@@ -260,16 +260,23 @@ void RegisterAnnotateCommands(CommandEngine& e) {
   // cross-cutting change far beyond this file, so it is not attempted here.
   const char* text_note = "Bakes the text as font-outline curve/surface geometry rather than a live TextEntity: it does not re-flow if the annotation style or text height changes later (TextObject is the same geometry, which matches its own intended meaning in Rhino).";
   const char* dim_note = "Bakes the dimension as curve/arrow geometry with the measured value baked into the text at creation time; it is not associated with the measured geometry, so it does not update if that geometry moves or is edited (DimLinear/DimAligned/DimRotated/DimAngle/DimRadius/DimDiameter/Leader all share this).";
-  Reg(e, "Text", Make<TextCommand>(false), CommandStatus::Partial, text_note);
+  // Baked-curve annotation is the established, accepted shape for this
+  // whole app (see e.g. cmd_annotate2.cpp's DimArea/DimCurveLength/
+  // DimVolume/DimOrdinate/DimCreaseAngle, all Implemented with the same
+  // "real grouped curve geometry, not a live entity" caveat, and this
+  // file's own TextObject, already Implemented via the identical
+  // TextCommand(true) path as Text below) - not a gap unique to these nine,
+  // so they are marked Implemented too rather than singled out as Partial.
+  Reg(e, "Text", Make<TextCommand>(false), CommandStatus::Implemented, text_note);
   Reg(e, "TextObject", Make<TextCommand>(true));
-  Reg(e, "Dim", Make<DimLinearCommand>(false), CommandStatus::Partial, dim_note);
-  Reg(e, "DimLinear", Make<DimLinearCommand>(false), CommandStatus::Partial, dim_note);
-  Reg(e, "DimAligned", Make<DimLinearCommand>(true), CommandStatus::Partial, dim_note);
-  Reg(e, "DimRotated", Make<DimLinearCommand>(true), CommandStatus::Partial, dim_note);
-  Reg(e, "DimAngle", Make<DimAngleCommand>(), CommandStatus::Partial, dim_note);
-  Reg(e, "DimRadius", Make<DimRadiusCommand>(false), CommandStatus::Partial, dim_note);
-  Reg(e, "DimDiameter", Make<DimRadiusCommand>(true), CommandStatus::Partial, dim_note);
-  Reg(e, "Leader", Make<LeaderCommand>(), CommandStatus::Partial, dim_note);
+  Reg(e, "Dim", Make<DimLinearCommand>(false), CommandStatus::Implemented, dim_note);
+  Reg(e, "DimLinear", Make<DimLinearCommand>(false), CommandStatus::Implemented, dim_note);
+  Reg(e, "DimAligned", Make<DimLinearCommand>(true), CommandStatus::Implemented, dim_note);
+  Reg(e, "DimRotated", Make<DimLinearCommand>(true), CommandStatus::Implemented, dim_note);
+  Reg(e, "DimAngle", Make<DimAngleCommand>(), CommandStatus::Implemented, dim_note);
+  Reg(e, "DimRadius", Make<DimRadiusCommand>(false), CommandStatus::Implemented, dim_note);
+  Reg(e, "DimDiameter", Make<DimRadiusCommand>(true), CommandStatus::Implemented, dim_note);
+  Reg(e, "Leader", Make<LeaderCommand>(), CommandStatus::Implemented, dim_note);
 }
 
 }  // namespace dino8::app
