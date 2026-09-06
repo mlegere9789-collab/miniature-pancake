@@ -57,7 +57,7 @@ Delete
 Circle 0,0,0 5
 SelLast
 CurvatureGraph
-@expect_objects 2
+@expect_objects 1
 SelAll
 Delete
 # --- Zebra / EMap / CurvatureAnalysis / DraftAngleAnalysis toggles on a sphere, ShowEdges on a box

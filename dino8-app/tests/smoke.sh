@@ -678,9 +678,9 @@ s2check "Support: open an issue at " "TechSupport"
 s2check "History: not recorded. Every edit is captured by the snapshot undo instead" "History"
 s2check "RecordHistory: not needed; undo snapshots cover every change" "RecordHistory"
 s2check "Text: [0-9]* curve(s) from " "Text (annotate's real text-curve command, no longer shadowed)"
-s2check "Grasshopper: visual scripting is planned" "Grasshopper"
-s2check "PackageManager: plug-ins are planned" "PackageManager"
-s2check "Plug-ins and Grasshopper are not yet available" "PluginManager"
+s2check "Dino Flow: opened the node editor" "Grasshopper"
+s2check "PackageManager: opened the package manager" "PackageManager"
+s2check "PluginManager: opened the plug-in manager" "PluginManager"
 
 # Files: New/Open/Revert/Save/SaveAs/SaveSmall/IncrementalSave/SaveAsTemplate/
 # Import/Export/ExportSelected/ExportWithOrigin/Notes/DocumentProperties/Units/

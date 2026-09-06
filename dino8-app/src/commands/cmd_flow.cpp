@@ -122,9 +122,9 @@ void RegisterFlowCommands(CommandEngine& e) {
         ctx.Print("AttachGHSData: attached graph data to " + std::to_string(attached) + " object(s)");
       }));
 
-  Reg(e, "PlugInManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().plugin_manager = true; }));
-  Reg(e, "PluginManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().plugin_manager = true; }));
-  Reg(e, "PackageManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().package_manager = true; }));
+  Reg(e, "PlugInManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().plugin_manager = true; ctx.Print("PlugInManager: opened the plug-in manager."); }));
+  Reg(e, "PluginManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().plugin_manager = true; ctx.Print("PluginManager: opened the plug-in manager."); }));
+  Reg(e, "PackageManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().package_manager = true; ctx.Print("PackageManager: opened the package manager."); }));
 
   Reg(e, "MigratePlugins", Immediate([](CommandContext& ctx) {
         std::vector<std::string> toks;
