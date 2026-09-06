@@ -758,4 +758,35 @@ d2check "SectionView: " "SectionView sliced the box"
 d2check "UpdateSectionViews: 1 section view(s) regenerated" "UpdateSectionViews rebuilt the section from its stored plane"
 d2check "gl_error=0" "drafting2 script ran without OpenGL errors"
 
+# CPU path tracer: material library presets, RenderAssignMaterialToObjects
+# Preset=, the RayTracedViewport display mode, Render/RenderArctic/
+# RenderPreview with Quality=Raytraced (see raytrace_script.txt).
+sed "s|@TMP@|$TMP/rt|g" "$HERE/raytrace_script.txt" > "$TMP/raytrace_script.txt"
+mkdir -p "$TMP/rt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  RT="$("$BIN" --smoke 60 --script "$TMP/raytrace_script.txt" 2>&1)" || { echo "$RT"; echo "FAIL: raytrace script exited non-zero"; exit 1; }
+else
+  RT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/raytrace_script.txt" 2>&1)" || { echo "$RT"; echo "FAIL: raytrace script exited non-zero"; exit 1; }
+fi
+rtcheck() { if echo "$RT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+rtcheck "Created material ChromeMat from preset Chrome" "RenderAssignMaterialToObjects Preset= created a material from the built-in library"
+rtcheck "Material GoldMat assigned to 1 object(s)" "material from a preset assigned to an object"
+rtcheck "MaterialLibrary: 48 built-in preset(s)" "MaterialLibrary reports the full preset count"
+rtcheck "Render: rendered Perspective at 96 x 64 .* \[Raytraced Samples=4 Bounces=2 Denoise=Yes\]" "Render honoured Quality=Raytraced Samples= Bounces="
+rtcheck "Saved rendering $TMP/rt/raytrace.bmp (96 x 64)" "SaveRenderWindowAs wrote the raytraced BMP"
+rtcheck "RenderArctic: rendered Perspective at 1280 x 720 .* \[Raytraced" "RenderArctic ran the path tracer at the document size"
+rtcheck "RenderPreview: rendered Perspective .* \[Raytraced" "RenderPreview ran the path tracer at viewport size"
+rtcheck "Saved $TMP/rt/raytrace.3dm" "the raytraced scene saved to a .3dm"
+rtcheck "gl_error=0" "no OpenGL errors while the viewport was in RayTracedViewport mode"
+python3 - "$TMP/rt/raytrace.bmp" <<'PY' && echo "ok   raytrace.bmp is a valid, non-flat 24-bit BMP" || { echo "FAIL raytrace.bmp invalid or flat"; fail=1; }
+import struct, sys
+d = open(sys.argv[1], 'rb').read()
+assert d[:2] == b'BM', 'signature'
+size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+assert size == len(d) and hdr == 40 and w == 96 and h == 64 and planes == 1 and bpp == 24, (size, len(d), w, h, bpp)
+px = d[off:]
+assert len(px) == ((w * 3 + 3) & ~3) * h, 'pixel data size'
+assert max(px) > 0 and min(px) < 255, 'image is flat'
+PY
+
 exit $fail

@@ -1,0 +1,27 @@
+# CPU path tracer QC: material library presets, RenderAssignMaterialToObjects
+# Preset=, the RayTracedViewport display mode, and Render/RenderPreview/
+# RenderArctic/RenderBlowup with Quality=Raytraced.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Box 0,0,0 20,20,0 10
+Sphere 35,10,8 8
+Plane -20,-20,0 20,40,0
+SelID 1
+RenderAssignMaterialToObjects ChromeMat Preset=Chrome
+SelNone
+SelID 2
+RenderAssignMaterialToObjects GoldMat Preset=Gold
+SelNone
+SelID 3
+RenderAssignMaterialToObjects FloorMat Preset=Aluminium
+SelNone
+PointLight 10,-30,40 Intensity=1.5
+MaterialLibrary
+Perspective
+ZoomExtents
+RayTracedViewport
+Render 96 64 Quality=Raytraced Samples=4 Bounces=2
+SaveRenderWindowAs @TMP@/raytrace.bmp
+RenderArctic Quality=Raytraced Samples=2 Bounces=2
+RenderPreview Quality=Raytraced Samples=2
+Wireframe
+Save @TMP@/raytrace.3dm
