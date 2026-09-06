@@ -198,10 +198,15 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "Tutorials", Immediate([](CommandContext& ctx) { ctx.App().Panels().help = true; }));
   Reg(e, "SetRenderColor", OnSelection("Select objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { for (ObjectId id : ids) ctx.Doc().Select(id, true); ctx.App().Panels().properties = true; }), CommandStatus::Partial, "Set colours in Properties.");
   Reg(e, "SetObjectDisplayMode", Immediate([](CommandContext& ctx) { ctx.App().Panels().display = true; }), CommandStatus::Partial, "Per-viewport modes; per-object modes are planned.");
-  Reg(e, "Dragmode", Immediate([](CommandContext& ctx) { ctx.Print("Drag mode: CPlane (objects drag along the construction plane)."); }), CommandStatus::Partial);
+  // Dragmode: same command name as cmd_state.cpp's "DragMode" (registry
+  // keys are case-insensitive) - superseded by that real ChoiceCommand
+  // (RegisterStateCommands runs after this file, so it always won here
+  // anyway; this stub was dead code).
   Reg(e, "History", Immediate([](CommandContext& ctx) { ctx.Print("History: not recorded. Every edit is captured by the snapshot undo instead."); }), CommandStatus::Partial);
   Reg(e, "RecordHistory", Immediate([](CommandContext& ctx) { ctx.Print("RecordHistory: not needed; undo snapshots cover every change."); }), CommandStatus::Partial);
-  Reg(e, "Grasshopper", Immediate([](CommandContext& ctx) { ctx.Print("Grasshopper: visual scripting is planned; use RunScript (Lua) or Macro / ReadCommandFile for automation today."); ctx.App().Panels().script_editor = true; }), CommandStatus::Partial);
+  // Grasshopper: superseded by cmd_flow.cpp's real Dino Flow node editor
+  // (RegisterFlowCommands runs last, so it always wins here anyway).
+  Reg(e, "Grasshopper", Immediate([](CommandContext& ctx) { ctx.App().Panels().script_editor = true; }), CommandStatus::Partial);
   Reg(e, "RunScript", Make<ScriptCommand>("RunScript"),
       CommandStatus::Implemented, "Runs a .lua script (embedded Lua 5.4, rhinoscriptsyntax-like rs.* API) or a .txt command file.");
   Reg(e, "LoadScript", Make<ScriptCommand>("LoadScript"),

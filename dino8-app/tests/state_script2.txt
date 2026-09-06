@@ -1,0 +1,184 @@
+# Extended state/window/misc QC: the remaining cmd_state.cpp and cmd_misc.cpp
+# toggles, window and viewport commands not already exercised elsewhere (see smoke.sh).
+SetActiveViewport Top
+# --- command-line control
+EnterEnd
+Pause
+MultiPause
+Echo
+NoEcho
+SetRedrawOn
+SetRedrawOff
+GetIssueState
+ResetMessageBoxes
+# --- OS window
+Fullscreen
+Fullscreen
+Maximize
+Minimize
+Restore
+# --- viewport management
+SplitViewportVertical
+NextViewportToTop
+BringViewportToTop
+PushViewportToBack
+NextOrthoViewport
+NextPerspectiveViewport
+SwapView
+SetMaximizedViewport Perspective
+ViewportTabs
+OneView
+4View
+# --- extra zoom variants
+Box 0,0,0 10,10,0 10
+SelAll
+ZoomEnds
+ZoomNaked
+ZoomNonManifold
+Zoom1To1Calibrate
+SetZoomExtentsBorder 1.2
+SelNone
+SelAll
+Delete
+@expect_objects 0
+# --- snaps / drag
+SetOrtho
+OrthoAngle 45
+SnapSize 2.5
+SetSnap 5
+OrthoSnapToCPlaneZ
+SnapToLocked
+SnapToOccluded
+SnapToMeshes
+SnapToMeshObject
+SnapToSubDObject
+ShowOsnap
+DragMode World
+DragStrength 50
+DragCopy
+RememberCopyOptions
+DollyZoom 85
+# --- panels / UI
+ToggleRightSidebar
+ShowToolbar
+ToolbarLock
+Commands
+PopupMenu
+PopupPopular
+Menus
+Macros
+OptionsPage
+PropertiesPage
+DocumentPropertiesPage
+OptionsExport @TMP@/options.json
+OptionsImport @TMP@/options.json
+Reset
+# --- files / paths
+SetWorkingFolder @TMP@
+Autosave
+FileExplorer
+OpenURL https://example.org/open
+WebBrowser https://example.org/browser
+ModelBasepoint 1,2,3
+EarthAnchorPoint 4,5,6
+# --- objects
+Point 0,0,0
+Point 1,0,0
+SelAll
+PointCloud
+SelNone
+InfinitePlane
+@expect_objects 3
+Box 20,0,0 30,10,0 10
+Box 40,0,0 50,10,0 10
+SelAll
+BringToFront
+SelAll
+SendToBack
+SelAll
+BringForward
+SelAll
+SendBackward
+SelAll
+ClearDrawOrder
+SelAll
+Delete
+@expect_objects 0
+NamedPosition
+Snapshots
+HistoryPurge
+HistoryUpdate
+Worksession
+LimitReferenceModel
+# Bounce is actually cmd_solidtools's real ray-bounce tool (a stale
+# cmd_state.cpp placeholder used to shadow it - removed): give it a ray so
+# it does not sit waiting for more picks.
+Box 0,0,0 10,10,0 10
+Bounce -5,5,5 5,5,5 3
+SelAll
+Delete
+@expect_objects 0
+ContentFilter
+# --- gumball
+GumballAlignment World
+GumballScaleMode Uniform
+GumballAutoReset
+GumballDynamicRelocate
+GumballRelocate 5,5,5
+GumballReset
+GumballSettings
+# --- capture (headless: writes files, no system clipboard)
+ViewCaptureToClipboard
+ScreenCaptureToClipboard
+# --- misc: help, command list/history, aliases, calculators, macros, toolbars
+Help
+CommandHelp Box
+CommandList
+CommandHistory
+Options
+ToggleLeftSidebar
+Toolbar
+ToolbarReset
+Alias qq Box
+Calc 2+3*4
+CalcRPN 2+3*4
+MacroEditor
+ReadCommandFile
+Snap
+Ortho
+Planar
+SmartTrack
+DisableOsnap
+Osnap
+Gumball
+Materials
+MaterialEditor
+Notifications
+About
+Licenses
+CheckForUpdates
+WhatsNew
+TechSupport
+LearnRhino
+Tutorials
+Box 0,0,0 5,5,0 5
+SelAll
+SetRenderColor
+SetObjectDisplayMode
+History
+RecordHistory
+# Text is actually cmd_annotate's real text-curve command (a stale
+# cmd_misc.cpp placeholder used to shadow it - removed): give it text and a
+# point so it does not sit waiting for more input.
+Text Hi 20,0,0
+SelLast
+List
+Grasshopper
+RunScript SelAll
+RunPythonScript SelAll
+ScriptEditor
+PackageManager
+PluginManager
+SelAll
+Delete
+@expect_objects 0

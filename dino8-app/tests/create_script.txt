@@ -1,0 +1,119 @@
+# Creation QC: Points/Lines/InterpCrv/CurveThroughPt/Sketch/Circle3Pt/CircleD/Arc3Pt/
+# Rectangle3Pt/Polygon/PolygonStar/Ellipse/Helix/Spiral/PointGrid/Divide/ClosestPt/
+# Plane3Pt/SrfPt (see smoke.sh).
+SetActiveViewport Top
+# --- Points: keeps adding point objects until Enter
+Points 0,0,0 10,0,0 20,0,0
+Enter
+@expect_objects 3
+SelAll
+Delete
+@expect_objects 0
+# --- Lines: chains a new 2-point line onto the previous end point
+Lines 0,0,0 10,0,0 10,10,0 0,10,0
+Enter
+@expect_objects 3
+SelAll
+List
+SelAll
+Delete
+@expect_objects 0
+# --- InterpCrv / CurveThroughPt / Sketch: interpolate through picked points
+InterpCrv 0,0,0 10,5,0 20,0,0 30,5,0
+Enter
+@expect_objects 1
+SelLast
+List
+Delete
+CurveThroughPt 0,0,0 10,5,0 20,0,0
+Enter
+@expect_objects 1
+SelLast
+Delete
+Sketch 0,0,0 10,5,0 20,0,0
+Enter
+@expect_objects 1
+SelLast
+Delete
+# --- Circle3Pt / CircleD
+Circle3Pt 10,0,0 -10,0,0 0,10,0
+SelLast
+List
+Delete
+CircleD 0,0,0 10,0,0
+SelLast
+List
+Delete
+# --- Arc3Pt
+Arc3Pt 0,0,0 10,0,0 5,5,0
+SelLast
+List
+Delete
+# --- Rectangle3Pt: edge then width
+Rectangle3Pt 0,0,0 10,0,0 0,5,0
+SelLast
+List
+@expect_objects 1
+Delete
+# --- Polygon (NumSides=5) and PolygonStar (NumSides=6)
+Polygon NumSides=5 0,0,0 10,0,0
+SelLast
+List
+Delete
+PolygonStar NumSides=6 0,0,0 10,0,0
+SelLast
+List
+Delete
+# --- Ellipse
+Ellipse 0,0,0 10,0,0 0,5,0
+SelLast
+List
+Delete
+# --- Helix and Spiral (Turns option)
+Helix Turns=3 0,0,0 0,0,20 5,0,0
+SelLast
+List
+Delete
+Spiral Turns=2 0,0,0 0,0,10 5,0,0 15,0,0
+SelLast
+List
+Delete
+# --- PointGrid: a 5x5 grid of points
+PointGrid 0,0,0 20,20,0
+@expect_objects 25
+SelAll
+Delete
+@expect_objects 0
+# --- Divide: split a line into 4 segments -> 3 interior points plus the 2 endpoints included
+Line 0,0,0 40,0,0
+SelLast
+Divide 4
+SelNone
+SelPt
+@expect_selected 5
+SelAll
+Delete
+@expect_objects 0
+# --- ClosestPt: find the closest point on a selected line to a test point
+Line 0,0,0 10,0,0
+SelLast
+ClosestPt 5,5,0
+@expect_objects 2
+SelLast
+List
+SelAll
+Delete
+@expect_objects 0
+# --- Plane3Pt and SrfPt build 4-corner surfaces
+Plane3Pt 0,0,0 10,0,0 0,5,0
+@expect_objects 1
+SelLast
+List
+Delete
+SrfPt 0,0,0 10,0,0 10,10,0 0,10,0
+@expect_objects 1
+SelLast
+List
+SelAll
+Delete
+@expect_objects 0

@@ -399,9 +399,11 @@ void RegisterStateCommands(CommandEngine& e) {
       }));
   Reg(e, "NewFloatingViewport", Immediate([](CommandContext& ctx) { Viewport* vp = AddViewportLike(ctx, ctx.ActiveViewport()); Activate(ctx, vp); }), CommandStatus::Partial, "Adds a docked viewport; drag its tab out to float it.");
   Reg(e, "SplitViewportHorizontal", Immediate([](CommandContext& ctx) { Viewport* vp = AddViewportLike(ctx, ctx.ActiveViewport()); ctx.Print("Added viewport " + vp->Name()); }), CommandStatus::Partial, "Adds a copy of the active viewport; dock it beside the original.");
-  Reg(e, "SplitViewportVertical", Immediate([](CommandContext& ctx) { Viewport* vp = AddViewportLike(ctx, ctx.ActiveViewport()); ctx.Print("Added viewport " + vp->Name()); }), CommandStatus::Partial, "Adds a copy of the active viewport; dock it below the original.");
+  // SplitViewportVertical: the real implementation lives in cmd_viewtools.cpp
+  // (RegisterViewToolsCommands runs after this file, so it always won here
+  // anyway; this stub was dead code).
   Reg(e, "NextViewportToTop", Immediate([](CommandContext& ctx) { ActivateNext(ctx, [](const Viewport&) { return true; }, "other"); }));
-  Reg(e, "BringViewportToTop", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) Activate(ctx, vp); }));
+  // BringViewportToTop: superseded by cmd_viewtools.cpp's implementation (see above).
   Reg(e, "PushViewportToBack", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("PrevViewport"); }));
   Reg(e, "NextOrthoViewport", Immediate([](CommandContext& ctx) { ActivateNext(ctx, [](const Viewport& v) { return !v.GetCamera().State().perspective; }, "parallel"); }));
   Reg(e, "NextPerspectiveViewport", Immediate([](CommandContext& ctx) { ActivateNext(ctx, [](const Viewport& v) { return v.GetCamera().State().perspective; }, "perspective"); }));
@@ -418,21 +420,14 @@ void RegisterStateCommands(CommandEngine& e) {
         ctx.Print("Swapped views of " + a.Name() + " and " + b.Name());
       }), CommandStatus::Partial, "Swaps the active viewport's view with the next one.");
   Reg(e, "OneView", Immediate([](CommandContext& ctx) { ctx.App().SetViewportLayout(1); ctx.Print("Single viewport layout"); }));
-  Reg(e, "ToggleFloatingViewport", Say("ToggleFloatingViewport: drag a viewport tab out of the dock to float it, or back in to dock it."), CommandStatus::Partial);
+  // ToggleFloatingViewport: superseded by cmd_viewtools.cpp's implementation.
   Reg(e, "LockViewport", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().lock_viewport; }, "Viewport lock"), CommandStatus::Partial, "Records the lock; mouse navigation still works.");
-  Reg(e, "SetMaximizedViewport", Make<TextArgCommand>("Viewport to maximize", [](CommandContext& ctx, const std::string& name) {
-        Viewport* target = ctx.App().FindViewport(name);
-        if (!target) for (auto& v : ctx.Viewports()) if (Lower(v->Name()) == Lower(name)) target = v.get();
-        if (!target) { ctx.Warn("No viewport '" + name + "'. Viewports: " + ViewportNames(ctx)); return; }
-        for (auto& v : ctx.Viewports()) { v->SetMaximized(v.get() == target); v->SetActive(v.get() == target); }
-        ctx.Print("Maximized viewport " + target->Name());
-      }));
-  Reg(e, "ViewportTabs", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().viewport_tabs; }, "Viewport tabs"), CommandStatus::Partial, "Viewports are always tabbed dock windows.");
+  // SetMaximizedViewport: superseded by cmd_viewtools.cpp's implementation.
+  // ViewportTabs: superseded by cmd_viewtools.cpp's implementation.
   Reg(e, "ZoomEnds", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->ZoomExtents(ctx.Doc(), ctx.Doc().SelectedCount() > 0); }), CommandStatus::Partial, "Zooms to the selected curves.");
   Reg(e, "ZoomNaked", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->ZoomExtents(ctx.Doc(), ctx.Doc().SelectedCount() > 0); }), CommandStatus::Partial, "Zooms to the selection; see ShowEdges for naked edges.");
   Reg(e, "ZoomNonManifold", Immediate([](CommandContext& ctx) { if (Viewport* vp = ctx.ActiveViewport()) vp->ZoomExtents(ctx.Doc(), ctx.Doc().SelectedCount() > 0); }), CommandStatus::Partial, "Zooms to the selection; SelNonManifold finds the meshes.");
-  Reg(e, "Zoom1To1Calibrate", Say("Zoom1To1Calibrate: Zoom1To1 assumes a 96 dpi screen; measure a Zoom1To1 view with a ruler and scale from there."), CommandStatus::Partial);
-  Reg(e, "SetZoomExtentsBorder", Make<NumberArgCommand>("Zoom extents border factor", [](CommandContext& ctx) { return ctx.App().State().zoom_extents_border; }, [](CommandContext& ctx, double v) { ctx.App().State().zoom_extents_border = std::max(1.0, v); ctx.Print("Zoom extents border = " + FormatNumber(std::max(1.0, v))); }), CommandStatus::Partial, "Stored; ZoomExtents uses its built-in margin.");
+  // Zoom1To1Calibrate, SetZoomExtentsBorder: superseded by cmd_viewtools.cpp's implementations.
 
   // ---- camera / lens ---------------------------------------------------
   Reg(e, "Camera", Make<CameraCommand>());
@@ -597,7 +592,9 @@ void RegisterStateCommands(CommandEngine& e) {
   Reg(e, "HistoryUpdate", Say("HistoryUpdate: no construction history is recorded; nothing to update."));
   Reg(e, "Worksession", Say("Worksession: reference models are planned; Import brings another file's objects in."), CommandStatus::Partial);
   Reg(e, "LimitReferenceModel", Say("LimitReferenceModel: reference models are planned."), CommandStatus::Partial);
-  Reg(e, "Bounce", Say("Bounce: ray bounce curves are planned."), CommandStatus::Partial);
+  // Bounce: superseded by cmd_solidtools.cpp's real ray-bounce implementation
+  // (RegisterSolidToolsCommands runs after this file, so it always won here
+  // anyway; this stub was dead code that misreported Bounce as unimplemented).
   Reg(e, "ContentFilter", Say("ContentFilter: render content filtering is planned; the Materials panel lists every material."), CommandStatus::Partial);
 
   // ---- gumball ------------------------------------------------------------

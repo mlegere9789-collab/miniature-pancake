@@ -584,4 +584,98 @@ echo "$VW" | grep -q "^smoke:" || { echo "$VW"; echo "FAIL: view script produced
 [ -s "$TMP/view/view.bmp" ] && echo "ok   ViewCaptureToFile wrote view.bmp" || { echo "FAIL ViewCaptureToFile"; fail=1; }
 [ -s "$TMP/view/screen.bmp" ] && echo "ok   ScreenCaptureToFile wrote screen.bmp" || { echo "FAIL ScreenCaptureToFile"; fail=1; }
 
+# Extended state/window/misc: the remaining cmd_state.cpp and cmd_misc.cpp
+# commands not already exercised elsewhere (see state_script2.txt).
+mkdir -p "$TMP/state2"
+sed "s|@TMP@|$TMP/state2|g" "$HERE/state_script2.txt" > "$TMP/state_script2.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  S2="$("$BIN" --smoke 200 --script "$TMP/state_script2.txt" 2>&1)" || { echo "$S2"; echo "FAIL: state2 script exited non-zero"; exit 1; }
+else
+  S2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/state_script2.txt" 2>&1)" || { echo "$S2"; echo "FAIL: state2 script exited non-zero"; exit 1; }
+fi
+echo "$S2" | grep -E "^(ok|FAIL)"
+if echo "$S2" | grep -q "^FAIL"; then fail=1; fi
+echo "$S2" | grep -q "^smoke:" || { echo "$S2"; echo "FAIL: state2 script produced no smoke line"; fail=1; }
+s2check() { if echo "$S2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+s2check "Echo on" "Echo toggled on"
+s2check "Echo off" "Echo toggled off"
+s2check "Redraw on" "SetRedrawOn"
+s2check "Redraw off" "SetRedrawOff"
+s2check "ResetMessageBoxes: all 'do not show again' choices cleared" "ResetMessageBoxes"
+s2check "Fullscreen on" "Fullscreen on"
+s2check "Fullscreen off" "Fullscreen off"
+s2check "Window maximized" "Maximize"
+s2check "Window restored" "Restore"
+s2check "SplitViewportVertical: added .* viewports" "SplitViewportVertical (cmd_viewtools's real implementation)"
+s2check "BringViewportToTop: " "BringViewportToTop (cmd_viewtools's real implementation)"
+s2check "SetMaximizedViewport: Perspective" "SetMaximizedViewport (cmd_viewtools's real implementation)"
+s2check "ViewportTabs: hidden" "ViewportTabs (cmd_viewtools's real implementation)"
+s2check "Zoom1To1Calibrate: .* pixels per mm" "Zoom1To1Calibrate (cmd_viewtools's real implementation)"
+s2check "SetZoomExtentsBorder: border factor 1.2" "SetZoomExtentsBorder (cmd_viewtools's real implementation)"
+s2check "Ortho angle = 45 deg" "OrthoAngle"
+s2check "Grid snap size = 2.5" "SnapSize"
+s2check "Grid snap on, size = 5" "SetSnap"
+s2check "DragMode = World" "DragMode World (also covers the removed Dragmode duplicate)"
+s2check "Drag strength = 50%" "DragStrength"
+s2check "Drag copy on" "DragCopy"
+s2check "Options exported to " "OptionsExport"
+s2check "Options imported from " "OptionsImport"
+s2check "Working folder: " "SetWorkingFolder"
+s2check "Autosave: " "Autosave"
+s2check "Model base point 1,2,3" "ModelBasepoint"
+s2check "Earth anchor point 4,5,6" "EarthAnchorPoint"
+s2check "PointCloud: 2 point(s) grouped" "PointCloud"
+s2check "InfinitePlane: 10000 x 10000 plane" "InfinitePlane"
+s2check "BringToFront: 5 object(s)" "BringToFront (DrawOrder family)"
+s2check "Bounce: polyline with 1 bounce(s)" "Bounce (cmd_solidtools's real ray-bounce, no longer shadowed)"
+s2check "GumballAlignment = World" "GumballAlignment"
+s2check "GumballScaleMode = Uniform" "GumballScaleMode"
+s2check "Gumball auto reset off" "GumballAutoReset"
+s2check "Gumball dynamic relocate on" "GumballDynamicRelocate"
+s2check "Gumball origin 5,5,5" "GumballRelocate"
+s2check "Gumball reset" "GumballReset"
+s2check "ViewCaptureToClipboard: image written to" "ViewCaptureToClipboard"
+s2check "ScreenCaptureToClipboard: image written to" "ScreenCaptureToClipboard"
+s2check "Alias qq -> Box" "Alias"
+if echo "$S2" | grep -qF "2+3*4 = 14"; then echo "ok   Calc"; else echo "FAIL Calc"; fail=1; fi
+s2check "Left sidebar" "ToggleLeftSidebar"
+
+# Files: New/Open/Revert/Save/SaveAs/SaveSmall/IncrementalSave/SaveAsTemplate/
+# Import/Export/ExportSelected/ExportWithOrigin/Notes/DocumentProperties/Units/
+# Audit3dmFile (see file_script.txt).
+mkdir -p "$TMP/file"
+sed "s|@TMP@|$TMP/file|g" "$HERE/file_script.txt" > "$TMP/file_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  FL="$("$BIN" --smoke 150 --script "$TMP/file_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: file script exited non-zero"; exit 1; }
+else
+  FL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/file_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: file script exited non-zero"; exit 1; }
+fi
+echo "$FL" | grep -E "^(ok|FAIL)"
+if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
+echo "$FL" | grep -q "^smoke:" || { echo "$FL"; echo "FAIL: file script produced no smoke line"; fail=1; }
+flcheck() { if echo "$FL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+flcheck "Saved $TMP/file/file1.3dm" "Save wrote file1.3dm"
+flcheck "Opened $TMP/file/file1.3dm (2 objects)" "Open re-read file1.3dm"
+flcheck "Saved $TMP/file/file2.3dm" "SaveAs wrote file2.3dm"
+flcheck "Opened $TMP/file/file2.3dm (2 objects)" "Open re-read file2.3dm"
+flcheck "Imported $TMP/file/file1.3dm" "Import brought file1.3dm's objects in"
+flcheck "Exported $TMP/file/export1.obj" "Export wrote export1.obj"
+test -s "$TMP/file/file1.3dm" && echo "ok   file1.3dm exists" || { echo "FAIL file1.3dm missing"; fail=1; }
+test -s "$TMP/file/file2.3dm" && echo "ok   file2.3dm exists" || { echo "FAIL file2.3dm missing"; fail=1; }
+test -s "$TMP/file/file2_1.3dm" && echo "ok   IncrementalSave wrote file2_1.3dm" || { echo "FAIL file2_1.3dm missing"; fail=1; }
+test -s "$TMP/file/file2_1_2.3dm" && echo "ok   IncrementalSave wrote file2_1_2.3dm" || { echo "FAIL file2_1_2.3dm missing"; fail=1; }
+test -s "$TMP/file/export1.obj" && echo "ok   export1.obj exists" || { echo "FAIL export1.obj missing"; fail=1; }
+
+# Creation: Points/Lines/InterpCrv/CurveThroughPt/Sketch/Circle3Pt/CircleD/Arc3Pt/
+# Rectangle3Pt/Polygon/PolygonStar/Ellipse/Helix/Spiral/PointGrid/Divide/ClosestPt/
+# Plane3Pt/SrfPt (see create_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  CR="$("$BIN" --smoke 150 --script "$HERE/create_script.txt" 2>&1)" || { echo "$CR"; echo "FAIL: create script exited non-zero"; exit 1; }
+else
+  CR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/create_script.txt" 2>&1)" || { echo "$CR"; echo "FAIL: create script exited non-zero"; exit 1; }
+fi
+echo "$CR" | grep -E "^(ok|FAIL)"
+if echo "$CR" | grep -q "^FAIL"; then fail=1; fi
+echo "$CR" | grep -q "^smoke:" || { echo "$CR"; echo "FAIL: create script produced no smoke line"; fail=1; }
+
 exit $fail
