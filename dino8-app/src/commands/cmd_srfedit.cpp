@@ -978,6 +978,7 @@ void RegisterSrfEditCommands(CommandEngine& e) {
   Reg(e, "FilletEdge", Planned("FilletEdge: exact edge fillets are planned; use FilletSrf-style Pipe/Boolean workflows for now."), CommandStatus::Partial);
   Reg(e, "ChamferEdge", Planned("ChamferEdge: exact edge chamfers are planned."), CommandStatus::Partial);
   Reg(e, "BlendEdge", Planned("BlendEdge: exact edge blends are planned."), CommandStatus::Partial);
+  Reg(e, "BlendSrf", Planned("BlendSrf: surface/surface blends need a surface-surface intersector the kernel does not have; use BlendEdge/BlendCrv on the boundary curves and Sweep2/NetworkSrf through the result instead."), CommandStatus::Partial);
   Reg(e, "FilletSrf", Planned("FilletSrf: surface/surface fillets are planned."), CommandStatus::Partial);
   Reg(e, "ChamferSrf", Planned("ChamferSrf: planned."), CommandStatus::Partial);
   Reg(e, "FilletSrfCrv", Planned("FilletSrfCrv: planned."), CommandStatus::Partial);

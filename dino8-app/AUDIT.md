@@ -1,3 +1,13 @@
+> **Update (2026-09-06):** this audit's command-coverage numbers (§0–§1) are stale. Follow-up work
+> registered nearly all of the "86 Planned" commands listed in §1.2 below (see `src/commands/cmd_remaining.cpp`
+> and `tests/remaining_script.txt`); the app's own start-up line is now the source of truth
+> ("... commands loaded (713 implemented, 420 partial, 12 planned)"). The only commands still Planned
+> are the twelve sub-object point-editing ones (`AddNextU/V`, `AddPrevU/V`, `NextU/V`, `PrevU/V`, `HBar`,
+> `PtOffSelected`, `DrapePt`, `CullControlPolygon`), which need sub-object point selection Dino 8 does not
+> have. Everything else in §1.2's table (BlendSrf, TweenSurfaces, IGES/STEP option commands, script-editor
+> commands, etc.) is now registered, most as honest `CommandStatus::Partial` stubs where the kernel lacks
+> the underlying geometry (documented in each command's note).
+
 # Dino 8 vs Rhino 8 — Implementation Audit
 
 *Read-only audit of `/home/user/miniature-pancake/dino8-app` (branch `claude/pdf-audit-i2bvwm`, HEAD 14bfad8, tree mid-cherry-pick of 3943b8b "clipping planes, layouts, named CPlanes, animation") plus the agent worktrees `agent-a0941ca88c6de51b1` (cmd_viewtools.cpp — identical to the staged main-tree copy) and `agent-aa263d74c70074354` (UI polish: `src/ui/Icons.cpp`, `Toolbars.cpp`, autocomplete, context menus — it adds no new command registrations). Sources: doc1.txt / doc2.txt (Rhino 8 Complete Feature Audit, Parts 1–7; doc1 is the PDF-extracted copy with clean tables), doc3.txt (rhnio8 — Rhino 8 Command Line Reference, 1055 entries), doc4.pdf (2-page "Dino 8" design blueprint; no poppler/pypdf available, so it was decoded by hand from its FlateDecode streams and ToUnicode CMaps — it is fully readable and is quoted below). Date: 2026-09-05.*
