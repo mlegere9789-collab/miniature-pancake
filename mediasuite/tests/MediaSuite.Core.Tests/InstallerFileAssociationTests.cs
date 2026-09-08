@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using MediaSuite.Core.Formats;
 using Xunit;
 
@@ -30,6 +31,41 @@ public class InstallerFileAssociationTests
             "installer/MediaSuite.iss's [Registry] SupportedTypes list is missing: "
             + string.Join(", ", missing)
             + ". Add a matching \"Root: HKA; Subkey: ...SupportedTypes...\" line for each.");
+    }
+
+    /// <summary>
+    /// The other direction of the check above: a format removed from the catalogue (or
+    /// never added correctly in the first place) must not leave a stale SupportedTypes
+    /// entry behind. Only checking "every catalogue extension is registered" would let
+    /// that drift silently forever, since nothing generates this list from the catalogue.
+    /// A stale entry is not a crash today -- <c>App.ResolveOpenWithFiles</c> already
+    /// filters "Open with" launches through <see cref="FormatCatalog.FromPath"/> and
+    /// drops anything the catalogue no longer recognises -- but it is still a real,
+    /// user-visible "Open with MediaSuite" choice for a format the app can no longer
+    /// actually do anything with.
+    /// </summary>
+    [Fact]
+    public void Every_registered_SupportedType_still_exists_in_the_catalogue()
+    {
+        var script = File.ReadAllText(FindInstallerScript());
+
+        var catalogueExtensions = new HashSet<string>(
+            FormatCatalog.All.SelectMany(format => format.AllExtensions),
+            StringComparer.OrdinalIgnoreCase);
+
+        var registeredExtensions = Regex.Matches(script, @"SupportedTypes""; ValueType: string; ValueName: ""\.([A-Za-z0-9]+)"";")
+            .Select(match => match.Groups[1].Value);
+
+        var stale = registeredExtensions
+            .Where(extension => !catalogueExtensions.Contains(extension))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(extension => extension, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        Assert.True(stale.Count == 0,
+            "installer/MediaSuite.iss's [Registry] SupportedTypes list registers extensions "
+            + "no longer in FormatCatalog: " + string.Join(", ", stale)
+            + ". Remove the matching \"Root: HKA; Subkey: ...SupportedTypes...\" line(s).");
     }
 
     /// <summary>
