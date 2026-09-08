@@ -77,6 +77,22 @@ void AddArrowLocal(std::vector<kernel::NurbsCurve>& out, Point3d tip, Vector3d d
   out.push_back(PolylineCurve({a, tip, b, a}));
 }
 
+// Encodes/decodes a list of object ids as "id,id,id" for a user_text tag
+// (BomRefIds - the associative link a table keeps to its source objects).
+std::string IdsTag(const std::vector<ObjectId>& ids) {
+  std::string s;
+  for (ObjectId id : ids) { if (!s.empty()) s += ","; s += std::to_string(id); }
+  return s;
+}
+std::vector<ObjectId> ParseIdsTag(const std::string& s) {
+  std::vector<ObjectId> out;
+  std::string cur;
+  auto flush = [&]() { if (!cur.empty()) { out.push_back(static_cast<ObjectId>(std::strtoull(cur.c_str(), nullptr, 10))); cur.clear(); } };
+  for (char c : s) { if (c == ',') flush(); else cur += c; }
+  flush();
+  return out;
+}
+
 std::string PointsTag(const std::vector<Point3d>& pts) {
   std::string s;
   for (const Point3d& p : pts) { if (!s.empty()) s += ";"; s += PointTag(p); }
@@ -116,7 +132,8 @@ void ParseColWidths(const std::string& s, TableSpec& spec) {
 // tagging every grid line with the JSON cell data and the plane the table
 // sits on, so TableEdit / the Table Editor panel can rebuild it. Fills in
 // spec's height defaults in place before storing them.
-int BuildTableGroup(CommandContext& ctx, TableSpec spec, const std::string& kind, int layer = -1) {
+int BuildTableGroup(CommandContext& ctx, TableSpec spec, const std::string& kind, int layer = -1,
+                    const std::map<std::string, std::string>& extra_tags = {}) {
   if (layer < 0) layer = DimensionLayer(ctx);
   const std::string style = ctx.Settings().annotation_style;
   if (spec.text_height <= 0) spec.text_height = AnnotationTextHeight(ctx);
@@ -147,6 +164,7 @@ int BuildTableGroup(CommandContext& ctx, TableSpec spec, const std::string& kind
     s.user_text["TableOrigin"] = ox;
     s.user_text["TableX"] = tx;
     s.user_text["TableY"] = ty;
+    for (const auto& [k, v] : extra_tags) s.user_text[k] = v;
     ids.push_back(ctx.Doc().Add(std::move(s)));
   }
 
@@ -323,6 +341,62 @@ class TitleBlockCommand : public Command {
   std::string name_, date_, scale_, sheet_;
 };
 
+// Aggregates `ids` into a BillOfMaterials TableSpec (rows/cols/cells only -
+// caller fills in origin/plane). Shared by BillOfMaterialsCommand and
+// UpdateBillOfMaterials so a re-derive from the same (or a re-scanned) id
+// list produces byte-identical logic to the original bake. `csv_rows`, when
+// given, is filled with the same rows for the optional CSV report.
+struct BomRow { std::string key, layer, material; int qty = 0; double length = 0, area = 0, volume = 0; };
+TableSpec BuildBomSpec(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::string& by, std::vector<BomRow>* csv_rows = nullptr) {
+  std::map<std::string, BomRow> rows;
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o || o->user_text.count("Annotation") || o->user_text.count("Hatch")) continue;  // skip drafting output itself
+    std::string block;
+    if (auto it = o->user_text.find("Block"); it != o->user_text.end()) block = it->second;
+    const std::string layer = (o->layer_index >= 0 && o->layer_index < static_cast<int>(ctx.Doc().Layers().size())) ? ctx.Doc().Layers()[static_cast<size_t>(o->layer_index)].name : "";
+    const std::string mat = o->material_name;
+    const std::string name = !block.empty() ? block : (!o->name.empty() ? o->name : ObjectKindName(o->kind));
+    const std::string key = by == "layer" ? (layer.empty() ? "(none)" : layer) : by == "material" ? (mat.empty() ? "(none)" : mat) : name;
+    BomRow& r = rows[key];
+    r.key = key;
+    r.layer = layer;
+    r.material = mat;
+    ++r.qty;
+    if (o->kind == ObjectKind::Curve && o->curve) r.length += o->curve->Length();
+    else if (auto m = MeshOf(*o)) { r.area += m->Area(); if (m->IsClosedManifold()) r.volume += std::fabs(m->Volume()); }
+  }
+  TableSpec spec;
+  spec.cols = 6;
+  spec.col_widths = {40, 14, 26, 26, 24, 20};
+  spec.cells = {"Item", "Qty", "Layer", "Material", "Length/Area", "Volume"};
+  spec.rows = 1;
+  for (const auto& [k, r] : rows) {
+    (void)k;
+    ++spec.rows;
+    spec.cells.push_back(r.key);
+    spec.cells.push_back(std::to_string(r.qty));
+    spec.cells.push_back(r.layer.empty() ? "-" : r.layer);
+    spec.cells.push_back(r.material.empty() ? "-" : r.material);
+    spec.cells.push_back(r.length > 0 ? FormatNumber(r.length) + " L" : r.area > 0 ? FormatNumber(r.area) + " A" : "-");
+    spec.cells.push_back(r.volume > 0 ? FormatNumber(r.volume) : "-");
+    if (csv_rows) csv_rows->push_back(r);
+  }
+  spec.title = "Bill of Materials";
+  return spec;
+}
+
+// A BillOfMaterials table is associative: the group carries
+//   BomRefIds = the exact object ids it was built from (explicit selection), or
+//   BomAll    = "1" (built from "every visible object" - Enter), no BomRefIds
+//   BomBy     = "name"/"layer"/"material" grouping key
+// so UpdateBillOfMaterials (below) can re-derive its rows from the *current*
+// state of those objects (or of the document, for BomAll) - count, name,
+// material, length/area/volume - instead of the numbers staying frozen at
+// creation time. A row's numbers track a live edit to its source objects;
+// what the table cannot know is which *new* objects should count under an
+// explicit id list (only Enter's "every visible object" mode re-scans for
+// newcomers) - documented in the command's registration note below.
 class BillOfMaterialsCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -334,56 +408,25 @@ class BillOfMaterialsCommand : public Command {
   void OnEnter(CommandContext& ctx) override {
     std::vector<ObjectId> ids;
     for (const SceneObject& o : ctx.Doc().Objects()) if (ctx.Doc().IsObjectVisible(o)) ids.push_back(o.id);
-    Run(ctx, ids);
+    Run(ctx, ids, /*all=*/true);
     Finish();
   }
-  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override { Run(ctx, ids); Finish(); }
-  void Run(CommandContext& ctx, const std::vector<ObjectId>& ids) {
-    struct Row { std::string key, layer, material; int qty = 0; double length = 0, area = 0, volume = 0; };
-    std::map<std::string, Row> rows;
-    for (ObjectId id : ids) {
-      const SceneObject* o = ctx.Doc().Find(id);
-      if (!o || o->user_text.count("Annotation") || o->user_text.count("Hatch")) continue;  // skip drafting output itself
-      std::string block;
-      if (auto it = o->user_text.find("Block"); it != o->user_text.end()) block = it->second;
-      const std::string layer = (o->layer_index >= 0 && o->layer_index < static_cast<int>(ctx.Doc().Layers().size())) ? ctx.Doc().Layers()[static_cast<size_t>(o->layer_index)].name : "";
-      const std::string mat = o->material_name;
-      const std::string name = !block.empty() ? block : (!o->name.empty() ? o->name : ObjectKindName(o->kind));
-      const std::string key = by_ == "layer" ? (layer.empty() ? "(none)" : layer) : by_ == "material" ? (mat.empty() ? "(none)" : mat) : name;
-      Row& r = rows[key];
-      r.key = key;
-      r.layer = layer;
-      r.material = mat;
-      ++r.qty;
-      if (o->kind == ObjectKind::Curve && o->curve) r.length += o->curve->Length();
-      else if (auto m = MeshOf(*o)) { r.area += m->Area(); if (m->IsClosedManifold()) r.volume += std::fabs(m->Volume()); }
-    }
-    TableSpec spec;
-    spec.cols = 6;
-    spec.col_widths = {40, 14, 26, 26, 24, 20};
-    spec.cells = {"Item", "Qty", "Layer", "Material", "Length/Area", "Volume"};
-    spec.rows = 1;
-    for (const auto& [k, r] : rows) {
-      (void)k;
-      ++spec.rows;
-      spec.cells.push_back(r.key);
-      spec.cells.push_back(std::to_string(r.qty));
-      spec.cells.push_back(r.layer.empty() ? "-" : r.layer);
-      spec.cells.push_back(r.material.empty() ? "-" : r.material);
-      spec.cells.push_back(r.length > 0 ? FormatNumber(r.length) + " L" : r.area > 0 ? FormatNumber(r.area) + " A" : "-");
-      spec.cells.push_back(r.volume > 0 ? FormatNumber(r.volume) : "-");
-    }
-    spec.title = "Bill of Materials";
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override { Run(ctx, ids, /*all=*/false); Finish(); }
+  void Run(CommandContext& ctx, const std::vector<ObjectId>& ids, bool all) {
+    std::vector<BomRow> csv_rows;
+    TableSpec spec = BuildBomSpec(ctx, ids, by_, csv_.empty() ? nullptr : &csv_rows);
     spec.origin = ctx.HoverPoint().value_or(Point3d(0, 0, 0));
     spec.plane = ActivePlane(ctx);
     ctx.Doc().BeginChange("BillOfMaterials");
-    BuildTableGroup(ctx, spec, "BillOfMaterials");
+    std::map<std::string, std::string> tags = {{"BomBy", by_}};
+    if (all) tags["BomAll"] = "1"; else tags["BomRefIds"] = IdsTag(ids);
+    BuildTableGroup(ctx, spec, "BillOfMaterials", -1, tags);
     if (!csv_.empty()) {
       std::ofstream f(csv_);
       f << "Item,Qty,Layer,Material,Length,Area,Volume\n";
-      for (const auto& [k, r] : rows) { (void)k; f << r.key << "," << r.qty << "," << r.layer << "," << r.material << "," << r.length << "," << r.area << "," << r.volume << "\n"; }
+      for (const BomRow& r : csv_rows) f << r.key << "," << r.qty << "," << r.layer << "," << r.material << "," << r.length << "," << r.area << "," << r.volume << "\n";
     }
-    ctx.Print("BillOfMaterials: " + std::to_string(rows.size()) + " row(s)" + (csv_.empty() ? "" : ", CSV written to " + csv_));
+    ctx.Print("BillOfMaterials: " + std::to_string(spec.rows - 1) + " row(s)" + (csv_.empty() ? "" : ", CSV written to " + csv_));
   }
   std::string by_, csv_;
 };
@@ -921,7 +964,8 @@ void RegisterDrafting2Commands(CommandEngine& e) {
   // singled out as Partial for sharing it.
   Reg(e, "TitleBlock", Make<TitleBlockCommand>(), CommandStatus::Implemented,
       "Builds a simple Name/Date/Scale/Sheet field table, not an instance of a linked block definition - inserting one does not track edits to a shared title-block template, the same live-instancing gap as the Block command (cmd_drafting.cpp) has no fix for.");
-  Reg(e, "BillOfMaterials", Make<BillOfMaterialsCommand>());
+  Reg(e, "BillOfMaterials", Make<BillOfMaterialsCommand>(), CommandStatus::Implemented,
+      "Associative: the table records which objects (or 'every visible object') it was built from and UpdateBillOfMaterials re-derives every row's count/layer/material/length-area-volume from their current state. Built from an explicit selection, it re-checks only those objects (a deleted one drops out; a new object never joins on its own) - only the Enter/'every visible object' mode picks up newcomers, since only it has a re-scan rule instead of a fixed id list.");
 
   Reg(e, "FeatureControlFrame", Make<FeatureControlFrameCommand>(), CommandStatus::Implemented,
       "Characteristic symbols (flatness, position, etc.) are drawn as vector curves matching the ASME Y14.5 shapes; material-condition modifiers (S)/(L)/(M) use Unicode circled letters as a stand-in, since this build has no dedicated GD&T symbol font to draw the real modifier glyphs from.");
@@ -968,6 +1012,52 @@ void RegisterDrafting2Commands(CommandEngine& e) {
         }
         ctx.Print("UpdateSectionViews: " + std::to_string(updated) + " section view(s) regenerated");
       }));
+
+  Reg(e, "UpdateBillOfMaterials", Immediate([](CommandContext& ctx) {
+        std::vector<int> groups;
+        for (const SceneObject& o : ctx.Doc().Objects())
+          if (o.group_id >= 0 && o.user_text.count("Annotation") && o.user_text.at("Annotation") == "BillOfMaterials" &&
+              std::find(groups.begin(), groups.end(), o.group_id) == groups.end())
+            groups.push_back(o.group_id);
+        if (groups.empty()) { ctx.Print("UpdateBillOfMaterials: no bill-of-materials tables in this document"); return; }
+        ctx.Doc().BeginChange("UpdateBillOfMaterials");
+        int updated = 0;
+        for (int g : groups) {
+          TableSpec old;
+          if (!LoadTableSpec(ctx.Doc(), g, old)) continue;  // group has no TableData - nothing to rebuild from
+          std::string by = "name", ref_ids_tag;
+          bool all = false;
+          for (const SceneObject& o : ctx.Doc().Objects()) {
+            if (o.group_id != g) continue;
+            if (auto it = o.user_text.find("BomBy"); it != o.user_text.end()) by = it->second;
+            if (auto it = o.user_text.find("BomAll"); it != o.user_text.end() && it->second == "1") all = true;
+            if (auto it = o.user_text.find("BomRefIds"); it != o.user_text.end()) ref_ids_tag = it->second;
+            break;
+          }
+          std::vector<ObjectId> ids;
+          if (all) { for (const SceneObject& o : ctx.Doc().Objects()) if (ctx.Doc().IsObjectVisible(o)) ids.push_back(o.id); }
+          else for (ObjectId id : ParseIdsTag(ref_ids_tag)) if (ctx.Doc().Find(id)) ids.push_back(id);  // drop ids of since-deleted objects
+          std::vector<BomRow> rows;
+          TableSpec spec = BuildBomSpec(ctx, ids, by, &rows);
+          spec.origin = old.origin;
+          spec.plane = old.plane;
+          for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+          std::map<std::string, std::string> tags = {{"BomBy", by}};
+          if (all) tags["BomAll"] = "1"; else tags["BomRefIds"] = IdsTag(ids);
+          if (BuildTableGroup(ctx, spec, "BillOfMaterials", -1, tags) >= 0) {
+            ++updated;
+            // A compact one-line-per-row summary (not the table's own glyph
+            // curve objects, which can number in the dozens for a small
+            // table) so a caller can confirm a row's aggregated fields - not
+            // just the row count - actually reflect the current document.
+            std::string summary;
+            for (const BomRow& r : rows) summary += (summary.empty() ? "" : "; ") + r.key + " qty=" + std::to_string(r.qty) + " material=" + (r.material.empty() ? "(none)" : r.material);
+            ctx.Print("UpdateBillOfMaterials:   " + summary);
+          }
+        }
+        ctx.Print("UpdateBillOfMaterials: " + std::to_string(updated) + " table(s) regenerated");
+      }), CommandStatus::Implemented,
+      "Re-derives every BillOfMaterials table's rows (count/layer/material/length-area-volume) from the current state of the objects it was built from, replacing the old baked rows in place - the associative counterpart to BillOfMaterials's static bake, following the same explicit-recompute shape as UpdateSectionViews above rather than an automatic hook on every document edit.");
 }
 
 // ---------------------------------------------------------------------------
