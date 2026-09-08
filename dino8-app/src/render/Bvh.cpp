@@ -214,4 +214,35 @@ bool Bvh::IntersectAny(const Point3d& origin, const Vector3d& dir, float tmin, f
   return false;
 }
 
+void Bvh::ExportGpuNodes(std::vector<float>& out) const {
+  out.clear();
+  out.reserve(nodes_.size() * 12);
+  for (const Node& n : nodes_) {
+    out.push_back(static_cast<float>(n.bmin.x)); out.push_back(static_cast<float>(n.bmin.y));
+    out.push_back(static_cast<float>(n.bmin.z)); out.push_back(static_cast<float>(n.left));
+    out.push_back(static_cast<float>(n.bmax.x)); out.push_back(static_cast<float>(n.bmax.y));
+    out.push_back(static_cast<float>(n.bmax.z)); out.push_back(static_cast<float>(n.count));
+    out.push_back(static_cast<float>(n.start)); out.push_back(0.f); out.push_back(0.f); out.push_back(0.f);
+  }
+}
+
+void Bvh::ExportGpuTriangles(std::vector<float>& out) const {
+  out.clear();
+  out.reserve(tris_.size() * 24);
+  for (const BvhTriangle& t : tris_) {
+    out.push_back(static_cast<float>(t.v0.x)); out.push_back(static_cast<float>(t.v0.y));
+    out.push_back(static_cast<float>(t.v0.z)); out.push_back(static_cast<float>(t.material));
+    out.push_back(static_cast<float>(t.v1.x)); out.push_back(static_cast<float>(t.v1.y));
+    out.push_back(static_cast<float>(t.v1.z)); out.push_back(0.f);
+    out.push_back(static_cast<float>(t.v2.x)); out.push_back(static_cast<float>(t.v2.y));
+    out.push_back(static_cast<float>(t.v2.z)); out.push_back(0.f);
+    out.push_back(static_cast<float>(t.n0.x)); out.push_back(static_cast<float>(t.n0.y));
+    out.push_back(static_cast<float>(t.n0.z)); out.push_back(0.f);
+    out.push_back(static_cast<float>(t.n1.x)); out.push_back(static_cast<float>(t.n1.y));
+    out.push_back(static_cast<float>(t.n1.z)); out.push_back(0.f);
+    out.push_back(static_cast<float>(t.n2.x)); out.push_back(static_cast<float>(t.n2.y));
+    out.push_back(static_cast<float>(t.n2.z)); out.push_back(0.f);
+  }
+}
+
 }  // namespace dino8::render

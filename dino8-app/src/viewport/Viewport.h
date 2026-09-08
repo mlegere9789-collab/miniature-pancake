@@ -11,6 +11,7 @@
 #include "doc/Document.h"
 #include "doc/SubObject.h"
 #include "render/GlRenderer.h"
+#include "render/GpuRaytracer.h"
 #include "render/PathTracer.h"
 #include "viewport/Camera.h"
 
@@ -311,11 +312,15 @@ class Viewport {
   // UndoView / RedoView (see the public methods above).
   std::vector<CameraState> view_undo_, view_redo_;
 
-  // RayTraced display mode (progressive path tracing at reduced
-  // resolution, accumulating while the camera and document are still;
-  // see cmd_raytrace.cpp's RayTracedViewport and DoRaytraceViewportFrame).
+  // RayTraced display mode: a genuine per-frame GPU BVH-traversal fragment
+  // shader (render::GpuRaytracer), temporally accumulated and denoised
+  // while the camera and document are still. `raytrace_` still gathers the
+  // scene (triangles/materials/lights/BVH build - CPU work, done once per
+  // change) via PathTracer::Prepare(); GpuRaytracer re-traces it on the GPU
+  // every frame instead of the CPU progressively accumulating a bitmap.
   PathTracer raytrace_;
-  GLuint raytrace_tex_ = 0;
+  render::GpuRaytracer raytrace_gpu_;
+  bool raytrace_gpu_inited_ = false;
   int raytrace_w_ = 0, raytrace_h_ = 0;
   CameraState raytrace_camera_{};
   bool raytrace_have_state_ = false;

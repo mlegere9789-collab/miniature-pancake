@@ -1,6 +1,9 @@
 # CPU path tracer QC: material library presets, RenderAssignMaterialToObjects
-# Preset=, the RayTracedViewport display mode, and Render/RenderPreview/
-# RenderArctic/RenderBlowup with Quality=Raytraced.
+# Preset=, the RayTracedViewport display mode (now a real per-frame GPU
+# BVH-traversal fragment shader - render::GpuRaytracer - not the CPU
+# PathTracer; see src/viewport/Viewport.cpp and tests/gpu_render_notes.md),
+# and Render/RenderPreview/RenderArctic/RenderBlowup with Quality=Raytraced
+# (those still use the CPU PathTracer for offline/batch renders).
 # @TMP@ is replaced by smoke.sh with a scratch directory.
 Box 0,0,0 20,20,0 10
 Sphere 35,10,8 8
@@ -19,6 +22,8 @@ MaterialLibrary
 Perspective
 ZoomExtents
 RayTracedViewport
+RotateView 20
+RotateView 20
 Render 96 64 Quality=Raytraced Samples=4 Bounces=2
 SaveRenderWindowAs @TMP@/raytrace.bmp
 RenderArctic Quality=Raytraced Samples=2 Bounces=2

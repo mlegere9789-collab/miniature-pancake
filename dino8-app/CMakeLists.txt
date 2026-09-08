@@ -133,6 +133,7 @@ set(DINO8_SOURCES
   src/render/Bvh.cpp
   src/render/MaterialLibrary.cpp
   src/render/PathTracer.cpp
+  src/render/GpuRaytracer.cpp
   src/ui/RenderPanels.cpp
   src/commands/CommandEngine.cpp
   src/commands/CommandCatalog.cpp
