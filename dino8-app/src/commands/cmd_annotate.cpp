@@ -82,14 +82,6 @@ void AddArrow(std::vector<kernel::NurbsCurve>& out, Point3d tip, Vector3d dir, d
 }
 std::string Fmt(double v) { return FormatNumber(v); }
 
-void AddDimension(CommandContext& ctx, const std::string& label, std::vector<kernel::NurbsCurve>& curves, const std::string& text, Point3d text_pos, const ON_Plane& pl, double text_h) {
-  ctx.Doc().BeginChange(label);
-  GlyphSpec g;
-  g.text = text; g.height = text_h; g.plane = pl; g.plane.SetOrigin(text_pos); g.center = true;
-  AddAnnotationGroup(ctx, label, curves, g);
-  ctx.Print(label + " " + text);
-}
-
 // A DimLinear/DimAligned dimension's fixed layout: everything about it that
 // does *not* depend on the two measured points, so it can be replayed
 // against a fresh p0/p1 by UpdateDimensions when the measured geometry
