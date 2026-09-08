@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coming from Rhino</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html"><span class="brand-mark">🦖</span> Dino 8 Docs</a>
+    <nav class="toplinks">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="commands.html">Command Reference</a>
+      <a href="tutorials.html">Tutorials</a>
+      <a href="coming-from-rhino.html" class="active">Coming from Rhino</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <h1>Coming from Rhino</h1>
+  <p class="lede">Dino 8 deliberately speaks Rhino 8's command vocabulary, so almost everything
+  you already know transfers directly. This page is an honest account of what is genuinely the
+  same, what is different, and what Dino 8 does not do yet &mdash; drawn from the project's own
+  self-audit (<code>dino8-app/RHINO8_KILLER_AUDIT.md</code>), not a marketing pitch.</p>
+
+  <h2>What transfers directly</h2>
+  <ul>
+    <li><strong>Command names and aliases.</strong> <code>Box</code>, <code>b</code>,
+    <code>Fillet</code>, <code>f</code>, <code>_</code>/<code>-</code>/<code>!</code> macro
+    prefixes, Enter-repeats-last-command, Esc-cancels &mdash; all identical.</li>
+    <li><strong>Coordinate input.</strong> <code>10,5,0</code> absolute, <code>@5,0</code>
+    relative, <code>20&lt;45</code> polar, bare distances along the cursor direction.</li>
+    <li><strong>Viewport conventions.</strong> Four named viewports, right-drag orbit/pan,
+    window vs. crossing selection, object snaps, ortho, the Gumball.</li>
+    <li><strong>The .3dm format.</strong> Native read/write of layers, names, colors, user text,
+    notes, named views, and units &mdash; files round-trip with real Rhino.</li>
+    <li><strong>The core modeling vocabulary.</strong> NURBS curves/surfaces, B-rep solids,
+    SubD, meshes, booleans, fillets/chamfers, transforms, and the command-line-driven workflow
+    itself all work the way you expect.</li>
+  </ul>
+
+  <h2>What is different (in Dino 8's favor)</h2>
+  <ul>
+    <li><strong>Price.</strong> Free, forever, no account, no license key, no telemetry, no
+    subscription &mdash; verified by source inspection, not just a claim.</li>
+    <li><strong>Undo can never desync.</strong> Every change snapshots the whole document, so
+    Undo/Redo cannot get into the "silently stops working" state Rhino users occasionally hit.
+    The tradeoff: undo is O(document size) instead of incremental, so it can feel slower on very
+    large documents.</li>
+    <li><strong>Command coverage as a checklist.</strong> All 1055 Rhino 8 catalog commands
+    exist on the command line and in the Help panel (F1) &mdash; see the
+    <a href="commands.html">Command Reference</a> for exactly which are fully implemented today.</li>
+  </ul>
+
+  <h2>What is different (real gaps you should know about)</h2>
+  <p>These are the differences that will actually matter if you move a real workflow over.
+  None of them are secret &mdash; each is called out, with the file/evidence behind it, in the
+  project's self-audit.</p>
+
+  <div class="callout warn">
+    <h4>Scripting: Lua only, no Python or .NET</h4>
+    <p>Rhino ships RhinoScript, full Python 3, the RhinoCommon .NET SDK (C#/VB.NET/F#), and
+    IronPython, with decades of tutorials and existing scripts. Dino 8 has an embedded Lua 5.4
+    scripting console and a from-scratch C plug-in ABI &mdash; real, but if your workflow leans
+    on a Python or C# script library, it will not run as-is.</p>
+  </div>
+
+  <div class="callout warn">
+    <h4>No construction history / associativity</h4>
+    <p>Rhino's optional history lets many operations stay live-linked to their inputs. In Dino 8,
+    edits (including GD&amp;T annotations, tables, and Dino Flow bakes) are static/baked the
+    moment they are created &mdash; moving a curve does not update anything downstream that was
+    built from it.</p>
+  </div>
+
+  <div class="callout warn">
+    <h4>Rendering: CPU path tracer, no GPU acceleration</h4>
+    <p>Rhino Render / Raytraced mode is built on GPU-accelerated Cycles with denoising and a huge
+    third-party ecosystem (V-Ray, KeyShot, Enscape, and more). Dino 8's path tracer is real and
+    CPU-only, with a 48-material library and no GPU acceleration, denoiser, or third-party render
+    plugin story.</p>
+  </div>
+
+  <div class="callout warn">
+    <h4>Dino Flow vs. Grasshopper</h4>
+    <p>Dino Flow is a genuine node-based visual scripting editor with real solving and baking,
+    and it can drive plugin-registered nodes. It does not yet have Grasshopper's data-tree
+    semantics (lists/graft/flatten), a solver/optimizer node family, or anything close to
+    Grasshopper's 15+ years of third-party component ecosystem.</p>
+  </div>
+
+  <div class="callout warn">
+    <h4>File format breadth</h4>
+    <p>Dino 8 reads/writes <code>.3dm</code>, <code>.obj</code>, <code>.stl</code>,
+    <code>.step</code>/<code>.stp</code>, <code>.iges</code>/<code>.igs</code>, <code>.dxf</code>,
+    <code>.pdf</code>, <code>.ply</code>, and <code>.svg</code>. Rhino additionally reads/writes
+    native DWG, SAT/ACIS, Parasolid (x_t/x_b), JT, FBX, glTF, and more &mdash; if your pipeline
+    depends on one of those, keep Rhino (or another converter) in the loop for now.</p>
+  </div>
+
+  <div class="callout warn">
+    <h4>No plugin ecosystem, no Grasshopper-plugin-equivalent marketplace</h4>
+    <p>Dino 8 ships one first-party sample plugin ("HelloDino") and a real C ABI for building
+    your own. Rhino has hundreds of commercial and free plugins built up over decades. This is a
+    network-effect gap, not something either team can close by engineering alone.</p>
+  </div>
+
+  <div class="callout warn">
+    <h4>Kernel robustness on hard, messy real-world geometry</h4>
+    <p>Every Dino 8 command is verified against Dino 8's own scripted test corpus (about 950
+    checks) &mdash; simple, clean, deliberately-constructed geometry. Rhino's boolean/fillet/
+    intersection solvers have 30 years of fixes for the degenerate tangencies, huge tolerances,
+    and messy imported topology that show up in real production files. If you regularly hit
+    "hard" cases in Rhino, expect Dino 8 to be less forgiving on the same files today.</p>
+  </div>
+
+  <h2>Smaller things worth knowing</h2>
+  <ul>
+    <li><strong>Autocomplete is prefix-only</strong> (type <code>Boo</code> to see
+    <code>BooleanUnion</code>/<code>BooleanDifference</code>/&hellip;), not the fuzzy match
+    Rhino's command box supports.</li>
+    <li><strong>No Rhino for iPad equivalent</strong> and no cloud/compute story (no Rhino
+    Compute or ShapeDiver equivalent) &mdash; desktop only, on Windows, Linux, and macOS
+    (including Windows-on-ARM).</li>
+    <li><strong>English only</strong> &mdash; no localization infrastructure yet.</li>
+    <li><strong>Installers are unsigned</strong> today, so Windows SmartScreen / macOS
+    Gatekeeper will show a warning on first run. This is a trust/distribution gap, not a
+    functional one.</li>
+    <li><strong>Single-document, single-user</strong> &mdash; no worksessions-equivalent, no
+    real-time multi-user co-editing (Rhino is also weak here, but has worksessions).</li>
+  </ul>
+
+  <h2>Bottom line</h2>
+  <p>If your workflow is core NURBS/SubD/mesh modeling, booleans, basic rendering, and
+  Lua-friendly scripting, Dino 8's command-line muscle memory will feel immediately familiar and
+  it costs nothing to try. If you depend on Python/RhinoCommon scripting, Grasshopper's plugin
+  ecosystem, GPU-accelerated rendering, native DWG/Parasolid interop, or Rhino's 30 years of
+  hardening against messy real-world files, keep Rhino around for those workflows &mdash; Dino 8
+  is not trying to hide that gap.</p>
+</main>
+
+<footer>
+  This page summarizes <code>dino8-app/RHINO8_KILLER_AUDIT.md</code>, the project's own
+  self-critical audit against the real, shipping Rhino 8. Read that file for the full 25-category
+  scoreboard and the engineering backlog behind closing each gap.
+</footer>
+</body>
+</html>
