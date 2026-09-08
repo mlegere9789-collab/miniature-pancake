@@ -78,6 +78,13 @@ class PathTracer {
     bool is_sun = false;
   };
 
+  // Read-only access to the scene Prepare() just gathered, so other
+  // renderers (GpuRaytracer) can reuse the same triangle/material/light
+  // gathering instead of re-implementing it.
+  const render::Bvh& SceneBvh() const { return bvh_; }
+  const std::vector<Material>& SceneMaterials() const { return materials_; }
+  const std::vector<SceneLight>& SceneLights() const { return lights_; }
+
  private:
   struct GroundPlane {
     bool enabled = false;

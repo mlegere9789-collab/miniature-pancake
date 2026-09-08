@@ -45,6 +45,19 @@ class Bvh {
   // origin instead, so this is normally -1).
   bool IntersectAny(const kernel::Point3d& origin, const kernel::Vector3d& dir, float tmin, float tmax) const;
 
+  // GPU export for GpuRaytracer (src/render/GpuRaytracer.h): flattens the
+  // already-built tree into float arrays ready for glTexBuffer upload, one
+  // vec4-triple per node / vec4-sextuple per triangle. Node count and
+  // triangle count are `out.size()/12` and `out.size()/24` respectively.
+  // Node layout (3 vec4 = 12 floats): (bmin.xyz, left) (bmax.xyz, count)
+  // (start, 0, 0, 0) - mirrors `Node` exactly so the GLSL traversal matches
+  // Intersect()/IntersectAny() above.
+  void ExportGpuNodes(std::vector<float>& out) const;
+  // Triangle layout (6 vec4 = 24 floats): (v0.xyz, material) (v1.xyz, 0)
+  // (v2.xyz, 0) (n0.xyz, 0) (n1.xyz, 0) (n2.xyz, 0). UVs are not exported -
+  // the GPU raytracer does not sample textures (see gpu_render_notes.md).
+  void ExportGpuTriangles(std::vector<float>& out) const;
+
  private:
   struct Node {
     kernel::Point3d bmin{1e30, 1e30, 1e30}, bmax{-1e30, -1e30, -1e30};

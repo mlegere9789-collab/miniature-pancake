@@ -81,6 +81,29 @@ typedef std::ptrdiff_t GLintptr;
 #ifndef GL_LINE_SMOOTH
 #define GL_LINE_SMOOTH 0x0B20
 #endif
+// GL 3.1+ constants used by the GPU raytracer (buffer textures + MRT
+// output). Core since 3.1/3.0 respectively; safe in a 3.3 core context.
+#ifndef GL_TEXTURE_BUFFER
+#define GL_TEXTURE_BUFFER 0x8C2A
+#endif
+#ifndef GL_RGBA32F
+#define GL_RGBA32F 0x8814
+#endif
+#ifndef GL_RGBA16F
+#define GL_RGBA16F 0x881A
+#endif
+#ifndef GL_RG32F
+#define GL_RG32F 0x8230
+#endif
+#ifndef GL_R32F
+#define GL_R32F 0x822E
+#endif
+#ifndef GL_COLOR_ATTACHMENT1
+#define GL_COLOR_ATTACHMENT1 0x8CE1
+#endif
+#ifndef GL_TEXTURE_BUFFER_BINDING
+#define GL_TEXTURE_BUFFER_BINDING 0x8C2A
+#endif
 
 #ifndef APIENTRY
 #define APIENTRY
@@ -134,7 +157,10 @@ namespace dino8::gl {
   X(void, Uniform2fv, GLint, GLsizei, const GLfloat*)                                       \
   X(void, Uniform3fv, GLint, GLsizei, const GLfloat*)                                       \
   X(void, Uniform4fv, GLint, GLsizei, const GLfloat*)                                       \
-  X(void, GenerateMipmap, GLenum)
+  X(void, GenerateMipmap, GLenum)                                                           \
+  X(void, TexBuffer, GLenum, GLenum, GLuint)                                                \
+  X(void, DrawBuffers, GLsizei, const GLenum*)                                              \
+  X(void, Uniform1iv, GLint, GLsizei, const GLint*)
 
 #define DINO8_GL_DECLARE(ret, name, ...) \
   typedef ret(APIENTRY* PFN_##name)(__VA_ARGS__); \
@@ -197,3 +223,6 @@ const char* LastError();
 #define glUniform3fv dino8::gl::Uniform3fv
 #define glUniform4fv dino8::gl::Uniform4fv
 #define glGenerateMipmap dino8::gl::GenerateMipmap
+#define glTexBuffer dino8::gl::TexBuffer
+#define glDrawBuffers dino8::gl::DrawBuffers
+#define glUniform1iv dino8::gl::Uniform1iv
