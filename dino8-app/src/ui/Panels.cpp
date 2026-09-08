@@ -682,14 +682,19 @@ void DrawOptionsWindow(Application& app) {
   if (ImGui::BeginTabBar("opts")) {
     if (ImGui::BeginTabItem("General")) {
       ImGui::TextWrapped("Dino 8 has no licence, update-check or account settings: there is nothing to configure here that could ever lock you out.");
-      if (ImGui::SliderFloat("UI scale", &app.ui_scale, 0.75f, 2.0f)) { ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
-      int theme = app.light_theme ? 1 : 0;
-      if (ImGui::Combo("Theme", &theme, "Dark\0Light\0")) { app.light_theme = theme == 1; ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
-      if (ImGui::ColorEdit3("Accent colour", app.accent_color, ImGuiColorEditFlags_NoInputs)) ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color);
+      if (ImGui::SliderFloat("UI scale", &app.ui_scale, 0.75f, 2.0f)) { ApplyDinoTheme(app.ui_scale, static_cast<ThemeMode>(app.theme_mode), app.accent_color); }
+      int theme = app.theme_mode;
+      if (ImGui::Combo("Theme", &theme, "Dark\0Light\0High Contrast\0")) { app.theme_mode = theme; ApplyDinoTheme(app.ui_scale, static_cast<ThemeMode>(app.theme_mode), app.accent_color); }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("High Contrast: WCAG-AA-ish text/background contrast, and hover/selected/disabled states shown with outlines, not just colour.");
+      const bool hc = app.theme_mode == static_cast<int>(ThemeMode::HighContrast);
+      ImGui::BeginDisabled(hc);
+      if (ImGui::ColorEdit3("Accent colour", app.accent_color, ImGuiColorEditFlags_NoInputs)) ApplyDinoTheme(app.ui_scale, static_cast<ThemeMode>(app.theme_mode), app.accent_color);
       ImGui::SameLine();
-      if (ImGui::SmallButton("Dino teal")) { app.accent_color[0] = 0.184f; app.accent_color[1] = 0.655f; app.accent_color[2] = 0.627f; ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
+      if (ImGui::SmallButton("Dino teal")) { app.accent_color[0] = 0.184f; app.accent_color[1] = 0.655f; app.accent_color[2] = 0.627f; ApplyDinoTheme(app.ui_scale, static_cast<ThemeMode>(app.theme_mode), app.accent_color); }
       ImGui::SameLine();
-      if (ImGui::SmallButton("Rhino blue")) { app.accent_color[0] = 0.30f; app.accent_color[1] = 0.62f; app.accent_color[2] = 0.95f; ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
+      if (ImGui::SmallButton("Rhino blue")) { app.accent_color[0] = 0.30f; app.accent_color[1] = 0.62f; app.accent_color[2] = 0.95f; ApplyDinoTheme(app.ui_scale, static_cast<ThemeMode>(app.theme_mode), app.accent_color); }
+      ImGui::EndDisabled();
+      if (hc) { ImGui::SameLine(); ImGui::TextDisabled("(fixed in High Contrast)"); }
       { bool show_welcome = !app.welcome_dismissed; if (ImGui::Checkbox("Show the welcome card on empty documents", &show_welcome)) app.welcome_dismissed = !show_welcome; }
       ImGui::Checkbox("Gumball", &app.gumball_enabled);
       ImGui::Checkbox("Show toolbars", &app.Panels().toolbars);

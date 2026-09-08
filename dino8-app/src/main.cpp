@@ -272,7 +272,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "%s\n", error.c_str());
     return 1;
   }
-  dino8::app::ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color);
+  dino8::app::ApplyDinoTheme(app.ui_scale, static_cast<dino8::app::ThemeMode>(app.theme_mode), app.accent_color);
   if (!error.empty()) std::fprintf(stderr, "warning: %s\n", error.c_str());
 
   if (!open_path.empty()) {

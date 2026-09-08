@@ -6,9 +6,21 @@
 
 namespace dino8::app {
 
+// UI theme: Dark and Light are the two ordinary palettes; HighContrast is a
+// dedicated accessible palette (WCAG-AA-ish or better text/background
+// contrast everywhere, and hover/selected/disabled states distinguished by
+// more than color alone - see ApplyDinoTheme in Theme.cpp for the ratios).
+enum class ThemeMode { Dark = 0, Light = 1, HighContrast = 2 };
+
 // Applies the theme. `accent_rgb` (3 floats, 0..1) overrides the default
-// Dino teal; nullptr keeps the last accent that was set.
-void ApplyDinoTheme(float ui_scale, bool light = false, const float* accent_rgb = nullptr);
+// Dino teal; nullptr keeps the last accent that was set. Ignored in
+// HighContrast mode, which fixes its own colours so contrast stays
+// guaranteed regardless of the user's chosen accent.
+void ApplyDinoTheme(float ui_scale, ThemeMode mode = ThemeMode::Dark, const float* accent_rgb = nullptr);
+// Convenience overload used where only light/dark used to matter.
+inline void ApplyDinoTheme(float ui_scale, bool light, const float* accent_rgb = nullptr) {
+  ApplyDinoTheme(ui_scale, light ? ThemeMode::Light : ThemeMode::Dark, accent_rgb);
+}
 
 // Colours shared by toolbars, status toggles, badges and selection
 // highlights. kAccent follows the "Accent colour" option; the others are
