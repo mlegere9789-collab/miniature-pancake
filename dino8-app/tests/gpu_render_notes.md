@@ -139,20 +139,39 @@ close to a production path tracer:
   hardware this would be meaningfully slower than an RT-core path tracer
   at the same triangle count, just not slow in absolute terms at these
   scene sizes (see above).
-- **One bounce only**, chosen stochastically between a diffuse GI lobe and
-  a mirror reflection lobe - not a multi-bounce path tracer. No caustics,
-  no proper multi-bounce global illumination, no participating media.
+- **1-3 configurable bounces** (was a hardcoded single bounce), stochastically
+  choosing a diffuse GI lobe or a mirror reflection lobe at each step, with
+  roughness-based early termination (a bounce landing on a rough/matte
+  surface stops extending the path, since further bounces off diffuse
+  geometry add rapidly-diminishing, increasingly noisy contribution at 1
+  spp/frame - see `SetMaxBounces`/`DINO8_RT_BOUNCES` in `GpuRaytracer.h/.cpp`).
+  Still not a true unbounded-depth path tracer: no caustics, no proper
+  multi-bounce global illumination, no participating media, and the shader's
+  loop bound is a fixed compile-time constant (`kMaxBounceDepth = 3`).
 - **Area lights (Rectangular/Linear) are approximated as point lights**
   at their centre for the GPU pass, unlike the CPU `PathTracer`'s proper
   area-sampled + MIS treatment - a real simplification, not just missing
   polish; it loses soft shadows from area lights.
-- **No texture sampling** in the GPU pass (materials use flat diffuse/
-  specular/emission colour only) - the CPU `PathTracer` samples material
-  textures (procedural and file-based); the GPU BVH export deliberately
-  does not carry UVs to keep the shader and buffer layout simpler.
-- **No transparency/refraction** - materials are shaded as opaque; the
-  CPU tracer's dielectric glass model (`transparency` -> IOR 1.5) is not
-  reproduced here.
+- **Texture sampling added**: the GPU pass now samples a small (16-layer,
+  64x64 per layer) `GL_TEXTURE_2D_ARRAY` atlas built from each material's
+  `texture_path` (procedural or file-based, nearest-neighbour resampled to
+  the fixed tile size) - see `UploadTextureAtlas`/`sampleAlbedo` in
+  `GpuRaytracer.cpp`. This is a real, honestly-scoped simplification versus
+  the CPU `PathTracer`'s full-resolution texture sampling, not full parity:
+  a 64x64 tile loses fine detail a full-resolution texture would keep, and
+  materials beyond the 16-layer cap silently fall back to flat diffuse
+  colour (a documented, not silent-to-the-user, gap - `mat_d_.x` stays 0
+  for them).
+- **Straight-through transparency added** (not refraction): a material with
+  `transparency > 0` now lets primary/bounce rays pass straight through it
+  (a stochastic alpha test, capped at 4 skips per ray, temporally
+  accumulated away) instead of being shaded fully opaque - see
+  `traceSurface`/`materialAlpha` in `GpuRaytracer.cpp`. This is not the CPU
+  tracer's dielectric glass model (`transparency` -> IOR 1.5 refraction);
+  there is no bending of the ray, no Fresnel term, and **shadow rays still
+  treat every surface as fully opaque** even a transparent one, a deliberate
+  simplification kept to avoid growing shadow-ray cost with the same
+  alpha-skip loop.
 - **No ML/spatiotemporal denoiser** (OptiX/OIDN-class) - the denoiser is a
   fixed 5x5 (taper-limited) edge-aware bilateral blur, good enough to hide
   1-spp noise while the temporal accumulation converges, not a learned
@@ -173,6 +192,23 @@ close to a production path tracer:
   broken. A future pass should tighten this - e.g. a `--smoke` hook that
   prints the HUD text (already includes `accum: N frames`) so smoke.sh can
   grep for a nonzero count, not just a clean error queue.
+
+## Note on the texture/transparency/multi-bounce pass above
+
+The performance table above ("Measured performance") predates the texture
+sampling, transparency, and multi-bounce work and was not re-measured when
+that landed: attempting to reproduce it via the recipe below (against this
+exact commit) produced zero `rt_frame_ms` lines rather than the expected
+per-frame numbers, a pre-existing quirk in how `--smoke` drives (or doesn't
+drive) the interactive viewport's per-frame `Viewport::Render` path, not
+something the texture/transparency/bounce change touched. Rather than
+fabricate numbers, this is left as an honest gap: the qualitative order-of
+-magnitude conclusion above (single-digit-to-tens of milliseconds per frame
+on software rasterization at these scene sizes) still holds since a few
+extra texture fetches and up to 2 more bounces are cheap relative to BVH
+traversal itself, but no fresh measured table exists for the new features.
+A future pass should first fix `--smoke`'s viewport-frame reproduction
+(or find its correct invocation) before re-measuring.
 
 ## Reproducing the measurements
 

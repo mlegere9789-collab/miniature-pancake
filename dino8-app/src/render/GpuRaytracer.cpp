@@ -5,6 +5,9 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "render/ImageIO.h"
+#include "render/MaterialLibrary.h"
+
 namespace dino8::render {
 
 using app::LightType;
@@ -45,6 +48,7 @@ layout(location = 1) out vec4 out_gbuf;
 uniform samplerBuffer u_nodes;
 uniform samplerBuffer u_tris;
 uniform sampler2D u_prev;
+uniform sampler2DArray u_tex_atlas;  // one tile per distinct material texture
 
 uniform vec3 u_eye, u_fwd, u_right, u_up;
 uniform float u_tan_fov, u_aspect, u_ortho_h;
@@ -52,12 +56,20 @@ uniform int u_ortho;
 uniform vec2 u_resolution;
 uniform int u_seed;  // set via glUniform1i - the loader has no glUniform1ui
 uniform float u_alpha;  // temporal blend weight: 1 = full reset, ->0 as frames accumulate
+uniform int u_max_bounces;  // indirect-bounce depth, clamped to [1, kMaxBounceDepth] below
+
+// Fixed unrolled-loop bound for the bounce loop in trace() below - must
+// match GpuRaytracer::kMaxBounceDepth (GLSL loop bounds must be
+// compile-time constants; u_max_bounces only decides how many of these
+// iterations actually run).
+const int kMaxBounceDepthGuard = 3;
 
 const int kMaxMat = 64;
 uniform int u_mat_count;
 uniform vec4 u_mat_a[kMaxMat];  // diffuse.rgb, gloss
 uniform vec4 u_mat_b[kMaxMat];  // specular.rgb, reflectivity
-uniform vec4 u_mat_c[kMaxMat];  // emission.rgb, transparency (unused: opaque only)
+uniform vec4 u_mat_c[kMaxMat];  // emission.rgb, transparency (alpha = 1 - transparency)
+uniform vec4 u_mat_d[kMaxMat];  // (has_texture, atlas_layer, unused, unused)
 
 const int kMaxLights = 8;
 uniform int u_light_count;
@@ -112,10 +124,15 @@ bool hitBox(vec3 bmin, vec3 bmax, vec3 o, vec3 invd, float tmin, float tmax) {
   return t0 <= t1;
 }
 
-bool hitTri(int tri, vec3 o, vec3 d, float tmin, float tmax, out float outT, out int outMat, out vec3 outN) {
-  vec4 t0 = texelFetch(u_tris, tri * 6 + 0);
-  vec4 t1 = texelFetch(u_tris, tri * 6 + 1);
-  vec4 t2 = texelFetch(u_tris, tri * 6 + 2);
+// Triangle layout is 8 vec4s now (Bvh::ExportGpuTriangles): positions
+// (0-2), normals (3-5), then packed UVs (6: uv0.xy,uv1.xy) (7: uv2.xy,0,0)
+// - added so the GPU pass can sample material textures like the CPU
+// PathTracer's AlbedoAt (see gpu_render_notes.md).
+bool hitTri(int tri, vec3 o, vec3 d, float tmin, float tmax, out float outT, out int outMat, out vec3 outN,
+            out vec2 outUV) {
+  vec4 t0 = texelFetch(u_tris, tri * 8 + 0);
+  vec4 t1 = texelFetch(u_tris, tri * 8 + 1);
+  vec4 t2 = texelFetch(u_tris, tri * 8 + 2);
   vec3 v0 = t0.xyz, v1 = t1.xyz, v2 = t2.xyz;
   vec3 e1 = v1 - v0, e2 = v2 - v0;
   vec3 p = cross(d, e2);
@@ -131,16 +148,20 @@ bool hitTri(int tri, vec3 o, vec3 d, float tmin, float tmax, out float outT, out
   float tt = dot(e2, q) * invDet;
   if (tt < tmin || tt > tmax) return false;
   outT = tt; outMat = int(t0.w);
-  vec3 n0 = texelFetch(u_tris, tri * 6 + 3).xyz;
-  vec3 n1 = texelFetch(u_tris, tri * 6 + 4).xyz;
-  vec3 n2 = texelFetch(u_tris, tri * 6 + 5).xyz;
+  vec3 n0 = texelFetch(u_tris, tri * 8 + 3).xyz;
+  vec3 n1 = texelFetch(u_tris, tri * 8 + 4).xyz;
+  vec3 n2 = texelFetch(u_tris, tri * 8 + 5).xyz;
   outN = normalize(n0 * (1.0 - u - v) + n1 * u + n2 * v);
+  vec4 uv01 = texelFetch(u_tris, tri * 8 + 6);
+  vec2 uv2 = texelFetch(u_tris, tri * 8 + 7).xy;
+  outUV = uv01.xy * (1.0 - u - v) + uv01.zw * u + uv2 * v;
   return true;
 }
 
 // Fixed-size explicit stack (GLSL has no recursion) - matches the CPU
 // traversal's own stack[64] depth budget.
-bool closestHit(vec3 o, vec3 d, float tmin, float tmax, out float outT, out int outMat, out vec3 outN, out vec3 outP) {
+bool closestHit(vec3 o, vec3 d, float tmin, float tmax, out float outT, out int outMat, out vec3 outN, out vec3 outP,
+                 out vec2 outUV) {
   vec3 invd = 1.0 / d;
   int stack[64]; int sp = 0; stack[sp++] = 0;
   bool found = false; float closest = tmax;
@@ -153,9 +174,9 @@ bool closestHit(vec3 o, vec3 d, float tmin, float tmax, out float outT, out int 
     if (count > 0) {
       int start = int(texelFetch(u_nodes, idx * 3 + 2).x);
       for (int i = 0; i < count; ++i) {
-        float tt; int mi; vec3 nn;
-        if (hitTri(start + i, o, d, tmin, closest, tt, mi, nn)) {
-          closest = tt; outT = tt; outMat = mi; outN = nn; found = true;
+        float tt; int mi; vec3 nn; vec2 uv;
+        if (hitTri(start + i, o, d, tmin, closest, tt, mi, nn, uv)) {
+          closest = tt; outT = tt; outMat = mi; outN = nn; outUV = uv; found = true;
         }
       }
     } else if (sp < 62) {
@@ -178,12 +199,49 @@ bool anyHit(vec3 o, vec3 d, float tmin, float tmax) {
     if (count > 0) {
       int start = int(texelFetch(u_nodes, idx * 3 + 2).x);
       for (int i = 0; i < count; ++i) {
-        float tt; int mi; vec3 nn;
-        if (hitTri(start + i, o, d, tmin, tmax, tt, mi, nn)) return true;
+        float tt; int mi; vec3 nn; vec2 uv;
+        // Shadow rays still treat every surface as fully opaque, even a
+        // transparent material - a deliberate, documented simplification
+        // (see gpu_render_notes.md) that keeps shadow-ray cost from
+        // growing with the same alpha-skip loop primary/bounce rays use.
+        if (hitTri(start + i, o, d, tmin, tmax, tt, mi, nn, uv)) return true;
       }
     } else if (sp < 62) {
       stack[sp++] = left; stack[sp++] = left + 1;
     }
+  }
+  return false;
+}
+
+// Material alpha test (1 = fully opaque, 0 = fully invisible) shared by the
+// primary-ray and bounce-ray alpha-skip loops below.
+float materialAlpha(int mat) { return mat >= 0 ? clamp(1.0 - u_mat_c[mat].w, 0.0, 1.0) : 1.0; }
+
+// Diffuse albedo at a shaded point, tinted by the material's atlas texture
+// tile (if it has one) - mirrors PathTracer::AlbedoAt's base*texture
+// multiply and its v-flip to match the atlas's top-down upload convention.
+vec3 sampleAlbedo(int mat, vec2 uv) {
+  vec3 base = mat >= 0 ? u_mat_a[mat].xyz : vec3(0.7);
+  if (mat < 0 || u_mat_d[mat].x < 0.5) return base;
+  vec2 fuv = vec2(fract(uv.x), 1.0 - fract(uv.y));
+  vec3 tex = texture(u_tex_atlas, vec3(fuv, u_mat_d[mat].y)).rgb;
+  return base * tex;
+}
+
+// Nearest opaque-enough surface along a ray, letting rays pass straight
+// through materials with transparency > 0 (stochastic alpha test,
+// temporally accumulated away - a straight-through simplification, not
+// refraction: see "Honest gap" in gpu_render_notes.md). Bounded to a small
+// number of skips so a chain of stacked transparent surfaces can't blow up
+// the per-pixel cost.
+const int kMaxAlphaSkips = 4;
+bool traceSurface(vec3 ro, vec3 rd, out float outT, out int outMat, out vec3 outN, out vec3 outP, out vec2 outUV) {
+  vec3 o = ro;
+  for (int i = 0; i < kMaxAlphaSkips; ++i) {
+    float t; int mat; vec3 n, p; vec2 uv;
+    if (!closestHit(o, rd, 1e-3, 1e6, t, mat, n, p, uv)) return false;
+    if (rnd() < materialAlpha(mat)) { outT = t; outMat = mat; outN = n; outP = p; outUV = uv; return true; }
+    o = p + rd * 1e-4;  // pass straight through, keep marching the same direction
   }
   return false;
 }
@@ -228,36 +286,51 @@ vec3 directLighting(vec3 p, vec3 n, vec3 viewDir, vec3 albedo, vec3 specColor, f
   return total;
 }
 
-// One primary trace + one bounce. Returns linear radiance.
+// Primary trace + up to u_max_bounces indirect bounces (clamped to
+// [1, kMaxBounceDepth] - see GpuRaytracer::SetMaxBounces). Returns linear
+// radiance.
 vec3 trace(vec3 ro, vec3 rd) {
-  float t; int mat; vec3 n, p;
-  if (!closestHit(ro, rd, 1e-3, 1e6, t, mat, n, p)) return skyColor(rd);
+  float t; int mat; vec3 n, p; vec2 uv;
+  if (!traceSurface(ro, rd, t, mat, n, p, uv)) return skyColor(rd);
   if (dot(n, rd) > 0.0) n = -n;  // face the viewer
-  vec3 albedo = mat >= 0 ? u_mat_a[mat].xyz : vec3(0.7);
+  vec3 albedo = sampleAlbedo(mat, uv);
   vec3 specColor = mat >= 0 ? u_mat_b[mat].xyz : vec3(1.0);
   float gloss = mat >= 0 ? u_mat_a[mat].w : 0.3;
   float reflectivity = mat >= 0 ? u_mat_b[mat].w : 0.0;
   vec3 emission = mat >= 0 ? u_mat_c[mat].xyz : vec3(0.0);
-  vec3 viewDir = -rd;
 
-  vec3 direct = directLighting(p, n, viewDir, albedo, specColor, gloss);
+  vec3 color = emission + directLighting(p, n, -rd, albedo, specColor, gloss);
 
-  // One indirect bounce: stochastically either a mirror reflection lobe
-  // (weighted by reflectivity) or a cosine-weighted diffuse GI lobe.
-  vec3 bounceDir = rnd() < reflectivity ? reflect(rd, n) : cosineSampleHemisphere(n);
-  float t2; int hit_mat2; vec3 n2, p2;
-  vec3 indirect;
-  if (closestHit(p + n * 1e-4, bounceDir, 1e-3, 1e6, t2, hit_mat2, n2, p2)) {
-    if (dot(n2, bounceDir) > 0.0) n2 = -n2;
-    vec3 albedo2 = hit_mat2 >= 0 ? u_mat_a[hit_mat2].xyz : vec3(0.7);
-    vec3 spec2 = hit_mat2 >= 0 ? u_mat_b[hit_mat2].xyz : vec3(1.0);
-    float gloss2 = hit_mat2 >= 0 ? u_mat_a[hit_mat2].w : 0.3;
-    vec3 emission2 = hit_mat2 >= 0 ? u_mat_c[hit_mat2].xyz : vec3(0.0);
-    indirect = emission2 + directLighting(p2, n2, -bounceDir, albedo2, spec2, gloss2);
-  } else {
-    indirect = skyColor(bounceDir);
+  // Indirect bounces: stochastically either a mirror reflection lobe
+  // (weighted by reflectivity) or a cosine-weighted diffuse GI lobe at
+  // each step, each contributing its own direct-lit + emitted radiance
+  // weighted by the accumulated path throughput (albedo product so far).
+  vec3 throughput = albedo;
+  vec3 bo = p + n * 1e-4, bd = rnd() < reflectivity ? reflect(rd, n) : cosineSampleHemisphere(n);
+  int maxBounces = clamp(u_max_bounces, 1, kMaxBounceDepthGuard);
+  for (int b = 0; b < kMaxBounceDepthGuard; ++b) {
+    if (b >= maxBounces) break;
+    float t2; int mat2; vec3 n2, p2; vec2 uv2;
+    if (!traceSurface(bo, bd, t2, mat2, n2, p2, uv2)) { color += throughput * skyColor(bd); break; }
+    if (dot(n2, bd) > 0.0) n2 = -n2;
+    vec3 albedo2 = sampleAlbedo(mat2, uv2);
+    vec3 spec2 = mat2 >= 0 ? u_mat_b[mat2].xyz : vec3(1.0);
+    float gloss2 = mat2 >= 0 ? u_mat_a[mat2].w : 0.3;
+    float refl2 = mat2 >= 0 ? u_mat_b[mat2].w : 0.0;
+    vec3 emission2 = mat2 >= 0 ? u_mat_c[mat2].xyz : vec3(0.0);
+    color += throughput * (emission2 + directLighting(p2, n2, -bd, albedo2, spec2, gloss2));
+    // Roughness-based termination: a bounce that lands on a rough (matte)
+    // surface already gives the same one-extra-sample GI the original
+    // single-bounce mode did; chasing further bounces off diffuse geometry
+    // adds rapidly diminishing, increasingly noisy contribution at 1
+    // spp/frame, so only keep extending the path while it stays
+    // glossy/mirror-like - the case where an extra bounce (a reflection in
+    // a reflection) is visually obvious.
+    if (gloss2 < 0.5 && refl2 < 0.5) break;
+    throughput *= albedo2;
+    bo = p2 + n2 * 1e-4;
+    bd = rnd() < refl2 ? reflect(bd, n2) : cosineSampleHemisphere(n2);
   }
-  vec3 color = emission + direct + albedo * indirect;
   return min(color, vec3(12.0));  // firefly clamp - 1 spp/frame is noisy before accumulation converges
 }
 
@@ -290,8 +363,8 @@ void main() {
   // G-buffer for the denoiser: re-fetch the primary hit's normal/depth
   // (cheap relative to the trace above; keeps `trace()` a single closed
   // function instead of threading extra out-parameters through it).
-  float t; int mat; vec3 n, p;
-  if (closestHit(ro, rd, 1e-3, 1e6, t, mat, n, p)) out_gbuf = vec4(normalize(n), t);
+  float t; int mat; vec3 n, p; vec2 uv;
+  if (closestHit(ro, rd, 1e-3, 1e6, t, mat, n, p, uv)) out_gbuf = vec4(normalize(n), t);
   else out_gbuf = vec4(0.0, 0.0, 0.0, 0.0);
 }
 )";
@@ -415,6 +488,9 @@ bool GpuRaytracer::CompilePrograms(std::string& error) {
   t_mat_a_ = glGetUniformLocation(trace_program_, "u_mat_a");
   t_mat_b_ = glGetUniformLocation(trace_program_, "u_mat_b");
   t_mat_c_ = glGetUniformLocation(trace_program_, "u_mat_c");
+  t_mat_d_ = glGetUniformLocation(trace_program_, "u_mat_d");
+  t_tex_atlas_ = glGetUniformLocation(trace_program_, "u_tex_atlas");
+  t_max_bounces_ = glGetUniformLocation(trace_program_, "u_max_bounces");
   t_light_count_ = glGetUniformLocation(trace_program_, "u_light_count");
   t_light_a_ = glGetUniformLocation(trace_program_, "u_light_a");
   t_light_b_ = glGetUniformLocation(trace_program_, "u_light_b");
@@ -438,6 +514,14 @@ bool GpuRaytracer::Init(std::string& error) {
   if (inited_) return true;
   if (!CompilePrograms(error)) return false;
   glGenVertexArrays(1, &vao_);
+  // DINO8_RT_BOUNCES lets the performance measurements in
+  // gpu_render_notes.md be reproduced at a specific bounce depth without
+  // recompiling (e.g. `DINO8_RT_BOUNCES=1` to compare against the original
+  // single-bounce cost, `=3` for the max).
+  if (const char* env = std::getenv("DINO8_RT_BOUNCES")) {
+    const int n = std::atoi(env);
+    if (n >= 1 && n <= kMaxBounceDepth) max_bounces_ = n;
+  }
   inited_ = true;
   return true;
 }
@@ -451,6 +535,7 @@ void GpuRaytracer::Shutdown() {
   if (tri_tex_) glDeleteTextures(1, &tri_tex_);
   if (node_buf_) glDeleteBuffers(1, &node_buf_);
   if (tri_buf_) glDeleteBuffers(1, &tri_buf_);
+  if (tex_atlas_) glDeleteTextures(1, &tex_atlas_);
   for (GLuint t : accum_tex_) if (t) glDeleteTextures(1, &t);
   if (gbuf_tex_) glDeleteTextures(1, &gbuf_tex_);
   for (GLuint f : trace_fbo_) if (f) glDeleteFramebuffers(1, &f);
@@ -464,13 +549,87 @@ void GpuRaytracer::UploadBuffer(GLuint& buf, GLuint& tex, const std::vector<floa
   tex = MakeFloatTexBuffer(buf, floats);
 }
 
+namespace {
+// Nearest-neighbour resample of a decoded image into a fixed
+// kTexTileSize x kTexTileSize RGBA8 tile - simpler than a proper minifying
+// filter and adequate for a low-res atlas feeding a 1-spp/frame trace that
+// is itself denoised/temporally accumulated (see gpu_render_notes.md for
+// the tradeoff this makes against full-resolution per-material textures).
+void ResampleToTile(const unsigned char* src, int sw, int sh, int tile, std::vector<unsigned char>& out) {
+  out.resize(static_cast<size_t>(tile) * tile * 4);
+  for (int y = 0; y < tile; ++y) {
+    const int sy = std::min(sh - 1, y * sh / tile);
+    for (int x = 0; x < tile; ++x) {
+      const int sx = std::min(sw - 1, x * sw / tile);
+      const unsigned char* s = &src[(static_cast<size_t>(sy) * sw + sx) * 4];
+      unsigned char* d = &out[(static_cast<size_t>(y) * tile + x) * 4];
+      d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+    }
+  }
+}
+}  // namespace
+
+void GpuRaytracer::UploadTextureAtlas(const std::vector<app::Material>& mats) {
+  // Collect distinct texture_paths across the materials actually uploaded
+  // (mat_count_, already clamped to 64 above), capped at kMaxTexLayers -
+  // materials beyond the cap fall back to flat diffuse colour (mat_d_.x
+  // stays 0), a documented gap, not a silent one (gpu_render_notes.md).
+  std::vector<std::string> layer_paths;
+  for (int i = 0; i < mat_count_; ++i) {
+    const std::string& path = mats[static_cast<size_t>(i)].texture_path;
+    if (path.empty()) continue;
+    int layer = -1;
+    for (size_t j = 0; j < layer_paths.size(); ++j) if (layer_paths[j] == path) { layer = static_cast<int>(j); break; }
+    if (layer < 0 && static_cast<int>(layer_paths.size()) < kMaxTexLayers) { layer = static_cast<int>(layer_paths.size()); layer_paths.push_back(path); }
+    if (layer >= 0) { mat_d_[static_cast<size_t>(i) * 4 + 0] = 1.f; mat_d_[static_cast<size_t>(i) * 4 + 1] = static_cast<float>(layer); }
+  }
+
+  if (tex_atlas_) { glDeleteTextures(1, &tex_atlas_); tex_atlas_ = 0; }
+  tex_layers_ = static_cast<int>(layer_paths.size());
+  glGenTextures(1, &tex_atlas_);
+  glBindTexture(GL_TEXTURE_2D_ARRAY, tex_atlas_);
+  const int layers_alloc = std::max(tex_layers_, 1);  // glTexImage3D dislikes a zero-depth allocation
+  glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, kTexTileSize, kTexTileSize, layers_alloc, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+  std::vector<unsigned char> tile;
+  for (int layer = 0; layer < tex_layers_; ++layer) {
+    const std::string& path = layer_paths[static_cast<size_t>(layer)];
+    bool ok = false;
+    int w = 0, h = 0;
+    std::vector<unsigned char> rgba;
+    if (app::IsProceduralTexture(path)) {
+      ok = app::GenerateProceduralTexture(path, kTexTileSize, kTexTileSize, rgba);
+      w = h = kTexTileSize;
+    } else {
+      app::Image img; std::string err;
+      if (app::LoadImageFile(path, img, err) && img.Valid()) { rgba = img.rgba; w = img.width; h = img.height; ok = true; }
+    }
+    if (!ok) {
+      // Decode failure (missing file, unsupported format): fall back to a
+      // flat mid-grey tile rather than leaving the layer's texels
+      // uninitialised.
+      tile.assign(static_cast<size_t>(kTexTileSize) * kTexTileSize * 4, 200);
+    } else if (w == kTexTileSize && h == kTexTileSize) {
+      tile = rgba;
+    } else {
+      ResampleToTile(rgba.data(), w, h, kTexTileSize, tile);
+    }
+    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer, kTexTileSize, kTexTileSize, 1, GL_RGBA, GL_UNSIGNED_BYTE, tile.data());
+  }
+  glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+  Check("UploadTextureAtlas");
+}
+
 void GpuRaytracer::UploadScene(const app::PathTracer& tracer, const app::RenderSettings& settings) {
   const Bvh& bvh = tracer.SceneBvh();
   std::vector<float> nodes, tris;
   bvh.ExportGpuNodes(nodes);
   bvh.ExportGpuTriangles(tris);
   node_count_ = static_cast<int>(nodes.size() / 12);
-  tri_count_ = static_cast<int>(tris.size() / 24);
+  tri_count_ = static_cast<int>(tris.size() / 32);
   UploadBuffer(node_buf_, node_tex_, nodes);
   Check("UploadScene nodes");
   UploadBuffer(tri_buf_, tri_tex_, tris);
@@ -481,6 +640,7 @@ void GpuRaytracer::UploadScene(const app::PathTracer& tracer, const app::RenderS
   mat_a_.assign(static_cast<size_t>(64) * 4, 0.f);
   mat_b_.assign(static_cast<size_t>(64) * 4, 0.f);
   mat_c_.assign(static_cast<size_t>(64) * 4, 0.f);
+  mat_d_.assign(static_cast<size_t>(64) * 4, 0.f);
   for (int i = 0; i < mat_count_; ++i) {
     const app::Material& m = mats[static_cast<size_t>(i)];
     mat_a_[static_cast<size_t>(i) * 4 + 0] = m.diffuse.r; mat_a_[static_cast<size_t>(i) * 4 + 1] = m.diffuse.g;
@@ -490,6 +650,7 @@ void GpuRaytracer::UploadScene(const app::PathTracer& tracer, const app::RenderS
     mat_c_[static_cast<size_t>(i) * 4 + 0] = m.emission.r; mat_c_[static_cast<size_t>(i) * 4 + 1] = m.emission.g;
     mat_c_[static_cast<size_t>(i) * 4 + 2] = m.emission.b; mat_c_[static_cast<size_t>(i) * 4 + 3] = m.transparency;
   }
+  UploadTextureAtlas(mats);
 
   const auto& lights = tracer.SceneLights();
   light_count_ = std::min<int>(static_cast<int>(lights.size()), 8);
@@ -610,11 +771,14 @@ GLuint GpuRaytracer::Render(const app::Camera& camera, double aspect, int width,
   glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_BUFFER, node_tex_); glUniform1i(t_nodes_, 0);
   glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_BUFFER, tri_tex_); glUniform1i(t_tris_, 1);
   glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, accum_tex_[src]); glUniform1i(t_prev_, 2);
+  glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D_ARRAY, tex_atlas_); glUniform1i(t_tex_atlas_, 3);
 
   glUniform1i(t_mat_count_, mat_count_);
   glUniform4fv(t_mat_a_, 64, mat_a_.data());
   glUniform4fv(t_mat_b_, 64, mat_b_.data());
   glUniform4fv(t_mat_c_, 64, mat_c_.data());
+  glUniform4fv(t_mat_d_, 64, mat_d_.data());
+  glUniform1i(t_max_bounces_, std::clamp(max_bounces_, 1, kMaxBounceDepth));
   glUniform1i(t_light_count_, light_count_);
   glUniform4fv(t_light_a_, 8, light_a_.data());
   glUniform4fv(t_light_b_, 8, light_b_.data());
@@ -642,6 +806,8 @@ GLuint GpuRaytracer::Render(const app::Camera& camera, double aspect, int width,
   Check("denoise draw");
 
   glBindVertexArray(0);
+  glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+  glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, 0);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glEnable(GL_DEPTH_TEST);
