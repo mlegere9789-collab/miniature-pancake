@@ -199,7 +199,7 @@ public sealed class JobQueueManager : IDisposable
 
         lock (_gate)
         {
-            if (job.IsFinished)
+            if (job.IsFinished || job.CompletionClaimed)
             {
                 return;
             }
@@ -210,14 +210,25 @@ public sealed class JobQueueManager : IDisposable
             }
             else
             {
-                canceledWhilePending = true;
+                // Claim completion here, still under this same lock -- the lock
+                // Schedule()'s own dequeue loop also takes before deciding whether to
+                // start this exact job. Claiming it after releasing this lock (as this
+                // used to) left a real window where Schedule(), running concurrently
+                // from any other job's completion, could dequeue and start this job
+                // before the claim landed: it would see IsFinished still false, hand it
+                // a fresh, never-cancelled token, and run it for real while this method
+                // went on to mark it Cancelled underneath -- a job whose UI says
+                // Cancelled but that silently finished (and wrote real output) anyway,
+                // with its true outcome then discarded because completion had already
+                // been claimed once.
+                canceledWhilePending = job.TryClaimCompletion();
             }
         }
 
         if (canceledWhilePending)
         {
-            // Stays in _pending; Schedule skips finished jobs when it reaches it.
-            Finish(job, JobResult.Canceled());
+            // Stays in _pending; Schedule skips a claimed job when it reaches it.
+            FinishClaimed(job, JobResult.Canceled());
             Schedule();
             return;
         }
@@ -243,18 +254,29 @@ public sealed class JobQueueManager : IDisposable
     /// <summary>Cancels everything — running and waiting alike.</summary>
     public void CancelAll()
     {
-        List<QueuedJob> pending;
+        List<QueuedJob> canceledPending = new();
         List<CancellationTokenSource> running;
 
         lock (_gate)
         {
-            pending = _pending.Where(job => !job.IsFinished).ToList();
+            // Same reasoning as Cancel(): each pending job's completion is claimed here,
+            // still under this lock, so Schedule() can never start one of these jobs in
+            // the window between this method reading the queue and actually recording
+            // its Cancelled outcome.
+            foreach (var job in _pending)
+            {
+                if (!job.IsFinished && job.TryClaimCompletion())
+                {
+                    canceledPending.Add(job);
+                }
+            }
+
             running = _running.Values.ToList();
         }
 
-        foreach (var job in pending)
+        foreach (var job in canceledPending)
         {
-            Finish(job, JobResult.Canceled());
+            FinishClaimed(job, JobResult.Canceled());
         }
 
         foreach (var cts in running)
@@ -320,8 +342,13 @@ public sealed class JobQueueManager : IDisposable
             {
                 var job = _pending.Dequeue();
 
-                // Canceled while it sat in the queue.
-                if (job.IsFinished)
+                // Canceled while it sat in the queue -- checking CompletionClaimed as
+                // well as IsFinished is what actually closes the race with Cancel()/
+                // CancelAll(): they claim completion inside this same lock before
+                // Status itself becomes Cancelled (IsFinished doesn't flip true until
+                // moments later, outside the lock), so a claimed-but-not-yet-finished
+                // job must still be skipped here rather than started.
+                if (job.IsFinished || job.CompletionClaimed)
                 {
                     continue;
                 }
@@ -347,12 +374,12 @@ public sealed class JobQueueManager : IDisposable
     /// </summary>
     private void DropFinishedFromPending()
     {
-        if (!_pending.Any(job => job.IsFinished))
+        if (!_pending.Any(job => job.IsFinished || job.CompletionClaimed))
         {
             return;
         }
 
-        var survivors = _pending.Where(job => !job.IsFinished).ToList();
+        var survivors = _pending.Where(job => !job.IsFinished && !job.CompletionClaimed).ToList();
         _pending.Clear();
 
         foreach (var job in survivors)
@@ -441,6 +468,17 @@ public sealed class JobQueueManager : IDisposable
             return;
         }
 
+        FinishClaimed(job, result);
+    }
+
+    /// <summary>
+    /// Applies a job's outcome once the caller already holds its completion claim (see
+    /// <see cref="QueuedJob.TryClaimCompletion"/>) -- used by <see cref="Cancel"/> and
+    /// <see cref="CancelAll"/>, which have to take that claim earlier, inside <see cref="_gate"/>,
+    /// to close their own race with <see cref="Schedule"/>'s dequeue loop.
+    /// </summary>
+    private void FinishClaimed(QueuedJob job, JobResult result)
+    {
         job.Finish(result, _time.GetUtcNow());
         JobStatusChanged?.Invoke(this, job);
     }
