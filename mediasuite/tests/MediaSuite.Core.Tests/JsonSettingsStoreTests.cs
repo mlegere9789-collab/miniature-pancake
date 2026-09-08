@@ -111,19 +111,28 @@ public class JsonSettingsStoreTests
         // same store's own Save() mid-File.Replace on another thread. Simulated here by
         // holding an exclusive read lock on a real, valid settings file for slightly
         // less than Load()'s own retry budget, then releasing it.
+        //
+        // The release deliberately runs on a dedicated Thread, not a ThreadPool Task
+        // (Task.Run/Task.Delay) -- this suite also runs JobQueueManagerTests' own
+        // 200-iteration Task.Run-based race tests, and under real CI scheduling those can
+        // starve the ThreadPool's global queue badly enough to delay a Task.Delay(60)
+        // well past this store's ~150ms retry budget, failing this test for a reason that
+        // has nothing to do with Load()'s own retry logic. A plain Thread is scheduled by
+        // the OS directly and is not subject to that contention.
         using var temp = new TempDirectory();
         var path = temp.Combine("settings.json");
         new JsonSettingsStore(path).Save(new AppSettings { Theme = ThemeMode.Dark });
 
         var exclusiveLock = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
-        var releaseLock = Task.Run(async () =>
+        var releaseThread = new Thread(() =>
         {
-            await Task.Delay(60);
+            Thread.Sleep(60);
             exclusiveLock.Dispose();
         });
+        releaseThread.Start();
 
         var settings = new JsonSettingsStore(path).Load();
-        releaseLock.Wait();
+        releaseThread.Join();
 
         Assert.Equal(ThemeMode.Dark, settings.Theme);
         Assert.False(File.Exists(temp.Combine("settings.corrupt.json")));
