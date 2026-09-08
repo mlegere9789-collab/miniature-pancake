@@ -464,6 +464,46 @@ class TestLogger(TempDatabaseTestCase):
         overview = {r["name"]: r for r in db.module_overview()}
         self.assertEqual(overview["deal_alert_bot"]["state"], "error")
 
+    def test_status_error_survives_any_notify_exception_not_just_notifyerror(self):
+        # _notify is documented "Never raises" but only caught
+        # notifier.NotifyError -- a malformed NOTIFY_WEBHOOK_URL used to
+        # raise a bare ValueError straight out of notifier.notify(), which
+        # escaped here uncaught and crashed the calling module's run()
+        # entirely, from status("error", ...) -- reachable on the ordinary
+        # error path every module's own top-level guard takes.
+        with (
+            patch.object(
+                config,
+                "get",
+                side_effect=lambda k, d=None: (
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
+                ),
+            ),
+            patch.object(
+                notifier, "notify", side_effect=ValueError("unknown url type")
+            ),
+        ):
+            get_logger("deal_alert_bot").status("error", "boom")
+        overview = {r["name"]: r for r in db.module_overview()}
+        self.assertEqual(overview["deal_alert_bot"]["state"], "error")
+
+    def test_flag_for_review_survives_any_notify_exception_not_just_notifyerror(self):
+        with (
+            patch.object(
+                config,
+                "get",
+                side_effect=lambda k, d=None: (
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
+                ),
+            ),
+            patch.object(
+                notifier, "notify", side_effect=ValueError("unknown url type")
+            ),
+        ):
+            rid = get_logger("deal_alert_bot").flag_for_review("Approve?")
+        self.assertEqual(len(db.pending_reviews()), 1)
+        self.assertEqual(db.pending_reviews()[0]["id"], rid)
+
 
 class TestNotifier(unittest.TestCase):
     def _server(self, status: int = 204):
@@ -491,6 +531,15 @@ class TestNotifier(unittest.TestCase):
     def test_no_webhook_url_raises(self):
         with self.assertRaises(notifier.NotifyError):
             notifier.notify("", "hi")
+
+    def test_malformed_url_raises_notifyerror_not_a_bare_valueerror(self):
+        # A pasted-in-a-hurry webhook URL missing its "https://" (or any
+        # other scheme-less/unparseable URL) makes urllib.request.Request's
+        # own constructor raise a bare ValueError -- notify()'s contract is
+        # "Raises NotifyError on any failure", so this must come back as
+        # one too, not leak the underlying ValueError to every caller.
+        with self.assertRaises(notifier.NotifyError):
+            notifier.notify("hooks.slack.com/services/x", "hi")
 
     def test_generic_format_posts_all_three_keys(self):
         url, received = self._server()

@@ -130,14 +130,26 @@ class ModuleLogger:
         return rid
 
     def _notify(self, text: str) -> None:
-        """Best-effort push notification. Never raises — see notifier.py."""
+        """Best-effort push notification. Never raises — see notifier.py.
+
+        Called from `status("error", ...)` and `flag_for_review(...)`,
+        both reachable from any module's ordinary run flow (an error status,
+        or *any* review-queue item, unconditionally) -- so this catches any
+        `Exception`, not just `notifier.NotifyError`, to actually hold that
+        "never raises" guarantee rather than merely documenting it. A
+        malformed `NOTIFY_WEBHOOK_URL` (missing "https://", say) becomes a
+        `NotifyError` inside `notifier.notify` itself now, but this is the
+        last line of defense against any failure mode neither of us has
+        anticipated -- a run must never crash just because a notification
+        couldn't be sent.
+        """
         webhook_url = config.get("NOTIFY_WEBHOOK_URL")
         if not webhook_url:
             return
         fmt = config.get("NOTIFY_FORMAT", "generic") or "generic"
         try:
             notifier.notify(webhook_url, f"[{self.module}] {text}", format=fmt)
-        except notifier.NotifyError as exc:
+        except Exception as exc:  # see docstring: never raise from here
             self._log.warning(f"Notification failed: {exc}")
 
 
