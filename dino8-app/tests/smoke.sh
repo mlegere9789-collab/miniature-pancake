@@ -771,6 +771,28 @@ echo "$BO" | grep -E "^(ok|FAIL)"
 if echo "$BO" | grep -q "^FAIL"; then fail=1; fi
 echo "$BO" | grep -q "^smoke:" || { echo "$BO"; echo "FAIL: boolean script produced no smoke line"; fail=1; }
 
+# Adversarial booleans: near-tangent/barely-overlapping/coincident solids,
+# an extreme-aspect-ratio sliver, a huge-coordinate-scale pair, a 10-deep
+# chained-difference feature, and non-manifold input (see
+# boolean_adversarial_script.txt and adversarial_corpus_notes.md).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  BA="$("$BIN" --smoke 300 --script "$HERE/boolean_adversarial_script.txt" 2>&1)" || { echo "$BA"; echo "FAIL: boolean-adversarial script exited non-zero"; exit 1; }
+else
+  BA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 300 --script "$HERE/boolean_adversarial_script.txt" 2>&1)" || { echo "$BA"; echo "FAIL: boolean-adversarial script exited non-zero"; exit 1; }
+fi
+bacheck() { if echo "$BA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+bacheck "BooleanUnion: 44 faces, volume 2000" "near-tangent boxes (1e-6 overlap) unioned into one solid at the correct volume"
+bacheck "BooleanIntersection: 16 faces, volume 0.01" "barely-overlapping boxes (1e-4 overlap) still intersected into a real, non-empty sliver"
+bacheck "BooleanUnion: 16 faces, volume 1000" "coincident duplicate boxes unioned without collapsing or crashing"
+bacheck "BooleanIntersection: 24 faces, volume 1000" "coincident duplicate boxes intersected back to the exact original volume"
+bacheck "BooleanDifference: 35992 faces, volume 750" "a 1000x1000x0.001 sliver survived a corner-clipping difference at its exact expected volume (1000 - 250)"
+bacheck "BooleanUnion: 40 faces, volume 1.4e+04" "two boxes at 1e6-unit coordinates still unioned to the exact expected volume (8000+8000-2000), no precision collapse"
+bacheck "BooleanDifference: 908 faces, volume 8800" "10 chained BooleanDifference cuts on one solid stayed valid through the final cut, ending at the exact expected volume (10000 - 10x120)"
+if echo "$BA" | grep -q "! No object with id"; then echo "FAIL boolean-adversarial script's own SelID bookkeeping was wrong (references a missing id)"; fail=1; else echo "ok   boolean-adversarial script's SelID bookkeeping matched every object the app actually created"; fi
+echo "$BA" | grep -E "^(ok|FAIL)"
+if echo "$BA" | grep -q "^FAIL"; then fail=1; fi
+bacheck "^ok   expect_objects 0" "boolean-adversarial script cleaned up to zero objects at the end"
+
 # Analysis: Distance/Length/Area/Volume/AreaCentroid/VolumeCentroid/What/List/BoundingBox/
 # Dir/Check/SelBadObjects/Angle/Radius/Diameter/Curvature/CurvatureGraph/Zebra/EMap/
 # CurvatureAnalysis/DraftAngleAnalysis/ShowEdges/CrvDeviation/PointDeviation/Audit/SystemInfo
