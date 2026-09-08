@@ -54,6 +54,30 @@ inline ObjectId AddCurve(CommandContext& ctx, const kernel::NurbsCurve& c, const
   return AddObject(ctx, SceneObject::MakeCurve(c), label);
 }
 
+// A fixed absolute tessellation tolerance (e.g. the historical 0.005) is
+// meaningless once object scale strays far from "a few units": on a
+// kilometer-scale solid it is far finer than the geometry needs (huge
+// triangle counts, slow booleans) and on a millimeter-or-smaller sliver it
+// can be coarser than the whole object, collapsing thin features into
+// degenerate triangles before a boolean/mesh op ever sees them. Scale the
+// tolerance to the object's own bounding-box diagonal instead, still
+// floored/capped so pathological (zero-size or NaN) boxes fall back to a
+// sane absolute default. The floor also reflects that Manifold's own mesh
+// interchange format stores vertices as single-precision floats (see
+// dino8-kernel/src/boolean.cpp's ToManifold/FromManifold): asking for
+// sub-float-precision detail cannot survive that round trip regardless of
+// how finely this tessellates.
+inline double AdaptiveMeshTolerance(const kernel::BoundingBox& bbox, double fallback = 0.005) {
+  const double diag = (bbox.max - bbox.min).Length();
+  if (!std::isfinite(diag) || diag <= 0) return fallback;
+  const double scaled = diag * 5e-4;  // 0.05% of the object's own diagonal
+  return std::clamp(scaled, 1e-5, 1.0);
+}
+
+inline double AdaptiveMeshTolerance(const SceneObject& o, double fallback = 0.005) {
+  return AdaptiveMeshTolerance(o.BoundingBox(), fallback);
+}
+
 // Best-effort closed mesh for an object (for booleans, volume, export).
 inline std::optional<kernel::Mesh> MeshOf(const SceneObject& o, double tol = 0.01) {
   switch (o.kind) {

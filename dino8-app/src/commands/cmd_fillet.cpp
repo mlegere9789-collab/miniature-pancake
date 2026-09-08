@@ -347,21 +347,59 @@ ON_NurbsSurface RuledSurface(const ON_Curve& a, const ON_Curve& b, int samples =
   return s;
 }
 
+// Bounding-box diagonal of a surface's own control net - a cheap, robust
+// stand-in for "how big is this surface" without evaluating the surface
+// itself (a plain CV bounding box, not a tight one, is enough to pick a
+// tolerance floor by).
+double SurfaceScale(const ON_NurbsSurface& s) {
+  ON_BoundingBox bb;
+  if (!s.GetBoundingBox(bb) || !bb.IsValid()) return 0.0;
+  return bb.Diagonal().Length();
+}
+
 // Core: constant or variable radius rolling-ball fillet between two
 // surfaces. `radius_at(t)` maps a spine fraction in [0,1] to a radius.
+// `tol` is normally ctx.Settings().absolute_tolerance floored at 1e-5 by
+// the caller - a document-wide setting that has no way to know THIS pair
+// of surfaces might be millimeter-scale or kilometer-scale relative to
+// whatever the user last set that document tolerance to. Every tolerance
+// floor below is additionally clamped against the surfaces' own scale
+// (`geo_tol`) so a mismatch between document tolerance and actual surface
+// size doesn't make an otherwise-valid fillet spuriously fail (floor too
+// tight for a huge pair of surfaces) or accept geometric noise as a real
+// spine (floor too loose for a tiny pair).
 FilletBuild BuildFillet(const ON_NurbsSurface& a, const ON_NurbsSurface& b, const std::function<double(double)>& radius_at, double tol) {
   FilletBuild out;
+  const double scale = std::max(SurfaceScale(a), SurfaceScale(b));
+  // 1e-6 of the surfaces' own scale - the same relative floor used for
+  // Manifold's tolerance in dino8-kernel/src/boolean.cpp, kept consistent
+  // here since both ultimately bound "smallest geometric detail this
+  // pipeline can resolve".
+  const double geo_tol = scale > 0 ? scale * 1e-6 : 0.0;
+  const double eff_tol = std::max(tol, geo_tol);
   IntersectOptions opt;
-  opt.tolerance = std::max(tol, 1e-6);
-  opt.mesh_tolerance = std::max(tol * 4, 1e-4);
+  opt.tolerance = std::max(eff_tol, 1e-6);
+  opt.mesh_tolerance = std::max(eff_tol * 4, geo_tol > 0 ? geo_tol * 4 : 1e-4);
   const double r0 = radius_at(0.0);
+  if (!(r0 > 0)) { out.error = "radius must be positive"; return out; }
+  // A radius that isn't even resolvable at this pipeline's own geometric
+  // precision (e.g. asking for a fillet far smaller than the surfaces'
+  // own scale times float/tolerance noise) can't produce a meaningful
+  // spine - fail clearly here rather than let a near-zero offset wobble
+  // through OffsetBy/IntersectSurfaces and loft into a degenerate sliver
+  // surface that LoftRows or the caller's trim step would otherwise have
+  // to detect after the fact.
+  if (scale > 0 && r0 < eff_tol) {
+    out.error = "radius " + FormatNumber(r0) + " is too small to resolve at this surface's own scale (tolerance " + FormatNumber(eff_tol) + ")";
+    return out;
+  }
   // Offset both surfaces towards each other by the representative radius,
   // then intersect the offsets to find the spine.
   const double sa = OffsetSign(a, b.PointAt(b.Domain(0).Mid(), b.Domain(1).Mid()));
   const double sb = OffsetSign(b, a.PointAt(a.Domain(0).Mid(), a.Domain(1).Mid()));
   const kernel::NurbsSurface offA = OffsetBy(a, sa * r0), offB = OffsetBy(b, sb * r0);
   std::vector<IntersectionCurve> ssx = IntersectSurfaces(offA.raw(), offB.raw(), opt);
-  if (ssx.empty()) { out.error = "the offset surfaces do not meet (surfaces too far apart, parallel, or radius too small)"; return out; }
+  if (ssx.empty()) { out.error = "the offset surfaces do not meet (surfaces too far apart or parallel, radius too small to reach, or - just as often - radius too LARGE for the surfaces to still overlap once offset that far)"; return out; }
   // Longest curve is the spine.
   const IntersectionCurve* best = &ssx.front();
   for (const IntersectionCurve& c : ssx) if (c.Length() > best->Length()) best = &c;
@@ -512,7 +550,19 @@ std::optional<ON_Brep> RoundFaceCorner(const ON_Brep& b, int fi, Point3d vertex,
   if (!outer) return std::nullopt;
   ON_SimpleArray<ON_Curve*> boundary;
   int corner_at = -1;  // index whose END sits at `vertex`
-  const double near_tol = std::max(tol * 200, 1e-3);
+  // A fixed 1e-3 "near enough to be this corner" floor is itself bigger
+  // than an entire small face (a millimeter-scale detail, say) and
+  // smaller than the float/construction noise on a very large one - either
+  // way it stops being "near the corner" in any geometrically meaningful
+  // sense. Scale it off the face's own size instead, clamped so it never
+  // grows large enough to span more than a fraction of the face (which
+  // would risk matching the wrong corner on a small face) nor shrinks
+  // below where float noise alone could defeat it.
+  ON_BoundingBox face_bbox;
+  const double face_scale = (f.SurfaceOf() && f.SurfaceOf()->GetBoundingBox(face_bbox) && face_bbox.IsValid()) ? face_bbox.Diagonal().Length() : 0.0;
+  const double near_tol = face_scale > 0
+      ? std::clamp(std::max(tol * 200, face_scale * 1e-4), face_scale * 1e-6, face_scale * 0.4)
+      : std::max(tol * 200, 1e-3);
   for (int k = 0; k < outer->TrimCount(); ++k) {
     const ON_BrepTrim* trim = outer->Trim(k);
     if (!trim) continue;
@@ -983,6 +1033,33 @@ class FilletEdgeCommand : public Command {
           const ON_BrepEdge& e = remainder.m_E[ei];
           if (e.m_edge_index >= 0 && e.TrimCount() == 1) exact_ok = false;
         }
+        // The naked-edge count above is a TOPOLOGICAL check only: every
+        // edge already has two trims referencing it (that's what
+        // JoinNakedEdges just arranged, by design, for edges that are
+        // merely close), which says nothing about whether their two
+        // sides' geometry actually coincides in 3D. Confirmed by testing:
+        // a fillet built on a box translated to ~1e6-unit coordinates
+        // passed the naked-edge count above (every edge had TrimCount()
+        // == 2) while its tessellated volume came back 0 (MeshOf refused
+        // to close a mesh with a real gap) - a genuine, silent hole this
+        // topological check alone can't see.
+        //
+        // ON_Brep::IsValid() (what the Check command uses) is NOT the
+        // right tool to catch this instead: it was tried here and
+        // rejected every fillet from this pipeline, including the
+        // perfectly good box-corner case fillet_script.txt already
+        // depends on - see TrimPlanarFace's own comment above about
+        // SetEdgeTolerance's recompute leaving edge tolerances at
+        // ON_UNSET_VALUE and failing IsValid() outright even for a sound
+        // result. Tessellate and check real closure instead (the same
+        // watertightness test Volume/MeshOf already rely on), which
+        // catches the 1e6-scale gap without false-positiving on
+        // everything else.
+        if (exact_ok) {
+          BrepMeshOptions check_opt;
+          check_opt.chord_tolerance = std::max(tol * 4, 1e-4);
+          exact_ok = MeshBrepClosed(remainder, check_opt).IsClosedManifold();
+        }
       }
       if (exact_ok) {
         if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
@@ -995,7 +1072,10 @@ class FilletEdgeCommand : public Command {
         ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) + " replaced with an exact " + (mode_ == Mode::Fillet ? "fillet" : "chamfer") + " (radius " + FormatNumber(radius_) + ")");
         return;
       }
-      // Exact trim unavailable (at least one face is not planar): mesh fallback.
+      // Exact trim unavailable - either a non-planar adjacent face, or (see
+      // the tessellation check above) an exact trim that LOOKED
+      // topologically closed but wasn't actually watertight. Try the mesh
+      // fallback either way.
       std::optional<kernel::Mesh> obj_mesh = ObjectMesh(*o, tol);
       if (obj_mesh && !spine.empty()) {
         kernel::Mesh cutter = SweepTubeCutter(spine, radius_for_tube);
@@ -1005,6 +1085,18 @@ class FilletEdgeCommand : public Command {
           ks.raw() = built;
           kernel::Mesh fillet_mesh = ks.TessellateGridAdaptive(std::max(tol * 4, 1e-4));
           kernel::Mesh combined = kernel::Mesh::MergeAndWeld({remainder_mesh, fillet_mesh}, tol);
+          // Same lesson as the exact path above: don't hand back something
+          // broken under a label that implies success. Confirmed by
+          // testing: at ~1e6-unit coordinates this mesh path can ALSO come
+          // back non-watertight (ON_Mesh's single-precision vertex storage
+          // - see dino8-kernel/src/boolean.cpp's FromManifold note - loses
+          // more absolute precision than a 2-unit fillet radius needs at
+          // that magnitude), so this is a genuine kernel-level ceiling,
+          // not something to paper over with an optimistic message.
+          if (!combined.IsClosedManifold()) {
+            ctx.Warn(label + ": could not build a watertight result at this object's coordinate scale (both the exact B-rep trim and the mesh fallback came back with a gap - see adversarial_corpus_notes.md)");
+            return;
+          }
           SceneObject repl = SceneObject::MakeMesh(combined);
           repl.layer_index = o->layer_index;
           repl.color = o->color;
@@ -1012,7 +1104,7 @@ class FilletEdgeCommand : public Command {
           ctx.Doc().Remove(pick.id);
           ObjectId nid = ctx.Doc().Add(std::move(repl));
           ctx.Doc().Select(nid, true);
-          ctx.Print(label + ": edge " + std::to_string(pick.edge) + " -- mesh fallback (one or both adjacent surfaces are not planar; result is an approximate mesh, not a clean B-rep)");
+          ctx.Print(label + ": edge " + std::to_string(pick.edge) + " -- mesh fallback (exact B-rep trim unavailable here; result is an approximate mesh, not a clean B-rep)");
           return;
         } catch (const std::exception& ex) { ctx.Warn(label + ": mesh fallback failed (" + std::string(ex.what()) + ")"); }
       }
