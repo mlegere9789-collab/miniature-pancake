@@ -1837,7 +1837,7 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
     if (!active_) dl->AddRect(ImVec2(p0.x - 4, p0.y - 2), ImVec2(p0.x + sz.x + 8, p0.y + sz.y + 2), IM_COL32(255, 255, 255, 40), 4.0f);
     dl->AddText(p0, IM_COL32(255, 255, 255, active_ ? 255 : 215), label);
     ImGui::SetCursorScreenPos(ImVec2(p0.x - 4, p0.y - 2));
-    if (ImGui::InvisibleButton(("##title_" + name_).c_str(), ImVec2(sz.x + 12, sz.y + 4)) || ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+    if (ImGui::InvisibleButton(("##title_" + name_).c_str(), ImVec2(sz.x + 12, sz.y + 4), ImGuiButtonFlags_EnableNav) || ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
       ImGui::OpenPopup(("##vpmenu_" + name_).c_str());
     }
     if (ImGui::BeginPopup(("##vpmenu_" + name_).c_str())) {

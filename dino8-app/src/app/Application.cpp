@@ -170,7 +170,7 @@ void Application::Shutdown() {
 }
 
 Viewport::FrameContext Application::MakeFrameContext() {
-  Viewport::SetLightTheme(light_theme);
+  Viewport::SetLightTheme(theme_mode == 1);
   Viewport::FrameContext ctx;
   ctx.doc = &doc_;
   ctx.preview_lines = &engine_->PreviewLines();
@@ -907,7 +907,7 @@ bool Application::ExportDrawing(const std::string& path, bool selected_only, dou
 // ---------------------------------------------------------------------------
 
 void Application::Frame() {
-  if (std::getenv("DINO8_UI_DEBUG") && (ImGui::GetFrameCount() == 5 || ImGui::GetFrameCount() == 90)) { const ImVec4& w = ImGui::GetStyle().Colors[ImGuiCol_WindowBg]; std::fprintf(stderr, "[theme] light=%d WindowBg=%.2f %.2f %.2f a=%.2f\n", light_theme ? 1 : 0, w.x, w.y, w.z, w.w); }
+  if (std::getenv("DINO8_UI_DEBUG") && (ImGui::GetFrameCount() == 5 || ImGui::GetFrameCount() == 90)) { const ImVec4& w = ImGui::GetStyle().Colors[ImGuiCol_WindowBg]; std::fprintf(stderr, "[theme] mode=%d WindowBg=%.2f %.2f %.2f a=%.2f\n", theme_mode, w.x, w.y, w.z, w.w); }
   UpdateCageCaptives(doc_);
   HandleShortcuts();
   ViewToolsFrame(*this);
@@ -1811,7 +1811,7 @@ void Application::DrawStatusBar() {
     ImGui::SameLine(ImGui::GetWindowWidth() - bell_w - 6.0f);
     const ImVec2 bp = ImGui::GetCursorScreenPos();
     const float bh = ImGui::GetFrameHeight();
-    if (ImGui::InvisibleButton("##bell", ImVec2(bell_w, bh))) {
+    if (ImGui::InvisibleButton("##bell", ImVec2(bell_w, bh), ImGuiButtonFlags_EnableNav)) {
       panels_.notifications = !panels_.notifications;
       unread_notifications = 0;
     }

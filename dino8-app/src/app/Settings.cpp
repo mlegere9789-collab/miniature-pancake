@@ -96,7 +96,15 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
   p.display = Bool(panels["display"], p.display); p.object_snaps = Bool(panels["object_snaps"], p.object_snaps);
   p.toolbars = Bool(panels["toolbars"], p.toolbars);
 
-  app.light_theme = Bool(root["light_theme"], app.light_theme);
+  // theme_mode (0=Dark,1=Light,2=High Contrast) is the source of truth;
+  // fall back to the older boolean "light_theme" key for configs saved
+  // before High Contrast existed.
+  if (!root["theme_mode"].IsNull()) {
+    app.theme_mode = static_cast<int>(Num(root["theme_mode"], app.theme_mode));
+    if (app.theme_mode < 0 || app.theme_mode > 2) app.theme_mode = 0;
+  } else {
+    app.theme_mode = Bool(root["light_theme"], false) ? 1 : 0;
+  }
   app.gumball_enabled = Bool(root["gumball"], app.gumball_enabled);
   const json::Value& tb = root["toolbar"];
   if (tb.IsArray() && tb.Size() > 0) { app.toolbar_commands.clear(); for (size_t i = 0; i < tb.Size(); ++i) app.toolbar_commands.push_back(tb[i].AsString()); }
@@ -122,7 +130,10 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
   if (!out) return false;
   out << "{\n";
   out << "  \"ui_scale\": " << ui_scale << ",\n";
-  out << "  \"light_theme\": " << (a.light_theme ? "true" : "false") << ",\n";
+  out << "  \"theme_mode\": " << a.theme_mode << ",\n";
+  // "light_theme" is a legacy key, kept so older Dino 8 builds reading this
+  // file still pick Light correctly; current builds read "theme_mode".
+  out << "  \"light_theme\": " << (a.theme_mode == 1 ? "true" : "false") << ",\n";
   out << "  \"gumball\": " << (a.gumball_enabled ? "true" : "false") << ",\n";
   out << "  \"toolbar\": [";
   for (size_t i = 0; i < a.toolbar_commands.size(); ++i) out << (i ? ", " : "") << "\"" << Escape(a.toolbar_commands[i]) << "\"";

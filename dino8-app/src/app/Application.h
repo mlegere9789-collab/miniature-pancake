@@ -246,7 +246,13 @@ class Application {
   std::optional<std::string> TakeWindowCaptureRequest() { std::optional<std::string> p = pending_window_capture_; pending_window_capture_.reset(); return p; }
   float ui_scale = 1.0f;
   bool gumball_enabled = true;
-  bool light_theme = false;
+  // UI theme, selected in Options > General (ui/Panels.cpp) and applied by
+  // ApplyDinoTheme (ui/Theme.cpp): 0 = Dark, 1 = Light, 2 = High Contrast
+  // (a dedicated accessible palette - WCAG-AA-ish text/background contrast,
+  // and hover/selected/disabled states that don't rely on color alone).
+  // Older config files only know "light_theme" (bool); Settings::Load
+  // migrates that into theme_mode when "theme_mode" itself is absent.
+  int theme_mode = 0;
   std::vector<std::string> toolbar_commands;  // customizable Standard toolbar (empty = default set)
   // Toolbar appearance (Options > Toolbar), persisted in Settings.
   int toolbar_icon_size = 24;        // 24, 32 or 40 px
