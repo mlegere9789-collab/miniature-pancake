@@ -82,6 +82,7 @@ def _run_billing(settings: Settings, log) -> tuple[float, int]:
     mrr = compute_mrr(subscriptions)
 
     since = snap.previous_run_unix(settings.lookback_hours)
+    charges_fetch_failed = False
     try:
         charges = stripe_client.list_charges_since(
             settings.stripe_secret_key, since, limit=settings.charge_limit
@@ -89,6 +90,7 @@ def _run_billing(settings: Settings, log) -> tuple[float, int]:
     except stripe_client.StripeError as exc:
         log.error(f"Stripe charges fetch failed: {exc}", event="api_error")
         charges = []
+        charges_fetch_failed = True
 
     summary: ChargeSummary = summarize_charges(charges)
 
@@ -134,7 +136,14 @@ def _run_billing(settings: Settings, log) -> tuple[float, int]:
         metadata=meta,
     )
 
-    snap.save(current_ids)
+    # A failed charges fetch means this window was never actually
+    # reconciled -- keep the old run_at so the next run's
+    # previous_run_unix() re-queries the same window instead of silently
+    # treating it as done and skipping it forever.
+    snap.save(
+        current_ids,
+        run_at=snap.previous_run_at if charges_fetch_failed else None,
+    )
     return summary.collected, flagged
 
 

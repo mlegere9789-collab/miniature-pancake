@@ -12,7 +12,11 @@ import unittest
 
 from .billing import compute_mrr, diff_subscriptions, summarize_charges
 from .config import Settings
-from .formatter import format_billing_summary, format_failed_charge
+from .formatter import (
+    format_billing_summary,
+    format_failed_charge,
+    format_refunded_charge,
+)
 
 MONTHLY_SUB = {
     "id": "sub_month",
@@ -176,6 +180,20 @@ class TestFormatter(unittest.TestCase):
         self.assertIn("card declined", text)
         self.assertIn("5.00", text)
 
+    def test_failed_charge_handles_a_present_but_null_amount(self):
+        # Stripe can return "amount": null (e.g. a restricted API key) --
+        # dict.get(key, 0) only substitutes the default when the key is
+        # *absent*, not when it's present and None, so a raw `/ 100.0`
+        # would raise TypeError here without to_float().
+        text = format_failed_charge(
+            {"id": "ch_1", "amount": None, "failure_message": "card declined"}
+        )
+        self.assertIn("$0.00", text)
+
+    def test_refunded_charge_handles_a_present_but_null_amount(self):
+        text = format_refunded_charge({"id": "ch_1", "amount_refunded": None})
+        self.assertIn("$0.00", text)
+
 
 class TestSnapshotStore(unittest.TestCase):
     def test_round_trip(self):
@@ -193,6 +211,46 @@ class TestSnapshotStore(unittest.TestCase):
                 store.save({"sub_a", "sub_b"})
                 reloaded = snap_mod.SnapshotStore()
                 self.assertEqual(reloaded.previous_ids, {"sub_a", "sub_b"})
+            finally:
+                snap_mod.SNAPSHOT_FILE = orig
+
+    def test_save_can_preserve_an_explicit_run_at(self):
+        # _run_billing passes this back in when the charges fetch for this
+        # window failed -- advancing run_at to "now" anyway would silently
+        # mark that window as reconciled and it would never be retried.
+        import tempfile
+        from pathlib import Path
+
+        from . import snapshot as snap_mod
+
+        with tempfile.TemporaryDirectory() as d:
+            orig = snap_mod.SNAPSHOT_FILE
+            snap_mod.SNAPSHOT_FILE = Path(d) / "snap.json"
+            try:
+                store = snap_mod.SnapshotStore()
+                store.save({"sub_a"}, run_at="2026-01-01T00:00:00+00:00")
+                reloaded = snap_mod.SnapshotStore()
+                self.assertEqual(reloaded.previous_run_at, "2026-01-01T00:00:00+00:00")
+                self.assertEqual(reloaded.previous_ids, {"sub_a"})
+            finally:
+                snap_mod.SNAPSHOT_FILE = orig
+
+    def test_save_defaults_run_at_to_now_when_not_given(self):
+        import tempfile
+        import time
+        from pathlib import Path
+
+        from . import snapshot as snap_mod
+
+        with tempfile.TemporaryDirectory() as d:
+            orig = snap_mod.SNAPSHOT_FILE
+            snap_mod.SNAPSHOT_FILE = Path(d) / "snap.json"
+            try:
+                store = snap_mod.SnapshotStore()
+                store.save({"sub_a"})
+                reloaded = snap_mod.SnapshotStore()
+                since = reloaded.previous_run_unix(default_lookback_hours=24)
+                self.assertLess(time.time() - since, 5)
             finally:
                 snap_mod.SNAPSHOT_FILE = orig
 

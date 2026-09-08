@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from orchestrator.paths import DATA_DIR, ensure_data_dir
+from orchestrator.paths import DATA_DIR, atomic_write_text, ensure_data_dir
 
 SNAPSHOT_FILE = DATA_DIR / "micro_saas_snapshot.json"
 
@@ -46,15 +46,27 @@ class SnapshotStore:
         fallback = now.timestamp() - default_lookback_hours * 3600
         return int(fallback)
 
-    def save(self, active_ids: set[str]) -> None:
+    def save(self, active_ids: set[str], *, run_at: str | None = None) -> None:
+        """Persist this run's active-subscription ids, and `run_at` (default:
+        now).
+
+        Pass the *previous* `run_at` back in (`self.previous_run_at`) when
+        the charges fetch for this window failed, rather than letting it
+        default to now — advancing it anyway would silently mark that
+        window as reconciled, and the next run's `previous_run_unix()`
+        would never look at it again. Subscription ids still get saved
+        either way: they reflect the current, successfully-fetched
+        subscription list regardless of whether the *charges* fetch
+        succeeded, and are needed for correct new/churn diffing next run.
+        """
         ensure_data_dir()
-        SNAPSHOT_FILE.write_text(
+        atomic_write_text(
+            SNAPSHOT_FILE,
             json.dumps(
                 {
                     "active_sub_ids": sorted(active_ids),
-                    "run_at": datetime.now(timezone.utc).isoformat(),
+                    "run_at": run_at or datetime.now(timezone.utc).isoformat(),
                 },
                 indent=2,
             ),
-            encoding="utf-8",
         )
