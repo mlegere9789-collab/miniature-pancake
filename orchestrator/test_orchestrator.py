@@ -886,6 +886,63 @@ class TestSchedulerHeartbeat(unittest.TestCase):
         self.assertFalse(sch.heartbeat_is_stale(heartbeat, now=now))
 
 
+class TestRunJob(TempDatabaseTestCase):
+    """`_run_job` is what actually fires a due job -- it must not launch a
+    module that's already running (dashboard "Run now" and a scheduler
+    firing landing on the same module at once), the exact same race
+    `TestTriggerRun`/`TestDatabaseTryStartRun` cover on the dashboard side."""
+
+    JOB = {
+        "name": "deal-alert-scan",
+        "module": "deal_alert_bot",
+        "command": "python -m modules.deal_alert_bot.run",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self._tmpdir2 = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir2.cleanup)
+        self._orig_root = sch.PROJECT_ROOT
+        sch.PROJECT_ROOT = Path(self._tmpdir2.name)
+        self.addCleanup(self._restore_root)
+
+    def _restore_root(self):
+        sch.PROJECT_ROOT = self._orig_root
+
+    def test_launches_and_returns_true_when_idle(self):
+        with patch("orchestrator.scheduler.subprocess.Popen") as popen_mock:
+            self.assertTrue(sch._run_job(self.JOB))
+        popen_mock.assert_called_once()
+        self.assertEqual(
+            popen_mock.call_args.args[0], "python -m modules.deal_alert_bot.run"
+        )
+
+    def test_marks_the_module_running_before_launch(self):
+        with patch("orchestrator.scheduler.subprocess.Popen"):
+            sch._run_job(self.JOB)
+        row = next(m for m in db.module_overview() if m["name"] == "deal_alert_bot")
+        self.assertEqual(row["state"], "running")
+
+    def test_refuses_and_does_not_launch_when_already_running(self):
+        db.try_start_run("deal_alert_bot")
+        with patch("orchestrator.scheduler.subprocess.Popen") as popen_mock:
+            self.assertFalse(sch._run_job(self.JOB))
+        popen_mock.assert_not_called()
+
+    def test_job_with_no_recognized_module_always_runs(self):
+        job = {**self.JOB, "module": "not_a_real_module"}
+        db.try_start_run("deal_alert_bot")  # unrelated module already running
+        with patch("orchestrator.scheduler.subprocess.Popen") as popen_mock:
+            self.assertTrue(sch._run_job(job))
+        popen_mock.assert_called_once()
+
+    def test_job_missing_module_key_always_runs(self):
+        job = {"name": "legacy-job", "command": "python -m modules.deal_alert_bot.run"}
+        with patch("orchestrator.scheduler.subprocess.Popen") as popen_mock:
+            self.assertTrue(sch._run_job(job))
+        popen_mock.assert_called_once()
+
+
 class TestCli(unittest.TestCase):
     def test_no_args_prints_docstring(self):
         buf = io.StringIO()
@@ -1093,7 +1150,7 @@ class TestDashboardHelpers(unittest.TestCase):
         self.assertEqual(dashboard._esc(None), "")
 
 
-class TestTriggerRun(unittest.TestCase):
+class TestTriggerRun(TempDatabaseTestCase):
     def test_unknown_module_returns_false_and_does_not_launch(self):
         with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
             self.assertFalse(dashboard.trigger_run("not_a_real_module"))
@@ -1118,6 +1175,74 @@ class TestTriggerRun(unittest.TestCase):
                 )
             finally:
                 dashboard.PROJECT_ROOT = orig
+
+    def test_launching_sets_status_to_running_immediately(self):
+        """Before the subprocess itself gets anywhere near its own
+        `log.status("running", ...)` call — closing the race this whole
+        mechanism exists to close."""
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                with patch("orchestrator.dashboard.subprocess.Popen"):
+                    dashboard.trigger_run("deal_alert_bot")
+                row = next(
+                    m for m in db.module_overview() if m["name"] == "deal_alert_bot"
+                )
+                self.assertEqual(row["state"], "running")
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+    def test_already_running_module_refuses_a_second_launch(self):
+        db.try_start_run("deal_alert_bot")
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
+                    self.assertFalse(dashboard.trigger_run("deal_alert_bot"))
+                popen_mock.assert_not_called()
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+    def test_a_module_left_idle_or_errored_can_be_launched_again(self):
+        db.set_status("deal_alert_bot", "error", "Crashed")
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
+                    self.assertTrue(dashboard.trigger_run("deal_alert_bot"))
+                popen_mock.assert_called_once()
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+
+class TestDatabaseTryStartRun(TempDatabaseTestCase):
+    def test_first_caller_wins(self):
+        self.assertTrue(db.try_start_run("deal_alert_bot"))
+        row = next(m for m in db.module_overview() if m["name"] == "deal_alert_bot")
+        self.assertEqual(row["state"], "running")
+
+    def test_second_concurrent_caller_is_refused(self):
+        self.assertTrue(db.try_start_run("deal_alert_bot", "first"))
+        self.assertFalse(db.try_start_run("deal_alert_bot", "second"))
+        # The refused caller's detail never overwrote the winner's.
+        row = next(m for m in db.module_overview() if m["name"] == "deal_alert_bot")
+        self.assertEqual(row["detail"], "first")
+
+    def test_can_restart_after_the_module_finishes(self):
+        self.assertTrue(db.try_start_run("deal_alert_bot"))
+        db.set_status("deal_alert_bot", "ok", "Done")
+        self.assertTrue(db.try_start_run("deal_alert_bot"))
+
+    def test_works_for_a_module_with_no_prior_status_row(self):
+        # module_overview()/init_db() always seed a row today, but the
+        # UPSERT itself must not depend on that -- exercise the plain
+        # INSERT branch directly against a table with no row for it yet.
+        with db.get_connection() as conn:
+            conn.execute("DELETE FROM status WHERE module = ?", ("deal_alert_bot",))
+        self.assertTrue(db.try_start_run("deal_alert_bot"))
 
 
 class TestTailLog(unittest.TestCase):

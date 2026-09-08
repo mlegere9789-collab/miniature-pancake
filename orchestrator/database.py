@@ -159,6 +159,41 @@ def set_status(module: str, state: str, detail: str = "") -> None:
         )
 
 
+def try_start_run(module: str, detail: str = "Queued") -> bool:
+    """Atomically claim the 'running' state for a module, refusing if it's
+    already running.
+
+    Both the dashboard's "Run now" button and the scheduler's own job firing
+    launch a module as a plain subprocess with nothing stopping two of them
+    landing at once (a double click, or a manual run overlapping a
+    cron/portable-daemon firing) — the module's own `log.status("running",
+    ...)` call only lands well after the subprocess has actually started, so
+    checking the *last-rendered* dashboard state is not enough to prevent it.
+    Two concurrent runs of the same module don't just duplicate work (e.g.
+    posting the same deal twice); each module's own dedup store
+    (`data/<module>_seen.json`) is an unlocked read-modify-write JSON file,
+    so whichever run finishes last silently overwrites the other's dedup
+    state.
+
+    This uses a single atomic UPSERT — conditional on the *current* row's
+    state, evaluated by SQLite as part of the same statement — so two
+    callers racing to start the same module can never both win. Returns True
+    if this call claimed 'running' and the caller should launch; False if
+    another run is already in progress and the caller should not.
+    """
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO status (module, state, detail, updated_at)
+               VALUES (?, 'running', ?, ?)
+               ON CONFLICT(module) DO UPDATE SET
+                 state='running', detail=excluded.detail,
+                 updated_at=excluded.updated_at
+               WHERE status.state != 'running'""",
+            (module, detail, utcnow()),
+        )
+        return cur.rowcount > 0
+
+
 def record_earning(
     module: str,
     amount: float,

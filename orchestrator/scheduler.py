@@ -39,7 +39,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from .paths import JOBS_EXAMPLE_PATH, JOBS_PATH, PROJECT_ROOT, ensure_data_dir
+from . import database as db
+from .paths import JOBS_EXAMPLE_PATH, JOBS_PATH, MODULES, PROJECT_ROOT, ensure_data_dir
 
 MARKER_BEGIN = "# >>> income-orchestrator jobs >>>"
 MARKER_END = "# <<< income-orchestrator jobs <<<"
@@ -298,7 +299,23 @@ def _is_due(job: dict[str, Any], now: datetime, last_run: datetime | None) -> bo
     return False
 
 
-def _run_job(job: dict[str, Any]) -> None:
+def _run_job(job: dict[str, Any]) -> bool:
+    """Fire one due job. Returns False, without launching anything, if the
+    job's own module is already running (see `database.try_start_run`) —
+    e.g. a manual "Run now" click from the dashboard landed on the same
+    module at the same moment this job came due. The caller should treat
+    that as "not run yet" rather than "ran", so the next poll retries it
+    instead of waiting out the job's full cadence.
+
+    A job with no recognized `module` field (or none at all) skips this
+    check and always runs — jobs.json's `module` key exists purely for this
+    de-duplication and isn't otherwise load-bearing, so an old or hand-edited
+    job missing it shouldn't be blocked from running at all.
+    """
+    module = job.get("module")
+    if module in MODULES and not db.try_start_run(module, "Queued from scheduler"):
+        print(f"[scheduler] skipping {job['name']}: {module} is already running")
+        return False
     print(f"[scheduler] running {job['name']}: {job['command']}")
     log_dir = PROJECT_ROOT / "data" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -313,6 +330,7 @@ def _run_job(job: dict[str, Any]) -> None:
             stdout=fh,
             stderr=subprocess.STDOUT,
         )
+    return True
 
 
 def cmd_run(poll_seconds: int = 30) -> int:
@@ -329,8 +347,7 @@ def cmd_run(poll_seconds: int = 30) -> int:
             for job in load_jobs(enabled_only=True):
                 last_raw = state.get(job["name"])
                 last_run = datetime.fromisoformat(last_raw) if last_raw else None
-                if _is_due(job, now, last_run):
-                    _run_job(job)
+                if _is_due(job, now, last_run) and _run_job(job):
                     state[job["name"]] = now.isoformat()
             _save_state(state)
             time.sleep(poll_seconds)
