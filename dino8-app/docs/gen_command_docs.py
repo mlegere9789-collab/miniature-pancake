@@ -131,12 +131,49 @@ def extract_trailing_note(call_text):
     return ""
 
 
+def registration_order():
+    """Dino 8's CommandEngine::Register() overwrites by name (registry_[key]
+    = ...), so when two files register the same command (a handful of
+    commands get a simple stub first and a real implementation later -- see
+    the comments in src/app/Application.cpp), the one called LAST at
+    startup is what actually runs. Returns the cmd_*.cpp filenames in the
+    same order Application.cpp calls their RegisterXCommands(), so the
+    generator can replay that same overwrite behaviour instead of an
+    arbitrary (e.g. alphabetical) file order."""
+    app_cpp = os.path.join(os.path.dirname(CMD_DIR), "app", "Application.cpp")
+    all_files = sorted(f for f in os.listdir(CMD_DIR) if f.startswith("cmd_") and f.endswith(".cpp"))
+    if not os.path.exists(app_cpp):
+        return all_files
+    with open(app_cpp, "r", encoding="utf-8", errors="replace") as f:
+        app_text = f.read()
+    # e.g. "RegisterSrfEditCommands(*engine_);" -> function name "RegisterSrfEditCommands"
+    call_order = re.findall(r"\b(Register\w+Commands)\s*\(\s*\*?engine_?\s*\)", app_text)
+    # Map each RegisterXCommands function name to the file that defines it.
+    func_to_file = {}
+    for fname in all_files:
+        with open(os.path.join(CMD_DIR, fname), "r", encoding="utf-8", errors="replace") as f:
+            t = f.read()
+        for fm in re.finditer(r"^void (Register\w+Commands)\(", t, re.M):
+            func_to_file[fm.group(1)] = fname
+    ordered = []
+    seen = set()
+    for func in call_order:
+        fname = func_to_file.get(func)
+        if fname and fname not in seen:
+            ordered.append(fname)
+            seen.add(fname)
+    # Any cmd_*.cpp not referenced by Application.cpp's call list (shouldn't
+    # normally happen) is appended at the end so nothing is silently dropped.
+    for fname in all_files:
+        if fname not in seen:
+            ordered.append(fname)
+    return ordered
+
+
 def parse_registrations():
     """Returns {lowercase_name: {"status": str, "note": str, "file": str}}"""
     regs = {}
-    for fname in sorted(os.listdir(CMD_DIR)):
-        if not (fname.startswith("cmd_") and fname.endswith(".cpp")):
-            continue
+    for fname in registration_order():
         path = os.path.join(CMD_DIR, fname)
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             text = f.read()
@@ -151,10 +188,12 @@ def parse_registrations():
             status = status_match.group(1) if status_match else "Implemented"
             note = extract_trailing_note(call_body) if status != "Implemented" or status_match else ""
             key = name.lower()
-            # A command can be registered more than once only by mistake;
-            # keep the first (source order matches registration order).
-            if key not in regs:
-                regs[key] = {"status": status, "note": note, "file": fname}
+            # CommandEngine::Register() overwrites by name, and a handful of
+            # commands are intentionally registered twice (a stub, then a
+            # real implementation later in startup order -- see
+            # registration_order() above) -- so the LAST registration in
+            # startup order wins, matching the real app.
+            regs[key] = {"status": status, "note": note, "file": fname}
     return regs
 
 

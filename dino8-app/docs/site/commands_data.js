@@ -3,8 +3,8 @@ window.DINO8_COMMANDS = {
  "generated_from": "data/commands.json + src/commands/cmd_*.cpp",
  "total": 1055,
  "counts": {
-  "Implemented": 1000,
-  "Partial": 55,
+  "Implemented": 1002,
+  "Partial": 53,
   "Planned": 0
  },
  "commands": [
@@ -1143,7 +1143,7 @@ window.DINO8_COMMANDS = {
    "menu": "",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_state.cpp",
+   "source": "cmd_viewtools.cpp",
    "aliases": []
   },
   {
@@ -1515,7 +1515,7 @@ window.DINO8_COMMANDS = {
    "menu": "View / Viewport title | Set CPlane",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_view.cpp",
+   "source": "cmd_viewtools.cpp",
    "aliases": [
     "cp"
    ]
@@ -1696,8 +1696,8 @@ window.DINO8_COMMANDS = {
    "toolbars": "Analyze, Surface Tools",
    "menu": "",
    "status": "Implemented",
-   "note": "",
-   "source": "cmd_analyze.cpp",
+   "note": "On-screen curvature comb (Scale= Density=); stays until CurvatureGraphOff.",
+   "source": "cmd_remaining.cpp",
    "aliases": []
   },
   {
@@ -2344,8 +2344,8 @@ window.DINO8_COMMANDS = {
    "toolbars": "Surface Creation, Surface Sidebar",
    "menu": "Surface | Drape",
    "status": "Implemented",
-   "note": "Drapes a grid mesh over the visible objects along the CPlane normal.",
-   "source": "cmd_meshtools.cpp",
+   "note": "",
+   "source": "cmd_remesh.cpp",
    "aliases": []
   },
   {
@@ -3673,7 +3673,7 @@ window.DINO8_COMMANDS = {
    "menu": "Surface | Heightfield from Image",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_meshtools.cpp",
+   "source": "cmd_remesh.cpp",
    "aliases": []
   },
   {
@@ -4006,8 +4006,8 @@ window.DINO8_COMMANDS = {
    "toolbars": "Curve from Object",
    "menu": "Curve | Curve From Objects > | Intersection",
    "status": "Implemented",
-   "note": "Curve/curve intersections as point objects (a single curve is self-intersected); two closed solids give the intersection volume.",
-   "source": "cmd_curveedit.cpp",
+   "note": "Curve/curve and closed-solid pairs as before; surface/surface, brep/brep, curve/surface and brep/curve now use a real mesh-seeded, Newton-refined intersector (SSX/CSX).",
+   "source": "cmd_fillet.cpp",
    "aliases": []
   },
   {
@@ -4593,7 +4593,7 @@ window.DINO8_COMMANDS = {
    "menu": "Window / Render | Panels > Materials",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_misc.cpp",
+   "source": "cmd_render.cpp",
    "aliases": []
   },
   {
@@ -5098,8 +5098,8 @@ window.DINO8_COMMANDS = {
    "toolbars": "Point Edit",
    "menu": "Transform | Move UVN | Window | Panels > MoveUVN",
    "status": "Implemented",
-   "note": "Moves the selected surface control points along the surface's own local U, V and normal directions at each point.",
-   "source": "cmd_select2.cpp",
+   "note": "",
+   "source": "cmd_srfedit.cpp",
    "aliases": []
   },
   {
@@ -5139,7 +5139,7 @@ window.DINO8_COMMANDS = {
    "menu": "View | Set CPlane > Named CPlanes | Viewport title | Set CPlane > Named CPlanes | Window | Panels > Named CPlanes",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_state.cpp",
+   "source": "cmd_viewtools.cpp",
    "aliases": []
   },
   {
@@ -7236,8 +7236,8 @@ window.DINO8_COMMANDS = {
    "toolbars": "Select",
    "menu": "",
    "status": "Implemented",
-   "note": "",
-   "source": "cmd_annotate2.cpp",
+   "note": "Selects every annotation object: there is one dimension/text style for the whole document, so every annotation uses it.",
+   "source": "cmd_select2.cpp",
    "aliases": []
   },
   {
@@ -7315,9 +7315,9 @@ window.DINO8_COMMANDS = {
    "description": "Select captive objects of a specified cage controls.",
    "toolbars": "Cage",
    "menu": "",
-   "status": "Partial",
-   "note": "Selects the other members of the selected objects' groups.",
-   "source": "cmd_select2.cpp",
+   "status": "Implemented",
+   "note": "",
+   "source": "cmd_solidtools.cpp",
    "aliases": []
   },
   {
@@ -7357,7 +7357,7 @@ window.DINO8_COMMANDS = {
    "menu": "",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_select2.cpp",
+   "source": "cmd_viewtools.cpp",
    "aliases": []
   },
   {
@@ -7417,7 +7417,7 @@ window.DINO8_COMMANDS = {
    "menu": "",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_select2.cpp",
+   "source": "cmd_subd.cpp",
    "aliases": []
   },
   {
@@ -7477,7 +7477,7 @@ window.DINO8_COMMANDS = {
    "menu": "",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_select2.cpp",
+   "source": "cmd_solidtools.cpp",
    "aliases": []
   },
   {
@@ -7509,7 +7509,7 @@ window.DINO8_COMMANDS = {
    "menu": "",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_select2.cpp",
+   "source": "cmd_viewtools.cpp",
    "aliases": []
   },
   {
@@ -7519,7 +7519,7 @@ window.DINO8_COMMANDS = {
    "menu": "",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_annotate2.cpp",
+   "source": "cmd_select2.cpp",
    "aliases": []
   },
   {
@@ -7789,7 +7789,7 @@ window.DINO8_COMMANDS = {
    "menu": "",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_annotate2.cpp",
+   "source": "cmd_select2.cpp",
    "aliases": []
   },
   {
@@ -8101,7 +8101,7 @@ window.DINO8_COMMANDS = {
    "menu": "",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_select2.cpp",
+   "source": "cmd_subd.cpp",
    "aliases": []
   },
   {
@@ -8293,7 +8293,7 @@ window.DINO8_COMMANDS = {
    "menu": "",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_annotate2.cpp",
+   "source": "cmd_select2.cpp",
    "aliases": []
   },
   {
@@ -9063,9 +9063,9 @@ window.DINO8_COMMANDS = {
    "description": "Moves selected vertices (or vertices of selected edges) along adjacent edges.",
    "toolbars": "Mesh Tools, SubD Tools, Transform",
    "menu": "SubD / Mesh | Edit Tools > Slide",
-   "status": "Partial",
-   "note": "",
-   "source": "cmd_srfedit.cpp",
+   "status": "Implemented",
+   "note": "Slides the picked vertex towards the target point, constrained to its best-aligned edge.",
+   "source": "cmd_subd.cpp",
    "aliases": []
   },
   {
@@ -10474,7 +10474,7 @@ window.DINO8_COMMANDS = {
    "toolbars": "Set View",
    "menu": "Not on menus.",
    "status": "Implemented",
-   "note": "Moves the camera one step per invocation (WalkAbout Forward 5, WalkAbout TurnLeft, ...) -- the scriptable, testable equivalent of holding an arrow key; there is no held-key/mouse-look session to enter outside a live GUI event loop.",
+   "note": "Alias of WalkAbout.",
    "source": "cmd_viewtools.cpp",
    "aliases": []
   },
@@ -10505,7 +10505,7 @@ window.DINO8_COMMANDS = {
    "menu": "Mesh | Edit Tools > | Weld",
    "status": "Implemented",
    "note": "",
-   "source": "cmd_boolean.cpp",
+   "source": "cmd_meshtools.cpp",
    "aliases": []
   },
   {
