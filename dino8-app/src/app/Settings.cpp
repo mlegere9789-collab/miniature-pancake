@@ -97,6 +97,7 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
   p.toolbars = Bool(panels["toolbars"], p.toolbars);
 
   app.light_theme = Bool(root["light_theme"], app.light_theme);
+  if (root["language"].IsString()) app.language = root["language"].AsString();
   app.gumball_enabled = Bool(root["gumball"], app.gumball_enabled);
   const json::Value& tb = root["toolbar"];
   if (tb.IsArray() && tb.Size() > 0) { app.toolbar_commands.clear(); for (size_t i = 0; i < tb.Size(); ++i) app.toolbar_commands.push_back(tb[i].AsString()); }
@@ -123,6 +124,7 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
   out << "{\n";
   out << "  \"ui_scale\": " << ui_scale << ",\n";
   out << "  \"light_theme\": " << (a.light_theme ? "true" : "false") << ",\n";
+  out << "  \"language\": \"" << Escape(a.language) << "\",\n";
   out << "  \"gumball\": " << (a.gumball_enabled ? "true" : "false") << ",\n";
   out << "  \"toolbar\": [";
   for (size_t i = 0; i < a.toolbar_commands.size(); ++i) out << (i ? ", " : "") << "\"" << Escape(a.toolbar_commands[i]) << "\"";

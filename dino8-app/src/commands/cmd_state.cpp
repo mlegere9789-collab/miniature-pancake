@@ -13,6 +13,7 @@
 #include <set>
 
 #include "app/Settings.h"
+#include "i18n/I18n.h"
 #include "session/Digitizer.h"
 
 namespace dino8::app {
@@ -518,6 +519,42 @@ void RegisterStateCommands(CommandEngine& e) {
   Reg(e, "Run", Immediate([](CommandContext& ctx) { ctx.Engine().PendingInputs().clear(); ctx.Warn("Run: Dino 8 does not execute external programs from the command line."); }), CommandStatus::Partial, "Deliberately never implemented: Dino 8 does not launch arbitrary external programs from a typed command (a real Rhino Run would exec() whatever the user typed with no sandboxing). Run Lua via RunScript/\"= expr\", or a shell command from your own terminal.");
   Reg(e, "GetIssueState", Say("GetIssueState: ok - no issues reported"));
   Reg(e, "ResetMessageBoxes", Immediate([](CommandContext& ctx) { ctx.App().State().message_boxes_reset = true; ctx.Print("ResetMessageBoxes: all 'do not show again' choices cleared"); }));
+  // Switches the UI language: menu bar, panel titles, status bar and common
+  // dialogs re-render in the new language immediately (i18n::Tr is read
+  // fresh every frame, nothing to rebuild). Accepts either a language code
+  // ("en", "es") or that language's own display name ("English", "Espanol"),
+  // case-insensitively. Persisted like any other Options > General setting.
+  Reg(e, "SetLanguage", Make<TextArgCommand>("Language", [](CommandContext& ctx, const std::string& raw) {
+        std::string want = Lower(raw);
+        std::string matched_code;
+        for (const auto& lang : i18n::AvailableLanguages()) {
+          if (Lower(lang.code) == want || Lower(lang.name) == want) { matched_code = lang.code; break; }
+        }
+        if (matched_code.empty()) {
+          std::string available;
+          for (const auto& lang : i18n::AvailableLanguages()) available += (available.empty() ? "" : ", ") + lang.name + " (" + lang.code + ")";
+          ctx.Warn("SetLanguage: unknown language '" + raw + "'. Available: " + available);
+          return;
+        }
+        i18n::SetLanguage(matched_code);
+        ctx.App().language = matched_code;
+        ctx.Print("SetLanguage: " + matched_code);
+      }));
+  // Test-only diagnostic (not in commands.json, not on any menu): prints a
+  // few i18n::Tr() lookups to the command history so tests/smoke.sh can
+  // verify, without a screenshot, that (a) a language switch really changes
+  // the translated text and (b) a key missing from the active language's
+  // table falls back to English rather than to a blank string or the raw
+  // key - es.json deliberately leaves out "panel.imgui_demo" (a low-visibility,
+  // developer-only string) so this has a real partially-translated key to
+  // exercise, and a key present in no table at all to prove the final
+  // fallback (to the key itself) doesn't crash or blank out either.
+  Reg(e, "I18nSelfTest", Immediate([](CommandContext& ctx) {
+        ctx.Print("I18nSelfTest: active=" + i18n::CurrentLanguage());
+        ctx.Print("I18nSelfTest: menu.file=" + i18n::Tr("menu.file"));
+        ctx.Print("I18nSelfTest: fallback(panel.imgui_demo)=" + i18n::Tr("panel.imgui_demo"));
+        ctx.Print("I18nSelfTest: unknown_key=" + i18n::Tr("this.key.does.not.exist.anywhere"));
+      }));
 
   // ---- OS window ---------------------------------------------------------
   Reg(e, "Fullscreen", Immediate([](CommandContext& ctx) {

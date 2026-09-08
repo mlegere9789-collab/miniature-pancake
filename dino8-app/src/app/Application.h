@@ -247,6 +247,10 @@ class Application {
   float ui_scale = 1.0f;
   bool gumball_enabled = true;
   bool light_theme = false;
+  // UI language code (Options > General, or the SetLanguage command), e.g.
+  // "en" or "es"; persisted. i18n::SetLanguage is the source of truth at
+  // runtime - this field mirrors it for Settings.cpp and Options.
+  std::string language = "en";
   std::vector<std::string> toolbar_commands;  // customizable Standard toolbar (empty = default set)
   // Toolbar appearance (Options > Toolbar), persisted in Settings.
   int toolbar_icon_size = 24;        // 24, 32 or 40 px
