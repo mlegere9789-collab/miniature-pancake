@@ -275,8 +275,17 @@ public static class GifCommandBuilder
         if (GifOperations.CombinesInputs(spec.OperationId))
         {
             // Frames hold for a fixed time in a slideshow, so the rate follows from that.
-            // Encoding faster than the slideshow only duplicates frames and inflates the file.
-            return Math.Clamp((int)Math.Round(1000d / ResolveFrameDuration(spec).TotalMilliseconds), 1, 50);
+            // Encoding faster than the slideshow only duplicates frames and inflates the
+            // file -- but rounding to the *nearest* fps (not up) can make the fps filter's
+            // own sampling grid coarser than each image's own duration window, and a
+            // sample-grid interval wider than an image's window can skip that image
+            // entirely rather than just mistiming it (e.g. a 700ms duration is 1.43 true
+            // fps, which rounds to 1 fps -- a 1000ms sampling interval that misses some
+            // images' 700ms windows outright). Rounding up instead guarantees the sampling
+            // interval (1000/fps) is never wider than the window it has to land inside, so
+            // every image gets at least one sample -- worth the marginally larger file
+            // Ceiling can produce over Round.
+            return Math.Clamp((int)Math.Ceiling(1000d / ResolveFrameDuration(spec).TotalMilliseconds), 1, 50);
         }
 
         var compressing = string.Equals(spec.OperationId, "gif.compress", StringComparison.OrdinalIgnoreCase);
