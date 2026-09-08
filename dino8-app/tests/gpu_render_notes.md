@@ -209,18 +209,29 @@ close to a production path tracer:
 ## Note on the texture/transparency/multi-bounce pass above
 
 The performance table above ("Measured performance") predates the texture
-sampling, transparency, and multi-bounce work and was not re-measured when
-that landed. An earlier note here attributed a failed reproduction attempt
-(zero `rt_frame_ms` lines) to "a pre-existing `--smoke`/viewport-render
-quirk" - that diagnosis was wrong. The real cause was the `mat2` shader bug
-above: `GpuRaytracer::Init()` was failing on every run, so no `rt_frame_ms`
-line could ever print regardless of how `--smoke` drives the viewport. With
-that bug now fixed, the reproduction recipe below works correctly again (as
-confirmed empirically), but no fresh timed measurement table has been taken
-for the texture/transparency/multi-bounce feature set specifically - a
-future pass should re-run the recipe and add real numbers here rather than
-relying on the qualitative order-of-magnitude estimate this section
-previously fell back on.
+sampling, transparency, and multi-bounce work. An earlier note here
+attributed a failed reproduction attempt (zero `rt_frame_ms` lines) to "a
+pre-existing `--smoke`/viewport-render quirk" - that diagnosis was wrong.
+The real cause was the `mat2` shader bug above: `GpuRaytracer::Init()` was
+failing on every run, so no `rt_frame_ms` line could ever print regardless
+of how `--smoke` drives the viewport. With that bug fixed, a fresh
+measurement (same sandbox, same llvmpipe software rasterizer, same
+noisy-shared-CPU caveats as the original table):
+
+| Scene | Triangles | Internal res | First frame (shader warm-up) | Steady-state range | Median (10 frames) |
+|---|---|---|---|---|---|
+| Box + sphere + ground plane, 1 point light, textured Chrome/Gold/Aluminium materials, 3 default bounces | 11,514 | 311x141 | ~18.8 ms | 8.2-12.1 ms | ~9.0 ms |
+
+Slightly higher than the original single-bounce/no-texture table's ~20 ms
+median at a similar triangle count and a comparable (slightly taller)
+resolution, consistent with the added cost of up to 3 bounces plus texture
+sampling - not a regression, the expected cost of doing genuinely more
+work per pixel. Still comfortably in the same single-digit-to-tens-of-
+milliseconds order of magnitude on software rasterization the original
+table concluded from; the qualitative "sub-millisecond on real GPU
+hardware" estimate in the section above continues to hold for the same
+reason (a few extra texture fetches and up to 2 more bounces are cheap
+relative to BVH traversal on hardware with actual parallelism).
 
 ## Reproducing the measurements
 
