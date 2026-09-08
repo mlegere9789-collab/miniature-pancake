@@ -478,6 +478,16 @@ int GFPGAN::load_weights(const char* model_path, std::vector<StyleConvWeights>& 
         ifs.read((char*)weights.style_convs_weight.data(), sizeof(float) * data_size4);
         ifs.read((char*)weights.style_convs_bias.data(), sizeof(float) * data_size5);
 
+        // A truncated or wrong-variant style.bin (a bad download, no checksum verifies
+        // it) would otherwise leave these buffers partially zero-filled while every
+        // caller up to face_enhance.exe's own exit code still reports success --
+        // silently producing garbage face restorations pasted onto real photos with
+        // nothing anywhere surfacing an error.
+        if (!ifs)
+        {
+            return -1;
+        }
+
         style_conv_weights.push_back(weights);
 
     }
@@ -505,6 +515,11 @@ int GFPGAN::load_weights(const char* model_path, std::vector<StyleConvWeights>& 
         ifs.read((char*)weights.to_rgbs_modulated_conv_modulation_bias.data(), sizeof(float) * data_size3);
         ifs.read((char*)weights.to_rgbs_bias.data(), sizeof(float) * data_size4);
 
+        if (!ifs)
+        {
+            return -1;
+        }
+
         to_rgbs_conv_weights.push_back(weights);
 
     }
@@ -513,6 +528,10 @@ int GFPGAN::load_weights(const char* model_path, std::vector<StyleConvWeights>& 
     std::vector<float> const_input_data;
     const_input_data.resize(const_input_size);
     ifs.read((char*)const_input_data.data(), sizeof(float) * const_input_size);
+    if (!ifs)
+    {
+        return -1;
+    }
     const_input = ncnn::Mat(512 * 4 * 4, (void*)const_input_data.data()).reshape(4, 4, 512).clone();
 
     ifs.close();
