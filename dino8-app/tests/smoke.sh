@@ -697,6 +697,87 @@ sccheck "^ok   expect_objects 3" "RunScript left the union, its point marker, an
 sccheck "selected by name lookup: 1" "rs.ObjectsByName found the object rs.ObjectName renamed to Widget"
 grep -q "! Script error" <<<"$SC" && { echo "FAIL script.txt printed a script error"; fail=1; } || echo "ok   no Lua script errors"
 
+# Python scripting: RunPythonScript through the embedded `dino8` module
+# (see src/script/PythonEngine.cpp), when this build was compiled with a
+# Python 3 development install (DINO8_HAVE_PYTHON - see CMakeLists.txt).
+# Builds a box and a sphere, sets Name/Color on the box (and reads its
+# Layer), selects it, deletes the sphere, and exercises dino8.RunCommand
+# and Point3d/Vector3d arithmetic. Unlike script_script.txt's Lua test
+# there is no trailing script token: PythonEngine runs a script
+# start-to-finish with no GetPoint-style mid-script suspend (see
+# python_script.txt's own header).
+#
+# dino8.RunCommand only *queues* a nested command line while called from
+# inside another command's callback (CommandEngine::RunNested -> Execute,
+# see cmd_misc.cpp/CommandEngine.cpp: callback_depth_ > 0 defers it to
+# deferred_, run once the calling command finishes) - the same as Lua's
+# rs.Command would if it were called from inside a running rs.* script.
+# So NewLayer's effect is not visible to the rest of *this* script; it
+# runs right after RunPythonScript's own command finishes instead, which
+# is why the layer check below reads the pre-existing "Default" layer and
+# the RunCommand check greps the run's full output rather than "history:
+# layer: Parts" inline.
+cat > "$TMP/t.py" <<'PY'
+import dino8
+
+box_id = dino8.doc.Objects.AddBox(dino8.Point3d(0, 0, 0), dino8.Vector3d(10, 10, 10))
+sphere_id = dino8.doc.Objects.AddSphere(dino8.Point3d(5, 5, 5), 2)
+
+obj = dino8.doc.Objects.Find(box_id)
+obj.Name = "Widget"
+obj.Color = (255, 0, 0)
+print("name: " + obj.Name)
+print("layer: " + obj.Layer)
+print("color: %d,%d,%d" % obj.Color)
+print("kind: " + obj.ObjectType)
+
+obj.Select()
+print("selected count: %d" % len(dino8.doc.Objects.GetSelectedObjects()))
+print("object count before delete: %d" % len(dino8.doc.Objects.AllObjects()))
+
+deleted = dino8.doc.Objects.Delete(sphere_id)
+print("deleted sphere: " + str(deleted))
+print("object count after delete: %d" % len(dino8.doc.Objects.AllObjects()))
+
+v = dino8.Vector3d(3, 4, 0)
+print("vector length: %.2f" % v.Length)
+p1 = dino8.Point3d(1, 2, 3)
+p2 = p1 + v
+print("point plus vector: %.0f,%.0f,%.0f" % (p2.X, p2.Y, p2.Z))
+
+by_name = [o for o in dino8.doc.Objects.AllObjects() if o.Name == "Widget"]
+print("found by name: %d" % len(by_name))
+
+dino8.RunCommand("NewLayer", "Parts")
+PY
+sed "s|@TMP@|$TMP|g" "$HERE/python_script.txt" > "$TMP/python_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  PS="$("$BIN" --smoke 100 --script "$TMP/python_script.txt" 2>&1)" || { echo "$PS"; echo "FAIL: python script exited non-zero"; exit 1; }
+else
+  PS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/python_script.txt" 2>&1)" || { echo "$PS"; echo "FAIL: python script exited non-zero"; exit 1; }
+fi
+if echo "$PS" | grep -q "no Python 3 development install"; then
+  echo "skip Python scripting not available in this build (compiled without Python3 Development.Embed - see CMakeLists.txt)"
+else
+  echo "$PS" | grep -E "^(ok|FAIL)"
+  if echo "$PS" | grep -q "^FAIL"; then fail=1; fi
+  pscheck() { if echo "$PS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  pscheck "history: name: Widget" "RunPythonScript's Dino8Object.Name getter/setter round-tripped"
+  pscheck "history: layer: Default" "Dino8Object.Layer read back the box's layer"
+  pscheck "Layer 'Parts' created and made current" "dino8.RunCommand(\"NewLayer\", \"Parts\") ran the real NewLayer command (deferred until RunPythonScript's own command finished, same as rs.Command would be)"
+  pscheck "history: color: 255,0,0" "Dino8Object.Color setter/getter round-tripped"
+  pscheck "history: kind: polysurface" "Dino8Object.ObjectType reported the box as a polysurface"
+  pscheck "history: selected count: 1" "Dino8Object.Select() selected the box"
+  pscheck "history: object count before delete: 2" "AllObjects saw both the box and the sphere"
+  pscheck "history: deleted sphere: True" "dino8.doc.Objects.Delete removed the sphere"
+  pscheck "history: object count after delete: 1" "AllObjects reflects the deletion"
+  pscheck "history: vector length: 5.00" "Vector3d.Length computed a 3-4-5 triangle"
+  pscheck "history: point plus vector: 4,6,3" "Point3d.__add__(Vector3d) matched RhinoCommon's operator+"
+  pscheck "history: found by name: 1" "list comprehension over AllObjects() found the renamed box"
+  pscheck "^ok   expect_objects 1" "RunPythonScript left exactly the box (the sphere was deleted from inside the script)"
+  grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
+fi
+
 # Dino Flow + plug-ins: node editor, the HelloDino sample plug-in (command +
 # Dino Flow node), and GrasshopperPlayer headless solve/bake (see flow_script.txt).
 sed "s|@FLOWFILE@|$HERE/flow_graph.dflow|g" "$HERE/flow_script.txt" > "$TMP/flow_script.txt"
