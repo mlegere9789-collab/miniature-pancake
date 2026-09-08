@@ -99,6 +99,7 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
   });
   engine_ = std::make_unique<CommandEngine>(*this, doc_, catalog_);
   lua_ = std::make_unique<LuaEngine>(*this);
+  python_ = std::make_unique<PythonEngine>(*this);
   RegisterCommands();
   engine_->RegisterCatalogPlaceholders();
   engine_->InstallDefaultAliases();
