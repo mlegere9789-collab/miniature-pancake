@@ -126,9 +126,13 @@ inline std::vector<ObjectId> AddGlyphCurves(CommandContext& ctx, const GlyphSpec
 }
 
 // Adds a complete annotation: `curves` (lines, arrows, leaders) plus the
-// text, as one group on the dimension layer. Returns the group id or -1.
+// text, as one group on the dimension layer. `extra_tags` (e.g. a
+// dimension's DimRefObj1/DimRefEnd1 anchors - see cmd_annotate.cpp) is
+// copied onto every curve in the group, so a later associativity update can
+// read it back from any member without needing to know which one holds it.
+// Returns the group id or -1.
 inline int AddAnnotationGroup(CommandContext& ctx, const std::string& kind, const std::vector<kernel::NurbsCurve>& curves,
-                              const GlyphSpec& text, int layer = -1) {
+                              const GlyphSpec& text, int layer = -1, const std::map<std::string, std::string>& extra_tags = {}) {
   if (layer < 0) layer = DimensionLayer(ctx);
   const std::string style = ctx.Settings().annotation_style;
   std::vector<ObjectId> ids;
@@ -136,6 +140,7 @@ inline int AddAnnotationGroup(CommandContext& ctx, const std::string& kind, cons
     SceneObject s = SceneObject::MakeCurve(c);
     s.layer_index = layer;
     TagAnnotation(s, kind, style);
+    for (const auto& [k, v] : extra_tags) s.user_text[k] = v;
     ids.push_back(ctx.Doc().Add(std::move(s)));
   }
   if (!text.text.empty()) {
@@ -185,6 +190,41 @@ inline bool GroupGlyphSpec(CommandContext& ctx, int group_id, GlyphSpec& g) {
     if (o.group_id == group_id && o.user_text.count("Glyph") && GlyphSpecOf(o, g)) return true;
   }
   return false;
+}
+
+// Finds a real document object anchored exactly at `p` (a Point object at
+// that location, or a curve's start/end): the basis for associative
+// dimensions (DimLinear/DimAligned - cmd_annotate.cpp). Skips other
+// annotation output (a dimension should never anchor to another dimension's
+// baked geometry) and returns false when `p` is free-floating - a dimension
+// built from unanchored points stays a static baked measurement, same as
+// today, since there is nothing live to track it back to.
+inline bool FindPointAnchor(Document& doc, Point3d p, ObjectId& obj, std::string& which) {
+  const double eps = 1e-7;
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.user_text.count("Annotation")) continue;
+    if (o.kind == ObjectKind::Point) {
+      if (o.point.DistanceTo(p) < eps) { obj = o.id; which = "point"; return true; }
+    } else if (o.kind == ObjectKind::Curve && o.curve) {
+      if (o.curve->raw().PointAtStart().DistanceTo(p) < eps) { obj = o.id; which = "start"; return true; }
+      if (o.curve->raw().PointAtEnd().DistanceTo(p) < eps) { obj = o.id; which = "end"; return true; }
+    }
+  }
+  return false;
+}
+
+// Resolves an anchor made by FindPointAnchor back to a current point -
+// the object's *current* location, which is how a moved/edited source
+// object propagates into a dimension update. False if the object is gone
+// or no longer the kind the anchor expects (e.g. a curve turned into
+// something else by a boolean/edit that replaced it).
+inline bool ResolveAnchor(Document& doc, ObjectId obj, const std::string& which, Point3d& out) {
+  const SceneObject* o = doc.Find(obj);
+  if (!o) return false;
+  if (which == "point") { if (o->kind != ObjectKind::Point) return false; out = o->point; return true; }
+  if (o->kind != ObjectKind::Curve || !o->curve) return false;
+  out = which == "start" ? Point3d(o->curve->raw().PointAtStart()) : Point3d(o->curve->raw().PointAtEnd());
+  return true;
 }
 
 // Small "Name=Value" option reader for script-driven commands: consumes the
