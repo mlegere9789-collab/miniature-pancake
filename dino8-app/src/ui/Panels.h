@@ -67,6 +67,9 @@ const char* ToolbarButtonLabel(const std::string& command);  // nullptr when unk
 
 // Small shared widgets.
 bool ColorEdit(const char* label, struct Color& color);
+// A translated window title with a "###<id>" ImGui-identity suffix, so a
+// language switch doesn't reset the saved dock layout (see Panels.cpp).
+std::string PanelTitle(const std::string& key, const char* stable_id);
 // The default main-toolbar command list ("|" is a separator).
 std::vector<std::string> DefaultToolbarCommands();
 // Evaluates a simple arithmetic expression ("2*(3+4)/5", sqrt, sin...).

@@ -13,11 +13,22 @@
 #include <vector>
 
 #include "app/Application.h"
+#include "i18n/I18n.h"
 #include "imgui.h"
 #include "script/LuaEngine.h"
 #include "ui/Theme.h"
 
 namespace dino8::app {
+
+using dino8::i18n::Tr;
+
+// A translated window title, with a "###<id>" suffix ImGui ignores for the
+// visible label but uses as the window's identity - so switching language
+// changes what's on screen without resetting the saved dock layout (which
+// keys off the part of the title after "###", per ImGui's ID rules).
+std::string PanelTitle(const std::string& key, const char* stable_id) {
+  return Tr(key) + "###" + stable_id;
+}
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -177,7 +188,7 @@ bool EvaluateExpression(const std::string& text, double& out, std::string& error
 
 void DrawLayersPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Layers", &app.Panels().layers)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.layers", "Layers").c_str(), &app.Panels().layers)) { ImGui::End(); return; }
   static char new_name[128] = "";
   if (ImGui::Button("New Layer")) {
     doc.BeginChange("New layer");
@@ -300,7 +311,7 @@ void DrawLayersPanel(Application& app) {
 
 void DrawPropertiesPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Properties", &app.Panels().properties)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.properties", "Properties").c_str(), &app.Panels().properties)) { ImGui::End(); return; }
   std::vector<ObjectId> sel = doc.SelectedIds();
   if (sel.empty()) {
     ImGui::TextDisabled("No objects selected.");
@@ -416,7 +427,7 @@ void DrawPropertiesPanel(Application& app) {
 // ---------------------------------------------------------------------------
 
 void DrawCommandHistoryPanel(Application& app) {
-  if (!ImGui::Begin("Command History", &app.Panels().command_history)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.command_history", "CommandHistory").c_str(), &app.Panels().command_history)) { ImGui::End(); return; }
   if (ImGui::SmallButton("Clear")) app.Engine().ClearHistory();
   ImGui::SameLine();
   if (ImGui::SmallButton("Copy all")) {
@@ -436,7 +447,7 @@ void DrawCommandHistoryPanel(Application& app) {
 }
 
 void DrawCommandListPanel(Application& app, std::string& filter, int& status_filter) {
-  if (!ImGui::Begin("Command List", &app.Panels().command_list)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.command_list", "CommandList").c_str(), &app.Panels().command_list)) { ImGui::End(); return; }
   CommandEngine& eng = app.Engine();
   const size_t n_impl = eng.CountWithStatus(CommandStatus::Implemented);
   const size_t n_part = eng.CountWithStatus(CommandStatus::Partial);
@@ -481,7 +492,7 @@ void DrawCommandListPanel(Application& app, std::string& filter, int& status_fil
 }
 
 void DrawHelpPanel(Application& app, std::string& search) {
-  if (!ImGui::Begin("Help", &app.Panels().help)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.help", "Help").c_str(), &app.Panels().help)) { ImGui::End(); return; }
   if (InputString("Find command", search)) {
     const CommandInfo* exact = app.Catalog().Find(search);
     if (exact) app.help_command = exact->name;
@@ -535,7 +546,7 @@ void DrawHelpPanel(Application& app, std::string& search) {
 // ---------------------------------------------------------------------------
 
 void DrawNotificationsPanel(Application& app) {
-  if (!ImGui::Begin("Notifications", &app.Panels().notifications)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.notifications", "Notifications").c_str(), &app.Panels().notifications)) { ImGui::End(); return; }
   ImGui::TextWrapped("Dino 8 is free software. There are no licences, subscriptions, sign-ins or update nags to manage.");
   ImGui::Separator();
   ImGui::Text("Recent messages:");
@@ -547,7 +558,7 @@ void DrawNotificationsPanel(Application& app) {
 
 void DrawNamedViewsPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Named Views", &app.Panels().named_views)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.named_views", "NamedViews").c_str(), &app.Panels().named_views)) { ImGui::End(); return; }
   static char name[128] = "";
   ImGui::InputTextWithHint("##nv", "view name", name, sizeof(name));
   ImGui::SameLine();
@@ -574,7 +585,7 @@ void DrawNamedViewsPanel(Application& app) {
 
 void DrawNotesPanel(Application& app, char* buffer, size_t buffer_size) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Notes", &app.Panels().notes)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.notes", "Notes").c_str(), &app.Panels().notes)) { ImGui::End(); return; }
   if (std::strcmp(buffer, doc.Notes().c_str()) != 0 && !ImGui::IsAnyItemActive()) std::snprintf(buffer, buffer_size, "%s", doc.Notes().c_str());
   if (ImGui::InputTextMultiline("##notes", buffer, buffer_size, ImVec2(-1, -1))) {
     doc.Notes() = buffer;
@@ -585,7 +596,7 @@ void DrawNotesPanel(Application& app, char* buffer, size_t buffer_size) {
 
 void DrawDocumentUserTextPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Document User Text", &app.Panels().document_user_text)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.document_user_text", "DocumentUserText").c_str(), &app.Panels().document_user_text)) { ImGui::End(); return; }
   static char key[128], value[512];
   ImGui::InputText("Key", key, sizeof(key));
   ImGui::InputText("Value", value, sizeof(value));
@@ -604,7 +615,7 @@ void DrawDocumentUserTextPanel(Application& app) {
 }
 
 void DrawDisplayPanel(Application& app) {
-  if (!ImGui::Begin("Display", &app.Panels().display)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.display", "Display").c_str(), &app.Panels().display)) { ImGui::End(); return; }
   Viewport* vp = app.ActiveViewport();
   if (vp) {
     ImGui::Text("Viewport: %s", vp->Name().c_str());
@@ -641,7 +652,7 @@ void DrawDisplayPanel(Application& app) {
 }
 
 void DrawCalculatorPanel(Application& app, std::string& input, std::string& result) {
-  if (!ImGui::Begin("Calculator", &app.Panels().calculator)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.calculator", "Calculator").c_str(), &app.Panels().calculator)) { ImGui::End(); return; }
   ImGui::TextDisabled("+ - * / ^ %%  sqrt sin cos tan asin acos atan abs ln log exp floor ceil round min max pow hypot pi e");
   if (InputString("Expression", input, ImGuiInputTextFlags_EnterReturnsTrue) || ImGui::Button("Evaluate")) {
     double v = 0;
@@ -660,39 +671,50 @@ void DrawCalculatorPanel(Application& app, std::string& input, std::string& resu
 
 void DrawAboutWindow(Application& app) {
   ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_Appearing);
-  if (!ImGui::Begin("About Dino 8", &app.Panels().about, ImGuiWindowFlags_NoDocking)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.about", "About").c_str(), &app.Panels().about, ImGuiWindowFlags_NoDocking)) { ImGui::End(); return; }
   ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(ThemeColors::kAccent[0], ThemeColors::kAccent[1], ThemeColors::kAccent[2], 1));
   ImGui::Text("Dino 8  %s", DINO8_VERSION);
   ImGui::PopStyleColor();
-  ImGui::TextWrapped("A free NURBS, SubD and mesh modeler with Rhino 8's command vocabulary. Totally free: no subscription, no payment, no licence keys, no accounts, no telemetry.");
+  ImGui::TextWrapped("%s", Tr("about.blurb").c_str());
   ImGui::Separator();
-  ImGui::BulletText("Geometry kernel: OpenNURBS (McNeel, MIT licence) + Manifold (Apache 2.0)");
-  ImGui::BulletText("UI: Dear ImGui (MIT) + GLFW (zlib)");
-  ImGui::BulletText("Command reference: %zu commands", app.Catalog().Size());
-  ImGui::BulletText("Native file format: .3dm (reads and writes Rhino 8 files)");
+  ImGui::BulletText("%s", Tr("about.kernel").c_str());
+  ImGui::BulletText("%s", Tr("about.ui_stack").c_str());
+  ImGui::BulletText(Tr("about.commands").c_str(), app.Catalog().Size());
+  ImGui::BulletText("%s", Tr("about.file_format").c_str());
   ImGui::Separator();
-  ImGui::TextWrapped("Keyboard: F1 command list, F2 history, F3 properties, F7 grid, F8 ortho, F9 grid snap, F10 control points, Ctrl+Z/Y undo/redo, Esc cancel.");
-  if (ImGui::Button("Close")) app.Panels().about = false;
+  ImGui::TextWrapped("%s", Tr("about.keyboard").c_str());
+  if (ImGui::Button(Tr("about.close").c_str())) app.Panels().about = false;
   ImGui::End();
 }
 
 void DrawOptionsWindow(Application& app) {
   ImGui::SetNextWindowSize(ImVec2(620, 460), ImGuiCond_Appearing);
-  if (!ImGui::Begin("Options", &app.Panels().options)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.options", "Options").c_str(), &app.Panels().options)) { ImGui::End(); return; }
   if (ImGui::BeginTabBar("opts")) {
-    if (ImGui::BeginTabItem("General")) {
-      ImGui::TextWrapped("Dino 8 has no licence, update-check or account settings: there is nothing to configure here that could ever lock you out.");
-      if (ImGui::SliderFloat("UI scale", &app.ui_scale, 0.75f, 2.0f)) { ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
+    if (ImGui::BeginTabItem(Tr("options.tab_general").c_str())) {
+      ImGui::TextWrapped("%s", Tr("options.general_intro").c_str());
+      if (ImGui::SliderFloat(Tr("options.ui_scale").c_str(), &app.ui_scale, 0.75f, 2.0f)) { ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
       int theme = app.light_theme ? 1 : 0;
-      if (ImGui::Combo("Theme", &theme, "Dark\0Light\0")) { app.light_theme = theme == 1; ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
-      if (ImGui::ColorEdit3("Accent colour", app.accent_color, ImGuiColorEditFlags_NoInputs)) ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color);
+      const std::string theme_items = Tr("options.theme_dark") + '\0' + Tr("options.theme_light") + '\0';
+      if (ImGui::Combo(Tr("options.theme").c_str(), &theme, theme_items.c_str())) { app.light_theme = theme == 1; ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
+      if (ImGui::ColorEdit3(Tr("options.accent_colour").c_str(), app.accent_color, ImGuiColorEditFlags_NoInputs)) ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color);
       ImGui::SameLine();
       if (ImGui::SmallButton("Dino teal")) { app.accent_color[0] = 0.184f; app.accent_color[1] = 0.655f; app.accent_color[2] = 0.627f; ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
       ImGui::SameLine();
       if (ImGui::SmallButton("Rhino blue")) { app.accent_color[0] = 0.30f; app.accent_color[1] = 0.62f; app.accent_color[2] = 0.95f; ApplyDinoTheme(app.ui_scale, app.light_theme, app.accent_color); }
-      { bool show_welcome = !app.welcome_dismissed; if (ImGui::Checkbox("Show the welcome card on empty documents", &show_welcome)) app.welcome_dismissed = !show_welcome; }
-      ImGui::Checkbox("Gumball", &app.gumball_enabled);
-      ImGui::Checkbox("Show toolbars", &app.Panels().toolbars);
+      { bool show_welcome = !app.welcome_dismissed; if (ImGui::Checkbox(Tr("options.show_welcome").c_str(), &show_welcome)) app.welcome_dismissed = !show_welcome; }
+      ImGui::Checkbox(Tr("options.gumball").c_str(), &app.gumball_enabled);
+      ImGui::Checkbox(Tr("options.show_toolbars").c_str(), &app.Panels().toolbars);
+      ImGui::SetNextItemWidth(160);
+      if (ImGui::BeginCombo(Tr("options.language").c_str(), dino8::i18n::CurrentLanguageName().c_str())) {
+        for (const auto& lang : dino8::i18n::AvailableLanguages()) {
+          if (ImGui::Selectable(lang.name.c_str(), lang.code == dino8::i18n::CurrentLanguage())) {
+            dino8::i18n::SetLanguage(lang.code);
+            app.language = lang.code;
+          }
+        }
+        ImGui::EndCombo();
+      }
       ImGui::Separator();
       ImGui::TextDisabled("Scripting");
       {
@@ -711,7 +733,7 @@ void DrawOptionsWindow(Application& app) {
       }
       ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("Modeling Aids")) {
+    if (ImGui::BeginTabItem(Tr("options.tab_modeling_aids").c_str())) {
       SnapSettings& s = app.Snaps();
       ImGui::Checkbox("Grid snap", &s.grid_snap);
       ImGui::Checkbox("Ortho", &s.ortho);
@@ -726,13 +748,13 @@ void DrawOptionsWindow(Application& app) {
       ImGui::Checkbox("Disable all", &s.disable_all);
       ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("View")) {
+    if (ImGui::BeginTabItem(Tr("options.tab_view").c_str())) {
       DocumentSettings& d = app.Doc().Settings();
       ImGui::Checkbox("Grid", &d.show_grid);
       ImGui::Checkbox("Axes", &d.show_axes);
       ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("Aliases")) {
+    if (ImGui::BeginTabItem(Tr("options.tab_aliases").c_str())) {
       static char alias[64], cmd[128];
       ImGui::InputText("Alias", alias, sizeof(alias));
       ImGui::InputText("Command", cmd, sizeof(cmd));
@@ -748,7 +770,7 @@ void DrawOptionsWindow(Application& app) {
       }
       ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("Toolbar")) {
+    if (ImGui::BeginTabItem(Tr("options.tab_toolbar").c_str())) {
       int size_index = app.toolbar_icon_size == 40 ? 2 : app.toolbar_icon_size == 32 ? 1 : 0;
       ImGui::SetNextItemWidth(120);
       if (ImGui::Combo("Icon size", &size_index, "24 px\0" "32 px\0" "40 px\0")) app.toolbar_icon_size = size_index == 2 ? 40 : size_index == 1 ? 32 : 24;
@@ -789,7 +811,7 @@ void DrawOptionsWindow(Application& app) {
       if (ImGui::Button("Reset to default")) tb = DefaultToolbarCommands();
       ImGui::EndTabItem();
     }
-    if (ImGui::BeginTabItem("Keyboard")) {
+    if (ImGui::BeginTabItem(Tr("options.tab_keyboard").c_str())) {
       ImGui::BulletText("F1 Command list   F2 History   F3 Properties   F7 Grid   F8 Ortho   F9 Grid snap   F10/F11 Points on/off");
       ImGui::BulletText("Ctrl+N/O/S New/Open/Save   Ctrl+Z/Y Undo/Redo   Ctrl+A Select all   Ctrl+G Group   Ctrl+H Hide");
       ImGui::BulletText("Home Undo view   PgUp/PgDn zoom   Arrow keys orbit   Esc cancel / deselect   Enter repeat last");
@@ -802,7 +824,7 @@ void DrawOptionsWindow(Application& app) {
 
 void DrawDocumentPropertiesWindow(Application& app) {
   ImGui::SetNextWindowSize(ImVec2(520, 380), ImGuiCond_Appearing);
-  if (!ImGui::Begin("Document Properties", &app.Panels().document_properties)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.document_properties", "DocumentProperties").c_str(), &app.Panels().document_properties)) { ImGui::End(); return; }
   DocumentSettings& s = app.Doc().Settings();
   static const char* units[] = {"Millimeters", "Centimeters", "Meters", "Inches", "Feet"};
   int cur = 0;
@@ -870,7 +892,7 @@ void DrawDocumentPropertiesWindow(Application& app) {
 void DrawLinetypesPanel(Application& app) {
   Document& doc = app.Doc();
   ImGui::SetNextWindowSize(ImVec2(420, 320), ImGuiCond_Appearing);
-  if (!ImGui::Begin("Linetypes", &app.Panels().linetypes)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.linetypes", "Linetypes").c_str(), &app.Panels().linetypes)) { ImGui::End(); return; }
   DocumentSettings& s = doc.Settings();
   double lts = s.linetype_scale;
   ImGui::SetNextItemWidth(120);
@@ -916,7 +938,7 @@ void DrawLinetypesPanel(Application& app) {
 
 void DrawBoxEditPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("BoxEdit", &app.Panels().box_edit)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.box_edit", "BoxEdit").c_str(), &app.Panels().box_edit)) { ImGui::End(); return; }
   std::vector<ObjectId> sel = doc.SelectedIds();
   kernel::BoundingBox bb;
   if (sel.empty() || !doc.BoundingBoxOf(sel, bb)) {
@@ -957,7 +979,7 @@ void DrawBoxEditPanel(Application& app) {
 
 void DrawUndoMultipleWindow(Application& app, bool redo) {
   bool& flag = redo ? app.Panels().redo_multiple : app.Panels().undo_multiple;
-  if (!ImGui::Begin(redo ? "Redo Multiple" : "Undo Multiple", &flag, ImGuiWindowFlags_AlwaysAutoResize)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle(redo ? "panel.redo_multiple" : "panel.undo_multiple", redo ? "RedoMultiple" : "UndoMultiple").c_str(), &flag, ImGuiWindowFlags_AlwaysAutoResize)) { ImGui::End(); return; }
   std::vector<std::string> labels = redo ? app.Doc().RedoLabels() : app.Doc().UndoLabels();
   if (labels.empty()) ImGui::TextDisabled("Nothing to %s.", redo ? "redo" : "undo");
   for (size_t i = 0; i < labels.size(); ++i) {
@@ -973,7 +995,7 @@ void DrawUndoMultipleWindow(Application& app, bool redo) {
 
 void DrawLayerStateManager(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Layer State Manager", &app.Panels().layer_state_manager)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.layer_state_manager", "LayerStateManager").c_str(), &app.Panels().layer_state_manager)) { ImGui::End(); return; }
   struct State { std::string name; std::vector<std::pair<std::string, std::pair<bool, bool>>> layers; };
   static std::vector<State> states;
   static char name[128] = "";
@@ -1003,7 +1025,7 @@ void DrawLayerStateManager(Application& app) {
 }
 
 void DrawSelectionFilterPanel(Application& app) {
-  if (!ImGui::Begin("Selection Filter", &app.Panels().selection_filter, ImGuiWindowFlags_AlwaysAutoResize)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.selection_filter", "SelectionFilter").c_str(), &app.Panels().selection_filter, ImGuiWindowFlags_AlwaysAutoResize)) { ImGui::End(); return; }
   ImGui::TextDisabled("Select only these object types with clicks and windows:");
   static bool filt[6] = {true, true, true, true, true, true};
   const char* names[6] = {"Points", "Curves", "Surfaces", "Polysurfaces", "Meshes", "SubDs"};
@@ -1021,7 +1043,7 @@ void DrawSelectionFilterPanel(Application& app) {
 
 void DrawMacroEditor(Application& app) {
   ImGui::SetNextWindowSize(ImVec2(520, 360), ImGuiCond_Appearing);
-  if (!ImGui::Begin("Macro Editor", &app.Panels().macro_editor)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.macro_editor", "MacroEditor").c_str(), &app.Panels().macro_editor)) { ImGui::End(); return; }
   static char text[4096] = "! _Box 0,0,0 10,10,10\n_ZoomExtents\n";
   ImGui::TextDisabled("One command per line. ! cancels the running command, _ forces English names, - suppresses dialogs.");
   ImGui::InputTextMultiline("##macro", text, sizeof(text), ImVec2(-1, -ImGui::GetFrameHeightWithSpacing() * 1.5f));
@@ -1091,7 +1113,7 @@ void DrawScriptEditor(Application& app) {
     s.loaded = true;
   }
   ImGui::SetNextWindowSize(ImVec2(760, 520), ImGuiCond_Appearing);
-  if (!ImGui::Begin("Script Editor", &app.Panels().script_editor)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.script_editor", "ScriptEditor").c_str(), &app.Panels().script_editor)) { ImGui::End(); return; }
 
   if (ImGui::Button("New")) { s.text.clear(); s.path.clear(); s.file_name.clear(); s.dirty = false; }
   ImGui::SameLine();
@@ -1176,7 +1198,7 @@ void DrawScriptEditor(Application& app) {
 
 void DrawScriptingReference(Application& app) {
   ImGui::SetNextWindowSize(ImVec2(700, 560), ImGuiCond_Appearing);
-  if (!ImGui::Begin("Scripting Reference", &app.Panels().scripting_reference)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.scripting_reference", "ScriptingReference").c_str(), &app.Panels().scripting_reference)) { ImGui::End(); return; }
   ImGui::TextWrapped("Every rs.* function Dino 8's embedded Lua 5.4 provides. RunScript/LoadScript run a .lua file; EditScript/ScriptEditor edit one; \"= expr\" on the command line runs a one-line Lua expression.");
   static char filter[128] = {};
   ImGui::InputTextWithHint("##rsfilter", "Filter (e.g. curve, layer, get)...", filter, sizeof(filter));
@@ -1199,7 +1221,7 @@ void DrawScriptingReference(Application& app) {
 
 void DrawClippingPlanesPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Clipping Planes", &app.Panels().clipping_planes)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.clipping_planes", "ClippingPlanes").c_str(), &app.Panels().clipping_planes)) { ImGui::End(); return; }
   if (ImGui::Button("New (ClippingPlane)")) app.Engine().Execute("ClippingPlane");
   ImGui::SameLine();
   if (ImGui::Button("Sections")) app.Engine().Execute("ClippingSections");
@@ -1255,7 +1277,7 @@ void DrawClippingPlanesPanel(Application& app) {
 
 void DrawLayoutsPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Layouts", &app.Panels().layouts)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.layouts", "Layouts").c_str(), &app.Panels().layouts)) { ImGui::End(); return; }
   if (ImGui::Button("New layout")) app.Engine().Execute("Layout");
   ImGui::SameLine();
   if (ImGui::Button("Add detail")) app.Engine().Execute("Detail");
@@ -1330,7 +1352,7 @@ void DrawLayoutsPanel(Application& app) {
 
 void DrawNamedCPlanesPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Named CPlanes", &app.Panels().named_cplanes)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.named_cplanes", "NamedCPlanes").c_str(), &app.Panels().named_cplanes)) { ImGui::End(); return; }
   static char name[128] = "";
   ImGui::InputTextWithHint("##ncp", "cplane name", name, sizeof(name));
   ImGui::SameLine();
