@@ -45,6 +45,8 @@ jobs:
   windows:
     name: Windows (build, installer .exe)
     runs-on: windows-latest
+    env:
+      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
@@ -66,7 +68,7 @@ jobs:
       # dino8-app/docs/CODE_SIGNING.md for exactly what secret to add and
       # where the certificate comes from.
       - name: Sign Dino8.exe (Authenticode)
-        if: ${{ secrets.WINDOWS_CERT_BASE64 != '' }}
+        if: ${{ env.HAS_WINDOWS_CERT == 'true' }}
         shell: pwsh
         env:
           WINDOWS_CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
@@ -91,7 +93,7 @@ jobs:
       # ISCC has produced it (the payload it embeds, build\install\Dino8.exe,
       # is already the signed binary from the step above).
       - name: Sign Windows installer (Authenticode)
-        if: ${{ secrets.WINDOWS_CERT_BASE64 != '' }}
+        if: ${{ env.HAS_WINDOWS_CERT == 'true' }}
         shell: pwsh
         env:
           WINDOWS_CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
@@ -142,6 +144,8 @@ jobs:
   macos:
     name: macOS (build, .dmg)
     runs-on: macos-14
+    env:
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERT_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install Ninja
@@ -159,7 +163,7 @@ jobs:
       # where the Developer ID certificate and app-specific password come
       # from.
       - name: Import Developer ID certificate
-        if: ${{ secrets.APPLE_CERT_BASE64 != '' }}
+        if: ${{ env.HAS_APPLE_CERT == 'true' }}
         env:
           APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
@@ -176,7 +180,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           rm -f "$CERT_PATH"
       - name: Code-sign the app bundle
-        if: ${{ secrets.APPLE_CERT_BASE64 != '' }}
+        if: ${{ env.HAS_APPLE_CERT == 'true' }}
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
@@ -188,7 +192,7 @@ jobs:
       # skipped entirely when there is no certificate to sign it with (Apple
       # refuses to notarize an unsigned bundle).
       - name: Notarize and staple the disk image
-        if: ${{ secrets.APPLE_CERT_BASE64 != '' }}
+        if: ${{ env.HAS_APPLE_CERT == 'true' }}
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
