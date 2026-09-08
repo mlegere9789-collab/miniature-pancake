@@ -399,7 +399,7 @@ FilletBuild BuildFillet(const ON_NurbsSurface& a, const ON_NurbsSurface& b, cons
   const double sb = OffsetSign(b, a.PointAt(a.Domain(0).Mid(), a.Domain(1).Mid()));
   const kernel::NurbsSurface offA = OffsetBy(a, sa * r0), offB = OffsetBy(b, sb * r0);
   std::vector<IntersectionCurve> ssx = IntersectSurfaces(offA.raw(), offB.raw(), opt);
-  if (ssx.empty()) { out.error = "the offset surfaces do not meet (surfaces too far apart, parallel, or radius too small)"; return out; }
+  if (ssx.empty()) { out.error = "the offset surfaces do not meet (surfaces too far apart or parallel, radius too small to reach, or - just as often - radius too LARGE for the surfaces to still overlap once offset that far)"; return out; }
   // Longest curve is the spine.
   const IntersectionCurve* best = &ssx.front();
   for (const IntersectionCurve& c : ssx) if (c.Length() > best->Length()) best = &c;
@@ -1033,6 +1033,33 @@ class FilletEdgeCommand : public Command {
           const ON_BrepEdge& e = remainder.m_E[ei];
           if (e.m_edge_index >= 0 && e.TrimCount() == 1) exact_ok = false;
         }
+        // The naked-edge count above is a TOPOLOGICAL check only: every
+        // edge already has two trims referencing it (that's what
+        // JoinNakedEdges just arranged, by design, for edges that are
+        // merely close), which says nothing about whether their two
+        // sides' geometry actually coincides in 3D. Confirmed by testing:
+        // a fillet built on a box translated to ~1e6-unit coordinates
+        // passed the naked-edge count above (every edge had TrimCount()
+        // == 2) while its tessellated volume came back 0 (MeshOf refused
+        // to close a mesh with a real gap) - a genuine, silent hole this
+        // topological check alone can't see.
+        //
+        // ON_Brep::IsValid() (what the Check command uses) is NOT the
+        // right tool to catch this instead: it was tried here and
+        // rejected every fillet from this pipeline, including the
+        // perfectly good box-corner case fillet_script.txt already
+        // depends on - see TrimPlanarFace's own comment above about
+        // SetEdgeTolerance's recompute leaving edge tolerances at
+        // ON_UNSET_VALUE and failing IsValid() outright even for a sound
+        // result. Tessellate and check real closure instead (the same
+        // watertightness test Volume/MeshOf already rely on), which
+        // catches the 1e6-scale gap without false-positiving on
+        // everything else.
+        if (exact_ok) {
+          BrepMeshOptions check_opt;
+          check_opt.chord_tolerance = std::max(tol * 4, 1e-4);
+          exact_ok = MeshBrepClosed(remainder, check_opt).IsClosedManifold();
+        }
       }
       if (exact_ok) {
         if (SceneObject* orig = ctx.Doc().Find(pick.id)) {
@@ -1045,7 +1072,10 @@ class FilletEdgeCommand : public Command {
         ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) + " replaced with an exact " + (mode_ == Mode::Fillet ? "fillet" : "chamfer") + " (radius " + FormatNumber(radius_) + ")");
         return;
       }
-      // Exact trim unavailable (at least one face is not planar): mesh fallback.
+      // Exact trim unavailable - either a non-planar adjacent face, or (see
+      // the tessellation check above) an exact trim that LOOKED
+      // topologically closed but wasn't actually watertight. Try the mesh
+      // fallback either way.
       std::optional<kernel::Mesh> obj_mesh = ObjectMesh(*o, tol);
       if (obj_mesh && !spine.empty()) {
         kernel::Mesh cutter = SweepTubeCutter(spine, radius_for_tube);
@@ -1055,6 +1085,18 @@ class FilletEdgeCommand : public Command {
           ks.raw() = built;
           kernel::Mesh fillet_mesh = ks.TessellateGridAdaptive(std::max(tol * 4, 1e-4));
           kernel::Mesh combined = kernel::Mesh::MergeAndWeld({remainder_mesh, fillet_mesh}, tol);
+          // Same lesson as the exact path above: don't hand back something
+          // broken under a label that implies success. Confirmed by
+          // testing: at ~1e6-unit coordinates this mesh path can ALSO come
+          // back non-watertight (ON_Mesh's single-precision vertex storage
+          // - see dino8-kernel/src/boolean.cpp's FromManifold note - loses
+          // more absolute precision than a 2-unit fillet radius needs at
+          // that magnitude), so this is a genuine kernel-level ceiling,
+          // not something to paper over with an optimistic message.
+          if (!combined.IsClosedManifold()) {
+            ctx.Warn(label + ": could not build a watertight result at this object's coordinate scale (both the exact B-rep trim and the mesh fallback came back with a gap - see adversarial_corpus_notes.md)");
+            return;
+          }
           SceneObject repl = SceneObject::MakeMesh(combined);
           repl.layer_index = o->layer_index;
           repl.color = o->color;
@@ -1062,7 +1104,7 @@ class FilletEdgeCommand : public Command {
           ctx.Doc().Remove(pick.id);
           ObjectId nid = ctx.Doc().Add(std::move(repl));
           ctx.Doc().Select(nid, true);
-          ctx.Print(label + ": edge " + std::to_string(pick.edge) + " -- mesh fallback (one or both adjacent surfaces are not planar; result is an approximate mesh, not a clean B-rep)");
+          ctx.Print(label + ": edge " + std::to_string(pick.edge) + " -- mesh fallback (exact B-rep trim unavailable here; result is an approximate mesh, not a clean B-rep)");
           return;
         } catch (const std::exception& ex) { ctx.Warn(label + ": mesh fallback failed (" + std::string(ex.what()) + ")"); }
       }

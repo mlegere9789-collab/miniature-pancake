@@ -554,6 +554,27 @@ flcheck "Intersect: 0 surface intersection curve.s., 1 curve/surface point.s." "
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
 flcheck "^ok   expect_objects 24" "fillet script produced the expected object count"
+
+# Adversarial fillets: tiny/at-the-limit/too-large radii relative to the
+# shortest adjacent edge, a huge-coordinate-scale box (a genuine kernel
+# limitation - see adversarial_corpus_notes.md), and a shallow-bend FilletSrf
+# (see fillet_adversarial_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  FA="$("$BIN" --smoke 200 --script "$HERE/fillet_adversarial_script.txt" 2>&1)" || { echo "$FA"; echo "FAIL: fillet-adversarial script exited non-zero"; exit 1; }
+else
+  FA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/fillet_adversarial_script.txt" 2>&1)" || { echo "$FA"; echo "FAIL: fillet-adversarial script exited non-zero"; exit 1; }
+fi
+facheck() { if echo "$FA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+facheck "FilletEdge: edge 10 of object 1 replaced with an exact fillet (radius 0.02)" "a radius far smaller than the shortest adjacent edge still built a real, exact fillet"
+facheck "FilletEdge: edge 10 of object 2 replaced with an exact fillet (radius 1)" "a radius at exactly half the shortest adjacent edge's length still built a valid fillet"
+facheck "7 faces, 15 edges, closed solid" "the at-the-limit fillet is a genuine closed solid, not degenerate"
+facheck "! FilletEdge: the offset surfaces do not meet" "a radius more than double what the geometry supports failed with a clear diagnostic, not a hang or garbage surface"
+facheck "! FilletEdge: could not build a watertight result at this object's coordinate scale" "a huge-coordinate-scale box's otherwise-ordinary fillet failed gracefully instead of silently returning a broken 'closed solid' (documented kernel limitation)"
+facheck "! FilletSrf: the offset surfaces do not meet" "FilletSrf on two nearly-flat planes failed with its own clear diagnostic instead of a garbage surface"
+echo "$FA" | grep -E "^(ok|FAIL)"
+if echo "$FA" | grep -q "^FAIL"; then fail=1; fi
+facheck "^ok   expect_objects 0" "fillet-adversarial script cleaned up to zero objects at the end"
+
 # Extended selection and state commands: SelDupAll, SelShortCrv, SelKeyValue, SelVolumeSphere, Dot, Camera, SetActiveViewport, licence rule (see state_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
   ST="$("$BIN" --smoke 120 --script "$HERE/state_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: state script exited non-zero"; exit 1; }
