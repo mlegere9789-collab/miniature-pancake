@@ -102,6 +102,59 @@ public class JsonSettingsStoreTests
     }
 
     [Fact]
+    public void A_transiently_locked_file_is_retried_rather_than_treated_as_corrupt()
+    {
+        // Regression test: Load() used to catch IOException identically to JsonException
+        // -- quarantining the file and silently resetting to defaults -- but a real
+        // settings file can be briefly unreadable for reasons that have nothing to do
+        // with its own content: antivirus/backup software holding a read lock, or this
+        // same store's own Save() mid-File.Replace on another thread. Simulated here by
+        // holding an exclusive read lock on a real, valid settings file for slightly
+        // less than Load()'s own retry budget, then releasing it.
+        using var temp = new TempDirectory();
+        var path = temp.Combine("settings.json");
+        new JsonSettingsStore(path).Save(new AppSettings { Theme = ThemeMode.Dark });
+
+        var exclusiveLock = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+        var releaseLock = Task.Run(async () =>
+        {
+            await Task.Delay(60);
+            exclusiveLock.Dispose();
+        });
+
+        var settings = new JsonSettingsStore(path).Load();
+        releaseLock.Wait();
+
+        Assert.Equal(ThemeMode.Dark, settings.Theme);
+        Assert.False(File.Exists(temp.Combine("settings.corrupt.json")));
+    }
+
+    [Fact]
+    public void Concurrent_saves_never_corrupt_each_other_through_a_shared_temp_file_name()
+    {
+        // Regression test: Save() used to write every call through the same fixed
+        // "<file>.tmp" name, so two saves racing each other (a background auto-save of
+        // window position racing an explicit Settings-screen save, say -- nothing
+        // synchronizes callers against each other) could have one call's WriteAllText
+        // truncate or corrupt the other's in-flight temp file. Each Save() now gets its
+        // own uniquely-named temp file, so both must complete cleanly (no exception) and
+        // leave a single, coherent, parseable settings file behind -- not a torn merge
+        // of both writes.
+        using var temp = new TempDirectory();
+        var path = temp.Combine("settings.json");
+
+        Parallel.Invoke(
+            () => new JsonSettingsStore(path).Save(new AppSettings { Theme = ThemeMode.Dark, MaxConcurrentJobs = 2 }),
+            () => new JsonSettingsStore(path).Save(new AppSettings { Theme = ThemeMode.Light, MaxConcurrentJobs = 4 }));
+
+        var reloaded = new JsonSettingsStore(path).Load();
+
+        Assert.True(reloaded.Theme is ThemeMode.Dark or ThemeMode.Light);
+        Assert.True(reloaded.MaxConcurrentJobs is 2 or 4);
+        Assert.False(File.Exists(temp.Combine("settings.corrupt.json")));
+    }
+
+    [Fact]
     public void Out_of_range_values_are_clamped_on_load()
     {
         using var temp = new TempDirectory();
