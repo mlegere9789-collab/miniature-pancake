@@ -283,5 +283,142 @@ class TestHealth(unittest.TestCase):
         self.assertTrue(result.detail)
 
 
+class TestRunEndToEnd(unittest.TestCase):
+    """Drives the real run() against a temp database/snapshot file and a
+    faked Stripe client -- no module's own run() orchestration was
+    exercised end-to-end anywhere in this project before this session (see
+    the same addition for ecommerce_dropshipping), only the pure functions
+    underneath it. This locks in the two billing bugs fixed earlier in this
+    PR (a null charge amount, and the snapshot's run_at not advancing past
+    a failed charges fetch) as permanent regressions, not just the one-off
+    scripts they were originally verified with."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        from orchestrator import database as db
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._orig_db_path = db.DB_PATH
+        db.DB_PATH = Path(self._tmpdir.name) / "test.db"
+        self.addCleanup(self._restore_db_path)
+        db.init_db()
+        self.db = db
+
+        from . import snapshot as snap_mod
+
+        self._orig_snapshot_file = snap_mod.SNAPSHOT_FILE
+        snap_mod.SNAPSHOT_FILE = Path(self._tmpdir.name) / "snapshot.json"
+        self.addCleanup(self._restore_snapshot_file)
+
+    def _restore_db_path(self):
+        self.db.DB_PATH = self._orig_db_path
+
+    def _restore_snapshot_file(self):
+        from . import snapshot as snap_mod
+
+        snap_mod.SNAPSHOT_FILE = self._orig_snapshot_file
+
+    def _patched_run(self, *, subscriptions=None, charges=None, charges_error=None):
+        from unittest.mock import patch
+
+        from . import run as run_mod
+
+        settings = make_settings(health_url=None)
+
+        def fake_list_charges_since(*args, **kwargs):
+            if charges_error is not None:
+                raise charges_error
+            return charges or []
+
+        return (
+            patch.object(run_mod.Settings, "load", return_value=settings),
+            patch.object(
+                run_mod.stripe_client,
+                "list_active_subscriptions",
+                return_value=subscriptions or [],
+            ),
+            patch.object(
+                run_mod.stripe_client,
+                "list_charges_since",
+                side_effect=fake_list_charges_since,
+            ),
+        )
+
+    def test_a_succeeded_charge_logs_a_net_earning(self):
+        from . import run as run_mod
+
+        charge = {
+            "id": "ch_1",
+            "status": "succeeded",
+            "amount": 1999,
+            "amount_refunded": 0,
+        }
+        p1, p2, p3 = self._patched_run(charges=[charge])
+        with p1, p2, p3:
+            collected = run_mod.run()
+        self.assertEqual(collected, 19.99)
+        self.assertEqual(self.db.totals()["total_earnings"], 19.99)
+
+    def test_a_charge_with_a_null_amount_does_not_crash_the_run(self):
+        # Regression test for the formatter.py fix: a failed charge with
+        # "amount": None used to raise TypeError deep inside
+        # format_failed_charge(), crashing the whole run before its
+        # snapshot could ever be saved.
+        from . import run as run_mod
+
+        charge = {
+            "id": "ch_bad",
+            "status": "failed",
+            "amount": None,
+            "failure_message": "card declined",
+        }
+        p1, p2, p3 = self._patched_run(charges=[charge])
+        with p1, p2, p3:
+            run_mod.run()  # must not raise
+        self.assertEqual(len(self.db.pending_reviews()), 1)
+        overview = {r["name"]: r for r in self.db.module_overview()}
+        self.assertEqual(overview["micro_saas"]["state"], "ok")
+
+    def test_a_failed_charges_fetch_preserves_run_at_for_the_next_run(self):
+        # Regression test for the snapshot.py/run.py fix: previously
+        # snap.save() always advanced run_at to now, even when the charges
+        # fetch itself had failed -- silently skipping that revenue window
+        # on every future run.
+        from . import run as run_mod
+        from . import snapshot as snap_mod
+        from .stripe_client import StripeError
+
+        # First, a clean run establishes a known run_at.
+        p1, p2, p3 = self._patched_run(charges=[])
+        with p1, p2, p3:
+            run_mod.run()
+        first_run_at = snap_mod.SnapshotStore().previous_run_at
+        self.assertIsNotNone(first_run_at)
+
+        # Second run: the charges fetch fails -- run_at must not advance.
+        p1, p2, p3 = self._patched_run(charges_error=StripeError("boom"))
+        with p1, p2, p3:
+            run_mod.run()
+        self.assertEqual(snap_mod.SnapshotStore().previous_run_at, first_run_at)
+
+    def test_new_and_churned_subscriptions_are_tracked_across_runs(self):
+        from . import run as run_mod
+        from . import snapshot as snap_mod
+
+        p1, p2, p3 = self._patched_run(subscriptions=[{"id": "sub_a", "items": {}}])
+        with p1, p2, p3:
+            run_mod.run()
+        self.assertEqual(snap_mod.SnapshotStore().previous_ids, {"sub_a"})
+
+        # sub_a churned, sub_b is new.
+        p1, p2, p3 = self._patched_run(subscriptions=[{"id": "sub_b", "items": {}}])
+        with p1, p2, p3:
+            run_mod.run()
+        self.assertEqual(snap_mod.SnapshotStore().previous_ids, {"sub_b"})
+
+
 if __name__ == "__main__":
     unittest.main()
