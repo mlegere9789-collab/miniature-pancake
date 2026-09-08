@@ -132,6 +132,10 @@
     functional one.</li>
     <li><strong>Single-document, single-user</strong> &mdash; no worksessions-equivalent, no
     real-time multi-user co-editing (Rhino is also weak here, but has worksessions).</li>
+    <li><strong><code>ToNURBS</code> on a SubD is approximate</strong>, not exact smooth
+    patches: the public OpenNURBS library Dino 8 builds against does not include Rhino's
+    proprietary SubD-to-NURBS-patch conversion, so Dino 8 falls back to a densely subdivided
+    mesh converted to a facetted B-rep. Converting an actual mesh object is exact.</li>
   </ul>
 
   <h2>Bottom line</h2>
