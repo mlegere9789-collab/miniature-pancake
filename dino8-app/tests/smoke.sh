@@ -1592,6 +1592,34 @@ i18ncheck "I18nSelfTest: active=en" "the active language is en again"
 i18ncheck "I18nSelfTest: menu\.file=File\$" "the same key reads back in plain English once switched back"
 i18ncheck "SetLanguage: unknown language 'nope'" "an unrecognised language name fails with a clear diagnostic instead of doing nothing"
 
+# a11y: High Contrast is a distinct palette (pure black bg / pure white
+# text / a forced 1px frame border), not merely a filter over Dark, and
+# switching themes actually rewrites the live ImGui style colours (see
+# docs/ACCESSIBILITY.md and SetTheme/ThemeSelfTest in cmd_state.cpp).
+cat > "$TMP/a11y_script.txt" <<'EOS'
+SetTheme HighContrast
+ThemeSelfTest
+SetTheme Dark
+ThemeSelfTest
+SetTheme nope
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  A11Y="$("$BIN" --smoke 60 --script "$TMP/a11y_script.txt" 2>&1)" || { echo "$A11Y"; echo "FAIL: a11y script exited non-zero"; exit 1; }
+else
+  A11Y="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/a11y_script.txt" 2>&1)" || { echo "$A11Y"; echo "FAIL: a11y script exited non-zero"; exit 1; }
+fi
+a11ycheck() { if echo "$A11Y" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+a11ycheck "SetTheme: highcontrast" "SetTheme switched to High Contrast"
+a11ycheck "ThemeSelfTest: mode=2" "the active theme mode is now HighContrast (2)"
+a11ycheck "ThemeSelfTest: window_bg=0\.000,0\.000,0\.000" "High Contrast's window background is pure black, not a tint of Dark's background"
+a11ycheck "ThemeSelfTest: text=1\.000,1\.000,1\.000" "High Contrast's text colour is pure white (~21:1 contrast on black)"
+a11ycheck "ThemeSelfTest: frame_border=1\.00" "High Contrast forces a visible 1px frame border (0 in Dark/Light), so state is legible from outline, not colour alone"
+a11ycheck "SetTheme: dark" "SetTheme switched back to Dark"
+a11ycheck "ThemeSelfTest: mode=0" "the active theme mode is Dark (0) again"
+a11ycheck "ThemeSelfTest: window_bg=0\.110,0\.118,0\.137" "switching back to Dark actually restores Dark's own background colour, not black"
+a11ycheck "ThemeSelfTest: frame_border=0\.00" "Dark's frame border is 0, confirming the forced border is High-Contrast-specific"
+a11ycheck "SetTheme: unknown theme 'nope'" "an unrecognised theme name fails with a clear diagnostic instead of doing nothing"
+
 # Frustum culling (Viewport.cpp - see tests/performance_notes.md's "No LOD
 # or frustum culling" item and tests/cull_test.sh for the full A/B/pixel-
 # diff proof): fold its pass/fail lines into this script's own count so a
@@ -1600,5 +1628,18 @@ CULL="$(bash "$HERE/cull_test.sh" "$BIN" 2>&1)" || true
 echo "$CULL" | grep -E "^(ok|FAIL)"
 if echo "$CULL" | grep -q "^FAIL"; then fail=1; fi
 echo "$CULL" | grep -q "^ok   cull-on and cull-off screenshots are pixel-identical" || { echo "FAIL cull_test.sh did not run to completion"; fail=1; }
+
+# Docs tutorials (docs/site/tutorials.html and README's "10 tutorials,
+# verified by running them" claim): run every 01..10 tutorial script
+# through the real binary via docs/tutorial_scripts/run_all.sh and fold
+# its pass/fail into this script's own count. Without this, the tutorial
+# scripts are real and do pass, but nothing gates them - a change that
+# breaks a documented tutorial sequence would only be noticed by a human
+# manually re-running run_all.sh, not by smoke.sh or CI.
+TUT="$(bash "$HERE/../docs/tutorial_scripts/run_all.sh" "$BIN" 2>&1)" || true
+echo "$TUT" | grep -E "^(FAIL|PASS:)"
+if echo "$TUT" | grep -q "^FAIL"; then fail=1; fi
+TUT_PASS_COUNT=$(echo "$TUT" | grep -c "^PASS:")
+[ "$TUT_PASS_COUNT" -eq 10 ] || { echo "FAIL: expected 10/10 tutorial scripts to pass, got $TUT_PASS_COUNT"; fail=1; }
 
 exit $fail

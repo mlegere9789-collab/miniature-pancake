@@ -6,6 +6,7 @@
 
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <filesystem>
@@ -15,6 +16,7 @@
 #include "app/Settings.h"
 #include "i18n/I18n.h"
 #include "session/Digitizer.h"
+#include "ui/Theme.h"
 
 namespace dino8::app {
 
@@ -554,6 +556,42 @@ void RegisterStateCommands(CommandEngine& e) {
         ctx.Print("I18nSelfTest: menu.file=" + i18n::Tr("menu.file"));
         ctx.Print("I18nSelfTest: fallback(panel.imgui_demo)=" + i18n::Tr("panel.imgui_demo"));
         ctx.Print("I18nSelfTest: unknown_key=" + i18n::Tr("this.key.does.not.exist.anywhere"));
+      }));
+
+  // Switches the active UI theme (Dark / Light / High Contrast) the same
+  // way Options > General > Theme does, so scripts/tests can exercise the
+  // High Contrast palette without driving the mouse through the Options
+  // window. Accepts "dark", "light", "highcontrast"/"high contrast", or
+  // "hc" case-insensitively.
+  Reg(e, "SetTheme", Make<TextArgCommand>("Theme", [](CommandContext& ctx, const std::string& raw) {
+        std::string want = Lower(raw);
+        want.erase(std::remove(want.begin(), want.end(), ' '), want.end());
+        ThemeMode mode;
+        if (want == "dark") mode = ThemeMode::Dark;
+        else if (want == "light") mode = ThemeMode::Light;
+        else if (want == "highcontrast" || want == "hc") mode = ThemeMode::HighContrast;
+        else { ctx.Warn("SetTheme: unknown theme '" + raw + "'. Available: Dark, Light, HighContrast"); return; }
+        ctx.App().theme_mode = static_cast<int>(mode);
+        ApplyDinoTheme(ctx.App().ui_scale, mode, ctx.App().accent_color);
+        ctx.Print("SetTheme: " + want);
+      }));
+  // Test-only diagnostic (not in commands.json, not on any menu): reads
+  // back the ImGui style colours/border sizes ApplyDinoTheme() actually
+  // wrote, so tests/smoke.sh can verify, without a screenshot, that High
+  // Contrast really is the pure-black/white/yellow, fully-bordered palette
+  // ACCESSIBILITY.md claims - not merely that SetTheme ran without crashing.
+  Reg(e, "ThemeSelfTest", Immediate([](CommandContext& ctx) {
+        const ImGuiStyle& s = ImGui::GetStyle();
+        const ImVec4& bg = s.Colors[ImGuiCol_WindowBg];
+        const ImVec4& text = s.Colors[ImGuiCol_Text];
+        char buf[128];
+        std::snprintf(buf, sizeof(buf), "%.3f,%.3f,%.3f", bg.x, bg.y, bg.z);
+        ctx.Print(std::string("ThemeSelfTest: mode=") + std::to_string(ctx.App().theme_mode));
+        ctx.Print(std::string("ThemeSelfTest: window_bg=") + buf);
+        std::snprintf(buf, sizeof(buf), "%.3f,%.3f,%.3f", text.x, text.y, text.z);
+        ctx.Print(std::string("ThemeSelfTest: text=") + buf);
+        std::snprintf(buf, sizeof(buf), "%.2f", s.FrameBorderSize);
+        ctx.Print(std::string("ThemeSelfTest: frame_border=") + buf);
       }));
 
   // ---- OS window ---------------------------------------------------------
