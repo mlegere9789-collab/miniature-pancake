@@ -801,7 +801,10 @@ fi
 
 # Dino Flow + plug-ins: node editor, the HelloDino sample plug-in (command +
 # Dino Flow node), and GrasshopperPlayer headless solve/bake (see flow_script.txt).
-sed "s|@FLOWFILE@|$HERE/flow_graph.dflow|g" "$HERE/flow_script.txt" > "$TMP/flow_script.txt"
+# The .dflow is copied to $TMP first so the second run below can edit that
+# copy in place (the source tree's copy stays untouched).
+cp "$HERE/flow_graph.dflow" "$TMP/flow_graph.dflow"
+sed -e "s|@FLOWFILE@|$TMP/flow_graph.dflow|g" -e "s|@FLOWSAVE@|$TMP/flow_saved.3dm|g" "$HERE/flow_script.txt" > "$TMP/flow_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
   FL="$("$BIN" --smoke 100 --script "$TMP/flow_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: flow script exited non-zero"; exit 1; }
 else
@@ -817,6 +820,30 @@ flcheck "gl_error=0" "flow script ran without OpenGL errors"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
 flcheck "^ok   expect_objects 2" "GrasshopperPlayer baked the Line into the document"
+flcheck "Total length = 30.41 " "the first bake's line has the slider=30 length"
+
+# Associativity, across a real close/reopen: edit the same .dflow file on
+# disk (slider 30 -> 55), then a *separate* process reopens the saved
+# document and runs GrasshopperUpdateBakes against that same path - it
+# should replace the previously-baked FlowLine object in place (same object
+# count, new length) rather than add a second one next to it (see
+# flow_update_script.txt).
+sed -i 's/"slider_value":30/"slider_value":55/' "$TMP/flow_graph.dflow"
+sed -e "s|@FLOWFILE@|$TMP/flow_graph.dflow|g" -e "s|@FLOWSAVE@|$TMP/flow_saved.3dm|g" "$HERE/flow_update_script.txt" > "$TMP/flow_update_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  FL2="$("$BIN" --smoke 100 --script "$TMP/flow_update_script.txt" 2>&1)" || { echo "$FL2"; echo "FAIL: flow update script exited non-zero"; exit 1; }
+else
+  FL2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/flow_update_script.txt" 2>&1)" || { echo "$FL2"; echo "FAIL: flow update script exited non-zero"; exit 1; }
+fi
+fl2check() { if echo "$FL2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+echo "$FL2" | grep -E "^(ok|FAIL)"
+if echo "$FL2" | grep -q "^FAIL"; then fail=1; fi
+fl2check "gl_error=0" "flow update script ran without OpenGL errors"
+FL2_EXPECT2_COUNT=$(echo "$FL2" | grep -c "^ok   expect_objects 2 (got 2)")
+if [ "$FL2_EXPECT2_COUNT" = "2" ]; then echo "ok   GrasshopperUpdateBakes kept the object count at 2 both before and after the re-bake (replaced in place, no duplicate)"; else echo "FAIL GrasshopperUpdateBakes kept the object count at 2 both before and after the re-bake (replaced in place, no duplicate)"; fail=1; fi
+fl2check "Total length = 30.41 " "the reopened document still has the original slider=30 line"
+fl2check "GrasshopperUpdateBakes: replaced 1 object(s) from a previous bake of .* with 1 freshly-solved object(s)" "GrasshopperUpdateBakes found and replaced (not duplicated) the previously-baked line"
+fl2check "Total length = 55.23 " "the re-baked line picked up the slider=55 edit made to the .dflow file on disk - associative, not frozen"
 
 # Object editing: Join/Explode/Rebuild/ChangeDegree/Offset/Extend/Flip/Dir/MakePeriodic/
 # Weight/InsertKnot/PointsOn/SetObjectName/Group/Hide/Lock/clipboard/Undo (see edit_script.txt).
@@ -1108,6 +1135,21 @@ if echo "$D2" | grep -q "Text = .*0\.02.*0\.03\|Text = .*0\.03.*0\.02.*0\.02"; t
 d2check "BillOfMaterials: " "BillOfMaterials built a table over the scene objects"
 d2check "SectionView: " "SectionView sliced the box"
 d2check "UpdateSectionViews: 1 section view(s) regenerated" "UpdateSectionViews rebuilt the section from its stored plane"
+
+# Associativity: UpdateBillOfMaterials re-derives a row's material from the
+# object's *current* material after RenderAssignMaterialToObjects changes it
+# (the row was built while the object had no material at all).
+D2_UBOM_COUNT=$(echo "$D2" | grep -c "UpdateBillOfMaterials: 2 table(s) regenerated")
+if [ "$D2_UBOM_COUNT" = "2" ]; then echo "ok   UpdateBillOfMaterials regenerated both tables, twice"; else echo "FAIL UpdateBillOfMaterials regenerated both tables, twice"; fail=1; fi
+d2check "(none) qty=1 material=(none)" "the By=Material row was built while BomBall had no material at all"
+d2check "NewMaterial qty=1 material=NewMaterial" "UpdateBillOfMaterials picked up BomBall's newly-assigned material, not the empty one baked at creation time"
+
+# Associativity: UpdateDimensions re-measures a DimLinear anchored to a real
+# Line object's endpoints after Scale1D stretches it from 20 to 40 units.
+d2check "Total length = 20 " "the line measured 20 units before the stretch"
+d2check "Total length = 40 " "Scale1D stretched the line to 40 units"
+d2check "UpdateDimensions:   DimLinear now measures 40" "UpdateDimensions redrew the dimension text from the stretched line's new length, not the 20 baked at creation time"
+
 d2check "gl_error=0" "drafting2 script ran without OpenGL errors"
 
 # CPU path tracer: material library presets, RenderAssignMaterialToObjects
