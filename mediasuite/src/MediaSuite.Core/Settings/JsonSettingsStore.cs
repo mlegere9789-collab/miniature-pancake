@@ -101,19 +101,21 @@ public sealed class JsonSettingsStore : ISettingsStore
         {
             File.WriteAllText(tempPath, json);
 
-            if (File.Exists(_filePath))
-            {
-                File.Replace(tempPath, _filePath, destinationBackupFileName: null);
-            }
-            else
-            {
-                File.Move(tempPath, _filePath);
-            }
+            // A single unconditional, atomic move -- not "check File.Exists, then Replace
+            // or Move accordingly". That check-then-act was its own race, independent of
+            // the per-call temp file name above: two concurrent Save() calls to a settings
+            // file that does not exist yet (the very first launch, or after a fresh
+            // install) could both see File.Exists == false and both choose File.Move,
+            // and whichever lost the race then threw "Cannot create a file when that file
+            // already exists" the instant the other had already created the destination.
+            // File.Move's own overwrite: true creates the destination when absent and
+            // atomically replaces it when present, so there is nothing left to race on.
+            File.Move(tempPath, _filePath, overwrite: true);
         }
         finally
         {
-            // File.Replace/Move already remove tempPath on success; this only matters
-            // if something above threw first, so a failed save doesn't also litter a
+            // File.Move already removes tempPath on success; this only matters if
+            // something above threw first, so a failed save doesn't also litter a
             // stray, uniquely-named temp file behind every time.
             try
             {
