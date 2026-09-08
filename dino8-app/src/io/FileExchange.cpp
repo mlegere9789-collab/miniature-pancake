@@ -295,6 +295,39 @@ void WriteDxfPolyline(DxfWriter& w, const std::vector<Point3d>& pts, bool closed
   w.G(8, layer);
 }
 
+// A generic freeform NURBS curve, exact: DXF's SPLINE entity carries the
+// full control-point/knot/weight data, so (unlike the polyline fallback)
+// re-importing this reconstructs the identical curve rather than a chord
+// approximation of it. DXF's knot vector has two more entries than
+// OpenNURBS' (it doesn't elide the duplicated first/last knot), matching
+// what DxfImporter::Spline()'s "knots.size() == want + 2" branch expects.
+void WriteDxfSpline(DxfWriter& w, const ON_NurbsCurve& nc, const std::string& layer, const Color* color) {
+  const int order = nc.Order();
+  const int cv_count = nc.CVCount();
+  const bool rational = nc.IsRational();
+  w.BeginEntity("SPLINE", layer, color);
+  w.G(100, "AcDbSpline");
+  int flags = 0;
+  if (nc.IsClosed()) flags |= 1;
+  if (nc.IsPeriodic()) flags |= 2;
+  if (rational) flags |= 4;
+  w.G(70, flags);
+  w.G(71, order - 1);
+  const int knot_count = nc.KnotCount() + 2;
+  w.G(72, knot_count);
+  w.G(73, cv_count);
+  w.G(74, 0);
+  w.G(40, nc.Knot(0));
+  for (int i = 0; i < nc.KnotCount(); ++i) w.G(40, nc.Knot(i));
+  w.G(40, nc.Knot(nc.KnotCount() - 1));
+  for (int i = 0; i < cv_count; ++i) {
+    if (rational) w.G(41, nc.Weight(i));
+    ON_3dPoint p;
+    nc.GetCV(i, p);
+    w.Point(10, p);
+  }
+}
+
 void WriteDxfCurve(DxfWriter& w, const kernel::NurbsCurve& curve, const std::string& layer, const Color* color) {
   const ON_NurbsCurve& nc = curve.raw();
   const double tol = 1e-6;
@@ -337,6 +370,16 @@ void WriteDxfCurve(DxfWriter& w, const kernel::NurbsCurve& curve, const std::str
     bool closed = false;
     if (pts.size() >= 3 && pts.front().DistanceTo(pts.back()) <= tol) { closed = true; pts.pop_back(); }
     WriteDxfPolyline(w, pts, closed, layer, color);
+    return;
+  }
+  // Any other freeform curve (including non-circular ellipses - OpenNURBS'
+  // own ON_Curve::IsEllipse() only ever recognizes circles, delegating to
+  // IsArc(), so there is no reliable way to single a true ellipse back out
+  // of its NURBS form here): write the exact NURBS as a SPLINE instead of
+  // flattening it to a polyline, so export-then-reimport round-trips the
+  // real control points/knots/weights rather than a chord approximation.
+  if (nc.IsValid() && nc.CVCount() >= 2) {
+    WriteDxfSpline(w, nc, layer, color);
     return;
   }
   std::vector<Point3d> pts = SampleCurve(curve, 0.01);
@@ -756,8 +799,22 @@ class DxfImporter {
     ON_NurbsCurve nc;
     nc.Create(3, rational, order, static_cast<int>(cvs.size()));
     for (size_t i = 0; i < cvs.size(); ++i) {
-      nc.SetCV(static_cast<int>(i), cvs[i]);
-      if (rational) nc.SetWeight(static_cast<int>(i), weights[i]);
+      if (rational) {
+        // ON_NurbsCurve::SetCV(ON_3dPoint) followed by SetWeight() does NOT
+        // do what it looks like it does: SetCV(ON_3dPoint) always stamps the
+        // homogeneous weight component to 1 first, and SetWeight() then
+        // overwrites just that component without rescaling x/y/z - so the
+        // pair silently rescales the point by 1/weight instead of setting a
+        // weighted control point. Feed the already-weighted homogeneous
+        // coordinates directly (SetCV(ON_4dPoint) stores them as-is on a
+        // rational curve) so a weight != 1 lands on the exact control point
+        // DXF specified, not on a corrupted one.
+        const double w = weights[i];
+        const Point3d& p = cvs[i];
+        nc.SetCV(static_cast<int>(i), ON_4dPoint(p.x * w, p.y * w, p.z * w, w));
+      } else {
+        nc.SetCV(static_cast<int>(i), cvs[i]);
+      }
     }
     // DXF stores cv_count + order knots (clamped); OpenNURBS drops the two
     // superfluous end knots.
