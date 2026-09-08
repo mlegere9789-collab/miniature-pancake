@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -186,6 +187,76 @@ int ApiSetUserText(unsigned long long id, const char* key, const char* value) {
   return 1;
 }
 
+// ---- Geometry handles ----------------------------------------------------
+// The plug-in ABI never exposes a real kernel::NurbsCurve/Mesh/etc pointer -
+// that would tie every plug-in binary to this build's exact OpenNURBS-backed
+// layout. Instead a CURVE/SURFACE/BREP/MESH Dino8FlowValue carries a plain
+// integer handle into this table, which holds the actual flow::Value (and
+// therefore its shared_ptr geometry) on Dino 8's side.
+//
+// Lifetime: a handle is populated right before a plug-in node's evaluator
+// runs (for its input ports) or created by the plug-in during the call (via
+// make_curve_value_polyline/make_mesh_value, or by forwarding an input
+// handle to an output), and is only ever read back immediately after that
+// same call returns (ApiRegisterFlowNode's eval lambda, below). The table is
+// cleared after every evaluator call, so handles never outlive the call
+// that produced them - matching the "valid only during the call" contract
+// already used for Dino8CommandContext.
+std::unordered_map<unsigned long long, flow::Value> g_geom_handles;
+unsigned long long g_next_geom_handle = 1;
+
+unsigned long long PutGeom(flow::Value v) {
+  const unsigned long long h = g_next_geom_handle++;
+  g_geom_handles.emplace(h, std::move(v));
+  return h;
+}
+
+const flow::Value* GetGeom(unsigned long long h) {
+  auto it = g_geom_handles.find(h);
+  return it == g_geom_handles.end() ? nullptr : &it->second;
+}
+
+void ClearGeomHandles() { g_geom_handles.clear(); }
+
+double ApiCurveLength(unsigned long long geom) {
+  const flow::Value* v = GetGeom(geom);
+  return (v && v->kind == flow::Kind::Curve && v->curve) ? v->curve->Length(400) : 0.0;
+}
+
+int ApiMeshFaceCount(unsigned long long geom) {
+  const flow::Value* v = GetGeom(geom);
+  return (v && v->kind == flow::Kind::Mesh && v->mesh) ? v->mesh->FaceCount() : 0;
+}
+
+int ApiMeshVertexCount(unsigned long long geom) {
+  const flow::Value* v = GetGeom(geom);
+  return (v && v->kind == flow::Kind::Mesh && v->mesh) ? v->mesh->VertexCount() : 0;
+}
+
+unsigned long long ApiMakeCurveValuePolyline(const double* xyz, int point_count, int closed) {
+  if (!xyz || point_count < 2) return 0;
+  ON_Polyline pl;
+  for (int i = 0; i < point_count; ++i) pl.Append(ON_3dPoint(xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]));
+  if (closed && pl.Count() > 0 && pl[0].DistanceTo(pl[pl.Count() - 1]) > 1e-9) pl.Append(pl[0]);
+  ON_PolylineCurve pc(pl);
+  ON_NurbsCurve nc;
+  pc.GetNurbForm(nc);
+  kernel::NurbsCurve c;
+  c.raw() = nc;
+  return PutGeom(flow::Value::Curve(std::move(c)));
+}
+
+unsigned long long ApiMakeMeshValue(const double* xyz, int vertex_count, const int* faces, int face_count) {
+  if (!xyz || vertex_count <= 0) return 0;
+  kernel::Mesh m;
+  ON_Mesh& raw = m.raw();
+  for (int i = 0; i < vertex_count; ++i) raw.SetVertex(i, ON_3dPoint(xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]));
+  for (int f = 0; f < face_count; ++f) raw.SetQuad(f, faces[f * 4], faces[f * 4 + 1], faces[f * 4 + 2], faces[f * 4 + 3]);
+  raw.ComputeFaceNormals();
+  raw.ComputeVertexNormals();
+  return PutGeom(flow::Value::MeshV(std::move(m)));
+}
+
 flow::Value FromFlowValue(const Dino8FlowValue& v) {
   switch (v.kind) {
     case DINO8_FLOW_NUMBER: return flow::Value::Number(v.number);
@@ -194,6 +265,13 @@ flow::Value FromFlowValue(const Dino8FlowValue& v) {
     case DINO8_FLOW_TEXT: return flow::Value::Text(std::string(v.text));
     case DINO8_FLOW_POINT: return flow::Value::Point(kernel::Point3d(v.xyz[0], v.xyz[1], v.xyz[2]));
     case DINO8_FLOW_VECTOR: return flow::Value::Vector(kernel::Vector3d(v.xyz[0], v.xyz[1], v.xyz[2]));
+    case DINO8_FLOW_CURVE:
+    case DINO8_FLOW_SURFACE:
+    case DINO8_FLOW_BREP:
+    case DINO8_FLOW_MESH: {
+      const flow::Value* g = GetGeom(v.geom);
+      return g ? *g : flow::Value::Null();
+    }
     default: return flow::Value::Null();
   }
 }
@@ -207,6 +285,10 @@ Dino8FlowValue ToFlowValue(const flow::Value& v) {
     case flow::Kind::Boolean: out.kind = DINO8_FLOW_BOOLEAN; out.number = v.num; break;
     case flow::Kind::Point: out.kind = DINO8_FLOW_POINT; out.xyz[0] = v.point.x; out.xyz[1] = v.point.y; out.xyz[2] = v.point.z; break;
     case flow::Kind::Vector: out.kind = DINO8_FLOW_VECTOR; out.xyz[0] = v.point.x; out.xyz[1] = v.point.y; out.xyz[2] = v.point.z; break;
+    case flow::Kind::Curve: out.kind = DINO8_FLOW_CURVE; out.geom = v.curve ? PutGeom(v) : 0; break;
+    case flow::Kind::Surface: out.kind = DINO8_FLOW_SURFACE; out.geom = v.surface ? PutGeom(v) : 0; break;
+    case flow::Kind::Brep: out.kind = DINO8_FLOW_BREP; out.geom = v.brep ? PutGeom(v) : 0; break;
+    case flow::Kind::Mesh: out.kind = DINO8_FLOW_MESH; out.geom = v.mesh ? PutGeom(v) : 0; break;
     default: {
       out.kind = DINO8_FLOW_TEXT;
       const std::string t = v.AsText();
@@ -238,6 +320,10 @@ int ApiRegisterFlowNode(const char* name, const char* category, const char* desc
       case DINO8_FLOW_TEXT: p.kind = flow::Kind::Text; break;
       case DINO8_FLOW_POINT: p.kind = flow::Kind::Point; break;
       case DINO8_FLOW_VECTOR: p.kind = flow::Kind::Vector; break;
+      case DINO8_FLOW_CURVE: p.kind = flow::Kind::Curve; break;
+      case DINO8_FLOW_SURFACE: p.kind = flow::Kind::Surface; break;
+      case DINO8_FLOW_BREP: p.kind = flow::Kind::Brep; break;
+      case DINO8_FLOW_MESH: p.kind = flow::Kind::Mesh; break;
       default: p.kind = flow::Kind::Any; break;
     }
     if (p.kind == flow::Kind::Number || p.kind == flow::Kind::Integer) p.def = flow::Value::Number(inputs[i].default_number);
@@ -254,6 +340,10 @@ int ApiRegisterFlowNode(const char* name, const char* category, const char* desc
       case DINO8_FLOW_TEXT: p.kind = flow::Kind::Text; break;
       case DINO8_FLOW_POINT: p.kind = flow::Kind::Point; break;
       case DINO8_FLOW_VECTOR: p.kind = flow::Kind::Vector; break;
+      case DINO8_FLOW_CURVE: p.kind = flow::Kind::Curve; break;
+      case DINO8_FLOW_SURFACE: p.kind = flow::Kind::Surface; break;
+      case DINO8_FLOW_BREP: p.kind = flow::Kind::Brep; break;
+      case DINO8_FLOW_MESH: p.kind = flow::Kind::Mesh; break;
       default: p.kind = flow::Kind::Any; break;
     }
     def.outputs.push_back(p);
@@ -266,8 +356,13 @@ int ApiRegisterFlowNode(const char* name, const char* category, const char* desc
     std::memset(out.data(), 0, out.size() * sizeof(Dino8FlowValue));
     char error[256] = {0};
     const int rc = evaluator(in.data(), in_count, out.data(), out_count, error, static_cast<int>(sizeof error), user_data);
-    if (rc != 0) { c.Fail(error[0] ? error : "plug-in node evaluation failed"); return; }
+    if (rc != 0) { ClearGeomHandles(); c.Fail(error[0] ? error : "plug-in node evaluation failed"); return; }
     for (int i = 0; i < out_count; ++i) c.Out(i, FromFlowValue(out[static_cast<size_t>(i)]));
+    // Handles only need to live for this one call: c.Out() above already
+    // copied any geometry it named into the graph's own Tree (via
+    // FromFlowValue's shared_ptr copy), so the table can be dropped now
+    // rather than accumulating across every solve.
+    ClearGeomHandles();
   };
   flow::Registry::Get().Add(def);
   if (g_loading) g_loading->flow_nodes.emplace_back(name);
@@ -295,6 +390,11 @@ Dino8PluginApi BuildApi(const std::string& config_dir) {
   api.select_object = ApiSelectObject;
   api.set_user_text = ApiSetUserText;
   api.register_flow_node = ApiRegisterFlowNode;
+  api.curve_length = ApiCurveLength;
+  api.mesh_face_count = ApiMeshFaceCount;
+  api.mesh_vertex_count = ApiMeshVertexCount;
+  api.make_curve_value_polyline = ApiMakeCurveValuePolyline;
+  api.make_mesh_value = ApiMakeMeshValue;
   return api;
 }
 
