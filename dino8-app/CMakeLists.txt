@@ -283,6 +283,20 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_brep_mesher PRIVATE dino8_kernel)
   add_test(NAME dino8_brep_mesher COMMAND dino8_test_brep_mesher)
 
+  # Property-based/randomized geometry fuzz test: random-but-valid NURBS
+  # curves/surfaces, random primitive-mesh boolean pairs, and random
+  # surface/surface intersections (the fillet family's core primitive),
+  # checked against invariants (no crash/hang, no NaN/Inf, manifold where
+  # claimed, positive primitive volume) that must hold for ANY valid input,
+  # not just the fixed known-good shapes test_brep_mesher.cpp covers. Fixed
+  # default seed for CI determinism; DINO8_FUZZ_SEED/argv[1] overrides it to
+  # reproduce a specific failure. See tests/fuzz_qa_notes.md for any findings
+  # documented rather than fixed.
+  add_executable(dino8_test_fuzz_geometry tests/test_fuzz_geometry.cpp src/geom/BrepMesher.cpp src/geom/SurfaceIntersect.cpp)
+  target_include_directories(dino8_test_fuzz_geometry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_fuzz_geometry PRIVATE dino8_kernel)
+  add_test(NAME dino8_fuzz_geometry COMMAND dino8_test_fuzz_geometry)
+
   # Standalone timing benchmark for Document's diff-based undo/redo history
   # (see tests/undo_bench.cpp and tests/undo_scaling_notes.md) - not an
   # add_test(), it has nothing to assert, just numbers to print.
