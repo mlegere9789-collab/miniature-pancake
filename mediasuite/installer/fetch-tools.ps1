@@ -33,14 +33,22 @@ if (Test-Path $ToolsDir) {
 }
 New-Item -ItemType Directory -Force -Path $ToolsDir | Out-Null
 
+# Two separate header sets, not one shared one: $githubApiHeaders carries this CI job's
+# own GITHUB_TOKEN (used only to avoid api.github.com's much stricter unauthenticated
+# rate limit) and must never leave github.com. Every other download in this script --
+# 7-Zip, Potrace, MuPDF, LibreOffice, the GFPGAN models on Google Drive, even
+# raw.githubusercontent.com -- goes out through the token-free $webHeaders instead, so a
+# compromised or malicious third-party host on the other end of one of those requests can
+# never walk away with this job's live GitHub credential.
 $webHeaders = @{ "User-Agent" = "MediaSuite-CI" }
+$githubApiHeaders = $webHeaders.Clone()
 if ($env:GITHUB_TOKEN) {
-    $webHeaders["Authorization"] = "Bearer $($env:GITHUB_TOKEN)"
+    $githubApiHeaders["Authorization"] = "Bearer $($env:GITHUB_TOKEN)"
 }
 
 function Get-LatestReleaseAssetUrl {
     param([Parameter(Mandatory)][string]$Repo, [Parameter(Mandatory)][string]$NamePattern)
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $webHeaders
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $githubApiHeaders
     $asset = $release.assets | Where-Object { $_.name -match $NamePattern } | Select-Object -First 1
     if (-not $asset) {
         throw "No release asset matching '$NamePattern' found in the latest release of $Repo. " +
