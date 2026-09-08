@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -191,38 +192,62 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
   if (mode_ == DisplayMode::RayTraced && !page_ && ctx.doc) {
-    // Progressive path-traced preview: render at 1/4 the viewport
-    // resolution and accumulate more samples each frame the camera and
-    // document stay still, restarting whenever either changes.
-    const int rw = std::max(width_ / 4, 4), rh = std::max(height_ / 4, 4);
+    // Real per-frame GPU raytraced preview (render::GpuRaytracer): a BVH
+    // built once from the document (below, only when the scene actually
+    // changed) is traced by a fragment shader every frame, temporally
+    // accumulated and denoised while the camera/document stay still. Runs
+    // at half the viewport resolution (bilinear-free nearest upscale, same
+    // reduced-res tactic the old CPU mode used, just less aggressive since
+    // this does real per-frame work instead of blitting a cached bitmap).
+    if (!raytrace_gpu_inited_) {
+      std::string err;
+      raytrace_gpu_inited_ = raytrace_gpu_.Init(err);
+      if (!raytrace_gpu_inited_) std::fprintf(stderr, "GpuRaytracer::Init failed: %s\n", err.c_str());
+    }
+    const int rw = std::max(width_ / 2, 4), rh = std::max(height_ / 2, 4);
     const CameraState cam = camera_.State();
     auto same_camera = [](const CameraState& a, const CameraState& b) {
       return (a.eye - b.eye).Length() < 1e-6 && (a.target - b.target).Length() < 1e-6 && (a.up - b.up).Length() < 1e-6 &&
              a.perspective == b.perspective && std::fabs(a.ortho_height - b.ortho_height) < 1e-6 &&
              std::fabs(a.lens_mm - b.lens_mm) < 1e-6;
     };
-    const bool stale = !raytrace_have_state_ || rw != raytrace_w_ || rh != raytrace_h_ ||
-                       !same_camera(cam, raytrace_camera_) || ctx.doc->Revision() != raytrace_revision_;
-    if (stale) {
+    const bool scene_stale = !raytrace_have_state_ || ctx.doc->Revision() != raytrace_revision_;
+    const bool camera_stale = !raytrace_have_state_ || !same_camera(cam, raytrace_camera_) || rw != raytrace_w_ || rh != raytrace_h_;
+    if (scene_stale && raytrace_gpu_inited_) {
       raytrace_.Prepare(*ctx.doc, cam, static_cast<double>(rw) / rh, ctx.curve_tolerance, ctx.surface_tolerance);
-      raytrace_.ResetAccumulation(rw, rh);
+      raytrace_gpu_.UploadScene(raytrace_, ctx.doc->Render());
+    }
+    if (scene_stale || camera_stale) {
       raytrace_camera_ = cam;
       raytrace_w_ = rw; raytrace_h_ = rh;
       raytrace_revision_ = ctx.doc->Revision();
       raytrace_have_state_ = true;
     }
-    std::vector<unsigned char> rgb;
-    raytrace_.Accumulate(1, 4, rgb);
-    if (rgb.size() == static_cast<size_t>(rw) * rh * 3) {
-      if (raytrace_tex_) renderer.DeleteTexture(raytrace_tex_);
-      raytrace_tex_ = renderer.CreateTexture(rw, rh, rgb.data(), 3);
+    GLuint present = 0;
+    if (raytrace_gpu_inited_) {
+      // Honest per-frame GPU cost, gated behind an env var (DINO8_RT_TIMING)
+      // so it costs nothing normally: glFinish() forces the trace+denoise
+      // passes to actually complete before stopping the clock, bypassing
+      // glfwSwapInterval(1)'s vsync pacing that otherwise hides the real
+      // GPU time behind whatever the display refresh allows. See
+      // tests/gpu_render_notes.md for the measured numbers this produces.
+      static const bool time_it = std::getenv("DINO8_RT_TIMING") != nullptr;
+      const auto t0 = time_it ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+      present = raytrace_gpu_.Render(camera_, static_cast<double>(rw) / rh, rw, rh, scene_stale || camera_stale);
+      if (time_it) {
+        glFinish();
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        std::fprintf(stderr, "rt_frame_ms=%.3f tris=%d res=%dx%d\n", ms, raytrace_gpu_.TriangleCount(), rw, rh);
+      }
     }
     renderer.EnableDepthTest(false);
-    renderer.DrawFullscreenTexture(raytrace_tex_);
+    if (present) renderer.DrawFullscreenTexture(present);
     renderer.EnableDepthTest(true);
+    const std::string hud = raytrace_gpu_.Empty() ? "GPU raytraced - empty scene"
+        : "GPU raytraced - accum: " + std::to_string(raytrace_gpu_.AccumulatedFrames()) + " frames, " +
+          std::to_string(raytrace_gpu_.TriangleCount()) + " tris @ " + std::to_string(rw) + "x" + std::to_string(rh);
     ImGui::GetForegroundDrawList()->AddText(ImVec2(static_cast<float>(screen_x_) + 8, static_cast<float>(screen_y_) + 8),
-                                            IM_COL32(255, 255, 255, 235),
-                                            ("samples: " + std::to_string(raytrace_.AccumulatedSamples())).c_str());
+                                            IM_COL32(255, 255, 255, 235), hud.c_str());
   } else if (page_) {
     DrawPage(renderer);
   } else {
