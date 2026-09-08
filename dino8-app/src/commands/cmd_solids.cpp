@@ -432,7 +432,20 @@ class ExtrudeCommand : public Command {
     if (shift != Point3d(0, 0, 0)) c.Translate(shift);
     ON_Plane plane;
     const bool closed = c.IsClosed();
-    if (closed && solid_ && c.IsPlanar(&plane, ctx.Settings().absolute_tolerance)) {
+    // ON_BrepTrimmedPlane builds a single trim loop unconditionally, with
+    // no check that the boundary curve is simple - for a self-crossing
+    // closed curve it would still hand back a Brep that topologically
+    // looks like a closed solid (every edge has two trims) while its trim
+    // loop actually crosses itself in 2D, a silent geometric corruption
+    // exactly like the huge-coordinate mesh-precision case documented in
+    // adversarial_corpus_notes.md. Reject it here instead and fall through
+    // to the open ruled-surface path below (SumSurface has no "solid"
+    // claim to violate, so it's a safe, honest degrade rather than a
+    // second failure mode).
+    kernel::NurbsCurve for_check;
+    if (CurveFromON(c, for_check) && CurveSelfIntersects(for_check, std::max(ctx.Settings().absolute_tolerance, 1e-9))) {
+      ctx.Warn("Extrude: the selected curve crosses itself - building an open surface instead of a solid cap");
+    } else if (closed && solid_ && c.IsPlanar(&plane, ctx.Settings().absolute_tolerance)) {
       ON_Brep* b = ON_BrepTrimmedPlane(plane, c);
       if (b) {
         ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + v));
@@ -613,15 +626,22 @@ void RegisterSolidCommands(CommandEngine& e) {
   Reg(e, "SubDLoft", OnSelection("Select curves to loft in order", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Loft(ctx, ids, true); }, 2));
   Reg(e, "PlanarSrf", OnSelection("Select planar closed curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("PlanarSrf");
-        int made = 0;
+        int made = 0, self_int = 0;
         for (ObjectId id : ids) {
           const SceneObject* o = ctx.Doc().Find(id);
           if (!o || o->kind != ObjectKind::Curve) continue;
           ON_Plane pl;
           if (!o->curve->raw().IsClosed() || !o->curve->raw().IsPlanar(&pl, ctx.Settings().absolute_tolerance)) continue;
+          // ON_BrepTrimmedPlane has no notion of a self-crossing boundary -
+          // it would hand back a Brep whose single trim loop crosses
+          // itself in 2D, silently reported as a normal planar surface.
+          // Reject that here instead of shipping the corrupt result.
+          if (CurveSelfIntersects(*o->curve, std::max(ctx.Settings().absolute_tolerance, 1e-9))) { ++self_int; continue; }
           if (ON_Brep* b = ON_BrepTrimmedPlane(pl, o->curve->raw())) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ++made; }
         }
-        if (made == 0) ctx.Warn("Select closed planar curves"); else ctx.Print("Created " + std::to_string(made) + " planar surface(s)");
+        if (made == 0 && self_int > 0) ctx.Warn("PlanarSrf: " + std::to_string(self_int) + " curve(s) cross themselves - a planar surface needs a simple (non-self-intersecting) boundary");
+        else if (made == 0) ctx.Warn("Select closed planar curves");
+        else ctx.Print("Created " + std::to_string(made) + " planar surface(s)" + (self_int > 0 ? " (" + std::to_string(self_int) + " self-intersecting curve(s) skipped)" : ""));
       }));
   Reg(e, "Mesh", OnSelection("Select surfaces, polysurfaces or SubDs to mesh", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { MeshFromSelection(ctx, ids, "Mesh", false); }));
   Reg(e, "ToSubD", OnSelection("Select meshes or polysurfaces to convert", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { MeshFromSelection(ctx, ids, "ToSubD", true); }));

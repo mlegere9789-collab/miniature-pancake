@@ -974,6 +974,28 @@ echo "$BA" | grep -E "^(ok|FAIL)"
 if echo "$BA" | grep -q "^FAIL"; then fail=1; fi
 bacheck "^ok   expect_objects 0" "boolean-adversarial script cleaned up to zero objects at the end"
 
+# Adversarial curve self-intersection: a closed bowtie polyline fed into
+# PlanarSrf (must be rejected) and a solid-capping Extrude (must degrade to
+# an open surface), an open self-crossing polyline confirming IntersectSelf
+# still finds real crossings after the shared CurveSelfIntersects refactor,
+# and a simple closed curve confirming no false positive on ordinary
+# geometry (see curve_adversarial_script.txt and adversarial_corpus_notes.md).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  CA="$("$BIN" --smoke 300 --script "$HERE/curve_adversarial_script.txt" 2>&1)" || { echo "$CA"; echo "FAIL: curve-adversarial script exited non-zero"; exit 1; }
+else
+  CA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 300 --script "$HERE/curve_adversarial_script.txt" 2>&1)" || { echo "$CA"; echo "FAIL: curve-adversarial script exited non-zero"; exit 1; }
+fi
+cacheck() { if echo "$CA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+cacheck "! PlanarSrf: 1 curve(s) cross themselves" "PlanarSrf rejected a closed bowtie polyline instead of silently building a self-crossing trim loop"
+cacheck "! Extrude: the selected curve crosses itself - building an open surface instead of a solid cap" "Extrude Solid=Yes degraded a bowtie curve to an open surface instead of claiming a solid it cannot honestly build"
+cacheck "  intersection at 5,5,0" "IntersectSelf still finds a real self-crossing after the shared CurveSelfIntersects refactor"
+echo "$CA" | grep -E "^(ok|FAIL)"
+if echo "$CA" | grep -q "^FAIL"; then fail=1; fi
+cacheck "Created 1 planar surface(s)" "a simple (non-self-intersecting) closed curve still built a normal planar surface - no false positive from the self-intersection check"
+CA_CROSS_COUNT=$(echo "$CA" | grep -c "cross themselves\|crosses itself")
+if [ "$CA_CROSS_COUNT" = "2" ]; then echo "ok   exactly the two bowtie cases were flagged as self-intersecting, nothing else"; else echo "FAIL exactly the two bowtie cases were flagged as self-intersecting, nothing else (got $CA_CROSS_COUNT)"; fail=1; fi
+cacheck "gl_error=0" "curve-adversarial script ran without OpenGL errors"
+
 # Analysis: Distance/Length/Area/Volume/AreaCentroid/VolumeCentroid/What/List/BoundingBox/
 # Dir/Check/SelBadObjects/Angle/Radius/Diameter/Curvature/CurvatureGraph/Zebra/EMap/
 # CurvatureAnalysis/DraftAngleAnalysis/ShowEdges/CrvDeviation/PointDeviation/Audit/SystemInfo

@@ -249,29 +249,9 @@ std::optional<Point3d> RayHitMesh(const kernel::Mesh& m, Point3d p, Vector3d d) 
   return p + d * best;
 }
 
-// Polyline sampling of a curve for the self-intersection test.
-std::vector<Point3d> Sample(const kernel::NurbsCurve& c, int n) {
-  std::vector<Point3d> pts;
-  const kernel::Interval d = c.Domain();
-  for (int i = 0; i <= n; ++i) pts.push_back(c.PointAt(d.min + (d.max - d.min) * i / n));
-  return pts;
-}
-
-bool SelfIntersects(const kernel::NurbsCurve& c, double tol) {
-  const int n = std::max(64, c.ControlPointCount() * 12);
-  const std::vector<Point3d> pts = Sample(c, n);
-  const bool closed = c.IsClosed();
-  for (size_t i = 0; i + 1 < pts.size(); ++i) {
-    for (size_t j = i + 2; j + 1 < pts.size(); ++j) {
-      if (closed && i == 0 && j + 2 == pts.size()) continue;  // the closing seam
-      ON_Line a(pts[i], pts[i + 1]), b(pts[j], pts[j + 1]);
-      double ta = 0, tb = 0;
-      if (!ON_IntersectLineLine(a, b, &ta, &tb, tol, true)) continue;
-      if (a.PointAt(ta).DistanceTo(b.PointAt(tb)) <= tol) return true;
-    }
-  }
-  return false;
-}
+// Self-intersection sampling test (CurveSelfIntersects) now lives in
+// cmd_common.h, shared with any command that needs to reject a
+// self-crossing boundary before treating it as a simple loop.
 
 // Takes the next typed token, or prompts for text.
 class TextArgCommand : public Command {
@@ -611,7 +591,7 @@ void RegisterSelect2Commands(CommandEngine& e) {
   Reg(e, "SelSelfIntersectingCrv", Immediate([](CommandContext& ctx) {
         const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-9);
         int n = 0;
-        for (SceneObject& o : ctx.Doc().Objects()) if (o.kind == ObjectKind::Curve && Selectable(ctx, o) && SelfIntersects(*o.curve, tol)) { o.selected = true; ++n; }
+        for (SceneObject& o : ctx.Doc().Objects()) if (o.kind == ObjectKind::Curve && Selectable(ctx, o) && CurveSelfIntersects(*o.curve, tol)) { o.selected = true; ++n; }
         ctx.Print("SelSelfIntersectingCrv: " + std::to_string(n) + " curve(s) selected");
       }), CommandStatus::Implemented, "Tests a dense polyline sampling of each curve (at least 64 points, or 12 per control point) for segment/segment intersections within tolerance.");
   Reg(e, "SelValue", Make<TextArgCommand>("User text value", [](CommandContext& ctx, const std::string& v) {

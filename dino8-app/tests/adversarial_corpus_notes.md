@@ -11,6 +11,31 @@ regressions introduced while building this corpus, and no further attempt to
 fix them is recommended within this kernel; the section headers say what
 would actually be required.
 
+## 3. Curve self-intersection corpus (`curve_adversarial_script.txt`) - fixed, not a limitation
+
+Unlike sections 1-2 above, this one was a real, fixable bug rather than a
+kernel-level limit: `PlanarSrf` and a solid-capping `Extrude` both called
+`ON_BrepTrimmedPlane`, which builds a single trim loop unconditionally with
+no check that the boundary curve is simple - fed a self-crossing closed
+curve (a bowtie), it silently returned a `Brep` that topologically looks
+like a closed solid (every edge has two trims) while its trim loop actually
+crosses itself in 2D, a silent geometric corruption. Both commands now
+reject a self-crossing boundary via a shared `CurveSelfIntersects` helper
+(`src/commands/cmd_common.h`, a dense polyline-sampled segment/segment
+test) before calling `ON_BrepTrimmedPlane`: `PlanarSrf` skips the curve
+with a warning, `Extrude` falls through to the open ruled-surface path
+(`SumSurface`, which has no "solid" claim to violate).
+
+**Not attempted in this pass** (honestly out of scope, not fixed and not
+proven infeasible - a future pass should pick these up): high-aspect-ratio
+surfaces (one dimension orders of magnitude larger than the other) fed into
+booleans/fillets/intersections, and self-intersecting sweep/loft rails or
+cross-sections. Both were part of the original ask for this corpus
+expansion but were not reached in the time available; this file's own
+sections 1-2 above cover the *scale*-related robustness issues found so
+far (huge-coordinate + small-feature precision, and radius-vs-tolerance),
+which is adjacent but not the same as an extreme *aspect-ratio* case.
+
 ## 1. Single-precision mesh storage breaks at huge-coordinate + small-feature combinations
 
 **Case:** `fillet_adversarial_script.txt`'s huge-scale section - a 10-unit
