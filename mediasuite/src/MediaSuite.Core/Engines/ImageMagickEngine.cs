@@ -48,8 +48,13 @@ public sealed class ImageMagickEngine : ExternalProcessEngine
         }
 
         var workingDirectory = ResolveWorkingDirectory(spec);
+        // spec.BatchRoot is the root JobLauncher computed from the *whole* original
+        // batch before splitting it into this one-file spec -- FindCommonRoot(spec.InputPaths)
+        // here would just return this single file's own containing folder. The fallback
+        // still covers operations that combine their inputs into one spec, where
+        // InputPaths already is the whole batch and BatchRoot is left null.
         var batchRoot = spec.Output.PreserveFolderStructure
-            ? OutputPathResolver.FindCommonRoot(spec.InputPaths)
+            ? spec.BatchRoot ?? OutputPathResolver.FindCommonRoot(spec.InputPaths)
             : null;
 
         var outputs = new List<string>(spec.InputPaths.Count);
@@ -117,7 +122,10 @@ public sealed class ImageMagickEngine : ExternalProcessEngine
         }
 
         var target = spec.Output with { Format = ResolveOutputFormat(spec, inputPath) };
-        var outputPath = OutputPathResolver.Resolve(inputPath, target, index, batchRoot);
+        // spec.BatchIndex, not the caller's loop position: JobLauncher splits a
+        // multi-file batch into one spec per file, so that loop only ever sees a
+        // single item and its own index would always resolve to 1 for every file.
+        var outputPath = OutputPathResolver.Resolve(inputPath, target, spec.BatchIndex ?? index, batchRoot);
         var arguments = ImageCommandBuilder.Build(spec, sourcePath, outputPath);
 
         await RunToolAsync(magick, arguments, "ImageMagick", cancellationToken, outputPathToDeleteOnCancel: outputPath)

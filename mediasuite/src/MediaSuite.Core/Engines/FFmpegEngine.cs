@@ -48,8 +48,13 @@ public sealed class FFmpegEngine : ExternalProcessEngine
         }
 
         var ffprobe = ToolLocator.Locate(ExternalToolId.FFprobe).Path;
+        // spec.BatchRoot is the root JobLauncher computed from the *whole* original
+        // batch before splitting it into this one-file spec -- FindCommonRoot(spec.InputPaths)
+        // here would just return this single file's own containing folder. The fallback
+        // still covers operations that combine their inputs into one spec, where
+        // InputPaths already is the whole batch and BatchRoot is left null.
         var batchRoot = spec.Output.PreserveFolderStructure
-            ? OutputPathResolver.FindCommonRoot(spec.InputPaths)
+            ? spec.BatchRoot ?? OutputPathResolver.FindCommonRoot(spec.InputPaths)
             : null;
 
         var outputs = new List<string>(spec.InputPaths.Count);
@@ -107,7 +112,10 @@ public sealed class FFmpegEngine : ExternalProcessEngine
             : await _probeReader.ReadAsync(ffprobe, inputPath, cancellationToken).ConfigureAwait(false);
 
         var target = spec.Output with { Format = ResolveOutputFormat(spec, inputPath) };
-        var outputPath = OutputPathResolver.Resolve(inputPath, target, index + 1, batchRoot);
+        // spec.BatchIndex, not the local loop position + 1: JobLauncher splits a
+        // multi-file batch into one spec per file, so this loop only ever sees a
+        // single item and index + 1 would always be 1 for every file.
+        var outputPath = OutputPathResolver.Resolve(inputPath, target, spec.BatchIndex ?? index + 1, batchRoot);
 
         var effectiveSpec = WithDurationForBitrateTargeting(spec, probe);
         var arguments = FFmpegCommandBuilder.Build(effectiveSpec, inputPath, outputPath, probe);
@@ -184,14 +192,36 @@ public sealed class FFmpegEngine : ExternalProcessEngine
     /// </summary>
     internal static TimeSpan? ExpectedOutputDuration(JobSpec spec, MediaProbe probe)
     {
-        if (string.Equals(spec.OperationId, "video.trim", StringComparison.OrdinalIgnoreCase)
-            && FFmpegCommandBuilder.TryReadDuration(spec, out var trimmed)
-            && trimmed > TimeSpan.Zero)
+        if (!string.Equals(spec.OperationId, "video.trim", StringComparison.OrdinalIgnoreCase))
+        {
+            return probe.Duration;
+        }
+
+        if (FFmpegCommandBuilder.TryReadDuration(spec, out var trimmed) && trimmed > TimeSpan.Zero)
         {
             return trimmed;
         }
 
-        return probe.Duration;
+        // Trim-to-EOF: only "start" was given, no "end"/"duration" (TryReadDuration
+        // returns false in exactly that case -- see its own doc comment). FFmpeg reports
+        // the *output* timeline, which starts back at zero right after the seek, so
+        // progress has to be measured against what's left of the source past "start",
+        // not the source's full length -- the same reasoning GifEngine.ExpectedDuration
+        // already applies to its own trim path, which this mirrors.
+        if (probe.Duration is not { TotalSeconds: > 0 } duration)
+        {
+            return probe.Duration;
+        }
+
+        if (!MediaTime.TryParse(spec.GetOption("start"), out var start) || start <= TimeSpan.Zero)
+        {
+            return duration;
+        }
+
+        // A start past the end of the clip leaves nothing to measure against, so fall
+        // back to an indeterminate bar rather than dividing by a negative remainder.
+        var remaining = duration - start;
+        return remaining > TimeSpan.Zero ? remaining : null;
     }
 
     /// <summary>

@@ -79,6 +79,34 @@ public class PngToSvgEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task An_existing_output_under_OverwritePolicy_Fail_is_a_clean_failure_not_a_crash()
+    {
+        // Regression test: OutputPathResolver.Resolve() throws a plain IOException when
+        // OverwritePolicy.Fail is set and the target already exists -- every sibling
+        // engine (FFmpeg, ImageMagick, Gif, Archive, Document, Pdf, Upscale) already
+        // catches that alongside ToolExecutionException; this engine was the one missing
+        // it, so this exact scenario used to propagate out of RunAsync unhandled instead
+        // of coming back as an ordinary failed job.
+        var input = _temp.CreateFile("logo.png");
+        _temp.CreateFile("out", "logo.svg");
+        var engine = new PngToSvgEngine(_runner, Tools());
+
+        var spec = Spec(new[] { input }) with
+        {
+            Output = new OutputTarget
+            {
+                Directory = _temp.Combine("out"),
+                OverwritePolicy = OverwritePolicy.Fail,
+            },
+        };
+
+        var result = await Run(engine, spec);
+
+        Assert.Equal(JobStatus.Failed, result.Status);
+        Assert.Contains("already exists", result.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void The_bitmap_step_flattens_transparency_and_thresholds()
     {
         var arguments = PngToSvgEngine.BuildBitmapArguments(

@@ -155,8 +155,13 @@ public sealed class PdfEngine : ExternalProcessEngine
         IProgress<JobProgress> progress,
         CancellationToken cancellationToken)
     {
+        // spec.BatchRoot is the root JobLauncher computed from the *whole* original
+        // batch before splitting it into this one-file spec -- FindCommonRoot(spec.InputPaths)
+        // here would just return this single file's own containing folder. The fallback
+        // still covers operations that combine their inputs into one spec, where
+        // InputPaths already is the whole batch and BatchRoot is left null.
         var batchRoot = spec.Output.PreserveFolderStructure
-            ? OutputPathResolver.FindCommonRoot(spec.InputPaths)
+            ? spec.BatchRoot ?? OutputPathResolver.FindCommonRoot(spec.InputPaths)
             : null;
 
         var outputs = new List<string>();

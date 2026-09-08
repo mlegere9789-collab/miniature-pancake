@@ -49,13 +49,20 @@ public sealed class JobLauncher
 
         var resolvedOptions = options ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        JobSpec SpecFor(IReadOnlyList<string> paths) => new()
+        // Computed once, from the whole original selection, before it gets split into one
+        // spec per file below — see JobSpec.BatchRoot's own doc comment for why this can't
+        // just be recomputed later from a single-file spec's own InputPaths.
+        var batchRoot = target.PreserveFolderStructure ? OutputPathResolver.FindCommonRoot(inputPaths) : null;
+
+        JobSpec SpecFor(IReadOnlyList<string> paths, int? batchIndex) => new()
         {
             OperationId = feature.OperationId,
             InputPaths = paths,
             Output = target,
             Preset = preset,
             Options = resolvedOptions,
+            BatchRoot = batchRoot,
+            BatchIndex = batchIndex,
         };
 
         if (OperationInputRules.CombinesInputs(feature.OperationId))
@@ -66,10 +73,13 @@ public sealed class JobLauncher
             }
 
             // The order the user added the files in is the order the frames play in, so it
-            // is passed through untouched.
-            return _queue.EnqueueRange(new[] { SpecFor(inputPaths.ToArray()) });
+            // is passed through untouched. This spec's own InputPaths already is the whole
+            // batch, so its engine's own loop position is already a correct batch index --
+            // BatchIndex stays null.
+            return _queue.EnqueueRange(new[] { SpecFor(inputPaths.ToArray(), batchIndex: null) });
         }
 
-        return _queue.EnqueueRange(inputPaths.Select(path => SpecFor(new[] { path })));
+        return _queue.EnqueueRange(
+            inputPaths.Select((path, i) => SpecFor(new[] { path }, batchIndex: i + 1)));
     }
 }
