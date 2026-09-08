@@ -5,6 +5,11 @@
 //   --smoke N     render N frames and exit (used by headless QC under Xvfb)
 //   --script FILE run each line of FILE as a command after start-up
 //   --screenshot FILE.ppm   save the final frame (used with --smoke)
+//   --stress N    add N simple boxes to a fresh document, time object
+//                 creation / display-mesh warmup / viewport picking / an
+//                 undo snapshot, print one "stress: ..." line, then exit
+//                 (or continue into --smoke's frame loop if both are given).
+//                 See tests/stress.sh and tests/performance_notes.md.
 //
 // Script lines starting with '@' are synthetic input for UI tests:
 //   @move X Y | @down [button] | @up [button] | @click X Y [button]
@@ -14,6 +19,8 @@
 //   @key NAME | @text STR | @wait N | @expect_selected N | @expect_objects N
 //   FILE.3dm      open a model on start-up
 
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -32,7 +39,10 @@
 
 #include "app/Application.h"
 #include "app/Settings.h"
+#include "doc/Document.h"
 #include "ui/Theme.h"
+#include "util/ThreadPool.h"
+#include "viewport/Viewport.h"
 
 namespace {
 
@@ -75,20 +85,134 @@ bool WriteWindowCaptureBmp(const std::string& path, int w, int h, const std::vec
   return true;
 }
 
+// Builds a single unit-cube mesh box centered at `center` - the stress
+// test's per-object geometry. Deliberately not the full BoxCommand path in
+// cmd_solids.cpp (Brep + trims + tolerance-driven tessellation): the point
+// of --stress is to measure what the document/viewport/undo layers cost at
+// N objects, not to re-benchmark solid modelling, so each object is as
+// cheap as a real object can be while still exercising a real DisplayCache
+// (triangles + normals) through SceneObject::EnsureDisplay.
+dino8::app::SceneObject MakeStressBox(dino8::kernel::Point3d center, double half_size) {
+  dino8::kernel::Mesh m;
+  ON_Mesh& r = m.raw();
+  const double x[2] = {center.x - half_size, center.x + half_size};
+  const double y[2] = {center.y - half_size, center.y + half_size};
+  const double z[2] = {center.z - half_size, center.z + half_size};
+  for (int k = 0; k < 2; ++k)
+    for (int j = 0; j < 2; ++j)
+      for (int i = 0; i < 2; ++i) r.SetVertex(k * 4 + j * 2 + i, ON_3dPoint(x[i], y[j], z[k]));
+  const int f[6][4] = {{0, 2, 3, 1}, {4, 5, 7, 6}, {0, 1, 5, 4}, {2, 6, 7, 3}, {0, 4, 6, 2}, {1, 3, 7, 5}};
+  for (int i = 0; i < 6; ++i) r.SetQuad(i, f[i][0], f[i][1], f[i][2], f[i][3]);
+  r.ComputeFaceNormals();
+  r.ComputeVertexNormals();
+  return dino8::app::SceneObject::MakeMesh(m);
+}
+
+// Runs the --stress workload against `app`'s current (freshly-cleared)
+// document: N boxes on a compact 3D grid, timing exactly the four things
+// tests/performance_notes.md reports on:
+//   - create_ms:  Document::Add x N (object list growth, not geometry cost)
+//   - warmup_ms:  SceneObject::EnsureDisplay x N, parallelized with
+//                 dino8::app::ParallelFor unless DINO8_DISABLE_PARALLEL_WARMUP
+//                 is set (each object's mutable display cache is its own -
+//                 see util/ThreadPool.h for why that is safe to parallelize)
+//   - pick_ms:    average Viewport::PickObject latency over kPickSamples
+//                 hover-style picks, accelerated by the ObjectGrid in
+//                 spatial/ObjectGrid.h unless DINO8_DISABLE_PICK_GRID is set
+//   - undo_ms:    a single Document::BeginChange call - the full-document
+//                 snapshot Undo takes before every command, which stays
+//                 O(objects) regardless of anything in this file (see the
+//                 "still doesn't scale" section of performance_notes.md)
+void RunStressTest(dino8::app::Application& app, int object_count) {
+  using Clock = std::chrono::steady_clock;
+  auto elapsed_ms = [](Clock::time_point since) {
+    return std::chrono::duration<double, std::milli>(Clock::now() - since).count();
+  };
+
+  dino8::app::Document& doc = app.Doc();
+  doc.Clear();
+
+  // A compact cube grid: side^3 >= object_count, boxes 1 unit apart center
+  // to center (0.4 half-size, so neighbours don't touch) - dense enough
+  // that a pick ray genuinely has to thread through many candidate cells,
+  // not spread so far apart that every object lands in its own grid cell.
+  const int side = std::max(1, static_cast<int>(std::ceil(std::cbrt(static_cast<double>(object_count)))));
+  const auto create_start = Clock::now();
+  int placed = 0;
+  for (int k = 0; k < side && placed < object_count; ++k) {
+    for (int j = 0; j < side && placed < object_count; ++j) {
+      for (int i = 0; i < side && placed < object_count; ++i) {
+        const dino8::kernel::Point3d center(i * 1.0, j * 1.0, k * 1.0);
+        doc.Add(MakeStressBox(center, 0.4));
+        ++placed;
+      }
+    }
+  }
+  const double create_ms = elapsed_ms(create_start);
+
+  const bool serial_warmup = std::getenv("DINO8_DISABLE_PARALLEL_WARMUP") != nullptr;
+  std::vector<dino8::app::SceneObject>& objects = doc.Objects();
+  const auto warmup_start = Clock::now();
+  if (serial_warmup) {
+    for (dino8::app::SceneObject& o : objects) o.EnsureDisplay(0.02, 0.05);
+  } else {
+    dino8::app::ParallelFor(objects.size(), [&](std::size_t i) { objects[i].EnsureDisplay(0.02, 0.05); });
+  }
+  const double warmup_ms = elapsed_ms(warmup_start);
+
+  dino8::app::Viewport* vp = app.ActiveViewport();
+  double pick_ms = -1.0;
+  if (vp) {
+    vp->GetCamera().ZoomExtents(dino8::kernel::BoundingBox{dino8::kernel::Point3d(-1, -1, -1),
+                                                            dino8::kernel::Point3d(side + 1.0, side + 1.0, side + 1.0)},
+                                vp->Aspect());
+    constexpr int kPickSamples = 200;
+    const auto pick_start = Clock::now();
+    for (int s = 0; s < kPickSamples; ++s) {
+      // Sweep across the viewport rather than picking the same pixel every
+      // time, so the grid's DDA march visits a realistically varied set of
+      // cells instead of one memoized path.
+      const double px = (s % 40) * 20.0 + 5.0;
+      const double py = ((s / 40) % 20) * 20.0 + 5.0;
+      vp->PickObject(doc, px, py, 6.0);
+    }
+    pick_ms = elapsed_ms(pick_start) / kPickSamples;
+  }
+
+  const auto undo_start = Clock::now();
+  doc.BeginChange("StressUndoSnapshot");
+  const double undo_ms = elapsed_ms(undo_start);
+
+  std::printf("stress: objects=%d create_ms=%.3f warmup_ms=%.3f pick_ms=%.4f undo_ms=%.3f grid=%s parallel_warmup=%s\n",
+              placed, create_ms, warmup_ms, pick_ms, undo_ms,
+              std::getenv("DINO8_DISABLE_PICK_GRID") ? "off" : "on", serial_warmup ? "off" : "on");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   int smoke_frames = -1;
+  int stress_count = -1;
   std::string script_path;
   std::string open_path;
   std::string screenshot_path;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--smoke") == 0 && i + 1 < argc) smoke_frames = std::atoi(argv[++i]);
+    else if (std::strcmp(argv[i], "--stress") == 0 && i + 1 < argc) stress_count = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--script") == 0 && i + 1 < argc) script_path = argv[++i];
     else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) screenshot_path = argv[++i];
     else if (std::strcmp(argv[i], "--version") == 0) { std::printf("Dino 8 %s\n", DINO8_VERSION); return 0; }
     else if (argv[i][0] != '-') open_path = argv[i];
   }
+  // --stress implies headless/offscreen like --smoke, unless --smoke was
+  // also given explicitly (then the caller wants to see stress objects in
+  // the following smoke frames too). A handful of frames run first so
+  // ImGui has laid out real viewport sizes (PickObject needs a non-1x1
+  // Viewport::Aspect()) before RunStressTest fires on frame 3, mirroring
+  // the `frame > 2` gate the script runner below already uses for the
+  // same reason.
+  const bool stress_only = stress_count >= 0 && smoke_frames < 0;
+  if (stress_only) smoke_frames = 4;
 
   glfwSetErrorCallback(GlfwErrorCallback);
   if (!glfwInit()) {
@@ -185,6 +309,8 @@ int main(int argc, char** argv) {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+
+    if (stress_count >= 0 && frame == 3) RunStressTest(app, stress_count);
 
     // Feed one script line per frame after the UI has settled.
     if (frame > 2 && script_cursor < script_lines.size() && wait_frames == 0) {
