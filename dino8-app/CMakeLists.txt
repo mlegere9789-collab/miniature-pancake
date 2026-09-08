@@ -125,6 +125,7 @@ set(DINO8_SOURCES
   src/gl/gl_loader.cpp
   src/app/Application.cpp
   src/app/Settings.cpp
+  src/i18n/I18n.cpp
   src/input/SpaceMouse.cpp
   src/sketch/Constraints.cpp
   src/commands/cmd_constraints.cpp
@@ -265,6 +266,7 @@ set(DINO8_DATA_FILES ${CMAKE_CURRENT_SOURCE_DIR}/data/commands.json ${CMAKE_CURR
 add_custom_command(TARGET Dino8 POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:Dino8>/data
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DINO8_DATA_FILES} $<TARGET_FILE_DIR:Dino8>/data/
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n $<TARGET_FILE_DIR:Dino8>/data/i18n
   COMMENT "Copying Dino8 data files next to the executable")
 
 # ---------------------------------------------------------------------------
@@ -302,12 +304,15 @@ include(GNUInstallDirs)
 if(APPLE)
   install(TARGETS Dino8 BUNDLE DESTINATION . COMPONENT app)
   install(FILES ${DINO8_DATA_FILES} DESTINATION "Dino8.app/Contents/Resources/data" COMPONENT app)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n DESTINATION "Dino8.app/Contents/Resources/data" COMPONENT app)
 elseif(WIN32)
   install(TARGETS Dino8 RUNTIME DESTINATION . COMPONENT app)
   install(FILES ${DINO8_DATA_FILES} DESTINATION data COMPONENT app)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n DESTINATION data COMPONENT app)
 else()
   install(TARGETS Dino8 RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT app)
   install(FILES ${DINO8_DATA_FILES} DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data COMPONENT app)
+  install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/data/i18n DESTINATION ${CMAKE_INSTALL_DATADIR}/dino8/data COMPONENT app)
   install(FILES packaging/linux/dino8.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications COMPONENT app)
   install(FILES resources/dino8.png DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps RENAME dino8.png COMPONENT app OPTIONAL)
 endif()
