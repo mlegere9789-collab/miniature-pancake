@@ -10,6 +10,15 @@
 //                 undo snapshot, print one "stress: ..." line, then exit
 //                 (or continue into --smoke's frame loop if both are given).
 //                 See tests/stress.sh and tests/performance_notes.md.
+//   --cull-test N     build a small near cluster plus N far-away boxes,
+//                     frame the camera on the near cluster only, render it
+//                     once and print one "cull_test: ..." line reporting
+//                     Viewport::DrawObjects' frustum-cull candidate count
+//                     (respects DINO8_DISABLE_FRUSTUM_CULL). Pair with
+//                     --cull-screenshot to also capture the render. See
+//                     tests/cull_test.sh.
+//   --cull-screenshot FILE.bmp   with --cull-test: write the viewport's
+//                 own render (Viewport::CaptureToFile) to FILE.bmp.
 //
 // Script lines starting with '@' are synthetic input for UI tests:
 //   @move X Y | @down [button] | @up [button] | @click X Y [button]
@@ -188,17 +197,85 @@ void RunStressTest(dino8::app::Application& app, int object_count) {
               std::getenv("DINO8_DISABLE_PICK_GRID") ? "off" : "on", serial_warmup ? "off" : "on");
 }
 
+// --cull-test N: an honest, same-binary-shaped proof (like --stress's grid
+// A/B above) that Viewport::DrawObjects' frustum cull (Viewport.cpp, see
+// the "Frustum culling" section and tests/performance_notes.md's "No LOD
+// or frustum culling" item it closes) only removes draw calls, never
+// removes anything that should still be visible.
+//
+// tests/cull_test.sh runs this binary twice - once normally, once with
+// DINO8_DISABLE_FRUSTUM_CULL=1 (the escape hatch Viewport.cpp's cull
+// checks, which forces every object back onto every frame's candidate
+// list, i.e. exactly the pre-cull behaviour in the same binary) - and
+// checks that:
+//   (a) the printed "cull_test:" line's candidate count is far below the
+//       object count with the cull on, and exactly equal to it with the
+//       cull disabled (proof the cull is actually doing something
+//       measurable, not just a no-op broad phase);
+//   (b) the two runs' `screenshot_path` files (this viewport's own render,
+//       written via Viewport::CaptureToFile, not the whole composited
+//       ImGui window) are pixel-identical (proof nothing that should be
+//       visible went missing, and nothing that shouldn't be visible
+//       appeared, regardless of what the cull skipped).
+//
+// A fixed 27-box cluster sits at the origin - what the camera below
+// actually frames with ZoomExtents - while `far_count` more boxes sit a
+// million units away, guaranteed outside that frustum; a passing run's
+// candidate count should land near 27 (plus a little grid-cell slack),
+// not near far_count + 27.
+void RunCullTest(dino8::app::Application& app, int far_count, const std::string& screenshot_path) {
+  dino8::app::Document& doc = app.Doc();
+  doc.Clear();
+
+  constexpr int kVisibleSide = 3;  // 27 boxes: small, but enough for a real grid with several cells.
+  for (int k = 0; k < kVisibleSide; ++k)
+    for (int j = 0; j < kVisibleSide; ++j)
+      for (int i = 0; i < kVisibleSide; ++i) doc.Add(MakeStressBox(dino8::kernel::Point3d(i * 1.0, j * 1.0, k * 1.0), 0.4));
+  const int visible_count = kVisibleSide * kVisibleSide * kVisibleSide;
+  const dino8::kernel::BoundingBox visible_box{dino8::kernel::Point3d(-1, -1, -1),
+                                                dino8::kernel::Point3d(kVisibleSide + 1.0, kVisibleSide + 1.0, kVisibleSide + 1.0)};
+
+  constexpr double kFarOffset = 1.0e6;  // world units from the origin - well outside the frustum framed below
+  for (int n = 0; n < far_count; ++n) {
+    doc.Add(MakeStressBox(dino8::kernel::Point3d(kFarOffset + (n % 100) * 2.0, kFarOffset + (n / 100) * 2.0, kFarOffset), 0.4));
+  }
+
+  dino8::app::Viewport* vp = app.ActiveViewport();
+  if (!vp) { std::printf("cull_test: total=0 candidates=0 visible_expected=%d far_count=%d error=no_active_viewport\n", visible_count, far_count); return; }
+  vp->SetMode(dino8::app::DisplayMode::Shaded);
+  // Frame only the near cluster - not doc's full extent, which would also
+  // include the far boxes and defeat the point of this test.
+  vp->GetCamera().ZoomExtents(visible_box, vp->Aspect());
+
+  dino8::app::Viewport::FrameContext ctx = app.MakeFrameContext();
+  vp->Render(app.Renderer(), ctx);
+  const dino8::app::Viewport::FrustumCullStats stats = vp->LastFrustumCullStats();
+
+  if (!screenshot_path.empty()) {
+    std::string err;
+    if (!vp->CaptureToFile(screenshot_path, err)) std::fprintf(stderr, "cull_test: screenshot failed: %s\n", err.c_str());
+  }
+
+  std::printf("cull_test: total=%zu candidates=%zu visible_expected=%d far_count=%d cull=%s\n",
+              stats.total_objects, stats.draw_candidates, visible_count, far_count,
+              std::getenv("DINO8_DISABLE_FRUSTUM_CULL") ? "off" : "on");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   int smoke_frames = -1;
   int stress_count = -1;
+  int cull_test_far_count = -1;
   std::string script_path;
   std::string open_path;
   std::string screenshot_path;
+  std::string cull_screenshot_path;
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--smoke") == 0 && i + 1 < argc) smoke_frames = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--stress") == 0 && i + 1 < argc) stress_count = std::atoi(argv[++i]);
+    else if (std::strcmp(argv[i], "--cull-test") == 0 && i + 1 < argc) cull_test_far_count = std::atoi(argv[++i]);
+    else if (std::strcmp(argv[i], "--cull-screenshot") == 0 && i + 1 < argc) cull_screenshot_path = argv[++i];
     else if (std::strcmp(argv[i], "--script") == 0 && i + 1 < argc) script_path = argv[++i];
     else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) screenshot_path = argv[++i];
     else if (std::strcmp(argv[i], "--version") == 0) { std::printf("Dino 8 %s\n", DINO8_VERSION); return 0; }
@@ -210,8 +287,9 @@ int main(int argc, char** argv) {
   // ImGui has laid out real viewport sizes (PickObject needs a non-1x1
   // Viewport::Aspect()) before RunStressTest fires on frame 3, mirroring
   // the `frame > 2` gate the script runner below already uses for the
-  // same reason.
-  const bool stress_only = stress_count >= 0 && smoke_frames < 0;
+  // same reason. --cull-test behaves the same way, for the same reason
+  // (RunCullTest also needs a real Viewport::Aspect() for ZoomExtents).
+  const bool stress_only = (stress_count >= 0 || cull_test_far_count >= 0) && smoke_frames < 0;
   if (stress_only) smoke_frames = 4;
 
   glfwSetErrorCallback(GlfwErrorCallback);
@@ -311,6 +389,7 @@ int main(int argc, char** argv) {
     ImGui::NewFrame();
 
     if (stress_count >= 0 && frame == 3) RunStressTest(app, stress_count);
+    if (cull_test_far_count >= 0 && frame == 3) RunCullTest(app, cull_test_far_count, cull_screenshot_path);
 
     // Feed one script line per frame after the UI has settled.
     if (frame > 2 && script_cursor < script_lines.size() && wait_frames == 0) {

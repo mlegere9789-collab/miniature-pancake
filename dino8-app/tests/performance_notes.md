@@ -161,15 +161,62 @@ floats rather than an indexed vertex buffer).
    to be touched from more than one thread at a time. That remains true
    after this session; nothing here makes concurrent command execution
    safe, and nothing here tries to.
-6. **No LOD or frustum culling in the renderer.** The spatial grid added
-   this session accelerates *picking*, not *drawing* - the main render
-   passes in `GlRenderer.cpp`/`Viewport.cpp` still walk every visible
-   object every frame to build draw calls. The grid's `QueryBox` could in
-   principle answer "which objects overlap the view frustum" the same way
-   it now answers window-select, but that integration was not attempted
-   this session (higher risk of a visible regression - a culled-but-should-
-   be-visible object is a much more noticeable bug than a slightly slower
-   pick) and is a reasonable next step for whoever picks this up.
+6. ~~**No LOD or frustum culling in the renderer.**~~ **Closed in a later
+   session** (`worktree-agent-frustum`): `Viewport::DrawObjects` now builds
+   a per-frame candidate list - a broad-phase `ObjectGrid::QueryBox` against
+   the view frustum's enclosing box, then a precise per-object AABB-vs-
+   frustum-plane test (the standard conservative "positive vertex" method:
+   an object is dropped only when its whole bounding box is outside one
+   plane, so anything merely straddling the frustum boundary is always
+   kept) - and the three draw passes in `DrawObjects` iterate that list
+   instead of `doc.Objects()` directly. Skipped entirely for `ctx.for_render`
+   (image export) and for any object currently showing control points (a
+   NURBS control polygon can legitimately reach outside its curve's own
+   tessellated bbox - see the `PickControlPoint`/`ControlPointsInWindow`
+   caveat above; same risk, same fix: don't cull it). An env var,
+   `DINO8_DISABLE_FRUSTUM_CULL`, forces the old "every object is a
+   candidate" behaviour in the same binary, mirroring
+   `DINO8_DISABLE_PICK_GRID`.
+
+   **How this was verified, not just argued:** `tests/cull_test.sh` (folded
+   into `tests/smoke.sh`) runs the app's `--cull-test` hook twice - cull on,
+   then cull off via that env var - against a document with a small object
+   cluster the camera is framed on plus thousands of objects placed far
+   outside that frame. It checks the candidate count actually collapses
+   with the cull on (proof the cull does something), never drops below the
+   framed cluster's own object count (proof nothing in view gets excluded
+   from the candidate list), and - the direct correctness proof - that the
+   two runs' screenshots (`Viewport::CaptureToFile`, not a composited
+   window) are **pixel-identical**. Same camera, same document, same
+   binary: the only difference between the two runs is which draw calls
+   got skipped, so a byte-for-byte match means the cull changed nothing
+   about what actually got rendered.
+
+   **A real bug this verification caught before it shipped:** the first
+   version computed the broad-phase query box straight from the frustum's
+   near/far corners (correct on its own) and queried the grid directly.
+   For a flat/2D-ish scene (many curves at one Z, e.g. `tests/curveedit_
+   script.txt`), `ObjectGrid::EnsureFresh`'s cell-size heuristic - which
+   divides an estimated scene *volume* by object count - starves on a
+   near-zero volume and picks a cell size far smaller than an ortho view's
+   depth span (`Camera::ProjectionMatrix`'s ortho case spans a full
+   `-far_z..far_z`, and `far_z` is at least 1000 world units). The result
+   was a query box that, while under `ObjectGrid::ForEachCellInBox`'s own
+   per-axis `kMaxSpan` cap on every axis individually, had a cell-count
+   *product* in the tens of millions - turning what should be an
+   imperceptible per-frame cost into multi-minute (in the worst case,
+   effectively indefinite) frame stalls, caught by `tests/smoke.sh`'s
+   `curveedit_script.txt` section hanging outright. The fix: `ObjectGrid`
+   now also exposes `Extent()` (the AABB of every object it indexed), and
+   the frustum's query box is clamped to that extent before querying -
+   nothing outside the document's own bounding box can be a candidate
+   anyway, so this can only shrink the query, never drop a real one, and it
+   collapses the pathological case back to the scene's actual size. Left
+   here because it is exactly the kind of thing "provably safe" is
+   supposed to catch: the cull itself was never wrong in that scenario, but
+   it would have shipped a severe, scene-shape-dependent performance cliff
+   without the smoke-script exercising real (flat) geometry, not just the
+   synthetic cube grid `--stress`/`--cull-test` build.
 
 ## Reproducing the comparison
 
@@ -178,4 +225,9 @@ both `DINO8_DISABLE_PICK_GRID` and `DINO8_DISABLE_PARALLEL_WARMUP` set, and
 prints both `stress:` lines side by side. `tests/stress.sh N` alone also
 fails (non-zero exit) if `pick_ms` exceeds an 8ms per-hover-pick budget, so
 a future regression in the grid (or its removal) will show up as a test
-failure, not just a forgotten number in this file.
+failure, not just a forgotten number in this file. `tests/cull_test.sh [BIN]
+[FAR_COUNT]` is the frustum-cull analogue (see item 6 above): it runs the
+app's `--cull-test` hook with and without `DINO8_DISABLE_FRUSTUM_CULL` and
+diffs the two runs' screenshots pixel-for-pixel, in addition to checking the
+candidate-count drop - both must hold for the test to pass, and it's run as
+part of `tests/smoke.sh` so a regression here fails CI directly.

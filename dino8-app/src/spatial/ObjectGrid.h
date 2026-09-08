@@ -63,6 +63,22 @@ class ObjectGrid {
 
   bool Empty() const { return object_count_ == 0; }
 
+  // The world-space AABB spanning every indexed object (as of the last
+  // EnsureFresh) - false when Empty(). Callers building their own query
+  // box from something other than an actual selection on screen (e.g. a
+  // view frustum, which can be enormous along its depth axis - see
+  // Viewport::FrustumWorldBox) should intersect it with this first: an
+  // object outside the document's own bounding box cannot exist, so
+  // clamping to this extent only ever shrinks a query box, never excludes
+  // a real candidate, and keeps ForEachCellInBox's cell walk proportional
+  // to the scene's actual size instead of to an arbitrarily distant near/
+  // far plane.
+  bool Extent(kernel::BoundingBox& out) const {
+    if (object_count_ == 0) return false;
+    out = extent_;
+    return true;
+  }
+
  private:
   struct CellKey {
     int x = 0, y = 0, z = 0;
@@ -84,6 +100,7 @@ class ObjectGrid {
   void ForEachCellInBox(const kernel::BoundingBox& box, const std::function<void(const CellKey&)>& fn) const;
 
   kernel::Point3d origin_{0, 0, 0};
+  kernel::BoundingBox extent_{};  // see Extent() above; valid iff object_count_ > 0
   double cell_size_ = 1.0;
   std::uint64_t built_for_revision_ = ~0ull;
   std::size_t object_count_ = 0;

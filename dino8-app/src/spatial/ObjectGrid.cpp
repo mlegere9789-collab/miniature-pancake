@@ -55,6 +55,7 @@ void ObjectGrid::EnsureFresh(const Document& doc) {
     scene.max.z = std::max(scene.max.z, b.max.z);
   }
   origin_ = scene.min;
+  extent_ = scene;
   const double dx = std::max(0.0, scene.max.x - scene.min.x);
   const double dy = std::max(0.0, scene.max.y - scene.min.y);
   const double dz = std::max(0.0, scene.max.z - scene.min.z);

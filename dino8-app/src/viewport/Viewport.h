@@ -253,6 +253,22 @@ class Viewport {
   bool UndoView();  // false: nothing to undo
   bool RedoView();  // false: nothing to redo
 
+  // Frustum culling stats from the most recent DrawObjects call (see
+  // tests/performance_notes.md's "No LOD or frustum culling" item and
+  // tests/cull_test.sh, which reads this to prove the cull actually drops
+  // objects without dropping anything that should still be visible).
+  // `total_objects` is doc.Objects().size() at that draw; `draw_candidates`
+  // is how many of those survived the broad-phase grid query and the
+  // per-object frustum-plane test (i.e. how many were actually considered
+  // for drawing this frame) - not drawn every frame (culling is skipped
+  // for ctx.for_render and when DINO8_DISABLE_FRUSTUM_CULL is set), in
+  // which case draw_candidates == total_objects.
+  struct FrustumCullStats {
+    std::size_t total_objects = 0;
+    std::size_t draw_candidates = 0;
+  };
+  FrustumCullStats LastFrustumCullStats() const { return frustum_cull_stats_; }
+
  private:
   void DrawGrid(GlRenderer& renderer, const DocumentSettings& settings, DisplayMode mode);
   // Everything between the background and the overlays: grid, ground
@@ -325,6 +341,9 @@ class Viewport {
   CameraState raytrace_camera_{};
   bool raytrace_have_state_ = false;
   std::uint64_t raytrace_revision_ = 0;
+
+  // See LastFrustumCullStats() above.
+  FrustumCullStats frustum_cull_stats_;
 };
 
 }  // namespace dino8::app

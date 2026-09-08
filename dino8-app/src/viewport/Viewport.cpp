@@ -657,6 +657,127 @@ void Viewport::DrawAxesGizmo(GlRenderer& renderer) {
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(aspect));
 }
 
+// ---------------------------------------------------------------------------
+// Frustum culling (tests/performance_notes.md, "No LOD or frustum culling")
+// ---------------------------------------------------------------------------
+//
+// DrawObjects below used to walk every doc.Objects() unconditionally to
+// build draw calls. This section adds a broad-phase + precise cull so
+// objects entirely outside the current view frustum never reach a draw
+// call, following the same "cache a fast reject, keep the exact math as
+// the final word" shape as ObjectGrid-backed picking above. Correctness is
+// the constraint that matters here (see the note this closes): a
+// culled-but-should-be-visible object is a much worse bug than a slow
+// frame, so every step below is deliberately conservative - see the
+// comments inline for why each one cannot under-cull.
+namespace {
+
+// Six world-space frustum planes (A,B,C,D; positive = inside), extracted
+// from a combined view-projection matrix by the standard Gribb/Hartmann
+// method. This works unmodified for both of Camera::ProjectionMatrix's
+// return values (perspective and parallel) because it operates purely on
+// the combined matrix's rows, not on any assumption about how the
+// projection was built - so it needs no special-casing for ortho, and it
+// derives the *exact same* planes GL's own clipping uses (same matrix),
+// which is what keeps this consistent with what actually gets rasterized.
+struct FrustumPlanes {
+  std::array<std::array<double, 4>, 6> planes{};
+};
+
+FrustumPlanes ExtractFrustumPlanes(const Mat4& view, const Mat4& proj) {
+  const Mat4 vp = proj * view;
+  const float* m = vp.Data();
+  // Column-major (Mat4::operator* indexes as m[col*4+row], see Camera.h),
+  // so row i of the matrix is (m[i], m[4+i], m[8+i], m[12+i]).
+  auto row = [&](int i) { return std::array<double, 4>{m[i], m[4 + i], m[8 + i], m[12 + i]}; };
+  const std::array<double, 4> r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+  auto combine = [](const std::array<double, 4>& a, const std::array<double, 4>& b, double sign) {
+    std::array<double, 4> p{a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2], a[3] + sign * b[3]};
+    const double len = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+    if (len > 1e-12) { p[0] /= len; p[1] /= len; p[2] /= len; p[3] /= len; }
+    return p;
+  };
+  FrustumPlanes f;
+  f.planes[0] = combine(r3, r0, 1.0);   // left
+  f.planes[1] = combine(r3, r0, -1.0);  // right
+  f.planes[2] = combine(r3, r1, 1.0);   // bottom
+  f.planes[3] = combine(r3, r1, -1.0);  // top
+  f.planes[4] = combine(r3, r2, 1.0);   // near
+  f.planes[5] = combine(r3, r2, -1.0);  // far
+  return f;
+}
+
+// Conservative AABB-vs-frustum test (the standard "positive vertex" trick):
+// for each plane, test only the box corner furthest in the plane normal's
+// direction. A box is culled only when that single most-favourable corner
+// is still outside one plane, i.e. only when *all eight* corners are
+// outside it - so a box that merely straddles the frustum boundary (any
+// corner still inside) is always kept. This can produce false negatives
+// (an object outside the true frustum kept as "maybe visible" near a
+// silhouette) but never a false positive that hides something visible -
+// exactly the asymmetry tests/performance_notes.md calls for. `margin`
+// pads every plane a little further outward for extra safety against the
+// float32 precision `proj`/`view` (and hence these planes) carry.
+bool BoxOutsideFrustum(const FrustumPlanes& f, const kernel::BoundingBox& box, double margin) {
+  for (const std::array<double, 4>& p : f.planes) {
+    const double px = p[0] >= 0 ? box.max.x : box.min.x;
+    const double py = p[1] >= 0 ? box.max.y : box.min.y;
+    const double pz = p[2] >= 0 ? box.max.z : box.min.z;
+    if (p[0] * px + p[1] * py + p[2] * pz + p[3] < -margin) return true;
+  }
+  return false;
+}
+
+// A world-space AABB that fully contains the view frustum, for the
+// ObjectGrid broad-phase query only (see DrawObjects below) - it does not
+// itself decide what gets culled, BoxOutsideFrustum does that precisely
+// per object afterward, so this only needs to be a safe superset, not
+// tight. Built from the frustum's exact 8 corner points (near/far corners
+// at their true forward-distance, matching Camera::ProjectionMatrix's own
+// near_z/far_z and, for ortho, its -far_z..far_z range) plus the eye
+// itself, so unlike the arc-length shortcut ObjectsInWindow's window_box
+// uses (fine there: it only feeds the same best-effort broad phase for an
+// arbitrary screen rectangle), this is exact for perspective - the near/far
+// corners are precisely the frustum's extreme points.
+kernel::BoundingBox FrustumWorldBox(const Camera& camera, double aspect) {
+  const CameraState& s = camera.State();
+  double far_dist;
+  const double near_dist = camera.NearFar(far_dist);
+  const Vector3d f = camera.Forward(), r = camera.Right(), u = camera.Up();
+  kernel::BoundingBox box{s.eye, s.eye};
+  auto expand = [&](Point3d p) {
+    box.min.x = std::min(box.min.x, p.x); box.max.x = std::max(box.max.x, p.x);
+    box.min.y = std::min(box.min.y, p.y); box.max.y = std::max(box.max.y, p.y);
+    box.min.z = std::min(box.min.z, p.z); box.max.z = std::max(box.max.z, p.z);
+  };
+  if (s.perspective) {
+    const double fov = 2.0 * std::atan(18.0 / s.lens_mm);
+    const double ty = std::tan(fov / 2.0), tx = ty * aspect;
+    for (double depth : {near_dist, far_dist})
+      for (double sx : {-1.0, 1.0})
+        for (double sy : {-1.0, 1.0}) expand(s.eye + f * depth + r * (sx * tx * depth) + u * (sy * ty * depth));
+  } else {
+    const double h = s.ortho_height / 2.0, w = h * aspect;
+    for (double depth : {-far_dist, far_dist})  // Camera::ProjectionMatrix's Ortho(...,-far_z,far_z)
+      for (double sx : {-1.0, 1.0})
+        for (double sy : {-1.0, 1.0}) expand(s.eye + f * depth + r * (sx * w) + u * (sy * h));
+  }
+  return box;
+}
+
+// Escape hatch mirroring PickGridDisabledForBenchmark below: forces every
+// object to stay a draw candidate, i.e. exactly the old "walk every
+// object" behaviour in the same binary - tests/cull_test.sh uses this for
+// an honest A/B (culled render vs uncensored render must look pixel-
+// identical), and it doubles as an instant field off-switch if a real
+// scene ever turns up a case this cull gets wrong.
+bool FrustumCullDisabled() {
+  static const bool disabled = std::getenv("DINO8_DISABLE_FRUSTUM_CULL") != nullptr;
+  return disabled;
+}
+
+}  // namespace
+
 void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, DisplayMode mode) {
   const Document& doc = *ctx.doc;
   const ModeStyle style = StyleFor(mode);
@@ -696,10 +817,79 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     return true;
   };
   const float curve_width = ctx.print_display ? 2.5f : 1.0f;
+
+  // Frustum culling: which doc.Objects() indices are even worth building a
+  // draw call for this frame. Skipped entirely for ctx.for_render (the
+  // Render/RenderView image-export path) - that path already runs far less
+  // often than interactive redraws, so there is nothing to gain by risking
+  // it, and it can use a tighter off-axis "blowup" sub-rectangle of this
+  // same frustum (Camera::BlowupProjectionMatrix) that this function never
+  // sees, so testing against the full frustum here would in any case be
+  // less precise for that path than just not culling it.
+  std::vector<std::size_t> render_candidates;
+  {
+    const std::vector<SceneObject>& objects = doc.Objects();
+    const bool skip_cull = ctx.for_render || FrustumCullDisabled();
+    if (skip_cull) {
+      render_candidates.resize(objects.size());
+      for (std::size_t i = 0; i < objects.size(); ++i) render_candidates[i] = i;
+    } else {
+      const double aspect = Aspect();
+      const FrustumPlanes planes = ExtractFrustumPlanes(camera_.ViewMatrix(), camera_.ProjectionMatrix(aspect));
+      ObjectGrid& grid = doc.PickGrid();
+      // FrustumWorldBox can be enormous along the view's depth axis (an
+      // ortho view's box spans Camera::ProjectionMatrix's full -far_z..
+      // far_z range, and NearFar's far_z is itself at least 1000 world
+      // units) - for a flat/2D-ish scene (many curves at one Z, say) that
+      // starves ObjectGrid::EnsureFresh's cell-size heuristic of real
+      // volume to divide by, giving a cell size far smaller than that
+      // depth span, which used to make ForEachCellInBox's cell walk cost
+      // minutes per frame even with its own kMaxSpan guard (each axis
+      // individually still under that cap, but their product enormous).
+      // Clamping to the grid's own indexed extent first fixes this
+      // generally, for any box shape: nothing outside the document's own
+      // bounding box can be a candidate, so this can only shrink the
+      // query, never drop a real one.
+      kernel::BoundingBox fbox = FrustumWorldBox(camera_, aspect);
+      kernel::BoundingBox scene_extent;
+      bool disjoint = false;
+      if (grid.Extent(scene_extent)) {
+        fbox.min.x = std::max(fbox.min.x, scene_extent.min.x); fbox.max.x = std::min(fbox.max.x, scene_extent.max.x);
+        fbox.min.y = std::max(fbox.min.y, scene_extent.min.y); fbox.max.y = std::min(fbox.max.y, scene_extent.max.y);
+        fbox.min.z = std::max(fbox.min.z, scene_extent.min.z); fbox.max.z = std::min(fbox.max.z, scene_extent.max.z);
+        disjoint = fbox.min.x > fbox.max.x || fbox.min.y > fbox.max.y || fbox.min.z > fbox.max.z;
+      }
+      const std::vector<std::size_t> broad =
+          (grid.Empty() || disjoint) ? std::vector<std::size_t>{} : grid.QueryBox(fbox);
+      render_candidates.reserve(broad.size());
+      for (std::size_t idx : broad) {
+        if (idx >= objects.size()) continue;  // grid stale mid-frame would be a bug elsewhere; be defensive, not wrong
+        const SceneObject& o = objects[idx];
+        // A NURBS control polygon can legitimately reach outside its own
+        // curve/surface's tessellated bounding box (the convex-hull
+        // property only guarantees the curve stays *inside* the control
+        // polygon's hull, not the other way around) - see the same caveat
+        // on PickControlPoint/ControlPointsInWindow in the Picking section
+        // below. Whenever this frame draws an object's control points,
+        // skip the frustum test for it entirely rather than risk dropping
+        // a control point the box-based test never saw.
+        const bool draws_control_points = o.show_control_points || (ctx.show_control_points_for_selected && o.selected);
+        if (draws_control_points) { render_candidates.push_back(idx); continue; }
+        const kernel::BoundingBox box = o.BoundingBox();
+        const double diag = (box.max - box.min).Length();
+        const double margin = std::max(1e-4, diag * 1e-3);
+        if (!BoxOutsideFrustum(planes, box, margin)) render_candidates.push_back(idx);
+      }
+    }
+    frustum_cull_stats_.total_objects = objects.size();
+    frustum_cull_stats_.draw_candidates = render_candidates.size();
+  }
+
   // Pass 1: fills (with polygon offset so edges win the depth test).
   if (style.fill) {
     renderer.EnablePolygonOffset(true);
-    for (const SceneObject& o : doc.Objects()) {
+    for (std::size_t candidate_index : render_candidates) {
+      const SceneObject& o = doc.Objects()[candidate_index];
       if (!shown(o)) continue;
       // SetObjectDisplayMode Wireframe: a per-object override that skips
       // the fill pass even in a shaded/rendered/etc. viewport, so the
@@ -780,7 +970,8 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     // though this display mode (Wireframe) draws no fills otherwise.
     renderer.EnablePolygonOffset(true);
     const ModeStyle shaded_style = StyleFor(DisplayMode::Shaded);
-    for (const SceneObject& o : doc.Objects()) {
+    for (std::size_t candidate_index : render_candidates) {
+      const SceneObject& o = doc.Objects()[candidate_index];
       if (!o.force_shaded || !shown(o)) continue;
       o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
       const DisplayCache& d = o.Display();
@@ -803,8 +994,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
   // it is a no-op when depth testing decides the outcome instead (3D shaded
   // views) and the only real effect is in Wireframe / Top / other parallel,
   // depth-off-for-lines views where curves actually overlap on screen.
-  std::vector<size_t> order(doc.Objects().size());
-  for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+  std::vector<size_t> order(render_candidates.begin(), render_candidates.end());
   std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
     auto draw_order_of = [&](const SceneObject& o) {
       auto it = o.user_text.find("DrawOrder");

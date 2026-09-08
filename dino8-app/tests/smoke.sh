@@ -1592,4 +1592,13 @@ i18ncheck "I18nSelfTest: active=en" "the active language is en again"
 i18ncheck "I18nSelfTest: menu\.file=File\$" "the same key reads back in plain English once switched back"
 i18ncheck "SetLanguage: unknown language 'nope'" "an unrecognised language name fails with a clear diagnostic instead of doing nothing"
 
+# Frustum culling (Viewport.cpp - see tests/performance_notes.md's "No LOD
+# or frustum culling" item and tests/cull_test.sh for the full A/B/pixel-
+# diff proof): fold its pass/fail lines into this script's own count so a
+# regression here fails smoke.sh, not just a separately-run script.
+CULL="$(bash "$HERE/cull_test.sh" "$BIN" 2>&1)" || true
+echo "$CULL" | grep -E "^(ok|FAIL)"
+if echo "$CULL" | grep -q "^FAIL"; then fail=1; fi
+echo "$CULL" | grep -q "^ok   cull-on and cull-off screenshots are pixel-identical" || { echo "FAIL cull_test.sh did not run to completion"; fail=1; }
+
 exit $fail
