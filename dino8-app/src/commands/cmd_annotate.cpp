@@ -277,6 +277,109 @@ class DimLinearCommand : public Command {
   std::vector<Point3d> pts_;
 };
 
+// Builds (or rebuilds) one DimAngle group from its vertex + two direction
+// points and a fixed plane - unlike the linear/radius layouts, everything
+// else (arc radius, extension-line length, text position) is a pure
+// function of those three points and the plane, so there is no separate
+// "layout minus measured geometry" struct to round-trip: just the plane.
+// Tags: DimPlaneOrigin/X/Y (the plane), DimP0/DimP1/DimP2 (the three points
+// as built, fallback), DimRefObj1/DimRefEnd1 (vertex), DimRefObj2/
+// DimRefEnd2 (first direction point), DimRefObj3/DimRefEnd3 (second
+// direction point) - present only where FindPointAnchor matched a real
+// object, same associativity story as BuildLinearDimensionGroup. Returns -1
+// if the two direction vectors are degenerate (same failure as before this
+// change).
+int BuildAngleDimensionGroup(CommandContext& ctx, Point3d vertex, Point3d p1, Point3d p2, const ON_Plane& pl, double text_h,
+                             bool has0, ObjectId ref0, const std::string& end0,
+                             bool has1, ObjectId ref1, const std::string& end1,
+                             bool has2, ObjectId ref2, const std::string& end2, double* deg_out = nullptr) {
+  Vector3d va = p1 - vertex, vb = p2 - vertex;
+  const double r = std::min(va.Length(), vb.Length()) * 0.7;
+  if (r <= 0) return -1;
+  va.Unitize(); vb.Unitize();
+  double a0 = std::atan2(ON_DotProduct(va, pl.yaxis), ON_DotProduct(va, pl.xaxis));
+  double a1 = std::atan2(ON_DotProduct(vb, pl.yaxis), ON_DotProduct(vb, pl.xaxis));
+  if (a1 < a0) std::swap(a0, a1);
+  if (a1 - a0 > ON_PI) { std::swap(a0, a1); a1 += 2 * ON_PI; }
+  ON_Plane cp = pl; cp.SetOrigin(vertex);
+  ON_Arc arc(ON_Circle(cp, r), ON_Interval(a0, a1));
+  std::vector<kernel::NurbsCurve> curves;
+  ON_ArcCurve ac(arc);
+  kernel::NurbsCurve k;
+  if (CurveFromON(ac, k)) curves.push_back(k);
+  AddLine(curves, vertex, vertex + va * (r * 1.1));
+  AddLine(curves, vertex, vertex + vb * (r * 1.1));
+  const double mid = (a0 + a1) / 2;
+  const Point3d tp = cp.PointAt(std::cos(mid) * (r + text_h), std::sin(mid) * (r + text_h));
+  const double deg = (a1 - a0) * 180.0 / ON_PI;
+  if (deg_out) *deg_out = deg;
+  std::map<std::string, std::string> tags;
+  tags["DimPlaneOrigin"] = PointTag(pl.origin);
+  tags["DimPlaneX"] = PointTag(Point3d(pl.xaxis));
+  tags["DimPlaneY"] = PointTag(Point3d(pl.yaxis));
+  tags["DimP0"] = PointTag(vertex);
+  tags["DimP1"] = PointTag(p1);
+  tags["DimP2"] = PointTag(p2);
+  if (has0) { tags["DimRefObj1"] = std::to_string(ref0); tags["DimRefEnd1"] = end0; }
+  if (has1) { tags["DimRefObj2"] = std::to_string(ref1); tags["DimRefEnd2"] = end1; }
+  if (has2) { tags["DimRefObj3"] = std::to_string(ref2); tags["DimRefEnd3"] = end2; }
+  GlyphSpec g;
+  g.text = Fmt(deg) + " deg"; g.height = text_h; g.plane = pl; g.plane.SetOrigin(tp); g.center = true;
+  return AddAnnotationGroup(ctx, "DimAngle", curves, g, -1, tags);
+}
+
+// Reads a DimAngle group's plane back (from any member).
+bool LoadAngleDimPlane(Document& doc, int group_id, ON_Plane& pl) {
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    Point3d org, ax, ay;
+    if (!o.user_text.count("DimPlaneOrigin") || !ParsePointTag(o.user_text.at("DimPlaneOrigin"), org)) continue;
+    if (!o.user_text.count("DimPlaneX") || !ParsePointTag(o.user_text.at("DimPlaneX"), ax)) continue;
+    if (!o.user_text.count("DimPlaneY") || !ParsePointTag(o.user_text.at("DimPlaneY"), ay)) continue;
+    pl = ON_Plane(org, Vector3d(ax.x, ax.y, ax.z), Vector3d(ay.x, ay.y, ay.z));
+    return true;
+  }
+  return false;
+}
+
+// Resolves a group's vertex/two direction points to their current value -
+// same ref-then-fallback contract as ResolveLinearDimPoints, for each of the
+// three points independently.
+bool ResolveAngleDimPoints(Document& doc, int group_id, Point3d& v, Point3d& p1, Point3d& p2) {
+  bool h0 = false, h1 = false, h2 = false;
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    if (!h0) {
+      if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) {
+        const ObjectId id = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10));
+        const std::string end = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point";
+        if (ResolveAnchor(doc, id, end, v)) h0 = true;
+      }
+      if (!h0 && o.user_text.count("DimP0") && ParsePointTag(o.user_text.at("DimP0"), v)) h0 = true;
+    }
+    if (!h1) {
+      if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) {
+        const ObjectId id = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10));
+        const std::string end = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point";
+        if (ResolveAnchor(doc, id, end, p1)) h1 = true;
+      }
+      if (!h1 && o.user_text.count("DimP1") && ParsePointTag(o.user_text.at("DimP1"), p1)) h1 = true;
+    }
+    if (!h2) {
+      if (auto it = o.user_text.find("DimRefObj3"); it != o.user_text.end()) {
+        const ObjectId id = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10));
+        const std::string end = o.user_text.count("DimRefEnd3") ? o.user_text.at("DimRefEnd3") : "point";
+        if (ResolveAnchor(doc, id, end, p2)) h2 = true;
+      }
+      if (!h2 && o.user_text.count("DimP2") && ParsePointTag(o.user_text.at("DimP2"), p2)) h2 = true;
+    }
+    if (h0 && h1 && h2) return true;
+  }
+  return h0 && h1 && h2;
+}
+
+// Angle: vertex, first direction point, second direction point. Associative
+// per-point exactly like DimLinear (FindPointAnchor on each of the three).
 class DimAngleCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantPoint("Vertex of angle"); }
@@ -287,26 +390,18 @@ class DimAngleCommand : public Command {
     if (pts_.size() == 2) { WantPoint("Second direction point"); return; }
     ctx.ClearPreview();
     const ON_Plane pl = ActivePlane(ctx);
-    Vector3d va = pts_[1] - pts_[0], vb = pts_[2] - pts_[0];
-    const double r = std::min(va.Length(), vb.Length()) * 0.7;
-    if (r <= 0) { Finish(); return; }
-    va.Unitize(); vb.Unitize();
-    double a0 = std::atan2(ON_DotProduct(va, pl.yaxis), ON_DotProduct(va, pl.xaxis));
-    double a1 = std::atan2(ON_DotProduct(vb, pl.yaxis), ON_DotProduct(vb, pl.xaxis));
-    if (a1 < a0) std::swap(a0, a1);
-    if (a1 - a0 > ON_PI) { std::swap(a0, a1); a1 += 2 * ON_PI; }
-    ON_Plane cp = pl; cp.SetOrigin(pts_[0]);
-    ON_Arc arc(ON_Circle(cp, r), ON_Interval(a0, a1));
-    std::vector<kernel::NurbsCurve> curves;
-    ON_ArcCurve ac(arc);
-    kernel::NurbsCurve k;
-    if (CurveFromON(ac, k)) curves.push_back(k);
-    AddLine(curves, pts_[0], pts_[0] + va * (r * 1.1));
-    AddLine(curves, pts_[0], pts_[0] + vb * (r * 1.1));
     const double h = Height(ctx);
-    const double mid = (a0 + a1) / 2;
-    const Point3d tp = cp.PointAt(std::cos(mid) * (r + h), std::sin(mid) * (r + h));
-    AddDimension(ctx, "DimAngle", curves, Fmt((a1 - a0) * 180.0 / ON_PI) + " deg", tp, pl, h);
+    ObjectId r0 = kNoObject, r1 = kNoObject, r2 = kNoObject;
+    std::string e0, e1, e2;
+    const bool h0 = FindPointAnchor(ctx.Doc(), pts_[0], r0, e0);
+    const bool h1 = FindPointAnchor(ctx.Doc(), pts_[1], r1, e1);
+    const bool h2 = FindPointAnchor(ctx.Doc(), pts_[2], r2, e2);
+    ctx.Doc().BeginChange("DimAngle");
+    double deg = 0;
+    const int g = BuildAngleDimensionGroup(ctx, pts_[0], pts_[1], pts_[2], pl, h, h0, r0, e0, h1, r1, e1, h2, r2, e2, &deg);
+    if (g < 0) { Finish(); return; }
+    const int nassoc = (h0 ? 1 : 0) + (h1 ? 1 : 0) + (h2 ? 1 : 0);
+    ctx.Print("DimAngle " + Fmt(deg) + " deg" + (nassoc ? " (associative to " + std::to_string(nassoc) + " point(s))" : ""));
     Finish();
   }
   void OnHover(CommandContext& ctx, Point3d h) override { ctx.ClearPreview(); if (!pts_.empty()) ctx.AddPreviewLine(pts_[0], h); if (pts_.size() > 1) ctx.AddPreviewLine(pts_[0], pts_[1]); }
@@ -314,6 +409,96 @@ class DimAngleCommand : public Command {
   std::vector<Point3d> pts_;
 };
 
+// A DimRadius/DimDiameter dimension's fixed layout: everything about it that
+// does not depend on the measured circle/arc's current center/radius, so it
+// can be replayed against a fresh center/radius by UpdateDimensions when the
+// measured curve moves or is resized. `dir` is the fixed world-space
+// direction from center towards the dimension-line pick point (a one-time
+// decision, like LinearDimLayout::horizontal); `extra` is how far beyond the
+// (original) radius that pick point sat, so the leader end keeps the same
+// visual stand-off as the radius changes.
+struct RadiusDimLayout { bool diameter = false; ON_Plane plane; Vector3d dir; double extra = 0; };
+
+// Builds (or rebuilds) one DimRadius/DimDiameter group from the measured
+// circle/arc's center+radius and fixed layout. Tags mirror
+// BuildLinearDimensionGroup's: DimIsDiameter/DimPlaneOrigin/DimPlaneX/
+// DimPlaneY/DimDir/DimExtra are the layout (LoadRadiusDimLayout), DimCenter/
+// DimRadiusVal are the as-built fallback, and DimRefObj1 - present only when
+// the command was run on a real selected curve, which is always, since
+// DimRadius/DimDiameter require picking an object - is the associativity:
+// ResolveRadiusDimGeom re-evaluates it via ResolveArcAnchor instead of the
+// fallback tags when it still resolves to an arc/circle.
+int BuildRadiusDimensionGroup(CommandContext& ctx, Point3d center, double radius, const RadiusDimLayout& L, double text_h,
+                              bool has_ref, ObjectId ref, double* val_out = nullptr) {
+  const ON_Plane& pl = L.plane;
+  Vector3d d = L.dir;
+  if (!d.Unitize()) d = pl.xaxis;
+  const Point3d on = center + d * radius;
+  const Point3d p = center + d * (radius + L.extra);
+  std::vector<kernel::NurbsCurve> curves;
+  if (L.diameter) { AddLine(curves, center - d * radius, p); AddArrow(curves, center - d * radius, -d, text_h, pl); }
+  else AddLine(curves, center, p);
+  AddArrow(curves, on, d, text_h, pl);
+  const double val = L.diameter ? radius * 2 : radius;
+  if (val_out) *val_out = val;
+  std::map<std::string, std::string> tags;
+  tags["DimIsDiameter"] = L.diameter ? "1" : "0";
+  tags["DimPlaneOrigin"] = PointTag(pl.origin);
+  tags["DimPlaneX"] = PointTag(Point3d(pl.xaxis));
+  tags["DimPlaneY"] = PointTag(Point3d(pl.yaxis));
+  tags["DimDir"] = PointTag(Point3d(d));
+  tags["DimExtra"] = FormatNumber(L.extra);
+  tags["DimCenter"] = PointTag(center);
+  tags["DimRadiusVal"] = FormatNumber(radius);
+  if (has_ref) tags["DimRefObj1"] = std::to_string(ref);
+  GlyphSpec g;
+  g.text = std::string(L.diameter ? "D " : "R ") + Fmt(val);
+  g.height = text_h; g.plane = pl; g.plane.SetOrigin(p + d * text_h); g.center = true;
+  return AddAnnotationGroup(ctx, L.diameter ? "DimDiameter" : "DimRadius", curves, g, -1, tags);
+}
+
+// Reads a DimRadius/DimDiameter group's layout tags back.
+bool LoadRadiusDimLayout(Document& doc, int group_id, RadiusDimLayout& L) {
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    Point3d org, ax, ay, dir;
+    if (!o.user_text.count("DimPlaneOrigin") || !ParsePointTag(o.user_text.at("DimPlaneOrigin"), org)) continue;
+    if (!o.user_text.count("DimPlaneX") || !ParsePointTag(o.user_text.at("DimPlaneX"), ax)) continue;
+    if (!o.user_text.count("DimPlaneY") || !ParsePointTag(o.user_text.at("DimPlaneY"), ay)) continue;
+    if (!o.user_text.count("DimDir") || !ParsePointTag(o.user_text.at("DimDir"), dir)) continue;
+    L.plane = ON_Plane(org, Vector3d(ax.x, ax.y, ax.z), Vector3d(ay.x, ay.y, ay.z));
+    L.dir = Vector3d(dir.x, dir.y, dir.z);
+    L.diameter = o.user_text.count("DimIsDiameter") && o.user_text.at("DimIsDiameter") == "1";
+    L.extra = o.user_text.count("DimExtra") ? std::atof(o.user_text.at("DimExtra").c_str()) : 0.0;
+    return true;
+  }
+  return false;
+}
+
+// Resolves a group's measured center/radius to their *current* value: the
+// referenced curve's live arc/circle geometry when DimRefObj1 resolves via
+// ResolveArcAnchor, else the center/radius recorded at creation (DimCenter/
+// DimRadiusVal).
+bool ResolveRadiusDimGeom(Document& doc, int group_id, Point3d& center, double& radius) {
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) {
+      const ObjectId id = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10));
+      ON_Arc arc;
+      if (ResolveArcAnchor(doc, id, arc)) { center = arc.Center(); radius = arc.Radius(); return true; }
+    }
+    if (o.user_text.count("DimCenter") && o.user_text.count("DimRadiusVal") && ParsePointTag(o.user_text.at("DimCenter"), center)) {
+      radius = std::atof(o.user_text.at("DimRadiusVal").c_str());
+      return true;
+    }
+  }
+  return false;
+}
+
+// Radius/diameter: select an arc or circle, then place the leader. Always
+// associative (see BuildRadiusDimensionGroup) since the command requires a
+// real selected curve to measure in the first place - unlike DimLinear,
+// there is no free-floating-point case here.
 class DimRadiusCommand : public Command {
  public:
   explicit DimRadiusCommand(bool diameter) : diameter_(diameter) {}
@@ -322,7 +507,7 @@ class DimRadiusCommand : public Command {
     for (ObjectId id : ids) {
       const SceneObject* o = ctx.Doc().Find(id);
       ON_Arc arc;
-      if (o && o->kind == ObjectKind::Curve && o->curve->raw().IsArc(nullptr, &arc)) { arc_ = arc; have_ = true; break; }
+      if (o && o->kind == ObjectKind::Curve && o->curve->raw().IsArc(nullptr, &arc)) { arc_ = arc; obj_ = id; have_ = true; break; }
     }
     if (!have_) { ctx.Warn("Select an arc or circle"); Finish(); return; }
     WantPoint("Dimension location");
@@ -330,21 +515,103 @@ class DimRadiusCommand : public Command {
   void OnPoint(CommandContext& ctx, Point3d p) override {
     const ON_Plane pl = ActivePlane(ctx);
     Vector3d d = p - arc_.Center();
+    const double extra = d.Length() - arc_.Radius();
     if (!d.Unitize()) d = pl.xaxis;
-    const Point3d on = arc_.Center() + d * arc_.Radius();
-    std::vector<kernel::NurbsCurve> curves;
+    RadiusDimLayout L;
+    L.diameter = diameter_;
+    L.plane = pl;
+    L.dir = d;
+    L.extra = extra;
     const double h = Height(ctx);
-    if (diameter_) { AddLine(curves, arc_.Center() - d * arc_.Radius(), p); AddArrow(curves, arc_.Center() - d * arc_.Radius(), -d, h, pl); }
-    else AddLine(curves, arc_.Center(), p);
-    AddArrow(curves, on, d, h, pl);
-    AddDimension(ctx, diameter_ ? "DimDiameter" : "DimRadius", curves, std::string(diameter_ ? "D " : "R ") + Fmt(diameter_ ? arc_.Radius() * 2 : arc_.Radius()), p + d * h, pl, h);
+    ctx.Doc().BeginChange(diameter_ ? "DimDiameter" : "DimRadius");
+    double val = 0;
+    const int g = BuildRadiusDimensionGroup(ctx, arc_.Center(), arc_.Radius(), L, h, true, obj_, &val);
+    if (g < 0) { Finish(); return; }
+    ctx.Print(std::string(diameter_ ? "DimDiameter " : "DimRadius ") + Fmt(val) + " (associative to selected arc/circle)");
     Finish();
   }
   bool diameter_;
   bool have_ = false;
+  ObjectId obj_ = kNoObject;
   ON_Arc arc_;
 };
 
+// Builds (or rebuilds) one Leader group from its arrowhead point (`tip`)
+// plus the rest of its polyline stored as fixed offsets *from* the tip -
+// so when the tip's anchor moves, the whole leader shape translates with it
+// rather than needing to re-derive a bend shape from nothing. Tags:
+// DimPlaneOrigin/X/Y (plane orientation), LeaderTip (fallback tip),
+// LeaderRest (";"-joined offsets), DimRefObj1/DimRefEnd1 (the tip's
+// FindPointAnchor match, when any).
+int BuildLeaderGroup(CommandContext& ctx, Point3d tip, const std::vector<Vector3d>& rest_offsets, const ON_Plane& pl, double text_h,
+                     const std::string& text, bool has_ref, ObjectId ref, const std::string& end) {
+  std::vector<Point3d> pts;
+  pts.push_back(tip);
+  for (const Vector3d& off : rest_offsets) pts.push_back(tip + off);
+  if (pts.size() < 2) return -1;
+  std::vector<kernel::NurbsCurve> curves;
+  curves.push_back(PolylineCurve(pts));
+  AddArrow(curves, pts[0], pts[0] - pts[1], text_h, pl);
+  std::map<std::string, std::string> tags;
+  tags["DimPlaneOrigin"] = PointTag(pl.origin);
+  tags["DimPlaneX"] = PointTag(Point3d(pl.xaxis));
+  tags["DimPlaneY"] = PointTag(Point3d(pl.yaxis));
+  tags["LeaderTip"] = PointTag(tip);
+  {
+    std::string s;
+    for (const Vector3d& off : rest_offsets) { if (!s.empty()) s += ";"; s += PointTag(Point3d(off)); }
+    tags["LeaderRest"] = s;
+  }
+  if (has_ref) { tags["DimRefObj1"] = std::to_string(ref); tags["DimRefEnd1"] = end; }
+  GlyphSpec g;
+  g.text = text; g.height = text_h; g.plane = pl; g.center = false;
+  g.plane.SetOrigin(pts.back() + pl.xaxis * (text_h * 0.4) - pl.yaxis * (text_h * 0.5));
+  return AddAnnotationGroup(ctx, "Leader", curves, g, -1, tags);
+}
+
+// Reads a Leader group's plane orientation and bend-point offsets back.
+bool LoadLeaderLayout(Document& doc, int group_id, ON_Plane& pl, std::vector<Vector3d>& rest_offsets) {
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    Point3d org, ax, ay;
+    if (!o.user_text.count("DimPlaneOrigin") || !ParsePointTag(o.user_text.at("DimPlaneOrigin"), org)) continue;
+    if (!o.user_text.count("DimPlaneX") || !ParsePointTag(o.user_text.at("DimPlaneX"), ax)) continue;
+    if (!o.user_text.count("DimPlaneY") || !ParsePointTag(o.user_text.at("DimPlaneY"), ay)) continue;
+    pl = ON_Plane(org, Vector3d(ax.x, ax.y, ax.z), Vector3d(ay.x, ay.y, ay.z));
+    rest_offsets.clear();
+    if (auto it = o.user_text.find("LeaderRest"); it != o.user_text.end()) {
+      std::stringstream ss(it->second);
+      std::string tok;
+      while (std::getline(ss, tok, ';')) {
+        Point3d off;
+        if (!tok.empty() && ParsePointTag(tok, off)) rest_offsets.push_back(Vector3d(off.x, off.y, off.z));
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
+// Resolves a Leader group's tip to its current value: the referenced
+// object's live position when DimRefObj1 resolves, else the LeaderTip
+// recorded at creation.
+bool ResolveLeaderTip(Document& doc, int group_id, Point3d& tip) {
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) {
+      const ObjectId id = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10));
+      const std::string end = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point";
+      if (ResolveAnchor(doc, id, end, tip)) return true;
+    }
+    if (o.user_text.count("LeaderTip") && ParsePointTag(o.user_text.at("LeaderTip"), tip)) return true;
+  }
+  return false;
+}
+
+// Leader: arrowhead point, any number of bend points, then text.
+// Associative when the arrowhead sits exactly on a real object
+// (FindPointAnchor, same coincidence rule as DimLinear's endpoints): the
+// whole leader shape (bend points, text) translates with the tip.
 class LeaderCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantPoint("Start of leader (arrowhead)"); }
@@ -354,17 +621,15 @@ class LeaderCommand : public Command {
     ctx.ClearPreview();
     const ON_Plane pl = ActivePlane(ctx);
     const double h = Height(ctx);
-    std::vector<kernel::NurbsCurve> curves;
-    curves.push_back(PolylineCurve(pts_));
-    AddArrow(curves, pts_[0], pts_[0] - pts_[1], h, pl);
-    Vector3d dir = pts_.back() - pts_[pts_.size() - 2];
-    dir.Unitize();
+    ObjectId ref = kNoObject;
+    std::string end;
+    const bool has_ref = FindPointAnchor(ctx.Doc(), pts_[0], ref, end);
+    std::vector<Vector3d> rest;
+    for (size_t i = 1; i < pts_.size(); ++i) rest.push_back(pts_[i] - pts_[0]);
     ctx.Doc().BeginChange("Leader");
-    GlyphSpec g;
-    g.text = t; g.height = h; g.plane = pl; g.center = false;
-    g.plane.SetOrigin(pts_.back() + pl.xaxis * (h * 0.4) - pl.yaxis * (h * 0.5));
-    AddAnnotationGroup(ctx, "Leader", curves, g);
-    ctx.Print("Leader " + t);
+    const int g = BuildLeaderGroup(ctx, pts_[0], rest, pl, h, t, has_ref, ref, end);
+    if (g < 0) { Finish(); return; }
+    ctx.Print("Leader " + t + (has_ref ? " (associative to arrowhead point)" : ""));
     Finish();
   }
   void OnHover(CommandContext& ctx, Point3d h) override { ctx.ClearPreview(); if (!pts_.empty()) { std::vector<Point3d> pv = pts_; pv.push_back(h); ctx.AddPreviewPolyline(pv); } }
@@ -384,9 +649,14 @@ void RegisterAnnotateCommands(CommandEngine& e) {
   // display, .3dm I/O and every editing command - a foundational,
   // cross-cutting change far beyond this file, so it is not attempted here.
   const char* text_note = "Bakes the text as font-outline curve/surface geometry rather than a live TextEntity: it does not re-flow if the annotation style or text height changes later (TextObject is the same geometry, which matches its own intended meaning in Rhino).";
-  const char* dim_note = "Bakes the dimension as curve/arrow geometry with the measured value baked into the text at creation time; it is not associated with the measured geometry, so it does not update if that geometry moves or is edited (DimRotated/DimAngle/DimRadius/DimDiameter/Leader all share this - see DimLinear/DimAligned below for the associative exception).";
   const char* linear_dim_note =
-      "Bakes curve/arrow geometry like every dimension here, but is associative when a measured point sits exactly on a real object (a Point object, or a curve endpoint - see FindPointAnchor, annotate_common.h): the dimension records which object and end it measured, and UpdateDimensions re-evaluates that object's current position and redraws the dimension line/text from it. A point that isn't on any object (free space, or a snap this build doesn't resolve to an anchor - a curve's interior, a brep vertex, ...) still dimensions correctly but stays a static baked measurement for that endpoint, same as before this change.";
+      "Bakes curve/arrow geometry like every dimension here, but is associative when a measured point sits exactly on a real object (a Point object, or a curve endpoint - see FindPointAnchor, annotate_common.h): the dimension records which object and end it measured, and UpdateDimensions re-evaluates that object's current position and redraws the dimension line/text from it. A point that isn't on any object (free space, or a snap this build doesn't resolve to an anchor - a curve's interior, a brep vertex, ...) still dimensions correctly but stays a static baked measurement for that endpoint, same as before this change. DimRotated builds the identical dimension as DimAligned (same command, same tagging), so it shares this associativity too.";
+  const char* angle_dim_note =
+      "Bakes curve/arrow geometry, associative per point exactly like DimLinear (FindPointAnchor on the vertex and each of the two direction points - see annotate_common.h): UpdateDimensions re-evaluates whichever of the three points matched a real object and rebuilds the arc/extension-lines/text from their current positions. A point that isn't on any object stays a static baked measurement for that vertex, same as before this change.";
+  const char* radius_dim_note =
+      "Bakes curve/arrow geometry, but is always associative: DimRadius/DimDiameter require selecting a real arc/circle curve to measure, so that curve's id is recorded directly (not by coincident-point matching) and UpdateDimensions re-evaluates its current center/radius (ResolveArcAnchor, annotate_common.h) and rebuilds the leader/text from it - the dimension-line direction and stand-off distance chosen at creation are kept fixed as the circle/arc moves or resizes.";
+  const char* leader_dim_note =
+      "Bakes curve/arrow geometry, associative when the arrowhead point sits exactly on a real object (FindPointAnchor, same coincidence rule as DimLinear): UpdateDimensions re-evaluates that object's current position and redraws the whole leader (bend points and text keep their built offsets from the tip, so the shape translates with it) - a leader whose arrowhead isn't on any object stays a static baked leader, same as before this change.";
   // Baked-curve annotation is the established, accepted shape for this
   // whole app (see e.g. cmd_annotate2.cpp's DimArea/DimCurveLength/
   // DimVolume/DimOrdinate/DimCreaseAngle, all Implemented with the same
@@ -399,46 +669,111 @@ void RegisterAnnotateCommands(CommandEngine& e) {
   Reg(e, "Dim", Make<DimLinearCommand>(false), CommandStatus::Implemented, linear_dim_note);
   Reg(e, "DimLinear", Make<DimLinearCommand>(false), CommandStatus::Implemented, linear_dim_note);
   Reg(e, "DimAligned", Make<DimLinearCommand>(true), CommandStatus::Implemented, linear_dim_note);
-  Reg(e, "DimRotated", Make<DimLinearCommand>(true), CommandStatus::Implemented, dim_note);
-  Reg(e, "DimAngle", Make<DimAngleCommand>(), CommandStatus::Implemented, dim_note);
-  Reg(e, "DimRadius", Make<DimRadiusCommand>(false), CommandStatus::Implemented, dim_note);
-  Reg(e, "DimDiameter", Make<DimRadiusCommand>(true), CommandStatus::Implemented, dim_note);
-  Reg(e, "Leader", Make<LeaderCommand>(), CommandStatus::Implemented, dim_note);
+  Reg(e, "DimRotated", Make<DimLinearCommand>(true), CommandStatus::Implemented, linear_dim_note);
+  Reg(e, "DimAngle", Make<DimAngleCommand>(), CommandStatus::Implemented, angle_dim_note);
+  Reg(e, "DimRadius", Make<DimRadiusCommand>(false), CommandStatus::Implemented, radius_dim_note);
+  Reg(e, "DimDiameter", Make<DimRadiusCommand>(true), CommandStatus::Implemented, radius_dim_note);
+  Reg(e, "Leader", Make<LeaderCommand>(), CommandStatus::Implemented, leader_dim_note);
 
   Reg(e, "UpdateDimensions", Immediate([](CommandContext& ctx) {
+        static const std::vector<std::string> kKinds = {"DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter", "Leader"};
         std::vector<int> groups;
+        std::map<int, std::string> kind_of;
         for (const SceneObject& o : ctx.Doc().Objects()) {
           auto it = o.user_text.find("Annotation");
-          if (it == o.user_text.end() || (it->second != "DimLinear" && it->second != "DimAligned")) continue;
-          if (o.group_id >= 0 && std::find(groups.begin(), groups.end(), o.group_id) == groups.end()) groups.push_back(o.group_id);
+          if (it == o.user_text.end() || std::find(kKinds.begin(), kKinds.end(), it->second) == kKinds.end()) continue;
+          if (o.group_id >= 0 && !kind_of.count(o.group_id)) { kind_of[o.group_id] = it->second; groups.push_back(o.group_id); }
         }
-        if (groups.empty()) { ctx.Print("UpdateDimensions: no DimLinear/DimAligned dimensions in this document"); return; }
+        if (groups.empty()) { ctx.Print("UpdateDimensions: no associative dimensions in this document"); return; }
         ctx.Doc().BeginChange("UpdateDimensions");
         int updated = 0, skipped = 0;
         for (int g : groups) {
-          LinearDimLayout L;
-          Point3d p0, p1;
-          if (!LoadLinearDimLayout(ctx.Doc(), g, L) || !ResolveLinearDimPoints(ctx.Doc(), g, p0, p1)) { ++skipped; continue; }
-          GlyphSpec old_glyph;
-          const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
-          ObjectId ref1 = kNoObject, ref2 = kNoObject;
-          std::string end1, end2;
-          bool has1 = false, has2 = false;
-          for (const SceneObject& o : ctx.Doc().Objects()) {
-            if (o.group_id != g) continue;
-            if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end1 = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point"; has1 = true; }
-            if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { ref2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end2 = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point"; has2 = true; }
+          const std::string& kind = kind_of[g];
+          if (kind == "DimLinear" || kind == "DimAligned") {
+            LinearDimLayout L;
+            Point3d p0, p1;
+            if (!LoadLinearDimLayout(ctx.Doc(), g, L) || !ResolveLinearDimPoints(ctx.Doc(), g, p0, p1)) { ++skipped; continue; }
+            GlyphSpec old_glyph;
+            const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
+            ObjectId ref1 = kNoObject, ref2 = kNoObject;
+            std::string end1, end2;
+            bool has1 = false, has2 = false;
+            for (const SceneObject& o : ctx.Doc().Objects()) {
+              if (o.group_id != g) continue;
+              if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end1 = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point"; has1 = true; }
+              if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { ref2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end2 = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point"; has2 = true; }
+            }
+            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+            double len = 0;
+            if (BuildLinearDimensionGroup(ctx, p0, p1, L, h, has1, ref1, end1, has2, ref2, end2, &len) >= 0) {
+              ++updated;
+              ctx.Print("UpdateDimensions:   " + std::string(L.aligned ? "DimAligned" : "DimLinear") + " now measures " + Fmt(len));
+            } else ++skipped;
+          } else if (kind == "DimAngle") {
+            ON_Plane pl;
+            Point3d v, p1, p2;
+            if (!LoadAngleDimPlane(ctx.Doc(), g, pl) || !ResolveAngleDimPoints(ctx.Doc(), g, v, p1, p2)) { ++skipped; continue; }
+            GlyphSpec old_glyph;
+            const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
+            ObjectId r0 = kNoObject, r1 = kNoObject, r2 = kNoObject;
+            std::string e0, e1, e2;
+            bool h0 = false, h1 = false, h2 = false;
+            for (const SceneObject& o : ctx.Doc().Objects()) {
+              if (o.group_id != g) continue;
+              if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { r0 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); e0 = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point"; h0 = true; }
+              if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { r1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); e1 = o.user_text.count("DimRefEnd2") ? o.user_text.at("DimRefEnd2") : "point"; h1 = true; }
+              if (auto it = o.user_text.find("DimRefObj3"); it != o.user_text.end()) { r2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); e2 = o.user_text.count("DimRefEnd3") ? o.user_text.at("DimRefEnd3") : "point"; h2 = true; }
+            }
+            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+            double deg = 0;
+            if (BuildAngleDimensionGroup(ctx, v, p1, p2, pl, h, h0, r0, e0, h1, r1, e1, h2, r2, e2, &deg) >= 0) {
+              ++updated;
+              ctx.Print("UpdateDimensions:   DimAngle now measures " + Fmt(deg) + " deg");
+            } else ++skipped;
+          } else if (kind == "DimRadius" || kind == "DimDiameter") {
+            RadiusDimLayout L;
+            Point3d center; double radius = 0;
+            if (!LoadRadiusDimLayout(ctx.Doc(), g, L) || !ResolveRadiusDimGeom(ctx.Doc(), g, center, radius)) { ++skipped; continue; }
+            GlyphSpec old_glyph;
+            const double h = GroupGlyphSpec(ctx, g, old_glyph) ? old_glyph.height : AnnotationTextHeight(ctx);
+            ObjectId ref1 = kNoObject;
+            bool has1 = false;
+            for (const SceneObject& o : ctx.Doc().Objects()) {
+              if (o.group_id != g) continue;
+              if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has1 = true; }
+            }
+            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+            double val = 0;
+            if (BuildRadiusDimensionGroup(ctx, center, radius, L, h, has1, ref1, &val) >= 0) {
+              ++updated;
+              ctx.Print("UpdateDimensions:   " + kind + " now measures " + Fmt(val));
+            } else ++skipped;
+          } else if (kind == "Leader") {
+            ON_Plane pl;
+            std::vector<Vector3d> rest;
+            Point3d tip;
+            if (!LoadLeaderLayout(ctx.Doc(), g, pl, rest) || !ResolveLeaderTip(ctx.Doc(), g, tip)) { ++skipped; continue; }
+            GlyphSpec old_glyph;
+            std::string text = "Leader";
+            double h = AnnotationTextHeight(ctx);
+            if (GroupGlyphSpec(ctx, g, old_glyph)) { text = old_glyph.text; h = old_glyph.height; }
+            ObjectId ref1 = kNoObject;
+            std::string end1;
+            bool has1 = false;
+            for (const SceneObject& o : ctx.Doc().Objects()) {
+              if (o.group_id != g) continue;
+              if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); end1 = o.user_text.count("DimRefEnd1") ? o.user_text.at("DimRefEnd1") : "point"; has1 = true; }
+            }
+            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+            if (BuildLeaderGroup(ctx, tip, rest, pl, h, text, has1, ref1, end1) >= 0) {
+              ++updated;
+              ctx.Print("UpdateDimensions:   Leader now points at " + PointTag(tip));
+            } else ++skipped;
           }
-          for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
-          double len = 0;
-          if (BuildLinearDimensionGroup(ctx, p0, p1, L, h, has1, ref1, end1, has2, ref2, end2, &len) >= 0) {
-            ++updated;
-            ctx.Print("UpdateDimensions:   " + std::string(L.aligned ? "DimAligned" : "DimLinear") + " now measures " + Fmt(len));
-          } else ++skipped;
         }
         ctx.Print("UpdateDimensions: " + std::to_string(updated) + " dimension(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable layout/points)" : ""));
       }), CommandStatus::Implemented,
-      "Re-evaluates every DimLinear/DimAligned dimension's associated endpoint(s) (see DimLinear's note) and rebuilds the dimension line/arrows/text from their current position, replacing the old baked geometry in place - the associative counterpart to those two dimension types' static bake, following the same explicit-recompute shape as UpdateSectionViews (cmd_drafting2.cpp) rather than an automatic hook on every document edit.");
+      "Re-evaluates every associative dimension's anchor(s) - DimLinear/DimAligned/DimRotated, DimAngle, DimRadius/DimDiameter, Leader - and rebuilds its curve/arrow/text geometry from their current position, replacing the old baked geometry in place - the associative counterpart to those dimension types' static bake, following the same explicit-recompute shape as UpdateSectionViews (cmd_drafting2.cpp) rather than an automatic hook on every document edit.");
 }
 
 }  // namespace dino8::app

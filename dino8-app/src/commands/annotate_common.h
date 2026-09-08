@@ -227,6 +227,21 @@ inline bool ResolveAnchor(Document& doc, ObjectId obj, const std::string& which,
   return true;
 }
 
+// Resolves a whole-object anchor (DimRadius/DimDiameter's measured circle or
+// arc, selected directly rather than matched by coincident point like
+// FindPointAnchor) back to its *current* arc/circle geometry. False if the
+// object is gone or no longer a curve, or the curve is no longer arc-shaped
+// (e.g. turned non-planar by an edit) - same "falls back to the static bake"
+// contract as ResolveAnchor.
+inline bool ResolveArcAnchor(Document& doc, ObjectId obj, ON_Arc& out) {
+  const SceneObject* o = doc.Find(obj);
+  if (!o || o->kind != ObjectKind::Curve || !o->curve) return false;
+  ON_Arc arc;
+  if (!o->curve->raw().IsArc(nullptr, &arc)) return false;
+  out = arc;
+  return true;
+}
+
 // Small "Name=Value" option reader for script-driven commands: consumes the
 // pending tokens that look like options (keys lower-cased) and leaves the
 // others queued for the command's prompts.
