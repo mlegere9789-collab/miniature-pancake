@@ -830,8 +830,8 @@ flcheck() { if echo "$FL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $
 flcheck "Dino Flow: opened the node editor" "Grasshopper opened the Dino Flow panel"
 flcheck "GrasshopperPluginList: 4 plug-in(s) found" "the plug-in loader found all four sample plug-ins"
 flcheck "HelloDino 1.0.0 - 1 command(s), 1 node(s)" "HelloDino loaded its command and Dino Flow node"
-flcheck "MeshTools 1.0.0 - 1 command(s), 1 node(s)" "MeshTools loaded its command and Dino Flow node"
-flcheck "CurveTools 1.0.0 - 1 command(s), 1 node(s)" "CurveTools loaded its command and Dino Flow node"
+flcheck "MeshTools 1.0.0 - 1 command(s), 3 node(s)" "MeshTools loaded its command and 3 Dino Flow nodes (Terrain Height, Terrain Mesh, Plugin Mesh Info)"
+flcheck "CurveTools 1.0.0 - 1 command(s), 3 node(s)" "CurveTools loaded its command and 3 Dino Flow nodes (Helix Point, Spiral Curve, Plugin Curve Length)"
 flcheck "AnalysisTools 1.0.0 - 1 command(s), 1 node(s)" "AnalysisTools loaded its command and Dino Flow node"
 flcheck "HelloDino: hello from the sample plug-in!" "the HelloDino command ran"
 flcheck "GrasshopperPlayer: solved 4 node(s)" "GrasshopperPlayer solved the sample graph"
@@ -896,6 +896,23 @@ fscheck() { if echo "$FS" | grep -qE "$1"; then echo "ok   $2"; else echo "FAIL 
 fscheck "^ok   expect_objects 1" "the solver graph baked exactly one point"
 fscheck "Evolutionary Solver \(#4\) best fitness 0 after 60 generation\(s\)" "the solver ran all 60 generations and converged to fitness 0 for (x-3)^2 with this fixed seed"
 fscheck "  3,0,0" "the baked point (best gene, best fitness) is exactly (3, 0, 0) - the true optimum of (x-3)^2"
+
+# Dino Flow plug-in geometry values: Spiral Curve (a plug-in node output of
+# kind CURVE) wired directly into Plugin Curve Length (a plug-in node INPUT
+# of kind CURVE) - proving the plugin ABI's opaque geometry handles round-
+# trip plugin-to-plugin, not just plugin-to-document (see
+# flow_plugin_geom_script.txt / flow_plugin_geom_graph.dflow).
+sed "s|@GEOMFILE@|$HERE/flow_plugin_geom_graph.dflow|g" "$HERE/flow_plugin_geom_script.txt" > "$TMP/flow_plugin_geom_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  FG="$("$BIN" --smoke 100 --script "$TMP/flow_plugin_geom_script.txt" 2>&1)" || { echo "$FG"; echo "FAIL: flow plugin geom script exited non-zero"; exit 1; }
+else
+  FG="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/flow_plugin_geom_script.txt" 2>&1)" || { echo "$FG"; echo "FAIL: flow plugin geom script exited non-zero"; exit 1; }
+fi
+fgcheck() { if echo "$FG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+fgcheck "^ok   expect_objects 1" "the plugin geometry graph baked exactly one point"
+fgcheck "GrasshopperPlayer: solved 4 node(s)" "GrasshopperPlayer solved Spiral Curve -> Plugin Curve Length -> Construct Point -> Bake"
+fgcheck "  10,0,0" "Plugin Curve Length correctly computed 10 for a radius=0 turns=1 pitch=10 helix (a straight segment), round-tripped through two plug-in nodes and baked as the point's X"
+fgcheck "gl_error=0" "flow plugin geometry script ran without OpenGL errors"
 
 # Object editing: Join/Explode/Rebuild/ChangeDegree/Offset/Extend/Flip/Dir/MakePeriodic/
 # Weight/InsertKnot/PointsOn/SetObjectName/Group/Hide/Lock/clipboard/Undo (see edit_script.txt).

@@ -27,7 +27,13 @@
 extern "C" {
 #endif
 
-#define DINO8_PLUGIN_API_VERSION 1
+/* Version 2 added the CURVE/SURFACE/BREP/MESH Dino8FlowKind values, the
+ * `geom` handle field on Dino8FlowValue, and the geometry helper callbacks
+ * (curve_length, mesh_face_count, mesh_vertex_count,
+ * make_curve_value_polyline, make_mesh_value) on Dino8PluginApi. A plug-in
+ * that only used version 1's scalar/point/text kinds still builds and runs
+ * unchanged - version 2 is additive. */
+#define DINO8_PLUGIN_API_VERSION 2
 
 #if defined(_WIN32)
 #define DINO8_PLUGIN_EXPORT __declspec(dllexport)
@@ -51,19 +57,38 @@ typedef enum Dino8FlowKind {
   DINO8_FLOW_TEXT = 3,
   DINO8_FLOW_POINT = 4,
   DINO8_FLOW_VECTOR = 5,
+  /* Geometry kinds (API version 2+). These carry no geometry data inline -
+   * see `geom` below - so a plug-in built against version 1 headers still
+   * compiles and simply never produces or accepts them. */
+  DINO8_FLOW_CURVE = 6,
+  DINO8_FLOW_SURFACE = 7,
+  DINO8_FLOW_BREP = 8,
+  DINO8_FLOW_MESH = 9,
   DINO8_FLOW_ANY = 100
 } Dino8FlowKind;
 
 /* One input or output value of a plug-in node. Only the members matching
  * `kind` are meaningful. Text points into memory owned by Dino 8 for
  * inputs; for outputs the plug-in writes into `text` (a buffer of
- * DINO8_FLOW_TEXT_MAX bytes) - it is copied after the evaluator returns. */
+ * DINO8_FLOW_TEXT_MAX bytes) - it is copied after the evaluator returns.
+ *
+ * `geom` (CURVE / SURFACE / BREP / MESH) is an opaque handle, NOT a
+ * pointer - Dino 8's real geometry types (OpenNURBS-backed NurbsCurve,
+ * NurbsSurface, Brep, Mesh) are never exposed across the C ABI, so this
+ * header stays stable no matter how the kernel's own types change. For an
+ * input value the handle already refers to a live geometry object owned by
+ * Dino 8; for an output value the plug-in gets one from
+ * Dino8PluginApi::make_curve_value_polyline / make_mesh_value (or forwards
+ * one it received as an input) and stores it here. A handle is valid only
+ * for the duration of the current Dino8FlowEvalFn call - do not save one
+ * and reuse it on a later call. */
 #define DINO8_FLOW_TEXT_MAX 512
 typedef struct Dino8FlowValue {
-  int kind;            /* Dino8FlowKind */
-  double number;       /* NUMBER / INTEGER / BOOLEAN (0 or 1) */
-  double xyz[3];       /* POINT / VECTOR */
+  int kind;                    /* Dino8FlowKind */
+  double number;                /* NUMBER / INTEGER / BOOLEAN (0 or 1) */
+  double xyz[3];                 /* POINT / VECTOR */
   char text[DINO8_FLOW_TEXT_MAX];
+  unsigned long long geom;      /* CURVE / SURFACE / BREP / MESH handle; 0 = none */
 } Dino8FlowValue;
 
 typedef struct Dino8FlowPort {
@@ -116,8 +141,25 @@ typedef struct Dino8PluginApi {
                             const Dino8FlowPort* inputs, int input_count, const Dino8FlowPort* outputs,
                             int output_count, Dino8FlowEvalFn evaluator, void* user_data);
 
-  /* Reserved for future versions; always NULL in version 1. */
-  void* reserved[8];
+  /* ---- Geometry value helpers (API version 2+; NULL under version 1) ----
+   * Operate on the opaque `geom` handles carried by DINO8_FLOW_CURVE/
+   * SURFACE/BREP/MESH values - see Dino8FlowValue. A bad or expired handle
+   * returns 0 rather than crashing. */
+  double (*curve_length)(unsigned long long geom);   /* arc length, sampled */
+  int (*mesh_face_count)(unsigned long long geom);
+  int (*mesh_vertex_count)(unsigned long long geom);
+  /* Builds a new CURVE geometry value from a polyline (same point layout as
+   * add_polyline) and returns its handle (0 on failure) - for handing back
+   * out through an output Dino8FlowValue with kind DINO8_FLOW_CURVE. This
+   * does NOT add anything to the document; see add_polyline for that. */
+  unsigned long long (*make_curve_value_polyline)(const double* xyz, int point_count, int closed);
+  /* Builds a new MESH geometry value (same vertex/face layout as add_mesh)
+   * and returns its handle (0 on failure) - for an output Dino8FlowValue
+   * with kind DINO8_FLOW_MESH. Does NOT add anything to the document. */
+  unsigned long long (*make_mesh_value)(const double* xyz, int vertex_count, const int* faces, int face_count);
+
+  /* Reserved for future versions; always NULL in version 2. */
+  void* reserved[3];
 } Dino8PluginApi;
 
 typedef int (*Dino8PluginInitFn)(const Dino8PluginApi* api);
