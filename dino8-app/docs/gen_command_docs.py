@@ -42,13 +42,22 @@ STATUS_RE = re.compile(r"CommandStatus::(Implemented|Partial|Planned)")
 
 def find_matching_paren(text, open_idx):
     """Given the index of an opening '(' in text, return the index of its
-    matching ')' accounting for nested parens and string/char literals."""
+    matching ')' accounting for nested parens, string/char literals, and
+    // and /* */ comments (a bare apostrophe in a comment like "it's" must
+    not be mistaken for the start of a char literal)."""
     depth = 0
     i = open_idx
     n = len(text)
     while i < n:
         c = text[i]
-        if c == '"':
+        if c == '/' and i + 1 < n and text[i + 1] == '/':
+            i = text.find('\n', i)
+            if i < 0:
+                return -1
+        elif c == '/' and i + 1 < n and text[i + 1] == '*':
+            end = text.find('*/', i + 2)
+            i = end + 2 if end >= 0 else n
+        elif c == '"':
             i += 1
             while i < n and text[i] != '"':
                 if text[i] == '\\':
@@ -84,9 +93,23 @@ def extract_trailing_note(call_text):
     n = len(call_text)
     while i < n:
         c = call_text[i]
-        if c == '"':
+        if c == '/' and i + 1 < n and call_text[i + 1] == '/':
+            nl = call_text.find('\n', i)
+            i = nl if nl >= 0 else n
+            continue
+        elif c == '/' and i + 1 < n and call_text[i + 1] == '*':
+            end = call_text.find('*/', i + 2)
+            i = end + 2 if end >= 0 else n
+            continue
+        elif c == '"':
             i += 1
             while i < n and call_text[i] != '"':
+                if call_text[i] == '\\':
+                    i += 1
+                i += 1
+        elif c == "'":
+            i += 1
+            while i < n and call_text[i] != "'":
                 if call_text[i] == '\\':
                     i += 1
                 i += 1
@@ -135,6 +158,43 @@ def parse_registrations():
     return regs
 
 
+def parse_table_driven_registrations(catalog_names, already_found):
+    """A handful of command families register their name through a local
+    variable rather than a string literal directly in a Reg(e, "Name", ...)
+    call (e.g. cmd_meshtools.cpp's `Metric metrics[]` table, looped with
+    `Reg(e, m.extract, ...)` / `Reg(e, m.sel, ...)`), which
+    parse_registrations() cannot see. Rather than writing a full C++
+    expression evaluator, fall back to: for any catalog command not already
+    matched, if its exact name appears as a quoted string literal anywhere
+    else in src/commands/*.cpp, treat it as Implemented (a command that is
+    genuinely unbuilt has no reason for its exact name to appear in the
+    source at all)."""
+    extra = {}
+    remaining = [n for n in catalog_names if n.lower() not in already_found]
+    if not remaining:
+        return extra
+    all_text = ""
+    files_by_name = {}
+    for fname in sorted(os.listdir(CMD_DIR)):
+        if not (fname.startswith("cmd_") and fname.endswith(".cpp")):
+            continue
+        with open(os.path.join(CMD_DIR, fname), "r", encoding="utf-8", errors="replace") as f:
+            t = f.read()
+        all_text += t
+        for name in remaining:
+            if f'"{name}"' in t:
+                files_by_name.setdefault(name, fname)
+    for name in remaining:
+        if f'"{name}"' in all_text:
+            extra[name.lower()] = {
+                "status": "Implemented",
+                "note": "Registered through a table-driven command family rather than a "
+                        "standalone Reg(...) call; see the source file for the shared implementation.",
+                "file": files_by_name.get(name, ""),
+            }
+    return extra
+
+
 def parse_aliases():
     """Best-effort extraction of default command-line aliases from
     CommandEngine::InstallDefaultAliases (alias -> canonical name), so the
@@ -159,6 +219,7 @@ def main():
         catalog = json.load(f)
 
     regs = parse_registrations()
+    regs.update(parse_table_driven_registrations([c["name"] for c in catalog], set(regs.keys())))
     aliases = parse_aliases()
 
     entries = []

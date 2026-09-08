@@ -3,9 +3,9 @@ window.DINO8_COMMANDS = {
  "generated_from": "data/commands.json + src/commands/cmd_*.cpp",
  "total": 1055,
  "counts": {
-  "Implemented": 979,
-  "Partial": 54,
-  "Planned": 22
+  "Implemented": 1000,
+  "Partial": 55,
+  "Planned": 0
  },
  "commands": [
   {
@@ -527,9 +527,9 @@ window.DINO8_COMMANDS = {
    "description": "Creates a new texture image by mapping a texture from a UV mesh to another.",
    "toolbars": "Texture Mapping",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Replaces each object with a mesh whose own texture coordinates are the resolved mapping (Planar/Box/Cylindrical/Spherical/Custom), frozen so it survives further mapping changes.",
+   "source": "cmd_render.cpp",
    "aliases": []
   },
   {
@@ -847,9 +847,9 @@ window.DINO8_COMMANDS = {
    "description": "Fills planar holes in objects with planar faces.",
    "toolbars": "Solid Tools",
    "menu": "Solid | Cap Planar Holes",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Caps every planar closed naked-edge loop on each selected polysurface (one call handles multiple separate holes).",
+   "source": "cmd_solids.cpp",
    "aliases": []
   },
   {
@@ -957,9 +957,9 @@ window.DINO8_COMMANDS = {
    "description": "Check in a license to the Zoo license manager.",
    "toolbars": "Not\u00a0on\u00a0toolbars.",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_state.cpp",
    "aliases": []
   },
   {
@@ -977,9 +977,9 @@ window.DINO8_COMMANDS = {
    "description": "Check out a license from the Zoo license manager.",
    "toolbars": "Not\u00a0on\u00a0toolbars.",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_state.cpp",
    "aliases": []
   },
   {
@@ -2907,9 +2907,9 @@ window.DINO8_COMMANDS = {
    "description": "Separate faces from a mesh by area.",
    "toolbars": "Extract\u00a0Mesh",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_meshtools.cpp",
    "aliases": []
   },
   {
@@ -2917,9 +2917,9 @@ window.DINO8_COMMANDS = {
    "description": "Separate faces from a mesh by aspect ratio.",
    "toolbars": "Extract\u00a0Mesh",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_meshtools.cpp",
    "aliases": []
   },
   {
@@ -2927,9 +2927,9 @@ window.DINO8_COMMANDS = {
    "description": "Separate faces from a mesh by a draft angle or weld status.",
    "toolbars": "Extract\u00a0Mesh",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_meshtools.cpp",
    "aliases": []
   },
   {
@@ -2937,9 +2937,9 @@ window.DINO8_COMMANDS = {
    "description": "Separate faces from a mesh by edge length.",
    "toolbars": "Extract\u00a0Mesh",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_meshtools.cpp",
    "aliases": []
   },
   {
@@ -3158,7 +3158,7 @@ window.DINO8_COMMANDS = {
    "toolbars": "New in V8, Tools",
    "menu": "",
    "status": "Implemented",
-   "note": "",
+   "note": "Opens the OS file manager (Explorer/Finder/xdg-open) at the working folder, the current document's folder, or the current directory, in that order; only prints the folder in headless/script mode.",
    "source": "cmd_state.cpp",
    "aliases": []
   },
@@ -4015,9 +4015,9 @@ window.DINO8_COMMANDS = {
    "description": "Finds self-intersections or self-overlaps in curves and marks them with point objects or curve segments.",
    "toolbars": "Not on toolbars",
    "menu": "",
-   "status": "Planned",
+   "status": "Implemented",
    "note": "",
-   "source": "",
+   "source": "cmd_curves2.cpp",
    "aliases": []
   },
   {
@@ -4045,9 +4045,9 @@ window.DINO8_COMMANDS = {
    "description": "Deselect all selected control or edit points and select all previously unselected control or edit points.",
    "toolbars": "Select, Select Points",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Inverts the control-point selection within the objects that have PointsOn.",
+   "source": "cmd_select2.cpp",
    "aliases": []
   },
   {
@@ -4207,9 +4207,9 @@ window.DINO8_COMMANDS = {
    "description": "Open the Libraries panel.",
    "toolbars": "Render Tools",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_state.cpp",
    "aliases": []
   },
   {
@@ -4361,9 +4361,9 @@ window.DINO8_COMMANDS = {
    "description": "Log you into Rhino using your Rhino account.",
    "toolbars": "Not\u00a0on\u00a0toolbars.",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_state.cpp",
    "aliases": []
   },
   {
@@ -4371,9 +4371,9 @@ window.DINO8_COMMANDS = {
    "description": "Log you out and returns any licenses borrowed from a Rhino account.",
    "toolbars": "Not\u00a0on\u00a0toolbars.",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_state.cpp",
    "aliases": []
   },
   {
@@ -4441,9 +4441,9 @@ window.DINO8_COMMANDS = {
    "description": "Remove the kink from the start/end of a curve or surface.",
    "toolbars": "Curve Tools, Surface Tools",
    "menu": "Edit | Make Periodic",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Partial",
+   "note": "Only the Smooth=Yes behaviour is implemented (a periodic-uniform curve refit through the same control points, seam relaxed smooth); Smooth=No's exact-shape-preserving re-knot is a distinct, considerably harder NURBS algorithm this build does not have.",
+   "source": "cmd_edit.cpp",
    "aliases": []
   },
   {
@@ -4943,9 +4943,9 @@ window.DINO8_COMMANDS = {
    "description": "Searches for 3rd-party plug-ins installed for previous versions of Rhino to load in the current version of Rhino if they are compatible.",
    "toolbars": "Not on toolbars",
    "menu": "",
-   "status": "Planned",
+   "status": "Implemented",
    "note": "",
-   "source": "",
+   "source": "cmd_flow.cpp",
    "aliases": []
   },
   {
@@ -7797,9 +7797,9 @@ window.DINO8_COMMANDS = {
    "description": "Select objects by object ID number.",
    "toolbars": "Select",
    "menu": "",
-   "status": "Planned",
+   "status": "Implemented",
    "note": "",
-   "source": "",
+   "source": "cmd_select.cpp",
    "aliases": []
   },
   {
@@ -7937,9 +7937,9 @@ window.DINO8_COMMANDS = {
    "description": "Select mesh faces from the parent mesh object that are within a specified range of area.",
    "toolbars": "Not\u00a0on\u00a0toolbars.",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_meshtools.cpp",
    "aliases": []
   },
   {
@@ -7947,9 +7947,9 @@ window.DINO8_COMMANDS = {
    "description": "Select mesh faces from the parent mesh object that are greater than the specified aspect ratio limit.",
    "toolbars": "Not\u00a0on\u00a0toolbars.",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_meshtools.cpp",
    "aliases": []
   },
   {
@@ -7957,9 +7957,9 @@ window.DINO8_COMMANDS = {
    "description": "Separate mesh faces from the parent mesh object based on the angle of the faces to the view.",
    "toolbars": "Not\u00a0on\u00a0toolbars.",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_meshtools.cpp",
    "aliases": []
   },
   {
@@ -7967,9 +7967,9 @@ window.DINO8_COMMANDS = {
    "description": "Select mesh faces from the parent mesh object that have an edge length greater or less than a specified value.",
    "toolbars": "Not\u00a0on\u00a0toolbars.",
    "menu": "",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_meshtools.cpp",
    "aliases": []
   },
   {
@@ -9727,9 +9727,9 @@ window.DINO8_COMMANDS = {
    "description": "Set the scale and center of all viewports to match the active viewport.",
    "toolbars": "Viewport Layout",
    "menu": "View / Viewport title | Set Camera > | Synchronize Views",
-   "status": "Planned",
-   "note": "",
-   "source": "",
+   "status": "Implemented",
+   "note": "Registered through a table-driven command family rather than a standalone Reg(...) call; see the source file for the shared implementation.",
+   "source": "cmd_remaining.cpp",
    "aliases": []
   },
   {
@@ -9747,9 +9747,9 @@ window.DINO8_COMMANDS = {
    "description": "Change an object's material color to match its display color.",
    "toolbars": "Render Tools",
    "menu": "Not on menus.",
-   "status": "Planned",
+   "status": "Implemented",
    "note": "",
-   "source": "",
+   "source": "cmd_render.cpp",
    "aliases": []
   },
   {

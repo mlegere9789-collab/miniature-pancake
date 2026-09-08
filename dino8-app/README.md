@@ -9,6 +9,13 @@ NURBS/B-rep/.3dm, Manifold for watertight mesh booleans) with a Dear ImGui
 + GLFW user interface. It runs on Windows, Linux and macOS from one code
 base.
 
+**[Read the docs](docs/site/index.html)** - a getting-started guide, a
+searchable reference for all 1055 Rhino 8 commands (each marked
+Implemented/Partial/Planned), ten verified step-by-step tutorials, and an
+honest "coming from Rhino" migration guide. Open `docs/site/index.html`
+directly in a browser, or serve the `docs/site/` folder with any static
+file server - no build step required.
+
 ## What is in the test build
 
 * **Every Rhino 8 command name** (1055 from the Rhino 8 Command Line
