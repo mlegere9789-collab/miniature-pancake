@@ -153,8 +153,7 @@ def render_earnings_csv() -> str:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=EARNINGS_CSV_FIELDS)
     writer.writeheader()
-    for row in db.list_earnings():
-        writer.writerow({field: row[field] for field in EARNINGS_CSV_FIELDS})
+    writer.writerows(db.to_csv_rows(db.list_earnings(), EARNINGS_CSV_FIELDS))
     return buf.getvalue()
 
 
@@ -162,8 +161,7 @@ def render_reviews_csv() -> str:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=REVIEWS_CSV_FIELDS)
     writer.writeheader()
-    for row in db.list_resolved_reviews():
-        writer.writerow({field: row[field] for field in REVIEWS_CSV_FIELDS})
+    writer.writerows(db.to_csv_rows(db.list_resolved_reviews(), REVIEWS_CSV_FIELDS))
     return buf.getvalue()
 
 

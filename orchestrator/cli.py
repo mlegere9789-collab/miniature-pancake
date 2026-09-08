@@ -25,8 +25,7 @@ from .paths import DB_PATH, ENV_PATH, JOBS_PATH, MODULES
 def _write_csv(rows: list[dict[str, Any]], fields: list[str], handle) -> None:
     writer = csv.DictWriter(handle, fieldnames=fields)
     writer.writeheader()
-    for row in rows:
-        writer.writerow({field: row[field] for field in fields})
+    writer.writerows(db.to_csv_rows(rows, fields))
 
 
 def _cmd_init() -> int:

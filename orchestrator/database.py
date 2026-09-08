@@ -318,6 +318,33 @@ def resolved_reviews(limit: int = 10) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+_CSV_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: Any) -> Any:
+    """Neutralize a value that Excel/Sheets would interpret as a formula
+    when a CSV export is opened there, rather than display as plain text —
+    a cell starting with any of ``=``, ``+``, ``-``, ``@`` (or a tab/CR;
+    OWASP's CSV-injection guidance covers all six) executes instead. Rows
+    here can carry text a module never controlled — a CheapShark deal
+    title, a Shopify order note, a Stripe charge description — so this
+    applies to every string cell in both CSV exports rather than trusting
+    any one field to be safe.
+    """
+    if isinstance(value, str) and value and value[0] in _CSV_FORMULA_TRIGGERS:
+        return "'" + value
+    return value
+
+
+def to_csv_rows(rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+    """Project each row down to `fields`, CSV-formula-escaped and ready for
+    `csv.DictWriter` — shared by the CLI's `export-earnings`/`export-reviews`
+    and the dashboard's matching CSV download routes so the two can't drift
+    out of sync on this.
+    """
+    return [{field: _csv_safe(row[field]) for field in fields} for row in rows]
+
+
 REVIEWS_CSV_FIELDS = [
     "resolved_at",
     "module",

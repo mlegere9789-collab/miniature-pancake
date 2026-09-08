@@ -1077,6 +1077,14 @@ class TestCmdExportEarnings(TempDatabaseTestCase):
         rows = list(csv.DictReader(io.StringIO(buf.getvalue())))
         self.assertEqual([r["module"] for r in rows], ["micro_saas"])
 
+    def test_formula_looking_source_is_neutralized(self):
+        db.record_earning("micro_saas", 1.0, source="=1+1")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.main(["export-earnings"])
+        rows = list(csv.DictReader(io.StringIO(buf.getvalue())))
+        self.assertEqual(rows[0]["source"], "'=1+1")
+
     def test_writes_to_file_when_out_given(self):
         db.record_earning("deal_alert_bot", 1.0)
         with tempfile.TemporaryDirectory() as d:
@@ -1245,6 +1253,35 @@ class TestDatabaseTryStartRun(TempDatabaseTestCase):
         self.assertTrue(db.try_start_run("deal_alert_bot"))
 
 
+class TestToCsvRows(unittest.TestCase):
+    """CSV-formula-injection regression: a cell starting with =, +, -, @ (or
+    a tab/CR) opens as a formula in Excel/Sheets rather than as text -- and
+    these exports carry text a module never controlled (a deal title, a
+    Shopify order note, a Stripe charge description)."""
+
+    def test_leaves_ordinary_text_untouched(self):
+        rows = db.to_csv_rows([{"title": "Approve this deal?"}], ["title"])
+        self.assertEqual(rows, [{"title": "Approve this deal?"}])
+
+    def test_prefixes_each_formula_trigger_character(self):
+        for trigger in ("=", "+", "-", "@", "\t", "\r"):
+            value = f"{trigger}cmd|'/bin/bash'!A1"
+            rows = db.to_csv_rows([{"title": value}], ["title"])
+            self.assertEqual(rows[0]["title"], "'" + value)
+
+    def test_non_string_fields_pass_through(self):
+        rows = db.to_csv_rows([{"amount": 4.2}], ["amount"])
+        self.assertEqual(rows[0]["amount"], 4.2)
+
+    def test_empty_string_is_not_touched(self):
+        rows = db.to_csv_rows([{"title": ""}], ["title"])
+        self.assertEqual(rows[0]["title"], "")
+
+    def test_only_projects_the_requested_fields(self):
+        rows = db.to_csv_rows([{"title": "x", "id": 1, "secret": "y"}], ["title"])
+        self.assertEqual(rows, [{"title": "x"}])
+
+
 class TestTailLog(unittest.TestCase):
     def test_unknown_module_returns_none(self):
         self.assertIsNone(dashboard.tail_log("not_a_real_module"))
@@ -1334,6 +1371,11 @@ class TestRenderEarningsCsv(TempDatabaseTestCase):
         rows = list(csv.DictReader(io.StringIO(dashboard.render_earnings_csv())))
         self.assertEqual([r["module"] for r in rows], ["micro_saas", "deal_alert_bot"])
 
+    def test_formula_looking_description_is_neutralized(self):
+        db.record_earning("micro_saas", 1.0, description="=cmd|'/bin/bash -c calc'!A1")
+        rows = list(csv.DictReader(io.StringIO(dashboard.render_earnings_csv())))
+        self.assertTrue(rows[0]["description"].startswith("'="))
+
 
 class TestRenderReviewsCsv(TempDatabaseTestCase):
     def test_header_only_when_empty(self):
@@ -1348,6 +1390,12 @@ class TestRenderReviewsCsv(TempDatabaseTestCase):
         self.assertEqual(rows[0]["title"], "Approve?")
         self.assertEqual(rows[0]["status"], "approved")
         self.assertEqual(rows[0]["resolution_note"], "fine")
+
+    def test_formula_looking_title_is_neutralized(self):
+        rid = db.add_review_item("deal_alert_bot", '=HYPERLINK("http://evil")')
+        db.resolve_review_item(rid, "approved")
+        rows = list(csv.DictReader(io.StringIO(dashboard.render_reviews_csv())))
+        self.assertTrue(rows[0]["title"].startswith("'="))
 
 
 class TestSchedulerStatusHelper(unittest.TestCase):
