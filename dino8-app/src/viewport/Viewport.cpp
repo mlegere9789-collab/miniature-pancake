@@ -900,6 +900,73 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
 // Picking
 // ---------------------------------------------------------------------------
 
+namespace {
+// Broad-phase candidate gathering for the ray- and box-based picks below,
+// backed by Document::PickGrid() (see spatial/ObjectGrid.h). This is what
+// turns PickObject/PickSubObject/ObjectsInWindow from "touch every object
+// in the document" into "touch objects whose cached display bounding box
+// is actually near the pick" - the fix for the O(objects) hover-every-frame
+// cost tests/performance_notes.md measures. Safe here specifically because
+// every geometry array these three functions read (DisplayCache::lines/
+// points/triangles and the topology mesh PickSubObject derives from) is
+// itself built to fit inside the same cached bounding box the grid indexes
+// - unlike raw NURBS control points, which the convex-hull property lets
+// stray outside a curve's own tessellated bbox, so PickControlPoint/
+// ControlPointsInWindow deliberately keep scanning every object (see the
+// note on those functions) rather than risk missing a real control point.
+//
+// Honest caveat: the wire/edge tests below accept a hit within
+// `pixel_radius` screen pixels of the exact ray, not only an exact ray
+// intersection, so in principle a wire whose AABB the ray's *line* just
+// misses but whose screen projection is still within pixel_radius could be
+// dropped by this broad phase where the old brute-force scan would have
+// found it. This was true of the same tolerance before the grid existed
+// too (a segment just outside best_wire_dist's initial pixel_radius was
+// always excluded) - what changes here is that the AABB test is now 3D/
+// world-space instead of implicitly "every object", so the case that could
+// regress is a wire within pixel_radius on screen from an AABB more than
+// roughly one grid cell away from the ray's line in world space. With
+// realistic cell sizing (see EnsureFresh) and ordinary pixel_radius values
+// (a handful of pixels) this has not been observed in tests/smoke.sh or
+// tests/stress.sh, but it is a real, if narrow, behavioral difference worth
+// stating plainly rather than claiming byte-for-byte identical results.
+//
+// A generous `max_distance` bounds the DDA march (see ObjectGrid::QueryRay);
+// 1e7 world units comfortably covers any realistic model without the walk
+// running away on a near-parallel ray that grazes past the grid's extent.
+constexpr double kPickRayMaxDistance = 1.0e7;
+
+// tests/stress.sh sets this to get an honest, same-binary A/B: every
+// candidate list becomes "every object", i.e. exactly the old brute-force
+// scan's behaviour, so pick_ms with and without it isolates what the grid
+// itself is worth rather than comparing across two different builds.
+bool PickGridDisabledForBenchmark() {
+  static const bool disabled = std::getenv("DINO8_DISABLE_PICK_GRID") != nullptr;
+  return disabled;
+}
+
+std::vector<std::size_t> AllIndices(const Document& doc) {
+  std::vector<std::size_t> all(doc.Objects().size());
+  for (std::size_t i = 0; i < all.size(); ++i) all[i] = i;
+  return all;
+}
+
+// Indices into doc.Objects(), not ObjectIds: Document::Find(id) is itself a
+// linear scan, so resolving each candidate as doc.Objects()[index] is what
+// keeps this O(1) per candidate instead of putting the O(n) cost right back.
+std::vector<std::size_t> RayCandidates(const Document& doc, const Ray& ray) {
+  if (PickGridDisabledForBenchmark()) return AllIndices(doc);
+  ObjectGrid& grid = doc.PickGrid();
+  return grid.QueryRay(ray, kPickRayMaxDistance);
+}
+
+std::vector<std::size_t> BoxCandidates(const Document& doc, const kernel::BoundingBox& box) {
+  if (PickGridDisabledForBenchmark()) return AllIndices(doc);
+  ObjectGrid& grid = doc.PickGrid();
+  return grid.QueryBox(box);
+}
+}  // namespace
+
 bool Viewport::WorldToPixel(Point3d p, double& px, double& py) const {
   double nx, ny, depth;
   if (!camera_.Project(p, Aspect(), nx, ny, depth)) return false;
@@ -953,7 +1020,9 @@ ObjectId Viewport::PickObject(const Document& doc, double px, double py, double 
   ObjectId best_face = kNoObject;
   double best_face_t = 1e300;
   const Ray ray = PixelRay(px, py);
-  for (const SceneObject& o : doc.Objects()) {
+  const std::vector<SceneObject>& all_objects = doc.Objects();
+  for (std::size_t candidate_index : RayCandidates(doc, ray)) {
+    const SceneObject& o = all_objects[candidate_index];
     if (!doc.IsObjectVisible(o) || doc.IsObjectLocked(o)) continue;
     o.EnsureDisplay(0.02, 0.05);
     const DisplayCache& d = o.Display();
@@ -1004,7 +1073,40 @@ std::vector<ObjectId> Viewport::ObjectsInWindow(const Document& doc, double x0, 
   const double top = std::min(y0, y1), bottom = std::max(y0, y1);
   std::vector<ObjectId> result;
   if (page_) return result;
-  for (const SceneObject& o : doc.Objects()) {
+  // Broad phase: the world-space box swept out by unprojecting the four
+  // screen corners through the camera's near/far distance conservatively
+  // bounds the selection frustum (it also includes some space outside the
+  // actual frustum for an off-centre rectangle, which only costs a few
+  // extra candidates - see ObjectGrid::QueryBox). Falls back to every
+  // object when the corners don't project (page_ already excluded above,
+  // so this is only reachable for a degenerate/behind-camera rectangle).
+  kernel::BoundingBox window_box;
+  bool have_window_box = false;
+  {
+    double far_z;
+    const double near_z = camera_.NearFar(far_z);
+    const double corners[4][2] = {{left, top}, {left, bottom}, {right, top}, {right, bottom}};
+    for (const double (&c)[2] : corners) {
+      const Ray corner_ray = PixelRay(c[0], c[1]);
+      for (double depth : {near_z, far_z}) {
+        const Point3d p = corner_ray.origin + corner_ray.direction * depth;
+        if (!have_window_box) { window_box.min = window_box.max = p; have_window_box = true; }
+        window_box.min.x = std::min(window_box.min.x, p.x); window_box.max.x = std::max(window_box.max.x, p.x);
+        window_box.min.y = std::min(window_box.min.y, p.y); window_box.max.y = std::max(window_box.max.y, p.y);
+        window_box.min.z = std::min(window_box.min.z, p.z); window_box.max.z = std::max(window_box.max.z, p.z);
+      }
+    }
+  }
+  const std::vector<SceneObject>& all_objects = doc.Objects();
+  std::vector<std::size_t> window_candidates;
+  if (have_window_box) {
+    window_candidates = BoxCandidates(doc, window_box);
+  } else {
+    window_candidates.resize(all_objects.size());
+    for (std::size_t i = 0; i < all_objects.size(); ++i) window_candidates[i] = i;
+  }
+  for (std::size_t candidate_index : window_candidates) {
+    const SceneObject& o = all_objects[candidate_index];
     if (!doc.IsObjectVisible(o) || doc.IsObjectLocked(o)) continue;
     o.EnsureDisplay(0.02, 0.05);
     const DisplayCache& d = o.Display();
@@ -1127,7 +1229,9 @@ std::optional<SubObjectPick> Viewport::PickSubObject(const Document& doc, double
       if (d <= pixel_radius && (!best_edge || d < best_edge->pixel_dist)) best_edge = SubObjectPick{r, pl[k - 1] + (pl[k] - pl[k - 1]) * t, d};
     }
   };
-  for (const SceneObject& o : doc.Objects()) {
+  const std::vector<SceneObject>& sub_pick_objects = doc.Objects();
+  for (std::size_t candidate_index : RayCandidates(doc, ray)) {
+    const SceneObject& o = sub_pick_objects[candidate_index];
     if (!doc.IsObjectVisible(o) || doc.IsObjectLocked(o)) continue;
     o.EnsureDisplay(0.02, 0.05);
     const DisplayCache& d = o.Display();

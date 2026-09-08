@@ -125,6 +125,7 @@ set(DINO8_SOURCES
   src/doc/Document.cpp
   src/doc/SceneObject.cpp
   src/doc/SubObjectEdit.cpp
+  src/spatial/ObjectGrid.cpp
   src/viewport/Camera.cpp
   src/viewport/Viewport.cpp
   src/render/GlRenderer.cpp

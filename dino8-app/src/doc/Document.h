@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "doc/SceneObject.h"
+#include "spatial/ObjectGrid.h"
 
 namespace dino8::app {
 
@@ -441,6 +442,20 @@ class Document {
   bool BoundingBoxOf(const std::vector<ObjectId>& ids, kernel::BoundingBox& out) const;
   bool VisibleBoundingBox(kernel::BoundingBox& out) const;
 
+  // ---- picking acceleration ---------------------------------------------
+  // A uniform grid over every object's world AABB, rebuilt lazily whenever
+  // Revision() has changed since the last query (see ObjectGrid::EnsureFresh).
+  // Viewport picking (PickObject/PickPoint/PickControlPoint/PickSubObject/
+  // ObjectsInWindow) queries this instead of scanning Objects() directly so
+  // a click or hover in a large assembly only visits nearby objects. `mutable`
+  // like the display caches on SceneObject - it is a derived cache of the
+  // object list, not document state, so const callers (drawing, picking) can
+  // still trigger a rebuild.
+  ObjectGrid& PickGrid() const {
+    pick_grid_.EnsureFresh(*this);
+    return pick_grid_;
+  }
+
   // ---- lifecycle -------------------------------------------------------
   void Clear();
   const std::string& Path() const { return path_; }
@@ -514,6 +529,7 @@ class Document {
   std::vector<Snapshot> redo_;
   size_t max_undo_ = 100;
   std::vector<std::pair<std::string, Snapshot>> named_snapshots_;
+  mutable ObjectGrid pick_grid_;
 };
 
 }  // namespace dino8::app
