@@ -184,31 +184,43 @@ close to a production path tracer:
 - **BVH is rebuilt on the CPU per document revision change**, same as the
   existing CPU tracer - fine for the static-while-viewing case this display
   mode targets, not suited to high-frequency per-frame deformation.
-- **The smoke-test coverage gap noted above**: the existing check only
-  asserts `gl_error=0` while `RayTracedViewport` runs with a camera
-  rotation mid-mode; it does not assert that a frame was actually produced
-  (e.g. `AccumulatedFrames() > 0` or a non-empty presented texture) the way
-  the bug described above would have kept passing that check even fully
-  broken. A future pass should tighten this - e.g. a `--smoke` hook that
-  prints the HUD text (already includes `accum: N frames`) so smoke.sh can
-  grep for a nonzero count, not just a clean error queue.
+- **The smoke-test coverage gap noted above - now fixed.** The existing
+  check only asserted `gl_error=0`, which a fully-broken raytracer that
+  never runs also trivially satisfies. A `DINO8_RT_FRAMES` env hook
+  (mirroring `DINO8_RT_TIMING`'s pattern) now prints `rt_accum_frames=N
+  empty=B` from `Viewport::Render`, and `tests/smoke.sh` asserts a real
+  `rt_accum_frames=<positive> empty=0` line appears - proof a frame was
+  actually produced, not just that nothing errored.
+
+  **This coverage gap was not theoretical - closing it immediately caught a
+  real bug that had made `RayTracedViewport` completely non-functional in
+  this session's own test environment since the texture/transparency/
+  multi-bounce commit landed.** The trace fragment shader declared a local
+  variable named `mat2` - which is GLSL's reserved 2x2-matrix type name,
+  not a legal identifier - inside the bounce loop added by that commit.
+  Every affected Mesa/llvmpipe GLSL compile failed with a genuine syntax
+  error, `GpuRaytracer::Init()` correctly detected and logged the failure,
+  and the raytracer silently never ran again after that - while `gl_error=0`
+  kept passing the whole time, because a mode that never executes also
+  never errors. Fixed by renaming the variable (`hitMat2`); confirmed via
+  the new `rt_accum_frames` check that frames are genuinely accumulating
+  again (verified 1 through 8+ frames across a normal smoke run).
 
 ## Note on the texture/transparency/multi-bounce pass above
 
 The performance table above ("Measured performance") predates the texture
 sampling, transparency, and multi-bounce work and was not re-measured when
-that landed: attempting to reproduce it via the recipe below (against this
-exact commit) produced zero `rt_frame_ms` lines rather than the expected
-per-frame numbers, a pre-existing quirk in how `--smoke` drives (or doesn't
-drive) the interactive viewport's per-frame `Viewport::Render` path, not
-something the texture/transparency/bounce change touched. Rather than
-fabricate numbers, this is left as an honest gap: the qualitative order-of
--magnitude conclusion above (single-digit-to-tens of milliseconds per frame
-on software rasterization at these scene sizes) still holds since a few
-extra texture fetches and up to 2 more bounces are cheap relative to BVH
-traversal itself, but no fresh measured table exists for the new features.
-A future pass should first fix `--smoke`'s viewport-frame reproduction
-(or find its correct invocation) before re-measuring.
+that landed. An earlier note here attributed a failed reproduction attempt
+(zero `rt_frame_ms` lines) to "a pre-existing `--smoke`/viewport-render
+quirk" - that diagnosis was wrong. The real cause was the `mat2` shader bug
+above: `GpuRaytracer::Init()` was failing on every run, so no `rt_frame_ms`
+line could ever print regardless of how `--smoke` drives the viewport. With
+that bug now fixed, the reproduction recipe below works correctly again (as
+confirmed empirically), but no fresh timed measurement table has been taken
+for the texture/transparency/multi-bounce feature set specifically - a
+future pass should re-run the recipe and add real numbers here rather than
+relying on the qualitative order-of-magnitude estimate this section
+previously fell back on.
 
 ## Reproducing the measurements
 

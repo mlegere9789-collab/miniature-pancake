@@ -1253,9 +1253,9 @@ d2check "gl_error=0" "drafting2 script ran without OpenGL errors"
 sed "s|@TMP@|$TMP/rt|g" "$HERE/raytrace_script.txt" > "$TMP/raytrace_script.txt"
 mkdir -p "$TMP/rt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
-  RT="$("$BIN" --smoke 60 --script "$TMP/raytrace_script.txt" 2>&1)" || { echo "$RT"; echo "FAIL: raytrace script exited non-zero"; exit 1; }
+  RT="$(env DINO8_RT_FRAMES=1 "$BIN" --smoke 60 --script "$TMP/raytrace_script.txt" 2>&1)" || { echo "$RT"; echo "FAIL: raytrace script exited non-zero"; exit 1; }
 else
-  RT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/raytrace_script.txt" 2>&1)" || { echo "$RT"; echo "FAIL: raytrace script exited non-zero"; exit 1; }
+  RT="$(xvfb-run -a -s "-screen 0 1600x900x24" env DINO8_RT_FRAMES=1 "$BIN" --smoke 60 --script "$TMP/raytrace_script.txt" 2>&1)" || { echo "$RT"; echo "FAIL: raytrace script exited non-zero"; exit 1; }
 fi
 rtcheck() { if echo "$RT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 rtcheck "Created material ChromeMat from preset Chrome" "RenderAssignMaterialToObjects Preset= created a material from the built-in library"
@@ -1268,6 +1268,22 @@ rtcheck "RenderPreview: rendered Perspective .* \[Raytraced" "RenderPreview ran 
 rtcheck "RenderBlowup:.*region rendered as a true optical zoom.*\[Raytraced\]" "RenderBlowup did a real optical zoom with the path tracer too, not a crop"
 rtcheck "Saved $TMP/rt/raytrace.3dm" "the raytraced scene saved to a .3dm"
 rtcheck "gl_error=0" "no OpenGL errors while the viewport was in RayTracedViewport mode"
+# Real proof RayTracedViewport actually produced a frame, not just that no
+# GL error happened (gl_error=0 alone would pass just as well if
+# GpuRaytracer::Init() silently failed and the whole mode were a no-op -
+# this is exactly the gap tests/gpu_render_notes.md itself documented and
+# that a fully broken shader once hid: see the DINO8_RT_FRAMES-gated
+# rt_accum_frames print in Viewport.cpp).
+if echo "$RT" | grep -qE "rt_accum_frames=[1-9][0-9]* empty=0"; then
+  echo "ok   RayTracedViewport actually accumulated real frames (empty=0, nonzero count), not just a clean but silently-no-op GL error queue"
+else
+  echo "FAIL RayTracedViewport never produced a real frame (no 'rt_accum_frames=N>0 empty=0' line) - gl_error=0 alone does not prove the raytracer ran"; fail=1
+fi
+if echo "$RT" | grep -q "GpuRaytracer::Init failed"; then
+  echo "FAIL GpuRaytracer::Init failed during the raytrace script - the GPU raytracer is non-functional in this environment"; fail=1
+else
+  echo "ok   GpuRaytracer::Init did not fail during the raytrace script"
+fi
 python3 - "$TMP/rt/raytrace.bmp" <<'PY' && echo "ok   raytrace.bmp is a valid, non-flat 24-bit BMP" || { echo "FAIL raytrace.bmp invalid or flat"; fail=1; }
 import struct, sys
 d = open(sys.argv[1], 'rb').read()

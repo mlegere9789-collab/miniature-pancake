@@ -248,6 +248,15 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
           std::to_string(raytrace_gpu_.TriangleCount()) + " tris @ " + std::to_string(rw) + "x" + std::to_string(rh);
     ImGui::GetForegroundDrawList()->AddText(ImVec2(static_cast<float>(screen_x_) + 8, static_cast<float>(screen_y_) + 8),
                                             IM_COL32(255, 255, 255, 235), hud.c_str());
+    // The HUD text above only ever reaches an ImGui draw list (a rendered
+    // overlay), so a headless smoke-test script has no way to assert that
+    // RayTracedViewport actually produced a frame rather than silently
+    // failing (see gpu_render_notes.md's own "smoke-test coverage gap"
+    // note - a fully-broken GpuRaytracer::Init() previously stayed
+    // gl_error=0 by simply never running, and nothing caught that). Mirrors
+    // DINO8_RT_TIMING's existing env-gated stderr print pattern above.
+    static const bool print_frames = std::getenv("DINO8_RT_FRAMES") != nullptr;
+    if (print_frames) std::fprintf(stderr, "rt_accum_frames=%d empty=%d\n", raytrace_gpu_.AccumulatedFrames(), raytrace_gpu_.Empty() ? 1 : 0);
   } else if (page_) {
     DrawPage(renderer);
   } else {

@@ -306,18 +306,23 @@ vec3 trace(vec3 ro, vec3 rd) {
   // each step, each contributing its own direct-lit + emitted radiance
   // weighted by the accumulated path throughput (albedo product so far).
   vec3 throughput = albedo;
-  vec3 bo = p + n * 1e-4, bd = rnd() < reflectivity ? reflect(rd, n) : cosineSampleHemisphere(n);
+  vec3 bo = p + n * 1e-4;
+  vec3 bd = rnd() < reflectivity ? reflect(rd, n) : cosineSampleHemisphere(n);
   int maxBounces = clamp(u_max_bounces, 1, kMaxBounceDepthGuard);
   for (int b = 0; b < kMaxBounceDepthGuard; ++b) {
     if (b >= maxBounces) break;
-    float t2; int mat2; vec3 n2, p2; vec2 uv2;
-    if (!traceSurface(bo, bd, t2, mat2, n2, p2, uv2)) { color += throughput * skyColor(bd); break; }
+    float t2;
+    int hitMat2;
+    vec3 n2;
+    vec3 p2;
+    vec2 uv2;
+    if (!traceSurface(bo, bd, t2, hitMat2, n2, p2, uv2)) { color += throughput * skyColor(bd); break; }
     if (dot(n2, bd) > 0.0) n2 = -n2;
-    vec3 albedo2 = sampleAlbedo(mat2, uv2);
-    vec3 spec2 = mat2 >= 0 ? u_mat_b[mat2].xyz : vec3(1.0);
-    float gloss2 = mat2 >= 0 ? u_mat_a[mat2].w : 0.3;
-    float refl2 = mat2 >= 0 ? u_mat_b[mat2].w : 0.0;
-    vec3 emission2 = mat2 >= 0 ? u_mat_c[mat2].xyz : vec3(0.0);
+    vec3 albedo2 = sampleAlbedo(hitMat2, uv2);
+    vec3 spec2 = hitMat2 >= 0 ? u_mat_b[hitMat2].xyz : vec3(1.0);
+    float gloss2 = hitMat2 >= 0 ? u_mat_a[hitMat2].w : 0.3;
+    float refl2 = hitMat2 >= 0 ? u_mat_b[hitMat2].w : 0.0;
+    vec3 emission2 = hitMat2 >= 0 ? u_mat_c[hitMat2].xyz : vec3(0.0);
     color += throughput * (emission2 + directLighting(p2, n2, -bd, albedo2, spec2, gloss2));
     // Roughness-based termination: a bounce that lands on a rough (matte)
     // surface already gives the same one-extra-sample GI the original
