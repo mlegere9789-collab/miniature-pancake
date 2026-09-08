@@ -130,8 +130,12 @@ that is easy to mistake for a bug — check those first.
   general-model output. Confirm a photo with no face in it still completes normally (the
   pass is designed to pass the image through unchanged when no face is detected, not fail
   the job). If `tools\gfpgan\face_enhance.exe` is missing on this machine (see Settings →
-  Bundled tools), `faceEnhance=true` should be a silent no-op, not an error — confirm that
-  too if you can test both states.
+  Bundled tools), `faceEnhance=true` should fail the job with a clear "not installed"
+  message, the same way `sharpen=true` does when ImageMagick is missing — not a silent
+  no-op. (This is deliberate, not a gap: see `UpscaleEngineTests.
+  Face_enhance_without_the_tool_fails_before_the_upscale_ever_runs`. A setting the user
+  explicitly turned on should say so loudly if it can't run, rather than silently doing
+  less than asked.) Confirm that too if you can test both states.
 
 ## Job failure diagnostics
 
@@ -235,9 +239,13 @@ neither of which CI or a fake process runner can see.
 
 - **AI upscaler face enhance**: CPU-only (GFPGAN-ncnn's own Vulkan support is still an
   open upstream TODO), and compiled from source at installer build time with no official
-  prebuilt binary to fall back to — `faceEnhance=true` silently does nothing if
-  `tools\gfpgan\face_enhance.exe` isn't present on this machine (see Settings → Bundled
-  tools), rather than failing the job.
+  prebuilt binary to fall back to. There is no dedicated UI control for it — it is set
+  the same way any advanced option is, by typing `faceEnhance=true` under the Custom
+  preset — so nothing in the UI stops a user from asking for it on a machine where
+  `tools\gfpgan\face_enhance.exe` was never built. Doing so fails the job with a clear
+  "not installed" message, the same as any other option that names a missing tool,
+  rather than silently skipping the pass — a job never silently produces less than the
+  options it was actually given.
 - **Archive**: RAR is extraction-only; creating a RAR archive needs a licensed encoder.
 - **Format catalogue**: spreadsheet and presentation formats (XLSX, PPTX, ODS, ODP,
   etc.), PostScript, and MIDI are not supported — see the doc comment on

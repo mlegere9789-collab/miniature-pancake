@@ -80,8 +80,10 @@ pipeline had never exercised before this was written, on top of everything `libr
 already risks. Its model weights (>100 MB) come from the same source repository's own
 Google Drive link rather than a GitHub release, fetched and validated the same fail-soft
 way. If the compile or the model download does not come out this run, the AI Photo
-Upscaler works exactly as it did before this tool existed; its `faceEnhance` option just
-has nothing to run.
+Upscaler works exactly as it did before this tool existed for every job that doesn't ask
+for face enhance; a job that does explicitly set `faceEnhance=true` fails with a clear
+"not installed" message instead of silently skipping the pass, the same as any other
+advanced option naming a tool that isn't there.
 
 Settings → Bundled tools re-scans on demand and shows exactly where each binary was found
 or where it is expected.
