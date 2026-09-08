@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using MediaSuite.App.ViewModels;
 using MediaSuite.Core.Features;
@@ -250,6 +251,54 @@ public sealed class ModulePageViewModelTests : IDisposable
         Assert.NotNull(fixture.Page.SelectedDriveFolder);
         Assert.Equal("42", fixture.Page.SelectedDriveFolder!.Id);
         Assert.False(fixture.Page.HasDriveFolderHint);
+    }
+
+    [Fact]
+    public void Toggling_upload_off_and_back_on_re_fetches_folders_instead_of_staying_stale()
+    {
+        // Regression test: the folder list used to only ever be fetched once per page --
+        // gated on DriveFolders.Count == 0 -- so a folder created, renamed, or removed in
+        // Drive itself after that first load would never show up here again for the rest
+        // of this page's lifetime, no matter how many times the checkbox was toggled.
+        using var fixture = CreateModulePage(FakeEngine.HandlesOnly("video.convert"), googleDriveEnabled: true);
+        fixture.Drive.FoldersToReturn = new[] { new GoogleDriveFolder { Id = "1", Name = "Clips" } };
+
+        fixture.Page.UploadToGoogleDrive = true;
+        Assert.Equal("Clips", Assert.Single(fixture.Page.DriveFolders).Name);
+
+        fixture.Drive.FoldersToReturn = new[]
+        {
+            new GoogleDriveFolder { Id = "1", Name = "Clips" },
+            new GoogleDriveFolder { Id = "2", Name = "Renders" },
+        };
+        fixture.Page.UploadToGoogleDrive = false;
+        fixture.Page.UploadToGoogleDrive = true;
+
+        Assert.Equal(2, fixture.Page.DriveFolders.Count);
+        Assert.Contains(fixture.Page.DriveFolders, folder => folder.Name == "Renders");
+    }
+
+    [Fact]
+    public void Toggling_upload_off_and_back_on_keeps_the_users_own_pick_over_the_last_used_folder()
+    {
+        // The refresh above must not stomp a selection the user already made in this
+        // session back to whatever folder was last actually used for a completed run --
+        // only fall back to that when the previously-picked folder no longer exists.
+        using var fixture = CreateModulePage(FakeEngine.HandlesOnly("video.convert"), googleDriveEnabled: true);
+        fixture.Settings.LastGoogleDriveFolderId = "1";
+        fixture.Drive.FoldersToReturn = new[]
+        {
+            new GoogleDriveFolder { Id = "1", Name = "Clips" },
+            new GoogleDriveFolder { Id = "2", Name = "Renders" },
+        };
+
+        fixture.Page.UploadToGoogleDrive = true;
+        fixture.Page.SelectedDriveFolder = fixture.Page.DriveFolders.Single(folder => folder.Id == "2");
+
+        fixture.Page.UploadToGoogleDrive = false;
+        fixture.Page.UploadToGoogleDrive = true;
+
+        Assert.Equal("2", fixture.Page.SelectedDriveFolder!.Id);
     }
 
     [Fact]

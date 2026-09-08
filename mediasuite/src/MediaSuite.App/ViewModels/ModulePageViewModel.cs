@@ -257,7 +257,13 @@ public class ModulePageViewModel : PageViewModel
         get => _uploadToGoogleDrive;
         set
         {
-            if (SetProperty(ref _uploadToGoogleDrive, value) && value && DriveFolders.Count == 0)
+            // Always re-fetch on the way to checked, not just the first time this page's
+            // list happens to be empty -- once populated, DriveFolders.Count == 0 is never
+            // true again for the rest of this page's lifetime, so a folder created,
+            // renamed, or removed from Drive itself (or from this same tool's own picker
+            // on another tab) after the first load would otherwise never show up here
+            // again short of restarting the app.
+            if (SetProperty(ref _uploadToGoogleDrive, value) && value)
             {
                 _ = RefreshDriveFoldersAsync();
             }
@@ -479,6 +485,13 @@ public class ModulePageViewModel : PageViewModel
 
     private async Task RefreshDriveFoldersAsync()
     {
+        // Now that this refreshes on every checked toggle (not just the first, empty-list
+        // one -- see UploadToGoogleDrive's setter), keep whatever the user already picked
+        // in this session where it still exists in the refreshed list, rather than
+        // stomping an in-progress selection back to whatever folder was last actually used
+        // for a completed run.
+        var previouslySelectedId = _selectedDriveFolder?.Id;
+
         try
         {
             DriveFolderHint = "Loading folders…";
@@ -490,8 +503,9 @@ public class ModulePageViewModel : PageViewModel
                 DriveFolders.Add(folder);
             }
 
+            var preferredId = previouslySelectedId ?? _settings.LastGoogleDriveFolderId;
             SelectedDriveFolder = DriveFolders.FirstOrDefault(
-                folder => string.Equals(folder.Id, _settings.LastGoogleDriveFolderId, StringComparison.Ordinal));
+                folder => string.Equals(folder.Id, preferredId, StringComparison.Ordinal));
 
             DriveFolderHint = DriveFolders.Count == 0 ? "No folders yet — Drive root will be used." : null;
         }

@@ -98,6 +98,25 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public void Setting_a_folder_path_to_whitespace_when_it_is_already_unset_does_not_persist_again()
+    {
+        // Regression test: the "only on a real change" check used to compare the raw
+        // incoming value against the stored one, but the stored value is always null or a
+        // real path, never whitespace -- so going from unset (null) to "", "   ", or back
+        // to null again always looked like a change from null and triggered a pointless
+        // extra Persist(), even though the normalized outcome was identical every time.
+        using var fixture = CreateSettings();
+        Assert.Null(fixture.AppSettings.DefaultOutputDirectory);
+
+        fixture.Settings.OutputDirectory = "   ";
+        Assert.Null(fixture.AppSettings.DefaultOutputDirectory);
+        Assert.Equal(0, fixture.Store.SaveCount);
+
+        fixture.Settings.OutputDirectory = string.Empty;
+        Assert.Equal(0, fixture.Store.SaveCount);
+    }
+
+    [Fact]
     public void MaxConcurrentJobs_is_clamped_and_notifies_the_live_queue()
     {
         using var fixture = CreateSettings();
