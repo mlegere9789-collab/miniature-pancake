@@ -17,6 +17,7 @@ import sys
 from typing import Any
 
 from . import database as db
+from . import scheduler as sch
 from .config import config
 from .database import EARNINGS_CSV_FIELDS, REVIEWS_CSV_FIELDS
 from .paths import DB_PATH, ENV_PATH, JOBS_PATH, MODULES
@@ -35,6 +36,23 @@ def _cmd_init() -> int:
     return 0
 
 
+def _scheduler_doctor_line() -> str:
+    """A one-line summary of the portable scheduler daemon's own heartbeat.
+
+    cron jobs don't need this -- a missed run just doesn't happen -- but
+    `scheduler run` (the only scheduling option on Windows) is a long-lived
+    process with nothing watching it. The dashboard already surfaces this
+    visually; `doctor` is the same check for anyone running headless, with
+    no dashboard open to notice a dead daemon.
+    """
+    heartbeat = sch.read_heartbeat()
+    if heartbeat is None:
+        return "never started (only relevant if you use `scheduler run`)"
+    if sch.heartbeat_is_stale(heartbeat):
+        return f"STALE — last heartbeat {heartbeat.get('beat_at', '?')}, likely dead"
+    return f"running (last heartbeat {heartbeat.get('beat_at', '?')})"
+
+
 def _cmd_doctor() -> int:
     print("Income Orchestrator — setup check\n")
     print(
@@ -46,6 +64,7 @@ def _cmd_doctor() -> int:
     print(
         f"  jobs.json:   {'found' if JOBS_PATH.exists() else 'using jobs.example.json defaults'}"
     )
+    print(f"  scheduler:   {_scheduler_doctor_line()}")
     print("\n  Credentials detected in .env:")
     tracked = [
         "ANTHROPIC_API_KEY",

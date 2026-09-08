@@ -253,19 +253,36 @@ def _write_heartbeat(poll_seconds: int) -> None:
 
 
 def read_heartbeat() -> dict[str, Any] | None:
-    """The portable daemon's last heartbeat, or None if it has never run.
+    """The portable daemon's last heartbeat, or None if it has never run
+    (or the file can't be trusted, e.g. a crash mid-write left it truncated
+    or otherwise malformed).
 
     cron reports its own reliability (a missed run just doesn't happen), but
     the portable daemon (`scheduler run` — the only option on Windows) is a
     long-lived process that can die silently with nothing else to notice.
-    The dashboard uses this to show whether it's actually alive.
+    The dashboard and `orchestrator doctor` both use this to show whether
+    it's actually alive.
+
+    Same discipline as `load_jobs`: malformed content is treated as "no
+    heartbeat" rather than raising into the caller. Unlike a malformed
+    `jobs.json`, this isn't loud about it on the console — every poll
+    rewrites this file cleanly, so a bad read here almost always just means
+    "never started" or "an in-progress write", not a standing problem
+    someone needs to go fix.
     """
     if not HEARTBEAT_FILE.exists():
         return None
     try:
-        return json.loads(HEARTBEAT_FILE.read_text(encoding="utf-8"))
+        data = json.loads(HEARTBEAT_FILE.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
+    if not isinstance(data, dict) or not isinstance(data.get("beat_at"), str):
+        return None
+    try:
+        datetime.fromisoformat(data["beat_at"])
+    except ValueError:
+        return None
+    return data
 
 
 def heartbeat_is_stale(

@@ -867,6 +867,26 @@ class TestSchedulerHeartbeat(unittest.TestCase):
         sch.HEARTBEAT_FILE.write_text("not json", encoding="utf-8")
         self.assertIsNone(sch.read_heartbeat())
 
+    def test_valid_json_but_not_an_object_returns_none(self):
+        sch.HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        sch.HEARTBEAT_FILE.write_text("[1, 2, 3]", encoding="utf-8")
+        self.assertIsNone(sch.read_heartbeat())
+
+    def test_object_missing_beat_at_returns_none(self):
+        sch.HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        sch.HEARTBEAT_FILE.write_text(
+            json.dumps({"pid": 1, "poll_seconds": 30}), encoding="utf-8"
+        )
+        self.assertIsNone(sch.read_heartbeat())
+
+    def test_beat_at_not_a_valid_timestamp_returns_none(self):
+        sch.HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        sch.HEARTBEAT_FILE.write_text(
+            json.dumps({"pid": 1, "poll_seconds": 30, "beat_at": "not-a-date"}),
+            encoding="utf-8",
+        )
+        self.assertIsNone(sch.read_heartbeat())
+
     def test_fresh_heartbeat_is_not_stale(self):
         sch._write_heartbeat(30)
         heartbeat = sch.read_heartbeat()
@@ -1004,6 +1024,7 @@ class TestCmdDoctor(unittest.TestCase):
                 patch.object(cli, "ENV_PATH", fake_env),
                 patch.object(cli, "DB_PATH", fake_db),
                 patch.object(cli, "JOBS_PATH", fake_jobs),
+                patch.object(cli.sch, "HEARTBEAT_FILE", Path(d) / "heartbeat.json"),
                 patch.object(cli.config, "has", return_value=False),
             ):
                 buf = io.StringIO()
@@ -1014,6 +1035,7 @@ class TestCmdDoctor(unittest.TestCase):
         self.assertIn("MISSING", out)
         self.assertIn("not created yet", out)
         self.assertIn("using jobs.example.json defaults", out)
+        self.assertIn("never started", out)
         self.assertIn("unset", out)
 
     def test_reports_found_when_present(self):
@@ -1028,6 +1050,7 @@ class TestCmdDoctor(unittest.TestCase):
                 patch.object(cli, "ENV_PATH", fake_env),
                 patch.object(cli, "DB_PATH", fake_db),
                 patch.object(cli, "JOBS_PATH", fake_jobs),
+                patch.object(cli.sch, "HEARTBEAT_FILE", Path(d) / "heartbeat.json"),
                 patch.object(cli.config, "has", return_value=True),
             ):
                 buf = io.StringIO()
@@ -1038,6 +1061,45 @@ class TestCmdDoctor(unittest.TestCase):
         self.assertIn("found", out)
         self.assertNotIn("MISSING", out)
         self.assertIn("set ", out)
+
+    def test_reports_a_live_heartbeat(self):
+        with tempfile.TemporaryDirectory() as d:
+            with (
+                patch.object(cli, "ENV_PATH", Path(d) / ".env"),
+                patch.object(cli, "DB_PATH", Path(d) / "orchestrator.db"),
+                patch.object(cli, "JOBS_PATH", Path(d) / "jobs.json"),
+                patch.object(cli.sch, "HEARTBEAT_FILE", Path(d) / "heartbeat.json"),
+                patch.object(cli.config, "has", return_value=False),
+            ):
+                sch._write_heartbeat(30)
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = cli.main(["doctor"])
+        self.assertEqual(code, 0)
+        self.assertIn("scheduler:   running", buf.getvalue())
+
+    def test_reports_a_stale_heartbeat(self):
+        with tempfile.TemporaryDirectory() as d:
+            heartbeat_path = Path(d) / "heartbeat.json"
+            old = datetime.now(timezone.utc) - timedelta(
+                seconds=sch.HEARTBEAT_STALE_SECONDS + 1
+            )
+            heartbeat_path.write_text(
+                json.dumps({"pid": 1, "poll_seconds": 30, "beat_at": old.isoformat()}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(cli, "ENV_PATH", Path(d) / ".env"),
+                patch.object(cli, "DB_PATH", Path(d) / "orchestrator.db"),
+                patch.object(cli, "JOBS_PATH", Path(d) / "jobs.json"),
+                patch.object(cli.sch, "HEARTBEAT_FILE", heartbeat_path),
+                patch.object(cli.config, "has", return_value=False),
+            ):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = cli.main(["doctor"])
+        self.assertEqual(code, 0)
+        self.assertIn("STALE", buf.getvalue())
 
 
 class TestCmdExportEarnings(TempDatabaseTestCase):

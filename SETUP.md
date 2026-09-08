@@ -152,8 +152,9 @@ or `weekly` (with `"at": "mon 09:00"`).
 ```bash
 python3 -m orchestrator doctor
 ```
-Shows whether `.env` exists, whether the database is created, and which
-credentials are set (values are never printed).
+Shows whether `.env` exists, whether the database is created, whether the
+portable scheduler daemon (if you're using `scheduler run` instead of cron)
+is actually alive, and which credentials are set (values are never printed).
 
 ---
 
