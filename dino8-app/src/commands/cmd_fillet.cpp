@@ -347,14 +347,52 @@ ON_NurbsSurface RuledSurface(const ON_Curve& a, const ON_Curve& b, int samples =
   return s;
 }
 
+// Bounding-box diagonal of a surface's own control net - a cheap, robust
+// stand-in for "how big is this surface" without evaluating the surface
+// itself (a plain CV bounding box, not a tight one, is enough to pick a
+// tolerance floor by).
+double SurfaceScale(const ON_NurbsSurface& s) {
+  ON_BoundingBox bb;
+  if (!s.GetBoundingBox(bb) || !bb.IsValid()) return 0.0;
+  return bb.Diagonal().Length();
+}
+
 // Core: constant or variable radius rolling-ball fillet between two
 // surfaces. `radius_at(t)` maps a spine fraction in [0,1] to a radius.
+// `tol` is normally ctx.Settings().absolute_tolerance floored at 1e-5 by
+// the caller - a document-wide setting that has no way to know THIS pair
+// of surfaces might be millimeter-scale or kilometer-scale relative to
+// whatever the user last set that document tolerance to. Every tolerance
+// floor below is additionally clamped against the surfaces' own scale
+// (`geo_tol`) so a mismatch between document tolerance and actual surface
+// size doesn't make an otherwise-valid fillet spuriously fail (floor too
+// tight for a huge pair of surfaces) or accept geometric noise as a real
+// spine (floor too loose for a tiny pair).
 FilletBuild BuildFillet(const ON_NurbsSurface& a, const ON_NurbsSurface& b, const std::function<double(double)>& radius_at, double tol) {
   FilletBuild out;
+  const double scale = std::max(SurfaceScale(a), SurfaceScale(b));
+  // 1e-6 of the surfaces' own scale - the same relative floor used for
+  // Manifold's tolerance in dino8-kernel/src/boolean.cpp, kept consistent
+  // here since both ultimately bound "smallest geometric detail this
+  // pipeline can resolve".
+  const double geo_tol = scale > 0 ? scale * 1e-6 : 0.0;
+  const double eff_tol = std::max(tol, geo_tol);
   IntersectOptions opt;
-  opt.tolerance = std::max(tol, 1e-6);
-  opt.mesh_tolerance = std::max(tol * 4, 1e-4);
+  opt.tolerance = std::max(eff_tol, 1e-6);
+  opt.mesh_tolerance = std::max(eff_tol * 4, geo_tol > 0 ? geo_tol * 4 : 1e-4);
   const double r0 = radius_at(0.0);
+  if (!(r0 > 0)) { out.error = "radius must be positive"; return out; }
+  // A radius that isn't even resolvable at this pipeline's own geometric
+  // precision (e.g. asking for a fillet far smaller than the surfaces'
+  // own scale times float/tolerance noise) can't produce a meaningful
+  // spine - fail clearly here rather than let a near-zero offset wobble
+  // through OffsetBy/IntersectSurfaces and loft into a degenerate sliver
+  // surface that LoftRows or the caller's trim step would otherwise have
+  // to detect after the fact.
+  if (scale > 0 && r0 < eff_tol) {
+    out.error = "radius " + FormatNumber(r0) + " is too small to resolve at this surface's own scale (tolerance " + FormatNumber(eff_tol) + ")";
+    return out;
+  }
   // Offset both surfaces towards each other by the representative radius,
   // then intersect the offsets to find the spine.
   const double sa = OffsetSign(a, b.PointAt(b.Domain(0).Mid(), b.Domain(1).Mid()));
@@ -512,7 +550,19 @@ std::optional<ON_Brep> RoundFaceCorner(const ON_Brep& b, int fi, Point3d vertex,
   if (!outer) return std::nullopt;
   ON_SimpleArray<ON_Curve*> boundary;
   int corner_at = -1;  // index whose END sits at `vertex`
-  const double near_tol = std::max(tol * 200, 1e-3);
+  // A fixed 1e-3 "near enough to be this corner" floor is itself bigger
+  // than an entire small face (a millimeter-scale detail, say) and
+  // smaller than the float/construction noise on a very large one - either
+  // way it stops being "near the corner" in any geometrically meaningful
+  // sense. Scale it off the face's own size instead, clamped so it never
+  // grows large enough to span more than a fraction of the face (which
+  // would risk matching the wrong corner on a small face) nor shrinks
+  // below where float noise alone could defeat it.
+  ON_BoundingBox face_bbox;
+  const double face_scale = (f.SurfaceOf() && f.SurfaceOf()->GetBoundingBox(face_bbox) && face_bbox.IsValid()) ? face_bbox.Diagonal().Length() : 0.0;
+  const double near_tol = face_scale > 0
+      ? std::clamp(std::max(tol * 200, face_scale * 1e-4), face_scale * 1e-6, face_scale * 0.4)
+      : std::max(tol * 200, 1e-3);
   for (int k = 0; k < outer->TrimCount(); ++k) {
     const ON_BrepTrim* trim = outer->Trim(k);
     if (!trim) continue;
