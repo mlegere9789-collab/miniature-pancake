@@ -253,6 +253,10 @@ class Application {
   // Older config files only know "light_theme" (bool); Settings::Load
   // migrates that into theme_mode when "theme_mode" itself is absent.
   int theme_mode = 0;
+  // UI language code (Options > General, or the SetLanguage command), e.g.
+  // "en" or "es"; persisted. i18n::SetLanguage is the source of truth at
+  // runtime - this field mirrors it for Settings.cpp and Options.
+  std::string language = "en";
   std::vector<std::string> toolbar_commands;  // customizable Standard toolbar (empty = default set)
   // Toolbar appearance (Options > Toolbar), persisted in Settings.
   int toolbar_icon_size = 24;        // 24, 32 or 40 px

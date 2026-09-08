@@ -11,6 +11,7 @@
 
 #include "commands/Command.h"
 #include "doc/SubObjectEdit.h"
+#include "i18n/I18n.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "io/File3dm.h"
@@ -92,6 +93,13 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
     error = "Could not load the command catalog: " + catalog_error;
     // Keep going: the app still works, just without the reference list.
   }
+  // Same search order as commands.json: the first "data/i18n" folder found
+  // next to the executable (or the build/source tree) supplies every
+  // installed language's string table.
+  i18n::Init({
+      exe_dir + "/data/i18n", exe_dir + "/../Resources/data/i18n", exe_dir + "/../share/dino8/data/i18n",
+      exe_dir + "/../../data/i18n", exe_dir + "/../../../dino8-app/data/i18n", "data/i18n",
+  });
   // Same search order as commands.json, minus the entries with no "/data" suffix.
   drafting::HatchLibrary::Instance().Load({
       exe_dir + "/data", exe_dir + "/../Resources/data", exe_dir + "/../share/dino8/data",
@@ -111,6 +119,7 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
   }
   SetViewportLayout(4);
   LoadSettings(*this, ui_scale);
+  if (!i18n::SetLanguage(language)) language = i18n::CurrentLanguage();  // unknown/removed language: fall back to English
   if (has_saved_layout) layout_built_ = true;
   plugins::Manager::Get().ScanDefaultFolders(*this);
   engine_->Print("Dino 8 " DINO8_VERSION " - free NURBS / SubD / mesh modeler, by LegeLabs");
@@ -1723,14 +1732,16 @@ void Application::DrawStatusBar() {
       ImGui::PopStyleColor(3);
       ImGui::SameLine(0, 4);
     };
-    ImGui::TextDisabled("Osnap");
+    ImGui::TextDisabled("%s", i18n::Tr("statusbar.osnap_group").c_str());
     ImGui::SameLine(0, 8);
-    osnap("End", snaps_.end); osnap("Near", snaps_.near_); osnap("Point", snaps_.point); osnap("Mid", snaps_.mid);
-    osnap("Cen", snaps_.cen); osnap("Int", snaps_.int_); osnap("Perp", snaps_.perp); osnap("Tan", snaps_.tan);
-    osnap("Quad", snaps_.quad); osnap("Vertex", snaps_.vertex);
-    osnap("Knot", snaps_.knot); osnap("Project", snaps_.project);
+    osnap(i18n::Tr("statusbar.osnap.end").c_str(), snaps_.end); osnap(i18n::Tr("statusbar.osnap.near").c_str(), snaps_.near_);
+    osnap(i18n::Tr("statusbar.osnap.point").c_str(), snaps_.point); osnap(i18n::Tr("statusbar.osnap.mid").c_str(), snaps_.mid);
+    osnap(i18n::Tr("statusbar.osnap.cen").c_str(), snaps_.cen); osnap(i18n::Tr("statusbar.osnap.int").c_str(), snaps_.int_);
+    osnap(i18n::Tr("statusbar.osnap.perp").c_str(), snaps_.perp); osnap(i18n::Tr("statusbar.osnap.tan").c_str(), snaps_.tan);
+    osnap(i18n::Tr("statusbar.osnap.quad").c_str(), snaps_.quad); osnap(i18n::Tr("statusbar.osnap.vertex").c_str(), snaps_.vertex);
+    osnap(i18n::Tr("statusbar.osnap.knot").c_str(), snaps_.knot); osnap(i18n::Tr("statusbar.osnap.project").c_str(), snaps_.project);
     ImGui::SameLine(0, 12);
-    osnap("Disable", snaps_.disable_all);
+    osnap(i18n::Tr("statusbar.osnap.disable").c_str(), snaps_.disable_all);
     ImGui::NewLine();
   }
   // Cursor coordinates (live), units, current layer, snap toggles, hint, bell.
@@ -1745,7 +1756,7 @@ void Application::DrawStatusBar() {
     ImGui::SameLine(0, w - ImGui::CalcTextSize(coords.c_str()).x + 12);
   }
   ImGui::TextDisabled("%s", doc_.Settings().unit_system.c_str());
-  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Document units (Document Properties > Units)");
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", i18n::Tr("statusbar.tip.units").c_str());
   ImGui::SameLine(0, 14);
   // Current layer: swatch + combo to change it.
   {
@@ -1767,7 +1778,7 @@ void Application::DrawStatusBar() {
       ImGui::EndCombo();
     }
     ImGui::PopStyleVar();
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Current layer: new objects go here. Click to change.");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", i18n::Tr("statusbar.tip.current_layer").c_str());
   }
   ImGui::SameLine(0, 14);
   // Snap toggles.
@@ -1780,17 +1791,17 @@ void Application::DrawStatusBar() {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
     ImGui::SameLine(0, 4);
   };
-  toggle("Grid Snap", snaps_.grid_snap, "Snap picked points to the grid (F9)");
-  toggle("Ortho", snaps_.ortho, "Constrain to 90 degree angles (F8)");
-  toggle("Planar", snaps_.planar, "Keep picks at the elevation of the previous point");
-  toggle("Osnap", panels_.object_snaps, "Show the object snap toolbar");
-  toggle("SmartTrack", snaps_.smart_track, "SmartTrack tracking lines");
-  toggle("Gumball", gumball_enabled, "Drag selected objects with the on-screen gumball");
+  toggle(i18n::Tr("statusbar.toggle.grid_snap").c_str(), snaps_.grid_snap, i18n::Tr("statusbar.tip.grid_snap").c_str());
+  toggle(i18n::Tr("statusbar.toggle.ortho").c_str(), snaps_.ortho, i18n::Tr("statusbar.tip.ortho").c_str());
+  toggle(i18n::Tr("statusbar.toggle.planar").c_str(), snaps_.planar, i18n::Tr("statusbar.tip.planar").c_str());
+  toggle(i18n::Tr("statusbar.toggle.osnap").c_str(), panels_.object_snaps, i18n::Tr("statusbar.tip.osnap").c_str());
+  toggle(i18n::Tr("statusbar.toggle.smarttrack").c_str(), snaps_.smart_track, i18n::Tr("statusbar.tip.smarttrack").c_str());
+  toggle(i18n::Tr("statusbar.toggle.gumball").c_str(), gumball_enabled, i18n::Tr("statusbar.tip.gumball").c_str());
   ImGui::SameLine(0, 14);
   ImGui::TextDisabled("%zu objects, %zu selected", doc_.ObjectCount(), doc_.SelectedCount());
   if (doc_.Modified()) {
     ImGui::SameLine(0, 8);
-    ImGui::TextDisabled("(modified)");
+    ImGui::TextDisabled("%s", i18n::Tr("statusbar.modified").c_str());
   }
   ImGui::SameLine(0, 14);
   // Right side: active-command hint and the notifications bell.

@@ -105,6 +105,7 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
   } else {
     app.theme_mode = Bool(root["light_theme"], false) ? 1 : 0;
   }
+  if (root["language"].IsString()) app.language = root["language"].AsString();
   app.gumball_enabled = Bool(root["gumball"], app.gumball_enabled);
   const json::Value& tb = root["toolbar"];
   if (tb.IsArray() && tb.Size() > 0) { app.toolbar_commands.clear(); for (size_t i = 0; i < tb.Size(); ++i) app.toolbar_commands.push_back(tb[i].AsString()); }
@@ -134,6 +135,7 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
   // "light_theme" is a legacy key, kept so older Dino 8 builds reading this
   // file still pick Light correctly; current builds read "theme_mode".
   out << "  \"light_theme\": " << (a.theme_mode == 1 ? "true" : "false") << ",\n";
+  out << "  \"language\": \"" << Escape(a.language) << "\",\n";
   out << "  \"gumball\": " << (a.gumball_enabled ? "true" : "false") << ",\n";
   out << "  \"toolbar\": [";
   for (size_t i = 0; i < a.toolbar_commands.size(); ++i) out << (i ? ", " : "") << "\"" << Escape(a.toolbar_commands[i]) << "\"";

@@ -1520,4 +1520,33 @@ fzcheck "^history: Command: Box$" "plain prefix 'Box' still autocompletes to its
 fzcheck "^history: Command: ZoomNonManifold$" "fuzzy subsequence 'zmanif' (not a prefix/substring of any command) autocompleted to the unique match ZoomNonManifold"
 fzcheck "gl_error=0" "fuzzy-autocomplete script ran without OpenGL errors"
 
+# i18n: SetLanguage actually swaps the active string table, a key missing
+# from a language's table (panel.imgui_demo is deliberately absent from
+# es.json - see cmd_state.cpp's I18nSelfTest) falls back to English instead
+# of a blank string or the raw key, an unknown key falls back to itself
+# rather than crashing, and an unrecognised language name fails with a
+# clear diagnostic instead of silently doing nothing.
+cat > "$TMP/i18n_script.txt" <<'EOS'
+SetLanguage es
+I18nSelfTest
+SetLanguage English
+I18nSelfTest
+SetLanguage nope
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  I18N="$("$BIN" --smoke 60 --script "$TMP/i18n_script.txt" 2>&1)" || { echo "$I18N"; echo "FAIL: i18n script exited non-zero"; exit 1; }
+else
+  I18N="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/i18n_script.txt" 2>&1)" || { echo "$I18N"; echo "FAIL: i18n script exited non-zero"; exit 1; }
+fi
+i18ncheck() { if echo "$I18N" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+i18ncheck "SetLanguage: es" "SetLanguage switched to Spanish"
+i18ncheck "I18nSelfTest: active=es" "the active language is now es"
+i18ncheck "I18nSelfTest: menu\.file=Archivo" "a translated string (menu.file) reads Archivo in Spanish, proving the switch changes displayed text"
+i18ncheck "I18nSelfTest: fallback(panel\.imgui_demo)=ImGui Demo (developer)" "a key missing from es.json falls back to the English text, not a blank string or the raw key"
+i18ncheck "I18nSelfTest: unknown_key=this\.key\.does\.not\.exist\.anywhere" "a key present in no language table at all falls back to the key itself rather than crashing or blanking"
+i18ncheck "SetLanguage: en" "SetLanguage switched back to English"
+i18ncheck "I18nSelfTest: active=en" "the active language is en again"
+i18ncheck "I18nSelfTest: menu\.file=File\$" "the same key reads back in plain English once switched back"
+i18ncheck "SetLanguage: unknown language 'nope'" "an unrecognised language name fails with a clear diagnostic instead of doing nothing"
+
 exit $fail

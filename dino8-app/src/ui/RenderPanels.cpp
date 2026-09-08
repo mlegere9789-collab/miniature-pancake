@@ -86,7 +86,7 @@ void AssignToSelection(Document& doc, const std::string& name) {
 
 void DrawMaterialsPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Materials", &app.Panels().materials)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.materials", "Materials").c_str(), &app.Panels().materials)) { ImGui::End(); return; }
   static std::string selected;
   static char new_name[64] = "";
   ImGui::InputTextWithHint("##nm", "new material name", new_name, sizeof(new_name));
@@ -218,7 +218,7 @@ void DrawMaterialsPanel(Application& app) {
 
 void DrawLightsPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Lights", &app.Panels().lights)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.lights", "Lights").c_str(), &app.Panels().lights)) { ImGui::End(); return; }
   RenderSettings& r = doc.Render();
   if (ImGui::CollapsingHeader("Sun", ImGuiTreeNodeFlags_DefaultOpen)) {
     bool t = false;
@@ -289,7 +289,7 @@ void DrawLightsPanel(Application& app) {
 
 void DrawRenderingPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Rendering", &app.Panels().rendering)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.rendering", "Rendering").c_str(), &app.Panels().rendering)) { ImGui::End(); return; }
   RenderSettings& r = doc.Render();
   ImGui::Text("Current renderer: Dino 8 built-in (OpenGL, Blinn-Phong)");
   ImGui::Separator();
@@ -335,7 +335,7 @@ void DrawRenderingPanel(Application& app) {
 
 void DrawEnvironmentsPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Environments", &app.Panels().environments)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.environments", "Environments").c_str(), &app.Panels().environments)) { ImGui::End(); return; }
   RenderSettings& r = doc.Render();
   bool t = false;
   if (ImGui::CollapsingHeader("Background", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -378,7 +378,7 @@ void DrawEnvironmentsPanel(Application& app) {
 
 void DrawTexturesPanel(Application& app) {
   Document& doc = app.Doc();
-  if (!ImGui::Begin("Textures", &app.Panels().textures)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.textures", "Textures").c_str(), &app.Panels().textures)) { ImGui::End(); return; }
   ImGui::TextWrapped("Textures are image files (BMP, PPM/PGM, PNG) referenced by materials. Assign one in the Materials panel or with the Picture command.");
   if (ImGui::SmallButton("Reload all")) app.Renderer().RefreshTextures();
   ImGui::Separator();
@@ -409,7 +409,7 @@ void DrawTexturesPanel(Application& app) {
 void DrawRenderWindow(Application& app) {
   RenderImage& img = app.LastRender();
   ImGui::SetNextWindowSize(ImVec2(760, 540), ImGuiCond_FirstUseEver);
-  if (!ImGui::Begin("Render Window", &app.Panels().render_window)) { ImGui::End(); return; }
+  if (!ImGui::Begin(PanelTitle("panel.render_window", "RenderWindow").c_str(), &app.Panels().render_window)) { ImGui::End(); return; }
   if (!img.Valid()) {
     ImGui::TextDisabled("Nothing rendered yet.");
     if (ImGui::Button("Render")) app.Engine().Execute("Render");
