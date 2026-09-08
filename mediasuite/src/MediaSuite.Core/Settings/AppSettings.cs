@@ -210,6 +210,4 @@ public sealed class AppSettings
 
     /// <summary>Upper bound on the concurrency slider — twice the core count, never below 4.</summary>
     public static int MaxConcurrencyLimit => Math.Max(4, Environment.ProcessorCount * 2);
-
-    public AppSettings Clone() => (AppSettings)MemberwiseClone();
 }
