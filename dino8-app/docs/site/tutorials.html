@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tutorials</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="index.html"><span class="brand-mark">🦖</span> Dino 8 Docs</a>
+    <nav class="toplinks">
+      <a href="index.html">Home</a>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="commands.html">Command Reference</a>
+      <a href="tutorials.html" class="active">Tutorials</a>
+      <a href="coming-from-rhino.html">Coming from Rhino</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <h1>Tutorials</h1>
+  <p class="lede">Ten task-based walkthroughs, each with the exact command sequence to type.
+  Every sequence below was run through the real <code>Dino8</code> binary headlessly with
+  <code>--smoke N --script &lt;file&gt;</code> and <code>@expect_objects</code>/
+  <code>@expect_selected</code> checks &mdash; the same mechanism <code>tests/smoke.sh</code>
+  uses for the project's own regression suite &mdash; so what you see here is what actually
+  happens, not an aspirational example. The scripts themselves live in
+  <code>dino8-app/docs/tutorial_scripts/</code>; run
+  <code>docs/tutorial_scripts/run_all.sh</code> to re-verify them against a freshly built
+  <code>Dino8</code> at any time.</p>
+
+  <ul class="toc">
+    <li><a href="#t1">1. First shapes and navigation</a></li>
+    <li><a href="#t2">2. Model a simple bracket</a></li>
+    <li><a href="#t3">3. Set up a render</a></li>
+    <li><a href="#t4">4. Organize a model with layers</a></li>
+    <li><a href="#t5">5. Parametric array with Dino Flow</a></li>
+    <li><a href="#t6">6. Block out a room</a></li>
+    <li><a href="#t7">7. Sketch and revolve a vase</a></li>
+    <li><a href="#t8">8. SubD basics</a></li>
+    <li><a href="#t9">9. Save, export, and reopen</a></li>
+    <li><a href="#t10">10. Draft, fillet, and extrude a profile</a></li>
+  </ul>
+
+  <h2 id="t1">1. First shapes and navigation<span class="verified">verified: 01_first_shapes.txt</span></h2>
+  <p>Create a box and a sphere, move one, copy it, rotate the copy, and undo your way back.</p>
+  <div class="step"><div class="num">1</div><div class="body"><strong><code>Box</code></strong><p>Click two corners in the Top view, then type <code>5</code> for the height. This is object 1.</p></div></div>
+  <div class="step"><div class="num">2</div><div class="body"><strong><code>Sphere</code></strong><p>Click a center point off to the side, then a radius. This is object 2.</p></div></div>
+  <div class="step"><div class="num">3</div><div class="body"><strong>Select the box, then <code>Move</code></strong><p>Click the box (or type <code>SelID 1</code>), run <code>Move</code>, click a base point and a target point.</p></div></div>
+  <div class="step"><div class="num">4</div><div class="body"><strong>Select the box again, then <code>Copy</code></strong><p>Run <code>Copy</code>, click a base point, then a target point, then press Enter to stop copying (Copy will keep placing more copies if you keep clicking).</p></div></div>
+  <div class="step"><div class="num">5</div><div class="body"><strong>Select only the new copy, then <code>Rotate</code></strong><p>Click a pivot point, then type an angle in degrees (or click a second point to set the angle visually).</p></div></div>
+  <div class="step"><div class="num">6</div><div class="body"><strong><code>Undo</code> twice</strong><p>The rotate and the copy both disappear, in reverse order, leaving the box and sphere as they were after the move.</p></div></div>
+  <pre><code>Box                       (click, click, type 5)
+Sphere                    (click, click)
+SelID 1
+Move                      (click base, click target)
+SelID 1
+Copy                      (click base, click target, Enter)
+SelID 3
+Rotate                    (click pivot, type 45)
+Undo
+Undo</code></pre>
+  <div class="callout"><h4>Selecting by id adds to the selection</h4><p><code>SelID</code>
+  (like most select commands) <em>adds</em> to whatever is already selected rather than
+  replacing it, exactly like Shift-clicking. Run <code>SelNone</code> first if you want only
+  the object you are about to pick by id &mdash; otherwise a command like <code>Copy</code> or
+  <code>Rotate</code> will act on everything still selected from an earlier step too.</p></div>
+
+  <h2 id="t2">2. Model a simple bracket<span class="verified">verified: 02_bracket.txt</span></h2>
+  <p>A flat plate, a mounting hole cut clean through it with a boolean, and one rounded corner
+  &mdash; the basic pattern behind most mechanical parts.</p>
+  <div class="step"><div class="num">1</div><div class="body"><strong><code>Box</code></strong><p>A 40 &times; 20 &times; 5 plate: click <code>0,0,0</code>, then <code>40,20,0</code>, then type <code>5</code> for the thickness.</p></div></div>
+  <div class="step"><div class="num">2</div><div class="body"><strong><code>Cylinder</code></strong><p>A hole tool taller than the plate and centered where you want the hole, e.g. base point <code>10,10,-1</code>, radius <code>2</code>, height <code>7</code> (so it pokes through both faces).</p></div></div>
+  <div class="step"><div class="num">3</div><div class="body"><strong>Select the plate, run <code>BooleanDifference</code>, then select the cylinder</strong><p>Click the plate first (or <code>SelID 1</code>), start <code>BooleanDifference</code>, then click the cylinder and press Enter. The cylinder disappears, leaving a clean hole through the plate.</p></div></div>
+  <div class="step"><div class="num">4</div><div class="body"><strong><code>FilletEdge</code></strong><p>Type <code>Radius=3</code>, then click a vertical corner edge of the plate (click the middle of the edge, not a face), then Enter.</p></div></div>
+  <p>Run <code>Volume</code> on the result any time to confirm it is still a closed, valid
+  solid.</p>
+  <pre><code>Box 0,0,0 40,20,0 5
+Cylinder 10,10,-1 2 7
+SelID 1
+BooleanDifference
+SelID 2
+Enter
+FilletEdge
+Radius=3
+                          (click the corner edge)
+Enter</code></pre>
+
+  <h2 id="t3">3. Set up a render<span class="verified">verified: 03_render_setup.txt</span></h2>
+  <p>Assign materials to a couple of objects, add a light and a ground plane, then render a
+  still image to a file.</p>
+  <div class="step"><div class="num">1</div><div class="body"><strong>Build something to render</strong><p>A <code>Box</code> and a <code>Sphere</code> is enough.</p></div></div>
+  <div class="step"><div class="num">2</div><div class="body"><strong>Select the box, run <code>RenderAssignMaterialToObjects</code></strong><p>e.g. <code>Plastic Color=220,60,50 Gloss=0.7</code>. Repeat on the sphere with a different material, e.g. <code>Glass Color=200,225,240 Transparency=0.6 Reflectivity=0.3</code>.</p></div></div>
+  <div class="step"><div class="num">3</div><div class="body"><strong><code>PointLight</code></strong><p>Click (or type) a position above and to the side of the scene, e.g. <code>10,-30,40 Intensity=1.5</code>.</p></div></div>
+  <div class="step"><div class="num">4</div><div class="body"><strong><code>GroundPlane On</code></strong><p>Optionally set a <code>Color=</code> for it.</p></div></div>
+  <div class="step"><div class="num">5</div><div class="body"><strong><code>Render</code></strong><p>Type the pixel width and height, e.g. <code>Render 1280 720</code>.</p></div></div>
+  <div class="step"><div class="num">6</div><div class="body"><strong><code>SaveRenderWindowAs</code></strong><p>Type a path ending in <code>.bmp</code> or <code>.ppm</code> to write the rendered image to disk.</p></div></div>
+  <pre><code>Box 0,0,0 20,20,0 10
+Sphere 35,10,8 8
+SelID 1
+RenderAssignMaterialToObjects Plastic Color=220,60,50 Gloss=0.7
+SelID 2
+RenderAssignMaterialToObjects Glass Color=200,225,240 Transparency=0.6 Reflectivity=0.3 Gloss=0.9
+PointLight 10,-30,40 Intensity=1.5
+GroundPlane On Color=150,158,168
+ZoomExtents
+Render 1280 720
+SaveRenderWindowAs myrender.bmp</code></pre>
+  <div class="callout warn"><h4>Honest limitation</h4><p>This is a CPU-only path tracer with no
+  GPU acceleration or denoiser &mdash; expect it to be slower than Rhino's Cycles-based
+  Raytraced mode at the same resolution/quality. See <a href="coming-from-rhino.html">Coming
+  from Rhino</a>.</p></div>
+
+  <h2 id="t4">4. Organize a model with layers<span class="verified">verified: 04_layers.txt</span></h2>
+  <p>Create named layers, put new geometry on the current layer automatically, move existing
+  objects between layers, and toggle visibility/locking.</p>
+  <pre><code>NewLayer Structure
+NewLayer Fixtures
+SetLayer Structure
+Box 0,0,0 20,20,0 10          (goes on Structure - it's now current)
+SetLayer Fixtures
+Sphere 30,10,5 5               (goes on Fixtures)
+SelID 1
+ChangeLayer Fixtures           (move the box onto Fixtures too)
+SelAll
+LayerOff                       (turns off every layer your selection is on)
+AllLayersOn                    (brings everything back)
+SelAll
+LayerLock                      (locks the layers of the selected objects)
+LayerUnlock                    (unlocks every layer)</code></pre>
+  <p>The Layers panel on the right shows the same state graphically: click the eye icon to
+  toggle visibility, the lock icon to toggle locking, and double-click a layer to make it
+  current.</p>
+
+  <h2 id="t5">5. Parametric array with Dino Flow<span class="verified">verified: 05_flow_array.txt</span></h2>
+  <p>Dino Flow is Dino 8's node-based visual scripting editor (its Grasshopper-class tool). This
+  walkthrough builds a tiny graph that arrays a box along a line, driven by a numeric slider, and
+  bakes the result into the document as real objects.</p>
+  <div class="step"><div class="num">1</div><div class="body"><strong>Type <code>Grasshopper</code></strong><p>Opens the Dino Flow node editor panel.</p></div></div>
+  <div class="step"><div class="num">2</div><div class="body"><strong>Add a <em>Number Slider</em> node</strong><p>Params &gt; Input &gt; Number Slider. Set it to integer mode, range 1&ndash;12, value 6 &mdash; this will drive how many copies the array makes.</p></div></div>
+  <div class="step"><div class="num">3</div><div class="body"><strong>Add a <em>Box</em> node</strong><p>Surface &gt; Primitive &gt; Box. Leave its Base at the origin and set X/Y/Z to <code>4</code> each &mdash; a 4-unit cube.</p></div></div>
+  <div class="step"><div class="num">4</div><div class="body"><strong>Add a <em>Linear Array</em> node</strong><p>Transform &gt; Array &gt; Linear Array. Wire the Box's output into its <em>Geometry</em> input, and the slider's output into its <em>Count</em> input. Leave Direction at <code>(1,0,0)</code> and Distance at <code>6</code>.</p></div></div>
+  <div class="step"><div class="num">5</div><div class="body"><strong>Add a <em>Bake</em> node</strong><p>Output &gt; Document &gt; Bake. Wire the Linear Array's output into it, set Layer to <code>Default</code> and Name to <code>FlowArray</code>.</p></div></div>
+  <div class="step"><div class="num">6</div><div class="body"><strong>Drag the slider (or click Bake)</strong><p>Watch the count of boxes in the viewport change live as you move the slider, then bake to add the six real box objects to the document.</p></div></div>
+  <p>To run a saved graph like this one from the command line instead of building it by hand
+  &mdash; useful for batch generation &mdash; use <code>GrasshopperPlayer</code>:</p>
+  <pre><code>Grasshopper
+GrasshopperPlayer path/to/graph.dflow Bake=Yes</code></pre>
+  <div class="callout warn"><h4>Honest limitation</h4><p>Dino Flow does not yet have
+  Grasshopper's data-tree semantics (lists/graft/flatten) or a solver/optimizer node family, and
+  there is no third-party node marketplace. See <a href="coming-from-rhino.html">Coming from
+  Rhino</a>.</p></div>
+
+  <h2 id="t6">6. Block out a room<span class="verified">verified: 06_arch_room.txt</span></h2>
+  <p>Dino 8's architecture commands build parametric walls with real cut openings for doors and
+  windows, plus floor slabs and roofs.</p>
+  <div class="step"><div class="num">1</div><div class="body"><strong><code>Wall</code></strong><p><code>Wall 0,0,0 5,0,0 2.4 0.2</code> &mdash; start point, end point, height 2.4, thickness 0.2 (a 5-unit wall, 2.4 tall).</p></div></div>
+  <div class="step"><div class="num">2</div><div class="body"><strong>Select the wall, run <code>Door</code></strong><p><code>Door 2.5,0,0 0.9 2.1</code> &mdash; a door centered at x=2.5, 0.9 wide, 2.1 tall, cut directly into the wall's mesh.</p></div></div>
+  <div class="step"><div class="num">3</div><div class="body"><strong>Select the wall again, run <code>Window</code></strong><p><code>Window 4,0,0 1.2 1.2 0.9</code> &mdash; center, width, height, sill height above the floor.</p></div></div>
+  <div class="step"><div class="num">4</div><div class="body"><strong><code>ArchSlab</code></strong><p><code>ArchSlab 0,-3,0 5,0,0 0.2</code> &mdash; two corners of a footprint and a thickness, for a floor slab.</p></div></div>
+  <p>Every edit to a wall (adding a door, then a window) rebuilds its mesh and gets a new object
+  id &mdash; reselect with <code>SelLast</code> right after creating or editing it rather than
+  remembering a specific id.</p>
+  <pre><code>Wall 0,0,0 5,0,0 2.4 0.2
+SelLast
+Door 2.5,0,0 0.9 2.1
+SelLast
+Window 4,0,0 1.2 1.2 0.9
+ArchSlab 0,-3,0 5,0,0 0.2</code></pre>
+  <p>Also available: <code>Roof</code> (gable/hip roofs over a footprint) and <code>Stair</code>
+  (a run of risers between two points).</p>
+
+  <h2 id="t7">7. Sketch and revolve a vase<span class="verified">verified: 07_revolve_vase.txt</span></h2>
+  <p>Draw half of a profile curve in the vertical plane, then spin it 360&deg; around a vertical
+  axis to build a surface of revolution.</p>
+  <div class="step"><div class="num">1</div><div class="body"><strong><code>InterpCrv</code></strong><p>Click several points up one side of where you want the vase's silhouette (e.g. a wide base narrowing then flaring at the lip), then press Enter to finish the curve. It passes exactly through each point.</p></div></div>
+  <div class="step"><div class="num">2</div><div class="body"><strong>Select the curve, run <code>Revolve</code></strong><p>Click the start of the revolve axis, then the end &mdash; a vertical line running through the curve's base, e.g. from <code>0,0,0</code> to <code>0,0,20</code>.</p></div></div>
+  <p>The profile curve stays in the document alongside the new revolved surface, so you can
+  tweak its control points (<kbd>F10</kbd>) and re-run <code>Revolve</code> to iterate.</p>
+  <pre><code>InterpCrv 0,0,0 3,0,4 2,0,8 4,0,12 0,0,14
+Enter
+SelLast
+Revolve
+                          (click 0,0,0, then 0,0,20 for the axis)</code></pre>
+  <div class="callout"><h4>Why the y is always 0</h4><p>Typed coordinates are resolved against
+  the <em>active viewport's</em> construction plane, not fixed world axes. Working in the Top
+  view keeps that plane identical to the world XY plane, so typing <code>x,0,z</code> places
+  points directly in the vertical world XZ plane &mdash; exactly like sketching in a Front view,
+  without depending on Front's own axis mapping. <code>InterpCrv</code> also needs an explicit
+  <code>Enter</code> once you are done clicking/typing points, the same as any other
+  multi-point curve command.</p></div>
+
+  <h2 id="t8">8. SubD basics<span class="verified">verified: 08_subd_basics.txt</span></h2>
+  <p>SubD (subdivision surface) modeling gives you a low-poly control cage that displays as a
+  smooth surface. This walkthrough creases an edge (so it displays sharp instead of smooth),
+  extrudes a face, and converts the result to NURBS.</p>
+  <div class="step"><div class="num">1</div><div class="body"><strong><code>SubDBox</code></strong><p>Same syntax as <code>Box</code> &mdash; two corners and a height.</p></div></div>
+  <div class="step"><div class="num">2</div><div class="body"><strong>Select the SubD, run <code>Crease</code></strong><p>Click the midpoints of one or more control-cage edges to mark them sharp, then Enter.</p></div></div>
+  <div class="step"><div class="num">3</div><div class="body"><strong><code>ExtrudeSubD</code></strong><p>Click the centroid of a face to extrude it, then type a distance.</p></div></div>
+  <div class="step"><div class="num">4</div><div class="body"><strong>Select the SubD, run <code>ToNURBS</code></strong><p>Adds a separate B-rep copy of the SubD to the document &mdash; the original SubD is untouched, so you keep editing the SubD cage and re-convert whenever you like.</p></div></div>
+  <pre><code>SubDBox 0,0,0 10,10,0 10
+SelLast
+Crease
+                          (click one or more edge midpoints)
+Enter
+SelLast
+ExtrudeSubD
+                          (click a face centroid)
+3
+SelLast
+ToNURBS</code></pre>
+  <div class="callout warn"><h4>Honest limitation</h4><p>OpenNURBS' own SubD-to-NURBS-patch
+  conversion is Rhino-proprietary and not part of the public library Dino 8 builds against, so
+  <code>ToNURBS</code> on a SubD approximates instead: a dense subdivided quad mesh converted to
+  a facetted B-rep, not smooth NURBS patches. Converting an actual mesh object with
+  <code>ToNURBS</code> is exact.</p></div>
+  <p>Other SubD tools worth knowing: <code>Inset</code>, <code>Bridge</code> (joins two SubD
+  faces with a tube), <code>OffsetSubD Solid=Yes</code> (shells it), <code>RepairSubD</code>.</p>
+
+  <h2 id="t9">9. Save, export, and reopen<span class="verified">verified: 09_save_export.txt</span></h2>
+  <p>The file workflow you will use constantly: native save for round-tripping your own work,
+  export for handing geometry to another tool.</p>
+  <pre><code>Box 0,0,0 10,10,0 10
+Sphere 30,0,0 5
+Save mymodel.3dm
+SelAll
+Export mymodel.stl
+New
+Open mymodel.3dm</code></pre>
+  <p><code>Save</code>/<code>Open</code> round-trip layers, object names, colors, user text,
+  notes, named views, and units losslessly through native <code>.3dm</code>. <code>Export</code>
+  supports OBJ, STL, STEP/IGES, DXF, PDF, PLY, and SVG depending on the objects selected;
+  <code>Import</code> brings another file's objects into the current document without closing
+  it.</p>
+
+  <h2 id="t10">10. Draft, fillet, and extrude a profile<span class="verified">verified: 10_profile_extrude.txt</span></h2>
+  <p>The classic 2D-to-3D workflow: draft a closed 2D outline, round its corners, then push it
+  into a solid.</p>
+  <div class="step"><div class="num">1</div><div class="body"><strong><code>Rectangle3Pt</code></strong><p>Click one corner, then a point along one edge, then a point along the perpendicular edge &mdash; this lets you draw a rectangle at any angle, not just axis-aligned.</p></div></div>
+  <div class="step"><div class="num">2</div><div class="body"><strong>Select it, run <code>FilletCorners</code></strong><p>Type a radius, e.g. <code>2</code> &mdash; every corner of the closed curve gets rounded in one pass.</p></div></div>
+  <div class="step"><div class="num">3</div><div class="body"><strong>Select the curve (<code>SelCrv</code> selects every curve), run <code>ExtrudeCrv</code></strong><p>Type a height. Because the profile is closed and planar, the result is a capped solid, not just a wall surface.</p></div></div>
+  <pre><code>Rectangle3Pt 0,0,0 20,0,0 0,10,0
+SelLast
+FilletCorners
+2
+SelCrv
+ExtrudeCrv 8</code></pre>
+
+  <h2>Re-verifying these tutorials</h2>
+  <p>Every script above lives in <code>dino8-app/docs/tutorial_scripts/</code>, named
+  <code>NN_description.txt</code> to match the numbering on this page. Run all ten against a
+  freshly built binary with:</p>
+  <pre><code>cmake --build dino8-app/build --parallel
+dino8-app/docs/tutorial_scripts/run_all.sh dino8-app/build/Dino8</code></pre>
+  <p>Each script uses the same <code>--smoke N --script FILE</code> headless mode and
+  <code>@expect_objects</code>/<code>@expect_selected</code> assertions as
+  <code>tests/smoke.sh</code>, so a regression in any command these tutorials use will fail
+  loudly instead of silently going stale in the docs.</p>
+</main>
+
+<footer>
+  Ten tutorials, ten verified command sequences. See <code>dino8-app/docs/tutorial_scripts/</code>
+  for the runnable originals.
+</footer>
+</body>
+</html>
