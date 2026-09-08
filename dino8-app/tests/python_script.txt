@@ -1,0 +1,11 @@
+# Python scripting QC: a .py file run through RunPythonScript that builds
+# geometry via the dino8 module, exercises object property access
+# (Name/Layer/Color), selection, deletion, dino8.RunCommand, and
+# Point3d/Vector3d arithmetic. Unlike script_script.txt's Lua test, this
+# never goes interactive mid-script (see PythonEngine.h): Python scripts
+# run start to finish in one call, so there is no trailing point token to
+# feed a GetPoint-style prompt here.
+# smoke.sh substitutes @TMP@ with a scratch directory and writes @TMP@/t.py
+# before running this.
+RunPythonScript @TMP@/t.py
+@expect_objects 1

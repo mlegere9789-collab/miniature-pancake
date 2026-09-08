@@ -18,6 +18,7 @@
 #include "render/GlRenderer.h"
 #include "doc/SubObject.h"
 #include "script/LuaEngine.h"
+#include "script/PythonEngine.h"
 #include "ui/Gumball.h"
 #include "imgui.h"
 #include "viewport/Viewport.h"
@@ -153,6 +154,7 @@ class Application {
   Document& Doc() { return doc_; }
   CommandEngine& Engine() { return *engine_; }
   LuaEngine& Lua() { return *lua_; }
+  PythonEngine& Python() { return *python_; }
   CommandCatalog& Catalog() { return catalog_; }
   // Scripting: RunScript reads the queued code (from "= expr" lines and the
   // Script Editor's Run button) instead of a file when one is waiting.
@@ -332,6 +334,7 @@ class Application {
   CommandCatalog catalog_;
   std::unique_ptr<CommandEngine> engine_;
   std::unique_ptr<LuaEngine> lua_;
+  std::unique_ptr<PythonEngine> python_;
   std::string queued_script_, queued_script_name_;
   bool queued_script_is_expression_ = false;
   bool has_queued_script_ = false;

@@ -7,6 +7,7 @@
 #include <sstream>
 
 #include "script/LuaEngine.h"
+#include "script/PythonEngine.h"
 #include "ui/Panels.h"
 
 namespace dino8::app {
@@ -221,7 +222,13 @@ class ScriptCommand : public Command {
     Application& app = ctx.App();
     const std::string ext = ToLower(std::filesystem::path(raw_path).extension().string());
     if (ext == ".py") {
-      ctx.Warn(label_ + ": " + raw_path + " is a Python file, but Dino 8 has no bundled Python interpreter; rewrite it as Lua (rs.* API) and run that instead.");
+      if (!PythonEngine::Available()) {
+        ctx.Warn(label_ + ": " + raw_path +
+                 " is a Python file, but this build has no Python 3 development install (DINO8_HAVE_PYTHON is off); "
+                 "rewrite it as Lua (rs.* API) and run that instead, or use RunPythonScript on a build with Python support.");
+      } else {
+        app.Python().StartFile(raw_path);
+      }
       Finish();
       return;
     }
@@ -257,6 +264,42 @@ class ScriptCommand : public Command {
 
   std::string label_;
   std::string preface_;
+};
+
+// RunPythonScript: runs a .py file through the embedded `dino8` module
+// (PythonEngine) when this build has one (DINO8_HAVE_PYTHON - see
+// CMakeLists.txt), or prints an honest "not available" message otherwise.
+//
+// Unlike ScriptCommand/Lua, this never goes interactive: PythonEngine runs
+// a script start-to-finish in Begin() (see PythonEngine.h for why - no
+// coroutine-style suspend for a dino8.GetPoint()-style prompt exists here),
+// so the command always finishes in the same call that started it.
+class PythonScriptCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    Application& app = ctx.App();
+    if (!PythonEngine::Available()) {
+      ctx.Warn(
+          "RunPythonScript: this build of Dino 8 was compiled without a Python 3 development install "
+          "(no DINO8_HAVE_PYTHON); rewrite the script as Lua (rs.* API) and use RunScript instead.");
+      Finish();
+      return;
+    }
+    if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) {
+      app.Python().StartFile(*path);
+      Finish();
+      return;
+    }
+    if (ctx.ScriptMode() || app.headless) {
+      ctx.Warn("RunPythonScript: no script file given");
+      Finish();
+      return;
+    }
+    app.ShowFileDialog("RunPythonScript", {".py"}, false, [&app](const std::string& path) {
+      app.Engine().Execute("-RunPythonScript \"" + path + "\"");
+    });
+    Finish();
+  }
 };
 
 // A genuine per-object display-mode override (SceneObject::force_wireframe /
@@ -364,14 +407,20 @@ void RegisterMiscCommands(CommandEngine& e) {
         if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) OpenInScriptEditor(ctx.App(), *path);
         ctx.App().Panels().script_editor = true;
       }), CommandStatus::Implemented, "Opens the Lua Script Editor.");
-  Reg(e, "RunPythonScript",
-      Make<ScriptCommand>("RunPythonScript", "Dino 8 has no bundled Python interpreter (no CPython in a small offline installer); running the given file as Lua instead (rs.* covers the same rhinoscriptsyntax surface)."),
-      CommandStatus::Implemented, "Python is not bundled; runs the file as Lua instead (same file-picker/run path as RunScript), with a clear warning for an actual .py file.");
+  Reg(e, "RunPythonScript", Make<PythonScriptCommand>(),
+      PythonEngine::Available() ? CommandStatus::Implemented : CommandStatus::Partial,
+      PythonEngine::Available()
+          ? "Runs a .py script through an embedded CPython 3 interpreter (pybind11; see the dino8.* module: "
+            "Point3d/Vector3d, doc.Objects.Add*/Find/Delete, object.Name/Layer/Color, RunCommand). Runs "
+            "start-to-finish (no rs.GetPoint-style mid-script interactive prompts, unlike Lua's RunScript)."
+          : "This build has no Python 3 development install (DINO8_HAVE_PYTHON is off); prints an honest "
+            "message instead of running the file - rewrite it as Lua (rs.* API) and use RunScript.");
   Reg(e, "EditPythonScript", Immediate([](CommandContext& ctx) {
-        ctx.Print("Dino 8 has no bundled Python interpreter; opening the Lua Script Editor - write Lua (rs.* API) instead of Python.");
+        if (!PythonEngine::Available())
+          ctx.Print("This build has no Python 3 development install; opening the (Lua-oriented) Script Editor as a plain text editor for the file.");
         if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) OpenInScriptEditor(ctx.App(), *path);
         ctx.App().Panels().script_editor = true;
-      }), CommandStatus::Implemented, "Python is not bundled; opens the Lua Script Editor (loading a given file, same as EditScript) instead.");
+      }), CommandStatus::Partial, "Opens the given .py file in the Script Editor panel as text; that panel's Run button still runs Lua - use RunPythonScript to execute a .py file.");
   Reg(e, "ScriptEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().script_editor = true; }));
   Reg(e, "ScriptingReference", Immediate([](CommandContext& ctx) { ctx.App().Panels().scripting_reference = true; }));
   // PackageManager / PluginManager: superseded, dead code - cmd_flow.cpp

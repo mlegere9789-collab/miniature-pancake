@@ -77,6 +77,31 @@ else()
   target_compile_options(dino8_lua PRIVATE -w)
 endif()
 
+# Python 3 scripting (src/script/PythonEngine.*) - optional, unlike Lua.
+# Rhino ships CPython, but CPython itself is not a `file(GLOB *.c)`-friendly
+# source tree the way Lua is (its own build is autotools/configure on Unix
+# and a bespoke MSBuild solution on Windows), so Dino 8 does not vendor it.
+# Instead this looks for a Python 3 development install already on the build
+# machine (python3-dev on Debian/Ubuntu, the Python.org/Homebrew framework on
+# macOS, the official installer's "Download debug binaries"/embeddable
+# package + import library on Windows) and links against it directly. When
+# it's missing, DINO8_HAVE_PYTHON simply stays unset: PythonEngine.cpp still
+# compiles (its embedding code is under #ifdef DINO8_HAVE_PYTHON) and
+# RunPythonScript falls back to its old honest "not available" message, so
+# the build never hard-fails for lack of a Python dev environment.
+find_package(Python3 3.8 COMPONENTS Interpreter Development.Embed)
+if(Python3_FOUND)
+  message(STATUS "Python3 ${Python3_VERSION} found (${Python3_LIBRARIES}); building embedded Python scripting (dino8 module)")
+  FetchContent_Declare(
+    pybind11
+    GIT_REPOSITORY https://github.com/pybind/pybind11.git
+    GIT_TAG        v2.13.6
+  )
+  FetchContent_MakeAvailable(pybind11)
+else()
+  message(WARNING "Python3 development headers/libs not found (need python3-dev or equivalent) - Dino 8 will build without embedded Python scripting; RunPythonScript will report that it is unavailable")
+endif()
+
 add_library(imgui STATIC
   ${imgui_SOURCE_DIR}/imgui.cpp
   ${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -161,6 +186,7 @@ set(DINO8_SOURCES
   src/commands/cmd_misc.cpp
   src/commands/cmd_render.cpp
   src/script/LuaEngine.cpp
+  src/script/PythonEngine.cpp
   src/commands/cmd_raytrace.cpp
   src/commands/cmd_exchange2.cpp
   src/io/File3dm.cpp
@@ -219,6 +245,10 @@ if(NOT TARGET opennurbs_public_freetype)
   endif()
 endif()
 target_link_libraries(Dino8 PRIVATE dino8_kernel imgui glfw OpenGL::GL opennurbs_public_freetype dino8_lua ${CMAKE_DL_LIBS})
+if(Python3_FOUND)
+  target_compile_definitions(Dino8 PRIVATE DINO8_HAVE_PYTHON)
+  target_link_libraries(Dino8 PRIVATE pybind11::embed)
+endif()
 
 if(MSVC)
   target_compile_options(Dino8 PRIVATE /W3 /EHsc /bigobj)
