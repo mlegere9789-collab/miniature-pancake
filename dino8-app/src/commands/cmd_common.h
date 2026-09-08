@@ -54,6 +54,35 @@ inline ObjectId AddCurve(CommandContext& ctx, const kernel::NurbsCurve& c, const
   return AddObject(ctx, SceneObject::MakeCurve(c), label);
 }
 
+// True if `c` crosses itself (within `tol`) - a coarse polyline-sampled
+// segment/segment test, adequate for rejecting bowtie-shaped curves before
+// they reach a command (PlanarSrf, a solid-capping Extrude, ...) that
+// builds a single-loop trim boundary and has no way to represent a
+// self-crossing one. Deliberately loose (samples, not an exact curve/curve
+// intersection): a false negative on a pathological curve just leaves the
+// existing "the result doesn't look right" behavior in place, while a
+// false positive would incorrectly reject legitimate geometry, so this
+// favors under- over over-flagging. Shared by SelSelfIntersectingCrv
+// (cmd_select2.cpp) and any command that needs to reject a self-crossing
+// boundary before treating it as a simple loop.
+inline bool CurveSelfIntersects(const kernel::NurbsCurve& c, double tol) {
+  const int n = std::max(64, c.ControlPointCount() * 12);
+  const kernel::Interval d = c.Domain();
+  std::vector<Point3d> pts;
+  for (int i = 0; i <= n; ++i) pts.push_back(c.PointAt(d.min + (d.max - d.min) * i / n));
+  const bool closed = c.IsClosed();
+  for (size_t i = 0; i + 1 < pts.size(); ++i) {
+    for (size_t j = i + 2; j + 1 < pts.size(); ++j) {
+      if (closed && i == 0 && j + 2 == pts.size()) continue;  // the closing seam
+      ON_Line a(pts[i], pts[i + 1]), b(pts[j], pts[j + 1]);
+      double ta = 0, tb = 0;
+      if (!ON_IntersectLineLine(a, b, &ta, &tb, tol, true)) continue;
+      if (a.PointAt(ta).DistanceTo(b.PointAt(tb)) <= tol) return true;
+    }
+  }
+  return false;
+}
+
 // A fixed absolute tessellation tolerance (e.g. the historical 0.005) is
 // meaningless once object scale strays far from "a few units": on a
 // kilometer-scale solid it is far finer than the geometry needs (huge
