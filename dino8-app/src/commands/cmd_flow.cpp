@@ -59,6 +59,37 @@ void RegisterFlowCommands(CommandEngine& e) {
         }
       }));
 
+  Reg(e, "GrasshopperUpdateBakes", Immediate([](CommandContext& ctx) {
+        std::vector<std::string> toks;
+        while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);
+        flow::Graph& g = flow::Editor::Get().graph;
+        std::string path = toks.empty() ? g.path : toks[0];
+        if (path.empty()) { ctx.Warn("GrasshopperUpdateBakes: no graph file given and none loaded (GrasshopperPlayer file.dflow Bake=Yes first, or pass one here)"); return; }
+        std::string error;
+        if (!toks.empty()) {
+          // A file was named explicitly: always reload it from disk, even
+          // if it's the same path already open - the whole point of naming
+          // it is to pick up edits made to the .dflow file since the last
+          // bake (a changed slider value, a rewired node, ...). Re-solving
+          // the in-memory graph without reloading (the no-argument path
+          // below) only catches changes made live in the open node editor.
+          if (!g.LoadFile(path, error)) { ctx.Warn("GrasshopperUpdateBakes: " + error); return; }
+        }
+        // Re-solve in case inputs (sliders, referenced objects) changed
+        // since the last bake.
+        g.MarkAllDirty();
+        g.Solve(&ctx.Doc());
+        ctx.Doc().BeginChange("GrasshopperUpdateBakes");
+        // Count stale objects first, purely for the report.
+        int stale = 0;
+        for (const SceneObject& o : ctx.Doc().Objects()) {
+          auto it = o.user_text.find("FlowGraph");
+          if (it != o.user_text.end() && it->second == path) ++stale;
+        }
+        const int baked = flow::RebakeGraph(g, ctx.Doc(), path);
+        ctx.Print("GrasshopperUpdateBakes: replaced " + std::to_string(stale) + " object(s) from a previous bake of " + path + " with " + std::to_string(baked) + " freshly-solved object(s)");
+      }));
+
   Reg(e, "GrasshopperFolders", Immediate([](CommandContext& ctx) {
         std::vector<std::string> toks;
         while (auto tok = ctx.Engine().TakePendingInput()) toks.push_back(*tok);

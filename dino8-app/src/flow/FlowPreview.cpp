@@ -102,7 +102,8 @@ void CollectGraphPreview(Graph& g, std::vector<float>& lines, std::vector<float>
   }
 }
 
-app::ObjectId BakeValue(app::Document& doc, const Value& v, int layer_index, const std::string& name) {
+app::ObjectId BakeValue(app::Document& doc, const Value& v, int layer_index, const std::string& name,
+                        const std::string& graph_source, NodeId source_node) {
   app::SceneObject obj;
   switch (v.kind) {
     case Kind::Point: obj = app::SceneObject::MakePoint(v.point); break;
@@ -114,6 +115,10 @@ app::ObjectId BakeValue(app::Document& doc, const Value& v, int layer_index, con
   }
   if (layer_index >= 0) obj.layer_index = layer_index;
   if (!name.empty()) obj.name = name;
+  if (!graph_source.empty()) {
+    obj.user_text["FlowGraph"] = graph_source;
+    obj.user_text["FlowNode"] = std::to_string(source_node);
+  }
   return doc.Add(std::move(obj));
 }
 
@@ -145,11 +150,23 @@ int BakeGraph(Graph& g, app::Document& doc) {
     for (const Value& v : gathered.AllItems()) {
       if (!began) { doc.BeginChange("GrasshopperPlayer Bake"); began = true; }
       const std::string nm = base_name.empty() ? "" : (base_name + (gathered.ItemCount() > 1 ? "_" + std::to_string(i) : ""));
-      if (BakeValue(doc, v, layer_index, nm) != app::kNoObject) ++baked;
+      if (BakeValue(doc, v, layer_index, nm, g.path, n->id) != app::kNoObject) ++baked;
       ++i;
     }
   }
   return baked;
+}
+
+int RebakeGraph(Graph& g, app::Document& doc, const std::string& graph_source) {
+  if (!graph_source.empty()) {
+    std::vector<app::ObjectId> stale;
+    for (const app::SceneObject& o : doc.Objects()) {
+      auto it = o.user_text.find("FlowGraph");
+      if (it != o.user_text.end() && it->second == graph_source) stale.push_back(o.id);
+    }
+    for (app::ObjectId id : stale) doc.Remove(id);
+  }
+  return BakeGraph(g, doc);
 }
 
 }  // namespace dino8::flow
