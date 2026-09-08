@@ -1,5 +1,6 @@
 #include "dino8/kernel/boolean.h"
 
+#include <cmath>
 #include <stdexcept>
 
 #include <manifold/manifold.h>
@@ -7,6 +8,32 @@
 namespace dino8::kernel {
 
 namespace {
+
+// Manifold's own default tolerance is tuned for "a few units" scale models.
+// A geometrically meaningful merge/coplanar-collapse tolerance instead
+// scales with the mesh's own size, so near-tangent or near-coincident
+// features get treated consistently whether the model is millimeter-scale
+// or kilometer-scale. This does NOT fix the separate, structural limitation
+// that ON_Mesh (and therefore this Mesh/ToManifold/FromManifold round trip)
+// stores vertex coordinates as single-precision floats throughout the
+// kernel - see the note on FromManifold below - it only makes Manifold's
+// own robustness pass (coplanar triangle merging, short-edge collapse)
+// scale-aware once the mesh has already been built and quantized to float.
+// SetTolerance() only ever raises the effective tolerance (it clamps to
+// max(epsilon, requested) when the requested value is smaller than the
+// current tolerance - see Manifold::SetTolerance), so this is always safe
+// to apply.
+double AdaptiveManifoldTolerance(const ON_Mesh& raw) {
+  ON_BoundingBox bbox;
+  if (!raw.GetBoundingBox(bbox) || !bbox.IsValid()) return 0.0;
+  const double diag = bbox.Diagonal().Length();
+  if (!std::isfinite(diag) || diag <= 0) return 0.0;
+  // 1e-6 of the mesh's own diagonal: small enough not to erase real detail
+  // on ordinary models, but large enough to bridge the float-precision
+  // noise (~1e-7 relative) that FromManifold's single-precision vertices
+  // already introduce at any scale.
+  return diag * 1e-6;
+}
 
 manifold::Manifold ToManifold(const Mesh& mesh) {
   const ON_Mesh& raw = mesh.raw();
@@ -41,9 +68,32 @@ manifold::Manifold ToManifold(const Mesh& mesh) {
         "manifold (Manifold::Status() != NoError) - booleans require "
         "watertight solids, not arbitrary tessellated surfaces");
   }
+  const double tol = AdaptiveManifoldTolerance(raw);
+  if (tol > 0) m = m.SetTolerance(tol);
   return m;
 }
 
+// NOTE - genuine kernel-level precision ceiling, not fixed here: `ON_Mesh`
+// (dino8::kernel::Mesh's underlying storage, used identically by every
+// other mesh consumer in this codebase - rendering, BrepMesher, Remesh,
+// etc., not just booleans) stores vertex coordinates in `ON_3fPoint`,
+// i.e. single-precision floats, independent of Manifold's own (double-
+// precision) internal representation. Every round trip through
+// ToManifold()/FromManifold() therefore quantizes coordinates to ~7
+// significant decimal digits. For a solid whose absolute coordinate
+// magnitude is large (e.g. ~1e6 units), that quantization step is itself
+// on the order of 0.1 unit - larger than many real modelling tolerances -
+// regardless of how tight the tolerance passed to Manifold is. This is not
+// something AdaptiveManifoldTolerance (above) can compensate for: that
+// tolerance only controls how aggressively Manifold merges/collapses
+// features that are already coincident to within the stored (already-
+// quantized) float coordinates; it cannot recover precision the float
+// storage already discarded. Fixing this for real would mean migrating
+// dino8::kernel::Mesh off ON_Mesh's single-precision vertex array to a
+// double-precision store throughout the kernel (rendering, meshing, every
+// other consumer) - a large, invasive change out of scope here. See
+// dino8-app/tests/adversarial_corpus_notes.md for the specific test case
+// this limits and why it's a structural ceiling rather than a boolean bug.
 Mesh FromManifold(const manifold::Manifold& m) {
   const manifold::MeshGL gl = m.GetMeshGL();
 

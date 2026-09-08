@@ -17,7 +17,7 @@ void RunBoolean(CommandContext& ctx, const std::vector<ObjectId>& a, const std::
     for (ObjectId id : ids) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
-      std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
+      std::optional<kernel::Mesh> m = MeshOf(*o, AdaptiveMeshTolerance(*o));
       if (!m || !m->IsClosedManifold()) { ctx.Warn("Object " + std::to_string(id) + " is not a closed solid; skipped"); continue; }
       out.push_back({id, *m});
     }
@@ -147,7 +147,7 @@ class SplitPlaneCommand : public Command {
     for (ObjectId id : ids_) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
-      std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
+      std::optional<kernel::Mesh> m = MeshOf(*o, AdaptiveMeshTolerance(*o));
       if (!m || !m->IsClosedManifold()) { ctx.Warn("Object " + std::to_string(id) + " is not a closed solid; skipped"); continue; }
       try {
         auto [pos, neg] = kernel::SplitByPlane(*m, n, offset);
@@ -189,7 +189,7 @@ class WireCutCommand : public Command {
     for (ObjectId id : ids_) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
-      std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
+      std::optional<kernel::Mesh> m = MeshOf(*o, AdaptiveMeshTolerance(*o));
       if (!m || !m->IsClosedManifold()) { ctx.Warn("Object " + std::to_string(id) + " is not a closed solid; skipped"); continue; }
       try {
         auto [pos, neg] = kernel::SplitByPlane(*m, n, offset);
