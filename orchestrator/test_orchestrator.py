@@ -1314,6 +1314,31 @@ class TestDatabaseTryStartRun(TempDatabaseTestCase):
             conn.execute("DELETE FROM status WHERE module = ?", ("deal_alert_bot",))
         self.assertTrue(db.try_start_run("deal_alert_bot"))
 
+    def _backdate_status(self, module: str, seconds_ago: int) -> None:
+        stamp = (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat(
+            timespec="seconds"
+        )
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE status SET updated_at = ? WHERE module = ?", (stamp, module)
+            )
+
+    def test_a_stuck_running_claim_can_be_reclaimed_once_stale(self):
+        # A crash before the module's own top-level guard runs (a bad CLI
+        # arg, an import error, SIGKILL) never calls set_status again --
+        # without a staleness escape hatch this would lock the module out
+        # of "Run now" and its own scheduled job forever.
+        self.assertTrue(db.try_start_run("deal_alert_bot", "first"))
+        self._backdate_status("deal_alert_bot", db.MAX_RUN_SECONDS + 1)
+        self.assertTrue(db.try_start_run("deal_alert_bot", "reclaimed"))
+        row = next(m for m in db.module_overview() if m["name"] == "deal_alert_bot")
+        self.assertEqual(row["detail"], "reclaimed")
+
+    def test_a_recent_running_claim_is_not_reclaimed(self):
+        self.assertTrue(db.try_start_run("deal_alert_bot", "first"))
+        self._backdate_status("deal_alert_bot", db.MAX_RUN_SECONDS - 1)
+        self.assertFalse(db.try_start_run("deal_alert_bot", "too soon"))
+
 
 class TestToCsvRows(unittest.TestCase):
     """CSV-formula-injection regression: a cell starting with =, +, -, @ (or

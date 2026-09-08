@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 from .paths import DB_PATH, MODULES, ensure_data_dir
@@ -159,6 +159,9 @@ def set_status(module: str, state: str, detail: str = "") -> None:
         )
 
 
+MAX_RUN_SECONDS = 1800  # 30 minutes -- see try_start_run's own docstring.
+
+
 def try_start_run(module: str, detail: str = "Queued") -> bool:
     """Atomically claim the 'running' state for a module, refusing if it's
     already running.
@@ -180,7 +183,24 @@ def try_start_run(module: str, detail: str = "Queued") -> bool:
     callers racing to start the same module can never both win. Returns True
     if this call claimed 'running' and the caller should launch; False if
     another run is already in progress and the caller should not.
+
+    The only thing that ever moves a module *out* of 'running' again is its
+    own `log.status(...)` call from inside `run()` — every module's own
+    top-level guard only catches a plain `Exception` there, so anything that
+    kills the subprocess before that point (a bad CLI argument triggering
+    `argparse`'s own `sys.exit()`, an import-time error, SIGKILL/OOM, the
+    host going down mid-run) would otherwise leave the claim in 'running'
+    forever, permanently locking that module out of both "Run now" and its
+    own scheduled job with no recovery but hand-editing the database. A
+    claim older than `MAX_RUN_SECONDS` is treated as abandoned and can be
+    re-claimed — the same trade-off `scheduler.heartbeat_is_stale` already
+    makes for the portable daemon itself, just without a heartbeat file to
+    read: this repo's five modules all do bounded, single-pass work (one
+    batch of API calls), so thirty minutes stuck at 'running' with no
+    update is itself already a strong abandoned-run signal.
     """
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(seconds=MAX_RUN_SECONDS)).isoformat(timespec="seconds")
     with get_connection() as conn:
         cur = conn.execute(
             """INSERT INTO status (module, state, detail, updated_at)
@@ -188,8 +208,8 @@ def try_start_run(module: str, detail: str = "Queued") -> bool:
                ON CONFLICT(module) DO UPDATE SET
                  state='running', detail=excluded.detail,
                  updated_at=excluded.updated_at
-               WHERE status.state != 'running'""",
-            (module, detail, utcnow()),
+               WHERE status.state != 'running' OR status.updated_at < ?""",
+            (module, detail, now.isoformat(timespec="seconds"), cutoff),
         )
         return cur.rowcount > 0
 
