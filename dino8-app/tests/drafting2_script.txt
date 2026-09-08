@@ -68,6 +68,41 @@ SectionView
 210,-5,0
 210,25,0
 UpdateSectionViews
+# --- BillOfMaterials associativity: change a selected object's material,
+# then UpdateBillOfMaterials re-derives that row from the current state
+# instead of the frozen count/material baked at creation time.
+SelNone
+Sphere 300,0,0 5
+SelLast
+SetObjectName BomBall
+SelName BomBall
+BillOfMaterials By=Material
+UpdateBillOfMaterials
+SelName BomBall
+RenderAssignMaterialToObjects NewMaterial
+UpdateBillOfMaterials
+SelNone
+# --- Associative DimLinear: the dimension is anchored to the two endpoints
+# of a real Line object. Stretching that line (Scale1D about its start
+# point, so the start stays put and the end moves from x=20 to x=40) and
+# running UpdateDimensions redraws the dimension line/arrows/text from the
+# new 40-unit length instead of leaving the original 20-unit static
+# measurement baked at creation time.
+SelNone
+Line 0,-90,0 20,-90,0
+SelLast
+SetObjectName MovingLine
+DimLinear
+0,-90,0
+20,-90,0
+0,-95,0
+SelName MovingLine
+Length
+Scale1D 0,-90,0 2
+UpdateDimensions
+SelName MovingLine
+Length
+SelNone
 Save @TMP@/drafting2.3dm
 New
 Open @TMP@/drafting2.3dm
