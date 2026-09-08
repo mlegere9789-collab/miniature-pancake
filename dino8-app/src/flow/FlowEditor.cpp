@@ -59,6 +59,8 @@ float NodeBodyExtra(const Node& n) {
     case NodeDef::Special::Colour: return 30.0f;
     case NodeDef::Special::Reference: return 26.0f;
     case NodeDef::Special::Expression: return 26.0f;
+    case NodeDef::Special::GenePool: return 34.0f;
+    case NodeDef::Special::Solver: return 20.0f;
     default: return 0;
   }
 }
@@ -461,6 +463,16 @@ void Editor::DrawNode(app::Application& app, Node& n, ImDrawList* dl, ImVec2 ori
       if (ImGui::InputText("##expr", buf, sizeof buf)) { n.text = buf; changed = true; }
       break;
     }
+    case NodeDef::Special::GenePool: {
+      int count = std::max(1, n.gene_count);
+      if (ImGui::SliderInt("Count##gp", &count, 1, 32)) { n.gene_count = count; changed = true; }
+      float minmax[2] = {static_cast<float>(n.slider_min), static_cast<float>(n.slider_max)};
+      if (ImGui::DragFloat2("Range##gp", minmax)) { n.slider_min = minmax[0]; n.slider_max = minmax[1]; changed = true; }
+      break;
+    }
+    case NodeDef::Special::Solver:
+      ImGui::TextDisabled("best %.4g / %d gen", n.solver_best_fitness, n.solver_generations_run);
+      break;
     default: break;
   }
   ImGui::PopItemWidth();

@@ -202,6 +202,7 @@ set(DINO8_SOURCES
   src/flow/FlowNodesVector.cpp
   src/flow/FlowNodesCurve.cpp
   src/flow/FlowNodesSurface.cpp
+  src/flow/FlowNodesSolver.cpp
   src/flow/FlowNodesOutput.cpp
   src/flow/FlowEditor.cpp
   src/flow/FlowPreview.cpp
@@ -273,6 +274,17 @@ add_custom_command(TARGET Dino8 POST_BUILD
 option(DINO8_BUILD_SAMPLE_PLUGIN "Build the HelloDino sample plug-in (plugins/sample)" ON)
 if(DINO8_BUILD_SAMPLE_PLUGIN)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/plugins/sample ${CMAKE_BINARY_DIR}/plugins/sample)
+endif()
+
+# Further plugin SDK examples (see docs/PLUGIN_SDK.md): each is a real,
+# independently-built shared library demonstrating a different capability
+# beyond HelloDino - mesh generation, curve generation, and multi-object
+# selection/analysis I/O.
+option(DINO8_BUILD_EXAMPLE_PLUGINS "Build the MeshTools/CurveTools/AnalysisTools example plug-ins (plugins/*)" ON)
+if(DINO8_BUILD_EXAMPLE_PLUGINS)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/plugins/mesh_tools ${CMAKE_BINARY_DIR}/plugins/mesh_tools)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/plugins/curve_tools ${CMAKE_BINARY_DIR}/plugins/curve_tools)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/plugins/analysis_tools ${CMAKE_BINARY_DIR}/plugins/analysis_tools)
 endif()
 
 option(DINO8_BUILD_TESTS "Build Dino 8 unit tests" ON)

@@ -809,14 +809,50 @@ else
 fi
 flcheck() { if echo "$FL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 flcheck "Dino Flow: opened the node editor" "Grasshopper opened the Dino Flow panel"
-flcheck "GrasshopperPluginList: 1 plug-in(s) found" "the plug-in loader found the HelloDino sample plug-in"
+flcheck "GrasshopperPluginList: 4 plug-in(s) found" "the plug-in loader found all four sample plug-ins"
 flcheck "HelloDino 1.0.0 - 1 command(s), 1 node(s)" "HelloDino loaded its command and Dino Flow node"
+flcheck "MeshTools 1.0.0 - 1 command(s), 1 node(s)" "MeshTools loaded its command and Dino Flow node"
+flcheck "CurveTools 1.0.0 - 1 command(s), 1 node(s)" "CurveTools loaded its command and Dino Flow node"
+flcheck "AnalysisTools 1.0.0 - 1 command(s), 1 node(s)" "AnalysisTools loaded its command and Dino Flow node"
 flcheck "HelloDino: hello from the sample plug-in!" "the HelloDino command ran"
 flcheck "GrasshopperPlayer: solved 4 node(s)" "GrasshopperPlayer solved the sample graph"
 flcheck "gl_error=0" "flow script ran without OpenGL errors"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
 flcheck "^ok   expect_objects 2" "GrasshopperPlayer baked the Line into the document"
+
+# Dino Flow data trees: Range -> Graft Tree -> Flatten Tree -> List Item ->
+# Construct Point -> Bake (see flow_tree_script.txt / flow_tree_graph.dflow).
+# AttachGHSData/GetUserText surface each node's Tree::Summary() so the
+# branch structure Graft/Flatten produce is directly checkable as text.
+sed "s|@TREEFILE@|$HERE/flow_tree_graph.dflow|g" "$HERE/flow_tree_script.txt" > "$TMP/flow_tree_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  FT="$("$BIN" --smoke 100 --script "$TMP/flow_tree_script.txt" 2>&1)" || { echo "$FT"; echo "FAIL: flow tree script exited non-zero"; exit 1; }
+else
+  FT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/flow_tree_script.txt" 2>&1)" || { echo "$FT"; echo "FAIL: flow tree script exited non-zero"; exit 1; }
+fi
+ftcheck() { if echo "$FT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+ftcheck "^ok   expect_objects 1" "the tree graph baked exactly one point"
+ftcheck "Range=5 items" "Range produced a 5-item, single-branch list"
+ftcheck "Graft Tree=5 items in 5 branches" "Graft Tree wrapped each item in its own branch"
+ftcheck "Flatten Tree=5 items;" "Flatten Tree collapsed the 5 grafted branches back into one"
+ftcheck "List Item=1 item" "List Item picked a single value out of the flattened list"
+ftcheck "  4,0,0" "List Item(index 2) of Range(0,10,5) read back as 4 via the baked point's coordinates"
+
+# Dino Flow evolutionary solver: Gene Pool -> (x-3)^2 fitness -> Evolutionary
+# Solver, a known-optimum problem (minimum 0 at x=3) checked two ways: the
+# GrasshopperPlayer summary line, and the baked (best-x, best-fitness) point
+# (see flow_solver_script.txt / flow_solver_graph.dflow).
+sed "s|@SOLVERFILE@|$HERE/flow_solver_graph.dflow|g" "$HERE/flow_solver_script.txt" > "$TMP/flow_solver_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  FS="$("$BIN" --smoke 100 --script "$TMP/flow_solver_script.txt" 2>&1)" || { echo "$FS"; echo "FAIL: flow solver script exited non-zero"; exit 1; }
+else
+  FS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/flow_solver_script.txt" 2>&1)" || { echo "$FS"; echo "FAIL: flow solver script exited non-zero"; exit 1; }
+fi
+fscheck() { if echo "$FS" | grep -qE "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+fscheck "^ok   expect_objects 1" "the solver graph baked exactly one point"
+fscheck "Evolutionary Solver \(#4\) best fitness 0 after 60 generation\(s\)" "the solver ran all 60 generations and converged to fitness 0 for (x-3)^2 with this fixed seed"
+fscheck "  3,0,0" "the baked point (best gene, best fitness) is exactly (3, 0, 0) - the true optimum of (x-3)^2"
 
 # Object editing: Join/Explode/Rebuild/ChangeDegree/Offset/Extend/Flip/Dir/MakePeriodic/
 # Weight/InsertKnot/PointsOn/SetObjectName/Group/Hide/Lock/clipboard/Undo (see edit_script.txt).

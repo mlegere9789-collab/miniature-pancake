@@ -51,6 +51,12 @@ void RegisterFlowCommands(CommandEngine& e) {
         flow::Graph& g = flow::Editor::Get().graph;
         ctx.Print("GrasshopperPlayer: solved " + std::to_string(g.Nodes().size()) + " node(s) in " + FormatNumber(g.last_stats.total_ms) + " ms" +
                   (bake ? ", baked " + std::to_string(ctx.Doc().ObjectCount()) + " document object(s) total" : ""));
+        for (auto& n : g.Nodes()) {
+          if (!n->def || n->def->special != flow::NodeDef::Special::Solver) continue;
+          ctx.Print("GrasshopperPlayer: " + n->type + " (#" + std::to_string(n->id) + ") best fitness " +
+                    FormatNumber(n->solver_best_fitness) + " after " + std::to_string(n->solver_generations_run) + " generation(s)" +
+                    (n->error.empty() ? "" : " - error: " + n->error));
+        }
       }));
 
   Reg(e, "GrasshopperFolders", Immediate([](CommandContext& ctx) {
@@ -93,13 +99,13 @@ void RegisterFlowCommands(CommandEngine& e) {
   Reg(e, "GrasshopperDeveloperSettings", Immediate([](CommandContext& ctx) {
         ctx.App().ShowHelpFor("GrasshopperDeveloperSettings");
         ctx.App().Panels().help = true;
-        ctx.Print("GrasshopperDeveloperSettings: node SDK docs are in the Help panel; the C API header is include/dino8_plugin.h.");
+        ctx.Print("GrasshopperDeveloperSettings: node SDK docs are in the Help panel; the C API header is include/dino8_plugin.h, and docs/PLUGIN_SDK.md walks through it with example code.");
       }));
 
   Reg(e, "GrasshopperGetSDKDocumentation", Immediate([](CommandContext& ctx) {
         ctx.App().ShowHelpFor("GrasshopperGetSDKDocumentation");
         ctx.App().Panels().help = true;
-        ctx.Print("GrasshopperGetSDKDocumentation: opened the Help panel; see include/dino8_plugin.h for the plug-in C ABI.");
+        ctx.Print("GrasshopperGetSDKDocumentation: opened the Help panel; see include/dino8_plugin.h for the plug-in C ABI and docs/PLUGIN_SDK.md for a guided walkthrough with example plug-ins (plugins/sample, plugins/mesh_tools, plugins/curve_tools, plugins/analysis_tools).");
       }));
 
   Reg(e, "AttachGHSData", OnSelection("Select objects to attach Dino Flow data to", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
