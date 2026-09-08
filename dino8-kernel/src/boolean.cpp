@@ -9,20 +9,21 @@ namespace dino8::kernel {
 
 namespace {
 
-// Manifold's own default tolerance is tuned for "a few units" scale models.
-// A geometrically meaningful merge/coplanar-collapse tolerance instead
-// scales with the mesh's own size, so near-tangent or near-coincident
-// features get treated consistently whether the model is millimeter-scale
-// or kilometer-scale. This does NOT fix the separate, structural limitation
-// that ON_Mesh (and therefore this Mesh/ToManifold/FromManifold round trip)
-// stores vertex coordinates as single-precision floats throughout the
-// kernel - see the note on FromManifold below - it only makes Manifold's
-// own robustness pass (coplanar triangle merging, short-edge collapse)
-// scale-aware once the mesh has already been built and quantized to float.
-// SetTolerance() only ever raises the effective tolerance (it clamps to
-// max(epsilon, requested) when the requested value is smaller than the
-// current tolerance - see Manifold::SetTolerance), so this is always safe
-// to apply.
+// Manifold's own default tolerance is tuned for "a few units" scale models,
+// and calling SetTolerance() unconditionally on every operand - even ones
+// that already boolean cleanly at the default tolerance - is NOT a free
+// robustness improvement: raising the tolerance triggers real topology
+// simplification (coplanar triangle merging, short-edge collapse; see
+// Manifold::SetTolerance's own doc comment), which measurably changed
+// results on ALREADY-WELL-CONDITIONED geometry during testing here (a
+// two-plane coplanar-face merge that unions two 1-unit-tall slabs and
+// slices the result: applying an adaptive tolerance up front changed the
+// slab union's own triangulation enough to corrupt the mid-height slice,
+// producing a zero-area result instead of the correct one - confirmed by
+// reverting just this one call and rebuilding). So this tolerance is used
+// only as a FALLBACK, engaged in BooleanCombine/SplitByPlane below after
+// the default-tolerance attempt has already failed - never applied to an
+// operation that would otherwise have succeeded unchanged.
 double AdaptiveManifoldTolerance(const ON_Mesh& raw) {
   ON_BoundingBox bbox;
   if (!raw.GetBoundingBox(bbox) || !bbox.IsValid()) return 0.0;
@@ -68,8 +69,6 @@ manifold::Manifold ToManifold(const Mesh& mesh) {
         "manifold (Manifold::Status() != NoError) - booleans require "
         "watertight solids, not arbitrary tessellated surfaces");
   }
-  const double tol = AdaptiveManifoldTolerance(raw);
-  if (tol > 0) m = m.SetTolerance(tol);
   return m;
 }
 
@@ -143,8 +142,16 @@ Mesh BooleanCombine(const Mesh& a, const Mesh& b, BooleanOp op) {
     return BooleanCombine(union_mesh, intersection_mesh, BooleanOp::Difference);
   }
 
-  const manifold::Manifold result =
-      ToManifold(a).Boolean(ToManifold(b), ToManifoldOp(op));
+  const manifold::Manifold ma = ToManifold(a), mb = ToManifold(b);
+  manifold::Manifold result = ma.Boolean(mb, ToManifoldOp(op));
+  if (result.Status() != manifold::Manifold::Error::NoError) {
+    // Fallback only, never the first attempt (see AdaptiveManifoldTolerance's
+    // comment): near-tangent or near-coincident geometry can fail Manifold's
+    // default-tolerance boolean outright, so retry once with a tolerance
+    // scaled to the larger operand's own size before giving up.
+    const double tol = std::max(AdaptiveManifoldTolerance(a.raw()), AdaptiveManifoldTolerance(b.raw()));
+    if (tol > 0) result = ma.SetTolerance(tol).Boolean(mb.SetTolerance(tol), ToManifoldOp(op));
+  }
   if (result.Status() != manifold::Manifold::Error::NoError) {
     throw std::runtime_error(
         "dino8::kernel::BooleanCombine: boolean operation failed "
@@ -154,8 +161,14 @@ Mesh BooleanCombine(const Mesh& a, const Mesh& b, BooleanOp op) {
 }
 
 std::pair<Mesh, Mesh> SplitByPlane(const Mesh& mesh, Vector3d plane_normal, double plane_offset) {
-  const auto halves = ToManifold(mesh).SplitByPlane(
-      manifold::vec3(plane_normal.x, plane_normal.y, plane_normal.z), plane_offset);
+  const manifold::vec3 n(plane_normal.x, plane_normal.y, plane_normal.z);
+  const manifold::Manifold m = ToManifold(mesh);
+  auto halves = m.SplitByPlane(n, plane_offset);
+  if (halves.first.Status() != manifold::Manifold::Error::NoError ||
+      halves.second.Status() != manifold::Manifold::Error::NoError) {
+    const double tol = AdaptiveManifoldTolerance(mesh.raw());
+    if (tol > 0) halves = m.SetTolerance(tol).SplitByPlane(n, plane_offset);
+  }
   if (halves.first.Status() != manifold::Manifold::Error::NoError ||
       halves.second.Status() != manifold::Manifold::Error::NoError) {
     throw std::runtime_error(
