@@ -1,0 +1,17 @@
+# DXF fidelity QC: a freeform (degree-3, non-rational) NURBS curve and a full
+# ellipse (degree-2, rational NURBS), exported to DXF then reimported, must
+# come back as the exact same geometry (control points, weights, length)
+# rather than a chord-sampled approximation - see WriteDxfSpline/
+# DxfImporter::Spline in FileExchange.cpp.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Curve 0,0,0 5,10,0 10,-5,0 15,5,0 Enter
+Ellipse 30,0,0 38,0,0 30,3,0
+SelAll
+List
+Length
+Export @TMP@/dxf_fidelity.dxf
+New
+Open @TMP@/dxf_fidelity.dxf
+SelAll
+List
+Length
