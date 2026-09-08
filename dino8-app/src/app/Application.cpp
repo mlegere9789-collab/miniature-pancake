@@ -113,7 +113,7 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
   LoadSettings(*this, ui_scale);
   if (has_saved_layout) layout_built_ = true;
   plugins::Manager::Get().ScanDefaultFolders(*this);
-  engine_->Print("Dino 8 " DINO8_VERSION " - free NURBS / SubD / mesh modeler");
+  engine_->Print("Dino 8 " DINO8_VERSION " - free NURBS / SubD / mesh modeler, by LegeLabs");
   engine_->Print("Command catalog: " + std::to_string(catalog_.Size()) + " commands loaded (" +
                  std::to_string(engine_->CountWithStatus(CommandStatus::Implemented)) + " implemented, " +
                  std::to_string(engine_->CountWithStatus(CommandStatus::Partial)) + " partial, " +

@@ -1,5 +1,7 @@
 # Dino 8
 
+### by LegeLabs (a Mike Legere company)
+
 A free desktop NURBS / SubD / mesh modeler that speaks Rhino 8's command
 vocabulary. Totally free: no subscription, no payment, no licence keys, no
 accounts, no telemetry, no update nags.

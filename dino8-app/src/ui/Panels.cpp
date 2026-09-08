@@ -665,6 +665,7 @@ void DrawAboutWindow(Application& app) {
   ImGui::Text("Dino 8  %s", DINO8_VERSION);
   ImGui::PopStyleColor();
   ImGui::TextWrapped("A free NURBS, SubD and mesh modeler with Rhino 8's command vocabulary. Totally free: no subscription, no payment, no licence keys, no accounts, no telemetry.");
+  ImGui::TextDisabled("By LegeLabs (a Mike Legere company)");
   ImGui::Separator();
   ImGui::BulletText("Geometry kernel: OpenNURBS (McNeel, MIT licence) + Manifold (Apache 2.0)");
   ImGui::BulletText("UI: Dear ImGui (MIT) + GLFW (zlib)");
