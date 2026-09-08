@@ -94,6 +94,25 @@ public class TempWorkspaceTests : IDisposable
     }
 
     [Fact]
+    public void Purge_never_deletes_a_folder_it_did_not_create()
+    {
+        // The temp root is user-configurable (Settings can point it at any folder), so
+        // a stale, unrelated subfolder living alongside real job workspaces there --
+        // one not named as a Guid in "N" format -- must never be swept up just for
+        // being old, the way a real job workspace would be.
+        var factory = CreateFactory();
+        var stranger = Path.Combine(_temp.Combine("work"), "not-a-job-workspace");
+        Directory.CreateDirectory(stranger);
+        File.WriteAllText(Path.Combine(stranger, "keep-me.txt"), "not ours to delete");
+        Directory.SetLastWriteTimeUtc(stranger, DateTime.UtcNow.AddDays(-1));
+
+        var removed = factory.PurgeStaleWorkspaces(TimeSpan.FromHours(1));
+
+        Assert.Equal(0, removed);
+        Assert.True(Directory.Exists(stranger));
+    }
+
+    [Fact]
     public void Purge_on_a_root_that_does_not_exist_yet_is_a_no_op()
     {
         var factory = new DiskTempWorkspaceFactory(_temp.Combine("never-created"));

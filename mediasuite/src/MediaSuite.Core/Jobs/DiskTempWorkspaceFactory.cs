@@ -72,7 +72,15 @@ public sealed class DiskTempWorkspaceFactory : ITempWorkspaceFactory
     {
         try
         {
-            return Directory.GetDirectories(_root);
+            // Only a folder this factory itself created -- named by Create() as a job's
+            // own Guid in "N" format -- is ours to delete. _root is user-configurable
+            // (Settings can point it at any folder, including one already used for
+            // something else), so without this filter a stale, unrelated subfolder the
+            // user happens to keep there would get silently wiped just for being older
+            // than the cutoff.
+            return Directory.GetDirectories(_root)
+                .Where(directory => Guid.TryParseExact(Path.GetFileName(directory), "N", out _))
+                .ToArray();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
