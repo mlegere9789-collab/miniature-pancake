@@ -322,7 +322,13 @@ IconButtonResult IconButton(Application& app, const char* command, const char* l
   const ImVec2 size = ButtonSize(app, show_label ? label : nullptr);
   const ImVec2 pos = ImGui::GetCursorScreenPos();
   ImGui::PushID(command);
-  ImGui::InvisibleButton("##btn", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+  // ImGuiButtonFlags_EnableNav: InvisibleButton opts out of keyboard/gamepad
+  // navigation by default, which would make every toolbar and sidebar
+  // button mouse-only even with ImGuiConfigFlags_NavEnableKeyboard set
+  // globally. Every command here also runs from a menu item or by typing
+  // its name at the command line, but Tab should still be able to reach
+  // and activate (Space/Enter) the buttons themselves.
+  ImGui::InvisibleButton("##btn", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_EnableNav);
   const bool hovered = ImGui::IsItemHovered();
   const bool held = ImGui::IsItemActive();
   ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -350,6 +356,18 @@ IconButtonResult IconButton(Application& app, const char* command, const char* l
     else if (customizable) r.context = true;
   }
   if (hovered && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_NoSharedDelay)) RichTooltip(app, b, command, customizable);
+  // Many of these buttons (the whole left sidebar, and the Standard toolbar
+  // with captions off) are icon-only with no visible text label - the name
+  // and description above are otherwise only ever shown on mouse hover.
+  // Show the same tooltip when the button has keyboard/gamepad nav focus
+  // (Tab landed on it) so a keyboard-only user gets the same identifying
+  // text a mouse user gets from hovering, without needing a pointer at all.
+  else if (ImGui::IsItemFocused()) {
+    // No mouse involved, so anchor the tooltip under the button instead of
+    // at the (possibly far away, or absent) mouse cursor.
+    ImGui::SetNextWindowPos(ImVec2(pos.x, pos.y + size.y + 4.0f));
+    RichTooltip(app, b, command, customizable);
+  }
   ImGui::PopID();
   return r;
 }
@@ -421,7 +439,7 @@ void DrawToolbars(Application& app) {
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const ImVec2 sz(ts.x + 16.0f, tab_h);
         ImGui::PushID(t);
-        if (ImGui::InvisibleButton("##tab", sz)) app.toolbar_tab = t;
+        if (ImGui::InvisibleButton("##tab", sz, ImGuiButtonFlags_EnableNav)) app.toolbar_tab = t;
         const bool hov = ImGui::IsItemHovered();
         if (active) dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), ImGui::GetColorU32(ImGuiCol_WindowBg), 4.0f, ImDrawFlags_RoundCornersTop);
         else if (hov) dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), ImGui::GetColorU32(ImGuiCol_TabHovered), 4.0f, ImDrawFlags_RoundCornersTop);
