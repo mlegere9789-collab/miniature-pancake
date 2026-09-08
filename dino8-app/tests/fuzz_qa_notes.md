@@ -105,3 +105,16 @@ If a future run of this fuzzer (a different seed, more iterations, or
 after a kernel change) does find a real failure, add it here with its
 exact reproducing seed and case description rather than weakening the
 invariant check to make it pass.
+
+## Platform note: no hang-timeout on Windows
+
+The per-case wall-clock timeout (`RunCase`'s `alarm(seconds)` + `SIGALRM`
+longjmp, the "no hangs" half of the invariant set) is POSIX-only; Windows
+has neither `alarm()` nor `SIGALRM`. On Windows this binary still catches
+crashes (`SIGSEGV`/`SIGABRT`/`SIGFPE`/`SIGILL` are all handled identically
+on every platform), but a genuine infinite loop in a fuzzed case would
+stall the binary (and the CI job) instead of being caught and reported as
+a timeout finding. This was found and is accepted as a real, honest gap
+rather than silently disabled - a Windows-native timeout would need a
+different mechanism entirely (a watchdog thread with `TerminateThread`, or
+a separate watchdog process), which is future work, not done here.

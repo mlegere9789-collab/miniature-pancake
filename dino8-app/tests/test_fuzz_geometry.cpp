@@ -30,6 +30,10 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
+#include <unistd.h>  // alarm() - POSIX only, see the RunCase Windows fallback below.
+#endif
+
 #include <opennurbs.h>
 
 #include "dino8/kernel/curve.h"
@@ -76,12 +80,14 @@ void ReportAndAbort(const char* why) {
 }
 
 extern "C" void OnSignal(int sig) {
+#ifndef _WIN32
   if (sig == SIGALRM && g_in_timed_case) {
     // Longjmp back into the driving loop rather than aborting outright:
     // a timeout is the invariant violation itself ("no hangs"), and we
     // still want the seed/case report below to fire exactly once.
     std::longjmp(g_timeout_jmp, 1);
   }
+#endif
   const char* name = sig == SIGSEGV ? "SIGSEGV (crash)"
                      : sig == SIGABRT ? "SIGABRT (assert/abort)"
                      : sig == SIGFPE  ? "SIGFPE (floating-point trap)"
@@ -114,6 +120,7 @@ template <typename Fn>
 void RunCase(int index, const char* desc, unsigned seconds, Fn&& fn) {
   g_case_index = index;
   g_case_desc = desc;
+#ifndef _WIN32
   if (setjmp(g_timeout_jmp) != 0) {
     alarm(0);
     g_in_timed_case = 0;
@@ -122,17 +129,29 @@ void RunCase(int index, const char* desc, unsigned seconds, Fn&& fn) {
   }
   g_in_timed_case = 1;
   alarm(seconds);
+#else
+  // Windows has no alarm()/SIGALRM: this fuzz run still gets crash detection
+  // (SIGSEGV/SIGABRT/SIGFPE/SIGILL, handled below) on every platform, but a
+  // genuine infinite hang on Windows would stall this binary/CI job instead
+  // of being caught and reported as a finding - a known, accepted gap, not
+  // silently pretended away. See fuzz_qa_notes.md.
+  (void)seconds;
+#endif
   try {
     fn();
   } catch (const std::exception&) {
     // Expected rejection of degenerate/invalid random input.
   } catch (...) {
+#ifndef _WIN32
     alarm(0);
     g_in_timed_case = 0;
+#endif
     ReportAndAbort("unknown (non-std::exception) C++ exception");
   }
+#ifndef _WIN32
   alarm(0);
   g_in_timed_case = 0;
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +306,9 @@ int main(int argc, char** argv) {
   std::signal(SIGABRT, OnSignal);
   std::signal(SIGFPE, OnSignal);
   std::signal(SIGILL, OnSignal);
+#ifndef _WIN32
   std::signal(SIGALRM, OnSignal);
+#endif
 
   uint64_t seed = 0xD1D0u * 0x9A5Bu + 8ull;  // fixed default seed
   if (argc > 1) seed = std::strtoull(argv[1], nullptr, 10);
