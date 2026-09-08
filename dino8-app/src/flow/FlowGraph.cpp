@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <limits>
+#include <random>
 #include <set>
 #include <sstream>
 #include <unordered_map>
@@ -254,6 +256,149 @@ void RunMatched(Graph& g, Node& n, app::Document* doc, const std::vector<Tree>& 
     for (auto& [path_, v] : gathered[o]) n.outputs[o].data.Add(v, path_);
 }
 
+// ---------------------------------------------------------------------
+// Evolutionary solver ("Galapagos"-style)
+// ---------------------------------------------------------------------
+// Algorithm: a generational real-valued genetic algorithm - tournament
+// selection (size 3), arithmetic (blend) crossover, uniform-random-offset
+// mutation, single-individual elitism. This is a genuine, if simple,
+// gradient-free evolutionary search: it does not know the objective's
+// gradient or shape and explores by resampling and recombining candidate
+// genomes, same family of algorithm as Grasshopper's Galapagos (which uses
+// a similar generational GA). It is NOT CMA-ES or simulated annealing, and
+// it does not guarantee a global optimum - like Galapagos, it is a
+// best-effort search that tends to converge for smooth, low-dimensional
+// objectives within its generation budget and can stagnate on hard
+// (highly multimodal / discontinuous) ones. Convergence: elitism guarantees
+// the best fitness seen is monotonically non-worsening across generations;
+// there is no separate convergence test - it always runs the requested
+// number of generations, since (as in Galapagos) "good enough" is left to
+// the user to judge from the reported best fitness.
+//
+// Mechanics: each candidate genome is evaluated by writing it into the
+// Gene Pool node this solver's Genes input is wired from, marking that
+// node (and everything downstream of it) dirty, and re-running the whole
+// graph solver - the ordinary dependency-driven Solve() - so whatever is
+// wired into this node's own Fitness input reflects that genome. The
+// solver node keeps itself un-dirtied for the duration (MarkDirty also
+// marks the solver itself, since the Gene Pool feeds it) so the nested
+// Solve() calls never recurse back into RunSolverNode. This makes the
+// solver's cost O(population * generations) full-graph solves, which is
+// fine for the small arithmetic graphs it is meant for but would be slow
+// on a graph with expensive geometry nodes in the fitness path.
+void RunSolverNode(Graph& g, Node& n, app::Document* doc) {
+  n.error.clear();
+  n.warning.clear();
+  for (Port& o : n.outputs) o.data.Clear();
+
+  const Wire* gw = g.WireInto(n.id, 0);
+  Node* gp = gw ? g.Find(gw->from) : nullptr;
+  if (!gp || !gp->def || gp->def->special != NodeDef::Special::GenePool) {
+    n.error = "Genes must be wired directly from a Gene Pool node";
+    return;
+  }
+  gp->gene_count = std::max(1, gp->gene_count);
+  const int len = gp->gene_count;
+  const double lo = std::min(gp->slider_min, gp->slider_max);
+  const double hi = std::max(gp->slider_min, gp->slider_max);
+
+  auto scalar_num = [&](int port, double fallback) {
+    Tree t;
+    g.GatherPort(n.id, port, t);
+    const Value* v = t.First();
+    double out;
+    return (v && v->AsNumber(out)) ? out : fallback;
+  };
+  bool minimize = true;
+  { Tree t; g.GatherPort(n.id, 2, t); const Value* v = t.First(); bool b; if (v && v->AsBool(b)) minimize = b; }
+  const int population = std::max(4, static_cast<int>(std::llround(scalar_num(3, 40))));
+  const int generations = std::max(1, static_cast<int>(std::llround(scalar_num(4, 60))));
+  const double mutation_rate = std::clamp(scalar_num(5, 0.15), 0.0, 1.0);
+  const unsigned seed = static_cast<unsigned>(std::llround(scalar_num(6, 1)));
+
+  std::mt19937 rng(seed);
+  std::uniform_real_distribution<double> uni(0.0, 1.0);
+  auto random_genome = [&] {
+    std::vector<double> gm(static_cast<size_t>(len));
+    for (double& x : gm) x = lo + uni(rng) * (hi - lo);
+    return gm;
+  };
+
+  // Writes `genome` into the Gene Pool, forces a full re-solve, and reads
+  // back whatever is wired into this node's Fitness input.
+  auto evaluate = [&](const std::vector<double>& genome) -> double {
+    gp->gene_values = genome;
+    g.MarkDirty(gp->id);
+    n.dirty = false;  // MarkDirty just re-dirtied us too (Genes wires into us); undo it so the nested Solve() below cannot recurse back into RunSolverNode.
+    g.Solve(doc);
+    Tree t;
+    g.GatherPort(n.id, 1, t);
+    const Value* v = t.First();
+    double f;
+    if (v && v->AsNumber(f)) return f;
+    return minimize ? std::numeric_limits<double>::infinity() : -std::numeric_limits<double>::infinity();
+  };
+
+  struct Individual { std::vector<double> genome; double fitness = 0; };
+  auto better = [minimize](double a, double b) { return minimize ? a < b : a > b; };
+
+  std::vector<Individual> pop(static_cast<size_t>(population));
+  for (Individual& ind : pop) { ind.genome = random_genome(); ind.fitness = evaluate(ind.genome); }
+  Individual best = pop[0];
+  for (const Individual& ind : pop) if (better(ind.fitness, best.fitness)) best = ind;
+
+  std::uniform_int_distribution<int> pick(0, population - 1);
+  auto tournament = [&]() -> const Individual& {
+    const Individual* w = &pop[static_cast<size_t>(pick(rng))];
+    for (int k = 0; k < 2; ++k) {
+      const Individual& c = pop[static_cast<size_t>(pick(rng))];
+      if (better(c.fitness, w->fitness)) w = &c;
+    }
+    return *w;
+  };
+
+  int generations_run = 0;
+  for (int gen = 0; gen < generations; ++gen) {
+    std::vector<Individual> next;
+    next.reserve(pop.size());
+    next.push_back(best);  // elitism: never lose the best genome found so far
+    while (next.size() < pop.size()) {
+      const Individual& pa = tournament();
+      const Individual& pb = tournament();
+      std::vector<double> child(static_cast<size_t>(len));
+      for (int i = 0; i < len; ++i) {
+        const double t = uni(rng);
+        double gene = pa.genome[static_cast<size_t>(i)] * t + pb.genome[static_cast<size_t>(i)] * (1.0 - t);  // arithmetic (blend) crossover
+        if (uni(rng) < mutation_rate) gene += (uni(rng) * 2.0 - 1.0) * (hi - lo) * 0.1;  // random-offset mutation
+        child[static_cast<size_t>(i)] = std::clamp(gene, lo, hi);
+      }
+      Individual ind; ind.genome = std::move(child); ind.fitness = evaluate(ind.genome);
+      if (better(ind.fitness, best.fitness)) best = ind;
+      next.push_back(std::move(ind));
+    }
+    pop = std::move(next);
+    ++generations_run;
+  }
+
+  // Leave the graph at the best genome found: set the solver's own outputs
+  // first, then re-solve so anything wired downstream of *this* node also
+  // sees the final answer within the same Solve() pass.
+  gp->gene_values = best.genome;
+  {
+    std::vector<Value> items;
+    for (double v : best.genome) items.push_back(Value::Number(v));
+    n.outputs[0].data = Tree::FromList(items);
+  }
+  n.outputs[1].data = Tree::Single(Value::Number(best.fitness));
+  n.outputs[2].data = Tree::Single(Value::Integer(generations_run));
+  n.solver_best_fitness = best.fitness;
+  n.solver_generations_run = generations_run;
+  g.MarkDirty(gp->id);
+  n.dirty = false;
+  g.Solve(doc);
+  n.dirty = false;
+}
+
 void Graph::Evaluate(Node& n, app::Document* doc) {
   if (!n.def) { n.dirty = false; return; }
   const auto t0 = std::chrono::steady_clock::now();
@@ -278,6 +423,20 @@ void Graph::Evaluate(Node& n, app::Document* doc) {
   }
   if (n.def->special == NodeDef::Special::Colour) {
     n.outputs[0].data = Tree::Single(Value::ColourV(n.colour));
+    n.dirty = false;
+    return;
+  }
+  if (n.def->special == NodeDef::Special::GenePool) {
+    n.gene_count = std::max(1, n.gene_count);
+    if (n.gene_values.size() != static_cast<size_t>(n.gene_count)) n.gene_values.resize(static_cast<size_t>(n.gene_count), (n.slider_min + n.slider_max) * 0.5);
+    std::vector<Value> items;
+    for (double v : n.gene_values) items.push_back(Value::Number(v));
+    n.outputs[0].data = Tree::FromList(items);
+    n.dirty = false;
+    return;
+  }
+  if (n.def->special == NodeDef::Special::Solver) {
+    RunSolverNode(*this, n, doc);
     n.dirty = false;
     return;
   }
@@ -437,7 +596,9 @@ std::string Graph::ToJson(const std::vector<NodeId>* only) const {
        << ",\"toggle\":" << (n->toggle ? "true" : "false")
        << ",\"text\":\"" << JEsc(n->text) << "\""
        << ",\"colour\":[" << n->colour.r << "," << n->colour.g << "," << n->colour.b << "]"
-       << ",\"refs\":[";
+       << ",\"gene_count\":" << n->gene_count << ",\"gene_values\":[";
+    for (size_t i = 0; i < n->gene_values.size(); ++i) os << (i ? "," : "") << n->gene_values[i];
+    os << "],\"refs\":[";
     for (size_t i = 0; i < n->refs.size(); ++i) os << (i ? "," : "") << n->refs[i];
     os << "],\"inputs\":[";
     for (size_t i = 0; i < n->inputs.size(); ++i) {
@@ -481,6 +642,9 @@ bool Graph::FromJson(const std::string& text, std::string& error, bool merge, fl
     n->text = jn["text"].AsString();
     const json::Value& jc = jn["colour"];
     if (jc.IsArray() && jc.Size() >= 3) n->colour = Colour{static_cast<float>(jc[0].number), static_cast<float>(jc[1].number), static_cast<float>(jc[2].number), 1.f};
+    if (jn["gene_count"].type == json::Value::Type::Number) n->gene_count = static_cast<int>(jn["gene_count"].number);
+    const json::Value& jgenes = jn["gene_values"];
+    for (size_t gv = 0; gv < jgenes.Size(); ++gv) n->gene_values.push_back(jgenes[gv].number);
     const json::Value& jrefs = jn["refs"];
     for (size_t r = 0; r < jrefs.Size(); ++r) n->refs.push_back(static_cast<std::uint64_t>(jrefs[r].number));
     const json::Value& jins = jn["inputs"];

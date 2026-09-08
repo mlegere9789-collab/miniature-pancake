@@ -95,7 +95,11 @@ struct NodeDef {
   std::vector<PortDef> outputs;
   Evaluator eval;
   // Special node kinds the editor/solver treat specially.
-  enum class Special { None, Slider, Panel, Toggle, Reference, Bake, Preview, TextTag, Expression, Colour, Plugin } special = Special::None;
+  // GenePool: a Slider-like source that outputs `gene_count` numbers in
+  // [Node::slider_min, Node::slider_max]; a solver drives it by writing
+  // Node::gene_values directly. Solver: a Galapagos-style evolutionary
+  // optimizer, see RunSolverNode() in FlowGraph.cpp.
+  enum class Special { None, Slider, Panel, Toggle, Reference, Bake, Preview, TextTag, Expression, Colour, Plugin, GenePool, Solver } special = Special::None;
   float body_width = 0;  // custom body width hint (0 = auto)
 };
 
@@ -149,6 +153,14 @@ class Node {
   bool graft_inputs = false;
   bool baked_once = false;
   int width_hint = 0;
+  // Gene Pool (Special::GenePool): how many numbers it outputs, and their
+  // current values (driven by a solver, or left at the midpoint of
+  // [slider_min, slider_max] until one runs). Solver (Special::Solver):
+  // read-only progress left by the last run, for the editor to display.
+  int gene_count = 5;
+  std::vector<double> gene_values;
+  double solver_best_fitness = 0;
+  int solver_generations_run = 0;
 
   Tree& Output(int i) { return outputs[static_cast<size_t>(i)].data; }
 };
@@ -194,6 +206,11 @@ class Graph {
   std::vector<Node*> TopologicalOrder();
   SolveStats Solve(app::Document* doc);
   bool AnyDirty() const;
+  // Reads what is currently gathered into `node`'s input `port` (the wired
+  // source's solved output, or the port's literal/default value). Used by
+  // the evolutionary solver to re-read its Fitness input after each
+  // candidate genome is solved.
+  void GatherPort(NodeId node, int port, Tree& out) { if (Node* n = Find(node)) GatherInput(*n, port, out); }
   void SetModified() { modified_ = true; ++revision_; }
   bool Modified() const { return modified_; }
   void ClearModified() { modified_ = false; }
@@ -231,5 +248,13 @@ class Graph {
 // Runs `def.eval` over the node's gathered inputs with Grasshopper list
 // matching (longest list, branch-by-branch); fills the output trees.
 void RunMatched(Graph& g, Node& n, app::Document* doc, const std::vector<Tree>& inputs);
+
+// Runs the evolutionary solver node `n` in place: finds the Gene Pool node
+// wired into its Genes input, searches its domain by genetic algorithm to
+// minimise/maximise whatever is wired into the Fitness input (re-solving
+// the graph once per candidate genome), and leaves the Gene Pool at the
+// best genome found. See FlowNodesSolver.cpp for the node's port layout and
+// the doc comment on the algorithm.
+void RunSolverNode(Graph& g, Node& n, app::Document* doc);
 
 }  // namespace dino8::flow
