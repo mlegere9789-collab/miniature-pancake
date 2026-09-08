@@ -93,6 +93,22 @@ class TestFormatter(unittest.TestCase):
         self.assertIn("partner.example", url)
         self.assertIn("id=XYZ", url)
 
+    def test_malformed_template_falls_back_to_plain_link_extra_placeholder(self):
+        # A stray {other} the operator forgot to also give a value for --
+        # str.format raises KeyError. Every deal in every run hits this
+        # same call, so an uncaught error here would crash the whole run
+        # forever until the .env template is fixed.
+        tmpl = "https://partner.example/r?u={deal_url}&id={other}"
+        url, is_aff = build_deal_url(SAMPLE_DEAL, affiliate_template=tmpl)
+        self.assertFalse(is_aff)
+        self.assertIn("dealID=ABC123", url)
+
+    def test_malformed_template_falls_back_to_plain_link_stray_brace(self):
+        tmpl = "https://partner.example/r?u={deal_url}&note={"
+        url, is_aff = build_deal_url(SAMPLE_DEAL, affiliate_template=tmpl)
+        self.assertFalse(is_aff)
+        self.assertIn("dealID=ABC123", url)
+
     def test_discord_payload_shape(self):
         url, is_aff = build_deal_url(SAMPLE_DEAL)
         payload = format_discord_payload(SAMPLE_DEAL, url, is_aff)

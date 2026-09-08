@@ -172,6 +172,29 @@ class TestSeenStore(unittest.TestCase):
             finally:
                 dedup.SEEN_FILE = orig
 
+    def test_a_numeric_id_still_dedups_after_a_reload(self):
+        # Nothing in assets.py enforces an asset's own "id" be a string --
+        # json.dumps() in save() silently turns a non-string dict key into
+        # a string key on write, so without coercing in is_seen/mark too,
+        # is_seen(1) after a reload would check `1 in {"1": ...}` (always
+        # False) and this asset would be re-keyworded every single run.
+        import tempfile
+        from pathlib import Path
+
+        from . import dedup
+
+        with tempfile.TemporaryDirectory() as d:
+            orig = dedup.SEEN_FILE
+            dedup.SEEN_FILE = Path(d) / "seen.json"
+            try:
+                store = dedup.SeenStore()
+                store.mark(1)
+                store.save()
+                reloaded = dedup.SeenStore()
+                self.assertTrue(reloaded.is_seen(1))
+            finally:
+                dedup.SEEN_FILE = orig
+
 
 if __name__ == "__main__":
     unittest.main()

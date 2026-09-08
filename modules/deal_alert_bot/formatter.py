@@ -29,7 +29,18 @@ def build_deal_url(
     """
     base = f"{REDIRECT_BASE}{deal.get('dealID', '')}"
     if affiliate_template and "{deal_url}" in affiliate_template:
-        return affiliate_template.format(deal_url=base), True
+        try:
+            return affiliate_template.format(deal_url=base), True
+        except (KeyError, IndexError, ValueError):
+            # A malformed template -- an extra {placeholder} besides
+            # {deal_url} that was never given a value, or stray braces --
+            # must not crash the whole run: DEAL_AFFILIATE_LINK_TEMPLATE is
+            # a hand-typed .env value, and every deal in every run hits
+            # this same call, so an uncaught error here means every run
+            # crashes before posting or marking anything as seen, forever,
+            # until the template is fixed. Fall back to the plain link,
+            # same as when no template is configured at all.
+            return base, False
     return base, False
 
 

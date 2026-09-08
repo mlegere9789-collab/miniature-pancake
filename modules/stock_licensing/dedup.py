@@ -33,11 +33,18 @@ class SeenStore:
             except (json.JSONDecodeError, OSError):
                 self._seen = {}
 
-    def is_seen(self, asset_id: str) -> bool:
-        return asset_id in self._seen
+    def is_seen(self, asset_id: object) -> bool:
+        # str(), not a bare `in` -- an asset id from stock_assets.json can
+        # be a JSON number (nothing enforces it must be a string), and
+        # json.dumps() in save() silently coerces a non-string dict key to
+        # a string on write. Without coercing here too, is_seen(1) after a
+        # reload would check `1 in {"1": ...}`, which is always False --
+        # dedup would silently never stick and every run would re-draft
+        # the same asset's keyword metadata forever.
+        return str(asset_id) in self._seen
 
-    def mark(self, asset_id: str) -> None:
-        self._seen[asset_id] = datetime.now(timezone.utc).isoformat()
+    def mark(self, asset_id: object) -> None:
+        self._seen[str(asset_id)] = datetime.now(timezone.utc).isoformat()
 
     def save(self) -> None:
         ensure_data_dir()
