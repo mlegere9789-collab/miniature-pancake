@@ -548,6 +548,51 @@ class TestPaths(unittest.TestCase):
             self.assertTrue(name)
 
 
+class TestAtomicWriteText(unittest.TestCase):
+    """Every *_seen.json dedup store (deal_alert_bot, ecommerce_dropshipping,
+    digital_products, stock_licensing) saves through this -- a crash
+    mid-write must never leave a truncated file that reads back as "nothing
+    has ever been seen"."""
+
+    def test_creates_a_new_file(self):
+        from . import paths
+
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "seen.json"
+            paths.atomic_write_text(target, '{"a": 1}')
+            self.assertEqual(target.read_text(encoding="utf-8"), '{"a": 1}')
+
+    def test_overwrites_existing_content_in_full(self):
+        from . import paths
+
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "seen.json"
+            target.write_text('{"old": true}', encoding="utf-8")
+            paths.atomic_write_text(target, '{"new": true}')
+            self.assertEqual(target.read_text(encoding="utf-8"), '{"new": true}')
+
+    def test_no_leftover_temp_file_after_a_successful_write(self):
+        from . import paths
+
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "seen.json"
+            paths.atomic_write_text(target, "{}")
+            self.assertEqual(os.listdir(d), ["seen.json"])
+
+    def test_original_file_is_untouched_if_the_write_fails(self):
+        from . import paths
+
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "seen.json"
+            target.write_text('{"safe": true}', encoding="utf-8")
+            with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    paths.atomic_write_text(target, '{"never": "lands"}')
+            # The real write_text is unpatched again by here -- read the
+            # actual destination file, which the failed write never touched.
+            self.assertEqual(target.read_text(encoding="utf-8"), '{"safe": true}')
+
+
 class JobsFileTestCase(unittest.TestCase):
     """Points scheduler.JOBS_PATH/JOBS_EXAMPLE_PATH at temp files."""
 

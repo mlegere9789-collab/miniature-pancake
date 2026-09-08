@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from orchestrator.paths import DATA_DIR, ensure_data_dir
+from orchestrator.paths import DATA_DIR, atomic_write_text, ensure_data_dir
 
 SEEN_FILE = DATA_DIR / "digital_products_seen.json"
 
@@ -40,4 +40,4 @@ class SeenStore:
 
     def save(self) -> None:
         ensure_data_dir()
-        SEEN_FILE.write_text(json.dumps(self._seen, indent=2), encoding="utf-8")
+        atomic_write_text(SEEN_FILE, json.dumps(self._seen, indent=2))

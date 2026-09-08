@@ -18,7 +18,7 @@ core (config, database, logging, scheduler, dashboard).
 | `dashboard.py` | A local web dashboard: per-module status with a **Run now** button (refuses a second click, or a cron/portable-daemon firing, while that module is already mid-run) and a log viewer, earnings (with a CSV export for bookkeeping), an interactive review queue (with a recently-resolved audit trail of past approve/reject decisions, also CSV-exportable), and an activity feed. |
 | `cli.py` / `__main__.py` | `python -m orchestrator <command>`. |
 | `demo.py` | Seeds sample data so you can explore the dashboard immediately. |
-| `paths.py` | Single source of truth for file locations and the module list. |
+| `paths.py` | Single source of truth for file locations and the module list, plus `atomic_write_text` — a crash-safe write every module's own dedup store (`data/*_seen.json`) uses so a kill mid-write can never leave a truncated file behind. |
 | `jobs.example.json` | Scheduler job templates (copy to `jobs.json`). |
 
 ## Commands
