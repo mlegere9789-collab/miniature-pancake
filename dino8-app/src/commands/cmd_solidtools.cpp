@@ -915,6 +915,23 @@ ArrayProfile ResolveArrayProfile(CommandContext& ctx, const std::vector<ObjectId
 // MoveHole/RotateHole replay as a single rigid hole feature - the whole
 // array moves/copies/mirrors/rotates together, matching "ArrayHole ...
 // multiple tools" as one tool.
+//
+// Per-centre cutter construction (CylinderCutter/ProfileCutter below) reads
+// only `pre` (a local copy of the solid's mesh) and each centre's own
+// geometry, so it looks embarrassingly parallel across `centers` - the same
+// shape of independent per-item work util/ThreadPool.h's ParallelFor is
+// for. It is deliberately still a plain sequential loop: each cutter
+// construction builds new ON_Brep/ON_Mesh objects and, for the union chain
+// right below, calls into kernel::BooleanCombine (the Manifold library).
+// Neither OpenNURBS' object construction path nor Manifold's is documented
+// here as safe to call concurrently from multiple threads, and nothing
+// elsewhere in this codebase currently does so (PathTracer.cpp's worker
+// threads trace rays against already-built triangle buffers - they do not
+// construct new ON_Brep/ON_Mesh geometry concurrently the way this loop
+// would). Getting that wrong would trade a real but rare perf win for
+// sporadic, hard-to-reproduce corruption in a boolean solid tool, so this
+// stays serial per the "if in doubt, keep it serial" rule until someone
+// verifies (or fixes) thread-safety in those libraries specifically.
 void HoleArray(CommandContext& ctx, const Input& in, const std::vector<ObjectId>& solid_ids, const std::vector<Point3d>& centers, double radius, double depth, const ArrayProfile& profile, const std::string& label) {
   std::vector<Solid> solids = Solids(ctx, solid_ids, label);
   if (solids.empty()) return;

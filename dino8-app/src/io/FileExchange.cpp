@@ -1,5 +1,6 @@
 #include "io/FileExchange.h"
 
+#include "util/ThreadPool.h"
 #include "viewport/Viewport.h"
 
 #include <opennurbs.h>
@@ -13,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <vector>
 
@@ -1279,29 +1281,58 @@ bool ExportPdf(const Document& doc, const Viewport* view, const std::string& pat
 
 bool ExportPly(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
   std::vector<const ON_Mesh*> meshes;
-  std::vector<kernel::Mesh> owned;
+  // Pass 1 (serial, cheap): which objects are actually included, in
+  // Objects() order - order matters for reproducible output, so this list
+  // is decided up front rather than as a side effect of the parallel loop.
+  std::vector<const SceneObject*> included;
   for (const SceneObject& o : doc.Objects()) {
     if (selected_only && !o.selected) continue;
     if (!doc.IsObjectVisible(o)) continue;
-    if (o.kind == ObjectKind::Mesh && o.mesh) owned.push_back(*o.mesh);
-    else if (o.kind == ObjectKind::Surface && o.surface) owned.push_back(o.surface->TessellateGridAdaptive(0.01));
-    else if (o.kind == ObjectKind::SubD && o.subd) owned.push_back(o.subd->ToApproximateMesh());
-    else if (o.kind == ObjectKind::Brep && o.brep) {
+    if ((o.kind == ObjectKind::Mesh && o.mesh) || (o.kind == ObjectKind::Surface && o.surface) ||
+        (o.kind == ObjectKind::SubD && o.subd) || (o.kind == ObjectKind::Brep && o.brep)) {
+      included.push_back(&o);
+    }
+  }
+  // Pass 2 (parallel): tessellate each included object into its own slot.
+  // Safe to parallelize - each iteration only reads its own SceneObject
+  // (a distinct unique_ptr<Surface/SubD/Brep> per object, none shared) and
+  // writes only to `results[i]`, its own std::optional. This is the same
+  // "each object's work is fully independent of every other object's"
+  // shape as EnsureDisplay's warmup pass in main.cpp's RunStressTest - see
+  // util/ThreadPool.h - and unlike HoleArray's cutter generation (see the
+  // comment there) nothing here calls into kernel::BooleanCombine/Manifold,
+  // only tessellation (TessellateGridAdaptive/ToApproximateMesh/
+  // EnsureDisplay), so there is no boolean-library thread-safety question
+  // to be cautious about. The actual file write below stays a single
+  // serial pass over an ordinary std::ofstream, as it must.
+  std::vector<std::optional<kernel::Mesh>> results(included.size());
+  ParallelFor(included.size(), [&](std::size_t i) {
+    const SceneObject& o = *included[i];
+    if (o.kind == ObjectKind::Mesh && o.mesh) {
+      results[i] = *o.mesh;
+    } else if (o.kind == ObjectKind::Surface && o.surface) {
+      results[i] = o.surface->TessellateGridAdaptive(0.01);
+    } else if (o.kind == ObjectKind::SubD && o.subd) {
+      results[i] = o.subd->ToApproximateMesh();
+    } else if (o.kind == ObjectKind::Brep && o.brep) {
       // Use the display tessellation (already a closed render mesh).
       o.EnsureDisplay(0.01, 0.05);
       const std::vector<float>& t = o.Display().triangles;
       kernel::Mesh m;
       ON_Mesh& raw = m.raw();
-      for (size_t i = 0; i + 17 < t.size(); i += 18) {
+      for (size_t k2 = 0; k2 + 17 < t.size(); k2 += 18) {
         const int base = raw.VertexCount();
-        for (int k = 0; k < 3; ++k) raw.m_V.Append(ON_3fPoint(t[i + k * 6], t[i + k * 6 + 1], t[i + k * 6 + 2]));
+        for (int k = 0; k < 3; ++k) raw.m_V.Append(ON_3fPoint(t[k2 + k * 6], t[k2 + k * 6 + 1], t[k2 + k * 6 + 2]));
         ON_MeshFace f; f.vi[0] = base; f.vi[1] = base + 1; f.vi[2] = base + 2; f.vi[3] = base + 2;
         raw.m_F.Append(f);
       }
       raw.CombineIdenticalVertices(true, true);
-      if (raw.FaceCount() > 0) owned.push_back(m);
+      if (raw.FaceCount() > 0) results[i] = m;
     }
-  }
+  });
+  std::vector<kernel::Mesh> owned;
+  owned.reserve(results.size());
+  for (std::optional<kernel::Mesh>& r : results) if (r) owned.push_back(std::move(*r));
   for (const kernel::Mesh& m : owned) meshes.push_back(&m.raw());
   if (meshes.empty()) {
     error = "Nothing to export: select meshes, surfaces, polysurfaces or SubDs";
