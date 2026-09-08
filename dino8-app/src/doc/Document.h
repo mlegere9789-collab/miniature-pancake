@@ -1,16 +1,27 @@
 // The Dino 8 document: objects, layers, groups, named views, document user
-// text, settings, and a snapshot-based undo/redo stack.
+// text, settings, and a diff-based undo/redo stack.
 //
 // Undo model: every command that modifies the document calls
-// BeginChange("label") first. That pushes a full snapshot (objects, layers,
-// groups) onto the undo stack. Full snapshots are deliberately simple and
-// robust - there is no per-operation inverse to get wrong, so Undo never
-// "randomly stops working" the way users report Rhino 8's does.
+// BeginChange("label") first (or, for an audited call site that knows
+// exactly which existing objects it's about to touch,
+// BeginChangeForObjects("label", ids) - see its comment). Internally this
+// records enough of the pre-edit state to later compute, once the command
+// has finished mutating, a StateDelta: the objects that were actually
+// added/removed/possibly-modified plus the (cheap) document-level state,
+// rather than a deep copy of the whole document. Undo/Redo apply or invert
+// that delta directly - no extra full-document capture on every step the
+// old snapshot-per-step model needed. There is still no per-operation
+// inverse to hand-write and get wrong: a delta always carries real
+// before/after values, never a recomputed inverse, so Undo/Redo keeps the
+// same robustness the old full-snapshot model had. See the StateDelta/
+// HistoryEntry/PendingChange comments below for the exact mechanics.
 #pragma once
 
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -430,9 +441,21 @@ class Document {
 
   // ---- undo / redo -----------------------------------------------------
   void BeginChange(const std::string& label);
+  // Fast path for a command that knows, before it mutates anything, the
+  // *complete* set of existing object ids it is about to modify in place -
+  // and is certain it will add no objects, remove no objects, and touch no
+  // other document state (layers/groups/materials/lights/clipping planes/
+  // layouts). Records only those objects' before-images (O(ids.size()),
+  // not O(document size)) instead of BeginChange's whole-document capture.
+  // Get the id list wrong (miss one that's actually touched, or touch one
+  // not listed) and that object's change silently won't undo/redo - so
+  // only call this from a call site that has been audited to satisfy the
+  // contract; every other caller should keep using the always-safe
+  // BeginChange(label) above, which never requires this guarantee.
+  void BeginChangeForObjects(const std::string& label, const std::vector<ObjectId>& ids);
   bool Undo();
   bool Redo();
-  bool CanUndo() const { return !undo_.empty(); }
+  bool CanUndo() const { return pending_.active || !undo_.empty(); }
   bool CanRedo() const { return !redo_.empty(); }
   std::vector<std::string> UndoLabels() const;
   std::vector<std::string> RedoLabels() const;
@@ -494,6 +517,129 @@ class Document {
   Snapshot Capture(const std::string& label) const;
   void Restore(const Snapshot& snapshot);
 
+  // ---- diff-based undo/redo history -------------------------------------
+  //
+  // The old model (see Capture/Restore above, still used for named
+  // snapshots) pushed a full document Snapshot on every BeginChange, and
+  // Undo()/Redo() each took an *additional* full Snapshot before restoring
+  // - O(document size) work and memory per step regardless of how small
+  // the edit was, which doesn't scale to large documents.
+  //
+  // StateDelta instead records, for one BeginChange...next-boundary span:
+  //  - the small, cheap document-level state (layers/groups/materials/
+  //    lights/clipping planes/layouts/id counters) in full, both sides,
+  //    unconditionally - these are never the bottleneck (a handful of
+  //    entries, no geometry), so there is no need to diff them and thus no
+  //    risk of an equality check silently missing a change.
+  //  - the objects that actually differ, keyed by ObjectId:
+  //     - `added`: existed after but not before (post-image only; Undo
+  //       removes them by id, Redo re-appends them).
+  //     - `removed`: existed before but not after (pre-image + the index
+  //       it lived at in the before-ordering; Undo reinserts them there,
+  //       Redo removes them by id).
+  //     - `modified_before`/`modified_after`: ids present on both sides
+  //       that may have changed value. SceneObject has no operator== (its
+  //       geometry members are opaque OpenNURBS wrappers with no cheap,
+  //       safe value-equality available), so rather than risk a hand-
+  //       rolled comparison silently declaring two different objects
+  //       "equal" (which would corrupt Undo), every id present on both
+  //       sides is conservatively treated as a candidate. For a command
+  //       that only adds/removes objects (the majority of creation/
+  //       deletion commands) this candidate set is empty - a real,
+  //       unconditional win. For a command that modifies existing objects
+  //       in place without adding/removing (Move, color/property edits,
+  //       ...) with no id-set change, EVERY object is a candidate under
+  //       the general BeginChange(label) path - i.e. no smaller than
+  //       today's full snapshot for that case. BeginChangeForObjects lets
+  //       an audited call site narrow the candidate set to just the ids it
+  //       is actually touching, which is where the real scaling win for
+  //       in-place edits comes from (see cmd_transform.cpp's ApplyXform).
+  //  - `modified_after` is left empty and filled in lazily, once, the
+  //    first time the entry is actually undone (Document::Undo) rather
+  //    than at record time - so an edit that is never undone only ever
+  //    pays for one copy per candidate object, not two; see Undo()'s
+  //    comment for why this is exactly the right moment and why it is
+  //    never O(document) more than once per entry.
+  struct StateDelta {
+    std::string label;
+
+    std::vector<Layer> layers_before, layers_after;
+    int current_layer_before = 0, current_layer_after = 0;
+    std::vector<Group> groups_before, groups_after;
+    std::vector<Material> materials_before, materials_after;
+    std::vector<Light> lights_before, lights_after;
+    std::vector<ClippingPlane> clipping_planes_before, clipping_planes_after;
+    std::vector<Layout> layouts_before, layouts_after;
+    ObjectId next_id_before = 1, next_id_after = 1;
+    int next_group_id_before = 1, next_group_id_after = 1;
+    int next_light_id_before = 1, next_light_id_after = 1;
+
+    std::vector<SceneObject> modified_before;
+    std::vector<SceneObject> modified_after;  // lazily populated - see Document::Undo
+    bool modified_after_ready = false;
+
+    std::vector<SceneObject> added;
+    struct RemovedObject {
+      SceneObject object;
+      size_t index_before = 0;  // position in the pre-edit objects_ ordering
+    };
+    std::vector<RemovedObject> removed;
+  };
+
+  // One undo/redo stack entry: a delta plus, every kCheckpointInterval
+  // entries, a full document Snapshot taken at the same moment as the
+  // delta's "after" state. Because every StateDelta already carries both
+  // directions once materialized, ordinary Undo()/Redo() never needs to
+  // replay a chain of deltas back to a checkpoint the way a "diff from
+  // last checkpoint only" scheme would - applying one entry is always
+  // O(that entry's delta), independent of how far back the last checkpoint
+  // was. The checkpoint here instead serves as a periodic, bounded-cost,
+  // ground-truth anchor: a cheap structural self-check (see Undo()) that
+  // catches an object-count/id-counter mismatch between the fast delta
+  // path and a full Capture(), rather than something Undo/Redo application
+  // itself depends on. It is shared via shared_ptr so holding one costs
+  // nothing beyond the single real Capture() taken to make it.
+  struct HistoryEntry {
+    StateDelta delta;
+    std::shared_ptr<const Snapshot> checkpoint;
+  };
+  static constexpr int kCheckpointInterval = 50;
+
+  // A BeginChange/BeginChangeForObjects call records the pre-edit state
+  // here immediately (this part is unavoidably synchronous - it must run
+  // before the caller's mutation) but does *not* yet know the post-edit
+  // state, since the caller hasn't mutated the document yet. Finalizing
+  // into a real StateDelta (see FinalizePending) - which needs both sides
+  // to compute the added/removed/modified split - happens lazily, right
+  // before the next BeginChange/BeginChangeForObjects/Undo/Redo/ClearUndo,
+  // by which point the previous command has finished mutating. This
+  // mirrors the old code's implicit contract (a BeginChange's snapshot was
+  // always really "the state as of the *next* BeginChange, minus this
+  // command's edit") without changing when callers may call BeginChange.
+  struct PendingChange {
+    bool active = false;
+    bool fast_path = false;
+    std::string label;
+    std::vector<Layer> layers;
+    int current_layer = 0;
+    std::vector<Group> groups;
+    std::vector<Material> materials;
+    std::vector<Light> lights;
+    std::vector<ClippingPlane> clipping_planes;
+    std::vector<Layout> layouts;
+    ObjectId next_id = 1;
+    int next_group_id = 1;
+    int next_light_id = 1;
+    std::vector<SceneObject> objects;            // general path: full pre-edit copy
+    std::vector<SceneObject> fast_path_before;    // fast path: just the declared ids
+  };
+  void FinalizePending();
+  void ApplyDelta(const StateDelta& delta, bool undo);
+  void ApplyObjectDelta(const StateDelta& delta, bool undo);
+
+  PendingChange pending_;
+  int ops_since_checkpoint_ = 0;
+
   std::vector<SceneObject> objects_;
   std::vector<ObjectId> prev_selection_;  // SelPrev / RestorePreviousSelection
   std::vector<Layer> layers_;
@@ -525,8 +671,8 @@ class Document {
   std::uint64_t revision_ = 0;
   ObjectId next_id_ = 1;
   int next_group_id_ = 1;
-  std::vector<Snapshot> undo_;
-  std::vector<Snapshot> redo_;
+  std::vector<HistoryEntry> undo_;
+  std::vector<HistoryEntry> redo_;
   size_t max_undo_ = 100;
   std::vector<std::pair<std::string, Snapshot>> named_snapshots_;
   mutable ObjectGrid pick_grid_;

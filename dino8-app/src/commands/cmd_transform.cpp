@@ -6,7 +6,21 @@ namespace dino8::app {
 namespace {
 
 void ApplyXform(CommandContext& ctx, const std::vector<ObjectId>& ids, const ON_Xform& xf, bool copy, const std::string& label) {
-  ctx.Doc().BeginChange(label);
+  // Move/Rotate/Scale/Mirror/Orient/Nudge/ProjectToCPlane (copy=false): the
+  // full set of ids about to be Transform()-ed in place is known upfront
+  // and nothing else about the document changes, so this qualifies for
+  // Document's object-scoped fast path (BeginChangeForObjects) instead of
+  // a whole-document capture - the O(document size) -> O(selection size)
+  // win the diff-based undo history exists for. The Copy variant (below)
+  // only adds new objects and never touches `ids`, which the general
+  // BeginChange(label) path already records cheaply (an add-only delta
+  // costs nothing for the untouched objects), so it doesn't need the fast
+  // path.
+  if (copy) {
+    ctx.Doc().BeginChange(label);
+  } else {
+    ctx.Doc().BeginChangeForObjects(label, ids);
+  }
   std::vector<ObjectId> made;
   for (ObjectId id : ids) {
     SceneObject* o = ctx.Doc().Find(id);

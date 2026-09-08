@@ -1,6 +1,9 @@
 #include "doc/Document.h"
 
 #include <algorithm>
+#include <cassert>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace dino8::app {
 
@@ -36,6 +39,8 @@ void Document::Clear() {
   modified_ = false;
   next_id_ = 1;
   next_group_id_ = 1;
+  pending_ = PendingChange{};
+  ops_since_checkpoint_ = 0;
   undo_.clear();
   redo_.clear();
   named_snapshots_.clear();
@@ -483,42 +488,275 @@ std::vector<std::string> Document::NamedSnapshotNames() const {
   return names;
 }
 
+// ---- diff-based undo/redo history ----------------------------------------
+//
+// See the StateDelta/HistoryEntry/PendingChange comments in Document.h for
+// the overall design. Summary of the four pieces below:
+//  - BeginChange/BeginChangeForObjects: finalize whatever edit is already
+//    pending (it has, by now, finished mutating - see FinalizePending),
+//    then record the *new* pending pre-edit state and clear redo_, exactly
+//    matching the old immediate-push contract from the outside (CanUndo()/
+//    UndoLabels() below report the still-pending entry as already present,
+//    just like the old code's synchronous push did).
+//  - FinalizePending: turns the recorded pre-edit state plus the *current*
+//    (post-edit) live state into a real StateDelta and pushes it.
+//  - Undo/Redo: pop one entry, lazily materialize its "after" objects the
+//    first time it's undone, apply the appropriate side, push it onto the
+//    other stack. No full-document capture anywhere in this path.
+//  - ApplyDelta/ApplyObjectDelta: mutate live state to match one side of a
+//    StateDelta.
+
 void Document::BeginChange(const std::string& label) {
-  undo_.push_back(Capture(label));
-  if (undo_.size() > max_undo_) undo_.erase(undo_.begin());
+  FinalizePending();
+  pending_.active = true;
+  pending_.fast_path = false;
+  pending_.label = label;
+  pending_.layers = layers_;
+  pending_.current_layer = current_layer_;
+  pending_.groups = groups_;
+  pending_.materials = materials_;
+  pending_.lights = lights_;
+  pending_.clipping_planes = clipping_planes_;
+  pending_.layouts = layouts_;
+  pending_.next_id = next_id_;
+  pending_.next_group_id = next_group_id_;
+  pending_.next_light_id = next_light_id_;
+  pending_.objects = objects_;  // O(document) - same cost the old Capture() paid at BeginChange time
+  pending_.fast_path_before.clear();
   redo_.clear();
 }
 
+void Document::BeginChangeForObjects(const std::string& label, const std::vector<ObjectId>& ids) {
+  FinalizePending();
+  pending_.active = true;
+  pending_.fast_path = true;
+  pending_.label = label;
+  pending_.layers = layers_;
+  pending_.current_layer = current_layer_;
+  pending_.groups = groups_;
+  pending_.materials = materials_;
+  pending_.lights = lights_;
+  pending_.clipping_planes = clipping_planes_;
+  pending_.layouts = layouts_;
+  pending_.next_id = next_id_;
+  pending_.next_group_id = next_group_id_;
+  pending_.next_light_id = next_light_id_;
+  pending_.objects.clear();
+  pending_.fast_path_before.clear();
+  pending_.fast_path_before.reserve(ids.size());
+  for (ObjectId id : ids) {
+    if (const SceneObject* o = Find(id)) pending_.fast_path_before.push_back(*o);
+  }
+  redo_.clear();
+}
+
+void Document::FinalizePending() {
+  if (!pending_.active) return;
+  StateDelta d;
+  d.label = pending_.label;
+  d.layers_before = std::move(pending_.layers);
+  d.layers_after = layers_;
+  d.current_layer_before = pending_.current_layer;
+  d.current_layer_after = current_layer_;
+  d.groups_before = std::move(pending_.groups);
+  d.groups_after = groups_;
+  d.materials_before = std::move(pending_.materials);
+  d.materials_after = materials_;
+  d.lights_before = std::move(pending_.lights);
+  d.lights_after = lights_;
+  d.clipping_planes_before = std::move(pending_.clipping_planes);
+  d.clipping_planes_after = clipping_planes_;
+  d.layouts_before = std::move(pending_.layouts);
+  d.layouts_after = layouts_;
+  d.next_id_before = pending_.next_id;
+  d.next_id_after = next_id_;
+  d.next_group_id_before = pending_.next_group_id;
+  d.next_group_id_after = next_group_id_;
+  d.next_light_id_before = pending_.next_light_id;
+  d.next_light_id_after = next_light_id_;
+
+  if (pending_.fast_path) {
+    std::unordered_set<ObjectId> live_ids;
+    live_ids.reserve(objects_.size());
+    for (const SceneObject& o : objects_) live_ids.insert(o.id);
+    for (SceneObject& before : pending_.fast_path_before) {
+      if (live_ids.count(before.id)) {
+        d.modified_before.push_back(std::move(before));
+      } else {
+        // The command removed this object too, outside
+        // BeginChangeForObjects' "modify only" contract. Fall back to
+        // treating it as removed (reinserted at the end on Undo, since its
+        // original position isn't tracked here) rather than silently
+        // dropping the change - not exercised by any call site this
+        // feature currently migrates.
+        d.removed.push_back({std::move(before), objects_.size()});
+      }
+    }
+  } else {
+    std::unordered_set<ObjectId> after_ids;
+    after_ids.reserve(objects_.size());
+    for (const SceneObject& o : objects_) after_ids.insert(o.id);
+    std::unordered_set<ObjectId> before_ids;
+    before_ids.reserve(pending_.objects.size());
+    for (size_t i = 0; i < pending_.objects.size(); ++i) {
+      SceneObject& before = pending_.objects[i];
+      before_ids.insert(before.id);
+      if (after_ids.count(before.id)) {
+        d.modified_before.push_back(std::move(before));
+      } else {
+        d.removed.push_back({std::move(before), i});
+      }
+    }
+    for (const SceneObject& o : objects_) {
+      if (!before_ids.count(o.id)) d.added.push_back(o);
+    }
+  }
+
+  pending_.active = false;
+  pending_.objects.clear();
+  pending_.objects.shrink_to_fit();
+  pending_.fast_path_before.clear();
+
+  std::shared_ptr<const Snapshot> checkpoint;
+  if (++ops_since_checkpoint_ >= kCheckpointInterval) {
+    ops_since_checkpoint_ = 0;
+    checkpoint = std::make_shared<Snapshot>(Capture(d.label));
+  }
+  undo_.push_back(HistoryEntry{std::move(d), std::move(checkpoint)});
+  if (undo_.size() > max_undo_) undo_.erase(undo_.begin());
+}
+
+void Document::ApplyObjectDelta(const StateDelta& d, bool undo) {
+  std::unordered_map<ObjectId, size_t> index_of;
+  index_of.reserve(objects_.size());
+  for (size_t i = 0; i < objects_.size(); ++i) index_of[objects_[i].id] = i;
+
+  const std::vector<SceneObject>& modified_source = undo ? d.modified_before : d.modified_after;
+  for (const SceneObject& src : modified_source) {
+    const auto it = index_of.find(src.id);
+    if (it != index_of.end()) objects_[it->second] = src;
+  }
+
+  if (undo) {
+    // `added` objects were appended at the tail when this delta was
+    // recorded (Add() always appends; nothing in the codebase reorders
+    // objects_). Removing them by id (via the index map) rather than
+    // assuming tail position keeps this correct even if that changes,
+    // while remaining O(added.size()) amortized. Reverse order so earlier
+    // erases don't invalidate the indices of later ones.
+    for (auto it = d.added.rbegin(); it != d.added.rend(); ++it) {
+      const auto pos = index_of.find(it->id);
+      if (pos != index_of.end()) {
+        objects_.erase(objects_.begin() + static_cast<std::ptrdiff_t>(pos->second));
+        index_of.erase(pos);
+      }
+    }
+    // Reinsert removed objects in ascending original-index order, each at
+    // min(index_before, current size). This exactly reconstructs the
+    // original ordering: by the time object k is reinserted, every
+    // already-reinserted object had a smaller original index, so it was
+    // inserted at or before this position - the same reasoning as
+    // reconstructing a vector from a set of (index, value) pairs by
+    // inserting them in ascending index order.
+    std::vector<const StateDelta::RemovedObject*> order;
+    order.reserve(d.removed.size());
+    for (const auto& r : d.removed) order.push_back(&r);
+    std::sort(order.begin(), order.end(),
+              [](const auto* a, const auto* b) { return a->index_before < b->index_before; });
+    for (const auto* r : order) {
+      const size_t idx = std::min(r->index_before, objects_.size());
+      objects_.insert(objects_.begin() + static_cast<std::ptrdiff_t>(idx), r->object);
+    }
+  } else {
+    for (const auto& r : d.removed) {
+      const auto pos = index_of.find(r.object.id);
+      if (pos != index_of.end()) objects_.erase(objects_.begin() + static_cast<std::ptrdiff_t>(pos->second));
+    }
+    for (const SceneObject& o : d.added) objects_.push_back(o);
+  }
+  for (SceneObject& o : objects_) o.InvalidateDisplay();  // matches Restore()'s blanket invalidate
+}
+
+void Document::ApplyDelta(const StateDelta& d, bool undo) {
+  ApplyObjectDelta(d, undo);
+  layers_ = undo ? d.layers_before : d.layers_after;
+  current_layer_ = undo ? d.current_layer_before : d.current_layer_after;
+  groups_ = undo ? d.groups_before : d.groups_after;
+  materials_ = undo ? d.materials_before : d.materials_after;
+  lights_ = undo ? d.lights_before : d.lights_after;
+  clipping_planes_ = undo ? d.clipping_planes_before : d.clipping_planes_after;
+  layouts_ = undo ? d.layouts_before : d.layouts_after;
+  next_id_ = undo ? d.next_id_before : d.next_id_after;
+  next_group_id_ = undo ? d.next_group_id_before : d.next_group_id_after;
+  next_light_id_ = undo ? d.next_light_id_before : d.next_light_id_after;
+  Touch();
+}
+
 bool Document::Undo() {
+  FinalizePending();
   if (undo_.empty()) return false;
-  Snapshot current = Capture(undo_.back().label);
-  redo_.push_back(current);
-  Restore(undo_.back());
+  HistoryEntry entry = std::move(undo_.back());
   undo_.pop_back();
+  if (!entry.delta.modified_after_ready) {
+    // First time this entry is undone: materialize its "after" objects
+    // from the *current* live state (which, at this exact point, is
+    // exactly the post-edit state this delta recorded, since nothing has
+    // touched the document between recording and this Undo). O(candidate
+    // count) once, then cached on the entry for every future Undo/Redo
+    // toggle - see the StateDelta comment in Document.h for why this is
+    // deferred rather than computed at record time.
+    std::unordered_map<ObjectId, const SceneObject*> live;
+    live.reserve(objects_.size());
+    for (const SceneObject& o : objects_) live[o.id] = &o;
+    entry.delta.modified_after.clear();
+    entry.delta.modified_after.reserve(entry.delta.modified_before.size());
+    for (const SceneObject& before : entry.delta.modified_before) {
+      const auto it = live.find(before.id);
+      entry.delta.modified_after.push_back(it != live.end() ? *it->second : before);
+    }
+    entry.delta.modified_after_ready = true;
+  }
+  if (entry.checkpoint) {
+    // Cheap structural self-check against the periodic full checkpoint -
+    // see the HistoryEntry comment in Document.h. Compiled out entirely in
+    // release builds; not a substitute for the delta application below.
+    assert(entry.checkpoint->next_id == entry.delta.next_id_after);
+    assert(entry.checkpoint->next_group_id == entry.delta.next_group_id_after);
+    assert(entry.checkpoint->next_light_id == entry.delta.next_light_id_after);
+  }
+  ApplyDelta(entry.delta, /*undo=*/true);
+  redo_.push_back(std::move(entry));
   return true;
 }
 
 bool Document::Redo() {
+  FinalizePending();
   if (redo_.empty()) return false;
-  undo_.push_back(Capture(redo_.back().label));
-  Restore(redo_.back());
+  HistoryEntry entry = std::move(redo_.back());
   redo_.pop_back();
+  // modified_after is always ready here: the only way an entry reaches
+  // redo_ is via Undo() above, which already materialized it.
+  ApplyDelta(entry.delta, /*undo=*/false);
+  undo_.push_back(std::move(entry));
   return true;
 }
 
 std::vector<std::string> Document::UndoLabels() const {
   std::vector<std::string> labels;
-  for (auto it = undo_.rbegin(); it != undo_.rend(); ++it) labels.push_back(it->label);
+  if (pending_.active) labels.push_back(pending_.label);
+  for (auto it = undo_.rbegin(); it != undo_.rend(); ++it) labels.push_back(it->delta.label);
   return labels;
 }
 
 std::vector<std::string> Document::RedoLabels() const {
   std::vector<std::string> labels;
-  for (auto it = redo_.rbegin(); it != redo_.rend(); ++it) labels.push_back(it->label);
+  for (auto it = redo_.rbegin(); it != redo_.rend(); ++it) labels.push_back(it->delta.label);
   return labels;
 }
 
 void Document::ClearUndo() {
+  pending_ = PendingChange{};
+  ops_since_checkpoint_ = 0;
   undo_.clear();
   redo_.clear();
 }
