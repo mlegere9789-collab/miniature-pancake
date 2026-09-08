@@ -116,6 +116,11 @@ typedef std::ptrdiff_t GLintptr;
 #ifndef GL_TEXTURE_BUFFER_BINDING
 #define GL_TEXTURE_BUFFER_BINDING 0x8C2A
 #endif
+// GL 3.0 texture-array target, used by the GPU raytracer's material
+// texture atlas (one layer per distinct material texture).
+#ifndef GL_TEXTURE_2D_ARRAY
+#define GL_TEXTURE_2D_ARRAY 0x8C1A
+#endif
 
 #ifndef APIENTRY
 #define APIENTRY
@@ -172,7 +177,9 @@ namespace dino8::gl {
   X(void, GenerateMipmap, GLenum)                                                           \
   X(void, TexBuffer, GLenum, GLenum, GLuint)                                                \
   X(void, DrawBuffers, GLsizei, const GLenum*)                                              \
-  X(void, Uniform1iv, GLint, GLsizei, const GLint*)
+  X(void, Uniform1iv, GLint, GLsizei, const GLint*)                                         \
+  X(void, TexImage3D, GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void*)         \
+  X(void, TexSubImage3D, GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLenum, const void*)
 
 #define DINO8_GL_DECLARE(ret, name, ...) \
   typedef ret(APIENTRY* PFN_##name)(__VA_ARGS__); \
@@ -238,3 +245,5 @@ const char* LastError();
 #define glTexBuffer dino8::gl::TexBuffer
 #define glDrawBuffers dino8::gl::DrawBuffers
 #define glUniform1iv dino8::gl::Uniform1iv
+#define glTexImage3D dino8::gl::TexImage3D
+#define glTexSubImage3D dino8::gl::TexSubImage3D

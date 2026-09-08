@@ -47,10 +47,17 @@ class GpuRaytracer {
   int TriangleCount() const { return tri_count_; }
   bool Empty() const { return tri_count_ == 0; }
 
+  // Max indirect-bounce depth (1 = the original single-bounce behaviour).
+  // Clamped to [1, kMaxBounceDepth] in Render(). See gpu_render_notes.md
+  // for the measured cost of raising this.
+  void SetMaxBounces(int n) { max_bounces_ = n; }
+  int MaxBounces() const { return max_bounces_; }
+
  private:
   bool EnsureTargets(int width, int height);
   bool CompilePrograms(std::string& error);
   void UploadBuffer(GLuint& buf, GLuint& tex, const std::vector<float>& floats);
+  void UploadTextureAtlas(const std::vector<app::Material>& mats);
 
   bool inited_ = false;
   GLuint trace_program_ = 0, denoise_program_ = 0;
@@ -62,7 +69,23 @@ class GpuRaytracer {
 
   // Materials/lights, mirrored into flat arrays ready for glUniform*fv.
   std::vector<float> mat_a_, mat_b_, mat_c_;  // (diffuse,gloss) (specular,reflectivity) (emission,transparency)
+  std::vector<float> mat_d_;  // (has_texture, atlas_layer, 0, 0)
   int mat_count_ = 0;
+
+  // Material texture atlas: one kTexTileSize x kTexTileSize RGBA8 layer per
+  // distinct material texture_path (procedural or file-based), up to
+  // kMaxTexLayers - see UploadTextureAtlas() / gpu_render_notes.md for the
+  // "why a fixed small atlas, not full-resolution per-material textures"
+  // tradeoff.
+  static constexpr int kTexTileSize = 64;
+  static constexpr int kMaxTexLayers = 16;
+  GLuint tex_atlas_ = 0;
+  int tex_layers_ = 0;
+
+  // Max indirect-bounce depth (see SetMaxBounces above). kMaxBounceDepth is
+  // the shader's fixed unrolled-loop bound.
+  static constexpr int kMaxBounceDepth = 3;
+  int max_bounces_ = 2;
   std::vector<float> light_a_, light_b_, light_c_;  // (pos,type) (dir,cos_outer) (color,cos_inner)
   int light_count_ = 0;
   int bg_mode_ = 0;
@@ -85,7 +108,8 @@ class GpuRaytracer {
   // Cached uniform locations (trace program).
   GLint t_prev_ = -1, t_nodes_ = -1, t_tris_ = -1, t_eye_ = -1, t_fwd_ = -1, t_right_ = -1, t_up_ = -1,
         t_tan_fov_ = -1, t_aspect_ = -1, t_ortho_ = -1, t_ortho_h_ = -1, t_resolution_ = -1, t_seed_ = -1,
-        t_alpha_ = -1, t_mat_count_ = -1, t_mat_a_ = -1, t_mat_b_ = -1, t_mat_c_ = -1, t_light_count_ = -1,
+        t_alpha_ = -1, t_mat_count_ = -1, t_mat_a_ = -1, t_mat_b_ = -1, t_mat_c_ = -1, t_mat_d_ = -1,
+        t_tex_atlas_ = -1, t_max_bounces_ = -1, t_light_count_ = -1,
         t_light_a_ = -1, t_light_b_ = -1, t_light_c_ = -1, t_bg_mode_ = -1, t_bg_top_ = -1, t_bg_bottom_ = -1,
         t_sun_enabled_ = -1, t_sun_dir_ = -1, t_sun_color_ = -1, t_sun_intensity_ = -1;
   // Cached uniform locations (denoise program).

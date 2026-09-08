@@ -228,7 +228,7 @@ void Bvh::ExportGpuNodes(std::vector<float>& out) const {
 
 void Bvh::ExportGpuTriangles(std::vector<float>& out) const {
   out.clear();
-  out.reserve(tris_.size() * 24);
+  out.reserve(tris_.size() * 32);
   for (const BvhTriangle& t : tris_) {
     out.push_back(static_cast<float>(t.v0.x)); out.push_back(static_cast<float>(t.v0.y));
     out.push_back(static_cast<float>(t.v0.z)); out.push_back(static_cast<float>(t.material));
@@ -242,6 +242,8 @@ void Bvh::ExportGpuTriangles(std::vector<float>& out) const {
     out.push_back(static_cast<float>(t.n1.z)); out.push_back(0.f);
     out.push_back(static_cast<float>(t.n2.x)); out.push_back(static_cast<float>(t.n2.y));
     out.push_back(static_cast<float>(t.n2.z)); out.push_back(0.f);
+    out.push_back(t.uv0[0]); out.push_back(t.uv0[1]); out.push_back(t.uv1[0]); out.push_back(t.uv1[1]);
+    out.push_back(t.uv2[0]); out.push_back(t.uv2[1]); out.push_back(0.f); out.push_back(0.f);
   }
 }
 
