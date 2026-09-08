@@ -68,6 +68,18 @@ public static class MediaTime
     }
 
     /// <summary>Formats a duration the way FFmpeg expects it on the command line.</summary>
-    public static string Format(TimeSpan value) =>
-        value.ToString(@"hh\:mm\:ss\.fff", CultureInfo.InvariantCulture);
+    public static string Format(TimeSpan value)
+    {
+        // TimeSpan's own "hh" custom format specifier is just the Hours component
+        // (0-23), not the total hours -- for any value of a day or more (a plausible
+        // trim start/end on a long recording, e.g. "30:00:00" typed directly, which
+        // TryParse above accepts without complaint) that silently wraps the hour count
+        // mod 24 and drops the day entirely, handing FFmpeg's -ss/-t a seek point up to
+        // 24 hours earlier than the one requested. FFmpeg's own duration syntax has no
+        // such 24-hour ceiling, so neither does this: the hour count is computed from
+        // TotalHours directly and only "mm"/"ss"/"fff" (each already scoped to their own
+        // sub-component, never a running total) are taken from the TimeSpan itself.
+        var totalHours = (long)value.TotalHours;
+        return $"{totalHours:00}:{value.ToString(@"mm\:ss\.fff", CultureInfo.InvariantCulture)}";
+    }
 }
