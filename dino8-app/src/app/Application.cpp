@@ -1605,7 +1605,7 @@ void Application::DrawCommandLine() {
   if (entered) {
     // Enter with an autocomplete row highlighted runs that command.
     if (autocomplete_index_ >= 0 && autocomplete_count_ > 0 && !engine_->IsRunning()) {
-      std::vector<const CommandInfo*> m = catalog_.WithPrefix(autocomplete_prefix_, 12);
+      std::vector<const CommandInfo*> m = catalog_.FuzzyMatch(autocomplete_prefix_, 12);
       if (autocomplete_index_ < static_cast<int>(m.size())) command_input_ = m[static_cast<size_t>(autocomplete_index_)]->name;
     }
     autocomplete_index_ = -1;
@@ -1626,7 +1626,7 @@ void Application::DrawCommandLine() {
   if (input_active && !engine_->IsRunning() && !command_input_.empty() && command_input_.find(' ') == std::string::npos) {
     std::string prefix = command_input_;
     while (!prefix.empty() && (prefix.front() == '_' || prefix.front() == '-' || prefix.front() == '!')) prefix.erase(prefix.begin());
-    std::vector<const CommandInfo*> matches = catalog_.WithPrefix(prefix, 12);
+    std::vector<const CommandInfo*> matches = catalog_.FuzzyMatch(prefix, 12);
     if (!matches.empty() && !prefix.empty()) {
       showing = true;
       if (prefix != autocomplete_prefix_) autocomplete_index_ = -1;

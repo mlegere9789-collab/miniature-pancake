@@ -1409,4 +1409,21 @@ echo "$RN" | grep -E "^(ok|FAIL)"
 if echo "$RN" | grep -q "^FAIL"; then fail=1; fi
 rncheck2 "gl_error=0" "remaining script ran without OpenGL errors"
 
+# Command-line autocomplete: real fuzzy/subsequence matching, not just
+# prefix matching (see fuzzy_autocomplete_script.txt). "bdiff" and "zmanif"
+# are neither prefixes nor contiguous substrings of any catalog command,
+# but are in-order subsequences of exactly one or two command names each;
+# Tab-completing them must pick the (shorter) real command. A plain
+# prefix ("Box") must still Tab-complete to itself, unchanged.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  FZ="$("$BIN" --smoke 60 --script "$HERE/fuzzy_autocomplete_script.txt" 2>&1)" || { echo "$FZ"; echo "FAIL: fuzzy-autocomplete script exited non-zero"; exit 1; }
+else
+  FZ="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/fuzzy_autocomplete_script.txt" 2>&1)" || { echo "$FZ"; echo "FAIL: fuzzy-autocomplete script exited non-zero"; exit 1; }
+fi
+fzcheck() { if echo "$FZ" | grep -qE "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+fzcheck "^history: Command: BooleanDifference$" "fuzzy subsequence 'bdiff' (not a prefix/substring of any command) autocompleted to BooleanDifference"
+fzcheck "^history: Command: Box$" "plain prefix 'Box' still autocompletes to itself (no regression from adding fuzzy matching)"
+fzcheck "^history: Command: ZoomNonManifold$" "fuzzy subsequence 'zmanif' (not a prefix/substring of any command) autocompleted to the unique match ZoomNonManifold"
+fzcheck "gl_error=0" "fuzzy-autocomplete script ran without OpenGL errors"
+
 exit $fail

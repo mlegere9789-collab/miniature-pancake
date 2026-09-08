@@ -29,6 +29,14 @@ class CommandCatalog {
   std::vector<const CommandInfo*> WithPrefix(const std::string& prefix, size_t limit = 50) const;
   // Names or descriptions containing `text`.
   std::vector<const CommandInfo*> Search(const std::string& text) const;
+  // Fuzzy/subsequence match against command names (case-insensitive), for
+  // the command-line autocomplete popup: `query`'s characters must appear
+  // in `name`, in order, but not necessarily contiguously (e.g. "bdiff"
+  // matches "BooleanDifference"). Ranked so exact and prefix matches come
+  // first, then contiguous substrings, then scattered subsequence matches
+  // (favouring consecutive runs, word-boundary starts, and shorter names);
+  // an empty query returns no results.
+  std::vector<const CommandInfo*> FuzzyMatch(const std::string& query, size_t limit = 50) const;
   size_t Size() const { return commands_.size(); }
   const std::string& LoadedFrom() const { return loaded_from_; }
 
