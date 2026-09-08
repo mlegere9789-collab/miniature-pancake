@@ -152,7 +152,9 @@ class SetRenderColorCommand : public Command {
   void OnText(CommandContext& ctx, const std::string& t) override {
     Color c;
     if (!ParseMiscColor(t, c)) { ctx.Warn("SetRenderColor: use r,g,b (0-255) or a colour name"); Finish(); return; }
-    ctx.Doc().BeginChange("SetRenderColor");
+    // ids_ is the fixed selection from OnObjects above; only color/
+    // color_by_layer change on those existing objects - fast path.
+    ctx.Doc().BeginChangeForObjects("SetRenderColor", ids_);
     int n = 0;
     for (ObjectId id : ids_) {
       SceneObject* o = ctx.Doc().Find(id);

@@ -1847,7 +1847,10 @@ void MatchProperties(CommandContext& ctx, const std::vector<ObjectId>& targets, 
   if (!src) { ctx.Warn("Select the source object"); return; }
   const Attrs a = Attrs::Of(*src);
   const bool layer = OptYes(o, "Layer", true), color = OptYes(o, "Color", true), material = OptYes(o, "Material", true), linetype = OptYes(o, "Linetype", true), name = OptYes(o, "Name", false), user = OptYes(o, "UserText", false);
-  ctx.Doc().BeginChange("MatchProperties");
+  // targets is the fixed selection passed in; only per-object attribute
+  // fields (layer/color/material/linetype/name/user_text) are set on
+  // those existing objects, nothing else about the document - fast path.
+  ctx.Doc().BeginChangeForObjects("MatchProperties", targets);
   int n = 0;
   for (ObjectId id : targets) {
     SceneObject* t = ctx.Doc().Find(id);

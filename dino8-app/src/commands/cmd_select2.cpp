@@ -146,7 +146,9 @@ class SoftEditCommand : public Command {
     if (!o) return;
     Point3d base_p;
     if (!ControlPointPosition(*o, base_->index, base_p)) return;
-    ctx.Doc().BeginChange("SoftEdit");
+    // Only base_->id's control points move; a single known existing
+    // object, nothing else about the document changes - fast path.
+    ctx.Doc().BeginChangeForObjects("SoftEdit", {base_->id});
     const int n = ControlPointCount(*o);
     int moved = 0;
     for (int i = 0; i < n; ++i) {
@@ -987,7 +989,14 @@ void RegisterSelect2Commands(CommandEngine& e) {
         std::sscanf(t.c_str(), "%lf,%lf,%lf", &du, &dv, &dn);
         std::vector<SubObjectRef> cps = SelectedOfKind(ctx, SubObjectKind::Vertex);
         if (cps.empty()) { ctx.Warn("Select control points first (PointsOn, then click them)"); return; }
-        ctx.Doc().BeginChange("MoveUVN");
+        // The exact set of existing objects whose control points move is
+        // known up front from cps (only surfaces below are actually
+        // touched, a subset); nothing else about the document changes.
+        std::vector<ObjectId> touched_ids;
+        for (const SubObjectRef& r : cps) {
+          if (std::find(touched_ids.begin(), touched_ids.end(), r.id) == touched_ids.end()) touched_ids.push_back(r.id);
+        }
+        ctx.Doc().BeginChangeForObjects("MoveUVN", touched_ids);
         int moved = 0;
         std::map<ObjectId, std::vector<SubObjectRef>> byObj;
         for (const SubObjectRef& r : cps) byObj[r.id].push_back(r);
@@ -1030,7 +1039,9 @@ void RegisterSelect2Commands(CommandEngine& e) {
           if (std::optional<kernel::Mesh> m = MeshOf(o, 0.01)) targets.push_back(std::move(*m));
         }
         if (targets.empty()) { ctx.Warn("DrapePt: no surfaces, polysurfaces, meshes or SubDs to drape onto"); return; }
-        ctx.Doc().BeginChange("DrapePt");
+        // pts is the fixed set of existing point objects being moved;
+        // the drape targets are only read, never modified - fast path.
+        ctx.Doc().BeginChangeForObjects("DrapePt", pts);
         const Vector3d down(0, 0, -1);
         int n = 0;
         for (ObjectId id : pts) {

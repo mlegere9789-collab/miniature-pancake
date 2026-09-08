@@ -11,7 +11,11 @@ namespace dino8::app {
 namespace {
 
 void HideShow(CommandContext& ctx, const std::vector<ObjectId>& ids, bool visible, const char* label) {
-  ctx.Doc().BeginChange(label);
+  // Only used by "Hide" below with a known, fixed selection: sets
+  // visible/selected on those existing ids only, never adds/removes
+  // objects or touches other document state - qualifies for the object-
+  // scoped fast path (see Document::BeginChangeForObjects).
+  ctx.Doc().BeginChangeForObjects(label, ids);
   for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->visible = visible; if (!visible) o->selected = false; }
 }
 
@@ -190,7 +194,9 @@ class SetObjectNameCommand : public Command {
   }
   void OnText(CommandContext& ctx, const std::string& name) override {
     if (name.empty()) { ctx.Warn("SetObjectName: name cannot be empty"); Finish(); return; }
-    ctx.Doc().BeginChange("SetObjectName");
+    // ids_ is the fixed selection collected in OnObjects above; only
+    // name is set on those existing objects - fast path candidate.
+    ctx.Doc().BeginChangeForObjects("SetObjectName", ids_);
     int i = 0;
     for (ObjectId id : ids_) {
       SceneObject* o = ctx.Doc().Find(id);
@@ -222,7 +228,9 @@ class SetUserTextCommand : public Command {
       WantText("Value for '" + key_ + "'");
       return;
     }
-    ctx.Doc().BeginChange("SetUserText");
+    // ids_ is the fixed selection collected up front; only user_text is
+    // set on those existing objects - fast path candidate.
+    ctx.Doc().BeginChangeForObjects("SetUserText", ids_);
     for (ObjectId id : ids_) if (SceneObject* o = ctx.Doc().Find(id)) o->user_text[key_] = t;
     ctx.Print("SetUserText: " + key_ + " = " + t + " on " + std::to_string(ids_.size()) + " object(s)");
     Finish();
@@ -450,7 +458,11 @@ void RegisterEditCommands(CommandEngine& e) {
         for (SceneObject& o : ctx.Doc().Objects()) o.visible = std::find(ids.begin(), ids.end(), o.id) != ids.end();
       }));
   Reg(e, "Unisolate", Immediate([](CommandContext& ctx) { ctx.Doc().BeginChange("Unisolate"); for (SceneObject& o : ctx.Doc().Objects()) o.visible = true; }));
-  Reg(e, "Lock", OnSelection("Select objects to lock", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ctx.Doc().BeginChange("Lock"); for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->locked = true; o->selected = false; } }));
+  // Lock: a fixed, known selection, only locked/selected are set on those
+  // existing objects - fast path candidate (unlike Unlock/LockSwap/
+  // UnlockSelected below, which iterate the whole document to find their
+  // ids and gain nothing from narrowing it).
+  Reg(e, "Lock", OnSelection("Select objects to lock", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ctx.Doc().BeginChangeForObjects("Lock", ids); for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->locked = true; o->selected = false; } }));
   Reg(e, "Unlock", Immediate([](CommandContext& ctx) { ctx.Doc().BeginChange("Unlock"); for (SceneObject& o : ctx.Doc().Objects()) o.locked = false; }));
   Reg(e, "UnlockSelected", Immediate([](CommandContext& ctx) { ctx.Doc().BeginChange("UnlockSelected"); for (SceneObject& o : ctx.Doc().Objects()) if (o.locked) { o.locked = false; o.selected = true; } }));
   Reg(e, "LockSwap", Immediate([](CommandContext& ctx) { ctx.Doc().BeginChange("LockSwap"); for (SceneObject& o : ctx.Doc().Objects()) { o.locked = !o.locked; o.selected = false; } }));

@@ -36,7 +36,16 @@ class ChangeLayerCommand : public Command {
   void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantText("Layer name"); }
   void OnText(CommandContext& ctx, const std::string& name) override {
     int idx = ctx.Doc().FindLayer(name);
-    if (idx < 0) { ctx.Doc().BeginChange("ChangeLayer"); idx = ctx.Doc().AddLayer(name); } else ctx.Doc().BeginChange("ChangeLayer");
+    if (idx < 0) {
+      // Adding a layer touches layers_ (document-level state), which the
+      // fast path's contract excludes - stay on the general path here.
+      ctx.Doc().BeginChange("ChangeLayer");
+      idx = ctx.Doc().AddLayer(name);
+    } else {
+      // Existing layer: only layer_index changes on the fixed ids_
+      // selection, nothing else about the document - fast path candidate.
+      ctx.Doc().BeginChangeForObjects("ChangeLayer", ids_);
+    }
     for (ObjectId id : ids_) if (SceneObject* o = ctx.Doc().Find(id)) { o->layer_index = idx; o->InvalidateDisplay(); }
     ctx.Print("Moved " + std::to_string(ids_.size()) + " object(s) to " + ctx.Doc().LayerFullPath(idx));
     Finish();
@@ -53,13 +62,15 @@ void RegisterLayerCommands(CommandEngine& e) {
   Reg(e, "SetLayer", Make<SetLayerCommand>());
   Reg(e, "ChangeLayer", Make<ChangeLayerCommand>());
   Reg(e, "ChangeToCurrentLayer", OnSelection("Select objects to move to the current layer", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ctx.Doc().BeginChange("ChangeToCurrentLayer");
+        // Fixed, known selection; only layer_index changes - fast path.
+        ctx.Doc().BeginChangeForObjects("ChangeToCurrentLayer", ids);
         for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->layer_index = ctx.Doc().CurrentLayer(); o->InvalidateDisplay(); }
       }));
   Reg(e, "MatchLayer", OnSelection("Select objects, the last one is the layer to match", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         const SceneObject* ref = ctx.Doc().Find(ids.back());
         if (!ref) return;
-        ctx.Doc().BeginChange("MatchLayer");
+        // Fixed, known selection; only layer_index changes - fast path.
+        ctx.Doc().BeginChangeForObjects("MatchLayer", ids);
         for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->layer_index = ref->layer_index; o->InvalidateDisplay(); }
       }, 2));
   Reg(e, "SetLayerToObject", OnSelection("Select an object", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
