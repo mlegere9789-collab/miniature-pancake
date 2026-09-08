@@ -1201,6 +1201,10 @@ d2check "NewMaterial qty=1 material=NewMaterial" "UpdateBillOfMaterials picked u
 d2check "Total length = 20 " "the line measured 20 units before the stretch"
 d2check "Total length = 40 " "Scale1D stretched the line to 40 units"
 d2check "UpdateDimensions:   DimLinear now measures 40" "UpdateDimensions redrew the dimension text from the stretched line's new length, not the 20 baked at creation time"
+d2check "DimRadius 5 (associative to selected arc/circle)" "DimRadius recorded the selected circle as its associative reference"
+d2check "UpdateDimensions:   DimRadius now measures 10" "UpdateDimensions redrew DimRadius from the circle's doubled radius, not the 5 baked at creation time"
+d2check "DimAngle 90 deg (associative to 3 point(s))" "DimAngle anchored all three points (vertex + two direction points) to real Point objects"
+d2check "UpdateDimensions:   DimAngle now measures 45 deg" "UpdateDimensions redrew DimAngle from a moved direction point's new position, not the 90 deg baked at creation time"
 
 d2check "gl_error=0" "drafting2 script ran without OpenGL errors"
 

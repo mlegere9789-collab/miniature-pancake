@@ -103,6 +103,44 @@ UpdateDimensions
 SelName MovingLine
 Length
 SelNone
+# --- Associative DimRadius: always associative to the selected arc/circle
+# (not coincident-point matching). Doubling the circle's radius via a
+# uniform Scale about its center, then UpdateDimensions, must pick up the
+# new radius instead of the 5 baked at creation time.
+Circle 0,0,0 5
+SelLast
+SetObjectName AssocCircle
+DimRadius
+10,0,0
+SelName AssocCircle
+Scale 0,0,0 2
+UpdateDimensions
+# --- Associative DimAngle: anchored to three real Point objects (vertex +
+# two direction points) via coincident-point matching, same rule as
+# DimLinear. Placed in an unused part of the plane (500,500 area) so
+# FindPointAnchor can't accidentally match an earlier object's coincident
+# corner/endpoint instead of these. Moving one direction point from
+# (500,510,0) to (510,510,0) changes the angle between (1,0,0) and the new
+# (1,1,0) direction from 90 to 45 degrees; UpdateDimensions must redraw it
+# as 45, not the original 90.
+Point 500,500,0
+SelLast
+SetObjectName AngleVertex
+Point 510,500,0
+SelLast
+SetObjectName AngleDir1
+Point 500,510,0
+SelLast
+SetObjectName AngleDir2
+SelNone
+DimAngle
+500,500,0
+510,500,0
+500,510,0
+SelName AngleDir2
+Move 500,510,0 510,510,0
+UpdateDimensions
+SelNone
 Save @TMP@/drafting2.3dm
 New
 Open @TMP@/drafting2.3dm
