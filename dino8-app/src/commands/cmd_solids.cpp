@@ -635,6 +635,24 @@ void RegisterSolidCommands(CommandEngine& e) {
           if (o->kind == ObjectKind::SubD) {
             ON_SubD copy = o->subd->raw();
             ON_Brep* b = copy.BrepForm(nullptr);
+            if (!b) {
+              // The vendored OpenNURBS build's ON_SubD::BrepForm() is an
+              // unconditional stub (always returns nullptr - the real
+              // Catmull-Clark limit-surface-to-NURBS-patch conversion is
+              // Rhino-proprietary and not part of the public OpenNURBS
+              // source), so this always fails; approximate instead by
+              // subdividing to a dense quad mesh (the same technique
+              // SmoothSubDMesh in SceneObject.cpp uses for on-screen
+              // display) and building a facetted Brep from that, exactly
+              // like the Mesh branch below already does.
+              try {
+                kernel::SubD dense = *o->subd;
+                int faces = dense.FaceCount(), levels = 0;
+                while (levels < 3 && faces > 0 && faces * 4 <= 100000) { faces *= 4; ++levels; }
+                if (levels > 0) dense.Subdivide(levels);
+                b = ON_BrepFromMesh(dense.ToApproximateMesh().raw().Topology());
+              } catch (...) { b = nullptr; }
+            }
             if (b) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ++made; }
           } else if (o->kind == ObjectKind::Mesh) {
             ON_Brep* b = ON_BrepFromMesh(o->mesh->raw().Topology());
@@ -642,7 +660,10 @@ void RegisterSolidCommands(CommandEngine& e) {
           }
         }
         ctx.Print("Converted " + std::to_string(made) + " object(s)");
-      }));
+      }), CommandStatus::Partial,
+      "SubD input approximates with a dense subdivided quad mesh converted to a facetted Brep, not smooth "
+      "NURBS patches - OpenNURBS' own SubD-to-NURBS-patch conversion is Rhino-proprietary and unavailable "
+      "here. Mesh input converts exactly.");
   Reg(e, "MeshToNURB", OnSelection("Select meshes", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("MeshToNURB");
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Mesh) if (ON_Brep* b = ON_BrepFromMesh(o->mesh->raw().Topology())) ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); }

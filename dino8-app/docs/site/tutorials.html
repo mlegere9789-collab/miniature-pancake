@@ -51,17 +51,23 @@
   <div class="step"><div class="num">2</div><div class="body"><strong><code>Sphere</code></strong><p>Click a center point off to the side, then a radius. This is object 2.</p></div></div>
   <div class="step"><div class="num">3</div><div class="body"><strong>Select the box, then <code>Move</code></strong><p>Click the box (or type <code>SelID 1</code>), run <code>Move</code>, click a base point and a target point.</p></div></div>
   <div class="step"><div class="num">4</div><div class="body"><strong>Select the box again, then <code>Copy</code></strong><p>Run <code>Copy</code>, click a base point, then a target point, then press Enter to stop copying (Copy will keep placing more copies if you keep clicking).</p></div></div>
-  <div class="step"><div class="num">5</div><div class="body"><strong>Select the new copy, then <code>Rotate</code></strong><p>Click a pivot point, then type an angle in degrees (or click a second point to set the angle visually).</p></div></div>
+  <div class="step"><div class="num">5</div><div class="body"><strong>Select only the new copy, then <code>Rotate</code></strong><p>Click a pivot point, then type an angle in degrees (or click a second point to set the angle visually).</p></div></div>
   <div class="step"><div class="num">6</div><div class="body"><strong><code>Undo</code> twice</strong><p>The rotate and the copy both disappear, in reverse order, leaving the box and sphere as they were after the move.</p></div></div>
   <pre><code>Box                       (click, click, type 5)
 Sphere                    (click, click)
 SelID 1
 Move                      (click base, click target)
+SelID 1
 Copy                      (click base, click target, Enter)
 SelID 3
 Rotate                    (click pivot, type 45)
 Undo
 Undo</code></pre>
+  <div class="callout"><h4>Selecting by id adds to the selection</h4><p><code>SelID</code>
+  (like most select commands) <em>adds</em> to whatever is already selected rather than
+  replacing it, exactly like Shift-clicking. Run <code>SelNone</code> first if you want only
+  the object you are about to pick by id &mdash; otherwise a command like <code>Copy</code> or
+  <code>Rotate</code> will act on everything still selected from an earlier step too.</p></div>
 
   <h2 id="t2">2. Model a simple bracket<span class="verified">verified: 02_bracket.txt</span></h2>
   <p>A flat plate, a mounting hole cut clean through it with a boolean, and one rounded corner
@@ -168,16 +174,24 @@ ArchSlab 0,-3,0 5,0,0 0.2</code></pre>
   (a run of risers between two points).</p>
 
   <h2 id="t7">7. Sketch and revolve a vase<span class="verified">verified: 07_revolve_vase.txt</span></h2>
-  <p>Draw half of a profile curve in the Front view, then spin it 360&deg; around a vertical
+  <p>Draw half of a profile curve in the vertical plane, then spin it 360&deg; around a vertical
   axis to build a surface of revolution.</p>
-  <div class="step"><div class="num">1</div><div class="body"><strong><code>InterpCrv</code></strong><p>Click several points up one side of where you want the vase's silhouette (e.g. a wide base narrowing then flaring at the lip). The curve passes exactly through each point.</p></div></div>
-  <div class="step"><div class="num">2</div><div class="body"><strong>Select the curve, run <code>Revolve</code></strong><p>Click the start of the revolve axis, then the end &mdash; a vertical line running through the curve's base, e.g. from <code>0,0,0</code> to <code>0,20,0</code>.</p></div></div>
+  <div class="step"><div class="num">1</div><div class="body"><strong><code>InterpCrv</code></strong><p>Click several points up one side of where you want the vase's silhouette (e.g. a wide base narrowing then flaring at the lip), then press Enter to finish the curve. It passes exactly through each point.</p></div></div>
+  <div class="step"><div class="num">2</div><div class="body"><strong>Select the curve, run <code>Revolve</code></strong><p>Click the start of the revolve axis, then the end &mdash; a vertical line running through the curve's base, e.g. from <code>0,0,0</code> to <code>0,0,20</code>.</p></div></div>
   <p>The profile curve stays in the document alongside the new revolved surface, so you can
   tweak its control points (<kbd>F10</kbd>) and re-run <code>Revolve</code> to iterate.</p>
-  <pre><code>InterpCrv 0,0,0 3,4,0 2,8,0 4,12,0 0,14,0
+  <pre><code>InterpCrv 0,0,0 3,0,4 2,0,8 4,0,12 0,0,14
+Enter
 SelLast
 Revolve
-                          (click 0,0,0, then 0,20,0 for the axis)</code></pre>
+                          (click 0,0,0, then 0,0,20 for the axis)</code></pre>
+  <div class="callout"><h4>Why the y is always 0</h4><p>Typed coordinates are resolved against
+  the <em>active viewport's</em> construction plane, not fixed world axes. Working in the Top
+  view keeps that plane identical to the world XY plane, so typing <code>x,0,z</code> places
+  points directly in the vertical world XZ plane &mdash; exactly like sketching in a Front view,
+  without depending on Front's own axis mapping. <code>InterpCrv</code> also needs an explicit
+  <code>Enter</code> once you are done clicking/typing points, the same as any other
+  multi-point curve command.</p></div>
 
   <h2 id="t8">8. SubD basics<span class="verified">verified: 08_subd_basics.txt</span></h2>
   <p>SubD (subdivision surface) modeling gives you a low-poly control cage that displays as a
@@ -186,7 +200,7 @@ Revolve
   <div class="step"><div class="num">1</div><div class="body"><strong><code>SubDBox</code></strong><p>Same syntax as <code>Box</code> &mdash; two corners and a height.</p></div></div>
   <div class="step"><div class="num">2</div><div class="body"><strong>Select the SubD, run <code>Crease</code></strong><p>Click the midpoints of one or more control-cage edges to mark them sharp, then Enter.</p></div></div>
   <div class="step"><div class="num">3</div><div class="body"><strong><code>ExtrudeSubD</code></strong><p>Click the centroid of a face to extrude it, then type a distance.</p></div></div>
-  <div class="step"><div class="num">4</div><div class="body"><strong>Select the SubD, run <code>ToNURBS</code></strong><p>Adds a separate NURBS/B-rep copy of the SubD to the document &mdash; the original SubD is untouched, so you keep editing the SubD cage and re-convert whenever you like.</p></div></div>
+  <div class="step"><div class="num">4</div><div class="body"><strong>Select the SubD, run <code>ToNURBS</code></strong><p>Adds a separate B-rep copy of the SubD to the document &mdash; the original SubD is untouched, so you keep editing the SubD cage and re-convert whenever you like.</p></div></div>
   <pre><code>SubDBox 0,0,0 10,10,0 10
 SelLast
 Crease
@@ -198,6 +212,11 @@ ExtrudeSubD
 3
 SelLast
 ToNURBS</code></pre>
+  <div class="callout warn"><h4>Honest limitation</h4><p>OpenNURBS' own SubD-to-NURBS-patch
+  conversion is Rhino-proprietary and not part of the public library Dino 8 builds against, so
+  <code>ToNURBS</code> on a SubD approximates instead: a dense subdivided quad mesh converted to
+  a facetted B-rep, not smooth NURBS patches. Converting an actual mesh object with
+  <code>ToNURBS</code> is exact.</p></div>
   <p>Other SubD tools worth knowing: <code>Inset</code>, <code>Bridge</code> (joins two SubD
   faces with a tube), <code>OffsetSubD Solid=Yes</code> (shells it), <code>RepairSubD</code>.</p>
 

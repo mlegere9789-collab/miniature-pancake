@@ -5,14 +5,17 @@ Box 0,0,0 10,10,0 5
 @expect_objects 1
 Sphere 20,0,5 5
 @expect_objects 2
+SelNone
 SelID 1
 Move 0,0,0 5,5,0
 SelLast
 List
+SelNone
 SelID 1
 Copy 5,5,0 5,25,0
 Enter
 @expect_objects 3
+SelNone
 SelID 3
 Rotate 5,25,0 45
 SelAll

@@ -3,8 +3,8 @@ window.DINO8_COMMANDS = {
  "generated_from": "data/commands.json + src/commands/cmd_*.cpp",
  "total": 1055,
  "counts": {
-  "Implemented": 1002,
-  "Partial": 53,
+  "Implemented": 1001,
+  "Partial": 54,
   "Planned": 0
  },
  "commands": [
@@ -9887,8 +9887,8 @@ window.DINO8_COMMANDS = {
    "description": "Convert objects like polycurves, extrusions, meshes, SubDs, true circles and arcs, to NURBS geometry components.",
    "toolbars": "Geometry Fix, SubD Tools",
    "menu": "Not on menus.",
-   "status": "Implemented",
-   "note": "",
+   "status": "Partial",
+   "note": "SubD input approximates with a dense subdivided quad mesh converted to a facetted Brep, not smooth ",
    "source": "cmd_solids.cpp",
    "aliases": []
   },
