@@ -87,7 +87,7 @@ public static class FFmpegCommandBuilder
 
             case "video.compress":
                 AppendVideoEncode(arguments, spec, extension);
-                AppendAudioEncode(arguments, spec, extension, forVideoContainer: true);
+                AppendAudioEncode(arguments, spec, extension);
                 AppendContainerExtras(arguments, extension);
                 return;
         }
@@ -95,7 +95,7 @@ public static class FFmpegCommandBuilder
         if (FFmpegOperations.ProducesAudioOnly(operation))
         {
             arguments.Add("-vn");
-            AppendAudioEncode(arguments, spec, extension, forVideoContainer: false);
+            AppendAudioEncode(arguments, spec, extension);
             return;
         }
 
@@ -108,7 +108,7 @@ public static class FFmpegCommandBuilder
         else
         {
             AppendVideoEncode(arguments, spec, extension);
-            AppendAudioEncode(arguments, spec, extension, forVideoContainer: true);
+            AppendAudioEncode(arguments, spec, extension);
         }
 
         AppendContainerExtras(arguments, extension);
@@ -139,7 +139,7 @@ public static class FFmpegCommandBuilder
         if (spec.GetBool("reencode", false))
         {
             AppendVideoEncode(arguments, spec, extension);
-            AppendAudioEncode(arguments, spec, extension, forVideoContainer: true);
+            AppendAudioEncode(arguments, spec, extension);
         }
         else
         {
@@ -216,9 +216,9 @@ public static class FFmpegCommandBuilder
         }
     }
 
-    private static void AppendAudioEncode(List<string> arguments, JobSpec spec, string extension, bool forVideoContainer)
+    private static void AppendAudioEncode(List<string> arguments, JobSpec spec, string extension)
     {
-        var codec = spec.GetOption("audioCodec", DefaultAudioCodec(extension, forVideoContainer));
+        var codec = spec.GetOption("audioCodec", DefaultAudioCodec(extension));
 
         arguments.Add("-c:a");
         arguments.Add(codec);
@@ -313,7 +313,7 @@ public static class FFmpegCommandBuilder
         _ => "libx264",
     };
 
-    internal static string DefaultAudioCodec(string extension, bool forVideoContainer) => extension switch
+    internal static string DefaultAudioCodec(string extension) => extension switch
     {
         "mp3" => "libmp3lame",
         "ogg" => "libvorbis",
@@ -325,7 +325,10 @@ public static class FFmpegCommandBuilder
         "aac" or "m4a" => "aac",
         "ac3" => "ac3",
         "webm" => "libopus",
-        _ => forVideoContainer ? "aac" : "aac",
+
+        // Every container this app writes that isn't its own dedicated audio format
+        // (mp4, mkv, mov, avi, wmv, mpeg, 3gp, m4v, ts) takes AAC just fine.
+        _ => "aac",
     };
 
     /// <summary>CRF for a preset. The usable range differs per codec, so the table does too.</summary>
