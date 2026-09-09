@@ -220,6 +220,77 @@ write_mtext_fixture (const char *path)
   return 0;
 }
 
+/* A real DIMENSION_LINEAR and a real DIMENSION_RADIUS entity, built via
+ * LibreDWG's own dwg_add_DIMENSION_LINEAR/dwg_add_DIMENSION_RADIUS -
+ * *not* marked "Experimental" in dwg_api.h (unlike dwg_add_SPLINE/
+ * dwg_add_MTEXT above), and confirmed by reading their implementation
+ * (src/dwg_api.c) directly: dwg_add_DIMENSION_LINEAR stores xline1_pt/
+ * xline2_pt verbatim and def_pt verbatim (its own comment there literally
+ * says "// dimline_pt"), and rotation_angle verbatim into dim_rotation, in
+ * RADIANS (ADD_CHECK_ANGLE rejects |angle| > 12, i.e. it expects radians,
+ * not degrees) - so 0.0 here really is a horizontal dimension.
+ * dwg_add_DIMENSION_RADIUS stores center_pt into def_pt and chord_pt into
+ * first_arc_pt verbatim. This is exactly the field mapping
+ * DxfImporter::Dimension/WalkDwgEntities in src/io/FileExchange.cpp expect
+ * (see that comment for the DXF-side group-code derivation, cross-checked
+ * against this same dwg.spec).
+ *
+ * Linear: xline1=(0,0,0), xline2=(10,0,0), def_pt(dimline location)=
+ * (5,5,0), rotation=0 (horizontal) - so the measured distance is exactly
+ * 10 (the two points' X-difference), independent of the dimension-line's Y
+ * offset.
+ * Radius: center=(40,0,0), chord (first_arc_pt)=(45,0,0) - radius exactly
+ * 5 (the distance between them) - leader_len=1.
+ */
+static int
+write_dim_fixture (const char *path)
+{
+  Dwg_Data *dwg = dwg_new_Document (R_2000, 0, 0);
+  if (!dwg)
+    {
+      fprintf (stderr, "dwg_new_Document failed\n");
+      return 1;
+    }
+  Dwg_Object *mspace = dwg_model_space_object (dwg);
+  if (!mspace)
+    {
+      fprintf (stderr, "dwg_model_space_object failed\n");
+      return 1;
+    }
+  Dwg_Object_BLOCK_HEADER *hdr = mspace->tio.object->tio.BLOCK_HEADER;
+
+  const dwg_point_3d x1 = { 0.0, 0.0, 0.0 };
+  const dwg_point_3d x2 = { 10.0, 0.0, 0.0 };
+  const dwg_point_3d defp = { 5.0, 5.0, 0.0 };
+  Dwg_Entity_DIMENSION_LINEAR *lin
+      = dwg_add_DIMENSION_LINEAR (hdr, &x1, &x2, &defp, 0.0);
+  if (!lin)
+    {
+      fprintf (stderr, "dwg_add_DIMENSION_LINEAR failed\n");
+      return 1;
+    }
+
+  const dwg_point_3d center = { 40.0, 0.0, 0.0 };
+  const dwg_point_3d chord = { 45.0, 0.0, 0.0 };
+  Dwg_Entity_DIMENSION_RADIUS *rad
+      = dwg_add_DIMENSION_RADIUS (hdr, &center, &chord, 1.0);
+  if (!rad)
+    {
+      fprintf (stderr, "dwg_add_DIMENSION_RADIUS failed\n");
+      return 1;
+    }
+
+  const int werr = dwg_write_file (path, dwg);
+  dwg_free (dwg);
+  if (werr >= DWG_ERR_CRITICAL)
+    {
+      fprintf (stderr, "dwg_write_file failed: 0x%x\n", werr);
+      return 1;
+    }
+  printf ("wrote %s\n", path);
+  return 0;
+}
+
 int
 main (int argc, char **argv)
 {
@@ -229,9 +300,11 @@ main (int argc, char **argv)
     return write_spline_fixture (argv[1]);
   if (argc == 3 && strcmp (argv[2], "mtext") == 0)
     return write_mtext_fixture (argv[1]);
+  if (argc == 3 && strcmp (argv[2], "dim") == 0)
+    return write_dim_fixture (argv[1]);
   if (argc != 2)
     {
-      fprintf (stderr, "usage: %s <output.dwg> [hatch|spline|mtext]\n", argv[0]);
+      fprintf (stderr, "usage: %s <output.dwg> [hatch|spline|mtext|dim]\n", argv[0]);
       return 2;
     }
 

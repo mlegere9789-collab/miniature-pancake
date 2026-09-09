@@ -1,5 +1,6 @@
 #include "io/FileExchange.h"
 
+#include "commands/DimGeometry.h"
 #include "drafting/HatchBuild.h"
 #include "drafting/HatchLibrary.h"
 #include "geom/TextOutline.h"
@@ -785,8 +786,74 @@ bool BuildMTextGlyphs(const std::vector<std::string>& lines, double height, int 
   return any;
 }
 
+// Adds one rebuilt dimension's curves + label text as a group to `doc`,
+// tagged and named exactly like AddAnnotationGroup (commands/
+// annotate_common.h) would - so SelDim finds it (group name match) and
+// UpdateDimensions can rebuild it (the tags in `tags` are exactly what
+// cmd_annotate.cpp's LoadLinearDimLayout/LoadRadiusDimLayout read back, see
+// commands/DimGeometry.h). Shared by DXF DIMENSION import
+// (DxfImporter::Dimension below) and DWG DIMENSION import (WalkDwgEntities,
+// further down this file - a single unnamed namespace spans the whole
+// translation unit, so this is visible there too). No DimRefObj#/
+// DimRefEnd# associativity tags: an imported dimension has no live document
+// object it was measured from (the source geometry it once referenced
+// isn't tracked by handle here), so UpdateDimensions falls back to the
+// static DimP0/DimP1/DimCenter/DimRadiusVal points recorded in `tags` -
+// same as a live dimension whose picked points didn't land on a real
+// object. Returns false if there is nothing to add (degenerate geometry or
+// a font-less environment with no arrow/line curves either, which cannot
+// happen here since BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry
+// always produce at least the line/arrow curves independent of the font).
+bool AddDimensionGroupToDoc(Document& doc, const std::string& kind, int layer,
+                            const std::vector<kernel::NurbsCurve>& curves, const DimGlyphSpec& text,
+                            const std::map<std::string, std::string>& tags) {
+  std::vector<ObjectId> ids;
+  for (const kernel::NurbsCurve& c : curves) {
+    SceneObject o = SceneObject::MakeCurve(c);
+    o.layer_index = layer;
+    o.user_text["Annotation"] = kind;
+    o.user_text["Style"] = "Standard";
+    for (const auto& [k, v] : tags) o.user_text[k] = v;
+    ids.push_back(doc.Add(std::move(o)));
+  }
+  if (!text.text.empty()) {
+    std::vector<kernel::NurbsCurve> glyphs;
+    std::string font_used;
+    double width = 0;
+    if (TextToCurves(text.text, text.height, text.plane, glyphs, font_used, &width)) {
+      const ON_Xform shift = ON_Xform::TranslationTransformation(-text.plane.xaxis * (text.center ? width / 2 : 0));
+      for (kernel::NurbsCurve gc : glyphs) {
+        if (text.center) gc.raw().Transform(shift);
+        SceneObject o = SceneObject::MakeCurve(gc);
+        o.layer_index = layer;
+        o.user_text["Annotation"] = kind;
+        o.user_text["Style"] = "Standard";
+        ids.push_back(doc.Add(std::move(o)));
+      }
+    }
+  }
+  if (ids.empty()) return false;
+  doc.CreateGroup(ids, kind);
+  return true;
+}
+
+// Text height fallback for an imported dimension's label: the document's
+// current annotation style, or twice its grid spacing - same as
+// commands/annotate_common.h's AnnotationTextHeight(CommandContext&), which
+// this has no CommandContext to call. Neither DXF's nor DWG's DIMENSION
+// entity carries the dimension's own text height directly (it lives in the
+// referenced DIMSTYLE, which this importer does not resolve - see
+// DxfImporter::Dimension's comment below), so this is the same honest
+// fallback default used for a document with no annotation style at all.
+// Shared by both DXF and DWG DIMENSION import, same reasoning as
+// AddDimensionGroupToDoc above.
+double ImportDimTextHeight(Document& doc) {
+  const AnnotationStyle& ast = doc.CurrentAnnotationStyle();
+  return ast.text_height > 0 ? ast.text_height : std::max(doc.Settings().grid_spacing * 2.0, 1e-6);
+}
+
 struct DxfImportStats {
-  int curves = 0, points = 0, meshes = 0, hatches = 0, skipped = 0, layers = 0;
+  int curves = 0, points = 0, meshes = 0, hatches = 0, dimensions = 0, skipped = 0, layers = 0;
 };
 
 class DxfImporter {
@@ -1201,6 +1268,110 @@ class DxfImporter {
     ++stats_.hatches;
   }
 
+  // DIMENSION: rebuilds a real, live/re-measurable Dino8 dimension
+  // (BuildLinearDimensionGeometry/BuildRadiusDimensionGeometry, commands/
+  // DimGeometry.h - the exact point-to-curve math cmd_annotate.cpp's own
+  // live Dim/DimAligned/DimRadius/DimDiameter commands use) from the
+  // entity's semantic definition points, rather than copying its
+  // pre-rendered anonymous block (group 2) - a rebuilt dimension is
+  // selectable via SelDim and re-measurable via UpdateDimensions, which
+  // frozen block geometry could never be.
+  //
+  // Group-code -> point mapping verified against LibreDWG's dwg.spec (the
+  // same struct layouts drive both its DWG encode/decode AND its DXF ascii
+  // export, so they are authoritative for what a real DXF file contains -
+  // see DWG_ENTITY(DIMENSION_LINEAR/ALIGNED/RADIUS/DIAMETER) in
+  // build/_deps/libredwg-src/src/dwg.spec):
+  //   type 0 (rotated/linear): xline1_pt=13/23/33, xline2_pt=14/24/34,
+  //     def_pt=10/20/30 (a point ON the dimension line - exactly what the
+  //     live DimLinear command's third "dimension line location" pick
+  //     supplies), dim_rotation=50 (degrees, 0 default = horizontal).
+  //   type 1 (aligned): same 13/14/10, but group 50 is the extension-line
+  //     obliquing angle instead of a dimension-line rotation.
+  //   type 4 (radius): def_pt=10/20/30 is the arc/circle CENTER,
+  //     first_arc_pt=15/25/35 is the point on the circle the leader/
+  //     dimension line touches, leader_len=40 is the stand-off beyond it.
+  //   type 3 (diameter): first_arc_pt=15/25/35 is one point on the circle,
+  //     def_pt=10/20/30 is "far_chord_pt" - the point diametrically
+  //     opposite (per dwg.spec's own comment on DIMENSION_DIAMETER's def_pt)
+  //     - so center = midpoint(15,10), radius = half their distance;
+  //     leader_len=40 same meaning as radius.
+  // All DIMENSION point groups are full 3D (13/23/33 etc., unlike LINE/
+  // TEXT/CIRCLE's OCS-relative 10/20/30) so they need no extrusion-plane
+  // transform to read; only the *orientation* used to build arrows/text
+  // (which side is "up") comes from the extrusion normal (group 210), same
+  // OcsPlane helper as every other entity here.
+  //
+  // Explicitly NOT rebuilt, detected and skipped rather than guessed at:
+  //   - type 0 with an oblique (not ~0/~90 degree) dim_rotation: Dino8's own
+  //     DimLinear only models horizontal/vertical dimension lines, so an
+  //     arbitrarily rotated one has no faithful representation to rebuild.
+  //   - angular dimensions (types 2/5): the measured angle depends on which
+  //     of two complementary arc sweeps AutoCAD chose, which DXF does not
+  //     encode anywhere this importer can recover - guessing risks silently
+  //     measuring the wrong angle.
+  //   - ordinate dimensions (type 6): which axis (X or Y) is being read is
+  //     carried only in the "use X axis" bit inside the same flag byte as
+  //     the block-reference/associativity bits this importer does not
+  //     otherwise need to decode, and a wrong guess silently reports the
+  //     wrong offset - not attempted.
+  // Both categories fall into the ordinary skipped-entity count.
+  void Dimension(const DxfEntity& e) {
+    const int type = e.I(70) & 7;
+    const double h = ImportDimTextHeight(doc_);
+    const int layer = LayerFor(e.S(8, "0"));
+    const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
+    if (type == 0 || type == 1) {
+      const Point3d p0 = e.P(13), p1 = e.P(14), loc = e.P(10);
+      if (p0.DistanceTo(p1) < 1e-9) { ++stats_.skipped; return; }
+      LinearDimLayout L;
+      L.plane = ON_Plane(p0, ocs.xaxis, ocs.yaxis);
+      L.aligned = (type == 1);
+      if (!L.aligned) {
+        const double rot = std::fmod(std::fabs(e.D(50, 0.0)), 180.0);
+        const bool near0 = rot < 1.0 || rot > 179.0;
+        const bool near90 = rot > 89.0 && rot < 91.0;
+        if (!near0 && !near90) { ++stats_.skipped; return; }  // oblique rotation: not representable, see comment above
+        L.horizontal = near0;
+        double ua, va, ub, vb, ul, vl;
+        L.plane.ClosestPointTo(p0, &ua, &va); L.plane.ClosestPointTo(p1, &ub, &vb); L.plane.ClosestPointTo(loc, &ul, &vl);
+        L.offset = L.horizontal ? vl : ul;
+      } else {
+        Vector3d n = ON_CrossProduct(L.plane.zaxis, Vector3d(p1 - p0));
+        n.Unitize();
+        L.offset = ON_DotProduct(loc - p0, n);
+      }
+      std::vector<kernel::NurbsCurve> curves;
+      DimGlyphSpec text;
+      std::map<std::string, std::string> tags;
+      if (!BuildLinearDimensionGeometry(p0, p1, L, h, curves, text, tags)) { ++stats_.skipped; return; }
+      if (AddDimensionGroupToDoc(doc_, L.aligned ? "DimAligned" : "DimLinear", layer, curves, text, tags)) ++stats_.dimensions;
+      else ++stats_.skipped;
+      return;
+    }
+    if (type == 3 || type == 4) {
+      const bool diameter = (type == 3);
+      const Point3d p10 = e.P(10), arc_pt = e.P(15);
+      Point3d center; double radius;
+      if (diameter) { center = (p10 + arc_pt) / 2.0; radius = p10.DistanceTo(arc_pt) / 2.0; }
+      else { center = p10; radius = p10.DistanceTo(arc_pt); }
+      if (radius < 1e-9) { ++stats_.skipped; return; }
+      RadiusDimLayout L;
+      L.diameter = diameter;
+      L.plane = ON_Plane(center, ocs.xaxis, ocs.yaxis);
+      L.dir = Vector3d(arc_pt - center);
+      L.extra = e.D(40, 0.0);
+      std::vector<kernel::NurbsCurve> curves;
+      DimGlyphSpec text;
+      std::map<std::string, std::string> tags;
+      if (!BuildRadiusDimensionGeometry(center, radius, L, h, curves, text, tags)) { ++stats_.skipped; return; }
+      if (AddDimensionGroupToDoc(doc_, diameter ? "DimDiameter" : "DimRadius", layer, curves, text, tags)) ++stats_.dimensions;
+      else ++stats_.skipped;
+      return;
+    }
+    ++stats_.skipped;  // angular (2/5) / ordinate (6): not tractable to rebuild correctly, see comment above
+  }
+
   void Entity(const DxfEntity& e, const std::vector<DxfEntity>& vertices) {
     const std::string& t = e.type;
     if (t == "LINE") Line(e);
@@ -1215,6 +1386,7 @@ class DxfImporter {
     else if (t == "POLYLINE") Polyline(e, vertices);
     else if (t == "3DFACE") Face(e);
     else if (t == "HATCH") Hatch(e);
+    else if (t == "DIMENSION") Dimension(e);
     else if (t == "VERTEX" || t == "SEQEND") {}
     else ++stats_.skipped;
   }
@@ -1311,10 +1483,11 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
   ss << "DXF: " << stats.curves << " curve" << (stats.curves == 1 ? "" : "s") << ", " << stats.points << " point"
      << (stats.points == 1 ? "" : "s") << ", " << stats.meshes << " mesh" << (stats.meshes == 1 ? "" : "es");
   if (stats.hatches) ss << ", " << stats.hatches << " hatch" << (stats.hatches == 1 ? "" : "es");
+  if (stats.dimensions) ss << ", " << stats.dimensions << " dimension" << (stats.dimensions == 1 ? "" : "s");
   if (stats.layers) ss << ", " << stats.layers << " new layer" << (stats.layers == 1 ? "" : "s");
   if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped";
   summary = ss.str();
-  if (stats.curves + stats.points + stats.meshes + stats.hatches == 0) {
+  if (stats.curves + stats.points + stats.meshes + stats.hatches + stats.dimensions == 0) {
     if (entities.empty()) summary = "No entities found in " + path;
     return false;
   }
@@ -1364,9 +1537,16 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
 // (src/drafting/HatchBuild.h), so an imported hatch is a real hatch
 // (selectable via SelHatch, rebuildable via HatchScale). Multiple boundary
 // paths (islands/holes) and edge-type (line/arc/spline segment) boundaries
-// fall into the skipped count, like DIMENSION, SPLINE, 3D solids/meshes,
-// xrefs and anything else outside this importer's
-// coverage - exactly ImportDxf's own honest gap for entities it can't read.
+// fall into the skipped count, like SPLINE, 3D solids/meshes, xrefs and
+// anything else outside this importer's coverage - exactly ImportDxf's own
+// honest gap for entities it can't read. DIMENSION_LINEAR/DIMENSION_ALIGNED/
+// DIMENSION_RADIUS/DIMENSION_DIAMETER (DWG splits DIMENSION into distinct
+// entity subtypes by fixedtype, unlike DXF's one entity + a type flag) are
+// rebuilt the same way as DxfImporter::Dimension - real Dino8 dimension
+// geometry (commands/DimGeometry.h) from the entity's semantic definition
+// points, not its frozen pre-rendered block. Angular/ordinate DIMENSION
+// subtypes and the jogged-radius LARGE_RADIAL_DIMENSION/ARC_DIMENSION fall
+// into the skipped count, same honest scope as DXF's angular/ordinate gap.
 
 namespace {
 
@@ -1382,7 +1562,7 @@ std::string TempPathNear(const std::string& hint, const std::string& suffix) {
 }
 
 struct DwgImportStats {
-  int curves = 0, points = 0, blocks_flattened = 0, hatches = 0, skipped = 0, layers = 0;
+  int curves = 0, points = 0, blocks_flattened = 0, hatches = 0, dimensions = 0, skipped = 0, layers = 0;
 };
 
 // Resolves a DWG entity's layer name ("0" when unset - DWG's default layer,
@@ -1648,6 +1828,97 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
         ++stats.hatches;
         break;
       }
+      // DIMENSION: same rebuild-from-semantic-points approach and the same
+      // commands/DimGeometry.h math as DxfImporter::Dimension (see its
+      // comment for the full group-code/field rationale, verified against
+      // this exact dwg.spec). DWG splits DIMENSION by fixedtype instead of a
+      // single entity + a type flag, so LINEAR/ALIGNED and RADIUS/DIAMETER
+      // are separate cases with their own struct layouts
+      // (Dwg_Entity_DIMENSION_LINEAR/ALIGNED/RADIUS/DIAMETER, dwg_api.h) -
+      // xline1_pt/xline2_pt/def_pt for linear+aligned (def_pt is
+      // DIMENSION_COMMON's shared field, the dimension-line location point,
+      // same as DXF group 10), first_arc_pt/def_pt/leader_len for
+      // radius+diameter (def_pt = far_chord_pt for diameter). Angular
+      // (ANG2LN/ANG3PT) and ordinate (ORDINATE) DIMENSION subtypes, and the
+      // jogged-radius LARGE_RADIAL_DIMENSION/ARC_DIMENSION entities, fall
+      // into the default case below (skipped), same honest scope as DXF.
+      case DWG_TYPE_DIMENSION_LINEAR:
+      case DWG_TYPE_DIMENSION_ALIGNED: {
+        const bool aligned = (o->fixedtype == DWG_TYPE_DIMENSION_ALIGNED);
+        BITCODE_3BD raw1, raw2, raw_def, raw_ext;
+        double dim_rotation = 0.0;
+        if (aligned) {
+          Dwg_Entity_DIMENSION_ALIGNED* e = ent->tio.DIMENSION_ALIGNED;
+          raw1 = e->xline1_pt; raw2 = e->xline2_pt; raw_def = e->def_pt; raw_ext = e->extrusion;
+        } else {
+          Dwg_Entity_DIMENSION_LINEAR* e = ent->tio.DIMENSION_LINEAR;
+          raw1 = e->xline1_pt; raw2 = e->xline2_pt; raw_def = e->def_pt; raw_ext = e->extrusion;
+          dim_rotation = e->dim_rotation * 180.0 / ON_PI;  // DWG stores radians; DXF group 50 is degrees
+        }
+        const Point3d p0 = xf * Point3d(raw1.x, raw1.y, raw1.z);
+        const Point3d p1 = xf * Point3d(raw2.x, raw2.y, raw2.z);
+        const Point3d loc = xf * Point3d(raw_def.x, raw_def.y, raw_def.z);
+        if (p0.DistanceTo(p1) < 1e-9) { ++stats.skipped; break; }
+        const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), Vector3d(raw_ext.x, raw_ext.y, raw_ext.z));
+        LinearDimLayout L;
+        L.plane = ON_Plane(p0, ocs.xaxis, ocs.yaxis);
+        L.aligned = aligned;
+        if (!aligned) {
+          const double rot = std::fmod(std::fabs(dim_rotation), 180.0);
+          const bool near0 = rot < 1.0 || rot > 179.0;
+          const bool near90 = rot > 89.0 && rot < 91.0;
+          if (!near0 && !near90) { ++stats.skipped; break; }  // oblique: not representable, see DxfImporter::Dimension
+          L.horizontal = near0;
+          double ua, va, ub, vb, ul, vl;
+          L.plane.ClosestPointTo(p0, &ua, &va); L.plane.ClosestPointTo(p1, &ub, &vb); L.plane.ClosestPointTo(loc, &ul, &vl);
+          L.offset = L.horizontal ? vl : ul;
+        } else {
+          Vector3d n = ON_CrossProduct(L.plane.zaxis, Vector3d(p1 - p0));
+          n.Unitize();
+          L.offset = ON_DotProduct(loc - p0, n);
+        }
+        std::vector<kernel::NurbsCurve> curves;
+        DimGlyphSpec text;
+        std::map<std::string, std::string> tags;
+        if (!BuildLinearDimensionGeometry(p0, p1, L, ImportDimTextHeight(doc), curves, text, tags)) { ++stats.skipped; break; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        if (AddDimensionGroupToDoc(doc, aligned ? "DimAligned" : "DimLinear", layer, curves, text, tags)) ++stats.dimensions;
+        else ++stats.skipped;
+        break;
+      }
+      case DWG_TYPE_DIMENSION_RADIUS:
+      case DWG_TYPE_DIMENSION_DIAMETER: {
+        const bool diameter = (o->fixedtype == DWG_TYPE_DIMENSION_DIAMETER);
+        BITCODE_3BD raw_arc, raw_def, raw_ext;
+        double leader_len;
+        if (diameter) {
+          Dwg_Entity_DIMENSION_DIAMETER* e = ent->tio.DIMENSION_DIAMETER;
+          raw_arc = e->first_arc_pt; raw_def = e->def_pt; leader_len = e->leader_len; raw_ext = e->extrusion;
+        } else {
+          Dwg_Entity_DIMENSION_RADIUS* e = ent->tio.DIMENSION_RADIUS;
+          raw_arc = e->first_arc_pt; raw_def = e->def_pt; leader_len = e->leader_len; raw_ext = e->extrusion;
+        }
+        const Point3d arc_pt = xf * Point3d(raw_arc.x, raw_arc.y, raw_arc.z);
+        const Point3d p10 = xf * Point3d(raw_def.x, raw_def.y, raw_def.z);
+        Point3d center; double radius;
+        if (diameter) { center = (p10 + arc_pt) / 2.0; radius = p10.DistanceTo(arc_pt) / 2.0; }
+        else { center = p10; radius = p10.DistanceTo(arc_pt); }
+        if (radius < 1e-9) { ++stats.skipped; break; }
+        const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), Vector3d(raw_ext.x, raw_ext.y, raw_ext.z));
+        RadiusDimLayout L;
+        L.diameter = diameter;
+        L.plane = ON_Plane(center, ocs.xaxis, ocs.yaxis);
+        L.dir = Vector3d(arc_pt - center);
+        L.extra = leader_len;
+        std::vector<kernel::NurbsCurve> curves;
+        DimGlyphSpec text;
+        std::map<std::string, std::string> tags;
+        if (!BuildRadiusDimensionGeometry(center, radius, L, ImportDimTextHeight(doc), curves, text, tags)) { ++stats.skipped; break; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        if (AddDimensionGroupToDoc(doc, diameter ? "DimDiameter" : "DimRadius", layer, curves, text, tags)) ++stats.dimensions;
+        else ++stats.skipped;
+        break;
+      }
       case DWG_TYPE_INSERT: {
         Dwg_Entity_INSERT* e = ent->tio.INSERT;
         Dwg_Object* blkdef = e->block_header ? e->block_header->obj : nullptr;
@@ -1701,11 +1972,12 @@ bool ImportDwg(Document& doc, const std::string& path, std::string& summary) {
   ss << "DWG: " << stats.curves << " curve" << (stats.curves == 1 ? "" : "s") << ", " << stats.points << " point"
      << (stats.points == 1 ? "" : "s");
   if (stats.hatches) ss << ", " << stats.hatches << " hatch" << (stats.hatches == 1 ? "" : "es");
+  if (stats.dimensions) ss << ", " << stats.dimensions << " dimension" << (stats.dimensions == 1 ? "" : "s");
   if (stats.layers) ss << ", " << stats.layers << " new layer" << (stats.layers == 1 ? "" : "s");
   if (stats.blocks_flattened) ss << ", " << stats.blocks_flattened << " block instance" << (stats.blocks_flattened == 1 ? "" : "s") << " flattened";
-  if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped (dimensions, multi-loop/edge-boundary hatches, 3D solids and meshes are not read back yet)";
+  if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped (angular/ordinate dimensions, multi-loop/edge-boundary hatches, 3D solids and meshes are not read back yet)";
   summary = ss.str();
-  if (stats.curves + stats.points + stats.hatches == 0) {
+  if (stats.curves + stats.points + stats.hatches + stats.dimensions == 0) {
     summary = "No supported entities found in " + path + (stats.skipped ? " (" + std::to_string(stats.skipped) + " unsupported entities skipped)" : "");
     return false;
   }

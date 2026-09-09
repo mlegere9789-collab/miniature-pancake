@@ -396,6 +396,119 @@ else
   echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the MTEXT fixture check"
   fail=1
 fi
+# DXF DIMENSION import: real, live/re-measurable Dino8 dimensions rebuilt
+# from the entity's semantic definition points (commands/DimGeometry.h -
+# the exact math cmd_annotate.cpp's own live Dim/DimAligned/DimRadius/
+# DimDiameter commands use), not a copy of its frozen anonymous-block
+# geometry - see DxfImporter::Dimension's comment in FileExchange.cpp for
+# the full group-code derivation (verified against LibreDWG's own
+# dwg.spec). Each fixture's points are hand-picked so the correct measured
+# value is known in advance: SelDim proves it is selectable like a live
+# dimension (group name match), and UpdateDimensions re-deriving the exact
+# same value from the DimP0/DimP1/DimCenter/DimRadiusVal tags proves the
+# import is tag-for-tag compatible with a dimension built in-app, not just
+# visually similar.
+#
+# Linear (type 0, horizontal): xline1=(0,0,0), xline2=(10,0,0) -> exactly 10.
+cp "$HERE/dxf_dim_linear_fixture.dxf" "$TMP/dxf_dim_linear_fixture.dxf"
+cat > "$TMP/dxf_dim_linear_script.txt" <<EOS
+Open $TMP/dxf_dim_linear_fixture.dxf
+SelDim
+List
+UpdateDimensions
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  DXDL="$("$BIN" --smoke 30 --script "$TMP/dxf_dim_linear_script.txt" 2>&1)" || { echo "$DXDL"; echo "FAIL: DXF DIMENSION (linear) script exited non-zero"; exit 1; }
+else
+  DXDL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_dim_linear_script.txt" 2>&1)" || { echo "$DXDL"; echo "FAIL: DXF DIMENSION (linear) script exited non-zero"; exit 1; }
+fi
+dxdlcheck() { if echo "$DXDL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dxdlcheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the type-0 (linear) DIMENSION entity"
+dxdlcheck "^history: 8 object(s) selected$" "SelDim found the imported dimension's 8 curves (dim line + 2 ext lines + 2 arrows + 3 '10' glyph curves) as a real DimLinear group"
+dxdlcheck "CV\[0\] 0,5,0" "the rebuilt dimension line sits at the def_pt's Y offset (5), not the raw extension-line points"
+dxdlcheck "UpdateDimensions:   DimLinear now measures 10" "UpdateDimensions re-derived the exact hand-computed distance (xline2.x - xline1.x = 10) from the imported dimension's own tags, proving it round-trips exactly like a live DimLinear"
+# Aligned (type 1): xline1=(0,0,0), xline2=(6,8,0) -> exactly 10 (3-4-5
+# triangle scaled 2x), independent of the dimension-line offset point.
+cp "$HERE/dxf_dim_aligned_fixture.dxf" "$TMP/dxf_dim_aligned_fixture.dxf"
+cat > "$TMP/dxf_dim_aligned_script.txt" <<EOS
+Open $TMP/dxf_dim_aligned_fixture.dxf
+SelDim
+UpdateDimensions
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  DXDA="$("$BIN" --smoke 30 --script "$TMP/dxf_dim_aligned_script.txt" 2>&1)" || { echo "$DXDA"; echo "FAIL: DXF DIMENSION (aligned) script exited non-zero"; exit 1; }
+else
+  DXDA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_dim_aligned_script.txt" 2>&1)" || { echo "$DXDA"; echo "FAIL: DXF DIMENSION (aligned) script exited non-zero"; exit 1; }
+fi
+dxdacheck() { if echo "$DXDA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dxdacheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the type-1 (aligned) DIMENSION entity"
+dxdacheck "^history: 8 object(s) selected$" "SelDim found the imported aligned dimension as a real DimAligned group"
+dxdacheck "UpdateDimensions:   DimAligned now measures 10" "UpdateDimensions re-derived the exact hand-computed 3-4-5-triangle distance (sqrt(6^2+8^2) = 10)"
+# Radius (type 4): center=(40,0,0), first_arc_pt=(45,0,0) -> radius exactly 5.
+cp "$HERE/dxf_dim_radius_fixture.dxf" "$TMP/dxf_dim_radius_fixture.dxf"
+cat > "$TMP/dxf_dim_radius_script.txt" <<EOS
+Open $TMP/dxf_dim_radius_fixture.dxf
+SelDim
+List
+UpdateDimensions
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  DXDR="$("$BIN" --smoke 30 --script "$TMP/dxf_dim_radius_script.txt" 2>&1)" || { echo "$DXDR"; echo "FAIL: DXF DIMENSION (radius) script exited non-zero"; exit 1; }
+else
+  DXDR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_dim_radius_script.txt" 2>&1)" || { echo "$DXDR"; echo "FAIL: DXF DIMENSION (radius) script exited non-zero"; exit 1; }
+fi
+dxdrcheck() { if echo "$DXDR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dxdrcheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the type-4 (radius) DIMENSION entity"
+dxdrcheck "^history: 5 object(s) selected$" "SelDim found the imported radius dimension's 5 curves (leader + arrow + 3 'R 5' glyph curves) as a real DimRadius group"
+dxdrcheck "CV\[0\] 40,0,0" "the rebuilt leader starts exactly at the DIMENSION's own def_pt (the arc/circle center)"
+dxdrcheck "UpdateDimensions:   DimRadius now measures 5" "UpdateDimensions re-derived the exact hand-computed radius (distance from center (40,0,0) to first_arc_pt (45,0,0) = 5)"
+# Diameter (type 3): first_arc_pt=(5,0,0), def_pt=far_chord_pt=(-5,0,0) ->
+# radius = half their distance = 5, so diameter = 10.
+cp "$HERE/dxf_dim_diameter_fixture.dxf" "$TMP/dxf_dim_diameter_fixture.dxf"
+cat > "$TMP/dxf_dim_diameter_script.txt" <<EOS
+Open $TMP/dxf_dim_diameter_fixture.dxf
+SelDim
+UpdateDimensions
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  DXDD="$("$BIN" --smoke 30 --script "$TMP/dxf_dim_diameter_script.txt" 2>&1)" || { echo "$DXDD"; echo "FAIL: DXF DIMENSION (diameter) script exited non-zero"; exit 1; }
+else
+  DXDD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_dim_diameter_script.txt" 2>&1)" || { echo "$DXDD"; echo "FAIL: DXF DIMENSION (diameter) script exited non-zero"; exit 1; }
+fi
+dxddcheck() { if echo "$DXDD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dxddcheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the type-3 (diameter) DIMENSION entity"
+dxddcheck "^history: 8 object(s) selected$" "SelDim found the imported diameter dimension's 8 curves (2-arrow diameter line + 2 arrows + 4 'D 10' glyph curves) as a real DimDiameter group"
+dxddcheck "UpdateDimensions:   DimDiameter now measures 10" "UpdateDimensions re-derived the exact hand-computed diameter (far_chord_pt (-5,0,0) to first_arc_pt (5,0,0) = 10 span, so diameter 10)"
+# DWG DIMENSION_LINEAR/DIMENSION_RADIUS: built via LibreDWG's own
+# dwg_add_DIMENSION_LINEAR/dwg_add_DIMENSION_RADIUS - unlike dwg_add_SPLINE/
+# dwg_add_MTEXT above, neither is marked "Experimental" in dwg_api.h, and
+# reading their src/dwg_api.c implementation confirms they store
+# xline1_pt/xline2_pt/def_pt and center_pt/chord_pt verbatim (see
+# dwg_fixture_gen.c's write_dim_fixture comment) - so this proves
+# WalkDwgEntities' DWG_TYPE_DIMENSION_LINEAR/DIMENSION_RADIUS cases against
+# real DWG entities, independent of Dino 8's own writer (which has no
+# DIMENSION export at all).
+if [ -x "$DWGBIN" ]; then
+  "$DWGBIN" "$TMP/dwg_dim_fixture.dwg" dim >/dev/null || { echo "FAIL: dwg_fixture_gen failed to write the DIMENSION fixture"; exit 1; }
+  cat > "$TMP/dwg_dim_script.txt" <<EOS
+Open $TMP/dwg_dim_fixture.dwg
+SelDim
+UpdateDimensions
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+    DWD="$("$BIN" --smoke 30 --script "$TMP/dwg_dim_script.txt" 2>&1)" || { echo "$DWD"; echo "FAIL: DWG DIMENSION script exited non-zero"; exit 1; }
+  else
+    DWD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dwg_dim_script.txt" 2>&1)" || { echo "$DWD"; echo "FAIL: DWG DIMENSION script exited non-zero"; exit 1; }
+  fi
+  dwdcheck() { if echo "$DWD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  dwdcheck "DWG: 0 curves, 0 points, 2 dimensions" "ImportDwg read the real DIMENSION_LINEAR and DIMENSION_RADIUS entities"
+  dwdcheck "^history: 13 object(s) selected$" "SelDim found both imported dimensions' curves as real DimLinear/DimRadius groups"
+  dwdcheck "UpdateDimensions:   DimLinear now measures 10" "UpdateDimensions re-derived the exact hand-computed linear distance (xline2.x - xline1.x = 10)"
+  dwdcheck "UpdateDimensions:   DimRadius now measures 5" "UpdateDimensions re-derived the exact hand-computed radius (chord_pt (45,0,0) - center_pt (40,0,0) = 5)"
+else
+  echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the DIMENSION fixture check"
+  fail=1
+fi
 # Surfaces: Pipe, OffsetSrf, Shell, Sweep1/2, NetworkSrf, Patch, ExtrudeCrvAlongCrv,
 # ExtrudeCrvTapered, Project, Pull (see surface_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then

@@ -1,5 +1,6 @@
 // Annotation: text and dimensions as curve groups (the text is real font
 // outline geometry, so it prints, exports and Booleans like any curve).
+#include "commands/DimGeometry.h"
 #include "commands/annotate_common.h"
 #include "commands/cmd_common.h"
 #include "geom/TextOutline.h"
@@ -92,7 +93,10 @@ std::string Fmt(double v) { return FormatNumber(v); }
 // once the dimension is built). `offset` is the fixed dimension-line
 // coordinate: the plane V for a horizontal linear dimension, U for
 // vertical, or the perpendicular offset distance for an aligned one.
-struct LinearDimLayout { bool aligned = false; bool horizontal = true; double offset = 0; ON_Plane plane; };
+// (Struct itself, and the point-to-geometry math below, live in
+// commands/DimGeometry.h now - shared verbatim with DXF/DWG DIMENSION
+// import, io/FileExchange.cpp, which has no CommandContext to build a live
+// dimension through.)
 
 // Builds (or rebuilds) one DimLinear/DimAligned group from its two measured
 // points and fixed layout, tagging the group so it can be found and rebuilt
@@ -112,45 +116,14 @@ struct LinearDimLayout { bool aligned = false; bool horizontal = true; double of
 int BuildLinearDimensionGroup(CommandContext& ctx, Point3d p0, Point3d p1, const LinearDimLayout& L, double text_h,
                               bool has_ref1, ObjectId ref1, const std::string& end1,
                               bool has_ref2, ObjectId ref2, const std::string& end2, double* len_out = nullptr) {
-  const ON_Plane& pl = L.plane;
-  Point3d a = p0, b = p1;
-  Vector3d dir = b - a;
-  if (!L.aligned) {
-    double ua, va, ub, vb;
-    pl.ClosestPointTo(a, &ua, &va); pl.ClosestPointTo(b, &ub, &vb);
-    if (L.horizontal) { a = pl.PointAt(ua, L.offset); b = pl.PointAt(ub, L.offset); }
-    else { a = pl.PointAt(L.offset, va); b = pl.PointAt(L.offset, vb); }
-    dir = b - a;
-  } else {
-    Vector3d n = ON_CrossProduct(pl.zaxis, dir);
-    n.Unitize();
-    a = a + n * L.offset; b = b + n * L.offset;
-  }
-  const double len = dir.Length();
-  if (len_out) *len_out = len;
-  if (len <= 0) return -1;
   std::vector<kernel::NurbsCurve> curves;
-  AddLine(curves, a, b);
-  AddLine(curves, p0, a);
-  AddLine(curves, p1, b);
-  AddArrow(curves, a, a - b, text_h, pl);
-  AddArrow(curves, b, b - a, text_h, pl);
-  Vector3d up = ON_CrossProduct(pl.zaxis, dir);
-  up.Unitize();
-  if (ON_DotProduct(up, pl.yaxis) < 0) up = -up;
-  GlyphSpec g;
-  g.text = Fmt(len); g.height = text_h; g.plane = pl; g.plane.SetOrigin((a + b) / 2.0 + up * (text_h * 0.6)); g.center = true;
+  DimGlyphSpec dg;
   std::map<std::string, std::string> tags;
-  tags["DimAligned"] = L.aligned ? "1" : "0";
-  tags["DimHorizontal"] = L.horizontal ? "1" : "0";
-  tags["DimOffset"] = FormatNumber(L.offset);
-  tags["DimPlaneOrigin"] = PointTag(pl.origin);
-  tags["DimPlaneX"] = PointTag(Point3d(pl.xaxis));
-  tags["DimPlaneY"] = PointTag(Point3d(pl.yaxis));
-  tags["DimP0"] = PointTag(p0);
-  tags["DimP1"] = PointTag(p1);
+  if (!BuildLinearDimensionGeometry(p0, p1, L, text_h, curves, dg, tags, len_out)) return -1;
   if (has_ref1) { tags["DimRefObj1"] = std::to_string(ref1); tags["DimRefEnd1"] = end1; }
   if (has_ref2) { tags["DimRefObj2"] = std::to_string(ref2); tags["DimRefEnd2"] = end2; }
+  GlyphSpec g;
+  g.text = dg.text; g.height = dg.height; g.plane = dg.plane; g.center = dg.center;
   return AddAnnotationGroup(ctx, L.aligned ? "DimAligned" : "DimLinear", curves, g, -1, tags);
 }
 
@@ -408,8 +381,9 @@ class DimAngleCommand : public Command {
 // direction from center towards the dimension-line pick point (a one-time
 // decision, like LinearDimLayout::horizontal); `extra` is how far beyond the
 // (original) radius that pick point sat, so the leader end keeps the same
-// visual stand-off as the radius changes.
-struct RadiusDimLayout { bool diameter = false; ON_Plane plane; Vector3d dir; double extra = 0; };
+// visual stand-off as the radius changes. (Struct itself, and the
+// point-to-geometry math below, live in commands/DimGeometry.h now - see
+// BuildLinearDimensionGroup's comment above on why.)
 
 // Builds (or rebuilds) one DimRadius/DimDiameter group from the measured
 // circle/arc's center+radius and fixed layout. Tags mirror
@@ -422,30 +396,13 @@ struct RadiusDimLayout { bool diameter = false; ON_Plane plane; Vector3d dir; do
 // fallback tags when it still resolves to an arc/circle.
 int BuildRadiusDimensionGroup(CommandContext& ctx, Point3d center, double radius, const RadiusDimLayout& L, double text_h,
                               bool has_ref, ObjectId ref, double* val_out = nullptr) {
-  const ON_Plane& pl = L.plane;
-  Vector3d d = L.dir;
-  if (!d.Unitize()) d = pl.xaxis;
-  const Point3d on = center + d * radius;
-  const Point3d p = center + d * (radius + L.extra);
   std::vector<kernel::NurbsCurve> curves;
-  if (L.diameter) { AddLine(curves, center - d * radius, p); AddArrow(curves, center - d * radius, -d, text_h, pl); }
-  else AddLine(curves, center, p);
-  AddArrow(curves, on, d, text_h, pl);
-  const double val = L.diameter ? radius * 2 : radius;
-  if (val_out) *val_out = val;
+  DimGlyphSpec dg;
   std::map<std::string, std::string> tags;
-  tags["DimIsDiameter"] = L.diameter ? "1" : "0";
-  tags["DimPlaneOrigin"] = PointTag(pl.origin);
-  tags["DimPlaneX"] = PointTag(Point3d(pl.xaxis));
-  tags["DimPlaneY"] = PointTag(Point3d(pl.yaxis));
-  tags["DimDir"] = PointTag(Point3d(d));
-  tags["DimExtra"] = FormatNumber(L.extra);
-  tags["DimCenter"] = PointTag(center);
-  tags["DimRadiusVal"] = FormatNumber(radius);
+  if (!BuildRadiusDimensionGeometry(center, radius, L, text_h, curves, dg, tags, val_out)) return -1;
   if (has_ref) tags["DimRefObj1"] = std::to_string(ref);
   GlyphSpec g;
-  g.text = std::string(L.diameter ? "D " : "R ") + Fmt(val);
-  g.height = text_h; g.plane = pl; g.plane.SetOrigin(p + d * text_h); g.center = true;
+  g.text = dg.text; g.height = dg.height; g.plane = dg.plane; g.center = dg.center;
   return AddAnnotationGroup(ctx, L.diameter ? "DimDiameter" : "DimRadius", curves, g, -1, tags);
 }
 
