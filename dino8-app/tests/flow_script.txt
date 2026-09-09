@@ -7,6 +7,7 @@
 Grasshopper
 GrasshopperPluginList
 HelloDino
+TestBadMeshIndex
 @expect_objects 1
 GrasshopperPlayer @FLOWFILE@ Bake=Yes
 @expect_objects 2

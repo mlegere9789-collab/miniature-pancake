@@ -124,7 +124,9 @@ typedef struct Dino8PluginApi {
   unsigned long long (*add_line)(double x0, double y0, double z0, double x1, double y1, double z1);
   unsigned long long (*add_polyline)(const double* xyz, int point_count, int closed);
   /* vertices: xyz triples; faces: `face_count` quads/tris as 4 indices each
-   * (repeat the third index for a triangle). */
+   * (repeat the third index for a triangle), 0-based into `xyz`. Returns 0
+   * (failure) if any face index is out of range, rather than reading past
+   * the vertex array. */
   unsigned long long (*add_mesh)(const double* xyz, int vertex_count, const int* faces, int face_count);
 
   /* Copies the ids of the selected objects into `out` (up to `max`),
@@ -153,9 +155,10 @@ typedef struct Dino8PluginApi {
    * out through an output Dino8FlowValue with kind DINO8_FLOW_CURVE. This
    * does NOT add anything to the document; see add_polyline for that. */
   unsigned long long (*make_curve_value_polyline)(const double* xyz, int point_count, int closed);
-  /* Builds a new MESH geometry value (same vertex/face layout as add_mesh)
-   * and returns its handle (0 on failure) - for an output Dino8FlowValue
-   * with kind DINO8_FLOW_MESH. Does NOT add anything to the document. */
+  /* Builds a new MESH geometry value (same vertex/face layout as add_mesh,
+   * including the same out-of-range-index rejection) and returns its handle
+   * (0 on failure) - for an output Dino8FlowValue with kind DINO8_FLOW_MESH.
+   * Does NOT add anything to the document. */
   unsigned long long (*make_mesh_value)(const double* xyz, int vertex_count, const int* faces, int face_count);
 
   /* Reserved for future versions; always NULL in version 2. */

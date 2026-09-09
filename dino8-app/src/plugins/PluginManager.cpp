@@ -135,8 +135,25 @@ unsigned long long ApiAddPolyline(const double* xyz, int point_count, int closed
   return doc.Add(app::SceneObject::MakeCurve(c));
 }
 
+// Rejects a plugin-supplied faces[] array whose vertex indices could run out
+// of bounds - a merely-buggy (not malicious) plugin can trip this trivially,
+// and an unchecked index reaches ON_Mesh::SetQuad/ComputeVertexNormals as an
+// out-of-bounds read, or a kernel::Mesh vector operator[] as silent
+// corruption further downstream (e.g. MergeAndWeld). Matches the bounds
+// check the Lua rs.AddMesh binding already applies.
+bool FaceIndicesInBounds(const int* faces, int face_count, int vertex_count) {
+  for (int f = 0; f < face_count; ++f) {
+    for (int k = 0; k < 4; ++k) {
+      const int v = faces[f * 4 + k];
+      if (v < 0 || v >= vertex_count) return false;
+    }
+  }
+  return true;
+}
+
 unsigned long long ApiAddMesh(const double* xyz, int vertex_count, const int* faces, int face_count) {
   if (!g_app || !xyz || vertex_count <= 0) return 0;
+  if (face_count > 0 && (!faces || !FaceIndicesInBounds(faces, face_count, vertex_count))) return 0;
   kernel::Mesh m;
   ON_Mesh& raw = m.raw();
   for (int i = 0; i < vertex_count; ++i) raw.SetVertex(i, ON_3dPoint(xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]));
@@ -248,6 +265,7 @@ unsigned long long ApiMakeCurveValuePolyline(const double* xyz, int point_count,
 
 unsigned long long ApiMakeMeshValue(const double* xyz, int vertex_count, const int* faces, int face_count) {
   if (!xyz || vertex_count <= 0) return 0;
+  if (face_count > 0 && (!faces || !FaceIndicesInBounds(faces, face_count, vertex_count))) return 0;
   kernel::Mesh m;
   ON_Mesh& raw = m.raw();
   for (int i = 0; i < vertex_count; ++i) raw.SetVertex(i, ON_3dPoint(xyz[i * 3], xyz[i * 3 + 1], xyz[i * 3 + 2]));

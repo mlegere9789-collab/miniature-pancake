@@ -202,12 +202,28 @@ static int PluginMeshInfoEval(const Dino8FlowValue* inputs, int input_count, Din
   return 0;
 }
 
+/* Regression test for the plugin ABI's face-index bounds check: deliberately
+ * sends a face that references a vertex past the end of a tiny 3-vertex
+ * mesh. add_mesh() must reject it (return 0) rather than let a buggy plugin
+ * read/write past the vertex array. */
+static int TestBadMeshIndexCommand(int argc, const char** argv, Dino8CommandContext* ctx) {
+  (void)argc; (void)argv; (void)ctx;
+  const double xyz[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+  const int bad_faces[4] = {0, 1, 2, 99};
+  const unsigned long long id = g_api->add_mesh(xyz, 3, bad_faces, 1);
+  g_api->print(id == 0 ? "TestBadMeshIndex: add_mesh correctly rejected an out-of-range face index"
+                       : "TestBadMeshIndex: FAILED - add_mesh accepted an out-of-range face index");
+  return id == 0 ? 0 : 1;
+}
+
 DINO8_PLUGIN_EXPORT int dino8_plugin_init(const Dino8PluginApi* api) {
   g_api = api;
   if (!api || api->api_version != DINO8_PLUGIN_API_VERSION) return 1;
 
   api->register_command("TerrainMesh", "TerrainMesh cols rows size amplitude seed - builds a procedural heightfield mesh.",
                         TerrainMeshCommand, NULL);
+  api->register_command("TestBadMeshIndex", "TestBadMeshIndex - regression test: add_mesh must reject an out-of-range face index.",
+                        TestBadMeshIndexCommand, NULL);
 
   Dino8FlowPort inputs[5];
   memset(inputs, 0, sizeof inputs);
