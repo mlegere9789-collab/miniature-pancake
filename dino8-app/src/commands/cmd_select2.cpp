@@ -816,7 +816,7 @@ void RegisterSelect2Commands(CommandEngine& e) {
       }), CommandStatus::Implemented, "Selects the individual edges shared by more than two faces, as sub-objects (not whole meshes).");
 
   // Blocks.
-  Reg(e, "SelMirroredBlocks", SelWhere([](CommandContext&, const SceneObject& o) { return o.user_text.count("Block") > 0 && o.user_text.count("Mirrored") > 0; }), CommandStatus::Partial, "Block instances are not tracked as mirrored yet; selects instances tagged Mirrored.");
+  Reg(e, "SelMirroredBlocks", SelWhere([](CommandContext&, const SceneObject& o) { return o.user_text.count("Block") > 0 && o.user_text.count("Mirrored") > 0; }), CommandStatus::Implemented, "Selects block instances created (or that had their own mirror-copy) via Mirror, which tags each member object Mirrored (see cmd_transform.cpp).");
   Reg(e, "SelObjectsWithHistory", Immediate([](CommandContext& ctx) { ctx.Print("0 objects selected (Dino 8 keeps no construction history; every edit is undoable instead)"); }));
 
   // Attributes.

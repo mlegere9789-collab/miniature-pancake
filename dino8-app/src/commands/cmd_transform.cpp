@@ -336,7 +336,30 @@ class MirrorCommand : public Command {
     return ON_Xform::MirrorTransformation(ON_PlaneEquation(n.x, n.y, n.z, -ON_DotProduct(n, a)));
   }
   void Apply(CommandContext& ctx, Point3d a, Point3d b) {
+    const size_t before = ctx.Doc().Objects().size();
     ApplyXform(ctx, ids_, Xform(ctx, a, b), copy_, "Mirror");
+    // Tag every block-instance member object this Mirror actually touched
+    // (in place, or the freshly-made copy) as Mirrored, so SelMirroredBlocks
+    // - previously a stub that could never find anything, since nothing
+    // ever set this tag - can select real mirrored instances. Mutating
+    // user_text here, after ApplyXform's BeginChange/BeginChangeForObjects
+    // call but before any later one, still lands inside the same pending
+    // change (finalized lazily on the next Begin/Undo/Redo), so it's
+    // captured by the same undo entry as the transform itself.
+    if (copy_) {
+      const std::vector<SceneObject>& objs = ctx.Doc().Objects();
+      for (size_t i = before; i < objs.size(); ++i) {
+        if (SceneObject* o = ctx.Doc().Find(objs[i].id)) {
+          if (o->user_text.count("Block")) o->user_text["Mirrored"] = "1";
+        }
+      }
+    } else {
+      for (ObjectId id : ids_) {
+        if (SceneObject* o = ctx.Doc().Find(id)) {
+          if (o->user_text.count("Block")) o->user_text["Mirrored"] = "1";
+        }
+      }
+    }
     ctx.ClearPreview();
     Finish();
   }

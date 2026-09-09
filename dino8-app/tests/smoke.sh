@@ -497,6 +497,12 @@ a2check "3 object(s) in instances of 'B' selected" "SelBlockInstanceNamed found 
 a2check "CreateUniqueBlock: 'C' copied from 'B', 3 instance(s) switched" "CreateUniqueBlock copied the definition"
 a2check "BlockEdit: editing 'D'" "BlockEdit placed an editable copy of the block instance"
 a2check "BlockEdit: block 'D' redefined with 1 object(s), 2 instance(s) updated" "BlockEdit's redefinition propagated to every instance of the block (real linked instancing)"
+a2check "Copied 2 object(s)" "Mirror Copy=Yes made real mirror copies of both MB block instance objects (the definition's own object plus the Insert copy)"
+if echo "$A2" | grep -A1 "^history: Command: SelMirroredBlocks$" | grep -q "^history: 2 object(s) selected$"; then
+  echo "ok   SelMirroredBlocks found the mirror-copied block instances (was a permanently non-functional stub - see cmd_transform.cpp/MirrorCommand::Apply)"
+else
+  echo "FAIL SelMirroredBlocks found the mirror-copied block instances"; fail=1
+fi
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then

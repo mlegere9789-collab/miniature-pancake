@@ -79,3 +79,17 @@ Move 0,0,0 0,0,50
 BlockEdit
 SelNone
 RescueBlockOrphans
+# --- SelMirroredBlocks: Mirror tags block-instance member objects Mirrored
+# (see cmd_transform.cpp/MirrorCommand::Apply), so a real mirror-copy of a
+# block instance can be re-selected afterwards.
+Box 500,0,0 510,10,0 10
+SelLast
+Block 500,0,0 MB
+Insert MB 560,0,0
+Enter
+SelBlockInstanceNamed Name=MB
+Mirror Copy=Yes
+560,0,0
+560,10,0
+SelNone
+SelMirroredBlocks
