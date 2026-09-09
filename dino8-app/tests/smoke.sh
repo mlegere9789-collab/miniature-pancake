@@ -219,6 +219,24 @@ fi
 dtcheck() { if echo "$DT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 dtcheck "DXF: 3 curves, 0 points" "DXF import read the TEXT entity"
 [ "$(echo "$DT" | grep -c "^history:   degree 1, [0-9]* control points, non-rational, closed$")" = "3" ] && echo "ok   DXF TEXT converted 'Hi' into exactly 3 closed glyph-outline curves (H, i-stem, i-dot)" || { echo "FAIL DXF TEXT did not produce the expected glyph curves"; fail=1; }
+# DXF MTEXT import: a minimal, hand-written DXF (no Dino8-authored export
+# path writes a native MTEXT entity - see dxf_mtext_script.txt) with real
+# multi-line content ("{\C1;Hi}\P" then "H\H2x;i") proves both ImportDxf's
+# MTEXT-to-glyph-outline conversion (one TextToCurves call per \P-separated
+# line, BuildMTextGlyphs in FileExchange.cpp) AND that its inline-
+# formatting-code stripping (MTextToLines) actually removes \C/\H/{/}
+# rather than leaving them as literal glyphs.
+cp "$HERE/dxf_mtext_fixture.dxf" "$TMP/dxf_mtext_fixture.dxf"
+sed "s|@TMP@|$TMP|g" "$HERE/dxf_mtext_script.txt" > "$TMP/dxf_mtext_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  DM="$("$BIN" --smoke 30 --script "$TMP/dxf_mtext_script.txt" 2>&1)" || { echo "$DM"; echo "FAIL: DXF MTEXT script exited non-zero"; exit 1; }
+else
+  DM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_mtext_script.txt" 2>&1)" || { echo "$DM"; echo "FAIL: DXF MTEXT script exited non-zero"; exit 1; }
+fi
+dmcheck() { if echo "$DM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dmcheck "DXF: 6 curves, 0 points" "DXF import read the MTEXT entity"
+[ "$(echo "$DM" | grep -c "^history:   degree 1, [0-9]* control points, non-rational, closed$")" = "6" ] && echo "ok   DXF MTEXT's two \\P-separated 'Hi' lines each converted into exactly 3 closed glyph-outline curves (6 total)" || { echo "FAIL DXF MTEXT did not produce the expected glyph curves"; fail=1; }
+[ "$(echo "$DM" | grep -c "^history: 6 object(s) selected$")" = "2" ] && echo "ok   DXF MTEXT's glyph curves carry the same Annotation=Text/Style=Standard user text as TEXT import (SelAnnotationStyle finds all 6, same as SelAll)" || { echo "FAIL DXF MTEXT glyph curves are not tagged/selectable like TEXT import's"; fail=1; }
 # DWG round-trip (via GNU LibreDWG, see FileExchange.cpp's ExportDwg/
 # ImportDwg): a line, a circle and a closed 4-point polyline must survive a
 # real Export to .dwg and a real Open back, with exact control-point
@@ -343,6 +361,39 @@ EOS
   dwscheck "CV\[3\] 15,5,0" "...and ends at its last, with all 4 fit points preserved exactly"
 else
   echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the SPLINE fixture check"
+  fail=1
+fi
+# DWG MTEXT: built via LibreDWG's own dwg_add_MTEXT (also marked
+# "Experimental. Does not work yet properly" in dwg_api.h - confirmed by
+# hand it does populate a real ins_pt/text/text_height/attachment this
+# time, unlike dwg_add_SPLINE above). The fixture's text embeds the same
+# inline-formatting-code shape as dxf_mtext_fixture.dxf
+# ("{\C1;Hi}\PH\H2x;i") and a non-default attachment point (5 =
+# middle-center, not the top-left default), proving ImportDwg's
+# DWG_TYPE_MTEXT case (formatting-code stripping via MTextToLines AND
+# non-top-left attachment layout via BuildMTextGlyphs, both in
+# FileExchange.cpp) against a real MTEXT entity built completely
+# independently of Dino 8's own writer (which has no MTEXT export at all).
+if [ -x "$DWGBIN" ]; then
+  "$DWGBIN" "$TMP/dwg_mtext_fixture.dwg" mtext >/dev/null || { echo "FAIL: dwg_fixture_gen failed to write the MTEXT fixture"; exit 1; }
+  cat > "$TMP/dwg_mtext_script.txt" <<EOS
+Open $TMP/dwg_mtext_fixture.dwg
+SelAll
+List
+SelAnnotationStyle
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+    DWM="$("$BIN" --smoke 30 --script "$TMP/dwg_mtext_script.txt" 2>&1)" || { echo "$DWM"; echo "FAIL: DWG MTEXT script exited non-zero"; exit 1; }
+  else
+    DWM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dwg_mtext_script.txt" 2>&1)" || { echo "$DWM"; echo "FAIL: DWG MTEXT script exited non-zero"; exit 1; }
+  fi
+  dwmcheck() { if echo "$DWM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  dwmcheck "DWG: 6 curves, 0 points" "ImportDwg read the MTEXT entity"
+  [ "$(echo "$DWM" | grep -c "^history:   degree 1, [0-9]* control points, non-rational, closed$")" = "6" ] && echo "ok   DWG MTEXT's two \\P-separated 'Hi' lines (with \\C/\\H/{}} codes stripped) each converted into exactly 3 closed glyph-outline curves (6 total)" || { echo "FAIL DWG MTEXT did not produce the expected glyph curves"; fail=1; }
+  [ "$(echo "$DWM" | grep -c "^history: 6 object(s) selected$")" = "2" ] && echo "ok   DWG MTEXT's glyph curves carry the same Annotation=Text/Style=Standard user text as TEXT import (SelAnnotationStyle finds all 6, same as SelAll)" || { echo "FAIL DWG MTEXT glyph curves are not tagged/selectable like TEXT import's"; fail=1; }
+  dwmcheck "CV\[0\] 17.14,26.25,0" "DWG MTEXT's middle-center attachment (5) offset the block both horizontally and vertically around the insertion point (20,20,0), not left uncentred like the top-left default"
+else
+  echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the MTEXT fixture check"
   fail=1
 fi
 # Surfaces: Pipe, OffsetSrf, Shell, Sweep1/2, NetworkSrf, Patch, ExtrudeCrvAlongCrv,

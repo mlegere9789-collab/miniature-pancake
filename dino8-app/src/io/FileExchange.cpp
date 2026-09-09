@@ -651,6 +651,140 @@ bool BulgePolylineCurve(const std::vector<BulgeVertex>& verts, bool closed, kern
   return CurveFromON(pc, out);
 }
 
+// ---- MTEXT: inline-formatting-code stripping and glyph-outline layout -----
+//
+// Shared by both DXF (DxfImporter::MText below) and DWG (WalkDwgEntities'
+// DWG_TYPE_MTEXT case, further down) - both carry the identical inline
+// markup, just concatenated differently (DXF's repeated group-3 chunks plus
+// a final group-1 chunk vs. DWG's single `text` field).
+
+// Vertical line spacing, as a multiple of cap height. MTEXT's own metric
+// (DXF group 44 / DWG's linespace_factor, a percentage of "3-on-5" font
+// leading) is not read - this is a fixed typographic default instead, the
+// same honest-approximation category as everything else this function
+// documents. 1.5x reads comfortably for the DejaVu/Liberation/FreeSans
+// fallback fonts TextOutline.h uses.
+constexpr double kMTextLineSpacingFactor = 1.5;
+
+// Strips MTEXT's inline formatting codes down to plain text, split into
+// lines on \P (paragraph break - the only code that changes the line
+// count). Handled: \P -> newline, \~ -> a plain space (non-breaking is not
+// a distinction this importer's plain-text output preserves), \\ \{ \} ->
+// literal backslash/brace, { and } (formatting-group grouping) dropped,
+// and every \<letter>...; run (\Cn; colour, \Fname; font, \Hn; height,
+// \Wn; width factor, \Qn; oblique, \Tn; tracking, \An alignment, \Sn/d;
+// stacked fractions, etc.) dropped as one unit up to its terminating ';',
+// or just the two-character code itself when it takes no argument (\L \l
+// \O \o \K \k - underline/overline/strikethrough on/off). This is the
+// tractable, common-case subset: it renders MTEXT as plain, unstyled
+// multi-line text (no per-run colour/font/height override, no real
+// stacked-fraction typesetting, no field-code substitution) - an honest
+// simplification, not a silent wrong-output case. A \S stacked-fraction
+// run's numerator/denominator text is dropped along with its \S...; code
+// (same treatment as every other bracketed formatting code here) rather
+// than approximated as "num/den", since the generic ';'-terminated scan
+// can't tell \S's argument apart from any other code's.
+std::vector<std::string> MTextToLines(const std::string& raw) {
+  std::string plain;
+  plain.reserve(raw.size());
+  for (size_t i = 0; i < raw.size(); ++i) {
+    const char c = raw[i];
+    if (c == '\\' && i + 1 < raw.size()) {
+      const char n = raw[i + 1];
+      if (n == 'P') { plain += '\n'; ++i; continue; }
+      if (n == '~') { plain += ' '; ++i; continue; }
+      if (n == '\\' || n == '{' || n == '}') { plain += n; ++i; continue; }
+      if (std::isalpha(static_cast<unsigned char>(n))) {
+        size_t j = i + 2;
+        while (j < raw.size() && raw[j] != ';' && raw[j] != '\\' && raw[j] != '{' && raw[j] != '}' && raw[j] != '\n') ++j;
+        if (j < raw.size() && raw[j] == ';') { i = j; continue; }
+        // No terminating ';' before the next control character: a
+        // no-argument code (\L \l \O \o \K \k and similar) - drop just the
+        // two characters, keep whatever follows as literal text.
+        ++i;
+        continue;
+      }
+      // An escape this doesn't recognise: drop the backslash, keep the
+      // character literally rather than losing it.
+      plain += n;
+      ++i;
+      continue;
+    }
+    if (c == '{' || c == '}') continue;  // formatting-group braces
+    if (c == '\r') continue;
+    plain += c;
+  }
+  std::vector<std::string> lines;
+  std::string cur;
+  for (char c : plain) {
+    if (c == '\n') { lines.push_back(cur); cur.clear(); }
+    else cur += c;
+  }
+  lines.push_back(cur);
+  return lines;
+}
+
+// Lays out MTEXT's plain (already formatting-stripped) lines as stacked
+// glyph-outline curves, one TextToCurves call per line (same conversion as
+// TEXT import), anchored per `attachment` (1-9, a 3x3 grid: 1=top-left,
+// 2=top-center, 3=top-right, 4=middle-left, ..., 9=bottom-right - DXF group
+// 71 / DWG's identical `attachment` field) relative to `base` (base.origin
+// is the MTEXT insertion point; base's plane already carries the entity's
+// own rotation and any accumulated block-instance transform).
+//
+// What's exact: attachment 1 (top-left, the default and by far the most
+// common) needs zero extra offset in either axis and positions the first
+// line's cap-top exactly at the insertion point, same as TEXT's own
+// baseline-at-insertion-point convention.
+//
+// What's approximated, honestly: the other 8 attachment points position
+// the block using this function's own kMTextLineSpacingFactor-based total
+// height, not real font leading/descender metrics, so vertical placement
+// for middle/bottom attachment can be off by a small fraction of a line
+// versus what AutoCAD would compute. Horizontal centring/right-justifying
+// (attachment columns 2/3/5/6/8/9) aligns each line about its OWN width
+// independently (via TextToCurves' advance_width), not against a shared
+// paragraph-box width computed from the widest line the way AutoCAD
+// justifies a real (possibly word-wrapped) MTEXT paragraph - so a
+// multi-line block with very different line lengths will have each line
+// individually centred/right-aligned rather than sharing one ragged edge.
+// Word-wrap itself (DXF group 41 / DWG rect_width, a reference box width)
+// is not applied at all - every line is exactly the line the \P breaks
+// define, unbounded, matching this session's existing "treat as unbounded"
+// scoping for that field.
+bool BuildMTextGlyphs(const std::vector<std::string>& lines, double height, int attachment, const ON_Plane& base,
+                      std::vector<std::vector<kernel::NurbsCurve>>& out_lines, std::string& font_used) {
+  if (lines.empty() || height <= 0) return false;
+  attachment = std::clamp(attachment, 1, 9);
+  const int col = (attachment - 1) % 3;  // 0 left, 1 center, 2 right
+  const int row = (attachment - 1) / 3;  // 0 top, 1 middle, 2 bottom
+  const double n = static_cast<double>(lines.size());
+  const double total_height = height + (n - 1.0) * height * kMTextLineSpacingFactor;
+  double top_y = 0.0;
+  if (row == 1) top_y = total_height * 0.5;
+  else if (row == 2) top_y = total_height;
+  out_lines.assign(lines.size(), {});
+  bool any = false;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    if (lines[i].empty()) continue;  // a genuinely blank paragraph: nothing to lay out
+    const double baseline_y = top_y - height - static_cast<double>(i) * height * kMTextLineSpacingFactor;
+    double advance = 0.0;
+    std::vector<kernel::NurbsCurve> glyphs;
+    std::string f;
+    const ON_Plane pl(base.PointAt(0.0, baseline_y), base.xaxis, base.yaxis);
+    if (!TextToCurves(lines[i], height, pl, glyphs, f, &advance) || glyphs.empty()) continue;
+    if (col != 0) {
+      const double dx = col == 1 ? -advance * 0.5 : -advance;
+      const ON_Xform shift = ON_Xform::TranslationTransformation(base.xaxis * dx);
+      for (kernel::NurbsCurve& g : glyphs) g.raw().Transform(shift);
+    }
+    out_lines[i] = std::move(glyphs);
+    font_used = f;
+    any = true;
+  }
+  return any;
+}
+
 struct DxfImportStats {
   int curves = 0, points = 0, meshes = 0, hatches = 0, skipped = 0, layers = 0;
 };
@@ -745,6 +879,44 @@ class DxfImporter {
       o.user_text["Text"] = value;
       doc_.Add(std::move(o));
       ++stats_.curves;
+    }
+  }
+
+  // MTEXT: group 1 is the final (<=250-char) text chunk, and any number of
+  // repeated group 3 entries are the earlier chunks in file order -
+  // concatenated (group 3s first, then group 1) they form the full raw
+  // text, inline formatting codes and all. See MTextToLines/BuildMTextGlyphs
+  // above for exactly what's stripped/approximated; converted to real
+  // glyph-outline curves the same way TEXT is (TextToCurves), one call per
+  // plain-text line.
+  void MText(const DxfEntity& e) {
+    std::string raw;
+    for (const DxfGroup& g : e.groups) if (g.code == 3) raw += g.value;
+    raw += e.S(1);
+    const double height = e.D(40, 1.0);
+    if (raw.empty() || height <= 0) { ++stats_.skipped; return; }
+    const std::vector<std::string> lines = MTextToLines(raw);
+    const int attachment = e.I(71, 1);
+    const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
+    ON_Plane base(OcsToWorld(ocs, e.P(10)), ocs.xaxis, ocs.yaxis);
+    base.Rotate(ON_DEGREES_TO_RADIANS * e.D(50, 0.0), ocs.zaxis);
+    std::vector<std::vector<kernel::NurbsCurve>> per_line;
+    std::string font_used;
+    if (!BuildMTextGlyphs(lines, height, attachment, base, per_line, font_used)) { ++stats_.skipped; return; }
+    // SelText's "Text" user-text filter should match the plain (formatting
+    // stripped) content, not the raw markup - lines rejoined with \n.
+    std::string plain_joined;
+    for (size_t i = 0; i < lines.size(); ++i) { if (i) plain_joined += "\n"; plain_joined += lines[i]; }
+    for (std::vector<kernel::NurbsCurve>& glyphs : per_line) {
+      for (kernel::NurbsCurve& g : glyphs) {
+        SceneObject o = SceneObject::MakeCurve(g);
+        ApplyAttributes(o, e);
+        o.user_text["Annotation"] = "Text";
+        o.user_text["Style"] = "Standard";
+        o.user_text["Text"] = plain_joined;
+        doc_.Add(std::move(o));
+        ++stats_.curves;
+      }
     }
   }
 
@@ -980,8 +1152,8 @@ class DxfImporter {
   //   - more than one boundary path (islands/holes: group code 91 != 1)
   //   - edge-type boundaries (LINE/ARC/ELLIPSE/SPLINE edge records instead
   //     of a polyline vertex list - group 92 without bit 0x2)
-  // Both fall into the ordinary skipped-entity count, same as MTEXT/
-  // DIMENSION/SPLINE-boundary elsewhere in this importer.
+  // Both fall into the ordinary skipped-entity count, same as DIMENSION/
+  // SPLINE-boundary elsewhere in this importer.
   void Hatch(const DxfEntity& e) {
     if (e.I(91, 0) != 1) { ++stats_.skipped; return; }  // multiple loops/islands: unsupported
     size_t i = 0;
@@ -1036,6 +1208,7 @@ class DxfImporter {
     else if (t == "CIRCLE") Circle(e);
     else if (t == "ARC") Arc(e);
     else if (t == "TEXT") Text(e);
+    else if (t == "MTEXT") MText(e);
     else if (t == "ELLIPSE") Ellipse(e);
     else if (t == "SPLINE") Spline(e);
     else if (t == "LWPOLYLINE") LwPolyline(e);
@@ -1177,19 +1350,22 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
 // build DWGs by hand, walking model-space entities with
 // get_first_owned_entity/get_next_owned_entity (both public, declared in
 // dwg.h) and switching on `fixedtype`. Coverage: LINE, POINT, CIRCLE, ARC,
-// LWPOLYLINE (bulges + closed flag), TEXT (converted to real glyph-outline
-// curves, see geom/TextOutline.h), INSERT (flattened recursively into
-// transformed copies of the referenced block's own entities - the same
-// "instance is a transformed copy, not a live GPU reference" model
-// InstantiateBlock (cmd_drafting.cpp) already uses for blocks defined
-// in-app), and HATCH for the common case only: exactly one boundary path
-// that is a polyline loop (Dwg_HATCH_Path::flag bit 2) - built through the
-// same drafting::BuildSolidHatch/BuildPatternHatch helpers the in-app Hatch
-// command uses (src/drafting/HatchBuild.h), so an imported hatch is a real
-// hatch (selectable via SelHatch, rebuildable via HatchScale). Multiple
-// boundary paths (islands/holes) and edge-type (line/arc/spline segment)
-// boundaries fall into the skipped count, like MTEXT, DIMENSION, SPLINE,
-// 3D solids/meshes, xrefs and anything else outside this importer's
+// LWPOLYLINE (bulges + closed flag), TEXT and MTEXT (converted to real
+// glyph-outline curves, see geom/TextOutline.h - MTEXT's inline formatting
+// codes are stripped to plain multi-line text, see MTextToLines/
+// BuildMTextGlyphs above for exactly what's exact vs. approximated),
+// INSERT (flattened recursively into transformed copies of the referenced
+// block's own entities - the same "instance is a transformed copy, not a
+// live GPU reference" model InstantiateBlock (cmd_drafting.cpp) already
+// uses for blocks defined in-app), and HATCH for the common case only:
+// exactly one boundary path that is a polyline loop (Dwg_HATCH_Path::flag
+// bit 2) - built through the same drafting::BuildSolidHatch/
+// BuildPatternHatch helpers the in-app Hatch command uses
+// (src/drafting/HatchBuild.h), so an imported hatch is a real hatch
+// (selectable via SelHatch, rebuildable via HatchScale). Multiple boundary
+// paths (islands/holes) and edge-type (line/arc/spline segment) boundaries
+// fall into the skipped count, like DIMENSION, SPLINE, 3D solids/meshes,
+// xrefs and anything else outside this importer's
 // coverage - exactly ImportDxf's own honest gap for entities it can't read.
 
 namespace {
@@ -1365,6 +1541,43 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
         }
         break;
       }
+      // MTEXT: DWG's single `text` field carries the same concatenated,
+      // formatting-code-laden content as DXF's group 3/1 chunks (see
+      // MTextToLines/BuildMTextGlyphs above for what's stripped/
+      // approximated). No `rotation` field on this struct - x_axis_dir is
+      // the rotation vector, same as DXF group 11 would be.
+      case DWG_TYPE_MTEXT: {
+        Dwg_Entity_MTEXT* e = ent->tio.MTEXT;
+        if (!e->text || !*e->text || e->text_height <= 0) { ++stats.skipped; break; }
+        const std::vector<std::string> lines = MTextToLines(e->text);
+        const int attachment = static_cast<int>(e->attachment);
+        double angle = 0.0;
+        if (std::fabs(e->x_axis_dir.x) > 1e-12 || std::fabs(e->x_axis_dir.y) > 1e-12) {
+          angle = std::atan2(e->x_axis_dir.y, e->x_axis_dir.x);
+        }
+        ON_Plane pl(Point3d(e->ins_pt.x, e->ins_pt.y, e->ins_pt.z), ON_xaxis, ON_yaxis);
+        pl.Rotate(angle, ON_zaxis);
+        pl.Transform(xf);
+        std::vector<std::vector<kernel::NurbsCurve>> per_line;
+        std::string font_used;
+        if (!BuildMTextGlyphs(lines, e->text_height, attachment, pl, per_line, font_used)) { ++stats.skipped; break; }
+        std::string plain_joined;
+        for (size_t i = 0; i < lines.size(); ++i) { if (i) plain_joined += "\n"; plain_joined += lines[i]; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        for (std::vector<kernel::NurbsCurve>& glyphs : per_line) {
+          for (kernel::NurbsCurve& g : glyphs) {
+            SceneObject so = SceneObject::MakeCurve(g);
+            so.layer_index = layer;
+            so.user_text["Annotation"] = "Text";
+            so.user_text["Style"] = "Standard";
+            so.user_text["Text"] = plain_joined;
+            ApplyDwgColor(so, ent->color);
+            doc.Add(std::move(so));
+            ++stats.curves;
+          }
+        }
+        break;
+      }
       case DWG_TYPE_POINT: {
         Dwg_Entity_POINT* e = ent->tio.POINT;
         Point3d p(e->x, e->y, e->z);
@@ -1490,7 +1703,7 @@ bool ImportDwg(Document& doc, const std::string& path, std::string& summary) {
   if (stats.hatches) ss << ", " << stats.hatches << " hatch" << (stats.hatches == 1 ? "" : "es");
   if (stats.layers) ss << ", " << stats.layers << " new layer" << (stats.layers == 1 ? "" : "s");
   if (stats.blocks_flattened) ss << ", " << stats.blocks_flattened << " block instance" << (stats.blocks_flattened == 1 ? "" : "s") << " flattened";
-  if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped (dimensions, splines, multi-loop/edge-boundary hatches, 3D solids and meshes are not read back yet)";
+  if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped (dimensions, multi-loop/edge-boundary hatches, 3D solids and meshes are not read back yet)";
   summary = ss.str();
   if (stats.curves + stats.points + stats.hatches == 0) {
     summary = "No supported entities found in " + path + (stats.skipped ? " (" + std::to_string(stats.skipped) + " unsupported entities skipped)" : "");

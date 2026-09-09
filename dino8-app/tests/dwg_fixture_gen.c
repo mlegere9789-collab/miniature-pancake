@@ -159,6 +159,67 @@ write_spline_fixture (const char *path)
   return 0;
 }
 
+/* A single MTEXT entity built via LibreDWG's own dwg_add_MTEXT - marked
+ * "Experimental. Does not work yet properly" in dwg_api.h, like
+ * dwg_add_SPLINE above, so its output is checked by hand before relying on
+ * it here: dwg_add_MTEXT populates ins_pt/rect_width/text (via
+ * dwg_add_u8_input, a real UTF-8 copy) and defaults x_axis_dir to (1,0,0)
+ * (no rotation), attachment to 1 (top-left), and text_height from the
+ * document's $TEXTSIZE header variable - not from any argument this
+ * function takes. This fixture overwrites text_height and attachment
+ * directly on the returned Dwg_Entity_MTEXT (plain public struct fields,
+ * the same ones ImportDwg's DWG_TYPE_MTEXT case reads - see WalkDwgEntities
+ * in src/io/FileExchange.cpp) to get a known height and to exercise a
+ * non-default attachment point (5 = middle-center) rather than only ever
+ * testing the top-left default.
+ *
+ * The text itself embeds the identical inline-formatting-code shape as
+ * tests/dxf_mtext_fixture.dxf ("{\C1;Hi}\PH\H2x;i" - a colour override and
+ * a formatting-group brace pair around the first "Hi", a \P paragraph
+ * break, then a mid-run height-override code inside the second "Hi"), so
+ * this proves ImportDwg's MTextToLines stripping against a real DWG_TYPE_
+ * MTEXT independent of Dino 8's own writer (which has no MTEXT export -
+ * ExportDxf/ExportDwg never write one), not just its glyph-outline layout.
+ */
+static int
+write_mtext_fixture (const char *path)
+{
+  Dwg_Data *dwg = dwg_new_Document (R_2000, 0, 0);
+  if (!dwg)
+    {
+      fprintf (stderr, "dwg_new_Document failed\n");
+      return 1;
+    }
+  Dwg_Object *mspace = dwg_model_space_object (dwg);
+  if (!mspace)
+    {
+      fprintf (stderr, "dwg_model_space_object failed\n");
+      return 1;
+    }
+  Dwg_Object_BLOCK_HEADER *hdr = mspace->tio.object->tio.BLOCK_HEADER;
+
+  const dwg_point_3d ins_pt = { 20.0, 20.0, 0.0 };
+  Dwg_Entity_MTEXT *mtext
+      = dwg_add_MTEXT (hdr, &ins_pt, 0.0, "{\\C1;Hi}\\PH\\H2x;i");
+  if (!mtext)
+    {
+      fprintf (stderr, "dwg_add_MTEXT failed\n");
+      return 1;
+    }
+  mtext->text_height = 5.0;
+  mtext->attachment = 5; /* middle-center, not the top-left default */
+
+  const int werr = dwg_write_file (path, dwg);
+  dwg_free (dwg);
+  if (werr >= DWG_ERR_CRITICAL)
+    {
+      fprintf (stderr, "dwg_write_file failed: 0x%x\n", werr);
+      return 1;
+    }
+  printf ("wrote %s\n", path);
+  return 0;
+}
+
 int
 main (int argc, char **argv)
 {
@@ -166,9 +227,11 @@ main (int argc, char **argv)
     return write_hatch_fixture (argv[1]);
   if (argc == 3 && strcmp (argv[2], "spline") == 0)
     return write_spline_fixture (argv[1]);
+  if (argc == 3 && strcmp (argv[2], "mtext") == 0)
+    return write_mtext_fixture (argv[1]);
   if (argc != 2)
     {
-      fprintf (stderr, "usage: %s <output.dwg> [hatch|spline]\n", argv[0]);
+      fprintf (stderr, "usage: %s <output.dwg> [hatch|spline|mtext]\n", argv[0]);
       return 2;
     }
 
