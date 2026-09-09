@@ -143,7 +143,8 @@ a process manager (systemd, `pm2`, Windows Task Scheduler, etc.) — we can set
 that up when you have a program to schedule.
 
 **Cadence options** (in `jobs.json`): `hourly`, `daily` (with `"at": "HH:MM"`),
-or `weekly` (with `"at": "mon 09:00"`).
+`weekly` (with `"at": "mon 09:00"`), or `every` (with `"interval_hours"`, 1-23
+— e.g. the example `deal-alert-scan` job runs every 3 hours).
 
 ---
 

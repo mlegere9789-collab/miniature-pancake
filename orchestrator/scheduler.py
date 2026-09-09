@@ -16,9 +16,10 @@ Two ways to run scheduled jobs, both driven by the same ``jobs.json``:
        python -m orchestrator.scheduler run
 
 Cadence grammar (see ``jobs.example.json``):
-    hourly            -> top of every hour
-    daily   at HH:MM  -> once a day
+    hourly                    -> top of every hour
+    daily   at HH:MM          -> once a day
     weekly  at DOW HH:MM  (DOW = mon|tue|...|sun)  -> once a week
+    every   interval_hours N (1-23)  -> every N hours, on the hour
 
 All jobs ship ``"enabled": false`` so nothing runs until you opt in.
 
