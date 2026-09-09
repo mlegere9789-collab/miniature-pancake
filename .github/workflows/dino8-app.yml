@@ -26,7 +26,9 @@ jobs:
           # (nothing below comes from it); its mirror has been repeatedly failing
           # "Hash Sum mismatch" on `apt-get update`, which aborts the whole step -
           # drop it first so a third-party repo we don't need can't break a build
-          # that has nothing to do with it.
+          # that has nothing to do with it. The exact filename varies by runner
+          # image, so find it by content instead of guessing a path.
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo rm -f /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update
           sudo apt-get install -y ninja-build libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils
