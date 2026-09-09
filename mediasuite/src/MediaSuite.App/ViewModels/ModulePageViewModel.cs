@@ -42,6 +42,7 @@ public class ModulePageViewModel : PageViewModel
     private string _newDriveFolderName = string.Empty;
     private string? _driveFolderHint;
     private bool _isCreatingDriveFolder;
+    private long _driveFoldersGeneration;
 
     public ModulePageViewModel(
         string title,
@@ -492,10 +493,24 @@ public class ModulePageViewModel : PageViewModel
         // for a completed run.
         var previouslySelectedId = _selectedDriveFolder?.Id;
 
+        // A real Drive call can complete out of order: a slower refresh from an earlier
+        // toggle could still be in flight when a newer one starts, or when
+        // CreateDriveFolderAsync adds a folder directly -- if that older call were allowed
+        // to finish and Clear()/repopulate DriveFolders afterward, it would stomp the newer,
+        // more current state with its own stale snapshot (e.g. making a folder the user just
+        // created disappear again, even though it still exists on Drive). Each call captures
+        // its own generation and only applies what it fetched if nothing newer has started
+        // since -- CreateDriveFolderAsync bumps this too, for the same reason.
+        var generation = ++_driveFoldersGeneration;
+
         try
         {
             DriveFolderHint = "Loading folders…";
             var folders = await _driveClient.ListFoldersAsync(null, CancellationToken.None);
+            if (generation != _driveFoldersGeneration)
+            {
+                return;
+            }
 
             DriveFolders.Clear();
             foreach (var folder in folders)
@@ -511,11 +526,17 @@ public class ModulePageViewModel : PageViewModel
         }
         catch (GoogleDriveNotSignedInException)
         {
-            DriveFolderHint = "Sign in to Google Drive from Settings to pick a folder.";
+            if (generation == _driveFoldersGeneration)
+            {
+                DriveFolderHint = "Sign in to Google Drive from Settings to pick a folder.";
+            }
         }
         catch (Exception ex)
         {
-            DriveFolderHint = $"Could not load Drive folders: {ex.Message}";
+            if (generation == _driveFoldersGeneration)
+            {
+                DriveFolderHint = $"Could not load Drive folders: {ex.Message}";
+            }
         }
     }
 
@@ -540,6 +561,12 @@ public class ModulePageViewModel : PageViewModel
             var id = await _driveClient.CreateFolderAsync(name, null, CancellationToken.None);
             var folder = new GoogleDriveFolder { Id = id, Name = name };
 
+            // Invalidates any refresh already in flight from an earlier toggle: without
+            // this, that refresh could still complete afterward with a snapshot fetched
+            // before this folder existed on Drive, Clear()-ing it right back out of the
+            // list a moment after it was added -- see RefreshDriveFoldersAsync's own
+            // comment on this same generation counter.
+            _driveFoldersGeneration++;
             DriveFolders.Add(folder);
             SelectedDriveFolder = folder;
             NewDriveFolderName = string.Empty;

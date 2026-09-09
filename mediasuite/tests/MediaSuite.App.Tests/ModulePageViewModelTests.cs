@@ -361,4 +361,32 @@ public sealed class ModulePageViewModelTests : IDisposable
         Assert.Single(fixture.Drive.CreatedFolders);
         Assert.Equal(string.Empty, fixture.Page.NewDriveFolderName);
     }
+
+    [Fact]
+    public void A_stale_refresh_still_in_flight_does_not_erase_a_folder_created_after_it_started()
+    {
+        // Regression test: RefreshDriveFoldersAsync had no sequencing guard against a real
+        // Drive call completing out of order. A slower refresh from an earlier toggle could
+        // still be in flight when the user creates a new folder; if that older call were
+        // then allowed to finish and Clear()/repopulate DriveFolders from its own stale,
+        // pre-creation snapshot, the folder the user just created would disappear from the
+        // list again, even though it still exists on Drive.
+        using var fixture = CreateModulePage(FakeEngine.HandlesOnly("video.convert"), googleDriveEnabled: true);
+        fixture.Drive.FoldersToReturn = new[] { new GoogleDriveFolder { Id = "1", Name = "Clips" } };
+        var pendingRefresh = new TaskCompletionSource<IReadOnlyList<GoogleDriveFolder>>();
+        fixture.Drive.PendingListFolders = pendingRefresh;
+
+        fixture.Page.UploadToGoogleDrive = true;
+        Assert.Empty(fixture.Page.DriveFolders); // that refresh is still in flight
+
+        fixture.Page.NewDriveFolderName = "New Exports";
+        fixture.Page.CreateDriveFolderCommand.Execute(null); // completes synchronously, bumps the generation
+        Assert.Equal("New Exports", Assert.Single(fixture.Page.DriveFolders).Name);
+
+        // The earlier, now-stale refresh finally "arrives" with a snapshot that predates the
+        // folder just created -- it must not stomp the newer state.
+        pendingRefresh.SetResult(fixture.Drive.FoldersToReturn);
+
+        Assert.Contains(fixture.Page.DriveFolders, folder => folder.Name == "New Exports");
+    }
 }

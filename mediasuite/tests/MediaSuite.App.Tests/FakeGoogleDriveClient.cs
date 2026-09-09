@@ -21,6 +21,15 @@ public sealed class FakeGoogleDriveClient : IGoogleDriveClient
 
     public Exception? ListFoldersFailure { get; set; }
 
+    /// <summary>
+    /// When set, <see cref="ListFoldersAsync"/> returns this task instead of an
+    /// already-completed one -- see <see cref="PendingCreateFolder"/> for why. Lets a test
+    /// hold one refresh in flight while a second refresh or a folder creation runs to
+    /// completion around it, to exercise ModulePageViewModel's own sequencing guard against
+    /// that older call's result arriving late and overwriting newer state.
+    /// </summary>
+    public TaskCompletionSource<IReadOnlyList<GoogleDriveFolder>>? PendingListFolders { get; set; }
+
     public List<(string Name, string? ParentFolderId)> CreatedFolders { get; } = new();
 
     /// <summary>
@@ -81,7 +90,7 @@ public sealed class FakeGoogleDriveClient : IGoogleDriveClient
     public Task<IReadOnlyList<GoogleDriveFolder>> ListFoldersAsync(string? parentFolderId, CancellationToken cancellationToken) =>
         ListFoldersFailure is not null
             ? Task.FromException<IReadOnlyList<GoogleDriveFolder>>(ListFoldersFailure)
-            : Task.FromResult(FoldersToReturn);
+            : PendingListFolders?.Task ?? Task.FromResult(FoldersToReturn);
 
     public Task<string> CreateFolderAsync(string name, string? parentFolderId, CancellationToken cancellationToken)
     {
