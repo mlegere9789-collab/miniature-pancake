@@ -1717,6 +1717,7 @@ check_nonflat_bmp "$TMP/rt/blowup.bmp" "blowup.bmp (RenderBlowup's own pixel out
 # igesstep_script.txt and step_plane_face.stp).
 sed "s|@TMP@|$TMP|g" "$HERE/igesstep_script.txt" > "$TMP/igesstep_script.txt"
 cp "$HERE/step_plane_face.stp" "$TMP/step_plane_face.stp"
+cp "$HERE/iges_recursive_fixture.igs" "$TMP/iges_recursive_fixture.igs"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
   IS="$("$BIN" --smoke 200 --script "$TMP/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
 else
@@ -1733,6 +1734,9 @@ ischeck "IGES: .*[1-9][0-9]* curve" "IGES import read the free NURBS curve back"
 ischeck "STEP: .*[1-9][0-9]* point" "STEP import read the point back"
 ischeck "IGES: .*[1-9][0-9]* point" "IGES import read the point back"
 ischeck "STEP: 1 brep (1 trimmed face), 1 curve, 0 points" "the hand-written STEP fixture (PLANE face + CIRCLE) imported as 2 objects"
+ischeck "IGES: 0 curves, 0 points, 0 surfaces, 0 breps (0 trimmed faces); 1 unsupported entity skipped" "a self-referencing IGES composite curve was rejected cleanly, not crashed/hung on (see BuildIgesCurve's recursion-depth guard)"
+ischeck "^ok   expect_objects 0" "the malformed IGES file added nothing to the document"
+grep -q "Segmentation fault\|core dumped" <<<"$IS" && { echo "FAIL: iges/step script segfaulted on the recursive-composite-curve fixture"; fail=1; } || echo "ok   no segfault while importing the recursive-composite-curve fixture"
 grep -qE "^ {5}128" "$TMP/t.igs" && grep -qE "^ {5}144" "$TMP/t.igs" && echo "ok   t.igs uses 128 (surface) and 144 (trimmed surface) entities" || { echo "FAIL t.igs entity types"; fail=1; }
 grep -q "=ADVANCED_FACE(" "$TMP/t.stp" && grep -q "B_SPLINE_SURFACE_WITH_KNOTS(" "$TMP/t.stp" && echo "ok   t.stp uses ADVANCED_FACE and B_SPLINE_SURFACE_WITH_KNOTS entities" || { echo "FAIL t.stp entity types"; fail=1; }
 grep -q "^ISO-10303-21;$" "$TMP/t.stp" && grep -q "^END-ISO-10303-21;$" "$TMP/t.stp" && echo "ok   t.stp is a complete Part 21 file" || { echo "FAIL t.stp malformed"; fail=1; }

@@ -1223,8 +1223,13 @@ class IgesImporter {
 };
 
 // Builds a curve entity (100/104/106/110/112/126) as a kernel-ready NURBS
-// curve, in model-space or parameter-space per `two_d`.
-bool BuildIgesCurve(const IgesRawEntity& e, const std::map<int, IgesRawEntity>& des, ON_NurbsCurve& out) {
+// curve, in model-space or parameter-space per `two_d`. `depth` bounds the
+// recursion a type-102 composite curve can cause by referencing another
+// composite curve; a malformed/crafted IGES file can make that chain
+// self-referencing or arbitrarily deep, which would otherwise stack-overflow
+// (undefined behavior, not something the caller's try/catch can stop).
+bool BuildIgesCurve(const IgesRawEntity& e, const std::map<int, IgesRawEntity>& des, ON_NurbsCurve& out, int depth = 0) {
+  if (depth > 64) return false;
   const std::vector<std::string>& p = e.params;
   switch (e.type) {
     case 110: {  // line
@@ -1306,6 +1311,7 @@ bool BuildIgesCurve(const IgesRawEntity& e, const std::map<int, IgesRawEntity>& 
                  // Hermite per segment is exact for cubic C-type; sampling
                  // keeps the reader simple and robust across all C-types).
       const int ctype = PInt(p, 0), ndim = PInt(p, 2), nseg = PInt(p, 3);
+      if (nseg < 0 || nseg > 100000 || ndim < 0) return false;  // reject a corrupt/hostile file's count instead of an unbounded allocation
       size_t idx = 4;
       std::vector<double> tvals(static_cast<size_t>(nseg) + 1);
       for (int i = 0; i <= nseg; ++i) tvals[static_cast<size_t>(i)] = PNum(p, idx++);
@@ -1333,6 +1339,7 @@ bool BuildIgesCurve(const IgesRawEntity& e, const std::map<int, IgesRawEntity>& 
     }
     case 126: {  // rational B-spline curve
       const int K = PInt(p, 0), M = PInt(p, 1);
+      if (K < 0 || K > 100000 || M < 0 || M > 1000) return false;  // reject a corrupt/hostile file's count instead of an unbounded allocation
       const int n = K + 1, degree = M;
       size_t idx = 6;
       std::vector<double> knots(static_cast<size_t>(n + degree + 1));
@@ -1354,7 +1361,7 @@ bool BuildIgesCurve(const IgesRawEntity& e, const std::map<int, IgesRawEntity>& 
         auto it = des.find(cde);
         if (it == des.end()) return false;
         ON_NurbsCurve seg;
-        if (!BuildIgesCurve(it->second, des, seg) || !seg.IsValid()) return false;
+        if (!BuildIgesCurve(it->second, des, seg, depth + 1) || !seg.IsValid()) return false;
         segs.push_back(std::move(seg));
       }
       if (segs.size() == 1) { out = segs[0]; return true; }
@@ -1383,6 +1390,11 @@ bool BuildIgesSurface(const IgesRawEntity& e, ON_NurbsSurface& out) {
   switch (e.type) {
     case 128: {
       const int K1 = PInt(p, 0), K2 = PInt(p, 1), M1 = PInt(p, 2), M2 = PInt(p, 3);
+      // Reject a corrupt/hostile file's counts instead of an unbounded or
+      // overflowing allocation - also caps n1*n2 (checked as int64) well
+      // under INT_MAX before it's used as a vector size below.
+      if (K1 < 0 || K1 > 100000 || K2 < 0 || K2 > 100000 || M1 < 0 || M1 > 1000 || M2 < 0 || M2 > 1000) return false;
+      if (static_cast<long long>(K1 + 1) * (K2 + 1) > 10000000LL) return false;
       const int n1 = K1 + 1, n2 = K2 + 1;
       // Header is K1,K2,M1,M2,PROP1..PROP5 = 9 scalars (indices 0-8); the
       // U knot vector starts at index 9, not 10.
