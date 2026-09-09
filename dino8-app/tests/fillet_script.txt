@@ -154,4 +154,25 @@ EndRadius=2
 SelLast
 List
 SelNone
-@expect_objects 28
+# --- FilletEdge on a solid cylinder's own flat-top rim (a full 360-degree
+# closed edge, one planar face + one cylindrical face) via the mesh
+# fallback: the exact B-rep trim only handles planar-planar adjacent
+# faces, so this always falls through to the mesh fallback, and being a
+# closed (periodic) edge specifically exercises the fallback's own
+# loop-closure handling (see adversarial_corpus_notes.md SS3) that no
+# box-corner edge ever does. Used to fail unconditionally with a
+# watertight-gap error regardless of radius; now succeeds with a real
+# (approximate, not exact - the mesh fallback's own documented
+# limitation) filleted mesh.
+SelAll
+Hide
+Cylinder 650,0,0 5 20
+SelLast
+FilletEdge
+Radius=1
+650,5,20
+Enter
+SelAll
+Volume
+SelNone
+@expect_objects 29

@@ -204,6 +204,7 @@ struct FilletBuild {
   ON_NurbsSurface fillet;              // rational fillet surface (u: across, v: along the spine)
   std::vector<Point3d> spine_pts;
   std::vector<Point3d> contact_a, contact_b;
+  std::vector<double> v_params;        // fillet.Domain(1) parameter for each row - lets a caller sample fillet.PointAt(u, v_params[i]) and land exactly on row i's own arc (LoftRows builds an interpolating spline through these exact parameter values)
   std::vector<ON_2dPoint> uv_a, uv_b;  // contact parameters on the ORIGINAL surfaces
   ON_NurbsCurve contact_curve_a, contact_curve_b;  // 3D curves through contact_a/contact_b
   ON_NurbsCurve pcurve_a, pcurve_b;                // 2D curves (on surface a/b) through uv_a/uv_b
@@ -328,6 +329,7 @@ FilletBuild BuildFillet(const ON_NurbsSurface& a, const ON_NurbsSurface& b, cons
     out.spine_pts.push_back(spine.points[i]);
     out.contact_a.push_back(spine.points[i] + da * r);
     out.contact_b.push_back(spine.points[i] + db * r);
+    out.v_params.push_back(spine.params[i]);
     out.uv_a.emplace_back(ua, va);
     out.uv_b.emplace_back(ub, vb);
   }
@@ -425,6 +427,7 @@ FilletBuild BuildPlanarVariableFillet(const ON_NurbsSurface& a, const ON_NurbsSu
     out.spine_pts.push_back(center);
     out.contact_a.push_back(ca);
     out.contact_b.push_back(cb);
+    out.v_params.push_back(t);
   }
   if (!LoftRows(rows, params, 3, out.fillet)) { out.error = "failed to loft the variable-radius fillet arcs"; return out; }
   std::vector<ON_3dPoint> pca, pcb;
@@ -550,6 +553,7 @@ FilletBuild BuildPlaneCylinderVariableFillet(const ON_NurbsSurface& a, const ON_
     out.spine_pts.push_back(center);
     out.contact_a.push_back(ca);
     out.contact_b.push_back(cb);
+    out.v_params.push_back(t);
   }
   if (!LoftRows(rows, params, 3, out.fillet)) { out.error = "failed to loft the variable-radius fillet arcs"; return out; }
   std::vector<ON_3dPoint> pca, pcb;
@@ -800,6 +804,52 @@ kernel::Mesh SweepTubeCutter(const std::vector<Point3d>& spine_in, const std::ve
   // negative volume (-14.35 on the test case), not assumed correct just
   // because IsClosedManifold() passed.
   for (size_t i = 0; i < n; ++i) rings.push_back({spine[i], ca[i], cb[i]});
+  return periodic ? kernel::Mesh::LoftPeriodicRings(rings) : kernel::Mesh::LoftClosedRings(rings);
+}
+
+// Builds a real, closed SOLID representing the material between the flat
+// wedge SweepTubeCutter() removes and the true rolling-ball fillet
+// surface `built` - the "lune" a caller unions onto the cutter's own
+// remainder solid instead of trying to weld an open fillet ribbon onto an
+// already fully-closed mesh (which two closed solids from a plain boolean
+// DIFFERENCE always are - there's no naked boundary left to weld an extra
+// patch into, which is the real reason the old weld-based approach could
+// never close: `IsClosedManifold()` on the difference result was already
+// true *before* the ribbon was ever added, so adding it just produced
+// overlapping, non-manifold geometry, not a gap to be welded shut).
+// Each cross-section ring is (spine, contact_a, [[arc_samples interior
+// points sampled from built's own true arc]], contact_b) - the same
+// planar circular arc BuildFillet/BuildPlanarVariableFillet/
+// BuildPlaneCylinderVariableFillet already computed contact_a/contact_b
+// from, so this ring is genuinely planar and simple (required for
+// LoftClosedRings()' end caps). A boolean UNION between this solid and
+// the cutter's own remainder is robust to the two meshes' independent
+// tessellations not matching vertex-for-vertex - unlike a manual weld,
+// Manifold's own CSG algorithm computes the real geometric intersection
+// regardless.
+kernel::Mesh BuildFilletSolid(const std::vector<Point3d>& spine_in, const std::vector<Point3d>& contact_a_in,
+                               const std::vector<Point3d>& contact_b_in, const std::vector<double>& v_params_in,
+                               const ON_NurbsSurface& built, bool periodic, int arc_samples = 5) {
+  std::vector<Point3d> spine = spine_in, ca = contact_a_in, cb = contact_b_in;
+  std::vector<double> v_params = v_params_in;
+  periodic = periodic && spine.size() >= 3;
+  if (periodic) { spine.pop_back(); ca.pop_back(); cb.pop_back(); if (!v_params.empty()) v_params.pop_back(); }
+  const size_t n = std::min({spine.size(), ca.size(), cb.size(), v_params.size()});
+  const ON_Interval u_domain = built.Domain(0);
+  std::vector<std::vector<Point3d>> rings;
+  rings.reserve(n);
+  for (size_t i = 0; i < n; ++i) {
+    std::vector<Point3d> ring;
+    ring.push_back(spine[i]);
+    ring.push_back(ca[i]);
+    for (int k = 1; k <= arc_samples; ++k) {
+      const double u = u_domain.ParameterAt(static_cast<double>(k) / (arc_samples + 1));
+      const ON_3dPoint p = built.PointAt(u, v_params[i]);
+      ring.emplace_back(p.x, p.y, p.z);
+    }
+    ring.push_back(cb[i]);
+    rings.push_back(std::move(ring));
+  }
   return periodic ? kernel::Mesh::LoftPeriodicRings(rings) : kernel::Mesh::LoftClosedRings(rings);
 }
 
@@ -1068,6 +1118,7 @@ class FilletEdgeCommand : public Command {
     ON_NurbsSurface built;
     std::vector<Point3d> spine;
     std::vector<Point3d> contact_pts_a, contact_pts_b;  // one contact point per spine sample, for the mesh-fallback wedge cutter
+    std::vector<double> v_params;        // built.Domain(1) parameter per spine sample, for sampling built's own true arc at each row
     ON_NurbsCurve ca, cb;                // contact curves, kept for exact trimming below
     bool ok = false;
     std::string err;
@@ -1120,6 +1171,7 @@ class FilletEdgeCommand : public Command {
         cb = fb.contact_curve_b;
         contact_pts_a = fb.contact_a;
         contact_pts_b = fb.contact_b;
+        v_params = fb.v_params;
       }
     }
     if (!ok) { ctx.Warn(label + ": " + err); return; }
@@ -1266,10 +1318,22 @@ class FilletEdgeCommand : public Command {
         kernel::Mesh cutter = SweepTubeCutter(spine, contact_pts_a, contact_pts_b, edge.IsClosed());
         try {
           kernel::Mesh remainder_mesh = kernel::BooleanCombine(*obj_mesh, cutter, kernel::BooleanOp::Difference);
-          kernel::NurbsSurface ks;
-          ks.raw() = built;
-          kernel::Mesh fillet_mesh = ks.TessellateGridAdaptive(std::max(tol * 4, 1e-4));
-          kernel::Mesh combined = kernel::Mesh::MergeAndWeld({remainder_mesh, fillet_mesh}, tol);
+          // remainder_mesh is already a fully closed, watertight solid on
+          // its own (a boolean DIFFERENCE between two closed solids always
+          // is) - it has NO naked boundary left for an added surface patch
+          // to weld into. The old approach (MergeAndWeld with a separately
+          // tessellated open fillet ribbon) was fighting an impossible
+          // topology: welding a patch onto an already-closed mesh cannot
+          // produce a valid manifold no matter how tight the tolerance,
+          // since there's nothing open to fuse it to. Instead, build the
+          // fillet as its OWN closed solid (the "lune" between the flat cut
+          // and the true rolling-ball arc) and boolean UNION it onto
+          // remainder_mesh - Manifold's CSG algorithm computes the real
+          // geometric intersection between the two independently-
+          // tessellated solids robustly, with no manual vertex-conformance
+          // requirement at all.
+          kernel::Mesh fillet_solid = BuildFilletSolid(spine, contact_pts_a, contact_pts_b, v_params, built, edge.IsClosed());
+          kernel::Mesh combined = kernel::BooleanCombine(remainder_mesh, fillet_solid, kernel::BooleanOp::Union);
           // Same lesson as the exact path above: don't hand back something
           // broken under a label that implies success. Confirmed by
           // testing: at ~1e6-unit coordinates this mesh path can ALSO come
@@ -1279,6 +1343,29 @@ class FilletEdgeCommand : public Command {
           // that magnitude), so this is a genuine kernel-level ceiling,
           // not something to paper over with an optimistic message.
           if (!combined.IsClosedManifold()) {
+            ctx.Warn(label + ": could not build a watertight result at this object's coordinate scale (both the exact B-rep trim and the mesh fallback came back with a gap - see adversarial_corpus_notes.md)");
+            return;
+          }
+          // A closed manifold alone isn't proof this actually cut anything:
+          // at extreme coordinate scales (~1e6 units), ON_Mesh's single-
+          // precision (ON_3fPoint) vertex storage can quantize the cutter/
+          // fillet-solid geometry so coarsely that the boolean union comes
+          // back closed but essentially unchanged from the original object
+          // - a real, previously-hidden failure mode this specific check
+          // exists to catch: cutter.Volume() is this fillet's own expected
+          // removed-material magnitude (computed from the exact same
+          // coordinates, so it degrades the same way under quantization),
+          // and a genuine fillet must remove at least a meaningful fraction
+          // of it - not "did the topology check pass," but "did the volume
+          // actually move by roughly the right amount." Confirmed this
+          // catches a real case: an otherwise-ordinary radius-2 fillet on a
+          // 10-unit box translated to 1e6-unit coordinates now clears the
+          // watertight check but changes volume by 0 instead of ~8.6 - this
+          // rejects that instead of silently handing back the unfilleted
+          // box under a label that implies success.
+          const double removed = std::fabs(obj_mesh->Volume() - combined.Volume());
+          const double expected_removed = std::fabs(cutter.Volume());
+          if (expected_removed > 1e-9 && removed < 0.1 * expected_removed) {
             ctx.Warn(label + ": could not build a watertight result at this object's coordinate scale (both the exact B-rep trim and the mesh fallback came back with a gap - see adversarial_corpus_notes.md)");
             return;
           }

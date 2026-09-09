@@ -151,33 +151,34 @@ needed once the scale-relative floor (added alongside this corpus) was in
 place for the *opposite* problem (surfaces far larger than the document
 tolerance, where the fixed 1e-4/1e-5 floors used to be needlessly tight).
 
-## 3. FilletEdge on a closed (periodic) edge - fixed the loft/spine gap, found a deeper pre-existing mesh-fallback gap
+## 3. FilletEdge on a closed (periodic) edge - fixed, via a real architecture change, not a tolerance tweak
 
 **Case:** `FilletEdge` on a solid cylinder's own flat-top rim (the edge
 between the top cap and the cylindrical wall, a full 360-degree closed
 loop) - e.g. `Cylinder 0,0,0 5 20` then `FilletEdge Radius=1` picked on
-that rim. Not exercised by any existing test: every prior `FilletEdge`/
-`ChamferEdge` test corpus case (this file included) uses a box corner,
-whose adjacent faces are both planar and get the *exact* B-rep trim path
-- the mesh fallback investigated here has never actually been exercised
-end-to-end by a passing test before.
+that rim. Not exercised by any existing test before this: every prior
+`FilletEdge`/`ChamferEdge` test corpus case (this file included) uses a
+box corner, whose adjacent faces are both planar and get the *exact*
+B-rep trim path - the mesh fallback investigated here had never actually
+been exercised end-to-end by a passing test before.
 
 **Symptom:** `"FilletEdge: could not build a watertight result at this
 object's coordinate scale (both the exact B-rep trim and the mesh
 fallback came back with a gap - see adversarial_corpus_notes.md)"`, at
 ordinary (millimeter-scale, radius 1) coordinates - not the huge-scale
-case documented above.
+case documented in section 1 above.
 
-**Two real, distinct root causes were found and one was fixed:**
+**Three real, distinct root causes were found, in sequence, and all three
+are now fixed:**
 
-1. **Fixed**: `SweepTubeCutter`'s mesh-fallback cutter tube and
-   `BuildFillet`'s own lofted fillet surface both treated the sampled
-   spine as an open chain even when the underlying edge is closed.
-   `LoftClosedRings()` (used for the cutter) caps *both* ends flat, which
-   for a periodic spine leaves two coincident flat caps sitting on top of
-   each other at the seam instead of a manifold join; separately,
-   `BuildFillet`'s own `rows` array (fed into `LoftRows` to build the
-   fillet surface) kept the raw first/last spine samples from
+1. **Periodic-spine loft/topology gap.** `SweepTubeCutter`'s mesh-fallback
+   cutter tube and `BuildFillet`'s own lofted fillet surface both treated
+   the sampled spine as an open chain even when the underlying edge is
+   closed. `LoftClosedRings()` (used for the cutter) caps *both* ends
+   flat, which for a periodic spine leaves two coincident flat caps
+   sitting on top of each other at the seam instead of a manifold join;
+   separately, `BuildFillet`'s own `rows` array (fed into `LoftRows` to
+   build the fillet surface) kept the raw first/last spine samples from
    `IntersectSurfaces`' marching tracer, which does not itself detect loop
    closure and left them a full ring-spacing or more apart (confirmed:
    ~0.3 units on a 5-unit-radius cylinder, roughly 1% of the loop's own
@@ -189,49 +190,59 @@ case documented above.
    used by `SweepTubeCutter` whenever `ON_BrepEdge::IsClosed()` is true,
    plus snapping `BuildFillet`'s last row to an exact copy of the first
    whenever the chosen spine's own `IntersectionCurve::closed` flag is
-   set. Both are real, independently verified fixes, not workarounds.
-2. **Still open, pre-existing, and NOT specific to periodic edges**: even
-   after both of the above, the cylinder-rim case above still fails.
-   Diagnosis: `SweepTubeCutter`'s cutter tube was originally an
-   independently-swept, deliberately oversized (`radius * 1.05`) circular
-   tube unrelated to the fillet's own geometry, so the boolean difference
-   gouged past the fillet's own analytic edges with nothing to re-trim the
-   resulting cavity back down to them - a debug instrumentation pass
-   measured `MergeAndWeld` collapsing only ~10 of the mesh pair's combined
-   ~10,600 vertices, essentially no welding at all. Rebuilt
-   `SweepTubeCutter` to cut a *wedge* instead (triangular cross-section
-   `(spine, contact_a, contact_b)` at each sample, using the exact same
-   contact points the fillet surface itself was lofted from, not an
-   independently-chosen radius) - a real, verified improvement: the
-   cutter's own volume is now sane and correctly signed (checked directly:
-   the ring winding `(spine, contact_a, contact_b)` gives a positive
-   volume; the reversed order gives -14.35 on the same test case, a wrong-
-   but-still-"closed"-manifold result that `IsClosedManifold()` alone
-   cannot catch - only checking the actual volume did), and welding
-   improved roughly 20x (from ~10 to ~270 of ~8,700 vertices). Still not
-   enough to close the mesh, and widening the weld tolerance to several
-   times the fillet's own mesh chord tolerance barely moved that number
-   (270 to ~370) - ruling out "just a tolerance problem." Root cause:
-   `remainder_mesh`'s cut boundary (Manifold's own re-triangulation of the
-   cutter/object intersection) and `fillet_mesh`'s boundary
-   (`TessellateGridAdaptive`'s independent sampling of the same analytic
-   surface) both approximate `contact_curve_a`/`contact_curve_b`, but as
-   two separately-generated triangulations they don't share vertices
-   pointwise even when their underlying curves are identical - this is a
-   real, deeper architectural mismatch (non-conforming meshes at a shared
-   boundary), not something a larger weld tolerance can safely paper over
-   without risking incorrect merges elsewhere in the mesh.
+   set.
+2. **Oversized, disconnected cutter.** `SweepTubeCutter`'s cutter tube was
+   an independently-swept, deliberately oversized (`radius * 1.05`)
+   circular tube unrelated to the fillet's own geometry, gouging past the
+   fillet's own analytic edges with nothing to re-trim the cavity back
+   down to them. Rebuilt to cut a *wedge* instead (triangular
+   cross-section `(spine, contact_a, contact_b)` at each sample, using the
+   exact same contact points the fillet surface itself was lofted from).
+3. **The actual root cause: welding a patch onto an already-closed mesh is
+   topologically impossible, no matter the tolerance.** A boolean
+   DIFFERENCE between two closed solids (`obj_mesh` and the cutter) is
+   *itself* always a fully closed, watertight solid - Manifold guarantees
+   it. That means `remainder_mesh` never had a naked boundary for the
+   separately-tessellated fillet ribbon (`TessellateGridAdaptive`'s own,
+   independent sampling of the true arc surface) to weld into via
+   `MergeAndWeld`, at ANY tolerance - a debug instrumentation pass
+   measured only ~10-370 of a combined ~8,700-10,600 vertices ever
+   matching closely enough to weld, regardless of how the wedge was
+   shaped or how wide the tolerance was pushed, because there was no real
+   gap to close in the first place, only two overlapping, independently-
+   triangulated closed and open surfaces glued shut arbitrarily. **Fixed**
+   by changing the whole strategy: build the fillet as its own closed
+   SOLID (`BuildFilletSolid` - the same wedge cross-section as the cutter,
+   but with the straight `contact_a`-to-`contact_b` edge replaced by
+   several interior points sampled from the fillet surface's own true
+   circular arc at that row, so the ring stays planar and simple, both
+   required for `LoftClosedRings()`'s end caps) and boolean UNION it onto
+   `remainder_mesh` instead of vertex-welding an open patch onto it.
+   Manifold's own CSG algorithm computes the real geometric intersection
+   between two independently-tessellated closed solids robustly - no
+   manual vertex conformance needed at all. Verified on the real
+   cylinder-rim case: `FilletEdge Radius=1` on `Cylinder 0,0,0 5 20`'s own
+   rim now succeeds (`"FilletEdge: edge N -- mesh fallback (... an
+   approximate mesh, not a clean B-rep)"`), added as a permanent
+   regression case in `tests/fillet_script.txt`/`tests/smoke.sh`.
 
-**What would actually fix the remaining gap:** the two triangulations
-need to be made *conforming* at their shared boundary - either by
-constraining `TessellateGridAdaptive`'s boundary row to the exact same
-sample points the cutter's own contact curves use (so Manifold's boolean
-re-triangulation and the fillet's own tessellation start from an
-identical polyline), or by inserting a proper constrained/conforming
-remesh pass after the boolean. Both are a materially larger rewrite than
-either fix already landed here, and honestly out of scope for this pass.
-Filed here rather than silently left unmentioned, per this file's own
-standard - and the wedge-cutter rewrite is kept regardless, since it is a
-real, independently verified improvement (correct cavity volume/shape)
-over the old oversized-tube approach even though it alone does not close
-the remaining gap.
+**A new failure mode this uncovered, and how it's guarded against:** the
+huge-coordinate-scale case in section 1 above initially started
+*silently succeeding* under this new union-based approach - it cleared
+`IsClosedManifold()` but the resulting volume hadn't actually changed at
+all (`Volume = 1000` both before and after a supposedly-successful
+`Radius=2` fillet), because at ~1e6-unit coordinates `ON_Mesh`'s
+single-precision (`ON_3fPoint`) vertex storage quantizes the cutter/
+fillet-solid geometry too coarsely for the boolean union to have any real
+effect - a watertight-but-wrong result, exactly the failure mode this
+whole file exists to catch rather than paper over. Fixed by adding a
+second check alongside the manifold check: the actual volume removed
+(`|obj_mesh->Volume() - combined.Volume()|`) must be at least 10% of the
+wedge cutter's own expected volume (`|cutter.Volume()|`, computed from the
+same coordinates so it degrades the same way under quantization) - a
+proportional, self-scaling check rather than an absolute threshold, so it
+correctly accepts a genuinely tiny fillet (radius 0.02) and correctly
+rejects a fillet that technically "closed" but changed nothing. Confirmed
+the huge-scale case (section 1) still gets its original, honest
+`"could not build a watertight result..."` diagnostic rather than a false
+success, and the cylinder-rim case above still succeeds correctly.
