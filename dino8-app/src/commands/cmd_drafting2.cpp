@@ -12,6 +12,7 @@
 #include "commands/cmd_common.h"
 #include "commands/hatch_common.h"
 #include "drafting/Gdt.h"
+#include "drafting/HatchBuild.h"
 #include "drafting/HatchLibrary.h"
 #include "drafting/SectionView.h"
 #include "drafting/Table.h"
@@ -735,21 +736,7 @@ class DimToleranceCommand : public Command {
 // ---------------------------------------------------------------------------
 
 bool AddSolidHatch(CommandContext& ctx, const kernel::NurbsCurve& boundary, ObjectId boundary_id, int layer, const Color* color) {
-  ON_Plane pl;
-  if (!boundary.raw().IsPlanar(&pl, ctx.Settings().absolute_tolerance)) return false;
-  ON_Brep* b = ON_BrepTrimmedPlane(pl, boundary.raw());
-  if (!b) return false;
-  kernel::Brep k;
-  k.raw() = *b;
-  delete b;
-  SceneObject s = SceneObject::MakeBrep(k);
-  s.name = "Hatch Solid";
-  s.layer_index = layer;
-  s.user_text["Hatch"] = "Solid";
-  s.user_text["HatchBoundary"] = std::to_string(boundary_id);
-  if (color) { s.color = *color; s.color_by_layer = false; }
-  ctx.Doc().CreateGroup({ctx.Doc().Add(std::move(s))}, "Hatch");
-  return true;
+  return drafting::BuildSolidHatch(ctx.Doc(), boundary, boundary_id, layer, ctx.Settings().absolute_tolerance, color);
 }
 
 bool AddBitmapHatch(CommandContext& ctx, const kernel::NurbsCurve& boundary, ObjectId boundary_id, int layer, const std::string& image) {
@@ -815,24 +802,10 @@ class LibraryHatchCommand : public Command {
       if (solid) { if (AddSolidHatch(ctx, b.curve, b.id, b.layer, has_color_ ? &color_ : nullptr)) ++made; continue; }
       if (bitmap) { if (AddBitmapHatch(ctx, b.curve, b.id, b.layer, image_)) ++made; continue; }
       if (!pat) continue;
-      ON_Plane pl;
-      if (!b.curve.raw().IsPlanar(&pl, ctx.Settings().absolute_tolerance)) continue;
-      const std::vector<drafting::Loop> loops = {BoundaryPolygon(b.curve)};
       bool truncated = false;
-      std::vector<kernel::NurbsCurve> lines = drafting::HatchPatternCurves(*pat, loops, pl, scale_, rotation_, ctx.Settings().hatch_base, 200000, &truncated);
-      if (lines.empty()) continue;
-      std::vector<ObjectId> objs;
-      for (const kernel::NurbsCurve& c : lines) {
-        SceneObject s = SceneObject::MakeCurve(c);
-        s.layer_index = b.layer;
-        s.user_text["Hatch"] = pat->name;
-        s.user_text["HatchSpacing"] = FormatNumber(scale_);
-        s.user_text["HatchRotation"] = FormatNumber(rotation_);
-        s.user_text["HatchBoundary"] = std::to_string(b.id);
-        if (has_color_) { s.color = color_; s.color_by_layer = false; }
-        objs.push_back(ctx.Doc().Add(std::move(s)));
-      }
-      ctx.Doc().CreateGroup(objs, "Hatch");
+      if (!drafting::BuildPatternHatch(ctx.Doc(), *pat, b.curve, b.id, b.layer, ctx.Settings().absolute_tolerance, scale_,
+                                        rotation_, ctx.Settings().hatch_base, has_color_ ? &color_ : nullptr, &truncated))
+        continue;
       ++made;
       if (truncated) ctx.Warn("Hatch: pattern density was truncated for one boundary");
     }

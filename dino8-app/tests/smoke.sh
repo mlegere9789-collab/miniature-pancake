@@ -266,6 +266,59 @@ else
   echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the INSERT fixture check"
   fail=1
 fi
+# DXF HATCH import: a minimal, hand-written DXF (no Dino8-authored export
+# path writes a native HATCH entity - ExportDxf has no HATCH writer at all)
+# containing one real solid-fill HATCH with a single polyline boundary path
+# (group 91=1, 92 bit 0x2, a 10x10 square) proves ImportDxf's HATCH-to-real-
+# hatch conversion (DxfImporter::Hatch, via drafting::BuildSolidHatch - the
+# same helper the in-app Hatch command's Solid case uses) for real: SelHatch
+# must find it, and its area must be the exact boundary area, not a guess.
+cp "$HERE/dxf_hatch_fixture.dxf" "$TMP/dxf_hatch_fixture.dxf"
+cat > "$TMP/dxf_hatch_script.txt" <<EOS
+Open $TMP/dxf_hatch_fixture.dxf
+SelHatch
+List
+Area
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  DXH="$("$BIN" --smoke 30 --script "$TMP/dxf_hatch_script.txt" 2>&1)" || { echo "$DXH"; echo "FAIL: DXF HATCH script exited non-zero"; exit 1; }
+else
+  DXH="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_hatch_script.txt" 2>&1)" || { echo "$DXH"; echo "FAIL: DXF HATCH script exited non-zero"; exit 1; }
+fi
+dxhcheck() { if echo "$DXH" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dxhcheck "DXF: 0 curves, 0 points, 0 meshes, 1 hatch" "ImportDxf read the solid-fill HATCH entity"
+dxhcheck "1 object(s) selected" "SelHatch found the imported hatch (real Hatch=Solid user_text, not just an ordinary object)"
+dxhcheck "name 'Hatch Solid'" "the imported solid hatch is the same trimmed-planar-brep object AddSolidHatch/BuildSolidHatch builds in-app"
+dxhcheck "1 faces, 1 edges, open" "the imported hatch is a single trimmed planar face"
+dxhcheck "Area = 100 square" "the imported hatch's area is exactly the 10x10 boundary (not a sampled approximation)"
+# DWG HATCH import: a real HATCH entity built independently through
+# LibreDWG's own dwg_add_HATCH/dwg_add_POLYLINE_2D API (dwg_fixture_gen.c's
+# write_hatch_fixture - "hatch" mode), pattern-filled (ANSI31) with one
+# polyline-type boundary path (a 10x10 square), proving ImportDwg's
+# DWG_TYPE_HATCH case for the pattern-fill path (drafting::BuildPatternHatch)
+# as a complement to the DXF test above, which covers the solid-fill path.
+if [ -x "$DWGBIN" ]; then
+  "$DWGBIN" "$TMP/dwg_hatch_fixture.dwg" hatch >/dev/null || { echo "FAIL: dwg_fixture_gen failed to write the HATCH fixture"; exit 1; }
+  cat > "$TMP/dwg_hatch_script.txt" <<EOS
+Open $TMP/dwg_hatch_fixture.dwg
+SelHatch
+List
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+    DWH="$("$BIN" --smoke 30 --script "$TMP/dwg_hatch_script.txt" 2>&1)" || { echo "$DWH"; echo "FAIL: DWG HATCH script exited non-zero"; exit 1; }
+  else
+    DWH="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dwg_hatch_script.txt" 2>&1)" || { echo "$DWH"; echo "FAIL: DWG HATCH script exited non-zero"; exit 1; }
+  fi
+  dwhcheck() { if echo "$DWH" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  dwhcheck "DWG: 0 curves, 0 points, 1 hatch; 1 unsupported entity skipped" "ImportDwg read the pattern-fill HATCH entity (and honestly counted its own POLYLINE_2D boundary record as unsupported on its own)"
+  dwhcheck "57 object(s) selected" "SelHatch found every ANSI31 hatch line as a real Hatch-tagged object, not a stray subset"
+  [ "$(echo "$DWH" | grep -c "^history:   degree 1, 2 control points, non-rational, open$")" = "57" ] && echo "ok   DWG HATCH's 57 ANSI31 pattern lines are all real degree-1 line curves" || { echo "FAIL DWG HATCH did not produce the expected 57 pattern-line curves"; fail=1; }
+  dwhcheck "CV\[0\] 0,0,0" "one ANSI31 hatch line runs the boundary's own diagonal-adjacent corner"
+  dwhcheck "CV\[1\] 10,10,0" "...to the opposite corner of the 10x10 boundary, confirming the pattern was clipped to the real boundary, not an arbitrary box"
+else
+  echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the HATCH fixture check"
+  fail=1
+fi
 # Surfaces: Pipe, OffsetSrf, Shell, Sweep1/2, NetworkSrf, Patch, ExtrudeCrvAlongCrv,
 # ExtrudeCrvTapered, Project, Pull (see surface_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then

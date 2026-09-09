@@ -1,5 +1,7 @@
 #include "io/FileExchange.h"
 
+#include "drafting/HatchBuild.h"
+#include "drafting/HatchLibrary.h"
 #include "geom/TextOutline.h"
 #include "util/ThreadPool.h"
 #include "viewport/Viewport.h"
@@ -650,7 +652,7 @@ bool BulgePolylineCurve(const std::vector<BulgeVertex>& verts, bool closed, kern
 }
 
 struct DxfImportStats {
-  int curves = 0, points = 0, meshes = 0, skipped = 0, layers = 0;
+  int curves = 0, points = 0, meshes = 0, hatches = 0, skipped = 0, layers = 0;
 };
 
 class DxfImporter {
@@ -964,6 +966,69 @@ class DxfImporter {
     faces_.clear();
   }
 
+  // HATCH: real import for the common, tractable case only - one boundary
+  // path of type "polyline" (a closed sequence of straight/bulge-arc
+  // vertices, group code 92 bit 0x2), which is what the overwhelming
+  // majority of real-world HATCH entities use (matching what Dino 8's own
+  // Hatch command would export if ExportDxf ever wrote native HATCH -
+  // it currently doesn't). Group codes 10/20/42/72/73/92/93 repeat per
+  // vertex/path, so unlike every other entity here this can't be read with
+  // DxfEntity::S()/D()/I() (first-occurrence lookups) - it walks e.groups
+  // in file order like a small state machine instead.
+  //
+  // Explicitly NOT handled, detected and skipped rather than guessed at:
+  //   - more than one boundary path (islands/holes: group code 91 != 1)
+  //   - edge-type boundaries (LINE/ARC/ELLIPSE/SPLINE edge records instead
+  //     of a polyline vertex list - group 92 without bit 0x2)
+  // Both fall into the ordinary skipped-entity count, same as MTEXT/
+  // DIMENSION/SPLINE-boundary elsewhere in this importer.
+  void Hatch(const DxfEntity& e) {
+    if (e.I(91, 0) != 1) { ++stats_.skipped; return; }  // multiple loops/islands: unsupported
+    size_t i = 0;
+    bool is_polyline = false;
+    for (; i < e.groups.size(); ++i) {
+      if (e.groups[i].code == 92) { is_polyline = (std::atoi(e.groups[i].value.c_str()) & 2) != 0; ++i; break; }
+    }
+    if (!is_polyline) { ++stats_.skipped; return; }  // edge-type (arc/spline) boundary: unsupported
+    bool has_bulge = false;
+    int nverts = -1;
+    for (; i < e.groups.size(); ++i) {
+      const DxfGroup& g = e.groups[i];
+      if (g.code == 72) has_bulge = std::atoi(g.value.c_str()) != 0;
+      else if (g.code == 93) { nverts = std::atoi(g.value.c_str()); ++i; break; }
+      else if (g.code == 10) break;  // no explicit 93 before the vertices: malformed, bail below
+    }
+    if (nverts < 3) { ++stats_.skipped; return; }
+    std::vector<BulgeVertex> verts;
+    for (; i < e.groups.size() && static_cast<int>(verts.size()) < nverts; ++i) {
+      if (e.groups[i].code != 10) continue;
+      BulgeVertex bv;
+      bv.p = Point3d(std::atof(e.groups[i].value.c_str()), 0, 0);
+      if (i + 1 < e.groups.size() && e.groups[i + 1].code == 20) { bv.p.y = std::atof(e.groups[i + 1].value.c_str()); ++i; }
+      if (has_bulge && i + 1 < e.groups.size() && e.groups[i + 1].code == 42) { bv.bulge = std::atof(e.groups[i + 1].value.c_str()); ++i; }
+      verts.push_back(bv);
+    }
+    if (static_cast<int>(verts.size()) != nverts) { ++stats_.skipped; return; }
+    kernel::NurbsCurve boundary;
+    if (!BulgePolylineCurve(verts, /*closed=*/true, boundary)) { ++stats_.skipped; return; }
+    const int layer = LayerFor(e.S(8, "0"));
+    const double tol = doc_.Settings().absolute_tolerance;
+    bool built = false;
+    if (e.I(70, 0) != 0) {  // solid fill flag
+      built = drafting::BuildSolidHatch(doc_, boundary, kNoObject, layer, tol);
+    } else {
+      const drafting::HatchPattern* pat = drafting::HatchLibrary::Instance().Find(e.S(2, "ANSI31"));
+      if (!pat) pat = drafting::HatchLibrary::Instance().Find("ANSI31");
+      if (pat) {
+        double scale = e.D(41, 1.0);
+        if (scale <= 0) scale = 1.0;
+        built = drafting::BuildPatternHatch(doc_, *pat, boundary, kNoObject, layer, tol, scale, e.D(52, 0.0), doc_.Settings().hatch_base);
+      }
+    }
+    if (!built) { ++stats_.skipped; return; }
+    ++stats_.hatches;
+  }
+
   void Entity(const DxfEntity& e, const std::vector<DxfEntity>& vertices) {
     const std::string& t = e.type;
     if (t == "LINE") Line(e);
@@ -976,6 +1041,7 @@ class DxfImporter {
     else if (t == "LWPOLYLINE") LwPolyline(e);
     else if (t == "POLYLINE") Polyline(e, vertices);
     else if (t == "3DFACE") Face(e);
+    else if (t == "HATCH") Hatch(e);
     else if (t == "VERTEX" || t == "SEQEND") {}
     else ++stats_.skipped;
   }
@@ -1071,10 +1137,11 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
   std::ostringstream ss;
   ss << "DXF: " << stats.curves << " curve" << (stats.curves == 1 ? "" : "s") << ", " << stats.points << " point"
      << (stats.points == 1 ? "" : "s") << ", " << stats.meshes << " mesh" << (stats.meshes == 1 ? "" : "es");
+  if (stats.hatches) ss << ", " << stats.hatches << " hatch" << (stats.hatches == 1 ? "" : "es");
   if (stats.layers) ss << ", " << stats.layers << " new layer" << (stats.layers == 1 ? "" : "s");
   if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped";
   summary = ss.str();
-  if (stats.curves + stats.points + stats.meshes == 0) {
+  if (stats.curves + stats.points + stats.meshes + stats.hatches == 0) {
     if (entities.empty()) summary = "No entities found in " + path;
     return false;
   }
@@ -1110,13 +1177,20 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
 // build DWGs by hand, walking model-space entities with
 // get_first_owned_entity/get_next_owned_entity (both public, declared in
 // dwg.h) and switching on `fixedtype`. Coverage: LINE, POINT, CIRCLE, ARC,
-// LWPOLYLINE (bulges + closed flag) and INSERT, flattened recursively into
+// LWPOLYLINE (bulges + closed flag), TEXT (converted to real glyph-outline
+// curves, see geom/TextOutline.h), INSERT (flattened recursively into
 // transformed copies of the referenced block's own entities - the same
 // "instance is a transformed copy, not a live GPU reference" model
 // InstantiateBlock (cmd_drafting.cpp) already uses for blocks defined
-// in-app. TEXT, MTEXT, DIMENSION, HATCH, SPLINE, 3D solids/meshes, xrefs
-// and anything else fall into the skipped count, exactly like ImportDxf's
-// own honest gap for entities outside its coverage.
+// in-app), and HATCH for the common case only: exactly one boundary path
+// that is a polyline loop (Dwg_HATCH_Path::flag bit 2) - built through the
+// same drafting::BuildSolidHatch/BuildPatternHatch helpers the in-app Hatch
+// command uses (src/drafting/HatchBuild.h), so an imported hatch is a real
+// hatch (selectable via SelHatch, rebuildable via HatchScale). Multiple
+// boundary paths (islands/holes) and edge-type (line/arc/spline segment)
+// boundaries fall into the skipped count, like MTEXT, DIMENSION, SPLINE,
+// 3D solids/meshes, xrefs and anything else outside this importer's
+// coverage - exactly ImportDxf's own honest gap for entities it can't read.
 
 namespace {
 
@@ -1132,7 +1206,7 @@ std::string TempPathNear(const std::string& hint, const std::string& suffix) {
 }
 
 struct DwgImportStats {
-  int curves = 0, points = 0, blocks_flattened = 0, skipped = 0, layers = 0;
+  int curves = 0, points = 0, blocks_flattened = 0, hatches = 0, skipped = 0, layers = 0;
 };
 
 // Resolves a DWG entity's layer name ("0" when unset - DWG's default layer,
@@ -1285,6 +1359,43 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
         ++stats.curves;
         break;
       }
+      // HATCH: same "common case only" scope as ImportDxf's HATCH handler -
+      // exactly one boundary path that is a polyline loop. Multiple loops
+      // (islands/holes) and edge-type (line/arc/spline segment) boundaries
+      // are detected and skipped, not approximated.
+      case DWG_TYPE_HATCH: {
+        Dwg_Entity_HATCH* e = ent->tio.HATCH;
+        if (e->num_paths != 1 || !e->paths) { ++stats.skipped; break; }
+        const Dwg_HATCH_Path& path = e->paths[0];
+        if (!(path.flag & 2) || !path.polyline_paths || path.num_segs_or_paths < 3) { ++stats.skipped; break; }
+        std::vector<BulgeVertex> verts;
+        verts.reserve(path.num_segs_or_paths);
+        for (BITCODE_BL i = 0; i < path.num_segs_or_paths; ++i) {
+          BulgeVertex bv;
+          bv.p = Point3d(path.polyline_paths[i].point.x, path.polyline_paths[i].point.y, e->elevation);
+          if (path.bulges_present) bv.bulge = path.polyline_paths[i].bulge;
+          verts.push_back(bv);
+        }
+        kernel::NurbsCurve boundary;
+        if (!BulgePolylineCurve(verts, /*closed=*/true, boundary)) { ++stats.skipped; break; }
+        boundary.raw().Transform(xf);
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        const double tol = doc.Settings().absolute_tolerance;
+        bool built = false;
+        if (e->is_solid_fill) {
+          built = drafting::BuildSolidHatch(doc, boundary, kNoObject, layer, tol);
+        } else {
+          const drafting::HatchPattern* pat = drafting::HatchLibrary::Instance().Find(e->name && *e->name ? e->name : "ANSI31");
+          if (!pat) pat = drafting::HatchLibrary::Instance().Find("ANSI31");
+          if (pat) {
+            const double scale = e->scale_spacing > 0 ? e->scale_spacing : 1.0;
+            built = drafting::BuildPatternHatch(doc, *pat, boundary, kNoObject, layer, tol, scale, e->angle * 180.0 / ON_PI, doc.Settings().hatch_base);
+          }
+        }
+        if (!built) { ++stats.skipped; break; }
+        ++stats.hatches;
+        break;
+      }
       case DWG_TYPE_INSERT: {
         Dwg_Entity_INSERT* e = ent->tio.INSERT;
         Dwg_Object* blkdef = e->block_header ? e->block_header->obj : nullptr;
@@ -1337,11 +1448,12 @@ bool ImportDwg(Document& doc, const std::string& path, std::string& summary) {
   std::ostringstream ss;
   ss << "DWG: " << stats.curves << " curve" << (stats.curves == 1 ? "" : "s") << ", " << stats.points << " point"
      << (stats.points == 1 ? "" : "s");
+  if (stats.hatches) ss << ", " << stats.hatches << " hatch" << (stats.hatches == 1 ? "" : "es");
   if (stats.layers) ss << ", " << stats.layers << " new layer" << (stats.layers == 1 ? "" : "s");
   if (stats.blocks_flattened) ss << ", " << stats.blocks_flattened << " block instance" << (stats.blocks_flattened == 1 ? "" : "s") << " flattened";
-  if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped (text, dimensions, hatches, splines, 3D solids and meshes are not read back yet)";
+  if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped (dimensions, splines, multi-loop/edge-boundary hatches, 3D solids and meshes are not read back yet)";
   summary = ss.str();
-  if (stats.curves + stats.points == 0) {
+  if (stats.curves + stats.points + stats.hatches == 0) {
     summary = "No supported entities found in " + path + (stats.skipped ? " (" + std::to_string(stats.skipped) + " unsupported entities skipped)" : "");
     return false;
   }
