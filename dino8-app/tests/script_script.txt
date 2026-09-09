@@ -8,3 +8,5 @@
 @expect_objects 1
 RunScript @TMP@/t.lua 20,20,20
 @expect_objects 3
+ConstraintsPanel
+ConstraintSolve

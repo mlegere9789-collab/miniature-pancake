@@ -1,5 +1,6 @@
 #include "drafting/Table.h"
 
+#include <algorithm>
 #include <sstream>
 
 #include "util/json_mini.h"
@@ -56,8 +57,16 @@ bool ParseTableDataJson(const std::string& json, TableSpec& spec) {
   dino8::json::Value v;
   std::string err;
   if (!dino8::json::Parse(json, v, err) || !v.IsObject()) return false;
-  spec.rows = static_cast<int>(v["rows"].number);
-  spec.cols = static_cast<int>(v["cols"].number);
+  // TableData is stored in an object's user-text - a crafted/corrupted
+  // .3dm can set rows/cols to anything. TableEditCommand::Run and
+  // BuildTableGroup both do cells.resize(rows*cols) with no cap of their
+  // own, so an absurd value here (e.g. 1e9) would reach that resize as a
+  // multi-exabyte allocation request the moment the object is selected and
+  // edited/rebuilt - clamp to the same sane bound used elsewhere (the
+  // interactive Table/TableEdit option parsing already floors at 1) rather
+  // than trusting the file.
+  spec.rows = std::clamp(static_cast<int>(v["rows"].number), 1, 10000);
+  spec.cols = std::clamp(static_cast<int>(v["cols"].number), 1, 10000);
   spec.row_height = v["rowh"].number;
   spec.text_height = v["texth"].number;
   spec.title = v["title"].AsString();

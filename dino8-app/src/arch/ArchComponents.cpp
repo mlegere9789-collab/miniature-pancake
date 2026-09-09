@@ -284,7 +284,14 @@ std::vector<ArchComponent> LoadArch(const Document& doc) {
     c.sill_height = v["sill"].number;
     c.ridge_height = v["ridge"].number;
     c.roof_style = static_cast<int>(v["roof_style"].number);
-    c.step_count = static_cast<int>(v["steps"].number);
+    // dino8.arch is stored in the document's user-text like dino8.constraints
+    // and TableData - a crafted/corrupted .3dm can set "steps" to anything.
+    // The interactive UI path (cmd_arch.cpp) clamps with std::max(1, ...);
+    // this file-load path only floored it (via BuildStairTreads' own
+    // std::max(1, c.step_count) at the loop bound), no ceiling - an absurd
+    // value would still drive that many heap-allocated tread meshes/scene
+    // objects. Clamp here too, matching the Table.cpp rows/cols fix.
+    c.step_count = std::clamp(static_cast<int>(v["steps"].number), 1, 500);
     c.rise = v["rise"].number;
     c.run = v["run"].number;
     c.stair_width = v["stair_width"].number;

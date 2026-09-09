@@ -1083,6 +1083,17 @@ print(string.format("picked point %.0f,%.0f,%.0f", p.x, p.y, p.z))
 rs.UnselectAllObjects()
 rs.SelectObject(widget)
 print("selected by name lookup: " .. tostring(#rs.ObjectsByName("Widget")))
+-- Regression for a real bug: dino8.constraints lives in the document's own
+-- user-text, so a crafted/corrupted .3dm can set it to anything.
+-- LoadConstraints must drop any constraint whose points/radius_objects are
+-- shorter than what BuildResiduals actually indexes for its type, not
+-- crash on it. Each of these three is short by exactly what its type
+-- needs (Parallel needs 4 points, Radius needs 1 radius_object,
+-- EqualRadius needs 2) - all three must be silently dropped.
+rs.SetDocumentUserText("dino8.constraints",
+  '[{"id":99,"type":"Parallel","points":[{"o":1,"i":0}]},' ..
+  '{"id":100,"type":"Radius","radius_objects":[]},' ..
+  '{"id":101,"type":"EqualRadius","radius_objects":[5]}]')
 LUA
 sed "s|@TMP@|$TMP|g" "$HERE/script_script.txt" > "$TMP/script_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
@@ -1102,6 +1113,8 @@ sccheck "^ok   expect_objects 1" "the inline Lua expression added exactly the on
 sccheck "^ok   expect_objects 3" "RunScript left the union, its point marker, and the earlier line"
 sccheck "selected by name lookup: 1" "rs.ObjectsByName found the object rs.ObjectName renamed to Widget"
 grep -q "! Script error" <<<"$SC" && { echo "FAIL script.txt printed a script error"; fail=1; } || echo "ok   no Lua script errors"
+sccheck "history: Constraints (0):" "LoadConstraints dropped all 3 malformed constraints (Parallel/Radius/EqualRadius each short exactly the point/radius_object count BuildResiduals indexes) instead of an out-of-bounds vector read"
+sccheck "history: ConstraintSolve: converged" "ConstraintSolve ran cleanly against the now-empty constraint list, not a crash"
 
 # Python scripting: RunPythonScript through the embedded `dino8` module
 # (see src/script/PythonEngine.cpp), when this build was compiled with a

@@ -171,6 +171,42 @@ std::vector<Constraint> LoadConstraints(const Document& doc) {
     }
     const json::Value& rads = v["radius_objects"];
     for (size_t j = 0; j < rads.Size(); ++j) c.radius_objects.push_back(static_cast<ObjectId>(rads[j].number));
+    // dino8.constraints is stored in the document's user-text - a plain
+    // string field a crafted/corrupted .3dm can set to anything. BuildResiduals
+    // indexes c.points[0..N-1]/c.radius_objects[0..M-1] unconditionally per
+    // type, with N/M NOT the same as RequiredObjectCount() (that function
+    // counts distinct geometry objects, not raw PointRef/point slots - e.g.
+    // a Parallel constraint is "2 objects" but needs 4 points, one pair per
+    // line). A constraint whose arrays are shorter than what BuildResiduals
+    // actually reads for its type must be dropped here, not trusted, or
+    // that becomes an out-of-bounds vector read the moment AutoResolveFrame
+    // runs (every frame, no explicit command needed).
+    int need_pts = 0, need_radius = 0;
+    switch (c.type) {
+      case ConstraintType::Coincident:
+      case ConstraintType::Horizontal:
+      case ConstraintType::Vertical:
+      case ConstraintType::Distance:
+        need_pts = 2; break;
+      case ConstraintType::Parallel:
+      case ConstraintType::Perpendicular:
+      case ConstraintType::EqualLength:
+      case ConstraintType::Angle:
+      case ConstraintType::Symmetric:
+        need_pts = 4; break;
+      case ConstraintType::Tangent:
+        need_pts = 3; need_radius = 1; break;
+      case ConstraintType::Midpoint:
+        need_pts = 3; break;
+      case ConstraintType::Fixed:
+        need_pts = 1; break;
+      case ConstraintType::EqualRadius:
+        need_radius = 2; break;
+      case ConstraintType::Radius:
+        need_radius = 1; break;
+    }
+    if (static_cast<int>(c.points.size()) < need_pts) continue;
+    if (static_cast<int>(c.radius_objects.size()) < need_radius) continue;
     out.push_back(c);
   }
   return out;
