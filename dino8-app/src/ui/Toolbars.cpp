@@ -33,7 +33,7 @@ struct ToolButton {
 // Every button that can appear on any tab or on the sidebar.
 const ToolButton kButtons[] = {
     {"New", "New", nullptr, "New document"},
-    {"Open", "Open", "Import", "Open a .3dm / OBJ / STL / DXF"},
+    {"Open", "Open", "Import", "Open a .3dm / OBJ / STL / DXF / DWG"},
     {"Save", "Save", "SaveAs", "Save (Ctrl+S)"},
     {"Import", "Import", nullptr, "Import geometry into this document"},
     {"Export", "Export", nullptr, "Export selected objects"},

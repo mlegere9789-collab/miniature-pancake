@@ -102,6 +102,44 @@ else()
   message(WARNING "Python3 development headers/libs not found (need python3-dev or equivalent) - Dino 8 will build without embedded Python scripting; RunPythonScript will report that it is unavailable")
 endif()
 
+# GNU LibreDWG (https://www.gnu.org/software/libredwg/) - the real DWG
+# read/write backend for Import/Export/Open/Save (see src/io/FileExchange.cpp's
+# ImportDwg/ExportDwg). LibreDWG is a genuine, actively-maintained GPLv3
+# implementation of Autodesk's proprietary DWG format, built the same way
+# FreeCAD's and other free CAD tools' DWG support is built - not a
+# reverse-engineered format spec written for this project. See
+# docs/INTEROP_LIMITATIONS.md and THIRD_PARTY_LICENSES.md for what linking
+# GPLv3 code here means for the rest of this codebase's licensing.
+#
+# LIBREDWG_LIBONLY skips its own command-line programs/tests/docs (we only
+# want the library); DISABLE_JSON skips its optional JSON reader/writer,
+# which otherwise needs the jsmn git submodule FetchContent does not fetch
+# on its own; DISABLE_WERROR keeps a stray upstream warning from becoming a
+# hard error under whatever host compiler builds this; ENABLE_LTO is turned
+# off because it is a link-time optimisation of LibreDWG's own build, not
+# something this project's build needs to inherit.
+FetchContent_Declare(
+  libredwg
+  GIT_REPOSITORY https://github.com/LibreDWG/libredwg.git
+  GIT_TAG        0.14.8594
+)
+set(LIBREDWG_LIBONLY ON CACHE BOOL "" FORCE)
+set(LIBREDWG_DISABLE_JSON ON CACHE BOOL "" FORCE)
+set(LIBREDWG_DISABLE_WRITE OFF CACHE BOOL "" FORCE)
+set(DISABLE_WERROR ON CACHE BOOL "" FORCE)
+set(ENABLE_LTO OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(libredwg)
+# Only the library target matters here; its own CMakeLists always names the
+# static target "redwg" on non-MSVC hosts (see its top-of-file `set(redwg
+# redwg)` / `set(redwg libredwg)`).
+if(MSVC)
+  set(DINO8_LIBREDWG_TARGET libredwg)
+else()
+  set(DINO8_LIBREDWG_TARGET redwg)
+endif()
+
 add_library(imgui STATIC
   ${imgui_SOURCE_DIR}/imgui.cpp
   ${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -230,7 +268,7 @@ endif()
 
 # FreeType (bundled with OpenNURBS) for text outlines.
 FetchContent_GetProperties(opennurbs)
-target_include_directories(Dino8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include ${opennurbs_SOURCE_DIR}/freetype263/include)
+target_include_directories(Dino8 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/include ${opennurbs_SOURCE_DIR}/freetype263/include ${libredwg_SOURCE_DIR}/include)
 target_compile_definitions(Dino8 PRIVATE
   DINO8_VERSION="${PROJECT_VERSION}"
   GL_SILENCE_DEPRECATION
@@ -246,7 +284,7 @@ if(NOT TARGET opennurbs_public_freetype)
     target_compile_options(opennurbs_public_freetype PRIVATE /w)
   endif()
 endif()
-target_link_libraries(Dino8 PRIVATE dino8_kernel imgui glfw OpenGL::GL opennurbs_public_freetype dino8_lua ${CMAKE_DL_LIBS})
+target_link_libraries(Dino8 PRIVATE dino8_kernel imgui glfw OpenGL::GL opennurbs_public_freetype dino8_lua ${DINO8_LIBREDWG_TARGET} ${CMAKE_DL_LIBS})
 if(Python3_FOUND)
   target_compile_definitions(Dino8 PRIVATE DINO8_HAVE_PYTHON)
   target_link_libraries(Dino8 PRIVATE pybind11::embed)
@@ -318,6 +356,27 @@ if(DINO8_BUILD_TESTS)
                                    src/doc/SubObjectEdit.cpp src/geom/BrepMesher.cpp)
   target_include_directories(dino8_undo_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_undo_bench PRIVATE dino8_kernel)
+
+  # DWG round-trip fixture generator (see tests/dwg_fixture_gen.c and
+  # smoke.sh's DWG section): builds a small real DWG file directly through
+  # LibreDWG's public dwg_add_* API - the same API LibreDWG's own
+  # test/unit-testing/add_test.c uses - containing a BLOCK_HEADER + INSERT
+  # (block instance) that Dino 8 cannot itself produce on export (Dino 8's
+  # own object model has no live block/instance entity type; a block
+  # instance placed in-app is stored as already-flattened geometry, so
+  # Dino8-authored exports never contain a real DWG/DXF INSERT to read
+  # back). This program exists purely to give ImportDwg's INSERT-flattening
+  # code (FileExchange.cpp's WalkDwgEntities) a real INSERT to prove it
+  # against, independent of what Dino 8's own exporter happens to produce.
+  add_executable(dwg_fixture_gen tests/dwg_fixture_gen.c)
+  target_include_directories(dwg_fixture_gen PRIVATE ${libredwg_SOURCE_DIR}/include)
+  target_link_libraries(dwg_fixture_gen PRIVATE ${DINO8_LIBREDWG_TARGET})
+  if(UNIX AND NOT APPLE)
+    # A plain C executable (unlike Dino8, which implicitly pulls in libm
+    # through libstdc++) needs libm linked explicitly for LibreDWG's own
+    # floor/atan2/sincos/trunc calls.
+    target_link_libraries(dwg_fixture_gen PRIVATE m)
+  endif()
 endif()
 
 # ---------------------------------------------------------------------------

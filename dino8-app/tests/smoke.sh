@@ -206,6 +206,47 @@ dfcheck "Exported $TMP/dxf_fidelity.dxf" "DXF export wrote a file"
 [ "$(echo "$DF" | grep -c "Total length = ")" = "2" ] && [ "$(echo "$DF" | grep "Total length = " | sort -u | wc -l)" = "1" ] && echo "ok   DXF SPLINE round-tripped the exact combined curve length (freeform curve + rational ellipse)" || { echo "FAIL DXF round-trip changed the combined curve length"; fail=1; }
 [ "$(echo "$DF" | grep -c "degree 2, 9 control points, rational, closed")" = "2" ] && [ "$(echo "$DF" | grep -c "CV\[1\] 38,3,0")" = "2" ] && echo "ok   DXF SPLINE round-tripped the ellipse's rational control points and weights" || { echo "FAIL DXF SPLINE lost the ellipse's rational control points/weights"; fail=1; }
 grep -q "^SPLINE$" "$TMP/dxf_fidelity.dxf" && echo "ok   dxf_fidelity.dxf uses exact SPLINE entities, not sampled polylines" || { echo "FAIL dxf_fidelity.dxf entity types"; fail=1; }
+# DWG round-trip (via GNU LibreDWG, see FileExchange.cpp's ExportDwg/
+# ImportDwg): a line, a circle and a closed 4-point polyline must survive a
+# real Export to .dwg and a real Open back, with exact control-point
+# counts/rational/closed flags and exact combined curve length (not just an
+# object count - see dwg_script.txt).
+DWGBIN="$(dirname "$BIN")/dwg_fixture_gen"
+sed "s|@TMP@|$TMP|g" "$HERE/dwg_script.txt" > "$TMP/dwg_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  DW="$("$BIN" --smoke 50 --script "$TMP/dwg_script.txt" 2>&1)" || { echo "$DW"; echo "FAIL: DWG round-trip script exited non-zero"; exit 1; }
+else
+  DW="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 50 --script "$TMP/dwg_script.txt" 2>&1)" || { echo "$DW"; echo "FAIL: DWG round-trip script exited non-zero"; exit 1; }
+fi
+dwcheck() { if echo "$DW" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dwcheck "Exported $TMP/dwg_roundtrip.dwg" "DWG export wrote a file"
+dwcheck "DWG: 3 curves, 0 points" "DWG import read the line, circle and closed polyline back"
+[ "$(echo "$DW" | grep -c "degree 2, 9 control points, rational, closed")" = "2" ] && echo "ok   DWG CIRCLE round-tripped as an exact rational NURBS circle" || { echo "FAIL DWG CIRCLE did not survive round-trip"; fail=1; }
+[ "$(echo "$DW" | grep -c "degree 1, 5 control points, non-rational, closed")" = "2" ] && echo "ok   DWG closed LWPOLYLINE round-tripped with the right point count and closed flag" || { echo "FAIL DWG closed polyline did not survive round-trip"; fail=1; }
+[ "$(echo "$DW" | grep -c "CV\[0\] 0,0,0")" = "2" ] && [ "$(echo "$DW" | grep -c "CV\[1\] 12,0,0")" = "2" ] && echo "ok   DWG LINE kept its exact endpoints" || { echo "FAIL DWG LINE endpoints did not survive round-trip"; fail=1; }
+[ "$(echo "$DW" | grep -c "Total length = ")" = "2" ] && [ "$(echo "$DW" | grep "Total length = " | sort -u | wc -l)" = "1" ] && echo "ok   DWG round-trip kept the exact combined curve length (line + circle + polyline)" || { echo "FAIL DWG round-trip changed the combined curve length"; fail=1; }
+[ "$(head -c 6 "$TMP/dwg_roundtrip.dwg")" = "AC1015" ] && echo "ok   dwg_roundtrip.dwg is a real binary DWG (AC1015/AutoCAD 2000 header)" || { echo "FAIL dwg_roundtrip.dwg is not a real DWG file"; fail=1; }
+# BLOCK_HEADER/INSERT (block instance): Dino 8 cannot itself write a real
+# DWG INSERT (a block instance placed in-app is stored pre-flattened - see
+# InstantiateBlock), so this fixture is built independently through
+# LibreDWG's own API (dwg_fixture_gen, see tests/dwg_fixture_gen.c) and
+# proves ImportDwg's INSERT-flattening code against a real block reference.
+if [ -x "$DWGBIN" ]; then
+  "$DWGBIN" "$TMP/dwg_insert_fixture.dwg" >/dev/null || { echo "FAIL: dwg_fixture_gen failed to write the INSERT fixture"; exit 1; }
+  sed "s|@TMP@|$TMP|g" "$HERE/dwg_insert_script.txt" > "$TMP/dwg_insert_script.txt"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+    DI="$("$BIN" --smoke 30 --script "$TMP/dwg_insert_script.txt" 2>&1)" || { echo "$DI"; echo "FAIL: DWG INSERT script exited non-zero"; exit 1; }
+  else
+    DI="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dwg_insert_script.txt" 2>&1)" || { echo "$DI"; echo "FAIL: DWG INSERT script exited non-zero"; exit 1; }
+  fi
+  dicheck() { if echo "$DI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  dicheck "DWG: 3 curves, 0 points, 1 block instance flattened" "ImportDwg flattened the independently-built BLOCK_HEADER/INSERT fixture"
+  dicheck "CV\[0\] 100,50,0" "DWG INSERT's flattened line starts at the scaled/rotated/translated insertion point"
+  dicheck "CV\[1\] 100,56,0" "DWG INSERT's flattened line ends where a 2-unit block line scaled 3x and rotated 90 degrees should (100,50,0)-(100,56,0)"
+else
+  echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the INSERT fixture check"
+  fail=1
+fi
 # Surfaces: Pipe, OffsetSrf, Shell, Sweep1/2, NetworkSrf, Patch, ExtrudeCrvAlongCrv,
 # ExtrudeCrvTapered, Project, Pull (see surface_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
@@ -1537,7 +1578,7 @@ rncheck2 "MoveTargetToObjects: " "MoveTargetToObjects moved the camera target"
 rncheck2 "ClearAllObjectDisplayModes: " "ClearAllObjectDisplayModes ran"
 rncheck2 "SaveWindowLayout: saved QCLayout" "SaveWindowLayout wrote a layout"
 rncheck2 "WindowLayout: restored QCLayout" "WindowLayout restored it"
-rncheck2 "AcadSchemes: DWG/DXF export schemes are not available" "AcadSchemes explains the real limitation"
+rncheck2 "AcadSchemes: there are no per-version export 'schemes'" "AcadSchemes explains the real limitation (DWG now writes for real, via LibreDWG, as AC1015)"
 rncheck2 "Unwrap: no per-triangle flattening/unwrapping algorithm exists" "Unwrap explains the real limitation and extracts a UV mesh"
 # IgesImportOptions/STEPTree open a file dialog (owned by cmd_exchange2.cpp,
 # not this file) and EditScript opens the Lua Script Editor panel silently

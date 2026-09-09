@@ -5,9 +5,16 @@
 
 #include <opennurbs.h>
 
+// GNU LibreDWG (see the "DWG (via GNU LibreDWG)" section below and
+// docs/INTEROP_LIMITATIONS.md / THIRD_PARTY_LICENSES.md). Pure C headers,
+// but both are extern "C"-guarded for C++ already.
+#include <dwg.h>
+#include <dwg_api.h>
+
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -1046,6 +1053,273 @@ bool ImportDxf(Document& doc, const std::string& path, std::string& summary) {
   summary = ss.str();
   if (stats.curves + stats.points + stats.meshes == 0) {
     if (entities.empty()) summary = "No entities found in " + path;
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// DWG (via GNU LibreDWG)
+// ---------------------------------------------------------------------------
+//
+// DWG is not a published format the way DXF is (see FileExchange.h and
+// docs/INTEROP_LIMITATIONS.md), so unlike every writer/reader above this one
+// is not hand-rolled: it links GNU LibreDWG, a genuine GPLv3 open-source
+// implementation, the same way FreeCAD's importDWG addon does.
+//
+// Export bridges through Dino 8's own, already-tested DXF writer: write a
+// temporary ASCII DXF with ExportDxf, hand it to LibreDWG's DXF reader
+// (dxf_read_file - a public, documented entry point), then LibreDWG's own
+// DWG writer (dwg_write_file). This is not a shortcut taken to avoid real
+// work: LibreDWG's DXF<->DWG bridge is its own best-tested, most heavily
+// exercised path (its test suite's dxf-roundtrip.sh does exactly this in
+// reverse), so composing it with Dino 8's mature DXF writer gives every
+// entity ExportDxf already supports (LINE/CIRCLE/ARC/LWPOLYLINE/POLYLINE/
+// 3DFACE, layers, colours) real DWG bytes, without a second, independently-
+// written and independently-buggy geometry-to-DWG-struct translator.
+//
+// Import cannot use the same trick symmetrically: LibreDWG's DWG-to-DXF
+// writer (dwg_write_dxf) is only reachable through its internal headers
+// (src/out_dxf.h / src/bits.h), not the public include/dwg.h and
+// include/dwg_api.h this project links against. So ImportDwg instead reads
+// the decoded Dwg_Data directly through the same public, stable dwg_api.h
+// struct layout LibreDWG's own add_test.c and dwgadd.c programs use to
+// build DWGs by hand, walking model-space entities with
+// get_first_owned_entity/get_next_owned_entity (both public, declared in
+// dwg.h) and switching on `fixedtype`. Coverage: LINE, POINT, CIRCLE, ARC,
+// LWPOLYLINE (bulges + closed flag) and INSERT, flattened recursively into
+// transformed copies of the referenced block's own entities - the same
+// "instance is a transformed copy, not a live GPU reference" model
+// InstantiateBlock (cmd_drafting.cpp) already uses for blocks defined
+// in-app. TEXT, MTEXT, DIMENSION, HATCH, SPLINE, 3D solids/meshes, xrefs
+// and anything else fall into the skipped count, exactly like ImportDxf's
+// own honest gap for entities outside its coverage.
+
+namespace {
+
+// A process-unique temp file path next to `hint` (same directory, so the
+// rename/open is on one filesystem) rather than a fixed name, so two
+// concurrent exports never collide.
+std::string TempPathNear(const std::string& hint, const std::string& suffix) {
+  std::error_code ec;
+  std::filesystem::path dir = std::filesystem::path(hint).parent_path();
+  if (dir.empty()) dir = std::filesystem::current_path(ec);
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  return (dir / (".dino8_dwg_" + std::to_string(stamp) + suffix)).string();
+}
+
+struct DwgImportStats {
+  int curves = 0, points = 0, blocks_flattened = 0, skipped = 0, layers = 0;
+};
+
+// Resolves a DWG entity's layer name ("0" when unset - DWG's default layer,
+// same convention as DXF group 8) and finds or creates the matching Dino 8
+// layer, colouring a freshly-created one from the DWG LAYER's ACI index when
+// available.
+int DwgLayerFor(Document& doc, std::map<std::string, int>& layer_map, Dwg_Object_Entity* ent, DwgImportStats& stats) {
+  std::string name = "0";
+  int aci = 7;  // ACI 7 = white/black, DXF/DWG's implicit default
+  if (ent->layer && ent->layer->obj && ent->layer->obj->tio.object &&
+      ent->layer->obj->fixedtype == DWG_TYPE_LAYER) {
+    Dwg_Object_LAYER* L = ent->layer->obj->tio.object->tio.LAYER;
+    if (L->name && *L->name) name = L->name;
+    if (L->color.index > 0 && L->color.index < 256) aci = L->color.index;
+  }
+  auto it = layer_map.find(name);
+  if (it != layer_map.end()) return it->second;
+  int idx;
+  if (name == "0") {
+    idx = 0;
+  } else {
+    idx = doc.FindLayer(name);
+    if (idx < 0) {
+      idx = doc.AddLayer(name);
+      ++stats.layers;
+      const std::array<int, 3> rgb = AciToRgb(aci);
+      doc.Layers()[static_cast<size_t>(idx)].color = Color::FromBytes(rgb[0], rgb[1], rgb[2]);
+    }
+  }
+  layer_map[name] = idx;
+  return idx;
+}
+
+// Per-entity colour override (mirrors DxfImporter::ApplyAttributes): only
+// set when the entity carries an explicit ACI 1-255, i.e. not
+// BYLAYER (256) or BYBLOCK (0).
+void ApplyDwgColor(SceneObject& o, const Dwg_Color& c) {
+  if (c.index > 0 && c.index < 256) {
+    const std::array<int, 3> rgb = AciToRgb(c.index);
+    o.color_by_layer = false;
+    o.color = Color::FromBytes(rgb[0], rgb[1], rgb[2]);
+  }
+}
+
+// Walks the entities directly owned by `block_obj` (a BLOCK_HEADER object -
+// model space itself, or a named block definition reached through an
+// INSERT) and adds them to `doc`, transformed by `xf`. Recurses into INSERT
+// with an accumulated transform so nested blocks flatten correctly; `depth`
+// guards against a malformed or self-referential DWG looping forever.
+void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, std::map<std::string, int>& layer_map,
+                     DwgImportStats& stats, int depth) {
+  if (!block_obj || depth > 16) return;
+  for (Dwg_Object* o = get_first_owned_entity(block_obj); o; o = get_next_owned_entity(block_obj, o)) {
+    if (!o || o->supertype != DWG_SUPERTYPE_ENTITY || !o->tio.entity) continue;
+    Dwg_Object_Entity* ent = o->tio.entity;
+    switch (o->fixedtype) {
+      case DWG_TYPE_LINE: {
+        Dwg_Entity_LINE* e = ent->tio.LINE;
+        kernel::NurbsCurve k;
+        if (!CurveFromON(ON_LineCurve(Point3d(e->start.x, e->start.y, e->start.z), Point3d(e->end.x, e->end.y, e->end.z)), k)) { ++stats.skipped; break; }
+        k.raw().Transform(xf);
+        SceneObject so = SceneObject::MakeCurve(k);
+        so.layer_index = DwgLayerFor(doc, layer_map, ent, stats);
+        ApplyDwgColor(so, ent->color);
+        doc.Add(std::move(so));
+        ++stats.curves;
+        break;
+      }
+      case DWG_TYPE_CIRCLE: {
+        Dwg_Entity_CIRCLE* e = ent->tio.CIRCLE;
+        ON_Circle c(ON_Plane(Point3d(e->center.x, e->center.y, e->center.z), ON_xaxis, ON_yaxis), e->radius);
+        kernel::NurbsCurve k;
+        if (!CurveFromON(ON_ArcCurve(c), k)) { ++stats.skipped; break; }
+        k.raw().Transform(xf);
+        SceneObject so = SceneObject::MakeCurve(k);
+        so.layer_index = DwgLayerFor(doc, layer_map, ent, stats);
+        ApplyDwgColor(so, ent->color);
+        doc.Add(std::move(so));
+        ++stats.curves;
+        break;
+      }
+      case DWG_TYPE_ARC: {
+        Dwg_Entity_ARC* e = ent->tio.ARC;
+        double a0 = e->start_angle, a1 = e->end_angle;
+        while (a1 <= a0 + 1e-12) a1 += 2.0 * ON_PI;
+        ON_Circle c(ON_Plane(Point3d(e->center.x, e->center.y, e->center.z), ON_xaxis, ON_yaxis), e->radius);
+        ON_Arc arc(c, ON_Interval(a0, a1));
+        kernel::NurbsCurve k;
+        if (!CurveFromON(ON_ArcCurve(arc), k)) { ++stats.skipped; break; }
+        k.raw().Transform(xf);
+        SceneObject so = SceneObject::MakeCurve(k);
+        so.layer_index = DwgLayerFor(doc, layer_map, ent, stats);
+        ApplyDwgColor(so, ent->color);
+        doc.Add(std::move(so));
+        ++stats.curves;
+        break;
+      }
+      case DWG_TYPE_POINT: {
+        Dwg_Entity_POINT* e = ent->tio.POINT;
+        Point3d p(e->x, e->y, e->z);
+        p = xf * p;
+        SceneObject so = SceneObject::MakePoint(p);
+        so.layer_index = DwgLayerFor(doc, layer_map, ent, stats);
+        ApplyDwgColor(so, ent->color);
+        doc.Add(std::move(so));
+        ++stats.points;
+        break;
+      }
+      case DWG_TYPE_LWPOLYLINE: {
+        Dwg_Entity_LWPOLYLINE* e = ent->tio.LWPOLYLINE;
+        if (e->num_points < 2) { ++stats.skipped; break; }
+        std::vector<BulgeVertex> verts;
+        verts.reserve(e->num_points);
+        for (unsigned i = 0; i < e->num_points; ++i) {
+          BulgeVertex bv;
+          bv.p = Point3d(e->points[i].x, e->points[i].y, e->elevation);
+          if (e->bulges && i < e->num_bulges) bv.bulge = e->bulges[i];
+          verts.push_back(bv);
+        }
+        const bool closed = (e->flag & 512) != 0;  // DXF 70 bit 512
+        kernel::NurbsCurve k;
+        if (!BulgePolylineCurve(verts, closed, k)) { ++stats.skipped; break; }
+        k.raw().Transform(xf);
+        SceneObject so = SceneObject::MakeCurve(k);
+        so.layer_index = DwgLayerFor(doc, layer_map, ent, stats);
+        ApplyDwgColor(so, ent->color);
+        doc.Add(std::move(so));
+        ++stats.curves;
+        break;
+      }
+      case DWG_TYPE_INSERT: {
+        Dwg_Entity_INSERT* e = ent->tio.INSERT;
+        Dwg_Object* blkdef = e->block_header ? e->block_header->obj : nullptr;
+        if (!blkdef || blkdef->fixedtype != DWG_TYPE_BLOCK_HEADER || !blkdef->tio.object) { ++stats.skipped; break; }
+        Dwg_Object_BLOCK_HEADER* bh = blkdef->tio.object->tio.BLOCK_HEADER;
+        const Point3d base(bh->base_pt.x, bh->base_pt.y, bh->base_pt.z);
+        const Point3d ins(e->ins_pt.x, e->ins_pt.y, e->ins_pt.z);
+        const double sx = e->scale.x != 0.0 ? e->scale.x : 1.0;
+        const double sy = e->scale.y != 0.0 ? e->scale.y : 1.0;
+        const double sz = e->scale.z != 0.0 ? e->scale.z : 1.0;
+        ON_Xform to_origin = ON_Xform::TranslationTransformation(-Vector3d(base.x, base.y, base.z));
+        ON_Xform scale = ON_Xform::DiagonalTransformation(sx, sy, sz);
+        ON_Xform rot = ON_Xform::IdentityTransformation;
+        rot.Rotation(e->rotation, ON_zaxis, ON_origin);
+        ON_Xform to_ins = ON_Xform::TranslationTransformation(Vector3d(ins.x, ins.y, ins.z));
+        const ON_Xform local = to_ins * rot * scale * to_origin;
+        WalkDwgEntities(doc, blkdef, xf * local, layer_map, stats, depth + 1);
+        ++stats.blocks_flattened;
+        break;
+      }
+      default:
+        ++stats.skipped;
+        break;
+    }
+  }
+}
+
+}  // namespace
+
+bool ImportDwg(Document& doc, const std::string& path, std::string& summary) {
+  summary.clear();
+  Dwg_Data dwg{};
+  const int err = dwg_read_file(path.c_str(), &dwg);
+  if (err >= DWG_ERR_CRITICAL) {
+    summary = "Could not read " + path + " (LibreDWG error 0x" + [&] { std::ostringstream h; h << std::hex << err; return h.str(); }() + ")";
+    dwg_free(&dwg);
+    return false;
+  }
+  Dwg_Object* mspace = dwg_model_space_object(&dwg);
+  if (!mspace) {
+    summary = "No model space found in " + path;
+    dwg_free(&dwg);
+    return false;
+  }
+  std::map<std::string, int> layer_map;
+  DwgImportStats stats;
+  WalkDwgEntities(doc, mspace, ON_Xform::IdentityTransformation, layer_map, stats, 0);
+  dwg_free(&dwg);
+
+  std::ostringstream ss;
+  ss << "DWG: " << stats.curves << " curve" << (stats.curves == 1 ? "" : "s") << ", " << stats.points << " point"
+     << (stats.points == 1 ? "" : "s");
+  if (stats.layers) ss << ", " << stats.layers << " new layer" << (stats.layers == 1 ? "" : "s");
+  if (stats.blocks_flattened) ss << ", " << stats.blocks_flattened << " block instance" << (stats.blocks_flattened == 1 ? "" : "s") << " flattened";
+  if (stats.skipped) ss << "; " << stats.skipped << " unsupported entit" << (stats.skipped == 1 ? "y" : "ies") << " skipped (text, dimensions, hatches, splines, 3D solids and meshes are not read back yet)";
+  summary = ss.str();
+  if (stats.curves + stats.points == 0) {
+    summary = "No supported entities found in " + path + (stats.skipped ? " (" + std::to_string(stats.skipped) + " unsupported entities skipped)" : "");
+    return false;
+  }
+  return true;
+}
+
+bool ExportDwg(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
+  const std::string tmp_dxf = TempPathNear(path, ".dxf");
+  if (!ExportDxf(doc, tmp_dxf, selected_only, error)) return false;
+
+  Dwg_Data dwg{};
+  int err = dxf_read_file(tmp_dxf.c_str(), &dwg);
+  std::error_code ec;
+  std::filesystem::remove(tmp_dxf, ec);
+  if (err >= DWG_ERR_CRITICAL) {
+    error = "LibreDWG could not parse the intermediate DXF (error 0x" + [&] { std::ostringstream h; h << std::hex << err; return h.str(); }() + ")";
+    dwg_free(&dwg);
+    return false;
+  }
+  err = dwg_write_file(path.c_str(), &dwg);
+  dwg_free(&dwg);
+  if (err >= DWG_ERR_CRITICAL) {
+    error = "Could not write " + path + " (LibreDWG error 0x" + [&] { std::ostringstream h; h << std::hex << err; return h.str(); }() + ")";
     return false;
   }
   return true;

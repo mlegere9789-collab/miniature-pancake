@@ -1,21 +1,47 @@
-# Why there is no native DWG, Parasolid, or ACIS support
+# Why there is no native Parasolid or ACIS support (and how DWG works)
 
 Dino 8 reads and writes `.3dm` (its own OpenNURBS-based format), `.obj`,
-`.stl`, `.ply`, `.dxf`, `.igs`/`.iges`, and `.stp`/`.step`. It does **not**
-read or write `.dwg`, and it has no Parasolid (`.x_t`/`.x_b`) or ACIS
-(`.sat`/`.sab`) kernel or import/export. This is not an oversight or a
-missing afternoon of work — each of these formats is a proprietary,
-commercially-licensed piece of technology, and there is no legal, from-scratch
-path to reimplementing them the way this project reimplemented, say, its own
-NURBS/mesh/boolean kernel or its DXF and STEP readers.
+`.stl`, `.ply`, `.dxf`, `.dwg`, `.igs`/`.iges`, and `.stp`/`.step`. It has
+**no** Parasolid (`.x_t`/`.x_b`) or ACIS (`.sat`/`.sab`) kernel or
+import/export. This is not an oversight or a missing afternoon of work —
+Parasolid and ACIS are proprietary, commercially-licensed pieces of
+technology, and there is no legal, from-scratch path to reimplementing them
+the way this project reimplemented, say, its own NURBS/mesh/boolean kernel or
+its DXF and STEP readers.
 
 ## DWG
 
-`.dwg` is Autodesk's native drawing format. It is not an open, published
-specification like DXF (which Autodesk does document publicly, and which
-this project does support — see `dino8-app/src/io/FileExchange.cpp`'s
-`ExportDxf`/`ImportDxf`). There are exactly two legitimate ways to read or
-write real-world `.dwg` files:
+`.dwg` is Autodesk's native drawing format and, unlike DXF (which Autodesk
+does document publicly), it is not a published specification either. This
+document used to say flatly that there was no legal, from-scratch way to
+support it, and named exactly two paths: an ODA SDK membership, or a
+RealDWG license from Autodesk. **That was wrong** — it missed a third,
+real option this project now uses: **GNU LibreDWG**
+(https://www.gnu.org/software/libredwg/), a from-scratch, independently
+reverse-engineered, GPLv3-licensed DWG reader/writer maintained by the FSF
+and GNU project since 2009. It is not a derivative of the ODA's or
+Autodesk's proprietary work, is not covered by either company's NDA, and is
+distributed as ordinary open-source source code anyone can fetch, build, and
+link against — which is exactly what `dino8-app/CMakeLists.txt` now does
+(`FetchContent_Declare(libredwg ...)`), the same way FreeCAD's `importDWG`
+addon and other free CAD tools get DWG support. See
+`dino8-app/src/io/FileExchange.cpp`'s `ExportDwg`/`ImportDwg` and
+`dino8-app/src/io/FileExchange.h` for what is actually implemented (LINE,
+POINT, CIRCLE, ARC, LWPOLYLINE, block instances, layers and colours; text,
+dimensions, hatches, splines and 3D solids/meshes are not read back yet) and
+`dino8-app/THIRD_PARTY_LICENSES.md` for what linking GPLv3 code means for
+the rest of this codebase's licensing — that part is a real, non-cosmetic
+consequence, not a footnote.
+This does **not** change the analysis below for Parasolid/ACIS: there is no
+GPL, BSD, or otherwise open equivalent of LibreDWG for either of those
+formats (see "Parasolid and ACIS" below for why), so the two-commercial-
+licenses-or-nothing conclusion still stands there. The rest of this DWG
+section is kept, lightly corrected, as the honest history of that mistake
+and why the two commercial paths remain true statements about DWG *on their
+own* — they are simply no longer the only paths.
+
+There are two commercial ways to read or write real-world `.dwg` files
+beyond LibreDWG's open-source path:
 
 1. **License the Open Design Alliance's (ODA) Teigha/ODA SDK.** The ODA is a
    consortium (its members include Autodesk's DWG competitors and many CAD
@@ -40,37 +66,38 @@ write real-world `.dwg` files:
    which a free Rhino-alternative like Dino 8 plainly is. This path is not
    realistically available to this project at all.
 
-There is no third option. Nobody has ever produced a legally clean,
-from-scratch, public-domain DWG reader/writer, because DWG is not a published
-format — it is a proprietary binary format whose structure is a trade
-secret, discovered only through the ODA's licensed, NDA'd reverse-engineering
-work (and Autodesk's own internal implementation). Reimplementing DWG support
-"from scratch" without a license from the ODA or Autodesk would mean either:
+These two commercial paths share the same shape and the same real cost this
+document originally described in detail: dues/licensing running from the
+low five figures a year and up, an NDA covering the SDK's own internals, and
+(for RealDWG specifically) Autodesk's documented history of not licensing it
+to products that compete with AutoCAD. Neither is what this project actually
+uses.
 
-- **Independently reverse-engineering `.dwg` from scratch** — reading
-  arbitrary sample files byte-by-byte and inferring the format. This is a
-  multi-year undertaking even for a well-resourced team (it took the ODA's
-  member consortium years, and DWG's internal structure has changed release
-  to release since AutoCAD's earliest versions); realistically it could not
-  be done correctly or completely by any near-term effort, would trail every
-  new AutoCAD release, and would produce a reader/writer that silently
-  mishandles or corrupts entity types nobody happened to test.
-- **A real legal risk even if attempted.** DWG is an actively maintained,
-  actively licensed proprietary format; Autodesk has a documented history of
-  contesting unlicensed DWG compatibility efforts (the "OpenDWG"/"TrustedDWG"
-  history and Autodesk's public statements framing unlicensed DWG read/write
-  as encroaching on its IP are part of the public record around why the ODA
-  exists as a licensed alternative in the first place). Shipping an
-  unlicensed DWG implementation in a public, redistributed free tool is not
-  a hypothetical risk — it invites exactly the kind of claim the ODA's
-  licensing model exists to avoid.
+What this project *does* use — GNU LibreDWG — is a fundamentally different
+thing from "reimplementing DWG from scratch for this project": it is an
+existing, independent, `~15+`-year-old GNU project that already did that
+reverse-engineering work as a public, GPL-licensed effort (in the same spirit
+as, and unrelated to, the ODA's private one), the way Samba independently
+reverse-engineered SMB/CIFS or Wine reverse-engineered the Win32 ABI. Using
+it does carry real, non-hypothetical consequences of its own — GPLv3 is a
+copyleft license, so linking it into Dino 8 puts the *combined, distributed
+binary* under GPLv3 terms (see `dino8-app/THIRD_PARTY_LICENSES.md`) — but
+that is a licensing-compliance question, not a "nobody has ever done this
+legally" one. The risk profile the paragraphs above describe (Autodesk
+contesting *unlicensed*, *reverse-engineered-by-this-project* DWG code) does
+not apply to *using* an already-published, decade-plus-mature GPL library
+the same way any other GPL dependency is used; it is the same category of
+choice as any other GPL-vs-permissive dependency decision, not a novel IP
+exposure this project is creating.
 
-**Bottom line**: native DWG support is available to Dino 8 only by the
-project owner obtaining an ODA membership (a recurring five-figure business
-expense with an NDA) and linking their SDK, or by Autodesk granting a RealDWG
-license (unlikely for a competing free product). Documenting this honestly
-is the deliverable here; no DWG code has been added, and none should be
-written without one of those two licenses in hand.
+**Bottom line**: DWG read/write now works via GNU LibreDWG (see
+`ExportDwg`/`ImportDwg` in `dino8-app/src/io/FileExchange.cpp`), with the
+entity coverage documented there and in `dino8-app/src/io/FileExchange.h`.
+The ODA-membership and RealDWG paths above remain the only ways to get
+Autodesk's or the ODA's *own* proprietary DWG implementations (their
+specific fidelity, their specific edge-case handling) directly — a project
+that specifically needs that, rather than LibreDWG's independent
+implementation, still needs one of those two commercial licenses.
 
 ## Parasolid and ACIS
 
@@ -102,8 +129,11 @@ a from-scratch open project cannot legally or practically reproduce:
   healing), and both formats are proprietary/trade-secret file formats, not
   published specifications. Reimplementing "a kernel that reads `.sat`/`.x_t`
   files and reproduces their exact geometry" without a license risks the
-  same category of IP exposure as unlicensed DWG, compounded by active
-  patent portfolios specific to solid-modeling algorithms.
+  same category of IP exposure a from-scratch, reverse-engineered-by-this-
+  project DWG reader would have risked (see the DWG section above for why
+  this project uses an existing GPL implementation, GNU LibreDWG, instead of
+  writing one), compounded by active patent portfolios specific to
+  solid-modeling algorithms that DWG's format-only exposure does not carry.
 - **Practically**: this is not "add another importer." Dino 8 already has
   its own NURBS/mesh/boolean geometry kernel (`dino8-kernel`, built on
   OpenNURBS + Manifold) — that from-scratch work is realistic because

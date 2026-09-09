@@ -2236,7 +2236,10 @@ void RegisterRemainingCommands(CommandEngine& e) {
   Reg(e, "ChangeSpace", OnSelection("Select objects to move between model and layout space", ChangeSpace), CommandStatus::Implemented,
       "With a layout active, copies the objects tagged with the layout name; in model space removes the tag. Objects are not drawn per page.");
   Reg(e, "DecimalPoint", Immediate(DecimalPoint), CommandStatus::Implemented, "Toggles the decimal separator of printed numbers (Separator=Comma/Point).");
-  Reg(e, "AcadSchemes", Say("AcadSchemes: DWG/DXF export schemes are not available; Dino 8 exports .3dm, OBJ, STL, PLY, SVG and PDF (see Export)."), CommandStatus::Partial);
+  Reg(e, "AcadSchemes", Say("AcadSchemes: there are no per-version export 'schemes' to pick from (AutoCAD's dialog for choosing an output DWG/DXF release); "
+                            "Dino 8's Export/SaveAs writes DWG through GNU LibreDWG as AC1015 (AutoCAD 2000) - the version LibreDWG's own writer documents as reliable - "
+                            "and DXF as the same AC1015. Also exports .3dm, OBJ, STL, PLY, SVG and PDF (see Export)."),
+      CommandStatus::Partial);
   Reg(e, "Rescue3dmFile", Immediate(Rescue3dmFile), CommandStatus::Implemented,
       "Reads what OpenNURBS can still parse from a damaged .3dm and adds the recovered objects; no chunk-level repair.");
   Reg(e, "ExportBitmaps", Immediate(ExportBitmaps), CommandStatus::Implemented, "Copies every referenced material texture into a folder (textures are never embedded).");

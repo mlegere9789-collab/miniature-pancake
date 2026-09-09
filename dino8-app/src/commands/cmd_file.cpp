@@ -19,8 +19,8 @@ std::string LowerExt(const std::string& path) {
   return e;
 }
 
-const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".igs", ".iges", ".stp", ".step"};
-const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".svg", ".pdf", ".igs", ".iges", ".stp", ".step"};
+const std::vector<std::string> kModelExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".igs", ".iges", ".stp", ".step"};
+const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".ply", ".dxf", ".dwg", ".svg", ".pdf", ".igs", ".iges", ".stp", ".step"};
 
 void SaveTo(CommandContext& ctx, const std::string& path) {
   std::string err;
@@ -34,6 +34,7 @@ bool ExportDocument(const Document& doc, const std::string& path, std::string& e
   const std::string ext = LowerExt(path);
   if (ext == ".3dm") return Save3dm(doc, path, error);
   if (ext == ".dxf") return ExportDxf(doc, path, true, error);
+  if (ext == ".dwg") return ExportDwg(doc, path, true, error);
   if (ext == ".ply") return ExportPly(doc, path, true, error);
   if (ext == ".igs" || ext == ".iges") return ExportIges(doc, path, true, error);
   if (ext == ".stp" || ext == ".step") return ExportStep(doc, path, true, error);
