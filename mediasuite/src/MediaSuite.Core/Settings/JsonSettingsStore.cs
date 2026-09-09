@@ -30,6 +30,7 @@ public sealed class JsonSettingsStore : ISettingsStore
     public string FilePath => _filePath;
 
     private const int MaxLoadAttempts = 3;
+    private const int MaxSaveMoveAttempts = 5;
 
     public AppSettings Load()
     {
@@ -100,17 +101,7 @@ public sealed class JsonSettingsStore : ISettingsStore
         try
         {
             File.WriteAllText(tempPath, json);
-
-            // A single unconditional, atomic move -- not "check File.Exists, then Replace
-            // or Move accordingly". That check-then-act was its own race, independent of
-            // the per-call temp file name above: two concurrent Save() calls to a settings
-            // file that does not exist yet (the very first launch, or after a fresh
-            // install) could both see File.Exists == false and both choose File.Move,
-            // and whichever lost the race then threw "Cannot create a file when that file
-            // already exists" the instant the other had already created the destination.
-            // File.Move's own overwrite: true creates the destination when absent and
-            // atomically replaces it when present, so there is nothing left to race on.
-            File.Move(tempPath, _filePath, overwrite: true);
+            MoveIntoPlace(tempPath);
         }
         finally
         {
@@ -127,6 +118,42 @@ public sealed class JsonSettingsStore : ISettingsStore
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 // Best effort only -- must not mask whatever the real save outcome was.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Renames the finished temp file into place, retrying briefly on a transient failure.
+    /// </summary>
+    /// <remarks>
+    /// Caught for real on this branch's own CI, not found by review:
+    /// <c>Concurrent_saves_never_corrupt_each_other_through_a_shared_temp_file_name</c>
+    /// failed with a genuine <see cref="UnauthorizedAccessException"/> ("Access to the
+    /// path is denied") out of the plain <c>File.Move(tempPath, _filePath, overwrite:
+    /// true)</c> call this replaces, from two threads racing that exact call against the
+    /// exact same destination at the exact same moment. <c>File.Move</c>'s own overwrite
+    /// support is not documented or guaranteed atomic against a second, concurrent rename
+    /// onto the same destination — only against the destination merely existing already —
+    /// so this is not the same race the per-call unique temp file name above already
+    /// closes (each call's own source is untouched either way); it is purely about two
+    /// calls contending for the one shared destination path, which a unique source name
+    /// cannot prevent by construction. A short retry is correct here the same way it is
+    /// in <see cref="Load"/>: the losing thread's own move is expected to succeed within
+    /// microseconds once the winning thread's rename completes, not a sign of real
+    /// corruption or a genuinely locked file.
+    /// </remarks>
+    private void MoveIntoPlace(string tempPath)
+    {
+        for (var attempt = 1; attempt <= MaxSaveMoveAttempts; attempt++)
+        {
+            try
+            {
+                File.Move(tempPath, _filePath, overwrite: true);
+                return;
+            }
+            catch (UnauthorizedAccessException) when (attempt < MaxSaveMoveAttempts)
+            {
+                Thread.Sleep(TimeSpan.FromMilliseconds(5 * attempt));
             }
         }
     }
