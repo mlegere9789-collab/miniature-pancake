@@ -206,6 +206,19 @@ dfcheck "Exported $TMP/dxf_fidelity.dxf" "DXF export wrote a file"
 [ "$(echo "$DF" | grep -c "Total length = ")" = "2" ] && [ "$(echo "$DF" | grep "Total length = " | sort -u | wc -l)" = "1" ] && echo "ok   DXF SPLINE round-tripped the exact combined curve length (freeform curve + rational ellipse)" || { echo "FAIL DXF round-trip changed the combined curve length"; fail=1; }
 [ "$(echo "$DF" | grep -c "degree 2, 9 control points, rational, closed")" = "2" ] && [ "$(echo "$DF" | grep -c "CV\[1\] 38,3,0")" = "2" ] && echo "ok   DXF SPLINE round-tripped the ellipse's rational control points and weights" || { echo "FAIL DXF SPLINE lost the ellipse's rational control points/weights"; fail=1; }
 grep -q "^SPLINE$" "$TMP/dxf_fidelity.dxf" && echo "ok   dxf_fidelity.dxf uses exact SPLINE entities, not sampled polylines" || { echo "FAIL dxf_fidelity.dxf entity types"; fail=1; }
+# DXF TEXT import: a minimal, hand-written DXF (no Dino8-authored export
+# path writes a native TEXT entity - see dxf_text_script.txt) proves
+# ImportDxf's TEXT-to-glyph-outline conversion for real.
+cp "$HERE/dxf_text_fixture.dxf" "$TMP/dxf_text_fixture.dxf"
+sed "s|@TMP@|$TMP|g" "$HERE/dxf_text_script.txt" > "$TMP/dxf_text_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  DT="$("$BIN" --smoke 30 --script "$TMP/dxf_text_script.txt" 2>&1)" || { echo "$DT"; echo "FAIL: DXF TEXT script exited non-zero"; exit 1; }
+else
+  DT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_text_script.txt" 2>&1)" || { echo "$DT"; echo "FAIL: DXF TEXT script exited non-zero"; exit 1; }
+fi
+dtcheck() { if echo "$DT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dtcheck "DXF: 3 curves, 0 points" "DXF import read the TEXT entity"
+[ "$(echo "$DT" | grep -c "^history:   degree 1, [0-9]* control points, non-rational, closed$")" = "3" ] && echo "ok   DXF TEXT converted 'Hi' into exactly 3 closed glyph-outline curves (H, i-stem, i-dot)" || { echo "FAIL DXF TEXT did not produce the expected glyph curves"; fail=1; }
 # DWG round-trip (via GNU LibreDWG, see FileExchange.cpp's ExportDwg/
 # ImportDwg): a line, a circle and a closed 4-point polyline must survive a
 # real Export to .dwg and a real Open back, with exact control-point

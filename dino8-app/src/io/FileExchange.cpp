@@ -725,6 +725,27 @@ class DxfImporter {
     ++stats_.points;
   }
 
+  void Text(const DxfEntity& e) {
+    const std::string value = e.S(1);
+    const double height = e.D(40, 1.0);
+    if (value.empty() || height <= 0) { ++stats_.skipped; return; }
+    const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
+    ON_Plane pl(OcsToWorld(ocs, e.P(10)), ocs.xaxis, ocs.yaxis);
+    pl.Rotate(ON_DEGREES_TO_RADIANS * e.D(50, 0.0), ocs.zaxis);
+    std::vector<kernel::NurbsCurve> glyphs;
+    std::string font_used;
+    if (!TextToCurves(value, height, pl, glyphs, font_used) || glyphs.empty()) { ++stats_.skipped; return; }
+    for (kernel::NurbsCurve& g : glyphs) {
+      SceneObject o = SceneObject::MakeCurve(g);
+      ApplyAttributes(o, e);
+      o.user_text["Annotation"] = "Text";
+      o.user_text["Style"] = "Standard";
+      o.user_text["Text"] = value;
+      doc_.Add(std::move(o));
+      ++stats_.curves;
+    }
+  }
+
   void Circle(const DxfEntity& e) {
     const ON_Plane ocs = OcsPlane(Point3d(0, 0, 0), e.Normal());
     const Point3d center = OcsToWorld(ocs, e.P(10));
@@ -949,6 +970,7 @@ class DxfImporter {
     else if (t == "POINT") Point(e);
     else if (t == "CIRCLE") Circle(e);
     else if (t == "ARC") Arc(e);
+    else if (t == "TEXT") Text(e);
     else if (t == "ELLIPSE") Ellipse(e);
     else if (t == "SPLINE") Spline(e);
     else if (t == "LWPOLYLINE") LwPolyline(e);
