@@ -670,11 +670,27 @@ public sealed class PdfEngine : ExternalProcessEngine
             && int.TryParse(trimmed.AsSpan(1), NumberStyles.Integer, CultureInfo.InvariantCulture, out var fromEnd)
             && fromEnd > 0)
         {
-            return totalPages - fromEnd + 1;
+            return InRange(totalPages - fromEnd + 1, token, totalPages);
         }
 
         return int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var page) && page > 0
-            ? page
+            ? InRange(page, token, totalPages)
             : throw new ArgumentException($"'{token}' is not a valid page number.", nameof(token));
     }
+
+    /// <summary>
+    /// Rejects a page number outside the document, rather than letting it reach
+    /// <see cref="ParsePageNumbers"/>'s own range-expansion loop unchecked. That loop walks
+    /// every integer from the smaller endpoint to the larger one to build the removed-page
+    /// set -- a single typo like "remove: 1-999999999" (meant as "everything from page 1
+    /// on") would otherwise spin that loop up to two billion times with no upper bound and
+    /// no cancellation check inside it, appearing to hang the job instead of failing fast
+    /// with a clear reason. "rN" can produce an out-of-range number too (e.g. "r10" on a
+    /// 5-page document resolves to page -4), so this applies to both parsed forms.
+    /// </summary>
+    private static int InRange(int page, string token, int totalPages) =>
+        page >= 1 && page <= totalPages
+            ? page
+            : throw new ArgumentException(
+                $"'{token}' is not a valid page for this {totalPages}-page document.", nameof(token));
 }
