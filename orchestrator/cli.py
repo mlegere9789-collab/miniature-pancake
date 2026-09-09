@@ -67,12 +67,17 @@ def _cmd_doctor() -> int:
     print(f"  scheduler:   {_scheduler_doctor_line()}")
     print("\n  Credentials detected in .env:")
     tracked = [
+        # digital_products and stock_licensing both idle/activate purely on this
+        # one key -- neither has a real marketplace credential to track: Etsy/
+        # Gumroad publishing and Adobe Stock/Shutterstock uploading are both
+        # explicitly not built yet (see each module's own README), so
+        # ETSY_API_KEY/SHUTTERSTOCK_API_TOKEN would always read "unset" here
+        # regardless of whether either module is actually fully configured --
+        # the same misleading shape the DISCORD_WEBHOOK_URL fix below replaced.
         "ANTHROPIC_API_KEY",
         "SHOPIFY_ADMIN_API_TOKEN",
         "STRIPE_SECRET_KEY",
-        "ETSY_API_KEY",
         "DISCORD_WEBHOOK_URL",
-        "SHUTTERSTOCK_API_TOKEN",
     ]
     for key in tracked:
         print(f"    {'set ' if config.has(key) else 'unset'}  {key}")
