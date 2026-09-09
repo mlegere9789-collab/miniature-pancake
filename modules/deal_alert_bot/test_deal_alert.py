@@ -237,6 +237,56 @@ class TestRunEndToEnd(unittest.TestCase):
         post_mock.assert_not_called()
         self.assertEqual(second, 0)
 
+    def test_a_later_deals_failure_does_not_lose_an_earlier_deals_seen_mark(self):
+        # Regression test: seen.save() used to run once after the whole
+        # posting loop finished, so an exception from a later deal that
+        # isn't wrapped as DiscordError (a bug, or any failure mode neither
+        # post_webhook nor this loop already anticipates) meant an earlier
+        # deal that had already posted successfully still lost its
+        # seen-mark, since it only ever existed in memory. The next run
+        # would then repost that same deal to Discord a second time -- the
+        # same double-post risk ecommerce_dropshipping's run() already
+        # guards against for its own per-order dedup mark.
+        from unittest.mock import patch
+
+        from . import dedup
+        from . import run as run_mod
+
+        deal_two = {**SAMPLE_DEAL, "dealID": "XYZ789", "title": "Celeste"}
+        p1, p2 = self._patched_run(
+            [SAMPLE_DEAL, deal_two],
+            dry_run=False,
+            webhook_url="http://example.invalid/hook",
+        )
+        with (
+            p1,
+            p2,
+            patch.object(
+                run_mod, "post_webhook", side_effect=[None, RuntimeError("boom")]
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                run_mod.run()
+
+        # The first deal posted (and its mark was saved) before the second
+        # deal's unexpected failure ended the run -- that mark must survive.
+        self.assertTrue(dedup.SeenStore().is_seen("ABC123"))
+
+
+class TestDiscordNotifier(unittest.TestCase):
+    def test_a_malformed_url_becomes_a_discord_error_not_a_bare_valueerror(self):
+        # Regression test: Request(...) raises a bare ValueError for a URL
+        # with no scheme (a pasted-in-a-hurry webhook URL missing its
+        # "https://"), which post_webhook did not used to catch -- letting
+        # it escape as an unhandled ValueError instead of the DiscordError
+        # every other failure in this function becomes, and (via run.py's
+        # own `except DiscordError`) crashing the whole run rather than
+        # being logged and skipped like an ordinary webhook failure.
+        from .discord_notifier import DiscordError, post_webhook
+
+        with self.assertRaises(DiscordError):
+            post_webhook("discord.com/api/webhooks/missing-scheme", {"content": "hi"})
+
 
 if __name__ == "__main__":
     unittest.main()

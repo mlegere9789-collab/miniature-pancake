@@ -30,17 +30,26 @@ def post_webhook(
         raise DiscordError("No webhook URL configured")
 
     body = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        webhook_url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
     try:
+        # Request(...) construction itself can raise -- a webhook URL with
+        # no scheme (a pasted-in-a-hurry "discord.com/api/webhooks/..."
+        # missing its "https://") makes it raise a bare
+        # ValueError("unknown url type"), not one of the exceptions below,
+        # so it has to be inside this same try to become a DiscordError
+        # like every other failure here (see orchestrator/notifier.py's own
+        # notify(), which this mirrors).
+        req = urllib.request.Request(
+            webhook_url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             # Discord returns 204 on success; 200 with ?wait=true.
             if resp.status not in (200, 204):
                 raise DiscordError(f"Unexpected HTTP {resp.status} from Discord")
+    except ValueError as exc:
+        raise DiscordError(f"Malformed webhook URL: {exc}") from exc
     except urllib.error.HTTPError as exc:
         detail = ""
         try:

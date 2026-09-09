@@ -161,10 +161,22 @@ def run(dry_run_override: bool | None = None, limit_override: int | None = None)
             )
             continue
         seen.mark(str(deal.get("dealID")))
+        # Persist the dedup mark right after this deal, not once after the
+        # whole batch: the webhook post just above already happened for
+        # real -- Discord has the message. If some later deal in this same
+        # batch raises something neither this loop nor post_webhook's own
+        # DiscordError wrapping catches, a batched save() at the end of the
+        # loop would never run at all, losing every earlier deal's own
+        # seen-mark along with it even though it already posted. The next
+        # run would then re-post that same deal a second time. Saving here
+        # means only deals posted before the failure are ever at risk of
+        # losing their mark, and none of them are: each one's mark is
+        # durable before the loop even reaches the next deal (the same
+        # reasoning ecommerce_dropshipping's run() already applies to its
+        # own per-order dedup mark).
+        seen.save()
         log.activity(f"Posted deal: {text}", event="deal_posted", metadata=meta)
         posted += 1
-
-    seen.save()
 
     summary = (
         f"{mode}: scanned {len(deals)}, {len(fresh)} new qualifying, "
