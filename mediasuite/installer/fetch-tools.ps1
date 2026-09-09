@@ -233,8 +233,13 @@ else {
         # /MT to match vcpkg's x64-windows-static triplet (static CRT) — a /MD-compiled
         # object linking against /MT-built static libs is a hard link error, not a warning.
         # Linking every .lib vcpkg produced for this triplet rather than guessing libraw's
-        # exact transitive dependency list (jpeg, zlib, lcms2, ...) by name.
-        & cl.exe /nologo /EHsc /O2 /MT "/I$includeDir" $dcrawCppPath "/Fe:$exePath" /link $libFiles.FullName
+        # exact transitive dependency list (jpeg, zlib, lcms2, ...) by name. /Fo sends the
+        # intermediate .obj into the same staging folder as the .exe -- without it, cl.exe
+        # defaults to dropping dcraw_emu.obj in whatever the script's working directory
+        # happens to be (the repo root, for both CI and a contributor running this by hand),
+        # an untracked build artifact `.gitignore`'s own `[Oo]bj/` rule doesn't catch since
+        # that only matches a directory literally named obj/Obj, not a loose *.obj file.
+        & cl.exe /nologo /EHsc /O2 /MT "/I$includeDir" "/Fo:$librawStage\" $dcrawCppPath "/Fe:$exePath" /link $libFiles.FullName
         if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
             throw "Compiling dcraw_emu.cpp failed with exit code $LASTEXITCODE"
         }
@@ -359,8 +364,11 @@ else {
         # max/min macros (on by default) rewrite "std::max(" into invalid syntax right
         # after "::" — a well-known, well-documented MSVC/Windows.h gotcha, fixed by this
         # one flag rather than touching the vendored source at all.
+        # /Fo sends the three intermediate .obj files into the same staging folder as the
+        # .exe, for the same reason as the LibRaw compile above -- without it they land
+        # loose in the repo root, uncovered by .gitignore's directory-only [Oo]bj/ rule.
         Write-Host "  cl.exe /nologo /EHsc /O2 /MT /DNOMINMAX $($includePaths -join ' ') $($sources -join ' ') /Fe:$exePath /link <$($libFiles.Count) .lib files>"
-        & cl.exe /nologo /EHsc /O2 /MT /DNOMINMAX $includePaths $sources "/Fe:$exePath" /link $libFiles.FullName
+        & cl.exe /nologo /EHsc /O2 /MT /DNOMINMAX $includePaths "/Fo:$faceEnhanceStage\" $sources "/Fe:$exePath" /link $libFiles.FullName
         if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
             throw "Compiling face_enhance.cpp failed with exit code $LASTEXITCODE"
         }
