@@ -119,5 +119,19 @@ SelAll
 Intersect
 SelPt
 List
+# --- FilletEdge with Radii=: a genuine variable-radius fillet, ramping the
+# radius from 1 (edge start) to 3 (edge end) along a box's own edge. Verified
+# against the closed-form volume for a linear radius ramp between two planar
+# faces: removed volume = (1-pi/4)*L*(r0^2+r0*r1+r1^2)/3
+# = (1-pi/4)*10*(1+3+9)/3 = 9.2994..., so 1000 - 9.2994 = 990.70.
+SelAll
+Hide
+Box 550,0,0 560,10,0 10
+FilletEdge
+Radii=0:1,1:3
+560,10,5
+Enter
+SelAll
+Volume
 SelNone
-@expect_objects 24
+@expect_objects 25

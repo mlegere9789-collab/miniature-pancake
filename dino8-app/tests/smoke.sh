@@ -573,9 +573,11 @@ flcheck "Area = 100 square" "the merged 5x10 + 5x10 planes have area 100"
 flcheck "ConnectSrf: extended both surfaces to their intersection curve" "ConnectSrf found the real SSX join line between two already-touching planes"
 flcheck "Intersect: 1 surface intersection curve.s., 0 curve/surface point.s." "Intersect (SSX) found the crossing line of two planes meeting at a right angle"
 flcheck "Intersect: 0 surface intersection curve.s., 1 curve/surface point.s." "Intersect (CSX) found where a line pierces a plane"
+flcheck "FilletEdge: edge 10 of object .* replaced with an exact fillet (variable radius: 1 at t=0, 3 at t=1 (exact))" "FilletEdge Radii= built a genuine variable-radius fillet via the exact planar closed form, not the constant-radius approximation"
+flcheck "Volume = 990.7 cubic" "a 10x10x10 box minus a variable r=1->3 edge fillet has volume 1000 - (1-pi/4)*10*(1+3+9)/3 = 990.70, matching the closed-form integral of a linear radius ramp"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
-flcheck "^ok   expect_objects 24" "fillet script produced the expected object count"
+flcheck "^ok   expect_objects 25" "fillet script produced the expected object count"
 
 # Adversarial fillets: tiny/at-the-limit/too-large radii relative to the
 # shortest adjacent edge, a huge-coordinate-scale box (a genuine kernel

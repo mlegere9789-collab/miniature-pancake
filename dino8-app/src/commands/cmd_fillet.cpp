@@ -26,6 +26,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <sstream>
 
 namespace dino8::app {
 
@@ -443,6 +444,78 @@ FilletBuild BuildFillet(const ON_NurbsSurface& a, const ON_NurbsSurface& b, cons
   return out;
 }
 
+// Genuinely exact variable-radius fillet between two PLANAR faces meeting
+// along `edge_curve` (any radius profile, not just linear). BuildFillet
+// above finds its spine by offsetting both surfaces by a single constant
+// amount (radius_at(0)) and intersecting the offsets - correct only when
+// the radius is actually constant, since a real variable-radius rolling
+// ball needs the ball's own offset to vary with position too. Confirmed by
+// testing: feeding BuildFillet a radius that varies by as little as 0.2 on
+// a 10-unit box edge (Radii=0:1.9,1:2.1) already produced a fillet whose
+// contact points sit measurably off the original planes (the "closest
+// point on the original surface" step finds a point AT r0 away, then
+// out.contact_a is placed at the DIFFERENT r(t) away in the same
+// direction, missing the plane by (r(t)-r0)), which is small enough to
+// pass BuildFillet's own max_gap bookkeeping silently but large enough to
+// fail the downstream watertight-mesh check every time.
+//
+// For two planes specifically this has an exact closed form instead of an
+// offset-and-intersect approximation: a plane's outward contact direction
+// (the unit vector from the rolling ball's centre to its tangent point on
+// that plane) is the same everywhere on the plane, independent of radius
+// or position along the edge - only the ball centre's distance from the
+// edge changes with r(t). So one constant-radius BuildFillet call at
+// r(0) is used ONLY to read off that pair of (validated, correctly
+// oriented) contact directions; from there every sample's ball centre,
+// and both contact points, are placed directly from r(t) and the edge
+// curve's own point at t, with no surface intersection at all.
+FilletBuild BuildPlanarVariableFillet(const ON_NurbsSurface& a, const ON_NurbsSurface& b, const ON_Curve& edge_curve, const std::function<double(double)>& radius_at, double tol, int samples = 32) {
+  FilletBuild out;
+  ON_Plane pa, pb;
+  const double plane_tol = std::max(tol * 10, 1e-4);
+  if (!a.IsPlanar(&pa, plane_tol) || !b.IsPlanar(&pb, plane_tol)) { out.error = "adjacent faces are not both planar"; return out; }
+  const double r0 = radius_at(0.0);
+  if (!(r0 > 0)) { out.error = "radius must be positive"; return out; }
+  // Bootstrap the two contact directions from a single constant-radius
+  // solve at r(0), which BuildFillet already gets right (validated by the
+  // existing FilletEdge/ChamferEdge tests) - a plane's normal doesn't
+  // depend on position, so these two directions are valid for every other
+  // sample along the edge too.
+  FilletBuild seed = BuildFillet(a, b, [r0](double) { return r0; }, tol);
+  if (!seed.ok || seed.spine_pts.empty()) { out.error = seed.ok ? "empty seed spine" : seed.error; return out; }
+  Vector3d dir_a = seed.contact_a.front() - seed.spine_pts.front();
+  Vector3d dir_b = seed.contact_b.front() - seed.spine_pts.front();
+  if (!dir_a.Unitize() || !dir_b.Unitize()) { out.error = "degenerate contact directions"; return out; }
+  Vector3d bis = dir_a + dir_b;
+  if (!bis.Unitize()) { out.error = "faces meet at a degenerate (near-180 deg) angle"; return out; }
+  const double cosb = ON_DotProduct(bis, dir_a);
+  if (std::fabs(cosb) < 1e-6) { out.error = "degenerate dihedral angle between the two faces"; return out; }
+  std::vector<HomogeneousRow> rows;
+  std::vector<double> params;
+  const ON_Interval de = edge_curve.Domain();
+  for (int i = 0; i <= samples; ++i) {
+    const double t = static_cast<double>(i) / samples;
+    const double r = radius_at(t);
+    if (!(r > 0)) { out.error = "radius must stay positive along the whole edge"; return out; }
+    const Point3d edge_pt = edge_curve.PointAt(de.ParameterAt(t));
+    const Point3d center = edge_pt - bis * (r / cosb);
+    const Point3d ca = center + dir_a * r, cb = center + dir_b * r;
+    rows.push_back(ArcRow(center, dir_a, dir_b, r));
+    params.push_back(t);
+    out.spine_pts.push_back(center);
+    out.contact_a.push_back(ca);
+    out.contact_b.push_back(cb);
+  }
+  if (!LoftRows(rows, params, 3, out.fillet)) { out.error = "failed to loft the variable-radius fillet arcs"; return out; }
+  std::vector<ON_3dPoint> pca, pcb;
+  for (size_t i = 0; i < out.contact_a.size(); ++i) { pca.push_back(out.contact_a[i]); pcb.push_back(out.contact_b[i]); }
+  out.contact_curve_a = InterpolateCubic(pca, params, false, 3);
+  out.contact_curve_b = InterpolateCubic(pcb, params, false, 3);
+  out.ok = true;
+  out.max_gap = 0;  // exact by construction: every contact point lies exactly on its plane and exactly r(t) from the spine
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Exact planar trim: replaces `face`'s outer loop portion adjacent to
 // `contact_uv` (a polyline in the face's own (u,v)) with that contact
@@ -634,7 +707,12 @@ int FindOuterTrimForEdge(const ON_Brep& b, int fi, int edge_index) {
 // input objects, or kNoObject on failure.
 // ---------------------------------------------------------------------------
 
-kernel::Mesh SweepTubeCutter(const std::vector<Point3d>& spine, double radius) {
+// `radii` gives one cutter-tube radius per spine sample (same size as
+// `spine`) so a variable-radius fillet's mesh fallback still cuts a tube
+// that matches the actual (varying) radius at each point along the edge,
+// instead of a single uniform tube that would either gouge past a small
+// end or leave a gap at a large one.
+kernel::Mesh SweepTubeCutter(const std::vector<Point3d>& spine, const std::vector<double>& radii) {
   std::vector<std::vector<Point3d>> rings;
   const int seg = 16;
   for (size_t i = 0; i < spine.size(); ++i) {
@@ -644,10 +722,11 @@ kernel::Mesh SweepTubeCutter(const std::vector<Point3d>& spine, double radius) {
     if (n.Length() < 1e-6) n = ON_CrossProduct(t, Vector3d(0, 1, 0));
     n.Unitize();
     Vector3d bnr = ON_CrossProduct(t, n);
+    const double radius = (i < radii.size() ? radii[i] : (radii.empty() ? 0.0 : radii.back())) * 1.05;
     std::vector<Point3d> ring;
     for (int k = 0; k < seg; ++k) {
       const double ang = 2 * ON_PI * k / seg;
-      ring.push_back(spine[i] + (n * std::cos(ang) + bnr * std::sin(ang)) * (radius * 1.05));
+      ring.push_back(spine[i] + (n * std::cos(ang) + bnr * std::sin(ang)) * radius);
     }
     rings.push_back(ring);
   }
@@ -877,15 +956,56 @@ class FilletEdgeCommand : public Command {
   enum class Mode { Fillet, Chamfer, Blend };
   explicit FilletEdgeCommand(Mode m) : mode_(m) {}
   void Begin(CommandContext&) override {
-    if (mode_ != Mode::Blend) options = {{"Radius", FormatNumber(radius_), {}, true, false}};
+    if (mode_ != Mode::Blend) {
+      options = {{"Radius", FormatNumber(radius_), {}, true, false}};
+      // Variable-radius handles: "t0:r0,t1:r1,..." with t in [0,1] along the
+      // edge (0 = edge start, 1 = edge end), piecewise-linearly interpolated
+      // between handles and held constant past the first/last one. Setting
+      // a plain Radius clears this and reverts to a single constant radius.
+      options.push_back({"Radii", "", {}, false, false});
+    }
     if (mode_ == Mode::Blend) options = {{"Continuity", "Tangency", {"Tangency", "Curvature"}, false, false}};
     options.push_back({"Preview", "No", {"Yes", "No"}, false, true});
     WantPoint("Click an edge to " + std::string(mode_ == Mode::Fillet ? "fillet" : mode_ == Mode::Chamfer ? "chamfer" : "blend") + " (Enter when done)");
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
-    if (n == "Radius") radius_ = std::atof(v.c_str());
+    if (n == "Radius") { radius_ = std::atof(v.c_str()); radii_.clear(); }
+    if (n == "Radii") radii_ = ParseRadiusHandles(v);
     if (n == "Continuity") curvature_ = (v == "Curvature");
     if (n == "Preview") preview_ = (v == "Yes");
+  }
+  // Parses "t0:r0,t1:r1,..." into sorted, [0,1]-clamped (t, radius) pairs.
+  // Malformed or empty tokens are skipped; a parse that yields nothing
+  // leaves variable-radius mode off (falls back to the constant Radius).
+  static std::vector<std::pair<double, double>> ParseRadiusHandles(const std::string& text) {
+    std::vector<std::pair<double, double>> handles;
+    std::stringstream ss(text);
+    std::string tok;
+    while (std::getline(ss, tok, ',')) {
+      const size_t colon = tok.find(':');
+      if (colon == std::string::npos) continue;
+      const double t = std::atof(tok.substr(0, colon).c_str());
+      const double r = std::atof(tok.substr(colon + 1).c_str());
+      if (!(r > 0)) continue;
+      handles.emplace_back(Clamp(t, 0.0, 1.0), r);
+    }
+    std::sort(handles.begin(), handles.end());
+    return handles;
+  }
+  // Piecewise-linear radius at spine-fraction t in [0,1]; a single constant
+  // radius when no Radii handles are set (t clamped past the ends).
+  double RadiusAt(double t) const {
+    if (radii_.empty()) return radius_;
+    if (t <= radii_.front().first) return radii_.front().second;
+    if (t >= radii_.back().first) return radii_.back().second;
+    for (size_t i = 0; i + 1 < radii_.size(); ++i) {
+      if (t >= radii_[i].first && t <= radii_[i + 1].first) {
+        const double span = radii_[i + 1].first - radii_[i].first;
+        const double f = span > 1e-12 ? (t - radii_[i].first) / span : 0.0;
+        return radii_[i].second + (radii_[i + 1].second - radii_[i].second) * f;
+      }
+    }
+    return radii_.back().second;
   }
   void OnEnter(CommandContext&) override { Finish(); }
   void OnPoint(CommandContext& ctx, Point3d p) override {
@@ -909,7 +1029,8 @@ class FilletEdgeCommand : public Command {
     const std::string label = mode_ == Mode::Fillet ? "FilletEdge" : mode_ == Mode::Chamfer ? "ChamferEdge" : "BlendEdge";
     ON_NurbsSurface built;
     std::vector<Point3d> spine;
-    double radius_for_tube = radius_;
+    std::vector<double> radii_for_tube;  // one radius per spine sample, for the mesh-fallback tube cutter
+    ON_NurbsCurve ca, cb;                // contact curves, kept for exact trimming below
     bool ok = false;
     std::string err;
     if (mode_ == Mode::Blend) {
@@ -925,13 +1046,37 @@ class FilletEdgeCommand : public Command {
       ok = BuildBlendSurface(ec, *sa, uv_a_fn, ec, *sb, uv_b_fn, curvature_, 24, built);
       if (!ok) err = "could not build the blend surface";
     } else {
-      auto radius_at = [&](double) { return radius_; };
-      FilletBuild fb = BuildFillet(*sa, *sb, radius_at, tol);
+      // radii_ (from the Radii= option) makes this a genuine variable-radius
+      // fillet/chamfer, with radius_at mapping a fraction along the edge to
+      // a radius via RadiusAt's piecewise-linear interpolation between
+      // handles. When both adjacent faces are planar (the common box/
+      // polysurface-corner case this command's exact trim already targets),
+      // BuildPlanarVariableFillet gives a real closed-form exact result for
+      // any radius profile; otherwise fall back to BuildFillet, whose
+      // single-offset construction is only exact when the radius is
+      // constant but still gives a usable (approximate) surface for a
+      // varying one on curved adjacent faces.
+      auto radius_at = [&](double t) { return RadiusAt(t); };
+      const bool variable = !radii_.empty();
+      variable_engine_used_ = false;
+      FilletBuild fb;
+      if (variable) {
+        ON_NurbsCurve ec;
+        edge.GetNurbForm(ec);
+        fb = BuildPlanarVariableFillet(*sa, *sb, ec, radius_at, tol);
+        variable_engine_used_ = fb.ok;
+      }
+      if (!fb.ok) fb = BuildFillet(*sa, *sb, radius_at, tol);
       ok = fb.ok;
       err = fb.error;
       if (ok) {
         built = mode_ == Mode::Fillet ? fb.fillet : FilletTwoSurfacesCommand::RuledBetween(fb.contact_curve_a, fb.contact_curve_b);
         spine = fb.spine_pts;
+        ca = fb.contact_curve_a;
+        cb = fb.contact_curve_b;
+        for (size_t i = 0; i < fb.spine_pts.size() && i < fb.contact_a.size(); ++i) {
+          radii_for_tube.push_back(fb.spine_pts[i].DistanceTo(fb.contact_a[i]));
+        }
       }
     }
     if (!ok) { ctx.Warn(label + ": " + err); return; }
@@ -952,14 +1097,11 @@ class FilletEdgeCommand : public Command {
     if (mode_ != Mode::Blend) {
       const int trim_idx0 = FindOuterTrimForEdge(*b, fi0, pick.edge);
       const int trim_idx1 = FindOuterTrimForEdge(*b, fi1, pick.edge);
-      ON_NurbsCurve ca, cb;
-      {
-        const double r0 = radius_;
-        auto radius_at = [&](double) { return r0; };
-        FilletBuild fb = BuildFillet(*sa, *sb, radius_at, tol);
-        ca = fb.contact_curve_a;
-        cb = fb.contact_curve_b;
-      }
+      // ca/cb (the fillet's own contact curves) were already computed once
+      // above, from the same radius_at used to build `built` -- reusing
+      // them here instead of rebuilding keeps the trim boundary and the
+      // fillet surface consistent for a variable radius, and avoids a
+      // second, redundant SSX solve.
       std::optional<ON_Brep> ra, rb;
       if (trim_idx0 >= 0) { ra = TrimPlanarFace(*b, fi0, trim_idx0, ca, false, tol); if (!ra) ra = TrimPlanarFace(*b, fi0, trim_idx0, ca, true, tol); }
       if (trim_idx1 >= 0) { rb = TrimPlanarFace(*b, fi1, trim_idx1, cb, false, tol); if (!rb) rb = TrimPlanarFace(*b, fi1, trim_idx1, cb, true, tol); }
@@ -1069,7 +1211,7 @@ class FilletEdgeCommand : public Command {
           orig->surface.reset();
           orig->InvalidateDisplay();
         }
-        ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) + " replaced with an exact " + (mode_ == Mode::Fillet ? "fillet" : "chamfer") + " (radius " + FormatNumber(radius_) + ")");
+        ctx.Print(label + ": edge " + std::to_string(pick.edge) + " of object " + std::to_string(pick.id) + " replaced with an exact " + (mode_ == Mode::Fillet ? "fillet" : "chamfer") + " (" + RadiusDescription() + ")");
         return;
       }
       // Exact trim unavailable - either a non-planar adjacent face, or (see
@@ -1078,7 +1220,7 @@ class FilletEdgeCommand : public Command {
       // fallback either way.
       std::optional<kernel::Mesh> obj_mesh = ObjectMesh(*o, tol);
       if (obj_mesh && !spine.empty()) {
-        kernel::Mesh cutter = SweepTubeCutter(spine, radius_for_tube);
+        kernel::Mesh cutter = SweepTubeCutter(spine, radii_for_tube);
         try {
           kernel::Mesh remainder_mesh = kernel::BooleanCombine(*obj_mesh, cutter, kernel::BooleanOp::Difference);
           kernel::NurbsSurface ks;
@@ -1119,10 +1261,24 @@ class FilletEdgeCommand : public Command {
   }
 
  private:
+  // Printable summary of the active radius profile: a single "radius N" for
+  // the constant case, or every handle for a variable-radius run so the
+  // command history records exactly what was built (matching how FilletSrf
+  // reports its own start/end radius for the two-point variable case).
+  std::string RadiusDescription() const {
+    if (radii_.empty()) return "radius " + FormatNumber(radius_);
+    std::string s = "variable radius:";
+    for (size_t i = 0; i < radii_.size(); ++i) s += (i ? ", " : " ") + FormatNumber(radii_[i].second) + " at t=" + FormatNumber(radii_[i].first);
+    s += variable_engine_used_ ? " (exact)" : " (approximate: adjacent faces are not both planar, so the exact closed form does not apply)";
+    return s;
+  }
+
   Mode mode_;
   double radius_ = 2;
+  std::vector<std::pair<double, double>> radii_;  // (t in [0,1], radius) handles; empty = constant radius_
   bool curvature_ = false;
   bool preview_ = false;
+  bool variable_engine_used_ = false;  // set by Run(): true when BuildPlanarVariableFillet (the exact closed form) built the last variable-radius result
 };
 
 // ---------------------------------------------------------------------------
