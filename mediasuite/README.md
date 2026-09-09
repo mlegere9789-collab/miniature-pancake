@@ -7,8 +7,10 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–18 of 18, complete, plus a self-contained installer.** Every
-> conversion module from the brief is in place, every tool has a Custom preset backed by
+> **Status: build steps 1–18 of 18, plus a self-contained installer** — save for step 9's
+> unit and time converters, catalogued but with no engine or page behind them yet (see
+> [What is done](#what-is-done) and [Build order](#build-order)). Every conversion module
+> from the brief is in place, every tool has a Custom preset backed by
 > named, savable option sets, jobs can optionally upload their output to Google Drive, and
 > the format catalogue has been audited against FreeConvert's format support. The
 > installer now bundles all 15 third-party tools automatically — every one CI actually
@@ -286,7 +288,8 @@ Convert.
   mnemonic would have rendered as a literal underscore instead of working
 - **Final build** — version set to `1.0.0` in `Directory.Build.props` and kept in step in
   `installer/MediaSuite.iss`, so the installer's file name, `AppVersion` and the running
-  app's own assembly version all agree; all 18 build steps from the brief are done
+  app's own assembly version all agree; all 18 build steps from the brief are done, save
+  for step 9's unit and time converters (catalogued, no engine or page yet — see above)
 
 ## Settings and presets
 
