@@ -192,26 +192,46 @@ case documented above.
    set. Both are real, independently verified fixes, not workarounds.
 2. **Still open, pre-existing, and NOT specific to periodic edges**: even
    after both of the above, the cylinder-rim case above still fails.
-   Diagnosis: `SweepTubeCutter`'s cutter tube is deliberately built 5%
-   oversized (`radius * 1.05`) so the boolean difference gouges past the
-   fillet's own analytic edges, but nothing then re-trims the resulting
-   cavity boundary back down to those edges - the code simply hands
-   `remainder_mesh` (the oversized cavity) and `fillet_mesh` (the
-   analytic fillet's own tessellation) to `MergeAndWeld` and expects
-   their boundaries to coincide within tolerance. They do not: a debug
-   instrumentation pass measured `MergeAndWeld` collapsing only ~10 of
-   the mesh pair's combined ~10,600 vertices - essentially no welding at
-   all, not a near-miss. This is a real gap in the mesh-fallback path
-   itself (the oversized-cutter-vs-analytic-ribbon boundary mismatch),
-   independent of the periodic-spine issue fixed above, and it is why no
-   existing test has ever exercised this fallback successfully: every
-   prior fillet test's adjacent faces are both planar, which always takes
-   the exact B-rep trim path instead and never reaches this code.
+   Diagnosis: `SweepTubeCutter`'s cutter tube was originally an
+   independently-swept, deliberately oversized (`radius * 1.05`) circular
+   tube unrelated to the fillet's own geometry, so the boolean difference
+   gouged past the fillet's own analytic edges with nothing to re-trim the
+   resulting cavity back down to them - a debug instrumentation pass
+   measured `MergeAndWeld` collapsing only ~10 of the mesh pair's combined
+   ~10,600 vertices, essentially no welding at all. Rebuilt
+   `SweepTubeCutter` to cut a *wedge* instead (triangular cross-section
+   `(spine, contact_a, contact_b)` at each sample, using the exact same
+   contact points the fillet surface itself was lofted from, not an
+   independently-chosen radius) - a real, verified improvement: the
+   cutter's own volume is now sane and correctly signed (checked directly:
+   the ring winding `(spine, contact_a, contact_b)` gives a positive
+   volume; the reversed order gives -14.35 on the same test case, a wrong-
+   but-still-"closed"-manifold result that `IsClosedManifold()` alone
+   cannot catch - only checking the actual volume did), and welding
+   improved roughly 20x (from ~10 to ~270 of ~8,700 vertices). Still not
+   enough to close the mesh, and widening the weld tolerance to several
+   times the fillet's own mesh chord tolerance barely moved that number
+   (270 to ~370) - ruling out "just a tolerance problem." Root cause:
+   `remainder_mesh`'s cut boundary (Manifold's own re-triangulation of the
+   cutter/object intersection) and `fillet_mesh`'s boundary
+   (`TessellateGridAdaptive`'s independent sampling of the same analytic
+   surface) both approximate `contact_curve_a`/`contact_curve_b`, but as
+   two separately-generated triangulations they don't share vertices
+   pointwise even when their underlying curves are identical - this is a
+   real, deeper architectural mismatch (non-conforming meshes at a shared
+   boundary), not something a larger weld tolerance can safely paper over
+   without risking incorrect merges elsewhere in the mesh.
 
-**What would actually fix the remaining gap:** the mesh fallback's cutter
-needs to be built from the fillet's own analytic contact curves (the same
-`contact_curve_a`/`contact_curve_b` the exact-trim path already computes),
-not an independently-swept, deliberately oversized tube - a genuinely
-separate, larger piece of work than the periodic-spine fix above, and
-honestly out of scope for this pass. Filed here rather than silently
-left unmentioned, per this file's own standard.
+**What would actually fix the remaining gap:** the two triangulations
+need to be made *conforming* at their shared boundary - either by
+constraining `TessellateGridAdaptive`'s boundary row to the exact same
+sample points the cutter's own contact curves use (so Manifold's boolean
+re-triangulation and the fillet's own tessellation start from an
+identical polyline), or by inserting a proper constrained/conforming
+remesh pass after the boolean. Both are a materially larger rewrite than
+either fix already landed here, and honestly out of scope for this pass.
+Filed here rather than silently left unmentioned, per this file's own
+standard - and the wedge-cutter rewrite is kept regardless, since it is a
+real, independently verified improvement (correct cavity volume/shape)
+over the old oversized-tube approach even though it alone does not close
+the remaining gap.

@@ -752,12 +752,24 @@ int FindOuterTrimForEdge(const ON_Brep& b, int fi, int edge_index) {
 // input objects, or kNoObject on failure.
 // ---------------------------------------------------------------------------
 
-// `radii` gives one cutter-tube radius per spine sample (same size as
-// `spine`) so a variable-radius fillet's mesh fallback still cuts a tube
-// that matches the actual (varying) radius at each point along the edge,
-// instead of a single uniform tube that would either gouge past a small
-// end or leave a gap at a large one.
-kernel::Mesh SweepTubeCutter(const std::vector<Point3d>& spine_in, const std::vector<double>& radii, bool periodic) {
+// Builds the mesh-fallback cutter as a wedge swept along the spine, with a
+// triangular (spine, contact_b, contact_a) cross-section at each sample -
+// not an independently-swept circular tube. An earlier, oversized
+// (radius * 1.05) circular-tube version gouged past the fillet's own
+// contact curves without anything re-trimming the cavity back down to
+// them, so the caller's later MergeAndWeld between the cut cavity and the
+// analytic fillet ribbon had almost nothing to actually weld (measured: 10
+// of ~10,600 vertices on a real test case) - a real, previously-hidden
+// bug, not something a bigger weld tolerance should paper over. Using the
+// wedge's own two known rail edges - spine-to-contact_a (running along
+// face A) and spine-to-contact_b (running along face B) - as the cutter's
+// side faces means the cavity this leaves behind is bounded EXACTLY by
+// contact_curve_a and contact_curve_b, the very same curves the fillet
+// ribbon itself is built from, so the two meshes' boundaries coincide
+// pointwise (up to sharing the same t-parameterization) rather than
+// approximately.
+kernel::Mesh SweepTubeCutter(const std::vector<Point3d>& spine_in, const std::vector<Point3d>& contact_a_in,
+                              const std::vector<Point3d>& contact_b_in, bool periodic) {
   // A spine sampled from a closed (periodic) edge curve - e.g. a solid
   // cylinder's own flat-top rim, or the rim where a bore meets a plate -
   // loops back on its own start point. LoftClosedRings() always caps both
@@ -773,27 +785,21 @@ kernel::Mesh SweepTubeCutter(const std::vector<Point3d>& spine_in, const std::ve
   // own loop closure, so a periodic spine's two end samples routinely land
   // a full ring-spacing or two apart, not within any tight numeric
   // tolerance of each other).
-  std::vector<Point3d> spine = spine_in;
+  std::vector<Point3d> spine = spine_in, ca = contact_a_in, cb = contact_b_in;
   periodic = periodic && spine.size() >= 3;
-  if (periodic) spine.pop_back();  // the closing sample duplicates the first ring's location
+  if (periodic) { spine.pop_back(); ca.pop_back(); cb.pop_back(); }  // the closing sample duplicates the first ring's location
+  const size_t n = std::min({spine.size(), ca.size(), cb.size()});
   std::vector<std::vector<Point3d>> rings;
-  const int seg = 16;
-  for (size_t i = 0; i < spine.size(); ++i) {
-    Vector3d t = periodic ? spine[(i + 1) % spine.size()] - spine[(i + spine.size() - 1) % spine.size()]
-                           : (i + 1 < spine.size() ? spine[i + 1] - spine[i] : spine[i] - spine[i - 1]);
-    if (!t.Unitize()) t = Vector3d(0, 0, 1);
-    Vector3d n = ON_CrossProduct(t, Vector3d(0, 0, 1));
-    if (n.Length() < 1e-6) n = ON_CrossProduct(t, Vector3d(0, 1, 0));
-    n.Unitize();
-    Vector3d bnr = ON_CrossProduct(t, n);
-    const double radius = (i < radii.size() ? radii[i] : (radii.empty() ? 0.0 : radii.back())) * 1.05;
-    std::vector<Point3d> ring;
-    for (int k = 0; k < seg; ++k) {
-      const double ang = 2 * ON_PI * k / seg;
-      ring.push_back(spine[i] + (n * std::cos(ang) + bnr * std::sin(ang)) * radius);
-    }
-    rings.push_back(ring);
-  }
+  rings.reserve(n);
+  // Winding: (spine, contact_a, contact_b) - verified empirically to match
+  // LoftClosedRings()/LoftPeriodicRings()' "CCW as seen from ahead along
+  // the loft direction" convention for a wedge built this way. A wrong
+  // order here still produces a topologically closed mesh, just an
+  // inside-out one - confirmed on a real cylinder-rim FilletEdge case: the
+  // (spine, contact_b, contact_a) order gave a closed cutter with a
+  // negative volume (-14.35 on the test case), not assumed correct just
+  // because IsClosedManifold() passed.
+  for (size_t i = 0; i < n; ++i) rings.push_back({spine[i], ca[i], cb[i]});
   return periodic ? kernel::Mesh::LoftPeriodicRings(rings) : kernel::Mesh::LoftClosedRings(rings);
 }
 
@@ -1061,7 +1067,7 @@ class FilletEdgeCommand : public Command {
     const std::string label = mode_ == Mode::Fillet ? "FilletEdge" : mode_ == Mode::Chamfer ? "ChamferEdge" : "BlendEdge";
     ON_NurbsSurface built;
     std::vector<Point3d> spine;
-    std::vector<double> radii_for_tube;  // one radius per spine sample, for the mesh-fallback tube cutter
+    std::vector<Point3d> contact_pts_a, contact_pts_b;  // one contact point per spine sample, for the mesh-fallback wedge cutter
     ON_NurbsCurve ca, cb;                // contact curves, kept for exact trimming below
     bool ok = false;
     std::string err;
@@ -1112,9 +1118,8 @@ class FilletEdgeCommand : public Command {
         spine = fb.spine_pts;
         ca = fb.contact_curve_a;
         cb = fb.contact_curve_b;
-        for (size_t i = 0; i < fb.spine_pts.size() && i < fb.contact_a.size(); ++i) {
-          radii_for_tube.push_back(fb.spine_pts[i].DistanceTo(fb.contact_a[i]));
-        }
+        contact_pts_a = fb.contact_a;
+        contact_pts_b = fb.contact_b;
       }
     }
     if (!ok) { ctx.Warn(label + ": " + err); return; }
@@ -1258,7 +1263,7 @@ class FilletEdgeCommand : public Command {
       // fallback either way.
       std::optional<kernel::Mesh> obj_mesh = ObjectMesh(*o, tol);
       if (obj_mesh && !spine.empty()) {
-        kernel::Mesh cutter = SweepTubeCutter(spine, radii_for_tube, edge.IsClosed());
+        kernel::Mesh cutter = SweepTubeCutter(spine, contact_pts_a, contact_pts_b, edge.IsClosed());
         try {
           kernel::Mesh remainder_mesh = kernel::BooleanCombine(*obj_mesh, cutter, kernel::BooleanOp::Difference);
           kernel::NurbsSurface ks;
