@@ -119,7 +119,7 @@ public static class ToolManifest
             "Real-ESRGAN",
             "realesrgan",
             new[] { "realesrgan-ncnn-vulkan.exe", "realesrgan.exe" },
-            "AI photo upscaling at 2x/4x/8x, CUDA-accelerated with a CPU fallback.",
+            "AI photo upscaling at 2x/4x/8x, Vulkan-accelerated on any GPU with a CPU fallback.",
             "BSD-3-Clause",
             "https://github.com/xinntao/Real-ESRGAN/releases"),
         new ToolDescriptor(
