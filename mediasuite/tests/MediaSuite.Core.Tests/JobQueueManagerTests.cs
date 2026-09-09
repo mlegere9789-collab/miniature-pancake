@@ -192,11 +192,23 @@ public class JobQueueManagerTests : IDisposable
     public async Task Cancelling_a_running_job_stops_it_and_leaves_the_others_running()
     {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var queue = CreateQueue(new EngineRegistry().Register(FakeEngine.Gated(gate)), maxConcurrency: 2);
+        var engine = FakeEngine.Gated(gate);
+        using var queue = CreateQueue(new EngineRegistry().Register(engine), maxConcurrency: 2);
 
         var doomed = queue.Enqueue(Spec());
         var survivor = queue.Enqueue(Spec());
         await WaitUntil(() => queue.RunningCount == 2);
+
+        // Wait for the engines themselves to be in flight, not just RunningCount: the
+        // queue books a job as running (reserves its slot) the moment Schedule() hands
+        // it to the thread pool, which is earlier than MarkRunning() actually flipping
+        // the job's own Status -- see the identical comment on
+        // Never_runs_more_jobs_at_once_than_the_concurrency_limit above. Asserting
+        // survivor.Status right after RunningCount == 2 (as this test used to) was a
+        // real, if narrow, race: on a loaded CI runner, survivor's own RunJobAsync
+        // continuation could still be waiting for a thread-pool slot, so its Status
+        // read back Pending instead of Running -- a genuine CI failure, not a fluke.
+        await WaitUntil(() => engine.ActiveCount == 2);
 
         queue.Cancel(doomed);
         await WaitUntil(() => doomed.Status == JobStatus.Canceled);
