@@ -319,6 +319,32 @@ else
   echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the HATCH fixture check"
   fail=1
 fi
+# DWG SPLINE: built via LibreDWG's own dwg_add_SPLINE (marked "Experimental.
+# Does not work yet properly" in dwg_api.h - confirmed by hand it only ever
+# populates fit_pts, never real NURBS control points), so this exercises
+# ImportDwg's DWG_TYPE_SPLINE fit-points fallback path (the same fallback
+# DXF SPLINE import already had), not its primary control-point path.
+if [ -x "$DWGBIN" ]; then
+  "$DWGBIN" "$TMP/dwg_spline_fixture.dwg" spline >/dev/null || { echo "FAIL: dwg_fixture_gen failed to write the SPLINE fixture"; exit 1; }
+  cat > "$TMP/dwg_spline_script.txt" <<EOS
+Open $TMP/dwg_spline_fixture.dwg
+SelAll
+List
+EOS
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+    DWS="$("$BIN" --smoke 30 --script "$TMP/dwg_spline_script.txt" 2>&1)" || { echo "$DWS"; echo "FAIL: DWG SPLINE script exited non-zero"; exit 1; }
+  else
+    DWS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dwg_spline_script.txt" 2>&1)" || { echo "$DWS"; echo "FAIL: DWG SPLINE script exited non-zero"; exit 1; }
+  fi
+  dwscheck() { if echo "$DWS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  dwscheck "DWG: 1 curve, 0 points" "ImportDwg read the fit-point-only SPLINE entity"
+  dwscheck "degree 1, 4 control points, non-rational, open" "the SPLINE's fit points became an exact polyline through them"
+  dwscheck "CV\[0\] 0,0,0" "the polyline starts at the SPLINE's first real fit point"
+  dwscheck "CV\[3\] 15,5,0" "...and ends at its last, with all 4 fit points preserved exactly"
+else
+  echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the SPLINE fixture check"
+  fail=1
+fi
 # Surfaces: Pipe, OffsetSrf, Shell, Sweep1/2, NetworkSrf, Patch, ExtrudeCrvAlongCrv,
 # ExtrudeCrvTapered, Project, Pull (see surface_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then

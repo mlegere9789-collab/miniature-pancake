@@ -108,14 +108,67 @@ write_hatch_fixture (const char *path)
   return 0;
 }
 
+/* A single SPLINE entity built via LibreDWG's own dwg_add_SPLINE - marked
+ * "Experimental. Does not work yet properly" in dwg_api.h, and indeed: it
+ * only ever populates fit_pts (num_ctrl_pts stays 0), never real NURBS
+ * control points, confirmed by hand before relying on it here. So this
+ * fixture exercises ImportDwg's DWG_TYPE_SPLINE fit-points fallback path
+ * (WalkDwgEntities in src/io/FileExchange.cpp) - the same fallback DXF
+ * SPLINE import already had for fit-point-only splines - not its
+ * primary real-control-point path (which no available fixture generator
+ * can produce; the control-point path is exercised indirectly by every
+ * curve this app itself writes as a NURBS, and is a straightforward,
+ * directly-inspectable translation of the same struct fields DXF's own
+ * SPLINE cvs/knots/weights handling already reads).
+ */
+static int
+write_spline_fixture (const char *path)
+{
+  Dwg_Data *dwg = dwg_new_Document (R_2000, 0, 0);
+  if (!dwg)
+    {
+      fprintf (stderr, "dwg_new_Document failed\n");
+      return 1;
+    }
+  Dwg_Object *mspace = dwg_model_space_object (dwg);
+  if (!mspace)
+    {
+      fprintf (stderr, "dwg_model_space_object failed\n");
+      return 1;
+    }
+  Dwg_Object_BLOCK_HEADER *hdr = mspace->tio.object->tio.BLOCK_HEADER;
+
+  const dwg_point_3d fit[4] = { { 0.0, 0.0, 0.0 }, { 5.0, 10.0, 0.0 }, { 10.0, -5.0, 0.0 }, { 15.0, 5.0, 0.0 } };
+  const dwg_point_3d tan1 = { 1.0, 0.0, 0.0 };
+  const dwg_point_3d tan2 = { 1.0, 0.0, 0.0 };
+  Dwg_Entity_SPLINE *spline = dwg_add_SPLINE (hdr, 4, fit, &tan1, &tan2);
+  if (!spline)
+    {
+      fprintf (stderr, "dwg_add_SPLINE failed\n");
+      return 1;
+    }
+
+  const int werr = dwg_write_file (path, dwg);
+  dwg_free (dwg);
+  if (werr >= DWG_ERR_CRITICAL)
+    {
+      fprintf (stderr, "dwg_write_file failed: 0x%x\n", werr);
+      return 1;
+    }
+  printf ("wrote %s\n", path);
+  return 0;
+}
+
 int
 main (int argc, char **argv)
 {
   if (argc == 3 && strcmp (argv[2], "hatch") == 0)
     return write_hatch_fixture (argv[1]);
+  if (argc == 3 && strcmp (argv[2], "spline") == 0)
+    return write_spline_fixture (argv[1]);
   if (argc != 2)
     {
-      fprintf (stderr, "usage: %s <output.dwg> [hatch]\n", argv[0]);
+      fprintf (stderr, "usage: %s <output.dwg> [hatch|spline]\n", argv[0]);
       return 2;
     }
 

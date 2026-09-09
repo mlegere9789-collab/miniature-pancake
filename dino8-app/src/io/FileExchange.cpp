@@ -1304,6 +1304,45 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
         ++stats.curves;
         break;
       }
+      case DWG_TYPE_SPLINE: {
+        Dwg_Entity_SPLINE* e = ent->tio.SPLINE;
+        kernel::NurbsCurve k;
+        bool ok = false;
+        if (e->num_ctrl_pts >= 2 && e->ctrl_pts) {
+          const int degree = std::max(1, static_cast<int>(e->degree));
+          const int order = std::min(degree + 1, static_cast<int>(e->num_ctrl_pts));
+          const bool rational = e->weighted != 0;
+          ON_NurbsCurve nc;
+          nc.Create(3, rational, order, static_cast<int>(e->num_ctrl_pts));
+          for (unsigned i = 0; i < e->num_ctrl_pts; ++i) {
+            const Dwg_SPLINE_control_point& cp = e->ctrl_pts[i];
+            if (rational) nc.SetCV(static_cast<int>(i), ON_4dPoint(cp.x * cp.w, cp.y * cp.w, cp.z * cp.w, cp.w));
+            else nc.SetCV(static_cast<int>(i), ON_3dPoint(cp.x, cp.y, cp.z));
+          }
+          if (e->num_knots == static_cast<unsigned>(nc.KnotCount()) && e->knots) {
+            for (int i = 0; i < nc.KnotCount(); ++i) nc.SetKnot(i, e->knots[i]);
+          } else {
+            nc.MakeClampedUniformKnotVector();
+          }
+          ok = CurveFromON(nc, k);
+        } else if (e->num_fit_pts >= 2 && e->fit_pts) {
+          // No real control-point data (some writers - including LibreDWG's
+          // own dwg_add_SPLINE - only ever emit fit points, matching DXF
+          // SPLINE import's identical fallback): approximate with a
+          // polyline through the fit points rather than skip entirely.
+          ON_Polyline pl;
+          for (unsigned i = 0; i < e->num_fit_pts; ++i) pl.Append(Point3d(e->fit_pts[i].x, e->fit_pts[i].y, e->fit_pts[i].z));
+          ok = CurveFromON(ON_PolylineCurve(pl), k);
+        }
+        if (!ok) { ++stats.skipped; break; }
+        k.raw().Transform(xf);
+        SceneObject so = SceneObject::MakeCurve(k);
+        so.layer_index = DwgLayerFor(doc, layer_map, ent, stats);
+        ApplyDwgColor(so, ent->color);
+        doc.Add(std::move(so));
+        ++stats.curves;
+        break;
+      }
       case DWG_TYPE_TEXT: {
         Dwg_Entity_TEXT* e = ent->tio.TEXT;
         if (!e->text_value || !*e->text_value || e->height <= 0) { ++stats.skipped; break; }
