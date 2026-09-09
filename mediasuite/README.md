@@ -341,7 +341,9 @@ SDK, Inno Setup 6 (`iscc.exe`) — the script falls back to Inno Setup's default
 location if `iscc.exe` is not already on PATH — and, for the full tool set, an MSVC +
 vcpkg toolchain and Chocolatey (both already present on a normal Windows 11 dev machine
 with Visual Studio installed; a local build without them still succeeds, just without
-LibRaw and Calibre, the two tools that specifically need them).
+LibRaw and Face Enhance — the two tools compiled from source against MSVC + vcpkg — and
+without Calibre, which installs via Chocolatey instead. LibreOffice needs neither: it
+installs from a plain MSI via `msiexec`, already built into Windows).
 
 Unlike the app itself, this is something the CI in this repository can actually verify
 end to end rather than only compile-check: `.github/workflows/mediasuite-ci.yml`'s
