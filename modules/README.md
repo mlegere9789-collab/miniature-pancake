@@ -25,7 +25,7 @@ log = get_logger("deal_alert_bot")          # must match this folder's name
 
 def run():
     log.status("running", "Scanning for deals")
-    api_key = config.require("TELEGRAM_BOT_TOKEN")   # never hardcode secrets
+    webhook = config.require("DISCORD_WEBHOOK_URL")   # never hardcode secrets
     # ... do the work ...
     log.activity("Scanned 200 listings, found 3 deals")
     log.earning(4.20, source="amazon", description="Affiliate commission")
