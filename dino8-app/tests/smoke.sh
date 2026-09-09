@@ -526,6 +526,11 @@ if echo "$A2" | grep -A1 "^history: Command: SelDim$" | grep -q "^history: 70 ob
 else
   echo "FAIL SelDim finds DimArea/DimCurveLength"; fail=1
 fi
+if echo "$A2" | grep -A1 "^history: Command: SelAnnotationStyle$" | grep -q "^history: 70 object(s) selected$"; then
+  echo "ok   SelAnnotationStyle/SelFontUse match the generic Annotation tag instead of a stale hardcoded per-kind list (same bug class as SelDim)"
+else
+  echo "FAIL SelAnnotationStyle/SelFontUse match the generic Annotation tag"; fail=1
+fi
 a2check "Centermark: 1 center mark(s)" "Centermark marked the circle"
 a2check "RevCloud: 26 arc(s), closed curve" "RevCloud built a closed cloud of 26 arcs around the 30x20 rectangle"
 a2check "TextProperties: 1 annotation(s) updated to \"World\", height 5" "TextProperties rebuilt the text with new content and height"

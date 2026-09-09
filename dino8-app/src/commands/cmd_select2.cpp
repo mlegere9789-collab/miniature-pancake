@@ -838,9 +838,17 @@ void RegisterSelect2Commands(CommandEngine& e) {
         ctx.Doc().SelectWhere([&](const SceneObject& o) { return Selectable(ctx, o) && Lower(o.material_name) == Lower(name); }, true);
         Report(ctx);
       }));
-  Reg(e, "SelFontUse", SelGroupNamed({"Text", "TextObject", "Leader", "DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter"}), CommandStatus::Implemented,
+  // Every TagAnnotation()-tagged object carries a generic "Annotation" tag
+  // regardless of its specific kind (text, any Dim* type, leaders, GD&T
+  // frames, section views, ...) - matching on that tag directly (like
+  // cmd_annotate2.cpp's own SelAnnotationStyle helper already did, before
+  // this registration shadowed it) instead of a hardcoded per-kind group-
+  // name list is what "selects every annotation object" actually requires;
+  // a hardcoded list silently misses any kind added after the list was
+  // written (this exact bug was just found and fixed for SelDim).
+  Reg(e, "SelFontUse", SelWhere([](CommandContext&, const SceneObject& o) { return o.user_text.count("Annotation") > 0; }), CommandStatus::Implemented,
       "Selects every annotation object: the document has one font setting (Document Properties > Text), so every annotation uses it.");
-  Reg(e, "SelAnnotationStyle", SelGroupNamed({"Text", "TextObject", "Leader", "DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter"}), CommandStatus::Implemented,
+  Reg(e, "SelAnnotationStyle", SelWhere([](CommandContext&, const SceneObject& o) { return o.user_text.count("Annotation") > 0; }), CommandStatus::Implemented,
       "Selects every annotation object: there is one dimension/text style for the whole document, so every annotation uses it.");
   Reg(e, "SelDimOverride", NoSuchObjects("dimensions with style overrides"));
   Reg(e, "SelDimTextOverride", NoSuchObjects("dimensions with text overrides"));

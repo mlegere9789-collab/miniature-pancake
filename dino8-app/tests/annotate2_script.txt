@@ -15,6 +15,10 @@ SelNone
 # DimCreaseAngle - see cmd_select2.cpp).
 SelDim
 SelNone
+# --- SelAnnotationStyle/SelFontUse: same stale-list bug, fixed by matching
+# the generic "Annotation" tag instead of a hardcoded per-kind list.
+SelAnnotationStyle
+SelNone
 # --- Centermark, RevCloud (rectangle 30 x 20 with 4-unit arcs)
 Circle 60,0,0 5
 SelLast
