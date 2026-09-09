@@ -186,3 +186,45 @@ SelClosedMesh
 Area
 BoundingBox
 Volume
+# --- Shell (per-face thickness): no face removed (Enter at the remove
+# prompt), then click the top face and give it its own thickness of 3
+# while every other face (bottom + 4 sides) keeps the default Thickness=1.
+# Proves the per-face override is real numerically, not just accepted
+# without crashing: this is a plain axis-aligned box, so each wall's inset
+# is independent per axis and the inner cavity is exactly another
+# axis-aligned box -
+#   x: [340,360] inset by the default 1 on both sides -> [341,359] (18)
+#   y: [0,20]    inset by the default 1 on both sides -> [1,19]   (18)
+#   z: [0,10]    inset by the default 1 on the bottom, the override 3 on
+#                the top                                -> [1,7]    (6)
+# inner volume = 18*18*6 = 1944, so the shell's volume is exactly
+# 4000 - 1944 = 2056. Cross-check against a uniform thickness-1 shell of
+# this same 20x20x10 box (no override at all): inner would be the full
+# [1,19]x[1,19]x[1,9] box, volume 18*18*8=2592, shell volume 4000-2592=
+# 1408 (matching the first Shell test above, same box size). Giving the
+# top face its own thickness 3 instead of 1 shrinks the inner cavity's
+# height by 2 (from 8 to 6), which removes exactly 18*18*2=648 less
+# material than the uniform case - 1408+648=2056, the number this test
+# actually asserts - so the override is provably changing the real
+# geometry by precisely the amount a thicker top wall should. Area
+# independently cross-checks: outer 2*(20*20)+4*(20*10)=1600, inner
+# 2*(18*18)+2*(18*6)+2*(18*6)=1080, boolean difference of two disjoint
+# nested boxes keeps both surfaces intact so total area = 1600+1080=2680.
+# The outer BoundingBox is untouched (only the inner cavity moved).
+SelAll
+Hide
+Box 340,0,0 360,20,0 10
+SelLast
+Shell
+Mode=Thickness
+350,10,10
+3
+Enter
+1
+SelLast
+List
+SelClosedMesh
+@expect_selected 1
+Area
+BoundingBox
+Volume

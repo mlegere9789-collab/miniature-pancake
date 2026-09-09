@@ -9,6 +9,7 @@
 // ON_SumSurface / ON_NurbsSurface::CreateRuledSurface, close (sub-tolerance
 // for reasonable sample counts) elsewhere. Each registration note says so.
 #include <algorithm>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -166,40 +167,71 @@ kernel::Mesh Outward(kernel::Mesh m) {
   return m;
 }
 
-// Offsets a mesh so that every face plane moves by `d`: each vertex solves
-// n_k . v = d over its distinct adjacent face normals (least squares when
-// more than three meet), so box corners and creases stay sharp instead of
-// shrinking along the averaged vertex normal.
-kernel::Mesh OffsetMesh(const kernel::Mesh& in, double d) {
+// Offsets a mesh so that every face plane moves by its own distance: each
+// vertex solves n_k . v = d_k over its distinct adjacent face normals
+// (least squares when more than three meet), so box corners and creases
+// stay sharp instead of shrinking along the averaged vertex normal. `region`
+// gives each mesh face (aligned 1:1 with `in`'s own face order) an integer
+// id; `d_for(id)` returns that region's own signed offset distance, so
+// different original faces of the same solid can move by different
+// amounts. At a vertex shared by two faces with *different* distances this
+// solves the exact intersection of the two offset planes - a real mitered
+// corner between a thick and a thin wall, not an average of the two - and
+// at a corner where three (or more) faces meet it is the same least-squares
+// plane-intersection the single-thickness code always used, just with a
+// per-constraint right-hand side instead of one shared scalar. This is
+// exact only when every face meeting at a given vertex is itself planar
+// (its own tessellation triangles all share one normal); a curved face's
+// triangle normals vary continuously, so "one distance per triangle" there
+// is at best the same kind of approximation the single-thickness version
+// already made - callers that care about a numerically verified result
+// should check planarity themselves (see `AllFacesPlanar` below) before
+// handing in a `region`/`d_for` pair that assigns different faces
+// different distances.
+kernel::Mesh OffsetMeshPerFace(const kernel::Mesh& in, const std::vector<int>& region, const std::function<double(int)>& d_for) {
   kernel::Mesh m = in;
   ON_Mesh& r = m.raw();
   r.ComputeFaceNormals();
-  std::vector<std::vector<ON_3dVector>> normals(static_cast<size_t>(r.VertexCount()));
+  struct NormalD { ON_3dVector n; double d; };
+  std::vector<std::vector<NormalD>> normals(static_cast<size_t>(r.VertexCount()));
   for (int f = 0; f < r.FaceCount(); ++f) {
     const ON_MeshFace& face = r.m_F[f];
     const ON_3dVector n(r.m_FN[f]);
+    const double d = d_for(static_cast<size_t>(f) < region.size() ? region[static_cast<size_t>(f)] : 0);
     for (int k = 0; k < (face.IsTriangle() ? 3 : 4); ++k) {
-      std::vector<ON_3dVector>& list = normals[static_cast<size_t>(face.vi[k])];
+      std::vector<NormalD>& list = normals[static_cast<size_t>(face.vi[k])];
       bool dup = false;
-      for (const ON_3dVector& e : list) if (ON_DotProduct(e, n) > 0.9995) { dup = true; break; }
-      if (!dup) list.push_back(n);
+      for (const NormalD& e : list) if (ON_DotProduct(e.n, n) > 0.9995) { dup = true; break; }
+      if (!dup) list.push_back({n, d});
     }
   }
-  const double cap = 3 * std::fabs(d);
   for (int i = 0; i < r.VertexCount(); ++i) {
-    const std::vector<ON_3dVector>& ns = normals[static_cast<size_t>(i)];
+    const std::vector<NormalD>& ns = normals[static_cast<size_t>(i)];
     if (ns.empty()) continue;
+    double cap = 0;
+    for (const NormalD& e : ns) cap = std::max(cap, std::fabs(e.d));
+    cap *= 3;
     ON_3dVector v = ON_3dVector::ZeroVector;
     bool solved = false;
-    if (ns.size() == 1) { v = ns[0] * d; solved = true; }
+    if (ns.size() == 1) { v = ns[0].n * ns[0].d; solved = true; }
     else if (ns.size() == 2) {
-      const double c = ON_DotProduct(ns[0], ns[1]);
-      if (1 + c > 0.05) { v = (ns[0] + ns[1]) * (d / (1 + c)); solved = true; }
+      // Exact solve of n0.v=d0, n1.v=d1 in the (n0,n1) basis; reduces to
+      // the old single-thickness shortcut (n0+n1)*(d/(1+c)) when d0==d1.
+      const double c = ON_DotProduct(ns[0].n, ns[1].n);
+      if (1 + c > 0.05) {
+        const double det = 1 - c * c;
+        if (std::fabs(det) > 1e-12) {
+          const double x = (ns[0].d - ns[1].d * c) / det;
+          const double y = (ns[1].d - ns[0].d * c) / det;
+          v = ns[0].n * x + ns[1].n * y;
+          solved = true;
+        }
+      }
     } else {
       double a[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}}, rhs[3] = {0, 0, 0};
-      for (const ON_3dVector& n : ns) {
-        const double c[3] = {n.x, n.y, n.z};
-        for (int p = 0; p < 3; ++p) { rhs[p] += d * c[p]; for (int q = 0; q < 3; ++q) a[p][q] += c[p] * c[q]; }
+      for (const NormalD& e : ns) {
+        const double c[3] = {e.n.x, e.n.y, e.n.z};
+        for (int p = 0; p < 3; ++p) { rhs[p] += e.d * c[p]; for (int q = 0; q < 3; ++q) a[p][q] += c[p] * c[q]; }
       }
       const double det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1]) - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0]) + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0]);
       if (std::fabs(det) > 1e-9) {
@@ -213,8 +245,10 @@ kernel::Mesh OffsetMesh(const kernel::Mesh& in, double d) {
       }
     }
     if (!solved) {
-      for (const ON_3dVector& n : ns) v += n;
-      if (v.Unitize()) v = v * d;
+      double dmean = 0;
+      for (const NormalD& e : ns) { v += e.n; dmean += e.d; }
+      dmean /= static_cast<double>(ns.size());
+      if (v.Unitize()) v = v * dmean;
     }
     if (v.Length() > cap) { v.Unitize(); v = v * cap; }
     r.SetVertex(i, r.Vertex(i) + v);
@@ -222,6 +256,37 @@ kernel::Mesh OffsetMesh(const kernel::Mesh& in, double d) {
   r.ComputeFaceNormals();
   r.ComputeVertexNormals();
   return m;
+}
+
+// Single-thickness offset: every face gets the same distance `d`. Defers
+// to OffsetMeshPerFace with one shared region so the two never drift apart
+// numerically - a mesh with no per-face overrides goes through exactly the
+// same arithmetic it always has.
+kernel::Mesh OffsetMesh(const kernel::Mesh& in, double d) {
+  const std::vector<int> region(static_cast<size_t>(in.raw().FaceCount()), 0);
+  return OffsetMeshPerFace(in, region, [d](int) { return d; });
+}
+
+// True if every one of `faces`' own per-brep-face triangle normals agrees
+// (within `cos_tol`) with that face's own first triangle - i.e. every
+// entry is genuinely flat. OffsetMeshPerFace's per-vertex plane solve is an
+// exact mitered offset only when every face meeting at a shared vertex is
+// planar (see its own comment); this is the gate that decides whether a
+// requested set of per-face thickness overrides is honoured (a solid
+// composed entirely of planar faces - a box, a prism, any polyhedron) or
+// silently would not be - in which case the caller falls back to the
+// single verified-correct uniform thickness instead of guessing.
+bool AllFacesPlanar(const std::vector<kernel::Mesh>& faces, double cos_tol) {
+  for (const kernel::Mesh& fm : faces) {
+    ON_Mesh r = fm.raw();
+    if (r.FaceCount() == 0) continue;
+    r.ComputeFaceNormals();
+    const ON_3dVector n0(r.m_FN[0]);
+    for (int f = 1; f < r.FaceCount(); ++f) {
+      if (ON_DotProduct(n0, ON_3dVector(r.m_FN[f])) < cos_tol) return false;
+    }
+  }
+  return true;
 }
 
 // Closed shell between an open mesh and its offset: bottom (flipped), top and
@@ -835,7 +900,27 @@ bool IsSimpleManifoldWithBoundary(const kernel::Mesh& m) {
 // corresponding outer/inner vertices, not a fitted surface - fine for the
 // common box/cup/case case this targets, visibly facetted on a sharply
 // curved opening edge.
-std::optional<kernel::Mesh> BuildOpenShell(const ON_Brep& brep, const std::vector<int>& remove, double thickness, std::string& err) {
+// `remove` empty: builds the ordinary fully-closed shell (outer minus its
+// inward offset, combined with a real mesh boolean - same shape of result
+// the old MeshOf()+OffsetMesh()+BooleanCombine() closed-shell path always
+// produced, just able to source per-face thickness). `remove` non-empty:
+// builds the open shell described below.
+//
+// `thickness_by_face` maps a brep face index (as returned by
+// PickShellFace/NearestFace) to its own wall thickness; any kept face not
+// present in it uses `default_thickness`. It is only actually honoured
+// (`out_overrides_applied` set true) when every kept face is planar
+// (AllFacesPlanar) - the case OffsetMeshPerFace's per-vertex plane solve is
+// an exact miter for, and the only case this has been numerically verified
+// for (see ShellCommand's own per-face test). When a kept face is curved,
+// `thickness_by_face` is ignored entirely and every face gets
+// `default_thickness` - the same, already-correct uniform behaviour Shell
+// always had - rather than applying an unverified per-triangle distance to
+// a curved surface.
+std::optional<kernel::Mesh> BuildShell(const ON_Brep& brep, const std::vector<int>& remove,
+                                        const std::map<int, double>& thickness_by_face, double default_thickness,
+                                        bool& out_overrides_applied, std::string& err) {
+  out_overrides_applied = false;
   ON_BoundingBox bb;
   brep.GetBoundingBox(bb);
   const double diag = bb.Diagonal().Length();
@@ -856,24 +941,67 @@ std::optional<kernel::Mesh> BuildOpenShell(const ON_Brep& brep, const std::vecto
   const bool flip = full.Volume() < 0;
   std::set<int> remove_set(remove.begin(), remove.end());
   std::vector<kernel::Mesh> kept;
+  std::vector<int> region;  // per outer-mesh-face original brep face index, aligned to `kept`'s concatenation order
   for (size_t i = 0; i < faces.size(); ++i) {
-    if (!remove_set.count(static_cast<int>(i)) && faces[i].FaceCount() > 0) kept.push_back(faces[i]);
+    if (!remove_set.count(static_cast<int>(i)) && faces[i].FaceCount() > 0) {
+      kept.push_back(faces[i]);
+      region.insert(region.end(), static_cast<size_t>(faces[i].raw().FaceCount()), static_cast<int>(i));
+    }
   }
   if (kept.empty()) { err = "would have no surface left after removing the selected face(s)"; return std::nullopt; }
-  kernel::Mesh outer_open = kernel::Mesh::MergeAndWeld(kept, weld);
-  if (flip) outer_open = outer_open.FlipNormals();
-  if (!IsSimpleManifoldWithBoundary(outer_open)) {
+  kernel::Mesh outer = kernel::Mesh::MergeAndWeld(kept, weld);
+  if (flip) outer = outer.FlipNormals();
+  const bool is_open = !remove.empty();
+  if (is_open && !IsSimpleManifoldWithBoundary(outer)) {
     err = "removing that face selection leaves a non-manifold or multi-piece remainder (not supported - try removing a single face, or a group of mutually-adjacent faces, from a simple box-like solid)";
     return std::nullopt;
   }
-  const kernel::Mesh inner_open = OffsetMesh(outer_open, -thickness);
-  const kernel::Mesh shell = ShellBetween(inner_open, outer_open);
-  if (shell.FaceCount() == 0) { err = "produced no geometry (thickness may be too large for the remaining wall)"; return std::nullopt; }
-  return shell;
+  std::map<int, double> effective;
+  if (!thickness_by_face.empty() && AllFacesPlanar(kept, 0.999999)) {
+    effective = thickness_by_face;
+    out_overrides_applied = true;
+  }
+  const auto d_for = [&](int fid) {
+    const auto it = effective.find(fid);
+    return -(it != effective.end() ? it->second : default_thickness);
+  };
+  const kernel::Mesh inner = OffsetMeshPerFace(outer, region, d_for);
+  if (is_open) {
+    const kernel::Mesh shell = ShellBetween(inner, outer);
+    if (shell.FaceCount() == 0) { err = "produced no geometry (thickness may be too large for the remaining wall)"; return std::nullopt; }
+    return shell;
+  }
+  try {
+    const kernel::Mesh shell = kernel::BooleanCombine(outer, inner, kernel::BooleanOp::Difference);
+    if (shell.FaceCount() == 0) { err = "is thinner than the thickness; skipped"; return std::nullopt; }
+    return shell;
+  } catch (const std::exception& ex) {
+    err = std::string("rejected by the mesh kernel (") + ex.what() + ")";
+    return std::nullopt;
+  }
 }
 
 class ShellCommand : public Command {
  public:
+  // Picking: the original single face-picking prompt, now doing double
+  // duty - a click marks a face to remove/open (Mode=Remove, the default,
+  // unchanged from before) or to get its own wall thickness instead of the
+  // shared default (Mode=Thickness), and Enter always moves straight on to
+  // the closing Thickness prompt exactly as it always did (so an old
+  // script's literal "Shell / Enter / 1" - no Mode, no extra picks - runs
+  // through the identical two calls it always has: OnEnter then
+  // OnNumber(1) at Phase::Thickness). A face picked in Mode=Thickness
+  // briefly switches `want` to Number to capture its value
+  // (OverrideValue), then returns to Picking on its own - no extra Enter
+  // is ever required for that, so it cannot get in the way of the plain
+  // "click remove faces, Enter" flow either. This is the "adapt
+  // pragmatically" alternative to a wholly separate pick-then-type
+  // sub-step: the original code's own single WantPoint moment already had
+  // exactly one thing an Enter from it could mean (finish picking), and
+  // preserving that meaning for old scripts mattered more than a second
+  // dedicated phase would have gained.
+  enum class Phase { Picking, OverrideValue, Thickness };
+
   void Begin(CommandContext&) override { WantObjects("Select closed solids to shell"); }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     ids_ = ids;
@@ -885,49 +1013,93 @@ class ShellCommand : public Command {
     if (any_brep) {
       DeselectAll(ctx, ids_);
       accept_preselection = false;
-      WantPoint("Click face(s) to remove/open (Enter for a fully closed shell)");
+      phase_ = Phase::Picking;
+      options = {{"Mode", "Remove", {"Remove", "Thickness"}, false, false}};
+      WantPoint("Click face(s) to remove/open, or set Mode=Thickness first to give clicked face(s) their own wall thickness (Enter for the default Thickness)");
     } else {
       StartThickness();
     }
   }
   void OnPoint(CommandContext& ctx, Point3d p) override {
-    if (!picking_faces_) return;
+    if (phase_ != Phase::Picking) return;
     std::optional<ShellFacePick> pick = PickShellFace(ctx, p, ids_);
     if (!pick) { ctx.Warn("No face of the selected solid(s) near that point"); return; }
-    std::vector<int>& picked = open_faces_[pick->id];
-    if (std::find(picked.begin(), picked.end(), pick->face) != picked.end()) {
-      ctx.Warn("That face is already marked to be removed");
+    if (!override_mode_) {
+      std::vector<int>& picked = open_faces_[pick->id];
+      if (std::find(picked.begin(), picked.end(), pick->face) != picked.end()) {
+        ctx.Warn("That face is already marked to be removed");
+        return;
+      }
+      picked.push_back(pick->face);
+      ctx.Print("Shell: face " + std::to_string(pick->face) + " on object " + std::to_string(pick->id) + " marked to open (" +
+                 std::to_string(picked.size()) + " on this solid); click more faces or press Enter");
       return;
     }
-    picked.push_back(pick->face);
-    ctx.Print("Shell: face " + std::to_string(pick->face) + " on object " + std::to_string(pick->id) + " marked to open (" +
-               std::to_string(picked.size()) + " on this solid); click more faces or press Enter");
+    const auto rem = open_faces_.find(pick->id);
+    if (rem != open_faces_.end() && std::find(rem->second.begin(), rem->second.end(), pick->face) != rem->second.end()) {
+      ctx.Warn("That face is marked to be removed and has no wall of its own to thicken");
+      return;
+    }
+    pending_override_ = pick;
+    const auto& existing = face_thickness_[pick->id];
+    const auto it = existing.find(pick->face);
+    const double def = it != existing.end() ? it->second : thickness_;
+    phase_ = Phase::OverrideValue;
+    WantNumber("Thickness for face " + std::to_string(pick->face) + " on object " + std::to_string(pick->id), def);
   }
-  void OnEnter(CommandContext&) override { if (picking_faces_) StartThickness(); }
+  void OnEnter(CommandContext&) override { if (phase_ == Phase::Picking) StartThickness(); }
   void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
     if (n == "Thickness") { double d; if (ParseNumber(v, d) && d > 0) { thickness_ = d; options[0].value = FormatNumber(d); default_number = d; } else ctx.Warn("Thickness must be positive"); }
+    if (n == "Mode") { override_mode_ = (v == "Thickness"); options[0].value = v; }
   }
   void OnText(CommandContext& ctx, const std::string& t) override {
-    if (picking_faces_) return;
+    if (phase_ != Phase::Thickness && phase_ != Phase::OverrideValue) return;
     double v;
     if (ParseNumber(t, v)) OnNumber(ctx, v);
   }
   void OnNumber(CommandContext& ctx, double t) override {
-    if (picking_faces_) return;
+    if (phase_ == Phase::OverrideValue) {
+      if (t <= 0) { ctx.Warn("Thickness must be positive"); return; }
+      face_thickness_[pending_override_->id][pending_override_->face] = t;
+      ctx.Print("Shell: face " + std::to_string(pending_override_->face) + " on object " + std::to_string(pending_override_->id) +
+                 " set to thickness " + FormatNumber(t) + "; click more faces or press Enter for the default Thickness");
+      pending_override_.reset();
+      phase_ = Phase::Picking;
+      WantPoint("Click face(s) to remove/open, or set Mode=Thickness first to give clicked face(s) their own wall thickness (Enter for the default Thickness)");
+      return;
+    }
+    if (phase_ != Phase::Thickness) return;
     if (t <= 0) { ctx.Warn("Thickness must be positive"); return; }
     std::vector<std::pair<ObjectId, kernel::Mesh>> results;
     std::vector<ObjectId> opened;
+    std::vector<ObjectId> per_face;
     for (ObjectId id : ids_) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
-      const auto it = open_faces_.find(id);
-      if (it != open_faces_.end() && !it->second.empty()) {
-        if (o->kind != ObjectKind::Brep || !o->brep) { ctx.Warn("Object " + std::to_string(id) + " has picked faces but is not a polysurface; skipped"); continue; }
+      const auto rem_it = open_faces_.find(id);
+      const bool has_remove = rem_it != open_faces_.end() && !rem_it->second.empty();
+      const auto fth_it = face_thickness_.find(id);
+      const bool has_overrides = fth_it != face_thickness_.end() && !fth_it->second.empty();
+      if (has_remove || has_overrides) {
+        if (o->kind != ObjectKind::Brep || !o->brep) {
+          ctx.Warn("Object " + std::to_string(id) + " has picked faces but is not a polysurface; skipped");
+          continue;
+        }
+        static const std::vector<int> kNoRemove;
+        static const std::map<int, double> kNoOverrides;
         std::string err;
-        std::optional<kernel::Mesh> r = BuildOpenShell(o->brep->raw(), it->second, t, err);
+        bool overrides_applied = false;
+        std::optional<kernel::Mesh> r = BuildShell(o->brep->raw(), has_remove ? rem_it->second : kNoRemove,
+                                                     has_overrides ? fth_it->second : kNoOverrides, t, overrides_applied, err);
         if (!r) { ctx.Warn("Shell: object " + std::to_string(id) + " " + err); continue; }
+        if (has_overrides && !overrides_applied) {
+          ctx.Warn("Shell: object " + std::to_string(id) +
+                    " has a curved face among those kept, so its per-face thickness override(s) were not numerically verified "
+                    "and were skipped; the default Thickness was used everywhere on it instead");
+        }
         results.push_back({id, *r});
-        opened.push_back(id);
+        if (has_remove) opened.push_back(id);
+        if (has_overrides && overrides_applied) per_face.push_back(id);
         continue;
       }
       std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
@@ -952,23 +1124,29 @@ class ShellCommand : public Command {
       n.layer_index = layer;
       ctx.Doc().Add(std::move(n));
       const bool is_open = std::find(opened.begin(), opened.end(), id) != opened.end();
+      const bool is_per_face = std::find(per_face.begin(), per_face.end(), id) != per_face.end();
+      const std::string face_note = is_per_face ? (", " + std::to_string(face_thickness_[id].size()) + " face(s) at their own thickness") : "";
       // Volume() assumes a closed, consistently-oriented mesh; an open
       // shell's Volume() is not a meaningful enclosed-volume figure (the
       // divergence-theorem sum is only exact across the missing face's
       // hole), so it is not printed for that case.
-      ctx.Print("Shell: thickness " + FormatNumber(t) + (is_open ? ", open (face(s) removed), area " + FormatNumber(r.Area())
-                                                                   : ", closed, volume " + FormatNumber(std::fabs(r.Volume()))));
+      ctx.Print("Shell: thickness " + FormatNumber(t) + face_note +
+                 (is_open ? ", open (face(s) removed), area " + FormatNumber(r.Area())
+                          : ", closed, volume " + FormatNumber(std::fabs(r.Volume()))));
     }
     Finish();
   }
   void StartThickness() {
-    picking_faces_ = false;
+    phase_ = Phase::Thickness;
     options = {{"Thickness", FormatNumber(thickness_), {}, true, false}};
     WantNumber("Thickness", thickness_);
   }
   std::vector<ObjectId> ids_;
   std::map<ObjectId, std::vector<int>> open_faces_;
-  bool picking_faces_ = true;
+  std::map<ObjectId, std::map<int, double>> face_thickness_;
+  std::optional<ShellFacePick> pending_override_;
+  Phase phase_ = Phase::Picking;
+  bool override_mode_ = false;
   double thickness_ = 1;
 };
 
@@ -1215,7 +1393,7 @@ void RegisterSurfaceCommands(CommandEngine& e) {
   Reg(e, "Patch", OnSelection("Select curves and points to fit a surface through", Patch), CommandStatus::Implemented, "Planar patch only: a least-squares plane trimmed by the single closed curve, or a fitted rectangle.");
   Reg(e, "Pipe", Make<PipeCommand>(), CommandStatus::Implemented, "Single radius. Cap=Yes gives a closed mesh solid; Cap=No a periodic NURBS surface (circle approximated by a cubic).");
   Reg(e, "OffsetSrf", Make<OffsetSrfCommand>(), CommandStatus::Implemented, "Surfaces: control points offset along Greville normals (exact for planes). Polysurfaces and meshes are offset as meshes along vertex normals; Solid=Yes closes the shell as a mesh.");
-  Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid as a mesh (outer minus inward vertex-normal offset). Optionally click face(s) of a polysurface solid to remove/open before entering thickness (Enter with none picked keeps the old fully-closed behavior): the picked face(s) are dropped from the outer surface, the remainder gets the inward offset, and a rim mesh connects the two boundary loops - a real open shell (cup/case) for a single face, or a group of mutually-adjacent faces, on a simple box-like solid; a selection that would leave a non-manifold or multi-piece remainder is rejected with a warning rather than producing bad geometry, and mesh-only solids (no polysurface to pick faces on) still only support the fully-closed form.");
+  Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid as a mesh (outer minus inward vertex-normal offset). Optionally click face(s) of a polysurface solid to remove/open before entering thickness (Enter with none picked keeps the old fully-closed behavior): the picked face(s) are dropped from the outer surface, the remainder gets the inward offset, and a rim mesh connects the two boundary loops - a real open shell (cup/case) for a single face, or a group of mutually-adjacent faces, on a simple box-like solid; a selection that would leave a non-manifold or multi-piece remainder is rejected with a warning rather than producing bad geometry, and mesh-only solids (no polysurface to pick faces on) still only support the fully-closed form. After face removal you can also click additional face(s) and type a thickness for each (repeat, then Enter for the default Thickness on the rest): every kept face's vertices then solve to the exact intersection of its own neighbours' offset planes, so two faces with different thickness meet in a real mitered corner rather than an average - numerically verified for a box (see tests/surface_script.txt) and, by the same plane-intersection algebra, correct for any solid whose kept faces are all planar (prisms and other polyhedra). If any kept face is curved, per-face overrides are detected and dropped for that solid (warned), falling back to the single default Thickness everywhere on it rather than applying an unverified per-triangle offset to a curved surface.");
   Reg(e, "ExtrudeCrvAlongCrv", Make<ExtrudeAlongCommand>(), CommandStatus::Implemented, "Exact translational sweep (sum surface); the profile is not rotated along the path.");
   Reg(e, "ExtrudeCrvTapered", Make<ExtrudeTaperedCommand>(), CommandStatus::Implemented, "Ruled surface to a copy of the profile scaled about its centroid by the draft angle (exact for circles, approximate corners).");
   Reg(e, "Project", Make<ProjectCommand>(false), CommandStatus::Implemented, "Projects along the CPlane normal onto the target's render mesh; result curves are refit through the projected samples.");

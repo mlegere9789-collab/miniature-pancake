@@ -309,7 +309,20 @@ sfcheck "Shell: thickness 1, open (face(s) removed), area 2248" "Shell (open) bu
 sfcheck "Area = 2248 square" "Shell (open) area matches the outer+inner+rim geometry exactly (all flat, no curvature error)"
 sfcheck "Bounding box min 300,0,0 max 320,20,10" "Shell (open) left the outer wall's own bounding box untouched"
 sfcheck "Volume = 1084 cubic" "Shell (open) volume is exactly the closed shell's 1408 minus the removed top layer's own 18x18x1"
-sfcheck "smoke: frames=200 objects=41" "surface script produced the expected object count"
+# Shell (per-face thickness): no face removed, but the top face is given
+# its own thickness of 3 while every other face keeps the default 1 - a
+# real different-thickness-per-face wall, not just a global number. The
+# per-vertex offset solve (OffsetMeshPerFace) makes each kept face's own
+# vertices hit the exact intersection of its neighbours' own offset planes,
+# so a box's orthogonal faces still meet in clean corners even though two
+# of them moved by different amounts; proved numerically by hand below.
+sfcheck "Shell: face 5 on object" "Shell registered the clicked top face for its own thickness"
+sfcheck "set to thickness 3" "the top face's override was recorded as 3"
+sfcheck "Shell: thickness 1, 1 face(s) at their own thickness, closed, volume 2056" "Shell (per-face) built one closed shell with a mixed-thickness wall"
+sfcheck "Area = 2680 square" "Shell (per-face) area matches outer 1600 + inner 1080 (two disjoint nested boxes, no boolean rework needed)"
+sfcheck "Bounding box min 340,0,0 max 360,20,10" "Shell (per-face) left the outer wall's own bounding box untouched"
+sfcheck "Volume = 2056 cubic" "Shell (per-face) volume is exactly 4000 - 18*18*6 (inner box shrunk to height 6 by the top face's own thickness 3, not the default 1) - 648 less material removed than the same box's uniform thickness-1 shell above (1408), i.e. 1408 + 18*18*2 = 2056"
+sfcheck "smoke: frames=200 objects=43" "surface script produced the expected object count"
 # Solids: Ellipsoid/SubDEllipsoid (real axis picking), Pyramid (NumSides=),
 # Loft (Normal vs Style=Straight), Cap (multiple separate openings) (see solids_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
