@@ -417,6 +417,131 @@ FilletBuild BuildPlanarVariableFillet(const ON_NurbsSurface& a, const ON_NurbsSu
   return out;
 }
 
+// Genuinely exact variable-radius fillet between one PLANAR face and one
+// CYLINDRICAL face, for the (extremely common) case where the cylinder's
+// axis is perpendicular to the plane - a flat face meeting a bore or a boss
+// straight-on, e.g. the rim where a drilled hole meets a plate's top face,
+// or the base of a turned boss/shaft standing on a flat shoulder. This is
+// NOT the general plane+cylinder case (an edge running along a cylinder's
+// generatrix, or a plane oblique to the axis, still fall back to BuildFillet
+// below) - only the perpendicular-axis case, where the edge is a genuine
+// circle centred on the axis.
+//
+// The generalization of BuildPlanarVariableFillet's key trick: on a plane
+// the ball's contact direction is one constant vector everywhere; on a
+// cylinder it is NOT constant in world space (it's the radial direction,
+// which rotates with position around the axis) but it IS constant in the
+// local, axis-relative sense - at every point along the edge, the ball's
+// cross-section in the vertical half-plane through that point and the axis
+// is EXACTLY the planar-corner problem (a flat line meeting a vertical line
+// at a fixed angle, always 90 degrees here since the axis is perpendicular
+// to the plane), because both surfaces are rotationally symmetric about
+// that same axis. So the same "one seed solve bootstraps a fixed local
+// geometry, then every sample is placed directly from r(t) and the edge
+// curve's own point" trick applies - the only difference is the cylinder's
+// local contact direction has to be re-evaluated (analytically, no
+// intersection) at each sample as the CURRENT radial direction there,
+// instead of being one constant vector for the whole edge.
+//
+// Verified analytically (see cmd_fillet.cpp's test-side derivation, and
+// tests/fillet_script.txt): for a solid cylinder's own end-cap rim (a
+// convex edge, radius Rc), the swept-away corner at ball radius r has
+// cross-sectional area r^2*(1-pi/4) with centroid at radial distance
+// Rc - r/(6-1.5*pi) from the axis (both derived from the standard
+// "square minus quarter-disk" corner shape and cross-checked against a
+// numeric double integral); integrating that around the full edge for a
+// realistic non-constant r(t) profile and comparing against this
+// construction's own built (and independently, very finely re-sampled)
+// volume is the FilletEdge Radii= plane+cylinder smoke test below.
+FilletBuild BuildPlaneCylinderVariableFillet(const ON_NurbsSurface& a, const ON_NurbsSurface& b, const ON_Curve& edge_curve, const std::function<double(double)>& radius_at, double tol, int samples = 32) {
+  FilletBuild out;
+  const double plane_tol = std::max(tol * 10, 1e-4);
+  const double cyl_tol = plane_tol;
+  ON_Plane plane;
+  ON_Cylinder cyl;
+  bool plane_is_a = false;
+  if (a.IsPlanar(&plane, plane_tol) && b.IsCylinder(&cyl, cyl_tol)) plane_is_a = true;
+  else if (b.IsPlanar(&plane, plane_tol) && a.IsCylinder(&cyl, cyl_tol)) plane_is_a = false;
+  else { out.error = "adjacent faces are not one planar and one cylindrical"; return out; }
+  Vector3d axis_dir = cyl.Axis();
+  if (!axis_dir.Unitize()) { out.error = "degenerate cylinder axis"; return out; }
+  const double axis_dot_normal = std::fabs(ON_DotProduct(axis_dir, plane.zaxis));
+  if (axis_dot_normal < 1.0 - 1e-6) { out.error = "cylinder axis is not perpendicular to the planar face (oblique plane/cylinder edges are not handled by this closed form)"; return out; }
+  const double rc = cyl.circle.Radius();
+  if (!(rc > 0)) { out.error = "degenerate cylinder radius"; return out; }
+  const Point3d axis_origin = cyl.Center();
+  const double r0 = radius_at(0.0);
+  if (!(r0 > 0)) { out.error = "radius must be positive"; return out; }
+  if (r0 >= rc) { out.error = "radius " + FormatNumber(r0) + " is not smaller than the cylinder's own radius " + FormatNumber(rc); return out; }
+  // Bootstrap both contact directions from a single constant-radius solve,
+  // same technique as BuildPlanarVariableFillet.
+  FilletBuild seed = BuildFillet(a, b, [r0](double) { return r0; }, tol);
+  if (!seed.ok || seed.spine_pts.empty()) { out.error = seed.ok ? "empty seed spine" : seed.error; return out; }
+  Vector3d seed_dir_a = seed.contact_a.front() - seed.spine_pts.front();
+  Vector3d seed_dir_b = seed.contact_b.front() - seed.spine_pts.front();
+  if (!seed_dir_a.Unitize() || !seed_dir_b.Unitize()) { out.error = "degenerate contact directions"; return out; }
+  const Vector3d& seed_dir_plane = plane_is_a ? seed_dir_a : seed_dir_b;
+  const Vector3d& seed_dir_cyl = plane_is_a ? seed_dir_b : seed_dir_a;
+  const double sign_axis = ON_DotProduct(seed_dir_plane, axis_dir) >= 0 ? 1.0 : -1.0;
+  if (std::fabs(std::fabs(ON_DotProduct(seed_dir_plane, axis_dir)) - 1.0) > 1e-4) { out.error = "seed contact direction on the planar face is not parallel to the cylinder axis"; return out; }
+  // Radial direction AT THE SEED'S OWN CONTACT POINT on the cylindrical
+  // face (seed.contact_a/b - a real closest-point projection onto the
+  // actual surface, so it genuinely sits at radius rc from the axis),
+  // NOT at the seed's spine/ball-centre point (which sits at radius
+  // rc +/- r0, not rc), and not at the edge curve's own t=0 (found by a
+  // completely separate SSX solve, seeded wherever that intersector's
+  // tracer happened to start - very unlikely to be the same point on the
+  // circle as the seed's own contact point).
+  const Point3d seed_contact_cyl = plane_is_a ? seed.contact_b.front() : seed.contact_a.front();
+  const Point3d axis_proj_seed = axis_origin + axis_dir * ON_DotProduct(seed_contact_cyl - axis_origin, axis_dir);
+  Vector3d u_seed = seed_contact_cyl - axis_proj_seed;
+  const double u_seed_len = u_seed.Length();
+  if (u_seed_len < rc * 0.5 || !u_seed.Unitize()) { out.error = "seed contact point does not lie on a circle centred on the cylinder axis"; return out; }
+  if (std::fabs(u_seed_len - rc) > std::max(tol * 50, rc * 1e-3)) { out.error = "seed contact point radius does not match the cylindrical face's own radius"; return out; }
+  const double sign_radial = ON_DotProduct(seed_dir_cyl, u_seed) >= 0 ? 1.0 : -1.0;
+  if (std::fabs(std::fabs(ON_DotProduct(seed_dir_cyl, u_seed)) - 1.0) > 1e-4) { out.error = "seed contact direction on the cylindrical face is not radial"; return out; }
+  const ON_Interval de = edge_curve.Domain();
+  std::vector<HomogeneousRow> rows;
+  std::vector<double> params;
+  for (int i = 0; i <= samples; ++i) {
+    const double t = static_cast<double>(i) / samples;
+    const double r = radius_at(t);
+    if (!(r > 0)) { out.error = "radius must stay positive along the whole edge"; return out; }
+    if (r >= rc) { out.error = "radius " + FormatNumber(r) + " is not smaller than the cylinder's own radius " + FormatNumber(rc); return out; }
+    const Point3d edge_pt = edge_curve.PointAt(de.ParameterAt(t));
+    const Point3d axis_proj = axis_origin + axis_dir * ON_DotProduct(edge_pt - axis_origin, axis_dir);
+    Vector3d radial = edge_pt - axis_proj;
+    const double radial_len = radial.Length();
+    if (radial_len < rc * 0.5 || !radial.Unitize()) { out.error = "edge sample does not lie on the cylinder's circle"; return out; }
+    const Vector3d dir_plane = axis_dir * sign_axis;
+    const Vector3d dir_cyl = radial * sign_radial;
+    Vector3d bis = dir_plane + dir_cyl;
+    if (!bis.Unitize()) { out.error = "faces meet at a degenerate (near-180 deg) angle"; return out; }
+    const double cosb = ON_DotProduct(bis, dir_plane);
+    if (std::fabs(cosb) < 1e-6) { out.error = "degenerate dihedral angle between the two faces"; return out; }
+    const Point3d center = edge_pt - bis * (r / cosb);
+    const Point3d contact_plane = center + dir_plane * r;
+    const Point3d contact_cyl = center + dir_cyl * r;
+    const Point3d& ca = plane_is_a ? contact_plane : contact_cyl;
+    const Point3d& cb = plane_is_a ? contact_cyl : contact_plane;
+    const Vector3d& da = plane_is_a ? dir_plane : dir_cyl;
+    const Vector3d& db = plane_is_a ? dir_cyl : dir_plane;
+    rows.push_back(ArcRow(center, da, db, r));
+    params.push_back(t);
+    out.spine_pts.push_back(center);
+    out.contact_a.push_back(ca);
+    out.contact_b.push_back(cb);
+  }
+  if (!LoftRows(rows, params, 3, out.fillet)) { out.error = "failed to loft the variable-radius fillet arcs"; return out; }
+  std::vector<ON_3dPoint> pca, pcb;
+  for (size_t i = 0; i < out.contact_a.size(); ++i) { pca.push_back(out.contact_a[i]); pcb.push_back(out.contact_b[i]); }
+  out.contact_curve_a = InterpolateCubic(pca, params, false, 3);
+  out.contact_curve_b = InterpolateCubic(pcb, params, false, 3);
+  out.ok = true;
+  out.max_gap = 0;  // exact by construction, same guarantee as BuildPlanarVariableFillet
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Exact planar trim: replaces `face`'s outer loop portion adjacent to
 // `contact_uv` (a polyline in the face's own (u,v)) with that contact
@@ -679,7 +804,28 @@ class FilletTwoSurfacesCommand : public Command {
     const bool chamfer = mode_ == Mode::Chamfer || mode_ == Mode::VariableChamfer;
     const double r0 = radius_, r1 = variable ? end_radius_ : radius_;
     auto radius_at = [&](double t) { return r0 + (r1 - r0) * t; };
-    FilletBuild fb2 = BuildFillet(*sa, *sb, radius_at, tol);
+    FilletBuild fb2;
+    // Same exact plane+perpendicular-cylinder closed form FilletEdge uses
+    // for its Radii= option (see BuildPlaneCylinderVariableFillet's own
+    // comment) - here the two faces are independently picked rather than a
+    // brep edge, so there is no ready-made edge curve; get one the same way
+    // BuildFillet itself finds a spine, by intersecting the two (untouched,
+    // zero-offset) surfaces directly - for a face pair that actually share
+    // a boundary, that IS the shared edge curve.
+    if (variable && r0 != r1) {
+      const double scale = std::max(SurfaceScale(*sa), SurfaceScale(*sb));
+      const double geo_tol = scale > 0 ? scale * 1e-6 : 0.0;
+      IntersectOptions opt;
+      opt.tolerance = std::max(std::max(tol, geo_tol), 1e-6);
+      opt.mesh_tolerance = std::max(opt.tolerance * 4, geo_tol > 0 ? geo_tol * 4 : 1e-4);
+      std::vector<IntersectionCurve> touch = IntersectSurfaces(*sa, *sb, opt);
+      if (!touch.empty()) {
+        const IntersectionCurve* best = &touch.front();
+        for (const IntersectionCurve& c : touch) if (c.Length() > best->Length()) best = &c;
+        fb2 = BuildPlaneCylinderVariableFillet(*sa, *sb, best->curve, radius_at, tol);
+      }
+    }
+    if (!fb2.ok) fb2 = BuildFillet(*sa, *sb, radius_at, tol);
     if (!fb2.ok) { ctx.Warn(std::string(chamfer ? "ChamferSrf" : "FilletSrf") + ": " + fb2.error); return; }
     ctx.Doc().BeginChange(chamfer ? "ChamferSrf" : "FilletSrf");
     ON_NurbsSurface result_surface = fb2.fillet;
@@ -898,13 +1044,17 @@ class FilletEdgeCommand : public Command {
       // radii_ (from the Radii= option) makes this a genuine variable-radius
       // fillet/chamfer, with radius_at mapping a fraction along the edge to
       // a radius via RadiusAt's piecewise-linear interpolation between
-      // handles. When both adjacent faces are planar (the common box/
-      // polysurface-corner case this command's exact trim already targets),
-      // BuildPlanarVariableFillet gives a real closed-form exact result for
-      // any radius profile; otherwise fall back to BuildFillet, whose
-      // single-offset construction is only exact when the radius is
-      // constant but still gives a usable (approximate) surface for a
-      // varying one on curved adjacent faces.
+      // handles. Two adjacent-face combinations have a real closed-form
+      // exact result for any radius profile: both faces planar (the common
+      // box/polysurface-corner case, BuildPlanarVariableFillet), and one
+      // planar + one cylindrical with the cylinder's axis perpendicular to
+      // the plane (the common flat-face-meets-a-bore-or-boss case,
+      // BuildPlaneCylinderVariableFillet - see its own comment for the
+      // derivation). Anything else (both cylindrical, sphere/cone/freeform,
+      // or a plane+cylinder pair with an oblique axis) falls back to
+      // BuildFillet, whose single-offset construction is only exact when
+      // the radius is constant but still gives a usable (approximate)
+      // surface for a varying one on curved adjacent faces.
       auto radius_at = [&](double t) { return RadiusAt(t); };
       const bool variable = !radii_.empty();
       variable_engine_used_ = false;
@@ -913,6 +1063,7 @@ class FilletEdgeCommand : public Command {
         ON_NurbsCurve ec;
         edge.GetNurbForm(ec);
         fb = BuildPlanarVariableFillet(*sa, *sb, ec, radius_at, tol);
+        if (!fb.ok) fb = BuildPlaneCylinderVariableFillet(*sa, *sb, ec, radius_at, tol);
         variable_engine_used_ = fb.ok;
       }
       if (!fb.ok) fb = BuildFillet(*sa, *sb, radius_at, tol);
@@ -1118,7 +1269,7 @@ class FilletEdgeCommand : public Command {
     if (radii_.empty()) return "radius " + FormatNumber(radius_);
     std::string s = "variable radius:";
     for (size_t i = 0; i < radii_.size(); ++i) s += (i ? ", " : " ") + FormatNumber(radii_[i].second) + " at t=" + FormatNumber(radii_[i].first);
-    s += variable_engine_used_ ? " (exact)" : " (approximate: adjacent faces are not both planar, so the exact closed form does not apply)";
+    s += variable_engine_used_ ? " (exact)" : " (approximate: adjacent faces are neither both planar nor a plane and a perpendicular-axis cylinder, so no exact closed form applies)";
     return s;
   }
 

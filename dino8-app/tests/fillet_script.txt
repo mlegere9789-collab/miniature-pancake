@@ -133,5 +133,25 @@ Radii=0:1,1:3
 Enter
 SelAll
 Volume
+# --- VariableFilletSrf with EndRadius=: exact plane+cylinder variable-radius
+# fillet (see BuildPlaneCylinderVariableFillet) between a cylinder's flat top
+# cap and its own cylindrical side wall, ramping the radius from 1 to 2
+# around the rim. Verified exact (no "approximate" suffix in the printed
+# message means every sample's contact points landed exactly on the plane
+# and exactly on the cylinder, per the closed-form construction).
+SelAll
+Hide
+Cylinder 600,0,0 5 20
+ExtractSrf
+600,0,20
+Enter
 SelNone
-@expect_objects 25
+VariableFilletSrf
+Radius=1
+EndRadius=2
+605,0,10
+600,0,20
+SelLast
+List
+SelNone
+@expect_objects 28
