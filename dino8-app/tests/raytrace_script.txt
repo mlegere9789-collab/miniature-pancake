@@ -27,9 +27,12 @@ RotateView 20
 Render 96 64 Quality=Raytraced Samples=4 Bounces=2
 SaveRenderWindowAs @TMP@/raytrace.bmp
 RenderArctic Quality=Raytraced Samples=2 Bounces=2
+SaveRenderWindowAs @TMP@/arctic.bmp
 RenderPreview Quality=Raytraced Samples=2
+SaveRenderWindowAs @TMP@/preview.bmp
 RenderBlowup Quality=Raytraced Samples=2
 -10,-10,-10
 40,40,30
+SaveRenderWindowAs @TMP@/blowup.bmp
 Wireframe
 Save @TMP@/raytrace.3dm

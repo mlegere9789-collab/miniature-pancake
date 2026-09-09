@@ -1333,16 +1333,27 @@ if echo "$RT" | grep -q "GpuRaytracer::Init failed"; then
 else
   echo "ok   GpuRaytracer::Init did not fail during the raytrace script"
 fi
-python3 - "$TMP/rt/raytrace.bmp" <<'PY' && echo "ok   raytrace.bmp is a valid, non-flat 24-bit BMP" || { echo "FAIL raytrace.bmp invalid or flat"; fail=1; }
+check_nonflat_bmp() {
+  # $1 = bmp path, $2 = label. Reads w/h from the BMP header itself (rather
+  # than hardcoding them) since RenderArctic/RenderPreview/RenderBlowup don't
+  # all render at a fixed size, and asserts the pixel data is non-flat - real
+  # proof PathTracer::Render() produced real, varied pixel data for that call
+  # site, not just that the command printed a normal-looking status line.
+  python3 - "$1" <<'PY' && echo "ok   $2 is a valid, non-flat 24-bit BMP" || { echo "FAIL $2 invalid or flat"; fail=1; }
 import struct, sys
 d = open(sys.argv[1], 'rb').read()
 assert d[:2] == b'BM', 'signature'
 size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
-assert size == len(d) and hdr == 40 and w == 96 and h == 64 and planes == 1 and bpp == 24, (size, len(d), w, h, bpp)
+assert size == len(d) and hdr == 40 and w > 0 and h > 0 and planes == 1 and bpp == 24, (size, len(d), w, h, bpp)
 px = d[off:]
-assert len(px) == ((w * 3 + 3) & ~3) * h, 'pixel data size'
+assert len(px) == ((w * 3 + 3) & ~3) * abs(h), 'pixel data size'
 assert max(px) > 0 and min(px) < 255, 'image is flat'
 PY
+}
+check_nonflat_bmp "$TMP/rt/raytrace.bmp" "raytrace.bmp"
+check_nonflat_bmp "$TMP/rt/arctic.bmp" "arctic.bmp (RenderArctic's own pixel output, not just its printed status line)"
+check_nonflat_bmp "$TMP/rt/preview.bmp" "preview.bmp (RenderPreview's own pixel output, not just its printed status line)"
+check_nonflat_bmp "$TMP/rt/blowup.bmp" "blowup.bmp (RenderBlowup's own pixel output, not just its printed status line)"
 
 # IGES / STEP round-trip: Box, Sphere, Cylinder, a trimmed planar surface,
 # a free NURBS curve, a point, and a hand-written STEP fixture (see
