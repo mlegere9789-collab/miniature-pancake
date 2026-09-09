@@ -183,9 +183,14 @@ Convert.
   through 7-Zip; since 7-Zip has no single "convert" command, every job extracts then
   recreates in the target format, with a GZIP target routed through an intermediate TAR
   first since gzip holds one stream, not several named entries
-- **Unit and time converters** — length/mass/area/volume/temperature/data/speed, and time
-  zones/Unix timestamps/durations/frame counts; pure arithmetic with no file to convert,
-  so unlike every other module these never touch the job queue at all
+- **Unit and time converters — catalogued, not yet built.** `util.unit-convert`/
+  `util.time-convert` are in the Feature catalogue (length/mass/area/volume/temperature/
+  data/speed; time zones/Unix timestamps/durations/frame counts) with real descriptions,
+  but neither has an engine or a dedicated calculator page behind it — being pure
+  arithmetic with no file to convert, there's nothing for the job queue to run for them
+  in the first place, unlike every other module here. The tool catalogue correctly shows
+  both as `Build step 9`, not `Ready` (same gap `image.color-picker` has at build step 4)
+  — `EngineSetupTests` asserts this invariant so it can't silently drift either way.
 - **AI upscaler** — 2x/4x/8x with general or anime models, optional denoise, sharpen and
   face enhance, through Real-ESRGAN's ncnn-vulkan build (GPU via Vulkan, with a CPU
   fallback); 8x is two chained passes rather than trusting every build to accept a single
@@ -355,7 +360,7 @@ from source, and the same `releases/latest` endpoint the in-app update checker (
 | 6 | GIF module | done |
 | 7 | PDF module | done |
 | 8 | Document / ebook module | done |
-| 9 | Archive / unit / time converters | done |
+| 9 | Archive / unit / time converters | done — archive module only; the unit and time converters are catalogued but have no engine or page yet, see [What is done](#what-is-done) |
 | 10 | AI upscaler (CUDA + CPU fallback) | done — Vulkan GPU path, plus an optional face-enhance pass (GFPGAN-ncnn, compiled from source, CPU-only) |
 | 11 | Settings system — presets | done |
 | 12 | Google Drive integration | done |
