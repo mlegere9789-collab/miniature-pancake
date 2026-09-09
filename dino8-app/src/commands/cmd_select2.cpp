@@ -586,8 +586,14 @@ void RegisterSelect2Commands(CommandEngine& e) {
   Reg(e, "SelDimLinear", SelGroupNamed({"DimLinear", "DimAligned"}));
   Reg(e, "SelDimAngular", SelGroupNamed({"DimAngle"}));
   Reg(e, "SelDimRadial", SelGroupNamed({"DimRadius", "DimDiameter"}));
-  Reg(e, "SelDimOrdinate", NoSuchObjects("ordinate dimensions"));
-  Reg(e, "SelDimCentermark", NoSuchObjects("centermarks"));
+  // DimOrdinate (cmd_annotate2.cpp) is a real, CommandStatus::Implemented
+  // command - NoSuchObjects here was simply wrong, claiming ordinate
+  // dimensions can never exist in this app when they genuinely can.
+  Reg(e, "SelDimOrdinate", SelGroupNamed({"DimOrdinate"}));
+  // Centermark (cmd_annotate2.cpp) is a real, working command that groups
+  // its curves under the name "Centermark" - NoSuchObjects here was
+  // simply wrong, the same bug SelDimOrdinate just had.
+  Reg(e, "SelDimCentermark", SelGroupNamed({"Centermark"}));
   Reg(e, "SelLight", NoSuchObjects("lights"));
   Reg(e, "SelPtCloud", SelGroupNamed({"PointCloud"}));
   Reg(e, "SelPicture", NoSuchObjects("pictures"));

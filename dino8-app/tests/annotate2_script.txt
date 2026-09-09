@@ -24,6 +24,27 @@ Circle 60,0,0 5
 SelLast
 Centermark
 SelNone
+# --- SelDimCentermark used to wrongly claim centermarks can never exist
+# (NoSuchObjects) even though Centermark, right above, is a real command.
+SelDimCentermark
+SelNone
+# --- SelDimOrdinate: same wrong-NoSuchObjects bug as SelDimCentermark,
+# even though DimOrdinate (below) is a real, working command.
+DimOrdinate
+200,0,0
+250,20,0
+Enter
+SelNone
+SelDimOrdinate
+SelNone
+# --- SelPicture: Picture (a real command) never tagged its own object,
+# so SelPicture could never find it; now tagged and selectable.
+Picture @DINO8ROOT@/resources/dino8.png
+300,0,0
+310,10,0
+SelNone
+SelPicture
+SelNone
 RevCloud Rectangle=Yes ArcLength=4 100,0,0 130,20,0
 SelNone
 # --- Text, then edit it through TextProperties and find it again

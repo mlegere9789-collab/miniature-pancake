@@ -600,6 +600,7 @@ class PictureCommand : public Command {
     SceneObject o = SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1));
     o.name = std::filesystem::path(path_).stem().string();
     o.material_name = name;
+    o.user_text["Picture"] = path_;
     doc.Add(std::move(o));
     ctx.Print("Picture: plane created with material " + name + " (" + path_ + ")");
     Finish();
@@ -862,6 +863,13 @@ void RegisterRenderCommands(CommandEngine& e) {
         int n = 0;
         for (Light& l : ctx.Doc().Lights()) { l.selected = true; ++n; }
         ctx.Print(std::to_string(n) + " light(s) selected");
+      }));
+  // Picture (above) now tags its plane with user_text["Picture"] - the
+  // select2.cpp registration this replaces (NoSuchObjects("pictures")) was
+  // wrong, since Picture is a real command that genuinely creates objects.
+  Reg(e, "SelPicture", Immediate([](CommandContext& ctx) {
+        ctx.Doc().SelectWhere([&](const SceneObject& o) { return ctx.Doc().IsObjectVisible(o) && !ctx.Doc().IsObjectLocked(o) && o.user_text.count("Picture") > 0; });
+        ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " picture(s) selected");
       }));
   Reg(e, "SetSpotlightToView", Immediate([](CommandContext& ctx) {
         Viewport* vp = ctx.ActiveViewport();

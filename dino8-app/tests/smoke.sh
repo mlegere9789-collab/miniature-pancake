@@ -544,7 +544,7 @@ assert len(set(px[i:i + 3] for i in range(0, len(px) - 3, 3 * 97))) > 8, 'too fe
 PY
 head -c 2 "$TMP/arctic.ppm" | grep -q "P6" && echo "ok   arctic.ppm is a binary PPM" || { echo "FAIL arctic.ppm"; fail=1; }
 # Annotation, linetype, hatch and block tools (see annotate2_script.txt).
-sed "s|@TMP@|$TMP|g" "$HERE/annotate2_script.txt" > "$TMP/annotate2_script.txt"
+sed -e "s|@TMP@|$TMP|g" -e "s|@DINO8ROOT@|$HERE/..|g" "$HERE/annotate2_script.txt" > "$TMP/annotate2_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
   A2="$("$BIN" --smoke 150 --script "$TMP/annotate2_script.txt" 2>&1)" || { echo "$A2"; echo "FAIL: annotate2 script exited non-zero"; exit 1; }
 else
@@ -564,6 +564,23 @@ else
   echo "FAIL SelAnnotationStyle/SelFontUse match the generic Annotation tag"; fail=1
 fi
 a2check "Centermark: 1 center mark(s)" "Centermark marked the circle"
+if echo "$A2" | grep -A1 "^history: Command: SelDimCentermark$" | grep -q "^history: 2 object(s) selected$"; then
+  echo "ok   SelDimCentermark finds real centermarks (was wrongly NoSuchObjects even though Centermark is a real command)"
+else
+  echo "FAIL SelDimCentermark finds real centermarks"; fail=1
+fi
+a2check "DimOrdinate: X 50" "DimOrdinate measured the ordinate"
+if echo "$A2" | grep -A1 "^history: Command: SelDimOrdinate$" | grep -q "^history: 5 object(s) selected$"; then
+  echo "ok   SelDimOrdinate finds real ordinate dimensions (was wrongly NoSuchObjects even though DimOrdinate is a real command)"
+else
+  echo "FAIL SelDimOrdinate finds real ordinate dimensions"; fail=1
+fi
+a2check "Picture: plane created with material dino8" "Picture placed the image plane"
+if echo "$A2" | grep -A1 "^history: Command: SelPicture$" | grep -q "^history: 1 picture(s) selected$"; then
+  echo "ok   SelPicture finds the Picture plane (Picture now tags its object, which it never did before)"
+else
+  echo "FAIL SelPicture finds the Picture plane"; fail=1
+fi
 a2check "RevCloud: 26 arc(s), closed curve" "RevCloud built a closed cloud of 26 arcs around the 30x20 rectangle"
 a2check "TextProperties: 1 annotation(s) updated to \"World\", height 5" "TextProperties rebuilt the text with new content and height"
 a2check "FindText: 1 annotation(s) containing \"World\" selected" "FindText found the edited text"
