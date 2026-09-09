@@ -1,7 +1,7 @@
 name: MediaSuite CI
 
 # WPF only builds on Windows, so this is the real compile check for the app —
-# the whole solution, plus the Core test suite.
+# the whole solution, plus both the Core and App test suites.
 on:
   push:
     branches: [main]
@@ -35,7 +35,30 @@ jobs:
         run: dotnet build mediasuite/MediaSuite.sln -c Release --no-restore
 
       - name: Test
-        run: dotnet test mediasuite/MediaSuite.sln -c Release --no-build --verbosity normal
+        # Two explicit invocations, not one `dotnet test` on the whole .sln: running the
+        # solution as a single command only ever reported MediaSuite.Core.Tests' own
+        # results (confirmed across this branch's entire CI history -- every prior run's
+        # "Test" step log shows exactly one "Total tests: N" summary and zero references to
+        # any MediaSuite.App.Tests class), silently never invoking MediaSuite.App.Tests at
+        # all. Every App-layer regression test added this session was compiling cleanly
+        # (the separate Build step covers both projects) but had never actually run under
+        # CI. Each project gets its own command so neither can go silently missing again.
+        # Both run regardless of the other's outcome (unlike the .sln-wide invocation's
+        # default MSBuild fail-fast, which stops at the first failing project) so a failure
+        # in one doesn't hide the other's full results -- but the step still has to fail
+        # overall if either did, which needs an explicit exit code check since PowerShell
+        # (this runner's default shell) does not stop a script on a failed command the way
+        # bash's `set -e` would.
+        run: |
+          dotnet test mediasuite/tests/MediaSuite.Core.Tests/MediaSuite.Core.Tests.csproj -c Release --no-build --verbosity normal
+          $coreTestsExitCode = $LASTEXITCODE
+
+          dotnet test mediasuite/tests/MediaSuite.App.Tests/MediaSuite.App.Tests.csproj -c Release --no-build --verbosity normal
+          $appTestsExitCode = $LASTEXITCODE
+
+          if ($coreTestsExitCode -ne 0 -or $appTestsExitCode -ne 0) {
+            exit 1
+          }
 
   installer:
     name: Build installer
