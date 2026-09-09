@@ -44,7 +44,8 @@ public class PdfCommandBuilderTests
         Assert.Contains("b.pdf", list);
         Assert.Contains("c.pdf", list);
 
-        // Order matters — this is what makes "combine in any order, drag to reorder" true.
+        // Order matters — the only way to control merge order is the order files were
+        // added, so qpdf has to see them in exactly that order.
         Assert.True(list.IndexOf("a.pdf") < list.IndexOf("b.pdf"));
         Assert.True(list.IndexOf("b.pdf") < list.IndexOf("c.pdf"));
         Assert.Equal("merged.pdf", list[^1]);
