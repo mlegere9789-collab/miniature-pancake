@@ -139,6 +139,23 @@ if(MSVC)
 else()
   set(DINO8_LIBREDWG_TARGET redwg)
 endif()
+# LibreDWG's src/dwg_spec_shared.h calls the GNU/BSD extension memmem()
+# unconditionally, with no fallback and no HAVE_MEMMEM guard, assuming its
+# declaration is always visible from <string.h>. That's true on Linux glibc
+# (whose headers expose it by default via _DEFAULT_SOURCE, which recent
+# glibc versions define implicitly) but not on macOS's libc: the function
+# has shipped in libSystem since 10.7, but its prototype in <string.h> is
+# gated behind _DARWIN_C_SOURCE, which is not defined by default in a plain
+# CMake build the way autotools' AC_USE_SYSTEM_EXTENSIONS/gnulib step would
+# set it. This is exactly what broke the "macOS (build, .dmg)" CI job on
+# commit 9e97996 ("call to undeclared function 'memmem'" - only visible
+# after the -Wno-cast-align cleanup above shrank the log enough to actually
+# see it). Defining both feature-test macros for LibreDWG's own target only
+# makes the same libc function's existing declaration visible on both
+# platforms, matching what its autotools build already gets for free.
+if(NOT MSVC)
+  target_compile_definitions(${DINO8_LIBREDWG_TARGET} PRIVATE _GNU_SOURCE _DARWIN_C_SOURCE)
+endif()
 # LibreDWG's own generated dwg2.spec code intentionally casts BITCODE_TV
 # (char*) to BITCODE_TU (unsigned short*) hundreds of times in its TRACE
 # logging macros - a deliberate, known-safe alignment-widening cast in
