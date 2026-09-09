@@ -150,3 +150,68 @@ wrong result - the graceful-failure contract already holds; no change was
 needed once the scale-relative floor (added alongside this corpus) was in
 place for the *opposite* problem (surfaces far larger than the document
 tolerance, where the fixed 1e-4/1e-5 floors used to be needlessly tight).
+
+## 3. FilletEdge on a closed (periodic) edge - fixed the loft/spine gap, found a deeper pre-existing mesh-fallback gap
+
+**Case:** `FilletEdge` on a solid cylinder's own flat-top rim (the edge
+between the top cap and the cylindrical wall, a full 360-degree closed
+loop) - e.g. `Cylinder 0,0,0 5 20` then `FilletEdge Radius=1` picked on
+that rim. Not exercised by any existing test: every prior `FilletEdge`/
+`ChamferEdge` test corpus case (this file included) uses a box corner,
+whose adjacent faces are both planar and get the *exact* B-rep trim path
+- the mesh fallback investigated here has never actually been exercised
+end-to-end by a passing test before.
+
+**Symptom:** `"FilletEdge: could not build a watertight result at this
+object's coordinate scale (both the exact B-rep trim and the mesh
+fallback came back with a gap - see adversarial_corpus_notes.md)"`, at
+ordinary (millimeter-scale, radius 1) coordinates - not the huge-scale
+case documented above.
+
+**Two real, distinct root causes were found and one was fixed:**
+
+1. **Fixed**: `SweepTubeCutter`'s mesh-fallback cutter tube and
+   `BuildFillet`'s own lofted fillet surface both treated the sampled
+   spine as an open chain even when the underlying edge is closed.
+   `LoftClosedRings()` (used for the cutter) caps *both* ends flat, which
+   for a periodic spine leaves two coincident flat caps sitting on top of
+   each other at the seam instead of a manifold join; separately,
+   `BuildFillet`'s own `rows` array (fed into `LoftRows` to build the
+   fillet surface) kept the raw first/last spine samples from
+   `IntersectSurfaces`' marching tracer, which does not itself detect loop
+   closure and left them a full ring-spacing or more apart (confirmed:
+   ~0.3 units on a 5-unit-radius cylinder, roughly 1% of the loop's own
+   circumference - not floating-point noise). Fixed via a new
+   `Mesh::LoftPeriodicRings()` kernel primitive (bands wrap the last ring
+   back to the first, no end caps - verified against `Mesh::Torus()`'s own
+   reference volume for the identical parameterization, and against the
+   exact analytic torus formula, in `dino8-kernel/tests/test_basic.cpp`)
+   used by `SweepTubeCutter` whenever `ON_BrepEdge::IsClosed()` is true,
+   plus snapping `BuildFillet`'s last row to an exact copy of the first
+   whenever the chosen spine's own `IntersectionCurve::closed` flag is
+   set. Both are real, independently verified fixes, not workarounds.
+2. **Still open, pre-existing, and NOT specific to periodic edges**: even
+   after both of the above, the cylinder-rim case above still fails.
+   Diagnosis: `SweepTubeCutter`'s cutter tube is deliberately built 5%
+   oversized (`radius * 1.05`) so the boolean difference gouges past the
+   fillet's own analytic edges, but nothing then re-trims the resulting
+   cavity boundary back down to those edges - the code simply hands
+   `remainder_mesh` (the oversized cavity) and `fillet_mesh` (the
+   analytic fillet's own tessellation) to `MergeAndWeld` and expects
+   their boundaries to coincide within tolerance. They do not: a debug
+   instrumentation pass measured `MergeAndWeld` collapsing only ~10 of
+   the mesh pair's combined ~10,600 vertices - essentially no welding at
+   all, not a near-miss. This is a real gap in the mesh-fallback path
+   itself (the oversized-cutter-vs-analytic-ribbon boundary mismatch),
+   independent of the periodic-spine issue fixed above, and it is why no
+   existing test has ever exercised this fallback successfully: every
+   prior fillet test's adjacent faces are both planar, which always takes
+   the exact B-rep trim path instead and never reaches this code.
+
+**What would actually fix the remaining gap:** the mesh fallback's cutter
+needs to be built from the fillet's own analytic contact curves (the same
+`contact_curve_a`/`contact_curve_b` the exact-trim path already computes),
+not an independently-swept, deliberately oversized tube - a genuinely
+separate, larger piece of work than the periodic-spine fix above, and
+honestly out of scope for this pass. Filed here rather than silently
+left unmentioned, per this file's own standard.

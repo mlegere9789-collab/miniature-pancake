@@ -465,6 +465,18 @@ class Mesh {
   // and RevolveProfile().
   static Mesh LoftClosedRings(const std::vector<std::vector<Point3d>>& rings);
 
+  // Same band skinning as LoftClosedRings(), but for a spine that loops back
+  // on itself: ring i gets a band to ring (i+1) % rings.size() (the last
+  // ring wraps back to the first) and there are no end caps, since a
+  // periodic spine's tube is already a closed loop with no open ends to cap.
+  // Use this instead of LoftClosedRings() whenever the ring sequence itself
+  // represents a full loop (e.g. a tube swept all the way around a closed
+  // edge) - capping both ends of a loop that already closes on itself
+  // produces two coincident flat caps at the seam instead of a manifold
+  // tube. Throws std::invalid_argument if fewer than 3 rings are given or
+  // ring vertex counts don't match.
+  static Mesh LoftPeriodicRings(const std::vector<std::vector<Point3d>>& rings);
+
   // Builds a real torus: a circular tube of `minor_radius`, swept around
   // `axis` at `major_radius` from `center`. Doesn't fit any earlier
   // primitive's shape: RevolveProfile()'s profile must start and end on

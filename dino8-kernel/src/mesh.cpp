@@ -1499,6 +1499,74 @@ Mesh Mesh::LoftClosedRings(const std::vector<std::vector<Point3d>>& rings) {
   return result;
 }
 
+Mesh Mesh::LoftPeriodicRings(const std::vector<std::vector<Point3d>>& rings) {
+  // Same band construction as LoftClosedRings(), but for a spine that loops
+  // back on itself (e.g. a fillet tube swept all the way around a closed
+  // edge, like a cylinder's own rim) rather than one with two distinct open
+  // ends: every ring gets a band to the *next* ring, wrapping the last ring
+  // back to the first, and there are no end caps at all - the tube is
+  // already a closed torus-like tube with no ends to cap. Using
+  // LoftClosedRings() (whose bands only run i -> i+1 for a plain open chain)
+  // for a periodic spine instead leaves two independent flat end caps sitting
+  // on top of each other where the spine closes up, which is not a manifold
+  // seam and produced a real, previously-undiscovered non-watertight gap in
+  // FilletEdge's mesh fallback for any fully closed edge (a solid cylinder's
+  // own end-cap rim, a bore/hole rim, etc).
+  const int m = static_cast<int>(rings.size());
+  if (m < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::LoftPeriodicRings: needs at least 3 rings to "
+        "close a loop");
+  }
+  const int ring_size = static_cast<int>(rings.front().size());
+  if (ring_size < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::Mesh::LoftPeriodicRings: each ring needs at least 3 "
+        "vertices");
+  }
+  for (const auto& ring : rings) {
+    if (static_cast<int>(ring.size()) != ring_size) {
+      throw std::invalid_argument(
+          "dino8::kernel::Mesh::LoftPeriodicRings: every ring must have the "
+          "same vertex count");
+    }
+  }
+
+  Mesh result;
+  ON_Mesh& out = result.mesh_;
+
+  std::vector<int> ring_start(static_cast<size_t>(m));
+  for (int i = 0; i < m; ++i) {
+    ring_start[static_cast<size_t>(i)] = out.m_V.Count();
+    for (const Point3d& p : rings[static_cast<size_t>(i)]) {
+      out.m_V.Append(ON_3fPoint(p));
+    }
+  }
+
+  auto append_tri = [&out](int v0, int v1, int v2) {
+    ON_MeshFace face;
+    face.vi[0] = v0;
+    face.vi[1] = v1;
+    face.vi[2] = v2;
+    face.vi[3] = v2;
+    out.m_F.Append(face);
+  };
+
+  // Same band winding as LoftClosedRings() (tri1=(a,a2,b2), tri2=(a,b2,b)),
+  // but i's partner wraps around with modulo m instead of stopping at m-1.
+  for (int i = 0; i < m; ++i) {
+    const int base_a = ring_start[static_cast<size_t>(i)];
+    const int base_b = ring_start[static_cast<size_t>((i + 1) % m)];
+    for (int k = 0; k < ring_size; ++k) {
+      const int k2 = (k + 1) % ring_size;
+      append_tri(base_a + k, base_a + k2, base_b + k2);
+      append_tri(base_a + k, base_b + k2, base_b + k);
+    }
+  }
+
+  return result;
+}
+
 Mesh Mesh::Torus(Point3d center, Vector3d axis, double major_radius, double minor_radius,
                  int major_segments, int minor_segments) {
   if (major_segments < 3 || minor_segments < 3) {

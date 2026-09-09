@@ -332,6 +332,25 @@ FilletBuild BuildFillet(const ON_NurbsSurface& a, const ON_NurbsSurface& b, cons
     out.uv_b.emplace_back(ub, vb);
   }
   if (rows.size() < 2) { out.error = "too few valid spine samples (radius likely larger than the surfaces support)"; return out; }
+  // For a closed (periodic) edge - e.g. a solid cylinder's own flat-top
+  // rim - the spine's first and last samples are the SAME physical
+  // location, but IntersectSurfaces' marching tracer doesn't itself detect
+  // loop closure, so they routinely land a full sample-spacing or more
+  // apart (confirmed by testing: up to several percent of the loop's own
+  // size, not numerical noise). Left as-is, that's a real geometric gap in
+  // the lofted fillet surface's own two ends, not just a topological one -
+  // no amount of downstream vertex-welding can close a gap that size.
+  // Snap the last row to an exact copy of the first (not just its
+  // position - contact_a/contact_b/uv too, so every derived curve stays
+  // consistent) whenever the intersection curve itself is closed.
+  if (spine.closed && rows.size() >= 3) {
+    rows.back() = rows.front();
+    out.spine_pts.back() = out.spine_pts.front();
+    out.contact_a.back() = out.contact_a.front();
+    out.contact_b.back() = out.contact_b.front();
+    out.uv_a.back() = out.uv_a.front();
+    out.uv_b.back() = out.uv_b.front();
+  }
   if (!LoftRows(rows, params, 3, out.fillet)) { out.error = "failed to loft the fillet arcs"; return out; }
   std::vector<ON_3dPoint> pa, pb;
   for (size_t i = 0; i < out.contact_a.size(); ++i) { pa.push_back(out.contact_a[i]); pb.push_back(out.contact_b[i]); }
@@ -738,11 +757,30 @@ int FindOuterTrimForEdge(const ON_Brep& b, int fi, int edge_index) {
 // that matches the actual (varying) radius at each point along the edge,
 // instead of a single uniform tube that would either gouge past a small
 // end or leave a gap at a large one.
-kernel::Mesh SweepTubeCutter(const std::vector<Point3d>& spine, const std::vector<double>& radii) {
+kernel::Mesh SweepTubeCutter(const std::vector<Point3d>& spine_in, const std::vector<double>& radii, bool periodic) {
+  // A spine sampled from a closed (periodic) edge curve - e.g. a solid
+  // cylinder's own flat-top rim, or the rim where a bore meets a plate -
+  // loops back on its own start point. LoftClosedRings() always caps both
+  // ends flat, which for a periodic spine leaves two coincident end caps
+  // sitting on top of each other right where the loop closes instead of a
+  // manifold seam; use LoftPeriodicRings() (no caps, last ring bands
+  // straight back to the first) instead whenever the caller says the
+  // *edge curve itself* is closed (ON_Curve::IsClosed(), checked once by
+  // the caller against the real curve - not inferred here from how close
+  // the sampled spine's first and last points happen to land, which can be
+  // off by a whole sample spacing or more: BuildFillet's spine comes from
+  // marching an SSX curve that doesn't itself special-case detecting its
+  // own loop closure, so a periodic spine's two end samples routinely land
+  // a full ring-spacing or two apart, not within any tight numeric
+  // tolerance of each other).
+  std::vector<Point3d> spine = spine_in;
+  periodic = periodic && spine.size() >= 3;
+  if (periodic) spine.pop_back();  // the closing sample duplicates the first ring's location
   std::vector<std::vector<Point3d>> rings;
   const int seg = 16;
   for (size_t i = 0; i < spine.size(); ++i) {
-    Vector3d t = i + 1 < spine.size() ? spine[i + 1] - spine[i] : spine[i] - spine[i - 1];
+    Vector3d t = periodic ? spine[(i + 1) % spine.size()] - spine[(i + spine.size() - 1) % spine.size()]
+                           : (i + 1 < spine.size() ? spine[i + 1] - spine[i] : spine[i] - spine[i - 1]);
     if (!t.Unitize()) t = Vector3d(0, 0, 1);
     Vector3d n = ON_CrossProduct(t, Vector3d(0, 0, 1));
     if (n.Length() < 1e-6) n = ON_CrossProduct(t, Vector3d(0, 1, 0));
@@ -756,7 +794,7 @@ kernel::Mesh SweepTubeCutter(const std::vector<Point3d>& spine, const std::vecto
     }
     rings.push_back(ring);
   }
-  return kernel::Mesh::LoftClosedRings(rings);
+  return periodic ? kernel::Mesh::LoftPeriodicRings(rings) : kernel::Mesh::LoftClosedRings(rings);
 }
 
 }  // namespace
@@ -1220,7 +1258,7 @@ class FilletEdgeCommand : public Command {
       // fallback either way.
       std::optional<kernel::Mesh> obj_mesh = ObjectMesh(*o, tol);
       if (obj_mesh && !spine.empty()) {
-        kernel::Mesh cutter = SweepTubeCutter(spine, radii_for_tube);
+        kernel::Mesh cutter = SweepTubeCutter(spine, radii_for_tube, edge.IsClosed());
         try {
           kernel::Mesh remainder_mesh = kernel::BooleanCombine(*obj_mesh, cutter, kernel::BooleanOp::Difference);
           kernel::NurbsSurface ks;

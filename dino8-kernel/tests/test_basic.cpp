@@ -4231,6 +4231,92 @@ void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
         "unit box equals prism volume + 1");
 }
 
+void TestLoftPeriodicRingsClosesTorusLikeTubeExactly() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  // Build the exact same shape Mesh::Torus() builds (major_radius=3,
+  // minor_radius=1, 48 major segments, 32 minor segments - the same
+  // segment counts TestTorusVolumeMatchesExactFormula() itself uses, since
+  // a coarser minor-circle polygon approximation (e.g. 16 segments) misses
+  // the 1% analytic tolerance on discretization error alone, unrelated to
+  // whether the loft itself is correct), but by hand as a sequence of
+  // small circular rings arranged around the big circle and fed through
+  // LoftPeriodicRings() - the same construction FilletEdge's mesh fallback
+  // (SweepTubeCutter) now uses for a fillet swept around a closed edge,
+  // instead of LoftClosedRings() (which would leave two coincident,
+  // non-manifold end caps where the ring sequence closes on itself). If
+  // LoftPeriodicRings() really stitches the last ring back to the first
+  // with no gap, this must come back closed-manifold, and its volume must
+  // match Mesh::Torus()'s own, independently-built reference torus.
+  constexpr double kMajor = 3.0, kMinor = 1.0;
+  constexpr int kMajorSeg = 48, kMinorSeg = 32;
+  std::vector<std::vector<Point3d>> rings;
+  for (int i = 0; i < kMajorSeg; ++i) {
+    const double theta = 2.0 * M_PI * i / kMajorSeg;
+    const double cx = std::cos(theta), sx = std::sin(theta);
+    std::vector<Point3d> ring;
+    // Minor-circle points are wound *backwards* (k descending) relative to
+    // Torus()'s own convention: LoftPeriodicRings (like LoftClosedRings)
+    // expects each ring to be CCW as seen from "ahead" along the loft
+    // direction, which for this hand-built ring sequence is the opposite
+    // sense from what Torus()'s own, independently-chosen band winding
+    // wants for the identical (theta, phi) parameterization - confirmed
+    // empirically (the un-reversed order gave a negative, mirror-image
+    // volume against Mesh::Torus()'s reference).
+    for (int k = kMinorSeg - 1; k >= 0; --k) {
+      const double phi = 2.0 * M_PI * k / kMinorSeg;
+      const double r = kMajor + kMinor * std::cos(phi);
+      ring.emplace_back(r * cx, r * sx, kMinor * std::sin(phi));
+    }
+    rings.push_back(ring);
+  }
+  const Mesh hand_built = Mesh::LoftPeriodicRings(rings);
+  Check(hand_built.IsClosedManifold(),
+        "LoftPeriodicRings closes a ring sequence that loops back on itself "
+        "into a real watertight manifold, with no gap where the loop closes");
+
+  const Mesh reference = Mesh::Torus(Point3d(0, 0, 0), dino8::kernel::Vector3d(0, 0, 1), kMajor,
+                                      kMinor, kMajorSeg, kMinorSeg);
+  const double hand_vol = hand_built.Volume(), ref_vol = reference.Volume();
+  Check(std::abs(hand_vol - ref_vol) < 1e-6 * ref_vol,
+        "a torus built by hand from LoftPeriodicRings matches Mesh::Torus()'s "
+        "own volume for the identical major/minor radius and segment counts");
+
+  const double analytic = 2.0 * M_PI * M_PI * kMajor * kMinor * kMinor;
+  Check(std::abs(hand_vol - analytic) / analytic < 0.01,
+        "the hand-built periodic-loft torus's volume is within 1% of the "
+        "analytic torus volume 2*pi^2*R*r^2 (a 48x32-segment polygonal "
+        "approximation, not an exact match)");
+}
+
+void TestLoftPeriodicRingsRejectsTooFewRingsAndMismatchedCounts() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  bool threw_too_few = false;
+  try {
+    const std::vector<Point3d> tri = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(0, 1, 0)};
+    Mesh::LoftPeriodicRings({tri, tri});
+  } catch (const std::invalid_argument&) {
+    threw_too_few = true;
+  }
+  Check(threw_too_few, "LoftPeriodicRings throws with fewer than 3 rings (a loop needs at least 3 to be meaningful)");
+
+  bool threw_mismatched = false;
+  try {
+    const std::vector<Point3d> triangle = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(0, 1, 0)};
+    const std::vector<Point3d> square = {Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1, 1),
+                                          Point3d(0, 1, 1)};
+    Mesh::LoftPeriodicRings({triangle, square, triangle});
+  } catch (const std::invalid_argument&) {
+    threw_mismatched = true;
+  }
+  Check(threw_mismatched,
+        "LoftPeriodicRings throws when rings have different vertex counts "
+        "rather than silently misaligning bands");
+}
+
 void TestTorusRejectsTooFewSegments() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -5952,6 +6038,8 @@ int main() {
   TestLoftClosedRingsSquareFrustumExactVolumeAndBoolean();
   TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts();
   TestLoftClosedRingsConcaveEndCapsExactPrismVolume();
+  TestLoftPeriodicRingsClosesTorusLikeTubeExactly();
+  TestLoftPeriodicRingsRejectsTooFewRingsAndMismatchedCounts();
   TestTorusRejectsTooFewSegments();
   TestTorusVolumeAndBoolean();
   TestMeshGetBoundingBox();
