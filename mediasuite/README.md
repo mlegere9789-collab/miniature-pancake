@@ -108,9 +108,16 @@ compiled on Linux or macOS. `MediaSuite.Core` and its tests build anywhere.
 
 ```powershell
 dotnet build mediasuite\MediaSuite.sln -c Release
-dotnet test  mediasuite\MediaSuite.sln -c Release
+dotnet test  mediasuite\tests\MediaSuite.Core.Tests\MediaSuite.Core.Tests.csproj -c Release
+dotnet test  mediasuite\tests\MediaSuite.App.Tests\MediaSuite.App.Tests.csproj -c Release
 dotnet run   --project mediasuite\src\MediaSuite.App
 ```
+
+Test the two projects separately, not `dotnet test` on the whole `.sln` — running the
+solution as one command only ever reports `MediaSuite.Core.Tests`' own results (its VSTest
+run silently never happens for `MediaSuite.App.Tests`, which still compiles fine); this
+branch's own CI made exactly that mistake for its entire history before catching it, see
+`.github/workflows/mediasuite-ci.yml`'s `Test` step for the full story.
 
 CI (`.github/workflows/mediasuite-ci.yml`) builds and tests the whole solution on
 `windows-latest` for every change under `mediasuite/`.
