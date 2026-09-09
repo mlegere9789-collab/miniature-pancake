@@ -71,7 +71,7 @@ def _cmd_doctor() -> int:
         "SHOPIFY_ADMIN_API_TOKEN",
         "STRIPE_SECRET_KEY",
         "ETSY_API_KEY",
-        "TELEGRAM_BOT_TOKEN",
+        "DISCORD_WEBHOOK_URL",
         "SHUTTERSTOCK_API_TOKEN",
     ]
     for key in tracked:
