@@ -211,5 +211,12 @@ miniature-pancake/
 │  └─ micro_saas/             #   built: health checks + Stripe billing
 ├─ data/                  # local DB + logs (git-ignored)
 ├─ .env.example           # credentials template (copy to .env)
-└─ SETUP.md               # this file
+├─ SETUP.md               # this file
+└─ mediasuite/            # unrelated project: a Windows-only media-converter
+                           #   WPF app + installer -- see mediasuite/README.md
 ```
+
+`mediasuite/` shares nothing with the setup above (no `.env`, no shared
+database, no shared config) — it's a separate Windows desktop app that
+happens to live in this same repository. If you're only here for the income
+programs, you can ignore it entirely.
