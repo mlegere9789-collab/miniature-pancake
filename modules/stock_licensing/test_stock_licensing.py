@@ -295,6 +295,40 @@ class TestRunEndToEnd(unittest.TestCase):
         self.assertEqual(len(reviews), 1)
         self.assertIn("not json at all", reviews[0]["payload"])
 
+    def test_a_later_assets_failure_does_not_lose_an_earlier_assets_seen_mark(self):
+        # Regression test: seen.save() used to run once after the whole
+        # keywording loop, so an exception from a later asset that isn't
+        # wrapped as AnthropicError/MetadataParseError (a bug, or any
+        # failure mode neither this loop nor its own try/excepts already
+        # anticipate) meant an earlier asset that had already been flagged
+        # for review lost its seen-mark too, since it only ever existed in
+        # memory. The next run would then re-spend an Anthropic API call
+        # and re-flag the same asset a second time -- the same double-work
+        # risk ecommerce_dropshipping's and deal_alert_bot's own run()s
+        # already guard against for their own dedup marks.
+        from unittest.mock import patch
+
+        from . import dedup
+        from . import run as run_mod
+
+        asset_two = {**SAMPLE_ASSET, "id": "second-asset", "filename": "second.jpg"}
+        p1, p2, _ = self._patched_run([SAMPLE_ASSET, asset_two])
+        with (
+            p1,
+            p2,
+            patch.object(
+                run_mod.anthropic_client,
+                "complete",
+                side_effect=[VALID_REPLY, RuntimeError("boom")],
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                run_mod.run()
+
+        # The first asset was keyworded and flagged (and its mark saved)
+        # before the second asset's unexpected failure ended the run.
+        self.assertTrue(dedup.SeenStore().is_seen("sunset-beach-01"))
+
 
 if __name__ == "__main__":
     unittest.main()
