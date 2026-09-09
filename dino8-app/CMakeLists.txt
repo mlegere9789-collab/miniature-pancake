@@ -262,6 +262,7 @@ set(DINO8_SOURCES
   src/io/FileIgesStep.cpp
   src/geom/BrepMesher.cpp
   src/geom/SurfaceIntersect.cpp
+  src/geom/BlendSurface.cpp
   src/commands/cmd_fillet.cpp
   src/util/json_mini.cpp
   src/flow/FlowData.cpp
@@ -377,6 +378,18 @@ if(DINO8_BUILD_TESTS)
   target_include_directories(dino8_test_fuzz_geometry PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(dino8_test_fuzz_geometry PRIVATE dino8_kernel)
   add_test(NAME dino8_fuzz_geometry COMMAND dino8_test_fuzz_geometry)
+
+  # Numerically verifies BuildBlendSurfaceG2's own claim (geom/BlendSurface.h):
+  # that its Continuity=Curvature blend's curvature vector at the boundary
+  # actually matches each adjacent surface's own curvature there (a real G2
+  # check), and that this differs measurably from the old/G1
+  # BuildBlendSurfaceG1 tangent-magnitude-boost approximation, which matches
+  # the tangent PLANE only and leaves a real curvature gap. See
+  # tests/test_g2_blend.cpp.
+  add_executable(dino8_test_g2_blend tests/test_g2_blend.cpp src/geom/BlendSurface.cpp)
+  target_include_directories(dino8_test_g2_blend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_g2_blend PRIVATE dino8_kernel)
+  add_test(NAME dino8_g2_blend COMMAND dino8_test_g2_blend)
 
   # Standalone timing benchmark for Document's diff-based undo/redo history
   # (see tests/undo_bench.cpp and tests/undo_scaling_notes.md) - not an

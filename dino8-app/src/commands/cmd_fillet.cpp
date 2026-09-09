@@ -20,6 +20,7 @@
 // back to a mesh boolean of a swept cutting tool, and says so in the
 // command's printed note ("mesh fallback").
 #include "commands/cmd_common.h"
+#include "geom/BlendSurface.h"
 #include "geom/SurfaceIntersect.h"
 
 #include <algorithm>
@@ -161,109 +162,9 @@ std::optional<kernel::Mesh> ObjectMesh(const SceneObject& o, double tol) { retur
 
 // ---------------------------------------------------------------------------
 // Homogeneous "skinning" of same-degree, same-knot-vector rows into a
-// rational NURBS surface. Row i's control points become column i of every
-// interpolated row exactly (see file banner): for each column we run a
-// global cubic interpolation (banded collocation, same technique as
-// SurfaceIntersect.cpp's InterpolateCubic) of the homogeneous (wx,wy,wz,w)
-// coordinates along the rows' parameter, so the u-isoparm at each row's own
-// v-parameter reproduces that row exactly.
-// ---------------------------------------------------------------------------
-
-struct HomogeneousRow {
-  std::vector<ON_4dPoint> cv;  // already homogeneous: (w*x, w*y, w*z, w)
-};
-
-// Builds the banded collocation system once (rows share params/knots) and
-// solves it for however many scalar channels are passed in `channels`
-// (each entry: n values, one per row).
-bool SolveGlobalInterpolation(const std::vector<double>& params, int order, std::vector<std::vector<double>>& channels, std::vector<double>& knots) {
-  const int n = static_cast<int>(params.size());
-  if (n < 2 || order < 2) return false;
-  const int p = order - 1;
-  knots.assign(static_cast<size_t>(n + order), 0.0);
-  for (int i = 0; i <= p; ++i) { knots[static_cast<size_t>(i)] = params.front(); knots[static_cast<size_t>(n + i)] = params.back(); }
-  for (int j = 1; j <= n - p - 1; ++j) {
-    double s = 0;
-    for (int k = j; k < j + p; ++k) s += params[static_cast<size_t>(k)];
-    knots[static_cast<size_t>(p + j)] = s / p;
-  }
-  std::vector<double> knot(knots.begin() + 1, knots.end() - 1);  // OpenNURBS-style (n+order-2 knots)
-  const int bw = 2 * p + 1;
-  std::vector<double> A(static_cast<size_t>(n) * bw, 0);
-  auto at = [&](int r, int c) -> double& { return A[static_cast<size_t>(r) * bw + (c - r + p)]; };
-  // See SurfaceIntersect.cpp's InterpolateCubic: ON_EvaluateNurbsBasis needs
-  // an order*order scratch buffer, not just `order`, or it overflows.
-  std::vector<double> N(static_cast<size_t>(order) * static_cast<size_t>(order));
-  for (int k = 0; k < n; ++k) {
-    const double t = params[static_cast<size_t>(k)];
-    const int span = ON_NurbsSpanIndex(order, n, knot.data(), t, 0, 0);
-    ON_EvaluateNurbsBasis(order, knot.data() + span, t, N.data());
-    for (int j = 0; j < order; ++j) {
-      const int c = span + j;
-      if (c - k + p < 0 || c - k + p >= bw) continue;
-      at(k, c) = N[static_cast<size_t>(j)];
-    }
-  }
-  for (int k = 0; k < n; ++k) {
-    const double piv = at(k, k);
-    if (std::fabs(piv) < 1e-300) continue;
-    for (int r = k + 1; r <= std::min(n - 1, k + p); ++r) {
-      const double f = at(r, k) / piv;
-      if (f == 0) continue;
-      for (int c = k; c <= std::min(n - 1, k + p); ++c) at(r, c) -= f * at(k, c);
-      for (auto& ch : channels) ch[static_cast<size_t>(r)] -= f * ch[static_cast<size_t>(k)];
-    }
-  }
-  for (auto& ch : channels) {
-    std::vector<double> sol(static_cast<size_t>(n), 0);
-    for (int r = n - 1; r >= 0; --r) {
-      double s = ch[static_cast<size_t>(r)];
-      for (int c = r + 1; c <= std::min(n - 1, r + p); ++c) s -= at(r, c) * sol[static_cast<size_t>(c)];
-      const double piv = at(r, r);
-      sol[static_cast<size_t>(r)] = std::fabs(piv) < 1e-300 ? 0 : s / piv;
-    }
-    ch = sol;
-  }
-  knots = knot;
-  return true;
-}
-
-// rows[j] is the j-th row (same CV count `nu`, same weight pattern); params
-// gives each row's v-parameter (size == rows.size()). Produces a rational
-// ON_NurbsSurface of order (min(4,nu), min(4,nv)) — but since every row
-// already has an *exact* arc representation, the u-direction keeps each
-// row's own order (assumed 3, quadratic Bezier arcs) untouched; only the
-// v-direction is a genuine global interpolation.
-bool LoftRows(const std::vector<HomogeneousRow>& rows, const std::vector<double>& params_in, int u_order, ON_NurbsSurface& out) {
-  const int nv = static_cast<int>(rows.size());
-  if (nv < 2) return false;
-  const int nu = static_cast<int>(rows.front().cv.size());
-  for (const auto& r : rows) if (static_cast<int>(r.cv.size()) != nu) return false;
-  std::vector<double> params = params_in;
-  const int v_order = std::min(4, nv);
-  std::vector<std::vector<double>> channels(static_cast<size_t>(nu) * 4, std::vector<double>(static_cast<size_t>(nv), 0.0));
-  for (int j = 0; j < nv; ++j)
-    for (int i = 0; i < nu; ++i) {
-      const ON_4dPoint& cv = rows[static_cast<size_t>(j)].cv[static_cast<size_t>(i)];
-      channels[static_cast<size_t>(i) * 4 + 0][static_cast<size_t>(j)] = cv.x;
-      channels[static_cast<size_t>(i) * 4 + 1][static_cast<size_t>(j)] = cv.y;
-      channels[static_cast<size_t>(i) * 4 + 2][static_cast<size_t>(j)] = cv.z;
-      channels[static_cast<size_t>(i) * 4 + 3][static_cast<size_t>(j)] = cv.w;
-    }
-  std::vector<double> v_knots;
-  if (!SolveGlobalInterpolation(params, v_order, channels, v_knots)) return false;
-  out.Create(3, true, u_order, v_order, nu, nv);
-  // u knots: a single clamped span per the (assumed Bezier) row representation.
-  for (int i = 0; i < nu + u_order - 2; ++i) out.SetKnot(0, i, i < u_order - 1 ? 0.0 : 1.0);
-  for (int i = 0; i < nv + v_order - 2; ++i) out.SetKnot(1, i, v_knots[static_cast<size_t>(i)]);
-  for (int i = 0; i < nu; ++i)
-    for (int j = 0; j < nv; ++j) {
-      const double w = channels[static_cast<size_t>(i) * 4 + 3][static_cast<size_t>(j)];
-      out.SetCV(i, j, ON_4dPoint(channels[static_cast<size_t>(i) * 4 + 0][static_cast<size_t>(j)], channels[static_cast<size_t>(i) * 4 + 1][static_cast<size_t>(j)], channels[static_cast<size_t>(i) * 4 + 2][static_cast<size_t>(j)], w));
-    }
-  return true;
-}
-
+// rational NURBS surface (HomogeneousRow, LoftRows) now lives in
+// geom/BlendSurface.{h,cpp} - shared with the Hermite blend rows there and
+// with tests/test_g2_blend.cpp.
 // ---------------------------------------------------------------------------
 // Rolling-ball fillet core
 // ---------------------------------------------------------------------------
@@ -893,63 +794,10 @@ class FilletTwoSurfacesCommand : public Command {
 // FilletEdge / ChamferEdge / BlendEdge: pick a shared edge on a polysurface.
 // ---------------------------------------------------------------------------
 
-namespace {
-
-// Interior parameter-space direction from (u,v) towards the surface's
-// domain centre, used as a robust (if approximate away from rectangular
-// domains) "into the face" probe for cross-boundary tangents.
-Vector3d InteriorDirection3d(const ON_Surface& s, double u, double v) {
-  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
-  double duu = du.Mid() - u, dvv = dv.Mid() - v;
-  const double len = std::hypot(duu, dvv);
-  if (len < 1e-12) { duu = 1; dvv = 0; } else { duu /= len; dvv /= len; }
-  const double step = 1e-3 * std::max(du.Length(), dv.Length());
-  const Point3d p0 = s.PointAt(u, v);
-  const Point3d p1 = s.PointAt(Clamp(u + duu * step, du.Min(), du.Max()), Clamp(v + dvv * step, dv.Min(), dv.Max()));
-  Vector3d d = p1 - p0;
-  if (!d.Unitize()) d = s.NormalAt(u, v);
-  return d;
-}
-
-// Cubic-Bezier (Hermite) row between pA (surface a) and pB (surface b), with
-// out-of-face tangents scaled by `mag` (roughly a third of the corner gap,
-// as is standard for a visually fair Hermite-to-Bezier conversion).
-HomogeneousRow HermiteRow(Point3d pa, Vector3d out_a, Point3d pb, Vector3d out_b, double mag) {
-  HomogeneousRow row;
-  const Point3d c0 = pa, c3 = pb;
-  const Point3d c1 = pa + out_a * mag, c2 = pb + out_b * mag;
-  row.cv = {ON_4dPoint(c0.x, c0.y, c0.z, 1), ON_4dPoint(c1.x, c1.y, c1.z, 1), ON_4dPoint(c2.x, c2.y, c2.z, 1), ON_4dPoint(c3.x, c3.y, c3.z, 1)};
-  return row;
-}
-
-// Builds a degree-3 x 3 Hermite blend surface between edge curves `ea`
-// (on surface `sa`, whose face-normal-consistent uv is `uv_a_at`) and `eb`
-// similarly. `curvature` scales the tangent magnitude up (documented
-// approximation for true G2 - a full quintic curvature match is not
-// attempted). Returns false if the edges have too few usable samples.
-bool BuildBlendSurface(const ON_Curve& ea, const ON_Surface& sa, const std::function<ON_2dPoint(double)>& uv_a_at, const ON_Curve& eb, const ON_Surface& sb, const std::function<ON_2dPoint(double)>& uv_b_at, bool curvature, int samples, ON_NurbsSurface& out) {
-  std::vector<HomogeneousRow> rows;
-  std::vector<double> params;
-  const ON_Interval da = ea.Domain();
-  for (int i = 0; i <= samples; ++i) {
-    const double t = static_cast<double>(i) / samples;
-    const double ta = da.ParameterAt(t);
-    const Point3d pa = ea.PointAt(ta);
-    const ON_2dPoint uva = uv_a_at(t);
-    const ON_2dPoint uvb = uv_b_at(t);
-    const Point3d pb = sb.PointAt(uvb.x, uvb.y);
-    Vector3d out_a = -InteriorDirection3d(sa, uva.x, uva.y);
-    Vector3d out_b = -InteriorDirection3d(sb, uvb.x, uvb.y);
-    const double gap = pa.DistanceTo(pb);
-    const double mag = gap * (curvature ? 0.55 : 0.35);
-    rows.push_back(HermiteRow(pa, out_a, pb, out_b, mag));
-    params.push_back(t);
-  }
-  (void)eb;
-  return LoftRows(rows, params, 4, out);
-}
-
-}  // namespace
+// BuildBlendSurfaceG1/BuildBlendSurfaceG2 (including InteriorDirection3d
+// and the Hermite row builders they're built from) now live in
+// geom/BlendSurface.{h,cpp} - shared with tests/test_g2_blend.cpp, which
+// numerically checks BuildBlendSurfaceG2's curvature-matching claim.
 
 class FilletEdgeCommand : public Command {
  public:
@@ -1043,7 +891,8 @@ class FilletEdgeCommand : public Command {
       };
       auto uv_a_fn = [&](double t) { return uv_at(t0, t); };
       auto uv_b_fn = [&](double t) { return uv_at(t1, t); };
-      ok = BuildBlendSurface(ec, *sa, uv_a_fn, ec, *sb, uv_b_fn, curvature_, 24, built);
+      ok = curvature_ ? BuildBlendSurfaceG2(ec, *sa, uv_a_fn, ec, *sb, uv_b_fn, 24, built)
+                      : BuildBlendSurfaceG1(ec, *sa, uv_a_fn, ec, *sb, uv_b_fn, false, 24, built);
       if (!ok) err = "could not build the blend surface";
     } else {
       // radii_ (from the Radii= option) makes this a genuine variable-radius
@@ -1257,7 +1106,7 @@ class FilletEdgeCommand : public Command {
     SceneObject like = *o;
     ObjectId nid = AddSurfaceFrom(ctx, built, like);
     ctx.Doc().Select(nid, true);
-    ctx.Print(label + ": blend surface added between the two faces at edge " + std::to_string(pick.edge) + (curvature_ ? " (Continuity=Curvature is an approximate tangent-magnitude boost, not a true G2 solve)" : ""));
+    ctx.Print(label + ": blend surface added between the two faces at edge " + std::to_string(pick.edge) + (curvature_ ? " (Continuity=Curvature: quintic blend, cross-boundary curvature matched exactly to both faces - G1 only where a face's own parametrization is singular there)" : ""));
   }
 
  private:
@@ -1448,7 +1297,8 @@ class BlendSrfCommand : public Command {
     auto uv_a_fn = [&](double t) { return uv_on(*sa, *ea, t); };
     auto uv_b_fn = [&](double t) { return uv_on(*sb, *eb, t); };
     ON_NurbsSurface built;
-    const bool ok = BuildBlendSurface(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, curvature_, 24, built);
+    const bool ok = curvature_ ? BuildBlendSurfaceG2(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, 24, built)
+                               : BuildBlendSurfaceG1(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, false, 24, built);
     delete ea;
     delete eb;
     if (!ok) { ctx.Warn("BlendSrf: could not build the blend"); return; }
@@ -1456,7 +1306,7 @@ class BlendSrfCommand : public Command {
     SceneObject like = *oa;
     ObjectId nid = AddSurfaceFrom(ctx, built, like);
     ctx.Doc().Select(nid, true);
-    ctx.Print(std::string("BlendSrf: blend surface added between object ") + std::to_string(fa.id) + " and " + std::to_string(fb.id) + (curvature_ ? " (Continuity=Curvature approximated by a larger tangent magnitude)" : " (Continuity=Tangency)"));
+    ctx.Print(std::string("BlendSrf: blend surface added between object ") + std::to_string(fa.id) + " and " + std::to_string(fb.id) + (curvature_ ? " (Continuity=Curvature: quintic blend, cross-boundary curvature matched exactly to both surfaces)" : " (Continuity=Tangency)"));
   }
 
  private:
@@ -1991,13 +1841,13 @@ void RegisterFilletCommands(CommandEngine& e) {
   Reg(e, "ChamferEdge", Make<FilletEdgeCommand>(FilletEdgeCommand::Mode::Chamfer), CommandStatus::Implemented,
       "Same trimming strategy as FilletEdge, a ruled chamfer instead of an arc.");
   Reg(e, "BlendEdge", Make<FilletEdgeCommand>(FilletEdgeCommand::Mode::Blend), CommandStatus::Implemented,
-      "Cubic-Hermite G1 blend surface added between the two faces (not stitched into the polysurface); Continuity=Curvature boosts tangent magnitude rather than solving true G2.");
+      "Hermite blend surface added between the two faces (not stitched into the polysurface). Continuity=Tangency is a degree-3x3 G1 blend. Continuity=Curvature is a degree-5x3 blend whose cross-boundary second derivative is set to each face's own exact analytic directional second derivative (Ev2Der, not a finite difference), so its curvature vector matches each face's curvature exactly in that direction (numerically verified in tests/test_g2_blend.cpp for both flat and curved faces) - real G2 in the cross-boundary direction, not full surface-wide G2 in every direction, and it silently falls back to the plain G1 tangent at any sample where a face's own parametrization is singular there.");
   Reg(e, "VariableBlendSrf", Make<FilletTwoSurfacesCommand>(FilletTwoSurfacesCommand::Mode::VariableFillet), CommandStatus::Partial,
       "Uses the same variable-radius rolling-ball fillet as VariableFilletSrf (a true independent blend-tangent variant is not implemented).");
   Reg(e, "MatchSrf", Make<MatchSrfCommand>(), CommandStatus::Implemented,
       "Moves the picked surface's boundary control row onto the target (Position); Tangency also aligns the next row's step to the target's tangent/normal.");
   Reg(e, "BlendSrf", Make<BlendSrfCommand>(), CommandStatus::Implemented,
-      "Degree-3x3 Hermite blend between two picked surface edges; Continuity=Curvature approximates G2 with a larger tangent magnitude, not a true quintic solve.");
+      "Hermite blend between two picked surface edges. Continuity=Tangency is a degree-3x3 G1 blend. Continuity=Curvature is a degree-5x3 blend matching each surface's own exact directional second derivative at the boundary (Ev2Der), so its curvature vector matches exactly in the cross-boundary direction (see BlendEdge's own help and tests/test_g2_blend.cpp) - not a claim of full surface-wide G2.");
   Reg(e, "ConnectSrf", Make<ConnectSrfCommand>(), CommandStatus::Partial,
       "Extends both surfaces and adds their real SSX join curve; exact trim is only immediate for the always-connecting planar case, otherwise trim manually with Split.");
   Reg(e, "SplitFace", Make<SplitFaceCommand>(), CommandStatus::Implemented,
