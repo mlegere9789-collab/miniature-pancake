@@ -1208,10 +1208,26 @@ if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
 echo "$FL" | grep -q "^smoke:" || { echo "$FL"; echo "FAIL: file script produced no smoke line"; fail=1; }
 flcheck() { if echo "$FL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 flcheck "Saved $TMP/file/file1.3dm" "Save wrote file1.3dm"
-flcheck "Opened $TMP/file/file1.3dm (2 objects)" "Open re-read file1.3dm"
+flcheck "Opened $TMP/file/file1.3dm (3 objects)" "Open re-read file1.3dm"
 flcheck "Saved $TMP/file/file2.3dm" "SaveAs wrote file2.3dm"
-flcheck "Opened $TMP/file/file2.3dm (2 objects)" "Open re-read file2.3dm"
+flcheck "Opened $TMP/file/file2.3dm (3 objects)" "Open re-read file2.3dm"
 flcheck "Imported $TMP/file/file1.3dm" "Import brought file1.3dm's objects in"
+# Real geometric-fidelity proof, not just object counts: List (run once
+# right before the first Save, once right after the matching Open) prints
+# each object's exact fingerprint - a degree/CV count for curves, face/edge
+# count for breps, face/edge/vertex/crease count for SubDs. Asserting each
+# line appears *exactly* twice (grep -c over the whole captured script
+# output, since grep -q would already be satisfied by the pre-save
+# occurrence alone) proves the .3dm round trip didn't silently drop or
+# corrupt control points, faces, or SubD topology - Box (brep), Sphere
+# (brep - confirmed via the real List output, not assumed), and SubDBox
+# (the first SubD object any .3dm round-trip test in this suite covers).
+FL_BOX_COUNT=$(echo "$FL" | grep -c "^history:   6 faces, 12 edges, closed solid$")
+[ "$FL_BOX_COUNT" = "2" ] && echo "ok   Box's exact 6 faces/12 edges fingerprint survived the .3dm round trip (List ran twice, both matched)" || { echo "FAIL Box's exact fingerprint did not appear exactly twice (got $FL_BOX_COUNT) - the .3dm round trip silently changed the brep"; fail=1; }
+FL_SPHERE_COUNT=$(echo "$FL" | grep -c "^history:   1 faces, 1 edges, closed solid$")
+[ "$FL_SPHERE_COUNT" = "2" ] && echo "ok   Sphere's exact 1 face/1 edge fingerprint survived the .3dm round trip" || { echo "FAIL Sphere's exact fingerprint did not appear exactly twice (got $FL_SPHERE_COUNT) - the .3dm round trip silently changed the brep"; fail=1; }
+FL_SUBD_COUNT=$(echo "$FL" | grep -c "^history:   6 faces, 12 edges, 8 vertices, 0 creases$")
+[ "$FL_SUBD_COUNT" = "2" ] && echo "ok   SubDBox's exact 6 faces/12 edges/8 vertices/0 creases fingerprint survived the .3dm round trip" || { echo "FAIL SubDBox's exact fingerprint did not appear exactly twice (got $FL_SUBD_COUNT) - the .3dm round trip silently changed the SubD topology"; fail=1; }
 flcheck "Exported $TMP/file/export1.obj" "Export wrote export1.obj"
 test -s "$TMP/file/file1.3dm" && echo "ok   file1.3dm exists" || { echo "FAIL file1.3dm missing"; fail=1; }
 test -s "$TMP/file/file2.3dm" && echo "ok   file2.3dm exists" || { echo "FAIL file2.3dm missing"; fail=1; }
@@ -1293,6 +1309,26 @@ d2check "DimRadius 5 (associative to selected arc/circle)" "DimRadius recorded t
 d2check "UpdateDimensions:   DimRadius now measures 10" "UpdateDimensions redrew DimRadius from the circle's doubled radius, not the 5 baked at creation time"
 d2check "DimAngle 90 deg (associative to 3 point(s))" "DimAngle anchored all three points (vertex + two direction points) to real Point objects"
 d2check "UpdateDimensions:   DimAngle now measures 45 deg" "UpdateDimensions redrew DimAngle from a moved direction point's new position, not the 90 deg baked at creation time"
+
+# Associativity survives a .3dm round trip: DimRefObj1/2/3 and group_id (see
+# cmd_annotate.cpp/File3dm.cpp) must still resolve after Save/New/Open, so
+# the post-Open UpdateDimensions re-run above finds and redraws the exact
+# same 4 associative dimensions (the tolerance-anchor DimLinear at 20, the
+# stretched DimLinear at 40, DimRadius at 10, DimAngle at 45 deg) as the
+# last pre-save run did - counting occurrences (not grep -q) so a broken
+# round trip that drops back to "no associative dimensions" or only
+# partially resolves them is actually caught, not masked by the pre-save
+# occurrences already having satisfied a plain substring match.
+D2_LEN20_COUNT=$(echo "$D2" | grep -c "UpdateDimensions:   DimLinear now measures 20")
+[ "$D2_LEN20_COUNT" = "4" ] && echo "ok   the tolerance-anchor DimLinear (=20) round-tripped and was redrawn on every UpdateDimensions call, including after Open" || { echo "FAIL DimLinear=20 redrawn $D2_LEN20_COUNT times, expected 4 (associativity did not survive the .3dm round trip)"; fail=1; }
+D2_LEN40_COUNT=$(echo "$D2" | grep -c "UpdateDimensions:   DimLinear now measures 40")
+[ "$D2_LEN40_COUNT" = "4" ] && echo "ok   the stretched DimLinear (=40) round-tripped and was redrawn on every UpdateDimensions call, including after Open" || { echo "FAIL DimLinear=40 redrawn $D2_LEN40_COUNT times, expected 4 (associativity did not survive the .3dm round trip)"; fail=1; }
+D2_RAD10_COUNT=$(echo "$D2" | grep -c "UpdateDimensions:   DimRadius now measures 10")
+[ "$D2_RAD10_COUNT" = "3" ] && echo "ok   DimRadius round-tripped and was redrawn after Open (3 calls: the two pre-save runs once it existed, plus the post-Open run)" || { echo "FAIL DimRadius redrawn $D2_RAD10_COUNT times, expected 3 (associativity did not survive the .3dm round trip)"; fail=1; }
+D2_ANG45_COUNT=$(echo "$D2" | grep -c "UpdateDimensions:   DimAngle now measures 45 deg")
+[ "$D2_ANG45_COUNT" = "2" ] && echo "ok   DimAngle round-tripped and was redrawn after Open (the one pre-save run once it existed, plus the post-Open run)" || { echo "FAIL DimAngle redrawn $D2_ANG45_COUNT times, expected 2 (associativity did not survive the .3dm round trip)"; fail=1; }
+D2_REGEN4_COUNT=$(echo "$D2" | grep -c "UpdateDimensions: 4 dimension(s) regenerated")
+[ "$D2_REGEN4_COUNT" = "2" ] && echo "ok   UpdateDimensions regenerated all 4 associative dimensions with 0 skipped, both before Save and again after Open" || { echo "FAIL UpdateDimensions: 4 dimension(s) regenerated seen $D2_REGEN4_COUNT times, expected 2 (some dimensions failed to resolve after the .3dm round trip)"; fail=1; }
 
 d2check "gl_error=0" "drafting2 script ran without OpenGL errors"
 

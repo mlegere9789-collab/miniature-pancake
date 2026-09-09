@@ -334,6 +334,7 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
   struct PendingDetail { int layout; size_t detail; std::string hidden_objects; };
   std::vector<PendingDetail> pending_details;
   UuidMap object_ids(UuidLess);  // object uuid -> document id (as int)
+  std::map<int, std::vector<ObjectId>> restore_groups;  // file group_id -> new object ids (see Document::CreateGroup below)
 
   int skipped = 0;
   ONX_ModelComponentIterator it(model, ON_ModelComponent::Type::ModelGeometry);
@@ -345,6 +346,7 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     if (!g) continue;
     SceneObject obj;
     bool made = false;
+    int file_group_id = -1;
     if (const ON_Light* light = ON_Light::Cast(g)) {
       AddLightFromOn(doc, *light, attr);
       continue;
@@ -485,11 +487,38 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
         const std::string key = FromWide(strings[i].m_key), val = FromWide(strings[i].m_string_value);
         if (key == "Dino8.Mapping") { ParseTextureMapping(val, obj.mapping); continue; }
         if (key == "Dino8.MappingScale") { obj.mapping_scale = static_cast<float>(std::atof(val.c_str())); continue; }
+        if (key == "Dino8.GroupId") { file_group_id = std::atoi(val.c_str()); continue; }
         obj.user_text[key] = val;
       }
     }
     const ObjectId added = doc.Add(std::move(obj));
     if (attr) object_ids[attr->m_uuid] = static_cast<int>(added);
+    if (file_group_id >= 0) restore_groups[file_group_id].push_back(added);
+  }
+  // Restore real Document::Group() membership (see Save3dm's "Dino8.GroupId"
+  // note) via the same CreateGroup() path the Group command itself uses, so
+  // group_id values can't collide with anything the document allocates
+  // later, and UpdateDimensions' own use of group_id to tie a dimension's
+  // baked objects together survives the round trip too.
+  for (auto& [file_gid, ids] : restore_groups) doc.CreateGroup(ids);
+  // DimRefObj1/2/3 (see Save3dm) were rewritten to the referenced anchor
+  // object's stable uuid at save time, since Open reassigns every object a
+  // fresh numeric id - resolve them back to the *new* numeric id now that
+  // every object has been added and object_ids is complete. A reference
+  // whose anchor didn't survive (e.g. excluded as a reference object) is
+  // dropped so UpdateDimensions falls back to its normal "skipped" handling
+  // instead of misinterpreting a stale uuid string as a bogus object id.
+  {
+    static const char* kDimRefPairs[][2] = {{"DimRefObj1", "DimRefEnd1"}, {"DimRefObj2", "DimRefEnd2"}, {"DimRefObj3", "DimRefEnd3"}};
+    for (SceneObject& o : doc.Objects()) {
+      for (const char** pair : kDimRefPairs) {
+        auto it = o.user_text.find(pair[0]);
+        if (it == o.user_text.end()) continue;
+        auto oi = object_ids.find(ON_UuidFromString(it->second.c_str()));
+        if (oi != object_ids.end()) it->second = std::to_string(oi->second);
+        else { o.user_text.erase(it); o.user_text.erase(pair[1]); }
+      }
+    }
   }
   // Per-detail hidden objects (saved as object uuids).
   for (const PendingDetail& pd : pending_details) {
@@ -777,11 +806,19 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
 
   int written = 0;
   std::map<ObjectId, ON_UUID> object_uuids;
+  // Pre-generate every written object's uuid before writing any attributes,
+  // so DimRefObj1/2/3 (see below) can always resolve the *referenced*
+  // object's uuid regardless of which one is written first.
+  for (const SceneObject& o : doc.Objects()) {
+    if (!include_reference_objects && o.user_text.count("Dino8.Reference")) continue;
+    ON_UUID uuid;
+    ON_CreateUuid(uuid);
+    object_uuids[o.id] = uuid;
+  }
   for (const SceneObject& o : doc.Objects()) {
     if (!include_reference_objects && o.user_text.count("Dino8.Reference")) continue;
     ON_3dmObjectAttributes attr;
-    ON_CreateUuid(attr.m_uuid);
-    object_uuids[o.id] = attr.m_uuid;
+    attr.m_uuid = object_uuids[o.id];
     attr.SetName(ON_wString(o.name.c_str()), true);
     attr.m_layer_index = file_layer_index[static_cast<size_t>(std::clamp(o.layer_index, 0, static_cast<int>(doc.Layers().size()) - 1))];
     if (!o.color_by_layer) {
@@ -794,7 +831,30 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
       attr.SetLinetypeSource(ON::linetype_from_object);
       attr.m_linetype_index = linetype_index(o.linetype);
     }
-    for (const auto& [k, v] : o.user_text) attr.SetUserString(ON_wString(k.c_str()), ON_wString(v.c_str()));
+    // DimRefObj1/2/3 (see cmd_annotate.cpp) carry the *referenced* anchor
+    // object's live numeric ObjectId, which Open reassigns on every load -
+    // write the anchor's stable uuid instead so UpdateDimensions can still
+    // resolve the same logical anchor after a .3dm round trip (fixed up
+    // back into a numeric id again on read, below).
+    static const char* kDimRefKeys[] = {"DimRefObj1", "DimRefObj2", "DimRefObj3"};
+    for (const auto& [k, v] : o.user_text) {
+      bool remapped = false;
+      for (const char* rk : kDimRefKeys) {
+        if (k != rk) continue;
+        const ObjectId ref = static_cast<ObjectId>(std::strtoull(v.c_str(), nullptr, 10));
+        auto ru = object_uuids.find(ref);
+        if (ru != object_uuids.end()) attr.SetUserString(ON_wString(k.c_str()), ON_wString(UuidString(ru->second).c_str()));
+        remapped = true;
+        break;
+      }
+      if (!remapped) attr.SetUserString(ON_wString(k.c_str()), ON_wString(v.c_str()));
+    }
+    // group_id (Document::CreateGroup/Ungroup) isn't part of any opennurbs
+    // table this app populates - persist it as a plain user string so real
+    // "Group" membership and UpdateDimensions' own use of group_id to tie a
+    // dimension's line/arrow/text objects together both survive Save/Open
+    // (restored via Document::CreateGroup on read, below).
+    if (o.group_id >= 0) attr.SetUserString(L"Dino8.GroupId", ON_wString(std::to_string(o.group_id).c_str()));
     if (!o.material_name.empty() && material_index.count(o.material_name)) {
       attr.m_material_index = material_index[o.material_name];
       attr.SetMaterialSource(ON::material_from_object);

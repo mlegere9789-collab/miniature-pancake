@@ -144,3 +144,11 @@ SelNone
 Save @TMP@/drafting2.3dm
 New
 Open @TMP@/drafting2.3dm
+# Prove associative-dimension references (DimRefObj1/2/3, group_id - see
+# cmd_annotate.cpp/File3dm.cpp) actually survive a .3dm round trip: rerunning
+# UpdateDimensions here must find the same associative dimensions and
+# reproduce the exact same measured values as the pre-save run above, not
+# report "no associative dimensions" (which is what happens if the group_id/
+# object-id references didn't come back resolvable).
+SelNone
+UpdateDimensions
