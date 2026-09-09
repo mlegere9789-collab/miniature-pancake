@@ -91,10 +91,24 @@ public static class OutputPathResolver
     {
         var result = string.IsNullOrWhiteSpace(template) ? "{name}.{ext}" : template;
 
-        return result
-            .Replace("{name}", name, StringComparison.OrdinalIgnoreCase)
-            .Replace("{ext}", extension, StringComparison.OrdinalIgnoreCase)
-            .Replace("{index}", index.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
+        // A single regex pass over the original template, not three chained Replace()
+        // calls: chaining would let a literal "{ext}" or "{index}" that happens to appear
+        // inside `name` itself -- an unusual but real filename, e.g. a batch-export tool's
+        // own unresolved "IMG_{index}.jpg" -- get reinterpreted as a template token by a
+        // later Replace() call, corrupting a value that was already substituted in. Regex's
+        // MatchEvaluator only ever sees matches from the original input string, so nothing
+        // substituted in is rescanned.
+        return System.Text.RegularExpressions.Regex.Replace(
+            result,
+            @"\{name\}|\{ext\}|\{index\}",
+            match => match.Value.ToLowerInvariant() switch
+            {
+                "{name}" => name,
+                "{ext}" => extension,
+                "{index}" => index.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                _ => match.Value,
+            },
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     }
 
     private static string ResolveDirectory(string inputPath, OutputTarget target, string? batchRoot)

@@ -61,6 +61,21 @@ public class OutputPathResolverTests : IDisposable
     }
 
     [Fact]
+    public void A_literal_token_lookalike_in_the_source_name_survives_intact()
+    {
+        // "IMG_{index}" is an unusual but real filename shape -- e.g. a batch-export tool
+        // that left its own "{index}" placeholder unresolved. Applying the "{name}.{ext}"
+        // template must substitute {name} with that literal text and stop, not let the
+        // "{index}" now sitting inside the result get reinterpreted by the template's own
+        // separate {index} substitution -- which would corrupt "IMG_{index}.png" into
+        // "IMG_7.png" instead of preserving what was actually in the source file's name.
+        var resolved = OutputPathResolver.Resolve(
+            _temp.CreateFile("IMG_{index}.jpg"), Target(), index: 7);
+
+        Assert.Equal("IMG_{index}.png", Path.GetFileName(resolved));
+    }
+
+    [Fact]
     public void Rename_is_the_default_and_never_destroys_an_existing_file()
     {
         var input = _temp.CreateFile("holiday.jpg");
