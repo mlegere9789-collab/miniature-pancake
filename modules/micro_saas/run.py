@@ -139,11 +139,15 @@ def _run_billing(settings: Settings, log) -> tuple[float, int]:
     # A failed charges fetch means this window was never actually
     # reconciled -- keep the old run_at so the next run's
     # previous_run_unix() re-queries the same window instead of silently
-    # treating it as done and skipping it forever.
-    snap.save(
-        current_ids,
-        run_at=snap.previous_run_at if charges_fetch_failed else None,
-    )
+    # treating it as done and skipping it forever. On a genuinely fresh
+    # install, previous_run_at is itself still None at this point (nothing
+    # has ever been reconciled) -- passed through as-is rather than
+    # omitted, so a failed first-ever run doesn't get treated as a
+    # successful one and silently advance run_at to now anyway.
+    if charges_fetch_failed:
+        snap.save(current_ids, run_at=snap.previous_run_at)
+    else:
+        snap.save(current_ids)
     return summary.collected, flagged
 
 

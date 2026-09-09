@@ -254,6 +254,30 @@ class TestSnapshotStore(unittest.TestCase):
             finally:
                 snap_mod.SNAPSHOT_FILE = orig
 
+    def test_save_with_explicit_none_stores_null_not_now(self):
+        # run.py passes self.previous_run_at back in verbatim when the
+        # charges fetch failed -- on the very first run ever that is itself
+        # still None. save() must store that None as-is (round-tripping
+        # back to previous_run_at is None on reload) rather than treating
+        # an explicit None the same as "not given" and defaulting to now,
+        # the same distinction _UNSET exists to make.
+        import tempfile
+        from pathlib import Path
+
+        from . import snapshot as snap_mod
+
+        with tempfile.TemporaryDirectory() as d:
+            orig = snap_mod.SNAPSHOT_FILE
+            snap_mod.SNAPSHOT_FILE = Path(d) / "snap.json"
+            try:
+                store = snap_mod.SnapshotStore()
+                store.save({"sub_a"}, run_at=None)
+                reloaded = snap_mod.SnapshotStore()
+                self.assertIsNone(reloaded.previous_run_at)
+                self.assertEqual(reloaded.previous_ids, {"sub_a"})
+            finally:
+                snap_mod.SNAPSHOT_FILE = orig
+
     def test_previous_run_unix_falls_back_to_lookback(self):
         import tempfile
         import time
@@ -403,6 +427,25 @@ class TestRunEndToEnd(unittest.TestCase):
         with p1, p2, p3:
             run_mod.run()
         self.assertEqual(snap_mod.SnapshotStore().previous_run_at, first_run_at)
+
+    def test_a_failed_first_ever_run_does_not_fabricate_a_run_at(self):
+        # Regression test for a gap the fix above didn't originally cover:
+        # snap.save() correctly preserves an *existing* previous_run_at when
+        # the charges fetch fails, but on a brand new install nothing has
+        # ever been reconciled yet, so previous_run_at is itself still None
+        # at that point. A bare `run_at or now()` would treat that None the
+        # same as "no override given" and advance run_at to now anyway --
+        # silently discarding exactly the window this fix exists to
+        # protect, the one time (the very first run) it matters most.
+        from . import run as run_mod
+        from . import snapshot as snap_mod
+        from .stripe_client import StripeError
+
+        p1, p2, p3 = self._patched_run(charges_error=StripeError("boom"))
+        with p1, p2, p3:
+            run_mod.run()  # must not raise
+
+        self.assertIsNone(snap_mod.SnapshotStore().previous_run_at)
 
     def test_new_and_churned_subscriptions_are_tracked_across_runs(self):
         from . import run as run_mod
