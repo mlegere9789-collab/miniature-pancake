@@ -28,22 +28,40 @@ The 13 "Missing" are **all false positives** of the regex scan — every one is 
 - `cmd_state.cpp:822`: `for (const char* n : {"CheckInLicense", "CheckOutLicense", "Login", "Logout", "Libraries", "DownloadLibraryTextures"}) Reg(e, n, Say(kFree));` — accounts for `CheckInLicense`, `CheckOutLicense`, `Login`, `Logout`, `Libraries`.
 - `cmd_meshtools.cpp:2209` and neighbouring lines: a table of `{extract-name, sel-name, metric, default, lambda}` entries drives `Reg(e, extract_name, ...)` / `Reg(e, sel_name, ...)` in a loop — accounts for `ExtractMeshFacesByArea/AspectRatio/DraftAngle/EdgeLength` and `SelMeshFacesByArea/AspectRatio/DraftAngle/EdgeLength`.
 
-Adding those 13 back gives the authoritative **1031 Implemented / 24 Partial / 0 Planned out of 1055** — confirmed by a second, independent per-file tally that expands the loops by hand (§1.1). Registered-name totals: catalogue names (1055) plus 131 non-catalogue extras (aliases such as `ZoomExtents`, `Top`, `Layers`, plus whole new subsystems — Dino Flow, plug-ins, architecture, constraints, digitizer, SpaceMouse — that have no Rhino 8 catalogue entry at all).
+Adding those 13 back gave **1031 Implemented / 24 Partial / 0 Planned out of 1055** at the time this section was first written — confirmed then by a second, independent per-file tally that expands the loops by hand (§1.1). Registered-name totals: catalogue names (1055) plus 131 non-catalogue extras (aliases such as `ZoomExtents`, `Top`, `Layers`, plus whole new subsystems — Dino Flow, plug-ins, architecture, constraints, digitizer, SpaceMouse — that have no Rhino 8 catalogue entry at all).
 
-### 0.1 The 24 remaining Partial commands
+**Update (2026-09-09):** the "24 Partial" count above is now stale — a live re-scan of the running binary's own command registry (which correctly resolves the same last-registration-wins override behaviour `CommandEngine::Reg` uses, so a command re-registered by a later `Register*Commands` call is counted under its *final* status, not an earlier stub) found **1003 Implemented / 52 Partial / 0 Planned out of 1055**. The gap is not a regression: most of the 29 newly-counted names are commands added by later feature work in this same development effort (the Digitizer/SpaceMouse/architecture/GD&T subsystems, the DXF/DWG interop series, etc.) whose own `CommandStatus::Partial` registrations were correct and honestly-noted from the day they landed, but were never folded back into this section's hand-written count and Appendix A listing. One entry (`SelMirroredBlocks`) has been *removed* from Appendix A below since it was fixed to `Implemented` in a later pass and no longer belongs in either the count or the table. §1.1's own per-file tally further down this document was NOT re-walked to match this correction — that would need its own dedicated pass — so treat the totals in §1.1 as the earlier, now-superseded snapshot and this section's numbers as current.
 
-After walking every one of them individually against current source, all 24 are genuinely infeasible without a capability this codebase deliberately does not have — not oversights:
+### 0.1 The 52 remaining Partial commands
+
+After walking every one of them individually against current source: the majority are genuinely infeasible without a capability this codebase deliberately does not have (hardware, a platform clipboard API, a kernel/data-model representation this app's design doesn't carry); a smaller number are real, scoped-down feature work rather than hard blockers — e.g. `CreateRegions`' open-curve-network case, `PointGrid`'s count options, `PrintDisplay`'s print colours, and `RemoveAllNakedMicroEdges`' actual removal step are each honestly described as future extensions of an already-partially-working command, not fully blocked. None are silent oversights or overclaimed successes either way:
 
 | Blocking capability | Commands |
 |---|---|
-| A connected digitizer | `DigBeep`, `DigSection`, `DigSketch` |
-| An OS clipboard image API | `ScreenCaptureToClipboard`, `ViewCaptureToClipboard` |
-| A block-instance parent/child hierarchy or extrusion-provenance tag | `SelChildren`, `SelParents`, `SelMirroredBlocks`, `SelExtrusion` |
+| A connected digitizer | `DigBeep`, `DigSection`, `DigSketch`, `DigCamera`, `DigClick`, `DigLine`, `Digitize` |
+| An OS clipboard image API | `ScreenCaptureToClipboard`, `ViewCaptureToClipboard`, `CopyRenderWindowToClipboard` |
+| A block-instance parent/child hierarchy or extrusion-provenance tag | `SelChildren`, `SelParents`, `SelExtrusion` |
 | Continuous mouse-drag capture in the command engine | `Sketch` |
 | A per-version DWG/DXF "scheme" picker (AutoCAD's dialog for choosing an output release) | `AcadSchemes` |
 | A per-object OCS distinct from bounding-box mapping | `ApplyOcsMapping` |
 | A UV-editing window | `UVEditor` |
 | Surface/surface intersection or topology-repair beyond what the kernel offers | `ConnectSrf`, `FilletSrfCrv`, `RefitTrim`, `ReplaceEdge`, `SplitRefitSurface`, `SquishBack`, `SquishInfo`, `UnjoinEdge`, `VariableBlendSrf`, `ExtractPipedCurve`, `ExtractOriginalCaptives` |
+| A live constructional-history/parametric dependency graph (an edit re-driving everything built from it) | `History`, `Symmetry`, `RemoveSymmetry` |
+| A dockable panel UI for this specific listing/gizmo | `BlockManager`, `MappingWidget`, `HBar` |
+| A saved dock-layout to restore a floated viewport to (today's re-dock rebuilds the whole grid) | `ToggleFloatingViewport` |
+| Deliberately never implemented (security/scope: no unsandboxed external-process exec) | `Run` |
+| A distinct point-cloud object kind in the data model (`ObjectKind` has no such variant) | `PointCloud` |
+| A non-manifold mesh/B-rep representation (the boolean kernel, Manifold, is manifold-only by design) | `NonmanifoldMerge` |
+| Per-face UV/texture-coordinate storage to pack into an atlas | `PackSubDFaces` |
+| Drawing-in-drawing block instancing for clipping drawings | `NestedClippingDrawing` |
+| Per-detail hidden-object mapping when importing a layout | `ImportLayout` |
+| A harder NURBS algorithm this build doesn't have (exact-shape re-knot; Rhino-proprietary SubD-to-NURBS-patch conversion) | `MakePeriodic` (`Smooth=No` only), `ToNURBS` |
+| A rendering pass this display pipeline doesn't have (grayscale-by-distance shading) | `ShowZBuffer` |
+| Clickable direction-arrow glyphs drawn in the viewport | `Dir` |
+| A dedicated Python-file editor (the Script Editor panel's Run button still executes Lua) | `EditPythonScript` |
+| A trim/heel hydrostatic solver | `Hydrostatics` |
+| Per-object-scoped undo search (today's `Undo` is always whole-document, last-entry) | `UndoSelected` |
+| Scoped-down feature work, not a hard block — each already does its main job, honestly missing one further piece | `CreateRegions` (open-curve networks), `PointGrid` (count options), `PrintDisplay` (print colours), `RemoveAllNakedMicroEdges` (detects but doesn't remove) |
 
 Their exact printed notes are in Appendix A.
 
@@ -212,7 +230,7 @@ The audit's theme tally (forum-topic counts, carried over verbatim from the prio
 - **No document tabs/MDI**, and no large-document performance testing exists.
 - **The installer is unsigned** — no `signtool`/`codesign` invocation found in `packaging/`.
 - **The path tracer is CPU-only**, not the GPU renderer doc4 described.
-- **The 24 remaining Partial commands** (§0.1) are genuinely blocked on hardware, OS APIs, or kernel capabilities this project does not have — not oversights, but still real gaps for a user who needs exactly one of them.
+- **The 52 remaining Partial commands** (§0.1, count corrected 2026-09-09 from a live registry re-scan) are mostly genuinely blocked on hardware, OS APIs, or kernel/data-model capabilities this project does not have, plus a handful of honestly-scoped-down feature extensions (see §0.1) — not oversights, but still real gaps for a user who needs exactly one of them.
 
 ### 4.3 What is absent
 A DinoCommon .NET SDK (this is a C++17 codebase — very unlikely to ever exist without a rewrite); Python/C#/RhinoScript compatibility for Dino Flow/plug-ins (the plug-in ABI is a from-scratch C ABI, not Rhino-compatible); SAT/Parasolid/SKP/FBX/glTF and most other exchange formats beyond .3dm/OBJ/STL/PLY/DXF/DWG/SVG/PDF/IGES/STEP (DWG was added since the prior pass, via the linked GPLv3 GNU LibreDWG library — see `docs/INTEROP_LIMITATIONS.md` and `THIRD_PARTY_LICENSES.md`; its entity coverage is a subset of DXF's); code signing; document tabs/MDI; live/associative annotation objects; construction history; incremental (O(change)) undo; a fuzzy command palette; multi-sheet printing with a print dialog; a UV-editing window; an OS clipboard image API; a per-version DWG/DXF "scheme" picker.
@@ -253,31 +271,61 @@ Given the current state — 1031/24/0 catalogue coverage and the specific remain
 
 ---
 
-## Appendix A — All 24 Partial commands with their exact notes
+## Appendix A — All 52 Partial commands with their exact notes
+
+(Updated 2026-09-09 from a live re-scan of the running binary's registry — see the note under §0.1. `SelMirroredBlocks`, previously listed here, is removed: it was fixed to `Implemented` in a later pass.)
 
 | Command | Note (verbatim from source) | Source |
 |---|---|---|
 | AcadSchemes | "AcadSchemes: there are no per-version export 'schemes' to pick from (AutoCAD's dialog for choosing an output DWG/DXF release); Dino 8's Export/SaveAs writes DWG through GNU LibreDWG as AC1015 (AutoCAD 2000) - the version LibreDWG's own writer documents as reliable - and DXF as the same AC1015. Also exports .3dm, OBJ, STL, PLY, SVG and PDF (see Export)." | `cmd_remaining.cpp` |
 | ApplyOcsMapping | "ApplyOcsMapping: object-coordinate-system mapping is not available; ApplyPlanarMapping uses the object's bounding box." | `cmd_remaining.cpp:2251` |
+| BlockManager | "BlockManager: Lists every block definition and its instance count in the command history; there is no dedicated dockable panel UI for it in this build." | `cmd_drafting.cpp:226` |
 | ConnectSrf | "Extends both surfaces and adds their real SSX join curve; exact trim is only immediate for the always-connecting planar case, otherwise trim manually with Split." | `cmd_fillet.cpp:1753-1754` |
-| DigBeep | "Stored flag: when on, Digitize/DigCamera/DigClick/DigLine/DigSection/DigSketch print a terminal bell (\\a) for each digitized point - a real, if minimal, stand-in for the audible beep real digitizer hardware would make. Still Partial because none of those commands can ever fire without a connected digitizer." | `cmd_state.cpp:891-892` |
+| CopyRenderWindowToClipboard | "CopyRenderWindowToClipboard: No OS clipboard integration for images exists anywhere in this app (same limitation as ViewCaptureToClipboard/ScreenCaptureToClipboard), so the image is written to a file next to the settings instead." | `cmd_render.cpp:1135` |
+| CreateRegions | "CreateRegions: Every region of up to 6 overlapping closed curves; open-curve networks are planned." | `cmd_solidtools.cpp:2013` |
+| DigBeep | "Stored flag: when on, Digitize/DigCamera/DigClick/DigLine/DigSection/DigSketch print a terminal bell (\a) for each digitized point - a real, if minimal, stand-in for the audible beep real digitizer hardware would make. Still Partial because none of those commands can ever fire without a connected digitizer." | `cmd_state.cpp:891-892` |
+| DigCamera | "DigCamera: No digitizer is connected. Use DigConnect (Protocol=Ascii for real hardware, File or Simulated to test headlessly), then this command reads its calibrated point stream." | `cmd_state.cpp:920` |
+| DigClick | "DigClick: No digitizer is connected (see the note on Digitize). Note also that unlike a real digitizer's hardware button, DigClick here is just another typed command name: this engine feeds any typed line to whatever command is already running, so DigClick can only ever fire when *no* other command is waiting for a point - it cannot interrupt one the way a real digitizer's stylus click would. It still prints and forwards the point it reads via CommandEngine::FeedPoint for whenever a future point-prompting command checks right after it runs." | `cmd_state.cpp:932` |
+| DigLine | "DigLine: No digitizer is connected. Use DigConnect (Protocol=Ascii for real hardware, File or Simulated to test headlessly), then this command reads its calibrated point stream." | `cmd_state.cpp:943` |
 | DigSection | "No digitizer is connected. Use DigConnect (Protocol=Ascii for real hardware, File or Simulated to test headlessly), then this command reads its calibrated point stream." (`kDigNotConnected`) | `cmd_state.cpp:44,889` |
 | DigSketch | Same as DigSection (`kDigNotConnected`) | `cmd_state.cpp:44,890` |
+| Digitize | "Digitize: No digitizer is connected. Use DigConnect (Protocol=Ascii for real hardware, File or Simulated to test headlessly), then this command reads its calibrated point stream." | `cmd_state.cpp:911` |
+| Dir | "Dir: Reports each curve's start point/tangent or surface's centre normal in the command history; there are no clickable direction-arrow glyphs drawn in the viewport, so reversing is a separate Flip call rather than a click on the arrow itself." | `cmd_edit.cpp:593` |
+| EditPythonScript | "EditPythonScript: Opens the given .py file in the Script Editor panel as text; that panel's Run button still runs Lua - use RunPythonScript to execute a .py file." | `cmd_misc.cpp:420` |
 | ExtractOriginalCaptives | "Fully restores the pre-cage original as a real copy while the document stays open, exactly like the analogous CopyHole/MoveHole hole-feature side table (see HoleFeature, Document.h) - but the same way, that side table is deliberately session state only, never written to the .3dm, so the original is gone once the file is closed and reopened." | `cmd_solidtools.cpp:2006-2007` |
 | ExtractPipedCurve | "ExtractPipedCurve: planned; Dino 8's Pipe command does not tag the resulting surface with its rail curve, so there is nothing recorded to extract." | `cmd_srfedit.cpp:2191` |
 | FilletSrfCrv | "FilletSrfCrv: planned; Rhino's version blends a surface into an independent curve, with the curve itself as one exact edge of the result. The rolling-ball arc construction FilletSrf/FilletSrfToRail use (cmd_fillet.cpp, and above in this file) needs a second SURFACE's closest point/normal at each arc; substituting a bare curve's closest point in its place gives an arc tangent to the surface but merely touching (not tangent to) the curve - a visibly different, not just approximate, result from what the command promises, so it is left honestly Partial rather than shipped as a misleading Implemented." | `cmd_srfedit.cpp:2167` |
+| HBar | "HBar: Handlebar-style dragging is not drawn; PointsOn + Gumball reaches the same result one CV at a time." | `cmd_select2.cpp:1032` |
+| History | "History: There is no constructional-history dependency graph in this build (e.g. a moved curve does not update surfaces built from it); undo snapshots are a substitute for undo/redo only, not for live parametric updates." | `cmd_misc.cpp:398` |
+| Hydrostatics | "Hydrostatics: Volume, displacement, and center of buoyancy are computed for real (clipped at the active construction plane, which stands in for a chosen waterline); longitudinal/vertical prismatic coefficients and a trim/heel solver are not implemented." | `cmd_srfedit.cpp:2208` |
+| ImportLayout | "ImportLayout: Imports the page and detail cameras; per-detail hidden objects are not mapped." | `cmd_viewtools.cpp:1555` |
+| MakePeriodic | "MakePeriodic: Only the Smooth=Yes behaviour is implemented (a periodic-uniform curve refit through the same control points, seam relaxed smooth); Smooth=No's exact-shape-preserving re-knot is a distinct, considerably harder NURBS algorithm this build does not have." | `cmd_edit.cpp:601` |
+| MappingWidget | "MappingWidget: There is no interactive 3D mapping gizmo in this build (the Gumball only manipulates objects, not mapping channels); ApplyCustomMapping's picked reference plane and Scale= option cover the same ground non-interactively." | `cmd_render.cpp:1025` |
+| NestedClippingDrawing | "NestedClippingDrawing: A clipping drawing nested inside another (one that shows the section of a section) needs block-instance recursion this app's ClippingDrawing model does not have; ClippingDrawings covers the flat case." | `cmd_viewtools.cpp:1514` |
+| NonmanifoldMerge | "NonmanifoldMerge: Genuinely infeasible without a kernel change: Dino 8's boolean/solid kernel is Manifold (github.com/elalish/manifold), which - as its name says - represents and operates on manifold (two-sided, no T-junctions) meshes only, so there is no non-manifold mesh/B-rep representation here to merge faces of into. Falls back to Join, which at least combines the selection into one object without claiming to weld non-manifold faces." | `cmd_solidtools.cpp:1999` |
+| PackSubDFaces | "PackSubDFaces: Reports the face count only: the kernel has no per-face UV/texture-coordinate storage to pack, so no texture atlas is produced." | `cmd_subd.cpp:1341` |
+| PointCloud | "PointCloud: Dino 8's ObjectKind enum has no distinct point-cloud kind (only Point/Curve/Surface/Brep/Mesh/SubD), so there is no per-point-color/density point-cloud object to build here - this groups the selected Point objects instead, the closest honest approximation with the data model as it stands." | `cmd_state.cpp:839` |
+| PointGrid | "PointGrid: 5 x 5 grid; count options are planned." | `cmd_create.cpp:469` |
+| PrintDisplay | "PrintDisplay: Previews line widths; print colours are planned." | `cmd_viewtools.cpp:1595` |
 | RefitTrim | "RefitTrim: planned; refitting a trim curve to a tolerance while keeping it inside the surface domain needs a constrained curve fit the kernel does not offer." | `cmd_srfedit.cpp:2146` |
+| RemoveAllNakedMicroEdges | "RemoveAllNakedMicroEdges: Detects naked edges shorter than 100x the document tolerance and reports them; does not yet remove them (that needs re-trimming the surrounding faces)." | `cmd_srfedit.cpp:2127` |
+| RemoveSymmetry | "RemoveSymmetry: Since Symmetry itself only ever builds a one-time mirrored copy (see its own note), there is no live link for this command to remove - it can only ever report that, honestly, rather than actually breaking a constraint that was never created." | `cmd_curves2.cpp:2510` |
 | ReplaceEdge | "ReplaceEdge: planned; the kernel has no operation to re-trim a face against a substitute edge curve while keeping the rest of the polysurface intact." | `cmd_srfedit.cpp:2126` |
+| Run | "Run: Deliberately never implemented: Dino 8 does not launch arbitrary external programs from a typed command (a real Rhino Run would exec() whatever the user typed with no sandboxing). Run Lua via RunScript/\"= expr\", or a shell command from your own terminal." | `cmd_state.cpp:521` |
 | ScreenCaptureToClipboard | "Same limitation as ViewCaptureToClipboard: no real system-clipboard image write, so it captures the active viewport to a file next to the settings instead." | `cmd_state.cpp:905` |
 | SelChildren | "Selects the other members of the selected objects' groups." | `cmd_select2.cpp:682` |
 | SelExtrusion | "Dino 8 stores extrusions as polysurfaces; selects every polysurface." | `cmd_select2.cpp:667` |
-| SelMirroredBlocks | "Block instances are not tracked as mirrored yet; selects instances tagged Mirrored." | `cmd_select2.cpp:837` |
 | SelParents | "Selects the other members of the selected objects' groups." | `cmd_select2.cpp:683` |
+| ShowZBuffer | "ShowZBuffer: Toggles and remembers the flag only; an actual depth-buffer visualization needs a grayscale-by-camera-distance pass added to GlRenderer's shading, which no viewport display mode does today." | `cmd_viewtools.cpp:1516` |
 | Sketch | "Click points instead of a continuous mouse-drag capture; no command in this codebase has drag-to-polyline input (confirmed absent in Viewport.cpp/CommandEngine.cpp), and it wouldn't be scriptable/testable here even if added." | `cmd_create.cpp:341-343` |
 | SplitRefitSurface | "SplitRefitSurface: planned; use Split then Rebuild on the pieces." | `cmd_srfedit.cpp:2147` |
 | SquishBack | "SquishBack: planned; Squish's flattened mesh does not retain a per-point map back to its source surface, so a curve drawn on the flat pattern cannot be projected back onto the 3D surface." | `cmd_srfedit.cpp:2063` |
 | SquishInfo | "SquishInfo: the flattened area/distortion report is printed at the end of Squish itself; there is no separate stored record to query afterwards." | `cmd_srfedit.cpp:2064` |
+| Symmetry | "Symmetry: Builds a one-time mirrored copy via Mirror; true Symmetry needs a live constraint that keeps re-mirroring the other half on every future edit, which would require hooking every edit/transform path in the document (not something this command alone can add) - edit each half and re-run Mirror to update the copy." | `cmd_curves2.cpp:2508` |
+| ToNURBS | "ToNURBS: SubD input approximates with a dense subdivided quad mesh converted to a facetted Brep, not smooth NURBS patches - OpenNURBS' own SubD-to-NURBS-patch conversion is Rhino-proprietary and unavailable here. Mesh input converts exactly." | `cmd_solids.cpp:649` |
+| ToggleFloatingViewport | "ToggleFloatingViewport: Floats or re-docks the target viewport correctly, but re-docking rebuilds the whole ImGui dock grid from scratch (there is no saved-arrangement to restore to), so any other viewports the user had rearranged snap back to the default grid too." | `cmd_viewtools.cpp:1725` |
 | UVEditor | "UVEditor: there is no UV editor; mapping is set per object with ApplyPlanarMapping, ApplyBoxMapping, ApplyCylindricalMapping and ApplySphericalMapping." | `cmd_remaining.cpp:2250` |
+| UndoSelected | "UndoSelected: Undoes the last change to the whole document." | `cmd_select2.cpp:889` |
 | UnjoinEdge | "UnjoinEdge: use ExtractSrf on one of the two faces sharing the edge, which leaves both faces with a naked copy of it; a true in-place unjoin that keeps both faces in the same polysurface is not implemented." | `cmd_srfedit.cpp:2125` |
 | VariableBlendSrf | "Uses the same variable-radius rolling-ball fillet as VariableFilletSrf (a true independent blend-tangent variant is not implemented)." | `cmd_fillet.cpp:1747-1748` |
 | ViewCaptureToClipboard | "There is no real system-clipboard image write here (that needs a platform-specific API - X11/Wayland selection ownership, the Win32 or Cocoa clipboard - which this GLFW-based app doesn't wire up, and X11's async selection protocol in particular doesn't survive a script exiting right after this command runs). Writes the capture to clipboard.bmp next to the settings instead." | `cmd_state.cpp:904` |
