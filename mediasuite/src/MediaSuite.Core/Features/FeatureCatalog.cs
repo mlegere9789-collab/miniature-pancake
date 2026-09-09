@@ -89,7 +89,7 @@ public static class FeatureCatalog
         new FeatureDescriptor("gif.compress", "GIF Compressor", FeatureSection.Compress, "GIF", "Fewer colours, dropped frames and lossy LZW, with a live size estimate.", 6),
         new FeatureDescriptor("video.crop", "Crop Video", FeatureSection.Tools, "Video Tools", "Crop to a region or an aspect ratio, with a preview.", 5),
         new FeatureDescriptor("video.trim", "Trim Video", FeatureSection.Tools, "Video Tools", "Cut by timecode, losslessly where the keyframes allow it.", 5),
-        new FeatureDescriptor("gif.maker", "GIF Maker", FeatureSection.Tools, "Image Tools", "Assemble a GIF from images or a video clip, with timing per frame.", 6),
+        new FeatureDescriptor("gif.maker", "GIF Maker", FeatureSection.Tools, "Image Tools", "Assemble a GIF from a sequence of still images, with timing per frame.", 6),
         new FeatureDescriptor("image.resize", "Resize Image", FeatureSection.Tools, "Image Tools", "Resize by pixels, percentage or longest edge, aspect ratio locked.", 4),
         new FeatureDescriptor("image.crop", "Crop Image", FeatureSection.Tools, "Image Tools", "Crop to a region, an aspect ratio or a fixed output size.", 4),
         new FeatureDescriptor("image.color-picker", "Color Picker", FeatureSection.Tools, "Image Tools", "Pick colours from an image and copy HEX, RGB or HSL.", 4),
