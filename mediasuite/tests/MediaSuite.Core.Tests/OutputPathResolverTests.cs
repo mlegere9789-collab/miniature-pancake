@@ -234,6 +234,30 @@ public class OutputPathResolverTests : IDisposable
         Assert.EndsWith(".png", resolved, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("con.tar.gz")]
+    [InlineData("con.txt.bak")]
+    [InlineData("NUL.old.docx")]
+    public void A_source_with_a_reserved_stem_before_an_embedded_dot_does_not_produce_a_reserved_output_name(string sourceName)
+    {
+        // Windows intercepts a reserved device name by the segment before the FIRST dot,
+        // not the last one -- "con.tar.gz" is exactly as reserved as "con.png", even though
+        // it has two extensions from Path's own point of view. A source file with an
+        // embedded dot in its name (a ".tar.gz" archive, a ".txt.bak" backup) is exactly
+        // the shape that slips past a check based on Path.GetFileNameWithoutExtension,
+        // which only ever strips the last one.
+        var resolved = OutputPathResolver.Resolve(_temp.CreateFile(sourceName), Target());
+
+        var sourceStemBeforeExtension = Path.GetFileNameWithoutExtension(sourceName);
+        var sourceDeviceStem = sourceStemBeforeExtension[..sourceStemBeforeExtension.IndexOf('.')];
+
+        var resolvedName = Path.GetFileName(resolved);
+        var resolvedDeviceStem = resolvedName[..resolvedName.IndexOf('.')];
+
+        Assert.NotEqual(sourceDeviceStem, resolvedDeviceStem, StringComparer.OrdinalIgnoreCase);
+        Assert.EndsWith(".png", resolved, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void An_extensionless_source_kept_at_its_own_format_does_not_end_in_a_trailing_dot()
     {

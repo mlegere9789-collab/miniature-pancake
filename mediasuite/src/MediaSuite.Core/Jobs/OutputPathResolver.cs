@@ -212,11 +212,17 @@ public static class OutputPathResolver
             return "output";
         }
 
-        var baseName = Path.GetFileNameWithoutExtension(cleaned);
+        // Windows intercepts a reserved device name based on the segment before the FIRST
+        // dot, not the last -- "con.tar.gz" and "con.txt.bak" are exactly as reserved as
+        // "con.png", even though Path.GetFileNameWithoutExtension only ever strips the
+        // final extension and would return "con.tar"/"con.txt" for those, missing the
+        // match entirely. Splitting on the first dot instead catches every one of them.
+        var firstDotIndex = cleaned.IndexOf('.');
+        var deviceStem = firstDotIndex < 0 ? cleaned : cleaned[..firstDotIndex];
 
-        if (ReservedDeviceNames.Contains(baseName))
+        if (ReservedDeviceNames.Contains(deviceStem))
         {
-            cleaned = $"{baseName}_{Path.GetExtension(cleaned)}";
+            cleaned = $"{deviceStem}_{cleaned[deviceStem.Length..]}";
         }
 
         return cleaned;
