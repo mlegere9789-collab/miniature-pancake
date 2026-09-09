@@ -44,6 +44,21 @@ SelControls
 Scale 295,-5,5 2
 SelCaptives
 BoundingBox
+# Regression: CageDivisions is persisted in the cage mesh's own user-text -
+# a crafted/corrupted .3dm can forge it to anything. Object 9 is the real
+# cage from above (built with divisions 2,2,2, clamped [1,10] by the
+# interactive Cage command itself); forging it to a value outside that
+# range must make IsCage reject it (CageEdit refuses it as "not a cage"),
+# not accept it and let CageEdit/Ffd index the real (small) lattice with
+# an out-of-range nx/ny/nz.
+SelID 9
+SetUserText
+CageDivisions
+20,1,1
+SelID 8
+CageEdit
+SelID 9
+Enter
 @expect_objects 10
 # --- Flow a line onto a half-circle arc (stretched to fit)
 SelNone

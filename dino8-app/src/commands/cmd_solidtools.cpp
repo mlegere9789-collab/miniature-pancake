@@ -1408,7 +1408,17 @@ kernel::Mesh LatticeMesh(const ON_Plane& pl, double sx, double sy, double sz, in
 bool CageDivisions(const SceneObject& o, int& nx, int& ny, int& nz) {
   auto it = o.user_text.find(kCageDivisionsTag);
   if (it == o.user_text.end()) return false;
-  return std::sscanf(it->second.c_str(), "%d,%d,%d", &nx, &ny, &nz) == 3 && nx >= 1 && ny >= 1 && nz >= 1;
+  if (std::sscanf(it->second.c_str(), "%d,%d,%d", &nx, &ny, &nz) != 3) return false;
+  // CageDivisions is persisted in object user-text - a plain string field a
+  // crafted/corrupted .3dm can set to anything. IsCage's own vertex-count
+  // check below is 32-bit int arithmetic ((nx+1)*(ny+1)*(nz+1)), which can
+  // overflow and wrap back around to match a real (small) mesh's vertex
+  // count even for a huge nx/ny/nz - and CageEdit's LatticeIndex/Ffd then
+  // index the real (small) lattice with those huge values, an out-of-bounds
+  // read. Cap to the same [1,10] range the interactive Cage command's own
+  // Divisions() enforces, so no value that could overflow the check below
+  // is ever accepted.
+  return nx >= 1 && nx <= 10 && ny >= 1 && ny <= 10 && nz >= 1 && nz <= 10;
 }
 
 bool IsCage(const SceneObject& o) {

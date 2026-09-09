@@ -877,6 +877,7 @@ stcheck "Cage: object 9, 2 x 2 x 2 divisions (27 control points)" "Cage built a 
 stcheck "CageEdit: 1 object(s) (14 points) bound to cage 9" "CageEdit bound the box (as a mesh) to the cage"
 stcheck "Bounding box min 300,-\?0,5 max 310,10,15" "moving the cage moved the captive"
 stcheck "Bounding box min 305,5,5 max 325,25,25" "scaling the cage scaled the captive"
+stcheck "CageEdit: object 9 is not a cage" "forging a cage's CageDivisions tag to 20 (outside the interactive command's own [1,10] range) made IsCage reject it, instead of an out-of-bounds lattice index in Ffd/LatticeIndex"
 stcheck "Flow: base length 20 -> target length 31.42 (stretched to fit)" "Flow measured both curves"
 stcheck "Flow: deformed 1 object(s)" "Flow deformed the line"
 stcheck "CV\[0\] 610,0,0" "the flowed line starts at the arc start"
