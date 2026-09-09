@@ -193,12 +193,6 @@ bool TriTri(const SurfaceMesh& A, int ta, const SurfaceMesh& B, int tb, double e
     const double f = s1 - s0 > 1e-300 ? (t - s0) / (s1 - s0) : 0;
     return Lerp(c.uv[i0], c.uv[i1], Clamp(f, 0, 1));
   };
-  auto make_end = [&](double t) {
-    SegEnd e;
-    if (ta0 >= tb0 ? t == t0 : false) { /* placeholder, resolved below */ }
-    return e;
-  };
-  (void)make_end;
   SegEnd e0, e1;
   if (ta0 >= tb0) { e0.p = ca.p[ia0]; e0.uva = ca.uv[ia0]; e0.uvb = uv_along(cb, ib0, ib1, tb0, tb1, t0); }
   else { e0.p = cb.p[ib0]; e0.uvb = cb.uv[ib0]; e0.uva = uv_along(ca, ia0, ia1, ta0, ta1, t0); }

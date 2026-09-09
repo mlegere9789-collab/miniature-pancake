@@ -2454,11 +2454,10 @@ class StepModel {
       if (p->args.size() < 12) return false;
       const int du = std::atoi(Trim(p->args[1]).c_str()), dv = std::atoi(Trim(p->args[2]).c_str());
       // Control point list is a list of rows (u), each a list of columns (v).
+      // Rows are themselves comma-containing lists ("(#a,#b,...)"), so a
+      // top-level SplitTop would break on inner commas too; split at the
+      // outer nesting level explicitly instead.
       std::vector<std::vector<int>> rows;
-      for (const std::string& row : SplitTop(Unparen(p->args[3]), ',')) {}  // placeholder, real split below
-      // The row split above breaks on inner commas too (each row is itself
-      // "(#a,#b,...)"), so split rows at the outer level explicitly.
-      rows.clear();
       {
         const std::string body = Unparen(p->args[3]);
         int depth = 0;
