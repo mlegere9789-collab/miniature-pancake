@@ -16,14 +16,28 @@ class Parser {
  public:
   Parser(const std::string& text, std::string& error) : text_(text), error_(error) {}
 
+  // ParseObject/ParseArray mutually recurse into ParseValue once per nesting
+  // level, with no other bound on how deep a file can nest arrays/objects -
+  // a file with thousands of nested "[" (deliberately crafted, or just
+  // corrupted) would otherwise drive one native stack frame per level and
+  // stack-overflow (the same untrusted-recursion class as the IGES
+  // composite-curve bug, but every settings/i18n/.dflow/plugin-manifest
+  // file this JSON parser reads is a comparable trust boundary).
+  static constexpr int kMaxDepth = 200;
+
   bool ParseValue(Value& out) {
     SkipWhitespace();
     if (pos_ >= text_.size()) {
       return Fail("unexpected end of input");
     }
+    if (depth_ > kMaxDepth) return Fail("nesting too deep");
     const char c = text_[pos_];
-    if (c == '{') return ParseObject(out);
-    if (c == '[') return ParseArray(out);
+    if (c == '{' || c == '[') {
+      ++depth_;
+      const bool ok = c == '{' ? ParseObject(out) : ParseArray(out);
+      --depth_;
+      return ok;
+    }
     if (c == '"') {
       out.type = Value::Type::String;
       return ParseString(out.string);
@@ -222,6 +236,7 @@ class Parser {
   const std::string& text_;
   std::string& error_;
   size_t pos_ = 0;
+  int depth_ = 0;
 };
 
 }  // namespace

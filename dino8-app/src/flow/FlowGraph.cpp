@@ -297,7 +297,12 @@ void RunSolverNode(Graph& g, Node& n, app::Document* doc) {
     n.error = "Genes must be wired directly from a Gene Pool node";
     return;
   }
-  gp->gene_count = std::max(1, gp->gene_count);
+  // Clamped, not just floored: gene_count can come straight from a .dflow
+  // file's JSON (FromJson below), and an unbounded value here would force a
+  // multi-GB allocation at RunSolverNode's vector::resize (an untrusted-file
+  // count reaching an allocation size unchecked, the same bug class already
+  // fixed for IGES's nseg/K/M counts).
+  gp->gene_count = std::clamp(gp->gene_count, 1, 100000);
   const int len = gp->gene_count;
   const double lo = std::min(gp->slider_min, gp->slider_max);
   const double hi = std::max(gp->slider_min, gp->slider_max);
@@ -427,7 +432,7 @@ void Graph::Evaluate(Node& n, app::Document* doc) {
     return;
   }
   if (n.def->special == NodeDef::Special::GenePool) {
-    n.gene_count = std::max(1, n.gene_count);
+    n.gene_count = std::clamp(n.gene_count, 1, 100000);
     if (n.gene_values.size() != static_cast<size_t>(n.gene_count)) n.gene_values.resize(static_cast<size_t>(n.gene_count), (n.slider_min + n.slider_max) * 0.5);
     std::vector<Value> items;
     for (double v : n.gene_values) items.push_back(Value::Number(v));
@@ -642,7 +647,11 @@ bool Graph::FromJson(const std::string& text, std::string& error, bool merge, fl
     n->text = jn["text"].AsString();
     const json::Value& jc = jn["colour"];
     if (jc.IsArray() && jc.Size() >= 3) n->colour = Colour{static_cast<float>(jc[0].number), static_cast<float>(jc[1].number), static_cast<float>(jc[2].number), 1.f};
-    if (jn["gene_count"].type == json::Value::Type::Number) n->gene_count = static_cast<int>(jn["gene_count"].number);
+    // Clamp before the double->int cast: an out-of-int-range JSON number
+    // (e.g. 1e20) would otherwise be undefined behavior, not just a large
+    // value; RunNode/RunSolverNode clamp gene_count again before it drives
+    // any allocation.
+    if (jn["gene_count"].type == json::Value::Type::Number) n->gene_count = static_cast<int>(std::clamp(jn["gene_count"].number, 1.0, 100000.0));
     const json::Value& jgenes = jn["gene_values"];
     for (size_t gv = 0; gv < jgenes.Size(); ++gv) n->gene_values.push_back(jgenes[gv].number);
     const json::Value& jrefs = jn["refs"];
