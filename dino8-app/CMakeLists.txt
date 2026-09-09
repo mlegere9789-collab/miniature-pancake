@@ -139,6 +139,18 @@ if(MSVC)
 else()
   set(DINO8_LIBREDWG_TARGET redwg)
 endif()
+# LibreDWG's own generated dwg2.spec code intentionally casts BITCODE_TV
+# (char*) to BITCODE_TU (unsigned short*) hundreds of times in its TRACE
+# logging macros - a deliberate, known-safe alignment-widening cast in
+# vendored third-party code we don't control, not a bug in anything this
+# project owns. Left enabled, this single warning class dominates a full
+# rebuild's compiler output (800+ occurrences), which has already once
+# pushed a real, unrelated compile error further back in a CI job's log
+# than this project's own log-fetching tooling could see, making that
+# failure much harder to diagnose than it needed to be.
+if(NOT MSVC)
+  target_compile_options(${DINO8_LIBREDWG_TARGET} PRIVATE -Wno-cast-align)
+endif()
 
 add_library(imgui STATIC
   ${imgui_SOURCE_DIR}/imgui.cpp
