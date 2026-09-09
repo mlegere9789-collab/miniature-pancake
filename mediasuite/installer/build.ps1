@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 <#
-    Publishes MediaSuite.App as a self-contained win-x64 build, fetches all 14 bundled
+    Publishes MediaSuite.App as a self-contained win-x64 build, fetches all 15 bundled
     tools (see fetch-tools.ps1), then compiles the installer from both. Run from
     anywhere; paths below are relative to this script.
 
