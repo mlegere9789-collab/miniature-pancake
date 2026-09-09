@@ -240,9 +240,15 @@ if [ -x "$DWGBIN" ]; then
     DI="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dwg_insert_script.txt" 2>&1)" || { echo "$DI"; echo "FAIL: DWG INSERT script exited non-zero"; exit 1; }
   fi
   dicheck() { if echo "$DI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
-  dicheck "DWG: 3 curves, 0 points, 1 block instance flattened" "ImportDwg flattened the independently-built BLOCK_HEADER/INSERT fixture"
+  dicheck "DWG: 6 curves, 0 points, 1 block instance flattened" "ImportDwg flattened the independently-built BLOCK_HEADER/INSERT fixture (plus the TEXT fixture's 3 glyph curves)"
   dicheck "CV\[0\] 100,50,0" "DWG INSERT's flattened line starts at the scaled/rotated/translated insertion point"
   dicheck "CV\[1\] 100,56,0" "DWG INSERT's flattened line ends where a 2-unit block line scaled 3x and rotated 90 degrees should (100,50,0)-(100,56,0)"
+  # DWG TEXT ("Hi" at height 5): Dino 8 itself never writes a native TEXT
+  # entity (see dwg_fixture_gen.c's own note), so this - like the INSERT
+  # above - is built independently through LibreDWG's own API and proves
+  # ImportDwg's DWG_TYPE_TEXT glyph-outline conversion for real. "H" is one
+  # closed contour, "i" is two (stem + dot) - 3 curve objects total.
+  [ "$(echo "$DI" | grep -c "^history:   degree 1, [0-9]* control points, non-rational, closed$")" = "3" ] && echo "ok   DWG TEXT converted 'Hi' into exactly 3 closed glyph-outline curves (H, i-stem, i-dot)" || { echo "FAIL DWG TEXT did not produce the expected glyph curves"; fail=1; }
 else
   echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the INSERT fixture check"
   fail=1

@@ -1,5 +1,6 @@
 #include "io/FileExchange.h"
 
+#include "geom/TextOutline.h"
 #include "util/ThreadPool.h"
 #include "viewport/Viewport.h"
 
@@ -1205,6 +1206,28 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
         ApplyDwgColor(so, ent->color);
         doc.Add(std::move(so));
         ++stats.curves;
+        break;
+      }
+      case DWG_TYPE_TEXT: {
+        Dwg_Entity_TEXT* e = ent->tio.TEXT;
+        if (!e->text_value || !*e->text_value || e->height <= 0) { ++stats.skipped; break; }
+        ON_Plane pl(Point3d(e->ins_pt.x, e->ins_pt.y, e->elevation), ON_xaxis, ON_yaxis);
+        pl.Rotate(e->rotation, ON_zaxis);
+        pl.Transform(xf);
+        std::vector<kernel::NurbsCurve> glyphs;
+        std::string font_used;
+        if (!TextToCurves(e->text_value, e->height, pl, glyphs, font_used) || glyphs.empty()) { ++stats.skipped; break; }
+        const int layer = DwgLayerFor(doc, layer_map, ent, stats);
+        for (kernel::NurbsCurve& g : glyphs) {
+          SceneObject so = SceneObject::MakeCurve(g);
+          so.layer_index = layer;
+          so.user_text["Annotation"] = "Text";
+          so.user_text["Style"] = "Standard";
+          so.user_text["Text"] = e->text_value;
+          ApplyDwgColor(so, ent->color);
+          doc.Add(std::move(so));
+          ++stats.curves;
+        }
         break;
       }
       case DWG_TYPE_POINT: {

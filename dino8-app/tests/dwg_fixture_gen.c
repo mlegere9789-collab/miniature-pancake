@@ -66,6 +66,15 @@ main (int argc, char **argv)
   const dwg_point_3d circle_c = { 10.0, 20.0, 0.0 };
   dwg_add_CIRCLE (ms_hdr, &circle_c, 4.5);
 
+  /* A real TEXT entity, for ImportDwg's glyph-outline conversion
+   * (WalkDwgEntities's DWG_TYPE_TEXT case in src/io/FileExchange.cpp) to
+   * read back - Dino 8 itself only ever writes text as pre-converted
+   * curve outlines (see AddTextCurves in cmd_annotate.cpp), never a native
+   * TEXT entity, so a Dino8-authored DWG export can never exercise this
+   * import path either; same rationale as the INSERT fixture above. */
+  const dwg_point_3d text_pt = { -30.0, 0.0, 0.0 };
+  dwg_add_TEXT (ms_hdr, "Hi", &text_pt, 5.0);
+
   /* Block definition: one 2-unit LINE along +X from the block's origin. */
   Dwg_Object_BLOCK_HEADER *blk = dwg_add_BLOCK_HEADER (dwg, "TESTBLK");
   if (!blk)
