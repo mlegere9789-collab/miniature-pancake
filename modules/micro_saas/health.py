@@ -25,9 +25,20 @@ class HealthResult:
 
 
 def check_health(url: str, *, timeout: int = DEFAULT_TIMEOUT) -> HealthResult:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     start = time.monotonic()
     try:
+        # Request(...) construction itself can raise -- a SAAS_HEALTH_URL
+        # with no scheme (a pasted-in-a-hurry "myapp.example.com/health"
+        # missing its "https://") makes it raise a bare
+        # ValueError("unknown url type"), not one of the exceptions below.
+        # This function's whole contract (see its own module docstring and
+        # every other branch here) is that it always returns a
+        # HealthResult and never raises -- run.py calls it with no
+        # try/except of its own, unlike the billing half of the same
+        # run(), so an uncaught exception here would abort not just the
+        # health check but the billing reconciliation that runs after it
+        # too, on every single run until the URL is fixed.
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             latency_ms = (time.monotonic() - start) * 1000
             if 200 <= resp.status < 400:
@@ -42,3 +53,6 @@ def check_health(url: str, *, timeout: int = DEFAULT_TIMEOUT) -> HealthResult:
     except TimeoutError:
         latency_ms = (time.monotonic() - start) * 1000
         return HealthResult(False, f"Timed out after {timeout}s", latency_ms)
+    except ValueError as exc:
+        latency_ms = (time.monotonic() - start) * 1000
+        return HealthResult(False, f"Malformed health URL: {exc}", latency_ms)

@@ -64,11 +64,20 @@ def trigger_run(module: str) -> bool:
     programs. No shell involved, so there's no interpolation to exploit
     either way, but the allowlist is the real defense.
 
+    Also returns False, without launching anything, if the module is already
+    running — `db.try_start_run` claims the 'running' state atomically
+    before the subprocess is even spawned, so a double click (or a manual
+    run landing the same moment the scheduler fires the same module) can't
+    start two instances of it; see that function's own docstring for why
+    that matters.
+
     Output is appended to the same `data/logs/<module>.log` file the
     scheduler's own portable daemon writes to, so a manual run and a
     scheduled one show up in the same place.
     """
     if module not in MODULES:
+        return False
+    if not db.try_start_run(module, "Queued from dashboard"):
         return False
     log_dir = PROJECT_ROOT / "data" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -144,8 +153,7 @@ def render_earnings_csv() -> str:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=EARNINGS_CSV_FIELDS)
     writer.writeheader()
-    for row in db.list_earnings():
-        writer.writerow({field: row[field] for field in EARNINGS_CSV_FIELDS})
+    writer.writerows(db.to_csv_rows(db.list_earnings(), EARNINGS_CSV_FIELDS))
     return buf.getvalue()
 
 
@@ -153,8 +161,7 @@ def render_reviews_csv() -> str:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=REVIEWS_CSV_FIELDS)
     writer.writeheader()
-    for row in db.list_resolved_reviews():
-        writer.writerow({field: row[field] for field in REVIEWS_CSV_FIELDS})
+    writer.writerows(db.to_csv_rows(db.list_resolved_reviews(), REVIEWS_CSV_FIELDS))
     return buf.getvalue()
 
 

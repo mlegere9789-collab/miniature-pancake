@@ -1,7 +1,7 @@
 name: MediaSuite CI
 
 # WPF only builds on Windows, so this is the real compile check for the app —
-# the whole solution, plus the Core test suite.
+# the whole solution, plus both the Core and App test suites.
 on:
   push:
     branches: [main]
@@ -35,12 +35,37 @@ jobs:
         run: dotnet build mediasuite/MediaSuite.sln -c Release --no-restore
 
       - name: Test
-        run: dotnet test mediasuite/MediaSuite.sln -c Release --no-build --verbosity normal
+        # Two explicit invocations, not one `dotnet test` on the whole .sln: running the
+        # solution as a single command only ever reported MediaSuite.Core.Tests' own
+        # results (confirmed across this branch's entire CI history -- every prior run's
+        # "Test" step log shows exactly one "Total tests: N" summary and zero references to
+        # any MediaSuite.App.Tests class), silently never invoking MediaSuite.App.Tests at
+        # all. Every App-layer regression test added this session was compiling cleanly
+        # (the separate Build step covers both projects) but had never actually run under
+        # CI. Each project gets its own command so neither can go silently missing again.
+        # Both run regardless of the other's outcome (unlike the .sln-wide invocation's
+        # default MSBuild fail-fast, which stops at the first failing project) so a failure
+        # in one doesn't hide the other's full results -- but the step still has to fail
+        # overall if either did, which needs an explicit exit code check since PowerShell
+        # (this runner's default shell) does not stop a script on a failed command the way
+        # bash's `set -e` would.
+        run: |
+          dotnet test mediasuite/tests/MediaSuite.Core.Tests/MediaSuite.Core.Tests.csproj -c Release --no-build --verbosity normal
+          $coreTestsExitCode = $LASTEXITCODE
+
+          dotnet test mediasuite/tests/MediaSuite.App.Tests/MediaSuite.App.Tests.csproj -c Release --no-build --verbosity normal
+          $appTestsExitCode = $LASTEXITCODE
+
+          if ($coreTestsExitCode -ne 0 -or $appTestsExitCode -ne 0) {
+            exit 1
+          }
 
   installer:
     name: Build installer
     runs-on: windows-latest
     needs: build
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     # This job alone is what has been burning the free-tier Actions minutes: ~25-30
     # real minutes, and Windows runners bill at 2x, so ~50-60 minutes per run. Restricted
     # to real merges to main (same condition "Publish release" below already uses) so
@@ -60,6 +85,40 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
+      - name: Read and verify app version
+        # Directory.Build.props and MediaSuite.iss each carry their own copy of the
+        # version, with no automated link between them -- both files' own comments
+        # already say so. This step is that link: it reads Directory.Build.props as
+        # the source of truth, fails loudly if MediaSuite.iss's MyAppVersion has
+        # drifted from it, and publishes the result as this job's own output so the
+        # release job below tags the release with the real version instead of a
+        # hardcoded one that would silently go stale the moment either file is bumped
+        # without the other -- previously that hardcoded tag meant every future
+        # release, even a real 1.1.0, would keep overwriting the "MediaSuite v1.0.0"
+        # release in place under the wrong version forever, since re-running the
+        # publish step on an existing tag updates it rather than erroring.
+        id: version
+        run: |
+          $xml = [xml](Get-Content mediasuite\Directory.Build.props)
+          $propsVersion = $xml.Project.PropertyGroup.Version
+          if ([string]::IsNullOrWhiteSpace($propsVersion)) {
+            throw "Could not read <Version> from mediasuite/Directory.Build.props"
+          }
+
+          $issContent = Get-Content mediasuite\installer\MediaSuite.iss -Raw
+          $issMatch = [regex]::Match($issContent, '#define MyAppVersion "([^"]+)"')
+          if (-not $issMatch.Success) {
+            throw "Could not read MyAppVersion from mediasuite/installer/MediaSuite.iss"
+          }
+          $issVersion = $issMatch.Groups[1].Value
+
+          if ($propsVersion -ne $issVersion) {
+            throw "Version mismatch: Directory.Build.props has '$propsVersion' but MediaSuite.iss's MyAppVersion has '$issVersion' -- bump both together."
+          }
+
+          Write-Host "App version: $propsVersion"
+          echo "version=$propsVersion" >> $env:GITHUB_OUTPUT
 
       - name: Publish MediaSuite.App (self-contained win-x64)
         run: |
@@ -136,11 +195,12 @@ jobs:
         # that needs a GitHub login to even find — not the "ready to go" download page
         # the README and the in-app update checker both already promise. Re-running this
         # on the same tag updates that release in place rather than erroring.
-        # Keep the tag in step with <Version> in ../mediasuite/Directory.Build.props and
-        # MyAppVersion in mediasuite/installer/MediaSuite.iss — there is no automated
-        # link between the three for a project this size.
+        # The tag comes from the installer job's own "Read and verify app version" step
+        # (Directory.Build.props, cross-checked against MediaSuite.iss) rather than a
+        # literal here, so a version bump can never leave this job silently publishing
+        # under a stale tag.
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0
-          name: MediaSuite v1.0.0
+          tag_name: v${{ needs.installer.outputs.version }}
+          name: MediaSuite v${{ needs.installer.outputs.version }}
           files: dist/*.exe

@@ -100,6 +100,17 @@ def run() -> int:
                 payload={"asset_id": asset["id"], "raw_reply": reply},
             )
             seen.mark(asset["id"])
+            # Persist right after this asset, not once after the whole
+            # batch: the review-queue row above is already a permanent
+            # database write. If some later asset in this same batch raises
+            # something neither this loop nor its own try/excepts already
+            # catch, a batched save() at the end would never run at all,
+            # losing every earlier asset's own seen-mark along with it even
+            # though it was already flagged. The next run would then
+            # re-spend an Anthropic API call and re-flag the same asset a
+            # second time (the same reasoning ecommerce_dropshipping's and
+            # deal_alert_bot's own run()s already apply to their dedup mark).
+            seen.save()
             drafted += 1
             continue
 
@@ -119,9 +130,8 @@ def run() -> int:
             metadata={"asset_id": asset["id"]},
         )
         seen.mark(asset["id"])
+        seen.save()
         drafted += 1
-
-    seen.save()
 
     summary = (
         f"drafted {drafted}/{len(fresh)} assets{f', {errors} errors' if errors else ''}"

@@ -94,3 +94,12 @@ on every push to `main` and every pull request, on Python 3.9 and 3.12
   program follows.
 - Each module's own README — what it does, its configuration, and (where
   relevant) what's deliberately not implemented yet and why.
+
+## MediaSuite
+
+This repository also hosts [`mediasuite/`](mediasuite), a separate, unrelated
+project: a local, offline Windows 11 media converter/compressor/toolbox (WPF
+app + a self-contained Inno Setup installer). It shares nothing with the
+Income Orchestrator above — no code, no config, no data — and lives entirely
+under its own subtree. See [`mediasuite/README.md`](mediasuite/README.md) for
+what it does and how to build it.

@@ -236,5 +236,141 @@ class TestSeenStore(unittest.TestCase):
                 dedup.SEEN_FILE = orig
 
 
+def _order(order_id: int, *, sku: str = "SKU-A", price: str = "20.00") -> dict:
+    return {
+        "id": order_id,
+        "name": f"#{order_id}",
+        "currency": "USD",
+        "shipping_address": GOOD_ADDRESS,
+        "line_items": [{"sku": sku, "quantity": 1, "price": price}],
+        "refunds": [],
+    }
+
+
+class TestRunEndToEnd(unittest.TestCase):
+    """Drives the real run() against a temp database/dedup file and a faked
+    Shopify client -- the one place this module's own orchestration (not
+    just its pure pricing/formatting/dedup helpers) gets exercised, so the
+    mark()-then-save()-per-order fix has a permanent regression test rather
+    than only the one-off script it was originally verified with."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        from orchestrator import database as db
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._orig_db_path = db.DB_PATH
+        db.DB_PATH = Path(self._tmpdir.name) / "test.db"
+        self.addCleanup(self._restore_db_path)
+        db.init_db()
+        self.db = db
+
+        from . import dedup
+
+        self._orig_seen_file = dedup.SEEN_FILE
+        dedup.SEEN_FILE = Path(self._tmpdir.name) / "seen.json"
+        self.addCleanup(self._restore_seen_file)
+
+        from .costs import CostBook
+
+        self._cost_book = CostBook({"SKU-A": 5.0})
+
+    def _restore_db_path(self):
+        self.db.DB_PATH = self._orig_db_path
+
+    def _restore_seen_file(self):
+        from . import dedup
+
+        dedup.SEEN_FILE = self._orig_seen_file
+
+    def _patched_run(self, orders, **settings_overrides):
+        from unittest.mock import patch
+
+        from . import run as run_mod
+
+        settings = make_settings(**settings_overrides)
+        return (
+            patch.object(run_mod.Settings, "load", return_value=settings),
+            patch.object(run_mod.CostBook, "load", return_value=self._cost_book),
+            patch.object(
+                run_mod.shopify_client, "fetch_open_orders", return_value=orders
+            ),
+        )
+
+    def test_a_clean_order_logs_earning_and_marks_seen(self):
+        from . import run as run_mod
+
+        p1, p2, p3 = self._patched_run([_order(1)])
+        with p1, p2, p3:
+            processed = run_mod.run()
+        self.assertEqual(processed, 1)
+        self.assertEqual(self.db.totals()["total_earnings"], 15.0)
+
+        from . import dedup
+
+        self.assertTrue(dedup.SeenStore().is_seen("1"))
+
+    def test_a_second_run_does_not_reprocess_the_same_order(self):
+        from . import run as run_mod
+
+        p1, p2, p3 = self._patched_run([_order(1)])
+        with p1, p2, p3:
+            run_mod.run()
+        p1, p2, p3 = self._patched_run([_order(1)])
+        with p1, p2, p3:
+            run_mod.run()
+        self.assertEqual(self.db.totals()["total_earnings"], 15.0)
+
+    def test_a_mid_batch_crash_does_not_lose_an_earlier_orders_dedup_mark(self):
+        # Regression test for the fix: seen.save() now runs after each
+        # order, not once after the whole batch, so a crash processing
+        # order 2 must not undo order 1's already-persisted mark (which
+        # would otherwise cause order 1's earning to be logged again, a
+        # second time, on the very next run).
+        from unittest.mock import patch
+
+        from . import run as run_mod
+
+        orig_record_earning = self.db.record_earning
+        calls = {"n": 0}
+
+        def flaky_record_earning(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("simulated DB write failure")
+            return orig_record_earning(*args, **kwargs)
+
+        p1, p2, p3 = self._patched_run([_order(1), _order(2)])
+        with (
+            p1,
+            p2,
+            p3,
+            patch.object(self.db, "record_earning", side_effect=flaky_record_earning),
+        ):
+            with self.assertRaises(RuntimeError):
+                run_mod.run()
+
+        from . import dedup
+
+        seen = dedup.SeenStore()
+        self.assertTrue(seen.is_seen("1"))
+        self.assertFalse(seen.is_seen("2"))
+        self.assertEqual(self.db.totals()["total_earnings"], 15.0)
+
+    def test_a_flagged_order_is_not_marked_as_an_earning(self):
+        from . import run as run_mod
+
+        # A missing SKU cost means an unknown margin -> flagged for review,
+        # not auto-logged.
+        p1, p2, p3 = self._patched_run([_order(1, sku="SKU-UNKNOWN")])
+        with p1, p2, p3:
+            run_mod.run()
+        self.assertEqual(self.db.totals()["total_earnings"], 0.0)
+        self.assertEqual(len(self.db.pending_reviews()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

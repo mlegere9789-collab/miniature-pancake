@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterator
 
 from .paths import DB_PATH, MODULES, ensure_data_dir
@@ -159,6 +159,61 @@ def set_status(module: str, state: str, detail: str = "") -> None:
         )
 
 
+MAX_RUN_SECONDS = 1800  # 30 minutes -- see try_start_run's own docstring.
+
+
+def try_start_run(module: str, detail: str = "Queued") -> bool:
+    """Atomically claim the 'running' state for a module, refusing if it's
+    already running.
+
+    Both the dashboard's "Run now" button and the scheduler's own job firing
+    launch a module as a plain subprocess with nothing stopping two of them
+    landing at once (a double click, or a manual run overlapping a
+    cron/portable-daemon firing) — the module's own `log.status("running",
+    ...)` call only lands well after the subprocess has actually started, so
+    checking the *last-rendered* dashboard state is not enough to prevent it.
+    Two concurrent runs of the same module don't just duplicate work (e.g.
+    posting the same deal twice); each module's own dedup store
+    (`data/<module>_seen.json`) is an unlocked read-modify-write JSON file,
+    so whichever run finishes last silently overwrites the other's dedup
+    state.
+
+    This uses a single atomic UPSERT — conditional on the *current* row's
+    state, evaluated by SQLite as part of the same statement — so two
+    callers racing to start the same module can never both win. Returns True
+    if this call claimed 'running' and the caller should launch; False if
+    another run is already in progress and the caller should not.
+
+    The only thing that ever moves a module *out* of 'running' again is its
+    own `log.status(...)` call from inside `run()` — every module's own
+    top-level guard only catches a plain `Exception` there, so anything that
+    kills the subprocess before that point (a bad CLI argument triggering
+    `argparse`'s own `sys.exit()`, an import-time error, SIGKILL/OOM, the
+    host going down mid-run) would otherwise leave the claim in 'running'
+    forever, permanently locking that module out of both "Run now" and its
+    own scheduled job with no recovery but hand-editing the database. A
+    claim older than `MAX_RUN_SECONDS` is treated as abandoned and can be
+    re-claimed — the same trade-off `scheduler.heartbeat_is_stale` already
+    makes for the portable daemon itself, just without a heartbeat file to
+    read: this repo's five modules all do bounded, single-pass work (one
+    batch of API calls), so thirty minutes stuck at 'running' with no
+    update is itself already a strong abandoned-run signal.
+    """
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(seconds=MAX_RUN_SECONDS)).isoformat(timespec="seconds")
+    with get_connection() as conn:
+        cur = conn.execute(
+            """INSERT INTO status (module, state, detail, updated_at)
+               VALUES (?, 'running', ?, ?)
+               ON CONFLICT(module) DO UPDATE SET
+                 state='running', detail=excluded.detail,
+                 updated_at=excluded.updated_at
+               WHERE status.state != 'running' OR status.updated_at < ?""",
+            (module, detail, now.isoformat(timespec="seconds"), cutoff),
+        )
+        return cur.rowcount > 0
+
+
 def record_earning(
     module: str,
     amount: float,
@@ -281,6 +336,33 @@ def resolved_reviews(limit: int = 10) -> list[dict[str, Any]]:
             (limit,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+_CSV_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: Any) -> Any:
+    """Neutralize a value that Excel/Sheets would interpret as a formula
+    when a CSV export is opened there, rather than display as plain text —
+    a cell starting with any of ``=``, ``+``, ``-``, ``@`` (or a tab/CR;
+    OWASP's CSV-injection guidance covers all six) executes instead. Rows
+    here can carry text a module never controlled — a CheapShark deal
+    title, a Shopify order note, a Stripe charge description — so this
+    applies to every string cell in both CSV exports rather than trusting
+    any one field to be safe.
+    """
+    if isinstance(value, str) and value and value[0] in _CSV_FORMULA_TRIGGERS:
+        return "'" + value
+    return value
+
+
+def to_csv_rows(rows: list[dict[str, Any]], fields: list[str]) -> list[dict[str, Any]]:
+    """Project each row down to `fields`, CSV-formula-escaped and ready for
+    `csv.DictWriter` — shared by the CLI's `export-earnings`/`export-reviews`
+    and the dashboard's matching CSV download routes so the two can't drift
+    out of sync on this.
+    """
+    return [{field: _csv_safe(row[field]) for field in fields} for row in rows]
 
 
 REVIEWS_CSV_FIELDS = [

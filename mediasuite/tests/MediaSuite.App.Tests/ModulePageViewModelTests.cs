@@ -1,4 +1,5 @@
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using MediaSuite.App.ViewModels;
 using MediaSuite.Core.Features;
@@ -253,6 +254,54 @@ public sealed class ModulePageViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Toggling_upload_off_and_back_on_re_fetches_folders_instead_of_staying_stale()
+    {
+        // Regression test: the folder list used to only ever be fetched once per page --
+        // gated on DriveFolders.Count == 0 -- so a folder created, renamed, or removed in
+        // Drive itself after that first load would never show up here again for the rest
+        // of this page's lifetime, no matter how many times the checkbox was toggled.
+        using var fixture = CreateModulePage(FakeEngine.HandlesOnly("video.convert"), googleDriveEnabled: true);
+        fixture.Drive.FoldersToReturn = new[] { new GoogleDriveFolder { Id = "1", Name = "Clips" } };
+
+        fixture.Page.UploadToGoogleDrive = true;
+        Assert.Equal("Clips", Assert.Single(fixture.Page.DriveFolders).Name);
+
+        fixture.Drive.FoldersToReturn = new[]
+        {
+            new GoogleDriveFolder { Id = "1", Name = "Clips" },
+            new GoogleDriveFolder { Id = "2", Name = "Renders" },
+        };
+        fixture.Page.UploadToGoogleDrive = false;
+        fixture.Page.UploadToGoogleDrive = true;
+
+        Assert.Equal(2, fixture.Page.DriveFolders.Count);
+        Assert.Contains(fixture.Page.DriveFolders, folder => folder.Name == "Renders");
+    }
+
+    [Fact]
+    public void Toggling_upload_off_and_back_on_keeps_the_users_own_pick_over_the_last_used_folder()
+    {
+        // The refresh above must not stomp a selection the user already made in this
+        // session back to whatever folder was last actually used for a completed run --
+        // only fall back to that when the previously-picked folder no longer exists.
+        using var fixture = CreateModulePage(FakeEngine.HandlesOnly("video.convert"), googleDriveEnabled: true);
+        fixture.Settings.LastGoogleDriveFolderId = "1";
+        fixture.Drive.FoldersToReturn = new[]
+        {
+            new GoogleDriveFolder { Id = "1", Name = "Clips" },
+            new GoogleDriveFolder { Id = "2", Name = "Renders" },
+        };
+
+        fixture.Page.UploadToGoogleDrive = true;
+        fixture.Page.SelectedDriveFolder = fixture.Page.DriveFolders.Single(folder => folder.Id == "2");
+
+        fixture.Page.UploadToGoogleDrive = false;
+        fixture.Page.UploadToGoogleDrive = true;
+
+        Assert.Equal("2", fixture.Page.SelectedDriveFolder!.Id);
+    }
+
+    [Fact]
     public void No_folders_yet_is_a_hint_not_an_error()
     {
         using var fixture = CreateModulePage(FakeEngine.HandlesOnly("video.convert"), googleDriveEnabled: true);
@@ -311,5 +360,33 @@ public sealed class ModulePageViewModelTests : IDisposable
 
         Assert.Single(fixture.Drive.CreatedFolders);
         Assert.Equal(string.Empty, fixture.Page.NewDriveFolderName);
+    }
+
+    [Fact]
+    public void A_stale_refresh_still_in_flight_does_not_erase_a_folder_created_after_it_started()
+    {
+        // Regression test: RefreshDriveFoldersAsync had no sequencing guard against a real
+        // Drive call completing out of order. A slower refresh from an earlier toggle could
+        // still be in flight when the user creates a new folder; if that older call were
+        // then allowed to finish and Clear()/repopulate DriveFolders from its own stale,
+        // pre-creation snapshot, the folder the user just created would disappear from the
+        // list again, even though it still exists on Drive.
+        using var fixture = CreateModulePage(FakeEngine.HandlesOnly("video.convert"), googleDriveEnabled: true);
+        fixture.Drive.FoldersToReturn = new[] { new GoogleDriveFolder { Id = "1", Name = "Clips" } };
+        var pendingRefresh = new TaskCompletionSource<IReadOnlyList<GoogleDriveFolder>>();
+        fixture.Drive.PendingListFolders = pendingRefresh;
+
+        fixture.Page.UploadToGoogleDrive = true;
+        Assert.Empty(fixture.Page.DriveFolders); // that refresh is still in flight
+
+        fixture.Page.NewDriveFolderName = "New Exports";
+        fixture.Page.CreateDriveFolderCommand.Execute(null); // completes synchronously, bumps the generation
+        Assert.Equal("New Exports", Assert.Single(fixture.Page.DriveFolders).Name);
+
+        // The earlier, now-stale refresh finally "arrives" with a snapshot that predates the
+        // folder just created -- it must not stomp the newer state.
+        pendingRefresh.SetResult(fixture.Drive.FoldersToReturn);
+
+        Assert.Contains(fixture.Page.DriveFolders, folder => folder.Name == "New Exports");
     }
 }

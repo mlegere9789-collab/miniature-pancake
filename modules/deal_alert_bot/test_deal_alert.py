@@ -93,6 +93,22 @@ class TestFormatter(unittest.TestCase):
         self.assertIn("partner.example", url)
         self.assertIn("id=XYZ", url)
 
+    def test_malformed_template_falls_back_to_plain_link_extra_placeholder(self):
+        # A stray {other} the operator forgot to also give a value for --
+        # str.format raises KeyError. Every deal in every run hits this
+        # same call, so an uncaught error here would crash the whole run
+        # forever until the .env template is fixed.
+        tmpl = "https://partner.example/r?u={deal_url}&id={other}"
+        url, is_aff = build_deal_url(SAMPLE_DEAL, affiliate_template=tmpl)
+        self.assertFalse(is_aff)
+        self.assertIn("dealID=ABC123", url)
+
+    def test_malformed_template_falls_back_to_plain_link_stray_brace(self):
+        tmpl = "https://partner.example/r?u={deal_url}&note={"
+        url, is_aff = build_deal_url(SAMPLE_DEAL, affiliate_template=tmpl)
+        self.assertFalse(is_aff)
+        self.assertIn("dealID=ABC123", url)
+
     def test_discord_payload_shape(self):
         url, is_aff = build_deal_url(SAMPLE_DEAL)
         payload = format_discord_payload(SAMPLE_DEAL, url, is_aff)
@@ -122,6 +138,154 @@ class TestSeenStore(unittest.TestCase):
                 self.assertTrue(reloaded.is_seen("ABC123"))
             finally:
                 dedup.SEEN_FILE = orig
+
+
+class TestRunEndToEnd(unittest.TestCase):
+    """Drives the real run() against a temp database/dedup file and a
+    faked CheapShark client -- no module's own run() orchestration was
+    exercised end-to-end anywhere in this project before this session,
+    only the pure functions underneath it (qualifies(), build_deal_url(),
+    dedup). Locks in the malformed-affiliate-template fix as a permanent
+    regression rather than only the one-off script it was verified with."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        from orchestrator import database as db
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._orig_db_path = db.DB_PATH
+        db.DB_PATH = Path(self._tmpdir.name) / "test.db"
+        self.addCleanup(self._restore_db_path)
+        db.init_db()
+        self.db = db
+
+        from . import dedup
+
+        self._orig_seen_file = dedup.SEEN_FILE
+        dedup.SEEN_FILE = Path(self._tmpdir.name) / "seen.json"
+        self.addCleanup(self._restore_seen_file)
+
+    def _restore_db_path(self):
+        self.db.DB_PATH = self._orig_db_path
+
+    def _restore_seen_file(self):
+        from . import dedup
+
+        dedup.SEEN_FILE = self._orig_seen_file
+
+    def _patched_run(self, deals, **settings_overrides):
+        from unittest.mock import patch
+
+        from . import run as run_mod
+
+        settings = make_settings(**settings_overrides)
+        return (
+            patch.object(run_mod.Settings, "load", return_value=settings),
+            patch.object(run_mod.cheapshark, "fetch_deals", return_value=deals),
+        )
+
+    def test_a_qualifying_deal_is_logged_in_dry_run_and_not_marked_seen(self):
+        # Dry-run deliberately never marks as seen (see run.py's own
+        # comment): flipping to live later should still post it once.
+        from . import run as run_mod
+
+        p1, p2 = self._patched_run([SAMPLE_DEAL])
+        with p1, p2:
+            posted = run_mod.run()
+        self.assertEqual(posted, 1)
+
+        from . import dedup
+
+        self.assertFalse(dedup.SeenStore().is_seen("ABC123"))
+
+    def test_malformed_affiliate_template_does_not_crash_the_run(self):
+        # Regression test for the formatter.py fix: build_deal_url() is
+        # called on every qualifying deal regardless of dry-run/live mode,
+        # before the dry-run branch -- a bad template used to crash here
+        # every single run, unconditionally.
+        from . import run as run_mod
+
+        bad_template = "https://partner.example/r?u={deal_url}&id={typo}"
+        p1, p2 = self._patched_run([SAMPLE_DEAL], affiliate_template=bad_template)
+        with p1, p2:
+            posted = run_mod.run()  # must not raise
+        self.assertEqual(posted, 1)
+        overview = {r["name"]: r for r in self.db.module_overview()}
+        self.assertIn(overview["deal_alert_bot"]["state"], ("ok", "warning"))
+
+    def test_a_posted_live_deal_is_marked_seen_and_not_reposted(self):
+        from unittest.mock import patch
+
+        from . import run as run_mod
+
+        p1, p2 = self._patched_run(
+            [SAMPLE_DEAL], dry_run=False, webhook_url="http://example.invalid/hook"
+        )
+        with p1, p2, patch.object(run_mod, "post_webhook") as post_mock:
+            first = run_mod.run()
+        post_mock.assert_called_once()
+        self.assertEqual(first, 1)
+
+        p1, p2 = self._patched_run(
+            [SAMPLE_DEAL], dry_run=False, webhook_url="http://example.invalid/hook"
+        )
+        with p1, p2, patch.object(run_mod, "post_webhook") as post_mock:
+            second = run_mod.run()
+        post_mock.assert_not_called()
+        self.assertEqual(second, 0)
+
+    def test_a_later_deals_failure_does_not_lose_an_earlier_deals_seen_mark(self):
+        # Regression test: seen.save() used to run once after the whole
+        # posting loop finished, so an exception from a later deal that
+        # isn't wrapped as DiscordError (a bug, or any failure mode neither
+        # post_webhook nor this loop already anticipates) meant an earlier
+        # deal that had already posted successfully still lost its
+        # seen-mark, since it only ever existed in memory. The next run
+        # would then repost that same deal to Discord a second time -- the
+        # same double-post risk ecommerce_dropshipping's run() already
+        # guards against for its own per-order dedup mark.
+        from unittest.mock import patch
+
+        from . import dedup
+        from . import run as run_mod
+
+        deal_two = {**SAMPLE_DEAL, "dealID": "XYZ789", "title": "Celeste"}
+        p1, p2 = self._patched_run(
+            [SAMPLE_DEAL, deal_two],
+            dry_run=False,
+            webhook_url="http://example.invalid/hook",
+        )
+        with (
+            p1,
+            p2,
+            patch.object(
+                run_mod, "post_webhook", side_effect=[None, RuntimeError("boom")]
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                run_mod.run()
+
+        # The first deal posted (and its mark was saved) before the second
+        # deal's unexpected failure ended the run -- that mark must survive.
+        self.assertTrue(dedup.SeenStore().is_seen("ABC123"))
+
+
+class TestDiscordNotifier(unittest.TestCase):
+    def test_a_malformed_url_becomes_a_discord_error_not_a_bare_valueerror(self):
+        # Regression test: Request(...) raises a bare ValueError for a URL
+        # with no scheme (a pasted-in-a-hurry webhook URL missing its
+        # "https://"), which post_webhook did not used to catch -- letting
+        # it escape as an unhandled ValueError instead of the DiscordError
+        # every other failure in this function becomes, and (via run.py's
+        # own `except DiscordError`) crashing the whole run rather than
+        # being logged and skipped like an ordinary webhook failure.
+        from .discord_notifier import DiscordError, post_webhook
+
+        with self.assertRaises(DiscordError):
+            post_webhook("discord.com/api/webhooks/missing-scheme", {"content": "hi"})
 
 
 if __name__ == "__main__":

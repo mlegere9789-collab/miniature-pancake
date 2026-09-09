@@ -168,6 +168,163 @@ class TestSeenStore(unittest.TestCase):
             finally:
                 dedup.SEEN_FILE = orig
 
+    def test_a_numeric_id_still_dedups_after_a_reload(self):
+        # Nothing in briefs.py enforces a brief's own "id" be a string --
+        # json.dumps() in save() silently turns a non-string dict key into
+        # a string key on write, so without coercing in is_seen/mark too,
+        # is_seen(1) after a reload would check `1 in {"1": ...}` (always
+        # False) and this brief would be redrafted every single run.
+        import tempfile
+        from pathlib import Path
+
+        from . import dedup
+
+        with tempfile.TemporaryDirectory() as d:
+            orig = dedup.SEEN_FILE
+            dedup.SEEN_FILE = Path(d) / "seen.json"
+            try:
+                store = dedup.SeenStore()
+                store.mark(1)
+                store.save()
+                reloaded = dedup.SeenStore()
+                self.assertTrue(reloaded.is_seen(1))
+            finally:
+                dedup.SEEN_FILE = orig
+
+
+class TestRunEndToEnd(unittest.TestCase):
+    """Drives the real run() against a temp database/dedup file and a
+    faked Claude client -- no module's own run() orchestration was
+    exercised end-to-end anywhere in this project before this session.
+    Locks in the numeric-id dedup fix as a permanent regression rather
+    than only the one-off script it was verified with."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+
+        from orchestrator import database as db
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir.cleanup)
+        self._orig_db_path = db.DB_PATH
+        db.DB_PATH = Path(self._tmpdir.name) / "test.db"
+        self.addCleanup(self._restore_db_path)
+        db.init_db()
+        self.db = db
+
+        from . import dedup
+
+        self._orig_seen_file = dedup.SEEN_FILE
+        dedup.SEEN_FILE = Path(self._tmpdir.name) / "seen.json"
+        self.addCleanup(self._restore_seen_file)
+
+    def _restore_db_path(self):
+        self.db.DB_PATH = self._orig_db_path
+
+    def _restore_seen_file(self):
+        from . import dedup
+
+        dedup.SEEN_FILE = self._orig_seen_file
+
+    def _patched_run(self, briefs, reply=VALID_REPLY, **settings_overrides):
+        from unittest.mock import patch
+
+        from . import run as run_mod
+
+        settings = make_settings(**settings_overrides)
+        return (
+            patch.object(run_mod.Settings, "load", return_value=settings),
+            patch.object(run_mod, "load_briefs", return_value=briefs),
+            patch.object(run_mod.anthropic_client, "complete", return_value=reply),
+        )
+
+    def test_a_fresh_brief_is_drafted_and_flagged_for_review(self):
+        from . import run as run_mod
+
+        p1, p2, p3 = self._patched_run([SAMPLE_BRIEF])
+        with p1, p2, p3:
+            drafted = run_mod.run()
+        self.assertEqual(drafted, 1)
+        self.assertEqual(len(self.db.pending_reviews()), 1)
+
+        from . import dedup
+
+        self.assertTrue(dedup.SeenStore().is_seen("budget-tracker"))
+
+    def test_a_second_run_does_not_redraft_the_same_brief(self):
+        from . import run as run_mod
+
+        p1, p2, p3 = self._patched_run([SAMPLE_BRIEF])
+        with p1, p2, p3:
+            run_mod.run()
+        p1, p2, p3 = self._patched_run([SAMPLE_BRIEF])
+        with p1, p2, p3:
+            second = run_mod.run()
+        self.assertEqual(second, 0)
+        self.assertEqual(len(self.db.pending_reviews()), 1)
+
+    def test_a_numeric_brief_id_still_dedups_across_real_runs(self):
+        # Regression test for the dedup.py fix: a brief with a JSON-number
+        # id used to silently defeat dedup after a reload, redrafting (and
+        # re-paying for) the same brief on every single run forever.
+        from . import run as run_mod
+
+        numeric_brief = {**SAMPLE_BRIEF, "id": 42}
+        p1, p2, p3 = self._patched_run([numeric_brief])
+        with p1, p2, p3:
+            run_mod.run()
+        p1, p2, p3 = self._patched_run([numeric_brief])
+        with p1, p2, p3:
+            second = run_mod.run()
+        self.assertEqual(second, 0)
+        self.assertEqual(len(self.db.pending_reviews()), 1)
+
+    def test_a_malformed_reply_still_flags_for_review_with_raw_text(self):
+        from . import run as run_mod
+
+        p1, p2, p3 = self._patched_run([SAMPLE_BRIEF], reply="not json at all")
+        with p1, p2, p3:
+            drafted = run_mod.run()
+        self.assertEqual(drafted, 1)
+        reviews = self.db.pending_reviews()
+        self.assertEqual(len(reviews), 1)
+        self.assertIn("not json at all", reviews[0]["payload"])
+
+    def test_a_later_briefs_failure_does_not_lose_an_earlier_briefs_seen_mark(self):
+        # Regression test: seen.save() used to run once after the whole
+        # drafting loop, so an exception from a later brief that isn't
+        # wrapped as AnthropicError/CopyParseError (a bug, or any failure
+        # mode neither this loop nor its own try/excepts already
+        # anticipate) meant an earlier brief that had already been flagged
+        # for review lost its seen-mark too, since it only ever existed in
+        # memory. The next run would then re-spend an Anthropic API call
+        # and re-flag the same brief a second time -- the same double-work
+        # risk ecommerce_dropshipping's and deal_alert_bot's own run()s
+        # already guard against for their own dedup marks.
+        from unittest.mock import patch
+
+        from . import dedup
+        from . import run as run_mod
+
+        brief_two = {**SAMPLE_BRIEF, "id": "second-brief", "name": "Second"}
+        p1, p2, _ = self._patched_run([SAMPLE_BRIEF, brief_two])
+        with (
+            p1,
+            p2,
+            patch.object(
+                run_mod.anthropic_client,
+                "complete",
+                side_effect=[VALID_REPLY, RuntimeError("boom")],
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                run_mod.run()
+
+        # The first brief was drafted and flagged (and its mark saved)
+        # before the second brief's unexpected failure ended the run.
+        self.assertTrue(dedup.SeenStore().is_seen("budget-tracker"))
+
 
 if __name__ == "__main__":
     unittest.main()

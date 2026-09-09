@@ -17,6 +17,7 @@ import sys
 from typing import Any
 
 from . import database as db
+from . import scheduler as sch
 from .config import config
 from .database import EARNINGS_CSV_FIELDS, REVIEWS_CSV_FIELDS
 from .paths import DB_PATH, ENV_PATH, JOBS_PATH, MODULES
@@ -25,8 +26,7 @@ from .paths import DB_PATH, ENV_PATH, JOBS_PATH, MODULES
 def _write_csv(rows: list[dict[str, Any]], fields: list[str], handle) -> None:
     writer = csv.DictWriter(handle, fieldnames=fields)
     writer.writeheader()
-    for row in rows:
-        writer.writerow({field: row[field] for field in fields})
+    writer.writerows(db.to_csv_rows(rows, fields))
 
 
 def _cmd_init() -> int:
@@ -34,6 +34,23 @@ def _cmd_init() -> int:
     print(f"Database ready at {DB_PATH}")
     print(f"Registered {len(MODULES)} modules: {', '.join(MODULES)}")
     return 0
+
+
+def _scheduler_doctor_line() -> str:
+    """A one-line summary of the portable scheduler daemon's own heartbeat.
+
+    cron jobs don't need this -- a missed run just doesn't happen -- but
+    `scheduler run` (the only scheduling option on Windows) is a long-lived
+    process with nothing watching it. The dashboard already surfaces this
+    visually; `doctor` is the same check for anyone running headless, with
+    no dashboard open to notice a dead daemon.
+    """
+    heartbeat = sch.read_heartbeat()
+    if heartbeat is None:
+        return "never started (only relevant if you use `scheduler run`)"
+    if sch.heartbeat_is_stale(heartbeat):
+        return f"STALE — last heartbeat {heartbeat.get('beat_at', '?')}, likely dead"
+    return f"running (last heartbeat {heartbeat.get('beat_at', '?')})"
 
 
 def _cmd_doctor() -> int:
@@ -47,14 +64,20 @@ def _cmd_doctor() -> int:
     print(
         f"  jobs.json:   {'found' if JOBS_PATH.exists() else 'using jobs.example.json defaults'}"
     )
+    print(f"  scheduler:   {_scheduler_doctor_line()}")
     print("\n  Credentials detected in .env:")
     tracked = [
+        # digital_products and stock_licensing both idle/activate purely on this
+        # one key -- neither has a real marketplace credential to track: Etsy/
+        # Gumroad publishing and Adobe Stock/Shutterstock uploading are both
+        # explicitly not built yet (see each module's own README), so
+        # ETSY_API_KEY/SHUTTERSTOCK_API_TOKEN would always read "unset" here
+        # regardless of whether either module is actually fully configured --
+        # the same misleading shape the DISCORD_WEBHOOK_URL fix below replaced.
         "ANTHROPIC_API_KEY",
         "SHOPIFY_ADMIN_API_TOKEN",
         "STRIPE_SECRET_KEY",
-        "ETSY_API_KEY",
-        "TELEGRAM_BOT_TOKEN",
-        "SHUTTERSTOCK_API_TOKEN",
+        "DISCORD_WEBHOOK_URL",
     ]
     for key in tracked:
         print(f"    {'set ' if config.has(key) else 'unset'}  {key}")

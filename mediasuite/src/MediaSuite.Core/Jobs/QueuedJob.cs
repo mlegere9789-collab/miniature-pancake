@@ -123,6 +123,18 @@ public sealed class QueuedJob : INotifyPropertyChanged
     /// </summary>
     internal bool TryClaimCompletion() => Interlocked.Exchange(ref _completionClaimed, 1) == 0;
 
+    /// <summary>
+    /// True once something has claimed the right to record this job's outcome (see
+    /// <see cref="TryClaimCompletion"/>), even if <see cref="Status"/> itself hasn't been
+    /// updated yet. <see cref="JobQueueManager"/>'s own dequeue loop checks this, under the
+    /// same lock a pending cancellation claims completion under, so it can never start a
+    /// job whose cancellation has already been claimed but not yet fully recorded --
+    /// checking <see cref="IsFinished"/> alone is not enough, since that only becomes true
+    /// once <c>Finish</c> actually runs, which for a cancelled-while-pending job happens
+    /// just after the claim, not atomically with it.
+    /// </summary>
+    internal bool CompletionClaimed => Interlocked.CompareExchange(ref _completionClaimed, 0, 0) == 1;
+
     internal void Finish(JobResult result, DateTimeOffset finishedAt)
     {
         Result = result;

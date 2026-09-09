@@ -19,7 +19,15 @@ _MONTHLY_OCCURRENCES = {
 }
 
 
-def _f(value: Any, default: float = 0.0) -> float:
+def to_float(value: Any, default: float = 0.0) -> float:
+    """Parse a Stripe numeric field that may be missing, `None` (a
+    present-but-null field, e.g. from a restricted API key), or otherwise
+    not a plain number. Every numeric field pulled off a raw Stripe object
+    anywhere in this module goes through this rather than a bare
+    `dict.get(key, 0)` — that only substitutes the default when the key is
+    *absent*, not when it's present and `None`, so a null `amount` on a
+    charge would otherwise reach a raw `/ 100.0` and raise.
+    """
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -32,8 +40,8 @@ def _item_monthly_amount(item: dict[str, Any]) -> float:
     interval = recurring.get("interval", "month")
     interval_count = max(1, int(recurring.get("interval_count") or 1))
     occurrences = _MONTHLY_OCCURRENCES.get(interval, 1.0) / interval_count
-    unit_amount = _f(price.get("unit_amount")) / 100.0
-    quantity = _f(item.get("quantity"), 1.0)
+    unit_amount = to_float(price.get("unit_amount")) / 100.0
+    quantity = to_float(item.get("quantity"), 1.0)
     return unit_amount * quantity * occurrences
 
 
@@ -67,9 +75,9 @@ def summarize_charges(charges: list[dict[str, Any]]) -> ChargeSummary:
     summary = ChargeSummary()
     for charge in charges:
         status = charge.get("status")
-        refunded_amount = _f(charge.get("amount_refunded"))
+        refunded_amount = to_float(charge.get("amount_refunded"))
         if status == "succeeded":
-            net_cents = _f(charge.get("amount")) - refunded_amount
+            net_cents = to_float(charge.get("amount")) - refunded_amount
             summary.collected += net_cents / 100.0
         elif status == "failed":
             summary.failed.append(charge)

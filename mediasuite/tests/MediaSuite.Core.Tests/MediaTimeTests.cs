@@ -43,6 +43,19 @@ public class MediaTimeTests
     }
 
     [Fact]
+    public void A_duration_of_a_day_or_more_keeps_its_real_hour_count_instead_of_wrapping_at_24()
+    {
+        // Regression test: TimeSpan's own "hh" custom format specifier is just the Hours
+        // component (0-23), not the total hours, so formatting a >=24h TimeSpan with it
+        // used to silently drop the day and hand FFmpeg a seek point up to 24 hours
+        // earlier than the one actually requested -- for a trim time a user can type
+        // directly ("30:00:00" parses cleanly via TryParse above), not just a
+        // theoretical value.
+        Assert.Equal("30:00:00.000", MediaTime.Format(TimeSpan.FromHours(30)));
+        Assert.Equal("25:00:01.250", MediaTime.Format(new TimeSpan(1, 1, 0, 1, 250)));
+    }
+
+    [Fact]
     public void Parsing_and_formatting_ignore_the_machine_locale()
     {
         // In a comma-decimal locale, "90.5" must still mean ninety and a half seconds and

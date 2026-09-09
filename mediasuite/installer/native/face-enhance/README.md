@@ -1,12 +1,20 @@
 # Face Enhance native source
 
-`face.h`/`face.cpp` and `gfpgan.h`/`gfpgan.cpp` are vendored, unmodified, from
+`face.h`/`face.cpp` and `gfpgan.h`/`gfpgan.cpp` are vendored from
 [Qengineering/GFPGAN-ncnn-Raspberry-Pi-4](https://github.com/Qengineering/GFPGAN-ncnn-Raspberry-Pi-4)
 (BSD-3-Clause — see `LICENSE-THIRD-PARTY.txt`), itself built on
 [FeiGeChuanShu/GFPGAN-ncnn](https://github.com/FeiGeChuanShu/GFPGAN-ncnn)'s ncnn port of
 [TencentARC/GFPGAN](https://github.com/TencentARC/GFPGAN). Face restoration through GFPGAN
 needs two supporting models this same source tree carries: a `yolov5-blazeface` face
 detector, and the `GFPGANCleanv1-NoCE-C2` weights (`encoder`/`style`) themselves.
+
+Not left unmodified: a since-fixed audit found two real bugs in the vendored code itself
+(see git history for the full reasoning). `gfpgan.cpp`'s `load_weights()` now checks
+`ifstream::read()`'s failure state after every read group, so a truncated or wrong-variant
+`style.bin` fails loudly instead of silently producing garbage restorations. `face.cpp`'s
+`draw_objects()` now only indexes the 3 landmark points `generate_proposals()` actually
+produces, rather than the 5 the original reference code assumed (a real, if currently dead,
+out-of-bounds read). Everything else is unmodified.
 
 `face_enhance.cpp` is MediaSuite's own driver — see the file's own header comment for how
 and why it differs from the original demo it is built against.

@@ -143,7 +143,8 @@ a process manager (systemd, `pm2`, Windows Task Scheduler, etc.) — we can set
 that up when you have a program to schedule.
 
 **Cadence options** (in `jobs.json`): `hourly`, `daily` (with `"at": "HH:MM"`),
-or `weekly` (with `"at": "mon 09:00"`).
+`weekly` (with `"at": "mon 09:00"`), or `every` (with `"interval_hours"`, 1-23
+— e.g. the example `deal-alert-scan` job runs every 3 hours).
 
 ---
 
@@ -152,8 +153,9 @@ or `weekly` (with `"at": "mon 09:00"`).
 ```bash
 python3 -m orchestrator doctor
 ```
-Shows whether `.env` exists, whether the database is created, and which
-credentials are set (values are never printed).
+Shows whether `.env` exists, whether the database is created, whether the
+portable scheduler daemon (if you're using `scheduler run` instead of cron)
+is actually alive, and which credentials are set (values are never printed).
 
 ---
 
@@ -210,5 +212,12 @@ miniature-pancake/
 │  └─ micro_saas/             #   built: health checks + Stripe billing
 ├─ data/                  # local DB + logs (git-ignored)
 ├─ .env.example           # credentials template (copy to .env)
-└─ SETUP.md               # this file
+├─ SETUP.md               # this file
+└─ mediasuite/            # unrelated project: a Windows-only media-converter
+                           #   WPF app + installer -- see mediasuite/README.md
 ```
+
+`mediasuite/` shares nothing with the setup above (no `.env`, no shared
+database, no shared config) — it's a separate Windows desktop app that
+happens to live in this same repository. If you're only here for the income
+programs, you can ignore it entirely.

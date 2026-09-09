@@ -119,7 +119,7 @@ public static class ToolManifest
             "Real-ESRGAN",
             "realesrgan",
             new[] { "realesrgan-ncnn-vulkan.exe", "realesrgan.exe" },
-            "AI photo upscaling at 2x/4x/8x, CUDA-accelerated with a CPU fallback.",
+            "AI photo upscaling at 2x/4x/8x, Vulkan-accelerated on any GPU with a CPU fallback.",
             "BSD-3-Clause",
             "https://github.com/xinntao/Real-ESRGAN/releases"),
         new ToolDescriptor(
@@ -147,7 +147,9 @@ public static class ToolManifest
             + "runs GFPGAN on each one, CPU-only. Compiled from source at installer build time "
             + "(no official prebuilt Windows binary exists), so unlike every other bundled tool "
             + "this one is genuinely allowed to be missing: the upscaler works exactly as before "
-            + "without it, the faceEnhance option just has nothing to run.",
+            + "for a job that never asks for it, but a job that explicitly sets faceEnhance=true "
+            + "without it installed fails with this same message rather than silently skipping "
+            + "the pass.",
             "BSD-3-Clause",
             "https://github.com/Qengineering/GFPGAN-ncnn-Raspberry-Pi-4"));
 

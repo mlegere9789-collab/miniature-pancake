@@ -33,14 +33,22 @@ if (Test-Path $ToolsDir) {
 }
 New-Item -ItemType Directory -Force -Path $ToolsDir | Out-Null
 
+# Two separate header sets, not one shared one: $githubApiHeaders carries this CI job's
+# own GITHUB_TOKEN (used only to avoid api.github.com's much stricter unauthenticated
+# rate limit) and must never leave github.com. Every other download in this script --
+# 7-Zip, Potrace, MuPDF, LibreOffice, the GFPGAN models on Google Drive, even
+# raw.githubusercontent.com -- goes out through the token-free $webHeaders instead, so a
+# compromised or malicious third-party host on the other end of one of those requests can
+# never walk away with this job's live GitHub credential.
 $webHeaders = @{ "User-Agent" = "MediaSuite-CI" }
+$githubApiHeaders = $webHeaders.Clone()
 if ($env:GITHUB_TOKEN) {
-    $webHeaders["Authorization"] = "Bearer $($env:GITHUB_TOKEN)"
+    $githubApiHeaders["Authorization"] = "Bearer $($env:GITHUB_TOKEN)"
 }
 
 function Get-LatestReleaseAssetUrl {
     param([Parameter(Mandatory)][string]$Repo, [Parameter(Mandatory)][string]$NamePattern)
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $webHeaders
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $githubApiHeaders
     $asset = $release.assets | Where-Object { $_.name -match $NamePattern } | Select-Object -First 1
     if (-not $asset) {
         throw "No release asset matching '$NamePattern' found in the latest release of $Repo. " +
@@ -221,12 +229,22 @@ else {
         $librawStage = Join-Path $ToolsDir "libraw"
         New-Item -ItemType Directory -Force -Path $librawStage | Out-Null
         $exePath = Join-Path $librawStage "dcraw_emu.exe"
+        $librawObjDir = Join-Path ([System.IO.Path]::GetTempPath()) "mediasuite-libraw-obj"
+        New-Item -ItemType Directory -Force -Path $librawObjDir | Out-Null
 
         # /MT to match vcpkg's x64-windows-static triplet (static CRT) — a /MD-compiled
         # object linking against /MT-built static libs is a hard link error, not a warning.
         # Linking every .lib vcpkg produced for this triplet rather than guessing libraw's
-        # exact transitive dependency list (jpeg, zlib, lcms2, ...) by name.
-        & cl.exe /nologo /EHsc /O2 /MT "/I$includeDir" $dcrawCppPath "/Fe:$exePath" /link $libFiles.FullName
+        # exact transitive dependency list (jpeg, zlib, lcms2, ...) by name. /Fo sends the
+        # intermediate .obj into a scratch temp folder -- without it, cl.exe defaults to
+        # dropping dcraw_emu.obj in whatever the script's working directory happens to be
+        # (the repo root, for both CI and a contributor running this by hand), an untracked
+        # build artifact `.gitignore`'s own `[Oo]bj/` rule doesn't catch since that only
+        # matches a directory literally named obj/Obj, not a loose *.obj file. This can't
+        # just point at $librawStage instead: that whole folder is later packaged verbatim
+        # into the installer (see MediaSuite.iss's "{#MyToolsStagedDir}\*" entry), so an
+        # .obj landing there would ship inside the installed app for no reason.
+        & cl.exe /nologo /EHsc /O2 /MT "/I$includeDir" "/Fo:$librawObjDir\" $dcrawCppPath "/Fe:$exePath" /link $libFiles.FullName
         if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
             throw "Compiling dcraw_emu.cpp failed with exit code $LASTEXITCODE"
         }
@@ -289,6 +307,8 @@ else {
         $faceEnhanceStage = Join-Path $ToolsDir "gfpgan"
         New-Item -ItemType Directory -Force -Path $faceEnhanceStage | Out-Null
         $exePath = Join-Path $faceEnhanceStage "face_enhance.exe"
+        $faceEnhanceObjDir = Join-Path ([System.IO.Path]::GetTempPath()) "mediasuite-faceenhance-obj"
+        New-Item -ItemType Directory -Force -Path $faceEnhanceObjDir | Out-Null
 
         $sources = @("face_enhance.cpp", "face.cpp", "gfpgan.cpp") | ForEach-Object { Join-Path $faceEnhanceSrcDir $_ }
 
@@ -351,8 +371,14 @@ else {
         # max/min macros (on by default) rewrite "std::max(" into invalid syntax right
         # after "::" — a well-known, well-documented MSVC/Windows.h gotcha, fixed by this
         # one flag rather than touching the vendored source at all.
+        # /Fo sends the three intermediate .obj files into a scratch temp folder, for the
+        # same reason as the LibRaw compile above -- without it they land loose in the repo
+        # root, uncovered by .gitignore's directory-only [Oo]bj/ rule. This can't point at
+        # $faceEnhanceStage instead: that whole folder is later packaged verbatim into the
+        # installer (see MediaSuite.iss's "{#MyToolsStagedDir}\*" entry), so an .obj landing
+        # there would ship inside the installed app for no reason.
         Write-Host "  cl.exe /nologo /EHsc /O2 /MT /DNOMINMAX $($includePaths -join ' ') $($sources -join ' ') /Fe:$exePath /link <$($libFiles.Count) .lib files>"
-        & cl.exe /nologo /EHsc /O2 /MT /DNOMINMAX $includePaths $sources "/Fe:$exePath" /link $libFiles.FullName
+        & cl.exe /nologo /EHsc /O2 /MT /DNOMINMAX $includePaths "/Fo:$faceEnhanceObjDir\" $sources "/Fe:$exePath" /link $libFiles.FullName
         if ($LASTEXITCODE -ne 0 -and $null -ne $LASTEXITCODE) {
             throw "Compiling face_enhance.cpp failed with exit code $LASTEXITCODE"
         }

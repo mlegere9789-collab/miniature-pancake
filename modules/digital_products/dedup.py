@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from orchestrator.paths import DATA_DIR, ensure_data_dir
+from orchestrator.paths import DATA_DIR, atomic_write_text, ensure_data_dir
 
 SEEN_FILE = DATA_DIR / "digital_products_seen.json"
 
@@ -32,12 +32,19 @@ class SeenStore:
             except (json.JSONDecodeError, OSError):
                 self._seen = {}
 
-    def is_seen(self, brief_id: str) -> bool:
-        return brief_id in self._seen
+    def is_seen(self, brief_id: object) -> bool:
+        # str(), not a bare `in` -- a brief id from product_briefs.json can
+        # be a JSON number (nothing enforces it must be a string), and
+        # json.dumps() in save() silently coerces a non-string dict key to
+        # a string on write. Without coercing here too, is_seen(1) after a
+        # reload would check `1 in {"1": ...}`, which is always False --
+        # dedup would silently never stick and every run would redraft the
+        # same brief forever.
+        return str(brief_id) in self._seen
 
-    def mark(self, brief_id: str) -> None:
-        self._seen[brief_id] = datetime.now(timezone.utc).isoformat()
+    def mark(self, brief_id: object) -> None:
+        self._seen[str(brief_id)] = datetime.now(timezone.utc).isoformat()
 
     def save(self) -> None:
         ensure_data_dir()
-        SEEN_FILE.write_text(json.dumps(self._seen, indent=2), encoding="utf-8")
+        atomic_write_text(SEEN_FILE, json.dumps(self._seen, indent=2))

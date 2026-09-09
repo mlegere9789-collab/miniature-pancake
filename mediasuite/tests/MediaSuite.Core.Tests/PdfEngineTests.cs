@@ -287,6 +287,46 @@ public class PdfEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task Removing_a_page_number_past_the_end_of_the_document_fails_fast_with_a_clear_reason()
+    {
+        // Regression guard: "remove" pre-resolves its own page list (see ParsePageNumbers),
+        // unlike organize/extract-pages/rotate/split-ranges, which hand the raw text
+        // straight to qpdf's own --pages option and let qpdf itself reject an out-of-range
+        // number. Before this had its own range check, a huge second endpoint like this one
+        // would make ParsePageNumbers' range-expansion loop walk every integer up to it with
+        // no upper bound and no cancellation check -- effectively hanging the job on a plain
+        // typo instead of failing immediately with a message naming the real problem. This
+        // test's own timeout (xUnit's default, well under what an unbounded loop would take)
+        // is itself part of the regression guard.
+        _runner.PageCount = 5;
+        var input = _temp.CreateFile("in.pdf");
+
+        var result = await Run(
+            new PdfEngine(_runner, Tools()),
+            Spec("pdf.remove-pages", new[] { input }, options: ("remove", "1-999999999")));
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("5-page", result.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Removing_pages_rejects_an_out_of_range_from_the_end_reference_too()
+    {
+        // "rN" resolves via the same totalPages - fromEnd + 1 arithmetic as any other page
+        // number here, so an rN past the start of the document (r10 on a 5-page file lands
+        // on page -4) needs the same range check as a plain out-of-range number.
+        _runner.PageCount = 5;
+        var input = _temp.CreateFile("in.pdf");
+
+        var result = await Run(
+            new PdfEngine(_runner, Tools()),
+            Spec("pdf.remove-pages", new[] { input }, options: ("remove", "r10")));
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("5-page", result.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Extracting_pages_keeps_only_the_ones_named()
     {
         var input = _temp.CreateFile("in.pdf");

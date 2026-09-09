@@ -262,6 +262,23 @@ public class GifCommandBuilderTests
     }
 
     [Fact]
+    public void A_frame_duration_that_does_not_evenly_divide_a_second_rounds_up_not_to_nearest()
+    {
+        // Regression test: the fps filter resamples the concat demuxer's own per-image
+        // timeline onto a fixed grid spaced 1000/fps ms apart. Rounding to the *nearest*
+        // fps can make that grid coarser than an image's own duration window -- 700ms is
+        // 1.43 true fps, which rounds to 1 fps (a 1000ms sampling gap), wide enough that
+        // an image whose 700ms window falls between two samples is dropped from the
+        // output entirely, not just mistimed. Rounding up to 2 fps instead keeps the
+        // 500ms sampling gap narrower than every 700ms window, so no image can be skipped.
+        Assert.Equal(2, GifCommandBuilder.ResolveFps(Spec("gif.maker", QualityPreset.Balanced, ("frameDurationMs", "700"))));
+
+        // 3.33 true fps must round up to 4, not down to 3: at 3 fps the 333ms sampling
+        // gap is wider than the 300ms image window and can still skip a frame.
+        Assert.Equal(4, GifCommandBuilder.ResolveFps(Spec("gif.maker", QualityPreset.Balanced, ("frameDurationMs", "300"))));
+    }
+
+    [Fact]
     public void An_explicit_frame_rate_still_wins_for_a_slideshow()
     {
         Assert.Equal(20, GifCommandBuilder.ResolveFps(

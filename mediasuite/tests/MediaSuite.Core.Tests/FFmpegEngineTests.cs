@@ -329,6 +329,37 @@ public class FFmpegEngineTests : IDisposable
     }
 
     [Fact]
+    public void A_trim_to_end_of_file_measures_progress_against_what_is_left_past_start()
+    {
+        // Regression test: with only "start" given (no "end"/"duration"), this used to
+        // fall through to the raw source duration -- but FFmpeg reports the *output*
+        // timeline, which restarts at zero right after the seek, so a 10-minute source
+        // trimmed from the 8-minute mark would only ever reach ~20% even at completion.
+        var probe = new MediaProbe(TimeSpan.FromMinutes(10));
+        var spec = Spec("video.trim", new[] { "a.mp4" }, options: new[] { ("start", "480") });
+
+        Assert.Equal(TimeSpan.FromMinutes(2), FFmpegEngine.ExpectedOutputDuration(spec, probe));
+    }
+
+    [Fact]
+    public void A_trim_with_no_start_or_end_at_all_measures_against_the_whole_file()
+    {
+        var probe = new MediaProbe(TimeSpan.FromMinutes(10));
+        var spec = Spec("video.trim", new[] { "a.mp4" });
+
+        Assert.Equal(TimeSpan.FromMinutes(10), FFmpegEngine.ExpectedOutputDuration(spec, probe));
+    }
+
+    [Fact]
+    public void A_trim_starting_past_the_end_of_the_clip_falls_back_to_indeterminate()
+    {
+        var probe = new MediaProbe(TimeSpan.FromMinutes(2));
+        var spec = Spec("video.trim", new[] { "a.mp4" }, options: new[] { ("start", "300") });
+
+        Assert.Null(FFmpegEngine.ExpectedOutputDuration(spec, probe));
+    }
+
+    [Fact]
     public void Anything_other_than_a_trim_measures_against_the_whole_file()
     {
         var probe = new MediaProbe(TimeSpan.FromMinutes(10));

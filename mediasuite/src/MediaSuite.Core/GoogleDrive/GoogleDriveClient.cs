@@ -28,15 +28,26 @@ public sealed class GoogleDriveClient : IGoogleDriveClient, IDisposable
 
     // JobQueueManager shares one GoogleDriveClient across every job in a batch, and runs
     // several of them at once (MaxConcurrentJobs defaults to Environment.ProcessorCount).
-    // _service is a plain mutable field with no lock of its own; guards every place that
-    // reads-then-decides or reads-then-replaces it, the same shape of bug
+    // _service is a plain mutable field with no lock of its own; this guards every place
+    // that reads-then-decides or reads-then-replaces it, the same shape of bug
     // OutputPathResolver had for output filenames. Without this, two jobs finishing an
-    // upload around the same moment (or one job uploading while the user clicks Sign
-    // in/out from Settings) could both see _service as null and both sign in, with
-    // whichever SignInAsync call finishes last disposing the DriveService the other one
-    // is still actively using mid-upload — a real ObjectDisposedException on an unrelated
-    // job's request, not just its own. A plain `lock` can't wrap the awaits inside
-    // sign-in, hence SemaphoreSlim rather than the `object`+`lock` OutputPathResolver uses.
+    // upload around the same moment could both see _service as null and both sign in,
+    // leaking one of the two resulting DriveService instances (whichever one loses the
+    // race to become the final _service, quietly overwritten and never disposed).
+    //
+    // This lock only ever protects the brief "check or replace _service" step, though —
+    // it is not held for anywhere near the full duration of a job's own upload, which can
+    // run for as long as the file takes to send. That is exactly why _service is never
+    // disposed when replaced (see SignInCoreAsync/SignOutAsync below): a job's in-flight
+    // ListFoldersAsync/CreateFolderAsync/UploadFileAsync call already captured its own
+    // DriveService reference from an earlier, separate RequireServiceAsync call and keeps
+    // using it entirely outside this lock, so disposing "the old _service" the moment the
+    // user signs out or re-authenticates from Settings could dispose the exact instance
+    // that job is still actively using mid-upload — a real ObjectDisposedException on an
+    // unrelated job's request, not just its own, and sign-in/out is common enough (a user
+    // switching accounts, or re-consenting after a revoked token) that this is a real risk,
+    // not a theoretical one. A plain `lock` can't wrap the awaits inside sign-in, hence
+    // SemaphoreSlim rather than the `object`+`lock` OutputPathResolver uses.
     private readonly SemaphoreSlim _serviceLock = new(1, 1);
 
     private DriveService? _service;
@@ -97,7 +108,12 @@ public sealed class GoogleDriveClient : IGoogleDriveClient, IDisposable
             cancellationToken,
             new FileDataStore(_tokenDirectory, fullPath: true)).ConfigureAwait(false);
 
-        _service?.Dispose();
+        // Deliberately not disposing the outgoing _service here (see _serviceLock's own
+        // comment) -- a job elsewhere may still be mid-upload against that exact instance,
+        // captured from an earlier RequireServiceAsync call this lock cannot see. Letting
+        // it be garbage-collected instead costs one abandoned DriveService/HttpClient per
+        // re-authentication, a rare, user-initiated action, in exchange for never handing
+        // an unrelated in-flight job an ObjectDisposedException.
         _service = new DriveService(new BaseClientService.Initializer
         {
             HttpClientInitializer = credential,
@@ -110,7 +126,8 @@ public sealed class GoogleDriveClient : IGoogleDriveClient, IDisposable
         _serviceLock.Wait();
         try
         {
-            _service?.Dispose();
+            // Not disposed, same reasoning as SignInCoreAsync -- an in-flight job elsewhere
+            // may still be actively using this exact instance.
             _service = null;
 
             if (Directory.Exists(_tokenDirectory))

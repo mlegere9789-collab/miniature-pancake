@@ -101,6 +101,64 @@ public class JobLauncherTests : IDisposable
     }
 
     [Fact]
+    public void BatchRoot_is_the_whole_selections_own_common_root_not_each_files_own_folder()
+    {
+        // Regression test: every non-merging job gets a JobSpec whose own InputPaths has
+        // exactly one file (see the test above this one) -- so OutputPathResolver.FindCommonRoot
+        // of *that* single-file spec would trivially return the file's own containing
+        // folder, silently defeating PreserveFolderStructure for every operation except
+        // the handful that combine their whole batch into one spec. JobSpec.BatchRoot
+        // exists specifically to carry the *real* common root, computed once here from
+        // the whole original selection before it gets split.
+        using var queue = CreateQueue();
+        queue.Pause();
+
+        var settings = new AppSettings { DefaultOutputDirectory = _temp.Path, PreserveFolderStructure = true };
+        var fileA = _temp.CreateFile("2024", "a.jpg");
+        var fileB = _temp.CreateFile("2025", "b.jpg");
+
+        var jobs = new JobLauncher(queue, settings).Launch(Feature(), new[] { fileA, fileB }, "png", QualityPreset.Balanced);
+
+        var expectedRoot = _temp.Path;
+        Assert.All(jobs, job => Assert.Equal(expectedRoot, job.Spec.BatchRoot, StringComparer.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void BatchIndex_is_each_files_real_position_in_the_whole_selection()
+    {
+        // Regression test: the {index} filename template token had the same problem as
+        // BatchRoot above, for the same reason -- each per-file spec's own loop position
+        // is always 0/1 since JobLauncher already split the batch down to one file per
+        // spec by the time any engine sees it.
+        using var queue = CreateQueue();
+        queue.Pause();
+
+        var settings = new AppSettings { DefaultOutputDirectory = _temp.Path };
+        var files = new[] { "a.jpg", "b.jpg", "c.jpg" };
+
+        var jobs = new JobLauncher(queue, settings).Launch(Feature(), files, "png", QualityPreset.Balanced);
+
+        Assert.Equal(new int?[] { 1, 2, 3 }, jobs.Select(job => job.Spec.BatchIndex));
+    }
+
+    [Fact]
+    public void BatchIndex_is_null_for_a_tool_that_combines_its_own_inputs()
+    {
+        // That spec's own InputPaths already is the whole batch, so its engine's own
+        // loop position is already a correct index -- BatchIndex must stay null rather
+        // than forcing every output in a merge (e.g. every frame of a slideshow) to the
+        // same fixed position.
+        using var queue = CreateQueue();
+        queue.Pause();
+
+        var settings = new AppSettings { DefaultOutputDirectory = _temp.Path };
+        var job = new JobLauncher(queue, settings)
+            .Launch(Feature("pdf.merge"), new[] { "a.pdf", "b.pdf" }, "pdf", QualityPreset.Balanced)[0];
+
+        Assert.Null(job.Spec.BatchIndex);
+    }
+
+    [Fact]
     public void A_tool_that_merges_its_inputs_gets_one_job_over_all_of_them()
     {
         // A GIF built from twenty stills is one animation, not twenty jobs racing to write

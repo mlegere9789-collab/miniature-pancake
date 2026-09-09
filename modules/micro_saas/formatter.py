@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .billing import ChargeSummary
+from .billing import ChargeSummary, to_float
 
 
 def format_billing_summary(
@@ -29,11 +29,14 @@ def format_churn_review(churned_ids: set[str], threshold: int) -> str:
 
 
 def format_failed_charge(charge: dict[str, Any]) -> str:
-    amount = charge.get("amount", 0) / 100.0
+    # to_float, not a raw dict.get(..., 0) / 100.0: a charge's own "amount"
+    # can be present but null (e.g. from a restricted API key), which a
+    # bare .get default doesn't catch and a raw division would raise on.
+    amount = to_float(charge.get("amount")) / 100.0
     reason = charge.get("failure_message") or "no failure message"
     return f"Charge {charge.get('id')} for ${amount:.2f} failed: {reason}"
 
 
 def format_refunded_charge(charge: dict[str, Any]) -> str:
-    refunded = charge.get("amount_refunded", 0) / 100.0
+    refunded = to_float(charge.get("amount_refunded")) / 100.0
     return f"Charge {charge.get('id')} has ${refunded:.2f} refunded"

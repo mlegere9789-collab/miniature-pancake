@@ -48,8 +48,13 @@ public sealed class PngToSvgEngine : ExternalProcessEngine
         }
 
         var workingDirectory = ResolveWorkingDirectory(spec);
+        // spec.BatchRoot is the root JobLauncher computed from the *whole* original
+        // batch before splitting it into this one-file spec -- FindCommonRoot(spec.InputPaths)
+        // here would just return this single file's own containing folder. The fallback
+        // still covers operations that combine their inputs into one spec, where
+        // InputPaths already is the whole batch and BatchRoot is left null.
         var batchRoot = spec.Output.PreserveFolderStructure
-            ? OutputPathResolver.FindCommonRoot(spec.InputPaths)
+            ? spec.BatchRoot ?? OutputPathResolver.FindCommonRoot(spec.InputPaths)
             : null;
 
         var outputs = new List<string>(spec.InputPaths.Count);
@@ -74,7 +79,10 @@ public sealed class PngToSvgEngine : ExternalProcessEngine
                     .ConfigureAwait(false);
 
                 var target = spec.Output with { Format = "svg" };
-                var outputPath = OutputPathResolver.Resolve(inputPath, target, index + 1, batchRoot);
+                // spec.BatchIndex, not the local loop position + 1: JobLauncher splits a
+                // multi-file batch into one spec per file, so this loop only ever sees a
+                // single item and index + 1 would always be 1 for every file.
+                var outputPath = OutputPathResolver.Resolve(inputPath, target, spec.BatchIndex ?? index + 1, batchRoot);
 
                 await RunToolAsync(
                     potrace, BuildTraceArguments(spec, bitmap, outputPath), "Potrace", cancellationToken,
@@ -86,6 +94,16 @@ public sealed class PngToSvgEngine : ExternalProcessEngine
             catch (ToolExecutionException ex)
             {
                 return JobResult.Failure(ex.Message, diagnostics: ex.Diagnostics);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                // Every sibling engine (FFmpeg, ImageMagick, Gif, Archive, Document, Pdf,
+                // Upscale) catches this too -- OutputPathResolver.Resolve() above can throw
+                // a plain IOException when OverwritePolicy.Fail is set and the target .svg
+                // already exists. Without this clause that propagated straight out of
+                // RunAsync as an unhandled exception instead of a clean failed job, the one
+                // engine here that didn't already have it.
+                return JobResult.Failure($"'{Path.GetFileName(inputPath)}': {ex.Message}");
             }
         }
 

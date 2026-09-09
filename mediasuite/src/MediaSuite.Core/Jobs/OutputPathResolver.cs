@@ -91,10 +91,24 @@ public static class OutputPathResolver
     {
         var result = string.IsNullOrWhiteSpace(template) ? "{name}.{ext}" : template;
 
-        return result
-            .Replace("{name}", name, StringComparison.OrdinalIgnoreCase)
-            .Replace("{ext}", extension, StringComparison.OrdinalIgnoreCase)
-            .Replace("{index}", index.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
+        // A single regex pass over the original template, not three chained Replace()
+        // calls: chaining would let a literal "{ext}" or "{index}" that happens to appear
+        // inside `name` itself -- an unusual but real filename, e.g. a batch-export tool's
+        // own unresolved "IMG_{index}.jpg" -- get reinterpreted as a template token by a
+        // later Replace() call, corrupting a value that was already substituted in. Regex's
+        // MatchEvaluator only ever sees matches from the original input string, so nothing
+        // substituted in is rescanned.
+        return System.Text.RegularExpressions.Regex.Replace(
+            result,
+            @"\{name\}|\{ext\}|\{index\}",
+            match => match.Value.ToLowerInvariant() switch
+            {
+                "{name}" => name,
+                "{ext}" => extension,
+                "{index}" => index.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                _ => match.Value,
+            },
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
     }
 
     private static string ResolveDirectory(string inputPath, OutputTarget target, string? batchRoot)
@@ -212,11 +226,17 @@ public static class OutputPathResolver
             return "output";
         }
 
-        var baseName = Path.GetFileNameWithoutExtension(cleaned);
+        // Windows intercepts a reserved device name based on the segment before the FIRST
+        // dot, not the last -- "con.tar.gz" and "con.txt.bak" are exactly as reserved as
+        // "con.png", even though Path.GetFileNameWithoutExtension only ever strips the
+        // final extension and would return "con.tar"/"con.txt" for those, missing the
+        // match entirely. Splitting on the first dot instead catches every one of them.
+        var firstDotIndex = cleaned.IndexOf('.');
+        var deviceStem = firstDotIndex < 0 ? cleaned : cleaned[..firstDotIndex];
 
-        if (ReservedDeviceNames.Contains(baseName))
+        if (ReservedDeviceNames.Contains(deviceStem))
         {
-            cleaned = $"{baseName}_{Path.GetExtension(cleaned)}";
+            cleaned = $"{deviceStem}_{cleaned[deviceStem.Length..]}";
         }
 
         return cleaned;

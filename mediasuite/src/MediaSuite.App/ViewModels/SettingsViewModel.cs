@@ -103,12 +103,18 @@ public sealed class SettingsViewModel : PageViewModel
         get => _settings.ResolveOutputDirectory();
         set
         {
-            if (string.Equals(_settings.DefaultOutputDirectory, value, StringComparison.Ordinal))
+            // Normalize before comparing, not after -- the stored value is never
+            // whitespace-only (it's always null or a real path), so comparing the raw
+            // incoming value against it made every empty/whitespace variant look like a
+            // "change" from null and trigger a pointless Persist() even though the
+            // normalized outcome (null) was identical to what was already stored.
+            var normalized = string.IsNullOrWhiteSpace(value) ? null : value;
+            if (string.Equals(_settings.DefaultOutputDirectory, normalized, StringComparison.Ordinal))
             {
                 return;
             }
 
-            _settings.DefaultOutputDirectory = string.IsNullOrWhiteSpace(value) ? null : value;
+            _settings.DefaultOutputDirectory = normalized;
             Persist();
             OnPropertyChanged();
         }
@@ -185,12 +191,13 @@ public sealed class SettingsViewModel : PageViewModel
         get => _settings.ResolveTempDirectory();
         set
         {
-            if (string.Equals(_settings.CustomTempDirectory, value, StringComparison.Ordinal))
+            var normalized = string.IsNullOrWhiteSpace(value) ? null : value;
+            if (string.Equals(_settings.CustomTempDirectory, normalized, StringComparison.Ordinal))
             {
                 return;
             }
 
-            _settings.CustomTempDirectory = string.IsNullOrWhiteSpace(value) ? null : value;
+            _settings.CustomTempDirectory = normalized;
             Persist();
             OnPropertyChanged();
         }
@@ -238,12 +245,13 @@ public sealed class SettingsViewModel : PageViewModel
         get => _settings.GoogleDriveCredentialsPath ?? "google-drive-credentials.json in the settings folder";
         set
         {
-            if (string.Equals(_settings.GoogleDriveCredentialsPath, value, StringComparison.Ordinal))
+            var normalized = string.IsNullOrWhiteSpace(value) ? null : value;
+            if (string.Equals(_settings.GoogleDriveCredentialsPath, normalized, StringComparison.Ordinal))
             {
                 return;
             }
 
-            _settings.GoogleDriveCredentialsPath = string.IsNullOrWhiteSpace(value) ? null : value;
+            _settings.GoogleDriveCredentialsPath = normalized;
             Persist();
             OnPropertyChanged();
         }
@@ -280,12 +288,13 @@ public sealed class SettingsViewModel : PageViewModel
         get => _settings.ToolsDirectory ?? "tools\\ next to MediaSuite.exe";
         set
         {
-            if (string.Equals(_settings.ToolsDirectory, value, StringComparison.Ordinal))
+            var normalized = string.IsNullOrWhiteSpace(value) ? null : value;
+            if (string.Equals(_settings.ToolsDirectory, normalized, StringComparison.Ordinal))
             {
                 return;
             }
 
-            _settings.ToolsDirectory = string.IsNullOrWhiteSpace(value) ? null : value;
+            _settings.ToolsDirectory = normalized;
             Persist();
             OnPropertyChanged();
             RefreshTools();

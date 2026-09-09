@@ -192,11 +192,23 @@ public class JobQueueManagerTests : IDisposable
     public async Task Cancelling_a_running_job_stops_it_and_leaves_the_others_running()
     {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var queue = CreateQueue(new EngineRegistry().Register(FakeEngine.Gated(gate)), maxConcurrency: 2);
+        var engine = FakeEngine.Gated(gate);
+        using var queue = CreateQueue(new EngineRegistry().Register(engine), maxConcurrency: 2);
 
         var doomed = queue.Enqueue(Spec());
         var survivor = queue.Enqueue(Spec());
         await WaitUntil(() => queue.RunningCount == 2);
+
+        // Wait for the engines themselves to be in flight, not just RunningCount: the
+        // queue books a job as running (reserves its slot) the moment Schedule() hands
+        // it to the thread pool, which is earlier than MarkRunning() actually flipping
+        // the job's own Status -- see the identical comment on
+        // Never_runs_more_jobs_at_once_than_the_concurrency_limit above. Asserting
+        // survivor.Status right after RunningCount == 2 (as this test used to) was a
+        // real, if narrow, race: on a loaded CI runner, survivor's own RunJobAsync
+        // continuation could still be waiting for a thread-pool slot, so its Status
+        // read back Pending instead of Running -- a genuine CI failure, not a fluke.
+        await WaitUntil(() => engine.ActiveCount == 2);
 
         queue.Cancel(doomed);
         await WaitUntil(() => doomed.Status == JobStatus.Canceled);
@@ -232,6 +244,54 @@ public class JobQueueManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Cancelling_a_waiting_job_never_lets_it_run_even_racing_a_concurrent_schedule()
+    {
+        // Regression test for a real race: Cancel() used to read "is this job still
+        // pending" and claim its Cancelled outcome as two separate steps with the
+        // internal lock released in between. A concurrent Schedule() call -- triggered
+        // from a different thread by any other job finishing -- could dequeue and
+        // start this exact job in that window: it would see the job not finished yet,
+        // hand it a fresh, never-cancelled token, and run it for real, while Cancel()
+        // went on to mark it Cancelled underneath. The job's engine would actually run
+        // (writing real output) even though its own status permanently reads Cancelled.
+        //
+        // Reproduced by repeatedly racing one job's cancellation against a second job's
+        // completion (which triggers Schedule() from JobQueueManager's own background
+        // continuation) at maxConcurrency: 1, so the cancelled job can only start if it
+        // is wrongly promoted out of _pending. Timing-based, so it runs many iterations
+        // rather than relying on a single one to land in the exact window.
+        for (var iteration = 0; iteration < 200; iteration++)
+        {
+            var everRan = false;
+            var engine = new FakeEngine((_, _, _) =>
+            {
+                Volatile.Write(ref everRan, true);
+                return Task.FromResult(JobResult.Success(Array.Empty<string>(), TimeSpan.Zero));
+            });
+            var trigger = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var triggerEngine = FakeEngine.Gated(trigger, id: "trigger", handles: "trigger.op");
+
+            using var queue = CreateQueue(
+                new EngineRegistry().Register(engine).Register(triggerEngine), maxConcurrency: 1);
+
+            // Occupies the single slot so the next job sits pending.
+            var occupier = queue.Enqueue(Spec("trigger.op"));
+            var doomed = queue.Enqueue(Spec());
+            await WaitUntil(() => queue.RunningCount == 1 && queue.PendingCount == 1);
+
+            var cancel = Task.Run(() => queue.Cancel(doomed));
+            var completeOccupier = Task.Run(() => trigger.TrySetResult());
+
+            await Task.WhenAll(cancel, completeOccupier);
+            await WaitForIdle(queue);
+
+            Assert.False(Volatile.Read(ref everRan), $"iteration {iteration}: a cancelled-while-pending job actually ran.");
+            Assert.Equal(JobStatus.Canceled, doomed.Status);
+            Assert.Equal(JobStatus.Completed, occupier.Status);
+        }
+    }
+
+    [Fact]
     public async Task CancelAll_stops_running_and_waiting_jobs_and_the_queue_goes_idle()
     {
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -248,6 +308,40 @@ public class JobQueueManagerTests : IDisposable
 
         Assert.All(queue.Jobs, job => Assert.Equal(JobStatus.Canceled, job.Status));
         Assert.True(queue.IsIdle);
+    }
+
+    [Fact]
+    public async Task CancelAll_never_lets_a_waiting_job_run_even_racing_a_concurrent_schedule()
+    {
+        // Same race as Cancel()'s own regression test above, for CancelAll()'s
+        // near-identical pending-job path.
+        for (var iteration = 0; iteration < 200; iteration++)
+        {
+            var everRan = false;
+            var engine = new FakeEngine((_, _, _) =>
+            {
+                Volatile.Write(ref everRan, true);
+                return Task.FromResult(JobResult.Success(Array.Empty<string>(), TimeSpan.Zero));
+            });
+            var trigger = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var triggerEngine = FakeEngine.Gated(trigger, id: "trigger", handles: "trigger.op");
+
+            using var queue = CreateQueue(
+                new EngineRegistry().Register(engine).Register(triggerEngine), maxConcurrency: 1);
+
+            var occupier = queue.Enqueue(Spec("trigger.op"));
+            var doomed = queue.Enqueue(Spec());
+            await WaitUntil(() => queue.RunningCount == 1 && queue.PendingCount == 1);
+
+            var cancelAll = Task.Run(() => queue.CancelAll());
+            var completeOccupier = Task.Run(() => trigger.TrySetResult());
+
+            await Task.WhenAll(cancelAll, completeOccupier);
+            await WaitForIdle(queue);
+
+            Assert.False(Volatile.Read(ref everRan), $"iteration {iteration}: a cancelled-while-pending job actually ran.");
+            Assert.Equal(JobStatus.Canceled, doomed.Status);
+        }
     }
 
     [Fact]

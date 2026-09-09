@@ -361,11 +361,20 @@ void Face::draw_objects(const cv::Mat& bgr, const std::vector<Object>& objects)
         const Object& obj = objects[i];
 
 
-        cv::circle(image, obj.pts[0], 2, cv::Scalar(0, 0, 255), -1);
-        cv::circle(image, obj.pts[1], 2, cv::Scalar(0, 255, 0), -1);
-        cv::circle(image, obj.pts[2], 2, cv::Scalar(255, 0, 0), -1);
-        cv::circle(image, obj.pts[3], 2, cv::Scalar(0, 255, 255), -1);
-        cv::circle(image, obj.pts[4], 2, cv::Scalar(255, 255, 0), -1);
+        // generate_proposals() above only ever pushes 3 landmark points per detection
+        // (its own "for (int l = 0; l < 3; l++)"), so indexing pts[3]/pts[4] here was a
+        // guaranteed out-of-bounds std::vector::operator[] read -- undefined behavior,
+        // not caught by anything since operator[] does no bounds checking. This function
+        // is not on the path face_enhance.cpp's own driver calls, so it's never actually
+        // run today, but it is real, shipped source that a future debug build could
+        // still call into.
+        for (size_t p = 0; p < obj.pts.size() && p < 3; p++)
+        {
+            static const cv::Scalar colors[3] = {
+                cv::Scalar(0, 0, 255), cv::Scalar(0, 255, 0), cv::Scalar(255, 0, 0),
+            };
+            cv::circle(image, obj.pts[p], 2, colors[p], -1);
+        }
         cv::rectangle(image, obj.rect, cv::Scalar(255, 0, 0));
 
         char text[256];

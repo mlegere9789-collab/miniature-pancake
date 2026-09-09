@@ -7,11 +7,13 @@ Convert / Compress / Tools feature set running entirely on your own machine, plu
 photo upscaler. Personal, single-user build: no accounts, no licence keys, no upload
 limits, no server.
 
-> **Status: build steps 1–18 of 18, complete, plus a self-contained installer.** Every
-> conversion module from the brief is in place, every tool has a Custom preset backed by
+> **Status: build steps 1–18 of 18, plus a self-contained installer** — save for step 9's
+> unit and time converters, catalogued but with no engine or page behind them yet (see
+> [What is done](#what-is-done) and [Build order](#build-order)). Every conversion module
+> from the brief is in place, every tool has a Custom preset backed by
 > named, savable option sets, jobs can optionally upload their output to Google Drive, and
 > the format catalogue has been audited against FreeConvert's format support. The
-> installer now bundles all 14 third-party tools automatically — every one CI actually
+> installer now bundles all 15 third-party tools automatically — every one CI actually
 > verified working, not just referenced — so a fresh install needs no manual downloads
 > for the full feature set; see [Bundled tools](#bundled-tools). [QA.md](QA.md)
 > is the checklist for actually verifying a real conversion — this project was built
@@ -84,7 +86,7 @@ IConversionEngine  ── the single seam between the queue and the outside worl
     ├── MuPDF / QPDF / Ghostscript        PDF
     ├── Pandoc / LibreOffice / Calibre    documents and ebooks
     ├── 7-Zip                             archives
-    └── Real-ESRGAN (CUDA)                AI upscaling
+    └── Real-ESRGAN (Vulkan)             AI upscaling
     │
 Output handler → local folder, or Google Drive (optional, off by default)
 ```
@@ -108,9 +110,16 @@ compiled on Linux or macOS. `MediaSuite.Core` and its tests build anywhere.
 
 ```powershell
 dotnet build mediasuite\MediaSuite.sln -c Release
-dotnet test  mediasuite\MediaSuite.sln -c Release
+dotnet test  mediasuite\tests\MediaSuite.Core.Tests\MediaSuite.Core.Tests.csproj -c Release
+dotnet test  mediasuite\tests\MediaSuite.App.Tests\MediaSuite.App.Tests.csproj -c Release
 dotnet run   --project mediasuite\src\MediaSuite.App
 ```
+
+Test the two projects separately, not `dotnet test` on the whole `.sln` — running the
+solution as one command only ever reports `MediaSuite.Core.Tests`' own results (its VSTest
+run silently never happens for `MediaSuite.App.Tests`, which still compiles fine); this
+branch's own CI made exactly that mistake for its entire history before catching it, see
+`.github/workflows/mediasuite-ci.yml`'s `Test` step for the full story.
 
 CI (`.github/workflows/mediasuite-ci.yml`) builds and tests the whole solution on
 `windows-latest` for every change under `mediasuite/`.
@@ -118,14 +127,14 @@ CI (`.github/workflows/mediasuite-ci.yml`) builds and tests the whole solution o
 ## Bundled tools
 
 The app shells out to third-party binaries, but you shouldn't need to find any of them
-yourself: `installer/fetch-tools.ps1` downloads real Windows binaries for all 14 during
+yourself: `installer/fetch-tools.ps1` downloads real Windows binaries for all 15 during
 the CI build — from each tool's own official release channel wherever one exists as a
 plain zip/7z, and by other means where it doesn't (LibRaw's `dcraw_emu.exe` has no
 prebuilt binary anywhere, so it's compiled from source with vcpkg + MSVC; Ghostscript's
 installer had its silent-install flag removed upstream, so its payload is extracted
 directly with 7-Zip instead of run; LibreOffice and Calibre only ship as full installers,
 so those install silently onto the CI machine itself and the result is harvested) — and
-bundles the result straight into the installer. Every one of the 14 was confirmed
+bundles the result straight into the installer. Every one of the 15 was confirmed
 actually working by reading the real CI log, not assumed from a green checkmark; see
 [tools/README.md](tools/README.md) for the exact method and evidence per tool.
 
@@ -144,7 +153,7 @@ Convert.
   source of truth for the shell's content and for engine operation ids
 - **Engine contract** — `IConversionEngine`, `JobSpec`, `JobResult`, `JobProgress`,
   `OutputTarget`, `EngineRegistry`
-- **Tool discovery** — manifest of 15 binaries with licences and download sources, plus a
+- **Tool discovery** — manifest of 16 binaries with licences and download sources, plus a
   locator with override → bundled → PATH resolution
 - **Settings** — JSON store with atomic writes, corrupt-file quarantine and range
   clamping; theme, save folder, concurrency, temp storage, update check
@@ -183,9 +192,14 @@ Convert.
   through 7-Zip; since 7-Zip has no single "convert" command, every job extracts then
   recreates in the target format, with a GZIP target routed through an intermediate TAR
   first since gzip holds one stream, not several named entries
-- **Unit and time converters** — length/mass/area/volume/temperature/data/speed, and time
-  zones/Unix timestamps/durations/frame counts; pure arithmetic with no file to convert,
-  so unlike every other module these never touch the job queue at all
+- **Unit and time converters — catalogued, not yet built.** `util.unit-convert`/
+  `util.time-convert` are in the Feature catalogue (length/mass/area/volume/temperature/
+  data/speed; time zones/Unix timestamps/durations/frame counts) with real descriptions,
+  but neither has an engine or a dedicated calculator page behind it — being pure
+  arithmetic with no file to convert, there's nothing for the job queue to run for them
+  in the first place, unlike every other module here. The tool catalogue correctly shows
+  both as `Build step 9`, not `Ready` (same gap `image.color-picker` has at build step 4)
+  — `EngineSetupTests` asserts this invariant so it can't silently drift either way.
 - **AI upscaler** — 2x/4x/8x with general or anime models, optional denoise, sharpen and
   face enhance, through Real-ESRGAN's ncnn-vulkan build (GPU via Vulkan, with a CPU
   fallback); 8x is two chained passes rather than trusting every build to accept a single
@@ -250,14 +264,14 @@ Convert.
   repo's Releases page, gated so a PR build never does it. Before this, the only way to
   get the installer was a 90-day CI artifact behind a GitHub login, which quietly broke
   the promise the README and the in-app update checker both already made
-- **Self-contained tool bundling** — `installer/fetch-tools.ps1` fetches all 14
+- **Self-contained tool bundling** — `installer/fetch-tools.ps1` fetches all 15
   third-party tools during the CI build and packages them straight into the installer,
   so a fresh install needs zero manual downloads; a plain zip/7z download where one
   exists, and something more particular where it doesn't — LibRaw's `dcraw_emu.exe`
   compiled from source (no prebuilt binary exists anywhere), Ghostscript's installer
   payload extracted directly since its silent-install flag was removed upstream, and
   LibreOffice/Calibre installed silently onto the CI machine itself and harvested. Every
-  one of the 14 was confirmed actually working from the real CI log, including two that
+  one of the 15 was confirmed actually working from the real CI log, including two that
   needed a real fix after an honest first failure (a stale MuPDF version pin, caught by
   a 404 in CI and corrected) rather than being assumed to work
 - **Update check** — on launch, if the setting is on, the app checks this repository's
@@ -274,7 +288,8 @@ Convert.
   mnemonic would have rendered as a literal underscore instead of working
 - **Final build** — version set to `1.0.0` in `Directory.Build.props` and kept in step in
   `installer/MediaSuite.iss`, so the installer's file name, `AppVersion` and the running
-  app's own assembly version all agree; all 18 build steps from the brief are done
+  app's own assembly version all agree; all 18 build steps from the brief are done, save
+  for step 9's unit and time converters (catalogued, no engine or page yet — see above)
 
 ## Settings and presets
 
@@ -312,7 +327,7 @@ external tool, so the queue and the tests never depend on the real Google API cl
 
 `installer/MediaSuite.iss` is an [Inno Setup](https://jrsoftware.org/isinfo.php) script
 that packages a self-contained `win-x64` publish of `MediaSuite.App` — no separate .NET
-runtime install required — plus all 14 bundled tools (see
+runtime install required — plus all 15 bundled tools (see
 [Bundled tools](#bundled-tools)) into a traditional wizard-style installer: Program Files
 under an elevation prompt, a Start Menu group, an optional desktop shortcut, and a real
 uninstaller. Uninstall still deliberately leaves `tools\` and the user's settings folder
@@ -329,7 +344,9 @@ SDK, Inno Setup 6 (`iscc.exe`) — the script falls back to Inno Setup's default
 location if `iscc.exe` is not already on PATH — and, for the full tool set, an MSVC +
 vcpkg toolchain and Chocolatey (both already present on a normal Windows 11 dev machine
 with Visual Studio installed; a local build without them still succeeds, just without
-LibRaw and Calibre, the two tools that specifically need them).
+LibRaw and Face Enhance — the two tools compiled from source against MSVC + vcpkg — and
+without Calibre, which installs via Chocolatey instead. LibreOffice needs neither: it
+installs from a plain MSI via `msiexec`, already built into Windows).
 
 Unlike the app itself, this is something the CI in this repository can actually verify
 end to end rather than only compile-check: `.github/workflows/mediasuite-ci.yml`'s
@@ -355,8 +372,8 @@ from source, and the same `releases/latest` endpoint the in-app update checker (
 | 6 | GIF module | done |
 | 7 | PDF module | done |
 | 8 | Document / ebook module | done |
-| 9 | Archive / unit / time converters | done |
-| 10 | AI upscaler (CUDA + CPU fallback) | done — Vulkan GPU path, plus an optional face-enhance pass (GFPGAN-ncnn, compiled from source, CPU-only) |
+| 9 | Archive / unit / time converters | done — archive module only; the unit and time converters are catalogued but have no engine or page yet, see [What is done](#what-is-done) |
+| 10 | AI upscaler (Vulkan GPU + CPU fallback) | done — plus an optional face-enhance pass (GFPGAN-ncnn, compiled from source, CPU-only) |
 | 11 | Settings system — presets | done |
 | 12 | Google Drive integration | done |
 | 13 | Format-parity audit vs FreeConvert | done — spreadsheet/presentation/PostScript formats deliberately deferred, see the FormatCatalog doc comment |

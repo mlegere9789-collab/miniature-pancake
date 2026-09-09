@@ -61,6 +61,21 @@ public class OutputPathResolverTests : IDisposable
     }
 
     [Fact]
+    public void A_literal_token_lookalike_in_the_source_name_survives_intact()
+    {
+        // "IMG_{index}" is an unusual but real filename shape -- e.g. a batch-export tool
+        // that left its own "{index}" placeholder unresolved. Applying the "{name}.{ext}"
+        // template must substitute {name} with that literal text and stop, not let the
+        // "{index}" now sitting inside the result get reinterpreted by the template's own
+        // separate {index} substitution -- which would corrupt "IMG_{index}.png" into
+        // "IMG_7.png" instead of preserving what was actually in the source file's name.
+        var resolved = OutputPathResolver.Resolve(
+            _temp.CreateFile("IMG_{index}.jpg"), Target(), index: 7);
+
+        Assert.Equal("IMG_{index}.png", Path.GetFileName(resolved));
+    }
+
+    [Fact]
     public void Rename_is_the_default_and_never_destroys_an_existing_file()
     {
         var input = _temp.CreateFile("holiday.jpg");
@@ -231,6 +246,30 @@ public class OutputPathResolverTests : IDisposable
 
         var baseName = Path.GetFileNameWithoutExtension(resolved);
         Assert.NotEqual(Path.GetFileNameWithoutExtension(sourceName), baseName, StringComparer.OrdinalIgnoreCase);
+        Assert.EndsWith(".png", resolved, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("con.tar.gz")]
+    [InlineData("con.txt.bak")]
+    [InlineData("NUL.old.docx")]
+    public void A_source_with_a_reserved_stem_before_an_embedded_dot_does_not_produce_a_reserved_output_name(string sourceName)
+    {
+        // Windows intercepts a reserved device name by the segment before the FIRST dot,
+        // not the last one -- "con.tar.gz" is exactly as reserved as "con.png", even though
+        // it has two extensions from Path's own point of view. A source file with an
+        // embedded dot in its name (a ".tar.gz" archive, a ".txt.bak" backup) is exactly
+        // the shape that slips past a check based on Path.GetFileNameWithoutExtension,
+        // which only ever strips the last one.
+        var resolved = OutputPathResolver.Resolve(_temp.CreateFile(sourceName), Target());
+
+        var sourceStemBeforeExtension = Path.GetFileNameWithoutExtension(sourceName);
+        var sourceDeviceStem = sourceStemBeforeExtension[..sourceStemBeforeExtension.IndexOf('.')];
+
+        var resolvedName = Path.GetFileName(resolved);
+        var resolvedDeviceStem = resolvedName[..resolvedName.IndexOf('.')];
+
+        Assert.NotEqual(sourceDeviceStem, resolvedDeviceStem, StringComparer.OrdinalIgnoreCase);
         Assert.EndsWith(".png", resolved, StringComparison.Ordinal);
     }
 

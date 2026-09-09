@@ -26,6 +26,28 @@ public sealed record JobSpec
     /// <summary>Where results are written.</summary>
     public required OutputTarget Output { get; init; }
 
+    /// <summary>
+    /// Deepest folder common to every file in the *original* batch the user selected —
+    /// computed once by <see cref="JobLauncher"/> before it splits that batch into one
+    /// <see cref="JobSpec"/> per file. Needed because <see cref="OutputPathResolver.FindCommonRoot"/>
+    /// of a single-file <see cref="InputPaths"/> (what every non-merging job actually gets)
+    /// trivially returns that one file's own containing folder, which would silently defeat
+    /// <see cref="OutputTarget.PreserveFolderStructure"/> for every operation except the
+    /// handful that combine their whole batch into one spec. Null when the batch spanned
+    /// drives or shared no common folder at all.
+    /// </summary>
+    public string? BatchRoot { get; init; }
+
+    /// <summary>
+    /// This file's 1-based position within the *original* batch the user selected, before
+    /// <see cref="JobLauncher"/> split it into one <see cref="JobSpec"/> per file — the
+    /// same reasoning as <see cref="BatchRoot"/> applies to the <c>{index}</c> filename
+    /// template token. Null for a spec whose <see cref="InputPaths"/> already *is* the
+    /// whole batch (an operation that combines its inputs), where each engine's own loop
+    /// position over that list is already correct.
+    /// </summary>
+    public int? BatchIndex { get; init; }
+
     /// <summary>Quality preset; engines fall back to their own defaults for anything the preset doesn't cover.</summary>
     public QualityPreset Preset { get; init; } = QualityPreset.Balanced;
 

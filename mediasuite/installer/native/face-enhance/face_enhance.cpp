@@ -73,6 +73,17 @@ namespace
         int faceArea = cv::countNonZero(invMaskEroded);
         int edgeWidth = static_cast<int>(std::sqrt(static_cast<double>(faceArea)) / 20);
         int erosionRadius = edgeWidth * 2;
+        if (erosionRadius < 1)
+        {
+            // A small or mostly-edge-cropped face (faceArea under ~400px, plausible for
+            // a face near the frame border) truncates edgeWidth to 0 here, and
+            // cv::getStructuringElement(MORPH_ELLIPSE, Size(0, 0)) returns an empty Mat
+            // -- which cv::erode below silently treats as "no kernel given" and
+            // substitutes its own default 3x3 rectangle instead, an uncontrolled shape
+            // this code never intended to ask for. Clamping to a minimum of 1 keeps the
+            // intended near-zero blend instead.
+            erosionRadius = 1;
+        }
         cv::Mat invMaskCenter;
         kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(erosionRadius, erosionRadius));
         cv::erode(invMaskEroded, invMaskCenter, kernel);
@@ -119,15 +130,16 @@ namespace
     }
 }
 
-int main(int argc, char** argv)
+// Everything past argument parsing, pulled into its own function so main() can wrap
+// the call in a single try/catch: OpenCV's own CV_Assert failures throw cv::Exception,
+// and a malformed model file (see load_weights' own bounds checks) or unexpected image
+// shape could plausibly reach one of these calls (imread, detect, align_warp_face,
+// process, imwrite) with nothing here catching it before this change -- an uncaught
+// exception terminates the process outright, mid-batch, with no diagnostic at all,
+// exactly the "crash the whole upscale job over a photo with nobody in it" outcome the
+// no-face-detected path above already goes out of its way to avoid.
+int RunFaceEnhance(const std::string& inputPath, const std::string& outputPath, const std::string& modelsDir)
 {
-    std::string inputPath, outputPath, modelsDir;
-    if (!ParseArguments(argc, argv, inputPath, outputPath, modelsDir))
-    {
-        std::fprintf(stderr, "Usage: face_enhance -i <input> -o <output> -m <models-dir>\n");
-        return 1;
-    }
-
     cv::Mat image = cv::imread(inputPath, cv::IMREAD_COLOR);
     if (image.empty())
     {
@@ -173,7 +185,11 @@ int main(int argc, char** argv)
     for (std::size_t i = 0; i < faces.size(); i++)
     {
         ncnn::Mat gfpganOutput;
-        gfpgan.process(alignedFaces[i], gfpganOutput);
+        if (gfpgan.process(alignedFaces[i], gfpganOutput) != 0)
+        {
+            std::fprintf(stderr, "GFPGAN restoration failed for face %zu of %zu.\n", i + 1, faces.size());
+            return 1;
+        }
 
         cv::Mat restoredFace;
         ToOpenCv(gfpganOutput, restoredFace);
@@ -189,4 +205,29 @@ int main(int argc, char** argv)
 
     std::printf("Restored %zu face(s).\n", faces.size());
     return 0;
+}
+
+int main(int argc, char** argv)
+{
+    std::string inputPath, outputPath, modelsDir;
+    if (!ParseArguments(argc, argv, inputPath, outputPath, modelsDir))
+    {
+        std::fprintf(stderr, "Usage: face_enhance -i <input> -o <output> -m <models-dir>\n");
+        return 1;
+    }
+
+    try
+    {
+        return RunFaceEnhance(inputPath, outputPath, modelsDir);
+    }
+    catch (const cv::Exception& ex)
+    {
+        std::fprintf(stderr, "Face enhancement failed (OpenCV): %s\n", ex.what());
+        return 1;
+    }
+    catch (const std::exception& ex)
+    {
+        std::fprintf(stderr, "Face enhancement failed: %s\n", ex.what());
+        return 1;
+    }
 }

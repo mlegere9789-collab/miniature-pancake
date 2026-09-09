@@ -464,6 +464,46 @@ class TestLogger(TempDatabaseTestCase):
         overview = {r["name"]: r for r in db.module_overview()}
         self.assertEqual(overview["deal_alert_bot"]["state"], "error")
 
+    def test_status_error_survives_any_notify_exception_not_just_notifyerror(self):
+        # _notify is documented "Never raises" but only caught
+        # notifier.NotifyError -- a malformed NOTIFY_WEBHOOK_URL used to
+        # raise a bare ValueError straight out of notifier.notify(), which
+        # escaped here uncaught and crashed the calling module's run()
+        # entirely, from status("error", ...) -- reachable on the ordinary
+        # error path every module's own top-level guard takes.
+        with (
+            patch.object(
+                config,
+                "get",
+                side_effect=lambda k, d=None: (
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
+                ),
+            ),
+            patch.object(
+                notifier, "notify", side_effect=ValueError("unknown url type")
+            ),
+        ):
+            get_logger("deal_alert_bot").status("error", "boom")
+        overview = {r["name"]: r for r in db.module_overview()}
+        self.assertEqual(overview["deal_alert_bot"]["state"], "error")
+
+    def test_flag_for_review_survives_any_notify_exception_not_just_notifyerror(self):
+        with (
+            patch.object(
+                config,
+                "get",
+                side_effect=lambda k, d=None: (
+                    "http://x" if k == "NOTIFY_WEBHOOK_URL" else d
+                ),
+            ),
+            patch.object(
+                notifier, "notify", side_effect=ValueError("unknown url type")
+            ),
+        ):
+            rid = get_logger("deal_alert_bot").flag_for_review("Approve?")
+        self.assertEqual(len(db.pending_reviews()), 1)
+        self.assertEqual(db.pending_reviews()[0]["id"], rid)
+
 
 class TestNotifier(unittest.TestCase):
     def _server(self, status: int = 204):
@@ -491,6 +531,15 @@ class TestNotifier(unittest.TestCase):
     def test_no_webhook_url_raises(self):
         with self.assertRaises(notifier.NotifyError):
             notifier.notify("", "hi")
+
+    def test_malformed_url_raises_notifyerror_not_a_bare_valueerror(self):
+        # A pasted-in-a-hurry webhook URL missing its "https://" (or any
+        # other scheme-less/unparseable URL) makes urllib.request.Request's
+        # own constructor raise a bare ValueError -- notify()'s contract is
+        # "Raises NotifyError on any failure", so this must come back as
+        # one too, not leak the underlying ValueError to every caller.
+        with self.assertRaises(notifier.NotifyError):
+            notifier.notify("hooks.slack.com/services/x", "hi")
 
     def test_generic_format_posts_all_three_keys(self):
         url, received = self._server()
@@ -546,6 +595,51 @@ class TestPaths(unittest.TestCase):
         for name in MODULES:
             self.assertIsInstance(name, str)
             self.assertTrue(name)
+
+
+class TestAtomicWriteText(unittest.TestCase):
+    """Every *_seen.json dedup store (deal_alert_bot, ecommerce_dropshipping,
+    digital_products, stock_licensing) saves through this -- a crash
+    mid-write must never leave a truncated file that reads back as "nothing
+    has ever been seen"."""
+
+    def test_creates_a_new_file(self):
+        from . import paths
+
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "seen.json"
+            paths.atomic_write_text(target, '{"a": 1}')
+            self.assertEqual(target.read_text(encoding="utf-8"), '{"a": 1}')
+
+    def test_overwrites_existing_content_in_full(self):
+        from . import paths
+
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "seen.json"
+            target.write_text('{"old": true}', encoding="utf-8")
+            paths.atomic_write_text(target, '{"new": true}')
+            self.assertEqual(target.read_text(encoding="utf-8"), '{"new": true}')
+
+    def test_no_leftover_temp_file_after_a_successful_write(self):
+        from . import paths
+
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "seen.json"
+            paths.atomic_write_text(target, "{}")
+            self.assertEqual(os.listdir(d), ["seen.json"])
+
+    def test_original_file_is_untouched_if_the_write_fails(self):
+        from . import paths
+
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "seen.json"
+            target.write_text('{"safe": true}', encoding="utf-8")
+            with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    paths.atomic_write_text(target, '{"never": "lands"}')
+            # The real write_text is unpatched again by here -- read the
+            # actual destination file, which the failed write never touched.
+            self.assertEqual(target.read_text(encoding="utf-8"), '{"safe": true}')
 
 
 class JobsFileTestCase(unittest.TestCase):
@@ -867,6 +961,26 @@ class TestSchedulerHeartbeat(unittest.TestCase):
         sch.HEARTBEAT_FILE.write_text("not json", encoding="utf-8")
         self.assertIsNone(sch.read_heartbeat())
 
+    def test_valid_json_but_not_an_object_returns_none(self):
+        sch.HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        sch.HEARTBEAT_FILE.write_text("[1, 2, 3]", encoding="utf-8")
+        self.assertIsNone(sch.read_heartbeat())
+
+    def test_object_missing_beat_at_returns_none(self):
+        sch.HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        sch.HEARTBEAT_FILE.write_text(
+            json.dumps({"pid": 1, "poll_seconds": 30}), encoding="utf-8"
+        )
+        self.assertIsNone(sch.read_heartbeat())
+
+    def test_beat_at_not_a_valid_timestamp_returns_none(self):
+        sch.HEARTBEAT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        sch.HEARTBEAT_FILE.write_text(
+            json.dumps({"pid": 1, "poll_seconds": 30, "beat_at": "not-a-date"}),
+            encoding="utf-8",
+        )
+        self.assertIsNone(sch.read_heartbeat())
+
     def test_fresh_heartbeat_is_not_stale(self):
         sch._write_heartbeat(30)
         heartbeat = sch.read_heartbeat()
@@ -884,6 +998,63 @@ class TestSchedulerHeartbeat(unittest.TestCase):
         just_inside = now - timedelta(seconds=sch.HEARTBEAT_STALE_SECONDS - 1)
         heartbeat = {"pid": 1, "poll_seconds": 30, "beat_at": just_inside.isoformat()}
         self.assertFalse(sch.heartbeat_is_stale(heartbeat, now=now))
+
+
+class TestRunJob(TempDatabaseTestCase):
+    """`_run_job` is what actually fires a due job -- it must not launch a
+    module that's already running (dashboard "Run now" and a scheduler
+    firing landing on the same module at once), the exact same race
+    `TestTriggerRun`/`TestDatabaseTryStartRun` cover on the dashboard side."""
+
+    JOB = {
+        "name": "deal-alert-scan",
+        "module": "deal_alert_bot",
+        "command": "python -m modules.deal_alert_bot.run",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self._tmpdir2 = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmpdir2.cleanup)
+        self._orig_root = sch.PROJECT_ROOT
+        sch.PROJECT_ROOT = Path(self._tmpdir2.name)
+        self.addCleanup(self._restore_root)
+
+    def _restore_root(self):
+        sch.PROJECT_ROOT = self._orig_root
+
+    def test_launches_and_returns_true_when_idle(self):
+        with patch("orchestrator.scheduler.subprocess.Popen") as popen_mock:
+            self.assertTrue(sch._run_job(self.JOB))
+        popen_mock.assert_called_once()
+        self.assertEqual(
+            popen_mock.call_args.args[0], "python -m modules.deal_alert_bot.run"
+        )
+
+    def test_marks_the_module_running_before_launch(self):
+        with patch("orchestrator.scheduler.subprocess.Popen"):
+            sch._run_job(self.JOB)
+        row = next(m for m in db.module_overview() if m["name"] == "deal_alert_bot")
+        self.assertEqual(row["state"], "running")
+
+    def test_refuses_and_does_not_launch_when_already_running(self):
+        db.try_start_run("deal_alert_bot")
+        with patch("orchestrator.scheduler.subprocess.Popen") as popen_mock:
+            self.assertFalse(sch._run_job(self.JOB))
+        popen_mock.assert_not_called()
+
+    def test_job_with_no_recognized_module_always_runs(self):
+        job = {**self.JOB, "module": "not_a_real_module"}
+        db.try_start_run("deal_alert_bot")  # unrelated module already running
+        with patch("orchestrator.scheduler.subprocess.Popen") as popen_mock:
+            self.assertTrue(sch._run_job(job))
+        popen_mock.assert_called_once()
+
+    def test_job_missing_module_key_always_runs(self):
+        job = {"name": "legacy-job", "command": "python -m modules.deal_alert_bot.run"}
+        with patch("orchestrator.scheduler.subprocess.Popen") as popen_mock:
+            self.assertTrue(sch._run_job(job))
+        popen_mock.assert_called_once()
 
 
 class TestCli(unittest.TestCase):
@@ -947,6 +1118,7 @@ class TestCmdDoctor(unittest.TestCase):
                 patch.object(cli, "ENV_PATH", fake_env),
                 patch.object(cli, "DB_PATH", fake_db),
                 patch.object(cli, "JOBS_PATH", fake_jobs),
+                patch.object(cli.sch, "HEARTBEAT_FILE", Path(d) / "heartbeat.json"),
                 patch.object(cli.config, "has", return_value=False),
             ):
                 buf = io.StringIO()
@@ -957,6 +1129,7 @@ class TestCmdDoctor(unittest.TestCase):
         self.assertIn("MISSING", out)
         self.assertIn("not created yet", out)
         self.assertIn("using jobs.example.json defaults", out)
+        self.assertIn("never started", out)
         self.assertIn("unset", out)
 
     def test_reports_found_when_present(self):
@@ -971,6 +1144,7 @@ class TestCmdDoctor(unittest.TestCase):
                 patch.object(cli, "ENV_PATH", fake_env),
                 patch.object(cli, "DB_PATH", fake_db),
                 patch.object(cli, "JOBS_PATH", fake_jobs),
+                patch.object(cli.sch, "HEARTBEAT_FILE", Path(d) / "heartbeat.json"),
                 patch.object(cli.config, "has", return_value=True),
             ):
                 buf = io.StringIO()
@@ -981,6 +1155,45 @@ class TestCmdDoctor(unittest.TestCase):
         self.assertIn("found", out)
         self.assertNotIn("MISSING", out)
         self.assertIn("set ", out)
+
+    def test_reports_a_live_heartbeat(self):
+        with tempfile.TemporaryDirectory() as d:
+            with (
+                patch.object(cli, "ENV_PATH", Path(d) / ".env"),
+                patch.object(cli, "DB_PATH", Path(d) / "orchestrator.db"),
+                patch.object(cli, "JOBS_PATH", Path(d) / "jobs.json"),
+                patch.object(cli.sch, "HEARTBEAT_FILE", Path(d) / "heartbeat.json"),
+                patch.object(cli.config, "has", return_value=False),
+            ):
+                sch._write_heartbeat(30)
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = cli.main(["doctor"])
+        self.assertEqual(code, 0)
+        self.assertIn("scheduler:   running", buf.getvalue())
+
+    def test_reports_a_stale_heartbeat(self):
+        with tempfile.TemporaryDirectory() as d:
+            heartbeat_path = Path(d) / "heartbeat.json"
+            old = datetime.now(timezone.utc) - timedelta(
+                seconds=sch.HEARTBEAT_STALE_SECONDS + 1
+            )
+            heartbeat_path.write_text(
+                json.dumps({"pid": 1, "poll_seconds": 30, "beat_at": old.isoformat()}),
+                encoding="utf-8",
+            )
+            with (
+                patch.object(cli, "ENV_PATH", Path(d) / ".env"),
+                patch.object(cli, "DB_PATH", Path(d) / "orchestrator.db"),
+                patch.object(cli, "JOBS_PATH", Path(d) / "jobs.json"),
+                patch.object(cli.sch, "HEARTBEAT_FILE", heartbeat_path),
+                patch.object(cli.config, "has", return_value=False),
+            ):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    code = cli.main(["doctor"])
+        self.assertEqual(code, 0)
+        self.assertIn("STALE", buf.getvalue())
 
 
 class TestCmdExportEarnings(TempDatabaseTestCase):
@@ -1019,6 +1232,14 @@ class TestCmdExportEarnings(TempDatabaseTestCase):
             cli.main(["export-earnings", "--module", "micro_saas"])
         rows = list(csv.DictReader(io.StringIO(buf.getvalue())))
         self.assertEqual([r["module"] for r in rows], ["micro_saas"])
+
+    def test_formula_looking_source_is_neutralized(self):
+        db.record_earning("micro_saas", 1.0, source="=1+1")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli.main(["export-earnings"])
+        rows = list(csv.DictReader(io.StringIO(buf.getvalue())))
+        self.assertEqual(rows[0]["source"], "'=1+1")
 
     def test_writes_to_file_when_out_given(self):
         db.record_earning("deal_alert_bot", 1.0)
@@ -1093,7 +1314,7 @@ class TestDashboardHelpers(unittest.TestCase):
         self.assertEqual(dashboard._esc(None), "")
 
 
-class TestTriggerRun(unittest.TestCase):
+class TestTriggerRun(TempDatabaseTestCase):
     def test_unknown_module_returns_false_and_does_not_launch(self):
         with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
             self.assertFalse(dashboard.trigger_run("not_a_real_module"))
@@ -1118,6 +1339,128 @@ class TestTriggerRun(unittest.TestCase):
                 )
             finally:
                 dashboard.PROJECT_ROOT = orig
+
+    def test_launching_sets_status_to_running_immediately(self):
+        """Before the subprocess itself gets anywhere near its own
+        `log.status("running", ...)` call — closing the race this whole
+        mechanism exists to close."""
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                with patch("orchestrator.dashboard.subprocess.Popen"):
+                    dashboard.trigger_run("deal_alert_bot")
+                row = next(
+                    m for m in db.module_overview() if m["name"] == "deal_alert_bot"
+                )
+                self.assertEqual(row["state"], "running")
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+    def test_already_running_module_refuses_a_second_launch(self):
+        db.try_start_run("deal_alert_bot")
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
+                    self.assertFalse(dashboard.trigger_run("deal_alert_bot"))
+                popen_mock.assert_not_called()
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+    def test_a_module_left_idle_or_errored_can_be_launched_again(self):
+        db.set_status("deal_alert_bot", "error", "Crashed")
+        with tempfile.TemporaryDirectory() as d:
+            orig = dashboard.PROJECT_ROOT
+            dashboard.PROJECT_ROOT = Path(d)
+            try:
+                with patch("orchestrator.dashboard.subprocess.Popen") as popen_mock:
+                    self.assertTrue(dashboard.trigger_run("deal_alert_bot"))
+                popen_mock.assert_called_once()
+            finally:
+                dashboard.PROJECT_ROOT = orig
+
+
+class TestDatabaseTryStartRun(TempDatabaseTestCase):
+    def test_first_caller_wins(self):
+        self.assertTrue(db.try_start_run("deal_alert_bot"))
+        row = next(m for m in db.module_overview() if m["name"] == "deal_alert_bot")
+        self.assertEqual(row["state"], "running")
+
+    def test_second_concurrent_caller_is_refused(self):
+        self.assertTrue(db.try_start_run("deal_alert_bot", "first"))
+        self.assertFalse(db.try_start_run("deal_alert_bot", "second"))
+        # The refused caller's detail never overwrote the winner's.
+        row = next(m for m in db.module_overview() if m["name"] == "deal_alert_bot")
+        self.assertEqual(row["detail"], "first")
+
+    def test_can_restart_after_the_module_finishes(self):
+        self.assertTrue(db.try_start_run("deal_alert_bot"))
+        db.set_status("deal_alert_bot", "ok", "Done")
+        self.assertTrue(db.try_start_run("deal_alert_bot"))
+
+    def test_works_for_a_module_with_no_prior_status_row(self):
+        # module_overview()/init_db() always seed a row today, but the
+        # UPSERT itself must not depend on that -- exercise the plain
+        # INSERT branch directly against a table with no row for it yet.
+        with db.get_connection() as conn:
+            conn.execute("DELETE FROM status WHERE module = ?", ("deal_alert_bot",))
+        self.assertTrue(db.try_start_run("deal_alert_bot"))
+
+    def _backdate_status(self, module: str, seconds_ago: int) -> None:
+        stamp = (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat(
+            timespec="seconds"
+        )
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE status SET updated_at = ? WHERE module = ?", (stamp, module)
+            )
+
+    def test_a_stuck_running_claim_can_be_reclaimed_once_stale(self):
+        # A crash before the module's own top-level guard runs (a bad CLI
+        # arg, an import error, SIGKILL) never calls set_status again --
+        # without a staleness escape hatch this would lock the module out
+        # of "Run now" and its own scheduled job forever.
+        self.assertTrue(db.try_start_run("deal_alert_bot", "first"))
+        self._backdate_status("deal_alert_bot", db.MAX_RUN_SECONDS + 1)
+        self.assertTrue(db.try_start_run("deal_alert_bot", "reclaimed"))
+        row = next(m for m in db.module_overview() if m["name"] == "deal_alert_bot")
+        self.assertEqual(row["detail"], "reclaimed")
+
+    def test_a_recent_running_claim_is_not_reclaimed(self):
+        self.assertTrue(db.try_start_run("deal_alert_bot", "first"))
+        self._backdate_status("deal_alert_bot", db.MAX_RUN_SECONDS - 1)
+        self.assertFalse(db.try_start_run("deal_alert_bot", "too soon"))
+
+
+class TestToCsvRows(unittest.TestCase):
+    """CSV-formula-injection regression: a cell starting with =, +, -, @ (or
+    a tab/CR) opens as a formula in Excel/Sheets rather than as text -- and
+    these exports carry text a module never controlled (a deal title, a
+    Shopify order note, a Stripe charge description)."""
+
+    def test_leaves_ordinary_text_untouched(self):
+        rows = db.to_csv_rows([{"title": "Approve this deal?"}], ["title"])
+        self.assertEqual(rows, [{"title": "Approve this deal?"}])
+
+    def test_prefixes_each_formula_trigger_character(self):
+        for trigger in ("=", "+", "-", "@", "\t", "\r"):
+            value = f"{trigger}cmd|'/bin/bash'!A1"
+            rows = db.to_csv_rows([{"title": value}], ["title"])
+            self.assertEqual(rows[0]["title"], "'" + value)
+
+    def test_non_string_fields_pass_through(self):
+        rows = db.to_csv_rows([{"amount": 4.2}], ["amount"])
+        self.assertEqual(rows[0]["amount"], 4.2)
+
+    def test_empty_string_is_not_touched(self):
+        rows = db.to_csv_rows([{"title": ""}], ["title"])
+        self.assertEqual(rows[0]["title"], "")
+
+    def test_only_projects_the_requested_fields(self):
+        rows = db.to_csv_rows([{"title": "x", "id": 1, "secret": "y"}], ["title"])
+        self.assertEqual(rows, [{"title": "x"}])
 
 
 class TestTailLog(unittest.TestCase):
@@ -1209,6 +1552,11 @@ class TestRenderEarningsCsv(TempDatabaseTestCase):
         rows = list(csv.DictReader(io.StringIO(dashboard.render_earnings_csv())))
         self.assertEqual([r["module"] for r in rows], ["micro_saas", "deal_alert_bot"])
 
+    def test_formula_looking_description_is_neutralized(self):
+        db.record_earning("micro_saas", 1.0, description="=cmd|'/bin/bash -c calc'!A1")
+        rows = list(csv.DictReader(io.StringIO(dashboard.render_earnings_csv())))
+        self.assertTrue(rows[0]["description"].startswith("'="))
+
 
 class TestRenderReviewsCsv(TempDatabaseTestCase):
     def test_header_only_when_empty(self):
@@ -1223,6 +1571,12 @@ class TestRenderReviewsCsv(TempDatabaseTestCase):
         self.assertEqual(rows[0]["title"], "Approve?")
         self.assertEqual(rows[0]["status"], "approved")
         self.assertEqual(rows[0]["resolution_note"], "fine")
+
+    def test_formula_looking_title_is_neutralized(self):
+        rid = db.add_review_item("deal_alert_bot", '=HYPERLINK("http://evil")')
+        db.resolve_review_item(rid, "approved")
+        rows = list(csv.DictReader(io.StringIO(dashboard.render_reviews_csv())))
+        self.assertTrue(rows[0]["title"].startswith("'="))
 
 
 class TestSchedulerStatusHelper(unittest.TestCase):

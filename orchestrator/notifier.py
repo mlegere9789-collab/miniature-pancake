@@ -56,17 +56,24 @@ def notify(
 
     fmt = format if format in VALID_FORMATS else "generic"
     body = json.dumps(_payload_for(text, fmt)).encode("utf-8")
-    req = urllib.request.Request(
-        webhook_url,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
     try:
+        # Request(...) construction itself can raise -- a webhook URL with
+        # no scheme (a pasted-in-a-hurry "hooks.slack.com/..." missing its
+        # "https://") makes it raise a bare ValueError("unknown url type"),
+        # not one of the exceptions below, so it has to be inside this same
+        # try to become a NotifyError like every other failure here.
+        req = urllib.request.Request(
+            webhook_url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             # Discord returns 204; Slack and most others return 200.
             if resp.status not in (200, 204):
                 raise NotifyError(f"Unexpected HTTP {resp.status} from webhook")
+    except ValueError as exc:
+        raise NotifyError(f"Malformed webhook URL: {exc}") from exc
     except urllib.error.HTTPError as exc:
         detail = ""
         try:

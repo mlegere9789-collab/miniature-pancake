@@ -116,9 +116,21 @@ def run(limit_override: int | None = None) -> int:
             )
             processed += 1
 
+        # Persist the dedup mark right after this order, not once after the
+        # whole batch: log.earning()/flag_for_review() above already
+        # committed a permanent, irreversible database row for this order.
+        # If some later order in this same batch raises (a DB write error,
+        # anything neither this loop nor its callees already catches), a
+        # batched save() would never run at all -- losing every earlier
+        # order's own seen-mark along with it, even though its earning was
+        # already logged. The next run would then re-fetch and re-log that
+        # same order's margin a second time, silently double-counting real
+        # revenue. Saving here means only orders processed before the
+        # failure are ever at risk of losing their mark, and none of them
+        # are: each one's mark is durable before the loop even reaches the
+        # next order.
         seen.mark(str(order.get("id")))
-
-    seen.save()
+        seen.save()
 
     summary = (
         f"synced {len(orders)} open orders, {len(fresh)} new: "

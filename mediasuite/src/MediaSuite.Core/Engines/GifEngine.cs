@@ -101,8 +101,13 @@ public sealed class GifEngine : ExternalProcessEngine
         IProgress<JobProgress> progress,
         CancellationToken cancellationToken)
     {
+        // spec.BatchRoot is the root JobLauncher computed from the *whole* original
+        // batch before splitting it into this one-file spec -- FindCommonRoot(spec.InputPaths)
+        // here would just return this single file's own containing folder. The fallback
+        // still covers operations that combine their inputs into one spec, where
+        // InputPaths already is the whole batch and BatchRoot is left null.
         var batchRoot = spec.Output.PreserveFolderStructure
-            ? OutputPathResolver.FindCommonRoot(spec.InputPaths)
+            ? spec.BatchRoot ?? OutputPathResolver.FindCommonRoot(spec.InputPaths)
             : null;
 
         var outputs = new List<string>(spec.InputPaths.Count);
@@ -261,7 +266,12 @@ public sealed class GifEngine : ExternalProcessEngine
         var format = GifOperations.FixedFormatFor(spec.OperationId)
             ?? throw new ArgumentException($"'{spec.OperationId}' is not a GIF operation.", nameof(spec));
 
-        return OutputPathResolver.Resolve(inputPath, spec.Output with { Format = format }, index, batchRoot);
+        // spec.BatchIndex, not the caller's own index: for a per-file job (the caller's
+        // loop only ever sees a single item after JobLauncher splits a multi-file batch),
+        // the loop's own index would always resolve to 1 for every file. A caller that
+        // already has a real batch-wide index (the slideshow path above) passes it
+        // explicitly and spec.BatchIndex is null there, so the fallback is a no-op.
+        return OutputPathResolver.Resolve(inputPath, spec.Output with { Format = format }, spec.BatchIndex ?? index, batchRoot);
     }
 
     private static string CreateStepFolder(string scratch, int index)

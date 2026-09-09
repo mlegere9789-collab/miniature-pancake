@@ -91,7 +91,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             "\uE740",
             FeatureSection.Upscale,
             "AI photo upscaler",
-            "Real-ESRGAN at 2x, 4x or 8x. Runs on the GPU through CUDA, with a CPU fallback when no supported GPU is present.",
+            "Real-ESRGAN at 2x, 4x or 8x. Runs on the GPU through Vulkan, with a CPU fallback when no supported GPU is present.",
             engines,
             launcher,
             settings,
