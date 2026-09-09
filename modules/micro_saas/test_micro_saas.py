@@ -306,6 +306,21 @@ class TestHealth(unittest.TestCase):
         self.assertFalse(result.ok)
         self.assertTrue(result.detail)
 
+    def test_check_health_handles_a_malformed_url_instead_of_raising(self):
+        # Regression test: Request(...) raises a bare ValueError for a URL
+        # with no scheme (a pasted-in-a-hurry SAAS_HEALTH_URL missing its
+        # "https://"). check_health's whole contract is to always return a
+        # HealthResult and never raise -- run.py calls it with no
+        # try/except of its own, so an uncaught exception here used to
+        # abort not just the health check but the billing reconciliation
+        # that runs after it in the same run(), every single run, until
+        # the URL was fixed.
+        from .health import check_health
+
+        result = check_health("myapp.example.com/health", timeout=1)
+        self.assertFalse(result.ok)
+        self.assertIn("Malformed", result.detail)
+
 
 class TestRunEndToEnd(unittest.TestCase):
     """Drives the real run() against a temp database/snapshot file and a
@@ -345,12 +360,14 @@ class TestRunEndToEnd(unittest.TestCase):
 
         snap_mod.SNAPSHOT_FILE = self._orig_snapshot_file
 
-    def _patched_run(self, *, subscriptions=None, charges=None, charges_error=None):
+    def _patched_run(
+        self, *, subscriptions=None, charges=None, charges_error=None, health_url=None
+    ):
         from unittest.mock import patch
 
         from . import run as run_mod
 
-        settings = make_settings(health_url=None)
+        settings = make_settings(health_url=health_url)
 
         def fake_list_charges_since(*args, **kwargs):
             if charges_error is not None:
@@ -383,6 +400,29 @@ class TestRunEndToEnd(unittest.TestCase):
         p1, p2, p3 = self._patched_run(charges=[charge])
         with p1, p2, p3:
             collected = run_mod.run()
+        self.assertEqual(collected, 19.99)
+        self.assertEqual(self.db.totals()["total_earnings"], 19.99)
+
+    def test_a_malformed_health_url_does_not_skip_billing_reconciliation(self):
+        # Regression test for the health.py fix: run() calls
+        # _run_health_check with no try/except of its own (unlike the
+        # billing half, which already catches StripeError per call) --
+        # check_health raising instead of returning a HealthResult used to
+        # abort the whole run() before billing ever ran, every single run,
+        # until SAAS_HEALTH_URL was fixed.
+        from . import run as run_mod
+
+        charge = {
+            "id": "ch_1",
+            "status": "succeeded",
+            "amount": 1999,
+            "amount_refunded": 0,
+        }
+        p1, p2, p3 = self._patched_run(
+            charges=[charge], health_url="myapp.example.com/health"
+        )
+        with p1, p2, p3:
+            collected = run_mod.run()  # must not raise
         self.assertEqual(collected, 19.99)
         self.assertEqual(self.db.totals()["total_earnings"], 19.99)
 
