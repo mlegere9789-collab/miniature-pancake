@@ -108,7 +108,7 @@ public static class FeatureCatalog
         new FeatureDescriptor("pdf.extract-images", "Extract Image from PDF", FeatureSection.Tools, "PDF Tools", "Pull embedded images out at original resolution.", 7),
         new FeatureDescriptor("pdf.remove-pages", "PDF Page Remover", FeatureSection.Tools, "PDF Tools", "Delete pages by number or range.", 7),
         new FeatureDescriptor("pdf.extract-pages", "Extract Pages from PDF", FeatureSection.Tools, "PDF Tools", "Save selected pages as a new PDF.", 7),
-        new FeatureDescriptor("upscale.photo", "AI Photo Upscaler", FeatureSection.Upscale, "AI Upscale", "Real-ESRGAN at 2x, 4x or 8x with general, anime and face-enhance models, denoise and sharpen, CUDA-accelerated.", 10));
+        new FeatureDescriptor("upscale.photo", "AI Photo Upscaler", FeatureSection.Upscale, "AI Upscale", "Real-ESRGAN at 2x, 4x or 8x with general, anime and face-enhance models, denoise and sharpen, Vulkan-accelerated on any GPU.", 10));
 
     /// <summary>Every feature, in brief order.</summary>
     public static IReadOnlyList<FeatureDescriptor> All => Features;

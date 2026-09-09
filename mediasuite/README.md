@@ -86,7 +86,7 @@ IConversionEngine  ── the single seam between the queue and the outside worl
     ├── MuPDF / QPDF / Ghostscript        PDF
     ├── Pandoc / LibreOffice / Calibre    documents and ebooks
     ├── 7-Zip                             archives
-    └── Real-ESRGAN (CUDA)                AI upscaling
+    └── Real-ESRGAN (Vulkan)             AI upscaling
     │
 Output handler → local folder, or Google Drive (optional, off by default)
 ```
@@ -373,7 +373,7 @@ from source, and the same `releases/latest` endpoint the in-app update checker (
 | 7 | PDF module | done |
 | 8 | Document / ebook module | done |
 | 9 | Archive / unit / time converters | done — archive module only; the unit and time converters are catalogued but have no engine or page yet, see [What is done](#what-is-done) |
-| 10 | AI upscaler (CUDA + CPU fallback) | done — Vulkan GPU path, plus an optional face-enhance pass (GFPGAN-ncnn, compiled from source, CPU-only) |
+| 10 | AI upscaler (Vulkan GPU + CPU fallback) | done — plus an optional face-enhance pass (GFPGAN-ncnn, compiled from source, CPU-only) |
 | 11 | Settings system — presets | done |
 | 12 | Google Drive integration | done |
 | 13 | Format-parity audit vs FreeConvert | done — spreadsheet/presentation/PostScript formats deliberately deferred, see the FormatCatalog doc comment |
