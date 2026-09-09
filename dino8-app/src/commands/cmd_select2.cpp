@@ -575,7 +575,14 @@ void RegisterSelect2Commands(CommandEngine& e) {
   Reg(e, "SelDot", SelWhere([](CommandContext&, const SceneObject& o) { return o.user_text.count("Dot") > 0; }));
   Reg(e, "SelLeader", SelGroupNamed({"Leader"}));
   Reg(e, "SelHatch", SelGroupNamed({"Hatch"}));
-  Reg(e, "SelDim", SelGroupNamed({"DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter"}));
+  // Every real dimension-type annotation this app can create (see
+  // cmd_annotate.cpp/cmd_annotate2.cpp's Reg("DimXxx", ...) calls) - this
+  // list had silently gone stale after DimArea/DimCurveLength/DimVolume/
+  // DimOrdinate/DimCreaseAngle were added, so SelDim (the command a user
+  // would naturally reach for to select every dimension) missed all 5 of
+  // them despite them being real, CommandStatus::Implemented annotations.
+  Reg(e, "SelDim", SelGroupNamed({"DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter", "DimArea",
+                                   "DimCurveLength", "DimVolume", "DimOrdinate", "DimCreaseAngle"}));
   Reg(e, "SelDimLinear", SelGroupNamed({"DimLinear", "DimAligned"}));
   Reg(e, "SelDimAngular", SelGroupNamed({"DimAngle"}));
   Reg(e, "SelDimRadial", SelGroupNamed({"DimRadius", "DimDiameter"}));

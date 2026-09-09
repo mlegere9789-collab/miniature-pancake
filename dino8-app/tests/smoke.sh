@@ -521,6 +521,11 @@ fi
 a2check() { if echo "$A2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 a2check "DimArea: Area = 314 square" "DimArea measured the circle (pi * 100)"
 a2check "DimCurveLength: Length = 40" "DimCurveLength measured the line"
+if echo "$A2" | grep -A1 "^history: Command: SelDim$" | grep -q "^history: 70 object(s) selected$"; then
+  echo "ok   SelDim finds DimArea/DimCurveLength (its label list had gone stale and silently excluded them, plus DimVolume/DimOrdinate/DimCreaseAngle - see cmd_select2.cpp)"
+else
+  echo "FAIL SelDim finds DimArea/DimCurveLength"; fail=1
+fi
 a2check "Centermark: 1 center mark(s)" "Centermark marked the circle"
 a2check "RevCloud: 26 arc(s), closed curve" "RevCloud built a closed cloud of 26 arcs around the 30x20 rectangle"
 a2check "TextProperties: 1 annotation(s) updated to \"World\", height 5" "TextProperties rebuilt the text with new content and height"
