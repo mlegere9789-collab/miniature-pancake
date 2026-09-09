@@ -1015,6 +1015,8 @@ vtcheck "OrientCameraToSrf: camera looks along the normal of object [0-9]* at 80
 vtcheck "Camera (Perspective): location 80,10,-96.05, target 80,10,0" "OrientCameraToSrf's camera looks straight down at the picked point"
 vtcheck "Zoom1To1Calibrate: 3.78 pixels per mm (96 dpi)" "Zoom1To1Calibrate read a dpi value from the command line"
 vtcheck "Zoom1To1: Perspective shows" "Zoom1To1 read back the calibrated pixels-per-mm"
+vtcheck "PerspectiveMatch: camera set to eye 30,-40,25, target 2,3,-1, lens 50 mm" "PerspectiveMatch's two-vanishing-point + orthocenter solve exactly reconstructed the ground-truth eye/target/lens (30,-40,25 / 2,3,-1 / 50mm) from points re-projected through that same camera -- not just 'ran without crashing'"
+vtcheck "Camera (Perspective): location 30,-40,25, target 2,3,-1, distance 57.52" "reading the camera back after PerspectiveMatch confirms it, not just the command's own printout"
 vtcheck "CPlane Perspective: elevation 7 (origin 0,0,7" "CPlane Elevation= moved the CPlane"
 vtcheck "NamedCPlane: saved Deck (origin 0,0,7" "NamedCPlane Save"
 vtcheck "NamedCPlane: restored Deck in Perspective (origin 0,0,7" "NamedCPlane Restore"

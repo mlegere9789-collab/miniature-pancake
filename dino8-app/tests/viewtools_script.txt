@@ -45,6 +45,34 @@ Camera
 Enter
 Zoom1To1Calibrate 96
 Zoom1To1
+# --- PerspectiveMatch: two-vanishing-point camera calibration, checked against a
+# known ground-truth camera. The 8 vanishing-point line points and 2 reference
+# points below are typed 3D coordinates (CPlane World, so they equal world
+# coordinates exactly); PerspectiveMatch itself re-projects each one through the
+# CURRENT (not yet touched) camera to recover where it sits on screen, so this
+# exactly simulates a user tracing real, perpendicular X/Y lines and 2 known
+# points in a photo taken from this exact eye/target/lens.
+CPlane World
+Perspective
+Camera
+30,-40,25
+2,3,-1
+ZoomLens 50
+PerspectiveMatch
+0,0,0
+10,0,0
+0,8,0
+10,8,0
+0,0,0
+0,10,0
+8,0,0
+8,10,0
+4,4,0
+4,4,0
+6,-3,5
+6,-3,5
+Camera
+Enter
 # --- named CPlanes
 CPlane Elevation=7
 NamedCPlane Save Deck

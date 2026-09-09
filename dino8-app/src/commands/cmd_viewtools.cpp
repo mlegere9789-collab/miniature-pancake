@@ -826,6 +826,209 @@ class OrientCameraToSrfCommand : public Command {
   ObjectId id_ = kNoObject;
 };
 
+// PerspectiveMatch: calibrates the active viewport's camera to match the
+// perspective of a background photo/reference image, using the classic
+// two-vanishing-point (orthocenter) calibration:
+//   1. Two pairs of parallel lines along two perpendicular horizontal
+//      world directions (8 clicks) give two vanishing points VP1, VP2 in
+//      the viewport's own current normalized-device-coordinate (NDC)
+//      space. Every click, however it was entered (mouse pick, typed
+//      coordinate, snap), is re-projected through the *pre-match* camera
+//      (Camera::Project, still untouched at pick time) to recover exactly
+//      where it sits on screen -- this is what makes typed/simulated
+//      coordinates and real mouse clicks equivalent inputs here.
+//   2. With the principal point at the NDC origin, the two vanishing
+//      directions must be perpendicular in 3-D, which pins the focal
+//      length: f^2 = -(VP1.VP2) (the standard orthocenter relation). This
+//      also fixes the camera's orientation (VP1/VP2 directions plus their
+//      cross product give an orthonormal world-axis basis).
+//   3. Two (screen click, known 3-D point) correspondences each give a
+//      world-space ray from the (still unknown) eye through that point;
+//      the eye is the point where the two rays best meet. One point alone
+//      only constrains the eye to a line (orientation is already fixed,
+//      but a single ray is a 1-parameter family), so a second point is
+//      required to pin down all 3 position DOF.
+// All coordinates below are "u,v" = aspect-corrected NDC (u = ndc_x *
+// aspect, v = ndc_y), so both axes share the same effective focal length
+// and the orthocenter formula applies directly without a separate
+// aspect-ratio correction term.
+class PerspectiveMatchCommand : public Command {
+  struct UV { double u = 0, v = 0; };
+
+ public:
+  void Begin(CommandContext&) override {
+    WantPoint("PerspectiveMatch: first point of line 1, along the model's first horizontal direction (e.g. X)");
+  }
+
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    Viewport* vp = ctx.ActiveViewport();
+    if (!vp) { Finish(); return; }
+    if (line_pts_.size() < 8) {
+      UV uv;
+      if (!ScreenUV(*vp, p, uv)) { ctx.Warn("PerspectiveMatch: that point is behind the camera; pick another"); return; }
+      line_pts_.push_back(uv);
+      static const char* kPrompts[8] = {
+          "Second point of line 1 (line 1 and line 2 run in the same world direction and meet at vanishing point 1)",
+          "First point of line 2, parallel to line 1",
+          "Second point of line 2",
+          "First point of line 3, along the perpendicular horizontal direction (e.g. Y)",
+          "Second point of line 3 (line 3 and line 4 run in the same world direction and meet at vanishing point 2)",
+          "First point of line 4, parallel to line 3",
+          "Second point of line 4",
+          "First reference point: click where a point of known 3D position appears in the view",
+      };
+      WantPoint(std::string("PerspectiveMatch: ") + kPrompts[line_pts_.size() - 1]);
+      return;
+    }
+    switch (ref_stage_) {
+      case 0: {
+        if (!ScreenUV(*vp, p, ref_uv_[0])) { ctx.Warn("PerspectiveMatch: that point is behind the camera; pick another"); return; }
+        ref_stage_ = 1;
+        WantPoint("PerspectiveMatch: that first reference point's known 3D coordinates (type them, or pick/snap the real point)");
+        return;
+      }
+      case 1: {
+        ref_xyz_[0] = p;
+        ref_stage_ = 2;
+        WantPoint("PerspectiveMatch: second reference point: click where another point of known 3D position appears in the view");
+        return;
+      }
+      case 2: {
+        if (!ScreenUV(*vp, p, ref_uv_[1])) { ctx.Warn("PerspectiveMatch: that point is behind the camera; pick another"); return; }
+        ref_stage_ = 3;
+        WantPoint("PerspectiveMatch: that second reference point's known 3D coordinates (type them, or pick/snap the real point)");
+        return;
+      }
+      default: {
+        ref_xyz_[1] = p;
+        Solve(ctx, *vp);
+        return;
+      }
+    }
+  }
+
+ private:
+  // World point -> aspect-corrected NDC (u,v) under the CURRENT (not yet
+  // modified) camera. False if the point is behind the eye.
+  static bool ScreenUV(Viewport& vp, Point3d p, UV& out) {
+    double ndc_x = 0, ndc_y = 0, depth = 0;
+    if (!vp.GetCamera().Project(p, vp.Aspect(), ndc_x, ndc_y, depth)) return false;
+    out.u = ndc_x * vp.Aspect();
+    out.v = ndc_y;
+    return true;
+  }
+
+  // Intersection of line (a1,b1) with line (a2,b2) in UV space. False if
+  // the two lines are (nearly) parallel on screen.
+  static bool LineIntersect(UV a1, UV b1, UV a2, UV b2, UV& out) {
+    const double d1u = b1.u - a1.u, d1v = b1.v - a1.v;
+    const double d2u = b2.u - a2.u, d2v = b2.v - a2.v;
+    const double denom = d1u * d2v - d1v * d2u;
+    if (std::fabs(denom) < 1e-9) return false;
+    const double t = ((a2.u - a1.u) * d2v - (a2.v - a1.v) * d2u) / denom;
+    out.u = a1.u + t * d1u;
+    out.v = a1.v + t * d1v;
+    return true;
+  }
+
+  // +1 if the vanishing point lies on segment (a,b)'s "b" side (so a->b is
+  // the chosen positive world direction), -1 if it lies on the "a" side.
+  static double DirectionSign(UV a, UV b, UV vp) {
+    const double d = (vp.u - a.u) * (b.u - a.u) + (vp.v - a.v) * (b.v - a.v);
+    return d >= 0.0 ? 1.0 : -1.0;
+  }
+
+  void Solve(CommandContext& ctx, Viewport& vp) {
+    UV vpu1, vpu2;
+    if (!LineIntersect(line_pts_[0], line_pts_[1], line_pts_[2], line_pts_[3], vpu1) ||
+        !LineIntersect(line_pts_[4], line_pts_[5], line_pts_[6], line_pts_[7], vpu2)) {
+      ctx.Warn("PerspectiveMatch: one of the two picked line pairs is nearly parallel on screen, so it has no usable vanishing point. Cancelled -- retry with lines that visibly converge.");
+      Finish();
+      return;
+    }
+    // Orthocenter relation for two vanishing points of perpendicular
+    // horizontal directions, principal point at the NDC origin.
+    const double f2 = -(vpu1.u * vpu2.u + vpu1.v * vpu2.v);
+    if (!(f2 > 1e-9)) {
+      ctx.Warn("PerspectiveMatch: these two directions don't give a valid two-point-perspective setup (the implied focal length is imaginary). Cancelled -- pick two directions that are actually perpendicular in the real scene.");
+      Finish();
+      return;
+    }
+    const double f = std::sqrt(f2);
+
+    const double sx = DirectionSign(line_pts_[0], line_pts_[1], vpu1);
+    const double sy = DirectionSign(line_pts_[4], line_pts_[5], vpu2);
+    Vector3d dir_x(sx * vpu1.u, sx * vpu1.v, sx * f);
+    Vector3d dir_y(sy * vpu2.u, sy * vpu2.v, sy * f);
+    dir_x.Unitize();
+    dir_y.Unitize();
+    // Re-orthonormalize (Gram-Schmidt) in case of numerical drift -- dir_x
+    // and dir_y are already exactly perpendicular by construction of f.
+    Vector3d dir_y_ortho = dir_y - dir_x * ON_DotProduct(dir_x, dir_y);
+    dir_y_ortho.Unitize();
+    dir_y = dir_y_ortho;
+    // The camera's own Right/Up/Forward basis is left-handed (Right x Up
+    // = -Forward, see Camera::Right/Up), so the world's +Z (up) direction
+    // in camera space is -(dir_x x dir_y), not +.
+    Vector3d dir_z = -ON_CrossProduct(dir_x, dir_y);
+    dir_z.Unitize();
+
+    // dir_x/dir_y/dir_z are the world +X/+Y/+Z axes, each expressed in
+    // camera space (the coordinates Camera::Project computes via dot
+    // products with Right/Up/Forward). Reading off components the other
+    // way round gives Right/Up/Forward *in world space*.
+    const Vector3d right_world(dir_x.x, dir_y.x, dir_z.x);
+    const Vector3d up_world(dir_x.y, dir_y.y, dir_z.y);
+    Vector3d forward_world(dir_x.z, dir_y.z, dir_z.z);
+    forward_world.Unitize();
+
+    // Each reference point gives a world-space ray from the eye through
+    // its known 3D position; the eye is where the two rays best meet.
+    Vector3d ray_dir[2];
+    for (int i = 0; i < 2; ++i) {
+      Vector3d d = right_world * ref_uv_[i].u + up_world * ref_uv_[i].v + forward_world * f;
+      d.Unitize();
+      ray_dir[i] = d;
+    }
+    // Closest points between line i: ref_xyz_[i] + t_i * (-ray_dir[i]).
+    const Vector3d da = -ray_dir[0], db = -ray_dir[1];
+    const Vector3d r = ref_xyz_[0] - ref_xyz_[1];
+    const double b = ON_DotProduct(da, db);
+    const double denom = 1.0 - b * b;
+    if (std::fabs(denom) < 1e-9) {
+      ctx.Warn("PerspectiveMatch: the two reference points' sightlines are parallel, so they don't pin down a camera position. Cancelled -- pick two reference points that aren't in the same direction from the camera.");
+      Finish();
+      return;
+    }
+    const double d = ON_DotProduct(da, r);
+    const double e = ON_DotProduct(db, r);
+    const double s = (b * e - d) / denom;
+    const double t = (e - b * d) / denom;
+    if (s <= 0.0 || t <= 0.0) {
+      ctx.Warn("PerspectiveMatch: the solved camera would sit behind one of the reference points; the result may be unreliable -- check the reference points and their 3D coordinates.");
+    }
+    const Point3d eye1 = ref_xyz_[0] + da * s;
+    const Point3d eye2 = ref_xyz_[1] + db * t;
+    const Point3d eye = eye1 + (eye2 - eye1) * 0.5;
+
+    CameraState& c = vp.GetCamera().State();
+    const double distance = std::max(vp.GetCamera().Distance(), 1e-3);
+    c.eye = eye;
+    c.target = eye + forward_world * distance;
+    c.up = up_world;
+    c.perspective = true;
+    c.lens_mm = std::clamp(18.0 * f, 5.0, 1000.0);
+    ctx.Print("PerspectiveMatch: camera set to eye " + FormatPoint(c.eye) + ", target " + FormatPoint(c.target) +
+              ", lens " + FormatNumber(c.lens_mm) + " mm (" + FormatNumber(2.0 * std::atan(1.0 / f) * 180.0 / ON_PI) + " deg)");
+    Finish();
+  }
+
+  std::vector<UV> line_pts_;
+  int ref_stage_ = 0;
+  UV ref_uv_[2];
+  Point3d ref_xyz_[2];
+};
+
 class NamedCPlaneCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -1460,7 +1663,13 @@ void RegisterViewToolsCommands(CommandEngine& e) {
         }
       }, 0));
   Reg(e, "OrientCameraToSrf", Make<OrientCameraToSrfCommand>());
-  Reg(e, "PerspectiveMatch", Immediate([](CommandContext& ctx) { ctx.Print("PerspectiveMatch: matching a camera to a background image is planned."); }), CommandStatus::Partial);
+  Reg(e, "PerspectiveMatch", Make<PerspectiveMatchCommand>(), CommandStatus::Implemented,
+      "Calibrates the active viewport's camera to a background photo by two-vanishing-point (orthocenter) "
+      "calibration: pick two pairs of parallel lines each, along two directions that are actually perpendicular "
+      "and horizontal in the real scene (8 points -> 2 vanishing points fix orientation and focal length), then "
+      "two (screen point, known 3D point) correspondences to fix position. Requires the photo to show two such "
+      "directions; does not handle a rolled/tilted horizon, lens distortion, or non-perpendicular reference "
+      "directions, and a single reference point cannot fix position on its own (a second is required).");
 
   // ---- animation ----
   Reg(e, "SetTurntableAnimation", Immediate(SetTurntable));
