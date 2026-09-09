@@ -261,7 +261,7 @@ sfcheck "Area = 62.79 square" "uncapped Pipe surface area ~ 2*pi*10"
 sfcheck "degree 3 x 1, CVs 27 x 2" "uncapped Pipe is a periodic NURBS tube"
 sfcheck "Bounding box min 20,0,-2 max 30,10,-2" "OffsetSrf moved the plane by 2 along its normal"
 sfcheck "Volume = 200 cubic" "OffsetSrf Solid=Yes closed a 10x10x2 slab"
-sfcheck "Shell: thickness 1, volume 1408" "Shell hollowed the box (4000 - 18*18*8)"
+sfcheck "Shell: thickness 1, closed, volume 1408" "Shell hollowed the box (4000 - 18*18*8)"
 sfcheck "ExtrudeCrvAlongCrv: 1 surface(s)" "ExtrudeCrvAlongCrv built a sum surface"
 sfcheck "Sweep1: 1 section(s) along 2 rail stations" "Sweep1 swept the circle along the line"
 sfcheck "Area = 124.2 square" "Sweep1 area ~ 2*pi*2*10 (cubic circle approximation)"
@@ -277,7 +277,20 @@ sfcheck "Project: 1 curve(s), 0 point(s)" "Project produced one curve"
 sfcheck "CV\[1\] 240,20,0" "Project landed the line on the plane"
 sfcheck "Pull: 0 curve(s), 1 point(s)" "Pull produced one point"
 sfcheck "  225,5,0" "Pull moved the point onto the plane"
-sfcheck "smoke: frames=200 objects=39" "surface script produced the expected object count"
+# Shell (open): picking the top face before entering thickness removes that
+# face's own wall layer from the result rather than producing another
+# fully-closed solid - real material gone, not a cosmetic label. The result
+# is still a single valid closed 2-manifold (a real opening is a cavity
+# reachable through empty space, not a literal hole in the mesh - the same
+# reason a 3D-printable mug's own mesh has no naked edges either), so the
+# proof is the exact Volume/Area/BoundingBox difference from the closed case
+# above, not IsClosedManifold()/SelOpenMesh.
+sfcheck "Shell: face 5 on object" "Shell registered the clicked top face to remove"
+sfcheck "Shell: thickness 1, open (face(s) removed), area 2248" "Shell (open) built one welded mesh: outer 1200 + inner 972 + a flat 76-unit rim"
+sfcheck "Area = 2248 square" "Shell (open) area matches the outer+inner+rim geometry exactly (all flat, no curvature error)"
+sfcheck "Bounding box min 300,0,0 max 320,20,10" "Shell (open) left the outer wall's own bounding box untouched"
+sfcheck "Volume = 1084 cubic" "Shell (open) volume is exactly the closed shell's 1408 minus the removed top layer's own 18x18x1"
+sfcheck "smoke: frames=200 objects=41" "surface script produced the expected object count"
 # Solids: Ellipsoid/SubDEllipsoid (real axis picking), Pyramid (NumSides=),
 # Loft (Normal vs Style=Straight), Cap (multiple separate openings) (see solids_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then

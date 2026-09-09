@@ -41,9 +41,12 @@ Hide
 Box 40,0,0 60,20,0 10
 SelLast
 Shell
+Enter
 1
 SelLast
 List
+SelClosedMesh
+@expect_selected 1
 # --- ExtrudeCrvAlongCrv: exact sum surface, 10 x 5 rectangle
 SelAll
 Hide
@@ -147,3 +150,39 @@ SelLast
 List
 Show
 SelAll
+# --- Shell (open): pick a face to remove/open before entering thickness, so
+# the top face's own wall layer is genuinely gone rather than merely
+# relabeled. Appended at the end of the file (after every other section's
+# fixed "SelID N" references) so its extra object IDs don't shift them.
+#
+# A properly shelled-and-opened solid is still a single valid *closed*
+# 2-manifold (like a real 3D-printable mug: no naked edges anywhere) - the
+# "opening" is a cavity reachable from outside through empty space, not a
+# literal hole in the mesh surface, so SelClosedMesh (not SelOpenMesh) is the
+# correct check here; the real, discriminating proof that a real opening
+# exists is that removing the top face's wall layer measurably removes that
+# layer's own material:
+#   closed (this file's very first Shell test): 4000 - 18*18*8 = 1408
+#   open (top face's own 1-thick, 18x18 layer no longer present): 1408 - 18*18*1 = 1084
+# matching the divergence-theorem Volume() of the actual result exactly, not
+# approximately - both the outer and inner surfaces here are flat, so there
+# is no curvature discretization error to blur the comparison. The Area
+# (outer 1200 + inner 972 + a flat 76-unit picture-frame rim between the
+# outer 20x20 and inner 18x18 loops at the untouched z=10 rim = 2248) and the
+# unchanged outer BoundingBox both independently confirm the outer wall and
+# rim geometry are exactly as expected, not just the volume number.
+SelAll
+Hide
+Box 300,0,0 320,20,0 10
+SelLast
+Shell
+310,10,10
+Enter
+1
+SelLast
+List
+SelClosedMesh
+@expect_selected 1
+Area
+BoundingBox
+Volume

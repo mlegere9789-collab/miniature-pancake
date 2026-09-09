@@ -10,6 +10,9 @@
 // for reasonable sample counts) elsewhere. Each registration note says so.
 #include <algorithm>
 #include <limits>
+#include <map>
+#include <set>
+#include <utility>
 
 #include "commands/cmd_common.h"
 
@@ -751,24 +754,182 @@ class OffsetSrfCommand : public Command {
   bool solid_ = false, flip_ = false;
 };
 
+// ---------------------------------------------------------------------------
+// Shell face picking: mirrors cmd_fillet.cpp's FacePick/PickFace pattern
+// (nearest brep face to a clicked point, via MeshBrepFaces) but restricted
+// to a caller-supplied set of object ids (only the solids Shell already has
+// selected are eligible), so it is its own small copy rather than a shared
+// export - the same "kept local" choice cmd_fillet.cpp's own comment makes
+// for cmd_srfedit.cpp's copy.
+// ---------------------------------------------------------------------------
+
+struct ShellFacePick { ObjectId id = kNoObject; int face = -1; double dist = 0; };
+
+std::optional<ShellFacePick> PickShellFace(CommandContext& ctx, Point3d p, const std::vector<ObjectId>& allowed) {
+  std::optional<ShellFacePick> best;
+  for (ObjectId id : allowed) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o || o->kind != ObjectKind::Brep || !o->brep) continue;
+    BrepMeshOptions opt;
+    opt.chord_tolerance = 0.05;
+    std::vector<kernel::Mesh> faces = MeshBrepFaces(o->brep->raw(), opt);
+    for (size_t f = 0; f < faces.size(); ++f) {
+      if (faces[f].FaceCount() == 0) continue;
+      const double d = faces[f].ClosestPoint(p).DistanceTo(p);
+      if (!best || d < best->dist) best = ShellFacePick{id, static_cast<int>(f), d};
+    }
+  }
+  return best;
+}
+
+// True if every edge of `m` is used by exactly one triangle in each of at
+// most two opposite windings (a normal manifold interior edge: once each
+// way) or by exactly one triangle total (a boundary edge) - the same
+// "well-behaved manifold-with-boundary" requirement Mesh::ExtrudeCappedSolid
+// enforces on its own cap argument, checked here directly on the *directed*
+// edge multiset so a non-manifold edge (3+ faces) or an inconsistently
+// wound pair (the same directed edge appearing twice) is caught rather than
+// silently handed to OffsetMesh/ShellBetween, which both assume it.
+bool IsSimpleManifoldWithBoundary(const kernel::Mesh& m) {
+  const ON_Mesh& r = m.raw();
+  if (r.FaceCount() == 0) return false;
+  std::map<std::pair<int, int>, int> directed;
+  for (int f = 0; f < r.FaceCount(); ++f) {
+    const ON_MeshFace& face = r.m_F[f];
+    const int k = face.IsTriangle() ? 3 : 4;
+    for (int e = 0; e < k; ++e) {
+      const int a = face.vi[e], b = face.vi[(e + 1) % k];
+      if (a == b) return false;
+      if (++directed[{a, b}] > 1) return false;
+    }
+  }
+  for (const auto& [edge, count] : directed) {
+    const auto rev = directed.find({edge.second, edge.first});
+    const int rev_count = rev == directed.end() ? 0 : rev->second;
+    if (count + rev_count > 2) return false;
+  }
+  return true;
+}
+
+// Builds a real *open* shell for the solid `brep`: the picked faces
+// (`remove`, brep face indices as returned by PickShellFace/NearestFace)
+// are dropped entirely rather than getting an inward offset, so the
+// remaining outer surface keeps a real boundary loop where they used to be
+// - the wall thickness only applies to what is left. `ShellBetween` (used
+// elsewhere in this file for OffsetSrf's solid option) already builds
+// exactly "flip one open mesh inward, keep the other outward, wall the gap
+// between them along the shared boundary loop", so it is reused verbatim
+// rather than writing a second rim-stitcher: inner_open (flipped inward)
+// is `bottom`, outer_open (unchanged) is `top`.
+//
+// Real scope: this only accepts a face selection whose remainder is a
+// single well-behaved manifold-with-boundary patch (IsSimpleManifoldWithBoundary
+// below) - true for one face, or several mutually-adjacent faces, removed
+// from a simple solid (a box, a box-like polysurface); it explicitly
+// rejects (rather than silently mis-triangulating) a selection that would
+// leave a non-manifold or self-overlapping remainder. Highly curved or
+// non-planar picked faces are accepted the same way any face is (the
+// removal is purely topological - drop that face's triangles - so no
+// planarity is actually required), but a mesh-level rim across a very
+// non-planar boundary loop is still a straight-line lip between
+// corresponding outer/inner vertices, not a fitted surface - fine for the
+// common box/cup/case case this targets, visibly facetted on a sharply
+// curved opening edge.
+std::optional<kernel::Mesh> BuildOpenShell(const ON_Brep& brep, const std::vector<int>& remove, double thickness, std::string& err) {
+  ON_BoundingBox bb;
+  brep.GetBoundingBox(bb);
+  const double diag = bb.Diagonal().Length();
+  BrepMeshOptions opt;
+  opt.chord_tolerance = std::isfinite(diag) && diag > 0 ? std::clamp(diag * 5e-4, 1e-5, 0.05) : 0.005;
+  std::vector<kernel::Mesh> faces = MeshBrepFaces(brep, opt);
+  if (faces.empty()) { err = "could not be meshed"; return std::nullopt; }
+  for (int fi : remove) {
+    if (fi < 0 || static_cast<size_t>(fi) >= faces.size() || faces[static_cast<size_t>(fi)].FaceCount() == 0) {
+      err = "has an invalid face selection";
+      return std::nullopt;
+    }
+  }
+  const double size = std::max(1e-9, diag);
+  const double weld = std::max(1e-12, size * 1e-8);
+  const kernel::Mesh full = kernel::Mesh::MergeAndWeld(faces, weld);
+  if (!full.IsClosedManifold()) { err = "is not a closed solid"; return std::nullopt; }
+  const bool flip = full.Volume() < 0;
+  std::set<int> remove_set(remove.begin(), remove.end());
+  std::vector<kernel::Mesh> kept;
+  for (size_t i = 0; i < faces.size(); ++i) {
+    if (!remove_set.count(static_cast<int>(i)) && faces[i].FaceCount() > 0) kept.push_back(faces[i]);
+  }
+  if (kept.empty()) { err = "would have no surface left after removing the selected face(s)"; return std::nullopt; }
+  kernel::Mesh outer_open = kernel::Mesh::MergeAndWeld(kept, weld);
+  if (flip) outer_open = outer_open.FlipNormals();
+  if (!IsSimpleManifoldWithBoundary(outer_open)) {
+    err = "removing that face selection leaves a non-manifold or multi-piece remainder (not supported - try removing a single face, or a group of mutually-adjacent faces, from a simple box-like solid)";
+    return std::nullopt;
+  }
+  const kernel::Mesh inner_open = OffsetMesh(outer_open, -thickness);
+  const kernel::Mesh shell = ShellBetween(inner_open, outer_open);
+  if (shell.FaceCount() == 0) { err = "produced no geometry (thickness may be too large for the remaining wall)"; return std::nullopt; }
+  return shell;
+}
+
 class ShellCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select closed solids to shell"); }
-  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
     ids_ = ids;
-    options = {{"Thickness", FormatNumber(thickness_), {}, true, false}};
-    WantNumber("Thickness", thickness_);
+    bool any_brep = false;
+    for (ObjectId id : ids_) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (o && o->kind == ObjectKind::Brep && o->brep) any_brep = true;
+    }
+    if (any_brep) {
+      DeselectAll(ctx, ids_);
+      accept_preselection = false;
+      WantPoint("Click face(s) to remove/open (Enter for a fully closed shell)");
+    } else {
+      StartThickness();
+    }
   }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!picking_faces_) return;
+    std::optional<ShellFacePick> pick = PickShellFace(ctx, p, ids_);
+    if (!pick) { ctx.Warn("No face of the selected solid(s) near that point"); return; }
+    std::vector<int>& picked = open_faces_[pick->id];
+    if (std::find(picked.begin(), picked.end(), pick->face) != picked.end()) {
+      ctx.Warn("That face is already marked to be removed");
+      return;
+    }
+    picked.push_back(pick->face);
+    ctx.Print("Shell: face " + std::to_string(pick->face) + " on object " + std::to_string(pick->id) + " marked to open (" +
+               std::to_string(picked.size()) + " on this solid); click more faces or press Enter");
+  }
+  void OnEnter(CommandContext&) override { if (picking_faces_) StartThickness(); }
   void OnOption(CommandContext& ctx, const std::string& n, const std::string& v) override {
     if (n == "Thickness") { double d; if (ParseNumber(v, d) && d > 0) { thickness_ = d; options[0].value = FormatNumber(d); default_number = d; } else ctx.Warn("Thickness must be positive"); }
   }
-  void OnText(CommandContext& ctx, const std::string& t) override { double v; if (ParseNumber(t, v)) OnNumber(ctx, v); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (picking_faces_) return;
+    double v;
+    if (ParseNumber(t, v)) OnNumber(ctx, v);
+  }
   void OnNumber(CommandContext& ctx, double t) override {
+    if (picking_faces_) return;
     if (t <= 0) { ctx.Warn("Thickness must be positive"); return; }
     std::vector<std::pair<ObjectId, kernel::Mesh>> results;
+    std::vector<ObjectId> opened;
     for (ObjectId id : ids_) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
+      const auto it = open_faces_.find(id);
+      if (it != open_faces_.end() && !it->second.empty()) {
+        if (o->kind != ObjectKind::Brep || !o->brep) { ctx.Warn("Object " + std::to_string(id) + " has picked faces but is not a polysurface; skipped"); continue; }
+        std::string err;
+        std::optional<kernel::Mesh> r = BuildOpenShell(o->brep->raw(), it->second, t, err);
+        if (!r) { ctx.Warn("Shell: object " + std::to_string(id) + " " + err); continue; }
+        results.push_back({id, *r});
+        opened.push_back(id);
+        continue;
+      }
       std::optional<kernel::Mesh> m = MeshOf(*o, 0.005);
       if (!m || !m->IsClosedManifold()) { ctx.Warn("Object " + std::to_string(id) + " is not a closed solid; skipped"); continue; }
       kernel::Mesh outer = Outward(*m);
@@ -790,11 +951,24 @@ class ShellCommand : public Command {
       SceneObject n = SceneObject::MakeMesh(r);
       n.layer_index = layer;
       ctx.Doc().Add(std::move(n));
-      ctx.Print("Shell: thickness " + FormatNumber(t) + ", volume " + FormatNumber(std::fabs(r.Volume())));
+      const bool is_open = std::find(opened.begin(), opened.end(), id) != opened.end();
+      // Volume() assumes a closed, consistently-oriented mesh; an open
+      // shell's Volume() is not a meaningful enclosed-volume figure (the
+      // divergence-theorem sum is only exact across the missing face's
+      // hole), so it is not printed for that case.
+      ctx.Print("Shell: thickness " + FormatNumber(t) + (is_open ? ", open (face(s) removed), area " + FormatNumber(r.Area())
+                                                                   : ", closed, volume " + FormatNumber(std::fabs(r.Volume()))));
     }
     Finish();
   }
+  void StartThickness() {
+    picking_faces_ = false;
+    options = {{"Thickness", FormatNumber(thickness_), {}, true, false}};
+    WantNumber("Thickness", thickness_);
+  }
   std::vector<ObjectId> ids_;
+  std::map<ObjectId, std::vector<int>> open_faces_;
+  bool picking_faces_ = true;
   double thickness_ = 1;
 };
 
@@ -1041,7 +1215,7 @@ void RegisterSurfaceCommands(CommandEngine& e) {
   Reg(e, "Patch", OnSelection("Select curves and points to fit a surface through", Patch), CommandStatus::Implemented, "Planar patch only: a least-squares plane trimmed by the single closed curve, or a fitted rectangle.");
   Reg(e, "Pipe", Make<PipeCommand>(), CommandStatus::Implemented, "Single radius. Cap=Yes gives a closed mesh solid; Cap=No a periodic NURBS surface (circle approximated by a cubic).");
   Reg(e, "OffsetSrf", Make<OffsetSrfCommand>(), CommandStatus::Implemented, "Surfaces: control points offset along Greville normals (exact for planes). Polysurfaces and meshes are offset as meshes along vertex normals; Solid=Yes closes the shell as a mesh.");
-  Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid as a mesh (outer minus inward vertex-normal offset); face removal to open the shell is planned.");
+  Reg(e, "Shell", Make<ShellCommand>(), CommandStatus::Implemented, "Hollows a closed solid as a mesh (outer minus inward vertex-normal offset). Optionally click face(s) of a polysurface solid to remove/open before entering thickness (Enter with none picked keeps the old fully-closed behavior): the picked face(s) are dropped from the outer surface, the remainder gets the inward offset, and a rim mesh connects the two boundary loops - a real open shell (cup/case) for a single face, or a group of mutually-adjacent faces, on a simple box-like solid; a selection that would leave a non-manifold or multi-piece remainder is rejected with a warning rather than producing bad geometry, and mesh-only solids (no polysurface to pick faces on) still only support the fully-closed form.");
   Reg(e, "ExtrudeCrvAlongCrv", Make<ExtrudeAlongCommand>(), CommandStatus::Implemented, "Exact translational sweep (sum surface); the profile is not rotated along the path.");
   Reg(e, "ExtrudeCrvTapered", Make<ExtrudeTaperedCommand>(), CommandStatus::Implemented, "Ruled surface to a copy of the profile scaled about its centroid by the draft angle (exact for circles, approximate corners).");
   Reg(e, "Project", Make<ProjectCommand>(false), CommandStatus::Implemented, "Projects along the CPlane normal onto the target's render mesh; result curves are refit through the projected samples.");
