@@ -75,11 +75,18 @@ namespace dino8::kernel {
 //      volume. So this function also finds any such face and replaces
 //      the shared corner vertex with a fine polygonal approximation of
 //      the exact arc (Brep::PlanarFace's own loop is straight-edged only,
-//      so this one corner is the sole place this function's geometry
-//      isn't exact to floating-point precision by construction of that
-//      representation, not by approximation of the fillet math itself -
-//      the sampling is fine enough that this is far below any reasonable
-//      volume tolerance). A face at that vertex whose plane is NOT
+//      so this one corner is the sole place this function's VISIBLE
+//      geometry isn't exact to floating-point precision by construction
+//      of that representation, not by approximation of the fillet math
+//      itself - the sampling is fine enough that this is far below any
+//      reasonable volume tolerance). This notched run is also given a
+//      LITERAL shared ON_BrepEdge with the fillet's own true-arc cap at
+//      that same corner (see PlanarFace::notch_begin/notch_count's own
+//      doc comment and Brep::FromMixedFaces' own comment for exactly how)
+//      - so, unlike the geometry, the TOPOLOGY at this corner is exact:
+//      IsManifold() reports no free boundary there and IsSolid() is true
+//      for a fillet on an otherwise-closed solid, not merely IsValid().
+//      A face at that vertex whose plane is NOT
 //      perpendicular to the edge (an oblique end condition) is left
 //      untouched - a real, narrower-than-general scope for what is, in
 //      full generality, solid modeling's own separate "vertex blend"

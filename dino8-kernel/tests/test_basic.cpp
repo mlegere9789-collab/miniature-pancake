@@ -6464,6 +6464,51 @@ void TestFilletConvexEdgeUnitCubeTopFrontCorner() {
           "covered by the fillet face");
   }
 
+  // The corner-notch feature's own real, falsifiable proof (see brep.h's
+  // and fillet.h's own updated comments): this box is CLOSED, and the
+  // filleted edge runs corner-to-corner, so BOTH of its own endpoints hit
+  // a third face perpendicular to it (the left x=0 face at edge_p0, the
+  // right x=1 face at edge_p1) - exactly the corner-notch case. Before
+  // this fix, each of those two corners had the fillet's own true
+  // circular cap edge and the notched face's own dense polygonal run as
+  // two INDIVIDUALLY valid but topologically SEPARATE boundary chains, so
+  // IsManifold() reported a free boundary there and IsSolid() was false,
+  // even though IsValid() already passed. Checking IsValid() alone here
+  // would NOT prove anything about this fix - it already passed before
+  // it, as brep.h's own comment is explicit about.
+  if (fillet_face_index >= 0) {
+    const ON_BrepFace& fillet_face_raw = raw.m_F[fillet_face_index];
+    Check(fillet_face_raw.m_li.Count() == 1, "the fillet face has exactly one loop");
+    if (fillet_face_raw.m_li.Count() == 1) {
+      const ON_BrepLoop& fillet_loop = raw.m_L[fillet_face_raw.m_li[0]];
+      Check(fillet_loop.m_ti.Count() == 4,
+            "the fillet face's own loop has exactly 4 trims (2 straight rails, 2 circular caps)");
+      bool all_four_shared = fillet_loop.m_ti.Count() == 4;
+      for (int ti = 0; ti < fillet_loop.m_ti.Count(); ++ti) {
+        const ON_BrepTrim& t = raw.m_T[fillet_loop.m_ti[ti]];
+        if (t.m_ei < 0 || raw.m_E[t.m_ei].m_ti.Count() != 2) all_four_shared = false;
+      }
+      Check(all_four_shared,
+            "every one of the fillet face's own 4 boundary edges - the 2 straight rails AND, after "
+            "this fix, the 2 circular caps too - is a genuinely shared, 2-trim ON_BrepEdge: the "
+            "fillet patch has NO free boundary edge left anywhere on this closed box");
+    }
+  }
+
+  ON_TextLog fillet_corner_log;
+  Check(filleted.raw().IsValid(&fillet_corner_log),
+        "the filleted closed box still genuinely passes ON_Brep::IsValid() (unchanged by this fix - "
+        "it already passed before, see this test's own comment above)");
+  bool corner_is_oriented = false, corner_has_boundary = true;
+  Check(filleted.raw().IsManifold(&corner_is_oriented, &corner_has_boundary) && corner_is_oriented &&
+            !corner_has_boundary,
+        "the feature's own falsifiable success criterion: the filleted closed box is now a "
+        "genuinely oriented, CLOSED (has_boundary == false) 2-manifold at BOTH corner-notch "
+        "corners, not merely two individually-valid-but-unshared boundary chains there");
+  Check(filleted.raw().IsSolid(),
+        "the filleted closed box reports IsSolid() == true - a real, closed, watertight solid, not "
+        "an open shape with a topological gap at either corner-notch corner");
+
   // Reject a non-convex/degenerate edge: two faces of the SAME box that
   // do not share this edge, or a concocted 180-degree (coplanar) pair,
   // should throw rather than silently produce nonsense.
@@ -7132,6 +7177,28 @@ void TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM() {
           "derive-from-topology path - tessellates to the same volume as the original, "
           "proving the cylindrical face's own real topology (not just its planar "
           "neighbors') survived the round trip too");
+
+    // This edge ((1,0,1)-(1,1,1) on a unit box) hits the corner-notch case
+    // at BOTH endpoints (the front y=0 face at (1,0,1), the back y=1 face
+    // at (1,1,1) - both perpendicular to the filleted edge), so this
+    // round trip genuinely exercises the corner-notch fix's own new
+    // object shape: a PlanarFace's own 2D trim curve as a real
+    // ON_PolylineCurve (not a plain ON_LineCurve), saved to and reloaded
+    // from an actual .3dm file. If that curve type, or the collapsed
+    // (shared-edge) topology around it, hadn't survived the round trip
+    // intact, this reloaded Brep would show a free boundary at one or
+    // both corners even though the ORIGINAL (pre-round-trip) one didn't -
+    // exactly what these two checks would catch.
+    bool reloaded_oriented = false, reloaded_has_boundary = true;
+    Check(brep_geometry->IsManifold(&reloaded_oriented, &reloaded_has_boundary) && reloaded_oriented &&
+              !reloaded_has_boundary,
+          "the RELOADED Brep is still a genuinely oriented, closed (no free boundary) 2-manifold at "
+          "both corner-notch corners - the shared arc-edge (and the notched face's own "
+          "ON_PolylineCurve trim) survived the actual .3dm file format round trip, not just this "
+          "kernel's own in-memory construction");
+    Check(brep_geometry->IsSolid(),
+          "the reloaded Brep reports IsSolid() == true too, matching the original (pre-round-trip) "
+          "Brep's own topology exactly");
   }
   Check(found_brep, "the .3dm file's model geometry actually contains the filleted Brep object");
 

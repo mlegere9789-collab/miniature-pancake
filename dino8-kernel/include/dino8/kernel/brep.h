@@ -59,15 +59,35 @@ class Mesh;
 // `FromMixedFaces()` inherits this for free: `BooleanCombinePlanar()`,
 // `ShellConvexPlanar()`, and `FilletConvexEdge()` (see boolean.h/
 // fillet.h) all assemble their result through one of these two, so their
-// own results are genuinely `IsValid()`-clean too. One disclosed, narrow
-// gap: `FilletConvexEdge()`'s own 200-segment polygonal corner notch
-// (used only where the filleted edge meets a face perpendicular to it -
-// see fillet.h's own doc comment) is topologically separate from the
-// fillet's own circular cap edge at that same corner, rather than a
-// literal shared arc-edge between them - both remain individually valid
-// boundary trims (`IsValid()` still passes), but that one corner is not
-// truly closed/manifold there; a real arc-edge there is a distinct,
-// not-yet-attempted follow-up, not a silent gap.
+// own results are genuinely `IsValid()`-clean too.
+//
+// FORMERLY a disclosed, narrow gap, now closed: `FilletConvexEdge()`'s
+// own polygonal corner notch (where the filleted edge meets a face
+// perpendicular to it - see fillet.h's own doc comment) used to be
+// topologically SEPARATE from the fillet's own circular cap edge at that
+// same corner (individually valid boundary trims, but not a literal
+// shared edge, so that one corner reported as open/non-manifold). It now
+// gets a LITERAL shared `ON_BrepEdge` with the cap - see `PlanarFace`'s
+// own `notch_begin`/`notch_count` fields below and `FromMixedFaces()`'s
+// own comment for exactly how: the cap's own true isocurve is built
+// first (a reordered Pass 3/4 visits every `CylindricalFace` before any
+// `PlanarFace`), and the notched face's own dense polygonal run is
+// collapsed to just its own two endpoints for topology purposes -
+// exactly the two points welded to the cap's own two corner vertices -
+// so the second face to reach that vertex pair reuses the cap's own edge
+// (and its own true arc curve) instead of building a new, unshared one,
+// the same "second face reuses the first face's real edge" mechanism the
+// straight-rail sharing above already relies on. The notched face's own
+// 2D trim curve for that one segment is a genuine multi-point polyline
+// through the original dense points (not a 2-point chord), so a fresh
+// consumer deriving this Brep's own boundary purely from stored topology
+// (a `.3dm` reload, say) reproduces the same shape this kernel's own
+// side-table-driven `Tessellate()` already draws - not a different,
+// silently-wrong one. `TestFilletConvexEdgeUnitCubeTopFrontCorner`'s own
+// closed-box corner genuinely reports `IsManifold()`'s `has_boundary` as
+// `false` and `IsSolid()` as `true` now, not just `IsValid()` (which
+// already passed before this fix and was never, on its own, proof the
+// gap was closed).
 class Brep {
  public:
   // Builds a one-face B-rep whose face is exactly `surface` (untrimmed).
@@ -148,6 +168,40 @@ class Brep {
   struct PlanarFace {
     ON_Plane plane;             // outward-facing normal (plane.zaxis)
     std::vector<Point3d> loop;  // closed polygon, CCW as seen from outside
+
+    // Optional, narrow extension consumed ONLY by FromMixedFaces()'s own
+    // genuine-topology builder - every other producer/consumer of
+    // PlanarFace (PlanarFaces(), ClipByHalfspace3d, ExactConvexHull,
+    // BooleanCombinePlanar/ShellConvexPlanar) never reads these two
+    // fields and is completely unaffected by their default values.
+    //
+    // Marks loop[notch_begin .. notch_begin+notch_count) (notch_count-1
+    // consecutive segments, no wraparound) as a fine polygonal
+    // approximation of ONE true circular arc that is known to coincide
+    // exactly, in 3D, with an adjacent Brep::CylindricalFace's own
+    // circular cap edge - precisely fillet.cpp's own NotchCornerAtVertex
+    // corner-notch construction (see fillet.h's own doc comment).
+    // notch_count == 0 (the default) means "no such run on this face";
+    // FromMixedFaces() ignores these fields entirely in that case.
+    //
+    // When set, FromMixedFaces() gives that whole run ONE literal shared
+    // ON_BrepEdge with the adjacent CylindricalFace's own cap (instead of
+    // notch_count-1 short, unshared micro-edges that can never be
+    // manifold - see brep.h's own class-level comment for why that used
+    // to be a disclosed, not-yet-closed gap) while still preserving the
+    // full dense polygon for TESSELLATION: this face's own visible
+    // boundary (face_trim_loops_) is completely unaffected by this field
+    // - only the real ON_Brep vertex/edge/trim/loop topology construction
+    // changes, collapsing the run's own interior points out of the loop's
+    // topology-only vertex list and instead threading them into that ONE
+    // trim's own 2D curve as a genuine multi-point polyline (not a naive
+    // 2-point chord) - the detail that lets the fine notch survive a
+    // .3dm round trip (or any other consumer reading this Brep's own real
+    // topology, e.g. ResolveFace()'s generic derive-from-topology path)
+    // with the same shape/volume as this kernel's own side-table-driven
+    // Tessellate(), not just look right in this kernel's own pipeline.
+    int notch_begin = 0;
+    int notch_count = 0;
   };
 
   // Extracts every face of this Brep as a PlanarFace: the face's own
