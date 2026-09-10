@@ -118,6 +118,42 @@ class Brep {
 
   int FaceCount() const;
 
+  // One planar face's boundary as a real 3D polygon plus its plane -
+  // the representation an exact (non-tessellated) planar B-rep boolean
+  // needs to work on directly, instead of a mesh approximation.
+  struct PlanarFace {
+    ON_Plane plane;             // outward-facing normal (plane.zaxis)
+    std::vector<Point3d> loop;  // closed polygon, CCW as seen from outside
+  };
+
+  // Extracts every face of this Brep as a PlanarFace: the face's own
+  // (u, v) domain rectangle (or trim loop, for a TrimmedPlanarFace()
+  // face) walked in increasing-parameter order and mapped through the
+  // surface's PointAt - which, per every planar-face factory here's own
+  // "u_dir x v_dir points outward" convention (see Box()'s comment),
+  // already winds each loop CCW as seen from outside. The plane itself
+  // is computed directly from that same loop via Newell's method (not
+  // from ON_Surface::IsPlanar's own plane, whose sign isn't guaranteed
+  // to agree with the loop's winding), so the two are always mutually
+  // consistent by construction. Throws std::invalid_argument if any face
+  // is not planar (checked via NurbsSurface::IsPlanar) - this is
+  // deliberately narrow: a genuine curved-face B-rep boolean is a much
+  // larger undertaking (NURBS-NURBS surface intersection + re-trimming,
+  // see IntersectSurfaces in dino8-app's own geom layer for the
+  // intersection-curve half of that, which this doesn't yet use) and is
+  // not attempted here.
+  std::vector<PlanarFace> PlanarFaces() const;
+
+  // The inverse of PlanarFaces(): builds a new Brep with one
+  // TrimmedPlanarFace()-equivalent face per PlanarFace, each an exact
+  // bilinear NurbsSurface spanning that face's own polygon's bounding
+  // rectangle in the plane's local (x, y) axes, trimmed to the polygon
+  // itself. Every `loop` must have at least 3 points and lie exactly in
+  // its own `plane` (within a small tolerance) - not re-validated here
+  // beyond what TrimmedPlanarFace() itself checks (throws
+  // std::invalid_argument on too few points).
+  static Brep FromPlanarFaces(const std::vector<PlanarFace>& faces);
+
   // Bounding box over the Brep's actual curved geometry, not just its
   // control points - a real gap nothing here could answer without
   // tessellating first (Mesh::GetBoundingBox() only sees a tessellation's

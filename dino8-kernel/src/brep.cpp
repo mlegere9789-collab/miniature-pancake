@@ -232,6 +232,110 @@ Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
 
 int Brep::FaceCount() const { return brep_.m_F.Count(); }
 
+namespace {
+
+// Newell's method: robust to a slightly non-planar or noisy polygon
+// (unlike a two-edge cross product), and its sign follows the loop's own
+// winding directly - the polygon and the plane it returns are always
+// mutually consistent, which is exactly what a half-space boolean needs.
+ON_3dVector NewellNormal(const std::vector<Point3d>& loop) {
+  ON_3dVector n(0, 0, 0);
+  const size_t k = loop.size();
+  for (size_t i = 0; i < k; ++i) {
+    const Point3d& p = loop[i];
+    const Point3d& q = loop[(i + 1) % k];
+    n.x += (p.y - q.y) * (p.z + q.z);
+    n.y += (p.z - q.z) * (p.x + q.x);
+    n.z += (p.x - q.x) * (p.y + q.y);
+  }
+  n.Unitize();
+  return n;
+}
+
+}  // namespace
+
+std::vector<Brep::PlanarFace> Brep::PlanarFaces() const {
+  std::vector<PlanarFace> result;
+  result.reserve(static_cast<size_t>(brep_.m_F.Count()));
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    FaceGeometry fg;
+    if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
+    NurbsSurface wrapper;
+    wrapper.raw() = fg.surface;
+    if (!wrapper.IsPlanar()) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::PlanarFaces: face " + std::to_string(i) +
+          " is not planar - this is a planar-only B-rep boolean, see its own doc comment");
+    }
+    std::vector<Point2d> uv;
+    if (!fg.outer.empty()) {
+      uv = fg.outer;
+    } else {
+      const ON_Interval du = fg.surface.Domain(0), dv = fg.surface.Domain(1);
+      // Increasing-parameter order around the rectangle - matches every
+      // planar-face factory's own "u_dir x v_dir points outward" winding.
+      uv = {Point2d(du[0], dv[0]), Point2d(du[1], dv[0]), Point2d(du[1], dv[1]), Point2d(du[0], dv[1])};
+    }
+    PlanarFace face;
+    face.loop.reserve(uv.size());
+    for (const Point2d& p : uv) face.loop.push_back(fg.surface.PointAt(p.x, p.y));
+    const ON_3dVector n = NewellNormal(face.loop);
+    face.plane = ON_Plane(face.loop[0], n);
+    result.push_back(std::move(face));
+  }
+  return result;
+}
+
+Brep Brep::FromPlanarFaces(const std::vector<Brep::PlanarFace>& faces) {
+  Brep result;
+  ON_Brep& brep = result.brep_;
+  for (const PlanarFace& f : faces) {
+    if (f.loop.size() < 3) continue;  // degenerate slice - nothing left of this face
+    const ON_Plane& pl = f.plane;
+    double min_x = 0, max_x = 0, min_y = 0, max_y = 0;
+    std::vector<Point2d> local;
+    local.reserve(f.loop.size());
+    for (size_t k = 0; k < f.loop.size(); ++k) {
+      const ON_3dVector d = f.loop[k] - pl.origin;
+      const double x = d * pl.xaxis, y = d * pl.yaxis;
+      local.emplace_back(x, y);
+      if (k == 0) { min_x = max_x = x; min_y = max_y = y; }
+      else { min_x = std::min(min_x, x); max_x = std::max(max_x, x); min_y = std::min(min_y, y); max_y = std::max(max_y, y); }
+    }
+    // A small margin so the trim loop's own extremal points never sit
+    // exactly on the surface's own domain edge (a real, if rare, source
+    // of clipping-boundary ambiguity in TessellateGridClippedExact).
+    const double mx = std::max(1e-9, (max_x - min_x) * 0.05), my = std::max(1e-9, (max_y - min_y) * 0.05);
+    min_x -= mx; max_x += mx; min_y -= my; max_y += my;
+    const std::vector<Point3d> grid = {
+        pl.origin + min_x * pl.xaxis + min_y * pl.yaxis,
+        pl.origin + min_x * pl.xaxis + max_y * pl.yaxis,
+        pl.origin + max_x * pl.xaxis + min_y * pl.yaxis,
+        pl.origin + max_x * pl.xaxis + max_y * pl.yaxis,
+    };
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    // FromControlGrid's clamped-uniform knot vector puts the domain at
+    // [0,1] regardless of the grid's real-world span, so rescale each
+    // local (x, y) into that normalized domain to get the trim loop.
+    std::vector<Point2d> trim;
+    trim.reserve(local.size());
+    for (const Point2d& p : local) trim.emplace_back((p.x - min_x) / (max_x - min_x), (p.y - min_y) / (max_y - min_y));
+    auto* surface_copy = new ON_NurbsSurface(surface.raw());
+    const int surface_index = brep.AddSurface(surface_copy);
+    brep.NewFace(surface_index);
+    result.face_trim_loops_.push_back(trim);
+    // exact_clip=true: this face's trim polygon IS its exact boundary
+    // (not an approximation of a curved one), so tessellation should
+    // clip to it exactly rather than approximate via whole-cell in/out -
+    // otherwise a caller measuring volume at low division counts would
+    // see grid-approximation error on a shape that has none to begin with.
+    result.face_exact_clip_.push_back(true);
+    result.face_hole_loops_.emplace_back();
+  }
+  brep.SetTrimIsoFlags();
+  return result;
+}
+
 BoundingBox Brep::GetTightBoundingBox() const {
   ON_BoundingBox box;
   if (!brep_.GetTightBoundingBox(box)) {

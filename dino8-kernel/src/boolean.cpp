@@ -280,4 +280,131 @@ Mesh SmoothAndRefine(const Mesh& mesh, double target_length, double min_sharp_an
 
 size_t CountDegenerateTriangles(const Mesh& mesh) { return ToManifold(mesh).NumDegenerateTris(); }
 
+namespace {
+
+constexpr double kConvexTol = 1e-9;
+
+// A relative tolerance so this scales with the solid's own size instead
+// of using one fixed epsilon on both a millimeter part and a
+// kilometer-scale one.
+double RelativeTol(const std::vector<Brep::PlanarFace>& faces) {
+  double max_extent = 0.0;
+  for (const Brep::PlanarFace& f : faces) {
+    for (const Point3d& p : f.loop) {
+      max_extent = std::max({max_extent, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
+    }
+  }
+  return std::max(kConvexTol, max_extent * 1e-9);
+}
+
+// Every vertex of every face must lie on the inside (or exactly on) of
+// every one of this solid's own half-spaces - the direct definition of
+// convexity for a solid already given as a set of outward-facing planes.
+bool IsConvex(const std::vector<Brep::PlanarFace>& faces, double tol) {
+  for (const Brep::PlanarFace& plane_face : faces) {
+    for (const Brep::PlanarFace& vertex_face : faces) {
+      for (const Point3d& p : vertex_face.loop) {
+        if (plane_face.plane.DistanceTo(p) > tol) return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Sutherland-Hodgman: clips a convex 3D polygon (already known to lie in
+// one plane) against one half-space, keeping the side the plane's own
+// normal points away from (DistanceTo <= tol is "inside").
+std::vector<Point3d> ClipByHalfspace(const std::vector<Point3d>& poly, const ON_Plane& clip_plane, double tol) {
+  if (poly.size() < 3) return {};
+  std::vector<Point3d> out;
+  out.reserve(poly.size() + 1);
+  const size_t n = poly.size();
+  for (size_t i = 0; i < n; ++i) {
+    const Point3d& cur = poly[i];
+    const Point3d& nxt = poly[(i + 1) % n];
+    const double dc = clip_plane.DistanceTo(cur);
+    const double dn = clip_plane.DistanceTo(nxt);
+    const bool cur_in = dc <= tol;
+    const bool nxt_in = dn <= tol;
+    if (cur_in) out.push_back(cur);
+    if (cur_in != nxt_in && std::fabs(dc - dn) > 1e-15) {
+      const double t = dc / (dc - dn);
+      out.push_back(cur + t * (nxt - cur));
+    }
+  }
+  return out;
+}
+
+// When a clip plane's boundary exactly coincides with an existing edge or
+// vertex of the polygon being clipped (the common case for two
+// axis-aligned or otherwise boundary-sharing solids, not a rare corner
+// case), Sutherland-Hodgman's own "insert an intersection point on every
+// crossing edge" step can emit a point that's a near-duplicate of one
+// already in the polygon - a hairline zero-length or reflex "spike" a
+// strict simple-polygon check correctly flags as self-intersecting, even
+// though the region it bounds is geometrically fine. Collapsing
+// consecutive near-duplicates (and any resulting collinear-through
+// vertex) after every clip keeps the polygon genuinely simple without
+// changing the region it encloses.
+std::vector<Point3d> CleanPolygon(const std::vector<Point3d>& poly, double tol) {
+  if (poly.size() < 3) return poly;
+  std::vector<Point3d> out;
+  out.reserve(poly.size());
+  for (const Point3d& p : poly) {
+    if (out.empty() || out.back().DistanceTo(p) > tol) out.push_back(p);
+  }
+  while (out.size() > 1 && out.front().DistanceTo(out.back()) <= tol) out.pop_back();
+  return out;
+}
+
+std::vector<Point3d> ClipByAllHalfspaces(std::vector<Point3d> poly, const std::vector<Brep::PlanarFace>& other,
+                                          double tol) {
+  for (const Brep::PlanarFace& f : other) {
+    poly = CleanPolygon(ClipByHalfspace(poly, f.plane, tol), tol);
+    if (poly.size() < 3) return {};
+  }
+  return poly;
+}
+
+}  // namespace
+
+Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b) {
+  const std::vector<Brep::PlanarFace> fa = a.PlanarFaces();
+  const std::vector<Brep::PlanarFace> fb = b.PlanarFaces();
+  const double tol = std::max(RelativeTol(fa), RelativeTol(fb));
+  if (!IsConvex(fa, tol) || !IsConvex(fb, tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanIntersectConvexPlanar: both solids must be convex "
+        "(a vertex of one lies outside one of its own faces' half-spaces) - see "
+        "this function's own doc comment for why non-convex inputs aren't handled here");
+  }
+  // When A and B share an exact coincident boundary plane (e.g. two
+  // prisms of the same height, both with a top face at the same z), that
+  // shared plane's clip result is identical whichever solid it's clipped
+  // relative to - so clipping BOTH A's copy of it against B AND B's copy
+  // against A produces the same polygon twice. Two coincident faces on
+  // one plane isn't a valid closed B-rep (a real boundary has exactly one
+  // face there), so keep only the first one found on any given plane.
+  auto same_plane = [tol](const ON_Plane& p, const ON_Plane& q) {
+    return std::fabs(p.DistanceTo(q.origin)) <= tol && p.zaxis.IsParallelTo(q.zaxis, 1e-6) == 1;
+  };
+  std::vector<Brep::PlanarFace> result;
+  auto add_clipped = [&](const std::vector<Brep::PlanarFace>& faces, const std::vector<Brep::PlanarFace>& clip_against) {
+    for (const Brep::PlanarFace& face : faces) {
+      bool already_have = false;
+      for (const Brep::PlanarFace& existing : result) {
+        if (same_plane(face.plane, existing.plane)) { already_have = true; break; }
+      }
+      if (already_have) continue;
+      Brep::PlanarFace clipped;
+      clipped.plane = face.plane;
+      clipped.loop = ClipByAllHalfspaces(face.loop, clip_against, tol);
+      if (clipped.loop.size() >= 3) result.push_back(std::move(clipped));
+    }
+  };
+  add_clipped(fa, fb);
+  add_clipped(fb, fa);
+  return Brep::FromPlanarFaces(result);
+}
+
 }  // namespace dino8::kernel

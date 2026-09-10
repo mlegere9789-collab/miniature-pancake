@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 
+#include "dino8/kernel/brep.h"
 #include "dino8/kernel/mesh.h"
 
 namespace dino8::kernel {
@@ -169,5 +170,41 @@ Mesh SmoothAndRefine(const Mesh& mesh, double target_length, double min_sharp_an
 // degeneracy that was ever present in the input." `mesh` must be a valid
 // closed manifold, same requirement as BooleanCombine().
 size_t CountDegenerateTriangles(const Mesh& mesh);
+
+// Exact B-rep boolean intersection of two CONVEX planar-faced solids -
+// e.g. two Brep::Box()es, or two Brep::FromPlanarFaces() results at
+// arbitrary transforms. Unlike BooleanCombine() (which tessellates both
+// operands to meshes and hands them to the external Manifold library),
+// this works directly on each solid's own exact planes: intersection of
+// two convex polyhedra is exactly the set of points satisfying every
+// half-space of both solids, computed by clipping (Sutherland-Hodgman)
+// every face polygon of `a` against every plane of `b`, and every face
+// polygon of `b` against every plane of `a` - each surviving fragment
+// lies exactly on one of the original planes, so the result is exact to
+// floating-point precision, not a tessellation approximation. This is
+// classical, unpatented computational geometry (convex polytope
+// intersection via half-space clipping - see e.g. Preparata & Shamos,
+// "Computational Geometry"), implemented here from that description, not
+// from or against any proprietary kernel's source.
+//
+// Deliberately narrow, and says so rather than silently producing a
+// wrong answer outside its scope: throws std::invalid_argument if either
+// input has a non-planar face (PlanarFaces()'s own check) or is
+// non-convex (checked directly: every vertex of every face must satisfy
+// every one of that solid's own half-spaces, within tolerance - a solid
+// that fails this would silently clip pieces of itself away against its
+// own planes if this function proceeded). When `a` and `b` share an
+// exact coincident boundary plane (e.g. two prisms of the same height,
+// both with a top face at the same z), that plane's clip result is
+// identical from either side and is kept only once - a real closed
+// B-rep has exactly one face there, not two stacked copies (verified by
+// the octagon-prism test case below, which fails closed/watertight
+// without this). Union and difference of convex solids are NOT generally
+// convex, and curved-face intersection needs a genuine NURBS-NURBS
+// surface-intersection-and-retrim step this doesn't attempt (see
+// dino8-app's IntersectSurfaces for that half, not yet wired to a Brep
+// boolean) - both are real, out-of-scope-here future work, not silently
+// approximated.
+Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b);
 
 }  // namespace dino8::kernel
