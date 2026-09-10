@@ -1,8 +1,23 @@
 #pragma once
 
+#include <vector>
+
 #include "dino8/kernel/brep.h"
 
 namespace dino8::kernel {
+
+// One station of a piecewise-linear rolling-ball taper profile along a
+// FilletConvexEdgeTapered edge: rolling-ball radius `radius` at arc
+// length `t` from edge_p0 (see the N-station FilletConvexEdgeTapered
+// overload below for the full construction). `t` is measured exactly the
+// same way FilletConvexEdge/the two-radius FilletConvexEdgeTapered
+// already measure it internally (arc length along e = normalize(edge_p1
+// - edge_p0)), just now exposed to the caller as an explicit station
+// list instead of always implicitly {0, L}.
+struct FilletRadiusStation {
+  double t = 0.0;
+  double radius = 0.0;
+};
 
 // Exact kernel-level rounding of ONE straight, convex edge shared by two
 // PLANAR faces of `solid` into a genuine circular-arc fillet: classical
@@ -172,7 +187,11 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
 // exact m=0 case is never run through the cone construction as a
 // very-flat approximation of it; the cone construction is mathematically
 // exact for any m!=0, but "is m exactly/negligibly zero" is a real,
-// separate branch, not a numerical-stability workaround).
+// separate branch, not a numerical-stability workaround). This whole
+// two-segment construction is itself now one call into the N-station
+// overload below with stations = {{0, radius0}, {L, radius1}} - see that
+// overload's own doc comment for the multi-station generalization this
+// section's derivation is the N=2 special case of.
 //
 // SCOPE, narrower even than FilletConvexEdge's own already-disclosed one
 // in v1, NOW CLOSED for the one case that matters here: this function DOES
@@ -272,10 +291,167 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
 // otherwise - a radius reaching exactly zero partway along the edge
 // would mean the swept patch's own apex falls INSIDE the trimmed region,
 // a genuinely different, degenerate topology this function does not
-// attempt). A piecewise-linear multi-segment taper and the fully general
-// free-form-radius canal-surface case (point 2 above) are both explicitly
-// out of scope for this function.
+// attempt). The fully general free-form-radius canal-surface case (point
+// 2 above) remains out of scope for this function.
+//
+// THIN WRAPPER, not a parallel implementation: this two-radius overload
+// delegates to the N-station overload below with stations = {{0,
+// radius0}, {edge_p0.DistanceTo(edge_p1), radius1}} - every claim in this
+// doc comment (the rail exactness, the cone derivation, the corner-notch
+// ellipse) is really a claim about that N=2 special case, verified
+// bit-for-bit identical to this overload's own former standalone
+// implementation (see dino8-kernel's own regression tests). Kept as its
+// own overload purely for caller convenience/back-compat, not because it
+// does anything the N-station overload can't.
 Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius0,
                               double radius1);
+
+// PIECEWISE-LINEAR MULTI-STATION generalization of the two-radius
+// FilletConvexEdgeTapered above: rolls a ball whose radius r(t) is
+// piecewise-linear in arc length t along the edge, interpolating
+// `stations` (which must be sorted by strictly increasing `t`, with
+// `stations.front().t == 0` and `stations.back().t ==
+// edge_p0.DistanceTo(edge_p1)` - i.e. the profile spans the WHOLE edge,
+// exactly as the two-radius overload's implicit {0, L} pair always has)
+// instead of a single linear r(t) = radius0 + m*t.
+//
+// THE PER-SEGMENT MATH IS EXACTLY THE TWO-RADIUS OVERLOAD'S OWN
+// DERIVATION, RE-APPLIED VERBATIM TO EACH [stations[k].t,
+// stations[k+1].t] SUB-INTERVAL - nothing in that derivation (see above)
+// assumed the taper covered the WHOLE edge, only that r(t) is linear on
+// the interval considered, which every segment of a piecewise-linear
+// profile is by definition. Concretely: for segment k, re-origin locally
+// (seg_p0 = edge_p0 + stations[k].t*e, local length Lseg =
+// stations[k+1].t - stations[k].t, local radii (stations[k].radius,
+// stations[k+1].radius)) and apply that same construction - same apex/
+// axis/frame formulas, same true-radius/true-length/true-sweep-angle
+// closed forms - producing one genuine Brep::ConicalFace per segment
+// (dino8-kernel's own BuildTaperedConeSegment helper, fillet.cpp, is
+// this shared math, factored out and used by BOTH this overload and the
+// two-radius one above for exactly this reason). k_i/k_j (the two rail
+// direction vectors) do not depend on the segment, and r(t) is
+// continuous by the profile's own definition, so rail_i(t)/rail_j(t) =
+// edge_p0 + t*e + r(t)*k_i (or k_j) are GLOBALLY continuous piecewise-
+// linear curves across every station, independent of any join treatment
+// - confirmed directly (not merely asserted), including at every
+// interior station, by dino8-kernel's own regression tests.
+//
+// Faces i/j (the two original PLANAR faces sharing the edge) are
+// re-trimmed by replacing their own single shared edge (edge_p0 to
+// edge_p1) with the FULL piecewise rail_i(t)/rail_j(t) polyline through
+// EVERY station (not just the two outer endpoints): each station-to-
+// station sub-run of that polyline is an ordinary straight loop edge
+// that coincides exactly (to floating-point precision) with the matching
+// ConicalFace segment's own straight rail side, so it welds into the
+// SAME real ON_BrepEdge automatically, with no new topology machinery
+// needed beyond FromMixedFaces()'s own existing coincident-point vertex
+// welding - genuinely the same mechanism the two-radius overload's own
+// single straight re-trim already relies on, just applied once per
+// segment instead of once for the whole edge. (A real correction versus
+// an earlier draft of this feature's own design: a SINGLE half-space cut
+// across the whole edge, using only one segment's own tilted rail
+// direction, does NOT work once there is more than one segment - once
+// adjacent segments have different slopes, rail_i(t) genuinely BENDS at
+// each interior station, so no single plane contains the whole rail; the
+// per-station polyline splice above is the correct generalization, not a
+// simplification of it.)
+//
+// THE INTERIOR-STATION JOIN - the one genuinely new piece of geometry
+// this overload needs beyond "N independent segments side by side" - is
+// where two adjacent segments' own swept cone patches meet at a shared
+// interior station. The two rail corners there (rail_i(t)/rail_j(t) at
+// that station) are shared exactly, by the rail continuity above, but a
+// segment's own natural v1 (or v0) CAP CIRCLE is NOT, in general, the
+// same curve as its neighbor's - checked directly (not assumed), because
+// the cone's own axis direction u_hat genuinely differs between adjacent
+// segments whenever their slopes differ (the same reason this
+// construction is only C0, not C1, at an interior station - see below).
+// For a representative monotonic three-station profile, the two
+// segments' own natural caps at the shared station were measured to
+// diverge by a few percent of the local radius at mid-sweep - both
+// points independently confirmed to lie exactly on the SAME sphere (the
+// rolling ball's own position at that station), i.e. a real curve
+// separation, not sampling noise, and (unlike the corner-notch ellipse's
+// own sagitta error) one that does NOT shrink as the notch sampling gets
+// finer - a genuinely non-vanishing approximation, the first of its kind
+// in this kernel, honestly disclosed rather than silently tolerated (see
+// Brep::ConicalFace::cap0_surface_fit_tolerance/
+// cap1_surface_fit_tolerance's own doc comment for the bound this is
+// given, and dino8-kernel's own regression tests for the numeric fixture
+// this was measured against).
+//
+// The construction: treat the EARLIER segment's own natural cap circle
+// as canonical (an arbitrary but simple, principled choice - "the
+// earlier segment's own cap is authoritative") and give it verbatim to
+// the LATER segment's own cap0_notch_points, exactly mirroring
+// EllipseNotchCornerAtVertex's own "one face's true boundary curve
+// becomes a LITERAL shared boundary, not two independently-plausible
+// approximations of two different curves" principle (see that function's
+// own doc comment) - just borrowed from a NEIGHBORING CONE instead of
+// derived from a third PLANAR face's own cutting plane. Because the
+// borrowed points do not lie exactly on the later segment's own cone,
+// this also carries a genuinely computed cap0_surface_fit_tolerance (or
+// cap1_surface_fit_tolerance, for the earlier segment's own side, kept
+// honest for whichever ordering ends up owning the shared ON_BrepEdge's
+// own m_tolerance) instead of the near-zero bound every other notch in
+// this kernel gets.
+//
+// C0-BUT-NOT-C1 AT INTERIOR STATIONS, AND WHY THAT IS CORRECT: because
+// the cone's own axis direction genuinely rotates between adjacent
+// segments whenever their slopes differ, the swept surface has a REAL
+// tangent-plane discontinuity - a visible crease - at every interior
+// station where the taper rate changes. This is the expected, correct
+// behavior of a genuinely PIECEWISE-LINEAR (not spline) radius profile,
+// exactly matching what a real rolling ball does when its own radius
+// growth rate changes abruptly - not a defect of this construction, and
+// not something a smoother radius law would avoid without becoming a
+// genuinely different (non-piecewise-linear) profile, out of scope here
+// exactly as it already was for the two-radius overload above.
+//
+// CORNER-NOTCH: applied only at the two OUTER endpoints (edge_p0,
+// edge_p1), using only the FIRST segment's own cone parameters at
+// edge_p0 and only the LAST segment's own cone parameters at edge_p1 -
+// EllipseNotchCornerAtVertex itself needs no changes at all, since it
+// only ever needs ONE cone's own apex/axis/frame/sweep, the same
+// signature it already has. Interior stations get zero corner-notch
+// calls - they have no third face there at all (an interior station is
+// purely an internal seam between two ConicalFace segments, not a
+// vertex/vertex-adjacent-face boundary of `solid`).
+//
+// VALIDATION, checked directly rather than assumed safe: `stations` must
+// have at least 2 entries, start at t=0 and end at t=edge length (throws
+// std::invalid_argument otherwise), have strictly increasing `t` and
+// strictly positive `radius` throughout, and have radius MONOTONIC
+// across the WHOLE vector (non-decreasing or non-increasing throughout,
+// not merely consecutive-pair by consecutive-pair) - an interior local
+// radius extremum is rejected outright, not silently mishandled: it was
+// measured, during this feature's own development, to make the interior-
+// join divergence balloon well past the monotonic case's own already-
+// disclosed few-percent figure, and to flip the sign of the two
+// neighboring cones' own apex placement along the edge (an "hourglass"
+// pairing this construction does not attempt). For more than 2 stations,
+// two CONSECUTIVE stations whose radii differ by less than this
+// function's own radius tolerance are also rejected (a locally-flat sub-
+// segment would need a CylindricalFace, not a degenerate ConicalFace,
+// mixed into the middle of the run - a real, larger increment of its
+// own, out of scope here); the ONLY flat case this function supports is
+// the top-level `stations.size() == 2` profile with near-equal radii,
+// which dispatches straight to FilletConvexEdge exactly as the
+// two-radius overload's own m~=0 dispatch already does - a genuine,
+// deliberate special case kept OUTSIDE the general per-segment cone loop
+// (a flat single segment needs a CylindricalFace, which
+// Brep::FromMixedFaces explicitly rejects being built as a degenerate
+// ConicalFace instead), disclosed here rather than silently narrowed.
+//
+// Also matches every other scope note above: convex dihedral only
+// between exactly two PLANAR faces, every station's radius strictly
+// positive, `Brep::MixedFaces()` recovering each segment's own frame/
+// radius/length/angle exactly but NOT round-tripping either a corner-
+// notch's or an interior-join's own dense sample shape (same disclosed
+// limit `cap0_notch_points`/`cap1_notch_points` already carry, see that
+// field's own doc comment), and the fully general free-form (non-
+// piecewise-linear) radius law remaining out of scope.
+Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
+                              const std::vector<FilletRadiusStation>& stations);
 
 }  // namespace dino8::kernel

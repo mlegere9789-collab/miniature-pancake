@@ -7192,6 +7192,584 @@ void TestFilletConvexEdgeTaperedRejectsInvalidInput() {
   // this box's own scale is still correctly rejected above.
 }
 
+// ============================================================================
+// FilletConvexEdgeTapered's N-station overload (piecewise-linear
+// multi-station taper) - see fillet.h's own N-station doc comment for the
+// full derivation these tests independently verify: each segment is the
+// SAME per-segment cone construction the two-radius overload already
+// uses, re-applied to a sub-interval, and the interior-station join
+// splices the earlier segment's own true cap circle into the later
+// segment's own cap0 verbatim (a genuine, non-vanishing approximation on
+// the later segment's own side, honestly bounded via
+// cap0_surface_fit_tolerance).
+// ============================================================================
+
+namespace {
+
+// Hand re-derivation (independent of fillet.cpp's own internals - see
+// TestFilletConvexEdgeTaperedRailExactness's own "genuinely checks the
+// MATH" principle) of ONE segment's own cone construction, for the SAME
+// free-tube fixture (box(0,0,0,3,1,1), walls only, top-front edge:
+// n_i=(0,0,1), n_j=(0,-1,0), e=(1,0,0)) every multi-station test below
+// reuses.
+struct HandSegment {
+  dino8::kernel::Point3d apex;
+  dino8::kernel::Vector3d u_hat, xaxis, yaxis;
+  double radius0_true = 0.0, radius1_true = 0.0, length_true = 0.0, sweep_angle = 0.0, tan_half_angle = 0.0;
+};
+
+HandSegment HandBuildSegment(const dino8::kernel::Point3d& seg_p0, double Lseg, double r_lo, double r_hi) {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  const Vector3d n_i(0, 0, 1), n_j(0, -1, 0);
+  Vector3d e(1, 0, 0);
+  const double dot_ij = n_i * n_j;
+  Vector3d bis = n_i + n_j;
+  bis.Unitize();
+  const double cosb = bis * n_i;
+
+  HandSegment seg;
+  const double m = (r_hi - r_lo) / Lseg;
+  const double t_star = -r_lo / m;
+  seg.apex = seg_p0 + t_star * e;
+  const Vector3d U = e - bis * (m / cosb);
+  const double Umag = U.Length();
+  Vector3d u_hat = U;
+  u_hat.Unitize();
+  seg.u_hat = u_hat;
+  const double m_over_Umag = m / Umag;
+  const double c = std::sqrt(std::max(0.0, 1.0 - m_over_Umag * m_over_Umag));
+  double cos_sweep = (dot_ij - m_over_Umag * m_over_Umag) / (c * c);
+  cos_sweep = std::max(-1.0, std::min(1.0, cos_sweep));
+  seg.sweep_angle = std::acos(cos_sweep);
+  Vector3d xaxis = n_i - (n_i * u_hat) * u_hat;
+  xaxis.Unitize();
+  Vector3d yaxis = ON_CrossProduct(u_hat, xaxis);
+  yaxis.Unitize();
+  seg.xaxis = xaxis;
+  seg.yaxis = yaxis;
+  seg.radius0_true = r_lo * c;
+  seg.radius1_true = r_hi * c;
+  seg.length_true = Lseg * c * c * Umag;
+  seg.tan_half_angle = (seg.radius1_true - seg.radius0_true) / seg.length_true;
+  return seg;
+}
+
+dino8::kernel::Point3d HandCapPoint(const HandSegment& seg, bool at_v1, double phi) {
+  const double r = at_v1 ? seg.radius1_true : seg.radius0_true;
+  const double h = r / seg.tan_half_angle;
+  const dino8::kernel::Point3d center = seg.apex + h * seg.u_hat;
+  return center + r * (std::cos(phi) * seg.xaxis + std::sin(phi) * seg.yaxis);
+}
+
+}  // namespace
+
+// Verification item (1): rail exactness at BOTH outer endpoints AND at the
+// one interior station, for a genuine 3-station (2-segment) profile on the
+// SAME free-tube fixture TestFilletConvexEdgeTaperedRailExactness already
+// uses (no third/perpendicular end face anywhere near this edge, so the
+// corner-notch question is orthogonal to this test). Monotonic increasing
+// radii, two DIFFERENT slopes (0.15->0.25 over t=[0,1.2], 0.25->0.45 over
+// t=[1.2,3.0]) so the interior station genuinely exercises a taper-RATE
+// change, not a degenerate same-slope case.
+void TestFilletConvexEdgeTaperedMultiStationRailExactness() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::FilletRadiusStation;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 3, 1, 1);
+  const std::vector<Brep::PlanarFace> all_faces = box.PlanarFaces();
+  const std::vector<Brep::PlanarFace> walls = {all_faces[0], all_faces[1], all_faces[2], all_faces[3]};
+  const Brep tube = Brep::FromPlanarFaces(walls);
+  const Point3d edge_p0(0, 0, 1), edge_p1(3, 0, 1);
+
+  const std::vector<FilletRadiusStation> stations = {{0.0, 0.15}, {1.2, 0.25}, {3.0, 0.45}};
+  const Brep filleted = FilletConvexEdgeTapered(tube, edge_p0, edge_p1, stations);
+
+  Check(filleted.FaceCount() == 6,
+        "a 3-station (2-segment) tapered fillet of one free tube edge yields 6 faces (2 untouched + 2 "
+        "re-trimmed walls + 2 new conical fillet segments)");
+
+  // Global, piecewise-linear r(t) hand re-derivation - matching
+  // TestFilletConvexEdgeTaperedRailExactness's own hand formulas exactly,
+  // generalized to piecewise r(t).
+  auto r_of = [&](double t) {
+    if (t <= stations[1].t) {
+      return stations[0].radius + (stations[1].radius - stations[0].radius) / (stations[1].t - stations[0].t) *
+                                       (t - stations[0].t);
+    }
+    return stations[1].radius + (stations[2].radius - stations[1].radius) / (stations[2].t - stations[1].t) *
+                                     (t - stations[1].t);
+  };
+  auto rail_i = [&](double t) { return Point3d(edge_p0.x + t, r_of(t), 1.0); };
+  auto rail_j = [&](double t) { return Point3d(edge_p0.x + t, 0.0, 1.0 - r_of(t)); };
+  auto spine_c = [&](double t) { return Point3d(edge_p0.x + t, r_of(t), 1.0 - r_of(t)); };
+
+  const std::vector<double> sample_ts = {0.0, 1.2, 3.0};  // both outer endpoints AND the interior station
+  bool rails_exact = true;
+  for (double t : sample_ts) {
+    const Point3d ri = rail_i(t), rj = rail_j(t), c = spine_c(t);
+    const double r = r_of(t);
+    if (std::fabs(ri.z - 1.0) > 1e-9) rails_exact = false;
+    if (std::fabs(ri.DistanceTo(c) - r) > 1e-9) rails_exact = false;
+    if (std::fabs(rj.y - 0.0) > 1e-9) rails_exact = false;
+    if (std::fabs(rj.DistanceTo(c) - r) > 1e-9) rails_exact = false;
+  }
+  Check(rails_exact,
+        "hand-derived, globally piecewise-linear rail_i(t)/rail_j(t): at t=0 (outer), t=1.2 (INTERIOR "
+        "station), and t=3.0 (outer), every sampled point lies within 1e-9 of its own face's plane AND "
+        "at exactly r(t) from the spine C(t) - rail continuity holds across the interior station too");
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.conical.size() == 2, "MixedFaces() finds exactly the two conical fillet segments");
+  if (mf.conical.size() != 2) return;
+
+  // Identify which recovered ConicalFace is segment 0 (near t in [0,1.2])
+  // vs segment 1 (t in [1.2,3.0]) by its own frame.origin (apex) matching
+  // the hand-derived apex for each segment - not by array index, which
+  // FromMixedFaces()/MixedFaces() make no promise about.
+  const HandSegment hand0 = HandBuildSegment(edge_p0, 1.2, 0.15, 0.25);
+  const HandSegment hand1 = HandBuildSegment(edge_p0 + 1.2 * dino8::kernel::Vector3d(1, 0, 0), 1.8, 0.25, 0.45);
+  int idx0 = -1, idx1 = -1;
+  for (size_t k = 0; k < mf.conical.size(); ++k) {
+    if (mf.conical[k].frame.origin.DistanceTo(hand0.apex) < 1e-6) idx0 = static_cast<int>(k);
+    if (mf.conical[k].frame.origin.DistanceTo(hand1.apex) < 1e-6) idx1 = static_cast<int>(k);
+  }
+  Check(idx0 >= 0 && idx1 >= 0 && idx0 != idx1,
+        "both recovered conical segments' own apexes exactly match the hand-derived per-segment apex "
+        "formula (same construction the two-radius overload's own single segment already uses, "
+        "re-applied per sub-interval)");
+  if (idx0 < 0 || idx1 < 0) return;
+
+  const Brep::ConicalFace& cf0 = mf.conical[static_cast<size_t>(idx0)];
+  const Brep::ConicalFace& cf1 = mf.conical[static_cast<size_t>(idx1)];
+  Check(std::fabs(cf0.radius0 - hand0.radius0_true) < 1e-9 && std::fabs(cf0.radius1 - hand0.radius1_true) < 1e-9 &&
+            std::fabs(cf0.length - hand0.length_true) < 1e-9 && std::fabs(cf0.angle - hand0.sweep_angle) < 1e-9,
+        "segment 0's own recovered radius0/radius1/length/angle exactly match the hand-derived values");
+  Check(std::fabs(cf1.radius0 - hand1.radius0_true) < 1e-9 && std::fabs(cf1.radius1 - hand1.radius1_true) < 1e-9 &&
+            std::fabs(cf1.length - hand1.length_true) < 1e-9 && std::fabs(cf1.angle - hand1.sweep_angle) < 1e-9,
+        "segment 1's own recovered radius0/radius1/length/angle exactly match the hand-derived values "
+        "(item 7 of this feature's own test plan: MixedFaces() round-trips a piecewise segment's own "
+        "frame/radius/length/angle exactly, including at an interior-join-notched cap)");
+}
+
+// Verification item (2): the interior-station join genuinely gives the two
+// adjacent segments a LITERAL shared boundary - segment 0's own true v1
+// cap circle, spliced verbatim into segment 1's own cap0, sharing one
+// literal ON_BrepEdge - not two independently-plausible approximations.
+//
+// Verified via the RAW topology directly (raw().m_E), not via a coarse
+// Tessellate()-produced mesh: a grid-clipped tessellation's own vertex set
+// is an independent rendering decision (see NurbsSurface::
+// TessellateGridClippedExact) that is NOT contractually required to
+// reproduce every single trim-polygon vertex verbatim for a CURVED face
+// the way it does for a flat one - confirmed directly during this
+// feature's own development (a mesh-vertex-based version of this check
+// intermittently failed on segment 0's own coarse mesh even though the
+// underlying topology, checked as below, was genuinely correct) - so the
+// real, falsifiable claim (one shared ON_BrepEdge, used by both faces,
+// carrying segment 0's own exact sample points) is checked at the level
+// this construction actually guarantees it at.
+void TestFilletConvexEdgeTaperedMultiStationInteriorJoinSharedPoints() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::FilletRadiusStation;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 3, 1, 1);
+  const std::vector<Brep::PlanarFace> all_faces = box.PlanarFaces();
+  const std::vector<Brep::PlanarFace> walls = {all_faces[0], all_faces[1], all_faces[2], all_faces[3]};
+  const Brep tube = Brep::FromPlanarFaces(walls);
+  const Point3d edge_p0(0, 0, 1), edge_p1(3, 0, 1);
+
+  const std::vector<FilletRadiusStation> stations = {{0.0, 0.15}, {1.2, 0.25}, {3.0, 0.45}};
+  const Brep filleted = FilletConvexEdgeTapered(tube, edge_p0, edge_p1, stations);
+
+  const HandSegment hand0 = HandBuildSegment(edge_p0, 1.2, 0.15, 0.25);
+  const HandSegment hand1 = HandBuildSegment(edge_p0 + 1.2 * dino8::kernel::Vector3d(1, 0, 0), 1.8, 0.25, 0.45);
+
+  const ON_Brep& raw = filleted.raw();
+
+  // Find the interior-join edge: the ONE edge whose own C3 curve is an
+  // ON_PolylineCurve (every other edge this construction builds - the
+  // straight rails, and any plain analytic cap isocurve - is not).
+  int join_edge = -1;
+  for (int e = 0; e < raw.m_E.Count(); ++e) {
+    if (ON_PolylineCurve::Cast(raw.m_E[e].EdgeCurveOf()) != nullptr) {
+      join_edge = e;
+      break;
+    }
+  }
+  Check(join_edge >= 0, "the interior-station join produces exactly one polyline-curve edge (no other "
+                        "edge in this construction is ever a polyline)");
+  if (join_edge < 0) return;
+  const ON_BrepEdge& edge = raw.m_E[join_edge];
+
+  Check(edge.m_ti.Count() == 2,
+        "the interior-join edge is shared by EXACTLY 2 trims - a genuine shared boundary between "
+        "segment 0's own cone and segment 1's own cone, not a free (unshared) boundary curve");
+
+  // Both faces that use this edge must be the two conical segments (not a
+  // planar face) - confirming this is genuinely the cone-to-cone seam, not
+  // some other polyline this construction might build.
+  bool both_faces_conical = edge.m_ti.Count() == 2;
+  for (int ti = 0; ti < edge.m_ti.Count(); ++ti) {
+    const int face_idx = raw.m_L[raw.m_T[edge.m_ti[ti]].m_li].m_fi;
+    ON_Plane p;
+    if (raw.m_F[face_idx].SurfaceOf()->IsPlanar(&p, 1e-6)) both_faces_conical = false;
+  }
+  Check(both_faces_conical, "the interior-join edge's own two faces are both non-planar (conical) - it "
+                            "is genuinely the cone-to-cone seam, not e.g. a planar face's own rail");
+
+  // The polyline's own literal 3D points must match segment 0's own true
+  // v1 cap circle (re-derived from scratch above) - both endpoints AND
+  // the interior sample points - confirming this shared edge really does
+  // carry segment 0's own exact geometry (not an interpolation, not
+  // segment 1's own natural circle, not some other approximation).
+  const ON_PolylineCurve* poly = ON_PolylineCurve::Cast(edge.EdgeCurveOf());
+  const int n_pts = poly->PointCount();
+  Check(n_pts >= 21, "the shared edge's own polyline has a genuinely dense sample count (kNotchSamples "
+                     "+ 1, not just the 2 rail corners)");
+
+  bool matches_hand0 = true;
+  // The polyline's own point order need not match hand0's own increasing-
+  // phi order (it may run either rail_i->rail_j or the reverse depending
+  // on which corner this edge's own m_vi[0] happens to be) - detect the
+  // direction from the FIRST point, then check every 5th sample either
+  // way, matching TestFilletConvexEdgeTaperedClosesCornerNotch's own
+  // "land exactly on production's own dense sample points" technique.
+  const ON_3dPoint front3d = poly->m_pline[0];
+  const Point3d front(front3d.x, front3d.y, front3d.z);
+  const bool forward = front.DistanceTo(HandCapPoint(hand0, /*at_v1=*/true, 0.0)) < 1e-6;
+  const bool backward = front.DistanceTo(HandCapPoint(hand0, /*at_v1=*/true, hand0.sweep_angle)) < 1e-6;
+  Check(forward || backward,
+        "the shared edge's own first point exactly matches one of segment 0's own two rail corners "
+        "(phi=0 or phi=sweep_angle) - the required rail-corner anchor for this construction");
+  if (forward || backward) {
+    for (int s = 0; s <= 20; ++s) {
+      const int idx = forward ? (s * (n_pts - 1)) / 20 : (n_pts - 1) - (s * (n_pts - 1)) / 20;
+      const ON_3dPoint p3d = poly->m_pline[idx];
+      const Point3d p(p3d.x, p3d.y, p3d.z);
+      const double phi = hand0.sweep_angle * static_cast<double>(s) / 20.0;
+      const Point3d hand_p = HandCapPoint(hand0, /*at_v1=*/true, phi);
+      if (p.DistanceTo(hand_p) > 1e-6) matches_hand0 = false;
+    }
+  }
+  Check(matches_hand0,
+        "the shared edge's own literal 3D points exactly match segment 0's own independently "
+        "re-derived true v1 cap circle at 21 sample angles - a genuine LITERAL shared boundary curve "
+        "carrying segment 0's own exact geometry, not an independently-plausible approximation");
+
+  // Falsifiable negative control: segment 1's own NATURAL (un-notched) v0
+  // cap circle - built from segment 1's OWN frame, not segment 0's - is a
+  // genuinely DIFFERENT curve (fillet.h's own doc comment: the two
+  // segments' natural caps diverge at mid-sweep). Confirms the match above
+  // is a real, falsifiable proof of splicing, not a coincidence of two
+  // curves that were already nearly identical.
+  const Point3d native1_mid = HandCapPoint(hand1, /*at_v1=*/false, hand1.sweep_angle * 0.5);
+  const Point3d shared_mid = HandCapPoint(hand0, /*at_v1=*/true, hand0.sweep_angle * 0.5);
+  Check(shared_mid.DistanceTo(native1_mid) > 1e-4,
+        "sanity check: segment 1's own NATURAL (un-notched) v0 mid-sweep point genuinely differs from "
+        "segment 0's own v1 mid-sweep point by more than a rounding-sized amount - confirming the "
+        "shared-edge match above is a real, falsifiable proof of splicing, not a coincidence of two "
+        "curves that were already nearly identical");
+}
+
+// Verification item (3): closed-form piecewise frustum-sector volume,
+// summing TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula's
+// own per-segment formula over both segments, each with THAT segment's own
+// radius0/radius1/length/angle (which genuinely differ segment to segment,
+// per the different slopes). Each segment is closed into its OWN
+// independent, self-contained frustum-of-a-cone-sector test solid - the
+// EXACT SAME proven construction the single-segment test already uses,
+// just applied twice and summed - rather than one combined solid sharing
+// a wall at the interior station: the two segments' own cone AXES are, in
+// general, two DIFFERENT lines (confirmed directly: for this fixture they
+// pass within ~0.007 of each other near the interior station but do NOT
+// coincide), so a single "radial wall" spanning both segments would not
+// be planar and is not attempted here - each segment's own volume is
+// independently exact and provably additive (the two solids' shared
+// material boundary, the interior-station join itself, contributes zero
+// volume either way it's cut).
+void TestFilletConvexEdgeTaperedMultiStationClosedFormVolumeMatchesFrustumFormula() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::FilletRadiusStation;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 3, 1, 1);
+  const std::vector<Brep::PlanarFace> all_faces = box.PlanarFaces();
+  const std::vector<Brep::PlanarFace> walls = {all_faces[0], all_faces[1], all_faces[2], all_faces[3]};
+  const Brep tube = Brep::FromPlanarFaces(walls);
+  const Point3d edge_p0(0, 0, 1), edge_p1(3, 0, 1);
+
+  const std::vector<FilletRadiusStation> stations = {{0.0, 0.15}, {1.2, 0.25}, {3.0, 0.45}};
+  const Brep filleted = FilletConvexEdgeTapered(tube, edge_p0, edge_p1, stations);
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.conical.size() == 2, "MixedFaces() finds exactly the two conical fillet segments (volume test)");
+  if (mf.conical.size() != 2) return;
+
+  double closed_form_volume = 0.0;
+  for (const Brep::ConicalFace& cf : mf.conical) {
+    closed_form_volume += (cf.angle / 6.0) * cf.length * (cf.radius0 * cf.radius0 + cf.radius0 * cf.radius1 +
+                                                            cf.radius1 * cf.radius1);
+  }
+  Check(closed_form_volume > 0.0, "sanity check: the summed closed-form piecewise frustum-sector volume is positive");
+
+  auto cone_pt = [](const Brep::ConicalFace& cf, double v, double phi) {
+    const double tan_half = (cf.radius1 - cf.radius0) / cf.length;
+    const double rho = tan_half * v;
+    return cf.frame.origin + v * cf.frame.zaxis + rho * (std::cos(phi) * cf.frame.xaxis + std::sin(phi) * cf.frame.yaxis);
+  };
+  auto newell = [](const std::vector<Point3d>& loop) {
+    ON_3dVector n(0, 0, 0);
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const Point3d& p = loop[i];
+      const Point3d& q = loop[(i + 1) % loop.size()];
+      n.x += (p.y - q.y) * (p.z + q.z);
+      n.y += (p.z - q.z) * (p.x + q.x);
+      n.z += (p.x - q.x) * (p.y + q.y);
+    }
+    n.Unitize();
+    return n;
+  };
+  auto make_face = [&](std::vector<Point3d> loop) {
+    Brep::PlanarFace f;
+    f.plane = ON_Plane(loop[0], newell(loop));
+    f.loop = std::move(loop);
+    return f;
+  };
+
+  // Per-segment, self-contained frustum-of-a-cone-sector test solid -
+  // identical construction to
+  // TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula's own
+  // single-segment version.
+  constexpr int kCapSamples = 1000;
+  double measured_volume_sum = 0.0;
+  for (const Brep::ConicalFace& cf : mf.conical) {
+    const double tan_half = (cf.radius1 - cf.radius0) / cf.length;
+    const double v0 = cf.radius0 / tan_half;
+    const double v1 = v0 + cf.length;
+    const Point3d axis0 = cf.frame.origin + v0 * cf.frame.zaxis;
+    const Point3d axis1 = cf.frame.origin + v1 * cf.frame.zaxis;
+    const Point3d rail_i0 = cone_pt(cf, v0, 0.0), rail_i1 = cone_pt(cf, v1, 0.0);
+    const Point3d rail_j0 = cone_pt(cf, v0, cf.angle), rail_j1 = cone_pt(cf, v1, cf.angle);
+
+    std::vector<Point3d> v0cap_loop;
+    v0cap_loop.reserve(kCapSamples + 2);
+    v0cap_loop.push_back(axis0);
+    for (int s = 0; s <= kCapSamples; ++s) {
+      const double phi = cf.angle * (1.0 - static_cast<double>(s) / kCapSamples);
+      v0cap_loop.push_back(cone_pt(cf, v0, phi));
+    }
+    std::vector<Point3d> v1cap_loop;
+    v1cap_loop.reserve(kCapSamples + 2);
+    v1cap_loop.push_back(axis1);
+    for (int s = 0; s <= kCapSamples; ++s) {
+      const double phi = cf.angle * static_cast<double>(s) / kCapSamples;
+      v1cap_loop.push_back(cone_pt(cf, v1, phi));
+    }
+    const std::vector<Point3d> wall_i_loop = {axis0, rail_i0, rail_i1, axis1};
+    const std::vector<Point3d> wall_j_loop = {axis0, axis1, rail_j1, rail_j0};
+
+    Brep::ConicalFace cf_copy = cf;
+    const Brep test_solid = Brep::FromMixedFaces(
+        {make_face(v0cap_loop), make_face(v1cap_loop), make_face(wall_i_loop), make_face(wall_j_loop)}, {},
+        {cf_copy});
+    measured_volume_sum += std::fabs(test_solid.TessellateToClosedMeshAdaptive(1e-8).Volume());
+  }
+
+  Check(std::fabs(measured_volume_sum - closed_form_volume) < 1e-5 * closed_form_volume,
+        "the SUM of each segment's own independently-tessellated, self-contained frustum-of-a-"
+        "cone-sector test solid matches the SUM of each segment's own closed-form "
+        "(angle/6)*length*(r0^2+r0*r1+r1^2) - the same ~1e-5-relative bar the single-segment test "
+        "achieves, confirming each of the two DIFFERENT-slope segments' own cone patch is exactly "
+        "what its own radius0/radius1/length/angle claims");
+}
+
+// Verification item (4): IsClosedManifold()/IsSolid() for a full,
+// multi-station, CLOSED result (unlike the free-tube fixture above, this
+// uses a closed unit box so both corner-notches AND the interior-station
+// join are exercised together in one watertight solid).
+void TestFilletConvexEdgeTaperedMultiStationIsClosedManifoldAndSolid() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::FilletRadiusStation;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const std::vector<FilletRadiusStation> stations = {{0.0, 0.10}, {0.4, 0.15}, {1.0, 0.22}};
+  const Brep filleted = FilletConvexEdgeTapered(box, edge_p0, edge_p1, stations);
+
+  ON_TextLog log;
+  Check(filleted.raw().IsValid(&log), "the multi-station tapered-filleted closed box passes ON_Brep::IsValid()");
+  bool oriented = false, has_boundary = true;
+  Check(filleted.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary,
+        "the multi-station tapered-filleted closed box is a genuinely oriented, CLOSED (has_boundary "
+        "== false) 2-manifold - at BOTH outer corner-notches AND the interior-station join");
+  Check(filleted.raw().IsSolid(),
+        "the multi-station tapered-filleted closed box reports IsSolid() == true - a real, closed, "
+        "watertight solid, not merely IsValid()");
+
+  const double vol = filleted.TessellateToClosedMeshAdaptive(1e-6).Volume();
+  Check(vol > 0.5 && vol < 1.0,
+        "sanity check: the filleted box's own volume is a plausible number between 0 (degenerate) and "
+        "1 (the original unit box, before any material was removed by the fillet)");
+}
+
+// Verification item (5): dispatch/degenerate-case bit-identity - the SAME
+// fillet built via the N-station overload with exactly 2 stations and via
+// the two-radius overload directly produce BIT-IDENTICAL Breps (fillet.h's
+// own "the two-radius overload is a thin wrapper" design, not a
+// numerically-close parallel path).
+void TestFilletConvexEdgeTaperedTwoStationDispatchIsBitIdenticalToTwoRadiusOverload() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::FilletRadiusStation;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const double radius0 = 0.15, radius1 = 0.35;
+  const double L = edge_p0.DistanceTo(edge_p1);
+
+  const Brep via_stations =
+      FilletConvexEdgeTapered(box, edge_p0, edge_p1, std::vector<FilletRadiusStation>{{0.0, radius0}, {L, radius1}});
+  const Brep via_two_radius = FilletConvexEdgeTapered(box, edge_p0, edge_p1, radius0, radius1);
+
+  const ON_Brep& a = via_stations.raw();
+  const ON_Brep& b = via_two_radius.raw();
+  Check(a.m_S.Count() == b.m_S.Count() && a.m_F.Count() == b.m_F.Count() && a.m_V.Count() == b.m_V.Count() &&
+            a.m_E.Count() == b.m_E.Count(),
+        "calling the N-station overload with exactly 2 stations and calling the two-radius overload "
+        "directly produce Breps with identical raw topology counts");
+
+  bool all_vertices_match = a.m_V.Count() == b.m_V.Count();
+  for (int i = 0; all_vertices_match && i < a.m_V.Count(); ++i) {
+    if (a.m_V[i].point.DistanceTo(b.m_V[i].point) > 0.0) all_vertices_match = false;
+  }
+  Check(all_vertices_match,
+        "every welded vertex point is BIT-FOR-BIT identical (DistanceTo == 0.0 exactly) between the "
+        "two call forms - proof the two-radius overload is a genuine thin wrapper around the "
+        "N-station overload (fillet.h's own design), not a separate parallel implementation");
+
+  const double vol_a = via_stations.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  const double vol_b = via_two_radius.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  Check(std::fabs(vol_a - vol_b) < 1e-12, "the two tessellated volumes also match to full floating-point precision");
+}
+
+// Verification item (6): the interior-station join's own surface-fit
+// deviation (Brep::ConicalFace::cap0_surface_fit_tolerance's own doc
+// comment) is a genuine, POSITIVE, NON-VANISHING quantity - it does not
+// shrink toward 0 as the notch's own sampling gets finer, unlike every
+// other notch tolerance in this kernel. Verified independently (not tied
+// to fillet.cpp's own kNotchSamples constant): computes the same radial
+// deviation formula BuildMultiStationTaperedFillet uses, from scratch,
+// at two very different sample counts, and confirms both give
+// essentially the SAME nonzero answer (converging to a positive constant,
+// not to 0).
+void TestFilletConvexEdgeTaperedMultiStationInteriorJoinToleranceDoesNotVanish() {
+  const HandSegment hand0 = HandBuildSegment(dino8::kernel::Point3d(0, 0, 1), 1.2, 0.15, 0.25);
+  const HandSegment hand1 =
+      HandBuildSegment(dino8::kernel::Point3d(0, 0, 1) + 1.2 * dino8::kernel::Vector3d(1, 0, 0), 1.8, 0.25, 0.45);
+
+  auto max_deviation_at_sampling = [&](int samples) {
+    const dino8::kernel::Point3d center0 = hand0.apex + (hand0.radius1_true / hand0.tan_half_angle) * hand0.u_hat;
+    double max_dev = 0.0;
+    for (int s = 0; s <= samples; ++s) {
+      const double phi = hand0.sweep_angle * static_cast<double>(s) / samples;
+      const dino8::kernel::Point3d p =
+          center0 + hand0.radius1_true * (std::cos(phi) * hand0.xaxis + std::sin(phi) * hand0.yaxis);
+      const dino8::kernel::Vector3d d = p - hand1.apex;
+      const double height = d * hand1.u_hat;
+      const double x = d * hand1.xaxis, y = d * hand1.yaxis;
+      const double true_radius = hand1.tan_half_angle * height;
+      const double actual_radial = std::sqrt(x * x + y * y);
+      max_dev = std::max(max_dev, std::fabs(actual_radial - true_radius));
+    }
+    return max_dev;
+  };
+
+  const double dev_200 = max_deviation_at_sampling(200);   // production's own kNotchSamples
+  const double dev_2000 = max_deviation_at_sampling(2000);  // 10x finer
+  const double dev_20000 = max_deviation_at_sampling(20000);  // 100x finer
+
+  // 1e-6 is chosen well above this construction's own ordinary
+  // discretization sagitta at kNotchSamples=200 for a circle this size
+  // (~5e-7, from the standard r*(dtheta^2)/8 sagitta estimate for a
+  // ~0.25-radius circle sampled every ~0.004 rad) - so a deviation this
+  // fixture actually measures (~1.6e-5, roughly 30x that sagitta floor)
+  // clears it comfortably while still being a real, checked bound rather
+  // than an arbitrarily large threshold.
+  Check(dev_200 > 1e-6,
+        "the interior-station join's own surface-fit deviation is genuinely non-tiny at production's "
+        "own sampling density - well above this construction's own ordinary discretization-sagitta "
+        "noise floor, not a rounding artifact");
+  Check(std::fabs(dev_2000 - dev_200) < 0.05 * dev_200 && std::fabs(dev_20000 - dev_200) < 0.05 * dev_200,
+        "increasing the sampling density 10x and 100x changes this measured deviation by less than 5% "
+        "- it converges to a POSITIVE CONSTANT as sampling gets finer, not to 0, confirming this is a "
+        "genuine, non-vanishing geometric approximation (an algebraic curve separation), unlike every "
+        "other, discretization-only notch tolerance in this kernel");
+}
+
+// Verification item (8): rejections for a malformed `stations` vector -
+// each must throw std::invalid_argument with the specific documented
+// reason, matching this kernel's own established error-contract testing
+// style.
+void TestFilletConvexEdgeTaperedMultiStationRejectsInvalidStations() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::FilletRadiusStation;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+
+  auto expect_throw = [&](const std::vector<FilletRadiusStation>& stations, const char* what) {
+    bool threw = false;
+    try {
+      FilletConvexEdgeTapered(box, edge_p0, edge_p1, stations);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, what);
+  };
+
+  // (a) non-monotonic profile (interior local max).
+  expect_throw({{0.0, 0.10}, {0.5, 0.30}, {1.0, 0.15}},
+               "FilletConvexEdgeTapered(stations) rejects a non-monotonic profile (interior radius max)");
+  // (b) fewer than 2 stations.
+  expect_throw({{0.0, 0.10}}, "FilletConvexEdgeTapered(stations) rejects fewer than 2 stations");
+  // (c) non-increasing t values.
+  expect_throw({{0.0, 0.10}, {0.5, 0.20}, {0.3, 0.30}},
+               "FilletConvexEdgeTapered(stations) rejects non-increasing t values");
+  // (d) a station with radius <= 0.
+  expect_throw({{0.0, 0.10}, {0.5, 0.0}, {1.0, 0.20}},
+               "FilletConvexEdgeTapered(stations) rejects a station with radius <= 0");
+  // (e) two consecutive stations with (near-)equal radius inside a
+  // >2-station profile (the locally-flat-sub-segment gap).
+  expect_throw({{0.0, 0.10}, {0.5, 0.10}, {1.0, 0.20}},
+               "FilletConvexEdgeTapered(stations) rejects two consecutive (near-)equal-radius stations "
+               "inside a >2-station profile (would need a CylindricalFace mixed into the run, out of "
+               "scope - see this function's own doc comment)");
+
+  // Sanity check: the SAME near-equal-radius case at the TOP level (only
+  // 2 stations) is explicitly ALLOWED - it dispatches to FilletConvexEdge,
+  // exactly like the two-radius overload's own m~=0 dispatch.
+  bool flat_two_station_threw = false;
+  try {
+    FilletConvexEdgeTapered(box, edge_p0, edge_p1, std::vector<FilletRadiusStation>{{0.0, 0.10}, {1.0, 0.10}});
+  } catch (const std::invalid_argument&) {
+    flat_two_station_threw = true;
+  }
+  Check(!flat_two_station_threw,
+        "a top-level 2-station profile with near-equal radii is explicitly ALLOWED (dispatches to "
+        "FilletConvexEdge) - the locally-flat rejection above applies only inside a >2-station profile");
+}
+
 // Brep::MixedFaces() is the direct inverse of Brep::FromMixedFaces() - this
 // builds a one-face cylindrical Brep with a deliberately "awkward" frame
 // (non-axis-aligned xaxis, a non-zero origin, a partial sweep that does NOT
@@ -11388,6 +11966,13 @@ int main() {
   TestFilletConvexEdgeTaperedClosesCornerNotch();
   TestFilletConvexEdgeTaperedCornerNotchDefectVolumeIsSmall();
   TestFilletConvexEdgeTaperedRejectsInvalidInput();
+  TestFilletConvexEdgeTaperedMultiStationRailExactness();
+  TestFilletConvexEdgeTaperedMultiStationInteriorJoinSharedPoints();
+  TestFilletConvexEdgeTaperedMultiStationClosedFormVolumeMatchesFrustumFormula();
+  TestFilletConvexEdgeTaperedMultiStationIsClosedManifoldAndSolid();
+  TestFilletConvexEdgeTaperedTwoStationDispatchIsBitIdenticalToTwoRadiusOverload();
+  TestFilletConvexEdgeTaperedMultiStationInteriorJoinToleranceDoesNotVanish();
+  TestFilletConvexEdgeTaperedMultiStationRejectsInvalidStations();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
   TestShellConvexPlanarResultHasValidTopology();

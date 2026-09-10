@@ -629,6 +629,48 @@ class Brep {
     // field is empty.
     double cap0_notch_tolerance = 0.0;
     double cap1_notch_tolerance = 0.0;
+
+    // Extends the guarantee cap0_notch_points/cap1_notch_points normally
+    // make (every listed point lies within notch_uv()'s own near-zero
+    // on-surface check, brep.cpp, of THIS cone's own real surface) for
+    // exactly one further, honestly-disclosed provenance:
+    // FilletConvexEdgeTapered's own N-station overload (fillet.h) splices
+    // an INTERIOR station join between two adjacent taper segments by
+    // giving the later segment's cap0_notch_points the EARLIER segment's
+    // own true v1 circle, borrowed verbatim rather than derived from this
+    // cone's own geometry. Two cones meeting where the taper RATE changes
+    // do not, in general, share a literal circle beyond their two common
+    // rail corners - verified directly (fillet.cpp's own interior-join
+    // construction, and dino8-kernel's own regression tests), not
+    // assumed: for a representative monotonic three-station profile the
+    // two segments' own natural caps at the shared station diverge by a
+    // few percent of the local radius at mid-sweep, both points measured
+    // on the SAME sphere (the rolling ball's own position at that
+    // station) - i.e. a real curve separation, not sampling noise, and it
+    // does NOT shrink as the notch sampling gets finer (unlike every
+    // other notch tolerance in this kernel).
+    //
+    // Setting this above the ordinary near-zero on-surface bound tells
+    // FromMixedFaces()'s own notch_uv() check to accept up to THIS
+    // genuinely computed (not guessed) worst-case radial deviation
+    // between the borrowed points and this cone's own true surface
+    // instead of throwing. Left at its default 0.0 for every OTHER
+    // ConicalFace this kernel ever builds - in particular every
+    // corner-notch call (EllipseNotchCornerAtVertex never sets it: its
+    // own points DO lie exactly on this cone, by construction of its
+    // closed form, so the tight default stays the active bound there,
+    // unchanged) and every non-notched cap.
+    //
+    // A real, structural difference from cap0_notch_tolerance/
+    // cap1_notch_tolerance above: those bound a polygonal approximation's
+    // deviation from a curve that DOES lie exactly on this surface; this
+    // bounds this surface's own deviation from a curve that, at an
+    // interior taper station, provably does NOT - the first tolerance in
+    // this kernel that does not shrink to zero as sampling gets finer,
+    // documented as such rather than treated as a defect. See fillet.h's
+    // own multi-station doc comment for the full derivation.
+    double cap0_surface_fit_tolerance = 0.0;
+    double cap1_surface_fit_tolerance = 0.0;
   };
 
   // The general sibling of PlanarFaces() that also recognizes a

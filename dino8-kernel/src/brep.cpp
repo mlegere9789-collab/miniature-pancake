@@ -1251,15 +1251,40 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     // surface, don't trust an independently-reconstructed parameter"
     // principle MixedFaces()'s own cylinder/cone recovery already uses,
     // applied here in the forward (build) direction instead.
-    auto notch_uv = [&](const std::vector<Point3d>& pts3d) {
+    auto notch_uv = [&](const std::vector<Point3d>& pts3d, double surface_fit_tol) {
       std::vector<Point2d> uv;
       uv.reserve(pts3d.size());
-      for (const Point3d& p : pts3d) {
+      for (size_t i = 0; i < pts3d.size(); ++i) {
+        const Point3d& p = pts3d[i];
         const Vector3d d = p - cf.frame.origin;
         const double height = d * cf.frame.zaxis;
         const double x = d * cf.frame.xaxis, y = d * cf.frame.yaxis;
-        double phi = std::atan2(y, x);
-        if (phi < 0.0) phi += 2.0 * ON_PI;
+        // The first and last points of a notch sample list are REQUIRED
+        // (cap0_notch_points/cap1_notch_points' own documented contract)
+        // to sit at angle exactly 0 and exactly cf.angle respectively -
+        // forced here directly rather than re-derived via atan2, exactly
+        // mirroring CylindricalFace's own notch_uv fix above (see its own
+        // comment for the full, checked-directly reason): atan2 cannot
+        // distinguish "angle 0" from "angle 2*pi" at all, and floating-
+        // point rounding at that exact boundary (y coming out as a tiny
+        // negative number instead of exactly 0.0 - a real, observed
+        // failure mode for a notch point that sits exactly ON this cone's
+        // own xaxis, e.g. a multi-station interior-join's own borrowed
+        // v1 circle sample at phi=0, not merely a theoretical corner
+        // case) can wrap the FIRST point to just-under-2*pi instead of 0,
+        // corrupting this cap's own visible-trim winding into a
+        // self-intersecting polygon. Every INTERIOR point still uses the
+        // genuine atan2-recovered angle, since those have no such
+        // contractual anchor.
+        double phi;
+        if (i == 0) {
+          phi = 0.0;
+        } else if (i + 1 == pts3d.size()) {
+          phi = cf.angle;
+        } else {
+          phi = std::atan2(y, x);
+          if (phi < 0.0) phi += 2.0 * ON_PI;
+        }
         double u = 0.0;
         if (!u_ref_circle.GetNurbFormParameterFromRadian(phi, &u)) {
           throw std::runtime_error(
@@ -1269,9 +1294,15 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
         }
         // Checked invariant, not merely trusted: this (u, height) point,
         // evaluated back through the REAL surface, must reproduce the
-        // same 3D point this whole notch is built from.
+        // same 3D point this whole notch is built from - within the
+        // ordinary near-zero bound for every notch this kernel has ever
+        // built before (see ConicalFace::cap0_surface_fit_tolerance/
+        // cap1_surface_fit_tolerance's own doc comment), or within that
+        // genuinely computed, larger, non-shrinking bound for exactly the
+        // one new provenance (an interior taper-station join) that field
+        // exists for.
         const Point3d check = surface->PointAt(u, height);
-        const double tol = std::max(1e-6, (cf.radius0 + cf.radius1) * 1e-6);
+        const double tol = std::max({1e-6, (cf.radius0 + cf.radius1) * 1e-6, surface_fit_tol});
         if (check.DistanceTo(p) > tol) {
           throw std::runtime_error(
               "dino8::kernel::Brep::FromMixedFaces: a ConicalFace's own cap "
@@ -1301,7 +1332,7 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
             "own first/last points must exactly match this face's own two rail "
             "corners at v0 (angle 0 and angle `angle` respectively)");
       }
-      cap0_full_uv = notch_uv(cf.cap0_notch_points);
+      cap0_full_uv = notch_uv(cf.cap0_notch_points, cf.cap0_surface_fit_tolerance);
       cap0_interior_uv.assign(cap0_full_uv.begin() + 1, cap0_full_uv.end() - 1);
       cap0_tol = cf.cap0_notch_tolerance;
     }
@@ -1318,7 +1349,7 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
             "own first/last points must exactly match this face's own two rail "
             "corners at v1 (angle 0 and angle `angle` respectively)");
       }
-      const std::vector<Point2d> full_uv = notch_uv(cf.cap1_notch_points);
+      const std::vector<Point2d> full_uv = notch_uv(cf.cap1_notch_points, cf.cap1_surface_fit_tolerance);
       // Segment index 2 walks u_max->0 (j->i, decreasing angle) - the
       // REVERSE of cap1_notch_points' own fixed i->j convention (see that
       // field's own doc comment) - so both the topology-only interior list
