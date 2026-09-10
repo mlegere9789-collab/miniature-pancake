@@ -6860,6 +6860,283 @@ void TestBooleanCombineMixedDrilledBoxCoincidentCapHeight() {
         "coincident-cap-height (no-overhang) drilled box's volume also matches 1000-40*pi to within 0.1");
 }
 
+// FromPlanarFaces()/FromMixedFaces() now build genuine ON_Brep
+// vertex/edge/trim/loop topology (coincident-point-welded shared
+// vertices, one real edge per distinct shared boundary reused - never a
+// third time - by whichever second face also walks it, one outer
+// loop/trim per face) instead of the minimal NewFace(surface_index)-only
+// path Box()/Sphere()/FromSurface()/TrimmedPlanarFace() still use (see
+// brep.h's own doc comment for exactly which factories do which). This is
+// what closes the gap TestBrepLacksFullOpenNurbsTopologyButStillUsable
+// documents for Box() itself - that test stays true and unchanged for
+// Box(), since Box() itself is untouched; THIS test is the new,
+// complementary fact for the two factories that changed.
+void TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology() {
+  using dino8::kernel::Brep;
+
+  const Brep box = Brep::FromPlanarFaces(Brep::Box(0, 0, 0, 2, 3, 4).PlanarFaces());
+  Check(box.FaceCount() == 6, "the rebuilt box still has 6 faces");
+
+  ON_TextLog log;
+  Check(box.raw().IsValid(&log),
+        "Brep::FromPlanarFaces()'s own box genuinely passes ON_Brep::IsValid() - real "
+        "vertex/edge/trim/loop topology, not just a shape this kernel's own pipeline can use");
+
+  bool is_oriented = false, has_boundary = true;
+  Check(box.raw().IsManifold(&is_oriented, &has_boundary) && is_oriented && !has_boundary,
+        "the rebuilt box is a genuinely oriented, closed (no free boundary) 2-manifold");
+  Check(box.raw().IsSolid(), "the rebuilt box's real topology reports IsSolid() true");
+}
+
+// BooleanCombinePlanar assembles its result via Brep::FromPlanarFaces
+// (see boolean.cpp) - no change to boolean.cpp itself was needed for this
+// to inherit real topology automatically.
+void TestBooleanCombinePlanarResultHasValidClosedTopology() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep u = BooleanCombinePlanar(a, b, BooleanOp::Union);
+
+  ON_TextLog log;
+  Check(u.raw().IsValid(&log), "BooleanCombinePlanar's own Union result genuinely passes ON_Brep::IsValid()");
+
+  bool is_oriented = false, has_boundary = true;
+  Check(u.raw().IsManifold(&is_oriented, &has_boundary) && is_oriented && !has_boundary,
+        "BooleanCombinePlanar's Union result is a genuinely oriented, closed 2-manifold");
+  Check(u.raw().IsSolid(), "BooleanCombinePlanar's Union result reports IsSolid() true");
+}
+
+// ShellConvexPlanar assembles its result via Brep::FromPlanarFaces too,
+// so it also inherits real topology for free - but checking it surfaced
+// a genuine, checked-directly finding that narrows this feature's own
+// original assumption ("IsValid()==true but IsSolid()==false"): this
+// kernel's own (pre-existing, unmodified by this change) ShellConvexPlanar
+// builds a flat "rim" picture-frame quad ring (see boolean.cpp's own
+// comment, the function's step 3) that fully SEALS the gap between the
+// kept exterior wall and the offset interior cavity wall at the removed
+// face's own opening - so the removed-top-face "open" shell is NOT
+// actually open in the topological sense: it has no free boundary edge
+// anywhere. Confirmed independently via Euler's formula on the actual
+// face/edge/vertex counts this test asserts below (V=16, E=28, F=14,
+// V-E+F=2 - the genus-0 closed-sphere invariant), not just eyeballed.
+// "Open" here means "has a hidden internal cavity" (as opposed to a
+// solid, non-hollow shape), not "has an accessible hole in its own
+// boundary" - IsSolid() is genuinely true, not false, for this kernel's
+// actual ShellConvexPlanar geometry.
+void TestShellConvexPlanarResultHasValidTopology() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ShellConvexPlanar;
+
+  const Brep cube = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep shell = ShellConvexPlanar(cube, {1}, 1.0);
+  Check(shell.FaceCount() == 14, "the shell still has 14 faces");
+
+  ON_TextLog log;
+  Check(shell.raw().IsValid(&log), "ShellConvexPlanar's own open-top shell genuinely passes ON_Brep::IsValid()");
+
+  Check(shell.raw().m_V.Count() == 16 && shell.raw().m_E.Count() == 28 && shell.raw().m_F.Count() == 14,
+        "the shell's own real topology has exactly 16 vertices, 28 edges, 14 faces - "
+        "V-E+F=2, the genus-0 closed-sphere Euler invariant");
+
+  bool is_oriented = false, has_boundary = true;
+  Check(shell.raw().IsManifold(&is_oriented, &has_boundary) && is_oriented && !has_boundary,
+        "ShellConvexPlanar's shell is a genuinely oriented, CLOSED 2-manifold - its own rim "
+        "faces seal the opening entirely rather than leaving a real free boundary there");
+  Check(shell.raw().IsSolid(),
+        "ShellConvexPlanar's shell reports IsSolid() true - a closed, watertight shape with a "
+        "hidden internal cavity, not an open bowl with an accessible hole (a real finding that "
+        "narrows this feature's own original \"IsSolid()==false here\" assumption - see this "
+        "test's own comment)");
+}
+
+// FilletConvexEdge()'s own free-boundary-cap sub-case (section 3(a) of
+// this feature's spec: no perpendicular end face at either endpoint of
+// the filleted edge, so its two circular cap edges are legal, unshared
+// boundary trims) - as opposed to section 3(b)'s corner-notch sub-case
+// (a perpendicular end face IS present and gets polygon-notched by
+// fillet.cpp's own 200-segment approximation), which is explicitly out
+// of scope for a literal shared arc-edge - see fillet.h and brep.h's own
+// doc comments.
+void TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::Point3d;
+
+  // An open 4-wall tube (a box's own 4 side walls, no top/bottom caps) -
+  // so the vertical edge filleted below has NO perpendicular end face at
+  // either endpoint anywhere in this solid, unlike
+  // TestFilletConvexEdgeUnitCubeTopFrontCorner's own closed-box case.
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 2);
+  const std::vector<Brep::PlanarFace> all_faces = box.PlanarFaces();
+  // Box()'s own face order (see its own comment): 0=bottom(-z),
+  // 1=top(+z), 2=front(-y), 3=back(+y), 4=left(-x), 5=right(+x).
+  const std::vector<Brep::PlanarFace> walls = {all_faces[2], all_faces[3], all_faces[4], all_faces[5]};
+  const Brep tube = Brep::FromPlanarFaces(walls);
+  Check(tube.FaceCount() == 4, "the open 4-wall tube has exactly 4 faces (no top/bottom)");
+
+  // The vertical edge (1,0,0)-(1,0,2) is shared by front(-y) and
+  // right(+x) - filleting it exercises the free-boundary-cap path: both
+  // circular cap edges (at z=0 and z=2) have no other face to weld to.
+  const Brep filleted = FilletConvexEdge(tube, Point3d(1, 0, 0), Point3d(1, 0, 2), 0.2);
+  Check(filleted.FaceCount() == 5,
+        "the filleted tube has 5 faces (3 untouched/re-trimmed walls + 1 new cylindrical "
+        "fillet face)");
+
+  ON_TextLog log;
+  Check(filleted.raw().IsValid(&log),
+        "FilletConvexEdge's free-boundary-cap result (no perpendicular end face) genuinely "
+        "passes ON_Brep::IsValid() - its two circular cap edges are legal, if unshared, "
+        "boundary trims");
+
+  bool is_oriented = false, has_boundary = false;
+  Check(filleted.raw().IsManifold(&is_oriented, &has_boundary) && is_oriented && has_boundary,
+        "the filleted tube is oriented but genuinely has a free boundary - it was never a "
+        "closed solid to begin with (no top/bottom caps)");
+  Check(!filleted.raw().IsSolid(),
+        "the filleted open tube correctly reports IsSolid() false - an open shape, not a "
+        "closed one");
+}
+
+// A genuine, deliberately non-manifold input (three faces sharing the
+// same spine edge, like three pages hinged at one binding) - Pass 3 of
+// FromMixedFaces()'s own real topology construction must reject a third
+// use of an already-mated edge rather than silently misbuilding a third
+// trim onto it (see this method's own doc comment; disclosed out of
+// scope exactly like every other planar-only/convex-only note already in
+// this codebase, per boolean.h/fillet.h).
+void TestFromMixedFacesRejectsNonManifoldEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  Brep::PlanarFace f1, f2, f3;
+  f1.loop = {Point3d(0, 0, 0), Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 0, 0)};
+  f1.plane = ON_Plane(f1.loop[0], ON_3dVector(0, -1, 0));
+  f2.loop = {Point3d(0, 0, 0), Point3d(0, 0, 1), Point3d(2, 0, 1), Point3d(2, 0, 0)};
+  f2.plane = ON_Plane(f2.loop[0], ON_3dVector(0, -1, 0));
+  f3.loop = {Point3d(0, 0, 0), Point3d(0, 0, 1), Point3d(3, 0, 1), Point3d(3, 0, 0)};
+  f3.plane = ON_Plane(f3.loop[0], ON_3dVector(0, -1, 0));
+
+  bool threw = false;
+  try {
+    Brep::FromPlanarFaces({f1, f2, f3});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "FromMixedFaces rejects a non-manifold edge (3 faces sharing the same boundary "
+        "segment) rather than silently misbuilding a third trim onto an already-mated edge");
+}
+
+// The strongest check this feature's own spec calls for: build a Brep
+// via FromPlanarFaces(), save it to a genuine .3dm, reload it, and wrap
+// the RELOADED raw ON_Brep in a FRESH dino8::kernel::Brep with EMPTY side
+// tables - forcing ResolveFace()'s generic derive-from-topology path
+// (SampleLoop() reading the reloaded brep's own loops/trims), not this
+// kernel's own internal side-table shortcut every other round-trip test
+// here (TestFileRoundTrip, TestModelAddMeshRoundTrips, ...) exercises
+// instead. If the reloaded volume matches, the REAL topology - not a
+// side-table - is what survived the round trip.
+void TestBrepFromPlanarFacesRoundTripsRealTopologyThroughDotThreeDM() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  const Brep original = Brep::FromPlanarFaces(Brep::Box(0, 0, 0, 2, 3, 4).PlanarFaces());
+  const double original_volume = original.TessellateToClosedMesh(1, 1).Volume();
+
+  Model model;
+  model.AddBrep(original);
+  const std::string path = "dino8_kernel_brep_topology_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save of a genuine-topology Brep succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_brep = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const auto* brep_geometry = dynamic_cast<const ON_Brep*>(geometry_component->Geometry(nullptr));
+    if (brep_geometry == nullptr) continue;
+    found_brep = true;
+
+    ON_TextLog log;
+    Check(brep_geometry->IsValid(&log),
+          "the RELOADED raw ON_Brep genuinely passes IsValid() - real topology round-tripped "
+          "through the actual .3dm file format, not just this kernel's own in-memory shape");
+    Check(brep_geometry->m_V.Count() == 8 && brep_geometry->m_E.Count() == 12 &&
+              brep_geometry->m_F.Count() == 6,
+          "the reloaded brep has the box's own exact vertex/edge/face counts (8/12/6)");
+
+    Brep fresh;  // EMPTY side tables - forces the generic derive-from-topology path.
+    fresh.raw() = *brep_geometry;
+    const double reloaded_volume = fresh.TessellateToClosedMesh(1, 1).Volume();
+    Check(std::abs(reloaded_volume - original_volume) < 1e-6,
+          "a FRESH Brep wrapping the reloaded raw ON_Brep (forcing ResolveFace()'s generic "
+          "loop-sampling path, not the side-table shortcut) tessellates to the same volume as "
+          "the original - proof the real topology, not a side-table, survived the round trip");
+  }
+  Check(found_brep, "the .3dm file's model geometry actually contains a Brep object");
+
+  std::remove(path.c_str());
+}
+
+// Same proof as the box round trip above, but for a CylindricalFace's own
+// curved edges - the isocurve-built cap edges and the straight rail
+// edges shared with the adjacent re-trimmed planar faces - so an isocurve
+// edge curve (not just a straight ON_LineCurve) genuinely survives the
+// .3dm round trip too, not just the flat-faced case.
+void TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::Model;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep filleted = FilletConvexEdge(box, Point3d(1, 0, 1), Point3d(1, 1, 1), 0.2);
+  const double original_volume = filleted.TessellateToClosedMesh(4, 4).Volume();
+
+  Model model;
+  model.AddBrep(filleted);
+  const std::string path = "dino8_kernel_fillet_topology_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save of a FilletConvexEdge result succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_brep = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const auto* brep_geometry = dynamic_cast<const ON_Brep*>(geometry_component->Geometry(nullptr));
+    if (brep_geometry == nullptr) continue;
+    found_brep = true;
+
+    ON_TextLog log;
+    Check(brep_geometry->IsValid(&log),
+          "the reloaded raw ON_Brep of a FilletConvexEdge result (including its cylindrical "
+          "face's own isocurve-built cap edges) genuinely passes IsValid()");
+
+    Brep fresh;
+    fresh.raw() = *brep_geometry;
+    const double reloaded_volume = fresh.TessellateToClosedMesh(4, 4).Volume();
+    Check(std::abs(reloaded_volume - original_volume) < 1e-6,
+          "the reloaded FilletConvexEdge Brep - forced through the generic "
+          "derive-from-topology path - tessellates to the same volume as the original, "
+          "proving the cylindrical face's own real topology (not just its planar "
+          "neighbors') survived the round trip too");
+  }
+  Check(found_brep, "the .3dm file's model geometry actually contains the filleted Brep object");
+
+  std::remove(path.c_str());
+}
+
 int main() {
   ON::Begin();
 
@@ -7005,6 +7282,13 @@ int main() {
   TestShellConvexPlanarRejectsTooLargeThickness();
   TestShellConvexPlanarRejectsAdjacentOpenings();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
+  TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
+  TestBooleanCombinePlanarResultHasValidClosedTopology();
+  TestShellConvexPlanarResultHasValidTopology();
+  TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology();
+  TestFromMixedFacesRejectsNonManifoldEdge();
+  TestBrepFromPlanarFacesRoundTripsRealTopologyThroughDotThreeDM();
+  TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM();
   TestMixedFacesRoundTripsCylindricalFace();
   TestClipPolygonByCircle3dPunchesExactHole();
   TestBooleanCombineMixedDrilledBoxThroughHole();
