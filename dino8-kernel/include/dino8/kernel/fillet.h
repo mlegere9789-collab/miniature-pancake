@@ -112,4 +112,106 @@ namespace dino8::kernel {
 // for their own convex/non-convex scoping.
 Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius);
 
+// LINEAR-TAPER generalization of FilletConvexEdge: rolls a ball of
+// radius r(t) = radius0 + m*t (t = arc length along the edge from
+// edge_p0, m = (radius1 - radius0) / |edge_p1 - edge_p0|) instead of a
+// single constant radius. The worked derivation (see also
+// Brep::ConicalFace's own doc comment for the resulting surface type):
+//
+//   1. The tangency construction that places the rolling ball's own
+//      center C(t) = edge_p0 + t*e - bis*r(t)/cosb (e, bis, cosb exactly
+//      as FilletConvexEdge's own doc comment derives them) never assumed
+//      r was constant - it holds for ANY r(t), so the two rail curves
+//      rail_i(t) = C(t) + n_i*r(t), rail_j(t) = C(t) + n_j*r(t) are
+//      EXACT for a general r(t), always lying exactly in face i's/face
+//      j's own plane respectively. This part needs no new theory at all.
+//
+//   2. For the INTERIOR of the swept patch, the general theory of canal/
+//      pipe surfaces (Peternell & Pottmann, "Computing rational
+//      parametrizations of canal surfaces," J. Symbolic Computation
+//      23(2-3), 1997) says the envelope of a one-parameter sphere family
+//      is, for a general r(t), NOT a rational surface at all (a genuine
+//      free-form canal surface) - UNLESS r(t) is linear, in which case a
+//      much simpler classical fact applies directly: since r(t) is
+//      linear, C(t) is ALSO exactly a straight line (C'(t) is constant -
+//      a direct, checked consequence of the tangency formula above, not
+//      assumed), and the envelope of spheres of linearly-varying radius
+//      centered along a straight line is EXACTLY a right circular cone
+//      (apex where the linear extrapolation of r(t) hits zero) - the
+//      same "spheres inscribed in a cone" fact used to derive a cone's
+//      own inscribed-sphere family in elementary solid geometry, here
+//      verified directly against the standard canal-surface
+//      characteristic-circle formula (not merely asserted): both the
+//      characteristic circle's own distance-from-apex-along-axis and its
+//      own radius come out exactly linear in t with a COMMON zero at the
+//      same apex parameter, so their ratio (tan of the cone's own
+//      half-angle) is provably t-independent. See dino8-kernel's own
+//      verification tests for the closed-form volume/rail checks this
+//      derivation was validated against, sample point by sample point,
+//      before being trusted here.
+//
+//   3. The rolling ball's own radius r(t) is NOT the same number as the
+//      cone's own true cross-sectional radius at the matching point -
+//      see Brep::ConicalFace's own doc comment for why (they differ by a
+//      fixed scale factor whenever m != 0) - this function computes that
+//      distinction internally; callers only ever see the physical
+//      rolling-ball radii radius0/radius1 in this function's own
+//      signature, exactly as FilletConvexEdge's single `radius` is a
+//      physical ball radius, not a raw cone parameter.
+//
+//   4. Each adjacent face is re-trimmed exactly as FilletConvexEdge's own
+//      step 3 describes, generalized only in that the cut plane's own
+//      in-plane normal is now perpendicular to the TILTED rail direction
+//      (which is still, provably, a single straight line per face - see
+//      point 1 - just no longer parallel to e once m != 0) instead of
+//      perpendicular to e itself.
+//
+// If `radius1` is within a small relative tolerance of `radius0` (m is
+// negligible), this function DISPATCHES to today's FilletConvexEdge
+// unchanged, called with radius0 - a genuine code-path dispatch (the
+// exact m=0 case is never run through the cone construction as a
+// very-flat approximation of it; the cone construction is mathematically
+// exact for any m!=0, but "is m exactly/negligibly zero" is a real,
+// separate branch, not a numerical-stability workaround).
+//
+// SCOPE, narrower even than FilletConvexEdge's own already-disclosed one,
+// stated plainly rather than silently narrowed: this function does NOT
+// attempt the corner-notch construction FilletConvexEdge's own
+// NotchCornerAtVertex performs for a third face perpendicular to the
+// EDGE at edge_p0/edge_p1. A genuine new finding, not merely an
+// unimplemented convenience: once m != 0, the cone's own axis direction
+// u = e - (m/cosb)*bis is NOT parallel to e (a real, checked-directly
+// consequence of the derivation above: u . n_i = -m != 0, whereas e is
+// perpendicular to both n_i and n_j by construction) - so a box-style
+// end face that IS perpendicular to e is NOT perpendicular to the cone's
+// own axis, meaning its true cross-section there is a planar ELLIPSE
+// (the cone sliced by a plane oblique to its own axis), not the fixed
+// circular-arc formula NotchCornerAtVertex hardcodes. Reusing that
+// machinery unchanged for the tapered case would be silently WRONG, not
+// merely unimplemented - so this function explicitly leaves any such
+// third face's sharp corner UNTOUCHED, exactly matching FilletConvexEdge's
+// own already-established "disclosed, narrower scope" pattern for an
+// oblique end face. This is a genuine, honest regression relative to
+// FilletConvexEdge's own corner-notch closure for the constant-radius
+// case - see this codebase's own verification tests for an explicit,
+// documented assertion of this scope limit, not a silently non-manifold
+// result. A follow-on increment could close it by generalizing
+// NotchCornerAtVertex to splice a sampled ELLIPSE instead of a circle -
+// real, bounded future work, deliberately not attempted here.
+//
+// Also matches FilletConvexEdge's own scope otherwise: a straight edge
+// between exactly two PLANAR faces, convex dihedral only, radius0 and
+// radius1 both strictly positive (throws std::invalid_argument
+// otherwise - a radius reaching exactly zero partway along the edge
+// would mean the swept patch's own apex falls INSIDE the trimmed region,
+// a genuinely different, degenerate topology this function does not
+// attempt), and any end face at edge_p0/edge_p1 is either absent,
+// oblique (already a disclosed FilletConvexEdge gap), or perpendicular
+// to e (now ALSO left untouched here - see above - rather than
+// incorrectly notched). A piecewise-linear multi-segment taper and the
+// fully general free-form-radius canal-surface case (point 2 above) are
+// both explicitly out of scope for this function.
+Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius0,
+                              double radius1);
+
 }  // namespace dino8::kernel

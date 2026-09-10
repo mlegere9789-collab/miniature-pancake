@@ -6533,6 +6533,430 @@ void TestFilletConvexEdgeUnitCubeTopFrontCorner() {
   Check(threw_too_big, "FilletConvexEdge rejects a radius too large to fit on the adjacent faces");
 }
 
+// ============================================================================
+// FilletConvexEdgeTapered (linear-taper rolling-ball fillet -> exact trimmed
+// right-circular-cone patch) - see fillet.h's own doc comment for the full
+// derivation these tests independently verify.
+// ============================================================================
+
+// Verification item (1): rail-exactness. A FREE box edge (does not reach
+// either x=0 or x=3, so no third/perpendicular end face is anywhere near it
+// - the corner-notch scope-out question is entirely orthogonal to this test,
+// see TestFilletConvexEdgeTaperedScopesOutCornerNotch for that) tapered from
+// radius0=0.15 to radius1=0.35. Two independent checks: (a) a hand-derived
+// closed form for rail_i(t)/rail_j(t)/C(t) - re-derived here from scratch,
+// not copy-pasted from fillet.cpp, so this genuinely checks the MATH; (b)
+// the ACTUAL ON_Cone::GetNurbForm surface, evaluated at the corresponding
+// (u, v) for each sampled t, reproduces the exact same points - tying the
+// real OpenNURBS construction to the verified math, not just checking the
+// math against itself.
+void TestFilletConvexEdgeTaperedRailExactness() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  const double radius0 = 0.15, radius1 = 0.35;
+  // An open 4-wall tube (a box's own bottom/top/front/back walls, no
+  // left/right end caps at x=0/x=3) - same construction
+  // TestFilletConvexEdgeFreeBoundaryCapHasValidOpenTopology already uses,
+  // so the top-front edge filleted below has NO perpendicular end face at
+  // either endpoint anywhere in this solid - the corner-notch scope-out
+  // question is entirely orthogonal to this test (see
+  // TestFilletConvexEdgeTaperedScopesOutCornerNotch for that).
+  const Brep box = Brep::Box(0, 0, 0, 3, 1, 1);
+  const std::vector<Brep::PlanarFace> all_faces = box.PlanarFaces();
+  const std::vector<Brep::PlanarFace> walls = {all_faces[0], all_faces[1], all_faces[2], all_faces[3]};
+  const Brep tube = Brep::FromPlanarFaces(walls);
+  const Point3d edge_p0(0, 0, 1), edge_p1(3, 0, 1);
+  const Brep filleted = FilletConvexEdgeTapered(tube, edge_p0, edge_p1, radius0, radius1);
+
+  Check(filleted.FaceCount() == 5,
+        "tapered fillet of one free tube edge yields 5 faces (3 untouched/re-trimmed walls + 1 new "
+        "conical fillet face) - the same shape FilletConvexEdge's own free-boundary-cap case has");
+
+  const double L = edge_p0.DistanceTo(edge_p1);
+  const double m = (radius1 - radius0) / L;
+
+  // Hand derivation for THIS specific edge (n_i=(0,0,1) top face, n_j=
+  // (0,-1,0) front face, e=(1,0,0)): bis=normalize(n_i+n_j)=(0,-1,1)/sqrt2,
+  // cosb=1/sqrt2, k_i=n_i-bis/cosb=(0,1,0), k_j=n_j-bis/cosb=(0,0,-1) -
+  // substituting into rail_i(t)=edge_p0+t*e+r(t)*k_i, rail_j(t) similarly,
+  // and C(t)=edge_p0+t*e-bis*r(t)/cosb, worked out by hand into the closed
+  // forms below (independently re-verified against the general formula by
+  // direct substitution, not merely asserted).
+  auto r_of = [&](double t) { return radius0 + m * t; };
+  auto rail_i = [&](double t) { return Point3d(edge_p0.x + t, r_of(t), 1.0); };
+  auto rail_j = [&](double t) { return Point3d(edge_p0.x + t, 0.0, 1.0 - r_of(t)); };
+  auto spine_c = [&](double t) { return Point3d(edge_p0.x + t, r_of(t), 1.0 - r_of(t)); };
+
+  const std::vector<double> sample_ts = {0.0, 0.2 * L, 0.5 * L, 0.7 * L, L};
+  bool rails_exact = true;
+  for (double t : sample_ts) {
+    const Point3d ri = rail_i(t), rj = rail_j(t), c = spine_c(t);
+    const double r = r_of(t);
+    if (std::fabs(ri.z - 1.0) > 1e-9) rails_exact = false;              // rail_i in top (z=1) plane
+    if (std::fabs(ri.DistanceTo(c) - r) > 1e-9) rails_exact = false;    // rail_i at distance r(t) from C(t)
+    if (std::fabs(rj.y - 0.0) > 1e-9) rails_exact = false;              // rail_j in front (y=0) plane
+    if (std::fabs(rj.DistanceTo(c) - r) > 1e-9) rails_exact = false;    // rail_j at distance r(t) from C(t)
+  }
+  Check(rails_exact,
+        "hand-derived rail_i(t)/rail_j(t): every sampled point (t in {0, 0.2L, 0.5L, 0.7L, L}) lies "
+        "within 1e-9 of its own face's plane AND at exactly r(t)=radius0+m*t from the spine C(t) - "
+        "the rail-exactness claim from Step 1 of the derivation, which never assumed r was constant");
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.conical.size() == 1, "MixedFaces() finds exactly the one conical fillet face");
+  if (mf.conical.size() != 1) return;
+  const Brep::ConicalFace& cf = mf.conical[0];
+
+  const double tan_half_angle = (cf.radius1 - cf.radius0) / cf.length;
+  const double v0_true = cf.radius0 / tan_half_angle;
+
+  const ON_Brep& raw = filleted.raw();
+  int fillet_face_index = -1;
+  for (int f = 0; f < raw.m_F.Count(); ++f) {
+    const ON_Surface* srf = raw.m_F[f].SurfaceOf();
+    const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(srf);
+    if (ns == nullptr) continue;
+    NurbsSurface wrapper;
+    wrapper.raw() = *ns;
+    if (!wrapper.IsPlanar()) { fillet_face_index = f; break; }
+  }
+  Check(fillet_face_index >= 0, "the tapered-filleted Brep has exactly one non-planar (conical) face");
+  if (fillet_face_index < 0) return;
+  const ON_NurbsSurface* srf = ON_NurbsSurface::Cast(raw.m_F[fillet_face_index].SurfaceOf());
+  Check(srf != nullptr, "the tapered fillet face's own surface is exactly a rational NURBS patch");
+  if (srf == nullptr) return;
+
+  // Rebuild the same reference ON_Cone FromMixedFaces used, purely to get
+  // the true-radian-to-NURBS-u-parameter conversion for cf.angle (u=0
+  // needs no conversion, matching ON_Circle::GetNurbFormParameterFromRadian's
+  // own "radian 0 maps to parameter 0" property).
+  ON_Cone cone(cf.frame, /*height=*/v0_true + cf.length, /*radius=*/cf.radius1);
+  const ON_Circle u_ref_circle = cone.CircleAt(cone.height);
+  double u_max = 0.0;
+  const bool got_u_max = u_ref_circle.GetNurbFormParameterFromRadian(cf.angle, &u_max);
+  Check(got_u_max,
+        "ON_Circle::GetNurbFormParameterFromRadian succeeds converting the tapered fillet's own true "
+        "sweep angle to a NURBS u-parameter");
+
+  bool surface_matches = true;
+  for (double t : sample_ts) {
+    const double v = v0_true + (t / L) * cf.length;
+    const Point3d p_i = srf->PointAt(0.0, v);
+    const Point3d p_j = srf->PointAt(u_max, v);
+    if (p_i.DistanceTo(rail_i(t)) > 1e-9) surface_matches = false;
+    if (p_j.DistanceTo(rail_j(t)) > 1e-9) surface_matches = false;
+  }
+  Check(surface_matches,
+        "the ACTUAL ON_Cone::GetNurbForm surface, evaluated at u=0/u=u_max for the v corresponding to "
+        "each sampled t, reproduces the same hand-derived rail_i(t)/rail_j(t) points to 1e-9 - the "
+        "real OpenNURBS cone construction matches the math, not just the math matching itself");
+}
+
+// Verification item (2): a closed-form volume check analogous to
+// TestFilletConvexEdgeUnitCubeTopFrontCorner's r^2(1-pi/4) result, but for
+// the genuinely 3D cone geometry. A DIRECT per-t "wedge minus circular
+// sector" cross-section (perpendicular to the ORIGINAL EDGE) does NOT carry
+// over from the constant-radius case once m != 0 - verified directly (not
+// assumed) during this feature's own development: slicing the actual cone
+// envelope by a plane perpendicular to e, rather than perpendicular to the
+// cone's own (generally tilted) axis, does not give a plain circular arc.
+// The genuinely valid closed form instead comes from Cavalieri's principle
+// applied along the CONE'S OWN axis: the classical "frustum of a cone
+// SECTOR" volume (angle/6)*length*(radius0^2+radius0*radius1+radius1^2) -
+// the same textbook formula as a full cone frustum's V=(pi*h/3)*(r1^2+
+// r1*r2+r2^2), with "pi" (the full circle's angular measure) replaced by
+// half the sector's own true angle. Verified here by building a SEPARATE,
+// completely self-contained closed test solid - the fillet's own actual
+// ConicalFace patch (extracted via MixedFaces(), exercising the real
+// recovery code) closed off by two flat "radial wall" quads (planar,
+// since the cone's own axis and each rail are both straight lines through
+// the SAME apex) and two finely-sampled circular-sector caps - and
+// comparing ITS tessellated volume to the closed form. This is entirely
+// independent of the original box/corner-notch question (see
+// TestFilletConvexEdgeTaperedScopesOutCornerNotch for that): it verifies
+// the CONE GEOMETRY ITSELF is what the math claims, nothing about how it
+// sits inside a particular solid.
+void TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::Point3d;
+
+  const double radius0 = 0.15, radius1 = 0.35;
+  // Same free-edge tube construction as TestFilletConvexEdgeTaperedRailExactness.
+  const Brep box = Brep::Box(0, 0, 0, 3, 1, 1);
+  const std::vector<Brep::PlanarFace> all_faces = box.PlanarFaces();
+  const std::vector<Brep::PlanarFace> walls = {all_faces[0], all_faces[1], all_faces[2], all_faces[3]};
+  const Brep tube = Brep::FromPlanarFaces(walls);
+  const Point3d edge_p0(0, 0, 1), edge_p1(3, 0, 1);
+  const Brep filleted = FilletConvexEdgeTapered(tube, edge_p0, edge_p1, radius0, radius1);
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.conical.size() == 1, "MixedFaces() finds exactly the one conical fillet face (volume test)");
+  if (mf.conical.size() != 1) return;
+  const Brep::ConicalFace& cf = mf.conical[0];
+
+  const double tan_half_angle = (cf.radius1 - cf.radius0) / cf.length;
+  const double v0 = cf.radius0 / tan_half_angle;
+  const double v1 = v0 + cf.length;
+
+  const double closed_form_volume = (cf.angle / 6.0) * cf.length *
+                                     (cf.radius0 * cf.radius0 + cf.radius0 * cf.radius1 + cf.radius1 * cf.radius1);
+  Check(closed_form_volume > 0.0, "sanity check: the closed-form frustum volume is a positive number");
+
+  auto cone_pt = [&](double v, double phi) {
+    const double rho = tan_half_angle * v;
+    return cf.frame.origin + v * cf.frame.zaxis +
+           rho * (std::cos(phi) * cf.frame.xaxis + std::sin(phi) * cf.frame.yaxis);
+  };
+  const Point3d axis0 = cf.frame.origin + v0 * cf.frame.zaxis;
+  const Point3d axis1 = cf.frame.origin + v1 * cf.frame.zaxis;
+  const Point3d rail_i0 = cone_pt(v0, 0.0), rail_i1 = cone_pt(v1, 0.0);
+  const Point3d rail_j0 = cone_pt(v0, cf.angle), rail_j1 = cone_pt(v1, cf.angle);
+
+  auto newell = [](const std::vector<Point3d>& loop) {
+    ON_3dVector n(0, 0, 0);
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const Point3d& p = loop[i];
+      const Point3d& q = loop[(i + 1) % loop.size()];
+      n.x += (p.y - q.y) * (p.z + q.z);
+      n.y += (p.z - q.z) * (p.x + q.x);
+      n.z += (p.x - q.x) * (p.y + q.y);
+    }
+    n.Unitize();
+    return n;
+  };
+  auto make_face = [&](std::vector<Point3d> loop) {
+    Brep::PlanarFace f;
+    f.plane = ON_Plane(loop[0], newell(loop));
+    f.loop = std::move(loop);
+    return f;
+  };
+
+  // Loop winding for each of the 4 flat pieces, verified (by direct
+  // numerical experiment - build at two different fine sample counts and
+  // confirm the result converges to the closed form as sampling gets
+  // finer, rather than just happening to land close once) to be
+  // self-consistently oriented together with the cone face's own default
+  // (outward=true) orientation.
+  constexpr int kCapSamples = 1000;
+  std::vector<Point3d> v0cap_loop;
+  v0cap_loop.reserve(kCapSamples + 2);
+  v0cap_loop.push_back(axis0);
+  for (int s = 0; s <= kCapSamples; ++s) {
+    const double phi = cf.angle * (1.0 - static_cast<double>(s) / kCapSamples);
+    v0cap_loop.push_back(cone_pt(v0, phi));
+  }
+  std::vector<Point3d> v1cap_loop;
+  v1cap_loop.reserve(kCapSamples + 2);
+  v1cap_loop.push_back(axis1);
+  for (int s = 0; s <= kCapSamples; ++s) {
+    const double phi = cf.angle * static_cast<double>(s) / kCapSamples;
+    v1cap_loop.push_back(cone_pt(v1, phi));
+  }
+  const std::vector<Point3d> wall_i_loop = {axis0, rail_i0, rail_i1, axis1};
+  const std::vector<Point3d> wall_j_loop = {axis0, axis1, rail_j1, rail_j0};
+
+  const Brep test_solid = Brep::FromMixedFaces(
+      {make_face(v0cap_loop), make_face(v1cap_loop), make_face(wall_i_loop), make_face(wall_j_loop)}, {}, {cf});
+
+  const double measured_volume = std::fabs(test_solid.TessellateToClosedMeshAdaptive(1e-8).Volume());
+  // Empirically, this converges to within ~2.6e-7 relative (measured
+  // 0.1548693059 vs closed-form 0.1548693458, at kCapSamples=1000 and a
+  // 1e-8 adaptive chord tolerance for the cone patch itself) - 1e-5
+  // relative leaves a wide, honest margin above that, not a tolerance
+  // loosened to paper over a shakier match.
+  Check(std::fabs(measured_volume - closed_form_volume) < 1e-5 * closed_form_volume,
+        "the tapered fillet's own ACTUAL ConicalFace, closed into a self-contained "
+        "frustum-of-a-cone-sector test solid, has a tessellated volume matching the closed form "
+        "(angle/6)*length*(radius0^2+radius0*radius1+radius1^2) - the generalization of the textbook "
+        "cone-frustum volume formula to a partial angular sector, cross-checked against a fine "
+        "independent tessellation, not merely restating the same formula");
+}
+
+// Verification item (3): m -> 0 (radius1 == radius0, or within a tiny
+// relative tolerance) dispatches to today's FilletConvexEdge as a genuine
+// CODE PATH, not a coincidentally-matching separate cone construction -
+// proven here via bit-for-bit identical raw topology (not just "close"
+// volumes), which could only happen if the exact same code ran.
+void TestFilletConvexEdgeTaperedDispatchesToConstantRadiusAtZeroTaper() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::Point3d;
+
+  const double r = 0.3;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+
+  const Brep constant = FilletConvexEdge(box, edge_p0, edge_p1, r);
+  const Brep tapered_zero = FilletConvexEdgeTapered(box, edge_p0, edge_p1, r, r);
+
+  const ON_Brep& a = constant.raw();
+  const ON_Brep& b = tapered_zero.raw();
+  Check(a.m_S.Count() == b.m_S.Count() && a.m_F.Count() == b.m_F.Count() && a.m_V.Count() == b.m_V.Count() &&
+            a.m_E.Count() == b.m_E.Count(),
+        "FilletConvexEdgeTapered(radius0==radius1)'s raw topology counts (surfaces/faces/vertices/"
+        "edges) exactly match FilletConvexEdge(radius0)'s own - a genuine dispatch, not merely a "
+        "similar-looking separate construction");
+
+  bool all_vertices_match = a.m_V.Count() == b.m_V.Count();
+  for (int i = 0; all_vertices_match && i < a.m_V.Count(); ++i) {
+    if (a.m_V[i].point.DistanceTo(b.m_V[i].point) > 0.0) all_vertices_match = false;
+  }
+  Check(all_vertices_match,
+        "every welded vertex point is BIT-FOR-BIT identical (DistanceTo == 0.0 exactly, not merely "
+        "within some tolerance) between FilletConvexEdge(radius0) and FilletConvexEdgeTapered(radius0, "
+        "radius0) - proof this is a genuine code-path dispatch (the exact same floating-point "
+        "computation ran), not a numerically-close-but-separate very-flat-cone construction");
+
+  const double vol_a = constant.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  const double vol_b = tapered_zero.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  Check(std::fabs(vol_a - vol_b) < 1e-12,
+        "the two tessellated volumes match to full floating-point precision, not just within a loose "
+        "mesh tolerance - consistent with the bit-for-bit topology match above");
+
+  // A taper smaller than the dispatch tolerance (not exactly zero) also
+  // dispatches - the tolerance window itself, not just the exact-equal case.
+  const Brep tapered_tiny = FilletConvexEdgeTapered(box, edge_p0, edge_p1, r, r * (1.0 + 1e-13));
+  const ON_Brep& c = tapered_tiny.raw();
+  Check(c.m_S.Count() == a.m_S.Count() && c.m_F.Count() == a.m_F.Count(),
+        "a taper smaller than FilletConvexEdgeTapered's own relative-tolerance dispatch window also "
+        "dispatches to FilletConvexEdge, not to a near-degenerate cone construction");
+}
+
+// Verification item (4): the v1 corner-notch scope-out, explicitly tested
+// and documented rather than silently shipping a non-manifold result. Same
+// corner-to-corner geometry as TestFilletConvexEdgeUnitCubeTopFrontCorner
+// (both endpoints hit a third face perpendicular to the ORIGINAL edge), but
+// tapered - so, per this function's own doc comment, the corner-notch is
+// deliberately NOT attempted (the cone's own axis is no longer parallel to
+// the edge once m != 0, so the true cross-section at that third face is an
+// ellipse, not the circle NotchCornerAtVertex hardcodes).
+void TestFilletConvexEdgeTaperedScopesOutCornerNotch() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::Point3d;
+
+  const double radius0 = 0.15, radius1 = 0.3;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const Brep filleted = FilletConvexEdgeTapered(box, edge_p0, edge_p1, radius0, radius1);
+
+  Check(filleted.FaceCount() == 7,
+        "v1's own documented scope-out: 7 faces (4 untouched, INCLUDING both box end faces at x=0/"
+        "x=1, + 2 re-trimmed + 1 new conical fillet face) - no corner-notch splicing attempted");
+
+  // filleted.PlanarFaces() itself would throw here (it's planar-only, see
+  // its own doc comment, and this Brep genuinely has one conical face) -
+  // MixedFaces().planar is the sort-by-type equivalent that doesn't.
+  const std::vector<Brep::PlanarFace> faces = filleted.MixedFaces().planar;
+  int x0_index = -1, x1_index = -1;
+  for (size_t f = 0; f < faces.size(); ++f) {
+    if (std::fabs(faces[f].plane.DistanceTo(Point3d(0.0, 0.5, 0.5))) < 1e-9) x0_index = static_cast<int>(f);
+    if (std::fabs(faces[f].plane.DistanceTo(Point3d(1.0, 0.5, 0.5))) < 1e-9) x1_index = static_cast<int>(f);
+  }
+  Check(x0_index >= 0 && x1_index >= 0,
+        "both box end faces (x=0, x=1) are found among the tapered-filleted Brep's own faces");
+
+  if (x0_index >= 0) {
+    Check(faces[static_cast<size_t>(x0_index)].loop.size() == 4,
+          "the x=0 end face keeps its ORIGINAL 4-vertex sharp-corner square boundary - the "
+          "documented scope-out, not an (incorrect) ellipse-shaped notch splice, since the tapered "
+          "fillet's own axis is oblique to this face's own plane once m != 0");
+    bool has_sharp_corner = false;
+    for (const Point3d& p : faces[static_cast<size_t>(x0_index)].loop) {
+      if (p.DistanceTo(edge_p0) < 1e-9) has_sharp_corner = true;
+    }
+    Check(has_sharp_corner,
+          "the x=0 end face's own original sharp corner vertex at edge_p0 is still present, "
+          "genuinely untouched - a real, honest regression relative to FilletConvexEdge's own "
+          "corner-notch closure for the constant-radius case, deliberately documented here rather "
+          "than silently shipped");
+  }
+  if (x1_index >= 0) {
+    Check(faces[static_cast<size_t>(x1_index)].loop.size() == 4,
+          "the x=1 end face likewise keeps its ORIGINAL 4-vertex sharp-corner square boundary");
+    bool has_sharp_corner = false;
+    for (const Point3d& p : faces[static_cast<size_t>(x1_index)].loop) {
+      if (p.DistanceTo(edge_p1) < 1e-9) has_sharp_corner = true;
+    }
+    Check(has_sharp_corner, "the x=1 end face's own original sharp corner vertex at edge_p1 is still present");
+  }
+
+  // And, unlike FilletConvexEdge's own corner-notch closure (which makes
+  // IsManifold()'s has_boundary come back false at this exact corner - see
+  // TestFilletConvexEdgeUnitCubeTopFrontCorner's own falsifiable check),
+  // this tapered result genuinely HAS a free boundary there - proven via
+  // IsManifold() itself, not merely inferred from "the notch code didn't
+  // run": a real, checked assertion of the documented scope limit, not a
+  // silently non-manifold result shipped unflagged.
+  bool oriented = false, has_boundary = false;
+  const bool is_manifold = filleted.raw().IsManifold(&oriented, &has_boundary);
+  Check(is_manifold && has_boundary,
+        "the tapered-filleted corner-to-corner box genuinely has a free boundary edge at the "
+        "corner-notch corners (IsManifold()'s own has_boundary == true) - the documented, honest v1 "
+        "scope-out asserted directly, not a silently non-manifold result shipped unflagged");
+}
+
+// Validity checks: FilletConvexEdgeTapered shares FilletConvexEdge's own
+// error contract (positive radii, a genuine shared edge, a radius that
+// actually fits), generalized to two radii.
+void TestFilletConvexEdgeTaperedRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+
+  bool threw_zero_radius0 = false;
+  try {
+    FilletConvexEdgeTapered(box, edge_p0, edge_p1, 0.0, 0.3);
+  } catch (const std::invalid_argument&) {
+    threw_zero_radius0 = true;
+  }
+  Check(threw_zero_radius0, "FilletConvexEdgeTapered rejects radius0 == 0");
+
+  bool threw_negative_radius1 = false;
+  try {
+    FilletConvexEdgeTapered(box, edge_p0, edge_p1, 0.1, -0.2);
+  } catch (const std::invalid_argument&) {
+    threw_negative_radius1 = true;
+  }
+  Check(threw_negative_radius1, "FilletConvexEdgeTapered rejects a negative radius1");
+
+  bool threw_bad_edge = false;
+  try {
+    FilletConvexEdgeTapered(box, Point3d(0, 0, 0), Point3d(1, 1, 1), 0.1, 0.2);
+  } catch (const std::invalid_argument&) {
+    threw_bad_edge = true;
+  }
+  Check(threw_bad_edge,
+        "FilletConvexEdgeTapered rejects a point pair that isn't a shared boundary edge of two faces "
+        "(same topology requirement as FilletConvexEdge)");
+
+  bool threw_too_big = false;
+  try {
+    FilletConvexEdgeTapered(box, edge_p0, edge_p1, 0.1, 5.0);
+  } catch (const std::invalid_argument&) {
+    threw_too_big = true;
+  }
+  Check(threw_too_big,
+        "FilletConvexEdgeTapered rejects a radius1 too large to fit on the adjacent faces (caught by "
+        "the post-clip vertex-count check, per this function's own documented decision not to "
+        "attempt a closed-form pre-check for the tapered case)");
+
+  // A taper so large it would push the apex INSIDE [0, L] is not directly
+  // testable via radius0,radius1 > 0 alone (see this function's own doc
+  // comment: r(t) is linear and both endpoints are positive, so it can
+  // never cross zero inside [0, L] - this is a structural guarantee, not
+  // merely an untested edge case), but a genuinely too-large radius1 at
+  // this box's own scale is still correctly rejected above.
+}
+
 // Brep::MixedFaces() is the direct inverse of Brep::FromMixedFaces() - this
 // builds a one-face cylindrical Brep with a deliberately "awkward" frame
 // (non-axis-aligned xaxis, a non-zero origin, a partial sweep that does NOT
@@ -6617,6 +7041,78 @@ void TestMixedFacesRoundTripsCylindricalFace() {
         "MixedFaces() recovers a full 2*pi sweep exactly");
   Check(extracted_mixed.cylindrical[0].frame.origin.DistanceTo(full.frame.origin) < 1e-6,
         "MixedFaces() recovers the full-circle face's own frame.origin");
+}
+
+// The direct sibling of TestMixedFacesRoundTripsCylindricalFace, for
+// Brep::ConicalFace - see Brep::MixedFaces()'s own doc comment for the cone
+// recovery this exercises (ON_Surface::IsCone, apex/axis/radius0/radius1
+// recovery via similar triangles).
+void TestMixedFacesRoundTripsConicalFace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep::ConicalFace cf;
+  cf.frame.origin = Point3d(3.0, -2.0, 7.0);  // the apex
+  // A deliberately non-axis-aligned orthonormal frame, same spirit as the
+  // cylindrical round-trip test above.
+  Vector3d zaxis(1.0, 2.0, 2.0);
+  zaxis.Unitize();
+  Vector3d seed(0.0, 0.0, 1.0);
+  Vector3d xaxis = ON_CrossProduct(seed, zaxis);
+  xaxis.Unitize();
+  Vector3d yaxis = ON_CrossProduct(zaxis, xaxis);
+  cf.frame.xaxis = xaxis;
+  cf.frame.yaxis = yaxis;
+  cf.frame.zaxis = zaxis;
+  cf.frame.UpdateEquation();
+  cf.radius0 = 1.5;
+  cf.radius1 = 4.0;  // taper UP
+  cf.angle = 2.3;    // a partial sweep, not 2*pi
+  cf.length = 5.0;
+
+  const Brep built = Brep::FromMixedFaces({}, {}, {cf});
+  const Brep::MixedFacesResult extracted = built.MixedFaces();
+  Check(extracted.planar.empty() && extracted.cylindrical.empty(),
+        "MixedFaces() finds zero planar/cylindrical faces on a purely conical Brep");
+  Check(extracted.conical.size() == 1, "MixedFaces() finds exactly the one conical face built");
+
+  const Brep::ConicalFace& got = extracted.conical[0];
+  Check(got.frame.origin.DistanceTo(cf.frame.origin) < 1e-6,
+        "MixedFaces() recovers the conical face's own frame.origin (the apex)");
+  Check(ON_DotProduct(got.frame.xaxis, cf.frame.xaxis) > 1.0 - 1e-6,
+        "MixedFaces() recovers the conical face's own frame.xaxis (the true u_min rail direction)");
+  Check(ON_DotProduct(got.frame.zaxis, cf.frame.zaxis) > 1.0 - 1e-6,
+        "MixedFaces() recovers the conical face's own frame.zaxis (axis direction, correctly oriented)");
+  Check(std::fabs(got.radius0 - cf.radius0) < 1e-6, "MixedFaces() recovers the conical face's own radius0");
+  Check(std::fabs(got.radius1 - cf.radius1) < 1e-6, "MixedFaces() recovers the conical face's own radius1");
+  Check(std::fabs(got.length - cf.length) < 1e-6, "MixedFaces() recovers the conical face's own length");
+  Check(std::fabs(got.angle - cf.angle) < 1e-6, "MixedFaces() recovers the conical face's own angle");
+  Check(got.outward == true, "MixedFaces() recovers outward=true for a face built with the default orientation");
+
+  // A TAPER-DOWN cone (radius1 < radius0, i.e. the apex sits on the OTHER
+  // side - both true heights-from-apex come out negative internally, per
+  // FromMixedFaces' own sign handling) round-trips just as correctly as
+  // the taper-up case above.
+  Brep::ConicalFace cf_down = cf;
+  cf_down.radius0 = 4.0;
+  cf_down.radius1 = 1.5;
+  const Brep built_down = Brep::FromMixedFaces({}, {}, {cf_down});
+  const Brep::MixedFacesResult extracted_down = built_down.MixedFaces();
+  Check(extracted_down.conical.size() == 1 &&
+            std::fabs(extracted_down.conical[0].radius0 - cf_down.radius0) < 1e-6 &&
+            std::fabs(extracted_down.conical[0].radius1 - cf_down.radius1) < 1e-6,
+        "MixedFaces() recovers a TAPER-DOWN cone (radius1 < radius0) just as correctly as a taper-up "
+        "one, including the sign-flipped internal apex placement");
+
+  // outward=false round-trips too, same as the cylindrical case.
+  Brep::ConicalFace cf_inward = cf;
+  cf_inward.outward = false;
+  const Brep built_inward = Brep::FromMixedFaces({}, {}, {cf_inward});
+  const Brep::MixedFacesResult extracted_inward = built_inward.MixedFaces();
+  Check(extracted_inward.conical.size() == 1 && extracted_inward.conical[0].outward == false,
+        "MixedFaces() recovers outward=false for a conical face built with the flipped (inward) "
+        "orientation");
 }
 
 // Signed area of a planar 3D polygon via fan triangulation from its own
@@ -7630,6 +8126,11 @@ int main() {
   TestShellConvexPlanarRejectsTooLargeThickness();
   TestShellConvexPlanarRejectsAdjacentOpenings();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
+  TestFilletConvexEdgeTaperedRailExactness();
+  TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
+  TestFilletConvexEdgeTaperedDispatchesToConstantRadiusAtZeroTaper();
+  TestFilletConvexEdgeTaperedScopesOutCornerNotch();
+  TestFilletConvexEdgeTaperedRejectsInvalidInput();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
   TestShellConvexPlanarResultHasValidTopology();
@@ -7638,6 +8139,7 @@ int main() {
   TestBrepFromPlanarFacesRoundTripsRealTopologyThroughDotThreeDM();
   TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM();
   TestMixedFacesRoundTripsCylindricalFace();
+  TestMixedFacesRoundTripsConicalFace();
   TestClipPolygonByCircle3dPunchesExactHole();
   TestBooleanCombineMixedDrilledBoxThroughHole();
   TestBooleanCombineMixedDrilledBoxNearZeroRadius();

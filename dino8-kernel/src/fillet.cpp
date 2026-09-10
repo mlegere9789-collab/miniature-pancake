@@ -346,4 +346,298 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
   return Brep::FromMixedFaces(mixed_planar, {fillet_face});
 }
 
+Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius0,
+                              double radius1) {
+  if (!(radius0 > 0.0) || !(radius1 > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeTapered: radius0 and radius1 must both "
+        "be strictly positive (a radius reaching zero partway along the edge "
+        "would put the swept patch's own apex INSIDE the trimmed region - a "
+        "genuinely different, out-of-scope topology - see this function's own "
+        "doc comment)");
+  }
+
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const double tol = RelativeTol(faces);
+
+  // --- locate the two faces sharing (edge_p0, edge_p1) - verbatim from
+  // FilletConvexEdge's own step (1) (see its own doc comment).
+  int idx_i = -1, idx_j = -1;
+  for (size_t f = 0; f < faces.size() && (idx_i < 0 || idx_j < 0); ++f) {
+    const std::vector<Point3d>& loop = faces[f].loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      const Point3d& a = loop[k];
+      const Point3d& b = loop[(k + 1) % n];
+      if (idx_i < 0 && PointsEqual(a, edge_p0, tol) && PointsEqual(b, edge_p1, tol)) {
+        idx_i = static_cast<int>(f);
+      }
+      if (idx_j < 0 && PointsEqual(a, edge_p1, tol) && PointsEqual(b, edge_p0, tol)) {
+        idx_j = static_cast<int>(f);
+      }
+    }
+  }
+  if (idx_i < 0 || idx_j < 0 || idx_i == idx_j) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeTapered: edge_p0->edge_p1 is not a "
+        "shared boundary edge of two distinct faces of `solid`, walked in "
+        "opposite directions on their own loops - see FilletConvexEdge's own "
+        "doc comment for the required topology, which this function shares");
+  }
+
+  const ON_Plane& plane_i = faces[static_cast<size_t>(idx_i)].plane;
+  const ON_Plane& plane_j = faces[static_cast<size_t>(idx_j)].plane;
+  const Vector3d n_i = plane_i.zaxis;
+  const Vector3d n_j = plane_j.zaxis;
+
+  Vector3d e = edge_p1 - edge_p0;
+  const double L = edge_p0.DistanceTo(edge_p1);
+  if (!e.Unitize()) {
+    throw std::invalid_argument("dino8::kernel::FilletConvexEdgeTapered: edge_p0 and edge_p1 coincide");
+  }
+
+  const double dot_ij = std::max(-1.0, std::min(1.0, n_i * n_j));
+  const double sweep_angle0 = std::acos(dot_ij);  // = pi - theta, the m=0 (planar dihedral) sweep
+  const double theta = ON_PI - sweep_angle0;
+  if (!(theta > 0.0) || !(theta < ON_PI)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeTapered: edge is not a convex dihedral "
+        "edge (interior angle theta is <= 0 or >= pi) - concave/degenerate "
+        "edges are out of scope, see FilletConvexEdge's own doc comment");
+  }
+
+  Vector3d bis = n_i + n_j;
+  if (!bis.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeTapered: the two adjacent faces' "
+        "normals sum to (near) zero - a degenerate (near-180-degree) dihedral");
+  }
+  const double cosb = bis * n_i;  // > 0 since theta < pi; also == bis*n_j (bis is symmetric in i,j)
+  if (cosb < 1e-9) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeTapered: degenerate bisector geometry "
+        "(cosb too small)");
+  }
+
+  // --- dispatch to today's FilletConvexEdge, UNCHANGED, when the taper is
+  // negligible - the exact m=0 case is a genuine separate code path, never
+  // run through the cone construction below as a very-flat approximation
+  // of one (see this function's own doc comment).
+  const double radius_tol = std::max(1e-9, std::max(radius0, radius1) * 1e-9);
+  if (std::fabs(radius1 - radius0) <= radius_tol) {
+    return FilletConvexEdge(solid, edge_p0, edge_p1, radius0);
+  }
+
+  const double m = (radius1 - radius0) / L;
+
+  // --- Step 1 (rail exactness, for ANY r(t)): k_i, k_j fixed vectors;
+  // rail_i(t) = edge_p0 + t*e + r(t)*k_i always lies exactly in plane i
+  // (k_i . n_i == 0, checked directly: n_i.n_i - (bis.n_i)/cosb == 1 - 1
+  // == 0), and analogously for rail_j/plane j - see this function's own
+  // doc comment for the full derivation.
+  const Vector3d k_i = n_i - bis * (1.0 / cosb);
+  const Vector3d k_j = n_j - bis * (1.0 / cosb);
+  auto r_of = [&](double t) { return radius0 + m * t; };
+  auto rail_i = [&](double t) { return edge_p0 + t * e + r_of(t) * k_i; };
+  auto rail_j = [&](double t) { return edge_p0 + t * e + r_of(t) * k_j; };
+
+  // --- Step 3 (cone apex/axis): the spine C(t) = edge_p0 + t*e -
+  // bis*r(t)/cosb has CONSTANT derivative U = e - (m/cosb)*bis whenever
+  // r(t) is linear (e.bis == 0, so this is a real consequence of r(t)
+  // being linear, not an assumption) - i.e. C(t) is itself a straight
+  // line. r(t) hits exactly zero at t* = -radius0/m, and C(t*) = edge_p0 +
+  // t**e exactly (the bisector-offset term vanishes there since it's
+  // proportional to r(t*) == 0) - a genuinely checked, not assumed,
+  // consequence: the fillet's own apex sits exactly ON the original sharp
+  // edge's own infinite line.
+  const double t_star = -radius0 / m;
+  const Point3d apex = edge_p0 + t_star * e;
+
+  const Vector3d U = e - bis * (m / cosb);
+  const double Umag = U.Length();
+  // Umag >= 1 always (U = e - (m/cosb)*bis with e.bis==0, |e|=|bis|=1, so
+  // Umag = sqrt(1+(m/cosb)^2) >= 1) - never degenerate.
+  Vector3d u_hat = U;
+  u_hat.Unitize();
+
+  // c = sqrt(1-(m/Umag)^2): the canal-surface characteristic-circle
+  // "does it degenerate" factor - here a genuine CONSTANT (not a function
+  // of t) because the spine is straight and r(t) is linear. Provably in
+  // (0, 1] for any valid convex dihedral (cosb in (0,1)) and ANY m,
+  // however large - see this function's own doc comment and
+  // FilletConvexEdgeTapered's own verification tests for the closed-form
+  // check this was validated against: |m|/Umag == |m|*cosb/sqrt(cosb^2+m^2)
+  // < cosb < 1 always, so the classical canal-surface "does the
+  // characteristic circle degenerate" condition never fails here - no
+  // extra "taper too steep" failure mode beyond radius0, radius1 > 0.
+  const double m_over_Umag = m / Umag;
+  const double c = std::sqrt(std::max(0.0, 1.0 - m_over_Umag * m_over_Umag));
+  if (c < 1e-9) {
+    // Should not happen per the proof above for any finite m and
+    // cosb in (0,1) - kept as a checked invariant, not silently trusted.
+    throw std::runtime_error(
+        "dino8::kernel::FilletConvexEdgeTapered: degenerate cone construction "
+        "(c too small) - this should be mathematically impossible for a valid "
+        "convex dihedral; please report this as a bug");
+  }
+
+  // The cone's own true angular sweep, between the two rails' own
+  // characteristic-circle angles - NOT simply sweep_angle0 (the plain
+  // planar-dihedral angle) once m != 0, because the rails' own directions
+  // are no longer perpendicular to the cone's own axis u_hat the way they
+  // were perpendicular to e in the m=0 case. Closed form, derived from
+  // and cross-checked against the standard canal-surface
+  // characteristic-circle formula (see this function's own doc comment
+  // and its verification tests): cos(cone_sweep) =
+  // (dot_ij - (m/Umag)^2) / c^2, reducing exactly to dot_ij (i.e.
+  // sweep_angle0) as m -> 0, confirmed to stay in (0, pi) - never
+  // reflex - for every convex dihedral/taper combination tested.
+  double cos_cone_sweep = (dot_ij - m_over_Umag * m_over_Umag) / (c * c);
+  cos_cone_sweep = std::max(-1.0, std::min(1.0, cos_cone_sweep));
+  const double cone_sweep_angle = std::acos(cos_cone_sweep);
+
+  // Cone frame: xaxis is n_i's own component perpendicular to the cone's
+  // axis (the projection that makes rail_i sit at angle 0 on the cone's
+  // own characteristic circle - verified directly against the standard
+  // formula, see this function's own doc comment); yaxis completes a
+  // right-handed frame the same way FilletConvexEdge's own frame does.
+  Vector3d xaxis = n_i - (n_i * u_hat) * u_hat;
+  if (!xaxis.Unitize()) {
+    throw std::runtime_error(
+        "dino8::kernel::FilletConvexEdgeTapered: degenerate cone frame (face "
+        "i's own normal is parallel to the cone's own axis) - should not "
+        "happen given c > 0 above; please report this as a bug");
+  }
+  Vector3d yaxis = ON_CrossProduct(u_hat, xaxis);
+  yaxis.Unitize();
+
+  // True cone cross-section radii at the patch's own two ends (radius*c,
+  // NOT the raw rolling-ball radius - see Brep::ConicalFace's own doc
+  // comment for why) and the true axial length between them (L*c^2*Umag,
+  // a direct closed form from v(t) = (t - t*) * c^2 * Umag).
+  Brep::ConicalFace fillet_face;
+  fillet_face.frame.origin = apex;
+  fillet_face.frame.xaxis = xaxis;
+  fillet_face.frame.yaxis = yaxis;
+  fillet_face.frame.zaxis = u_hat;
+  fillet_face.frame.UpdateEquation();
+  fillet_face.radius0 = radius0 * c;
+  fillet_face.radius1 = radius1 * c;
+  fillet_face.angle = cone_sweep_angle;
+  fillet_face.length = L * c * c * Umag;
+
+  // --- re-trim faces i/j: same single-plane-clip FilletConvexEdge's own
+  // step 3 uses, generalized so the cut plane's own in-plane normal is
+  // perpendicular to the TILTED rail direction d_i/d_j = e + m*k_i/k_j
+  // (still, provably, a single straight line per face - Step 1 above)
+  // instead of perpendicular to e itself. d_i is guaranteed nonzero and
+  // perpendicular to n_i (d_i.n_i == e.n_i + m*(k_i.n_i) == 0 + 0 == 0,
+  // both terms checked directly above/in FilletConvexEdge's own
+  // derivation), so this is always well-defined.
+  const Vector3d d_i = e + m * k_i;
+  const Vector3d d_j = e + m * k_j;
+
+  Vector3d m_i = ON_CrossProduct(n_i, d_i);
+  if (!m_i.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeTapered: degenerate face/edge geometry "
+        "(face i's own tilted rail direction is parallel to its own normal)");
+  }
+  const Point3d contact_i0 = rail_i(0.0);
+  if (m_i * (edge_p0 - contact_i0) >= 0.0) m_i = -m_i;
+
+  Vector3d m_j = ON_CrossProduct(n_j, d_j);
+  if (!m_j.Unitize()) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeTapered: degenerate face/edge geometry "
+        "(face j's own tilted rail direction is parallel to its own normal)");
+  }
+  const Point3d contact_j1 = rail_j(L);
+  if (m_j * (edge_p1 - contact_j1) >= 0.0) m_j = -m_j;
+
+  // Unlike FilletConvexEdge, this function does NOT attempt FilletConvexEdge's
+  // own closed-form "does the radius fit" pre-check here: its
+  // trim_back = radius/tan(theta/2) relies on k_i being exactly
+  // perpendicular to the (m=0) rail direction e, which is no longer true
+  // once m != 0 (k_i . d_i == m * |k_i|^2 != 0 - a real, checked
+  // difference from the m=0 case, not an oversight) - so that clean closed
+  // form does not carry over exactly.
+  //
+  // A real gap CONFIRMED DURING DEVELOPMENT, not merely theorized: relying
+  // on the post-clip loop.size()<3 check ALONE (as FilletConvexEdge's own
+  // "if the pre-check isn't binding, the post-check still is" fallback
+  // does) is NOT sufficient here. A large enough radius1 on a small solid
+  // pushes rail_i(L)/rail_j(0) entirely OUTSIDE the adjacent face's own
+  // finite extent - and ClipByHalfspace3d, given a cut plane whose
+  // (tilted) intended rail line doesn't actually pass through the face's
+  // own polygon at all, does not reliably empty the polygon to fewer than
+  // 3 vertices; it can instead produce a small, entirely unrelated corner
+  // sliver that still has exactly 3 vertices (confirmed directly: radius0
+  // =0.1, radius1=5.0 on a unit cube produced a 3-vertex "retrimmed" face
+  // whose own vertices were NOT rail_i(0)/rail_i(L) at all, and the
+  // resulting Brep's tessellated volume came out at 5.3x the original
+  // unit cube - silently wrong, not merely rejected). The real, checked
+  // fix: after clipping, verify BOTH of face i's own intended rail
+  // endpoints (rail_i(0), rail_i(L) - exact, closed-form points, not
+  // approximations) are genuinely present as vertices of the retrimmed
+  // loop, and likewise for face j - if either is missing, the tilted cut
+  // plane did not actually intersect that face's own bounded extent along
+  // the intended rail line, so the taper does not fit this solid's
+  // geometry and this function refuses to silently ship whatever
+  // ClipByHalfspace3d happened to produce instead.
+  const Point3d rail_i_far = rail_i(L);
+  const Point3d rail_j_near = rail_j(0.0);
+  auto loop_has_point_near = [&](const std::vector<Point3d>& loop, const Point3d& p) {
+    for (const Point3d& v : loop) {
+      if (PointsEqual(v, p, tol)) return true;
+    }
+    return false;
+  };
+
+  const ON_Plane cut_i(contact_i0, -m_i);
+  const ON_Plane cut_j(contact_j1, -m_j);
+
+  Brep::PlanarFace retrimmed_i = faces[static_cast<size_t>(idx_i)];
+  retrimmed_i.loop = detail::ClipByHalfspace3d(retrimmed_i.loop, cut_i, tol);
+  Brep::PlanarFace retrimmed_j = faces[static_cast<size_t>(idx_j)];
+  retrimmed_j.loop = detail::ClipByHalfspace3d(retrimmed_j.loop, cut_j, tol);
+  if (retrimmed_i.loop.size() < 3 || retrimmed_j.loop.size() < 3) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeTapered: re-trimming an adjacent face "
+        "left fewer than 3 vertices - radius0/radius1 too large for this "
+        "solid's geometry");
+  }
+  if (!loop_has_point_near(retrimmed_i.loop, contact_i0) || !loop_has_point_near(retrimmed_i.loop, rail_i_far) ||
+      !loop_has_point_near(retrimmed_j.loop, rail_j_near) || !loop_has_point_near(retrimmed_j.loop, contact_j1)) {
+    throw std::invalid_argument(
+        "dino8::kernel::FilletConvexEdgeTapered: radius0/radius1 too large to "
+        "fit - the intended rail line (rail_i(0)-rail_i(L) on face i, "
+        "rail_j(0)-rail_j(L) on face j) no longer lies within one of the "
+        "adjacent faces' own bounded extent, so the tilted retrim plane cut "
+        "through a different, unrelated region instead of the intended sliver");
+  }
+
+  // --- assemble: all untouched faces, then the two re-trimmed ones, then
+  // the one new ConicalFace. Deliberately NO NotchCornerAtVertex call -
+  // v1's own explicit, honest scope-out (see this function's own doc
+  // comment): once m != 0 the cone's own axis is not parallel to e, so a
+  // third face perpendicular to e has a true cross-section there that is
+  // an ELLIPSE, not the circular arc NotchCornerAtVertex hardcodes -
+  // reusing it unchanged would be silently wrong, so any such face's
+  // sharp corner is left untouched instead.
+  std::vector<Brep::PlanarFace> others;
+  others.reserve(faces.size() - 2);
+  for (size_t f = 0; f < faces.size(); ++f) {
+    if (static_cast<int>(f) != idx_i && static_cast<int>(f) != idx_j) {
+      others.push_back(faces[f]);
+    }
+  }
+
+  std::vector<Brep::PlanarFace> mixed_planar = std::move(others);
+  mixed_planar.push_back(std::move(retrimmed_i));
+  mixed_planar.push_back(std::move(retrimmed_j));
+
+  return Brep::FromMixedFaces(mixed_planar, {}, {fillet_face});
+}
+
 }  // namespace dino8::kernel

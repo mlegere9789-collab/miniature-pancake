@@ -282,6 +282,129 @@ Brep::PlanarFace ExtractPlanarFace(const FaceGeometry& fg) {
   return face;
 }
 
+// Recovers a ConicalFace from a face already known to be non-planar and
+// non-cylindrical - the direct sibling of MixedFaces()'s own inline
+// cylinder-recovery code (see that method's own doc comment for the
+// worked description this mirrors), split into its own function purely
+// because a cone's apex/two-radius recovery has enough of its own steps
+// to be worth reading on its own. Throws std::invalid_argument if the
+// face is neither cylindrical nor conical (mirrors PlanarFaces()' own
+// honest narrowing for a non-planar face) or std::runtime_error if the
+// recovered geometry is internally inconsistent (should not happen for a
+// face this kernel itself built).
+void ExtractConicalFace(const ON_Brep& brep, int face_index, const FaceGeometry& fg,
+                         Brep::MixedFacesResult& result) {
+  ON_Cone cone;
+  // Same tolerance scale as MixedFaces()'s own IsCylinder() check just
+  // above - loose enough for NURBS-fit noise, tight enough not to
+  // misclassify a genuinely free-form face.
+  const double cone_tol = 1e-4;
+  if (!fg.surface.IsCone(&cone, cone_tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        " is neither planar, cylindrical, nor conical - a genuinely free-form "
+        "face is out of scope here, the same honest narrowing PlanarFaces() "
+        "uses for a non-planar face (see this method's own doc comment)");
+  }
+
+  const std::vector<Point2d> uv = FaceOuterUv(fg);
+  double u_min = uv[0].x, u_max = uv[0].x, v_min = uv[0].y, v_max = uv[0].y;
+  for (const Point2d& p : uv) {
+    u_min = std::min(u_min, p.x);
+    u_max = std::max(u_max, p.x);
+    v_min = std::min(v_min, p.y);
+    v_max = std::max(v_max, p.y);
+  }
+
+  // The actual 3D points at the trim rectangle's own (u_min, v_min) and
+  // (u_min, v_max) corners, evaluated on the REAL surface - exactly the
+  // same "don't trust the fitted primitive's own arbitrary reference
+  // direction" principle MixedFaces()'s own cylinder recovery uses.
+  const Point3d p_near = fg.surface.PointAt(u_min, v_min);
+  const Point3d p_far = fg.surface.PointAt(u_min, v_max);
+
+  Vector3d axis_dir = cone.Axis();
+  if (!axis_dir.Unitize()) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        ": ON_Surface::IsCone returned a degenerate (zero-length) axis");
+  }
+  const Point3d apex = cone.ApexPoint();
+
+  // Orient zaxis so v increases in the +zaxis direction, matching
+  // FromMixedFaces' own "v == true axial height from the apex" convention
+  // - found from the REAL surface, not assumed from ON_Cone::Axis()'s own
+  // arbitrary sign (the same defensive check MixedFaces()'s own cylinder
+  // path applies to ON_Cylinder::Axis()).
+  Vector3d zaxis = axis_dir;
+  double h_near = ON_DotProduct(p_near - apex, zaxis);
+  double h_far = ON_DotProduct(p_far - apex, zaxis);
+  if (h_far < h_near) {
+    zaxis = -zaxis;
+    h_near = -h_near;
+    h_far = -h_far;
+  }
+
+  const Point3d proj_near = apex + h_near * zaxis;
+  const Point3d proj_far = apex + h_far * zaxis;
+  const double radius0 = p_near.DistanceTo(proj_near);
+  const double radius1 = p_far.DistanceTo(proj_far);
+
+  Vector3d xaxis = p_near - proj_near;
+  if (!xaxis.Unitize()) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        "'s trim corner sits exactly on the fitted cone's own axis - cannot "
+        "recover a consistent reference frame");
+  }
+
+  // Self-consistency check: both ends of a genuine right circular cone
+  // satisfy radius / height-from-apex = the SAME constant (tan of the
+  // cone's own half-angle) - cross-multiplied to avoid instability if
+  // either height happens to be near zero.
+  const double lhs = radius1 * h_near;
+  const double rhs = radius0 * h_far;
+  const double scale = std::max({std::fabs(lhs), std::fabs(rhs), 1e-9});
+  if (std::fabs(lhs - rhs) > scale * 1e-6) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        "'s two trim corners are not consistent with a single right circular "
+        "cone (radius/height-from-apex ratio disagrees between them)");
+  }
+
+  Brep::ConicalFace cf;
+  cf.frame.origin = apex;
+  cf.frame.xaxis = xaxis;
+  cf.frame.zaxis = zaxis;
+  cf.frame.yaxis = ON_CrossProduct(zaxis, xaxis);
+  cf.frame.yaxis.Unitize();
+  cf.frame.UpdateEquation();
+  cf.radius0 = radius0;
+  cf.radius1 = radius1;
+  cf.length = h_far - h_near;
+  cf.outward = !brep.m_F[face_index].m_bRev;
+
+  // True radian sweep between the trim's own u_min and u_max, via the
+  // SAME ON_Circle::GetRadianFromNurbFormParameter conversion the
+  // cylinder path above uses - called on cone.CircleAt(cone.height), the
+  // literal circle ON_Cone::GetNurbForm's own u-knots are copied from
+  // (verified directly against opennurbs_cone.cpp - see this class'
+  // MixedFacesResult doc comment), so this is exact, not an
+  // approximation carried over from the cylinder case.
+  const ON_Circle u_ref_circle = cone.CircleAt(cone.height);
+  double r_min = 0.0, r_max = 0.0;
+  if (!u_ref_circle.GetRadianFromNurbFormParameter(u_min, &r_min) ||
+      !u_ref_circle.GetRadianFromNurbFormParameter(u_max, &r_max)) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        ": ON_Circle::GetRadianFromNurbFormParameter failed converting the "
+        "trim's own u-domain to true angle");
+  }
+  cf.angle = r_max - r_min;
+
+  result.conical.push_back(cf);
+}
+
 }  // namespace
 
 std::vector<Brep::PlanarFace> Brep::PlanarFaces() const {
@@ -321,11 +444,11 @@ Brep::MixedFacesResult Brep::MixedFaces() const {
     // not to misclassify a genuinely non-cylindrical face.
     const double cyl_tol = 1e-4;
     if (!fg.surface.IsCylinder(&cyl, cyl_tol)) {
-      throw std::invalid_argument(
-          "dino8::kernel::Brep::MixedFaces: face " + std::to_string(i) +
-          " is neither planar nor cylindrical - a genuinely free-form face is "
-          "out of scope here, the same honest narrowing PlanarFaces() uses "
-          "for a non-planar face (see this method's own doc comment)");
+      // Not a cylinder - try a cone next (see this method's own doc
+      // comment for the ConicalFace recovery this mirrors from
+      // FromMixedFaces()'s own cone-building code below).
+      ExtractConicalFace(brep_, i, fg, result);
+      continue;
     }
 
     const std::vector<Point2d> uv = FaceOuterUv(fg);
@@ -467,13 +590,21 @@ class VertexWelder {
 struct FaceTopology {
   std::vector<int> vids;
   std::vector<Point2d> trim_uv;
-  // Only set for a CylindricalFace's own 4-point (u, v) rectangle loop
-  // (see BuildFaceLoop's own comment for why its two cap segments, index 0
-  // and 2, need this instead of a plain straight edge). Borrowed - owned
-  // by brep.m_S, valid for this whole FromMixedFaces() call.
-  ON_NurbsSurface* cylindrical_surface = nullptr;
-  double cylindrical_u_max = 0.0;
-  double cylindrical_length = 0.0;
+  // Only set for a CylindricalFace's or ConicalFace's own 4-point (u, v)
+  // rectangle loop (see BuildFaceLoop's own comment for why its two cap
+  // segments, index 0 and 2, need this instead of a plain straight edge).
+  // Borrowed - owned by brep.m_S, valid for this whole FromMixedFaces()
+  // call. `curved_v0` is the TRUE v-value of the index-0 cap: always 0.0
+  // for a CylindricalFace (whose own frame.origin sits ON the patch, at
+  // v=0 by construction - see CylindricalFace's own doc comment), but
+  // generally nonzero for a ConicalFace (whose own frame.origin is the
+  // cone's APEX, outside the trimmed patch - see ConicalFace's own doc
+  // comment), so the two cap isocurves live at v=curved_v0 and
+  // v=curved_v0+curved_length rather than always at v=0 and v=length.
+  ON_NurbsSurface* curved_surface = nullptr;
+  double curved_u_max = 0.0;
+  double curved_v0 = 0.0;
+  double curved_length = 0.0;
   // Parallel to vids/trim_uv (same length, or empty when nothing on this
   // face has been collapsed - the overwhelmingly common case). Non-empty
   // at index k means the segment vids[k]->vids[k+1] is a PlanarFace's own
@@ -499,18 +630,20 @@ struct FaceTopology {
 // misbuilding a third trim onto it.
 //
 // The 3D edge curve is a straight ON_LineCurve between the two welded
-// points in every case except a CylindricalFace's own two circular cap
-// segments (index 0 at v=0, index 2 at v=length, of its 4-point
-// [u:0..u_max, v:0..length] rectangle loop - see brep.h's FromMixedFaces
-// comment for that rectangle's own construction), which instead use the
-// surface's own isocurve (ON_Surface::IsoCurve(0, v)) so the edge's C3
-// curve and the trim's 2D-to-surface composition are identical by
-// construction, not independently reconstructed and merely close. The
-// rectangle's other two segments (index 1 at u=u_max, index 3 at u=0) -
-// the fillet's two straight "rail" lines - need no such special-casing:
-// they're genuinely straight, so the plain ON_LineCurve path already
-// welds them against FilletConvexEdge's own re-trimmed planar faces with
-// zero extra work, exactly as that function's own doc comment states.
+// points in every case except a CylindricalFace's or ConicalFace's own
+// two circular cap segments (index 0 at v=curved_v0, index 2 at
+// v=curved_v0+curved_length, of its 4-point [u:0..curved_u_max,
+// v:curved_v0..curved_v0+curved_length] rectangle loop - see brep.h's
+// FromMixedFaces comment for that rectangle's own construction), which
+// instead use the surface's own isocurve (ON_Surface::IsoCurve(0, v)) so
+// the edge's C3 curve and the trim's 2D-to-surface composition are
+// identical by construction, not independently reconstructed and merely
+// close. The rectangle's other two segments (index 1 at u=curved_u_max,
+// index 3 at u=0) - the fillet's two straight "rail" lines - need no such
+// special-casing: they're genuinely straight, so the plain ON_LineCurve
+// path already welds them against FilletConvexEdge's own re-trimmed
+// planar faces with zero extra work, exactly as that function's own doc
+// comment states.
 //
 // ON_Surface::IsoCurve(0, c)'s own natural direction is increasing-u
 // (point at parameter t is srf(t, c)): segment 0 (u: 0 -> u_max) walks
@@ -528,7 +661,7 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
     const int vid_from = topo.vids[k];
     const int vid_to = topo.vids[k1];
 
-    const bool is_cap = topo.cylindrical_surface != nullptr && (k == 0 || k == 2);
+    const bool is_cap = topo.curved_surface != nullptr && (k == 0 || k == 2);
     const bool iso_reversed = is_cap && k == 2;
 
     const uint32_t lo = static_cast<uint32_t>(std::min(vid_from, vid_to));
@@ -542,18 +675,19 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
       int curve_start_vid = vid_from;
       int curve_end_vid = vid_to;
       if (is_cap) {
-        const double v_const = (k == 0) ? 0.0 : topo.cylindrical_length;
-        ON_Curve* iso = topo.cylindrical_surface->IsoCurve(/*dir=*/0, v_const);
+        const double v_const = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
+        ON_Curve* iso = topo.curved_surface->IsoCurve(/*dir=*/0, v_const);
         if (!iso) {
           throw std::runtime_error(
               "dino8::kernel::Brep::FromMixedFaces: ON_Surface::IsoCurve failed "
-              "building a CylindricalFace's own cap edge");
+              "building a CylindricalFace's/ConicalFace's own cap edge");
         }
-        if (!iso->Trim(ON_Interval(0.0, topo.cylindrical_u_max))) {
+        if (!iso->Trim(ON_Interval(0.0, topo.curved_u_max))) {
           delete iso;
           throw std::runtime_error(
-              "dino8::kernel::Brep::FromMixedFaces: trimming a CylindricalFace's "
-              "own cap isocurve to its real sweep angle failed");
+              "dino8::kernel::Brep::FromMixedFaces: trimming a "
+              "CylindricalFace's/ConicalFace's own cap isocurve to its real "
+              "sweep angle failed");
         }
         iso->SetDomain(0.0, 1.0);
         c3 = iso;
@@ -636,7 +770,8 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
 }  // namespace
 
 Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
-                           const std::vector<Brep::CylindricalFace>& cylindrical_faces) {
+                           const std::vector<Brep::CylindricalFace>& cylindrical_faces,
+                           const std::vector<Brep::ConicalFace>& conical_faces) {
   Brep result;
   ON_Brep& brep = result.brep_;
   VertexWelder welder;
@@ -786,9 +921,95 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     t.trim_uv = trim;
     t.vids = {welder.Weld(surface->PointAt(0.0, 0.0)), welder.Weld(surface->PointAt(u_max, 0.0)),
               welder.Weld(surface->PointAt(u_max, cf.length)), welder.Weld(surface->PointAt(0.0, cf.length))};
-    t.cylindrical_surface = surface;
-    t.cylindrical_u_max = u_max;
-    t.cylindrical_length = cf.length;
+    t.curved_surface = surface;
+    t.curved_u_max = u_max;
+    t.curved_v0 = 0.0;
+    t.curved_length = cf.length;
+    topo.push_back(std::move(t));
+  }
+
+  for (const ConicalFace& cf : conical_faces) {
+    // See ConicalFace's own doc comment for the closed-form derivation:
+    // radius0/radius1 (the TRUE cone cross-section radii at the patch's
+    // own two ends) and length (the TRUE axial distance between them)
+    // determine the cone's own half-angle and, from there, the true
+    // axial height of each end AS MEASURED FROM THE APEX (frame.origin) -
+    // a third quantity neither radius0/radius1 nor length store directly,
+    // recovered here by similar triangles, the same relationship
+    // ON_Cone::PointAt's own construction uses (radius = tan(half_angle)
+    // * height-from-apex, confirmed directly against opennurbs_cone.cpp).
+    if (!(cf.length > 0.0)) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromMixedFaces: ConicalFace::length must be "
+          "strictly positive");
+    }
+    const double tan_half_angle = (cf.radius1 - cf.radius0) / cf.length;
+    if (std::fabs(tan_half_angle) < 1e-300) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromMixedFaces: ConicalFace::radius0 and "
+          "radius1 are equal - this is a degenerate (zero half-angle) cone, "
+          "i.e. genuinely a cylinder; build a CylindricalFace instead");
+    }
+    const double v0 = cf.radius0 / tan_half_angle;  // true height-from-apex, end 0
+    const double v1 = cf.radius1 / tan_half_angle;  // true height-from-apex, end 1
+    // ON_Cone::GetNurbForm builds its own NURBS surface's v-domain as
+    // [0, height] (or [height, 0] if height<0 - confirmed directly against
+    // opennurbs_cone.cpp/PointAt's own height>=0 branch, not assumed), so
+    // whichever of v0/v1 has the LARGER magnitude is what has to be passed
+    // as ON_Cone's own `height` for that domain to fully contain both -
+    // the other one, closer to the apex, then lies strictly inside it.
+    const bool use_v1_as_height = std::fabs(v1) >= std::fabs(v0);
+    const double cone_height = use_v1_as_height ? v1 : v0;
+    const double cone_radius = use_v1_as_height ? cf.radius1 : cf.radius0;
+
+    const ON_Cone cone(cf.frame, cone_height, cone_radius);
+    auto* surface = new ON_NurbsSurface();
+    const int rc = cone.GetNurbForm(*surface);
+    if (rc == 0) {
+      delete surface;
+      throw std::runtime_error(
+          "dino8::kernel::Brep::FromMixedFaces: ON_Cone::GetNurbForm failed "
+          "(invalid frame/height/radius)");
+    }
+    // Same NURBS-parameter-is-not-radian-angle correction as the cylinder
+    // path above, confirmed to apply identically to a cone: ON_Cone::
+    // GetNurbForm's own u-knots are a direct copy of the base circle's own
+    // ON_Circle::GetNurbForm knots (verified against opennurbs_cone.cpp),
+    // so the same ON_Circle::GetNurbFormParameterFromRadian conversion is
+    // exact here too, not an approximation borrowed from the cylinder
+    // case. Built on `cone.CircleAt(cone.height)` - the literal circle
+    // GetNurbForm's own construction uses - matching MixedFaces()'s own
+    // inverse conversion (see that method's own doc comment).
+    const ON_Circle u_ref_circle = cone.CircleAt(cone.height);
+    double u_max = 0.0;
+    if (!u_ref_circle.GetNurbFormParameterFromRadian(cf.angle, &u_max)) {
+      delete surface;
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromMixedFaces: ConicalFace::angle is out of "
+          "ON_Circle's own [0, 2*pi] NURBS-parameterization domain");
+    }
+    const int surface_index = brep.AddSurface(surface);
+    ON_BrepFace& face = brep.NewFace(surface_index);
+    // v0 < v1 always (see ConicalFace's own doc comment: the true
+    // height-from-apex is monotonically increasing along +frame.zaxis by
+    // construction of FilletConvexEdgeTapered's own derivation), so this
+    // is the same increasing-(u, v)-parameter corner order the cylinder
+    // path above uses, just offset to [v0, v1] instead of [0, length].
+    face.m_bRev = !cf.outward;
+    const std::vector<Point2d> trim = {Point2d(0.0, v0), Point2d(u_max, v0), Point2d(u_max, v1),
+                                        Point2d(0.0, v1)};
+    result.face_trim_loops_.push_back(trim);
+    result.face_exact_clip_.push_back(true);
+    result.face_hole_loops_.emplace_back();
+
+    FaceTopology t;
+    t.trim_uv = trim;
+    t.vids = {welder.Weld(surface->PointAt(0.0, v0)), welder.Weld(surface->PointAt(u_max, v0)),
+              welder.Weld(surface->PointAt(u_max, v1)), welder.Weld(surface->PointAt(0.0, v1))};
+    t.curved_surface = surface;
+    t.curved_u_max = u_max;
+    t.curved_v0 = v0;
+    t.curved_length = v1 - v0;
     topo.push_back(std::move(t));
   }
 
@@ -803,32 +1024,36 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
   // sharing an edge automatically wherever two faces' own welded vertex
   // pairs match (see BuildFaceLoop's own doc comment for exactly how).
   //
-  // Visited in TWO passes - every CylindricalFace's own topo entry first,
-  // then every PlanarFace's - rather than one pass in `topo`'s own
-  // (planar-then-cylindrical) order. `brep.m_F`'s own face indices are
-  // completely unaffected (those were already fixed by Pass 1's own
-  // NewFace() call order above; this only changes which face's
-  // BuildFaceLoop call runs first for a given shared vertex pair). This
-  // is what guarantees a CylindricalFace's own true-arc cap edge always
-  // exists BEFORE a PlanarFace's own collapsed corner-notch segment (see
-  // PlanarFace::notch_begin/notch_count's own doc comment) could reach
-  // the same welded vertex pair: whichever face's BuildFaceLoop call
+  // Visited in TWO passes - every CylindricalFace's/ConicalFace's own topo
+  // entry first, then every PlanarFace's - rather than one pass in
+  // `topo`'s own (planar-then-cylindrical-then-conical) order. `brep.m_F`'s
+  // own face indices are completely unaffected (those were already fixed
+  // by Pass 1's own NewFace() call order above; this only changes which
+  // face's BuildFaceLoop call runs first for a given shared vertex pair).
+  // This is what guarantees a CylindricalFace's own true-arc cap edge
+  // always exists BEFORE a PlanarFace's own collapsed corner-notch segment
+  // (see PlanarFace::notch_begin/notch_count's own doc comment) could
+  // reach the same welded vertex pair: whichever face's BuildFaceLoop call
   // visits a vertex pair FIRST wins the right to build that edge's real
-  // 3D curve, and the second visitor merely reuses it - so cylindrical
-  // faces must go first for a notch to ever get the arc, not a straight
-  // line. Straight-rail sharing (fillet.h) is completely unaffected by
-  // this reordering, exactly as it was unaffected by which of the two
-  // ORIGINAL pass-1 loops (planar, cylindrical) ran first: a straight
-  // ON_LineCurve between the same two points is identical regardless of
-  // which face happens to build it.
+  // 3D curve, and the second visitor merely reuses it - so curved faces
+  // must go first for a notch to ever get the arc, not a straight line.
+  // (A ConicalFace's own two cap arcs are never notch-shared in v1 - see
+  // FilletConvexEdgeTapered's own doc comment for why - but visiting it in
+  // this same first pass is still correct and harmless: nothing else ever
+  // reaches its own welded vertex pairs first regardless.) Straight-rail
+  // sharing (fillet.h) is completely unaffected by this reordering,
+  // exactly as it was unaffected by which of the two ORIGINAL pass-1 loops
+  // (planar, cylindrical) ran first: a straight ON_LineCurve between the
+  // same two points is identical regardless of which face happens to
+  // build it.
   std::unordered_map<uint64_t, int> edge_of_vertex_pair;
   for (size_t fi = 0; fi < topo.size(); ++fi) {
-    if (topo[fi].cylindrical_surface != nullptr) {
+    if (topo[fi].curved_surface != nullptr) {
       BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair);
     }
   }
   for (size_t fi = 0; fi < topo.size(); ++fi) {
-    if (topo[fi].cylindrical_surface == nullptr) {
+    if (topo[fi].curved_surface == nullptr) {
       BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair);
     }
   }

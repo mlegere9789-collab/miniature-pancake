@@ -263,6 +263,91 @@ class Brep {
     bool outward = true;
   };
 
+  // One curved LINEAR-TAPER fillet face's exact geometry: a trimmed
+  // right-circular-CONE patch - the shape a rolling ball of LINEARLY
+  // varying radius r(t) = r0 + m*t traces along a straight edge between
+  // two planes (see FilletConvexEdgeTapered in dino8/kernel/fillet.h for
+  // the one place this gets built, and that function's own doc comment
+  // for the worked derivation this relies on). A sibling of
+  // CylindricalFace, deliberately NOT unified with it into one struct:
+  // a cone has no single supporting plane (CylindricalFace::frame.origin
+  // sits ON the swept patch; a cone's own natural frame.origin is its
+  // APEX, which is always strictly OUTSIDE the trimmed patch whenever
+  // both radii are positive - see below) and no single radius, so
+  // reusing CylindricalFace's fields would be a lossy fit, not a genuine
+  // generalization.
+  //
+  // The exactness argument (see FilletConvexEdgeTapered's own doc
+  // comment for the full derivation, and dino8-kernel's worked-example
+  // verification tests for the closed-form checks): for a straight spine
+  // C(t) (the rolling ball's own center, itself a straight line whenever
+  // r(t) is linear - a real, checked-directly consequence of the
+  // tangency construction, not assumed) and LINEARLY varying radius
+  // r(t) = r0 + m*t, the classical canal-surface characteristic-circle
+  // formula (Peternell & Pottmann, "Computing rational parametrizations
+  // of canal surfaces," J. Symbolic Computation 23(2-3), 1997) reduces
+  // to: every characteristic circle lies in a plane perpendicular to a
+  // FIXED axis direction u (not the edge direction e itself, except in
+  // the m=0 special case CylindricalFace already covers - see below),
+  // centered on a FIXED line through that same axis, with radius growing
+  // LINEARLY from zero at a single apex point A - i.e., a genuine right
+  // circular cone, verified directly (not merely asserted) against the
+  // standard formula: both the circle's distance-from-apex-along-axis
+  // and its own radius are exactly linear in t with a COMMON zero at
+  // apex parameter t* = -r0/m, so their ratio (tan of the cone's own
+  // half-angle) is a t-independent constant.
+  //
+  // A subtlety the m=0 (CylindricalFace) case has no analogue of: the
+  // rolling ball's own radius r(t) is NOT the same number as the cone's
+  // own true cross-sectional radius at the corresponding point - they
+  // differ by a fixed scale factor c = sqrt(1 - (m/|u|)^2) (the same
+  // "does the characteristic circle degenerate" factor the general
+  // canal-surface formula always carries, here a genuine constant since
+  // the spine is straight and the radius law is linear), because the
+  // ball's own CENTER does not sit on the cone's own axis whenever m!=0
+  // (only the axis-projected point of each characteristic circle does).
+  // `radius0`/`radius1` below are that TRUE cone cross-section radius
+  // (r(t)*c at the patch's own two ends), not the raw rolling-ball
+  // radius FilletConvexEdgeTapered's own radius0/radius1 PARAMETERS
+  // name - the same names are reused for both because they play the
+  // same "radius at this end of the patch" role, but they are genuinely
+  // different numbers whenever the taper is nonzero; this struct always
+  // stores the former (what OpenNURBS' own ON_Cone construction needs).
+  //
+  // `frame.origin` is the cone's own APEX A - a point strictly outside
+  // the trimmed patch whenever both radii are positive (the physical
+  // radius extrapolates to exactly zero there, i.e. the rolling ball
+  // shrinks to a point sitting exactly ON the original sharp edge's own
+  // infinite line - a genuinely checked, not assumed, consequence of the
+  // tangency construction, since the bisector-offset term in the ball's
+  // own center formula is proportional to r(t) and so vanishes exactly
+  // where r(t) does). `frame.zaxis` is the cone's own unit axis
+  // direction u/|u| (NOT generally parallel to the edge direction e once
+  // m!=0 - see FilletConvexEdgeTapered's own doc comment for why this,
+  // not e, is what a THIRD face perpendicular to e can no longer share
+  // this patch's own end arc with, exactly, without going through a
+  // separate elliptical-cross-section generalization v1 does not
+  // attempt). `frame.xaxis` is the angle-0 reference direction, playing
+  // the same role CylindricalFace::frame.xaxis does. `radius0`/`radius1`
+  // are the TRUE cone cross-section radii (see above) at the patch's own
+  // two ends; `length` is the TRUE axial distance between those two ends
+  // measured along `frame.zaxis` from wherever the patch actually starts
+  // (NOT from the apex - the apex itself sits `radius0/tan(half_angle)`
+  // further back along `frame.zaxis`, a value fully recoverable from
+  // radius0/radius1/length alone via similar triangles, so no separate
+  // "distance from apex to patch start" field is needed: tan(half_angle)
+  // = (radius1-radius0)/length, and the apex-to-start distance is
+  // radius0/tan(half_angle)). `angle`/`outward` play the same role
+  // CylindricalFace's own fields do.
+  struct ConicalFace {
+    ON_Plane frame;
+    double radius0 = 0.0;
+    double radius1 = 0.0;
+    double angle = 0.0;
+    double length = 0.0;
+    bool outward = true;
+  };
+
   // The general sibling of PlanarFaces() that also recognizes a
   // cylindrical face rather than throwing on it - the extraction half of
   // what BooleanCombineMixed (see boolean.h) needs to get a
@@ -305,16 +390,53 @@ class Brep {
   //     canonical parameterization, not to any particular circle
   //     instance's plane.
   //
-  // Throws std::invalid_argument if a face is neither planar nor
-  // cylindrical (a genuinely free-form face - out of scope, the same
+  // A non-planar, non-cylindrical face is next checked via
+  // `raw().IsCone(&cone, tol)` (the direct sibling of the IsCylinder()
+  // check above, mirrored the same way ON_Surface::IsCone mirrors
+  // ON_Surface::IsCylinder - both confirmed present in the vendored
+  // OpenNURBS source, not merely assumed from the spec text this method
+  // was built from) and, if that succeeds, recovered as the inverse of
+  // what FromMixedFaces() built for a ConicalFace:
+  //   - `frame.zaxis` is ON_Cone::Axis(); `frame.origin` is the fitted
+  //     cone's own ApexPoint() directly (unlike CylindricalFace's own
+  //     axis-projection recovery, a cone's apex is already a single,
+  //     unambiguous point - no projection needed).
+  //   - `frame.xaxis` is recovered the same way CylindricalFace's own
+  //     frame.xaxis is: evaluate the REAL surface at the trim rectangle's
+  //     own (u_min, v_min) corner, then take the unit vector from that
+  //     corner's own axis-projected point (not the apex) to the corner
+  //     itself - i.e. exactly the patch's own rail at the trim's own
+  //     u_min, correct for any trim rectangle's own u_min the same way
+  //     CylindricalFace's own recovery is.
+  //   - `radius0`/`radius1` are recovered from the corner point (and the
+  //     analogous far corner at v_max) via the SAME apex-relative
+  //     similar-triangles relationship FromMixedFaces() itself uses to go
+  //     the other way (radius = tan(half_angle) * distance-from-apex, a
+  //     direct read of ON_Cone::PointAt's own construction, not an
+  //     independent formula) - `length` is the true axial distance
+  //     between those two corners' own axis-projected points.
+  //   - `angle` is recovered exactly as CylindricalFace's own `angle` is:
+  //     the true radian sweep between the trim's own u_min/u_max via
+  //     ON_Circle::GetRadianFromNurbFormParameter, confirmed directly
+  //     (not assumed) to apply unchanged to a cone's own NURBS
+  //     parameterization - ON_Cone::GetNurbForm builds its own u-knots by
+  //     literally copying an ON_Circle::GetNurbForm curve's own knots
+  //     (verified against the vendored opennurbs_cone.cpp source), so a
+  //     cone's u-parameter is the exact same non-radian NURBS-circle
+  //     parameterization a cylinder's is, needing the exact same
+  //     angle<->parameter conversion, not a different one.
+  //
+  // Throws std::invalid_argument if a face is neither planar, cylindrical,
+  // nor conical (a genuinely free-form face - out of scope, the same
   // honest narrowing PlanarFaces() uses for a non-planar face) or
-  // std::runtime_error if the trim corner's recovered distance from the
-  // fitted axis doesn't match the fitted radius within tolerance (should
-  // not happen for a face this kernel itself built, but is checked rather
-  // than silently returning a wrong frame).
+  // std::runtime_error if a trim corner's recovered geometry doesn't
+  // match the fitted primitive within tolerance (should not happen for a
+  // face this kernel itself built, but is checked rather than silently
+  // returning a wrong frame).
   struct MixedFacesResult {
     std::vector<PlanarFace> planar;
     std::vector<CylindricalFace> cylindrical;
+    std::vector<ConicalFace> conical;
   };
   MixedFacesResult MixedFaces() const;
 
@@ -344,9 +466,26 @@ class Brep {
   // and CylindricalFace's own doc comments describe; not re-validated
   // beyond what NewFace's own surface construction requires.
   //
-  // FromPlanarFaces(faces) is exactly FromMixedFaces(faces, {}).
+  // Every ConicalFace becomes an exact rational-NURBS patch the same way,
+  // via ON_Cone(ON_Plane(frame.origin, ..., frame.zaxis), height, radius)
+  // .GetNurbForm() for a (height, radius) reference point chosen (from
+  // whichever of the patch's own two ends is farther from the apex) so
+  // the cone's own natural [0, height] (or [height, 0], per
+  // ON_Cone::GetNurbForm's own sign convention for a negative height -
+  // confirmed directly against the vendored source, not assumed) v-domain
+  // fully contains both of the patch's own true end heights - trimmed to
+  // the sub-rectangle of true angle [0, angle] (same
+  // GetNurbFormParameterFromRadian conversion as a CylindricalFace, see
+  // MixedFaces()'s own doc comment for why a cone needs the identical
+  // correction) and true axial height [v0, v1] (NOT [0, length] - a
+  // cone's own frame.origin is its apex, not the patch's own start, so
+  // this sub-range is generally offset from the surface's own v=0,
+  // unlike a CylindricalFace's own [0, length]).
+  //
+  // FromPlanarFaces(faces) is exactly FromMixedFaces(faces, {}, {}).
   static Brep FromMixedFaces(const std::vector<PlanarFace>& faces,
-                              const std::vector<CylindricalFace>& cylindrical_faces);
+                              const std::vector<CylindricalFace>& cylindrical_faces,
+                              const std::vector<ConicalFace>& conical_faces = {});
 
   // The inverse of PlanarFaces(): builds a new Brep with one
   // TrimmedPlanarFace()-equivalent face per PlanarFace, each an exact
