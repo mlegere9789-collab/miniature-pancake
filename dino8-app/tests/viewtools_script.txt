@@ -1,0 +1,128 @@
+# View tools QC: clipping planes + sections, layouts + details, named CPlanes, animation.
+# @TMP@ is replaced by smoke.sh with a scratch directory.
+Sphere 0,0,0 10
+# --- clipping plane through the sphere's equator (CPlane XY in Perspective): clips the top half
+ClippingPlane -20,-20,0 20,20,0
+ClippingSections
+SelCrv
+List
+SelNone
+ClearClippingSections
+DisableClippingPlane
+EnableClippingPlane
+ClippingPlane Viewports=Active Name=Upper -20,-20,5 20,20,5
+SelClippingPlane
+SaveClippingSectionCPlanes
+SaveClippingSectionViews
+ExportClippingSectionInfo @TMP@/clipping.txt
+ClippingDrawings
+UpdateClippingDrawings
+EditClippingDrawings
+ExportClippingDrawings @TMP@/drawings.3dm
+Delete
+ClippingSections
+ClearClippingSections
+# --- ExtractClippingSlices (planar slice surfaces), MPlane orientation
+# tracking, OrientCameraToSrf (picked point), Zoom1To1
+ExtractClippingSlices
+SelLast
+List
+ClearClippingSections
+SelNone
+Box 50,0,0 60,10,0 5
+SelLast
+Rotate 55,5,0 45
+SelLast
+MPlane
+SelNone
+MPlane
+CPlane World
+Plane 70,0,0 90,20,0
+SelLast
+OrientCameraToSrf
+80,10,0
+Camera
+Enter
+Zoom1To1Calibrate 96
+Zoom1To1
+# --- PerspectiveMatch: two-vanishing-point camera calibration, checked against a
+# known ground-truth camera. The 8 vanishing-point line points and 2 reference
+# points below are typed 3D coordinates (CPlane World, so they equal world
+# coordinates exactly); PerspectiveMatch itself re-projects each one through the
+# CURRENT (not yet touched) camera to recover where it sits on screen, so this
+# exactly simulates a user tracing real, perpendicular X/Y lines and 2 known
+# points in a photo taken from this exact eye/target/lens.
+CPlane World
+Perspective
+Camera
+30,-40,25
+2,3,-1
+ZoomLens 50
+PerspectiveMatch
+0,0,0
+10,0,0
+0,8,0
+10,8,0
+0,0,0
+0,10,0
+8,0,0
+8,10,0
+4,4,0
+4,4,0
+6,-3,5
+6,-3,5
+Camera
+Enter
+# --- named CPlanes
+CPlane Elevation=7
+NamedCPlane Save Deck
+CPlane World
+NamedCPlane Restore Deck
+CPlanePrevious
+CPlaneNext
+CPlane Rotate=45
+CopyCPlaneToAll
+NamedCPlane List
+# --- layouts and details (page coordinates are millimetres)
+Layout Name=Sheet1 Width=297 Height=210
+Detail 20,20 150,120
+Detail View=Perspective Name=Iso 170,20 280,190
+Layouts
+SelDetail Iso
+HideLayersInDetail Default
+ShowLayersInDetail Default
+CopyDetailToViewport Perspective
+CopyViewportToDetail Perspective
+CopyLayout
+LayoutProperties Name=Sheet2 Width=420 Height=297
+Layouts Model
+# --- animation: turntable, stepping, playback, recording
+SetTurntableAnimation Frames=6 Degrees=360
+ViewFrameNumber 3
+ViewNextFrame
+ViewLastFrame
+ViewFirstFrame
+PlayAnimation
+@wait 8
+RecordAnimation Folder=@TMP@/frames
+@wait 10
+# --- sun animations: camera stays put, the Sun sweeps instead
+SetOneDaySunAnimation Frames=4
+ViewFirstFrame
+Sun
+ViewLastFrame
+Sun
+SetSeasonalSunAnimation Frames=4
+ViewFirstFrame
+Sun
+ViewLastFrame
+Sun
+SplitViewportHorizontal
+CloseViewport
+Save @TMP@/viewtools.3dm
+New
+Open @TMP@/viewtools.3dm
+Layouts
+NamedCPlane List
+SelClippingPlane
+@expect_objects 5

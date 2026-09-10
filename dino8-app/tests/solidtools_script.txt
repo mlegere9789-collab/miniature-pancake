@@ -1,0 +1,232 @@
+# Solid tools QC: holes, planar curve booleans, Clash, cage editing, Flow, ScaleByPlane.
+# Object counts are checked with @expect_objects after each section.
+# --- RoundHole through a 20x20x10 box: volume 4000 - pi*9*10 = 3717.3 (the result mesh takes a new id: 2)
+Box 0,0,0 20,20,0 10
+SelLast
+RoundHole
+10,10,10
+3
+10
+SelLast
+Volume
+@expect_objects 1
+# --- CurveBoolean union of two overlapping circles: one closed curve
+SelNone
+Circle 50,0,0 5
+Circle 56,0,0 5
+SelID 3
+SelID 4
+CurveBoolean
+SelLast
+List
+@expect_objects 4
+# --- Clash between two overlapping spheres
+SelNone
+Sphere 200,0,0 10
+Sphere 212,0,0 10
+SelID 6
+SelID 7
+Clash
+@expect_objects 6
+# --- Cage + CageEdit, then move and scale the cage: the captive follows
+SelNone
+Box 300,0,0 310,10,0 10
+Cage 295,-5,0 315,15,0 15
+SelID 8
+CageEdit
+SelID 9
+Enter
+SelControls
+Move 295,-5,0 295,-5,5
+SelCaptives
+BoundingBox
+SelControls
+Scale 295,-5,5 2
+SelCaptives
+BoundingBox
+# Regression: CageDivisions is persisted in the cage mesh's own user-text -
+# a crafted/corrupted .3dm can forge it to anything. Object 9 is the real
+# cage from above (built with divisions 2,2,2, clamped [1,10] by the
+# interactive Cage command itself); forging it to a value outside that
+# range must make IsCage reject it (CageEdit refuses it as "not a cage"),
+# not accept it and let CageEdit/Ffd index the real (small) lattice with
+# an out-of-range nx/ny/nz.
+SelID 9
+SetUserText
+CageDivisions
+20,1,1
+SelID 8
+CageEdit
+SelID 9
+Enter
+@expect_objects 10
+# --- Flow a line onto a half-circle arc (stretched to fit)
+SelNone
+Line 500,0,0 520,0,0
+Arc 600,0,0 610,0,0 590,0,0
+SelID 13
+Flow
+Stretch=Yes
+SelID 13
+Enter
+SelID 14
+Enter
+SelID 13
+Length
+SelID 13
+List
+@expect_objects 12
+# --- ScaleByPlane: scale a mesh box by 2 along Z about the plane z=0
+SelNone
+MeshBox 400,0,0 410,10,0 10
+SelLast
+ScaleByPlane
+400,0,0
+400,0,1
+2
+SelID 15
+BoundingBox
+@expect_objects 14
+# --- ArrayHole: a 2x2 grid of round holes through a 40x40x10 box
+SelNone
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHole
+Enter
+10,10,10
+2
+10
+2
+2
+20
+20
+SelLast
+Volume
+@expect_objects 15
+# --- ArrayHole with a profile curve: a 1x3 row of 4x4 square holes
+SelNone
+Rectangle 0,0,0 4,4,0
+SelLast
+SetObjectName ProfileRect
+SelNone
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHole
+SelName ProfileRect
+Enter
+5,5,10
+2
+10
+1
+3
+0
+10
+SelLast
+Volume
+@expect_objects 17
+# --- ArrayHolePolar: 4 round holes on a circle about the CPlane normal
+SelNone
+Box 0,0,0 40,40,0 10
+SelLast
+ArrayHolePolar
+Enter
+10,10,10
+2
+10
+10,20,0
+4
+SelLast
+Volume
+@expect_objects 18
+# --- MoveHole / CopyHole / RotateHole / MirrorHole on a RoundHole feature
+SelNone
+Box 0,0,0 20,20,0 10
+SelLast
+RoundHole
+5,5,10
+2
+10
+SelLast
+MoveHole
+5,5,0
+8,5,0
+SelLast
+List
+SelLast
+CopyHole
+8,5,0
+15,15,0
+SelLast
+RotateHole
+10,10,0
+90
+SelLast
+MirrorHole
+10,0,0
+10,20,0
+@expect_objects 21
+# --- CutVolume: a r=5 cylinder's worth of a box, volume pi*25*10 = 785.4
+SelNone
+Circle 10,10,0 5
+SelLast
+Box 0,0,0 20,20,0 10
+CutVolume
+SelLast
+Enter
+SelLast
+Volume
+@expect_objects 24
+# --- Bounce: a ray straight down off a box top bounces straight back up
+SelNone
+Box 0,0,0 20,20,0 5
+Bounce
+10,10,20
+10,10,0
+5
+@expect_objects 26
+# --- CreateSolid: joins/welds a single closed Brep's own surfaces into a closed mesh solid
+SelNone
+Box 800,0,0 810,10,0 10
+SelLast
+CreateSolid
+@expect_objects 27
+# --- Splop: places an oriented copy at a picked point on a target surface
+SelNone
+Plane 900,0,0 910,10,0
+SelLast
+SetObjectName SplopSrf
+Sphere 905,5,20 1
+SelLast
+Splop
+SelName SplopSrf
+Enter
+905,5,0
+Enter
+@expect_objects 30
+# --- Reflect: mirrors the selection across a plane and welds original + mirror into one symmetric mesh
+SelNone
+MeshBox 1000,0,0 1005,10,0 10
+SelLast
+Reflect
+1005,0,0
+1005,10,0
+@expect_objects 31
+# --- Radiate / RadiateFind: bake vertex colours from the Sun, then find the lights used
+SelNone
+MeshSphere 1100,0,0 5
+SelLast
+Sun On
+Radiate
+RadiateFind
+@expect_objects 32
+# --- OrientCrvToEdge: orients a copy directly onto a picked polysurface edge, no DupEdge needed
+SelNone
+Box 1200,0,0 1210,10,0 10
+MeshBox 1250,0,0 1251,1,0 1
+SelLast
+OrientCrvToEdge
+1250,0,0
+1200,0,5
+1200,0,3
+Enter
+@expect_objects 35

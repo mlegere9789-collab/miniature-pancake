@@ -1,0 +1,20 @@
+# DWG round-trip QC (via GNU LibreDWG - see FileExchange.cpp's
+# ExportDwg/ImportDwg). Exports a line, a circle and a closed 4-point
+# polyline to a real DWG, reopens that DWG into a fresh document, and
+# checks the geometry survived exactly: not just the object count, but the
+# exact control-point count/rational/closed flags and the exact combined
+# curve length before vs after (see smoke.sh's dwcheck section).
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+Line 0,0,0 12,0,0
+Circle 5,5,0 3.5
+Polyline 0,20,0 10,20,0 10,30,0 0,30,0 0,20,0
+Enter
+SelAll
+List
+Length
+Export @TMP@/dwg_roundtrip.dwg
+New
+Open @TMP@/dwg_roundtrip.dwg
+SelAll
+List
+Length

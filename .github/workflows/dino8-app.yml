@@ -1,0 +1,253 @@
+name: Dino 8 App
+
+on:
+  push:
+    branches: [main, 'claude/pdf-audit-i2bvwm']
+    paths: ['dino8-app/**', 'dino8-kernel/**', '.github/workflows/dino8-app.yml']
+  pull_request:
+    paths: ['dino8-app/**', 'dino8-kernel/**', '.github/workflows/dino8-app.yml']
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Linux (build, smoke test, .deb)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          # The runner image preinstalls a Google Chrome apt source we never use
+          # (nothing below comes from it); its mirror has been repeatedly failing
+          # "Hash Sum mismatch" on `apt-get update`, which aborts the whole step -
+          # drop it first so a third-party repo we don't need can't break a build
+          # that has nothing to do with it. The exact filename varies by runner
+          # image, so find it by content instead of guessing a path.
+          sudo grep -rl "dl.google.com/linux/chrome" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libglu1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxkbcommon-dev xvfb mesa-utils
+      - name: Configure
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE
+      - name: Build
+        run: cmake --build dino8-app/build
+      - name: Unit tests
+        run: cd dino8-app/build && ctest --output-on-failure
+      - name: Smoke test (headless)
+        run: dino8-app/tests/smoke.sh dino8-app/build/Dino8
+      - name: Package
+        run: cd dino8-app/build && cpack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-linux
+          path: |
+            dino8-app/build/*.deb
+            dino8-app/build/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows (build, installer .exe)
+    runs-on: windows-latest
+    env:
+      HAS_WINDOWS_CERT: ${{ secrets.WINDOWS_CERT_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure (Ninja + MSVC)
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build dino8-app/build --parallel
+      - name: Unit tests
+        run: cd dino8-app/build && ctest --output-on-failure -C Release
+      - name: Version check
+        run: dino8-app\build\Dino8.exe --version
+      # Inert until a real certificate exists: skipped entirely (no-op) when
+      # the WINDOWS_CERT_BASE64 secret is unset, so this changes nothing
+      # about today's unsigned builds. Signing the built exe here (before the
+      # install tree, installer, and portable zip are made from it) means all
+      # three downstream artifacts carry the signed binary. See
+      # dino8-app/docs/CODE_SIGNING.md for exactly what secret to add and
+      # where the certificate comes from.
+      - name: Sign Dino8.exe (Authenticode)
+        if: ${{ env.HAS_WINDOWS_CERT == 'true' }}
+        shell: pwsh
+        env:
+          WINDOWS_CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $certPath = "$env:RUNNER_TEMP\dino8-signing.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_CERT_BASE64))
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          & $signtool sign /f $certPath /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dino8-app\build\Dino8.exe
+          $code = $LASTEXITCODE
+          Remove-Item $certPath
+          if ($code -ne 0) { exit $code }
+      - name: Install tree
+        run: cmake --install dino8-app/build --prefix dino8-app/build/install --component app
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+      - name: Compile installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" dino8-app\packaging\windows\Dino8.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Same secret gate as above: signs the installer wrapper itself once
+      # ISCC has produced it (the payload it embeds, build\install\Dino8.exe,
+      # is already the signed binary from the step above).
+      - name: Sign Windows installer (Authenticode)
+        if: ${{ env.HAS_WINDOWS_CERT == 'true' }}
+        shell: pwsh
+        env:
+          WINDOWS_CERT_BASE64: ${{ secrets.WINDOWS_CERT_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $certPath = "$env:RUNNER_TEMP\dino8-signing.pfx"
+          [IO.File]::WriteAllBytes($certPath, [Convert]::FromBase64String($env:WINDOWS_CERT_BASE64))
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1).FullName
+          & $signtool sign /f $certPath /p $env:WINDOWS_CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 dino8-app\dist\*.exe
+          $code = $LASTEXITCODE
+          Remove-Item $certPath
+          if ($code -ne 0) { exit $code }
+      - name: Portable zip
+        run: cd dino8-app/build && cpack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-windows-installer
+          path: dino8-app/dist/*.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-windows-portable
+          path: dino8-app/build/*.zip
+          if-no-files-found: error
+
+  windows-arm:
+    name: Windows on ARM (build, portable zip)
+    runs-on: windows-11-arm
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: Configure (Ninja + MSVC arm64)
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCPACK_SYSTEM_NAME=win-arm64
+      - name: Build
+        run: cmake --build dino8-app/build --parallel
+      - name: Version check
+        run: dino8-app\build\Dino8.exe --version
+      - name: Portable zip
+        run: cd dino8-app/build && cpack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-windows-arm64
+          path: dino8-app/build/*.zip
+          if-no-files-found: error
+  macos:
+    name: macOS (build, .dmg)
+    runs-on: macos-14
+    env:
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERT_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ninja
+        run: brew install ninja
+      - name: Configure
+        run: cmake -S dino8-app -B dino8-app/build -G Ninja -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+      - name: Build
+        run: cmake --build dino8-app/build
+      - name: Unit tests
+        run: cd dino8-app/build && ctest --output-on-failure
+      # Inert until a real certificate exists: both steps below are skipped
+      # entirely (no-op) when the APPLE_CERT_BASE64 secret is unset, so this
+      # changes nothing about today's unsigned/unnotarized .dmg. See
+      # dino8-app/docs/CODE_SIGNING.md for exactly what secrets to add and
+      # where the Developer ID certificate and app-specific password come
+      # from.
+      - name: Import Developer ID certificate
+        if: ${{ env.HAS_APPLE_CERT == 'true' }}
+        env:
+          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/dino8-signing.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/dino8-signing.keychain-db"
+          echo -n "$APPLE_CERT_BASE64" | base64 --decode -o "$CERT_PATH"
+          security create-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm -f "$CERT_PATH"
+      - name: Code-sign the app bundle
+        if: ${{ env.HAS_APPLE_CERT == 'true' }}
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" dino8-app/build/Dino8.app
+          codesign --verify --deep --strict --verbose=2 dino8-app/build/Dino8.app
+      - name: Package
+        run: cd dino8-app/build && cpack
+      # Same secret gate: notarizes and staples the .dmg cpack just produced,
+      # skipped entirely when there is no certificate to sign it with (Apple
+      # refuses to notarize an unsigned bundle).
+      - name: Notarize and staple the disk image
+        if: ${{ env.HAS_APPLE_CERT == 'true' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          DMG="$(ls dino8-app/build/*.dmg | head -1)"
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait
+          xcrun stapler staple "$DMG"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dino8-macos
+          path: dino8-app/build/*.dmg
+          if-no-files-found: error
+
+  release:
+    name: Publish beta pre-release
+    # Every push to the development branch (or a manual run) that builds on
+    # all three platforms publishes a downloadable pre-release with the
+    # installers attached. Free software: no licence keys involved.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: [linux, windows, windows-arm, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: List files
+        run: find dist -type f | sort
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dino8-beta-${{ github.run_number }}
+          name: "Dino 8 beta build ${{ github.run_number }}"
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          body: |
+            Dino 8 beta test build from commit ${{ github.sha }}.
+
+            * **Windows**: `Dino8Setup-0.1.0.exe` (installer) or the portable `Dino8-0.1.0-win64.zip`
+            * **Windows on ARM**: portable `Dino8-0.1.0-win-arm64.zip` (when the ARM runner is available)
+            * **Linux**: `dino8_0.1.0_amd64.deb` or `Dino8-0.1.0-Linux.tar.gz`
+            * **macOS** (Apple Silicon): `Dino8-0.1.0-Darwin.dmg`
+
+            Totally free. No subscription, no payment, no licence keys, no accounts.
+          files: |
+            dist/Dino8-windows-installer/*.exe
+            dist/Dino8-windows-portable/*.zip
+            dist/Dino8-windows-arm64/*.zip
+            dist/Dino8-linux/*.deb
+            dist/Dino8-linux/*.tar.gz
+            dist/Dino8-macos/*.dmg

@@ -1,0 +1,52 @@
+# Solids QC: Ellipsoid/SubDEllipsoid (real axis picking), Pyramid (NumSides=),
+# Loft (Style=Straight), Cap (multiple separate openings) (see smoke.sh).
+SetActiveViewport Top
+# --- Ellipsoid: center, then the three semi-axis end points (5, 3, 2 along
+# world x/y/z here); volume should be close to the analytic 4/3*pi*5*3*2.
+Ellipsoid 0,0,0 5,0,0 0,3,0 0,0,2
+SelLast
+Volume
+# --- SubDEllipsoid: same three axes, as a SubD/mesh approximation.
+SubDEllipsoid 50,0,0 5,0,0 0,3,0 0,0,2
+SelLast
+List
+# --- Pyramid: NumSides=6 gives a hexagonal-base mesh pyramid (4 is the default).
+Pyramid 100,0,0 NumSides=6 5 10
+SelLast
+List
+# --- Loft: three parallel lines. Normal fits a cubic-through-control-points
+# v-direction (degree min(3, sections-1) = 2 here); Style=Straight drops to
+# degree 1 (a real, linear/ruled surface, not just a smaller Normal fit).
+SelAll
+Hide
+Line 150,0,0 160,0,0
+Line 150,5,5 160,5,5
+Line 150,0,10 160,0,10
+SelCrv
+Loft
+SelSrf
+List
+SelAll
+Hide
+Line 150,0,0 160,0,0
+Line 150,5,5 160,5,5
+Line 150,0,10 160,0,10
+SelCrv
+Loft Style=Straight
+SelSrf
+List
+# --- Cap: delete a box's top AND bottom faces (two separate, non-adjacent
+# naked-edge loops), then Cap both back in with one call - previously Cap
+# only ever capped a single loop per polysurface.
+SelAll
+Hide
+Box 200,0,0 210,10,0 10
+DeleteFaces
+205,5,10
+205,5,0
+Enter
+SelPolysrf
+List
+Cap
+SelPolysrf
+List

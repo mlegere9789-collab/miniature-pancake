@@ -1,0 +1,347 @@
+# Surface editing QC: ExtractSrf, DeleteFaces, DupBorder, DupEdge, DupFaceBorder, Untrim, ExtractIsocurve,
+# ExtractWireframe, ExtendSrf, UnrollSrf, Silhouette, RailRevolve, Fin, Ribbon, 3DFace, SrfControlPtGrid.
+# --- ExtractSrf the top face of a box (click above the box centre), then DeleteFaces the bottom
+Box 0,0,0 10,10,0 10
+ExtractSrf
+5,5,10
+Enter
+SelAll
+List
+DeleteFaces
+5,5,0
+Enter
+# --- DupBorder on the now-open box (one border loop), DupEdge of one edge
+SelPolysrf
+DupBorder
+DupEdge
+5,0,0
+Enter
+DupFaceBorder
+5,5,10
+Enter
+# --- Untrim a trimmed planar surface
+SelAll
+Hide
+Circle 50,0,0 5
+SelLast
+PlanarSrf
+Untrim
+50,0,0
+Enter
+SelPolysrf
+List
+# --- Isocurves and wireframe of a cylinder
+SelAll
+Hide
+Cylinder 100,0,0 5 10
+ExtractIsocurve Direction=Both
+105,0,5
+Enter
+SelPolysrf
+ExtractWireframe
+# --- ExtendSrf a plane by 10 (click near its +X edge)
+SelAll
+Hide
+Plane 200,0,0 210,10,0
+ExtendSrf
+209,5,0
+10
+SelSrf
+BoundingBox
+# --- UnrollSrf half a cylinder (developable): area is preserved
+SelAll
+Hide
+Cylinder 300,0,0 5 10
+SelPolysrf
+UnrollSrf
+# --- Silhouette of a sphere in the Top view
+SelAll
+Hide
+Sphere 400,0,0 5
+SelPolysrf
+Silhouette
+# --- RailRevolve, Fin, Ribbon, 3DFace, SrfControlPtGrid
+SelAll
+Hide
+Line 520,0,0 500,0,10
+Circle 500,0,0 20
+SelCrv
+RailRevolve
+500,0,0
+500,0,1
+SelAll
+Hide
+Line 600,0,0 620,0,0
+SelCrv
+Ribbon
+5
+SelAll
+Hide
+3DFace 700,0,0 710,0,0 710,10,0 700,10,0
+Point 800,0,0
+Point 810,0,0
+Point 800,10,0
+Point 810,10,5
+SelPt
+SrfControlPtGrid
+2
+SelNone
+# --- UntrimBorder keeps the border-only untrim behavior honest (no holes on this disk, but
+# the outer trim really is removed and replaced with a full-surface loop)
+SelAll
+Hide
+Circle 900,0,0 5
+SelLast
+PlanarSrf
+UntrimBorder
+900,0,0
+Enter
+SelPolysrf
+List
+# --- JoinEdge forces two just-touching planes into one polysurface
+SelAll
+Hide
+Plane 1000,0,0 1010,10,0
+Plane 1010,0,0 1020,10,0
+SelAll
+JoinEdge
+# --- MoveFace: raise a box's top face by 5
+SelAll
+Hide
+Box 1100,0,0 1110,10,0 10
+MoveFace
+1105,5,10
+Enter
+1105,5,10
+1105,5,15
+SelPolysrf
+BoundingBox
+# --- MoveEdge: raise one top edge of a box by 5 (the far corner stays put, roofing the box)
+SelAll
+Hide
+Box 1200,0,0 1210,10,0 10
+MoveEdge
+1205,0,10
+Enter
+1205,0,10
+1205,0,15
+SelPolysrf
+BoundingBox
+# --- MoveUntrimmedFace: same as MoveFace, restricted to (and here, a valid pick of) an untrimmed face
+SelAll
+Hide
+Box 1300,0,0 1310,10,0 10
+MoveUntrimmedFace
+1305,5,10
+Enter
+1305,5,10
+1305,5,20
+SelPolysrf
+BoundingBox
+# --- MoveUntrimmedEdge: same as MoveEdge, restricted to an iso-boundary edge
+SelAll
+Hide
+Box 1400,0,0 1410,10,0 10
+MoveUntrimmedEdge
+1405,0,10
+Enter
+1405,0,10
+1405,0,25
+SelPolysrf
+BoundingBox
+# --- MoveUVN: move a single control point of a plain surface along its local normal
+SelAll
+Hide
+Plane 1500,0,0 1510,10,0
+MoveUVN
+1500,0,0
+0,0,7
+# --- FoldFace: fold a box's top face 30 degrees about its front-bottom hinge edge
+SelAll
+Hide
+Box 1600,0,0 1610,10,0 10
+FoldFace
+1605,0,0
+1605,5,10
+30
+SelPolysrf
+BoundingBox
+# --- SetPlanar: flatten two off-plane points onto the construction plane
+SelAll
+Hide
+Point 1700,0,5
+Point 1710,0,8
+SelPt
+SetPlanar
+BoundingBox
+# --- VolumeMoments / AreaMoments / Hydrostatics: real second-moment and waterline numbers
+SelAll
+Hide
+Box 1800,0,0 1810,10,0 10
+SelPolysrf
+VolumeMoments
+SelAll
+Hide
+Plane 1900,0,0 1910,10,0
+SelSrf
+AreaMoments
+SelAll
+Hide
+Sphere 2000,0,0 5
+SelPolysrf
+Hydrostatics
+# --- ExtractBadSrf / RemoveAllNakedMicroEdges: real checks that find nothing wrong with a good box
+SelAll
+Hide
+Box 2100,0,0 2110,10,0 10
+SelPolysrf
+ExtractBadSrf
+RemoveAllNakedMicroEdges
+# --- ShrinkTrimmedSrfToEdge on a trimmed disk
+SelAll
+Hide
+Circle 2200,0,0 5
+SelLast
+PlanarSrf
+SelPolysrf
+ShrinkTrimmedSrfToEdge
+# --- SrfSeam: move the seam of a real closed (periodic) surface (Sweep1 of a
+# closed circle profile along a straight rail). Both curves must exist before
+# Sweep1 starts (typing a new curve-creation command mid-selection doesn't
+# work - it's swallowed as a bogus option token), so they're created first
+# and picked by their known object IDs (68, 69: this script has created
+# exactly 67 objects by this point).
+SelAll
+Hide
+Line 2300,0,0 2300,0,10
+Circle 2300,0,0 4
+SelID 68
+Sweep1
+SelID 69
+Enter
+SrfSeam
+2304,0,5
+2300,4,5
+# --- SphereTangentToThreeSurfaces: a sphere nestled into a box's corner,
+# equidistant from all three mutually-perpendicular faces
+SelAll
+Hide
+Box 2400,0,0 2410,10,0 10
+SphereTangentToThreeSurfaces
+2400,5,5
+2405,0,5
+2405,5,0
+# --- SetSurfaceTangent: rotate a flat plane's far edge to match a tilted
+# neighbour sharing its near edge
+SelAll
+Hide
+SrfPt 2500,0,0 2510,0,0 2500,10,0 2510,10,0
+SrfPt 2500,0,0 2510,0,5 2500,10,0 2510,10,5
+SetSurfaceTangent
+2505,0,0
+2505,5,2.5
+# --- VariableOffsetSrf: offset a plane 1 unit at U-min growing to 3 at U-max
+SelAll
+Hide
+Plane 2600,0,0 2610,10,0
+VariableOffsetSrf Distance1=1 Distance2=3
+2605,5,0
+# --- FitCurveToSurface: pull an elevated line onto a plane with a coarse fit
+SelAll
+Hide
+Plane 2700,0,0 2710,10,0
+Line 2700,3,2 2710,7,2
+SelLast
+FitCurveToSurface
+2705,5,0
+# --- PatchSingleFace: replace a box's top face with a Coons patch through its
+# own 4 edges (volume must stay exact - the same box, still flat)
+SelAll
+Hide
+Box 2800,0,0 2810,10,0 10
+PatchSingleFace
+2805,5,10
+SelPolysrf
+Volume
+# --- ApplyCrv: an alias for Flow's own base/target curve deformation (both
+# curves pre-created and picked by ID, same reason as the Sweep1 block above)
+SelAll
+Hide
+Line 2900,0,0 2900,10,0
+Arc 2950,0,0 2950,15,5 2950,30,0
+SelID 81
+ApplyCrv
+SelID 81
+Enter
+SelID 82
+Enter
+# --- ApplyMesh / ApplyMeshUVN: reshape a mesh sphere onto a same-topology
+# bigger mesh sphere (identical tessellation regardless of radius); both
+# meshes pre-created and picked by ID, same reason as above
+SelAll
+Hide
+MeshSphere 3000,0,0 5
+MeshSphere 3000,0,0 8
+SelID 83
+ApplyMesh
+SelID 83
+Enter
+SelID 84
+Enter
+SelAll
+Hide
+MeshSphere 3100,0,0 5
+MeshSphere 3100,0,0 9
+SelID 86
+ApplyMeshUVN
+SelID 86
+Enter
+SelID 87
+Enter
+# --- Boss: a closed circle footprint on a box's top face, extruded upward
+# following the (flat) surface normal and unioned with the box (curve
+# created last so SelLast picks it; SelPolysrf then re-picks the box alone)
+SelAll
+Hide
+Box 3200,0,0 3210,10,0 10
+Circle 3205,5,10 2
+SelLast
+Boss
+SelPolysrf
+Enter
+5
+SelMesh
+Volume
+# --- Rib: an open spine on the box's top face, a thin wall tapering to zero
+# at both ends, unioned with the box
+SelAll
+Hide
+Box 3300,0,0 3310,10,0 10
+Line 3305,2,10 3305,8,10
+SelLast
+Rib
+SelPolysrf
+Enter
+2
+SelMesh
+Volume
+# --- FilletSrfToRail: rolling-ball arcs sampled along a rail running down a
+# box corner (two perpendicular planes)
+SelAll
+Hide
+SrfPt 3400,0,0 3410,0,0 3400,0,10 3410,0,10
+SrfPt 3400,0,0 3400,10,0 3400,0,10 3400,10,10
+Line 3400,0,2 3400,0,8
+SelLast
+FilletSrfToRail Radius=1
+3405,0,5
+3400,5,5
+# --- SoftEditSrf: falloff-weighted control point drag on a flat plane
+SelAll
+Hide
+Plane 3500,0,0 3510,10,0
+SoftEditSrf Radius=8
+3505,5,0
+3505,5,3
+SelNone
+@expect_objects 95

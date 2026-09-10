@@ -1,0 +1,2 @@
+add_executable(dino8_demo_trophy build_demo_model.cpp)
+target_link_libraries(dino8_demo_trophy PRIVATE dino8_kernel)

@@ -1,0 +1,2281 @@
+#include "viewport/Viewport.h"
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <set>
+
+#include "doc/SubObjectEdit.h"
+#include "imgui.h"
+#include "ui/Theme.h"
+
+namespace dino8::app {
+
+using kernel::Point3d;
+using kernel::Vector3d;
+
+const char* DisplayModeName(DisplayMode mode) {
+  switch (mode) {
+    case DisplayMode::Wireframe: return "Wireframe";
+    case DisplayMode::Shaded: return "Shaded";
+    case DisplayMode::Rendered: return "Rendered";
+    case DisplayMode::Ghosted: return "Ghosted";
+    case DisplayMode::XRay: return "X-Ray";
+    case DisplayMode::Technical: return "Technical";
+    case DisplayMode::Artistic: return "Artistic";
+    case DisplayMode::Pen: return "Pen";
+    case DisplayMode::Arctic: return "Arctic";
+    case DisplayMode::Monochrome: return "Monochrome";
+    case DisplayMode::RayTraced: return "Raytraced";
+  }
+  return "Wireframe";
+}
+
+std::vector<DisplayMode> AllDisplayModes() {
+  return {DisplayMode::Wireframe, DisplayMode::Shaded, DisplayMode::Rendered, DisplayMode::Ghosted,
+          DisplayMode::XRay, DisplayMode::Technical, DisplayMode::Artistic, DisplayMode::Pen,
+          DisplayMode::Arctic, DisplayMode::Monochrome, DisplayMode::RayTraced};
+}
+
+DisplayMode DisplayModeFromName(const std::string& name) {
+  std::string n;
+  for (char c : name) if (c != '-' && c != ' ' && c != '_') n.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  for (DisplayMode m : AllDisplayModes()) {
+    std::string mn;
+    for (const char* c = DisplayModeName(m); *c; ++c) if (*c != '-' && *c != ' ') mn.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(*c))));
+    if (mn == n) return m;
+  }
+  return DisplayMode::Shaded;
+}
+
+Viewport::Viewport(const std::string& name, const std::string& standard_view) : name_(name) {
+  SetStandardView(standard_view);
+  camera_.State().target = Point3d(0, 0, 0);
+  if (standard_view == "Perspective") {
+    camera_.State().eye = Point3d(60, -60, 45);
+    camera_.SetPerspective();
+    mode_ = DisplayMode::Shaded;
+  } else {
+    camera_.State().ortho_height = 80;
+  }
+}
+
+void Viewport::SetStandardView(const std::string& view) {
+  standard_view_ = view;
+  ConstructionPlane cp;
+  if (view == "Top") { camera_.SetTop(); }
+  else if (view == "Bottom") { camera_.SetBottom(); cp.y_axis = Vector3d(0, -1, 0); }
+  else if (view == "Front") { camera_.SetFront(); cp.x_axis = Vector3d(1, 0, 0); cp.y_axis = Vector3d(0, 0, 1); }
+  else if (view == "Back") { camera_.SetBack(); cp.x_axis = Vector3d(-1, 0, 0); cp.y_axis = Vector3d(0, 0, 1); }
+  else if (view == "Right") { camera_.SetRight(); cp.x_axis = Vector3d(0, 1, 0); cp.y_axis = Vector3d(0, 0, 1); }
+  else if (view == "Left") { camera_.SetLeft(); cp.x_axis = Vector3d(0, -1, 0); cp.y_axis = Vector3d(0, 0, 1); }
+  else if (view == "Isometric") { camera_.SetIsometric(); }
+  else { camera_.SetPerspective(); }
+  cplane_ = cp;
+}
+
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct ModeStyle {
+  Color bg_top, bg_bottom;
+  bool fill = true;
+  bool lit = true;
+  float fill_alpha = 1.0f;
+  bool edges = true;
+  bool isocurves = true;
+  bool force_white = false;   // Arctic / Pen fills
+  bool monochrome = false;
+  bool depth_lines = true;
+  Color edge_color = Color::FromBytes(30, 30, 30);
+};
+
+ModeStyle StyleFor(DisplayMode mode) {
+  ModeStyle s;
+  s.bg_top = Color::FromBytes(46, 50, 58);
+  s.bg_bottom = Color::FromBytes(24, 26, 31);
+  switch (mode) {
+    case DisplayMode::Wireframe: s.fill = false; s.edges = true; break;
+    case DisplayMode::Shaded: break;
+    case DisplayMode::Rendered: s.isocurves = false; s.edges = false; break;
+    case DisplayMode::Ghosted: s.fill_alpha = 0.35f; break;
+    case DisplayMode::XRay: s.fill_alpha = 0.18f; s.depth_lines = false; break;
+    case DisplayMode::Technical: s.monochrome = true; s.edge_color = Color::FromBytes(20, 20, 20); s.bg_top = s.bg_bottom = Color::FromBytes(235, 235, 235); break;
+    case DisplayMode::Artistic: s.monochrome = true; s.bg_top = Color::FromBytes(242, 236, 220); s.bg_bottom = Color::FromBytes(222, 214, 195); s.edge_color = Color::FromBytes(60, 50, 40); break;
+    case DisplayMode::Pen: s.force_white = true; s.lit = false; s.isocurves = false; s.bg_top = s.bg_bottom = Color::FromBytes(255, 255, 255); s.edge_color = Color::FromBytes(0, 0, 0); break;
+    case DisplayMode::Arctic: s.force_white = true; s.isocurves = false; s.bg_top = s.bg_bottom = Color::FromBytes(250, 250, 250); s.edge_color = Color::FromBytes(150, 150, 150); break;
+    case DisplayMode::Monochrome: s.monochrome = true; s.isocurves = false; break;
+    case DisplayMode::RayTraced: s.isocurves = false; s.edges = false; s.bg_top = s.bg_bottom = Color::FromBytes(20, 20, 22); break;
+  }
+  return s;
+}
+
+Color Mix(Color a, Color b, float t) {
+  return Color{a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t};
+}
+
+const Color kSelectionColor = Color::FromBytes(255, 210, 0);
+const Color kLockedColor = Color::FromBytes(120, 120, 120);
+const Color kControlPointColor = Color::FromBytes(255, 255, 255);
+const Color kControlPolygonColor = Color::FromBytes(160, 160, 160);
+const Color kEdgeHighlightColor = Color::FromBytes(255, 70, 220);  // ShowEdges: all edges (magenta)
+const Color kNakedEdgeColor = Color::FromBytes(255, 40, 40);       // ShowEdges: naked edges (red)
+
+}  // namespace
+
+// Background colours for a display mode, honouring the document's render
+// environment (Rendered mode) and the GradientView toggle.
+bool g_light_theme = false;
+
+void Viewport::SetLightTheme(bool light) { g_light_theme = light; }
+
+void BackgroundFor(DisplayMode mode, const Document* doc, bool arctic, Color& top, Color& bottom) {
+  const ModeStyle style = StyleFor(mode);
+  top = style.bg_top;
+  bottom = style.bg_bottom;
+  // Light UI theme: light viewport backgrounds for the modelling modes (Rhino's light scheme).
+  if (g_light_theme && mode != DisplayMode::Rendered && mode != DisplayMode::Pen && mode != DisplayMode::Arctic &&
+      mode != DisplayMode::Technical && mode != DisplayMode::Artistic) {
+    top = Color::FromBytes(226, 230, 236);
+    bottom = Color::FromBytes(246, 247, 249);
+  }
+  if (!doc) return;
+  const RenderSettings& r = doc->Render();
+  if (arctic) { top = bottom = Color::FromBytes(250, 250, 250); return; }
+  if (mode == DisplayMode::Rendered) {
+    switch (r.background) {
+      case RenderSettings::Background::Solid: top = bottom = r.background_color; break;
+      case RenderSettings::Background::Gradient: top = r.gradient_top; bottom = r.gradient_bottom; break;
+      case RenderSettings::Background::Sky: top = Color::FromBytes(96, 138, 200); bottom = Color::FromBytes(222, 230, 240); break;
+      case RenderSettings::Background::Image: top = bottom = Color::FromBytes(40, 40, 40); break;  // shown only if the image fails to load
+    }
+    return;
+  }
+  if (!r.gradient_view) top = bottom;
+}
+
+// A full-viewport textured quad drawn over the gradient clear, stretched to
+// fill (letterboxing/UV fitting is not attempted): Rendered mode's Image
+// background (part of the actual render, `for_render` or not), or
+// BackgroundBitmap's modelling-aid picture (every mode, interactive only --
+// never part of a final render). A no-op if neither applies or the file
+// fails to load.
+void DrawBackgroundImage(GlRenderer& renderer, const Document* doc, DisplayMode mode, bool arctic, bool for_render) {
+  if (!doc || arctic) return;
+  const RenderSettings& r = doc->Render();
+  std::string path;
+  if (mode == DisplayMode::Rendered && r.background == RenderSettings::Background::Image && !r.environment_image.empty()) path = r.environment_image;
+  else if (!for_render && r.background_bitmap_enabled && !r.background_bitmap.empty()) path = r.background_bitmap;
+  if (path.empty()) return;
+  const GLuint tex = renderer.TextureFor(path);
+  if (!tex) return;
+  renderer.EnableDepthTest(false);
+  renderer.DrawFullscreenTexture(tex);
+  renderer.EnableDepthTest(true);
+}
+
+void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
+  if (!target_.Resize(std::max(width_, 1), std::max(height_, 1))) return;
+  target_.Bind();
+  Color top, bottom;
+  BackgroundFor(mode_, ctx.doc, false, top, bottom);
+  renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(Aspect()));
+  renderer.ClearGradient(top, bottom);
+  DrawBackgroundImage(renderer, ctx.doc, mode_, false, false);
+  renderer.EnableDepthTest(true);
+  renderer.EnableBlend(true);
+  if (mode_ == DisplayMode::RayTraced && !page_ && ctx.doc) {
+    // Real per-frame GPU raytraced preview (render::GpuRaytracer): a BVH
+    // built once from the document (below, only when the scene actually
+    // changed) is traced by a fragment shader every frame, temporally
+    // accumulated and denoised while the camera/document stay still. Runs
+    // at half the viewport resolution (bilinear-free nearest upscale, same
+    // reduced-res tactic the old CPU mode used, just less aggressive since
+    // this does real per-frame work instead of blitting a cached bitmap).
+    if (!raytrace_gpu_inited_) {
+      std::string err;
+      raytrace_gpu_inited_ = raytrace_gpu_.Init(err);
+      if (!raytrace_gpu_inited_) std::fprintf(stderr, "GpuRaytracer::Init failed: %s\n", err.c_str());
+    }
+    const int rw = std::max(width_ / 2, 4), rh = std::max(height_ / 2, 4);
+    const CameraState cam = camera_.State();
+    auto same_camera = [](const CameraState& a, const CameraState& b) {
+      return (a.eye - b.eye).Length() < 1e-6 && (a.target - b.target).Length() < 1e-6 && (a.up - b.up).Length() < 1e-6 &&
+             a.perspective == b.perspective && std::fabs(a.ortho_height - b.ortho_height) < 1e-6 &&
+             std::fabs(a.lens_mm - b.lens_mm) < 1e-6;
+    };
+    const bool scene_stale = !raytrace_have_state_ || ctx.doc->Revision() != raytrace_revision_;
+    const bool camera_stale = !raytrace_have_state_ || !same_camera(cam, raytrace_camera_) || rw != raytrace_w_ || rh != raytrace_h_;
+    if (scene_stale && raytrace_gpu_inited_) {
+      raytrace_.Prepare(*ctx.doc, cam, static_cast<double>(rw) / rh, ctx.curve_tolerance, ctx.surface_tolerance);
+      raytrace_gpu_.UploadScene(raytrace_, ctx.doc->Render());
+    }
+    if (scene_stale || camera_stale) {
+      raytrace_camera_ = cam;
+      raytrace_w_ = rw; raytrace_h_ = rh;
+      raytrace_revision_ = ctx.doc->Revision();
+      raytrace_have_state_ = true;
+    }
+    GLuint present = 0;
+    if (raytrace_gpu_inited_) {
+      // Honest per-frame GPU cost, gated behind an env var (DINO8_RT_TIMING)
+      // so it costs nothing normally: glFinish() forces the trace+denoise
+      // passes to actually complete before stopping the clock, bypassing
+      // glfwSwapInterval(1)'s vsync pacing that otherwise hides the real
+      // GPU time behind whatever the display refresh allows. See
+      // tests/gpu_render_notes.md for the measured numbers this produces.
+      static const bool time_it = std::getenv("DINO8_RT_TIMING") != nullptr;
+      const auto t0 = time_it ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+      present = raytrace_gpu_.Render(camera_, static_cast<double>(rw) / rh, rw, rh, scene_stale || camera_stale);
+      if (time_it) {
+        glFinish();
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        std::fprintf(stderr, "rt_frame_ms=%.3f tris=%d res=%dx%d\n", ms, raytrace_gpu_.TriangleCount(), rw, rh);
+      }
+    }
+    renderer.EnableDepthTest(false);
+    if (present) renderer.DrawFullscreenTexture(present);
+    renderer.EnableDepthTest(true);
+    const std::string hud = raytrace_gpu_.Empty() ? "GPU raytraced - empty scene"
+        : "GPU raytraced - accum: " + std::to_string(raytrace_gpu_.AccumulatedFrames()) + " frames, " +
+          std::to_string(raytrace_gpu_.TriangleCount()) + " tris @ " + std::to_string(rw) + "x" + std::to_string(rh);
+    ImGui::GetForegroundDrawList()->AddText(ImVec2(static_cast<float>(screen_x_) + 8, static_cast<float>(screen_y_) + 8),
+                                            IM_COL32(255, 255, 255, 235), hud.c_str());
+    // The HUD text above only ever reaches an ImGui draw list (a rendered
+    // overlay), so a headless smoke-test script has no way to assert that
+    // RayTracedViewport actually produced a frame rather than silently
+    // failing (see gpu_render_notes.md's own "smoke-test coverage gap"
+    // note - a fully-broken GpuRaytracer::Init() previously stayed
+    // gl_error=0 by simply never running, and nothing caught that). Mirrors
+    // DINO8_RT_TIMING's existing env-gated stderr print pattern above.
+    static const bool print_frames = std::getenv("DINO8_RT_FRAMES") != nullptr;
+    if (print_frames) std::fprintf(stderr, "rt_accum_frames=%d empty=%d\n", raytrace_gpu_.AccumulatedFrames(), raytrace_gpu_.Empty() ? 1 : 0);
+  } else if (page_) {
+    DrawPage(renderer);
+  } else {
+    DrawScene(renderer, ctx, mode_, Aspect());
+  }
+  // Command preview geometry (rubber bands, dynamic previews).
+  renderer.EnableDepthTest(false);
+  if (ctx.preview_lines) renderer.DrawLines(*ctx.preview_lines, Color::FromBytes(255, 255, 255));
+  if (ctx.overlay_lines && !ctx.overlay_lines->empty()) renderer.DrawLines(*ctx.overlay_lines, Color::FromBytes(255, 120, 40));
+  if (ctx.preview_points) renderer.DrawPoints(*ctx.preview_points, Color::FromBytes(255, 255, 255), 7.0f);
+  if (ctx.cursor_marker) {
+    const Point3d& p = *ctx.cursor_marker;
+    const std::vector<float> marker = {static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)};
+    renderer.DrawPoints(marker, Color::FromBytes(255, 255, 255), 9.0f);
+  }
+  DrawAxesGizmo(renderer);
+  renderer.EnableDepthTest(true);
+  RenderTarget::Unbind();
+}
+
+bool Viewport::RenderToImage(GlRenderer& renderer, const FrameContext& base, int w, int h, int supersample,
+                             bool arctic, std::vector<unsigned char>& rgb, std::string& error, std::array<double, 4> blowup) {
+  w = std::clamp(w, 1, 8192);
+  h = std::clamp(h, 1, 8192);
+  supersample = std::clamp(supersample, 1, 4);
+  while (supersample > 1 && (w * supersample > 8192 || h * supersample > 8192)) --supersample;
+  RenderTarget rt;
+  if (!rt.Resize(w * supersample, h * supersample)) { error = "Could not create a render buffer of " + std::to_string(w) + " x " + std::to_string(h); return false; }
+  FrameContext ctx = base;
+  ctx.for_render = true;
+  ctx.arctic = arctic;
+  ctx.preview_lines = nullptr;
+  ctx.preview_points = nullptr;
+  ctx.cursor_marker.reset();
+  const double aspect = static_cast<double>(w) / h;
+  rt.Bind();
+  Color top, bottom;
+  BackgroundFor(DisplayMode::Rendered, ctx.doc, arctic, top, bottom);
+  renderer.SetMatrices(camera_.ViewMatrix(), camera_.BlowupProjectionMatrix(aspect, blowup[0], blowup[1], blowup[2], blowup[3]));
+  renderer.ClearGradient(top, bottom);
+  DrawBackgroundImage(renderer, ctx.doc, DisplayMode::Rendered, arctic, true);
+  renderer.EnableDepthTest(true);
+  renderer.EnableBlend(true);
+  DrawScene(renderer, ctx, DisplayMode::Rendered, aspect);
+  renderer.EnableDepthTest(true);
+  std::vector<unsigned char> big;
+  rt.ReadPixels(big);
+  RenderTarget::Unbind();
+  // Box-filter the supersampled image down.
+  rgb.assign(static_cast<size_t>(w) * h * 3, 0);
+  const int W = w * supersample;
+  const int n = supersample * supersample;
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      int acc[3] = {0, 0, 0};
+      for (int sy = 0; sy < supersample; ++sy) {
+        for (int sx = 0; sx < supersample; ++sx) {
+          const unsigned char* p = &big[(static_cast<size_t>(y * supersample + sy) * W + static_cast<size_t>(x * supersample + sx)) * 3];
+          acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2];
+        }
+      }
+      unsigned char* o = &rgb[(static_cast<size_t>(y) * w + x) * 3];
+      o[0] = static_cast<unsigned char>(acc[0] / n); o[1] = static_cast<unsigned char>(acc[1] / n); o[2] = static_cast<unsigned char>(acc[2] / n);
+    }
+  }
+  // Restore this viewport's own projection for anything drawn afterwards.
+  renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(Aspect()));
+  return true;
+}
+
+void Viewport::DrawScene(GlRenderer& renderer, const FrameContext& ctx, DisplayMode mode, double aspect) {
+  (void)aspect;
+  if (!ctx.doc) return;
+  doc_for_grid_ = ctx.doc;
+  // The ground plane replaces the grid in Rendered mode (as in Rhino).
+  const bool ground = mode == DisplayMode::Rendered && ctx.doc->Render().ground_plane;
+  if (!ctx.for_render && !ground) DrawGrid(renderer, ctx.doc->Settings(), mode);
+  if (mode == DisplayMode::Rendered) {
+    SetupLights(renderer, ctx);
+    DrawGroundPlane(renderer, ctx);
+  }
+  // Clipping planes that clip this viewport cut the model (not the grid).
+  std::vector<std::array<float, 4>> clip;
+  for (const ClippingPlane& cp : ctx.doc->ClippingPlanes()) {
+    if (!cp.enabled || !cp.ClipsViewport(name_)) continue;
+    Vector3d n = cp.Normal();
+    if (!n.Unitize()) continue;
+    // Keep the half-space behind the plane: -(n . (p - origin)) >= 0.
+    clip.push_back({static_cast<float>(-n.x), static_cast<float>(-n.y), static_cast<float>(-n.z),
+                    static_cast<float>(ON_DotProduct(n, cp.origin))});
+  }
+  if (!clip.empty()) renderer.SetClipPlanes(clip);
+  DrawObjects(renderer, ctx, mode);
+  if (!clip.empty()) renderer.ClearClipPlanes();
+  if (!ctx.for_render && ctx.show_clipping_planes) DrawClippingPlanes(renderer, *ctx.doc);
+  if (!ctx.for_render) DrawLightWidgets(renderer, *ctx.doc);
+}
+
+void Viewport::SetupLights(GlRenderer& renderer, const FrameContext& ctx) {
+  const Document& doc = *ctx.doc;
+  const RenderSettings& r = doc.Render();
+  std::vector<GpuLight> lights;
+  for (const Light& L : doc.Lights()) {
+    if (!L.enabled || lights.size() >= static_cast<size_t>(kMaxGpuLights)) continue;
+    GpuLight g;
+    g.r = L.color.r * L.intensity; g.g = L.color.g * L.intensity; g.b = L.color.b * L.intensity;
+    g.direction = L.direction;
+    switch (L.type) {
+      case LightType::Point: g.kind = GpuLight::Point; g.position = L.position; break;
+      case LightType::Directional: g.kind = GpuLight::Directional; break;
+      case LightType::Spot: {
+        g.kind = GpuLight::Spot;
+        g.position = L.position;
+        const double outer = std::clamp(static_cast<double>(L.spot_angle), 1.0, 89.0) * ON_PI / 180.0;
+        const double inner = outer * (0.35 + 0.6 * std::clamp(L.spot_hardness, 0.f, 1.f));
+        g.cos_outer = static_cast<float>(std::cos(outer));
+        g.cos_inner = static_cast<float>(std::cos(inner));
+        break;
+      }
+      case LightType::Rectangular: {
+        // Area light approximated by a wide spot at its centre.
+        g.kind = GpuLight::Spot;
+        g.position = L.position;
+        g.cos_outer = static_cast<float>(std::cos(85.0 * ON_PI / 180.0));
+        g.cos_inner = static_cast<float>(std::cos(45.0 * ON_PI / 180.0));
+        break;
+      }
+      case LightType::Linear: {
+        g.kind = GpuLight::Point;
+        g.position = L.position + L.x_axis * (L.length * 0.5);
+        break;
+      }
+    }
+    lights.push_back(g);
+  }
+  if (r.sun && lights.size() < static_cast<size_t>(kMaxGpuLights)) {
+    GpuLight g;
+    g.kind = GpuLight::Directional;
+    const double az = r.sun_azimuth * ON_PI / 180.0, alt = r.sun_altitude * ON_PI / 180.0;
+    const Vector3d towards_sun(std::cos(alt) * std::sin(az), std::cos(alt) * std::cos(az), std::sin(alt));
+    g.direction = -towards_sun;
+    g.r = r.sun_color.r * r.sun_intensity; g.g = r.sun_color.g * r.sun_intensity; g.b = r.sun_color.b * r.sun_intensity;
+    lights.push_back(g);
+  }
+  if (lights.empty()) {
+    // Rhino's default lighting: a key light over the camera's left
+    // shoulder and a dimmer fill from the right, both following the view.
+    const Vector3d f = camera_.Forward(), rgt = camera_.Right(), up = camera_.Up();
+    GpuLight key;
+    key.kind = GpuLight::Directional;
+    key.direction = f * 0.7 - up * 0.55 + rgt * 0.35;
+    key.r = key.g = key.b = 0.95f;
+    GpuLight fill;
+    fill.kind = GpuLight::Directional;
+    fill.direction = f * 0.6 - up * 0.1 - rgt * 0.7;
+    fill.r = 0.42f; fill.g = 0.43f; fill.b = 0.46f;
+    lights = {key, fill};
+  }
+  Color ambient = r.skylight ? Color::FromBytes(84, 90, 100) : Color::FromBytes(40, 40, 42);
+  if (ctx.arctic) {
+    ambient = Color::FromBytes(150, 150, 152);
+    for (GpuLight& g : lights) { g.r *= 0.7f; g.g *= 0.7f; g.b *= 0.7f; }
+  }
+  renderer.SetLights(lights, ambient);
+}
+
+void Viewport::DrawGroundPlane(GlRenderer& renderer, const FrameContext& ctx) {
+  const Document& doc = *ctx.doc;
+  const RenderSettings& r = doc.Render();
+  if (!r.ground_plane) return;
+  kernel::BoundingBox box;
+  const bool has = doc.VisibleBoundingBox(box);
+  if (!has) { box.min = Point3d(-10, -10, 0); box.max = Point3d(10, 10, 0); }
+  const double z = r.ground_auto_height ? box.min.z : r.ground_height;
+  const double cx = (box.min.x + box.max.x) / 2, cy = (box.min.y + box.max.y) / 2;
+  const double radius = std::max({box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z, 1.0}) / 2;
+  const double half = std::max(radius * 60, 100.0);
+  const double fade = std::max(radius * 14, 25.0);
+  std::vector<ShadowBlob> blobs;
+  if (r.ground_shadows) {
+    for (const SceneObject& o : doc.Objects()) {
+      if (!doc.IsObjectVisible(o) || blobs.size() >= static_cast<size_t>(kMaxShadowBlobs)) continue;
+      o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+      const DisplayCache& d = o.Display();
+      if (d.triangles.empty() || !d.has_bbox) continue;
+      ShadowBlob b;
+      b.cx = static_cast<float>((d.bbox.min.x + d.bbox.max.x) / 2);
+      b.cy = static_cast<float>((d.bbox.min.y + d.bbox.max.y) / 2);
+      const double sx = d.bbox.max.x - d.bbox.min.x, sy = d.bbox.max.y - d.bbox.min.y;
+      b.rx = static_cast<float>(std::max(sx * 0.62, radius * 0.03));
+      b.ry = static_cast<float>(std::max(sy * 0.62, radius * 0.03));
+      const double gap = (d.bbox.min.z - z) / std::max(radius, 1e-9);
+      b.strength = static_cast<float>(std::clamp(1.0 - gap * 1.2, 0.0, 1.0)) * (ctx.arctic ? 0.55f : 0.9f);
+      if (b.strength > 0.01f) blobs.push_back(b);
+    }
+  }
+  Color color = ctx.arctic ? Color::FromBytes(246, 246, 246) : r.ground_color;
+  color.a = 1.f;
+  renderer.DrawGroundPlane(cx, cy, z - radius * 2e-4, half, fade, color, blobs);
+}
+
+void Viewport::DrawLightWidgets(GlRenderer& renderer, const Document& doc) {
+  if (doc.Lights().empty()) return;
+  const double px = camera_.PixelSize(std::max(height_, 1));
+  const double s = px * 10;  // widget size in world units
+  std::vector<float> lines, sel_lines;
+  auto seg = [&](std::vector<float>& v, Point3d a, Point3d b) {
+    v.push_back(static_cast<float>(a.x)); v.push_back(static_cast<float>(a.y)); v.push_back(static_cast<float>(a.z));
+    v.push_back(static_cast<float>(b.x)); v.push_back(static_cast<float>(b.y)); v.push_back(static_cast<float>(b.z));
+  };
+  auto frame = [](Vector3d d, Vector3d& u, Vector3d& v) {
+    if (!d.Unitize()) d = Vector3d(0, 0, -1);
+    Vector3d ref = std::fabs(d.z) < 0.9 ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+    u = ON_CrossProduct(d, ref); u.Unitize();
+    v = ON_CrossProduct(d, u); v.Unitize();
+  };
+  std::vector<float> disabled;
+  for (const Light& L : doc.Lights()) {
+    std::vector<float>& out = L.selected ? sel_lines : (L.enabled ? lines : disabled);
+    const Point3d p = L.position;
+    Vector3d d = L.direction;
+    if (!d.Unitize()) d = Vector3d(0, 0, -1);
+    switch (L.type) {
+      case LightType::Point: {
+        // A small star: three axes plus the four space diagonals.
+        seg(out, p + Vector3d(-s, 0, 0), p + Vector3d(s, 0, 0));
+        seg(out, p + Vector3d(0, -s, 0), p + Vector3d(0, s, 0));
+        seg(out, p + Vector3d(0, 0, -s), p + Vector3d(0, 0, s));
+        const double t = s * 0.6;
+        seg(out, p + Vector3d(-t, -t, -t), p + Vector3d(t, t, t));
+        seg(out, p + Vector3d(-t, t, -t), p + Vector3d(t, -t, t));
+        seg(out, p + Vector3d(t, -t, -t), p + Vector3d(-t, t, t));
+        seg(out, p + Vector3d(t, t, -t), p + Vector3d(-t, -t, t));
+        break;
+      }
+      case LightType::Spot: {
+        const double len = L.length > 0 ? L.length : s * 6;
+        const double rad = len * std::tan(std::clamp(static_cast<double>(L.spot_angle), 1.0, 89.0) * ON_PI / 180.0);
+        Vector3d u, v;
+        frame(d, u, v);
+        const Point3d base = p + d * len;
+        const int n = 16;
+        Point3d prev = base + u * rad;
+        for (int i = 1; i <= n; ++i) {
+          const double a = 2 * ON_PI * i / n;
+          const Point3d q = base + u * (rad * std::cos(a)) + v * (rad * std::sin(a));
+          seg(out, prev, q);
+          if (i % 4 == 0) seg(out, p, q);
+          prev = q;
+        }
+        seg(out, p + Vector3d(-s, 0, 0), p + Vector3d(s, 0, 0));
+        seg(out, p + Vector3d(0, -s, 0), p + Vector3d(0, s, 0));
+        seg(out, p + Vector3d(0, 0, -s), p + Vector3d(0, 0, s));
+        break;
+      }
+      case LightType::Directional: {
+        Vector3d u, v;
+        frame(d, u, v);
+        const double len = s * 5;
+        const Point3d tip = p + d * len;
+        seg(out, p, tip);
+        seg(out, tip, tip - d * (s * 1.2) + u * (s * 0.6));
+        seg(out, tip, tip - d * (s * 1.2) - u * (s * 0.6));
+        seg(out, tip, tip - d * (s * 1.2) + v * (s * 0.6));
+        seg(out, tip, tip - d * (s * 1.2) - v * (s * 0.6));
+        // Three parallel rays show it lights everything the same way.
+        seg(out, p + u * s, p + u * s + d * (len * 0.7));
+        seg(out, p - u * s, p - u * s + d * (len * 0.7));
+        break;
+      }
+      case LightType::Rectangular: {
+        Vector3d x = L.x_axis;
+        if (!x.Unitize()) x = Vector3d(1, 0, 0);
+        Vector3d y = ON_CrossProduct(d, x);
+        if (!y.Unitize()) y = Vector3d(0, 1, 0);
+        const double hl = L.length / 2, hw = L.width / 2;
+        const Point3d c0 = p - x * hl - y * hw, c1 = p + x * hl - y * hw, c2 = p + x * hl + y * hw, c3 = p - x * hl + y * hw;
+        seg(out, c0, c1); seg(out, c1, c2); seg(out, c2, c3); seg(out, c3, c0);
+        seg(out, c0, c2); seg(out, c1, c3);
+        seg(out, p, p + d * std::max(hl, hw));
+        break;
+      }
+      case LightType::Linear: {
+        Vector3d x = L.x_axis;
+        if (!x.Unitize()) x = Vector3d(1, 0, 0);
+        const Point3d q = p + x * L.length;
+        seg(out, p, q);
+        Vector3d u, v;
+        frame(x, u, v);
+        seg(out, p - u * s, p + u * s); seg(out, q - u * s, q + u * s);
+        seg(out, p - v * s, p + v * s); seg(out, q - v * s, q + v * s);
+        seg(out, p + d * s, q + d * s);
+        break;
+      }
+    }
+  }
+  renderer.DrawLines(lines, Color::FromBytes(255, 214, 90));
+  renderer.DrawLines(disabled, Color::FromBytes(130, 130, 130));
+  renderer.DrawLines(sel_lines, kSelectionColor, 2.0f);
+}
+
+void Viewport::DrawGrid(GlRenderer& renderer, const DocumentSettings& s, DisplayMode mode) {
+  if (!s.show_grid && !s.show_axes) return;
+  const int n = std::max(1, s.grid_extents);
+  const double sp = std::max(s.grid_spacing, 1e-6);
+  const double ext = n * sp;
+  std::vector<float> minor, major;
+  auto push = [](std::vector<float>& v, Point3d a, Point3d b) {
+    v.push_back(static_cast<float>(a.x)); v.push_back(static_cast<float>(a.y)); v.push_back(static_cast<float>(a.z));
+    v.push_back(static_cast<float>(b.x)); v.push_back(static_cast<float>(b.y)); v.push_back(static_cast<float>(b.z));
+  };
+  if (s.show_grid) {
+    for (int i = -n; i <= n; ++i) {
+      if (i == 0) continue;
+      const double t = i * sp;
+      std::vector<float>& dst = (s.grid_major_every > 0 && i % s.grid_major_every == 0) ? major : minor;
+      push(dst, cplane_.ToWorld(t, -ext), cplane_.ToWorld(t, ext));
+      push(dst, cplane_.ToWorld(-ext, t), cplane_.ToWorld(ext, t));
+    }
+  }
+  bool light = mode == DisplayMode::Pen || mode == DisplayMode::Arctic ||
+               mode == DisplayMode::Technical || mode == DisplayMode::Artistic;
+  {
+    Color top, bottom;
+    BackgroundFor(mode, doc_for_grid_, false, top, bottom);
+    light = light || (0.299f * bottom.r + 0.587f * bottom.g + 0.114f * bottom.b > 0.5f);
+  }
+  renderer.DrawLines(minor, light ? Color::FromBytes(215, 215, 215) : Color::FromBytes(58, 62, 70));
+  renderer.DrawLines(major, light ? Color::FromBytes(190, 190, 190) : Color::FromBytes(78, 83, 92));
+  if (s.show_axes) {
+    std::vector<float> xa, ya, za;
+    push(xa, cplane_.ToWorld(-ext, 0), cplane_.ToWorld(ext, 0));
+    push(ya, cplane_.ToWorld(0, -ext), cplane_.ToWorld(0, ext));
+    push(za, cplane_.origin, cplane_.ToWorld(0, 0, ext * 0.25));
+    renderer.DrawLines(xa, Color::FromBytes(200, 70, 70));
+    renderer.DrawLines(ya, Color::FromBytes(70, 180, 70));
+    renderer.DrawLines(za, Color::FromBytes(70, 110, 220));
+  }
+}
+
+void Viewport::DrawPage(GlRenderer& renderer) {
+  // A white sheet with a drop shadow on the neutral background; the page
+  // lies in the world XY plane (1 unit = 1 mm) so picks give page coordinates.
+  auto quad = [](std::vector<float>& v, double x0, double y0, double x1, double y1, double z) {
+    const float pts[6][3] = {{static_cast<float>(x0), static_cast<float>(y0), static_cast<float>(z)}, {static_cast<float>(x1), static_cast<float>(y0), static_cast<float>(z)}, {static_cast<float>(x1), static_cast<float>(y1), static_cast<float>(z)},
+                             {static_cast<float>(x0), static_cast<float>(y0), static_cast<float>(z)}, {static_cast<float>(x1), static_cast<float>(y1), static_cast<float>(z)}, {static_cast<float>(x0), static_cast<float>(y1), static_cast<float>(z)}};
+    for (auto& p : pts) { v.insert(v.end(), {p[0], p[1], p[2], 0.f, 0.f, 1.f}); }
+  };
+  std::vector<float> shadow, sheet;
+  const double sh = std::max(page_w_, page_h_) * 0.01;
+  quad(shadow, sh, -sh, page_w_ + sh, page_h_ - sh, -0.02);
+  quad(sheet, 0, 0, page_w_, page_h_, -0.01);
+  renderer.EnableDepthTest(false);
+  renderer.DrawTriangles(shadow, Color{0.f, 0.f, 0.f, 0.35f}, false);
+  renderer.DrawTriangles(sheet, Color::FromBytes(255, 255, 255), false);
+  const float w = static_cast<float>(page_w_), h = static_cast<float>(page_h_);
+  std::vector<float> border = {0, 0, 0, w, 0, 0, w, 0, 0, w, h, 0, w, h, 0, 0, h, 0, 0, h, 0, 0, 0, 0};
+  renderer.DrawLines(border, Color::FromBytes(120, 120, 120));
+  renderer.EnableDepthTest(true);
+}
+
+void Viewport::DrawClippingPlanes(GlRenderer& renderer, const Document& doc) {
+  for (const ClippingPlane& cp : doc.ClippingPlanes()) {
+    Vector3d x = cp.x_axis, y = cp.y_axis;
+    if (!x.Unitize() || !y.Unitize()) continue;
+    const Vector3d n = ON_CrossProduct(x, y);
+    const Point3d c = cp.origin;
+    const Point3d p00 = c - x * (cp.width / 2) - y * (cp.height / 2), p10 = c + x * (cp.width / 2) - y * (cp.height / 2);
+    const Point3d p11 = c + x * (cp.width / 2) + y * (cp.height / 2), p01 = c - x * (cp.width / 2) + y * (cp.height / 2);
+    std::vector<float> tri;
+    for (const Point3d* p : {&p00, &p10, &p11, &p00, &p11, &p01}) {
+      tri.insert(tri.end(), {static_cast<float>(p->x), static_cast<float>(p->y), static_cast<float>(p->z), static_cast<float>(n.x), static_cast<float>(n.y), static_cast<float>(n.z)});
+    }
+    const Color fill = cp.selected ? Color{1.f, 0.82f, 0.f, 0.35f} : (cp.enabled ? Color{0.35f, 0.65f, 1.f, 0.22f} : Color{0.6f, 0.6f, 0.6f, 0.15f});
+    renderer.DrawTriangles(tri, fill, false);
+    std::vector<float> lines;
+    auto push = [&](Point3d a, Point3d b) { lines.insert(lines.end(), {static_cast<float>(a.x), static_cast<float>(a.y), static_cast<float>(a.z), static_cast<float>(b.x), static_cast<float>(b.y), static_cast<float>(b.z)}); };
+    push(p00, p10); push(p10, p11); push(p11, p01); push(p01, p00);
+    // Normal arrow (the side that gets cut away).
+    const double len = 0.25 * std::max(cp.width, cp.height);
+    const Point3d tip = c + n * len;
+    push(c, tip);
+    push(tip, tip - n * (len * 0.2) + x * (len * 0.08));
+    push(tip, tip - n * (len * 0.2) - x * (len * 0.08));
+    const Color edge = cp.selected ? kSelectionColor : (cp.enabled ? Color::FromBytes(90, 150, 240) : Color::FromBytes(140, 140, 140));
+    renderer.DrawLines(lines, edge, cp.selected ? 2.0f : 1.0f);
+  }
+}
+
+void Viewport::DrawAxesGizmo(GlRenderer& renderer) {
+  // Small world-axis indicator in the lower-left corner, drawn in a tiny
+  // orthographic projection so it never scales with zoom.
+  const Mat4 view = camera_.ViewMatrix();
+  Mat4 rot = view;
+  rot.m[12] = rot.m[13] = rot.m[14] = 0;  // drop translation
+  const double aspect = Aspect();
+  const double size = 0.08;
+  Mat4 proj = Mat4::Ortho(-1 * aspect, 1 * aspect, -1, 1, -10, 10);
+  Mat4 shift = Mat4::Identity();
+  shift.m[12] = static_cast<float>(-aspect + size * 1.6);
+  shift.m[13] = static_cast<float>(-1 + size * 1.6);
+  renderer.SetMatrices(rot, shift * proj);
+  const float L = static_cast<float>(size);
+  renderer.DrawLines({0, 0, 0, L, 0, 0}, Color::FromBytes(230, 70, 70));
+  renderer.DrawLines({0, 0, 0, 0, L, 0}, Color::FromBytes(70, 200, 70));
+  renderer.DrawLines({0, 0, 0, 0, 0, L}, Color::FromBytes(80, 130, 255));
+  renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(aspect));
+}
+
+// ---------------------------------------------------------------------------
+// Frustum culling (tests/performance_notes.md, "No LOD or frustum culling")
+// ---------------------------------------------------------------------------
+//
+// DrawObjects below used to walk every doc.Objects() unconditionally to
+// build draw calls. This section adds a broad-phase + precise cull so
+// objects entirely outside the current view frustum never reach a draw
+// call, following the same "cache a fast reject, keep the exact math as
+// the final word" shape as ObjectGrid-backed picking above. Correctness is
+// the constraint that matters here (see the note this closes): a
+// culled-but-should-be-visible object is a much worse bug than a slow
+// frame, so every step below is deliberately conservative - see the
+// comments inline for why each one cannot under-cull.
+namespace {
+
+// Six world-space frustum planes (A,B,C,D; positive = inside), extracted
+// from a combined view-projection matrix by the standard Gribb/Hartmann
+// method. This works unmodified for both of Camera::ProjectionMatrix's
+// return values (perspective and parallel) because it operates purely on
+// the combined matrix's rows, not on any assumption about how the
+// projection was built - so it needs no special-casing for ortho, and it
+// derives the *exact same* planes GL's own clipping uses (same matrix),
+// which is what keeps this consistent with what actually gets rasterized.
+struct FrustumPlanes {
+  std::array<std::array<double, 4>, 6> planes{};
+};
+
+FrustumPlanes ExtractFrustumPlanes(const Mat4& view, const Mat4& proj) {
+  const Mat4 vp = proj * view;
+  const float* m = vp.Data();
+  // Column-major (Mat4::operator* indexes as m[col*4+row], see Camera.h),
+  // so row i of the matrix is (m[i], m[4+i], m[8+i], m[12+i]).
+  auto row = [&](int i) { return std::array<double, 4>{m[i], m[4 + i], m[8 + i], m[12 + i]}; };
+  const std::array<double, 4> r0 = row(0), r1 = row(1), r2 = row(2), r3 = row(3);
+  auto combine = [](const std::array<double, 4>& a, const std::array<double, 4>& b, double sign) {
+    std::array<double, 4> p{a[0] + sign * b[0], a[1] + sign * b[1], a[2] + sign * b[2], a[3] + sign * b[3]};
+    const double len = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+    if (len > 1e-12) { p[0] /= len; p[1] /= len; p[2] /= len; p[3] /= len; }
+    return p;
+  };
+  FrustumPlanes f;
+  f.planes[0] = combine(r3, r0, 1.0);   // left
+  f.planes[1] = combine(r3, r0, -1.0);  // right
+  f.planes[2] = combine(r3, r1, 1.0);   // bottom
+  f.planes[3] = combine(r3, r1, -1.0);  // top
+  f.planes[4] = combine(r3, r2, 1.0);   // near
+  f.planes[5] = combine(r3, r2, -1.0);  // far
+  return f;
+}
+
+// Conservative AABB-vs-frustum test (the standard "positive vertex" trick):
+// for each plane, test only the box corner furthest in the plane normal's
+// direction. A box is culled only when that single most-favourable corner
+// is still outside one plane, i.e. only when *all eight* corners are
+// outside it - so a box that merely straddles the frustum boundary (any
+// corner still inside) is always kept. This can produce false negatives
+// (an object outside the true frustum kept as "maybe visible" near a
+// silhouette) but never a false positive that hides something visible -
+// exactly the asymmetry tests/performance_notes.md calls for. `margin`
+// pads every plane a little further outward for extra safety against the
+// float32 precision `proj`/`view` (and hence these planes) carry.
+bool BoxOutsideFrustum(const FrustumPlanes& f, const kernel::BoundingBox& box, double margin) {
+  for (const std::array<double, 4>& p : f.planes) {
+    const double px = p[0] >= 0 ? box.max.x : box.min.x;
+    const double py = p[1] >= 0 ? box.max.y : box.min.y;
+    const double pz = p[2] >= 0 ? box.max.z : box.min.z;
+    if (p[0] * px + p[1] * py + p[2] * pz + p[3] < -margin) return true;
+  }
+  return false;
+}
+
+// A world-space AABB that fully contains the view frustum, for the
+// ObjectGrid broad-phase query only (see DrawObjects below) - it does not
+// itself decide what gets culled, BoxOutsideFrustum does that precisely
+// per object afterward, so this only needs to be a safe superset, not
+// tight. Built from the frustum's exact 8 corner points (near/far corners
+// at their true forward-distance, matching Camera::ProjectionMatrix's own
+// near_z/far_z and, for ortho, its -far_z..far_z range) plus the eye
+// itself, so unlike the arc-length shortcut ObjectsInWindow's window_box
+// uses (fine there: it only feeds the same best-effort broad phase for an
+// arbitrary screen rectangle), this is exact for perspective - the near/far
+// corners are precisely the frustum's extreme points.
+kernel::BoundingBox FrustumWorldBox(const Camera& camera, double aspect) {
+  const CameraState& s = camera.State();
+  double far_dist;
+  const double near_dist = camera.NearFar(far_dist);
+  const Vector3d f = camera.Forward(), r = camera.Right(), u = camera.Up();
+  kernel::BoundingBox box{s.eye, s.eye};
+  auto expand = [&](Point3d p) {
+    box.min.x = std::min(box.min.x, p.x); box.max.x = std::max(box.max.x, p.x);
+    box.min.y = std::min(box.min.y, p.y); box.max.y = std::max(box.max.y, p.y);
+    box.min.z = std::min(box.min.z, p.z); box.max.z = std::max(box.max.z, p.z);
+  };
+  if (s.perspective) {
+    const double fov = 2.0 * std::atan(18.0 / s.lens_mm);
+    const double ty = std::tan(fov / 2.0), tx = ty * aspect;
+    for (double depth : {near_dist, far_dist})
+      for (double sx : {-1.0, 1.0})
+        for (double sy : {-1.0, 1.0}) expand(s.eye + f * depth + r * (sx * tx * depth) + u * (sy * ty * depth));
+  } else {
+    const double h = s.ortho_height / 2.0, w = h * aspect;
+    for (double depth : {-far_dist, far_dist})  // Camera::ProjectionMatrix's Ortho(...,-far_z,far_z)
+      for (double sx : {-1.0, 1.0})
+        for (double sy : {-1.0, 1.0}) expand(s.eye + f * depth + r * (sx * w) + u * (sy * h));
+  }
+  return box;
+}
+
+// Escape hatch mirroring PickGridDisabledForBenchmark below: forces every
+// object to stay a draw candidate, i.e. exactly the old "walk every
+// object" behaviour in the same binary - tests/cull_test.sh uses this for
+// an honest A/B (culled render vs uncensored render must look pixel-
+// identical), and it doubles as an instant field off-switch if a real
+// scene ever turns up a case this cull gets wrong.
+bool FrustumCullDisabled() {
+  static const bool disabled = std::getenv("DINO8_DISABLE_FRUSTUM_CULL") != nullptr;
+  return disabled;
+}
+
+}  // namespace
+
+void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, DisplayMode mode) {
+  const Document& doc = *ctx.doc;
+  const ModeStyle style = StyleFor(mode);
+  const bool rendered = mode == DisplayMode::Rendered;
+  // Rendered mode draws every opaque object first, then the transparent
+  // ones back to front with depth writes off so glass composites properly.
+  std::vector<std::pair<double, const SceneObject*>> transparent;
+  auto draw_rendered = [&](const SceneObject& o, const Material& m) {
+    const DisplayCache& d = o.Display();
+    RenderMaterial rm;
+    rm.diffuse = m.diffuse;
+    if (ctx.arctic) { rm.diffuse = Color::FromBytes(240, 240, 240); rm.specular = Color::FromBytes(40, 40, 40); rm.shininess = 6.f; rm.reflectivity = 0.f; }
+    else {
+      const float gloss = std::clamp(m.gloss, 0.f, 1.f);
+      rm.specular = Color{m.specular.r * (0.15f + 0.85f * gloss), m.specular.g * (0.15f + 0.85f * gloss), m.specular.b * (0.15f + 0.85f * gloss), 1.f};
+      rm.shininess = 4.f * std::pow(2.f, gloss * 6.f);
+      rm.reflectivity = std::clamp(m.reflectivity, 0.f, 1.f);
+      rm.emission = m.emission;
+      if (!m.texture_path.empty()) rm.texture = renderer.TextureFor(m.texture_path);
+    }
+    if (doc.IsObjectLocked(o)) rm.diffuse = Mix(rm.diffuse, kLockedColor, 0.6f);
+    if (o.selected && !ctx.for_render) rm.diffuse = Mix(rm.diffuse, kSelectionColor, 0.55f);
+    rm.diffuse.a = std::clamp(1.f - m.transparency, 0.f, 1.f) * style.fill_alpha;
+    const std::vector<float>* uvs = nullptr;
+    if (rm.texture) {
+      const TextureMapping mapping = o.mapping != TextureMapping::Default ? o.mapping : m.mapping;
+      const float scale = o.mapping != TextureMapping::Default ? o.mapping_scale : m.mapping_scale;
+      o.EnsureMappedUVs(mapping, scale);
+      uvs = &d.mapped_uvs;
+    }
+    renderer.DrawTrianglesRendered(d.triangles, uvs, rm);
+  };
+  auto shown = [&](const SceneObject& o) {
+    if (!doc.IsObjectVisible(o)) return false;
+    if (ctx.hidden_layers && std::find(ctx.hidden_layers->begin(), ctx.hidden_layers->end(), o.layer_index) != ctx.hidden_layers->end()) return false;
+    if (ctx.hidden_objects && std::find(ctx.hidden_objects->begin(), ctx.hidden_objects->end(), o.id) != ctx.hidden_objects->end()) return false;
+    return true;
+  };
+  const float curve_width = ctx.print_display ? 2.5f : 1.0f;
+
+  // Frustum culling: which doc.Objects() indices are even worth building a
+  // draw call for this frame. Skipped entirely for ctx.for_render (the
+  // Render/RenderView image-export path) - that path already runs far less
+  // often than interactive redraws, so there is nothing to gain by risking
+  // it, and it can use a tighter off-axis "blowup" sub-rectangle of this
+  // same frustum (Camera::BlowupProjectionMatrix) that this function never
+  // sees, so testing against the full frustum here would in any case be
+  // less precise for that path than just not culling it.
+  std::vector<std::size_t> render_candidates;
+  {
+    const std::vector<SceneObject>& objects = doc.Objects();
+    const bool skip_cull = ctx.for_render || FrustumCullDisabled();
+    if (skip_cull) {
+      render_candidates.resize(objects.size());
+      for (std::size_t i = 0; i < objects.size(); ++i) render_candidates[i] = i;
+    } else {
+      const double aspect = Aspect();
+      const FrustumPlanes planes = ExtractFrustumPlanes(camera_.ViewMatrix(), camera_.ProjectionMatrix(aspect));
+      ObjectGrid& grid = doc.PickGrid();
+      // FrustumWorldBox can be enormous along the view's depth axis (an
+      // ortho view's box spans Camera::ProjectionMatrix's full -far_z..
+      // far_z range, and NearFar's far_z is itself at least 1000 world
+      // units) - for a flat/2D-ish scene (many curves at one Z, say) that
+      // starves ObjectGrid::EnsureFresh's cell-size heuristic of real
+      // volume to divide by, giving a cell size far smaller than that
+      // depth span, which used to make ForEachCellInBox's cell walk cost
+      // minutes per frame even with its own kMaxSpan guard (each axis
+      // individually still under that cap, but their product enormous).
+      // Clamping to the grid's own indexed extent first fixes this
+      // generally, for any box shape: nothing outside the document's own
+      // bounding box can be a candidate, so this can only shrink the
+      // query, never drop a real one.
+      kernel::BoundingBox fbox = FrustumWorldBox(camera_, aspect);
+      kernel::BoundingBox scene_extent;
+      bool disjoint = false;
+      if (grid.Extent(scene_extent)) {
+        fbox.min.x = std::max(fbox.min.x, scene_extent.min.x); fbox.max.x = std::min(fbox.max.x, scene_extent.max.x);
+        fbox.min.y = std::max(fbox.min.y, scene_extent.min.y); fbox.max.y = std::min(fbox.max.y, scene_extent.max.y);
+        fbox.min.z = std::max(fbox.min.z, scene_extent.min.z); fbox.max.z = std::min(fbox.max.z, scene_extent.max.z);
+        disjoint = fbox.min.x > fbox.max.x || fbox.min.y > fbox.max.y || fbox.min.z > fbox.max.z;
+      }
+      const std::vector<std::size_t> broad =
+          (grid.Empty() || disjoint) ? std::vector<std::size_t>{} : grid.QueryBox(fbox);
+      render_candidates.reserve(broad.size());
+      for (std::size_t idx : broad) {
+        if (idx >= objects.size()) continue;  // grid stale mid-frame would be a bug elsewhere; be defensive, not wrong
+        const SceneObject& o = objects[idx];
+        // A NURBS control polygon can legitimately reach outside its own
+        // curve/surface's tessellated bounding box (the convex-hull
+        // property only guarantees the curve stays *inside* the control
+        // polygon's hull, not the other way around) - see the same caveat
+        // on PickControlPoint/ControlPointsInWindow in the Picking section
+        // below. Whenever this frame draws an object's control points,
+        // skip the frustum test for it entirely rather than risk dropping
+        // a control point the box-based test never saw.
+        const bool draws_control_points = o.show_control_points || (ctx.show_control_points_for_selected && o.selected);
+        if (draws_control_points) { render_candidates.push_back(idx); continue; }
+        const kernel::BoundingBox box = o.BoundingBox();
+        const double diag = (box.max - box.min).Length();
+        const double margin = std::max(1e-4, diag * 1e-3);
+        if (!BoxOutsideFrustum(planes, box, margin)) render_candidates.push_back(idx);
+      }
+    }
+    frustum_cull_stats_.total_objects = objects.size();
+    frustum_cull_stats_.draw_candidates = render_candidates.size();
+  }
+
+  // Pass 1: fills (with polygon offset so edges win the depth test).
+  if (style.fill) {
+    renderer.EnablePolygonOffset(true);
+    for (std::size_t candidate_index : render_candidates) {
+      const SceneObject& o = doc.Objects()[candidate_index];
+      if (!shown(o)) continue;
+      // SetObjectDisplayMode Wireframe: a per-object override that skips
+      // the fill pass even in a shaded/rendered/etc. viewport, so the
+      // object still shows only edges/curves below.
+      if (o.force_wireframe) continue;
+      o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+      const DisplayCache& d = o.Display();
+      if (d.triangles.empty()) continue;
+      // Shaded/Ghosted/X-Ray fill with one light material like Rhino's
+      // default, unless the object carries a material; Rendered uses the
+      // object/layer colour.
+      Color c = Color::FromBytes(205, 207, 212);
+      if (rendered || !o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
+      if (style.force_white) c = Color::FromBytes(245, 245, 245);
+      else if (style.monochrome) c = Color::FromBytes(200, 200, 205);
+      if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
+      if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
+      c.a = style.fill_alpha;
+      // Surface analysis: the object's own setting wins, else the app-wide
+      // fallback (Zebra/EMap with nothing selected applies to every surface).
+      const AnalysisSettings* analysis = nullptr;
+      if (o.analysis.mode != AnalysisMode::None) analysis = &o.analysis;
+      else if (ctx.fallback_analysis && ctx.fallback_analysis->mode != AnalysisMode::None) analysis = ctx.fallback_analysis;
+      if (analysis) {
+        switch (analysis->mode) {
+          case AnalysisMode::Zebra:
+            renderer.DrawTrianglesZebra(d.triangles, analysis->zebra_direction == ZebraDirection::Vertical,
+                                        analysis->zebra_density, style.fill_alpha);
+            continue;
+          case AnalysisMode::EMap: {
+            Color tint = Color::FromBytes(255, 255, 255);
+            if (o.selected) tint = Mix(tint, kSelectionColor, 0.2f);
+            tint.a = style.fill_alpha;
+            renderer.DrawTrianglesEMap(d.triangles, tint);
+            continue;
+          }
+          case AnalysisMode::Curvature:
+          case AnalysisMode::DraftAngle:
+          case AnalysisMode::Thickness:
+            o.EnsureAnalysisColors(*analysis);
+            if (!d.colors.empty()) {
+              renderer.DrawTriangles(d.triangles, d.colors, style.fill_alpha);
+              continue;
+            }
+            break;
+          case AnalysisMode::None: break;
+        }
+      }
+      // No analysis override: honour vertex colours stored on the mesh
+      // itself (e.g. from ComputeVertexColors) before falling back to a
+      // flat per-object colour.
+      if (!analysis && !d.mesh_vertex_colors.empty() && d.mesh_vertex_colors.size() == d.triangles.size() / 2) {
+        renderer.DrawTriangles(d.triangles, d.mesh_vertex_colors, style.fill_alpha);
+        continue;
+      }
+      if (rendered) {
+        const Material m = doc.MaterialFor(o);
+        if (m.transparency > 0.001f && !ctx.arctic) {
+          // Sort key: view-space depth of the bounding-box centre.
+          const Point3d centre = d.has_bbox ? Point3d((d.bbox.min.x + d.bbox.max.x) / 2, (d.bbox.min.y + d.bbox.max.y) / 2, (d.bbox.min.z + d.bbox.max.z) / 2) : Point3d(0, 0, 0);
+          transparent.emplace_back((centre - camera_.State().eye) * camera_.Forward(), &o);
+          continue;
+        }
+        draw_rendered(o, m);
+        continue;
+      }
+      renderer.DrawTriangles(d.triangles, c, style.lit);
+    }
+    if (!transparent.empty()) {
+      std::sort(transparent.begin(), transparent.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+      renderer.EnableDepthWrite(false);
+      for (const auto& [depth, o] : transparent) draw_rendered(*o, doc.MaterialFor(*o));
+      renderer.EnableDepthWrite(true);
+    }
+    renderer.EnablePolygonOffset(false);
+  } else {
+    // ShadeSelected: fill just the objects it marked `force_shaded`, even
+    // though this display mode (Wireframe) draws no fills otherwise.
+    renderer.EnablePolygonOffset(true);
+    const ModeStyle shaded_style = StyleFor(DisplayMode::Shaded);
+    for (std::size_t candidate_index : render_candidates) {
+      const SceneObject& o = doc.Objects()[candidate_index];
+      if (!o.force_shaded || !shown(o)) continue;
+      o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+      const DisplayCache& d = o.Display();
+      if (d.triangles.empty()) continue;
+      Color c = Color::FromBytes(205, 207, 212);
+      if (!o.material_name.empty() || !o.color_by_layer) c = doc.EffectiveColor(o);
+      if (doc.IsObjectLocked(o)) c = Mix(c, kLockedColor, 0.6f);
+      if (o.selected) c = Mix(c, kSelectionColor, 0.55f);
+      c.a = shaded_style.fill_alpha;
+      renderer.DrawTriangles(d.triangles, c, shaded_style.lit);
+    }
+    renderer.EnablePolygonOffset(false);
+  }
+  // Pass 2: curves, edges, isocurves, points, control points.
+  // Draw order (BringToFront/SendToBack/...) is stored per-object as the
+  // "DrawOrder" user text (higher draws later, i.e. on top). It only ever
+  // matters for coincident 2D-ish geometry (curves/points/hatches) where
+  // depth testing can't already resolve which one is "on top" - so this is
+  // a stable sort of the object list by that value, applied to every mode;
+  // it is a no-op when depth testing decides the outcome instead (3D shaded
+  // views) and the only real effect is in Wireframe / Top / other parallel,
+  // depth-off-for-lines views where curves actually overlap on screen.
+  std::vector<size_t> order(render_candidates.begin(), render_candidates.end());
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    auto draw_order_of = [&](const SceneObject& o) {
+      auto it = o.user_text.find("DrawOrder");
+      return it != o.user_text.end() ? std::atoi(it->second.c_str()) : 0;
+    };
+    return draw_order_of(doc.Objects()[a]) < draw_order_of(doc.Objects()[b]);
+  });
+  if (!style.depth_lines) renderer.EnableDepthTest(false);
+  for (size_t oi : order) {
+    const SceneObject& o = doc.Objects()[oi];
+    if (!doc.IsObjectVisible(o)) continue;
+    if (o.kind == ObjectKind::Curve) o.SetDisplayDashes(doc.EffectiveDashes(o));
+    if (!shown(o)) continue;
+    o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+    const DisplayCache& d = o.Display();
+    const bool is_curve_like = o.kind == ObjectKind::Curve;
+    Color line_color = doc.EffectiveColor(o);
+    // Rhino's default layer colour is black, which vanishes on a dark
+    // background: lift near-black wire colours so curves stay readable.
+    {
+      Color bg_top, bg_bottom;
+      BackgroundFor(mode, &doc, ctx.arctic, bg_top, bg_bottom);
+      const float bg_lum = 0.299f * bg_bottom.r + 0.587f * bg_bottom.g + 0.114f * bg_bottom.b;
+      const float lum = 0.299f * line_color.r + 0.587f * line_color.g + 0.114f * line_color.b;
+      if (bg_lum < 0.45f && lum < 0.25f && !style.fill) line_color = Color::FromBytes(222, 225, 230);
+      else if (bg_lum < 0.45f && lum < 0.25f && is_curve_like) line_color = Color::FromBytes(222, 225, 230);
+    }
+    if (!is_curve_like) {
+      if (style.fill) line_color = style.monochrome || style.force_white ? style.edge_color : Mix(line_color, style.edge_color, 0.55f);
+      if (!style.edges && !style.isocurves && !o.selected) {
+        // Rendered mode: no wires on surfaces/meshes at all.
+        if (o.kind != ObjectKind::Point) continue;
+      }
+    }
+    if (doc.IsObjectLocked(o)) line_color = Mix(line_color, kLockedColor, 0.7f);
+    if (o.selected) line_color = kSelectionColor;
+    if (!d.lines.empty() && (is_curve_like || style.edges || style.isocurves || o.selected)) {
+      renderer.DrawLines(d.lines, line_color, is_curve_like ? curve_width : 1.0f);
+    }
+    if (!d.points.empty()) {
+      renderer.DrawPoints(d.points, o.selected ? kSelectionColor : line_color, 6.0f);
+    }
+    if (o.show_render_mesh_wires && !d.triangles.empty()) {
+      // ToggleRenderMesh/ShowRenderMesh: the tessellation's own triangle
+      // edges, overlaid regardless of display mode, to see facet density.
+      std::vector<float> wire;
+      const size_t n_verts = d.triangles.size() / 6;
+      wire.reserve(n_verts * 2 * 3);
+      for (size_t t = 0; t + 2 < n_verts; t += 3) {
+        const float* a = &d.triangles[t * 6];
+        const float* b = &d.triangles[(t + 1) * 6];
+        const float* c = &d.triangles[(t + 2) * 6];
+        auto seg = [&](const float* p, const float* q) { for (int k = 0; k < 3; ++k) wire.push_back(p[k]); for (int k = 0; k < 3; ++k) wire.push_back(q[k]); };
+        seg(a, b); seg(b, c); seg(c, a);
+      }
+      renderer.DrawLines(wire, Color::FromBytes(40, 40, 40), 1.0f);
+    }
+    if (o.show_control_points || (ctx.show_control_points_for_selected && o.selected)) {
+      renderer.EnableDepthTest(false);
+      renderer.DrawLines(d.control_polygon, kControlPolygonColor);
+      if (o.hidden_control_points.empty() && !sub_filter_.cull_control_polygon) {
+        renderer.DrawPoints(d.control_points, kControlPointColor, 5.0f);
+      } else {
+        std::vector<int> idx;
+        std::vector<float> xyz;
+        VisibleControlPoints(o, idx, &xyz);
+        renderer.DrawPoints(xyz, kControlPointColor, 5.0f);
+      }
+      renderer.EnableDepthTest(style.depth_lines);
+    }
+    if (o.highlight_edges && !d.edges.empty()) {
+      // ShowEdges: every edge thick, naked edges on top in a second colour.
+      renderer.DrawLines(d.edges, kEdgeHighlightColor, 3.0f);
+      if (!d.naked_edges.empty()) renderer.DrawLines(d.naked_edges, kNakedEdgeColor, 4.0f);
+    }
+  }
+  // Selected sub-objects: control points as big dots, edges thick, faces tinted.
+  if (ctx.sub_selection && !ctx.sub_selection->Empty() && !ctx.for_render) {
+    std::vector<float> pts, lines, tris;
+    for (const SubObjectRef& r : ctx.sub_selection->Items()) {
+      const SceneObject* o = doc.Find(r.id);
+      if (!o || !shown(*o)) continue;
+      o->EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+      const DisplayCache& d = o->Display();
+      if (r.kind == SubObjectKind::Face && o->kind == ObjectKind::Surface) {
+        tris.insert(tris.end(), d.triangles.begin(), d.triangles.end());
+        lines.insert(lines.end(), d.edges.begin(), d.edges.end());
+        continue;
+      }
+      if (r.kind == SubObjectKind::Face && !d.triangle_face.empty() && (o->kind == ObjectKind::Brep || o->kind == ObjectKind::Mesh)) {
+        for (size_t t = 0; t < d.triangle_face.size() && (t + 1) * 18 <= d.triangles.size(); ++t) {
+          if (d.triangle_face[t] == r.index) tris.insert(tris.end(), d.triangles.begin() + static_cast<long>(t * 18), d.triangles.begin() + static_cast<long>((t + 1) * 18));
+        }
+        if (o->kind == ObjectKind::Brep) {
+          std::vector<float> dummy_tris;
+          AppendSubObjectDisplay(*o, r, pts, lines, dummy_tris);  // boundary only; the fill came from the cache
+        }
+        continue;
+      }
+      AppendSubObjectDisplay(*o, r, pts, lines, tris);
+    }
+    if (!tris.empty()) {
+      renderer.EnableDepthTest(true);
+      renderer.EnablePolygonOffset(true);
+      Color fill = kSelectionColor;
+      fill.a = 0.55f;
+      renderer.DrawTriangles(tris, fill, false);
+      renderer.EnablePolygonOffset(false);
+    }
+    renderer.EnableDepthTest(false);
+    if (!lines.empty()) renderer.DrawLines(lines, kSelectionColor, 3.0f);
+    if (!pts.empty()) renderer.DrawPoints(pts, kSelectionColor, 9.0f);
+  }
+  renderer.EnableDepthTest(true);
+}
+
+// ---------------------------------------------------------------------------
+// Picking
+// ---------------------------------------------------------------------------
+
+namespace {
+// Broad-phase candidate gathering for the ray- and box-based picks below,
+// backed by Document::PickGrid() (see spatial/ObjectGrid.h). This is what
+// turns PickObject/PickSubObject/ObjectsInWindow from "touch every object
+// in the document" into "touch objects whose cached display bounding box
+// is actually near the pick" - the fix for the O(objects) hover-every-frame
+// cost tests/performance_notes.md measures. Safe here specifically because
+// every geometry array these three functions read (DisplayCache::lines/
+// points/triangles and the topology mesh PickSubObject derives from) is
+// itself built to fit inside the same cached bounding box the grid indexes
+// - unlike raw NURBS control points, which the convex-hull property lets
+// stray outside a curve's own tessellated bbox, so PickControlPoint/
+// ControlPointsInWindow deliberately keep scanning every object (see the
+// note on those functions) rather than risk missing a real control point.
+//
+// Honest caveat: the wire/edge tests below accept a hit within
+// `pixel_radius` screen pixels of the exact ray, not only an exact ray
+// intersection, so in principle a wire whose AABB the ray's *line* just
+// misses but whose screen projection is still within pixel_radius could be
+// dropped by this broad phase where the old brute-force scan would have
+// found it. This was true of the same tolerance before the grid existed
+// too (a segment just outside best_wire_dist's initial pixel_radius was
+// always excluded) - what changes here is that the AABB test is now 3D/
+// world-space instead of implicitly "every object", so the case that could
+// regress is a wire within pixel_radius on screen from an AABB more than
+// roughly one grid cell away from the ray's line in world space. With
+// realistic cell sizing (see EnsureFresh) and ordinary pixel_radius values
+// (a handful of pixels) this has not been observed in tests/smoke.sh or
+// tests/stress.sh, but it is a real, if narrow, behavioral difference worth
+// stating plainly rather than claiming byte-for-byte identical results.
+//
+// A generous `max_distance` bounds the DDA march (see ObjectGrid::QueryRay);
+// 1e7 world units comfortably covers any realistic model without the walk
+// running away on a near-parallel ray that grazes past the grid's extent.
+constexpr double kPickRayMaxDistance = 1.0e7;
+
+// tests/stress.sh sets this to get an honest, same-binary A/B: every
+// candidate list becomes "every object", i.e. exactly the old brute-force
+// scan's behaviour, so pick_ms with and without it isolates what the grid
+// itself is worth rather than comparing across two different builds.
+bool PickGridDisabledForBenchmark() {
+  static const bool disabled = std::getenv("DINO8_DISABLE_PICK_GRID") != nullptr;
+  return disabled;
+}
+
+std::vector<std::size_t> AllIndices(const Document& doc) {
+  std::vector<std::size_t> all(doc.Objects().size());
+  for (std::size_t i = 0; i < all.size(); ++i) all[i] = i;
+  return all;
+}
+
+// Indices into doc.Objects(), not ObjectIds: Document::Find(id) is itself a
+// linear scan, so resolving each candidate as doc.Objects()[index] is what
+// keeps this O(1) per candidate instead of putting the O(n) cost right back.
+std::vector<std::size_t> RayCandidates(const Document& doc, const Ray& ray) {
+  if (PickGridDisabledForBenchmark()) return AllIndices(doc);
+  ObjectGrid& grid = doc.PickGrid();
+  return grid.QueryRay(ray, kPickRayMaxDistance);
+}
+
+std::vector<std::size_t> BoxCandidates(const Document& doc, const kernel::BoundingBox& box) {
+  if (PickGridDisabledForBenchmark()) return AllIndices(doc);
+  ObjectGrid& grid = doc.PickGrid();
+  return grid.QueryBox(box);
+}
+}  // namespace
+
+bool Viewport::WorldToPixel(Point3d p, double& px, double& py) const {
+  double nx, ny, depth;
+  if (!camera_.Project(p, Aspect(), nx, ny, depth)) return false;
+  px = (nx + 1.0) * 0.5 * width_;
+  py = (1.0 - ny) * 0.5 * height_;
+  return true;
+}
+
+Ray Viewport::PixelRay(double px, double py) const {
+  const double nx = (px / std::max(width_, 1)) * 2.0 - 1.0;
+  const double ny = 1.0 - (py / std::max(height_, 1)) * 2.0;
+  return camera_.ScreenRay(nx, ny, Aspect());
+}
+
+namespace {
+
+double PointSegmentDistance2D(double px, double py, double ax, double ay, double bx, double by, double& t_out) {
+  const double dx = bx - ax, dy = by - ay;
+  const double len2 = dx * dx + dy * dy;
+  double t = len2 > 1e-12 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0.0;
+  t = std::clamp(t, 0.0, 1.0);
+  t_out = t;
+  const double cx = ax + dx * t, cy = ay + dy * t;
+  return std::hypot(px - cx, py - cy);
+}
+
+bool RayTriangle(const Ray& ray, Point3d a, Point3d b, Point3d c, double& t_out) {
+  const Vector3d e1 = b - a, e2 = c - a;
+  const Vector3d p = ON_CrossProduct(ray.direction, e2);
+  const double det = ON_DotProduct(e1, p);
+  if (std::abs(det) < 1e-12) return false;
+  const double inv = 1.0 / det;
+  const Vector3d s = ray.origin - a;
+  const double u = ON_DotProduct(s, p) * inv;
+  if (u < 0 || u > 1) return false;
+  const Vector3d q = ON_CrossProduct(s, e1);
+  const double v = ON_DotProduct(ray.direction, q) * inv;
+  if (v < 0 || u + v > 1) return false;
+  const double t = ON_DotProduct(e2, q) * inv;
+  if (t < 0) return false;
+  t_out = t;
+  return true;
+}
+
+}  // namespace
+
+ObjectId Viewport::PickObject(const Document& doc, double px, double py, double pixel_radius) const {
+  if (page_) return kNoObject;
+  ObjectId best_wire = kNoObject;
+  double best_wire_dist = pixel_radius;
+  ObjectId best_face = kNoObject;
+  double best_face_t = 1e300;
+  const Ray ray = PixelRay(px, py);
+  const std::vector<SceneObject>& all_objects = doc.Objects();
+  for (std::size_t candidate_index : RayCandidates(doc, ray)) {
+    const SceneObject& o = all_objects[candidate_index];
+    if (!doc.IsObjectVisible(o) || doc.IsObjectLocked(o)) continue;
+    o.EnsureDisplay(0.02, 0.05);
+    const DisplayCache& d = o.Display();
+    // Wires and points: screen-space distance.
+    for (size_t i = 0; i + 5 < d.lines.size(); i += 6) {
+      double ax, ay, bx, by;
+      if (!WorldToPixel(Point3d(d.lines[i], d.lines[i + 1], d.lines[i + 2]), ax, ay)) continue;
+      if (!WorldToPixel(Point3d(d.lines[i + 3], d.lines[i + 4], d.lines[i + 5]), bx, by)) continue;
+      double t;
+      const double dist = PointSegmentDistance2D(px, py, ax, ay, bx, by, t);
+      if (dist < best_wire_dist) {
+        best_wire_dist = dist;
+        best_wire = o.id;
+      }
+    }
+    for (size_t i = 0; i + 2 < d.points.size(); i += 3) {
+      double ax, ay;
+      if (!WorldToPixel(Point3d(d.points[i], d.points[i + 1], d.points[i + 2]), ax, ay)) continue;
+      const double dist = std::hypot(px - ax, py - ay);
+      if (dist < best_wire_dist) {
+        best_wire_dist = dist;
+        best_wire = o.id;
+      }
+    }
+    // Faces: ray intersection (only when the mode draws fills).
+    if (StyleFor(mode_).fill) {
+      for (size_t i = 0; i + 17 < d.triangles.size(); i += 18) {
+        double t;
+        if (RayTriangle(ray, Point3d(d.triangles[i], d.triangles[i + 1], d.triangles[i + 2]),
+                        Point3d(d.triangles[i + 6], d.triangles[i + 7], d.triangles[i + 8]),
+                        Point3d(d.triangles[i + 12], d.triangles[i + 13], d.triangles[i + 14]), t)) {
+          if (t < best_face_t) {
+            best_face_t = t;
+            best_face = o.id;
+          }
+        }
+      }
+    }
+  }
+  // Curves/points near the cursor beat a face behind them (Rhino behavior).
+  if (best_wire != kNoObject && best_wire_dist <= pixel_radius) return best_wire;
+  return best_face;
+}
+
+std::vector<ObjectId> Viewport::ObjectsInWindow(const Document& doc, double x0, double y0, double x1,
+                                                double y1, bool crossing) const {
+  const double left = std::min(x0, x1), right = std::max(x0, x1);
+  const double top = std::min(y0, y1), bottom = std::max(y0, y1);
+  std::vector<ObjectId> result;
+  if (page_) return result;
+  // Broad phase: the world-space box swept out by unprojecting the four
+  // screen corners through the camera's near/far distance conservatively
+  // bounds the selection frustum (it also includes some space outside the
+  // actual frustum for an off-centre rectangle, which only costs a few
+  // extra candidates - see ObjectGrid::QueryBox). Falls back to every
+  // object when the corners don't project (page_ already excluded above,
+  // so this is only reachable for a degenerate/behind-camera rectangle).
+  kernel::BoundingBox window_box;
+  bool have_window_box = false;
+  {
+    double far_z;
+    const double near_z = camera_.NearFar(far_z);
+    const double corners[4][2] = {{left, top}, {left, bottom}, {right, top}, {right, bottom}};
+    for (const double (&c)[2] : corners) {
+      const Ray corner_ray = PixelRay(c[0], c[1]);
+      for (double depth : {near_z, far_z}) {
+        const Point3d p = corner_ray.origin + corner_ray.direction * depth;
+        if (!have_window_box) { window_box.min = window_box.max = p; have_window_box = true; }
+        window_box.min.x = std::min(window_box.min.x, p.x); window_box.max.x = std::max(window_box.max.x, p.x);
+        window_box.min.y = std::min(window_box.min.y, p.y); window_box.max.y = std::max(window_box.max.y, p.y);
+        window_box.min.z = std::min(window_box.min.z, p.z); window_box.max.z = std::max(window_box.max.z, p.z);
+      }
+    }
+  }
+  const std::vector<SceneObject>& all_objects = doc.Objects();
+  std::vector<std::size_t> window_candidates;
+  if (have_window_box) {
+    window_candidates = BoxCandidates(doc, window_box);
+  } else {
+    window_candidates.resize(all_objects.size());
+    for (std::size_t i = 0; i < all_objects.size(); ++i) window_candidates[i] = i;
+  }
+  for (std::size_t candidate_index : window_candidates) {
+    const SceneObject& o = all_objects[candidate_index];
+    if (!doc.IsObjectVisible(o) || doc.IsObjectLocked(o)) continue;
+    o.EnsureDisplay(0.02, 0.05);
+    const DisplayCache& d = o.Display();
+    bool any_inside = false, all_inside = true, any_vertex = false;
+    auto test = [&](float x, float y, float z) {
+      double px, py;
+      any_vertex = true;
+      if (!WorldToPixel(Point3d(x, y, z), px, py)) {
+        all_inside = false;
+        return;
+      }
+      const bool inside = px >= left && px <= right && py >= top && py <= bottom;
+      any_inside = any_inside || inside;
+      all_inside = all_inside && inside;
+    };
+    for (size_t i = 0; i + 2 < d.lines.size(); i += 3) test(d.lines[i], d.lines[i + 1], d.lines[i + 2]);
+    for (size_t i = 0; i + 2 < d.points.size(); i += 3) test(d.points[i], d.points[i + 1], d.points[i + 2]);
+    if (d.lines.empty() && d.points.empty()) {
+      for (size_t i = 0; i + 5 < d.triangles.size(); i += 6) test(d.triangles[i], d.triangles[i + 1], d.triangles[i + 2]);
+    }
+    if (!any_vertex) continue;
+    if (crossing ? any_inside : all_inside) result.push_back(o.id);
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Sub-object picking
+// ---------------------------------------------------------------------------
+
+void Viewport::VisibleControlPoints(const SceneObject& o, std::vector<int>& indices, std::vector<float>* xyz) const {
+  indices.clear();
+  if (xyz) xyz->clear();
+  o.EnsureDisplay(0.02, 0.05);
+  const DisplayCache& d = o.Display();
+  const size_t n = d.control_points.size() / 3;
+  const bool cull = sub_filter_.cull_control_polygon && !d.triangles.empty();
+  for (size_t i = 0; i < n; ++i) {
+    if (!o.hidden_control_points.empty() &&
+        std::find(o.hidden_control_points.begin(), o.hidden_control_points.end(), static_cast<int>(i)) != o.hidden_control_points.end()) continue;
+    const Point3d p(d.control_points[i * 3], d.control_points[i * 3 + 1], d.control_points[i * 3 + 2]);
+    if (cull) {
+      // CullControlPolygon: hidden when the object's own display mesh lies
+      // between the camera and the control point.
+      double sx, sy;
+      if (WorldToPixel(p, sx, sy)) {
+        const Ray ray = PixelRay(sx, sy);
+        const double tp = ON_DotProduct(p - ray.origin, ray.direction);
+        const double eps = 1e-3 * std::max(1.0, tp);
+        bool occluded = false;
+        for (size_t k = 0; k + 17 < d.triangles.size() && !occluded; k += 18) {
+          double t;
+          if (RayTriangle(ray, Point3d(d.triangles[k], d.triangles[k + 1], d.triangles[k + 2]),
+                          Point3d(d.triangles[k + 6], d.triangles[k + 7], d.triangles[k + 8]),
+                          Point3d(d.triangles[k + 12], d.triangles[k + 13], d.triangles[k + 14]), t) && t < tp - eps) occluded = true;
+        }
+        if (occluded) continue;
+      }
+    }
+    indices.push_back(static_cast<int>(i));
+    if (xyz) { xyz->push_back(d.control_points[i * 3]); xyz->push_back(d.control_points[i * 3 + 1]); xyz->push_back(d.control_points[i * 3 + 2]); }
+  }
+}
+
+std::optional<SubObjectPick> Viewport::PickControlPoint(const Document& doc, double px, double py, double pixel_radius) const {
+  std::optional<SubObjectPick> best;
+  if (page_) return best;
+  for (const SceneObject& o : doc.Objects()) {
+    if (!o.show_control_points || !doc.IsObjectVisible(o) || doc.IsObjectLocked(o)) continue;
+    std::vector<int> idx;
+    std::vector<float> xyz;
+    VisibleControlPoints(o, idx, &xyz);
+    for (size_t k = 0; k < idx.size(); ++k) {
+      const Point3d p(xyz[k * 3], xyz[k * 3 + 1], xyz[k * 3 + 2]);
+      double sx, sy;
+      if (!WorldToPixel(p, sx, sy)) continue;
+      const double dist = std::hypot(sx - px, sy - py);
+      if (dist <= pixel_radius && (!best || dist < best->pixel_dist)) best = SubObjectPick{SubObjectRef::Vertex(o.id, idx[k]), p, dist};
+    }
+  }
+  return best;
+}
+
+std::vector<SubObjectRef> Viewport::ControlPointsInWindow(const Document& doc, double x0, double y0, double x1, double y1) const {
+  std::vector<SubObjectRef> out;
+  if (page_) return out;
+  const double left = std::min(x0, x1), right = std::max(x0, x1), top = std::min(y0, y1), bottom = std::max(y0, y1);
+  for (const SceneObject& o : doc.Objects()) {
+    if (!o.show_control_points || !doc.IsObjectVisible(o) || doc.IsObjectLocked(o)) continue;
+    std::vector<int> idx;
+    std::vector<float> xyz;
+    VisibleControlPoints(o, idx, &xyz);
+    for (size_t k = 0; k < idx.size(); ++k) {
+      double sx, sy;
+      if (!WorldToPixel(Point3d(xyz[k * 3], xyz[k * 3 + 1], xyz[k * 3 + 2]), sx, sy)) continue;
+      if (sx >= left && sx <= right && sy >= top && sy <= bottom) out.push_back(SubObjectRef::Vertex(o.id, idx[k]));
+    }
+  }
+  return out;
+}
+
+std::optional<SubObjectPick> Viewport::PickSubObject(const Document& doc, double px, double py, const SubObjectPickFilter& filter,
+                                                     double pixel_radius) const {
+  std::optional<SubObjectPick> best_vertex, best_edge, best_face;
+  double best_face_t = 1e300;
+  if (page_) return std::nullopt;
+  const bool allow_v = !filter.Any() || filter.vertices;
+  const bool allow_e = !filter.Any() || filter.edges;
+  const bool allow_f = !filter.Any() || filter.faces;
+  const Ray ray = PixelRay(px, py);
+  auto seg_dist = [&](Point3d a, Point3d b, double& t) {
+    double ax, ay, bx, by;
+    if (!WorldToPixel(a, ax, ay) || !WorldToPixel(b, bx, by)) return 1e300;
+    return PointSegmentDistance2D(px, py, ax, ay, bx, by, t);
+  };
+  auto consider_edge = [&](const SubObjectRef& r, const std::vector<Point3d>& pl) {
+    for (size_t k = 1; k < pl.size(); ++k) {
+      double t;
+      const double d = seg_dist(pl[k - 1], pl[k], t);
+      if (d <= pixel_radius && (!best_edge || d < best_edge->pixel_dist)) best_edge = SubObjectPick{r, pl[k - 1] + (pl[k] - pl[k - 1]) * t, d};
+    }
+  };
+  const std::vector<SceneObject>& sub_pick_objects = doc.Objects();
+  for (std::size_t candidate_index : RayCandidates(doc, ray)) {
+    const SceneObject& o = sub_pick_objects[candidate_index];
+    if (!doc.IsObjectVisible(o) || doc.IsObjectLocked(o)) continue;
+    o.EnsureDisplay(0.02, 0.05);
+    const DisplayCache& d = o.Display();
+    kernel::Mesh scratch;
+    const ON_Mesh* net = TopologyMesh(o, scratch);
+    if (allow_v && net) {
+      for (int i = 0; i < net->VertexCount(); ++i) {
+        const ON_3dPoint v = net->Vertex(i);
+        double sx, sy;
+        if (!WorldToPixel(Point3d(v.x, v.y, v.z), sx, sy)) continue;
+        const double dist = std::hypot(sx - px, sy - py);
+        if (dist <= pixel_radius && (!best_vertex || dist < best_vertex->pixel_dist)) best_vertex = SubObjectPick{SubObjectRef::Vertex(o.id, i), Point3d(v.x, v.y, v.z), dist};
+      }
+    }
+    if (allow_e) {
+      if (o.kind == ObjectKind::Brep && o.brep) {
+        const ON_Brep& b = o.brep->raw();
+        for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+          if (b.m_E[ei].m_edge_index < 0) continue;
+          consider_edge(SubObjectRef::BrepEdge(o.id, ei), BrepEdgePolyline(b, ei, 16));
+        }
+      } else if (o.kind == ObjectKind::Surface) {
+        for (int k = 0; k < 4; ++k) consider_edge(SubObjectRef{o.id, SubObjectKind::Edge, k, -1}, SubObjectPoints(o, SubObjectRef{o.id, SubObjectKind::Edge, k, -1}));
+      } else if (net) {
+        std::set<std::pair<int, int>> seen;
+        for (int fi = 0; fi < net->m_F.Count(); ++fi) {
+          const ON_MeshFace& f = net->m_F[fi];
+          const int n = f.IsQuad() ? 4 : 3;
+          for (int k = 0; k < n; ++k) {
+            const int a = f.vi[k], c = f.vi[(k + 1) % n];
+            if (!seen.insert({std::min(a, c), std::max(a, c)}).second) continue;
+            const ON_3dPoint pa = net->Vertex(a), pc = net->Vertex(c);
+            consider_edge(SubObjectRef::MeshEdge(o.id, a, c), {Point3d(pa.x, pa.y, pa.z), Point3d(pc.x, pc.y, pc.z)});
+          }
+        }
+      }
+    }
+    if (allow_f) {
+      if (o.kind == ObjectKind::SubD && net) {
+        // Faces of the control net (the smooth surface follows them).
+        for (int fi = 0; fi < net->m_F.Count(); ++fi) {
+          const ON_MeshFace& f = net->m_F[fi];
+          const int n = f.IsQuad() ? 4 : 3;
+          std::vector<Point3d> poly;
+          for (int k = 0; k < n; ++k) { const ON_3dPoint v = net->Vertex(f.vi[k]); poly.emplace_back(v.x, v.y, v.z); }
+          for (size_t k = 1; k + 1 < poly.size(); ++k) {
+            double t;
+            if (RayTriangle(ray, poly[0], poly[k], poly[k + 1], t) && t < best_face_t) { best_face_t = t; best_face = SubObjectPick{SubObjectRef::Face(o.id, fi), ray.origin + ray.direction * t, 0}; }
+          }
+        }
+      } else if (!d.triangles.empty() && (o.kind == ObjectKind::Brep || o.kind == ObjectKind::Mesh || o.kind == ObjectKind::Surface)) {
+        for (size_t i = 0; i + 17 < d.triangles.size(); i += 18) {
+          double t;
+          if (RayTriangle(ray, Point3d(d.triangles[i], d.triangles[i + 1], d.triangles[i + 2]),
+                          Point3d(d.triangles[i + 6], d.triangles[i + 7], d.triangles[i + 8]),
+                          Point3d(d.triangles[i + 12], d.triangles[i + 13], d.triangles[i + 14]), t) && t < best_face_t) {
+            const size_t ti = i / 18;
+            const int fi = o.kind == ObjectKind::Surface ? 0 : (ti < d.triangle_face.size() ? d.triangle_face[ti] : -1);
+            if (fi < 0) continue;
+            best_face_t = t;
+            best_face = SubObjectPick{SubObjectRef::Face(o.id, fi), ray.origin + ray.direction * t, 0};
+          }
+        }
+      }
+    }
+  }
+  if (best_vertex) return best_vertex;
+  if (best_edge) return best_edge;
+  return best_face;
+}
+
+PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, double px, double py,
+                               std::optional<Point3d> ortho_base, double grid_spacing,
+                               bool want_point) const {
+  PickResult result;
+  // Project osnap: the final point drops onto the CPlane.
+  auto finish = [&](PickResult r) {
+    if (snaps.project && want_point) {
+      const Vector3d nn = cplane_.Normal();
+      const double w = ON_DotProduct(r.point - cplane_.origin, nn);
+      if (std::fabs(w) > 1e-9) {
+        r.point = r.point - nn * w;
+        r.snap_label = r.snap_label.empty() ? "Project" : r.snap_label + " Project";
+      }
+    }
+    return r;
+  };
+  const Ray ray = PixelRay(px, py);
+  // Free point: ray/CPlane intersection (fallback: a plane through the
+  // target perpendicular to the view when the ray is parallel to CPlane).
+  const Vector3d n = cplane_.Normal();
+  const double denom = ON_DotProduct(ray.direction, n);
+  Point3d free_point;
+  if (std::abs(denom) > 1e-9) {
+    const double t = ON_DotProduct(cplane_.origin - ray.origin, n) / denom;
+    free_point = ray.origin + ray.direction * t;
+  } else {
+    const Vector3d f = camera_.Forward();
+    const double t = ON_DotProduct(camera_.State().target - ray.origin, f) / std::max(ON_DotProduct(ray.direction, f), 1e-9);
+    free_point = ray.origin + ray.direction * t;
+  }
+  result.point = free_point;
+
+  if (!want_point) return result;
+
+  // Object snaps: nearest candidate within a pixel radius.
+  const double snap_radius = 10.0;
+  double best = snap_radius;
+  // SnapToOccluded: when off, a candidate point is rejected if some other
+  // visible object's bounding box lies between the camera and it along the
+  // pick ray (a real, if approximate, depth test - exact per-triangle
+  // occlusion would need a full render-side z-buffer readback).
+  const SceneObject* current_obj = nullptr;
+  auto is_occluded_by_others = [&](Point3d p) {
+    const double d_self = ON_DotProduct(p - ray.origin, ray.direction);
+    for (const SceneObject& other : doc.Objects()) {
+      if (&other == current_obj || !doc.IsObjectVisible(other)) continue;
+      const kernel::BoundingBox obb = other.BoundingBox();
+      const Point3d ctr((obb.min.x + obb.max.x) / 2, (obb.min.y + obb.max.y) / 2, (obb.min.z + obb.max.z) / 2);
+      const double d_other = ON_DotProduct(ctr - ray.origin, ray.direction);
+      if (d_other >= d_self - 1e-6) continue;  // not nearer to the camera
+      double sx, sy;
+      if (!WorldToPixel(ctr, sx, sy)) continue;
+      const double r = 0.5 * (std::hypot(obb.max.x - obb.min.x, std::hypot(obb.max.y - obb.min.y, obb.max.z - obb.min.z)));
+      double ex, ey;
+      WorldToPixel(ctr + Vector3d(r, 0, 0), ex, ey);
+      const double screen_r = std::max(1.0, std::hypot(ex - sx, ey - sy));
+      if (std::hypot(sx - px, sy - py) < screen_r) return true;
+    }
+    return false;
+  };
+  auto consider = [&](Point3d p, const char* label) {
+    if (!snaps.snap_to_occluded && is_occluded_by_others(p)) return;
+    double sx, sy;
+    if (!WorldToPixel(p, sx, sy)) return;
+    const double dist = std::hypot(sx - px, sy - py);
+    if (dist < best) {
+      best = dist;
+      result.point = p;
+      result.snap_label = label;
+      result.snapped = true;
+    }
+  };
+  if (!snaps.disable_all) {
+    for (const SceneObject& o : doc.Objects()) {
+      if (!doc.IsObjectVisible(o)) continue;
+      if (!snaps.snap_to_locked && doc.IsObjectLocked(o)) continue;
+      if (!snaps.snap_to_mesh_object && o.kind == ObjectKind::Mesh) continue;
+      if (!snaps.snap_to_subd_object && o.kind == ObjectKind::SubD) continue;
+      current_obj = &o;
+      // Quick reject: bounding box far from the cursor.
+      const kernel::BoundingBox bb = o.BoundingBox();
+      double bx0, by0, bx1, by1;
+      const bool p0 = WorldToPixel(bb.min, bx0, by0);
+      const bool p1 = WorldToPixel(bb.max, bx1, by1);
+      if (p0 && p1) {
+        const double margin = 40.0;
+        if (px < std::min(bx0, bx1) - margin || px > std::max(bx0, bx1) + margin ||
+            py < std::min(by0, by1) - margin || py > std::max(by0, by1) + margin) {
+          continue;
+        }
+      }
+      switch (o.kind) {
+        case ObjectKind::Point:
+          if (snaps.point) consider(o.point, "Point");
+          break;
+        case ObjectKind::Curve: {
+          const kernel::NurbsCurve& c = *o.curve;
+          const kernel::Interval dom = c.Domain();
+          if (snaps.end) {
+            consider(c.PointAt(dom.min), "End");
+            consider(c.PointAt(dom.max), "End");
+            if (c.Degree() == 1) {
+              for (int i = 1; i + 1 < c.ControlPointCount(); ++i) consider(c.ControlPointAt(i), "End");
+            }
+          }
+          if (snaps.mid) {
+            if (c.Degree() == 1) {
+              for (int i = 0; i + 1 < c.ControlPointCount(); ++i) {
+                const Point3d a = c.ControlPointAt(i), b = c.ControlPointAt(i + 1);
+                consider(Point3d((a.x + b.x) / 2, (a.y + b.y) / 2, (a.z + b.z) / 2), "Mid");
+              }
+            } else {
+              consider(c.PointAt(c.ParameterAtArcLength(c.Length() / 2.0)), "Mid");
+            }
+          }
+          if (snaps.cen) {
+            ON_Arc arc;
+            if (c.raw().IsArc(nullptr, &arc)) consider(arc.Center(), "Cen");
+          }
+          if (snaps.quad) {
+            ON_Arc arc;
+            if (c.raw().IsArc(nullptr, &arc) && arc.IsCircle()) {
+              const ON_Plane pl = arc.Plane();
+              const double r = arc.Radius();
+              consider(arc.Center() + pl.xaxis * r, "Quad");
+              consider(arc.Center() - pl.xaxis * r, "Quad");
+              consider(arc.Center() + pl.yaxis * r, "Quad");
+              consider(arc.Center() - pl.yaxis * r, "Quad");
+            }
+          }
+          if (snaps.knot) {
+            std::vector<double> spans(static_cast<size_t>(std::max(c.raw().SpanCount(), 0)) + 1);
+            if (spans.size() > 1 && c.raw().GetSpanVector(spans.data())) for (double k : spans) consider(c.PointAt(k), "Knot");
+          }
+          if (snaps.perp && ortho_base) {
+            consider(c.ClosestPoint(*ortho_base), "Perp");
+          }
+          if (snaps.tan && ortho_base) {
+            // Tangent from the previous point: minimise the angle between
+            // (C(t) - base) and the curve tangent, then refine locally.
+            const int n = 64;
+            double best_t = dom.min, best_v = 1e300;
+            auto score = [&](double t) {
+              Vector3d d = c.PointAt(t) - *ortho_base;
+              Vector3d tg = c.TangentAt(t);
+              if (!d.Unitize()) return 1e300;
+              return 1.0 - std::fabs(ON_DotProduct(d, tg));
+            };
+            for (int i = 0; i <= n; ++i) {
+              const double t = dom.min + (dom.max - dom.min) * i / n;
+              const double v = score(t);
+              if (v < best_v) { best_v = v; best_t = t; }
+            }
+            double lo = std::max(dom.min, best_t - (dom.max - dom.min) / n), hi = std::min(dom.max, best_t + (dom.max - dom.min) / n);
+            for (int it = 0; it < 30; ++it) {
+              const double m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
+              if (score(m1) < score(m2)) hi = m2; else lo = m1;
+            }
+            best_t = (lo + hi) / 2;
+            if (score(best_t) < 0.01) consider(c.PointAt(best_t), "Tan");
+          }
+          if (snaps.int_) {
+            // Intersections with other visible curves near the cursor, from
+            // the display polylines (screen-space test, 3D result).
+            const DisplayCache& d = o.Display();
+            for (const SceneObject& other : doc.Objects()) {
+              if (&other == &o || other.kind != ObjectKind::Curve || !doc.IsObjectVisible(other) || other.id < o.id) continue;
+              const DisplayCache& e = other.Display();
+              for (size_t i = 0; i + 5 < d.lines.size(); i += 6) {
+                double ax, ay, bx, by, tt;
+                const Point3d a(d.lines[i], d.lines[i + 1], d.lines[i + 2]), b(d.lines[i + 3], d.lines[i + 4], d.lines[i + 5]);
+                if (!WorldToPixel(a, ax, ay) || !WorldToPixel(b, bx, by)) continue;
+                if (PointSegmentDistance2D(px, py, ax, ay, bx, by, tt) > snap_radius * 2) continue;
+                for (size_t j = 0; j + 5 < e.lines.size(); j += 6) {
+                  double cx, cy, dx, dy, t2;
+                  const Point3d p(e.lines[j], e.lines[j + 1], e.lines[j + 2]), q(e.lines[j + 3], e.lines[j + 4], e.lines[j + 5]);
+                  if (!WorldToPixel(p, cx, cy) || !WorldToPixel(q, dx, dy)) continue;
+                  if (PointSegmentDistance2D(px, py, cx, cy, dx, dy, t2) > snap_radius * 2) continue;
+                  const double r1x = bx - ax, r1y = by - ay, r2x = dx - cx, r2y = dy - cy;
+                  const double den = r1x * r2y - r1y * r2x;
+                  if (std::fabs(den) < 1e-9) continue;
+                  const double u = ((cx - ax) * r2y - (cy - ay) * r2x) / den;
+                  const double v = ((cx - ax) * r1y - (cy - ay) * r1x) / den;
+                  if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+                  consider(a + (b - a) * u, "Int");
+                }
+              }
+            }
+          }
+          if (snaps.near_) {
+            const DisplayCache& d = o.Display();
+            for (size_t i = 0; i + 5 < d.lines.size(); i += 6) {
+              double ax, ay, bx, by, t;
+              const Point3d a(d.lines[i], d.lines[i + 1], d.lines[i + 2]);
+              const Point3d b(d.lines[i + 3], d.lines[i + 4], d.lines[i + 5]);
+              if (!WorldToPixel(a, ax, ay) || !WorldToPixel(b, bx, by)) continue;
+              const double dist = PointSegmentDistance2D(px, py, ax, ay, bx, by, t);
+              if (dist < best) {
+                best = dist;
+                result.point = a + (b - a) * t;
+                result.snap_label = "Near";
+                result.snapped = true;
+              }
+            }
+          }
+          break;
+        }
+        case ObjectKind::Surface: {
+          if (snaps.end) {
+            const kernel::NurbsSurface& s = *o.surface;
+            const kernel::Interval du = s.Domain(0), dv = s.Domain(1);
+            consider(s.PointAt(du.min, dv.min), "End");
+            consider(s.PointAt(du.max, dv.min), "End");
+            consider(s.PointAt(du.min, dv.max), "End");
+            consider(s.PointAt(du.max, dv.max), "End");
+          }
+          if (snaps.knot) {
+            const ON_NurbsSurface& raw = o.surface->raw();
+            std::vector<double> su(static_cast<size_t>(std::max(raw.SpanCount(0), 0)) + 1), sv(static_cast<size_t>(std::max(raw.SpanCount(1), 0)) + 1);
+            if (su.size() > 1 && sv.size() > 1 && su.size() * sv.size() <= 4096 && raw.GetSpanVector(0, su.data()) && raw.GetSpanVector(1, sv.data())) {
+              for (double ku : su) for (double kv : sv) consider(raw.PointAt(ku, kv), "Knot");
+            }
+          }
+          break;
+        }
+        case ObjectKind::Brep: {
+          const ON_Brep& b = o.brep->raw();
+          if (snaps.end) {
+            for (int i = 0; i < b.m_V.Count(); ++i) consider(b.m_V[i].Point(), "End");
+          }
+          if (snaps.knot) {
+            // Knot-line intersections of every face's surface (untrimmed extent).
+            for (int fi = 0; fi < b.m_F.Count(); ++fi) {
+              const ON_Surface* srf = b.m_F[fi].SurfaceOf();
+              if (!srf) continue;
+              std::vector<double> su(static_cast<size_t>(std::max(srf->SpanCount(0), 0)) + 1), sv(static_cast<size_t>(std::max(srf->SpanCount(1), 0)) + 1);
+              if (su.size() < 2 || sv.size() < 2 || su.size() * sv.size() > 1024) continue;
+              if (!srf->GetSpanVector(0, su.data()) || !srf->GetSpanVector(1, sv.data())) continue;
+              for (double ku : su) for (double kv : sv) consider(srf->PointAt(ku, kv), "Knot");
+            }
+          }
+          break;
+        }
+        case ObjectKind::Mesh: {
+          if ((snaps.vertex || snaps.end) && snaps.snap_to_meshes) {
+            const ON_Mesh& m = o.mesh->raw();
+            for (int i = 0; i < m.m_V.Count(); ++i) {
+              const ON_3fPoint& v = m.m_V[i];
+              consider(Point3d(v.x, v.y, v.z), snaps.vertex ? "Vertex" : "End");
+            }
+          }
+          break;
+        }
+        case ObjectKind::SubD: {
+          // The control-net vertices double as the SubD's snap points -
+          // there is no separate limit-surface evaluator here.
+          if ((snaps.vertex || snaps.end) && o.subd) {
+            const kernel::Mesh net = o.subd->ToApproximateMesh();
+            const ON_Mesh& m = net.raw();
+            for (int i = 0; i < m.m_V.Count(); ++i) {
+              const ON_3fPoint& v = m.m_V[i];
+              consider(Point3d(v.x, v.y, v.z), snaps.vertex ? "Vertex" : "End");
+            }
+          }
+          break;
+        }
+      }
+    }
+  }
+  if (result.snapped) return finish(result);
+
+  // SmartTrack: lines through the tracking points along the CPlane axes,
+  // and the intersections of two such lines.
+  if (snaps.smart_track && !track_points_.empty() && !snaps.disable_all) {
+    const double tol = 8.0;
+    const Vector3d ax = cplane_.x_axis, ay = cplane_.y_axis;
+    bool have = false, have_cross = false;
+    double best_d = tol;
+    Point3d best_p;
+    std::vector<std::pair<Point3d, Point3d>> best_lines;
+    auto screen_dist = [&](Point3d p, double& dist) {
+      double sx, sy;
+      if (!WorldToPixel(p, sx, sy)) return false;
+      dist = std::hypot(sx - px, sy - py);
+      return true;
+    };
+    // Closest point on the line (T, dir) to the cursor ray.
+    auto line_point = [&](Point3d t, Vector3d dir) {
+      const Vector3d w0 = t - ray.origin;
+      const double a = ON_DotProduct(ray.direction, ray.direction), b = ON_DotProduct(ray.direction, dir), c = ON_DotProduct(dir, dir);
+      const double d = ON_DotProduct(ray.direction, w0), e = ON_DotProduct(dir, w0);
+      const double denom = a * c - b * b;
+      const double s = std::fabs(denom) < 1e-12 ? 0.0 : (a * e - b * d) / denom * -1.0;
+      return t + dir * s;
+    };
+    for (size_t i = 0; i < track_points_.size(); ++i) {
+      for (size_t j = 0; j < track_points_.size(); ++j) {
+        if (i == j) continue;
+        // x-line of T_i meets y-line of T_j.
+        const Point3d ti = track_points_[i], tj = track_points_[j];
+        const double ui = ON_DotProduct(ti - cplane_.origin, ax), vi = ON_DotProduct(ti - cplane_.origin, ay), wi = ON_DotProduct(ti - cplane_.origin, n);
+        const double uj = ON_DotProduct(tj - cplane_.origin, ax);
+        if (std::fabs(uj - ui) < 1e-9) continue;
+        const Point3d cross = cplane_.ToWorld(uj, vi, wi);
+        double dist;
+        if (screen_dist(cross, dist) && dist <= tol && (!have_cross || dist < best_d)) {
+          have = have_cross = true; best_d = dist; best_p = cross;
+          best_lines = {{ti, cross}, {tj, cross}};
+        }
+      }
+    }
+    if (!have_cross) {
+      for (const Point3d& t : track_points_) {
+        for (const Vector3d& dir : {ax, ay}) {
+          const Point3d p = line_point(t, dir);
+          double dist;
+          if (screen_dist(p, dist) && dist <= tol && dist < best_d) { have = true; best_d = dist; best_p = p; best_lines = {{t, p}}; }
+        }
+      }
+    }
+    if (have) {
+      result.point = best_p;
+      result.snap_label = "SmartTrack";
+      result.snapped = true;
+      result.track_lines = best_lines;
+      return finish(result);
+    }
+  }
+
+  // Ortho / planar constraints relative to the previous point.
+  Point3d p = free_point;
+  if (ortho_base) {
+    const Point3d base = *ortho_base;
+    if (snaps.planar) {
+      // Keep the CPlane elevation of the base point.
+      const double w = ON_DotProduct(base - cplane_.origin, n);
+      const double pw = ON_DotProduct(p - cplane_.origin, n);
+      p = p + n * (w - pw);
+    }
+    if (snaps.ortho) {
+      // Constrain to the nearest multiple of OrthoAngle degrees from the
+      // base point, measured in the CPlane (this reduces to the classic
+      // axis-aligned snap when the angle is 90 degrees).
+      const Vector3d rel = p - base;
+      const double u = ON_DotProduct(rel, cplane_.x_axis);
+      const double v = ON_DotProduct(rel, cplane_.y_axis);
+      const double w = ON_DotProduct(rel, n);
+      const double r = std::sqrt(u * u + v * v);
+      Point3d p_planar;
+      if (r > 1e-9) {
+        const double step = std::clamp(snaps.ortho_angle_deg, 1.0, 180.0) * ON_PI / 180.0;
+        const double ang = std::round(std::atan2(v, u) / step) * step;
+        p_planar = base + cplane_.x_axis * (r * std::cos(ang)) + cplane_.y_axis * (r * std::sin(ang)) + n * w;
+      } else {
+        p_planar = base + n * w;
+      }
+      p = p_planar;
+      result.snap_label = "Ortho";
+      if (snaps.ortho_snap_to_cplane_z) {
+        // OrthoSnapToCPlaneZ: also offer the CPlane's vertical line through
+        // the base point (closest point on that line to the pick ray),
+        // and use it instead when it is closer on screen to the cursor.
+        const Vector3d r0 = ray.origin - base;
+        const double a = ON_DotProduct(ray.direction, ray.direction), b = ON_DotProduct(ray.direction, n), c = ON_DotProduct(n, n);
+        const double dd = ON_DotProduct(ray.direction, r0), ee = ON_DotProduct(n, r0);
+        const double denom = a * c - b * b;
+        if (std::fabs(denom) > 1e-9) {
+          const double t = (a * ee - b * dd) / denom;
+          const Point3d p_vert = base + n * t;
+          double sx1, sy1, sx2, sy2;
+          if (WorldToPixel(p_vert, sx1, sy1) && WorldToPixel(p_planar, sx2, sy2) &&
+              std::hypot(sx1 - px, sy1 - py) < std::hypot(sx2 - px, sy2 - py)) {
+            p = p_vert;
+            result.snap_label = "Ortho (CPlane Z)";
+          }
+        }
+      }
+    }
+  }
+  if (snaps.grid_snap && grid_spacing > 0) {
+    const Vector3d rel = p - cplane_.origin;
+    const double u = std::round(ON_DotProduct(rel, cplane_.x_axis) / grid_spacing) * grid_spacing;
+    const double v = std::round(ON_DotProduct(rel, cplane_.y_axis) / grid_spacing) * grid_spacing;
+    const double w = ON_DotProduct(rel, n);
+    p = cplane_.ToWorld(u, v, w);
+    if (result.snap_label.empty()) result.snap_label = "Grid";
+  }
+  result.point = p;
+  return finish(result);
+}
+
+void Viewport::ZoomTo(const kernel::BoundingBox& box) { camera_.ZoomExtents(box, Aspect()); }
+
+void Viewport::PushViewHistory() {
+  view_undo_.push_back(camera_.State());
+  if (view_undo_.size() > 50) view_undo_.erase(view_undo_.begin());
+  view_redo_.clear();
+}
+
+bool Viewport::UndoView() {
+  if (view_undo_.empty()) return false;
+  view_redo_.push_back(camera_.State());
+  camera_.SetState(view_undo_.back());
+  view_undo_.pop_back();
+  return true;
+}
+
+bool Viewport::RedoView() {
+  if (view_redo_.empty()) return false;
+  view_undo_.push_back(camera_.State());
+  camera_.SetState(view_redo_.back());
+  view_redo_.pop_back();
+  return true;
+}
+
+void Viewport::ZoomExtents(const Document& doc, bool selected_only) {
+  kernel::BoundingBox box;
+  bool has = selected_only ? doc.BoundingBoxOf(doc.SelectedIds(), box) : doc.VisibleBoundingBox(box);
+  if (!has) {
+    box.min = Point3d(-20, -20, -20);
+    box.max = Point3d(20, 20, 20);
+  }
+  // Pad degenerate boxes (single point / flat curve) so they don't zoom to nothing.
+  const Vector3d size = box.max - box.min;
+  const double pad = std::max(size.Length() * 0.05, 1.0);
+  if (size.x < 1e-6) { box.min.x -= pad; box.max.x += pad; }
+  if (size.y < 1e-6) { box.min.y -= pad; box.max.y += pad; }
+  if (size.z < 1e-6) { box.min.z -= pad; box.max.z += pad; }
+  ZoomTo(box);
+}
+
+// ---------------------------------------------------------------------------
+// ImGui window + input
+// ---------------------------------------------------------------------------
+
+ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, bool want_point,
+                                bool want_objects, std::optional<Point3d> ortho_base,
+                                double grid_spacing, bool& request_focus_command_line) {
+  ViewportEvents ev;
+  if (!visible_) return ev;
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  const std::string title = name_ + "###vp_" + name_;
+  bool open = true;
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                                 ImGuiWindowFlags_NoCollapse;
+  if (!ImGui::Begin(title.c_str(), &open, flags)) {
+    ImGui::End();
+    ImGui::PopStyleVar();
+    return ev;
+  }
+  const ImVec2 avail = ImGui::GetContentRegionAvail();
+  width_ = std::max(1, static_cast<int>(avail.x));
+  height_ = std::max(1, static_cast<int>(avail.y));
+  ev = DrawContent(doc, snaps, want_point, want_objects, ortho_base, grid_spacing, request_focus_command_line, false);
+  ImGui::End();
+  ImGui::PopStyleVar();
+  return ev;
+}
+
+ViewportEvents Viewport::DrawEmbedded(const Document& doc, const SnapSettings& snaps, bool want_point,
+                                      bool want_objects, std::optional<Point3d> ortho_base,
+                                      double grid_spacing, bool& request_focus_command_line, int width, int height) {
+  width_ = std::max(1, width);
+  height_ = std::max(1, height);
+  ImGui::PushID(name_.c_str());
+  ViewportEvents ev = DrawContent(doc, snaps, want_point, want_objects, ortho_base, grid_spacing, request_focus_command_line, true);
+  ImGui::PopID();
+  return ev;
+}
+
+ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& snaps, bool want_point,
+                                     bool want_objects, std::optional<Point3d> ortho_base,
+                                     double grid_spacing, bool& request_focus_command_line, bool embedded) {
+  ViewportEvents ev;
+  ImGuiIO& io = ImGui::GetIO();
+  const ImVec2 cursor = ImGui::GetCursorScreenPos();
+  screen_x_ = cursor.x;
+  screen_y_ = cursor.y;
+  img_x_ = cursor.x;
+  img_y_ = cursor.y;
+  if (target_.Texture()) {
+    ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(target_.Texture())), ImVec2(static_cast<float>(width_), static_cast<float>(height_)), ImVec2(0, 1), ImVec2(1, 0));
+  } else {
+    ImGui::Dummy(ImVec2(static_cast<float>(width_), static_cast<float>(height_)));
+  }
+  const bool hovered = ImGui::IsItemHovered();
+  ev.hovered = hovered;
+  if (std::getenv("DINO8_UI_DEBUG")) {
+    const ImVec2 mp = ImGui::GetIO().MousePos;
+    if (mp.x >= img_x_ && mp.x <= img_x_ + width_ && mp.y >= img_y_ && mp.y <= img_y_ + height_)
+      std::fprintf(stderr, "[vp] %s frame %d mouse %.0f,%.0f in rect (%.0f,%.0f %dx%d) hovered=%d down0=%d dragging=%d\n", name_.c_str(), ImGui::GetFrameCount(), mp.x, mp.y, img_x_, img_y_, width_, height_, hovered ? 1 : 0, ImGui::IsMouseDown(0) ? 1 : 0, dragging_ ? 1 : 0);
+  }
+  const double mx = io.MousePos.x - img_x_;
+  const double my = io.MousePos.y - img_y_;
+  ev.shift = io.KeyShift;
+  ev.ctrl = io.KeyCtrl;
+
+  // Viewport title overlay with a click-to-open menu (views / display modes).
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  {
+    const ImVec2 p0(cursor.x + 6, cursor.y + 4);
+    const char* label = name_.c_str();
+    const ImVec2 sz = ImGui::CalcTextSize(label);
+    const ImVec4 acc = ImVec4(ThemeColors::kAccent[0], ThemeColors::kAccent[1], ThemeColors::kAccent[2], 1.0f);
+    const ImU32 pill = active_ ? ImGui::GetColorU32(ImVec4(acc.x, acc.y, acc.z, 0.85f)) : IM_COL32(30, 32, 38, 150);
+    dl->AddRectFilled(ImVec2(p0.x - 4, p0.y - 2), ImVec2(p0.x + sz.x + 8, p0.y + sz.y + 2), pill, 4.0f);
+    if (!active_) dl->AddRect(ImVec2(p0.x - 4, p0.y - 2), ImVec2(p0.x + sz.x + 8, p0.y + sz.y + 2), IM_COL32(255, 255, 255, 40), 4.0f);
+    dl->AddText(p0, IM_COL32(255, 255, 255, active_ ? 255 : 215), label);
+    ImGui::SetCursorScreenPos(ImVec2(p0.x - 4, p0.y - 2));
+    if (ImGui::InvisibleButton(("##title_" + name_).c_str(), ImVec2(sz.x + 12, sz.y + 4), ImGuiButtonFlags_EnableNav) || ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+      ImGui::OpenPopup(("##vpmenu_" + name_).c_str());
+    }
+    if (ImGui::BeginPopup(("##vpmenu_" + name_).c_str())) {
+      if (ImGui::BeginMenu("Set View")) {
+        for (const char* v : {"Top", "Bottom", "Front", "Back", "Right", "Left", "Perspective", "Isometric"}) {
+          if (ImGui::MenuItem(v)) SetStandardView(v);
+        }
+        ImGui::EndMenu();
+      }
+      if (ImGui::BeginMenu("Display Mode")) {
+        for (DisplayMode m : AllDisplayModes()) {
+          if (ImGui::MenuItem(DisplayModeName(m), nullptr, mode_ == m)) mode_ = m;
+        }
+        ImGui::EndMenu();
+      }
+      if (!embedded && ImGui::MenuItem(maximized_ ? "Restore Viewports" : "Maximize Viewport")) maximized_ = !maximized_;
+      if (ImGui::MenuItem("Zoom Extents")) ZoomExtents(doc, false);
+      if (ImGui::MenuItem("Zoom Selected")) ZoomExtents(doc, true);
+      ImGui::EndPopup();
+    }
+    ImGui::SetCursorScreenPos(cursor);
+  }
+  // Display mode label in the corner.
+  {
+    const char* mode = DisplayModeName(mode_);
+    const ImVec2 sz = ImGui::CalcTextSize(mode);
+    dl->AddText(ImVec2(cursor.x + width_ - sz.x - 8, cursor.y + 4), IM_COL32(200, 200, 200, 160), mode);
+  }
+
+  // Hover feedback.
+  if (!want_point && !cp_dragging_) {
+    track_points_.clear();
+    track_candidate_.reset();
+  }
+  auto dashed = [&](Point3d a, Point3d b, ImU32 col) {
+    double ax, ay, bx, by;
+    if (!WorldToPixel(a, ax, ay) || !WorldToPixel(b, bx, by)) return;
+    const double len = std::hypot(bx - ax, by - ay);
+    if (len < 1e-6) return;
+    const double ux = (bx - ax) / len, uy = (by - ay) / len;
+    for (double t = 0; t < len; t += 10.0) {
+      const double t2 = std::min(len, t + 6.0);
+      dl->AddLine(ImVec2(static_cast<float>(img_x_ + ax + ux * t), static_cast<float>(img_y_ + ay + uy * t)),
+                  ImVec2(static_cast<float>(img_x_ + ax + ux * t2), static_cast<float>(img_y_ + ay + uy * t2)), col, 1.0f);
+    }
+  };
+  if (want_point && snaps.smart_track) {
+    // Tracking point markers.
+    for (const Point3d& t : track_points_) {
+      double sx, sy;
+      if (!WorldToPixel(t, sx, sy)) continue;
+      const ImVec2 c(static_cast<float>(img_x_ + sx), static_cast<float>(img_y_ + sy));
+      dl->AddLine(ImVec2(c.x - 5, c.y), ImVec2(c.x + 5, c.y), IM_COL32(255, 255, 255, 200), 1.0f);
+      dl->AddLine(ImVec2(c.x, c.y - 5), ImVec2(c.x, c.y + 5), IM_COL32(255, 255, 255, 200), 1.0f);
+    }
+  }
+  if (hovered) {
+    if (want_point) {
+      ev.hover_pick = PickPoint(doc, snaps, mx, my, ortho_base, grid_spacing, true);
+      if (ev.hover_pick->snapped || !ev.hover_pick->snap_label.empty()) {
+        const std::string& lbl = ev.hover_pick->snap_label;
+        dl->AddText(ImVec2(io.MousePos.x + 14, io.MousePos.y + 10), IM_COL32(255, 255, 255, 230), lbl.c_str());
+      }
+      for (const auto& [a, b] : ev.hover_pick->track_lines) dashed(a, b, IM_COL32(255, 255, 255, 190));
+      // SmartTrack: a snap hovered for half a second becomes a tracking point.
+      if (snaps.smart_track) {
+        const std::string& lbl = ev.hover_pick->snap_label;
+        const bool trackable = ev.hover_pick->snapped && (lbl == "End" || lbl == "Mid" || lbl == "Cen" || lbl == "Point" || lbl == "Vertex" || lbl == "Knot" || lbl == "Quad" || lbl == "Int");
+        const double now_t = ImGui::GetTime();
+        if (!trackable) {
+          track_candidate_.reset();
+        } else if (track_candidate_ && (*track_candidate_ - ev.hover_pick->point).Length() < 1e-9) {
+          if (now_t - track_candidate_since_ >= 0.5) {
+            bool known = false;
+            for (const Point3d& t : track_points_) known = known || (t - *track_candidate_).Length() < 1e-9;
+            if (!known) {
+              track_points_.push_back(*track_candidate_);
+              if (track_points_.size() > 6) track_points_.erase(track_points_.begin());
+            }
+          }
+        } else {
+          track_candidate_ = ev.hover_pick->point;
+          track_candidate_since_ = now_t;
+        }
+      }
+    } else {
+      PickResult free = PickPoint(doc, snaps, mx, my, std::nullopt, grid_spacing, false);
+      ev.hover_pick = free;
+    }
+    if (want_objects || !want_point) ev.hover_object = PickObject(doc, mx, my);
+    if (ev.hover_object != kNoObject) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    // Typing while hovering a viewport goes to the command line.
+    if (io.InputQueueCharacters.Size > 0 && !io.WantTextInput) request_focus_command_line = true;
+  }
+
+  // Mouse buttons.
+  const double now = ImGui::GetTime();
+  if (hovered && !dragging_ && !all_input_locked_) {
+    for (int b = 0; b < 3; ++b) {
+      if (b == 0 && input_locked_) continue;
+      if (ImGui::IsMouseClicked(b)) {
+        dragging_ = true;
+        drag_button_ = b;
+        drag_start_x_ = last_x_ = mx;
+        drag_start_y_ = last_y_ = my;
+        drag_moved_ = false;
+        active_ = true;
+        // Pressing on a selected control point starts a direct drag of the
+        // selected points instead of a window (Rhino behaviour).
+        if (b == 0 && !want_point && sub_selection_ && !sub_selection_->Empty() && !io.KeyCtrl && !io.KeyShift) {
+          std::optional<SubObjectPick> cp = PickControlPoint(doc, mx, my);
+          if (cp && sub_selection_->Contains(cp->ref)) {
+            cp_dragging_ = true;
+            cp_drag_start_ = cp->point;
+            ev.cp_drag_begin = true;
+          }
+        }
+      }
+    }
+    if (hovered) active_ = active_ || ImGui::IsMouseClicked(0);
+  }
+  if (dragging_) {
+    const double dx = mx - last_x_, dy = my - last_y_;
+    if (std::hypot(mx - drag_start_x_, my - drag_start_y_) > 3.0) drag_moved_ = true;
+    if (drag_button_ == 1 || drag_button_ == 2) {
+      if (drag_moved_ && !view_locked_) {
+        if (io.KeyShift || drag_button_ == 2 || !camera_.State().perspective) {
+          camera_.Pan(dx, dy, width_, height_);
+        } else if (io.KeyCtrl) {
+          camera_.Dolly(-dy * 0.02);
+        } else {
+          camera_.Orbit(dx, dy);
+        }
+      }
+    } else if (drag_button_ == 0 && cp_dragging_) {
+      if (drag_moved_) {
+        // Target: an object snap under the cursor, else the point on the
+        // view-parallel plane through the dragged control point.
+        Point3d target = cp_drag_start_;
+        PickResult pr = PickPoint(doc, snaps, mx, my, std::nullopt, grid_spacing, true);
+        if (pr.snapped) {
+          target = pr.point;
+          dl->AddText(ImVec2(io.MousePos.x + 14, io.MousePos.y + 10), IM_COL32(255, 255, 255, 230), pr.snap_label.c_str());
+        } else {
+          const Ray r = PixelRay(mx, my);
+          const Vector3d f = camera_.Forward();
+          const double denom = ON_DotProduct(f, r.direction);
+          if (std::fabs(denom) > 1e-12) target = r.origin + r.direction * (ON_DotProduct(f, cp_drag_start_ - r.origin) / denom);
+          if (snaps.grid_snap && grid_spacing > 0) {
+            Vector3d dlt = target - cp_drag_start_;
+            dlt = Vector3d(std::round(dlt.x / grid_spacing) * grid_spacing, std::round(dlt.y / grid_spacing) * grid_spacing, std::round(dlt.z / grid_spacing) * grid_spacing);
+            target = cp_drag_start_ + dlt;
+          }
+        }
+        ev.cp_drag_update = true;
+        ev.cp_drag_delta = target - cp_drag_start_;
+      }
+    } else if (drag_button_ == 0 && drag_moved_) {
+      // Rubber-band selection rectangle.
+      const ImVec2 a(static_cast<float>(img_x_ + drag_start_x_), static_cast<float>(img_y_ + drag_start_y_));
+      const ImVec2 b(static_cast<float>(img_x_ + mx), static_cast<float>(img_y_ + my));
+      const bool crossing = mx < drag_start_x_;
+      dl->AddRectFilled(a, b, crossing ? IM_COL32(120, 200, 120, 40) : IM_COL32(120, 160, 255, 40));
+      dl->AddRect(a, b, crossing ? IM_COL32(120, 220, 120, 220) : IM_COL32(140, 180, 255, 220));
+    }
+    last_x_ = mx;
+    last_y_ = my;
+    if (!ImGui::IsMouseDown(drag_button_)) {
+      dragging_ = false;
+      if (drag_button_ == 0) {
+        if (cp_dragging_) {
+          cp_dragging_ = false;
+          ev.cp_drag_end = true;
+        }
+        if (drag_moved_ && !ev.cp_drag_end) {
+          ev.window = std::array<double, 4>{drag_start_x_, drag_start_y_, mx, my};
+          ev.window_is_crossing = mx < drag_start_x_;
+        } else if (!drag_moved_) {
+          ev.clicked = true;
+          ev.double_clicked = (now - last_click_time_) < 0.35;
+          last_click_time_ = now;
+          ev.click_pick = PickPoint(doc, snaps, mx, my, ortho_base, grid_spacing, want_point);
+          ev.clicked_object = PickObject(doc, mx, my);
+          if (!want_point) {
+            ev.clicked_control_point = PickControlPoint(doc, mx, my);
+            if ((io.KeyCtrl && io.KeyShift) || sub_filter_.Any()) ev.clicked_sub_object = PickSubObject(doc, mx, my, sub_filter_);
+          }
+        }
+      } else if (drag_button_ == 1 && !drag_moved_) {
+        ev.right_clicked = true;
+        ev.right_click_object = PickObject(doc, mx, my);
+      } else if (drag_button_ == 2 && !drag_moved_) {
+        ev.middle_clicked = true;
+      }
+      drag_button_ = -1;
+    }
+  }
+  // Wheel zoom about the cursor.
+  if (hovered && !all_input_locked_ && !view_locked_ && std::abs(io.MouseWheel) > 0.0f) {
+    PickResult under = PickPoint(doc, snaps, mx, my, std::nullopt, grid_spacing, false);
+    camera_.DollyToward(io.MouseWheel, under.point);
+  }
+  if (embedded) ImGui::SetCursorScreenPos(cursor);
+  return ev;
+}
+
+}  // namespace dino8::app
+
+namespace dino8::app {
+
+bool Viewport::CaptureToFile(const std::string& path, std::string& error) const {
+  const int w = target_.Width(), h = target_.Height();
+  if (w <= 0 || h <= 0 || target_.Texture() == 0) { error = "Viewport has not been rendered yet"; return false; }
+  std::vector<unsigned char> rgb(static_cast<size_t>(w) * h * 3);
+  target_.Bind();
+  glPixelStorei(GL_PACK_ALIGNMENT, 1);
+  glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
+  RenderTarget::Unbind();
+  FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) { error = "Cannot write " + path; return false; }
+  const int row = (w * 3 + 3) & ~3;
+  const unsigned int data_size = static_cast<unsigned int>(row) * h;
+  const unsigned int file_size = 54 + data_size;
+  unsigned char hdr[54] = {'B', 'M'};
+  auto put32 = [&](int at, unsigned int v) { for (int i = 0; i < 4; ++i) hdr[at + i] = static_cast<unsigned char>((v >> (8 * i)) & 0xff); };
+  auto put16 = [&](int at, unsigned int v) { hdr[at] = static_cast<unsigned char>(v & 0xff); hdr[at + 1] = static_cast<unsigned char>((v >> 8) & 0xff); };
+  put32(2, file_size); put32(10, 54); put32(14, 40); put32(18, static_cast<unsigned int>(w)); put32(22, static_cast<unsigned int>(h));
+  put16(26, 1); put16(28, 24); put32(34, data_size);
+  std::fwrite(hdr, 1, 54, f);
+  std::vector<unsigned char> line(static_cast<size_t>(row), 0);
+  for (int y = 0; y < h; ++y) {  // BMP rows are bottom-up, which matches GL
+    for (int x = 0; x < w; ++x) {
+      const unsigned char* p = &rgb[(static_cast<size_t>(y) * w + x) * 3];
+      line[static_cast<size_t>(x) * 3] = p[2]; line[static_cast<size_t>(x) * 3 + 1] = p[1]; line[static_cast<size_t>(x) * 3 + 2] = p[0];
+    }
+    std::fwrite(line.data(), 1, line.size(), f);
+  }
+  std::fclose(f);
+  return true;
+}
+
+}  // namespace dino8::app

@@ -1,0 +1,24 @@
+{"format":"dflow1","nodes":[
+{"id":1,"type":"Number Slider","x":0,"y":0,"enabled":true,"preview":true,"slider_min":1,"slider_max":12,"slider_value":6,"slider_integer":true,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[]},
+{"id":2,"type":"Box","x":0,"y":150,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Point","x":0,"y":0,"z":0}},
+  {"has":true,"value":{"kind":"Number","num":4}},
+  {"has":true,"value":{"kind":"Number","num":4}},
+  {"has":true,"value":{"kind":"Number","num":4}}
+]},
+{"id":3,"type":"Linear Array","x":200,"y":75,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":true,"value":{"kind":"Vector","x":1,"y":0,"z":0}},
+  {"has":true,"value":{"kind":"Number","num":6}},
+  {"has":false,"value":{"kind":"Integer","num":5}}
+]},
+{"id":4,"type":"Bake","x":400,"y":75,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":true,"value":{"kind":"Text","text":"Default"}},
+  {"has":true,"value":{"kind":"Text","text":"FlowArray"}}
+]}
+],"wires":[
+{"from":2,"fp":0,"to":3,"tp":0},
+{"from":1,"fp":0,"to":3,"tp":3},
+{"from":3,"fp":0,"to":4,"tp":0}
+]}

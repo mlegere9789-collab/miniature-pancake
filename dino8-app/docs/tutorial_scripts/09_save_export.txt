@@ -1,0 +1,16 @@
+# Tutorial 9: Save, export and reopen a model - verifies the exact command
+# sequence quoted in docs/site/tutorials.html "Save, export, and reopen"
+# tutorial. @TMP@ is substituted with a scratch directory by the test runner.
+SetActiveViewport Top
+Box 0,0,0 10,10,0 10
+Sphere 30,0,0 5
+@expect_objects 2
+Save @TMP@/mymodel.3dm
+SelAll
+Export @TMP@/mymodel.stl
+New
+@expect_objects 0
+Open @TMP@/mymodel.3dm
+@expect_objects 2
+SelAll
+List

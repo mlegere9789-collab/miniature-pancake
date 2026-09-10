@@ -1,0 +1,21 @@
+# Tutorial 8: SubD basics - a creased SubD box with one face extruded.
+# Verifies the exact command sequence quoted in docs/site/tutorials.html
+# "SubD basics" tutorial.
+SubDBox 0,0,0 10,10,0 10
+@expect_objects 1
+SelLast
+Crease
+5,0,0
+5,10,0
+Enter
+SelLast
+What
+SelLast
+ExtrudeSubD
+5,5,10
+Enter
+3
+@expect_objects 1
+SelLast
+ToNURBS
+@expect_objects 2
