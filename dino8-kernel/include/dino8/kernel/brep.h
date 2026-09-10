@@ -812,14 +812,69 @@ class Brep {
   // instead (e.g. to deliberately under- or over-sample the shared
   // boundary relative to the rest of the grid).
   //
-  // Deliberately narrow in scope (see boolean.h's own BooleanCombineMixed
-  // doc comment and this method's own implementation comments for the
-  // exact matching rule): targets exactly the wedge-cap-vs-cylindrical-
-  // wall shared arc boundary BooleanCombineMixed's own drilled-hole case
-  // produces. Does not attempt to generalize to arbitrary shared edges
-  // between arbitrary face types (e.g. ShellConvexPlanar's own
-  // separately-disclosed planar/planar grid-mismatch note is a real,
-  // likely easier, separate follow-up this does not attempt).
+  // SECOND, separate matching pass, added after the arc-matching pass
+  // above and targeting a DIFFERENT gap: TestBooleanCombineMixedDrilledBoxThroughHole's
+  // own comment used to disclose that, even with the arc seam above
+  // closed, the untouched side walls' own shared STRAIGHT edge with each
+  // wedge cap was still open - both faces are ordinary, independently-
+  // parameterized PLANAR patches there (no circular parameterization, no
+  // handedness/angle-offset issue, just two straight-edge grids that
+  // don't happen to land on the same sample points), a structurally
+  // simpler but genuinely SEPARATE problem from the curved one above (it
+  // needed no detail::ArcSchedule3d/ConvertAngleBetweenFrames-style
+  // machinery, just plain linear interpolation of the wedge's own
+  // already-evaluated corner points). For every wedge PlanarFace's own
+  // straight (non-arc) trim-loop segment that lies exactly along one edge
+  // of some OTHER resolved planar face whose own visible boundary is a
+  // plain 4-corner quadrilateral (an untrimmed face, or - what
+  // FromMixedFaces() actually builds even for an untouched input face -
+  // an explicit 4-point trim; see this method's own implementation
+  // comments for why matching directly against those 4 corners in 3D,
+  // rather than either face's own real surface u/v domain, is needed: a
+  // Box() wall's own real u/v assignment to physical x/y/z is NOT the
+  // same for every wall, confirmed directly - Box()'s own front and back
+  // walls assign x/z to u/v oppositely), this method computes the shared
+  // boundary points ONCE via plain linear interpolation between the
+  // wedge's own two segment endpoints, and uses that SAME array - again
+  // literally, not a second independently-evaluated approximation -
+  // as BOTH the wedge's own substituted boundary there AND the plain
+  // quad face's own forced tensor-grid row/column at the matching
+  // position, exactly mirroring the arc pass's own "share the literal
+  // points" mechanism. A plain quad face with at least one such match is
+  // tessellated via a dedicated bilinear-interpolation grid builder
+  // (never through the real NURBS surface at all for that face - see
+  // this method's own implementation for why bilinear interpolation of
+  // the same 4 corners is the exact same physical shape to floating-
+  // point precision for a genuinely planar quadrilateral, while making
+  // literal forced-point injection tractable); a plain quad face with no
+  // match falls through to exactly today's behavior, unaffected.
+  //
+  // Together, the two passes give BooleanCombineMixed's own drilled-box
+  // case a genuinely complete Mesh::IsClosedManifold() result via
+  // TessellateToClosedMeshConforming() - see
+  // TestBooleanCombineMixedDrilledBoxThroughHole's own comment for the
+  // exact claim and its one remaining, PRE-EXISTING (not introduced by
+  // either pass) caveat: an unequal u_divisions/v_divisions pair can
+  // leave two adjacent Box() walls' own shared VERTICAL corner edge open
+  // (confirmed directly to already affect a plain, undrilled Brep::Box()
+  // via the ordinary Tessellate() path too, for exactly the same "which
+  // physical axis is u vs v differs per wall" reason above) - a genuinely
+  // different, separate gap from the wedge/wall seam either pass targets.
+  //
+  // Deliberately narrow in scope beyond that (see boolean.h's own
+  // BooleanCombineMixed doc comment and this method's own implementation
+  // comments for the exact matching rules): the arc pass targets exactly
+  // the wedge-cap-vs-cylindrical-wall shared arc boundary
+  // BooleanCombineMixed's own drilled-hole case produces; the straight-
+  // edge pass generalizes one step further (ANY trimmed planar face's own
+  // straight boundary segment against ANY plain-quad planar face, not
+  // hardcoded to Box() walls specifically), but its SOURCE side still
+  // only ever walks a wedge PlanarFace's own trim loop (i.e. a face with
+  // a recorded PlanarFace::arc_runs entry) - a genuinely arbitrary pair
+  // of adjacent PlanarFaces neither of which is a wedge is not attempted
+  // (e.g. ShellConvexPlanar's own separately-disclosed planar/planar
+  // grid-mismatch note remains a real, separate follow-up this does not
+  // attempt).
   std::vector<Mesh> TessellateConforming(int u_divisions = 8, int v_divisions = 8,
                                           int boundary_samples = -1) const;
 

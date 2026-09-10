@@ -1341,6 +1341,21 @@ Mesh Brep::TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) cons
 
 namespace {
 
+// A run of a wedge PlanarFace's own trim loop being substituted with a
+// fresh set of replacement points - the same "begin/count consecutive
+// original indices, wrapping around the loop's own start/end if needed"
+// shape as PlanarFace::ArcRun (see its own doc comment), but decoupled
+// from that struct so BuildResampledWedgeLoop/BuildConformingWedgeMesh
+// (below) can host BOTH an arc substitution (the curved-boundary fix)
+// AND a straight-edge substitution (this one, see
+// TessellateConforming()'s own doc comment for the planar/planar
+// perimeter gap this closes) without either mechanism knowing about the
+// other's own source struct.
+struct SubRange {
+  int begin = 0;
+  int count = 0;
+};
+
 // One shared boundary sample set: `points` is the LITERAL
 // detail::ArcSchedule3d() output computed from a wedge PlanarFace's own
 // PlanarFace::ArcRun - used verbatim (never re-derived, never
@@ -1382,33 +1397,43 @@ bool SameCircleAsCylinder(const Point3d& center, double radius, const Vector3d& 
 
 // Rebuilds a wedge PlanarFace's own trim polygon (`trim_uv`, on `wrapper`
 // - the SAME bilinear surface Tessellate() already trims to) as a 3D
-// polygon with every arc_run in `subs` substituted for its own fresh
-// detail::ArcSchedule3d() points, and every OTHER vertex copied verbatim
-// (via `wrapper.PointAt`, the same evaluation Tessellate() itself already
-// performs for this face's boundary). `runs` provides each substituted
-// run's own `begin`/`count` (which original indices the run occupies -
-// see PlanarFace::ArcRun's own doc comment for why that range may wrap
-// around this loop's own start/end); `subs` pairs a run index with its
-// own fresh replacement points.
+// polygon with every SubRange in `subs` substituted for its own fresh
+// replacement points, and every OTHER vertex copied verbatim (via
+// `wrapper.PointAt`, the same evaluation Tessellate() itself already
+// performs for this face's boundary). Each `subs` entry pairs a
+// SubRange (which consecutive original indices it replaces - see
+// SubRange's own doc comment for why that range may wrap around this
+// loop's own start/end) with its own fresh replacement points; a
+// SubRange's own source is irrelevant here - it may come from a
+// PlanarFace::ArcRun (the curved-boundary fix) or from a straight-edge
+// match against an adjacent plain quad face (this one), and both kinds
+// may coexist in the same `subs` list for the same wedge.
 //
 // Walking `trim_uv`'s own indices in order and either skipping (a point
-// strictly inside some run's own range), substituting (the run's full
-// replacement, emitted once at the run's own `begin` index), or copying
-// verbatim reproduces the SAME cyclic polygon (same winding, same
-// overall shape) as the original loop, merely rotated to start
-// wherever index 0 happens to fall relative to the run - a rotation of a
-// closed cyclic polygon changes nothing about the shape or winding it
-// represents.
+// strictly inside some range's own span), substituting (that range's
+// full replacement, emitted once at the range's own `begin` index), or
+// copying verbatim reproduces the SAME cyclic polygon (same winding,
+// same overall shape) as the original loop, merely rotated to start
+// wherever index 0 happens to fall relative to the ranges - a rotation
+// of a closed cyclic polygon changes nothing about the shape or winding
+// it represents. Two ADJACENT ranges that share an original endpoint
+// (e.g. a wedge's own two straight rails on either side of one box
+// corner, each independently matched against a different wall) would
+// otherwise each emit that shared point once, producing a duplicate,
+// zero-length-edge vertex; the caller is responsible for dropping the
+// later range's own leading point in that case (see
+// TessellateConforming()'s own straight-edge matching pass) - this
+// function itself does no such deduplication, since it has no way to
+// tell a genuine duplicate from two ranges that happen to share a
+// numeric position coincidentally.
 std::vector<Point3d> BuildResampledWedgeLoop(const NurbsSurface& wrapper, const std::vector<Point2d>& trim_uv,
-                                              const std::vector<Brep::PlanarFace::ArcRun>& runs,
-                                              const std::vector<std::pair<size_t, std::vector<Point3d>>>& subs) {
+                                              const std::vector<std::pair<SubRange, std::vector<Point3d>>>& subs) {
   const size_t n = trim_uv.size();
   std::vector<bool> excluded(n, false);
   std::unordered_map<size_t, const std::vector<Point3d>*> insert_at;
   for (const auto& sub : subs) {
-    const Brep::PlanarFace::ArcRun& run = runs[sub.first];
-    const size_t begin = static_cast<size_t>(run.begin);
-    const size_t count = static_cast<size_t>(run.count);
+    const size_t begin = static_cast<size_t>(sub.first.begin);
+    const size_t count = static_cast<size_t>(sub.first.count);
     for (size_t k = 0; k < count && k < n; ++k) excluded[(begin + k) % n] = true;
     insert_at[begin] = &sub.second;
   }
@@ -1437,9 +1462,8 @@ std::vector<Point3d> BuildResampledWedgeLoop(const NurbsSurface& wrapper, const 
 // the same helper ExtractPlanarFace already uses, keeps this independent
 // of how many arc_runs a given face has, including zero).
 Mesh BuildConformingWedgeMesh(const NurbsSurface& wrapper, const std::vector<Point2d>& trim_uv,
-                               const std::vector<Brep::PlanarFace::ArcRun>& runs,
-                               const std::vector<std::pair<size_t, std::vector<Point3d>>>& subs) {
-  const std::vector<Point3d> loop3d = BuildResampledWedgeLoop(wrapper, trim_uv, runs, subs);
+                               const std::vector<std::pair<SubRange, std::vector<Point3d>>>& subs) {
+  const std::vector<Point3d> loop3d = BuildResampledWedgeLoop(wrapper, trim_uv, subs);
   Mesh mesh;
   if (loop3d.size() < 3) return mesh;
   const Vector3d normal = NewellNormal(loop3d);
@@ -1590,6 +1614,174 @@ Mesh BuildConformingCylinderMesh(const NurbsSurface& wrapper, const std::vector<
   return mesh;
 }
 
+// One shared boundary sample forced onto a plain quad face's own tensor
+// grid, at parameter `t` (in [0, 1]) along whichever of the quad's own
+// two axes (see BuildConformingPlainQuadMesh's own doc comment for the
+// `a`/`b` convention) the corresponding edge runs along.
+struct EdgeForce {
+  double t = 0.0;
+  Point3d point;
+};
+
+// Builds one un-cut, 4-corner planar face's own tensor-product mesh via
+// PLAIN BILINEAR interpolation of its own 4 corners `q[0..3]` (CCW, the
+// SAME order `fg.outer` - or the implicit domain-corner rectangle for an
+// untrimmed face - already presents them in, per FaceOuterUv's own doc
+// comment), with any of `a_forces_b0`/`a_forces_b1`/`b_forces_a0`/
+// `b_forces_a1` overriding grid rows/columns at their own recorded `t`
+// position with the LITERAL Point3d already computed for the matching
+// straight edge of some adjacent wedge PlanarFace - the plain-quad
+// counterpart to BuildConformingCylinderMesh's own "inject the wedge's
+// own literal arc points into the matching grid row" mechanism just
+// above, generalized from "always forced along u at fixed v" (the only
+// shape a CylindricalFace's own cap match ever needs) to "forced along
+// EITHER of this quad's own two axes, at either of that axis's own two
+// extremes" (the shape a Box() wall's own cap-level edge needs, since
+// which physical direction - x, y, or z - plays which role varies per
+// wall; see TessellateConforming()'s own doc comment for why).
+//
+// Deliberately does NOT evaluate the real underlying NURBS surface at
+// all (unlike TessellateGridClippedExact, which this replaces for a
+// face that has at least one forced edge) - `q[0..3]` are evaluated
+// once by the caller (via wrapper.PointAt on the face's own 4 trim
+// corners) and every other grid point is a direct bilinear blend of
+// them. Exactly matches TessellateGridClippedExact's own physical shape
+// for the faces this is used on (a genuine planar quadrilateral, where
+// bilinear interpolation and the degree-(1,1) NURBS surface's own
+// PointAt are the same map to floating-point precision) while making
+// the forced-point injection tractable at all: TessellateGridClippedExact
+// tessellates by clipping independent grid CELLS against a trim
+// polygon, which has no notion of "this specific boundary vertex must
+// be exactly this literal point" - a plain tensor grid does.
+//
+// `a` runs from `q[0]` (a=0) to `q[1]` (a=1) at b=0, and from `q[3]` to
+// `q[2]` at b=1; `b` runs from `q[0]` (b=0) to `q[3]` (b=1) at a=0, and
+// from `q[1]` to `q[2]` at a=1 - i.e. `a`/`b` are just this function's
+// own name for whichever of the real surface's u/v (or a transposition
+// of them) makes `q[0]->q[1]` and `q[0]->q[3]` the two edges out of
+// `q[0]`, matching TessellateGrid's own (v00,v10,v11)/(v00,v11,v01)
+// triangle winding exactly (with `a` playing the role TessellateGrid's
+// own `u` plays, `b` playing `v`'s) - since `q[0..3]` is a CCW loop as
+// seen from outside (the same invariant every planar-face factory in
+// this kernel already maintains), `(q[1]-q[0]) x (q[3]-q[0])` points
+// outward exactly as "u_dir x v_dir points outward" already promises
+// elsewhere in this file, so this reproduces the correct orientation
+// with no separate flip/transpose logic needed regardless of which real
+// axis `a`/`b` happen to correspond to for any one particular face.
+Mesh BuildConformingPlainQuadMesh(const std::array<Point3d, 4>& q, int u_divisions, int v_divisions,
+                                   const std::vector<EdgeForce>& a_forces_b0,
+                                   const std::vector<EdgeForce>& a_forces_b1,
+                                   const std::vector<EdgeForce>& b_forces_a0,
+                                   const std::vector<EdgeForce>& b_forces_a1) {
+  auto bilinear = [&](double a, double b) {
+    return (1.0 - a) * (1.0 - b) * q[0] + a * (1.0 - b) * q[1] + a * b * q[2] + (1.0 - a) * b * q[3];
+  };
+
+  struct Break {
+    double t = 0.0;
+    const Point3d* at_lo = nullptr;  // forced point at this axis's own "0" extreme
+    const Point3d* at_hi = nullptr;  // forced point at this axis's own "1" extreme
+  };
+  // Shared "collect forced breakpoints, then fill the remaining gaps at
+  // roughly `divisions`-uniform spacing" logic - the same shape
+  // BuildConformingCylinderMesh's own u-breakpoint construction already
+  // uses (see its own doc comment), applied once per axis here since
+  // EITHER axis (not just `u`) may carry forced points for a plain quad
+  // face (see this function's own doc comment for why).
+  auto build_axis = [](const std::vector<EdgeForce>& forces_lo, const std::vector<EdgeForce>& forces_hi,
+                        int divisions) {
+    const double tol = 1e-9;
+    std::vector<Break> breaks;
+    auto add_break = [&](double t, const Point3d* lo, const Point3d* hi) {
+      for (Break& b : breaks) {
+        if (std::fabs(b.t - t) <= tol) {
+          if (lo) b.at_lo = lo;
+          if (hi) b.at_hi = hi;
+          return;
+        }
+      }
+      Break b;
+      b.t = t;
+      b.at_lo = lo;
+      b.at_hi = hi;
+      breaks.push_back(b);
+    };
+    add_break(0.0, nullptr, nullptr);
+    add_break(1.0, nullptr, nullptr);
+    for (const EdgeForce& f : forces_lo) add_break(f.t, &f.point, nullptr);
+    for (const EdgeForce& f : forces_hi) add_break(f.t, nullptr, &f.point);
+    std::sort(breaks.begin(), breaks.end(), [](const Break& x, const Break& y) { return x.t < y.t; });
+
+    const double target_spacing = 1.0 / static_cast<double>(std::max(divisions, 1));
+    std::vector<Break> filled;
+    filled.reserve(breaks.size() * 2);
+    for (size_t i = 0; i + 1 < breaks.size(); ++i) {
+      filled.push_back(breaks[i]);
+      const double gap = breaks[i + 1].t - breaks[i].t;
+      if (gap > target_spacing * 1.5) {
+        const int extra = static_cast<int>(std::ceil(gap / target_spacing)) - 1;
+        for (int e = 1; e <= extra; ++e) {
+          Break b;
+          b.t = breaks[i].t + gap * static_cast<double>(e) / static_cast<double>(extra + 1);
+          filled.push_back(b);
+        }
+      }
+    }
+    if (!breaks.empty()) filled.push_back(breaks.back());
+    return filled;
+  };
+
+  const std::vector<Break> a_breaks = build_axis(a_forces_b0, a_forces_b1, u_divisions);
+  const std::vector<Break> b_breaks = build_axis(b_forces_a0, b_forces_a1, v_divisions);
+
+  Mesh mesh;
+  ON_Mesh& raw = mesh.raw();
+  const size_t a_points = a_breaks.size();
+  const size_t b_points = b_breaks.size();
+  raw.m_V.Reserve(static_cast<int>(a_points * b_points));
+  auto grid_index = [b_points](size_t i, size_t j) { return static_cast<int>(i * b_points + j); };
+  for (size_t i = 0; i < a_points; ++i) {
+    for (size_t j = 0; j < b_points; ++j) {
+      const Point3d* forced = nullptr;
+      if (j == 0) {
+        forced = a_breaks[i].at_lo;
+      } else if (j + 1 == b_points) {
+        forced = a_breaks[i].at_hi;
+      }
+      if (forced == nullptr) {
+        if (i == 0) {
+          forced = b_breaks[j].at_lo;
+        } else if (i + 1 == a_points) {
+          forced = b_breaks[j].at_hi;
+        }
+      }
+      const Point3d p = forced != nullptr ? *forced : bilinear(a_breaks[i].t, b_breaks[j].t);
+      raw.m_V.Append(ON_3fPoint(p));
+    }
+  }
+  for (size_t i = 0; i + 1 < a_points; ++i) {
+    for (size_t j = 0; j + 1 < b_points; ++j) {
+      const int v00 = grid_index(i, j);
+      const int v10 = grid_index(i + 1, j);
+      const int v11 = grid_index(i + 1, j + 1);
+      const int v01 = grid_index(i, j + 1);
+      ON_MeshFace tri1;
+      tri1.vi[0] = v00;
+      tri1.vi[1] = v10;
+      tri1.vi[2] = v11;
+      tri1.vi[3] = v11;
+      raw.m_F.Append(tri1);
+      ON_MeshFace tri2;
+      tri2.vi[0] = v00;
+      tri2.vi[1] = v11;
+      tri2.vi[2] = v01;
+      tri2.vi[3] = v01;
+      raw.m_F.Append(tri2);
+    }
+  }
+  return mesh;
+}
+
 }  // namespace
 
 std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, int boundary_samples) const {
@@ -1638,7 +1830,7 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
 
   const double tol = 1e-9;
 
-  std::unordered_map<int, std::vector<std::pair<size_t, std::vector<Point3d>>>> wedge_subs;
+  std::unordered_map<int, std::vector<std::pair<SubRange, std::vector<Point3d>>>> wedge_subs;
   std::unordered_map<int, std::vector<ConformingMatch>> cyl_matches;
 
   for (int i = 0; i < n; ++i) {
@@ -1708,7 +1900,7 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
         raw_u[static_cast<size_t>(s)] = u;
       }
 
-      wedge_subs[i].push_back({k, shared_points});
+      wedge_subs[i].push_back({SubRange{run.begin, run.count}, shared_points});
 
       ConformingMatch match;
       match.run_index = k;
@@ -1717,6 +1909,212 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
       match.raw_u = std::move(raw_u);
       match.points = shared_points;
       cyl_matches[matched->face_index].push_back(std::move(match));
+    }
+  }
+
+  // Second matching pass: every wedge PlanarFace's own STRAIGHT (i.e.
+  // non-arc) boundary segments against every "plain quad" planar face's
+  // own 4 edges - the planar/planar counterpart to the arc-matching pass
+  // just above, closing the SEPARATE gap that one leaves open (see this
+  // method's own doc comment): where a wedge's own straight rail lies
+  // exactly along an untouched Box() side wall's own cap-level edge,
+  // force both sides to share the LITERAL same boundary points, exactly
+  // as the arc pass already does for the wedge-cap/cylinder-wall seam.
+  //
+  // A "plain quad" target is any resolved PLANAR face whose own visible
+  // boundary is exactly 4 points (either an explicit 4-point trim - what
+  // FromMixedFaces() always builds, even for an UNTOUCHED input face,
+  // per its own doc comment - or the implicit domain-corner rectangle of
+  // a genuinely untrimmed face) that isn't itself already a wedge or a
+  // matched CylindricalFace: a Box() side wall the drilling cylinder
+  // never reaches is exactly this shape. Matching against `fg.outer`'s
+  // own 4 corners directly (rather than the real surface's own u/v
+  // domain) sidesteps a real subtlety a prior investigation of this gap
+  // found: which physical direction (x, y, or z) plays "u" vs "v" is NOT
+  // the same for every wall (confirmed directly - Box()'s own front and
+  // back walls assign x/z to u/v oppositely) - operating purely on the
+  // 4 corner points themselves in their own already-CCW-as-seen-from-
+  // outside order needs no per-wall axis convention at all, see
+  // BuildConformingPlainQuadMesh's own doc comment for exactly how.
+  struct QuadFace {
+    int face_index = 0;
+    std::array<Point3d, 4> corner;
+  };
+  std::vector<QuadFace> quad_faces;
+  for (int i = 0; i < n; ++i) {
+    if (!resolved[static_cast<size_t>(i)]) continue;
+    if (cyl_matches.count(i) != 0 || wedge_subs.count(i) != 0) continue;
+    const FaceGeometry& fg = fgs[static_cast<size_t>(i)];
+    NurbsSurface wrapper;
+    wrapper.raw() = fg.surface;
+    if (!wrapper.IsPlanar()) continue;
+    std::vector<Point2d> corners_uv;
+    if (fg.outer.size() == 4) {
+      corners_uv = fg.outer;
+    } else if (fg.outer.empty()) {
+      const ON_Interval du = fg.surface.Domain(0), dv = fg.surface.Domain(1);
+      corners_uv = {Point2d(du.Min(), dv.Min()), Point2d(du.Max(), dv.Min()), Point2d(du.Max(), dv.Max()),
+                    Point2d(du.Min(), dv.Max())};
+    } else {
+      continue;  // a genuinely trimmed (non-4-corner) planar face - not this pass's target shape
+    }
+    QuadFace qf;
+    qf.face_index = i;
+    for (int c = 0; c < 4; ++c) qf.corner[static_cast<size_t>(c)] = wrapper.PointAt(corners_uv[static_cast<size_t>(c)].x, corners_uv[static_cast<size_t>(c)].y);
+    quad_faces.push_back(qf);
+  }
+
+  // Per-quad-face, per-edge (0: q0->q1 at b=0, 1: q1->q2 at a=1, 2:
+  // q2->q3 at b=1, 3: q3->q0 at a=0 - see BuildConformingPlainQuadMesh's
+  // own doc comment for this a/b convention) forced points, keyed the
+  // same way BuildConformingPlainQuadMesh itself organizes them (two
+  // lists per axis, one per extreme).
+  std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>> plain_forces;  // index 0..3 == edge index above
+
+  for (const auto& wsub : wedge_subs) {
+    const int wedge_index = wsub.first;
+    if (static_cast<size_t>(wedge_index) >= face_arc_runs_.size()) continue;
+    const FaceGeometry& wfg = fgs[static_cast<size_t>(wedge_index)];
+    NurbsSurface wwrapper;
+    wwrapper.raw() = wfg.surface;
+    const std::vector<PlanarFace::ArcRun>& runs = face_arc_runs_[static_cast<size_t>(wedge_index)];
+    const size_t wn = wfg.outer.size();
+    if (wn < 3) continue;
+    std::vector<bool> arc_excluded(wn, false);
+    for (const PlanarFace::ArcRun& run : runs) {
+      const size_t begin = static_cast<size_t>(run.begin);
+      const size_t count = static_cast<size_t>(run.count);
+      for (size_t k = 0; k < count && k < wn; ++k) arc_excluded[(begin + k) % wn] = true;
+    }
+
+    // Every straight (both endpoints non-arc) segment of this wedge's
+    // own trim loop, matched (if at all) against exactly one quad
+    // face's own edge - collected in trim-loop order (increasing
+    // `begin`) so the duplicate-shared-corner fix-up below (mirroring
+    // this method's own arc-matching pass fix-up in spirit, see
+    // BuildResampledWedgeLoop's own doc comment) can compare each
+    // segment to its immediate predecessor.
+    struct StraightMatch {
+      int begin = 0;
+      std::vector<Point3d> points;  // this wedge's own P(begin) .. P(begin+1), inclusive of both ends
+    };
+    std::vector<StraightMatch> straight_matches;
+
+    for (size_t k = 0; k < wn; ++k) {
+      const size_t k1 = (k + 1) % wn;
+      if (arc_excluded[k] || arc_excluded[k1]) continue;  // a radial rail, not a perimeter segment - see above
+
+      const Point3d p0 = wwrapper.PointAt(wfg.outer[k].x, wfg.outer[k].y);
+      const Point3d p1 = wwrapper.PointAt(wfg.outer[k1].x, wfg.outer[k1].y);
+      const double seg_len = p0.DistanceTo(p1);
+      if (seg_len < 1e-12) continue;  // degenerate - nothing to match
+
+      for (const QuadFace& qf : quad_faces) {
+        bool matched_this_segment = false;
+        for (int e = 0; e < 4 && !matched_this_segment; ++e) {
+          // Edge e's own "from" (a=0 or b=0 end) and "to" (a=1 or b=1
+          // end) reference corners, per this function's own a/b
+          // convention (see BuildConformingPlainQuadMesh's doc comment):
+          // edge 0 (q0->q1, b=0) and edge 2 (q3->q2, b=1) both measure
+          // `a`; edge 3 (q0->q3, a=0) and edge 1 (q1->q2, a=1) both
+          // measure `b`. Edge 2 and edge 3 are walked "backward" in
+          // `corner`'s own trim order (q2->q3, q3->q0) relative to the
+          // `a`/`b` value they carry, so their own reference pair is
+          // chosen accordingly (from=q3,to=q2 for edge 2; from=q0,to=q3
+          // for edge 3) rather than following `corner`'s own walk
+          // direction - this is exactly what keeps a=0 anchored at
+          // q0/q3 and a=1 at q1/q2 (and b symmetrically) for EVERY edge,
+          // matching BuildConformingPlainQuadMesh's own convention
+          // regardless of which edge a given wedge segment lands on.
+          const Point3d& from = (e == 0) ? qf.corner[0] : (e == 1) ? qf.corner[1] : (e == 2) ? qf.corner[3] : qf.corner[0];
+          const Point3d& to = (e == 0) ? qf.corner[1] : (e == 1) ? qf.corner[2] : (e == 2) ? qf.corner[2] : qf.corner[3];
+          const Vector3d edge_vec = to - from;
+          const double edge_len2 = edge_vec.LengthSquared();
+          if (edge_len2 < 1e-18) continue;
+          const double edge_len = std::sqrt(edge_len2);
+          const double lin_tol = std::max(1e-9, edge_len * 1e-6);
+
+          auto project = [&](const Point3d& p, double* t_out) {
+            const Vector3d d = p - from;
+            const double t = ON_DotProduct(d, edge_vec) / edge_len2;
+            const Point3d on_line = from + t * edge_vec;
+            if (p.DistanceTo(on_line) > lin_tol) return false;
+            *t_out = t;
+            return true;
+          };
+          double t0 = 0.0, t1 = 0.0;
+          if (!project(p0, &t0) || !project(p1, &t1)) continue;
+          const double edge_tol = lin_tol / edge_len;
+          if (t0 < -edge_tol || t0 > 1.0 + edge_tol || t1 < -edge_tol || t1 > 1.0 + edge_tol) continue;
+          t0 = std::clamp(t0, 0.0, 1.0);
+          t1 = std::clamp(t1, 0.0, 1.0);
+
+          // A genuine match: build this segment's own shared points by
+          // PLAIN LINEAR interpolation of p0/p1 directly (never
+          // re-evaluated through either face's own NURBS surface) - the
+          // straight-edge analogue of detail::ArcSchedule3d, used
+          // verbatim as both this wedge's own substituted boundary and
+          // the matching quad face's own forced grid row/column, so the
+          // two sides share their boundary EXACTLY, not just closely
+          // (the same guarantee the arc-matching pass above already
+          // makes for the wedge-cap/cylinder-wall seam).
+          // Rounded with a tiny fixed epsilon nudge (not plain
+          // std::lround) so that a wedge segment whose own true span is
+          // EXACTLY a half-integer multiple of 1/divisions - the common
+          // case for a straight-through hole centered (or evenly split)
+          // on a wall's own edge, where two DIFFERENT wedges (e.g. the
+          // top-cap and bottom-cap wedge touching the same wall) each
+          // independently compute a span that SHOULD be identical but
+          // differs by a few ULPs of floating-point noise from their own
+          // independent constructions - rounds the SAME way on both
+          // sides instead of landing on opposite sides of the tie. Both
+          // wedges' own spans still agree to noise-level precision
+          // (~1e-13 relative for this kernel's own coordinate scales),
+          // so a fixed epsilon many orders of magnitude looser than that
+          // noise, but far tighter than "the next integer's own gap",
+          // resolves the tie deterministically without masking a
+          // genuine (non-tied) span. A genuinely asymmetric per-wedge
+          // span (e.g. a straight hole whose own top and bottom cap
+          // footprints differ) is not this increment's own test scope -
+          // see this method's own doc comment.
+          const int divisions = (e == 0 || e == 2) ? u_divisions : v_divisions;
+          const double raw_count = std::fabs(t1 - t0) * divisions;
+          const int count = std::max(1, static_cast<int>(std::floor(raw_count + 0.5 + 1e-7)));
+          std::vector<Point3d> shared(static_cast<size_t>(count) + 1);
+          for (int s = 0; s <= count; ++s) {
+            const double f = static_cast<double>(s) / static_cast<double>(count);
+            shared[static_cast<size_t>(s)] = p0 + f * (p1 - p0);
+          }
+
+          straight_matches.push_back({static_cast<int>(k), shared});
+
+          std::vector<EdgeForce>& target_list = plain_forces[qf.face_index][static_cast<size_t>(e)];
+          for (int s = 0; s <= count; ++s) {
+            const double f = static_cast<double>(s) / static_cast<double>(count);
+            target_list.push_back({t0 + f * (t1 - t0), shared[static_cast<size_t>(s)]});
+          }
+          matched_this_segment = true;
+        }
+      }
+    }
+
+    if (straight_matches.empty()) continue;
+    std::sort(straight_matches.begin(), straight_matches.end(),
+              [](const StraightMatch& a, const StraightMatch& b) { return a.begin < b.begin; });
+    // Drop the leading point of any match whose own segment starts
+    // exactly where the PREVIOUS (already-processed) match's own
+    // segment ends - both would otherwise independently include that
+    // shared corner, producing a duplicate, zero-length-edge vertex in
+    // the resampled loop (see BuildResampledWedgeLoop's own doc comment
+    // for why this function, not that one, is responsible for avoiding
+    // it).
+    for (size_t m = 1; m < straight_matches.size(); ++m) {
+      if (straight_matches[m].begin == straight_matches[m - 1].begin + 1 && straight_matches[m].points.size() > 1) {
+        straight_matches[m].points.erase(straight_matches[m].points.begin());
+      }
+    }
+    for (StraightMatch& sm : straight_matches) {
+      wedge_subs[wedge_index].push_back({SubRange{sm.begin, 2}, std::move(sm.points)});
     }
   }
 
@@ -1730,12 +2128,22 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
 
     const auto cyl_it = cyl_matches.find(i);
     const auto wedge_it = wedge_subs.find(i);
+    const auto plain_it = plain_forces.find(i);
 
     if (cyl_it != cyl_matches.end()) {
       result.push_back(BuildConformingCylinderMesh(wrapper, fg.outer, u_divisions, v_divisions, cyl_it->second));
     } else if (wedge_it != wedge_subs.end()) {
-      result.push_back(
-          BuildConformingWedgeMesh(wrapper, fg.outer, face_arc_runs_[static_cast<size_t>(i)], wedge_it->second));
+      result.push_back(BuildConformingWedgeMesh(wrapper, fg.outer, wedge_it->second));
+    } else if (plain_it != plain_forces.end()) {
+      std::array<Point3d, 4> corner;
+      for (const QuadFace& qf : quad_faces) {
+        if (qf.face_index == i) {
+          corner = qf.corner;
+          break;
+        }
+      }
+      result.push_back(BuildConformingPlainQuadMesh(corner, u_divisions, v_divisions, plain_it->second[0],
+                                                      plain_it->second[2], plain_it->second[3], plain_it->second[1]));
     } else if (fg.outer.empty()) {
       result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions));
     } else if (fg.exact_clip) {

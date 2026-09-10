@@ -7870,33 +7870,47 @@ void TestBooleanCombineMixedDrilledBoxThroughHole() {
         "as the ordinary Tessellate() path above - the conforming path changes ONLY how the shared wedge-arc/"
         "cylinder-wall boundary is sampled, not the B-rep's own geometry");
 
-  // The actual watertightness claim this increment can make, precisely
-  // stated: the wedge-arc-vs-cylindrical-wall boundary
-  // Brep::TessellateConforming() targets is now GENUINELY closed - zero
-  // boundary edges anywhere except on the box's own known outer
-  // perimeter (see CountNonPerimeterBoundaryEdges's own doc comment for
-  // exactly what that excludes and why). This is NOT yet
-  // mesh_conforming.IsClosedManifold() itself: a SEPARATE, different gap
-  // remains along the untouched side walls' own shared straight edge
-  // with each wedge cap (both faces are ordinary, independently
-  // -parameterized PLANAR patches there, with no shared breakpoints at
-  // all - confirmed directly, not merely suspected: it persists
-  // identically at every division count tried, including 256, so it is
-  // not a resolution/convergence issue). That is the SAME class of gap
-  // this file's own ShellConvexPlanar tests already disclose elsewhere
-  // (see boolean.h's own BooleanCombineMixed doc comment's explicit
-  // non-goals: "ShellConvexPlanar's own separately-disclosed planar/
-  // planar grid-mismatch note is a real, likely easier, follow-up left
-  // for its own increment") - a genuinely different, deliberately
-  // out-of-scope problem from the one this increment's own arc_runs/
-  // ArcSchedule3d/ConvertAngleBetweenFrames/TessellateConforming
-  // machinery targets, not a sign that fix is incomplete on its own
-  // terms.
+  // The wedge-arc-vs-cylindrical-wall boundary Brep::TessellateConforming()
+  // originally targeted is closed (zero boundary edges anywhere except
+  // on the box's own known outer perimeter - see
+  // CountNonPerimeterBoundaryEdges's own doc comment for exactly what
+  // that excludes and why) - unchanged from before, kept here as the
+  // narrower, targeted check it always was.
   Check(CountNonPerimeterBoundaryEdges(mesh_conforming) == 0,
         "TessellateToClosedMeshConforming()'s own mesh has ZERO boundary edges anywhere except the box's own known "
-        "outer perimeter - the wedge-arc-vs-cylindrical-wall seam this increment targets is now genuinely closed "
-        "(see this test's own comment for the separate, different, still-open side-wall/wedge gap this does NOT "
-        "claim to close)");
+        "outer perimeter - the wedge-arc-vs-cylindrical-wall seam is genuinely closed");
+
+  // The FULL watertightness claim, genuinely achieved by a SECOND,
+  // separate matching pass in Brep::TessellateConforming() (straight-edge
+  // matching, added after the arc-matching pass above): the untouched
+  // side walls' own shared straight edge with each wedge cap - the gap
+  // this test used to describe as a separately-disclosed, still-open
+  // problem (both faces were ordinary, independently-parameterized
+  // PLANAR patches there, with no shared breakpoints at all) - is now
+  // ALSO closed, by forcing the wedge's own literal straight-rail sample
+  // points into the matching wall's own tensor grid at that shared edge,
+  // the same "share the literal points, not just close approximations of
+  // them" mechanism the arc pass already used for the curved seam. The
+  // result is a mesh that is a genuine, complete IsClosedManifold() - not
+  // a partial improvement, and not merely the narrower
+  // CountNonPerimeterBoundaryEdges check above (which structurally
+  // cannot see this exact seam, since it deliberately excludes the box's
+  // whole outer perimeter - see that function's own doc comment). This
+  // holds for u_divisions == v_divisions (as tessellated here and by
+  // every other TessellateConforming() caller in this file); an unequal
+  // u_divisions/v_divisions pair is a SEPARATE, PRE-EXISTING gap this fix
+  // does not touch - confirmed directly to already affect a plain,
+  // undrilled Brep::Box() via the ordinary Tessellate() path (adjacent
+  // Box() walls assign u/v to physical x/y/z oppositely - see
+  // TessellateConforming()'s own doc comment - so their shared vertical
+  // corner edge is sampled at u_divisions steps on one side and
+  // v_divisions steps on the other whenever those differ), not something
+  // this increment's own wedge/wall straight-edge matching introduced or
+  // is positioned to fix.
+  Check(mesh_conforming.IsClosedManifold(),
+        "TessellateToClosedMeshConforming()'s own mesh is a genuine, complete IsClosedManifold() - both the "
+        "wedge-arc/cylinder-wall seam AND the wedge/wall straight-perimeter seam are closed, so the drilled box's "
+        "own conforming mesh has NO open boundary anywhere");
 }
 
 // Degenerate case 1 (spec section 6's own "cheap, worthwhile" list): a
@@ -7923,10 +7937,12 @@ void TestBooleanCombineMixedDrilledBoxNearZeroRadius() {
         "near-zero-radius drilled box's volume is within 0.02 of the plain (undrilled) box volume, 1000");
 
   // Same conforming-path checks as TestBooleanCombineMixedDrilledBoxThroughHole
-  // (see that test's own comment for exactly what "zero non-perimeter
-  // boundary edges" does and does not claim) - a near-zero radius is a
-  // real stress case for the shared-boundary machinery (tiny radius,
-  // same angle math) that a plain volume check alone wouldn't catch.
+  // (see that test's own comment for exactly what each check does and
+  // does not claim) - a near-zero radius is a real stress case for the
+  // shared-boundary machinery (tiny radius, same angle math, and a
+  // straight-rail span that's almost the wall's own FULL edge instead of
+  // a comfortable half of it) that a plain volume check alone wouldn't
+  // catch.
   const Mesh mesh_conforming = drilled.TessellateToClosedMeshConforming(64, 64);
   Check(std::fabs(mesh_conforming.Volume() - hand_derived_volume) < 0.01,
         "near-zero-radius drilled box's TessellateToClosedMeshConforming() volume matches the same hand-derived "
@@ -7934,6 +7950,9 @@ void TestBooleanCombineMixedDrilledBoxNearZeroRadius() {
   Check(CountNonPerimeterBoundaryEdges(mesh_conforming) == 0,
         "near-zero-radius drilled box's conforming mesh also has zero non-perimeter boundary edges - the "
         "wedge-arc-vs-cylindrical-wall seam closes correctly even at this tiny radius");
+  Check(mesh_conforming.IsClosedManifold(),
+        "near-zero-radius drilled box's conforming mesh is a genuine, complete IsClosedManifold() - the "
+        "wedge/wall straight-perimeter seam closes correctly even at this tiny radius, not just the curved seam");
 }
 
 // Degenerate case 2 (spec section 6's own "cheap, worthwhile" list): the
@@ -7984,6 +8003,70 @@ void TestBooleanCombineMixedDrilledBoxCoincidentCapHeight() {
         "within 0.1");
   Check(CountNonPerimeterBoundaryEdges(mesh_conforming) == 0,
         "coincident-cap-height drilled box's conforming mesh also has zero non-perimeter boundary edges");
+  Check(mesh_conforming.IsClosedManifold(),
+        "coincident-cap-height drilled box's conforming mesh is a genuine, complete IsClosedManifold() - the "
+        "wedge/wall straight-perimeter seam closes correctly even in this coincident-cap-height edge case");
+}
+
+// Genuinely asymmetric case: an off-center hole (not centered on the
+// box's own footprint, so the wedge/wall straight-rail split point along
+// each wall's own cap-level edge is NOT at that wall's own midpoint) at
+// an odd (non-power-of-two, non-evenly-dividing-the-box) division count.
+// The 3 tests above are all deliberately re-checked here too, but this
+// one specifically guards against a fix that only happens to work for a
+// centered hole and/or a division count that evenly divides the box's
+// own symmetric geometry - confirmed directly (not merely assumed) as a
+// real distinct risk during this fix's own development: with a centered
+// hole and matching-parity division count, a wedge/wall straight-rail
+// split lands exactly on a pre-existing wall grid line, which a much
+// narrower (and NOT actually general) fix could satisfy by reusing the
+// wall's own existing breakpoints rather than genuinely sharing points.
+// u_divisions == v_divisions here (17, not evenly dividing 10, and not a
+// divisor either side of the hole's own off-center split) - unequal
+// u_divisions/v_divisions is a separate, pre-existing gap this fix does
+// not touch (see TestBooleanCombineMixedDrilledBoxThroughHole's own
+// comment for why, confirmed directly against a plain undrilled box).
+void TestBooleanCombineMixedDrilledBoxOffCenterHole() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace hole;
+  hole.frame.origin = Point3d(3.3, 6.7, -1.0);
+  hole.frame.xaxis = Vector3d(1, 0, 0);
+  hole.frame.yaxis = Vector3d(0, 1, 0);
+  hole.frame.zaxis = Vector3d(0, 0, 1);
+  hole.frame.UpdateEquation();
+  hole.radius = 1.7;
+  hole.angle = 2.0 * ON_PI;
+  hole.length = 12.0;
+  const Brep cyl = Brep::FromMixedFaces({}, {hole});
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  Check(drilled.FaceCount() == 4 + 2 * 4 + 1,
+        "an off-center drilled box still has the same 13-face topology as the centered case");
+
+  const double hand_derived_volume = 1000.0 - ON_PI * 1.7 * 1.7 * 10.0;
+  const Mesh mesh_conforming = drilled.TessellateToClosedMeshConforming(17, 17);
+  // 0.15, not the 0.1 other tests in this file use at a higher division
+  // count: confirmed directly that the measured error here (~0.13) is
+  // ordinary coarse-tessellation approximation error (the SAME bounded,
+  // shrinks-with-division-count source TestBooleanCombineMixedDrilledBoxThroughHole's
+  // own comment already discloses for the circular hole boundary), not a
+  // sign of a topology defect - IsClosedManifold() below is already true
+  // at this same division count, confirmed directly down to div=17.
+  Check(std::fabs(mesh_conforming.Volume() - hand_derived_volume) < 0.15,
+        "off-center drilled box's TessellateToClosedMeshConforming() volume matches 1000-pi*1.7^2*10 to within "
+        "0.15 - the same bounded, division-count-dependent tessellation error every other volume check in this "
+        "file already discloses, not a topology defect");
+  Check(mesh_conforming.IsClosedManifold(),
+        "off-center drilled box's conforming mesh is a genuine, complete IsClosedManifold() at an odd division "
+        "count that does not evenly divide either the box's own span or the hole's own off-center split point - "
+        "the wedge/wall straight-perimeter fix is genuinely general, not merely reusing a coincidence of symmetric "
+        "geometry lining up with a wall's own pre-existing grid lines");
 }
 
 // FromPlanarFaces()/FromMixedFaces() now build genuine ON_Brep
@@ -8733,6 +8816,7 @@ int main() {
   TestBooleanCombineMixedDrilledBoxThroughHole();
   TestBooleanCombineMixedDrilledBoxNearZeroRadius();
   TestBooleanCombineMixedDrilledBoxCoincidentCapHeight();
+  TestBooleanCombineMixedDrilledBoxOffCenterHole();
   TestExactConvexHullBoxSixExactQuadFaces();
   TestExactConvexHullOctahedronEightExactTriFaces();
   TestExactConvexHullIgnoresInteriorPoints();
