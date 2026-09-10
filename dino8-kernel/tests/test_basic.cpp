@@ -10442,6 +10442,271 @@ void TestBooleanCombineMixedDifferenceUnaffectedByEndCapFix() {
         "merely coincidentally producing the same count");
 }
 
+// Intersection end-cap tests (TestBooleanCombineMixedIntersection*): the
+// polarity-aware extension of SynthesizeEndCaps to BooleanOp::Intersection
+// (see boolean.h's own BooleanCombineMixed doc comment, "INTERSECTION END
+// CAPS", for the full derivation this group verifies). Unlike the Union
+// boss group above, the defining case here is a cylinder FULLY EMBEDDED in
+// the other operand - the fully-embedded case is exactly where Union needs
+// NO cap (case
+// TestBooleanCombineMixedUnionBossFullyEmbeddedAddsNoCap above) but
+// Intersection needs a cap at BOTH ends, the literal opposite polarity.
+
+void TestBooleanCombineMixedIntersectionFullyEmbeddedBothEndsCapped() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A 10x10x10 box intersected with a radius-2, length-4 cylinder fully
+  // embedded inside it (z=3 to z=7, radial center (5,5) far from all four
+  // side walls) - CylinderPlaneNoInteraction's own closed-form bound means
+  // NEITHER end of this cylindrical fragment is ever split, so both
+  // end0_is_original/end1_is_original stay true, and the whole lateral
+  // wall survives as ONE fragment, classified kIn against the box and
+  // collected into from_a.in. A∩B here is exactly the solid cylinder
+  // itself (box ⊃ cylinder), whose boundary is the lateral wall PLUS two
+  // end disks - neither disk exists anywhere in either operand's own face
+  // list (a bare CylindricalFace operand has no real PlanarFace caps, and
+  // the box's own caps are nowhere near z=3/z=7) - so without this fix's
+  // own end-cap synthesis, the Intersection result would be an open tube.
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, 3.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 4.0;
+  Brep cyl = Brep::FromMixedFaces({}, {boss});
+
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Intersection);
+
+  // 1 surviving cylindrical wall + 4 synthesized cap quadrants at EACH of
+  // its two original ends (8 total) = 9 faces - the box's own faces
+  // contribute nothing (from_a.in/from_b.in/from_a.on all empty for the
+  // box side: none of its 6 planar faces lie inside the cylinder).
+  Check(result.FaceCount() == 9,
+        "fully-embedded Intersection cylinder has exactly 9 faces (1 cylindrical wall + 4 synthesized cap "
+        "quadrants at EACH of its two original ends) - the box's own faces contribute nothing to A∩B here, "
+        "confirming both ends, not just one, get a synthesized cap");
+
+  const double hand_derived_volume = ON_PI * 2.0 * 2.0 * 4.0;  // pi*r^2*h, ~= 50.265482
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "a fully-embedded Intersection cylinder's tessellated result is a genuinely CLOSED manifold - both of "
+        "its own original ends need a synthesized cap (the OPPOSITE polarity of the Union boss case), and this "
+        "fix supplies both");
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "fully-embedded Intersection cylinder's tessellated volume (div=64) matches the hand-derived pi*r^2*h to "
+        "within 0.05 - a real, bounded arc-sampling/tessellation tolerance (see the Union boss test group's own "
+        "top comment), NOT floating-point exactness - before this fix the result was an open tube with no closed "
+        "volume at all");
+}
+
+void TestBooleanCombineMixedIntersectionFullyEmbeddedSecondGeometry() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A genuinely DIFFERENT box/cylinder pairing (not a trivial rescale of
+  // the case above): a 20x12x8 box with a radius-1.5, length-3 cylinder
+  // embedded off-center at (6,4), z=2.5 to z=5.5 - different box
+  // proportions, different cylinder radius/length, and an off-axis radial
+  // center, confirming the fix generalizes rather than happening to match
+  // one specific symmetric setup.
+  Brep box = Brep::Box(0, 0, 0, 20, 12, 8);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(6, 4, 2.5);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 1.5;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 3.0;
+  Brep cyl = Brep::FromMixedFaces({}, {boss});
+
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Intersection);
+
+  Check(result.FaceCount() == 9,
+        "fully-embedded Intersection cylinder (2nd, differently-proportioned geometry) has exactly 9 faces (1 "
+        "cylindrical wall + 4 synthesized cap quadrants at each of its two original ends)");
+
+  const double hand_derived_volume = ON_PI * 1.5 * 1.5 * 3.0;  // pi*r^2*h, ~= 21.205750
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "fully-embedded Intersection cylinder (2nd geometry) is a genuinely CLOSED manifold, confirming the fix "
+        "is not specific to the first test's particular box/cylinder proportions or centered placement");
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "fully-embedded Intersection cylinder (2nd geometry) tessellated volume matches the hand-derived "
+        "pi*r^2*h to within 0.05");
+}
+
+void TestBooleanCombineMixedIntersectionDisjointIsEmpty() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Negative control: a cylinder entirely OUTSIDE the box (base at z=20,
+  // box top at z=10, no overlap at all) - A∩B is genuinely empty, so no
+  // fragment survives into from_a.in/from_b.in at all, and
+  // SynthesizeEndCaps is never even reached for this operand - this fix
+  // must not synthesize a spurious cap out of nothing.
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, 20.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 4.0;
+  Brep cyl = Brep::FromMixedFaces({}, {boss});
+
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Intersection);
+  Check(result.FaceCount() == 0,
+        "a disjoint Intersection (cylinder entirely outside the box, no overlap at all) produces a genuinely "
+        "EMPTY result - no fragment ever reaches from_a.in/from_b.in, so this fix's own SynthesizeEndCaps is "
+        "never even invoked on a real fragment, confirming it adds nothing out of nothing");
+}
+
+// Falsifiability control (mirrors TestBooleanCombineMixedUnionBossWithoutCapIsProvablyOpen above): isolates the
+// literal geometric defect this fix closes from BooleanCombineMixed's own machinery, confirming the underlying
+// bare-CylindricalFace fragment genuinely needs the synthesized caps this fix adds.
+void TestBooleanCombineMixedIntersectionWithoutFixIsProvablyOpen() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, 3.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 4.0;
+  const Brep bare_cyl = Brep::FromMixedFaces({}, {boss});
+
+  const Mesh mesh = bare_cyl.TessellateToClosedMesh(32, 32);
+  Check(!mesh.IsClosedManifold(),
+        "a bare CylindricalFace with no cap faces at all (exactly the fully-embedded case's own surviving "
+        "cylindrical wall, before this fix's own end-cap synthesis adds either end's disk) is provably NOT a "
+        "closed manifold on its own - the literal geometric defect this fix's Intersection extension closes");
+}
+
+// Honest scope-limit control (see boolean.h's own BooleanCombineMixed doc comment, "This Intersection fix does
+// NOT make every Intersection result watertight..."): confirms this fix does not silently paper over the
+// SEPARATE, pre-existing ClipPolygonByCircle3d "outside only" gap at a genuine mid-length crossing, and that
+// SynthesizeEndCaps correctly stays inert at a split (non-original) end rather than guessing.
+void TestBooleanCombineMixedIntersectionPartialCrossingRemainsDisclosedGap() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A cylinder poking through the box's own top face (z=6 to z=14, box
+  // z-range [0,10]): its bottom end (z=6) is original (still fully inside
+  // the box, no split there - CylinderPlaneNoInteraction's own bound never
+  // triggers since z=6 is well below the top at z=10) and IS given a
+  // synthesized cap by this fix (probe just below z=6 is kIn against the
+  // box); its top end (z=14) is NOT original (SplitMixedAgainstAllFaces'
+  // own case (iii) splits it at z=10, the box's own top face) - so this
+  // fix correctly leaves that end alone. The box's own top face is
+  // genuinely split there too (case (ii)'s ClipPolygonByCircle3d), but
+  // that split only ever produces the wedge pieces OUTSIDE the circular
+  // footprint (radius > 2) - which classify kOut against the cylinder and
+  // land in from_a.out, never from_a.in - so NONE of the box's own
+  // top-face material makes it into the Intersection result at all; the
+  // disc-shaped piece INSIDE the circle that SHOULD close this seam (case
+  // (ii)'s own "outside only" limitation) is simply never produced
+  // anywhere in the pipeline. Net result: still not a closed manifold, but
+  // for the disclosed reason (a genuine hole at the split seam with
+  // literally zero closing material from either operand), not because
+  // this fix mis-synthesized or omitted its OWN cap at the bottom.
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, 6.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 8.0;
+  Brep cyl = Brep::FromMixedFaces({}, {boss});
+
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Intersection);
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(!mesh.IsClosedManifold(),
+        "a one-sided poke-through Intersection (cylinder crossing the box's own top face mid-length) is still "
+        "NOT a closed manifold after this fix - the ClipPolygonByCircle3d 'outside only' limitation at the "
+        "split seam (see boolean.h's own doc comment) is a separate, pre-existing gap this fix does not close, "
+        "honestly disclosed rather than silently papered over");
+
+  // The fix's own bottom-end cap (4 quadrants) IS present, and it is the
+  // ONLY material this fix contributes: 1 cylindrical wall fragment (split
+  // at z=10, so only the [6,10] piece survives into from_b.in, with
+  // end0_is_original == true at z=6 and end1_is_original == false at the
+  // split) + 4 synthesized bottom-cap quadrants at that original z=6 end =
+  // 5 faces - directly confirming (not merely inferring) that the box's
+  // own top face contributes NOTHING here: its split wedges (case (ii))
+  // classify kOut against the cylinder (from_a.out, not from_a.in), so
+  // from_a.in is genuinely empty. No 5th/6th quadrant leaked in at the
+  // split (non-original) top end either.
+  Check(result.FaceCount() == 5,
+        "one-sided poke-through Intersection has exactly 5 faces (1 cylindrical wall fragment [z=6..10] + 4 "
+        "synthesized bottom-cap quadrants at the original z=6 end, and NOTHING from the box's own top face, whose "
+        "split wedges classify kOut and never reach from_a.in) - confirming this fix's own SynthesizeEndCaps adds "
+        "a cap ONLY at the genuinely original end, never at the split (z=10) end, even though that end is also "
+        "exposed/non-watertight for the separate, disclosed ClipPolygonByCircle3d reason above");
+}
+
+void TestBooleanCombineMixedIntersectionUnaffectedExistingCalls() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanOp;
+
+  // BooleanCombineMixed is a SEPARATE code path from the mesh-based
+  // BooleanCombine/BooleanCombinePlanar this codebase's own pre-existing
+  // BooleanOp::Intersection tests exercise (see boolean.h's own doc
+  // comment's file-by-file citation) - this fix's own new
+  // SynthesizeEndCaps(..., PointClass::kIn) call is additive ONLY inside
+  // BooleanCombineMixed's Intersection branch, structurally unreachable
+  // from either of those. Re-derive TestBooleanIntersection's own
+  // mesh-based scenario directly here and confirm it is bit-for-bit
+  // unaffected (same technique TestBooleanCombineMixedDifferenceUnaffectedByEndCapFix
+  // above already uses for the Union fix's own sibling Difference path);
+  // the fuller confirmation - every one of the pre-existing 930 ok: checks
+  // (including every existing BooleanOp::Intersection call site) reproduced
+  // bit-for-bit identically after this fix - is the ordered-subsequence
+  // diff this increment's own commit message cites, not repeated here.
+  const auto a = MakeBox(0, 0, 0, 2, 2, 2);
+  const auto b = MakeBox(1, 1, 1, 3, 3, 3);
+  const auto result = BooleanCombine(a, b, BooleanOp::Intersection);
+  Check(std::abs(result.Volume() - 1.0) < 1e-6,
+        "a pre-existing mesh-based BooleanCombine(..., BooleanOp::Intersection) call (structurally unreachable "
+        "from BooleanCombineMixed's own new Intersection end-cap code) still produces the exact 1x1x1 overlap "
+        "volume TestBooleanIntersection already establishes, confirming this fix's own new code is genuinely "
+        "additive and does not perturb the mesh-based path at all");
+}
+
 int main() {
   ON::Begin();
 
@@ -10644,6 +10909,12 @@ int main() {
   TestBooleanCombineMixedUnionBossFullyEmbeddedAddsNoCap();
   TestBooleanCombineMixedUnionBossWithoutCapIsProvablyOpen();
   TestBooleanCombineMixedDifferenceUnaffectedByEndCapFix();
+  TestBooleanCombineMixedIntersectionFullyEmbeddedBothEndsCapped();
+  TestBooleanCombineMixedIntersectionFullyEmbeddedSecondGeometry();
+  TestBooleanCombineMixedIntersectionDisjointIsEmpty();
+  TestBooleanCombineMixedIntersectionWithoutFixIsProvablyOpen();
+  TestBooleanCombineMixedIntersectionPartialCrossingRemainsDisclosedGap();
+  TestBooleanCombineMixedIntersectionUnaffectedExistingCalls();
 
   ON::End();
 

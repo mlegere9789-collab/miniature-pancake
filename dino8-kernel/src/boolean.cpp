@@ -2184,8 +2184,28 @@ std::vector<MixedFace> BuildEndCap(const Brep::CylindricalFace& cf, bool at_v0) 
 // near that height), and the same "classify a single interior-ish point"
 // technique RepresentativeInteriorPointMixed/ClassifyPointVsMixedSolid
 // already rely on elsewhere in this pipeline, not a new technique.
+//
+// `needed_class` is the probe classification (against `other`) that means
+// "this original end needs a synthesized cap" - PointClass::kOut for the
+// Union/boss caller below (nothing in EITHER operand continues past this
+// end, so the union boundary genuinely terminates here and needs its own
+// disk), but the OPPOSITE, PointClass::kIn, for the BooleanOp::Intersection
+// caller (see BooleanCombineMixed's own switch statement below and
+// boolean.h's own doc comment for the worked argument): an
+// Intersection-kept fragment's own original end means THIS solid's
+// material stops there regardless of the other operand, so a probe that's
+// kIn (the other operand's material keeps going past the point where this
+// fragment's own material stops) is exactly the case where nothing else in
+// the result bounds A∩B there - the other operand's own surface is
+// interior, not a boundary, at that point - and a cap is needed; a probe
+// that's kOut at an original end means the other operand doesn't reach
+// past there either, consistent with "already sealed or not actually
+// reached" (a genuine crossing would have produced a split, clearing
+// end{0,1}_is_original), so no cap is added. Defaults to kOut so every
+// pre-existing two-argument call site (the Union branch) is completely
+// unaffected - same probes, same classification, same faces produced.
 std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments, const std::vector<MixedFace>& other,
-                                          double tol) {
+                                          double tol, PointClass needed_class = PointClass::kOut) {
   std::vector<MixedFace> caps;
   for (const MixedFace& f : fragments) {
     if (!f.is_cyl) continue;
@@ -2193,13 +2213,13 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
     const double probe_eps = std::max(tol, 1e-6 * std::max(cf.radius, std::max(cf.length, 1.0)));
     if (cf.end0_is_original) {
       const Point3d probe = cf.frame.origin - probe_eps * cf.frame.zaxis;
-      if (ClassifyPointVsMixedSolid(probe, other, tol) == PointClass::kOut) {
+      if (ClassifyPointVsMixedSolid(probe, other, tol) == needed_class) {
         for (MixedFace& piece : BuildEndCap(cf, /*at_v0=*/true)) caps.push_back(std::move(piece));
       }
     }
     if (cf.end1_is_original) {
       const Point3d probe = cf.frame.origin + (cf.length + probe_eps) * cf.frame.zaxis;
-      if (ClassifyPointVsMixedSolid(probe, other, tol) == PointClass::kOut) {
+      if (ClassifyPointVsMixedSolid(probe, other, tol) == needed_class) {
         for (MixedFace& piece : BuildEndCap(cf, /*at_v0=*/false)) caps.push_back(std::move(piece));
       }
     }
@@ -2260,11 +2280,28 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op) {
       for (MixedFace& cap : SynthesizeEndCaps(from_b.out, fa, tol)) result.push_back(std::move(cap));
       break;
     }
-    case BooleanOp::Intersection:
+    case BooleanOp::Intersection: {
       for (const MixedFace& f : from_a.in) result.push_back(f);
       for (const MixedFace& f : from_b.in) result.push_back(f);
       for (const MixedFace& f : from_a.on) result.push_back(f);
+      // End-cap synthesis, mirroring the Union branch above but with the
+      // OPPOSITE probe polarity (PointClass::kIn, not the default kOut -
+      // see SynthesizeEndCaps' own doc comment above and boolean.h's own
+      // BooleanCombineMixed doc comment for the worked argument): a bare
+      // CylindricalFace operand kept in an Intersection result (from_a.in/
+      // from_b.in) can have a genuinely original end where NEITHER
+      // operand's already-collected faces supply the closing disk - most
+      // simply, a cylinder fully embedded in the other operand, which
+      // needs a cap at BOTH its own ends. `from_a.on`/`from_b.on` are not
+      // scanned here for the same reason the Union branch's comment above
+      // already gives: a cylindrical fragment's own representative point
+      // is always strictly interior along its curved surface, never
+      // landing in the `on` bucket for any geometry this increment's own
+      // tests build.
+      for (MixedFace& cap : SynthesizeEndCaps(from_a.in, fb, tol, PointClass::kIn)) result.push_back(std::move(cap));
+      for (MixedFace& cap : SynthesizeEndCaps(from_b.in, fa, tol, PointClass::kIn)) result.push_back(std::move(cap));
       break;
+    }
     case BooleanOp::Difference:
       for (const MixedFace& f : from_a.out) result.push_back(f);
       for (const MixedFace& f : from_b.in) result.push_back(FlipMixedFace(f));

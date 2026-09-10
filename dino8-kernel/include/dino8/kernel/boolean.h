@@ -464,18 +464,66 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // volume and IsClosedManifold() tests for a boss whose base sits flush
 // with the other operand's own cap, overlaps it partway, or never touches
 // it at all (both ends exposed), and for a negative control (a fully
-// embedded boss, correctly adding no cap at all). NOT separately verified
-// by this increment: BooleanOp::Intersection has an analogous gap (an
-// Intersection-collected cylindrical fragment can also have an end that's
-// exposed because the CYLINDER itself terminates there, not because the
-// other solid's own boundary does) but the correct polarity of "does an
-// exposed end there need a cap" is NOT simply the mirror of the Union
-// case (a fully-embedded-in-the-other-solid cylinder used for
-// Intersection needs caps at BOTH its own ends, the opposite of what a
-// naive generalization of the Union probe's own kOut-means-cap rule would
-// give) - genuinely unverified, deliberately NOT wired up here rather
-// than risking a silently-wrong extension. A partial-angle ("pie slice")
-// boss, and an OBLIQUE (non-axis-aligned) Union boss, are each a
+// embedded boss, correctly adding no cap at all).
+//
+// INTERSECTION END CAPS (a later increment): BooleanOp::Intersection has an
+// analogous gap - an Intersection-collected cylindrical fragment
+// (from_a.in/from_b.in) can also have an end that's exposed because the
+// CYLINDER itself terminates there, not because the other solid's own
+// boundary does - and the correct polarity of "does an exposed end there
+// need a cap" is the literal OPPOSITE of the Union rule above, not its
+// mirror: a fully-embedded-in-the-other-solid cylinder used for
+// Intersection needs caps at BOTH its own ends, where a naive
+// generalization of the Union probe's own kOut-means-cap rule would add
+// NEITHER. The reasoning: a fragment kept in an Intersection result is
+// material of A∩B, which can only exist where BOTH solids have material.
+// A still-original end means no more of THIS fragment's own solid exists
+// past that point, regardless of the other operand - so if the probe just
+// past that end is PointClass::kIn (the OTHER operand's material keeps
+// going past where this fragment's own material stops), the intersection
+// region also has to stop exactly there, and nothing else in the result
+// bounds it there (the other operand's own surface is interior, not a
+// boundary, at that point) - a cap is needed. If the probe is kOut, the
+// other operand doesn't reach past there either, consistent with "already
+// sealed by a real split, or never actually reached" (a genuine crossing
+// there would already have produced a split, clearing
+// end{0,1}_is_original) - no cap is added. `SynthesizeEndCaps` (boolean.cpp)
+// takes this polarity as an explicit `needed_class` parameter (defaulting
+// to kOut, so the Union call sites above are completely unaffected); the
+// Intersection branch calls it with PointClass::kIn on both from_a.in/fb
+// and from_b.in/fa, mirroring the Union branch's own symmetric pairing.
+// Verified the same way as the Union fix: closed-form volume and
+// IsClosedManifold() checks for two differently-proportioned fully-embedded
+// boss/box pairs (one centered, one off-center with different box/cylinder
+// proportions), a disjoint negative control (empty result, no cap
+// reachable), and a falsifiability check confirming the underlying
+// unfixed fragment is provably open on its own.
+//
+// This Intersection fix does NOT make every Intersection result
+// watertight, for a reason independent of polarity: SplitMixedAgainstAllFaces'
+// own case (ii) (the planar-face-crosses-the-cylinder split, boolean.cpp)
+// builds the planar operand's own split pieces via
+// detail::ClipPolygonByCircle3d, which - per that function's own doc
+// comment - returns only the wedge pieces OUTSIDE the circle, never the
+// disc-shaped piece INSIDE it. That's exactly right for Union/Difference (a
+// boss/hole never needs the box's own material INSIDE the punched
+// footprint), but for Intersection the region inside that circle on the
+// crossed planar face is exactly the correct cap material, and it is never
+// produced. So wherever the cylinder genuinely CROSSES a planar face of the
+// other operand mid-length (a real split, end{0,1}_is_original cleared at
+// that end), a real face is still missing at that seam, and no cap
+// synthesized on the cylindrical fragment's end can supply it - that end
+// is (correctly) not original there, so SynthesizeEndCaps correctly adds
+// nothing there, neither the needed cap nor a spurious one. This is a
+// separate, pre-existing limitation this increment's own tests directly
+// confirm is unchanged (same face count with or without this fix, for a
+// cylinder that pokes through one or both of a box's own planar faces) -
+// disclosed, not silently papered over; closing it needs its own follow-up
+// (an "inside-the-circle disc fragment" producer for case (ii)), a
+// materially different, separate piece of work.
+//
+// A partial-angle ("pie slice") boss, and an OBLIQUE (non-axis-aligned)
+// Union boss, are each a
 // straightforward generalization of already-exact primitives here
 // (PointOnCylFace already supports arbitrary angle; the oblique split
 // already marks its own notched end as not-original) but neither is
