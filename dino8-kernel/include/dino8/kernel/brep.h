@@ -202,6 +202,83 @@ class Brep {
     // Tessellate(), not just look right in this kernel's own pipeline.
     int notch_begin = 0;
     int notch_count = 0;
+
+    // Optional, narrow extension consumed ONLY by TessellateConforming()
+    // (below) - every other producer/consumer of PlanarFace (PlanarFaces(),
+    // FromMixedFaces() itself, ClipByHalfspace3d, ExactConvexHull,
+    // BooleanCombinePlanar/ShellConvexPlanar, and Tessellate()/
+    // TessellateAdaptive()/TessellateNonUniformAdaptive()) never reads
+    // this field and is completely unaffected by its default (empty)
+    // value - see TessellateConforming()'s own doc comment for the one
+    // place this is actually used, and boolean.cpp's own
+    // SplitMixedAgainstAllFaces (case (ii), right where
+    // detail::ClipPolygonByCircle3d is already called) for the one place
+    // it is actually populated.
+    //
+    // Marks a run of this loop's own vertices as a fine polygonal
+    // approximation of ONE true circular arc that is known to coincide
+    // exactly, in 3D, with an adjacent Brep::CylindricalFace's own
+    // lateral-surface boundary at one end (v=0 or v=length) - precisely
+    // the wedge-cap-vs-cylinder-wall shared boundary
+    // detail::ClipPolygonByCircle3d's own doc comment discloses as a
+    // known, disclosed mesh-watertightness gap (the wedge cap and the
+    // cylindrical wall are each tessellated on their own independent
+    // local grid today, so their tessellated vertices along that shared
+    // boundary don't coincide except at a handful of explicit trim
+    // vertices). `arc_runs` does not change that today - Tessellate()
+    // ignores it entirely - it only records where the two would need to
+    // agree, so TessellateConforming() can make them actually do so.
+    struct ArcRun {
+      // loop[begin], loop[(begin+1) % loop.size()], ...,
+      // loop[(begin+count-1) % loop.size()] - i.e. `count` consecutive
+      // points, WRAPPING around this loop's own start/end if
+      // begin+count > loop.size(). Unlike notch_begin/notch_count above
+      // (which deliberately never wrap), a wraparound run is the COMMON
+      // case here: detail::ClipPolygonByCircle3d's own returned wedge
+      // polygon always starts and ends AT an arc sample point (see that
+      // function's own doc comment for its exact vertex ordering: the
+      // very first point pushed is a circle sample, and the very last
+      // several points pushed - right up to the implicit closing edge
+      // back to that first point - are circle samples too), so the
+      // run's own single contiguous stretch of arc vertices, walked in
+      // this loop's own stored order, generically crosses the loop's
+      // own index-0 seam rather than sitting neatly inside it.
+      int begin = 0;
+      int count = 0;  // number of points in the run; 0 means "no run"
+
+      // The arc's own center and radius, and the two angles (radians, in
+      // `plane_xaxis`/`plane_yaxis`'s own basis below - NOT a second,
+      // independently-built basis; see PlanarFace::plane's own doc
+      // comment and detail/arc_schedule3d.h's own top comment for why
+      // that distinction is exactly what the prior, reverted attempt at
+      // this fix got wrong) at loop[begin] and loop[(begin+count-1) %
+      // loop.size()] respectively. `angle_end` may be LESS than
+      // `angle_begin` (a decreasing sweep) - detail::ArcSchedule3d()
+      // handles that directly, no reordering needed.
+      Point3d center;
+      double radius = 0.0;
+      double angle_begin = 0.0;
+      double angle_end = 0.0;
+
+      // The owning PlanarFace's own `plane.xaxis`/`plane.yaxis` AT THE
+      // TIME this run was recorded, copied here directly rather than
+      // re-derived later: `angle_begin`/`angle_end` above are only
+      // meaningful relative to this EXACT basis, and a Brep built via
+      // FromMixedFaces() does not otherwise persist any per-face
+      // ON_Plane once construction has consumed one (see
+      // FromMixedFaces()'s own planar-face loop: `plane` is used to
+      // build that face's bilinear surface and then discarded) - so
+      // TessellateConforming() needs its own copy to convert
+      // `angle_begin`/`angle_end` back into 3D points or into another
+      // face's own frame at all. A narrow but deliberate widening beyond
+      // "pure bookkeeping of already-computed scalars": `plane.xaxis`/
+      // `plane.yaxis` are themselves already-computed values (the same
+      // ones ClipPolygonByCircle3d's own caller already has in hand),
+      // just not otherwise threaded through to where they're needed.
+      Vector3d plane_xaxis;
+      Vector3d plane_yaxis;
+    };
+    std::vector<ArcRun> arc_runs;
   };
 
   // Extracts every face of this Brep as a PlanarFace: the face's own
@@ -670,6 +747,87 @@ class Brep {
   // TessellateNonUniformAdaptive() followed by Mesh::MergeAndWeld().
   Mesh TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) const;
 
+  // A purely additive, opt-in sibling of Tessellate() that closes
+  // BooleanCombineMixed's own disclosed mesh-watertightness gap (see
+  // detail::ClipPolygonByCircle3d's own doc comment, and
+  // TestBooleanCombineMixedDrilledBoxThroughHole's own comment in this
+  // kernel's test file) WITHOUT touching Tessellate() itself, or any of
+  // the boolean-classification-critical code
+  // (detail::ClipPolygonByCircle3d, SplitMixedAgainstAllFaces,
+  // ClassifyPointVsMixedSolid) that gap's own prior, reverted fix attempt
+  // corrupted. Every existing caller of Tessellate()/
+  // TessellateToClosedMesh() (and every other Tessellate*() variant) is
+  // completely unaffected - this is a new, separate entry point, not a
+  // new code path inside an existing one.
+  //
+  // For a face i with a non-empty PlanarFace::arc_runs entry (populated
+  // ONLY by BooleanCombineMixed's own SplitMixedAgainstAllFaces case
+  // (ii), i.e. a "wedge" cap fragment left over from punching a
+  // perpendicular cylindrical hole through a planar face - see
+  // PlanarFace::ArcRun's own doc comment) whose run's (center, radius,
+  // plane-normal) matches some other face j's own CylindricalFace
+  // geometry (recovered the same way MixedFaces() already recovers one,
+  // within `tol` - see this class' own MixedFaces() doc comment) at one
+  // of j's own two ends (v=0 or v=length): this method computes
+  // `boundary_samples + 1` shared boundary points ONCE, via
+  // detail::ArcSchedule3d() using the wedge's OWN angle_begin/angle_end/
+  // plane_xaxis/plane_yaxis (not a second, independently-built basis),
+  // and uses THAT SAME array of points - literally, not a second
+  // independently-evaluated approximation of them - as BOTH: (a) the
+  // wedge face's own tessellated boundary vertices along that run
+  // (substituted in place of the run's own dense original samples,
+  // triangulated via the existing, proven, boundary-only
+  // detail::EarClipTriangulate), and (b) the cylindrical face's own
+  // tessellated boundary vertices along the matching row of its own
+  // (u, v) grid (the row's other, non-boundary breakpoints still come
+  // from evaluating that face's real NURBS surface, exactly as
+  // Tessellate() already does - only the shared-boundary row's vertices
+  // are substituted). Converting the wedge's own angle values into the
+  // cylindrical face's own frame uses detail::ConvertAngleBetweenFrames()
+  // - the one isolated, independently unit-tested frame-to-frame
+  // conversion this whole path needs (see detail/arc_schedule3d.h's own
+  // top comment for why it is kept this narrow and this separate from
+  // both this method and boolean.cpp).
+  //
+  // Because both sides' shared-boundary vertices are the exact same
+  // Point3d values - not merely close, to within some tolerance - the
+  // two faces' own tessellations share that boundary EXACTLY, closing
+  // the gap Tessellate() cannot: two independently-parameterized
+  // exact-clip faces (today) only ever share the small number of
+  // explicit trim/corner vertices, never the dense interior samples a
+  // curved shared boundary needs for genuine watertightness.
+  //
+  // A face with no matching arc_run/CylindricalFace pair (the
+  // overwhelming majority of any Brep - every untouched side wall, every
+  // Box(), every Sphere(), ...) falls through to EXACTLY today's
+  // Tessellate() behavior for that face, at the same u_divisions/
+  // v_divisions - this method's own new machinery is reached only for
+  // the specific wedge-cap-vs-cylinder-wall pairing it targets, per
+  // boolean.h's own BooleanCombineMixed doc comment.
+  //
+  // `boundary_samples`, if -1 (the default), is max(u_divisions,
+  // v_divisions) - dense enough that a caller asking for a fine grid on
+  // either axis also gets a fine shared boundary, without having to
+  // reason about the two separately. A caller may pass an explicit value
+  // instead (e.g. to deliberately under- or over-sample the shared
+  // boundary relative to the rest of the grid).
+  //
+  // Deliberately narrow in scope (see boolean.h's own BooleanCombineMixed
+  // doc comment and this method's own implementation comments for the
+  // exact matching rule): targets exactly the wedge-cap-vs-cylindrical-
+  // wall shared arc boundary BooleanCombineMixed's own drilled-hole case
+  // produces. Does not attempt to generalize to arbitrary shared edges
+  // between arbitrary face types (e.g. ShellConvexPlanar's own
+  // separately-disclosed planar/planar grid-mismatch note is a real,
+  // likely easier, separate follow-up this does not attempt).
+  std::vector<Mesh> TessellateConforming(int u_divisions = 8, int v_divisions = 8,
+                                          int boundary_samples = -1) const;
+
+  // TessellateConforming() followed by Mesh::MergeAndWeld() - mirrors
+  // TessellateToClosedMesh()'s own composition over Tessellate().
+  Mesh TessellateToClosedMeshConforming(int u_divisions = 8, int v_divisions = 8,
+                                         int boundary_samples = -1) const;
+
   const ON_Brep& raw() const { return brep_; }
   ON_Brep& raw() { return brep_; }
 
@@ -687,6 +845,15 @@ class Brep {
   // every face except one built by TrimmedPlanarFace() with
   // hole_loops_uv). Meaningless for an empty trim loop.
   std::vector<std::vector<std::vector<Point2d>>> face_hole_loops_;
+  // Parallel to face_trim_loops_: that face's own PlanarFace::arc_runs,
+  // carried through unchanged from FromMixedFaces()'s own `faces`
+  // argument (see PlanarFace::ArcRun's own doc comment) - empty for
+  // every face except a planar one whose input PlanarFace had a non-empty
+  // arc_runs. Empty (never populated) for every cylindrical/conical
+  // face, and for every face built by any OTHER factory here (Box(),
+  // Sphere(), FromSurface(), TrimmedPlanarFace()) - consumed ONLY by
+  // TessellateConforming().
+  std::vector<std::vector<PlanarFace::ArcRun>> face_arc_runs_;
 };
 
 }  // namespace dino8::kernel

@@ -1,13 +1,18 @@
 #include "dino8/kernel/brep.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
+#include "dino8/kernel/detail/arc_schedule3d.h"
+#include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/mesh.h"
 
 namespace dino8::kernel {
@@ -129,6 +134,7 @@ Brep Brep::FromSurface(const NurbsSurface& surface) {
   result.face_trim_loops_.emplace_back();  // untrimmed
   result.face_exact_clip_.push_back(false);
   result.face_hole_loops_.emplace_back();
+  result.face_arc_runs_.emplace_back();
 
   brep.SetTrimIsoFlags();
 
@@ -174,6 +180,7 @@ Brep Brep::Box(double x0, double y0, double z0, double x1, double y1,
     result.face_trim_loops_.emplace_back();  // untrimmed
     result.face_exact_clip_.push_back(false);
     result.face_hole_loops_.emplace_back();
+    result.face_arc_runs_.emplace_back();
   }
 
   brep.SetTrimIsoFlags();
@@ -198,6 +205,7 @@ Brep Brep::Sphere(Point3d center, double radius) {
   result.face_trim_loops_.emplace_back();  // untrimmed
   result.face_exact_clip_.push_back(false);
   result.face_hole_loops_.emplace_back();
+  result.face_arc_runs_.emplace_back();
 
   brep.SetTrimIsoFlags();
   return result;
@@ -229,6 +237,7 @@ Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
   result.face_trim_loops_.push_back(trim_loop_uv);
   result.face_exact_clip_.push_back(exact_clip);
   result.face_hole_loops_.push_back(std::move(hole_loops_uv));
+  result.face_arc_runs_.emplace_back();
 
   brep.SetTrimIsoFlags();
   return result;
@@ -405,6 +414,75 @@ void ExtractConicalFace(const ON_Brep& brep, int face_index, const FaceGeometry&
   result.conical.push_back(cf);
 }
 
+// Recovers a CylindricalFace from a face already confirmed cylindrical
+// (`cyl` is that face's own already-fitted ON_Cylinder) - the direct
+// sibling of ExtractConicalFace() above, factored out of MixedFaces()'s
+// own inline cylinder-recovery code (see that method's own doc comment
+// for the worked description this mirrors) purely so
+// Brep::TessellateConforming() can recover the SAME CylindricalFace
+// geometry for a given face index without a second, independently-
+// maintained copy of this recovery logic - not a behavior change to
+// MixedFaces() itself (this is a pure code-motion refactor: every line
+// below is unchanged from MixedFaces()'s own prior inline version).
+Brep::CylindricalFace ExtractCylindricalFace(const ON_Brep& brep, int face_index, const FaceGeometry& fg,
+                                              const ON_Cylinder& cyl) {
+  const std::vector<Point2d> uv = FaceOuterUv(fg);
+  double u_min = uv[0].x, u_max = uv[0].x, v_min = uv[0].y, v_max = uv[0].y;
+  for (const Point2d& p : uv) {
+    u_min = std::min(u_min, p.x);
+    u_max = std::max(u_max, p.x);
+    v_min = std::min(v_min, p.y);
+    v_max = std::max(v_max, p.y);
+  }
+
+  const Point3d p_corner = fg.surface.PointAt(u_min, v_min);
+  const Point3d p_far = fg.surface.PointAt(u_min, v_max);
+
+  Vector3d axis_dir = cyl.Axis();
+  if (!axis_dir.Unitize()) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        ": ON_Surface::IsCylinder returned a degenerate (zero-length) axis");
+  }
+  const Point3d& axis_ref = cyl.Center();
+  const Point3d frame_origin = axis_ref + ON_DotProduct(p_corner - axis_ref, axis_dir) * axis_dir;
+
+  Vector3d xaxis = p_corner - frame_origin;
+  const double radius = cyl.circle.Radius();
+  const double radius_tol = std::max(1e-9, radius * 1e-6);
+  if (std::fabs(xaxis.Length() - radius) > radius_tol || !xaxis.Unitize()) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        "'s trim corner does not lie at the fitted cylinder's own radius "
+        "from its axis - cannot recover a consistent reference frame");
+  }
+
+  Vector3d zaxis = axis_dir;
+  if (ON_DotProduct(p_far - frame_origin, zaxis) < 0.0) zaxis = -zaxis;
+
+  Brep::CylindricalFace cf;
+  cf.frame.origin = frame_origin;
+  cf.frame.xaxis = xaxis;
+  cf.frame.zaxis = zaxis;
+  cf.frame.yaxis = ON_CrossProduct(zaxis, xaxis);
+  cf.frame.yaxis.Unitize();
+  cf.frame.UpdateEquation();
+  cf.radius = radius;
+  cf.length = v_max - v_min;
+  cf.outward = !brep.m_F[face_index].m_bRev;
+
+  double r_min = 0.0, r_max = 0.0;
+  if (!cyl.circle.GetRadianFromNurbFormParameter(u_min, &r_min) ||
+      !cyl.circle.GetRadianFromNurbFormParameter(u_max, &r_max)) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        ": ON_Circle::GetRadianFromNurbFormParameter failed converting the "
+        "trim's own u-domain to true angle");
+  }
+  cf.angle = r_max - r_min;
+  return cf;
+}
+
 }  // namespace
 
 std::vector<Brep::PlanarFace> Brep::PlanarFaces() const {
@@ -451,78 +529,7 @@ Brep::MixedFacesResult Brep::MixedFaces() const {
       continue;
     }
 
-    const std::vector<Point2d> uv = FaceOuterUv(fg);
-    double u_min = uv[0].x, u_max = uv[0].x, v_min = uv[0].y, v_max = uv[0].y;
-    for (const Point2d& p : uv) {
-      u_min = std::min(u_min, p.x);
-      u_max = std::max(u_max, p.x);
-      v_min = std::min(v_min, p.y);
-      v_max = std::max(v_max, p.y);
-    }
-
-    // The actual 3D point at the trim rectangle's own (u_min, v_min)
-    // corner - the patch's own rail at u_min, evaluated on the REAL
-    // surface rather than assumed - see this method's own doc comment for
-    // why this (not IsCylinder()'s own arbitrarily-oriented fitted
-    // circle) is what frame.xaxis/frame.origin are recovered from.
-    const Point3d p_corner = fg.surface.PointAt(u_min, v_min);
-    const Point3d p_far = fg.surface.PointAt(u_min, v_max);
-
-    Vector3d axis_dir = cyl.Axis();
-    if (!axis_dir.Unitize()) {
-      throw std::runtime_error(
-          "dino8::kernel::Brep::MixedFaces: face " + std::to_string(i) +
-          ": ON_Surface::IsCylinder returned a degenerate (zero-length) axis");
-    }
-    const Point3d& axis_ref = cyl.Center();
-    const Point3d frame_origin = axis_ref + ON_DotProduct(p_corner - axis_ref, axis_dir) * axis_dir;
-
-    Vector3d xaxis = p_corner - frame_origin;
-    const double radius = cyl.circle.Radius();
-    const double radius_tol = std::max(1e-9, radius * 1e-6);
-    if (std::fabs(xaxis.Length() - radius) > radius_tol || !xaxis.Unitize()) {
-      throw std::runtime_error(
-          "dino8::kernel::Brep::MixedFaces: face " + std::to_string(i) +
-          "'s trim corner does not lie at the fitted cylinder's own radius "
-          "from its axis - cannot recover a consistent reference frame");
-    }
-
-    // Orient zaxis so v increases in the +zaxis direction, matching
-    // FromMixedFaces' own "v == true axial distance from frame.origin"
-    // convention - found from the REAL surface (a point farther along v),
-    // not assumed from ON_Cylinder::Axis()'s own arbitrary sign.
-    Vector3d zaxis = axis_dir;
-    if (ON_DotProduct(p_far - frame_origin, zaxis) < 0.0) zaxis = -zaxis;
-
-    Brep::CylindricalFace cf;
-    cf.frame.origin = frame_origin;
-    cf.frame.xaxis = xaxis;
-    cf.frame.zaxis = zaxis;
-    cf.frame.yaxis = ON_CrossProduct(zaxis, xaxis);
-    cf.frame.yaxis.Unitize();
-    cf.frame.UpdateEquation();
-    cf.radius = radius;
-    cf.length = v_max - v_min;
-    // The inverse of FromMixedFaces' own `face.m_bRev = !cf.outward;` -
-    // see CylindricalFace::outward's own doc comment.
-    cf.outward = !brep_.m_F[i].m_bRev;
-
-    // True radian sweep between the trim's own u_min and u_max - the
-    // documented inverse of GetNurbFormParameterFromRadian FromMixedFaces
-    // uses to go the other way (see this method's own doc comment for why
-    // it's valid to call on the fitted `cyl.circle` even though that
-    // circle's own xaxis has no relation to `cf.frame.xaxis` above).
-    double r_min = 0.0, r_max = 0.0;
-    if (!cyl.circle.GetRadianFromNurbFormParameter(u_min, &r_min) ||
-        !cyl.circle.GetRadianFromNurbFormParameter(u_max, &r_max)) {
-      throw std::runtime_error(
-          "dino8::kernel::Brep::MixedFaces: face " + std::to_string(i) +
-          ": ON_Circle::GetRadianFromNurbFormParameter failed converting the "
-          "trim's own u-domain to true angle");
-    }
-    cf.angle = r_max - r_min;
-
-    result.cylindrical.push_back(cf);
+    result.cylindrical.push_back(ExtractCylindricalFace(brep_, i, fg, cyl));
   }
   return result;
 }
@@ -862,6 +869,10 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     // see grid-approximation error on a shape that has none to begin with.
     result.face_exact_clip_.push_back(true);
     result.face_hole_loops_.emplace_back();
+    // Carried through verbatim - see PlanarFace::ArcRun's own doc comment
+    // and TessellateConforming()'s own doc comment for the one place
+    // this is actually read.
+    result.face_arc_runs_.push_back(f.arc_runs);
 
     // Genuine topology (see BuildFaceLoop above): weld this face's own
     // loop points - the exact same 3D points the side tables above just
@@ -952,6 +963,7 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     // v=0/v=length), not an approximation of one.
     result.face_exact_clip_.push_back(true);
     result.face_hole_loops_.emplace_back();
+    result.face_arc_runs_.emplace_back();  // meaningless for a non-planar face
 
     // Genuine topology (see BuildFaceLoop above): the same 4 corner
     // points the trim rectangle's own UV corners map to through this
@@ -1160,6 +1172,7 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     result.face_trim_loops_.push_back(visible_trim);
     result.face_exact_clip_.push_back(true);
     result.face_hole_loops_.emplace_back();
+    result.face_arc_runs_.emplace_back();  // meaningless for a non-planar face
 
     FaceTopology t;
     t.trim_uv = trim;
@@ -1324,6 +1337,420 @@ std::vector<Mesh> Brep::TessellateNonUniformAdaptive(double chord_tolerance) con
 
 Mesh Brep::TessellateToClosedMeshNonUniformAdaptive(double chord_tolerance) const {
   return Mesh::MergeAndWeld(TessellateNonUniformAdaptive(chord_tolerance));
+}
+
+namespace {
+
+// One shared boundary sample set: `points` is the LITERAL
+// detail::ArcSchedule3d() output computed from a wedge PlanarFace's own
+// PlanarFace::ArcRun - used verbatim (never re-derived, never
+// re-evaluated through a NURBS surface) as BOTH the wedge's own
+// substituted boundary vertices AND the matching row of the adjacent
+// CylindricalFace's own tessellated grid. This identity - literally the
+// same std::vector<Point3d>, not a second, independently-computed
+// approximation of it - is the actual mechanism that makes
+// Brep::TessellateConforming()'s two sides share their boundary exactly,
+// not just closely; see that method's own doc comment.
+struct ConformingMatch {
+  size_t run_index = 0;
+  int cyl_face_index = 0;
+  bool at_v0 = false;  // true: the cylindrical face's own v=0 end; false: v=length
+  std::vector<double> raw_u;    // the cylindrical face's own raw NURBS-u per shared point (grid layout only)
+  std::vector<Point3d> points;  // == detail::ArcSchedule3d(...) - the actual shared vertex positions
+};
+
+// True when a wedge's own recorded arc (center/radius/plane-normal)
+// physically matches `cf`'s own lateral surface - the "which
+// CylindricalFace does this arc_run belong to" test
+// Brep::TessellateConforming() needs (see that method's own doc
+// comment). Reuses boolean.cpp's own same_plane-style pattern (a
+// distance-to-axis-line check plus a radius check plus a normal-
+// alignment check), independently re-derived here rather than shared
+// across translation units for a three-line predicate.
+bool SameCircleAsCylinder(const Point3d& center, double radius, const Vector3d& normal,
+                           const Brep::CylindricalFace& cf, double tol) {
+  const double rtol = std::max(tol, cf.radius * 1e-6);
+  const Vector3d d = center - cf.frame.origin;
+  const double height = ON_DotProduct(d, cf.frame.zaxis);
+  const Point3d axis_point = cf.frame.origin + height * cf.frame.zaxis;
+  if (center.DistanceTo(axis_point) > rtol) return false;
+  if (std::fabs(radius - cf.radius) > rtol) return false;
+  const double align = std::fabs(ON_DotProduct(normal, cf.frame.zaxis));
+  if (align < 1.0 - 1e-6) return false;
+  return true;
+}
+
+// Rebuilds a wedge PlanarFace's own trim polygon (`trim_uv`, on `wrapper`
+// - the SAME bilinear surface Tessellate() already trims to) as a 3D
+// polygon with every arc_run in `subs` substituted for its own fresh
+// detail::ArcSchedule3d() points, and every OTHER vertex copied verbatim
+// (via `wrapper.PointAt`, the same evaluation Tessellate() itself already
+// performs for this face's boundary). `runs` provides each substituted
+// run's own `begin`/`count` (which original indices the run occupies -
+// see PlanarFace::ArcRun's own doc comment for why that range may wrap
+// around this loop's own start/end); `subs` pairs a run index with its
+// own fresh replacement points.
+//
+// Walking `trim_uv`'s own indices in order and either skipping (a point
+// strictly inside some run's own range), substituting (the run's full
+// replacement, emitted once at the run's own `begin` index), or copying
+// verbatim reproduces the SAME cyclic polygon (same winding, same
+// overall shape) as the original loop, merely rotated to start
+// wherever index 0 happens to fall relative to the run - a rotation of a
+// closed cyclic polygon changes nothing about the shape or winding it
+// represents.
+std::vector<Point3d> BuildResampledWedgeLoop(const NurbsSurface& wrapper, const std::vector<Point2d>& trim_uv,
+                                              const std::vector<Brep::PlanarFace::ArcRun>& runs,
+                                              const std::vector<std::pair<size_t, std::vector<Point3d>>>& subs) {
+  const size_t n = trim_uv.size();
+  std::vector<bool> excluded(n, false);
+  std::unordered_map<size_t, const std::vector<Point3d>*> insert_at;
+  for (const auto& sub : subs) {
+    const Brep::PlanarFace::ArcRun& run = runs[sub.first];
+    const size_t begin = static_cast<size_t>(run.begin);
+    const size_t count = static_cast<size_t>(run.count);
+    for (size_t k = 0; k < count && k < n; ++k) excluded[(begin + k) % n] = true;
+    insert_at[begin] = &sub.second;
+  }
+  std::vector<Point3d> result;
+  result.reserve(n + 64);
+  for (size_t idx = 0; idx < n; ++idx) {
+    const auto it = insert_at.find(idx);
+    if (it != insert_at.end()) {
+      for (const Point3d& p : *it->second) result.push_back(p);
+      continue;
+    }
+    if (excluded[idx]) continue;
+    result.push_back(wrapper.PointAt(trim_uv[idx].x, trim_uv[idx].y));
+  }
+  return result;
+}
+
+// Triangulates a wedge PlanarFace's own resampled boundary (see
+// BuildResampledWedgeLoop above) via the existing, proven, boundary-only
+// detail::EarClipTriangulate - the same triangulator RepresentativeInteriorPoint()
+// and NurbsSurface's own concave exact-clip path already rely on
+// elsewhere in this kernel. Projects into a LOCAL 2D basis derived via
+// Newell's method from the resampled loop itself (NOT the run's own
+// stored plane_xaxis/plane_yaxis - any consistent orthonormal basis of
+// the same plane triangulates identically; reusing NewellNormal here,
+// the same helper ExtractPlanarFace already uses, keeps this independent
+// of how many arc_runs a given face has, including zero).
+Mesh BuildConformingWedgeMesh(const NurbsSurface& wrapper, const std::vector<Point2d>& trim_uv,
+                               const std::vector<Brep::PlanarFace::ArcRun>& runs,
+                               const std::vector<std::pair<size_t, std::vector<Point3d>>>& subs) {
+  const std::vector<Point3d> loop3d = BuildResampledWedgeLoop(wrapper, trim_uv, runs, subs);
+  Mesh mesh;
+  if (loop3d.size() < 3) return mesh;
+  const Vector3d normal = NewellNormal(loop3d);
+  const ON_Plane proj_plane(loop3d[0], normal);
+  std::vector<Point2d> loop2d;
+  loop2d.reserve(loop3d.size());
+  for (const Point3d& p : loop3d) {
+    const Vector3d d = p - proj_plane.origin;
+    loop2d.emplace_back(ON_DotProduct(d, proj_plane.xaxis), ON_DotProduct(d, proj_plane.yaxis));
+  }
+  ON_Mesh& raw = mesh.raw();
+  raw.m_V.Reserve(static_cast<int>(loop3d.size()));
+  for (const Point3d& p : loop3d) raw.m_V.Append(ON_3fPoint(p));
+  for (const std::array<int, 3>& tri : dino8::kernel::detail::EarClipTriangulate(loop2d)) {
+    ON_MeshFace face;
+    face.vi[0] = tri[0];
+    face.vi[1] = tri[1];
+    face.vi[2] = tri[2];
+    face.vi[3] = tri[2];
+    raw.m_F.Append(face);
+  }
+  return mesh;
+}
+
+// Builds a CylindricalFace's own tensor-product (u, v) mesh with the
+// EXACT shared points from every ConformingMatch injected at their own
+// (matched u breakpoint, v=0-or-length row) grid position - every other
+// vertex still comes from evaluating the real NURBS surface via
+// `wrapper.PointAt`, exactly as Tessellate() already does. This is a
+// bespoke tensor-grid assembly (not a call to
+// NurbsSurface::TessellateGridNonUniform()) specifically so the shared-
+// boundary vertices are the LITERAL Point3d values
+// Brep::TessellateConforming() already computed for the wedge side - a
+// plain "pass matching u_values into TessellateGridNonUniform" would
+// still independently re-evaluate the surface at those parameters,
+// which is NOT guaranteed bit-identical to a wedge's own closed-form
+// detail::ArcSchedule3d() point even when both represent the same
+// physical point to full floating-point precision (a rational NURBS
+// surface evaluation and a direct trig formula are different
+// computations) - seeTessellateConforming()'s own doc comment for why
+// bit-identical (not merely close) boundary vertices is the actual
+// point of this whole mechanism.
+Mesh BuildConformingCylinderMesh(const NurbsSurface& wrapper, const std::vector<Point2d>& trim_uv, int u_divisions,
+                                  int v_divisions, const std::vector<ConformingMatch>& matches) {
+  double u_min = trim_uv[0].x, u_max = trim_uv[0].x, v_min = trim_uv[0].y, v_max = trim_uv[0].y;
+  for (const Point2d& p : trim_uv) {
+    u_min = std::min(u_min, p.x);
+    u_max = std::max(u_max, p.x);
+    v_min = std::min(v_min, p.y);
+    v_max = std::max(v_max, p.y);
+  }
+  const double u_range = std::max(u_max - u_min, 1e-300);
+  const double u_tol = std::max(1e-12, u_range * 1e-9);
+
+  struct UBreak {
+    double u = 0.0;
+    const Point3d* v0_point = nullptr;
+    const Point3d* v1_point = nullptr;
+  };
+  std::vector<UBreak> breaks;
+  auto add_break = [&](double u, const Point3d* v0p, const Point3d* v1p) {
+    for (UBreak& b : breaks) {
+      if (std::fabs(b.u - u) <= u_tol) {
+        if (v0p) b.v0_point = v0p;
+        if (v1p) b.v1_point = v1p;
+        return;
+      }
+    }
+    UBreak b;
+    b.u = u;
+    b.v0_point = v0p;
+    b.v1_point = v1p;
+    breaks.push_back(b);
+  };
+  add_break(u_min, nullptr, nullptr);
+  add_break(u_max, nullptr, nullptr);
+  for (const ConformingMatch& m : matches) {
+    for (size_t s = 0; s < m.raw_u.size(); ++s) {
+      add_break(m.raw_u[s], m.at_v0 ? &m.points[s] : nullptr, m.at_v0 ? nullptr : &m.points[s]);
+    }
+  }
+  std::sort(breaks.begin(), breaks.end(), [](const UBreak& a, const UBreak& b) { return a.u < b.u; });
+
+  // Fill remaining interior u breakpoints uniformly wherever the
+  // boundary-derived breakpoints above leave a gap wider than roughly
+  // what u_divisions alone would have produced - see
+  // TessellateConforming()'s own doc comment.
+  const double target_spacing = u_range / static_cast<double>(std::max(u_divisions, 1));
+  std::vector<UBreak> filled;
+  filled.reserve(breaks.size() * 2);
+  for (size_t i = 0; i + 1 < breaks.size(); ++i) {
+    filled.push_back(breaks[i]);
+    const double gap = breaks[i + 1].u - breaks[i].u;
+    if (gap > target_spacing * 1.5) {
+      const int extra = static_cast<int>(std::ceil(gap / target_spacing)) - 1;
+      for (int e = 1; e <= extra; ++e) {
+        UBreak b;
+        b.u = breaks[i].u + gap * static_cast<double>(e) / static_cast<double>(extra + 1);
+        filled.push_back(b);
+      }
+    }
+  }
+  if (!breaks.empty()) filled.push_back(breaks.back());
+
+  std::vector<double> v_values(static_cast<size_t>(v_divisions) + 1);
+  for (int j = 0; j <= v_divisions; ++j) {
+    v_values[static_cast<size_t>(j)] = v_min + (v_max - v_min) * static_cast<double>(j) / static_cast<double>(v_divisions);
+  }
+  const double v_tol = std::max(1e-12, (v_max - v_min) * 1e-9);
+
+  Mesh mesh;
+  ON_Mesh& raw = mesh.raw();
+  const size_t u_points = filled.size();
+  const size_t v_points = v_values.size();
+  raw.m_V.Reserve(static_cast<int>(u_points * v_points));
+  auto grid_index = [v_points](size_t i, size_t j) { return static_cast<int>(i * v_points + j); };
+  for (size_t i = 0; i < u_points; ++i) {
+    for (size_t j = 0; j < v_points; ++j) {
+      const bool is_v0_row = std::fabs(v_values[j] - v_min) <= v_tol;
+      const bool is_v1_row = std::fabs(v_values[j] - v_max) <= v_tol;
+      const Point3d* forced = is_v0_row ? filled[i].v0_point : (is_v1_row ? filled[i].v1_point : nullptr);
+      const Point3d p = forced != nullptr ? *forced : wrapper.PointAt(filled[i].u, v_values[j]);
+      raw.m_V.Append(ON_3fPoint(p));
+    }
+  }
+  if (u_points >= 2) {
+    for (size_t i = 0; i + 1 < u_points; ++i) {
+      for (size_t j = 0; j + 1 < v_points; ++j) {
+        const int v00 = grid_index(i, j);
+        const int v10 = grid_index(i + 1, j);
+        const int v11 = grid_index(i + 1, j + 1);
+        const int v01 = grid_index(i, j + 1);
+        ON_MeshFace tri1;
+        tri1.vi[0] = v00;
+        tri1.vi[1] = v10;
+        tri1.vi[2] = v11;
+        tri1.vi[3] = v11;
+        raw.m_F.Append(tri1);
+        ON_MeshFace tri2;
+        tri2.vi[0] = v00;
+        tri2.vi[1] = v11;
+        tri2.vi[2] = v01;
+        tri2.vi[3] = v01;
+        raw.m_F.Append(tri2);
+      }
+    }
+  }
+  return mesh;
+}
+
+}  // namespace
+
+std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, int boundary_samples) const {
+  if (u_divisions < 1 || v_divisions < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::TessellateConforming: u_divisions and v_divisions must be at least 1");
+  }
+  if (boundary_samples < 0) boundary_samples = std::max(u_divisions, v_divisions);
+  if (boundary_samples < 1) {
+    throw std::invalid_argument("dino8::kernel::Brep::TessellateConforming: boundary_samples must be at least 1");
+  }
+
+  const int n = brep_.m_F.Count();
+  std::vector<FaceGeometry> fgs(static_cast<size_t>(n));
+  std::vector<bool> resolved(static_cast<size_t>(n), false);
+  for (int i = 0; i < n; ++i) {
+    resolved[static_cast<size_t>(i)] =
+        ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fgs[static_cast<size_t>(i)]);
+  }
+
+  // Every face that resolves to a CylindricalFace, recovered exactly as
+  // MixedFaces() already does (same ExtractCylindricalFace() helper) -
+  // see this method's own doc comment.
+  struct CylEntry {
+    int face_index = 0;
+    Brep::CylindricalFace cf;
+  };
+  std::vector<CylEntry> cyls;
+  for (int i = 0; i < n; ++i) {
+    if (!resolved[static_cast<size_t>(i)]) continue;
+    NurbsSurface wrapper;
+    wrapper.raw() = fgs[static_cast<size_t>(i)].surface;
+    if (wrapper.IsPlanar()) continue;
+    ON_Cylinder cyl;
+    const double cyl_tol = 1e-4;  // same scale MixedFaces() itself uses
+    if (fgs[static_cast<size_t>(i)].surface.IsCylinder(&cyl, cyl_tol)) {
+      CylEntry entry;
+      entry.face_index = i;
+      entry.cf = ExtractCylindricalFace(brep_, i, fgs[static_cast<size_t>(i)], cyl);
+      cyls.push_back(std::move(entry));
+    }
+    // A non-cylindrical curved face (e.g. a ConicalFace) is simply never
+    // matched below - it falls through to today's ordinary path, per
+    // this method's own doc comment ("does not attempt to generalize").
+  }
+
+  const double tol = 1e-9;
+
+  std::unordered_map<int, std::vector<std::pair<size_t, std::vector<Point3d>>>> wedge_subs;
+  std::unordered_map<int, std::vector<ConformingMatch>> cyl_matches;
+
+  for (int i = 0; i < n; ++i) {
+    if (static_cast<size_t>(i) >= face_arc_runs_.size()) continue;
+    const std::vector<PlanarFace::ArcRun>& runs = face_arc_runs_[static_cast<size_t>(i)];
+    if (runs.empty()) continue;
+    for (size_t k = 0; k < runs.size(); ++k) {
+      const PlanarFace::ArcRun& run = runs[k];
+      Vector3d normal = ON_CrossProduct(run.plane_xaxis, run.plane_yaxis);
+      if (!normal.Unitize()) continue;  // degenerate stored basis - skip, falls through to ordinary path
+
+      const CylEntry* matched = nullptr;
+      for (const CylEntry& ce : cyls) {
+        if (SameCircleAsCylinder(run.center, run.radius, normal, ce.cf, tol)) {
+          matched = &ce;
+          break;
+        }
+      }
+      if (matched == nullptr) continue;
+
+      const double height = ON_DotProduct(run.center - matched->cf.frame.origin, matched->cf.frame.zaxis);
+      const double len_tol = std::max(tol, matched->cf.length * 1e-6);
+      bool at_v0 = false;
+      if (std::fabs(height) <= len_tol) {
+        at_v0 = true;
+      } else if (std::fabs(height - matched->cf.length) <= len_tol) {
+        at_v0 = false;
+      } else {
+        continue;  // doesn't land at either end of the matched cylinder - not a case this targets
+      }
+
+      ON_Plane wedge_plane;
+      wedge_plane.origin = run.center;
+      wedge_plane.xaxis = run.plane_xaxis;
+      wedge_plane.yaxis = run.plane_yaxis;
+      wedge_plane.zaxis = normal;
+      wedge_plane.UpdateEquation();
+
+      const std::vector<Point3d> shared_points = detail::ArcSchedule3d(
+          run.center, run.radius, run.plane_xaxis, run.plane_yaxis, run.angle_begin, run.angle_end, boundary_samples);
+
+      const ON_Circle ref_circle(matched->cf.frame, matched->cf.radius);
+      std::vector<double> raw_u(shared_points.size());
+      for (int s = 0; s <= boundary_samples; ++s) {
+        const double t = static_cast<double>(s) / static_cast<double>(boundary_samples);
+        const double theta = run.angle_begin + (run.angle_end - run.angle_begin) * t;
+        double cyl_theta = detail::ConvertAngleBetweenFrames(theta, wedge_plane, matched->cf.frame);
+        // ON_Circle::GetNurbFormParameterFromRadian only accepts an angle
+        // within the circle's own [0, 2*pi] radian domain (see
+        // ON_Arc::GetNurbFormParameterFromRadian's own DomainRadians()
+        // check) - ConvertAngleBetweenFrames has no reason to already
+        // land in that range (it's a plain angle subtraction/negation),
+        // so normalize here, at the one call site that actually needs
+        // the NURBS-form convention, rather than inside
+        // ConvertAngleBetweenFrames itself (which stays a pure, general
+        // "true angle in frame A -> true angle in frame B" conversion,
+        // useful regardless of any one target's own parameterization
+        // convention).
+        cyl_theta = std::fmod(cyl_theta, 2.0 * ON_PI);
+        if (cyl_theta < 0.0) cyl_theta += 2.0 * ON_PI;
+        double u = 0.0;
+        if (!ref_circle.GetNurbFormParameterFromRadian(cyl_theta, &u)) {
+          throw std::runtime_error(
+              "dino8::kernel::Brep::TessellateConforming: ON_Circle::GetNurbFormParameterFromRadian failed "
+              "converting a shared arc angle to the cylindrical face's own raw NURBS-u parameter");
+        }
+        raw_u[static_cast<size_t>(s)] = u;
+      }
+
+      wedge_subs[i].push_back({k, shared_points});
+
+      ConformingMatch match;
+      match.run_index = k;
+      match.cyl_face_index = matched->face_index;
+      match.at_v0 = at_v0;
+      match.raw_u = std::move(raw_u);
+      match.points = shared_points;
+      cyl_matches[matched->face_index].push_back(std::move(match));
+    }
+  }
+
+  std::vector<Mesh> result;
+  result.reserve(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    if (!resolved[static_cast<size_t>(i)]) continue;
+    FaceGeometry& fg = fgs[static_cast<size_t>(i)];
+    NurbsSurface wrapper;
+    wrapper.raw() = fg.surface;
+
+    const auto cyl_it = cyl_matches.find(i);
+    const auto wedge_it = wedge_subs.find(i);
+
+    if (cyl_it != cyl_matches.end()) {
+      result.push_back(BuildConformingCylinderMesh(wrapper, fg.outer, u_divisions, v_divisions, cyl_it->second));
+    } else if (wedge_it != wedge_subs.end()) {
+      result.push_back(
+          BuildConformingWedgeMesh(wrapper, fg.outer, face_arc_runs_[static_cast<size_t>(i)], wedge_it->second));
+    } else if (fg.outer.empty()) {
+      result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions));
+    } else if (fg.exact_clip) {
+      result.push_back(wrapper.TessellateGridClippedExact(u_divisions, v_divisions, fg.outer));
+    } else {
+      const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
+      result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions, &fg.outer, holes));
+    }
+    if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
+  }
+  return result;
+}
+
+Mesh Brep::TessellateToClosedMeshConforming(int u_divisions, int v_divisions, int boundary_samples) const {
+  return Mesh::MergeAndWeld(TessellateConforming(u_divisions, v_divisions, boundary_samples));
 }
 
 }  // namespace dino8::kernel

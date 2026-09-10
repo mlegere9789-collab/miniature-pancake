@@ -1,11 +1,13 @@
 // Minimal assert-based smoke tests for chunk 1's exit criteria. Not pulling
 // in a test framework dependency for four checks.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -16,6 +18,7 @@
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/convex_hull.h"
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/detail/arc_schedule3d.h"
 #include "dino8/kernel/detail/circle_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/file_io.h"
@@ -7437,6 +7440,197 @@ void TestClipPolygonByCircle3dPunchesExactHole() {
         "(out of scope for this increment, disclosed rather than silently approximated)");
 }
 
+// detail::ArcSchedule3d() (detail/arc_schedule3d.h) - the pure, closed-
+// form (no ON_Circle/NURBS machinery) shared-boundary-schedule primitive
+// Brep::TessellateConforming() builds on. Verified standalone, before it
+// ever touches real geometry, per this increment's own design discipline
+// (see that header's own top comment).
+void TestArcSchedule3dEvenlySpacedExactEndpoints() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  using dino8::kernel::detail::ArcSchedule3d;
+
+  const Point3d center(1, 2, 3);
+  const double radius = 5.0;
+  const Vector3d xaxis(1, 0, 0);
+  const Vector3d yaxis(0, 1, 0);
+  const double angle_begin = 0.3;
+  const double angle_end = 2.1;
+  const int count = 10;
+
+  const std::vector<Point3d> pts = ArcSchedule3d(center, radius, xaxis, yaxis, angle_begin, angle_end, count);
+  Check(pts.size() == static_cast<size_t>(count) + 1, "ArcSchedule3d returns exactly count+1 points");
+
+  const Point3d expected_first = center + radius * (std::cos(angle_begin) * xaxis + std::sin(angle_begin) * yaxis);
+  const Point3d expected_last = center + radius * (std::cos(angle_end) * xaxis + std::sin(angle_end) * yaxis);
+  Check(pts.front().DistanceTo(expected_first) == 0.0,
+        "ArcSchedule3d's own first point is exactly center + radius*(cos(angle_begin)*xaxis + "
+        "sin(angle_begin)*yaxis) - bit-exact, the same formula this test computes independently");
+  Check(pts.back().DistanceTo(expected_last) == 0.0,
+        "ArcSchedule3d's own last point is exactly the same formula evaluated at angle_end");
+
+  bool evenly_spaced = true;
+  for (int k = 0; k <= count; ++k) {
+    const double expected_angle = angle_begin + (angle_end - angle_begin) * (static_cast<double>(k) / count);
+    const Vector3d d = pts[static_cast<size_t>(k)] - center;
+    const double actual_angle = std::atan2(ON_DotProduct(d, yaxis), ON_DotProduct(d, xaxis));
+    if (std::fabs(actual_angle - expected_angle) > 1e-12) evenly_spaced = false;
+  }
+  Check(evenly_spaced, "ArcSchedule3d's own points are evenly spaced in TRUE angle (not NURBS/circle parameter)");
+
+  // A "backwards" (decreasing) sweep - exactly what a wedge's own
+  // PlanarFace::ArcRun records (see that field's own doc comment) -
+  // works the same way, no reordering needed.
+  const std::vector<Point3d> reversed = ArcSchedule3d(center, radius, xaxis, yaxis, 2.0, 0.5, 6);
+  Check(reversed.size() == 7, "ArcSchedule3d handles a decreasing angle_end < angle_begin sweep, still count+1 points");
+  const Point3d reversed_expected_last = center + radius * (std::cos(0.5) * xaxis + std::sin(0.5) * yaxis);
+  Check(reversed.back().DistanceTo(reversed_expected_last) == 0.0,
+        "ArcSchedule3d's decreasing-sweep last point is exactly the formula at angle_end, even though angle_end < "
+        "angle_begin");
+
+  const std::vector<Point3d> single = ArcSchedule3d(center, radius, xaxis, yaxis, 0.0, 1.0, 0);
+  Check(single.size() == 1 && single[0].DistanceTo(center + radius * xaxis) == 0.0,
+        "ArcSchedule3d with count=0 returns exactly one point, at angle_begin");
+
+  bool threw_negative_count = false;
+  try {
+    ArcSchedule3d(center, radius, xaxis, yaxis, 0.0, 1.0, -1);
+  } catch (const std::invalid_argument&) {
+    threw_negative_count = true;
+  }
+  Check(threw_negative_count, "ArcSchedule3d rejects a negative count rather than misbehaving silently");
+}
+
+// detail::AngleOffsetBetweenFrames()/ConvertAngleBetweenFrames() - the
+// ONE isolated frame-to-frame angle conversion this whole conforming-
+// tessellation path needs (see detail/arc_schedule3d.h's own top
+// comment). Tested here against BOTH a same-handed synthetic frame pair
+// (a plain rotation) AND a deliberately LEFT-HANDED (mirrored-normal)
+// synthetic pair - the exact scenario that broke the prior, reverted
+// attempt at this same fix (see circle_clip3d.h's own doc comment) -
+// BEFORE this conversion ever touches real geometry, per this
+// increment's own design discipline.
+void TestAngleOffsetBetweenFramesSameHandedPair() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  using dino8::kernel::detail::AngleOffsetBetweenFrames;
+  using dino8::kernel::detail::ConvertAngleBetweenFrames;
+
+  ON_Plane plane;
+  plane.origin = Point3d(0, 0, 0);
+  plane.xaxis = Vector3d(1, 0, 0);
+  plane.yaxis = Vector3d(0, 1, 0);
+  plane.zaxis = Vector3d(0, 0, 1);
+  plane.UpdateEquation();
+
+  const double rot = 40.0 * ON_PI / 180.0;
+  ON_Plane cyl_frame;
+  cyl_frame.origin = Point3d(0, 0, 0);
+  cyl_frame.xaxis = Vector3d(std::cos(rot), std::sin(rot), 0);
+  cyl_frame.yaxis = Vector3d(-std::sin(rot), std::cos(rot), 0);
+  cyl_frame.zaxis = Vector3d(0, 0, 1);  // SAME normal as plane - same-handed
+  cyl_frame.UpdateEquation();
+
+  const double offset = AngleOffsetBetweenFrames(plane, cyl_frame);
+  Check(std::fabs(offset - rot) < 1e-12,
+        "AngleOffsetBetweenFrames reports the true rotation angle (40 degrees) between two same-handed frames "
+        "sharing a normal");
+
+  // A vector at plane-local angle `rot` IS cyl_frame.xaxis exactly (by
+  // construction above), so its own cyl_frame-local angle must be 0.
+  const double converted_at_rot = ConvertAngleBetweenFrames(rot, plane, cyl_frame);
+  Check(std::fabs(std::remainder(converted_at_rot, 2.0 * ON_PI)) < 1e-12,
+        "ConvertAngleBetweenFrames maps plane's own 40-degree direction (== cyl_frame.xaxis) to exactly 0 in "
+        "cyl_frame's own basis, for a same-handed pair");
+
+  // Direct geometric round-trip: the SAME physical point, reconstructed
+  // via EITHER frame's own (radius, angle) formula, must coincide.
+  bool all_round_trip = true;
+  for (double theta : {0.0, 0.7, 2.1, -1.4, 3.0}) {
+    const Point3d via_plane = plane.origin + 3.0 * (std::cos(theta) * plane.xaxis + std::sin(theta) * plane.yaxis);
+    const double cyl_theta = ConvertAngleBetweenFrames(theta, plane, cyl_frame);
+    const Point3d via_cyl =
+        cyl_frame.origin + 3.0 * (std::cos(cyl_theta) * cyl_frame.xaxis + std::sin(cyl_theta) * cyl_frame.yaxis);
+    if (via_plane.DistanceTo(via_cyl) > 1e-9) all_round_trip = false;
+  }
+  Check(all_round_trip,
+        "ConvertAngleBetweenFrames round-trips correctly for a same-handed pair: the same physical point is "
+        "reconstructed via either frame's own formula, for several different angles");
+}
+
+void TestAngleOffsetBetweenFramesLeftHandedPair() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  using dino8::kernel::detail::AngleOffsetBetweenFrames;
+  using dino8::kernel::detail::ConvertAngleBetweenFrames;
+
+  ON_Plane plane;
+  plane.origin = Point3d(0, 0, 0);
+  plane.xaxis = Vector3d(1, 0, 0);
+  plane.yaxis = Vector3d(0, 1, 0);
+  plane.zaxis = Vector3d(0, 0, 1);
+  plane.UpdateEquation();
+
+  // A deliberately MIRRORED frame: zaxis is ANTI-parallel to plane's own
+  // zaxis (plane.zaxis dot cyl_frame.zaxis < 0) - exactly the "poly_plane
+  // .zaxis anti-parallel to cyl_frame.xaxis cross cyl_frame.yaxis"
+  // scenario circle_clip3d.h's own doc comment names as what broke the
+  // earlier, reverted attempt at this fix (there, a box's BOTTOM cap vs.
+  // its drilling cylinder's own fixed axis direction). xaxis/yaxis below
+  // are still chosen to make (xaxis, yaxis, zaxis) a genuine right-handed
+  // triple (zaxis = xaxis cross yaxis) - this frame is entirely
+  // self-consistent, it is simply a MIRROR IMAGE of `plane` over their
+  // shared physical (x, y) subspace, not an invalid one.
+  const double rot = 25.0 * ON_PI / 180.0;
+  ON_Plane cyl_frame;
+  cyl_frame.origin = Point3d(0, 0, 0);
+  cyl_frame.xaxis = Vector3d(std::cos(rot), std::sin(rot), 0);
+  cyl_frame.zaxis = Vector3d(0, 0, -1);
+  cyl_frame.yaxis = ON_CrossProduct(cyl_frame.zaxis, cyl_frame.xaxis);
+  cyl_frame.yaxis.Unitize();
+  cyl_frame.UpdateEquation();
+  Check(std::fabs(ON_DotProduct(plane.zaxis, cyl_frame.zaxis) + 1.0) < 1e-12,
+        "this test's own synthetic cyl_frame is genuinely left-handed relative to plane (opposite normal) - "
+        "sanity-checking the fixture itself, not yet the function under test");
+
+  const double offset = AngleOffsetBetweenFrames(plane, cyl_frame);
+  Check(std::fabs(offset - rot) < 1e-12,
+        "AngleOffsetBetweenFrames still correctly reports where cyl_frame.xaxis points in plane's own basis (25 "
+        "degrees) even for this mirrored pair - it answers a well-defined question regardless of handedness");
+
+  // The actual crux: does ConvertAngleBetweenFrames correctly handle the
+  // handedness flip, or does it (like the prior, reverted attempt) get
+  // the rotation SENSE backwards for a mirrored pair? Checked the same
+  // direct geometric round-trip way as the same-handed test above - if
+  // this fails, it fails exactly the way the earlier attempt's own bug
+  // did: silently misplacing points, not throwing.
+  bool all_round_trip = true;
+  double max_error = 0.0;
+  for (double theta : {0.0, 0.7, 2.1, -1.4, 3.0}) {
+    const Point3d via_plane = plane.origin + 3.0 * (std::cos(theta) * plane.xaxis + std::sin(theta) * plane.yaxis);
+    const double cyl_theta = ConvertAngleBetweenFrames(theta, plane, cyl_frame);
+    const Point3d via_cyl =
+        cyl_frame.origin + 3.0 * (std::cos(cyl_theta) * cyl_frame.xaxis + std::sin(cyl_theta) * cyl_frame.yaxis);
+    max_error = std::max(max_error, via_plane.DistanceTo(via_cyl));
+    if (via_plane.DistanceTo(via_cyl) > 1e-9) all_round_trip = false;
+  }
+  Check(all_round_trip,
+        "ConvertAngleBetweenFrames round-trips correctly for a DELIBERATELY LEFT-HANDED (mirrored-normal) frame "
+        "pair too: the same physical point is reconstructed via either frame's own formula - the exact scenario "
+        "that broke the prior, reverted attempt at this fix, caught here in isolation before it can ever touch "
+        "real geometry");
+
+  // A specific worked check on top of the loop above: at plane-local
+  // angle 25 degrees (== cyl_frame.xaxis exactly, same construction as
+  // the same-handed test), the mirrored conversion must STILL report
+  // exactly 0 - this one is a direct, hand-checkable value, not just a
+  // round-trip distance.
+  const double converted_at_rot = ConvertAngleBetweenFrames(rot, plane, cyl_frame);
+  Check(std::fabs(std::remainder(converted_at_rot, 2.0 * ON_PI)) < 1e-12,
+        "ConvertAngleBetweenFrames maps plane's own 25-degree direction (== cyl_frame.xaxis) to exactly 0 in "
+        "cyl_frame's own basis, even for this mirrored pair");
+}
+
 // Builds the box-with-a-drilled-hole scenario from the spec's own
 // section 5 ("smallest, most valuable first case"): A = a 10x10x10 box,
 // B = a single full-circle (2*pi) CylindricalFace of radius `hole_radius`
@@ -7460,6 +7654,122 @@ std::pair<dino8::kernel::Brep, dino8::kernel::Brep> BuildDrilledBoxInputs(double
   hole.length = hole_length;
   Brep cyl = Brep::FromMixedFaces({}, {hole});
   return {box, cyl};
+}
+
+// Counts boundary edges (used by exactly one triangle, after
+// Mesh::MergeAndWeld) that do NOT lie on the drilled box's own known
+// axis-aligned outer perimeter (x=0, x=10, y=0, y=10) - i.e. every
+// boundary edge EXCEPT the ones along the untouched side walls' own
+// shared straight edge with a wedge cap. That side-wall/wedge boundary
+// is a genuinely SEPARATE, independently-parameterized-planar-face grid
+// mismatch (matching the same class of gap ShellConvexPlanar's own doc
+// comment already discloses elsewhere in this file - see boolean.h's own
+// BooleanCombineMixed doc comment's explicit non-goals) - NOT the
+// wedge-arc-vs-cylindrical-wall boundary this increment's own
+// Brep::TessellateConforming() targets and closes. A non-zero result
+// here would mean the ARC boundary itself is still open; the drilled
+// box's OWN outer-perimeter boundary edges (a separate, expected,
+// disclosed count) are deliberately excluded so this function answers
+// exactly the question this increment's own fix is responsible for.
+int CountNonPerimeterBoundaryEdges(const dino8::kernel::Mesh& merged) {
+  std::map<std::pair<int, int>, int> undirected;
+  const ON_Mesh& raw = merged.raw();
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_MeshFace& f = raw.m_F[i];
+    auto visit = [&](int a, int b) { ++undirected[std::minmax(a, b)]; };
+    visit(f.vi[0], f.vi[1]);
+    visit(f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      visit(f.vi[2], f.vi[3]);
+      visit(f.vi[3], f.vi[0]);
+    } else {
+      visit(f.vi[2], f.vi[0]);
+    }
+  }
+  auto on_perimeter = [](const ON_3fPoint& p) {
+    const double eps = 1e-4;
+    return std::fabs(p.x - 0.0) < eps || std::fabs(p.x - 10.0) < eps || std::fabs(p.y - 0.0) < eps ||
+           std::fabs(p.y - 10.0) < eps;
+  };
+  int count = 0;
+  for (const auto& [edge, n] : undirected) {
+    if (n == 2) continue;
+    const ON_3fPoint& a = raw.m_V[edge.first];
+    const ON_3fPoint& b = raw.m_V[edge.second];
+    if (on_perimeter(a) && on_perimeter(b)) continue;
+    ++count;
+  }
+  return count;
+}
+
+// The "both sides agree" test - the actual crux of this whole fix (see
+// Brep::TessellateConforming()'s own doc comment in brep.h): asserts
+// that a wedge cap's own substituted arc-boundary vertices and the
+// adjacent cylindrical face's own matching boundary-row vertices are
+// BIT-IDENTICAL (exact floating-point equality after ON_Mesh's own
+// single-precision storage, not merely close to within some tolerance).
+void TestBooleanCombineMixedConformingSharedArcBoundaryIsBitIdentical() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto [box, cyl] = BuildDrilledBoxInputs(/*hole_radius=*/2.0, /*hole_z0=*/-1.0, /*hole_length=*/12.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+
+  // FromMixedFaces() (and hence BooleanCombineMixed's own
+  // Brep::FromMixedFaces(out_planar, out_cyl) call) always builds every
+  // planar face's own ON_BrepFace before any cylindrical face's own -
+  // so the drilled box's single CylindricalFace lands at exactly index
+  // MixedFaces().planar.size() (12 planar faces: 4 untouched walls + 2
+  // hole-punched caps of 4 wedges each - the same 4+2*4 this file's own
+  // face-count checks elsewhere already assert).
+  const size_t cyl_face_index = drilled.MixedFaces().planar.size();
+  const std::vector<Mesh> faces = drilled.TessellateConforming(16, 16);
+  Check(cyl_face_index < faces.size() && cyl_face_index == 12,
+        "the drilled box's own single cylindrical face lands at TessellateConforming()'s own index 12, right "
+        "after the 12 planar faces");
+
+  const ON_Mesh& cyl_mesh = faces[cyl_face_index].raw();
+  std::vector<ON_3fPoint> cyl_bottom_row;
+  for (int i = 0; i < cyl_mesh.m_V.Count(); ++i) {
+    if (std::fabs(cyl_mesh.m_V[i].z) < 1e-4) cyl_bottom_row.push_back(cyl_mesh.m_V[i]);
+  }
+  Check(!cyl_bottom_row.empty(),
+        "the cylindrical face's own tessellated mesh has at least one bottom-row (z=0) vertex to check against");
+
+  // Face 0 is one of the 4 bottom-cap (z=0) wedges (BooleanCombineMixed's
+  // own from_a.out ordering: the box's own bottom face is split and
+  // classified before the top face - confirmed directly, not assumed,
+  // by this test's own earlier development). Its own arc-boundary
+  // vertices are exactly the ones at distance 2 (the hole radius) from
+  // the drilling axis (5, 5, *); every other vertex of this small wedge
+  // (its two straight radial rails and its own short stretch of the
+  // box's own outer perimeter) sits much farther from that axis.
+  const ON_Mesh& wedge_mesh = faces[0].raw();
+  int wedge_arc_vertices = 0;
+  int exact_matches = 0;
+  for (int i = 0; i < wedge_mesh.m_V.Count(); ++i) {
+    const ON_3fPoint& p = wedge_mesh.m_V[i];
+    if (std::fabs(p.z) > 1e-4) continue;
+    const double dist = std::sqrt((p.x - 5.0) * (p.x - 5.0) + (p.y - 5.0) * (p.y - 5.0));
+    if (std::fabs(dist - 2.0) > 1e-3) continue;
+    ++wedge_arc_vertices;
+    for (const ON_3fPoint& q : cyl_bottom_row) {
+      if (p.x == q.x && p.y == q.y && p.z == q.z) {
+        ++exact_matches;
+        break;
+      }
+    }
+  }
+  Check(wedge_arc_vertices >= 15,
+        "wedge face 0's own tessellated mesh has a genuine, non-trivial run of arc-boundary vertices (at radius 2 "
+        "from the drilling axis) to check, not a degenerate empty case");
+  Check(exact_matches == wedge_arc_vertices,
+        "every one of wedge face 0's own arc-boundary vertices has a BIT-IDENTICAL (exact float ==, not merely "
+        "close) counterpart among the cylindrical face's own bottom-row vertices - the actual crux of this fix: "
+        "both sides of the shared boundary come from the literal same detail::ArcSchedule3d() call, not two "
+        "independently-evaluated approximations of the same curve");
 }
 
 // The spec's own section 5 first milestone: a box with a through-hole
@@ -7543,33 +7853,50 @@ void TestBooleanCombineMixedDrilledBoxThroughHole() {
         "BooleanCombineMixed's own exact-B-rep volume and the independent mesh-based Manifold volume agree with "
         "each other, not just with the hand-derived value separately");
 
-  // Watertightness - KNOWN, DISCLOSED LIMITATION, not silently skipped:
+  // Watertightness via Tessellate() (the ORIGINAL, still-default path) -
+  // KNOWN, DISCLOSED LIMITATION, not silently skipped:
   // Mesh::MergeAndWeld(drilled.Tessellate(...)) does NOT pass
-  // IsClosedManifold() or Manifold's own tolerant ToManifold() check at
-  // any division count or weld tolerance tried during development
-  // (confirmed directly, not assumed). Root cause: the drilled box's own
-  // hole-punched cap faces (4 wedge PlanarFaces each) and the
-  // cylindrical hole-wall face are each tessellated with their OWN
-  // independently-chosen local (u, v) grid (Brep::FromMixedFaces' own
-  // per-face bounding-rectangle parameterization); their tessellated
-  // vertices along the SHARED curved (wedge-arc-to-cylinder-rail)
-  // boundary don't coincide except at the small number of explicit trim
-  // vertices both sides happen to share, even after aligning the wedges'
-  // own arc sampling to the cylinder's own NURBS parameterization (a
-  // real, separate fix this increment DOES make - see
-  // ClipPolygonByCircle3d's own doc comment). This is the same class of
-  // "independently-parameterized exact-clip faces don't share interior
-  // grid points" limitation ShellConvexPlanar's/BooleanCombinePlanar's
-  // own tests already disclose and route around by tessellating at
-  // divisions=1 - unavailable here because a full 2*pi CylindricalFace's
-  // own raw NURBS surface wraps u=0 and u=u_max onto the same 3D point,
-  // which collapses divisions=1 to a degenerate zero-area cell (also
-  // confirmed directly). Real follow-up work, not attempted here: either
-  // a shared-boundary-aware tessellator, or building the hole wall and
-  // its two adjacent caps from one CONSISTENTLY parameterized surface
-  // patch instead of three independent ones. The B-rep's own geometry
-  // is exact regardless (see the volume checks above) - this gap is a
-  // TESSELLATION artifact, not a boundary-representation defect.
+  // IsClosedManifold() at any division count or weld tolerance (confirmed
+  // directly). Root cause: the hole-punched cap faces (4 wedge
+  // PlanarFaces each) and the cylindrical hole-wall face are each
+  // tessellated with their OWN independently-chosen local (u, v) grid,
+  // and Tessellate() itself is left completely unchanged by this
+  // increment - see Brep::TessellateConforming()'s own doc comment
+  // (brep.h) for the new, separate, opt-in entry point that actually
+  // closes this, checked next.
+  const Mesh mesh_conforming = drilled.TessellateToClosedMeshConforming(64, 64);
+  Check(std::fabs(mesh_conforming.Volume() - hand_derived_volume) < 0.05,
+        "TessellateToClosedMeshConforming()'s own volume matches the hand-derived 1000-40*pi to the same tolerance "
+        "as the ordinary Tessellate() path above - the conforming path changes ONLY how the shared wedge-arc/"
+        "cylinder-wall boundary is sampled, not the B-rep's own geometry");
+
+  // The actual watertightness claim this increment can make, precisely
+  // stated: the wedge-arc-vs-cylindrical-wall boundary
+  // Brep::TessellateConforming() targets is now GENUINELY closed - zero
+  // boundary edges anywhere except on the box's own known outer
+  // perimeter (see CountNonPerimeterBoundaryEdges's own doc comment for
+  // exactly what that excludes and why). This is NOT yet
+  // mesh_conforming.IsClosedManifold() itself: a SEPARATE, different gap
+  // remains along the untouched side walls' own shared straight edge
+  // with each wedge cap (both faces are ordinary, independently
+  // -parameterized PLANAR patches there, with no shared breakpoints at
+  // all - confirmed directly, not merely suspected: it persists
+  // identically at every division count tried, including 256, so it is
+  // not a resolution/convergence issue). That is the SAME class of gap
+  // this file's own ShellConvexPlanar tests already disclose elsewhere
+  // (see boolean.h's own BooleanCombineMixed doc comment's explicit
+  // non-goals: "ShellConvexPlanar's own separately-disclosed planar/
+  // planar grid-mismatch note is a real, likely easier, follow-up left
+  // for its own increment") - a genuinely different, deliberately
+  // out-of-scope problem from the one this increment's own arc_runs/
+  // ArcSchedule3d/ConvertAngleBetweenFrames/TessellateConforming
+  // machinery targets, not a sign that fix is incomplete on its own
+  // terms.
+  Check(CountNonPerimeterBoundaryEdges(mesh_conforming) == 0,
+        "TessellateToClosedMeshConforming()'s own mesh has ZERO boundary edges anywhere except the box's own known "
+        "outer perimeter - the wedge-arc-vs-cylindrical-wall seam this increment targets is now genuinely closed "
+        "(see this test's own comment for the separate, different, still-open side-wall/wedge gap this does NOT "
+        "claim to close)");
 }
 
 // Degenerate case 1 (spec section 6's own "cheap, worthwhile" list): a
@@ -7594,6 +7921,19 @@ void TestBooleanCombineMixedDrilledBoxNearZeroRadius() {
         "toward the plain box volume as r shrinks");
   Check(std::fabs(mesh.Volume() - 1000.0) < 0.02,
         "near-zero-radius drilled box's volume is within 0.02 of the plain (undrilled) box volume, 1000");
+
+  // Same conforming-path checks as TestBooleanCombineMixedDrilledBoxThroughHole
+  // (see that test's own comment for exactly what "zero non-perimeter
+  // boundary edges" does and does not claim) - a near-zero radius is a
+  // real stress case for the shared-boundary machinery (tiny radius,
+  // same angle math) that a plain volume check alone wouldn't catch.
+  const Mesh mesh_conforming = drilled.TessellateToClosedMeshConforming(64, 64);
+  Check(std::fabs(mesh_conforming.Volume() - hand_derived_volume) < 0.01,
+        "near-zero-radius drilled box's TessellateToClosedMeshConforming() volume matches the same hand-derived "
+        "value to the same tolerance as the ordinary Tessellate() path above");
+  Check(CountNonPerimeterBoundaryEdges(mesh_conforming) == 0,
+        "near-zero-radius drilled box's conforming mesh also has zero non-perimeter boundary edges - the "
+        "wedge-arc-vs-cylindrical-wall seam closes correctly even at this tiny radius");
 }
 
 // Degenerate case 2 (spec section 6's own "cheap, worthwhile" list): the
@@ -7631,6 +7971,19 @@ void TestBooleanCombineMixedDrilledBoxCoincidentCapHeight() {
   const Mesh mesh = drilled.TessellateToClosedMesh(128, 128);
   Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.1,
         "coincident-cap-height (no-overhang) drilled box's volume also matches 1000-40*pi to within 0.1");
+
+  // Same conforming-path checks as TestBooleanCombineMixedDrilledBoxThroughHole
+  // - a real stress case for TessellateConforming()'s own matched-tuple
+  // logic, since here the cylindrical fragment's own v=0/v=length ends
+  // coincide EXACTLY with both box caps (no height-split at all - see
+  // this test's own top comment), the boundary case for the "at_v0"
+  // height check in Brep::TessellateConforming()'s own implementation.
+  const Mesh mesh_conforming = drilled.TessellateToClosedMeshConforming(64, 64);
+  Check(std::fabs(mesh_conforming.Volume() - hand_derived_volume) < 0.1,
+        "coincident-cap-height drilled box's TessellateToClosedMeshConforming() volume also matches 1000-40*pi to "
+        "within 0.1");
+  Check(CountNonPerimeterBoundaryEdges(mesh_conforming) == 0,
+        "coincident-cap-height drilled box's conforming mesh also has zero non-perimeter boundary edges");
 }
 
 // FromPlanarFaces()/FromMixedFaces() now build genuine ON_Brep
@@ -8373,6 +8726,10 @@ int main() {
   TestMixedFacesRoundTripsCylindricalFace();
   TestMixedFacesRoundTripsConicalFace();
   TestClipPolygonByCircle3dPunchesExactHole();
+  TestArcSchedule3dEvenlySpacedExactEndpoints();
+  TestAngleOffsetBetweenFramesSameHandedPair();
+  TestAngleOffsetBetweenFramesLeftHandedPair();
+  TestBooleanCombineMixedConformingSharedArcBoundaryIsBitIdentical();
   TestBooleanCombineMixedDrilledBoxThroughHole();
   TestBooleanCombineMixedDrilledBoxNearZeroRadius();
   TestBooleanCombineMixedDrilledBoxCoincidentCapHeight();

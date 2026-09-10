@@ -4,11 +4,13 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
 #include <manifold/manifold.h>
 
+#include "dino8/kernel/detail/arc_schedule3d.h"
 #include "dino8/kernel/detail/circle_clip3d.h"
 #include "dino8/kernel/detail/halfspace_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
@@ -1458,6 +1460,110 @@ bool CylinderPlaneNoInteraction(const Brep::CylindricalFace& cf, const ON_Plane&
   return (lo > tol) || (hi < -tol);
 }
 
+// Recovers PlanarFace::ArcRun bookkeeping from a wedge polygon
+// detail::ClipPolygonByCircle3d already returned - pure bookkeeping over
+// that function's own already-computed output, NOT a second, independent
+// re-derivation of any geometry (see PlanarFace::ArcRun's own doc
+// comment in brep.h, and this function's own doc comment there, for why
+// this is deliberately kept OUTSIDE ClipPolygonByCircle3d itself, unlike
+// the prior, reverted attempt at this same fix).
+//
+// ClipPolygonByCircle3d's own vertex ordering (see its own doc comment
+// for the exact construction) guarantees `loop`'s vertex at index 1 is
+// always a radial exit point onto the ORIGINAL polygon's own boundary
+// (`e0.point`) - generically NOT at distance `radius` from `center` -
+// while the run of genuine arc-sample vertices is ALWAYS a single
+// contiguous block that wraps across `loop`'s own index-0 seam (the loop
+// both starts AND ends at arc samples - see PlanarFace::ArcRun's own doc
+// comment for why). So scanning `loop` in the ROTATED order starting at
+// index 1 (1, 2, ..., n-1, 0) - guaranteed to begin at a non-arc vertex -
+// finds that one run as a single contiguous stretch with no wraparound
+// bookkeeping of its own needed here; FindArcRun() itself then reports it
+// back in `loop`'s own original (unrotated) indexing, wraparound and all.
+//
+// Detection is purely by distance from `center`: a vertex within `tol`
+// (scaled to at least `radius * 1e-6`, the same relative-tolerance
+// pattern MixedFaces()' own recovered-radius check in brep.cpp uses) of
+// `radius` from `center` is an arc sample; this needs no knowledge of
+// ClipPolygonByCircle3d's own internal sample count or quadrant
+// structure, so it stays correct even if that function's own internal
+// implementation details change later. Returns std::nullopt (rather than
+// throwing) if no run of at least 2 vertices is found - a degenerate
+// input this increment's own actual callers never produce, but a safe,
+// silent "no conforming tessellation available for this wedge" fallback
+// is more defensible than either crashing or guessing.
+std::optional<Brep::PlanarFace::ArcRun> FindArcRun(const std::vector<Point3d>& loop, const Point3d& center,
+                                                    double radius, const ON_Plane& plane, double tol) {
+  const size_t n = loop.size();
+  if (n < 2) return std::nullopt;
+  const double rtol = std::max(tol, radius * 1e-6);
+  std::vector<bool> is_arc(n);
+  for (size_t i = 0; i < n; ++i) {
+    is_arc[i] = std::fabs(loop[i].DistanceTo(center) - radius) <= rtol;
+  }
+
+  size_t best_begin = 0, best_count = 0, cur_begin = 0, cur_count = 0;
+  for (size_t k = 0; k < n; ++k) {
+    const size_t idx = (1 + k) % n;  // rotated scan starting at index 1
+    if (is_arc[idx]) {
+      if (cur_count == 0) cur_begin = idx;
+      ++cur_count;
+      if (cur_count > best_count) {
+        best_begin = cur_begin;
+        best_count = cur_count;
+      }
+    } else {
+      cur_count = 0;
+    }
+  }
+  if (best_count < 2) return std::nullopt;
+
+  Brep::PlanarFace::ArcRun run;
+  run.begin = static_cast<int>(best_begin);
+  run.count = static_cast<int>(best_count);
+  run.center = center;
+  run.radius = radius;
+  run.plane_xaxis = plane.xaxis;
+  run.plane_yaxis = plane.yaxis;
+
+  auto angle_of = [&](const Point3d& p) {
+    const Vector3d d = p - center;
+    return std::atan2(ON_DotProduct(d, plane.yaxis), ON_DotProduct(d, plane.xaxis));
+  };
+  run.angle_begin = angle_of(loop[best_begin]);
+  const double raw_end = angle_of(loop[(best_begin + best_count - 1) % n]);
+
+  // atan2's own (-pi, pi] branch cut means `raw_end` can land on the
+  // "wrong side" of it relative to `angle_begin` even when the two
+  // points are physically close together on the circle (e.g. one just
+  // past +pi, reported as a negative angle near -pi) - two INDEPENDENT
+  // atan2 calls have no reason to agree on which of a point's own
+  // (angle, angle +/- 2*pi, ...) representations to report. Left
+  // uncorrected, detail::ArcSchedule3d's own plain linear interpolation
+  // from angle_begin to angle_end would sweep the LONG way around the
+  // circle instead of the short arc this run actually is - confirmed
+  // directly during development (not a theoretical worry): exactly one
+  // of the drilled box's own four wedges per cap hit this, and its own
+  // substituted boundary points swept 270 degrees instead of the true
+  // 90, corrupting that quadrant's own shared boundary with the
+  // cylinder and leaving it un-welded.
+  //
+  // Fixed here by re-expressing the end angle as `angle_begin` plus the
+  // SHORTEST signed angular delta to `raw_end` (the standard
+  // atan2(sin(d), cos(d)) unwrap, landing in (-pi, pi]) - correct for
+  // this run's own only current producer, ClipPolygonByCircle3d, whose
+  // every run is exactly one 90-degree quadrant (see its own doc
+  // comment) and therefore always strictly under the half-turn this
+  // "always take the short way" choice assumes; a hypothetical future
+  // producer whose own run spans a HALF turn or more would need a
+  // different (not merely atan2-branch-driven) disambiguation, which
+  // this function does not attempt.
+  const double raw_delta = raw_end - run.angle_begin;
+  const double wrapped_delta = std::atan2(std::sin(raw_delta), std::cos(raw_delta));
+  run.angle_end = run.angle_begin + wrapped_delta;
+  return run;
+}
+
 // Splits `self` against EVERY face of `other`, keeping both children of
 // every genuine cut (case (i)/(iii)) or the single surviving fragment of
 // a hole-punch (case (ii)) or an unmodified whole fragment ("no
@@ -1512,6 +1618,20 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
             if (piece.size() < 3) continue;
             MixedFace m;
             m.planar.plane = f.planar.plane;
+            // Bookkeeping only, over ClipPolygonByCircle3d's own already-
+            // computed output and this branch's own already-computed
+            // proj_center/g.cyl.radius/f.planar.plane - see
+            // PlanarFace::ArcRun's own doc comment (brep.h) and
+            // FindArcRun's own doc comment (above) for why this never
+            // touches ClipPolygonByCircle3d itself. Consumed ONLY by
+            // Brep::TessellateConforming(); every other consumer of this
+            // MixedFace (SplitMixedAgainstAllFaces' own remaining logic,
+            // ClassifyPointVsMixedSolid, RepresentativeInteriorPointMixed,
+            // Tessellate()) never reads PlanarFace::arc_runs at all.
+            if (std::optional<Brep::PlanarFace::ArcRun> run =
+                    FindArcRun(piece, proj_center, g.cyl.radius, f.planar.plane, tol)) {
+              m.planar.arc_runs.push_back(*run);
+            }
             m.planar.loop = std::move(piece);
             next.push_back(std::move(m));
           }
