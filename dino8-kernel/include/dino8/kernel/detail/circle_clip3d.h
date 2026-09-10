@@ -11,6 +11,16 @@
 // clip primitive shared wherever it's needed, not a second copy per
 // caller.
 //
+// This header also has a second entry point, ClipPolygonByCircleInsideOnly3d
+// (below ClipPolygonByCircle3d) - the disc-shaped piece INSIDE the circle
+// that ClipPolygonByCircle3d itself deliberately never returns (see its
+// own doc comment just below), needed by BooleanCombineMixed's own
+// Intersection path wherever a cylinder crosses a planar face MID-LENGTH
+// (see boolean.h's own doc comment). It is an ADDITIVE sibling, not a
+// change to this function's own contract - see its own doc comment for why
+// a new function, not an in-place extension, given the two prior reverted
+// attempts documented right below.
+//
 // Classical, unpatented computational geometry: line-circle and line-line
 // intersection (each a closed form, no root-finding beyond the quadratic
 // formula). When the circle sits strictly inside `poly`, the result is
@@ -312,6 +322,110 @@ inline std::vector<std::vector<Point3d>> ClipPolygonByCircle3d(const std::vector
       piece2d.push_back(sample2d((q + 1) * per_quadrant - s, n_samples));
     }
 
+    std::vector<Point3d> piece3d;
+    piece3d.reserve(piece2d.size());
+    for (const Point2d& p : piece2d) piece3d.push_back(to_3d(p));
+    pieces.push_back(std::move(piece3d));
+  }
+  return pieces;
+}
+
+// ADDITIVE sibling to ClipPolygonByCircle3d (above) - does NOT modify that
+// function's own return contract, body, or any existing call site (see this
+// header's own top comment: two prior attempts to alter its own behavior
+// were reverted after real, confirmed regressions - this leaves it
+// completely untouched). Reuses its already-verified internal primitives
+// (SegmentCircleCrossings, PointInPolygon2d) exactly the way
+// ellipse_clip3d.h's own ClipPolygonByEllipse3d already reuses
+// ConvexPolygonRayExitDir - a second, independent CALLER of the same shared
+// quadratic-formula math, not a duplicate of it.
+//
+// Returns the disc-shaped region INSIDE the circle that ClipPolygonByCircle3d
+// deliberately never returns (see its own doc comment) - needed only by
+// BooleanCombineMixed's own Intersection path, at a planar face genuinely
+// crossed MID-LENGTH by a perpendicular cylinder (see boolean.h's own
+// BooleanCombineMixed doc comment).
+//
+// Same preconditions as ClipPolygonByCircle3d (poly convex/CCW/planar;
+// circle in the same plane; the circle must not cross poly's own boundary -
+// throws std::invalid_argument identically otherwise). Re-validates
+// independently rather than trusting a caller to invoke both functions in
+// lockstep - the check is O(n) and cheap, not the fragile part.
+//
+// Split into the SAME 4 quadrant "pie slice" pattern BuildEndCap's own
+// synthesized end caps already use (boolean.cpp) - center vertex + one
+// quarter-turn arc run each, NOT one loop wrapping the whole circle - for
+// the identical reason BuildEndCap's own doc comment gives: a full-circle
+// ArcRun's own angle_begin=0/angle_end=2*pi seam is a confirmed
+// duplicate-vertex degeneracy FindArcRun/detail::ArcSchedule3d were never
+// built to handle (every existing ArcRun this codebase produces is
+// strictly under a half turn).
+//
+// Each returned piece is [center, arc_sample_0, ..., arc_sample_per_quadrant]
+// (implicit closing edge back to `center`) - bit-identical in shape and
+// winding convention to BuildEndCap's own wedges (CCW as seen from
+// `poly_plane.zaxis`, since `poly_plane` here is the SAME face plane the
+// caller already owns, no mirroring needed unlike BuildEndCap's own
+// possibly-reflected cap plane). This means the SAME existing FindArcRun
+// helper (boolean.cpp) that already recovers PlanarFace::ArcRun bookkeeping
+// from ClipPolygonByCircle3d's own outside wedges also works, completely
+// unmodified, on these pieces: FindArcRun detects the arc run purely by
+// distance-from-center, and its own rotated scan starting at index 1
+// trivially finds this convention's single contiguous, non-wrapping run at
+// indices [1, count] (center sits at index 0, never mistaken for an arc
+// sample since its distance from itself is 0, not `radius`).
+//
+// Returns {} (no pieces) when the circle's own center is not strictly
+// inside `poly` - the mirror of ClipPolygonByCircle3d's own `{poly}`
+// "unchanged, whole face" return for that same input: there is no "inside
+// disc" to speak of when the circle doesn't reach poly's interior at all.
+inline std::vector<std::vector<Point3d>> ClipPolygonByCircleInsideOnly3d(
+    const std::vector<Point3d>& poly, const ON_Plane& poly_plane, const Point3d& circle_center, double radius,
+    double tol, int circle_samples = 200) {
+  using namespace circle_clip_detail;
+
+  if (poly.size() < 3) return {};
+
+  std::vector<Point2d> poly2d;
+  poly2d.reserve(poly.size());
+  for (const Point3d& p : poly) poly2d.push_back(ProjectToPlaneAxes2d(poly_plane, p));
+  const Point2d c2d = ProjectToPlaneAxes2d(poly_plane, circle_center);
+
+  const double tol_t = std::max(1e-12, tol / std::max(radius, tol));
+
+  const size_t n = poly2d.size();
+  size_t crossing_count = 0;
+  for (size_t i = 0; i < n; ++i) {
+    crossing_count += SegmentCircleCrossings(poly2d[i], poly2d[(i + 1) % n], c2d, radius, tol_t).size();
+  }
+  if (crossing_count > 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::detail::ClipPolygonByCircleInsideOnly3d: the circle "
+        "crosses the polygon's own boundary (a partial overlap) - out of "
+        "scope, see ClipPolygonByCircle3d's own doc comment");
+  }
+
+  if (!PointInPolygon2d(c2d.x, c2d.y, poly2d)) return {};  // no interaction
+
+  auto to_3d = [&](const Point2d& p) {
+    return poly_plane.origin + p.x * poly_plane.xaxis + p.y * poly_plane.yaxis;
+  };
+  auto sample2d = [&](int k, int n_samples_total) {
+    const double ang = 2.0 * ON_PI * static_cast<double>(k) / n_samples_total;
+    return Point2d(c2d.x + radius * std::cos(ang), c2d.y + radius * std::sin(ang));
+  };
+
+  const int n_samples = std::max(8, (circle_samples / 4) * 4);
+  const int per_quadrant = n_samples / 4;
+
+  std::vector<std::vector<Point3d>> pieces;
+  pieces.reserve(4);
+  for (int q = 0; q < 4; ++q) {
+    std::vector<Point2d> piece2d;
+    piece2d.push_back(c2d);  // center - the one non-arc anchor vertex
+    for (int s = 0; s <= per_quadrant; ++s) {
+      piece2d.push_back(sample2d(q * per_quadrant + s, n_samples));
+    }
     std::vector<Point3d> piece3d;
     piece3d.reserve(piece2d.size());
     for (const Point2d& p : piece2d) piece3d.push_back(to_3d(p));

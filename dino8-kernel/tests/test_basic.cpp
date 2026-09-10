@@ -11289,11 +11289,14 @@ void TestBooleanCombineMixedIntersectionWithoutFixIsProvablyOpen() {
         "closed manifold on its own - the literal geometric defect this fix's Intersection extension closes");
 }
 
-// Honest scope-limit control (see boolean.h's own BooleanCombineMixed doc comment, "This Intersection fix does
-// NOT make every Intersection result watertight..."): confirms this fix does not silently paper over the
-// SEPARATE, pre-existing ClipPolygonByCircle3d "outside only" gap at a genuine mid-length crossing, and that
-// SynthesizeEndCaps correctly stays inert at a split (non-original) end rather than guessing.
-void TestBooleanCombineMixedIntersectionPartialCrossingRemainsDisclosedGap() {
+// This test used to be TestBooleanCombineMixedIntersectionPartialCrossingRemainsDisclosedGap, documenting and
+// asserting the UNFIXED state of the "one-sided poke-through" fixture (see boolean.h's own former "This
+// Intersection fix does NOT make every Intersection result watertight..." paragraph). This increment is the
+// disclosed follow-up that closes exactly that gap - detail::ClipPolygonByCircleInsideOnly3d (circle_clip3d.h)
+// now produces the disc-shaped piece INSIDE the crossing circle that ClipPolygonByCircle3d's own wedges never
+// return (see that new function's own doc comment) - so this test is flipped in place to assert the FIXED
+// result, using the exact same fixture, rather than leaving a now-false claim standing.
+void TestBooleanCombineMixedIntersectionMidLengthCrossingIsClosedManifold() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
@@ -11304,22 +11307,19 @@ void TestBooleanCombineMixedIntersectionPartialCrossingRemainsDisclosedGap() {
   // A cylinder poking through the box's own top face (z=6 to z=14, box
   // z-range [0,10]): its bottom end (z=6) is original (still fully inside
   // the box, no split there - CylinderPlaneNoInteraction's own bound never
-  // triggers since z=6 is well below the top at z=10) and IS given a
-  // synthesized cap by this fix (probe just below z=6 is kIn against the
-  // box); its top end (z=14) is NOT original (SplitMixedAgainstAllFaces'
-  // own case (iii) splits it at z=10, the box's own top face) - so this
-  // fix correctly leaves that end alone. The box's own top face is
-  // genuinely split there too (case (ii)'s ClipPolygonByCircle3d), but
-  // that split only ever produces the wedge pieces OUTSIDE the circular
-  // footprint (radius > 2) - which classify kOut against the cylinder and
-  // land in from_a.out, never from_a.in - so NONE of the box's own
-  // top-face material makes it into the Intersection result at all; the
-  // disc-shaped piece INSIDE the circle that SHOULD close this seam (case
-  // (ii)'s own "outside only" limitation) is simply never produced
-  // anywhere in the pipeline. Net result: still not a closed manifold, but
-  // for the disclosed reason (a genuine hole at the split seam with
-  // literally zero closing material from either operand), not because
-  // this fix mis-synthesized or omitted its OWN cap at the bottom.
+  // triggers since z=6 is well below the top at z=10) and gets a
+  // synthesized cap (probe just below z=6 is kIn against the box); its top
+  // end (z=14) is NOT original (SplitMixedAgainstAllFaces' own case (iii)
+  // splits it at z=10, the box's own top face) - so SynthesizeEndCaps
+  // correctly leaves that end alone (a real face already closes it now,
+  // see below). The box's own top face is genuinely split there too (case
+  // (ii)): the wedge pieces OUTSIDE the circular footprint (radius > 2)
+  // still classify kOut and land in from_a.out (never from_a.in) exactly
+  // as before, but the new disc-shaped piece INSIDE the circle (radius <
+  // 2), produced by detail::ClipPolygonByCircleInsideOnly3d, sits strictly
+  // inside the crossing cylinder and now classifies kIn - landing in
+  // from_a.in and closing the seam this fixture's own prior test left
+  // open.
   Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
   Brep::CylindricalFace boss;
   boss.frame.origin = Point3d(5, 5, 6.0);
@@ -11333,29 +11333,268 @@ void TestBooleanCombineMixedIntersectionPartialCrossingRemainsDisclosedGap() {
   Brep cyl = Brep::FromMixedFaces({}, {boss});
 
   const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Intersection);
-  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
-  Check(!mesh.IsClosedManifold(),
-        "a one-sided poke-through Intersection (cylinder crossing the box's own top face mid-length) is still "
-        "NOT a closed manifold after this fix - the ClipPolygonByCircle3d 'outside only' limitation at the "
-        "split seam (see boolean.h's own doc comment) is a separate, pre-existing gap this fix does not close, "
-        "honestly disclosed rather than silently papered over");
 
-  // The fix's own bottom-end cap (4 quadrants) IS present, and it is the
-  // ONLY material this fix contributes: 1 cylindrical wall fragment (split
-  // at z=10, so only the [6,10] piece survives into from_b.in, with
-  // end0_is_original == true at z=6 and end1_is_original == false at the
-  // split) + 4 synthesized bottom-cap quadrants at that original z=6 end =
-  // 5 faces - directly confirming (not merely inferring) that the box's
-  // own top face contributes NOTHING here: its split wedges (case (ii))
-  // classify kOut against the cylinder (from_a.out, not from_a.in), so
-  // from_a.in is genuinely empty. No 5th/6th quadrant leaked in at the
-  // split (non-original) top end either.
-  Check(result.FaceCount() == 5,
-        "one-sided poke-through Intersection has exactly 5 faces (1 cylindrical wall fragment [z=6..10] + 4 "
-        "synthesized bottom-cap quadrants at the original z=6 end, and NOTHING from the box's own top face, whose "
-        "split wedges classify kOut and never reach from_a.in) - confirming this fix's own SynthesizeEndCaps adds "
-        "a cap ONLY at the genuinely original end, never at the split (z=10) end, even though that end is also "
-        "exposed/non-watertight for the separate, disclosed ClipPolygonByCircle3d reason above");
+  // 1 cylindrical wall fragment [z=6..10] (end0_is_original at z=6, split
+  // at z=10) + 4 synthesized bottom-cap quadrants at the original z=6 end
+  // (from_b.in's own end-cap, unchanged from before this fix) + 4 NEW
+  // inside-disc quadrants at the box's own top face (z=10), the material
+  // this fix adds = 9 faces total.
+  Check(result.FaceCount() == 9,
+        "one-sided poke-through Intersection has exactly 9 faces (1 cylindrical wall fragment [z=6..10] + 4 "
+        "synthesized bottom-cap quadrants at the original z=6 end + 4 NEW inside-disc quadrants at the box's own "
+        "top face, z=10) - the box's own top face now DOES contribute, via the new "
+        "detail::ClipPolygonByCircleInsideOnly3d piece, closing the seam the prior, unfixed version of this test "
+        "left open");
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "a one-sided poke-through Intersection (cylinder crossing the box's own top face mid-length) is now a "
+        "genuinely CLOSED manifold - the box's own top-face inside-disc, classified kIn against the cylinder by "
+        "the ordinary classify-then-bucket pipeline (no new BooleanOp-specific logic), supplies the previously-"
+        "missing material at the split seam");
+
+  const double hand_derived_volume = ON_PI * 2.0 * 2.0 * 4.0;  // pi*r^2*h over z=[6,10], the box-limited height
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "one-sided poke-through Intersection's tessellated volume (div=64) matches the hand-derived pi*r^2*h "
+        "(over the box-limited height z=[6,10], since the cylinder itself continues past z=10 but the box cuts "
+        "it off there) to within 0.05");
+}
+
+// Second, differently-proportioned geometry (mirrors the existing "2nd geometry" pattern, e.g.
+// TestBooleanCombineMixedIntersectionFullyEmbeddedSecondGeometry above): a different box size, cylinder radius,
+// and off-center axis position, crossing mid-length through exactly one face - confirms the fix isn't specific
+// to the first fixture's particular proportions or centering.
+void TestBooleanCombineMixedIntersectionMidLengthCrossingSecondGeometry() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A 12x8x6 box; a radius-1.5, length-10 cylinder based at (4,3,2) - its
+  // own bottom end (z=2) sits inside the box (original, gets a synthesized
+  // cap) and its own body crosses the box's top face (z=6) mid-length
+  // (v_cut = 6-2 = 4, strictly inside (0, 10)), then continues on past it.
+  // The box's other 5 faces never interact (the bottom face at z=0 is
+  // below the cylinder's own z=2 base - CylinderPlaneNoInteraction; all
+  // four side walls sit 2.5-4 units from the axis, well outside the
+  // radius-1.5 footprint).
+  Brep box = Brep::Box(0, 0, 0, 12, 8, 6);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(4, 3, 2.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 1.5;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 10.0;
+  Brep cyl = Brep::FromMixedFaces({}, {boss});
+
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Intersection);
+
+  // 1 cylindrical wall fragment [z=2..6] + 4 synthesized bottom-cap
+  // quadrants at the original z=2 end + 4 inside-disc quadrants at the
+  // box's own top face (z=6) = 9 faces, the same total as the first
+  // fixture despite completely different proportions.
+  Check(result.FaceCount() == 9,
+        "one-sided poke-through Intersection (2nd, differently-proportioned geometry) has exactly 9 faces (1 "
+        "cylindrical wall + 4 synthesized bottom-cap quadrants + 4 inside-disc quadrants at the crossed top face)");
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "one-sided poke-through Intersection (2nd geometry) is a genuinely CLOSED manifold, confirming the fix "
+        "generalizes beyond the first fixture's own particular centered/symmetric proportions");
+
+  const double hand_derived_volume = ON_PI * 1.5 * 1.5 * 4.0;  // pi*r^2*h over the box-limited height z=[2,6]
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "one-sided poke-through Intersection (2nd geometry) tessellated volume matches the hand-derived pi*r^2*h "
+        "to within 0.05");
+}
+
+// A genuinely new scenario this fix's own mid-length gate makes possible: the cylinder's own finite axial range
+// spans PAST the box on BOTH ends, so BOTH of the box's z-perpendicular caps are mid-length crossings of the
+// ORIGINAL cylinder, and the surviving cylindrical wall fragment has NEITHER end original (both are split
+// boundaries) - so SynthesizeEndCaps contributes nothing at all, and every closing face comes from the two new
+// inside-discs. Directly validates the "correct for multiple mid-length crossings from the same cylinder" claim
+// in this fix's own boolean.cpp comment.
+void TestBooleanCombineMixedIntersectionBothEndsMidLengthCrossing() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Same box/radius/footprint as the first fixture, but the cylinder now
+  // spans z=-2 to z=12 (length 14) - two units past the box's own z=0
+  // bottom and z=10 top. Both v_cut values (0-(-2)=2 and 10-(-2)=12) fall
+  // strictly inside (0, 14), so both box caps trigger the new gate.
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, -2.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 14.0;
+  Brep cyl = Brep::FromMixedFaces({}, {boss});
+
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Intersection);
+
+  // 1 cylindrical wall fragment [z=0..10] (split at BOTH ends by the box's
+  // own two caps, so end0_is_original == end1_is_original == false and
+  // SynthesizeEndCaps adds nothing) + 4 bottom-face inside-disc quadrants
+  // (z=0) + 4 top-face inside-disc quadrants (z=10) = 9 faces - every
+  // closing face this time comes from the new machinery, none from the
+  // pre-existing end-cap synthesis.
+  Check(result.FaceCount() == 9,
+        "a both-ends-mid-length-crossing Intersection has exactly 9 faces (1 cylindrical wall, split at BOTH ends "
+        "so SynthesizeEndCaps contributes nothing, + 4 bottom inside-disc quadrants + 4 top inside-disc "
+        "quadrants) - confirming the fix fires correctly and independently at two separate crossings of the same "
+        "cylinder");
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "a both-ends-mid-length-crossing Intersection is a genuinely CLOSED manifold with NO synthesized end cap "
+        "involved at all - both closing faces are the new inside-disc pieces");
+
+  const double hand_derived_volume = ON_PI * 2.0 * 2.0 * 10.0;  // pi*r^2*h over the box's own FULL height
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "a both-ends-mid-length-crossing Intersection's tessellated volume matches the hand-derived pi*r^2*h over "
+        "the box's own full height (the cylinder's own footprint fits entirely inside the box's cross-section, "
+        "and its axial range covers the box's own full height, so A∩B is exactly a radius-2 cylinder as tall as "
+        "the box) to within 0.05");
+}
+
+// The falsifiable claim behind this fix's own "bit-identical rail" argument (circle_clip3d.h's own doc comment
+// for ClipPolygonByCircleInsideOnly3d): the NEW inside-disc's own arc-boundary vertices and the adjoining
+// cylindrical wall's own matching boundary row are BIT-IDENTICAL after tessellation, not merely close - the
+// same style of check TestBooleanCombineMixedConformingSharedArcBoundaryIsBitIdentical already uses for the
+// pre-existing outside-wedge/cylinder-wall seam, applied here to the NEW disc/wall seam instead.
+void TestBooleanCombineMixedIntersectionInsideDiscRailIsBitIdentical() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, 6.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 8.0;
+  Brep cyl = Brep::FromMixedFaces({}, {boss});
+
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Intersection);
+
+  // BooleanCombineMixed's own switch (Intersection branch) pushes
+  // from_a.in (the box's own 4 top-face inside-disc quadrants) FIRST,
+  // before from_b.in (the cylindrical wall) and the wall's own
+  // synthesized bottom cap (appended last via SynthesizeEndCaps) -
+  // confirmed directly by this test's own face-count/ordering
+  // development, mirroring TestBooleanCombineMixedConformingSharedArcBoundaryIsBitIdentical's
+  // own established technique for locating a known face by index rather
+  // than guessing. Brep::FromMixedFaces() then places every planar face
+  // before the single cylindrical face (8 planar: 4 top-disc + 4
+  // bottom-cap, then 1 cylindrical at index 8).
+  const size_t cyl_face_index = result.MixedFaces().planar.size();
+  const std::vector<Mesh> faces = result.TessellateConforming(64, 64);
+  Check(cyl_face_index < faces.size() && cyl_face_index == 8,
+        "the Intersection result's own single cylindrical wall face lands at TessellateConforming()'s own index "
+        "8, right after the 8 planar faces (4 top-disc quadrants + 4 bottom-cap quadrants)");
+
+  const ON_Mesh& cyl_mesh = faces[cyl_face_index].raw();
+  std::vector<ON_3fPoint> cyl_top_row;
+  for (int i = 0; i < cyl_mesh.m_V.Count(); ++i) {
+    if (std::fabs(cyl_mesh.m_V[i].z - 10.0) < 1e-4) cyl_top_row.push_back(cyl_mesh.m_V[i]);
+  }
+  Check(!cyl_top_row.empty(),
+        "the cylindrical wall's own tessellated mesh has at least one top-row (z=10, its own split/non-original "
+        "end) vertex to check against");
+
+  // Face 0 is one of the 4 top-face inside-disc quadrants (from_a.in's
+  // own push order, first in the Intersection switch). Its own
+  // arc-boundary vertices are exactly the ones at distance 2 (the
+  // cylinder's own radius) from the axis (5, 5, *); its own straight
+  // radial rails (toward the disc's own center vertex) sit at every other
+  // distance down to 0.
+  const ON_Mesh& disc_mesh = faces[0].raw();
+  int disc_arc_vertices = 0;
+  int exact_matches = 0;
+  for (int i = 0; i < disc_mesh.m_V.Count(); ++i) {
+    const ON_3fPoint& p = disc_mesh.m_V[i];
+    if (std::fabs(p.z - 10.0) > 1e-4) continue;
+    const double dist = std::sqrt((p.x - 5.0) * (p.x - 5.0) + (p.y - 5.0) * (p.y - 5.0));
+    if (std::fabs(dist - 2.0) > 1e-3) continue;
+    ++disc_arc_vertices;
+    for (const ON_3fPoint& q : cyl_top_row) {
+      if (p.x == q.x && p.y == q.y && p.z == q.z) {
+        ++exact_matches;
+        break;
+      }
+    }
+  }
+  Check(disc_arc_vertices >= 15,
+        "inside-disc face 0's own tessellated mesh has a genuine, non-trivial run of arc-boundary vertices (at "
+        "radius 2 from the cylinder's own axis) to check, not a degenerate empty case");
+  Check(exact_matches == disc_arc_vertices,
+        "every one of the inside-disc's own arc-boundary vertices has a BIT-IDENTICAL (exact float ==, not "
+        "merely close) counterpart among the cylindrical wall's own top-row vertices - the same shared-boundary "
+        "mechanism (FindArcRun/detail::ArcSchedule3d, reused completely unmodified) already proven for the "
+        "pre-existing outside-wedge/cylinder-wall seam now also closes this NEW disc/wall seam bit-exactly");
+}
+
+// Confirms this fix's own new machinery (the mid-length gate and ClipPolygonByCircleInsideOnly3d call in
+// SplitMixedAgainstAllFaces' case (ii)) is genuinely INERT for Difference, not merely untested there - the
+// "generate-then-discard" argument in boolean.cpp's own comment. Deliberately reuses BuildDrilledBoxInputs' own
+// established through-hole fixture (already exercised, unmodified, by TestBooleanCombineMixedDrilledBoxThroughHole
+// and friends elsewhere in this file) rather than a fresh one: a through-hole's cylinder crosses BOTH of the
+// box's own z-caps mid-length (both v_cut values fall strictly inside (0, length), since the hole pokes one unit
+// past each end - see BuildDrilledBoxInputs' own doc comment), so this fix's new gate genuinely fires at BOTH
+// caps and ClipPolygonByCircleInsideOnly3d genuinely runs - unlike a hand-built one-sided fixture with an
+// embedded (non-face-touching) cylinder end, which would exercise a SEPARATE, pre-existing Difference gap
+// (Difference never calls SynthesizeEndCaps at all, unlike Union/Intersection - see that function's own doc
+// comment) that has nothing to do with this increment. Reusing the already-established, already-closed
+// through-hole fixture isolates exactly the claim this test makes: the new inside-discs are provably discarded
+// by Difference's own switch, not merely absent because the new code never ran.
+void TestBooleanCombineMixedDifferenceInsideDiscMachineryIsInert() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto [box, cyl] = BuildDrilledBoxInputs(/*hole_radius=*/2.0, /*hole_z0=*/-1.0, /*hole_length=*/12.0);
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+
+  // Exactly the same 13-face topology TestBooleanCombineMixedDrilledBoxThroughHole already establishes (4
+  // untouched side walls + 2 hole-punched caps of 4 wedges each + 1 cylindrical hole wall) - NOT 13 + 8, which is
+  // what leaking BOTH caps' worth of new inside-disc quadrants into the result would produce.
+  Check(result.FaceCount() == 4 + 2 * 4 + 1,
+        "a through-hole Difference (both of the box's own caps are mid-length crossings of the drilling cylinder, "
+        "so this fix's new gate fires at BOTH) still has exactly 13 faces, NOT 21 - confirming the 8 new "
+        "inside-disc quadrants this fix's own code genuinely computes here are provably discarded by Difference's "
+        "own switch, not silently leaking in");
+
+  const double hand_derived_volume = 1000.0 - ON_PI * 4.0 * 10.0;  // pi*r^2*h over the box's own full height
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "the through-hole Difference result is a genuinely CLOSED manifold, bit-for-bit the same result this "
+        "fixture already gave before this increment - the new inside-disc code ran (and was discarded) at both "
+        "caps without perturbing this result at all");
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "the through-hole Difference result's tessellated volume (div=64) matches the same hand-derived value "
+        "TestBooleanCombineMixedDrilledBoxThroughHole already establishes (at div=256) to within 0.05 - a real, "
+        "bounded arc-sampling/tessellation tolerance at this lower division count, not floating-point exactness");
 }
 
 void TestBooleanCombineMixedIntersectionUnaffectedExistingCalls() {
@@ -12132,7 +12371,11 @@ int main() {
   TestBooleanCombineMixedIntersectionFullyEmbeddedSecondGeometry();
   TestBooleanCombineMixedIntersectionDisjointIsEmpty();
   TestBooleanCombineMixedIntersectionWithoutFixIsProvablyOpen();
-  TestBooleanCombineMixedIntersectionPartialCrossingRemainsDisclosedGap();
+  TestBooleanCombineMixedIntersectionMidLengthCrossingIsClosedManifold();
+  TestBooleanCombineMixedIntersectionMidLengthCrossingSecondGeometry();
+  TestBooleanCombineMixedIntersectionBothEndsMidLengthCrossing();
+  TestBooleanCombineMixedIntersectionInsideDiscRailIsBitIdentical();
+  TestBooleanCombineMixedDifferenceInsideDiscMachineryIsInert();
   TestBooleanCombineMixedIntersectionUnaffectedExistingCalls();
   TestBooleanCombineMixedParallelCylinderUnionAxiallyDisjointBothEndsCapped();
   TestBooleanCombineMixedParallelCylinderUnionOneFullyNestedContributesNothing();

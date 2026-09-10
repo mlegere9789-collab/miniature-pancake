@@ -499,28 +499,92 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // reachable), and a falsifiability check confirming the underlying
 // unfixed fragment is provably open on its own.
 //
-// This Intersection fix does NOT make every Intersection result
-// watertight, for a reason independent of polarity: SplitMixedAgainstAllFaces'
-// own case (ii) (the planar-face-crosses-the-cylinder split, boolean.cpp)
-// builds the planar operand's own split pieces via
-// detail::ClipPolygonByCircle3d, which - per that function's own doc
-// comment - returns only the wedge pieces OUTSIDE the circle, never the
-// disc-shaped piece INSIDE it. That's exactly right for Union/Difference (a
-// boss/hole never needs the box's own material INSIDE the punched
-// footprint), but for Intersection the region inside that circle on the
-// crossed planar face is exactly the correct cap material, and it is never
-// produced. So wherever the cylinder genuinely CROSSES a planar face of the
-// other operand mid-length (a real split, end{0,1}_is_original cleared at
-// that end), a real face is still missing at that seam, and no cap
-// synthesized on the cylindrical fragment's end can supply it - that end
-// is (correctly) not original there, so SynthesizeEndCaps correctly adds
-// nothing there, neither the needed cap nor a spurious one. This is a
-// separate, pre-existing limitation this increment's own tests directly
-// confirm is unchanged (same face count with or without this fix, for a
-// cylinder that pokes through one or both of a box's own planar faces) -
-// disclosed, not silently papered over; closing it needs its own follow-up
-// (an "inside-the-circle disc fragment" producer for case (ii)), a
-// materially different, separate piece of work.
+// MID-LENGTH CROSSING INTERSECTION SEAM (closed, a later increment): the
+// paragraph above's own gap - wherever the cylinder genuinely CROSSES a
+// planar face of the other operand mid-length (a real split,
+// end{0,1}_is_original cleared at that end, so no cap synthesized on the
+// cylindrical fragment's own end can supply the missing material there
+// either) - is now closed. SplitMixedAgainstAllFaces' own case (ii) (the
+// planar-face-crosses-the-cylinder split, boolean.cpp) still builds the
+// planar operand's own OUTSIDE-the-circle wedge pieces via
+// detail::ClipPolygonByCircle3d exactly as before (that function itself is
+// completely untouched - see its own doc comment for why: it already
+// discloses TWO separate, real, confirmed regressions from prior attempts
+// to alter its own behavior in place, a "keyhole"-bridged loop and a NURBS-
+// frame-aligned arc sampling, both reverted). The missing disc-shaped
+// INSIDE piece is instead produced by a new, ADDITIVE sibling function,
+// detail::ClipPolygonByCircleInsideOnly3d (same header), sharing every
+// piece of nontrivial math (SegmentCircleCrossings, PointInPolygon2d) with
+// the existing function while never modifying it - the same
+// "new sibling, not a risky in-place edit of proven-fragile code" pattern
+// ellipse_clip3d.h's own ClipPolygonByEllipse3d/ConvexPolygonRayExitDir
+// already established for the oblique case.
+//
+// Case (ii) calls this new function ONLY when `g.cyl`'s own finite axial
+// range genuinely reaches the plane MID-LENGTH (a `v_cut` gate exactly
+// mirroring case (iii)'s own identical condition on the opposite side of
+// this same seam - see that gate's own comment in boolean.cpp) - a flush-
+// end touch is left to the existing end-cap synthesis above, unchanged.
+// The new disc pieces are split into the SAME 4-quadrant "pie slice"
+// pattern BuildEndCap's own synthesized caps already use (never a single
+// loop wrapping the whole circle - see ClipPolygonByCircleInsideOnly3d's
+// own doc comment for why: a full 0-to-2*pi ArcRun has a confirmed,
+// checked-directly duplicate-vertex seam degeneracy FindArcRun/
+// detail::ArcSchedule3d were never built to handle), so the SAME existing
+// FindArcRun helper recovers PlanarFace::ArcRun bookkeeping for them
+// completely unmodified, and Brep::TessellateConforming()'s own circle-
+// identity/axial-height matching (brep.cpp) reconciles the new disc's own
+// boundary against the adjoining cylindrical fragment's own matching row
+// with zero new code in brep.cpp/brep.h/arc_schedule3d.h at all.
+//
+// Deliberately NOT gated on BooleanOp: SplitMixedAgainstAllFaces stays
+// fully op-agnostic, exactly like every other case (i)/(ii)/(iii) branch.
+// The new disc's own representative point always classifies kIn against
+// the OTHER operand (it sits strictly inside the crossing cylinder's
+// occupied volume by construction), so the EXISTING classify-then-bucket
+// switch below already discards it for Union (never scans `.in` at all)
+// and for Difference-from-this-side (`from_a.in` is never collected
+// either) with zero new op-specific logic anywhere in this shared split
+// pipeline - verified directly, not merely argued: every existing
+// drilled-through-hole Difference/Union test (both of whose caps ARE
+// mid-length crossings of the same drilling/boss cylinder, so this new
+// code genuinely runs there too) produces an UNCHANGED face count, volume,
+// and IsClosedManifold() result, confirming "generate-then-discard" rather
+// than merely "never reached".
+//
+// One real, checked-directly subtlety this increment's own tiny-radius
+// regression testing found and fixed: RepresentativeInteriorPointMixed's
+// existing, generic SafeInteriorPoint2d-based interior-point heuristic
+// (used for every OTHER planar MixedFace shape, unchanged) picks a point
+// only a `radius`-scaled epsilon above the polygon's own lowest vertex -
+// fine for an ordinary wedge (whose own y-extent is bounded by the WHOLE
+// face's scale), but for this new function's own "pure fan" pieces (whose
+// own y-extent is bounded ONLY by the circle's radius) that margin shrinks
+// right along with the radius, and for a small enough radius relative to
+// this pipeline's own boolean tolerance (confirmed directly: radius=0.01
+// against a typical ~1e-8 tolerance) lands close enough to the arc
+// boundary to be misclassified PointClass::kOn instead of kIn, leaking a
+// spurious face into results that should have discarded it. Fixed with a
+// closed-form, always-safe representative point (half a radius out from
+// center along the arc run's own mid-angle) for exactly this one known
+// "pure fan" shape (center plus a full, uninterrupted arc run, the
+// signature no OTHER MixedFace producer in this codebase - including
+// BuildEndCap's own caps, which never reach this function at all, see
+// SynthesizeEndCaps above - happens to build), provably inert on every
+// pre-existing shape (RepresentativeInteriorPointMixed's own doc comment,
+// boolean.cpp, has the full argument).
+//
+// Honest remaining scope, unchanged from before this increment: two
+// DIFFERENT cylinders whose footprint circles interact on the SAME planar
+// face (each gets its own correctly-produced disc independently, but nei
+// -ther this fix nor ClipPolygonByCircle3d attempts to reason about a
+// once-already-clipped, non-rectangular `poly` losing convexity for a
+// second interacting circle); a non-full-circle (partial-sweep)
+// cylindrical operand (both circle-clip functions share this same
+// unstated full-circle assumption, not newly introduced or newly lifted
+// here); and oblique (non-perpendicular) plane/cylinder crossings, whose
+// own already-disclosed non-watertight-at-the-wedge-seam limitation is
+// entirely unaffected and unwidened by this increment.
 //
 // An OBLIQUE (non-axis-aligned) Union boss is a straightforward
 // generalization of already-exact primitives here (the oblique split

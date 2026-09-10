@@ -1235,6 +1235,51 @@ Point2d SafeInteriorPoint2d(const std::vector<Point2d>& poly) {
 // SplitCylindricalByObliquePlane.
 Point3d RepresentativeInteriorPointMixed(const MixedFace& f) {
   if (!f.is_cyl) {
+    // A genuine "pure fan" piece - loop == [center, arc_sample_0, ...,
+    // arc_sample_N] with NO other straight-boundary vertices at all (the
+    // one ArcRun present covers every vertex except the center at index
+    // 0) - is exactly the shape detail::ClipPolygonByCircleInsideOnly3d's
+    // own quadrant pieces have (see that function's own doc comment,
+    // circle_clip3d.h). SafeInteriorPoint2d's own generic horizontal-scan
+    // heuristic (below) picks a point only `eps`-above this piece's own
+    // lowest vertex - fine for an ordinary wedge (interleaved with
+    // `poly`'s own original boundary, so its own y-extent is bounded by
+    // the whole FACE's scale, keeping that margin comfortably above any
+    // reasonable tolerance), but for a pure fan whose own y-extent is
+    // bounded ONLY by `radius` itself, that same relative-`eps` margin
+    // shrinks right along with `radius` - and for a small enough radius
+    // (a real, checked-directly failure, not a theoretical worry: a
+    // radius=0.01 disc against this pipeline's typical ~1e-8 boolean
+    // tolerance) the chosen point lands close enough to the arc boundary
+    // to be misclassified PointClass::kOn instead of kIn against the very
+    // solid this piece is carved from, leaking a spurious face into a
+    // Difference/Union result that should have discarded it entirely.
+    // Closed-form and always safe instead, for this one known shape: the
+    // point half a radius out from `center` along the arc run's own
+    // mid-angle direction sits exactly `0.5 * radius` inside the curved
+    // boundary and strictly inside both straight radial edges (any
+    // sweep under a full turn, which every producer of this shape - this
+    // one included, see that function's own doc comment on why every arc
+    // run here stays under a half turn - already guarantees), with a
+    // margin that scales WITH `radius` instead of shrinking independently
+    // of it. Provably inert on every OTHER MixedFace shape this pipeline
+    // already builds: an ordinary ClipPolygonByCircle3d wedge always
+    // interleaves at least one piece of `poly`'s own original boundary
+    // between its own two arc endpoints (see that function's own doc
+    // comment), so `run.count` there is always strictly less than
+    // `loop.size() - 1`, and BuildEndCap's own caps never reach this
+    // function at all (SynthesizeEndCaps appends them straight to the
+    // result, see BooleanCombineMixed's own doc comment) - so this branch
+    // is reached, in this codebase today, only by
+    // ClipPolygonByCircleInsideOnly3d's own pieces.
+    const std::vector<Brep::PlanarFace::ArcRun>& runs = f.planar.arc_runs;
+    if (runs.size() == 1 && runs[0].begin == 1 &&
+        static_cast<size_t>(runs[0].count) == f.planar.loop.size() - 1) {
+      const Brep::PlanarFace::ArcRun& run = runs[0];
+      const double mid_angle = 0.5 * (run.angle_begin + run.angle_end);
+      return run.center + (0.5 * run.radius) * (std::cos(mid_angle) * run.plane_xaxis +
+                                                  std::sin(mid_angle) * run.plane_yaxis);
+    }
     const std::vector<Point2d> loop2d = ProjectLoopOntoPlaneAxes(f.planar.plane, f.planar.loop);
     const Point2d p2d = SafeInteriorPoint2d(loop2d);
     return f.planar.plane.origin + p2d.x * f.planar.plane.xaxis + p2d.y * f.planar.plane.yaxis;
@@ -2043,6 +2088,45 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
             }
             m.planar.loop = std::move(piece);
             next.push_back(std::move(m));
+          }
+
+          // The inside-circle disc, ONLY when g.cyl's own finite axial range
+          // genuinely reaches this plane MID-LENGTH - not just touching an
+          // already-original, unsplit end (that case is already correctly
+          // closed by SynthesizeEndCaps, see boolean.h's own doc comment).
+          // Mirrors case (iii)'s own identical `v_cut` condition below
+          // exactly, computed directly from `g.cyl` rather than from any
+          // fragment case (iii) may or may not have produced elsewhere -
+          // the two conditions are symmetric by construction (plane.origin
+          // minus cylinder.origin, dotted with the cylinder's own axis),
+          // not coincidentally similar.
+          //
+          // Deliberately NOT gated on BooleanOp: SplitMixedAgainstAllFaces
+          // stays fully op-agnostic (see boolean.h's own BooleanCombineMixed
+          // doc comment for the full reasoning) - the disc's own
+          // representative point always classifies kIn against the OTHER
+          // operand (it sits strictly inside the crossing cylinder's
+          // occupied volume by construction), so the EXISTING
+          // classify-then-bucket switch in BooleanCombineMixed already
+          // discards it for Union/Difference-from-this-side and keeps it
+          // for Intersection, with zero new op-specific logic anywhere in
+          // this shared split pipeline - the same reuse-not-reimplement
+          // principle this codebase's own case (i)/(ii)/(iii) dispatch
+          // already follows throughout.
+          const double v_cut = ON_DotProduct(f.planar.plane.origin - g.cyl.frame.origin, g.cyl.frame.zaxis);
+          if (v_cut > tol && v_cut < g.cyl.length - tol) {
+            for (std::vector<Point3d>& piece : detail::ClipPolygonByCircleInsideOnly3d(
+                     f.planar.loop, f.planar.plane, proj_center, g.cyl.radius, tol)) {
+              if (piece.size() < 3) continue;
+              MixedFace m;
+              m.planar.plane = f.planar.plane;
+              if (std::optional<Brep::PlanarFace::ArcRun> run =
+                      FindArcRun(piece, proj_center, g.cyl.radius, f.planar.plane, tol)) {
+                m.planar.arc_runs.push_back(*run);
+              }
+              m.planar.loop = std::move(piece);
+              next.push_back(std::move(m));
+            }
           }
         } else if (CylinderPlaneNoInteraction(g.cyl, f.planar.plane, tol)) {
           next.push_back(std::move(f));
