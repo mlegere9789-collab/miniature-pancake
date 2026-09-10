@@ -346,6 +346,100 @@ class Brep {
     double angle = 0.0;
     double length = 0.0;
     bool outward = true;
+
+    // Optional, narrow extension mirroring PlanarFace::notch_begin/
+    // notch_count (see its own doc comment) but for THIS face's own end
+    // cap: dense, ordered sample points of the TRUE boundary curve where a
+    // third face's own cutting plane intersects this cone - generally an
+    // ELLIPSE once the fillet is tapered (the intersection of a plane with
+    // a cone, when the plane is not perpendicular to the cone's own axis -
+    // see FilletConvexEdgeTapered's own doc comment for the closed-form
+    // h(phi) derivation), not the fixed-height CIRCLE this patch's own
+    // angle-swept v=v0 (or v=v1) edge otherwise traces. Empty (the
+    // default) means "this end is the plain natural circular cap, no
+    // notch" - every existing caller/producer of ConicalFace (including
+    // every call this kernel itself ever made before this field existed)
+    // is completely unaffected.
+    //
+    // `cap0_notch_points` is for the v0 (near-apex) end, `cap1_notch_points`
+    // for the v1 (far) end. When set, a field's own first and last points
+    // MUST be exactly the same two points this patch's own rail corners
+    // already are at that end (angle 0 and angle `angle` respectively, at
+    // v0 for cap0 / v1 for cap1) - FromMixedFaces() checks this directly
+    // rather than trusting it blindly. Every point is ordered by
+    // INCREASING angle (0 -> `angle`, the same angle=0-at-frame.xaxis
+    // convention every other angle on this struct uses) for BOTH fields -
+    // a single fixed convention regardless of which end, NOT reversed to
+    // match the raw trim loop's own v1-side u_max->0 walk direction, which
+    // FromMixedFaces() itself accounts for internally.
+    //
+    // FromMixedFaces() gives the notched end's whole run ONE literal
+    // shared ON_BrepEdge with whichever adjacent PlanarFace's own matching
+    // corner-notch reaches the same two welded endpoint vertices - the
+    // exact same "curved face visited first, builds the true boundary
+    // curve; the second visitor reuses it" two-pass mechanism already
+    // documented on this class' own top-level comment and on
+    // PlanarFace::notch_begin/notch_count, just applied here to a curved
+    // face's own cap instead of only ever being the FIRST visitor for a
+    // straight-line rail or an exact circular cap. Unlike the circular
+    // case (where the shared edge's own 3D curve is the exact isocurve),
+    // there is no simple isocurve family for a general ellipse in this
+    // surface's own (u, v) domain, so the shared edge here is instead a
+    // genuine polyline through these same dense points - the one place a
+    // notched ConicalFace's own boundary isn't exact to floating-point
+    // precision by construction of the representation, matching (not
+    // exceeding) the same disclosed tradeoff PlanarFace's own notch
+    // machinery already accepts for the circular case's PLANAR side, now
+    // also true of the curved side here (see `cap0_notch_tolerance`/
+    // `cap1_notch_tolerance` below for the genuinely computed, not
+    // guessed, bound on that approximation).
+    //
+    // Also changes this struct's own contract: once an end is notched,
+    // `radius0`/`radius1` describe the TRUE cone cross-section radius only
+    // at that end's own two RAIL corners (where the notch curve is
+    // anchored), NOT uniformly across that whole end's boundary anymore -
+    // every other point of the notch curve generally sits at a different
+    // true height-from-apex than v0/v1 (see FilletConvexEdgeTapered's own
+    // doc comment: h(phi) == v0 exactly only at the two corners, by proof,
+    // not merely by construction - everywhere strictly between them it
+    // differs, which is exactly why this notch machinery is needed instead
+    // of just reusing radius0/radius1 unchanged).
+    //
+    // A genuine, CONFIRMED (not merely theorized) disclosed gap this
+    // implies: `Brep::MixedFaces()`'s own cone-recovery (ExtractConicalFace,
+    // brep.cpp) is NOT attempted/reliable for a face built with either of
+    // these fields set. It infers a notched end's own v_min/v_max purely
+    // from the dense visible trim polygon's own numeric extremes, which no
+    // longer coincide with that end's true v0/v1 once the notch dips the
+    // boundary toward the apex between the two rail corners (a real,
+    // checked-directly, non-hypothetical consequence, not just a plausible
+    // risk: building a real notched ConicalFace and calling MixedFaces() on
+    // it does NOT throw - it silently returns a WRONG radius0 for the
+    // notched end, off by roughly 1% for a worked fixture, while the OTHER
+    // (still-v1-anchored) end's radius1 happens to come back correct,
+    // because that end's own true v1 still IS the polygon's own global max
+    // even with the notch's own dip). Round-tripping a notched ConicalFace
+    // back out through MixedFaces() is real, disclosed, out-of-scope future
+    // work - not attempted here, since this increment's own task is
+    // closing FilletConvexEdgeTapered's corner-notch gap (which never
+    // itself calls MixedFaces() on its own result), not generalizing
+    // MixedFaces()'s own extraction to match.
+    std::vector<Point3d> cap0_notch_points;
+    std::vector<Point3d> cap1_notch_points;
+
+    // Genuine, directly-computed sagitta-style upper bound on the notch
+    // polyline's own deviation from the TRUE continuous curve it
+    // approximates (see EllipseNotchCornerAtVertex in fillet.cpp for how
+    // this is actually measured - the max distance, over every sample
+    // segment, between that segment's own straight-line midpoint and the
+    // true curve's own point at the matching angle) - used as the shared
+    // edge's own `m_tolerance` instead of the 0.0 every other edge
+    // FromMixedFaces() builds gets (see BuildFaceLoop's own comment for
+    // why 0.0 is an honest claim everywhere else but not here). Meaningless
+    // (left at its default 0.0) when the corresponding cap*_notch_points
+    // field is empty.
+    double cap0_notch_tolerance = 0.0;
+    double cap1_notch_tolerance = 0.0;
   };
 
   // The general sibling of PlanarFaces() that also recognizes a

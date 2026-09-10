@@ -618,6 +618,15 @@ struct FaceTopology {
   // FromMixedFaces' own comment for exactly why this two-level
   // (collapsed topology, dense trim curve) split is what's needed).
   std::vector<std::vector<Point2d>> notch_interior_uv;
+  // Parallel to notch_interior_uv (same length when non-empty): the
+  // genuinely computed sagitta-style tolerance for THAT segment's own
+  // notch (see ConicalFace::cap0_notch_tolerance/cap1_notch_tolerance's
+  // own doc comment) - meaningless (0.0) at any index where
+  // notch_interior_uv is empty. Only ever populated for a ConicalFace's
+  // own cap segments (index 0/2); a PlanarFace's own notch keeps using
+  // the shared edge built by whichever CylindricalFace/ConicalFace visits
+  // first, so it never needs its own entry here.
+  std::vector<double> cap_notch_tolerance;
 };
 
 // Builds one face's genuine ON_BrepLoop plus its edges/trims (spec
@@ -638,8 +647,13 @@ struct FaceTopology {
 // instead use the surface's own isocurve (ON_Surface::IsoCurve(0, v)) so
 // the edge's C3 curve and the trim's 2D-to-surface composition are
 // identical by construction, not independently reconstructed and merely
-// close. The rectangle's other two segments (index 1 at u=curved_u_max,
-// index 3 at u=0) - the fillet's two straight "rail" lines - need no such
+// close - UNLESS that cap segment is itself notched (see
+// ConicalFace::cap0_notch_points/cap1_notch_points' own doc comment), in
+// which case the true boundary there is a curve (generally an ellipse)
+// with no simple isocurve form, so the edge is instead a dense
+// ON_PolylineCurve through the notch's own sample points (see below). The
+// rectangle's other two segments (index 1 at u=curved_u_max, index 3 at
+// u=0) - the fillet's two straight "rail" lines - need no such
 // special-casing: they're genuinely straight, so the plain ON_LineCurve
 // path already welds them against FilletConvexEdge's own re-trimmed
 // planar faces with zero extra work, exactly as that function's own doc
@@ -652,6 +666,19 @@ struct FaceTopology {
 // that so the new edge's own v0/v1 vertex assignment always matches its
 // own 3D curve's real start/end point, which every other edge here (and
 // ON_Brep's own topology in general) requires.
+//
+// A cap segment (index 0 or 2) that ALSO carries a `notch_interior_uv`
+// entry (see ConicalFace::cap0_notch_points/cap1_notch_points' own doc
+// comment) is a genuinely DIFFERENT case from the plain isocurve above:
+// its own true boundary curve is not a fixed-v isocurve at all (a plain
+// circle), so its own C3 edge curve is instead built as a dense
+// ON_PolylineCurve through the SAME (u, v) points this segment's own 2D
+// trim curve threads through below (topo.trim_uv[k], every
+// notch_interior_uv[k] entry, topo.trim_uv[k1]) - already in this
+// segment's own k->k1 walk order by construction (see
+// EllipseNotchCornerAtVertex's own doc comment for how that order is
+// guaranteed), so unlike the plain isocurve branch, no `iso_reversed`
+// correction is needed here at all.
 void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
                     std::unordered_map<uint64_t, int>& edge_of_vertex_pair) {
   ON_BrepLoop& loop = brep.NewLoop(ON_BrepLoop::outer, face);
@@ -662,7 +689,8 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
     const int vid_to = topo.vids[k1];
 
     const bool is_cap = topo.curved_surface != nullptr && (k == 0 || k == 2);
-    const bool iso_reversed = is_cap && k == 2;
+    const bool has_notch_interior = k < topo.notch_interior_uv.size() && !topo.notch_interior_uv[k].empty();
+    const bool iso_reversed = is_cap && !has_notch_interior && k == 2;
 
     const uint32_t lo = static_cast<uint32_t>(std::min(vid_from, vid_to));
     const uint32_t hi = static_cast<uint32_t>(std::max(vid_from, vid_to));
@@ -674,7 +702,22 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
       ON_Curve* c3 = nullptr;
       int curve_start_vid = vid_from;
       int curve_end_vid = vid_to;
-      if (is_cap) {
+      // See ConicalFace::cap0_notch_tolerance/cap1_notch_tolerance's own
+      // doc comment for why this, unlike every other edge here, isn't
+      // always honestly 0.0.
+      double edge_tolerance = 0.0;
+      if (is_cap && has_notch_interior) {
+        ON_3dPointArray pts3d;
+        pts3d.Append(topo.curved_surface->PointAt(topo.trim_uv[k].x, topo.trim_uv[k].y));
+        for (const Point2d& p : topo.notch_interior_uv[k]) {
+          pts3d.Append(topo.curved_surface->PointAt(p.x, p.y));
+        }
+        pts3d.Append(topo.curved_surface->PointAt(topo.trim_uv[k1].x, topo.trim_uv[k1].y));
+        auto* poly = new ON_PolylineCurve(pts3d);
+        poly->SetDomain(0.0, 1.0);
+        c3 = poly;
+        edge_tolerance = k < topo.cap_notch_tolerance.size() ? topo.cap_notch_tolerance[k] : 0.0;
+      } else if (is_cap) {
         const double v_const = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
         ON_Curve* iso = topo.curved_surface->IsoCurve(/*dir=*/0, v_const);
         if (!iso) {
@@ -716,10 +759,13 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
       // builds genuinely IS exact - a straight line between the same two
       // points its own endpoint vertices store, or a CylindricalFace
       // cap's own true isocurve - so 0.0 is the real answer, not a
-      // plugged-in default. Pass 5 below calls SetTolerancesBoxesAndFlags
-      // with bLazy=true specifically so it leaves this alone instead of
-      // overwriting it back to unset.
-      edge.m_tolerance = 0.0;
+      // plugged-in default - EXCEPT a notched ConicalFace cap edge (see
+      // above), which is honestly a polygonal approximation of a curve
+      // with no simple isocurve form, carrying its own genuinely computed
+      // `edge_tolerance` instead of a false claim of exactness. Pass 5
+      // below calls SetTolerancesBoxesAndFlags with bLazy=true
+      // specifically so it leaves this alone instead of overwriting it.
+      edge.m_tolerance = edge_tolerance;
       edge_index = edge.m_edge_index;
       edge_of_vertex_pair.emplace(key, edge_index);
     } else {
@@ -737,8 +783,6 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
     const bool bRev3d = (edge.m_vi[0] != vid_from);
 
     ON_Curve* c2 = nullptr;
-    const bool has_notch_interior =
-        k < topo.notch_interior_uv.size() && !topo.notch_interior_uv[k].empty();
     if (has_notch_interior) {
       // This segment is a PlanarFace's own collapsed notch run (see
       // PlanarFace::notch_begin/notch_count's own doc comment): the real
@@ -998,18 +1042,138 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     face.m_bRev = !cf.outward;
     const std::vector<Point2d> trim = {Point2d(0.0, v0), Point2d(u_max, v0), Point2d(u_max, v1),
                                         Point2d(0.0, v1)};
-    result.face_trim_loops_.push_back(trim);
+
+    const Point3d corner00 = surface->PointAt(0.0, v0);
+    const Point3d corner_u0 = surface->PointAt(u_max, v0);
+    const Point3d corner_u1 = surface->PointAt(u_max, v1);
+    const Point3d corner01 = surface->PointAt(0.0, v1);
+
+    // See ConicalFace::cap0_notch_points/cap1_notch_points' own doc
+    // comment: converts a dense list of 3D points already known to lie on
+    // this cone (in fixed increasing-angle order) into their own (u, v)
+    // coordinates on THIS specific surface - the same "evaluate the REAL
+    // surface, don't trust an independently-reconstructed parameter"
+    // principle MixedFaces()'s own cylinder/cone recovery already uses,
+    // applied here in the forward (build) direction instead.
+    auto notch_uv = [&](const std::vector<Point3d>& pts3d) {
+      std::vector<Point2d> uv;
+      uv.reserve(pts3d.size());
+      for (const Point3d& p : pts3d) {
+        const Vector3d d = p - cf.frame.origin;
+        const double height = d * cf.frame.zaxis;
+        const double x = d * cf.frame.xaxis, y = d * cf.frame.yaxis;
+        double phi = std::atan2(y, x);
+        if (phi < 0.0) phi += 2.0 * ON_PI;
+        double u = 0.0;
+        if (!u_ref_circle.GetNurbFormParameterFromRadian(phi, &u)) {
+          throw std::runtime_error(
+              "dino8::kernel::Brep::FromMixedFaces: a ConicalFace's own cap "
+              "notch point's angle is out of ON_Circle's own NURBS-"
+              "parameterization domain");
+        }
+        // Checked invariant, not merely trusted: this (u, height) point,
+        // evaluated back through the REAL surface, must reproduce the
+        // same 3D point this whole notch is built from.
+        const Point3d check = surface->PointAt(u, height);
+        const double tol = std::max(1e-6, (cf.radius0 + cf.radius1) * 1e-6);
+        if (check.DistanceTo(p) > tol) {
+          throw std::runtime_error(
+              "dino8::kernel::Brep::FromMixedFaces: a ConicalFace's own cap "
+              "notch point does not lie on the cone's own real surface "
+              "within tolerance - please report this as a bug");
+        }
+        uv.emplace_back(u, height);
+      }
+      return uv;
+    };
+
+    std::vector<Point2d> cap0_interior_uv;  // notch_interior_uv[0], empty unless notched
+    std::vector<Point2d> cap1_interior_uv;  // notch_interior_uv[2] (already REVERSED), empty unless notched
+    double cap0_tol = 0.0, cap1_tol = 0.0;
+    std::vector<Point2d> cap0_full_uv, cap1_full_uv_reversed;  // for the visible trim, below
+
+    if (!cf.cap0_notch_points.empty()) {
+      if (cf.cap0_notch_points.size() < 2) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: ConicalFace::cap0_notch_points "
+            "must have at least 2 points (the two rail corners) when non-empty");
+      }
+      if (cf.cap0_notch_points.front().DistanceTo(corner00) > 1e-6 ||
+          cf.cap0_notch_points.back().DistanceTo(corner_u0) > 1e-6) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: ConicalFace::cap0_notch_points's "
+            "own first/last points must exactly match this face's own two rail "
+            "corners at v0 (angle 0 and angle `angle` respectively)");
+      }
+      cap0_full_uv = notch_uv(cf.cap0_notch_points);
+      cap0_interior_uv.assign(cap0_full_uv.begin() + 1, cap0_full_uv.end() - 1);
+      cap0_tol = cf.cap0_notch_tolerance;
+    }
+    if (!cf.cap1_notch_points.empty()) {
+      if (cf.cap1_notch_points.size() < 2) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: ConicalFace::cap1_notch_points "
+            "must have at least 2 points (the two rail corners) when non-empty");
+      }
+      if (cf.cap1_notch_points.front().DistanceTo(corner01) > 1e-6 ||
+          cf.cap1_notch_points.back().DistanceTo(corner_u1) > 1e-6) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: ConicalFace::cap1_notch_points's "
+            "own first/last points must exactly match this face's own two rail "
+            "corners at v1 (angle 0 and angle `angle` respectively)");
+      }
+      const std::vector<Point2d> full_uv = notch_uv(cf.cap1_notch_points);
+      // Segment index 2 walks u_max->0 (j->i, decreasing angle) - the
+      // REVERSE of cap1_notch_points' own fixed i->j convention (see that
+      // field's own doc comment) - so both the topology-only interior list
+      // and the visible-trim splice below need it reversed.
+      cap1_full_uv_reversed.assign(full_uv.rbegin(), full_uv.rend());
+      cap1_interior_uv.assign(cap1_full_uv_reversed.begin() + 1, cap1_full_uv_reversed.end() - 1);
+      cap1_tol = cf.cap1_notch_tolerance;
+    }
+
+    // The VISIBLE (tessellated) trim boundary: the plain rectangle's own 4
+    // corners, with either notched segment's straight corner-to-corner
+    // edge replaced by its own dense chain - this is what actually changes
+    // this face's own TESSELLATED shape (see ConicalFace::cap0_notch_points'
+    // own doc comment), independent of the topology-only collapse above.
+    std::vector<Point2d> visible_trim;
+    if (!cap0_full_uv.empty()) {
+      visible_trim.insert(visible_trim.end(), cap0_full_uv.begin(), cap0_full_uv.end());
+    } else {
+      visible_trim.push_back(trim[0]);
+      visible_trim.push_back(trim[1]);
+    }
+    // trim[2] (corner_u1) always comes next, whether from the straight
+    // rail-j segment (B: c1->c2) landing there or as cap0's own chain's
+    // implicit successor - either way it's the start of segment C
+    // (c2->c3), so it's added exactly once here; cap1_full_uv_reversed's
+    // OWN first point is that same corner_u1 (see above), so it's skipped
+    // (begin() + 1) to avoid duplicating it.
+    visible_trim.push_back(trim[2]);
+    if (!cap1_full_uv_reversed.empty()) {
+      visible_trim.insert(visible_trim.end(), cap1_full_uv_reversed.begin() + 1, cap1_full_uv_reversed.end());
+    } else {
+      visible_trim.push_back(trim[3]);
+    }
+
+    result.face_trim_loops_.push_back(visible_trim);
     result.face_exact_clip_.push_back(true);
     result.face_hole_loops_.emplace_back();
 
     FaceTopology t;
     t.trim_uv = trim;
-    t.vids = {welder.Weld(surface->PointAt(0.0, v0)), welder.Weld(surface->PointAt(u_max, v0)),
-              welder.Weld(surface->PointAt(u_max, v1)), welder.Weld(surface->PointAt(0.0, v1))};
+    t.vids = {welder.Weld(corner00), welder.Weld(corner_u0), welder.Weld(corner_u1), welder.Weld(corner01)};
     t.curved_surface = surface;
     t.curved_u_max = u_max;
     t.curved_v0 = v0;
     t.curved_length = v1 - v0;
+    t.notch_interior_uv.resize(4);
+    t.notch_interior_uv[0] = std::move(cap0_interior_uv);
+    t.notch_interior_uv[2] = std::move(cap1_interior_uv);
+    t.cap_notch_tolerance.assign(4, 0.0);
+    t.cap_notch_tolerance[0] = cap0_tol;
+    t.cap_notch_tolerance[2] = cap1_tol;
     topo.push_back(std::move(t));
   }
 

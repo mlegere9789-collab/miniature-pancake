@@ -142,6 +142,162 @@ void NotchCornerAtVertex(std::vector<Brep::PlanarFace>& other_faces, const Point
   }
 }
 
+// Same corner-notch splicing NotchCornerAtVertex performs (see its own doc
+// comment for the shared machinery this mirrors) but for
+// FilletConvexEdgeTapered's own cone patch: sampling the TRUE ELLIPSE
+// where the cone meets a third face's cutting plane (the plane through
+// `vertex` perpendicular to `e`, the SAME plane that face's own boundary
+// already lies in) instead of a plain circle - see fillet.h's own doc
+// comment for the worked closed-form derivation this evaluates:
+//   g(phi) = u_hat + tan_half_angle*(cos(phi)*xaxis + sin(phi)*yaxis)
+//   h(phi) = ((vertex - apex) . e) / (g(phi) . e)
+//   P(phi) = apex + h(phi)*g(phi)
+//
+// Besides splicing the dense sample run into whichever PLANAR face is
+// found perpendicular to `e` at `vertex` (identical mechanics to
+// NotchCornerAtVertex, including its own "can't unambiguously tell which
+// neighbor is on face i's/j's side, leave alone" and "no matching face,
+// silently no-op" behavior), this ALSO returns the SAME dense sample list
+// via `cap_notch_points_out` - always in increasing-angle (i-to-j, angle 0
+// -> sweep_angle) order regardless of which physical direction the found
+// face's own loop happens to walk (matching ConicalFace::
+// cap0_notch_points/cap1_notch_points' own fixed-direction convention) -
+// plus a genuinely measured (not guessed) sagitta-style tolerance via
+// `cap_notch_tolerance_out`, so FilletConvexEdgeTapered can feed the
+// IDENTICAL points into the ConicalFace's own cap0_notch_points/
+// cap1_notch_points: the fillet's own true cap patch and the notched
+// third face then share a LITERAL boundary curve, not two independently
+// -plausible approximations of two different curves (see fillet.h's own
+// doc comment for why that distinction is the actual, checked-directly
+// finding this construction exists to fix).
+//
+// Throws std::runtime_error if g(phi).e changes sign (or gets too close to
+// 0) across the swept angle: this would mean the cutting plane is
+// asymptotically parallel to (or crosses) one of the cone's own rulings
+// strictly inside the sweep - a real geometric degeneracy the closed
+// form's own division would otherwise silently blow up on, checked
+// directly here rather than assumed impossible (unlike `c` in
+// FilletConvexEdgeTapered's own cone construction, which IS provably
+// never degenerate for any valid convex dihedral/taper - see that
+// function's own doc comment; this is a genuinely different, real failure
+// mode that only arises once a THIRD face's own cutting plane is brought
+// into the picture).
+void EllipseNotchCornerAtVertex(std::vector<Brep::PlanarFace>& other_faces, const Point3d& vertex,
+                                 const Vector3d& e, const ON_Plane& plane_i, const ON_Plane& plane_j,
+                                 const Point3d& apex, const Vector3d& u_hat, const Vector3d& xaxis,
+                                 const Vector3d& yaxis, double tan_half_angle, double sweep_angle, double tol,
+                                 std::vector<Point3d>& cap_notch_points_out, double& cap_notch_tolerance_out) {
+  auto g = [&](double phi) {
+    return u_hat + tan_half_angle * (std::cos(phi) * xaxis + std::sin(phi) * yaxis);
+  };
+  auto h_of = [&](double phi) { return ((vertex - apex) * e) / (g(phi) * e); };
+  auto ellipse_pt = [&](double phi) { return apex + h_of(phi) * g(phi); };
+
+  // Checked invariant: g(phi).e must not change sign (or vanish) across
+  // [0, sweep_angle] - see this function's own doc comment.
+  {
+    const double ge0 = g(0.0) * e;
+    const double sign0 = ge0 >= 0.0 ? 1.0 : -1.0;
+    for (int s = 0; s <= kNotchSamples; ++s) {
+      const double phi = sweep_angle * static_cast<double>(s) / kNotchSamples;
+      if (g(phi) * e * sign0 < 1e-9) {
+        throw std::runtime_error(
+            "dino8::kernel::EllipseNotchCornerAtVertex: the cutting plane is "
+            "asymptotically parallel to (or crosses) one of the cone's own "
+            "rulings within the swept angle - the closed-form h(phi) is "
+            "degenerate here, a genuine geometric limit of this "
+            "construction (see fillet.h's own doc comment), not a bug");
+      }
+    }
+  }
+
+  for (Brep::PlanarFace& f : other_faces) {
+    // Only a face perpendicular to `e` can share this cutting plane at
+    // all - same test NotchCornerAtVertex uses.
+    if (std::fabs(f.plane.zaxis * e) < 1.0 - 1e-6) continue;
+
+    std::vector<Point3d>& loop = f.loop;
+    const size_t n = loop.size();
+    for (size_t k = 0; k < n; ++k) {
+      if (loop[k].DistanceTo(vertex) > tol) continue;
+      const Point3d& pred = loop[(k + n - 1) % n];
+      const Point3d& succ = loop[(k + 1) % n];
+      const bool pred_on_i = std::fabs(plane_i.DistanceTo(pred)) <= tol;
+      const bool pred_on_j = std::fabs(plane_j.DistanceTo(pred)) <= tol;
+      const bool succ_on_i = std::fabs(plane_i.DistanceTo(succ)) <= tol;
+      const bool succ_on_j = std::fabs(plane_j.DistanceTo(succ)) <= tol;
+      bool i_to_j;
+      if (pred_on_i && succ_on_j) {
+        i_to_j = true;
+      } else if (pred_on_j && succ_on_i) {
+        i_to_j = false;
+      } else {
+        continue;
+      }
+
+      // Canonical i->j (angle 0 -> sweep_angle) sample list - always in
+      // this fixed order, matching ConicalFace::cap0_notch_points/
+      // cap1_notch_points' own documented convention; only the SPLICE
+      // direction into this particular face's own loop (below) depends on
+      // i_to_j, exactly mirroring NotchCornerAtVertex's own handling.
+      std::vector<Point3d> canonical;
+      canonical.reserve(static_cast<size_t>(kNotchSamples) + 1);
+      for (int s = 0; s <= kNotchSamples; ++s) {
+        const double phi = sweep_angle * static_cast<double>(s) / kNotchSamples;
+        canonical.push_back(ellipse_pt(phi));
+      }
+
+      // Genuine sagitta-style tolerance: the max distance, over every
+      // sample segment, from that segment's own straight-line midpoint to
+      // the TRUE curve's own point at the matching midpoint angle - a
+      // real, directly measured bound on this polygonal approximation's
+      // own error (not a guess), the same quantity
+      // FilletConvexEdge's own kNotchSamples doc comment argues is "far
+      // below any reasonable volume tolerance" for the circle case,
+      // computed here explicitly since it needs independent verification
+      // for this genuinely different (non-circular) curve.
+      double max_sagitta = 0.0;
+      for (int s = 0; s < kNotchSamples; ++s) {
+        const double phi_mid = sweep_angle * (static_cast<double>(s) + 0.5) / kNotchSamples;
+        const Point3d chord_mid =
+            0.5 * (canonical[static_cast<size_t>(s)] + canonical[static_cast<size_t>(s) + 1]);
+        max_sagitta = std::max(max_sagitta, chord_mid.DistanceTo(ellipse_pt(phi_mid)));
+      }
+
+      std::vector<Point3d> arc = canonical;
+      if (!i_to_j) std::reverse(arc.begin(), arc.end());
+
+      std::vector<Point3d> new_loop;
+      new_loop.reserve(n - 1 + arc.size());
+      for (size_t mm = 0; mm < n; ++mm) {
+        if (mm == k) {
+          new_loop.insert(new_loop.end(), arc.begin(), arc.end());
+        } else {
+          new_loop.push_back(loop[mm]);
+        }
+      }
+      loop = std::move(new_loop);
+
+      f.notch_begin = static_cast<int>(k);
+      f.notch_count = static_cast<int>(arc.size());
+
+      // Only the FIRST matching face's own sample list feeds the
+      // ConicalFace's own cap - there is exactly one true cutting plane
+      // per end, so exactly one canonical sample list is meaningful,
+      // mirroring NotchCornerAtVertex's own "a face shouldn't need it
+      // twice" assumption. Still keep iterating `other_faces` afterward
+      // (matching NotchCornerAtVertex's own control flow) rather than
+      // returning outright, in case a more exotic solid legitimately has
+      // more than one perpendicular face here.
+      if (cap_notch_points_out.empty()) {
+        cap_notch_points_out = std::move(canonical);
+        cap_notch_tolerance_out = max_sagitta;
+      }
+      break;  // this face's corner is notched; move on to the next face
+    }
+  }
+}
+
 }  // namespace
 
 Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius) {
@@ -618,13 +774,18 @@ Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1
   }
 
   // --- assemble: all untouched faces, then the two re-trimmed ones, then
-  // the one new ConicalFace. Deliberately NO NotchCornerAtVertex call -
-  // v1's own explicit, honest scope-out (see this function's own doc
-  // comment): once m != 0 the cone's own axis is not parallel to e, so a
-  // third face perpendicular to e has a true cross-section there that is
-  // an ELLIPSE, not the circular arc NotchCornerAtVertex hardcodes -
-  // reusing it unchanged would be silently wrong, so any such face's
-  // sharp corner is left untouched instead.
+  // the one new ConicalFace. Close the two ends exactly as
+  // FilletConvexEdge's own NotchCornerAtVertex does for the
+  // constant-radius case, generalized to sample the TRUE ELLIPSE (not a
+  // circle) where a third face perpendicular to `e` meets this now-tilted
+  // cone - see EllipseNotchCornerAtVertex's own doc comment and fillet.h's
+  // own doc comment for the closed-form derivation this closes v1's own
+  // disclosed gap with. `tan_half_angle` is recomputed here from
+  // fillet_face's own already-finalized radius0/radius1/length fields
+  // (the exact same formula Brep::FromMixedFaces independently recomputes
+  // from the SAME fields - see fillet.h's own doc comment - keeping the
+  // two constructions provably consistent rather than threading one more
+  // parameter through by hand).
   std::vector<Brep::PlanarFace> others;
   others.reserve(faces.size() - 2);
   for (size_t f = 0; f < faces.size(); ++f) {
@@ -632,6 +793,14 @@ Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1
       others.push_back(faces[f]);
     }
   }
+
+  const double tan_half_angle = (fillet_face.radius1 - fillet_face.radius0) / fillet_face.length;
+  EllipseNotchCornerAtVertex(others, edge_p0, e, plane_i, plane_j, apex, u_hat, xaxis, yaxis, tan_half_angle,
+                              cone_sweep_angle, tol, fillet_face.cap0_notch_points,
+                              fillet_face.cap0_notch_tolerance);
+  EllipseNotchCornerAtVertex(others, edge_p1, e, plane_i, plane_j, apex, u_hat, xaxis, yaxis, tan_half_angle,
+                              cone_sweep_angle, tol, fillet_face.cap1_notch_points,
+                              fillet_face.cap1_notch_tolerance);
 
   std::vector<Brep::PlanarFace> mixed_planar = std::move(others);
   mixed_planar.push_back(std::move(retrimmed_i));

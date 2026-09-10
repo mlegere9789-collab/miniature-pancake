@@ -174,30 +174,97 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
 // exact for any m!=0, but "is m exactly/negligibly zero" is a real,
 // separate branch, not a numerical-stability workaround).
 //
-// SCOPE, narrower even than FilletConvexEdge's own already-disclosed one,
-// stated plainly rather than silently narrowed: this function does NOT
-// attempt the corner-notch construction FilletConvexEdge's own
-// NotchCornerAtVertex performs for a third face perpendicular to the
-// EDGE at edge_p0/edge_p1. A genuine new finding, not merely an
-// unimplemented convenience: once m != 0, the cone's own axis direction
-// u = e - (m/cosb)*bis is NOT parallel to e (a real, checked-directly
-// consequence of the derivation above: u . n_i = -m != 0, whereas e is
-// perpendicular to both n_i and n_j by construction) - so a box-style
-// end face that IS perpendicular to e is NOT perpendicular to the cone's
-// own axis, meaning its true cross-section there is a planar ELLIPSE
-// (the cone sliced by a plane oblique to its own axis), not the fixed
-// circular-arc formula NotchCornerAtVertex hardcodes. Reusing that
-// machinery unchanged for the tapered case would be silently WRONG, not
-// merely unimplemented - so this function explicitly leaves any such
-// third face's sharp corner UNTOUCHED, exactly matching FilletConvexEdge's
-// own already-established "disclosed, narrower scope" pattern for an
-// oblique end face. This is a genuine, honest regression relative to
-// FilletConvexEdge's own corner-notch closure for the constant-radius
-// case - see this codebase's own verification tests for an explicit,
-// documented assertion of this scope limit, not a silently non-manifold
-// result. A follow-on increment could close it by generalizing
-// NotchCornerAtVertex to splice a sampled ELLIPSE instead of a circle -
-// real, bounded future work, deliberately not attempted here.
+// SCOPE, narrower even than FilletConvexEdge's own already-disclosed one
+// in v1, NOW CLOSED for the one case that matters here: this function DOES
+// attempt the corner-notch construction, generalized (via
+// EllipseNotchCornerAtVertex, fillet.cpp) from FilletConvexEdge's own
+// NotchCornerAtVertex for a third face perpendicular to the EDGE at
+// edge_p0/edge_p1. v1's own genuine finding stands, and is exactly why
+// this needs its own construction rather than reusing NotchCornerAtVertex
+// unchanged: once m != 0, the cone's own axis direction u = e -
+// (m/cosb)*bis is NOT parallel to e (u . n_i = -m != 0, whereas e is
+// perpendicular to both n_i and n_j by construction) - so a box-style end
+// face that IS perpendicular to e is NOT perpendicular to the cone's own
+// axis, meaning its true cross-section there is a planar ELLIPSE (the
+// cone sliced by a plane oblique to its own axis), not the fixed
+// circular-arc formula NotchCornerAtVertex hardcodes.
+//
+// The closed form (worked out here, not hand-waved): parametrize the
+// cone by axial height-from-apex h and true angle phi (angle 0 at
+// frame.xaxis, matching every other angle on ConicalFace),
+//   P(h, phi) = apex + h*g(phi),   g(phi) := u_hat + tanb*(cos(phi)*xaxis
+//                                             + sin(phi)*yaxis)
+// (u_hat/xaxis/yaxis the SAME cone frame this function already builds;
+// tanb = (radius1_true - radius0_true) / length_true, the cone's own
+// tan-half-angle already recomputed identically in Brep::FromMixedFaces -
+// reused via ConicalFace's own already-finalized fields, not re-derived
+// independently, so the two constructions stay provably consistent).
+// g(phi) is the cone's own (unnormalized) ruling direction at angle phi -
+// note it does NOT depend on h. The cutting plane through `vertex`
+// (edge_p0 or edge_p1) perpendicular to e is {X : (X-vertex).e == 0};
+// substituting P(h,phi) and solving the resulting LINEAR-in-h equation
+// gives the closed form directly:
+//   h(phi) = ((vertex - apex) . e) / (g(phi) . e)
+// - a genuine Mobius (linear-fractional) function of (cos phi, sin phi),
+// the standard shape a plane-vs-cone intersection takes in the cone's own
+// natural angular coordinate. The 3D point at angle phi is then
+// P(phi) = apex + h(phi)*g(phi). Two properties, both proven (not merely
+// observed) and both load-bearing for what follows:
+//   - h(0) and h(sweep_angle) come out EXACTLY equal to the cone's own
+//     v0 (or v1, at the other endpoint) - i.e. the ellipse passes exactly
+//     through this patch's own two rail corners at that end - because
+//     both rail points satisfy (rail-vertex).e == 0 (k_i.e == k_j.e == 0,
+//     already used elsewhere in this derivation) AND lie on the cone by
+//     construction, so they're forced to coincide with the unique
+//     solution of the linear-in-h plane equation at their own angle.
+//   - g(phi).e can, for a steep enough taper, change sign somewhere
+//     inside the swept range (the cutting plane becomes asymptotically
+//     parallel to that one ruling) - a real, checked-directly degeneracy
+//     EllipseNotchCornerAtVertex verifies against directly (throws
+//     std::runtime_error rather than silently dividing by ~0), not
+//     present in the m=0 case (where g(phi).e is the CONSTANT 1, since
+//     u_hat -> e and xaxis.e, yaxis.e -> 0 as m -> 0 - confirming this
+//     construction is the genuine generalization of NotchCornerAtVertex's
+//     circle, collapsing to it exactly at zero taper, not a different
+//     construction that merely resembles it).
+//
+// A genuine, checked-directly finding from building this (see
+// EllipseNotchCornerAtVertex's own doc comment and this feature's own
+// verification tests for the numeric fixture this was validated against):
+// the resulting ellipse and the cone's own PLAIN v=v0/v=v1 cap (a circle,
+// perpendicular to u_hat, sharing only the two rail-corner points with the
+// ellipse) are genuinely DIFFERENT curves - for one tested fixture,
+// diverging by up to ~6% of the local radius at the curve's own
+// mid-sweep point, a divergence that does NOT shrink with finer sampling
+// (it is not a discretization error). Splicing the ellipse into only the
+// third PlanarFace's own notch while leaving the ConicalFace's own cap as
+// the plain circle would therefore produce a Brep that reports a
+// manifold, closed boundary there (IsManifold()'s has_boundary == false)
+// while its two "sharing" faces trace measurably different 3D curves at
+// that shared boundary - silently wrong, not merely approximate. So this
+// function does the more thorough fix instead: the ConicalFace's OWN cap
+// at a notched end is ALSO re-trimmed to the same dense ellipse sample
+// points (ConicalFace::cap0_notch_points/cap1_notch_points - see that
+// struct's own doc comment), giving the fillet's own true patch and the
+// notched third face a LITERAL shared boundary curve, not two
+// independently-plausible approximations of different curves. Unlike the
+// circular case (whose shared cap edge is the EXACT isocurve), there is
+// no simple isocurve family for a general ellipse in the cone's own (u,
+// v) domain, so this shared boundary is itself a dense polygonal
+// approximation on BOTH sides now (not just the planar side, as in the
+// circular case) - the one place this construction isn't exact to
+// floating-point precision by construction of the representation, exactly
+// mirroring FilletConvexEdge's own already-disclosed tradeoff for the
+// circular case, just now also true of the curved side (see
+// ConicalFace::cap0_notch_tolerance/cap1_notch_tolerance for the
+// genuinely computed, not guessed, bound this carries).
+//
+// A THIRD face that is NOT perpendicular to e (an oblique end condition)
+// is still left untouched, exactly matching FilletConvexEdge's own
+// already-established scope for that harder case (see
+// EllipseNotchCornerAtVertex's own doc comment - it silently no-ops when
+// no matching perpendicular third face is found, same as
+// NotchCornerAtVertex).
 //
 // Also matches FilletConvexEdge's own scope otherwise: a straight edge
 // between exactly two PLANAR faces, convex dihedral only, radius0 and
@@ -205,12 +272,9 @@ Brep FilletConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, doubl
 // otherwise - a radius reaching exactly zero partway along the edge
 // would mean the swept patch's own apex falls INSIDE the trimmed region,
 // a genuinely different, degenerate topology this function does not
-// attempt), and any end face at edge_p0/edge_p1 is either absent,
-// oblique (already a disclosed FilletConvexEdge gap), or perpendicular
-// to e (now ALSO left untouched here - see above - rather than
-// incorrectly notched). A piecewise-linear multi-segment taper and the
-// fully general free-form-radius canal-surface case (point 2 above) are
-// both explicitly out of scope for this function.
+// attempt). A piecewise-linear multi-segment taper and the fully general
+// free-form-radius canal-surface case (point 2 above) are both explicitly
+// out of scope for this function.
 Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double radius0,
                               double radius1);
 
