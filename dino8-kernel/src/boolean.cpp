@@ -1,9 +1,14 @@
 #include "dino8/kernel/boolean.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 #include <manifold/manifold.h>
+
+#include "dino8/kernel/detail/polygon2d.h"
 
 namespace dino8::kernel {
 
@@ -311,13 +316,37 @@ bool IsConvex(const std::vector<Brep::PlanarFace>& faces, double tol) {
   return true;
 }
 
-// Sutherland-Hodgman: clips a convex 3D polygon (already known to lie in
-// one plane) against one half-space, keeping the side the plane's own
-// normal points away from (DistanceTo <= tol is "inside").
-std::vector<Point3d> ClipByHalfspace(const std::vector<Point3d>& poly, const ON_Plane& clip_plane, double tol) {
-  if (poly.size() < 3) return {};
-  std::vector<Point3d> out;
-  out.reserve(poly.size() + 1);
+// Sutherland-Hodgman, run once but keeping BOTH children instead of only
+// the "inside" one: a single pass over `poly`'s edges classifies each
+// vertex against `clip_plane` and files it (or, at a sign change, the
+// shared interpolated crossing point) into `inside` and/or `outside`.
+// This "split, not clip" primitive is what every non-convex boolean below
+// is built from - see Requicha & Voelcker, "Boolean operations in solid
+// modeling: Boundary evaluation and merging algorithms," Proc. IEEE 73(1),
+// 1985, for the classical (unpatented) boundary-evaluation technique this
+// implements: partitioning a face against every plane of the other solid
+// until each surviving fragment lies wholly on one side of every such
+// plane and can be classified with a single point-in-solid test.
+//
+// Valid for a CONCAVE `poly`, not just a convex one: clipping against a
+// single half-space (one plane) is a purely local per-edge operation that
+// doesn't depend on the subject polygon's own convexity. If the plane
+// crosses a concave polygon's boundary more than twice, one side's output
+// is a single vertex loop that revisits the cut line more than once (two
+// or more regions joined by zero-net-area "bridge" edges lying exactly on
+// the cut) rather than several separate loops - the same "keyhole" trick
+// used to triangulate a polygon with a hole - whose signed area, and
+// hence any ear-clip triangulation of it, still comes out exactly right.
+struct HalfspaceSplit {
+  std::vector<Point3d> inside;
+  std::vector<Point3d> outside;
+};
+
+HalfspaceSplit SplitByHalfspace(const std::vector<Point3d>& poly, const ON_Plane& clip_plane, double tol) {
+  HalfspaceSplit result;
+  if (poly.size() < 3) return result;
+  result.inside.reserve(poly.size() + 1);
+  result.outside.reserve(poly.size() + 1);
   const size_t n = poly.size();
   for (size_t i = 0; i < n; ++i) {
     const Point3d& cur = poly[i];
@@ -326,13 +355,30 @@ std::vector<Point3d> ClipByHalfspace(const std::vector<Point3d>& poly, const ON_
     const double dn = clip_plane.DistanceTo(nxt);
     const bool cur_in = dc <= tol;
     const bool nxt_in = dn <= tol;
-    if (cur_in) out.push_back(cur);
+    if (cur_in) {
+      result.inside.push_back(cur);
+    } else {
+      result.outside.push_back(cur);
+    }
     if (cur_in != nxt_in && std::fabs(dc - dn) > 1e-15) {
       const double t = dc / (dc - dn);
-      out.push_back(cur + t * (nxt - cur));
+      const Point3d crossing = cur + t * (nxt - cur);
+      // The crossing point sits exactly on `clip_plane`, so it's a shared
+      // vertex of BOTH children - the new edge along the cut.
+      result.inside.push_back(crossing);
+      result.outside.push_back(crossing);
     }
   }
-  return out;
+  return result;
+}
+
+// Clips a convex 3D polygon (already known to lie in one plane) against
+// one half-space, keeping the side the plane's own normal points away
+// from (DistanceTo <= tol is "inside"). A thin wrapper so
+// ClipByAllHalfspaces/BooleanIntersectConvexPlanar - both of which only
+// ever want the "inside" child - need no change.
+std::vector<Point3d> ClipByHalfspace(const std::vector<Point3d>& poly, const ON_Plane& clip_plane, double tol) {
+  return SplitByHalfspace(poly, clip_plane, tol).inside;
 }
 
 // When a clip plane's boundary exactly coincides with an existing edge or
@@ -364,6 +410,299 @@ std::vector<Point3d> ClipByAllHalfspaces(std::vector<Point3d> poly, const std::v
     if (poly.size() < 3) return {};
   }
   return poly;
+}
+
+// ---------------------------------------------------------------------
+// Non-convex planar boolean (BooleanCombinePlanar, below): split every
+// face of A against every plane of B (and vice versa), classify each
+// surviving fragment IN/OUT/ON the other solid, then reassemble the
+// fragments the op calls for. Classical Requicha & Voelcker boundary
+// evaluation (see SplitByHalfspace's own doc comment for the citation),
+// generalized from BooleanIntersectConvexPlanar's convex-only clipping
+// to solids of either shape.
+// ---------------------------------------------------------------------
+
+// Splits `loop` against EVERY plane of `other`, keeping both children of
+// every cut instead of only the inside one: a worklist starts as `{loop}`
+// and each plane of `other` in turn runs every polygon currently in the
+// worklist through SplitByHalfspace, replacing it with whichever of its
+// inside/outside children survive CleanPolygon with >= 3 vertices. After
+// every plane has been applied, each surviving polygon lies entirely on
+// one side of every plane of `other` - see ClassifyPointVsSolid's own
+// comment for why that's exactly what makes single-point classification
+// of each survivor valid, even when `loop` (or `other`) is non-convex.
+std::vector<std::vector<Point3d>> SplitAgainstAllPlanes(std::vector<Point3d> loop,
+                                                         const std::vector<Brep::PlanarFace>& other, double tol) {
+  std::vector<std::vector<Point3d>> worklist;
+  worklist.push_back(std::move(loop));
+  for (const Brep::PlanarFace& f : other) {
+    std::vector<std::vector<Point3d>> next;
+    next.reserve(worklist.size() * 2);
+    for (const std::vector<Point3d>& poly : worklist) {
+      const HalfspaceSplit split = SplitByHalfspace(poly, f.plane, tol);
+      std::vector<Point3d> inside = CleanPolygon(split.inside, tol);
+      std::vector<Point3d> outside = CleanPolygon(split.outside, tol);
+      if (inside.size() >= 3) next.push_back(std::move(inside));
+      if (outside.size() >= 3) next.push_back(std::move(outside));
+    }
+    worklist = std::move(next);
+  }
+  return worklist;
+}
+
+// Projects a 3D point already known to lie in `plane` onto the plane's
+// own (x, y) axes - the same local 2D coordinate system Brep::
+// FromPlanarFaces already projects a face's loop into (see its own `d *
+// pl.xaxis, d * pl.yaxis`), so a loop and a query point end up in a
+// mutually consistent 2D frame no matter which arbitrary in-plane
+// rotation `plane`'s constructor happened to pick.
+Point2d ProjectOntoPlaneAxes(const ON_Plane& plane, const Point3d& p) {
+  const ON_3dVector d = p - plane.origin;
+  return Point2d(d * plane.xaxis, d * plane.yaxis);
+}
+
+std::vector<Point2d> ProjectLoopOntoPlaneAxes(const ON_Plane& plane, const std::vector<Point3d>& loop) {
+  std::vector<Point2d> out;
+  out.reserve(loop.size());
+  for (const Point3d& v : loop) out.push_back(ProjectOntoPlaneAxes(plane, v));
+  return out;
+}
+
+// Standard even-odd ray-casting point-in-polygon test in 2D (the same
+// algorithm as surface.cpp's own file-local PointInPolygon, duplicated
+// here rather than shared across translation units for a two-line
+// function - boundary behavior is deliberately not relied upon by any
+// caller here; see DistanceToPolygonBoundary2D for the boundary case
+// this module actually needs to detect).
+bool PointInPolygon2D(double x, double y, const std::vector<Point2d>& polygon) {
+  bool inside = false;
+  const size_t n = polygon.size();
+  for (size_t i = 0, j = n - 1; i < n; j = i++) {
+    const Point2d& pi = polygon[i];
+    const Point2d& pj = polygon[j];
+    const bool crosses = (pi.y > y) != (pj.y > y);
+    if (crosses) {
+      const double x_at_crossing = (pj.x - pi.x) * (y - pi.y) / (pj.y - pi.y) + pi.x;
+      if (x < x_at_crossing) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+double DistancePointToSegment2D(double px, double py, double ax, double ay, double bx, double by) {
+  const double vx = bx - ax, vy = by - ay;
+  const double wx = px - ax, wy = py - ay;
+  const double len2 = vx * vx + vy * vy;
+  double t = (len2 > 1e-30) ? (wx * vx + wy * vy) / len2 : 0.0;
+  t = std::max(0.0, std::min(1.0, t));
+  const double cx = ax + t * vx, cy = ay + t * vy;
+  return std::hypot(px - cx, py - cy);
+}
+
+// Minimum distance from (x, y) to any edge of `polygon` - used to detect
+// a ray-cast hit that grazes an edge or vertex (within `tol` of the
+// boundary), which ClassifyPointVsSolid's ray caster can't parity-count
+// reliably and must instead treat as a reason to abandon that direction.
+double DistanceToPolygonBoundary2D(double x, double y, const std::vector<Point2d>& polygon) {
+  double best = std::numeric_limits<double>::infinity();
+  const size_t n = polygon.size();
+  for (size_t i = 0; i < n; ++i) {
+    const Point2d& a = polygon[i];
+    const Point2d& b = polygon[(i + 1) % n];
+    best = std::min(best, DistancePointToSegment2D(x, y, a.x, a.y, b.x, b.y));
+  }
+  return best;
+}
+
+enum class PointClass { kIn, kOut, kOn };
+
+// A fixed list of non-axis-aligned "generic" unit directions to ray-cast
+// along - irrational-slope-ish (built from the golden ratio) so a
+// direction is vanishingly unlikely to be exactly parallel to any input
+// plane or to pass exactly through a vertex/edge of an unrelated face,
+// the two situations ClassifyPointVsSolid's ray caster has to detect and
+// route around rather than silently mis-parity-count. Up to 8 attempts,
+// per this module's own doc comment.
+std::vector<Vector3d> GenericRayDirections() {
+  const double phi = 1.6180339887498948482;
+  const double phi2 = phi * phi;
+  std::vector<Vector3d> dirs = {
+      Vector3d(1.0, phi, phi2),      Vector3d(phi, phi2, 1.0),   Vector3d(phi2, 1.0, phi),
+      Vector3d(1.0, -phi, phi2),     Vector3d(-phi, phi2, 1.0),  Vector3d(phi2, -1.0, -phi),
+      Vector3d(-1.0, phi, -phi2),    Vector3d(phi, -phi2, 1.0),
+  };
+  for (Vector3d& d : dirs) {
+    const double len = d.Length();
+    if (len > 1e-12) d = d / len;
+  }
+  return dirs;
+}
+
+// Point-in-polyhedron classification for a single point against a closed
+// planar-faced solid (`faces`), per Requicha & Voelcker-style boundary
+// evaluation (see SplitByHalfspace's own doc comment for the citation).
+//
+// This is called once per fragment surviving SplitAgainstAllPlanes, with
+// that fragment's own representative interior point - valid (not just for
+// a convex `faces`) because splitting a face against EVERY plane of the
+// other solid, not just its finite faces, means a surviving fragment's
+// open interior can never cross any of those planes; since the other
+// solid's actual boundary is entirely made of finite pieces OF those same
+// planes, the fragment's interior can never cross the actual boundary
+// either, so every point in it shares one true classification.
+//
+// First checks ON: coincidence with one of `faces`' own planes, within
+// `tol`, AND the point's projection landing inside that face's own loop -
+// the same role `same_plane` plays in BooleanIntersectConvexPlanar,
+// collapsing a coincident face to a single copy rather than double-
+// counting it as if it were floating just inside or outside the solid.
+//
+// Otherwise ray-casts along GenericRayDirections() until one direction
+// resolves cleanly (no face grazed edge-on or parallel-and-coincident),
+// and returns IN/OUT by the parity of crossings. Exhausting every
+// direction without a clean pass - only possible on adversarial input,
+// since the directions are generic and non-parallel to any real input
+// plane - falls back to the sign of the distance to the nearest face.
+PointClass ClassifyPointVsSolid(const Point3d& p, const std::vector<Brep::PlanarFace>& faces, double tol) {
+  for (const Brep::PlanarFace& f : faces) {
+    if (std::fabs(f.plane.DistanceTo(p)) <= tol) {
+      const std::vector<Point2d> loop2d = ProjectLoopOntoPlaneAxes(f.plane, f.loop);
+      const Point2d p2d = ProjectOntoPlaneAxes(f.plane, p);
+      if (PointInPolygon2D(p2d.x, p2d.y, loop2d)) return PointClass::kOn;
+    }
+  }
+
+  for (const Vector3d& d : GenericRayDirections()) {
+    bool clean = true;
+    int crossings = 0;
+    for (const Brep::PlanarFace& f : faces) {
+      const double denom = f.plane.zaxis * d;
+      if (std::fabs(denom) < 1e-9) {
+        // The ray runs parallel to this face's own plane. If p is also IN
+        // that plane, the ray can't cross this face cleanly at all -
+        // abandon this direction rather than guess. Otherwise the ray
+        // simply never meets this face's (infinite) plane - not a
+        // degenerate case, just skip it.
+        if (std::fabs(f.plane.DistanceTo(p)) <= tol) { clean = false; break; }
+        continue;
+      }
+      const double t = ((f.plane.origin - p) * f.plane.zaxis) / denom;
+      if (t <= tol) continue;  // behind (or at) the ray's own origin
+      const Point3d hit = p + t * d;
+      const std::vector<Point2d> loop2d = ProjectLoopOntoPlaneAxes(f.plane, f.loop);
+      const Point2d hit2d = ProjectOntoPlaneAxes(f.plane, hit);
+      if (DistanceToPolygonBoundary2D(hit2d.x, hit2d.y, loop2d) <= tol) {
+        // Grazes an edge or vertex - can't be parity-counted reliably.
+        clean = false;
+        break;
+      }
+      if (PointInPolygon2D(hit2d.x, hit2d.y, loop2d)) ++crossings;
+    }
+    if (clean) return (crossings % 2 == 1) ? PointClass::kIn : PointClass::kOut;
+  }
+
+  // Fallback: sign of the distance to the nearest face. DistanceTo > 0
+  // means p is on the side the face's own outward normal points toward -
+  // i.e. outside that face's half-space - matching every other half-space
+  // convention in this file (see ClipByHalfspace's own `dc <= tol` test).
+  double best_abs = std::numeric_limits<double>::infinity();
+  double best_signed = 0.0;
+  for (const Brep::PlanarFace& f : faces) {
+    const double dist = f.plane.DistanceTo(p);
+    if (std::fabs(dist) < best_abs) {
+      best_abs = std::fabs(dist);
+      best_signed = dist;
+    }
+  }
+  return (best_signed > 0.0) ? PointClass::kOut : PointClass::kIn;
+}
+
+// A point guaranteed to lie in `face.loop`'s own interior (not just its
+// vertex or area-weighted average, either of which can fall outside a
+// concave or "keyhole"-bridged polygon - see SplitByHalfspace's own
+// comment on why a survivor can be bridged): ear-clip triangulate the
+// loop in its own local 2D axes (dino8::kernel::detail::
+// EarClipTriangulate already handles concave polygons robustly - it's
+// what this codebase's own loft end caps use) and take the centroid of
+// whichever triangle it finds first, which by construction is strictly
+// inside the polygon.
+Point3d RepresentativeInteriorPoint(const Brep::PlanarFace& face) {
+  const std::vector<Point2d> loop2d = ProjectLoopOntoPlaneAxes(face.plane, face.loop);
+  const std::vector<std::array<int, 3>> tris = dino8::kernel::detail::EarClipTriangulate(loop2d);
+  if (!tris.empty()) {
+    const std::array<int, 3>& t = tris.front();
+    const Point2d c2d((loop2d[t[0]].x + loop2d[t[1]].x + loop2d[t[2]].x) / 3.0,
+                       (loop2d[t[0]].y + loop2d[t[1]].y + loop2d[t[2]].y) / 3.0);
+    return face.plane.origin + c2d.x * face.plane.xaxis + c2d.y * face.plane.yaxis;
+  }
+  // Ear-clipping only fails to find any triangle on a badly degenerate
+  // loop (e.g. near-zero area) - fall back to a plain vertex average
+  // rather than crash; a degenerate sliver's exact interior point matters
+  // far less than not throwing on it.
+  Point3d sum(0.0, 0.0, 0.0);
+  for (const Point3d& v : face.loop) sum = sum + v;
+  return sum / static_cast<double>(face.loop.size());
+}
+
+// One face fragment plus its classification against the OTHER solid.
+struct ClassifiedFace {
+  Brep::PlanarFace face;
+  PointClass cls;
+};
+
+// Splits every face of `self_faces` against every plane of
+// `other_faces`, then classifies each surviving fragment against
+// `other_faces` via its own representative interior point.
+std::vector<ClassifiedFace> SplitAndClassify(const std::vector<Brep::PlanarFace>& self_faces,
+                                              const std::vector<Brep::PlanarFace>& other_faces, double tol) {
+  std::vector<ClassifiedFace> result;
+  for (const Brep::PlanarFace& f : self_faces) {
+    for (std::vector<Point3d>& piece : SplitAgainstAllPlanes(f.loop, other_faces, tol)) {
+      Brep::PlanarFace fragment;
+      fragment.plane = f.plane;
+      fragment.loop = std::move(piece);
+      const PointClass cls = ClassifyPointVsSolid(RepresentativeInteriorPoint(fragment), other_faces, tol);
+      result.push_back({std::move(fragment), cls});
+    }
+  }
+  return result;
+}
+
+struct ClassifiedBuckets {
+  std::vector<Brep::PlanarFace> in, out, on;
+};
+
+ClassifiedBuckets SplitAndBucket(const std::vector<Brep::PlanarFace>& self_faces,
+                                  const std::vector<Brep::PlanarFace>& other_faces, double tol) {
+  ClassifiedBuckets buckets;
+  for (ClassifiedFace& cf : SplitAndClassify(self_faces, other_faces, tol)) {
+    switch (cf.cls) {
+      case PointClass::kIn:
+        buckets.in.push_back(std::move(cf.face));
+        break;
+      case PointClass::kOut:
+        buckets.out.push_back(std::move(cf.face));
+        break;
+      case PointClass::kOn:
+        buckets.on.push_back(std::move(cf.face));
+        break;
+    }
+  }
+  return buckets;
+}
+
+// Flips a face so its outward normal (and winding) point the opposite
+// way - what a B face bounding material A is losing becomes, in A - B,
+// a face bounding material into the new cavity. ON_Plane::Flip() swaps
+// the plane's x/y axes, reverses its z axis, and updates its cached
+// plane equation, so DistanceTo/zaxis stay self-consistent afterward;
+// reversing the loop's own vertex order is what keeps "CCW as seen from
+// outside" true of the new outward normal, independent of which in-plane
+// (x, y) axes Flip() happened to pick.
+Brep::PlanarFace FlipFace(Brep::PlanarFace f) {
+  f.plane.Flip();
+  std::reverse(f.loop.begin(), f.loop.end());
+  return f;
 }
 
 }  // namespace
@@ -404,6 +743,85 @@ Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b) {
   };
   add_clipped(fa, fb);
   add_clipped(fb, fa);
+  return Brep::FromPlanarFaces(result);
+}
+
+Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op) {
+  const std::vector<Brep::PlanarFace> fa = a.PlanarFaces();
+  const std::vector<Brep::PlanarFace> fb = b.PlanarFaces();
+  const double tol = std::max(RelativeTol(fa), RelativeTol(fb));
+
+  if (op == BooleanOp::SymmetricDifference) {
+    // No direct XOR primitive here either (see BooleanCombine's own
+    // comment on the mesh-boolean side of this same enum) - composed from
+    // the three ops this function does implement, exactly like
+    // BooleanCombine does for meshes.
+    const Brep union_brep = BooleanCombinePlanar(a, b, BooleanOp::Union);
+    const Brep intersection_brep = BooleanCombinePlanar(a, b, BooleanOp::Intersection);
+    return BooleanCombinePlanar(union_brep, intersection_brep, BooleanOp::Difference);
+  }
+
+  // Split every face of A against every plane of B, classify each
+  // survivor against B; then the same the other way around.
+  const ClassifiedBuckets from_a = SplitAndBucket(fa, fb, tol);
+  const ClassifiedBuckets from_b = SplitAndBucket(fb, fa, tol);
+
+  // A coincident A_on/B_on pair (same plane, same finite extent) is one
+  // physical face counted twice - the same role `same_plane` plays in
+  // BooleanIntersectConvexPlanar's own dedup, generalized here to also
+  // recognize the OPPOSED-normal case Difference needs (two solids
+  // touching face-to-face but filling opposite sides of that face).
+  auto same_plane = [tol](const ON_Plane& p, const ON_Plane& q) {
+    return std::fabs(p.DistanceTo(q.origin)) <= tol && p.zaxis.IsParallelTo(q.zaxis, 1e-6) == 1;
+  };
+
+  std::vector<Brep::PlanarFace> result;
+  switch (op) {
+    case BooleanOp::Union:
+      // A_out u B_out u A_on: B's own coincident copy of a shared
+      // boundary face is a duplicate of A's (same_plane, by construction
+      // of ON classification), so it's never separately added.
+      for (const Brep::PlanarFace& f : from_a.out) result.push_back(f);
+      for (const Brep::PlanarFace& f : from_b.out) result.push_back(f);
+      for (const Brep::PlanarFace& f : from_a.on) result.push_back(f);
+      break;
+    case BooleanOp::Intersection:
+      // A_in u B_in u A_on - with convex A, B every face is then wholly
+      // inside or outside every plane, so A_in here is exactly what
+      // ClipByAllHalfspaces already returns: this reduces to
+      // BooleanIntersectConvexPlanar's own result on convex inputs.
+      for (const Brep::PlanarFace& f : from_a.in) result.push_back(f);
+      for (const Brep::PlanarFace& f : from_b.in) result.push_back(f);
+      for (const Brep::PlanarFace& f : from_a.on) result.push_back(f);
+      break;
+    case BooleanOp::Difference:
+      // A - B: keep the part of A outside B, plus the part of B inside A
+      // flipped to bound the new cavity from the other side.
+      for (const Brep::PlanarFace& f : from_a.out) result.push_back(f);
+      for (const Brep::PlanarFace& f : from_b.in) result.push_back(FlipFace(f));
+      // A coincident A_on/B_on pair: outward normals agreeing means the
+      // two solids have material on the SAME side of that shared face
+      // (touching flush, e.g. two prisms sharing a base) - subtracting B
+      // removes that material too, so the pair cancels and neither copy
+      // belongs in A - B. Normals opposed means B's face bounds material
+      // A is losing from the OTHER side (B sits on the far side of A's
+      // own boundary) - A's copy is still a real boundary of A - B and is
+      // kept unchanged; so is any A_on face with no B_on counterpart at
+      // all (nothing to cancel or reorient it against).
+      for (const Brep::PlanarFace& a_on : from_a.on) {
+        bool cancelled = false;
+        for (const Brep::PlanarFace& b_on : from_b.on) {
+          if (same_plane(a_on.plane, b_on.plane)) {
+            cancelled = true;
+            break;
+          }
+        }
+        if (!cancelled) result.push_back(a_on);
+      }
+      break;
+    default:
+      throw std::invalid_argument("dino8::kernel::BooleanCombinePlanar: unknown BooleanOp");
+  }
   return Brep::FromPlanarFaces(result);
 }
 

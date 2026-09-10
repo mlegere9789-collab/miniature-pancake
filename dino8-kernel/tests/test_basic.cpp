@@ -6016,6 +6016,167 @@ void TestBooleanIntersectConvexPlanarRejectsNonConvex() {
                "clipping it as if it were convex");
 }
 
+// Hand-builds a right prism over an arbitrary (possibly non-convex) CCW
+// 2D base polygon, extruded from z0 to z1, as a genuine Brep::PlanarFace
+// list - the same "bottom cap, top cap, one quad per base edge" shape
+// every Brep primitive factory here builds, just for a base polygon this
+// kernel has no dedicated factory for. Each face's outward normal is
+// derived directly from its own loop's vertex order (cross product of
+// the first two edges for a wall quad; the caps are axis-aligned by
+// construction), so orientation is correct by construction rather than
+// asserted.
+dino8::kernel::Brep MakePrismFromPolygon(const std::vector<dino8::kernel::Point2d>& base_ccw, double z0,
+                                          double z1) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  std::vector<Point3d> bottom, top;
+  bottom.reserve(base_ccw.size());
+  top.reserve(base_ccw.size());
+  for (const Point2d& p : base_ccw) bottom.emplace_back(p.x, p.y, z0);
+  for (const Point2d& p : base_ccw) top.emplace_back(p.x, p.y, z1);
+
+  std::vector<Brep::PlanarFace> faces;
+
+  // Bottom cap: outward normal -z, so its loop must be CCW as seen from
+  // BELOW - i.e. the reverse of the (CCW-from-above) base order.
+  Brep::PlanarFace bottom_face;
+  bottom_face.loop.assign(bottom.rbegin(), bottom.rend());
+  bottom_face.plane = ON_Plane(bottom_face.loop[0], ON_3dVector(0, 0, -1));
+  faces.push_back(bottom_face);
+
+  // Top cap: outward normal +z, base order as-is.
+  Brep::PlanarFace top_face;
+  top_face.loop = top;
+  top_face.plane = ON_Plane(top_face.loop[0], ON_3dVector(0, 0, 1));
+  faces.push_back(top_face);
+
+  const size_t n = base_ccw.size();
+  for (size_t i = 0; i < n; ++i) {
+    const size_t j = (i + 1) % n;
+    Brep::PlanarFace side;
+    side.loop = {bottom[i], bottom[j], top[j], top[i]};
+    const ON_3dVector e1 = bottom[j] - bottom[i];
+    const ON_3dVector e2 = top[i] - bottom[i];
+    ON_3dVector normal = ON_CrossProduct(e1, e2);
+    normal.Unitize();
+    side.plane = ON_Plane(side.loop[0], normal);
+    faces.push_back(side);
+  }
+  return Brep::FromPlanarFaces(faces);
+}
+
+// The exact hand-computed non-convex boolean case from this feature's own
+// spec: A is an L-shaped prism (base (0,0),(4,0),(4,2),(2,2),(2,4),(0,4) -
+// shoelace area 12, one reflex corner at (2,2) - extruded z in [0,3], so
+// Volume(A) = 36) and B is the box [1,3]x[1,3]x[0,3] (Volume(B) = 12).
+// B's footprint lies entirely in the outer 4x4 square (area 4); the part
+// of B's footprint inside the L's notch [2,4]x[2,4] is exactly [2,3]x[2,3]
+// (area 1), so footprint(A n B) = 4 - 1 = 3 and Volume(A n B) = 9.
+// Exactly: Volume(Union) = 36+12-9 = 39, Volume(A-B) = 36-9 = 27,
+// Volume(B-A) = 12-9 = 3.
+//
+// Deliberately NOT a convex-reducible case: B's x=3 wall (y in [1,3]) is
+// split by A's own y=2 plane exactly at the L's reflex corner, and A's
+// top/bottom L-shaped caps are split by all four of B's vertical planes
+// across that same concave region - both split directions genuinely
+// exercise SplitByHalfspace's non-convex path and
+// ClassifyPointVsSolid's ray-casting, not simple convex clipping (every
+// individual plane here only ever crosses either shape's own boundary
+// twice, so this case never needs the "keyhole"-bridged-polygon path
+// SplitByHalfspace's own comment flags as a further-out corner case).
+void TestBooleanCombinePlanarNonConvexLShapeVsBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Point2d;
+
+  const std::vector<Point2d> l_base = {
+      Point2d(0, 0), Point2d(4, 0), Point2d(4, 2), Point2d(2, 2), Point2d(2, 4), Point2d(0, 4),
+  };
+  const Brep a = MakePrismFromPolygon(l_base, 0.0, 3.0);
+  const Brep b = Brep::Box(1, 1, 0, 3, 3, 3);
+
+  // Sanity-check the two operands' own volumes first (double-precision,
+  // directly off the exact planar geometry via a fine tessellation - not
+  // load-bearing for the boolean itself, but confirms MakePrismFromPolygon
+  // built the L-shape's 36 correctly before trusting anything derived
+  // from it).
+  Check(std::fabs(a.TessellateToClosedMesh(1, 1).Volume() - 36.0) < 1e-6,
+        "L-shaped prism A has volume 36 (shoelace area 12 x height 3)");
+  Check(std::fabs(b.TessellateToClosedMesh(1, 1).Volume() - 12.0) < 1e-6,
+        "box B = [1,3]x[1,3]x[0,3] has volume 12");
+
+  const Brep u = BooleanCombinePlanar(a, b, BooleanOp::Union);
+  const double union_volume = u.TessellateToClosedMesh(1, 1).Volume();
+  Check(std::fabs(union_volume - 39.0) < 1e-6,
+        "Union(L-prism, box) has volume 39 = 36 + 12 - 9 (hand-derived footprint overlap)");
+
+  const Brep i = BooleanCombinePlanar(a, b, BooleanOp::Intersection);
+  const double intersection_volume = i.TessellateToClosedMesh(1, 1).Volume();
+  Check(std::fabs(intersection_volume - 9.0) < 1e-6,
+        "Intersection(L-prism, box) has volume 9 = footprint-overlap area 3 x height 3");
+
+  const Brep a_minus_b = BooleanCombinePlanar(a, b, BooleanOp::Difference);
+  const double a_minus_b_volume = a_minus_b.TessellateToClosedMesh(1, 1).Volume();
+  Check(std::fabs(a_minus_b_volume - 27.0) < 1e-6, "A - B has volume 27 = 36 - 9");
+
+  const Brep b_minus_a = BooleanCombinePlanar(b, a, BooleanOp::Difference);
+  const double b_minus_a_volume = b_minus_a.TessellateToClosedMesh(1, 1).Volume();
+  Check(std::fabs(b_minus_a_volume - 3.0) < 1e-6, "B - A has volume 3 = 12 - 9");
+
+  // Tighter, tessellation-free cross-check on the two differences: A - B
+  // and B - A partition the symmetric difference, and
+  // (A - B) + (B - A) + 2*Intersection = Volume(A) + Volume(B) exactly, an
+  // identity that only needs the SAME Mesh::Volume() floor once rather
+  // than trusting each hand-derived constant in isolation.
+  Check(std::fabs((a_minus_b_volume + b_minus_a_volume + 2.0 * intersection_volume) - (36.0 + 12.0)) < 1e-6,
+        "A-B, B-A and Intersection exactly partition/overlap A u B: (A-B)+(B-A)+2*(AnB) == Vol(A)+Vol(B)");
+
+  // Extra robustness check beyond volume matching alone: BooleanCombinePlanar's
+  // assembled Union result must be a genuinely CLOSED, watertight solid -
+  // not one that merely happens to compute the right volume despite a gap
+  // in its boundary (e.g. two adjoining fragments' shared edge not lining
+  // up exactly). Verified the same way this file's own exact-clipping
+  // tests do (see e.g. TestAnnulusFaceExtrudesToWatertightTube): hand the
+  // tessellated mesh to Manifold's own boolean engine and union it with a
+  // disjoint unit box - Manifold accepts non-manifold input by throwing,
+  // so a clean "+1" here is real evidence of a watertight result.
+  //
+  // Verified at (u_divisions, v_divisions) = (1, 1) rather than a finer
+  // grid: every face BooleanCombinePlanar emits is exact_clip
+  // (Brep::FromPlanarFaces marks all of them that way), so a single grid
+  // cell clipped exactly to the trim polygon already reproduces the exact
+  // boundary - no approximation is lost going coarser (the same property
+  // TestExactClippingMatchesAreaButNotCellCounts exercises elsewhere in
+  // this file). Going FINER actually breaks watertightness here, though,
+  // and that's worth being explicit about rather than silently dodging:
+  // TessellateGridClippedExact adds an extra tessellation vertex wherever
+  // an internal grid line crosses a face's trim boundary, and two
+  // differently-sized adjacent exact-clip faces sharing an edge (exactly
+  // what splitting produces - one tiny sliver fragment next to a large
+  // neighbor along the same cut line) place those extra points at
+  // different fractions along that shared edge, so the two faces'
+  // independently-tessellated boundaries no longer line up vertex-for-
+  // vertex at divisions > 1 (confirmed directly: IsClosedManifold() is
+  // true at (1,1) and false at (2,2)/(4,4)/(6,6)/(10,10)/(20,20), while
+  // Volume() stays correct at every resolution - a tessellation "cracking"
+  // artifact in the pre-existing FromPlanarFaces/TessellateGridClippedExact
+  // pipeline that BooleanCombinePlanar's differently-sized fragments newly
+  // expose, not a defect in the split/classify/combine logic itself, and
+  // out of scope to fix here.
+  const dino8::kernel::Mesh union_mesh = u.TessellateToClosedMesh(1, 1);
+  Check(union_mesh.IsClosedManifold(), "BooleanCombinePlanar's Union result tessellates to a genuinely "
+                                       "closed/watertight mesh at (1,1) divisions");
+  const dino8::kernel::Mesh disjoint_unit_box = Brep::Box(100, 100, 100, 101, 101, 101).TessellateToClosedMesh(1, 1);
+  const dino8::kernel::Mesh union_plus_disjoint =
+      dino8::kernel::BooleanCombine(union_mesh, disjoint_unit_box, dino8::kernel::BooleanOp::Union);
+  Check(std::fabs(union_plus_disjoint.Volume() - (union_mesh.Volume() + 1.0)) < 1e-6,
+        "Manifold accepts BooleanCombinePlanar's Union result as watertight: union with a "
+        "disjoint unit box adds exactly 1");
+}
+
 }  // namespace
 
 int main() {
@@ -6158,6 +6319,7 @@ int main() {
   TestConeToApexSharesBoundaryValidation();
   TestBooleanIntersectConvexPlanarExactBoxOverlap();
   TestBooleanIntersectConvexPlanarRejectsNonConvex();
+  TestBooleanCombinePlanarNonConvexLShapeVsBox();
 
   ON::End();
 

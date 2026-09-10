@@ -207,4 +207,46 @@ size_t CountDegenerateTriangles(const Mesh& mesh);
 // approximated.
 Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b);
 
+// Exact B-rep boolean (Union, Intersection, or Difference; SymmetricDifference
+// composed from those three, same as BooleanCombine()'s mesh-boolean
+// version) between two planar-faced solids of ARBITRARY shape - the
+// general non-convex case BooleanIntersectConvexPlanar's own doc comment
+// flags as future work. Classical Requicha & Voelcker boundary
+// evaluation (see "Boolean operations in solid modeling: Boundary
+// evaluation and merging algorithms," Proc. IEEE 73(1), 1985 - the same
+// public-domain, unpatented technique BooleanIntersectConvexPlanar's own
+// doc comment cites Preparata & Shamos for the convex-only special case
+// of): every face of A is SPLIT (not merely clipped) against every plane
+// of B, and vice versa, via Sutherland-Hodgman run once per plane but
+// keeping both children instead of only the inside one; every surviving
+// fragment is then classified IN/OUT/ON the other solid - directly, for
+// a fragment coincident with one of the other solid's own faces, or by
+// ray-casting along a fixed list of non-axis-aligned directions
+// otherwise - and the op-specific combination of classified fragments
+// (e.g. Difference keeps A's outside plus B's inside flipped to bound the
+// new cavity) is reassembled into the result Brep via Brep::
+// FromPlanarFaces, exactly as BooleanIntersectConvexPlanar's own return
+// does. Because every face is split against the OTHER solid's full plane
+// arrangement (not just clipped to its own convex extent), this is
+// correct for a non-convex `a` and/or `b` too - unlike
+// BooleanIntersectConvexPlanar, this function has no convexity
+// precondition to check or reject.
+//
+// A degenerate corner this doesn't specially handle: if a single cutting
+// plane crosses a sufficiently complex concave face's boundary more than
+// twice, the resulting fragment's own loop can come back as a
+// "keyhole"-bridged polygon (two or more regions joined by zero-net-area
+// edges lying exactly on the cut - see SplitByHalfspace's own comment in
+// boolean.cpp) rather than as several separate loops. That fragment's
+// signed area, and the interior sample point ClassifyPointVsSolid uses
+// (found by ear-clip triangulation, which handles a bridged polygon
+// correctly - the same technique used to triangulate a polygon with a
+// hole), both still come out exactly right; whether Brep::FromPlanarFaces'
+// own exact-clip tessellation renders such a bridged loop as a visually
+// clean multi-lobed face is not separately verified here - the geometry
+// this function's own tests exercise (an L-shaped non-convex prism
+// against an overlapping box) never produces one, since every individual
+// cutting plane involved only ever crosses that shape's boundary twice.
+Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op);
+
 }  // namespace dino8::kernel
