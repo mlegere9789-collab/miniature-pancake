@@ -612,16 +612,22 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // nested call, an honestly disclosed gap, not silently mishandled.
 // Finally: Brep::TessellateConforming()'s own quad-vs-quad seam pass
 // (tasks #55-57's own domain, both files completely untouched by this
-// increment) has its own SEPARATE, pre-existing limitation, newly exposed
-// (not caused) by this increment's own tests: a box where only ONE of its
-// two z-perpendicular caps gets wedge-split while the other stays a
-// single untouched quad - a face-topology combination no test before this
-// increment ever built - leaves the box's own untouched-cap corners with
-// real open boundary edges, unrelated to and far from this fix's own new
-// seam (both are separately, directly confirmed watertight - see
+// increment) used to have its own SEPARATE, pre-existing limitation,
+// newly exposed (not caused) by this increment's own tests: a box where
+// only ONE of its two z-perpendicular caps gets wedge-split while the
+// other stays a single untouched quad - a face-topology combination no
+// test before this increment ever built - left the box's own
+// untouched-cap corners with real open boundary edges, unrelated to and
+// far from this fix's own new seam (both were separately, directly
+// confirmed watertight at the time - see
 // TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed's own
-// comment in tests/test_basic.cpp for the measurement and the height-
-// scoped check that isolates the two).
+// comment in tests/test_basic.cpp for the original measurement). Task #65
+// closed that gap AT SYMMETRIC u_divisions/v_divisions (see
+// Brep::TessellateConforming()'s own doc comment in brep.h for the exact
+// mechanism and its own honestly-disclosed asymmetric-divisions scope
+// limit); both Union/boss tests above now assert a full, unscoped
+// Mesh::IsClosedManifold() rather than the height-scoped probe they used
+// to need.
 //
 // Explicitly OUT OF SCOPE, and this throws std::invalid_argument (or, for
 // the grazing-incidence sub-case, std::runtime_error surfaced through

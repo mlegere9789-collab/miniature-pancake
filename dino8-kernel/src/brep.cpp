@@ -2162,8 +2162,65 @@ std::vector<PlainQuadFace> CollectPlainQuadFaces(const std::vector<FaceGeometry>
 // here is always a complete shared edge between two faces of the same
 // solid, never a wedge's own partial rail, so no fractional-span
 // rounding/tie-breaking is needed).
+//
+// `already_forced`, if non-null, is the SAME `plain_forces` map the
+// wedge/straight-edge passes above have already populated - i.e. it both
+// names which face indices are already guaranteed to dispatch through
+// BuildConformingPlainQuadMesh's own bilinear grid builder (see
+// TessellateConforming()'s own dispatch loop) rather than that face's
+// natural default (TessellateGrid or, for a BooleanCombineMixed-
+// reconstructed face, TessellateGridClippedExact), AND carries the exact
+// point lists already forced onto each such face's own 4 edges.
+// `natural_count` agreeing between two sides is only proof they'll
+// tessellate identically when BOTH sides also use the SAME dispatch
+// path - true for every caller of Tessellate() (which has no forcing
+// pass to begin with, so `already_forced` is always null there) and for
+// every TessellateConforming() pair where neither or BOTH sides are
+// already forced, but false the one place TessellateConforming()'s own
+// wedge/straight-edge passes above force exactly ONE side of a seam
+// (e.g. a wedge-forced Box() wall's own top edge) while leaving its
+// OTHER edge's plain-quad neighbor (e.g. an untouched z-cap, reconstructed
+// with `exact_clip = true` by BooleanCombineMixed's own FromMixedFaces())
+// on its natural, possibly-diverging default - confirmed directly: at
+// EQUAL u_divisions/v_divisions, a wedge-forced wall's unclaimed bottom
+// edge samples a uniform bilinear row while its untouched-cap neighbor's
+// own TessellateGridClippedExact dispatch samples a DIFFERENT, margined
+// partition of the same physical edge at the identical division count -
+// see TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed's
+// own comment for the exact measurement. So a pair is now also forced
+// (bypassing the `count_a == count_b` skip below) whenever `already_forced`
+// says EXACTLY ONE of the two sides is already a forced face - the other
+// side's own dispatch is not yet pinned down, so nothing is redundant
+// about forcing it too; a pair where NEITHER or BOTH sides are already
+// forced keeps the original count-agreement skip untouched.
+//
+// When that new trigger fires, `shared_count` is NOT simply
+// max(u_divisions, v_divisions) the way the pre-existing count-mismatch
+// trigger uses - BuildConformingPlainQuadMesh's own `build_axis` (see its
+// doc comment) unions the t-breakpoints of a quad's TWO OPPOSITE edges
+// (edge 0 with edge 2, or edge 1 with edge 3) into ONE shared per-axis
+// breakpoint list for the WHOLE grid, since a tensor-product mesh needs
+// the same column count on every row. If the already-forced side's
+// OPPOSITE edge (its own already-forced top edge, in the wall-vs-cap
+// example) carries a DIFFERENT point count than whatever this pass would
+// otherwise pick, that union silently grows to include BOTH sets - adding
+// extra, spurious bilinear-interpolated points to the very edge meant to
+// match the neighbor, corrupting the match instead of completing it
+// (confirmed directly: an early version of this fix used a flat
+// max(u_divisions, v_divisions) here unconditionally and produced a
+// mesh with MORE open boundary edges than before at an asymmetric
+// divisions pair, all still exactly at the same physical seam). So:
+// when the already-forced side's own opposite edge (`opposite_edge`)
+// already carries points, reuse ITS point count as `shared_count` instead
+// - keeping that face's own two opposite (same-axis) edges consistent,
+// which is what `build_axis` actually needs - falling back to
+// max(u_divisions, v_divisions) only when there is no such competing
+// opposite-edge force to stay consistent with (the pre-existing
+// count-mismatch case, and the common case where neither side was
+// already forced at all).
 std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>> ComputePlainQuadSeamForces(
-    const std::vector<PlainQuadFace>& quad_faces, int u_divisions, int v_divisions) {
+    const std::vector<PlainQuadFace>& quad_faces, int u_divisions, int v_divisions,
+    const std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>>* already_forced = nullptr) {
   std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>> forces;
 
   auto natural_count = [&](const PlainQuadFace& qf, int e) {
@@ -2173,6 +2230,10 @@ std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>> ComputePlainQuadS
     const bool v_constant = std::fabs(to.y - from.y) <= tol_v;
     return v_constant ? u_divisions : v_divisions;
   };
+  // Edge 0's own opposite edge is edge 2 (both constant-b); edge 1's is
+  // edge 3 (both constant-a) - see BuildConformingPlainQuadMesh's own
+  // doc comment for this a/b convention.
+  auto opposite_edge = [](int e) { return (e + 2) % 4; };
 
   for (size_t a = 0; a < quad_faces.size(); ++a) {
     for (size_t b = a + 1; b < quad_faces.size(); ++b) {
@@ -2193,9 +2254,64 @@ std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>> ComputePlainQuadS
 
           const int count_a = natural_count(qa, ea);
           const int count_b = natural_count(qb, eb);
-          if (count_a == count_b) continue;  // already agrees - nothing to force on either side
+          // Restricted to u_divisions == v_divisions (see this function's
+          // own doc comment for the full reasoning): at unequal divisions,
+          // which physical axis (x/y/z) a wall assigns to "u" vs "v" is
+          // NOT the same for every wall (confirmed directly - Box()'s own
+          // front and back walls assign it oppositely), so two DIFFERENT
+          // already-forced walls bordering the SAME plain-quad neighbor
+          // (e.g. a box's untouched cap, bordered by all 4 walls) can
+          // legitimately want that neighbor's own OPPOSITE edges forced to
+          // two DIFFERENT counts - a conflict no single per-pair choice of
+          // `shared_count` can resolve, since BuildConformingPlainQuadMesh
+          // needs BOTH of a quad's own opposite edges internally consistent
+          // (see its own doc comment). At EQUAL divisions this conflict is
+          // structurally impossible: u_divisions and v_divisions are the
+          // same NUMBER, so every wall's own wedge-forced count is
+          // identical regardless of which axis convention that wall uses -
+          // confirmed directly, not merely assumed (an earlier version of
+          // this fix applied the same trigger unconditionally and produced
+          // a genuinely WORSE-open mesh than before at an asymmetric
+          // divisions pair, from exactly this cap-vs-multiple-walls
+          // conflict). So asymmetric divisions combined with a one-sided
+          // wedge remains an honestly-disclosed, separate, deeper
+          // limitation this increment does not close - see
+          // TessellateConforming()'s own doc comment in brep.h.
+          const bool a_already_forced =
+              u_divisions == v_divisions && already_forced != nullptr && already_forced->count(qa.face_index) != 0;
+          const bool b_already_forced =
+              u_divisions == v_divisions && already_forced != nullptr && already_forced->count(qb.face_index) != 0;
+          const bool exactly_one_already_forced = a_already_forced != b_already_forced;
+          if (count_a == count_b && !exactly_one_already_forced) {
+            continue;  // already agrees, and neither side's dispatch is pinned to a differing path
+          }
 
-          const int shared_count = std::max(u_divisions, v_divisions);
+          int shared_count = std::max(u_divisions, v_divisions);
+          if (exactly_one_already_forced) {
+            const int forced_face = a_already_forced ? qa.face_index : qb.face_index;
+            const int forced_edge = a_already_forced ? ea : eb;
+            const std::vector<EdgeForce>& opposite =
+                already_forced->at(forced_face)[static_cast<size_t>(opposite_edge(forced_edge))];
+            // Count DISTINCT t-values, not the raw vector size: a wedge's
+            // own straight-edge match (see the second matching pass above)
+            // can push the SAME t twice - once as the last point of one
+            // matched rail segment, once as the first point of the next -
+            // whenever two adjacent rails were not immediately consecutive
+            // in trim-loop order (so the leading-point dedup that pass
+            // applies to itself never saw them as neighbors). Using the
+            // raw size here would silently pick the wrong shared_count
+            // (confirmed directly: it produced a 9-division row from an
+            // opposite edge that is genuinely only 8 divisions with one
+            // duplicated midpoint).
+            std::vector<double> distinct_t;
+            distinct_t.reserve(opposite.size());
+            for (const EdgeForce& f : opposite) distinct_t.push_back(f.t);
+            std::sort(distinct_t.begin(), distinct_t.end());
+            distinct_t.erase(std::unique(distinct_t.begin(), distinct_t.end(),
+                                          [](double x, double y) { return std::fabs(x - y) <= 1e-9; }),
+                              distinct_t.end());
+            if (distinct_t.size() >= 2) shared_count = static_cast<int>(distinct_t.size()) - 1;
+          }
           std::vector<EdgeForce>& fa = forces[qa.face_index][static_cast<size_t>(ea)];
           std::vector<EdgeForce>& fb = forces[qb.face_index][static_cast<size_t>(eb)];
           for (int s = 0; s <= shared_count; ++s) {
@@ -2719,16 +2835,32 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
   // time - see ComputePlainQuadSeamForces's own doc comment for the
   // exact matching mechanism, shared verbatim here, not reimplemented.
   //
-  // Gated on u_divisions != v_divisions for the same reason Tessellate()'s
-  // own pass is (see that method's own doc comment): when the two counts
-  // are equal, every edge's natural sample count already agrees on both
-  // sides, so ComputePlainQuadSeamForces's own `count_a == count_b`
-  // short-circuit means this entire block computes and changes nothing -
-  // a structural guarantee, not a heuristic, that every existing
-  // TessellateConforming()/TessellateToClosedMeshConforming() caller in
-  // this kernel's own test file (which all use symmetric divisions) is
-  // completely unaffected by this pass.
-  if (u_divisions != v_divisions) {
+  // Gated on u_divisions != v_divisions, OR on the straight-edge pass
+  // above having already forced at least one face into `plain_forces` -
+  // a SECOND, narrower trigger closing a SEPARATE gap than the one the
+  // paragraph above describes (see ComputePlainQuadSeamForces's own doc
+  // comment for the full mechanism and the direct measurement that
+  // surfaced it): even at EQUAL u_divisions/v_divisions, where every
+  // edge's natural sample count agrees on both sides by construction, a
+  // wedge-forced face (e.g. a Box() wall whose TOP edge the straight-edge
+  // pass above just claimed) is now guaranteed to dispatch through
+  // BuildConformingPlainQuadMesh's own bilinear grid builder for its
+  // ENTIRE tessellation - including its other, still-unclaimed edges -
+  // while a plain-quad neighbor across one of those unclaimed edges that
+  // is NOT itself forced still dispatches through its own natural
+  // default, which for a BooleanCombineMixed-reconstructed face is
+  // TessellateGridClippedExact, not TessellateGrid/BuildConformingPlainQuadMesh.
+  // "Natural sample count agrees" is not "produces identical points" once
+  // the two sides can land on genuinely different tessellation
+  // algorithms - the one-sided-boss case
+  // (TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed:
+  // only the box's TOP z-cap is wedge-split, its BOTTOM z-cap stays an
+  // untouched, exact-clip-dispatched quad) is the first Brep in this
+  // kernel's own test suite where that combination occurs. When NEITHER
+  // trigger applies (u_divisions == v_divisions AND the straight-edge
+  // pass forced nothing - e.g. a plain, undrilled Box()), this whole
+  // block is still a complete no-op, exactly as before.
+  if (u_divisions != v_divisions || !plain_forces.empty()) {
     // Candidate set: every resolved face NOT already claimed by the arc-
     // matching or straight-edge-matching passes above - i.e. the same
     // "not a wedge, not a matched cylinder" criterion the local
@@ -2751,7 +2883,14 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
       }
     }
     const std::vector<PlainQuadFace> quad_quad_candidates = CollectPlainQuadFaces(fgs, quad_pass_resolved);
-    const auto quad_quad_forces = ComputePlainQuadSeamForces(quad_quad_candidates, u_divisions, v_divisions);
+    // `plain_forces` itself (as already populated by the straight-edge
+    // pass above) is passed directly as the `already_forced` map, so
+    // ComputePlainQuadSeamForces can both detect the "exactly one side
+    // already forced" case its own doc comment above describes AND reuse
+    // an already-forced face's own opposite-edge point count to stay
+    // consistent with it (see that function's own doc comment for why).
+    const auto quad_quad_forces =
+        ComputePlainQuadSeamForces(quad_quad_candidates, u_divisions, v_divisions, &plain_forces);
 
     // Merge additively: fill only edge slots the wedge/cylinder passes
     // above left empty. Never overwrite a slot that's already non-empty -

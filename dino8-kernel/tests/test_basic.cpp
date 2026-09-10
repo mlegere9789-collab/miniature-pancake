@@ -8570,47 +8570,6 @@ int CountNonPerimeterBoundaryEdges(const dino8::kernel::Mesh& merged) {
   return count;
 }
 
-// Counts boundary edges (used by exactly one triangle, after
-// Mesh::MergeAndWeld) whose own midpoint height is AT OR ABOVE
-// `z_threshold` - a narrower, height-scoped sibling of
-// CountNonPerimeterBoundaryEdges above, built for this increment's own
-// Union/boss end-cap tests (TestBooleanCombineMixedUnionBoss*): those
-// scenarios' own box operand can have a genuinely separate, PRE-EXISTING
-// gap at its own UNTOUCHED lower corners (see
-// TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed's own
-// comment for the direct measurement and citation) that has nothing to
-// do with this increment's own new end-cap-synthesis seam - restricting
-// the height range to "at the boss's own base height or above" isolates
-// exactly the seam this fix is responsible for (the box-top wedge's own
-// arc boundary against the surviving cylindrical fragment, and this
-// fix's own synthesized end-cap disc against that same fragment's other
-// end) from that separate, lower, unrelated gap.
-int CountOpenBoundaryEdgesAtOrAboveHeight(const dino8::kernel::Mesh& merged, double z_threshold) {
-  std::map<std::pair<int, int>, int> undirected;
-  const ON_Mesh& raw = merged.raw();
-  for (int i = 0; i < raw.m_F.Count(); ++i) {
-    const ON_MeshFace& f = raw.m_F[i];
-    auto visit = [&](int a, int b) { ++undirected[std::minmax(a, b)]; };
-    visit(f.vi[0], f.vi[1]);
-    visit(f.vi[1], f.vi[2]);
-    if (f.IsQuad()) {
-      visit(f.vi[2], f.vi[3]);
-      visit(f.vi[3], f.vi[0]);
-    } else {
-      visit(f.vi[2], f.vi[0]);
-    }
-  }
-  int count = 0;
-  for (const auto& [edge, n] : undirected) {
-    if (n == 2) continue;
-    const ON_3fPoint& a = raw.m_V[edge.first];
-    const ON_3fPoint& b = raw.m_V[edge.second];
-    if (0.5 * (a.z + b.z) < z_threshold) continue;
-    ++count;
-  }
-  return count;
-}
-
 // The "both sides agree" test - the actual crux of this whole fix (see
 // Brep::TessellateConforming()'s own doc comment in brep.h): asserts
 // that a wedge cap's own substituted arc-boundary vertices and the
@@ -9800,6 +9759,153 @@ void TestTessellateConformingSymmetricDivisionsUnaffectedByQuadQuadFix() {
   }
 }
 
+// Task #65: the ONE-SIDED wedge/quad-quad gap the third pass's own doc
+// comment in brep.h never closed before - a box where ONE z-perpendicular
+// cap gets wedge-split while the OTHER stays a single untouched plain
+// quad, at EQUAL u_divisions/v_divisions (where the pre-existing
+// quad-vs-quad pass's own `u_divisions != v_divisions` gate used to fully
+// bypass it). Every prior BuildDrilledBoxInputs-based test drills a hole
+// clean through BOTH z-caps, so a wedge-forced wall's only plain-quad
+// neighbor was ALSO always wedge-forced too - this fixture (mirrors
+// TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed's own
+// construction) is the first in this file where a wedge-forced wall's
+// OTHER (still-unclaimed) edge borders a plain-quad face that stays on
+// its own natural, exact-clip-dispatched default. Directly confirmed
+// before this fix (temporarily reverting the `already_forced`-aware
+// trigger in ComputePlainQuadSeamForces and re-measuring): IsClosedManifold()
+// was false, with 64 open boundary edges at (64, 64), every single one at
+// z=0 (the box's untouched bottom cap and its seam with the 4 side
+// walls) - none near the wedge/boss region at all.
+void TestTessellateConformingOneSidedWedgeSymmetricDivisionsIsClosedManifold() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, 10.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 4.0;
+  const Brep cyl = Brep::FromMixedFaces({}, {boss});
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Union);
+
+  for (const int n : {8, 17}) {
+    const Mesh mesh = result.TessellateToClosedMeshConforming(n, n);
+    Check(mesh.IsClosedManifold(),
+          "the one-sided-wedge box+boss Union at SYMMETRIC divisions is a genuine, complete IsClosedManifold() - "
+          "the new `already_forced`-aware trigger in ComputePlainQuadSeamForces forces the untouched bottom cap's "
+          "own seam against the 4 side walls even though every edge's natural sample count already agrees at "
+          "u==v, because one side (the wedge-forced wall) is already pinned to BuildConformingPlainQuadMesh's own "
+          "bilinear dispatch while the other (the untouched cap) was still on its natural, diverging "
+          "TessellateGridClippedExact default");
+  }
+}
+
+// The honestly-disclosed remaining scope limit, mirroring
+// TestTessellateObliqueHullQuadSeamRemainsPreExistingGap's own style:
+// this SAME one-sided-wedge fixture at an ASYMMETRIC divisions pair is
+// NOT closed by task #65, and this test proves that directly rather than
+// silently leaving it untested. Investigated directly, not merely
+// asserted: at unequal u_divisions/v_divisions, which physical axis a
+// wall assigns to "u" vs "v" is NOT the same for every wall (Box()'s own
+// front and back walls assign it oppositely - see
+// ComputePlainQuadSeamForces's own doc comment in brep.cpp), so two
+// DIFFERENT already-forced walls bordering the SAME untouched cap can
+// legitimately need that cap's own OPPOSITE edges forced to two DIFFERENT
+// counts - a conflict no single per-pair `shared_count` choice can
+// resolve, since BuildConformingPlainQuadMesh's own tensor grid needs a
+// quad's two opposite edges internally consistent. Confirmed directly (an
+// early version of this fix applied its new trigger unconditionally, i.e.
+// without this test's own `u_divisions == v_divisions` restriction, and
+// produced a mesh with genuinely MORE open boundary edges than before at
+// an asymmetric divisions pair - not merely "still open", actively worse)
+// - so the new trigger is deliberately restricted to u_divisions ==
+// v_divisions, leaving this asymmetric case exactly as open as it always
+// was pre-fix, never silently masked into a false pass.
+void TestTessellateConformingOneSidedWedgeAsymmetricDivisionsRemainsPreExistingGap() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, 10.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 4.0;
+  const Brep cyl = Brep::FromMixedFaces({}, {boss});
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Union);
+
+  const std::vector<std::pair<int, int>> pairs = {{8, 11}, {17, 4}};
+  for (const auto& uv : pairs) {
+    Check(!result.TessellateToClosedMeshConforming(uv.first, uv.second).IsClosedManifold(),
+          "the one-sided-wedge box+boss Union at an ASYMMETRIC divisions pair remains genuinely open - task #65's "
+          "own new trigger is deliberately restricted to u_divisions == v_divisions (see "
+          "ComputePlainQuadSeamForces's own doc comment for why forcing it unconditionally made this case "
+          "actively WORSE, not merely still-open), so this pre-existing gap is left exactly as it was, never "
+          "silently masked into a false IsClosedManifold() pass");
+  }
+}
+
+// The inertness claim for the new trigger, mirroring
+// TestTessellateConformingSymmetricDivisionsUnaffectedByQuadQuadFix's own
+// style: a plain, undrilled Box() has zero wedges anywhere, so
+// `plain_forces` stays empty after the straight-edge pass regardless of
+// this fix - the new `!plain_forces.empty()` gate is exactly as false as
+// the old `u_divisions != v_divisions` gate already was at symmetric
+// divisions, so TessellateConforming(N, N) is STILL bit-identical to
+// Tessellate(N, N) for every face. This is the same underlying claim
+// TestTessellateConformingSymmetricDivisionsUnaffectedByQuadQuadFix
+// already makes; repeated here, explicitly scoped to task #65's own new
+// trigger, so a future regression that widens the gate incorrectly (e.g.
+// firing even with `plain_forces` empty) is caught by name.
+void TestTessellateConformingOneSidedWedgeFixInertOnPlainBox() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 4, 6, 9);
+  for (const int n : {8, 17}) {
+    const std::vector<Mesh> conforming = box.TessellateConforming(n, n);
+    const std::vector<Mesh> plain = box.Tessellate(n, n);
+    Check(conforming.size() == 6 && plain.size() == 6, "Box() has 6 faces from both methods");
+    bool all_match = conforming.size() == 6 && plain.size() == 6;
+    for (size_t idx = 0; all_match && idx < 6; ++idx) {
+      const ON_Mesh& a = conforming[idx].raw();
+      const ON_Mesh& b = plain[idx].raw();
+      if (a.m_V.Count() != b.m_V.Count()) {
+        all_match = false;
+        break;
+      }
+      for (int i = 0; i < a.m_V.Count(); ++i) {
+        if (a.m_V[i].x != b.m_V[i].x || a.m_V[i].y != b.m_V[i].y || a.m_V[i].z != b.m_V[i].z) {
+          all_match = false;
+          break;
+        }
+      }
+    }
+    Check(all_match,
+          "task #65's new `already_forced`-aware trigger is a provable no-op for a plain, undrilled Box() (zero "
+          "wedges anywhere means `plain_forces` stays empty, so the widened outer gate is still false at N==N) - "
+          "TessellateConforming(N, N) remains bit-identical to Tessellate(N, N) for every face, exactly as before "
+          "this fix");
+  }
+}
+
 // FromPlanarFaces()/FromMixedFaces() now build genuine ON_Brep
 // vertex/edge/trim/loop topology (coincident-point-welded shared
 // vertices, one real edge per distinct shared boundary reused - never a
@@ -10743,33 +10849,30 @@ void TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed() {
         "floating-point exactness - before this fix the measured volume was off by tens of units (an open mesh "
         "entirely missing the boss's own free-end cap material)");
 
-  // Deliberately NOT a plain IsClosedManifold() check here (unlike cases
-  // C/D below, which pass it outright). Investigating this test directly
-  // (not merely assumed) surfaced a genuine, SEPARATE, PRE-EXISTING gap
-  // in Brep::TessellateConforming()'s own quad-vs-quad seam pass (tasks
-  // #55-57's own domain, boolean.cpp/brep.cpp both completely untouched
-  // by this increment's own diff there): a box where ONE z-perpendicular
-  // cap gets wedge-split (here, the top, by the boss) while the OTHER
-  // stays a single untouched quad (here, the bottom, since the boss never
-  // reaches it) is a face-topology combination NO existing test before
-  // this increment ever built (every prior BuildDrilledBoxInputs-based
-  // test drills a hole clean through BOTH caps) - and measuring it
-  // directly shows real open boundary edges at the box's own bottom
-  // corners (z=0), nowhere near this fix's own cap. Directly confirmed,
-  // not assumed: CountOpenBoundaryEdgesAtOrAboveHeight at a threshold
-  // strictly below the boss's own base height (z=10) is exactly 0 - i.e.
-  // this fix's own new seam (the box-top wedge's own arc boundary against
-  // the surviving cylindrical fragment, AND this fix's own synthesized
-  // end-cap disc against that fragment's free top end) is genuinely
-  // closed; only the separate, lower, unrelated gap remains. This is the
-  // one honestly-disclosed scope limit this increment did not additionally
-  // take on (see boolean.h's own BooleanCombineMixed doc comment).
-  Check(CountOpenBoundaryEdgesAtOrAboveHeight(mesh, 9.99) == 0,
-        "flush-base Union boss: EVERY boundary edge at or above the boss's own base height (z=10) is closed - "
-        "both the pre-existing box-top-wedge/cylinder-wall seam AND this fix's own new free-end cap/cylinder-wall "
-        "seam are genuinely watertight; the mesh's own remaining open edges (if any) are confined to the box's "
-        "own untouched bottom corners, a separate, disclosed, pre-existing TessellateConforming() gap this "
-        "increment does not touch");
+  // A plain, unscoped IsClosedManifold() check - NOT possible when this
+  // test was first written (see git history/this comment's own prior
+  // text): investigating this test directly at the time surfaced a
+  // genuine, SEPARATE, then-PRE-EXISTING gap in
+  // Brep::TessellateConforming()'s own quad-vs-quad seam pass (tasks
+  // #55-57's own domain) that this increment's own diff did not touch -
+  // a box where ONE z-perpendicular cap gets wedge-split (here, the top,
+  // by the boss) while the OTHER stays a single untouched quad (here, the
+  // bottom, since the boss never reaches it) left real open boundary
+  // edges at the box's own bottom corners (z=0), nowhere near this fix's
+  // own cap. That gap is now closed AT SYMMETRIC DIVISIONS by task #65
+  // (see ComputePlainQuadSeamForces's own doc comment in brep.cpp for the
+  // exact mechanism and its own honestly-disclosed asymmetric-divisions
+  // scope limit) - this test's own mesh uses u_divisions == v_divisions
+  // (64, 64), so the height-scoped probe it used to need
+  // (CountOpenBoundaryEdgesAtOrAboveHeight) is no longer necessary here; a
+  // full, unscoped IsClosedManifold() now holds for the ENTIRE mesh,
+  // box-bottom corners included.
+  Check(mesh.IsClosedManifold(),
+        "flush-base Union boss's TessellateToClosedMeshConforming(64, 64) is a genuine, complete "
+        "IsClosedManifold() - both the pre-existing box-top-wedge/cylinder-wall seam and this fix's own new "
+        "free-end cap/cylinder-wall seam are watertight, AND (since task #65, at these SYMMETRIC divisions) the "
+        "box's own untouched bottom corners are too - before task #65 this same mesh had 64 open boundary edges, "
+        "every single one at z=0, confirmed by direct measurement");
 }
 
 void TestBooleanCombineMixedUnionBossOverlappingBaseVolumeAndCapSeamIsClosed() {
@@ -10825,20 +10928,18 @@ void TestBooleanCombineMixedUnionBossOverlappingBaseVolumeAndCapSeamIsClosed() {
         "within 0.05 - the embedded 2 units of the boss contribute nothing extra (already box material), matching "
         "a genuine partial-overlap case, not just the fully-exposed case A above");
 
-  // Same honest scoping as case A above (see that test's own comment for
+  // Same honest history as case A above (see that test's own comment for
   // the full citation): the box's own untouched bottom corners (z=0, the
-  // boss never reaches there either) carry the SAME separate,
-  // pre-existing TessellateConforming() quad-vs-quad gap, unrelated to
-  // this fix. Everything at or above the boss's own base height (z=8) -
-  // including its own SPLIT bottom (sealed, no cap - z=8) and its own
-  // free top end (capped by this fix - z=13) - is confirmed genuinely
-  // closed.
-  Check(CountOpenBoundaryEdgesAtOrAboveHeight(mesh, 7.99) == 0,
-        "overlapping-base Union boss: EVERY boundary edge at or above the boss's own base height (z=8) is closed "
-        "- the split (embedded) bottom end's own seam against the box's hole-punched top face, AND this fix's own "
-        "new free-end cap/cylinder-wall seam at z=13, are both genuinely watertight; the mesh's own remaining "
-        "open edges (if any) are confined to the box's own untouched bottom corners, the same separate, "
-        "disclosed, pre-existing gap case A's own comment cites");
+  // boss never reaches there either) used to carry the same separate,
+  // then-pre-existing TessellateConforming() quad-vs-quad gap - closed by
+  // task #65 at these SYMMETRIC (64, 64) divisions, so a full, unscoped
+  // IsClosedManifold() now holds here too, not just the height-scoped
+  // probe this test used before.
+  Check(mesh.IsClosedManifold(),
+        "overlapping-base Union boss's TessellateToClosedMeshConforming(64, 64) is a genuine, complete "
+        "IsClosedManifold() - the split (embedded) bottom end's own seam against the box's hole-punched top face, "
+        "this fix's own new free-end cap/cylinder-wall seam at z=13, AND (since task #65, at these SYMMETRIC "
+        "divisions) the box's own untouched bottom corners are all genuinely watertight");
 }
 
 void TestBooleanCombineMixedUnionBossNoContactBothEndsCapped() {
@@ -12007,6 +12108,9 @@ int main() {
   TestTessellateConformingQuadQuadSeamDrilledBoxIsClosedManifold();
   TestTessellateConformingQuadQuadSeamOffCenterHoleIsClosedManifold();
   TestTessellateConformingSymmetricDivisionsUnaffectedByQuadQuadFix();
+  TestTessellateConformingOneSidedWedgeSymmetricDivisionsIsClosedManifold();
+  TestTessellateConformingOneSidedWedgeAsymmetricDivisionsRemainsPreExistingGap();
+  TestTessellateConformingOneSidedWedgeFixInertOnPlainBox();
   TestExactConvexHullBoxSixExactQuadFaces();
   TestExactConvexHullOctahedronEightExactTriFaces();
   TestExactConvexHullIgnoresInteriorPoints();

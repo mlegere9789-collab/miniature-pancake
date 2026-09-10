@@ -1105,6 +1105,68 @@ class Brep {
   // not attempted by any of the three passes (e.g. ShellConvexPlanar's own
   // separately-disclosed planar/planar grid-mismatch note remains a real,
   // separate follow-up none of them attempt).
+  //
+  // A FOURTH gap, closed at SYMMETRIC divisions only (task #65): the
+  // three passes above all implicitly assumed that whenever a
+  // plain-quad face's two natural sample counts (per edge) already
+  // agree, BOTH sides tessellate identically - true whenever both sides
+  // dispatch through the same underlying algorithm, but NOT when the
+  // straight-edge pass above has already forced exactly ONE side of a
+  // seam (pinning that face to BuildConformingPlainQuadMesh's own
+  // bilinear grid for its ENTIRE tessellation, including its other,
+  // still-unclaimed edges) while the other side's face remains on its own
+  // natural default - which, for a face BooleanCombineMixed reconstructed
+  // via FromMixedFaces() (`exact_clip = true` even for an untouched input
+  // face), is NurbsSurface::TessellateGridClippedExact(), a genuinely
+  // different, margined algorithm. The first Brep in this kernel's own
+  // test suite to expose this: a box with a bare CylindricalFace boss
+  // Union'd on, whose base sits flush with (or embedded in) the box's TOP
+  // face - the TOP z-cap gets wedge-split around the boss, but the BOTTOM
+  // z-cap (the boss's z-range never reaches it) stays a single, untouched
+  // plain quad. Every prior BuildDrilledBoxInputs-based test drills a hole
+  // clean through BOTH z-caps, so a wedge-forced wall's only plain-quad
+  // neighbor was always ALSO wedge-forced - this one-sided topology was
+  // simply never built before. Closed by reusing the exact same
+  // CollectPlainQuadFaces()/ComputePlainQuadSeamForces() machinery the
+  // third pass above already uses (not a fourth, parallel mechanism): the
+  // straight-edge pass's own `plain_forces` map is now ALSO passed to
+  // ComputePlainQuadSeamForces as an `already_forced` lookup, so a pair is
+  // forced not only on a genuine natural-count mismatch but also whenever
+  // exactly one side is already a `plain_forces` key - reusing that
+  // already-forced side's own OPPOSITE edge's point count (not a flat
+  // max(u_divisions, v_divisions)) as the shared count, so
+  // BuildConformingPlainQuadMesh's own tensor grid (which needs a quad's
+  // two OPPOSITE edges internally consistent - see its own doc comment)
+  // stays consistent on the already-forced side; see
+  // ComputePlainQuadSeamForces's own doc comment in brep.cpp for the exact
+  // mechanism and the direct measurement that surfaced both the original
+  // gap and this consistency requirement.
+  //
+  // Deliberately restricted to u_divisions == v_divisions: investigated
+  // directly, not merely assumed, an unrestricted version of this same
+  // trigger made an ASYMMETRIC-divisions instance of this same one-sided
+  // fixture genuinely WORSE (more open boundary edges than before the
+  // fix, not merely still-open) - because at unequal divisions, which
+  // physical axis a wall assigns to "u" vs "v" is not the same for every
+  // wall (front and back walls assign it oppositely - see
+  // ComputePlainQuadSeamForces's own doc comment), so two DIFFERENT
+  // already-forced walls bordering the SAME untouched cap can legitimately
+  // need that cap's own two OPPOSITE edges forced to two DIFFERENT counts,
+  // a conflict no single per-pair choice can resolve. At EQUAL divisions
+  // this conflict is structurally impossible (u_divisions and v_divisions
+  // are then the same number, so every wall's own forced count agrees
+  // regardless of axis convention) - confirmed directly, not merely
+  // assumed. So a one-sided wedge/quad seam like the one above is now
+  // genuinely closed at any SYMMETRIC u_divisions/v_divisions, while the
+  // combination of a one-sided wedge AND asymmetric divisions remains an
+  // honestly-disclosed, separate, deeper limitation of
+  // BuildConformingPlainQuadMesh's own tensor-grid design that this
+  // increment does not close - see
+  // TestTessellateConformingOneSidedWedgeSymmetricDivisionsIsClosedManifold
+  // and
+  // TestTessellateConformingOneSidedWedgeAsymmetricDivisionsRemainsPreExistingGap
+  // for the exact falsifiable claims, both proven directly rather than
+  // assumed.
   std::vector<Mesh> TessellateConforming(int u_divisions = 8, int v_divisions = 8,
                                           int boundary_samples = -1) const;
 
