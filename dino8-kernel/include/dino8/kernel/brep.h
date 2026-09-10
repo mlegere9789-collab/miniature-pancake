@@ -849,27 +849,61 @@ class Brep {
   // literal forced-point injection tractable); a plain quad face with no
   // match falls through to exactly today's behavior, unaffected.
   //
-  // Together, the two passes give BooleanCombineMixed's own drilled-box
-  // case a genuinely complete Mesh::IsClosedManifold() result via
-  // TessellateToClosedMeshConforming() - see
-  // TestBooleanCombineMixedDrilledBoxThroughHole's own comment for the
-  // exact claim and its one remaining caveat, genuinely different from
-  // the wedge/wall seam either pass targets: an unequal u_divisions/
-  // v_divisions pair can leave THIS method's OWN quad-vs-quad case (two
-  // adjacent plain quads, neither one a wedge) with an open shared edge
-  // - not only a Box() wall pair's own VERTICAL corner edge, but HALF of
-  // any Box()'s own 12 edges (every horizontal cap-level edge that
-  // mismatches too), for the "which physical axis is u vs v differs per
-  // wall" reason above. Tessellate() ITSELF no longer has this gap (a
-  // later, separate fix closed it there for the ordinary, non-conforming
-  // path - see that method's own doc comment, and
-  // TestBoxAsymmetricDivisionsIsClosedManifold and its siblings in this
-  // kernel's own test file); THIS method's own quad-vs-quad case, reached
-  // only when neither side of a mismatched pair is already claimed by
-  // the wedge/cylinder passes above, still has it - generalizing
-  // Tessellate()'s own new matching pass to this method too (sharing one
-  // helper between both, per that pass's own doc comment) is a natural,
-  // low-risk follow-up, not yet attempted here.
+  // Together, the two passes above give BooleanCombineMixed's own
+  // drilled-box case a genuinely complete Mesh::IsClosedManifold() result
+  // via TessellateToClosedMeshConforming() at any SYMMETRIC u_divisions/
+  // v_divisions - see TestBooleanCombineMixedDrilledBoxThroughHole's own
+  // comment for the exact claim.
+  //
+  // THIRD, separate matching pass, added after the two above and closing
+  // the one gap they leave open: an unequal u_divisions/v_divisions pair
+  // used to leave THIS method's OWN quad-vs-quad case (two adjacent plain
+  // quads, NEITHER one a wedge - e.g. two untouched Box() wall faces the
+  // drilling hole never reaches, or every edge of a plain, undrilled
+  // Brep::Box(), which has zero wedges/cylinders anywhere to seed either
+  // pass above) with an open shared edge, for the exact same "which
+  // physical axis is u vs v differs per face" reason
+  // ComputePlainQuadSeamForces's own doc comment (brep.cpp) discloses for
+  // Tessellate()'s own, structurally identical fix. Closed here by
+  // reusing that SAME machinery - CollectPlainQuadFaces() and
+  // ComputePlainQuadSeamForces(), both already living in brep.cpp's own
+  // anonymous namespace - directly, not a second, hand-adapted
+  // reimplementation: every resolved face that is NOT already a key of
+  // the arc-matching pass's `cyl_matches` or `wedge_subs` above (the
+  // identical "not a wedge, not a matched cylinder" criterion the
+  // straight-edge pass's own `quad_faces` collection already applies) is
+  // collected, matched pairwise by shared 3D edge exactly as
+  // Tessellate()'s own pass does, and the resulting forced points are
+  // merged ADDITIVELY into the same `plain_forces` map the straight-edge
+  // pass above already populates - filling only the edge slots that pass
+  // left empty, never overwriting one it already claimed, so a face that
+  // is both a straight-edge-pass target AND a quad-vs-quad-pass target
+  // (its other, still-unclaimed edges) gets both sets of forces without
+  // either pass corrupting the other's work. Gated on u_divisions !=
+  // v_divisions for the identical reason Tessellate()'s own pass is (see
+  // that method's own doc comment): a full structural bypass, not a
+  // heuristic - when the two counts are equal every edge's natural
+  // sample count already agrees on both sides, so this whole pass
+  // computes and changes nothing, leaving every existing
+  // TessellateConforming()/TessellateToClosedMeshConforming() caller in
+  // this kernel's own test file (every one of which uses symmetric
+  // divisions) bit-for-bit unaffected (verified directly: the full
+  // ordered list of pre-existing test checks is byte-identical before and
+  // after this pass was added, and
+  // TestTessellateConformingSymmetricDivisionsUnaffectedByQuadQuadFix
+  // gives that same claim its own in-file, falsifiable check).
+  //
+  // The result: Brep::Box().TessellateToClosedMeshConforming(u, v) (and
+  // BooleanCombineMixed's own drilled-box case) is now a genuine, complete
+  // Mesh::IsClosedManifold() at ANY u_divisions/v_divisions pair, not only
+  // a symmetric one - see
+  // TestTessellateConformingQuadQuadSeamPlainBoxIsClosedManifold and
+  // TestTessellateConformingQuadQuadSeamDrilledBoxIsClosedManifold for the
+  // exact falsifiable claims (the latter also re-confirms, at an
+  // asymmetric pair, that this pass leaves the two pre-existing passes'
+  // own wedge-arc/wedge-straight-edge seams exactly as closed as they
+  // already were - see CountNonPerimeterBoundaryEdges's own doc comment
+  // in this kernel's test file).
   //
   // Deliberately narrow in scope beyond that (see boolean.h's own
   // BooleanCombineMixed doc comment and this method's own implementation
@@ -880,11 +914,19 @@ class Brep {
   // straight boundary segment against ANY plain-quad planar face, not
   // hardcoded to Box() walls specifically), but its SOURCE side still
   // only ever walks a wedge PlanarFace's own trim loop (i.e. a face with
-  // a recorded PlanarFace::arc_runs entry) - a genuinely arbitrary pair
-  // of adjacent PlanarFaces neither of which is a wedge is not attempted
-  // (e.g. ShellConvexPlanar's own separately-disclosed planar/planar
-  // grid-mismatch note remains a real, separate follow-up this does not
-  // attempt).
+  // a recorded PlanarFace::arc_runs entry); the quad-vs-quad pass
+  // generalizes one step further still - NEITHER side needs to be a
+  // wedge - but still only ever matches a "plain quad" face in
+  // CollectPlainQuadFaces's own sense (planar, no holes, exactly 4
+  // corners - explicit or the implicit domain rectangle - and
+  // axis-aligned in its own (u, v) domain; see that function's own doc
+  // comment in brep.cpp for the real, pre-existing, separate gap this
+  // deliberately leaves for a face shaped otherwise, e.g. one quad face of
+  // a hulled, arbitrarily-rotated box). A genuinely arbitrary pair of
+  // adjacent PlanarFaces, neither one shaped like a plain quad, is still
+  // not attempted by any of the three passes (e.g. ShellConvexPlanar's own
+  // separately-disclosed planar/planar grid-mismatch note remains a real,
+  // separate follow-up none of them attempt).
   std::vector<Mesh> TessellateConforming(int u_divisions = 8, int v_divisions = 8,
                                           int boundary_samples = -1) const;
 

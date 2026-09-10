@@ -7898,22 +7898,25 @@ void TestBooleanCombineMixedDrilledBoxThroughHole() {
   // whole outer perimeter - see that function's own doc comment). This
   // holds for u_divisions == v_divisions (as tessellated here and by
   // every other TessellateConforming() caller in this file); an unequal
-  // u_divisions/v_divisions pair is a SEPARATE gap this fix does not
-  // touch for TessellateConforming()'s own quad-vs-quad case
-  // specifically (see that method's own doc comment) - PRE-EXISTING when
-  // this increment landed, and confirmed at the time to affect HALF of
-  // any plain, undrilled Brep::Box()'s own 12 edges via the ordinary
-  // Tessellate() path too (not only the box's own vertical corner
-  // edges - every horizontal cap-level edge that mismatches too), for
-  // the "which physical axis is u vs v differs per wall" reason above.
-  // Brep::Tessellate() ITSELF no longer has this gap (a later, separate
-  // fix closed it there - see Tessellate()'s own doc comment in brep.h,
-  // and TestBoxAsymmetricDivisionsIsClosedManifold and its siblings in
-  // this file); TessellateConforming()'s OWN quad-vs-quad case, reached
-  // only when neither side of a mismatched pair is already claimed by
-  // the wedge/cylinder passes above, still has it - a real, narrower,
-  // still-open follow-up, not something this increment's own wedge/wall
-  // straight-edge matching introduced or was ever positioned to fix.
+  // u_divisions/v_divisions pair was, when THIS increment landed, a
+  // SEPARATE gap it did not touch for TessellateConforming()'s own
+  // quad-vs-quad case specifically - confirmed at the time to affect HALF
+  // of any plain, undrilled Brep::Box()'s own 12 edges via the ordinary
+  // Tessellate() path too (not only the box's own vertical corner edges -
+  // every horizontal cap-level edge that mismatches too), for the "which
+  // physical axis is u vs v differs per wall" reason above.
+  // Brep::Tessellate() lost this gap first (a later, separate fix closed
+  // it there - see Tessellate()'s own doc comment in brep.h, and
+  // TestBoxAsymmetricDivisionsIsClosedManifold and its siblings in this
+  // file); TessellateConforming()'s OWN quad-vs-quad case - reached only
+  // when neither side of a mismatched pair is already claimed by the
+  // wedge/cylinder passes above - was left open a while longer, then
+  // ALSO closed, by a THIRD matching pass added after this one that
+  // reuses that same Tessellate()-side machinery directly (see
+  // TessellateConforming()'s own doc comment in brep.h for the exact
+  // mechanism, and TestTessellateConformingQuadQuadSeamDrilledBoxIsClosedManifold
+  // for this exact drilled-box geometry re-checked at an asymmetric
+  // divisions pair).
   Check(mesh_conforming.IsClosedManifold(),
         "TessellateToClosedMeshConforming()'s own mesh is a genuine, complete IsClosedManifold() - both the "
         "wedge-arc/cylinder-wall seam AND the wedge/wall straight-perimeter seam are closed, so the drilled box's "
@@ -8074,6 +8077,192 @@ void TestBooleanCombineMixedDrilledBoxOffCenterHole() {
         "count that does not evenly divide either the box's own span or the hole's own off-center split point - "
         "the wedge/wall straight-perimeter fix is genuinely general, not merely reusing a coincidence of symmetric "
         "geometry lining up with a wall's own pre-existing grid lines");
+}
+
+// ---------------------------------------------------------------------
+// Brep::TessellateConforming()'s own THIRD matching pass: closing the
+// quad-vs-quad seam gap (two adjacent "plain quad" planar faces, NEITHER
+// one a wedge or a matched cylinder) at an unequal u_divisions/
+// v_divisions pair - the gap TestBooleanCombineMixedDrilledBoxThroughHole's
+// own comment used to describe as still open (see that method's own doc
+// comment in brep.h, and ComputePlainQuadSeamForces's own doc comment in
+// brep.cpp for the actual matching mechanism, reused verbatim from
+// Tessellate()'s own, structurally identical fix).
+// ---------------------------------------------------------------------
+
+// The cleanest possible isolation of this fix from the two PRE-EXISTING
+// passes: a plain, undrilled Brep::Box() has ZERO wedges and ZERO
+// cylindrical faces anywhere (Box()'s own factory never populates
+// PlanarFace::arc_runs at all - see brep.h's own face_arc_runs_ comment),
+// so the arc-matching and straight-edge-matching passes above are
+// structurally incapable of ever firing for it, at ANY divisions. Every
+// one of its 12 edges falls through entirely to either this new third
+// pass, or - before this fix - to the untouched ordinary
+// TessellateGrid/TessellateGridClippedExact fallback, exactly mirroring
+// Brep::Tessellate()'s own pre-fix behavior for the identical Brep (see
+// TestBoxAsymmetricDivisionsIsClosedManifold's own comment for that same
+// fact about Tessellate()).
+void TestTessellateConformingQuadQuadSeamPlainBoxIsClosedManifold() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 3, 5);
+  const std::vector<std::pair<int, int>> pairs = {{8, 5}, {17, 4}, {256, 3}, {1, 2}, {2, 1}};
+  for (const auto& uv : pairs) {
+    const Mesh mesh = box.TessellateToClosedMeshConforming(uv.first, uv.second);
+    Check(mesh.raw().m_V.Count() > 8,
+          "Brep::Box()'s TessellateToClosedMeshConforming() asymmetric-divisions mesh has more vertices than its "
+          "8 raw corners - a genuine tessellated grid, not a degenerate empty result");
+    Check(mesh.IsClosedManifold(),
+          "Brep::Box().TessellateToClosedMeshConforming(u, v) at an asymmetric (u != v) divisions pair is a "
+          "genuine, complete IsClosedManifold() - the new third (quad-vs-quad) matching pass closes every one of "
+          "the box's 12 edges even with ZERO wedges/cylinders anywhere to seed the two pre-existing passes");
+  }
+}
+
+// The harder, composed case: BooleanCombineMixed's own drilled-box Brep
+// (12 planar faces - 4 untouched walls + 2 hole-punched caps of 4 wedges
+// each - plus 1 cylindrical hole-wall fragment), where the two
+// PRE-EXISTING passes are already active (per
+// TestBooleanCombineMixedDrilledBoxThroughHole's own bit-identical and
+// IsClosedManifold() checks, both at symmetric divisions only). Checked
+// here at several asymmetric pairs - a coprime "unfriendly" pair, an
+// extreme skew, and (12, 20) specifically because 12 and 20 are each the
+// OTHER pair member's own factor pattern away from lining up by accident
+// (mirrors TestBoxAsymmetricDivisionsIsClosedManifold's own choice of
+// pairs) - to confirm the new pass both closes the previously-open
+// untouched-wall-vs-untouched-wall seams AND composes correctly with the
+// two pre-existing passes rather than interfering with them.
+void TestTessellateConformingQuadQuadSeamDrilledBoxIsClosedManifold() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto [box, cyl] = BuildDrilledBoxInputs(/*hole_radius=*/2.0, /*hole_z0=*/-1.0, /*hole_length=*/12.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+
+  const std::vector<std::pair<int, int>> pairs = {{17, 4}, {12, 20}, {256, 3}};
+  for (const auto& uv : pairs) {
+    const Mesh mesh = drilled.TessellateToClosedMeshConforming(uv.first, uv.second);
+    Check(mesh.raw().m_V.Count() > 8,
+          "drilled box's TessellateToClosedMeshConforming() asymmetric-divisions mesh has more vertices than a "
+          "plain box's 8 raw corners - a genuine tessellated grid, not a degenerate empty result");
+    // A new, stronger check the fix makes possible: this narrower probe
+    // (see CountNonPerimeterBoundaryEdges's own doc comment for exactly
+    // what it excludes and why) was previously only ever exercised at
+    // symmetric divisions by every other test in this file - confirming
+    // it ALSO holds at an asymmetric pair positively shows the new third
+    // pass doesn't perturb the two pre-existing passes' own seam at all,
+    // not merely that the two don't visibly conflict.
+    Check(CountNonPerimeterBoundaryEdges(mesh) == 0,
+          "the wedge-arc-vs-cylindrical-wall seam (and the wedge-vs-wall straight-perimeter seam - both "
+          "PRE-EXISTING passes) stay genuinely closed at an ASYMMETRIC divisions pair too - the new third pass "
+          "does not disturb them");
+    Check(mesh.IsClosedManifold(),
+          "drilled box's TessellateToClosedMeshConforming(u, v) at an asymmetric (u != v) divisions pair is a "
+          "genuine, complete IsClosedManifold() - the new third (quad-vs-quad) matching pass closes the untouched "
+          "side walls' own shared edges too, composing correctly with the two pre-existing wedge-arc/wedge-"
+          "straight-edge passes rather than interfering with them");
+  }
+}
+
+// Genuinely asymmetric GEOMETRY (not just divisions): an off-center hole
+// (mirrors TestBooleanCombineMixedDrilledBoxOffCenterHole's own
+// construction and rationale for why a centered hole and/or a
+// division count that evenly divides the box's own span could let a
+// much narrower, NOT actually general fix pass by coincidence), now ALSO
+// checked at a genuinely asymmetric u_divisions/v_divisions pair - the
+// exact combination that test's own comment explicitly flagged as
+// untested ("u_divisions == v_divisions here... unequal u_divisions/
+// v_divisions is a separate, pre-existing gap this fix does not touch").
+void TestTessellateConformingQuadQuadSeamOffCenterHoleIsClosedManifold() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace hole;
+  hole.frame.origin = Point3d(3.3, 6.7, -1.0);
+  hole.frame.xaxis = Vector3d(1, 0, 0);
+  hole.frame.yaxis = Vector3d(0, 1, 0);
+  hole.frame.zaxis = Vector3d(0, 0, 1);
+  hole.frame.UpdateEquation();
+  hole.radius = 1.7;
+  hole.angle = 2.0 * ON_PI;
+  hole.length = 12.0;
+  const Brep cyl = Brep::FromMixedFaces({}, {hole});
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+
+  const Mesh mesh = drilled.TessellateToClosedMeshConforming(17, 4);
+  Check(CountNonPerimeterBoundaryEdges(mesh) == 0,
+        "off-center drilled box's wedge-arc/wedge-straight-edge seams stay closed at a genuinely asymmetric "
+        "(17, 4) divisions pair too");
+  Check(mesh.IsClosedManifold(),
+        "off-center drilled box's TessellateToClosedMeshConforming(17, 4) is a genuine, complete "
+        "IsClosedManifold() at an odd, asymmetric divisions pair that does not evenly divide either the box's own "
+        "span or the hole's own off-center split point - the new quad-vs-quad pass is genuinely general, not "
+        "merely reusing a coincidence of symmetric geometry lining up with a wall's own pre-existing grid lines");
+}
+
+// The bypass claim (mirrors Tessellate()'s own
+// TestTessellateSymmetricDivisionsMatchesIndependentReconstruction - see
+// that test's own comment): when u_divisions == v_divisions, the new
+// third pass's own `if (u_divisions != v_divisions)` gate means it never
+// runs at all - a structural guarantee, not a heuristic. Proven here not
+// by reading the source but by an INDEPENDENT cross-check, using a plain
+// Box() for the same isolation reason
+// TestTessellateConformingQuadQuadSeamPlainBoxIsClosedManifold's own
+// comment gives: with zero wedges/cylinders anywhere, the two
+// PRE-EXISTING passes are structurally guaranteed no-ops REGARDLESS of
+// divisions symmetry (unlike a drilled Brep, where the straight-edge
+// pass is unconditional and would already make TessellateConforming()'s
+// own output differ from Tessellate()'s, for reasons having nothing to
+// do with this fix - a plain Box() is the only Brep where the ONLY
+// possible source of divergence between the two methods is this new
+// pass specifically). So: Brep::TessellateConforming(N, N)'s own
+// per-face output for a plain Box(), compared bit-for-bit against
+// Brep::Tessellate(N, N)'s own output for the SAME Brep - both methods
+// resolve every face via the identical ResolveFace() call and, with no
+// wedge/cylinder pairing possible at all, dispatch to the exact same
+// ordinary fallback branch (TessellateGrid/TessellateGridClippedExact)
+// whenever their own respective quad-vs-quad pass is gated off by u==v -
+// so any divergence here would mean this fix's own gate failed to
+// suppress it.
+void TestTessellateConformingSymmetricDivisionsUnaffectedByQuadQuadFix() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 3, 5);
+  for (const int n : {8, 17, 256}) {
+    const std::vector<Mesh> conforming = box.TessellateConforming(n, n);
+    const std::vector<Mesh> plain = box.Tessellate(n, n);
+    Check(conforming.size() == 6 && plain.size() == 6,
+          "Box() has 6 faces, from both Tessellate() and TessellateConforming()");
+    bool all_match = conforming.size() == 6 && plain.size() == 6;
+    for (size_t idx = 0; all_match && idx < 6; ++idx) {
+      const ON_Mesh& a = conforming[idx].raw();
+      const ON_Mesh& b = plain[idx].raw();
+      if (a.m_V.Count() != b.m_V.Count()) {
+        all_match = false;
+        break;
+      }
+      for (int i = 0; i < a.m_V.Count(); ++i) {
+        if (a.m_V[i].x != b.m_V[i].x || a.m_V[i].y != b.m_V[i].y || a.m_V[i].z != b.m_V[i].z) {
+          all_match = false;
+          break;
+        }
+      }
+    }
+    Check(all_match,
+          "at symmetric divisions (N, N), Box().TessellateConforming(N, N)'s own output for every face is "
+          "BIT-IDENTICAL to Box().Tessellate(N, N)'s own output for that same face - the new quad-vs-quad "
+          "matching pass is gated off by u==v and hence never fires, so it changes nothing relative to the plain "
+          "ordinary fallback both methods already used for these faces");
+  }
 }
 
 // FromPlanarFaces()/FromMixedFaces() now build genuine ON_Brep
@@ -9102,6 +9291,10 @@ int main() {
   TestBooleanCombineMixedDrilledBoxNearZeroRadius();
   TestBooleanCombineMixedDrilledBoxCoincidentCapHeight();
   TestBooleanCombineMixedDrilledBoxOffCenterHole();
+  TestTessellateConformingQuadQuadSeamPlainBoxIsClosedManifold();
+  TestTessellateConformingQuadQuadSeamDrilledBoxIsClosedManifold();
+  TestTessellateConformingQuadQuadSeamOffCenterHoleIsClosedManifold();
+  TestTessellateConformingSymmetricDivisionsUnaffectedByQuadQuadFix();
   TestExactConvexHullBoxSixExactQuadFaces();
   TestExactConvexHullOctahedronEightExactTriFaces();
   TestExactConvexHullIgnoresInteriorPoints();

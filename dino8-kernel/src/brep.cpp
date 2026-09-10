@@ -2042,11 +2042,15 @@ std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>> ComputePlainQuadS
 // domain, e.g. one face of a hulled, arbitrarily-ROTATED box - confirmed
 // directly to be a real, PRE-EXISTING, SEPARATE gap unaffected by this
 // fix either way). A non-planar face (cylindrical, conical, spherical)
-// is never part of this pass either. And this fix is Tessellate()-only:
-// TessellateConforming() has its own, separately-disclosed, NOT-YET-
-// closed version of this exact same gap for its own quad-vs-quad case
-// (see that method's own doc comment) - completely unaffected by this
-// change, still open, a real, separate, future follow-up.
+// is never part of this pass either. This fix is Tessellate()-only: it
+// does not touch TessellateConforming() at all - TessellateConforming()
+// had its own, separately-disclosed version of this exact same gap for
+// its own quad-vs-quad case (two adjacent plain quads, neither a wedge),
+// left open by this change. A LATER, separate fix closed it there too,
+// by reusing this same CollectPlainQuadFaces()/ComputePlainQuadSeamForces()
+// machinery directly from inside TessellateConforming() itself - see that
+// method's own doc comment (brep.h) for the exact mechanism and
+// falsifiable claim.
 std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
   std::vector<Mesh> result;
   result.reserve(static_cast<size_t>(brep_.m_F.Count()));
@@ -2440,6 +2444,84 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
     }
     for (StraightMatch& sm : straight_matches) {
       wedge_subs[wedge_index].push_back({SubRange{sm.begin, 2}, std::move(sm.points)});
+    }
+  }
+
+  // Third matching pass: two DIFFERENT "plain quad" planar faces (see
+  // CollectPlainQuadFaces's own doc comment) that share a boundary edge
+  // but where NEITHER side is a wedge or a matched CylindricalFace - the
+  // pair the two passes above never look at, since both of them only
+  // ever walk a wedge's own trim loop as their SOURCE side (see this
+  // method's own doc comment for the concrete example: two untouched
+  // Box() wall faces the drilling hole never reaches). This is exactly
+  // the gap Tessellate()'s own doc comment discloses as this method's
+  // "separately-disclosed, NOT-YET-closed" follow-up - now closed, by
+  // reusing CollectPlainQuadFaces/ComputePlainQuadSeamForces directly
+  // (both already live in this same anonymous namespace, are already
+  // generic over any (fgs, resolved) pair, and already carry the
+  // IsAxisAlignedQuadUv/holes guards the local `quad_faces` collection
+  // above doesn't need for its own narrower wedge-vs-quad job) rather
+  // than a second, hand-adapted local reimplementation that would risk a
+  // second, subtly different definition of "natural count" or
+  // "axis-aligned" drifting out of sync with Tessellate()'s own over
+  // time - see ComputePlainQuadSeamForces's own doc comment for the
+  // exact matching mechanism, shared verbatim here, not reimplemented.
+  //
+  // Gated on u_divisions != v_divisions for the same reason Tessellate()'s
+  // own pass is (see that method's own doc comment): when the two counts
+  // are equal, every edge's natural sample count already agrees on both
+  // sides, so ComputePlainQuadSeamForces's own `count_a == count_b`
+  // short-circuit means this entire block computes and changes nothing -
+  // a structural guarantee, not a heuristic, that every existing
+  // TessellateConforming()/TessellateToClosedMeshConforming() caller in
+  // this kernel's own test file (which all use symmetric divisions) is
+  // completely unaffected by this pass.
+  if (u_divisions != v_divisions) {
+    // Candidate set: every resolved face NOT already claimed by the arc-
+    // matching or straight-edge-matching passes above - i.e. the same
+    // "not a wedge, not a matched cylinder" criterion the local
+    // `quad_faces` collection above already applies (line-for-line: a
+    // face is excluded here iff it would have been excluded there),
+    // routed through CollectPlainQuadFaces so it additionally gets the
+    // uv-based IsAxisAlignedQuadUv guard and holes check that pass
+    // doesn't need for its own narrower job. Because those two extra
+    // guards only ever narrow (never widen) CollectPlainQuadFaces's
+    // result relative to the local `quad_faces` list above - both start
+    // from the identical resolved-and-not-wedge/cylinder base, and both
+    // require the same "planar, 4-corner-or-untrimmed" shape - every
+    // face this pass can add to `plain_forces` is guaranteed to already
+    // be present in `quad_faces`, so the final dispatch loop's own
+    // corner lookup below always finds it.
+    std::vector<bool> quad_pass_resolved = resolved;
+    for (int i = 0; i < n; ++i) {
+      if (cyl_matches.count(i) != 0 || wedge_subs.count(i) != 0) {
+        quad_pass_resolved[static_cast<size_t>(i)] = false;
+      }
+    }
+    const std::vector<PlainQuadFace> quad_quad_candidates = CollectPlainQuadFaces(fgs, quad_pass_resolved);
+    const auto quad_quad_forces = ComputePlainQuadSeamForces(quad_quad_candidates, u_divisions, v_divisions);
+
+    // Merge additively: fill only edge slots the wedge/cylinder passes
+    // above left empty. Never overwrite a slot that's already non-empty -
+    // per the dispatch priority below (cyl_it > wedge_it > plain_it), a
+    // face already claimed as a wedge or matched cylinder is excluded
+    // from `quad_quad_candidates` above and so can never appear as a key
+    // here; a face that IS an existing `plain_forces` target from the
+    // straight-edge pass keeps its wedge-forced edges exactly as they
+    // are - only its OTHER, still-unclaimed edges (if any) gain new
+    // forces here. Physically this should never collide with an
+    // already-forced edge (each physical edge has exactly one neighbor;
+    // if that neighbor is a wedge, no other quad candidate can also
+    // report matching 3D endpoints on that same edge), but the check is
+    // defense-in-depth: it costs nothing and guarantees a pass-2 force
+    // can never be silently clobbered even if that assumption were ever
+    // violated.
+    for (const auto& [face_index, edges] : quad_quad_forces) {
+      std::array<std::vector<EdgeForce>, 4>& dst = plain_forces[face_index];
+      for (int e = 0; e < 4; ++e) {
+        if (!dst[e].empty()) continue;
+        dst[e] = edges[e];
+      }
     }
   }
 
