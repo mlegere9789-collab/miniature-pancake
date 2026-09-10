@@ -1724,11 +1724,19 @@ ObliqueCylinderSplit SplitCylindricalByObliquePlane(const Brep::CylindricalFace&
   result.lo.length = h0;
   result.lo.cap1_notch_points = canonical;
   result.lo.cap1_notch_tolerance = max_sagitta;
+  // `lo`'s own new v=length end is this notched cut, never a genuine
+  // unmet terminus of the input cylinder - see
+  // CylindricalFace::end0_is_original/end1_is_original's own doc comment.
+  // `lo`'s own v=0 end is untouched, inherited via `result.lo = cf` above.
+  result.lo.end1_is_original = false;
   result.hi = cf;
   result.hi.frame.origin = cf.frame.origin + h0 * cf.frame.zaxis;
   result.hi.length = cf.length - h0;
   result.hi.cap0_notch_points = canonical;
   result.hi.cap0_notch_tolerance = max_sagitta;
+  // Mirror of `lo` above: `hi`'s own new v=0 end is this same notched
+  // cut; `hi`'s own v=length end is inherited.
+  result.hi.end0_is_original = false;
   return result;
 }
 
@@ -1768,7 +1776,35 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
       } else if (!f.is_cyl && g.is_cyl) {
         // Case (ii) / no-interaction / oblique (out of scope).
         const double align = std::fabs(ON_DotProduct(g.cyl.frame.zaxis, f.planar.plane.zaxis));
-        if (align > 1.0 - kAxisAlignTol) {
+        // A real, checked-directly correction to this branch's own
+        // earlier form (found and verified during this increment's own
+        // end-cap-synthesis testing, not merely theorized): "the axis is
+        // perpendicular to this plane" alone does NOT mean the FINITE
+        // cylinder `g.cyl` (bounded to [0, g.cyl.length] along that axis)
+        // actually reaches this plane at all - only that ITS INFINITE
+        // EXTENSION would. The prior form of this branch punched a
+        // circular hole into `f.planar` unconditionally whenever
+        // `align > 1 - kAxisAlignTol`, regardless of axial reach - exactly
+        // right for every EXISTING test (BuildDrilledBoxInputs' own hole
+        // always spans clean through both of the box's own z-caps, so the
+        // finite cylinder genuinely does reach both), but WRONG whenever
+        // it doesn't: a Union/boss cylinder whose base sits flush with
+        // (or embedded in) only ONE of a box's two z-perpendicular caps is
+        // still perpendicular to the OTHER, untouched cap too - and this
+        // branch used to punch a hole in that FAR cap as well, with
+        // nothing else in the pipeline ever refilling the missing
+        // material (ClipPolygonByCircle3d's own wedges represent ONLY the
+        // material outside the circle - see that function's own doc
+        // comment - so the "hole" was pure data loss, not merely lost
+        // topology). Confirmed directly: every one of this increment's
+        // own new Union/boss tests reproduced a genuinely wrong,
+        // non-closed, under-volume result at the FAR cap before this
+        // correction, using the exact same CylinderPlaneNoInteraction
+        // closed-form bound case (iii) below already trusts for the
+        // identical question on the OTHER side of this same seam.
+        if (align > 1.0 - kAxisAlignTol && CylinderPlaneNoInteraction(g.cyl, f.planar.plane, tol)) {
+          next.push_back(std::move(f));
+        } else if (align > 1.0 - kAxisAlignTol) {
           // The infinite cylinder's own axis runs perpendicular to
           // `f.planar`'s plane, so its silhouette IN that plane is
           // exactly a circle: center = the projection of the cylinder's
@@ -1852,9 +1888,18 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
           if (v_cut > tol && v_cut < f.cyl.length - tol) {
             Brep::CylindricalFace lo = f.cyl;
             lo.length = v_cut;
+            // `lo`'s own v=length end is a FRESH boundary this split just
+            // cut - never a genuine unmet terminus of the input cylinder
+            // (see CylindricalFace::end0_is_original/end1_is_original's
+            // own doc comment) - `lo`'s own v=0 end is untouched, so its
+            // own flag is simply inherited via `lo = f.cyl` above.
+            lo.end1_is_original = false;
             Brep::CylindricalFace hi = f.cyl;
             hi.frame.origin = f.cyl.frame.origin + v_cut * f.cyl.frame.zaxis;
             hi.length = f.cyl.length - v_cut;
+            // Mirror of `lo` above: `hi`'s own NEW v=0 end is this same
+            // fresh cut; `hi`'s own v=length end is inherited.
+            hi.end0_is_original = false;
             MixedFace mlo;
             mlo.is_cyl = true;
             mlo.cyl = lo;
@@ -1976,6 +2021,192 @@ MixedFace FlipMixedFace(MixedFace f) {
   return f;
 }
 
+// Number of boundary samples the placeholder disc polygon below is built
+// from - the same order of magnitude ClipPolygonByCircle3d's own default
+// `circle_samples = 200` already uses for a comparable circular boundary.
+// This is ONLY the placeholder ordinary-Tessellate() fidelity: whenever
+// Brep::TessellateConforming() is actually used (as every IsClosedManifold()
+// check in this increment's own tests does), this whole polygon is
+// discarded and rebuilt at the caller's own requested division count via
+// the PlanarFace::ArcRun attached below - see BuildEndCap's own doc
+// comment.
+constexpr int kEndCapSamples = 200;
+
+// Synthesizes the flat, full-circle Brep::PlanarFace disc that closes one
+// end of a surviving Union-result CylindricalFace fragment `cf` whose end
+// is a genuine, EXPOSED, unmet terminus of the original input cylinder
+// (see CylindricalFace::end0_is_original/end1_is_original's own doc
+// comment, and BooleanCombineMixed's own doc comment for the three-case
+// argument for when this is and isn't needed) - `at_v0` selects which end
+// (true: v=0/cf.frame.origin, false: v=length).
+//
+// Restricted to a FULL-SWEEP (angle == 2*pi) `cf`: the only kind of bare
+// CylindricalFace boolean operand any producer in this codebase ever
+// builds today (see CylindricalFace::cap0_notch_points' own doc comment
+// for the identical restriction already accepted elsewhere) - a genuinely
+// partial-angle ("pie slice") cap would need an additional pair of
+// straight radial rails plus a center vertex, a real generalization this
+// increment's own test plan never exercises; throws rather than guessing
+// at an unverified shape.
+//
+// Built entirely from already-verified primitives, not new closed-form
+// geometry: PointOnCylFace (this file's own exact circle-point evaluator,
+// already used by RepresentativeInteriorPointMixed above) samples the
+// disc's own placeholder boundary, and a hand-built PlanarFace::ArcRun
+// (NOT recovered via FindArcRun - see this function's own orientation
+// comment below for exactly why) lets Brep::TessellateConforming() later
+// re-sample that SAME boundary, bit-identically, against the adjoining
+// cylindrical face's own matching row, at whatever division count the
+// caller actually asks for - the exact mechanism already proven correct
+// for a wedge cap vs. a cylindrical wall's shared arc (SplitMixedAgainstAllFaces
+// case (ii), above).
+//
+// Orientation: the loop's own true outward normal must be
+// `-cf.frame.zaxis` at the v=0 end and `+cf.frame.zaxis` at v=length (or
+// the reverse, if `cf.outward` is false - see CylindricalFace::outward's
+// own doc comment) for PlanarFace's own "loop is CCW as seen from
+// outside, plane.zaxis is the outward normal" invariant to hold. Rather
+// than build the loop always in increasing PHYSICAL angle and separately
+// reason about when that needs reversing, this parameterizes each wedge's
+// own loop directly in the DISC'S OWN plane-local angle (always
+// increasing within that wedge, so its own run.angle_begin/angle_end are
+// unconditionally correct on BOTH ends - genuinely simpler than
+// FindArcRun's own "recover angle_begin/angle_end from an already-built
+// loop of unknown handedness" problem: this function builds its own loop
+// and its own ArcRun together, from a single already-consistent
+// (plane_xaxis, plane_yaxis) basis, rather than inferring one after the
+// fact from an arbitrary polygon). `plane.yaxis` (== `run.plane_yaxis`)
+// is cf.frame.yaxis when the target normal is +cf.frame.zaxis
+// (same-handed, a plain reparameterization) and -cf.frame.yaxis when it's
+// -cf.frame.zaxis (mirrored, a reflection) - direct algebra confirms this
+// choice always places disc-local angle `theta` at PHYSICAL cf.frame
+// angle `+-theta` (sign matching same_handed) while ALWAYS tracing CCW in
+// the disc's own (plane.xaxis, plane.yaxis) basis, regardless of which
+// case applies - verified by direct substitution, not merely asserted,
+// and empirically confirmed by this increment's own volume-sign test (a
+// flipped normal would double the closed-form volume error in the wrong
+// direction, exactly the kind of falsifiable check this codebase's own
+// sibling increments already use).
+//
+// Split into 4 QUADRANT "pie slice" pieces (center + one quarter-turn arc
+// each) rather than one single loop wrapping the whole circle - directly
+// mirroring detail::ClipPolygonByCircle3d's own established "4 simple
+// wedges, cut at four rays 90 degrees apart" pattern (see that function's
+// own top comment for why FOUR pieces, not one bridged/holed loop) rather
+// than inventing a new shape this codebase has never built before. This
+// is not merely stylistic: a SINGLE loop covering the full [0, 2*pi]
+// sweep would need its own ArcRun to span the loop's own start/end seam,
+// and detail::ArcSchedule3d's own first and last returned points
+// (angle_begin=0, angle_end=2*pi) are the SAME physical location (cos/sin
+// are 2*pi-periodic) - a genuine, confirmed-directly duplicate-vertex
+// degeneracy at that seam (caught by this increment's own falsifiability
+// testing, not merely anticipated) that a plain wedge's own run - always
+// strictly UNDER a quarter turn - never has to contend with. Each
+// quadrant's own run here is a plain 90-degree sweep, structurally
+// identical in shape to every ArcRun this codebase's own existing,
+// already-verified TessellateConforming() machinery already handles.
+std::vector<MixedFace> BuildEndCap(const Brep::CylindricalFace& cf, bool at_v0) {
+  if (!(cf.angle >= 2.0 * ON_PI - kAxisAlignTol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: synthesizing an end cap for a "
+        "PARTIAL-sweep (angle < 2*pi) cylindrical fragment is out of scope "
+        "for this increment - see BuildEndCap's own doc comment in "
+        "boolean.cpp");
+  }
+
+  const double height = at_v0 ? 0.0 : cf.length;
+  const Point3d center = cf.frame.origin + height * cf.frame.zaxis;
+  const bool same_handed = at_v0 ? !cf.outward : cf.outward;  // true iff target normal == +cf.frame.zaxis
+
+  ON_Plane plane;
+  plane.origin = center;
+  plane.xaxis = cf.frame.xaxis;
+  plane.yaxis = same_handed ? cf.frame.yaxis : -cf.frame.yaxis;
+  plane.zaxis = same_handed ? cf.frame.zaxis : -cf.frame.zaxis;
+  plane.UpdateEquation();
+
+  constexpr int kQuadrants = 4;
+  const int per_quadrant = std::max(2, kEndCapSamples / kQuadrants);
+
+  std::vector<MixedFace> pieces;
+  pieces.reserve(kQuadrants);
+  for (int q = 0; q < kQuadrants; ++q) {
+    const double plane_theta_begin = cf.angle * static_cast<double>(q) / static_cast<double>(kQuadrants);
+    const double plane_theta_end = cf.angle * static_cast<double>(q + 1) / static_cast<double>(kQuadrants);
+
+    std::vector<Point3d> loop;
+    loop.reserve(static_cast<size_t>(per_quadrant) + 2);
+    loop.push_back(center);  // the one non-arc anchor vertex - see this function's own doc comment
+    for (int s = 0; s <= per_quadrant; ++s) {
+      const double t = static_cast<double>(s) / static_cast<double>(per_quadrant);
+      const double plane_theta = plane_theta_begin + (plane_theta_end - plane_theta_begin) * t;
+      const double physical_theta = same_handed ? plane_theta : -plane_theta;
+      loop.push_back(PointOnCylFace(cf, physical_theta, height));
+    }
+
+    Brep::PlanarFace::ArcRun run;
+    run.begin = 1;  // skip the center vertex at index 0
+    run.count = per_quadrant + 1;
+    run.center = center;
+    run.radius = cf.radius;
+    run.angle_begin = plane_theta_begin;
+    run.angle_end = plane_theta_end;
+    run.plane_xaxis = plane.xaxis;
+    run.plane_yaxis = plane.yaxis;
+
+    MixedFace m;
+    m.planar.plane = plane;
+    m.planar.loop = std::move(loop);
+    m.planar.arc_runs.push_back(run);
+    pieces.push_back(std::move(m));
+  }
+  return pieces;
+}
+
+// Scans every surviving cylindrical fragment in `fragments` (one side's
+// own `out` bucket - see BooleanCombineMixed's own Union branch below)
+// for an end that (a) is still `end{0,1}_is_original` (a genuine terminus
+// of the input cylinder, not a boundary this pipeline already cut against
+// `other`'s own surface) and (b) probes as PointClass::kOut just past
+// that end against `other` (the SAME `other_faces` list
+// SplitAndBucketMixed already classified this very fragment against) -
+// i.e. genuinely exposed, nothing else in the result already closes it
+// (see BooleanCombineMixed's own doc comment for the worked three-case
+// argument this directly implements). Builds a real Brep::PlanarFace disc
+// via BuildEndCap for each such end; every fragment/end that fails either
+// check is left alone, exactly as before this increment - so this
+// function can only ever ADD faces to the Union result, never remove or
+// modify one.
+//
+// The probe point sits ON the cylinder's own axis, a fixed small step
+// `probe_eps` past the end (not at the rim) - representative for every
+// case this increment's own tests build (a flat operand boundary at or
+// near that height), and the same "classify a single interior-ish point"
+// technique RepresentativeInteriorPointMixed/ClassifyPointVsMixedSolid
+// already rely on elsewhere in this pipeline, not a new technique.
+std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments, const std::vector<MixedFace>& other,
+                                          double tol) {
+  std::vector<MixedFace> caps;
+  for (const MixedFace& f : fragments) {
+    if (!f.is_cyl) continue;
+    const Brep::CylindricalFace& cf = f.cyl;
+    const double probe_eps = std::max(tol, 1e-6 * std::max(cf.radius, std::max(cf.length, 1.0)));
+    if (cf.end0_is_original) {
+      const Point3d probe = cf.frame.origin - probe_eps * cf.frame.zaxis;
+      if (ClassifyPointVsMixedSolid(probe, other, tol) == PointClass::kOut) {
+        for (MixedFace& piece : BuildEndCap(cf, /*at_v0=*/true)) caps.push_back(std::move(piece));
+      }
+    }
+    if (cf.end1_is_original) {
+      const Point3d probe = cf.frame.origin + (cf.length + probe_eps) * cf.frame.zaxis;
+      if (ClassifyPointVsMixedSolid(probe, other, tol) == PointClass::kOut) {
+        for (MixedFace& piece : BuildEndCap(cf, /*at_v0=*/false)) caps.push_back(std::move(piece));
+      }
+    }
+  }
+  return caps;
+}
+
 }  // namespace
 
 Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op) {
@@ -2008,11 +2239,27 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op) {
 
   std::vector<MixedFace> result;
   switch (op) {
-    case BooleanOp::Union:
+    case BooleanOp::Union: {
       for (const MixedFace& f : from_a.out) result.push_back(f);
       for (const MixedFace& f : from_b.out) result.push_back(f);
       for (const MixedFace& f : from_a.on) result.push_back(f);
+      // End-cap synthesis (see SynthesizeEndCaps' own doc comment above,
+      // and this function's own doc comment in boolean.h): a bare
+      // CylindricalFace Union/boss operand's own genuinely EXPOSED,
+      // never-split end has no PlanarFace anywhere in either operand to
+      // close it - every existing branch above only ever collects
+      // fragments the two operands ALREADY built, never synthesizes new
+      // material. `from_a.on`/`from_b.on` are not scanned here: a
+      // cylindrical fragment's own representative point is always
+      // strictly interior along its curved surface, so it is classified
+      // kIn/kOut directly and never lands in the `on` bucket at all for
+      // any geometry this increment's own tests build (see this
+      // function's own same_plane comment above for the analogous,
+      // already-accepted narrowing on the Difference path).
+      for (MixedFace& cap : SynthesizeEndCaps(from_a.out, fb, tol)) result.push_back(std::move(cap));
+      for (MixedFace& cap : SynthesizeEndCaps(from_b.out, fa, tol)) result.push_back(std::move(cap));
       break;
+    }
     case BooleanOp::Intersection:
       for (const MixedFace& f : from_a.in) result.push_back(f);
       for (const MixedFace& f : from_b.in) result.push_back(f);

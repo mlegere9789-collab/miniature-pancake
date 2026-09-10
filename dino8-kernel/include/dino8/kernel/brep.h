@@ -394,6 +394,51 @@ class Brep {
     // the corresponding cap*_notch_points field is empty.
     double cap0_notch_tolerance = 0.0;
     double cap1_notch_tolerance = 0.0;
+
+    // True when this fragment's own v=0 (end0)/v=length (end1) end is
+    // STILL the original, never-split terminus of the whole input
+    // CylindricalFace this fragment ultimately descends from - false when
+    // that end was instead manufactured by splitting (boolean.cpp's own
+    // SplitMixedAgainstAllFaces case (iii), perpendicular or oblique).
+    // Defaults to true, so every existing caller/producer of
+    // CylindricalFace (every call this kernel made before these two
+    // fields existed, including a fresh Brep::FromMixedFaces({}, {cf})
+    // operand) is completely unaffected: a freshly-built cylinder has
+    // BOTH its ends still original, exactly what `true`/`true` means.
+    //
+    // The one place this is actually READ: BooleanCombineMixed's own new
+    // end-cap synthesis step (boolean.cpp), which needs to tell "this end
+    // is a genuine, possibly-exposed terminus of the input solid" (may
+    // need a synthesized Brep::PlanarFace disc to close it - see that
+    // function's own doc comment) apart from "this end is a boundary
+    // this SAME pipeline already cut against the other operand's own
+    // surface" (already sealed by that operand's own face, needs no cap -
+    // see boolean.h's own BooleanCombineMixed doc comment for the worked
+    // three-case argument). SplitMixedAgainstAllFaces' own case (iii)
+    // branches (both the axis-aligned real split and the oblique
+    // SplitCylindricalByObliquePlane) are the only two places that ever
+    // set either field to false, each marking exactly the one end its own
+    // split just manufactured while leaving the other end's flag
+    // inherited from the input fragment - every other branch (a
+    // no-interaction pass-through, or a planar/planar or planar/
+    // cylindrical case that never touches a CylindricalFace's own fields
+    // at all) leaves both flags untouched.
+    //
+    // NOT round-tripped through Brep::MixedFaces() (the reverse
+    // extraction, straight NURBS surface -> CylindricalFace): a
+    // CylindricalFace recovered that way always gets the default
+    // true/true, the same honest simplification cap0_notch_points/
+    // cap1_notch_points already make (see that field's own doc comment) -
+    // correct for every operand this increment's own tests ever build
+    // (a fresh, unsplit input cylinder) but NOT verified for a
+    // CylindricalFace fragment re-extracted from a PRIOR
+    // BooleanCombineMixed result and fed into a second one (e.g.
+    // BooleanOp::SymmetricDifference's own internal Union-then-
+    // Intersection-then-Difference chain) - an honestly disclosed,
+    // unexercised edge case, not silently mishandled: see
+    // BooleanCombineMixed's own doc comment in boolean.h.
+    bool end0_is_original = true;
+    bool end1_is_original = true;
   };
 
   // One curved LINEAR-TAPER fillet face's exact geometry: a trimmed

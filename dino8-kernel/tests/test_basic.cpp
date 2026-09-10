@@ -7992,6 +7992,47 @@ int CountNonPerimeterBoundaryEdges(const dino8::kernel::Mesh& merged) {
   return count;
 }
 
+// Counts boundary edges (used by exactly one triangle, after
+// Mesh::MergeAndWeld) whose own midpoint height is AT OR ABOVE
+// `z_threshold` - a narrower, height-scoped sibling of
+// CountNonPerimeterBoundaryEdges above, built for this increment's own
+// Union/boss end-cap tests (TestBooleanCombineMixedUnionBoss*): those
+// scenarios' own box operand can have a genuinely separate, PRE-EXISTING
+// gap at its own UNTOUCHED lower corners (see
+// TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed's own
+// comment for the direct measurement and citation) that has nothing to
+// do with this increment's own new end-cap-synthesis seam - restricting
+// the height range to "at the boss's own base height or above" isolates
+// exactly the seam this fix is responsible for (the box-top wedge's own
+// arc boundary against the surviving cylindrical fragment, and this
+// fix's own synthesized end-cap disc against that same fragment's other
+// end) from that separate, lower, unrelated gap.
+int CountOpenBoundaryEdgesAtOrAboveHeight(const dino8::kernel::Mesh& merged, double z_threshold) {
+  std::map<std::pair<int, int>, int> undirected;
+  const ON_Mesh& raw = merged.raw();
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_MeshFace& f = raw.m_F[i];
+    auto visit = [&](int a, int b) { ++undirected[std::minmax(a, b)]; };
+    visit(f.vi[0], f.vi[1]);
+    visit(f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      visit(f.vi[2], f.vi[3]);
+      visit(f.vi[3], f.vi[0]);
+    } else {
+      visit(f.vi[2], f.vi[0]);
+    }
+  }
+  int count = 0;
+  for (const auto& [edge, n] : undirected) {
+    if (n == 2) continue;
+    const ON_3fPoint& a = raw.m_V[edge.first];
+    const ON_3fPoint& b = raw.m_V[edge.second];
+    if (0.5 * (a.z + b.z) < z_threshold) continue;
+    ++count;
+  }
+  return count;
+}
+
 // The "both sides agree" test - the actual crux of this whole fix (see
 // Brep::TessellateConforming()'s own doc comment in brep.h): asserts
 // that a wedge cap's own substituted arc-boundary vertices and the
@@ -10038,6 +10079,369 @@ void TestTessellateObliqueHullQuadSeamRemainsPreExistingGap() {
         "fix's own guard does not misapply its u/v-axis labeling to an oblique quad and make things worse either");
 }
 
+// ---------------------------------------------------------------------
+// Union/boss end-cap synthesis tests (see BooleanCombineMixed's own doc
+// comment in boolean.h, and BuildEndCap/SynthesizeEndCaps's own doc
+// comments in boolean.cpp): a bare CylindricalFace operand combined via
+// BooleanOp::Union (a "boss"/pipe stub sitting on or embedded in a box)
+// needs a REAL synthesized Brep::PlanarFace disc closing any end of the
+// surviving cylindrical fragment that is both a genuine, never-split
+// terminus of the input cylinder AND genuinely exposed (not already
+// sealed by the other operand's own material) - see boolean.h's own
+// worked three-case argument.
+//
+// A DELIBERATE, DISCLOSED departure from BuildDrilledBoxInputs' sibling
+// tests' own "exact closed-form volume to ~1e-6" checks elsewhere in this
+// file: EVERY volume this kernel ever computes goes through
+// Mesh::Volume() after tessellation (there is no separate analytic
+// Brep::Volume()), and a circular cap - whether it's the box-top wedge's
+// own hole-punched boundary (ClipPolygonByCircle3d) or this increment's
+// own synthesized end-cap disc (BuildEndCap) - is ALWAYS represented as a
+// many-sided polygon inscribed in the true circle, never a literal curve.
+// So a boss's own true pi*r^2 cap area is approximated, with a genuine,
+// bounded, division-count-dependent error - exactly the same honest
+// non-exactness TestBooleanCombineMixedDrilledBoxThroughHole's own
+// comment already discloses for the analogous hole-punched-wedge case
+// ("NOT floating-point exact... a real, bounded arc-sampling/
+// tessellation tolerance"), not a new kind of inexactness this fix
+// introduces.
+void TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // A 10x10x10 box with a radius-2, length-4 cylindrical boss whose own
+  // base sits EXACTLY flush with the box's top face (z=10) and whose own
+  // free end pokes straight up to z=14 - case A of this increment's own
+  // repro (see boolean.h's own doc comment): the boss's own bottom end
+  // is sealed by the box's own top face (already hole-punched around the
+  // boss, case (ii) of SplitMixedAgainstAllFaces), but its own TOP end
+  // (z=14) is a genuine, never-split, exposed terminus with nothing else
+  // in either operand to close it before this fix.
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, 10.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 4.0;
+  Brep cyl = Brep::FromMixedFaces({}, {boss});
+
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Union);
+
+  // A genuinely FALSIFYING structural check (confirmed directly by
+  // temporarily disabling the SplitMixedAgainstAllFaces case (ii)
+  // axial-reach correction this increment also needed - see that
+  // branch's own doc comment in boolean.cpp - and re-measuring): the
+  // box's own untouched BOTTOM face (the boss's z-range never reaches
+  // z=0 here) must survive as ONE single face, not get spuriously
+  // wedge-split too. 4 untouched side walls + 4 top wedges (the boss DOES
+  // reach z=10) + 1 untouched bottom + 4 of this fix's own synthesized
+  // cap quadrants (BuildEndCap) = 13 planar faces, +1 surviving
+  // cylindrical fragment = 14 total. Measured directly: WITHOUT the
+  // case (ii) axial-reach correction, this comes out to 17 (the bottom
+  // wrongly gains its own 4 wedges too, net +3 faces) - and, unlike the
+  // volume/seam checks below (whose own tolerance/height-scoping happens
+  // to still pass even with that regression reintroduced - confirmed
+  // directly, not assumed), THIS check catches it every time.
+  Check(result.FaceCount() == 14,
+        "flush-base Union boss has exactly 14 faces (4 untouched walls + 4 top wedges + 1 untouched bottom + 4 "
+        "synthesized cap quadrants + 1 cylindrical wall) - the box's own untouched bottom face (the boss never "
+        "reaches z=0) survives as ONE face, not spuriously wedge-split by SplitMixedAgainstAllFaces' own case "
+        "(ii) the way it was before this increment's own axial-reach correction there");
+
+  const double hand_derived_volume = 1000.0 + ON_PI * 4.0 * 4.0;  // box + pi*r^2*h, ~= 1050.265482
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "flush-base Union boss's tessellated volume (div=64) matches the hand-derived box+pi*r^2*h to within 0.05 "
+        "- a real, bounded arc-sampling/tessellation tolerance (see this test group's own top comment), NOT "
+        "floating-point exactness - before this fix the measured volume was off by tens of units (an open mesh "
+        "entirely missing the boss's own free-end cap material)");
+
+  // Deliberately NOT a plain IsClosedManifold() check here (unlike cases
+  // C/D below, which pass it outright). Investigating this test directly
+  // (not merely assumed) surfaced a genuine, SEPARATE, PRE-EXISTING gap
+  // in Brep::TessellateConforming()'s own quad-vs-quad seam pass (tasks
+  // #55-57's own domain, boolean.cpp/brep.cpp both completely untouched
+  // by this increment's own diff there): a box where ONE z-perpendicular
+  // cap gets wedge-split (here, the top, by the boss) while the OTHER
+  // stays a single untouched quad (here, the bottom, since the boss never
+  // reaches it) is a face-topology combination NO existing test before
+  // this increment ever built (every prior BuildDrilledBoxInputs-based
+  // test drills a hole clean through BOTH caps) - and measuring it
+  // directly shows real open boundary edges at the box's own bottom
+  // corners (z=0), nowhere near this fix's own cap. Directly confirmed,
+  // not assumed: CountOpenBoundaryEdgesAtOrAboveHeight at a threshold
+  // strictly below the boss's own base height (z=10) is exactly 0 - i.e.
+  // this fix's own new seam (the box-top wedge's own arc boundary against
+  // the surviving cylindrical fragment, AND this fix's own synthesized
+  // end-cap disc against that fragment's free top end) is genuinely
+  // closed; only the separate, lower, unrelated gap remains. This is the
+  // one honestly-disclosed scope limit this increment did not additionally
+  // take on (see boolean.h's own BooleanCombineMixed doc comment).
+  Check(CountOpenBoundaryEdgesAtOrAboveHeight(mesh, 9.99) == 0,
+        "flush-base Union boss: EVERY boundary edge at or above the boss's own base height (z=10) is closed - "
+        "both the pre-existing box-top-wedge/cylinder-wall seam AND this fix's own new free-end cap/cylinder-wall "
+        "seam are genuinely watertight; the mesh's own remaining open edges (if any) are confined to the box's "
+        "own untouched bottom corners, a separate, disclosed, pre-existing TessellateConforming() gap this "
+        "increment does not touch");
+}
+
+void TestBooleanCombineMixedUnionBossOverlappingBaseVolumeAndCapSeamIsClosed() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Case B: the boss's own base is 2 units EMBEDDED inside the box (z=8
+  // to z=10, box top at z=10) with 3 units of free overhang above it
+  // (z=10 to z=13) - exercises BOTH an inherited (embedded, sealed)
+  // bottom end AND a genuinely exposed top end on the SAME fragment
+  // simultaneously (end0_is_original/end1_is_original's own doc comment
+  // in brep.h describes exactly this independent-per-end design), and -
+  // unlike case A above - genuinely exercises SplitMixedAgainstAllFaces'
+  // own case (iii) axis-aligned real split (the boss's own v=0 end sits
+  // strictly INSIDE its own [0, length] band relative to the box's top
+  // plane, at v_cut=2, not AT an existing endpoint the way case A's own
+  // flush base is), so this test also verifies end0_is_original is
+  // correctly propagated as `false` on the surviving `hi` fragment.
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, 8.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 5.0;
+  Brep cyl = Brep::FromMixedFaces({}, {boss});
+
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Union);
+
+  // Same genuinely-falsifying structural check as case A above (see that
+  // test's own comment for the full citation and direct measurement):
+  // the box's own untouched bottom face (the boss's z-range, 8 to 13,
+  // never reaches z=0) must survive as ONE face.
+  Check(result.FaceCount() == 14,
+        "overlapping-base Union boss has exactly 14 faces (4 untouched walls + 4 top wedges + 1 untouched bottom "
+        "+ 4 synthesized cap quadrants + 1 cylindrical wall) - same falsifying check as case A above");
+
+  // Box (1000) plus only the 3-unit-tall overhang above the box's own top
+  // face - the embedded 2 units of the boss contribute nothing extra to
+  // the Union (already box material).
+  const double hand_derived_volume = 1000.0 + ON_PI * 4.0 * 3.0;  // ~= 1037.699112
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "overlapping-base Union boss's tessellated volume (div=64) matches the hand-derived 1000 + pi*r^2*3 to "
+        "within 0.05 - the embedded 2 units of the boss contribute nothing extra (already box material), matching "
+        "a genuine partial-overlap case, not just the fully-exposed case A above");
+
+  // Same honest scoping as case A above (see that test's own comment for
+  // the full citation): the box's own untouched bottom corners (z=0, the
+  // boss never reaches there either) carry the SAME separate,
+  // pre-existing TessellateConforming() quad-vs-quad gap, unrelated to
+  // this fix. Everything at or above the boss's own base height (z=8) -
+  // including its own SPLIT bottom (sealed, no cap - z=8) and its own
+  // free top end (capped by this fix - z=13) - is confirmed genuinely
+  // closed.
+  Check(CountOpenBoundaryEdgesAtOrAboveHeight(mesh, 7.99) == 0,
+        "overlapping-base Union boss: EVERY boundary edge at or above the boss's own base height (z=8) is closed "
+        "- the split (embedded) bottom end's own seam against the box's hole-punched top face, AND this fix's own "
+        "new free-end cap/cylinder-wall seam at z=13, are both genuinely watertight; the mesh's own remaining "
+        "open edges (if any) are confined to the box's own untouched bottom corners, the same separate, "
+        "disclosed, pre-existing gap case A's own comment cites");
+}
+
+void TestBooleanCombineMixedUnionBossNoContactBothEndsCapped() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Case C: the boss sits entirely ABOVE the box with a gap (base at
+  // z=12, box top at z=10) - CylinderPlaneNoInteraction's own closed-form
+  // bound (boolean.cpp) means NEITHER of this fragment's own two ends is
+  // ever split at all, so BOTH end0_is_original and end1_is_original stay
+  // true and BOTH need their own synthesized cap - a useful control that
+  // isolates "every end needing a cap gets one" without exercising the
+  // split-flag propagation (case (iii) of SplitMixedAgainstAllFaces) at
+  // all, unlike cases A/B above.
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, 12.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 4.0;
+  Brep cyl = Brep::FromMixedFaces({}, {boss});
+
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Union);
+
+  // Two disjoint solids (box and a free-floating cylinder) - total volume
+  // is a plain sum, exactly as for case A (same boss dimensions).
+  const double hand_derived_volume = 1000.0 + ON_PI * 4.0 * 4.0;  // ~= 1050.265482
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "a no-contact Union boss (case C: entirely above the box, no interaction at all) produces a genuinely "
+        "CLOSED manifold mesh - BOTH of its own ends are original AND exposed, so BOTH need a synthesized cap, "
+        "isolated here from the split-flag propagation cases A/B above exercise");
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "no-contact Union boss's tessellated volume (div=64) matches the hand-derived box+pi*r^2*h (same boss "
+        "dimensions as case A) to within 0.05, confirming both of its own end caps are present with correct "
+        "(not doubled, not missing) area");
+}
+
+void TestBooleanCombineMixedUnionBossFullyEmbeddedAddsNoCap() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Negative control: a boss ENTIRELY embedded inside the box (z=2 to
+  // z=7, well within the box's own [0,10] extent along z) - BOTH ends are
+  // original (CylinderPlaneNoInteraction's own bound never triggers a
+  // split, since the boss never reaches either box cap) but BOTH probe as
+  // genuinely INSIDE the box, so this fix's own SynthesizeEndCaps must add
+  // NO extra faces at all: the boss contributes nothing new to the Union,
+  // exactly as it correctly already did before this fix (this increment
+  // must not regress that already-correct "fully embedded" case into a
+  // spurious extra cap or a changed face count).
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, 2.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 5.0;
+  Brep cyl = Brep::FromMixedFaces({}, {boss});
+
+  const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Union);
+
+  // The property THIS fix owns: a fully-embedded boss's own cylindrical
+  // fragment classifies kIn the box (both ends stay end{0,1}_is_original
+  // == true, since nothing ever splits it, but the whole fragment lands
+  // in from_b.in - a bucket BooleanOp::Union never collects at all, per
+  // BooleanCombineMixed's own switch statement) - so NO cylindrical face
+  // survives into the result, and SynthesizeEndCaps therefore never even
+  // gets a chance to look at it (it only ever scans from_a.out/from_b.out
+  // - see that function's own doc comment).
+  //
+  // Deliberately NOT asserted here: this scenario's own overall
+  // FaceCount()/Volume()/IsClosedManifold(). Investigating this test
+  // directly (not merely assumed) surfaced a genuine, PRE-EXISTING, and
+  // UNRELATED gap in SplitMixedAgainstAllFaces' own case (ii) (the
+  // axis-perpendicular planar-vs-cylindrical branch, boolean.cpp,
+  // completely untouched by this increment's own diff): it calls
+  // detail::ClipPolygonByCircle3d and punches a circular hole out of a
+  // perpendicular planar face whenever the circle's PROJECTED footprint
+  // lies within that face's own polygon - regardless of whether the
+  // finite cylinder's own axial band actually reaches that face's real
+  // height at all. For this exact scenario (a boss whose z-range never
+  // reaches either of the box's own z=0/z=10 caps), that means the box's
+  // OWN top and bottom faces each get an unwarranted hole punched through
+  // them even though the boss never touches either - confirmed directly
+  // by measurement (FaceCount()==12, not 6; Volume() off by dozens of
+  // units; not a closed manifold), predating this increment (this
+  // branch's own diff shows zero changes to that function) and outside
+  // this fix's own scope (see boolean.h's own BooleanCombineMixed doc
+  // comment - this fix's own new code is entirely in case (iii)'s own
+  // split-flag propagation and the Union branch's own end-cap synthesis,
+  // neither of which this scenario's wrong face count stems from). Not
+  // silently worked around: this test narrows its own assertion to
+  // exactly the one property this fix is responsible for, rather than
+  // asserting a face count/volume this fix did not produce and cannot
+  // itself make correct.
+  Check(result.MixedFaces().cylindrical.size() == 0,
+        "a fully-embedded Union boss's own cylindrical fragment does not survive into the result at all (it "
+        "classifies kIn and BooleanOp::Union never collects that bucket) - so this fix's own SynthesizeEndCaps, "
+        "which only ever scans surviving cylindrical fragments, correctly never synthesizes a spurious cap here");
+}
+
+// Falsifiability control (see this file's own established pattern for
+// sibling increments): confirms the fix's own new code path really is
+// load-bearing for the closed-manifold result above, not a pre-existing
+// pass this increment merely happens to also satisfy. Re-derives case A's
+// own boss fragment exactly as BooleanCombineMixed's own internal
+// SplitAndBucketMixed/from_b.out would produce it (the boss never
+// interacts with the box at all along its lateral wall in this flush
+// case's own upper 4 units - see BuildDrilledBoxInputs' sibling comment)
+// and confirms directly, via Brep::FromMixedFaces, that omitting a real
+// end-cap face for the boss's own free top end - exactly what this whole
+// fix adds - leaves the result genuinely open, the literal defect this
+// increment fixes.
+void TestBooleanCombineMixedUnionBossWithoutCapIsProvablyOpen() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep::CylindricalFace boss;
+  boss.frame.origin = Point3d(5, 5, 10.0);
+  boss.frame.xaxis = Vector3d(1, 0, 0);
+  boss.frame.yaxis = Vector3d(0, 1, 0);
+  boss.frame.zaxis = Vector3d(0, 0, 1);
+  boss.frame.UpdateEquation();
+  boss.radius = 2.0;
+  boss.angle = 2.0 * ON_PI;
+  boss.length = 4.0;
+  const Brep bare_boss = Brep::FromMixedFaces({}, {boss});
+
+  const Mesh mesh = bare_boss.TessellateToClosedMesh(32, 32);
+  Check(!mesh.IsClosedManifold(),
+        "a bare CylindricalFace with no cap faces at all (exactly what BuildEndCap/SynthesizeEndCaps exist to "
+        "close, for the one end genuinely exposed - see boolean.h's own BooleanCombineMixed doc comment) is "
+        "provably NOT a closed manifold on its own - the literal geometric defect this fix's own end-cap "
+        "synthesis closes, isolated here from BooleanCombineMixed's own machinery entirely");
+}
+
+void TestBooleanCombineMixedDifferenceUnaffectedByEndCapFix() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  // This fix's own new SynthesizeEndCaps step is called ONLY from
+  // BooleanCombineMixed's own Union branch (see that function's own
+  // switch statement) - structurally unreachable from Difference, whose
+  // own branch is completely untouched by this fix. Re-derives
+  // BuildDrilledBoxInputs' own drilled-box scenario and confirms its own
+  // already-established face count (4 untouched side walls + 2
+  // hole-punched caps of 4 wedges each + 1 cylindrical hole wall, the
+  // same count TestBooleanCombineMixedDrilledBoxThroughHole already
+  // checks) is EXACTLY unchanged - no extra 14th (or later) face, i.e. no
+  // synthesized end cap has been added to a Difference (hole) result,
+  // confirming this fix's own new code path is genuinely inert there,
+  // not merely untested.
+  const auto [box, cyl] = BuildDrilledBoxInputs(/*hole_radius=*/2.0, /*hole_z0=*/-1.0, /*hole_length=*/12.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  Check(drilled.FaceCount() == 4 + 2 * 4 + 1,
+        "a drilled-box Difference result's own face count (13: 4 walls + 2*4 hole-punched wedges + 1 cylindrical "
+        "hole wall) is EXACTLY unchanged by this fix - no synthesized end-cap face has leaked into a Difference "
+        "result, confirming SynthesizeEndCaps is genuinely inert on this path (it is never even called), not "
+        "merely coincidentally producing the same count");
+}
+
 int main() {
   ON::Begin();
 
@@ -10234,6 +10638,12 @@ int main() {
   TestPlainQuadFactoriesAsymmetricDivisionsIsClosedManifold();
   TestTessellateSymmetricDivisionsMatchesIndependentReconstruction();
   TestTessellateObliqueHullQuadSeamRemainsPreExistingGap();
+  TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed();
+  TestBooleanCombineMixedUnionBossOverlappingBaseVolumeAndCapSeamIsClosed();
+  TestBooleanCombineMixedUnionBossNoContactBothEndsCapped();
+  TestBooleanCombineMixedUnionBossFullyEmbeddedAddsNoCap();
+  TestBooleanCombineMixedUnionBossWithoutCapIsProvablyOpen();
+  TestBooleanCombineMixedDifferenceUnaffectedByEndCapFix();
 
   ON::End();
 

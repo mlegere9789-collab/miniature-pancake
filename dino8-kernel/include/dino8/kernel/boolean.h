@@ -399,7 +399,110 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 //     cylindrical interaction (e.g. a drilled box's own four side walls,
 //     when the hole's footprint stays strictly inside the box's own
 //     cross-section) reduces EXACTLY to what BooleanCombinePlanar would
-//     already do with it.
+//     already do with it. A real, checked-directly correction versus this
+//     branch's own earlier form (found and fixed by the same increment
+//     that added end-cap synthesis below, not merely theorized): "the
+//     cylinder's axis is perpendicular to this plane" alone does NOT mean
+//     the FINITE cylinder actually reaches this plane at all - only that
+//     its infinite extension would - so this closed-form no-interaction
+//     bound is now checked FIRST, even in the axis-perpendicular case,
+//     before ever punching a circular hole; every existing Difference/hole
+//     test is unaffected (its own drilled cylinder always genuinely
+//     reaches both of the box's own caps, so this bound was already false
+//     there), but a Union/boss cylinder that only touches ONE of a box's
+//     two z-perpendicular caps needs this correction to avoid a spurious,
+//     material-losing hole punched in the FAR, untouched cap too (see
+//     SplitMixedAgainstAllFaces' own doc comment at that branch,
+//     boolean.cpp, for the full citation).
+//
+// UNION/BOSS END CAPS: a bare CylindricalFace operand (built the same way
+// every existing hole/drill operand is, Brep::FromMixedFaces({}, {cf}))
+// combined via BooleanOp::Union - a boss, pipe stub, or standoff sitting
+// on or embedded in the other operand, rather than a hole drilled INTO
+// it - has a genuine, exact closed-form gap the Difference/hole path
+// never hits: a Difference result never collects the "outside" bucket of
+// the cylindrical operand at all (only its "inside" fragment, flipped, is
+// kept - see this function's own .cpp switch statement), so a drilled
+// bit's own free-hanging stub ends are simply dropped, never needing a
+// cap. A Union result DOES collect that "outside" bucket directly, so a
+// surviving cylindrical fragment's own end can be a genuine, unmet
+// terminus of the input solid with NOTHING in either operand to close it
+// - RayVsMixedFace's own two IMPLICIT end disks (this function's own .cpp
+// comment) make point-CLASSIFICATION correct regardless, but were never
+// real output faces, so the RESULT B-rep itself was left with an open
+// boundary there.
+//
+// The fix, closed-form and additive (touches nothing any existing test
+// exercises outside the two corrections named above): two new bookkeeping
+// fields on CylindricalFace, `end0_is_original`/`end1_is_original` (see
+// that struct's own doc comment in brep.h), record whether a fragment's
+// v=0/v=length end is STILL the original, never-split terminus of the
+// input cylinder (true, the default - every existing producer is
+// unaffected) or a boundary this same split pipeline already manufactured
+// (case (iii)'s own axis-aligned and oblique branches, boolean.cpp, the
+// only two places that ever set either to false). For every surviving
+// Union-result cylindrical fragment, a new step (SynthesizeEndCaps,
+// boolean.cpp) probes a point just past each ORIGINAL end along the axis
+// against the OTHER operand's own faces: PointClass::kOut there means the
+// end is genuinely exposed (needs a cap - BuildEndCap synthesizes a real,
+// full-circle Brep::PlanarFace disc there, split into 4 quadrant "pie
+// slice" pieces mirroring detail::ClipPolygonByCircle3d's own established
+// pattern, each carrying a genuine PlanarFace::ArcRun so
+// Brep::TessellateConforming() reconciles the new cap's own boundary with
+// the adjacent cylindrical wall's row bit-identically, the same already-
+// proven mechanism that closes the wedge-cap/cylinder-wall seam
+// elsewhere); kIn or kOn means the end is already sealed by the other
+// operand's own material (either fully embedded, or exactly coincident
+// with a split boundary) and no cap is added. Restricted, like every
+// other cap-notch mechanism in this codebase, to a FULL-SWEEP
+// (angle == 2*pi) cylindrical fragment - the only kind any producer here
+// ever builds - BuildEndCap throws for a genuinely partial-angle case
+// rather than guessing at an unverified "pie slice with a real sector cut
+// out" shape.
+//
+// SCOPE, stated plainly: verified by this increment's own closed-form
+// volume and IsClosedManifold() tests for a boss whose base sits flush
+// with the other operand's own cap, overlaps it partway, or never touches
+// it at all (both ends exposed), and for a negative control (a fully
+// embedded boss, correctly adding no cap at all). NOT separately verified
+// by this increment: BooleanOp::Intersection has an analogous gap (an
+// Intersection-collected cylindrical fragment can also have an end that's
+// exposed because the CYLINDER itself terminates there, not because the
+// other solid's own boundary does) but the correct polarity of "does an
+// exposed end there need a cap" is NOT simply the mirror of the Union
+// case (a fully-embedded-in-the-other-solid cylinder used for
+// Intersection needs caps at BOTH its own ends, the opposite of what a
+// naive generalization of the Union probe's own kOut-means-cap rule would
+// give) - genuinely unverified, deliberately NOT wired up here rather
+// than risking a silently-wrong extension. A partial-angle ("pie slice")
+// boss, and an OBLIQUE (non-axis-aligned) Union boss, are each a
+// straightforward generalization of already-exact primitives here
+// (PointOnCylFace already supports arbitrary angle; the oblique split
+// already marks its own notched end as not-original) but neither is
+// separately tested by this increment - out of scope, not silently
+// mishandled (BuildEndCap throws for the partial-angle case explicitly).
+// Two cylindrical faces interacting (case (iv) above) remains unaffected
+// and out of scope. A CylindricalFace fragment re-extracted from a PRIOR
+// BooleanCombineMixed result (e.g. inside BooleanOp::SymmetricDifference's
+// own internal Union-then-Intersection-then-Difference chain) always gets
+// end0_is_original/end1_is_original defaulted back to true/true on
+// re-extraction (Brep::MixedFaces() does not round-trip this new
+// bookkeeping, the same honest simplification cap0_notch_points/
+// cap1_notch_points already make) - correct for every operand this
+// increment's own tests build, but genuinely unverified for a SECOND-LEVEL
+// nested call, an honestly disclosed gap, not silently mishandled.
+// Finally: Brep::TessellateConforming()'s own quad-vs-quad seam pass
+// (tasks #55-57's own domain, both files completely untouched by this
+// increment) has its own SEPARATE, pre-existing limitation, newly exposed
+// (not caused) by this increment's own tests: a box where only ONE of its
+// two z-perpendicular caps gets wedge-split while the other stays a
+// single untouched quad - a face-topology combination no test before this
+// increment ever built - leaves the box's own untouched-cap corners with
+// real open boundary edges, unrelated to and far from this fix's own new
+// seam (both are separately, directly confirmed watertight - see
+// TestBooleanCombineMixedUnionBossFlushBaseVolumeAndCapSeamIsClosed's own
+// comment in tests/test_basic.cpp for the measurement and the height-
+// scoped check that isolates the two).
 //
 // Explicitly OUT OF SCOPE, and this throws std::invalid_argument (or, for
 // the grazing-incidence sub-case, std::runtime_error surfaced through
