@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -317,12 +318,44 @@ void ExtractConicalFace(const ON_Brep& brep, int face_index, const FaceGeometry&
   }
 
   const std::vector<Point2d> uv = FaceOuterUv(fg);
-  double u_min = uv[0].x, u_max = uv[0].x, v_min = uv[0].y, v_max = uv[0].y;
+  double u_min = uv[0].x, u_max = uv[0].x;
   for (const Point2d& p : uv) {
     u_min = std::min(u_min, p.x);
     u_max = std::max(u_max, p.x);
-    v_min = std::min(v_min, p.y);
-    v_max = std::max(v_max, p.y);
+  }
+
+  // v_min/v_max: NOT a plain global min/max of every trim-polygon point's
+  // v (that would also sweep in a notched cap's own dense splice, see
+  // ConicalFace::cap0_notch_points/cap1_notch_points' own doc comment -
+  // every interior notch sample sits at a true height-from-apex strictly
+  // different from v0/v1, so a global scan silently picks up the notch's
+  // own dip instead of the true rail-corner v). Restricted instead to only
+  // the points that sit exactly at u_min or u_max: FromMixedFaces() never
+  // subdivides the two straight rail segments (u == 0 and u == u_max in
+  // its own trim rectangle - see that method's own cap-splice comment),
+  // so those two points are always, and ONLY, the genuine rail corners
+  // (u_min, v0)/(u_min, v1) and (u_max, v0)/(u_max, v1) - whether or not
+  // either cap is notched. A notch's own interior samples always have u
+  // strictly between u_min and u_max, by construction of
+  // EllipseNotchCornerAtVertex's monotone-in-phi sampling (fillet.cpp) -
+  // so they can never masquerade as a rail-corner point here. Works
+  // identically whether `uv` came from the side-table fast path or from
+  // genuinely sampling a resolved ON_Brep's own loop (ResolveFace above),
+  // since both paths preserve the same rail-vs-cap trim structure.
+  const double u_tol = 1e-9 * std::max(1.0, std::max(std::fabs(u_min), std::fabs(u_max)));
+  double v_min = std::numeric_limits<double>::infinity();
+  double v_max = -std::numeric_limits<double>::infinity();
+  for (const Point2d& p : uv) {
+    if (std::fabs(p.x - u_min) <= u_tol || std::fabs(p.x - u_max) <= u_tol) {
+      v_min = std::min(v_min, p.y);
+      v_max = std::max(v_max, p.y);
+    }
+  }
+  if (!(v_min < v_max)) {
+    throw std::runtime_error(
+        "dino8::kernel::Brep::MixedFaces: face " + std::to_string(face_index) +
+        "'s trim polygon has no two distinct points at its own u_min/u_max - "
+        "cannot recover the true rail-corner v-range");
   }
 
   // The actual 3D points at the trim rectangle's own (u_min, v_min) and

@@ -482,25 +482,36 @@ class Brep {
     // differs, which is exactly why this notch machinery is needed instead
     // of just reusing radius0/radius1 unchanged).
     //
-    // A genuine, CONFIRMED (not merely theorized) disclosed gap this
-    // implies: `Brep::MixedFaces()`'s own cone-recovery (ExtractConicalFace,
-    // brep.cpp) is NOT attempted/reliable for a face built with either of
-    // these fields set. It infers a notched end's own v_min/v_max purely
-    // from the dense visible trim polygon's own numeric extremes, which no
-    // longer coincide with that end's true v0/v1 once the notch dips the
-    // boundary toward the apex between the two rail corners (a real,
-    // checked-directly, non-hypothetical consequence, not just a plausible
-    // risk: building a real notched ConicalFace and calling MixedFaces() on
-    // it does NOT throw - it silently returns a WRONG radius0 for the
-    // notched end, off by roughly 1% for a worked fixture, while the OTHER
-    // (still-v1-anchored) end's radius1 happens to come back correct,
-    // because that end's own true v1 still IS the polygon's own global max
-    // even with the notch's own dip). Round-tripping a notched ConicalFace
-    // back out through MixedFaces() is real, disclosed, out-of-scope future
-    // work - not attempted here, since this increment's own task is
-    // closing FilletConvexEdgeTapered's corner-notch gap (which never
-    // itself calls MixedFaces() on its own result), not generalizing
-    // MixedFaces()'s own extraction to match.
+    // A gap this USED to imply, now closed: `Brep::MixedFaces()`'s own
+    // cone-recovery (ExtractConicalFace, brep.cpp) previously derived a
+    // notched end's own v_min/v_max from a plain global min/max over every
+    // point of the dense visible trim polygon - which no longer coincides
+    // with that end's true v0/v1 once the notch dips the boundary toward
+    // the apex between the two rail corners, since the scan picked up the
+    // dip instead. That silently returned a WRONG radius0/radius1 for the
+    // notched end(s) (confirmed, not theorized: for a fully closed box
+    // filleted at a corner where BOTH ends get notched, radius0 came back
+    // off by roughly 2% and radius1 by roughly 1%, not just one end as an
+    // earlier version of this comment claimed - a single notched vertex is
+    // enough to corrupt that end's own radius; the other end is only
+    // "correct" when it genuinely has no notch of its own).
+    //
+    // Fixed by restricting ExtractConicalFace()'s v_min/v_max scan to only
+    // the trim polygon's points that sit exactly at the trim's own u_min or
+    // u_max: FromMixedFaces() never subdivides the two straight rail
+    // segments (u == 0 and u == u_max in its own trim rectangle, above),
+    // and a notch's own interior samples always have u strictly between
+    // u_min and u_max (EllipseNotchCornerAtVertex's monotone-in-phi
+    // sampling, fillet.cpp) - so those two u-values are always, and only,
+    // the genuine rail corners regardless of whether either cap is
+    // notched. This depends only on the trim curve's own (u, v) values, so
+    // it works identically whether MixedFaces() reads a face straight out
+    // of this Brep's own side table or from a genuinely resolved
+    // ON_Brep loop (e.g. after a .3dm round trip) - see MixedFacesResult's
+    // own doc comment below for the details of what's now recovered
+    // exactly and what (round-tripping the notch's own dense polyline
+    // shape back into cap0_notch_points/cap1_notch_points) remains
+    // out of scope.
     std::vector<Point3d> cap0_notch_points;
     std::vector<Point3d> cap1_notch_points;
 
@@ -579,13 +590,37 @@ class Brep {
   //     itself - i.e. exactly the patch's own rail at the trim's own
   //     u_min, correct for any trim rectangle's own u_min the same way
   //     CylindricalFace's own recovery is.
+  //   - `v_min`/`v_max` (and hence the corner points `radius0`/`radius1`
+  //     below are read from) are NOT a plain global min/max over every
+  //     point of the trim polygon - that would also sweep in a notched
+  //     cap's own dense ellipse splice (ConicalFace::cap0_notch_points/
+  //     cap1_notch_points' own doc comment), whose interior samples sit at
+  //     a true height-from-apex strictly different from v0/v1 by
+  //     construction. Restricted instead to only the points that sit
+  //     exactly at the trim's own u_min or u_max: FromMixedFaces() never
+  //     subdivides the two straight rail segments, and a notch's own
+  //     interior samples always have u strictly between u_min and u_max
+  //     (EllipseNotchCornerAtVertex's monotone-in-phi sampling,
+  //     fillet.cpp), so this recovers the true rail-corner v-range exactly
+  //     whether or not either cap is notched.
   //   - `radius0`/`radius1` are recovered from the corner point (and the
   //     analogous far corner at v_max) via the SAME apex-relative
   //     similar-triangles relationship FromMixedFaces() itself uses to go
   //     the other way (radius = tan(half_angle) * distance-from-apex, a
   //     direct read of ON_Cone::PointAt's own construction, not an
   //     independent formula) - `length` is the true axial distance
-  //     between those two corners' own axis-projected points.
+  //     between those two corners' own axis-projected points. Exact for a
+  //     notched end too, now that v_min/v_max above are (see
+  //     TestMixedFacesRoundTripsNotchedConicalFace in test_basic.cpp for
+  //     the falsifiable check). What is NOT recovered: the notch's own
+  //     dense polyline shape itself - MixedFacesResult's ConicalFace comes
+  //     back with cap0_notch_points/cap1_notch_points empty regardless of
+  //     whether the source face was notched, so a full round trip through
+  //     FromMixedFaces() would rebuild that end as a plain flat circular
+  //     cap at the (now-exact) radius0/radius1, not the original ellipse
+  //     boundary - a real, disclosed, still out-of-scope gap, narrower
+  //     than the one this fix closes (frame/radius0/radius1/length/angle
+  //     are all exact; only the notch geometry itself doesn't round-trip).
   //   - `angle` is recovered exactly as CylindricalFace's own `angle` is:
   //     the true radian sweep between the trim's own u_min/u_max via
   //     ON_Circle::GetRadianFromNurbFormParameter, confirmed directly

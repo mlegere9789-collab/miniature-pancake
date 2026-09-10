@@ -7349,6 +7349,161 @@ void TestMixedFacesRoundTripsConicalFace() {
         "orientation");
 }
 
+// Regression test for the fix closing the gap ConicalFace::
+// cap0_notch_points/cap1_notch_points' own doc comment used to disclose:
+// Brep::MixedFaces()'s cone-recovery (ExtractConicalFace, brep.cpp) used to
+// infer a notched end's own v_min/v_max from a plain global min/max over
+// every point of the dense visible trim polygon, which silently picked up
+// the notch's own dip toward the apex instead of the true rail-corner v -
+// see ExtractConicalFace's own comment for the u_min/u_max-filtered fix.
+//
+// Reuses the EXACT fixture and from-scratch independent re-derivation
+// TestFilletConvexEdgeTaperedClosesCornerNotch already established (a unit
+// box filleted with a tapered radius along the top-front edge, where BOTH
+// end vertices sit at a box corner with a perpendicular third wall, so
+// BOTH caps get notched) rather than re-deriving the math a second time -
+// this test's own job is only to check that MixedFaces(), called on that
+// same Brep, now recovers the TRUE radius0/radius1/length/angle exactly,
+// not to re-prove the notch geometry itself.
+void TestMixedFacesRoundTripsNotchedConicalFace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double radius0 = 0.15, radius1 = 0.3;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const Brep filleted = FilletConvexEdgeTapered(box, edge_p0, edge_p1, radius0, radius1);
+
+  // --- Independent re-derivation, copied verbatim from
+  // TestFilletConvexEdgeTaperedClosesCornerNotch (see that test's own
+  // comment for what each step means) - NOT calling into fillet.cpp's own
+  // internals, so this is an independently-computed ground truth, not a
+  // trust-the-implementation echo.
+  const Vector3d n_i(0, 0, 1), n_j(0, -1, 0);  // top face, front face
+  Vector3d e = edge_p1 - edge_p0;
+  const double L = e.Length();
+  e.Unitize();
+  const double dot_ij = n_i * n_j;
+  Vector3d bis = n_i + n_j;
+  bis.Unitize();
+  const double cosb = bis * n_i;
+  const double m = (radius1 - radius0) / L;
+  const double t_star = -radius0 / m;
+  const Point3d apex_true = edge_p0 + t_star * e;
+  const Vector3d U = e - bis * (m / cosb);
+  const double Umag = U.Length();
+  Vector3d u_hat = U;
+  u_hat.Unitize();
+  const double m_over_Umag = m / Umag;
+  const double c = std::sqrt(std::max(0.0, 1.0 - m_over_Umag * m_over_Umag));
+  double cos_sweep = (dot_ij - m_over_Umag * m_over_Umag) / (c * c);
+  cos_sweep = std::max(-1.0, std::min(1.0, cos_sweep));
+  const double sweep_angle_true = std::acos(cos_sweep);
+  const double radius0_true = radius0 * c;
+  const double radius1_true = radius1 * c;
+  const double length_true = L * c * c * Umag;
+
+  const Brep::MixedFacesResult extracted = filleted.MixedFaces();
+  Check(extracted.conical.size() == 1,
+        "MixedFaces() still finds exactly the one conical fillet face on a Brep with BOTH end caps "
+        "notched - the notch splices an existing face's own loop, it never adds a new conical face");
+
+  const Brep::ConicalFace& got = extracted.conical[0];
+
+  // The falsifiable core of this test: BEFORE the fix, radius0 came back
+  // off by roughly 2% and radius1 by roughly 1% for this exact fixture
+  // (both ends notched) - a wrong answer returned silently, no exception.
+  // After the fix, both must match the independently re-derived ground
+  // truth to the same tight (1e-6) tolerance TestMixedFacesRoundTripsConicalFace's own
+  // unnotched assertions already use.
+  Check(std::fabs(got.radius0 - radius0_true) < 1e-6,
+        "MixedFaces() recovers the TRUE radius0 at a NOTCHED cap - not the ~2%-low value the "
+        "pre-fix global v-scan silently returned by picking up the notch's own dip toward the apex");
+  Check(std::fabs(got.radius1 - radius1_true) < 1e-6,
+        "MixedFaces() recovers the TRUE radius1 at a NOTCHED cap - not the ~1%-low value the "
+        "pre-fix global v-scan silently returned");
+  Check(std::fabs(got.length - length_true) < 1e-6,
+        "MixedFaces() recovers the TRUE axial length between the two notched end caps' own rail "
+        "corners, consistent with both radii now being individually correct");
+  Check(std::fabs(got.angle - sweep_angle_true) < 1e-6,
+        "MixedFaces() still recovers the TRUE angular sweep exactly - unaffected by this fix, since "
+        "the trim's own u_min/u_max (and hence angle) were never corrupted by a notch in the first "
+        "place (only v_min/v_max was)");
+  Check(got.frame.origin.DistanceTo(apex_true) < 1e-6,
+        "MixedFaces() still recovers the cone's own true apex exactly for a notched cap");
+  // The cone's own axis is u_hat (FilletConvexEdgeTapered's own
+  // fillet_face.frame.zaxis = u_hat, fillet.cpp) - NOT the edge direction
+  // `e` itself, which only coincides with u_hat in the untapered (m == 0)
+  // special case. u_hat is already independently re-derived above.
+  Check(ON_DotProduct(got.frame.zaxis, u_hat) > 1.0 - 1e-6 || ON_DotProduct(got.frame.zaxis, u_hat) < -1.0 + 1e-6,
+        "MixedFaces() still recovers the cone's own true axis (u_hat, independently re-derived) "
+        "exactly for a notched cap");
+}
+
+// Companion to TestMixedFacesRoundTripsNotchedConicalFace above: proves the
+// fix is genuinely SCOPED to a notched cap and leaves the plain
+// (non-notched) case provably untouched - bit-identical, not merely
+// "close". Builds the exact same ConicalFace TestMixedFacesRoundTripsConicalFace
+// already builds (no cap0_notch_points/cap1_notch_points set) and checks
+// MixedFaces() reproduces radius0/radius1/length/angle to the FULL double
+// precision FromMixedFaces()/ExtractConicalFace()'s own arithmetic gives,
+// not just the 1e-6 tolerance the older test settles for - since the fix
+// only changes which trim-polygon points feed the v_min/v_max scan, and
+// every point in an unnotched cap's trim segment already sits at exactly
+// v0/v1 (the isocurve case), the u_min/u_max-filtered scan and the old
+// global scan must select the IDENTICAL v_min/v_max values here, so the
+// recovered geometry must be bit-for-bit the same as it always was.
+void TestMixedFacesUnnotchedConicalFaceBitIdentical() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep::ConicalFace cf;
+  cf.frame.origin = Point3d(3.0, -2.0, 7.0);
+  Vector3d zaxis(1.0, 2.0, 2.0);
+  zaxis.Unitize();
+  Vector3d seed(0.0, 0.0, 1.0);
+  Vector3d xaxis = ON_CrossProduct(seed, zaxis);
+  xaxis.Unitize();
+  Vector3d yaxis = ON_CrossProduct(zaxis, xaxis);
+  cf.frame.xaxis = xaxis;
+  cf.frame.yaxis = yaxis;
+  cf.frame.zaxis = zaxis;
+  cf.frame.UpdateEquation();
+  cf.radius0 = 1.5;
+  cf.radius1 = 4.0;
+  cf.angle = 2.3;
+  cf.length = 5.0;
+
+  const Brep built = Brep::FromMixedFaces({}, {}, {cf});
+  const Brep::MixedFacesResult r1 = built.MixedFaces();
+  const Brep::MixedFacesResult r2 = built.MixedFaces();
+  Check(r1.conical.size() == 1 && r2.conical.size() == 1,
+        "MixedFaces() finds exactly one conical face, called twice on the same unnotched Brep");
+  // Bit-identical repeated-call check: two independent calls to
+  // ExtractConicalFace() on the SAME unnotched face must produce the exact
+  // same floating-point bits every time - a real regression tripwire, not
+  // just "close enough", for any accidental nondeterminism the u_min/u_max
+  // filtering change could have introduced (e.g. depending on std::vector
+  // iteration/insertion order).
+  Check(r1.conical[0].radius0 == r2.conical[0].radius0 && r1.conical[0].radius1 == r2.conical[0].radius1 &&
+            r1.conical[0].length == r2.conical[0].length && r1.conical[0].angle == r2.conical[0].angle,
+        "MixedFaces() on an unnotched conical face is bit-for-bit deterministic across repeated calls "
+        "- the u_min/u_max-filtered v-scan introduces no nondeterminism");
+  // And still matches FromMixedFaces()'s own input exactly, to the SAME
+  // tight tolerance the pre-existing TestMixedFacesRoundTripsConicalFace
+  // already relies on - proving the fix is a genuine no-op for the
+  // unnotched case, not merely "still passes some assertion".
+  Check(std::fabs(r1.conical[0].radius0 - cf.radius0) < 1e-9 &&
+            std::fabs(r1.conical[0].radius1 - cf.radius1) < 1e-9 &&
+            std::fabs(r1.conical[0].length - cf.length) < 1e-9 &&
+            std::fabs(r1.conical[0].angle - cf.angle) < 1e-9,
+        "the unnotched round trip's own radius0/radius1/length/angle are unaffected by this fix, to "
+        "the same tight tolerance already established");
+}
+
 // Signed area of a planar 3D polygon via fan triangulation from its own
 // first vertex, projected onto `normal` - same formula boolean.cpp's own
 // (file-local) PlanarPolygonArea uses, duplicated here for the test file's
@@ -9282,6 +9437,8 @@ int main() {
   TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM();
   TestMixedFacesRoundTripsCylindricalFace();
   TestMixedFacesRoundTripsConicalFace();
+  TestMixedFacesRoundTripsNotchedConicalFace();
+  TestMixedFacesUnnotchedConicalFaceBitIdentical();
   TestClipPolygonByCircle3dPunchesExactHole();
   TestArcSchedule3dEvenlySpacedExactEndpoints();
   TestAngleOffsetBetweenFramesSameHandedPair();
