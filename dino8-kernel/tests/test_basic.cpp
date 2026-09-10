@@ -6012,6 +6012,7 @@ void TestBooleanIntersectConvexPlanarRejectsNonConvex() {
   } catch (const std::invalid_argument&) {
     threw = true;
   }
+
   Check(threw, "BooleanIntersectConvexPlanar rejects a non-convex operand instead of silently "
                "clipping it as if it were convex");
 }
@@ -6177,6 +6178,108 @@ void TestBooleanCombinePlanarNonConvexLShapeVsBox() {
         "disjoint unit box adds exactly 1");
 }
 
+// Exact (double-precision, untessellated) enclosed volume of a Brep with
+// only planar faces, via the same signed-tetrahedra-from-the-world-origin
+// divergence-theorem formula Mesh::Volume() already uses (see mesh.cpp) -
+// applied directly to each face's own exact 3D polygon (fan-triangulated
+// from its own first vertex) instead of to a tessellated, single-precision
+// (ON_3fPoint) mesh. This is what lets ShellConvexPlanar's own volume be
+// checked to a much tighter tolerance than Mesh::Volume()'s inherent
+// ~1e-6-relative single-precision floor.
+double PlanarBrepVolumeExact(const dino8::kernel::Brep& brep) {
+  using dino8::kernel::Point3d;
+  double volume = 0.0;
+  for (const auto& face : brep.PlanarFaces()) {
+    const std::vector<Point3d>& loop = face.loop;
+    if (loop.size() < 3) continue;
+    const Point3d& a = loop[0];
+    for (size_t i = 1; i + 1 < loop.size(); ++i) {
+      const Point3d& b = loop[i];
+      const Point3d& c = loop[i + 1];
+      volume += (a.x * (b.y * c.z - b.z * c.y) - a.y * (b.x * c.z - b.z * c.x) +
+                 a.z * (b.x * c.y - b.y * c.x)) /
+                6.0;
+    }
+  }
+  return volume;
+}
+
+void TestShellConvexPlanarCubeOpenTopExactVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ShellConvexPlanar;
+
+  const double s = 10.0, t = 1.0;
+  const Brep cube = Brep::Box(0, 0, 0, s, s, s);
+  const Brep shell = ShellConvexPlanar(cube, {1}, t);
+
+  // 5 kept faces x 2 (exterior wall + interior cavity wall) plus 4 rim
+  // quads (one per edge of the removed top face's own square loop).
+  Check(shell.FaceCount() == 14,
+        "an open-top cube shell has 14 faces: 5 kept faces x 2 plus 4 rim quads");
+
+  const double shell_volume = PlanarBrepVolumeExact(shell);
+  const double expected_volume = s * s * s - (s - 2 * t) * (s - 2 * t) * (s - t);
+  Check(std::fabs(expected_volume - 424.0) < 1e-12,
+        "the hand-derived formula itself evaluates to 424 for s=10, t=1");
+
+  Check(std::fabs(shell_volume - expected_volume) < 1e-9,
+        "ShellConvexPlanar's exact double-precision volume matches s^3-(s-2t)^2*(s-t)");
+
+  const double cube_volume = PlanarBrepVolumeExact(cube);
+  Check(std::fabs(cube_volume - 1000.0) < 1e-9, "the original cube's own exact volume is 1000 (10^3)");
+  Check(std::fabs((cube_volume - shell_volume) - 576.0) < 1e-9,
+        "original minus shell equals the cavity volume, 576 = 8*8*9");
+
+  // divisions=1 (corner-to-corner only, no interior grid points): each
+  // face here is a FromPlanarFaces()-built exact-clip polygon with its
+  // own independent local (u,v) parameterization (a margin-padded
+  // bounding rectangle around that face's own loop, per FromPlanarFaces'
+  // own comment) - two adjacent faces' interior grid lines do NOT line
+  // up in 3D at any divisions > 1 (they only ever agree exactly at the
+  // shared polygon's own corners), so a higher division count here would
+  // manufacture a false T-junction/watertightness failure that has
+  // nothing to do with ShellConvexPlanar's own (exact) geometry - the
+  // same reasoning TestBrepBoxIsClosedAndWatertight's own comment gives
+  // for using divisions=1 there.
+  const auto mesh = shell.TessellateToClosedMesh(1, 1);
+  Check(mesh.IsClosedManifold(),
+        "the open-top cube shell's tessellation welds into one closed, watertight manifold");
+  Check(std::fabs(mesh.Volume() - 424.0) < 1e-3,
+        "the shell's tessellated-mesh volume also matches 424, within the mesh's own float floor");
+}
+
+void TestShellConvexPlanarRejectsTooLargeThickness() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ShellConvexPlanar;
+
+  const Brep cube = Brep::Box(0, 0, 0, 10, 10, 10);
+  bool threw = false;
+  try {
+    ShellConvexPlanar(cube, {1}, 6.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "ShellConvexPlanar refuses a wall thickness beyond the solid's own inradius "
+        "instead of emitting a degenerate/garbage shell");
+}
+
+void TestShellConvexPlanarRejectsAdjacentOpenings() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ShellConvexPlanar;
+
+  const Brep cube = Brep::Box(0, 0, 0, 10, 10, 10);
+  bool threw = false;
+  try {
+    ShellConvexPlanar(cube, {1, 2}, 1.0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "ShellConvexPlanar refuses two mutually adjacent removed faces (needs a "
+        "non-planar multi-facet rim, out of scope here)");
+}
+
 }  // namespace
 
 int main() {
@@ -6320,6 +6423,9 @@ int main() {
   TestBooleanIntersectConvexPlanarExactBoxOverlap();
   TestBooleanIntersectConvexPlanarRejectsNonConvex();
   TestBooleanCombinePlanarNonConvexLShapeVsBox();
+  TestShellConvexPlanarCubeOpenTopExactVolume();
+  TestShellConvexPlanarRejectsTooLargeThickness();
+  TestShellConvexPlanarRejectsAdjacentOpenings();
 
   ON::End();
 

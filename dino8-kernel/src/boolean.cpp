@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <string>
 
 #include <manifold/manifold.h>
 
@@ -403,13 +404,12 @@ std::vector<Point3d> CleanPolygon(const std::vector<Point3d>& poly, double tol) 
   return out;
 }
 
-std::vector<Point3d> ClipByAllHalfspaces(std::vector<Point3d> poly, const std::vector<Brep::PlanarFace>& other,
-                                          double tol) {
-  for (const Brep::PlanarFace& f : other) {
-    poly = CleanPolygon(ClipByHalfspace(poly, f.plane, tol), tol);
-    if (poly.size() < 3) return {};
-  }
-  return poly;
+std::vector<Point3d> ClipByAllHalfspaces(const std::vector<Point3d>& poly, const ON_Plane& poly_plane,
+                                          const std::vector<Brep::PlanarFace>& other, double tol) {
+  std::vector<ON_Plane> planes;
+  planes.reserve(other.size());
+  for (const Brep::PlanarFace& f : other) planes.push_back(f.plane);
+  return ClipConvexPolygon(poly, poly_plane, planes, tol);
 }
 
 // ---------------------------------------------------------------------
@@ -707,6 +707,31 @@ Brep::PlanarFace FlipFace(Brep::PlanarFace f) {
 
 }  // namespace
 
+// Shared with ShellConvexPlanar (see boolean.h) - this is the same
+// clip-a-polygon-against-a-list-of-planes loop BooleanIntersectConvexPlanar
+// has always run per face, now factored out so both operations run one
+// verified clipper instead of two copies of the same algorithm. Behavior
+// for existing callers here is unchanged: `tol` is always passed explicitly
+// (never the default), so this extraction doesn't alter
+// BooleanIntersectConvexPlanar's own already-verified precision.
+std::vector<Point3d> ClipConvexPolygon(const std::vector<Point3d>& poly, const ON_Plane& poly_plane,
+                                        const std::vector<ON_Plane>& halfspaces, double tol) {
+  if (tol < 0.0) {
+    double max_extent = std::max({std::fabs(poly_plane.origin.x), std::fabs(poly_plane.origin.y),
+                                   std::fabs(poly_plane.origin.z)});
+    for (const Point3d& p : poly) {
+      max_extent = std::max({max_extent, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
+    }
+    tol = std::max(kConvexTol, max_extent * 1e-9);
+  }
+  std::vector<Point3d> out = poly;
+  for (const ON_Plane& hs : halfspaces) {
+    out = CleanPolygon(ClipByHalfspace(out, hs, tol), tol);
+    if (out.size() < 3) return {};
+  }
+  return out;
+}
+
 Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b) {
   const std::vector<Brep::PlanarFace> fa = a.PlanarFaces();
   const std::vector<Brep::PlanarFace> fb = b.PlanarFaces();
@@ -737,7 +762,7 @@ Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b) {
       if (already_have) continue;
       Brep::PlanarFace clipped;
       clipped.plane = face.plane;
-      clipped.loop = ClipByAllHalfspaces(face.loop, clip_against, tol);
+      clipped.loop = ClipByAllHalfspaces(face.loop, face.plane, clip_against, tol);
       if (clipped.loop.size() >= 3) result.push_back(std::move(clipped));
     }
   };
@@ -822,6 +847,255 @@ Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op) {
     default:
       throw std::invalid_argument("dino8::kernel::BooleanCombinePlanar: unknown BooleanOp");
   }
+  return Brep::FromPlanarFaces(result);
+}
+
+namespace {
+// Signed area of a planar polygon (known to already lie in one plane,
+// with unit `normal`), via fan triangulation from the polygon's own
+// first vertex - the standard formula for a polygon given as an ordered
+// vertex loop in a known plane (Preparata & Shamos, "Computational
+// Geometry", the same textbook already cited for the half-space clipper
+// above). Every polygon ShellConvexPlanar measures here is convex (a
+// clip of a convex polygon against half-spaces), so the fan from vertex
+// 0 never leaves it.
+double PlanarPolygonArea(const std::vector<Point3d>& poly, const Vector3d& normal) {
+  if (poly.size() < 3) return 0.0;
+  const Point3d& origin = poly[0];
+  Vector3d sum(0, 0, 0);
+  for (size_t i = 1; i + 1 < poly.size(); ++i) {
+    sum += ON_CrossProduct(poly[i] - origin, poly[i + 1] - origin);
+  }
+  return 0.5 * std::fabs(sum * normal);
+}
+
+}  // namespace
+
+Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces, double t) {
+
+  if (!(t > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ShellConvexPlanar: t must be positive");
+  }
+
+  const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
+  const int n = static_cast<int>(faces.size());
+  const double tol = RelativeTol(faces);
+  if (!IsConvex(faces, tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ShellConvexPlanar: solid must be convex (a vertex of "
+        "one of its own faces lies outside one of its own other faces' "
+        "half-spaces) - see BooleanIntersectConvexPlanar's own doc comment "
+        "for why non-convex input isn't handled here");
+  }
+
+  std::vector<bool> is_removed(static_cast<size_t>(n), false);
+  for (int idx : removed_faces) {
+    if (idx < 0 || idx >= n) {
+      throw std::invalid_argument(
+          "dino8::kernel::ShellConvexPlanar: removed_faces contains an index "
+          "out of range for solid.PlanarFaces()");
+    }
+    is_removed[static_cast<size_t>(idx)] = true;
+  }
+
+  // Scope limit: two removed faces sharing an edge would need a
+  // non-planar, multi-facet rim to close the combined opening - genuinely
+  // out of scope here (see this function's own doc comment), so refuse
+  // rather than emit a wrong single-plane rim for either one.
+  auto shares_edge = [tol](const std::vector<Point3d>& a, const std::vector<Point3d>& b) {
+    for (size_t i = 0; i < a.size(); ++i) {
+      const Point3d& a0 = a[i];
+      const Point3d& a1 = a[(i + 1) % a.size()];
+      for (size_t j = 0; j < b.size(); ++j) {
+        if (a0.DistanceTo(b[(j + 1) % b.size()]) <= tol && a1.DistanceTo(b[j]) <= tol) return true;
+      }
+    }
+    return false;
+  };
+  for (size_t i = 0; i < removed_faces.size(); ++i) {
+    for (size_t j = i + 1; j < removed_faces.size(); ++j) {
+      if (shares_edge(faces[static_cast<size_t>(removed_faces[i])].loop,
+                       faces[static_cast<size_t>(removed_faces[j])].loop)) {
+        throw std::invalid_argument(
+            "dino8::kernel::ShellConvexPlanar: two entries of removed_faces "
+            "are mutually adjacent - an opening spanning more than one "
+            "original face needs a non-planar, multi-facet rim, out of "
+            "scope here (see this function's own doc comment)");
+      }
+    }
+  }
+
+  // (1) Constraint planes: kept -> that face's own plane offset inward by
+  // t (translated by -t*n_i); removed -> unchanged (a removed face
+  // contributes an opening, so nothing is offset there, and its plane
+  // never moves on either side of the cut - see the rim derivation
+  // below).
+  std::vector<ON_Plane> pi(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    if (is_removed[static_cast<size_t>(i)]) {
+      pi[static_cast<size_t>(i)] = faces[static_cast<size_t>(i)].plane;
+      continue;
+    }
+    ON_Plane offset = faces[static_cast<size_t>(i)].plane;
+    offset.origin = offset.origin - t * offset.zaxis;
+    offset.UpdateEquation();
+    pi[static_cast<size_t>(i)] = offset;
+  }
+
+  // Every kept face's inner (cavity-side) loop, computed - and checked
+  // for degeneracy - for ALL kept faces before any output face is built,
+  // so a t that's too large anywhere aborts the whole operation instead
+  // of emitting a partially-shelled Brep.
+  std::vector<std::vector<Point3d>> inner(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    if (is_removed[static_cast<size_t>(i)]) continue;
+    const Brep::PlanarFace& face = faces[static_cast<size_t>(i)];
+    const Vector3d n_i = face.plane.zaxis;
+    std::vector<Point3d> translated;
+    translated.reserve(face.loop.size());
+    for (const Point3d& p : face.loop) translated.push_back(p - t * n_i);
+
+    std::vector<ON_Plane> others;
+    others.reserve(static_cast<size_t>(n - 1));
+    for (int k = 0; k < n; ++k) {
+      if (k == i) continue;
+      others.push_back(pi[static_cast<size_t>(k)]);
+    }
+    std::vector<Point3d> clipped = ClipConvexPolygon(translated, pi[static_cast<size_t>(i)], others, tol);
+    const double area = PlanarPolygonArea(clipped, n_i);
+    // Zero-area threshold scaled the same way RelativeTol scales length:
+    // a genuine sliver at this solid's own size, not one fixed epsilon.
+    const double area_tol = tol * tol;
+    if (clipped.size() < 3 || area <= area_tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::ShellConvexPlanar: wall thickness t is too large "
+          "for face " + std::to_string(i) + " - its inner offset collapses "
+          "to fewer than 3 vertices or ~0 area (t at or beyond that face's "
+          "own local offset feasibility, up to the solid's inradius)");
+    }
+    inner[static_cast<size_t>(i)] = std::move(clipped);
+  }
+
+  std::vector<Brep::PlanarFace> result;
+
+  // (1)+(2) Kept faces: outer copy unchanged, inner copy at the offset
+  // plane with reversed winding/flipped normal - the material lies
+  // between the two, so the inner surface's outward-from-material normal
+  // is -n_i, the opposite of the exterior copy's own outward normal (see
+  // this function's header comment for the sign argument).
+  for (int i = 0; i < n; ++i) {
+    if (is_removed[static_cast<size_t>(i)]) continue;
+    const Brep::PlanarFace& face = faces[static_cast<size_t>(i)];
+    result.push_back(face);  // exterior wall, unmodified
+
+    std::vector<Point3d> reversed(inner[static_cast<size_t>(i)].rbegin(), inner[static_cast<size_t>(i)].rend());
+    Brep::PlanarFace inner_face;
+    inner_face.plane = ON_Plane(reversed[0], -face.plane.zaxis);
+    inner_face.loop = std::move(reversed);
+    result.push_back(std::move(inner_face));
+  }
+
+  // (3) Rim/washer around each opening: outer edge = the removed face's
+  // own original loop, inner edge = that same loop clipped against every
+  // OTHER face's constraint plane. Both lie in the removed face's own
+  // (unmoved) plane - it's the one plane on either side of the cut that
+  // never gets offset - so the whole rim is flat, split here into one
+  // flat quad per edge, equivalent to a single TrimmedPlanarFace washer
+  // (outer=loop_j, hole=rim_j) but directly expressible as PlanarFaces
+  // through the existing FromPlanarFaces() path.
+  //
+  // Sutherland-Hodgman clipping preserves the CYCLIC order of surviving
+  // vertices but not their absolute list index - rim_j[0] is not in
+  // general the inset of loop_j[0] (clipping against several planes in
+  // sequence can rotate which surviving/inserted vertex ends up first).
+  // So outer edge k is paired with its rim edge by IDENTITY (which kept
+  // face bounds it), not by index: edge k of loop_j is shared with
+  // exactly one other face adj[k] (found by matching it, reversed,
+  // against every other face's own loop); for t > 0 that whole edge lies
+  // entirely outside pi[adj[k]] (every point on it sits at distance
+  // exactly t from that plane, since it lay at distance 0 on adj[k]'s
+  // own original, un-offset plane), so it is replaced wholesale by a new
+  // rim edge lying exactly on pi[adj[k]] - found by checking which rim
+  // edge's own midpoint lies on that plane.
+  for (int j = 0; j < n; ++j) {
+    if (!is_removed[static_cast<size_t>(j)]) continue;
+    const Brep::PlanarFace& face_j = faces[static_cast<size_t>(j)];
+    std::vector<ON_Plane> others;
+    others.reserve(static_cast<size_t>(n - 1));
+    for (int k = 0; k < n; ++k) {
+      if (k == j) continue;
+      others.push_back(pi[static_cast<size_t>(k)]);
+    }
+    const std::vector<Point3d>& loop_j = face_j.loop;
+    std::vector<Point3d> rim_j = ClipConvexPolygon(loop_j, pi[static_cast<size_t>(j)], others, tol);
+
+    if (rim_j.size() < 3) {
+      throw std::invalid_argument(
+          "dino8::kernel::ShellConvexPlanar: wall thickness t collapses "
+          "opening " + std::to_string(j) + "'s rim entirely (t at or beyond "
+          "the opening's own local offset feasibility)");
+    }
+
+    const size_t m = loop_j.size();
+    // adj[k]: the other face sharing loop_j's edge (k, k+1) - found by a
+    // reversed-edge match against every other face's own loop (two
+    // adjacent faces of a solid always traverse a shared edge in
+    // opposite directions).
+    std::vector<int> adj(m, -1);
+    for (size_t k = 0; k < m; ++k) {
+      const Point3d& e0 = loop_j[k];
+      const Point3d& e1 = loop_j[(k + 1) % m];
+      for (int p = 0; p < n && adj[k] < 0; ++p) {
+        if (p == j) continue;
+        const std::vector<Point3d>& lp = faces[static_cast<size_t>(p)].loop;
+        for (size_t q = 0; q < lp.size(); ++q) {
+          if (e0.DistanceTo(lp[(q + 1) % lp.size()]) <= tol && e1.DistanceTo(lp[q]) <= tol) {
+            adj[k] = p;
+            break;
+          }
+        }
+      }
+      if (adj[k] < 0) {
+        throw std::invalid_argument(
+            "dino8::kernel::ShellConvexPlanar: opening " + std::to_string(j) +
+            "'s own loop has an edge shared with no other face - not a valid "
+            "closed solid boundary");
+      }
+    }
+
+    // rim_edge_for_face[p]: the rim edge (start index) whose own midpoint
+    // lies on face p's constraint plane pi[p].
+    const size_t rim_n = rim_j.size();
+    std::vector<int> rim_edge_for_face(static_cast<size_t>(n), -1);
+    for (size_t rm = 0; rm < rim_n; ++rm) {
+      const Point3d mid = rim_j[rm] + 0.5 * (rim_j[(rm + 1) % rim_n] - rim_j[rm]);
+      for (int p = 0; p < n; ++p) {
+        if (p == j) continue;
+        if (std::fabs(pi[static_cast<size_t>(p)].DistanceTo(mid)) <= tol) {
+          rim_edge_for_face[static_cast<size_t>(p)] = static_cast<int>(rm);
+          break;
+        }
+      }
+    }
+
+    for (size_t k = 0; k < m; ++k) {
+      const int owner = adj[k];
+      const int rm = rim_edge_for_face[static_cast<size_t>(owner)];
+      if (rm < 0) {
+        throw std::invalid_argument(
+            "dino8::kernel::ShellConvexPlanar: wall thickness t collapses "
+            "the rim edge of opening " + std::to_string(j) + " adjacent to "
+            "face " + std::to_string(owner) +
+            " - out of scope here, see this function's own doc comment");
+      }
+      Brep::PlanarFace quad;
+      quad.plane = face_j.plane;
+      quad.loop = {loop_j[k], loop_j[(k + 1) % m], rim_j[(static_cast<size_t>(rm) + 1) % rim_n],
+                   rim_j[static_cast<size_t>(rm)]};
+      result.push_back(std::move(quad));
+    }
+  }
+
   return Brep::FromPlanarFaces(result);
 }
 

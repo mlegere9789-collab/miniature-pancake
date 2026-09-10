@@ -249,4 +249,78 @@ Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b);
 // cutting plane involved only ever crosses that shape's boundary twice.
 Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op);
 
+// The Sutherland-Hodgman half-space clipper shared by
+// BooleanIntersectConvexPlanar (above) and ShellConvexPlanar (below) -
+// extracted here, not rewritten, so both operations run the same verified
+// clipping loop instead of two independent copies of it. `poly` is a
+// convex polygon already known to lie in `poly_plane`; the result is
+// `poly` clipped against every plane in `halfspaces` in turn, keeping on
+// each step the side each plane's own outward normal points away from
+// (`dot(p - plane.origin, plane.zaxis) <= tol`, i.e. `plane.DistanceTo(p)
+// <= tol` - exactly BooleanIntersectConvexPlanar's own inside test).
+// Returns an empty vector if any step leaves fewer than 3 vertices; never
+// throws (callers decide what "clipped away to nothing" means for them -
+// see BooleanIntersectConvexPlanar's and ShellConvexPlanar's own
+// handling of that).
+//
+// `tol`, if non-negative, is used as-is - this is how
+// BooleanIntersectConvexPlanar keeps its own existing, already-verified
+// tolerance behavior completely unchanged after this extraction (it
+// still computes and passes its own relative tolerance, exactly as
+// before). If negative (the default), a tolerance is derived from `poly`
+// and `poly_plane`'s own coordinate magnitudes the same way - a
+// self-contained default for callers, like ShellConvexPlanar, that don't
+// already have an externally-computed one on hand.
+std::vector<Point3d> ClipConvexPolygon(const std::vector<Point3d>& poly, const ON_Plane& poly_plane,
+                                        const std::vector<ON_Plane>& halfspaces, double tol = -1.0);
+
+// Hollows out a CONVEX planar-faced solid to wall thickness `t`, opening
+// it at `removed_faces` (indices into `solid.PlanarFaces()`) - e.g. an
+// open-top box from Brep::Box() with removed_faces={1} (see PlanarFaces()/
+// Box()'s own face-order comment for which index that is).
+//
+// The construction, face by face:
+//  - Every KEPT face i contributes two faces to the result: its own
+//    original outer loop, unchanged (the exterior wall doesn't move), and
+//    an inner loop lying in that face's plane offset inward by `t`
+//    (translated by -t*n_i, n_i = faces[i].plane.zaxis), clipped
+//    (ClipConvexPolygon, above) against every OTHER face's own
+//    "constraint plane" - that other face's own inward offset if it's
+//    also kept, or its original unmoved plane if it's in
+//    `removed_faces`. The inner loop's outward normal (from the shell's
+//    own material) is -n_i, the opposite of the exterior copy's own - a
+//    direct consequence of the material being sandwiched between the two
+//    (see this function's own .cpp comment for the worked-through sign
+//    argument).
+//  - Every REMOVED face contributes neither an outer nor an inner copy
+//    (dropped entirely - that absence is the opening); its own plane is
+//    also never offset, so it never bounds any other face's clip either.
+//  - The opening's boundary is closed by a flat "rim" (washer) lying
+//    entirely in that removed face's own original, unmoved plane: outer
+//    edge = the removed face's own original loop, inner edge = that same
+//    loop clipped against every OTHER face's constraint plane (both the
+//    outer and inner rim edges lie in the removed face's plane, since
+//    that's the one plane left unmoved on both sides of the cut - see
+//    the .cpp comment for why that's forced, not assumed). Represented
+//    as one flat quad per edge of the removed face's own loop, matching
+//    outer edge k to inner edge k - see the .cpp comment for why that
+//    trapezoid strip comes out correctly wound without extra
+//    bookkeeping.
+//
+// Convex-solid precondition: same check and failure mode as
+// BooleanIntersectConvexPlanar (a non-convex solid would clip pieces of
+// itself away against its own offset planes). Every inner loop is
+// computed - and checked for degeneracy - before any output face is
+// built: if offsetting any kept face by `t` collapses its inner loop to
+// fewer than 3 vertices or ~0 area (t at or beyond that face's own local
+// offset feasibility, up to the solid's inradius - t = s/2 for a cube of
+// side s, say), this throws std::invalid_argument rather than emitting a
+// partially-correct shell. Likewise throws if a removed face's rim edge
+// count doesn't match its own outer loop's (the same t-too-large
+// degeneracy, on the rim instead of an inner face) or if two entries of
+// `removed_faces` are mutually adjacent (share an edge) - an opening
+// spanning more than one original face needs a non-planar, multi-facet
+// rim, genuinely out of scope here, not silently approximated.
+Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces, double t);
+
 }  // namespace dino8::kernel
