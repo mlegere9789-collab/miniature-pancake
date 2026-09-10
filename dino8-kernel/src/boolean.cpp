@@ -12,6 +12,7 @@
 
 #include "dino8/kernel/detail/arc_schedule3d.h"
 #include "dino8/kernel/detail/circle_clip3d.h"
+#include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/halfspace_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
 
@@ -1140,6 +1141,14 @@ double RelativeTolMixed(const std::vector<MixedFace>& faces) {
 // interaction logic branches on, rather than the oblique case it refuses.
 constexpr double kAxisAlignTol = 1e-6;
 
+// How small |dot(cylinder axis, plane normal)| can get before the oblique
+// plane+cylinder ellipse (case (ii)/(iii) below) is refused as a genuine
+// geometric degeneracy rather than silently divided through - see
+// detail::ComputeEllipseFrame3d's own doc comment (ellipse_clip3d.h) for
+// why: the ellipse's own semi-major axis (radius/|C|) is unboundedly large
+// as C -> 0 (grazing/near-axis-parallel incidence).
+constexpr double kMinObliqueC = 1e-6;
+
 // A point ON a CylindricalFace's own lateral surface, at true angle
 // `angle` (radians from `cf.frame.xaxis`) and true axial height `height`
 // (distance from `cf.frame.origin` along `cf.frame.zaxis`) - the same
@@ -1206,17 +1215,47 @@ Point2d SafeInteriorPoint2d(const std::vector<Point2d>& poly) {
 // RepresentativeInteriorPoint() (above). A cylindrical fragment's own
 // trim region is always exactly an axis-aligned (angle, height) rectangle
 // (CylindricalFace's own doc comment), so its own midpoint is trivially,
-// always interior - no triangulation needed. A planar fragment uses
-// SafeInteriorPoint2d() (above), NOT the existing shared
-// RepresentativeInteriorPoint() - see that function's own doc comment for
-// why.
+// always interior - no triangulation needed... UNLESS that fragment is
+// itself an oblique-cut notch (cap0_notch_points/cap1_notch_points
+// non-empty - see SplitCylindricalByObliquePlane, above): there, the
+// TRUE physical boundary at that end is the wavy ellipse, not the flat
+// v=0/v=length rectangle edge the plain midpoint formula assumes, and for
+// a sufficiently large tilt the flat rectangle's own midpoint height can
+// sit on the WRONG side of that true wavy boundary at some angles (the
+// ellipse's own amplitude can exceed half of the flat reference height) -
+// a real, checked-directly correctness gap the plain formula alone does
+// not handle, not merely a theoretical worry. Fixed by picking a height
+// GUARANTEED to clear the true wavy boundary everywhere across the sweep:
+// half of the LOWEST notch sample (for a cap1-notched "lo" fragment,
+// guaranteed strictly below the true floor at every angle) or the
+// midpoint between the HIGHEST notch sample and the flat v=length top
+// (for a cap0-notched "hi" fragment, guaranteed strictly above the true
+// ceiling at every angle) - both closed-form, no search beyond a linear
+// scan of the same dense sample list already computed once by
+// SplitCylindricalByObliquePlane.
 Point3d RepresentativeInteriorPointMixed(const MixedFace& f) {
   if (!f.is_cyl) {
     const std::vector<Point2d> loop2d = ProjectLoopOntoPlaneAxes(f.planar.plane, f.planar.loop);
     const Point2d p2d = SafeInteriorPoint2d(loop2d);
     return f.planar.plane.origin + p2d.x * f.planar.plane.xaxis + p2d.y * f.planar.plane.yaxis;
   }
-  return PointOnCylFace(f.cyl, 0.5 * f.cyl.angle, 0.5 * f.cyl.length);
+  const Brep::CylindricalFace& cf = f.cyl;
+  double height = 0.5 * cf.length;
+  if (!cf.cap1_notch_points.empty()) {
+    double min_h = std::numeric_limits<double>::infinity();
+    for (const Point3d& p : cf.cap1_notch_points) {
+      min_h = std::min(min_h, ON_DotProduct(p - cf.frame.origin, cf.frame.zaxis));
+    }
+    height = std::min(height, 0.5 * min_h);
+  }
+  if (!cf.cap0_notch_points.empty()) {
+    double max_h = -std::numeric_limits<double>::infinity();
+    for (const Point3d& p : cf.cap0_notch_points) {
+      max_h = std::max(max_h, ON_DotProduct(p - cf.frame.origin, cf.frame.zaxis));
+    }
+    height = std::max(height, 0.5 * (max_h + cf.length));
+  }
+  return PointOnCylFace(cf, 0.5 * cf.angle, height);
 }
 
 // Result of casting one ray against one MixedFace: how many times it
@@ -1564,6 +1603,135 @@ std::optional<Brep::PlanarFace::ArcRun> FindArcRun(const std::vector<Point3d>& l
   return run;
 }
 
+// Result of SplitCylindricalByObliquePlane: either the fragment is left
+// completely unmodified (the plane's own ellipse never enters `cf`'s own
+// [0, length] band across the whole swept angle - a real interaction
+// CylinderPlaneNoInteraction's own conservative closed-form bound can
+// still miss, since that bound is deliberately pessimistic, not exact),
+// or it genuinely splits into a "below the cut" and "above the cut"
+// fragment.
+struct ObliqueCylinderSplit {
+  bool split = false;
+  Brep::CylindricalFace lo, hi;  // valid only when split == true
+};
+
+// Splits a FULL-SWEEP (angle == 2*pi) CylindricalFace `cf` by the oblique
+// plane described by `ef` (= detail::ComputeEllipseFrame3d(cf, plane) -
+// passed in already built, rather than rebuilt here, so a caller sharing
+// this same `ef` with the planar side's own detail::ClipPolygonByEllipse3d
+// call - case (ii) below - gets the exact same closed-form curve, not two
+// independently-computed approximations of it).
+//
+// Restricted to angle == 2*pi (checked directly, not assumed): a genuinely
+// PARTIAL-sweep CylindricalFace's own two rail corners sit at two
+// DIFFERENT angular positions, generally at two DIFFERENT true heights
+// h(phi) along this same ellipse - so a notched cap's own two endpoints
+// could not both match a single scalar `length` the way
+// CylindricalFace::cap0_notch_points/cap1_notch_points' own doc comment
+// requires, unlike the full-sweep case (where phi=0 and phi=2*pi are the
+// SAME physical point by periodicity, so h(0) == h(2*pi) automatically -
+// see that field's own doc comment for the direct verification). Every
+// CylindricalFace this kernel's own BooleanCombineMixed pipeline ever
+// builds as an operand - and every fragment its OWN existing perpendicular
+// branch (case (iii)'s align>1-kAxisAlignTol path, which only ever changes
+// `length`/`frame.origin`, never `angle`) ever produces - is full-sweep,
+// so this restriction costs nothing this increment's own callers actually
+// need; a genuinely partial-sweep oblique operand is real, disclosed,
+// out-of-scope future work (see boolean.h's own doc comment), not silently
+// mishandled.
+//
+// The height function h(phi) = dot(EllipsePointAt(ef, phi) - cf.frame.origin,
+// cf.frame.zaxis) is sampled at `samples`+1 points across the full sweep
+// [0, 2*pi]. Three closed-form-checkable outcomes:
+//   - h(phi) stays entirely at or below 0 (within `tol`), or entirely at
+//     or above cf.length (within `tol`), for EVERY sample: the ellipse
+//     never actually enters this fragment's own [0, length] band - no
+//     genuine interaction here (the conservative CylinderPlaneNoInteraction
+//     bound was merely pessimistic) - `split` is left false, caller keeps
+//     `cf` unmodified.
+//   - h(phi) stays STRICTLY inside (tol, cf.length - tol) for EVERY
+//     sample: the plane's ellipse crosses the WHOLE swept angle strictly
+//     between the fragment's two existing ends - the "cylindrical wedge"
+//     case this increment's own closed-form volume test targets. Splits
+//     into a "lo" fragment (frame.origin unchanged, new length = h(0),
+//     cap1_notch_points = the ellipse's own canonical sample list) and a
+//     "hi" fragment (frame.origin shifted to the cut height, new length =
+//     cf.length - h(0), cap0_notch_points = the SAME canonical sample
+//     list) - both anchored at the exact same scalar h(0) (== h(2*pi) by
+//     periodicity, see above), so both new fragments' own rail-corner
+//     checks in FromMixedFaces() are satisfied by construction, not by
+//     coincidence.
+//   - anything else (some samples inside the band, some outside): the
+//     plane's own ellipse enters and/or exits the [0, length] band only
+//     across PART of the swept angle - a harder, genuinely non-monotonic
+//     case (this fragment would need MORE than 2 angular*height pieces to
+//     represent exactly) this function does not attempt. Throws
+//     std::invalid_argument rather than silently building a wrong 2-piece
+//     split.
+ObliqueCylinderSplit SplitCylindricalByObliquePlane(const Brep::CylindricalFace& cf, const detail::EllipseFrame3d& ef,
+                                                     double tol, int samples = 200) {
+  if (!(cf.angle >= 2.0 * ON_PI - kAxisAlignTol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: an oblique plane+cylinder "
+        "interaction against a PARTIAL-sweep (angle < 2*pi) cylindrical "
+        "fragment is out of scope for this increment - see "
+        "SplitCylindricalByObliquePlane's own doc comment in boolean.cpp");
+  }
+
+  const std::vector<Point3d> canonical = detail::EllipseBoundarySample3d(ef, 0.0, 2.0 * ON_PI, samples);
+  std::vector<double> h(canonical.size());
+  for (size_t s = 0; s < canonical.size(); ++s) {
+    h[s] = ON_DotProduct(canonical[s] - cf.frame.origin, cf.frame.zaxis);
+  }
+
+  bool all_below = true, all_above = true, all_inside = true;
+  for (const double hv : h) {
+    if (hv > tol) all_below = false;
+    if (hv < cf.length - tol) all_above = false;
+    if (!(hv > tol && hv < cf.length - tol)) all_inside = false;
+  }
+
+  ObliqueCylinderSplit result;
+  if (all_below || all_above) {
+    result.split = false;
+    return result;
+  }
+  if (!all_inside) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: an oblique plane's own "
+        "intersection with a cylindrical face enters/exits that face's own "
+        "[0, length] band across only PART of the swept angle (a "
+        "non-monotonic interaction) - out of scope for this increment, see "
+        "SplitCylindricalByObliquePlane's own doc comment in boolean.cpp");
+  }
+
+  // Genuine sagitta-style tolerance, the same quantity
+  // EllipseNotchCornerAtVertex (fillet.cpp) computes for its own ellipse
+  // notch: the max distance, over every sample segment, between that
+  // segment's own straight-line midpoint and the true curve's own point at
+  // the matching MIDPOINT phi (not one of the two sampled endpoints).
+  double max_sagitta = 0.0;
+  const int n = static_cast<int>(canonical.size()) - 1;
+  for (int s = 0; s < n; ++s) {
+    const double phi_mid = 2.0 * ON_PI * (static_cast<double>(s) + 0.5) / n;
+    const Point3d chord_mid = 0.5 * (canonical[static_cast<size_t>(s)] + canonical[static_cast<size_t>(s) + 1]);
+    max_sagitta = std::max(max_sagitta, chord_mid.DistanceTo(detail::EllipsePointAt(ef, phi_mid)));
+  }
+
+  const double h0 = h.front();  // == h(2*pi) by periodicity, see this function's own doc comment
+  result.split = true;
+  result.lo = cf;
+  result.lo.length = h0;
+  result.lo.cap1_notch_points = canonical;
+  result.lo.cap1_notch_tolerance = max_sagitta;
+  result.hi = cf;
+  result.hi.frame.origin = cf.frame.origin + h0 * cf.frame.zaxis;
+  result.hi.length = cf.length - h0;
+  result.hi.cap0_notch_points = canonical;
+  result.hi.cap0_notch_tolerance = max_sagitta;
+  return result;
+}
+
 // Splits `self` against EVERY face of `other`, keeping both children of
 // every genuine cut (case (i)/(iii)) or the single surviving fragment of
 // a hole-punch (case (ii)) or an unmodified whole fragment ("no
@@ -1638,11 +1806,40 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
         } else if (CylinderPlaneNoInteraction(g.cyl, f.planar.plane, tol)) {
           next.push_back(std::move(f));
         } else {
-          throw std::invalid_argument(
-              "dino8::kernel::BooleanCombineMixed: a planar face crosses a "
-              "cylindrical face's silhouette at an oblique (non-"
-              "perpendicular) axis angle - out of scope for this "
-              "increment, see this function's own doc comment in boolean.h");
+          // Case (ii), OBLIQUE: g.cyl's own axis is neither perpendicular
+          // to f.planar's plane (the branch above) nor provably
+          // non-interacting (CylinderPlaneNoInteraction) - the closed-form
+          // ellipse case (see detail::ComputeEllipseFrame3d's own doc
+          // comment, ellipse_clip3d.h, for the P(phi) derivation).
+          const double axial = ON_DotProduct(g.cyl.frame.zaxis, f.planar.plane.zaxis);
+          if (std::fabs(axial) < kMinObliqueC) {
+            throw std::invalid_argument(
+                "dino8::kernel::BooleanCombineMixed: a planar face crosses a "
+                "cylindrical face's silhouette at a grazing (near-axis-"
+                "parallel) angle - the ellipse's own semi-major axis is "
+                "unboundedly large here, a real geometric degeneracy, not a "
+                "bug - out of scope for this increment");
+          }
+          const detail::EllipseFrame3d ef = detail::ComputeEllipseFrame3d(g.cyl, f.planar.plane, kMinObliqueC);
+          for (std::vector<Point3d>& piece : detail::ClipPolygonByEllipse3d(f.planar.loop, f.planar.plane, ef, tol)) {
+            if (piece.size() < 3) continue;
+            MixedFace m;
+            m.planar.plane = f.planar.plane;
+            // No arc_runs entry here (unlike the perpendicular branch
+            // above): PlanarFace::arc_runs is consumed ONLY by
+            // Brep::TessellateConforming(), whose own reconciliation
+            // machinery (detail::ArcSchedule3d) is CIRCLE-specific and is
+            // deliberately NOT extended to the oblique ellipse case by this
+            // increment (see boolean.h's own BooleanCombineMixed doc
+            // comment for the honestly-disclosed scope note this implies:
+            // ordinary Tessellate() on an oblique-drilled result carries
+            // the SAME known non-watertight-at-the-wedge-seam limitation
+            // the existing PERPENDICULAR case already has without
+            // TessellateConforming() - see TestBooleanCombineMixedDrilledBoxThroughHole's
+            // own comment for that pre-existing, unchanged limitation).
+            m.planar.loop = std::move(piece);
+            next.push_back(std::move(m));
+          }
         }
       } else if (f.is_cyl && !g.is_cyl) {
         // Case (iii) / no-interaction / oblique (out of scope) - the
@@ -1675,11 +1872,33 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
         } else if (CylinderPlaneNoInteraction(f.cyl, g.planar.plane, tol)) {
           next.push_back(std::move(f));
         } else {
-          throw std::invalid_argument(
-              "dino8::kernel::BooleanCombineMixed: a cylindrical face "
-              "crosses a planar face at an oblique (non-perpendicular "
-              "axis) angle - out of scope for this increment, see this "
-              "function's own doc comment in boolean.h");
+          // Case (iii), OBLIQUE: the direct mirror of case (ii)'s own new
+          // oblique branch above, splitting the CYLINDRICAL fragment
+          // instead of the planar one - see SplitCylindricalByObliquePlane's
+          // own doc comment for the closed-form "cylindrical wedge" math.
+          const double axial = ON_DotProduct(f.cyl.frame.zaxis, g.planar.plane.zaxis);
+          if (std::fabs(axial) < kMinObliqueC) {
+            throw std::invalid_argument(
+                "dino8::kernel::BooleanCombineMixed: a cylindrical face "
+                "crosses a planar face's own cutting plane at a grazing "
+                "(near-axis-parallel) angle - the ellipse's own semi-major "
+                "axis is unboundedly large here, a real geometric "
+                "degeneracy, not a bug - out of scope for this increment");
+          }
+          const detail::EllipseFrame3d ef = detail::ComputeEllipseFrame3d(f.cyl, g.planar.plane, kMinObliqueC);
+          const ObliqueCylinderSplit split = SplitCylindricalByObliquePlane(f.cyl, ef, tol);
+          if (!split.split) {
+            next.push_back(std::move(f));
+          } else {
+            MixedFace mlo;
+            mlo.is_cyl = true;
+            mlo.cyl = split.lo;
+            MixedFace mhi;
+            mhi.is_cyl = true;
+            mhi.cyl = split.hi;
+            next.push_back(std::move(mlo));
+            next.push_back(std::move(mhi));
+          }
         }
       } else {
         // Case (iv): both cylindrical - explicitly OUT OF SCOPE here

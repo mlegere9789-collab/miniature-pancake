@@ -338,6 +338,62 @@ class Brep {
     double angle = 0.0;
     double length = 0.0;
     bool outward = true;
+
+    // Optional, narrow extension mirroring ConicalFace::cap0_notch_points/
+    // cap1_notch_points (see that struct's own doc comment for the shared
+    // machinery this reuses) but for THIS patch's own v=0 (cap0) / v=length
+    // (cap1) end: dense, ordered sample points of the TRUE boundary curve
+    // where an OBLIQUE (non-perpendicular-axis) planar face's own cutting
+    // plane intersects this cylinder - an ELLIPSE (see
+    // dino8/kernel/detail/ellipse_clip3d.h's own top comment for the
+    // closed-form P(phi) derivation this uses), not the fixed-height
+    // CIRCLE this patch's angle-swept v=0/v=length edge otherwise traces.
+    // Empty (the default) means "this end is the plain natural circular
+    // cap, no notch" - every existing caller/producer of CylindricalFace
+    // (including every call this kernel itself ever made before this field
+    // existed) is completely unaffected.
+    //
+    // `cap0_notch_points` is for the v=0 end, `cap1_notch_points` for the
+    // v=length end. When set, a field's own first and last points MUST be
+    // exactly the same two points this patch's own rail corners already
+    // are at that end (angle 0 and angle `angle`, at v=0 for cap0 / v=
+    // length for cap1) - FromMixedFaces() checks this directly rather than
+    // trusting it blindly. Every point is ordered by INCREASING angle (0
+    // -> `angle`, the same angle=0-at-frame.xaxis convention every other
+    // angle on this struct uses) for BOTH fields, matching
+    // ConicalFace's own fixed convention.
+    //
+    // A real, CHECKED (not merely assumed) simplification versus
+    // ConicalFace's own doc comment: when `angle` == 2*pi EXACTLY (a
+    // full-circle drilled hole/boss - the only kind of CylindricalFace
+    // this kernel's own BooleanCombineMixed pipeline builds today, per
+    // ClipPolygonByCircle3d's own existing test fixtures), the SAME
+    // unconditional "front matches the angle-0 rail corner, back matches
+    // the angle-`angle` rail corner" check ConicalFace already uses turns
+    // out to need NO separate branch: at a full 2*pi sweep the two rail
+    // corners themselves already coincide (ON_Cylinder::GetNurbForm's own
+    // NURBS-circle parameterization evaluates to the identical point at
+    // u=0 and u=u_max for a closed full-circle base curve - confirmed
+    // directly, not assumed), and this field's own front/back points are
+    // both EllipsePointAt(ef, 0) / EllipsePointAt(ef, 2*pi) - two
+    // evaluations of the same closed-form cosine/sine that agree to
+    // floating-point precision even though 0 and 2*pi are not the same
+    // literal double. So the general rail-corner check ALREADY accepts
+    // the full-sweep case, with no widening of its own tolerance and no
+    // "is this a full circle" branch - a genuine, verified simplification
+    // over what a naive port of ConicalFace's own machinery would have
+    // needed, not an unexamined assumption.
+    std::vector<Point3d> cap0_notch_points;
+    std::vector<Point3d> cap1_notch_points;
+
+    // Genuine, directly-computed sagitta-style upper bound on the notch
+    // polyline's own deviation from the true continuous ellipse it
+    // approximates - the same quantity ConicalFace::cap0_notch_tolerance/
+    // cap1_notch_tolerance already documents, used as the shared edge's own
+    // m_tolerance the same way. Meaningless (left at its default 0.0) when
+    // the corresponding cap*_notch_points field is empty.
+    double cap0_notch_tolerance = 0.0;
+    double cap1_notch_tolerance = 0.0;
   };
 
   // One curved LINEAR-TAPER fillet face's exact geometry: a trimmed

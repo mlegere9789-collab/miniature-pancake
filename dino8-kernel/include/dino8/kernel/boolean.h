@@ -338,9 +338,9 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // this function's own, separate pipeline.
 //
 // SCOPE, stated as plainly as BooleanIntersectConvexPlanar/
-// BooleanCombinePlanar's own doc comments state theirs: this handles
-// exactly ONE new kind of face interaction, closed-form and exact except
-// for one disclosed polygonal approximation -
+// BooleanCombinePlanar's own doc comments state theirs: this handles TWO
+// kinds of face interaction, both closed-form and exact except for one
+// disclosed polygonal approximation each -
 //   - a planar face crossed by a cylindrical face whose axis is
 //     PERPENDICULAR to that plane (the infinite cylinder's silhouette in
 //     the plane is exactly a circle - the same closed-form fact dino8-
@@ -356,6 +356,41 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 //     cylindrical face by height into two CylindricalFace children at the
 //     exact axial cut point (one dot product, zero approximation - MORE
 //     exact than the planar side).
+//   - the OBLIQUE case (neither perpendicular nor clearly non-
+//     interacting): the infinite cylinder's own silhouette in a
+//     non-perpendicular cutting plane is a genuine ELLIPSE, not a circle -
+//     a classical closed-form fact (P(phi) = center + radius*cos(phi)*e0 +
+//     radius*sin(phi)*e1, derived and verified directly in detail/
+//     ellipse_clip3d.h's own top comment, not merely asserted). The planar
+//     side is split by detail::ClipPolygonByEllipse3d (the direct
+//     generalization of ClipPolygonByCircle3d, same "4 simple wedges, one
+//     disclosed polygonal-sampling approximation of the boundary, throws
+//     on a genuine boundary crossing" contract); the cylindrical side is
+//     split by SplitCylindricalByObliquePlane (boolean.cpp) into a "below
+//     the cut" and "above the cut" CylindricalFace, each carrying the true
+//     wavy ellipse boundary in its own new cap0_notch_points/
+//     cap1_notch_points field (Brep::CylindricalFace's own doc comment) -
+//     mirroring the closed-form ellipse notch ConicalFace/
+//     FilletConvexEdgeTapered already use for a TAPERED fillet's own cap,
+//     applied here to a genuinely different curve (a plane-cylinder
+//     ellipse, not a plane-cone one) via a wholly separate function, not a
+//     generalization-in-place. Restricted to a FULL-SWEEP (angle == 2*pi)
+//     cylindrical operand and to an interaction that crosses the whole
+//     swept angle monotonically (the closed-form "cylindrical wedge"
+//     case, whose exact volume equals a PERPENDICULAR cut at the ellipse's
+//     own center height - see this increment's own volume-formula test) -
+//     see SplitCylindricalByObliquePlane's own doc comment (boolean.cpp)
+//     for the two real, checked-directly limitations this implies
+//     (a partial-sweep operand, and a non-monotonic/re-entrant crossing)
+//     and why neither is silently mishandled. A DISCLOSED, NOT extended,
+//     limitation versus the perpendicular case above: Brep::
+//     TessellateConforming()'s own circle-specific arc-reconciliation
+//     machinery is not extended to the ellipse case, so an oblique-cut
+//     result's own ordinary Tessellate() output carries the SAME known,
+//     already-disclosed non-watertight-at-the-wedge-seam limitation the
+//     PERPENDICULAR case already has without TessellateConforming() (see
+//     that function's own doc comment) - this is not a new gap, just an
+//     un-widened existing one.
 //   - a face pair with NO possible interaction at all (checked via a
 //     closed-form conservative bound on the cylinder's own signed
 //     distance to the other face's plane) is left completely unmodified -
@@ -366,12 +401,16 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 //     cross-section) reduces EXACTLY to what BooleanCombinePlanar would
 //     already do with it.
 //
-// Explicitly OUT OF SCOPE, and this throws std::invalid_argument rather
-// than silently approximating: a planar/cylindrical pair at an OBLIQUE
-// (neither perpendicular nor clearly non-interacting) axis angle, and any
-// two CYLINDRICAL faces interacting (or potentially interacting) at all -
-// both need a genuine NURBS-NURBS surface intersection and re-trim step
-// (see IntersectSurfaces in dino8-app's own geom layer for the
+// Explicitly OUT OF SCOPE, and this throws std::invalid_argument (or, for
+// the grazing-incidence sub-case, std::runtime_error surfaced through
+// detail::ComputeEllipseFrame3d) rather than silently approximating: a
+// planar/cylindrical pair at a GRAZING (near-axis-parallel) angle (the
+// ellipse's own semi-major axis is unboundedly large there), an oblique
+// interaction against a partial-sweep cylindrical operand, a
+// non-monotonic (re-entrant) oblique crossing, and any two CYLINDRICAL
+// faces interacting (or potentially interacting) at all - the last needs a
+// genuine NURBS-NURBS surface intersection and re-trim step (see
+// IntersectSurfaces in dino8-app's own geom layer for the
 // intersection-curve half of that, not yet wired to a Brep boolean here),
 // a materially bigger, separate follow-up this increment doesn't attempt.
 //
