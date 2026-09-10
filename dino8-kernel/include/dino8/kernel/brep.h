@@ -160,12 +160,85 @@ class Brep {
   // radius; `angle` (radians, in (0, pi) for the convex edges this is
   // built for) is the total angle swept from `xaxis`; `length` is the
   // patch's extent along `zaxis`, starting at `frame.origin`.
+  // `outward`, if false, flips the patch's presented (tessellated) normal
+  // to point radially INWARD instead of the frame/radius/angle/length
+  // geometry's own natural radially-outward direction - needed so a
+  // cylindrical face can bound material from the CONCAVE side (e.g. the
+  // wall of a drilled hole, whose outward-from-material direction points
+  // toward the axis, not away from it), the same role FlipFace() already
+  // plays for a PlanarFace via reversing its loop/plane. Unlike
+  // PlanarFace (whose loop winding and plane.zaxis directly encode
+  // orientation, so no separate flag is needed), a CylindricalFace's own
+  // frame/radius/angle/length always describe the SAME physical patch
+  // regardless of which way it's meant to face - `outward` is the one bit
+  // of information that's otherwise missing, translated by
+  // FromMixedFaces() into the underlying ON_BrepFace::m_bRev flag
+  // Tessellate()/TessellateAdaptive()/TessellateNonUniformAdaptive() all
+  // already respect generically (see their own `m_bRev` check). Defaults
+  // to true so every existing caller (FilletConvexEdge's own always-
+  // outward fillet patch) is unaffected.
   struct CylindricalFace {
     ON_Plane frame;
     double radius = 0.0;
     double angle = 0.0;
     double length = 0.0;
+    bool outward = true;
   };
+
+  // The general sibling of PlanarFaces() that also recognizes a
+  // cylindrical face rather than throwing on it - the extraction half of
+  // what BooleanCombineMixed (see boolean.h) needs to get a
+  // CylindricalFace back OUT of an arbitrary Brep (PlanarFaces() itself
+  // deliberately can't - see its own doc comment). A planar face is
+  // extracted exactly as PlanarFaces() does (same code, not a second
+  // copy); a non-planar face is checked via `raw().IsCylinder(&cyl, tol)`
+  // - the same real OpenNURBS API dino8-app's own
+  // BuildPlaneCylinderVariableFillet (cmd_fillet.cpp) already calls to
+  // recognize a cylindrical face - and, if that succeeds, its
+  // frame/radius/angle/length are recovered as the direct inverse of what
+  // FromMixedFaces() built:
+  //   - `radius` is ON_Cylinder's own fitted circle radius.
+  //   - `frame.zaxis` is ON_Cylinder::Axis(); `frame.origin` is found by
+  //     evaluating the REAL surface (not trusting whatever arbitrary
+  //     reference direction IsCylinder()'s own internal curve-fit happens
+  //     to pick for its returned circle) at the face's own trim
+  //     rectangle's (u_min, v_min) corner and projecting that point onto
+  //     the fitted axis LINE - this is what makes the extraction correct
+  //     for ANY trim rectangle's own u_min (not just one that happens to
+  //     start at the raw surface's own u=0), a real generalization beyond
+  //     the narrower assumption this method could have gotten away with,
+  //     given every CylindricalFace this kernel itself ever builds via
+  //     FromMixedFaces does start its own trim at u=0.
+  //   - `frame.xaxis` is the unit vector from that same projected point to
+  //     the actual corner point - i.e., exactly the patch's own rail at
+  //     the trim's own u_min, matching CylindricalFace's own doc comment
+  //     ("frame.xaxis is exactly the patch's own rail at angle 0") with
+  //     "angle 0" now meaning this face's own u_min rather than
+  //     necessarily the underlying surface's u=0.
+  //   - `length` is the trim rectangle's true v-extent (v_max - v_min,
+  //     already true axial distance per FromMixedFaces' own comment).
+  //   - `angle` is the true radian sweep between the trim's own u_min and
+  //     u_max, via ON_Circle::GetRadianFromNurbFormParameter (the
+  //     documented inverse of GetNurbFormParameterFromRadian
+  //     FromMixedFaces uses to go the other way) - valid to call on the
+  //     FITTED circle even though that circle's own xaxis has no relation
+  //     to this face's own frame.xaxis above, since that conversion is
+  //     intrinsic to the standard 4-span rational NURBS circle's own
+  //     canonical parameterization, not to any particular circle
+  //     instance's plane.
+  //
+  // Throws std::invalid_argument if a face is neither planar nor
+  // cylindrical (a genuinely free-form face - out of scope, the same
+  // honest narrowing PlanarFaces() uses for a non-planar face) or
+  // std::runtime_error if the trim corner's recovered distance from the
+  // fitted axis doesn't match the fitted radius within tolerance (should
+  // not happen for a face this kernel itself built, but is checked rather
+  // than silently returning a wrong frame).
+  struct MixedFacesResult {
+    std::vector<PlanarFace> planar;
+    std::vector<CylindricalFace> cylindrical;
+  };
+  MixedFacesResult MixedFaces() const;
 
   // The inverse of PlanarFaces(), generalized to also place curved
   // circular-cylinder patches alongside the planar ones (PlanarFaces()

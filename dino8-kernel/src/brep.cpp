@@ -252,6 +252,32 @@ ON_3dVector NewellNormal(const std::vector<Point3d>& loop) {
   return n;
 }
 
+// The trim polygon in (u, v) space to walk for `fg`, in increasing-
+// parameter order when `fg` carries no explicit outer loop of its own -
+// shared by PlanarFaces() and MixedFaces() (below) so "what UV rectangle
+// does an untrimmed face fall back to" is answered in exactly one place.
+std::vector<Point2d> FaceOuterUv(const FaceGeometry& fg) {
+  if (!fg.outer.empty()) return fg.outer;
+  const ON_Interval du = fg.surface.Domain(0), dv = fg.surface.Domain(1);
+  // Increasing-parameter order around the rectangle - matches every
+  // planar-face factory's own "u_dir x v_dir points outward" winding.
+  return {Point2d(du[0], dv[0]), Point2d(du[1], dv[0]), Point2d(du[1], dv[1]), Point2d(du[0], dv[1])};
+}
+
+// Builds a PlanarFace from already-resolved face geometry known to be
+// planar - the one conversion PlanarFaces() and MixedFaces() (below)
+// share verbatim, so a planar face's own extraction never has two
+// independently-maintained copies that could quietly drift apart.
+Brep::PlanarFace ExtractPlanarFace(const FaceGeometry& fg) {
+  const std::vector<Point2d> uv = FaceOuterUv(fg);
+  Brep::PlanarFace face;
+  face.loop.reserve(uv.size());
+  for (const Point2d& p : uv) face.loop.push_back(fg.surface.PointAt(p.x, p.y));
+  const ON_3dVector n = NewellNormal(face.loop);
+  face.plane = ON_Plane(face.loop[0], n);
+  return face;
+}
+
 }  // namespace
 
 std::vector<Brep::PlanarFace> Brep::PlanarFaces() const {
@@ -267,21 +293,109 @@ std::vector<Brep::PlanarFace> Brep::PlanarFaces() const {
           "dino8::kernel::Brep::PlanarFaces: face " + std::to_string(i) +
           " is not planar - this is a planar-only B-rep boolean, see its own doc comment");
     }
-    std::vector<Point2d> uv;
-    if (!fg.outer.empty()) {
-      uv = fg.outer;
-    } else {
-      const ON_Interval du = fg.surface.Domain(0), dv = fg.surface.Domain(1);
-      // Increasing-parameter order around the rectangle - matches every
-      // planar-face factory's own "u_dir x v_dir points outward" winding.
-      uv = {Point2d(du[0], dv[0]), Point2d(du[1], dv[0]), Point2d(du[1], dv[1]), Point2d(du[0], dv[1])};
+    result.push_back(ExtractPlanarFace(fg));
+  }
+  return result;
+}
+
+Brep::MixedFacesResult Brep::MixedFaces() const {
+  MixedFacesResult result;
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    FaceGeometry fg;
+    if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
+    NurbsSurface wrapper;
+    wrapper.raw() = fg.surface;
+    if (wrapper.IsPlanar()) {
+      result.planar.push_back(ExtractPlanarFace(fg));
+      continue;
     }
-    PlanarFace face;
-    face.loop.reserve(uv.size());
-    for (const Point2d& p : uv) face.loop.push_back(fg.surface.PointAt(p.x, p.y));
-    const ON_3dVector n = NewellNormal(face.loop);
-    face.plane = ON_Plane(face.loop[0], n);
-    result.push_back(std::move(face));
+
+    ON_Cylinder cyl;
+    // Same tolerance scale cmd_fillet.cpp's own BuildPlaneCylinderVariableFillet
+    // uses for this exact IsCylinder() call - loose enough to accept a
+    // NURBS fit's own float-ish surface-construction noise, tight enough
+    // not to misclassify a genuinely non-cylindrical face.
+    const double cyl_tol = 1e-4;
+    if (!fg.surface.IsCylinder(&cyl, cyl_tol)) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::MixedFaces: face " + std::to_string(i) +
+          " is neither planar nor cylindrical - a genuinely free-form face is "
+          "out of scope here, the same honest narrowing PlanarFaces() uses "
+          "for a non-planar face (see this method's own doc comment)");
+    }
+
+    const std::vector<Point2d> uv = FaceOuterUv(fg);
+    double u_min = uv[0].x, u_max = uv[0].x, v_min = uv[0].y, v_max = uv[0].y;
+    for (const Point2d& p : uv) {
+      u_min = std::min(u_min, p.x);
+      u_max = std::max(u_max, p.x);
+      v_min = std::min(v_min, p.y);
+      v_max = std::max(v_max, p.y);
+    }
+
+    // The actual 3D point at the trim rectangle's own (u_min, v_min)
+    // corner - the patch's own rail at u_min, evaluated on the REAL
+    // surface rather than assumed - see this method's own doc comment for
+    // why this (not IsCylinder()'s own arbitrarily-oriented fitted
+    // circle) is what frame.xaxis/frame.origin are recovered from.
+    const Point3d p_corner = fg.surface.PointAt(u_min, v_min);
+    const Point3d p_far = fg.surface.PointAt(u_min, v_max);
+
+    Vector3d axis_dir = cyl.Axis();
+    if (!axis_dir.Unitize()) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::MixedFaces: face " + std::to_string(i) +
+          ": ON_Surface::IsCylinder returned a degenerate (zero-length) axis");
+    }
+    const Point3d& axis_ref = cyl.Center();
+    const Point3d frame_origin = axis_ref + ON_DotProduct(p_corner - axis_ref, axis_dir) * axis_dir;
+
+    Vector3d xaxis = p_corner - frame_origin;
+    const double radius = cyl.circle.Radius();
+    const double radius_tol = std::max(1e-9, radius * 1e-6);
+    if (std::fabs(xaxis.Length() - radius) > radius_tol || !xaxis.Unitize()) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::MixedFaces: face " + std::to_string(i) +
+          "'s trim corner does not lie at the fitted cylinder's own radius "
+          "from its axis - cannot recover a consistent reference frame");
+    }
+
+    // Orient zaxis so v increases in the +zaxis direction, matching
+    // FromMixedFaces' own "v == true axial distance from frame.origin"
+    // convention - found from the REAL surface (a point farther along v),
+    // not assumed from ON_Cylinder::Axis()'s own arbitrary sign.
+    Vector3d zaxis = axis_dir;
+    if (ON_DotProduct(p_far - frame_origin, zaxis) < 0.0) zaxis = -zaxis;
+
+    Brep::CylindricalFace cf;
+    cf.frame.origin = frame_origin;
+    cf.frame.xaxis = xaxis;
+    cf.frame.zaxis = zaxis;
+    cf.frame.yaxis = ON_CrossProduct(zaxis, xaxis);
+    cf.frame.yaxis.Unitize();
+    cf.frame.UpdateEquation();
+    cf.radius = radius;
+    cf.length = v_max - v_min;
+    // The inverse of FromMixedFaces' own `face.m_bRev = !cf.outward;` -
+    // see CylindricalFace::outward's own doc comment.
+    cf.outward = !brep_.m_F[i].m_bRev;
+
+    // True radian sweep between the trim's own u_min and u_max - the
+    // documented inverse of GetNurbFormParameterFromRadian FromMixedFaces
+    // uses to go the other way (see this method's own doc comment for why
+    // it's valid to call on the fitted `cyl.circle` even though that
+    // circle's own xaxis has no relation to `cf.frame.xaxis` above).
+    double r_min = 0.0, r_max = 0.0;
+    if (!cyl.circle.GetRadianFromNurbFormParameter(u_min, &r_min) ||
+        !cyl.circle.GetRadianFromNurbFormParameter(u_max, &r_max)) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::MixedFaces: face " + std::to_string(i) +
+          ": ON_Circle::GetRadianFromNurbFormParameter failed converting the "
+          "trim's own u-domain to true angle");
+    }
+    cf.angle = r_max - r_min;
+
+    result.cylindrical.push_back(cf);
   }
   return result;
 }
@@ -361,15 +475,21 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
           "of ON_Circle's own [0, 2*pi] NURBS-parameterization domain");
     }
     const int surface_index = brep.AddSurface(surface);
-    brep.NewFace(surface_index);
+    ON_BrepFace& face = brep.NewFace(surface_index);
     // Same increasing-parameter corner order PlanarFaces()'s own
     // untrimmed-domain fallback uses - and, per this method's own doc
     // comment, u_dir x v_dir already points radially outward for
     // ON_Cylinder::GetNurbForm's natural parameterization (verified
     // directly: at u=0 the tangent in u is r*(local +y) and dP/dv is
     // frame.zaxis, whose cross product is r*frame.xaxis - the true
-    // outward radial direction at angle 0), so no m_bRev flip is needed
-    // here, matching Sphere()'s own precedent of never setting it either.
+    // outward radial direction at angle 0). `cf.outward == false` (see
+    // CylindricalFace's own doc comment) flips that via m_bRev, exactly
+    // the flag Tessellate()/TessellateAdaptive()/
+    // TessellateNonUniformAdaptive() already check generically for any
+    // face; Sphere()'s own precedent of never setting it is unaffected
+    // (this is the same field, just actually used here for the first
+    // time).
+    face.m_bRev = !cf.outward;
     const std::vector<Point2d> trim = {Point2d(0.0, 0.0), Point2d(u_max, 0.0),
                                         Point2d(u_max, cf.length), Point2d(0.0, cf.length)};
     result.face_trim_loops_.push_back(trim);

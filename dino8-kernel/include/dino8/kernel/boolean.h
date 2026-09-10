@@ -323,4 +323,69 @@ std::vector<Point3d> ClipConvexPolygon(const std::vector<Point3d>& poly, const O
 // rim, genuinely out of scope here, not silently approximated.
 Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces, double t);
 
+// Exact B-rep boolean between two solids where either (or both) may have
+// a CYLINDRICAL face, not just planar ones - what closes the gap
+// BooleanCombinePlanar's own PlanarFaces()-only precondition leaves open:
+// a box with a drilled hole or a boss (bolt holes, counterbores, pipe
+// stubs) is flatly impossible to build via BooleanCombinePlanar today, and
+// this is the narrowest, most valuable slice of the general non-planar
+// case - see the audit doc this increment's own spec cites for why. A NEW
+// entry point, not a modification of BooleanCombinePlanar: that function's
+// own behavior (verified to ~1e-9 by hundreds of already-passing checks)
+// is completely unaffected - a planar-only pair of faces always goes
+// through the exact same Sutherland-Hodgman half-space split
+// (SplitByHalfspace3d) BooleanCombinePlanar itself uses, just reached via
+// this function's own, separate pipeline.
+//
+// SCOPE, stated as plainly as BooleanIntersectConvexPlanar/
+// BooleanCombinePlanar's own doc comments state theirs: this handles
+// exactly ONE new kind of face interaction, closed-form and exact except
+// for one disclosed polygonal approximation -
+//   - a planar face crossed by a cylindrical face whose axis is
+//     PERPENDICULAR to that plane (the infinite cylinder's silhouette in
+//     the plane is exactly a circle - the same closed-form fact dino8-
+//     app's own BuildPlaneCylinderVariableFillet, cmd_fillet.cpp, already
+//     exploits for a plane+cylinder fillet): splits the planar face by
+//     punching that circle out of it (detail/circle_clip3d.h's
+//     ClipPolygonByCircle3d - exact except for a fine polygonal sampling
+//     of the circle boundary, the same kind of disclosed, bounded
+//     approximation FilletConvexEdge's own end-cap notch already makes,
+//     not a new kind of inexactness).
+//   - the same relationship the other way around - a cylindrical face
+//     crossed by a planar face perpendicular to ITS axis - splits the
+//     cylindrical face by height into two CylindricalFace children at the
+//     exact axial cut point (one dot product, zero approximation - MORE
+//     exact than the planar side).
+//   - a face pair with NO possible interaction at all (checked via a
+//     closed-form conservative bound on the cylinder's own signed
+//     distance to the other face's plane) is left completely unmodified -
+//     the same behavior BooleanCombinePlanar's own planar-only pipeline
+//     already has for two faces that don't intersect, so a face with no
+//     cylindrical interaction (e.g. a drilled box's own four side walls,
+//     when the hole's footprint stays strictly inside the box's own
+//     cross-section) reduces EXACTLY to what BooleanCombinePlanar would
+//     already do with it.
+//
+// Explicitly OUT OF SCOPE, and this throws std::invalid_argument rather
+// than silently approximating: a planar/cylindrical pair at an OBLIQUE
+// (neither perpendicular nor clearly non-interacting) axis angle, and any
+// two CYLINDRICAL faces interacting (or potentially interacting) at all -
+// both need a genuine NURBS-NURBS surface intersection and re-trim step
+// (see IntersectSurfaces in dino8-app's own geom layer for the
+// intersection-curve half of that, not yet wired to a Brep boolean here),
+// a materially bigger, separate follow-up this increment doesn't attempt.
+//
+// Point-in-solid classification (the other half of the non-convex
+// pipeline, alongside splitting) gets one new, exact closed-form branch:
+// a ray cast against a cylindrical face is a standard ray-vs-infinite-
+// cylinder quadratic (project the ray into the plane perpendicular to the
+// cylinder's axis), with true axial height and true angle recovered by a
+// dot product and an atan2 respectively, checked against the
+// CylindricalFace's own axis-aligned (angle, height) trim rectangle - see
+// this function's own .cpp comment for the exact derivation. The existing
+// graze-the-boundary fallback (try the next GenericRayDirections() entry)
+// carries over unchanged in spirit, generalized to also detect a graze on
+// a cylindrical face's own (angle, height) rectangle boundary.
+Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op);
+
 }  // namespace dino8::kernel

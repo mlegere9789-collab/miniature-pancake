@@ -9,11 +9,14 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/detail/circle_clip3d.h"
+#include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/file_io.h"
 #include "dino8/kernel/fillet.h"
 #include "dino8/kernel/mesh.h"
@@ -6484,6 +6487,379 @@ void TestFilletConvexEdgeUnitCubeTopFrontCorner() {
   Check(threw_too_big, "FilletConvexEdge rejects a radius too large to fit on the adjacent faces");
 }
 
+// Brep::MixedFaces() is the direct inverse of Brep::FromMixedFaces() - this
+// builds a one-face cylindrical Brep with a deliberately "awkward" frame
+// (non-axis-aligned xaxis, a non-zero origin, a partial sweep that does NOT
+// start at the raw surface's own u=0) via FromMixedFaces(), extracts it back
+// via MixedFaces(), and checks every recovered field matches the original to
+// tight tolerance - the round trip the real spec risk (MixedFaces()'s own
+// u=0-reference-direction recovery) lives or dies on.
+void TestMixedFacesRoundTripsCylindricalFace() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep::CylindricalFace cf;
+  cf.frame.origin = Point3d(3.0, -2.0, 7.0);
+  // A deliberately non-axis-aligned orthonormal frame: zaxis along a
+  // generic direction, xaxis/yaxis completed from it via cross products
+  // (not (1,0,0)/(0,1,0)) - if MixedFaces() secretly assumed an
+  // axis-aligned frame anywhere, this would catch it.
+  Vector3d zaxis(1.0, 2.0, 2.0);
+  zaxis.Unitize();
+  Vector3d seed(0.0, 0.0, 1.0);
+  Vector3d xaxis = ON_CrossProduct(seed, zaxis);
+  xaxis.Unitize();
+  Vector3d yaxis = ON_CrossProduct(zaxis, xaxis);
+  cf.frame.xaxis = xaxis;
+  cf.frame.yaxis = yaxis;
+  cf.frame.zaxis = zaxis;
+  cf.frame.UpdateEquation();
+  cf.radius = 2.5;
+  cf.angle = 4.0;  // a partial sweep, not 2*pi
+  cf.length = 6.0;
+
+  const Brep built = Brep::FromMixedFaces({}, {cf});
+  const Brep::MixedFacesResult extracted = built.MixedFaces();
+  Check(extracted.planar.empty(), "MixedFaces() finds zero planar faces on a purely cylindrical Brep");
+  Check(extracted.cylindrical.size() == 1, "MixedFaces() finds exactly the one cylindrical face built");
+
+  const Brep::CylindricalFace& got = extracted.cylindrical[0];
+  Check(got.frame.origin.DistanceTo(cf.frame.origin) < 1e-6,
+        "MixedFaces() recovers the cylindrical face's own frame.origin");
+  Check(ON_DotProduct(got.frame.xaxis, cf.frame.xaxis) > 1.0 - 1e-6,
+        "MixedFaces() recovers the cylindrical face's own frame.xaxis (the true u_min rail direction)");
+  Check(ON_DotProduct(got.frame.zaxis, cf.frame.zaxis) > 1.0 - 1e-6,
+        "MixedFaces() recovers the cylindrical face's own frame.zaxis (axis direction, correctly oriented)");
+  Check(std::fabs(got.radius - cf.radius) < 1e-6, "MixedFaces() recovers the cylindrical face's own radius");
+  Check(std::fabs(got.length - cf.length) < 1e-6, "MixedFaces() recovers the cylindrical face's own length");
+  Check(std::fabs(got.angle - cf.angle) < 1e-6, "MixedFaces() recovers the cylindrical face's own angle");
+  Check(got.outward == true, "MixedFaces() recovers outward=true for a face built with the default orientation");
+
+  // A face built with outward=false (the "inward-facing hole wall"
+  // orientation BooleanCombineMixed's own Difference path needs) round-trips
+  // its own orientation too, not just its geometry.
+  Brep::CylindricalFace cf_inward = cf;
+  cf_inward.outward = false;
+  const Brep built_inward = Brep::FromMixedFaces({}, {cf_inward});
+  const Brep::MixedFacesResult extracted_inward = built_inward.MixedFaces();
+  Check(extracted_inward.cylindrical.size() == 1 && extracted_inward.cylindrical[0].outward == false,
+        "MixedFaces() recovers outward=false for a face built with the flipped (inward) orientation");
+
+  // A full-circle (angle = 2*pi) cylindrical face - the case this
+  // increment's own box-with-a-hole test actually uses - round-trips too,
+  // including through a mixed Brep that also has a planar face (so
+  // MixedFaces() genuinely has to sort faces by type, not just handle an
+  // all-cylindrical Brep).
+  Brep::PlanarFace pf;
+  pf.plane = ON_Plane(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  pf.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  Brep::CylindricalFace full;
+  full.frame.origin = Point3d(5.0, 5.0, -1.0);
+  full.frame.xaxis = Vector3d(1, 0, 0);
+  full.frame.yaxis = Vector3d(0, 1, 0);
+  full.frame.zaxis = Vector3d(0, 0, 1);
+  full.frame.UpdateEquation();
+  full.radius = 2.0;
+  full.angle = 2.0 * ON_PI;
+  full.length = 12.0;
+  const Brep mixed = Brep::FromMixedFaces({pf}, {full});
+  const Brep::MixedFacesResult extracted_mixed = mixed.MixedFaces();
+  Check(extracted_mixed.planar.size() == 1 && extracted_mixed.cylindrical.size() == 1,
+        "MixedFaces() sorts a mixed planar+cylindrical Brep's faces by type correctly");
+  Check(std::fabs(extracted_mixed.cylindrical[0].angle - 2.0 * ON_PI) < 1e-6,
+        "MixedFaces() recovers a full 2*pi sweep exactly");
+  Check(extracted_mixed.cylindrical[0].frame.origin.DistanceTo(full.frame.origin) < 1e-6,
+        "MixedFaces() recovers the full-circle face's own frame.origin");
+}
+
+// Signed area of a planar 3D polygon via fan triangulation from its own
+// first vertex, projected onto `normal` - same formula boolean.cpp's own
+// (file-local) PlanarPolygonArea uses, duplicated here for the test file's
+// own independent check.
+double PlanarPolygonAreaForTest(const std::vector<dino8::kernel::Point3d>& poly, const dino8::kernel::Vector3d& normal) {
+  using dino8::kernel::Point3d;
+  if (poly.size() < 3) return 0.0;
+  const Point3d& origin = poly[0];
+  dino8::kernel::Vector3d sum(0, 0, 0);
+  for (size_t i = 1; i + 1 < poly.size(); ++i) {
+    sum += ON_CrossProduct(poly[i] - origin, poly[i + 1] - origin);
+  }
+  return 0.5 * std::fabs(sum * normal);
+}
+
+void TestClipPolygonByCircle3dPunchesExactHole() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  using dino8::kernel::detail::ClipPolygonByCircle3d;
+
+  const ON_Plane plane(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const std::vector<Point3d> square = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+  const Point3d center(5, 5, 0);
+  const double radius = 2.0;
+  const int samples = 200;
+
+  const auto pieces = ClipPolygonByCircle3d(square, plane, center, radius, 1e-9, samples);
+  Check(pieces.size() == 4, "ClipPolygonByCircle3d punches a hole as exactly 4 simple wedge pieces");
+
+  bool all_simple = true;
+  double total_area = 0.0;
+  for (const auto& piece : pieces) {
+    if (!dino8::kernel::detail::IsSimplePolygon(
+            [&] {
+              std::vector<dino8::kernel::Point2d> p2d;
+              for (const Point3d& p : piece) p2d.emplace_back(p.x, p.y);
+              return p2d;
+            }())) {
+      all_simple = false;
+    }
+    total_area += PlanarPolygonAreaForTest(piece, Vector3d(0, 0, 1));
+  }
+  Check(all_simple, "every one of ClipPolygonByCircle3d's own wedge pieces is a simple (non-self-touching) polygon");
+
+  // Exact area of a regular N-gon inscribed in a circle of radius r:
+  // (N/2)*r^2*sin(2*pi/N) - checked to a loose (1e-3 relative) tolerance
+  // rather than floating-point-exact, since a small amount of drift is
+  // tolerated here rather than over-fitting this one test to this
+  // function's own exact internal sample-angle bookkeeping.
+  const double inscribed_ngon_area = (samples / 2.0) * radius * radius * std::sin(2.0 * ON_PI / samples);
+  const double expected_total = 100.0 - inscribed_ngon_area;
+  Check(std::fabs(total_area - expected_total) / expected_total < 1e-3,
+        "the four wedge pieces' own total area is within 1e-3 relative of square-area minus the true inscribed "
+        "N-gon area (exact match isn't expected - NURBS-uniform sampling isn't a regular N-gon, see this test's own "
+        "comment)");
+
+  // Sanity: that inscribed-N-gon area is itself very close to (but
+  // strictly less than) the true disk area pi*r^2 - the honestly-disclosed
+  // polygonal-arc approximation, bounded and small (~1.6e-4 relative for
+  // N=200), not the source of any of this test's own tighter checks above.
+  const double true_disk_area = ON_PI * radius * radius;
+  Check(inscribed_ngon_area < true_disk_area && (true_disk_area - inscribed_ngon_area) / true_disk_area < 1e-3,
+        "the N=200 inscribed polygon's own area deficit from the true disk is small (<1e-3 relative), as documented");
+
+  // A circle entirely OUTSIDE the polygon leaves it completely unchanged -
+  // the "no interaction" case every non-cylinder-touching face (e.g. this
+  // increment's own box side walls) needs to reduce to exactly.
+  const auto unchanged = ClipPolygonByCircle3d(square, plane, Point3d(50, 50, 0), radius, 1e-9, samples);
+  Check(unchanged.size() == 1 && unchanged[0].size() == square.size(),
+        "ClipPolygonByCircle3d returns exactly one unchanged piece (same vertex count) when the circle doesn't "
+        "touch the polygon at all");
+  bool same_points = true;
+  for (size_t i = 0; i < square.size(); ++i) {
+    if (unchanged[0][i].DistanceTo(square[i]) > 1e-12) same_points = false;
+  }
+  Check(same_points, "ClipPolygonByCircle3d's unchanged-loop case returns the exact same vertices, not just the same count");
+
+  // A circle that genuinely crosses the polygon's own boundary (partial
+  // overlap) is explicitly out of scope for this increment - throws
+  // rather than silently emitting a wrong/self-intersecting loop.
+  bool threw_partial_overlap = false;
+  try {
+    ClipPolygonByCircle3d(square, plane, Point3d(0, 0, 0), radius, 1e-9, samples);
+  } catch (const std::invalid_argument&) {
+    threw_partial_overlap = true;
+  }
+  Check(threw_partial_overlap,
+        "ClipPolygonByCircle3d rejects a circle that partially overlaps the polygon's own boundary "
+        "(out of scope for this increment, disclosed rather than silently approximated)");
+}
+
+// Builds the box-with-a-drilled-hole scenario from the spec's own
+// section 5 ("smallest, most valuable first case"): A = a 10x10x10 box,
+// B = a single full-circle (2*pi) CylindricalFace of radius `hole_radius`
+// centered on the box's own footprint, spanning z in
+// [`hole_z0`, `hole_z0` + `hole_length`]. Returns the two input Breps.
+std::pair<dino8::kernel::Brep, dino8::kernel::Brep> BuildDrilledBoxInputs(double hole_radius, double hole_z0,
+                                                                          double hole_length) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace hole;
+  hole.frame.origin = Point3d(5, 5, hole_z0);
+  hole.frame.xaxis = Vector3d(1, 0, 0);
+  hole.frame.yaxis = Vector3d(0, 1, 0);
+  hole.frame.zaxis = Vector3d(0, 0, 1);
+  hole.frame.UpdateEquation();
+  hole.radius = hole_radius;
+  hole.angle = 2.0 * ON_PI;
+  hole.length = hole_length;
+  Brep cyl = Brep::FromMixedFaces({}, {hole});
+  return {box, cyl};
+}
+
+// The spec's own section 5 first milestone: a box with a through-hole
+// whose axis is exactly perpendicular to the box's cap faces and whose
+// footprint stays strictly inside the box's cross-section, verified per
+// section 6's own plan (adapted to what actually converges - see the
+// comments below for the one point where this test is honest about a
+// tolerance floor that is NOT floating-point-exact, unlike the fully
+// planar BooleanCombinePlanar tests elsewhere in this file).
+void TestBooleanCombineMixedDrilledBoxThroughHole() {
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const auto [box, cyl] = BuildDrilledBoxInputs(/*hole_radius=*/2.0, /*hole_z0=*/-1.0, /*hole_length=*/12.0);
+
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+
+  // 4 untouched side walls + 2 hole-punched cap faces (each represented
+  // as 4 simple wedge pieces - see ClipPolygonByCircle3d's own doc
+  // comment for why, not one bridged loop) + 1 cylindrical hole-wall
+  // fragment (the [0,10] embedded middle segment of the drilling
+  // cylinder's own [−1,11] full extent, height-split at both box caps -
+  // case (iii) of boolean.h's own doc comment; the two 1-unit stubs
+  // poking out either end classify outside the box and are dropped).
+  Check(drilled.FaceCount() == 4 + 2 * 4 + 1,
+        "drilled box has 4 untouched side walls + 2 hole-punched caps (4 wedges each) + 1 cylindrical hole wall "
+        "= 13 faces");
+
+  // Hand-derived exact volume: box (1000) minus the cylinder's own
+  // volume over the box's full height (pi*r^2*h = pi*4*10 = 40*pi, since
+  // the hole pokes exactly 1 unit past both box ends, so its full
+  // height inside the box is exactly 10).
+  const double hand_derived_volume = 1000.0 - ON_PI * 4.0 * 10.0;  // ~= 874.336294
+
+  // The measured volume's own error has TWO sources, both shrinking with
+  // tessellation division count: (1) the wedge caps' own circular hole
+  // boundary is a polygonal (NURBS-uniform-sampled) approximation of the
+  // true circle - a fixed per-vertex-count bound, same disclosed kind of
+  // approximation FilletConvexEdge's own end-cap notch already makes;
+  // (2) ordinary triangulated-surface tessellation error on the
+  // cylindrical wall's own curvature. Both are bounded, non-floating-
+  // point-precision sources of error - unlike this file's fully-planar
+  // BooleanCombinePlanar/BooleanIntersectConvexPlanar tests, which are
+  // exact to ~1e-9. At divisions=256 the measured volume is within
+  // 0.02 of the hand-derived value (~2e-5 relative) - asserted here to
+  // 0.05 (an order of magnitude looser than the measured error, not a
+  // tight bound tuned to this one run).
+  const Mesh mesh_256 = drilled.TessellateToClosedMesh(256, 256);
+  const double measured_volume = mesh_256.Volume();
+  Check(std::fabs(measured_volume - hand_derived_volume) < 0.05,
+        "drilled box's tessellated volume (div=256) matches the hand-derived 1000-40*pi to within 0.05 - a real, "
+        "bounded arc-sampling/tessellation tolerance, NOT floating-point exactness (see this test's own comment)");
+
+  // Second, independent derivation: BooleanCombine's own mesh-based
+  // (Manifold) path, entirely independent of BooleanCombineMixed's own
+  // exact B-rep pipeline. Uses Mesh::Cylinder() (a genuine CLOSED solid
+  // cylinder mesh) rather than tessellating `cyl` itself: `cyl`'s own
+  // Brep is deliberately just the bare lateral CylindricalFace with no
+  // cap faces at all (see boolean.h's own RayVsMixedFace doc comment for
+  // why BooleanCombineMixed's own exact pipeline needs no real caps
+  // there), so tessellating it directly gives an OPEN tube - not a valid
+  // watertight Manifold input on its own, confirmed directly (Manifold
+  // rejects it outright, correctly, not a bug in either the tube or
+  // Manifold). Mesh::Cylinder() builds the same physical solid WITH real
+  // end caps, independent of BooleanCombineMixed's own trim/frame
+  // machinery entirely - a genuinely separate code path for this
+  // cross-check.
+  const Mesh mesh_box = box.TessellateToClosedMesh(64, 64);
+  const Mesh mesh_cyl = Mesh::Cylinder(Point3d(5, 5, -1), Vector3d(0, 0, 1), 2.0, 12.0, /*circle_segments=*/200,
+                                        /*grid_divisions=*/64);
+  const Mesh mesh_diff = BooleanCombine(mesh_box, mesh_cyl, BooleanOp::Difference);
+  Check(std::fabs(mesh_diff.Volume() - hand_derived_volume) < 0.5,
+        "the independent mesh-based (Manifold) Difference of the same two solids' own tessellations also matches "
+        "the hand-derived volume, within Manifold's own single-precision-mesh tolerance");
+  Check(std::fabs(mesh_diff.Volume() - measured_volume) < 0.5,
+        "BooleanCombineMixed's own exact-B-rep volume and the independent mesh-based Manifold volume agree with "
+        "each other, not just with the hand-derived value separately");
+
+  // Watertightness - KNOWN, DISCLOSED LIMITATION, not silently skipped:
+  // Mesh::MergeAndWeld(drilled.Tessellate(...)) does NOT pass
+  // IsClosedManifold() or Manifold's own tolerant ToManifold() check at
+  // any division count or weld tolerance tried during development
+  // (confirmed directly, not assumed). Root cause: the drilled box's own
+  // hole-punched cap faces (4 wedge PlanarFaces each) and the
+  // cylindrical hole-wall face are each tessellated with their OWN
+  // independently-chosen local (u, v) grid (Brep::FromMixedFaces' own
+  // per-face bounding-rectangle parameterization); their tessellated
+  // vertices along the SHARED curved (wedge-arc-to-cylinder-rail)
+  // boundary don't coincide except at the small number of explicit trim
+  // vertices both sides happen to share, even after aligning the wedges'
+  // own arc sampling to the cylinder's own NURBS parameterization (a
+  // real, separate fix this increment DOES make - see
+  // ClipPolygonByCircle3d's own doc comment). This is the same class of
+  // "independently-parameterized exact-clip faces don't share interior
+  // grid points" limitation ShellConvexPlanar's/BooleanCombinePlanar's
+  // own tests already disclose and route around by tessellating at
+  // divisions=1 - unavailable here because a full 2*pi CylindricalFace's
+  // own raw NURBS surface wraps u=0 and u=u_max onto the same 3D point,
+  // which collapses divisions=1 to a degenerate zero-area cell (also
+  // confirmed directly). Real follow-up work, not attempted here: either
+  // a shared-boundary-aware tessellator, or building the hole wall and
+  // its two adjacent caps from one CONSISTENTLY parameterized surface
+  // patch instead of three independent ones. The B-rep's own geometry
+  // is exact regardless (see the volume checks above) - this gap is a
+  // TESSELLATION artifact, not a boundary-representation defect.
+}
+
+// Degenerate case 1 (spec section 6's own "cheap, worthwhile" list): a
+// near-zero hole radius should reduce the drilled volume toward the
+// plain box volume (1000) as radius -> 0 - a real limiting-case check,
+// not just "doesn't throw".
+void TestBooleanCombineMixedDrilledBoxNearZeroRadius() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto [box, cyl] = BuildDrilledBoxInputs(/*hole_radius=*/0.01, /*hole_z0=*/-1.0, /*hole_length=*/12.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  Check(drilled.FaceCount() == 4 + 2 * 4 + 1,
+        "a near-zero-radius drilled box still has the same 13-face topology as the r=2 case");
+
+  const double hand_derived_volume = 1000.0 - ON_PI * 0.01 * 0.01 * 10.0;  // ~= 999.9969
+  const Mesh mesh = drilled.TessellateToClosedMesh(64, 64);
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.01,
+        "near-zero-radius (r=0.01) drilled box's volume matches 1000-pi*r^2*10 to within 0.01, correctly reducing "
+        "toward the plain box volume as r shrinks");
+  Check(std::fabs(mesh.Volume() - 1000.0) < 0.02,
+        "near-zero-radius drilled box's volume is within 0.02 of the plain (undrilled) box volume, 1000");
+}
+
+// Degenerate case 2 (spec section 6's own "cheap, worthwhile" list): the
+// cylinder's own height exactly matches the box's height, with no
+// overhang past either cap (frame.origin.z=0, length=10) - the
+// coincident-cap-plane edge case BooleanCombinePlanar's own Difference
+// logic already has a same_plane/cancellation rule for, exercised here
+// with the cylindrical fragment's own two ends landing EXACTLY at v_cut=0
+// and v_cut=length (no actual height-split occurs at either box cap - see
+// SplitMixedAgainstAllFaces's own case (iii) branch: `v_cut` at or beyond
+// an existing endpoint leaves the fragment whole) rather than via the
+// same_plane dedup path a planar "on" pair would use (see this test file's
+// own final report for why: a CylindricalFace fragment's own
+// representative point is always strictly interior along its curved
+// surface, so it classifies kIn/kOut directly and never reaches the "on"
+// bucket at all for this geometry).
+void TestBooleanCombineMixedDrilledBoxCoincidentCapHeight() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto [box, cyl] = BuildDrilledBoxInputs(/*hole_radius=*/2.0, /*hole_z0=*/0.0, /*hole_length=*/10.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+
+  // No overhang past either cap: 4 side walls + 2 hole-punched caps (4
+  // wedges each), and exactly ONE cylindrical hole-wall fragment (the
+  // whole [0,10] cylinder, never actually split - both potential cuts
+  // land exactly at its own existing endpoints).
+  Check(drilled.FaceCount() == 4 + 2 * 4 + 1,
+        "coincident-cap-height drilled box (no overhang) still has 13 faces - the cylindrical hole wall is never "
+        "split at all, since both box caps coincide exactly with its own two existing endpoints");
+
+  const double hand_derived_volume = 1000.0 - ON_PI * 4.0 * 10.0;  // same as the overhang case - height is still 10
+  const Mesh mesh = drilled.TessellateToClosedMesh(128, 128);
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.1,
+        "coincident-cap-height (no-overhang) drilled box's volume also matches 1000-40*pi to within 0.1");
+}
+
 int main() {
   ON::Begin();
 
@@ -6629,6 +7005,11 @@ int main() {
   TestShellConvexPlanarRejectsTooLargeThickness();
   TestShellConvexPlanarRejectsAdjacentOpenings();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
+  TestMixedFacesRoundTripsCylindricalFace();
+  TestClipPolygonByCircle3dPunchesExactHole();
+  TestBooleanCombineMixedDrilledBoxThroughHole();
+  TestBooleanCombineMixedDrilledBoxNearZeroRadius();
+  TestBooleanCombineMixedDrilledBoxCoincidentCapHeight();
 
   ON::End();
 

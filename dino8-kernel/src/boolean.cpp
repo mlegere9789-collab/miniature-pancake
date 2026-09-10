@@ -9,6 +9,7 @@
 
 #include <manifold/manifold.h>
 
+#include "dino8/kernel/detail/circle_clip3d.h"
 #include "dino8/kernel/detail/halfspace_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
 
@@ -1063,6 +1064,650 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
   }
 
   return Brep::FromPlanarFaces(result);
+}
+
+// ---------------------------------------------------------------------
+// BooleanCombineMixed: the axis-perpendicular-only extension of the
+// non-convex planar pipeline above to a solid that may have a
+// CYLINDRICAL face - see boolean.h's own doc comment for the exact,
+// deliberately narrow scope. Every helper below is NEW and independent of
+// the planar-only helpers above (SplitAgainstAllPlanes, ClassifyPointVsSolid,
+// SplitAndBucket, ...) wherever the two would otherwise diverge; where the
+// underlying primitive is identical (a plane-vs-plane half-space split,
+// the interior-point/ear-clip trick, FlipFace) this reuses that exact
+// same helper rather than a second copy of it, so BooleanCombinePlanar's
+// own already-verified behavior is provably untouched.
+// ---------------------------------------------------------------------
+
+namespace {
+
+// The sum-type currency this pipeline operates on in place of
+// vector<Brep::PlanarFace> - a plain tagged struct (not std::variant)
+// since every consumer below already needs to branch on face kind
+// explicitly, and a tag+two-members struct is copy/move-friendly and
+// simple to build without visitor boilerplate.
+struct MixedFace {
+  bool is_cyl = false;
+  Brep::PlanarFace planar;
+  Brep::CylindricalFace cyl;
+};
+
+std::vector<MixedFace> ToMixed(const Brep::MixedFacesResult& mf) {
+  std::vector<MixedFace> out;
+  out.reserve(mf.planar.size() + mf.cylindrical.size());
+  for (const Brep::PlanarFace& p : mf.planar) {
+    MixedFace m;
+    m.planar = p;
+    out.push_back(std::move(m));
+  }
+  for (const Brep::CylindricalFace& c : mf.cylindrical) {
+    MixedFace m;
+    m.is_cyl = true;
+    m.cyl = c;
+    out.push_back(std::move(m));
+  }
+  return out;
+}
+
+// A relative tolerance in the same spirit as RelativeTol() above,
+// generalized to also cover a CylindricalFace's own extent (its axis
+// endpoints, expanded by `radius` in every axis - a cheap, deliberately
+// loose bound, not a tight bounding box; this only ever feeds a tolerance
+// scale, not a geometric result).
+double RelativeTolMixed(const std::vector<MixedFace>& faces) {
+  double max_extent = 0.0;
+  for (const MixedFace& f : faces) {
+    if (!f.is_cyl) {
+      for (const Point3d& p : f.planar.loop) {
+        max_extent = std::max({max_extent, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
+      }
+      continue;
+    }
+    const Brep::CylindricalFace& cf = f.cyl;
+    const Point3d ends[2] = {cf.frame.origin, cf.frame.origin + cf.length * cf.frame.zaxis};
+    for (const Point3d& e : ends) {
+      max_extent = std::max({max_extent, std::fabs(e.x) + cf.radius, std::fabs(e.y) + cf.radius,
+                              std::fabs(e.z) + cf.radius});
+    }
+  }
+  return std::max(kConvexTol, max_extent * 1e-9);
+}
+
+// How closely `dir` has to align with `normal` (or vice versa) to count
+// as the "perpendicular axis" case this increment's own splitting/no-
+// interaction logic branches on, rather than the oblique case it refuses.
+constexpr double kAxisAlignTol = 1e-6;
+
+// A point ON a CylindricalFace's own lateral surface, at true angle
+// `angle` (radians from `cf.frame.xaxis`) and true axial height `height`
+// (distance from `cf.frame.origin` along `cf.frame.zaxis`) - the same
+// parameterization FromMixedFaces()/MixedFaces() already use, just
+// evaluated directly instead of through a NURBS surface.
+Point3d PointOnCylFace(const Brep::CylindricalFace& cf, double angle, double height) {
+  return cf.frame.origin + height * cf.frame.zaxis +
+         cf.radius * (std::cos(angle) * cf.frame.xaxis + std::sin(angle) * cf.frame.yaxis);
+}
+
+// A point in a SIMPLE 2D polygon's own interior (convex or concave), via
+// the standard "scan a horizontal line just above the polygon's own
+// lowest vertex" construction: that line crosses the polygon's boundary
+// an EVEN number of times (even-odd rule), and the interval immediately
+// next to the lowest vertex is always genuinely interior material for
+// ANY simple polygon - a real, general-purpose technique (see e.g. any
+// standard computational-geometry text's treatment of the even-odd
+// rule).
+//
+// Deliberately NOT the existing, shared RepresentativeInteriorPoint()
+// (used unchanged elsewhere in this file, including by
+// BooleanCombinePlanar): that helper's ear-clip triangulation only checks
+// that a candidate ear contains no OTHER POLYGON VERTEX - which can't
+// detect an ear whose own interior instead cuts straight across a
+// VERTEX-FREE gap. Confirmed directly during development, not a
+// theoretical worry: an earlier "keyhole"-bridged representation of a
+// hole-punched cap polygon (see ClipPolygonByCircle3d's own doc comment
+// for why that representation was abandoned) made EarClipTriangulate's
+// first "ear" land with its centroid essentially AT the removed
+// material's own center - which would have silently misclassified that
+// fragment as inside the drilled cylinder instead of outside it. This
+// function is a from-scratch, independent fix used only by this new
+// pipeline, so BooleanCombinePlanar's own use of the shared helper is
+// completely unaffected.
+Point2d SafeInteriorPoint2d(const std::vector<Point2d>& poly) {
+  const size_t n = poly.size();
+  size_t lo = 0;
+  double y_max = poly[0].y;
+  for (size_t i = 1; i < n; ++i) {
+    if (poly[i].y < poly[lo].y) lo = i;
+    y_max = std::max(y_max, poly[i].y);
+  }
+  const double y_min = poly[lo].y;
+  const double eps = std::max(1e-9, (y_max - y_min) * 1e-6);
+  const double y = y_min + eps;
+  std::vector<double> xs;
+  for (size_t i = 0; i < n; ++i) {
+    const Point2d& a = poly[i];
+    const Point2d& b = poly[(i + 1) % n];
+    if ((a.y <= y) != (b.y <= y)) {
+      const double t = (y - a.y) / (b.y - a.y);
+      xs.push_back(a.x + t * (b.x - a.x));
+    }
+  }
+  std::sort(xs.begin(), xs.end());
+  if (xs.size() >= 2) return Point2d(0.5 * (xs[0] + xs[1]), y);
+  // Degenerate input (shouldn't happen for any polygon this pipeline
+  // builds) - fall back to the lowest vertex itself rather than crash.
+  return poly[lo];
+}
+
+// A point guaranteed to lie in the interior of `f`'s own (angle, height)
+// or (loop) trim region - the MixedFace-aware sibling of
+// RepresentativeInteriorPoint() (above). A cylindrical fragment's own
+// trim region is always exactly an axis-aligned (angle, height) rectangle
+// (CylindricalFace's own doc comment), so its own midpoint is trivially,
+// always interior - no triangulation needed. A planar fragment uses
+// SafeInteriorPoint2d() (above), NOT the existing shared
+// RepresentativeInteriorPoint() - see that function's own doc comment for
+// why.
+Point3d RepresentativeInteriorPointMixed(const MixedFace& f) {
+  if (!f.is_cyl) {
+    const std::vector<Point2d> loop2d = ProjectLoopOntoPlaneAxes(f.planar.plane, f.planar.loop);
+    const Point2d p2d = SafeInteriorPoint2d(loop2d);
+    return f.planar.plane.origin + p2d.x * f.planar.plane.xaxis + p2d.y * f.planar.plane.yaxis;
+  }
+  return PointOnCylFace(f.cyl, 0.5 * f.cyl.angle, 0.5 * f.cyl.length);
+}
+
+// Result of casting one ray against one MixedFace: how many times it
+// crosses that face's own finite trim region cleanly, and whether it
+// instead grazed that region's own boundary (in which case the caller
+// must abandon this whole ray direction, exactly as
+// ClassifyPointVsSolid's own planar-only ray caster already does).
+struct FaceHitResult {
+  int crossings = 0;
+  bool grazed = false;
+};
+
+// Ray-vs-one-MixedFace, generalizing ClassifyPointVsSolid's own inner
+// per-face loop body to also handle a cylindrical face. The planar branch
+// is copied verbatim from that existing, already-verified logic (not
+// refactored to share code across the two ray-casters, so
+// ClassifyPointVsSolid's own behavior is provably unaffected by this
+// function's existence).
+//
+// The cylindrical branch is a standard closed-form ray-vs-infinite-
+// cylinder test: project the ray's origin and direction into the plane
+// perpendicular to the cylinder's own axis (subtracting off each vector's
+// own component along `cf.frame.zaxis`), giving a 2D ray-vs-circle
+// problem - a quadratic in the ray parameter t, solved in closed form,
+// exactly like ClipPolygonByCircle3d's own line-circle intersection. For
+// each candidate root (t > tol, i.e. genuinely in front of the ray's own
+// origin), true axial height is recovered by one dot product and true
+// angle by one atan2 in the frame's own local (xaxis, yaxis) basis - then
+// checked against the CylindricalFace's own axis-aligned (angle, height)
+// trim rectangle, the same "two-interval test" boolean.h's own doc
+// comment describes. A hit within `tol` of that rectangle's own boundary
+// (in either height or angle) grazes it and can't be parity-counted
+// reliably, so it's reported the same way a grazed planar face is.
+//
+// PLUS: a ray intersection against `cf`'s own two IMPLICIT flat end
+// disks/sectors at height 0 and height `cf.length` - not real PlanarFace
+// entries anywhere in the Brep (a bounded CylindricalFace used as a
+// boolean operand - this increment's own drilling/boss cylinder, built
+// via Brep::FromMixedFaces({}, {cf}) with no cap faces at all, since any
+// real cap material always ends up either outside the OTHER operand
+// entirely or is provided by that operand's own faces instead), but a
+// finite-length, finite-angle cylindrical patch still defines a genuinely
+// closed SOLID region (a bounded wedge of a cylinder) for point-
+// membership purposes, and ray-parity against an OPEN tube (lateral
+// surface only, no caps) undercounts by exactly one crossing whenever a
+// ray happens to exit through an END rather than the side - confirmed
+// directly during development: a point safely outside the cylinder's own
+// radius (e.g. one of the drilled box's own side-wall centroids) but
+// within its axial height range was misclassified as INSIDE the cylinder
+// before these two implicit disks were added, because at least one of
+// GenericRayDirections()'s own 8 directions happened to leave through the
+// (missing) cap rather than the lateral wall. These two disks are purely
+// an internal bookkeeping device for THIS classification, not anything
+// FromMixedFaces()/the result Brep ever sees - they never appear as
+// actual output faces, don't affect splitting, and cost nothing when
+// `faces` is a purely planar list (this whole function only runs for a
+// cylindrical `f` at all).
+FaceHitResult RayVsMixedFace(const Point3d& p, const Vector3d& d, const MixedFace& f, double tol) {
+  FaceHitResult r;
+  if (!f.is_cyl) {
+    const Brep::PlanarFace& pf = f.planar;
+    const double denom = pf.plane.zaxis * d;
+    if (std::fabs(denom) < 1e-9) {
+      if (std::fabs(pf.plane.DistanceTo(p)) <= tol) r.grazed = true;
+      return r;
+    }
+    const double t = ((pf.plane.origin - p) * pf.plane.zaxis) / denom;
+    if (t <= tol) return r;
+    const Point3d hit = p + t * d;
+    const std::vector<Point2d> loop2d = ProjectLoopOntoPlaneAxes(pf.plane, pf.loop);
+    const Point2d hit2d = ProjectOntoPlaneAxes(pf.plane, hit);
+    if (DistanceToPolygonBoundary2D(hit2d.x, hit2d.y, loop2d) <= tol) {
+      r.grazed = true;
+      return r;
+    }
+    if (PointInPolygon2D(hit2d.x, hit2d.y, loop2d)) r.crossings = 1;
+    return r;
+  }
+
+  const Brep::CylindricalFace& cf = f.cyl;
+  const Vector3d op = p - cf.frame.origin;
+  const Vector3d op_perp = op - ON_DotProduct(op, cf.frame.zaxis) * cf.frame.zaxis;
+  const Vector3d d_perp = d - ON_DotProduct(d, cf.frame.zaxis) * cf.frame.zaxis;
+  const double qa = ON_DotProduct(d_perp, d_perp);
+  if (qa < 1e-14) return r;  // ray runs (near-)parallel to the axis - see this function's own doc comment
+  const double qb = 2.0 * ON_DotProduct(op_perp, d_perp);
+  const double qc = ON_DotProduct(op_perp, op_perp) - cf.radius * cf.radius;
+  const double disc = qb * qb - 4.0 * qa * qc;
+  if (disc < 0.0) return r;  // the ray's own infinite line never meets the infinite cylinder at all
+  const double sq = std::sqrt(disc);
+  const double roots[2] = {(-qb - sq) / (2.0 * qa), (-qb + sq) / (2.0 * qa)};
+  const bool full = cf.angle >= 2.0 * ON_PI - 1e-9;
+  const double ang_tol = tol / std::max(cf.radius, tol);
+  for (const double t : roots) {
+    if (t <= tol) continue;
+    const Point3d hit = p + t * d;
+    const Vector3d hp = hit - cf.frame.origin;
+    const double h = ON_DotProduct(hp, cf.frame.zaxis);
+    if (h < -tol || h > cf.length + tol) continue;  // clearly outside the finite height range
+    double ang_margin = std::numeric_limits<double>::infinity();
+    if (!full) {
+      const Vector3d radial = hp - h * cf.frame.zaxis;
+      double ang = std::atan2(ON_DotProduct(radial, cf.frame.yaxis), ON_DotProduct(radial, cf.frame.xaxis));
+      if (ang < 0.0) ang += 2.0 * ON_PI;
+      if (ang < -ang_tol || ang > cf.angle + ang_tol) continue;  // clearly outside the swept angle range
+      ang_margin = std::min(ang, cf.angle - ang);
+    }
+    const double h_margin = std::min(h, cf.length - h);
+    if (h_margin <= tol || ang_margin <= ang_tol) {
+      r.grazed = true;
+      return r;
+    }
+    ++r.crossings;
+  }
+
+  // The two implicit end disks/sectors - see this function's own doc
+  // comment above for why they're needed even though they're never real
+  // output faces.
+  const double axial_denom = ON_DotProduct(d, cf.frame.zaxis);
+  if (std::fabs(axial_denom) >= 1e-12) {
+    for (const double h_cap : {0.0, cf.length}) {
+      const Point3d cap_center = cf.frame.origin + h_cap * cf.frame.zaxis;
+      const double t = ON_DotProduct(cap_center - p, cf.frame.zaxis) / axial_denom;
+      if (t <= tol) continue;
+      const Point3d hit = p + t * d;
+      const Vector3d hp = hit - cap_center;
+      const double dist = hp.Length();
+      if (dist > cf.radius + tol) continue;  // outside this disk/sector's own outer radius entirely
+      double ang_margin = std::numeric_limits<double>::infinity();
+      if (!full) {
+        double ang = std::atan2(ON_DotProduct(hp, cf.frame.yaxis), ON_DotProduct(hp, cf.frame.xaxis));
+        if (ang < 0.0) ang += 2.0 * ON_PI;
+        if (ang < -ang_tol || ang > cf.angle + ang_tol) continue;  // outside this sector's own angular wedge
+        ang_margin = std::min(ang, cf.angle - ang);
+      }
+      const double radial_margin = cf.radius - dist;  // >= -tol here (see the `continue` above)
+      if (radial_margin <= tol || ang_margin <= ang_tol) {
+        r.grazed = true;
+        return r;
+      }
+      ++r.crossings;
+    }
+  }
+  return r;
+}
+
+// The MixedFace-aware sibling of ClassifyPointVsSolid() (above), reusing
+// that function's own structure (ON-check, then ray-cast, then a nearest-
+// face fallback) but not its code, so the existing planar-only classifier
+// is provably unaffected by this one's existence.
+PointClass ClassifyPointVsMixedSolid(const Point3d& p, const std::vector<MixedFace>& faces, double tol) {
+  for (const MixedFace& f : faces) {
+    if (!f.is_cyl) {
+      if (std::fabs(f.planar.plane.DistanceTo(p)) <= tol) {
+        const std::vector<Point2d> loop2d = ProjectLoopOntoPlaneAxes(f.planar.plane, f.planar.loop);
+        const Point2d p2d = ProjectOntoPlaneAxes(f.planar.plane, p);
+        if (PointInPolygon2D(p2d.x, p2d.y, loop2d)) return PointClass::kOn;
+      }
+      continue;
+    }
+    const Brep::CylindricalFace& cf = f.cyl;
+    const Vector3d rel = p - cf.frame.origin;
+    const double h = ON_DotProduct(rel, cf.frame.zaxis);
+    const Vector3d radial = rel - h * cf.frame.zaxis;
+    const double dist = radial.Length();
+    if (std::fabs(dist - cf.radius) <= tol && h >= -tol && h <= cf.length + tol) {
+      const bool full = cf.angle >= 2.0 * ON_PI - 1e-9;
+      if (full) return PointClass::kOn;
+      double ang = std::atan2(ON_DotProduct(radial, cf.frame.yaxis), ON_DotProduct(radial, cf.frame.xaxis));
+      if (ang < 0.0) ang += 2.0 * ON_PI;
+      const double ang_tol = tol / std::max(cf.radius, tol);
+      if (ang >= -ang_tol && ang <= cf.angle + ang_tol) return PointClass::kOn;
+    }
+  }
+
+  for (const Vector3d& d : GenericRayDirections()) {
+    bool clean = true;
+    int crossings = 0;
+    for (const MixedFace& f : faces) {
+      const FaceHitResult hit = RayVsMixedFace(p, d, f, tol);
+      if (hit.grazed) {
+        clean = false;
+        break;
+      }
+      crossings += hit.crossings;
+    }
+    if (clean) return (crossings % 2 == 1) ? PointClass::kIn : PointClass::kOut;
+  }
+
+  // Fallback: sign of the distance to the nearest PLANAR face only (a
+  // real, disclosed narrowing versus ClassifyPointVsSolid's own fallback,
+  // which considers every face) - never expected to be reached in
+  // practice, since GenericRayDirections()' own directions are generic/
+  // irrational-ish and this increment's own test geometry (an
+  // axis-aligned box and an axis-aligned cylinder) has no adversarial
+  // grazing alignment with any of them. If every face here happened to be
+  // cylindrical (no planar face at all to fall back on), this
+  // conservatively reports kOut rather than guessing further.
+  double best_abs = std::numeric_limits<double>::infinity();
+  double best_signed = 0.0;
+  for (const MixedFace& f : faces) {
+    if (f.is_cyl) continue;
+    const double dist = f.planar.plane.DistanceTo(p);
+    if (std::fabs(dist) < best_abs) {
+      best_abs = std::fabs(dist);
+      best_signed = dist;
+    }
+  }
+  if (!std::isfinite(best_abs)) return PointClass::kOut;
+  return (best_signed > 0.0) ? PointClass::kOut : PointClass::kIn;
+}
+
+// True if the cylindrical fragment `cf` cannot possibly reach `plane` at
+// all - a closed-form conservative bound, not a search: a point on cf's
+// own base circle at true angle theta and axial height h has signed
+// distance to `plane` equal to
+//   base + h*axial + radius*(cos(theta)*A + sin(theta)*B)
+// where base = plane.DistanceTo(cf.frame.origin), axial =
+// dot(cf.frame.zaxis, plane.zaxis), A = dot(cf.frame.xaxis, plane.zaxis),
+// B = dot(cf.frame.yaxis, plane.zaxis) - a plain dot-product sinusoid in
+// theta, whose own min/max over a full revolution is exactly
+// +/- radius*sqrt(A^2+B^2) (amplitude of a*cos+b*sin), and whose min/max
+// over h in [0, length] (linear in h) is at one of the two endpoints. The
+// overall min/max of that expression over the WHOLE fragment therefore
+// has a closed form with no search - if that whole range stays strictly
+// on one side of `plane` (both bounds share sign, outside `tol`), the
+// fragment truly cannot cross `plane` anywhere, regardless of how `cf`'s
+// own axis happens to be oriented relative to it (this subsumes both the
+// "axis lies within the plane" case this increment's own box side walls
+// hit, and the general oblique case, into one formula).
+bool CylinderPlaneNoInteraction(const Brep::CylindricalFace& cf, const ON_Plane& plane, double tol) {
+  const double base = plane.DistanceTo(cf.frame.origin);
+  const double axial = ON_DotProduct(cf.frame.zaxis, plane.zaxis);
+  const double A = ON_DotProduct(cf.frame.xaxis, plane.zaxis);
+  const double B = ON_DotProduct(cf.frame.yaxis, plane.zaxis);
+  const double amp = cf.radius * std::sqrt(A * A + B * B);
+  const double d0 = base;
+  const double d1 = base + cf.length * axial;
+  const double lo = std::min(d0, d1) - amp;
+  const double hi = std::max(d0, d1) + amp;
+  return (lo > tol) || (hi < -tol);
+}
+
+// Splits `self` against EVERY face of `other`, keeping both children of
+// every genuine cut (case (i)/(iii)) or the single surviving fragment of
+// a hole-punch (case (ii)) or an unmodified whole fragment ("no
+// interaction") - the MixedFace-aware sibling of SplitAgainstAllPlanes()
+// (above). See boolean.h's own BooleanCombineMixed doc comment for the
+// four pair cases this dispatches between; throws std::invalid_argument
+// for the two genuinely out-of-scope ones (oblique plane/cylinder, any
+// cylinder/cylinder interaction) rather than silently approximating them.
+std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vector<MixedFace>& other, double tol) {
+  std::vector<MixedFace> worklist;
+  worklist.push_back(std::move(self));
+  for (const MixedFace& g : other) {
+    std::vector<MixedFace> next;
+    next.reserve(worklist.size() * 2);
+    for (MixedFace& f : worklist) {
+      if (!f.is_cyl && !g.is_cyl) {
+        // Case (i): both planar - UNCHANGED, still SplitByHalfspace3d,
+        // exactly BooleanCombinePlanar's own SplitAgainstAllPlanes.
+        const HalfspaceSplit split = SplitByHalfspace(f.planar.loop, g.planar.plane, tol);
+        std::vector<Point3d> inside = CleanPolygon(split.inside, tol);
+        std::vector<Point3d> outside = CleanPolygon(split.outside, tol);
+        if (inside.size() >= 3) {
+          MixedFace m;
+          m.planar.plane = f.planar.plane;
+          m.planar.loop = std::move(inside);
+          next.push_back(std::move(m));
+        }
+        if (outside.size() >= 3) {
+          MixedFace m;
+          m.planar.plane = f.planar.plane;
+          m.planar.loop = std::move(outside);
+          next.push_back(std::move(m));
+        }
+      } else if (!f.is_cyl && g.is_cyl) {
+        // Case (ii) / no-interaction / oblique (out of scope).
+        const double align = std::fabs(ON_DotProduct(g.cyl.frame.zaxis, f.planar.plane.zaxis));
+        if (align > 1.0 - kAxisAlignTol) {
+          // The infinite cylinder's own axis runs perpendicular to
+          // `f.planar`'s plane, so its silhouette IN that plane is
+          // exactly a circle: center = the projection of the cylinder's
+          // own axis point onto the plane along that same axis (one dot
+          // product, since axis and plane normal are parallel here),
+          // radius = g.cyl.radius. Each surviving piece (see
+          // ClipPolygonByCircle3d's own doc comment for why it returns
+          // several simple wedge pieces rather than one bridged or holed
+          // loop) becomes its own planar MixedFace, continuing
+          // independently in the worklist.
+          const Point3d proj_center =
+              g.cyl.frame.origin - f.planar.plane.DistanceTo(g.cyl.frame.origin) * f.planar.plane.zaxis;
+          for (std::vector<Point3d>& piece :
+               detail::ClipPolygonByCircle3d(f.planar.loop, f.planar.plane, proj_center, g.cyl.radius, tol)) {
+            if (piece.size() < 3) continue;
+            MixedFace m;
+            m.planar.plane = f.planar.plane;
+            m.planar.loop = std::move(piece);
+            next.push_back(std::move(m));
+          }
+        } else if (CylinderPlaneNoInteraction(g.cyl, f.planar.plane, tol)) {
+          next.push_back(std::move(f));
+        } else {
+          throw std::invalid_argument(
+              "dino8::kernel::BooleanCombineMixed: a planar face crosses a "
+              "cylindrical face's silhouette at an oblique (non-"
+              "perpendicular) axis angle - out of scope for this "
+              "increment, see this function's own doc comment in boolean.h");
+        }
+      } else if (f.is_cyl && !g.is_cyl) {
+        // Case (iii) / no-interaction / oblique (out of scope) - the
+        // trivial, fully exact mirror of case (ii): a plane perpendicular
+        // to the cylinder's own axis intersects it along an exact
+        // constant-height iso-line.
+        const double align = std::fabs(ON_DotProduct(f.cyl.frame.zaxis, g.planar.plane.zaxis));
+        if (align > 1.0 - kAxisAlignTol) {
+          const double v_cut = ON_DotProduct(g.planar.plane.origin - f.cyl.frame.origin, f.cyl.frame.zaxis);
+          if (v_cut > tol && v_cut < f.cyl.length - tol) {
+            Brep::CylindricalFace lo = f.cyl;
+            lo.length = v_cut;
+            Brep::CylindricalFace hi = f.cyl;
+            hi.frame.origin = f.cyl.frame.origin + v_cut * f.cyl.frame.zaxis;
+            hi.length = f.cyl.length - v_cut;
+            MixedFace mlo;
+            mlo.is_cyl = true;
+            mlo.cyl = lo;
+            MixedFace mhi;
+            mhi.is_cyl = true;
+            mhi.cyl = hi;
+            next.push_back(std::move(mlo));
+            next.push_back(std::move(mhi));
+          } else {
+            // The cut plane coincides with (or lies beyond) one of this
+            // fragment's own two existing endpoints - nothing to split,
+            // the whole fragment already lies on one side.
+            next.push_back(std::move(f));
+          }
+        } else if (CylinderPlaneNoInteraction(f.cyl, g.planar.plane, tol)) {
+          next.push_back(std::move(f));
+        } else {
+          throw std::invalid_argument(
+              "dino8::kernel::BooleanCombineMixed: a cylindrical face "
+              "crosses a planar face at an oblique (non-perpendicular "
+              "axis) angle - out of scope for this increment, see this "
+              "function's own doc comment in boolean.h");
+        }
+      } else {
+        // Case (iv): both cylindrical - explicitly OUT OF SCOPE here
+        // regardless of whether they'd actually interact (this
+        // increment's own test solids never put a cylindrical face on
+        // both sides of a single BooleanCombineMixed call, so this branch
+        // is never exercised by them) - needs a genuine NURBS-NURBS
+        // surface intersection (SurfaceIntersect, dino8-app's own geom
+        // layer), a materially bigger, separate follow-up.
+        throw std::invalid_argument(
+            "dino8::kernel::BooleanCombineMixed: two cylindrical faces "
+            "interacting is out of scope for this increment - needs a "
+            "genuine NURBS-NURBS surface intersection, see this function's "
+            "own doc comment in boolean.h");
+      }
+    }
+    worklist = std::move(next);
+  }
+  return worklist;
+}
+
+struct ClassifiedMixedFace {
+  MixedFace face;
+  PointClass cls;
+};
+
+std::vector<ClassifiedMixedFace> SplitAndClassifyMixed(const std::vector<MixedFace>& self_faces,
+                                                        const std::vector<MixedFace>& other_faces, double tol) {
+  std::vector<ClassifiedMixedFace> result;
+  for (const MixedFace& f : self_faces) {
+    for (MixedFace& piece : SplitMixedAgainstAllFaces(f, other_faces, tol)) {
+      const Point3d rep = RepresentativeInteriorPointMixed(piece);
+      const PointClass cls = ClassifyPointVsMixedSolid(rep, other_faces, tol);
+      result.push_back({std::move(piece), cls});
+    }
+  }
+  return result;
+}
+
+struct ClassifiedBucketsMixed {
+  std::vector<MixedFace> in, out, on;
+};
+
+ClassifiedBucketsMixed SplitAndBucketMixed(const std::vector<MixedFace>& self_faces,
+                                            const std::vector<MixedFace>& other_faces, double tol) {
+  ClassifiedBucketsMixed buckets;
+  for (ClassifiedMixedFace& cf : SplitAndClassifyMixed(self_faces, other_faces, tol)) {
+    switch (cf.cls) {
+      case PointClass::kIn:
+        buckets.in.push_back(std::move(cf.face));
+        break;
+      case PointClass::kOut:
+        buckets.out.push_back(std::move(cf.face));
+        break;
+      case PointClass::kOn:
+        buckets.on.push_back(std::move(cf.face));
+        break;
+    }
+  }
+  return buckets;
+}
+
+// The MixedFace-aware sibling of FlipFace() (above): a planar fragment
+// flips exactly as FlipFace() already does (reused directly, not
+// reimplemented); a cylindrical fragment has no loop/plane of its own to
+// reverse, so it flips via CylindricalFace::outward instead - see that
+// field's own doc comment in brep.h for why that's the one piece of
+// information a CylindricalFace needs to bound material from either side.
+MixedFace FlipMixedFace(MixedFace f) {
+  if (!f.is_cyl) {
+    f.planar = FlipFace(f.planar);
+  } else {
+    f.cyl.outward = !f.cyl.outward;
+  }
+  return f;
+}
+
+}  // namespace
+
+Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op) {
+  std::vector<MixedFace> fa = ToMixed(a.MixedFaces());
+  std::vector<MixedFace> fb = ToMixed(b.MixedFaces());
+  const double tol = std::max(RelativeTolMixed(fa), RelativeTolMixed(fb));
+
+  if (op == BooleanOp::SymmetricDifference) {
+    const Brep union_brep = BooleanCombineMixed(a, b, BooleanOp::Union);
+    const Brep intersection_brep = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+    return BooleanCombineMixed(union_brep, intersection_brep, BooleanOp::Difference);
+  }
+
+  const ClassifiedBucketsMixed from_a = SplitAndBucketMixed(fa, fb, tol);
+  const ClassifiedBucketsMixed from_b = SplitAndBucketMixed(fb, fa, tol);
+
+  // Same coincident-plane dedup BooleanCombinePlanar's own Difference
+  // branch uses, restricted to the planar/planar pair (a coincident
+  // CylindricalFace "on" pair needs its own dedup rule this increment's
+  // own narrow test scope never exercises - see boolean.h's own doc
+  // comment; a CylindricalFace fragment's own representative point is
+  // always strictly interior to its own solid along its curved surface's
+  // interior height range in every case this increment's tests produce,
+  // so it is classified kIn/kOut directly rather than ever landing in
+  // the `on` bucket at all - not a silently-dropped case, a genuinely
+  // unreached one for the geometry this increment builds).
+  auto same_plane = [tol](const ON_Plane& p, const ON_Plane& q) {
+    return std::fabs(p.DistanceTo(q.origin)) <= tol && p.zaxis.IsParallelTo(q.zaxis, 1e-6) == 1;
+  };
+
+  std::vector<MixedFace> result;
+  switch (op) {
+    case BooleanOp::Union:
+      for (const MixedFace& f : from_a.out) result.push_back(f);
+      for (const MixedFace& f : from_b.out) result.push_back(f);
+      for (const MixedFace& f : from_a.on) result.push_back(f);
+      break;
+    case BooleanOp::Intersection:
+      for (const MixedFace& f : from_a.in) result.push_back(f);
+      for (const MixedFace& f : from_b.in) result.push_back(f);
+      for (const MixedFace& f : from_a.on) result.push_back(f);
+      break;
+    case BooleanOp::Difference:
+      for (const MixedFace& f : from_a.out) result.push_back(f);
+      for (const MixedFace& f : from_b.in) result.push_back(FlipMixedFace(f));
+      for (const MixedFace& a_on : from_a.on) {
+        bool cancelled = false;
+        for (const MixedFace& b_on : from_b.on) {
+          if (!a_on.is_cyl && !b_on.is_cyl && same_plane(a_on.planar.plane, b_on.planar.plane)) {
+            cancelled = true;
+            break;
+          }
+        }
+        if (!cancelled) result.push_back(a_on);
+      }
+      break;
+    default:
+      throw std::invalid_argument("dino8::kernel::BooleanCombineMixed: unknown BooleanOp");
+  }
+
+  std::vector<Brep::PlanarFace> out_planar;
+  std::vector<Brep::CylindricalFace> out_cyl;
+  out_planar.reserve(result.size());
+  for (const MixedFace& f : result) {
+    if (f.is_cyl) {
+      out_cyl.push_back(f.cyl);
+    } else {
+      out_planar.push_back(f.planar);
+    }
+  }
+  return Brep::FromMixedFaces(out_planar, out_cyl);
 }
 
 }  // namespace dino8::kernel
