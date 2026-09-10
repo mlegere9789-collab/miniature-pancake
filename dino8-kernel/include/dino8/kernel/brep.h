@@ -28,22 +28,46 @@ class Mesh;
 // implementation) is a distinct, substantial next chunk, not something
 // "wrapping OpenNURBS" gets us for free.
 //
-// A real architectural fact, checked directly (`ON_Brep::IsValid()`),
-// not assumed: every face-adding factory here (Box(), Sphere(),
-// TrimmedPlanarFace()) builds its face via `ON_Brep::NewFace(int
-// surface_index)` - the minimal, surface-only overload - rather than
-// constructing genuine `ON_Brep` vertex/edge/trim/loop topology the way
-// Rhino's own file format expects. `ON_Brep::IsValid()` checks exactly
-// that topology, so it reports every Brep this kernel builds as invalid,
-// even a perfectly good one like `Box()`. This doesn't stop a Brep built
-// here from being fully usable through this kernel's own pipeline, which
-// never calls `IsValid()` and doesn't need the topology it checks for:
-// `Tessellate()` reads each face's surface directly, and
-// `TessellateToClosedMesh()`'s own vertex-welding step is what actually
-// closes the seams between faces, not shared `ON_Brep` vertex/edge
-// records. Still, a `.3dm` file saved via `Model::AddBrep()` may not
-// round-trip cleanly through other OpenNURBS-based tools that validate
-// topology on load.
+// A real architectural fact, checked directly (`ON_Brep::IsValid()`), not
+// assumed - narrowed here to name exactly which factories it still
+// applies to, now that it's no longer all of them: `Box()`, `Sphere()`,
+// `TrimmedPlanarFace()`, and `FromSurface()` all still build their face(s)
+// via `ON_Brep::NewFace(int surface_index)` - the minimal, surface-only
+// overload - rather than constructing genuine `ON_Brep` vertex/edge/trim/
+// loop topology the way Rhino's own file format expects. `ON_Brep::
+// IsValid()` checks exactly that topology, so it reports every Brep any
+// of those four factories builds as invalid, even a perfectly good one
+// like `Box()`. This doesn't stop a Brep built by one of them from being
+// fully usable through this kernel's own pipeline, which never calls
+// `IsValid()` and doesn't need the topology it checks for: `Tessellate()`
+// reads each face's surface directly, and `TessellateToClosedMesh()`'s
+// own vertex-welding step is what actually closes the seams between
+// faces, not shared `ON_Brep` vertex/edge records. Still, a `.3dm` file
+// saved via `Model::AddBrep()` from one of these four may not round-trip
+// cleanly through other OpenNURBS-based tools that validate topology on
+// load.
+//
+// `FromPlanarFaces()`/`FromMixedFaces()` (below) are the exception: they
+// build genuine `ON_BrepVertex`/`ON_BrepEdge`/`ON_BrepLoop`/`ON_BrepTrim`
+// topology (coincident loop points welded into shared vertices, a real
+// edge created once and reused - never a third time - by whichever
+// second face also walks it, one real outer loop and trim per face), so
+// `ON_Brep::IsValid()` reports a Brep from either of them as valid - and,
+// unlike the four factories above, their own `.3dm` round-trips carry
+// real topology into other OpenNURBS-based readers, not just this
+// kernel's own pipeline. Everything built ON TOP of `FromPlanarFaces()`/
+// `FromMixedFaces()` inherits this for free: `BooleanCombinePlanar()`,
+// `ShellConvexPlanar()`, and `FilletConvexEdge()` (see boolean.h/
+// fillet.h) all assemble their result through one of these two, so their
+// own results are genuinely `IsValid()`-clean too. One disclosed, narrow
+// gap: `FilletConvexEdge()`'s own 200-segment polygonal corner notch
+// (used only where the filleted edge meets a face perpendicular to it -
+// see fillet.h's own doc comment) is topologically separate from the
+// fillet's own circular cap edge at that same corner, rather than a
+// literal shared arc-edge between them - both remain individually valid
+// boundary trims (`IsValid()` still passes), but that one corner is not
+// truly closed/manifold there; a real arc-edge there is a distinct,
+// not-yet-attempted follow-up, not a silent gap.
 class Brep {
  public:
   // Builds a one-face B-rep whose face is exactly `surface` (untrimmed).

@@ -2,7 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <functional>
 #include <stdexcept>
+#include <unordered_map>
+#include <utility>
 
 #include "dino8/kernel/mesh.h"
 
@@ -286,10 +290,206 @@ std::vector<Brep::PlanarFace> Brep::PlanarFaces() const {
   return result;
 }
 
+namespace {
+
+// Coincident-point vertex welding for FromMixedFaces()'s own genuine
+// ON_Brep topology (real vertices/edges/trims/loops instead of just
+// NewFace(surface_index)): the same principle Mesh::MergeAndWeld() already
+// relies on for welding a tessellation's own seams shut, reused here as
+// the identity test that gives PlanarFace/CylindricalFace loop points -
+// which carry no vertex identity of their own - a shared ON_BrepVertex
+// wherever two faces' own loops meet at "the same" 3D point. tol = 1e-6
+// matches Mesh::MergeAndWeld's own proven default exactly, not a newly
+// invented tolerance; see brep.h's FromMixedFaces doc comment for the
+// real, disclosed limit this implies (features smaller than that mis-weld).
+constexpr double kBrepWeldTolerance = 1e-6;
+
+struct WeldKey {
+  long long x = 0, y = 0, z = 0;
+  bool operator==(const WeldKey& other) const {
+    return x == other.x && y == other.y && z == other.z;
+  }
+};
+
+struct WeldKeyHash {
+  size_t operator()(const WeldKey& k) const {
+    size_t h = std::hash<long long>()(k.x);
+    h ^= std::hash<long long>()(k.y) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    h ^= std::hash<long long>()(k.z) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    return h;
+  }
+};
+
+// Welds coincident 3D points into canonical global vertex ids, local and
+// temporary to one FromMixedFaces() call (never stored on Brep itself -
+// see brep.h's own comment on why PlanarFace/CylindricalFace need no
+// struct changes for this).
+class VertexWelder {
+ public:
+  int Weld(const Point3d& p) {
+    const WeldKey key{std::llround(p.x / kBrepWeldTolerance), std::llround(p.y / kBrepWeldTolerance),
+                       std::llround(p.z / kBrepWeldTolerance)};
+    const auto it = index_of_.find(key);
+    if (it != index_of_.end()) return it->second;
+    const int id = static_cast<int>(points_.size());
+    points_.push_back(p);
+    index_of_.emplace(key, id);
+    return id;
+  }
+  const std::vector<Point3d>& Points() const { return points_; }
+
+ private:
+  std::unordered_map<WeldKey, int, WeldKeyHash> index_of_;
+  std::vector<Point3d> points_;
+};
+
+// Per-face bookkeeping needed to build genuine loop/trim/edge topology,
+// gathered alongside each face's existing surface-building code below
+// without changing any of that math. `vids`/`trim_uv` are parallel arrays,
+// one welded global vertex id and one (u, v) trim point per loop point, in
+// loop order (already CCW-outward per every planar-face factory's own
+// "u_dir x v_dir points outward" convention - see PlanarFaces()'s own
+// comment - so this reuses that winding rather than re-deriving it).
+struct FaceTopology {
+  std::vector<int> vids;
+  std::vector<Point2d> trim_uv;
+  // Only set for a CylindricalFace's own 4-point (u, v) rectangle loop
+  // (see BuildFaceLoop's own comment for why its two cap segments, index 0
+  // and 2, need this instead of a plain straight edge). Borrowed - owned
+  // by brep.m_S, valid for this whole FromMixedFaces() call.
+  ON_NurbsSurface* cylindrical_surface = nullptr;
+  double cylindrical_u_max = 0.0;
+  double cylindrical_length = 0.0;
+};
+
+// Builds one face's genuine ON_BrepLoop plus its edges/trims (spec
+// sections 2-3): an edge is created the first time its own {min(vid),
+// max(vid)} welded vertex pair is seen and shared automatically the
+// second time (the same pair from the adjacent face's own loop) via
+// `edge_of_vertex_pair`; a third use is a non-manifold edge, out of scope
+// exactly like every other planar-only/convex-only note already in this
+// codebase (boolean.h/fillet.h), so it throws rather than silently
+// misbuilding a third trim onto it.
+//
+// The 3D edge curve is a straight ON_LineCurve between the two welded
+// points in every case except a CylindricalFace's own two circular cap
+// segments (index 0 at v=0, index 2 at v=length, of its 4-point
+// [u:0..u_max, v:0..length] rectangle loop - see brep.h's FromMixedFaces
+// comment for that rectangle's own construction), which instead use the
+// surface's own isocurve (ON_Surface::IsoCurve(0, v)) so the edge's C3
+// curve and the trim's 2D-to-surface composition are identical by
+// construction, not independently reconstructed and merely close. The
+// rectangle's other two segments (index 1 at u=u_max, index 3 at u=0) -
+// the fillet's two straight "rail" lines - need no such special-casing:
+// they're genuinely straight, so the plain ON_LineCurve path already
+// welds them against FilletConvexEdge's own re-trimmed planar faces with
+// zero extra work, exactly as that function's own doc comment states.
+//
+// ON_Surface::IsoCurve(0, c)'s own natural direction is increasing-u
+// (point at parameter t is srf(t, c)): segment 0 (u: 0 -> u_max) walks
+// that same direction, but segment 2 (u: u_max -> 0, per the rectangle's
+// own CCW order) walks it backwards - `iso_reversed` below accounts for
+// that so the new edge's own v0/v1 vertex assignment always matches its
+// own 3D curve's real start/end point, which every other edge here (and
+// ON_Brep's own topology in general) requires.
+void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
+                    std::unordered_map<uint64_t, int>& edge_of_vertex_pair) {
+  ON_BrepLoop& loop = brep.NewLoop(ON_BrepLoop::outer, face);
+  const size_t n = topo.vids.size();
+  for (size_t k = 0; k < n; ++k) {
+    const size_t k1 = (k + 1) % n;
+    const int vid_from = topo.vids[k];
+    const int vid_to = topo.vids[k1];
+
+    const bool is_cap = topo.cylindrical_surface != nullptr && (k == 0 || k == 2);
+    const bool iso_reversed = is_cap && k == 2;
+
+    const uint32_t lo = static_cast<uint32_t>(std::min(vid_from, vid_to));
+    const uint32_t hi = static_cast<uint32_t>(std::max(vid_from, vid_to));
+    const uint64_t key = (static_cast<uint64_t>(lo) << 32) | hi;
+
+    int edge_index;
+    const auto it = edge_of_vertex_pair.find(key);
+    if (it == edge_of_vertex_pair.end()) {
+      ON_Curve* c3 = nullptr;
+      int curve_start_vid = vid_from;
+      int curve_end_vid = vid_to;
+      if (is_cap) {
+        const double v_const = (k == 0) ? 0.0 : topo.cylindrical_length;
+        ON_Curve* iso = topo.cylindrical_surface->IsoCurve(/*dir=*/0, v_const);
+        if (!iso) {
+          throw std::runtime_error(
+              "dino8::kernel::Brep::FromMixedFaces: ON_Surface::IsoCurve failed "
+              "building a CylindricalFace's own cap edge");
+        }
+        if (!iso->Trim(ON_Interval(0.0, topo.cylindrical_u_max))) {
+          delete iso;
+          throw std::runtime_error(
+              "dino8::kernel::Brep::FromMixedFaces: trimming a CylindricalFace's "
+              "own cap isocurve to its real sweep angle failed");
+        }
+        iso->SetDomain(0.0, 1.0);
+        c3 = iso;
+        if (iso_reversed) {
+          curve_start_vid = vid_to;
+          curve_end_vid = vid_from;
+        }
+      } else {
+        c3 = new ON_LineCurve(brep.m_V[vid_from].point, brep.m_V[vid_to].point);
+        c3->SetDomain(0.0, 1.0);
+      }
+      const int c3i = brep.AddEdgeCurve(c3);
+      ON_BrepEdge& edge = brep.NewEdge(brep.m_V[curve_start_vid], brep.m_V[curve_end_vid], c3i);
+      // A real, checked-directly discovery (not assumed from the spec's
+      // own text): the PUBLIC OpenNURBS build's own ON_Brep::
+      // SetEdgeTolerance is a deliberate stub for any edge with a trim -
+      // its own comment says so verbatim ("TL_Brep::SetEdgeTolerance
+      // overrides ON_Brep::SetEdgeTolerance and sets the tolerance
+      // correctly") - TL_Brep being Rhino's own closed-source topology
+      // library, not part of the public SDK this kernel is built on. Left
+      // alone, every edge here would keep ON_UNSET_VALUE forever and
+      // IsValid() would report every single one as invalid, regardless of
+      // how correct the actual topology is. The honest fix, matching
+      // example_brep.cpp's own MakeTwistedCubeEdge (see its own "this
+      // simple example is exact" comment): every edge this function
+      // builds genuinely IS exact - a straight line between the same two
+      // points its own endpoint vertices store, or a CylindricalFace
+      // cap's own true isocurve - so 0.0 is the real answer, not a
+      // plugged-in default. Pass 5 below calls SetTolerancesBoxesAndFlags
+      // with bLazy=true specifically so it leaves this alone instead of
+      // overwriting it back to unset.
+      edge.m_tolerance = 0.0;
+      edge_index = edge.m_edge_index;
+      edge_of_vertex_pair.emplace(key, edge_index);
+    } else {
+      edge_index = it->second;
+      if (brep.m_E[edge_index].m_ti.Count() >= 2) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: an edge is shared by 3 or "
+            "more faces (non-manifold) - out of scope here, matching every "
+            "other planar-only/convex-only scope note already in this "
+            "codebase (boolean.h/fillet.h)");
+      }
+    }
+
+    const ON_BrepEdge& edge = brep.m_E[edge_index];
+    const bool bRev3d = (edge.m_vi[0] != vid_from);
+
+    auto* c2 = new ON_LineCurve(topo.trim_uv[k], topo.trim_uv[k1]);
+    c2->SetDomain(0.0, 1.0);
+    const int c2i = brep.AddTrimCurve(c2);
+    brep.NewTrim(brep.m_E[edge_index], bRev3d, loop, c2i);
+  }
+}
+
+}  // namespace
+
 Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
                            const std::vector<Brep::CylindricalFace>& cylindrical_faces) {
   Brep result;
   ON_Brep& brep = result.brep_;
+  VertexWelder welder;
+  std::vector<FaceTopology> topo;
   for (const PlanarFace& f : faces) {
     if (f.loop.size() < 3) continue;  // degenerate slice - nothing left of this face
     const ON_Plane& pl = f.plane;
@@ -332,6 +532,16 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     // see grid-approximation error on a shape that has none to begin with.
     result.face_exact_clip_.push_back(true);
     result.face_hole_loops_.emplace_back();
+
+    // Genuine topology (see BuildFaceLoop above): weld this face's own
+    // loop points - the exact same 3D points the side tables above just
+    // recorded - into canonical global vertex ids, reusing f.loop/trim
+    // rather than re-deriving either.
+    FaceTopology t;
+    t.trim_uv = trim;
+    t.vids.reserve(f.loop.size());
+    for (const Point3d& p : f.loop) t.vids.push_back(welder.Weld(p));
+    topo.push_back(std::move(t));
   }
 
   for (const CylindricalFace& cf : cylindrical_faces) {
@@ -379,9 +589,52 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     // v=0/v=length), not an approximation of one.
     result.face_exact_clip_.push_back(true);
     result.face_hole_loops_.emplace_back();
+
+    // Genuine topology (see BuildFaceLoop above): the same 4 corner
+    // points the trim rectangle's own UV corners map to through this
+    // exact surface - welded into the same global vertex space as every
+    // PlanarFace loop above, which is precisely what lets a fillet's two
+    // straight rails share real ON_BrepEdge objects with the adjacent
+    // re-trimmed planar faces' own matching corners, with no special
+    // casing (see FilletConvexEdge's own doc comment for why those rail
+    // points are exact to floating-point precision, not merely close).
+    FaceTopology t;
+    t.trim_uv = trim;
+    t.vids = {welder.Weld(surface->PointAt(0.0, 0.0)), welder.Weld(surface->PointAt(u_max, 0.0)),
+              welder.Weld(surface->PointAt(u_max, cf.length)), welder.Weld(surface->PointAt(0.0, cf.length))};
+    t.cylindrical_surface = surface;
+    t.cylindrical_u_max = u_max;
+    t.cylindrical_length = cf.length;
+    topo.push_back(std::move(t));
   }
 
-  brep.SetTrimIsoFlags();
+  // Pass 2 (see this feature's own spec): materialize one real
+  // ON_BrepVertex per canonical welded point, in weld-id order - `brep`
+  // starts with an empty m_V, and NewVertex() always appends at the next
+  // index, so this makes brep.m_V's own indices exactly match every
+  // `vids` entry recorded above.
+  for (const Point3d& p : welder.Points()) brep.NewVertex(p);
+
+  // Passes 3 + 4: one genuine ON_BrepLoop plus its edges/trims per face,
+  // sharing an edge automatically wherever two faces' own welded vertex
+  // pairs match (see BuildFaceLoop's own doc comment for exactly how).
+  std::unordered_map<uint64_t, int> edge_of_vertex_pair;
+  for (size_t fi = 0; fi < topo.size(); ++fi) {
+    BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair);
+  }
+
+  // Pass 5: NewVertex()/NewEdge()/NewTrim() above all leave m_tolerance at
+  // ON_UNSET_VALUE - a sentinel ON_Brep::IsValid() rejects outright - so
+  // this real geometry-derived tolerance/flag pass (replacing the old
+  // bare SetTrimIsoFlags() call FromSurface()/Box()/Sphere()/
+  // TrimmedPlanarFace() still use, since they don't build this topology)
+  // is required here, not optional polish. bLazy=true so this leaves
+  // BuildFaceLoop's own already-correct edge.m_tolerance=0.0 alone
+  // (see its own comment for why: the public build's SetEdgeTolerance is
+  // a stub that would otherwise reset it right back to unset) while still
+  // genuinely computing every vertex/trim tolerance, loop type, iso flag,
+  // and trim bounding box left at their own NewVertex()/NewTrim() sentinel.
+  brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
   return result;
 }
 

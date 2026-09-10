@@ -7,6 +7,8 @@ build/
 dino8_kernel_roundtrip_test.3dm
 dino8_kernel_mesh_roundtrip_test.3dm
 dino8_kernel_subd_roundtrip_test.3dm
+dino8_kernel_brep_topology_roundtrip_test.3dm
+dino8_kernel_fillet_topology_roundtrip_test.3dm
 dino8_kernel_mesh_obj_test.obj
 dino8_kernel_mesh_stl_test.stl
 dino8_kernel_mesh_stl_load_test.stl
