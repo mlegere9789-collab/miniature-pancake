@@ -15,6 +15,7 @@
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/file_io.h"
+#include "dino8/kernel/fillet.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/subd.h"
 #include "dino8/kernel/surface.h"
@@ -6179,6 +6180,207 @@ void TestBooleanCombinePlanarNonConvexLShapeVsBox() {
 
 }  // namespace
 
+// The spec's own required exact case: fillet the unit cube's top
+// (z=1, normal +z) / front (y=0, normal -y) edge from (0,0,1) to (1,0,1)
+// at radius 0.3. The two faces are perpendicular, so theta (interior
+// dihedral) = pi - acos(0) = pi/2 exactly - the standard "square corner"
+// case cmd_fillet.cpp's own r^2*(1-pi/4) formula was derived for.
+//
+// Hand-derived expected geometry (NOT by calling FilletConvexEdge's own
+// formulas - an independent derivation from the same public inputs):
+// n_i=(0,0,1), n_j=(0,-1,0), bis=normalize(n_i+n_j)=(0,-1,1)/sqrt(2),
+// cosb=dot(bis,n_i)=1/sqrt(2), so radius/cosb = 0.3*sqrt(2), and
+// bis*(radius/cosb) = (0,-1,1)/sqrt(2) * 0.3*sqrt(2) = (0,-0.3,0.3)
+// exactly (the sqrt(2) cancels). Axis point C(edge_p0) = edge_p0 -
+// (0,-0.3,0.3) = (0, 0.3, 0.7); contact points T_i = C + 0.3*n_i =
+// (0, 0.3, 1.0), T_j = C + 0.3*n_j = (0, 0.0, 0.7) - i.e. the top face's
+// new boundary sits at y=0.3 (matching "top face retrimmed to y>=0.3")
+// and the front face's at z=0.7 (matching "front face retrimmed to
+// z<=0.7"), exactly as this feature's own spec states.
+//
+// Trim-back distance t = r*cot(theta/2) = 0.3*cot(pi/4) = 0.3 exactly.
+// Removed cross-section area A(theta) = r^2*(cot(theta/2)-(pi-theta)/2) =
+// r^2*(1 - pi/4) at theta=pi/2 - the same formula already verified in
+// dino8-app/src/commands/cmd_fillet.cpp for the 90-degree plane/plane (or
+// plane/cylinder) corner case. Volume removed = A*L with edge length
+// L=1, giving the exact expected filleted volume asserted below.
+void TestFilletConvexEdgeUnitCubeTopFrontCorner() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  const double r = 0.3;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const Brep filleted = FilletConvexEdge(box, edge_p0, edge_p1, r);
+
+  Check(filleted.FaceCount() == 7,
+        "filleting one box edge yields 7 faces (4 untouched + 2 re-trimmed + 1 new "
+        "cylindrical fillet face)");
+
+  const double expected_removed_area = r * r * (1.0 - ON_PI / 4.0);
+  Check(std::fabs(expected_removed_area - 0.019314165294229654) < 1e-15,
+        "sanity check: this test's own closed-form removed area matches the spec's worked value");
+  const double expected_volume = 1.0 - expected_removed_area;
+  Check(std::fabs(expected_volume - 0.980685834705770346) < 1e-12,
+        "sanity check: this test's own closed-form filleted volume matches the spec's worked value");
+
+  // Genuine, independent verification of the actual constructed geometry
+  // (real surface construction + trimming, not a restatement of the
+  // formula above): tessellate the real mixed planar+cylindrical Brep at
+  // a tight adaptive chord tolerance and measure its volume. The only
+  // curved face here is the one fillet patch (radius 0.3, a quarter-turn
+  // sector); at a 1e-7 chord tolerance its chordal tessellation error is
+  // many orders of magnitude below the 1e-6 tolerance used below, so this
+  // is an honest, tight (not exact-symbolic) check - the same documented
+  // single-precision ON_Mesh vertex floor already noted by boolean.cpp's
+  // own AdaptiveManifoldTolerance comment and exercised by this test
+  // file's other exact-volume Brep tests (e.g.
+  // TestBooleanIntersectConvexPlanarExactBoxOverlap's octagon case) is
+  // the actual precision ceiling here, not FilletConvexEdge's own
+  // (double-precision-exact) construction.
+  const double measured_volume = filleted.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  Check(std::fabs(measured_volume - expected_volume) < 1e-6,
+        "filleted unit cube's tessellated volume matches 1 - r^2*(1-pi/4) = "
+        "0.980685834705770346 to within 1e-6");
+
+  // The two new contact points on each face, per the hand derivation
+  // above.
+  const Point3d Ti0(0.0, r, 1.0);
+  const Point3d Ti1(1.0, r, 1.0);
+  const Point3d Tj0(0.0, 0.0, 1.0 - r);
+  const Point3d Tj1(1.0, 0.0, 1.0 - r);
+
+  // Locate the one non-planar (cylindrical) face by the same IsPlanar()
+  // check PlanarFaces() itself relies on - not a hard-coded face index,
+  // since FilletConvexEdge's own face ordering isn't part of its
+  // documented contract.
+  const ON_Brep& raw = filleted.raw();
+  int fillet_face_index = -1;
+  for (int f = 0; f < raw.m_F.Count(); ++f) {
+    const ON_Surface* srf = raw.m_F[f].SurfaceOf();
+    const ON_NurbsSurface* ns = ON_NurbsSurface::Cast(srf);
+    if (ns == nullptr) continue;
+    dino8::kernel::NurbsSurface wrapper;
+    wrapper.raw() = *ns;
+    if (!wrapper.IsPlanar()) {
+      fillet_face_index = f;
+      break;
+    }
+  }
+  Check(fillet_face_index >= 0, "the filleted Brep has exactly one non-planar (cylindrical) fillet face");
+
+  if (fillet_face_index >= 0) {
+    const ON_NurbsSurface* fillet_srf = ON_NurbsSurface::Cast(raw.m_F[fillet_face_index].SurfaceOf());
+    Check(fillet_srf != nullptr, "the fillet face's own surface is exactly a rational NURBS patch");
+    if (fillet_srf != nullptr) {
+      const ON_Interval u_dom = fillet_srf->Domain(0);
+      const ON_Interval v_dom = fillet_srf->Domain(1);
+      Check(std::fabs(v_dom.Min() - 0.0) < 1e-12 && std::fabs(v_dom.Max() - 1.0) < 1e-9,
+            "fillet surface's height (v) domain is exactly [0, edge length] = [0, 1]");
+      // theta=pi/2 here means the fillet's sweep angle (pi-theta) is
+      // exactly pi/2, one of ON_Circle's own four quadrant knots - the
+      // one case where "the nurbs parameter and radian parameter are the
+      // same" (ON_Circle::GetNurbFormParameterFromRadian's own doc
+      // comment), so the far rail's true NURBS u-parameter is exactly
+      // pi/2 with no reparameterization step needed for this test.
+      const double u_max = ON_PI / 2.0;
+      const Point3d rail_i_p0 = fillet_srf->PointAt(u_dom.Min(), v_dom.Min());
+      const Point3d rail_i_p1 = fillet_srf->PointAt(u_dom.Min(), v_dom.Max());
+      const Point3d rail_j_p0 = fillet_srf->PointAt(u_max, v_dom.Min());
+      const Point3d rail_j_p1 = fillet_srf->PointAt(u_max, v_dom.Max());
+      Check(rail_i_p0.DistanceTo(Ti0) < 1e-9,
+            "fillet face's angle=0 rail at v=0 exactly equals face i's new contact point T_i(edge_p0)");
+      Check(rail_i_p1.DistanceTo(Ti1) < 1e-9,
+            "fillet face's angle=0 rail at v=length exactly equals face i's new contact point T_i(edge_p1)");
+      Check(rail_j_p0.DistanceTo(Tj0) < 1e-9,
+            "fillet face's angle=pi/2 rail at v=0 exactly equals face j's new contact point T_j(edge_p0)");
+      Check(rail_j_p1.DistanceTo(Tj1) < 1e-9,
+            "fillet face's angle=pi/2 rail at v=length exactly equals face j's new contact point T_j(edge_p1)");
+    }
+  }
+
+  // And confirm those same points genuinely sit on the boundary of the
+  // re-trimmed top/front faces' own tessellations - i.e. the pieces
+  // actually meet there, not just that the fillet patch floats at the
+  // right place in space in isolation. Faces are identified by a point
+  // known to lie on their own original (untouched-by-filleting) plane
+  // and nowhere else on the box (a face-interior point, not a shared
+  // corner/edge point).
+  const std::vector<Mesh> meshes = filleted.Tessellate(24, 24);
+  Check(static_cast<int>(meshes.size()) == raw.m_F.Count(),
+        "Tessellate() returns one mesh per face, same indexing as raw().m_F");
+  int top_index = -1, front_index = -1;
+  for (int f = 0; f < raw.m_F.Count(); ++f) {
+    if (f == fillet_face_index) continue;
+    const ON_Surface* srf = raw.m_F[f].SurfaceOf();
+    ON_Plane p;
+    if (!srf->IsPlanar(&p, 1e-7)) continue;
+    if (std::fabs(p.DistanceTo(Point3d(0.5, 0.5, 1.0))) < 1e-7) top_index = f;    // top face interior
+    if (std::fabs(p.DistanceTo(Point3d(0.5, 0.0, 0.5))) < 1e-7) front_index = f;  // front face interior
+  }
+  Check(top_index >= 0 && front_index >= 0 && top_index != front_index,
+        "the re-trimmed top (z=1) and front (y=0) faces are both found among the filleted Brep's faces");
+
+  auto has_vertex_near = [](const Mesh& mesh, const Point3d& target, double tol) {
+    const ON_Mesh& m = mesh.raw();
+    double best = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < m.m_V.Count(); ++i) {
+      const ON_3fPoint& v = m.m_V[i];
+      best = std::min(best, target.DistanceTo(Point3d(v.x, v.y, v.z)));
+    }
+    return best < tol;
+  };
+  if (top_index >= 0 && front_index >= 0) {
+    // 1e-6, not 1e-9: these points are found among tessellated mesh
+    // vertices (exact-clip boundary vertices, but reached through the
+    // grid-clipping code path rather than direct surface evaluation), so
+    // this is a genuinely looser, honestly-documented tolerance than the
+    // direct surface-evaluation checks above.
+    Check(has_vertex_near(meshes[static_cast<size_t>(top_index)], Ti0, 1e-6) &&
+              has_vertex_near(meshes[static_cast<size_t>(top_index)], Ti1, 1e-6),
+          "the re-trimmed top face's own tessellation has vertices exactly at its new boundary "
+          "edge (T_i(edge_p0), T_i(edge_p1)) - the same points the fillet face's own rail passes "
+          "through");
+    Check(has_vertex_near(meshes[static_cast<size_t>(front_index)], Tj0, 1e-6) &&
+              has_vertex_near(meshes[static_cast<size_t>(front_index)], Tj1, 1e-6),
+          "the re-trimmed front face's own tessellation has vertices exactly at its new boundary "
+          "edge (T_j(edge_p0), T_j(edge_p1)) - the same points the fillet face's own rail passes "
+          "through");
+    // And the sharp original edge itself is gone: no vertex of either
+    // re-trimmed face's tessellation should remain at the original
+    // edge_p0/edge_p1 corner.
+    Check(!has_vertex_near(meshes[static_cast<size_t>(top_index)], edge_p0, 1e-6) &&
+              !has_vertex_near(meshes[static_cast<size_t>(top_index)], edge_p1, 1e-6),
+          "the re-trimmed top face's own sharp original edge (y=0) is actually gone, not just "
+          "covered by the fillet face");
+  }
+
+  // Reject a non-convex/degenerate edge: two faces of the SAME box that
+  // do not share this edge, or a concocted 180-degree (coplanar) pair,
+  // should throw rather than silently produce nonsense.
+  bool threw_bad_edge = false;
+  try {
+    FilletConvexEdge(box, Point3d(0, 0, 0), Point3d(1, 1, 1), r);
+  } catch (const std::invalid_argument&) {
+    threw_bad_edge = true;
+  }
+  Check(threw_bad_edge,
+        "FilletConvexEdge rejects a point pair that isn't a shared boundary edge of two faces");
+
+  // Reject a radius too large to fit (trim-back distance would exceed
+  // the face's own extent from the edge - here the box's own 1-unit
+  // extent).
+  bool threw_too_big = false;
+  try {
+    FilletConvexEdge(box, edge_p0, edge_p1, 5.0);
+  } catch (const std::invalid_argument&) {
+    threw_too_big = true;
+  }
+  Check(threw_too_big, "FilletConvexEdge rejects a radius too large to fit on the adjacent faces");
+}
+
 int main() {
   ON::Begin();
 
@@ -6320,6 +6522,7 @@ int main() {
   TestBooleanIntersectConvexPlanarExactBoxOverlap();
   TestBooleanIntersectConvexPlanarRejectsNonConvex();
   TestBooleanCombinePlanarNonConvexLShapeVsBox();
+  TestFilletConvexEdgeUnitCubeTopFrontCorner();
 
   ON::End();
 

@@ -8,6 +8,7 @@
 
 #include <manifold/manifold.h>
 
+#include "dino8/kernel/detail/halfspace_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
 
 namespace dino8::kernel {
@@ -316,60 +317,32 @@ bool IsConvex(const std::vector<Brep::PlanarFace>& faces, double tol) {
   return true;
 }
 
-// Sutherland-Hodgman, run once but keeping BOTH children instead of only
-// the "inside" one: a single pass over `poly`'s edges classifies each
-// vertex against `clip_plane` and files it (or, at a sign change, the
-// shared interpolated crossing point) into `inside` and/or `outside`.
-// This "split, not clip" primitive is what every non-convex boolean below
-// is built from - see Requicha & Voelcker, "Boolean operations in solid
+// Sutherland-Hodgman half-space clip, run once but keeping BOTH children
+// instead of only the "inside" one - what every non-convex boolean below
+// is built from (see Requicha & Voelcker, "Boolean operations in solid
 // modeling: Boundary evaluation and merging algorithms," Proc. IEEE 73(1),
 // 1985, for the classical (unpatented) boundary-evaluation technique this
 // implements: partitioning a face against every plane of the other solid
 // until each surviving fragment lies wholly on one side of every such
-// plane and can be classified with a single point-in-solid test.
+// plane and can be classified with a single point-in-solid test).
 //
-// Valid for a CONCAVE `poly`, not just a convex one: clipping against a
-// single half-space (one plane) is a purely local per-edge operation that
-// doesn't depend on the subject polygon's own convexity. If the plane
+// Valid for a CONCAVE `poly`, not just a convex one - see this function's
+// own doc comment in dino8/kernel/detail/halfspace_clip3d.h. If the plane
 // crosses a concave polygon's boundary more than twice, one side's output
 // is a single vertex loop that revisits the cut line more than once (two
 // or more regions joined by zero-net-area "bridge" edges lying exactly on
 // the cut) rather than several separate loops - the same "keyhole" trick
 // used to triangulate a polygon with a hole - whose signed area, and
 // hence any ear-clip triangulation of it, still comes out exactly right.
-struct HalfspaceSplit {
-  std::vector<Point3d> inside;
-  std::vector<Point3d> outside;
-};
+//
+// This one primitive is shared with fillet.cpp's FilletConvexEdge (see
+// dino8/kernel/detail/halfspace_clip3d.h for the extracted, single copy);
+// these are thin aliases so every call site below reads exactly as it did
+// before the extraction.
+using HalfspaceSplit = detail::HalfspaceSplit3d;
 
 HalfspaceSplit SplitByHalfspace(const std::vector<Point3d>& poly, const ON_Plane& clip_plane, double tol) {
-  HalfspaceSplit result;
-  if (poly.size() < 3) return result;
-  result.inside.reserve(poly.size() + 1);
-  result.outside.reserve(poly.size() + 1);
-  const size_t n = poly.size();
-  for (size_t i = 0; i < n; ++i) {
-    const Point3d& cur = poly[i];
-    const Point3d& nxt = poly[(i + 1) % n];
-    const double dc = clip_plane.DistanceTo(cur);
-    const double dn = clip_plane.DistanceTo(nxt);
-    const bool cur_in = dc <= tol;
-    const bool nxt_in = dn <= tol;
-    if (cur_in) {
-      result.inside.push_back(cur);
-    } else {
-      result.outside.push_back(cur);
-    }
-    if (cur_in != nxt_in && std::fabs(dc - dn) > 1e-15) {
-      const double t = dc / (dc - dn);
-      const Point3d crossing = cur + t * (nxt - cur);
-      // The crossing point sits exactly on `clip_plane`, so it's a shared
-      // vertex of BOTH children - the new edge along the cut.
-      result.inside.push_back(crossing);
-      result.outside.push_back(crossing);
-    }
-  }
-  return result;
+  return detail::SplitByHalfspace3d(poly, clip_plane, tol);
 }
 
 // Clips a convex 3D polygon (already known to lie in one plane) against
@@ -378,7 +351,7 @@ HalfspaceSplit SplitByHalfspace(const std::vector<Point3d>& poly, const ON_Plane
 // ClipByAllHalfspaces/BooleanIntersectConvexPlanar - both of which only
 // ever want the "inside" child - need no change.
 std::vector<Point3d> ClipByHalfspace(const std::vector<Point3d>& poly, const ON_Plane& clip_plane, double tol) {
-  return SplitByHalfspace(poly, clip_plane, tol).inside;
+  return detail::ClipByHalfspace3d(poly, clip_plane, tol);
 }
 
 // When a clip plane's boundary exactly coincides with an existing edge or
@@ -393,14 +366,7 @@ std::vector<Point3d> ClipByHalfspace(const std::vector<Point3d>& poly, const ON_
 // vertex) after every clip keeps the polygon genuinely simple without
 // changing the region it encloses.
 std::vector<Point3d> CleanPolygon(const std::vector<Point3d>& poly, double tol) {
-  if (poly.size() < 3) return poly;
-  std::vector<Point3d> out;
-  out.reserve(poly.size());
-  for (const Point3d& p : poly) {
-    if (out.empty() || out.back().DistanceTo(p) > tol) out.push_back(p);
-  }
-  while (out.size() > 1 && out.front().DistanceTo(out.back()) <= tol) out.pop_back();
-  return out;
+  return detail::CleanPolygon3d(poly, tol);
 }
 
 std::vector<Point3d> ClipByAllHalfspaces(std::vector<Point3d> poly, const std::vector<Brep::PlanarFace>& other,

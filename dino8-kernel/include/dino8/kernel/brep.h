@@ -144,6 +144,59 @@ class Brep {
   // not attempted here.
   std::vector<PlanarFace> PlanarFaces() const;
 
+  // One curved fillet face's exact geometry: a circular-cylinder patch,
+  // the shape a constant-radius rolling-ball fillet along a STRAIGHT edge
+  // always is (see FilletConvexEdge in dino8/kernel/fillet.h for the one
+  // place this gets built). Deliberately a sibling of PlanarFace, not an
+  // overload of it - PlanarFace::plane is a genuine supporting plane the
+  // face lies in, which has no meaning for a curved patch.
+  //
+  // `frame` is reused purely as a local coordinate frame, not a
+  // supporting plane: `origin` is a point on the fillet's axis (the
+  // cylinder's own axis line), `zaxis` is the axis direction (unit,
+  // parallel to the filleted edge), and `xaxis` is the reference
+  // direction the sweep's `angle` is measured from (so `frame.xaxis` is
+  // exactly the patch's own rail at angle 0). `radius` is the fillet
+  // radius; `angle` (radians, in (0, pi) for the convex edges this is
+  // built for) is the total angle swept from `xaxis`; `length` is the
+  // patch's extent along `zaxis`, starting at `frame.origin`.
+  struct CylindricalFace {
+    ON_Plane frame;
+    double radius = 0.0;
+    double angle = 0.0;
+    double length = 0.0;
+  };
+
+  // The inverse of PlanarFaces(), generalized to also place curved
+  // circular-cylinder patches alongside the planar ones (PlanarFaces()
+  // itself has no CylindricalFace counterpart to extract them back out
+  // of, since it's deliberately planar-only - see its own doc comment).
+  // Every PlanarFace becomes exactly what FromPlanarFaces() below already
+  // built for it (a bilinear NurbsSurface spanning that polygon's own
+  // bounding rectangle, trimmed to the polygon). Every CylindricalFace
+  // becomes an exact rational-NURBS patch via ON_Cylinder(ON_Circle(
+  // frame, radius), length).GetNurbForm() - the same exactness argument
+  // Sphere() already relies on for ON_Sphere::GetNurbForm, generalized
+  // from a whole untrimmed sphere to a trimmed cylindrical rectangle -
+  // added via NewFace and trimmed to the sub-rectangle of the cylinder's
+  // own (angle, height) domain covering [0, length] of height and the
+  // true angles [0, angle] of sweep. Because a rational NURBS circle's
+  // own curve parameter does NOT match true radian angle except at its
+  // four quadrant knots (ON_Circle::GetNurbForm's own doc comment is
+  // explicit about this - "the parameterization of NURBS curve does not
+  // match circle's transcendental parameterization"), the trim boundary
+  // at true angle `angle` is located via ON_Circle::
+  // GetNurbFormParameterFromRadian(angle, ...) rather than by using
+  // `angle` as a raw parameter value directly - the same real conversion
+  // ON_Circle's own header points callers at, not an approximation of it.
+  // Every `loop`/`frame` must satisfy the same preconditions PlanarFace's
+  // and CylindricalFace's own doc comments describe; not re-validated
+  // beyond what NewFace's own surface construction requires.
+  //
+  // FromPlanarFaces(faces) is exactly FromMixedFaces(faces, {}).
+  static Brep FromMixedFaces(const std::vector<PlanarFace>& faces,
+                              const std::vector<CylindricalFace>& cylindrical_faces);
+
   // The inverse of PlanarFaces(): builds a new Brep with one
   // TrimmedPlanarFace()-equivalent face per PlanarFace, each an exact
   // bilinear NurbsSurface spanning that face's own polygon's bounding
@@ -151,7 +204,9 @@ class Brep {
   // itself. Every `loop` must have at least 3 points and lie exactly in
   // its own `plane` (within a small tolerance) - not re-validated here
   // beyond what TrimmedPlanarFace() itself checks (throws
-  // std::invalid_argument on too few points).
+  // std::invalid_argument on too few points). Equivalent to
+  // FromMixedFaces(faces, {}) - kept as its own entry point since it's
+  // the overwhelmingly common case and needs no CylindricalFace argument.
   static Brep FromPlanarFaces(const std::vector<PlanarFace>& faces);
 
   // Bounding box over the Brep's actual curved geometry, not just its

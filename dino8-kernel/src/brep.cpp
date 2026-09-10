@@ -286,7 +286,8 @@ std::vector<Brep::PlanarFace> Brep::PlanarFaces() const {
   return result;
 }
 
-Brep Brep::FromPlanarFaces(const std::vector<Brep::PlanarFace>& faces) {
+Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
+                           const std::vector<Brep::CylindricalFace>& cylindrical_faces) {
   Brep result;
   ON_Brep& brep = result.brep_;
   for (const PlanarFace& f : faces) {
@@ -332,8 +333,60 @@ Brep Brep::FromPlanarFaces(const std::vector<Brep::PlanarFace>& faces) {
     result.face_exact_clip_.push_back(true);
     result.face_hole_loops_.emplace_back();
   }
+
+  for (const CylindricalFace& cf : cylindrical_faces) {
+    const ON_Circle circle(cf.frame, cf.radius);
+    const ON_Cylinder cyl(circle, cf.length);
+    auto* surface = new ON_NurbsSurface();
+    const int rc = cyl.GetNurbForm(*surface);
+    if (rc == 0) {
+      delete surface;
+      throw std::runtime_error(
+          "dino8::kernel::Brep::FromMixedFaces: ON_Cylinder::GetNurbForm failed "
+          "(invalid frame/radius/length)");
+    }
+    // The cylinder's own NURBS surface parameterizes u by the base
+    // circle's NURBS-curve parameter (NOT true radian angle - see this
+    // method's own doc comment) and v linearly by true height (v == the
+    // real distance along `frame.zaxis`, since ON_Cylinder::GetNurbForm
+    // sets the v-knots directly to [height[0], height[1]] with no
+    // reparameterization). So v = 0 and v = cf.length are exactly right,
+    // but the u-bound for `cf.angle` of true sweep has to be found via
+    // the real NURBS<->radian conversion ON_Circle itself provides.
+    double u_max = 0.0;
+    if (!circle.GetNurbFormParameterFromRadian(cf.angle, &u_max)) {
+      delete surface;
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::FromMixedFaces: CylindricalFace::angle is out "
+          "of ON_Circle's own [0, 2*pi] NURBS-parameterization domain");
+    }
+    const int surface_index = brep.AddSurface(surface);
+    brep.NewFace(surface_index);
+    // Same increasing-parameter corner order PlanarFaces()'s own
+    // untrimmed-domain fallback uses - and, per this method's own doc
+    // comment, u_dir x v_dir already points radially outward for
+    // ON_Cylinder::GetNurbForm's natural parameterization (verified
+    // directly: at u=0 the tangent in u is r*(local +y) and dP/dv is
+    // frame.zaxis, whose cross product is r*frame.xaxis - the true
+    // outward radial direction at angle 0), so no m_bRev flip is needed
+    // here, matching Sphere()'s own precedent of never setting it either.
+    const std::vector<Point2d> trim = {Point2d(0.0, 0.0), Point2d(u_max, 0.0),
+                                        Point2d(u_max, cf.length), Point2d(0.0, cf.length)};
+    result.face_trim_loops_.push_back(trim);
+    // exact_clip=true for the same reason FromPlanarFaces()'s own faces
+    // use it above: this trim rectangle IS the patch's exact boundary
+    // (the two straight rails at u=0/u=u_max and the two circular arcs at
+    // v=0/v=length), not an approximation of one.
+    result.face_exact_clip_.push_back(true);
+    result.face_hole_loops_.emplace_back();
+  }
+
   brep.SetTrimIsoFlags();
   return result;
+}
+
+Brep Brep::FromPlanarFaces(const std::vector<Brep::PlanarFace>& faces) {
+  return FromMixedFaces(faces, {});
 }
 
 BoundingBox Brep::GetTightBoundingBox() const {
