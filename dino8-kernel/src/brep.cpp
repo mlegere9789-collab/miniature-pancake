@@ -2355,12 +2355,56 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
       Vector3d normal = ON_CrossProduct(run.plane_xaxis, run.plane_yaxis);
       if (!normal.Unitize()) continue;  // degenerate stored basis - skip, falls through to ordinary path
 
+      ON_Plane wedge_plane;
+      wedge_plane.origin = run.center;
+      wedge_plane.xaxis = run.plane_xaxis;
+      wedge_plane.yaxis = run.plane_yaxis;
+      wedge_plane.zaxis = normal;
+      wedge_plane.UpdateEquation();
+
+      // SameCircleAsCylinder (above) matches purely by circle IDENTITY -
+      // same axis line, radius, and normal - with no reference to angular
+      // sweep at all, which was completely unambiguous for every producer
+      // of a CylindricalFace boolean operand before the parallel-axis
+      // cylinder/cylinder increment (case (iv) of
+      // SplitMixedAgainstAllFaces, boolean.cpp): every one of those only
+      // ever emitted a SINGLE, full 2*pi wall fragment per physical
+      // circle. That increment's own SplitCylindricalByParallelCylinder
+      // can legitimately produce TWO separate, genuinely PARTIAL-angle
+      // wall fragments sharing the exact same circle in one result (two
+      // angular children of the same original cylinder) - so multiple
+      // `cyls` entries can now pass SameCircleAsCylinder for the same
+      // wedge run, and picking the FIRST one unconditionally (this
+      // method's own prior behavior) can pair a cap wedge with the WRONG
+      // co-circular wall fragment, silently corrupting the shared
+      // boundary re-sampling with an out-of-range angle. Confirmed
+      // directly during that increment's own development (not a
+      // theoretical worry): a two-wedge parallel-cylinder Union measured
+      // a wildly wrong tessellated volume and a non-manifold mesh before
+      // this disambiguation was added, traced to exactly this ambiguity.
+      // Fixed here by additionally requiring the run's own MIDPOINT angle
+      // (converted into the candidate's own local frame via
+      // ConvertAngleBetweenFrames, the same conversion this method
+      // already performs per-sample below) to genuinely fall inside that
+      // candidate's own local [0, cf.angle] sweep - trivially satisfied
+      // for every PRE-EXISTING full 2*pi candidate (so every prior,
+      // single-wall scenario's own behavior is completely unchanged; see
+      // TestTessellateConformingSymmetricDivisionsUnaffectedByQuadQuadFix's
+      // own sibling precedent for this kind of "gated, provably inert on
+      // old callers" claim), while correctly refusing a genuinely
+      // partial-angle candidate whose own sweep does not contain this
+      // particular run.
       const CylEntry* matched = nullptr;
       for (const CylEntry& ce : cyls) {
-        if (SameCircleAsCylinder(run.center, run.radius, normal, ce.cf, tol)) {
-          matched = &ce;
-          break;
-        }
+        if (!SameCircleAsCylinder(run.center, run.radius, normal, ce.cf, tol)) continue;
+        const double mid_theta = 0.5 * (run.angle_begin + run.angle_end);
+        double cyl_mid = detail::ConvertAngleBetweenFrames(mid_theta, wedge_plane, ce.cf.frame);
+        cyl_mid = std::fmod(cyl_mid, 2.0 * ON_PI);
+        if (cyl_mid < 0.0) cyl_mid += 2.0 * ON_PI;
+        constexpr double kAngleContainTol = 1e-6;
+        if (cyl_mid < -kAngleContainTol || cyl_mid > ce.cf.angle + kAngleContainTol) continue;
+        matched = &ce;
+        break;
       }
       if (matched == nullptr) continue;
 
@@ -2374,13 +2418,6 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
       } else {
         continue;  // doesn't land at either end of the matched cylinder - not a case this targets
       }
-
-      ON_Plane wedge_plane;
-      wedge_plane.origin = run.center;
-      wedge_plane.xaxis = run.plane_xaxis;
-      wedge_plane.yaxis = run.plane_yaxis;
-      wedge_plane.zaxis = normal;
-      wedge_plane.UpdateEquation();
 
       const std::vector<Point3d> shared_points = detail::ArcSchedule3d(
           run.center, run.radius, run.plane_xaxis, run.plane_yaxis, run.angle_begin, run.angle_end, boundary_samples);

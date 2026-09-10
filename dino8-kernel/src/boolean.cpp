@@ -1499,6 +1499,35 @@ bool CylinderPlaneNoInteraction(const Brep::CylindricalFace& cf, const ON_Plane&
   return (lo > tol) || (hi < -tol);
 }
 
+// True iff two PARALLEL-AXIS cylindrical fragments' own infinite cylinders
+// cannot possibly interact at all - closed form, no search: with both axes
+// parallel, the radial distance between the two axis LINES (`dist`,
+// computed once by projecting `cf_b`'s own axis point into `cf_a`'s own
+// (xaxis, yaxis) plane - valid because that projection is the SAME for
+// every point along either infinite axis line, both being parallel to the
+// same direction) is constant along the shared axis direction, so "the two
+// walls never touch, anywhere along their shared axis direction" is
+// exactly `dist > r_a + r_b` (the two circular cross-sections are disjoint)
+// or `dist < |r_a - r_b|` (one cross-section is strictly nested inside the
+// other, no crossing) - the same two-regime circle/circle non-intersection
+// test the standard closed-form circle-circle intersection construction
+// (Weisstein, MathWorld, "Circle-Circle Intersection"; equivalently Paul
+// Bourke, "Intersection of two circles," 1997) starts from. This answers
+// ONLY whether the two INFINITE cylinders' walls interact radially -
+// whether the two FINITE axial ranges actually overlap is a separate
+// question, deliberately left to the existing generic classifier
+// (ClassifyPointVsMixedSolid/RayVsMixedFace), exactly the same "infinite
+// vs finite reach" split of responsibility CylinderPlaneNoInteraction
+// above already establishes for the plane/cylinder case.
+bool CylinderCylinderNoInteraction(const Brep::CylindricalFace& cf_a, const Brep::CylindricalFace& cf_b, double tol) {
+  const Vector3d d = cf_b.frame.origin - cf_a.frame.origin;
+  const double bx = ON_DotProduct(d, cf_a.frame.xaxis);
+  const double by = ON_DotProduct(d, cf_a.frame.yaxis);
+  const double dist = std::sqrt(bx * bx + by * by);
+  const double r_a = cf_a.radius, r_b = cf_b.radius;
+  return (dist > r_a + r_b + tol) || (dist < std::fabs(r_a - r_b) - tol);
+}
+
 // Recovers PlanarFace::ArcRun bookkeeping from a wedge polygon
 // detail::ClipPolygonByCircle3d already returned - pure bookkeeping over
 // that function's own already-computed output, NOT a second, independent
@@ -1743,6 +1772,182 @@ ObliqueCylinderSplit SplitCylindricalByObliquePlane(const Brep::CylindricalFace&
 // Splits `self` against EVERY face of `other`, keeping both children of
 // every genuine cut (case (i)/(iii)) or the single surviving fragment of
 // a hole-punch (case (ii)) or an unmodified whole fragment ("no
+// Wraps an already-built CylindricalFace as a MixedFace - a one-line
+// convenience factored out for SplitCylindricalByParallelCylinder below
+// (which builds several of these), matching the 3-line pattern several
+// existing call sites in this file already repeat inline.
+MixedFace MixedFaceFromCyl(Brep::CylindricalFace cf) {
+  MixedFace m;
+  m.is_cyl = true;
+  m.cyl = std::move(cf);
+  return m;
+}
+
+// Splits a FULL-SWEEP (angle == 2*pi) PARALLEL-axis cylindrical fragment
+// `cf` against another PARALLEL-axis cylinder `other`, by the closed-form
+// circle/circle intersection of their two cross-sectional circles
+// (CylinderCylinderNoInteraction's own doc comment above derives the same
+// projection this reuses): with both axes parallel to a shared direction,
+// every point on either axis line projects to the SAME 2D point in the
+// plane perpendicular to that direction regardless of which point along
+// the (infinite) axis is chosen, so this reduces exactly to ordinary 2D
+// circle/circle intersection of a circle of radius `cf.radius` at the
+// origin (in `cf`'s own (xaxis, yaxis) basis) and a circle of radius
+// `other.radius` at the projection of `other.frame.origin`, distance
+// `dist` apart - the standard closed form (Weisstein, MathWorld,
+// "Circle-Circle Intersection"; Paul Bourke, "Intersection of two
+// circles," 1997):
+//
+//   a = (dist^2 + r_a^2 - r_b^2) / (2*dist)
+//   h = sqrt(r_a^2 - a^2)                    (real iff the circles cross)
+//   midpoint = a * (center_b / dist)
+//   perp = rot90(center_b) / dist
+//   P1 = midpoint + h*perp,  P2 = midpoint - h*perp
+//
+// Three closed-form-checkable regimes (see CylinderCylinderNoInteraction's
+// own doc comment for the first two):
+//   - no interaction, disjoint circles: `cf` is returned completely
+//     unmodified - the existing, untouched ClassifyPointVsMixedSolid/
+//     RayVsMixedFace machinery already classifies it correctly as wholly
+//     kIn or wholly kOut without any split.
+//   - no interaction, one circle fully nested inside the other: same
+//     unmodified pass-through - `cf`'s own wall sits at a CONSTANT radial
+//     distance from `other`'s own axis for every angle (either always
+//     inside `other`'s radius or always outside it), so no angular split
+//     is needed even though the two solids DO interact volumetrically.
+//   - exactly 2 crossings: `cf` genuinely splits into two angular
+//     children at the two circle/circle intersection angles, both pushed
+//     onto the worklist (mirroring case (i)'s planar/planar split and case
+//     (iii)'s height split, which likewise produce BOTH children and let
+//     the existing generic classifier decide which survives) - NEITHER
+//     child is privileged as "the kept one" here.
+//
+// Restricted to a FULL-SWEEP `cf` for the identical reason
+// SplitCylindricalByObliquePlane/BuildEndCap already restrict themselves
+// to one: no producer in this pipeline ever builds a partial-sweep
+// cylindrical boolean operand today, so a genuinely partial-sweep x
+// partial-sweep interaction is an unverified shape this increment declines
+// to guess at.
+//
+// Needs NO new CylindricalFace fields and touches NONE of
+// ClassifyPointVsMixedSolid/RayVsMixedFace/RepresentativeInteriorPointMixed/
+// BooleanCombineMixed's own switch statement: every one of those already
+// treats a CylindricalFace's own (angle, height) trim rectangle fully
+// generically, with no special-casing of WHY a fragment has the angle it
+// has (an oblique cut, a height split, or - now - an angular split). This
+// function's only job is to produce two syntactically valid CylindricalFace
+// angular children; the rest of the pipeline is unmodified and correct by
+// the same argument every other case here already relies on.
+std::vector<MixedFace> SplitCylindricalByParallelCylinder(const Brep::CylindricalFace& cf,
+                                                            const Brep::CylindricalFace& other, double tol) {
+  if (!(cf.angle >= 2.0 * ON_PI - kAxisAlignTol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: a parallel-axis cylinder/"
+        "cylinder interaction against a PARTIAL-sweep (angle < 2*pi) "
+        "cylindrical fragment is out of scope for this increment - see "
+        "SplitCylindricalByParallelCylinder's own doc comment in "
+        "boolean.cpp");
+  }
+
+  if (CylinderCylinderNoInteraction(cf, other, tol)) {
+    return {MixedFaceFromCyl(cf)};  // disjoint, or one fully nested inside the other - no split needed
+  }
+
+  // 2D projection onto cf's own (xaxis, yaxis) - see this function's own
+  // doc comment above and CylinderCylinderNoInteraction's for why this is
+  // valid for any point along either infinite parallel axis line.
+  const Vector3d d = other.frame.origin - cf.frame.origin;
+  const double center_b_x = ON_DotProduct(d, cf.frame.xaxis);
+  const double center_b_y = ON_DotProduct(d, cf.frame.yaxis);
+  const double dist = std::sqrt(center_b_x * center_b_x + center_b_y * center_b_y);
+  const double r_a = cf.radius, r_b = other.radius;
+
+  const double a = (dist * dist + r_a * r_a - r_b * r_b) / (2.0 * dist);
+  const double h2 = r_a * r_a - a * a;
+  if (h2 <= tol * tol) {
+    // Exact/near tangency - a genuine degeneracy this increment excludes
+    // (the boundary between "0 crossings" and "2 crossings" regimes is
+    // not a closed-form-clean case to split on): thrown rather than
+    // silently routed into either branch.
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: two parallel cylinders are "
+        "exactly (or near-exactly) tangent - out of scope for this "
+        "increment, see SplitCylindricalByParallelCylinder's own doc "
+        "comment in boolean.cpp");
+  }
+  const double h = std::sqrt(h2);
+  const double mid_x = a * center_b_x / dist, mid_y = a * center_b_y / dist;
+  const double perp_x = -center_b_y / dist, perp_y = center_b_x / dist;
+  const double p1_x = mid_x + h * perp_x, p1_y = mid_y + h * perp_y;
+  const double p2_x = mid_x - h * perp_x, p2_y = mid_y - h * perp_y;
+
+  double theta1 = std::atan2(p1_y, p1_x);
+  double theta2 = std::atan2(p2_y, p2_x);
+  if (theta1 < 0.0) theta1 += 2.0 * ON_PI;
+  if (theta2 < 0.0) theta2 += 2.0 * ON_PI;
+  if (theta2 < theta1) std::swap(theta1, theta2);  // theta1 < theta2, both in [0, 2*pi)
+
+  // Two angular children: [theta1, theta2] and [theta2, theta1 + 2*pi] -
+  // exactly the "produce both, let the existing generic classifier decide"
+  // pattern case (i)'s planar/planar split and case (iii)'s height split
+  // already use.
+  auto make_child = [&](double begin, double sweep) {
+    Brep::CylindricalFace child = cf;
+    child.angle = sweep;
+    // Rotate (xaxis, yaxis) about zaxis by `begin` so the new angle=0 rail
+    // sits at cf's own physical angle `begin` - elementary in-plane
+    // rotation of an orthonormal pair about a shared axis, preserving
+    // right-handedness with zaxis unchanged. `end0_is_original`/
+    // `end1_is_original` are inherited unchanged via `child = cf` above -
+    // an angular split touches neither end's true axial terminus, so
+    // BooleanCombineMixed's own end-cap synthesis bookkeeping needs no new
+    // field for this (see that struct's own doc comment in brep.h).
+    const double cb = std::cos(begin), sb = std::sin(begin);
+    child.frame.xaxis = cb * cf.frame.xaxis + sb * cf.frame.yaxis;
+    child.frame.yaxis = -sb * cf.frame.xaxis + cb * cf.frame.yaxis;
+    child.frame.UpdateEquation();
+    return child;
+  };
+
+  std::vector<MixedFace> out;
+  out.push_back(MixedFaceFromCyl(make_child(theta1, theta2 - theta1)));
+  out.push_back(MixedFaceFromCyl(make_child(theta2, 2.0 * ON_PI - (theta2 - theta1))));
+  return out;
+}
+
+// True iff a synthesized end cap for `cf`'s own end (`at_v0` selects which
+// one) needs no trimming against a DIFFERENT, interacting, PARALLEL-axis
+// cylinder `other` - i.e. `other`'s own finite axial range does not reach
+// that end's height AT ALL, checked by converting the cap's own axial
+// position into `other`'s own native height coordinate (one dot product,
+// since both axes are parallel) and testing it against `other`'s own
+// [0, other.length] range.
+//
+// This is deliberately CONSERVATIVE, not a full trim-need analysis: a
+// synthesized end cap is always a FULL 0-to-radius pie slice (BuildEndCap's
+// own doc comment), so even for the angular wedge this increment's own
+// split keeps as "outside other", the disc's own near-center region can
+// still dip into `other`'s own footprint whenever `other`'s axial range
+// reaches that height at all (confirmed directly: for two substantially
+// overlapping circles, at least one axis typically lies inside the OTHER
+// circle, and the disc's own radial sweep at a "kept" angle is not
+// monotonic away from that axis - a genuine correctness risk, not a
+// theoretical worry) - so this function refuses (returns false, and the
+// caller throws rather than emit a possibly-wrong cap) whenever `other`'s
+// axial range reaches the cap's own height, regardless of whether the
+// dip actually occurs at every angle. Extending this to a real per-angle
+// trim (reusing detail::ClipPolygonByCircle3d on the already-built cap
+// polygon, exactly case (ii)'s own machinery) is real, tractable, closed-
+// form work but is its own follow-up increment (see boolean.h's own
+// BooleanCombineMixed doc comment) - not attempted here.
+bool ParallelCylinderCapNeedsNoTrim(const Brep::CylindricalFace& cf, bool at_v0,
+                                     const Brep::CylindricalFace& other, double tol) {
+  const double height = at_v0 ? 0.0 : cf.length;
+  const Point3d cap_point = cf.frame.origin + height * cf.frame.zaxis;
+  const double other_h = ON_DotProduct(cap_point - other.frame.origin, other.frame.zaxis);
+  return other_h < -tol || other_h > other.length + tol;
+}
+
 // interaction") - the MixedFace-aware sibling of SplitAgainstAllPlanes()
 // (above). See boolean.h's own BooleanCombineMixed doc comment for the
 // four pair cases this dispatches between; throws std::invalid_argument
@@ -1946,18 +2151,45 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
           }
         }
       } else {
-        // Case (iv): both cylindrical - explicitly OUT OF SCOPE here
-        // regardless of whether they'd actually interact (this
-        // increment's own test solids never put a cylindrical face on
-        // both sides of a single BooleanCombineMixed call, so this branch
-        // is never exercised by them) - needs a genuine NURBS-NURBS
-        // surface intersection (SurfaceIntersect, dino8-app's own geom
-        // layer), a materially bigger, separate follow-up.
-        throw std::invalid_argument(
-            "dino8::kernel::BooleanCombineMixed: two cylindrical faces "
-            "interacting is out of scope for this increment - needs a "
-            "genuine NURBS-NURBS surface intersection, see this function's "
-            "own doc comment in boolean.h");
+        // Case (iv): both cylindrical. PARALLEL axes (checked via
+        // cross-product-near-zero on the two unit axis directions, which
+        // correctly catches both same-direction and anti-parallel axes in
+        // one test - both frame.zaxis are already unit by construction of
+        // every ON_Plane-backed frame this pipeline builds) get the new
+        // closed-form circle/circle angular split this increment adds; a
+        // genuinely oblique (non-parallel-axis) pair - Steinmetz's own
+        // equal-radius/intersecting-axes case included - remains out of
+        // scope, for two DIFFERENT reasons named explicitly rather than
+        // conflated into one message: the fully general skew/unequal-radii
+        // case needs a genuine NURBS-NURBS surface intersection, while
+        // Steinmetz's own intersection curve - though it DOES reduce to a
+        // pair of exact planar ellipses in closed form - sits in the
+        // MIDDLE of each cylinder's wall, not at either end, and
+        // CylindricalFace's own trim representation (an axis-aligned
+        // (angle, height) rectangle, optionally notched at one END) has no
+        // way to express a lens-shaped puncture in its own interior -
+        // needing a materially bigger, new curved-face interior-trim
+        // representation, a separate follow-up (see this function's own
+        // doc comment in boolean.h for the full, disclosed reasoning).
+        const Vector3d cross_axes = ON_CrossProduct(f.cyl.frame.zaxis, g.cyl.frame.zaxis);
+        const bool axes_parallel = cross_axes.Length() < kAxisAlignTol;
+        if (axes_parallel) {
+          for (MixedFace& piece : SplitCylindricalByParallelCylinder(f.cyl, g.cyl, tol)) {
+            next.push_back(std::move(piece));
+          }
+        } else {
+          throw std::invalid_argument(
+              "dino8::kernel::BooleanCombineMixed: two cylindrical faces "
+              "interacting with non-parallel axes is out of scope for this "
+              "increment - needs either a genuine NURBS-NURBS surface "
+              "intersection (the fully general skew/unequal-radii case) or "
+              "a new curved-face interior-trim representation (the "
+              "Steinmetz equal-radius/intersecting-axes case, whose own "
+              "intersection curve DOES factor into two exact planar "
+              "ellipses in closed form but sits in the interior of each "
+              "cylinder's wall, not at either end) - see this function's "
+              "own doc comment in boolean.h");
+        }
       }
     }
     worklist = std::move(next);
@@ -2078,15 +2310,39 @@ constexpr int kEndCapSamples = 200;
 // fact from an arbitrary polygon). `plane.yaxis` (== `run.plane_yaxis`)
 // is cf.frame.yaxis when the target normal is +cf.frame.zaxis
 // (same-handed, a plain reparameterization) and -cf.frame.yaxis when it's
-// -cf.frame.zaxis (mirrored, a reflection) - direct algebra confirms this
-// choice always places disc-local angle `theta` at PHYSICAL cf.frame
-// angle `+-theta` (sign matching same_handed) while ALWAYS tracing CCW in
-// the disc's own (plane.xaxis, plane.yaxis) basis, regardless of which
-// case applies - verified by direct substitution, not merely asserted,
-// and empirically confirmed by this increment's own volume-sign test (a
-// flipped normal would double the closed-form volume error in the wrong
-// direction, exactly the kind of falsifiable check this codebase's own
-// sibling increments already use).
+// -cf.frame.zaxis (mirrored, a reflection).
+//
+// The mirrored (same_handed == false) case maps disc-local angle `theta`
+// to PHYSICAL cf.frame angle `cf.angle - theta`, NOT the naive `-theta` a
+// prior version of this function used (#61's own original increment,
+// which only ever built this for a FULL 2*pi sweep). Both choices trace
+// the correct set of points and correct winding for a FULL 2*pi sweep -
+// `cos(2*pi - theta) == cos(-theta)` and `sin(2*pi - theta) == sin(-theta)`
+// are exact trig identities, so the two formulas are bit-identical there,
+// and every one of #61/#62's own already-verified full-circle tests stay
+// completely unaffected (this is a real, checked substitution, not an
+// assumption). But for a genuinely PARTIAL sweep - unreachable before
+// this increment's own relaxed guard above, since every prior producer of
+// a CylindricalFace boolean operand built only full circles - `-theta`
+// and `cf.angle - theta` are NOT the same: `-theta` sweeps disc-local
+// [0, cf.angle] to PHYSICAL [-cf.angle, 0], a completely DIFFERENT
+// angular range than the wall's own actual rail corners at PHYSICAL
+// [0, cf.angle], while `cf.angle - theta` correctly keeps BOTH endpoints
+// (disc-local 0 and cf.angle) pinned to the wall's own true PHYSICAL rail
+// corners (0 and cf.angle) and only reverses the INTERIOR traversal
+// order - the genuinely intended effect of "same_handed == false", now
+// achieved without also corrupting which physical angles get covered.
+// This is a real, previously-latent bug this increment's own relaxed
+// guard newly exposed (not introduced): confirmed directly by building a
+// two-wedge parallel-cylinder Union with the two formulas swapped back and
+// forth - the naive `-theta` version measures a wildly wrong tessellated
+// volume and a non-closed mesh (the mirrored end's cap silently covers
+// the WRONG angular range, misaligned with its own wall's rail), while
+// `cf.angle - theta` measures the correct closed-form volume and a
+// genuinely closed manifold - see
+// TestBooleanCombineMixedParallelCylinderUnionAxiallyDisjointBothEndsCapped's
+// own comment in the test file for the falsifiable claim this fix makes
+// true.
 //
 // Split into 4 QUADRANT "pie slice" pieces (center + one quarter-turn arc
 // each) rather than one single loop wrapping the whole circle - directly
@@ -2106,12 +2362,38 @@ constexpr int kEndCapSamples = 200;
 // identical in shape to every ArcRun this codebase's own existing,
 // already-verified TessellateConforming() machinery already handles.
 std::vector<MixedFace> BuildEndCap(const Brep::CylindricalFace& cf, bool at_v0) {
-  if (!(cf.angle >= 2.0 * ON_PI - kAxisAlignTol)) {
+  // Was restricted to a FULL-SWEEP (angle == 2*pi) `cf` only; relaxed here
+  // (the parallel-axis cylinder/cylinder increment's own addition) to any
+  // genuinely positive sweep, once inspection of this function's own body
+  // confirmed the restriction was conservative, not structural: every
+  // wedge below is already built as [center, arc_pt_0, ..., arc_pt_N] with
+  // an implicit closing edge back to `center` - i.e. every wedge, whether
+  // an interior chunk of a full circle or one of the two BOUNDARY wedges
+  // of a partial sweep, already carries its own two straight radial edges
+  // (center->arc_start, arc_end->center via the implicit close). For a
+  // full 2*pi sweep those boundary wedges' radial edges are internal
+  // diagonals, welded away by the adjacent wedges tiling the whole disc
+  // (exactly ClipPolygonByCircle3d's own 4-wedge pattern); for a
+  // genuinely partial `cf.angle` (now reachable here: the surviving
+  // angular child of a SplitCylindricalByParallelCylinder split), the
+  // FIRST wedge's own center->arc(0) edge and the LAST wedge's own
+  // arc(cf.angle)->center edge become real boundary edges of a pie-slice
+  // cap - and they are already EXACT (straight lines, built from the same
+  // PointOnCylFace the adjoining cylindrical wall's own rail at that same
+  // angle already uses - no polygonal-approximation notch needed, since a
+  // straight radial edge has no curvature to approximate). The
+  // kQuadrants/per_quadrant wedge-count logic below already divides
+  // `cf.angle` (whatever it is) into 4 equal pieces and needs no change at
+  // all for this: it continues to work identically for cf.angle == 2*pi
+  // (existing, already-verified behavior, completely untouched by this
+  // guard relaxation) and now also produces a geometrically valid partial
+  // pie-slice for any 0 < cf.angle < 2*pi.
+  if (!(cf.angle > kAxisAlignTol)) {
     throw std::invalid_argument(
         "dino8::kernel::BooleanCombineMixed: synthesizing an end cap for a "
-        "PARTIAL-sweep (angle < 2*pi) cylindrical fragment is out of scope "
-        "for this increment - see BuildEndCap's own doc comment in "
-        "boolean.cpp");
+        "cylindrical fragment with zero (or near-zero) swept angle is a "
+        "degenerate no-op, not a real cap - see BuildEndCap's own doc "
+        "comment in boolean.cpp");
   }
 
   const double height = at_v0 ? 0.0 : cf.length;
@@ -2120,8 +2402,43 @@ std::vector<MixedFace> BuildEndCap(const Brep::CylindricalFace& cf, bool at_v0) 
 
   ON_Plane plane;
   plane.origin = center;
-  plane.xaxis = cf.frame.xaxis;
-  plane.yaxis = same_handed ? cf.frame.yaxis : -cf.frame.yaxis;
+  if (same_handed) {
+    plane.xaxis = cf.frame.xaxis;
+    plane.yaxis = cf.frame.yaxis;
+  } else {
+    // Chosen so that, for EVERY plane_theta (not just the full-circle
+    // special case), `cos(plane_theta)*plane.xaxis +
+    // sin(plane_theta)*plane.yaxis` is EXACTLY the same 3D point as
+    // `PointOnCylFace(cf, cf.angle - plane_theta, height)` - the actual
+    // formula the loop below uses to build this cap's own real boundary
+    // points (see this function's own "Orientation" doc comment above for
+    // why the mirrored case maps plane_theta to physical angle
+    // `cf.angle - plane_theta`, not merely `-plane_theta`). Derived by
+    // direct trig expansion of `cos(cf.angle - theta)*cf.frame.xaxis +
+    // sin(cf.angle - theta)*cf.frame.yaxis` into
+    // `cos(theta)*[cos(cf.angle)*xaxis + sin(cf.angle)*yaxis] +
+    // sin(theta)*[sin(cf.angle)*xaxis - cos(cf.angle)*yaxis]` - i.e.
+    // exactly the coefficients of cos(theta)/sin(theta) below - and
+    // verified orthonormal (both unit length, mutually perpendicular) by
+    // direct substitution using cf.frame.xaxis/yaxis's own orthonormality.
+    // This basis is WHAT `run.plane_xaxis`/`run.plane_yaxis` below get set
+    // to, so that Brep::TessellateConforming()'s own INDEPENDENT
+    // recomputation of this same boundary (detail::ArcSchedule3d, which
+    // evaluates purely from run.center/radius/plane_xaxis/plane_yaxis/
+    // angle_begin/angle_end, with no knowledge of `cf` or `same_handed` at
+    // all) reproduces the IDENTICAL points this loop already computed,
+    // not a second, independently-drifting approximation of them - the
+    // same "single canonical producer, shared unchanged" principle this
+    // codebase's own detail::ellipse_clip3d.h/circle_clip3d.h headers
+    // already document. For cf.angle == 2*pi exactly this reduces (via
+    // cos(2*pi)=1, sin(2*pi)=0) to plane.xaxis=cf.frame.xaxis,
+    // plane.yaxis=-cf.frame.yaxis - bit-identical to this function's own
+    // prior, already-verified full-circle-only behavior, so every
+    // pre-existing full-sweep caller is completely unaffected.
+    const double ca = std::cos(cf.angle), sa = std::sin(cf.angle);
+    plane.xaxis = ca * cf.frame.xaxis + sa * cf.frame.yaxis;
+    plane.yaxis = sa * cf.frame.xaxis - ca * cf.frame.yaxis;
+  }
   plane.zaxis = same_handed ? cf.frame.zaxis : -cf.frame.zaxis;
   plane.UpdateEquation();
 
@@ -2140,7 +2457,7 @@ std::vector<MixedFace> BuildEndCap(const Brep::CylindricalFace& cf, bool at_v0) 
     for (int s = 0; s <= per_quadrant; ++s) {
       const double t = static_cast<double>(s) / static_cast<double>(per_quadrant);
       const double plane_theta = plane_theta_begin + (plane_theta_end - plane_theta_begin) * t;
-      const double physical_theta = same_handed ? plane_theta : -plane_theta;
+      const double physical_theta = same_handed ? plane_theta : (cf.angle - plane_theta);
       loop.push_back(PointOnCylFace(cf, physical_theta, height));
     }
 
@@ -2204,6 +2521,28 @@ std::vector<MixedFace> BuildEndCap(const Brep::CylindricalFace& cf, bool at_v0) 
 // end{0,1}_is_original), so no cap is added. Defaults to kOut so every
 // pre-existing two-argument call site (the Union branch) is completely
 // unaffected - same probes, same classification, same faces produced.
+// True iff none of `other`'s own PARALLEL-axis cylindrical faces that
+// genuinely interact with `cf` (CylinderCylinderNoInteraction false - a
+// disjoint or fully-nested-and-never-touching pair is skipped entirely,
+// since a cap can never dip into a footprint it never reaches) require the
+// disclosed cap-trim gap ParallelCylinderCapNeedsNoTrim's own doc comment
+// describes. Non-parallel-axis cylindrical faces in `other` are skipped
+// too (irrelevant to this specific guard - only reachable if `other` holds
+// faces from a solid this increment's own case (iv) dispatch never
+// actually split `cf` against, e.g. an unrelated feature elsewhere on the
+// same Brep).
+bool ParallelCylinderCapSafeAgainstAll(const Brep::CylindricalFace& cf, bool at_v0,
+                                        const std::vector<MixedFace>& other, double tol) {
+  for (const MixedFace& g : other) {
+    if (!g.is_cyl) continue;
+    const Vector3d cross_axes = ON_CrossProduct(cf.frame.zaxis, g.cyl.frame.zaxis);
+    if (cross_axes.Length() >= kAxisAlignTol) continue;  // not parallel - irrelevant to this guard
+    if (CylinderCylinderNoInteraction(cf, g.cyl, tol)) continue;  // never touches radially - always safe
+    if (!ParallelCylinderCapNeedsNoTrim(cf, at_v0, g.cyl, tol)) return false;
+  }
+  return true;
+}
+
 std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments, const std::vector<MixedFace>& other,
                                           double tol, PointClass needed_class = PointClass::kOut) {
   std::vector<MixedFace> caps;
@@ -2214,12 +2553,36 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
     if (cf.end0_is_original) {
       const Point3d probe = cf.frame.origin - probe_eps * cf.frame.zaxis;
       if (ClassifyPointVsMixedSolid(probe, other, tol) == needed_class) {
+        // See ParallelCylinderCapNeedsNoTrim's own doc comment: a
+        // synthesized cap whose own footprint might need trimming against
+        // an interacting parallel-axis cylinder in `other` is refused
+        // rather than silently emitted over-large - a real, disclosed
+        // scope limit of this increment's own parallel-axis cylinder/
+        // cylinder capability, not a bug.
+        if (!ParallelCylinderCapSafeAgainstAll(cf, /*at_v0=*/true, other, tol)) {
+          throw std::invalid_argument(
+              "dino8::kernel::BooleanCombineMixed: a synthesized end cap's "
+              "own footprint may need trimming against an interacting "
+              "parallel-axis cylinder that also reaches this end's height "
+              "- out of scope for this increment, see "
+              "ParallelCylinderCapNeedsNoTrim's own doc comment in "
+              "boolean.cpp");
+        }
         for (MixedFace& piece : BuildEndCap(cf, /*at_v0=*/true)) caps.push_back(std::move(piece));
       }
     }
     if (cf.end1_is_original) {
       const Point3d probe = cf.frame.origin + (cf.length + probe_eps) * cf.frame.zaxis;
       if (ClassifyPointVsMixedSolid(probe, other, tol) == needed_class) {
+        if (!ParallelCylinderCapSafeAgainstAll(cf, /*at_v0=*/false, other, tol)) {
+          throw std::invalid_argument(
+              "dino8::kernel::BooleanCombineMixed: a synthesized end cap's "
+              "own footprint may need trimming against an interacting "
+              "parallel-axis cylinder that also reaches this end's height "
+              "- out of scope for this increment, see "
+              "ParallelCylinderCapNeedsNoTrim's own doc comment in "
+              "boolean.cpp");
+        }
         for (MixedFace& piece : BuildEndCap(cf, /*at_v0=*/false)) caps.push_back(std::move(piece));
       }
     }

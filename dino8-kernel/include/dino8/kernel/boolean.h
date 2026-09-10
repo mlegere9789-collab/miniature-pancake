@@ -522,15 +522,86 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // (an "inside-the-circle disc fragment" producer for case (ii)), a
 // materially different, separate piece of work.
 //
-// A partial-angle ("pie slice") boss, and an OBLIQUE (non-axis-aligned)
-// Union boss, are each a
-// straightforward generalization of already-exact primitives here
-// (PointOnCylFace already supports arbitrary angle; the oblique split
-// already marks its own notched end as not-original) but neither is
-// separately tested by this increment - out of scope, not silently
-// mishandled (BuildEndCap throws for the partial-angle case explicitly).
-// Two cylindrical faces interacting (case (iv) above) remains unaffected
-// and out of scope. A CylindricalFace fragment re-extracted from a PRIOR
+// An OBLIQUE (non-axis-aligned) Union boss is a straightforward
+// generalization of already-exact primitives here (the oblique split
+// already marks its own notched end as not-original) but is not separately
+// tested by this increment - out of scope, not silently mishandled.
+//
+// CYLINDER/CYLINDER (PARALLEL AXES) - a later increment: case (iv) above
+// (two cylindrical faces interacting) now handles the PARALLEL-axis
+// sub-case for BooleanOp::Union: the two cross-sectional circles
+// (projected onto the plane perpendicular to the shared axis direction)
+// are split by the standard closed-form circle/circle intersection
+// (Weisstein, MathWorld, "Circle-Circle Intersection"; Paul Bourke,
+// "Intersection of two circles," 1997) into either an unmodified pass-
+// through (disjoint circles, or one fully nested inside the other - the
+// existing generic classifier already handles both correctly with no
+// split) or two angular CylindricalFace children at the two crossing
+// angles (SplitCylindricalByParallelCylinder, boolean.cpp), which the rest
+// of the pipeline (splitting, classification, bucketing) treats exactly
+// like any other cylindrical fragment - no new CylindricalFace field, and
+// no change to ClassifyPointVsMixedSolid/RayVsMixedFace/
+// RepresentativeInteriorPointMixed/this function's own switch statement,
+// since none of those special-case WHY a fragment has the (angle, height)
+// trim rectangle it has. BuildEndCap's own former FULL-SWEEP-only
+// restriction is relaxed to any positive sweep (its own body already
+// built every wedge's boundary from exact straight radial edges, so a
+// genuinely partial pie-slice cap needed no new machinery, only a weaker
+// guard - see BuildEndCap's own doc comment in boolean.cpp).
+//
+// Restricted, in this increment, to BooleanOp::Union only, and further
+// restricted within Union to an end whose synthesized cap provably needs
+// no trimming against the OTHER, interacting cylinder (a NEW closed-form
+// check, ParallelCylinderCapNeedsNoTrim, boolean.cpp: a synthesized cap is
+// always a full 0-to-radius pie slice, and that disc's own near-center
+// region can dip into the other cylinder's footprint whenever that other
+// cylinder's own finite axial range reaches the cap's own height at all -
+// a real, checked-directly correctness risk for substantially-overlapping
+// circles, not a theoretical worry - so SynthesizeEndCaps throws
+// std::invalid_argument rather than emit a possibly wrong, untrimmed cap
+// whenever this check fails). Two DIFFERENT larger pieces of follow-up
+// work remain, named separately rather than conflated:
+//   - BooleanOp::Intersection/Difference on a parallel-axis pair: the
+//     split itself is op-agnostic and runs correctly for these ops too
+//     (shared classify/bucket machinery), but their surviving fragments'
+//     end caps are lens-shaped overlaps of BOTH footprints far more often
+//     than Union's are, needing the same cap-vs-other-cylinder re-clip
+//     named below - SynthesizeEndCaps' Intersection call sites are NOT
+//     extended to call the new parallel-cylinder machinery at all, so an
+//     Intersection/Difference result on a parallel-axis pair is correctly
+//     non-watertight at any exposed original end (the same disclosed-gap
+//     shape the existing planar/cylinder Intersection gap below already
+//     has), not silently wrong.
+//   - Genuinely TRIMMING a synthesized cap against an interacting
+//     cylinder (needed both to widen Union's own coverage past the
+//     narrow "no axial overlap" case above, and as the prerequisite for
+//     Intersection/Difference, whose lens-shaped caps need it far more
+//     often): real, tractable, closed-form work - reusing
+//     detail::ClipPolygonByCircle3d directly on the cap's own already-
+//     built polygon against the other cylinder's own circular footprint
+//     on that same plane, exactly case (ii)'s own machinery, just invoked
+//     on a synthesized face instead of an original operand face - but
+//     honestly a second increment, not a one-line addition, since it
+//     needs SynthesizeEndCaps/BuildEndCap re-architected to feed the
+//     synthesized cap back into SplitMixedAgainstAllFaces' own worklist
+//     (so it gets classified/bucketed generically) rather than appended
+//     directly to the result the way today's code does.
+// Also out of scope in this increment: exact/near-tangent parallel
+// cylinders (SplitCylindricalByParallelCylinder throws - the boundary
+// between the "0 crossings" and "2 crossings" regimes is a genuine
+// degeneracy, not a closed-form-clean case to split on) and a PARTIAL-
+// sweep cylindrical operand on either side of a parallel-axis interaction
+// (SplitCylindricalByParallelCylinder throws - the identical restriction
+// BuildEndCap/SplitCylindricalByObliquePlane already state, for the
+// identical reason: no producer here ever builds one).
+//
+// STEINMETZ (equal-radius, intersecting axes) and the fully general
+// (skew, unequal-radii) case remain unaffected and out of scope - see the
+// paragraph below for exactly why Steinmetz, though its own intersection
+// curve DOES factor into two exact planar ellipses in closed form, is a
+// materially bigger lift than parallel axes (a "hole punched into the
+// interior of a curved face" problem, not a "notch at one end" problem).
+// A CylindricalFace fragment re-extracted from a PRIOR
 // BooleanCombineMixed result (e.g. inside BooleanOp::SymmetricDifference's
 // own internal Union-then-Intersection-then-Difference chain) always gets
 // end0_is_original/end1_is_original defaulted back to true/true on
@@ -558,12 +629,17 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // planar/cylindrical pair at a GRAZING (near-axis-parallel) angle (the
 // ellipse's own semi-major axis is unboundedly large there), an oblique
 // interaction against a partial-sweep cylindrical operand, a
-// non-monotonic (re-entrant) oblique crossing, and any two CYLINDRICAL
-// faces interacting (or potentially interacting) at all - the last needs a
-// genuine NURBS-NURBS surface intersection and re-trim step (see
-// IntersectSurfaces in dino8-app's own geom layer for the
+// non-monotonic (re-entrant) oblique crossing, and two CYLINDRICAL faces
+// interacting with NON-PARALLEL axes (see the CYLINDER/CYLINDER paragraph
+// above for the now-supported parallel-axis Union sub-case, and its own
+// separately disclosed remaining gaps) - the fully general skew/unequal-
+// radii case needs a genuine NURBS-NURBS surface intersection and re-trim
+// step (see IntersectSurfaces in dino8-app's own geom layer for the
 // intersection-curve half of that, not yet wired to a Brep boolean here),
-// a materially bigger, separate follow-up this increment doesn't attempt.
+// while the Steinmetz equal-radius/intersecting-axes case needs a new
+// curved-face interior-trim representation instead (see the CYLINDER/
+// CYLINDER paragraph above) - two different, materially bigger, separate
+// follow-ups this increment doesn't attempt.
 //
 // Point-in-solid classification (the other half of the non-convex
 // pipeline, alongside splitting) gets one new, exact closed-form branch:

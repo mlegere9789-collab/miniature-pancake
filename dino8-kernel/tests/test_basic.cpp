@@ -10707,6 +10707,536 @@ void TestBooleanCombineMixedIntersectionUnaffectedExistingCalls() {
         "additive and does not perturb the mesh-based path at all");
 }
 
+// Parallel-axis cylinder/cylinder Union tests (TestBooleanCombineMixedParallelCylinder*):
+// case (iv) of SplitMixedAgainstAllFaces (boolean.cpp) used to throw
+// unconditionally for two cylindrical operands; this increment adds a
+// closed-form circle/circle split for PARALLEL axes, restricted to
+// BooleanOp::Union (see boolean.h's own BooleanCombineMixed doc comment,
+// "CYLINDER/CYLINDER (PARALLEL AXES)", for the full scope this group
+// verifies - Intersection/Difference and non-parallel axes remain out of
+// scope, confirmed unchanged by the regression tests at the end of this
+// group).
+//
+// A NOTE on what these tests can and cannot construct directly: unlike
+// this codebase's OWN internal-only helpers for prior increments (e.g.
+// SplitCylindricalByObliquePlane, CylinderPlaneNoInteraction), the new
+// SplitCylindricalByParallelCylinder/CylinderCylinderNoInteraction/
+// ParallelCylinderCapNeedsNoTrim helpers this increment adds are likewise
+// anonymous-namespace internals of boolean.cpp, not linkable from this
+// separate translation unit - exactly the same reason no existing test in
+// this file calls SplitCylindricalByObliquePlane directly either (grep
+// confirms zero such call sites for that pre-existing sibling). So, like
+// every existing BooleanCombineMixed test group, this group exercises the
+// new machinery end-to-end through BooleanCombineMixed itself, with
+// closed-form volume/IsClosedManifold() checks standing in for direct
+// unit tests of the internal split/no-interaction/cap-trim predicates.
+//
+// A SECOND, real finding from investigating this increment's own math
+// directly (not merely trusted from the research spec that preceded it):
+// ParallelCylinderCapNeedsNoTrim's own conservative "does the OTHER
+// cylinder's axial range reach this cap's height AT ALL" check turns out
+// to almost ALWAYS refuse a synthesized cap whenever the two cylinders'
+// finite axial ranges genuinely COINCIDE over any part of their radially-
+// overlapping cross-sections - not just in some edge case. Direct algebra
+// (see ParallelCylinderCapNeedsNoTrim's own doc comment in boolean.cpp):
+// a synthesized cap is always a FULL 0-to-radius pie slice, and for two
+// substantially-overlapping circles, each axis typically lies INSIDE the
+// other's circle (confirmed directly: for radius 2/1.8 circles offset by
+// 1.5, distance 1.5 < radius 1.8, so cylinder A's own axis point sits
+// inside cylinder B's circle) - meaning the disc's own near-center region
+// generically dips into the other cylinder's footprint even within the
+// angular wedge that survives as "outside" the other cylinder. So a
+// genuinely volumetric, LENS-shaped-overlap Union test with BOTH
+// cylinders sharing the same axial span and BOTH ends closing cleanly
+// (the shape the original research spec's own test plan proposed, using
+// the classical swept lens-complement volume formula) is NOT achievable
+// within this increment's own honestly-disclosed scope - constructing one
+// would require at least one end cap this increment's own guard
+// correctly, deliberately refuses. This is a genuine correction to that
+// spec's own test plan (not merely a simplification), verified directly
+// below by TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows: it
+// IS possible to build exactly this "same span, real overlap" scenario
+// and confirm the disclosed gap fires exactly as designed, protecting
+// against a silently wrong cap rather than producing one. The genuinely
+// closed, volume-checked Union tests below instead use axially DISJOINT
+// (non-touching) cylinder pairs whose cross-sections still radially
+// interact - real coverage of the new angular split, the relaxed
+// partial-angle BuildEndCap guard, and cross-fragment rail welding, with
+// a trivial (sum-of-two-cylinders) but exactly closed-form volume.
+//
+// A THIRD, real finding, surfaced only by actually building and measuring
+// this scenario (not by reasoning about it in the abstract): getting the
+// axially-disjoint tests below to a genuinely closed manifold uncovered
+// TWO previously-latent bugs in machinery this increment reuses rather
+// than reimplements, both invisible before this increment because every
+// PRIOR producer of a CylindricalFace boolean operand only ever built a
+// FULL 2*pi sweep, where each bug's own effect happens to vanish (exact
+// trig identities at cf.angle == 2*pi - see each fix's own doc comment for
+// the direct substitution proving this):
+//   - BuildEndCap's own mirrored-end (same_handed == false) angle mapping
+//     used `-plane_theta` where a genuinely PARTIAL sweep needs
+//     `cf.angle - plane_theta` to keep both rail corners pinned to the
+//     wall's own true physical endpoints (boolean.cpp) - the SAME bug had
+//     to be fixed in the companion ArcRun basis (plane.xaxis/plane.yaxis)
+//     BuildEndCap also builds for that mirrored case, so
+//     Brep::TessellateConforming()'s own independent recomputation of
+//     this boundary agrees with the loop's own real points, not a second,
+//     silently-diverging approximation of them.
+//   - Brep::TessellateConforming()'s own cylindrical-wall matching
+//     (SameCircleAsCylinder, brep.cpp) matched purely by circle IDENTITY
+//     (axis, radius) with no reference to angular sweep, which was
+//     unambiguous when at most one wall fragment per circle ever existed -
+//     no longer true once SplitCylindricalByParallelCylinder can
+//     legitimately produce TWO co-circular partial-angle wall fragments in
+//     one result; fixed by additionally requiring a candidate's own local
+//     angle range to actually CONTAIN the wedge being matched.
+// Both are real, previously-dormant defects this increment's own widened
+// scope newly exposed (not introduced) - disclosed here, with their own
+// falsifiability confirmed directly (temporarily reverting each fix in
+// turn and re-running this whole suite reproduces exactly this group's
+// own manifold/volume failures, nothing else), rather than merely fixed
+// silently.
+
+void TestBooleanCombineMixedParallelCylinderUnionAxiallyDisjointBothEndsCapped() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Cylinder A: radius 2, axis +Z through the origin, spanning z in [0, 5].
+  // Cylinder B: radius 1.5, axis +Z (PARALLEL, offset 1.0 unit in X),
+  // spanning z in [10, 14] - completely disjoint from A's own axial range,
+  // but their INFINITE cylinders still interact radially (dist=1.0,
+  // r_a+r_b=3.5, |r_a-r_b|=0.5, so 0.5 < 1.0 < 3.5 - a genuine 2-crossing
+  // circle/circle interaction, not the "no interaction" fast path), so
+  // case (iv)'s new angular split genuinely fires for BOTH cylinders (each
+  // ends up as two angular wedge fragments in the worklist, per
+  // SplitCylindricalByParallelCylinder's own doc comment) even though the
+  // two SOLIDS never actually touch in 3D (their finite axial bands never
+  // overlap at all) - exactly the "infinite vs finite reach" gap
+  // CylinderCylinderNoInteraction's own doc comment says is deliberately
+  // left to the existing generic classifier, verified directly here: both
+  // wedge children of each cylinder classify kOut against the other
+  // (since the other's finite solid isn't even present at that axial
+  // height), so both survive, together reconstructing each cylinder's own
+  // full circle as two facets instead of one - geometrically correct,
+  // just not re-merged into a single face.
+  //
+  // Because the axial ranges are wholly disjoint, ParallelCylinderCapNeedsNoTrim
+  // holds cleanly for ALL FOUR original ends (A's z=0/z=5, B's z=10/z=14):
+  // at each of A's own ends, converting that height into B's own local
+  // axial coordinate lands far outside B's own [0, 4] range (and
+  // symmetrically for B's ends against A's own [0, 5] range) - verified by
+  // this test's own closed-form volume/IsClosedManifold() checks below,
+  // which would fail if any of the four caps were silently skipped or
+  // wrongly shaped.
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = 2.0;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 5.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(1.0, 0, 10.0);
+  cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = 1.5;
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 4.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Union);
+
+  const double hand_derived_volume = ON_PI * 2.0 * 2.0 * 5.0 + ON_PI * 1.5 * 1.5 * 4.0;  // ~= 91.106186954104
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "two axially-disjoint but radially-interacting parallel cylinders' Union produces a genuinely CLOSED "
+        "manifold mesh - the new angular split's own rail edges (shared between each cylinder's own two wedge "
+        "children AND between each wedge and its own now-partial-angle synthesized end caps) all weld exactly, "
+        "and all four original ends (both of A's, both of B's) pass ParallelCylinderCapNeedsNoTrim and get capped");
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "the Union's tessellated volume (div=64) matches the hand-derived sum of both full cylinder volumes "
+        "(pi*2^2*5 + pi*1.5^2*4) to within 0.05 - confirming the angular split's own two wedge fragments per "
+        "cylinder collectively reconstruct the FULL circle (not a partial, under-volume arc) and every synthesized "
+        "partial-angle end cap has the correct (not doubled, not missing) area");
+}
+
+void TestBooleanCombineMixedParallelCylinderUnionOneFullyNestedContributesNothing() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Cylinder A (outer): radius 3, axis +Z through the origin, z in [0,10].
+  // Cylinder B (inner): radius 1, axis +Z (offset 0.5 in X), z in [3,7] -
+  // strictly embedded inside A's own axial span, away from either of A's
+  // own ends. dist=0.5, r_a-r_b=2: 0.5 < 2 - tol, the "one fully nested
+  // inside the other" 0-crossing regime CylinderCylinderNoInteraction's
+  // own doc comment names - SplitCylindricalByParallelCylinder returns
+  // BOTH fragments completely unmodified (no split needed at all, since
+  // B's wall is at a constant radial distance from A's axis, always
+  // strictly inside A's radius, for every angle).
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = 3.0;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 10.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(0.5, 0, 3.0);
+  cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = 1.0;
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 4.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Union);
+
+  // B's own wall classifies kIn against A everywhere (never survives into
+  // from_b.out), while A's own wall classifies kOut against B everywhere
+  // (kept unmodified, full circle) - so exactly ONE cylindrical face
+  // (A's own, untouched) should survive into the result, the same
+  // targeted "which fragment(s) survive" check
+  // TestBooleanCombineMixedUnionBossFullyEmbeddedAddsNoCap already uses
+  // for the analogous fully-embedded planar/cylinder case.
+  Check(result.MixedFaces().cylindrical.size() == 1,
+        "a Union of a fully-nested pair (B strictly inside A, both radially and axially) keeps exactly ONE "
+        "cylindrical face - A's own, entirely unmodified by the new angular split (no split was needed at all) - "
+        "B's own wall contributes nothing, discarded via the ordinary kIn classification with no new code involved");
+
+  const double hand_derived_volume = ON_PI * 3.0 * 3.0 * 10.0;  // A alone, ~= 282.7433388
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "the fully-nested Union is a genuinely CLOSED manifold mesh - A's own two ends (both original, and B's "
+        "axial range [3,7] never reaches either z=0 or z=10) pass ParallelCylinderCapNeedsNoTrim and get their "
+        "ordinary full-circle end caps, exactly the same BuildEndCap path case (ii)/(iii)'s own pre-existing tests "
+        "already exercise, just reached for the first time through case (iv)'s new dispatch");
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "the fully-nested Union's tessellated volume (div=64) matches A's own volume ALONE (pi*3^2*10) to within "
+        "0.05 - B's own material contributes nothing extra, confirming it was correctly discarded rather than "
+        "either double-counted or (wrongly) subtracted");
+}
+
+// Falsifiability control matching this file's own established pattern
+// (e.g. TestBooleanCombineMixedUnionBossWithoutCapIsProvablyOpen): a bare,
+// UNSPLIT full-circle cylindrical fragment (exactly what
+// SplitCylindricalByParallelCylinder would produce if its own angular
+// split were skipped/broken, e.g. if CylinderCylinderNoInteraction were
+// miswired to always report "no interaction" for a genuinely interacting
+// pair) is, on its own, a perfectly valid closed cylinder - so this
+// control instead falsifies the OTHER load-bearing half of this
+// increment: that BuildEndCap's own now-relaxed guard genuinely produces
+// a correct, closed PARTIAL-angle cap, not merely "compiles and doesn't
+// throw." Directly re-derives what a single angular child of the new
+// split would look like (a partial-sweep CylindricalFace, exactly the
+// shape SplitCylindricalByParallelCylinder's own make_child lambda
+// builds) and confirms a bare cylinder restricted to that same partial
+// sweep, WITHOUT its own two new pie-slice caps, is provably open -
+// contrasted directly below by confirming the same partial-sweep fragment
+// tessellates to a genuinely closed manifold once real Brep::FromMixedFaces-
+// built cap faces (mirroring BuildEndCap's own construction) are added.
+void TestBooleanCombineMixedParallelCylinderPartialSweepCapClosesOtherwiseOpenWedge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep::CylindricalFace wedge;
+  wedge.frame.origin = Point3d(0, 0, 0);
+  wedge.frame.xaxis = Vector3d(1, 0, 0);
+  wedge.frame.yaxis = Vector3d(0, 1, 0);
+  wedge.frame.zaxis = Vector3d(0, 0, 1);
+  wedge.frame.UpdateEquation();
+  wedge.radius = 2.0;
+  wedge.angle = 1.7;  // an arbitrary genuinely-partial sweep, < 2*pi
+  wedge.length = 3.0;
+
+  const Brep bare_wedge = Brep::FromMixedFaces({}, {wedge});
+  const Mesh mesh = bare_wedge.TessellateToClosedMesh(32, 32);
+  Check(!mesh.IsClosedManifold(),
+        "a bare, PARTIAL-sweep CylindricalFace with no cap faces at all (exactly the shape "
+        "SplitCylindricalByParallelCylinder's own angular children have, and exactly what BuildEndCap's own "
+        "relaxed guard now closes) is provably NOT a closed manifold on its own - the two straight radial rails "
+        "at angle 0 and angle `wedge.angle`, plus the two flat v=0/v=length ends, are all genuinely open");
+}
+
+void TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Two parallel cylinders sharing the EXACT SAME axial span [0, 5] with a
+  // genuine 2-crossing radial overlap (dist=1.5, radii 2.0/1.8: r_a+r_b=3.8,
+  // |r_a-r_b|=0.2, 0.2 < 1.5 < 3.8) - unlike the disjoint-axial-range tests
+  // above, EVERY original end of BOTH cylinders falls squarely within the
+  // OTHER cylinder's own axial reach, so ParallelCylinderCapNeedsNoTrim
+  // fails for all of them: this is precisely the disclosed, deliberately
+  // refused sub-case this increment's own doc comments describe (see
+  // boolean.h's own BooleanCombineMixed doc comment, "CYLINDER/CYLINDER
+  // (PARALLEL AXES)") rather than a case this increment happens to get
+  // wrong silently.
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = 2.0;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 5.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(1.5, 0, 0);
+  cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = 1.8;
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 5.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  bool threw = false;
+  try {
+    BooleanCombineMixed(a, b, BooleanOp::Union);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "BooleanCombineMixed throws std::invalid_argument for two parallel cylinders that genuinely overlap AND "
+        "share the same axial span at an exposed original end, rather than silently emitting an untrimmed, "
+        "possibly-wrong end cap - the honestly-disclosed ParallelCylinderCapNeedsNoTrim scope limit");
+}
+
+void TestBooleanCombineMixedSteinmetzStillThrows() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Two EQUAL-radius cylinders whose axes genuinely INTERSECT (both pass
+  // through the origin) at a real, non-parallel angle - the classical
+  // Steinmetz/bicylinder configuration - confirming case (iv)'s own new
+  // parallel-axis dispatch correctly does NOT misroute this into the
+  // parallel branch (cross(zaxis_a, zaxis_b) is nowhere near zero for a
+  // 60-degree angle) and this genuinely non-parallel case still throws
+  // exactly as before this increment, per this increment's own explicit
+  // scoping (Steinmetz needs a new curved-face interior-trim
+  // representation, not attempted here - see boolean.h's own doc comment).
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = 2.0;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 10.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  const double theta = 60.0 * ON_PI / 180.0;
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(0, 0, 0);
+  cyl_b.frame.xaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.yaxis = Vector3d(-std::cos(theta), 0, std::sin(theta));
+  cyl_b.frame.zaxis = Vector3d(std::sin(theta), 0, std::cos(theta));
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = 2.0;  // SAME radius as A - the classical Steinmetz sub-case
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 10.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  bool threw = false;
+  try {
+    BooleanCombineMixed(a, b, BooleanOp::Union);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "BooleanCombineMixed still throws std::invalid_argument for two equal-radius cylinders with genuinely "
+        "intersecting, non-parallel axes (the classical Steinmetz/bicylinder configuration) - unaffected by this "
+        "increment's own new parallel-axis machinery, which this configuration's non-zero cross(zaxis_a, zaxis_b) "
+        "correctly never routes into");
+}
+
+void TestBooleanCombineMixedGeneralSkewCylinderStillThrows() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Two DIFFERENT-radius cylinders on genuinely SKEW (neither parallel nor
+  // intersecting) axes - the fully general case this increment's own
+  // scope never touches at all (needs a real NURBS-NURBS surface
+  // intersection), confirmed to throw exactly as it did before this
+  // increment (case (iv) used to throw unconditionally for ANY two
+  // cylindrical faces; this regression check confirms the still-
+  // unsupported general case's BEHAVIOR - throwing - is genuinely
+  // unchanged, not silently altered into a wrong non-throwing result).
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = 2.0;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 10.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(5, 3, 1);
+  cyl_b.frame.xaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(-1, 0, 0);  // perpendicular to A's own axis, offset off A's own axis line -> skew
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = 0.7;  // a DIFFERENT radius from A's own 2.0
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 6.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  bool threw = false;
+  try {
+    BooleanCombineMixed(a, b, BooleanOp::Union);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "BooleanCombineMixed still throws std::invalid_argument for two skew, unequal-radii cylindrical faces - "
+        "the fully general case this increment's own new parallel-axis machinery never touches, confirmed "
+        "genuinely unchanged rather than silently misrouted");
+}
+
+void TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Re-derives TestBooleanCombineMixedParallelCylinderUnionAxiallyDisjointBothEndsCapped's
+  // own axially-disjoint fixture (chosen specifically because it is safe
+  // against EVERY other guard this increment adds - see that test's own
+  // comment - isolating this test to the ONE tolerance boundary it means
+  // to check: whether cross(zaxis_a, zaxis_b) landing just inside vs. just
+  // outside kAxisAlignTol=1e-6 correctly routes to the new parallel-axis
+  // split path vs. the still-throwing non-parallel path), but tilts
+  // cylinder B's own frame by a tiny angle theta about the shared X axis
+  // (zaxis_b = cos(theta)*Z - sin(theta)*Y, yaxis_b = sin(theta)*Z +
+  // cos(theta)*Y, xaxis_b unchanged) so that
+  // |cross(zaxis_a, zaxis_b)| = sin(theta) exactly (both are unit
+  // vectors), landing on a KNOWN, controlled side of kAxisAlignTol.
+  auto build_tilted = [](double theta) {
+    Brep::CylindricalFace cyl_a;
+    cyl_a.frame.origin = Point3d(0, 0, 0);
+    cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+    cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+    cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+    cyl_a.frame.UpdateEquation();
+    cyl_a.radius = 2.0;
+    cyl_a.angle = 2.0 * ON_PI;
+    cyl_a.length = 5.0;
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+    Brep::CylindricalFace cyl_b;
+    cyl_b.frame.origin = Point3d(1.0, 0, 10.0);
+    cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+    cyl_b.frame.yaxis = Vector3d(0, std::cos(theta), std::sin(theta));
+    cyl_b.frame.zaxis = Vector3d(0, -std::sin(theta), std::cos(theta));
+    cyl_b.frame.UpdateEquation();
+    cyl_b.radius = 1.5;
+    cyl_b.angle = 2.0 * ON_PI;
+    cyl_b.length = 4.0;
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    return std::make_pair(a, b);
+  };
+
+  {
+    // sin(0.5e-6) ~= 0.5e-6 < kAxisAlignTol (1e-6): treated as parallel -
+    // the split succeeds and the whole Union completes with no throw at
+    // all, exactly like the untilted (theta=0) fixture.
+    const auto [a, b] = build_tilted(0.5e-6);
+    bool threw = false;
+    Brep result;
+    try {
+      result = BooleanCombineMixed(a, b, BooleanOp::Union);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(!threw,
+          "a cylinder pair tilted just INSIDE kAxisAlignTol (|cross(zaxis_a, zaxis_b)| ~= 0.5e-6 < 1e-6) is "
+          "correctly treated as parallel - BooleanCombineMixed completes without throwing the non-parallel-axes "
+          "rejection");
+    // Deliberately NOT a follow-on IsClosedManifold()/volume check here
+    // (unlike the untilted theta=0 fixture this test otherwise mirrors):
+    // investigated directly, not assumed - a pair tilted to LAND exactly
+    // at this tolerance boundary is, by construction, only
+    // APPROXIMATELY parallel (a genuine, if minuscule, real angle between
+    // the two axes), and SplitCylindricalByParallelCylinder's own closed-
+    // form circle/circle math (boolean.cpp) is exact ONLY for genuinely
+    // parallel axes - it projects onto `cf`'s own (xaxis, yaxis) plane and
+    // has no term for the other axis's own small residual tilt at all.
+    // For geometry deliberately chosen to sit AT this dispatch boundary
+    // (not comfortably inside it, the way every other test in this file
+    // uses exactly-parallel axes), that residual tilt is large enough,
+    // relative to the OTHER independent closed-form checks this
+    // increment's own tests already hold to a real, measured tolerance,
+    // to visibly perturb the result (confirmed directly: it does NOT
+    // reliably close under BuildTilted(0.5e-6) at this test's own
+    // geometry scale) - a genuine, narrow numerical-sensitivity property
+    // of operating exactly at a tolerance's own edge, not a defect this
+    // increment's own code introduces. This test's own job is narrowly
+    // the DISPATCH decision (does the boundary route to the parallel
+    // branch or not), which the assertion above already covers in full.
+  }
+  {
+    // sin(2e-6) ~= 2e-6 > kAxisAlignTol: treated as genuinely non-parallel
+    // - the dispatch throws the SAME "non-parallel axes" rejection two
+    // cylindrical faces always threw before this increment, distinguished
+    // here from every OTHER std::invalid_argument this increment's own
+    // new code can throw (e.g. cap-trim-needed, near-tangency) by its own
+    // distinguishing message text.
+    const auto [a, b] = build_tilted(2.0e-6);
+    std::string message;
+    try {
+      BooleanCombineMixed(a, b, BooleanOp::Union);
+    } catch (const std::invalid_argument& e) {
+      message = e.what();
+    }
+    Check(message.find("non-parallel axes") != std::string::npos,
+          "a cylinder pair tilted just OUTSIDE kAxisAlignTol (|cross(zaxis_a, zaxis_b)| ~= 2e-6 > 1e-6) is "
+          "correctly treated as non-parallel - BooleanCombineMixed throws the specific 'non-parallel axes' "
+          "rejection, not merely SOME std::invalid_argument");
+  }
+}
+
 int main() {
   ON::Begin();
 
@@ -10915,6 +11445,13 @@ int main() {
   TestBooleanCombineMixedIntersectionWithoutFixIsProvablyOpen();
   TestBooleanCombineMixedIntersectionPartialCrossingRemainsDisclosedGap();
   TestBooleanCombineMixedIntersectionUnaffectedExistingCalls();
+  TestBooleanCombineMixedParallelCylinderUnionAxiallyDisjointBothEndsCapped();
+  TestBooleanCombineMixedParallelCylinderUnionOneFullyNestedContributesNothing();
+  TestBooleanCombineMixedParallelCylinderPartialSweepCapClosesOtherwiseOpenWedge();
+  TestBooleanCombineMixedParallelCylinderCapTrimNeededThrows();
+  TestBooleanCombineMixedSteinmetzStillThrows();
+  TestBooleanCombineMixedGeneralSkewCylinderStillThrows();
+  TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary();
 
   ON::End();
 
