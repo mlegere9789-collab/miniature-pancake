@@ -14,6 +14,7 @@
 
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/convex_hull.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/detail/circle_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
@@ -7137,6 +7138,286 @@ void TestFilletConvexEdgeRoundTripsCylindricalTopologyThroughDotThreeDM() {
   std::remove(path.c_str());
 }
 
+void TestExactConvexHullBoxSixExactQuadFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ExactConvexHull;
+  using dino8::kernel::Point3d;
+
+  // Same 8-corner cube ConvexHull()'s own TestConvexHull() uses, so the
+  // two entry points are directly comparable on identical input - but
+  // this one must come back as 6 genuine quad PlanarFaces, not 12
+  // unmerged triangles, since that's the whole point of doing the
+  // plane-grouping/2D-rehull step at all.
+  const std::vector<Point3d> cube_corners = {
+      Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0),
+      Point3d(0, 0, 2), Point3d(2, 0, 2), Point3d(2, 2, 2), Point3d(0, 2, 2),
+  };
+  const Brep hull = ExactConvexHull(cube_corners);
+  Check(hull.FaceCount() == 6,
+        "ExactConvexHull of a cube's 8 corners has exactly 6 faces - real face merging, "
+        "not one triangle pair left per side (12)");
+
+  const std::vector<Brep::PlanarFace> faces = hull.PlanarFaces();
+  bool all_quads = true;
+  for (const Brep::PlanarFace& f : faces) {
+    if (f.loop.size() != 4) all_quads = false;
+  }
+  Check(all_quads, "every one of the hull's 6 faces is an exact quad (4 vertices), not a "
+                    "triangle or an over-tessellated polygon with extra collinear points");
+
+  const double volume = PlanarBrepVolumeExact(hull);
+  Check(std::fabs(volume - 8.0) < 1e-9,
+        "ExactConvexHull's own exact (untessellated) volume of the cube hull is 8 to 1e-9, "
+        "the same tolerance class as this file's other exact-Brep volume checks");
+}
+
+void TestExactConvexHullOctahedronEightExactTriFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ExactConvexHull;
+  using dino8::kernel::Point3d;
+
+  // Same +-1-on-each-axis octahedron TestSmoothAndRefine's own ConvexHull()
+  // call uses - QuickHull's own seed tetrahedron plus one more apex point
+  // is exactly this shape's own topology, so this doubles as a check that
+  // the seeding/horizon logic doesn't produce spurious extra facets on
+  // the very shape most likely to expose an off-by-one there.
+  const std::vector<Point3d> octahedron_points = {
+      Point3d(1, 0, 0),  Point3d(-1, 0, 0), Point3d(0, 1, 0),
+      Point3d(0, -1, 0), Point3d(0, 0, 1),  Point3d(0, 0, -1),
+  };
+  const Brep hull = ExactConvexHull(octahedron_points);
+  Check(hull.FaceCount() == 8, "ExactConvexHull of a regular octahedron's 6 vertices has exactly 8 "
+                                "triangular faces");
+
+  const std::vector<Brep::PlanarFace> faces = hull.PlanarFaces();
+  bool all_triangles = true;
+  for (const Brep::PlanarFace& f : faces) {
+    if (f.loop.size() != 3) all_triangles = false;
+  }
+  Check(all_triangles, "every one of the octahedron hull's 8 faces is an exact triangle - a "
+                        "genuinely non-mergeable face count, unlike the cube's");
+
+  const double volume = PlanarBrepVolumeExact(hull);
+  Check(std::fabs(volume - 4.0 / 3.0) < 1e-9,
+        "the octahedron hull's exact volume matches the closed-form 4/3 (two unit-height "
+        "square pyramids, base area 2, glued base to base) to 1e-9");
+}
+
+void TestExactConvexHullIgnoresInteriorPoints() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ExactConvexHull;
+  using dino8::kernel::Point3d;
+
+  // QuickHull's own defining property, exercised directly: a point
+  // strictly inside the hull of the others must never end up as a hull
+  // vertex, so adding several of them must not change the result at all
+  // - same shape used by TestConvexHull()'s own mesh-hull version of
+  // this exact check.
+  const std::vector<Point3d> cube_corners = {
+      Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0),
+      Point3d(0, 0, 2), Point3d(2, 0, 2), Point3d(2, 2, 2), Point3d(0, 2, 2),
+  };
+  std::vector<Point3d> with_interior = cube_corners;
+  with_interior.push_back(Point3d(1, 1, 1));    // cube's own center
+  with_interior.push_back(Point3d(1, 1, 0));    // center of the z=0 face
+  with_interior.push_back(Point3d(0.5, 0.5, 0.5));  // strictly inside, off-center
+
+  const Brep hull = ExactConvexHull(with_interior);
+  Check(hull.FaceCount() == 6,
+        "adding several points strictly inside the cube's own hull still yields exactly 6 "
+        "faces - the interior points don't sprout spurious extra facets");
+  const double volume = PlanarBrepVolumeExact(hull);
+  Check(std::fabs(volume - 8.0) < 1e-9,
+        "adding those interior points doesn't change the hull's exact volume at all");
+}
+
+void TestExactConvexHullTooFewPointsThrows() {
+  using dino8::kernel::ExactConvexHull;
+  using dino8::kernel::Point3d;
+
+  bool threw = false;
+  try {
+    ExactConvexHull({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(0, 1, 0)});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ExactConvexHull throws std::invalid_argument on fewer than 4 points - the "
+               "same error contract ConvexHull() already has");
+}
+
+void TestExactConvexHullCoplanarPointsThrows() {
+  using dino8::kernel::ExactConvexHull;
+  using dino8::kernel::Point3d;
+
+  // 5 points, all with z=0 - a valid 2D shape, but no 3D hull exists.
+  bool threw_coplanar = false;
+  try {
+    ExactConvexHull({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0),
+                      Point3d(0.5, 0.5, 0)});
+  } catch (const std::invalid_argument&) {
+    threw_coplanar = true;
+  }
+  Check(threw_coplanar,
+        "ExactConvexHull throws std::invalid_argument on an all-coplanar point set - no 3D "
+        "hull exists, matching ConvexHull()'s own Manifold-failure case for the same input");
+
+  // 4 collinear points - degenerate even earlier (the line-farthest-point
+  // search itself finds nothing off the line).
+  bool threw_collinear = false;
+  try {
+    ExactConvexHull({Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(2, 0, 0), Point3d(3, 0, 0)});
+  } catch (const std::invalid_argument&) {
+    threw_collinear = true;
+  }
+  Check(threw_collinear, "ExactConvexHull throws std::invalid_argument on an all-collinear "
+                          "point set too");
+}
+
+void TestExactConvexHullMatchesMeshConvexHullVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ConvexHull;
+  using dino8::kernel::ExactConvexHull;
+  using dino8::kernel::Point3d;
+
+  // A genuinely non-box convex polytope - a box with one apex point above
+  // its top face (a "house" shape) - so this cross-check isn't just
+  // re-proving the box case against itself: ExactConvexHull's own
+  // double-precision exact volume and ConvexHull()'s independent
+  // Manifold-backed (single-precision-mesh) volume, computed from the
+  // SAME point set through two completely different code paths, must
+  // still agree closely.
+  const std::vector<Point3d> house_points = {
+      Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 2, 0), Point3d(0, 2, 0),
+      Point3d(0, 0, 2), Point3d(2, 0, 2), Point3d(2, 2, 2), Point3d(0, 2, 2),
+      Point3d(1, 1, 4),  // apex, centered above the top face
+  };
+
+  const Brep exact_hull = ExactConvexHull(house_points);
+  const double exact_volume = PlanarBrepVolumeExact(exact_hull);
+
+  const auto mesh_hull = ConvexHull(house_points);
+  const double mesh_volume = mesh_hull.Volume();
+
+  Check(exact_volume > 8.0 + 1e-6,
+        "sanity check: the house shape's own volume is strictly more than the box alone (the "
+        "apex genuinely extends the hull, this isn't just testing the box case again)");
+  Check(std::fabs(exact_volume - mesh_volume) < 1e-6 * exact_volume,
+        "ExactConvexHull's exact volume and the independent Manifold-backed ConvexHull()'s "
+        "own mesh volume agree to within 1e-6 relative on the same point set");
+}
+
+void TestExactConvexHullPipelineIntegration() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanIntersectConvexPlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::ExactConvexHull;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ShellConvexPlanar;
+  using dino8::kernel::Vector3d;
+
+  // THE point of building this at the Brep level at all: a point cloud
+  // (including a couple of strictly-interior points, so this is
+  // genuinely exercising QuickHull rather than just re-wrapping 8 known
+  // corners) run through ExactConvexHull must plug directly into every
+  // one of this kernel's existing exact convex-planar operations, with
+  // zero adaptation code on their side.
+  const double s = 2.0;
+  std::vector<Point3d> cloud = {
+      Point3d(0, 0, 0), Point3d(s, 0, 0), Point3d(s, s, 0), Point3d(0, s, 0),
+      Point3d(0, 0, s), Point3d(s, 0, s), Point3d(s, s, s), Point3d(0, s, s),
+  };
+  cloud.push_back(Point3d(1, 1, 1));    // strictly interior - the cube's own center
+  cloud.push_back(Point3d(0.2, 1, 0));  // strictly interior - on the bottom face's interior
+
+  const Brep hull = ExactConvexHull(cloud);
+  Check(hull.FaceCount() == 6,
+        "the pipeline test's own hull is a plain 6-quad box, as expected from an 8-corner "
+        "cube plus interior points");
+  const double hull_volume = PlanarBrepVolumeExact(hull);
+  Check(std::fabs(hull_volume - s * s * s) < 1e-9, "the hull's own exact volume is s^3 = 8");
+
+  // (a) FilletConvexEdge directly on the hull's own top-front edge - same
+  // edge/radius shape as TestFilletConvexEdgeUnitCubeTopFrontCorner,
+  // scaled to s=2: a straight edge shared by two of ExactConvexHull's own
+  // PlanarFace loops, found by FilletConvexEdge exactly the way it would
+  // for any other Brep - no special-casing for where this Brep came from.
+  const double r = 0.3;
+  const Brep filleted = FilletConvexEdge(hull, Point3d(0, 0, s), Point3d(s, 0, s), r);
+  Check(filleted.FaceCount() == 7,
+        "FilletConvexEdge accepts the hull with zero adaptation and produces the expected "
+        "7-face result (4 untouched + 2 re-trimmed + 1 new cylindrical fillet face)");
+  // Removed volume is a length-s prism of cross-section r^2*(1-pi/4) - the
+  // same per-unit-length sliver TestFilletConvexEdgeUnitCubeTopFrontCorner
+  // derives for its own unit-length edge, here multiplied by this edge's
+  // own length s. Checked only via the tessellated mesh volume, exactly
+  // like that existing test does - PlanarBrepVolumeExact (and PlanarFaces()
+  // itself) can't be used here at all: a genuine fillet result has ONE
+  // curved (cylindrical) face by construction, and PlanarFaces() throws
+  // std::invalid_argument on any non-planar face, by design (see its own
+  // doc comment) - that's not a gap this test works around, it's the
+  // documented boundary of what the exact-planar helper is even for.
+  const double expected_fillet_volume = s * s * s - s * r * r * (1.0 - ON_PI / 4.0);
+  const double fillet_mesh_volume = filleted.TessellateToClosedMeshAdaptive(1e-7).Volume();
+  Check(std::fabs(fillet_mesh_volume - expected_fillet_volume) < 1e-6,
+        "the same fillet-on-a-hull result's independently tessellated mesh volume also "
+        "matches, within the mesh's own single-precision floor - a genuinely watertight "
+        "solid, not just a plausible volume number");
+
+  // (b) ShellConvexPlanar directly on the (unfilleted) hull, opening its
+  // top face - found by outward-normal direction rather than a
+  // hard-coded index, since ExactConvexHull's own face order isn't (and
+  // was never meant to be) the same convention Brep::Box() happens to use.
+  const std::vector<Brep::PlanarFace> hull_faces = hull.PlanarFaces();
+  int top_face_index = -1;
+  for (size_t i = 0; i < hull_faces.size(); ++i) {
+    if (hull_faces[i].plane.zaxis.IsParallelTo(Vector3d(0, 0, 1), 1e-6) == 1) {
+      top_face_index = static_cast<int>(i);
+      break;
+    }
+  }
+  Check(top_face_index >= 0, "the hull has a face whose outward normal is exactly +z - the "
+                             "top face ShellConvexPlanar is about to open");
+  const double t = 0.2;
+  const Brep shelled = ShellConvexPlanar(hull, {top_face_index}, t);
+  Check(shelled.FaceCount() == 14,
+        "ShellConvexPlanar accepts the hull with zero adaptation and produces the same "
+        "14-face open-top-shell topology TestShellConvexPlanarCubeOpenTopExactVolume gets "
+        "from a plain Brep::Box()");
+  const double expected_shell_volume = s * s * s - (s - 2 * t) * (s - 2 * t) * (s - t);
+  const double shell_volume = PlanarBrepVolumeExact(shelled);
+  Check(std::fabs(shell_volume - expected_shell_volume) < 1e-9,
+        "the shell-of-a-hull result's exact volume matches s^3-(s-2t)^2*(s-t) to 1e-9");
+
+  // (c) BooleanIntersectConvexPlanar directly between the hull and a
+  // plain Brep::Box() - mixing an ExactConvexHull() result with a
+  // conventional factory's own Brep in the SAME boolean call, which is
+  // only possible at all because both sides resolve through the same
+  // PlanarFaces()/FromPlanarFaces() contract.
+  const Brep overlapping_box = Brep::Box(1, 1, 1, 3, 3, 3);
+  const Brep intersection = BooleanIntersectConvexPlanar(hull, overlapping_box);
+  Check(intersection.FaceCount() == 6,
+        "BooleanIntersectConvexPlanar(hull, box) accepts the hull with zero adaptation and "
+        "returns a 6-face box (the overlap region)");
+  const double expected_intersection_volume = 1.0;  // overlap is exactly [1,2]^3
+  const double intersection_volume = PlanarBrepVolumeExact(intersection);
+  Check(std::fabs(intersection_volume - expected_intersection_volume) < 1e-9,
+        "BooleanIntersectConvexPlanar(hull, box)'s exact volume is exactly 1 (the [1,2]^3 "
+        "overlap), with the hull as one of the operands, no special-casing needed");
+
+  // (d) BooleanCombinePlanar (Union), the other planar boolean explicitly
+  // named in ExactConvexHull's own doc comment as an interoperability
+  // target - same disjoint-box-union shape TestConvexHull's own mesh-hull
+  // check uses, but through the exact (non-tessellated) planar pipeline.
+  const Brep disjoint_box = Brep::Box(10, 10, 10, 11, 11, 11);
+  const Brep union_result = BooleanCombinePlanar(hull, disjoint_box, BooleanOp::Union);
+  const double union_volume = PlanarBrepVolumeExact(union_result);
+  Check(std::fabs(union_volume - (hull_volume + 1.0)) < 1e-9,
+        "BooleanCombinePlanar(hull, disjoint_box, Union) also accepts the hull with zero "
+        "adaptation: the union's exact volume is exactly hull_volume + 1");
+}
+
 int main() {
   ON::Begin();
 
@@ -7294,6 +7575,13 @@ int main() {
   TestBooleanCombineMixedDrilledBoxThroughHole();
   TestBooleanCombineMixedDrilledBoxNearZeroRadius();
   TestBooleanCombineMixedDrilledBoxCoincidentCapHeight();
+  TestExactConvexHullBoxSixExactQuadFaces();
+  TestExactConvexHullOctahedronEightExactTriFaces();
+  TestExactConvexHullIgnoresInteriorPoints();
+  TestExactConvexHullTooFewPointsThrows();
+  TestExactConvexHullCoplanarPointsThrows();
+  TestExactConvexHullMatchesMeshConvexHullVolume();
+  TestExactConvexHullPipelineIntegration();
 
   ON::End();
 

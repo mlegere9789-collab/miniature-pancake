@@ -52,6 +52,7 @@ add_library(dino8_kernel STATIC
   src/fillet.cpp
   src/file_io.cpp
   src/subd.cpp
+  src/convex_hull.cpp
 )
 
 # windows.h (pulled in by opennurbs.h) defines min/max macros that break
