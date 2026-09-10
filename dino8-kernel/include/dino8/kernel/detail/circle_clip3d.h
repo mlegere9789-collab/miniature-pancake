@@ -117,8 +117,18 @@ struct RayExit {
   size_t edge_index = 0;
 };
 
-inline RayExit ConvexPolygonRayExit(const std::vector<Point2d>& poly2d, const Point2d& c2d, double angle) {
-  const double dx = std::cos(angle), dy = std::sin(angle);
+// Vector-direction overload, factored out of the angle-taking version
+// below so a caller with a raw 2D direction (e.g. detail::
+// ClipPolygonByEllipse3d in ellipse_clip3d.h, whose ellipse-parameter
+// "wedge" directions are generally NOT 90 degrees apart in real physical
+// angle - see that file's own doc comment) doesn't need to round-trip
+// through atan2 just to get back the same (dx, dy) it already has. A
+// strict, backward-compatible generalization of an internal helper, not
+// new behavior on the public ClipPolygonByCircle3d entry point:
+// ConvexPolygonRayExit(angle) below becomes a one-line wrapper over this,
+// so ClipPolygonByCircle3d itself is untouched bit-for-bit.
+inline RayExit ConvexPolygonRayExitDir(const std::vector<Point2d>& poly2d, const Point2d& c2d, const Point2d& dir) {
+  const double dx = dir.x, dy = dir.y;
   const size_t n = poly2d.size();
   RayExit best;
   double best_t = std::numeric_limits<double>::infinity();
@@ -149,6 +159,10 @@ inline RayExit ConvexPolygonRayExit(const std::vector<Point2d>& poly2d, const Po
     best.point = c2d;
   }
   return best;
+}
+
+inline RayExit ConvexPolygonRayExit(const std::vector<Point2d>& poly2d, const Point2d& c2d, double angle) {
+  return ConvexPolygonRayExitDir(poly2d, c2d, Point2d(std::cos(angle), std::sin(angle)));
 }
 
 }  // namespace circle_clip_detail

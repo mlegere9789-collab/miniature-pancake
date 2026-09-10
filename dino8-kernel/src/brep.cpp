@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "dino8/kernel/detail/arc_schedule3d.h"
+#include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/mesh.h"
 
@@ -989,11 +990,156 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     face.m_bRev = !cf.outward;
     const std::vector<Point2d> trim = {Point2d(0.0, 0.0), Point2d(u_max, 0.0),
                                         Point2d(u_max, cf.length), Point2d(0.0, cf.length)};
-    result.face_trim_loops_.push_back(trim);
+
+    const Point3d corner00 = surface->PointAt(0.0, 0.0);
+    const Point3d corner_u0 = surface->PointAt(u_max, 0.0);
+    const Point3d corner_u1 = surface->PointAt(u_max, cf.length);
+    const Point3d corner01 = surface->PointAt(0.0, cf.length);
+
+    // See CylindricalFace::cap0_notch_points/cap1_notch_points' own doc
+    // comment: converts a dense list of 3D points already known to lie on
+    // this cylinder (in fixed increasing-angle order) into their own
+    // (u, v) coordinates on THIS specific surface - the exact same
+    // "evaluate the REAL surface, don't trust an independently
+    // reconstructed parameter" principle ConicalFace's own notch_uv lambda
+    // (below) already uses, mirrored here for the cylinder case (no
+    // apex-relative height recovery needed - a cylinder's true axial
+    // height already equals v directly).
+    auto notch_uv = [&](const std::vector<Point3d>& pts3d) {
+      std::vector<Point2d> uv;
+      uv.reserve(pts3d.size());
+      for (size_t i = 0; i < pts3d.size(); ++i) {
+        const Point3d& p = pts3d[i];
+        const Vector3d d = p - cf.frame.origin;
+        const double height = d * cf.frame.zaxis;
+        const double x = d * cf.frame.xaxis, y = d * cf.frame.yaxis;
+        double phi;
+        // The first and last points of a notch sample list are REQUIRED
+        // (by this field's own documented contract - see
+        // CylindricalFace::cap0_notch_points' own doc comment) to sit at
+        // angle exactly 0 and exactly cf.angle respectively - forced here
+        // directly rather than re-derived via atan2, because atan2 cannot
+        // distinguish "angle 0" from "angle 2*pi" (the SAME physical
+        // direction) at all, and for a FULL 2*pi sweep specifically (the
+        // only case this increment's own SplitCylindricalByObliquePlane
+        // ever produces) that ambiguity is not a remote corner case but
+        // the literal boundary EVERY notch touches at both its own
+        // endpoints. A real, checked-directly numerical subtlety found
+        // during this increment's own development (not assumed): with
+        // atan2 alone, floating-point rounding at that exact boundary
+        // (y coming out as a tiny negative number instead of exactly 0)
+        // intermittently wrapped the FIRST point to just-under-2*pi
+        // instead of 0, corrupting the cap's own visible-trim winding
+        // into a self-intersecting polygon - confirmed directly by
+        // reverting just this fix and reproducing the exact failure
+        // (NurbsSurface::TessellateGridClippedExact's own "trim_polygon
+        // must be simple" rejection) again. Every INTERIOR point (i
+        // strictly between 0 and the last index) still uses the genuine
+        // atan2-recovered angle, since those have no such contractual
+        // anchor and are honestly the geometry's own computed angle.
+        if (i == 0) {
+          phi = 0.0;
+        } else if (i + 1 == pts3d.size()) {
+          phi = cf.angle;
+        } else {
+          phi = std::atan2(y, x);
+          if (phi < 0.0) phi += 2.0 * ON_PI;
+        }
+        double u = 0.0;
+        if (!circle.GetNurbFormParameterFromRadian(phi, &u)) {
+          throw std::runtime_error(
+              "dino8::kernel::Brep::FromMixedFaces: a CylindricalFace's own cap "
+              "notch point's angle is out of ON_Circle's own NURBS-"
+              "parameterization domain");
+        }
+        // Checked invariant, not merely trusted: this (u, height) point,
+        // evaluated back through the REAL surface, must reproduce the same
+        // 3D point this whole notch is built from.
+        const Point3d check = surface->PointAt(u, height);
+        const double check_tol = std::max(1e-6, cf.radius * 1e-6);
+        if (check.DistanceTo(p) > check_tol) {
+          throw std::runtime_error(
+              "dino8::kernel::Brep::FromMixedFaces: a CylindricalFace's own cap "
+              "notch point does not lie on the cylinder's own real surface "
+              "within tolerance - please report this as a bug");
+        }
+        uv.emplace_back(u, height);
+      }
+      return uv;
+    };
+
+    std::vector<Point2d> cap0_interior_uv;  // notch_interior_uv[0], empty unless notched
+    std::vector<Point2d> cap1_interior_uv;  // notch_interior_uv[2] (already REVERSED), empty unless notched
+    double cap0_tol = 0.0, cap1_tol = 0.0;
+    std::vector<Point2d> cap0_full_uv, cap1_full_uv_reversed;  // for the visible trim, below
+
+    if (!cf.cap0_notch_points.empty()) {
+      if (cf.cap0_notch_points.size() < 2) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: CylindricalFace::cap0_notch_points "
+            "must have at least 2 points (the two rail corners) when non-empty");
+      }
+      if (cf.cap0_notch_points.front().DistanceTo(corner00) > 1e-6 ||
+          cf.cap0_notch_points.back().DistanceTo(corner_u0) > 1e-6) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: CylindricalFace::cap0_notch_points's "
+            "own first/last points must exactly match this face's own two rail "
+            "corners at v=0 (angle 0 and angle `angle` respectively) - see that "
+            "field's own doc comment for why this check already accommodates a "
+            "full 2*pi sweep with no separate branch");
+      }
+      cap0_full_uv = notch_uv(cf.cap0_notch_points);
+      cap0_interior_uv.assign(cap0_full_uv.begin() + 1, cap0_full_uv.end() - 1);
+      cap0_tol = cf.cap0_notch_tolerance;
+    }
+    if (!cf.cap1_notch_points.empty()) {
+      if (cf.cap1_notch_points.size() < 2) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: CylindricalFace::cap1_notch_points "
+            "must have at least 2 points (the two rail corners) when non-empty");
+      }
+      if (cf.cap1_notch_points.front().DistanceTo(corner01) > 1e-6 ||
+          cf.cap1_notch_points.back().DistanceTo(corner_u1) > 1e-6) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: CylindricalFace::cap1_notch_points's "
+            "own first/last points must exactly match this face's own two rail "
+            "corners at v=length (angle 0 and angle `angle` respectively)");
+      }
+      const std::vector<Point2d> full_uv = notch_uv(cf.cap1_notch_points);
+      // Segment index 2 walks u_max->0 (decreasing angle) - the reverse of
+      // cap1_notch_points' own fixed increasing-angle convention - so both
+      // the topology-only interior list and the visible-trim splice below
+      // need it reversed, exactly mirroring ConicalFace's own handling.
+      cap1_full_uv_reversed.assign(full_uv.rbegin(), full_uv.rend());
+      cap1_interior_uv.assign(cap1_full_uv_reversed.begin() + 1, cap1_full_uv_reversed.end() - 1);
+      cap1_tol = cf.cap1_notch_tolerance;
+    }
+
+    // The VISIBLE (tessellated) trim boundary: the plain rectangle's own 4
+    // corners, with either notched segment's straight corner-to-corner
+    // edge replaced by its own dense chain - mirrors ConicalFace's own
+    // construction exactly (see its own comment above for why each piece
+    // appears exactly once).
+    std::vector<Point2d> visible_trim;
+    if (!cap0_full_uv.empty()) {
+      visible_trim.insert(visible_trim.end(), cap0_full_uv.begin(), cap0_full_uv.end());
+    } else {
+      visible_trim.push_back(trim[0]);
+      visible_trim.push_back(trim[1]);
+    }
+    visible_trim.push_back(trim[2]);
+    if (!cap1_full_uv_reversed.empty()) {
+      visible_trim.insert(visible_trim.end(), cap1_full_uv_reversed.begin() + 1, cap1_full_uv_reversed.end());
+    } else {
+      visible_trim.push_back(trim[3]);
+    }
+
+    result.face_trim_loops_.push_back(visible_trim);
     // exact_clip=true for the same reason FromPlanarFaces()'s own faces
     // use it above: this trim rectangle IS the patch's exact boundary
-    // (the two straight rails at u=0/u=u_max and the two circular arcs at
-    // v=0/v=length), not an approximation of one.
+    // (the two straight rails at u=0/u=u_max and the two circular arcs -
+    // or, once notched, an ellipse - at v=0/v=length), not an
+    // approximation of one.
     result.face_exact_clip_.push_back(true);
     result.face_hole_loops_.emplace_back();
     result.face_arc_runs_.emplace_back();  // meaningless for a non-planar face
@@ -1008,12 +1154,17 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     // points are exact to floating-point precision, not merely close).
     FaceTopology t;
     t.trim_uv = trim;
-    t.vids = {welder.Weld(surface->PointAt(0.0, 0.0)), welder.Weld(surface->PointAt(u_max, 0.0)),
-              welder.Weld(surface->PointAt(u_max, cf.length)), welder.Weld(surface->PointAt(0.0, cf.length))};
+    t.vids = {welder.Weld(corner00), welder.Weld(corner_u0), welder.Weld(corner_u1), welder.Weld(corner01)};
     t.curved_surface = surface;
     t.curved_u_max = u_max;
     t.curved_v0 = 0.0;
     t.curved_length = cf.length;
+    t.notch_interior_uv.resize(4);
+    t.notch_interior_uv[0] = std::move(cap0_interior_uv);
+    t.notch_interior_uv[2] = std::move(cap1_interior_uv);
+    t.cap_notch_tolerance.assign(4, 0.0);
+    t.cap_notch_tolerance[0] = cap0_tol;
+    t.cap_notch_tolerance[2] = cap1_tol;
     topo.push_back(std::move(t));
   }
 

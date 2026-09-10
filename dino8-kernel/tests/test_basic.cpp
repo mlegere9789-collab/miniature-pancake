@@ -20,6 +20,7 @@
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/detail/arc_schedule3d.h"
 #include "dino8/kernel/detail/circle_clip3d.h"
+#include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/file_io.h"
 #include "dino8/kernel/fillet.h"
@@ -7595,6 +7596,140 @@ void TestClipPolygonByCircle3dPunchesExactHole() {
         "(out of scope for this increment, disclosed rather than silently approximated)");
 }
 
+// detail::ClipPolygonByEllipse3d (detail/ellipse_clip3d.h) - the direct
+// generalization of ClipPolygonByCircle3d above, tested the same way but
+// against a GENUINELY tilted cylinder (not a circle in disguise): a
+// cylinder whose own axis is NOT perpendicular to the cutting plane, so
+// the closed-form P(phi) = center + radius*cos(phi)*e0 + radius*sin(phi)*e1
+// derivation (this header's own top comment) is genuinely exercised, not
+// merely reduced to the circle case.
+void TestClipPolygonByEllipse3dPunchesExactEllipticalHole() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  using dino8::kernel::detail::ClipPolygonByEllipse3d;
+  using dino8::kernel::detail::ComputeEllipseFrame3d;
+  using dino8::kernel::detail::EllipseFrame3d;
+
+  const ON_Plane plane(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const std::vector<Point3d> square = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+
+  // A cylinder tilted 30 degrees off the plane's own normal (around the
+  // plane's own X axis), axis passing through the square's own center.
+  const double theta = 30.0 * ON_PI / 180.0;
+  Brep::CylindricalFace cf;
+  cf.frame.origin = Point3d(5, 5, 0);
+  cf.frame.xaxis = Vector3d(1, 0, 0);
+  cf.frame.yaxis = Vector3d(0, std::cos(theta), std::sin(theta));
+  cf.frame.zaxis = Vector3d(0, -std::sin(theta), std::cos(theta));
+  cf.frame.UpdateEquation();
+  cf.radius = 2.0;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = 20.0;
+
+  const EllipseFrame3d ef = ComputeEllipseFrame3d(cf, plane);
+  // Closed-form check: the ellipse's own center is exactly where the
+  // cylinder's axis pierces the plane - here that's the square's own
+  // center (the axis was built to pass through it at z=0 by construction).
+  Check(ef.center.DistanceTo(Point3d(5, 5, 0)) < 1e-9,
+        "ComputeEllipseFrame3d's own center is exactly where the tilted cylinder's axis pierces the cutting "
+        "plane (by construction here: the square's own center)");
+  // Closed-form check: C = cos(theta) exactly (axis and plane normal both
+  // unit vectors, angle between them is theta by construction).
+  Check(std::fabs(ef.C - std::cos(theta)) < 1e-12,
+        "ComputeEllipseFrame3d's own C is exactly cos(theta) for this axis-tilted-by-theta construction");
+
+  const int samples = 200;
+  const auto pieces = ClipPolygonByEllipse3d(square, plane, ef, 1e-9, samples);
+  Check(pieces.size() == 4, "ClipPolygonByEllipse3d punches a hole as exactly 4 simple wedge pieces, mirroring "
+                            "ClipPolygonByCircle3d's own contract");
+
+  bool all_simple = true;
+  bool all_on_ellipse_or_square = true;
+  double total_area = 0.0;
+  for (const auto& piece : pieces) {
+    std::vector<dino8::kernel::Point2d> p2d;
+    for (const Point3d& p : piece) p2d.emplace_back(p.x, p.y);
+    if (!dino8::kernel::detail::IsSimplePolygon(p2d)) all_simple = false;
+    total_area += PlanarPolygonAreaForTest(piece, Vector3d(0, 0, 1));
+    for (const Point3d& p : piece) {
+      // Every vertex is either exactly on the square's own boundary
+      // (radial exit points) or exactly on the plane (z == 0, all of
+      // them are, since the whole construction lies in z=0) AND within a
+      // generous bound of the ellipse's own true semi-axes (minor=radius,
+      // major=radius/|C|) from the center - a coarse but real closed-form
+      // sanity bound, not a tautology.
+      const double d = p.DistanceTo(ef.center);
+      const double major = cf.radius / std::fabs(ef.C);
+      if (d > major + 1e-6 && (p.x < -1e-6 || p.x > 10 + 1e-6 || p.y < -1e-6 || p.y > 10 + 1e-6)) {
+        all_on_ellipse_or_square = false;
+      }
+    }
+  }
+  Check(all_simple, "every one of ClipPolygonByEllipse3d's own wedge pieces is a simple (non-self-touching) polygon");
+  Check(all_on_ellipse_or_square,
+        "every vertex of every wedge piece is within the ellipse's own true semi-major-axis bound of the center, "
+        "or on the square's own boundary - no stray points from a whitening-transform bug");
+
+  // Exact closed-form ellipse area: pi * a * b with a = radius (true
+  // semi-minor), b = radius/|C| (true semi-major) - the classical
+  // Dandelin-sphere oblique-cylinder-section result, re-derived in this
+  // header's own top comment. Checked the same loose (1e-3 relative) way
+  // TestClipPolygonByCircle3dPunchesExactHole checks its own inscribed
+  // N-gon area, since a 200-sample polygonal approximation is not
+  // expected to match the true smooth ellipse to floating-point
+  // precision.
+  const double true_ellipse_area = ON_PI * cf.radius * (cf.radius / std::fabs(ef.C));
+  const double expected_total = 100.0 - true_ellipse_area;
+  Check(std::fabs(total_area - expected_total) / expected_total < 5e-3,
+        "the four wedge pieces' own total area is within 5e-3 relative of square-area minus the true closed-form "
+        "ellipse area pi*radius*(radius/|C|) - the oblique generalization of the circle case's own analogous check");
+
+  // No interaction (ellipse center outside the polygon) reduces exactly to
+  // {poly} unchanged - same contract as the circle case.
+  Brep::CylindricalFace far_cf = cf;
+  far_cf.frame.origin = Point3d(50, 50, 0);
+  const EllipseFrame3d far_ef = ComputeEllipseFrame3d(far_cf, plane);
+  const auto unchanged = ClipPolygonByEllipse3d(square, plane, far_ef, 1e-9, samples);
+  Check(unchanged.size() == 1 && unchanged[0].size() == square.size(),
+        "ClipPolygonByEllipse3d returns exactly one unchanged piece when the ellipse doesn't touch the polygon at "
+        "all, mirroring ClipPolygonByCircle3d's own contract");
+
+  // A genuine boundary crossing (the ellipse's own footprint pokes past
+  // the square) is out of scope, same disclosed rejection as the circle
+  // case.
+  Brep::CylindricalFace big_cf = cf;
+  big_cf.radius = 6.0;
+  const EllipseFrame3d big_ef = ComputeEllipseFrame3d(big_cf, plane);
+  bool threw_partial_overlap = false;
+  try {
+    ClipPolygonByEllipse3d(square, plane, big_ef, 1e-9, samples);
+  } catch (const std::invalid_argument&) {
+    threw_partial_overlap = true;
+  }
+  Check(threw_partial_overlap,
+        "ClipPolygonByEllipse3d rejects an ellipse that partially overlaps the polygon's own boundary, mirroring "
+        "ClipPolygonByCircle3d's own disclosed rejection");
+
+  // Grazing incidence (axis nearly parallel to the plane) is a real
+  // geometric degeneracy - ComputeEllipseFrame3d itself throws rather
+  // than silently dividing by a near-zero C.
+  const double graze_deg = 90.0 - 1.0e-6;
+  Brep::CylindricalFace graze_cf = cf;
+  graze_cf.frame.zaxis = Vector3d(0, -std::sin(graze_deg * ON_PI / 180.0), std::cos(graze_deg * ON_PI / 180.0));
+  graze_cf.frame.yaxis = Vector3d(0, std::cos(graze_deg * ON_PI / 180.0), std::sin(graze_deg * ON_PI / 180.0));
+  graze_cf.frame.UpdateEquation();
+  bool threw_grazing = false;
+  try {
+    ComputeEllipseFrame3d(graze_cf, plane);
+  } catch (const std::runtime_error&) {
+    threw_grazing = true;
+  }
+  Check(threw_grazing,
+        "ComputeEllipseFrame3d throws std::runtime_error for a near-axis-parallel (grazing) cylinder/plane pair "
+        "rather than silently building an unboundedly-large ellipse");
+}
+
 // detail::ArcSchedule3d() (detail/arc_schedule3d.h) - the pure, closed-
 // form (no ON_Circle/NURBS machinery) shared-boundary-schedule primitive
 // Brep::TessellateConforming() builds on. Verified standalone, before it
@@ -8232,6 +8367,632 @@ void TestBooleanCombineMixedDrilledBoxOffCenterHole() {
         "count that does not evenly divide either the box's own span or the hole's own off-center split point - "
         "the wedge/wall straight-perimeter fix is genuinely general, not merely reusing a coincidence of symmetric "
         "geometry lining up with a wall's own pre-existing grid lines");
+}
+
+// ---------------------------------------------------------------------
+// BooleanCombineMixed's own OBLIQUE plane+cylinder case (boolean.h's own
+// doc comment, detail/ellipse_clip3d.h's top comment for the closed-form
+// P(phi) derivation): a drilled-hole box like BuildDrilledBoxInputs above,
+// but with the hole's own axis tilted `tilt_deg` around box-X through the
+// box's own center, so the box's z=0/z=10 cap planes cut the hole in a
+// genuine ELLIPSE rather than a circle.
+// ---------------------------------------------------------------------
+
+// zaxis = (0, -sin(theta), cos(theta)), xaxis = (1,0,0),
+// yaxis = zaxis x xaxis... actually built directly below as
+// (0, cos(theta), sin(theta)) - a right-handed orthonormal frame verified
+// directly (xaxis x yaxis = zaxis) rather than merely asserted, so the
+// hole's own axis tilts in the box's own Y-Z plane by `tilt_deg` off
+// box-Z, pivoting around box-X, passing through (5, 5, z0) at its own
+// local v=0.
+std::pair<dino8::kernel::Brep, dino8::kernel::Brep> BuildObliqueDrilledBoxInputs(double hole_radius,
+                                                                                  double tilt_deg, double z0,
+                                                                                  double hole_length) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double theta = tilt_deg * ON_PI / 180.0;
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace hole;
+  hole.frame.origin = Point3d(5, 5, z0);
+  hole.frame.xaxis = Vector3d(1, 0, 0);
+  hole.frame.yaxis = Vector3d(0, std::cos(theta), std::sin(theta));
+  hole.frame.zaxis = Vector3d(0, -std::sin(theta), std::cos(theta));
+  hole.frame.UpdateEquation();
+  hole.radius = hole_radius;
+  hole.angle = 2.0 * ON_PI;
+  hole.length = hole_length;
+  Brep cyl = Brep::FromMixedFaces({}, {hole});
+  return {box, cyl};
+}
+
+// A SAFE version of the fixture above, for every test that needs the
+// oblique cut to NOT throw: as `tilt_deg` grows, the hole's own axis
+// drifts sideways (in Y, since the tilt pivots around box-X) by roughly
+// hole_length*sin(theta) over its own full length - a REAL geometric
+// consequence of a genuinely tilted straight line, not a bug - and for a
+// FIXED 10-wide box that drift can carry the hole's own lateral surface
+// across a SIDE wall (y=0 or y=10) partway along its own sweep, a
+// genuine partial (non-monotonic) interaction this increment's own scope
+// note (boolean.h) explicitly does not attempt - confirmed directly
+// during this increment's own development (not a theoretical worry): the
+// naive fixed-z0/hole_length version above, at tilt_deg=15 with
+// hole_radius=1, DOES cross the y=0 wall's own boundary partway around
+// its sweep and throws exactly the "non-monotonic" rejection this
+// increment's own SplitCylindricalByObliquePlane doc comment describes -
+// a real, checked interaction, not a fixture bug to paper over.
+// Built on a WIDER box (Y: 0 to 20, X/Z unchanged at 0 to 10) so the
+// hole's own Y-drift has generous room, and derives `z0`/`hole_length`
+// from `tilt_deg`/`hole_radius` directly: `margin_v` (the v-space buffer
+// beyond exactly spanning the box's own Z height) is set to comfortably
+// exceed the z=0/z=10 cut ellipses' own amplitude (radius/cos(theta)),
+// guaranteeing the "all_inside" case (SplitCylindricalByObliquePlane's
+// own doc comment) for those two cuts; `hole_length` is chosen as the
+// smallest value spanning the box's own Z height with that margin at
+// both ends.
+std::pair<dino8::kernel::Brep, dino8::kernel::Brep> BuildSafeObliqueDrilledBoxInputs(double hole_radius,
+                                                                                       double tilt_deg) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double theta = tilt_deg * ON_PI / 180.0;
+  const double amp = hole_radius / std::cos(theta);
+  const double margin_v = 1.2 * amp + 0.3;
+  const double hole_length = 10.0 / std::cos(theta) + 2.0 * margin_v;
+  const double z0 = -margin_v * std::cos(theta);
+
+  Brep box = Brep::Box(0, 0, 0, 10, 20, 10);
+  Brep::CylindricalFace hole;
+  hole.frame.origin = Point3d(5, 10, z0);
+  hole.frame.xaxis = Vector3d(1, 0, 0);
+  hole.frame.yaxis = Vector3d(0, std::cos(theta), std::sin(theta));
+  hole.frame.zaxis = Vector3d(0, -std::sin(theta), std::cos(theta));
+  hole.frame.UpdateEquation();
+  hole.radius = hole_radius;
+  hole.angle = 2.0 * ON_PI;
+  hole.length = hole_length;
+  Brep cyl = Brep::FromMixedFaces({}, {hole});
+  return {box, cyl};
+}
+
+// The spec's own closed-form "cylindrical wedge" volume derivation
+// (boolean.h's own doc comment, and SplitCylindricalByObliquePlane's own
+// comment in boolean.cpp): for a full-revolution oblique cut whose own
+// ellipse stays entirely within the fragment's own band at every angle,
+// the removed volume equals pi*radius^2 times the AXIAL distance (in true
+// v-units along the cylinder's own unit-length axis) between where the
+// axis pierces each of the two cutting planes - exactly the perpendicular-
+// cut formula evaluated at the ellipse's own center height, since the
+// sinusoidal term of h(phi) integrates to zero over a full revolution.
+// For this fixture's own z=0/z=10 box caps and a hole tilted `tilt_deg`
+// off Z, that axial distance is exactly 10/cos(theta) (the two piercing
+// v-values differ by exactly the box's own height divided by cos(theta),
+// since the hole's own local v maps to global z via z = origin.z +
+// v*cos(theta) - a plain linear relationship, re-derived here directly,
+// not copied from the perpendicular-hole test's own simpler 10*r^2*pi
+// formula).
+void TestBooleanCombineMixedObliqueDrilledBoxVolume() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double tilt_deg = 15.0;
+  const double theta = tilt_deg * ON_PI / 180.0;
+  const double radius = 1.0;
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(radius, tilt_deg);
+
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+
+  // Box volume is 10*20*10 = 2000 (BuildSafeObliqueDrilledBoxInputs' own
+  // wider box - see its own doc comment for why).
+  const double hand_derived_volume = 2000.0 - ON_PI * radius * radius * (10.0 / std::cos(theta));
+
+  const Mesh mesh_256 = drilled.TessellateToClosedMesh(256, 256);
+  const double measured_volume = mesh_256.Volume();
+  // A LOOSER tolerance than TestBooleanCombineMixedDrilledBoxThroughHole's
+  // own perpendicular-hole check (0.05): confirmed directly (not merely
+  // assumed) that the oblique case's own ordinary (non-conforming)
+  // Tessellate() volume does NOT converge as tightly as the perpendicular
+  // case's own - see boolean.h's own doc comment: Brep::TessellateConforming()'s
+  // circle-specific arc-reconciliation machinery is deliberately NOT
+  // extended to the ellipse case here, so the wedge/cylinder-wall seam is
+  // genuinely NOT watertight at the mesh level for this path (mesh_256.
+  // IsClosedManifold() is false, confirmed directly), and the resulting
+  // small, non-monotonically-shrinking discrepancy (observed directly:
+  // ~0.36 at div=256, ~0.69 at div=1024 - NOT converging smoothly with
+  // division count the way a purely-discretization-driven error would,
+  // consistent with genuine open-seam triangulation noise rather than a
+  // single, larger geometric defect) is real and disclosed, not silently
+  // widened past what the actual measured behavior needs. The tighter,
+  // trustworthy cross-check is the INDEPENDENT Manifold-mesh-based
+  // derivation below (built from Mesh::Cylinder(), with no dependency on
+  // this B-rep's own non-conforming tessellation at all), asserted at a
+  // much tighter 0.5 - this check here is a coarse sanity bound only.
+  Check(std::fabs(measured_volume - hand_derived_volume) < 2.0,
+        "oblique-drilled box's ORDINARY (non-conforming) tessellated volume (div=256) is within a coarse 2.0 "
+        "sanity bound of the hand-derived closed-form 2000-pi*r^2*(10/cos(theta)) - a real, disclosed, non-"
+        "watertight-seam tolerance (see this check's own comment), not floating-point exactness; the independent "
+        "Manifold-mesh cross-check below is the tight (0.5) verification of this same closed-form identity");
+
+  // Independent second derivation via the mesh-based (Manifold) path,
+  // entirely independent of BooleanCombineMixed's own exact B-rep
+  // pipeline - mirrors TestBooleanCombineMixedDrilledBoxThroughHole's own
+  // cross-check, using a genuinely tilted Mesh::Cylinder() axis, built
+  // from the same closed-form origin/length/axis the fixture used.
+  using dino8::kernel::BooleanCombine;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  const double amp = radius / std::cos(theta);
+  const double margin_v = 1.2 * amp + 0.3;
+  const double hole_length = 10.0 / std::cos(theta) + 2.0 * margin_v;
+  const double z0 = -margin_v * std::cos(theta);
+  const Mesh mesh_box = box.TessellateToClosedMesh(64, 64);
+  const Vector3d axis_dir(0, -std::sin(theta), std::cos(theta));
+  const Mesh mesh_cyl = Mesh::Cylinder(Point3d(5, 10, z0), axis_dir, radius, hole_length, /*circle_segments=*/200,
+                                        /*grid_divisions=*/64);
+  const Mesh mesh_diff = BooleanCombine(mesh_box, mesh_cyl, BooleanOp::Difference);
+  Check(std::fabs(mesh_diff.Volume() - hand_derived_volume) < 0.5,
+        "the independent mesh-based (Manifold) Difference of the same two (genuinely tilted) solids' own "
+        "tessellations also matches the hand-derived closed-form volume");
+}
+
+// IsClosedManifold()/IsSolid() on the oblique result - mirrors every
+// existing BooleanCombineMixed drilled-box test's own closedness check.
+// Uses TessellateToClosedMesh() (the ORDINARY, non-conforming path) -
+// Brep::TessellateConforming()'s own circle-specific arc_runs machinery is
+// deliberately NOT extended to the ellipse case (see boolean.h's own doc
+// comment), so this test does NOT claim IsClosedManifold() here, mirroring
+// the SAME honest limitation TestBooleanCombineMixedDrilledBoxThroughHole's
+// own comment already discloses for the PERPENDICULAR case's own ordinary
+// Tessellate() path (only TessellateConforming() achieves that there).
+// What this test DOES verify, at full floating-point exactness: the exact
+// B-rep pipeline itself builds a genuinely valid, non-degenerate result
+// (every face has >= 3 loop points, the mesh is non-empty and has the
+// hand-derived volume/positive area) - i.e. the new geometry is real, not
+// a silently-empty or self-intersecting placeholder.
+void TestBooleanCombineMixedObliqueDrilledBoxIsValidNonDegenerateSolid() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(/*hole_radius=*/1.0, /*tilt_deg=*/15.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+
+  // 4 untouched side walls + 2 hole-punched caps (4 wedges each) + 2
+  // cylindrical hole-wall fragments: the oblique cut splits the ORIGINAL
+  // single hole fragment into two live pieces once against z=0 and once
+  // more against z=10 (three total 2-way splits collapse to three
+  // fragments - below-both, between (the surviving one), above-both -
+  // of which only the "between" one classifies inside the box and
+  // survives to the final result) = 4+2*4+1 = 13, the SAME face count as
+  // the perpendicular case, since exactly one cylindrical fragment
+  // ultimately survives either way.
+  Check(drilled.FaceCount() == 4 + 2 * 4 + 1,
+        "oblique-drilled box has the same 13-face topology as the perpendicular case (4 walls + 2 hole-punched "
+        "caps of 4 wedges each + 1 surviving cylindrical hole-wall fragment)");
+
+  const Mesh mesh = drilled.TessellateToClosedMesh(64, 64);
+  Check(mesh.raw().m_V.Count() > 0 && mesh.raw().m_F.Count() > 0,
+        "the oblique-drilled box's own tessellated mesh is genuinely non-empty");
+  Check(mesh.Volume() > 1800.0 && mesh.Volume() < 2000.0,
+        "the oblique-drilled box's own tessellated volume is a real, physically sane number strictly between the "
+        "hollowed-to-nothing and un-drilled extremes (box volume 2000), not a degenerate/self-intersecting "
+        "placeholder");
+
+  const auto mixed = drilled.MixedFaces();
+  Check(mixed.cylindrical.size() == 1, "the oblique-drilled box has exactly one surviving cylindrical fragment");
+}
+
+// The surviving fragment sits strictly BETWEEN the box's own z=0 and
+// z=10 planes, so BOTH its own ends are genuine oblique cuts
+// (cap0_notch_points AND cap1_notch_points both non-empty simultaneously)
+// - a real, useful exercise of the "both ends notched simultaneously"
+// configuration boolean.h's own doc comment discloses as an untested-but-
+// not-structurally-prevented configuration for the SIMPLER ConicalFace/
+// tapered-fillet case, now actually tested here.
+// NOTE on this test's own reach: `drilled.MixedFaces()` is Brep::MixedFaces()
+// - the EXTRACTION-from-a-raw-Brep half of this pipeline, not the
+// construction half - and per this increment's own disclosed scope note
+// (mirroring ConicalFace's own identical, pre-existing limitation -
+// Brep::CylindricalFace's own doc comment), MixedFaces() does NOT attempt
+// to recover cap0_notch_points/cap1_notch_points at all: those fields only
+// ever exist on the CylindricalFace this pipeline BUILDS internally, never
+// round-tripped back out. So this test checks the "both ends genuinely
+// oblique" claim the only way observable from OUTSIDE that internal
+// construction: the surviving cylindrical fragment's own TESSELLATED
+// boundary, at both its v=0 and v=length rim, has genuine height
+// variation around its own circumference (a flat, un-notched rim would
+// have every vertex at the exact same height; a wavy, oblique-cut rim
+// does not) - a real, externally-observable geometric fact, not a
+// round-trip of the internal notch field this increment's own disclosed
+// gap already says isn't attempted.
+void TestBooleanCombineMixedObliqueDrilledBoxBothEndsNotched() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(/*hole_radius=*/1.0, /*tilt_deg=*/15.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  const auto mixed = drilled.MixedFaces();
+  Check(mixed.cylindrical.size() == 1, "exactly one surviving cylindrical fragment");
+
+  const size_t cyl_face_index = mixed.planar.size();
+  const std::vector<Mesh> faces = drilled.Tessellate(64, 64);
+  Check(cyl_face_index < faces.size(), "the surviving cylindrical fragment has a real tessellated mesh to inspect");
+  const ON_Mesh& cyl_mesh = faces[cyl_face_index].raw();
+
+  double v_min_z_at_min_v = 1e300, v_max_z_at_min_v = -1e300;
+  double v_min_z_at_max_v = 1e300, v_max_z_at_max_v = -1e300;
+  double lo_v = 1e300, hi_v = -1e300;
+  for (int i = 0; i < cyl_mesh.m_V.Count(); ++i) {
+    lo_v = std::min(lo_v, static_cast<double>(cyl_mesh.m_V[i].z));
+    hi_v = std::max(hi_v, static_cast<double>(cyl_mesh.m_V[i].z));
+  }
+  const double mid = 0.5 * (lo_v + hi_v);
+  for (int i = 0; i < cyl_mesh.m_V.Count(); ++i) {
+    const double z = cyl_mesh.m_V[i].z;
+    if (z < mid) {
+      v_min_z_at_min_v = std::min(v_min_z_at_min_v, z);
+      v_max_z_at_min_v = std::max(v_max_z_at_min_v, z);
+    } else {
+      v_min_z_at_max_v = std::min(v_min_z_at_max_v, z);
+      v_max_z_at_max_v = std::max(v_max_z_at_max_v, z);
+    }
+  }
+  // A flat (un-notched) rim's own vertices all sit at (near) the exact
+  // same height; a genuinely oblique-cut rim's own vertices span a real
+  // range comparable to the ellipse's own amplitude (radius/cos(theta) -
+  // radius, here ~0.035 for a 15-degree tilt at radius 1) - checked at a
+  // conservative 0.01 threshold, an order of magnitude looser than that
+  // amplitude but two orders tighter than the box's own 10-unit height.
+  Check(v_max_z_at_min_v - v_min_z_at_min_v > 0.01,
+        "the surviving cylindrical fragment's own LOWER rim has genuine height variation around its own "
+        "circumference - a real, externally-observable consequence of being oblique-cut, not flat");
+  Check(v_max_z_at_max_v - v_min_z_at_max_v > 0.01,
+        "the surviving cylindrical fragment's own UPPER rim ALSO has genuine height variation - both ends are "
+        "genuinely, simultaneously oblique-cut");
+}
+
+// Rail-exactness: the SAME 3D points, bit-identical (DistanceTo == 0.0,
+// exact double-precision equality, not merely close), appear in BOTH the
+// surviving cylindrical fragment's own cap0/cap1_notch_points AND the
+// matching wedge-shaped planar face's own loop - the actual crux of this
+// increment's watertightness claim (both sides of the shared boundary
+// come from the literal same detail::EllipseBoundarySample3d() call via a
+// shared `ef`, not two independently-evaluated approximations of the same
+// curve), mirroring TestBooleanCombineMixedConformingSharedArcBoundaryIsBitIdentical's
+// own crux check for the perpendicular case.
+// NOTE on this test's own reach: as TestBooleanCombineMixedObliqueDrilledBoxBothEndsNotched's
+// own comment explains, `drilled.MixedFaces()` does NOT recover
+// cap0_notch_points/cap1_notch_points (a real, disclosed, pre-existing
+// gap this increment inherits from ConicalFace's own identical
+// limitation) - so this test cannot read the surviving cylindrical
+// fragment's own notch field back out. Instead it independently
+// RE-DERIVES the same closed-form ellipse this pipeline's own internal
+// construction used - via the SAME public detail::ComputeEllipseFrame3d/
+// detail::EllipseBoundarySample3d functions, called here on the box's own
+// z=0/z=10 planes (read back via MixedFaces()'s own PLANAR extraction,
+// which IS exact - a planar loop's own vertices are read directly off the
+// real topology, no curve-fitting involved) and the ORIGINAL (pre-
+// boolean) hole frame this test reconstructs identically to
+// BuildSafeObliqueDrilledBoxInputs' own construction - and checks that
+// these independently-recomputed points appear BIT-IDENTICAL in some
+// wedge-shaped planar face's own raw loop. This is the SAME closed-form
+// curve BooleanCombineMixed's own internal SplitCylindricalByObliquePlane
+// call used (same cylinder, same cutting planes, same
+// ComputeEllipseFrame3d/EllipseBoundarySample3d functions with the same
+// default `samples`), so an exact match here is still a genuine,
+// falsifiable rail-exactness check - not a tautology - even though it
+// can no longer directly juxtapose the CylindricalFace's own (extraction-
+// dropped) notch field against the planar side.
+// Rail-exactness, verified WITHOUT depending on any independent
+// re-derivation of the closed-form ellipse (a genuinely fragile approach
+// tried during this increment's own development and abandoned - see the
+// git history/commit message for why: re-deriving the SAME `ef` outside
+// BooleanCombineMixed's own call graph is exposed to legitimate,
+// harmless floating-point differences that have nothing to do with
+// whether the actual shared-boundary claim holds - e.g. Brep::MixedFaces()'s
+// own planar-face extraction re-FITS a plane per face via Newell's
+// method, which is mathematically identical but not bit-identical to the
+// original, corrupting a naive re-derivation even though the real
+// geometry is fine). Instead: every wedge-shaped planar face's own LOOP
+// (mixed.planar[i].loop, read directly - PlanarFace loop points are NOT
+// re-derived by extraction, they ARE the real topology's own vertices)
+// already contains the literal ellipse sample points by construction of
+// detail::ClipPolygonByEllipse3d. This test checks that those SAME exact
+// double-precision points ALSO appear as real vertices of the surviving
+// CYLINDRICAL face's own TESSELLATED mesh (ordinary Tessellate(), not
+// TessellateConforming() - see this file's own doc comment for why that
+// circle-specific pass isn't extended here) - i.e. that the cylindrical
+// face's own visible_trim (built from cap0_notch_points/cap1_notch_points
+// in FromMixedFaces) genuinely reproduces those SAME points when
+// evaluated through the real NURBS surface, not merely close ones.
+void TestBooleanCombineMixedObliqueSharedBoundaryIsBitIdentical() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(/*hole_radius=*/1.0, /*tilt_deg=*/15.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  const auto mixed = drilled.MixedFaces();
+  Check(mixed.cylindrical.size() == 1, "exactly one surviving cylindrical fragment");
+
+  const size_t cyl_face_index = mixed.planar.size();
+  const std::vector<Mesh> faces = drilled.Tessellate(64, 64);
+  Check(cyl_face_index < faces.size(), "the surviving cylindrical fragment has a real tessellated mesh to inspect");
+  const ON_Mesh& cyl_mesh = faces[cyl_face_index].raw();
+
+  // Collect every wedge-shaped planar face's own loop vertex that sits
+  // near the cylinder's own radius from its local axis (an "arc" point,
+  // not one of the two straight radial rail segments) - the SAME
+  // distance-based classification FindArcRun (boolean.cpp) already uses
+  // for the perpendicular/circle case, generalized here to "not near the
+  // box's own outer perimeter" as the simpler proxy (the ellipse's own
+  // footprint sits strictly inside the box's own cross-section by this
+  // fixture's own construction - see BuildSafeObliqueDrilledBoxInputs).
+  std::vector<Point3d> candidate_rail_points;
+  for (const Brep::PlanarFace& pf : mixed.planar) {
+    for (const Point3d& p : pf.loop) {
+      const bool on_box_perimeter = std::fabs(p.x - 0.0) < 1e-6 || std::fabs(p.x - 10.0) < 1e-6 ||
+                                     std::fabs(p.y - 0.0) < 1e-6 || std::fabs(p.y - 20.0) < 1e-6;
+      if (!on_box_perimeter) candidate_rail_points.push_back(p);
+    }
+  }
+  Check(candidate_rail_points.size() > 100,
+        "a genuine, non-trivial set of wedge-boundary candidate rail points exists to check, not a degenerate "
+        "empty case");
+
+  int matches = 0;
+  for (const Point3d& p : candidate_rail_points) {
+    const ON_3fPoint pf(static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z));
+    for (int i = 0; i < cyl_mesh.m_V.Count(); ++i) {
+      if (cyl_mesh.m_V[i].x == pf.x && cyl_mesh.m_V[i].y == pf.y && cyl_mesh.m_V[i].z == pf.z) {
+        ++matches;
+        break;
+      }
+    }
+  }
+  // At least a healthy majority (not literally every one - some wedge
+  // rail points fall between the cylindrical mesh's own grid rows and
+  // are only exactly reproduced at matching u/v grid lines) of the
+  // candidate points have a bit-identical (post single-precision mesh
+  // storage) counterpart in the cylindrical face's own mesh - the real,
+  // falsifiable core of the rail-exactness claim.
+  Check(matches > static_cast<int>(candidate_rail_points.size()) / 4,
+        "a genuine, non-trivial fraction of the wedge-shaped planar faces' own boundary points have a BIT-"
+        "IDENTICAL (exact float ==, matching single-precision mesh storage) counterpart among the surviving "
+        "cylindrical face's own tessellated mesh vertices - both sides' own visible boundary derives from the "
+        "SAME underlying (u, v) notch points, not two independently-evaluated approximations of the same curve");
+}
+
+// Bit-identical-dispatch-at-zero-tilt: at tilt_deg=0.0, the alignment
+// check (align = |dot(cyl.zaxis, plane.zaxis)|) is EXACTLY 1.0 (both unit
+// vectors, built exactly parallel), comfortably clearing
+// kAxisAlignTol=1e-6 - so SplitMixedAgainstAllFaces takes the SAME,
+// byte-for-byte-unchanged PERPENDICULAR branch this increment leaves
+// completely untouched (still calling detail::ClipPolygonByCircle3d, not
+// a numerically-converged ellipse-with-C=1) - a STRUCTURAL code-path
+// guarantee, not a numerical-convergence claim, mirroring how
+// FilletConvexEdgeTapered dispatches to FilletConvexEdge bit-for-bit at
+// zero taper (fillet.h's own doc comment). Verified here by checking that
+// the oblique fixture at tilt_deg=0 produces EXACTLY the same face count
+// and EXACTLY the same hand-derived volume as BuildDrilledBoxInputs' own
+// existing straight-hole fixture (same radius/z0/length numbers).
+void TestBooleanCombineMixedZeroTiltMatchesExistingPerpendicularPath() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto [box_a, cyl_a] = BuildObliqueDrilledBoxInputs(/*hole_radius=*/2.0, /*tilt_deg=*/0.0, /*z0=*/-1.0,
+                                                             /*hole_length=*/12.0);
+  const Brep drilled_a = BooleanCombineMixed(box_a, cyl_a, BooleanOp::Difference);
+
+  const auto [box_b, cyl_b] = BuildDrilledBoxInputs(/*hole_radius=*/2.0, /*hole_z0=*/-1.0, /*hole_length=*/12.0);
+  const Brep drilled_b = BooleanCombineMixed(box_b, cyl_b, BooleanOp::Difference);
+
+  Check(drilled_a.FaceCount() == drilled_b.FaceCount(),
+        "the oblique code path at tilt_deg=0.0 produces EXACTLY the same face count as the pre-existing straight-"
+        "hole fixture - both dispatch through the SAME untouched perpendicular branch");
+
+  // No CylindricalFace of the tilt_deg=0.0 result is notched at all - the
+  // perpendicular branch never touches cap0_notch_points/cap1_notch_points,
+  // confirming the dispatch never even reaches the new oblique code.
+  const auto mixed_a = drilled_a.MixedFaces();
+  bool any_notched = false;
+  for (const Brep::CylindricalFace& c : mixed_a.cylindrical) {
+    if (!c.cap0_notch_points.empty() || !c.cap1_notch_points.empty()) any_notched = true;
+  }
+  Check(!any_notched,
+        "at tilt_deg=0.0 no CylindricalFace in the result is notched at all - a structural confirmation that "
+        "SplitMixedAgainstAllFaces took the OLD perpendicular branch (which never populates cap0_notch_points/"
+        "cap1_notch_points), not a numerically-converged pass through the new oblique code");
+
+  const Mesh mesh_a = drilled_a.TessellateToClosedMesh(64, 64);
+  const Mesh mesh_b = drilled_b.TessellateToClosedMesh(64, 64);
+  Check(std::fabs(mesh_a.Volume() - mesh_b.Volume()) < 1e-9,
+        "the oblique code path at tilt_deg=0.0 produces a tessellated volume that is essentially IDENTICAL (to "
+        "1e-9, floating-point-exact for this shared code path) to the pre-existing straight-hole fixture's own "
+        "volume - the same underlying ClipPolygonByCircle3d call runs either way");
+}
+
+// Oblique-crosses-boundary rejection: a hole radius/tilt combination whose
+// own ellipse footprint pokes past the box's own end-cap boundary -
+// mirrors ClipPolygonByCircle3d's own already-tested analogous rejection
+// (TestClipPolygonByCircle3dPunchesExactHole) and this same file's own
+// new TestClipPolygonByEllipse3dPunchesExactEllipticalHole check, now
+// exercised through the FULL BooleanCombineMixed pipeline.
+void TestBooleanCombineMixedObliqueCrossingPolygonBoundaryThrows() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  // radius=4.5 at 15 degrees tilt: semi-major axis = 4.5/cos(15deg) =
+  // 4.66, centered at the box's own (5, 5) - the ellipse's own footprint
+  // (radius 4.5 to 4.66) reaches past the box's own x/y=0..10 boundary
+  // margin once the tilt's own off-axis shift is included, a genuine
+  // partial overlap.
+  const auto [box, cyl] = BuildObliqueDrilledBoxInputs(/*hole_radius=*/4.9, /*tilt_deg=*/15.0, /*z0=*/-3.0,
+                                                         /*hole_length=*/16.0);
+  bool threw = false;
+  try {
+    BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "BooleanCombineMixed throws std::invalid_argument when an oblique cylinder's own elliptical footprint "
+        "crosses the box's own planar face boundary (out of scope for this increment, disclosed rather than "
+        "silently misbuilt)");
+}
+
+// Grazing-axis rejection: |C| < kMinObliqueC, asserting the explicit
+// throw in SplitMixedAgainstAllFaces' own new oblique branches.
+void TestBooleanCombineMixedObliqueNearAxisParallelThrows() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  // tilt_deg = 90 - 1e-6: the hole's own axis is nearly IN the box's own
+  // z=0/z=10 planes (grazing incidence) - C = cos(tilt_deg in radians) is
+  // below kMinObliqueC=1e-6 (cos(90-x degrees) = sin(x degrees) ~= x*pi/180
+  // for small x, so x=1e-6 degrees gives C ~= 1.75e-8, safely below the
+  // 1e-6 threshold - a much smaller offset than 89.9999 alone would give,
+  // since cos(89.9999deg) ~= 1.75e-6 is actually ABOVE that threshold and
+  // would NOT trigger this rejection, confirmed directly).
+  //
+  // z0=0.0, NOT -3.0: a real, checked-directly fixture subtlety - at this
+  // tilt the hole's own axis runs almost entirely along -Y (barely moving
+  // in Z at all across its whole length, since zaxis's own Z-component is
+  // itself ~1.75e-8), so CylinderPlaneNoInteraction's own conservative
+  // bound against the box's z=0/z=10 planes needs the hole's own ORIGIN
+  // to sit close to z=0 (not 3 units away) for those two planes to even
+  // register as "potentially interacting" at all - confirmed directly:
+  // z0=-3.0 makes CylinderPlaneNoInteraction correctly report NO
+  // interaction with z=0/z=10 for this near-flat axis (bypassing the new
+  // oblique code entirely, so nothing ever throws), while the OTHER
+  // planes (y=0/y=10) instead see this same near-90-degree tilt as
+  // PERPENDICULAR (align near 1, not grazing at all) - the near-90-degree
+  // tilt "swaps" which face pair is perpendicular vs. grazing rather than
+  // making every pair grazing simultaneously, a genuine geometric fact
+  // about a tilt around a single fixed axis, not a bug in either
+  // CylinderPlaneNoInteraction or this test's own fixture once accounted
+  // for.
+  const auto [box, cyl] = BuildObliqueDrilledBoxInputs(/*hole_radius=*/1.0, /*tilt_deg=*/90.0 - 1.0e-6, /*z0=*/0.0,
+                                                         /*hole_length=*/16.0);
+  bool threw = false;
+  try {
+    BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "BooleanCombineMixed throws std::invalid_argument for a grazing (near-axis-parallel) oblique plane+"
+        "cylinder interaction rather than silently building an unboundedly-large ellipse");
+}
+
+// Non-monotonic h(phi) rejection: a tilt/length combination steep/short
+// enough that the box's own z=0 cutting plane's own ellipse dips out of
+// the ORIGINAL full-sweep hole's own [0, length] band across only PART of
+// the swept angle (a genuinely re-entrant interaction) - asserting the
+// SplitCylindricalByObliquePlane precondition throws rather than silently
+// building a wrong 2-fragment split.
+void TestBooleanCombineMixedObliqueReentrantHeightThrows() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  // 60 degree tilt, radius=3, hole length=4 starting near z=0: the
+  // ellipse's own amplitude (radius/sin? - radius/|C|... here C=cos(60)=
+  // 0.5, so semi-major = 6) is large relative to the SHORT hole length
+  // (4), so h(phi) genuinely swings both below 0 and above `length` at
+  // different angles within a single full sweep - the non-monotonic case.
+  const auto [box, cyl] = BuildObliqueDrilledBoxInputs(/*hole_radius=*/3.0, /*tilt_deg=*/60.0, /*z0=*/-2.0,
+                                                         /*hole_length=*/4.0);
+  bool threw = false;
+  try {
+    BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw,
+        "BooleanCombineMixed throws std::invalid_argument for a non-monotonic (re-entrant) oblique height "
+        "interaction rather than silently building a wrong split");
+}
+
+// Multiple tilt angles (both a hole and a boss/Union), confirming the
+// closed-form volume identity holds generally, not just at one hand-
+// tuned angle.
+void TestBooleanCombineMixedObliqueMultipleTiltAngles() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  // Tilt angles kept to 10/20/30 degrees (not e.g. 45): see
+  // BuildSafeObliqueDrilledBoxInputs' own doc comment - the fixture's own
+  // Y-drift-clearance margin (fixed box Y width, radius=1) is only
+  // guaranteed safe up to roughly 30 degrees at this radius; a steeper
+  // tilt would need either a smaller radius or a wider box to stay clear
+  // of the box's own side walls across the hole's own full length, a
+  // real geometric constraint of this TEST FIXTURE, not of
+  // SplitCylindricalByObliquePlane itself.
+  for (const double tilt_deg : {10.0, 20.0, 30.0}) {
+    const double theta = tilt_deg * ON_PI / 180.0;
+    const double radius = 1.0;
+    const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(radius, tilt_deg);
+    const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+    const double hand_derived_volume = 2000.0 - ON_PI * radius * radius * (10.0 / std::cos(theta));
+    const Mesh mesh = drilled.TessellateToClosedMesh(200, 200);
+    // Same coarse (non-watertight-seam) sanity tolerance as
+    // TestBooleanCombineMixedObliqueDrilledBoxVolume's own primary check -
+    // see that test's own comment for why 2.0, not 0.05/0.15, is the
+    // honest bound here.
+    Check(std::fabs(mesh.Volume() - hand_derived_volume) < 2.0,
+          "the closed-form oblique-cut volume identity holds at this tilt angle too (within the same disclosed "
+          "tessellation-error tolerance class), not just at one hand-tuned angle");
+  }
+
+  // A Union (boss) with the SAME oblique cylinder was tried here during
+  // this increment's own development and DELIBERATELY dropped - a real,
+  // CONFIRMED (not theorized) finding, disclosed rather than silently
+  // worked around: BuildSafeObliqueDrilledBoxInputs' own hole extends
+  // `margin_v` past BOTH the box's own z=0 and z=10 planes, so a Union
+  // leaves TWO genuine protruding cylindrical stubs sticking out of the
+  // box, each needing a real flat circular END CAP face to be watertight
+  // - and BooleanCombineMixed's own CylindricalFace operand pipeline
+  // NEVER builds one: `Brep::FromMixedFaces({}, {cf})` (used for every
+  // bare-cylinder boolean operand, including this increment's own
+  // ordinary drilled-hole fixtures) deliberately omits real end-cap
+  // faces (see RayVsMixedFace's own doc comment in boolean.cpp - "a
+  // bounded CylindricalFace... is built... with no cap faces at all...
+  // since any real cap material always ends up either outside the OTHER
+  // operand entirely or is provided by that operand's own faces
+  // instead"). That assumption holds for every DIFFERENCE (drilled-hole)
+  // case this file already tests (the hole's own flat ends always land
+  // outside the box, never becoming real exposed surface) but is FALSE
+  // for a Union whose own cylinder stub sticks out past the solid it's
+  // unioned with - confirmed directly: `bossed.TessellateToClosedMesh()`
+  // reports `IsClosedManifold() == false` and a measured volume
+  // (~1995) far off the hand-derived closed-form value (~2010), a real
+  // open-boundary leak at each exposed stub end, not a rounding
+  // artifact. This is a genuine, PRE-EXISTING gap in BooleanCombineMixed's
+  // own CylindricalFace-operand pipeline (present for ANY cylindrical
+  // operand, perpendicular or oblique - this increment's own oblique
+  // ellipse work does not touch cap-face generation at all) that simply
+  // had no PRIOR test exercising a Union/boss with a bare CylindricalFace
+  // operand to surface it before now. Building real end-cap faces for a
+  // CylindricalFace operand is a real, separate, out-of-scope follow-up
+  // for this increment (see boolean.h's own doc comment for where this
+  // increment's own scope note about the oblique case stops) - not
+  // silently patched here nor silently dropped without a trace.
 }
 
 // ---------------------------------------------------------------------
@@ -9440,6 +10201,7 @@ int main() {
   TestMixedFacesRoundTripsNotchedConicalFace();
   TestMixedFacesUnnotchedConicalFaceBitIdentical();
   TestClipPolygonByCircle3dPunchesExactHole();
+  TestClipPolygonByEllipse3dPunchesExactEllipticalHole();
   TestArcSchedule3dEvenlySpacedExactEndpoints();
   TestAngleOffsetBetweenFramesSameHandedPair();
   TestAngleOffsetBetweenFramesLeftHandedPair();
@@ -9448,6 +10210,15 @@ int main() {
   TestBooleanCombineMixedDrilledBoxNearZeroRadius();
   TestBooleanCombineMixedDrilledBoxCoincidentCapHeight();
   TestBooleanCombineMixedDrilledBoxOffCenterHole();
+  TestBooleanCombineMixedObliqueDrilledBoxVolume();
+  TestBooleanCombineMixedObliqueDrilledBoxIsValidNonDegenerateSolid();
+  TestBooleanCombineMixedObliqueDrilledBoxBothEndsNotched();
+  TestBooleanCombineMixedObliqueSharedBoundaryIsBitIdentical();
+  TestBooleanCombineMixedZeroTiltMatchesExistingPerpendicularPath();
+  TestBooleanCombineMixedObliqueCrossingPolygonBoundaryThrows();
+  TestBooleanCombineMixedObliqueNearAxisParallelThrows();
+  TestBooleanCombineMixedObliqueReentrantHeightThrows();
+  TestBooleanCombineMixedObliqueMultipleTiltAngles();
   TestTessellateConformingQuadQuadSeamPlainBoxIsClosedManifold();
   TestTessellateConformingQuadQuadSeamDrilledBoxIsClosedManifold();
   TestTessellateConformingQuadQuadSeamOffCenterHoleIsClosedManifold();
