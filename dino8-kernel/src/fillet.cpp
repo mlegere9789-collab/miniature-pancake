@@ -119,6 +119,24 @@ void NotchCornerAtVertex(std::vector<Brep::PlanarFace>& other_faces, const Point
         }
       }
       loop = std::move(new_loop);
+
+      // Mark this run for Brep::FromMixedFaces (see PlanarFace's own
+      // notch_begin/notch_count doc comment): `arc` is spliced in exactly
+      // at position k (every point before k is copied 1:1 first), so it
+      // occupies new_loop[k .. k+arc.size()-1] - and, per this function's
+      // own doc comment, arc.front()/arc.back() are exactly the same two
+      // 3D points the adjacent CylindricalFace's own cap corner is built
+      // from, so FromMixedFaces' own vertex welder is what actually
+      // proves the identity, not this assignment alone. If this same
+      // face were ever notched at BOTH of the fillet's own endpoints (a
+      // real but narrower case this function doesn't attempt - see this
+      // note - since only one notch_begin/notch_count pair fits on a
+      // PlanarFace), this second call's own assignment below would
+      // simply overwrite the first's, leaving that earlier corner with
+      // its old, still-individually-valid-but-unshared polygonal notch
+      // rather than crashing or silently misbuilding either one.
+      f.notch_begin = static_cast<int>(k);
+      f.notch_count = static_cast<int>(arc.size());
       break;  // this face's corner is notched; a face shouldn't need it twice at the same vertex
     }
   }

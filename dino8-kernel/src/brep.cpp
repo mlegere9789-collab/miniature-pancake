@@ -474,6 +474,19 @@ struct FaceTopology {
   ON_NurbsSurface* cylindrical_surface = nullptr;
   double cylindrical_u_max = 0.0;
   double cylindrical_length = 0.0;
+  // Parallel to vids/trim_uv (same length, or empty when nothing on this
+  // face has been collapsed - the overwhelmingly common case). Non-empty
+  // at index k means the segment vids[k]->vids[k+1] is a PlanarFace's own
+  // collapsed notch run (see PlanarFace::notch_begin/notch_count's own
+  // doc comment): these are the run's own INTERIOR (u, v) points, in
+  // order, excluding the two endpoints already at trim_uv[k]/trim_uv[k1]
+  // - so BuildFaceLoop can thread them into that one trim's own 2D curve
+  // as a genuine dense polyline instead of collapsing the visible
+  // boundary itself, even though the real topology now has only ONE edge
+  // there (shared with the adjacent CylindricalFace's own cap - see
+  // FromMixedFaces' own comment for exactly why this two-level
+  // (collapsed topology, dense trim curve) split is what's needed).
+  std::vector<std::vector<Point2d>> notch_interior_uv;
 };
 
 // Builds one face's genuine ON_BrepLoop plus its edges/trims (spec
@@ -589,8 +602,32 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
     const ON_BrepEdge& edge = brep.m_E[edge_index];
     const bool bRev3d = (edge.m_vi[0] != vid_from);
 
-    auto* c2 = new ON_LineCurve(topo.trim_uv[k], topo.trim_uv[k1]);
-    c2->SetDomain(0.0, 1.0);
+    ON_Curve* c2 = nullptr;
+    const bool has_notch_interior =
+        k < topo.notch_interior_uv.size() && !topo.notch_interior_uv[k].empty();
+    if (has_notch_interior) {
+      // This segment is a PlanarFace's own collapsed notch run (see
+      // PlanarFace::notch_begin/notch_count's own doc comment): the real
+      // topology has collapsed it to ONE edge (shared with the adjacent
+      // CylindricalFace's own true-arc cap, per this method's own
+      // reordered Pass 3/4 above), but this face's own 2D trim curve for
+      // it is still the full dense polyline through every original notch
+      // point - an ON_PolylineCurve, not a 2-point ON_LineCurve - so this
+      // face's own visible boundary (and any consumer deriving it purely
+      // from stored topology, e.g. a .3dm reload) is exactly the fine
+      // polygonal notch, not a chord cutting straight across the corner.
+      ON_3dPointArray pts;
+      pts.Append(ON_3dPoint(topo.trim_uv[k].x, topo.trim_uv[k].y, 0.0));
+      for (const Point2d& p : topo.notch_interior_uv[k]) pts.Append(ON_3dPoint(p.x, p.y, 0.0));
+      pts.Append(ON_3dPoint(topo.trim_uv[k1].x, topo.trim_uv[k1].y, 0.0));
+      auto* poly = new ON_PolylineCurve(pts);
+      poly->ChangeDimension(2);
+      poly->SetDomain(0.0, 1.0);
+      c2 = poly;
+    } else {
+      c2 = new ON_LineCurve(topo.trim_uv[k], topo.trim_uv[k1]);
+      c2->SetDomain(0.0, 1.0);
+    }
     const int c2i = brep.AddTrimCurve(c2);
     brep.NewTrim(brep.m_E[edge_index], bRev3d, loop, c2i);
   }
@@ -652,9 +689,36 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     // recorded - into canonical global vertex ids, reusing f.loop/trim
     // rather than re-deriving either.
     FaceTopology t;
-    t.trim_uv = trim;
     t.vids.reserve(f.loop.size());
-    for (const Point3d& p : f.loop) t.vids.push_back(welder.Weld(p));
+    if (f.notch_count > 1 && f.notch_begin >= 0 &&
+        static_cast<size_t>(f.notch_begin + f.notch_count) <= f.loop.size()) {
+      // See PlanarFace::notch_begin/notch_count's own doc comment: collapse
+      // this run's own STRICTLY INTERIOR points out of the topology-only
+      // vids/trim_uv (so the run becomes ONE loop segment, able to share
+      // ONE real edge with the adjacent CylindricalFace's own cap - see
+      // FromMixedFaces' own reordered Pass 3/4 below), while folding those
+      // same interior points into notch_interior_uv at the run's own first
+      // KEPT index so BuildFaceLoop can still thread them into that one
+      // segment's own 2D trim curve as a dense polyline - the visible
+      // boundary this face presents (face_trim_loops_ below, and hence
+      // this kernel's own Tessellate()) is entirely untouched either way.
+      const int begin = f.notch_begin;
+      const int end = f.notch_begin + f.notch_count - 1;  // last run index, inclusive
+      for (size_t k = 0; k < f.loop.size(); ++k) {
+        const int ik = static_cast<int>(k);
+        if (ik > begin && ik < end) continue;  // strictly-interior notch point
+        t.vids.push_back(welder.Weld(f.loop[k]));
+        t.trim_uv.push_back(trim[k]);
+        if (ik == begin) {
+          t.notch_interior_uv.emplace_back(trim.begin() + begin + 1, trim.begin() + end);
+        } else {
+          t.notch_interior_uv.emplace_back();
+        }
+      }
+    } else {
+      t.trim_uv = trim;
+      for (const Point3d& p : f.loop) t.vids.push_back(welder.Weld(p));
+    }
     topo.push_back(std::move(t));
   }
 
@@ -738,9 +802,35 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
   // Passes 3 + 4: one genuine ON_BrepLoop plus its edges/trims per face,
   // sharing an edge automatically wherever two faces' own welded vertex
   // pairs match (see BuildFaceLoop's own doc comment for exactly how).
+  //
+  // Visited in TWO passes - every CylindricalFace's own topo entry first,
+  // then every PlanarFace's - rather than one pass in `topo`'s own
+  // (planar-then-cylindrical) order. `brep.m_F`'s own face indices are
+  // completely unaffected (those were already fixed by Pass 1's own
+  // NewFace() call order above; this only changes which face's
+  // BuildFaceLoop call runs first for a given shared vertex pair). This
+  // is what guarantees a CylindricalFace's own true-arc cap edge always
+  // exists BEFORE a PlanarFace's own collapsed corner-notch segment (see
+  // PlanarFace::notch_begin/notch_count's own doc comment) could reach
+  // the same welded vertex pair: whichever face's BuildFaceLoop call
+  // visits a vertex pair FIRST wins the right to build that edge's real
+  // 3D curve, and the second visitor merely reuses it - so cylindrical
+  // faces must go first for a notch to ever get the arc, not a straight
+  // line. Straight-rail sharing (fillet.h) is completely unaffected by
+  // this reordering, exactly as it was unaffected by which of the two
+  // ORIGINAL pass-1 loops (planar, cylindrical) ran first: a straight
+  // ON_LineCurve between the same two points is identical regardless of
+  // which face happens to build it.
   std::unordered_map<uint64_t, int> edge_of_vertex_pair;
   for (size_t fi = 0; fi < topo.size(); ++fi) {
-    BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair);
+    if (topo[fi].cylindrical_surface != nullptr) {
+      BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair);
+    }
+  }
+  for (size_t fi = 0; fi < topo.size(); ++fi) {
+    if (topo[fi].cylindrical_surface == nullptr) {
+      BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair);
+    }
   }
 
   // Pass 5: NewVertex()/NewEdge()/NewTrim() above all leave m_tolerance at
