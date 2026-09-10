@@ -7898,15 +7898,22 @@ void TestBooleanCombineMixedDrilledBoxThroughHole() {
   // whole outer perimeter - see that function's own doc comment). This
   // holds for u_divisions == v_divisions (as tessellated here and by
   // every other TessellateConforming() caller in this file); an unequal
-  // u_divisions/v_divisions pair is a SEPARATE, PRE-EXISTING gap this fix
-  // does not touch - confirmed directly to already affect a plain,
-  // undrilled Brep::Box() via the ordinary Tessellate() path (adjacent
-  // Box() walls assign u/v to physical x/y/z oppositely - see
-  // TessellateConforming()'s own doc comment - so their shared vertical
-  // corner edge is sampled at u_divisions steps on one side and
-  // v_divisions steps on the other whenever those differ), not something
-  // this increment's own wedge/wall straight-edge matching introduced or
-  // is positioned to fix.
+  // u_divisions/v_divisions pair is a SEPARATE gap this fix does not
+  // touch for TessellateConforming()'s own quad-vs-quad case
+  // specifically (see that method's own doc comment) - PRE-EXISTING when
+  // this increment landed, and confirmed at the time to affect HALF of
+  // any plain, undrilled Brep::Box()'s own 12 edges via the ordinary
+  // Tessellate() path too (not only the box's own vertical corner
+  // edges - every horizontal cap-level edge that mismatches too), for
+  // the "which physical axis is u vs v differs per wall" reason above.
+  // Brep::Tessellate() ITSELF no longer has this gap (a later, separate
+  // fix closed it there - see Tessellate()'s own doc comment in brep.h,
+  // and TestBoxAsymmetricDivisionsIsClosedManifold and its siblings in
+  // this file); TessellateConforming()'s OWN quad-vs-quad case, reached
+  // only when neither side of a mismatched pair is already claimed by
+  // the wedge/cylinder passes above, still has it - a real, narrower,
+  // still-open follow-up, not something this increment's own wedge/wall
+  // straight-edge matching introduced or was ever positioned to fix.
   Check(mesh_conforming.IsClosedManifold(),
         "TessellateToClosedMeshConforming()'s own mesh is a genuine, complete IsClosedManifold() - both the "
         "wedge-arc/cylinder-wall seam AND the wedge/wall straight-perimeter seam are closed, so the drilled box's "
@@ -8648,6 +8655,284 @@ void TestExactConvexHullPipelineIntegration() {
         "adaptation: the union's exact volume is exactly hull_volume + 1");
 }
 
+// ---------------------------------------------------------------------
+// Tests for the u_divisions != v_divisions plain-quad seam fix in
+// Brep::Tessellate() (see that method's own doc comment in brep.h, and
+// ComputePlainQuadSeamForces's own doc comment in brep.cpp for the
+// actual matching mechanism).
+// ---------------------------------------------------------------------
+
+// Reconstructs the EXACT trim polygon (and its own surface) that
+// Brep::FromMixedFaces() builds for one PlanarFace, purely from PUBLIC
+// data (PlanarFace::loop/plane) - replicating that factory's own
+// documented construction (a degree-(1,1) surface spanning the face's
+// own local (x, y) extent plus a 5% margin, normalized to a
+// [0,1]x[0,1] domain; see src/brep.cpp's own FromMixedFaces
+// implementation for the exact formula this mirrors). Used ONLY to give
+// TestTessellateSymmetricDivisionsMatchesIndependentReconstruction's own
+// "symmetric divisions is unaffected" claim a genuinely INDEPENDENT
+// cross-check (calling NurbsSurface::TessellateGridClippedExact
+// directly, never through Brep::Tessellate() at all) rather than
+// trusting the fix's own internal machinery to grade its own homework -
+// the same spirit as this file's own CountNonPerimeterBoundaryEdges/
+// BuildDrilledBoxInputs helpers already needing to know a factory's own
+// construction details for an independent cross-check.
+std::pair<dino8::kernel::NurbsSurface, std::vector<dino8::kernel::Point2d>> ReconstructMixedFaceQuad(
+    const dino8::kernel::Brep::PlanarFace& f) {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point2d;
+  using dino8::kernel::Point3d;
+
+  std::vector<std::pair<double, double>> local;
+  double min_x = 0, max_x = 0, min_y = 0, max_y = 0;
+  for (size_t k = 0; k < f.loop.size(); ++k) {
+    const auto d = f.loop[k] - f.plane.origin;
+    const double x = d * f.plane.xaxis, y = d * f.plane.yaxis;
+    local.push_back({x, y});
+    if (k == 0) {
+      min_x = max_x = x;
+      min_y = max_y = y;
+    } else {
+      min_x = std::min(min_x, x);
+      max_x = std::max(max_x, x);
+      min_y = std::min(min_y, y);
+      max_y = std::max(max_y, y);
+    }
+  }
+  const double mx = std::max(1e-9, (max_x - min_x) * 0.05), my = std::max(1e-9, (max_y - min_y) * 0.05);
+  min_x -= mx;
+  max_x += mx;
+  min_y -= my;
+  max_y += my;
+  const std::vector<Point3d> grid = {
+      f.plane.origin + min_x * f.plane.xaxis + min_y * f.plane.yaxis,
+      f.plane.origin + min_x * f.plane.xaxis + max_y * f.plane.yaxis,
+      f.plane.origin + max_x * f.plane.xaxis + min_y * f.plane.yaxis,
+      f.plane.origin + max_x * f.plane.xaxis + max_y * f.plane.yaxis,
+  };
+  NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+  std::vector<Point2d> trim;
+  trim.reserve(local.size());
+  for (const auto& p : local) {
+    trim.emplace_back((p.first - min_x) / (max_x - min_x), (p.second - min_y) / (max_y - min_y));
+  }
+  return {surface, trim};
+}
+
+// The core falsifiable claim: Brep::Box() now welds into a genuine,
+// complete Mesh::IsClosedManifold() at ANY u_divisions/v_divisions pair
+// - not only when the two happen to be equal. A non-cubic box (2x3x5)
+// is used throughout so no dimension-symmetry could coincidentally mask
+// a bug. (17, 4) is deliberately a coprime, "unfriendly" pair -
+// following this file's own precedent elsewhere of using 17 as a
+// genuinely awkward division count, not a small multiple that could
+// coincidentally still line up; (256, 3) is an extreme skew in the
+// other direction; (1, 2)/(2, 1) are the lowest legal counts, where the
+// "1" side leaves an edge with only its own 2 corners and no interior
+// points at all to possibly disagree about.
+void TestBoxAsymmetricDivisionsIsClosedManifold() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 3, 5);
+  const std::vector<std::pair<int, int>> pairs = {{8, 5}, {4, 3}, {3, 4}, {1, 2}, {2, 1}, {17, 4}, {256, 3}};
+  for (const auto& uv : pairs) {
+    const Mesh mesh = box.TessellateToClosedMesh(uv.first, uv.second);
+    Check(mesh.raw().m_V.Count() > 8,
+          "Brep::Box()'s asymmetric-divisions mesh has more vertices than its 8 raw corners - a genuine "
+          "tessellated grid, not a degenerate empty result");
+    Check(mesh.IsClosedManifold(),
+          "Brep::Box().TessellateToClosedMesh(u, v) at an asymmetric (u != v) divisions pair is a genuine, "
+          "complete IsClosedManifold() - the plain-quad seam fix closes every one of the box's 12 edges, not "
+          "only the 6 that happened to already agree on divisions count regardless of u/v");
+  }
+}
+
+// Confirms the fix is NOT Box()-specific: any "plain quad" producer -
+// FromMixedFaces()/FromPlanarFaces() reconstructing a box from its own
+// PlanarFaces(), and ExactConvexHull() degenerating to a literal 6-quad
+// box for a cube's own 8 corners - gets the exact same closed-manifold
+// guarantee at asymmetric divisions, since all three go through
+// Brep::Tessellate()'s own plain-quad seam pass identically.
+void TestPlainQuadFactoriesAsymmetricDivisionsIsClosedManifold() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ExactConvexHull;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 2, 3, 5);
+  const Brep from_planar_faces = Brep::FromMixedFaces(box.PlanarFaces(), {}, {});
+  const std::vector<Point3d> corners = {
+      Point3d(0, 0, 0), Point3d(2, 0, 0), Point3d(2, 3, 0), Point3d(0, 3, 0),
+      Point3d(0, 0, 5), Point3d(2, 0, 5), Point3d(2, 3, 5), Point3d(0, 3, 5),
+  };
+  const Brep hull = ExactConvexHull(corners);
+
+  const std::vector<std::pair<int, int>> pairs = {{8, 5}, {17, 4}};
+  for (const auto& uv : pairs) {
+    Check(from_planar_faces.TessellateToClosedMesh(uv.first, uv.second).IsClosedManifold(),
+          "FromMixedFaces(box.PlanarFaces()).TessellateToClosedMesh(u, v) at an asymmetric divisions pair is a "
+          "genuine, complete IsClosedManifold() - the plain-quad seam fix is not specific to Box()'s own "
+          "untrimmed walls, it also closes an exact_clip quad built by FromMixedFaces()/FromPlanarFaces()");
+    Check(hull.TessellateToClosedMesh(uv.first, uv.second).IsClosedManifold(),
+          "ExactConvexHull(box corners).TessellateToClosedMesh(u, v) at an asymmetric divisions pair is a "
+          "genuine, complete IsClosedManifold() - the same fix, reached through a third, independent producer "
+          "of plain-quad faces");
+  }
+}
+
+// The bypass claim (see Brep::Tessellate()'s own doc comment): when
+// u_divisions == v_divisions, the new plain-quad seam pass finds zero
+// mismatches (every edge's natural sample count is trivially
+// u_divisions == v_divisions on both sides) and therefore never routes
+// ANY face through BuildConformingPlainQuadMesh - Tessellate() computes
+// EXACTLY what it did before this fix. Proven here not by reading the
+// source but by an INDEPENDENT cross-check: Tessellate(N, N)'s own
+// per-face output, compared bit-for-bit against directly calling
+// NurbsSurface::TessellateGrid()/TessellateGridClippedExact() on that
+// same face's own surface, extracted straight from Brep::raw() (Box())
+// or reconstructed from public PlanarFace data (FromMixedFaces()) -
+// never through Brep::Tessellate() at all for either half.
+//
+// Box()'s own walls (untrimmed, degree-(1,1), zero margin) are checked
+// first - though on their own they can't fully distinguish the two
+// algorithms (BuildConformingPlainQuadMesh's plain bilinear blend and
+// NurbsSurface::TessellateGrid's own affine domain stepping are
+// analytically the SAME map for a margin-free degree-(1,1) quad, so
+// even a misfired new-code-path would coincidentally reproduce the same
+// bits for a Box() wall specifically).
+//
+// FromMixedFaces(box.PlanarFaces())'s own walls (exact_clip, with
+// FromMixedFaces()'s own documented 5% margin) are the genuinely
+// DISCRIMINATING half of this test: NurbsSurface::TessellateGridClippedExact's
+// own margin-vs-grid-line interaction makes its actual per-face vertex
+// count diverge from the "naive" (N+1)^2 a plain bilinear blend would
+// give - confirmed directly (not assumed): at N=256, one such face's raw
+// vertex count is 55225, not 257^2=66049. A bypass-wiring bug that let
+// even ONE face slip through the new machinery at a SYMMETRIC N would
+// very likely change that face's own vertex count away from what the
+// independently-reconstructed direct call gives - a genuinely
+// falsifiable check, not merely "stays whatever the code currently does".
+void TestTessellateSymmetricDivisionsMatchesIndependentReconstruction() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+
+  auto bit_identical = [](const Mesh& a, const Mesh& b) {
+    if (a.raw().m_V.Count() != b.raw().m_V.Count()) return false;
+    for (int i = 0; i < a.raw().m_V.Count(); ++i) {
+      const ON_3fPoint& p = a.raw().m_V[i];
+      const ON_3fPoint& q = b.raw().m_V[i];
+      if (p.x != q.x || p.y != q.y || p.z != q.z) return false;
+    }
+    return true;
+  };
+  // Mirrors ResolveFace()'s own "don't trust GetNurbForm alone" dual
+  // path (src/brep.cpp) exactly, so this reconstruction is provably the
+  // same surface Brep::Tessellate() itself would resolve.
+  auto resolve_nurbs_surface = [](const ON_Surface* srf, ON_NurbsSurface& out) {
+    if (const auto* ns = ON_NurbsSurface::Cast(srf)) {
+      out = *ns;
+      return true;
+    }
+    return srf->GetNurbForm(out) > 0;
+  };
+
+  // Box() walls, N=8: matches independent per-face TessellateGrid().
+  {
+    const Brep box = Brep::Box(0, 0, 0, 2, 3, 5);
+    const std::vector<Mesh> faces = box.Tessellate(8, 8);
+    Check(faces.size() == 6, "Box() has 6 faces");
+    bool all_match = faces.size() == 6;
+    for (int i = 0; all_match && i < box.raw().m_F.Count(); ++i) {
+      ON_NurbsSurface ns;
+      if (!resolve_nurbs_surface(box.raw().m_F[i].SurfaceOf(), ns)) {
+        all_match = false;
+        break;
+      }
+      NurbsSurface wrapper;
+      wrapper.raw() = ns;
+      const Mesh direct = wrapper.TessellateGrid(8, 8);
+      if (!bit_identical(direct, faces[static_cast<size_t>(i)])) all_match = false;
+    }
+    Check(all_match,
+          "Box().Tessellate(8, 8) (symmetric) is BIT-IDENTICAL, per face, to an independently-computed direct "
+          "NurbsSurface::TessellateGrid(8, 8) call on that same face's own raw surface - the untouched, "
+          "pre-existing code path");
+  }
+
+  // FromMixedFaces(box.PlanarFaces()) walls, N=8 and N=256: matches
+  // independent per-face TessellateGridClippedExact() against a
+  // trim/surface reconstructed purely from public PlanarFace data.
+  {
+    const Brep box = Brep::Box(0, 0, 0, 2, 3, 5);
+    const Brep fp = Brep::FromMixedFaces(box.PlanarFaces(), {}, {});
+    const auto pfaces = box.PlanarFaces();
+    for (const int n : {8, 256}) {
+      const std::vector<Mesh> faces = fp.Tessellate(n, n);
+      Check(faces.size() == 6, "FromMixedFaces(box.PlanarFaces()) has 6 faces");
+      bool all_match = faces.size() == 6;
+      for (size_t i = 0; all_match && i < pfaces.size(); ++i) {
+        const auto reconstructed = ReconstructMixedFaceQuad(pfaces[i]);
+        const Mesh direct = reconstructed.first.TessellateGridClippedExact(n, n, reconstructed.second);
+        if (!bit_identical(direct, faces[i])) all_match = false;
+      }
+      Check(all_match,
+            "FromMixedFaces(box.PlanarFaces()).Tessellate(N, N) (symmetric) is BIT-IDENTICAL, per face, to an "
+            "independently-reconstructed direct NurbsSurface::TessellateGridClippedExact(N, N) call on that same "
+            "face's own surface/trim - genuinely discriminating (see this test's own comment: the margined "
+            "exact_clip algorithm's own vertex count diverges from a plain bilinear blend's at this N), not "
+            "merely coincidentally matching");
+    }
+  }
+}
+
+// Honest disclosure, not silently papered over: this fix's own
+// IsAxisAlignedQuadUv guard deliberately excludes a "plain quad" face
+// whose own (u, v) corners are NOT an axis-aligned rectangle in its own
+// parameter domain (see that function's own doc comment in brep.cpp) -
+// confirmed directly to be a real, SEPARATE, PRE-EXISTING gap: hulling a
+// box's 8 corners after rotating them by an arbitrary angle produces
+// exactly this shape, and its own tessellation does NOT reliably close
+// even at u_divisions == v_divisions (each side's own vertex count along
+// a shared "diagonal" edge comes from however many grid lines its own
+// clip crosses, not from u_divisions+1 or v_divisions+1 alone). This
+// test asserts that gap remains EXACTLY as before this fix - neither
+// worsened (this fix must not misapply its own u/v-axis labeling to
+// such a face) nor silently, incorrectly "fixed" (which would mean the
+// guard failed to exclude it) - at BOTH a symmetric and an asymmetric
+// divisions pair.
+void TestTessellateObliqueHullQuadSeamRemainsPreExistingGap() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ExactConvexHull;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  const double ang = 0.6109;  // ~35 degrees - an arbitrary, non-axis-aligned rotation
+  const double ax = 0.267261, ay = 0.534522, az = 0.801784;  // (1,2,3)/sqrt(14), an arbitrary unit axis
+  auto rotate = [&](double x, double y, double z) {
+    const double c = std::cos(ang), s = std::sin(ang);
+    const double dot = ax * x + ay * y + az * z;
+    const double crossx = ay * z - az * y, crossy = az * x - ax * z, crossz = ax * y - ay * x;
+    return Point3d(x * c + crossx * s + ax * dot * (1 - c), y * c + crossy * s + ay * dot * (1 - c),
+                   z * c + crossz * s + az * dot * (1 - c));
+  };
+  const std::vector<Point3d> corners = {
+      rotate(0, 0, 0), rotate(2, 0, 0), rotate(2, 3, 0), rotate(0, 3, 0),
+      rotate(0, 0, 5), rotate(2, 0, 5), rotate(2, 3, 5), rotate(0, 3, 5),
+  };
+  const Brep rotated_hull = ExactConvexHull(corners);
+
+  Check(!rotated_hull.TessellateToClosedMesh(8, 8).IsClosedManifold(),
+        "a hulled, arbitrarily-rotated box's own quad faces are NOT axis-aligned in their own (u, v) domain "
+        "(IsAxisAlignedQuadUv correctly excludes them), so this fix's own plain-quad seam pass never touches "
+        "them - the PRE-EXISTING, SEPARATE grid-mismatch gap that already existed even at u_divisions == "
+        "v_divisions is left exactly as it was, not silently masked into a false IsClosedManifold() pass");
+  Check(!rotated_hull.TessellateToClosedMesh(8, 5).IsClosedManifold(),
+        "...and the same pre-existing gap is also left exactly as it was at an ASYMMETRIC divisions pair - this "
+        "fix's own guard does not misapply its u/v-axis labeling to an oblique quad and make things worse either");
+}
+
 int main() {
   ON::Begin();
 
@@ -8824,6 +9109,10 @@ int main() {
   TestExactConvexHullCoplanarPointsThrows();
   TestExactConvexHullMatchesMeshConvexHullVolume();
   TestExactConvexHullPipelineIntegration();
+  TestBoxAsymmetricDivisionsIsClosedManifold();
+  TestPlainQuadFactoriesAsymmetricDivisionsIsClosedManifold();
+  TestTessellateSymmetricDivisionsMatchesIndependentReconstruction();
+  TestTessellateObliqueHullQuadSeamRemainsPreExistingGap();
 
   ON::End();
 

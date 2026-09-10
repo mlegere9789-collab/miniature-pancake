@@ -853,13 +853,23 @@ class Brep {
   // case a genuinely complete Mesh::IsClosedManifold() result via
   // TessellateToClosedMeshConforming() - see
   // TestBooleanCombineMixedDrilledBoxThroughHole's own comment for the
-  // exact claim and its one remaining, PRE-EXISTING (not introduced by
-  // either pass) caveat: an unequal u_divisions/v_divisions pair can
-  // leave two adjacent Box() walls' own shared VERTICAL corner edge open
-  // (confirmed directly to already affect a plain, undrilled Brep::Box()
-  // via the ordinary Tessellate() path too, for exactly the same "which
-  // physical axis is u vs v differs per wall" reason above) - a genuinely
-  // different, separate gap from the wedge/wall seam either pass targets.
+  // exact claim and its one remaining caveat, genuinely different from
+  // the wedge/wall seam either pass targets: an unequal u_divisions/
+  // v_divisions pair can leave THIS method's OWN quad-vs-quad case (two
+  // adjacent plain quads, neither one a wedge) with an open shared edge
+  // - not only a Box() wall pair's own VERTICAL corner edge, but HALF of
+  // any Box()'s own 12 edges (every horizontal cap-level edge that
+  // mismatches too), for the "which physical axis is u vs v differs per
+  // wall" reason above. Tessellate() ITSELF no longer has this gap (a
+  // later, separate fix closed it there for the ordinary, non-conforming
+  // path - see that method's own doc comment, and
+  // TestBoxAsymmetricDivisionsIsClosedManifold and its siblings in this
+  // kernel's own test file); THIS method's own quad-vs-quad case, reached
+  // only when neither side of a mismatched pair is already claimed by
+  // the wedge/cylinder passes above, still has it - generalizing
+  // Tessellate()'s own new matching pass to this method too (sharing one
+  // helper between both, per that pass's own doc comment) is a natural,
+  // low-risk follow-up, not yet attempted here.
   //
   // Deliberately narrow in scope beyond that (see boolean.h's own
   // BooleanCombineMixed doc comment and this method's own implementation

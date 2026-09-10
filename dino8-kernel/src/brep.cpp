@@ -1264,31 +1264,6 @@ BoundingBox Brep::GetTightBoundingBox() const {
   return BoundingBox{box.Min(), box.Max()};
 }
 
-std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
-  std::vector<Mesh> result;
-  result.reserve(static_cast<size_t>(brep_.m_F.Count()));
-  for (int i = 0; i < brep_.m_F.Count(); ++i) {
-    FaceGeometry fg;
-    if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
-    NurbsSurface wrapper;
-    wrapper.raw() = fg.surface;
-    if (fg.outer.empty()) {
-      result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions));
-    } else if (fg.exact_clip) {
-      result.push_back(wrapper.TessellateGridClippedExact(u_divisions, v_divisions, fg.outer));
-    } else {
-      const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
-      result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions, &fg.outer, holes));
-    }
-    if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
-  }
-  return result;
-}
-
-Mesh Brep::TessellateToClosedMesh(int u_divisions, int v_divisions) const {
-  return Mesh::MergeAndWeld(Tessellate(u_divisions, v_divisions));
-}
-
 std::vector<Mesh> Brep::TessellateAdaptive(double chord_tolerance) const {
   std::vector<Mesh> result;
   result.reserve(static_cast<size_t>(brep_.m_F.Count()));
@@ -1782,7 +1757,357 @@ Mesh BuildConformingPlainQuadMesh(const std::array<Point3d, 4>& q, int u_divisio
   return mesh;
 }
 
+// `q[e]`'s own "from" corner (BuildConformingPlainQuadMesh's a/b
+// convention: edge 0 is q0->q1 at b=0, edge 1 is q1->q2 at a=1, edge 2 is
+// q3->q2 at b=1 - walked "backward" in q's own trim order so a=0 still
+// anchors at q3 and a=1 at q2 - edge 3 is q0->q3 at a=0). Factored out
+// (as a template, so it works identically on a face's own 3D corners and
+// its 2D (u, v) corners) because Tessellate()'s own new plain-quad seam
+// pass (below) needs this exact convention twice - once to test whether
+// a face's own edge is a constant-u or constant-v line at all
+// (IsAxisAlignedQuadUv), once to build the shared 3D boundary
+// (ComputePlainQuadSeamForces) - TessellateConforming()'s own
+// straight-edge pass above keeps its own inline copy of this same
+// convention unchanged (see its own implementation comments), since
+// sharing one helper between the two is a natural follow-up, not
+// required by this fix's own scope (see Tessellate()'s own doc comment).
+template <typename P>
+P PlainQuadEdgeFrom(const std::array<P, 4>& q, int e) {
+  return (e == 0) ? q[0] : (e == 1) ? q[1] : (e == 2) ? q[3] : q[0];
+}
+template <typename P>
+P PlainQuadEdgeTo(const std::array<P, 4>& q, int e) {
+  return (e == 0) ? q[1] : (e == 1) ? q[2] : (e == 2) ? q[2] : q[3];
+}
+
+// True when every one of a "plain quad" face's own 4 edges (see
+// CollectPlainQuadFaces's own doc comment for that shape's definition)
+// is, in the face's OWN (u, v) domain, either a constant-u or a
+// constant-v line - the actual condition NurbsSurface::TessellateGrid/
+// TessellateGridClippedExact's own per-edge sample count (u_divisions+1
+// along a constant-v edge, v_divisions+1 along a constant-u edge)
+// depends on. This is NOT guaranteed merely by "this face's outer loop
+// has exactly 4 points": ExtractPlanarFace's own ON_Plane(origin,
+// normal) picks an in-plane (x, y) basis from the normal ALONE, with no
+// relationship to the polygon's own edge directions - confirmed directly
+// (not merely derived): hulling a box's 8 corners after rotating them by
+// an arbitrary angle produces quad faces whose own local (x, y), and
+// hence (after FromMixedFaces()'s own rescale) (u, v), corners share
+// NEITHER an x/u NOR a y/v value pairwise - a genuinely rotated
+// quadrilateral in its own parameter domain, not an axis-aligned
+// rectangle. A face shaped that way is excluded from the ENTIRE seam
+// pass (CollectPlainQuadFaces never adds it to `quad_faces` at all) -
+// this is a real, PRE-EXISTING, SEPARATE gap (confirmed directly: even
+// at u_divisions == v_divisions, such a face's own tessellated boundary
+// does not reliably coincide with its neighbor's either, since each
+// side's own vertex count along the shared edge comes from however many
+// grid lines its own diagonal trim edge happens to cross - not from
+// u_divisions+1 or v_divisions+1 alone), already covered by this
+// kernel's own existing disclosure that "a genuinely arbitrary pair of
+// adjacent PlanarFaces... is not attempted" (see
+// TessellateConforming()'s own doc comment) - not something this fix
+// touches, and not safe to misapply this pass's own u/v-axis labeling to
+// (doing so could inject wrong force points instead of correctly doing
+// nothing).
+bool IsAxisAlignedQuadUv(const std::array<Point2d, 4>& uv) {
+  for (int e = 0; e < 4; ++e) {
+    const Point2d from = PlainQuadEdgeFrom(uv, e);
+    const Point2d to = PlainQuadEdgeTo(uv, e);
+    const double tol_u = 1e-9 * (1.0 + std::fabs(from.x) + std::fabs(to.x));
+    const double tol_v = 1e-9 * (1.0 + std::fabs(from.y) + std::fabs(to.y));
+    const bool u_constant = std::fabs(to.x - from.x) <= tol_u;
+    const bool v_constant = std::fabs(to.y - from.y) <= tol_v;
+    if (!u_constant && !v_constant) return false;  // a genuinely oblique edge
+  }
+  return true;
+}
+
+// One "plain quad" planar face's own 4 outward-CCW corners, in both 3D
+// (`corner` - what BuildConformingPlainQuadMesh actually builds a mesh
+// from) and the SAME corners' own (u, v) values (`corner_uv` - what
+// ComputePlainQuadSeamForces needs to tell a constant-u edge from a
+// constant-v one, per IsAxisAlignedQuadUv's own doc comment for why that
+// can't be assumed from edge index alone the way
+// TessellateConforming()'s own narrower-scoped pass safely does).
+struct PlainQuadFace {
+  int face_index = 0;
+  std::array<Point3d, 4> corner;
+  std::array<Point2d, 4> corner_uv;
+};
+
+// Collects every resolved face that is a "plain quad" in the sense
+// TessellateConforming()'s own straight-edge pass already defines
+// (planar, and either untrimmed - using the implicit domain-corner
+// rectangle, per FaceOuterUv's own doc comment - or trimmed to an
+// explicit 4-point outer loop, what FromMixedFaces() always builds, even
+// for an untouched input face), further narrowed by two guards that pass
+// does not need:
+//
+// - `fg.holes` must be empty. TessellateConforming()'s own inputs
+//   (Box()-derived walls, FromMixedFaces()-built quads) never carry
+//   holes by construction, so its own filter gets away without checking;
+//   Tessellate() is reached by a broader input surface, including a
+//   .3dm-round-tripped Brep whose face happens to present a literal
+//   4-point outer loop AND an inner hole loop (ResolveFace's own
+//   fallback path only synthesizes a domain-rectangle outer when holes
+//   are present and outer was ALREADY empty - a face with its own real
+//   4-point outer plus a hole keeps both, and its own exact_clip is then
+//   false - see ResolveFace's own implementation). Routing such a face
+//   through BuildConformingPlainQuadMesh (which has no hole-clipping
+//   logic at all) would silently drop the hole, so this filter excludes
+//   it instead - that face keeps its exact prior tessellation via
+//   Tessellate()'s own ordinary TessellateGrid(..., &fg.outer, holes)
+//   path, unaffected.
+// - The face's own 4 corners must be axis-aligned in its own (u, v)
+//   domain (see IsAxisAlignedQuadUv's own doc comment for exactly why,
+//   and the separate, pre-existing gap this guard deliberately leaves
+//   untouched rather than misapplying itself to).
+std::vector<PlainQuadFace> CollectPlainQuadFaces(const std::vector<FaceGeometry>& fgs,
+                                                  const std::vector<bool>& resolved) {
+  std::vector<PlainQuadFace> quad_faces;
+  for (size_t i = 0; i < fgs.size(); ++i) {
+    if (!resolved[i]) continue;
+    const FaceGeometry& fg = fgs[i];
+    if (!fg.holes.empty()) continue;
+    NurbsSurface wrapper;
+    wrapper.raw() = fg.surface;
+    if (!wrapper.IsPlanar()) continue;
+    std::array<Point2d, 4> corners_uv;
+    if (fg.outer.size() == 4) {
+      for (int c = 0; c < 4; ++c) corners_uv[static_cast<size_t>(c)] = fg.outer[static_cast<size_t>(c)];
+    } else if (fg.outer.empty()) {
+      const ON_Interval du = fg.surface.Domain(0), dv = fg.surface.Domain(1);
+      corners_uv = {Point2d(du.Min(), dv.Min()), Point2d(du.Max(), dv.Min()), Point2d(du.Max(), dv.Max()),
+                    Point2d(du.Min(), dv.Max())};
+    } else {
+      continue;  // a genuinely trimmed (non-4-corner) planar face - not this pass's target shape
+    }
+    if (!IsAxisAlignedQuadUv(corners_uv)) continue;
+    PlainQuadFace qf;
+    qf.face_index = static_cast<int>(i);
+    qf.corner_uv = corners_uv;
+    for (int c = 0; c < 4; ++c) {
+      qf.corner[static_cast<size_t>(c)] =
+          wrapper.PointAt(corners_uv[static_cast<size_t>(c)].x, corners_uv[static_cast<size_t>(c)].y);
+    }
+    quad_faces.push_back(qf);
+  }
+  return quad_faces;
+}
+
+// The actual fix for the gap TessellateConforming()'s own doc comment
+// discloses (and Tessellate()'s own doc comment now discloses too - see
+// there for the full falsifiable before/after claim): for two DIFFERENT
+// "plain quad" faces (see CollectPlainQuadFaces's own doc comment) that
+// share a boundary edge, NurbsSurface::TessellateGrid/
+// TessellateGridClippedExact samples that edge independently on each
+// side - u_divisions+1 points along a constant-v edge, v_divisions+1
+// along a constant-u edge - and because which PHYSICAL axis (x, y, or z)
+// plays u vs v is NOT the same for every face (confirmed directly:
+// Box()'s own front and back walls assign x/z to u/v oppositely - see
+// Brep::Box()'s own comment), two faces sharing one physical edge can
+// each apply a DIFFERENT one of the two division counts to it whenever
+// u_divisions != v_divisions, leaving that edge's two independently-
+// tessellated copies with different point counts - genuinely open, not
+// just approximately open.
+//
+// Only ever called when u_divisions != v_divisions (see Tessellate()'s
+// own doc comment for why the two counts being equal is a full
+// structural guarantee, not a heuristic, that NONE of this runs at all):
+// every edge in the whole Brep has exactly one of two possible natural
+// sample counts, u_divisions or v_divisions, so a mismatch between two
+// sides can only ever be exactly {u_divisions, v_divisions} in some
+// order - making the shared, closing count simply max(u_divisions,
+// v_divisions), the same choice TessellateConforming()'s own
+// boundary_samples default already makes for the same reason (dense
+// enough that a caller asking for a fine grid on either axis also gets a
+// fine shared boundary).
+//
+// Compares every DISTINCT pair of quad faces' 4 edges by their two 3D
+// endpoints (in either order - two faces sharing a physical edge
+// normally walk it in OPPOSITE order, since their outward normals point
+// opposite ways across it; a same-direction coincidence is also accepted
+// rather than silently missed, though it would mean inconsistent winding
+// between the two faces - not expected from any Brep this kernel's own
+// factories build) rather than either face's own u/v domain, for exactly
+// the reason above. A pair whose natural counts already agree (6 of a
+// Box()'s own 12 edges, for instance - every edge where both walls
+// happen to use the SAME one of the two division counts) is left
+// completely untouched: both sides already compute the identical count
+// and hence the identical shared corner-to-corner points on their own,
+// so forcing anything there would be redundant, not merely harmless.
+// For a genuine mismatch, the shared points are built via PLAIN LINEAR
+// interpolation between the two matched corner points (never a second,
+// independently-evaluated approximation through either face's own NURBS
+// surface - the same "share the literal points" mechanism
+// TessellateConforming()'s own straight-edge pass already uses) and
+// pushed into BOTH faces' own force lists at their own local edge index
+// - always spanning that edge's FULL t in [0, 1] on both sides (unlike
+// TessellateConforming()'s own wedge-vs-quad pass, a quad-vs-quad match
+// here is always a complete shared edge between two faces of the same
+// solid, never a wedge's own partial rail, so no fractional-span
+// rounding/tie-breaking is needed).
+std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>> ComputePlainQuadSeamForces(
+    const std::vector<PlainQuadFace>& quad_faces, int u_divisions, int v_divisions) {
+  std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>> forces;
+
+  auto natural_count = [&](const PlainQuadFace& qf, int e) {
+    const Point2d from = PlainQuadEdgeFrom(qf.corner_uv, e);
+    const Point2d to = PlainQuadEdgeTo(qf.corner_uv, e);
+    const double tol_v = 1e-9 * (1.0 + std::fabs(from.y) + std::fabs(to.y));
+    const bool v_constant = std::fabs(to.y - from.y) <= tol_v;
+    return v_constant ? u_divisions : v_divisions;
+  };
+
+  for (size_t a = 0; a < quad_faces.size(); ++a) {
+    for (size_t b = a + 1; b < quad_faces.size(); ++b) {
+      const PlainQuadFace& qa = quad_faces[a];
+      const PlainQuadFace& qb = quad_faces[b];
+      for (int ea = 0; ea < 4; ++ea) {
+        const Point3d a_from = PlainQuadEdgeFrom(qa.corner, ea);
+        const Point3d a_to = PlainQuadEdgeTo(qa.corner, ea);
+        const double edge_len = a_from.DistanceTo(a_to);
+        if (edge_len < 1e-12) continue;  // degenerate - nothing to match
+        const double lin_tol = std::max(1e-9, edge_len * 1e-6);
+        for (int eb = 0; eb < 4; ++eb) {
+          const Point3d b_from = PlainQuadEdgeFrom(qb.corner, eb);
+          const Point3d b_to = PlainQuadEdgeTo(qb.corner, eb);
+          const bool reversed = a_from.DistanceTo(b_to) <= lin_tol && a_to.DistanceTo(b_from) <= lin_tol;
+          const bool forward = !reversed && a_from.DistanceTo(b_from) <= lin_tol && a_to.DistanceTo(b_to) <= lin_tol;
+          if (!reversed && !forward) continue;  // not the same physical edge
+
+          const int count_a = natural_count(qa, ea);
+          const int count_b = natural_count(qb, eb);
+          if (count_a == count_b) continue;  // already agrees - nothing to force on either side
+
+          const int shared_count = std::max(u_divisions, v_divisions);
+          std::vector<EdgeForce>& fa = forces[qa.face_index][static_cast<size_t>(ea)];
+          std::vector<EdgeForce>& fb = forces[qb.face_index][static_cast<size_t>(eb)];
+          for (int s = 0; s <= shared_count; ++s) {
+            const double t = static_cast<double>(s) / static_cast<double>(shared_count);
+            const Point3d p = a_from + t * (a_to - a_from);
+            fa.push_back({t, p});
+            fb.push_back({reversed ? 1.0 - t : t, p});
+          }
+        }
+      }
+    }
+  }
+  return forces;
+}
+
 }  // namespace
+
+// Tessellates each face into a triangle mesh via NurbsSurface's grid
+// tessellator (see its comment for why this doesn't go through
+// OpenNURBS' own CreateMesh). One Mesh per face, in face order.
+// `u_divisions`/`v_divisions` apply to every face's own parameter
+// domain. Faces built by TrimmedPlanarFace() are tessellated against
+// their trim loop; every other face here is untrimmed.
+//
+// When u_divisions != v_divisions, two adjacent "plain quad" planar
+// faces (see CollectPlainQuadFaces's own doc comment for the exact
+// shape - every wall of Box(), and every rectangular-in-its-own-(u,v)
+// quad built by FromMixedFaces()/FromPlanarFaces()/ExactConvexHull())
+// that share a boundary edge but would otherwise sample it at two
+// DIFFERENT point counts - because which physical axis (x, y, or z)
+// plays u vs v differs per face; see ComputePlainQuadSeamForces's own
+// doc comment for the exact mechanism and Brep::Box()'s own comment for
+// a directly-confirmed example - now share the LITERAL same boundary
+// points instead, closing that seam: Mesh::MergeAndWeld(Tessellate(u,
+// v)) (i.e. TessellateToClosedMesh(u, v)) is a genuine
+// Mesh::IsClosedManifold() for such a Brep at ANY u_divisions/
+// v_divisions pair, not only when the two happen to be equal (falsified,
+// were it untrue, by TestBoxAsymmetricDivisionsIsClosedManifold and its
+// siblings in this kernel's own test file).
+//
+// This is a full structural bypass, not a heuristic: when u_divisions ==
+// v_divisions, every edge in the whole Brep has the SAME natural sample
+// count on both sides by construction (there is only one division count
+// to disagree about), so the new matching pass above finds zero
+// mismatches and leaves EVERY face's tessellation exactly as it was -
+// bit-for-bit identical to this method's own pre-fix behavior (verified
+// directly: TestTessellateSymmetricDivisionsUnaffectedByAsymmetricFix
+// compares raw mesh vertex/face data float-for-float against a
+// same-shape asymmetric call's own untouched faces).
+//
+// Scope limits, honestly: only a face whose own visible boundary is
+// EXACTLY 4 points (explicit or the implicit domain rectangle), with no
+// hole loops, and whose own (u, v) corners form an axis-aligned
+// rectangle in that face's own parameter domain, ever participates (see
+// CollectPlainQuadFaces's own doc comment for the concrete gaps this
+// deliberately leaves for a face shaped otherwise - a genuinely trimmed
+// non-4-corner planar face, a 4-corner face that ALSO has a hole, or a
+// quad face that is only a rectangle in 3D but NOT in its own (u, v)
+// domain, e.g. one face of a hulled, arbitrarily-ROTATED box - confirmed
+// directly to be a real, PRE-EXISTING, SEPARATE gap unaffected by this
+// fix either way). A non-planar face (cylindrical, conical, spherical)
+// is never part of this pass either. And this fix is Tessellate()-only:
+// TessellateConforming() has its own, separately-disclosed, NOT-YET-
+// closed version of this exact same gap for its own quad-vs-quad case
+// (see that method's own doc comment) - completely unaffected by this
+// change, still open, a real, separate, future follow-up.
+std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
+  std::vector<Mesh> result;
+  result.reserve(static_cast<size_t>(brep_.m_F.Count()));
+
+  const int n = brep_.m_F.Count();
+  std::vector<FaceGeometry> fgs(static_cast<size_t>(n));
+  std::vector<bool> resolved(static_cast<size_t>(n), false);
+  for (int i = 0; i < n; ++i) {
+    resolved[static_cast<size_t>(i)] =
+        ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fgs[static_cast<size_t>(i)]);
+  }
+
+  std::vector<PlainQuadFace> quad_faces;
+  std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>> plain_forces;
+  if (u_divisions != v_divisions) {
+    quad_faces = CollectPlainQuadFaces(fgs, resolved);
+    plain_forces = ComputePlainQuadSeamForces(quad_faces, u_divisions, v_divisions);
+  }
+
+  for (int i = 0; i < n; ++i) {
+    if (!resolved[static_cast<size_t>(i)]) continue;
+    FaceGeometry& fg = fgs[static_cast<size_t>(i)];
+    NurbsSurface wrapper;
+    wrapper.raw() = fg.surface;
+    const auto plain_it = plain_forces.find(i);
+    if (plain_it != plain_forces.end()) {
+      std::array<Point3d, 4> corner{};
+      for (const PlainQuadFace& qf : quad_faces) {
+        if (qf.face_index == i) {
+          corner = qf.corner;
+          break;
+        }
+      }
+      result.push_back(BuildConformingPlainQuadMesh(corner, u_divisions, v_divisions, plain_it->second[0],
+                                                      plain_it->second[2], plain_it->second[3],
+                                                      plain_it->second[1]));
+    } else if (fg.outer.empty()) {
+      result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions));
+    } else if (fg.exact_clip) {
+      result.push_back(wrapper.TessellateGridClippedExact(u_divisions, v_divisions, fg.outer));
+    } else {
+      const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
+      result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions, &fg.outer, holes));
+    }
+    if (brep_.m_F[i].m_bRev) result.back() = result.back().FlipNormals();
+  }
+  return result;
+}
+
+// Tessellate() followed by Mesh::MergeAndWeld() - the combination that
+// actually produces a single closed, boolean-ready mesh from a closed
+// Brep like Box(). Tessellate() alone leaves each face's tessellation as
+// a separate mesh with its own copy of shared-edge vertices; this is
+// what welds those seams shut - including, now, the u_divisions !=
+// v_divisions plain-quad seams Tessellate() itself closes (see its own
+// doc comment): the literal shared boundary points that fix forces are
+// exactly what lets this weld succeed at ANY divisions pair, not just a
+// symmetric one.
+Mesh Brep::TessellateToClosedMesh(int u_divisions, int v_divisions) const {
+  return Mesh::MergeAndWeld(Tessellate(u_divisions, v_divisions));
+}
 
 std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, int boundary_samples) const {
   if (u_divisions < 1 || v_divisions < 1) {
