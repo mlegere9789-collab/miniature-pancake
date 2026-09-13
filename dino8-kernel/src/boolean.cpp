@@ -671,7 +671,46 @@ ClassifiedBuckets SplitAndBucket(const std::vector<Brep::PlanarFace>& self_faces
 // (x, y) axes Flip() happened to pick.
 Brep::PlanarFace FlipFace(Brep::PlanarFace f) {
   f.plane.Flip();
+  const size_t n = f.loop.size();
   std::reverse(f.loop.begin(), f.loop.end());
+  // Reversing the loop's own vertex order (above) means any attached
+  // ArcRun (PlanarFace::ArcRun's own doc comment, brep.h) - recording
+  // WHERE in the loop an arc lives, and which direction it sweeps - must
+  // be remapped too, not left stale referencing pre-reversal indices/
+  // direction. Reversing a length-n array maps old index i to new index
+  // (n-1-i), so a contiguous OLD run [begin, begin+count) (mod n, the
+  // same circular convention BuildResampledWedgeLoop already uses)
+  // becomes the contiguous NEW range starting at (n-begin-count) mod n,
+  // same length - but now walked in the OPPOSITE direction, so the run's
+  // own angle_begin/angle_end (the SAME two physical endpoints, still)
+  // must swap too, or a later re-sample (detail::ArcSchedule3d) would
+  // trace this arc backwards relative to the loop's own new vertex
+  // order.
+  //
+  // Found and fixed here by direct counterexample, not anticipated by
+  // this function's own original form (which predates any PlanarFace
+  // ever carrying content AFTER its own arc run): BuildLensEndCap's own
+  // lens-cap loop, [arc_samples..., chord_mid] with run.begin=0 and
+  // run.count=the arc's own sample count, leaves exactly one trailing
+  // NON-arc vertex (chord_mid) past the run. Left unfixed, a reversed
+  // run's own `begin` still pointed at the SAME numeric index as before
+  // reversal - which, after reversal, generally lands on a completely
+  // DIFFERENT vertex (chord_mid itself, shifted from the loop's own end
+  // to its new index 0) - silently overwriting it with a resampled arc
+  // point instead and losing the real chord_mid vertex entirely,
+  // corrupting the shared boundary this run exists to reconcile against
+  // (confirmed directly: exactly the failure this increment's own
+  // reverse-subtraction Difference test caught, not a theoretical
+  // worry - see TestBooleanCombineMixedParallelCylinderDifferenceAMinusBLensComplement's
+  // own comment in the test file).
+  for (Brep::PlanarFace::ArcRun& run : f.arc_runs) {
+    if (n == 0) continue;
+    const size_t new_begin =
+        ((static_cast<size_t>(n) - static_cast<size_t>(run.begin) % n - static_cast<size_t>(run.count) % n) % n + n) %
+        n;
+    run.begin = static_cast<int>(new_begin);
+    std::swap(run.angle_begin, run.angle_end);
+  }
   return f;
 }
 
@@ -1883,6 +1922,84 @@ MixedFace MixedFaceFromCyl(Brep::CylindricalFace cf) {
 // function's only job is to produce two syntactically valid CylindricalFace
 // angular children; the rest of the pipeline is unmodified and correct by
 // the same argument every other case here already relies on.
+// The result of the closed-form circle/circle crossing computation shared
+// between SplitCylindricalByParallelCylinder's own angular wall split
+// (below) and BuildLensEndCap's own lens-shaped Intersection/Difference
+// end cap (further below) - factored out into its own function so BOTH
+// call sites consume the EXACT SAME computed intersection points/angles
+// rather than two independently re-derived (and potentially numerically
+// drifting) copies of the same math. This is a pure extraction of
+// SplitCylindricalByParallelCylinder's own pre-existing inline computation
+// (see that function's own doc comment for the closed-form derivation
+// itself, Weisstein/Bourke) - not new geometry.
+struct ParallelCylinderCrossing {
+  bool crosses = false;  // false: disjoint, tangent, or one nested inside the other - no lens/split exists
+  // The two circle/circle intersection points, in 3D, evaluated AT `cf`'s
+  // own frame.origin height (an arbitrary reference height - the
+  // projected 2D geometry is identical at every height along the shared
+  // axis direction, see SplitCylindricalByParallelCylinder's own doc
+  // comment for why). A caller needing these at a DIFFERENT height (e.g.
+  // a specific end cap's own height) shifts by `height * cf.frame.zaxis`.
+  Point3d p1, p2;
+  // The true angle (radians, in `cf`'s own frame) of p1 and p2
+  // respectively - deliberately NOT sorted or wrap-adjusted, so a caller
+  // needing floating-point IDENTITY with a fragment built from these same
+  // raw values elsewhere (e.g. SplitCylindricalByParallelCylinder's own
+  // rail corners, or BuildLensEndCap's own cap boundary) can reuse them
+  // directly, unmodified - see BuildLensEndCap's own doc comment for why
+  // that identity matters there.
+  double theta_p1_cf = 0.0, theta_p2_cf = 0.0;
+  // Mirror of the above, in `other`'s own frame instead (computed via the
+  // SAME p1/p2 points - the angle-only projection onto a frame's own
+  // (xaxis, yaxis) is invariant to which height along the shared axis
+  // direction p1/p2 happen to be stored at, since xaxis/yaxis are both
+  // perpendicular to that shared axis).
+  double theta_p1_other = 0.0, theta_p2_other = 0.0;
+};
+
+ParallelCylinderCrossing ComputeParallelCylinderCrossing(const Brep::CylindricalFace& cf,
+                                                          const Brep::CylindricalFace& other, double tol) {
+  ParallelCylinderCrossing result;
+
+  // 2D projection onto cf's own (xaxis, yaxis) - see this function's own
+  // doc comment above and CylinderCylinderNoInteraction's for why this is
+  // valid for any point along either infinite parallel axis line.
+  const Vector3d d = other.frame.origin - cf.frame.origin;
+  const double center_b_x = ON_DotProduct(d, cf.frame.xaxis);
+  const double center_b_y = ON_DotProduct(d, cf.frame.yaxis);
+  const double dist = std::sqrt(center_b_x * center_b_x + center_b_y * center_b_y);
+  const double r_a = cf.radius, r_b = other.radius;
+  if (dist <= tol) return result;  // concentric (or coincident) axes - not a genuine 2-point crossing
+
+  const double a = (dist * dist + r_a * r_a - r_b * r_b) / (2.0 * dist);
+  const double h2 = r_a * r_a - a * a;
+  if (h2 <= tol * tol) return result;  // tangent or disjoint - see this function's own callers for what each does with `crosses == false`
+  const double h = std::sqrt(h2);
+  const double mid_x = a * center_b_x / dist, mid_y = a * center_b_y / dist;
+  const double perp_x = -center_b_y / dist, perp_y = center_b_x / dist;
+  const double p1_x = mid_x + h * perp_x, p1_y = mid_y + h * perp_y;
+  const double p2_x = mid_x - h * perp_x, p2_y = mid_y - h * perp_y;
+
+  result.p1 = cf.frame.origin + p1_x * cf.frame.xaxis + p1_y * cf.frame.yaxis;
+  result.p2 = cf.frame.origin + p2_x * cf.frame.xaxis + p2_y * cf.frame.yaxis;
+  result.theta_p1_cf = std::atan2(p1_y, p1_x);
+  result.theta_p2_cf = std::atan2(p2_y, p2_x);
+  if (result.theta_p1_cf < 0.0) result.theta_p1_cf += 2.0 * ON_PI;
+  if (result.theta_p2_cf < 0.0) result.theta_p2_cf += 2.0 * ON_PI;
+
+  auto angle_in_other = [&](const Point3d& p) {
+    const Vector3d rel = p - other.frame.origin;
+    double ang = std::atan2(ON_DotProduct(rel, other.frame.yaxis), ON_DotProduct(rel, other.frame.xaxis));
+    if (ang < 0.0) ang += 2.0 * ON_PI;
+    return ang;
+  };
+  result.theta_p1_other = angle_in_other(result.p1);
+  result.theta_p2_other = angle_in_other(result.p2);
+
+  result.crosses = true;
+  return result;
+}
+
 std::vector<MixedFace> SplitCylindricalByParallelCylinder(const Brep::CylindricalFace& cf,
                                                             const Brep::CylindricalFace& other, double tol) {
   if (!(cf.angle >= 2.0 * ON_PI - kAxisAlignTol)) {
@@ -1898,18 +2015,12 @@ std::vector<MixedFace> SplitCylindricalByParallelCylinder(const Brep::Cylindrica
     return {MixedFaceFromCyl(cf)};  // disjoint, or one fully nested inside the other - no split needed
   }
 
-  // 2D projection onto cf's own (xaxis, yaxis) - see this function's own
-  // doc comment above and CylinderCylinderNoInteraction's for why this is
-  // valid for any point along either infinite parallel axis line.
-  const Vector3d d = other.frame.origin - cf.frame.origin;
-  const double center_b_x = ON_DotProduct(d, cf.frame.xaxis);
-  const double center_b_y = ON_DotProduct(d, cf.frame.yaxis);
-  const double dist = std::sqrt(center_b_x * center_b_x + center_b_y * center_b_y);
-  const double r_a = cf.radius, r_b = other.radius;
-
-  const double a = (dist * dist + r_a * r_a - r_b * r_b) / (2.0 * dist);
-  const double h2 = r_a * r_a - a * a;
-  if (h2 <= tol * tol) {
+  // Same closed-form circle/circle crossing math this function always
+  // used, now factored into ComputeParallelCylinderCrossing (above) so
+  // BuildLensEndCap's own lens cap (further below) shares this EXACT
+  // computation rather than an independent copy.
+  const ParallelCylinderCrossing crossing = ComputeParallelCylinderCrossing(cf, other, tol);
+  if (!crossing.crosses) {
     // Exact/near tangency - a genuine degeneracy this increment excludes
     // (the boundary between "0 crossings" and "2 crossings" regimes is
     // not a closed-form-clean case to split on): thrown rather than
@@ -1920,16 +2031,9 @@ std::vector<MixedFace> SplitCylindricalByParallelCylinder(const Brep::Cylindrica
         "increment, see SplitCylindricalByParallelCylinder's own doc "
         "comment in boolean.cpp");
   }
-  const double h = std::sqrt(h2);
-  const double mid_x = a * center_b_x / dist, mid_y = a * center_b_y / dist;
-  const double perp_x = -center_b_y / dist, perp_y = center_b_x / dist;
-  const double p1_x = mid_x + h * perp_x, p1_y = mid_y + h * perp_y;
-  const double p2_x = mid_x - h * perp_x, p2_y = mid_y - h * perp_y;
 
-  double theta1 = std::atan2(p1_y, p1_x);
-  double theta2 = std::atan2(p2_y, p2_x);
-  if (theta1 < 0.0) theta1 += 2.0 * ON_PI;
-  if (theta2 < 0.0) theta2 += 2.0 * ON_PI;
+  double theta1 = crossing.theta_p1_cf;
+  double theta2 = crossing.theta_p2_cf;
   if (theta2 < theta1) std::swap(theta1, theta2);  // theta1 < theta2, both in [0, 2*pi)
 
   // Two angular children: [theta1, theta2] and [theta2, theta1 + 2*pi] -
@@ -1991,6 +2095,86 @@ bool ParallelCylinderCapNeedsNoTrim(const Brep::CylindricalFace& cf, bool at_v0,
   const Point3d cap_point = cf.frame.origin + height * cf.frame.zaxis;
   const double other_h = ON_DotProduct(cap_point - other.frame.origin, other.frame.zaxis);
   return other_h < -tol || other_h > other.length + tol;
+}
+
+// Splits `cf` axially wherever a DIFFERENT, interacting, PARALLEL-axis
+// cylinder `other`'s own two axial termini (height 0 and height
+// `other.length`, in `other`'s own frame) fall STRICTLY inside `cf`'s own
+// [0, cf.length] range - the cylinder/cylinder analogue of case (iii)'s
+// own `v_cut` height-split against an explicit planar face's z=const
+// plane (SplitMixedAgainstAllFaces, below), needed for a genuinely
+// DIFFERENT reason than that split's own trigger: a bare CylindricalFace
+// boolean operand's own finite axial extent has no PlanarFace ANYWHERE in
+// this pipeline to split against at all (see BooleanCombineMixed's own
+// doc comment on bare CylindricalFace operands - `other`'s own two ends
+// are never represented as explicit faces the way case (iii)'s plane is).
+// Without this, RepresentativeInteriorPointMixed's own SINGLE
+// representative point has to stand in for `cf`'s ENTIRE axial range when
+// SplitAndClassifyMixed classifies a fragment against `other` - which is
+// simply wrong whenever `other`'s own bounded axial reach ends partway
+// through `cf`'s own length, since `cf`'s TRUE in/out classification
+// against `other` then genuinely differs above vs below that height and a
+// single sample cannot see that.
+//
+// Confirmed directly, not merely theorized: before this function existed,
+// BooleanCombineMixed(a, b, Intersection) on two genuinely CROSSING
+// parallel cylinders with PARTIALLY overlapping (neither disjoint nor one
+// fully containing the other's) axial ranges measured a kept wall
+// fragment spanning `cf`'s own FULL original length when the true axial
+// overlap band was strictly shorter - see
+// TestBooleanCombineMixedParallelCylinderIntersectionCrossingLensCaps' own
+// comment in the test file for the exact numbers this fix makes correct.
+// This is a genuinely NEW gap this increment's own research phase did not
+// anticipate (it assumed the existing wall-split machinery was already
+// fully correct for the wall) - found and fixed here by direct
+// counterexample during implementation, not by following any prior spec.
+//
+// Applies the SAME "lo gets end1_is_original=false, hi gets
+// end0_is_original=false" bookkeeping case (iii) already uses just below
+// - a fresh cut here is never a genuine unmet terminus of the original
+// input cylinder either. Not gated on BooleanOp, for the same reason
+// nothing else in SplitMixedAgainstAllFaces is (see that function's own
+// doc comment): this is purely a refinement of the geometry available to
+// the SHARED classify-then-bucket step downstream, not a new
+// operator-specific mechanism.
+//
+// Deliberately NOT called unconditionally on every parallel-cylinder pair
+// (see the case (iv) dispatch below for exactly when it's invoked): doing
+// so for a cylinder that is NEVER radially inside `other` at any angle
+// (e.g. the OUTER member of a nested pair) would add classification-inert
+// internal seams and needlessly change that cylinder's own fragment
+// count - confirmed directly to matter, not just tidiness: applying this
+// unconditionally broke TestBooleanCombineMixedParallelCylinderUnionOneFullyNestedContributesNothing's
+// own "A survives as exactly ONE cylindrical face" assertion during this
+// function's own development, by splitting A (the untouched OUTER
+// cylinder, whose own wall is never inside the smaller nested B at any
+// height) into 3 axially-inert pieces for no classification benefit.
+std::vector<Brep::CylindricalFace> SplitCylindricalByOtherCylinderAxialExtent(
+    const Brep::CylindricalFace& cf, const Brep::CylindricalFace& other, double tol) {
+  std::vector<Brep::CylindricalFace> pieces{cf};
+  for (const double other_local_h : {0.0, other.length}) {
+    const Point3d cut_point = other.frame.origin + other_local_h * other.frame.zaxis;
+    std::vector<Brep::CylindricalFace> next;
+    next.reserve(pieces.size() + 1);
+    for (const Brep::CylindricalFace& piece : pieces) {
+      const double v_cut = ON_DotProduct(cut_point - piece.frame.origin, piece.frame.zaxis);
+      if (v_cut > tol && v_cut < piece.length - tol) {
+        Brep::CylindricalFace lo = piece;
+        lo.length = v_cut;
+        lo.end1_is_original = false;
+        Brep::CylindricalFace hi = piece;
+        hi.frame.origin = piece.frame.origin + v_cut * piece.frame.zaxis;
+        hi.length = piece.length - v_cut;
+        hi.end0_is_original = false;
+        next.push_back(std::move(lo));
+        next.push_back(std::move(hi));
+      } else {
+        next.push_back(piece);
+      }
+    }
+    pieces = std::move(next);
+  }
+  return pieces;
 }
 
 // interaction") - the MixedFace-aware sibling of SplitAgainstAllPlanes()
@@ -2258,8 +2442,82 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
         const Vector3d cross_axes = ON_CrossProduct(f.cyl.frame.zaxis, g.cyl.frame.zaxis);
         const bool axes_parallel = cross_axes.Length() < kAxisAlignTol;
         if (axes_parallel) {
-          for (MixedFace& piece : SplitCylindricalByParallelCylinder(f.cyl, g.cyl, tol)) {
-            next.push_back(std::move(piece));
+          // The existing angular split (unchanged - crossing regime: 2
+          // children; disjoint/nested regime: 1 unmodified fragment), THEN
+          // - new for this increment's own Intersection/Difference support
+          // - an axial split of each resulting piece against `g.cyl`'s own
+          // finite axial termini (SplitCylindricalByOtherCylinderAxialExtent,
+          // above): unconditionally in the CROSSING regime (angular.size()
+          // > 1 - applied to BOTH children, not just the one that dips
+          // into `g.cyl`, for a reason found only by direct
+          // counterexample, see below), or in the NESTED/disjoint regime
+          // (angular.size() == 1) only when `f.cyl` is itself the member
+          // wholly nested inside `g.cyl` (checked directly below, NOT the
+          // reverse - see SplitCylindricalByOtherCylinderAxialExtent's own
+          // doc comment for why applying this to the OUTER member of a
+          // nested pair is both unnecessary and would silently change
+          // existing, already-verified fragment counts).
+          //
+          // Why BOTH crossing-regime children, not just the one that can
+          // be radially inside `g.cyl` (an earlier, narrower version of
+          // this dispatch's own reasoning, since corrected by direct
+          // counterexample): the WALL is not the only thing that needs to
+          // reconnect correctly. Consider `f.cyl`'s OUTSIDE-`g.cyl` child
+          // - angularly always outside `g.cyl`'s footprint, so its own
+          // CLASSIFICATION against `g.cyl` is genuinely height-invariant
+          // (always kOut), but its own two straight RADIAL RAILS (at its
+          // shared boundary angles with the INSIDE child, i.e. exactly at
+          // `g.cyl`'s own crossing points) are NOT height-invariant
+          // structurally: wherever the INSIDE child's own middle axial
+          // band gets discarded (the genuine A-inside-B region, excluded
+          // from Difference/Intersection's own kept buckets) and replaced
+          // by `g.cyl`'s OWN wall instead, `g.cyl`'s wall's own rail (at
+          // that SAME crossing angle, but spanning only ITS OWN finite
+          // axial reach) needs a correctly length-matched rail segment
+          // from the OUTSIDE child to weld against - which only exists if
+          // the OUTSIDE child is ALSO cut at the same two heights.
+          // Skipping this (an earlier version of this fix did, to dodge a
+          // DIFFERENT bug - see immediately below) leaves the outside
+          // child's own single, full-length rail with no correctly-sized
+          // partner there: a genuine open seam, caught directly by this
+          // increment's own Difference test's own IsClosedManifold()/
+          // volume checks (not merely inferred).
+          //
+          // This does reintroduce a SEPARATE, genuinely new ambiguity
+          // this increment's own implementation found and fixed at its
+          // real source instead of working around here: once BOTH
+          // children are axially split, the SHORT arc (inside child's own
+          // cap-isocurve boundary at the cut height) and the LONG arc
+          // (outside child's own two axially-adjacent pieces reconnecting
+          // at that SAME height) share the identical two endpoint
+          // vertices (the crossing points) - and Brep::FromMixedFaces()
+          // used to identify an edge PURELY by that vertex pair, so a
+          // short arc, a long arc, and that long arc's own self-pairing
+          // partner all collided under one key, throwing "edge shared by
+          // 3 or more faces". Fixed at the actual source
+          // (BuildFaceLoop's own edge key, brep.cpp) by additionally
+          // hashing each cap edge's own midpoint position - see that
+          // function's own doc comment for the full derivation - rather
+          // than worked around here by narrowing which pieces get split
+          // (which merely swaps one open-seam bug for a different one, as
+          // this increment's own history directly demonstrates).
+          std::vector<MixedFace> angular = SplitCylindricalByParallelCylinder(f.cyl, g.cyl, tol);
+          bool need_axial_split = angular.size() > 1;
+          if (!need_axial_split) {
+            const Vector3d dd = g.cyl.frame.origin - f.cyl.frame.origin;
+            const double bx = ON_DotProduct(dd, f.cyl.frame.xaxis);
+            const double by = ON_DotProduct(dd, f.cyl.frame.yaxis);
+            const double dist = std::sqrt(bx * bx + by * by);
+            need_axial_split = (dist + f.cyl.radius <= g.cyl.radius + tol);
+          }
+          for (MixedFace& piece : angular) {
+            if (need_axial_split) {
+              for (Brep::CylindricalFace& sub : SplitCylindricalByOtherCylinderAxialExtent(piece.cyl, g.cyl, tol)) {
+                next.push_back(MixedFaceFromCyl(std::move(sub)));
+              }
+            } else {
+              next.push_back(std::move(piece));
+            }
           }
         } else {
           throw std::invalid_argument(
@@ -2627,6 +2885,257 @@ bool ParallelCylinderCapSafeAgainstAll(const Brep::CylindricalFace& cf, bool at_
   return true;
 }
 
+// Builds the lens-shaped Intersection/Difference end cap that closes
+// cylinder `cf`'s own genuine terminus (`at_v0` selects which end) where
+// it is cut off by a DIFFERENT, PARALLEL-axis cylinder `other` that
+// genuinely CROSSES `cf` (a real 2-point circle/circle crossing - not
+// disjoint, not tangent, not one nested inside the other) and whose own
+// finite axial range reaches this end's height mid-length
+// (ParallelCylinderCapNeedsNoTrim returning false is exactly this
+// trigger - see SynthesizeEndCaps' own kIn-branch doc comment below for
+// why the ORDINARY on-axis probe cannot see this case at all).
+//
+// Re-derived directly, not merely following the prior research phase's
+// own proposal: that probe sits ON `cf`'s own axis, which for a genuinely
+// CROSSING pair generally sits OUTSIDE `other` entirely (the two axes are
+// `dist` apart, with `|r_a - r_b| < dist < r_a + r_b` - `cf`'s own axis
+// only has to be within `other.radius` of `other`'s axis for the probe to
+// read kIn, which is NOT implied by a genuine crossing at all). Confirmed
+// by direct counterexample, not merely theorized: two parallel cylinders
+// of radius 3 and 2, axes 4 apart (a genuine crossing: 3+2=5 > 4 > 3-2=1),
+// have a real, non-empty lens-shaped intersection at every height in their
+// axial overlap band, yet BOTH cylinders' own axis points sit strictly
+// outside the OTHER cylinder (distance 4 exceeds either radius) - see this
+// increment's own test file for the worked volume check this exact
+// configuration is verified against.
+//
+// The lens cross-section is the classical two-circle "lens" (Weisstein,
+// MathWorld, "Circle-Circle Intersection"; Bourke, "Intersection of two
+// circles," 1997) - built here as TWO simple, non-self-touching circular-
+// segment pieces meeting at the chord between the two crossing points,
+// mirroring the "several simple pieces sharing an internal cut, never one
+// bridged loop" principle circle_clip3d.h's own top comment already
+// establishes for an analogous problem: one piece is bounded by the arc
+// of `cf`'s own circle that lies inside `other`, plus the straight chord;
+// the other is the mirror, bounded by the arc of `other`'s own circle
+// that lies inside `cf`, plus the SAME chord, traversed in the opposite
+// direction so the two pieces share that edge with opposite orientation
+// (weldable, not two unrelated pieces) - the same convention BuildEndCap's
+// own 4 quadrant wedges already use for their shared internal radial cuts.
+// Each piece carries exactly ONE PlanarFace::ArcRun (never two arcs in one
+// loop - existing `detail::ClipPolygonByCircle3d`/`ClipPolygonByCircleInsideOnly3d`
+// were checked directly and cannot be reused here at all: BOTH explicitly
+// throw whenever the clip circle crosses the polygon boundary, which is
+// exactly what a genuine two-circle lens does by definition - so this is
+// genuinely new geometry, not a case of under-using existing machinery),
+// so Brep::TessellateConforming()'s existing, unmodified reconciliation
+// machinery needs no new case to weld each piece's own arc edge against
+// the matching CylindricalFace wall wedge's own rail, exactly the way it
+// already does for a plain pie-slice cap (BuildEndCap) or an inside-circle
+// disc (case (ii)'s own mid-length crossing producer).
+//
+// Reuses ComputeParallelCylinderCrossing (above) for the actual
+// intersection points/angles - the SAME computation
+// SplitCylindricalByParallelCylinder's own angular wall split already
+// uses - rather than an independent, potentially-drifting re-derivation,
+// so this cap's own corner vertices are computed via the EXACT SAME raw
+// angle values (bit-identical, not merely close) as the adjoining wall
+// wedge's own rail corners: both ultimately evaluate
+// `radius*(cos(theta)*xaxis+sin(theta)*yaxis)` at one of
+// `crossing.theta_p1_cf`/`theta_p2_cf`, unmodified - see `build_segment`
+// below for why only the interior samples (never the two loop endpoints)
+// go through a `+/-2*pi` wrap adjustment.
+//
+// Winding: rather than hand-deriving which of the two candidate arcs'
+// sweep DIRECTIONS produces the correct outward orientation for every
+// possible relative circle placement (a genuinely easy-to-get-backwards
+// derivation - see AngleOffsetBetweenFrames/ConvertAngleBetweenFrames's
+// own doc comment, arc_schedule3d.h, for a documented real regression of
+// exactly this kind elsewhere in this codebase), this determines ONE
+// global reversal flag from segment 1's own natural sweep direction versus
+// the target outward normal (both expressed in `cf`'s own right-handed
+// frame, where "increasing angle" is unambiguously CCW as seen from
+// `+cf.frame.zaxis` by construction) and applies that SAME flag to BOTH
+// segments - reversing only segment 1 (or only segment 2) would break the
+// P1<->P2 shared-chord identity between them; reversing both preserves it
+// while still correctly flipping the whole boundary's orientation when
+// needed.
+std::vector<MixedFace> BuildLensEndCap(const Brep::CylindricalFace& cf, bool at_v0,
+                                        const Brep::CylindricalFace& other, double tol, int arc_samples = 200) {
+  const ParallelCylinderCrossing crossing = ComputeParallelCylinderCrossing(cf, other, tol);
+  if (!crossing.crosses) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: BuildLensEndCap called on a "
+        "non-crossing parallel-axis cylinder pair - a caller bug (see "
+        "SynthesizeEndCaps' own doc comment, which only ever calls this "
+        "after confirming ComputeParallelCylinderCrossing(...).crosses)");
+  }
+
+  const double height = at_v0 ? 0.0 : cf.length;
+  const bool same_handed = at_v0 ? !cf.outward : cf.outward;  // true iff target normal == +cf.frame.zaxis (BuildEndCap's own convention)
+
+  const Point3d cf_cap_center = cf.frame.origin + height * cf.frame.zaxis;
+  const Point3d other_axis_here =
+      other.frame.origin + ON_DotProduct(cf_cap_center - other.frame.origin, other.frame.zaxis) * other.frame.zaxis;
+  auto point_on_other = [&](double theta) {
+    return other_axis_here + other.radius * (std::cos(theta) * other.frame.xaxis + std::sin(theta) * other.frame.yaxis);
+  };
+
+  auto inside_other = [&](const Point3d& p) {
+    const Vector3d rel = p - other.frame.origin;
+    const Vector3d perp = rel - ON_DotProduct(rel, other.frame.zaxis) * other.frame.zaxis;
+    return perp.Length() < other.radius - tol;
+  };
+  auto inside_cf = [&](const Point3d& p) {
+    const Vector3d rel = p - cf.frame.origin;
+    const Vector3d perp = rel - ON_DotProduct(rel, cf.frame.zaxis) * cf.frame.zaxis;
+    return perp.Length() < cf.radius - tol;
+  };
+
+  // For each circle, of the two arcs connecting its own two raw crossing
+  // angles, pick whichever one's MIDPOINT genuinely lies inside the other
+  // cylinder (not assumed - a lens's own "inside" arc is not always the
+  // numerically shorter one). Expressed as a possibly-`+/-2*pi`-shifted
+  // "end" value purely to encode WHICH arc/direction was chosen; the raw,
+  // unshifted values are used again below for the loop's own two boundary
+  // samples.
+  auto pick_inside_arc_end = [](double begin_raw, double end_raw, const std::function<bool(double)>& midpoint_inside) {
+    double end_direct = end_raw;
+    while (end_direct < begin_raw) end_direct += 2.0 * ON_PI;
+    const double mid = 0.5 * (begin_raw + end_direct);
+    return midpoint_inside(mid) ? end_direct : (end_direct - 2.0 * ON_PI);
+  };
+  const double seg1_end_shifted = pick_inside_arc_end(
+      crossing.theta_p1_cf, crossing.theta_p2_cf,
+      [&](double mid) { return inside_other(PointOnCylFace(cf, mid, height)); });
+  const double seg2_end_shifted = pick_inside_arc_end(
+      crossing.theta_p2_other, crossing.theta_p1_other,
+      [&](double mid) { return inside_cf(point_on_other(mid)); });
+
+  // Segment 1's own NATURAL sweep (P1 -> P2, via cf's own inside arc):
+  // positive iff that sweep is increasing angle in cf's own right-handed
+  // frame, i.e. CCW as seen from +cf.frame.zaxis.
+  const bool natural_ccw_from_plus_cf_z = (seg1_end_shifted - crossing.theta_p1_cf) > 0.0;
+  const bool reverse_both = (natural_ccw_from_plus_cf_z != same_handed);
+
+  auto build_segment = [&](double natural_raw_first, double natural_raw_last, double natural_interp_last,
+                            bool reverse, const std::function<Point3d(double)>& eval) {
+    const double raw_first = reverse ? natural_raw_last : natural_raw_first;
+    const double raw_last = reverse ? natural_raw_first : natural_raw_last;
+    const double interp_first = reverse ? natural_interp_last : natural_raw_first;
+    const double interp_last = reverse ? natural_raw_first : natural_interp_last;
+    std::vector<Point3d> loop;
+    loop.reserve(static_cast<size_t>(arc_samples) + 1);
+    for (int s = 0; s <= arc_samples; ++s) {
+      if (s == 0) {
+        loop.push_back(eval(raw_first));
+      } else if (s == arc_samples) {
+        loop.push_back(eval(raw_last));
+      } else {
+        const double t = static_cast<double>(s) / static_cast<double>(arc_samples);
+        loop.push_back(eval(interp_first + (interp_last - interp_first) * t));
+      }
+    }
+    return loop;
+  };
+
+  std::vector<Point3d> loop1 = build_segment(
+      crossing.theta_p1_cf, crossing.theta_p2_cf, seg1_end_shifted, reverse_both,
+      [&](double theta) { return PointOnCylFace(cf, theta, height); });
+  std::vector<Point3d> loop2 =
+      build_segment(crossing.theta_p2_other, crossing.theta_p1_other, seg2_end_shifted, reverse_both, point_on_other);
+  const int loop1_arc_count = static_cast<int>(loop1.size());
+  const int loop2_arc_count = static_cast<int>(loop2.size());
+
+  // Neither loop is closed by a direct chord between its own two arc
+  // endpoints (P1<->P2 directly) - instead an extra, genuinely interior
+  // vertex `chord_mid` (the chord's own midpoint - any point strictly off
+  // both circles works equally; the midpoint is simplest) is appended to
+  // EACH loop, splitting what would otherwise be one P1<->P2 edge into two
+  // (P2->mid, mid->P1 for one loop; the reverse for the other) - still
+  // exactly the same straight chord geometrically (both sub-edges are
+  // exactly colinear with it, zero area difference), but no longer the
+  // SAME vertex pair `Brep::FromMixedFaces()` also assigns to `cf`'s own
+  // (or `other`'s own) wall CylindricalFace's own v-const cap edge at
+  // this same height.
+  //
+  // This is a genuinely NEW wrinkle this increment's own research phase
+  // did not anticipate, found and fixed here by direct counterexample
+  // during implementation: `Brep::FromMixedFaces()` identifies an edge
+  // PURELY by its own two endpoint vertices (see its own
+  // `edge_of_vertex_pair` map), with no awareness that a curved
+  // CylindricalFace's own v-const "cap" boundary is built as a single
+  // ISOCURVE edge between its two rail corners (P1, P2) - exactly the
+  // SAME two points a lens cap's own naive P1<->P2 chord would connect.
+  // Confirmed directly: without this fix, `Brep::FromMixedFaces()` throws
+  // its own "an edge is shared by 3 or more faces" error - the wall's own
+  // single-curve cap edge, plus BOTH lens segments' own naive chords, all
+  // three claiming the identical (P1, P2) vertex pair. Every EXISTING arc-
+  // bearing cap producer in this codebase (BuildEndCap's own pie-slice
+  // wedges; case (ii)'s own inside-circle disc quadrants) sidesteps this
+  // exact collision structurally, not by coincidence: a "pie slice" loop's
+  // own closing edge always runs from its LAST arc sample back to a
+  // CENTER vertex, never directly between its own two arc endpoints - so
+  // this collision never arises for any shape this codebase has built
+  // before a genuine circular-SEGMENT (chord-bounded, no center) cap.
+  const Point3d chord_mid = 0.5 * (crossing.p1 + crossing.p2) + height * cf.frame.zaxis;
+  loop1.push_back(chord_mid);
+  loop2.push_back(chord_mid);
+
+  ON_Plane plane;
+  plane.origin = cf_cap_center;
+  plane.xaxis = cf.frame.xaxis;
+  plane.yaxis = cf.frame.yaxis;
+  plane.zaxis = same_handed ? cf.frame.zaxis : -cf.frame.zaxis;
+  plane.UpdateEquation();
+
+  // angle_begin/angle_end for each run must reflect the ACTUAL signed
+  // sweep this loop was built with (which can exceed a quarter turn, and
+  // can run either direction) - not re-derived via atan2 after the fact
+  // (see FindArcRun's own doc comment for why a plain atan2 reconstruction
+  // silently picks the wrong, "short way" direction/magnitude for a run
+  // that isn't itself short). Tracked explicitly alongside each loop's own
+  // construction instead.
+  const double loop1_swept = reverse_both ? (crossing.theta_p1_cf - seg1_end_shifted) : (seg1_end_shifted - crossing.theta_p1_cf);
+  const double loop1_begin_angle = reverse_both ? crossing.theta_p2_cf : crossing.theta_p1_cf;
+  const double loop2_swept =
+      reverse_both ? (crossing.theta_p2_other - seg2_end_shifted) : (seg2_end_shifted - crossing.theta_p2_other);
+  const double loop2_begin_angle = reverse_both ? crossing.theta_p1_other : crossing.theta_p2_other;
+
+  Brep::PlanarFace::ArcRun run1;
+  run1.begin = 0;
+  run1.count = loop1_arc_count;  // the arc samples only - NOT the appended chord_mid vertex
+  run1.center = cf_cap_center;
+  run1.radius = cf.radius;
+  run1.plane_xaxis = cf.frame.xaxis;
+  run1.plane_yaxis = cf.frame.yaxis;
+  run1.angle_begin = loop1_begin_angle;
+  run1.angle_end = loop1_begin_angle + loop1_swept;
+
+  Brep::PlanarFace::ArcRun run2;
+  run2.begin = 0;
+  run2.count = loop2_arc_count;  // the arc samples only - NOT the appended chord_mid vertex
+  run2.center = other_axis_here;
+  run2.radius = other.radius;
+  run2.plane_xaxis = other.frame.xaxis;
+  run2.plane_yaxis = other.frame.yaxis;
+  run2.angle_begin = loop2_begin_angle;
+  run2.angle_end = loop2_begin_angle + loop2_swept;
+
+  MixedFace m1, m2;
+  m1.planar.plane = plane;
+  m1.planar.loop = std::move(loop1);
+  m1.planar.arc_runs.push_back(run1);
+  m2.planar.plane = plane;
+  m2.planar.loop = std::move(loop2);
+  m2.planar.arc_runs.push_back(run2);
+
+  std::vector<MixedFace> pieces;
+  pieces.push_back(std::move(m1));
+  pieces.push_back(std::move(m2));
+  return pieces;
+}
+
 std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments, const std::vector<MixedFace>& other,
                                           double tol, PointClass needed_class = PointClass::kOut) {
   std::vector<MixedFace> caps;
@@ -2634,7 +3143,53 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
     if (!f.is_cyl) continue;
     const Brep::CylindricalFace& cf = f.cyl;
     const double probe_eps = std::max(tol, 1e-6 * std::max(cf.radius, std::max(cf.length, 1.0)));
-    if (cf.end0_is_original) {
+
+    // NEW for this increment: a genuinely CROSSING parallel-axis
+    // interactor whose own axial range reaches a given end's height needs
+    // a LENS cap there, for the kIn (Intersection/Difference) polarity
+    // ONLY - see BuildLensEndCap's own doc comment for why the ordinary
+    // on-axis probe just below cannot see this shape at all (it can
+    // wrongly read kOut even though a genuine, non-empty lens exists).
+    // Checked FIRST, before that probe, since the probe's own answer is
+    // not meaningful for this case. At most ONE qualifying interactor is
+    // supported per end - two or more simultaneously-reaching crossing
+    // interactors is a genuine three-or-more-cylinder mutual interaction
+    // this increment does not attempt (the true cross-section there can
+    // be a more complex multi-arc region than a single lens) - refused
+    // (thrown) rather than silently picking one, mirroring
+    // ParallelCylinderCapNeedsNoTrim's own "refuse rather than guess"
+    // convention.
+    auto try_lens_cap = [&](bool at_v0) -> bool {
+      if (needed_class != PointClass::kIn) return false;
+      const MixedFace* crossing_interactor = nullptr;
+      int crossing_count = 0;
+      for (const MixedFace& g : other) {
+        if (!g.is_cyl) continue;
+        const Vector3d cross_axes = ON_CrossProduct(cf.frame.zaxis, g.cyl.frame.zaxis);
+        if (cross_axes.Length() >= kAxisAlignTol) continue;
+        if (CylinderCylinderNoInteraction(cf, g.cyl, tol)) continue;
+        if (!ComputeParallelCylinderCrossing(cf, g.cyl, tol).crosses) continue;
+        if (ParallelCylinderCapNeedsNoTrim(cf, at_v0, g.cyl, tol)) continue;
+        crossing_interactor = &g;
+        ++crossing_count;
+      }
+      if (crossing_count > 1) {
+        throw std::invalid_argument(
+            "dino8::kernel::BooleanCombineMixed: a synthesized Intersection/"
+            "Difference end cap's own footprint is reached by MORE THAN ONE "
+            "genuinely-crossing parallel-axis cylinder at once - a "
+            "three-or-more-cylinder mutual interaction, out of scope for "
+            "this increment, see SynthesizeEndCaps' own doc comment in "
+            "boolean.cpp");
+      }
+      if (crossing_interactor == nullptr) return false;
+      for (MixedFace& piece : BuildLensEndCap(cf, at_v0, crossing_interactor->cyl, tol)) {
+        caps.push_back(std::move(piece));
+      }
+      return true;
+    };
+
+    if (cf.end0_is_original && !try_lens_cap(/*at_v0=*/true)) {
       const Point3d probe = cf.frame.origin - probe_eps * cf.frame.zaxis;
       if (ClassifyPointVsMixedSolid(probe, other, tol) == needed_class) {
         // See ParallelCylinderCapNeedsNoTrim's own doc comment: a
@@ -2655,7 +3210,7 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
         for (MixedFace& piece : BuildEndCap(cf, /*at_v0=*/true)) caps.push_back(std::move(piece));
       }
     }
-    if (cf.end1_is_original) {
+    if (cf.end1_is_original && !try_lens_cap(/*at_v0=*/false)) {
       const Point3d probe = cf.frame.origin + (cf.length + probe_eps) * cf.frame.zaxis;
       if (ClassifyPointVsMixedSolid(probe, other, tol) == needed_class) {
         if (!ParallelCylinderCapSafeAgainstAll(cf, /*at_v0=*/false, other, tol)) {
@@ -2761,6 +3316,29 @@ Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op) {
           }
         }
         if (!cancelled) result.push_back(a_on);
+      }
+      // New for this increment: Difference previously called
+      // SynthesizeEndCaps nowhere at all, so a bare CylindricalFace
+      // operand's own genuinely exposed original end (parallel-axis
+      // cylinder/cylinder pair or otherwise) was silently left open by
+      // this branch specifically - a real, previously-latent gap this
+      // increment's own test plan is the first to exercise for the
+      // parallel-cylinder case. `from_a.out` is capped exactly the way
+      // Union caps its own `from_a.out`/`from_b.out` (the SAME code path,
+      // SAME polarity, SAME disclosed crossing-cap-trim refusal for a
+      // plain disc cap - A's outer material here has the identical trim
+      // risk Union already declines to guess at). `from_b.in` is capped
+      // exactly the way Intersection caps its own `from_a.in`/`from_b.in`
+      // (kIn polarity, including the new lens-cap path above), then EACH
+      // resulting cap is flipped via the existing, unmodified
+      // FlipMixedFace before being appended - correct for a lens cap's
+      // straight-chord+arc boundary exactly as it already is for any
+      // other planar loop, verified directly (not merely assumed) by this
+      // increment's own reverse-subtraction (B - A) test, which exercises
+      // FlipFace on this genuinely new loop shape for the first time.
+      for (MixedFace& cap : SynthesizeEndCaps(from_a.out, fb, tol)) result.push_back(std::move(cap));
+      for (MixedFace& cap : SynthesizeEndCaps(from_b.in, fa, tol, PointClass::kIn)) {
+        result.push_back(FlipMixedFace(std::move(cap)));
       }
       break;
     default:

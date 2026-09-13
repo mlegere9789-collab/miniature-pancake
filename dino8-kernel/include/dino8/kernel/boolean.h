@@ -613,51 +613,176 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // genuinely partial pie-slice cap needed no new machinery, only a weaker
 // guard - see BuildEndCap's own doc comment in boolean.cpp).
 //
-// Restricted, in this increment, to BooleanOp::Union only, and further
-// restricted within Union to an end whose synthesized cap provably needs
-// no trimming against the OTHER, interacting cylinder (a NEW closed-form
-// check, ParallelCylinderCapNeedsNoTrim, boolean.cpp: a synthesized cap is
-// always a full 0-to-radius pie slice, and that disc's own near-center
+// Originally restricted, in the increment that added the parallel-axis
+// split above, to BooleanOp::Union only. A LATER increment extends
+// PARALLEL-axis cylinder/cylinder support to BooleanOp::Intersection and
+// BooleanOp::Difference as well, for exactly two axial sub-cases (a THIRD,
+// the same "cap-trim" gap Union's own paragraph above already discloses,
+// remains genuinely out of scope - see below):
+//   - NESTED (one cylinder's circle strictly inside the other's, the same
+//     0-crossing regime CylinderCylinderNoInteraction already names): needs
+//     ZERO new geometry. The inner cylinder's own wall is already collected
+//     into from_a.in/from_b.in unmodified by the existing, unchanged
+//     classify-then-bucket pipeline, and its own two original ends already
+//     pass the EXISTING ParallelCylinderCapNeedsNoTrim check cleanly
+//     (the outer cylinder's axial reach frequently doesn't even overlap the
+//     inner one's own end heights) - so the existing on-axis-probe/
+//     BuildEndCap path this increment does not touch handles it already.
+//   - CROSSING (a genuine 2-point circle/circle intersection): the wall
+//     wedges were ALSO already correct before this later increment (the
+//     split/classify/bucket pipeline is, and remains, fully op-agnostic -
+//     the SAME wedge fragments Union already computed are simply routed
+//     into `.in` instead of `.out`/`.on` by the SHARED bucketing switch),
+//     but two genuinely NEW pieces of machinery were needed to close the
+//     result, both found by direct implementation, not anticipated in
+//     advance:
+//       (1) SplitCylindricalByOtherCylinderAxialExtent (boolean.cpp): when
+//           the two cylinders' finite axial ranges only PARTIALLY overlap,
+//           a fragment's classification against the other operand can
+//           genuinely differ above vs. below the other's own axial
+//           terminus - which a single RepresentativeInteriorPointMixed
+//           sample cannot see. This performs the missing axial split
+//           (mirroring case (iii)'s own v_cut plane split, but against a
+//           bare CylindricalFace's own two ends, which have no explicit
+//           PlanarFace to split against anywhere in this pipeline) so the
+//           existing classifier gets one representative sample per
+//           genuinely-distinct axial band, not one for the whole
+//           fragment. Applied to BOTH angular children in the crossing
+//           regime (not just the one radially inside the other) - a real,
+//           checked-directly correction to this increment's own first
+//           attempt, which applied it only to the inside child for
+//           classification purposes and left the outside child as one
+//           long, unsplit piece: that is classification-safe (the outside
+//           child's own kOut answer is genuinely height-invariant) but
+//           leaves its own straight rail unable to weld against whichever
+//           OTHER fragment (the inside child's own surviving end band, or
+//           the other cylinder's own wall) ends up adjoining it at each
+//           axial cut - a real, checked-directly open seam, not a
+//           theoretical concern. Applied only to the nested regime's own
+//           INNER member (never the outer one, which has no such rail-
+//           adjacency concern since nothing else ever borders it along
+//           the shared axial cuts) - see BuildFaceLoop's own doc comment,
+//           brep.cpp, for the OTHER real bug this split-both-children
+//           correction re-exposed and fixed: two axially-adjacent bands
+//           of the SAME angular child re-sharing their own boundary
+//           correctly (2 uses), against a genuinely different child's own
+//           short/long-arc cap sharing the identical two endpoint
+//           vertices, needed disambiguating by more than vertex identity
+//           alone.
+//       (2) BuildLensEndCap (boolean.cpp): where a genuinely crossing
+//           interactor's own finite axial range reaches an end mid-length
+//           (ParallelCylinderCapNeedsNoTrim returning false - previously
+//           always a REFUSAL, now this specific trigger instead), the
+//           correct cap is the classical two-circle "lens" (Weisstein,
+//           MathWorld, "Circle-Circle Intersection"; Bourke, "Intersection
+//           of two circles," 1997), NOT a re-trim of a full pie-slice disc
+//           - the on-axis probe SynthesizeEndCaps already used for Union
+//           is not even a valid proxy for whether this cap is needed here
+//           (a genuinely crossing pair's own axes commonly sit outside
+//           each OTHER's circle entirely, confirmed by direct
+//           counterexample - see that function's own doc comment), so this
+//           is checked independently, ahead of the ordinary probe, for the
+//           kIn (Intersection/Difference-from-this-side) polarity only.
+//           Built as two simple, non-self-touching circular-segment
+//           MixedFace pieces sharing the crossing chord as an internal
+//           edge (mirroring the "several simple pieces, never one bridged
+//           loop" convention circle_clip3d.h's own top comment already
+//           establishes) - closed via an interior chord-midpoint vertex
+//           rather than the chord's own two crossing-point endpoints
+//           directly, because those same two points are ALSO exactly the
+//           wall's own v-const cap-edge endpoints (Brep::FromMixedFaces()
+//           identifies an edge purely by its endpoint-vertex pair), and a
+//           third, fourth edge claiming that identical pair throws
+//           Brep::FromMixedFaces()'s own "edge shared by 3+ faces" error -
+//           a second genuinely new wrinkle found by direct implementation,
+//           not anticipated by this feature's own original scoping. At
+//           most ONE genuinely-crossing interactor's own lens is supported
+//           per end; a second, simultaneously-reaching crossing cylinder
+//           at the same end (a true three-or-more-cylinder mutual
+//           interaction, whose real cross-section there is not generally a
+//           single lens) is refused (thrown) rather than silently picking
+//           one, mirroring ParallelCylinderCapNeedsNoTrim's own
+//           "refuse rather than guess" convention.
+//   Difference itself needed one further, purely mechanical addition: its
+//   own switch branch previously never called SynthesizeEndCaps AT ALL (a
+//   real, previously-latent gap, invisible before a bare CylindricalFace
+//   operand's exposed original end became reachable through Difference),
+//   so `from_a.out` is now capped exactly the way Union caps its own
+//   `.out` fragments (identical polarity, identical disclosed cap-trim
+//   refusal below), and `from_b.in` is capped exactly the way Intersection
+//   caps its own `.in` fragments (kIn polarity, including the new lens
+//   path above) and then flipped via the existing, unmodified
+//   FlipMixedFace - which itself needed a real fix here too (see
+//   FlipFace's own doc comment, boolean.cpp): it used to reverse a planar
+//   loop's own vertex order without remapping any attached ArcRun's own
+//   begin/angle_begin/angle_end to match, silently corrupting a flipped
+//   lens cap's own chord-midpoint vertex (this increment's own first
+//   PlanarFace shape with content trailing its own arc run) - fixed and
+//   verified directly by this increment's own Difference tests.
+//
+//   Difference's NESTED sub-case (one cylinder wholly inside the other,
+//   no crossing) is fully verified CLOSED and volume-exact, needing none
+//   of the machinery below - identical to the nested Intersection case
+//   above. Difference's CROSSING sub-case (a genuine lens) is verified to
+//   CONSTRUCT correctly (Brep::FromMixedFaces() accepts the result; the
+//   tessellated volume matches the closed-form lens-complement formula to
+//   well under 1%) but has one further, honestly disclosed limitation,
+//   found only by direct implementation, not anticipated by this
+//   increment's own original scoping: a crossing pair's own OUTER angular
+//   wedge, once axially split into 3 or more bands by
+//   SplitCylindricalByOtherCylinderAxialExtent, can have a MIDDLE band
+//   with no original ends at all - never an ArcRun match target in
+//   Brep::TessellateConforming() the way its own axially-adjacent
+//   siblings (each carrying either an ordinary BuildEndCap cap or this
+//   increment's own lens cap) are - so that middle band's own conforming
+//   mesh falls back to a plain, uniform-in-u grid at a different
+//   effective density than its capped neighbors, leaving a real, narrow
+//   non-manifold seam at the internal wedge-to-wedge cut lines (not a
+//   boolean-topology defect - purely a Brep::TessellateConforming() mesh-
+//   density reconciliation gap). Closing this needs a broader refactor
+//   (one shared, per-physical-circle breakpoint schedule spanning every
+//   fragment of that circle, rather than today's per-fragment-independent
+//   one) - real, tractable, but a separate, larger follow-up, not
+//   attempted here; see TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly's
+//   own doc comment in the test file for the full derivation.
+//
+// STILL restricted, for BOTH Union and the new Intersection/Difference
+// support, to an end whose synthesized cap provably needs no TRIMMING
+// against the other, interacting cylinder outside of the two sub-cases
+// named above (a synthesized plain pie-slice disc's own near-center
 // region can dip into the other cylinder's footprint whenever that other
 // cylinder's own finite axial range reaches the cap's own height at all -
 // a real, checked-directly correctness risk for substantially-overlapping
-// circles, not a theoretical worry - so SynthesizeEndCaps throws
-// std::invalid_argument rather than emit a possibly wrong, untrimmed cap
-// whenever this check fails). Two DIFFERENT larger pieces of follow-up
-// work remain, named separately rather than conflated:
-//   - BooleanOp::Intersection/Difference on a parallel-axis pair: the
-//     split itself is op-agnostic and runs correctly for these ops too
-//     (shared classify/bucket machinery), but their surviving fragments'
-//     end caps are lens-shaped overlaps of BOTH footprints far more often
-//     than Union's are, needing the same cap-vs-other-cylinder re-clip
-//     named below - SynthesizeEndCaps' Intersection call sites are NOT
-//     extended to call the new parallel-cylinder machinery at all, so an
-//     Intersection/Difference result on a parallel-axis pair is correctly
-//     non-watertight at any exposed original end (the same disclosed-gap
-//     shape the existing planar/cylinder Intersection gap below already
-//     has), not silently wrong.
-//   - Genuinely TRIMMING a synthesized cap against an interacting
-//     cylinder (needed both to widen Union's own coverage past the
-//     narrow "no axial overlap" case above, and as the prerequisite for
-//     Intersection/Difference, whose lens-shaped caps need it far more
-//     often): real, tractable, closed-form work - reusing
-//     detail::ClipPolygonByCircle3d directly on the cap's own already-
-//     built polygon against the other cylinder's own circular footprint
-//     on that same plane, exactly case (ii)'s own machinery, just invoked
-//     on a synthesized face instead of an original operand face - but
-//     honestly a second increment, not a one-line addition, since it
-//     needs SynthesizeEndCaps/BuildEndCap re-architected to feed the
-//     synthesized cap back into SplitMixedAgainstAllFaces' own worklist
-//     (so it gets classified/bucketed generically) rather than appended
-//     directly to the result the way today's code does.
-// Also out of scope in this increment: exact/near-tangent parallel
-// cylinders (SplitCylindricalByParallelCylinder throws - the boundary
-// between the "0 crossings" and "2 crossings" regimes is a genuine
-// degeneracy, not a closed-form-clean case to split on) and a PARTIAL-
-// sweep cylindrical operand on either side of a parallel-axis interaction
-// (SplitCylindricalByParallelCylinder throws - the identical restriction
-// BuildEndCap/SplitCylindricalByObliquePlane already state, for the
-// identical reason: no producer here ever builds one).
+// circles sharing an axial span, not a theoretical worry - see
+// ParallelCylinderCapNeedsNoTrim's own doc comment, boolean.cpp).
+// SynthesizeEndCaps throws std::invalid_argument rather than emit a
+// possibly-wrong, untrimmed disc whenever this still applies (Union's own
+// kOut polarity has no lens-cap alternative at all; a kIn cap only gets
+// the lens treatment when its one crossing interactor's footprint reaches
+// that exact height, not for a same-axial-span coincidence generally).
+// Genuinely TRIMMING an ordinary plain-disc cap against an interacting
+// cylinder (as opposed to building the closed-form lens this increment
+// adds for the kIn/crossing case specifically) remains real, tractable,
+// closed-form follow-up work, not attempted here: reusing
+// detail::ClipPolygonByCircle3d directly on the cap's own already-built
+// polygon against the other cylinder's own circular footprint on that same
+// plane, exactly case (ii)'s own machinery, just invoked on a synthesized
+// face instead of an original operand face - but honestly a further
+// increment, not a one-line addition, since it needs SynthesizeEndCaps/
+// BuildEndCap re-architected to feed the synthesized cap back into
+// SplitMixedAgainstAllFaces' own worklist (so it gets classified/bucketed
+// generically) rather than appended directly to the result the way
+// today's code does.
+// Also out of scope, unaffected and unwidened by the Intersection/
+// Difference support above: exact/near-tangent parallel cylinders
+// (SplitCylindricalByParallelCylinder / ComputeParallelCylinderCrossing
+// throw - the boundary between the "0 crossings" and "2 crossings"
+// regimes is a genuine degeneracy, not a closed-form-clean case to split
+// on) and a PARTIAL-sweep cylindrical operand on either side of a
+// parallel-axis interaction (SplitCylindricalByParallelCylinder throws -
+// the identical restriction BuildEndCap/SplitCylindricalByObliquePlane
+// already state, for the identical reason: no producer here ever builds
+// one).
 //
 // STEINMETZ (equal-radius, intersecting axes) and the fully general
 // (skew, unequal-radii) case remain unaffected and out of scope - see the

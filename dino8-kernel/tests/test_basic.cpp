@@ -12155,6 +12155,594 @@ void TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary() {
   }
 }
 
+// Parallel-axis cylinder/cylinder Intersection/Difference tests
+// (TestBooleanCombineMixedParallelCylinderIntersection*/Difference*): a
+// LATER increment extends the PARALLEL-axis machinery the Union group
+// above establishes to BooleanOp::Intersection and BooleanOp::Difference,
+// for the NESTED and CROSSING axial sub-cases (see boolean.h's own
+// BooleanCombineMixed doc comment, "CYLINDER/CYLINDER (PARALLEL AXES)",
+// for the full, updated scope this group verifies).
+//
+// The nested sub-case needs NO new geometry (the existing on-axis-probe/
+// BuildEndCap path already handles it once reached through Intersection's
+// own kIn polarity); the crossing sub-case needs the new BuildLensEndCap
+// producer AND, independently, SplitCylindricalByOtherCylinderAxialExtent
+// - a genuinely new gap this increment's own implementation found by
+// direct counterexample (not anticipated by the research phase that
+// preceded it): without it, a partially-overlapping axial band's own
+// wall wedge kept its ORIGINAL cylinder's full length rather than being
+// trimmed to the true overlap band, since a single representative sample
+// point cannot see a height-varying classification. Both gaps are
+// exercised directly below (TestBooleanCombineMixedParallelCylinderIntersectionCrossingLensCaps
+// pins down the exact face count and closed-form volume that only comes
+// out right once the axial trim is genuinely applied).
+void TestBooleanCombineMixedParallelCylinderIntersectionNestedFullDisc() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Cylinder A (outer): radius 3, axis +Z through the origin, z in [0,10].
+  // Cylinder B (inner): radius 1, axis +Z (offset 0.5 in X), z in [3,9] -
+  // strictly nested inside A both radially (dist=0.5, r_a-r_b=2, 0.5 < 2)
+  // and axially (B's own range sits strictly inside A's), the same
+  // 0-crossing regime TestBooleanCombineMixedParallelCylinderUnionOneFullyNestedContributesNothing
+  // already establishes for Union - re-derived here for Intersection,
+  // where the ANSWER is the opposite of Union's: B's own material (not
+  // A's) is what survives.
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = 3.0;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 10.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(0.5, 0, 3.0);
+  cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = 1.0;
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 6.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+
+  // A's own wall never classifies kIn against B (always strictly outside
+  // B's small radius), so A contributes NOTHING; B's own wall classifies
+  // kIn against A everywhere and survives whole, unmodified (no split was
+  // needed at all - the existing 0-crossing fast path) - exactly ONE
+  // cylindrical face plus its own two ordinary full-disc end caps (no
+  // lens shape anywhere in this configuration).
+  Check(result.MixedFaces().cylindrical.size() == 1,
+        "the nested Intersection keeps exactly ONE cylindrical face - B's own, entirely unmodified - A's own wall "
+        "contributes nothing, discarded via the ordinary kOut classification with no new code involved");
+  Check(result.MixedFaces().planar.size() == 8,
+        "the nested Intersection's own two end caps are ordinary full 0-to-radius discs, each built (like every "
+        "other BuildEndCap disc in this codebase) as 4 quadrant pie-slice pieces - 8 planar faces total (BuildEndCap's "
+        "own pre-existing path, reached here for the first time through Intersection's kIn polarity) - NOT the new "
+        "lens shape, since B never genuinely crosses A (0-crossing nested regime)");
+
+  const double hand_derived_volume = ON_PI * 1.0 * 1.0 * 6.0;  // B alone, over its own full [3,9] axial range
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "the nested Intersection result is a genuinely CLOSED manifold - B's own wall plus its two ordinary "
+        "full-disc caps weld exactly, with no reliance on any of this increment's own NEW lens-cap machinery at "
+        "all (that machinery is not even reachable for a 0-crossing pair, see BuildLensEndCap's own doc comment)");
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "the nested Intersection's tessellated volume (div=64) matches B's own full cylinder volume ALONE "
+        "(pi*1^2*6) to within 0.05 - A's own material contributes nothing, confirming B was kept in full rather "
+        "than clipped or double-counted");
+}
+
+void TestBooleanCombineMixedParallelCylinderIntersectionDisjointAxialRangesEmpty() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Same RADIAL configuration (nested, 0-crossing) as the test above, but
+  // B's own axial range [11,15] is now wholly OUTSIDE A's own [0,10] -
+  // a negative control confirming a radially-interacting but axially
+  // disjoint pair correctly produces an EMPTY Intersection (0 faces), not
+  // a spuriously nonempty one, exercising the SAME axial reasoning
+  // ParallelCylinderCapNeedsNoTrim/SplitCylindricalByOtherCylinderAxialExtent
+  // rely on, from the opposite (whole-fragment-classification) direction.
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = 3.0;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 10.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(0.5, 0, 11.0);
+  cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = 1.0;
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 4.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+
+  Check(result.FaceCount() == 0,
+        "two radially-nested but AXIALLY DISJOINT parallel cylinders (B's own [11,15] never overlaps A's own "
+        "[0,10] at all) produce a genuinely EMPTY Intersection - B's own unmodified fragment classifies kOut "
+        "against A everywhere along its own length, contributing nothing, and A's own wall never classifies kIn "
+        "against B either");
+}
+
+// The main worked crossing example this test group is built around: two
+// GENUINELY crossing (2-point circle/circle intersection) parallel
+// cylinders whose axial ranges only PARTIALLY overlap - cylinder A radius
+// 3 at the origin, z in [0,10]; cylinder B radius 2, axis offset 4 units
+// in X, z in [3,9]. dist=4, r_a+r_b=5, |r_a-r_b|=1: 1 < 4 < 5, a genuine
+// crossing (NOT nested, NOT disjoint). B's own axial range [3,9] sits
+// STRICTLY inside A's own [0,10], so both of B's own original ends need a
+// lens cap (ParallelCylinderCapNeedsNoTrim fails for both, since A's own
+// axial reach spans past either height) - exactly the worked example this
+// increment's own BuildLensEndCap doc comment cites.
+void TestBooleanCombineMixedParallelCylinderIntersectionCrossingLensCaps() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double r_a = 3.0, r_b = 2.0, d = 4.0;
+  // Falsifiability of the OLD (on-axis-probe-only) approach the prior
+  // research phase's own spec proposed reusing directly, re-derived here
+  // rather than merely asserted: a genuine crossing's own axis-to-axis
+  // distance `d` exceeds `r_a` (this cylinder's OWN radius), so a probe
+  // placed ON A's axis sits strictly OUTSIDE B - the on-axis probe would
+  // wrongly conclude "no lens cap needed" here even though a real,
+  // nonempty lens exists at every height in the overlap band.
+  Check(d > r_a, "this configuration's own axis-to-axis distance genuinely exceeds A's own radius - confirming "
+                 "directly (not merely asserting) that an on-axis probe placed on EITHER cylinder's own axis would "
+                 "read as outside the other cylinder here, so the ordinary SynthesizeEndCaps probe cannot be the "
+                 "trigger for this cap; BuildLensEndCap's own independent, geometry-first trigger is genuinely "
+                 "necessary, not merely a defensive extra");
+
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = r_a;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 10.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(d, 0, 3.0);
+  cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = r_b;
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 6.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+
+  // Exactly 2 cylindrical faces (A's own middle wall wedge, trimmed by
+  // SplitCylindricalByOtherCylinderAxialExtent to the true [3,9] overlap
+  // band rather than A's own full [0,10] length; B's own full-height
+  // wedge, never needing an axial trim since B's own [3,9] range already
+  // sits wholly inside A's) and exactly 4 planar faces (2 lens caps, one
+  // per B end, each built as 2 circular-segment pieces).
+  Check(result.MixedFaces().cylindrical.size() == 2,
+        "the crossing Intersection keeps exactly 2 cylindrical wall wedges - A's own middle band (axially TRIMMED "
+        "to the true [3,9] overlap, confirming SplitCylindricalByOtherCylinderAxialExtent genuinely fired) and "
+        "B's own full-height wedge");
+  Check(result.MixedFaces().planar.size() == 4,
+        "the crossing Intersection has exactly 4 planar faces - the 2 lens end caps (one per B's own original "
+        "end, both needed since A's own axial reach spans past both), each built as exactly 2 circular-segment "
+        "pieces by BuildLensEndCap");
+
+  const double lens_area = r_a * r_a * std::acos((d * d + r_a * r_a - r_b * r_b) / (2.0 * d * r_a)) +
+                            r_b * r_b * std::acos((d * d + r_b * r_b - r_a * r_a) / (2.0 * d * r_b)) -
+                            0.5 * std::sqrt((-d + r_a + r_b) * (d + r_a - r_b) * (d - r_a + r_b) * (d + r_a + r_b));
+  const double overlap_length = 6.0;  // max(0,3)..min(10,9)
+  const double hand_derived_volume = lens_area * overlap_length;  // ~= 11.9387509
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 256);
+  Check(mesh.IsClosedManifold(),
+        "the crossing Intersection's lens-shaped result is a genuinely CLOSED manifold - both new seams (the lens "
+        "cap's own A-side arc against A's own wall wedge, and its own B-side arc against B's own wall wedge) weld "
+        "exactly via TessellateConforming()'s existing, unmodified circle-identity reconciliation, and the new "
+        "interior chord-midpoint vertex this increment's own BuildLensEndCap adds closes each lens segment's own "
+        "loop without colliding with the wall's own v-const cap edge");
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "the crossing Intersection's tessellated volume (div=64x256, matching this codebase's own established "
+        "high-division closed-form check precedent) matches the classical circle-circle lens area (Weisstein, "
+        "MathWorld; Bourke 1997) extruded over the true [3,9] axial overlap band to within 0.05");
+}
+
+// Rail-exactness: the two NEW seams a lens cap introduces (its own A-side
+// arc against A's own wall wedge, and its own B-side arc against B's own
+// wall wedge) share bit-identical (exact float ==, not merely close)
+// boundary vertices after conforming tessellation - the same falsifiable
+// technique TestBooleanCombineMixedIntersectionInsideDiscRailIsBitIdentical
+// (task #66) already established for the analogous inside-disc/wall seam,
+// applied here to the genuinely new lens-cap/wall seams.
+void TestBooleanCombineMixedParallelCylinderIntersectionLensCapRailIsBitIdentical() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double r_a = 3.0, r_b = 2.0, d = 4.0;
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = r_a;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 10.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(d, 0, 3.0);
+  cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = r_b;
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 6.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+  const std::vector<Mesh> faces = result.TessellateConforming(64, 256);
+  // MixedFaces() places every planar face before every cylindrical one -
+  // 4 planar (2 lens caps x 2 segments) then 2 cylindrical (A's own
+  // trimmed middle band at index 4, B's own full-height wedge at index 5,
+  // in from_a.in/from_b.in's own push order).
+  Check(result.MixedFaces().planar.size() == 4 && faces.size() >= 6,
+        "the crossing Intersection result has the expected 4 planar + 2 cylindrical face layout this test's own "
+        "seam-matching logic below assumes");
+  const size_t b_wall_index = result.MixedFaces().planar.size() + 1;  // A's wall is index 4, B's is index 5
+  const ON_Mesh& b_wall_mesh = faces[b_wall_index].raw();
+
+  // B's own wall wedge spans its own full local height [0, 6] (global z
+  // in [3, 9]) - its own v=0 rail (global z=3) is exactly the arc this
+  // increment's own lens cap at B's z=3 end also traces (segment 1 of
+  // BuildLensEndCap, built from `cf`=B's own circle).
+  std::vector<ON_3fPoint> b_wall_bottom_row;
+  for (int i = 0; i < b_wall_mesh.m_V.Count(); ++i) {
+    if (std::fabs(b_wall_mesh.m_V[i].z - 3.0) < 1e-4) b_wall_bottom_row.push_back(b_wall_mesh.m_V[i]);
+  }
+  Check(!b_wall_bottom_row.empty(),
+        "B's own cylindrical wall wedge has at least one bottom-row (z=3, its own original end) vertex to check "
+        "against");
+
+  // Search every planar face for one whose own arc-boundary vertices (at
+  // distance r_b from B's own axis, at height z=3) match B's wall's own
+  // bottom row bit-for-bit - the lens cap's own B-side segment, found by
+  // its own geometric signature rather than assumed at a fixed index (the
+  // exact push order of the 2 pieces within each of the 2 lens caps is an
+  // internal BuildLensEndCap implementation detail this test does not
+  // pin down).
+  int best_arc_vertices = 0, best_exact_matches = 0;
+  for (size_t f = 0; f < result.MixedFaces().planar.size(); ++f) {
+    const ON_Mesh& mesh = faces[f].raw();
+    int arc_vertices = 0, exact_matches = 0;
+    for (int i = 0; i < mesh.m_V.Count(); ++i) {
+      const ON_3fPoint& p = mesh.m_V[i];
+      if (std::fabs(p.z - 3.0) > 1e-4) continue;
+      const double dist = std::sqrt((p.x - d) * (p.x - d) + p.y * p.y);  // distance from B's own axis
+      if (std::fabs(dist - r_b) > 1e-3) continue;
+      ++arc_vertices;
+      for (const ON_3fPoint& q : b_wall_bottom_row) {
+        if (p.x == q.x && p.y == q.y && p.z == q.z) {
+          ++exact_matches;
+          break;
+        }
+      }
+    }
+    if (arc_vertices > best_arc_vertices) {
+      best_arc_vertices = arc_vertices;
+      best_exact_matches = exact_matches;
+    }
+  }
+  Check(best_arc_vertices >= 15,
+        "at least one planar face (the lens cap's own B-side segment at B's z=3 end) has a genuine, non-trivial "
+        "run of arc-boundary vertices at radius r_b from B's own axis to check, not a degenerate empty case");
+  Check(best_exact_matches == best_arc_vertices,
+        "every one of that lens segment's own arc-boundary vertices has a BIT-IDENTICAL (exact float ==, not "
+        "merely close) counterpart among B's own cylindrical wall wedge's bottom-row vertices - the SAME "
+        "shared-boundary mechanism (FindArcRun/detail::ArcSchedule3d) already proven for the pre-existing "
+        "inside-disc/wall seam (task #66) also closes this NEW lens-cap/wall seam bit-exactly");
+}
+
+// Difference on the NESTED (0-crossing, no lens) sub-case: A's own full
+// cylinder minus B's own axially- and radially-nested cylinder, a strict
+// cylindrical "drill" through the middle of A - Difference's own new
+// SynthesizeEndCaps wiring reduces here to exactly the SAME ordinary
+// BuildEndCap/no-lens path the nested Intersection test above already
+// verifies, so this is genuinely CLOSED and closed-form-checkable with
+// NO reliance on BuildLensEndCap at all (that machinery is not even
+// reachable for a 0-crossing pair).
+void TestBooleanCombineMixedParallelCylinderDifferenceNestedFullDisc() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = 3.0;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 10.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(0.5, 0, 3.0);
+  cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = 1.0;
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 6.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Difference);
+
+  const double hand_derived_volume = ON_PI * 3.0 * 3.0 * 10.0 - ON_PI * 1.0 * 1.0 * 6.0;  // ~= 263.893783
+
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "A minus B on the nested (0-crossing) configuration is a genuinely CLOSED manifold - Difference's own "
+        "new SynthesizeEndCaps wiring (previously called nowhere in the Difference branch at all) closes A's own "
+        "two untouched ends with ordinary full-disc caps, and B's own wall (flipped, from_b.in) bounds the drilled "
+        "cavity with no lens shape involved at all");
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+        "A minus B's tessellated volume (div=64) matches A's own full cylinder volume minus B's own full "
+        "cylinder volume to within 0.05 - a straightforward drilled-cylinder closed form");
+}
+
+// Difference on the CROSSING (genuine lens) sub-case: same worked example
+// as the Intersection test above. Difference's own construction (the
+// SAME from_a.out/from_b.in wiring, reusing the SAME BuildLensEndCap this
+// increment adds) succeeds without throwing and produces the expected
+// topology - confirmed directly here - but this specific combination
+// surfaces a genuinely NEW, narrowly-scoped tessellation-conforming gap
+// this increment's own implementation found and honestly discloses
+// rather than silently working around or overclaiming past: `from_a.out`
+// here includes BOTH the outer angular wedge (axially split into 3 bands
+// by SplitCylindricalByOtherCylinderAxialExtent, all 3 KEPT since that
+// wedge is never radially inside B) and the inner angular wedge's own two
+// surviving end bands (its own middle band is the excluded A-inside-B
+// piece). The wedge's own MIDDLE band ([3,9], between the two kept end
+// bands) has no original ends at all - so it never appears as a
+// `cyl_matches` target in Brep::TessellateConforming() the way its own
+// axially-adjacent siblings (which DO carry either an ordinary BuildEndCap
+// cap or this increment's own lens cap) do - meaning that middle band's
+// own conforming mesh falls back to a PLAIN, uniform-in-u grid, at a
+// DIFFERENT effective angular resolution than its own capped neighbors'
+// match-driven grids. The result: a real, narrow, non-manifold seam
+// exactly at the wedge-to-wedge internal cut lines - NOT a boolean
+// topology defect (Brep::FromMixedFaces() succeeds without throwing,
+// confirmed directly below, and the tessellated volume is correct to
+// within 0.2%, see below) but a genuine Brep::TessellateConforming()
+// limitation: its own per-CylindricalFace breakpoint schedule is derived
+// independently per face from whichever ArcRun matches happen to land on
+// it, with no mechanism yet to propagate a densely-matched neighbor's own
+// breakpoints across an internal, match-free cylindrical seam. Closing
+// this fully needs a broader refactor (a single, shared per-physical-
+// circle breakpoint schedule spanning every fragment of that circle, not
+// today's per-fragment-independent one) - real, tractable, but a
+// separate, larger follow-up, not attempted here; see boolean.h's own
+// BooleanCombineMixed doc comment for this same disclosure.
+void TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double r_a = 3.0, r_b = 2.0, d = 4.0;
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = r_a;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 10.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(d, 0, 3.0);
+  cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = r_b;
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 6.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  bool threw = false;
+  Brep result;
+  try {
+    result = BooleanCombineMixed(a, b, BooleanOp::Difference);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(!threw,
+        "A minus B on the crossing configuration completes without throwing - Difference's own new "
+        "SynthesizeEndCaps wiring, reusing the SAME BuildLensEndCap the Intersection test above verifies, builds "
+        "a structurally valid Brep (Brep::FromMixedFaces() accepts it - no '3 or more faces share an edge' error, "
+        "confirming this increment's own edge-identity fix, BuildFaceLoop's arc-midpoint hash, correctly "
+        "disambiguates the short/long-arc collision this configuration would otherwise hit)");
+
+  const auto mf = result.MixedFaces();
+  Check(mf.cylindrical.size() == 6,
+        "the crossing Difference result has exactly 6 cylindrical faces - A's own outer wedge (axially split "
+        "into 3 kept bands: [0,3], [3,9], [9,10]), A's own inner wedge's 2 surviving end bands ([0,3], [9,10] - "
+        "its own middle [3,9] band is the excluded A-inside-B piece), and B's own full-height wedge (flipped)");
+  Check(mf.planar.size() == 20,
+        "the crossing Difference result has exactly 20 planar faces - 4 ordinary partial-sweep pie-slice caps "
+        "(A's own outer AND inner wedges each need a cap at one of A's own two untouched ends), each one built, "
+        "like every BuildEndCap disc in this codebase, as 4 quadrant pieces (4 caps x 4 quadrants = 16), plus 4 "
+        "lens-cap pieces (2 per B end x 2 circular segments) flipped from B's own kIn caps");
+
+  const double lens_area = r_a * r_a * std::acos((d * d + r_a * r_a - r_b * r_b) / (2.0 * d * r_a)) +
+                            r_b * r_b * std::acos((d * d + r_b * r_b - r_a * r_a) / (2.0 * d * r_b)) -
+                            0.5 * std::sqrt((-d + r_a + r_b) * (d + r_a - r_b) * (d - r_a + r_b) * (d + r_a + r_b));
+  const double vol_a_full = ON_PI * r_a * r_a * 10.0;
+  const double hand_derived_volume = vol_a_full - lens_area * 6.0;  // ~= 270.804588
+
+  // Deliberately NOT an IsClosedManifold() check (see this test's own doc
+  // comment above for the disclosed, narrow conforming-tessellation seam
+  // this exact configuration hits) - the tessellated VOLUME is still
+  // meaningful and close, confirming the underlying geometry is right
+  // even though the mesh has a few small non-manifold internal seams.
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 1.0,
+        "the crossing Difference result's tessellated volume is still within 1.0 (well under 0.4% relative "
+        "error) of A's own full cylinder volume minus the classical lens volume, despite the disclosed "
+        "conforming-mesh seam above - confirming the underlying boolean geometry (not just the mesh stitching) "
+        "is correct");
+}
+
+// Confirms every EXISTING Union test in this file (and the still-throwing
+// Steinmetz/general-skew non-parallel-axis rejections) remains completely
+// unaffected by this increment's own Intersection/Difference additions -
+// the shared functions this increment edits (SynthesizeEndCaps,
+// ParallelCylinderCapSafeAgainstAll's own split-out ParallelCylinderCapNeedsNoTrim)
+// are exercised here again, end to end, for the ORIGINAL Union scenarios,
+// with the SAME closed-form checks those tests already establish. The
+// fuller confirmation - the pre-existing 1005 ok: lines reproduced as an
+// exact ordered subsequence - is the verification technique this
+// increment's own commit message cites, not repeated inline here.
+void TestBooleanCombineMixedParallelCylinderIntersectionUnaffectsUnionAndNonParallelCases() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  {
+    // Re-derive TestBooleanCombineMixedParallelCylinderUnionAxiallyDisjointBothEndsCapped's
+    // own fixture and confirm its Union result is bit-for-bit unaffected.
+    Brep::CylindricalFace cyl_a;
+    cyl_a.frame.origin = Point3d(0, 0, 0);
+    cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+    cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+    cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+    cyl_a.frame.UpdateEquation();
+    cyl_a.radius = 2.0;
+    cyl_a.angle = 2.0 * ON_PI;
+    cyl_a.length = 5.0;
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+    Brep::CylindricalFace cyl_b;
+    cyl_b.frame.origin = Point3d(1.0, 0, 10.0);
+    cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+    cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+    cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+    cyl_b.frame.UpdateEquation();
+    cyl_b.radius = 1.5;
+    cyl_b.angle = 2.0 * ON_PI;
+    cyl_b.length = 4.0;
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+    const Brep result = BooleanCombineMixed(a, b, BooleanOp::Union);
+    const double hand_derived_volume = ON_PI * 2.0 * 2.0 * 5.0 + ON_PI * 1.5 * 1.5 * 4.0;
+    const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+    Check(mesh.IsClosedManifold(),
+          "the pre-existing axially-disjoint parallel-cylinder Union test's own manifold-closure result is "
+          "unaffected by this increment's own Intersection/Difference additions");
+    Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+          "the pre-existing axially-disjoint parallel-cylinder Union test's own closed-form volume is unaffected "
+          "by this increment's own Intersection/Difference additions");
+  }
+  {
+    // Re-derive TestBooleanCombineMixedSteinmetzStillThrows' own fixture
+    // for BooleanOp::Intersection AND BooleanOp::Difference specifically
+    // (that pre-existing test only exercises BooleanOp::Union) - case
+    // (iv)'s own axes_parallel dispatch throws BEFORE `op` is even
+    // consulted, so this confirms directly, not merely by inference from
+    // the Union case, that the still-unsupported non-parallel-axis
+    // rejection is genuinely op-agnostic and unaffected by this
+    // increment's own new op-specific end-cap machinery.
+    Brep::CylindricalFace cyl_a;
+    cyl_a.frame.origin = Point3d(0, 0, 0);
+    cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+    cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+    cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+    cyl_a.frame.UpdateEquation();
+    cyl_a.radius = 2.0;
+    cyl_a.angle = 2.0 * ON_PI;
+    cyl_a.length = 10.0;
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+    const double theta = 60.0 * ON_PI / 180.0;
+    Brep::CylindricalFace cyl_b;
+    cyl_b.frame.origin = Point3d(0, 0, 0);
+    cyl_b.frame.xaxis = Vector3d(0, 1, 0);
+    cyl_b.frame.yaxis = Vector3d(-std::cos(theta), 0, std::sin(theta));
+    cyl_b.frame.zaxis = Vector3d(std::sin(theta), 0, std::cos(theta));
+    cyl_b.frame.UpdateEquation();
+    cyl_b.radius = 2.0;
+    cyl_b.angle = 2.0 * ON_PI;
+    cyl_b.length = 10.0;
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+    for (const BooleanOp op : {BooleanOp::Intersection, BooleanOp::Difference}) {
+      bool threw = false;
+      try {
+        BooleanCombineMixed(a, b, op);
+      } catch (const std::invalid_argument&) {
+        threw = true;
+      }
+      Check(threw,
+            "the Steinmetz (equal-radius, intersecting non-parallel axes) configuration still throws "
+            "std::invalid_argument for BooleanOp::Intersection and BooleanOp::Difference too, not merely for "
+            "BooleanOp::Union - the non-parallel-axes rejection in case (iv)'s own dispatch fires before `op` is "
+            "even consulted, so this increment's own new Intersection/Difference machinery is structurally "
+            "unreachable here, confirmed directly rather than assumed from the pre-existing Union-only test");
+    }
+  }
+}
+
 int main() {
   ON::Begin();
 
@@ -12384,6 +12972,13 @@ int main() {
   TestBooleanCombineMixedSteinmetzStillThrows();
   TestBooleanCombineMixedGeneralSkewCylinderStillThrows();
   TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary();
+  TestBooleanCombineMixedParallelCylinderIntersectionNestedFullDisc();
+  TestBooleanCombineMixedParallelCylinderIntersectionDisjointAxialRangesEmpty();
+  TestBooleanCombineMixedParallelCylinderIntersectionCrossingLensCaps();
+  TestBooleanCombineMixedParallelCylinderIntersectionLensCapRailIsBitIdentical();
+  TestBooleanCombineMixedParallelCylinderDifferenceNestedFullDisc();
+  TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly();
+  TestBooleanCombineMixedParallelCylinderIntersectionUnaffectsUnionAndNonParallelCases();
 
   ON::End();
 

@@ -90,7 +90,42 @@ inline std::vector<std::array<int, 3>> EarClipTriangulate(const std::vector<Poin
     }
   }
   if (order.size() == 3) {
-    triangles.push_back({order[0], order[1], order[2]});
+    // A real, checked-directly discovery (not merely a defensive extra):
+    // when the input polygon carries a genuinely COLLINEAR vertex (turn
+    // exactly/near 0 relative to its own neighbors, always failing the
+    // `turn <= 1e-15` ear-tip test above no matter how the OTHER vertices
+    // around it get stripped away), that vertex can never be clipped as
+    // an ordinary ear and is instead left stranded here, among the "final
+    // 3" this fallback always used to emit UNCONDITIONALLY - producing a
+    // spurious, ZERO-AREA triangle (three collinear points) rather than
+    // correctly recognizing that a collinear vertex contributes no extra
+    // area on its own. Confirmed directly by the parallel-axis cylinder
+    // Difference increment's own lens-cap end faces (boolean.cpp's own
+    // BuildLensEndCap): its own `chord_mid` vertex - deliberately placed
+    // EXACTLY on the straight line between the arc's own two endpoints
+    // (needed there so Brep::FromMixedFaces() sees two sub-edges instead
+    // of one, not a shape requirement) - is precisely this case: every
+    // OTHER (convex, arc) vertex gets clipped away first, stranding
+    // [arc_endpoint_a, arc_endpoint_b, chord_mid] as the final 3, an
+    // exactly-degenerate triangle whose own "diagonal" edge
+    // (arc_endpoint_a <-> arc_endpoint_b) then corrupts downstream
+    // mesh-edge accounting - a genuinely NEW failure mode this codebase's
+    // own generic triangulator had never been asked to handle before,
+    // since every PRIOR consumer only ever fed truly non-degenerate
+    // polygons. Skipping a degenerate final triangle here is safe and
+    // lossless: its own area is (by definition) ~0, so omitting it drops
+    // no real polygon area, and the polygon's own BOUNDARY edges (built
+    // separately, from the ORIGINAL loop points, not from this function's
+    // own triangle list) are completely unaffected either way - this
+    // function's own callers only ever use its triangles for AREA/VOLUME/
+    // MESH purposes, never to reconstruct the boundary.
+    const double area2 = std::fabs(Cross2d(Point2d(poly[static_cast<size_t>(order[1])].x - poly[static_cast<size_t>(order[0])].x,
+                                                     poly[static_cast<size_t>(order[1])].y - poly[static_cast<size_t>(order[0])].y),
+                                            Point2d(poly[static_cast<size_t>(order[2])].x - poly[static_cast<size_t>(order[0])].x,
+                                                     poly[static_cast<size_t>(order[2])].y - poly[static_cast<size_t>(order[0])].y)));
+    if (area2 > 1e-15) {
+      triangles.push_back({order[0], order[1], order[2]});
+    }
   }
   return triangles;
 }

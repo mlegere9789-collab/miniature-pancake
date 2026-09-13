@@ -721,7 +721,8 @@ struct FaceTopology {
 // guaranteed), so unlike the plain isocurve branch, no `iso_reversed`
 // correction is needed here at all.
 void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
-                    std::unordered_map<uint64_t, int>& edge_of_vertex_pair) {
+                    std::unordered_map<uint64_t, int>& edge_of_vertex_pair,
+                    std::unordered_map<int, Point3d>& cap_arc_midpoint_of_edge) {
   ON_BrepLoop& loop = brep.NewLoop(ON_BrepLoop::outer, face);
   const size_t n = topo.vids.size();
   for (size_t k = 0; k < n; ++k) {
@@ -735,7 +736,75 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
 
     const uint32_t lo = static_cast<uint32_t>(std::min(vid_from, vid_to));
     const uint32_t hi = static_cast<uint32_t>(std::max(vid_from, vid_to));
-    const uint64_t key = (static_cast<uint64_t>(lo) << 32) | hi;
+    const uint64_t plain_key = (static_cast<uint64_t>(lo) << 32) | hi;
+    uint64_t key = plain_key;
+
+    // A real edge-identity refinement, needed once a single circle's own
+    // cap boundary can legitimately exist as TWO DIFFERENT arcs sharing
+    // the exact same two endpoint vertices - found and fixed by direct
+    // counterexample in the later parallel-axis cylinder/cylinder
+    // Intersection/Difference increment (boolean.cpp's own
+    // SplitCylindricalByOtherCylinderAxialExtent doc comment has the full
+    // worked scenario): a genuinely CROSSING pair's two angular wedge
+    // children share their own two crossing-point vertices, so the SHORT
+    // arc (one wedge's own cap boundary) and the LONG arc (the OTHER
+    // wedge's own cap boundary, or that same wedge's own two axially-
+    // adjacent pieces reconnecting after an axial split) both reduce to
+    // the identical (lo, hi) vertex-pair key above despite being
+    // genuinely DIFFERENT curves - silently welding the wrong pair, or
+    // (once a THIRD claimant of the same key exists) throwing the "shared
+    // by 3 or more faces" refusal below for two faces that were never
+    // actually adjacent at all.
+    //
+    // Deliberately checked ONLY against an EXISTING edge that was ITSELF
+    // created by a plain (non-notched) is_cap segment - never against a
+    // straight edge or a notched-polyline edge - and deliberately applied
+    // AFTER the ordinary plain-key lookup below finds a collision, not
+    // folded into the key up front: an earlier version of this fix
+    // computed an arc-identity-augmented key UNCONDITIONALLY for every
+    // is_cap segment, which broke every PRE-EXISTING case where a
+    // CylindricalFace's/ConicalFace's own is_cap cap edge is legitimately
+    // shared with a DIFFERENT kind of segment reducing to the same 2
+    // vertices by a DIFFERENT construction (a fillet's own corner-notch
+    // splice against an adjacent wall's dense notch polyline chief among
+    // them, task #50/#52's own already-verified mechanism) - a real,
+    // checked-directly regression (FilletConvexEdge's, FilletConvexEdgeTapered's,
+    // and the .3dm round-trip's own corner-notch tests all newly failed),
+    // since the two sides of that SAME shared edge compute DIFFERENT
+    // augmented keys (one is_cap, one not) and can never find each other
+    // again. This narrower form only ever intervenes at the ONE genuine
+    // ambiguity this codebase has - two is_cap arcs, same 2 endpoints,
+    // different curves - leaving every other sharing pattern (is_cap vs.
+    // straight, is_cap vs. notched-polyline, is_cap vs. the SAME arc)
+    // exactly as it always matched.
+    auto same_cap_arc_midpoint = [&](int existing_edge_index) {
+      const auto it2 = cap_arc_midpoint_of_edge.find(existing_edge_index);
+      if (it2 == cap_arc_midpoint_of_edge.end()) return false;  // not an is_cap-created edge at all
+      const double v_const_for_check = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
+      const Point3d mid = topo.curved_surface->PointAt(topo.curved_u_max * 0.5, v_const_for_check);
+      return mid.DistanceTo(it2->second) <= kBrepWeldTolerance * 10.0;
+    };
+    if (is_cap && !has_notch_interior) {
+      const auto plain_it = edge_of_vertex_pair.find(plain_key);
+      if (plain_it != edge_of_vertex_pair.end() && !same_cap_arc_midpoint(plain_it->second)) {
+        // A genuinely different arc claims the same 2 vertices as an
+        // EXISTING is_cap-created edge - salt the key so this arc gets
+        // (or finds) its own separate edge instead of colliding with the
+        // wrong one.
+        const double v_const_for_hash = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
+        const Point3d mid = topo.curved_surface->PointAt(topo.curved_u_max * 0.5, v_const_for_hash);
+        auto quant = [](double x) { return std::llround(x / kBrepWeldTolerance); };
+        uint64_t h = 1469598103934665603ull;  // FNV-1a offset basis
+        auto mix = [&](int64_t v) {
+          h ^= static_cast<uint64_t>(v);
+          h *= 1099511628211ull;  // FNV-1a prime
+        };
+        mix(quant(mid.x));
+        mix(quant(mid.y));
+        mix(quant(mid.z));
+        key = plain_key ^ h;
+      }
+    }
 
     int edge_index;
     const auto it = edge_of_vertex_pair.find(key);
@@ -809,6 +878,11 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
       edge.m_tolerance = edge_tolerance;
       edge_index = edge.m_edge_index;
       edge_of_vertex_pair.emplace(key, edge_index);
+      if (is_cap && !has_notch_interior) {
+        const double v_const_for_record = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
+        cap_arc_midpoint_of_edge.emplace(edge_index,
+                                          topo.curved_surface->PointAt(topo.curved_u_max * 0.5, v_const_for_record));
+      }
     } else {
       edge_index = it->second;
       if (brep.m_E[edge_index].m_ti.Count() >= 2) {
@@ -1439,14 +1513,20 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
   // same two points is identical regardless of which face happens to
   // build it.
   std::unordered_map<uint64_t, int> edge_of_vertex_pair;
+  // Records, for every edge BuildFaceLoop() creates via a plain
+  // (non-notched) is_cap segment, the physical midpoint of the arc it was
+  // built from - see BuildFaceLoop's own doc comment on this map's one
+  // use: disambiguating a genuinely different arc from a legitimately
+  // shared one when both reduce to the same 2 endpoint vertices.
+  std::unordered_map<int, Point3d> cap_arc_midpoint_of_edge;
   for (size_t fi = 0; fi < topo.size(); ++fi) {
     if (topo[fi].curved_surface != nullptr) {
-      BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair);
+      BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair, cap_arc_midpoint_of_edge);
     }
   }
   for (size_t fi = 0; fi < topo.size(); ++fi) {
     if (topo[fi].curved_surface == nullptr) {
-      BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair);
+      BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair, cap_arc_midpoint_of_edge);
     }
   }
 
@@ -2541,7 +2621,39 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
       // old callers" claim), while correctly refusing a genuinely
       // partial-angle candidate whose own sweep does not contain this
       // particular run.
+      //
+      // A SECOND disambiguation axis, alongside the angular one above,
+      // found and fixed by direct counterexample during the later
+      // parallel-axis Intersection/Difference increment (not anticipated
+      // by the angular-only fix's own original scoping): once
+      // SplitCylindricalByOtherCylinderAxialExtent (boolean.cpp) can
+      // legitimately produce TWO OR MORE cylindrical fragments that share
+      // not just the same circle (axis + radius) but the EXACT SAME
+      // rotated angular frame too (the SAME angular wedge, cut into
+      // several axial bands at different heights), the angle-containment
+      // check alone can no longer tell them apart - EVERY axial sibling's
+      // own local sweep [0, ce.cf.angle] identically contains the SAME
+      // run's own midpoint angle, since they share the identical rotation.
+      // Confirmed directly: an end cap's own run at height h, matched
+      // against the FIRST such axial sibling found (regardless of that
+      // sibling's own actual height range), silently computed a bogus
+      // `height` relative to the WRONG sibling's own frame.origin -
+      // landing at neither that wrong sibling's v=0 nor v=length, so the
+      // run was skipped entirely (falling through to this cap's own
+      // un-reconciled, independently-sampled polygon boundary) instead of
+      // being resampled to match its own TRUE adjoining wall band, leaving
+      // a genuine (if visually small) crack of unwelded near-duplicate
+      // vertices along that whole arc - not a full open hole, but still a
+      // real non-manifold seam, caught by this increment's own
+      // IsClosedManifold() checks, not by inspection. Fixed by checking
+      // height/at_v0 compatibility INSIDE this same search loop (moved up
+      // from after it), so a candidate that matches on angle but not on
+      // height is skipped in favor of a LATER candidate, rather than
+      // wrongly committing to the first angle-only match and then
+      // discarding the run entirely when its height doesn't fit.
       const CylEntry* matched = nullptr;
+      double matched_height = 0.0;
+      bool matched_at_v0 = false;
       for (const CylEntry& ce : cyls) {
         if (!SameCircleAsCylinder(run.center, run.radius, normal, ce.cf, tol)) continue;
         const double mid_theta = 0.5 * (run.angle_begin + run.angle_end);
@@ -2550,21 +2662,24 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
         if (cyl_mid < 0.0) cyl_mid += 2.0 * ON_PI;
         constexpr double kAngleContainTol = 1e-6;
         if (cyl_mid < -kAngleContainTol || cyl_mid > ce.cf.angle + kAngleContainTol) continue;
+
+        const double height = ON_DotProduct(run.center - ce.cf.frame.origin, ce.cf.frame.zaxis);
+        const double len_tol = std::max(tol, ce.cf.length * 1e-6);
+        if (std::fabs(height) <= len_tol) {
+          matched_at_v0 = true;
+        } else if (std::fabs(height - ce.cf.length) <= len_tol) {
+          matched_at_v0 = false;
+        } else {
+          continue;  // angle-compatible but wrong axial band - keep searching
+        }
         matched = &ce;
+        matched_height = height;
         break;
       }
       if (matched == nullptr) continue;
 
-      const double height = ON_DotProduct(run.center - matched->cf.frame.origin, matched->cf.frame.zaxis);
-      const double len_tol = std::max(tol, matched->cf.length * 1e-6);
-      bool at_v0 = false;
-      if (std::fabs(height) <= len_tol) {
-        at_v0 = true;
-      } else if (std::fabs(height - matched->cf.length) <= len_tol) {
-        at_v0 = false;
-      } else {
-        continue;  // doesn't land at either end of the matched cylinder - not a case this targets
-      }
+      const double height = matched_height;
+      const bool at_v0 = matched_at_v0;
 
       const std::vector<Point3d> shared_points = detail::ArcSchedule3d(
           run.center, run.radius, run.plane_xaxis, run.plane_yaxis, run.angle_begin, run.angle_end, boundary_samples);
