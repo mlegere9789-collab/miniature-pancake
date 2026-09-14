@@ -474,13 +474,24 @@ class Brep {
     // curve's; its two rails are real edges between the two pinch
     // vertices on each side, and its notch curves are the halves of the
     // two curves going once around this cylinder). Every notch chain of
-    // both shapes still starts and ends exactly at its face's rail
-    // corners at the same v, per the contract above. The one chain that
-    // ends at a DIFFERENT v is that boolean's sloped cut of the larger
-    // cylinder's plain pieces at a general axis angle (the admitted
-    // departure above): a helix between the two loops' pinch heights,
-    // handed verbatim as cap1 of the piece below it and cap0 of the piece
-    // above it, each an otherwise ordinary singly-notched face.
+    // both shapes starts exactly at its face's angle-0 rail corner at the
+    // same v (a producer always anchors the piece's own origin or length
+    // there); the departure above - the chain's LAST point landing at a
+    // height other than the flat angle-`angle` corner's - is not limited
+    // to one chain. It is guaranteed level (both rail corners at the flat
+    // v) for INTERSECTING axes (any angle), by that pair's own symmetry.
+    // For a genuinely SKEW pair whose smaller cylinder still fully
+    // pierces the larger one (BooleanCombineMixed's own doc comment), it
+    // generally is NOT: on the larger cylinder's wall a slab's two pinch
+    // vertices (and so a plain piece's helix, already the general-angle
+    // departure) can differ in height even at a right axis angle if the
+    // pair is skew, and on the smaller cylinder's wall its own upper/
+    // middle/lower bands pick up the same asymmetry on their angle-`angle`
+    // rail regardless of axis angle - every one of those notch chains
+    // still starts at the flat angle-0 corner and only its own last point
+    // moves, so no new mechanism is needed, only the expectation that a
+    // notched cylinder/cylinder fragment's far rail corner is level with
+    // its near one no longer holds outside the intersecting-axis case.
     std::vector<Point3d> cap0_notch_points;
     std::vector<Point3d> cap1_notch_points;
 
