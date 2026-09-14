@@ -16526,29 +16526,31 @@ void TestBooleanCombineMixedChainedNegativeControls() {
 // TestMixedFacesReturnsVerbatimRecordsForBooleanResults cases above, all
 // still bit-identical after this change.
 //
-// What is NOT fixed here, confirmed directly rather than assumed: cutting a
-// SINGLE full-sweep notched cylindrical fragment mid-length (the case that
-// would actually exercise the widened height gate against real material
-// outside [0, length]) goes through a DIFFERENT function - the axis-aligned
-// split producer around SplitAndBucketMixed's case (ii)/(iii) `v_cut` branch
-// - which builds its two children via a blind `lo = cf; lo.length = v_cut;`
-// / `hi = cf; hi.frame.origin = ...` field copy that does not clear or
-// re-derive the ORIGINAL fragment's own cap0_notch_points/cap1_notch_points
-// on the newly-cut end. A notch that belonged to the far (untouched) rail
-// survives correctly, but a notch on the rail nearest the cut is carried
-// forward onto a child whose own v=0 or v=length no longer matches it,
-// which FromMixedFaces() (correctly) refuses as a rail-corner mismatch -
-// this reproduces regardless of whether `v_cut` itself falls inside or
-// outside the flat [0, length] domain (checked directly for both). This is
-// a genuinely separate, producer-side gap from the classification fix
-// above (a different function, not touched by this increment's scope) -
-// flagged here as a negative control so it is not mistaken for a
-// regression, and as the concrete next step for whoever picks this up: the
-// split producer needs to decide, per new child, which (if either) of the
-// original two notch lists still applies to its own new rail, exactly the
-// same "which end is still original" bookkeeping
-// end0_is_original/end1_is_original already does for open-vs-closed
-// classification, generalized to notch ownership.
+// UPDATE (mid-length split producer gap closed): what this comment used to
+// call "NOT fixed here" - the axis-aligned split producer around case
+// (ii)/(iii)'s own `v_cut` branch building its two children via a blind
+// `lo = cf; lo.length = v_cut;` / `hi = cf; hi.frame.origin = ...` field
+// copy that never cleared the notch fields the fresh-cut end could no
+// longer claim - is now fixed (both call sites clear the fresh-cut side's
+// own cap notch unconditionally; see boolean.h's own BooleanCombineMixed
+// doc comment for the exact mechanism). Confirmed directly: a bare,
+// single-fragment notched cylinder cut mid-length in its own flat region no
+// longer throws the rail-corner mismatch this comment used to document.
+//
+// This SPECIFIC fixture (the shared-notch PAIR below, not a single
+// fragment) still throws, but no longer for that reason: its own wall is
+// TWO fragments of what is conceptually one cylinder (upper/lower, split
+// at their shared notch), and a plane that crosses one of them still hits
+// the separate, pre-existing, already-disclosed same-surface-multiplicity
+// bug ("an edge is shared by 3 or more faces") - each fragment of a
+// multi-fragment wall punches the cutting plane independently, producing
+// colliding edges at the seam (documented elsewhere in this codebase as
+// out of scope, a Phase 3 item, unrelated to notch-field bookkeeping and
+// untouched by this fix). So the fixture's own bottom-line outcome (still
+// throws) is unchanged and this remains a valid negative control - but the
+// REASON changed, confirmed directly by inspecting the thrown message
+// (now "3 or more faces", not the old rail-corner-mismatch text), so the
+// assertion text below is updated to match rather than left stale.
 void TestBooleanCombineMixedNotchAwareClassificationStillNeedsSplitProducerWork() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
@@ -16573,13 +16575,162 @@ void TestBooleanCombineMixedNotchAwareClassificationStillNeedsSplitProducerWork(
     inter_threw = true;
   }
   Check(diff_threw && inter_threw,
-        "Difference/Intersection(shared-notch solid, a box crossing its cap0 notch's true extended material) "
-        "still throw today - genuine INTERACTION with a notch's extended region is now correctly detected "
-        "(CylinderPlaneNoInteraction no longer passes the wall through unmodified there), but the mid-length "
-        "split producer that must then actually cut the notched fragment has its own separate, pre-existing "
-        "gap (a blind field copy that does not clear the cut child's inherited notch points) - documented above, "
-        "out of scope for the classification-only fix in this increment, and NOT expected to start passing "
-        "silently until that producer gap is fixed");
+        "Difference/Intersection(shared-notch PAIR solid, a box crossing its cap0 notch's true extended material) "
+        "still throw today - genuine INTERACTION with a notch's extended region is correctly detected "
+        "(CylinderPlaneNoInteraction does not pass the wall through unmodified there), the mid-length split "
+        "producer now correctly clears the fresh-cut end's stale notch fields (no longer the rail-corner-mismatch "
+        "throw this test used to document), but this fixture's own wall is two fragments of one conceptual "
+        "cylinder and the plane crosses both, hitting the separate, pre-existing, already-disclosed "
+        "same-surface-multiplicity bug (\"3 or more faces\") instead - out of scope here, a Phase 3 item, and NOT "
+        "expected to start passing silently until THAT gap is fixed");
+}
+
+// Positive control for the mid-length split fix above: a BARE, single-
+// fragment notched cylinder (no second fragment, so the shared-notch
+// pair's own separate multiplicity issue cannot mask the result), cut
+// strictly inside its own flat region by a plane perpendicular to its
+// axis - exactly case (iii)'s own align>1-kAxisAlignTol mid-length branch,
+// reached through the real BooleanCombineMixed pipeline, not a hand-copy
+// of its code. Before the fix, `hi` (the child whose own new v=0 is the
+// fresh cut) still carried the parent's cap0_notch_points describing the
+// OLD v=0, and FromMixedFaces() correctly refused it as a rail-corner
+// mismatch - Difference used to throw here. After the fix, `hi.cap0_
+// notch_points` is cleared (its own true v=0 is flat, the cut plane), and
+// both ops build successfully.
+void TestBooleanCombineMixedMidLengthSplitClearsStaleNotch() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const double r = 2.0, length = 10.0, tan_a = 0.3, cut_z = 8.0;
+  Brep::CylindricalFace cf;
+  cf.frame = ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0));
+  cf.radius = r;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = length;
+  const double a = std::atan(tan_a);
+  const ON_Plane notch_cut(ON_3dPoint(r, 0, 0), ON_3dVector(-std::sin(a), 0, std::cos(a)));
+  const auto ef = dino8::kernel::detail::ComputeEllipseFrame3d(cf, notch_cut);
+  cf.cap0_notch_points = dino8::kernel::detail::EllipseBoundarySample3d(ef, 0.0, 2.0 * ON_PI, 200);
+  const Brep bare = Brep::FromMixedFaces({}, {cf});
+
+  // z <= 8: leaves the notched cap0 end (dipping toward z=0 and below near
+  // angle pi) untouched, and cuts deep in the flat half, far from the
+  // notch's own extreme dip.
+  const Brep box = Brep::Box(-10, -10, -10, 10, 10, cut_z);
+
+  bool inter_ok = false, diff_ok = false;
+  size_t inter_cyl = 0, diff_cyl = 0;
+  try {
+    const Brep result = BooleanCombineMixed(bare, box, BooleanOp::Intersection);
+    inter_cyl = result.MixedFaces().cylindrical.size();
+    inter_ok = true;
+  } catch (const std::exception&) {
+  }
+  try {
+    const Brep result = BooleanCombineMixed(bare, box, BooleanOp::Difference);
+    diff_cyl = result.MixedFaces().cylindrical.size();
+    diff_ok = true;
+  } catch (const std::exception&) {
+  }
+  Check(inter_ok && diff_ok && inter_cyl == 1 && diff_cyl == 1,
+        "Intersection/Difference(bare cap0-notched cylinder, a box whose plane cuts strictly inside its own flat "
+        "region) both build successfully with exactly one cylindrical fragment each - the mid-length split's "
+        "fresh-cut child no longer inherits the parent's now-mismatched cap0_notch_points (the rail-corner-"
+        "mismatch throw this scenario used to produce before the fix)");
+}
+
+// Positive control for the inside-disc producer fix above: Union(drilled
+// box, a cover box flush with the hole's own SEALED far end) used to leave
+// a real, measurable hole in the roof there (the mid-length inside-disc
+// producer's own v_cut gate excluded v_cut == g.cyl.length exactly, even
+// for a sealed - end1_is_original == false - terminus). Reproduces the
+// task's own measured deficit (10*pi/3) and confirms it is gone: the
+// union of a box with a through-hole and a flush-topped cover that exactly
+// refills the hole equals the plain box's own volume, 1000, not
+// 1000 - 10*pi/3 (~989.53).
+void TestBooleanCombineMixedInsideDiscProducerCoversSealedEndBoundary() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  Brep::CylindricalFace hole;
+  hole.frame.origin = Point3d(3, 3, -1);
+  hole.frame.xaxis = ON_3dVector(1, 0, 0);
+  hole.frame.yaxis = ON_3dVector(0, 1, 0);
+  hole.frame.zaxis = ON_3dVector(0, 0, 1);
+  hole.frame.UpdateEquation();
+  hole.radius = 1.0;
+  hole.angle = 2.0 * ON_PI;
+  hole.length = 12.0;
+  const Brep hole_solid = Brep::FromMixedFaces({}, {hole});
+  const Brep drilled = BooleanCombineMixed(box, hole_solid, BooleanOp::Difference);
+
+  // Flush with the drilled box's own top face (z=10) AND with the hole
+  // wall's own sealed far end (v_cut = g.cyl.length exactly, since the
+  // hole spans z in [-1, 11]).
+  const Brep cover = Brep::Box(1, 1, 0, 6, 6, 10);
+  const Brep u = BooleanCombineMixed(drilled, cover, BooleanOp::Union);
+  const Mesh m = u.TessellateToClosedMesh(64, 64);
+  const double vol = m.Volume();
+  Check(std::fabs(vol - 1000.0) < 0.05,
+        "Union(drilled box, a cover flush with the hole's own sealed far end) measures the true 1000.000000 (the "
+        "cover exactly refills the through-hole for its own full length and is otherwise contained in the box), "
+        "not the old ~989.53 deficit of 10*pi/3 the inside-disc producer's own v_cut == length exclusion used to "
+        "leave as a real, unfilled gap in the roof there");
+}
+
+// Positive control for case (i)'s arc_runs pass-through fix above: a
+// planar-vs-planar split whose second plane never actually clips the
+// first face (every vertex already on the inside halfspace) now carries
+// PlanarFace::arc_runs forward verbatim instead of unconditionally
+// dropping it. Reproduces the task's own measurement: an enclosing box
+// intersected with a Steinmetz cylinder union used to drop arc_runs on
+// all 32 of the union's own wedge-cap planar faces (1 -> 0), even though
+// the box's own planes never clip any of them (su is strictly smaller).
+void TestSplitMixedAgainstAllFacesPassThroughCarriesArcRuns() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  auto make_cyl = [](Point3d origin, Vector3d zaxis, Vector3d xaxis, double r, double l) {
+    Brep::CylindricalFace cf;
+    cf.frame.origin = origin;
+    cf.frame.zaxis = zaxis;
+    cf.frame.xaxis = xaxis;
+    cf.frame.yaxis = ON_CrossProduct(zaxis, xaxis);
+    cf.frame.UpdateEquation();
+    cf.radius = r;
+    cf.angle = 2.0 * ON_PI;
+    cf.length = l;
+    return cf;
+  };
+  const Brep cyl_a =
+      Brep::FromMixedFaces({}, {make_cyl(Point3d(0, 0, -5), ON_3dVector(0, 0, 1), ON_3dVector(1, 0, 0), 2.0, 10.0)});
+  const Brep cyl_b =
+      Brep::FromMixedFaces({}, {make_cyl(Point3d(0, -5, 0), ON_3dVector(0, 1, 0), ON_3dVector(1, 0, 0), 2.0, 10.0)});
+  const Brep su = BooleanCombineMixed(cyl_a, cyl_b, BooleanOp::Union);
+
+  const auto before = su.MixedFaces();
+  size_t before_with_runs = 0;
+  for (const auto& p : before.planar) before_with_runs += p.arc_runs.empty() ? 0 : 1;
+
+  const Brep box = Brep::Box(-10, -10, -10, 10, 10, 10);
+  const Brep inter = BooleanCombineMixed(su, box, BooleanOp::Intersection);
+  const auto after = inter.MixedFaces();
+  size_t after_with_runs = 0;
+  for (const auto& p : after.planar) after_with_runs += p.arc_runs.empty() ? 0 : 1;
+
+  Check(before.planar.size() == 32 && before_with_runs == 32 && after.planar.size() == 32 && after_with_runs == 32,
+        "case (i)'s planar/planar split carries arc_runs through a genuine pass-through (a fully-enclosing box's "
+        "own planes never actually clip any of the Steinmetz union's 32 wedge-cap faces): all 32 still have "
+        "arc_runs after the second boolean, not the old 0 every one of them used to drop to");
 }
 
 // ---------------------------------------------------------------------
@@ -17445,6 +17596,9 @@ int main() {
   TestFromMixedFacesSlopedNotchCapAndStraightChordStayDistinct();
   TestFromMixedFacesFlatCornerGateIsInert();
   TestBooleanCombineMixedNotchAwareClassificationStillNeedsSplitProducerWork();
+  TestBooleanCombineMixedMidLengthSplitClearsStaleNotch();
+  TestBooleanCombineMixedInsideDiscProducerCoversSealedEndBoundary();
+  TestSplitMixedAgainstAllFacesPassThroughCarriesArcRuns();
 
   ON::End();
 

@@ -1079,27 +1079,77 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 //     operand either - this closes a real, source-confirmed
 //     misclassification risk rather than a defect visible in any of this
 //     codebase's own existing fixtures.
+//   - MID-LENGTH SPLIT NOW CLEARS THE STALE NOTCH IT CANNOT KEEP. A plane
+//     perpendicular to a cylindrical fragment's axis that lands strictly
+//     inside (0, length) used to build its two children by a plain field
+//     copy of the original fragment (case (iii)'s own align>1-kAxisAlignTol
+//     mid-length branch, and the identical pattern in
+//     SplitCylindricalByOtherCylinderAxialExtent for a parallel-cylinder
+//     pair's own axial-extent split) - correcting `length`/`frame.origin`/
+//     one end{0,1}_is_original flag, but never the notch fields. Each
+//     child's OWN untouched end keeps its inherited cap0/cap1_notch_points
+//     correctly (nothing changed there), but each child's OWN fresh-cut end
+//     is never a genuine terminus of the input, so whichever notch the
+//     PARENT had at THAT same cap index (if any) still described the
+//     parent's old, no-longer-existent boundary - FromMixedFaces() (rightly)
+//     rejected the mismatch as a rail-corner error rather than silently
+//     building the wrong shape. Both call sites now clear the fresh-cut
+//     side's own cap notch (points + tolerance) unconditionally - a
+//     no-op for the overwhelmingly common un-notched fragment, since
+//     clearing an already-empty vector changes nothing. This is a pure
+//     "which cap can this child still claim" correction: it does not
+//     interpolate or re-derive a notch for the new cut face (there isn't
+//     one - the cut is flat), it only stops attaching someone else's notch
+//     to a boundary that no longer has it.
+//   - INSIDE-DISC PRODUCER NOW COVERS A SEALED END AT THE BOUNDARY. Case
+//     (ii)'s own mid-length inside-circle-disc producer (the piece of a
+//     crossing planar face that refills a cylindrical hole's interior)
+//     used to gate strictly on v_cut in the OPEN interval (0, length),
+//     excluding a plane that lands EXACTLY at v=0 or v=length - even when
+//     that end is a sealed, non-original terminus (end0_is_original/
+//     end1_is_original false; see those fields' own doc comment), where a
+//     real disc of material genuinely belongs and nothing else in the
+//     pipeline supplies it (a genuinely OPEN original end at the same
+//     boundary is already closed by SynthesizeEndCaps and must not
+//     double-count, so the gate widens only for a sealed end). Confirmed
+//     directly: a box refilling a through-hole exactly flush with the
+//     hole's own sealed far end used to leave a real, volume-measurable
+//     gap in the roof there (Union(drilled box, a flush cover) measured
+//     989.529747 against the true 1000.000000 - a deficit of 10*pi/3,
+//     the exact divergence-sum signature of a missing disc at that
+//     height); now measures the true value.
+//   - CASE (i) NOW CARRIES arc_runs THROUGH A GENUINE PASS-THROUGH. The
+//     both-planar split used to rebuild each surviving loop's MixedFace
+//     with only plane+loop, unconditionally dropping PlanarFace::arc_runs
+//     - even when the second plane never actually clips this face at all
+//     (SplitByHalfspace's own "keep both children" variant only inserts
+//     new points at a real crossing, so a face with every vertex already
+//     on the inside halfspace comes back as the exact same point sequence
+//     in the exact same order - the stored begin/count indices are still
+//     valid for it). That case is now detected (split.outside empty
+//     before CleanPolygon) and arc_runs is carried forward verbatim; a
+//     genuinely-clipped face (the plane actually cuts the loop) still
+//     drops arc_runs exactly as before, deliberately - the surviving
+//     loop's vertices may be reordered or have new intersection points
+//     inserted, so the old indices are not safely reusable without new
+//     re-detection logic this fix does not add. Confirmed directly: an
+//     enclosing box that never clips a Steinmetz union's own 32 wedge
+//     caps used to drop arc_runs on all 32 (1 -> 0); now all 32 keep it.
 //   Still out of scope, each thrown honestly, not approximated: a second
 //   cut that INTERACTS with a notched or partial-sweep fragment (every
 //   cylinder-pair producer's own partial-sweep/already-notched guard, and
 //   a plane crossing a notched wall's own notch), a plane containing a
 //   wall's axis direction (the grazing refusal), a plane meeting a wall
 //   that a previous cut left as several fragments of one cylinder (each
-//   fragment punches the plane separately - "3 or more faces"), a third
+//   fragment punches the plane separately - "3 or more faces" - this is
+//   also why the shared-notch fixture cut through its own notch band still
+//   throws even after the mid-length split fix above: the split producer
+//   itself now succeeds, but that fixture's wall is several fragments of
+//   one cylinder for an unrelated, pre-existing reason and the final
+//   reassembly still refuses the resulting edge multiplicity), a third
 //   hole whose circle straddles an earlier hole's wedge cut
-//   (ClipPolygonByCircle3d's partial-overlap refusal), and - now that
-//   CylinderPlaneNoInteraction correctly detects interaction with a
-//   notch's own extended material instead of silently passing the wall
-//   through - the split producer that must then actually cut a
-//   single, full-sweep notched cylindrical fragment mid-length: its two
-//   children are built by a plain field copy of the original fragment
-//   that does not clear or re-derive whichever cap0/cap1_notch_points
-//   belonged to the rail nearest the new cut, so FromMixedFaces()
-//   correctly refuses the mismatched rail corner rather than silently
-//   building the wrong shape (confirmed directly: Difference/Intersection
-//   of the shared-notch fixture against a box crossing its notch's
-//   extended material still throw today, for this reason, not a
-//   classification defect).
+//   (ClipPolygonByCircle3d's partial-overlap refusal), and a genuinely-
+//   clipped planar face's own arc_runs (the case (i) note above).
 //
 // SYMMETRIC DIFFERENCE: BooleanOp::SymmetricDifference returns
 // Brep::Compound({Difference(a, b), Difference(b, a)}) - two lumps in one
