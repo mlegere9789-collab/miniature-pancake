@@ -208,8 +208,11 @@ size_t CountDegenerateTriangles(const Mesh& mesh);
 Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b);
 
 // Exact B-rep boolean (Union, Intersection, or Difference; SymmetricDifference
-// composed from those three, same as BooleanCombine()'s mesh-boolean
-// version) between two planar-faced solids of ARBITRARY shape - the
+// is the Brep::Compound of the two lumps Difference(a, b) and
+// Difference(b, a) - see BooleanCombineMixed's own SYMMETRIC DIFFERENCE
+// paragraph below for why one shell cannot hold an XOR, and Brep::Compound
+// in brep.h for the representation) between two planar-faced solids of
+// ARBITRARY shape - the
 // general non-convex case BooleanIntersectConvexPlanar's own doc comment
 // flags as future work. Classical Requicha & Voelcker boundary
 // evaluation (see "Boolean operations in solid modeling: Boundary
@@ -978,22 +981,93 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // volume lands within ~1e-4 relative of the closed forms for Union,
 // Intersection and both Differences at 90 and 60 degrees, at symmetric
 // and asymmetric divisions (see the Steinmetz tests in
-// tests/test_basic.cpp for the exact measured residuals). Brep::MixedFaces()
-// does not round-trip an eye's notches (it re-extracts as a plain
-// length-2r band), so a Steinmetz result is not a valid operand for a
-// second BooleanCombineMixed call: BooleanOp::SymmetricDifference on
-// Steinmetz operands throws (from the parallel-axis partial-sweep guard
-// the re-extracted fragments then hit) rather than returning a wrong
-// solid.
-// A CylindricalFace fragment re-extracted from a PRIOR
-// BooleanCombineMixed result (e.g. inside BooleanOp::SymmetricDifference's
-// own internal Union-then-Intersection-then-Difference chain) always gets
-// end0_is_original/end1_is_original defaulted back to true/true on
-// re-extraction (Brep::MixedFaces() does not round-trip this new
-// bookkeeping, the same honest simplification cap0_notch_points/
-// cap1_notch_points already make) - correct for every operand this
-// increment's own tests build, but genuinely unverified for a SECOND-LEVEL
-// nested call, an honestly disclosed gap, not silently mishandled.
+// tests/test_basic.cpp for the exact measured residuals).
+//
+// RESULTS AS OPERANDS (chained calls): a BooleanCombineMixed result is a
+// first-class operand of a second call, on two supports that a chained
+// call used to lack - the measured defects and their fixes:
+//   - VERBATIM FACE RECORDS. Brep::MixedFaces() hands back the exact
+//     PlanarFace/CylindricalFace records Brep::FromMixedFaces() built the
+//     result from (see that method's own doc comment in brep.h): a
+//     notched wall keeps its cap0/cap1_notch_points (an oblique hole's
+//     201-point ellipses, a Steinmetz eye's two half-ellipses, a
+//     half-band's one), its true frame.origin/length (the former
+//     geometric re-extraction read the trim's bounding box, which a notch
+//     widens - an oblique drilled box's wall came back 10.889 long instead
+//     of 10/cos 15 = 10.353, and a rebuilt shared-notch solid came back
+//     +26% in volume with its notch filled in), and a cap piece keeps its
+//     arc runs. So a Steinmetz Union/Intersection or an oblique drilled
+//     box rebuilt from its own MixedFaces() reproduces its volume and is
+//     still closed under the conforming mesher.
+//   - The CLOSED-OPERAND RULE (ToMixed, boolean.cpp): an operand is
+//     either a BARE TUBE - only plain, un-notched cylindrical faces, the
+//     legacy drill/boss operand Brep::FromMixedFaces({}, {cf}) - or a
+//     CLOSED SOLID whose own faces already bound it (any planar face, or
+//     any notched cylindrical face). Only a bare tube keeps the
+//     implicit-end-disk classification (RayVsMixedFace) and the end-cap
+//     synthesis (SynthesizeEndCaps) its end flags encode; a closed
+//     operand's cylindrical faces have both end0/end1_is_original forced
+//     false before anything reads them, so no implicit disk is cast at
+//     their ends and no cap is synthesized for their fragments. This is
+//     an OPERAND property, not a face property: a boss's base inside a
+//     union result is a still-original end of the input cylinder AND an
+//     open passage into the box. Before this rule every chained call
+//     whose first result kept a cylindrical face re-fired the cap
+//     synthesis on that face's true/true flags and stitched 8 spurious
+//     quadrant caps across the FIRST hole (Difference(Difference(box,
+//     h1), h2) measured 1000 - 20 pi - 10 pi/3, i.e. -1.1%; Union(drilled
+//     box, box2) -0.7%; Difference(Union(box, boss), hole) threw "3 or
+//     more faces" where the spurious disc's edges collided).
+//   Measured with both in place (ordinary 64-division volumes, relative
+//   to the closed forms): a second hole through a drilled box (parallel
+//   or perpendicular) +7.6e-5 with 18 planar + 2 cylindrical faces (the
+//   26 + 2 of the spurious caps gone); a far hole through a box-plus-boss
+//   union, in either order, -2.1e-5; Intersection/Union/Difference of a
+//   drilled box with a second box +4.1e-5 / +2.4e-5 / +7.6e-5; a boss on,
+//   a far hole through, and a planar cut of the oblique drilled box
+//   +6.2e-6 / +4.6e-5 / +3.8e-5 (its doubly-notched wall passes through
+//   the non-parallel no-interaction test verbatim); the shared-notch
+//   fixture cut above its notch -1.0e-4. Every existing operand is a
+//   planar-only solid or a bare un-notched tube, so the whole prior suite
+//   is bit-for-bit unchanged. An operand carrying a ConicalFace (a
+//   tapered fillet) is refused (std::invalid_argument) - it used to have
+//   its cones silently dropped from its boundary.
+//   Still out of scope, each thrown honestly, not approximated: a second
+//   cut that INTERACTS with a notched or partial-sweep fragment (every
+//   cylinder-pair producer's own partial-sweep/already-notched guard, and
+//   a plane crossing a notched wall's own notch), a plane containing a
+//   wall's axis direction (the grazing refusal), a plane meeting a wall
+//   that a previous cut left as several fragments of one cylinder (each
+//   fragment punches the plane separately - "3 or more faces"), a third
+//   hole whose circle straddles an earlier hole's wedge cut
+//   (ClipPolygonByCircle3d's partial-overlap refusal), and a classifier
+//   that still reads a notched wall's un-notched rectangle as material
+//   (a box enclosing a Steinmetz union, or a second box covering a hole).
+//
+// SYMMETRIC DIFFERENCE: BooleanOp::SymmetricDifference returns
+// Brep::Compound({Difference(a, b), Difference(b, a)}) - two lumps in one
+// Brep, NOT welded to each other (see Brep::Compound in brep.h). It has
+// to: along the intersection curve of the two boundaries the XOR boundary
+// has four incident faces (A's outside, B's outside, and the two flipped
+// insides), which a single FromMixedFaces shell cannot hold - the former
+// Difference(Union, Intersection) chain threw "an edge is shared by 3 or
+// more faces" for EVERY operand kind, two plain overlapping boxes
+// included, in BooleanCombinePlanar and BooleanCombineMixed alike.
+// Manifold's own mesh XOR keeps the touching curve's vertices duplicated
+// for the same reason (its welded result has 4-fold edges). Measured:
+// two overlapping unit-ish boxes 14.000 exactly (IsValid, IsSolid, 48
+// planar faces, each lump 7 and closed under the conforming mesher);
+// disjoint boxes 16; a nested pair collapses to the single lump A - B
+// (7); the Steinmetz pair at 90 and 60 degrees within 2e-6 (conforming)
+// of 2 pi r^2 L - 2 V_int with 12 cylindrical + 32 planar faces; a box
+// and a through-hole within 3e-6 of 1000 - 10 pi + 2 pi. A compound is
+// refused as an operand of either boolean (std::invalid_argument): a
+// boolean over lumps needs Difference/Intersection distributed per lump
+// plus a merge step for Union, a later increment. Difference's own
+// coincident-face rule carries into each lump unchanged: a same-normal
+// coincident pair is dropped in both lumps (the XOR has no boundary
+// there), an opposite-normal pair is kept in both (two lumps touching
+// face to face).
 // Finally: Brep::TessellateConforming()'s own quad-vs-quad seam pass
 // (tasks #55-57's own domain, both files completely untouched by this
 // increment) used to have its own SEPARATE, pre-existing limitation,

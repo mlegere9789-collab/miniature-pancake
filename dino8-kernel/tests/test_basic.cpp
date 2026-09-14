@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <map>
 #include <sstream>
@@ -15790,6 +15791,592 @@ void TestFromMixedFacesStraightChordAndCapArcBetweenSameVerticesAreDistinctEdges
   Check(raw.IsValid(), "the chord-and-arc shell is ON_Brep::IsValid()");
 }
 
+// ---------------------------------------------------------------------
+// Boolean results as operands: closed-operand semantics, verbatim face
+// records, and the two-lump compound SymmetricDifference
+// ---------------------------------------------------------------------
+//
+// See BooleanCombineMixed's own "RESULTS AS OPERANDS" and "SYMMETRIC
+// DIFFERENCE" paragraphs in boolean.h and Brep::Compound/MixedFaces() in
+// brep.h. Every expected value below is a closed form; every bound is
+// roughly 10x the residual measured at the time these tests were written
+// (ordinary tessellation at 64 divisions, conforming at 64), so a
+// regression to the former behaviour - -10 pi/3 of spurious end caps on
+// a chained call, a notch filled back in on a round trip, or the "3 or
+// more faces" throw of the single-shell XOR - fails by orders of
+// magnitude, not by a tolerance's width.
+
+// What a chained call or a compound must produce: face counts through
+// MixedFaces(), the ordinary and conforming volumes, and any
+// std::invalid_argument, so a regression to a throw is a failed check
+// with the message in hand rather than an aborted run.
+struct ChainedMeasurement {
+  bool threw = false;
+  std::string message;
+  size_t planar = 0, cylindrical = 0;
+  bool valid = false, solid = false;
+  double volume = 0.0;             // ordinary tessellation, 64 divisions
+  double conforming_volume = 0.0;  // conforming tessellation, 64 divisions
+  bool conforming_closed = false;
+  std::vector<std::pair<int, int>> lumps;
+  std::vector<dino8::kernel::Brep::PlanarFace> planar_faces;
+};
+
+ChainedMeasurement MeasureChained(const std::function<dino8::kernel::Brep()>& build) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  ChainedMeasurement m;
+  try {
+    const Brep result = build();
+    const Brep::MixedFacesResult mixed = result.MixedFaces();
+    m.planar = mixed.planar.size();
+    m.cylindrical = mixed.cylindrical.size();
+    m.planar_faces = mixed.planar;
+    m.valid = result.raw().IsValid();
+    m.solid = result.raw().IsSolid();
+    m.lumps = result.LumpFaceRanges();
+    if (result.FaceCount() > 0) {
+      m.volume = result.TessellateToClosedMesh(64, 64).Volume();
+      const Mesh conforming = result.TessellateToClosedMeshConforming(64, 64);
+      m.conforming_volume = conforming.Volume();
+      m.conforming_closed = conforming.IsClosedManifold();
+    }
+  } catch (const std::invalid_argument& e) {
+    m.threw = true;
+    m.message = e.what();
+  }
+  return m;
+}
+
+bool Within(double measured, double expected, double relative) {
+  return std::fabs(measured - expected) <= relative * std::fabs(expected);
+}
+
+// Each lump of a compound welded on its own (TessellateConforming() yields
+// one mesh per face in face order; LumpFaceRanges() slices it): closure
+// and volume per lump, which the whole-Brep weld cannot report wherever
+// two lumps touch (their contact edges are 4-fold after welding).
+struct LumpMeasurement {
+  bool closed = false;
+  double volume = 0.0;
+};
+std::vector<LumpMeasurement> MeasureLumps(const dino8::kernel::Brep& brep, int divisions) {
+  using dino8::kernel::Mesh;
+  std::vector<LumpMeasurement> out;
+  const std::vector<Mesh> faces = brep.TessellateConforming(divisions, divisions);
+  if (faces.size() != static_cast<size_t>(brep.FaceCount())) return out;  // a face failed to resolve
+  for (const std::pair<int, int>& range : brep.LumpFaceRanges()) {
+    const std::vector<Mesh> subset(faces.begin() + range.first, faces.begin() + range.second);
+    const Mesh welded = Mesh::MergeAndWeld(subset);
+    out.push_back({welded.IsClosedManifold(), welded.Volume()});
+  }
+  return out;
+}
+
+// True iff some planar face's whole loop lies within `radius` (+ a hair)
+// of `center` - the signature of a synthesized quadrant end cap (its loop
+// is the disc center plus arc points at exactly `radius`); a legitimate
+// wedge piece of a box face always reaches the box's own perimeter.
+bool HasPlanarFaceWithin(const std::vector<dino8::kernel::Brep::PlanarFace>& faces, const dino8::kernel::Point3d& center,
+                         double radius) {
+  for (const dino8::kernel::Brep::PlanarFace& f : faces) {
+    bool all_within = !f.loop.empty();
+    for (const dino8::kernel::Point3d& p : f.loop) {
+      if (p.DistanceTo(center) > radius + 1e-6) {
+        all_within = false;
+        break;
+      }
+    }
+    if (all_within) return true;
+  }
+  return false;
+}
+
+// SymmetricDifference of two boxes, through BOTH B-rep booleans: the
+// Brep::Compound of (A - B) and (B - A). At head both threw "an edge is
+// shared by 3 or more faces" from the Difference(Union, Intersection)
+// chain's final reassembly - the XOR boundary has four faces along the
+// contact curve - so every check here is a falsifier of the compound
+// representation. Overlapping: 8 + 8 - 2 = 14, two lumps of 7. Disjoint:
+// 16, two lumps that do not touch (so even the whole-Brep weld closes).
+// Nested (B inside A): the second lump is empty and is skipped, so the
+// result is the single lump A - B = 7 - and, being one lump, a valid
+// operand of a further call.
+void TestBooleanSymmetricDifferenceBrepBoxesIsTwoLumpCompound() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+  for (const bool planar_pipeline : {false, true}) {
+    const char* which = planar_pipeline ? "BooleanCombinePlanar" : "BooleanCombineMixed";
+    bool threw = false;
+    Brep sd;
+    try {
+      sd = planar_pipeline ? BooleanCombinePlanar(a, b, BooleanOp::SymmetricDifference)
+                           : BooleanCombineMixed(a, b, BooleanOp::SymmetricDifference);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(!threw, (std::string(which) +
+                   ": SymmetricDifference of two overlapping boxes no longer throws the single-shell 'edge shared by "
+                   "3 or more faces' refusal - it is a Brep::Compound of (A - B) and (B - A)")
+                      .c_str());
+    if (threw) continue;
+    const ChainedMeasurement m = MeasureChained([&] { return sd; });
+    Check(m.valid && m.solid && m.planar == 48 && m.cylindrical == 0,
+          (std::string(which) + ": the two-box XOR compound is ON_Brep::IsValid() and IsSolid() with 48 planar faces "
+                                "(24 per lump) and no cylindrical face")
+              .c_str());
+    Check(Within(m.volume, 14.0, 1e-9) && Within(m.conforming_volume, 14.0, 1e-9),
+          (std::string(which) + ": the two-box XOR volume is 8 + 8 - 2*1 = 14 under both tessellators (measured "
+                                "exactly, 5e-13 relative)")
+              .c_str());
+    Check(m.lumps.size() == 2 && m.lumps[0] == std::make_pair(0, 24) && m.lumps[1] == std::make_pair(24, 48),
+          (std::string(which) + ": LumpFaceRanges() reports exactly the two lumps, [0, 24) and [24, 48)").c_str());
+    const std::vector<LumpMeasurement> lumps = MeasureLumps(sd, 8);
+    Check(lumps.size() == 2 && lumps[0].closed && lumps[1].closed && Within(lumps[0].volume, 7.0, 1e-9) &&
+              Within(lumps[1].volume, 7.0, 1e-9),
+          (std::string(which) + ": each lump's own conforming tessellation, welded on its own, is a closed manifold of "
+                                "volume 7 (A - B and B - A)")
+              .c_str());
+    Check(!m.conforming_closed,
+          (std::string(which) + ": the WHOLE compound welded as one mesh is NOT a closed manifold - the two lumps touch "
+                                "along the contact curve, where welding makes 4-fold edges (exactly what the Manifold "
+                                "mesh XOR's own welded result shows) - the disclosed reason XOR is a compound")
+              .c_str());
+  }
+
+  {
+    const ChainedMeasurement m =
+        MeasureChained([&] { return BooleanCombineMixed(a, Brep::Box(5, 5, 5, 7, 7, 7), BooleanOp::SymmetricDifference); });
+    Check(!m.threw && m.planar == 12 && m.lumps.size() == 2 && Within(m.volume, 16.0, 1e-9) && m.conforming_closed &&
+              Within(m.conforming_volume, 16.0, 1e-9),
+          "SymmetricDifference of two DISJOINT boxes: two untouched lumps of 6 faces, volume 16, and since nothing "
+          "touches, even the whole-Brep conforming weld is a closed manifold");
+  }
+  {
+    Brep nested_sd;
+    bool built = false;
+    try {
+      nested_sd = BooleanCombineMixed(a, Brep::Box(0.5, 0.5, 0.5, 1.5, 1.5, 1.5), BooleanOp::SymmetricDifference);
+      built = true;
+    } catch (const std::invalid_argument&) {
+    }
+    Check(built, "SymmetricDifference of NESTED boxes builds");
+    if (!built) return;
+    const ChainedMeasurement m = MeasureChained([&] { return nested_sd; });
+    Check(!m.threw && m.lumps.size() == 1 && m.planar == 60 && Within(m.volume, 7.0, 1e-9) && m.conforming_closed,
+          "SymmetricDifference of NESTED boxes (B inside A): B - A is empty and skipped, so the result is the single "
+          "lump A - B (60 faces, volume 8 - 1 = 7, closed under the conforming weld)");
+    const ChainedMeasurement chained =
+        MeasureChained([&] { return BooleanCombineMixed(nested_sd, Brep::Box(5, 5, 5, 7, 7, 7), BooleanOp::Union); });
+    Check(!chained.threw && chained.lumps.size() == 1 && Within(chained.volume, 15.0, 1e-9),
+          "a single-lump SymmetricDifference result is a valid operand of a further call: Union with a far box gives "
+          "7 + 8 = 15");
+  }
+}
+
+// SymmetricDifference of curved operands: the Steinmetz pair at 90 and 60
+// degrees (2 pi r^2 L - 2 V_int, 12 cylindrical + 32 planar faces - each
+// lump is one of the already-verified Steinmetz Differences) and a box
+// with a through-hole cylinder (1000 - 10 pi + 2 pi: the drilled box plus
+// the two protruding stubs, capped by the box caps' inside-disc pieces).
+// Both threw at head (the Steinmetz chain hit the partial-sweep guard on
+// its re-extracted eyes; the box/cylinder chain hit tangent parallel
+// cylinders). Bounds: conforming 1e-4 relative against measured 1.8e-6 /
+// 2.6e-6; ordinary 2e-3 / 3e-4 against 3.9e-4 / 2.9e-5.
+void TestBooleanSymmetricDifferenceBrepSteinmetzAndDrilledBox() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const double r = 2.0, length = 10.0;
+  for (const double alpha_deg : {90.0, 60.0}) {
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(r, length, length, alpha_deg);
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    const double expected = 2.0 * ON_PI * r * r * length - 2.0 * SteinmetzIntersectionVolume(r, alpha_deg);
+    Brep sd;
+    bool threw = false;
+    try {
+      sd = BooleanCombineMixed(a, b, BooleanOp::SymmetricDifference);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(!threw, "Steinmetz SymmetricDifference no longer throws (the former Difference(Union, Intersection) chain "
+                  "re-extracted the eyes as plain bands and hit the partial-sweep guard) at both 90 and 60 degrees");
+    if (threw) continue;
+    const ChainedMeasurement m = MeasureChained([&] { return sd; });
+    Check(m.valid && m.cylindrical == 12 && m.planar == 32 && m.lumps.size() == 2,
+          "Steinmetz SymmetricDifference: a two-lump IsValid() compound with 12 cylindrical faces (A - B's 4 "
+          "half-bands + 2 eyes, and B - A's) and 32 planar faces (all four original ends' half-disc wedges)");
+    Check(Within(m.conforming_volume, expected, 1e-4),
+          "Steinmetz SymmetricDifference: the conforming 64-division volume is within 1e-4 of 2 pi r^2 L - 2 * "
+          "16 r^3 / (3 sin alpha) at both 90 and 60 degrees (measured -1.75e-6 and +1.8e-6)");
+    Check(Within(m.volume, expected, 2e-3),
+          "Steinmetz SymmetricDifference: the ordinary 64-division volume is within 0.2% of the closed form at both "
+          "angles (measured -3.9e-4 and -2.1e-4, the inscribed-polygon deficit)");
+    const std::vector<LumpMeasurement> lumps = MeasureLumps(sd, 64);
+    const double v_int = SteinmetzIntersectionVolume(r, alpha_deg);
+    Check(lumps.size() == 2 && lumps[0].closed && lumps[1].closed &&
+              Within(lumps[0].volume, ON_PI * r * r * length - v_int, 1e-3) &&
+              Within(lumps[1].volume, ON_PI * r * r * length - v_int, 1e-3),
+          "Steinmetz SymmetricDifference: each lump welded on its own is a closed manifold of volume pi r^2 L - "
+          "V_int at both angles - each lump IS the already-verified A - B / B - A result");
+  }
+
+  {
+    const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+    const Brep cyl = Brep::FromMixedFaces({}, {BuildZAxisCylinder(Point3d(3, 3, -1), 1.0, 12.0)});
+    const double expected = 1000.0 - 10.0 * ON_PI + 2.0 * ON_PI;
+    const ChainedMeasurement m = MeasureChained([&] { return BooleanCombineMixed(box, cyl, BooleanOp::SymmetricDifference); });
+    Check(!m.threw && m.lumps.size() == 2 && m.cylindrical == 3 && m.planar == 28,
+          "box XOR through-hole cylinder: a two-lump compound with 3 cylindrical faces (the hole wall, the two "
+          "protruding stubs) and 28 planar faces");
+    Check(!m.threw && Within(m.volume, expected, 3e-4) && Within(m.conforming_volume, expected, 1e-4),
+          "box XOR through-hole cylinder: volume 1000 - 10 pi + 2 pi within 3e-4 (ordinary, measured +2.9e-5) and "
+          "1e-4 (conforming, measured +2.6e-6)");
+  }
+}
+
+// Chained calls whose FIRST result keeps a cylindrical face, against the
+// closed forms. At head every one of these was off by exactly -10 pi/3
+// (8 spurious quadrant caps synthesized across the first hole, whose
+// re-extracted wall still said end0/end1_is_original) or threw "3 or more
+// faces" where a spurious cap's edges collided with the real ones. The
+// closed-operand rule (ToMixed, boolean.cpp) is what fixes them; the
+// structural falsifier is case (iii)'s face count (18 planar + 2
+// cylindrical, not 26 + 2) and the absence of any planar face lying
+// wholly within r of the first hole's axis endpoints.
+void TestBooleanCombineMixedChainedCallsHonorClosedOperands() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Brep boss = Brep::FromMixedFaces({}, {BuildZAxisCylinder(Point3d(5, 5, 10), 2.0, 4.0)});
+  const Brep hole = Brep::FromMixedFaces({}, {BuildZAxisCylinder(Point3d(2, 2, -1), 1.0, 12.0)});
+  const Brep h1 = Brep::FromMixedFaces({}, {BuildZAxisCylinder(Point3d(3, 3, -1), 1.0, 12.0)});
+  const Brep h2 = Brep::FromMixedFaces({}, {BuildZAxisCylinder(Point3d(7, 7, -1), 1.0, 12.0)});
+  const Brep hx = Brep::FromMixedFaces({}, {BuildXAxisCylinder(Point3d(-1, 7, 7), 1.0, 12.0)});
+  const Brep drilled = BooleanCombineMixed(box, h1, BooleanOp::Difference);
+
+  {
+    const double expected = 1000.0 + 16.0 * ON_PI - 10.0 * ON_PI;
+    const ChainedMeasurement m = MeasureChained(
+        [&] { return BooleanCombineMixed(BooleanCombineMixed(box, boss, BooleanOp::Union), hole, BooleanOp::Difference); });
+    Check(!m.threw && m.planar == 19 && m.cylindrical == 2 && Within(m.volume, expected, 2e-4),
+          "(ii) Difference(Union(box, boss), far hole): 19 planar + 2 cylindrical faces and 1000 + 16 pi - 10 pi "
+          "within 2e-4 (measured -2.1e-5) - at head this threw '3 or more faces' from a spurious disc at the "
+          "boss base");
+    const ChainedMeasurement m2 = MeasureChained(
+        [&] { return BooleanCombineMixed(BooleanCombineMixed(box, hole, BooleanOp::Difference), boss, BooleanOp::Union); });
+    Check(!m2.threw && m2.planar == 19 && m2.cylindrical == 2 && Within(m2.volume, expected, 2e-4),
+          "(ii-b) Union(Difference(box, far hole), boss): the other order, same faces and same volume within 2e-4 "
+          "(head: -1.03%, the hole's two spurious caps)");
+  }
+  {
+    const double expected = 1000.0 - 20.0 * ON_PI;
+    const ChainedMeasurement m = MeasureChained([&] { return BooleanCombineMixed(drilled, h2, BooleanOp::Difference); });
+    Check(!m.threw && m.planar == 18 && m.cylindrical == 2,
+          "(iii) Difference(Difference(box, h1), h2): 18 planar + 2 cylindrical faces - the 8 spurious quadrant "
+          "caps head stitched across the first hole (26 planar) are gone");
+    Check(!m.threw && Within(m.volume, expected, 8e-4) && Within(m.conforming_volume, expected, 5e-4),
+          "(iii) two parallel holes: 1000 - 20 pi within 8e-4 (ordinary, measured +7.6e-5) and 5e-4 (conforming, "
+          "measured +4.1e-5) - head measured -1.11%, exactly -10 pi/3");
+    Check(!m.threw && !HasPlanarFaceWithin(m.planar_faces, Point3d(3, 3, 0), 1.0) &&
+              !HasPlanarFaceWithin(m.planar_faces, Point3d(3, 3, 10), 1.0),
+          "(iii) falsifier: no planar face lies wholly within r = 1 of the first hole's axis endpoints (3, 3, 0) "
+          "and (3, 3, 10) - the signature of a synthesized quadrant cap sealing an open hole");
+    const ChainedMeasurement mx = MeasureChained([&] { return BooleanCombineMixed(drilled, hx, BooleanOp::Difference); });
+    Check(!mx.threw && mx.planar == 18 && mx.cylindrical == 2 && Within(mx.volume, expected, 8e-4),
+          "(iii-c) the second hole along X through the drilled box: 18 + 2 faces and 1000 - 20 pi within 8e-4 "
+          "(measured +7.6e-5)");
+  }
+  {
+    const Brep right_half = Brep::Box(5, 0, 0, 15, 10, 10);
+    const ChainedMeasurement mi = MeasureChained(
+        [&] { return BooleanCombineMixed(drilled, Brep::Box(1, 0, 0, 15, 10, 10), BooleanOp::Intersection); });
+    Check(!mi.threw && mi.planar == 12 && mi.cylindrical == 1 && Within(mi.volume, 900.0 - 10.0 * ON_PI, 4e-4),
+          "(iii-e) Intersection(drilled box, box x >= 1): 12 + 1 faces and 900 - 10 pi within 4e-4 (measured "
+          "+4.1e-5)");
+    const ChainedMeasurement mu = MeasureChained([&] { return BooleanCombineMixed(drilled, right_half, BooleanOp::Union); });
+    Check(!mu.threw && mu.planar == 22 && mu.cylindrical == 1 && Within(mu.volume, 1500.0 - 10.0 * ON_PI, 3e-4),
+          "(vi-b) Union(drilled box, box x in [5, 15]): 22 + 1 faces and 1500 - 10 pi within 3e-4 (measured "
+          "+2.4e-5; head -0.71%)");
+    const ChainedMeasurement md =
+        MeasureChained([&] { return BooleanCombineMixed(drilled, right_half, BooleanOp::Difference); });
+    Check(!md.threw && md.planar == 12 && md.cylindrical == 1 && Within(md.volume, 500.0 - 10.0 * ON_PI, 8e-4),
+          "(vi-d) Difference(drilled box, box x in [5, 15]) = the left half: 12 + 1 faces and 500 - 10 pi within "
+          "8e-4 (measured +7.6e-5)");
+  }
+}
+
+// Chained calls through a result whose wall is NOTCHED - the oblique
+// drilled box (both ends of its hole wall carry a 201-point ellipse) and
+// the hand-built shared-notch pair - which need the verbatim face records
+// too: at head the re-extracted wall was the 10.889-long bounding-box
+// band with its notches gone (skirts poking outside the box), off by
+// -0.6% to -0.9% or throwing. (iv) puts a boss on the x = 10 face (the
+// notched wall passes through the non-parallel no-interaction test
+// verbatim), (iv-b) drills a far perpendicular hole, (iv-c) cuts off a
+// slab that never touches the hole, (v-e) cuts the shared-notch solid
+// above its notch: pi r^2 * 7 = 28 pi.
+void TestBooleanCombineMixedChainedCallsThroughNotchedResults() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const double theta = 15.0 * ON_PI / 180.0;
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(/*hole_radius=*/1.0, /*tilt_deg=*/15.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  const double v_drilled = 2000.0 - ON_PI * 10.0 / std::cos(theta);
+
+  {
+    const Brep boss = Brep::FromMixedFaces({}, {BuildXAxisCylinder(Point3d(10, 4, 5), 1.5, 5.0)});
+    const double expected = v_drilled + ON_PI * 1.5 * 1.5 * 5.0;
+    const ChainedMeasurement m = MeasureChained([&] { return BooleanCombineMixed(drilled, boss, BooleanOp::Union); });
+    Check(!m.threw && m.planar == 19 && m.cylindrical == 2 && Within(m.volume, expected, 1e-4),
+          "(iv) Union(oblique drilled box, boss on the x = 10 face): 19 + 2 faces and 2000 - 10 pi / cos 15 + "
+          "11.25 pi within 1e-4 (measured +6.2e-6; head -0.63%)");
+  }
+  {
+    const Brep far_hole = Brep::FromMixedFaces({}, {BuildZAxisCylinder(Point3d(2, 2, -1), 1.0, 12.0)});
+    const ChainedMeasurement m = MeasureChained([&] { return BooleanCombineMixed(drilled, far_hole, BooleanOp::Difference); });
+    Check(!m.threw && m.planar == 18 && m.cylindrical == 2 && Within(m.volume, v_drilled - 10.0 * ON_PI, 5e-4),
+          "(iv-b) Difference(oblique drilled box, far perpendicular hole): 18 + 2 faces and 2000 - 10 pi / cos 15 - "
+          "10 pi within 5e-4 (measured +4.6e-5; head -0.64%)");
+  }
+  {
+    const ChainedMeasurement m = MeasureChained(
+        [&] { return BooleanCombineMixed(drilled, Brep::Box(7, -1, -1, 15, 21, 11), BooleanOp::Difference); });
+    Check(!m.threw && m.planar == 12 && m.cylindrical == 1 && Within(m.volume, v_drilled - 600.0, 4e-4),
+          "(iv-c) Difference(oblique drilled box, slab x >= 7 not touching the hole): 12 + 1 faces and 2000 - "
+          "10 pi / cos 15 - 600 within 4e-4 (measured +3.8e-5; head -0.91%)");
+  }
+  {
+    const SharedNotchPairFixture fx = BuildSharedNotchCylinderPair();
+    const ChainedMeasurement m = MeasureChained(
+        [&] { return BooleanCombineMixed(fx.brep, Brep::Box(-10, -10, 4, 10, 10, 10), BooleanOp::Difference); });
+    Check(!m.threw && m.planar == 8 && m.cylindrical == 2 && Within(m.conforming_volume, 28.0 * ON_PI, 1e-3) &&
+              Within(m.volume, 28.0 * ON_PI, 5e-3),
+          "(v-e) the shared-notch solid (z in [-3, 7], r = 2) minus the half-space z >= 4: 8 planar (the z = -3 cap "
+          "quadrants and the z = 4 disc quadrants) + 2 cylindrical faces, 28 pi within 1e-3 conforming (measured "
+          "+1.0e-4) and 5e-3 ordinary (measured -1.1e-3, the r = 2 wall's inscribed-polygon deficit) - head threw "
+          "'3 or more faces' (the upper fragment re-extracted over z in [-2, 7])");
+  }
+}
+
+// The verbatim face records themselves (Brep::MixedFaces(), brep.h): a
+// notched wall comes back with its 201-point notch lists and true
+// length, a rebuilt solid reproduces the original bit for bit, and a
+// record that no longer matches its face (the raw() ON_Brep transformed
+// behind the class's back) is ignored in favour of the geometric
+// extraction. Cones stay on the geometric path by contract - the
+// multi-station tapered-fillet closed-form test above depends on it.
+void TestMixedFacesReturnsVerbatimRecordsForBooleanResults() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  const double theta = 15.0 * ON_PI / 180.0;
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(/*hole_radius=*/1.0, /*tilt_deg=*/15.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  const Brep::MixedFacesResult mf = drilled.MixedFaces();
+  Check(mf.cylindrical.size() == 1 && mf.cylindrical[0].cap0_notch_points.size() == 201 &&
+            mf.cylindrical[0].cap1_notch_points.size() == 201 && mf.cylindrical[0].cap0_notch_tolerance > 0.0,
+        "MixedFaces() on the oblique drilled box returns the hole wall's own 201-point cap0 AND cap1 notch lists "
+        "(and their tolerance) verbatim - head returned empty lists");
+  Check(mf.cylindrical.size() == 1 && std::fabs(mf.cylindrical[0].length - 10.0 / std::cos(theta)) < 1e-9,
+        "MixedFaces() on the oblique drilled box returns the wall's true length 10 / cos 15 = 10.352762, not the "
+        "10.889 the trim's notch-widened bounding box reads");
+  size_t literal_pieces = 0;
+  for (const Brep::PlanarFace& f : mf.planar) {
+    for (const Brep::PlanarFace::ArcRun& run : f.arc_runs) {
+      if (!run.literal_points.empty()) ++literal_pieces;
+    }
+  }
+  Check(literal_pieces > 0,
+        "MixedFaces() on the oblique drilled box returns the cap pieces' LITERAL ellipse arc runs verbatim - head "
+        "returned no arc runs at all");
+  {
+    const Brep rebuilt = Brep::FromMixedFaces(mf.planar, mf.cylindrical);
+    const double v_original = drilled.TessellateToClosedMesh(64, 64).Volume();
+    const double v_rebuilt = rebuilt.TessellateToClosedMesh(64, 64).Volume();
+    const Mesh conforming = rebuilt.TessellateToClosedMeshConforming(64, 64);
+    const double expected = 2000.0 - ON_PI * 10.0 / std::cos(theta);
+    Check(Within(v_rebuilt, v_original, 1e-12) && conforming.IsClosedManifold() && Within(conforming.Volume(), expected, 1e-4),
+          "the oblique drilled box rebuilt from its own MixedFaces() has the identical ordinary volume and is "
+          "closed under the conforming mesher within 1e-4 of the closed form (measured +2.7e-6) - the notches "
+          "survived the round trip");
+  }
+  {
+    const SharedNotchPairFixture fx = BuildSharedNotchCylinderPair();
+    const Brep::MixedFacesResult shared = fx.brep.MixedFaces();
+    const Brep rebuilt = Brep::FromMixedFaces(shared.planar, shared.cylindrical);
+    const Mesh conforming = rebuilt.TessellateToClosedMeshConforming(64, 64);
+    Check(shared.cylindrical.size() == 2 && conforming.IsClosedManifold() && Within(conforming.Volume(), fx.true_volume, 1e-3),
+          "the shared-notch pair rebuilt from its own MixedFaces() is closed under the conforming mesher within "
+          "1e-3 of 40 pi (measured -6.2e-5) - head rebuilt it +26% with the notch filled back in");
+  }
+  {
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0);
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    const double v_int = SteinmetzIntersectionVolume(2.0, 90.0);
+    const Brep::MixedFacesResult mu = BooleanCombineMixed(a, b, BooleanOp::Union).MixedFaces();
+    const Brep union_rebuilt = Brep::FromMixedFaces(mu.planar, mu.cylindrical);
+    const Mesh union_conforming = union_rebuilt.TessellateToClosedMeshConforming(64, 64);
+    Check(union_conforming.IsClosedManifold() && Within(union_conforming.Volume(), 80.0 * ON_PI - v_int, 2e-4),
+          "the Steinmetz Union rebuilt from its own MixedFaces() is closed under the conforming mesher within 2e-4 "
+          "of 80 pi - 128/3 (measured -1.4e-5) - head rebuilt +20% with every eye filled in");
+    const Brep::MixedFacesResult mi = BooleanCombineMixed(a, b, BooleanOp::Intersection).MixedFaces();
+    bool eyes_verbatim = mi.cylindrical.size() == 4 && mi.planar.empty();
+    for (const Brep::CylindricalFace& eye : mi.cylindrical) {
+      eyes_verbatim = eyes_verbatim && eye.length == 0.0 && !eye.cap0_notch_points.empty() &&
+                      !eye.cap1_notch_points.empty() && !eye.end0_is_original && !eye.end1_is_original;
+    }
+    const Brep inter_rebuilt = Brep::FromMixedFaces(mi.planar, mi.cylindrical);
+    const Mesh inter_conforming = inter_rebuilt.TessellateToClosedMeshConforming(64, 64);
+    Check(eyes_verbatim && inter_rebuilt.raw().IsSolid() && inter_conforming.IsClosedManifold() &&
+              Within(inter_conforming.Volume(), v_int, 1e-3),
+          "the Steinmetz Intersection's four eyes come back length 0, doubly notched, both end flags false, and "
+          "rebuild into an IsSolid() shell closed under the conforming mesher within 1e-3 of 128/3 (measured "
+          "-6.2e-5)");
+  }
+  {
+    // Staleness self-check: transform the raw ON_Brep behind the class's
+    // back (what dino8-app's FlowData does); the records no longer match
+    // their faces and MixedFaces() must fall back to geometric extraction
+    // of the MOVED surfaces rather than hand back the stale records.
+    Brep moved = drilled;
+    moved.raw().Transform(ON_Xform::TranslationTransformation(ON_3dVector(100.0, 0.0, 0.0)));
+    const Brep::MixedFacesResult stale = moved.MixedFaces();
+    const Brep::CylindricalFace& record = mf.cylindrical[0];
+    bool planar_moved = stale.planar.size() == mf.planar.size();
+    for (size_t k = 0; planar_moved && k < stale.planar.size(); ++k) {
+      planar_moved = std::fabs(stale.planar[k].loop[0].x - mf.planar[k].loop[0].x - 100.0) < 1e-6;
+    }
+    bool wall_extracted_from_moved_surface = stale.cylindrical.size() == 1;
+    if (wall_extracted_from_moved_surface) {
+      // The geometric fallback's origin is the axis projection of the
+      // trim's (u_min, v_min) corner - for a notched wall the notch's own
+      // lowest point, not the record's origin - so what it must satisfy
+      // is: on the TRANSLATED axis line, the record's radius, and notch
+      // lists empty (that path never recovers them); its length is the
+      // notch-widened bounding box, provably not the record's.
+      const Brep::CylindricalFace& got = stale.cylindrical[0];
+      const ON_3dVector off_axis = got.frame.origin - (record.frame.origin + ON_3dVector(100.0, 0.0, 0.0));
+      const double along = ON_DotProduct(off_axis, record.frame.zaxis);
+      wall_extracted_from_moved_surface = (off_axis - along * record.frame.zaxis).Length() < 1e-6 &&
+                                          std::fabs(got.radius - record.radius) < 1e-6 && got.cap0_notch_points.empty() &&
+                                          got.cap1_notch_points.empty() && std::fabs(got.length - record.length) > 0.1;
+    }
+    Check(wall_extracted_from_moved_surface && planar_moved,
+          "after raw().Transform() the stored records no longer match their faces: MixedFaces() falls back to "
+          "geometric extraction of the MOVED surfaces (the wall's origin on the translated axis line, loops "
+          "translated by 100, notch lists empty and the bounding-box length as that path always gave) instead of "
+          "returning the stale untranslated records");
+  }
+  Check(Brep::Box(0, 0, 0, 1, 1, 1).LumpFaceRanges() == std::vector<std::pair<int, int>>{{0, 6}},
+        "LumpFaceRanges() on an ordinary (non-compound) Brep is the single range [0, FaceCount())");
+}
+
+// The scope limits that are meant to stay honest throws, and the new
+// refusals: SymmetricDifference of the parallel-crossing pair still hits
+// B - A's cap-trim refusal; Difference(Steinmetz Union, b) still hits the
+// partial-sweep guard (a second cut INTERACTING with notched half-bands
+// is out of scope); a compound is refused as an operand of both
+// booleans; a conical (tapered-fillet) operand is refused instead of
+// having its cones dropped; a raw()-assigned lump is refused by Compound.
+void TestBooleanCombineMixedChainedNegativeControls() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanCombinePlanar;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdgeTapered;
+  using dino8::kernel::FilletRadiusStation;
+  using dino8::kernel::Point3d;
+
+  {
+    const Brep a = Brep::FromMixedFaces({}, {BuildZAxisCylinder(Point3d(0, 0, 0), 3.0, 10.0)});
+    const Brep b = Brep::FromMixedFaces({}, {BuildZAxisCylinder(Point3d(4, 0, 3), 2.0, 6.0)});
+    const ChainedMeasurement m = MeasureChained([&] { return BooleanCombineMixed(a, b, BooleanOp::SymmetricDifference); });
+    Check(m.threw && m.message.find("may need trimming against an interacting parallel-axis cylinder") != std::string::npos,
+          "negative control: SymmetricDifference of the parallel-axis crossing fixture still throws B - A's own "
+          "cap-trim refusal (B's original ends lie inside A's axial range) - the pre-existing scope limit, "
+          "inherited by the (B - A) lump");
+  }
+  {
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0);
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    const ChainedMeasurement m = MeasureChained(
+        [&] { return BooleanCombineMixed(BooleanCombineMixed(a, b, BooleanOp::Union), b, BooleanOp::Difference); });
+    Check(m.threw && m.message.find("PARTIAL-sweep") != std::string::npos,
+          "negative control: Difference(Steinmetz Union, b) still throws the Steinmetz partial-sweep guard - a "
+          "second cut that INTERACTS with a notched half-band is honestly out of scope, not silently wrong");
+  }
+  {
+    Brep boxes_sd;
+    bool built = false;
+    try {
+      boxes_sd = BooleanCombineMixed(Brep::Box(0, 0, 0, 2, 2, 2), Brep::Box(1, 1, 1, 3, 3, 3), BooleanOp::SymmetricDifference);
+      built = true;
+    } catch (const std::invalid_argument&) {
+    }
+    Check(built, "the compound-operand refusal's fixture (a two-box SymmetricDifference) builds");
+    const Brep other = Brep::Box(5, 5, 5, 7, 7, 7);
+    for (const BooleanOp op : {BooleanOp::Union, BooleanOp::Difference, BooleanOp::SymmetricDifference}) {
+      if (!built) break;
+      const ChainedMeasurement mixed = MeasureChained([&] { return BooleanCombineMixed(boxes_sd, other, op); });
+      const ChainedMeasurement mixed_rev = MeasureChained([&] { return BooleanCombineMixed(other, boxes_sd, op); });
+      const ChainedMeasurement planar = MeasureChained([&] { return BooleanCombinePlanar(boxes_sd, other, op); });
+      Check(mixed.threw && mixed.message.find("Brep::Compound of several lumps") != std::string::npos && mixed_rev.threw &&
+                planar.threw && planar.message.find("Brep::Compound of several lumps") != std::string::npos,
+            "a two-lump compound (a SymmetricDifference result) is refused as EITHER operand of BooleanCombineMixed "
+            "and BooleanCombinePlanar with a message naming the compound, for Union, Difference and "
+            "SymmetricDifference alike");
+    }
+  }
+  {
+    const Brep box = Brep::Box(0, 0, 0, 3, 1, 1);
+    const std::vector<Brep::PlanarFace> all_faces = box.PlanarFaces();
+    const Brep tube = Brep::FromPlanarFaces({all_faces[0], all_faces[1], all_faces[2], all_faces[3]});
+    const std::vector<FilletRadiusStation> stations = {{0.0, 0.15}, {1.2, 0.25}, {3.0, 0.45}};
+    const Brep filleted = FilletConvexEdgeTapered(tube, Point3d(0, 0, 1), Point3d(3, 0, 1), stations);
+    Check(filleted.MixedFaces().conical.size() == 2 && filleted.MixedFaces().conical[0].cap0_notch_points.empty(),
+          "a tapered fillet's cones still come back from MixedFaces() through geometric extraction with empty "
+          "notch lists - the documented cone contract the verbatim records deliberately leave alone");
+    const ChainedMeasurement m =
+        MeasureChained([&] { return BooleanCombineMixed(filleted, Brep::Box(-1, -1, -1, 1, 2, 2), BooleanOp::Union); });
+    Check(m.threw && m.message.find("ConicalFace") != std::string::npos,
+          "a ConicalFace-bearing operand is refused by BooleanCombineMixed with a message naming ConicalFace - head "
+          "silently dropped the cones from the operand's boundary");
+  }
+  {
+    Brep raw_lump;
+    raw_lump.raw() = Brep::Box(0, 0, 0, 1, 1, 1).raw();
+    bool threw = false;
+    try {
+      Brep::Compound({raw_lump, Brep::Box(2, 2, 2, 3, 3, 3)});
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw, "Brep::Compound refuses a raw()-assigned lump whose side tables do not cover its faces, rather "
+                 "than letting the next lump's tables slide onto them");
+  }
+}
+
 int main() {
   ON::Begin();
 
@@ -16058,6 +16645,12 @@ int main() {
   TestBooleanCombineMixedUnequalRadiusPerpendicularSecondRadiusRatio();
   TestBooleanCombineMixedUnequalRadiusPerpendicularNegativeControls();
   TestFromMixedFacesStraightChordAndCapArcBetweenSameVerticesAreDistinctEdges();
+  TestBooleanSymmetricDifferenceBrepBoxesIsTwoLumpCompound();
+  TestBooleanSymmetricDifferenceBrepSteinmetzAndDrilledBox();
+  TestBooleanCombineMixedChainedCallsHonorClosedOperands();
+  TestBooleanCombineMixedChainedCallsThroughNotchedResults();
+  TestMixedFacesReturnsVerbatimRecordsForBooleanResults();
+  TestBooleanCombineMixedChainedNegativeControls();
 
   ON::End();
 

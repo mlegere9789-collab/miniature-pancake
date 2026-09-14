@@ -500,19 +500,25 @@ class Brep {
     // cylindrical case that never touches a CylindricalFace's own fields
     // at all) leaves both flags untouched.
     //
-    // NOT round-tripped through Brep::MixedFaces() (the reverse
-    // extraction, straight NURBS surface -> CylindricalFace): a
-    // CylindricalFace recovered that way always gets the default
-    // true/true, the same honest simplification cap0_notch_points/
-    // cap1_notch_points already make (see that field's own doc comment) -
-    // correct for every operand this increment's own tests ever build
-    // (a fresh, unsplit input cylinder) but NOT verified for a
-    // CylindricalFace fragment re-extracted from a PRIOR
-    // BooleanCombineMixed result and fed into a second one (e.g.
-    // BooleanOp::SymmetricDifference's own internal Union-then-
-    // Intersection-then-Difference chain) - an honestly disclosed,
-    // unexercised edge case, not silently mishandled: see
-    // BooleanCombineMixed's own doc comment in boolean.h.
+    // Round-tripped through Brep::MixedFaces() verbatim for a face this
+    // kernel's own FromMixedFaces() built (the stored face record - see
+    // MixedFaces()'s own doc comment), and defaulted to true/true by the
+    // geometric fallback (a face read back out of raw ON_Brep topology,
+    // e.g. after a .3dm reload). Neither value is what decides a
+    // boolean's behaviour for a face of a CLOSED operand, though:
+    // BooleanCombineMixed's own ToMixed (boolean.cpp) overrides both
+    // flags to false for every cylindrical face of an operand that is
+    // not a bare tube (any planar face, or any notched cylindrical face
+    // - the closed-operand rule in boolean.h's own doc comment), because
+    // "does this end still need an implicit disk / a synthesized cap" is
+    // a property of the OPERAND (does it bound a solid by itself?), not
+    // of the face: a boss's base at z=10 inside a union result is a
+    // still-original, never-split end of its input cylinder AND an open
+    // passage into the box, and no per-face flag can express that. So
+    // these flags only ever steer a boolean for the legacy bare-tube
+    // operand FromMixedFaces({}, {cf}), whose fresh true/true they are
+    // right for, and for the fragments a split manufactures inside one
+    // BooleanCombineMixed call.
     bool end0_is_original = true;
     bool end1_is_original = true;
   };
@@ -840,6 +846,41 @@ class Brep {
   //     boundary - a real, disclosed, still out-of-scope gap, narrower
   //     than the one this fix closes (frame/radius0/radius1/length/angle
   //     are all exact; only the notch geometry itself doesn't round-trip).
+  //     This is a deliberate CONTRACT, not merely a gap: a ConicalFace is
+  //     excluded from the verbatim face-record path described below, so
+  //     a cone always comes back through this geometric extraction with
+  //     empty notch lists. FilletConvexEdgeTapered's own closed-form
+  //     tests (tests/test_basic.cpp, the multi-station frustum-formula
+  //     test) rebuild "self-contained frustum" solids from extracted
+  //     cones and rely on those ends coming back as plain circular caps.
+  //
+  // VERBATIM FACE RECORDS (planar and cylindrical faces only): every face
+  // FromMixedFaces() builds from a PlanarFace or a CylindricalFace keeps
+  // that input record, verbatim, in a side table parallel to the face
+  // list (face_records_, kept in lockstep by every factory here exactly
+  // as face_arc_runs_/face_notch_rows_ already are). MixedFaces() returns
+  // the stored record for such a face instead of re-deriving it from the
+  // NURBS surface, so everything the geometric extraction above cannot
+  // see comes back bit-identical: a PlanarFace's arc_runs (circular and
+  // literal), notch_begin/notch_count and its producer's own plane basis;
+  // a CylindricalFace's cap0/cap1_notch_points and their tolerances, its
+  // true frame.origin/length for a notched face (the extraction's own
+  // trim bounding box reads a notch's dip as extra length), and its
+  // end0/end1_is_original flags. This is what makes a BooleanCombineMixed
+  // result a first-class operand of a second call (see boolean.h).
+  // Before a record is used it is checked against the face's REAL
+  // surface (three surface evaluations per face: a planar face's first
+  // three trim vertices against the record's first three loop points, a
+  // cylindrical face's two angle-0 rail corners against
+  // frame.origin + radius*xaxis at v=0/v=length plus a mid-sweep point's
+  // height and radius against the record's axis, and the face's own
+  // m_bRev against `outward`), within 1e-6 of the face's own scale. A
+  // record that no longer matches - a Brep whose raw() ON_Brep was
+  // transformed or reassigned behind this class's back, e.g. dino8-app's
+  // FlowData `b.raw().Transform(x)` - is stale and silently ignored; the
+  // face then takes the geometric extraction above, exactly as every face
+  // built by any other factory (Box(), Sphere(), FromSurface(),
+  // TrimmedPlanarFace(), a raw()-assigned .3dm reload) always does.
   //   - `angle` is recovered exactly as CylindricalFace's own `angle` is:
   //     the true radian sweep between the trim's own u_min/u_max via
   //     ON_Circle::GetRadianFromNurbFormParameter, confirmed directly
@@ -944,6 +985,45 @@ class Brep {
   // FromMixedFaces(faces, {}) - kept as its own entry point since it's
   // the overwhelmingly common case and needs no CylindricalFace argument.
   static Brep FromPlanarFaces(const std::vector<PlanarFace>& faces);
+
+  // One Brep holding several independent closed shells ("lumps"): every
+  // lump's ON_Brep is appended (ON_Brep::Append - "appends a copy of brep
+  // to this and updates indices ... Duplicates are not removed") and every
+  // face-parallel side table is concatenated in the same order, so each
+  // lump's faces keep their own trims, arc runs, notch rows and verbatim
+  // face records. Lumps are deliberately NOT welded to each other: two
+  // lumps that touch along a curve keep their own vertices and edges
+  // there. That is the only manifold representation of a symmetric
+  // difference (XOR) - along the intersection curve of A and B the XOR
+  // boundary has FOUR incident faces (A's outside, B's outside, and the
+  // two flipped insides), which no single FromMixedFaces() shell can
+  // hold ("an edge is shared by 3 or more faces") - and it is exactly
+  // how the Manifold mesh boolean represents its own XOR (a touching
+  // curve's vertices duplicated; welding them back gives 4-fold edges).
+  // ON_Brep::IsValid()/IsSolid() hold for a compound of valid solid lumps
+  // (each lump is a closed shell of its own; Tessellate*() volumes add up
+  // per face), but a MergeAndWeld of the whole tessellation is not a
+  // closed manifold wherever two lumps touch - weld each lump's own face
+  // range (LumpFaceRanges() below) separately for a per-lump closure
+  // check. A lump with no faces at all (an empty boolean result) is
+  // skipped: the compound of X with the empty set is X, so such a result
+  // is a plain single-lump Brep. Every lump must have its side tables in
+  // lockstep with its own faces (a Brep one of this class's own
+  // factories built, or empty) - a raw()-assigned lump whose tables do
+  // not cover its faces is refused (std::invalid_argument) rather than
+  // letting a following lump's tables slide onto its faces.
+  static Brep Compound(const std::vector<Brep>& lumps);
+
+  // The [begin, end) face-index ranges of this Brep's lumps, in the order
+  // Compound() received them (a nested compound is flattened). A Brep
+  // built by anything other than Compound() is one lump, {0, FaceCount()}.
+  // The recorded ranges are checked against the actual face count (they
+  // must tile [0, FaceCount()) exactly); a stale record - a raw() ON_Brep
+  // reassigned behind this class's back - falls back to the single full
+  // range, the same self-check discipline MixedFaces()'s face records
+  // use. BooleanCombineMixed/BooleanCombinePlanar refuse an operand with
+  // more than one lump (see boolean.h).
+  std::vector<std::pair<int, int>> LumpFaceRanges() const;
 
   // Bounding box over the Brep's actual curved geometry, not just its
   // control points - a real gap nothing here could answer without
@@ -1532,6 +1612,25 @@ class Brep {
     double v_end1 = 0.0;
   };
   std::vector<CylinderNotchRows> face_notch_rows_;
+  // Parallel to face_notch_rows_ (kept in lockstep by every factory that
+  // pushes it): the exact PlanarFace or CylindricalFace record
+  // FromMixedFaces() built face i from, verbatim - `kind` is kNone for a
+  // face built by any other factory, and, deliberately, for a ConicalFace
+  // (see MixedFaces()'s own doc comment: a cone's notches come back empty
+  // by contract). Consumed ONLY by MixedFaces(), which returns the record
+  // in place of the geometric extraction after checking it still matches
+  // the face's own surface.
+  struct FaceRecord {
+    enum Kind { kNone = 0, kPlanar, kCylindrical };
+    Kind kind = kNone;
+    PlanarFace planar;
+    CylindricalFace cyl;
+  };
+  std::vector<FaceRecord> face_records_;
+  // Set only by Compound(): the [begin, end) face-index range of each
+  // lump, in order. Empty for every other Brep (one lump) - see
+  // LumpFaceRanges().
+  std::vector<std::pair<int, int>> lump_face_ranges_;
 };
 
 }  // namespace dino8::kernel

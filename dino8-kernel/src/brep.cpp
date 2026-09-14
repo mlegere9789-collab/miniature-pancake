@@ -138,6 +138,7 @@ Brep Brep::FromSurface(const NurbsSurface& surface) {
   result.face_hole_loops_.emplace_back();
   result.face_arc_runs_.emplace_back();
   result.face_notch_rows_.emplace_back();
+  result.face_records_.emplace_back();
 
   brep.SetTrimIsoFlags();
 
@@ -185,6 +186,7 @@ Brep Brep::Box(double x0, double y0, double z0, double x1, double y1,
     result.face_hole_loops_.emplace_back();
     result.face_arc_runs_.emplace_back();
     result.face_notch_rows_.emplace_back();
+    result.face_records_.emplace_back();
   }
 
   brep.SetTrimIsoFlags();
@@ -211,6 +213,7 @@ Brep Brep::Sphere(Point3d center, double radius) {
   result.face_hole_loops_.emplace_back();
   result.face_arc_runs_.emplace_back();
   result.face_notch_rows_.emplace_back();
+  result.face_records_.emplace_back();
 
   brep.SetTrimIsoFlags();
   return result;
@@ -244,6 +247,7 @@ Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
   result.face_hole_loops_.push_back(std::move(hole_loops_uv));
   result.face_arc_runs_.emplace_back();
   result.face_notch_rows_.emplace_back();
+  result.face_records_.emplace_back();
 
   brep.SetTrimIsoFlags();
   return result;
@@ -521,6 +525,58 @@ Brep::CylindricalFace ExtractCylindricalFace(const ON_Brep& brep, int face_index
   return cf;
 }
 
+// Staleness self-checks for the verbatim face records MixedFaces()
+// returns in place of the geometric extraction above (see that method's
+// own doc comment in brep.h): true iff the record still describes the
+// face's REAL surface. Three surface evaluations per face, compared at
+// 1e-6 of the face's own coordinate scale - far above the ~1e-15 relative
+// noise of the surface construction (a planar face's margined bilinear
+// grid, ON_Cylinder::GetNurbForm) and far below any transform a caller
+// would apply to a raw() ON_Brep behind this class's back, which is the
+// one way a record goes stale.
+double RecordScale(const Point3d& a, const Point3d& b, const Point3d& c) {
+  double scale = 1.0;
+  for (const Point3d& p : {a, b, c}) {
+    scale = std::max({scale, std::fabs(p.x), std::fabs(p.y), std::fabs(p.z)});
+  }
+  return scale;
+}
+
+// A planar face's trim polygon has one (u, v) vertex per input loop point,
+// in the same order (FromMixedFaces' own planar loop), so the surface
+// evaluated at the first three trim vertices must land on the record's
+// first three loop points.
+bool PlanarRecordMatchesFace(const Brep::PlanarFace& rec, const FaceGeometry& fg) {
+  if (rec.loop.size() < 3 || fg.outer.size() != rec.loop.size()) return false;
+  const double tol = 1e-6 * RecordScale(rec.loop[0], rec.loop[1], rec.loop[2]);
+  for (size_t k = 0; k < 3; ++k) {
+    const Point3d on_surface = fg.surface.PointAt(fg.outer[k].x, fg.outer[k].y);
+    if (on_surface.DistanceTo(rec.loop[k]) > tol) return false;
+  }
+  return true;
+}
+
+// A cylindrical face's surface is ON_Cylinder(ON_Circle(frame, radius),
+// ...).GetNurbForm(): u=0 is angle 0 (the frame.xaxis rail) and v is true
+// axial height, so (0, 0) and (0, length) are the two angle-0 rail corners
+// (one point for a length-0 eye), and a mid-domain u sample at v=0 must sit
+// at height 0 and distance `radius` from the record's own axis - the third
+// probe that pins a rotation about the rail line, which leaves both rail
+// corners fixed but moves the axis. `outward` maps to !m_bRev.
+bool CylindricalRecordMatchesFace(const Brep::CylindricalFace& rec, const FaceGeometry& fg, bool face_rev) {
+  if (rec.outward == face_rev) return false;
+  const Point3d rail0 = rec.frame.origin + rec.radius * rec.frame.xaxis;
+  const Point3d rail1 = rail0 + rec.length * rec.frame.zaxis;
+  const double tol = 1e-6 * RecordScale(rec.frame.origin, rail0, rail1);
+  if (fg.surface.PointAt(0.0, 0.0).DistanceTo(rail0) > tol) return false;
+  if (fg.surface.PointAt(0.0, rec.length).DistanceTo(rail1) > tol) return false;
+  const Point3d mid = fg.surface.PointAt(fg.surface.Domain(0).Mid(), 0.0);
+  const Vector3d rel = mid - rec.frame.origin;
+  const double h = ON_DotProduct(rel, rec.frame.zaxis);
+  const double radial = (rel - h * rec.frame.zaxis).Length();
+  return std::fabs(h) <= tol && std::fabs(radial - rec.radius) <= tol;
+}
+
 }  // namespace
 
 std::vector<Brep::PlanarFace> Brep::PlanarFaces() const {
@@ -546,6 +602,24 @@ Brep::MixedFacesResult Brep::MixedFaces() const {
   for (int i = 0; i < brep_.m_F.Count(); ++i) {
     FaceGeometry fg;
     if (!ResolveFace(brep_, i, face_trim_loops_, face_exact_clip_, face_hole_loops_, fg)) continue;
+    // The verbatim face record first (see this method's own doc comment
+    // in brep.h): the exact PlanarFace/CylindricalFace FromMixedFaces()
+    // built this face from, returned as-is while it still matches the
+    // face's real surface. An absent record (any other factory, a cone
+    // by contract) or a stale one (a raw() ON_Brep transformed behind
+    // this class's back) takes the geometric extraction below, exactly
+    // as every face did before records existed.
+    if (static_cast<size_t>(i) < face_records_.size()) {
+      const FaceRecord& rec = face_records_[static_cast<size_t>(i)];
+      if (rec.kind == FaceRecord::kPlanar && PlanarRecordMatchesFace(rec.planar, fg)) {
+        result.planar.push_back(rec.planar);
+        continue;
+      }
+      if (rec.kind == FaceRecord::kCylindrical && CylindricalRecordMatchesFace(rec.cyl, fg, brep_.m_F[i].m_bRev)) {
+        result.cylindrical.push_back(rec.cyl);
+        continue;
+      }
+    }
     NurbsSurface wrapper;
     wrapper.raw() = fg.surface;
     if (wrapper.IsPlanar()) {
@@ -1128,6 +1202,11 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     // this is actually read.
     result.face_arc_runs_.push_back(f.arc_runs);
     result.face_notch_rows_.emplace_back();  // a planar face never has notch rows
+    // The input record itself, verbatim, for MixedFaces() to hand back
+    // (see FaceRecord's own comment in brep.h).
+    result.face_records_.emplace_back();
+    result.face_records_.back().kind = FaceRecord::kPlanar;
+    result.face_records_.back().planar = f;
 
     // Genuine topology (see BuildFaceLoop above): weld this face's own
     // loop points - the exact same 3D points the side tables above just
@@ -1453,6 +1532,12 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
       rows.v_end0 = 0.0;
       rows.v_end1 = cf.length;
     }
+    // The input record itself, verbatim - notch lists, tolerances, end
+    // flags and all - for MixedFaces() to hand back (see FaceRecord's own
+    // comment in brep.h).
+    result.face_records_.emplace_back();
+    result.face_records_.back().kind = FaceRecord::kCylindrical;
+    result.face_records_.back().cyl = cf;
 
     // Genuine topology (see BuildFaceLoop above): the same 4 corner
     // points the trim rectangle's own UV corners map to through this
@@ -1702,6 +1787,10 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     result.face_hole_loops_.emplace_back();
     result.face_arc_runs_.emplace_back();  // meaningless for a non-planar face
     result.face_notch_rows_.emplace_back();  // a cone never reaches the cylinder strip mesher
+    // Deliberately NO verbatim record for a cone: MixedFaces() keeps the
+    // geometric extraction (notches come back empty) by documented
+    // contract - see that method's own doc comment in brep.h.
+    result.face_records_.emplace_back();
 
     FaceTopology t;
     t.trim_uv = trim;
@@ -1798,6 +1887,59 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
 
 Brep Brep::FromPlanarFaces(const std::vector<Brep::PlanarFace>& faces) {
   return FromMixedFaces(faces, {});
+}
+
+Brep Brep::Compound(const std::vector<Brep>& lumps) {
+  Brep result;
+  for (const Brep& lump : lumps) {
+    const int lump_faces = lump.brep_.m_F.Count();
+    if (lump_faces == 0) continue;  // the empty set: contributes nothing (see brep.h)
+    const size_t n = static_cast<size_t>(lump_faces);
+    if (lump.face_trim_loops_.size() != n || lump.face_exact_clip_.size() != n ||
+        lump.face_hole_loops_.size() != n || lump.face_arc_runs_.size() != n ||
+        lump.face_notch_rows_.size() != n || lump.face_records_.size() != n) {
+      throw std::invalid_argument(
+          "dino8::kernel::Brep::Compound: a lump's face side tables are not in "
+          "lockstep with its faces (a raw()-assigned ON_Brep, not a Brep this "
+          "class's own factories built) - refused rather than letting a "
+          "following lump's tables slide onto its faces; see Compound's own "
+          "doc comment in brep.h");
+    }
+    // Record this lump's face range(s) BEFORE appending, offset by the
+    // faces already present; a lump that is itself a compound flattens.
+    const int offset = result.brep_.m_F.Count();
+    for (const std::pair<int, int>& range : lump.LumpFaceRanges()) {
+      result.lump_face_ranges_.emplace_back(offset + range.first, offset + range.second);
+    }
+    // "appends a copy of brep to this and updates indices of appended
+    // brep parts. Duplicates are not removed." (opennurbs_brep.h) - the
+    // lumps stay unwelded, by design (see brep.h).
+    result.brep_.Append(lump.brep_);
+    auto concatenate = [](auto& dst, const auto& src) { dst.insert(dst.end(), src.begin(), src.end()); };
+    concatenate(result.face_trim_loops_, lump.face_trim_loops_);
+    concatenate(result.face_exact_clip_, lump.face_exact_clip_);
+    concatenate(result.face_hole_loops_, lump.face_hole_loops_);
+    concatenate(result.face_arc_runs_, lump.face_arc_runs_);
+    concatenate(result.face_notch_rows_, lump.face_notch_rows_);
+    concatenate(result.face_records_, lump.face_records_);
+  }
+  return result;
+}
+
+std::vector<std::pair<int, int>> Brep::LumpFaceRanges() const {
+  const int face_count = brep_.m_F.Count();
+  if (!lump_face_ranges_.empty()) {
+    // Self-check (see brep.h): the recorded ranges must tile
+    // [0, face_count) exactly, else the record is stale and this is one
+    // lump for every purpose.
+    bool consistent = lump_face_ranges_.front().first == 0 && lump_face_ranges_.back().second == face_count;
+    for (size_t k = 0; consistent && k < lump_face_ranges_.size(); ++k) {
+      const std::pair<int, int>& range = lump_face_ranges_[k];
+      consistent = range.first <= range.second && (k == 0 || lump_face_ranges_[k - 1].second == range.first);
+    }
+    if (consistent) return lump_face_ranges_;
+  }
+  return {{0, face_count}};
 }
 
 BoundingBox Brep::GetTightBoundingBox() const {

@@ -784,20 +784,49 @@ Brep BooleanIntersectConvexPlanar(const Brep& a, const Brep& b) {
   return Brep::FromPlanarFaces(result);
 }
 
+namespace {
+
+// A Brep::Compound() of two or more lumps (the representation every
+// SymmetricDifference result below has) is refused as an operand of
+// either B-rep boolean: Difference and Intersection would distribute over
+// the lumps exactly ((L1 u L2) - B = (L1 - B) u (L2 - B)), but Union
+// needs a merge step between lumps that touch or overlap, and neither
+// pipeline below has one - the single-shell split/classify/reassemble
+// would hand FromMixedFaces the non-manifold contact edges. Refused with
+// a clear message rather than failing deep inside FromMixedFaces.
+void RefuseCompoundOperand(const Brep& operand, const char* function_name) {
+  if (operand.LumpFaceRanges().size() <= 1) return;
+  throw std::invalid_argument(std::string("dino8::kernel::") + function_name +
+                              ": an operand is a Brep::Compound of several lumps (e.g. a "
+                              "SymmetricDifference result) - a boolean over lumps needs a "
+                              "per-lump distribution plus a Union merge step this kernel does "
+                              "not have yet; see Brep::Compound's own doc comment in brep.h");
+}
+
+}  // namespace
+
 Brep BooleanCombinePlanar(const Brep& a, const Brep& b, BooleanOp op) {
+  RefuseCompoundOperand(a, "BooleanCombinePlanar");
+  RefuseCompoundOperand(b, "BooleanCombinePlanar");
+
+  if (op == BooleanOp::SymmetricDifference) {
+    // XOR = (A - B) u (B - A), as a Brep::Compound of the two lumps: the
+    // two differences touch along the intersection curve of the two
+    // boundaries, where the XOR boundary has FOUR incident faces (A's
+    // outside, B's outside, and both flipped insides), so no single
+    // FromPlanarFaces shell can hold it - the former Difference(Union,
+    // Intersection) chain threw "an edge is shared by 3 or more faces"
+    // from that final reassembly for two overlapping boxes. Trivially
+    // correct given Difference is correct in both argument orders (each
+    // lump IS one verified Difference result); no coincident-face rule
+    // beyond Difference's own is involved.
+    return Brep::Compound({BooleanCombinePlanar(a, b, BooleanOp::Difference),
+                           BooleanCombinePlanar(b, a, BooleanOp::Difference)});
+  }
+
   const std::vector<Brep::PlanarFace> fa = a.PlanarFaces();
   const std::vector<Brep::PlanarFace> fb = b.PlanarFaces();
   const double tol = std::max(RelativeTol(fa), RelativeTol(fb));
-
-  if (op == BooleanOp::SymmetricDifference) {
-    // No direct XOR primitive here either (see BooleanCombine's own
-    // comment on the mesh-boolean side of this same enum) - composed from
-    // the three ops this function does implement, exactly like
-    // BooleanCombine does for meshes.
-    const Brep union_brep = BooleanCombinePlanar(a, b, BooleanOp::Union);
-    const Brep intersection_brep = BooleanCombinePlanar(a, b, BooleanOp::Intersection);
-    return BooleanCombinePlanar(union_brep, intersection_brep, BooleanOp::Difference);
-  }
 
   // Split every face of A against every plane of B, classify each
   // survivor against B; then the same the other way around.
@@ -1138,7 +1167,56 @@ struct MixedFace {
   Brep::CylindricalFace cyl;
 };
 
+// The CLOSED-OPERAND rule (see BooleanCombineMixed's own doc comment in
+// boolean.h): an operand is a BARE TUBE - the legacy drill/boss operand
+// Brep::FromMixedFaces({}, {cf}), plain un-notched cylindrical faces and
+// nothing else - or it is a CLOSED SOLID whose own faces already bound
+// it. Only a bare tube keeps the implicit-end-disk (RayVsMixedFace) and
+// end-cap-synthesis (SynthesizeEndCaps) semantics its end flags encode;
+// a closed operand's cylindrical ends are all "already sealed" (flags
+// forced false here), so no implicit disk is ever cast against them and
+// no cap is ever synthesized for their fragments. This is decided per
+// OPERAND, not per face: a boss's base inside a Union result is a
+// still-original, never-split end of its input cylinder AND an open
+// passage into the box, and no per-face flag can say "needs a disk" -
+// the box's own faces already bound that solid. Without this rule every
+// chained call whose first result kept a cylindrical face re-fired
+// SynthesizeEndCaps on that face's true/true flags and stitched spurious
+// quadrant caps across a hole that the first call had already sealed
+// (measured on Difference(Difference(box, h1), h2): 8 spurious caps at
+// the first hole's two ends, volume off by exactly -10*pi/3), or threw
+// "3 or more faces" where the spurious cap's edges collided.
+//
+// Why "any planar face, or any notched cylindrical face" and nothing
+// else: a planar face is what every closed solid this kernel builds has
+// (a box, a drilled box, a union with a boss, a Steinmetz union with its
+// half-disc caps); the one closed solid with NO planar face is the
+// Steinmetz Intersection (four doubly-notched eyes), which the notch test
+// catches - and a notch is only ever produced by a boolean split or by a
+// hand-built closed fixture, never by a drill operand. Neither a partial
+// sweep nor a count of cylindrical faces marks a closed solid: a bare
+// partial-sweep wedge, and a bare full tube whose wall happens to be two
+// un-notched half-bands, are both open shells that only the implicit
+// disks close, exactly as before. Every operand the existing suite feeds
+// in is either planar-only (the rule is vacuous - no cylindrical face to
+// override, no implicit disk to skip) or a bare un-notched tube (the rule
+// leaves it bare), so the suite's every result is bit-for-bit unchanged
+// (verified: 1267 identical checks in identical order).
 std::vector<MixedFace> ToMixed(const Brep::MixedFacesResult& mf) {
+  if (!mf.conical.empty()) {
+    // Previously dropped silently, leaving a tapered-fillet operand with
+    // a hole in its boundary - refused honestly instead.
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: an operand has a ConicalFace (a "
+        "tapered fillet) - the mixed planar/cylindrical pipeline has no cone "
+        "splitter or classifier, so such an operand is refused rather than "
+        "having its conical faces silently dropped from its boundary");
+  }
+  bool bare_tube = mf.planar.empty();
+  for (const Brep::CylindricalFace& c : mf.cylindrical) {
+    if (!c.cap0_notch_points.empty() || !c.cap1_notch_points.empty()) bare_tube = false;
+  }
+
   std::vector<MixedFace> out;
   out.reserve(mf.planar.size() + mf.cylindrical.size());
   for (const Brep::PlanarFace& p : mf.planar) {
@@ -1150,6 +1228,10 @@ std::vector<MixedFace> ToMixed(const Brep::MixedFacesResult& mf) {
     MixedFace m;
     m.is_cyl = true;
     m.cyl = c;
+    if (!bare_tube) {
+      m.cyl.end0_is_original = false;
+      m.cyl.end1_is_original = false;
+    }
     out.push_back(std::move(m));
   }
   return out;
@@ -1512,10 +1594,20 @@ FaceHitResult RayVsMixedFace(const Point3d& p, const Vector3d& d, const MixedFac
 
   // The two implicit end disks/sectors - see this function's own doc
   // comment above for why they're needed even though they're never real
-  // output faces.
+  // output faces. An implicit disk exists only at an end that is still
+  // an OPEN original terminus of a bare-tube operand: ToMixed (above)
+  // clears both flags on every cylindrical face of a closed operand,
+  // whose own faces already bound its solid, so a ray leaving such a
+  // face's end passes through the operand's real cap or into its
+  // interior and must not be counted twice. Every list this function
+  // ever sees (SplitAndClassifyMixed's `other_faces`, SynthesizeEndCaps'
+  // `other`) is an unsplit ToMixed list, so for a bare tube both flags
+  // are still true here and both disks are cast exactly as before.
   const double axial_denom = ON_DotProduct(d, cf.frame.zaxis);
   if (std::fabs(axial_denom) >= 1e-12) {
-    for (const double h_cap : {0.0, cf.length}) {
+    for (int end = 0; end < 2; ++end) {
+      if (end == 0 ? !cf.end0_is_original : !cf.end1_is_original) continue;
+      const double h_cap = end == 0 ? 0.0 : cf.length;
       const Point3d cap_center = cf.frame.origin + h_cap * cf.frame.zaxis;
       const double t = ON_DotProduct(cap_center - p, cf.frame.zaxis) / axial_denom;
       if (t <= tol) continue;
@@ -4493,15 +4585,23 @@ std::vector<MixedFace> SynthesizeEndCaps(const std::vector<MixedFace>& fragments
 }  // namespace
 
 Brep BooleanCombineMixed(const Brep& a, const Brep& b, BooleanOp op) {
+  RefuseCompoundOperand(a, "BooleanCombineMixed");
+  RefuseCompoundOperand(b, "BooleanCombineMixed");
+
+  if (op == BooleanOp::SymmetricDifference) {
+    // XOR = (A - B) u (B - A) as a Brep::Compound of two lumps - see
+    // BooleanCombinePlanar's own SymmetricDifference branch above for
+    // why one shell can never hold it (four faces meet along every
+    // intersection-curve edge) and boolean.h's own doc comment for the
+    // measured closed forms. Each lump is one verified Difference; no
+    // round trip through a prior result is involved at all.
+    return Brep::Compound({BooleanCombineMixed(a, b, BooleanOp::Difference),
+                           BooleanCombineMixed(b, a, BooleanOp::Difference)});
+  }
+
   std::vector<MixedFace> fa = ToMixed(a.MixedFaces());
   std::vector<MixedFace> fb = ToMixed(b.MixedFaces());
   const double tol = std::max(RelativeTolMixed(fa), RelativeTolMixed(fb));
-
-  if (op == BooleanOp::SymmetricDifference) {
-    const Brep union_brep = BooleanCombineMixed(a, b, BooleanOp::Union);
-    const Brep intersection_brep = BooleanCombineMixed(a, b, BooleanOp::Intersection);
-    return BooleanCombineMixed(union_brep, intersection_brep, BooleanOp::Difference);
-  }
 
   const ClassifiedBucketsMixed from_a = SplitAndBucketMixed(fa, fb, tol);
   const ClassifiedBucketsMixed from_b = SplitAndBucketMixed(fb, fa, tol);
