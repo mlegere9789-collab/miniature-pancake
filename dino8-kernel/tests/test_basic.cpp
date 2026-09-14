@@ -14047,19 +14047,25 @@ void TestBooleanCombineMixedSteinmetzEyeFragmentAloneBuildsAndIsOpen() {
         "the whole region between the two notch curves is covered, nothing below v=0 or above v=length dropped");
 }
 
-// Disclosed-limitation control: the Intersection result's ordinary
-// tessellation is NOT watertight (T-junctions along the shared
-// half-ellipses), and the conforming tessellator - untouched by this
-// increment - has no notched-strip mesher yet, so it produces the same
-// open mesh. The notched-strip mesher is the follow-up; when it lands,
-// these two assertions are the ones to flip.
-void TestBooleanCombineMixedSteinmetzIntersectionTessellationIsNotYetWatertight() {
+// The Intersection result's ORDINARY tessellation is NOT watertight
+// (T-junctions along the shared half-ellipses: each cylinder tessellates
+// its side of every shared curve on its own grid) - a disclosed, deliberate
+// limitation of the plain path. The CONFORMING path IS watertight: each
+// eye is a length-0 doubly-notched strip whose two boundary chains are
+// the literal canonical half-ellipse sample lists both cylinders share
+// (Brep::TessellateConforming()'s own per-row strip mesher, see its doc
+// comment in brep.h), so the four eyes' shared vertices are bit-identical
+// and the solid closes. Volume bound: 1e-3 relative, ~15x the measured
+// -6.2e-5 residual (which is set by the 200-sample chains, not the
+// division count - it is the same at 32, 64 and 128 divisions).
+void TestBooleanCombineMixedSteinmetzIntersectionConformingIsWatertight() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
 
-  const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0);
+  const double r = 2.0;
+  const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(r, 10.0, 10.0, 90.0);
   const Brep a = Brep::FromMixedFaces({}, {cyl_a});
   const Brep b = Brep::FromMixedFaces({}, {cyl_b});
   const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
@@ -14067,10 +14073,20 @@ void TestBooleanCombineMixedSteinmetzIntersectionTessellationIsNotYetWatertight(
         "Steinmetz Intersection: the ORDINARY 64-division tessellation is NOT a closed manifold - each cylinder "
         "tessellates its side of every shared half-ellipse on its own grid (T-junctions), the disclosed limitation "
         "the notched-strip conforming mesher is the follow-up for");
-  Check(!result.TessellateToClosedMeshConforming(64, 64).IsClosedManifold(),
-        "Steinmetz Intersection: the CONFORMING 64-division tessellation is not closed either today - it has no "
-        "mesher for a doubly-notched eye and falls back to the ordinary grid clip; flip this assertion when the "
-        "notched-strip mesher lands");
+  const double expected = SteinmetzIntersectionVolume(r, 90.0);
+  const Mesh conforming = result.TessellateToClosedMeshConforming(64, 64);
+  Check(conforming.IsClosedManifold(),
+        "Steinmetz Intersection: the CONFORMING 64-division tessellation IS a closed manifold - the four eyes are "
+        "meshed as doubly-notched strips whose boundary chains are the literal shared half-ellipse samples");
+  Check(std::fabs(conforming.Volume() - expected) < 1e-3 * expected,
+        "Steinmetz Intersection: the conforming 64-division volume is within 0.1% of 16 r^3 / 3 (measured -6.2e-5 "
+        "relative)");
+  for (const auto& uv : {std::make_pair(12, 20), std::make_pair(17, 4)}) {
+    const Mesh m = result.TessellateToClosedMeshConforming(uv.first, uv.second);
+    Check(m.IsClosedManifold() && std::fabs(m.Volume() - expected) < 1e-3 * expected,
+          "Steinmetz Intersection: the conforming tessellation is closed and within 0.1% of the closed form at "
+          "asymmetric divisions too (12/20 and 17/4) - the eye strips' boundary is the sample list, not the grid");
+  }
 }
 
 void TestBooleanCombineMixedSteinmetzNegativeControls() {
@@ -14208,11 +14224,20 @@ void TestBooleanCombineMixedSteinmetzUnionAndDifferenceVolumes() {
       Check(!mesh.IsClosedManifold(),
             "Steinmetz Union: the ordinary tessellation is NOT closed (shared half-ellipse T-junctions and end-cap "
             "wedge seams) - the disclosed limitation the notched-strip conforming mesher is the follow-up for");
-      const double conforming_volume = result.TessellateToClosedMeshConforming(64, 64).Volume();
-      Check(std::fabs(conforming_volume - expected) > 0.1 * expected,
-            "Steinmetz Union: the untouched CONFORMING tessellator today returns a volume more than 10% off the "
-            "closed form (measured +23%) - its cylinder mesher grids each half-band's full (u, v) bounding box and "
-            "fills the eye back in; flip this assertion when the notched-strip mesher replaces that path");
+      // The conforming path meshes every half-band as a strip between its
+      // literal half-ellipse notch chain and its cap-forced flat row, so
+      // the eye is honored (not filled back in) and every seam - the four
+      // shared half-ellipses, the eight end-cap arcs - is vertex-identical.
+      // Bound 1e-3 relative, >10x the measured residual (-1.4e-5 at 90
+      // degrees, 64 divisions).
+      const Mesh conforming = result.TessellateToClosedMeshConforming(64, 64);
+      Check(conforming.IsClosedManifold(),
+            "Steinmetz Union: the CONFORMING 64-division tessellation IS a closed manifold at both 90 and 60 "
+            "degrees - each half-band is a strip between its literal notch chain and its cap-forced flat row");
+      Check(std::fabs(conforming.Volume() - expected) < 1e-3 * expected,
+            "Steinmetz Union: the conforming 64-division volume is within 0.1% of pi r^2 (L_A + L_B) - "
+            "16 r^3 / (3 sin alpha) at both 90 and 60 degrees - the eye is honored, not filled back in by a "
+            "bounding-box grid");
     }
     {
       const Brep result = BooleanCombineMixed(a, b, BooleanOp::Difference);
@@ -14227,6 +14252,10 @@ void TestBooleanCombineMixedSteinmetzUnionAndDifferenceVolumes() {
             "16 r^3 / (3 sin alpha) at both 90 and 60 degrees (measured -1.1e-4 relative)");
       Check(!mesh.IsClosedManifold(),
             "Steinmetz A - B: the ordinary tessellation is NOT closed - the same disclosed T-junction limitation");
+      const Mesh conforming = result.TessellateToClosedMeshConforming(64, 64);
+      Check(conforming.IsClosedManifold() && std::fabs(conforming.Volume() - expected) < 1e-3 * expected,
+            "Steinmetz A - B: the CONFORMING 64-division tessellation is closed and within 0.1% of the closed form "
+            "at both 90 and 60 degrees - B's two flipped eyes mesh as pinched strips forming the cavity wall");
     }
     {
       const Brep result = BooleanCombineMixed(b, a, BooleanOp::Difference);
@@ -14239,6 +14268,11 @@ void TestBooleanCombineMixedSteinmetzUnionAndDifferenceVolumes() {
       Check(std::fabs(mesh.Volume() - expected) < kRelTol * expected,
             "Steinmetz B - A: the ordinary 128-division tessellated volume is within 0.2% of pi r^2 L_B - "
             "16 r^3 / (3 sin alpha) at both 90 and 60 degrees (measured -3.9e-5 relative)");
+      const Mesh conforming = result.TessellateToClosedMeshConforming(64, 64);
+      Check(conforming.IsClosedManifold() && std::fabs(conforming.Volume() - expected) < 1e-3 * expected,
+            "Steinmetz B - A: the CONFORMING 64-division tessellation is closed and within 0.1% of the closed form "
+            "at both 90 and 60 degrees - the tilted cylinder's own half-bands mesh correctly at a non-right angle "
+            "too (their seam sample must snap to the face's own angle-0 rail, not wrap to 2*pi)");
     }
   }
 }
@@ -14492,7 +14526,7 @@ int main() {
   TestBooleanCombineMixedSteinmetzIntersectionGeneralAngleVolume();
   TestBooleanCombineMixedSteinmetzArgumentOrderSymmetryAndSharedBoundaryIsBitIdentical();
   TestBooleanCombineMixedSteinmetzEyeFragmentAloneBuildsAndIsOpen();
-  TestBooleanCombineMixedSteinmetzIntersectionTessellationIsNotYetWatertight();
+  TestBooleanCombineMixedSteinmetzIntersectionConformingIsWatertight();
   TestBooleanCombineMixedSteinmetzNegativeControls();
   TestBooleanCombineMixedSteinmetzUnionAndDifferenceVolumes();
 

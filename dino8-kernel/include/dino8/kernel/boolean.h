@@ -859,14 +859,17 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // sides of each shared half-ellipse on their own parameter grids, so the
 // mesh has T-junctions there and is NOT Mesh::IsClosedManifold() - the
 // same disclosed limitation the oblique plane+cylinder case carries.
-// Brep::TessellateConforming() has no mesher for a notched cylinder
-// fragment yet: on an Intersection result it falls back to the same open
-// mesh, and on a Union/Difference result it routes each half-band whose
-// flat end matched a cap ArcRun into its bounding-box cylinder mesher,
-// which FILLS THE EYE BACK IN - a mesh of the wrong solid (Union volume
-// +23%) that can even report IsClosedManifold(). Until the notched-strip
-// conforming mesher (a separate follow-up) lands, take a Steinmetz
-// result's volume from the ordinary tessellation only. Brep::MixedFaces()
+// Brep::TessellateConforming() IS watertight on every Steinmetz result:
+// its per-row strip mesher (see that method's own doc comment in brep.h)
+// meshes each eye as a length-0 strip between its two literal
+// half-ellipse sample lists and each half-band as a strip between its
+// literal notch list and its cap-forced flat row, so the shared curves
+// are vertex-identical across the two cylinders and the eye is honored
+// rather than filled back in - Mesh::IsClosedManifold() holds and the
+// volume lands within ~1e-4 relative of the closed forms for Union,
+// Intersection and both Differences at 90 and 60 degrees, at symmetric
+// and asymmetric divisions (see the Steinmetz tests in
+// tests/test_basic.cpp for the exact measured residuals). Brep::MixedFaces()
 // does not round-trip an eye's notches (it re-extracts as a plain
 // length-2r band), so a Steinmetz result is not a valid operand for a
 // second BooleanCombineMixed call: BooleanOp::SymmetricDifference on

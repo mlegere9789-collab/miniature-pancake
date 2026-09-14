@@ -3394,6 +3394,20 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
         // convention).
         cyl_theta = std::fmod(cyl_theta, 2.0 * ON_PI);
         if (cyl_theta < 0.0) cyl_theta += 2.0 * ON_PI;
+        // A PARTIAL-sweep face's own seam sample (the run endpoint sitting
+        // exactly on the face's angle-0 rail) can convert to -epsilon
+        // rather than +epsilon depending on the frames' relative
+        // orientation, which the normalization above turns into 2*pi -
+        // epsilon: a raw u far beyond the face's own trimmed sweep, that
+        // would drag the row's uniform gap-fill columns across the entire
+        // untrimmed far side of the cylinder. Measured directly on a
+        // 60-degree Steinmetz half-band (fine at 90 degrees, where the
+        // same sample converts to +epsilon). For a full 2*pi sweep both
+        // readings name the same seam and nothing changes here.
+        constexpr double kSeamSnapTol = 1e-6;
+        if (cyl_theta > matched->cf.angle + kSeamSnapTol && cyl_theta >= 2.0 * ON_PI - kSeamSnapTol) {
+          cyl_theta = 0.0;
+        }
         double u = 0.0;
         if (!ref_circle.GetNurbFormParameterFromRadian(cyl_theta, &u)) {
           throw std::runtime_error(

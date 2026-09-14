@@ -1352,11 +1352,21 @@ class Brep {
   // against its oblique PLANAR cap (the planar side still tessellates by
   // exact clipping over its own grid rather than from the shared literal
   // notch points - a planar-side counterpart to this mesher is a
-  // separate piece of work), and the length-0 "eye"/half-band shapes a
-  // Steinmetz (equal-radius crossing-axes) intersection would hand this
-  // mesher (both rows notched, rails pinched to a shared vertex) are
-  // verified in shape only - the pinch handling is exercised by direct
-  // construction, not yet by a producer in this kernel.
+  // separate piece of work). The length-0 "eye" and half-band shapes a
+  // Steinmetz (equal-radius crossing-axes) boolean produces (both rows
+  // notched with the rails pinched to a shared vertex; one notch row plus
+  // one cap-forced flat row) are verified end to end: every Steinmetz
+  // Union/Intersection/Difference result is a closed manifold under this
+  // method at 90 and 60 degrees (see BooleanCombineMixed's own Steinmetz
+  // tessellation paragraph in boolean.h). One detail that only a
+  // non-right axis angle exposes: a matched cap run's own endpoint sample
+  // sitting exactly on a partial-sweep face's angle-0 rail can convert to
+  // -epsilon in that face's frame and, normalized into [0, 2*pi), land at
+  // 2*pi - epsilon - a raw u far beyond the face's own sweep that would
+  // drag the flat row's gap-fill columns across the whole untrimmed far
+  // side of the cylinder. Such a sample is snapped back to the seam
+  // (angle 0) when it lies beyond the face's own sweep; a full-sweep face
+  // is unaffected, both readings naming the same seam.
   std::vector<Mesh> TessellateConforming(int u_divisions = 8, int v_divisions = 8,
                                           int boundary_samples = -1) const;
 
