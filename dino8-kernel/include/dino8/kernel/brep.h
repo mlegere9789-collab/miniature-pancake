@@ -401,6 +401,29 @@ class Brep {
     // any point changes - the rail corners stay at v=0/v=length - only
     // the domain the grid spans. An un-notched face's domain stays exactly
     // [0, length].
+    //
+    // A face may be notched at BOTH ends, and `length == 0` is legal
+    // exactly when it is: a Steinmetz "eye" (see BooleanCombineMixed's
+    // own doc comment in boolean.h) - the region of one cylinder's wall
+    // inside an equal-radius crossing cylinder, bounded below by cap0's
+    // half-ellipse and above by cap1's, the two curves meeting only at the
+    // face's own two rail corners (the two pinch points), which then
+    // coincide pairwise (the angle-0 corners at v=0 and v=length are one
+    // point, likewise the angle-`angle` corners). FromMixedFaces() builds
+    // such a face's loop from the two notched cap trims alone: a RAIL
+    // whose two corners weld to the same vertex is a zero-length rail and
+    // gets no trim and no edge (rails only - a full-sweep face's CAP
+    // legitimately self-loops between its two coincident corners and is
+    // always built); the surface's v-domain is [lowest, highest] notch
+    // height, per the widening above; consecutive coincident points the
+    // cap splice then leaves in the visible trim are collapsed; and two
+    // notched caps joining the same two vertices are kept as two distinct
+    // edges, told apart by the midpoint of their own point lists (see
+    // BuildFaceLoop in brep.cpp) - which is also what lets four such
+    // curves between the same two pinch vertices, across two cylinders,
+    // each be shared by exactly the two faces bounded by it. A length == 0
+    // face with fewer than two notches has no surface to build and is
+    // not a supported shape.
     std::vector<Point3d> cap0_notch_points;
     std::vector<Point3d> cap1_notch_points;
 
@@ -840,7 +863,11 @@ class Brep {
   // own rails still run v=0..length and every (u, v) coordinate is
   // unchanged, v being true axial height. An un-notched face's domain is
   // exactly [0, length], as before. Throws std::invalid_argument if that
-  // widened span is degenerate.
+  // widened span is degenerate. A face notched at BOTH ends with
+  // length == 0 (a Steinmetz eye - see CylindricalFace's own doc comment)
+  // builds as a two-trim loop between its two pinch vertices, its
+  // zero-length rails skipped and its two notched caps kept as distinct
+  // edges even though they join the same two vertices.
   // Every `loop`/`frame` must satisfy the same preconditions PlanarFace's
   // and CylindricalFace's own doc comments describe; not re-validated
   // beyond what NewFace's own surface construction requires.

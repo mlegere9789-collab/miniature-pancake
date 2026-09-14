@@ -668,7 +668,24 @@ struct FaceTopology {
   // the shared edge built by whichever CylindricalFace/ConicalFace visits
   // first, so it never needs its own entry here.
   std::vector<double> cap_notch_tolerance;
+  // Parallel to notch_interior_uv (same length when non-empty): for a
+  // CylindricalFace's/ConicalFace's own notched cap segment, the midpoint
+  // of the LITERAL cap*_notch_points list that segment was built from
+  // (NotchListMidpoint below) - the one datum BuildFaceLoop uses to tell
+  // two genuinely different notch polylines joining the same two vertices
+  // apart. Default-valued at any index whose notch_interior_uv is empty.
+  std::vector<Point3d> notch_midpoint_3d;
 };
+
+// The midpoint of a dense notch sample list, as the average of its two
+// central points (the same point twice when the count is odd), so the
+// value is identical whichever direction the list is walked - the two
+// faces sharing a notched edge walk it in opposite directions.
+Point3d NotchListMidpoint(const std::vector<Point3d>& pts) {
+  const Point3d& a = pts[(pts.size() - 1) / 2];
+  const Point3d& b = pts[pts.size() / 2];
+  return 0.5 * (a + b);
+}
 
 // Builds one face's genuine ON_BrepLoop plus its edges/trims (spec
 // sections 2-3): an edge is created the first time its own {min(vid),
@@ -720,9 +737,49 @@ struct FaceTopology {
 // EllipseNotchCornerAtVertex's own doc comment for how that order is
 // guaranteed), so unlike the plain isocurve branch, no `iso_reversed`
 // correction is needed here at all.
+//
+// A curved face's RAIL segment (index 1 or 3) whose two endpoint vertices
+// welded to the SAME vertex is a zero-length rail and is skipped - no
+// trim, no edge. Only a CylindricalFace with length == 0 and both caps
+// notched (a Steinmetz "eye", see CylindricalFace's own doc comment) ever
+// has one: its loop is then the two notched cap polylines alone, a bigon
+// between the two pinch vertices. Deliberately restricted to rails: a
+// full-sweep face's CAP segment legitimately self-loops (its two rail
+// corners at angle 0 and 2*pi are the same welded vertex) and must keep
+// being built.
+//
+// `notched_edges_of_vertex_pair` disambiguates NOTCHED cap edges that
+// reduce to the same two endpoint vertices but are genuinely different
+// curves - the notched analogue of `cap_arc_midpoint_of_edge` below,
+// needed once the same two vertices can carry several distinct notch
+// polylines: the four half-ellipses of a Steinmetz crossing all join the
+// same two pinch vertices, and an eye's own two caps are two of them.
+// Keyed by the plain vertex-pair key, it lists every edge a notched cap
+// segment CREATED under that pair (its polyline's midpoint, and the key
+// it was stored under). It intervenes ONLY when a notched segment's plain
+// key collides with an EXISTING edge that was itself created by a notched
+// segment with a DIFFERENT midpoint: the segment then reuses a listed
+// edge whose midpoint matches its own, or is stored under a salted key of
+// its own. Every other pattern is exactly as it always was - a notched
+// segment finding no edge creates one under the plain key, one finding a
+// plain is-cap arc or a straight edge reuses it (the fillet corner-notch
+// mechanism), and one finding a notched edge with the SAME midpoint
+// (a shared cut between two fragments) reuses it. The midpoint is taken
+// from the LITERAL cap*_notch_points list the segment was built from
+// (FaceTopology::notch_midpoint_3d), never re-evaluated through this
+// face's own surface: two faces sharing a curve share that list verbatim
+// (a Steinmetz half-ellipse handed to both cylinders; a tapered fillet's
+// interior-station join, whose borrowed points deliberately do NOT lie on
+// the later cone's surface - see ConicalFace::cap0_surface_fit_tolerance),
+// so their midpoints agree exactly, while genuinely different curves
+// between the same two vertices are separated by a physical distance
+// (the four Steinmetz half-ellipses' midpoints sit at least 2r apart).
+// Compared by distance, not by a quantized hash, so no rounding boundary
+// can split a shared curve in two.
 void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
                     std::unordered_map<uint64_t, int>& edge_of_vertex_pair,
-                    std::unordered_map<int, Point3d>& cap_arc_midpoint_of_edge) {
+                    std::unordered_map<int, Point3d>& cap_arc_midpoint_of_edge,
+                    std::unordered_map<uint64_t, std::vector<std::pair<Point3d, uint64_t>>>& notched_edges_of_vertex_pair) {
   ON_BrepLoop& loop = brep.NewLoop(ON_BrepLoop::outer, face);
   const size_t n = topo.vids.size();
   for (size_t k = 0; k < n; ++k) {
@@ -733,6 +790,10 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
     const bool is_cap = topo.curved_surface != nullptr && (k == 0 || k == 2);
     const bool has_notch_interior = k < topo.notch_interior_uv.size() && !topo.notch_interior_uv[k].empty();
     const bool iso_reversed = is_cap && !has_notch_interior && k == 2;
+
+    if (topo.curved_surface != nullptr && (k == 1 || k == 3) && vid_from == vid_to) {
+      continue;  // zero-length rail of a length == 0 eye - see this function's own doc comment
+    }
 
     const uint32_t lo = static_cast<uint32_t>(std::min(vid_from, vid_to));
     const uint32_t hi = static_cast<uint32_t>(std::max(vid_from, vid_to));
@@ -803,6 +864,34 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
         mix(quant(mid.y));
         mix(quant(mid.z));
         key = plain_key ^ h;
+      }
+    }
+
+    // Notched-vs-notched disambiguation - see this function's own doc
+    // comment. Collision-only: `key` stays the plain key unless the plain
+    // key already names an edge that a notched segment with a DIFFERENT
+    // midpoint created.
+    Point3d notched_mid;
+    if (is_cap && has_notch_interior) {
+      notched_mid = k < topo.notch_midpoint_3d.size() ? topo.notch_midpoint_3d[k] : Point3d();
+      if (edge_of_vertex_pair.find(plain_key) != edge_of_vertex_pair.end()) {
+        const auto listed = notched_edges_of_vertex_pair.find(plain_key);
+        if (listed != notched_edges_of_vertex_pair.end() && !listed->second.empty()) {
+          bool matched = false;
+          for (const std::pair<Point3d, uint64_t>& entry : listed->second) {
+            if (entry.first.DistanceTo(notched_mid) <= kBrepWeldTolerance * 10.0) {
+              key = entry.second;
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) {
+            uint64_t h = 1469598103934665603ull;  // FNV-1a offset basis
+            h ^= static_cast<uint64_t>(listed->second.size());
+            h *= 1099511628211ull;  // FNV-1a prime
+            key = plain_key ^ h;
+          }
+        }
       }
     }
 
@@ -882,6 +971,8 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
         const double v_const_for_record = (k == 0) ? topo.curved_v0 : topo.curved_v0 + topo.curved_length;
         cap_arc_midpoint_of_edge.emplace(edge_index,
                                           topo.curved_surface->PointAt(topo.curved_u_max * 0.5, v_const_for_record));
+      } else if (is_cap && has_notch_interior) {
+        notched_edges_of_vertex_pair[plain_key].emplace_back(notched_mid, key);
       }
     } else {
       edge_index = it->second;
@@ -1252,6 +1343,31 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     } else {
       visible_trim.push_back(trim[3]);
     }
+    // A face notched at BOTH ends with length == 0 (a Steinmetz eye - see
+    // CylindricalFace's own doc comment) has no rails: the splice above
+    // then repeats a pinch point twice in a row (cap0's last point, then
+    // trim[2] at the same (u_max, 0)) and once more across the wraparound
+    // (cap1's first point at (0, 0) closing onto cap0's first). A zero-
+    // length polygon edge is not a shape the exact-clip tessellator's own
+    // simple-polygon check is meant for, so consecutive coincident points
+    // (wraparound included) are collapsed. Gated on both caps being
+    // notched, and inert for the positive-length doubly-notched case too
+    // (its rails keep every consecutive pair apart), so no face built
+    // before eyes existed changes.
+    if (!cap0_full_uv.empty() && !cap1_full_uv_reversed.empty()) {
+      const double uv_tol = 1e-9 * std::max({1.0, u_max, cyl.height[1] - cyl.height[0]});
+      auto same_uv = [uv_tol](const Point2d& p, const Point2d& q) {
+        return std::fabs(p.x - q.x) <= uv_tol && std::fabs(p.y - q.y) <= uv_tol;
+      };
+      std::vector<Point2d> deduped;
+      deduped.reserve(visible_trim.size());
+      for (const Point2d& p : visible_trim) {
+        if (!deduped.empty() && same_uv(deduped.back(), p)) continue;
+        deduped.push_back(p);
+      }
+      while (deduped.size() > 1 && same_uv(deduped.front(), deduped.back())) deduped.pop_back();
+      visible_trim = std::move(deduped);
+    }
 
     result.face_trim_loops_.push_back(visible_trim);
     // exact_clip=true for the same reason FromPlanarFaces()'s own faces
@@ -1284,6 +1400,9 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     t.cap_notch_tolerance.assign(4, 0.0);
     t.cap_notch_tolerance[0] = cap0_tol;
     t.cap_notch_tolerance[2] = cap1_tol;
+    t.notch_midpoint_3d.assign(4, Point3d());
+    if (!cf.cap0_notch_points.empty()) t.notch_midpoint_3d[0] = NotchListMidpoint(cf.cap0_notch_points);
+    if (!cf.cap1_notch_points.empty()) t.notch_midpoint_3d[2] = NotchListMidpoint(cf.cap1_notch_points);
     topo.push_back(std::move(t));
   }
 
@@ -1521,6 +1640,9 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     t.cap_notch_tolerance.assign(4, 0.0);
     t.cap_notch_tolerance[0] = cap0_tol;
     t.cap_notch_tolerance[2] = cap1_tol;
+    t.notch_midpoint_3d.assign(4, Point3d());
+    if (!cf.cap0_notch_points.empty()) t.notch_midpoint_3d[0] = NotchListMidpoint(cf.cap0_notch_points);
+    if (!cf.cap1_notch_points.empty()) t.notch_midpoint_3d[2] = NotchListMidpoint(cf.cap1_notch_points);
     topo.push_back(std::move(t));
   }
 
@@ -1564,14 +1686,22 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
   // use: disambiguating a genuinely different arc from a legitimately
   // shared one when both reduce to the same 2 endpoint vertices.
   std::unordered_map<int, Point3d> cap_arc_midpoint_of_edge;
+  // Records, per plain vertex-pair key, every edge BuildFaceLoop() creates
+  // via a NOTCHED cap segment (polyline midpoint + the key it was stored
+  // under) - see BuildFaceLoop's own doc comment for its one use: telling
+  // apart genuinely different notch polylines that join the same two
+  // vertices, without touching how any other kind of segment matches.
+  std::unordered_map<uint64_t, std::vector<std::pair<Point3d, uint64_t>>> notched_edges_of_vertex_pair;
   for (size_t fi = 0; fi < topo.size(); ++fi) {
     if (topo[fi].curved_surface != nullptr) {
-      BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair, cap_arc_midpoint_of_edge);
+      BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair, cap_arc_midpoint_of_edge,
+                    notched_edges_of_vertex_pair);
     }
   }
   for (size_t fi = 0; fi < topo.size(); ++fi) {
     if (topo[fi].curved_surface == nullptr) {
-      BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair, cap_arc_midpoint_of_edge);
+      BuildFaceLoop(brep, brep.m_F[static_cast<int>(fi)], topo[fi], edge_of_vertex_pair, cap_arc_midpoint_of_edge,
+                    notched_edges_of_vertex_pair);
     }
   }
 
