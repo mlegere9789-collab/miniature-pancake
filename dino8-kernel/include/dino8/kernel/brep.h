@@ -1258,38 +1258,78 @@ class Brep {
   // BooleanCombineMixed entirely) so the check isolates this ONE
   // mechanism from the separate, still-open gap described next.
   //
-  // Investigated, found, and HONESTLY left open (not attempted here): a
-  // SEPARATE, previously-undiagnosed density-mismatch gap in the same
-  // "one shared u-breakpoint list for both the v=0 and v=length rows"
-  // design BuildConformingCylinderMesh's own `breaks`/`filled`
-  // construction (brep.cpp) already relies on - when a SINGLE
+  // A SIXTH gap, closed by the per-row strip mesher
+  // (BuildConformingCylinderStripMesh, brep.cpp): a SEPARATE density-
+  // mismatch in the "one shared u-breakpoint list for both the v=0 and
+  // v=length rows" design BuildConformingCylinderMesh's own
+  // `breaks`/`filled` construction relies on - when a SINGLE
   // CylindricalFace fragment has REAL ArcRun matches at BOTH its own
   // ends, but those two caps have genuinely DIFFERENT internal structure
   // (e.g. an ordinary BuildEndCap cap, split into 4 quadrant sub-arcs, on
   // one end, and a single, un-split BuildLensEndCap arc spanning the
   // WHOLE sweep on the other - exactly the shape boolean.h's own
   // crossing-Difference fixture's INNER wedge bands have), the denser
-  // cap's own quadrant-boundary breakpoints leak, as extra UNFORCED grid
-  // columns, into the sparser cap's own row too (since `breaks`/`filled`
-  // is shared across both rows) - creating a genuine T-junction between
-  // that row and the sparser cap's own simpler boundary loop (which was
-  // never given those extra columns at all). Confirmed directly: every
-  // one of the sparser (lens) cap's own breakpoints is bit-identical (to
-  // floating-point noise) to the matching face's own forced points at
-  // that SAME location - this is NOT a breakpoint-VALUE mismatch, it is a
-  // genuine adjacency mismatch between the sparse cap's own boundary loop
-  // and the denser row built for the SAME face's OTHER end. Closing this
-  // needs BuildConformingCylinderMesh to carry two genuinely INDEPENDENT
-  // u-breakpoint schedules (one per row) plus a "loft between two
-  // differently-parameterized boundary polylines" triangulator to
-  // reconcile them - a materially larger restructuring of this delicate,
-  // already-many-times-patched dispatch machinery than the fix above, not
-  // attempted here. See
-  // TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly's
-  // own doc comment in the test file for the exact measurement isolating
-  // this from the fix above (640 of that fixture's original 1260 non-
-  // manifold edges survive this increment, confirmed to be exactly this
-  // second mechanism, not a residual of the first).
+  // cap's own quadrant-boundary breakpoints leaked, as extra UNFORCED
+  // grid columns, into the sparser cap's own row too (since
+  // `breaks`/`filled` was shared across both rows) - a genuine
+  // T-junction between that row and the sparser cap's own simpler
+  // boundary loop, NOT a breakpoint-VALUE mismatch (every one of the
+  // sparser cap's own forced points was already bit-identical on both
+  // sides). The fix is exactly the restructuring that diagnosis called
+  // for: each of the two rows now carries its OWN breakpoint schedule -
+  // the forced points of the ArcRun matches at THAT end only (plus the
+  // two rails and the same uniform gap fill as before) - so the lens row
+  // has exactly the lens loop's own vertices and the quadrant row exactly
+  // the four quadrants' union, and the band between two such
+  // differently-sampled rows is lofted by a stack-sweep triangulation of
+  // the u-monotone polygon they bound (de Berg et al., Computational
+  // Geometry, section 3.3 - not a naive two-pointer merge, which is only
+  // valid for a CONVEX strip and can silently overlap when one row is a
+  // curved notch). Interior rows are laid on the UNION of both rows'
+  // breakpoints, so the strip's own interior stays a clean quad-like
+  // lattice wherever the two rows agree and only the cells between two
+  // genuinely different samplings pick up the extra fan triangles. The
+  // SAME mesher also serves a NOTCHED cylindrical fragment (one built
+  // with cap0_notch_points/cap1_notch_points): its notched row is the
+  // literal notch polyline (the side table `face_notch_rows_` records the
+  // input's own points AND the (u, v) FromMixedFaces() spliced into the
+  // visible trim, so chain and trim agree exactly), which closes a
+  // latent gap the earlier IsRectangularTrimUv gate only protected the
+  // cap-LESS case against: a notched fragment WITH an ArcRun match on its
+  // flat end used to reach the bounding-box tensor mesher and have its
+  // notch silently filled back in (measured directly on a synthetic
+  // shared-notch pair - see
+  // TestTessellateConformingSharedNotchCylinderPairIsClosedManifold in
+  // tests/test_basic.cpp - as a volume of ~159.2 against a true 125.7,
+  // with every notch edge shared by 4 faces). Dispatch (see the loop at
+  // the end of this method's body): a hole-free cylindrical fragment is
+  // routed to the strip mesher iff it is notched OR it has matches at
+  // BOTH ends whose EFFECTIVE per-row column sets (forced raw_u plus the
+  // two rails, deduplicated within the mesher's own u tolerance) differ;
+  // every other face - in particular every face that was already closed
+  // under the shared-list tensor mesher - keeps its previous path
+  // bit-for-bit. Comparing EFFECTIVE rather than raw forced sets is
+  // essential: a full-sweep face whose two caps put the seam sample at
+  // u=0 on one row and at u=u_max on the other has different raw sets
+  // but identical effective columns, and comparing raw sets re-routed
+  // ~15 already-closed faces in this file's own test suite (found and
+  // fixed by tracing every dispatch decision across the whole suite,
+  // which now re-routes exactly the crossing fixture's two inner bands
+  // plus the notched oblique fragments). See
+  // TestBooleanCombineMixedParallelCylinderDifferenceCrossingIsClosedManifold
+  // and ...RowSchedulesDiffer (tests/test_basic.cpp) for the falsifiable
+  // claims: the crossing fixture is a closed manifold at symmetric AND
+  // asymmetric divisions, and the inner band's two rows carry 65 and 257
+  // distinct vertices respectively - a count the shared-list design could
+  // not produce. What this does NOT close: an oblique fragment's seam
+  // against its oblique PLANAR cap (the planar side still tessellates by
+  // exact clipping over its own grid rather than from the shared literal
+  // notch points - a planar-side counterpart to this mesher is a
+  // separate piece of work), and the length-0 "eye"/half-band shapes a
+  // Steinmetz (equal-radius crossing-axes) intersection would hand this
+  // mesher (both rows notched, rails pinched to a shared vertex) are
+  // verified in shape only - the pinch handling is exercised by direct
+  // construction, not yet by a producer in this kernel.
   std::vector<Mesh> TessellateConforming(int u_divisions = 8, int v_divisions = 8,
                                           int boundary_samples = -1) const;
 
@@ -1324,6 +1364,32 @@ class Brep {
   // Sphere(), FromSurface(), TrimmedPlanarFace()) - consumed ONLY by
   // TessellateConforming().
   std::vector<std::vector<PlanarFace::ArcRun>> face_arc_runs_;
+  // Parallel to face_arc_runs_ (kept in lockstep by every factory that
+  // pushes face_arc_runs_): a CylindricalFace's own literal cap-notch
+  // rows, consumed ONLY by TessellateConforming()'s per-row strip mesher
+  // (see that method's own doc comment). `present` is false for every
+  // face except a cylindrical one built by FromMixedFaces() with a
+  // non-empty cap0_notch_points and/or cap1_notch_points; for such a face
+  // `cap0_points`/`cap1_points` are that input's own lists verbatim (in
+  // its fixed increasing-angle order) and `cap0_uv`/`cap1_uv` are the
+  // SAME (u, v) coordinates FromMixedFaces() itself computed for them
+  // (the ones spliced into the face's visible trim loop), so the mesher's
+  // notch row and the trim polygon agree exactly rather than being two
+  // independent re-derivations of one curve. `v_end0`/`v_end1` are the
+  // flat rows' own v (0 and length), recorded here so the mesher never
+  // has to recover them from a trim bounding box that a notch's own dip
+  // past the rail band would have widened. An un-notched end keeps an
+  // empty list and the mesher builds that row as a flat chain instead.
+  struct CylinderNotchRows {
+    bool present = false;
+    std::vector<Point3d> cap0_points;
+    std::vector<Point2d> cap0_uv;
+    std::vector<Point3d> cap1_points;
+    std::vector<Point2d> cap1_uv;
+    double v_end0 = 0.0;
+    double v_end1 = 0.0;
+  };
+  std::vector<CylinderNotchRows> face_notch_rows_;
 };
 
 }  // namespace dino8::kernel
