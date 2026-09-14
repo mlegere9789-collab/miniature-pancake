@@ -1234,7 +1234,19 @@ class Brep {
   // copies `frame`/`angle`/`radius` verbatim across axial siblings, only
   // ever trimming `length`/shifting `frame.origin` along the shared
   // axis), so reusing its raw_u values reproduces the identical
-  // breakpoints, closing the seam. `CanonicalCylinderUBreakpoints`
+  // breakpoints, closing the seam. This fallback is GATED on the
+  // fragment's own trim being a plain (u, v) rectangle with no holes
+  // (IsRectangularTrimUv, brep.cpp): BuildConformingCylinderMesh grids
+  // the trim's full bounding box and never clips to the polygon, so a
+  // NOTCHED, cap-less fragment - the oblique path's own surviving
+  // hole-wall, whose only ends are ellipse notches and which therefore
+  // also has no ArcRun match on either end - keeps the trim-clipping
+  // path exactly as Tessellate() treats it. Confirmed necessary, not
+  // merely prudent: an ungated version of this fallback silently filled
+  // such a fragment's notch back in (its area came out as the bounding
+  // box's, not the closed form) - see
+  // TestTessellateConformingNotchedUncappedCylinderHonorsTrim
+  // (tests/test_basic.cpp). `CanonicalCylinderUBreakpoints`
   // (brep.cpp, an independent-resampling fallback) is kept only as a
   // defensive last resort for the (believed never to arise in practice)
   // case where no such sibling exists at all - see its own doc comment

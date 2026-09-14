@@ -1737,6 +1737,37 @@ bool SameCircleAsCylinder(const Point3d& center, double radius, const Vector3d& 
 // per fragment, which reproduces that same frame up to ordinary
 // floating-point fit noise), while two different wedges of the same
 // cylinder never do.
+// True when a face's outer trim polygon, in its own (u, v) domain, is a
+// plain axis-aligned rectangle: every vertex lies on the polygon's own
+// bounding box boundary (extra collinear vertices along a side are
+// fine). This is the exact precondition BuildConformingCylinderMesh's
+// tensor grid relies on - it grids the trim's full (u, v) bounding box
+// and never clips to the polygon - so it is what gates that mesher's
+// use for a "friendless" cylindrical band (see TessellateConforming()'s
+// own dispatch below). A NOTCHED CylindricalFace (cap0_notch_points/
+// cap1_notch_points, e.g. the oblique path's own surviving hole-wall
+// fragment, whose only ends are ellipse notches with no cap anywhere)
+// has genuinely interior trim vertices and must keep the trim-clipping
+// path, or its notch would be silently filled back in.
+bool IsRectangularTrimUv(const std::vector<Point2d>& outer) {
+  if (outer.size() < 4) return false;
+  double u_min = outer[0].x, u_max = outer[0].x, v_min = outer[0].y, v_max = outer[0].y;
+  for (const Point2d& p : outer) {
+    u_min = std::min(u_min, p.x);
+    u_max = std::max(u_max, p.x);
+    v_min = std::min(v_min, p.y);
+    v_max = std::max(v_max, p.y);
+  }
+  const double tol_u = 1e-9 * (1.0 + std::fabs(u_min) + std::fabs(u_max));
+  const double tol_v = 1e-9 * (1.0 + std::fabs(v_min) + std::fabs(v_max));
+  for (const Point2d& p : outer) {
+    const bool on_u_side = std::fabs(p.x - u_min) <= tol_u || std::fabs(p.x - u_max) <= tol_u;
+    const bool on_v_side = std::fabs(p.y - v_min) <= tol_v || std::fabs(p.y - v_max) <= tol_v;
+    if (!on_u_side && !on_v_side) return false;
+  }
+  return true;
+}
+
 bool SameWedgeAsCylinder(const Brep::CylindricalFace& a, const Brep::CylindricalFace& b, double tol) {
   const double rtol = std::max(tol, a.radius * 1e-6);
   const Vector3d d = b.frame.origin - a.frame.origin;
@@ -3208,10 +3239,15 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
     const auto self_cyl_it = cyl_by_face.find(i);
     if (cyl_it != cyl_matches.end()) {
       result.push_back(BuildConformingCylinderMesh(wrapper, fg.outer, u_divisions, v_divisions, cyl_it->second));
-    } else if (self_cyl_it != cyl_by_face.end()) {
+    } else if (self_cyl_it != cyl_by_face.end() && fg.holes.empty() && IsRectangularTrimUv(fg.outer)) {
       // A CylindricalFace fragment with NO ArcRun match on either end at
       // all (see boolean.h's own disclosure) - a "friendless" middle
-      // axial band. Rather than falling back to NurbsSurface::TessellateGrid's
+      // axial band. Gated on the trim being a plain (u, v) rectangle with
+      // no holes (IsRectangularTrimUv - see its own doc comment): the
+      // mesher below grids the bounding box, so a NOTCHED, cap-less
+      // fragment (the oblique path's surviving hole-wall) must instead
+      // keep the trim-clipping path further down, exactly as
+      // Tessellate() treats it. Rather than falling back to NurbsSurface::TessellateGrid's
       // raw-u-uniform division (this branch's own prior behavior, and
       // exactly the mismatch that left an unwelded seam against any
       // axially-adjacent, ArcRun-matched sibling sharing this same

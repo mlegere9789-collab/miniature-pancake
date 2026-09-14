@@ -9757,6 +9757,71 @@ void TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm() {
         "slivers, not seam noise; what remains is ordinary discretization error that shrinks with division count");
 }
 
+// Brep::TessellateConforming() on a notched CylindricalFace that has NO
+// cap match at all - the oblique path's own surviving hole-wall shape
+// (full sweep, one or both ends notched by an ellipse, no synthesized cap
+// anywhere) - must honor the trim polygon exactly as Tessellate() does:
+// a notch is a genuine bite out of (or extra material beyond) the rail
+// band, never something a bounding-box tensor grid may fill back in.
+// This guards TessellateConforming()'s own "friendless band" fallback
+// (see its doc comment in brep.h): that fallback's mesher
+// (BuildConformingCylinderMesh) grids the trim's full (u, v) bounding
+// box, which is only correct for a plain rectangular trim, so the
+// dispatch must route a NON-rectangular cylindrical trim to the
+// trim-clipping path instead. Same fixture and closed form as
+// TestFromMixedFacesNotchedCylinderCoversNotchOutsideRailBand above.
+void TestTessellateConformingNotchedUncappedCylinderHonorsTrim() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double r = 2.0, L = 3.0, tan_a = 0.5;
+  const double band_area = 2.0 * ON_PI * r * L;
+  const double per_notch = 2.0 * ON_PI * r * r * tan_a;
+  struct Mode {
+    bool notch0, notch1;
+    const char* what;
+  };
+  const Mode modes[] = {
+      {true, false,
+       "TessellateConforming() of a cap-less full-sweep CylindricalFace whose cap0 notch dips below v=0 has the "
+       "closed-form area 2*pi*r*L + 2*pi*r^2*tan(a) (within 0.5%) - the notch is honored, not filled back in by a "
+       "bounding-box grid"},
+      {false, true,
+       "TessellateConforming() of a cap-less full-sweep CylindricalFace whose cap1 notch rises above v=length has "
+       "the closed-form area 2*pi*r*L + 2*pi*r^2*tan(a) (within 0.5%) - the mirror-image notch is honored too"},
+      {true, true,
+       "TessellateConforming() of a cap-less full-sweep CylindricalFace notched at BOTH ends (the oblique-drilled "
+       "fragment's own shape) has the closed-form area 2*pi*r*L + 2*2*pi*r^2*tan(a) (within 0.5%)"},
+  };
+  for (const Mode& mode : modes) {
+    const Brep::CylindricalFace cf = BuildOutOfBandNotchedCylinder(r, L, tan_a, mode.notch0, mode.notch1);
+    const Brep b = Brep::FromMixedFaces({}, {cf});
+    const double true_area = band_area + (mode.notch0 ? per_notch : 0.0) + (mode.notch1 ? per_notch : 0.0);
+    double area = 0.0;
+    for (const Mesh& m : b.TessellateConforming(256, 256)) area += m.Area();
+    Check(std::fabs(area - true_area) < 0.005 * true_area, mode.what);
+  }
+
+  // The real producer, through the conforming entry point this time:
+  // the oblique-drilled box's own volume must land as close to the
+  // closed form as the ORDINARY path's does (see
+  // TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm
+  // above for that measurement and its bound).
+  const double tilt_deg = 15.0;
+  const double theta = tilt_deg * ON_PI / 180.0;
+  const double radius = 1.0;
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(radius, tilt_deg);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  const double hand_derived_volume = 2000.0 - ON_PI * radius * radius * (10.0 / std::cos(theta));
+  const double conforming_volume = drilled.TessellateToClosedMeshConforming(256, 256).Volume();
+  Check(std::fabs(conforming_volume - hand_derived_volume) < 0.1,
+        "the oblique-drilled box's TessellateToClosedMeshConforming(256, 256) volume is within 0.1 of the closed-form "
+        "2000-pi*r^2*(10/cos(theta)) - the surviving notched hole-wall keeps its notches under the conforming path "
+        "too, rather than being routed through a bounding-box grid that would fill them in");
+}
+
 // ---------------------------------------------------------------------
 // Brep::TessellateConforming()'s own THIRD matching pass: closing the
 // quad-vs-quad seam gap (two adjacent "plain quad" planar faces, NEITHER
@@ -13398,6 +13463,7 @@ int main() {
   TestBooleanCombineMixedObliqueMultipleTiltAngles();
   TestFromMixedFacesNotchedCylinderCoversNotchOutsideRailBand();
   TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm();
+  TestTessellateConformingNotchedUncappedCylinderHonorsTrim();
   TestTessellateConformingQuadQuadSeamPlainBoxIsClosedManifold();
   TestTessellateConformingQuadQuadSeamDrilledBoxIsClosedManifold();
   TestTessellateConformingQuadQuadSeamOffCenterHoleIsClosedManifold();
