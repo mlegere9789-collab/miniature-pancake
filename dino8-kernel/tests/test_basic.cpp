@@ -12143,13 +12143,16 @@ void TestBooleanCombineMixedSteinmetzStillThrows() {
 
   // Two EQUAL-radius cylinders whose axes genuinely INTERSECT (both pass
   // through the origin) at a real, non-parallel angle - the classical
-  // Steinmetz/bicylinder configuration - confirming case (iv)'s own new
+  // Steinmetz/bicylinder configuration - confirming case (iv)'s own
   // parallel-axis dispatch correctly does NOT misroute this into the
   // parallel branch (cross(zaxis_a, zaxis_b) is nowhere near zero for a
-  // 60-degree angle) and this genuinely non-parallel case still throws
-  // exactly as before this increment, per this increment's own explicit
-  // scoping (Steinmetz needs a new curved-face interior-trim
-  // representation, not attempted here - see boolean.h's own doc comment).
+  // 60-degree angle). This fixture still throws: BOTH cylinders' frame
+  // origins sit AT the crossing, so each starts at the crossing point and
+  // violates the Steinmetz split's extent precondition (every original
+  // end must be farther than r*max(cot, tan)(alpha/2) from the crossing
+  // - see boolean.h's own doc comment); a crossing centred along both
+  // cylinders is the supported configuration, exercised by the
+  // TestBooleanCombineMixedSteinmetz* tests further below.
   Brep::CylindricalFace cyl_a;
   cyl_a.frame.origin = Point3d(0, 0, 0);
   cyl_a.frame.xaxis = Vector3d(1, 0, 0);
@@ -12881,12 +12884,15 @@ void TestBooleanCombineMixedParallelCylinderIntersectionUnaffectsUnionAndNonPara
   {
     // Re-derive TestBooleanCombineMixedSteinmetzStillThrows' own fixture
     // for BooleanOp::Intersection AND BooleanOp::Difference specifically
-    // (that pre-existing test only exercises BooleanOp::Union) - case
-    // (iv)'s own axes_parallel dispatch throws BEFORE `op` is even
-    // consulted, so this confirms directly, not merely by inference from
-    // the Union case, that the still-unsupported non-parallel-axis
-    // rejection is genuinely op-agnostic and unaffected by this
-    // increment's own new op-specific end-cap machinery.
+    // (that pre-existing test only exercises BooleanOp::Union) - the
+    // rejection fires inside SplitMixedAgainstAllFaces, BEFORE `op` is
+    // even consulted, so this confirms directly, not merely by inference
+    // from the Union case, that it is genuinely op-agnostic. Both
+    // cylinders start AT the crossing here (their frame origins are the
+    // crossing point), violating the Steinmetz split's extent
+    // precondition - see TestBooleanCombineMixedSteinmetzStillThrows'
+    // own comment; the supported, crossing-centred configuration is
+    // exercised by the TestBooleanCombineMixedSteinmetz* tests.
     Brep::CylindricalFace cyl_a;
     cyl_a.frame.origin = Point3d(0, 0, 0);
     cyl_a.frame.xaxis = Vector3d(1, 0, 0);
@@ -12923,6 +12929,532 @@ void TestBooleanCombineMixedParallelCylinderIntersectionUnaffectsUnionAndNonPara
             "BooleanOp::Union - the non-parallel-axes rejection in case (iv)'s own dispatch fires before `op` is "
             "even consulted, so this increment's own new Intersection/Difference machinery is structurally "
             "unreachable here, confirmed directly rather than assumed from the pre-existing Union-only test");
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
+// Steinmetz (equal-radius, intersecting-axes) cylinder/cylinder booleans
+// ---------------------------------------------------------------------
+//
+// Closed forms (r = radius, alpha = axis angle, L_A/L_B = lengths), all
+// classical: Intersection V = 16 r^3 / (3 sin alpha) (the Steinmetz solid,
+// 16 r^3 / 3 at 90 degrees); Union = pi r^2 (L_A + L_B) - V; A - B =
+// pi r^2 L_A - V.
+//
+// Every volume below is measured through ORDINARY TessellateToClosedMesh():
+// each cylinder tessellates its own side of a shared half-ellipse edge on
+// its own parameter grid, so the two sides meet at T-junctions and NO
+// Steinmetz result is Mesh::IsClosedManifold() today (asserted below, so
+// the notched-strip conforming mesher that is the follow-up has a
+// falsifiable target - see BooleanCombineMixed's own doc comment in
+// boolean.h). The surface is still geometrically closed, so the
+// divergence-theorem volume converges normally: measured at 256
+// divisions the Intersection results sit -1.6e-4 (relative) below the
+// closed form at both angles - the cylinder wall's own inscribed-chord
+// deficit, shrinking four-fold per doubling (-9.3e-3 at 32, -2.4e-3 at
+// 64, -6.1e-4 at 128) - so this bound is ~12x that residual, 2.5x tighter
+// than the 0.5% the increment's plan allowed.
+constexpr double kSteinmetzIntersectionVolumeRelTol = 2e-3;
+
+double SteinmetzIntersectionVolume(double r, double alpha_deg) {
+  return 16.0 * r * r * r / (3.0 * std::sin(alpha_deg * ON_PI / 180.0));
+}
+
+// Two equal-radius, full-sweep cylinders whose axes cross at the origin at
+// `alpha_deg`: A along +Z (frame origin at z = -length_a/2), B along
+// (sin alpha, 0, cos alpha) with xaxis +Y (the common perpendicular of the
+// two axes) - both centred on the crossing. The optional overrides build
+// the negative controls: `radius_b` (unequal radii), `skew_y` (shifts B's
+// whole axis off A's along +Y so the two axes no longer meet), `angle_b`
+// (a partial sweep).
+std::pair<dino8::kernel::Brep::CylindricalFace, dino8::kernel::Brep::CylindricalFace> BuildSteinmetzCylinders(
+    double r, double length_a, double length_b, double alpha_deg, double radius_b = -1.0, double skew_y = 0.0,
+    double angle_b = 2.0 * ON_PI) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, -0.5 * length_a);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = r;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = length_a;
+
+  const double alpha = alpha_deg * ON_PI / 180.0;
+  const Vector3d axis_b(std::sin(alpha), 0, std::cos(alpha));
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(0, skew_y, 0) - 0.5 * length_b * axis_b;
+  cyl_b.frame.xaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.yaxis = Vector3d(-std::cos(alpha), 0, std::sin(alpha));
+  cyl_b.frame.zaxis = axis_b;
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = radius_b > 0.0 ? radius_b : r;
+  cyl_b.angle = angle_b;
+  cyl_b.length = length_b;
+  return {cyl_a, cyl_b};
+}
+
+void TestBooleanCombineMixedSteinmetzIntersectionPerpendicularVolumeAndTopology() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double r = 2.0;
+  const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(r, 10.0, 10.0, 90.0);
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+
+  const auto mixed = result.MixedFaces();
+  Check(mixed.cylindrical.size() == 4 && mixed.planar.empty(),
+        "Steinmetz Intersection at 90 degrees: exactly 4 cylindrical faces (the two eye-shaped wall regions of each "
+        "cylinder) and no planar face at all - neither operand's original ends survive, so no end cap is synthesized");
+
+  // The raw ON_Brep topology, checked directly (not via a mesh): the four
+  // half-ellipses all join the same two pinch vertices, so this is where
+  // "each shared boundary is ONE edge used by exactly two faces" is
+  // genuinely falsifiable - a merged pair would leave fewer than 4 edges
+  // (or throw "3 or more faces"), a duplicated pair more than 4.
+  const ON_Brep& raw = result.raw();
+  Check(raw.m_V.Count() == 2,
+        "Steinmetz Intersection at 90 degrees: the raw ON_Brep has exactly 2 vertices - the two pinch points where "
+        "all four half-ellipses meet");
+  bool pinch_points_exact = raw.m_V.Count() == 2;
+  for (int v = 0; v < raw.m_V.Count(); ++v) {
+    const ON_3dPoint p = raw.m_V[v].point;
+    if (std::fabs(p.x) > 1e-9 || std::fabs(std::fabs(p.y) - r) > 1e-9 || std::fabs(p.z) > 1e-9) {
+      pinch_points_exact = false;
+    }
+  }
+  Check(pinch_points_exact,
+        "Steinmetz Intersection at 90 degrees: both vertices sit at (0, +/-r, 0) to 1e-9 - the closed-form pinch "
+        "points Q +/- r*n on the common perpendicular of the two axes");
+  Check(raw.m_E.Count() == 4,
+        "Steinmetz Intersection at 90 degrees: exactly 4 edges - one per half-ellipse, so each shared boundary is ONE "
+        "edge, never two per-cylinder copies of the same curve");
+  bool each_edge_shared_by_two = raw.m_E.Count() == 4;
+  for (int e = 0; e < raw.m_E.Count(); ++e) {
+    if (raw.m_E[e].m_ti.Count() != 2) each_edge_shared_by_two = false;
+  }
+  Check(each_edge_shared_by_two,
+        "Steinmetz Intersection at 90 degrees: every one of the 4 half-ellipse edges is used by exactly 2 trims (one "
+        "eye of each cylinder) - four genuinely different curves joining the same two vertices were told apart, "
+        "none silently merged, none duplicated");
+  Check(raw.IsValid() && raw.IsSolid(),
+        "Steinmetz Intersection at 90 degrees: ON_Brep::IsValid() and IsSolid() both hold for the four bigon-shaped "
+        "eye faces (two notched cap trims each, no rails)");
+
+  const Mesh mesh = result.TessellateToClosedMesh(256, 256);
+  const double expected = SteinmetzIntersectionVolume(r, 90.0);
+  Check(std::fabs(mesh.Volume() - expected) < kSteinmetzIntersectionVolumeRelTol * expected,
+        "Steinmetz Intersection at 90 degrees: the ordinary 256-division tessellated volume is within 0.2% of the "
+        "classical 16 r^3 / 3 = 42.6667 (measured -1.6e-4 relative)");
+}
+
+void TestBooleanCombineMixedSteinmetzIntersectionGeneralAngleVolume() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  // 60 degrees: the two notch amplitudes differ (r cot 30 = 3.46 vs
+  // r tan 30 = 1.15), so this exercises the asymmetric-eye bookkeeping
+  // (top/bottom curves read off the sampled lists, not assumed +/-r cos).
+  const double r = 2.0;
+  const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(r, 10.0, 10.0, 60.0);
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+
+  const auto mixed = result.MixedFaces();
+  Check(mixed.cylindrical.size() == 4 && mixed.planar.empty(),
+        "Steinmetz Intersection at 60 degrees: exactly 4 cylindrical faces and no planar face");
+  const ON_Brep& raw = result.raw();
+  bool topology_ok = raw.m_V.Count() == 2 && raw.m_E.Count() == 4;
+  for (int e = 0; e < raw.m_E.Count(); ++e) {
+    if (raw.m_E[e].m_ti.Count() != 2) topology_ok = false;
+  }
+  Check(topology_ok,
+        "Steinmetz Intersection at 60 degrees: 2 pinch vertices, 4 half-ellipse edges, each shared by exactly 2 "
+        "trims - the general-angle decomposition has the same topology as the perpendicular one");
+  Check(raw.IsValid() && raw.IsSolid(),
+        "Steinmetz Intersection at 60 degrees: ON_Brep::IsValid() and IsSolid() both hold");
+
+  const Mesh mesh = result.TessellateToClosedMesh(256, 256);
+  const double expected = SteinmetzIntersectionVolume(r, 60.0);
+  Check(std::fabs(mesh.Volume() - expected) < kSteinmetzIntersectionVolumeRelTol * expected,
+        "Steinmetz Intersection at 60 degrees: the ordinary 256-division tessellated volume is within 0.2% of "
+        "16 r^3 / (3 sin 60) = 49.267 (measured -1.6e-4 relative)");
+}
+
+// Argument-order symmetry and the shared-boundary sampling identity: the
+// four half-ellipse lists are sampled ONCE, on a canonical cylinder chosen
+// independently of argument order, and the SAME std::vector<Point3d> is
+// handed to both cylinders' fragments. A per-operand sampler (uniform in
+// each cylinder's OWN angle) would produce the same point SET but
+// different points, so this is the one check that can tell the two
+// designs apart.
+void TestBooleanCombineMixedSteinmetzArgumentOrderSymmetryAndSharedBoundaryIsBitIdentical() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Vector3d;
+
+  const double r = 2.0;
+  const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(r, 10.0, 10.0, 90.0);
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+  const Brep ab = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+  const Brep ba = BooleanCombineMixed(b, a, BooleanOp::Intersection);
+
+  Check(ab.FaceCount() == 4 && ba.FaceCount() == 4,
+        "Steinmetz Intersection: BooleanCombineMixed(a, b) and (b, a) both produce exactly 4 faces");
+  const double volume_ab = ab.TessellateToClosedMesh(64, 64).Volume();
+  const double volume_ba = ba.TessellateToClosedMesh(64, 64).Volume();
+  Check(std::fabs(volume_ab - volume_ba) < 1e-9,
+        "Steinmetz Intersection: (a, b) and (b, a) tessellate to the same volume within 1e-9 (measured 1.9e-11) - "
+        "the decomposition is argument-order independent");
+
+  // Face order is from_a.in then from_b.in: A's two eyes (axis +Z) come
+  // first in (a, b), B's two (axis +X) first in (b, a).
+  const auto mixed_ab = ab.MixedFaces();
+  bool face_order_as_expected = mixed_ab.cylindrical.size() == 4;
+  for (size_t i = 0; face_order_as_expected && i < 4; ++i) {
+    const Vector3d expected_axis = i < 2 ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+    if ((mixed_ab.cylindrical[i].frame.zaxis - expected_axis).Length() > 1e-9) face_order_as_expected = false;
+  }
+  Check(face_order_as_expected,
+        "Steinmetz Intersection (a, b): faces 0-1 are A's eyes (axis +Z) and faces 2-3 are B's (axis +X)");
+
+  const std::vector<Mesh> faces_ab = ab.Tessellate(64, 64);
+  const std::vector<Mesh> faces_ba = ba.Tessellate(64, 64);
+  bool per_face_identical = faces_ab.size() == 4 && faces_ba.size() == 4;
+  for (size_t i = 0; per_face_identical && i < 4; ++i) {
+    const ON_Mesh& ma = faces_ab[i].raw();
+    const ON_Mesh& mb = faces_ba[(i + 2) % 4].raw();
+    if (ma.m_V.Count() != mb.m_V.Count() || ma.m_V.Count() == 0) {
+      per_face_identical = false;
+      break;
+    }
+    for (int k = 0; k < ma.m_V.Count(); ++k) {
+      if (!(ma.m_V[k].x == mb.m_V[k].x && ma.m_V[k].y == mb.m_V[k].y && ma.m_V[k].z == mb.m_V[k].z)) {
+        per_face_identical = false;
+        break;
+      }
+    }
+  }
+  Check(per_face_identical,
+        "Steinmetz Intersection: each face of (a, b) tessellates to a vertex-for-vertex float-identical mesh to its "
+        "counterpart in (b, a) - the fragments built for a given cylinder do not depend on which operand it was");
+
+  // The shared half-ellipses: every mesh vertex of an A-eye that lies on
+  // the intersection curve (distance r from BOTH axes) and is one of the
+  // canonical samples has a float== counterpart in B's eyes. Measured: 586
+  // on-curve vertices per A-eye, 392 with an exact counterpart. The
+  // on-curve vertices WITHOUT one are (i) the exact-clip tessellator's own
+  // grid-crossing points on the curve - the T-junctions that keep the
+  // ordinary mesh from closing - and (ii) the 14 canonical samples that
+  // land exactly on a 64-division parameter grid line (the two pinches at
+  // u=0/u=u_max, the mid-angle samples on the domain's v-boundary, and
+  // the quarter-angle samples at u = u_max/4 and 3u_max/4, which the
+  // rational quadratic arc maps exactly to angle by symmetry), which that
+  // tessellator re-emits as two nearby points ~1.5e-7 apart rather than
+  // verbatim (checked at double precision, not inferred). A per-operand
+  // sampler would match only the handful of points both parameterizations
+  // hit exactly (endpoints and mid-angle), nowhere near 380.
+  auto on_curve = [&](const ON_3fPoint& p) {
+    const double dist_a = std::sqrt(static_cast<double>(p.x) * p.x + static_cast<double>(p.y) * p.y);
+    const double dist_b = std::sqrt(static_cast<double>(p.y) * p.y + static_cast<double>(p.z) * p.z);
+    return std::fabs(dist_a - r) < 1e-4 && std::fabs(dist_b - r) < 1e-4;
+  };
+  int on_curve_total = 0, on_curve_matched = 0;
+  for (int fa = 0; fa < 2; ++fa) {
+    const ON_Mesh& ma = faces_ab[static_cast<size_t>(fa)].raw();
+    for (int i = 0; i < ma.m_V.Count(); ++i) {
+      if (!on_curve(ma.m_V[i])) continue;
+      ++on_curve_total;
+      bool found = false;
+      for (int fb = 2; fb < 4 && !found; ++fb) {
+        const ON_Mesh& mb = faces_ab[static_cast<size_t>(fb)].raw();
+        for (int j = 0; j < mb.m_V.Count(); ++j) {
+          if (ma.m_V[i].x == mb.m_V[j].x && ma.m_V[i].y == mb.m_V[j].y && ma.m_V[i].z == mb.m_V[j].z) {
+            found = true;
+            break;
+          }
+        }
+      }
+      if (found) ++on_curve_matched;
+    }
+  }
+  Check(on_curve_matched >= 2 * 380,
+        "Steinmetz Intersection: at least 380 on-curve mesh vertices per A-eye have a BIT-IDENTICAL (exact float ==) "
+        "counterpart among B's eyes' vertices (measured 392 of the 400 distinct canonical samples per eye) - both "
+        "cylinders' fragments carry the literal same canonical half-ellipse sample lists");
+  Check(on_curve_total - on_curve_matched >= 2 * 100,
+        "Steinmetz Intersection: at least 100 on-curve vertices per A-eye have NO counterpart (measured 194) - the "
+        "grid-crossing T-junction vertices each cylinder's own tessellation adds along the shared curve, the concrete "
+        "signature of why the ordinary mesh is not watertight there");
+}
+
+// The eye representation on its own: a CylindricalFace with angle = pi,
+// length = 0 and BOTH caps notched (bottom half-ellipse as cap0, top as
+// cap1, both between the same two pinch points) builds through
+// Brep::FromMixedFaces() - degenerate rails skipped, the two notched caps
+// told apart, the visible trim deduplicated - and is, as a single face,
+// provably open. Closure is a property of the four-eye assembly, not of
+// the builder accepting one eye.
+void TestBooleanCombineMixedSteinmetzEyeFragmentAloneBuildsAndIsOpen() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Hand-built from the closed form at 90 degrees, A along +Z, B along
+  // +X, crossing at the origin, r = 2: the pinch points are (0, -r, 0)
+  // (local angle 0) and (0, r, 0) (local angle pi); over local angle
+  // t in [0, pi] (true angle theta = t - pi/2) the bottom curve is
+  // (r cos theta, r sin theta, -r cos theta) and the top curve
+  // (r cos theta, r sin theta, +r cos theta).
+  const double r = 2.0;
+  Brep::CylindricalFace eye;
+  eye.frame.origin = Point3d(0, 0, 0);
+  eye.frame.xaxis = Vector3d(0, -1, 0);
+  eye.frame.yaxis = Vector3d(1, 0, 0);
+  eye.frame.zaxis = Vector3d(0, 0, 1);
+  eye.frame.UpdateEquation();
+  eye.radius = r;
+  eye.angle = ON_PI;
+  eye.length = 0.0;
+  const int samples = 200;
+  for (int s = 0; s <= samples; ++s) {
+    const double theta = -0.5 * ON_PI + ON_PI * static_cast<double>(s) / samples;
+    eye.cap0_notch_points.emplace_back(r * std::cos(theta), r * std::sin(theta), -r * std::cos(theta));
+    eye.cap1_notch_points.emplace_back(r * std::cos(theta), r * std::sin(theta), r * std::cos(theta));
+  }
+  eye.end0_is_original = false;
+  eye.end1_is_original = false;
+
+  bool threw = false;
+  Brep built;
+  try {
+    built = Brep::FromMixedFaces({}, {eye});
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  Check(!threw, "a single Steinmetz eye (angle = pi, length = 0, both caps notched) builds through FromMixedFaces "
+                "without throwing");
+  if (threw) return;
+  Check(built.FaceCount() == 1 && built.raw().m_V.Count() == 2 && built.raw().m_E.Count() == 2,
+        "the eye alone is one face on 2 vertices (the pinch points) and 2 edges (its two notched caps) - the two "
+        "zero-length rails were skipped and the two caps, which join the same two vertices, were not merged");
+  const Mesh mesh = built.TessellateToClosedMesh(64, 64);
+  Check(!mesh.IsClosedManifold(), "the eye alone is NOT a closed manifold - a single open patch");
+  // The eye's exact area is 4 r^2 (a classical corollary of the Steinmetz
+  // solid's surface area 16 r^2 at 90 degrees: four eyes of 4 r^2 each).
+  Check(std::fabs(mesh.Area() - 4.0 * r * r) < 0.05,
+        "the eye alone tessellates to the classical area 4 r^2 = 16 within 0.05 (measured 15.995 at 64 divisions) - "
+        "the whole region between the two notch curves is covered, nothing below v=0 or above v=length dropped");
+}
+
+// Disclosed-limitation control: the Intersection result's ordinary
+// tessellation is NOT watertight (T-junctions along the shared
+// half-ellipses), and the conforming tessellator - untouched by this
+// increment - has no notched-strip mesher yet, so it produces the same
+// open mesh. The notched-strip mesher is the follow-up; when it lands,
+// these two assertions are the ones to flip.
+void TestBooleanCombineMixedSteinmetzIntersectionTessellationIsNotYetWatertight() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0);
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+  Check(!result.TessellateToClosedMesh(64, 64).IsClosedManifold(),
+        "Steinmetz Intersection: the ORDINARY 64-division tessellation is NOT a closed manifold - each cylinder "
+        "tessellates its side of every shared half-ellipse on its own grid (T-junctions), the disclosed limitation "
+        "the notched-strip conforming mesher is the follow-up for");
+  Check(!result.TessellateToClosedMeshConforming(64, 64).IsClosedManifold(),
+        "Steinmetz Intersection: the CONFORMING 64-division tessellation is not closed either today - it has no "
+        "mesher for a doubly-notched eye and falls back to the ordinary grid clip; flip this assertion when the "
+        "notched-strip mesher lands");
+}
+
+void TestBooleanCombineMixedSteinmetzNegativeControls() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  auto message_of = [](const Brep::CylindricalFace& cyl_a, const Brep::CylindricalFace& cyl_b, BooleanOp op,
+                       bool& threw_invalid_argument) {
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    threw_invalid_argument = false;
+    try {
+      BooleanCombineMixed(a, b, op);
+    } catch (const std::invalid_argument& e) {
+      threw_invalid_argument = true;
+      return std::string(e.what());
+    }
+    return std::string();
+  };
+  bool threw = false;
+
+  {
+    // Unequal radii on intersecting, perpendicular axes: the intersection
+    // curve is no longer a pair of planar ellipses (a genuine quartic),
+    // out of scope - and the message names "non-parallel axes", the
+    // substring TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary
+    // keys on for its own unequal-radii tilted pair.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0, /*radius_b=*/1.5);
+    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Intersection, threw);
+    Check(threw && message.find("non-parallel axes") != std::string::npos,
+          "Steinmetz negative control: UNEQUAL radii on intersecting perpendicular axes throw std::invalid_argument "
+          "whose message names 'non-parallel axes'");
+  }
+  {
+    // Equal radii but genuinely skew axes (B shifted 1.0 along the common
+    // perpendicular): no crossing point exists.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0, -1.0, /*skew_y=*/1.0);
+    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Intersection, threw);
+    Check(threw && message.find("non-parallel axes") != std::string::npos,
+          "Steinmetz negative control: equal-radius but genuinely SKEW axes throw std::invalid_argument naming "
+          "'non-parallel axes'");
+  }
+  {
+    // Extent precondition: B only 3 long, so its ends sit 1.5 from the
+    // crossing, inside the r*max(cot, tan)(alpha/2) = 2 reach of the eye
+    // - B's end disc would cut the eye and there is no face for it.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 3.0, 90.0);
+    for (const BooleanOp op : {BooleanOp::Intersection, BooleanOp::Union, BooleanOp::Difference}) {
+      const std::string message = message_of(cyl_a, cyl_b, op, threw);
+      Check(threw && message.find("non-parallel axes") != std::string::npos &&
+                message.find("STRICTLY interior") != std::string::npos,
+            "Steinmetz negative control: a crossing NOT strictly interior to both cylinders (B's ends 1.5 from the "
+            "crossing, amplitude 2) throws std::invalid_argument naming the extent precondition, for every op");
+    }
+  }
+  {
+    // Exactly AT the bound (B's ends 2.0 = amplitude from the crossing):
+    // refused too - the inequality is strict.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 4.0, 90.0);
+    message_of(cyl_a, cyl_b, BooleanOp::Intersection, threw);
+    Check(threw, "Steinmetz negative control: a crossing exactly AT the extent bound (B's ends at distance = "
+                 "amplitude) is refused - the precondition is strict");
+  }
+  {
+    // Just past the bound (B's ends 2.1 from the crossing) the split is
+    // accepted and the Intersection is the full Steinmetz solid - the
+    // precondition is not over-strict, and the Intersection volume does
+    // not depend on the lengths at all once it holds.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 4.2, 90.0);
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+    const double expected = SteinmetzIntersectionVolume(2.0, 90.0);
+    const double volume = result.TessellateToClosedMesh(128, 128).Volume();
+    Check(result.MixedFaces().cylindrical.size() == 4 && std::fabs(volume - expected) < 1e-3 * expected,
+          "Steinmetz positive boundary control: B's ends just past the extent bound (2.1 vs amplitude 2) build the "
+          "same 4-eye Intersection with the same 16 r^3 / 3 volume within 0.1% at 128 divisions (measured -6.1e-4) "
+          "- the precondition is not over-strict");
+  }
+  {
+    // A partial-sweep operand: its wall would not cover the whole eye.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0, -1.0, 0.0, /*angle_b=*/ON_PI);
+    message_of(cyl_a, cyl_b, BooleanOp::Intersection, threw);
+    Check(threw, "Steinmetz negative control: a PARTIAL-sweep operand throws std::invalid_argument");
+  }
+}
+
+// Union and Difference need nothing beyond the six-fragment split: the
+// op-agnostic classify-then-bucket pipeline keeps the eight half-bands
+// (Union) or A's four half-bands plus B's two eyes flipped (A - B), and
+// the existing SynthesizeEndCaps/BuildEndCap close every surviving
+// original end with a pi-sweep half-disc (4 wedges each) - measured face
+// counts 8 cylindrical + 32 planar (Union) and 6 + 16 (Difference), and
+// ordinary-tessellation volumes within 2.0e-4 (relative) of the closed
+// forms at 128 divisions (Union: -2.0e-4 at 90 degrees, -1.9e-4 at 60;
+// A - B: -1.1e-4 / -6.7e-5; B - A: -3.6e-5 / -3.9e-5).
+//
+// Two disclosed limitations, both asserted as current behavior so the
+// follow-ups are falsifiable: the ordinary mesh is not closed (the same
+// T-junctions as the Intersection, plus the end caps' own wedge seams);
+// and the CONFORMING tessellator, which this increment deliberately does
+// not touch, routes each half-band with a matched cap ArcRun into its
+// full-(u, v)-bounding-box cylinder mesher - which FILLS THE EYE BACK IN,
+// returning a mesh of the wrong solid (Union measured +23% over the
+// closed form) that, for Union, even reports IsClosedManifold(). Until
+// the notched-strip conforming mesher lands, a Steinmetz Union's volume
+// must come from the ordinary tessellation, never the conforming one.
+void TestBooleanCombineMixedSteinmetzUnionAndDifferenceVolumes() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double r = 2.0, length_a = 10.0, length_b = 8.0;
+  constexpr double kRelTol = 2e-3;
+  for (const double alpha_deg : {90.0, 60.0}) {
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(r, length_a, length_b, alpha_deg);
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    const double v_intersection = SteinmetzIntersectionVolume(r, alpha_deg);
+
+    {
+      const Brep result = BooleanCombineMixed(a, b, BooleanOp::Union);
+      const auto mixed = result.MixedFaces();
+      Check(mixed.cylindrical.size() == 8 && mixed.planar.size() == 32,
+            "Steinmetz Union: 8 cylindrical faces (four half-bands per cylinder) and 32 planar faces (four original "
+            "ends, each closed by two pi-sweep half-discs of 4 wedges) at both 90 and 60 degrees");
+      const double expected = ON_PI * r * r * (length_a + length_b) - v_intersection;
+      const Mesh mesh = result.TessellateToClosedMesh(128, 128);
+      Check(std::fabs(mesh.Volume() - expected) < kRelTol * expected,
+            "Steinmetz Union: the ordinary 128-division tessellated volume is within 0.2% of pi r^2 (L_A + L_B) - "
+            "16 r^3 / (3 sin alpha) at both 90 and 60 degrees (measured -2.0e-4 relative)");
+      Check(!mesh.IsClosedManifold(),
+            "Steinmetz Union: the ordinary tessellation is NOT closed (shared half-ellipse T-junctions and end-cap "
+            "wedge seams) - the disclosed limitation the notched-strip conforming mesher is the follow-up for");
+      const double conforming_volume = result.TessellateToClosedMeshConforming(64, 64).Volume();
+      Check(std::fabs(conforming_volume - expected) > 0.1 * expected,
+            "Steinmetz Union: the untouched CONFORMING tessellator today returns a volume more than 10% off the "
+            "closed form (measured +23%) - its cylinder mesher grids each half-band's full (u, v) bounding box and "
+            "fills the eye back in; flip this assertion when the notched-strip mesher replaces that path");
+    }
+    {
+      const Brep result = BooleanCombineMixed(a, b, BooleanOp::Difference);
+      const auto mixed = result.MixedFaces();
+      Check(mixed.cylindrical.size() == 6 && mixed.planar.size() == 16,
+            "Steinmetz A - B: 6 cylindrical faces (A's four half-bands plus B's two eyes, flipped, as the cavity "
+            "wall) and 16 planar faces (A's two original ends only) at both 90 and 60 degrees");
+      const double expected = ON_PI * r * r * length_a - v_intersection;
+      const Mesh mesh = result.TessellateToClosedMesh(128, 128);
+      Check(std::fabs(mesh.Volume() - expected) < kRelTol * expected,
+            "Steinmetz A - B: the ordinary 128-division tessellated volume is within 0.2% of pi r^2 L_A - "
+            "16 r^3 / (3 sin alpha) at both 90 and 60 degrees (measured -1.1e-4 relative)");
+      Check(!mesh.IsClosedManifold(),
+            "Steinmetz A - B: the ordinary tessellation is NOT closed - the same disclosed T-junction limitation");
+    }
+    {
+      const Brep result = BooleanCombineMixed(b, a, BooleanOp::Difference);
+      const auto mixed = result.MixedFaces();
+      Check(mixed.cylindrical.size() == 6 && mixed.planar.size() == 16,
+            "Steinmetz B - A: 6 cylindrical and 16 planar faces at both 90 and 60 degrees - the reverse subtraction "
+            "keeps B's half-bands and A's eyes");
+      const double expected = ON_PI * r * r * length_b - v_intersection;
+      const Mesh mesh = result.TessellateToClosedMesh(128, 128);
+      Check(std::fabs(mesh.Volume() - expected) < kRelTol * expected,
+            "Steinmetz B - A: the ordinary 128-division tessellated volume is within 0.2% of pi r^2 L_B - "
+            "16 r^3 / (3 sin alpha) at both 90 and 60 degrees (measured -3.9e-5 relative)");
     }
   }
 }
@@ -13165,6 +13697,13 @@ int main() {
   TestBooleanCombineMixedParallelCylinderDifferenceNestedFullDisc();
   TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly();
   TestBooleanCombineMixedParallelCylinderIntersectionUnaffectsUnionAndNonParallelCases();
+  TestBooleanCombineMixedSteinmetzIntersectionPerpendicularVolumeAndTopology();
+  TestBooleanCombineMixedSteinmetzIntersectionGeneralAngleVolume();
+  TestBooleanCombineMixedSteinmetzArgumentOrderSymmetryAndSharedBoundaryIsBitIdentical();
+  TestBooleanCombineMixedSteinmetzEyeFragmentAloneBuildsAndIsOpen();
+  TestBooleanCombineMixedSteinmetzIntersectionTessellationIsNotYetWatertight();
+  TestBooleanCombineMixedSteinmetzNegativeControls();
+  TestBooleanCombineMixedSteinmetzUnionAndDifferenceVolumes();
 
   ON::End();
 

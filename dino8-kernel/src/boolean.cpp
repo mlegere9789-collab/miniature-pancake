@@ -1272,6 +1272,19 @@ Point2d SafeInteriorPoint2d(const std::vector<Point2d>& poly) {
 // ceiling at every angle) - both closed-form, no search beyond a linear
 // scan of the same dense sample list already computed once by
 // SplitCylindricalByObliquePlane.
+//
+// A face notched at BOTH ends with length == 0 - a Steinmetz eye (see
+// SplitCylindricalBySteinmetzCylinder's own section comment, below) - has
+// no flat end to measure from at all, so it takes its own branch first:
+// the mid-angle point halfway between the two curves' own mid-angle
+// samples, which is where the other cylinder's axis pierces this wall.
+// The four Steinmetz half-bands need no new branch: an upper half-band
+// (cap0 notched, notch heights in [0, length]) lands on the existing
+// "hi" formula and a lower one (cap1 notched) on the existing "lo"
+// formula, and the extent precondition that admits the split guarantees
+// both points sit outside the crossing cylinder - verified by the
+// Steinmetz Union/Difference face counts and volumes in the tests, not
+// by inspection.
 Point3d RepresentativeInteriorPointMixed(const MixedFace& f) {
   if (!f.is_cyl) {
     // A genuine "pure fan" piece - loop == [center, arc_sample_0, ...,
@@ -1324,6 +1337,26 @@ Point3d RepresentativeInteriorPointMixed(const MixedFace& f) {
     return f.planar.plane.origin + p2d.x * f.planar.plane.xaxis + p2d.y * f.planar.plane.yaxis;
   }
   const Brep::CylindricalFace& cf = f.cyl;
+  if (!cf.cap0_notch_points.empty() && !cf.cap1_notch_points.empty()) {
+    // A Steinmetz EYE (see SplitCylindricalBySteinmetzCylinder's own
+    // section comment): length == 0, bounded below by cap0's half-ellipse
+    // and above by cap1's, meeting only at the two pinch vertices at local
+    // angles 0 and `angle`. Neither single-notch formula below applies
+    // (there is no flat end to measure from at all), so the point is
+    // placed at the mid-angle, halfway between the two curves' own
+    // mid-angle samples - each list's middle entry sits exactly at that
+    // cylinder's mid-angle (it is the sample in the plane spanned by the
+    // two axes, for BOTH cylinders), so this height is strictly between
+    // the two boundary curves there, with margin half the eye's own
+    // mid-angle height (r*min(cot, tan)(alpha/2) at least). At that point
+    // the OTHER cylinder's axis pierces this wall, so the classification
+    // against it is an unambiguous kIn.
+    const size_t m0 = cf.cap0_notch_points.size() / 2;
+    const size_t m1 = cf.cap1_notch_points.size() / 2;
+    const double h_bottom = ON_DotProduct(cf.cap0_notch_points[m0] - cf.frame.origin, cf.frame.zaxis);
+    const double h_top = ON_DotProduct(cf.cap1_notch_points[m1] - cf.frame.origin, cf.frame.zaxis);
+    return PointOnCylFace(cf, 0.5 * cf.angle, 0.5 * (h_bottom + h_top));
+  }
   double height = 0.5 * cf.length;
   if (!cf.cap1_notch_points.empty()) {
     double min_h = std::numeric_limits<double>::infinity();
@@ -2177,6 +2210,378 @@ std::vector<Brep::CylindricalFace> SplitCylindricalByOtherCylinderAxialExtent(
   return pieces;
 }
 
+// ---------------------------------------------------------------------
+// Steinmetz (equal-radius, intersecting-axes) cylinder/cylinder split
+// ---------------------------------------------------------------------
+//
+// Two equal-radius cylinders whose axes meet at a point Q at an angle
+// alpha in (0, pi) - the classical Steinmetz/bicylinder configuration -
+// have an intersection curve that factors, in closed form, into two
+// PLANAR ELLIPSES (a classical, public-domain fact): subtracting the two
+// implicit cylinder equations
+//     |p-Q|^2 - ((p-Q).a)^2 = r^2   and   |p-Q|^2 - ((p-Q).b)^2 = r^2
+// leaves ((p-Q).a)^2 = ((p-Q).b)^2, i.e. (p-Q).(a-b) = 0 or (p-Q).(a+b) = 0
+// - the two planes E1 (normal a-b) and E2 (normal a+b) through Q. Each
+// plane cuts each cylinder in an ellipse (detail::ComputeEllipseFrame3d's
+// own closed form, ellipse_clip3d.h), and on either plane a point sits at
+// the SAME distance from both axes, so E1's ellipse on A's wall and E1's
+// ellipse on B's wall are one and the same 3D curve (likewise E2).
+//
+// On cylinder A's own (theta, h) wall chart - h measured from Q along
+// a = A's zaxis, theta from A's xaxis, phi0 = the angle of the in-plane
+// component of b - the two ellipses are the cosine curves
+//     h1(theta) = +r*cot(alpha/2)*cos(theta - phi0)      (plane E1)
+//     h2(theta) = -r*tan(alpha/2)*cos(theta - phi0)      (plane E2)
+// and a wall point is inside B iff h lies strictly BETWEEN h1 and h2: the
+// quadratic (h*cos(alpha) + r*sin(alpha)*cos(theta-phi0))^2 - h^2 has
+// exactly those two roots in h and is positive between them. The two
+// curves cross where cos(theta - phi0) = 0 - at the two PINCH points
+// Q +/- r*n, n = (a x b)/|a x b|, which lie on both walls. So the part of
+// A's wall inside B is NOT an isolated hole punched into the wall's
+// interior: it is two "eyes" (one per angular half, [phi0-pi/2, phi0+pi/2]
+// and [phi0+pi/2, phi0+3pi/2]), each bounded below by one half-ellipse
+// and above by the other, touching the rest of the wall only at the two
+// pinch points. Splitting the wall at the two pinch angles therefore
+// turns EVERY piece into a shape CylindricalFace already represents with
+// no new fields at all:
+//   - four HALF-BANDS: angle = pi, one flat original end, the other end a
+//     single smooth half-ellipse notch (exactly SplitCylindricalByObliquePlane's
+//     notched-at-one-end shape, cap0_notch_points for an upper band /
+//     cap1_notch_points for a lower one);
+//   - two EYES: angle = pi, length = 0, BOTH ends notched - the lower
+//     half-ellipse as cap0_notch_points, the upper one as cap1_notch_points,
+//     both running between the same two pinch vertices (see
+//     CylindricalFace's own doc comment in brep.h for the length == 0 rule
+//     and Brep::FromMixedFaces()'s handling of the two degenerate rails).
+// Every half-ellipse bounds exactly two faces in every op (Union: two
+// half-bands; Intersection: two eyes; Difference: a half-band of one
+// cylinder and an eye of the other), and an eye's own two caps join the
+// same two vertices - which is why Brep::FromMixedFaces() tells notched
+// cap edges apart by their polyline midpoint (BuildFaceLoop, brep.cpp).
+//
+// General alpha costs nothing structural: only the two amplitudes (cot
+// vs tan of alpha/2) and phi0 change, and every fragment's notch heights
+// are read off the sampled lists themselves, never from a closed-form
+// amplitude.
+//
+// SAMPLING IDENTITY. The four half-ellipse lists are sampled ONCE, on a
+// CANONICAL cylinder chosen by a deterministic, argument-order-independent
+// rule (SteinmetzCanonicalFirst, below), uniformly in that cylinder's own
+// angle, and the identical std::vector<Point3d> is handed to every
+// fragment of BOTH cylinders bounded by that half-ellipse - detail::
+// EllipseBoundarySample3d's own "one canonical producer, several
+// consumers" principle. This is what makes the shared boundary bit-
+// identical across the two cylinders: samples uniform in A's angle and
+// samples uniform in B's angle are the same point SET but never the same
+// floating-point values (sin(pi/2 - t) != cos(t) bitwise), and for
+// alpha != 90 degrees the correspondence is not even uniform. Because
+// SplitAndBucketMixed(fa, fb) and SplitAndBucketMixed(fb, fa) both reach
+// this code with the SAME two original faces, the canonical choice - and
+// hence every sampled point - is identical in both calls.
+//
+// EXTENT PRECONDITION (derived, not guessed): the cross-section of the
+// bicylinder perpendicular to a at height h (from Q) is non-empty iff
+// |h| < r*(1+|cos alpha|)/sin(alpha) = r*max(cot(alpha/2), tan(alpha/2)),
+// which is also the larger of the two notch amplitudes. Requiring both
+// original ends of BOTH cylinders to satisfy |h_end - h_Q| > that bound
+// (+ tol) guarantees at once that both eyes are strictly interior to each
+// wall, that neither cylinder's end disc touches the other cylinder, and
+// that SynthesizeEndCaps' on-axis probe just past every original end
+// reads an unambiguous PointClass::kOut (a point on A's axis at height h
+// is inside B iff |h| < r/sin(alpha), which the bound exceeds). A
+// configuration violating it - e.g. a cylinder that STARTS at the
+// crossing - is refused (thrown) rather than split into fragments whose
+// eyes would run into an end disc this pipeline has no face for. Small
+// alpha (cot large) and alpha near pi (tan large) are refused by this
+// same check; alpha within kAxisAlignTol of 0 or pi never reaches here
+// (case (iv)'s own parallel-axis branch takes it first).
+
+constexpr int kSteinmetzSamples = 200;  // segments per half-ellipse; EVEN, so index N/2 is the mid-angle sample
+
+struct SteinmetzCrossing {
+  Point3d q;                   // the axes' crossing point, ON the canonical cylinder's own axis
+  double alpha = 0.0;          // angle between the two axis directions, in (0, pi)
+  double amplitude_max = 0.0;  // r * max(cot(alpha/2), tan(alpha/2)) - see the extent precondition above
+  Point3d pinch[2];            // Q +/- r*n: the two points every half-ellipse starts or ends at
+  // E1 over [phi0-pi/2, phi0+pi/2], E1 over [phi0+pi/2, phi0+3pi/2], then
+  // E2 over the same two ranges - each list in increasing CANONICAL angle,
+  // kSteinmetzSamples+1 points, first and last points at the two pinches.
+  std::array<std::vector<Point3d>, 4> half_ellipses;
+  std::array<double, 4> sagitta{};  // per list, the same chord-midpoint bound SplitCylindricalByObliquePlane computes
+};
+
+// Deterministic, argument-order-independent choice of which of the two
+// cylinders the shared half-ellipses are sampled on: lexicographic on
+// (zaxis, origin). Two cylinders reaching the Steinmetz split always have
+// different axis directions (a parallel pair takes case (iv)'s other
+// branch), so this never needs to break a tie.
+bool SteinmetzCanonicalFirst(const Brep::CylindricalFace& p, const Brep::CylindricalFace& q) {
+  const double kp[6] = {p.frame.zaxis.x, p.frame.zaxis.y, p.frame.zaxis.z,
+                        p.frame.origin.x, p.frame.origin.y, p.frame.origin.z};
+  const double kq[6] = {q.frame.zaxis.x, q.frame.zaxis.y, q.frame.zaxis.z,
+                        q.frame.origin.x, q.frame.origin.y, q.frame.origin.z};
+  for (int i = 0; i < 6; ++i) {
+    if (kp[i] < kq[i]) return true;
+    if (kp[i] > kq[i]) return false;
+  }
+  return true;
+}
+
+// Throws std::invalid_argument (every message naming "non-parallel axes",
+// the substring the existing dispatch-boundary test keys on) for unequal
+// radii, genuinely skew axes, or a crossing that is not strictly interior
+// to both cylinders per the extent precondition above.
+SteinmetzCrossing ComputeSteinmetzCrossing(const Brep::CylindricalFace& self, const Brep::CylindricalFace& other,
+                                           double tol) {
+  const double radius_tol = std::max(tol, 1e-9 * std::max(self.radius, other.radius));
+  if (std::fabs(self.radius - other.radius) > radius_tol) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: two cylindrical faces interacting "
+        "with non-parallel axes and UNEQUAL radii is out of scope - only the "
+        "Steinmetz equal-radius, intersecting-axes case is supported (the "
+        "general skew/unequal-radii case needs a genuine NURBS-NURBS surface "
+        "intersection) - see this function's own doc comment in boolean.h");
+  }
+
+  const bool self_first = SteinmetzCanonicalFirst(self, other);
+  const Brep::CylindricalFace& canon = self_first ? self : other;
+  const Brep::CylindricalFace& partner = self_first ? other : self;
+  const Vector3d a = canon.frame.zaxis;
+  const Vector3d b = partner.frame.zaxis;
+
+  // Closest points of the two (infinite) axis lines - the standard
+  // closed form for two lines O_a + s*a, O_b + t*b with unit directions.
+  const Vector3d w = canon.frame.origin - partner.frame.origin;
+  const double d_ab = ON_DotProduct(a, b);
+  const double d_aw = ON_DotProduct(a, w);
+  const double d_bw = ON_DotProduct(b, w);
+  const double denom = 1.0 - d_ab * d_ab;  // sin^2(alpha), bounded away from 0 by the dispatch's own parallel test
+  const double s = (d_ab * d_bw - d_aw) / denom;
+  const double t = (d_bw - d_ab * d_aw) / denom;
+  const Point3d on_canon = canon.frame.origin + s * a;
+  const Point3d on_partner = partner.frame.origin + t * b;
+  if (on_canon.DistanceTo(on_partner) > tol) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: two cylindrical faces interacting "
+        "with non-parallel axes that do not INTERSECT (genuinely skew axes) is "
+        "out of scope - only the Steinmetz equal-radius, intersecting-axes case "
+        "is supported (the general skew case needs a genuine NURBS-NURBS "
+        "surface intersection) - see this function's own doc comment in "
+        "boolean.h");
+  }
+
+  SteinmetzCrossing crossing;
+  crossing.q = on_canon;
+  crossing.alpha = std::acos(std::max(-1.0, std::min(1.0, d_ab)));
+  const double half = 0.5 * crossing.alpha;
+  crossing.amplitude_max = canon.radius * std::max(1.0 / std::tan(half), std::tan(half));
+
+  for (const Brep::CylindricalFace* c : {&self, &other}) {
+    const double h_q = ON_DotProduct(crossing.q - c->frame.origin, c->frame.zaxis);
+    if (!(h_q > crossing.amplitude_max + tol && c->length - h_q > crossing.amplitude_max + tol)) {
+      throw std::invalid_argument(
+          "dino8::kernel::BooleanCombineMixed: two equal-radius cylindrical "
+          "faces with intersecting non-parallel axes (the Steinmetz "
+          "configuration) are supported only when the crossing is STRICTLY "
+          "interior to both cylinders - every original end must sit more than "
+          "r*max(cot(alpha/2), tan(alpha/2)) from the crossing along its own "
+          "axis, so both eye-shaped intersection regions lie wholly inside "
+          "each wall and neither end disc touches the other cylinder - see "
+          "this function's own doc comment in boolean.h");
+    }
+  }
+
+  // b's in-plane component perpendicular to a, and its angle phi0 in the
+  // canonical cylinder's own (xaxis, yaxis) basis - the mid-angle of the
+  // first angular half.
+  Vector3d u = b - d_ab * a;
+  u.Unitize();
+  const double phi0 = std::atan2(ON_DotProduct(u, canon.frame.yaxis), ON_DotProduct(u, canon.frame.xaxis));
+
+  // The two cutting planes through Q. Their normals' signs are irrelevant
+  // to detail::ComputeEllipseFrame3d (base and C flip together), and the
+  // grazing guard is provably clear: |a.n1| = sin(alpha/2), |a.n2| =
+  // cos(alpha/2), both far above kMinObliqueC for any alpha the extent
+  // precondition above admits.
+  const ON_Plane plane1(crossing.q, a - b);
+  const ON_Plane plane2(crossing.q, a + b);
+  const detail::EllipseFrame3d ef1 = detail::ComputeEllipseFrame3d(canon, plane1, kMinObliqueC);
+  const detail::EllipseFrame3d ef2 = detail::ComputeEllipseFrame3d(canon, plane2, kMinObliqueC);
+
+  const double phi_lo = phi0 - 0.5 * ON_PI;
+  const double phi_mid = phi0 + 0.5 * ON_PI;
+  const double phi_hi = phi0 + 1.5 * ON_PI;
+  const detail::EllipseFrame3d* frames[4] = {&ef1, &ef1, &ef2, &ef2};
+  const double from[4] = {phi_lo, phi_mid, phi_lo, phi_mid};
+  const double to[4] = {phi_mid, phi_hi, phi_mid, phi_hi};
+  for (int i = 0; i < 4; ++i) {
+    std::vector<Point3d> pts = detail::EllipseBoundarySample3d(*frames[i], from[i], to[i], kSteinmetzSamples);
+    // Same sagitta-style bound SplitCylindricalByObliquePlane computes for
+    // its own notch: max over every segment of the distance between the
+    // chord's midpoint and the true curve's point at the midpoint angle.
+    double max_sagitta = 0.0;
+    const int n = static_cast<int>(pts.size()) - 1;
+    for (int k = 0; k < n; ++k) {
+      const double phi_seg_mid = from[i] + (to[i] - from[i]) * (static_cast<double>(k) + 0.5) / n;
+      const Point3d chord_mid = 0.5 * (pts[static_cast<size_t>(k)] + pts[static_cast<size_t>(k) + 1]);
+      max_sagitta = std::max(max_sagitta, chord_mid.DistanceTo(detail::EllipsePointAt(*frames[i], phi_seg_mid)));
+    }
+    crossing.half_ellipses[static_cast<size_t>(i)] = std::move(pts);
+    crossing.sagitta[static_cast<size_t>(i)] = max_sagitta;
+  }
+  crossing.pinch[0] = crossing.half_ellipses[0].front();
+  crossing.pinch[1] = crossing.half_ellipses[0].back();
+  return crossing;
+}
+
+// Splits a FULL-SWEEP, un-notched cylindrical fragment `cf` against an
+// equal-radius, intersecting-axis cylinder `other` into the six fragments
+// derived in the section comment above (per angular half: an upper
+// half-band, a lower half-band, and the eye between them), all six pushed
+// onto the worklist for the existing generic classifier to keep or
+// discard - the same "produce every piece, never privilege one" pattern
+// every other split in this file follows. Which of the four canonical
+// half-ellipse lists bounds which fragment of THIS cylinder is decided
+// from the lists themselves (which pinch each starts at, which angular
+// half its mid-angle sample falls in, whether that sample sits above or
+// below the crossing height), so the non-canonical cylinder needs no
+// separate sign bookkeeping and no closed-form amplitude is ever assumed;
+// a list is reversed where this cylinder's own increasing local angle
+// runs opposite to the canonical one's.
+std::vector<MixedFace> SplitCylindricalBySteinmetzCylinder(const Brep::CylindricalFace& cf,
+                                                            const Brep::CylindricalFace& other, double tol) {
+  for (const Brep::CylindricalFace* c : {&cf, &other}) {
+    if (!(c->angle >= 2.0 * ON_PI - kAxisAlignTol)) {
+      throw std::invalid_argument(
+          "dino8::kernel::BooleanCombineMixed: a Steinmetz (equal-radius, "
+          "intersecting-axes) cylinder/cylinder interaction involving a "
+          "PARTIAL-sweep (angle < 2*pi) cylindrical fragment is out of scope "
+          "- see SplitCylindricalBySteinmetzCylinder's own doc comment in "
+          "boolean.cpp");
+    }
+  }
+  if (!cf.cap0_notch_points.empty() || !cf.cap1_notch_points.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: a Steinmetz (equal-radius, "
+        "intersecting-axes) cylinder/cylinder interaction against a "
+        "cylindrical fragment that is ALREADY notched at an end is out of "
+        "scope - see SplitCylindricalBySteinmetzCylinder's own doc comment in "
+        "boolean.cpp");
+  }
+
+  const SteinmetzCrossing crossing = ComputeSteinmetzCrossing(cf, other, tol);
+
+  const double h_q = ON_DotProduct(crossing.q - cf.frame.origin, cf.frame.zaxis);
+  const Point3d origin_q = cf.frame.origin + h_q * cf.frame.zaxis;  // Q projected onto cf's own axis
+  auto local_angle = [&](const Point3d& p) {
+    const Vector3d d = p - origin_q;
+    double ang = std::atan2(ON_DotProduct(d, cf.frame.yaxis), ON_DotProduct(d, cf.frame.xaxis));
+    if (ang < 0.0) ang += 2.0 * ON_PI;
+    return ang;
+  };
+  const double theta_pinch[2] = {local_angle(crossing.pinch[0]), local_angle(crossing.pinch[1])};
+
+  struct HalfCurves {
+    std::vector<Point3d> top, bottom;  // in increasing local angle of this half, pinch to pinch
+    double top_sagitta = 0.0, bottom_sagitta = 0.0;
+    int top_count = 0, bottom_count = 0;
+  };
+  HalfCurves halves[2];  // halves[i] starts (local angle 0) at pinch i
+  const size_t mid_index = kSteinmetzSamples / 2;
+  for (size_t i = 0; i < 4; ++i) {
+    const std::vector<Point3d>& pts = crossing.half_ellipses[i];
+    const int start = pts.front().DistanceTo(crossing.pinch[0]) <= pts.front().DistanceTo(crossing.pinch[1]) ? 0 : 1;
+    double d = local_angle(pts[mid_index]) - theta_pinch[start];
+    if (d < 0.0) d += 2.0 * ON_PI;
+    int half = start;
+    std::vector<Point3d> oriented = pts;
+    if (d > ON_PI) {
+      // This cylinder's increasing local angle runs the other way along
+      // this curve: it lives in the half starting at the OTHER pinch.
+      half = 1 - start;
+      std::reverse(oriented.begin(), oriented.end());
+    }
+    const double h_mid = ON_DotProduct(pts[mid_index] - origin_q, cf.frame.zaxis);
+    HalfCurves& hc = halves[half];
+    if (h_mid > 0.0) {
+      hc.top = std::move(oriented);
+      hc.top_sagitta = crossing.sagitta[i];
+      ++hc.top_count;
+    } else {
+      hc.bottom = std::move(oriented);
+      hc.bottom_sagitta = crossing.sagitta[i];
+      ++hc.bottom_count;
+    }
+  }
+  for (const HalfCurves& hc : halves) {
+    if (hc.top_count != 1 || hc.bottom_count != 1) {
+      throw std::runtime_error(
+          "dino8::kernel::BooleanCombineMixed: the Steinmetz half-ellipse "
+          "bookkeeping did not assign exactly one upper and one lower curve to "
+          "each angular half - please report this as a bug");
+    }
+  }
+
+  // Same elementary in-plane rotation SplitCylindricalByParallelCylinder's
+  // own make_child uses: rotate (xaxis, yaxis) about zaxis by `begin` so
+  // local angle 0 sits at cf's own physical angle `begin`.
+  auto rotated_half = [&](double begin) {
+    Brep::CylindricalFace child = cf;
+    child.angle = ON_PI;
+    const double cb = std::cos(begin), sb = std::sin(begin);
+    child.frame.xaxis = cb * cf.frame.xaxis + sb * cf.frame.yaxis;
+    child.frame.yaxis = -sb * cf.frame.xaxis + cb * cf.frame.yaxis;
+    child.frame.UpdateEquation();
+    return child;
+  };
+
+  std::vector<MixedFace> out;
+  out.reserve(6);
+  for (int half = 0; half < 2; ++half) {
+    const HalfCurves& hc = halves[half];
+    const Brep::CylindricalFace base = rotated_half(theta_pinch[half]);
+
+    // Upper half-band: from the crossing height up to cf's own original
+    // top, notched below by this half's upper curve (whose endpoints are
+    // the two pinches, at local angles 0 and pi, at v=0 - exactly the rail
+    // corners CylindricalFace's own notch contract requires).
+    Brep::CylindricalFace upper = base;
+    upper.frame.origin = origin_q;
+    upper.frame.UpdateEquation();
+    upper.length = cf.length - h_q;
+    upper.cap0_notch_points = hc.top;
+    upper.cap0_notch_tolerance = hc.top_sagitta;
+    upper.end0_is_original = false;  // v=0 is the fresh cut; v=length inherited from cf
+
+    // Lower half-band: from cf's own original bottom up to the crossing
+    // height, notched above by this half's lower curve (endpoints at
+    // v=length).
+    Brep::CylindricalFace lower = base;
+    lower.length = h_q;
+    lower.cap1_notch_points = hc.bottom;
+    lower.cap1_notch_tolerance = hc.bottom_sagitta;
+    lower.end1_is_original = false;
+
+    // Eye: the region between the two curves - length 0, both caps
+    // notched, no original end at all.
+    Brep::CylindricalFace eye = base;
+    eye.frame.origin = origin_q;
+    eye.frame.UpdateEquation();
+    eye.length = 0.0;
+    eye.cap0_notch_points = hc.bottom;
+    eye.cap0_notch_tolerance = hc.bottom_sagitta;
+    eye.cap1_notch_points = hc.top;
+    eye.cap1_notch_tolerance = hc.top_sagitta;
+    eye.end0_is_original = false;
+    eye.end1_is_original = false;
+
+    out.push_back(MixedFaceFromCyl(std::move(upper)));
+    out.push_back(MixedFaceFromCyl(std::move(lower)));
+    out.push_back(MixedFaceFromCyl(std::move(eye)));
+  }
+  return out;
+}
+
 // interaction") - the MixedFace-aware sibling of SplitAgainstAllPlanes()
 // (above). See boolean.h's own BooleanCombineMixed doc comment for the
 // four pair cases this dispatches between; throws std::invalid_argument
@@ -2520,17 +2925,19 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
             }
           }
         } else {
-          throw std::invalid_argument(
-              "dino8::kernel::BooleanCombineMixed: two cylindrical faces "
-              "interacting with non-parallel axes is out of scope for this "
-              "increment - needs either a genuine NURBS-NURBS surface "
-              "intersection (the fully general skew/unequal-radii case) or "
-              "a new curved-face interior-trim representation (the "
-              "Steinmetz equal-radius/intersecting-axes case, whose own "
-              "intersection curve DOES factor into two exact planar "
-              "ellipses in closed form but sits in the interior of each "
-              "cylinder's wall, not at either end) - see this function's "
-              "own doc comment in boolean.h");
+          // Non-parallel axes: the Steinmetz (equal-radius, intersecting-
+          // axes) split - see SplitCylindricalBySteinmetzCylinder's own
+          // section comment above for the closed-form two-ellipse
+          // decomposition into four half-bands and two eyes. Its own
+          // guards throw std::invalid_argument (each naming "non-parallel
+          // axes") for unequal radii, genuinely skew axes, a crossing not
+          // strictly interior to both cylinders, or a partial-sweep
+          // operand - the fully general skew/unequal-radii case still
+          // needs a genuine NURBS-NURBS surface intersection and remains
+          // out of scope.
+          for (MixedFace& piece : SplitCylindricalBySteinmetzCylinder(f.cyl, g.cyl, tol)) {
+            next.push_back(std::move(piece));
+          }
         }
       }
     }

@@ -784,12 +784,62 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // already state, for the identical reason: no producer here ever builds
 // one).
 //
-// STEINMETZ (equal-radius, intersecting axes) and the fully general
-// (skew, unequal-radii) case remain unaffected and out of scope - see the
-// paragraph below for exactly why Steinmetz, though its own intersection
-// curve DOES factor into two exact planar ellipses in closed form, is a
-// materially bigger lift than parallel axes (a "hole punched into the
-// interior of a curved face" problem, not a "notch at one end" problem).
+// STEINMETZ (equal-radius, INTERSECTING non-parallel axes) cylinder/
+// cylinder pairs are supported for every op, by the classical closed-form
+// decomposition (SplitCylindricalBySteinmetzCylinder's own section comment
+// in boolean.cpp has the derivation): the intersection curve of two
+// equal-radius cylinders whose axes meet at Q factors into two planar
+// ellipses (the planes through Q with normals a-b and a+b), the two
+// ellipses cross at the two "pinch" points Q +/- r*n on the axes' common
+// perpendicular, and on each wall the region inside the other cylinder is
+// two eye-shaped regions between the curves, touching the rest of the
+// wall only at those two points - NOT a hole punched into the wall's
+// interior. Splitting each wall at the two pinch angles yields four
+// half-bands (angle pi, one flat original end, the other end a single
+// half-ellipse notch - the notched-at-one-end CylindricalFace shape the
+// oblique case already uses) and two eyes (angle pi, length 0, BOTH ends
+// notched - see CylindricalFace's own doc comment in brep.h), so no new
+// trim representation is needed. The four half-ellipses are sampled once,
+// on a canonical cylinder chosen independently of argument order, and the
+// identical point lists are handed to both cylinders' fragments, so the
+// shared boundary is bit-identical on both sides. Union keeps the eight
+// half-bands and closes the four original ends with half-discs through
+// the unchanged BuildEndCap; Intersection keeps the four eyes;
+// Difference keeps one cylinder's half-bands and the other's eyes,
+// flipped, as the cavity wall. Any axis angle alpha is supported
+// (Intersection volume 16 r^3 / (3 sin alpha)).
+//
+// Steinmetz PRECONDITIONS, each refused with std::invalid_argument (every
+// message naming "non-parallel axes") rather than approximated: equal
+// radii; axes that genuinely intersect (a skew pair is the general case
+// below); both operands full-sweep and not already notched; and the
+// crossing STRICTLY interior to both cylinders - every original end
+// farther than r*max(cot(alpha/2), tan(alpha/2)) from the crossing along
+// its own axis, which guarantees both eyes lie wholly inside each wall,
+// neither end disc touches the other cylinder, and SynthesizeEndCaps'
+// on-axis probes read an unambiguous kOut (a cylinder that starts at the
+// crossing is refused).
+//
+// Steinmetz TESSELLATION: ordinary Brep::Tessellate() covers every
+// fragment exactly (volumes converge to the closed forms, -1.6e-4
+// relative at 256 divisions), but the two cylinders tessellate their
+// sides of each shared half-ellipse on their own parameter grids, so the
+// mesh has T-junctions there and is NOT Mesh::IsClosedManifold() - the
+// same disclosed limitation the oblique plane+cylinder case carries.
+// Brep::TessellateConforming() has no mesher for a notched cylinder
+// fragment yet: on an Intersection result it falls back to the same open
+// mesh, and on a Union/Difference result it routes each half-band whose
+// flat end matched a cap ArcRun into its bounding-box cylinder mesher,
+// which FILLS THE EYE BACK IN - a mesh of the wrong solid (Union volume
+// +23%) that can even report IsClosedManifold(). Until the notched-strip
+// conforming mesher (a separate follow-up) lands, take a Steinmetz
+// result's volume from the ordinary tessellation only. Brep::MixedFaces()
+// does not round-trip an eye's notches (it re-extracts as a plain
+// length-2r band), so a Steinmetz result is not a valid operand for a
+// second BooleanCombineMixed call: BooleanOp::SymmetricDifference on
+// Steinmetz operands throws (from the parallel-axis partial-sweep guard
+// the re-extracted fragments then hit) rather than returning a wrong
+// solid.
 // A CylindricalFace fragment re-extracted from a PRIOR
 // BooleanCombineMixed result (e.g. inside BooleanOp::SymmetricDifference's
 // own internal Union-then-Intersection-then-Difference chain) always gets
@@ -825,16 +875,13 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // ellipse's own semi-major axis is unboundedly large there), an oblique
 // interaction against a partial-sweep cylindrical operand, a
 // non-monotonic (re-entrant) oblique crossing, and two CYLINDRICAL faces
-// interacting with NON-PARALLEL axes (see the CYLINDER/CYLINDER paragraph
-// above for the now-supported parallel-axis Union sub-case, and its own
-// separately disclosed remaining gaps) - the fully general skew/unequal-
-// radii case needs a genuine NURBS-NURBS surface intersection and re-trim
-// step (see IntersectSurfaces in dino8-app's own geom layer for the
-// intersection-curve half of that, not yet wired to a Brep boolean here),
-// while the Steinmetz equal-radius/intersecting-axes case needs a new
-// curved-face interior-trim representation instead (see the CYLINDER/
-// CYLINDER paragraph above) - two different, materially bigger, separate
-// follow-ups this increment doesn't attempt.
+// with NON-PARALLEL axes outside the Steinmetz preconditions above
+// (unequal radii, or genuinely skew axes - see the CYLINDER/CYLINDER and
+// STEINMETZ paragraphs above for what IS supported) - the fully general
+// skew/unequal-radii case needs a genuine NURBS-NURBS surface
+// intersection and re-trim step (see IntersectSurfaces in dino8-app's own
+// geom layer for the intersection-curve half of that, not yet wired to a
+// Brep boolean here), a materially bigger, separate follow-up.
 //
 // Point-in-solid classification (the other half of the non-convex
 // pipeline, alongside splitting) gets one new, exact closed-form branch:
