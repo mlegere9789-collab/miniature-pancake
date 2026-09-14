@@ -1486,6 +1486,56 @@ Point3d RepresentativeInteriorPointMixed(const MixedFace& f) {
   return PointOnCylFace(cf, 0.5 * cf.angle, height);
 }
 
+// Interpolates the TRUE height of a notch curve at a given angle, from one
+// of a CylindricalFace's own cap0_notch_points/cap1_notch_points chains -
+// the same dense, fixed-order (first point at angle 0, last at cf.angle,
+// interior points recovered by atan2 in cf.frame's own (xaxis, yaxis)
+// basis) sample lists FromMixedFaces' own notch_uv lambda (brep.cpp, see
+// its doc comment) already reinterprets, walked here instead of re-fit,
+// so no separate (angle, height) table is invented - there isn't one
+// stored anywhere, only the 3D points themselves (CylindricalFace's own
+// field). `angle` is expected to already be clamped to [0, cf.angle] by
+// the caller (both ClassifyPointVsMixedSolid's ON-check and
+// RayVsMixedFace's cylindrical branch do this before calling in), so this
+// never has to extrapolate past either end of the chain's own domain.
+double NotchHeightAt(const std::vector<Point3d>& chain, const Brep::CylindricalFace& cf, double angle) {
+  double prev_angle = 0.0;
+  double prev_h = ON_DotProduct(chain.front() - cf.frame.origin, cf.frame.zaxis);
+  for (size_t i = 1; i < chain.size(); ++i) {
+    const Vector3d d = chain[i] - cf.frame.origin;
+    const double h = ON_DotProduct(d, cf.frame.zaxis);
+    double a;
+    if (i + 1 == chain.size()) {
+      a = cf.angle;
+    } else {
+      a = std::atan2(ON_DotProduct(d, cf.frame.yaxis), ON_DotProduct(d, cf.frame.xaxis));
+      if (a < 0.0) a += 2.0 * ON_PI;
+    }
+    if (angle <= a || i + 1 == chain.size()) {
+      if (a <= prev_angle) return h;  // degenerate (coincident-angle) segment - use this sample directly
+      const double t = (angle - prev_angle) / (a - prev_angle);
+      return prev_h + std::max(0.0, std::min(1.0, t)) * (h - prev_h);
+    }
+    prev_angle = a;
+    prev_h = h;
+  }
+  return prev_h;  // angle >= chain.back()'s own angle (== cf.angle) - return the last sample's height
+}
+
+// The wall's true lower/upper height bound at a given angle: the flat rail
+// (0 / cf.length) for an un-notched end, or the notch curve's own
+// interpolated height (NotchHeightAt) for a notched one. For an un-notched
+// face this reduces to exactly the constants 0.0/cf.length used
+// everywhere before this increment, so every call site substituting these
+// in for the old flat bounds is a pure widening for a notched face and a
+// bit-identical no-op otherwise.
+double Cap0HeightAt(const Brep::CylindricalFace& cf, double angle) {
+  return cf.cap0_notch_points.empty() ? 0.0 : NotchHeightAt(cf.cap0_notch_points, cf, angle);
+}
+double Cap1HeightAt(const Brep::CylindricalFace& cf, double angle) {
+  return cf.cap1_notch_points.empty() ? cf.length : NotchHeightAt(cf.cap1_notch_points, cf, angle);
+}
+
 // Result of casting one ray against one MixedFace: how many times it
 // crosses that face's own finite trim region cleanly, and whether it
 // instead grazed that region's own boundary (in which case the caller
@@ -1582,16 +1632,28 @@ FaceHitResult RayVsMixedFace(const Point3d& p, const Vector3d& d, const MixedFac
     const Point3d hit = p + t * d;
     const Vector3d hp = hit - cf.frame.origin;
     const double h = ON_DotProduct(hp, cf.frame.zaxis);
-    if (h < -tol || h > cf.length + tol) continue;  // clearly outside the finite height range
+    // The true angle is needed for the notch-height lookup below even for
+    // a FULL (2*pi) sweep - a full cylindrical face can still carry a
+    // notched cap (an oblique-cut tube/hole, e.g. SplitCylindricalByObliquePlane's
+    // own full-sweep case, boolean.cpp:1998/2217) whose height varies with
+    // angle even though there is no angular TRIM to gate on.
+    const Vector3d radial = hp - h * cf.frame.zaxis;
+    double ang = std::atan2(ON_DotProduct(radial, cf.frame.yaxis), ON_DotProduct(radial, cf.frame.xaxis));
+    if (ang < 0.0) ang += 2.0 * ON_PI;
     double ang_margin = std::numeric_limits<double>::infinity();
     if (!full) {
-      const Vector3d radial = hp - h * cf.frame.zaxis;
-      double ang = std::atan2(ON_DotProduct(radial, cf.frame.yaxis), ON_DotProduct(radial, cf.frame.xaxis));
-      if (ang < 0.0) ang += 2.0 * ON_PI;
       if (ang < -ang_tol || ang > cf.angle + ang_tol) continue;  // clearly outside the swept angle range
       ang_margin = std::min(ang, cf.angle - ang);
     }
-    const double h_margin = std::min(h, cf.length - h);
+    // Notch-aware height bounds (Cap0HeightAt/Cap1HeightAt): for an
+    // un-notched end these are exactly 0.0/cf.length, so this is a
+    // bit-identical no-op versus the old flat gate on every fixture that
+    // predates notched faces - see those functions' own doc comments.
+    const double clamped_ang = std::max(0.0, std::min(cf.angle, ang));
+    const double lo = Cap0HeightAt(cf, clamped_ang);
+    const double hi = Cap1HeightAt(cf, clamped_ang);
+    if (h < lo - tol || h > hi + tol) continue;  // clearly outside the true (possibly notched) height range
+    const double h_margin = std::min(h - lo, hi - h);
     if (h_margin <= tol || ang_margin <= ang_tol) {
       r.grazed = true;
       return r;
@@ -1659,13 +1721,22 @@ PointClass ClassifyPointVsMixedSolid(const Point3d& p, const std::vector<MixedFa
     const double h = ON_DotProduct(rel, cf.frame.zaxis);
     const Vector3d radial = rel - h * cf.frame.zaxis;
     const double dist = radial.Length();
-    if (std::fabs(dist - cf.radius) <= tol && h >= -tol && h <= cf.length + tol) {
+    if (std::fabs(dist - cf.radius) <= tol) {
       const bool full = cf.angle >= 2.0 * ON_PI - 1e-9;
-      if (full) return PointClass::kOn;
+      // The true angle is needed for the notch-height lookup below even
+      // for a full (2*pi) sweep - see RayVsMixedFace's identical note.
       double ang = std::atan2(ON_DotProduct(radial, cf.frame.yaxis), ON_DotProduct(radial, cf.frame.xaxis));
       if (ang < 0.0) ang += 2.0 * ON_PI;
       const double ang_tol = tol / std::max(cf.radius, tol);
-      if (ang >= -ang_tol && ang <= cf.angle + ang_tol) return PointClass::kOn;
+      if (full || (ang >= -ang_tol && ang <= cf.angle + ang_tol)) {
+        // Notch-aware height bounds (Cap0HeightAt/Cap1HeightAt): reduces
+        // to exactly today's `h >= -tol && h <= cf.length + tol` for any
+        // un-notched face - bit-identical no-op there.
+        const double clamped_ang = std::max(0.0, std::min(cf.angle, ang));
+        const double lo = Cap0HeightAt(cf, clamped_ang);
+        const double hi = Cap1HeightAt(cf, clamped_ang);
+        if (h >= lo - tol && h <= hi + tol) return PointClass::kOn;
+      }
     }
   }
 
@@ -1724,14 +1795,56 @@ PointClass ClassifyPointVsMixedSolid(const Point3d& p, const std::vector<MixedFa
 // own axis happens to be oriented relative to it (this subsumes both the
 // "axis lies within the plane" case this increment's own box side walls
 // hit, and the general oblique case, into one formula).
+// A fragment's own axial band is [0, length] widened, for a notched
+// fragment, to cover its notch curves - the same widening
+// Brep::FromMixedFaces() applies to the surface's v-domain (see
+// CylindricalFace's own doc comment in brep.h), plus twice the notch's
+// own sagitta bound: the polyline's extreme heights can undershoot the
+// true ellipse's by at most one segment sagitta (the h-component of the
+// chord-midpoint deviation, at the segment holding the curve's own
+// extremum), doubled here for a margin that costs nothing. Moved ahead of
+// its first use in CylinderPlaneNoInteraction below (NonParallelCylinder-
+// PairNoInteraction's own fuller doc comment, further down this file,
+// covers this same helper's role for the cylinder/cylinder no-interaction
+// test too).
+struct AxialBand {
+  double lo = 0.0, hi = 0.0;
+};
+
+AxialBand CylindricalFragmentAxialBand(const Brep::CylindricalFace& cf) {
+  AxialBand band{0.0, cf.length};
+  auto widen = [&](const std::vector<Point3d>& notch, double notch_tolerance) {
+    const double margin = 2.0 * notch_tolerance;
+    for (const Point3d& p : notch) {
+      const double h = ON_DotProduct(p - cf.frame.origin, cf.frame.zaxis);
+      band.lo = std::min(band.lo, h - margin);
+      band.hi = std::max(band.hi, h + margin);
+    }
+  };
+  widen(cf.cap0_notch_points, cf.cap0_notch_tolerance);
+  widen(cf.cap1_notch_points, cf.cap1_notch_tolerance);
+  return band;
+}
+
 bool CylinderPlaneNoInteraction(const Brep::CylindricalFace& cf, const ON_Plane& plane, double tol) {
+  // The axial extent this bound sweeps over `h` is widened to
+  // CylindricalFragmentAxialBand's own [lo,hi] - the un-notched
+  // [0,length] rectangle when cf carries no notch, but wider whenever a
+  // notch pushes true material below v=0 or above v=length (a cap0 notch
+  // generally dips below v=0, a cap1 notch rises above v=length - see
+  // CylindricalFace's own doc comment). Without this widening, a plane
+  // that only reaches the notched-away extra material would be wrongly
+  // declared non-interacting and passed through unmodified. For an
+  // un-notched face the band is exactly {0, cf.length}, so this is a
+  // bit-identical no-op versus the old d0/d1 formula.
+  const AxialBand band = CylindricalFragmentAxialBand(cf);
   const double base = plane.DistanceTo(cf.frame.origin);
   const double axial = ON_DotProduct(cf.frame.zaxis, plane.zaxis);
   const double A = ON_DotProduct(cf.frame.xaxis, plane.zaxis);
   const double B = ON_DotProduct(cf.frame.yaxis, plane.zaxis);
   const double amp = cf.radius * std::sqrt(A * A + B * B);
-  const double d0 = base;
-  const double d1 = base + cf.length * axial;
+  const double d0 = base + band.lo * axial;
+  const double d1 = base + band.hi * axial;
   const double lo = std::min(d0, d1) - amp;
   const double hi = std::max(d0, d1) + amp;
   return (lo > tol) || (hi < -tol);
@@ -3536,25 +3649,6 @@ std::vector<MixedFace> SplitCylindricalByUnequalCylinder(const Brep::Cylindrical
 // argument-order-independent order first so the floating-point arithmetic
 // is bit-identical too - no verdict can flip on a rounding difference at
 // the exact boundary.
-
-struct AxialBand {
-  double lo = 0.0, hi = 0.0;
-};
-
-AxialBand CylindricalFragmentAxialBand(const Brep::CylindricalFace& cf) {
-  AxialBand band{0.0, cf.length};
-  auto widen = [&](const std::vector<Point3d>& notch, double notch_tolerance) {
-    const double margin = 2.0 * notch_tolerance;
-    for (const Point3d& p : notch) {
-      const double h = ON_DotProduct(p - cf.frame.origin, cf.frame.zaxis);
-      band.lo = std::min(band.lo, h - margin);
-      band.hi = std::max(band.hi, h + margin);
-    }
-  };
-  widen(cf.cap0_notch_points, cf.cap0_notch_tolerance);
-  widen(cf.cap1_notch_points, cf.cap1_notch_tolerance);
-  return band;
-}
 
 // Closest distance between the segments [p1, q1] and [p2, q2] - Ericson's
 // ClosestPtSegmentSegment (see the section comment above), degenerate

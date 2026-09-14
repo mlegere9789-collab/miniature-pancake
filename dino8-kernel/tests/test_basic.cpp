@@ -16513,6 +16513,75 @@ void TestBooleanCombineMixedChainedNegativeControls() {
   }
 }
 
+// Documents the boundary of THIS increment (notch-aware ClassifyPointVsMixedSolid/
+// RayVsMixedFace/CylinderPlaneNoInteraction, boolean.cpp): the ON-check and
+// ray-cast now consult the notched cap's own true (angle, height) curve
+// instead of the un-notched flat [0, length] rectangle (via NotchHeightAt/
+// Cap0HeightAt/Cap1HeightAt), and CylinderPlaneNoInteraction's closed-form
+// bound is widened to CylindricalFragmentAxialBand so a plane that only
+// reaches a notch's OWN extended material is no longer wrongly declared
+// non-interacting. Both changes are provably inert on every pre-existing
+// (un-notched, or already-passing notched) fixture - see the two
+// TestBooleanCombineMixedChainedCallsThroughNotchedResults/
+// TestMixedFacesReturnsVerbatimRecordsForBooleanResults cases above, all
+// still bit-identical after this change.
+//
+// What is NOT fixed here, confirmed directly rather than assumed: cutting a
+// SINGLE full-sweep notched cylindrical fragment mid-length (the case that
+// would actually exercise the widened height gate against real material
+// outside [0, length]) goes through a DIFFERENT function - the axis-aligned
+// split producer around SplitAndBucketMixed's case (ii)/(iii) `v_cut` branch
+// - which builds its two children via a blind `lo = cf; lo.length = v_cut;`
+// / `hi = cf; hi.frame.origin = ...` field copy that does not clear or
+// re-derive the ORIGINAL fragment's own cap0_notch_points/cap1_notch_points
+// on the newly-cut end. A notch that belonged to the far (untouched) rail
+// survives correctly, but a notch on the rail nearest the cut is carried
+// forward onto a child whose own v=0 or v=length no longer matches it,
+// which FromMixedFaces() (correctly) refuses as a rail-corner mismatch -
+// this reproduces regardless of whether `v_cut` itself falls inside or
+// outside the flat [0, length] domain (checked directly for both). This is
+// a genuinely separate, producer-side gap from the classification fix
+// above (a different function, not touched by this increment's scope) -
+// flagged here as a negative control so it is not mistaken for a
+// regression, and as the concrete next step for whoever picks this up: the
+// split producer needs to decide, per new child, which (if either) of the
+// original two notch lists still applies to its own new rail, exactly the
+// same "which end is still original" bookkeeping
+// end0_is_original/end1_is_original already does for open-vs-closed
+// classification, generalized to notch ownership.
+void TestBooleanCombineMixedNotchAwareClassificationStillNeedsSplitProducerWork() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const SharedNotchPairFixture fx = BuildSharedNotchCylinderPair();
+  // z in [-1, 1]: entirely outside the `upper` fragment's own flat [2, 7]
+  // rail range but inside its cap0 notch's true extended material near
+  // angle pi (the curve dips to abs z = -2 there) - exactly the region the
+  // OLD (un-widened) CylinderPlaneNoInteraction would have wrongly called
+  // non-interacting, and the widened one above correctly calls interacting.
+  const Brep box = Brep::Box(-10, -10, -1, 10, 10, 1);
+  bool diff_threw = false, inter_threw = false;
+  try {
+    BooleanCombineMixed(fx.brep, box, BooleanOp::Difference);
+  } catch (const std::invalid_argument&) {
+    diff_threw = true;
+  }
+  try {
+    BooleanCombineMixed(fx.brep, box, BooleanOp::Intersection);
+  } catch (const std::invalid_argument&) {
+    inter_threw = true;
+  }
+  Check(diff_threw && inter_threw,
+        "Difference/Intersection(shared-notch solid, a box crossing its cap0 notch's true extended material) "
+        "still throw today - genuine INTERACTION with a notch's extended region is now correctly detected "
+        "(CylinderPlaneNoInteraction no longer passes the wall through unmodified there), but the mid-length "
+        "split producer that must then actually cut the notched fragment has its own separate, pre-existing "
+        "gap (a blind field copy that does not clear the cut child's inherited notch points) - documented above, "
+        "out of scope for the classification-only fix in this increment, and NOT expected to start passing "
+        "silently until that producer gap is fixed");
+}
+
 // ---------------------------------------------------------------------
 // Unequal-radius cylinder/cylinder booleans at a GENERAL axis angle
 // ---------------------------------------------------------------------
@@ -17375,6 +17444,7 @@ int main() {
   TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls();
   TestFromMixedFacesSlopedNotchCapAndStraightChordStayDistinct();
   TestFromMixedFacesFlatCornerGateIsInert();
+  TestBooleanCombineMixedNotchAwareClassificationStillNeedsSplitProducerWork();
 
   ON::End();
 

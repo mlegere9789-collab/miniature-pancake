@@ -1055,6 +1055,30 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 //   is bit-for-bit unchanged. An operand carrying a ConicalFace (a
 //   tapered fillet) is refused (std::invalid_argument) - it used to have
 //   its cones silently dropped from its boundary.
+//   - NOTCH-AWARE CLASSIFICATION. ClassifyPointVsMixedSolid's ON-check and
+//     RayVsMixedFace's cylindrical branch used to test a notched
+//     CylindricalFace's own true (angle, height) trim against its
+//     UN-notched flat [0, length] rectangle - a point genuinely carved
+//     away by the notch at that angle (inside the flat rectangle but
+//     outside the notch curve) misclassified kOn/counted a ray crossing
+//     it should not have, and CylinderPlaneNoInteraction's own closed-form
+//     bound swept only that same flat rectangle, so a plane reaching ONLY
+//     a notch's own extended material (a cap0 notch generally dips below
+//     v=0, a cap1 notch generally rises above v=length) could be wrongly
+//     declared non-interacting and passed through unmodified instead of
+//     being classified or split at all. Both now consult the notched
+//     cap's own interpolated (angle, height) curve directly (the same
+//     dense sample lists FromMixedFaces() itself reinterprets) instead of
+//     the flat rectangle; for an un-notched face every formula reduces to
+//     the exact prior arithmetic, so this is a bit-for-bit no-op on every
+//     pre-existing fixture (confirmed: the whole prior suite is unchanged).
+//     A fully-enclosing or fully-disjoint second operand's own planar
+//     faces already resolved via the flat CylinderPlaneNoInteraction bound
+//     before this fix too (its notch never reaches far enough to matter
+//     for those), so no measured volume changes for that shape of second
+//     operand either - this closes a real, source-confirmed
+//     misclassification risk rather than a defect visible in any of this
+//     codebase's own existing fixtures.
 //   Still out of scope, each thrown honestly, not approximated: a second
 //   cut that INTERACTS with a notched or partial-sweep fragment (every
 //   cylinder-pair producer's own partial-sweep/already-notched guard, and
@@ -1063,9 +1087,19 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 //   that a previous cut left as several fragments of one cylinder (each
 //   fragment punches the plane separately - "3 or more faces"), a third
 //   hole whose circle straddles an earlier hole's wedge cut
-//   (ClipPolygonByCircle3d's partial-overlap refusal), and a classifier
-//   that still reads a notched wall's un-notched rectangle as material
-//   (a box enclosing a Steinmetz union, or a second box covering a hole).
+//   (ClipPolygonByCircle3d's partial-overlap refusal), and - now that
+//   CylinderPlaneNoInteraction correctly detects interaction with a
+//   notch's own extended material instead of silently passing the wall
+//   through - the split producer that must then actually cut a
+//   single, full-sweep notched cylindrical fragment mid-length: its two
+//   children are built by a plain field copy of the original fragment
+//   that does not clear or re-derive whichever cap0/cap1_notch_points
+//   belonged to the rail nearest the new cut, so FromMixedFaces()
+//   correctly refuses the mismatched rail corner rather than silently
+//   building the wrong shape (confirmed directly: Difference/Intersection
+//   of the shared-notch fixture against a box crossing its notch's
+//   extended material still throw today, for this reason, not a
+//   classification defect).
 //
 // SYMMETRIC DIFFERENCE: BooleanOp::SymmetricDifference returns
 // Brep::Compound({Difference(a, b), Difference(b, a)}) - two lumps in one
