@@ -848,6 +848,46 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // on-axis probes read an unambiguous kOut (a cylinder that starts at the
 // crossing is refused).
 //
+// NON-PARALLEL NO-INTERACTION pairs: before any of those preconditions is
+// consulted, a non-parallel pair whose two FINITE cylinders provably
+// cannot touch passes through the split unchanged - exactly the way a
+// disjoint PARALLEL pair already does - so its Union is both solids (each
+// wall one face, every original end capped), A - B is A unchanged, and
+// its Intersection is empty, for any radii and any axis placement. Two
+// closed-form tests decide this (NonParallelCylinderPairNoInteraction,
+// boolean.cpp), either sufficient on its own:
+//   - EXACT for equal radii and intersecting axes: the region inside both
+//     infinite cylinders (the Steinmetz solid) extends along either axis
+//     exactly r*max(cot(alpha/2), tan(alpha/2)) either side of the
+//     crossing - the same bound as the extent precondition, which is the
+//     solid's true axial reach, not an over-estimate - so if that band
+//     misses EITHER cylinder's own axial extent (by more than the
+//     pipeline tolerance), the pair never meets. Along each axis this is
+//     exact: a pair separable by one axis alone is never refused. A pair
+//     whose bands overlap both extents while the crossing is not strictly
+//     interior to both cylinders (a genuine or, at a general angle, a
+//     near-tip partial end crossing) still throws the extent refusal
+//     above, message unchanged; so does a pair that touches only through
+//     the combination of both axial clips.
+//   - CONSERVATIVE for every other pair (skew axes and/or unequal radii):
+//     each finite cylinder lies inside the capsule of its own axis
+//     segment with its own radius, so two pairs whose axis SEGMENTS are
+//     more than r_a + r_b + tol apart (standard closed-form segment/
+//     segment distance) never meet. A skew or unequal-radius pair the
+//     capsule test cannot separate - the segments within r_a + r_b, which
+//     for pegs meeting end-to-side can still be a disjoint pair - throws
+//     the same "UNEQUAL radii" / "do not INTERSECT" refusals as before.
+// A fragment's axial extent is its [0, length] widened over any notch it
+// already carries, so partial-sweep or already-notched fragments are
+// passed through as well when the pair provably never meets; their
+// guards still fire when it does. The verdict is argument-order
+// independent (the pair is canonically ordered before any arithmetic),
+// so neither the (a, b) nor the (b, a) split direction ever throws for a
+// no-interaction pair. A no-interaction Union/Difference result's
+// conforming tessellation is a closed manifold (only the quadrant end
+// caps meet plain full-sweep walls, the configuration already verified
+// closed for the disjoint parallel-axis case).
+//
 // Steinmetz TESSELLATION: ordinary Brep::Tessellate() covers every
 // fragment exactly (volumes converge to the closed forms, -1.6e-4
 // relative at 256 divisions), but the two cylinders tessellate their
@@ -903,13 +943,15 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // ellipse's own semi-major axis is unboundedly large there), an oblique
 // interaction against a partial-sweep cylindrical operand, a
 // non-monotonic (re-entrant) oblique crossing, and two CYLINDRICAL faces
-// with NON-PARALLEL axes outside the Steinmetz preconditions above
-// (unequal radii, or genuinely skew axes - see the CYLINDER/CYLINDER and
-// STEINMETZ paragraphs above for what IS supported) - the fully general
-// skew/unequal-radii case needs a genuine NURBS-NURBS surface
-// intersection and re-trim step (see IntersectSurfaces in dino8-app's own
-// geom layer for the intersection-curve half of that, not yet wired to a
-// Brep boolean here), a materially bigger, separate follow-up.
+// with NON-PARALLEL axes that INTERACT (or cannot be proven not to)
+// outside the Steinmetz preconditions above (unequal radii, or genuinely
+// skew axes - see the CYLINDER/CYLINDER, STEINMETZ and NON-PARALLEL
+// NO-INTERACTION paragraphs above for what IS supported) - the fully
+// general skew/unequal-radii interaction needs a genuine NURBS-NURBS
+// surface intersection and re-trim step (see IntersectSurfaces in
+// dino8-app's own geom layer for the intersection-curve half of that,
+// not yet wired to a Brep boolean here), a materially bigger, separate
+// follow-up.
 //
 // Point-in-solid classification (the other half of the non-convex
 // pipeline, alongside splitting) gets one new, exact closed-form branch:

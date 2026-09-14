@@ -2294,7 +2294,10 @@ std::vector<Brep::CylindricalFace> SplitCylindricalByOtherCylinderAxialExtent(
 // eyes would run into an end disc this pipeline has no face for. Small
 // alpha (cot large) and alpha near pi (tan large) are refused by this
 // same check; alpha within kAxisAlignTol of 0 or pi never reaches here
-// (case (iv)'s own parallel-axis branch takes it first).
+// (case (iv)'s own parallel-axis branch takes it first), and neither
+// does a pair whose finite cylinders provably never meet at all - the
+// same bound, read the other way round, is the no-interaction test
+// case (iv) consults first (NonParallelCylinderPairNoInteraction, below).
 
 constexpr int kSteinmetzSamples = 200;  // segments per half-ellipse; EVEN, so index N/2 is the mid-angle sample
 
@@ -2580,6 +2583,194 @@ std::vector<MixedFace> SplitCylindricalBySteinmetzCylinder(const Brep::Cylindric
     out.push_back(MixedFaceFromCyl(std::move(eye)));
   }
   return out;
+}
+
+// ---------------------------------------------------------------------
+// Non-parallel cylinder/cylinder NO-INTERACTION tests
+// ---------------------------------------------------------------------
+//
+// The non-parallel-axis analogue of CylinderCylinderNoInteraction (above):
+// a closed-form, provably-sufficient answer to "can these two FINITE
+// cylinders touch at all?", consulted by case (iv)'s dispatch BEFORE the
+// Steinmetz split, so a pair that provably never meets passes through the
+// split unchanged (exactly the parallel-axis no-interaction mechanism:
+// the fragment is pushed onto the worklist as-is, the existing generic
+// classifier then reads kOut against the other solid, and the shared
+// classify-then-bucket step keeps it for Union/Difference-from-this-side
+// and drops it for Intersection - no new bookkeeping anywhere downstream)
+// instead of being refused by ComputeSteinmetzCrossing's own guards. Two
+// independent tests, either sufficient on its own:
+//
+// (1) CAPSULE SEPARATION - any pair, no assumption on radii or on whether
+//     the axes meet. Every point of a finite cylinder (axial band
+//     [lo, hi], radius r) is within r of the foot of its own axial
+//     projection, which lies on the axis SEGMENT {origin + h*zaxis,
+//     h in [lo, hi]} - so the finite cylinder is contained in the capsule
+//     (segment swept by a ball of radius r) of that segment. Two capsules
+//     whose segments are more than r_a + r_b apart are disjoint (a shared
+//     point would put the two segments within r_a + r_b of each other by
+//     the triangle inequality), so the finite cylinders are too. The
+//     segment/segment distance is the standard closed form
+//     (Ericson, "Real-Time Collision Detection," 5.1.9, ClosestPtSegmentSegment;
+//     equivalently Eberly / Sunday's dist3D_Segment_to_Segment): minimize
+//     the quadratic |P(s) - Q(t)|^2 over the unit square, clamping to its
+//     edges. Conservative in both directions: it never separates an
+//     interacting pair, and it can fail to separate a disjoint one whose
+//     axis segments come within r_a + r_b (e.g. two equal-radius pegs
+//     end-to-side with a small gap) - which is exactly what test (2)
+//     closes for the one configuration this kernel otherwise supports.
+//
+// (2) STEINMETZ AXIAL BAND - equal radii and genuinely intersecting axes
+//     only (the same radius_tol and closest-points test
+//     ComputeSteinmetzCrossing itself applies, so the two never disagree
+//     about which regime a pair is in). Derivation: put Q at the origin,
+//     A's axis along z, B's along b = (sin alpha, 0, cos alpha). A point
+//     p = (x, y, h) is inside A iff x^2 + y^2 < r^2 and inside B iff
+//     |p|^2 - (p.b)^2 < r^2, i.e. x^2 + y^2 + h^2 - (x sin alpha + h cos alpha)^2 < r^2.
+//     Subtracting the two: inside BOTH iff y^2 < r^2 - x^2 - (x cos alpha - h sin alpha)^2,
+//     so the cross-section of A_inf ∩ B_inf perpendicular to A's axis at
+//     height h is non-empty iff |h sin alpha - x cos alpha| < r for some
+//     |x| < r - minimizing over x, iff |h| sin alpha < r(1 + |cos alpha|),
+//     i.e. |h| < r(1 + |cos alpha|)/sin alpha = r*max(cot(alpha/2), tan(alpha/2))
+//     = amplitude_max, the very bound ComputeSteinmetzCrossing's extent
+//     precondition uses (this is EXACT: it is the Steinmetz solid's full
+//     axial extent, not an over-estimate). By symmetry the same holds
+//     along B's axis with the same amplitude. Since
+//     A_fin ∩ B_fin ⊆ A_inf ∩ B_inf, if for EITHER cylinder the band
+//     [h_Q - amplitude_max, h_Q + amplitude_max] misses that cylinder's own
+//     axial band [lo, hi], the finite pair cannot meet. This is exact
+//     along each axis separately, so it never refuses a pair that one
+//     axis alone can separate; when BOTH bands overlap their extents the
+//     pair generally does meet (always so at alpha = 90 degrees, where
+//     the solid's axial tips are whole chords rather than points), and
+//     the existing extent precondition decides between "split" and
+//     "refuse" as before. The three regimes tile the axis with no gap and
+//     no overlap: no-interaction below -amplitude_max - tol or above
+//     length + amplitude_max + tol, split strictly inside
+//     (amplitude_max + tol, length - amplitude_max - tol), refuse between.
+//
+// A fragment's own axial band is [0, length] widened, for a notched
+// fragment, to cover its notch curves - the same widening
+// Brep::FromMixedFaces() applies to the surface's v-domain (see
+// CylindricalFace's own doc comment in brep.h), plus twice the notch's
+// own sagitta bound: the polyline's extreme heights can undershoot the
+// true ellipse's by at most one segment sagitta (the h-component of the
+// chord-midpoint deviation, at the segment holding the curve's own
+// extremum), doubled here for a margin that costs nothing. Full-sweep is
+// never assumed either: a partial sweep is a subset of the full circle,
+// so both tests stay conservative for every CylindricalFace shape this
+// pipeline produces, which is why this check runs BEFORE the Steinmetz
+// split's own partial-sweep/already-notched guards - those guards refuse
+// an INTERACTION they cannot represent, and a pair that provably never
+// interacts needs no representation at all.
+//
+// Argument-order symmetry: SplitAndBucketMixed(fa, fb) and (fb, fa) both
+// reach this with the same two original faces, and the verdict must be
+// identical in both directions (a fragment passing through in one
+// direction while its partner is refused in the other would throw from
+// one of the two calls anyway). Both tests are symmetric functions of the
+// pair mathematically, and the pair is put into SteinmetzCanonicalFirst's
+// argument-order-independent order first so the floating-point arithmetic
+// is bit-identical too - no verdict can flip on a rounding difference at
+// the exact boundary.
+
+struct AxialBand {
+  double lo = 0.0, hi = 0.0;
+};
+
+AxialBand CylindricalFragmentAxialBand(const Brep::CylindricalFace& cf) {
+  AxialBand band{0.0, cf.length};
+  auto widen = [&](const std::vector<Point3d>& notch, double notch_tolerance) {
+    const double margin = 2.0 * notch_tolerance;
+    for (const Point3d& p : notch) {
+      const double h = ON_DotProduct(p - cf.frame.origin, cf.frame.zaxis);
+      band.lo = std::min(band.lo, h - margin);
+      band.hi = std::max(band.hi, h + margin);
+    }
+  };
+  widen(cf.cap0_notch_points, cf.cap0_notch_tolerance);
+  widen(cf.cap1_notch_points, cf.cap1_notch_tolerance);
+  return band;
+}
+
+// Closest distance between the segments [p1, q1] and [p2, q2] - Ericson's
+// ClosestPtSegmentSegment (see the section comment above), degenerate
+// (point-like) segments included.
+double SegmentSegmentDistance(const Point3d& p1, const Point3d& q1, const Point3d& p2, const Point3d& q2) {
+  constexpr double kTiny = 1e-30;  // squared length below which a segment is treated as a point
+  auto clamp01 = [](double v) { return std::max(0.0, std::min(1.0, v)); };
+  const Vector3d d1 = q1 - p1;
+  const Vector3d d2 = q2 - p2;
+  const Vector3d r = p1 - p2;
+  const double a = ON_DotProduct(d1, d1);
+  const double e = ON_DotProduct(d2, d2);
+  const double f = ON_DotProduct(d2, r);
+  double s = 0.0, t = 0.0;
+  if (a <= kTiny && e <= kTiny) {
+    // both segments are points
+  } else if (a <= kTiny) {
+    t = clamp01(f / e);
+  } else {
+    const double c = ON_DotProduct(d1, r);
+    if (e <= kTiny) {
+      s = clamp01(-c / a);
+    } else {
+      const double b = ON_DotProduct(d1, d2);
+      const double denom = a * e - b * b;  // >= 0 by Cauchy-Schwarz, 0 iff parallel
+      s = denom > 0.0 ? clamp01((b * f - c * e) / denom) : 0.0;
+      t = (b * s + f) / e;
+      if (t < 0.0) {
+        t = 0.0;
+        s = clamp01(-c / a);
+      } else if (t > 1.0) {
+        t = 1.0;
+        s = clamp01((b - c) / a);
+      }
+    }
+  }
+  return (p1 + s * d1).DistanceTo(p2 + t * d2);
+}
+
+bool NonParallelCylinderPairNoInteraction(const Brep::CylindricalFace& cf_a, const Brep::CylindricalFace& cf_b,
+                                          double tol) {
+  const bool a_first = SteinmetzCanonicalFirst(cf_a, cf_b);
+  const Brep::CylindricalFace& p = a_first ? cf_a : cf_b;
+  const Brep::CylindricalFace& q = a_first ? cf_b : cf_a;
+  const AxialBand band_p = CylindricalFragmentAxialBand(p);
+  const AxialBand band_q = CylindricalFragmentAxialBand(q);
+
+  // (1) Capsule separation - any pair.
+  const double segment_distance =
+      SegmentSegmentDistance(p.frame.origin + band_p.lo * p.frame.zaxis, p.frame.origin + band_p.hi * p.frame.zaxis,
+                             q.frame.origin + band_q.lo * q.frame.zaxis, q.frame.origin + band_q.hi * q.frame.zaxis);
+  if (segment_distance > p.radius + q.radius + tol) return true;
+
+  // (2) Steinmetz axial band - equal radii, intersecting axes only, with
+  // the SAME regime tests ComputeSteinmetzCrossing applies.
+  const double radius_tol = std::max(tol, 1e-9 * std::max(p.radius, q.radius));
+  if (std::fabs(p.radius - q.radius) > radius_tol) return false;
+  const Vector3d a = p.frame.zaxis;
+  const Vector3d b = q.frame.zaxis;
+  const Vector3d w = p.frame.origin - q.frame.origin;
+  const double d_ab = ON_DotProduct(a, b);
+  const double d_aw = ON_DotProduct(a, w);
+  const double d_bw = ON_DotProduct(b, w);
+  const double denom = 1.0 - d_ab * d_ab;  // sin^2(alpha) - the dispatch only sends non-parallel pairs here
+  if (!(denom > 0.0)) return false;
+  const double s = (d_ab * d_bw - d_aw) / denom;
+  const double t = (d_bw - d_ab * d_aw) / denom;
+  const Point3d on_p = p.frame.origin + s * a;
+  const Point3d on_q = q.frame.origin + t * b;
+  if (on_p.DistanceTo(on_q) > tol) return false;  // genuinely skew - only the capsule test applies
+  const double alpha = std::acos(std::max(-1.0, std::min(1.0, d_ab)));
+  const double half = 0.5 * alpha;
+  const double amplitude_max = p.radius * std::max(1.0 / std::tan(half), std::tan(half));
+  const Point3d crossing = on_p;  // ComputeSteinmetzCrossing's own Q: on the canonical cylinder's axis
+  auto band_misses = [&](const Brep::CylindricalFace& c, const AxialBand& band) {
+    const double h_q = ON_DotProduct(crossing - c.frame.origin, c.frame.zaxis);
+    return h_q + amplitude_max < band.lo - tol || h_q - amplitude_max > band.hi + tol;
+  };
+  return band_misses(p, band_p) || band_misses(q, band_q);
 }
 
 // interaction") - the MixedFace-aware sibling of SplitAgainstAllPlanes()
@@ -2924,6 +3115,21 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
               next.push_back(std::move(piece));
             }
           }
+        } else if (NonParallelCylinderPairNoInteraction(f.cyl, g.cyl, tol)) {
+          // Non-parallel axes, but the two FINITE cylinders provably never
+          // meet (capsule separation for any pair, or - for an equal-
+          // radius intersecting-axes pair - the Steinmetz solid's own
+          // exact axial band missing either cylinder's extent; see the
+          // section comment above NonParallelCylinderPairNoInteraction):
+          // the fragment passes through unchanged, exactly the way
+          // SplitCylindricalByParallelCylinder returns a disjoint
+          // parallel-axis fragment untouched, and the existing generic
+          // classifier reads it kOut against the other solid downstream.
+          // Checked BEFORE the Steinmetz split's own guards, so a pair
+          // that never interacts is never refused for a property (unequal
+          // radii, skew axes, an end short of the crossing, a partial
+          // sweep, an existing notch) that only matters when it does.
+          next.push_back(std::move(f));
         } else {
           // Non-parallel axes: the Steinmetz (equal-radius, intersecting-
           // axes) split - see SplitCylindricalBySteinmetzCylinder's own
@@ -2932,9 +3138,11 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
           // guards throw std::invalid_argument (each naming "non-parallel
           // axes") for unequal radii, genuinely skew axes, a crossing not
           // strictly interior to both cylinders, or a partial-sweep
-          // operand - the fully general skew/unequal-radii case still
-          // needs a genuine NURBS-NURBS surface intersection and remains
-          // out of scope.
+          // operand - now only for pairs the no-interaction test above
+          // could not separate, i.e. pairs that genuinely (or, for the
+          // conservative capsule test, possibly) touch; the fully general
+          // skew/unequal-radii INTERACTION still needs a genuine
+          // NURBS-NURBS surface intersection and remains out of scope.
           for (MixedFace& piece : SplitCylindricalBySteinmetzCylinder(f.cyl, g.cyl, tol)) {
             next.push_back(std::move(piece));
           }
