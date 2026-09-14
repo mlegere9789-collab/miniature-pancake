@@ -2577,6 +2577,70 @@ struct EdgeForce {
   Point3d point;
 };
 
+// One breakpoint of a plain quad's own a or b axis (see
+// BuildConformingPlainQuadMesh below): its parameter, plus the forced
+// literal point (if any) at each of that axis's two extremes.
+struct QuadAxisBreak {
+  double t = 0.0;
+  const Point3d* at_lo = nullptr;  // forced point at this axis's own "0" extreme
+  const Point3d* at_hi = nullptr;  // forced point at this axis's own "1" extreme
+};
+
+// Shared "collect forced breakpoints, then fill the remaining gaps at
+// roughly `divisions`-uniform spacing" logic - the same shape
+// BuildConformingCylinderMesh's own u-breakpoint construction already
+// uses (see its own doc comment), applied once per axis by
+// BuildConformingPlainQuadMesh (both extremes' forces unioned into one
+// list, since a tensor grid needs one column set for every row) and
+// once per ROW by BuildConformingPlainQuadStripMesh (one extreme's
+// forces at a time, the other passed empty). `forces_lo`/`forces_hi`
+// are the forced points at the axis's "0"/"1" extreme; two forces within
+// 1e-9 in t share one breakpoint, the later one winning that extreme's
+// pointer. The result is sorted by t, always starting at 0 and ending at
+// 1.
+std::vector<QuadAxisBreak> BuildQuadAxisBreaks(const std::vector<EdgeForce>& forces_lo,
+                                               const std::vector<EdgeForce>& forces_hi, int divisions) {
+  const double tol = 1e-9;
+  std::vector<QuadAxisBreak> breaks;
+  auto add_break = [&](double t, const Point3d* lo, const Point3d* hi) {
+    for (QuadAxisBreak& b : breaks) {
+      if (std::fabs(b.t - t) <= tol) {
+        if (lo) b.at_lo = lo;
+        if (hi) b.at_hi = hi;
+        return;
+      }
+    }
+    QuadAxisBreak b;
+    b.t = t;
+    b.at_lo = lo;
+    b.at_hi = hi;
+    breaks.push_back(b);
+  };
+  add_break(0.0, nullptr, nullptr);
+  add_break(1.0, nullptr, nullptr);
+  for (const EdgeForce& f : forces_lo) add_break(f.t, &f.point, nullptr);
+  for (const EdgeForce& f : forces_hi) add_break(f.t, nullptr, &f.point);
+  std::sort(breaks.begin(), breaks.end(), [](const QuadAxisBreak& x, const QuadAxisBreak& y) { return x.t < y.t; });
+
+  const double target_spacing = 1.0 / static_cast<double>(std::max(divisions, 1));
+  std::vector<QuadAxisBreak> filled;
+  filled.reserve(breaks.size() * 2);
+  for (size_t i = 0; i + 1 < breaks.size(); ++i) {
+    filled.push_back(breaks[i]);
+    const double gap = breaks[i + 1].t - breaks[i].t;
+    if (gap > target_spacing * 1.5) {
+      const int extra = static_cast<int>(std::ceil(gap / target_spacing)) - 1;
+      for (int e = 1; e <= extra; ++e) {
+        QuadAxisBreak b;
+        b.t = breaks[i].t + gap * static_cast<double>(e) / static_cast<double>(extra + 1);
+        filled.push_back(b);
+      }
+    }
+  }
+  if (!breaks.empty()) filled.push_back(breaks.back());
+  return filled;
+}
+
 // Builds one un-cut, 4-corner planar face's own tensor-product mesh via
 // PLAIN BILINEAR interpolation of its own 4 corners `q[0..3]` (CCW, the
 // SAME order `fg.outer` - or the implicit domain-corner rectangle for an
@@ -2631,62 +2695,16 @@ Mesh BuildConformingPlainQuadMesh(const std::array<Point3d, 4>& q, int u_divisio
     return (1.0 - a) * (1.0 - b) * q[0] + a * (1.0 - b) * q[1] + a * b * q[2] + (1.0 - a) * b * q[3];
   };
 
-  struct Break {
-    double t = 0.0;
-    const Point3d* at_lo = nullptr;  // forced point at this axis's own "0" extreme
-    const Point3d* at_hi = nullptr;  // forced point at this axis's own "1" extreme
-  };
-  // Shared "collect forced breakpoints, then fill the remaining gaps at
-  // roughly `divisions`-uniform spacing" logic - the same shape
-  // BuildConformingCylinderMesh's own u-breakpoint construction already
-  // uses (see its own doc comment), applied once per axis here since
-  // EITHER axis (not just `u`) may carry forced points for a plain quad
-  // face (see this function's own doc comment for why).
-  auto build_axis = [](const std::vector<EdgeForce>& forces_lo, const std::vector<EdgeForce>& forces_hi,
-                        int divisions) {
-    const double tol = 1e-9;
-    std::vector<Break> breaks;
-    auto add_break = [&](double t, const Point3d* lo, const Point3d* hi) {
-      for (Break& b : breaks) {
-        if (std::fabs(b.t - t) <= tol) {
-          if (lo) b.at_lo = lo;
-          if (hi) b.at_hi = hi;
-          return;
-        }
-      }
-      Break b;
-      b.t = t;
-      b.at_lo = lo;
-      b.at_hi = hi;
-      breaks.push_back(b);
-    };
-    add_break(0.0, nullptr, nullptr);
-    add_break(1.0, nullptr, nullptr);
-    for (const EdgeForce& f : forces_lo) add_break(f.t, &f.point, nullptr);
-    for (const EdgeForce& f : forces_hi) add_break(f.t, nullptr, &f.point);
-    std::sort(breaks.begin(), breaks.end(), [](const Break& x, const Break& y) { return x.t < y.t; });
-
-    const double target_spacing = 1.0 / static_cast<double>(std::max(divisions, 1));
-    std::vector<Break> filled;
-    filled.reserve(breaks.size() * 2);
-    for (size_t i = 0; i + 1 < breaks.size(); ++i) {
-      filled.push_back(breaks[i]);
-      const double gap = breaks[i + 1].t - breaks[i].t;
-      if (gap > target_spacing * 1.5) {
-        const int extra = static_cast<int>(std::ceil(gap / target_spacing)) - 1;
-        for (int e = 1; e <= extra; ++e) {
-          Break b;
-          b.t = breaks[i].t + gap * static_cast<double>(e) / static_cast<double>(extra + 1);
-          filled.push_back(b);
-        }
-      }
-    }
-    if (!breaks.empty()) filled.push_back(breaks.back());
-    return filled;
-  };
-
-  const std::vector<Break> a_breaks = build_axis(a_forces_b0, a_forces_b1, u_divisions);
-  const std::vector<Break> b_breaks = build_axis(b_forces_a0, b_forces_a1, v_divisions);
+  // Once per axis (see BuildQuadAxisBreaks above), since EITHER axis
+  // (not just `u`) may carry forced points for a plain quad face (see
+  // this function's own doc comment for why). Both extremes' forces are
+  // unioned into ONE list per axis - a tensor grid needs the same column
+  // set on every row - which is exactly why a quad whose two opposite
+  // edges carry genuinely DIFFERENT forced sets is routed to
+  // BuildConformingPlainQuadStripMesh instead (see the dispatch in
+  // TessellateConforming).
+  const std::vector<QuadAxisBreak> a_breaks = BuildQuadAxisBreaks(a_forces_b0, a_forces_b1, u_divisions);
+  const std::vector<QuadAxisBreak> b_breaks = BuildQuadAxisBreaks(b_forces_a0, b_forces_a1, v_divisions);
 
   Mesh mesh;
   ON_Mesh& raw = mesh.raw();
@@ -2733,6 +2751,105 @@ Mesh BuildConformingPlainQuadMesh(const std::array<Point3d, 4>& q, int u_divisio
       raw.m_F.Append(tri2);
     }
   }
+  return mesh;
+}
+
+// Per-ROW variant of BuildConformingPlainQuadMesh for a plain quad whose
+// two OPPOSITE a-edges (b=0 and b=1) carry genuinely DIFFERENT forced
+// t-sets - the planar counterpart of BuildConformingCylinderStripMesh,
+// and the same design: row 0 is EXACTLY the b=0 edge's own chain (its
+// forced points plus uniform gap-fill, nothing else), the last row
+// EXACTLY the b=1 edge's own chain, every interior row lies on the union
+// of both chains' t values (so the mesh stays a clean loft between the
+// two edges), and consecutive rows are joined by TriangulateStrip. The
+// b axis (rows) is built exactly as the tensor mesher builds it and must
+// agree on its own two edges (b_forces_a0 vs b_forces_a1) - when it does
+// not, the dispatch transposes the quad so the mismatched pair becomes
+// the a-edges; a quad mismatched on BOTH axes has no such rescue and
+// stays on the tensor mesher (see TessellateConforming's own doc
+// comment for that disclosed residual). Corner forcing follows the
+// tensor mesher's rule verbatim: an a-edge force at t=0/t=1 wins,
+// otherwise the b-edge's own force at that row.
+//
+// Why the tensor mesher cannot do this: BuildQuadAxisBreaks unions the
+// two opposite edges' t-sets into one column list for the WHOLE grid, so
+// a t forced only on the b=0 edge still appears on the b=1 row as an
+// unforced bilinear point - a T-junction against whatever neighbor
+// shares that b=1 edge (and vice versa). Measured on the oblique-drilled
+// box (a tilted hole's two cap ellipses pierce a long wall's top and
+// bottom edges at different positions): 756 such perimeter edges stayed
+// open at 64/64 with the ellipse seam itself already closed, all on the
+// two long walls, and every one closes under this mesher.
+Mesh BuildConformingPlainQuadStripMesh(const std::array<Point3d, 4>& q, int u_divisions, int v_divisions,
+                                        const std::vector<EdgeForce>& a_forces_b0,
+                                        const std::vector<EdgeForce>& a_forces_b1,
+                                        const std::vector<EdgeForce>& b_forces_a0,
+                                        const std::vector<EdgeForce>& b_forces_a1) {
+  auto bilinear = [&](double a, double b) {
+    return (1.0 - a) * (1.0 - b) * q[0] + a * (1.0 - b) * q[1] + a * b * q[2] + (1.0 - a) * b * q[3];
+  };
+  const std::vector<EdgeForce> none;
+  const std::vector<QuadAxisBreak> a_lo = BuildQuadAxisBreaks(a_forces_b0, none, u_divisions);
+  const std::vector<QuadAxisBreak> a_hi = BuildQuadAxisBreaks(none, a_forces_b1, u_divisions);
+  const std::vector<QuadAxisBreak> b_breaks = BuildQuadAxisBreaks(b_forces_a0, b_forces_a1, v_divisions);
+
+  // Interior rows: the union of both chains' t values, deduplicated
+  // within the same 1e-9 BuildQuadAxisBreaks itself uses.
+  std::vector<double> a_all;
+  a_all.reserve(a_lo.size() + a_hi.size());
+  for (const QuadAxisBreak& b : a_lo) a_all.push_back(b.t);
+  for (const QuadAxisBreak& b : a_hi) a_all.push_back(b.t);
+  std::sort(a_all.begin(), a_all.end());
+  {
+    std::vector<double> distinct;
+    distinct.reserve(a_all.size());
+    for (double t : a_all) {
+      if (!distinct.empty() && std::fabs(t - distinct.back()) <= 1e-9) continue;
+      distinct.push_back(t);
+    }
+    a_all.swap(distinct);
+  }
+
+  Mesh mesh;
+  ON_Mesh& raw = mesh.raw();
+  auto append = [&](const Point3d& p) {
+    raw.m_V.Append(ON_3fPoint(p));
+    return raw.m_V.Count() - 1;
+  };
+  std::vector<std::vector<StripRowVertex>> rows(b_breaks.size());
+  for (size_t j = 0; j < b_breaks.size(); ++j) {
+    const double bt = b_breaks[j].t;
+    const bool first = j == 0;
+    const bool last = j + 1 == b_breaks.size();
+    if (first || last) {
+      const std::vector<QuadAxisBreak>& chain = first ? a_lo : a_hi;
+      for (size_t i = 0; i < chain.size(); ++i) {
+        const Point3d* forced = first ? chain[i].at_lo : chain[i].at_hi;
+        if (forced == nullptr) {
+          if (i == 0) {
+            forced = b_breaks[j].at_lo;
+          } else if (i + 1 == chain.size()) {
+            forced = b_breaks[j].at_hi;
+          }
+        }
+        rows[j].push_back({chain[i].t, bt, append(forced != nullptr ? *forced : bilinear(chain[i].t, bt))});
+      }
+    } else {
+      for (size_t i = 0; i < a_all.size(); ++i) {
+        const Point3d* forced = nullptr;
+        if (i == 0) {
+          forced = b_breaks[j].at_lo;
+        } else if (i + 1 == a_all.size()) {
+          forced = b_breaks[j].at_hi;
+        }
+        rows[j].push_back({a_all[i], bt, append(forced != nullptr ? *forced : bilinear(a_all[i], bt))});
+      }
+    }
+  }
+  // TriangulateStrip emits CCW-in-(a, b) triangles, the same orientation
+  // as the tensor mesher's own tri1/tri2, so `(q[1]-q[0]) x (q[3]-q[0])`
+  // pointing outward gives outward-facing triangles here too.
+  for (size_t j = 0; j + 1 < rows.size(); ++j) TriangulateStrip(rows[j], rows[j + 1], raw);
   return mesh;
 }
 
@@ -3037,10 +3154,13 @@ std::unordered_map<int, std::array<std::vector<EdgeForce>, 4>> ComputePlainQuadS
           // this fix applied the same trigger unconditionally and produced
           // a genuinely WORSE-open mesh than before at an asymmetric
           // divisions pair, from exactly this cap-vs-multiple-walls
-          // conflict). So asymmetric divisions combined with a one-sided
-          // wedge remains an honestly-disclosed, separate, deeper
-          // limitation this increment does not close - see
-          // TessellateConforming()'s own doc comment in brep.h.
+          // conflict). Asymmetric divisions combined with a one-sided
+          // wedge is nonetheless closed today - not by widening this
+          // trigger, but downstream of it: a quad whose two opposite
+          // edges end up with different forced sets is meshed per row by
+          // BuildConformingPlainQuadStripMesh, each edge row exactly its
+          // own chain, so the two counts never need reconciling at all -
+          // see TessellateConforming()'s own doc comment in brep.h.
           const bool a_already_forced =
               u_divisions == v_divisions && already_forced != nullptr && already_forced->count(qa.face_index) != 0;
           const bool b_already_forced =
@@ -3270,6 +3390,24 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
     if (runs.empty()) continue;
     for (size_t k = 0; k < runs.size(); ++k) {
       const PlanarFace::ArcRun& run = runs[k];
+      // A LITERAL run (PlanarFace::ArcRun::literal_points - the oblique
+      // plane+cylinder ellipse pieces) needs no cylinder match and no
+      // resampling: its points ARE the shared boundary, the very same
+      // EllipsePointAt values the adjoining notched cylindrical fragment
+      // meshes as its own literal notch row (BuildConformingCylinderStripMesh).
+      // Registering it in `wedge_subs` verbatim routes this face to
+      // BuildConformingWedgeMesh (ear-clip of the substituted loop) and
+      // into the straight-edge pass below, exactly like an arc wedge -
+      // `arc_excluded` there already treats the run's indices as
+      // non-straight. Nothing is pushed into `cyl_matches`: the
+      // cylindrical side's row is the notch side table's, not a
+      // resampled cap arc.
+      if (!run.literal_points.empty()) {
+        if (run.count > 0 && static_cast<size_t>(run.count) == run.literal_points.size()) {
+          wedge_subs[i].push_back({SubRange{run.begin, run.count}, run.literal_points});
+        }
+        continue;
+      }
       Vector3d normal = ON_CrossProduct(run.plane_xaxis, run.plane_yaxis);
       if (!normal.Unitize()) continue;  // degenerate stored basis - skip, falls through to ordinary path
 
@@ -3874,8 +4012,43 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
           break;
         }
       }
-      result.push_back(BuildConformingPlainQuadMesh(corner, u_divisions, v_divisions, plain_it->second[0],
-                                                      plain_it->second[2], plain_it->second[3], plain_it->second[1]));
+      // Per-row strip routing for a plain quad (the planar twin of the
+      // cylindrical dispatch above): a quad whose two OPPOSITE edges
+      // carry different EFFECTIVE forced t-sets (forced t plus the two
+      // corners, deduplicated within the mesher's own 1e-9) goes to
+      // BuildConformingPlainQuadStripMesh - the tensor mesher's shared
+      // per-axis column list would put one edge's forced columns on the
+      // other edge's row as unforced T-junctions, so a differing pair is
+      // never closed by it today and re-routing cannot un-close anything.
+      // Edge 0 vs 2 (both constant-b, measuring a) differing is the
+      // mesher's native shape; edge 3 vs 1 (constant-a, measuring b)
+      // differing is the same shape on the transposed quad {q0,q3,q2,q1}
+      // (whose edge 0 is the original edge 3, edge 2 the original edge 1,
+      // edge 3 the original edge 0 and edge 1 the original edge 2, each
+      // keeping its own from/to convention), which is wound clockwise as
+      // seen from outside, so its triangles are flipped back. Both axes
+      // differing (no fixture in this kernel produces it) or neither:
+      // the tensor mesher, bit-for-bit as before.
+      const std::array<std::vector<EdgeForce>, 4>& forces = plain_it->second;
+      auto effective_t = [](const std::vector<EdgeForce>& f) {
+        std::vector<double> t{0.0, 1.0};
+        for (const EdgeForce& e : f) t.push_back(e.t);
+        return t;
+      };
+      const bool a_differs = !SameEffectiveRowSet(effective_t(forces[0]), effective_t(forces[2]), 1e-9);
+      const bool b_differs = !SameEffectiveRowSet(effective_t(forces[3]), effective_t(forces[1]), 1e-9);
+      if (a_differs && !b_differs) {
+        result.push_back(BuildConformingPlainQuadStripMesh(corner, u_divisions, v_divisions, forces[0], forces[2],
+                                                           forces[3], forces[1]));
+      } else if (b_differs && !a_differs) {
+        const std::array<Point3d, 4> transposed = {corner[0], corner[3], corner[2], corner[1]};
+        result.push_back(BuildConformingPlainQuadStripMesh(transposed, v_divisions, u_divisions, forces[3], forces[1],
+                                                           forces[0], forces[2])
+                             .FlipNormals());
+      } else {
+        result.push_back(BuildConformingPlainQuadMesh(corner, u_divisions, v_divisions, forces[0], forces[2],
+                                                        forces[3], forces[1]));
+      }
     } else if (fg.outer.empty()) {
       result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions));
     } else if (fg.exact_clip) {

@@ -382,15 +382,19 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 //     see SplitCylindricalByObliquePlane's own doc comment (boolean.cpp)
 //     for the two real, checked-directly limitations this implies
 //     (a partial-sweep operand, and a non-monotonic/re-entrant crossing)
-//     and why neither is silently mishandled. A DISCLOSED, NOT extended,
-//     limitation versus the perpendicular case above: Brep::
-//     TessellateConforming()'s own circle-specific arc-reconciliation
-//     machinery is not extended to the ellipse case, so an oblique-cut
-//     result's own ordinary Tessellate() output carries the SAME known,
-//     already-disclosed non-watertight-at-the-wedge-seam limitation the
-//     PERPENDICULAR case already has without TessellateConforming() (see
-//     that function's own doc comment) - this is not a new gap, just an
-//     un-widened existing one.
+//     and why neither is silently mishandled. Under Brep::
+//     TessellateConforming() the ellipse seam is watertight: each planar
+//     piece records its ellipse stretch as a LITERAL ArcRun
+//     (PlanarFace::ArcRun::literal_points - the very EllipsePointAt
+//     samples the fragment's cap0/cap1_notch_points hold, reported by
+//     ClipPolygonByEllipse3d's own `ellipse_runs`), which that method
+//     ear-clips around verbatim while the fragment meshes the same list
+//     as its notch row (see TessellateConforming's own doc comment, the
+//     SEVENTH and EIGHTH entries). An oblique-cut result's own ordinary
+//     Tessellate() output still carries the SAME known, already-disclosed
+//     non-watertight-at-the-wedge-seam limitation the PERPENDICULAR case
+//     has without TessellateConforming() - not a new gap, just the
+//     existing one.
 //   - a face pair with NO possible interaction at all (checked via a
 //     closed-form conservative bound on the cylinder's own signed
 //     distance to the other face's plane) is left completely unmodified -

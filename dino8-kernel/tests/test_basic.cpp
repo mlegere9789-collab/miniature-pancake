@@ -8308,6 +8308,114 @@ void TestClipPolygonByEllipse3dPunchesExactEllipticalHole() {
         "rather than silently building an unboundedly-large ellipse");
 }
 
+// ClipPolygonByEllipse3d's winding contract and its `ellipse_runs`
+// out-param (see its own doc comment): the SAME tilted cylinder cut by
+// two planes whose outward normals point opposite ways (a drilled box's
+// z=0 and z=10 caps) has its canonical increasing-phi sweep CCW in one
+// plane's local axes and CW in the other's. Before the clipper reversed
+// the CW case, that orientation's pieces came out wound CLOCKWISE as
+// seen from the plane's own normal (ON_Brep LoopDirection -1 on the four
+// z=0 pieces of the oblique-drilled box, measured directly), which any
+// mesher that orients by the loop itself turns inside out. Checked here
+// standalone, in both orientations: every piece winds CCW about the
+// plane's own normal, stays simple, and its reported run is exactly the
+// per_quadrant+1 consecutive EllipsePointAt samples of its quadrant,
+// DOUBLE-exact (the same samples the cylindrical side carries), walked
+// monotonically in phi - increasing in exactly one of the two
+// orientations (the reversed one) and decreasing in the other, which
+// pins down that the reversal fires for exactly one of them.
+void TestClipPolygonByEllipse3dReportsLiteralRunsAndWindsCcw() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  using dino8::kernel::detail::ClipPolygonByEllipse3d;
+  using dino8::kernel::detail::ComputeEllipseFrame3d;
+  using dino8::kernel::detail::EllipseFrame3d;
+  using dino8::kernel::detail::EllipsePointAt;
+
+  const double theta = 30.0 * ON_PI / 180.0;
+  Brep::CylindricalFace cf;
+  cf.frame.origin = Point3d(5, 5, 0);
+  cf.frame.xaxis = Vector3d(1, 0, 0);
+  cf.frame.yaxis = Vector3d(0, std::cos(theta), std::sin(theta));
+  cf.frame.zaxis = Vector3d(0, -std::sin(theta), std::cos(theta));
+  cf.frame.UpdateEquation();
+  cf.radius = 2.0;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = 20.0;
+
+  const int samples = 200;
+  const int per_quadrant = samples / 4;
+  const double full = 2.0 * ON_PI;
+  int orientations_increasing = 0, orientations_decreasing = 0;
+  for (const double normal_z : {1.0, -1.0}) {
+    const Vector3d normal(0, 0, normal_z);
+    const ON_Plane plane(Point3d(0, 0, 0), normal);
+    // The square wound CCW about `normal` - the PlanarFace contract the
+    // clipper's input already honors.
+    std::vector<Point3d> square = {Point3d(0, 0, 0), Point3d(10, 0, 0), Point3d(10, 10, 0), Point3d(0, 10, 0)};
+    if (normal_z < 0.0) std::reverse(square.begin(), square.end());
+    const EllipseFrame3d ef = ComputeEllipseFrame3d(cf, plane);
+    std::vector<std::pair<int, int>> runs;
+    const auto pieces = ClipPolygonByEllipse3d(square, plane, ef, 1e-9, samples, &runs);
+    Check(pieces.size() == 4 && runs.size() == 4,
+          "ClipPolygonByEllipse3d reports exactly one {begin, count} ellipse run per wedge piece (4 of each) for "
+          "both orientations of the cutting plane's own normal");
+
+    bool all_ccw = true, all_simple = true, all_counts = true, all_exact = true;
+    int increasing_pieces = 0, decreasing_pieces = 0;
+    for (size_t q = 0; q < pieces.size() && q < runs.size(); ++q) {
+      const std::vector<Point3d>& piece = pieces[q];
+      const int n = static_cast<int>(piece.size());
+      Vector3d twice_area(0, 0, 0);
+      for (int i = 0; i < n; ++i) {
+        twice_area += ON_CrossProduct(piece[static_cast<size_t>(i)] - piece[0],
+                                      piece[static_cast<size_t>((i + 1) % n)] - piece[0]);
+      }
+      if (twice_area * normal <= 0.0) all_ccw = false;
+      std::vector<dino8::kernel::Point2d> p2d;
+      for (const Point3d& p : piece) p2d.emplace_back(p.x, p.y);
+      if (!dino8::kernel::detail::IsSimplePolygon(p2d)) all_simple = false;
+
+      const int begin = runs[q].first, count = runs[q].second;
+      if (count != per_quadrant + 1 || begin < 0 || begin >= n) {
+        all_counts = false;
+        continue;
+      }
+      bool increasing = true, decreasing = true;
+      for (int j = 0; j < count; ++j) {
+        const Point3d& p = piece[static_cast<size_t>((begin + j) % n)];
+        // The clipper's own phi arithmetic, operation for operation
+        // (phi0 = 0 plus full * k / n_samples), so equality is exact.
+        const int k_inc = static_cast<int>(q) * per_quadrant + j;
+        const int k_dec = (static_cast<int>(q) + 1) * per_quadrant - j;
+        const Point3d inc = EllipsePointAt(ef, 0.0 + full * static_cast<double>(k_inc) / samples);
+        const Point3d dec = EllipsePointAt(ef, 0.0 + full * static_cast<double>(k_dec) / samples);
+        if (!(p.x == inc.x && p.y == inc.y && p.z == inc.z)) increasing = false;
+        if (!(p.x == dec.x && p.y == dec.y && p.z == dec.z)) decreasing = false;
+      }
+      if (increasing) ++increasing_pieces;
+      if (decreasing) ++decreasing_pieces;
+      if (!increasing && !decreasing) all_exact = false;
+    }
+    Check(all_ccw,
+          "every ClipPolygonByEllipse3d piece is wound COUNTERCLOCKWISE about the cutting plane's own normal in "
+          "BOTH orientations - the CW-in-plane phi sweep is reversed rather than emitted as a clockwise loop");
+    Check(all_simple, "every piece stays a simple polygon in both orientations (a reversal changes no vertex)");
+    Check(all_counts, "every reported run has exactly per_quadrant+1 points and an in-range begin index");
+    Check(all_exact,
+          "every reported run's points are, walked from `begin` in the piece's own loop order, EXACTLY (double ==) "
+          "the quadrant's own consecutive EllipsePointAt samples in one monotone phi direction - the literal "
+          "points the cylindrical side's own notch rows carry");
+    if (increasing_pieces == 4) ++orientations_increasing;
+    if (decreasing_pieces == 4) ++orientations_decreasing;
+  }
+  Check(orientations_increasing == 1 && orientations_decreasing == 1,
+        "the run is walked in INCREASING phi for exactly one of the two plane orientations (the one the clipper "
+        "reversed) and DECREASING for the other - the reversal fires for exactly the CW-in-plane orientation, not "
+        "both or neither");
+}
+
 // detail::ArcSchedule3d() (detail/arc_schedule3d.h) - the pure, closed-
 // form (no ON_Circle/NURBS machinery) shared-boundary-schedule primitive
 // Brep::TessellateConforming() builds on. Verified standalone, before it
@@ -9072,11 +9180,11 @@ void TestBooleanCombineMixedObliqueDrilledBoxVolume() {
   const double measured_volume = mesh_256.Volume();
   // A LOOSER tolerance than TestBooleanCombineMixedDrilledBoxThroughHole's
   // own perpendicular-hole check (0.05), kept as a coarse sanity bound:
-  // see boolean.h's own doc comment - Brep::TessellateConforming()'s
-  // circle-specific arc-reconciliation machinery is deliberately NOT
-  // extended to the ellipse case here, so the wedge/cylinder-wall seam is
-  // genuinely NOT watertight at the mesh level for this path (mesh_256.
-  // IsClosedManifold() is false, confirmed directly). The discrepancy
+  // ordinary Tessellate() does not reconcile the wedge/cylinder-wall
+  // seam, so it is genuinely NOT watertight at the mesh level for THIS
+  // path (mesh_256.IsClosedManifold() is false, confirmed directly);
+  // TessellateConforming() closes it - see
+  // TestTessellateConformingObliqueDrilledBoxIsClosedManifold. The discrepancy
   // this bound was originally sized for (~0.36 at div=256, ~0.69 at
   // div=1024, NOT shrinking with division count) turned out NOT to be
   // open-seam triangulation noise at all but a single geometric defect:
@@ -9292,9 +9400,10 @@ void TestBooleanCombineMixedObliqueDrilledBoxBothEndsNotched() {
 // already contains the literal ellipse sample points by construction of
 // detail::ClipPolygonByEllipse3d. This test checks that those SAME exact
 // double-precision points ALSO appear as real vertices of the surviving
-// CYLINDRICAL face's own TESSELLATED mesh (ordinary Tessellate(), not
-// TessellateConforming() - see this file's own doc comment for why that
-// circle-specific pass isn't extended here) - i.e. that the cylindrical
+// CYLINDRICAL face's own TESSELLATED mesh (ordinary Tessellate() here;
+// the conforming path's own two-way bit-identity is asserted separately
+// by TestTessellateConformingObliqueDrilledBoxEllipseSeamIsBitIdentical)
+// - i.e. that the cylindrical
 // face's own visible_trim (built from cap0_notch_points/cap1_notch_points
 // in FromMixedFaces) genuinely reproduces those SAME points when
 // evaluated through the real NURBS surface, not merely close ones.
@@ -9823,6 +9932,300 @@ void TestTessellateConformingNotchedUncappedCylinderHonorsTrim() {
 }
 
 // ---------------------------------------------------------------------
+// The oblique fragment's seam against its oblique PLANAR cap under
+// Brep::TessellateConforming() - the planar-side counterpart of the
+// cylindrical strip mesher. Two mechanisms, each with its own control:
+// (1) the oblique planar pieces carry their ellipse samples as a LITERAL
+// ArcRun (PlanarFace::ArcRun::literal_points), so TessellateConforming()
+// ear-clips each piece around the very points the cylindrical fragment's
+// notch row already uses instead of exact-clipping the piece over its
+// own grid (which inserted grid-crossing vertices along the ellipse
+// polyline - a T-junction seam, 446 open edges at 64/64 on the drilled
+// box, measured before this closed); and (2) a plain quad whose two
+// opposite edges carry different forced t-sets (the tilted hole's two
+// cap ellipses pierce a long wall's top and bottom edges at different
+// positions) is meshed per row by BuildConformingPlainQuadStripMesh
+// instead of the tensor grid (756 open perimeter edges at 64/64 after
+// (1) alone, all on the two 20-long walls, measured directly).
+// ---------------------------------------------------------------------
+
+// The inscribed-200-gon volume the conforming mesh of an oblique-drilled
+// box must reproduce: the planar pieces are exact, and the hole wall is
+// a stack of 200-gons inscribed in the cylinder's own cross-section (the
+// 200 canonical ellipse samples per row, at the same 200 angles on every
+// row), so the removed solid is an oblique prism of that 200-gon's area
+// over the axial length 10/cos(theta) - a closed form this
+// tessellation matches far more tightly than the smooth pi*r^2 one.
+double ObliqueDrilledBox200GonVolumeForTest(double radius, double tilt_deg) {
+  const double theta = tilt_deg * ON_PI / 180.0;
+  const double ngon_area = 100.0 * radius * radius * std::sin(2.0 * ON_PI / 200.0);
+  return 2000.0 - ngon_area * (10.0 / std::cos(theta));
+}
+
+// The whole point: the oblique-drilled box is a closed manifold under
+// TessellateToClosedMeshConforming() at symmetric and asymmetric
+// divisions - measured 1886/486/324/234 open boundary edges at 64/64,
+// 12/20, 17/4 and 8/8 before this closed, and zero after - while the
+// ORDINARY Tessellate() path keeps its pre-existing, disclosed open
+// wedge seam (asserted, so the closure is attributable to the conforming
+// path, not to a change in the boolean's own geometry).
+void TestTessellateConformingObliqueDrilledBoxIsClosedManifold() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double tilt_deg = 15.0;
+  const double theta = tilt_deg * ON_PI / 180.0;
+  const double radius = 1.0;
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(radius, tilt_deg);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  const double hand_derived_volume = 2000.0 - ON_PI * radius * radius * (10.0 / std::cos(theta));
+  const double ngon_volume = ObliqueDrilledBox200GonVolumeForTest(radius, tilt_deg);
+
+  const std::vector<std::pair<int, int>> pairs = {{64, 64}, {12, 20}, {17, 4}, {8, 8}};
+  for (const auto& uv : pairs) {
+    const Mesh mesh = drilled.TessellateToClosedMeshConforming(uv.first, uv.second);
+    Check(mesh.IsClosedManifold(),
+          "the oblique-drilled box's TessellateToClosedMeshConforming() mesh is a genuine, complete "
+          "IsClosedManifold() - the ellipse seam is meshed from the LITERAL shared samples on both sides and the "
+          "long walls' differing top/bottom edge sets are meshed per row, at symmetric and asymmetric divisions");
+    // Measured residual 0.00535 against the smooth closed form (the
+    // inscribed-200-gon deficit pi*r^2*(10/cos theta)*(1-sinc(2*pi/200))),
+    // and under 7e-7 against the 200-gon closed form at every pair.
+    Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.01,
+          "the conforming oblique-drilled box's volume is within 0.01 of 2000-pi*r^2*(10/cos(theta)) (measured "
+          "0.00535 short - exactly the inscribed 200-gon's deficit, at every division pair)");
+    Check(std::fabs(mesh.Volume() - ngon_volume) < 1e-5,
+          "the conforming oblique-drilled box's volume matches the inscribed-200-gon closed form within 1e-5 "
+          "(measured under 7e-7 at every division pair) - the planar pieces are exact and the hole wall is a stack "
+          "of 200-gons on the cylinder's own cross-section, regardless of division count");
+  }
+
+  Check(!drilled.TessellateToClosedMesh(64, 64).IsClosedManifold(),
+        "the SAME oblique-drilled box under ordinary Tessellate() is still NOT a closed manifold - the ellipse seam "
+        "is closed by TessellateConforming()'s literal-run and per-row meshers, not by any change to the boolean's "
+        "own geometry (ordinary Tessellate() keeps its pre-existing, disclosed open wedge seam)");
+}
+
+// The bit-identity crux, on the conforming meshes themselves: every
+// vertex of the surviving cylindrical fragment's own two notch rows
+// (z=0 and z=10, 201 vertices each - the literal cap0/cap1_notch_points)
+// has an EXACTLY float== counterpart among the planar pieces' mesh
+// vertices, and conversely every planar-mesh vertex that lies on the
+// ellipse (at a cap plane, off the box's own perimeter) has an exactly
+// float== counterpart in the cylindrical mesh. Both directions held
+// before this closed too (201/201 - the seam was a pure T-junction, not
+// a value mismatch); they are asserted here so the closure can never be
+// re-explained by MergeAndWeld's 1e-6 snap alone.
+void TestTessellateConformingObliqueDrilledBoxEllipseSeamIsBitIdentical() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(/*hole_radius=*/1.0, /*tilt_deg=*/15.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  const auto mixed = drilled.MixedFaces();
+  Check(mixed.cylindrical.size() == 1, "exactly one surviving cylindrical fragment (conforming bit-identity)");
+  const size_t cyl_face_index = mixed.planar.size();
+  const std::vector<Mesh> faces = drilled.TessellateConforming(64, 64);
+  Check(cyl_face_index < faces.size(), "the surviving cylindrical fragment has a conforming mesh to inspect");
+  const ON_Mesh& cyl_mesh = faces[cyl_face_index].raw();
+
+  auto planar_has = [&](const ON_3fPoint& v) {
+    for (size_t pj = 0; pj < mixed.planar.size(); ++pj) {
+      const ON_Mesh& pm = faces[pj].raw();
+      for (int q = 0; q < pm.m_V.Count(); ++q) {
+        if (pm.m_V[q].x == v.x && pm.m_V[q].y == v.y && pm.m_V[q].z == v.z) return true;
+      }
+    }
+    return false;
+  };
+  auto cylinder_has = [&](const ON_3fPoint& v) {
+    for (int q = 0; q < cyl_mesh.m_V.Count(); ++q) {
+      if (cyl_mesh.m_V[q].x == v.x && cyl_mesh.m_V[q].y == v.y && cyl_mesh.m_V[q].z == v.z) return true;
+    }
+    return false;
+  };
+
+  for (const double level : {0.0, 10.0}) {
+    int row = 0, row_matched = 0;
+    for (int k = 0; k < cyl_mesh.m_V.Count(); ++k) {
+      if (std::fabs(static_cast<double>(cyl_mesh.m_V[k].z) - level) > 1e-4) continue;
+      ++row;
+      if (planar_has(cyl_mesh.m_V[k])) ++row_matched;
+    }
+    Check(row == 201 && row_matched == 201,
+          "every one of the surviving cylindrical fragment's 201 notch-row vertices at this cap plane is EXACTLY "
+          "float== some planar piece's conforming-mesh vertex - the wall's literal notch row and the wedges' "
+          "literal runs are the same EllipsePointAt values");
+  }
+
+  int ellipse_vertices = 0, ellipse_matched = 0;
+  for (size_t pj = 0; pj < mixed.planar.size(); ++pj) {
+    const ON_Mesh& pm = faces[pj].raw();
+    for (int q = 0; q < pm.m_V.Count(); ++q) {
+      const ON_3fPoint& v = pm.m_V[q];
+      const bool at_cap = std::fabs(v.z) < 1e-4 || std::fabs(v.z - 10.0) < 1e-4;
+      const bool on_perimeter = std::fabs(v.x) < 1e-4 || std::fabs(v.x - 10.0) < 1e-4 || std::fabs(v.y) < 1e-4 ||
+                                std::fabs(v.y - 20.0) < 1e-4;
+      if (!at_cap || on_perimeter) continue;  // an ear-clipped piece has no interior vertices: off-perimeter == ellipse
+      ++ellipse_vertices;
+      if (cylinder_has(v)) ++ellipse_matched;
+    }
+  }
+  // 2 caps x 4 pieces x (200/4 + 1) run points = 408 (adjacent pieces
+  // share their quadrant-boundary sample, each emitting it once).
+  Check(ellipse_vertices >= 400 && ellipse_matched == ellipse_vertices,
+        "every planar piece's conforming-mesh vertex on the ellipse (408 expected: 2 caps x 4 pieces x 51 literal "
+        "run points) is EXACTLY float== some vertex of the cylindrical fragment's conforming mesh - the converse "
+        "direction of the same bit-identity");
+}
+
+// Dispatch control (falsifiability): under the literal-run path each
+// oblique piece's conforming mesh is an ear-clip of its own resampled
+// loop - 106 to 126 vertices at 64/64 (51 ellipse samples plus the two
+// wall segments' shared points) - where the exact-clip path it replaced
+// produced 3682 to 3721 vertices per piece (measured on the same fixture
+// before this closed). The bound sits an order of magnitude below the
+// old count and three times above the new one, so a silent fall-back to
+// the grid clipper fails this immediately.
+void TestTessellateConformingObliqueDrilledBoxPiecesMeshFromLiteralLoop() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(/*hole_radius=*/1.0, /*tilt_deg=*/15.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  const auto mixed = drilled.MixedFaces();
+  const std::vector<Mesh> faces = drilled.TessellateConforming(64, 64);
+
+  int pieces = 0, loop_meshed = 0;
+  for (size_t i = 0; i < mixed.planar.size() && i < faces.size(); ++i) {
+    if (mixed.planar[i].loop.size() <= 4) continue;  // an untouched wall, not an oblique piece
+    ++pieces;
+    const int nv = faces[i].raw().m_V.Count();
+    if (nv >= 51 && nv < 400) ++loop_meshed;
+  }
+  Check(pieces == 8, "the oblique-drilled box has exactly 8 oblique planar pieces (4 per cap) to inspect");
+  Check(loop_meshed == pieces,
+        "every oblique piece's conforming mesh at 64/64 has between 51 and 400 vertices (measured 106-126: the "
+        "ear-clipped literal loop) rather than the 3682-3721 the exact-clip grid path produced - the piece is "
+        "meshed from its literal run, not clipped over its own grid");
+}
+
+// The producer-side control: after ClipPolygonByEllipse3d's winding
+// fix, every planar face of the oblique-drilled box has an ON_Brep
+// outer loop wound +1 (CCW in its own surface's (u, v) domain, which
+// FromMixedFaces() builds from the face's own plane axes). Measured
+// before the fix: 8 of the 12 planar loops were +1 and the 4 z=0 pieces
+// were -1 - the same defect that turned the ear-clipped pieces inside
+// out. This falsifies the producer fix on its own, with no mesher in
+// the loop.
+void TestBooleanCombineMixedObliquePlanarPiecesWindCcwFromOutside() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(/*hole_radius=*/1.0, /*tilt_deg=*/15.0);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  const ON_Brep& raw = drilled.raw();
+  int planar_faces = 0, loops = 0, ccw_loops = 0;
+  for (int fi = 0; fi < raw.m_F.Count(); ++fi) {
+    const ON_BrepFace& face = raw.m_F[fi];
+    ON_NurbsSurface nurbs;
+    face.SurfaceOf()->GetNurbForm(nurbs);
+    ON_Plane plane;
+    if (!nurbs.IsPlanar(&plane, 1e-6)) continue;
+    ++planar_faces;
+    for (int li = 0; li < face.m_li.Count(); ++li) {
+      ++loops;
+      if (raw.LoopDirection(raw.m_L[face.m_li[li]]) == 1) ++ccw_loops;
+    }
+  }
+  Check(planar_faces == 12 && loops == 12,
+        "the oblique-drilled box has 12 planar faces with one outer loop each (4 walls + 2 caps x 4 pieces)");
+  Check(ccw_loops == loops,
+        "every planar loop of the oblique-drilled box has ON_Brep LoopDirection +1 (CCW in its own surface "
+        "domain) - the z=0 cap's four pieces included, which were -1 before ClipPolygonByEllipse3d reversed its "
+        "CW-in-plane walk");
+}
+
+// A second closed-form fixture with the SAME seam: the bare oblique
+// cut, box UNION tilted cylinder - the cylinder pokes out of both caps,
+// so each cap is punched by the same 4-piece ellipse clip and the two
+// protruding stubs keep their notched ends against the caps. 22 faces
+// (4 walls + 8 cap pieces + 2 notched stubs + 2 synthesized end caps of
+// 4 wedges each), volume 2000 + pi*r^2*(L - 10/cos theta) where the
+// protrusion L - 10/cos(theta) is exactly 2*margin_v by the fixture's
+// own construction. Measured 1886/324/486 open edges at 64/64, 17/4 and
+// 12/20 before this closed (the identical signature as the Difference),
+// zero after; volume residual 6e-4 to 3.2e-3 (the stubs' end-cap
+// polygon deficit, shrinking with divisions).
+void TestTessellateConformingObliqueUnionBareCutIsClosedManifold() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double tilt_deg = 15.0;
+  const double theta = tilt_deg * ON_PI / 180.0;
+  const double radius = 1.0;
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(radius, tilt_deg);
+  const Brep joined = BooleanCombineMixed(box, cyl, BooleanOp::Union);
+  Check(joined.FaceCount() == 22,
+        "box UNION tilted cylinder has 22 faces: 4 walls + 2 caps x 4 oblique pieces + 2 notched protruding stubs "
+        "+ 2 synthesized end caps x 4 wedges");
+
+  // BuildSafeObliqueDrilledBoxInputs' own margin_v, re-derived here.
+  const double margin_v = 1.2 * (radius / std::cos(theta)) + 0.3;
+  const double hand_derived_volume = 2000.0 + ON_PI * radius * radius * 2.0 * margin_v;
+  const std::vector<std::pair<int, int>> pairs = {{64, 64}, {17, 4}, {12, 20}};
+  for (const auto& uv : pairs) {
+    const Mesh mesh = joined.TessellateToClosedMeshConforming(uv.first, uv.second);
+    Check(mesh.IsClosedManifold(),
+          "box UNION tilted cylinder is a genuine, complete IsClosedManifold() under TessellateToClosedMeshConforming() "
+          "at symmetric and asymmetric divisions - the same oblique cap/stub seam as the Difference, closed by the "
+          "same literal-run and per-row meshers");
+    Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.05,
+          "the conforming box UNION tilted cylinder volume is within 0.05 of 2000 + pi*r^2*(L - 10/cos(theta)) "
+          "(measured 6e-4 to 3.2e-3 short - the protruding stubs' end-cap polygon deficit)");
+  }
+}
+
+// Tilt sweep: the closure is not a property of one angle. At 5 and 30
+// degrees (the seam's y-offset between the two caps, 10*tan(theta),
+// ranges from 0.87 to 5.77 units, so the long walls' top and bottom
+// edges are split at very different positions) the drilled box is
+// closed at symmetric and asymmetric divisions and its volume matches
+// the inscribed-200-gon closed form within 1e-5 (measured under 9e-7).
+void TestTessellateConformingObliqueDrilledBoxTiltSweepIsClosedManifold() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double radius = 1.0;
+  for (const double tilt_deg : {5.0, 30.0}) {
+    const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(radius, tilt_deg);
+    const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+    const double ngon_volume = ObliqueDrilledBox200GonVolumeForTest(radius, tilt_deg);
+    for (const auto& uv : std::vector<std::pair<int, int>>{{64, 64}, {17, 4}}) {
+      const Mesh mesh = drilled.TessellateToClosedMeshConforming(uv.first, uv.second);
+      Check(mesh.IsClosedManifold(),
+            "the oblique-drilled box at a 5 or 30 degree tilt is a closed manifold under "
+            "TessellateToClosedMeshConforming() at 64/64 and 17/4 - the literal-run and per-row meshers hold across "
+            "the tilt range, not just at the 15-degree fixture");
+      Check(std::fabs(mesh.Volume() - ngon_volume) < 1e-5,
+            "the 5/30-degree conforming volume matches the inscribed-200-gon closed form within 1e-5 (measured "
+            "under 9e-7)");
+    }
+  }
+}
+
+// ---------------------------------------------------------------------
 // Brep::TessellateConforming()'s own THIRD matching pass: closing the
 // quad-vs-quad seam gap (two adjacent "plain quad" planar faces, NEITHER
 // one a wedge or a matched cylinder) at an unequal u_divisions/
@@ -10058,28 +10461,31 @@ void TestTessellateConformingOneSidedWedgeSymmetricDivisionsIsClosedManifold() {
   }
 }
 
-// The honestly-disclosed remaining scope limit, mirroring
-// TestTessellateObliqueHullQuadSeamRemainsPreExistingGap's own style:
-// this SAME one-sided-wedge fixture at an ASYMMETRIC divisions pair is
-// NOT closed by task #65, and this test proves that directly rather than
-// silently leaving it untested. Investigated directly, not merely
-// asserted: at unequal u_divisions/v_divisions, which physical axis a
-// wall assigns to "u" vs "v" is NOT the same for every wall (Box()'s own
-// front and back walls assign it oppositely - see
-// ComputePlainQuadSeamForces's own doc comment in brep.cpp), so two
-// DIFFERENT already-forced walls bordering the SAME untouched cap can
-// legitimately need that cap's own OPPOSITE edges forced to two DIFFERENT
-// counts - a conflict no single per-pair `shared_count` choice can
-// resolve, since BuildConformingPlainQuadMesh's own tensor grid needs a
-// quad's two opposite edges internally consistent. Confirmed directly (an
-// early version of this fix applied its new trigger unconditionally, i.e.
-// without this test's own `u_divisions == v_divisions` restriction, and
-// produced a mesh with genuinely MORE open boundary edges than before at
-// an asymmetric divisions pair - not merely "still open", actively worse)
-// - so the new trigger is deliberately restricted to u_divisions ==
-// v_divisions, leaving this asymmetric case exactly as open as it always
-// was pre-fix, never silently masked into a false pass.
-void TestTessellateConformingOneSidedWedgeAsymmetricDivisionsRemainsPreExistingGap() {
+// This SAME one-sided-wedge fixture at an ASYMMETRIC divisions pair -
+// formerly a planted "remains genuinely open" assertion, now closed as a
+// side effect of the per-row plain-quad strip mesher (see
+// BuildConformingPlainQuadStripMesh's own doc comment in brep.cpp). The
+// original diagnosis still stands and is still why ComputePlainQuadSeamForces's
+// `already_forced` trigger stays restricted to u_divisions ==
+// v_divisions: at unequal divisions, which physical axis a wall assigns
+// to "u" vs "v" is NOT the same for every wall (Box()'s own front and
+// back walls assign it oppositely), so a wall's wedge-forced top edge
+// and its bottom edge can legitimately carry two DIFFERENT point sets -
+// a conflict BuildConformingPlainQuadMesh's tensor grid could not
+// resolve, since it unions both sets into one column list and so put
+// unforced columns on both rows (an early, unconditional version of
+// that trigger made this case actively WORSE for exactly that reason).
+// What changed is the dispatch downstream of the forcing: a quad whose
+// two opposite edges disagree is now meshed row by row, each edge row
+// exactly its own forced chain, so no reconciliation of the two counts
+// is needed at all. Measured directly: 220, 264 and 128 open boundary
+// edges at 8/11, 17/4 and 12/20 before, zero after, with the tessellated
+// volume identical to the pre-fix value within 1e-9 at every pair (every
+// re-meshed face is planar, so re-triangulating it changes nothing about
+// the volume it bounds). The 0.5 volume bound covers the boss wall's own
+// inscribed-polygon deficit (0.32 at 8 divisions per quadrant, the worst
+// of these pairs at 0.17), not this fix.
+void TestTessellateConformingOneSidedWedgeAsymmetricDivisionsIsClosedManifold() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
@@ -10099,15 +10505,21 @@ void TestTessellateConformingOneSidedWedgeAsymmetricDivisionsRemainsPreExistingG
   boss.length = 4.0;
   const Brep cyl = Brep::FromMixedFaces({}, {boss});
   const Brep result = BooleanCombineMixed(box, cyl, BooleanOp::Union);
+  const double hand_derived_volume = 1000.0 + ON_PI * boss.radius * boss.radius * boss.length;
 
-  const std::vector<std::pair<int, int>> pairs = {{8, 11}, {17, 4}};
+  const std::vector<std::pair<int, int>> pairs = {{8, 11}, {17, 4}, {12, 20}};
   for (const auto& uv : pairs) {
-    Check(!result.TessellateToClosedMeshConforming(uv.first, uv.second).IsClosedManifold(),
-          "the one-sided-wedge box+boss Union at an ASYMMETRIC divisions pair remains genuinely open - task #65's "
-          "own new trigger is deliberately restricted to u_divisions == v_divisions (see "
-          "ComputePlainQuadSeamForces's own doc comment for why forcing it unconditionally made this case "
-          "actively WORSE, not merely still-open), so this pre-existing gap is left exactly as it was, never "
-          "silently masked into a false IsClosedManifold() pass");
+    const Mesh mesh = result.TessellateToClosedMeshConforming(uv.first, uv.second);
+    Check(mesh.IsClosedManifold(),
+          "the one-sided-wedge box+boss Union at an ASYMMETRIC divisions pair is now a genuine, complete "
+          "IsClosedManifold() - a wall whose wedge-forced top edge and differently-forced bottom edge disagree is "
+          "meshed per row by BuildConformingPlainQuadStripMesh, each edge row exactly its own chain, instead of the "
+          "tensor grid that put unforced columns on both rows (measured 220/264/128 open edges at 8/11, 17/4, 12/20 "
+          "before, zero after)");
+    Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.5,
+          "the asymmetric-divisions box+boss conforming volume stays within 0.5 of 1000 + pi*r^2*L (measured "
+          "0.05-0.17 short, the boss wall's inscribed-polygon deficit; identical to the pre-fix volume within 1e-9 "
+          "at every pair)");
   }
 }
 
@@ -14883,6 +15295,7 @@ int main() {
   TestMixedFacesUnnotchedConicalFaceBitIdentical();
   TestClipPolygonByCircle3dPunchesExactHole();
   TestClipPolygonByEllipse3dPunchesExactEllipticalHole();
+  TestClipPolygonByEllipse3dReportsLiteralRunsAndWindsCcw();
   TestArcSchedule3dEvenlySpacedExactEndpoints();
   TestAngleOffsetBetweenFramesSameHandedPair();
   TestAngleOffsetBetweenFramesLeftHandedPair();
@@ -14903,12 +15316,18 @@ int main() {
   TestFromMixedFacesNotchedCylinderCoversNotchOutsideRailBand();
   TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm();
   TestTessellateConformingNotchedUncappedCylinderHonorsTrim();
+  TestTessellateConformingObliqueDrilledBoxIsClosedManifold();
+  TestTessellateConformingObliqueDrilledBoxEllipseSeamIsBitIdentical();
+  TestTessellateConformingObliqueDrilledBoxPiecesMeshFromLiteralLoop();
+  TestBooleanCombineMixedObliquePlanarPiecesWindCcwFromOutside();
+  TestTessellateConformingObliqueUnionBareCutIsClosedManifold();
+  TestTessellateConformingObliqueDrilledBoxTiltSweepIsClosedManifold();
   TestTessellateConformingQuadQuadSeamPlainBoxIsClosedManifold();
   TestTessellateConformingQuadQuadSeamDrilledBoxIsClosedManifold();
   TestTessellateConformingQuadQuadSeamOffCenterHoleIsClosedManifold();
   TestTessellateConformingSymmetricDivisionsUnaffectedByQuadQuadFix();
   TestTessellateConformingOneSidedWedgeSymmetricDivisionsIsClosedManifold();
-  TestTessellateConformingOneSidedWedgeAsymmetricDivisionsRemainsPreExistingGap();
+  TestTessellateConformingOneSidedWedgeAsymmetricDivisionsIsClosedManifold();
   TestTessellateConformingOneSidedWedgeFixInertOnPlainBox();
   TestExactConvexHullBoxSixExactQuadFaces();
   TestExactConvexHullOctahedronEightExactTriFaces();

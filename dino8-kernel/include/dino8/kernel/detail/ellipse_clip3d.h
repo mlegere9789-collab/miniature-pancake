@@ -76,6 +76,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <opennurbs.h>
@@ -211,13 +212,44 @@ inline std::vector<double> SegmentEllipseCrossings(const Point2d& a, const Point
 //  - a genuine boundary CROSSING (partial overlap): throws
 //    std::invalid_argument, the same disclosed out-of-scope case
 //    ClipPolygonByCircle3d already has.
+//
+// Every returned piece is wound COUNTERCLOCKWISE as seen from
+// `poly_plane`'s own outward normal (the same "CCW as seen from outside"
+// contract every PlanarFace loop in this kernel honors, and the one
+// ClipPolygonByCircle3d's pieces satisfy by construction). For the
+// ellipse this takes an explicit step: the canonical phi sweep is a
+// property of the CYLINDER's frame, not of `poly_plane`, and traces
+// CLOCKWISE in the plane's own local axes for one of any two opposite
+// caps (see `phi_is_ccw_in_plane` below) - such a piece is assembled by
+// the CW walk and then reversed, so its VERTEX SET (and hence the
+// bit-identical sharing with the cylindrical side) is untouched while
+// its winding is corrected. Measured directly before this reversal
+// existed: a drilled box's four z=0 pieces had ON_Brep LoopDirection -1
+// and a Newell normal anti-parallel to the cap's plane, which is
+// harmless to grid-clipping tessellators (cell winding comes from the
+// grid) but fatal to any mesher that orients by the loop itself.
+//
+// `ellipse_runs`, when non-null, receives one {begin, count} pair per
+// returned piece (cleared first; empty when the result is {poly}):
+// the piece's own ellipse-sample stretch as a circular index range
+// [begin, begin+count) mod piece.size() in the piece's own final walk
+// order - exactly the `count` consecutive vertices that are literal
+// EllipsePointAt samples (per_quadrant+1 of them: both quadrant-boundary
+// samples plus the interior ones), the same shape PlanarFace::ArcRun's
+// begin/count describe. Unlike ClipPolygonByCircle3d's pieces (whose arc
+// run FindArcRun recovers afterwards by radius test), the ellipse run is
+// reported here at the one site that knows it exactly, so the caller
+// can record a LITERAL ArcRun (see PlanarFace::ArcRun::literal_points)
+// without any geometric re-detection.
 inline std::vector<std::vector<Point3d>> ClipPolygonByEllipse3d(const std::vector<Point3d>& poly,
                                                                   const ON_Plane& poly_plane,
                                                                   const EllipseFrame3d& ef, double tol,
-                                                                  int samples = 200) {
+                                                                  int samples = 200,
+                                                                  std::vector<std::pair<int, int>>* ellipse_runs = nullptr) {
   using namespace circle_clip_detail;
   using namespace ellipse_clip_detail;
 
+  if (ellipse_runs) ellipse_runs->clear();
   if (poly.size() < 3) return {};
 
   std::vector<Point2d> poly2d;
@@ -333,6 +365,27 @@ inline std::vector<std::vector<Point3d>> ClipPolygonByEllipse3d(const std::vecto
       piece3d.push_back(sample3d((q + 1) * per_quadrant - s));
     }
 
+    // The ellipse run in the piece's CURRENT walk order: index
+    // (n - per_quadrant) is sample3d((q+1)*per_quadrant), the last
+    // per_quadrant-1 indices are the reversed interior samples, and the
+    // run wraps around to index 0 (sample3d(q*per_quadrant)) -
+    // per_quadrant+1 literal points in all.
+    const int pn = static_cast<int>(piece3d.size());
+    int run_begin = pn - per_quadrant;
+    const int run_count = per_quadrant + 1;
+    if (!phi_is_ccw_in_plane) {
+      // The CW-in-plane walk assembled a loop wound CLOCKWISE as seen
+      // from poly_plane's own outward normal (see this function's own
+      // doc comment) - reverse it so the piece honors the "CCW as seen
+      // from outside" contract. Reversing a length-n array maps old
+      // index i to n-1-i, so the contiguous run [begin, begin+count)
+      // mod n lands at (n - begin - count) mod n, walked in the
+      // opposite (now increasing-phi) direction - the same remap
+      // FlipFace (boolean.cpp) applies to an ArcRun.
+      std::reverse(piece3d.begin(), piece3d.end());
+      run_begin = ((pn - run_begin - run_count) % pn + pn) % pn;
+    }
+    if (ellipse_runs) ellipse_runs->emplace_back(run_begin, run_count);
     pieces.push_back(std::move(piece3d));
   }
   return pieces;

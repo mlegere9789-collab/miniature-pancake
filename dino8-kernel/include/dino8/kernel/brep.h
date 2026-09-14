@@ -277,6 +277,27 @@ class Brep {
       // just not otherwise threaded through to where they're needed.
       Vector3d plane_xaxis;
       Vector3d plane_yaxis;
+
+      // When non-empty, this run is NOT a circular arc at all but a run
+      // of LITERAL shared boundary points - exactly `count` of them, one
+      // per loop index in [begin, begin+count) mod loop.size(), in this
+      // loop's own walk order - that TessellateConforming() substitutes
+      // verbatim for those loop vertices, never re-evaluating or
+      // re-sampling them; `center`/`radius`/`angle_*`/`plane_*` above are
+      // then unused and left default. The one producer today is
+      // BooleanCombineMixed's oblique plane+cylinder case (boolean.cpp,
+      // via detail::ClipPolygonByEllipse3d's `ellipse_runs` out-param):
+      // the points are the SAME detail::EllipsePointAt samples the
+      // adjoining cylindrical fragment carries in its own
+      // cap0_notch_points/cap1_notch_points (see CylindricalFace), so the
+      // planar wedge and the cylinder wall share a bit-identical seam
+      // without either side ever evaluating "the same point" twice - the
+      // planar-side counterpart of the cylinder's own literal notch rows.
+      // A run must be either an arc (this vector empty) or literal (this
+      // vector of size `count`); FlipFace (boolean.cpp) reverses the
+      // vector alongside its `begin` remap, since the points walk the
+      // loop's order.
+      std::vector<Point3d> literal_points;
     };
     std::vector<ArcRun> arc_runs;
   };
@@ -1213,15 +1234,17 @@ class Brep {
   // this conflict is structurally impossible (u_divisions and v_divisions
   // are then the same number, so every wall's own forced count agrees
   // regardless of axis convention) - confirmed directly, not merely
-  // assumed. So a one-sided wedge/quad seam like the one above is now
-  // genuinely closed at any SYMMETRIC u_divisions/v_divisions, while the
-  // combination of a one-sided wedge AND asymmetric divisions remains an
-  // honestly-disclosed, separate, deeper limitation of
-  // BuildConformingPlainQuadMesh's own tensor-grid design that this
-  // increment does not close - see
+  // assumed. So a one-sided wedge/quad seam like the one above is
+  // genuinely closed at any SYMMETRIC u_divisions/v_divisions by this
+  // trigger alone; the combination of a one-sided wedge AND asymmetric
+  // divisions was, for a time, a disclosed limitation of
+  // BuildConformingPlainQuadMesh's own tensor-grid design, and is now
+  // closed downstream of the forcing by the per-row plain-quad strip
+  // mesher (the EIGHTH entry below) without touching this trigger's own
+  // restriction - see
   // TestTessellateConformingOneSidedWedgeSymmetricDivisionsIsClosedManifold
   // and
-  // TestTessellateConformingOneSidedWedgeAsymmetricDivisionsRemainsPreExistingGap
+  // TestTessellateConformingOneSidedWedgeAsymmetricDivisionsIsClosedManifold
   // for the exact falsifiable claims, both proven directly rather than
   // assumed.
   //
@@ -1348,11 +1371,10 @@ class Brep {
   // claims: the crossing fixture is a closed manifold at symmetric AND
   // asymmetric divisions, and the inner band's two rows carry 65 and 257
   // distinct vertices respectively - a count the shared-list design could
-  // not produce. What this does NOT close: an oblique fragment's seam
-  // against its oblique PLANAR cap (the planar side still tessellates by
-  // exact clipping over its own grid rather than from the shared literal
-  // notch points - a planar-side counterpart to this mesher is a
-  // separate piece of work). The length-0 "eye" and half-band shapes a
+  // not produce. An oblique fragment's seam against its oblique PLANAR
+  // cap is closed by the SEVENTH and EIGHTH entries below (the planar
+  // side used to exact-clip over its own grid rather than mesh from the
+  // shared literal notch points). The length-0 "eye" and half-band shapes a
   // Steinmetz (equal-radius crossing-axes) boolean produces (both rows
   // notched with the rails pinched to a shared vertex; one notch row plus
   // one cap-forced flat row) are verified end to end: every Steinmetz
@@ -1367,6 +1389,70 @@ class Brep {
   // side of the cylinder. Such a sample is snapped back to the seam
   // (angle 0) when it lies beyond the face's own sweep; a full-sweep face
   // is unaffected, both readings naming the same seam.
+  //
+  // A SEVENTH gap, closed here: the oblique plane+cylinder seam's PLANAR
+  // side. BooleanCombineMixed's oblique case yields planar wedge pieces
+  // whose loops contain the ellipse's literal EllipsePointAt samples -
+  // the same values the notched cylindrical fragment carries as its
+  // cap0/cap1_notch_points and meshes as its literal notch row under the
+  // SIXTH entry above - but those pieces recorded no ArcRun at all, so
+  // they fell through to TessellateGridClippedExact over their own
+  // margined grid, which inserts a vertex wherever a grid line crosses
+  // the ellipse polyline: a pure T-junction seam (measured on the
+  // oblique-drilled box at 64/64: 446 open edges on the two ellipses
+  // while every one of the cylinder's 402 row vertices was already
+  // float== a planar vertex), and their straight perimeter segments were
+  // never matched against the walls either (a further 1440 open edges on
+  // the box perimeter, since the straight-edge pass only walks
+  // `wedge_subs` sources). Closed by recording the ellipse stretch as a
+  // LITERAL ArcRun (PlanarFace::ArcRun::literal_points, reported by
+  // ClipPolygonByEllipse3d's own `ellipse_runs` out-param at the one
+  // site that knows the run exactly), which the arc-matching pass
+  // registers in `wedge_subs` verbatim - no cylinder match, no
+  // ArcSchedule3d resampling - so the piece dispatches to
+  // BuildConformingWedgeMesh (an ear-clip of its literal loop) and its
+  // straight segments enter the straight-edge pass like any other
+  // wedge's. One producer-side fix came with it: for the cap whose
+  // outward normal opposes the cylinder's own phi sweep (a drilled box's
+  // z=0 cap) ClipPolygonByEllipse3d's pieces were wound clockwise as seen
+  // from outside (ON_Brep LoopDirection -1) - harmless to the grid
+  // clippers, but it turned the ear-clipped pieces inside out; the
+  // clipper now reverses such a piece, vertex set untouched.
+  //
+  // An EIGHTH gap, closed here - the planar twin of the SIXTH: with the
+  // ellipse seam closed, 756 open edges remained at 64/64, all on the
+  // box's two 20-long walls. The tilted hole's two cap ellipses pierce a
+  // long wall's top and bottom edges at different positions (the seam's
+  // offset between the caps is 10*tan(theta)), so the two edges carry
+  // different forced t-sets, and BuildConformingPlainQuadMesh's tensor
+  // grid unions both into one column list: the bottom edge's split
+  // column appears on the top row as an unforced bilinear point, and
+  // vice versa. Closed by BuildConformingPlainQuadStripMesh (see its own
+  // doc comment): row 0 exactly the b=0 edge's chain, the last row
+  // exactly the b=1 edge's, interior rows on the union, consecutive rows
+  // joined by the same TriangulateStrip the cylindrical strips use.
+  // Dispatch: a plain-forced quad takes the strip iff exactly one of its
+  // two opposite-edge pairs has differing EFFECTIVE t-sets (transposed
+  // when it is the b pair); a quad whose pairs both agree keeps the
+  // tensor mesher bit-for-bit (every previously closed result
+  // reproduces), and a quad mismatched on BOTH axes has no such rescue
+  // and stays on the tensor mesher - disclosed, and hit by no fixture in
+  // this kernel's suite. This also closes the asymmetric-divisions
+  // one-sided-wedge case disclosed further above (measured 220/264/128
+  // open edges at 8/11, 17/4, 12/20, now zero, volumes unchanged):
+  // ComputePlainQuadSeamForces's own u == v restriction is untouched;
+  // the count conflict it avoids simply no longer needs resolving, since
+  // a quad's two opposite edges no longer have to agree. Verified end to
+  // end: the oblique-drilled box is a closed manifold under this method
+  // at 64/64, 12/20, 17/4 and 8/8 and at 5/15/30-degree tilts, the bare
+  // oblique Union (box plus a protruding tilted cylinder, 22 faces)
+  // likewise, with the volume matching the inscribed-200-gon closed form
+  // within 1e-6 - see TestTessellateConformingObliqueDrilledBoxIsClosedManifold
+  // and its siblings (tests/test_basic.cpp). Unchanged and unrelated to
+  // mesh watertightness: the ON_Brep topology of an oblique result still
+  // does not share the ellipse edges between the pieces and the
+  // fragment (one ON_LineCurve edge per sample on each side; IsSolid()
+  // stays false), exactly as before.
   std::vector<Mesh> TessellateConforming(int u_divisions = 8, int v_divisions = 8,
                                           int boundary_samples = -1) const;
 

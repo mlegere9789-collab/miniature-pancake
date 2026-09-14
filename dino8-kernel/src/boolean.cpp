@@ -710,6 +710,10 @@ Brep::PlanarFace FlipFace(Brep::PlanarFace f) {
         n;
     run.begin = static_cast<int>(new_begin);
     std::swap(run.angle_begin, run.angle_end);
+    // A LITERAL run (see PlanarFace::ArcRun::literal_points) carries its
+    // points in the loop's own walk order, so they reverse with it - the
+    // literal counterpart of the angle swap just above.
+    std::reverse(run.literal_points.begin(), run.literal_points.end());
   }
   return f;
 }
@@ -1324,8 +1328,14 @@ Point3d RepresentativeInteriorPointMixed(const MixedFace& f) {
     // result, see BooleanCombineMixed's own doc comment) - so this branch
     // is reached, in this codebase today, only by
     // ClipPolygonByCircleInsideOnly3d's own pieces.
+    // Guarded on the run being a genuine circular arc: a LITERAL run
+    // (PlanarFace::ArcRun::literal_points, the oblique ellipse pieces)
+    // has no center/radius/angles to evaluate, and its shape (a sample
+    // stretch plus at least two straight rails and a perimeter walk)
+    // never matches this begin/count signature anyway - the guard makes
+    // that structural fact explicit rather than relied upon.
     const std::vector<Brep::PlanarFace::ArcRun>& runs = f.planar.arc_runs;
-    if (runs.size() == 1 && runs[0].begin == 1 &&
+    if (runs.size() == 1 && runs[0].literal_points.empty() && runs[0].begin == 1 &&
         static_cast<size_t>(runs[0].count) == f.planar.loop.size() - 1) {
       const Brep::PlanarFace::ArcRun& run = runs[0];
       const double mid_angle = 0.5 * (run.angle_begin + run.angle_end);
@@ -2926,22 +2936,46 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
                 "bug - out of scope for this increment");
           }
           const detail::EllipseFrame3d ef = detail::ComputeEllipseFrame3d(g.cyl, f.planar.plane, kMinObliqueC);
-          for (std::vector<Point3d>& piece : detail::ClipPolygonByEllipse3d(f.planar.loop, f.planar.plane, ef, tol)) {
+          std::vector<std::pair<int, int>> ellipse_runs;
+          std::vector<std::vector<Point3d>> oblique_pieces =
+              detail::ClipPolygonByEllipse3d(f.planar.loop, f.planar.plane, ef, tol, 200, &ellipse_runs);
+          for (size_t pi = 0; pi < oblique_pieces.size(); ++pi) {
+            std::vector<Point3d>& piece = oblique_pieces[pi];
             if (piece.size() < 3) continue;
             MixedFace m;
             m.planar.plane = f.planar.plane;
-            // No arc_runs entry here (unlike the perpendicular branch
-            // above): PlanarFace::arc_runs is consumed ONLY by
-            // Brep::TessellateConforming(), whose own reconciliation
-            // machinery (detail::ArcSchedule3d) is CIRCLE-specific and is
-            // deliberately NOT extended to the oblique ellipse case by this
-            // increment (see boolean.h's own BooleanCombineMixed doc
-            // comment for the honestly-disclosed scope note this implies:
-            // ordinary Tessellate() on an oblique-drilled result carries
-            // the SAME known non-watertight-at-the-wedge-seam limitation
-            // the existing PERPENDICULAR case already has without
-            // TessellateConforming() - see TestBooleanCombineMixedDrilledBoxThroughHole's
-            // own comment for that pre-existing, unchanged limitation).
+            // Unlike the perpendicular branch above (whose FindArcRun
+            // re-detects a CIRCLE by radius so TessellateConforming() can
+            // re-sample it via detail::ArcSchedule3d), the ellipse has no
+            // circle-style resampling - and needs none: the piece's own
+            // ellipse stretch already IS the canonical sample list the
+            // adjoining cylindrical fragment carries verbatim in its
+            // cap0_notch_points/cap1_notch_points (both are the same
+            // EllipsePointAt evaluations over the same `ef`, see
+            // ellipse_clip3d.h). So the run is recorded as a LITERAL
+            // ArcRun (PlanarFace::ArcRun::literal_points): the exact
+            // points, in loop order, that TessellateConforming()
+            // substitutes for the wedge's boundary and ear-clips around,
+            // making the planar/cylinder ellipse seam bit-identical on
+            // both sides. Consumed ONLY by TessellateConforming(); every
+            // other consumer of this MixedFace never reads arc_runs (the
+            // one arc-specific reader, RepresentativeInteriorPointMixed's
+            // inside-disc shortcut, explicitly skips literal runs), and
+            // ordinary Tessellate() still carries the pre-existing,
+            // disclosed non-watertight wedge seam the perpendicular case
+            // has too (see boolean.h's own BooleanCombineMixed doc
+            // comment).
+            if (pi < ellipse_runs.size()) {
+              Brep::PlanarFace::ArcRun run;
+              run.begin = ellipse_runs[pi].first;
+              run.count = ellipse_runs[pi].second;
+              const size_t pn = piece.size();
+              run.literal_points.reserve(static_cast<size_t>(run.count));
+              for (int j = 0; j < run.count; ++j) {
+                run.literal_points.push_back(piece[(static_cast<size_t>(run.begin) + static_cast<size_t>(j)) % pn]);
+              }
+              m.planar.arc_runs.push_back(std::move(run));
+            }
             m.planar.loop = std::move(piece);
             next.push_back(std::move(m));
           }
