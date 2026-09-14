@@ -1665,6 +1665,46 @@ bool SameCircleAsCylinder(const Point3d& center, double radius, const Vector3d& 
   return true;
 }
 
+// True when two CylindricalFace records describe the SAME physical
+// wedge of the SAME physical cylinder - same axis line, radius, u=0
+// angular reference direction (`frame.xaxis`), and angular sweep - as
+// opposed to SameCircleAsCylinder above, which only identifies "the same
+// physical circle" (axis + radius + normal) and is deliberately blind to
+// angular reference and sweep, since the arc-matching pass above needs
+// exactly that laxer test to pair a cap's own arc against ANY
+// axially-adjacent wall fragment, regardless of that fragment's own
+// wedge. This stricter test is for a DIFFERENT job (see
+// BuildConformingCylinderMesh's own dispatch site below): reusing one
+// wedge's OWN axially-adjacent, already-`cyl_matches`-populated sibling's
+// raw-u breakpoints as another, "friendless" sibling's own fallback
+// schedule requires the SAME angular reference, not merely the same
+// circle - two DIFFERENT wedges of one physical cylinder (e.g. this
+// file's own parallel-cylinder-Difference fixture's A-outer vs. A-inner
+// wedge) generally have DIFFERENT `frame.xaxis` directions, so reusing
+// one wedge's raw-u values for the other would silently apply the wrong
+// angular reference and reproduce exactly the seam this is meant to fix.
+// `SplitCylindricalByOtherCylinderAxialExtent` (boolean.cpp) is confirmed
+// (by direct inspection of its own implementation) to copy an axial
+// sibling's `frame`/`angle`/`radius` verbatim, only ever trimming
+// `length` and shifting `frame.origin` along the shared axis - so two
+// genuine axial siblings of one wedge always satisfy this predicate
+// (mirroring the SAME re-derivation `ExtractCylindricalFace` performs
+// per fragment, which reproduces that same frame up to ordinary
+// floating-point fit noise), while two different wedges of the same
+// cylinder never do.
+bool SameWedgeAsCylinder(const Brep::CylindricalFace& a, const Brep::CylindricalFace& b, double tol) {
+  const double rtol = std::max(tol, a.radius * 1e-6);
+  const Vector3d d = b.frame.origin - a.frame.origin;
+  const double height = ON_DotProduct(d, a.frame.zaxis);
+  const Point3d axis_point = a.frame.origin + height * a.frame.zaxis;
+  if (b.frame.origin.DistanceTo(axis_point) > rtol) return false;
+  if (std::fabs(a.radius - b.radius) > rtol) return false;
+  if (ON_DotProduct(a.frame.zaxis, b.frame.zaxis) < 1.0 - 1e-6) return false;
+  if (ON_DotProduct(a.frame.xaxis, b.frame.xaxis) < 1.0 - 1e-6) return false;
+  if (std::fabs(a.angle - b.angle) > 1e-6) return false;
+  return true;
+}
+
 // Rebuilds a wedge PlanarFace's own trim polygon (`trim_uv`, on `wrapper`
 // - the SAME bilinear surface Tessellate() already trims to) as a 3D
 // polygon with every SubRange in `subs` substituted for its own fresh
@@ -1776,8 +1816,77 @@ Mesh BuildConformingWedgeMesh(const NurbsSurface& wrapper, const std::vector<Poi
 // computations) - seeTessellateConforming()'s own doc comment for why
 // bit-identical (not merely close) boundary vertices is the actual
 // point of this whole mechanism.
+// LAST-RESORT angle-uniform raw-NURBS-u breakpoint schedule for a
+// CylindricalFace's own FULL [0, cf.angle] sweep, used ONLY when a
+// "friendless" axial band (see BuildConformingCylinderMesh's own dispatch
+// site below) has NO already-`cyl_matches`-populated sibling of the SAME
+// wedge (per SameWedgeAsCylinder above) to borrow real breakpoints from -
+// an edge case that should not arise for any boolean-produced middle
+// band in this kernel today (every such band has at least one capped
+// axial sibling somewhere in the result), but is kept as a defensive
+// fallback so a face this branch cannot fully reconcile still gets SOME
+// angle-uniform schedule (better than NurbsSurface::TessellateGrid's own
+// raw-u-uniform one) rather than silently regressing to today's bug the
+// moment that assumption is ever violated. IMPORTANT: unlike reusing a
+// real sibling's own `raw_u` (see below), this does NOT generally
+// reproduce the same breakpoints a capped sibling's own ArcRun match(es)
+// would compute - a cap built as several quadrant-sized ArcRuns (see
+// BuildEndCap's own "always 4 quadrant pieces" convention) samples EACH
+// quadrun uniformly across only ITS OWN angular sub-range, not the
+// wedge's full sweep in one pass, so the resulting breakpoint set is
+// generally NOT the same as sampling `sample_count` steps uniformly
+// across the ENTIRE [0, cf.angle] sweep in one go. This helper exists
+// purely as a not-worse-than-before safety net for that no-sibling edge
+// case, not as the mechanism that actually closes the seam.
+std::vector<double> CanonicalCylinderUBreakpoints(const Brep::CylindricalFace& cf, int sample_count) {
+  const ON_Circle ref_circle(cf.frame, cf.radius);
+  std::vector<double> raw_u(static_cast<size_t>(std::max(sample_count, 1)) + 1);
+  for (int s = 0; s <= sample_count; ++s) {
+    const double t = static_cast<double>(s) / static_cast<double>(std::max(sample_count, 1));
+    const double theta = cf.angle * t;
+    double u = 0.0;
+    if (!ref_circle.GetNurbFormParameterFromRadian(theta, &u)) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::TessellateConforming: ON_Circle::GetNurbFormParameterFromRadian failed "
+          "converting a cylindrical face's own canonical angle-uniform breakpoint to raw NURBS-u");
+    }
+    raw_u[static_cast<size_t>(s)] = u;
+  }
+  return raw_u;
+}
+
+// `fallback_u_breakpoints`, when non-empty, seeds a set of EXTRA u
+// breakpoints (no forced 3D point at either row, unlike a genuine
+// ConformingMatch - see `matches` below) into the same `add_break`
+// dedup-by-`u_tol` machinery `matches` already feeds. It exists for
+// exactly one caller (see the dispatch site in TessellateConforming()
+// below): a CylindricalFace fragment with ZERO entries in `matches` at
+// all (a "friendless" middle axial band produced by splitting a cylinder
+// against another cylinder - see boolean.h's own disclosure of this gap)
+// - such a fragment previously fell through to a plain, raw-u-uniform
+// grid (NurbsSurface::TessellateGrid) at BOTH its v=0 and v=length rows,
+// which samples genuinely different physical angular locations than an
+// axially-adjacent, ArcRun-matched sibling's own angle-uniform
+// breakpoints along the SAME shared circle - an unwelded seam at every
+// interior column. The caller populates this by directly reusing an
+// axially-adjacent, already-matched sibling's OWN `raw_u` values (the
+// SAME `ConformingMatch::raw_u` this function's own `matches` parameter
+// already forces breakpoints from, just gathered from a DIFFERENT face's
+// entry in `cyl_matches`, identified via SameWedgeAsCylinder as sharing
+// this face's own wedge) - not an independently re-derived schedule -
+// since a cap's own ArcRun match set can span SEVERAL quadrant-sized
+// runs (see BuildEndCap's own "always 4 quadrant pieces" convention),
+// each sampled uniformly only across ITS OWN angular sub-range, and only
+// the sibling's own actual accumulated breakpoint set (not a fresh
+// single uniform-over-the-full-sweep resampling - see
+// CanonicalCylinderUBreakpoints' own doc comment for why that
+// alternative is NOT equivalent) is guaranteed to reproduce the exact
+// values that sibling's own shared boundary row already committed to. An
+// empty `fallback_u_breakpoints` (the default for every pre-existing
+// caller) is a complete no-op in the loop below.
 Mesh BuildConformingCylinderMesh(const NurbsSurface& wrapper, const std::vector<Point2d>& trim_uv, int u_divisions,
-                                  int v_divisions, const std::vector<ConformingMatch>& matches) {
+                                  int v_divisions, const std::vector<ConformingMatch>& matches,
+                                  const std::vector<double>& fallback_u_breakpoints = {}) {
   double u_min = trim_uv[0].x, u_max = trim_uv[0].x, v_min = trim_uv[0].y, v_max = trim_uv[0].y;
   for (const Point2d& p : trim_uv) {
     u_min = std::min(u_min, p.x);
@@ -1810,6 +1919,7 @@ Mesh BuildConformingCylinderMesh(const NurbsSurface& wrapper, const std::vector<
   };
   add_break(u_min, nullptr, nullptr);
   add_break(u_max, nullptr, nullptr);
+  for (double u : fallback_u_breakpoints) add_break(u, nullptr, nullptr);
   for (const ConformingMatch& m : matches) {
     for (size_t s = 0; s < m.raw_u.size(); ++s) {
       add_break(m.raw_u[s], m.at_v0 ? &m.points[s] : nullptr, m.at_v0 ? nullptr : &m.points[s]);
@@ -2550,6 +2660,12 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
     Brep::CylindricalFace cf;
   };
   std::vector<CylEntry> cyls;
+  // Indexes `cyls` by its own `face_index`, for the fallback-breakpoint
+  // lookup in the dispatch loop below (a CylindricalFace fragment with
+  // zero `cyl_matches` entries needs its OWN CylindricalFace record -
+  // frame, radius, angle - to compute CanonicalCylinderUBreakpoints;
+  // see that helper's own doc comment above BuildConformingCylinderMesh).
+  std::unordered_map<int, const Brep::CylindricalFace*> cyl_by_face;
   for (int i = 0; i < n; ++i) {
     if (!resolved[static_cast<size_t>(i)]) continue;
     NurbsSurface wrapper;
@@ -2567,6 +2683,7 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
     // matched below - it falls through to today's ordinary path, per
     // this method's own doc comment ("does not attempt to generalize").
   }
+  for (const CylEntry& ce : cyls) cyl_by_face[ce.face_index] = &ce.cf;
 
   const double tol = 1e-9;
 
@@ -3043,8 +3160,46 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
     const auto wedge_it = wedge_subs.find(i);
     const auto plain_it = plain_forces.find(i);
 
+    const auto self_cyl_it = cyl_by_face.find(i);
     if (cyl_it != cyl_matches.end()) {
       result.push_back(BuildConformingCylinderMesh(wrapper, fg.outer, u_divisions, v_divisions, cyl_it->second));
+    } else if (self_cyl_it != cyl_by_face.end()) {
+      // A CylindricalFace fragment with NO ArcRun match on either end at
+      // all (see boolean.h's own disclosure) - a "friendless" middle
+      // axial band. Rather than falling back to NurbsSurface::TessellateGrid's
+      // raw-u-uniform division (this branch's own prior behavior, and
+      // exactly the mismatch that left an unwelded seam against any
+      // axially-adjacent, ArcRun-matched sibling sharing this same
+      // wedge), gather every OTHER face's own `cyl_matches` entries whose
+      // CylindricalFace record is the SAME wedge as this one
+      // (SameWedgeAsCylinder - see its own doc comment for why "same
+      // wedge", not merely "same circle", is the right identity here) and
+      // reuse their literal `raw_u` breakpoints as this face's own
+      // fallback schedule (see BuildConformingCylinderMesh's own doc
+      // comment for `fallback_u_breakpoints` for why reusing a real
+      // sibling's own accumulated breakpoints, rather than independently
+      // resampling this face's own [0, cf.angle] sweep uniformly, is the
+      // part that actually reproduces the exact values a capped sibling's
+      // shared boundary row already committed to). Every genuine
+      // boolean-produced middle band has at least one such sibling
+      // somewhere in the result (it was axially split FROM one, by
+      // SplitCylindricalByOtherCylinderAxialExtent); CanonicalCylinderUBreakpoints
+      // (see its own doc comment) is kept purely as a defensive fallback
+      // for the case that assumption is ever violated.
+      std::vector<double> fallback;
+      for (const auto& [other_face, other_matches] : cyl_matches) {
+        const auto other_cf_it = cyl_by_face.find(other_face);
+        if (other_cf_it == cyl_by_face.end()) continue;
+        if (!SameWedgeAsCylinder(*self_cyl_it->second, *other_cf_it->second, tol)) continue;
+        for (const ConformingMatch& m : other_matches) {
+          fallback.insert(fallback.end(), m.raw_u.begin(), m.raw_u.end());
+        }
+      }
+      if (fallback.empty()) {
+        fallback = CanonicalCylinderUBreakpoints(*self_cyl_it->second, boundary_samples);
+      }
+      result.push_back(
+          BuildConformingCylinderMesh(wrapper, fg.outer, u_divisions, v_divisions, {}, fallback));
     } else if (wedge_it != wedge_subs.end()) {
       result.push_back(BuildConformingWedgeMesh(wrapper, fg.outer, wedge_it->second));
     } else if (plain_it != plain_forces.end()) {
