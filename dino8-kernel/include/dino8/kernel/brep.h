@@ -445,6 +445,20 @@ class Brep {
     // each be shared by exactly the two faces bounded by it. A length == 0
     // face with fewer than two notches has no surface to build and is
     // not a supported shape.
+    //
+    // The unequal-radius perpendicular cylinder/cylinder boolean (again
+    // see BooleanCombineMixed's doc comment) produces two more doubly-
+    // notched shapes, both built by the same machinery with nothing
+    // added: the larger cylinder's PLUG - the eye shape at an angle
+    // 2*asin(r_b/r_a) < pi (its two notch curves are the two arcs of the
+    // loop where the smaller cylinder pierces this wall) - and the
+    // smaller cylinder's MIDDLE band, notched at both ends with a
+    // POSITIVE length (from the lower curve's pinch height to the upper
+    // curve's; its two rails are real edges between the two pinch
+    // vertices on each side, and its notch curves are the halves of the
+    // two curves going once around this cylinder). Every notch chain of
+    // both shapes still starts and ends exactly at its face's rail
+    // corners at the same v, per the contract above.
     std::vector<Point3d> cap0_notch_points;
     std::vector<Point3d> cap1_notch_points;
 
@@ -885,10 +899,15 @@ class Brep {
   // unchanged, v being true axial height. An un-notched face's domain is
   // exactly [0, length], as before. Throws std::invalid_argument if that
   // widened span is degenerate. A face notched at BOTH ends with
-  // length == 0 (a Steinmetz eye - see CylindricalFace's own doc comment)
-  // builds as a two-trim loop between its two pinch vertices, its
-  // zero-length rails skipped and its two notched caps kept as distinct
-  // edges even though they join the same two vertices.
+  // length == 0 (a Steinmetz eye or an unequal-radius plug - see
+  // CylindricalFace's own doc comment) builds as a two-trim loop between
+  // its two pinch vertices, its zero-length rails skipped and its two
+  // notched caps kept as distinct edges even though they join the same
+  // two vertices; one with a positive length (an unequal-radius middle
+  // band) keeps its two straight rails, which are told apart from a
+  // circular cap ARC between the same two vertices (another fragment's
+  // cut at the same height) by the chord's own midpoint - an arc and its
+  // chord are never one curve.
   // Every `loop`/`frame` must satisfy the same preconditions PlanarFace's
   // and CylindricalFace's own doc comments describe; not re-validated
   // beyond what NewFace's own surface construction requires.

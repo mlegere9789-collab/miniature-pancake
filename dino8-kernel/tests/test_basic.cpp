@@ -14238,6 +14238,35 @@ double SteinmetzIntersectionVolume(double r, double alpha_deg) {
   return 16.0 * r * r * r / (3.0 * std::sin(alpha_deg * ON_PI / 180.0));
 }
 
+// Closed form for the Intersection of two cylinders of UNEQUAL radii
+// r_a > r_b whose axes meet at a right angle: the cross-section at offset
+// y along the axes' common perpendicular is a rectangle 2 sqrt(r_a^2 - y^2)
+// by 2 sqrt(r_b^2 - y^2), so V = integral_{-r_b}^{r_b} 4 sqrt(r_a^2 - y^2)
+// sqrt(r_b^2 - y^2) dy. Evaluated by 1-D quadrature with y = r_b sin t,
+// which turns the integrand into 4 r_b^2 cos^2(t) sqrt(r_a^2 - r_b^2 sin^2 t)
+// - smooth on [-pi/2, pi/2], where the raw form's infinite-slope endpoints
+// would cost Simpson its fourth-order convergence - and composite Simpson
+// at 20000 intervals, accurate to ~1e-14 relative there (checked against
+// 2e4 vs 4e4 intervals), far below every bound that uses it. At r_a = r_b
+// it must reproduce the Steinmetz 16 r^3 / 3, which the first unequal-
+// radius test asserts as a self-check of the quadrature itself. Union =
+// pi (r_a^2 L_A + r_b^2 L_B) - V, A - B = pi r_a^2 L_A - V, B - A =
+// pi r_b^2 L_B - V.
+double UnequalCylinderIntersectionVolume(double r_a, double r_b) {
+  const int n = 20000;
+  auto f = [&](double t) {
+    const double c = std::cos(t), s = std::sin(t);
+    return 4.0 * r_b * r_b * c * c * std::sqrt(r_a * r_a - r_b * r_b * s * s);
+  };
+  const double lo = -0.5 * ON_PI, hi = 0.5 * ON_PI, h = (hi - lo) / n;
+  double sum = 0.0;
+  for (int i = 0; i <= n; ++i) {
+    const double w = (i == 0 || i == n) ? 1.0 : (i % 2 ? 4.0 : 2.0);
+    sum += w * f(lo + i * h);
+  }
+  return sum * h / 3.0;
+}
+
 // Two equal-radius, full-sweep cylinders whose axes cross at the origin at
 // `alpha_deg`: A along +Z (frame origin at z = -length_a/2), B along
 // (sin alpha, 0, cos alpha) with xaxis +Y (the common perpendicular of the
@@ -14604,16 +14633,41 @@ void TestBooleanCombineMixedSteinmetzNegativeControls() {
   bool threw = false;
 
   {
-    // Unequal radii on intersecting, perpendicular axes: the intersection
-    // curve is no longer a pair of planar ellipses (a genuine quartic),
-    // out of scope - and the message names "non-parallel axes", the
-    // substring TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary
-    // keys on for its own unequal-radii tilted pair.
-    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0, /*radius_b=*/1.5);
+    // Unequal radii on intersecting, NON-PERPENDICULAR (60 degree) axes:
+    // the intersection curve is no longer a pair of planar ellipses (a
+    // genuine quartic), and the unequal-radius split supports
+    // perpendicular axes only (at a general angle the two loops on the
+    // larger wall sit at two different heights - see
+    // SplitCylindricalByUnequalPerpendicularCylinder's own section
+    // comment in boolean.cpp), so this is refused - and the message names
+    // "non-parallel axes", the substring
+    // TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary keys
+    // on for its own unequal-radii tilted pair. This fixture used to sit
+    // at 90 degrees, a pair the unequal-radius split now BUILDS; that
+    // former fixture is asserted as the positive case just below.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 60.0, /*radius_b=*/1.5);
     const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Intersection, threw);
     Check(threw && message.find("non-parallel axes") != std::string::npos,
-          "Steinmetz negative control: UNEQUAL radii on intersecting perpendicular axes throw std::invalid_argument "
-          "whose message names 'non-parallel axes'");
+          "Steinmetz negative control: UNEQUAL radii on intersecting NON-PERPENDICULAR (60 degree) axes throw "
+          "std::invalid_argument whose message names 'non-parallel axes'");
+  }
+  {
+    // The former negative fixture - unequal radii (2 and 1.5) on
+    // intersecting PERPENDICULAR axes - now builds through the
+    // unequal-radius split: the four-face (two plugs, two middle bands)
+    // Intersection, IsValid and IsSolid, closed under the conforming
+    // mesher and matching the 1-D quadrature closed form.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0, /*radius_b=*/1.5);
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+    const double expected = UnequalCylinderIntersectionVolume(2.0, 1.5);
+    const Mesh conforming = result.TessellateToClosedMeshConforming(64, 64);
+    Check(result.MixedFaces().cylindrical.size() == 4 && result.raw().IsValid() && result.raw().IsSolid() &&
+              conforming.IsClosedManifold() && std::fabs(conforming.Volume() - expected) < 1e-3 * expected,
+          "the former Steinmetz negative control - UNEQUAL radii (2 and 1.5) on intersecting PERPENDICULAR axes - "
+          "now builds: a 4-face, IsValid and IsSolid Intersection whose conforming 64-division mesh is closed and "
+          "within 0.1% of the quadrature closed form 26.113");
   }
   {
     // Equal radii but genuinely skew axes (B shifted 1.0 along the common
@@ -15124,6 +15178,618 @@ void TestBooleanCombineMixedNonParallelCylinderNoInteractionSkewAndUnequalRadii(
   }
 }
 
+// ---------------------------------------------------------------------
+// Unequal-radius, intersecting, PERPENDICULAR-axis cylinder/cylinder
+// booleans
+// ---------------------------------------------------------------------
+//
+// r_a > r_b, axes meeting at a right angle, B piercing A completely
+// (SplitCylindricalByUnequalPerpendicularCylinder, boolean.cpp): the
+// larger wall splits at the four pinch angles +/- asin(r_b/r_a) about the
+// two piercing points into two slabs (upper piece, lower piece, plug) and
+// two plain pieces cut at the crossing height; the smaller wall splits at
+// its two pinch generators into two halves (upper, middle, lower band).
+// Same fixture as the Steinmetz tests (BuildSteinmetzCylinders with
+// radius_b), closed form UnequalCylinderIntersectionVolume (above).
+//
+// Every ordinary TessellateToClosedMesh() volume converges to the closed
+// form but is NOT closed (the two cylinders tessellate their sides of the
+// four shared arcs on their own grids - the same disclosed T-junction
+// limitation the Steinmetz results carry), while the CONFORMING mesher
+// closes every op at every division pair tried (its per-row strip mesher
+// meshes the plugs, the positive-length doubly-notched middle bands and
+// the notched slab pieces as strips between their literal shared arcs).
+// Measured residuals are quoted in each check string; bounds are 10x or
+// more above them.
+void TestBooleanCombineMixedUnequalRadiusPerpendicularIntersectionVolumeAndTopology() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  Check(std::fabs(UnequalCylinderIntersectionVolume(2.0, 2.0) - 16.0 * 8.0 / 3.0) < 1e-9,
+        "unequal-radius quadrature self-check: at r_a = r_b = 2 the 1-D Simpson closed form reproduces the Steinmetz "
+        "16 r^3 / 3 = 42.6667 within 1e-9");
+
+  const double r_a = 2.0, r_b = 1.0;
+  const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(r_a, 10.0, 10.0, 90.0, r_b);
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+  const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+
+  const auto mixed = result.MixedFaces();
+  Check(mixed.cylindrical.size() == 4 && mixed.planar.empty(),
+        "unequal-radius (2/1) perpendicular Intersection: exactly 4 cylindrical faces (A's two plugs, B's two middle "
+        "bands) and no planar face - neither operand's original ends survive, so no end cap is synthesized");
+
+  // Raw topology: the four pinch points (+/- sqrt(r_a^2 - r_b^2), +/- r_b, 0)
+  // - B's two generators at common-perpendicular coordinate +/- r_b, where
+  // they are tangent to A's wall - and six edges (four shared arcs plus
+  // the two middle bands' rails between the pinches), each used by
+  // exactly two trims.
+  const ON_Brep& raw = result.raw();
+  Check(raw.m_V.Count() == 4,
+        "unequal-radius Intersection: the raw ON_Brep has exactly 4 vertices - the four pinch points where each "
+        "loop's two arcs meet");
+  bool pinch_points_exact = raw.m_V.Count() == 4;
+  const double c = std::sqrt(r_a * r_a - r_b * r_b);
+  for (int v = 0; v < raw.m_V.Count(); ++v) {
+    const ON_3dPoint p = raw.m_V[v].point;
+    if (std::fabs(std::fabs(p.x) - c) > 1e-9 || std::fabs(std::fabs(p.y) - r_b) > 1e-9 || std::fabs(p.z) > 1e-9) {
+      pinch_points_exact = false;
+    }
+  }
+  Check(pinch_points_exact,
+        "unequal-radius Intersection: every vertex sits at (+/- sqrt(r_a^2 - r_b^2), +/- r_b, 0) to 1e-9 - the "
+        "closed-form pinch points, at ONE height (the crossing's) on A, which is what lets a single cut decompose "
+        "A's wall");
+  Check(raw.m_E.Count() == 6,
+        "unequal-radius Intersection: exactly 6 edges - one per shared arc plus the two middle bands' straight rails "
+        "between the pinches, so each shared boundary is ONE edge, never two per-cylinder copies");
+  bool each_edge_shared_by_two = raw.m_E.Count() == 6;
+  for (int e = 0; e < raw.m_E.Count(); ++e) {
+    if (raw.m_E[e].m_ti.Count() != 2) each_edge_shared_by_two = false;
+  }
+  Check(each_edge_shared_by_two,
+        "unequal-radius Intersection: every one of the 6 edges is used by exactly 2 trims - the four arcs joining "
+        "the same pinch pairs were told apart, none merged, none duplicated");
+  Check(raw.IsValid() && raw.IsSolid(),
+        "unequal-radius Intersection: ON_Brep::IsValid() and IsSolid() both hold for the two plugs (angle "
+        "2*asin(r_b/r_a) = 60 degrees, length 0, both caps notched) and the two positive-length doubly-notched "
+        "middle bands");
+
+  const double expected = UnequalCylinderIntersectionVolume(r_a, r_b);
+  const Mesh mesh = result.TessellateToClosedMesh(256, 256);
+  Check(std::fabs(mesh.Volume() - expected) < 2e-3 * expected,
+        "unequal-radius Intersection: the ordinary 256-division tessellated volume is within 0.2% of the quadrature "
+        "closed form 12.1603 (measured -1.6e-4 relative; -6.1e-4 at 128)");
+  Check(!result.TessellateToClosedMesh(128, 128).IsClosedManifold(),
+        "unequal-radius Intersection: the ORDINARY 128-division tessellation is NOT a closed manifold - each "
+        "cylinder tessellates its side of every shared arc on its own grid (T-junctions), the same disclosed "
+        "limitation the Steinmetz results carry");
+  const Mesh conforming = result.TessellateToClosedMeshConforming(64, 64);
+  Check(conforming.IsClosedManifold(),
+        "unequal-radius Intersection: the CONFORMING 64-division tessellation IS a closed manifold - the plugs and "
+        "the middle bands are meshed as strips whose boundary chains are the literal shared arc samples");
+  Check(std::fabs(conforming.Volume() - expected) < 1e-3 * expected,
+        "unequal-radius Intersection: the conforming 64-division volume is within 0.1% of the closed form "
+        "(measured -4.4e-5 relative, set by the 200-segment chains, not the division count)");
+  for (const auto& uv : {std::make_pair(12, 20), std::make_pair(17, 4)}) {
+    const Mesh m = result.TessellateToClosedMeshConforming(uv.first, uv.second);
+    Check(m.IsClosedManifold() && std::fabs(m.Volume() - expected) < 1e-3 * expected,
+          "unequal-radius Intersection: the conforming tessellation is closed and within 0.1% of the closed form at "
+          "asymmetric divisions too (12/20 and 17/4; measured -4.4e-5 at both)");
+  }
+}
+
+// Union and Difference need nothing beyond the ten-plus-six-fragment
+// split: the op-agnostic classify-then-bucket pipeline keeps A's eight
+// wall pieces and B's four outer bands (Union), A's eight pieces plus B's
+// two middle bands flipped as the bore's wall (A - B), or B's four outer
+// bands plus A's two plugs flipped (B - A), and SynthesizeEndCaps/
+// BuildEndCap close every surviving original end with quadrant wedges
+// (A's ends are now four angular pieces each, B's two). Measured face
+// counts 12 + 48, 10 + 32 and 6 + 16.
+//
+// A - B is the one op that needed a change outside boolean.cpp: B's
+// middle band has a straight rail between two pinch vertices and A's
+// plain piece, cut at the crossing height, has its cut ARC between the
+// same two vertices; FromMixedFaces used to key edges by vertex pair
+// alone there and threw "shared by 3 or more faces". BuildFaceLoop's
+// straight-vs-arc salt (brep.cpp) keeps them distinct - exercised
+// directly by TestFromMixedFacesStraightChordAndCapArcBetweenSameVerticesAreDistinctEdges
+// below.
+void TestBooleanCombineMixedUnequalRadiusPerpendicularUnionAndDifferenceVolumes() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double r_a = 2.0, r_b = 1.0, length_a = 10.0, length_b = 10.0;
+  const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(r_a, length_a, length_b, 90.0, r_b);
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+  const double v_intersection = UnequalCylinderIntersectionVolume(r_a, r_b);
+  constexpr double kRelTol = 2e-3;
+
+  // Ordinary volume at 128 divisions within 0.2%, not closed; conforming
+  // closed and within 0.1% at (64, 64) and within 0.2% at the two
+  // asymmetric division pairs.
+  auto measure = [&](const Brep& result, double expected, const char* ordinary_what, const char* open_what,
+                     const char* conforming_what, const char* asymmetric_what) {
+    const Mesh mesh = result.TessellateToClosedMesh(128, 128);
+    Check(std::fabs(mesh.Volume() - expected) < kRelTol * expected, ordinary_what);
+    Check(!mesh.IsClosedManifold(), open_what);
+    const Mesh conforming = result.TessellateToClosedMeshConforming(64, 64);
+    Check(conforming.IsClosedManifold() && std::fabs(conforming.Volume() - expected) < 1e-3 * expected,
+          conforming_what);
+    bool asymmetric_ok = true;
+    for (const auto& uv : {std::make_pair(12, 20), std::make_pair(17, 4)}) {
+      const Mesh m = result.TessellateToClosedMeshConforming(uv.first, uv.second);
+      if (!m.IsClosedManifold() || std::fabs(m.Volume() - expected) >= kRelTol * expected) asymmetric_ok = false;
+    }
+    Check(asymmetric_ok, asymmetric_what);
+  };
+
+  {
+    const Brep result = BooleanCombineMixed(a, b, BooleanOp::Union);
+    const auto mixed = result.MixedFaces();
+    Check(mixed.cylindrical.size() == 12 && mixed.planar.size() == 48,
+          "unequal-radius Union: 12 cylindrical faces (A's two slab uppers, two slab lowers and four plain pieces; "
+          "B's four outer bands) and 48 planar faces (A's two ends as 4 angular pieces x 4 wedges, B's two ends as "
+          "2 x 4)");
+    Check(result.raw().IsValid(), "unequal-radius Union: ON_Brep::IsValid() holds");
+    measure(result, ON_PI * (r_a * r_a * length_a + r_b * r_b * length_b) - v_intersection,
+            "unequal-radius Union: the ordinary 128-division volume is within 0.2% of pi (r_a^2 L_A + r_b^2 L_B) - V "
+            "= 144.919 (measured -2.5e-4 relative)",
+            "unequal-radius Union: the ordinary tessellation is NOT closed (shared-arc T-junctions and end-cap wedge "
+            "seams) - the disclosed limitation of the plain path",
+            "unequal-radius Union: the CONFORMING 64-division tessellation is a closed manifold within 0.1% of the "
+            "closed form (measured -9.0e-6 relative) - every slab piece and outer band meshes as a strip between its "
+            "literal arc and its cap-forced flat row",
+            "unequal-radius Union: the conforming tessellation is closed and within 0.2% at asymmetric divisions "
+            "(12/20 and 17/4; measured -7.3e-5 and -1.1e-4)");
+  }
+  {
+    const Brep result = BooleanCombineMixed(a, b, BooleanOp::Difference);
+    const auto mixed = result.MixedFaces();
+    Check(mixed.cylindrical.size() == 10 && mixed.planar.size() == 32,
+          "unequal-radius A - B: 10 cylindrical faces (A's eight wall pieces plus B's two middle bands, flipped, as "
+          "the bore's wall) and 32 planar faces (A's two ends only)");
+    Check(result.raw().IsValid(), "unequal-radius A - B: ON_Brep::IsValid() holds - the middle bands' straight rails "
+                                  "and A's cut arcs between the same pinch vertices are distinct edges");
+    measure(result, ON_PI * r_a * r_a * length_a - v_intersection,
+            "unequal-radius A - B: the ordinary 128-division volume is within 0.2% of pi r_a^2 L_A - V = 113.503 "
+            "(measured -2.4e-4 relative)",
+            "unequal-radius A - B: the ordinary tessellation is NOT closed - the same disclosed T-junction limitation",
+            "unequal-radius A - B: the CONFORMING 64-division tessellation is a closed manifold within 0.1% of the "
+            "closed form (measured -4.6e-6 relative) - B's two flipped middle bands mesh as doubly-notched strips "
+            "forming the bore's wall",
+            "unequal-radius A - B: the conforming tessellation is closed and within 0.2% at asymmetric divisions "
+            "(12/20 and 17/4; measured -8.2e-5 and -1.2e-4)");
+  }
+  {
+    const Brep result = BooleanCombineMixed(b, a, BooleanOp::Difference);
+    const auto mixed = result.MixedFaces();
+    Check(mixed.cylindrical.size() == 6 && mixed.planar.size() == 16,
+          "unequal-radius B - A: 6 cylindrical faces (B's four outer bands plus A's two plugs, flipped) and 16 "
+          "planar faces (B's two ends only)");
+    measure(result, ON_PI * r_b * r_b * length_b - v_intersection,
+            "unequal-radius B - A: the ordinary 128-division volume is within 0.2% of pi r_b^2 L_B - V = 19.256 "
+            "(measured -7.6e-5 relative)",
+            "unequal-radius B - A: the ordinary tessellation is NOT closed - the same disclosed T-junction limitation",
+            "unequal-radius B - A: the CONFORMING 64-division tessellation is a closed manifold within 0.1% of the "
+            "closed form (measured -1.3e-5 relative) - A's two flipped plugs mesh as pinched strips closing the "
+            "two notches in B's wall",
+            "unequal-radius B - A: the conforming tessellation is closed and within 0.2% at asymmetric divisions "
+            "(12/20 and 17/4; measured -4.0e-5 and -8.2e-5)");
+  }
+}
+
+// Argument-order symmetry and the shared-arc sampling identity: the four
+// arcs are sampled ONCE on the smaller cylinder (a canonical choice - the
+// radii differ, so it is the same cylinder whichever operand is `self`)
+// and the SAME std::vector<Point3d> is handed to both cylinders'
+// fragments. Same pattern as the Steinmetz test of this name.
+void TestBooleanCombineMixedUnequalRadiusPerpendicularArgumentOrderAndSharedArcIsBitIdentical() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Vector3d;
+
+  const double r_a = 2.0, r_b = 1.0;
+  const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(r_a, 10.0, 10.0, 90.0, r_b);
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+  const Brep ab = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+  const Brep ba = BooleanCombineMixed(b, a, BooleanOp::Intersection);
+
+  Check(ab.FaceCount() == 4 && ba.FaceCount() == 4,
+        "unequal-radius Intersection: BooleanCombineMixed(a, b) and (b, a) both produce exactly 4 faces");
+  // The merged closed meshes differ at ~6e-10 (measured): the faces are
+  // welded and summed in operand order, and the four pinch vertices are
+  // each welded from two samples that agree only to ~1e-16 (an arc's
+  // last point vs. the next arc's first, at theta = phi + 2pi vs. phi).
+  // The per-face check below is the strict one.
+  const double volume_ab = ab.TessellateToClosedMesh(64, 64).Volume();
+  const double volume_ba = ba.TessellateToClosedMesh(64, 64).Volume();
+  Check(std::fabs(volume_ab - volume_ba) < 1e-8,
+        "unequal-radius Intersection: (a, b) and (b, a) tessellate to the same volume within 1e-8 (measured "
+        "6.0e-10, the merged mesh's weld/summation order) - the decomposition is argument-order independent");
+
+  // Face order is from_a.in then from_b.in: A's two plugs (axis +Z,
+  // radius 2) first in (a, b), B's two middle bands (axis +X, radius 1)
+  // first in (b, a).
+  const auto mixed_ab = ab.MixedFaces();
+  bool face_order_as_expected = mixed_ab.cylindrical.size() == 4;
+  for (size_t i = 0; face_order_as_expected && i < 4; ++i) {
+    const Vector3d expected_axis = i < 2 ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+    const double expected_radius = i < 2 ? r_a : r_b;
+    if ((mixed_ab.cylindrical[i].frame.zaxis - expected_axis).Length() > 1e-9 ||
+        std::fabs(mixed_ab.cylindrical[i].radius - expected_radius) > 1e-9) {
+      face_order_as_expected = false;
+    }
+  }
+  Check(face_order_as_expected,
+        "unequal-radius Intersection (a, b): faces 0-1 are A's plugs (axis +Z, radius 2) and faces 2-3 are B's "
+        "middle bands (axis +X, radius 1)");
+
+  const std::vector<Mesh> faces_ab = ab.Tessellate(64, 64);
+  const std::vector<Mesh> faces_ba = ba.Tessellate(64, 64);
+  bool per_face_identical = faces_ab.size() == 4 && faces_ba.size() == 4;
+  for (size_t i = 0; per_face_identical && i < 4; ++i) {
+    const ON_Mesh& ma = faces_ab[i].raw();
+    const ON_Mesh& mb = faces_ba[(i + 2) % 4].raw();
+    if (ma.m_V.Count() != mb.m_V.Count() || ma.m_V.Count() == 0) {
+      per_face_identical = false;
+      break;
+    }
+    for (int k = 0; k < ma.m_V.Count(); ++k) {
+      if (!(ma.m_V[k].x == mb.m_V[k].x && ma.m_V[k].y == mb.m_V[k].y && ma.m_V[k].z == mb.m_V[k].z)) {
+        per_face_identical = false;
+        break;
+      }
+    }
+  }
+  Check(per_face_identical,
+        "unequal-radius Intersection: each face of (a, b) tessellates to a vertex-for-vertex float-identical mesh to "
+        "its counterpart in (b, a) - the fragments built for a given cylinder do not depend on which operand it was");
+
+  // Every mesh vertex of an A-plug on the intersection curve (distance
+  // r_a from A's axis, the z axis, and r_b from B's, the x axis) that is
+  // one of the canonical samples has a float== counterpart in B's middle
+  // bands. Measured: 1088 on-curve vertices over the two plugs, 790 with
+  // an exact counterpart (395 per plug, of the 400 distinct samples
+  // bounding it); the rest are the exact-clip tessellator's own
+  // grid-crossing points on the curve (the T-junctions) and the few
+  // samples landing exactly on a grid line, re-emitted as nearby points -
+  // exactly the Steinmetz test's accounting. A per-operand sampler
+  // (uniform in each cylinder's OWN angle) would match only the handful
+  // of points both parameterizations hit exactly.
+  auto on_curve = [&](const ON_3fPoint& p) {
+    const double dist_a = std::sqrt(static_cast<double>(p.x) * p.x + static_cast<double>(p.y) * p.y);
+    const double dist_b = std::sqrt(static_cast<double>(p.y) * p.y + static_cast<double>(p.z) * p.z);
+    return std::fabs(dist_a - r_a) < 1e-4 && std::fabs(dist_b - r_b) < 1e-4;
+  };
+  int on_curve_total = 0, on_curve_matched = 0;
+  for (int fa = 0; fa < 2; ++fa) {
+    const ON_Mesh& ma = faces_ab[static_cast<size_t>(fa)].raw();
+    for (int i = 0; i < ma.m_V.Count(); ++i) {
+      if (!on_curve(ma.m_V[i])) continue;
+      ++on_curve_total;
+      bool found = false;
+      for (int fb = 2; fb < 4 && !found; ++fb) {
+        const ON_Mesh& mb = faces_ab[static_cast<size_t>(fb)].raw();
+        for (int j = 0; j < mb.m_V.Count(); ++j) {
+          if (ma.m_V[i].x == mb.m_V[j].x && ma.m_V[i].y == mb.m_V[j].y && ma.m_V[i].z == mb.m_V[j].z) {
+            found = true;
+            break;
+          }
+        }
+      }
+      if (found) ++on_curve_matched;
+    }
+  }
+  Check(on_curve_matched >= 2 * 380,
+        "unequal-radius Intersection: at least 380 on-curve mesh vertices per A-plug have a BIT-IDENTICAL (exact "
+        "float ==) counterpart among B's middle bands' vertices (measured 395 per plug) - both cylinders' fragments "
+        "carry the literal same canonical arc sample lists");
+  Check(on_curve_total - on_curve_matched >= 2 * 100,
+        "unequal-radius Intersection: at least 100 on-curve vertices per A-plug have NO counterpart (measured 149) - "
+        "the grid-crossing T-junction vertices each cylinder's own tessellation adds along the shared curve, the "
+        "concrete signature of why the ordinary mesh is not watertight there");
+}
+
+// A second radius ratio, r_b/r_a = 0.95: the slabs widen to 2*asin(0.95)
+// = 143.6 degrees and the two plain pieces of A shrink to 36.4-degree
+// slivers, so A's plain pieces and their cut arcs - the edges the
+// straight-vs-arc salt tells apart in A - B - are exercised at a very
+// different proportion than the 2/1 fixture's 120 degrees.
+void TestBooleanCombineMixedUnequalRadiusPerpendicularSecondRadiusRatio() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double r_a = 2.0, r_b = 1.9, length_a = 10.0, length_b = 10.0;
+  const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(r_a, length_a, length_b, 90.0, r_b);
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+  const double v_intersection = UnequalCylinderIntersectionVolume(r_a, r_b);
+
+  auto closed_and_matches = [](const Brep& result, double expected) {
+    const Mesh m = result.TessellateToClosedMeshConforming(64, 64);
+    return m.IsClosedManifold() && std::fabs(m.Volume() - expected) < 1e-3 * expected;
+  };
+  {
+    const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+    const ON_Brep& raw = result.raw();
+    bool pinch_points_exact = raw.m_V.Count() == 4;
+    const double c = std::sqrt(r_a * r_a - r_b * r_b);
+    for (int v = 0; v < raw.m_V.Count(); ++v) {
+      const ON_3dPoint p = raw.m_V[v].point;
+      if (std::fabs(std::fabs(p.x) - c) > 1e-9 || std::fabs(std::fabs(p.y) - r_b) > 1e-9 || std::fabs(p.z) > 1e-9) {
+        pinch_points_exact = false;
+      }
+    }
+    Check(result.MixedFaces().cylindrical.size() == 4 && pinch_points_exact && raw.m_E.Count() == 6 &&
+              raw.IsValid() && raw.IsSolid(),
+          "unequal-radius (2/1.9) Intersection: 4 faces, 4 pinch vertices at (+/- 0.6245, +/- 1.9, 0), 6 edges, "
+          "IsValid and IsSolid");
+    Check(closed_and_matches(result, v_intersection),
+          "unequal-radius (2/1.9) Intersection: the conforming 64-division mesh is closed and within 0.1% of the "
+          "quadrature closed form 39.369 (measured -5.7e-5 relative)");
+  }
+  {
+    const Brep result = BooleanCombineMixed(a, b, BooleanOp::Union);
+    const auto mixed = result.MixedFaces();
+    Check(mixed.cylindrical.size() == 12 && mixed.planar.size() == 48 &&
+              closed_and_matches(result, ON_PI * (r_a * r_a * length_a + r_b * r_b * length_b) - v_intersection),
+          "unequal-radius (2/1.9) Union: 12 + 48 faces, conforming 64-division mesh closed and within 0.1% of the "
+          "closed form 199.707 (measured -1.0e-5 relative)");
+  }
+  {
+    const Brep result = BooleanCombineMixed(a, b, BooleanOp::Difference);
+    const auto mixed = result.MixedFaces();
+    Check(mixed.cylindrical.size() == 10 && mixed.planar.size() == 32 &&
+              closed_and_matches(result, ON_PI * r_a * r_a * length_a - v_intersection),
+          "unequal-radius (2/1.9) A - B: 10 + 32 faces, conforming 64-division mesh closed and within 0.1% of the "
+          "closed form 86.295 (measured +6.2e-6 relative) - the 36-degree plain slivers' cut arcs and B's middle "
+          "bands' rails between the same pinch vertices stay distinct edges");
+  }
+  {
+    const Brep result = BooleanCombineMixed(b, a, BooleanOp::Difference);
+    const auto mixed = result.MixedFaces();
+    Check(mixed.cylindrical.size() == 6 && mixed.planar.size() == 16 &&
+              closed_and_matches(result, ON_PI * r_b * r_b * length_b - v_intersection),
+          "unequal-radius (2/1.9) B - A: 6 + 16 faces, conforming 64-division mesh closed and within 0.1% of the "
+          "closed form 74.043 (measured -4.6e-6 relative)");
+  }
+}
+
+// What the unequal-radius split still refuses, each with the message
+// substrings the dispatch-boundary tests key on ("non-parallel axes",
+// "UNEQUAL radii"), and the positive controls bracketing each refusal.
+void TestBooleanCombineMixedUnequalRadiusPerpendicularNegativeControls() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  auto message_of = [](const Brep::CylindricalFace& cyl_a, const Brep::CylindricalFace& cyl_b, BooleanOp op,
+                       bool& threw_invalid_argument) {
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    threw_invalid_argument = false;
+    try {
+      BooleanCombineMixed(a, b, op);
+    } catch (const std::invalid_argument& e) {
+      threw_invalid_argument = true;
+      return std::string(e.what());
+    }
+    return std::string();
+  };
+  auto names_both = [](const std::string& message) {
+    return message.find("non-parallel axes") != std::string::npos && message.find("UNEQUAL radii") != std::string::npos;
+  };
+  auto builds_intersection = [](const Brep::CylindricalFace& cyl_a, const Brep::CylindricalFace& cyl_b,
+                                double expected) {
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+    const Mesh m = result.TessellateToClosedMeshConforming(64, 64);
+    return result.MixedFaces().cylindrical.size() == 4 && m.IsClosedManifold() &&
+           std::fabs(m.Volume() - expected) < 1e-3 * expected;
+  };
+  const double expected = UnequalCylinderIntersectionVolume(2.0, 1.0);
+  bool threw = false;
+
+  {
+    // A general axis angle: the two loops on A sit at heights +/-
+    // cot(60) sqrt(3) = +/- 1 from the crossing, so no single cut works.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 60.0, 1.0);
+    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Intersection, threw);
+    Check(threw && names_both(message) && message.find("PERPENDICULAR") != std::string::npos,
+          "unequal-radius negative control: intersecting axes at 60 degrees throw std::invalid_argument naming "
+          "'non-parallel axes', 'UNEQUAL radii' and 'PERPENDICULAR' - the general-angle pierce is still refused");
+  }
+  {
+    // The perpendicularity criterion is a tolerance, stated as the pinch
+    // heights' spread on A: |cot(alpha)| sqrt(r_a^2 - r_b^2) <= tol.
+    // A 1e-6 radian tilt spreads them by 1.7e-6 (refused); a 1e-9 radian
+    // tilt by 1.7e-9, inside the ~7e-9 pipeline tolerance of this
+    // fixture's extent (accepted, and the result is the same solid).
+    const double tilt_big = 90.0 - 1e-6 * 180.0 / ON_PI;
+    const double tilt_small = 90.0 - 1e-9 * 180.0 / ON_PI;
+    const auto [big_a, big_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, tilt_big, 1.0);
+    const std::string message = message_of(big_a, big_b, BooleanOp::Intersection, threw);
+    Check(threw && message.find("PERPENDICULAR") != std::string::npos,
+          "unequal-radius negative control: axes 1e-6 radians off perpendicular (pinch heights 1.7e-6 apart on A, "
+          "above the pipeline tolerance) are refused as non-perpendicular");
+    const auto [small_a, small_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, tilt_small, 1.0);
+    Check(builds_intersection(small_a, small_b, expected),
+          "unequal-radius positive control: axes 1e-9 radians off perpendicular (pinch heights 1.7e-9 apart, within "
+          "the pipeline tolerance) build the same 4-face Intersection, closed and within 0.1% of the closed form");
+  }
+  {
+    // Genuinely skew axes (B shifted 0.3 along the common perpendicular):
+    // B still pierces A completely, but a skew pierce puts a piece's rail
+    // corners at different heights, which this increment does not
+    // represent.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0, 1.0, /*skew_y=*/0.3);
+    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Union, threw);
+    Check(threw && names_both(message) && message.find("INTERSECT") != std::string::npos,
+          "unequal-radius negative control: genuinely SKEW axes (B's axis 0.3 off A's along the common "
+          "perpendicular) throw std::invalid_argument naming 'non-parallel axes', 'UNEQUAL radii' and 'do not "
+          "INTERSECT'");
+  }
+  {
+    // Extent precondition along B: B's ends must sit farther than r_a = 2
+    // from the crossing. L_B = 3.9 (ends at 1.95) is refused for every
+    // op; L_B = 4.0 (at the bound) too, the inequality being strict;
+    // L_B = 4.2 builds the same Intersection.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 3.9, 90.0, 1.0);
+    for (const BooleanOp op : {BooleanOp::Intersection, BooleanOp::Union, BooleanOp::Difference}) {
+      const std::string message = message_of(cyl_a, cyl_b, op, threw);
+      Check(threw && names_both(message) && message.find("STRICTLY interior") != std::string::npos,
+            "unequal-radius negative control: B's ends 1.95 from the crossing (< r_a = 2, a partial penetration) "
+            "throw std::invalid_argument naming the extent precondition ('STRICTLY interior'), for every op");
+    }
+    const auto [at_a, at_b] = BuildSteinmetzCylinders(2.0, 10.0, 4.0, 90.0, 1.0);
+    message_of(at_a, at_b, BooleanOp::Intersection, threw);
+    Check(threw, "unequal-radius negative control: B's ends exactly AT the extent bound (2.0 = r_a) are refused - "
+                 "the precondition is strict");
+    const auto [ok_a, ok_b] = BuildSteinmetzCylinders(2.0, 10.0, 4.2, 90.0, 1.0);
+    Check(builds_intersection(ok_a, ok_b, expected),
+          "unequal-radius positive control: B's ends just past the bound (2.1 vs r_a = 2) build the same 4-face "
+          "Intersection, closed and within 0.1% of the closed form - the precondition is not over-strict, and the "
+          "Intersection does not depend on the lengths once it holds");
+  }
+  {
+    // Extent precondition along A: A's ends must sit farther than r_b = 1
+    // from the crossing. L_A = 1.9 refused, L_A = 2.2 builds.
+    const auto [short_a, short_b] = BuildSteinmetzCylinders(2.0, 1.9, 10.0, 90.0, 1.0);
+    const std::string message = message_of(short_a, short_b, BooleanOp::Intersection, threw);
+    Check(threw && message.find("STRICTLY interior") != std::string::npos,
+          "unequal-radius negative control: A's ends 0.95 from the crossing (< r_b = 1, B's bore would break out "
+          "of A's end disc) throw the extent refusal");
+    const auto [ok_a, ok_b] = BuildSteinmetzCylinders(2.0, 2.2, 10.0, 90.0, 1.0);
+    Check(builds_intersection(ok_a, ok_b, expected),
+          "unequal-radius positive control: A's ends just past the bound (1.1 vs r_b = 1) build the same 4-face "
+          "Intersection, closed and within 0.1% of the closed form");
+  }
+  {
+    // A partial-sweep operand: its wall would not cover a whole loop.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0, 1.0, 0.0, /*angle_b=*/ON_PI);
+    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Intersection, threw);
+    Check(threw && names_both(message) && message.find("PARTIAL-sweep") != std::string::npos,
+          "unequal-radius negative control: a PARTIAL-sweep operand throws std::invalid_argument naming "
+          "'non-parallel axes', 'UNEQUAL radii' and 'PARTIAL-sweep'");
+  }
+  {
+    // Radii equal within the shared radius tolerance route to the
+    // Steinmetz split as before: its Intersection has TWO pinch vertices
+    // (all four half-ellipses meet at Q +/- r n), the unequal split's
+    // four.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0, 2.0 * (1.0 + 1e-10));
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+    Check(result.MixedFaces().cylindrical.size() == 4 && result.raw().m_V.Count() == 2,
+          "unequal-radius dispatch control: radii differing by 2e-10 (within the shared radius tolerance) still "
+          "take the Steinmetz split - a 4-face Intersection on the Steinmetz TWO pinch vertices, not the unequal "
+          "split's four");
+  }
+}
+
+// The BuildFaceLoop straight-vs-arc salt on its own, at the FromMixedFaces
+// level: a quarter-sweep cylinder cut at mid-height gives two pieces
+// sharing the cut ARC between two vertices, and a planar triangle whose
+// one edge is the straight CHORD between the same two vertices. An arc
+// and its chord are never the same curve, so the shell must build with
+// the arc shared by the two cylinder pieces and the chord its own
+// one-trim edge - exactly the pattern the unequal-radius A - B produces
+// (B's middle band's rail vs. A's plain piece's cut arc). Before the salt
+// the chord silently reused the arc's edge and FromMixedFaces threw
+// "shared by 3 or more faces".
+void TestFromMixedFacesStraightChordAndCapArcBetweenSameVerticesAreDistinctEdges() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double r = 1.0;
+  Brep::CylindricalFace lower;
+  lower.frame.origin = Point3d(0, 0, 0);
+  lower.frame.xaxis = Vector3d(1, 0, 0);
+  lower.frame.yaxis = Vector3d(0, 1, 0);
+  lower.frame.zaxis = Vector3d(0, 0, 1);
+  lower.frame.UpdateEquation();
+  lower.radius = r;
+  lower.angle = 0.5 * ON_PI;
+  lower.length = 1.0;
+  lower.end1_is_original = false;
+  Brep::CylindricalFace upper = lower;
+  upper.frame.origin = Point3d(0, 0, 1);
+  upper.frame.UpdateEquation();
+  upper.end0_is_original = false;
+  upper.end1_is_original = true;
+
+  // The cut arc's endpoints (the pieces' shared rail corners) and a third
+  // point off the cylinder; the triangle's plane is the one through them,
+  // its loop CCW about that plane's normal.
+  const Point3d v1(r, 0, 1), v2(0, r, 1), apex(0, 0, 3);
+  Brep::PlanarFace triangle;
+  triangle.plane = ON_Plane(v1, v2, apex);
+  triangle.loop = {v1, v2, apex};
+
+  bool threw = false;
+  std::string message;
+  Brep built;
+  try {
+    built = Brep::FromMixedFaces({triangle}, {lower, upper});
+  } catch (const std::exception& e) {
+    threw = true;
+    message = e.what();
+  }
+  Check(!threw,
+        "a straight planar chord and a cylinder's cap ARC between the same two vertices build through "
+        "FromMixedFaces without the 'shared by 3 or more faces' refusal - the chord gets its own edge");
+  if (threw) return;
+  const ON_Brep& raw = built.raw();
+  int two_trim_edges = 0;
+  int arcs_between = 0, chords_between = 0;
+  for (int e = 0; e < raw.m_E.Count(); ++e) {
+    const ON_BrepEdge& edge = raw.m_E[e];
+    if (edge.m_ti.Count() == 2) ++two_trim_edges;
+    const ON_3dPoint p0 = raw.m_V[edge.m_vi[0]].point, p1 = raw.m_V[edge.m_vi[1]].point;
+    const bool joins_v1_v2 = (p0.DistanceTo(v1) < 1e-9 && p1.DistanceTo(v2) < 1e-9) ||
+                             (p0.DistanceTo(v2) < 1e-9 && p1.DistanceTo(v1) < 1e-9);
+    if (!joins_v1_v2) continue;
+    // Polyline length of the edge's 3D curve over 2000 samples (the
+    // public OpenNURBS build has no curve-length query): a quarter circle
+    // of radius 1 measures pi/2 to ~1e-7 that way, the chord sqrt 2 exactly.
+    const ON_Curve* curve = edge.EdgeCurveOf();
+    if (curve == nullptr) continue;
+    const ON_Interval domain = curve->Domain();
+    double length = 0.0;
+    ON_3dPoint previous = curve->PointAt(domain[0]);
+    for (int s = 1; s <= 2000; ++s) {
+      const ON_3dPoint next = curve->PointAt(domain.ParameterAt(static_cast<double>(s) / 2000.0));
+      length += previous.DistanceTo(next);
+      previous = next;
+    }
+    if (std::fabs(length - 0.5 * ON_PI * r) < 1e-6 && edge.m_ti.Count() == 2) ++arcs_between;
+    if (std::fabs(length - std::sqrt(2.0) * r) < 1e-9 && edge.m_ti.Count() == 1) ++chords_between;
+  }
+  Check(built.FaceCount() == 3 && raw.m_E.Count() == 10 && two_trim_edges == 1,
+        "the chord-and-arc shell has 3 faces and 10 edges, exactly one of them (the cut arc) used by two trims");
+  Check(arcs_between == 1 && chords_between == 1,
+        "between the two shared vertices there are exactly two edges: the quarter-circle ARC (length pi/2, two "
+        "trims) and the straight CHORD (length sqrt 2, one trim) - genuinely different curves kept distinct");
+  Check(raw.IsValid(), "the chord-and-arc shell is ON_Brep::IsValid()");
+}
+
 int main() {
   ON::Begin();
 
@@ -15386,6 +16052,12 @@ int main() {
   TestBooleanCombineMixedNonParallelCylinderNoInteractionCrossingBeyondFirstOperandsEnd();
   TestBooleanCombineMixedNonParallelCylinderNoInteractionShortPegStopsShortOfCylinder();
   TestBooleanCombineMixedNonParallelCylinderNoInteractionSkewAndUnequalRadii();
+  TestBooleanCombineMixedUnequalRadiusPerpendicularIntersectionVolumeAndTopology();
+  TestBooleanCombineMixedUnequalRadiusPerpendicularUnionAndDifferenceVolumes();
+  TestBooleanCombineMixedUnequalRadiusPerpendicularArgumentOrderAndSharedArcIsBitIdentical();
+  TestBooleanCombineMixedUnequalRadiusPerpendicularSecondRadiusRatio();
+  TestBooleanCombineMixedUnequalRadiusPerpendicularNegativeControls();
+  TestFromMixedFacesStraightChordAndCapArcBetweenSameVerticesAreDistinctEdges();
 
   ON::End();
 

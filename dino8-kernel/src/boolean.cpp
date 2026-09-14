@@ -1277,18 +1277,24 @@ Point2d SafeInteriorPoint2d(const std::vector<Point2d>& poly) {
 // scan of the same dense sample list already computed once by
 // SplitCylindricalByObliquePlane.
 //
-// A face notched at BOTH ends with length == 0 - a Steinmetz eye (see
-// SplitCylindricalBySteinmetzCylinder's own section comment, below) - has
-// no flat end to measure from at all, so it takes its own branch first:
-// the mid-angle point halfway between the two curves' own mid-angle
-// samples, which is where the other cylinder's axis pierces this wall.
-// The four Steinmetz half-bands need no new branch: an upper half-band
+// A face notched at BOTH ends - a Steinmetz eye or an unequal-radius plug
+// (length == 0; see SplitCylindricalBySteinmetzCylinder's and
+// SplitCylindricalByUnequalPerpendicularCylinder's own section comments,
+// below), or the unequal-radius split's positive-length MIDDLE band of
+// the smaller cylinder - has no flat end to measure from at all, so it
+// takes its own branch first: the mid-angle point halfway between the
+// two curves' own mid-angle samples, which is where the other cylinder's
+// axis pierces this wall (an eye or plug) or where this wall crosses the
+// other cylinder's axis (a middle band - the point on the smaller
+// cylinder's wall at the height of the crossing, at the mid-angle of the
+// half, is ON the larger cylinder's axis). The half-bands and the
+// unequal-radius split's other pieces need no new branch: an upper piece
 // (cap0 notched, notch heights in [0, length]) lands on the existing
 // "hi" formula and a lower one (cap1 notched) on the existing "lo"
-// formula, and the extent precondition that admits the split guarantees
+// formula, and the extent precondition that admits each split guarantees
 // both points sit outside the crossing cylinder - verified by the
-// Steinmetz Union/Difference face counts and volumes in the tests, not
-// by inspection.
+// Steinmetz and unequal-radius Union/Difference face counts and volumes
+// in the tests, not by inspection.
 Point3d RepresentativeInteriorPointMixed(const MixedFace& f) {
   if (!f.is_cyl) {
     // A genuine "pure fan" piece - loop == [center, arc_sample_0, ...,
@@ -1360,7 +1366,13 @@ Point3d RepresentativeInteriorPointMixed(const MixedFace& f) {
     // the two boundary curves there, with margin half the eye's own
     // mid-angle height (r*min(cot, tan)(alpha/2) at least). At that point
     // the OTHER cylinder's axis pierces this wall, so the classification
-    // against it is an unambiguous kIn.
+    // against it is an unambiguous kIn. The unequal-radius split's plug
+    // (same shape, angle 2*asin(r_b/r_a)) and its positive-length middle
+    // band land here too, with the same property: both lists' middle
+    // entries are the samples at theta = phi + pi/2 on the smaller
+    // cylinder, i.e. in the plane spanned by the two axes, so the point
+    // is on the other cylinder's axis (margin r_b for a plug, r_a for a
+    // middle band) - see that split's own section comment.
     const size_t m0 = cf.cap0_notch_points.size() / 2;
     const size_t m1 = cf.cap1_notch_points.size() / 2;
     const double h_bottom = ON_DotProduct(cf.cap0_notch_points[m0] - cf.frame.origin, cf.frame.zaxis);
@@ -2340,20 +2352,27 @@ bool SteinmetzCanonicalFirst(const Brep::CylindricalFace& p, const Brep::Cylindr
   return true;
 }
 
+// The radius tolerance every non-parallel cylinder/cylinder decision in
+// case (iv) shares - the no-interaction band test, the Steinmetz split
+// and the unequal-radius split (below) must all agree on whether a pair
+// has "equal" radii, so it is computed in exactly one place.
+double CylinderPairRadiusTolerance(const Brep::CylindricalFace& p, const Brep::CylindricalFace& q, double tol) {
+  return std::max(tol, 1e-9 * std::max(p.radius, q.radius));
+}
+
 // Throws std::invalid_argument (every message naming "non-parallel axes",
-// the substring the existing dispatch-boundary test keys on) for unequal
-// radii, genuinely skew axes, or a crossing that is not strictly interior
-// to both cylinders per the extent precondition above.
+// the substring the existing dispatch-boundary test keys on) for genuinely
+// skew axes, or a crossing that is not strictly interior to both cylinders
+// per the extent precondition above. Unequal radii never reach here (case
+// (iv)'s dispatch sends them to SplitCylindricalByUnequalPerpendicularCylinder,
+// below), so that guard is a bug check, not a scope refusal.
 SteinmetzCrossing ComputeSteinmetzCrossing(const Brep::CylindricalFace& self, const Brep::CylindricalFace& other,
                                            double tol) {
-  const double radius_tol = std::max(tol, 1e-9 * std::max(self.radius, other.radius));
-  if (std::fabs(self.radius - other.radius) > radius_tol) {
-    throw std::invalid_argument(
-        "dino8::kernel::BooleanCombineMixed: two cylindrical faces interacting "
-        "with non-parallel axes and UNEQUAL radii is out of scope - only the "
-        "Steinmetz equal-radius, intersecting-axes case is supported (the "
-        "general skew/unequal-radii case needs a genuine NURBS-NURBS surface "
-        "intersection) - see this function's own doc comment in boolean.h");
+  if (std::fabs(self.radius - other.radius) > CylinderPairRadiusTolerance(self, other, tol)) {
+    throw std::runtime_error(
+        "dino8::kernel::BooleanCombineMixed: the Steinmetz (equal-radius) split "
+        "was reached with UNEQUAL radii - case (iv)'s own dispatch routes those "
+        "to the unequal-radius split, so this is a bug; please report it");
   }
 
   const bool self_first = SteinmetzCanonicalFirst(self, other);
@@ -2596,6 +2615,584 @@ std::vector<MixedFace> SplitCylindricalBySteinmetzCylinder(const Brep::Cylindric
 }
 
 // ---------------------------------------------------------------------
+// Unequal-radius, intersecting, PERPENDICULAR-axis cylinder/cylinder split
+// ---------------------------------------------------------------------
+//
+// Two cylinders A (radius r_a) and B (radius r_b < r_a) whose axes meet
+// at a point Q. Unlike the equal-radius Steinmetz case the intersection
+// curve does not factor into planar ellipses (it is a genuine space
+// quartic), but it still has a per-angle CLOSED FORM on the SMALLER
+// cylinder's wall, in this file's own P + h*z + r*(cos*x + sin*y)
+// convention (PointOnCylFace): with X(theta, h) = P_b + h*b + e(theta),
+// e(theta) = r_b*(cos(theta)*x_b + sin(theta)*y_b), M*v = v - (v.a)*a the
+// projector onto the plane perpendicular to A's axis a (so |M*(X - P_a)|
+// is X's distance from A's axis) and D = P_b - P_a, "X lies on A's wall"
+// is |M*(D + e(theta)) + h*M*b|^2 = r_a^2 - a QUADRATIC in h at every
+// theta:
+//     A2*h^2 + A1(theta)*h + A0(theta) = 0
+//     A2        = |M*b|^2 = 1 - (a.b)^2 = sin^2(alpha)     (constant > 0)
+//     A1(theta) = 2*(M*b).(M*(D + e(theta)))
+//     A0(theta) = |M*(D + e(theta))|^2 - r_a^2
+//     h(theta)  = (-A1 +/- sqrt(A1^2 - 4*A2*A0)) / (2*A2).
+// For intersecting axes (D perpendicular to both) the discriminant is
+// 4*A2*(r_a^2 - r_b^2*cos^2(theta - phi)) >= 4*A2*(r_a^2 - r_b^2) > 0 at
+// EVERY theta - phi being the angle, in B's own (x_b, y_b) basis, of the
+// axes' common perpendicular n = (a x b)/|a x b| - so both roots exist
+// on every generator of B: B pierces A completely, and on B's wall the
+// curve is two closed curves each going once around B's axis (the "+"
+// root, above Q, and the "-" root, below it). On A's wall the same
+// points form two closed LOOPS, one around each point where B's axis
+// pierces A's wall, never winding around A's axis: a point of the curve
+// has common-perpendicular coordinate r_b*cos(theta - phi), so its angle
+// on A satisfies r_a*sin(theta_A - phi_A) = r_b*cos(theta - phi) (phi_A
+// = the angle of b's in-plane component in A's basis), whose extremes
+// sin(theta_A - phi_A) = +/- r_b/r_a are attained at theta = phi and
+// theta = phi + pi - the four PINCH points, B's two generators at
+// common-perpendicular coordinate +/- r_b, which are tangent to A's wall
+// there. Each loop spans 2*theta_m of A's angle, theta_m = asin(r_b/r_a),
+// centred on phi_A (the "+" root) or phi_A + pi (the "-" root). Every
+// pinch sits at height +/- cot(alpha)*sqrt(r_a^2 - r_b^2) from Q on A's
+// axis (the "+" root's two above, the "-" root's two below - both pinches
+// of one root at the SAME height, by the reflection through the axes'
+// plane), so at alpha = 90 degrees, THIS increment's scope, all four are
+// at h_Q: one cut height serves the whole decomposition (see
+// PERPENDICULARITY below). The curve's axial reach is (r_a + r_b*|cos
+// alpha|)/sin(alpha) along B's axis and (r_b + r_a*|cos alpha|)/sin(alpha)
+// along A's (r_a and r_b at 90 degrees), attained ON the curve at theta =
+// phi +/- pi/2, the samples in the plane of the two axes.
+//
+// NO HOLE REPRESENTATION IS NEEDED - the observation that made the
+// Steinmetz split cheap carries over: a loop on A's wall touches its own
+// two theta-extreme generators only at its two pinch points, so splitting
+// A's wall by the four iso-theta rails at phi_A +/- theta_m and phi_A +
+// pi +/- theta_m leaves
+//   - two SLABS (angle 2*theta_m, each holding one loop), each in turn an
+//     UPPER piece (origin at h_Q, cap0 notched by the loop's upper arc),
+//     a LOWER piece (top at h_Q, cap1 notched by the lower arc) and a
+//     PLUG (origin at h_Q, length 0, cap0 = the lower arc, cap1 = the
+//     upper arc - the Steinmetz eye shape, now with angle 2*theta_m < pi:
+//     the part of A's wall inside B), and
+//   - two PLAIN pieces (angle pi - 2*theta_m), each cut at h_Q into a
+//     lower and an upper piece so every rail on A ends at a vertex the
+//     slab pieces' rails share;
+// and B's wall, split at its two pinch generators theta = phi, phi + pi
+// into two halves (angle pi), each an UPPER band (origin at the "+"
+// curve's pinch height, cap0 = that curve's half), a MIDDLE band (from
+// the "-" curve's pinch height to the "+" curve's, cap0 = the lower half,
+// cap1 = the upper half - the positive-length doubly-notched shape
+// CylindricalFace already admits: the part of B's wall inside A) and a
+// LOWER band (top at the "-" curve's pinch height, cap1 = its half).
+// Every piece is a shape Brep::FromMixedFaces() already builds and
+// Brep::TessellateConforming()'s strip mesher already meshes. Each of
+// the four canonical arcs bounds exactly two faces in every op:
+// Intersection keeps the two plugs and the two middle bands (4 faces,
+// no original end survives, no cap); Union keeps A's eight wall pieces
+// and B's four outer bands plus BuildEndCap's quadrant wedges on every
+// original end (each of A's ends is now four angular pieces, each of
+// B's two); A - B keeps A's eight wall pieces and B's two middle bands
+// flipped as the bore's wall; B - A keeps B's four outer bands and A's
+// two plugs flipped. All of that falls out of the op-agnostic
+// classify-then-bucket step with no op-specific code, exactly as for
+// Steinmetz; RepresentativeInteriorPointMixed's existing branches
+// classify every piece with a margin of at least the smaller radius (its
+// own doc comment has the per-shape argument).
+//
+// SAMPLING IDENTITY: the four arcs are sampled ONCE, uniformly in the
+// SMALLER cylinder's own angle theta over [phi, phi+pi] and [phi+pi,
+// phi+2pi] for each root, kCylinderPairSamples segments each, and the
+// identical std::vector<Point3d> is handed to every fragment of BOTH
+// cylinders bounded by that arc (a slab piece of A, a band of B) - the
+// same one-producer-several-consumers principle the Steinmetz split
+// follows, and what makes the shared boundary bit-identical on both
+// sides. "The smaller cylinder" is a canonical choice: the two radii
+// differ by more than CylinderPairRadiusTolerance (the dispatch's own
+// test), so it is the same cylinder whichever operand is `self`, and
+// every quantity below is computed from (larger, smaller) in that fixed
+// order, never from (self, other).
+//
+// PERPENDICULARITY - this increment's scope, stated as the geometric
+// condition the decomposition needs rather than as an angle: all four
+// pinch points must lie at ONE height on A within the pipeline tolerance
+// `tol` (and the two pinches of each of B's curves at one height on B),
+// so that a single cut at h_Q makes every rail on A end at a shared
+// vertex and every notch chain start and end at its piece's own rail
+// corners (CylindricalFace's contract, which FromMixedFaces checks to
+// 1e-6 and this pipeline's vertex weld also honours at 1e-6). Measured
+// directly on the sampled pinch points, it amounts to
+// |cot(alpha)|*sqrt(r_a^2 - r_b^2) <= tol, i.e. |cos(alpha)| below
+// roughly tol/r_a - about 1e-8 radians at unit scale (tol is ~1e-9 of
+// the operands' extent); an exactly-constructed right angle evaluates to
+// ~1e-16 and passes with orders of magnitude to spare. A pair outside it
+// - a general axis angle - is refused, not snapped: its two loops sit at
+// two different heights, a slab's notched pieces cannot be cut at the
+// other loop's height without crossing their own notch, and the plain
+// pieces would then need a second cut whose rails no slab piece matches.
+// Handling that is the next increment, not something this one
+// approximates by nudging the axes into a right angle.
+//
+// EXTENT PRECONDITION - the Steinmetz one with the reaches above: every
+// original end of BOTH cylinders must sit farther from the crossing than
+// the curve's axial reach on that cylinder plus twice the sampled arcs'
+// sagitta bound plus tol. Read off the sampled lists (whose extreme
+// heights ARE the closed-form reaches at 90 degrees, the extremum being
+// itself a sample since kCylinderPairSamples is even), so the check and
+// the geometry cannot disagree. It guarantees that both loops are
+// strictly interior to A's wall and both curves to B's, that neither end
+// disc touches the other cylinder (a point of A's end disc is at least
+// its own axial distance from B's axis at 90 degrees, and vice versa),
+// and that SynthesizeEndCaps' on-axis probe just past every original
+// end reads kOut. A cylinder ending inside the other (a blind bore, a
+// partial penetration) is refused rather than split into fragments whose
+// curves would run into an end disc this pipeline has no face for.
+//
+// Also refused, each with std::invalid_argument naming "non-parallel
+// axes" and "UNEQUAL radii" (the substrings the existing dispatch-
+// boundary tests key on): genuinely skew axes (the two axis lines'
+// closest points farther apart than tol - a skew pierce puts a piece's
+// two rail corners at different heights, a representation extension
+// this increment does not make), a partial-sweep operand, an operand
+// already notched at an end, and near-degenerate slivers (a slab or a
+// plain piece narrower than kMinCylinderPairPieceAngle, or samples so
+// close that the weld could merge them).
+
+constexpr int kCylinderPairSamples = 200;  // segments per arc; EVEN, so index N/2 is the sample at theta = phi + pi/2
+constexpr double kMinCylinderPairPieceAngle = 1e-3;  // radians; a narrower slab or plain piece is refused as a sliver
+
+struct UnequalCylinderCrossing {
+  Point3d q;               // the axes' crossing point, ON the larger cylinder's own axis
+  double alpha = 0.0;      // angle between the two axis directions, in (0, pi)
+  double h_q_large = 0.0;  // q's height along the larger cylinder's axis, from its own origin
+  double h_q_small = 0.0;  // the smaller cylinder's closest axis point's height, from its own origin
+  double theta_m = 0.0;    // asin(r_b / r_a): each loop spans 2*theta_m of the larger cylinder's angle
+  // The "+" root over theta in [phi, phi+pi] and [phi+pi, phi+2pi], then
+  // the "-" root over the same two ranges - each in increasing theta on
+  // the smaller cylinder, kCylinderPairSamples+1 points, first and last
+  // points at pinch points (arcs[0].back() and arcs[1].front() are the
+  // same sample; likewise arcs[2]/arcs[3]).
+  std::array<std::vector<Point3d>, 4> arcs;
+  std::array<double, 4> sagitta{};  // per list, the same chord-midpoint bound the other producers compute
+};
+
+// One point of the intersection curve: the quadratic of the section
+// comment solved on the smaller cylinder's generator `theta`, for the
+// "+" (root_sign = +1) or "-" (root_sign = -1) root.
+Point3d UnequalCylinderCurvePoint(const Brep::CylindricalFace& large, const Brep::CylindricalFace& small,
+                                  double theta, int root_sign) {
+  const Vector3d a = large.frame.zaxis;
+  auto project = [&](const Vector3d& v) { return v - ON_DotProduct(v, a) * a; };
+  const Vector3d e = small.radius * (std::cos(theta) * small.frame.xaxis + std::sin(theta) * small.frame.yaxis);
+  const Vector3d mb = project(small.frame.zaxis);
+  const Vector3d mde = project((small.frame.origin - large.frame.origin) + e);
+  const double a2 = ON_DotProduct(mb, mb);
+  const double a1 = 2.0 * ON_DotProduct(mb, mde);
+  const double a0 = ON_DotProduct(mde, mde) - large.radius * large.radius;
+  const double disc = a1 * a1 - 4.0 * a2 * a0;
+  if (!(a2 > 0.0) || !(disc > 0.0)) {
+    throw std::runtime_error(
+        "dino8::kernel::BooleanCombineMixed: the unequal-radius cylinder/cylinder "
+        "intersection curve's per-angle quadratic has no real root on a "
+        "generator of the smaller cylinder - impossible for intersecting axes "
+        "and r_b < r_a, so please report this as a bug");
+  }
+  const double h = (-a1 + root_sign * std::sqrt(disc)) / (2.0 * a2);
+  return small.frame.origin + h * small.frame.zaxis + e;
+}
+
+// Samples the four canonical arcs and checks every precondition of the
+// section comment. `large` and `small` are the two operands in radius
+// order (the caller has already established large.radius > small.radius
+// by more than CylinderPairRadiusTolerance), so every result is
+// argument-order independent by construction.
+UnequalCylinderCrossing ComputeUnequalCylinderCrossing(const Brep::CylindricalFace& large,
+                                                       const Brep::CylindricalFace& small, double tol) {
+  const Vector3d a = large.frame.zaxis;
+  const Vector3d b = small.frame.zaxis;
+
+  // Closest points of the two (infinite) axis lines - the same closed
+  // form ComputeSteinmetzCrossing uses.
+  const Vector3d w = large.frame.origin - small.frame.origin;
+  const double d_ab = ON_DotProduct(a, b);
+  const double d_aw = ON_DotProduct(a, w);
+  const double d_bw = ON_DotProduct(b, w);
+  const double denom = 1.0 - d_ab * d_ab;  // sin^2(alpha), bounded away from 0 by the dispatch's own parallel test
+  const double s = (d_ab * d_bw - d_aw) / denom;
+  const double t = (d_bw - d_ab * d_aw) / denom;
+  const Point3d on_large = large.frame.origin + s * a;
+  const Point3d on_small = small.frame.origin + t * b;
+  if (on_large.DistanceTo(on_small) > tol) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: two cylindrical faces interacting "
+        "with non-parallel axes and UNEQUAL radii whose axes do not INTERSECT "
+        "(genuinely skew axes) is out of scope - only the intersecting, "
+        "perpendicular-axis unequal-radius case is supported (a skew pierce "
+        "needs rail corners at different heights, a representation extension "
+        "not made yet) - see this function's own doc comment in boolean.h");
+  }
+
+  UnequalCylinderCrossing crossing;
+  crossing.q = on_large;
+  crossing.alpha = std::acos(std::max(-1.0, std::min(1.0, d_ab)));
+  crossing.h_q_large = s;
+  crossing.h_q_small = t;
+  crossing.theta_m = std::asin(std::min(1.0, small.radius / large.radius));
+
+  // Sliver guard: a slab spans 2*theta_m, a plain piece pi - 2*theta_m.
+  if (!(2.0 * crossing.theta_m >= kMinCylinderPairPieceAngle) ||
+      !(ON_PI - 2.0 * crossing.theta_m >= kMinCylinderPairPieceAngle)) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: two cylindrical faces interacting "
+        "with non-parallel axes and UNEQUAL radii whose radius ratio makes a "
+        "slab (2*asin(r_b/r_a)) or a plain piece (pi - 2*asin(r_b/r_a)) of the "
+        "larger cylinder's wall narrower than 1e-3 radians is refused as a "
+        "sliver - see this function's own doc comment in boolean.h");
+  }
+
+  // phi: the common perpendicular's angle in the smaller cylinder's own
+  // basis - its two pinch generators are theta = phi and theta = phi + pi.
+  Vector3d n = ON_CrossProduct(a, b);
+  n.Unitize();
+  const double phi = std::atan2(ON_DotProduct(n, small.frame.yaxis), ON_DotProduct(n, small.frame.xaxis));
+
+  const int root_signs[4] = {+1, +1, -1, -1};
+  const double from[4] = {phi, phi + ON_PI, phi, phi + ON_PI};
+  double min_spacing = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < 4; ++i) {
+    std::vector<Point3d> pts;
+    pts.reserve(static_cast<size_t>(kCylinderPairSamples) + 1);
+    for (int k = 0; k <= kCylinderPairSamples; ++k) {
+      // `from + pi * k / N` rather than `from + (to - from) * k / N`, so
+      // the sample at theta = phi + pi is the identical double whether it
+      // ends the first range or starts the second.
+      const double theta = from[i] + ON_PI * static_cast<double>(k) / kCylinderPairSamples;
+      pts.push_back(UnequalCylinderCurvePoint(large, small, theta, root_signs[i]));
+    }
+    // Same sagitta-style bound the other notch producers compute: max
+    // over every segment of the distance between the chord's midpoint
+    // and the true curve's point at the midpoint angle.
+    double max_sagitta = 0.0;
+    for (int k = 0; k < kCylinderPairSamples; ++k) {
+      const double theta_mid = from[i] + ON_PI * (static_cast<double>(k) + 0.5) / kCylinderPairSamples;
+      const Point3d chord_mid = 0.5 * (pts[static_cast<size_t>(k)] + pts[static_cast<size_t>(k) + 1]);
+      max_sagitta = std::max(max_sagitta,
+                             chord_mid.DistanceTo(UnequalCylinderCurvePoint(large, small, theta_mid, root_signs[i])));
+      min_spacing = std::min(min_spacing, pts[static_cast<size_t>(k)].DistanceTo(pts[static_cast<size_t>(k) + 1]));
+    }
+    crossing.arcs[static_cast<size_t>(i)] = std::move(pts);
+    crossing.sagitta[static_cast<size_t>(i)] = max_sagitta;
+  }
+  if (!(min_spacing > 10.0 * tol)) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: two cylindrical faces interacting "
+        "with non-parallel axes and UNEQUAL radii are too small for the "
+        "intersection curve's samples to stay apart by more than 10x the "
+        "pipeline tolerance - refused rather than welded into a degenerate "
+        "chain - see this function's own doc comment in boolean.h");
+  }
+
+  auto height_on = [](const Brep::CylindricalFace& c, const Point3d& p) {
+    return ON_DotProduct(p - c.frame.origin, c.frame.zaxis);
+  };
+
+  // PERPENDICULARITY (section comment): the four pinch points at h_Q on
+  // the larger cylinder, and each root's two pinches level on the smaller.
+  double pinch_dev_large = 0.0;
+  for (const std::vector<Point3d>& arc : crossing.arcs) {
+    for (const Point3d* p : {&arc.front(), &arc.back()}) {
+      pinch_dev_large = std::max(pinch_dev_large, std::fabs(height_on(large, *p) - crossing.h_q_large));
+    }
+  }
+  const double pinch_dev_small =
+      std::max(std::fabs(height_on(small, crossing.arcs[0].front()) - height_on(small, crossing.arcs[0].back())),
+               std::fabs(height_on(small, crossing.arcs[2].front()) - height_on(small, crossing.arcs[2].back())));
+  if (pinch_dev_large > tol || pinch_dev_small > tol) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: two cylindrical faces interacting "
+        "with non-parallel axes and UNEQUAL radii are supported only when the "
+        "axes are PERPENDICULAR - the four pinch points of the intersection "
+        "curve must sit at one height on the larger cylinder within the "
+        "pipeline tolerance (|cot(alpha)| * sqrt(r_a^2 - r_b^2) <= tol); at a "
+        "general axis angle the two loops sit at two heights and the wall "
+        "cannot be decomposed with a single cut - out of scope - see this "
+        "function's own doc comment in boolean.h");
+  }
+
+  // EXTENT PRECONDITION (section comment), read off the sampled lists.
+  double max_sagitta = 0.0;
+  for (const double sg : crossing.sagitta) max_sagitta = std::max(max_sagitta, sg);
+  for (const Brep::CylindricalFace* c : {&large, &small}) {
+    double h_min = std::numeric_limits<double>::infinity();
+    double h_max = -std::numeric_limits<double>::infinity();
+    for (const std::vector<Point3d>& arc : crossing.arcs) {
+      for (const Point3d& p : arc) {
+        const double h = height_on(*c, p);
+        h_min = std::min(h_min, h);
+        h_max = std::max(h_max, h);
+      }
+    }
+    const double margin = 2.0 * max_sagitta + tol;
+    if (!(h_min - margin > 0.0 && h_max + margin < c->length)) {
+      throw std::invalid_argument(
+          "dino8::kernel::BooleanCombineMixed: two cylindrical faces with "
+          "intersecting perpendicular non-parallel axes and UNEQUAL radii are "
+          "supported only when the crossing is STRICTLY interior to both "
+          "cylinders - every original end must sit farther from the crossing "
+          "along its own axis than the intersection curve's axial reach on that "
+          "cylinder (the larger radius r_a along the smaller cylinder's axis, the "
+          "smaller radius r_b along the larger cylinder's axis), so that both "
+          "curves lie wholly inside each wall and neither end disc touches the "
+          "other cylinder - a partial penetration or blind bore is out of scope "
+          "- see this function's own doc comment in boolean.h");
+    }
+  }
+  return crossing;
+}
+
+// Splits a FULL-SWEEP, un-notched cylindrical fragment `cf` against an
+// unequal-radius, intersecting, perpendicular-axis cylinder `other` into
+// the ten (when `cf` is the larger cylinder) or six (the smaller)
+// fragments derived in the section comment above, all pushed onto the
+// worklist for the existing generic classifier to keep or discard - the
+// same "produce every piece, never privilege one" pattern every other
+// split in this file follows. Which canonical arc bounds which fragment
+// is decided from the lists themselves (a loop's pinch angles from its
+// arcs' endpoints, upper vs lower from the mid-angle sample's height,
+// orientation from the quarter- and mid-angle samples' local angles),
+// exactly as the Steinmetz split does, so neither cylinder needs
+// separate sign bookkeeping and no closed-form height is ever assumed
+// beyond the checked perpendicularity condition.
+std::vector<MixedFace> SplitCylindricalByUnequalPerpendicularCylinder(const Brep::CylindricalFace& cf,
+                                                                       const Brep::CylindricalFace& other,
+                                                                       double tol) {
+  for (const Brep::CylindricalFace* c : {&cf, &other}) {
+    if (!(c->angle >= 2.0 * ON_PI - kAxisAlignTol)) {
+      throw std::invalid_argument(
+          "dino8::kernel::BooleanCombineMixed: an unequal-radius cylinder/"
+          "cylinder interaction with non-parallel axes (UNEQUAL radii, "
+          "intersecting perpendicular axes) involving a PARTIAL-sweep (angle < "
+          "2*pi) cylindrical fragment is out of scope - see "
+          "SplitCylindricalByUnequalPerpendicularCylinder's own doc comment in "
+          "boolean.cpp");
+    }
+  }
+  if (!cf.cap0_notch_points.empty() || !cf.cap1_notch_points.empty()) {
+    throw std::invalid_argument(
+        "dino8::kernel::BooleanCombineMixed: an unequal-radius cylinder/cylinder "
+        "interaction with non-parallel axes (UNEQUAL radii, intersecting "
+        "perpendicular axes) against a cylindrical fragment that is ALREADY "
+        "notched at an end is out of scope - see "
+        "SplitCylindricalByUnequalPerpendicularCylinder's own doc comment in "
+        "boolean.cpp");
+  }
+
+  const bool cf_is_large = cf.radius > other.radius;
+  const Brep::CylindricalFace& large = cf_is_large ? cf : other;
+  const Brep::CylindricalFace& small = cf_is_large ? other : cf;
+  const UnequalCylinderCrossing crossing = ComputeUnequalCylinderCrossing(large, small, tol);
+  const double h_q = cf_is_large ? crossing.h_q_large : crossing.h_q_small;
+
+  auto height_on = [&](const Point3d& p) { return ON_DotProduct(p - cf.frame.origin, cf.frame.zaxis); };
+  auto local_angle = [&](const Brep::CylindricalFace& c, const Point3d& p) {
+    const Vector3d d = p - c.frame.origin;
+    double ang = std::atan2(ON_DotProduct(d, c.frame.yaxis), ON_DotProduct(d, c.frame.xaxis));
+    if (ang < 0.0) ang += 2.0 * ON_PI;
+    return ang;
+  };
+  auto bug = [](const char* what) {
+    throw std::runtime_error(std::string("dino8::kernel::BooleanCombineMixed: the unequal-radius cylinder/"
+                                         "cylinder bookkeeping ") +
+                             what + " - please report this as a bug");
+  };
+  const size_t mid_index = kCylinderPairSamples / 2;
+  const size_t quarter_index = kCylinderPairSamples / 4;
+
+  // Same elementary in-plane rotation the parallel-axis and Steinmetz
+  // splits use: rotate (xaxis, yaxis) about zaxis by `begin` so local
+  // angle 0 sits at cf's own physical angle `begin`.
+  auto rotated = [&](double begin, double angle) {
+    Brep::CylindricalFace child = cf;
+    child.angle = angle;
+    const double cb = std::cos(begin), sb = std::sin(begin);
+    child.frame.xaxis = cb * cf.frame.xaxis + sb * cf.frame.yaxis;
+    child.frame.yaxis = -sb * cf.frame.xaxis + cb * cf.frame.yaxis;
+    child.frame.UpdateEquation();
+    return child;
+  };
+  auto with_origin_at = [&](Brep::CylindricalFace child, double height, double length) {
+    child.frame.origin = cf.frame.origin + height * cf.frame.zaxis;
+    child.frame.UpdateEquation();
+    child.length = length;
+    return child;
+  };
+  // A canonical list in `child`'s own increasing local angle: reversed
+  // iff its quarter-angle sample sits at a larger local angle than its
+  // mid-angle sample (both strictly inside the child's sweep, so neither
+  // can wrap at the 0/2*pi seam the endpoints touch).
+  auto oriented = [&](const Brep::CylindricalFace& child, const std::vector<Point3d>& pts) {
+    std::vector<Point3d> out = pts;
+    const double a_quarter = local_angle(child, pts[quarter_index]);
+    const double a_mid = local_angle(child, pts[mid_index]);
+    if (!(a_quarter > 0.0 && a_quarter < child.angle && a_mid > 0.0 && a_mid < child.angle)) {
+      bug("found a canonical arc's interior samples outside the fragment's own sweep");
+    }
+    if (a_quarter > a_mid) std::reverse(out.begin(), out.end());
+    return out;
+  };
+
+  std::vector<MixedFace> out;
+  if (cf_is_large) {
+    // A: two slabs (each: upper, lower, plug) and two plain pieces (each
+    // cut at h_Q), see the section comment.
+    struct Slab {
+      double begin = 0.0, angle = 0.0;
+      const std::vector<Point3d>* upper = nullptr;
+      const std::vector<Point3d>* lower = nullptr;
+      double upper_sagitta = 0.0, lower_sagitta = 0.0;
+    };
+    Slab slabs[2];
+    for (size_t loop = 0; loop < 2; ++loop) {
+      const std::vector<Point3d>& first = crossing.arcs[2 * loop];
+      const std::vector<Point3d>& second = crossing.arcs[2 * loop + 1];
+      const double t0 = local_angle(cf, first.front());
+      const double t1 = local_angle(cf, first.back());
+      double span = t1 - t0;
+      if (span < 0.0) span += 2.0 * ON_PI;
+      double begin = t0;
+      if (span > ON_PI) {  // the loop is the SHORT way round between its two pinches
+        begin = t1;
+        span = 2.0 * ON_PI - span;
+      }
+      if (std::fabs(span - 2.0 * crossing.theta_m) > 1e-6) {
+        bug("measured a slab's angular span that disagrees with 2*asin(r_b/r_a)");
+      }
+      const bool first_is_upper = height_on(first[mid_index]) > h_q;
+      const bool second_is_upper = height_on(second[mid_index]) > h_q;
+      if (first_is_upper == second_is_upper) bug("did not find one upper and one lower arc per loop");
+      Slab& sl = slabs[loop];
+      sl.begin = begin;
+      sl.angle = span;
+      sl.upper = first_is_upper ? &first : &second;
+      sl.lower = first_is_upper ? &second : &first;
+      sl.upper_sagitta = crossing.sagitta[first_is_upper ? 2 * loop : 2 * loop + 1];
+      sl.lower_sagitta = crossing.sagitta[first_is_upper ? 2 * loop + 1 : 2 * loop];
+    }
+    if (slabs[1].begin < slabs[0].begin) std::swap(slabs[0], slabs[1]);
+
+    out.reserve(10);
+    for (const Slab& sl : slabs) {
+      const Brep::CylindricalFace base = rotated(sl.begin, sl.angle);
+
+      // Upper piece: from the crossing height up to cf's own original
+      // top, notched below by the loop's upper arc (endpoints at the two
+      // pinches, local angles 0 and `angle`, at v=0 within tol).
+      Brep::CylindricalFace upper = with_origin_at(base, h_q, cf.length - h_q);
+      upper.cap0_notch_points = oriented(upper, *sl.upper);
+      upper.cap0_notch_tolerance = sl.upper_sagitta;
+      upper.end0_is_original = false;
+
+      // Lower piece: from cf's own original bottom up to the crossing
+      // height, notched above by the lower arc.
+      Brep::CylindricalFace lower = base;
+      lower.length = h_q;
+      lower.cap1_notch_points = oriented(lower, *sl.lower);
+      lower.cap1_notch_tolerance = sl.lower_sagitta;
+      lower.end1_is_original = false;
+
+      // Plug: the wall inside the other cylinder - length 0, both caps
+      // notched, no original end.
+      Brep::CylindricalFace plug = with_origin_at(base, h_q, 0.0);
+      plug.cap0_notch_points = oriented(plug, *sl.lower);
+      plug.cap0_notch_tolerance = sl.lower_sagitta;
+      plug.cap1_notch_points = oriented(plug, *sl.upper);
+      plug.cap1_notch_tolerance = sl.upper_sagitta;
+      plug.end0_is_original = false;
+      plug.end1_is_original = false;
+
+      out.push_back(MixedFaceFromCyl(std::move(upper)));
+      out.push_back(MixedFaceFromCyl(std::move(lower)));
+      out.push_back(MixedFaceFromCyl(std::move(plug)));
+    }
+    // Plain pieces: the two gaps between the slabs, each cut at h_Q so
+    // its rails end where the slab pieces' rails do.
+    for (size_t gap = 0; gap < 2; ++gap) {
+      const Slab& before = slabs[gap];
+      const Slab& after = slabs[1 - gap];
+      const double begin = before.begin + before.angle;
+      double angle = after.begin - begin;
+      if (angle < 0.0) angle += 2.0 * ON_PI;
+      if (angle < kMinCylinderPairPieceAngle || angle > ON_PI) bug("measured a plain piece that is not the gap between the two slabs");
+      Brep::CylindricalFace plain_lower = rotated(begin, angle);
+      plain_lower.length = h_q;
+      plain_lower.end1_is_original = false;
+      Brep::CylindricalFace plain_upper = with_origin_at(plain_lower, h_q, cf.length - h_q);
+      plain_upper.end0_is_original = false;
+      plain_upper.end1_is_original = cf.end1_is_original;
+      out.push_back(MixedFaceFromCyl(std::move(plain_lower)));
+      out.push_back(MixedFaceFromCyl(std::move(plain_upper)));
+    }
+  } else {
+    // B: two halves at the pinch generators, each an upper, a middle and
+    // a lower band, see the section comment.
+    const double t0 = local_angle(cf, crossing.arcs[0].front());  // the pinch generator theta = phi
+    const bool plus_is_upper = height_on(crossing.arcs[0][mid_index]) > h_q;
+    if ((height_on(crossing.arcs[2][mid_index]) > h_q) == plus_is_upper) {
+      bug("did not find one root above and one below the crossing on the smaller cylinder");
+    }
+    const size_t top_first = plus_is_upper ? 0 : 2;
+    const size_t bottom_first = plus_is_upper ? 2 : 0;
+    // One height per curve for BOTH halves (the two pinches of a curve
+    // are level within tol, checked by ComputeUnequalCylinderCrossing),
+    // so the rails of the two halves on a pinch generator meet at the
+    // same vertex exactly, not merely within the weld.
+    const double h_top = height_on(crossing.arcs[top_first].front());
+    const double h_bottom = height_on(crossing.arcs[bottom_first].front());
+    if (!(h_top - h_bottom > tol)) bug("found the upper curve's pinch not above the lower curve's");
+
+    out.reserve(6);
+    for (int half = 0; half < 2; ++half) {
+      const Brep::CylindricalFace base = rotated(t0 + half * ON_PI, ON_PI);
+      // The arc of each curve whose mid-angle sample lies in this half.
+      auto arc_in_half = [&](size_t first) -> size_t {
+        for (size_t i = first; i < first + 2; ++i) {
+          double d = local_angle(cf, crossing.arcs[i][mid_index]) - t0;
+          if (d < 0.0) d += 2.0 * ON_PI;
+          if ((d < ON_PI) == (half == 0)) return i;
+        }
+        bug("found no arc of a curve in an angular half of the smaller cylinder");
+        return first;
+      };
+      const size_t top_i = arc_in_half(top_first);
+      const size_t bottom_i = arc_in_half(bottom_first);
+      const std::vector<Point3d>& top = crossing.arcs[top_i];
+      const std::vector<Point3d>& bottom = crossing.arcs[bottom_i];
+
+      Brep::CylindricalFace upper = with_origin_at(base, h_top, cf.length - h_top);
+      upper.cap0_notch_points = oriented(upper, top);
+      upper.cap0_notch_tolerance = crossing.sagitta[top_i];
+      upper.end0_is_original = false;
+
+      Brep::CylindricalFace middle = with_origin_at(base, h_bottom, h_top - h_bottom);
+      middle.cap0_notch_points = oriented(middle, bottom);
+      middle.cap0_notch_tolerance = crossing.sagitta[bottom_i];
+      middle.cap1_notch_points = oriented(middle, top);
+      middle.cap1_notch_tolerance = crossing.sagitta[top_i];
+      middle.end0_is_original = false;
+      middle.end1_is_original = false;
+
+      Brep::CylindricalFace lower = base;
+      lower.length = h_bottom;
+      lower.cap1_notch_points = oriented(lower, bottom);
+      lower.cap1_notch_tolerance = crossing.sagitta[bottom_i];
+      lower.end1_is_original = false;
+
+      out.push_back(MixedFaceFromCyl(std::move(upper)));
+      out.push_back(MixedFaceFromCyl(std::move(middle)));
+      out.push_back(MixedFaceFromCyl(std::move(lower)));
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------
 // Non-parallel cylinder/cylinder NO-INTERACTION tests
 // ---------------------------------------------------------------------
 //
@@ -2757,8 +3354,7 @@ bool NonParallelCylinderPairNoInteraction(const Brep::CylindricalFace& cf_a, con
 
   // (2) Steinmetz axial band - equal radii, intersecting axes only, with
   // the SAME regime tests ComputeSteinmetzCrossing applies.
-  const double radius_tol = std::max(tol, 1e-9 * std::max(p.radius, q.radius));
-  if (std::fabs(p.radius - q.radius) > radius_tol) return false;
+  if (std::fabs(p.radius - q.radius) > CylinderPairRadiusTolerance(p, q, tol)) return false;
   const Vector3d a = p.frame.zaxis;
   const Vector3d b = q.frame.zaxis;
   const Vector3d w = p.frame.origin - q.frame.origin;
@@ -3055,20 +3651,19 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
         // one test - both frame.zaxis are already unit by construction of
         // every ON_Plane-backed frame this pipeline builds) get the new
         // closed-form circle/circle angular split this increment adds; a
-        // genuinely oblique (non-parallel-axis) pair - Steinmetz's own
-        // equal-radius/intersecting-axes case included - remains out of
-        // scope, for two DIFFERENT reasons named explicitly rather than
-        // conflated into one message: the fully general skew/unequal-radii
-        // case needs a genuine NURBS-NURBS surface intersection, while
-        // Steinmetz's own intersection curve - though it DOES reduce to a
-        // pair of exact planar ellipses in closed form - sits in the
-        // MIDDLE of each cylinder's wall, not at either end, and
-        // CylindricalFace's own trim representation (an axis-aligned
-        // (angle, height) rectangle, optionally notched at one END) has no
-        // way to express a lens-shaped puncture in its own interior -
-        // needing a materially bigger, new curved-face interior-trim
-        // representation, a separate follow-up (see this function's own
-        // doc comment in boolean.h for the full, disclosed reasoning).
+        // non-parallel pair is first tested for provable non-interaction,
+        // then routed by radius: unequal radii to the intersecting,
+        // perpendicular-axis split (SplitCylindricalByUnequalPerpendicularCylinder),
+        // equal radii to the Steinmetz split at any axis angle
+        // (SplitCylindricalBySteinmetzCylinder) - both decompose each wall
+        // into shapes CylindricalFace already represents (the region of
+        // one wall inside the other cylinder touches the rest of the wall
+        // only at pinch points, so no interior-trim representation is
+        // needed; see both section comments). What remains out of scope
+        // - unequal radii at a general axis angle, skew axes, partial
+        // penetration - is refused by those splits' own guards, each for
+        // the specific reason named there (see this function's own doc
+        // comment in boolean.h for the full, disclosed reasoning).
         const Vector3d cross_axes = ON_CrossProduct(f.cyl.frame.zaxis, g.cyl.frame.zaxis);
         const bool axes_parallel = cross_axes.Length() < kAxisAlignTol;
         if (axes_parallel) {
@@ -3164,19 +3759,36 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
           // radii, skew axes, an end short of the crossing, a partial
           // sweep, an existing notch) that only matters when it does.
           next.push_back(std::move(f));
+        } else if (std::fabs(f.cyl.radius - g.cyl.radius) > CylinderPairRadiusTolerance(f.cyl, g.cyl, tol)) {
+          // Non-parallel axes, UNEQUAL radii: the intersecting,
+          // perpendicular-axis split - see
+          // SplitCylindricalByUnequalPerpendicularCylinder's own section
+          // comment above for the per-angle closed form on the smaller
+          // cylinder and the ten-piece (larger) / six-piece (smaller)
+          // decomposition. Its own guards throw std::invalid_argument
+          // (each naming "non-parallel axes" and "UNEQUAL radii") for
+          // genuinely skew axes, a non-perpendicular axis angle, a
+          // crossing not strictly interior to both cylinders, a
+          // partial-sweep or already-notched operand, or a sliver - again
+          // only for pairs the no-interaction test above could not
+          // separate; the general-angle and skew INTERACTIONS remain out
+          // of scope, each for the specific representational reason that
+          // section comment names.
+          for (MixedFace& piece : SplitCylindricalByUnequalPerpendicularCylinder(f.cyl, g.cyl, tol)) {
+            next.push_back(std::move(piece));
+          }
         } else {
-          // Non-parallel axes: the Steinmetz (equal-radius, intersecting-
+          // Non-parallel axes, equal radii: the Steinmetz (intersecting-
           // axes) split - see SplitCylindricalBySteinmetzCylinder's own
           // section comment above for the closed-form two-ellipse
           // decomposition into four half-bands and two eyes. Its own
           // guards throw std::invalid_argument (each naming "non-parallel
-          // axes") for unequal radii, genuinely skew axes, a crossing not
-          // strictly interior to both cylinders, or a partial-sweep
-          // operand - now only for pairs the no-interaction test above
-          // could not separate, i.e. pairs that genuinely (or, for the
-          // conservative capsule test, possibly) touch; the fully general
-          // skew/unequal-radii INTERACTION still needs a genuine
-          // NURBS-NURBS surface intersection and remains out of scope.
+          // axes") for genuinely skew axes, a crossing not strictly
+          // interior to both cylinders, or a partial-sweep operand - now
+          // only for pairs the no-interaction test above could not
+          // separate, i.e. pairs that genuinely (or, for the conservative
+          // capsule test, possibly) touch; the equal-radius skew
+          // INTERACTION remains out of scope.
           for (MixedFace& piece : SplitCylindricalBySteinmetzCylinder(f.cyl, g.cyl, tol)) {
             next.push_back(std::move(piece));
           }

@@ -857,6 +857,68 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // on-axis probes read an unambiguous kOut (a cylinder that starts at the
 // crossing is refused).
 //
+// UNEQUAL-RADIUS, intersecting, PERPENDICULAR-axis cylinder/cylinder
+// pairs (r_b < r_a, the axes meeting at a right angle, B piercing A
+// completely) are supported for every op as well
+// (SplitCylindricalByUnequalPerpendicularCylinder's own section comment
+// in boolean.cpp has the derivation). The intersection curve is no
+// longer a pair of planar ellipses, but on the SMALLER cylinder's wall
+// it has a per-angle closed form - "the point at angle theta and height
+// h on B lies on A's wall" is a quadratic in h whose discriminant is
+// positive on every generator when r_b < r_a - so it is sampled exactly,
+// once, uniformly in B's own angle, as four canonical arcs handed
+// verbatim to both cylinders' fragments (bit-identical shared boundary,
+// as for Steinmetz). On B the curve is two closed curves, one above and
+// one below the crossing, each going once around B; on A it is two
+// closed loops, one around each point where B's axis pierces A's wall,
+// each spanning 2*asin(r_b/r_a) of A's angle and touching its own
+// theta-extreme generators only at two PINCH points - B's generators at
+// common-perpendicular coordinate +/- r_b, all four at the crossing's
+// height on A when the axes are perpendicular. So, again, no hole is
+// ever punched into a wall's interior: A's wall splits at the four pinch
+// angles into two SLABS (each an upper piece notched by the loop's upper
+// arc, a lower piece notched by its lower arc, and a PLUG - the eye
+// shape, angle 2*asin(r_b/r_a), length 0, both caps notched) and two
+// PLAIN pieces cut at the crossing height; B's wall splits at its two
+// pinch generators into two halves, each an upper band, a positive-
+// length doubly-notched MIDDLE band (the part of B's wall inside A) and
+// a lower band - every one a CylindricalFace shape that already existed
+// (see that struct's doc comment in brep.h). Union keeps A's eight wall
+// pieces, B's four outer bands and BuildEndCap's wedges on every
+// original end (12 cylindrical + 48 planar faces); Intersection keeps
+// the two plugs and the two middle bands (4 faces, IsValid and IsSolid,
+// volume the 1-D quadrature closed form integral_{-r_b}^{r_b}
+// 4 sqrt(r_a^2 - y^2) sqrt(r_b^2 - y^2) dy); A - B keeps A's pieces and
+// B's middle bands flipped as the bore's wall (10 + 32); B - A keeps B's
+// outer bands and A's plugs flipped (6 + 16) - all from the same
+// op-agnostic classify-then-bucket step. Brep::TessellateConforming() is
+// a closed manifold on every one of these results at symmetric and
+// asymmetric divisions (measured within ~1e-4 relative of the closed
+// forms at r 2/1 and 2/1.9); ordinary Brep::Tessellate() converges but
+// carries the same shared-curve T-junctions the Steinmetz results do.
+// The one change this needed outside boolean.cpp is in
+// Brep::FromMixedFaces(): B's middle band's straight rail and A's plain
+// piece's cut arc join the same two pinch vertices, and are now kept as
+// distinct edges (an arc and its chord are never one curve - see
+// BuildFaceLoop in brep.cpp).
+//
+// Unequal-radius PRECONDITIONS, each refused with std::invalid_argument
+// naming "non-parallel axes" and "UNEQUAL radii": axes that genuinely
+// intersect; axes PERPENDICULAR within the pipeline tolerance - stated
+// as the condition the decomposition needs, that the four pinch points
+// lie at one height on A within tol, i.e. |cot(alpha)| sqrt(r_a^2 - r_b^2)
+// <= tol (about 1e-8 radians at unit scale; an exactly-constructed right
+// angle passes with orders of magnitude to spare, a general axis angle
+// is refused, not snapped); both operands full-sweep and not already
+// notched; a radius ratio that leaves no slab or plain piece narrower
+// than 1e-3 radians; and the crossing STRICTLY interior to both
+// cylinders - every original end farther from the crossing than the
+// curve's axial reach on that cylinder (r_a along B's axis, r_b along
+// A's at 90 degrees) plus the sampled arcs' sagitta - so both loops lie
+// wholly inside each wall, neither end disc touches the other cylinder
+// and SynthesizeEndCaps' probes read kOut; a blind bore or a partial
+// penetration is refused.
+//
 // NON-PARALLEL NO-INTERACTION pairs: before any of those preconditions is
 // consulted, a non-parallel pair whose two FINITE cylinders provably
 // cannot touch passes through the split unchanged - exactly the way a
@@ -884,8 +946,11 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 //     more than r_a + r_b + tol apart (standard closed-form segment/
 //     segment distance) never meet. A skew or unequal-radius pair the
 //     capsule test cannot separate - the segments within r_a + r_b, which
-//     for pegs meeting end-to-side can still be a disjoint pair - throws
-//     the same "UNEQUAL radii" / "do not INTERSECT" refusals as before.
+//     for pegs meeting end-to-side can still be a disjoint pair - goes on
+//     to the unequal-radius or Steinmetz split, whose own guards then
+//     decide (an unequal-radius pair at a general angle, skew, or not
+//     piercing completely still throws, naming "UNEQUAL radii" and the
+//     specific reason).
 // A fragment's axial extent is its [0, length] widened over any notch it
 // already carries, so partial-sweep or already-notched fragments are
 // passed through as well when the pair provably never meets; their
@@ -956,14 +1021,23 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // interaction against a partial-sweep cylindrical operand, a
 // non-monotonic (re-entrant) oblique crossing, and two CYLINDRICAL faces
 // with NON-PARALLEL axes that INTERACT (or cannot be proven not to)
-// outside the Steinmetz preconditions above (unequal radii, or genuinely
-// skew axes - see the CYLINDER/CYLINDER, STEINMETZ and NON-PARALLEL
-// NO-INTERACTION paragraphs above for what IS supported) - the fully
-// general skew/unequal-radii interaction needs a genuine NURBS-NURBS
-// surface intersection and re-trim step (see IntersectSurfaces in
-// dino8-app's own geom layer for the intersection-curve half of that,
-// not yet wired to a Brep boolean here), a materially bigger, separate
-// follow-up.
+// outside the Steinmetz and unequal-radius preconditions above (see the
+// CYLINDER/CYLINDER, STEINMETZ, UNEQUAL-RADIUS and NON-PARALLEL
+// NO-INTERACTION paragraphs for what IS supported), each for a specific,
+// named reason: unequal radii at a GENERAL axis angle (the two loops on
+// the larger wall sit at two different heights, cot(alpha) sqrt(r_a^2 -
+// r_b^2) either side of the crossing, so the wall needs two cut heights
+// and a slab's notched pieces cannot be cut at the other loop's height
+// without crossing their own notch - a further decomposition step, not a
+// new representation); genuinely SKEW axes (a skew pierce puts a
+// fragment's two rail corners at different heights, which the
+// CylindricalFace contract does not yet express); and PARTIAL
+// penetration - a cylinder ending inside the other, or a skew pair whose
+// curve is a single loop on each wall (the loop's four split points then
+// differ between the two walls, so a notch chain would need to carry
+// several edges). None of these needs a NURBS-NURBS surface intersection
+// (the curve's per-angle closed form holds for any pair of cylinders);
+// they are representational follow-ups.
 //
 // Point-in-solid classification (the other half of the non-convex
 // pipeline, alongside splitting) gets one new, exact closed-form branch:

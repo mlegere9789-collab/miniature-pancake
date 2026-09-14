@@ -780,6 +780,31 @@ Point3d NotchListMidpoint(const std::vector<Point3d>& pts) {
 // (the four Steinmetz half-ellipses' midpoints sit at least 2r apart).
 // Compared by distance, not by a quantized hash, so no rounding boundary
 // can split a shared curve in two.
+//
+// The third identity gap, closed the same collision-only way: a STRAIGHT
+// segment (a curved face's rail, or a planar loop edge) whose plain key
+// names an EXISTING edge that a plain is-cap ARC created. A circular arc
+// and the chord between its endpoints are never the same curve unless
+// the arc is degenerate (its midpoint on the chord), so the two cannot
+// legitimately share an edge - yet before this refinement the straight
+// segment silently reused the arc's edge, and with the arc already
+// shared by two faces that meant "shared by 3 or more faces". The one
+// producer of this pattern is the unequal-radius perpendicular cylinder/
+// cylinder Difference (boolean.cpp, SplitCylindricalByUnequalPerpendicularCylinder):
+// the smaller cylinder's middle band has a straight rail between two
+// pinch vertices, and the larger cylinder's plain piece, cut at the
+// crossing height, has its cut ARC between the same two vertices. The
+// segment is salted by its own chord midpoint (quantized, FNV-mixed, the
+// same recipe the is-cap salt uses) - the same key the other half-band's
+// identical rail then computes, so a rail shared by two faces stays one
+// edge - and only when the existing arc's midpoint is farther than
+// 10 * kBrepWeldTolerance from that chord midpoint, so a degenerate arc
+// keeps matching its chord exactly as before. No sharing pattern the
+// suite exercises changes: an arc arriving AFTER a straight edge was
+// already salted by the is-cap block below (same_cap_arc_midpoint
+// answers false for any non-is-cap edge), a straight segment finding a
+// straight or notched edge still reuses it, and a straight segment
+// creating an edge first is untouched.
 void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
                     std::unordered_map<uint64_t, int>& edge_of_vertex_pair,
                     std::unordered_map<int, Point3d>& cap_arc_midpoint_of_edge,
@@ -868,6 +893,32 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
         mix(quant(mid.y));
         mix(quant(mid.z));
         key = plain_key ^ h;
+      }
+    }
+
+    // Straight-vs-arc disambiguation - see this function's own doc
+    // comment. Collision-only: `key` stays the plain key unless the plain
+    // key already names an edge a plain is-cap arc created whose midpoint
+    // is off this segment's chord.
+    if (!is_cap && !has_notch_interior) {
+      const auto plain_it = edge_of_vertex_pair.find(plain_key);
+      if (plain_it != edge_of_vertex_pair.end()) {
+        const auto arc_it = cap_arc_midpoint_of_edge.find(plain_it->second);
+        if (arc_it != cap_arc_midpoint_of_edge.end()) {
+          const Point3d chord_mid = 0.5 * (brep.m_V[vid_from].point + brep.m_V[vid_to].point);
+          if (chord_mid.DistanceTo(arc_it->second) > kBrepWeldTolerance * 10.0) {
+            auto quant = [](double x) { return std::llround(x / kBrepWeldTolerance); };
+            uint64_t h = 1469598103934665603ull;  // FNV-1a offset basis
+            auto mix = [&](int64_t v) {
+              h ^= static_cast<uint64_t>(v);
+              h *= 1099511628211ull;  // FNV-1a prime
+            };
+            mix(quant(chord_mid.x));
+            mix(quant(chord_mid.y));
+            mix(quant(chord_mid.z));
+            key = plain_key ^ h;
+          }
+        }
       }
     }
 
