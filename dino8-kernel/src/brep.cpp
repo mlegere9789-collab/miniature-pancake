@@ -789,8 +789,8 @@ Point3d NotchListMidpoint(const std::vector<Point3d>& pts) {
 // legitimately share an edge - yet before this refinement the straight
 // segment silently reused the arc's edge, and with the arc already
 // shared by two faces that meant "shared by 3 or more faces". The one
-// producer of this pattern is the unequal-radius perpendicular cylinder/
-// cylinder Difference (boolean.cpp, SplitCylindricalByUnequalPerpendicularCylinder):
+// producer of this pattern is the unequal-radius cylinder/cylinder
+// Difference at a right angle (boolean.cpp, SplitCylindricalByUnequalCylinder):
 // the smaller cylinder's middle band has a straight rail between two
 // pinch vertices, and the larger cylinder's plain piece, cut at the
 // crossing height, has its cut ARC between the same two vertices. The
@@ -805,6 +805,25 @@ Point3d NotchListMidpoint(const std::vector<Point3d>& pts) {
 // answers false for any non-is-cap edge), a straight segment finding a
 // straight or notched edge still reuses it, and a straight segment
 // creating an edge first is untouched.
+//
+// The fourth, the notched analogue of the third: a STRAIGHT segment whose
+// plain key names an EXISTING edge that a NOTCHED cap segment created
+// under that same plain key, with the polyline's midpoint off this
+// segment's chord. A chord and a non-degenerate polyline are never one
+// curve either. The producer is the same cylinder/cylinder Difference at
+// a general axis angle: the larger cylinder's plain piece is then cut by
+// a HELIX between the two pinch vertices (a notched polyline, not a cap
+// arc), and the smaller cylinder's middle band's straight rail joins the
+// same two vertices. Salted exactly as the third (by the quantized chord
+// midpoint, so the other half-band's identical rail lands on the same
+// key), only when the listed polyline's midpoint is farther than
+// 10 * kBrepWeldTolerance from the chord midpoint (a degenerate polyline
+// keeps matching its chord), and only against an edge stored under the
+// plain key itself. The mirror order - a notched segment arriving after
+// a straight edge - deliberately keeps reusing that edge, the fillet
+// corner-notch mechanism above; the helix always arrives first (a
+// Difference lists the first operand's faces before the second's, and
+// curved faces' loops are built before planar ones).
 void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
                     std::unordered_map<uint64_t, int>& edge_of_vertex_pair,
                     std::unordered_map<int, Point3d>& cap_arc_midpoint_of_edge,
@@ -917,6 +936,36 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
             mix(quant(chord_mid.y));
             mix(quant(chord_mid.z));
             key = plain_key ^ h;
+          }
+        }
+      }
+    }
+
+    // Straight-vs-notched disambiguation - see this function's own doc
+    // comment. Collision-only: `key` stays the plain key unless the plain
+    // key already names an edge a notched cap segment created under that
+    // very key whose polyline midpoint is off this segment's chord.
+    if (!is_cap && !has_notch_interior && key == plain_key) {
+      const auto plain_it = edge_of_vertex_pair.find(plain_key);
+      if (plain_it != edge_of_vertex_pair.end()) {
+        const auto listed = notched_edges_of_vertex_pair.find(plain_key);
+        if (listed != notched_edges_of_vertex_pair.end()) {
+          for (const std::pair<Point3d, uint64_t>& entry : listed->second) {
+            if (entry.second != plain_key) continue;  // only the edge actually stored under the plain key
+            const Point3d chord_mid = 0.5 * (brep.m_V[vid_from].point + brep.m_V[vid_to].point);
+            if (chord_mid.DistanceTo(entry.first) > kBrepWeldTolerance * 10.0) {
+              auto quant = [](double x) { return std::llround(x / kBrepWeldTolerance); };
+              uint64_t h = 1469598103934665603ull;  // FNV-1a offset basis
+              auto mix = [&](int64_t v) {
+                h ^= static_cast<uint64_t>(v);
+                h *= 1099511628211ull;  // FNV-1a prime
+              };
+              mix(quant(chord_mid.x));
+              mix(quant(chord_mid.y));
+              mix(quant(chord_mid.z));
+              key = plain_key ^ h;
+            }
+            break;
           }
         }
       }
@@ -1254,12 +1303,35 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     // (this is the same field, just actually used here for the first
     // time).
     face.m_bRev = !cf.outward;
-    const std::vector<Point2d> trim = {Point2d(0.0, 0.0), Point2d(u_max, 0.0),
-                                        Point2d(u_max, cf.length), Point2d(0.0, cf.length)};
+    // A notched cap's LAST point may sit on the angle-`angle` rail at a
+    // height other than the flat corner's - a SLOPED cut chain (see
+    // CylindricalFace::cap0_notch_points' own doc comment: the unequal-
+    // radius cylinder/cylinder split's helical cut across a plain piece
+    // at a general axis angle, whose two ends are at the two loops' pinch
+    // heights). That rail corner is then the chain's own last point: the
+    // trim rectangle's corner moves to its height, the rail between the
+    // two corners stays the straight iso-u edge it always was, and the
+    // rail-corner check below, the (u, v) conversion, the side tables and
+    // the topology are untouched. Gated on the chain's last height
+    // differing from the flat corner by more than the 1e-6 the rail-
+    // corner check tolerates, so every face whose chain ends at the flat
+    // corner within that check - every face built before sloped chains
+    // existed - keeps the identical (u_max, 0) / (u_max, length) corner.
+    double v_corner_u0 = 0.0, v_corner_u1 = cf.length;
+    if (!cf.cap0_notch_points.empty()) {
+      const double h = (cf.cap0_notch_points.back() - cf.frame.origin) * cf.frame.zaxis;
+      if (std::fabs(h) > 1e-6) v_corner_u0 = h;
+    }
+    if (!cf.cap1_notch_points.empty()) {
+      const double h = (cf.cap1_notch_points.back() - cf.frame.origin) * cf.frame.zaxis;
+      if (std::fabs(h - cf.length) > 1e-6) v_corner_u1 = h;
+    }
+    const std::vector<Point2d> trim = {Point2d(0.0, 0.0), Point2d(u_max, v_corner_u0),
+                                        Point2d(u_max, v_corner_u1), Point2d(0.0, cf.length)};
 
     const Point3d corner00 = surface->PointAt(0.0, 0.0);
-    const Point3d corner_u0 = surface->PointAt(u_max, 0.0);
-    const Point3d corner_u1 = surface->PointAt(u_max, cf.length);
+    const Point3d corner_u0 = surface->PointAt(u_max, v_corner_u0);
+    const Point3d corner_u1 = surface->PointAt(u_max, v_corner_u1);
     const Point3d corner01 = surface->PointAt(0.0, cf.length);
 
     // See CylindricalFace::cap0_notch_points/cap1_notch_points' own doc
