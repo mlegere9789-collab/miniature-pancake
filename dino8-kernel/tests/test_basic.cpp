@@ -12262,45 +12262,84 @@ void TestBooleanCombineMixedGeneralSkewCylinderStillThrows() {
   using dino8::kernel::Vector3d;
 
   // Two DIFFERENT-radius cylinders on genuinely SKEW (neither parallel nor
-  // intersecting) axes - the fully general case this increment's own
-  // scope never touches at all (needs a real NURBS-NURBS surface
-  // intersection), confirmed to throw exactly as it did before this
-  // increment (case (iv) used to throw unconditionally for ANY two
-  // cylindrical faces; this regression check confirms the still-
-  // unsupported general case's BEHAVIOR - throwing - is genuinely
+  // intersecting) axes that genuinely INTERACT - the fully general case
+  // this increment's own scope never touches at all (needs a real
+  // NURBS-NURBS surface intersection), confirmed to throw exactly as it
+  // did before this increment (case (iv) used to throw unconditionally
+  // for ANY two cylindrical faces; this regression check confirms the
+  // still-unsupported general case's BEHAVIOR - throwing - is genuinely
   // unchanged, not silently altered into a wrong non-throwing result).
-  Brep::CylindricalFace cyl_a;
-  cyl_a.frame.origin = Point3d(0, 0, 0);
-  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
-  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
-  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
-  cyl_a.frame.UpdateEquation();
-  cyl_a.radius = 2.0;
-  cyl_a.angle = 2.0 * ON_PI;
-  cyl_a.length = 10.0;
-  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+  //
+  // B's axis line runs at y = 1.5, z = 1 - 1.5 from A's own axis line, so
+  // B's radius-0.7 tube (y in [0.8, 2.2]) genuinely overlaps A's radius-2
+  // wall (y up to 2 at x = 0): a real interaction. This fixture used to
+  // sit at y = 3, a pair that never touches at all (B's tube stays at
+  // y >= 2.3, outside A's x^2 + y^2 <= 4 everywhere); once
+  // BooleanCombineMixed learned to recognise a provably disjoint
+  // non-parallel pair (NonParallelCylinderPairNoInteraction, boolean.cpp
+  // - the capsule-separation test: axis segments 3 apart > 2 + 0.7), that
+  // pair no longer throws and could no longer stand in for "the general
+  // skew interaction is still refused" - so the fixture moved in to a
+  // pair that really interacts, and the original disjoint pair is
+  // asserted below as the no-interaction Union it now correctly is.
+  auto build_pair = [](double y_offset) {
+    Brep::CylindricalFace cyl_a;
+    cyl_a.frame.origin = Point3d(0, 0, 0);
+    cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+    cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+    cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+    cyl_a.frame.UpdateEquation();
+    cyl_a.radius = 2.0;
+    cyl_a.angle = 2.0 * ON_PI;
+    cyl_a.length = 10.0;
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
 
-  Brep::CylindricalFace cyl_b;
-  cyl_b.frame.origin = Point3d(5, 3, 1);
-  cyl_b.frame.xaxis = Vector3d(0, 0, 1);
-  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
-  cyl_b.frame.zaxis = Vector3d(-1, 0, 0);  // perpendicular to A's own axis, offset off A's own axis line -> skew
-  cyl_b.frame.UpdateEquation();
-  cyl_b.radius = 0.7;  // a DIFFERENT radius from A's own 2.0
-  cyl_b.angle = 2.0 * ON_PI;
-  cyl_b.length = 6.0;
-  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    Brep::CylindricalFace cyl_b;
+    cyl_b.frame.origin = Point3d(5, y_offset, 1);
+    cyl_b.frame.xaxis = Vector3d(0, 0, 1);
+    cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+    cyl_b.frame.zaxis = Vector3d(-1, 0, 0);  // perpendicular to A's own axis, offset off A's own axis line -> skew
+    cyl_b.frame.UpdateEquation();
+    cyl_b.radius = 0.7;  // a DIFFERENT radius from A's own 2.0
+    cyl_b.angle = 2.0 * ON_PI;
+    cyl_b.length = 6.0;
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    return std::make_pair(a, b);
+  };
 
-  bool threw = false;
-  try {
-    BooleanCombineMixed(a, b, BooleanOp::Union);
-  } catch (const std::invalid_argument&) {
-    threw = true;
+  {
+    const auto [a, b] = build_pair(1.5);
+    bool threw = false;
+    try {
+      BooleanCombineMixed(a, b, BooleanOp::Union);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw,
+          "BooleanCombineMixed still throws std::invalid_argument for two skew, unequal-radii cylindrical faces - "
+          "the fully general case this increment's own new parallel-axis machinery never touches, confirmed "
+          "genuinely unchanged rather than silently misrouted");
   }
-  Check(threw,
-        "BooleanCombineMixed still throws std::invalid_argument for two skew, unequal-radii cylindrical faces - "
-        "the fully general case this increment's own new parallel-axis machinery never touches, confirmed "
-        "genuinely unchanged rather than silently misrouted");
+  {
+    // The original y = 3 fixture: skew, unequal radii, and provably
+    // disjoint (axis segments 3 apart, radii 2 + 0.7) - a no-interaction
+    // pair, not a refused interaction.
+    const auto [a, b] = build_pair(3.0);
+    bool threw = false;
+    Brep result;
+    try {
+      result = BooleanCombineMixed(a, b, BooleanOp::Union);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    const double expected = ON_PI * 2.0 * 2.0 * 10.0 + ON_PI * 0.7 * 0.7 * 6.0;
+    const double volume = threw ? 0.0 : result.TessellateToClosedMesh(128, 128).Volume();
+    Check(!threw && result.MixedFaces().cylindrical.size() == 2 && std::fabs(volume - expected) < 1e-3 * expected,
+          "the same skew, unequal-radii pair moved out to y = 3 (axis segments 3 apart > 2 + 0.7, so the two finite "
+          "cylinders provably never touch) no longer throws: BooleanCombineMixed's non-parallel no-interaction test "
+          "passes both walls through unchanged and the Union is both solids, 2 cylindrical faces and the summed "
+          "volume pi (4*10 + 0.49*6) within 0.1% at 128 divisions");
+  }
 }
 
 void TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary() {
@@ -12323,7 +12362,21 @@ void TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary() {
   // cos(theta)*Y, xaxis_b unchanged) so that
   // |cross(zaxis_a, zaxis_b)| = sin(theta) exactly (both are unit
   // vectors), landing on a KNOWN, controlled side of kAxisAlignTol.
-  auto build_tilted = [](double theta) {
+  //
+  // `z0_b` is B's own base height: 10.0 reproduces the axially-disjoint
+  // fixture exactly. The just-OUTSIDE branch below needs an AXIALLY
+  // OVERLAPPING pair (z0_b = 3.0, B spanning z in [3, 7] against A's
+  // [0, 5]) since BooleanCombineMixed learned to recognise a provably
+  // disjoint non-parallel pair (NonParallelCylinderPairNoInteraction,
+  // boolean.cpp): the disjoint fixture's axis segments are sqrt(26) ~ 5.1
+  // apart, more than 2 + 1.5, so on the non-parallel path it now
+  // correctly completes as a no-interaction Union instead of throwing,
+  // and can no longer serve as the observable of that branch's
+  // still-refused unequal-radii interaction. The overlapping pair
+  // genuinely interacts (axis segments 1 apart) and is refused exactly as
+  // before; the disjoint pair's own new non-parallel result is asserted
+  // separately below.
+  auto build_tilted = [](double theta, double z0_b) {
     Brep::CylindricalFace cyl_a;
     cyl_a.frame.origin = Point3d(0, 0, 0);
     cyl_a.frame.xaxis = Vector3d(1, 0, 0);
@@ -12336,7 +12389,7 @@ void TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary() {
     const Brep a = Brep::FromMixedFaces({}, {cyl_a});
 
     Brep::CylindricalFace cyl_b;
-    cyl_b.frame.origin = Point3d(1.0, 0, 10.0);
+    cyl_b.frame.origin = Point3d(1.0, 0, z0_b);
     cyl_b.frame.xaxis = Vector3d(1, 0, 0);
     cyl_b.frame.yaxis = Vector3d(0, std::cos(theta), std::sin(theta));
     cyl_b.frame.zaxis = Vector3d(0, -std::sin(theta), std::cos(theta));
@@ -12352,7 +12405,7 @@ void TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary() {
     // sin(0.5e-6) ~= 0.5e-6 < kAxisAlignTol (1e-6): treated as parallel -
     // the split succeeds and the whole Union completes with no throw at
     // all, exactly like the untilted (theta=0) fixture.
-    const auto [a, b] = build_tilted(0.5e-6);
+    const auto [a, b] = build_tilted(0.5e-6, 10.0);
     bool threw = false;
     Brep result;
     try {
@@ -12392,8 +12445,10 @@ void TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary() {
     // cylindrical faces always threw before this increment, distinguished
     // here from every OTHER std::invalid_argument this increment's own
     // new code can throw (e.g. cap-trim-needed, near-tangency) by its own
-    // distinguishing message text.
-    const auto [a, b] = build_tilted(2.0e-6);
+    // distinguishing message text. Axially OVERLAPPING pair (see
+    // build_tilted's own comment): the non-parallel path's no-interaction
+    // test cannot separate it, so its unequal-radii refusal fires.
+    const auto [a, b] = build_tilted(2.0e-6, 3.0);
     std::string message;
     try {
       BooleanCombineMixed(a, b, BooleanOp::Union);
@@ -12404,6 +12459,32 @@ void TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary() {
           "a cylinder pair tilted just OUTSIDE kAxisAlignTol (|cross(zaxis_a, zaxis_b)| ~= 2e-6 > 1e-6) is "
           "correctly treated as non-parallel - BooleanCombineMixed throws the specific 'non-parallel axes' "
           "rejection, not merely SOME std::invalid_argument");
+  }
+  {
+    // The original axially-DISJOINT fixture on the just-OUTSIDE side: the
+    // non-parallel path now recognises it as a no-interaction pair and
+    // completes. That the pair took the NON-parallel branch is still
+    // directly observable, more sharply than the throw ever made it: the
+    // parallel path's angular split leaves each wall as TWO wedge
+    // children (4 cylindrical faces, see
+    // TestBooleanCombineMixedParallelCylinderUnionAxiallyDisjointBothEndsCapped),
+    // while the non-parallel no-interaction pass-through keeps each wall
+    // as ONE face.
+    const auto [a, b] = build_tilted(2.0e-6, 10.0);
+    bool threw = false;
+    Brep result;
+    try {
+      result = BooleanCombineMixed(a, b, BooleanOp::Union);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    const double expected = ON_PI * 2.0 * 2.0 * 5.0 + ON_PI * 1.5 * 1.5 * 4.0;
+    const double volume = threw ? 0.0 : result.TessellateToClosedMesh(128, 128).Volume();
+    Check(!threw && result.MixedFaces().cylindrical.size() == 2 && std::fabs(volume - expected) < 1e-3 * expected,
+          "the axially-disjoint pair tilted just OUTSIDE kAxisAlignTol no longer throws: on the non-parallel path "
+          "the capsule-separation no-interaction test (axis segments ~5.1 apart > 2 + 1.5) passes both walls "
+          "through as ONE face each (2 cylindrical faces, versus the parallel path's 4 wedge children) and the "
+          "Union's volume is pi (4*5 + 2.25*4) within 0.1% at 128 divisions");
   }
 }
 
@@ -14277,6 +14358,360 @@ void TestBooleanCombineMixedSteinmetzUnionAndDifferenceVolumes() {
   }
 }
 
+// ---------------------------------------------------------------------
+// Non-parallel cylinder/cylinder NO-INTERACTION pairs
+// ---------------------------------------------------------------------
+//
+// A non-parallel pair whose two FINITE cylinders provably never meet
+// passes through case (iv) unchanged instead of being refused by the
+// Steinmetz split's guards (NonParallelCylinderPairNoInteraction,
+// boolean.cpp): Union = both solids (each wall ONE face, every original
+// end capped by BuildEndCap's four quadrant wedges), A - B = A unchanged,
+// Intersection = empty. The two separation tests are exercised
+// separately. The exact Steinmetz axial band (equal radii, intersecting
+// axes) gets fixtures whose axis SEGMENTS come closer than 2r - the
+// conservative capsule test cannot separate those, only the band does -
+// once with the crossing beyond the FIRST operand's end and once beyond
+// the SECOND's, so the verdict is exercised from both sides of the
+// argument order. The capsule test gets skew and unequal-radius pairs.
+// Every passing fixture is bracketed by a near-miss control 0.1 closer
+// that genuinely overlaps and must still throw the pre-existing message.
+//
+// Volumes are measured through the ORDINARY tessellation at 128 divisions
+// (measured -3.24e-4 relative on every fixture below - the untouched
+// walls' own inscribed-polygon deficit, identical across all of them -
+// so the 0.1% bound is 3x that residual), and separately through the
+// CONFORMING tessellation at 64 divisions, which is a genuinely CLOSED
+// manifold for every no-interaction Union and Difference here (measured
+// -1.0e-4 relative): with no wall ever split, the only seams are the
+// untouched BuildEndCap quadrant caps against a plain full-sweep wall,
+// exactly the already-closed configuration
+// TestBooleanCombineMixedParallelCylinderUnionAxiallyDisjointBothEndsCapped
+// verifies.
+constexpr double kNoInteractionVolumeRelTol = 1e-3;
+
+dino8::kernel::Brep::CylindricalFace BuildBareCylinder(const dino8::kernel::Point3d& origin,
+                                                       const dino8::kernel::Vector3d& xaxis,
+                                                       const dino8::kernel::Vector3d& yaxis,
+                                                       const dino8::kernel::Vector3d& zaxis, double radius,
+                                                       double length) {
+  dino8::kernel::Brep::CylindricalFace cf;
+  cf.frame.origin = origin;
+  cf.frame.xaxis = xaxis;
+  cf.frame.yaxis = yaxis;
+  cf.frame.zaxis = zaxis;
+  cf.frame.UpdateEquation();
+  cf.radius = radius;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = length;
+  return cf;
+}
+
+// A cylinder along +X: xaxis +Y, yaxis +Z (right-handed: Y x Z = X).
+dino8::kernel::Brep::CylindricalFace BuildXAxisCylinder(const dino8::kernel::Point3d& origin, double radius,
+                                                        double length) {
+  using dino8::kernel::Vector3d;
+  return BuildBareCylinder(origin, Vector3d(0, 1, 0), Vector3d(0, 0, 1), Vector3d(1, 0, 0), radius, length);
+}
+
+// A cylinder along +Z with the standard frame.
+dino8::kernel::Brep::CylindricalFace BuildZAxisCylinder(const dino8::kernel::Point3d& origin, double radius,
+                                                        double length) {
+  using dino8::kernel::Vector3d;
+  return BuildBareCylinder(origin, Vector3d(1, 0, 0), Vector3d(0, 1, 0), Vector3d(0, 0, 1), radius, length);
+}
+
+// What every op of a no-interaction pair must produce, measured through
+// MixedFaces() counts and ordinary tessellated volume. `threw` reports
+// any std::invalid_argument so a regression to the old refusal shows up
+// as a plain failed check rather than an uncaught exception.
+struct NoInteractionMeasurement {
+  bool threw = false;
+  size_t cylindrical = 0, planar = 0, faces = 0;
+  double volume = 0.0;             // ordinary tessellation, 128 divisions
+  double conforming_volume = 0.0;  // conforming tessellation, 64 divisions
+  bool conforming_closed = false;  // ... and whether that mesh is a closed manifold
+};
+
+NoInteractionMeasurement MeasureBoolean(const dino8::kernel::Brep& a, const dino8::kernel::Brep& b,
+                                        dino8::kernel::BooleanOp op) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  NoInteractionMeasurement m;
+  try {
+    const Brep result = dino8::kernel::BooleanCombineMixed(a, b, op);
+    const auto mixed = result.MixedFaces();
+    m.cylindrical = mixed.cylindrical.size();
+    m.planar = mixed.planar.size();
+    m.faces = static_cast<size_t>(result.FaceCount());
+    if (m.faces > 0) {
+      m.volume = result.TessellateToClosedMesh(128, 128).Volume();
+      const Mesh conforming = result.TessellateToClosedMeshConforming(64, 64);
+      m.conforming_volume = conforming.Volume();
+      m.conforming_closed = conforming.IsClosedManifold();
+    }
+  } catch (const std::invalid_argument&) {
+    m.threw = true;
+  }
+  return m;
+}
+
+bool VolumeMatches(const NoInteractionMeasurement& m, double expected) {
+  return !m.threw && std::fabs(m.volume - expected) < kNoInteractionVolumeRelTol * expected;
+}
+
+// The conforming mesh is closed AND agrees with the closed form - both,
+// since a closed mesh of the wrong solid (the Steinmetz Union's own
+// disclosed +23% conforming result) would pass closure alone.
+bool ConformingClosedAndMatches(const NoInteractionMeasurement& m, double expected) {
+  return !m.threw && m.conforming_closed &&
+         std::fabs(m.conforming_volume - expected) < kNoInteractionVolumeRelTol * expected;
+}
+
+// Steinmetz band, crossing beyond the FIRST operand's end: A along +Z,
+// z in [0, 10]; B along +X, radius equal, x in [-4, 4] at z = 12.5. The
+// axes meet at Q = (0, 0, 12.5), strictly interior to B (h_Q = 4 in
+// [0, 8], amplitude r*max(cot 45, tan 45) = 2) but 2.5 past A's own top,
+// so A's band [10.5, 14.5] misses A's [0, 10] by 0.5. The axis segments
+// are only 2.5 apart (< 2r = 4): the capsule test cannot separate this
+// pair, only the band does. The solids are genuinely disjoint (B stays at
+// z >= 10.5, A at z <= 10).
+void TestBooleanCombineMixedNonParallelCylinderNoInteractionCrossingBeyondFirstOperandsEnd() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const double r = 2.0, length_a = 10.0, length_b = 8.0;
+  const Brep a = Brep::FromMixedFaces({}, {BuildZAxisCylinder(Point3d(0, 0, 0), r, length_a)});
+  const Brep b = Brep::FromMixedFaces({}, {BuildXAxisCylinder(Point3d(-4.0, 0, 12.5), r, length_b)});
+  const double volume_a = ON_PI * r * r * length_a;  // 40 pi
+  const double volume_b = ON_PI * r * r * length_b;  // 32 pi
+
+  const NoInteractionMeasurement u_ab = MeasureBoolean(a, b, BooleanOp::Union);
+  Check(!u_ab.threw,
+        "no-interaction Union (equal radii, axes meeting 2.5 beyond A's top, axis segments closer than 2r): "
+        "BooleanCombineMixed no longer throws the Steinmetz extent refusal - the exact axial band separates the pair");
+  Check(!u_ab.threw && u_ab.cylindrical == 2 && u_ab.planar == 16,
+        "no-interaction Union: MixedFaces() has exactly 2 cylindrical faces (each wall passed through as ONE "
+        "unsplit face) and 16 planar faces (all four original ends, each closed by BuildEndCap's 4 quadrant wedges)");
+  Check(VolumeMatches(u_ab, volume_a + volume_b),
+        "no-interaction Union: the ordinary 128-division tessellated volume is pi r^2 (L_A + L_B) = 72 pi = 226.19 "
+        "within 0.1% (measured -3.2e-4 relative, the untouched walls' plain inscribed-polygon deficit)");
+  Check(ConformingClosedAndMatches(u_ab, volume_a + volume_b),
+        "no-interaction Union: the CONFORMING 64-division tessellation is a genuinely CLOSED manifold with the same "
+        "72 pi volume within 0.1% (measured -1.0e-4) - no wall was split, so the only seams are the quadrant end "
+        "caps against plain full-sweep walls, the configuration the parallel-axis disjoint test already closes");
+
+  const NoInteractionMeasurement u_ba = MeasureBoolean(b, a, BooleanOp::Union);
+  Check(!u_ba.threw && u_ba.cylindrical == 2 && u_ba.planar == 16 && VolumeMatches(u_ba, volume_a + volume_b) &&
+            ConformingClosedAndMatches(u_ba, volume_a + volume_b),
+        "no-interaction Union (b, a): the reverse argument order gives the same 2 + 16 faces, the same volume and "
+        "the same closed conforming mesh - the verdict is symmetric, neither direction throws");
+
+  const NoInteractionMeasurement d_ab = MeasureBoolean(a, b, BooleanOp::Difference);
+  Check(!d_ab.threw && d_ab.cylindrical == 1 && d_ab.planar == 8 && VolumeMatches(d_ab, volume_a) &&
+            ConformingClosedAndMatches(d_ab, volume_a),
+        "no-interaction A - B: A comes back unchanged - 1 cylindrical face, 8 planar (its two ends), volume "
+        "pi r^2 L_A = 40 pi within 0.1%, closed conforming mesh");
+  const NoInteractionMeasurement d_ba = MeasureBoolean(b, a, BooleanOp::Difference);
+  Check(!d_ba.threw && d_ba.cylindrical == 1 && d_ba.planar == 8 && VolumeMatches(d_ba, volume_b),
+        "no-interaction B - A: B comes back unchanged - 1 cylindrical face, 8 planar, volume pi r^2 L_B = 32 pi "
+        "within 0.1%");
+
+  const NoInteractionMeasurement i_ab = MeasureBoolean(a, b, BooleanOp::Intersection);
+  const NoInteractionMeasurement i_ba = MeasureBoolean(b, a, BooleanOp::Intersection);
+  Check(!i_ab.threw && i_ab.faces == 0 && !i_ba.threw && i_ba.faces == 0,
+        "no-interaction Intersection: a genuinely EMPTY result (FaceCount() == 0) in both argument orders - the "
+        "same representation the disjoint parallel-axis and disjoint box/cylinder Intersections already produce");
+
+  // Near-miss control, 1.0 closer: B at z = 11.5 spans z in [9.5, 13.5]
+  // and genuinely overlaps A's top 0.5 - a partial end crossing. A's band
+  // [9.5, 13.5] now reaches A's [0, 10], nothing separates the pair, and
+  // the crossing is not strictly interior to A (it lies 1.5 beyond A's
+  // top): the pre-existing extent refusal fires, unchanged, for every op.
+  {
+    const Brep b_near = Brep::FromMixedFaces({}, {BuildXAxisCylinder(Point3d(-4.0, 0, 11.5), r, length_b)});
+    bool all_refused = true;
+    for (const BooleanOp op : {BooleanOp::Union, BooleanOp::Difference, BooleanOp::Intersection}) {
+      std::string message;
+      try {
+        BooleanCombineMixed(a, b_near, op);
+      } catch (const std::invalid_argument& e) {
+        message = e.what();
+      }
+      if (message.find("non-parallel axes") == std::string::npos ||
+          message.find("STRICTLY interior") == std::string::npos) {
+        all_refused = false;
+      }
+    }
+    Check(all_refused,
+          "near-miss control: the same pair 1.0 closer (B at z = 11.5, overlapping A's top by 0.5 - a genuine "
+          "partial end crossing whose band reaches A's extent) still throws std::invalid_argument naming "
+          "'non-parallel axes' and 'STRICTLY interior' for Union, Difference and Intersection alike");
+  }
+}
+
+// Steinmetz band, crossing INSIDE the first operand but beyond the SECOND's
+// end: A along +Z, z in [-5, 5]; B a short equal-radius peg along +X,
+// x in [2.5, 6.5], whose axis line passes straight through A's axis at
+// Q = (0, 0, 0). Q is strictly interior to A (h_Q = 5, amplitude 2), but
+// B starts 2.5 past Q on its own axis: B's band [-4.5, -0.5] misses B's
+// [0, 4] by 0.5. The axis segments are 2.5 apart (< 2r), so again only
+// the band separates the pair; the solids are disjoint (B at x >= 2.5, A
+// at x <= 2). Bracketed at +/- 0.05 around the true contact at x = 2.
+void TestBooleanCombineMixedNonParallelCylinderNoInteractionShortPegStopsShortOfCylinder() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const double r = 2.0, length_a = 10.0, length_b = 4.0;
+  const Brep a = Brep::FromMixedFaces({}, {BuildZAxisCylinder(Point3d(0, 0, -5.0), r, length_a)});
+  const double volume_a = ON_PI * r * r * length_a;  // 40 pi
+  const double volume_b = ON_PI * r * r * length_b;  // 16 pi
+  auto peg_from = [&](double x0) {
+    return Brep::FromMixedFaces({}, {BuildXAxisCylinder(Point3d(x0, 0, 0), r, length_b)});
+  };
+
+  const Brep b = peg_from(2.5);
+  const NoInteractionMeasurement u_ab = MeasureBoolean(a, b, BooleanOp::Union);
+  Check(!u_ab.threw && u_ab.cylindrical == 2 && u_ab.planar == 16 && VolumeMatches(u_ab, volume_a + volume_b) &&
+            ConformingClosedAndMatches(u_ab, volume_a + volume_b),
+        "short-peg no-interaction Union (crossing strictly interior to A, but B's band [-4.5, -0.5] misses B's own "
+        "[0, 4]): 2 cylindrical + 16 planar faces, volume pi r^2 (L_A + L_B) = 56 pi within 0.1%, and a closed "
+        "conforming mesh");
+  const NoInteractionMeasurement u_ba = MeasureBoolean(b, a, BooleanOp::Union);
+  Check(!u_ba.threw && u_ba.cylindrical == 2 && u_ba.planar == 16 && VolumeMatches(u_ba, volume_a + volume_b),
+        "short-peg no-interaction Union (b, a): same 2 + 16 faces and volume in the reverse argument order");
+  const NoInteractionMeasurement d_ab = MeasureBoolean(a, b, BooleanOp::Difference);
+  Check(!d_ab.threw && d_ab.cylindrical == 1 && d_ab.planar == 8 && VolumeMatches(d_ab, volume_a),
+        "short-peg no-interaction A - B: A unchanged (1 cylindrical + 8 planar faces, volume 40 pi within 0.1%)");
+  const NoInteractionMeasurement d_ba = MeasureBoolean(b, a, BooleanOp::Difference);
+  Check(!d_ba.threw && d_ba.cylindrical == 1 && d_ba.planar == 8 && VolumeMatches(d_ba, volume_b),
+        "short-peg no-interaction B - A: B unchanged (1 cylindrical + 8 planar faces, volume 16 pi within 0.1%)");
+  const NoInteractionMeasurement i_ab = MeasureBoolean(a, b, BooleanOp::Intersection);
+  const NoInteractionMeasurement i_ba = MeasureBoolean(b, a, BooleanOp::Intersection);
+  Check(!i_ab.threw && i_ab.faces == 0 && !i_ba.threw && i_ba.faces == 0,
+        "short-peg no-interaction Intersection: empty (FaceCount() == 0) in both argument orders");
+
+  // Tight bracket around the true contact at x = 2 (A's wall).
+  {
+    const NoInteractionMeasurement u_tight = MeasureBoolean(a, peg_from(2.05), BooleanOp::Union);
+    Check(!u_tight.threw && u_tight.cylindrical == 2 && VolumeMatches(u_tight, volume_a + volume_b),
+          "short-peg bracket: the peg starting at x = 2.05 (a 0.05 gap to A's wall; B's band ends at -0.05, "
+          "short of B's [0, 4]) is still a no-interaction pair - Union builds with 2 cylindrical faces and the "
+          "summed volume");
+  }
+  {
+    const Brep b_near = peg_from(1.95);
+    bool all_refused = true;
+    for (const BooleanOp op : {BooleanOp::Union, BooleanOp::Difference, BooleanOp::Intersection}) {
+      std::string message;
+      try {
+        BooleanCombineMixed(a, b_near, op);
+      } catch (const std::invalid_argument& e) {
+        message = e.what();
+      }
+      if (message.find("non-parallel axes") == std::string::npos ||
+          message.find("STRICTLY interior") == std::string::npos) {
+        all_refused = false;
+      }
+    }
+    Check(all_refused,
+          "short-peg near-miss control: the peg starting at x = 1.95 (its band [-3.95, 0.05] just reaches its own "
+          "[0, 4], and its end disc genuinely cuts 0.05 into A) still throws std::invalid_argument naming "
+          "'non-parallel axes' and 'STRICTLY interior' for every op - the extent refusal is unchanged where the "
+          "pair genuinely touches");
+  }
+}
+
+// Capsule separation: skew and/or unequal-radius pairs, still out of scope
+// when they interact, now pass through when their axis segments are more
+// than r_a + r_b apart. A along +Z, z in [0, 10], radius 2; B along +X at
+// (y, z) = (y_offset, 5), x in [-3, 3] - the axis lines never meet (skew,
+// distance y_offset), and the segments' closest points are (0, 0, 5) and
+// (0, y_offset, 5).
+void TestBooleanCombineMixedNonParallelCylinderNoInteractionSkewAndUnequalRadii() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const double r_a = 2.0, length_a = 10.0, length_b = 6.0;
+  const Brep a = Brep::FromMixedFaces({}, {BuildZAxisCylinder(Point3d(0, 0, 0), r_a, length_a)});
+  const double volume_a = ON_PI * r_a * r_a * length_a;  // 40 pi
+  auto skew_b = [&](double y_offset, double r_b) {
+    return Brep::FromMixedFaces({}, {BuildXAxisCylinder(Point3d(-3.0, y_offset, 5.0), r_b, length_b)});
+  };
+
+  {
+    // Far apart, unequal radii: segments 6 apart, r_a + r_b = 3.
+    const double r_b = 1.0;
+    const double volume_b = ON_PI * r_b * r_b * length_b;  // 6 pi
+    const Brep b = skew_b(6.0, r_b);
+    const NoInteractionMeasurement u_ab = MeasureBoolean(a, b, BooleanOp::Union);
+    Check(!u_ab.threw && u_ab.cylindrical == 2 && u_ab.planar == 16 && VolumeMatches(u_ab, volume_a + volume_b) &&
+              ConformingClosedAndMatches(u_ab, volume_a + volume_b),
+          "skew unequal-radius no-interaction Union (axis segments 6 apart > 2 + 1): no 'UNEQUAL radii' or 'skew' "
+          "refusal - 2 cylindrical + 16 planar faces, volume pi (4*10 + 1*6) = 46 pi within 0.1%, and a closed "
+          "conforming mesh");
+    const NoInteractionMeasurement u_ba = MeasureBoolean(b, a, BooleanOp::Union);
+    Check(!u_ba.threw && u_ba.cylindrical == 2 && u_ba.planar == 16 && VolumeMatches(u_ba, volume_a + volume_b),
+          "skew unequal-radius no-interaction Union (b, a): same faces and volume in the reverse argument order");
+    const NoInteractionMeasurement d_ab = MeasureBoolean(a, b, BooleanOp::Difference);
+    Check(!d_ab.threw && d_ab.cylindrical == 1 && d_ab.planar == 8 && VolumeMatches(d_ab, volume_a),
+          "skew unequal-radius no-interaction A - B: A unchanged (1 + 8 faces, volume 40 pi within 0.1%)");
+    const NoInteractionMeasurement i_ab = MeasureBoolean(a, b, BooleanOp::Intersection);
+    const NoInteractionMeasurement i_ba = MeasureBoolean(b, a, BooleanOp::Intersection);
+    Check(!i_ab.threw && i_ab.faces == 0 && !i_ba.threw && i_ba.faces == 0,
+          "skew unequal-radius no-interaction Intersection: empty (FaceCount() == 0) in both argument orders");
+  }
+  {
+    // Tight bracket around the capsule bound r_a + r_b = 3, which for
+    // this geometry is also the true contact (B's tube reaches y_offset -
+    // r_b, A's wall y = 2 at x = 0).
+    const double r_b = 1.0;
+    const double volume_b = ON_PI * r_b * r_b * length_b;
+    const NoInteractionMeasurement u_tight = MeasureBoolean(a, skew_b(3.05, r_b), BooleanOp::Union);
+    Check(!u_tight.threw && u_tight.cylindrical == 2 && VolumeMatches(u_tight, volume_a + volume_b),
+          "skew unequal-radius bracket: axis segments 3.05 apart (a 0.05 gap between the two solids) is still a "
+          "no-interaction pair - Union builds with 2 cylindrical faces and the summed volume");
+
+    std::string message;
+    try {
+      BooleanCombineMixed(a, skew_b(2.95, r_b), BooleanOp::Union);
+    } catch (const std::invalid_argument& e) {
+      message = e.what();
+    }
+    Check(message.find("non-parallel axes") != std::string::npos && message.find("UNEQUAL radii") != std::string::npos,
+          "skew unequal-radius near-miss control: axis segments 2.95 apart (< 2 + 1, the two solids genuinely "
+          "overlap by 0.05) still throws std::invalid_argument naming 'non-parallel axes' and 'UNEQUAL radii' - "
+          "the interacting general case remains refused");
+  }
+  {
+    // Equal radii but skew: far apart passes on the capsule test alone
+    // (the Steinmetz band never applies to a skew pair); closer than 2r
+    // it is the pre-existing skew refusal, unchanged.
+    const double r_b = 2.0;
+    const double volume_b = ON_PI * r_b * r_b * length_b;  // 24 pi
+    const NoInteractionMeasurement u_far = MeasureBoolean(a, skew_b(6.0, r_b), BooleanOp::Union);
+    Check(!u_far.threw && u_far.cylindrical == 2 && u_far.planar == 16 && VolumeMatches(u_far, volume_a + volume_b),
+          "equal-radius SKEW no-interaction Union (axis lines 6 apart > 2 + 2): no 'skew axes' refusal - 2 + 16 "
+          "faces and volume pi (4*10 + 4*6) = 64 pi within 0.1%");
+
+    std::string message;
+    try {
+      BooleanCombineMixed(a, skew_b(3.5, r_b), BooleanOp::Intersection);
+    } catch (const std::invalid_argument& e) {
+      message = e.what();
+    }
+    Check(message.find("non-parallel axes") != std::string::npos && message.find("INTERSECT") != std::string::npos,
+          "equal-radius skew near-miss control: axis lines 3.5 apart (< 2 + 2, the tubes overlap by 0.5) still "
+          "throws the pre-existing 'do not INTERSECT (genuinely skew axes)' refusal naming 'non-parallel axes'");
+  }
+}
+
 int main() {
   ON::Begin();
 
@@ -14529,6 +14964,9 @@ int main() {
   TestBooleanCombineMixedSteinmetzIntersectionConformingIsWatertight();
   TestBooleanCombineMixedSteinmetzNegativeControls();
   TestBooleanCombineMixedSteinmetzUnionAndDifferenceVolumes();
+  TestBooleanCombineMixedNonParallelCylinderNoInteractionCrossingBeyondFirstOperandsEnd();
+  TestBooleanCombineMixedNonParallelCylinderNoInteractionShortPegStopsShortOfCylinder();
+  TestBooleanCombineMixedNonParallelCylinderNoInteractionSkewAndUnequalRadii();
 
   ON::End();
 
