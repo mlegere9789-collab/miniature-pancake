@@ -384,6 +384,23 @@ class Brep {
     // angle on this struct uses) for BOTH fields, matching
     // ConicalFace's own fixed convention.
     //
+    // One admitted departure from "the flat corner": the LAST point must
+    // sit at angle `angle`, but its HEIGHT may differ from the flat
+    // corner's (v=0 for cap0, v=length for cap1) - a SLOPED cut chain, the
+    // unequal-radius cylinder/cylinder boolean's helical cut across the
+    // larger cylinder's plain pieces at a general axis angle (see
+    // BooleanCombineMixed's doc comment in boolean.h), whose two ends are
+    // at two different heights. That rail corner is then the chain's own
+    // last point: FromMixedFaces() moves the trim rectangle's angle-
+    // `angle` corner at that end to the chain's height, the rail between
+    // the face's two angle-`angle` corners stays a straight edge, and the
+    // rail-corner check is made against the moved corner. The first point
+    // is always the flat angle-0 corner (a producer anchors the piece's
+    // origin or length at the chain's first height). Gated on the height
+    // differing by more than the 1e-6 the rail-corner check tolerates: a
+    // chain ending within 1e-6 of the flat corner keeps the exact flat
+    // trim, so nothing built before sloped chains existed changes.
+    //
     // A real, CHECKED (not merely assumed) simplification versus
     // ConicalFace's own doc comment: when `angle` == 2*pi EXACTLY (a
     // full-circle drilled hole/boss - the only kind of CylindricalFace
@@ -446,8 +463,8 @@ class Brep {
     // face with fewer than two notches has no surface to build and is
     // not a supported shape.
     //
-    // The unequal-radius perpendicular cylinder/cylinder boolean (again
-    // see BooleanCombineMixed's doc comment) produces two more doubly-
+    // The unequal-radius cylinder/cylinder boolean (again see
+    // BooleanCombineMixed's doc comment) produces two more doubly-
     // notched shapes, both built by the same machinery with nothing
     // added: the larger cylinder's PLUG - the eye shape at an angle
     // 2*asin(r_b/r_a) < pi (its two notch curves are the two arcs of the
@@ -458,7 +475,12 @@ class Brep {
     // vertices on each side, and its notch curves are the halves of the
     // two curves going once around this cylinder). Every notch chain of
     // both shapes still starts and ends exactly at its face's rail
-    // corners at the same v, per the contract above.
+    // corners at the same v, per the contract above. The one chain that
+    // ends at a DIFFERENT v is that boolean's sloped cut of the larger
+    // cylinder's plain pieces at a general axis angle (the admitted
+    // departure above): a helix between the two loops' pinch heights,
+    // handed verbatim as cap1 of the piece below it and cap0 of the piece
+    // above it, each an otherwise ordinary singly-notched face.
     std::vector<Point3d> cap0_notch_points;
     std::vector<Point3d> cap1_notch_points;
 

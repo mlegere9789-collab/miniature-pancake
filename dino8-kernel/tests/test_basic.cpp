@@ -14268,6 +14268,69 @@ double UnequalCylinderIntersectionVolume(double r_a, double r_b) {
   return sum * h / 3.0;
 }
 
+// The same Intersection at a GENERAL axis angle alpha: V(alpha) = V(90
+// degrees) / sin(alpha). In the frame with the crossing at the origin,
+// A's axis along z and B's along b = (sin alpha, 0, cos alpha), the axes'
+// common perpendicular is y. At offset y the section of A is the strip
+// |x| <= w_a(y) = sqrt(r_a^2 - y^2) (A's axis is z, so its distance is
+// sqrt(x^2 + y^2)), and the section of B is the strip |x cos alpha - z sin
+// alpha| <= w_b(y) = sqrt(r_b^2 - y^2) (a point's squared distance from
+// B's axis is |p|^2 - (p.b)^2 = y^2 + (x cos alpha - z sin alpha)^2), a
+// strip of width 2 w_b running along b. Two strips of widths 2 w_a and
+// 2 w_b crossing at angle alpha meet in a parallelogram of area
+// 4 w_a w_b / sin alpha (for each admissible x the z-interval has length
+// 2 w_b / sin alpha), the right-angle rectangle sheared along z, so the
+// 1-D quadrature above carries over with the single factor 1/sin alpha.
+// Self-checked below (TestBooleanCombineMixedUnequalRadiusGeneralAngle...)
+// against an independent 2-D scan that never uses the parallelogram area
+// and, at equal radii, against the Steinmetz 16 r^3 / (3 sin alpha).
+double UnequalCylinderIntersectionVolumeAtAngle(double r_a, double r_b, double alpha_deg) {
+  return UnequalCylinderIntersectionVolume(r_a, r_b) / std::sin(alpha_deg * ON_PI / 180.0);
+}
+
+// Independent evaluation of the same volume: composite Simpson over (y, z)
+// of the x-extent of the section {|x| <= w_a(y)} intersected with
+// {|x cos alpha - z sin alpha| <= w_b(y)}, computed by clipping the two
+// x-intervals against each other (the second is x in (z sin alpha -+
+// w_b)/cos alpha; at a right angle it does not depend on x and admits
+// every x iff |z| <= w_b). The z range is the curve's reach along A,
+// (r_a |cos alpha| + r_b)/sin alpha, outside which every section is
+// empty. The integrand has the parallelogram's corner kinks, so this
+// rule converges like h^2, not h^4: at n = 2000 in each direction it
+// agrees with the closed form to ~2e-5 relative (its own error).
+double UnequalCylinderIntersectionVolumeBySectionScan(double r_a, double r_b, double alpha_deg, int n = 2000) {
+  const double alpha = alpha_deg * ON_PI / 180.0;
+  const double sa = std::sin(alpha), ca = std::cos(alpha);
+  const double z_max = (r_a * std::fabs(ca) + r_b) / sa;
+  auto x_extent = [&](double y, double z) {
+    if (std::fabs(y) >= r_b) return 0.0;
+    const double w_a = std::sqrt(std::max(0.0, r_a * r_a - y * y));
+    const double w_b = std::sqrt(std::max(0.0, r_b * r_b - y * y));
+    double lo = -w_a, hi = w_a;
+    if (std::fabs(ca) < 1e-12) {
+      if (std::fabs(z * sa) > w_b) return 0.0;
+    } else {
+      const double e0 = (z * sa - w_b) / ca, e1 = (z * sa + w_b) / ca;
+      lo = std::max(lo, std::min(e0, e1));
+      hi = std::min(hi, std::max(e0, e1));
+    }
+    return std::max(0.0, hi - lo);
+  };
+  const double hy = 2.0 * r_b / n, hz = 2.0 * z_max / n;
+  double sum = 0.0;
+  for (int i = 0; i <= n; ++i) {
+    const double wy = (i == 0 || i == n) ? 1.0 : (i % 2 ? 4.0 : 2.0);
+    const double y = -r_b + i * hy;
+    double row = 0.0;
+    for (int j = 0; j <= n; ++j) {
+      const double wz = (j == 0 || j == n) ? 1.0 : (j % 2 ? 4.0 : 2.0);
+      row += wz * x_extent(y, -z_max + j * hz);
+    }
+    sum += wy * row;
+  }
+  return sum * hy * hz / 9.0;
+}
+
 // Two equal-radius, full-sweep cylinders whose axes cross at the origin at
 // `alpha_deg`: A along +Z (frame origin at z = -length_a/2), B along
 // (sin alpha, 0, cos alpha) with xaxis +Y (the common perpendicular of the
@@ -14636,21 +14699,31 @@ void TestBooleanCombineMixedSteinmetzNegativeControls() {
   {
     // Unequal radii on intersecting, NON-PERPENDICULAR (60 degree) axes:
     // the intersection curve is no longer a pair of planar ellipses (a
-    // genuine quartic), and the unequal-radius split supports
-    // perpendicular axes only (at a general angle the two loops on the
-    // larger wall sit at two different heights - see
-    // SplitCylindricalByUnequalPerpendicularCylinder's own section
-    // comment in boolean.cpp), so this is refused - and the message names
-    // "non-parallel axes", the substring
-    // TestBooleanCombineMixedParallelAxisDetectionToleranceBoundary keys
-    // on for its own unequal-radii tilted pair. This fixture used to sit
-    // at 90 degrees, a pair the unequal-radius split now BUILDS; that
-    // former fixture is asserted as the positive case just below.
+    // genuine quartic), so this pair never takes the Steinmetz split - it
+    // takes the unequal-radius split, which builds it at any axis angle
+    // (SplitCylindricalByUnequalCylinder's own section comment in
+    // boolean.cpp): the four-face Intersection, closed under the
+    // conforming mesher and matching V(90 degrees)/sin(60 degrees). This
+    // fixture was a refusal for two increments (first of the Steinmetz
+    // split, then of the right-angle-only unequal-radius split); the
+    // general-angle tests below cover the same pair at every op.
     const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 60.0, /*radius_b=*/1.5);
     const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Intersection, threw);
-    Check(threw && message.find("non-parallel axes") != std::string::npos,
-          "Steinmetz negative control: UNEQUAL radii on intersecting NON-PERPENDICULAR (60 degree) axes throw "
-          "std::invalid_argument whose message names 'non-parallel axes'");
+    bool builds = !threw;
+    if (builds) {
+      const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+      const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+      const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+      const double expected = UnequalCylinderIntersectionVolumeAtAngle(2.0, 1.5, 60.0);
+      const Mesh m = result.TessellateToClosedMeshConforming(64, 64);
+      builds = result.MixedFaces().cylindrical.size() == 4 && result.raw().IsValid() && result.raw().IsSolid() &&
+               m.IsClosedManifold() && std::fabs(m.Volume() - expected) < 1e-3 * expected;
+    }
+    Check(builds,
+          "Steinmetz negative control: UNEQUAL radii on intersecting NON-PERPENDICULAR (60 degree) axes are not a "
+          "Steinmetz pair - the unequal-radius split builds them at any axis angle: a 4-face Intersection, IsValid "
+          "and IsSolid, closed under the conforming mesher and within 0.1% of V(90)/sin 60 = 30.15 (measured "
+          "-4.9e-5 relative)");
   }
   {
     // The former negative fixture - unequal radii (2 and 1.5) on
@@ -15180,18 +15253,21 @@ void TestBooleanCombineMixedNonParallelCylinderNoInteractionSkewAndUnequalRadii(
 }
 
 // ---------------------------------------------------------------------
-// Unequal-radius, intersecting, PERPENDICULAR-axis cylinder/cylinder
-// booleans
+// Unequal-radius, intersecting-axis cylinder/cylinder booleans
 // ---------------------------------------------------------------------
 //
-// r_a > r_b, axes meeting at a right angle, B piercing A completely
-// (SplitCylindricalByUnequalPerpendicularCylinder, boolean.cpp): the
-// larger wall splits at the four pinch angles +/- asin(r_b/r_a) about the
-// two piercing points into two slabs (upper piece, lower piece, plug) and
-// two plain pieces cut at the crossing height; the smaller wall splits at
-// its two pinch generators into two halves (upper, middle, lower band).
-// Same fixture as the Steinmetz tests (BuildSteinmetzCylinders with
-// radius_b), closed form UnequalCylinderIntersectionVolume (above).
+// r_a > r_b, axes meeting at a right angle first (the level fast path),
+// then at a general angle, B piercing A completely
+// (SplitCylindricalByUnequalCylinder, boolean.cpp): the larger wall
+// splits at the four pinch angles +/- asin(r_b/r_a) about the two
+// piercing points into two slabs (upper piece, lower piece, plug - each
+// slab at its own loop's pinch height) and two plain pieces cut from the
+// pinch vertex on one rail to the pinch vertex on the other (the flat
+// circle at the crossing height at a right angle, a helix at any other
+// angle); the smaller wall splits at its two pinch generators into two
+// halves (upper, middle, lower band). Same fixture as the Steinmetz tests
+// (BuildSteinmetzCylinders with radius_b), closed forms
+// UnequalCylinderIntersectionVolume / ...AtAngle (above).
 //
 // Every ordinary TessellateToClosedMesh() volume converges to the closed
 // form but is NOT closed (the two cylinders tessellate their sides of the
@@ -15603,35 +15679,95 @@ void TestBooleanCombineMixedUnequalRadiusPerpendicularNegativeControls() {
     return result.MixedFaces().cylindrical.size() == 4 && m.IsClosedManifold() &&
            std::fabs(m.Volume() - expected) < 1e-3 * expected;
   };
+  // The number of ON_PolylineCurve edges of a result: the four shared arcs
+  // are always polylines; the two plain pieces' cuts are polylines only on
+  // the sloped-cut path (helices), plain cap arcs on the level path.
+  auto polyline_edges_of = [](const Brep& result) {
+    int count = 0;
+    const ON_Brep& raw = result.raw();
+    for (int e = 0; e < raw.m_E.Count(); ++e) {
+      if (ON_PolylineCurve::Cast(raw.m_E[e].EdgeCurveOf()) != nullptr) ++count;
+    }
+    return count;
+  };
   const double expected = UnequalCylinderIntersectionVolume(2.0, 1.0);
   bool threw = false;
 
   {
     // A general axis angle: the two loops on A sit at heights +/-
-    // cot(60) sqrt(3) = +/- 1 from the crossing, so no single cut works.
+    // cot(60) sqrt(3) = +/- 1 from the crossing, so no single flat cut
+    // works - the plain pieces take the sloped (helical) cut instead, and
+    // the pair builds. The four pinch vertices are the closed-form points
+    // (+/- sqrt(r_a^2 - r_b^2), +/- r_b, x cot(alpha)): B's two generators
+    // at common-perpendicular coordinate +/- r_b, each tangent to A's wall
+    // where its height along B makes it a point of A's wall.
     const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 60.0, 1.0);
+    const double expected_60 = UnequalCylinderIntersectionVolumeAtAngle(2.0, 1.0, 60.0);
     const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Intersection, threw);
-    Check(threw && names_both(message) && message.find("PERPENDICULAR") != std::string::npos,
-          "unequal-radius negative control: intersecting axes at 60 degrees throw std::invalid_argument naming "
-          "'non-parallel axes', 'UNEQUAL radii' and 'PERPENDICULAR' - the general-angle pierce is still refused");
+    bool pinch_points_exact = !threw;
+    if (!threw) {
+      const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+      const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+      const ON_Brep& raw = BooleanCombineMixed(a, b, BooleanOp::Intersection).raw();
+      pinch_points_exact = raw.m_V.Count() == 4;
+      const double c = std::sqrt(3.0), cot_alpha = 1.0 / std::tan(ON_PI / 3.0);
+      for (int v = 0; v < raw.m_V.Count(); ++v) {
+        const ON_3dPoint p = raw.m_V[v].point;
+        if (std::fabs(std::fabs(p.x) - c) > 1e-9 || std::fabs(std::fabs(p.y) - 1.0) > 1e-9 ||
+            std::fabs(p.z - p.x * cot_alpha) > 1e-9) {
+          pinch_points_exact = false;
+        }
+      }
+    }
+    Check(!threw && builds_intersection(cyl_a, cyl_b, expected_60),
+          "unequal-radius former negative control: intersecting axes at 60 degrees now BUILD the 4-face "
+          "Intersection, closed under the conforming mesher and within 0.1% of V(90)/sin 60 = 14.042 (measured "
+          "-4.4e-5 relative) - the general-angle pierce takes the sloped-cut path");
+    Check(pinch_points_exact,
+          "unequal-radius at 60 degrees: the Intersection's 4 vertices are the closed-form pinch points "
+          "(+/- sqrt 3, +/- 1, z = x cot 60 = +/- 1) to 1e-9 - the '+' loop's two at height +1, the '-' loop's at -1");
   }
   {
-    // The perpendicularity criterion is a tolerance, stated as the pinch
-    // heights' spread on A: |cot(alpha)| sqrt(r_a^2 - r_b^2) <= tol.
-    // A 1e-6 radian tilt spreads them by 1.7e-6 (refused); a 1e-9 radian
-    // tilt by 1.7e-9, inside the ~7e-9 pipeline tolerance of this
-    // fixture's extent (accepted, and the result is the same solid).
+    // The level fast path is a tolerance, stated as the pinch heights'
+    // spread on A: |cot(alpha)| sqrt(r_a^2 - r_b^2) <= tol. A 1e-6 radian
+    // tilt spreads them by 1.7e-6, above the ~7e-9 pipeline tolerance of
+    // this fixture's extent, so it takes the sloped cut (A - B then has 6
+    // polyline edges: the four arcs plus the two helices); a 1e-9 radian
+    // tilt spreads them by 1.7e-9 and takes the level path (4 polyline
+    // edges, the plain pieces cut by cap arcs). Both build the same
+    // solid to within the mesh tolerance.
     const double tilt_big = 90.0 - 1e-6 * 180.0 / ON_PI;
     const double tilt_small = 90.0 - 1e-9 * 180.0 / ON_PI;
     const auto [big_a, big_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, tilt_big, 1.0);
     const std::string message = message_of(big_a, big_b, BooleanOp::Intersection, threw);
-    Check(threw && message.find("PERPENDICULAR") != std::string::npos,
-          "unequal-radius negative control: axes 1e-6 radians off perpendicular (pinch heights 1.7e-6 apart on A, "
-          "above the pipeline tolerance) are refused as non-perpendicular");
+    bool sloped_path_builds = !threw;
+    if (!threw) {
+      const Brep a = Brep::FromMixedFaces({}, {big_a});
+      const Brep b = Brep::FromMixedFaces({}, {big_b});
+      const Brep difference = BooleanCombineMixed(a, b, BooleanOp::Difference);
+      const auto mixed = difference.MixedFaces();
+      const Mesh m = difference.TessellateToClosedMeshConforming(64, 64);
+      const double expected_difference = ON_PI * 4.0 * 10.0 - expected / std::sin(1e-6 * 0.0 + ON_PI / 2.0 - 1e-6);
+      sloped_path_builds = mixed.cylindrical.size() == 10 && mixed.planar.size() == 32 &&
+                           polyline_edges_of(difference) == 6 && difference.raw().IsValid() && m.IsClosedManifold() &&
+                           std::fabs(m.Volume() - expected_difference) < 1e-3 * expected_difference;
+    }
+    Check(sloped_path_builds,
+          "unequal-radius former negative control: axes 1e-6 radians off perpendicular (pinch heights 1.7e-6 apart "
+          "on A, above the pipeline tolerance) now BUILD via the sloped-cut path - A - B has 10 + 32 faces, 6 "
+          "polyline edges (4 arcs + 2 helices), IsValid, closed and within 0.1% of the closed form");
     const auto [small_a, small_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, tilt_small, 1.0);
     Check(builds_intersection(small_a, small_b, expected),
           "unequal-radius positive control: axes 1e-9 radians off perpendicular (pinch heights 1.7e-9 apart, within "
           "the pipeline tolerance) build the same 4-face Intersection, closed and within 0.1% of the closed form");
+    {
+      const Brep a = Brep::FromMixedFaces({}, {small_a});
+      const Brep b = Brep::FromMixedFaces({}, {small_b});
+      Check(polyline_edges_of(BooleanCombineMixed(a, b, BooleanOp::Difference)) == 4,
+            "unequal-radius level-path control: the 1e-9 radian tilt's A - B has exactly 4 polyline edges (the "
+            "four shared arcs) - its plain pieces are cut by the flat cap arcs at the crossing height, the "
+            "right-angle path, not by helices");
+    }
   }
   {
     // Genuinely skew axes (B shifted 0.3 along the common perpendicular):
@@ -16377,6 +16513,589 @@ void TestBooleanCombineMixedChainedNegativeControls() {
   }
 }
 
+// ---------------------------------------------------------------------
+// Unequal-radius cylinder/cylinder booleans at a GENERAL axis angle
+// ---------------------------------------------------------------------
+//
+// The same decomposition at every axis angle in (0, pi): each slab of the
+// larger cylinder is anchored at its own loop's pinch height h_Q +/-
+// cot(alpha) sqrt(r_a^2 - r_b^2), and each plain piece is cut by ONE helix
+// from the pinch vertex on its one rail to the pinch vertex on its other
+// (SplitCylindricalByUnequalCylinder's section comment, boolean.cpp).
+// Face counts are those of the right-angle case (4/0, 12/48, 10/32, 6/16),
+// the Intersection's raw topology is the same 4 vertices and 6 edges, and
+// the closed form is V(90)/sin(alpha) (UnequalCylinderIntersectionVolumeAtAngle).
+// Five configurations: 60 and 80 degrees at r 2/1 (80 is inside the band
+// where a second HORIZONTAL cut would cross a slab piece's own notch -
+// cos(alpha)(r_a + sqrt(r_a^2 - r_b^2)) < r_b - the case that rules out
+// the horizontal-cut alternative), 45 degrees at 2/1.5, 30 degrees at
+// 2/1 with longer operands (the reach grows as 1/sin alpha), and 120
+// degrees at 2/1 (obtuse: the mirror of 60, same volume). Every op in
+// both argument orders; measured residuals in the check strings, bounds
+// ~10x above them.
+void TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  // The closed form's own self-checks: the independent (y, z) section
+  // scan agrees at 90 degrees (where it must reproduce the 1-D rule),
+  // at 60/45/30 degrees and at 2/1.5, and at equal radii V(90)/sin alpha
+  // is the Steinmetz 16 r^3 / (3 sin alpha).
+  {
+    bool scan_agrees = true;
+    double worst = 0.0;
+    for (const auto& cfg : {std::make_tuple(2.0, 1.0, 90.0), std::make_tuple(2.0, 1.0, 60.0),
+                            std::make_tuple(2.0, 1.0, 45.0), std::make_tuple(2.0, 1.0, 30.0),
+                            std::make_tuple(2.0, 1.5, 45.0), std::make_tuple(2.0, 1.0, 120.0)}) {
+      const auto [r_a, r_b, alpha] = cfg;
+      const double closed = UnequalCylinderIntersectionVolumeAtAngle(r_a, r_b, alpha);
+      const double scan = UnequalCylinderIntersectionVolumeBySectionScan(r_a, r_b, alpha);
+      worst = std::max(worst, std::fabs(scan - closed) / closed);
+      if (std::fabs(scan - closed) > 1e-4 * closed) scan_agrees = false;
+    }
+    Check(scan_agrees,
+          "general-angle quadrature self-check: the independent 2-D (y, z) section scan agrees with V(90)/sin(alpha) "
+          "within 1e-4 relative at 90, 60, 45, 30 and 120 degrees (r 2/1) and 45 degrees (2/1.5) - the parallelogram "
+          "section area 4 w_a w_b / sin(alpha) is right (measured worst 2.3e-5, the scan's own kink error)");
+    Check(std::fabs(UnequalCylinderIntersectionVolumeAtAngle(2.0, 2.0, 60.0) - SteinmetzIntersectionVolume(2.0, 60.0)) <
+                  1e-9 &&
+              std::fabs(UnequalCylinderIntersectionVolumeAtAngle(2.0, 2.0, 45.0) - SteinmetzIntersectionVolume(2.0, 45.0)) <
+                  1e-9,
+          "general-angle quadrature self-check: at equal radii V(90)/sin(alpha) reproduces the Steinmetz 16 r^3 / (3 "
+          "sin alpha) at 60 and 45 degrees within 1e-9 (49.2672 and 60.3398)");
+  }
+
+  auto polyline_edges_of = [](const Brep& result) {
+    int count = 0;
+    const ON_Brep& raw = result.raw();
+    for (int e = 0; e < raw.m_E.Count(); ++e) {
+      if (ON_PolylineCurve::Cast(raw.m_E[e].EdgeCurveOf()) != nullptr) ++count;
+    }
+    return count;
+  };
+  // Conforming: closed at (64, 64), (12, 20) and (17, 4) and within
+  // `rel_tol` of `expected` at each.
+  auto conforming_closed_within = [](const Brep& result, double expected, double rel_tol) {
+    for (const auto& uv : {std::make_pair(64, 64), std::make_pair(12, 20), std::make_pair(17, 4)}) {
+      const Mesh m = result.TessellateToClosedMeshConforming(uv.first, uv.second);
+      if (!m.IsClosedManifold() || std::fabs(m.Volume() - expected) >= rel_tol * expected) return false;
+    }
+    return true;
+  };
+  // Ordinary 128-division: within 0.2% and NOT closed (the disclosed
+  // shared-curve T-junctions).
+  auto ordinary_converges_but_open = [](const Brep& result, double expected) {
+    const Mesh m = result.TessellateToClosedMesh(128, 128);
+    return std::fabs(m.Volume() - expected) < 2e-3 * expected && !m.IsClosedManifold();
+  };
+  constexpr double kConformingRelTol = 1e-3;
+
+  struct Config {
+    double alpha_deg, r_a, r_b, length_a, length_b;
+    const char* name;
+  };
+  const Config configs[] = {
+      {60.0, 2.0, 1.0, 10.0, 10.0, "60 deg, r 2/1, L 10/10"},   {80.0, 2.0, 1.0, 10.0, 10.0, "80 deg, r 2/1, L 10/10"},
+      {45.0, 2.0, 1.5, 10.0, 10.0, "45 deg, r 2/1.5, L 10/10"}, {30.0, 2.0, 1.0, 14.0, 14.0, "30 deg, r 2/1, L 14/14"},
+      {120.0, 2.0, 1.0, 10.0, 10.0, "120 deg, r 2/1, L 10/10"},
+  };
+  for (const Config& cfg : configs) {
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(cfg.r_a, cfg.length_a, cfg.length_b, cfg.alpha_deg, cfg.r_b);
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    const double v_int = UnequalCylinderIntersectionVolumeAtAngle(cfg.r_a, cfg.r_b, cfg.alpha_deg);
+    const double v_a = ON_PI * cfg.r_a * cfg.r_a * cfg.length_a;
+    const double v_b = ON_PI * cfg.r_b * cfg.r_b * cfg.length_b;
+    const std::string tag = std::string("unequal-radius general angle (") + cfg.name + "): ";
+    auto what = [&](const char* s) { return tag + s; };
+
+    {
+      const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+      const auto mixed = result.MixedFaces();
+      const ON_Brep& raw = result.raw();
+      bool each_edge_shared_by_two = raw.m_E.Count() == 6;
+      for (int e = 0; e < raw.m_E.Count(); ++e) {
+        if (raw.m_E[e].m_ti.Count() != 2) each_edge_shared_by_two = false;
+      }
+      bool pinch_points_exact = raw.m_V.Count() == 4;
+      const double c = std::sqrt(cfg.r_a * cfg.r_a - cfg.r_b * cfg.r_b);
+      const double cot_alpha = 1.0 / std::tan(cfg.alpha_deg * ON_PI / 180.0);
+      for (int v = 0; v < raw.m_V.Count(); ++v) {
+        const ON_3dPoint p = raw.m_V[v].point;
+        if (std::fabs(std::fabs(p.x) - c) > 1e-9 || std::fabs(std::fabs(p.y) - cfg.r_b) > 1e-9 ||
+            std::fabs(p.z - p.x * cot_alpha) > 1e-9) {
+          pinch_points_exact = false;
+        }
+      }
+      Check(mixed.cylindrical.size() == 4 && mixed.planar.empty() && raw.m_V.Count() == 4 && each_edge_shared_by_two,
+            what("Intersection has 4 cylindrical faces (two plugs, two middle bands), no planar face, 4 vertices and "
+                 "6 edges each used by exactly 2 trims - the right-angle topology at a general angle")
+                .c_str());
+      Check(pinch_points_exact,
+            what("Intersection's 4 vertices are the closed-form pinch points (+/- sqrt(r_a^2 - r_b^2), +/- r_b, "
+                 "z = x cot alpha) to 1e-9 - one loop's two at +cot(alpha) sqrt(r_a^2 - r_b^2), the other's at its "
+                 "negative")
+                .c_str());
+      Check(raw.IsValid() && raw.IsSolid() && polyline_edges_of(result) == 4,
+            what("Intersection is ON_Brep::IsValid() and IsSolid() with 4 polyline edges (the four shared arcs; no "
+                 "helix survives in the Intersection)")
+                .c_str());
+      Check(ordinary_converges_but_open(result, v_int),
+            what("Intersection's ordinary 128-division tessellation is within 0.2% of V(90)/sin(alpha) and NOT "
+                 "closed (each cylinder grids its side of the shared arcs on its own - the disclosed T-junctions)")
+                .c_str());
+      Check(conforming_closed_within(result, v_int, kConformingRelTol),
+            what("Intersection's CONFORMING tessellation is a closed manifold within 0.1% of V(90)/sin(alpha) at "
+                 "(64,64), (12,20) and (17,4) (measured -4.4e-5 to -4.9e-5 at every configuration)")
+                .c_str());
+      const Brep reversed = BooleanCombineMixed(b, a, BooleanOp::Intersection);
+      Check(reversed.MixedFaces().cylindrical.size() == 4 && reversed.raw().IsValid() && reversed.raw().IsSolid() &&
+                conforming_closed_within(reversed, v_int, kConformingRelTol),
+            what("Intersection (b, a) has the same 4 faces, IsValid and IsSolid, closed and within 0.1% at all three "
+                 "division pairs")
+                .c_str());
+    }
+    {
+      const Brep result = BooleanCombineMixed(a, b, BooleanOp::Union);
+      const auto mixed = result.MixedFaces();
+      Check(mixed.cylindrical.size() == 12 && mixed.planar.size() == 48 && result.raw().IsValid() &&
+                polyline_edges_of(result) == 6,
+            what("Union has 12 cylindrical + 48 planar faces (A's two slab uppers, two slab lowers and four plain "
+                 "pieces, B's four outer bands, quadrant wedges on every original end), IsValid, and 6 polyline "
+                 "edges (four arcs + the two helices)")
+                .c_str());
+      Check(ordinary_converges_but_open(result, v_a + v_b - v_int),
+            what("Union's ordinary 128-division tessellation is within 0.2% of pi (r_a^2 L_A + r_b^2 L_B) - V and "
+                 "NOT closed")
+                .c_str());
+      Check(conforming_closed_within(result, v_a + v_b - v_int, kConformingRelTol),
+            what("Union's CONFORMING tessellation is closed within 0.1% at (64,64), (12,20) and (17,4) - the "
+                 "sloped-corner plain pieces mesh as strips between their flat original end and the helix, welding "
+                 "to the slab pieces along every rail (measured within 4e-5)")
+                .c_str());
+      const Brep reversed = BooleanCombineMixed(b, a, BooleanOp::Union);
+      Check(reversed.MixedFaces().cylindrical.size() == 12 && reversed.MixedFaces().planar.size() == 48 &&
+                conforming_closed_within(reversed, v_a + v_b - v_int, kConformingRelTol),
+            what("Union (b, a) has the same 12 + 48 faces, closed and within 0.1% at all three division pairs")
+                .c_str());
+    }
+    {
+      const Brep result = BooleanCombineMixed(a, b, BooleanOp::Difference);
+      const auto mixed = result.MixedFaces();
+      Check(mixed.cylindrical.size() == 10 && mixed.planar.size() == 32 && result.raw().IsValid() &&
+                polyline_edges_of(result) == 6,
+            what("A - B has 10 cylindrical + 32 planar faces (A's eight wall pieces, B's two middle bands flipped as "
+                 "the bore), IsValid, and 6 polyline edges - each helix and B's middle band's straight rail join "
+                 "the same two pinch vertices and are kept as distinct edges")
+                .c_str());
+      Check(conforming_closed_within(result, v_a - v_int, kConformingRelTol),
+            what("A - B's CONFORMING tessellation is closed within 0.1% of pi r_a^2 L_A - V at (64,64), (12,20) "
+                 "and (17,4) (measured within 3e-5)")
+                .c_str());
+    }
+    {
+      const Brep result = BooleanCombineMixed(b, a, BooleanOp::Difference);
+      const auto mixed = result.MixedFaces();
+      Check(mixed.cylindrical.size() == 6 && mixed.planar.size() == 16 && result.raw().IsValid() &&
+                polyline_edges_of(result) == 4,
+            what("B - A has 6 cylindrical + 16 planar faces (B's four outer bands, A's two plugs flipped), IsValid, "
+                 "and 4 polyline edges")
+                .c_str());
+      Check(conforming_closed_within(result, v_b - v_int, kConformingRelTol),
+            what("B - A's CONFORMING tessellation is closed within 0.1% of pi r_b^2 L_B - V at (64,64), (12,20) "
+                 "and (17,4) (measured within 1e-4)")
+                .c_str());
+    }
+  }
+}
+
+// Argument-order symmetry and the shared-arc sampling identity at a
+// general angle - the pattern of the right-angle test of this name, at
+// 60 degrees: the four arcs are sampled once on the smaller cylinder and
+// the same lists are handed to both cylinders' fragments, so (a, b) and
+// (b, a) tessellate each face float-identically and the plugs' on-curve
+// vertices have bit-identical counterparts in the middle bands.
+void TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Vector3d;
+
+  const double r_a = 2.0, r_b = 1.0, alpha = 60.0 * ON_PI / 180.0;
+  const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(r_a, 10.0, 10.0, 60.0, r_b);
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+  const Brep ab = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+  const Brep ba = BooleanCombineMixed(b, a, BooleanOp::Intersection);
+
+  Check(ab.FaceCount() == 4 && ba.FaceCount() == 4,
+        "unequal-radius 60-degree Intersection: BooleanCombineMixed(a, b) and (b, a) both produce exactly 4 faces");
+  const double volume_ab = ab.TessellateToClosedMesh(64, 64).Volume();
+  const double volume_ba = ba.TessellateToClosedMesh(64, 64).Volume();
+  Check(std::fabs(volume_ab - volume_ba) < 1e-8,
+        "unequal-radius 60-degree Intersection: (a, b) and (b, a) tessellate to the same volume within 1e-8 - the "
+        "decomposition is argument-order independent");
+
+  const Vector3d axis_b(std::sin(alpha), 0, std::cos(alpha));
+  const auto mixed_ab = ab.MixedFaces();
+  bool face_order_as_expected = mixed_ab.cylindrical.size() == 4;
+  for (size_t i = 0; face_order_as_expected && i < 4; ++i) {
+    const Vector3d expected_axis = i < 2 ? Vector3d(0, 0, 1) : axis_b;
+    const double expected_radius = i < 2 ? r_a : r_b;
+    if ((mixed_ab.cylindrical[i].frame.zaxis - expected_axis).Length() > 1e-9 ||
+        std::fabs(mixed_ab.cylindrical[i].radius - expected_radius) > 1e-9) {
+      face_order_as_expected = false;
+    }
+  }
+  Check(face_order_as_expected,
+        "unequal-radius 60-degree Intersection (a, b): faces 0-1 are A's plugs (axis +Z, radius 2) and faces 2-3 "
+        "are B's middle bands (axis (sin 60, 0, cos 60), radius 1)");
+
+  const std::vector<Mesh> faces_ab = ab.Tessellate(64, 64);
+  const std::vector<Mesh> faces_ba = ba.Tessellate(64, 64);
+  bool per_face_identical = faces_ab.size() == 4 && faces_ba.size() == 4;
+  for (size_t i = 0; per_face_identical && i < 4; ++i) {
+    const ON_Mesh& ma = faces_ab[i].raw();
+    const ON_Mesh& mb = faces_ba[(i + 2) % 4].raw();
+    if (ma.m_V.Count() != mb.m_V.Count() || ma.m_V.Count() == 0) {
+      per_face_identical = false;
+      break;
+    }
+    for (int k = 0; k < ma.m_V.Count(); ++k) {
+      if (!(ma.m_V[k].x == mb.m_V[k].x && ma.m_V[k].y == mb.m_V[k].y && ma.m_V[k].z == mb.m_V[k].z)) {
+        per_face_identical = false;
+        break;
+      }
+    }
+  }
+  Check(per_face_identical,
+        "unequal-radius 60-degree Intersection: each face of (a, b) tessellates to a vertex-for-vertex "
+        "float-identical mesh to its counterpart in (b, a)");
+
+  // On-curve vertices: distance r_a from A's axis (z) and r_b from B's
+  // axis (through the origin along axis_b).
+  auto on_curve = [&](const ON_3fPoint& p) {
+    const double x = p.x, y = p.y, z = p.z;
+    const double dist_a = std::sqrt(x * x + y * y);
+    const double along_b = x * axis_b.x + y * axis_b.y + z * axis_b.z;
+    const double dist_b = std::sqrt(std::max(0.0, x * x + y * y + z * z - along_b * along_b));
+    return std::fabs(dist_a - r_a) < 1e-4 && std::fabs(dist_b - r_b) < 1e-4;
+  };
+  int on_curve_total = 0, on_curve_matched = 0;
+  for (int fa = 0; fa < 2; ++fa) {
+    const ON_Mesh& ma = faces_ab[static_cast<size_t>(fa)].raw();
+    for (int i = 0; i < ma.m_V.Count(); ++i) {
+      if (!on_curve(ma.m_V[i])) continue;
+      ++on_curve_total;
+      bool found = false;
+      for (int fb = 2; fb < 4 && !found; ++fb) {
+        const ON_Mesh& mb = faces_ab[static_cast<size_t>(fb)].raw();
+        for (int j = 0; j < mb.m_V.Count(); ++j) {
+          if (ma.m_V[i].x == mb.m_V[j].x && ma.m_V[i].y == mb.m_V[j].y && ma.m_V[i].z == mb.m_V[j].z) {
+            found = true;
+            break;
+          }
+        }
+      }
+      if (found) ++on_curve_matched;
+    }
+  }
+  Check(on_curve_matched >= 2 * 380,
+        "unequal-radius 60-degree Intersection: at least 380 on-curve mesh vertices per A-plug have a BIT-IDENTICAL "
+        "counterpart among B's middle bands' vertices - both cylinders' fragments carry the literal same canonical "
+        "arc sample lists at a general angle too");
+  Check(on_curve_total - on_curve_matched >= 2 * 100,
+        "unequal-radius 60-degree Intersection: at least 100 on-curve vertices per A-plug have NO counterpart - the "
+        "grid-crossing T-junction vertices of the ordinary tessellation");
+}
+
+// What the split refuses at a general angle, with the message substrings
+// the dispatch-boundary tests key on, and the positive controls
+// bracketing each refusal. The extent reaches at 60 degrees (r 2/1):
+// (r_a + r_b cos 60)/sin 60 = 2.887 along B, (r_b + r_a cos 60)/sin 60 =
+// 2.309 along A.
+void TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  auto message_of = [](const Brep::CylindricalFace& cyl_a, const Brep::CylindricalFace& cyl_b, BooleanOp op,
+                       bool& threw_invalid_argument) {
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    threw_invalid_argument = false;
+    try {
+      BooleanCombineMixed(a, b, op);
+    } catch (const std::invalid_argument& e) {
+      threw_invalid_argument = true;
+      return std::string(e.what());
+    }
+    return std::string();
+  };
+  auto names_both = [](const std::string& message) {
+    return message.find("non-parallel axes") != std::string::npos && message.find("UNEQUAL radii") != std::string::npos;
+  };
+  auto builds_intersection = [](const Brep::CylindricalFace& cyl_a, const Brep::CylindricalFace& cyl_b,
+                                double expected) {
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+    const Mesh m = result.TessellateToClosedMeshConforming(64, 64);
+    return result.MixedFaces().cylindrical.size() == 4 && m.IsClosedManifold() &&
+           std::fabs(m.Volume() - expected) < 1e-3 * expected;
+  };
+  const double expected = UnequalCylinderIntersectionVolumeAtAngle(2.0, 1.0, 60.0);
+  bool threw = false;
+
+  {
+    // Genuinely skew axes at 60 degrees (B shifted 0.3 along the common
+    // perpendicular): refused for the same reason as at a right angle.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 60.0, 1.0, /*skew_y=*/0.3);
+    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Union, threw);
+    Check(threw && names_both(message) && message.find("INTERSECT") != std::string::npos,
+          "unequal-radius general-angle negative control: genuinely SKEW axes at 60 degrees (B's axis 0.3 off A's "
+          "along the common perpendicular) throw std::invalid_argument naming 'non-parallel axes', 'UNEQUAL radii' "
+          "and 'do not INTERSECT'");
+  }
+  {
+    // Extent along B at 60 degrees: the reach is (r_a + r_b cos 60)/sin 60
+    // = 2.887 > r_a; L_B = 5.7 (ends at 2.85) is refused for every op, L_B
+    // = 6.0 (ends at 3.0) builds - a length that would have passed the
+    // right-angle bound (2.0) is refused here, the reach being read off
+    // the samples.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 5.7, 60.0, 1.0);
+    bool refused_for_every_op = true;
+    for (const BooleanOp op : {BooleanOp::Intersection, BooleanOp::Union, BooleanOp::Difference}) {
+      const std::string message = message_of(cyl_a, cyl_b, op, threw);
+      if (!threw || !names_both(message) || message.find("STRICTLY interior") == std::string::npos) {
+        refused_for_every_op = false;
+      }
+    }
+    Check(refused_for_every_op,
+          "unequal-radius general-angle negative control: B's ends 2.85 from the crossing at 60 degrees (< the "
+          "reach (r_a + r_b cos 60)/sin 60 = 2.887, though > r_a = 2) throw the extent refusal ('STRICTLY "
+          "interior') for every op");
+    const auto [ok_a, ok_b] = BuildSteinmetzCylinders(2.0, 10.0, 6.0, 60.0, 1.0);
+    Check(builds_intersection(ok_a, ok_b, expected),
+          "unequal-radius general-angle positive control: B's ends 3.0 from the crossing (just past the 2.887 reach) "
+          "build the same 4-face Intersection, closed and within 0.1% of V(90)/sin 60");
+  }
+  {
+    // Extent along A at 60 degrees: the reach is (r_b + r_a cos 60)/sin 60
+    // = 2.309 (the '+' loop's top). L_A = 4.5 (ends at 2.25) refused, L_A
+    // = 4.8 (ends at 2.4) builds.
+    const auto [short_a, short_b] = BuildSteinmetzCylinders(2.0, 4.5, 10.0, 60.0, 1.0);
+    const std::string message = message_of(short_a, short_b, BooleanOp::Intersection, threw);
+    Check(threw && names_both(message) && message.find("STRICTLY interior") != std::string::npos,
+          "unequal-radius general-angle negative control: A's ends 2.25 from the crossing at 60 degrees (< the "
+          "reach (r_b + r_a cos 60)/sin 60 = 2.309) throw the extent refusal");
+    const auto [ok_a, ok_b] = BuildSteinmetzCylinders(2.0, 4.8, 10.0, 60.0, 1.0);
+    Check(builds_intersection(ok_a, ok_b, expected),
+          "unequal-radius general-angle positive control: A's ends 2.4 from the crossing (just past the 2.309 "
+          "reach) build the same 4-face Intersection, closed and within 0.1% - the loops, pinch heights +/- 1 "
+          "included, lie inside A's wall");
+  }
+  {
+    // A partial-sweep operand at 60 degrees.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 60.0, 1.0, 0.0, /*angle_b=*/ON_PI);
+    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Intersection, threw);
+    Check(threw && names_both(message) && message.find("PARTIAL-sweep") != std::string::npos,
+          "unequal-radius general-angle negative control: a PARTIAL-sweep operand at 60 degrees throws "
+          "std::invalid_argument naming 'non-parallel axes', 'UNEQUAL radii' and 'PARTIAL-sweep'");
+  }
+  {
+    // A sliver: r_b so small that a slab (2 asin(r_b/r_a)) is narrower than
+    // 1e-3 radians.
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 60.0, 2.0 * std::sin(4e-4));
+    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Intersection, threw);
+    Check(threw && names_both(message) && message.find("sliver") != std::string::npos,
+          "unequal-radius general-angle negative control: a radius ratio whose slab would span 8e-4 radians throws "
+          "std::invalid_argument naming 'non-parallel axes', 'UNEQUAL radii' and 'sliver'");
+  }
+  {
+    // Radii equal within the shared radius tolerance route to the
+    // Steinmetz split at 60 degrees as before (two pinch vertices).
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 60.0, 2.0 * (1.0 + 1e-10));
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    const Brep result = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+    Check(result.MixedFaces().cylindrical.size() == 4 && result.raw().m_V.Count() == 2,
+          "unequal-radius general-angle dispatch control: radii differing by 2e-10 at 60 degrees still take the "
+          "Steinmetz split - a 4-face Intersection on the Steinmetz TWO pinch vertices");
+  }
+}
+
+// The sloped rail corner and the straight-vs-notched salt on their own, at
+// the FromMixedFaces level: a quarter-sweep cylinder split by a HELIX from
+// (angle 0, height 1) to (angle pi/2, height 1.5) - the lower piece's cap1
+// chain and the upper piece's cap0 chain, both ending on the angle-pi/2
+// rail at a height other than the flat corner's - plus a planar triangle
+// whose one edge is the straight CHORD between the helix's endpoints,
+// exactly the pattern the general-angle A - B produces (B's middle band's
+// rail vs. A's plain piece's helix).
+void TestFromMixedFacesSlopedNotchCapAndStraightChordStayDistinct() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double r = 1.0, h_left = 1.0, h_right = 1.5;
+  const int n = 50;
+  std::vector<Point3d> helix;
+  for (int k = 0; k <= n; ++k) {
+    const double t = static_cast<double>(k) / n;
+    const double theta = 0.5 * ON_PI * t;
+    helix.emplace_back(r * std::cos(theta), r * std::sin(theta), h_left + (h_right - h_left) * t);
+  }
+  Brep::CylindricalFace lower;
+  lower.frame.origin = Point3d(0, 0, 0);
+  lower.frame.xaxis = Vector3d(1, 0, 0);
+  lower.frame.yaxis = Vector3d(0, 1, 0);
+  lower.frame.zaxis = Vector3d(0, 0, 1);
+  lower.frame.UpdateEquation();
+  lower.radius = r;
+  lower.angle = 0.5 * ON_PI;
+  lower.length = h_left;
+  lower.cap1_notch_points = helix;
+  lower.cap1_notch_tolerance = 1e-4;
+  lower.end1_is_original = false;
+  Brep::CylindricalFace upper = lower;
+  upper.frame.origin = Point3d(0, 0, h_left);
+  upper.frame.UpdateEquation();
+  upper.length = 2.0 - h_left;
+  upper.cap1_notch_points.clear();
+  upper.cap1_notch_tolerance = 0.0;
+  upper.cap0_notch_points = helix;
+  upper.cap0_notch_tolerance = 1e-4;
+  upper.end0_is_original = false;
+  upper.end1_is_original = true;
+
+  const Point3d v1 = helix.front(), v2 = helix.back(), apex(0, 0, 3);
+  Brep::PlanarFace triangle;
+  triangle.plane = ON_Plane(v1, v2, apex);
+  triangle.loop = {v1, v2, apex};
+
+  bool threw = false;
+  std::string message;
+  Brep built;
+  try {
+    built = Brep::FromMixedFaces({triangle}, {lower, upper});
+  } catch (const std::exception& e) {
+    threw = true;
+    message = e.what();
+  }
+  Check(!threw,
+        "a notch chain ending on the angle-`angle` rail at a height other than the flat corner's (a sloped cut) "
+        "is accepted by FromMixedFaces for both the piece below it (cap1) and the piece above it (cap0), and the "
+        "straight chord between its endpoints builds alongside without the 'shared by 3 or more faces' refusal");
+  if (threw) return;
+  const ON_Brep& raw = built.raw();
+  int two_trim_edges = 0, polylines_between = 0, chords_between = 0;
+  bool polyline_is_the_shared_one = true;
+  for (int e = 0; e < raw.m_E.Count(); ++e) {
+    const ON_BrepEdge& edge = raw.m_E[e];
+    if (edge.m_ti.Count() == 2) ++two_trim_edges;
+    const ON_3dPoint p0 = raw.m_V[edge.m_vi[0]].point, p1 = raw.m_V[edge.m_vi[1]].point;
+    const bool joins_v1_v2 = (p0.DistanceTo(v1) < 1e-9 && p1.DistanceTo(v2) < 1e-9) ||
+                             (p0.DistanceTo(v2) < 1e-9 && p1.DistanceTo(v1) < 1e-9);
+    if (!joins_v1_v2) continue;
+    if (ON_PolylineCurve::Cast(edge.EdgeCurveOf()) != nullptr) {
+      ++polylines_between;
+      if (edge.m_ti.Count() != 2) polyline_is_the_shared_one = false;
+    } else if (ON_LineCurve::Cast(edge.EdgeCurveOf()) != nullptr) {
+      ++chords_between;
+      if (edge.m_ti.Count() != 1) polyline_is_the_shared_one = false;
+    }
+  }
+  bool sloped_corner_vertex = false, flat_corner_vertex = false;
+  for (int v = 0; v < raw.m_V.Count(); ++v) {
+    const ON_3dPoint p = raw.m_V[v].point;
+    if (p.DistanceTo(ON_3dPoint(0, r, h_right)) < 1e-9) sloped_corner_vertex = true;
+    if (p.DistanceTo(ON_3dPoint(0, r, h_left)) < 1e-9) flat_corner_vertex = true;
+  }
+  Check(built.FaceCount() == 3 && raw.m_V.Count() == 7 && raw.m_E.Count() == 10 && two_trim_edges == 1,
+        "the helix-and-chord shell has 3 faces, 7 vertices and 10 edges, exactly one of them (the helix) used by "
+        "two trims");
+  Check(polylines_between == 1 && chords_between == 1 && polyline_is_the_shared_one,
+        "between the helix's two endpoint vertices there are exactly two edges: the polyline HELIX (shared by the "
+        "two cylinder pieces) and the straight CHORD (the triangle's own) - a chord and a non-degenerate polyline "
+        "kept distinct");
+  Check(sloped_corner_vertex && !flat_corner_vertex,
+        "the two pieces' angle-pi/2 rails meet at the chain's own last point (0, 1, 1.5), and no vertex sits at the "
+        "flat corner (0, 1, 1) - the rail corner moved to the chain's height");
+  Check(raw.IsValid(), "the helix-and-chord shell is ON_Brep::IsValid()");
+}
+
+// The sloped-corner gate is inert below the rail-corner check's own 1e-6:
+// a chain whose last point is 5e-7 above the flat corner keeps the exact
+// flat trim (the shared vertex is at the flat corner's height exactly),
+// so every face built before sloped chains existed is unchanged.
+void TestFromMixedFacesFlatCornerGateIsInert() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double r = 1.0, h_cut = 1.0, rise = 5e-7;
+  const int n = 50;
+  std::vector<Point3d> chain;
+  for (int k = 0; k <= n; ++k) {
+    const double t = static_cast<double>(k) / n;
+    const double theta = 0.5 * ON_PI * t;
+    chain.emplace_back(r * std::cos(theta), r * std::sin(theta), h_cut + rise * t);
+  }
+  Brep::CylindricalFace lower;
+  lower.frame.origin = Point3d(0, 0, 0);
+  lower.frame.xaxis = Vector3d(1, 0, 0);
+  lower.frame.yaxis = Vector3d(0, 1, 0);
+  lower.frame.zaxis = Vector3d(0, 0, 1);
+  lower.frame.UpdateEquation();
+  lower.radius = r;
+  lower.angle = 0.5 * ON_PI;
+  lower.length = h_cut;
+  lower.cap1_notch_points = chain;
+  lower.cap1_notch_tolerance = 1e-6;
+  lower.end1_is_original = false;
+  Brep::CylindricalFace upper = lower;
+  upper.frame.origin = Point3d(0, 0, h_cut);
+  upper.frame.UpdateEquation();
+  upper.length = 1.0;
+  upper.cap1_notch_points.clear();
+  upper.cap1_notch_tolerance = 0.0;
+  upper.cap0_notch_points = chain;
+  upper.cap0_notch_tolerance = 1e-6;
+  upper.end0_is_original = false;
+  upper.end1_is_original = true;
+
+  bool threw = false;
+  Brep built;
+  try {
+    built = Brep::FromMixedFaces({}, {lower, upper});
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  Check(!threw, "a chain ending 5e-7 above the flat corner (inside the rail-corner check's 1e-6) builds");
+  if (threw) return;
+  const ON_Brep& raw = built.raw();
+  bool corner_exactly_flat = false;
+  int shared_polylines = 0;
+  for (int v = 0; v < raw.m_V.Count(); ++v) {
+    const ON_3dPoint p = raw.m_V[v].point;
+    if (std::fabs(p.x) < 1e-9 && std::fabs(p.y - r) < 1e-9 && p.z == h_cut) corner_exactly_flat = true;
+  }
+  for (int e = 0; e < raw.m_E.Count(); ++e) {
+    if (ON_PolylineCurve::Cast(raw.m_E[e].EdgeCurveOf()) != nullptr && raw.m_E[e].m_ti.Count() == 2) {
+      ++shared_polylines;
+    }
+  }
+  Check(corner_exactly_flat && raw.m_V.Count() == 6 && shared_polylines == 1 && raw.IsValid(),
+        "the gate is inert: the angle-pi/2 corner vertex sits at EXACTLY the flat height 1.0 (not 1.0 + 5e-7), the "
+        "shell has 6 vertices and the chain is one 2-trim polyline edge - the flat trim of every pre-existing "
+        "notched face is unchanged");
+}
+
 int main() {
   ON::Begin();
 
@@ -16651,6 +17370,11 @@ int main() {
   TestBooleanCombineMixedChainedCallsThroughNotchedResults();
   TestMixedFacesReturnsVerbatimRecordsForBooleanResults();
   TestBooleanCombineMixedChainedNegativeControls();
+  TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps();
+  TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical();
+  TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls();
+  TestFromMixedFacesSlopedNotchCapAndStraightChordStayDistinct();
+  TestFromMixedFacesFlatCornerGateIsInert();
 
   ON::End();
 
