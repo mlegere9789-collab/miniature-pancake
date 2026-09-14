@@ -2429,10 +2429,21 @@ std::vector<Brep::CylindricalFace> SplitCylindricalByOtherCylinderAxialExtent(
         Brep::CylindricalFace lo = piece;
         lo.length = v_cut;
         lo.end1_is_original = false;
+        // Same fix as case (iii)'s identical mid-length split above: `lo`'s
+        // own v=length is this fresh cut, so any cap1 notch `piece` had no
+        // longer describes `lo`'s own true far end - clear it. `lo`'s own
+        // v=0 is untouched, so cap0_notch_points (if any) stays as is.
+        lo.cap1_notch_points.clear();
+        lo.cap1_notch_tolerance = 0.0;
         Brep::CylindricalFace hi = piece;
         hi.frame.origin = piece.frame.origin + v_cut * piece.frame.zaxis;
         hi.length = piece.length - v_cut;
         hi.end0_is_original = false;
+        // Mirror: `hi`'s own v=0 is the fresh cut, clear any inherited
+        // cap0 notch. `hi`'s own v=length is untouched, so
+        // cap1_notch_points stays as is.
+        hi.cap0_notch_points.clear();
+        hi.cap0_notch_tolerance = 0.0;
         next.push_back(std::move(lo));
         next.push_back(std::move(hi));
       } else {
@@ -3867,9 +3878,31 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
         const HalfspaceSplit split = SplitByHalfspace(f.planar.loop, g.planar.plane, tol);
         std::vector<Point3d> inside = CleanPolygon(split.inside, tol);
         std::vector<Point3d> outside = CleanPolygon(split.outside, tol);
+        // f.planar.arc_runs indexes f.planar.loop by position - carrying
+        // it forward is only safe when this plane doesn't actually clip
+        // the loop at all (split.outside empty BEFORE CleanPolygon, i.e.
+        // every vertex was already on the inside halfspace), since
+        // SplitByHalfspace3d's own Sutherland-Hodgman pass only inserts
+        // new points at actual clip crossings - a genuine pass-through
+        // leaves `inside` the same point sequence in the same order, so
+        // the run's stored begin/count indices still point at the same
+        // arc. A genuinely-clipped face (outside non-empty) may reorder
+        // or insert into the loop, so the old indices are not safely
+        // reusable there - recomputing them needs either center/radius-
+        // based re-detection (FindArcRun's own approach, which needs a
+        // circle this halfspace clip has no notion of) or position-
+        // matching surviving vertices into a new contiguous range; both
+        // are real new logic, deliberately out of scope here. Dropping
+        // arc_runs for that case (as today) is the conservative choice:
+        // TessellateConforming() falls back to its pre-existing,
+        // disclosed non-watertight wedge-seam handling for a face that is
+        // actually cut by a second operation, rather than risking a
+        // blind copy silently substituting wrong points.
+        const bool pass_through = split.outside.empty();
         if (inside.size() >= 3) {
           MixedFace m;
           m.planar.plane = f.planar.plane;
+          if (pass_through) m.planar.arc_runs = f.planar.arc_runs;
           m.planar.loop = std::move(inside);
           next.push_back(std::move(m));
         }
@@ -3970,7 +4003,26 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
           // principle this codebase's own case (i)/(ii)/(iii) dispatch
           // already follows throughout.
           const double v_cut = ON_DotProduct(f.planar.plane.origin - g.cyl.frame.origin, g.cyl.frame.zaxis);
-          if (v_cut > tol && v_cut < g.cyl.length - tol) {
+          // Widen the mid-length gate to also cover a SEALED end sitting
+          // exactly at the boundary (v_cut == 0 or == g.cyl.length,
+          // end{0,1}_is_original == false - Phase 1's closed-operand rule,
+          // see that flag's own doc comment): a sealed end is not a
+          // genuinely open terminus, so a real disc of material belongs
+          // there too, and today's strict `v_cut > tol && v_cut <
+          // g.cyl.length - tol` silently excludes exactly that boundary,
+          // dropping the disc (confirmed live: a cover box flush with a
+          // drilled hole's own sealed far end loses the material that
+          // should close the union's roof there, changing Volume() by a
+          // measurable divergence-sum deficit at that height). A
+          // genuinely open ORIGINAL end at the same boundary still
+          // excludes the disc - that case is already closed by
+          // SynthesizeEndCaps elsewhere (see that function's own doc
+          // comment) and must not double-count.
+          const bool at_v0 = std::fabs(v_cut) <= tol;
+          const bool at_v1 = std::fabs(v_cut - g.cyl.length) <= tol;
+          const bool mid = v_cut > tol && v_cut < g.cyl.length - tol;
+          const bool sealed_end = (at_v0 && !g.cyl.end0_is_original) || (at_v1 && !g.cyl.end1_is_original);
+          if (mid || sealed_end) {
             for (std::vector<Point3d>& piece : detail::ClipPolygonByCircleInsideOnly3d(
                      f.planar.loop, f.planar.plane, proj_center, g.cyl.radius, tol)) {
               if (piece.size() < 3) continue;
@@ -4063,12 +4115,29 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
             // own doc comment) - `lo`'s own v=0 end is untouched, so its
             // own flag is simply inherited via `lo = f.cyl` above.
             lo.end1_is_original = false;
+            // `lo`'s own v=length is this same fresh cut, so any cap1
+            // notch `lo` inherited via `lo = f.cyl` above no longer
+            // describes `lo`'s own true far end (it still describes the
+            // PARENT's far end, at the parent's own v=length, not this
+            // cut). `lo`'s own v=0 is untouched, so cap0_notch_points (if
+            // any) stays exactly as inherited - correct as-is, no change
+            // needed there. A no-op when the parent had no cap1 notch
+            // (the overwhelmingly common case), so this is bit-identical
+            // for every un-notched fixture.
+            lo.cap1_notch_points.clear();
+            lo.cap1_notch_tolerance = 0.0;
             Brep::CylindricalFace hi = f.cyl;
             hi.frame.origin = f.cyl.frame.origin + v_cut * f.cyl.frame.zaxis;
             hi.length = f.cyl.length - v_cut;
             // Mirror of `lo` above: `hi`'s own NEW v=0 end is this same
             // fresh cut; `hi`'s own v=length end is inherited.
             hi.end0_is_original = false;
+            // Mirror of `lo`'s cap1 clear above: `hi`'s own v=0 is the
+            // fresh cut, so any cap0 notch `hi` inherited via `hi = f.cyl`
+            // no longer describes `hi`'s own true near end. `hi`'s own
+            // v=length is untouched, so cap1_notch_points stays as is.
+            hi.cap0_notch_points.clear();
+            hi.cap0_notch_tolerance = 0.0;
             MixedFace mlo;
             mlo.is_cyl = true;
             mlo.cyl = lo;
