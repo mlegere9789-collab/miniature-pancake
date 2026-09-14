@@ -926,13 +926,47 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // every notched piece does, as a record spanning its trim's bounding
 // height band with the notch chain, not as the original piece.
 //
+// SKEW axes (the axis lines' closest points farther apart than the
+// pipeline tolerance, distance d) are supported too, for every op above,
+// PROVIDED the smaller cylinder still fully pierces the larger one on
+// every generator - d + r_b < r_a, a single closed-form condition
+// independent of alpha (the per-angle discriminant on the smaller
+// cylinder is minimized at the generator closest to the larger
+// cylinder's axis, and is positive there exactly under this condition -
+// see SplitCylindricalByUnequalCylinder's own section comment in
+// boolean.cpp for the derivation) - AND the axes meet at a RIGHT ANGLE
+// (any d), or are actually intersecting (d = 0, any angle). The
+// representation above needs no extension for the skew case: B's two
+// pinch generators still exist and still bound its two bands, and
+// CylindricalFace's own rail-corner contract (brep.h) already lets a
+// notch chain's far rail corner sit at a height other than its near
+// one - what changes is only that this asymmetry, guaranteed absent for
+// intersecting axes, is now common: on the larger cylinder it appears
+// exactly when alpha != 90 degrees AND d != 0 (a right-angle skew pair
+// still anchors both loops level, since cot(90 degrees) = 0), and on the
+// smaller cylinder it appears whenever d != 0, at ANY axis angle. A
+// genuinely OBLIQUE skew pair (alpha != 90 degrees AND d != 0) is
+// measured, not assumed, to be out of scope: there a single loop's two
+// pinch heights on the LARGER cylinder can themselves differ (equal only
+// at d = 0 or alpha = 90), and Brep::TessellateConforming()'s strip
+// mesher does not yet triangulate a slab built from two such heights
+// into a closed manifold, even though the B-rep it builds is
+// ON_Brep::IsValid() - a strip-mesher limitation, refused by
+// ComputeUnequalCylinderCrossing's own guard rather than shipped broken.
+// A skew pair whose smaller cylinder does NOT fully pierce the larger
+// one (a partial penetration) is refused for the separate reason a
+// blind bore is - its curve would run into an end disc this pipeline
+// has no face for.
+//
 // Unequal-radius PRECONDITIONS, each refused with std::invalid_argument
-// naming "non-parallel axes" and "UNEQUAL radii": axes that genuinely
-// intersect (the axis lines' closest points within the pipeline
-// tolerance; a skew pierce is refused, not snapped); both operands
-// full-sweep and not already notched; a radius ratio that leaves no slab
-// or plain piece narrower than 1e-3 radians; samples of the four arcs
-// and of the sloped cut chains more than 10x the tolerance apart; and
+// naming "non-parallel axes" and "UNEQUAL radii": axes that neither
+// intersect nor, if skew, fully pierce (d + r_b < r_a); a genuinely
+// OBLIQUE skew pair (alpha != 90 degrees AND d != 0, naming "OBLIQUE" -
+// the strip-mesher limitation above); both operands
+// full-sweep and not already notched; a radius ratio (and, for a skew
+// pair, closest-axis distance) that leaves no slab or plain piece
+// narrower than 1e-3 radians; samples of the four arcs and of the sloped
+// cut chains more than 10x the tolerance apart; and
 // the crossing STRICTLY interior to both cylinders - every original end
 // farther from the crossing than the curve's axial reach on that
 // cylinder ((r_a + r_b |cos alpha|)/sin(alpha) along B's axis, (r_b +
@@ -1120,21 +1154,18 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // with NON-PARALLEL axes that INTERACT (or cannot be proven not to)
 // outside the Steinmetz and unequal-radius preconditions above (see the
 // CYLINDER/CYLINDER, STEINMETZ, UNEQUAL-RADIUS and NON-PARALLEL
-// NO-INTERACTION paragraphs for what IS supported), each for a specific,
-// named reason: unequal radii at a GENERAL axis angle (the two loops on
-// the larger wall sit at two different heights, cot(alpha) sqrt(r_a^2 -
-// r_b^2) either side of the crossing, so the wall needs two cut heights
-// and a slab's notched pieces cannot be cut at the other loop's height
-// without crossing their own notch - a further decomposition step, not a
-// new representation); genuinely SKEW axes (a skew pierce puts a
-// fragment's two rail corners at different heights, which the
-// CylindricalFace contract does not yet express); and PARTIAL
-// penetration - a cylinder ending inside the other, or a skew pair whose
-// curve is a single loop on each wall (the loop's four split points then
-// differ between the two walls, so a notch chain would need to carry
-// several edges). None of these needs a NURBS-NURBS surface intersection
-// (the curve's per-angle closed form holds for any pair of cylinders);
-// they are representational follow-ups.
+// NO-INTERACTION paragraphs for what IS supported - unequal radii at ANY
+// axis angle, intersecting OR skew, are now covered there), each for a
+// specific, named reason: a PARTIAL penetration - a cylinder ending
+// inside the other on intersecting axes, or a skew pair whose smaller
+// cylinder does not fully pierce the larger one (d + r_b >= r_a, d the
+// axes' closest-point distance) - where the curve is a single loop on
+// each wall whose split points differ between the two walls, so a notch
+// chain would need to carry several edges, a further decomposition step
+// this pipeline does not yet have. This needs no NURBS-NURBS surface
+// intersection (the curve's per-angle closed form holds for any pair of
+// cylinders, skew included - see UNEQUAL-RADIUS above); it is a
+// representational follow-up.
 //
 // Point-in-solid classification (the other half of the non-convex
 // pipeline, alongside splitting) gets one new, exact closed-form branch:

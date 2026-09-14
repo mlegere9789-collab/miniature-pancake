@@ -2899,13 +2899,40 @@ std::vector<MixedFace> SplitCylindricalBySteinmetzCylinder(const Brep::Cylindric
 // penetration) is refused rather than split into fragments whose curves
 // would run into an end disc this pipeline has no face for.
 //
+// SKEW AXES (the two axis lines' closest points farther apart than tol)
+// are supported too, when the smaller cylinder still FULLY PIERCES the
+// larger on every generator - d + r_b < r_a, d the axes' closest-point
+// distance, a single closed-form condition independent of alpha (see
+// ComputeUnequalCylinderCrossing's own comment for the derivation) -
+// PROVIDED the axes also meet at a RIGHT ANGLE (any d), or the pair is
+// actually intersecting (d = 0, any angle). The representation itself
+// needs no change for the skew case: B's two "pinch" generators (theta =
+// phi, phi + pi) still exist and still bound its bands, only their two
+// heights on EITHER cylinder are no longer guaranteed level within a
+// band the way they are for intersecting axes - and FromMixedFaces'
+// rail-corner mechanism (its own doc comment) already lets a notched
+// cap's far rail sit at a height other than the near rail's, exactly
+// what a general-angle plain-piece helix chain already needed. What IS
+// out of scope is a genuinely OBLIQUE skew pair (alpha != 90 degrees AND
+// d != 0): there a single LOOP's own two pinch heights on the LARGER
+// cylinder can differ (cot(alpha)*sqrt(r_a^2-(d+r_b)^2) vs the same with
+// (d-r_b), equal only when d = 0 or alpha = 90), and measured directly,
+// Brep::TessellateConforming()'s strip mesher does not yet triangulate a
+// slab built from two such heights into a closed manifold (the B-rep it
+// builds IS ON_Brep::IsValid(), so this is a strip-mesher limitation,
+// not a representation or splitting one) - refused outright by
+// ComputeUnequalCylinderCrossing's own guard rather than shipped with a
+// silently wrong mesh. A skew pair that does not fully pierce (a partial
+// penetration) is refused for the separate, representational reason a
+// blind bore is: its curve would run into an end disc this pipeline has
+// no face for.
+//
 // Also refused, each with std::invalid_argument naming "non-parallel
 // axes" and "UNEQUAL radii" (the substrings the existing dispatch-
-// boundary tests key on): genuinely skew axes (the two axis lines'
-// closest points farther apart than tol - a skew pierce has no two
-// pinch points on one generator of B, so B's bands have no rail to end
-// at), a partial-sweep operand, an operand already notched at an end,
-// and near-degenerate slivers (a slab or a plain piece narrower than
+// boundary tests key on): a skew pair that does not fully pierce, a
+// genuinely oblique skew pair (naming "OBLIQUE"), a partial-sweep
+// operand, an operand already notched at an end, and near-degenerate
+// slivers (a slab or a plain piece narrower than
 // kMinCylinderPairPieceAngle, or samples so close that the weld could
 // merge them).
 
@@ -2917,7 +2944,13 @@ struct UnequalCylinderCrossing {
   double alpha = 0.0;      // angle between the two axis directions, in (0, pi)
   double h_q_large = 0.0;  // q's height along the larger cylinder's axis, from its own origin
   double h_q_small = 0.0;  // the smaller cylinder's closest axis point's height, from its own origin
-  double theta_m = 0.0;    // asin(r_b / r_a): each loop spans 2*theta_m of the larger cylinder's angle
+  // theta_m_near/far: asin((d +/- r_b) / r_a), d the axes' closest-point
+  // distance (0 for intersecting axes). A slab of the larger cylinder's
+  // wall spans theta_m_near - theta_m_far; at d = 0 these are
+  // +/- asin(r_b/r_a), the old symmetric theta_m, and the span is
+  // 2*asin(r_b/r_a) as before.
+  double theta_m_near = 0.0;
+  double theta_m_far = 0.0;
   // True when all four sampled pinch points sit at h_q_large within the
   // pipeline tolerance - the LEVEL FAST PATH of the section comment
   // (the right-angle decomposition, one cut at h_Q); false selects the
@@ -2978,15 +3011,30 @@ UnequalCylinderCrossing ComputeUnequalCylinderCrossing(const Brep::CylindricalFa
   const double t = (d_bw - d_ab * d_aw) / denom;
   const Point3d on_large = large.frame.origin + s * a;
   const Point3d on_small = small.frame.origin + t * b;
-  if (on_large.DistanceTo(on_small) > tol) {
+  // d: the axes' closest-point distance - 0 for intersecting axes, > tol
+  // for genuinely skew ones. A skew pair is supported when it still
+  // FULLY PIERCES: the per-angle discriminant on the smaller cylinder,
+  // 4*sin^2(alpha)*(r_a^2 - (d + r_b*cos(theta))^2) (see this function's
+  // own doc comment for the general-D derivation), is minimized over
+  // theta at cos(theta) = 1, so "every generator of the smaller cylinder
+  // meets the larger one" reduces to the single closed-form, alpha-
+  // INDEPENDENT condition d + r_b < r_a. A skew pair that fails it is a
+  // partial penetration (a blind, ragged intersection this pipeline has
+  // no fragment shapes for) and stays refused, like an intersecting-axis
+  // pair failing the extent precondition below.
+  const double d = on_large.DistanceTo(on_small);
+  const bool is_skew = d > tol;
+  if (is_skew && !(d + small.radius < large.radius - tol)) {
     throw std::invalid_argument(
         "dino8::kernel::BooleanCombineMixed: two cylindrical faces interacting "
-        "with non-parallel axes and UNEQUAL radii whose axes do not INTERSECT "
-        "(genuinely skew axes) is out of scope - only the intersecting-axis "
-        "unequal-radius case (any axis angle) is supported (a skew pierce has "
-        "no pair of pinch points on one generator of the smaller cylinder for "
-        "its bands to end at) - see this function's own doc comment in "
-        "boolean.h");
+        "with non-parallel axes and UNEQUAL radii on genuinely SKEW axes (the "
+        "axis lines' closest points farther apart than the pipeline tolerance) "
+        "whose smaller cylinder does NOT fully pierce the larger one on every "
+        "generator (the closest-axis distance plus the smaller radius is not "
+        "strictly less than the larger radius) is a partial penetration and is "
+        "out of scope - only a skew pair whose smaller cylinder fully pierces "
+        "the larger, or an intersecting-axis pair (any angle), is supported - "
+        "see this function's own doc comment in boolean.h");
   }
 
   UnequalCylinderCrossing crossing;
@@ -2994,16 +3042,22 @@ UnequalCylinderCrossing ComputeUnequalCylinderCrossing(const Brep::CylindricalFa
   crossing.alpha = std::acos(std::max(-1.0, std::min(1.0, d_ab)));
   crossing.h_q_large = s;
   crossing.h_q_small = t;
-  crossing.theta_m = std::asin(std::min(1.0, small.radius / large.radius));
+  // The loop-span extremes generalized to a possibly-nonzero closest-axis
+  // distance d (see this function's own doc comment): at d = 0 these
+  // reduce to +/- asin(r_b/r_a), the old symmetric theta_m. Clamped
+  // because (d - r_b)/r_a can be negative (d < r_b) or, right at the
+  // full-pierce boundary, brush +/-1.
+  crossing.theta_m_near = std::asin(std::max(-1.0, std::min(1.0, (d + small.radius) / large.radius)));
+  crossing.theta_m_far = std::asin(std::max(-1.0, std::min(1.0, (d - small.radius) / large.radius)));
+  const double slab_span = crossing.theta_m_near - crossing.theta_m_far;
 
-  // Sliver guard: a slab spans 2*theta_m, a plain piece pi - 2*theta_m.
-  if (!(2.0 * crossing.theta_m >= kMinCylinderPairPieceAngle) ||
-      !(ON_PI - 2.0 * crossing.theta_m >= kMinCylinderPairPieceAngle)) {
+  // Sliver guard: a slab spans `slab_span`, a plain piece pi - slab_span.
+  if (!(slab_span >= kMinCylinderPairPieceAngle) || !(ON_PI - slab_span >= kMinCylinderPairPieceAngle)) {
     throw std::invalid_argument(
         "dino8::kernel::BooleanCombineMixed: two cylindrical faces interacting "
-        "with non-parallel axes and UNEQUAL radii whose radius ratio makes a "
-        "slab (2*asin(r_b/r_a)) or a plain piece (pi - 2*asin(r_b/r_a)) of the "
-        "larger cylinder's wall narrower than 1e-3 radians is refused as a "
+        "with non-parallel axes and UNEQUAL radii whose radius ratio (and, for "
+        "a skew pair, closest-axis distance) makes a slab or a plain piece of "
+        "the larger cylinder's wall narrower than 1e-3 radians is refused as a "
         "sliver - see this function's own doc comment in boolean.h");
   }
 
@@ -3055,9 +3109,11 @@ UnequalCylinderCrossing ComputeUnequalCylinderCrossing(const Brep::CylindricalFa
 
   // LEVEL FAST PATH (section comment): the four pinch points at h_Q on
   // the larger cylinder within tol selects the single flat cut; otherwise
-  // the sloped cut. Each root's two pinches must be level on the smaller
-  // cylinder at any angle (a consistency guard, unreachable behind the
-  // closest-points test above for intersecting axes).
+  // the sloped cut. This is UNAFFECTED by skew: the pinch height on the
+  // larger cylinder is cot(alpha)*sqrt(r_a^2 - (d+/-r_b)^2)-shaped and at
+  // alpha = 90 degrees collapses to h_Q regardless of d (cot(90) = 0), so
+  // a right-angle skew pair still takes the level fast path exactly as
+  // the intersecting-axis one does.
   double pinch_dev_large = 0.0;
   for (const std::vector<Point3d>& arc : crossing.arcs) {
     for (const Point3d* p : {&arc.front(), &arc.back()}) {
@@ -3065,16 +3121,68 @@ UnequalCylinderCrossing ComputeUnequalCylinderCrossing(const Brep::CylindricalFa
     }
   }
   crossing.level = pinch_dev_large <= tol;
-  const double pinch_dev_small =
-      std::max(std::fabs(height_on(small, crossing.arcs[0].front()) - height_on(small, crossing.arcs[0].back())),
-               std::fabs(height_on(small, crossing.arcs[2].front()) - height_on(small, crossing.arcs[2].back())));
-  if (pinch_dev_small > tol) {
-    throw std::invalid_argument(
-        "dino8::kernel::BooleanCombineMixed: two cylindrical faces interacting "
-        "with non-parallel axes and UNEQUAL radii whose intersection curve's "
-        "two pinch points on one generator of the smaller cylinder are not at "
-        "one height within the pipeline tolerance - a genuinely skew pierce, "
-        "out of scope - see this function's own doc comment in boolean.h");
+  // Each root's two pinch points are level on the SMALLER cylinder for
+  // intersecting axes (d <= tol, a consistency guard, unreachable behind
+  // the closest-points test) - but genuinely NOT for a skew pair (d >
+  // tol): its two pinch heights on the smaller cylinder are
+  // sqrt(r_a^2-(d+r_b)^2)/sin(alpha) and sqrt(r_a^2-(d-r_b)^2)/sin(alpha),
+  // equal only at d = 0. SplitCylindricalByUnequalCylinder's own band
+  // construction reads each pinch height directly off the oriented arc's
+  // own endpoints rather than assuming they agree, so this stays a pure
+  // consistency guard on the intersecting-axis regime, not a scope limit.
+  if (!is_skew) {
+    const double pinch_dev_small =
+        std::max(std::fabs(height_on(small, crossing.arcs[0].front()) - height_on(small, crossing.arcs[0].back())),
+                 std::fabs(height_on(small, crossing.arcs[2].front()) - height_on(small, crossing.arcs[2].back())));
+    if (pinch_dev_small > tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::BooleanCombineMixed: two cylindrical faces interacting "
+          "with non-parallel axes and UNEQUAL radii whose intersection curve's "
+          "two pinch points on one generator of the smaller cylinder are not at "
+          "one height within the pipeline tolerance despite intersecting axes - "
+          "please report this as a bug - see this function's own doc comment in "
+          "boolean.h");
+    }
+  }
+  // A SKEW pair off the level fast path (is_skew && !crossing.level, i.e.
+  // genuinely OBLIQUE axes together with skew) can put a single LOOP's
+  // own two pinch heights on the LARGER cylinder at two different values
+  // (section 1.4 of this increment's own research: h_pinch_near =
+  // cot(alpha)*sqrt(r_a^2-(d+r_b)^2), h_pinch_far the same with (d-r_b) -
+  // equal only when d = 0 or alpha = 90 degrees). Every producer above
+  // already reads each pinch height off its own sampled endpoint rather
+  // than assuming they agree (SplitCylindricalByUnequalCylinder's own
+  // comment), and the resulting B-rep IS valid - but measured directly,
+  // Brep::TessellateConforming()'s strip mesher does not yet triangulate
+  // a slab's own upper/lower/plain pieces correctly when their two rail
+  // heights differ THIS way (verified: the conforming mesh comes back
+  // with duplicated, non-manifold coverage along the slab's own rails,
+  // while the SAME configuration's Intersection - built only from the
+  // plug and B's bands, neither of which has this asymmetry - and B - A
+  // - built only from B's bands and A's plugs, flipped - both come back
+  // correct). Rather than ship a silently wrong Union/Difference mesh,
+  // this refuses the combination outright until the strip mesher is
+  // extended; the B-rep-only (IsValid) path is unaffected by this guard,
+  // and the LEVEL cases - any d at alpha = 90 degrees, or any alpha at
+  // d = 0 - are unaffected since crossing.level is already true there.
+  if (is_skew && !crossing.level) {
+    const double loop_pinch_dev_large =
+        std::max(std::fabs(height_on(large, crossing.arcs[0].front()) - height_on(large, crossing.arcs[0].back())),
+                 std::fabs(height_on(large, crossing.arcs[2].front()) - height_on(large, crossing.arcs[2].back())));
+    if (loop_pinch_dev_large > tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::BooleanCombineMixed: two cylindrical faces interacting "
+          "with non-parallel axes and UNEQUAL radii on a genuinely OBLIQUE "
+          "(non-right-angle) SKEW pair, where a single loop's own two pinch "
+          "points sit at different heights on the larger cylinder, is out of "
+          "scope for this increment - measured to build an ON_Brep::IsValid() "
+          "result whose conforming tessellation is not yet a closed manifold "
+          "(the strip mesher does not yet handle a slab's own asymmetric rail "
+          "heights) - a right-angle skew pair (any closest-axis distance) and "
+          "an oblique intersecting-axis pair (closest-axis distance 0) both "
+          "remain fully supported - see this function's own doc comment in "
+          "boolean.h");
+    }
   }
 
   // EXTENT PRECONDITION (section comment), read off the sampled lists.
@@ -3094,8 +3202,10 @@ UnequalCylinderCrossing ComputeUnequalCylinderCrossing(const Brep::CylindricalFa
     if (!(h_min - margin > 0.0 && h_max + margin < c->length)) {
       throw std::invalid_argument(
           "dino8::kernel::BooleanCombineMixed: two cylindrical faces with "
-          "intersecting non-parallel axes and UNEQUAL radii are supported only "
-          "when the crossing is STRICTLY interior to both cylinders - every "
+          "non-parallel axes and UNEQUAL radii (intersecting or, when the "
+          "smaller cylinder fully pierces the larger, genuinely skew) are "
+          "supported only when the crossing is STRICTLY interior to both "
+          "cylinders - every "
           "original end must sit farther from the crossing along its own axis "
           "than the intersection curve's axial reach on that cylinder ((r_a + "
           "r_b |cos alpha|)/sin alpha along the smaller cylinder's axis, (r_b + "
@@ -3234,8 +3344,8 @@ std::vector<MixedFace> SplitCylindricalByUnequalCylinder(const Brep::Cylindrical
         span = 2.0 * ON_PI - span;
         std::swap(begin_pt, end_pt);
       }
-      if (std::fabs(span - 2.0 * crossing.theta_m) > 1e-6) {
-        bug("measured a slab's angular span that disagrees with 2*asin(r_b/r_a)");
+      if (std::fabs(span - (crossing.theta_m_near - crossing.theta_m_far)) > 1e-6) {
+        bug("measured a slab's angular span that disagrees with theta_m_near - theta_m_far");
       }
       // Upper vs lower by comparing the two arcs' centre samples against
       // EACH OTHER: at a general angle both arcs of one loop can sit on
@@ -3394,14 +3504,17 @@ std::vector<MixedFace> SplitCylindricalByUnequalCylinder(const Brep::Cylindrical
     }
     const size_t top_first = plus_is_upper ? 0 : 2;
     const size_t bottom_first = plus_is_upper ? 2 : 0;
-    // One height per curve for BOTH halves (the two pinches of a curve
-    // are level within tol at any axis angle, checked by
-    // ComputeUnequalCylinderCrossing), so the rails of the two halves on
-    // a pinch generator meet at the same vertex exactly, not merely
-    // within the weld. Nothing on B depends on the axis angle.
-    const double h_top = height_on(crossing.arcs[top_first].front());
-    const double h_bottom = height_on(crossing.arcs[bottom_first].front());
-    if (!(h_top - h_bottom > tol)) bug("found the upper curve's pinch not above the lower curve's");
+    // For INTERSECTING axes the two pinches of a curve are level, so one
+    // height per curve serves both halves. For a SKEW pair (d > tol) they
+    // generally are not (sqrt(r_a^2-(d+r_b)^2) and sqrt(r_a^2-(d-r_b)^2),
+    // both over sin(alpha), equal only at d = 0): each half's own near
+    // rail (local angle 0) must be anchored at THAT half's own sampled
+    // pinch height, read off the oriented arc's own front point, exactly
+    // the mechanism FromMixedFaces' rail-corner contract already uses for
+    // the far rail (local angle `angle`) via cap*_notch_points.back() - so
+    // here the SAME arrays already carry both ends' true heights and no
+    // extra bookkeeping is needed beyond reading them per half instead of
+    // once globally.
 
     out.reserve(6);
     for (int half = 0; half < 2; ++half) {
@@ -3409,34 +3522,41 @@ std::vector<MixedFace> SplitCylindricalByUnequalCylinder(const Brep::Cylindrical
       // The arc of each curve whose mid-angle sample lies in this half.
       auto arc_in_half = [&](size_t first) -> size_t {
         for (size_t i = first; i < first + 2; ++i) {
-          double d = local_angle(cf, crossing.arcs[i][mid_index]) - t0;
-          if (d < 0.0) d += 2.0 * ON_PI;
-          if ((d < ON_PI) == (half == 0)) return i;
+          double dd = local_angle(cf, crossing.arcs[i][mid_index]) - t0;
+          if (dd < 0.0) dd += 2.0 * ON_PI;
+          if ((dd < ON_PI) == (half == 0)) return i;
         }
         bug("found no arc of a curve in an angular half of the smaller cylinder");
         return first;
       };
       const size_t top_i = arc_in_half(top_first);
       const size_t bottom_i = arc_in_half(bottom_first);
-      const std::vector<Point3d>& top = crossing.arcs[top_i];
-      const std::vector<Point3d>& bottom = crossing.arcs[bottom_i];
+      // Oriented ONCE per half, per curve, so the identical array (and
+      // the identical front/back heights it carries) is handed to every
+      // piece of this half that shares that rail - the file's own
+      // one-producer-several-consumers principle.
+      const std::vector<Point3d> top = oriented(base, crossing.arcs[top_i]);
+      const std::vector<Point3d> bottom = oriented(base, crossing.arcs[bottom_i]);
+      const double h_top = height_on(top.front());
+      const double h_bottom = height_on(bottom.front());
+      if (!(h_top - h_bottom > tol)) bug("found the upper curve's pinch not above the lower curve's");
 
       Brep::CylindricalFace upper = with_origin_at(base, h_top, cf.length - h_top);
-      upper.cap0_notch_points = oriented(upper, top);
+      upper.cap0_notch_points = top;
       upper.cap0_notch_tolerance = crossing.sagitta[top_i];
       upper.end0_is_original = false;
 
       Brep::CylindricalFace middle = with_origin_at(base, h_bottom, h_top - h_bottom);
-      middle.cap0_notch_points = oriented(middle, bottom);
+      middle.cap0_notch_points = bottom;
       middle.cap0_notch_tolerance = crossing.sagitta[bottom_i];
-      middle.cap1_notch_points = oriented(middle, top);
+      middle.cap1_notch_points = top;
       middle.cap1_notch_tolerance = crossing.sagitta[top_i];
       middle.end0_is_original = false;
       middle.end1_is_original = false;
 
       Brep::CylindricalFace lower = base;
       lower.length = h_bottom;
-      lower.cap1_notch_points = oriented(lower, bottom);
+      lower.cap1_notch_points = bottom;
       lower.cap1_notch_tolerance = crossing.sagitta[bottom_i];
       lower.end1_is_original = false;
 
@@ -4022,14 +4142,15 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
           // the smaller cylinder, the ten-piece (larger) / six-piece
           // (smaller) decomposition, the sloped cut of the larger
           // cylinder's plain pieces at a general angle and the level fast
-          // path at a right angle. Its own guards throw
+          // path at a right angle. Skew axes are supported too, when the
+          // smaller cylinder fully pierces the larger (d + r_b < r_a, d
+          // the axes' closest-point distance). Its own guards throw
           // std::invalid_argument (each naming "non-parallel axes" and
-          // "UNEQUAL radii") for genuinely skew axes, a crossing not
-          // strictly interior to both cylinders, a partial-sweep or
-          // already-notched operand, or a sliver - again only for pairs
-          // the no-interaction test above could not separate; the skew
-          // INTERACTION remains out of scope, for the representational
-          // reason that section comment names.
+          // "UNEQUAL radii") for a skew pair that does NOT fully pierce
+          // (a partial penetration), a crossing not strictly interior to
+          // both cylinders, a partial-sweep or already-notched operand,
+          // or a sliver - again only for pairs the no-interaction test
+          // above could not separate.
           for (MixedFace& piece : SplitCylindricalByUnequalCylinder(f.cyl, g.cyl, tol)) {
             next.push_back(std::move(piece));
           }

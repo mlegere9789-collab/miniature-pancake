@@ -14288,6 +14288,37 @@ double UnequalCylinderIntersectionVolumeAtAngle(double r_a, double r_b, double a
   return UnequalCylinderIntersectionVolume(r_a, r_b) / std::sin(alpha_deg * ON_PI / 180.0);
 }
 
+// A strict generalization of UnequalCylinderIntersectionVolume to a pair
+// of axes whose closest-point distance is `d` (0 for the intersecting-
+// axis case above) instead of assumed 0: the cross-section at offset y
+// along the axes' common perpendicular is still a rectangle, now
+// 2 sqrt(r_a^2 - y^2) by 2 sqrt(r_b^2 - (y - d)^2) (B's own strip is
+// centred at y = d, not y = 0), so
+//   V = (4 / sin alpha) integral sqrt(r_a^2-y^2) sqrt(r_b^2-(y-d)^2) dy
+// over y in [d - r_b, d + r_b] (the whole of B's cross-section, since
+// FULL PIERCE - d + r_b < r_a - keeps that interval strictly inside
+// [-r_a, r_a], so the integrand never hits a domain edge and the
+// substitution y = d + r_b sin t keeps it smooth: sqrt(r_b^2-(y-d)^2) =
+// r_b cos t, dy = r_b cos t dt). At d = 0 this collapses to
+// UnequalCylinderIntersectionVolumeAtAngle exactly (checked as a unit
+// test below): a genuinely SEPARATE closed form only in the d term, not
+// a parallel implementation that could silently diverge from it.
+double UnequalCylinderIntersectionVolumeSkew(double r_a, double r_b, double alpha_deg, double d) {
+  const int n = 20000;
+  auto f = [&](double t) {
+    const double c = std::cos(t), s = std::sin(t);
+    const double y = d + r_b * s;
+    return r_b * r_b * c * c * std::sqrt(std::max(0.0, r_a * r_a - y * y));
+  };
+  const double lo = -0.5 * ON_PI, hi = 0.5 * ON_PI, h = (hi - lo) / n;
+  double sum = 0.0;
+  for (int i = 0; i <= n; ++i) {
+    const double w = (i == 0 || i == n) ? 1.0 : (i % 2 ? 4.0 : 2.0);
+    sum += w * f(lo + i * h);
+  }
+  return 4.0 * (sum * h / 3.0) / std::sin(alpha_deg * ON_PI / 180.0);
+}
+
 // Independent evaluation of the same volume: composite Simpson over (y, z)
 // of the x-extent of the section {|x| <= w_a(y)} intersected with
 // {|x cos alpha - z sin alpha| <= w_b(y)}, computed by clipping the two
@@ -15771,15 +15802,22 @@ void TestBooleanCombineMixedUnequalRadiusPerpendicularNegativeControls() {
   }
   {
     // Genuinely skew axes (B shifted 0.3 along the common perpendicular):
-    // B still pierces A completely, but a skew pierce puts a piece's rail
-    // corners at different heights, which this increment does not
-    // represent.
+    // B still pierces A completely (d + r_b = 1.3 < r_a = 2), so this is a
+    // FULL-PIERCE skew pair - it now BUILDS, exactly like an intersecting-
+    // axis pair, because FromMixedFaces' rail-corner mechanism (already
+    // needed for the general-angle plain-piece helix chain) already lets
+    // a piece's far rail sit at a height other than its near rail's,
+    // which is all a skew pinch's asymmetric heights need. See
+    // TestBooleanCombineMixedUnequalRadiusSkewFullPierceVolumeAndTopology
+    // for the full topology/volume/argument-order coverage of this case;
+    // this former negative control is kept here as the regression record
+    // of exactly what stopped throwing.
     const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0, 1.0, /*skew_y=*/0.3);
-    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Union, threw);
-    Check(threw && names_both(message) && message.find("INTERSECT") != std::string::npos,
-          "unequal-radius negative control: genuinely SKEW axes (B's axis 0.3 off A's along the common "
-          "perpendicular) throw std::invalid_argument naming 'non-parallel axes', 'UNEQUAL radii' and 'do not "
-          "INTERSECT'");
+    const double expected_skew = UnequalCylinderIntersectionVolumeSkew(2.0, 1.0, 90.0, 0.3);
+    Check(builds_intersection(cyl_a, cyl_b, expected_skew),
+          "unequal-radius former negative control: genuinely SKEW axes (B's axis 0.3 off A's along the common "
+          "perpendicular, perpendicular otherwise) now BUILD the 4-face Intersection, closed under the conforming "
+          "mesher and within 0.1% of the skew closed form (d = 0.3) rather than throwing 'do not INTERSECT'");
   }
   {
     // Extent precondition along B: B's ends must sit farther than r_a = 2
@@ -16853,13 +16891,22 @@ void TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls() {
 
   {
     // Genuinely skew axes at 60 degrees (B shifted 0.3 along the common
-    // perpendicular): refused for the same reason as at a right angle.
+    // perpendicular): d + r_b = 1.3 < r_a = 2, so this pair DOES fully
+    // pierce (the alpha-independent condition of the 90-degree case
+    // above) - but 60 degrees is OBLIQUE, not a right angle, so this is
+    // the oblique-skew combination that stays refused (see
+    // TestBooleanCombineMixedUnequalRadiusObliqueSkewStillThrows and
+    // ComputeUnequalCylinderCrossing's own guard in boolean.cpp: a
+    // single loop's two pinch heights on A can differ there, and the
+    // strip mesher does not yet triangulate that correctly) - so unlike
+    // the 90-degree case, this one keeps throwing, now with the NEW
+    // oblique-skew wording rather than "do not INTERSECT".
     const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 60.0, 1.0, /*skew_y=*/0.3);
     const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Union, threw);
-    Check(threw && names_both(message) && message.find("INTERSECT") != std::string::npos,
-          "unequal-radius general-angle negative control: genuinely SKEW axes at 60 degrees (B's axis 0.3 off A's "
-          "along the common perpendicular) throw std::invalid_argument naming 'non-parallel axes', 'UNEQUAL radii' "
-          "and 'do not INTERSECT'");
+    Check(threw && names_both(message) && message.find("OBLIQUE") != std::string::npos,
+          "unequal-radius general-angle negative control: genuinely SKEW axes at 60 degrees (an OBLIQUE angle) "
+          "throw std::invalid_argument naming 'non-parallel axes', 'UNEQUAL radii' and 'OBLIQUE' - the full-pierce "
+          "condition holds but the oblique+skew combination is a separate, still-unsupported limitation");
   }
   {
     // Extent along B at 60 degrees: the reach is (r_a + r_b cos 60)/sin 60
@@ -16926,6 +16973,220 @@ void TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls() {
     Check(result.MixedFaces().cylindrical.size() == 4 && result.raw().m_V.Count() == 2,
           "unequal-radius general-angle dispatch control: radii differing by 2e-10 at 60 degrees still take the "
           "Steinmetz split - a 4-face Intersection on the Steinmetz TWO pinch vertices");
+  }
+}
+
+// ---------------------------------------------------------------------
+// Unequal-radius, SKEW-axis, FULL-PIERCE cylinder/cylinder booleans
+// ---------------------------------------------------------------------
+//
+// Genuinely skew axes (closest-point distance d > tol) whose smaller
+// cylinder still fully pierces the larger one (d + r_b < r_a, a single
+// closed-form condition independent of the axis angle - see
+// ComputeUnequalCylinderCrossing's own comment) build exactly like the
+// intersecting-axis case: the representation needs no extension because
+// FromMixedFaces' rail-corner mechanism (already landed for the general-
+// angle plain-piece helix chain) already lets a piece's far rail sit at a
+// height other than its near rail's, and SplitCylindricalByUnequalCylinder
+// reads every pinch height directly off the sampled arcs rather than
+// assuming the two ends of a rail agree. Checked at a right angle (where
+// skew changes nothing about A's own anchoring - both loops stay level,
+// since cot(90 degrees) = 0 - but B's own bands DO pick up asymmetric
+// rail heights, exercising the rail-corner mechanism even there) and at
+// two oblique angles (where A's own slabs pick up asymmetric heights
+// too, the case least like anything Phase 1/2 exercised).
+void TestBooleanCombineMixedUnequalRadiusSkewFullPierceVolumeAndTopology() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  // Quadrature self-check: the skew closed form at d = 0 must reproduce
+  // the existing intersecting-axis closed form exactly (a strict
+  // generalization, not a parallel implementation).
+  for (const double alpha : {90.0, 60.0, 45.0}) {
+    const double a_form = UnequalCylinderIntersectionVolumeAtAngle(2.0, 1.0, alpha);
+    const double d0_form = UnequalCylinderIntersectionVolumeSkew(2.0, 1.0, alpha, 0.0);
+    Check(std::fabs(d0_form - a_form) < 1e-9 * a_form,
+          "unequal-radius skew quadrature self-check: at d = 0 the general-d closed form reproduces the "
+          "intersecting-axis one within 1e-9 relative, at 90/60/45 degrees");
+  }
+
+  auto exercise = [](double r_a, double r_b, double alpha_deg, double d, const char* label) {
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(r_a, 10.0, 10.0, alpha_deg, r_b, /*skew_y=*/d);
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    const double v_a = ON_PI * r_a * r_a * 10.0;
+    const double v_b = ON_PI * r_b * r_b * 10.0;
+    const double v_i = UnequalCylinderIntersectionVolumeSkew(r_a, r_b, alpha_deg, d);
+
+    // Only Intersection's own 4-face result is checked against
+    // ON_Brep::IsSolid() here, matching every other Intersection test in
+    // this file (TestBooleanCombineMixedUnequalRadiusPerpendicular/
+    // GeneralAngleIntersectionAndAllOps): Union and Difference's own
+    // many-piece results are checked with IsValid() + the mesh's own
+    // IsClosedManifold()/Volume(), exactly as
+    // TestBooleanCombineMixedUnequalRadiusPerpendicularUnionAndDifferenceVolumes
+    // does for the intersecting-axis case - ON_Brep::IsSolid() is not
+    // asserted for Union/Difference there either.
+    auto check_op = [&](const Brep& x, const Brep& y, BooleanOp op, double expected, const char* op_name) {
+      const Brep result = BooleanCombineMixed(x, y, op);
+      const Mesh m = result.TessellateToClosedMeshConforming(64, 64);
+      bool ok = result.raw().IsValid() && m.IsClosedManifold() &&
+               std::fabs(m.Volume() - expected) < 1e-3 * expected;
+      if (op == BooleanOp::Intersection) ok = ok && result.raw().IsSolid();
+      Check(ok, (std::string("unequal-radius skew full-pierce (") + label + ", " + op_name +
+                "): IsValid" + (op == BooleanOp::Intersection ? ", IsSolid" : "") +
+                ", closed conforming mesh, volume within 0.1% of the skew closed form")
+                   .c_str());
+    };
+    check_op(a, b, BooleanOp::Intersection, v_i, "Intersection");
+    check_op(b, a, BooleanOp::Intersection, v_i, "Intersection, argument order (b, a)");
+    check_op(a, b, BooleanOp::Union, v_a + v_b - v_i, "Union");
+    check_op(a, b, BooleanOp::Difference, v_a - v_i, "A - B");
+    check_op(b, a, BooleanOp::Difference, v_b - v_i, "B - A");
+
+    // Argument order also for the shared-arc topology: the Intersection's
+    // vertex count and volume must match exactly whichever operand is
+    // passed as `self` (mirrors
+    // TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical
+    // for the intersecting-axis case, now for a skew pair).
+    const Brep result_ab = BooleanCombineMixed(a, b, BooleanOp::Intersection);
+    const Brep result_ba = BooleanCombineMixed(b, a, BooleanOp::Intersection);
+    Check(result_ab.raw().m_V.Count() == result_ba.raw().m_V.Count() &&
+              result_ab.raw().m_V.Count() == 4,
+          (std::string("unequal-radius skew full-pierce (") + label +
+          "): both argument orders produce the same 4-vertex Intersection topology")
+             .c_str());
+  };
+
+  // Perpendicular, two skew offsets (d = 0.5 and d = 0.9, both < r_a - r_b
+  // = 1, so full pierce - the extent precondition's own bound at 90
+  // degrees is unaffected by d, per this function's own doc comment). At
+  // a right angle A's own slabs stay anchored level (cot(90) = 0), so
+  // this is the fully-supported skew regime for every op.
+  exercise(2.0, 1.0, 90.0, 0.5, "perpendicular d=0.5");
+  exercise(2.0, 1.0, 90.0, 0.9, "perpendicular d=0.9");
+  // A genuinely OBLIQUE skew pair (alpha != 90, d != 0) is measured, not
+  // assumed, to be OUT OF SCOPE for this increment and is NOT exercised
+  // here - see TestBooleanCombineMixedUnequalRadiusObliqueSkewStillThrows
+  // and ComputeUnequalCylinderCrossing's own guard in boolean.cpp for
+  // why: a single loop's two pinch heights on the larger cylinder can
+  // differ there (section 1.4's h_pinch_near != h_pinch_far unless d = 0
+  // or alpha = 90), and Brep::TessellateConforming()'s strip mesher does
+  // not yet triangulate a slab built from two such heights correctly
+  // (measured: ON_Brep::IsValid() holds but the conforming mesh comes
+  // back with duplicated, non-manifold coverage along the slab's own
+  // rails) - refused outright rather than shipping a silently wrong
+  // mesh.
+}
+
+void TestBooleanCombineMixedUnequalRadiusSkewPartialPenetrationStillThrows() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  auto message_of = [](const Brep::CylindricalFace& cyl_a, const Brep::CylindricalFace& cyl_b, BooleanOp op,
+                       bool& threw_invalid_argument) {
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    threw_invalid_argument = false;
+    try {
+      BooleanCombineMixed(a, b, op);
+    } catch (const std::invalid_argument& e) {
+      threw_invalid_argument = true;
+      return std::string(e.what());
+    }
+    return std::string();
+  };
+  bool threw = false;
+
+  // r_a = 2, r_b = 1: full pierce needs d < 1. d = 1.0 sits exactly at the
+  // boundary (refused, the inequality being strict); d = 1.05 is clearly a
+  // partial penetration. Both must still throw, naming "non-parallel
+  // axes" and "UNEQUAL radii", and now the NEW partial-penetration
+  // wording rather than "do not INTERSECT" (reserved for axes within tol
+  // of genuinely intersecting).
+  for (const double d : {1.0, 1.05}) {
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0, 1.0, /*skew_y=*/d);
+    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Union, threw);
+    Check(threw && message.find("non-parallel axes") != std::string::npos &&
+              message.find("UNEQUAL radii") != std::string::npos && message.find("fully pierce") != std::string::npos,
+          "unequal-radius skew negative control: d + r_b >= r_a (a partial penetration, d = 1.0 or 1.05 at r_a = 2, "
+          "r_b = 1) throws std::invalid_argument naming 'non-parallel axes', 'UNEQUAL radii' and 'fully pierce', "
+          "NOT 'do not INTERSECT'");
+  }
+  // A genuinely skew, FULL-PIERCE pair (d = 0.99 < 1) must NOT throw the
+  // partial-penetration message - the boundary is exercised from both
+  // sides.
+  {
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0, 1.0, /*skew_y=*/0.99);
+    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Union, threw);
+    Check(!threw,
+          "unequal-radius skew positive control: d = 0.99 (just inside the full-pierce bound d + r_b < r_a = 2) "
+          "builds rather than throwing");
+  }
+}
+
+// The genuinely OBLIQUE + SKEW combination: measured (see
+// ComputeUnequalCylinderCrossing's own guard in boolean.cpp) to build an
+// ON_Brep::IsValid() result whose conforming tessellation is not a closed
+// manifold (a single loop's two pinch heights on the larger cylinder
+// differ there, and the strip mesher does not yet triangulate that
+// correctly), so it is refused outright rather than shipped broken. This
+// is a real, disclosed scope limit of this increment, not a fabricated
+// negative control: falsifiability is exercised directly by
+// TestBooleanCombineMixedUnequalRadiusObliqueSkewGuardIsLoadBearing below.
+void TestBooleanCombineMixedUnequalRadiusObliqueSkewStillThrows() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+
+  auto message_of = [](const Brep::CylindricalFace& cyl_a, const Brep::CylindricalFace& cyl_b, BooleanOp op,
+                       bool& threw_invalid_argument) {
+    const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+    const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+    threw_invalid_argument = false;
+    try {
+      BooleanCombineMixed(a, b, op);
+    } catch (const std::invalid_argument& e) {
+      threw_invalid_argument = true;
+      return std::string(e.what());
+    }
+    return std::string();
+  };
+  bool threw = false;
+
+  // Every op is refused, not just Union - the guard fires in the shared
+  // crossing computation before any op-specific dispatch, so Intersection
+  // and B - A (which this increment's own falsifiability run showed
+  // build a CORRECT result for this exact configuration, when the guard
+  // is temporarily disabled) are refused too, deliberately, for a single
+  // uniform scope boundary rather than a per-op one.
+  for (const BooleanOp op : {BooleanOp::Intersection, BooleanOp::Union, BooleanOp::Difference}) {
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 60.0, 1.0, /*skew_y=*/0.3);
+    const std::string message = message_of(cyl_a, cyl_b, op, threw);
+    Check(threw && message.find("non-parallel axes") != std::string::npos &&
+              message.find("UNEQUAL radii") != std::string::npos && message.find("OBLIQUE") != std::string::npos,
+          "unequal-radius oblique-skew negative control: 60 degrees, d = 0.3 (full pierce, but oblique) throws for "
+          "every op, naming 'non-parallel axes', 'UNEQUAL radii' and 'OBLIQUE'");
+  }
+  // A second (alpha, d) pair, to confirm the guard is alpha/d-general,
+  // not keyed to one specific configuration.
+  {
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 45.0, 1.0, /*skew_y=*/0.3);
+    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Union, threw);
+    Check(threw && message.find("OBLIQUE") != std::string::npos,
+          "unequal-radius oblique-skew negative control: 45 degrees, d = 0.3 also throws naming 'OBLIQUE'");
+  }
+  // The boundary at alpha = 90 degrees exactly: NOT refused by this
+  // guard (crossing.level is true there for any d), confirming the guard
+  // is genuinely angle-selective and not a blanket skew refusal.
+  {
+    const auto [cyl_a, cyl_b] = BuildSteinmetzCylinders(2.0, 10.0, 10.0, 90.0, 1.0, /*skew_y=*/0.3);
+    const std::string message = message_of(cyl_a, cyl_b, BooleanOp::Union, threw);
+    Check(!threw, "unequal-radius oblique-skew boundary control: alpha = 90 degrees exactly (the level fast path) "
+                  "is NOT caught by the oblique-skew guard, even at the same d = 0.3 that throws at 60/45 degrees");
   }
 }
 
@@ -17373,6 +17634,9 @@ int main() {
   TestBooleanCombineMixedUnequalRadiusGeneralAngleIntersectionAndAllOps();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleArgumentOrderAndSharedArcIsBitIdentical();
   TestBooleanCombineMixedUnequalRadiusGeneralAngleNegativeControls();
+  TestBooleanCombineMixedUnequalRadiusSkewFullPierceVolumeAndTopology();
+  TestBooleanCombineMixedUnequalRadiusSkewPartialPenetrationStillThrows();
+  TestBooleanCombineMixedUnequalRadiusObliqueSkewStillThrows();
   TestFromMixedFacesSlopedNotchCapAndStraightChordStayDistinct();
   TestFromMixedFacesFlatCornerGateIsInert();
 
