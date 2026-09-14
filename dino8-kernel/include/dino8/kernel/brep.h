@@ -1197,6 +1197,87 @@ class Brep {
   // TestTessellateConformingOneSidedWedgeAsymmetricDivisionsRemainsPreExistingGap
   // for the exact falsifiable claims, both proven directly rather than
   // assumed.
+  //
+  // A FIFTH gap, closed here: the arc-matching pass above only ever
+  // populates `cyl_matches` for a CylindricalFace fragment with an ArcRun
+  // match on AT LEAST one of its own v=0/v=length ends (an ordinary
+  // BuildEndCap cap or a lens cap - see boolean.h's own BooleanCombineMixed
+  // disclosure). A fragment with NO match on EITHER end - a "friendless"
+  // middle axial band, produced when SplitCylindricalByOtherCylinderAxialExtent
+  // (boolean.cpp) axially splits one wedge into 3+ bands and only the
+  // OUTER two bands keep a real terminus - used to fall through to
+  // NurbsSurface::TessellateGrid's plain, raw-u-uniform grid: genuinely
+  // different physical angular sample locations than an axially-adjacent,
+  // ArcRun-matched sibling's own angle-uniform breakpoints along the
+  // exact same physical circle, leaving a real, narrow non-manifold seam
+  // at the band's own internal axial cut lines (not a boolean-topology
+  // defect - purely this method's own mesh-density reconciliation gap).
+  // Closed by giving such a face a fallback breakpoint schedule built NOT
+  // from a fresh, independent resampling of its own [0, angle] sweep (a
+  // uniform-in-true-angle recipe applied to the WHOLE sweep in one pass
+  // is not the same schedule a capped sibling's own ArcRun match(es)
+  // compute whenever that cap is itself split into several sub-arcs - e.g.
+  // BuildEndCap's own "always 4 quadrant pieces" convention samples EACH
+  // quadrant uniformly across only its own quarter, not the full sweep in
+  // one pass, so an independently-resampled full-sweep schedule generally
+  // lands on DIFFERENT breakpoints than the quadrant-based one even at
+  // the same overall sample count - confirmed directly, not merely
+  // theorized, during this fix's own development) but by directly REUSING
+  // an axially-adjacent sibling's own already-computed `raw_u`
+  // breakpoints, identified via SameWedgeAsCylinder (brep.cpp) - a
+  // stricter test than the arc-matching pass's own SameCircleAsCylinder,
+  // additionally requiring the SAME angular reference direction
+  // (frame.xaxis) and sweep, not merely the same axis+radius, since two
+  // DIFFERENT wedges of one physical cylinder share a circle but not an
+  // angular reference. Every genuine axial sibling produced by
+  // SplitCylindricalByOtherCylinderAxialExtent qualifies (that function
+  // copies `frame`/`angle`/`radius` verbatim across axial siblings, only
+  // ever trimming `length`/shifting `frame.origin` along the shared
+  // axis), so reusing its raw_u values reproduces the identical
+  // breakpoints, closing the seam. `CanonicalCylinderUBreakpoints`
+  // (brep.cpp, an independent-resampling fallback) is kept only as a
+  // defensive last resort for the (believed never to arise in practice)
+  // case where no such sibling exists at all - see its own doc comment
+  // for exactly why it is NOT equivalent to reusing a real sibling's own
+  // breakpoints. See
+  // TestTessellateConformingFriendlessMiddleBandSyntheticWedgeIsClosedManifold
+  // (tests/test_basic.cpp) for the exact falsifiable claim, verified on a
+  // synthetic 3-band single-wedge fixture built directly (bypassing
+  // BooleanCombineMixed entirely) so the check isolates this ONE
+  // mechanism from the separate, still-open gap described next.
+  //
+  // Investigated, found, and HONESTLY left open (not attempted here): a
+  // SEPARATE, previously-undiagnosed density-mismatch gap in the same
+  // "one shared u-breakpoint list for both the v=0 and v=length rows"
+  // design BuildConformingCylinderMesh's own `breaks`/`filled`
+  // construction (brep.cpp) already relies on - when a SINGLE
+  // CylindricalFace fragment has REAL ArcRun matches at BOTH its own
+  // ends, but those two caps have genuinely DIFFERENT internal structure
+  // (e.g. an ordinary BuildEndCap cap, split into 4 quadrant sub-arcs, on
+  // one end, and a single, un-split BuildLensEndCap arc spanning the
+  // WHOLE sweep on the other - exactly the shape boolean.h's own
+  // crossing-Difference fixture's INNER wedge bands have), the denser
+  // cap's own quadrant-boundary breakpoints leak, as extra UNFORCED grid
+  // columns, into the sparser cap's own row too (since `breaks`/`filled`
+  // is shared across both rows) - creating a genuine T-junction between
+  // that row and the sparser cap's own simpler boundary loop (which was
+  // never given those extra columns at all). Confirmed directly: every
+  // one of the sparser (lens) cap's own breakpoints is bit-identical (to
+  // floating-point noise) to the matching face's own forced points at
+  // that SAME location - this is NOT a breakpoint-VALUE mismatch, it is a
+  // genuine adjacency mismatch between the sparse cap's own boundary loop
+  // and the denser row built for the SAME face's OTHER end. Closing this
+  // needs BuildConformingCylinderMesh to carry two genuinely INDEPENDENT
+  // u-breakpoint schedules (one per row) plus a "loft between two
+  // differently-parameterized boundary polylines" triangulator to
+  // reconcile them - a materially larger restructuring of this delicate,
+  // already-many-times-patched dispatch machinery than the fix above, not
+  // attempted here. See
+  // TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly's
+  // own doc comment in the test file for the exact measurement isolating
+  // this from the fix above (640 of that fixture's original 1260 non-
+  // manifold edges survive this increment, confirmed to be exactly this
+  // second mechanism, not a residual of the first).
   std::vector<Mesh> TessellateConforming(int u_divisions = 8, int v_divisions = 8,
                                           int boundary_samples = -1) const;
 

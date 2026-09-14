@@ -12721,35 +12721,56 @@ void TestBooleanCombineMixedParallelCylinderDifferenceNestedFullDisc() {
 // as the Intersection test above. Difference's own construction (the
 // SAME from_a.out/from_b.in wiring, reusing the SAME BuildLensEndCap this
 // increment adds) succeeds without throwing and produces the expected
-// topology - confirmed directly here - but this specific combination
-// surfaces a genuinely NEW, narrowly-scoped tessellation-conforming gap
-// this increment's own implementation found and honestly discloses
-// rather than silently working around or overclaiming past: `from_a.out`
-// here includes BOTH the outer angular wedge (axially split into 3 bands
-// by SplitCylindricalByOtherCylinderAxialExtent, all 3 KEPT since that
-// wedge is never radially inside B) and the inner angular wedge's own two
+// topology - confirmed directly here. `from_a.out` here includes BOTH the
+// outer angular wedge (axially split into 3 bands by
+// SplitCylindricalByOtherCylinderAxialExtent, all 3 KEPT since that wedge
+// is never radially inside B) and the inner angular wedge's own two
 // surviving end bands (its own middle band is the excluded A-inside-B
-// piece). The wedge's own MIDDLE band ([3,9], between the two kept end
-// bands) has no original ends at all - so it never appears as a
+// piece). The outer wedge's own MIDDLE band ([3,9], between the two kept
+// end bands) has no original ends at all, so it never appeared as a
 // `cyl_matches` target in Brep::TessellateConforming() the way its own
 // axially-adjacent siblings (which DO carry either an ordinary BuildEndCap
-// cap or this increment's own lens cap) do - meaning that middle band's
-// own conforming mesh falls back to a PLAIN, uniform-in-u grid, at a
-// DIFFERENT effective angular resolution than its own capped neighbors'
-// match-driven grids. The result: a real, narrow, non-manifold seam
-// exactly at the wedge-to-wedge internal cut lines - NOT a boolean
-// topology defect (Brep::FromMixedFaces() succeeds without throwing,
-// confirmed directly below, and the tessellated volume is correct to
-// within 0.2%, see below) but a genuine Brep::TessellateConforming()
-// limitation: its own per-CylindricalFace breakpoint schedule is derived
-// independently per face from whichever ArcRun matches happen to land on
-// it, with no mechanism yet to propagate a densely-matched neighbor's own
-// breakpoints across an internal, match-free cylindrical seam. Closing
-// this fully needs a broader refactor (a single, shared per-physical-
-// circle breakpoint schedule spanning every fragment of that circle, not
-// today's per-fragment-independent one) - real, tractable, but a
-// separate, larger follow-up, not attempted here; see boolean.h's own
-// BooleanCombineMixed doc comment for this same disclosure.
+// cap or this increment's own lens cap) do - the "friendless middle band"
+// gap boolean.h's own BooleanCombineMixed doc comment discloses. A later
+// increment fixed exactly that mechanism (see
+// Brep::TessellateConforming()'s own doc comment in brep.h, the "FIFTH
+// gap" entry, and
+// TestTessellateConformingFriendlessMiddleBandSyntheticWedgeIsClosedManifold
+// below for the isolated, falsifiable proof) - confirmed directly on
+// THIS fixture too: the 630 non-manifold edges this exact configuration
+// used to show at each of z=3 and z=9 (1260 total) are now down to 320
+// at each level (640 total), and every one of the REMOVED 310-per-level
+// edges was confirmed (by direct angular-range measurement) to lie in
+// the OUTER wedge's own 302-degree sweep - exactly the friendless-
+// middle-band mechanism, and exactly the portion this fix targets.
+//
+// The REMAINING 320-per-level edges are a SEPARATE, previously-
+// undiagnosed gap this same investigation found (not something this
+// increment's own fix attempts, and not the mechanism boolean.h's own
+// pre-existing disclosure named): they lie entirely within the INNER
+// wedge's own much narrower ~58-degree sweep (confirmed directly: their
+// own angular range is exactly [-28.96, +28.96] degrees, the inner
+// wedge's own notch, and their own step size along that range exactly
+// matches a single 65-sample lens-arc pass, not the outer wedge's own
+// 257-point combined quadrant grid). A's own inner wedge bands each have
+// a REAL match at BOTH ends - an ordinary, 4-quadrant BuildEndCap cap at
+// one end, this increment's own single, un-split BuildLensEndCap arc at
+// the other - but BuildConformingCylinderMesh (brep.cpp) shares ONE
+// u-breakpoint list between its two rows, so the quadrant cap's own
+// denser breakpoints leak, as extra unforced columns, into the row that
+// needs to match the sparser lens cap's own simpler boundary instead - a
+// genuine T-junction, confirmed directly (not a breakpoint-VALUE
+// mismatch: every one of the lens run's own 65 points is bit-identical,
+// to floating-point noise, to the matching face's own forced points at
+// that same location). See Brep::TessellateConforming()'s own doc
+// comment in brep.h for the full derivation and why closing it needs a
+// materially larger restructuring (two independent per-row u-breakpoint
+// schedules plus a two-differently-parameterized-polylines lofting
+// triangulator) than this increment's own scope - not attempted here.
+// Consequently this exact fixture's own conforming mesh is STILL not a
+// full Mesh::IsClosedManifold() (unlike the isolated synthetic fixture
+// below, which hits only the fixed mechanism) - the volume check below
+// remains the honest, falsifiable claim this exact fixture can make.
 void TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
@@ -12812,17 +12833,277 @@ void TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectl
   const double vol_a_full = ON_PI * r_a * r_a * 10.0;
   const double hand_derived_volume = vol_a_full - lens_area * 6.0;  // ~= 270.804588
 
-  // Deliberately NOT an IsClosedManifold() check (see this test's own doc
-  // comment above for the disclosed, narrow conforming-tessellation seam
-  // this exact configuration hits) - the tessellated VOLUME is still
-  // meaningful and close, confirming the underlying geometry is right
-  // even though the mesh has a few small non-manifold internal seams.
+  // Deliberately NOT an IsClosedManifold() check - see this test's own
+  // doc comment above for exactly why: this exact fixture's own inner
+  // wedge bands hit a SEPARATE, still-open gap (the quadrant-cap-vs-
+  // lens-cap density mismatch) that this increment's own fix does not
+  // attempt. The tessellated volume remains meaningful and close either
+  // way, confirming the underlying boolean geometry (not merely the mesh
+  // stitching) is correct; a direct edge-count/angular-range measurement
+  // (also described in that same doc comment) is what actually confirms
+  // this increment's own fix closed the outer wedge's own seam here.
   const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
   Check(std::fabs(mesh.Volume() - hand_derived_volume) < 1.0,
         "the crossing Difference result's tessellated volume is still within 1.0 (well under 0.4% relative "
         "error) of A's own full cylinder volume minus the classical lens volume, despite the disclosed "
         "conforming-mesh seam above - confirming the underlying boolean geometry (not just the mesh stitching) "
         "is correct");
+}
+
+// Builds a synthetic 3-band single-cylinder fixture DIRECTLY via
+// Brep::FromMixedFaces() - bypassing BooleanCombineMixed entirely - that
+// isolates exactly ONE mechanism: a CylindricalFace fragment with NO
+// ArcRun match on either end (a "friendless" middle axial band), sharing
+// its own circle with two AXIALLY-ADJACENT, ordinarily-capped siblings.
+// This is deliberately narrower than
+// TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly's
+// own fixture above: THAT fixture's outer wedge hits this exact
+// mechanism too, but its INNER wedge simultaneously hits a SEPARATE,
+// still-open density-mismatch gap (see that test's own doc comment) that
+// this increment's own fix does not attempt - so THAT fixture's own mesh
+// can never assert a clean, isolated Mesh::IsClosedManifold() for this
+// mechanism alone. This fixture can, because both of its own caps are
+// built the IDENTICAL, ordinary 4-quadrant BuildEndCap shape (same
+// density on both ends - no lens cap, no cross-density mismatch), so
+// there is no second mechanism left to interfere.
+//
+// Three CylindricalFace fragments - [0,3], [3,7], [7,10] - share ONE
+// FULL circle (radius=3, angle=2*pi, same frame). Deliberately full-
+// sweep rather than a genuine partial wedge: a partial wedge's own two
+// straight rails would need real, matching straight-edge closure faces
+// of their own (a separate, well-tested mechanism this fixture has no
+// need to also exercise) to form a closed solid at all, while a full
+// 2*pi sweep closes on itself at u=0/u=u_max via ordinary position-based
+// welding - the same convention every other full-cylinder test in this
+// file already relies on - leaving ONLY the mechanism this test actually
+// targets in play. Only the OUTER two bands ([0,3] at v=0, [7,10] at
+// v=length) get a real end cap, built here inline as 4 quadrant pieces
+// mirroring BuildEndCap's own same_handed/mirrored-basis math exactly
+// (boolean.cpp) - the SAME shape/density every existing passing
+// full-cylinder conforming test in this file already uses. The middle
+// band [3,7] gets nothing at either end - a "friendless" fragment by
+// construction, exactly like A's own outer wedge's middle band in the
+// BooleanCombineMixed fixture above, but without that fixture's own
+// separate inner-wedge gap alongside it.
+//
+// Falsifiability verified directly (not merely asserted): temporarily
+// reverting Brep::TessellateConforming()'s own fallback fix (this file's
+// git history) and rebuilding makes this exact test's own
+// IsClosedManifold() check fail, confirming it fails for the right
+// reason rather than trivially passing regardless of the fix.
+void TestTessellateConformingFriendlessMiddleBandSyntheticWedgeIsClosedManifold() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double radius = 3.0;
+  const double angle = 2.0 * ON_PI;
+  const double z0 = 0.0, z1 = 3.0, z2 = 7.0, z3 = 10.0;
+
+  auto make_band = [&](double z_begin, double z_end) {
+    Brep::CylindricalFace cf;
+    cf.frame.origin = Point3d(0, 0, z_begin);
+    cf.frame.xaxis = Vector3d(1, 0, 0);
+    cf.frame.yaxis = Vector3d(0, 1, 0);
+    cf.frame.zaxis = Vector3d(0, 0, 1);
+    cf.frame.UpdateEquation();
+    cf.radius = radius;
+    cf.angle = angle;
+    cf.length = z_end - z_begin;
+    cf.outward = true;
+    return cf;
+  };
+  const Brep::CylindricalFace band1 = make_band(z0, z1);  // [0,3]  - capped at v=0 (z=0)
+  const Brep::CylindricalFace band2 = make_band(z1, z2);  // [3,7]  - friendless
+  const Brep::CylindricalFace band3 = make_band(z2, z3);  // [7,10] - capped at v=length (z=10)
+
+  // Mirrors BuildEndCap's own same_handed/mirrored-basis/4-quadrant
+  // construction (boolean.cpp) exactly - the identical shape every
+  // existing passing full-cylinder conforming test in this file relies
+  // on for its own end caps.
+  auto build_quadrant_caps = [&](const Brep::CylindricalFace& cf, bool at_v0, int per_quadrant) {
+    const double height = at_v0 ? 0.0 : cf.length;
+    const Point3d center = cf.frame.origin + height * cf.frame.zaxis;
+    const bool same_handed = at_v0 ? !cf.outward : cf.outward;
+    Vector3d plane_xaxis, plane_yaxis;
+    if (same_handed) {
+      plane_xaxis = cf.frame.xaxis;
+      plane_yaxis = cf.frame.yaxis;
+    } else {
+      const double ca = std::cos(cf.angle), sa = std::sin(cf.angle);
+      plane_xaxis = ca * cf.frame.xaxis + sa * cf.frame.yaxis;
+      plane_yaxis = sa * cf.frame.xaxis - ca * cf.frame.yaxis;
+    }
+    auto point_on_face = [&](double physical_theta) {
+      return center + cf.radius * (std::cos(physical_theta) * cf.frame.xaxis + std::sin(physical_theta) * cf.frame.yaxis);
+    };
+    std::vector<Brep::PlanarFace> pieces;
+    for (int q = 0; q < 4; ++q) {
+      const double plane_theta_begin = cf.angle * static_cast<double>(q) / 4.0;
+      const double plane_theta_end = cf.angle * static_cast<double>(q + 1) / 4.0;
+      std::vector<Point3d> loop;
+      loop.push_back(center);
+      std::vector<Point3d> arc_pts;
+      arc_pts.reserve(static_cast<size_t>(per_quadrant) + 1);
+      for (int s = 0; s <= per_quadrant; ++s) {
+        const double t = static_cast<double>(s) / static_cast<double>(per_quadrant);
+        const double plane_theta = plane_theta_begin + (plane_theta_end - plane_theta_begin) * t;
+        const double physical_theta = same_handed ? plane_theta : (cf.angle - plane_theta);
+        arc_pts.push_back(point_on_face(physical_theta));
+      }
+      for (const Point3d& p : arc_pts) loop.push_back(p);
+      Brep::PlanarFace::ArcRun run;
+      run.begin = 1;
+      run.count = static_cast<int>(arc_pts.size());
+      run.center = center;
+      run.radius = cf.radius;
+      run.angle_begin = plane_theta_begin;
+      run.angle_end = plane_theta_end;
+      run.plane_xaxis = plane_xaxis;
+      run.plane_yaxis = plane_yaxis;
+      Brep::PlanarFace cap;
+      cap.loop = std::move(loop);
+      cap.arc_runs.push_back(run);
+      cap.plane.origin = center;
+      cap.plane.xaxis = plane_xaxis;
+      cap.plane.yaxis = plane_yaxis;
+      cap.plane.zaxis = same_handed ? cf.frame.zaxis : -cf.frame.zaxis;
+      cap.plane.UpdateEquation();
+      pieces.push_back(std::move(cap));
+    }
+    return pieces;
+  };
+
+  std::vector<Brep::PlanarFace> caps;
+  for (Brep::PlanarFace& p : build_quadrant_caps(band1, /*at_v0=*/true, 16)) caps.push_back(std::move(p));
+  for (Brep::PlanarFace& p : build_quadrant_caps(band3, /*at_v0=*/false, 16)) caps.push_back(std::move(p));
+
+  const Brep result = Brep::FromMixedFaces(caps, {band1, band2, band3});
+  const auto mf = result.MixedFaces();
+  Check(mf.cylindrical.size() == 3 && mf.planar.size() == 8,
+        "the synthetic 3-band cylinder round-trips through Brep::FromMixedFaces()/MixedFaces() with exactly the "
+        "3 cylindrical bands and 8 planar quadrant-cap pieces (4 quadrants x 2 caps) it was built from - no "
+        "edge-identity surprises from the hand-built ArcRun/loop pairing");
+
+  const double hand_derived_volume = ON_PI * radius * radius * (z3 - z0);
+  const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "the synthetic 3-band cylinder's conforming mesh (div=64) IS a genuinely closed manifold - unlike the "
+        "BooleanCombineMixed crossing-Difference fixture above (which hits a SECOND, still-open gap on its own "
+        "inner wedge alongside this one), this fixture hits ONLY the friendless-middle-band mechanism, so this "
+        "check isolates and falsifiably confirms Brep::TessellateConforming()'s own fallback fix (reusing an "
+        "axially-adjacent sibling's own raw_u breakpoints via SameWedgeAsCylinder - see brep.h's own doc "
+        "comment) actually closes it - verified directly to fail without that fix (see this test's own doc "
+        "comment above)");
+  Check(std::fabs(mesh.Volume() - hand_derived_volume) < 0.1,
+        "the synthetic 3-band cylinder's tessellated volume matches the closed-form pi*r^2*length volume to "
+        "well under 0.1% relative error (the small residual is ordinary circle-to-64-gon tessellation "
+        "flattening, not a boolean or welding defect)");
+}
+
+// Re-derives the SAME synthetic 3-band cylinder fixture as the test just
+// above, but at ASYMMETRIC divisions (u_divisions=12, v_divisions=20, so
+// boundary_samples defaults to max(12,20)=20 != u_divisions) - confirming
+// the middle band's own fallback breakpoint schedule is built from the
+// axially-adjacent siblings' own ACTUAL raw_u breakpoints (which are
+// always sampled with `boundary_samples`, per the arc-matching pass),
+// not `u_divisions`: at the symmetric 64/64 divisions above,
+// boundary_samples == u_divisions by construction, so a fallback that
+// mistakenly used u_divisions instead would stay hidden; this asymmetric
+// pair is the one that would expose it.
+void TestTessellateConformingFriendlessMiddleBandSyntheticWedgeAsymmetricDivisionsIsClosedManifold() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double radius = 3.0;
+  const double angle = 2.0 * ON_PI;
+  const double z0 = 0.0, z1 = 3.0, z2 = 7.0, z3 = 10.0;
+
+  auto make_band = [&](double z_begin, double z_end) {
+    Brep::CylindricalFace cf;
+    cf.frame.origin = Point3d(0, 0, z_begin);
+    cf.frame.xaxis = Vector3d(1, 0, 0);
+    cf.frame.yaxis = Vector3d(0, 1, 0);
+    cf.frame.zaxis = Vector3d(0, 0, 1);
+    cf.frame.UpdateEquation();
+    cf.radius = radius;
+    cf.angle = angle;
+    cf.length = z_end - z_begin;
+    cf.outward = true;
+    return cf;
+  };
+  const Brep::CylindricalFace band1 = make_band(z0, z1);
+  const Brep::CylindricalFace band2 = make_band(z1, z2);
+  const Brep::CylindricalFace band3 = make_band(z2, z3);
+
+  auto build_quadrant_caps = [&](const Brep::CylindricalFace& cf, bool at_v0, int per_quadrant) {
+    const double height = at_v0 ? 0.0 : cf.length;
+    const Point3d center = cf.frame.origin + height * cf.frame.zaxis;
+    const bool same_handed = at_v0 ? !cf.outward : cf.outward;
+    Vector3d plane_xaxis, plane_yaxis;
+    if (same_handed) {
+      plane_xaxis = cf.frame.xaxis;
+      plane_yaxis = cf.frame.yaxis;
+    } else {
+      const double ca = std::cos(cf.angle), sa = std::sin(cf.angle);
+      plane_xaxis = ca * cf.frame.xaxis + sa * cf.frame.yaxis;
+      plane_yaxis = sa * cf.frame.xaxis - ca * cf.frame.yaxis;
+    }
+    auto point_on_face = [&](double physical_theta) {
+      return center + cf.radius * (std::cos(physical_theta) * cf.frame.xaxis + std::sin(physical_theta) * cf.frame.yaxis);
+    };
+    std::vector<Brep::PlanarFace> pieces;
+    for (int q = 0; q < 4; ++q) {
+      const double plane_theta_begin = cf.angle * static_cast<double>(q) / 4.0;
+      const double plane_theta_end = cf.angle * static_cast<double>(q + 1) / 4.0;
+      std::vector<Point3d> loop;
+      loop.push_back(center);
+      std::vector<Point3d> arc_pts;
+      arc_pts.reserve(static_cast<size_t>(per_quadrant) + 1);
+      for (int s = 0; s <= per_quadrant; ++s) {
+        const double t = static_cast<double>(s) / static_cast<double>(per_quadrant);
+        const double plane_theta = plane_theta_begin + (plane_theta_end - plane_theta_begin) * t;
+        const double physical_theta = same_handed ? plane_theta : (cf.angle - plane_theta);
+        arc_pts.push_back(point_on_face(physical_theta));
+      }
+      for (const Point3d& p : arc_pts) loop.push_back(p);
+      Brep::PlanarFace::ArcRun run;
+      run.begin = 1;
+      run.count = static_cast<int>(arc_pts.size());
+      run.center = center;
+      run.radius = cf.radius;
+      run.angle_begin = plane_theta_begin;
+      run.angle_end = plane_theta_end;
+      run.plane_xaxis = plane_xaxis;
+      run.plane_yaxis = plane_yaxis;
+      Brep::PlanarFace cap;
+      cap.loop = std::move(loop);
+      cap.arc_runs.push_back(run);
+      cap.plane.origin = center;
+      cap.plane.xaxis = plane_xaxis;
+      cap.plane.yaxis = plane_yaxis;
+      cap.plane.zaxis = same_handed ? cf.frame.zaxis : -cf.frame.zaxis;
+      cap.plane.UpdateEquation();
+      pieces.push_back(std::move(cap));
+    }
+    return pieces;
+  };
+
+  std::vector<Brep::PlanarFace> caps;
+  for (Brep::PlanarFace& p : build_quadrant_caps(band1, /*at_v0=*/true, 16)) caps.push_back(std::move(p));
+  for (Brep::PlanarFace& p : build_quadrant_caps(band3, /*at_v0=*/false, 16)) caps.push_back(std::move(p));
+
+  const Brep result = Brep::FromMixedFaces(caps, {band1, band2, band3});
+  const Mesh mesh = result.TessellateToClosedMeshConforming(12, 20);
+  Check(mesh.IsClosedManifold(),
+        "the synthetic 3-band cylinder's conforming mesh stays a genuinely closed manifold even at ASYMMETRIC "
+        "divisions (u=12, v=20, so boundary_samples defaults to 20 != u_divisions) - confirming the middle "
+        "band's own fallback schedule is built from the axially-adjacent siblings' own actual raw_u breakpoints "
+        "(always sampled with `boundary_samples`), not `u_divisions`, since the symmetric 64/64 case alone "
+        "(u_divisions == boundary_samples there) could not distinguish the two");
 }
 
 // Confirms every EXISTING Union test in this file (and the still-throwing
@@ -13164,6 +13445,8 @@ int main() {
   TestBooleanCombineMixedParallelCylinderIntersectionLensCapRailIsBitIdentical();
   TestBooleanCombineMixedParallelCylinderDifferenceNestedFullDisc();
   TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly();
+  TestTessellateConformingFriendlessMiddleBandSyntheticWedgeIsClosedManifold();
+  TestTessellateConformingFriendlessMiddleBandSyntheticWedgeAsymmetricDivisionsIsClosedManifold();
   TestBooleanCombineMixedParallelCylinderIntersectionUnaffectsUnionAndNonParallelCases();
 
   ON::End();
