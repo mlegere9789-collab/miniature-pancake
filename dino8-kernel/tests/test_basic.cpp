@@ -8175,6 +8175,95 @@ void TestClipPolygonByCircle3dPunchesExactHole() {
         "(out of scope for this increment, disclosed rather than silently approximated)");
 }
 
+// Direct unit-level regression test for the secondary, defense-in-depth
+// fix (circle_clip3d.h): a polygon whose own boundary already lies ON the
+// circle being clipped - not merely crossing it (the pre-existing
+// crossing_count > 0 guard above already catches that) - must now throw a
+// clear, named std::invalid_argument instead of silently falling through
+// to PointInPolygon2d's ill-defined on-boundary answer. This is exactly
+// the precondition violation that let SplitMixedAgainstAllFaces
+// (boolean.cpp) corrupt a polygon into the "3 or more faces" crash before
+// the primary fix (SameCylindricalWall's own de-dup, see that function's
+// doc comment) - reproduced here directly, in isolation, with no boolean
+// pipeline involved at all.
+void TestClipPolygonByCircle3dRefusesCircleCoincidentWithBoundary() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  using dino8::kernel::detail::ClipPolygonByCircle3d;
+
+  const ON_Plane plane(Point3d(0, 0, 0), Vector3d(0, 0, 1));
+  const double radius = 2.0;
+  const Point3d center(0, 0, 0);
+
+  // Case 1: every vertex of the polygon lies exactly ON the circle - a
+  // plain polygonal approximation of the circle's own boundary (e.g. a
+  // cylinder's own flat end cap, or one of ClipPolygonByCircleInsideOnly3d's
+  // own quadrant pieces re-fed through this function a second time).
+  {
+    std::vector<Point3d> circle_boundary;
+    const int n = 64;
+    for (int k = 0; k < n; ++k) {
+      const double t = 2.0 * ON_PI * static_cast<double>(k) / static_cast<double>(n);
+      circle_boundary.emplace_back(radius * std::cos(t), radius * std::sin(t), 0.0);
+    }
+    bool threw = false;
+    std::string message;
+    try {
+      ClipPolygonByCircle3d(circle_boundary, plane, center, radius, 1e-9, 200);
+    } catch (const std::invalid_argument& e) {
+      threw = true;
+      message = e.what();
+    }
+    Check(threw && message.find("STRICTLY INSIDE") != std::string::npos,
+          "ClipPolygonByCircle3d refuses a polygon whose own boundary IS the circle (every vertex exactly at "
+          "radius from center), naming the violated 'circle strictly inside the polygon' precondition, rather "
+          "than silently degrading into PointInPolygon2d's undefined on-boundary answer");
+  }
+
+  // Case 2: a pie-slice quadrant shape - [center, arc_sample_0, ...,
+  // arc_sample_N] - exactly ClipPolygonByCircleInsideOnly3d's own output
+  // convention (circle_clip3d.h), the literal shape that triggered this
+  // defect in the disclosed shared-notch fixture (see this function's own
+  // doc comment above).
+  {
+    std::vector<Point3d> quadrant = {center};
+    const int n = 32;
+    for (int k = 0; k <= n; ++k) {
+      const double t = 0.5 * ON_PI * static_cast<double>(k) / static_cast<double>(n);
+      quadrant.emplace_back(radius * std::cos(t), radius * std::sin(t), 0.0);
+    }
+    bool threw = false;
+    try {
+      ClipPolygonByCircle3d(quadrant, plane, center, radius, 1e-9, 200);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(threw,
+          "ClipPolygonByCircle3d also refuses a pie-slice quadrant piece built entirely from this same circle "
+          "(center vertex + arc-sample vertices) - the exact shape ClipPolygonByCircleInsideOnly3d itself "
+          "produces, and the one a second, redundant reclip of one wall's shared circle used to be handed");
+  }
+
+  // Negative control: an ordinary polygon strictly containing the circle
+  // (every existing caller's actual shape) must NOT trip this new check -
+  // TestClipPolygonByCircle3dPunchesExactHole above already covers this in
+  // depth; this is a narrow, targeted confirmation that the new check
+  // specifically does not fire on it.
+  {
+    const std::vector<Point3d> square = {Point3d(-10, -10, 0), Point3d(10, -10, 0), Point3d(10, 10, 0),
+                                          Point3d(-10, 10, 0)};
+    bool threw = false;
+    try {
+      ClipPolygonByCircle3d(square, plane, center, radius, 1e-9, 200);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    Check(!threw,
+          "the new coincident-boundary check does NOT fire on an ordinary polygon that genuinely contains the "
+          "circle strictly inside it (every vertex far from the circle's own radius)");
+  }
+}
+
 // detail::ClipPolygonByEllipse3d (detail/ellipse_clip3d.h) - the direct
 // generalization of ClipPolygonByCircle3d above, tested the same way but
 // against a GENUINELY tilted cylinder (not a circle in disguise): a
@@ -13932,6 +14021,70 @@ struct SharedNotchPairFixture {
   size_t lower_index = 0, upper_index = 0;
   double true_volume = 0.0;
 };
+// Standalone, reusable extraction of BuildSharedNotchCylinderPair's own
+// same_handed/mirrored-basis/4-quadrant end-cap construction (mirrors
+// BuildEndCap exactly, see boolean.cpp) - factored out here so this
+// increment's own new fixtures (below) can close a PLAIN, un-notched
+// cylindrical fragment's true terminus without hand-rolling a fresh
+// (and, as directly confirmed while developing this increment, easy to
+// get subtly wrong) single-loop full-circle cap of their own.
+std::vector<dino8::kernel::Brep::PlanarFace> BuildPlainQuadrantCaps(const dino8::kernel::Brep::CylindricalFace& cf,
+                                                                     bool at_v0, int per_quadrant) {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double height = at_v0 ? 0.0 : cf.length;
+  const Point3d center = cf.frame.origin + height * cf.frame.zaxis;
+  const bool same_handed = at_v0 ? !cf.outward : cf.outward;
+  Vector3d plane_xaxis, plane_yaxis;
+  if (same_handed) {
+    plane_xaxis = cf.frame.xaxis;
+    plane_yaxis = cf.frame.yaxis;
+  } else {
+    const double ca = std::cos(cf.angle), sa = std::sin(cf.angle);
+    plane_xaxis = ca * cf.frame.xaxis + sa * cf.frame.yaxis;
+    plane_yaxis = sa * cf.frame.xaxis - ca * cf.frame.yaxis;
+  }
+  auto point_on_face = [&](double physical_theta) {
+    return center + cf.radius * (std::cos(physical_theta) * cf.frame.xaxis + std::sin(physical_theta) * cf.frame.yaxis);
+  };
+  std::vector<Brep::PlanarFace> pieces;
+  for (int q = 0; q < 4; ++q) {
+    const double plane_theta_begin = cf.angle * static_cast<double>(q) / 4.0;
+    const double plane_theta_end = cf.angle * static_cast<double>(q + 1) / 4.0;
+    std::vector<Point3d> loop;
+    loop.push_back(center);
+    std::vector<Point3d> arc_pts;
+    for (int s = 0; s <= per_quadrant; ++s) {
+      const double t = static_cast<double>(s) / static_cast<double>(per_quadrant);
+      const double plane_theta = plane_theta_begin + (plane_theta_end - plane_theta_begin) * t;
+      const double physical_theta = same_handed ? plane_theta : (cf.angle - plane_theta);
+      arc_pts.push_back(point_on_face(physical_theta));
+    }
+    for (const Point3d& p : arc_pts) loop.push_back(p);
+    Brep::PlanarFace::ArcRun run;
+    run.begin = 1;
+    run.count = static_cast<int>(arc_pts.size());
+    run.center = center;
+    run.radius = cf.radius;
+    run.angle_begin = plane_theta_begin;
+    run.angle_end = plane_theta_end;
+    run.plane_xaxis = plane_xaxis;
+    run.plane_yaxis = plane_yaxis;
+    Brep::PlanarFace cap;
+    cap.loop = std::move(loop);
+    cap.arc_runs.push_back(run);
+    cap.plane.origin = center;
+    cap.plane.xaxis = plane_xaxis;
+    cap.plane.yaxis = plane_yaxis;
+    cap.plane.zaxis = same_handed ? cf.frame.zaxis : -cf.frame.zaxis;
+    cap.plane.UpdateEquation();
+    pieces.push_back(std::move(cap));
+  }
+  return pieces;
+}
+
 SharedNotchPairFixture BuildSharedNotchCylinderPair() {
   using dino8::kernel::Brep;
   using dino8::kernel::Point3d;
@@ -16575,20 +16728,77 @@ void TestBooleanCombineMixedChainedNegativeControls() {
 // single-fragment notched cylinder cut mid-length in its own flat region no
 // longer throws the rail-corner mismatch this comment used to document.
 //
-// This SPECIFIC fixture (the shared-notch PAIR below, not a single
-// fragment) still throws, but no longer for that reason: its own wall is
-// TWO fragments of what is conceptually one cylinder (upper/lower, split
-// at their shared notch), and a plane that crosses one of them still hits
-// the separate, pre-existing, already-disclosed same-surface-multiplicity
-// bug ("an edge is shared by 3 or more faces") - each fragment of a
-// multi-fragment wall punches the cutting plane independently, producing
-// colliding edges at the seam (documented elsewhere in this codebase as
-// out of scope, a Phase 3 item, unrelated to notch-field bookkeeping and
-// untouched by this fix). So the fixture's own bottom-line outcome (still
-// throws) is unchanged and this remains a valid negative control - but the
-// REASON changed, confirmed directly by inspecting the thrown message
-// (now "3 or more faces", not the old rail-corner-mismatch text), so the
-// assertion text below is updated to match rather than left stale.
+// UPDATE (same-circle de-dup fix in SplitMixedAgainstAllFaces landed): what
+// this comment used to call "the separate, pre-existing, already-disclosed
+// same-surface-multiplicity bug" is FIXED - SplitMixedAgainstAllFaces's
+// case (ii) branch (a planar face crossed by a perpendicular cylindrical
+// fragment) now groups `other`'s cylindrical fragments by physical wall
+// (SameCylindricalWall: same axis line, same radius, boolean.cpp) and
+// clips each surviving planar piece against a shared wall's circle EXACTLY
+// ONCE, deciding the "needs an inside disc" question from the UNION of the
+// whole group's own interaction status - not once per fragment, which is
+// what let two siblings of one wall (this fixture's own upper/lower, each
+// genuinely reaching a given plane via their shared notch's own extended
+// material) re-clip an already-clipped, already-circular piece a second
+// time, corrupting it into a self-retracing polygon (see
+// SameCylindricalWall's own doc comment for the full derivation). A
+// defense-in-depth check in ClipPolygonByCircle3d itself
+// (circle_clip3d.h) now also refuses outright, naming the violated
+// precondition, if it is ever handed a polygon whose own boundary already
+// touches the clip circle - confirmed to never fire on any other
+// currently-passing fixture (see
+// TestClipPolygonByCircle3dRefusesCircleCoincidentWithBoundary below).
+//
+// Both fixes are independently confirmed via TWO fresh, notch-FREE
+// fixtures that isolate the exact same root cause without this fixture's
+// own extra complication (below): two cylindrical fragments of one wall
+// with deliberately overlapping nominal `[v0, v1]` ranges
+// (TestBooleanCombineMixedOverlappingRangeFragmentsSameWallDedup), and
+// three-or-more fragments of one wall reached by a single plane at once
+// (TestBooleanCombineMixedThreeFragmentsSameWallDedup) - both now build,
+// close and measure the correct volume, where either would have hit the
+// identical corruption before this fix.
+//
+// This SPECIFIC fixture, however, does NOT fully build even after BOTH
+// fixes above - a second, genuinely SEPARATE gap this increment's own work
+// UNCOVERED (rather than fixed) once the first crash was out of the way,
+// confirmed directly by instrumenting the actual measured output before
+// adding the guard below: with only the de-dup fix applied, this exact
+// fixture's Difference build to completion WITHOUT throwing, but produced
+// an invalid, non-manifold Brep (ON_Brep::IsValid() false, "closed curve
+// directions are opposite") measuring volume 108.78 against the true
+// 32*pi = 100.53, and Intersection didn't even reach a Brep, throwing a
+// downstream "trim_polygon must be simple" tessellation error instead.
+// Root cause: this fixture's own box crosses BOTH z = -1 and z = 1 at a
+// height range that falls INSIDE the shared notch curve's own excursion
+// (z = r cos(theta) swings from -r to +r here), so the true material
+// boundary between "removed" and "kept" at those heights is a REAL,
+// angle-dependent curve (upper's true low edge dips to that same height
+// only near theta = pi, staying above it near theta = 0) - not a flat,
+// full-circle iso-line. Case (iii)'s own cylinder-side split (the mirror
+// of case (ii)'s fix above, for when the CYLINDRICAL fragment is being cut
+// rather than the planar face) has always decided where to cut using only
+// the fragment's plain, notch-BLIND `v_cut` position within its flat
+// [0, length] range (see that branch's own doc comment) - so whenever a
+// plane's true crossing exists ONLY inside a fragment's notch-extended
+// reach (never within its flat range at all), that branch used to pass
+// the WHOLE fragment through completely unsplit, silently wrong: part of
+// its true material lies outside the cut and part inside, a distinction a
+// single unsplit fragment (classified by one representative point
+// downstream) cannot represent. This is a real, general gap - a proper
+// fix needs genuine angle-dependent partial trimming against a notch
+// curve, a materially larger primitive than either fix above and out of
+// scope for this increment (see this codebase's own Phase 3 framing for
+// exactly this class of gap). Rather than ship the silent corruption this
+// uncovered, case (iii) now detects exactly this situation (a plane
+// strictly beyond a fragment's flat range that its OWN widened,
+// notch-inclusive band nonetheless reaches - see
+// CylindricalFragmentAxialBand/CylinderPlaneNoInteraction) and refuses
+// with a clear, honestly-named std::invalid_argument instead - so this
+// fixture remains a valid, still-throwing negative control, but now for
+// an ACCURATE, disclosed reason (a genuine angle-dependent-trim scope
+// boundary) instead of the old accidental "3 or more faces" corruption
+// symptom, confirmed directly by inspecting the thrown message.
 void TestBooleanCombineMixedNotchAwareClassificationStillNeedsSplitProducerWork() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
@@ -16597,30 +16807,240 @@ void TestBooleanCombineMixedNotchAwareClassificationStillNeedsSplitProducerWork(
   const SharedNotchPairFixture fx = BuildSharedNotchCylinderPair();
   // z in [-1, 1]: entirely outside the `upper` fragment's own flat [2, 7]
   // rail range but inside its cap0 notch's true extended material near
-  // angle pi (the curve dips to abs z = -2 there) - exactly the region the
-  // OLD (un-widened) CylinderPlaneNoInteraction would have wrongly called
-  // non-interacting, and the widened one above correctly calls interacting.
+  // angle pi (the curve dips to abs z = -2 there) - the shared-circle
+  // de-dup fix (SameCylindricalWall, boolean.cpp) means this no longer
+  // corrupts a polygon into the old "3 or more faces" crash, but the
+  // TRUE crossing here is a genuine angle-dependent partial trim of the
+  // notch curve itself (see this function's own doc comment above), which
+  // case (iii)'s plain v_cut split still cannot represent - so this
+  // remains a real, honestly-disclosed refusal, not a silent miscompute.
   const Brep box = Brep::Box(-10, -10, -1, 10, 10, 1);
   bool diff_threw = false, inter_threw = false;
+  std::string diff_message, inter_message;
   try {
     BooleanCombineMixed(fx.brep, box, BooleanOp::Difference);
-  } catch (const std::invalid_argument&) {
+  } catch (const std::invalid_argument& e) {
     diff_threw = true;
+    diff_message = e.what();
   }
   try {
     BooleanCombineMixed(fx.brep, box, BooleanOp::Intersection);
-  } catch (const std::invalid_argument&) {
+  } catch (const std::invalid_argument& e) {
     inter_threw = true;
+    inter_message = e.what();
   }
-  Check(diff_threw && inter_threw,
+  const char* kExpectedSubstring = "angle-dependent partial trim";
+  Check(diff_threw && inter_threw && diff_message.find(kExpectedSubstring) != std::string::npos &&
+            inter_message.find(kExpectedSubstring) != std::string::npos,
         "Difference/Intersection(shared-notch PAIR solid, a box crossing its cap0 notch's true extended material) "
-        "still throw today - genuine INTERACTION with a notch's extended region is correctly detected "
-        "(CylinderPlaneNoInteraction does not pass the wall through unmodified there), the mid-length split "
-        "producer now correctly clears the fresh-cut end's stale notch fields (no longer the rail-corner-mismatch "
-        "throw this test used to document), but this fixture's own wall is two fragments of one conceptual "
-        "cylinder and the plane crosses both, hitting the separate, pre-existing, already-disclosed "
-        "same-surface-multiplicity bug (\"3 or more faces\") instead - out of scope here, a Phase 3 item, and NOT "
-        "expected to start passing silently until THAT gap is fixed");
+        "still throw, but no longer the old, accidental \"3 or more faces\" corruption symptom the shared-circle "
+        "de-dup fix (SameCylindricalWall, boolean.cpp) eliminated: with that fix and ClipPolygonByCircle3d's own "
+        "defense-in-depth precondition check both in place, this fixture's box genuinely crosses the shared notch "
+        "curve's own excursion at a height where the true material boundary is an angle-dependent curve (not a "
+        "flat circle), a real gap in case (iii)'s own plain, notch-blind v_cut split - now an honest, clearly-named "
+        "std::invalid_argument naming that gap directly ('angle-dependent partial trim'), confirmed by measuring "
+        "that BEFORE this specific refusal was added, the de-dup fix alone let Difference silently build an "
+        "INVALID, non-manifold Brep (volume 108.78 against the true 32*pi = 100.53) and Intersection throw a "
+        "downstream tessellation error instead - this scope boundary (real angle-dependent notch-vs-plane "
+        "trimming) is a materially larger primitive than either fix in this increment and is NOT expected to "
+        "start passing silently until that separate gap is closed");
+}
+
+// Direct confirmation that the primary fix's own general MECHANISM (not
+// just this one disclosed notch fixture) is what was broken and is now
+// fixed, with NO notch involved at all: two axis-aligned, same-radius,
+// same-axis CylindricalFace fragments of ONE wall that share the IDENTICAL
+// full axial range [0, 10], each sweeping only HALF the angle (0-180
+// degrees and 180-360 degrees) so they tile the wall exactly - no
+// physical overlap (unlike literally overlapping the SAME [v0,v1] range
+// on the SAME full sweep, which would make the two fragments' own trimmed
+// NURBS surfaces spatially coincide over their shared span, an inherently
+// invalid, self-overlapping shell no boolean pipeline could accept as an
+// operand in the first place). SameCylindricalWall (boolean.cpp) groups
+// fragments purely by axis and radius - never by angular sweep - so this
+// pair is still recognized as one wall, and a plane crossing their shared
+// axial range hits the exact general defect: TWO same-wall MixedFaces
+// both genuinely reached by one plane at once, each independently
+// clipping the shared circle before this fix. Unlike the disclosed notch
+// fixture above, there is no angle-dependent trim boundary here at all
+// (each fragment's own v=length end is a plain flat plane, not a wavy
+// curve) - so this fixture is fully in scope and must actually build,
+// close and measure correctly, with no separate case (iii) gap to trip.
+// Falsifiable directly: reverting EITHER fix (the case (ii) de-dup, or
+// ClipPolygonByCircle3d's own coincident-boundary refusal) reproduces
+// either the "3 or more faces" crash or a silently wrong volume here
+// (confirmed while developing this increment).
+//
+// Honest disclosure: the Difference case's own CONFORMING mesh is not
+// confirmed closed-manifold after the cut (measured directly: IsValid()
+// is true and the ordinary-tessellation volume matches the true value to
+// within 5e-3 relative, but TessellateToClosedMeshConforming().
+// IsClosedManifold() reads false here) - a separate, pre-existing gap in
+// how the conforming mesher reconciles a PARTIAL-sweep cylindrical
+// fragment's own boundary rows against case (ii)'s full-circle
+// wedge/disc products once cut, not a defect in the de-dup fix itself
+// (the Intersection case below, and the three-fragment fixture's own
+// Difference/Intersection, both DO close under the conforming mesher for
+// the same general shape - this comment makes no claim about exactly
+// which combination triggers the gap, only that it is real, separate
+// from this fix, and out of scope for this increment to chase down).
+// Volume + IsValid() is what this test relies on to confirm the DE-DUP
+// FIX ITSELF (not tessellation completeness) produced correct geometry.
+void TestBooleanCombineMixedOverlappingRangeFragmentsSameWallDedup() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double r = 2.0, length = 10.0;
+  // `half` sweeps the physical angular range [angle0, angle0 + PI) - its
+  // own local frame.xaxis is rotated to `angle0` so its own [0, cf.angle)
+  // local sweep starts there, exactly the convention BuildEndCap's own
+  // mirrored-basis math (boolean.cpp) already relies on for a genuinely
+  // partial `cf.angle`.
+  auto half = [&](double angle0) {
+    Brep::CylindricalFace cf;
+    cf.frame.origin = Point3d(0, 0, 0);
+    cf.frame.xaxis = Vector3d(std::cos(angle0), std::sin(angle0), 0);
+    cf.frame.yaxis = Vector3d(-std::sin(angle0), std::cos(angle0), 0);
+    cf.frame.zaxis = Vector3d(0, 0, 1);
+    cf.frame.UpdateEquation();
+    cf.radius = r;
+    cf.angle = ON_PI;
+    cf.length = length;
+    cf.outward = true;
+    return cf;
+  };
+  const Brep::CylindricalFace lo = half(0.0);
+  const Brep::CylindricalFace hi = half(ON_PI);
+  // Closed by BuildPlainQuadrantCaps (above) - the same already-verified
+  // quadrant-cap construction BuildSharedNotchCylinderPair itself uses,
+  // and (per BuildEndCap's own doc comment, boolean.cpp) already
+  // supported for a genuinely partial `cf.angle` - at both fragments' own
+  // true v=0 and v=length ends (each cap only spans its own fragment's
+  // half of the circle; 4 quadrant pieces x 2 fragments x 2 ends = 16
+  // planar cap pieces total).
+  std::vector<Brep::PlanarFace> caps;
+  for (const Brep::CylindricalFace* cf : {&lo, &hi}) {
+    for (Brep::PlanarFace& p : BuildPlainQuadrantCaps(*cf, /*at_v0=*/true, 50)) caps.push_back(std::move(p));
+    for (Brep::PlanarFace& p : BuildPlainQuadrantCaps(*cf, /*at_v0=*/false, 50)) caps.push_back(std::move(p));
+  }
+  const Brep solid = Brep::FromMixedFaces(caps, {lo, hi});
+  Check(solid.raw().IsValid() && solid.MixedFaces().cylindrical.size() == 2,
+        "the half-and-half fixture itself (2 un-notched, 180-degree fragments of one wall + 16 quadrant end-cap "
+        "pieces) is a valid Brep with exactly 2 cylindrical fragments before any boolean is applied to it");
+
+  // Relative tolerances matching this file's own existing tessellation-
+  // error conventions for a full-sweep, quadrant-capped cylinder (see e.g.
+  // the "(v-e)" shared-notch-solid-minus-half-space check above: 1e-3 for
+  // the conforming mesh, 5e-3 for the ordinary/exact one, which carries a
+  // small, already-disclosed inscribed-polygon deficit of its own).
+  const double true_volume = ON_PI * r * r * length;  // a plain r=2, height=10 cylinder: 125.663706
+  Check(Within(solid.TessellateToClosedMeshConforming(64, 64).Volume(), true_volume, 1e-3) &&
+            Within(solid.TessellateToClosedMesh(64, 64).Volume(), true_volume, 5e-3),
+        "the half-and-half fixture's own un-cut volume is the plain full-cylinder volume pi*4*10 = 125.66 within "
+        "1e-3 conforming / 5e-3 ordinary - the two half-sweep fragments jointly tile the whole wall exactly once, "
+        "no notch involved");
+
+  // A box crossing z = 5 (squarely inside BOTH fragments' own IDENTICAL
+  // [0, 10] axial range) - the exact general shape of the disclosed notch
+  // fixture's own defect (two same-wall fragments both genuinely reached
+  // by one plane at once), but via an angular partition instead of a
+  // notch, so this one is fully within scope and must actually BUILD,
+  // close and measure correctly.
+  const Brep box = Brep::Box(-10, -10, 4, 10, 10, 6);
+  const Brep diff = BooleanCombineMixed(solid, box, BooleanOp::Difference);
+  Check(diff.raw().IsValid(), "Difference(half-and-half wall, a box crossing BOTH fragments' identical axial "
+                              "range at once) builds a valid Brep - before the fix, this exact shape (two "
+                              "same-wall fragments both genuinely reached by one plane) corrupted a polygon into "
+                              "the \"3 or more faces\" throw with zero notch involvement");
+  const double true_diff_volume = ON_PI * r * r * 8.0;  // removes the z in [4,6] slab: height 10 - 2 = 8
+  Check(Within(diff.TessellateToClosedMesh(64, 64).Volume(), true_diff_volume, 5e-3),
+        "Difference(half-and-half wall, box crossing z in [4, 6]) measures pi*4*8 = 100.53 within 5e-3 relative "
+        "(the box removes exactly the [4, 6] slab from the plain r=2, height=10 cylinder) - note: unlike the "
+        "three-way fixture below, this pair's own conforming mesh is NOT confirmed closed-manifold after the cut "
+        "(a separate, pre-existing partial-sweep/conforming-tessellation seam-matching gap this increment did not "
+        "touch and does not attempt to fix - see this function's own doc comment); the volume match alone is what "
+        "confirms the DE-DUP FIX itself produced geometrically correct pieces, which is what this test targets");
+
+  const Brep inter = BooleanCombineMixed(solid, box, BooleanOp::Intersection);
+  Check(inter.raw().IsValid(), "Intersection(half-and-half wall, same box) also builds a valid Brep");
+  const double true_inter_volume = ON_PI * r * r * 2.0;  // the kept z in [4,6] slab: height 2
+  Check(inter.TessellateToClosedMeshConforming(64, 64).IsClosedManifold() &&
+            Within(inter.TessellateToClosedMeshConforming(64, 64).Volume(), true_inter_volume, 1e-3) &&
+            Within(inter.TessellateToClosedMesh(64, 64).Volume(), true_inter_volume, 5e-3),
+        "Intersection(half-and-half wall, box crossing z in [4, 6]) is a closed manifold (conforming) measuring "
+        "pi*4*2 = 25.13 within 1e-3 conforming / 5e-3 ordinary");
+}
+
+// The fix's own GROUPING generalizes past pairwise de-duplication: THREE
+// fragments of one wall (not just two), all genuinely reached by a single
+// plane at once - a naive "de-dup exactly 2 fragments" implementation
+// could pass every test above while still corrupting a 3-fragment wall (a
+// third fragment's own pass would still redundantly re-clip the first
+// two's already-clipped pieces a second AND third time). Same construction
+// as the half-and-half fixture above (no notch, no axial overlap), but
+// three 120-degree angular thirds of one wall, all sharing the identical
+// full [0, 11] axial range.
+void TestBooleanCombineMixedThreeFragmentsSameWallDedup() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double r = 1.5, length = 11.0;
+  auto third = [&](double angle0) {
+    Brep::CylindricalFace cf;
+    cf.frame.origin = Point3d(0, 0, 0);
+    cf.frame.xaxis = Vector3d(std::cos(angle0), std::sin(angle0), 0);
+    cf.frame.yaxis = Vector3d(-std::sin(angle0), std::cos(angle0), 0);
+    cf.frame.zaxis = Vector3d(0, 0, 1);
+    cf.frame.UpdateEquation();
+    cf.radius = r;
+    cf.angle = 2.0 * ON_PI / 3.0;
+    cf.length = length;
+    cf.outward = true;
+    return cf;
+  };
+  const Brep::CylindricalFace a = third(0.0);
+  const Brep::CylindricalFace b = third(2.0 * ON_PI / 3.0);
+  const Brep::CylindricalFace c = third(4.0 * ON_PI / 3.0);
+  std::vector<Brep::PlanarFace> caps;
+  for (const Brep::CylindricalFace* cf : {&a, &b, &c}) {
+    for (Brep::PlanarFace& p : BuildPlainQuadrantCaps(*cf, /*at_v0=*/true, 50)) caps.push_back(std::move(p));
+    for (Brep::PlanarFace& p : BuildPlainQuadrantCaps(*cf, /*at_v0=*/false, 50)) caps.push_back(std::move(p));
+  }
+  const Brep solid = Brep::FromMixedFaces(caps, {a, b, c});
+  Check(solid.raw().IsValid() && solid.MixedFaces().cylindrical.size() == 3,
+        "the three-way fixture itself (3 un-notched, 120-degree fragments of one wall + 24 quadrant end-cap "
+        "pieces) is a valid Brep with exactly 3 cylindrical fragments before any boolean is applied to it");
+
+  const double true_volume = ON_PI * r * r * length;  // a plain r=1.5, height=11 cylinder
+  Check(Within(solid.TessellateToClosedMeshConforming(64, 64).Volume(), true_volume, 1e-3) &&
+            Within(solid.TessellateToClosedMesh(64, 64).Volume(), true_volume, 5e-3),
+        "the three-way fixture's own un-cut volume is the plain full-cylinder volume pi*2.25*11 = 77.75 within "
+        "1e-3 conforming / 5e-3 ordinary - all three 120-degree fragments jointly tile the whole wall exactly "
+        "once");
+
+  // A box crossing z = 6.5, squarely inside all three fragments' own
+  // IDENTICAL [0, 11] axial range at once.
+  const Brep box = Brep::Box(-10, -10, 6.0, 10, 10, 7.0);
+  const Brep diff = BooleanCombineMixed(solid, box, BooleanOp::Difference);
+  const double true_diff_volume = ON_PI * r * r * 10.0;  // removes the z in [6,7] slab: height 11 - 1 = 10
+  Check(diff.raw().IsValid() && Within(diff.TessellateToClosedMesh(64, 64).Volume(), true_diff_volume, 5e-3),
+        "Difference(three-way wall, a box crossing all three fragments' identical axial range at once) is a "
+        "valid Brep measuring pi*2.25*10 = 70.69 within 5e-3 relative - a naive pairwise-only de-dup would still "
+        "corrupt this exact shape (the third fragment's own pass would re-clip the first two's already-clipped "
+        "pieces yet again)");
+
+  const Brep inter = BooleanCombineMixed(solid, box, BooleanOp::Intersection);
+  const double true_inter_volume = ON_PI * r * r * 1.0;  // the kept z in [6,7] slab: height 1
+  Check(inter.raw().IsValid() && Within(inter.TessellateToClosedMesh(64, 64).Volume(), true_inter_volume, 5e-3),
+        "Intersection(three-way wall, same box) is a valid Brep measuring pi*2.25 = 7.07 within 5e-3 relative");
 }
 
 // Positive control for the mid-length split fix above: a BARE, single-
@@ -17747,6 +18167,7 @@ int main() {
   TestMixedFacesRoundTripsNotchedConicalFace();
   TestMixedFacesUnnotchedConicalFaceBitIdentical();
   TestClipPolygonByCircle3dPunchesExactHole();
+  TestClipPolygonByCircle3dRefusesCircleCoincidentWithBoundary();
   TestClipPolygonByEllipse3dPunchesExactEllipticalHole();
   TestClipPolygonByEllipse3dReportsLiteralRunsAndWindsCcw();
   TestArcSchedule3dEvenlySpacedExactEndpoints();
@@ -17860,6 +18281,8 @@ int main() {
   TestFromMixedFacesSlopedNotchCapAndStraightChordStayDistinct();
   TestFromMixedFacesFlatCornerGateIsInert();
   TestBooleanCombineMixedNotchAwareClassificationStillNeedsSplitProducerWork();
+  TestBooleanCombineMixedOverlappingRangeFragmentsSameWallDedup();
+  TestBooleanCombineMixedThreeFragmentsSameWallDedup();
   TestBooleanCombineMixedMidLengthSplitClearsStaleNotch();
   TestBooleanCombineMixedInsideDiscProducerCoversSealedEndBoundary();
   TestSplitMixedAgainstAllFacesPassThroughCarriesArcRuns();

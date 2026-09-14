@@ -2583,6 +2583,34 @@ double CylinderPairRadiusTolerance(const Brep::CylindricalFace& p, const Brep::C
   return std::max(tol, 1e-9 * std::max(p.radius, q.radius));
 }
 
+// True when two cylindrical MixedFace fragments are pieces of the SAME
+// physical wall (same axis line, same direction, same radius) rather than
+// merely two cylinders that happen to interact - the question
+// SplitMixedAgainstAllFaces's case (ii) branch (below) needs answered
+// before it punches a given planar face against each of `other`'s
+// cylindrical fragments in turn, so that two siblings of one wall (e.g.
+// two fragments produced by case (iii)'s own axial split, or a pair
+// handed in directly as siblings the way a notch-pair test fixture does)
+// are never treated as two DIFFERENT circles to clip against the same
+// plane. Reuses this file's own existing idioms rather than inventing a
+// new tolerance convention: CylinderPairRadiusTolerance for "same radius"
+// (exactly the same test the parallel-cylinder-pair dispatch already
+// applies), and the same axis-parallel (cross product near zero) plus
+// same-direction (dot product positive) plus same-radial-offset (origin
+// difference projected onto the frame's own x/y axes) idiom the parallel
+// cylinder/cylinder branch above already uses to decide "these two axes
+// are the same line", not just "parallel lines offset from each other".
+bool SameCylindricalWall(const Brep::CylindricalFace& p, const Brep::CylindricalFace& q, double tol) {
+  const Vector3d cross_axes = ON_CrossProduct(p.frame.zaxis, q.frame.zaxis);
+  if (cross_axes.Length() >= kAxisAlignTol) return false;  // not parallel axes
+  if (ON_DotProduct(p.frame.zaxis, q.frame.zaxis) < 0.0) return false;  // opposite-facing: not one wall
+  if (std::fabs(p.radius - q.radius) > CylinderPairRadiusTolerance(p, q, tol)) return false;
+  const Vector3d dd = q.frame.origin - p.frame.origin;
+  const double bx = ON_DotProduct(dd, p.frame.xaxis);
+  const double by = ON_DotProduct(dd, p.frame.yaxis);
+  return std::sqrt(bx * bx + by * by) <= tol;  // same axis LINE, not just parallel
+}
+
 // Throws std::invalid_argument (every message naming "non-parallel axes",
 // the substring the existing dispatch-boundary test keys on) for genuinely
 // skew axes, or a crossing that is not strictly interior to both cylinders
@@ -3866,9 +3894,73 @@ bool NonParallelCylinderPairNoInteraction(const Brep::CylindricalFace& cf_a, con
 // for the two genuinely out-of-scope ones (oblique plane/cylinder, any
 // cylinder/cylinder interaction) rather than silently approximating them.
 std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vector<MixedFace>& other, double tol) {
+  const bool self_is_planar = !self.is_cyl;
   std::vector<MixedFace> worklist;
   worklist.push_back(std::move(self));
-  for (const MixedFace& g : other) {
+
+  // Same-physical-wall de-duplication for case (ii) below (the ONLY case
+  // this defect can reach - see SameCylindricalWall's own doc comment):
+  // `other` may contain two-or-more cylindrical fragments that are really
+  // pieces of one physical wall (same axis line, same radius). Without
+  // this, this function's own case (ii) branch would clip a given planar
+  // face's surviving pieces against that one circle once per FRAGMENT
+  // instead of once per WALL - harmless when a fragment's own [0,length]
+  // interaction range with the crossing plane is disjoint from its
+  // siblings' (the ordinary case), but corrupting whenever a notch (or any
+  // other producer of overlapping-range fragments) makes two siblings'
+  // TRUE material reach the same plane at once: the second fragment's pass
+  // would re-clip pieces that are ALREADY that circle's own clip products
+  // from the first fragment's pass, violating ClipPolygonByCircle3d's own
+  // "circle strictly inside poly" precondition (see circle_clip3d.h) and
+  // producing a self-retracing, duplicate-adjacent-vertex polygon -
+  // observed downstream as brep.cpp's "edge shared by 3 or more faces"
+  // throw, a real defect but the wrong LAYER to fix it at (see this
+  // increment's own commit message for the full chain of custody).
+  //
+  // group_rep[i] names the representative index (within `other`) of the
+  // wall group `other[i]` belongs to: itself, for the first cylindrical
+  // fragment seen of a given wall (or any non-cylindrical entry, or a
+  // singleton wall with no sibling); an EARLIER index, for every later
+  // fragment of a wall already seen. wall_interacts[rep] / wall_needs_disc
+  // [rep] (meaningful only at a representative index, and only when this
+  // call's own `self` is planar - case (ii) never triggers otherwise) are
+  // the UNION, over every fragment sharing that wall, of "does this
+  // crossing plane genuinely interact with it" / "does it need an inside
+  // disc here (mid-length reach or a sealed end)" - computed once per
+  // wall below, not once per fragment inside the main loop's own case (ii)
+  // branch.
+  std::vector<size_t> group_rep(other.size());
+  std::vector<char> wall_interacts(other.size(), 0);
+  std::vector<char> wall_needs_disc(other.size(), 0);
+  if (self_is_planar && !worklist.empty()) {
+    const ON_Plane plane = worklist.front().planar.plane;
+    for (size_t i = 0; i < other.size(); ++i) {
+      group_rep[i] = i;
+      if (!other[i].is_cyl) continue;
+      for (size_t j = 0; j < i; ++j) {
+        if (other[j].is_cyl && SameCylindricalWall(other[j].cyl, other[i].cyl, tol)) {
+          group_rep[i] = group_rep[j];
+          break;
+        }
+      }
+      const Brep::CylindricalFace& cyl = other[i].cyl;
+      const double align_i = std::fabs(ON_DotProduct(cyl.frame.zaxis, plane.zaxis));
+      if (align_i > 1.0 - kAxisAlignTol) {
+        if (!CylinderPlaneNoInteraction(cyl, plane, tol)) {
+          wall_interacts[group_rep[i]] = 1;
+        }
+        const double v_cut = ON_DotProduct(plane.origin - cyl.frame.origin, cyl.frame.zaxis);
+        const bool at_v0 = std::fabs(v_cut) <= tol;
+        const bool at_v1 = std::fabs(v_cut - cyl.length) <= tol;
+        const bool mid = v_cut > tol && v_cut < cyl.length - tol;
+        const bool sealed_end = (at_v0 && !cyl.end0_is_original) || (at_v1 && !cyl.end1_is_original);
+        if (mid || sealed_end) wall_needs_disc[group_rep[i]] = 1;
+      }
+    }
+  }
+
+  for (size_t g_idx = 0; g_idx < other.size(); ++g_idx) {
+    const MixedFace& g = other[g_idx];
     std::vector<MixedFace> next;
     next.reserve(worklist.size() * 2);
     for (MixedFace& f : worklist) {
@@ -3941,7 +4033,16 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
         // correction, using the exact same CylinderPlaneNoInteraction
         // closed-form bound case (iii) below already trusts for the
         // identical question on the OTHER side of this same seam.
-        if (align > 1.0 - kAxisAlignTol && CylinderPlaneNoInteraction(g.cyl, f.planar.plane, tol)) {
+        if (align > 1.0 - kAxisAlignTol && (group_rep[g_idx] != g_idx || !wall_interacts[group_rep[g_idx]])) {
+          // Either (a) this fragment is not this wall's representative -
+          // an earlier fragment sharing its (axis, radius) already ran
+          // this branch's clip once for the WHOLE wall (see the
+          // group_rep/wall_interacts precompute above), so re-clipping
+          // this same circle against pieces that may already BE that
+          // circle's own clip products is exactly the corruption this fix
+          // exists to avoid - or (b) it is the representative, but no
+          // fragment of this wall (union across the whole group) actually
+          // reaches this plane, so there is nothing to clip either way.
           next.push_back(std::move(f));
         } else if (align > 1.0 - kAxisAlignTol) {
           // The infinite cylinder's own axis runs perpendicular to
@@ -3956,6 +4057,46 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
           // independently in the worklist.
           const Point3d proj_center =
               g.cyl.frame.origin - f.planar.plane.DistanceTo(g.cyl.frame.origin) * f.planar.plane.zaxis;
+
+          // `f` itself may already be BUILT ENTIRELY from this same circle
+          // - either a polygonal approximation of the circle's own
+          // boundary, or one of ClipPolygonByCircleInsideOnly3d's own
+          // "[center, arc_sample...]" pie-slice quadrant pieces (see that
+          // function's own doc comment, circle_clip3d.h) - rather than a
+          // larger, genuinely different face merely touched by it. This is
+          // a real, legitimate shape this branch can be handed, not just
+          // the shared-notch defect's own "two different fragments of one
+          // wall in the SAME call" scenario the group_rep/wall_interacts
+          // de-dup above already handles: e.g. Difference(Union(A, B), B)
+          // re-examines a disc/quadrant piece the FIRST boolean already
+          // built from B's own wall against that SAME wall again, one
+          // call later, where no amount of de-duplication of `other` (a
+          // single fragment, B, this time) helps. Either shape means every
+          // vertex of `f.planar.loop` lies within tolerance of EITHER
+          // `proj_center` itself (distance 0, a pie-slice's own center
+          // vertex) OR `g.cyl.radius` from it (a boundary/arc vertex) -
+          // and when that holds, `f` has no meaningful "outside the
+          // circle" wedge (the complement of the circle within itself is
+          // empty) or "inside disc" distinct from itself left to produce,
+          // so passing it through unchanged is the correct answer, not
+          // merely a workaround for ClipPolygonByCircle3d's own refusal to
+          // process an input its contract (circle strictly INSIDE the
+          // polygon) explicitly excludes.
+          bool f_built_from_this_circle = !f.planar.loop.empty();
+          for (const Point3d& p : f.planar.loop) {
+            const double d = p.DistanceTo(proj_center);
+            const bool on_center = d <= tol;
+            const bool on_radius = std::fabs(d - g.cyl.radius) <= tol;
+            if (!on_center && !on_radius) {
+              f_built_from_this_circle = false;
+              break;
+            }
+          }
+          if (f_built_from_this_circle) {
+            next.push_back(std::move(f));
+            continue;
+          }
+
           for (std::vector<Point3d>& piece :
                detail::ClipPolygonByCircle3d(f.planar.loop, f.planar.plane, proj_center, g.cyl.radius, tol)) {
             if (piece.size() < 3) continue;
@@ -4002,7 +4143,6 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
           // this shared split pipeline - the same reuse-not-reimplement
           // principle this codebase's own case (i)/(ii)/(iii) dispatch
           // already follows throughout.
-          const double v_cut = ON_DotProduct(f.planar.plane.origin - g.cyl.frame.origin, g.cyl.frame.zaxis);
           // Widen the mid-length gate to also cover a SEALED end sitting
           // exactly at the boundary (v_cut == 0 or == g.cyl.length,
           // end{0,1}_is_original == false - Phase 1's closed-operand rule,
@@ -4018,11 +4158,16 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
           // excludes the disc - that case is already closed by
           // SynthesizeEndCaps elsewhere (see that function's own doc
           // comment) and must not double-count.
-          const bool at_v0 = std::fabs(v_cut) <= tol;
-          const bool at_v1 = std::fabs(v_cut - g.cyl.length) <= tol;
-          const bool mid = v_cut > tol && v_cut < g.cyl.length - tol;
-          const bool sealed_end = (at_v0 && !g.cyl.end0_is_original) || (at_v1 && !g.cyl.end1_is_original);
-          if (mid || sealed_end) {
+          //
+          // Decided via wall_needs_disc[group_rep[g_idx]] - the UNION of
+          // this condition across every fragment sharing this wall, not
+          // just this one fragment's own v_cut (see the precompute above)
+          // - so the disc is built exactly once per wall, from whichever
+          // sibling fragment's reach actually needs it, rather than once
+          // per fragment (which is what let a shared-notch pair's second
+          // fragment redundantly rebuild - and then reclip - the identical
+          // disc the first fragment had already produced).
+          if (wall_needs_disc[group_rep[g_idx]]) {
             for (std::vector<Point3d>& piece : detail::ClipPolygonByCircleInsideOnly3d(
                      f.planar.loop, f.planar.plane, proj_center, g.cyl.radius, tol)) {
               if (piece.size() < 3) continue;
@@ -4146,10 +4291,59 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
             mhi.cyl = hi;
             next.push_back(std::move(mlo));
             next.push_back(std::move(mhi));
+          } else if (v_cut < -tol || v_cut > f.cyl.length + tol) {
+            // The cut plane lies genuinely BEYOND this fragment's own flat
+            // [0, length] range (not merely at/near one of its two
+            // existing endpoints - see the plain endpoint-touch case
+            // below) - ordinarily proof there is nothing here to split,
+            // the whole fragment already lies on one side. NOT so whenever
+            // this fragment carries a notch whose OWN widened axial reach
+            // (CylindricalFragmentAxialBand, used by
+            // CylinderPlaneNoInteraction) genuinely extends PAST that flat
+            // range far enough to reach this exact plane: unlike case
+            // (ii)'s mirror branch above (which reads the notch honestly
+            // via the SAME widened test before deciding whether to punch a
+            // circle), this branch's plain v_cut check is notch-BLIND by
+            // construction - it only ever asks "where does the plane cross
+            // this fragment's NOMINAL flat cylinder", never "does the
+            // fragment's true, notch-extended material reach here" - so a
+            // plane that only reaches a fragment's notch-extended material
+            // (not its nominal range at all) would otherwise silently fall
+            // through to the plain pass-through below, an outright WRONG
+            // answer: the fragment's true material genuinely straddles
+            // this plane at SOME angles (wherever the notch dips PAST it)
+            // while never reaching it at others depending on the notch's
+            // own per-angle profile - a partial, angle-dependent trim this
+            // branch has no way to represent (it can only produce a flat,
+            // full-circle iso-line split or an unmodified whole fragment).
+            // Confirmed directly, not merely theorized: the shared-notch
+            // cylinder pair's own upper/lower fragments, crossed by a
+            // plane that lands in exactly this gap, silently produced
+            // self-overlapping, non-manifold, wrong-volume Breps once the
+            // "3 or more faces" crash this SAME scenario used to hit
+            // elsewhere was fixed (see SameCylindricalWall's own doc
+            // comment) - i.e. fixing that unrelated crash unmasked this
+            // pre-existing, previously-undetectable gap rather than fixing
+            // it. Refuse honestly here instead of silently mis-splitting -
+            // a genuine, disclosed scope boundary (real angle-dependent
+            // notch-vs-plane trimming, out of scope for this increment),
+            // not a bug to paper over.
+            if (!CylinderPlaneNoInteraction(f.cyl, g.planar.plane, tol)) {
+              throw std::invalid_argument(
+                  "dino8::kernel::BooleanCombineMixed: a planar face crosses a "
+                  "NOTCHED cylindrical fragment's own notch-extended material "
+                  "strictly beyond its flat [0, length] range - a genuine, "
+                  "angle-dependent partial trim there (the notch reaches this "
+                  "plane at some angles and not others) is out of scope for "
+                  "this increment; see SplitMixedAgainstAllFaces's own case "
+                  "(iii) doc comment (boolean.cpp) for the full reasoning");
+            }
+            next.push_back(std::move(f));
           } else {
-            // The cut plane coincides with (or lies beyond) one of this
-            // fragment's own two existing endpoints - nothing to split,
-            // the whole fragment already lies on one side.
+            // The cut plane coincides with (or lies just barely beyond, by
+            // no more than `tol`) one of this fragment's own two existing
+            // endpoints - nothing to split, the whole fragment already
+            // lies on one side.
             next.push_back(std::move(f));
           }
         } else if (CylinderPlaneNoInteraction(f.cyl, g.planar.plane, tol)) {

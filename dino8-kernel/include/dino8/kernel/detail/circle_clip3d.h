@@ -265,6 +265,43 @@ inline std::vector<std::vector<Point3d>> ClipPolygonByCircle3d(const std::vector
         "this increment, see this function's own doc comment");
   }
 
+  // Defense in depth: this function's own contract requires the circle to
+  // sit STRICTLY INSIDE `poly` (see this function's own doc comment) -
+  // never on/coincident with poly's own boundary. The crossing_count guard
+  // above only catches a circle that genuinely TRANSITS the boundary (a
+  // real crossing-pair of roots); it does NOT catch a polygon whose
+  // boundary already coincides with (or merely touches) this same circle,
+  // since SegmentCircleCrossings explicitly treats a tangency (discriminant
+  // <= 0) as "not a genuine crossing either way" - exactly the case a
+  // vertex sitting ON the circle produces for its two adjacent edges. Left
+  // unchecked, such a polygon falls through to PointInPolygon2d below with
+  // the query point (the circle's own center) tested against a polygon
+  // whose own boundary is itself (nearly) that same circle - an ill-
+  // defined case for that plain even-odd test (the center can coincide
+  // with a POLYGON VERTEX rather than a genuine interior point). Confirmed
+  // directly as the actual mechanism behind a real, previously-observed
+  // defect: SplitMixedAgainstAllFaces (boolean.cpp) re-clipping a second
+  // cylindrical fragment's shared circle against pieces that were already
+  // the first fragment's own circle-clip products - see
+  // SameCylindricalWall's own doc comment there for the caller-side fix,
+  // and this function's own regression test
+  // (TestClipPolygonByCircle3dRefusesCircleCoincidentWithBoundary) for a
+  // direct repro of this exact precondition violation in isolation. Refuse
+  // explicitly, naming the violated precondition, rather than silently
+  // degrading into PointInPolygon2d's undefined on-boundary answer.
+  for (const Point2d& p : poly2d) {
+    const double d = std::hypot(p.x - c2d.x, p.y - c2d.y);
+    if (std::fabs(d - radius) <= tol) {
+      throw std::invalid_argument(
+          "dino8::kernel::detail::ClipPolygonByCircle3d: a polygon vertex "
+          "lies on the circle's own boundary (the polygon already "
+          "coincides with, or touches, the circle) - this function's own "
+          "precondition requires the circle to sit STRICTLY INSIDE the "
+          "polygon; refusing rather than silently producing a corrupted "
+          "clip from PointInPolygon2d's ill-defined on-boundary answer");
+    }
+  }
+
   auto to_3d = [&](const Point2d& p) {
     return poly_plane.origin + p.x * poly_plane.xaxis + p.y * poly_plane.yaxis;
   };
