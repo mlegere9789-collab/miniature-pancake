@@ -1022,7 +1022,52 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
 
   for (const CylindricalFace& cf : cylindrical_faces) {
     const ON_Circle circle(cf.frame, cf.radius);
-    const ON_Cylinder cyl(circle, cf.length);
+    ON_Cylinder cyl(circle, cf.length);
+    // A notched cap (cap0_notch_points/cap1_notch_points, see that field's
+    // own doc comment) is generally NOT confined to the [0, length] band
+    // the two rail corners span: an oblique cut's ellipse swings both
+    // above and below the single scalar height the rail corners are
+    // anchored at (SplitCylindricalByObliquePlane, boolean.cpp, anchors
+    // both children at h(0) while the ellipse itself ranges over
+    // h(0) -+ amplitude around the sweep), so the kept region of the
+    // "hi" child dips below its own v=0 and the "lo" child's rises above
+    // its own v=length. ON_Cylinder::GetNurbForm sets the surface's
+    // v-knots to literally [height[0], height[1]], and every grid
+    // tessellator here (NurbsSurface::TessellateGridClippedExact chief
+    // among them) lays its cells over the SURFACE's own domain - so any
+    // trimmed area outside that domain would simply never be covered,
+    // silently dropping the out-of-band sliver from every Tessellate()
+    // result with no error (a real, measured defect: a notched wall
+    // came out at exactly the UN-notched band's area). Widening the
+    // cylinder's own height span here, BEFORE GetNurbForm, to cover
+    // every notch point's true height is the whole fix: v is true axial
+    // height in this parameterization (see the comment just below), so
+    // no (u, v) coordinate computed anywhere downstream changes - only
+    // the domain the grid spans. Gated on a notch actually being present
+    // so the overwhelmingly common un-notched face is built bit-for-bit
+    // exactly as before (height[0] == 0, height[1] == length).
+    if (!cf.cap0_notch_points.empty() || !cf.cap1_notch_points.empty()) {
+      double h_min = std::min(0.0, cf.length), h_max = std::max(0.0, cf.length);
+      auto widen_to = [&](const std::vector<Point3d>& pts) {
+        for (const Point3d& p : pts) {
+          const double h = (p - cf.frame.origin) * cf.frame.zaxis;
+          h_min = std::min(h_min, h);
+          h_max = std::max(h_max, h);
+        }
+      };
+      widen_to(cf.cap0_notch_points);
+      widen_to(cf.cap1_notch_points);
+      constexpr double kMinHeightSpan = 1e-9;
+      if (!(h_max - h_min > kMinHeightSpan)) {
+        throw std::invalid_argument(
+            "dino8::kernel::Brep::FromMixedFaces: a notched CylindricalFace's "
+            "own height span (its [0, length] rail band widened to cover every "
+            "cap notch point's true height) is degenerate (zero or NaN) - "
+            "there is no surface to build");
+      }
+      cyl.height[0] = h_min;
+      cyl.height[1] = h_max;
+    }
     auto* surface = new ON_NurbsSurface();
     const int rc = cyl.GetNurbForm(*surface);
     if (rc == 0) {

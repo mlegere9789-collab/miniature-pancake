@@ -9071,24 +9071,32 @@ void TestBooleanCombineMixedObliqueDrilledBoxVolume() {
   const Mesh mesh_256 = drilled.TessellateToClosedMesh(256, 256);
   const double measured_volume = mesh_256.Volume();
   // A LOOSER tolerance than TestBooleanCombineMixedDrilledBoxThroughHole's
-  // own perpendicular-hole check (0.05): confirmed directly (not merely
-  // assumed) that the oblique case's own ordinary (non-conforming)
-  // Tessellate() volume does NOT converge as tightly as the perpendicular
-  // case's own - see boolean.h's own doc comment: Brep::TessellateConforming()'s
+  // own perpendicular-hole check (0.05), kept as a coarse sanity bound:
+  // see boolean.h's own doc comment - Brep::TessellateConforming()'s
   // circle-specific arc-reconciliation machinery is deliberately NOT
   // extended to the ellipse case here, so the wedge/cylinder-wall seam is
   // genuinely NOT watertight at the mesh level for this path (mesh_256.
-  // IsClosedManifold() is false, confirmed directly), and the resulting
-  // small, non-monotonically-shrinking discrepancy (observed directly:
-  // ~0.36 at div=256, ~0.69 at div=1024 - NOT converging smoothly with
-  // division count the way a purely-discretization-driven error would,
-  // consistent with genuine open-seam triangulation noise rather than a
-  // single, larger geometric defect) is real and disclosed, not silently
-  // widened past what the actual measured behavior needs. The tighter,
-  // trustworthy cross-check is the INDEPENDENT Manifold-mesh-based
-  // derivation below (built from Mesh::Cylinder(), with no dependency on
-  // this B-rep's own non-conforming tessellation at all), asserted at a
-  // much tighter 0.5 - this check here is a coarse sanity bound only.
+  // IsClosedManifold() is false, confirmed directly). The discrepancy
+  // this bound was originally sized for (~0.36 at div=256, ~0.69 at
+  // div=1024, NOT shrinking with division count) turned out NOT to be
+  // open-seam triangulation noise at all but a single geometric defect:
+  // FromMixedFaces() built the surviving hole-wall fragment's own
+  // cylinder surface over exactly its [0, length] rail band, while both
+  // of that fragment's oblique-cut ends genuinely extend past it (the
+  // ellipse swings +-r*tan(theta) around the rail-corner height), and
+  // the grid tessellator never covered the out-of-band slivers - see
+  // CylindricalFace::cap0_notch_points' own doc comment and
+  // TestFromMixedFacesNotchedCylinderCoversNotchOutsideRailBand below.
+  // With the surface's own v-domain now widened to cover the notch, the
+  // same measurement converges the way a discretization-driven error
+  // should: ~0.05 at div=64, ~0.004 at div=256, ~0.002 at div=1024.
+  // TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm
+  // asserts that tighter behavior; this check's own 2.0 is left as-is
+  // (a fixed, already-published bound, not loosened and not retuned).
+  // The INDEPENDENT Manifold-mesh-based derivation below (built from
+  // Mesh::Cylinder(), with no dependency on this B-rep's own
+  // non-conforming tessellation at all) remains the cross-check of the
+  // closed-form identity itself, asserted at 0.5.
   Check(std::fabs(measured_volume - hand_derived_volume) < 2.0,
         "oblique-drilled box's ORDINARY (non-conforming) tessellated volume (div=256) is within a coarse 2.0 "
         "sanity bound of the hand-derived closed-form 2000-pi*r^2*(10/cos(theta)) - a real, disclosed, non-"
@@ -9571,6 +9579,182 @@ void TestBooleanCombineMixedObliqueMultipleTiltAngles() {
   // for this increment (see boolean.h's own doc comment for where this
   // increment's own scope note about the oblique case stops) - not
   // silently patched here nor silently dropped without a trace.
+}
+
+// ---------------------------------------------------------------------
+// Brep::FromMixedFaces() with a notched CylindricalFace whose notch
+// leaves the [0, length] rail band (see CylindricalFace::cap0_notch_points'
+// own doc comment). This is not an exotic input: it is the shape
+// SplitCylindricalByObliquePlane (boolean.cpp) ALWAYS produces, since it
+// anchors both children's own new rail-corner height at h(0) - the
+// ellipse's own height at angle 0 - while the ellipse itself swings both
+// above and below that height around the sweep. The kept region of the
+// "hi" child therefore dips below its own v=0, and the "lo" child's rises
+// above its own v=length. The cylinder's own NURBS surface is built with
+// v-knots [height[0], height[1]] (ON_Cylinder::GetNurbForm), and
+// NurbsSurface::TessellateGridClippedExact grids the SURFACE's own domain
+// - so any trimmed area outside that domain is silently never covered.
+// ---------------------------------------------------------------------
+
+// A full-sweep cylinder (radius r, length L, frame = world XY at the
+// origin) whose v=0 and/or v=L end is notched by the closed-form ellipse
+// (detail::ComputeEllipseFrame3d/EllipseBoundarySample3d - the same two
+// functions BooleanCombineMixed's own oblique split uses) of a cutting
+// plane through that end's own angle-0 rail corner, tilted by
+// a = atan(tan_a) about the frame's own y axis. The ellipse's own height
+// is then h0(phi) = -r*tan_a*(1 - cos phi) at the v=0 end (dipping
+// 2*r*tan_a BELOW v=0 at phi=pi) and h1(phi) = L + r*tan_a*(1 - cos phi)
+// at the v=L end (rising the same amount ABOVE v=L) - each leaving the
+// [0, L] band entirely on the OUTSIDE, so the whole notch is extra
+// material beyond the plain band, never a bite out of it. Passing the
+// plane through the rail corner keeps h(0) == h(2*pi) == 0 (or L)
+// exactly, satisfying the field's own first/last-point contract.
+dino8::kernel::Brep::CylindricalFace BuildOutOfBandNotchedCylinder(double r, double L, double tan_a, bool notch0,
+                                                                   bool notch1) {
+  using dino8::kernel::Brep;
+  Brep::CylindricalFace cf;
+  cf.frame = ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0));
+  cf.radius = r;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = L;
+  const double a = std::atan(tan_a);
+  if (notch0) {
+    const ON_Plane cut(ON_3dPoint(r, 0, 0), ON_3dVector(-std::sin(a), 0, std::cos(a)));
+    const auto ef = dino8::kernel::detail::ComputeEllipseFrame3d(cf, cut);
+    cf.cap0_notch_points = dino8::kernel::detail::EllipseBoundarySample3d(ef, 0.0, 2.0 * ON_PI, 200);
+  }
+  if (notch1) {
+    const ON_Plane cut(ON_3dPoint(r, 0, L), ON_3dVector(std::sin(a), 0, std::cos(a)));
+    const auto ef = dino8::kernel::detail::ComputeEllipseFrame3d(cf, cut);
+    cf.cap1_notch_points = dino8::kernel::detail::EllipseBoundarySample3d(ef, 0.0, 2.0 * ON_PI, 200);
+  }
+  return cf;
+}
+
+// Closed form: the lateral area of the kept region is
+//   r * integral_0^{2*pi} (h_top(phi) - h_bottom(phi)) dphi
+// and integral_0^{2*pi} (1 - cos phi) dphi = 2*pi, so each out-of-band
+// notch adds exactly 2*pi*r^2*tan_a to the plain band's own 2*pi*r*L.
+void TestFromMixedFacesNotchedCylinderCoversNotchOutsideRailBand() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  const double r = 2.0, L = 3.0, tan_a = 0.5;
+  const double band_area = 2.0 * ON_PI * r * L;
+  const double per_notch = 2.0 * ON_PI * r * r * tan_a;
+
+  // The un-notched face is the control: its surface's own v-domain must
+  // stay EXACTLY [0, L] (no widening at all for the overwhelmingly common
+  // un-notched case), and its area must be the plain band's.
+  {
+    const Brep::CylindricalFace plain = BuildOutOfBandNotchedCylinder(r, L, tan_a, false, false);
+    const Brep b = Brep::FromMixedFaces({}, {plain});
+    const ON_Interval dv = b.raw().m_S[0]->Domain(1);
+    Check(dv.Min() == 0.0 && dv.Max() == L,
+          "an un-notched CylindricalFace's own surface keeps its v-domain at exactly [0, length] - the widening "
+          "below is gated on a notch actually being present, bit-identical otherwise");
+    double area = 0.0;
+    for (const Mesh& m : b.Tessellate(256, 256)) area += m.Area();
+    Check(std::fabs(area - band_area) < 0.005 * band_area,
+          "an un-notched full-sweep CylindricalFace tessellates to the plain band's own 2*pi*r*L area");
+  }
+
+  struct Mode {
+    bool notch0, notch1;
+    const char* domain_what;
+    const char* area_what;
+  };
+  const Mode modes[] = {
+      {true, false,
+       "a cap0 notch dipping below v=0 widens the surface's own v-domain to exactly [min notch height, length]",
+       "a full-sweep CylindricalFace whose cap0 notch dips BELOW v=0 tessellates to the closed-form area "
+       "2*pi*r*L + 2*pi*r^2*tan(a) (within 0.5%) - the sliver between the notch and v=0 is covered, not silently "
+       "dropped by a tessellation grid that only spans the un-widened [0, length]"},
+      {false, true,
+       "a cap1 notch rising above v=length widens the surface's own v-domain to exactly [0, max notch height]",
+       "a full-sweep CylindricalFace whose cap1 notch rises ABOVE v=length tessellates to the closed-form area "
+       "2*pi*r*L + 2*pi*r^2*tan(a) (within 0.5%) - the mirror-image sliver beyond v=length is covered too"},
+      {true, true,
+       "notches at BOTH ends widen the surface's own v-domain to exactly [min notch height, max notch height]",
+       "a full-sweep CylindricalFace notched out-of-band at BOTH ends tessellates to the closed-form area "
+       "2*pi*r*L + 2*2*pi*r^2*tan(a) (within 0.5%) - the configuration BooleanCombineMixed's own surviving "
+       "oblique-drilled fragment always has"},
+  };
+  for (const Mode& mode : modes) {
+    const Brep::CylindricalFace cf = BuildOutOfBandNotchedCylinder(r, L, tan_a, mode.notch0, mode.notch1);
+    double h_min = 0.0, h_max = L;
+    for (const Point3d& p : cf.cap0_notch_points) {
+      const double h = (p - cf.frame.origin) * cf.frame.zaxis;
+      h_min = std::min(h_min, h);
+      h_max = std::max(h_max, h);
+    }
+    for (const Point3d& p : cf.cap1_notch_points) {
+      const double h = (p - cf.frame.origin) * cf.frame.zaxis;
+      h_min = std::min(h_min, h);
+      h_max = std::max(h_max, h);
+    }
+    const Brep b = Brep::FromMixedFaces({}, {cf});
+    const ON_Interval dv = b.raw().m_S[0]->Domain(1);
+    Check(std::fabs(dv.Min() - h_min) < 1e-12 && std::fabs(dv.Max() - h_max) < 1e-12, mode.domain_what);
+
+    const double true_area = band_area + (mode.notch0 ? per_notch : 0.0) + (mode.notch1 ? per_notch : 0.0);
+    double area = 0.0;
+    for (const Mesh& m : b.Tessellate(256, 256)) area += m.Area();
+    Check(std::fabs(area - true_area) < 0.005 * true_area, mode.area_what);
+  }
+}
+
+// The same defect reached through the REAL producer: the oblique-drilled
+// box's own surviving cylindrical hole-wall fragment (both ends notched by
+// SplitCylindricalByObliquePlane) has the closed-form lateral area
+// 2*pi*r*(10/cos(theta)) - the same "a full-revolution oblique cut
+// integrates to a perpendicular cut at the ellipse's own center height"
+// identity TestBooleanCombineMixedObliqueDrilledBoxVolume's own volume
+// formula rests on, applied to the wall's own area. With the two
+// out-of-band slivers dropped the wall comes up short by exactly
+// 4*r^2*tan(theta) (two notches, each missing r*integral max(0, -h) dphi
+// = 2*r^2*tan(theta)) - about 1.07 for r=1 at 15 degrees, an order of
+// magnitude more than every discretization term at 256 divisions
+// combined, which is what makes this a clean, falsifiable bound rather
+// than a tolerance tuned to whatever the current output happens to be.
+// The whole solid's own volume then follows: with the wall complete, the
+// ordinary (still non-watertight-at-the-seam, see
+// TestBooleanCombineMixedObliqueDrilledBoxVolume's own comment)
+// Tessellate() volume lands within ~0.004 of the closed form at div=256
+// (measured directly), against ~0.36 with the slivers dropped - asserted
+// here at 0.1, a 20x margin over the measured residual that the dropped-
+// sliver defect still misses by more than 3x.
+void TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const double tilt_deg = 15.0;
+  const double theta = tilt_deg * ON_PI / 180.0;
+  const double radius = 1.0;
+  const auto [box, cyl] = BuildSafeObliqueDrilledBoxInputs(radius, tilt_deg);
+  const Brep drilled = BooleanCombineMixed(box, cyl, BooleanOp::Difference);
+  const auto mixed = drilled.MixedFaces();
+  Check(mixed.cylindrical.size() == 1, "exactly one surviving cylindrical fragment (wall-area check)");
+
+  const size_t cyl_face_index = mixed.planar.size();
+  const std::vector<Mesh> faces = drilled.Tessellate(256, 256);
+  Check(cyl_face_index < faces.size(), "the surviving cylindrical fragment has a real tessellated mesh (wall-area check)");
+  const double wall_area = faces[cyl_face_index].Area();
+  const double closed_form = 2.0 * ON_PI * radius * (10.0 / std::cos(theta));
+  Check(std::fabs(wall_area - closed_form) < 0.05,
+        "the oblique-drilled box's own surviving hole-wall fragment tessellates (div=256) to its closed-form lateral "
+        "area 2*pi*r*(10/cos(theta)) within 0.05 - both out-of-band ellipse slivers (below the fragment's own v=0 "
+        "and above its own v=length) are covered, not silently dropped");
+
+  const double hand_derived_volume = 2000.0 - ON_PI * radius * radius * (10.0 / std::cos(theta));
+  const double measured_volume = dino8::kernel::Mesh::MergeAndWeld(faces).Volume();
+  Check(std::fabs(measured_volume - hand_derived_volume) < 0.1,
+        "the oblique-drilled box's ORDINARY (non-conforming) tessellated volume (div=256) is within 0.1 of the "
+        "closed-form 2000-pi*r^2*(10/cos(theta)) - the earlier ~0.36 discrepancy was the two dropped hole-wall "
+        "slivers, not seam noise; what remains is ordinary discretization error that shrinks with division count");
 }
 
 // ---------------------------------------------------------------------
@@ -12931,6 +13115,8 @@ int main() {
   TestBooleanCombineMixedObliqueNearAxisParallelThrows();
   TestBooleanCombineMixedObliqueReentrantHeightThrows();
   TestBooleanCombineMixedObliqueMultipleTiltAngles();
+  TestFromMixedFacesNotchedCylinderCoversNotchOutsideRailBand();
+  TestBooleanCombineMixedObliqueSurvivingWallAreaAndVolumeMatchClosedForm();
   TestTessellateConformingQuadQuadSeamPlainBoxIsClosedManifold();
   TestTessellateConformingQuadQuadSeamDrilledBoxIsClosedManifold();
   TestTessellateConformingQuadQuadSeamOffCenterHoleIsClosedManifold();

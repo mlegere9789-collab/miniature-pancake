@@ -383,6 +383,24 @@ class Brep {
     // "is this a full circle" branch - a genuine, verified simplification
     // over what a naive port of ConicalFace's own machinery would have
     // needed, not an unexamined assumption.
+    //
+    // A notch's INTERIOR points are NOT required to stay inside the
+    // [0, length] band the two rail corners span, and in the one case
+    // this kernel itself produces they never do: an oblique cut's ellipse
+    // swings both above and below the single scalar height its two rail
+    // corners are anchored at (SplitCylindricalByObliquePlane, boolean.cpp,
+    // anchors both children at the ellipse's own height at angle 0), so a
+    // cap0 notch generally dips below v=0 and a cap1 notch rises above
+    // v=length - the kept region genuinely extends past the rail band
+    // there. Only the two documented endpoint constraints above (on the
+    // surface, at the rail corners) are required. FromMixedFaces() widens
+    // the underlying cylinder surface's own v-domain from [0, length] to
+    // [min(0, lowest notch height), max(length, highest notch height)] so
+    // the tessellation grid covers that whole trimmed region; since v is
+    // true axial height in this parameterization, no (u, v) coordinate of
+    // any point changes - the rail corners stay at v=0/v=length - only
+    // the domain the grid spans. An un-notched face's domain stays exactly
+    // [0, length].
     std::vector<Point3d> cap0_notch_points;
     std::vector<Point3d> cap1_notch_points;
 
@@ -811,6 +829,18 @@ class Brep {
   // GetNurbFormParameterFromRadian(angle, ...) rather than by using
   // `angle` as a raw parameter value directly - the same real conversion
   // ON_Circle's own header points callers at, not an approximation of it.
+  // For a CylindricalFace with a notched cap (cap0_notch_points/
+  // cap1_notch_points) whose notch leaves the [0, length] band, the
+  // cylinder's own height span - and hence the surface's v-domain, which
+  // ON_Cylinder::GetNurbForm sets to exactly [height[0], height[1]] - is
+  // widened to [min(0, lowest notch height), max(length, highest notch
+  // height)] before the surface is built, so the grid tessellators (which
+  // span the surface's own domain) cover the whole trimmed region rather
+  // than silently dropping the out-of-band sliver; the trim rectangle's
+  // own rails still run v=0..length and every (u, v) coordinate is
+  // unchanged, v being true axial height. An un-notched face's domain is
+  // exactly [0, length], as before. Throws std::invalid_argument if that
+  // widened span is degenerate.
   // Every `loop`/`frame` must satisfy the same preconditions PlanarFace's
   // and CylindricalFace's own doc comments describe; not re-validated
   // beyond what NewFace's own surface construction requires.
