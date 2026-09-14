@@ -137,6 +137,7 @@ Brep Brep::FromSurface(const NurbsSurface& surface) {
   result.face_exact_clip_.push_back(false);
   result.face_hole_loops_.emplace_back();
   result.face_arc_runs_.emplace_back();
+  result.face_notch_rows_.emplace_back();
 
   brep.SetTrimIsoFlags();
 
@@ -183,6 +184,7 @@ Brep Brep::Box(double x0, double y0, double z0, double x1, double y1,
     result.face_exact_clip_.push_back(false);
     result.face_hole_loops_.emplace_back();
     result.face_arc_runs_.emplace_back();
+    result.face_notch_rows_.emplace_back();
   }
 
   brep.SetTrimIsoFlags();
@@ -208,6 +210,7 @@ Brep Brep::Sphere(Point3d center, double radius) {
   result.face_exact_clip_.push_back(false);
   result.face_hole_loops_.emplace_back();
   result.face_arc_runs_.emplace_back();
+  result.face_notch_rows_.emplace_back();
 
   brep.SetTrimIsoFlags();
   return result;
@@ -240,6 +243,7 @@ Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
   result.face_exact_clip_.push_back(exact_clip);
   result.face_hole_loops_.push_back(std::move(hole_loops_uv));
   result.face_arc_runs_.emplace_back();
+  result.face_notch_rows_.emplace_back();
 
   brep.SetTrimIsoFlags();
   return result;
@@ -1072,6 +1076,7 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     // and TessellateConforming()'s own doc comment for the one place
     // this is actually read.
     result.face_arc_runs_.push_back(f.arc_runs);
+    result.face_notch_rows_.emplace_back();  // a planar face never has notch rows
 
     // Genuine topology (see BuildFaceLoop above): weld this face's own
     // loop points - the exact same 3D points the side tables above just
@@ -1378,6 +1383,25 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     result.face_exact_clip_.push_back(true);
     result.face_hole_loops_.emplace_back();
     result.face_arc_runs_.emplace_back();  // meaningless for a non-planar face
+    // The literal notch rows for TessellateConforming()'s per-row strip
+    // mesher (see CylinderNotchRows' own doc comment in brep.h): the
+    // input's own point lists verbatim, paired with the SAME (u, v)
+    // notch_uv() just computed for the visible trim above (cap1's in its
+    // own increasing-angle order, i.e. the reverse of the trim splice's
+    // walk), so the mesher's notch row and the trim polygon are one
+    // computation, not two. Left `present == false` for the ordinary
+    // un-notched face, which never reaches that mesher on this account.
+    result.face_notch_rows_.emplace_back();
+    if (!cf.cap0_notch_points.empty() || !cf.cap1_notch_points.empty()) {
+      CylinderNotchRows& rows = result.face_notch_rows_.back();
+      rows.present = true;
+      rows.cap0_points = cf.cap0_notch_points;
+      rows.cap0_uv = cap0_full_uv;
+      rows.cap1_points = cf.cap1_notch_points;
+      rows.cap1_uv.assign(cap1_full_uv_reversed.rbegin(), cap1_full_uv_reversed.rend());
+      rows.v_end0 = 0.0;
+      rows.v_end1 = cf.length;
+    }
 
     // Genuine topology (see BuildFaceLoop above): the same 4 corner
     // points the trim rectangle's own UV corners map to through this
@@ -1626,6 +1650,7 @@ Brep Brep::FromMixedFaces(const std::vector<Brep::PlanarFace>& faces,
     result.face_exact_clip_.push_back(true);
     result.face_hole_loops_.emplace_back();
     result.face_arc_runs_.emplace_back();  // meaningless for a non-planar face
+    result.face_notch_rows_.emplace_back();  // a cone never reaches the cylinder strip mesher
 
     FaceTopology t;
     t.trim_uv = trim;
@@ -2198,6 +2223,349 @@ Mesh BuildConformingCylinderMesh(const NurbsSurface& wrapper, const std::vector<
     }
   }
   return mesh;
+}
+
+// ---------------------------------------------------------------------
+// Per-row chain strip mesher for a CylindricalFace whose two v-rows carry
+// genuinely DIFFERENT breakpoint schedules - see Brep::TessellateConforming()'s
+// own doc comment (brep.h, the "SIXTH gap" entry) for the diagnosis this
+// answers. BuildConformingCylinderMesh above forces every ConformingMatch
+// sample onto ONE shared u-breakpoint list used by both its v=0 and its
+// v=length row, which is exactly right when the two ends' caps are
+// sampled identically (the common case, kept on that function
+// unchanged) and a genuine T-junction otherwise: the denser end's
+// breakpoints become unforced extra columns on the sparser end's row,
+// which that end's own cap loop never received. Here each row is its
+// OWN chain - a flat row carries only the matches at THAT end (plus the
+// rails and the same uniform gap fill), a notched row is the literal
+// cap-notch polyline - and the band between two consecutive rows is
+// triangulated as the u-monotone polygon it is.
+// ---------------------------------------------------------------------
+
+// One vertex of a row chain: its (u, v) on the face's own surface and,
+// when it is a LITERAL shared point (a ConformingMatch sample or a cap-
+// notch point), a pointer to that exact Point3d, used verbatim and never
+// re-evaluated through the surface - the same "same std::vector<Point3d>
+// on both sides" identity BuildConformingCylinderMesh's forced points
+// rely on. A null `forced` means "evaluate wrapper.PointAt(u, v)".
+struct StripChainVertex {
+  double u = 0.0;
+  double v = 0.0;
+  const Point3d* forced = nullptr;
+};
+// Strictly increasing in u; front at the u_min rail, back at the u_max
+// rail.
+using RowChain = std::vector<StripChainVertex>;
+
+// The flat (un-notched) row at v = `v_flat`: the two rails plus the
+// forced raw_u samples of every ConformingMatch at THIS end only
+// (`at_v0`), deduplicated within `u_tol` (a later forced point wins the
+// slot, exactly as BuildConformingCylinderMesh's add_break does) and
+// sorted, then the same "fill any gap wider than 1.5x the u_divisions
+// spacing uniformly" rule that function applies to its shared list -
+// restricted to one row, so a row with a single 65-point lens arc gets
+// exactly those 65 columns and a row with four 65-point quadrant arcs
+// exactly their 257-point union.
+RowChain BuildFlatRowChain(double u_min, double u_max, double v_flat, double u_tol, int u_divisions,
+                           const std::vector<ConformingMatch>& matches, bool at_v0) {
+  struct Break {
+    double u = 0.0;
+    const Point3d* point = nullptr;
+  };
+  std::vector<Break> breaks;
+  auto add_break = [&](double u, const Point3d* point) {
+    for (Break& b : breaks) {
+      if (std::fabs(b.u - u) <= u_tol) {
+        if (point) b.point = point;
+        return;
+      }
+    }
+    breaks.push_back({u, point});
+  };
+  add_break(u_min, nullptr);
+  add_break(u_max, nullptr);
+  for (const ConformingMatch& m : matches) {
+    if (m.at_v0 != at_v0) continue;
+    for (size_t s = 0; s < m.raw_u.size(); ++s) add_break(m.raw_u[s], &m.points[s]);
+  }
+  std::sort(breaks.begin(), breaks.end(), [](const Break& a, const Break& b) { return a.u < b.u; });
+
+  const double u_range = std::max(u_max - u_min, 1e-300);
+  const double target_spacing = u_range / static_cast<double>(std::max(u_divisions, 1));
+  RowChain chain;
+  chain.reserve(breaks.size() * 2);
+  for (size_t i = 0; i + 1 < breaks.size(); ++i) {
+    chain.push_back({breaks[i].u, v_flat, breaks[i].point});
+    const double gap = breaks[i + 1].u - breaks[i].u;
+    if (gap > target_spacing * 1.5) {
+      const int extra = static_cast<int>(std::ceil(gap / target_spacing)) - 1;
+      for (int e = 1; e <= extra; ++e) {
+        const double u = breaks[i].u + gap * static_cast<double>(e) / static_cast<double>(extra + 1);
+        chain.push_back({u, v_flat, nullptr});
+      }
+    }
+  }
+  if (!breaks.empty()) chain.push_back({breaks.back().u, v_flat, breaks.back().point});
+  return chain;
+}
+
+// A notched row: the side table's literal points, verbatim, at the (u, v)
+// FromMixedFaces() already computed for them (see CylinderNotchRows' own
+// doc comment in brep.h). The table's contract is increasing angle, hence
+// increasing u - the reversal below is a guard, not an expected path. No
+// gap fill: a producer's notch list is dense by construction (200-odd
+// samples over at least a quarter sweep), and adding unforced columns
+// to a row that must match a neighbour's literal polyline vertex-for-
+// vertex would reintroduce exactly the T-junction this mesher removes.
+RowChain BuildNotchRowChain(const std::vector<Point3d>& points, const std::vector<Point2d>& uv) {
+  RowChain chain;
+  chain.reserve(points.size());
+  for (size_t i = 0; i < points.size() && i < uv.size(); ++i) chain.push_back({uv[i].x, uv[i].y, &points[i]});
+  if (chain.size() >= 2 && chain.front().u > chain.back().u) std::reverse(chain.begin(), chain.end());
+  return chain;
+}
+
+// Piecewise-linear v(u) along a chain (binary search on u), clamped to
+// the chain's end values outside its u range.
+double ChainVAt(const RowChain& chain, double u) {
+  if (u <= chain.front().u) return chain.front().v;
+  if (u >= chain.back().u) return chain.back().v;
+  size_t lo = 0, hi = chain.size() - 1;
+  while (hi - lo > 1) {
+    const size_t mid = (lo + hi) / 2;
+    if (chain[mid].u <= u) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  const double du = chain[hi].u - chain[lo].u;
+  const double t = du > 0.0 ? (u - chain[lo].u) / du : 0.0;
+  return chain[lo].v + (chain[hi].v - chain[lo].v) * t;
+}
+
+// One already-appended mesh vertex of a row: its (u, v) and its index in
+// the mesh being built.
+struct StripRowVertex {
+  double u = 0.0;
+  double v = 0.0;
+  int index = 0;
+};
+
+// Triangulates the band between two consecutive rows, `lower` and
+// `upper` (each strictly increasing in u, both spanning the same
+// [u_min, u_max]), as the u-monotone polygon they bound - the standard
+// stack sweep for monotone polygons (de Berg, Cheong, van Kreveld,
+// Overmars, Computational Geometry, section 3.3): walk the merged
+// sequence of both rows by increasing u, keeping on a stack the vertices
+// that still need diagonals; a vertex on the OTHER chain than the stack
+// top fans a triangle to every consecutive stack pair; a vertex on the
+// SAME chain pops while the diagonal to the vertex below the top lies
+// inside the polygon (a left turn seen from the lower chain, a right
+// turn from the upper one), emitting one triangle per pop. Every
+// diagonal is tested for being on the interior side, so no two triangles
+// overlap and none is left out, for ANY simple u-monotone strip - no
+// convexity is assumed, which matters here: a naive two-pointer "advance
+// the smaller u, emit one triangle" merge is only valid when both rows
+// are straight (the tensor case) and can silently overlap when one row
+// is a curved notch sampled at different u than the other.
+//
+// A tie in u puts the UPPER row's vertex first; for two rows with the
+// identical u set that reproduces BuildConformingCylinderMesh's own
+// v00-v11 cell diagonal exactly. Every emitted triangle is ordered CCW
+// in (u, v) - the same orientation as that function's own tri1/tri2, so
+// the surface's u_dir x v_dir outward normal and the dispatch loop's
+// m_bRev flip apply to both meshers unchanged. A triangle with a repeated
+// vertex index (a pinched rail, see BuildConformingCylinderStripMesh) is
+// skipped rather than emitted degenerate.
+void TriangulateStrip(const std::vector<StripRowVertex>& lower, const std::vector<StripRowVertex>& upper,
+                      ON_Mesh& raw) {
+  struct SweepVertex {
+    double u = 0.0;
+    double v = 0.0;
+    int index = 0;
+    int chain = 0;  // 0 = lower row, 1 = upper row
+  };
+  std::vector<SweepVertex> seq;
+  seq.reserve(lower.size() + upper.size());
+  {
+    size_t i = 0, j = 0;
+    while (i < lower.size() || j < upper.size()) {
+      const bool take_upper = (i >= lower.size()) || (j < upper.size() && upper[j].u <= lower[i].u);
+      if (take_upper) {
+        seq.push_back({upper[j].u, upper[j].v, upper[j].index, 1});
+        ++j;
+      } else {
+        seq.push_back({lower[i].u, lower[i].v, lower[i].index, 0});
+        ++i;
+      }
+    }
+  }
+  // A vertex shared by both rows (a pinched rail) appears twice in a row
+  // in the merged sequence; the polygon has it once.
+  {
+    std::vector<SweepVertex> unique;
+    unique.reserve(seq.size());
+    for (const SweepVertex& s : seq) {
+      if (!unique.empty() && unique.back().index == s.index) continue;
+      unique.push_back(s);
+    }
+    seq.swap(unique);
+  }
+  if (seq.size() < 3) return;
+
+  auto emit = [&](const SweepVertex& p, const SweepVertex& q, const SweepVertex& r) {
+    if (p.index == q.index || q.index == r.index || p.index == r.index) return;
+    const double twice_area = (q.u - p.u) * (r.v - p.v) - (q.v - p.v) * (r.u - p.u);
+    ON_MeshFace f;
+    f.vi[0] = p.index;
+    if (twice_area >= 0.0) {
+      f.vi[1] = q.index;
+      f.vi[2] = r.index;
+    } else {
+      f.vi[1] = r.index;
+      f.vi[2] = q.index;
+    }
+    f.vi[3] = f.vi[2];
+    raw.m_F.Append(f);
+  };
+  auto cross = [](const SweepVertex& o, const SweepVertex& p, const SweepVertex& q) {
+    return (p.u - o.u) * (q.v - o.v) - (p.v - o.v) * (q.u - o.u);
+  };
+
+  std::vector<SweepVertex> stack;
+  stack.push_back(seq[0]);
+  stack.push_back(seq[1]);
+  for (size_t k = 2; k + 1 < seq.size(); ++k) {
+    const SweepVertex& v = seq[k];
+    if (v.chain != stack.back().chain) {
+      for (size_t s = 0; s + 1 < stack.size(); ++s) emit(v, stack[s], stack[s + 1]);
+      const SweepVertex previous_top = stack.back();
+      stack.clear();
+      stack.push_back(previous_top);
+      stack.push_back(v);
+    } else {
+      SweepVertex last = stack.back();
+      stack.pop_back();
+      while (!stack.empty()) {
+        const double c = cross(stack.back(), last, v);
+        const bool diagonal_inside = v.chain == 0 ? (c > 0.0) : (c < 0.0);
+        if (!diagonal_inside) break;
+        emit(v, stack.back(), last);
+        last = stack.back();
+        stack.pop_back();
+      }
+      stack.push_back(last);
+      stack.push_back(v);
+    }
+  }
+  const SweepVertex& final_vertex = seq.back();
+  for (size_t s = 0; s + 1 < stack.size(); ++s) emit(final_vertex, stack[s], stack[s + 1]);
+}
+
+// Builds a CylindricalFace's mesh from two independent boundary row
+// chains: row 0 is `bottom` (the v=0 end), row `v_divisions` is `top`
+// (the v=length end), and each interior row j lies on the UNION of both
+// chains' u breakpoints (deduplicated within `u_tol`) at
+// v = lerp(bottom's v(u), top's v(u), j / v_divisions) - so for two flat
+// rows the interior is exactly BuildConformingCylinderMesh's own uniform
+// v progression, and for a notched row the interior rows follow the
+// notch's own dip smoothly out to the flat end. Every chain vertex with
+// a literal `forced` point is appended verbatim; everything else is
+// wrapper.PointAt. The two rails: where the two chains meet at the same
+// (u, v) within tolerance (the pinch of a length-0 "eye" strip, whose
+// two rows are two half-curves sharing their endpoints) every row reuses
+// the bottom chain's endpoint vertex instead of stacking coincident
+// vertices there; otherwise the rail column is PointAt(u_rail, v_j),
+// the same samples an axially-adjacent sibling's own tensor rail
+// carries, so rail welding is unchanged.
+Mesh BuildConformingCylinderStripMesh(const NurbsSurface& wrapper, const RowChain& bottom, const RowChain& top,
+                                      int v_divisions, double u_tol, double v_tol) {
+  Mesh mesh;
+  ON_Mesh& raw = mesh.raw();
+  if (bottom.size() < 2 || top.size() < 2 || v_divisions < 1) return mesh;
+
+  std::vector<double> u_all;
+  u_all.reserve(bottom.size() + top.size());
+  for (const StripChainVertex& c : bottom) u_all.push_back(c.u);
+  for (const StripChainVertex& c : top) u_all.push_back(c.u);
+  std::sort(u_all.begin(), u_all.end());
+  std::vector<double> u_interior;
+  for (double u : u_all) {
+    if (!u_interior.empty() && std::fabs(u - u_interior.back()) <= u_tol) continue;
+    u_interior.push_back(u);
+  }
+
+  const bool pinch0 = std::fabs(bottom.front().u - top.front().u) <= u_tol &&
+                      std::fabs(bottom.front().v - top.front().v) <= v_tol;
+  const bool pinch1 =
+      std::fabs(bottom.back().u - top.back().u) <= u_tol && std::fabs(bottom.back().v - top.back().v) <= v_tol;
+
+  auto append = [&](const StripChainVertex& c) {
+    const Point3d p = c.forced != nullptr ? *c.forced : wrapper.PointAt(c.u, c.v);
+    raw.m_V.Append(ON_3fPoint(p));
+    return raw.m_V.Count() - 1;
+  };
+
+  std::vector<std::vector<StripRowVertex>> rows(static_cast<size_t>(v_divisions) + 1);
+  for (const StripChainVertex& c : bottom) rows[0].push_back({c.u, c.v, append(c)});
+  const int first_index = rows[0].front().index;
+  const int last_index = rows[0].back().index;
+  for (int j = 1; j < v_divisions; ++j) {
+    const double t = static_cast<double>(j) / static_cast<double>(v_divisions);
+    std::vector<StripRowVertex>& row = rows[static_cast<size_t>(j)];
+    row.reserve(u_interior.size());
+    for (size_t k = 0; k < u_interior.size(); ++k) {
+      const double u = u_interior[k];
+      const double v = (1.0 - t) * ChainVAt(bottom, u) + t * ChainVAt(top, u);
+      if (pinch0 && k == 0) {
+        row.push_back({u, v, first_index});
+      } else if (pinch1 && k + 1 == u_interior.size()) {
+        row.push_back({u, v, last_index});
+      } else {
+        row.push_back({u, v, append({u, v, nullptr})});
+      }
+    }
+  }
+  for (size_t k = 0; k < top.size(); ++k) {
+    const StripChainVertex& c = top[k];
+    if (pinch0 && k == 0) {
+      rows.back().push_back({c.u, c.v, first_index});
+    } else if (pinch1 && k + 1 == top.size()) {
+      rows.back().push_back({c.u, c.v, last_index});
+    } else {
+      rows.back().push_back({c.u, c.v, append(c)});
+    }
+  }
+  for (size_t j = 0; j + 1 < rows.size(); ++j) TriangulateStrip(rows[j], rows[j + 1], raw);
+  return mesh;
+}
+
+// True when two u-breakpoint sets, each taken as a sorted set
+// deduplicated within `u_tol`, coincide element-wise within `u_tol` -
+// the "would BuildConformingCylinderMesh force the same columns on both
+// rows" question the dispatch below asks. Callers pass the EFFECTIVE
+// sets (forced samples plus the two rails), not the raw forced samples:
+// see the dispatch site for why that distinction decides which faces are
+// re-routed.
+bool SameEffectiveRowSet(std::vector<double> a, std::vector<double> b, double u_tol) {
+  auto normalize = [u_tol](std::vector<double>& s) {
+    std::sort(s.begin(), s.end());
+    std::vector<double> d;
+    d.reserve(s.size());
+    for (double u : s) {
+      if (!d.empty() && std::fabs(u - d.back()) <= u_tol) continue;
+      d.push_back(u);
+    }
+    s.swap(d);
+  };
+  normalize(a);
+  normalize(b);
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i) {
+    if (std::fabs(a[i] - b[i]) > u_tol) return false;
+  }
+  return true;
 }
 
 // One shared boundary sample forced onto a plain quad face's own tensor
@@ -3367,7 +3735,78 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
     const auto plain_it = plain_forces.find(i);
 
     const auto self_cyl_it = cyl_by_face.find(i);
-    if (cyl_it != cyl_matches.end()) {
+
+    // Per-row strip routing (see this method's own doc comment, the
+    // "SIXTH gap" entry, and BuildConformingCylinderStripMesh's own): a
+    // hole-free cylindrical fragment takes the strip mesher iff it is
+    // NOTCHED (its side-table entry is present - the literal notch
+    // polyline becomes that row, closing the latent "an ArcRun match on
+    // the flat end routed the whole face to the bounding-box tensor
+    // mesher, which filled the notch back in" gap) or it has matches at
+    // BOTH ends whose EFFECTIVE per-row column sets differ. "Effective"
+    // means the forced raw_u samples PLUS the two rails, deduplicated
+    // within the mesher's own u tolerance - exactly the columns
+    // BuildConformingCylinderMesh would force on each row. Comparing the
+    // RAW forced sets instead is wrong in a way that only a suite-wide
+    // trace exposed: a full-sweep face whose two caps sample the seam at
+    // u=0 on one row and at u=u_max on the other has different raw sets
+    // but identical effective columns, and treating those as "different"
+    // re-routed ~15 faces that the shared-list tensor mesher already
+    // closed. With the effective comparison the only re-routed faces are
+    // the ones that genuinely could not have been closed before: an
+    // unforced column on a matched row is a T-junction against that
+    // cap's literal loop, which Mesh::IsClosedManifold() rejects.
+    const CylinderNotchRows* notch_rows = nullptr;
+    if (static_cast<size_t>(i) < face_notch_rows_.size() && face_notch_rows_[static_cast<size_t>(i)].present) {
+      notch_rows = &face_notch_rows_[static_cast<size_t>(i)];
+    }
+    bool rows_differ = false;
+    double u_min = 0.0, u_max = 0.0, v_min = 0.0, v_max = 0.0, u_tol = 0.0, v_tol = 0.0;
+    if (self_cyl_it != cyl_by_face.end() && !fg.outer.empty()) {
+      u_min = u_max = fg.outer[0].x;
+      v_min = v_max = fg.outer[0].y;
+      for (const Point2d& p : fg.outer) {
+        u_min = std::min(u_min, p.x);
+        u_max = std::max(u_max, p.x);
+        v_min = std::min(v_min, p.y);
+        v_max = std::max(v_max, p.y);
+      }
+      u_tol = std::max(1e-12, std::max(u_max - u_min, 1e-300) * 1e-9);
+      v_tol = std::max(1e-12, (v_max - v_min) * 1e-9);
+      if (cyl_it != cyl_matches.end()) {
+        std::vector<double> row0, row1;
+        for (const ConformingMatch& m : cyl_it->second) {
+          std::vector<double>& row = m.at_v0 ? row0 : row1;
+          row.insert(row.end(), m.raw_u.begin(), m.raw_u.end());
+        }
+        if (!row0.empty() && !row1.empty()) {
+          for (std::vector<double>* row : {&row0, &row1}) {
+            row->push_back(u_min);
+            row->push_back(u_max);
+          }
+          rows_differ = !SameEffectiveRowSet(row0, row1, u_tol);
+        }
+      }
+    }
+    const bool take_strip =
+        self_cyl_it != cyl_by_face.end() && !fg.outer.empty() && fg.holes.empty() && (notch_rows != nullptr || rows_differ);
+    if (take_strip) {
+      static const std::vector<ConformingMatch> kNoMatches;
+      const std::vector<ConformingMatch>& matches = cyl_it != cyl_matches.end() ? cyl_it->second : kNoMatches;
+      // A flat row sits at the side table's own recorded end height when
+      // the face is notched (its trim bounding box may have been widened
+      // by the OTHER end's notch), else at the trim's own v extreme -
+      // the same value BuildConformingCylinderMesh's v_min/v_max are.
+      const double v_end0 = notch_rows != nullptr ? notch_rows->v_end0 : v_min;
+      const double v_end1 = notch_rows != nullptr ? notch_rows->v_end1 : v_max;
+      const RowChain bottom = (notch_rows != nullptr && !notch_rows->cap0_points.empty())
+                                  ? BuildNotchRowChain(notch_rows->cap0_points, notch_rows->cap0_uv)
+                                  : BuildFlatRowChain(u_min, u_max, v_end0, u_tol, u_divisions, matches, /*at_v0=*/true);
+      const RowChain top = (notch_rows != nullptr && !notch_rows->cap1_points.empty())
+                               ? BuildNotchRowChain(notch_rows->cap1_points, notch_rows->cap1_uv)
+                               : BuildFlatRowChain(u_min, u_max, v_end1, u_tol, u_divisions, matches, /*at_v0=*/false);
+      result.push_back(BuildConformingCylinderStripMesh(wrapper, bottom, top, v_divisions, u_tol, v_tol));
+    } else if (cyl_it != cyl_matches.end()) {
       result.push_back(BuildConformingCylinderMesh(wrapper, fg.outer, u_divisions, v_divisions, cyl_it->second));
     } else if (self_cyl_it != cyl_by_face.end() && fg.holes.empty() && IsRectangularTrimUv(fg.outer)) {
       // A CylindricalFace fragment with NO ArcRun match on either end at

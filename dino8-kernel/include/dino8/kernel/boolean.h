@@ -726,9 +726,10 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 //   above. Difference's CROSSING sub-case (a genuine lens) is verified to
 //   CONSTRUCT correctly (Brep::FromMixedFaces() accepts the result; the
 //   tessellated volume matches the closed-form lens-complement formula to
-//   well under 1%). A later increment closed one of the two conforming-
-//   mesh gaps this crossing sub-case originally exposed and honestly
-//   discloses the other, narrower one that survives:
+//   well under 1%), and its conforming mesh is a closed manifold: two
+//   later increments closed the two conforming-mesh gaps this crossing
+//   sub-case originally exposed (1260 non-manifold edges at 64/64 when
+//   the sub-case first landed, now 0):
 //
 //   (1) CLOSED: a crossing pair's own OUTER angular wedge, once axially
 //   split into 3 or more bands by SplitCylindricalByOtherCylinderAxialExtent,
@@ -749,30 +750,34 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 //   and TestTessellateConformingFriendlessMiddleBandSyntheticWedgeIsClosedManifold
 //   (test_basic.cpp) for the isolated, falsifiable proof.
 //
-//   (2) STILL OPEN, honestly disclosed, found while verifying (1) rather
-//   than anticipated by this increment's own original scoping: fixing (1)
-//   does NOT, by itself, make this exact crossing-Difference fixture a
-//   full Mesh::IsClosedManifold() - a SEPARATE, previously-undiagnosed
-//   gap in Brep::TessellateConforming()'s own dispatch machinery affects
-//   A's own INNER angular wedge bands instead. Those bands each have a
-//   REAL ArcRun match at BOTH their own ends (an ordinary, 4-quadrant-
-//   split BuildEndCap cap on one end, this increment's own single,
-//   un-split BuildLensEndCap arc on the other) - but
-//   BuildConformingCylinderMesh (brep.cpp) shares ONE u-breakpoint list
-//   between its v=0 and v=length rows, so the quadrant cap's own denser
-//   breakpoints leak, as extra unforced columns, into the row that needs
-//   to match the sparser lens cap's own simpler boundary loop instead - a
-//   genuine T-junction, confirmed directly (not a breakpoint-VALUE
-//   mismatch: the lens run's own literal points are bit-identical, to
-//   floating-point noise, on both sides). Closing this needs
-//   BuildConformingCylinderMesh to carry two genuinely independent
-//   per-row u-breakpoint schedules plus a "loft between two differently-
-//   parameterized boundary polylines" triangulator to reconcile them - a
-//   materially larger restructuring of this delicate dispatch machinery
-//   than fix (1) above, not attempted here. See
-//   TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly's
-//   own doc comment in the test file for the full derivation and the
-//   exact edge-count measurement that isolates this from fix (1).
+//   (2) CLOSED, by a later increment than (1), which found it while
+//   verifying (1): fixing (1) did NOT, by itself, make this exact
+//   crossing-Difference fixture a full Mesh::IsClosedManifold() - a
+//   SEPARATE gap in Brep::TessellateConforming()'s own dispatch machinery
+//   affected A's own INNER angular wedge bands instead. Those bands each
+//   have a REAL ArcRun match at BOTH their own ends (an ordinary,
+//   4-quadrant-split BuildEndCap cap on one end, a single, un-split
+//   BuildLensEndCap arc on the other) - and BuildConformingCylinderMesh
+//   (brep.cpp) shared ONE u-breakpoint list between its v=0 and v=length
+//   rows, so the quadrant cap's own denser breakpoints leaked, as extra
+//   unforced columns, into the row that had to match the sparser lens
+//   cap's own simpler boundary loop instead - a genuine T-junction (not
+//   a breakpoint-VALUE mismatch: the lens run's own literal points were
+//   already bit-identical on both sides). Closed by exactly the
+//   restructuring that diagnosis called for: a per-row strip mesher
+//   (BuildConformingCylinderStripMesh, brep.cpp) that gives each row its
+//   OWN breakpoint schedule and lofts the band between two differently-
+//   sampled rows by a monotone-polygon stack sweep - see
+//   Brep::TessellateConforming()'s own doc comment (brep.h, the "SIXTH
+//   gap" entry) for the mechanism and its dispatch rule, and
+//   TestBooleanCombineMixedParallelCylinderDifferenceCrossingIsClosedManifold
+//   (test_basic.cpp, plus its asymmetric-divisions and row-schedule
+//   companions) for the falsifiable closure claim on this exact fixture.
+//   The one conforming-mesh seam that REMAINS open for the mixed
+//   pipeline is unrelated to parallel cylinders: an OBLIQUE plane-cut
+//   fragment's seam against its oblique PLANAR cap, where the planar side
+//   still tessellates by exact clipping over its own grid rather than
+//   from the shared literal notch points (the cylinder side now does).
 //
 // STILL restricted, for BOTH Union and the new Intersection/Difference
 // support, to an end whose synthesized cap provably needs no TRIMMING

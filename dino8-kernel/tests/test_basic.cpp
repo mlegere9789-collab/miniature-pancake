@@ -12812,33 +12812,33 @@ void TestBooleanCombineMixedParallelCylinderDifferenceNestedFullDisc() {
 // the OUTER wedge's own 302-degree sweep - exactly the friendless-
 // middle-band mechanism, and exactly the portion this fix targets.
 //
-// The REMAINING 320-per-level edges are a SEPARATE, previously-
-// undiagnosed gap this same investigation found (not something this
-// increment's own fix attempts, and not the mechanism boolean.h's own
-// pre-existing disclosure named): they lie entirely within the INNER
-// wedge's own much narrower ~58-degree sweep (confirmed directly: their
-// own angular range is exactly [-28.96, +28.96] degrees, the inner
-// wedge's own notch, and their own step size along that range exactly
-// matches a single 65-sample lens-arc pass, not the outer wedge's own
-// 257-point combined quadrant grid). A's own inner wedge bands each have
-// a REAL match at BOTH ends - an ordinary, 4-quadrant BuildEndCap cap at
-// one end, this increment's own single, un-split BuildLensEndCap arc at
-// the other - but BuildConformingCylinderMesh (brep.cpp) shares ONE
-// u-breakpoint list between its two rows, so the quadrant cap's own
-// denser breakpoints leak, as extra unforced columns, into the row that
-// needs to match the sparser lens cap's own simpler boundary instead - a
-// genuine T-junction, confirmed directly (not a breakpoint-VALUE
-// mismatch: every one of the lens run's own 65 points is bit-identical,
-// to floating-point noise, to the matching face's own forced points at
-// that same location). See Brep::TessellateConforming()'s own doc
-// comment in brep.h for the full derivation and why closing it needs a
-// materially larger restructuring (two independent per-row u-breakpoint
-// schedules plus a two-differently-parameterized-polylines lofting
-// triangulator) than this increment's own scope - not attempted here.
-// Consequently this exact fixture's own conforming mesh is STILL not a
-// full Mesh::IsClosedManifold() (unlike the isolated synthetic fixture
-// below, which hits only the fixed mechanism) - the volume check below
-// remains the honest, falsifiable claim this exact fixture can make.
+// The REMAINING 320-per-level edges were a SEPARATE gap this same
+// investigation found (not the mechanism boolean.h's own earlier
+// disclosure named): they lay entirely within the INNER wedge's own much
+// narrower ~58-degree sweep (confirmed directly: their own angular range
+// was exactly [-28.96, +28.96] degrees, the inner wedge's own notch, and
+// their own step size along that range exactly matched a single
+// 65-sample lens-arc pass, not the outer wedge's own 257-point combined
+// quadrant grid). A's own inner wedge bands each have a REAL match at
+// BOTH ends - an ordinary, 4-quadrant BuildEndCap cap at one end, a
+// single, un-split BuildLensEndCap arc at the other - and
+// BuildConformingCylinderMesh (brep.cpp) shared ONE u-breakpoint list
+// between its two rows, so the quadrant cap's own denser breakpoints
+// leaked, as extra unforced columns, into the row that had to match the
+// sparser lens cap's own simpler boundary instead - a genuine T-junction
+// (not a breakpoint-VALUE mismatch: every one of the lens run's own 65
+// points was already bit-identical to the matching face's own forced
+// points). A later increment closed exactly that with a per-row strip
+// mesher (two independent per-row breakpoint schedules lofted by a
+// monotone-polygon stack sweep - see Brep::TessellateConforming()'s own
+// doc comment in brep.h, the "SIXTH gap" entry), so this fixture's own
+// conforming mesh IS now a full Mesh::IsClosedManifold(); that closure
+// claim, its asymmetric-divisions twin and the per-row vertex-count
+// control that proves the two rows genuinely differ live in
+// TestBooleanCombineMixedParallelCylinderDifferenceCrossingIsClosedManifold
+// and the tests following it below. This test keeps its original
+// construction and volume checks unchanged as the boolean-geometry
+// claim they always were.
 void TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
@@ -12901,15 +12901,15 @@ void TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectl
   const double vol_a_full = ON_PI * r_a * r_a * 10.0;
   const double hand_derived_volume = vol_a_full - lens_area * 6.0;  // ~= 270.804588
 
-  // Deliberately NOT an IsClosedManifold() check - see this test's own
-  // doc comment above for exactly why: this exact fixture's own inner
-  // wedge bands hit a SEPARATE, still-open gap (the quadrant-cap-vs-
-  // lens-cap density mismatch) that this increment's own fix does not
-  // attempt. The tessellated volume remains meaningful and close either
-  // way, confirming the underlying boolean geometry (not merely the mesh
-  // stitching) is correct; a direct edge-count/angular-range measurement
-  // (also described in that same doc comment) is what actually confirms
-  // this increment's own fix closed the outer wedge's own seam here.
+  // A volume check, deliberately kept as written: when this test was
+  // first added the fixture's inner wedge bands hit the quadrant-cap-vs-
+  // lens-cap density mismatch described in the doc comment above, so an
+  // IsClosedManifold() check could not be made here. The per-row strip
+  // mesher has since closed that mismatch, and the closure claim is made
+  // - and made falsifiable - by
+  // TestBooleanCombineMixedParallelCylinderDifferenceCrossingIsClosedManifold
+  // below on this same fixture; this check remains the boolean-geometry
+  // claim (the volume is right regardless of how the mesh is stitched).
   const Mesh mesh = result.TessellateToClosedMeshConforming(64, 64);
   Check(std::fabs(mesh.Volume() - hand_derived_volume) < 1.0,
         "the crossing Difference result's tessellated volume is still within 1.0 (well under 0.4% relative "
@@ -13172,6 +13172,444 @@ void TestTessellateConformingFriendlessMiddleBandSyntheticWedgeAsymmetricDivisio
         "band's own fallback schedule is built from the axially-adjacent siblings' own actual raw_u breakpoints "
         "(always sampled with `boundary_samples`), not `u_divisions`, since the symmetric 64/64 case alone "
         "(u_divisions == boundary_samples there) could not distinguish the two");
+}
+
+// ---------------------------------------------------------------------
+// Brep::TessellateConforming()'s per-row strip mesher (see its own doc
+// comment in brep.h, the "SIXTH gap" entry): the two v-rows of a
+// cylindrical fragment each carry their OWN breakpoint schedule, lofted
+// by a monotone-polygon stack sweep, instead of one shared list.
+// ---------------------------------------------------------------------
+
+// The SAME two parallel cylinders
+// TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly
+// above builds (A: r=3 along z over [0,10]; B: r=2, axis offset 4 along
+// x, over [3,9]; A minus B), with the same closed-form volume it derives
+// - kept as one helper so every check below provably measures that one
+// fixture rather than a re-typed near-copy of it.
+struct CrossingDifferenceFixture {
+  dino8::kernel::Brep result;
+  bool threw = false;
+  double r_a = 3.0, r_b = 2.0, d = 4.0;
+  double hand_derived_volume = 0.0;
+};
+CrossingDifferenceFixture BuildParallelCylinderDifferenceCrossingFixture() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  CrossingDifferenceFixture fx;
+  Brep::CylindricalFace cyl_a;
+  cyl_a.frame.origin = Point3d(0, 0, 0);
+  cyl_a.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_a.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_a.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_a.frame.UpdateEquation();
+  cyl_a.radius = fx.r_a;
+  cyl_a.angle = 2.0 * ON_PI;
+  cyl_a.length = 10.0;
+  const Brep a = Brep::FromMixedFaces({}, {cyl_a});
+
+  Brep::CylindricalFace cyl_b;
+  cyl_b.frame.origin = Point3d(fx.d, 0, 3.0);
+  cyl_b.frame.xaxis = Vector3d(1, 0, 0);
+  cyl_b.frame.yaxis = Vector3d(0, 1, 0);
+  cyl_b.frame.zaxis = Vector3d(0, 0, 1);
+  cyl_b.frame.UpdateEquation();
+  cyl_b.radius = fx.r_b;
+  cyl_b.angle = 2.0 * ON_PI;
+  cyl_b.length = 6.0;
+  const Brep b = Brep::FromMixedFaces({}, {cyl_b});
+
+  try {
+    fx.result = BooleanCombineMixed(a, b, BooleanOp::Difference);
+  } catch (const std::invalid_argument&) {
+    fx.threw = true;
+  }
+  const double r_a = fx.r_a, r_b = fx.r_b, d = fx.d;
+  const double lens_area = r_a * r_a * std::acos((d * d + r_a * r_a - r_b * r_b) / (2.0 * d * r_a)) +
+                           r_b * r_b * std::acos((d * d + r_b * r_b - r_a * r_a) / (2.0 * d * r_b)) -
+                           0.5 * std::sqrt((-d + r_a + r_b) * (d + r_a - r_b) * (d - r_a + r_b) * (d + r_a + r_b));
+  fx.hand_derived_volume = ON_PI * r_a * r_a * 10.0 - lens_area * 6.0;  // ~= 270.804588
+  return fx;
+}
+
+// The claim the crossing-Difference test above deliberately could NOT
+// make when it was written: the fixture's conforming mesh IS a closed
+// manifold. A's two inner-wedge bands each have a 4-quadrant BuildEndCap
+// cap on one end (4 x 65 - 3 = 257 forced columns at boundary_samples=64)
+// and a single un-split lens arc on the other (65); the shared-breakpoint
+// tensor mesher gave the lens row the quadrant row's 192 extra UNFORCED
+// columns too - a T-junction the lens cap's own 65-vertex loop never saw
+// (320 boundary edges per level, 640 in all, every one of them on those
+// two bands' lens rows). Per-row chains give the lens row exactly the 65
+// lens vertices, so the band's 64 row edges coincide, vertex for vertex,
+// with the lens loop's 64 arc edges. Falsifiable: routing every face back
+// through the shared-list tensor mesher makes exactly this closure check
+// (and the three tests after it) fail while every other check in this
+// file still passes - verified directly during this increment's own
+// development, not assumed.
+void TestBooleanCombineMixedParallelCylinderDifferenceCrossingIsClosedManifold() {
+  using dino8::kernel::Mesh;
+
+  const CrossingDifferenceFixture fx = BuildParallelCylinderDifferenceCrossingFixture();
+  Check(!fx.threw, "the crossing-Difference fixture constructs (strip-mesher closure test)");
+  if (fx.threw) return;
+
+  const Mesh mesh = fx.result.TessellateToClosedMeshConforming(64, 64);
+  Check(mesh.IsClosedManifold(),
+        "the crossing Difference result's TessellateToClosedMeshConforming(64, 64) IS a genuinely closed manifold - "
+        "the per-row strip mesher gives A's inner-wedge bands a 65-column lens row and a 257-column quadrant row "
+        "instead of one shared 257-column list, so the lens cap's own 64 arc edges now have exact partners on the "
+        "band (the 640 lens-row boundary edges the shared-list tensor mesher left are gone)");
+  Check(std::fabs(mesh.Volume() - fx.hand_derived_volume) < 1.0,
+        "the crossing Difference result's closed conforming mesh (64, 64) still has the closed-form volume "
+        "(A's full cylinder minus the lens prism) within 1.0 - the strip mesher changed the band's triangulation, "
+        "not its geometry");
+}
+
+// The same fixture at ASYMMETRIC divisions, mirroring the friendless-band
+// test's rationale above: at 64/64 boundary_samples == u_divisions by
+// construction, so a strip mesher that mistakenly built its flat rows
+// from u_divisions rather than from the matches' own boundary_samples-
+// sampled raw_u (or that filled gaps by the wrong spacing) would stay
+// hidden there. (12, 20) puts boundary_samples above u_divisions; (17, 4)
+// puts a prime sample count against a coarse v subdivision, so no
+// coincidence of counts can mask a wrong schedule. Volume tolerances are
+// proportional to the coarser polygonal approximation of the circles at
+// each count (a 4 x 17-gon is visibly not a circle), not to any seam.
+void TestBooleanCombineMixedParallelCylinderDifferenceCrossingAsymmetricDivisionsIsClosedManifold() {
+  using dino8::kernel::Mesh;
+
+  const CrossingDifferenceFixture fx = BuildParallelCylinderDifferenceCrossingFixture();
+  Check(!fx.threw, "the crossing-Difference fixture constructs (strip-mesher asymmetric-divisions test)");
+  if (fx.threw) return;
+
+  const Mesh mesh_12_20 = fx.result.TessellateToClosedMeshConforming(12, 20);
+  Check(mesh_12_20.IsClosedManifold(),
+        "the crossing Difference result's conforming mesh stays a closed manifold at ASYMMETRIC divisions "
+        "(u=12, v=20, so boundary_samples defaults to 20 != u_divisions) - the strip mesher's flat rows are built "
+        "from the matches' own boundary_samples-sampled raw_u, not from u_divisions");
+  Check(std::fabs(mesh_12_20.Volume() - fx.hand_derived_volume) < 1.0,
+        "the crossing Difference result's (12, 20) conforming volume is within 1.0 (under 0.4%) of the closed form - "
+        "ordinary 4 x 20-gon circle flattening, no missing or doubled material");
+
+  const Mesh mesh_17_4 = fx.result.TessellateToClosedMeshConforming(17, 4);
+  Check(mesh_17_4.IsClosedManifold(),
+        "the crossing Difference result's conforming mesh stays a closed manifold at (u=17, v=4) too - a prime "
+        "boundary sample count against a coarse v subdivision, so no coincidence of counts can hide a wrong row "
+        "schedule");
+  Check(std::fabs(mesh_17_4.Volume() - fx.hand_derived_volume) < 1.0,
+        "the crossing Difference result's (17, 4) conforming volume is within 1.0 (under 0.4%) of the closed form");
+}
+
+// The falsifiability control for the mechanism itself, independent of
+// welding: on TessellateConforming(64, 64) the inner band that borders
+// the z=3 lens cap has exactly boundary_samples + 1 = 65 distinct
+// vertices on its lens row (z=3) and 4 * boundary_samples + 1 = 257 on
+// its quadrant-cap row (z=0) - two genuinely different per-row schedules
+// on ONE face, which the shared-list tensor design cannot produce at all
+// (it gave both rows 257). Plus the lens piece's own 65 arc vertices are
+// float== the band's lens-row vertices (the same bit-identity pattern
+// TestBooleanCombineMixedConformingSharedArcBoundaryIsBitIdentical
+// establishes for the drilled box) - the strip mesher only ever ADDS
+// literal forced points to a row, it never re-evaluates one.
+void TestBooleanCombineMixedParallelCylinderDifferenceCrossingRowSchedulesDiffer() {
+  using dino8::kernel::Mesh;
+
+  const CrossingDifferenceFixture fx = BuildParallelCylinderDifferenceCrossingFixture();
+  Check(!fx.threw, "the crossing-Difference fixture constructs (strip-mesher row-schedule test)");
+  if (fx.threw) return;
+
+  const size_t planar_count = fx.result.MixedFaces().planar.size();
+  const std::vector<Mesh> faces = fx.result.TessellateConforming(64, 64);
+  Check(faces.size() == planar_count + 6,
+        "TessellateConforming(64, 64) of the crossing Difference result yields one mesh per face (20 planar + 6 "
+        "cylindrical)");
+
+  // A's inner-wedge [0,3] band, located by geometry rather than by index
+  // (it is face planar_count + 3 in the fixture's own ordering at the
+  // time of writing): the one cylindrical face all of whose vertices sit
+  // at radius r_a from A's axis, within z in [0, 3], and inside B's
+  // footprint (x > 2.5 - the inner wedge spans about +-29 degrees about
+  // +x). A's OUTER [0,3] band shares the radius and z-range but wraps the
+  // far side of A (x down to -3).
+  const double eps = 1e-4;
+  int band = -1;
+  int band_count = 0;
+  for (size_t f = planar_count; f < faces.size(); ++f) {
+    const ON_Mesh& m = faces[f].raw();
+    if (m.m_V.Count() == 0) continue;
+    bool matches = true;
+    for (int i = 0; i < m.m_V.Count() && matches; ++i) {
+      const ON_3fPoint& p = m.m_V[i];
+      const double dist = std::sqrt(static_cast<double>(p.x) * p.x + static_cast<double>(p.y) * p.y);
+      if (std::fabs(dist - fx.r_a) > 1e-3 || p.z < -eps || p.z > 3.0 + eps || p.x < 2.5) matches = false;
+    }
+    if (matches) {
+      band = static_cast<int>(f);
+      ++band_count;
+    }
+  }
+  Check(band_count == 1 && band >= 0,
+        "exactly one cylindrical face of the crossing Difference result is A's inner-wedge [0,3] band (radius 3 "
+        "from A's axis, z in [0,3], entirely inside B's footprint)");
+  if (band < 0) return;
+
+  const ON_Mesh& band_mesh = faces[static_cast<size_t>(band)].raw();
+  int lens_row = 0, quadrant_row = 0;
+  std::vector<ON_3fPoint> lens_row_points;
+  for (int i = 0; i < band_mesh.m_V.Count(); ++i) {
+    const ON_3fPoint& p = band_mesh.m_V[i];
+    if (std::fabs(p.z - 3.0) < eps) {
+      ++lens_row;
+      lens_row_points.push_back(p);
+    } else if (std::fabs(p.z) < eps) {
+      ++quadrant_row;
+    }
+  }
+  Check(lens_row == 65,
+        "the inner [0,3] band's own z=3 (lens-cap) row has exactly boundary_samples + 1 = 65 distinct vertices - "
+        "the lens arc's own 65 forced points and nothing else (the shared-list tensor mesher gave this row 257)");
+  Check(quadrant_row == 257,
+        "the inner [0,3] band's own z=0 (quadrant-cap) row has exactly 4 * boundary_samples + 1 = 257 distinct "
+        "vertices - the four quadrant arcs' union - on the SAME face whose other row has 65: two genuinely "
+        "different per-row schedules, which one shared breakpoint list cannot express");
+
+  // The lens piece on A's circle at z=3: the planar face with the most
+  // vertices at radius r_a from A's axis in the z=3 plane (the other lens
+  // piece at that height lies on B's circle and touches A's only at the
+  // two lens corners).
+  int lens_face = -1;
+  int lens_arc_vertices = 0;
+  for (size_t f = 0; f < planar_count; ++f) {
+    const ON_Mesh& m = faces[f].raw();
+    int on_arc = 0;
+    for (int i = 0; i < m.m_V.Count(); ++i) {
+      const ON_3fPoint& p = m.m_V[i];
+      if (std::fabs(p.z - 3.0) > eps) continue;
+      const double dist = std::sqrt(static_cast<double>(p.x) * p.x + static_cast<double>(p.y) * p.y);
+      if (std::fabs(dist - fx.r_a) > 1e-3) continue;
+      ++on_arc;
+    }
+    if (on_arc > lens_arc_vertices) {
+      lens_arc_vertices = on_arc;
+      lens_face = static_cast<int>(f);
+    }
+  }
+  Check(lens_face >= 0 && lens_arc_vertices == 65,
+        "the z=3 lens piece on A's circle tessellates with exactly 65 arc vertices at radius 3 from A's axis - its "
+        "substituted boundary is the same 65-point ArcSchedule3d sample the band's lens row was forced to");
+  int exact_matches = 0;
+  if (lens_face >= 0) {
+    const ON_Mesh& m = faces[static_cast<size_t>(lens_face)].raw();
+    for (int i = 0; i < m.m_V.Count(); ++i) {
+      const ON_3fPoint& p = m.m_V[i];
+      if (std::fabs(p.z - 3.0) > eps) continue;
+      const double dist = std::sqrt(static_cast<double>(p.x) * p.x + static_cast<double>(p.y) * p.y);
+      if (std::fabs(dist - fx.r_a) > 1e-3) continue;
+      for (const ON_3fPoint& q : lens_row_points) {
+        if (p.x == q.x && p.y == q.y && p.z == q.z) {
+          ++exact_matches;
+          break;
+        }
+      }
+    }
+  }
+  Check(exact_matches == lens_arc_vertices,
+        "every one of the lens piece's 65 arc vertices has a BIT-IDENTICAL (exact float ==) counterpart on the "
+        "band's lens row - the strip mesher appends the literal shared Point3d values, never a re-evaluation");
+}
+
+// Two full-sweep fragments of ONE cylinder (r=2, axis z) that share a
+// single literal 201-point notch list - the ellipse where the plane z = x
+// cuts the cylinder - built directly via Brep::FromMixedFaces(): the
+// UPPER fragment carries it as cap0 (its v=0 end, dipping 2r below the
+// rail band), the LOWER fragment as cap1 (its v=length end), and each has
+// an ordinary flat end at the far side closed by 4 quadrant caps
+// mirroring BuildEndCap, so the pair is a complete solid of volume
+// pi r^2 (2L) with L=5. This is the shape a Steinmetz half-band pair
+// will hand the conforming path (one notched row + one capped flat row
+// per face), reachable today by direct construction.
+struct SharedNotchPairFixture {
+  dino8::kernel::Brep brep;
+  size_t lower_index = 0, upper_index = 0;
+  double true_volume = 0.0;
+};
+SharedNotchPairFixture BuildSharedNotchCylinderPair() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double r = 2.0, L = 5.0;
+  const int n = 200;
+  std::vector<Point3d> curve;
+  curve.reserve(static_cast<size_t>(n) + 1);
+  for (int k = 0; k <= n; ++k) {
+    const double t = 2.0 * ON_PI * static_cast<double>(k) / static_cast<double>(n);
+    curve.emplace_back(r * std::cos(t), r * std::sin(t), r * std::cos(t));
+  }
+  auto make = [&](double z_origin) {
+    Brep::CylindricalFace cf;
+    cf.frame.origin = Point3d(0, 0, z_origin);
+    cf.frame.xaxis = Vector3d(1, 0, 0);
+    cf.frame.yaxis = Vector3d(0, 1, 0);
+    cf.frame.zaxis = Vector3d(0, 0, 1);
+    cf.frame.UpdateEquation();
+    cf.radius = r;
+    cf.angle = 2.0 * ON_PI;
+    cf.length = L;
+    cf.outward = true;
+    return cf;
+  };
+  // The curve's height at angle 0 is +r, so anchoring the upper fragment's
+  // v=0 rail corners at z=r and the lower fragment's v=length corners at
+  // that same height puts both fragments' rail corners exactly on the
+  // shared curve's first/last point, as the notch contract requires.
+  Brep::CylindricalFace upper = make(r);  // [r, r+L] with cap0 = curve (dips to -r)
+  upper.cap0_notch_points = curve;
+  upper.cap0_notch_tolerance = 1e-4;
+  Brep::CylindricalFace lower = make(r - L);  // [r-L, r] with cap1 = curve
+  lower.cap1_notch_points = curve;
+  lower.cap1_notch_tolerance = 1e-4;
+
+  // Mirrors BuildEndCap's own same_handed/mirrored-basis/4-quadrant
+  // construction exactly (the same helper shape the friendless-band
+  // tests above use).
+  auto build_quadrant_caps = [&](const Brep::CylindricalFace& cf, bool at_v0, int per_quadrant) {
+    const double height = at_v0 ? 0.0 : cf.length;
+    const Point3d center = cf.frame.origin + height * cf.frame.zaxis;
+    const bool same_handed = at_v0 ? !cf.outward : cf.outward;
+    Vector3d plane_xaxis, plane_yaxis;
+    if (same_handed) {
+      plane_xaxis = cf.frame.xaxis;
+      plane_yaxis = cf.frame.yaxis;
+    } else {
+      const double ca = std::cos(cf.angle), sa = std::sin(cf.angle);
+      plane_xaxis = ca * cf.frame.xaxis + sa * cf.frame.yaxis;
+      plane_yaxis = sa * cf.frame.xaxis - ca * cf.frame.yaxis;
+    }
+    auto point_on_face = [&](double physical_theta) {
+      return center + cf.radius * (std::cos(physical_theta) * cf.frame.xaxis + std::sin(physical_theta) * cf.frame.yaxis);
+    };
+    std::vector<Brep::PlanarFace> pieces;
+    for (int q = 0; q < 4; ++q) {
+      const double plane_theta_begin = cf.angle * static_cast<double>(q) / 4.0;
+      const double plane_theta_end = cf.angle * static_cast<double>(q + 1) / 4.0;
+      std::vector<Point3d> loop;
+      loop.push_back(center);
+      std::vector<Point3d> arc_pts;
+      for (int s = 0; s <= per_quadrant; ++s) {
+        const double t = static_cast<double>(s) / static_cast<double>(per_quadrant);
+        const double plane_theta = plane_theta_begin + (plane_theta_end - plane_theta_begin) * t;
+        const double physical_theta = same_handed ? plane_theta : (cf.angle - plane_theta);
+        arc_pts.push_back(point_on_face(physical_theta));
+      }
+      for (const Point3d& p : arc_pts) loop.push_back(p);
+      Brep::PlanarFace::ArcRun run;
+      run.begin = 1;
+      run.count = static_cast<int>(arc_pts.size());
+      run.center = center;
+      run.radius = cf.radius;
+      run.angle_begin = plane_theta_begin;
+      run.angle_end = plane_theta_end;
+      run.plane_xaxis = plane_xaxis;
+      run.plane_yaxis = plane_yaxis;
+      Brep::PlanarFace cap;
+      cap.loop = std::move(loop);
+      cap.arc_runs.push_back(run);
+      cap.plane.origin = center;
+      cap.plane.xaxis = plane_xaxis;
+      cap.plane.yaxis = plane_yaxis;
+      cap.plane.zaxis = same_handed ? cf.frame.zaxis : -cf.frame.zaxis;
+      cap.plane.UpdateEquation();
+      pieces.push_back(std::move(cap));
+    }
+    return pieces;
+  };
+  std::vector<Brep::PlanarFace> caps;
+  for (Brep::PlanarFace& p : build_quadrant_caps(lower, /*at_v0=*/true, 50)) caps.push_back(std::move(p));
+  for (Brep::PlanarFace& p : build_quadrant_caps(upper, /*at_v0=*/false, 50)) caps.push_back(std::move(p));
+
+  SharedNotchPairFixture fx;
+  fx.brep = Brep::FromMixedFaces(caps, {lower, upper});
+  fx.lower_index = caps.size();
+  fx.upper_index = caps.size() + 1;
+  fx.true_volume = ON_PI * r * r * 2.0 * L;  // 125.663706
+  return fx;
+}
+
+// The latent gap the strip mesher closes on the NOTCHED side, measured
+// rather than argued: each fragment of the shared-notch pair above has an
+// ArcRun match on its flat end, so under the previous dispatch both went
+// to the bounding-box tensor mesher - which gridded each fragment's whole
+// widened (u, v) rectangle and FILLED ITS NOTCH BACK IN (the earlier
+// IsRectangularTrimUv gate only protected the cap-LESS notched fragment).
+// Measured under that path: volume 159.16 against the true 125.66, with
+// every one of the 1280 notch-row edges shared by 4 faces, and not a
+// closed manifold. With the notch row as the literal 201-point polyline
+// the pair is closed, volume-exact to tessellation error, and the two
+// fragments' notch rows are the same float values (both chains point at
+// the same literal list). Falsifiable in both directions: routing back
+// to the tensor mesher fails the closure, volume AND bit-identity checks.
+void TestTessellateConformingSharedNotchCylinderPairIsClosedManifold() {
+  using dino8::kernel::Mesh;
+
+  const SharedNotchPairFixture fx = BuildSharedNotchCylinderPair();
+  Check(fx.brep.MixedFaces().cylindrical.size() == 2 && fx.brep.MixedFaces().planar.size() == 8,
+        "the shared-notch pair round-trips through Brep::FromMixedFaces()/MixedFaces() as 2 cylindrical fragments "
+        "and 8 quadrant-cap pieces");
+
+  const std::vector<Mesh> faces = fx.brep.TessellateConforming(64, 64);
+  Check(faces.size() == 10, "TessellateConforming(64, 64) of the shared-notch pair yields one mesh per face");
+  const Mesh merged = fx.brep.TessellateToClosedMeshConforming(64, 64);
+  Check(merged.IsClosedManifold(),
+        "the shared-notch cylinder pair's conforming mesh (64, 64) IS a closed manifold - each fragment's notched row "
+        "is the literal 201-point ellipse polyline and its flat row the quadrant cap's own forced schedule, lofted "
+        "by the strip mesher (the shared-list tensor mesher filled both notches back in and left 1280 edges shared "
+        "by 4 faces)");
+  Check(std::fabs(merged.Volume() - fx.true_volume) < 0.05,
+        "the shared-notch pair's conforming volume (64, 64) is within 0.05 of pi*r^2*2L = 125.66 - the notches are "
+        "honored on the conforming path (the tensor mesher measured 159.16 here, the two filled-in notches' worth "
+        "of doubled material)");
+
+  const Mesh merged_17_4 = fx.brep.TessellateToClosedMeshConforming(17, 4);
+  Check(merged_17_4.IsClosedManifold(),
+        "the shared-notch cylinder pair's conforming mesh stays a closed manifold at (u=17, v=4) - a prime boundary "
+        "sample count on the quadrant rows against the fixed 201-point notch rows and a coarse v subdivision");
+  Check(std::fabs(merged_17_4.Volume() - fx.true_volume) < 0.1,
+        "the shared-notch pair's (17, 4) conforming volume is within 0.1 (under 0.1%) of pi*r^2*2L - ordinary "
+        "4 x 17-gon flattening of the flat end caps, no missing or doubled material");
+
+  // Bit-identity across the shared curve: every vertex of the LOWER
+  // fragment on the plane z = x (the notch) has an exact float==
+  // counterpart in the UPPER fragment, and there are exactly 201 of them
+  // (the literal list, no interior-row vertex happens to land on it).
+  if (faces.size() != 10) return;
+  const ON_Mesh& lower_mesh = faces[fx.lower_index].raw();
+  const ON_Mesh& upper_mesh = faces[fx.upper_index].raw();
+  int on_curve = 0, exact = 0;
+  for (int k = 0; k < lower_mesh.m_V.Count(); ++k) {
+    const ON_3fPoint& p = lower_mesh.m_V[k];
+    if (std::fabs(static_cast<double>(p.z) - static_cast<double>(p.x)) > 1e-4) continue;
+    ++on_curve;
+    for (int q = 0; q < upper_mesh.m_V.Count(); ++q) {
+      const ON_3fPoint& w = upper_mesh.m_V[q];
+      if (w.x == p.x && w.y == p.y && w.z == p.z) {
+        ++exact;
+        break;
+      }
+    }
+  }
+  Check(on_curve == 201,
+        "the lower fragment's conforming mesh (64, 64) has exactly 201 vertices on the shared notch curve z = x - "
+        "the literal notch list, with no extra unforced column on that row");
+  Check(exact == on_curve,
+        "every one of the lower fragment's 201 notch-curve vertices is BIT-IDENTICAL (exact float ==) to a vertex "
+        "of the upper fragment - both strip chains point at the same literal Point3d list, so the shared curve is "
+        "one set of values, not two evaluations of one ellipse");
 }
 
 // Confirms every EXISTING Union test in this file (and the still-throwing
@@ -14045,6 +14483,10 @@ int main() {
   TestBooleanCombineMixedParallelCylinderDifferenceCrossingConstructsCorrectly();
   TestTessellateConformingFriendlessMiddleBandSyntheticWedgeIsClosedManifold();
   TestTessellateConformingFriendlessMiddleBandSyntheticWedgeAsymmetricDivisionsIsClosedManifold();
+  TestBooleanCombineMixedParallelCylinderDifferenceCrossingIsClosedManifold();
+  TestBooleanCombineMixedParallelCylinderDifferenceCrossingAsymmetricDivisionsIsClosedManifold();
+  TestBooleanCombineMixedParallelCylinderDifferenceCrossingRowSchedulesDiffer();
+  TestTessellateConformingSharedNotchCylinderPairIsClosedManifold();
   TestBooleanCombineMixedParallelCylinderIntersectionUnaffectsUnionAndNonParallelCases();
   TestBooleanCombineMixedSteinmetzIntersectionPerpendicularVolumeAndTopology();
   TestBooleanCombineMixedSteinmetzIntersectionGeneralAngleVolume();
