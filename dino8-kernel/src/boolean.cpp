@@ -1384,6 +1384,8 @@ Point2d SafeInteriorPoint2d(const std::vector<Point2d>& poly) {
 // (above the chain everywhere), both at the plain piece's mid-angle,
 // where the wall is at common-perpendicular coordinate +/- r_a, farther
 // from the smaller cylinder's axis than its radius at every height.
+double NotchHeightAt(const std::vector<Point3d>& chain, const Brep::CylindricalFace& cf, double angle);
+
 Point3d RepresentativeInteriorPointMixed(const MixedFace& f) {
   if (!f.is_cyl) {
     // A genuine "pure fan" piece - loop == [center, arc_sample_0, ...,
@@ -1462,10 +1464,29 @@ Point3d RepresentativeInteriorPointMixed(const MixedFace& f) {
     // cylinder, i.e. in the plane spanned by the two axes, so the point
     // is on the other cylinder's axis (margin r_b for a plug, r_a for a
     // middle band) - see that split's own section comment.
-    const size_t m0 = cf.cap0_notch_points.size() / 2;
-    const size_t m1 = cf.cap1_notch_points.size() / 2;
-    const double h_bottom = ON_DotProduct(cf.cap0_notch_points[m0] - cf.frame.origin, cf.frame.zaxis);
-    const double h_top = ON_DotProduct(cf.cap1_notch_points[m1] - cf.frame.origin, cf.frame.zaxis);
+    // Evaluated by INTERPOLATED angle (NotchHeightAt, at the true mid-
+    // angle 0.5*cf.angle) rather than by each list's own middle ARRAY
+    // index: the two coincide for every genuine Steinmetz eye / unequal-
+    // radius plug or middle band this codebase itself produces (their own
+    // point lists are built by even angular sampling, so the middle
+    // index IS the mid-angle sample - the ORIGINAL comment above's own
+    // claim, still true and still relied on for those shapes) - but NOT
+    // for a bigon this increment's own SplitNotchedCylinderAtHeight
+    // builds from a seam-straddling window (NotchSubChainWrapped
+    // concatenates two sub-runs at the SEAM, not at the window's own mid-
+    // angle, so the middle INDEX can land on - or near - a crossing point
+    // instead), a real, checked-directly failure mode (confirmed via the
+    // disclosed fixture's own `lower` fragment: its wraparound bigon's
+    // window is symmetric around the seam, so `cap1_notch_points`' own
+    // middle index landed almost exactly on a crossing point - height
+    // ~0 relative instead of the window's own true mid-angle value -
+    // silently misclassifying the whole bigon as outside the OTHER
+    // operand it was genuinely inside). NotchHeightAt's own interpolation
+    // is angle-based, not index-based, so it is correct for BOTH cases
+    // uniformly - a strict widening, not a behavior change, for every
+    // pre-existing Steinmetz/plug/middle-band fixture.
+    const double h_bottom = NotchHeightAt(cf.cap0_notch_points, cf, 0.5 * cf.angle);
+    const double h_top = NotchHeightAt(cf.cap1_notch_points, cf, 0.5 * cf.angle);
     return PointOnCylFace(cf, 0.5 * cf.angle, 0.5 * (h_bottom + h_top));
   }
   double height = 0.5 * cf.length;
@@ -1534,6 +1555,344 @@ double Cap0HeightAt(const Brep::CylindricalFace& cf, double angle) {
 }
 double Cap1HeightAt(const Brep::CylindricalFace& cf, double angle) {
   return cf.cap1_notch_points.empty() ? cf.length : NotchHeightAt(cf.cap1_notch_points, cf, angle);
+}
+
+// ---- Angle-dependent notch-vs-plane splitting (task #86) -----------------
+//
+// SplitMixedAgainstAllFaces' own case (iii), further down this file, splits
+// a cylindrical fragment by a plane perpendicular to its own axis using a
+// single scalar `v_cut` - exactly right for a plain, un-notched wall, but
+// WRONG whenever the fragment's own ACTIVE notch chain (cap0, for material
+// [h(theta), length], or cap1, for material [0, h(theta)] - see
+// CylindricalFace's own doc comment, brep.h) genuinely straddles `v_cut` at
+// some angles and not others: the true boundary there is not one curve but
+// a CLAMP, `h'(theta) = max(h(theta), v0)` for a cap0-notched fragment (or
+// `min(h(theta), v0)`, cap1's mirror), plus a doubly-notched, length == 0
+// "bigon" fragment - the SAME shape already used for a Steinmetz eye /
+// unequal-radius plug (CylindricalFace's own doc comment again) - over each
+// angular window where the notch's own excursion sits on the "wrong" side
+// of v0, with one of its two notch chains the degenerate, in-contract case
+// of a literally FLAT chain. See this increment's own commit message for
+// the full derivation (worked from BuildSharedNotchCylinderPair's own
+// disclosed fixture, tests/test_basic.cpp) and its own closed-form check.
+//
+// Restricted to a fragment notched at exactly ONE end - a fragment notched
+// at BOTH ends simultaneously (a Steinmetz eye / unequal-radius plug or
+// middle band) crossed inside its own notch-extended range at both ends at
+// once is a real, disclosed gap, not resolved here (see the throw site in
+// case (iii) itself). Also restricted to a crossing window strictly inside
+// (0, cf.angle) - one touching the full-sweep seam (angle 0 == cf.angle)
+// would need a wraparound merge this increment does not build - a second,
+// narrower disclosed gap (also refused explicitly at the case (iii) call
+// site, not silently mishandled here).
+
+// Per-sample physical angle of a notch chain - the same walk NotchHeightAt
+// itself performs (first point at angle 0, last at cf.angle, interior
+// points recovered via atan2 in cf.frame's own (xaxis, yaxis) basis) but
+// returned as a full array instead of being interleaved with a single
+// height lookup, since every helper below needs to re-walk it (the
+// crossing finder, the sub-chain extractor, and the clamp splicer) and
+// none should re-derive its own copy of this same atan2 logic.
+std::vector<double> NotchChainAngles(const std::vector<Point3d>& chain, const Brep::CylindricalFace& cf) {
+  std::vector<double> angles(chain.size(), 0.0);
+  for (size_t i = 1; i < chain.size(); ++i) {
+    if (i + 1 == chain.size()) {
+      angles[i] = cf.angle;
+      continue;
+    }
+    const Vector3d d = chain[i] - cf.frame.origin;
+    double a = std::atan2(ON_DotProduct(d, cf.frame.yaxis), ON_DotProduct(d, cf.frame.xaxis));
+    if (a < 0.0) a += 2.0 * ON_PI;
+    angles[i] = a;
+  }
+  return angles;
+}
+
+// The angles (within [0, cf.angle], sorted, deduplicated within `tol`)
+// where `chain`'s own NotchHeightAt interpolation crosses target height
+// `v0` exactly - the direct algebraic inverse of NotchHeightAt's own
+// per-segment linear interpolation, walking the same samples. Handles any
+// number of crossings (a general chain need not be unimodal, even though
+// the disclosed fixture's own curve - a plain cosine - only ever has two).
+std::vector<double> NotchCrossingAngles(const std::vector<Point3d>& chain, const Brep::CylindricalFace& cf,
+                                         double v0, double tol) {
+  const std::vector<double> angles = NotchChainAngles(chain, cf);
+  std::vector<double> crossings;
+  for (size_t i = 1; i < chain.size(); ++i) {
+    const double h0 = ON_DotProduct(chain[i - 1] - cf.frame.origin, cf.frame.zaxis) - v0;
+    const double h1 = ON_DotProduct(chain[i] - cf.frame.origin, cf.frame.zaxis) - v0;
+    if ((h0 <= 0.0 && h1 >= 0.0) || (h0 >= 0.0 && h1 <= 0.0)) {
+      double a;
+      if (std::fabs(h1 - h0) <= 1e-15) {
+        a = angles[i - 1];  // degenerate (near-flat) segment already sitting on v0
+      } else {
+        const double t = std::max(0.0, std::min(1.0, h0 / (h0 - h1)));
+        a = angles[i - 1] + t * (angles[i] - angles[i - 1]);
+      }
+      if (crossings.empty() || a - crossings.back() > tol) crossings.push_back(a);
+    }
+  }
+  return crossings;
+}
+
+// The angular window(s) within [0, cf.angle] where `chain`'s own
+// interpolated height is strictly on the "active" side of v0 - `below` ==
+// true means "height < v0" (a cap0-notched fragment's own "material dips
+// past the cut" case), false means "height > v0" (cap1's mirror). Built
+// from NotchCrossingAngles' own roots: between consecutive breakpoints
+// {0, crossings..., cf.angle}, the chain's own sign relative to v0 cannot
+// change (NotchHeightAt is piecewise-linear, so a genuine sign change
+// always has its own recorded root), so one sample at each interval's own
+// midpoint decides that whole interval.
+//
+// Returns {} outright whenever there is no crossing at all (`chain`
+// uniformly on one side of v0, over its WHOLE [0, cf.angle] domain) - a
+// real, checked-directly distinction, not a redundant early-out: with no
+// crossing, "the whole domain is one window" is NOT a genuine angle-
+// dependent case at all (there is no angle where the OTHER side's
+// material exists), so it is already exactly what case (iii)'s own plain
+// flat mid/beyond branches handle correctly on their own (confirmed
+// directly against this file's own pre-existing "(v-e)" test, boolean.cpp:
+// the shared-notch pair's `upper` fragment, cut at z=4, has its ENTIRE
+// cap0 chain below that cut - h(theta) max is 0, v0 is 2 - and the plain
+// flat split is exactly right there; treating that uniform case as a
+// "window" would wrongly route it into SplitNotchedCylinderAtHeight and
+// trip its own full-sweep-seam refusal for a fragment that needs no
+// angle-dependent split whatsoever).
+std::vector<std::pair<double, double>> NotchWindows(const std::vector<Point3d>& chain,
+                                                      const Brep::CylindricalFace& cf, double v0, bool below,
+                                                      double tol) {
+  std::vector<double> breaks = NotchCrossingAngles(chain, cf, v0, tol);
+  if (breaks.empty()) return {};
+  breaks.insert(breaks.begin(), 0.0);
+  breaks.push_back(cf.angle);
+  std::vector<std::pair<double, double>> windows;
+  for (size_t i = 0; i + 1 < breaks.size(); ++i) {
+    const double a0 = breaks[i], a1 = breaks[i + 1];
+    if (a1 - a0 <= tol) continue;
+    const double mid_h = NotchHeightAt(chain, cf, 0.5 * (a0 + a1));
+    const bool active = below ? (mid_h < v0 - tol) : (mid_h > v0 + tol);
+    if (active) windows.push_back({a0, a1});
+  }
+  return windows;
+}
+
+// Dense samples of the TRUE notch curve `chain` between physical angles
+// [a0, a1] (a0 < a1, both already inside [0, cf.angle]). An endpoint whose
+// own `exact_a0`/`exact_a1` flag is true is EXACTLY one of
+// NotchCrossingAngles' own roots (`chain`'s own interpolated height there
+// is `v0`, to within that root-finder's own precision) and is built via
+// the exact on-surface formula at height `v0` (radius `cf.radius`, angle
+// a0/a1 - the same formula FlatNotchArc uses), NOT the chain's own
+// linearly-interpolated 3D position there: a genuine, checked-directly
+// fix, not a stylistic preference - the two differ by that segment's own
+// sagitta (confirmed directly: ~2e-4 for the disclosed fixture's 200-point
+// chain, comfortably over FromMixedFaces' own 1e-6 rail-corner-exact
+// tolerance), and this sub-chain's own two endpoints MUST bit-match
+// whichever bigon's own frame.xaxis/yaxis - built from the SAME
+// cos(a0)/sin(a0) formula, see SplitNotchedCylinderAtHeight - reads as its
+// own rail corner. An endpoint whose flag is false is NOT a crossing at
+// all - a plain internal split point (NotchSubChainWrapped's own seam,
+// exactly `chain.front()`/`chain.back()`, already exact on the surface at
+// the chain's OWN true height there, needing no v0 override) - forcing
+// `v0` there too would be a real bug, not a harmless simplification:
+// confirmed directly, this is exactly what silently misplaced a
+// mid-window sample at the wrong height for the disclosed fixture's own
+// wraparound bigon (`lower`'s own window, straddling the seam), corrupting
+// RepresentativeInteriorPointMixed's own interpolated read of this same
+// chain enough to misclassify the whole bigon. Interior points (strictly
+// between a0 and a1) always keep the chain's own literal samples (already
+// exactly on the surface, no interpolation needed there).
+std::vector<Point3d> NotchSubChain(const std::vector<Point3d>& chain, const Brep::CylindricalFace& cf, double a0,
+                                    double a1, double v0, bool exact_a0 = true, bool exact_a1 = true) {
+  const std::vector<double> angles = NotchChainAngles(chain, cf);
+  const Point3d axis_pt = cf.frame.origin + v0 * cf.frame.zaxis;
+  auto exact_at = [&](double a) {
+    return axis_pt + cf.radius * (std::cos(a) * cf.frame.xaxis + std::sin(a) * cf.frame.yaxis);
+  };
+  std::vector<Point3d> out;
+  out.push_back(exact_a0 ? exact_at(a0) : chain.front());
+  for (size_t i = 0; i < chain.size(); ++i) {
+    if (angles[i] > a0 + 1e-9 && angles[i] < a1 - 1e-9) out.push_back(chain[i]);
+  }
+  out.push_back(exact_a1 ? exact_at(a1) : chain.back());
+  return out;
+}
+
+// A literal, densely-sampled FLAT notch chain: on cf's own cylindrical
+// surface, at CONSTANT height `v`, physical angle [a0, a1] - the
+// degenerate "flat chain" CylindricalFace's own doc comment explicitly
+// allows (brep.h). Sample count scales with the window's own angular
+// width so a narrow window isn't over- or under-sampled relative to
+// kEndCapSamples' own full-circle density. Returned by value so the
+// caller can share this SAME vector, verbatim, between the clamped
+// fragment's own flattened sub-run and the matching bigon window's own
+// flat cap on the other side of that shared edge - this codebase's
+// established "same std::vector<Point3d> on both sides" shared-edge
+// identity convention.
+std::vector<Point3d> FlatNotchArc(const Brep::CylindricalFace& cf, double v, double a0, double a1) {
+  const int count = std::max(4, static_cast<int>(std::round(200.0 * (a1 - a0) / (2.0 * ON_PI))));
+  std::vector<Point3d> pts;
+  pts.reserve(static_cast<size_t>(count) + 1);
+  const Point3d axis_pt = cf.frame.origin + v * cf.frame.zaxis;
+  for (int k = 0; k <= count; ++k) {
+    const double t = static_cast<double>(k) / static_cast<double>(count);
+    const double a = a0 + (a1 - a0) * t;
+    pts.push_back(axis_pt + cf.radius * (std::cos(a) * cf.frame.xaxis + std::sin(a) * cf.frame.yaxis));
+  }
+  return pts;
+}
+
+// Dense samples of the TRUE notch curve `chain` between physical angles
+// [a0, a1] where a1 may exceed cf.angle - the WRAPPED sibling of
+// NotchSubChain, needed only for a window that straddles the full-sweep
+// seam (see SplitNotchedCylinderAtHeight's own doc comment): the angular
+// range past cf.angle is looked up by wrapping back to the start of
+// `chain`, joined at cf.angle/0 - a plain INTERNAL split point, NOT a
+// genuine crossing (only a0 and a1 themselves are - see NotchSubChain's
+// own doc comment for why this distinction is load-bearing, not
+// cosmetic): the join uses `chain.front()`/`chain.back()` directly
+// (exact_a1=false / exact_a0=false), never `v0`. The one duplicate point
+// this produces at the seam itself (chain.front() and chain.back() are
+// the SAME physical point for a full 2*pi sweep - CylindricalFace's own
+// doc comment) is dropped.
+std::vector<Point3d> NotchSubChainWrapped(const std::vector<Point3d>& chain, const Brep::CylindricalFace& cf,
+                                           double a0, double a1, double v0) {
+  if (a1 <= cf.angle + 1e-9) return NotchSubChain(chain, cf, a0, a1, v0);
+  std::vector<Point3d> first_part = NotchSubChain(chain, cf, a0, cf.angle, v0, /*exact_a0=*/true, /*exact_a1=*/false);
+  std::vector<Point3d> second_part =
+      NotchSubChain(chain, cf, 0.0, a1 - cf.angle, v0, /*exact_a0=*/false, /*exact_a1=*/true);
+  first_part.insert(first_part.end(), second_part.begin() + 1, second_part.end());
+  return first_part;
+}
+
+// Result of one angle-dependent split: the piece present at every angle
+// (`clamped`, always exactly one, same frame/angle/radius as the input -
+// its own `length` changes from `cf.length` only in the one case noted on
+// `clamped` itself, below), plus zero or more zero-length "bigon"
+// fragments, one per window.
+struct AngleDependentSplit {
+  Brep::CylindricalFace clamped;
+  std::vector<Brep::CylindricalFace> windows;
+};
+
+// Builds the angle-dependent split of a SINGLY-notched cylindrical
+// fragment `cf` by a plane at local height `v0`, given `windows`
+// (NotchWindows, already called by the caller with the correct `below`
+// sense for whichever cap is notched - see this section's own top comment)
+// - the caller is expected to have already confirmed `windows` is
+// non-empty. `cap0_is_notch` selects which of the two mirror cases this
+// is: true means `cf`'s own ACTIVE chain is cap0_notch_points (material
+// [h(theta), length]; the ALWAYS-PRESENT "clamped" piece is
+// [max(h(theta), v0), length], the windowed piece(s) [h(theta), v0]).
+// false means cap1 (material [0, h(theta)]; clamped is
+// [0, min(h(theta), v0)], windowed is [v0, h(theta)]).
+//
+// A fragment's own flat rail-corner value (0 for cap0, `cf.length` for
+// cap1 - by contract the SAME physical point at angle 0 and angle
+// cf.angle, the full-sweep rail-corner-coincidence simplification, see
+// CylindricalFace's own doc comment) can itself fall on the WINDOWED side
+// of v0 - i.e. a window can touch, or even straddle, the angle 0/cf.angle
+// seam (the caller is expected to have already refused the one variant of
+// this this function does not build - a cap0-notched fragment whose
+// corner is active - see the call site's own doc comment for exactly why
+// that variant is scoped out and this one, cap1's mirror, is not). Two
+// real consequences follow, both handled here:
+//  1. The `clamped` piece's own rail-corner value is then v0 itself (its
+//     boundary AT angle 0 is min(cf.length, v0) = v0, since v0 < length in
+//     this regime) - so `clamped.length` becomes v0, not cf.length (a
+//     TRUE length change, not merely a chain edit - unlike the ordinary,
+//     non-corner-active case, where the flat rail corner is untouched and
+//     length stays cf.length exactly as inherited).
+//  2. The windowed piece can straddle the seam (its own two crossing
+//     points, the genuine pinch vertices where h(theta) == v0, sit on
+//     EITHER side of angle 0 rather than being two ordinary points inside
+//     (0, cf.angle)) - a window touching the seam without a genuine
+//     crossing on the OTHER side of it is not a pinch at all (the rail
+//     corner itself, at height cf.length/0, is generally nowhere near v0)
+//     and must be merged with whichever window touches the OTHER end of
+//     the seam into the single TRUE bigon this really is, expressed with
+//     its own second angle past cf.angle (NotchSubChainWrapped handles the
+//     lookup this implies).
+AngleDependentSplit SplitNotchedCylinderAtHeight(const Brep::CylindricalFace& cf, bool cap0_is_notch, double v0,
+                                                  std::vector<std::pair<double, double>> windows, double tol) {
+  const std::vector<Point3d>& chain = cap0_is_notch ? cf.cap0_notch_points : cf.cap1_notch_points;
+  const std::vector<double> angles = NotchChainAngles(chain, cf);
+
+  const bool corner_active =
+      windows.front().first <= tol || windows.back().second >= cf.angle - tol;
+
+  AngleDependentSplit result;
+  result.clamped = cf;
+  if (corner_active) {
+    // Only cap1's mirror reaches here with a real fix applied (see this
+    // function's own doc comment); cap0_is_notch + corner_active is
+    // refused by the caller before this function is ever invoked.
+    result.clamped.length = v0;
+  }
+  std::vector<Point3d>& clamped_chain =
+      cap0_is_notch ? result.clamped.cap0_notch_points : result.clamped.cap1_notch_points;
+  clamped_chain.clear();
+
+  // The `clamped` chain's own construction never needs the seam-straddling
+  // merge below (unlike the windowed bigon's own true pinch points, its
+  // own "is this angle windowed" question is representation-agnostic) - it
+  // walks the ORIGINAL, unmerged windows in physical-angle order, 0 to
+  // cf.angle, inserting the ORIGINAL true-curve samples strictly between
+  // windows and FlatNotchArc's own dense flat run across each window
+  // (including, correctly, right at angle 0 or cf.angle when a window
+  // touches either end - see this function's own doc comment).
+  double cursor = -1.0;  // sentinel below every real angle, so angle 0 is never skipped
+  for (const auto& w : windows) {
+    for (size_t i = 0; i < chain.size(); ++i) {
+      if (angles[i] > cursor + 1e-9 && angles[i] < w.first - 1e-9) clamped_chain.push_back(chain[i]);
+    }
+    for (const Point3d& p : FlatNotchArc(cf, v0, w.first, w.second)) clamped_chain.push_back(p);
+    cursor = w.second;
+  }
+  for (size_t i = 0; i < chain.size(); ++i) {
+    if (angles[i] > cursor + 1e-9) clamped_chain.push_back(chain[i]);
+  }
+
+  // The genuine bigon window(s): merge a window ending at cf.angle with
+  // one starting at 0 into the single TRUE seam-straddling bigon (see this
+  // function's own doc comment) before building each one.
+  if (windows.size() >= 2 && windows.front().first <= tol && windows.back().second >= cf.angle - tol) {
+    std::pair<double, double> merged{windows.back().first, windows.front().second + cf.angle};
+    windows.erase(windows.begin());
+    windows.pop_back();
+    windows.push_back(merged);
+  }
+  for (const auto& w : windows) {
+    std::vector<Point3d> flat = FlatNotchArc(cf, v0, w.first, w.second);
+    std::vector<Point3d> true_curve = NotchSubChainWrapped(chain, cf, w.first, w.second, v0);
+
+    Brep::CylindricalFace bigon;
+    bigon.frame.origin = cf.frame.origin + v0 * cf.frame.zaxis;
+    bigon.frame.zaxis = cf.frame.zaxis;
+    bigon.frame.xaxis = std::cos(w.first) * cf.frame.xaxis + std::sin(w.first) * cf.frame.yaxis;
+    bigon.frame.yaxis = -std::sin(w.first) * cf.frame.xaxis + std::cos(w.first) * cf.frame.yaxis;
+    bigon.frame.UpdateEquation();
+    bigon.radius = cf.radius;
+    bigon.angle = w.second - w.first;
+    bigon.length = 0.0;
+    bigon.outward = cf.outward;
+    bigon.end0_is_original = false;
+    bigon.end1_is_original = false;
+    if (cap0_is_notch) {
+      bigon.cap0_notch_points = std::move(true_curve);
+      bigon.cap0_notch_tolerance = cf.cap0_notch_tolerance;
+      bigon.cap1_notch_points = std::move(flat);
+      bigon.cap1_notch_tolerance = 0.0;
+    } else {
+      bigon.cap1_notch_points = std::move(true_curve);
+      bigon.cap1_notch_tolerance = cf.cap1_notch_tolerance;
+      bigon.cap0_notch_points = std::move(flat);
+      bigon.cap0_notch_tolerance = 0.0;
+    }
+    result.windows.push_back(std::move(bigon));
+  }
+  return result;
 }
 
 // Result of casting one ray against one MixedFace: how many times it
@@ -4251,7 +4610,134 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
         const double align = std::fabs(ON_DotProduct(f.cyl.frame.zaxis, g.planar.plane.zaxis));
         if (align > 1.0 - kAxisAlignTol) {
           const double v_cut = ON_DotProduct(g.planar.plane.origin - f.cyl.frame.origin, f.cyl.frame.zaxis);
-          if (v_cut > tol && v_cut < f.cyl.length - tol) {
+          // Angle-dependent notch-vs-plane routing (task #86): a fragment
+          // notched at exactly ONE end may need the general clamp+bigon
+          // split (SplitNotchedCylinderAtHeight, above) instead of either
+          // of the two plain branches below, whenever this plane's own
+          // height genuinely straddles that notch's excursion at some
+          // angles and not others - regardless of whether `v_cut` itself
+          // falls "mid" (inside the flat [0, length] band, the first
+          // branch below) or "beyond" it (the second branch below): both
+          // are notch-blind in exactly the same way (see this function's
+          // own doc comment further down for the mid branch's own,
+          // previously-unnoticed version of this gap, found while
+          // developing this increment - the shared-notch cylinder pair's
+          // own `lower` fragment hits it at this exact fixture's two box
+          // planes, even though `upper`'s is the one the prior increment's
+          // refusal already named). A fragment notched at BOTH ends is
+          // still out of scope (see the throw below); one notched at
+          // NEITHER end (the overwhelmingly common case) never enters this
+          // block at all (both NotchWindows calls below are on an empty
+          // chain and NotchHeightAt's own empty-chain callers already
+          // return the plain flat height, so `windows` is always empty).
+          //
+          // Excludes `f.cyl.length == 0` fragments outright - i.e. a
+          // bigon THIS SAME split producer already built, from an earlier
+          // g_idx pass over a DIFFERENT operand planar face crossing the
+          // same original fragment (SplitMixedAgainstAllFaces' own N-way
+          // face loop folds `next` back into `worklist` between passes -
+          // see that loop's own comments). A bigon is doubly-notched BY
+          // CONSTRUCTION (cap0 = a true-curve sub-run, cap1 = a flat run,
+          // or the mirror), which would otherwise misfire the "notched at
+          // both ends" refusal below for a shape that was never a genuine
+          // both-ends-notched INPUT at all - confirmed directly: the
+          // disclosed fixture's own two-plane box does exactly this (the
+          // z-plane processed second finds `lower`'s own bigon from the
+          // first plane still genuinely reaching it, global z in
+          // [-1, 2] roughly, crossing the second plane at z = 1). A
+          // SECOND plane genuinely reaching an already-built bigon is a
+          // real, disclosed composition gap of its OWN (chaining this
+          // increment's own split producer against a bigon it just
+          // produced) - falling through unchanged to the plain "beyond"
+          // branch below, whose own CylinderPlaneNoInteraction check
+          // refuses it honestly (a length == 0 fragment can never be
+          // "mid", so it always reaches that branch), rather than being
+          // silently misclassified as the unrelated both-ends-notched
+          // scope boundary.
+          const bool cap0_notch = f.cyl.length > tol && !f.cyl.cap0_notch_points.empty();
+          const bool cap1_notch = f.cyl.length > tol && !f.cyl.cap1_notch_points.empty();
+          std::vector<std::pair<double, double>> windows;
+          bool cap0_is_notch = false;
+          if (cap0_notch && !cap1_notch) {
+            cap0_is_notch = true;
+            windows = NotchWindows(f.cyl.cap0_notch_points, f.cyl, v_cut, /*below=*/true, tol);
+          } else if (cap1_notch && !cap0_notch) {
+            cap0_is_notch = false;
+            windows = NotchWindows(f.cyl.cap1_notch_points, f.cyl, v_cut, /*below=*/false, tol);
+          } else if (cap0_notch && cap1_notch) {
+            // A fragment notched at BOTH ends (a Steinmetz eye / unequal-
+            // radius plug or middle band) crossed inside its own notch-
+            // extended range at either end is a real, disclosed gap the
+            // single-notch machinery above does not cover (its own clamp
+            // math assumes exactly one active chain) - refuse only when
+            // this plane actually reaches one of the two notches' own
+            // excursions (the same NotchWindows test used for the single-
+            // notch case, on whichever chain), so a double-notched
+            // fragment untouched by this plane (the common case for it -
+            // see e.g. the Steinmetz-eye/plug tests elsewhere in this
+            // file, none of which cross a plane through their own notch
+            // excursion) is completely unaffected by this new check.
+            const bool touches_cap0 =
+                !NotchWindows(f.cyl.cap0_notch_points, f.cyl, v_cut, /*below=*/true, tol).empty();
+            const bool touches_cap1 =
+                !NotchWindows(f.cyl.cap1_notch_points, f.cyl, v_cut, /*below=*/false, tol).empty();
+            if (touches_cap0 || touches_cap1) {
+              throw std::invalid_argument(
+                  "dino8::kernel::BooleanCombineMixed: a planar face crosses "
+                  "a cylindrical fragment NOTCHED AT BOTH ENDS (a Steinmetz "
+                  "eye / unequal-radius plug or middle band) at a height "
+                  "where at least one end's own notch genuinely straddles "
+                  "the cut, angle-dependently - out of scope for this "
+                  "increment (a SINGLY-notched fragment IS handled - see "
+                  "SplitNotchedCylinderAtHeight's own doc comment, "
+                  "boolean.cpp - this is the remaining, disclosed gap: both "
+                  "ends notched AND both genuinely crossed at once)");
+            }
+          }
+          if (!windows.empty()) {
+            // A window touching (or, once merged, straddling) the full-
+            // sweep seam (angle 0 == cf.angle) is handled by
+            // SplitNotchedCylinderAtHeight itself for cap1's mirror (its
+            // own "clamped" piece's rail corner becoming v0 - see that
+            // function's own doc comment) - the shared-notch cylinder
+            // pair's own `lower` fragment hits exactly this, at both of
+            // the disclosed fixture's own box planes. The mirror
+            // direction - a CAP0-notched fragment whose corner is active
+            // - is NOT built (it would need a symmetric frame-shift-and-
+            // truncate fix on the `clamped` piece this increment did not
+            // need for its own disclosed fixture, since `upper`'s own
+            // crossings never reach its flat corner - see
+            // SplitNotchedCylinderAtHeight's own doc comment) - refused
+            // explicitly here, a real but narrower disclosed scope
+            // boundary, rather than silently building a fresh cylindrical
+            // fragment whose own rail-corner contract this function's
+            // cap0 branch does not honor in that configuration.
+            const bool corner_active =
+                windows.front().first <= tol || windows.back().second >= f.cyl.angle - tol;
+            if (corner_active && cap0_is_notch) {
+              throw std::invalid_argument(
+                  "dino8::kernel::BooleanCombineMixed: a CAP0-notched "
+                  "cylindrical fragment's angle-dependent crossing window "
+                  "touches its own full-sweep seam (angle 0 / cf.angle) - "
+                  "out of scope for this increment (the mirror case, a "
+                  "CAP1-notched fragment with the same seam-touching "
+                  "pattern, IS handled - see SplitNotchedCylinderAtHeight's "
+                  "own doc comment, boolean.cpp, for exactly why this "
+                  "direction still needs a symmetric fix this increment "
+                  "did not build)");
+            }
+            AngleDependentSplit split = SplitNotchedCylinderAtHeight(f.cyl, cap0_is_notch, v_cut, windows, tol);
+            MixedFace m_clamped;
+            m_clamped.is_cyl = true;
+            m_clamped.cyl = std::move(split.clamped);
+            next.push_back(std::move(m_clamped));
+            for (Brep::CylindricalFace& w : split.windows) {
+              MixedFace m_w;
+              m_w.is_cyl = true;
+              m_w.cyl = std::move(w);
+              next.push_back(std::move(m_w));
+            }
+          } else if (v_cut > tol && v_cut < f.cyl.length - tol) {
             Brep::CylindricalFace lo = f.cyl;
             lo.length = v_cut;
             // `lo`'s own v=length end is a FRESH boundary this split just
@@ -4296,47 +4782,56 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
             // [0, length] range (not merely at/near one of its two
             // existing endpoints - see the plain endpoint-touch case
             // below) - ordinarily proof there is nothing here to split,
-            // the whole fragment already lies on one side. NOT so whenever
-            // this fragment carries a notch whose OWN widened axial reach
-            // (CylindricalFragmentAxialBand, used by
-            // CylinderPlaneNoInteraction) genuinely extends PAST that flat
-            // range far enough to reach this exact plane: unlike case
-            // (ii)'s mirror branch above (which reads the notch honestly
-            // via the SAME widened test before deciding whether to punch a
-            // circle), this branch's plain v_cut check is notch-BLIND by
-            // construction - it only ever asks "where does the plane cross
-            // this fragment's NOMINAL flat cylinder", never "does the
-            // fragment's true, notch-extended material reach here" - so a
-            // plane that only reaches a fragment's notch-extended material
-            // (not its nominal range at all) would otherwise silently fall
-            // through to the plain pass-through below, an outright WRONG
-            // answer: the fragment's true material genuinely straddles
-            // this plane at SOME angles (wherever the notch dips PAST it)
-            // while never reaching it at others depending on the notch's
-            // own per-angle profile - a partial, angle-dependent trim this
-            // branch has no way to represent (it can only produce a flat,
-            // full-circle iso-line split or an unmodified whole fragment).
-            // Confirmed directly, not merely theorized: the shared-notch
-            // cylinder pair's own upper/lower fragments, crossed by a
-            // plane that lands in exactly this gap, silently produced
-            // self-overlapping, non-manifold, wrong-volume Breps once the
-            // "3 or more faces" crash this SAME scenario used to hit
-            // elsewhere was fixed (see SameCylindricalWall's own doc
-            // comment) - i.e. fixing that unrelated crash unmasked this
-            // pre-existing, previously-undetectable gap rather than fixing
-            // it. Refuse honestly here instead of silently mis-splitting -
-            // a genuine, disclosed scope boundary (real angle-dependent
-            // notch-vs-plane trimming, out of scope for this increment),
-            // not a bug to paper over.
+            // the whole fragment already lies on one side.
+            //
+            // A genuine angle-dependent notch-vs-plane straddle (this
+            // fragment's true, notch-extended material reaching this plane
+            // at SOME angles and not others) is no longer reached here at
+            // all: the `windows` computation above (NotchWindows, run
+            // BEFORE either of this if/else-if's own two branches, on
+            // whichever single cap is notched) already routes that case to
+            // SplitNotchedCylinderAtHeight's own general clamp+bigon split
+            // - see this function's own doc comment further up for the
+            // fix and its derivation (task #86; this branch's own prior
+            // comment, before that fix, is what first named and disclosed
+            // this exact gap, using this same shared-notch cylinder pair
+            // fixture). What CAN still reach this throw now: (a) `windows`
+            // came back empty (no single-notch chain's own interpolated
+            // height genuinely crosses `v_cut` at any angle) or this
+            // fragment is notched at BOTH ends with neither notch touched
+            // (the separate, still-disclosed double-notch gap above), yet
+            // CylinderPlaneNoInteraction's own CONSERVATIVE widened-band
+            // test (a fixed sagitta margin, not an exact per-angle
+            // evaluation) still can't rule out interaction - a genuine, if
+            // now much narrower, residual gap between "provably no
+            // interaction" and "this increment's own exact per-angle
+            // machinery already found none"; or (b) `f` is itself a
+            // length == 0 bigon THIS SAME split producer already built
+            // from an earlier operand planar face (deliberately excluded
+            // from the `windows`/notch-routing above - see that exclusion's
+            // own comment), genuinely reached by THIS DIFFERENT plane too
+            // - composing this increment's own split against a bigon it
+            // just produced is a real, disclosed gap of its own (confirmed
+            // directly: the disclosed fixture's own two-plane box crosses
+            // `lower`'s own bigon, from the first plane, with the second).
+            // Neither is a bug to paper over.
             if (!CylinderPlaneNoInteraction(f.cyl, g.planar.plane, tol)) {
               throw std::invalid_argument(
                   "dino8::kernel::BooleanCombineMixed: a planar face crosses a "
                   "NOTCHED cylindrical fragment's own notch-extended material "
-                  "strictly beyond its flat [0, length] range - a genuine, "
-                  "angle-dependent partial trim there (the notch reaches this "
-                  "plane at some angles and not others) is out of scope for "
-                  "this increment; see SplitMixedAgainstAllFaces's own case "
-                  "(iii) doc comment (boolean.cpp) for the full reasoning");
+                  "strictly beyond its flat [0, length] range, and "
+                  "CylinderPlaneNoInteraction's own conservative widened-band "
+                  "test cannot rule out interaction there, while either no "
+                  "single notched cap's own exact per-angle height (NotchWindows) "
+                  "actually crosses this plane at any angle, or `f` is itself a "
+                  "zero-length bigon this same split producer already built from "
+                  "a DIFFERENT operand planar face, now also genuinely reached by "
+                  "THIS one - composing this increment's own angle-dependent "
+                  "split against more than one operand planar face on the same "
+                  "notch is out of scope for this increment; see "
+                  "SplitMixedAgainstAllFaces's own case (iii) doc comment, "
+                  "boolean.cpp, for the general fix this refusal no longer "
+                  "covers on a first pass");
             }
             next.push_back(std::move(f));
           } else {

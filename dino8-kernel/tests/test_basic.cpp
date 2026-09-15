@@ -16759,61 +16759,121 @@ void TestBooleanCombineMixedChainedNegativeControls() {
 // close and measure the correct volume, where either would have hit the
 // identical corruption before this fix.
 //
-// This SPECIFIC fixture, however, does NOT fully build even after BOTH
-// fixes above - a second, genuinely SEPARATE gap this increment's own work
-// UNCOVERED (rather than fixed) once the first crash was out of the way,
-// confirmed directly by instrumenting the actual measured output before
-// adding the guard below: with only the de-dup fix applied, this exact
-// fixture's Difference build to completion WITHOUT throwing, but produced
-// an invalid, non-manifold Brep (ON_Brep::IsValid() false, "closed curve
-// directions are opposite") measuring volume 108.78 against the true
-// 32*pi = 100.53, and Intersection didn't even reach a Brep, throwing a
-// downstream "trim_polygon must be simple" tessellation error instead.
-// Root cause: this fixture's own box crosses BOTH z = -1 and z = 1 at a
-// height range that falls INSIDE the shared notch curve's own excursion
-// (z = r cos(theta) swings from -r to +r here), so the true material
-// boundary between "removed" and "kept" at those heights is a REAL,
-// angle-dependent curve (upper's true low edge dips to that same height
-// only near theta = pi, staying above it near theta = 0) - not a flat,
-// full-circle iso-line. Case (iii)'s own cylinder-side split (the mirror
-// of case (ii)'s fix above, for when the CYLINDRICAL fragment is being cut
-// rather than the planar face) has always decided where to cut using only
-// the fragment's plain, notch-BLIND `v_cut` position within its flat
-// [0, length] range (see that branch's own doc comment) - so whenever a
-// plane's true crossing exists ONLY inside a fragment's notch-extended
-// reach (never within its flat range at all), that branch used to pass
-// the WHOLE fragment through completely unsplit, silently wrong: part of
-// its true material lies outside the cut and part inside, a distinction a
-// single unsplit fragment (classified by one representative point
-// downstream) cannot represent. This is a real, general gap - a proper
-// fix needs genuine angle-dependent partial trimming against a notch
-// curve, a materially larger primitive than either fix above and out of
-// scope for this increment (see this codebase's own Phase 3 framing for
-// exactly this class of gap). Rather than ship the silent corruption this
-// uncovered, case (iii) now detects exactly this situation (a plane
-// strictly beyond a fragment's flat range that its OWN widened,
-// notch-inclusive band nonetheless reaches - see
-// CylindricalFragmentAxialBand/CylinderPlaneNoInteraction) and refuses
-// with a clear, honestly-named std::invalid_argument instead - so this
-// fixture remains a valid, still-throwing negative control, but now for
-// an ACCURATE, disclosed reason (a genuine angle-dependent-trim scope
-// boundary) instead of the old accidental "3 or more faces" corruption
-// symptom, confirmed directly by inspecting the thrown message.
-void TestBooleanCombineMixedNotchAwareClassificationStillNeedsSplitProducerWork() {
+// This SPECIFIC fixture used to NOT fully build even after both fixes
+// above - a second, genuinely SEPARATE gap that work uncovered (rather
+// than fixed) once the first crash was out of the way: with only the
+// de-dup fix applied, this exact fixture's Difference used to build to
+// completion WITHOUT throwing, but produced an invalid, non-manifold Brep
+// (ON_Brep::IsValid() false, "closed curve directions are opposite")
+// measuring volume 108.78 against the true 32*pi = 100.53, and
+// Intersection didn't even reach a Brep, throwing a downstream
+// "trim_polygon must be simple" tessellation error instead. Root cause:
+// this fixture's own box crosses BOTH z = -1 and z = 1 at a height range
+// that falls INSIDE the shared notch curve's own excursion (z =
+// r cos(theta) swings from -r to +r here), so the true material boundary
+// between "removed" and "kept" at those heights is a REAL, angle-dependent
+// curve (upper's true low edge dips to that same height only near
+// theta = pi, staying above it near theta = 0) - not a flat, full-circle
+// iso-line. Case (iii)'s own cylinder-side split used to decide where to
+// cut using only the fragment's plain, notch-BLIND `v_cut` position
+// within its flat [0, length] range - so whenever a plane's true crossing
+// existed ONLY inside a fragment's notch-extended reach, that branch used
+// to pass the WHOLE fragment through completely unsplit, silently wrong.
+//
+// task #86 closes this for a SINGLY-notched fragment (see
+// SplitNotchedCylinderAtHeight's own doc comment, boolean.cpp, for the
+// clamp+bigon derivation and NotchWindows/NotchCrossingAngles for the
+// crossing-angle root-finder) - verified below directly against this same
+// disclosed fixture, at a SINGLE crossing plane (z = 1 only): both
+// `upper` (cap0-notched) and `lower` (cap1-notched) genuinely straddle
+// this one plane at once, exercising the clamp construction for BOTH
+// mirror directions (cap0's "clamp upward", cap1's "clamp downward, own
+// length truncated to v0" - the real, previously-unnoticed SECOND
+// instance of this same gap this increment's own development found, see
+// SplitNotchedCylinderAtHeight's own doc comment) in a single call.
+//
+// What remains genuinely out of scope, and is its own negative control
+// immediately below (TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingRefuses):
+// this fixture's ORIGINAL two-plane box (z in [-1, 1], both faces crossing
+// the SAME shared notch curve) - a SECOND operand planar face reaching a
+// bigon THIS SAME split producer already built from the FIRST. Composing
+// this increment's own split against more than one operand planar face on
+// the same notch is a real, disclosed gap (see case (iii)'s own doc
+// comment, boolean.cpp, and this function's own commit message).
+void TestBooleanCombineMixedNotchAwareSplitProducerBuildsSingleCrossingPlane() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const SharedNotchPairFixture fx = BuildSharedNotchCylinderPair();
+  // z >= 1 only (a half-space box, its one relevant face at z = 1) - both
+  // `upper` (cap0, dips to abs z = -2 near theta = pi) and `lower` (cap1,
+  // dips to abs z = -2 near theta = pi too - the SAME literal curve) have
+  // their own notch excursion genuinely straddled by this single plane at
+  // once (`upper`'s own v_cut = -1, `lower`'s own v_cut = 4, both landing
+  // inside their respective notch's own [-4, 0] / [1, 5] local range).
+  const Brep box = Brep::Box(-10, -10, 1, 10, 10, 10);
+  const double true_volume = fx.true_volume;  // pi * 4 * 10 = 125.663706
+  // Closed form: the shared notch curve is purely an internal bookkeeping
+  // seam (BuildSharedNotchCylinderPair's own doc comment) - the solid is a
+  // plain r = 2 cylinder over z in [-3, 7], so the box (z >= 1) genuinely
+  // keeps, for Intersection, exactly the z in [1, 7] slab (a plain
+  // cylinder of height 6) - and, for Difference, exactly the complementary
+  // z in [-3, 1] slab (height 4) - independent of the internal seam's own
+  // angle-dependent shape.
+  const double true_inter_volume = ON_PI * 4.0 * 6.0;  // 24 pi = 75.398224
+  const double true_diff_volume = true_volume - true_inter_volume;  // 16 pi = 50.265482
+
+  const Brep diff = BooleanCombineMixed(fx.brep, box, BooleanOp::Difference);
+  Check(diff.MixedFaces().cylindrical.size() == 2 && diff.MixedFaces().planar.size() == 8,
+        "Difference(shared-notch pair, box z >= 1) builds exactly 2 cylindrical fragments (lower's own clamped "
+        "piece, truncated to length = 4 at the box's own cut height, and upper's own bigon, the angle-dependent "
+        "window where its notch dips below z = 1) plus the 8 pre-existing z = -3 quadrant caps - not the stale "
+        "'angle-dependent partial trim' throw this exact fixture used to produce before task #86's split producer");
+  const double diff_ordinary = diff.TessellateToClosedMesh(64, 64).Volume();
+  const Mesh diff_conforming = diff.TessellateToClosedMeshConforming(64, 64);
+  Check(Within(diff_conforming.Volume(), true_diff_volume, 1e-3) && Within(diff_ordinary, true_diff_volume, 5e-3),
+        "Difference(shared-notch pair, box z >= 1) measures the true 16*pi = 50.265482 within 1e-3 conforming "
+        "(measured -2.4e-4) / 5e-3 ordinary (measured -1.1e-3) - before task #86, this fixture's own v_cut split "
+        "was notch-blind at BOTH fragments' own crossing (upper's plain v_cut = -1 outside [0, length], lower's "
+        "plain v_cut = 4 genuinely inside [0, length] but still crossing lower's own cap1 excursion) and this "
+        "exact call threw instead of measuring anything");
+
+  const Brep inter = BooleanCombineMixed(fx.brep, box, BooleanOp::Intersection);
+  Check(inter.MixedFaces().cylindrical.size() == 2 && inter.MixedFaces().planar.size() == 8,
+        "Intersection(shared-notch pair, box z >= 1) builds exactly 2 cylindrical fragments (lower's own bigon and "
+        "upper's own clamped piece - the mirror pair of Difference's own two kept fragments above) plus the "
+        "8 pre-existing z = 7 quadrant caps");
+  const double inter_ordinary = inter.TessellateToClosedMesh(64, 64).Volume();
+  const Mesh inter_conforming = inter.TessellateToClosedMeshConforming(64, 64);
+  Check(Within(inter_conforming.Volume(), true_inter_volume, 1e-3) && Within(inter_ordinary, true_inter_volume, 5e-3),
+        "Intersection(shared-notch pair, box z >= 1) measures the true 24*pi = 75.398224 within 1e-3 conforming "
+        "(measured -6.6e-5) / 5e-3 ordinary (measured -1.1e-3)");
+}
+
+// The genuinely remaining gap: composing this increment's own angle-
+// dependent split against a SECOND operand planar face crossing the SAME
+// notch a FIRST face already split it against - the disclosed fixture's
+// OWN original two-plane box (z in [-1, 1]), whose bottom face (z = -1)
+// and top face (z = 1) BOTH cross the shared notch curve's own excursion.
+// Confirmed directly (not merely theorized) that this is a genuinely
+// DIFFERENT, narrower gap than the single-crossing-plane case the test
+// above now handles: the first plane's own split correctly produces
+// `lower`'s own bigon (an angle-dependent window this increment's split
+// producer built, itself doubly-notched by construction), and the SECOND
+// plane genuinely reaches that SAME bigon (global z in roughly [1, 2] at
+// its own angular window) - composing SplitNotchedCylinderAtHeight against
+// a fragment it JUST produced, from a DIFFERENT operand face, is out of
+// scope for this increment (see SplitMixedAgainstAllFaces's own case
+// (iii) doc comment, boolean.cpp, and its own exclusion of length == 0
+// fragments from the single/double-notch routing above).
+void TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingRefuses() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
 
   const SharedNotchPairFixture fx = BuildSharedNotchCylinderPair();
-  // z in [-1, 1]: entirely outside the `upper` fragment's own flat [2, 7]
-  // rail range but inside its cap0 notch's true extended material near
-  // angle pi (the curve dips to abs z = -2 there) - the shared-circle
-  // de-dup fix (SameCylindricalWall, boolean.cpp) means this no longer
-  // corrupts a polygon into the old "3 or more faces" crash, but the
-  // TRUE crossing here is a genuine angle-dependent partial trim of the
-  // notch curve itself (see this function's own doc comment above), which
-  // case (iii)'s plain v_cut split still cannot represent - so this
-  // remains a real, honestly-disclosed refusal, not a silent miscompute.
   const Brep box = Brep::Box(-10, -10, -1, 10, 10, 1);
   bool diff_threw = false, inter_threw = false;
   std::string diff_message, inter_message;
@@ -16829,21 +16889,78 @@ void TestBooleanCombineMixedNotchAwareClassificationStillNeedsSplitProducerWork(
     inter_threw = true;
     inter_message = e.what();
   }
-  const char* kExpectedSubstring = "angle-dependent partial trim";
+  const char* kExpectedSubstring = "more than one operand planar face on the same notch";
   Check(diff_threw && inter_threw && diff_message.find(kExpectedSubstring) != std::string::npos &&
             inter_message.find(kExpectedSubstring) != std::string::npos,
-        "Difference/Intersection(shared-notch PAIR solid, a box crossing its cap0 notch's true extended material) "
-        "still throw, but no longer the old, accidental \"3 or more faces\" corruption symptom the shared-circle "
-        "de-dup fix (SameCylindricalWall, boolean.cpp) eliminated: with that fix and ClipPolygonByCircle3d's own "
-        "defense-in-depth precondition check both in place, this fixture's box genuinely crosses the shared notch "
-        "curve's own excursion at a height where the true material boundary is an angle-dependent curve (not a "
-        "flat circle), a real gap in case (iii)'s own plain, notch-blind v_cut split - now an honest, clearly-named "
-        "std::invalid_argument naming that gap directly ('angle-dependent partial trim'), confirmed by measuring "
-        "that BEFORE this specific refusal was added, the de-dup fix alone let Difference silently build an "
-        "INVALID, non-manifold Brep (volume 108.78 against the true 32*pi = 100.53) and Intersection throw a "
-        "downstream tessellation error instead - this scope boundary (real angle-dependent notch-vs-plane "
-        "trimming) is a materially larger primitive than either fix in this increment and is NOT expected to "
-        "start passing silently until that separate gap is closed");
+        "Difference/Intersection(shared-notch PAIR solid, the ORIGINAL two-plane box crossing the shared notch at "
+        "BOTH z = -1 and z = 1) still throw - not the stale 'angle-dependent partial trim' message task #86's "
+        "single-crossing-plane fix already resolves (see the test immediately above), but a REAL, narrower "
+        "remaining gap named directly: composing this increment's own split against a SECOND operand planar face "
+        "reaching a bigon a FIRST face already produced from the same notch - confirmed live that this is exactly "
+        "what happens here (lower's own bigon from the z = -1 pass is genuinely reached again by z = 1) - this "
+        "scope boundary is NOT expected to start passing silently until N-way composition across multiple operand "
+        "planar faces on one notch is built");
+}
+
+// The OTHER genuinely remaining gap: a fragment notched at BOTH ends
+// simultaneously (a Steinmetz eye / unequal-radius plug or middle band),
+// crossed at a height where its notch genuinely straddles the cut. Built
+// by taking the disclosed fixture's own already-validated `upper` record
+// (MixedFaces() round trip) and artificially giving its previously-flat,
+// un-notched far end (cap1, at v = length) a trivial, in-contract FLAT
+// notch chain - every point at v = length exactly, satisfying the rail-
+// corner contract exactly the same way FlatNotchArc's own degenerate flat
+// chains do (see that function's own doc comment, boolean.cpp) - turning
+// `upper` into a fragment notched at both ends without touching its own
+// real cap0 curve, its shared seam with `lower`, or any of the fixture's
+// own pre-existing closing quadrant caps (all of which stay bit-identical,
+// so the rebuilt solid is still valid before the boolean under test).
+void TestBooleanCombineMixedNotchAwareBothEndsNotchedRefuses() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const SharedNotchPairFixture fx = BuildSharedNotchCylinderPair();
+  Brep::MixedFacesResult mf = fx.brep.MixedFaces();
+  for (Brep::CylindricalFace& cf : mf.cylindrical) {
+    if (!cf.cap0_notch_points.empty() && cf.cap1_notch_points.empty()) {
+      const int n = 32;
+      for (int k = 0; k <= n; ++k) {
+        const double t = cf.angle * static_cast<double>(k) / static_cast<double>(n);
+        cf.cap1_notch_points.push_back(cf.frame.origin + cf.length * cf.frame.zaxis +
+                                        cf.radius * (std::cos(t) * cf.frame.xaxis + std::sin(t) * cf.frame.yaxis));
+      }
+      cf.cap1_notch_tolerance = 1e-9;
+    }
+  }
+  const Brep doubly_notched = Brep::FromMixedFaces(mf.planar, mf.cylindrical);
+  Check(doubly_notched.MixedFaces().cylindrical.size() == 2,
+        "the artificially double-notched shared-notch-pair fixture (upper's own far end given a trivial, "
+        "in-contract FLAT cap1 chain) still round-trips to 2 cylindrical fragments before the boolean under test");
+
+  // A SINGLE crossing plane (z >= 1 only, not the disclosed fixture's own
+  // two-plane box - see the composed-multi-plane test above for why that
+  // one hits a DIFFERENT gap first) genuinely reaching `upper`'s own real
+  // cap0 excursion (v_cut = -1, inside its [-4, 0] range) - enough on its
+  // own to trip the double-notch refusal (either end touching is
+  // sufficient - see SplitMixedAgainstAllFaces's own case (iii) doc
+  // comment), regardless of the artificial, always-flat cap1 chain never
+  // itself being touched.
+  const Brep box = Brep::Box(-10, -10, 1, 10, 10, 10);
+  bool threw = false;
+  std::string message;
+  try {
+    BooleanCombineMixed(doubly_notched, box, BooleanOp::Difference);
+  } catch (const std::invalid_argument& e) {
+    threw = true;
+    message = e.what();
+  }
+  Check(threw && message.find("NOTCHED AT BOTH ENDS") != std::string::npos,
+        "Difference(a fragment artificially notched at BOTH ends, a box crossing only its real cap0 excursion) "
+        "throws the double-notch refusal, naming the REAL remaining gap - a fragment notched at both ends "
+        "simultaneously - not the single-notch machinery's own success path (task #86's single-crossing-plane "
+        "fix, exercised directly above, would otherwise happily split this fragment on its cap0 side alone)");
 }
 
 // Direct confirmation that the primary fix's own general MECHANISM (not
@@ -18280,7 +18397,9 @@ int main() {
   TestBooleanCombineMixedUnequalRadiusObliqueSkewStillThrows();
   TestFromMixedFacesSlopedNotchCapAndStraightChordStayDistinct();
   TestFromMixedFacesFlatCornerGateIsInert();
-  TestBooleanCombineMixedNotchAwareClassificationStillNeedsSplitProducerWork();
+  TestBooleanCombineMixedNotchAwareSplitProducerBuildsSingleCrossingPlane();
+  TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingRefuses();
+  TestBooleanCombineMixedNotchAwareBothEndsNotchedRefuses();
   TestBooleanCombineMixedOverlappingRangeFragmentsSameWallDedup();
   TestBooleanCombineMixedThreeFragmentsSameWallDedup();
   TestBooleanCombineMixedMidLengthSplitClearsStaleNotch();
