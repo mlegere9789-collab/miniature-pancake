@@ -28,6 +28,7 @@
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/subd.h"
 #include "dino8/kernel/surface.h"
+#include "dino8/kernel/surface_intersect.h"
 
 namespace {
 
@@ -1492,6 +1493,129 @@ void TestSurfaceIsTorus() {
   NurbsSurface cone;
   cone.raw() = cone_surface;
   Check(!cone.IsTorus(1e-6), "a cone reports IsTorus() false");
+}
+
+void TestSurfaceIntersectSphereGreatCircle() {
+  using dino8::kernel::CurveSurfaceHit;
+  using dino8::kernel::IntersectCurveSurface;
+  using dino8::kernel::IntersectionCurve;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::IntersectSurfaces;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // The general intersector (relocated from dino8-app/src/geom/
+  // SurfaceIntersect into the kernel) working on ANY ON_Surface, not a
+  // per-type special case: a genuine sphere via ON_Sphere::GetNurbForm
+  // (same construction TestSurfaceIsSphere() above already validated)
+  // against a genuine flat NURBS plane passing exactly through the
+  // sphere's center. Every 3D point of the resulting curve must sit at
+  // distance == radius from the center - a real, independently
+  // verifiable geometric fact (a great circle), not just "it ran".
+  const Point3d center(1.0, -2.0, 0.5);
+  const double radius = 3.0;
+  const ON_Sphere on_sphere(center, radius);
+  ON_NurbsSurface sphere_surface;
+  Check(on_sphere.GetNurbForm(sphere_surface) != 0, "ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere;
+  sphere.raw() = sphere_surface;
+
+  // A flat bilinear patch at z = center.z, spanning well past the
+  // sphere's radius in x/y so it fully crosses the sphere. FromControlGrid
+  // lays the u_count x v_count grid out row-major (u fastest); all four
+  // corners share z = center.z so the patch is exactly planar.
+  const std::vector<Point3d> plane_grid = {
+      Point3d(center.x - 10, center.y - 10, center.z),
+      Point3d(center.x - 10, center.y + 10, center.z),
+      Point3d(center.x + 10, center.y - 10, center.z),
+      Point3d(center.x + 10, center.y + 10, center.z),
+  };
+  const NurbsSurface plane = NurbsSurface::FromControlGrid(plane_grid, 2, 2, 1, 1);
+
+  IntersectOptions opt;
+  opt.tolerance = 1e-6;
+  opt.mesh_tolerance = 0.02;
+  const std::vector<IntersectionCurve> curves = IntersectSurfaces(plane.raw(), sphere.raw(), opt);
+  Check(!curves.empty(), "a plane through a sphere's center produces at least one intersection curve");
+  if (!curves.empty()) {
+    // The equatorial great circle crosses the sphere's own u (longitude)
+    // seam once (its u parameter sweeps the full [0, 2*pi) range), so
+    // SplitAtSeams() genuinely (and correctly - confirmed by reading it)
+    // cuts the single closed loop into (typically two) open curves at
+    // that seam rather than returning one `closed == true` curve. That
+    // splitting is real, disclosed intersector behavior, not a bug: the
+    // independently verifiable facts checked below are (1) every
+    // refined point on every returned curve sits at exactly the
+    // sphere's radius from its center, and (2) the curves' combined arc
+    // length equals the full circumference 2*pi*radius, i.e. together
+    // they trace the *entire* great circle, not a partial arc.
+    double max_radius_error = 0;
+    double total_length = 0;
+    for (const IntersectionCurve& c : curves) {
+      for (const Point3d& p : c.points) {
+        max_radius_error = std::max(max_radius_error, std::abs(p.DistanceTo(center) - radius));
+      }
+      for (size_t i = 1; i < c.points.size(); ++i) total_length += c.points[i].DistanceTo(c.points[i - 1]);
+      if (c.closed && !c.points.empty()) total_length += c.points.back().DistanceTo(c.points.front());
+    }
+    Check(max_radius_error < 1e-3,
+          "every refined point on the plane/sphere intersection curve(s) "
+          "sits at distance == the sphere's radius from its center "
+          "(within tolerance), i.e. it genuinely traces a great circle");
+    const double expected_circumference = 2.0 * 3.14159265358979323846 * radius;
+    Check(std::abs(total_length - expected_circumference) < 0.05 * expected_circumference,
+          "the returned curve(s)' combined polyline length matches the "
+          "great circle's true circumference 2*pi*radius within 5% (a "
+          "coarse polyline-chord bound, not floating-point exactness), "
+          "confirming the full circle was traced rather than a partial arc");
+  }
+
+  // Non-intersecting case: the same sphere against a plane well clear of
+  // it (offset by more than the radius along z) must produce no curves.
+  const std::vector<Point3d> far_plane_grid = {
+      Point3d(center.x - 10, center.y - 10, center.z + radius + 5.0),
+      Point3d(center.x - 10, center.y + 10, center.z + radius + 5.0),
+      Point3d(center.x + 10, center.y - 10, center.z + radius + 5.0),
+      Point3d(center.x + 10, center.y + 10, center.z + radius + 5.0),
+  };
+  const NurbsSurface far_plane = NurbsSurface::FromControlGrid(far_plane_grid, 2, 2, 1, 1);
+  const std::vector<IntersectionCurve> none = IntersectSurfaces(far_plane.raw(), sphere.raw(), opt);
+  Check(none.empty(), "a plane placed well clear of the sphere produces no intersection curves");
+
+  // Curve/surface: a line straight through the sphere along its own
+  // local z-axis (through the center) must hit the sphere at exactly two
+  // points, at center.z - radius and center.z + radius, with the curve
+  // parameter matching that position on the line.
+  const std::vector<Point3d> line_pts = {
+      Point3d(center.x, center.y, center.z - 10.0),
+      Point3d(center.x, center.y, center.z + 10.0),
+  };
+  const NurbsCurve line = NurbsCurve::FromControlPoints(line_pts, /*degree=*/1);
+  const dino8::kernel::Interval line_domain = line.Domain();
+  const std::vector<CurveSurfaceHit> hits = IntersectCurveSurface(line.raw(), sphere.raw(), opt);
+  Check(hits.size() == 2, "a line through a sphere's center hits the sphere at exactly two points");
+  if (hits.size() == 2) {
+    // hits are sorted by curve parameter t; the first must be the entry
+    // point at z = center.z - radius, the second the exit at z = center.z + radius.
+    Check(hits[0].point.z < hits[1].point.z, "the two hits are returned in increasing-t (increasing z) order");
+    Check(std::abs(hits[0].point.z - (center.z - radius)) < 1e-3,
+          "the near hit sits at exactly center.z - radius");
+    Check(std::abs(hits[1].point.z - (center.z + radius)) < 1e-3,
+          "the far hit sits at exactly center.z + radius");
+    Check(std::abs(hits[0].point.x - center.x) < 1e-3 && std::abs(hits[0].point.y - center.y) < 1e-3,
+          "the near hit lies on the line's own x/y (straight through the center)");
+    // Expected parameter values: the line runs linearly from z = center.z
+    // - 10 to z = center.z + 10 over its domain, so the hit at
+    // z = center.z - radius sits at fraction (10 - radius) / 20 across
+    // the domain, and the far hit at (10 + radius) / 20.
+    const double expected_t0 = line_domain.min + (line_domain.max - line_domain.min) * ((10.0 - radius) / 20.0);
+    const double expected_t1 = line_domain.min + (line_domain.max - line_domain.min) * ((10.0 + radius) / 20.0);
+    Check(std::abs(hits[0].t - expected_t0) < 1e-3,
+          "the near hit's curve parameter matches the hand-derived expected value");
+    Check(std::abs(hits[1].t - expected_t1) < 1e-3,
+          "the far hit's curve parameter matches the hand-derived expected value");
+  }
 }
 
 void TestSurfaceGetApproximateSize() {
@@ -18413,6 +18537,7 @@ int main() {
   TestSurfaceIsCylinder();
   TestSurfaceIsCone();
   TestSurfaceIsTorus();
+  TestSurfaceIntersectSphereGreatCircle();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
