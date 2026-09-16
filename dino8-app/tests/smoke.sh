@@ -859,6 +859,15 @@ if echo "$A2" | grep -A1 "^history: Command: SelMirroredBlocks$" | grep -q "^his
 else
   echo "FAIL SelMirroredBlocks found the mirror-copied block instances"; fail=1
 fi
+# --- Centermark/CenterLine associativity: moving the referenced circle/
+# lines and re-running UpdateDimensions must redraw the mark/midline at its
+# new position, not the position it was baked at - real associativity, not
+# a static copy (see the block above "SelMirroredBlocks" in
+# annotate2_script.txt).
+a2check "Centermark: 1 center mark(s) (associative to the selected circle/arc)" "Centermark on the second circle recorded its associative reference"
+a2check "UpdateDimensions:   Centermark now at 720,15,0" "UpdateDimensions redrew the Centermark at the moved circle's new center (720,15,0), not the 700,0,0 it was created at"
+a2check "CenterLine: midline between the two selected lines (associative to both)" "CenterLine recorded both selected lines as associative references"
+a2check "UpdateDimensions:   CenterLine now spans 800,0,0 to 800,10,0" "UpdateDimensions redrew the CenterLine's midline at x=800 after moving one of the two lines from x=800 to x=780 (midline between the moved line and the untouched x=820 line), not the x=810 midline it was created at"
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then

@@ -888,6 +888,7 @@ void DrawDocumentPropertiesWindow(Application& app) {
   if (ImGui::Button("Linetypes panel")) app.Panels().linetypes = true;
   ImGui::Separator();
   if (InputString("Dimension layer (empty = current)", s.dimension_layer)) app.Doc().Touch();
+  if (InputString("Center mark/line layer (empty = current)", s.center_layer)) app.Doc().Touch();
   ImGui::Separator();
   ImGui::Text("File: %s", app.Doc().Path().empty() ? "(unsaved)" : app.Doc().Path().c_str());
   ImGui::Text("Objects: %zu   Layers: %zu   Revision: %llu", app.Doc().ObjectCount(), app.Doc().Layers().size(),

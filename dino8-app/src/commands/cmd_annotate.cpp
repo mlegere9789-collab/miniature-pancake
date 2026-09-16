@@ -625,7 +625,7 @@ void RegisterAnnotateCommands(CommandEngine& e) {
   Reg(e, "Leader", Make<LeaderCommand>(), CommandStatus::Implemented, leader_dim_note);
 
   Reg(e, "UpdateDimensions", Immediate([](CommandContext& ctx) {
-        static const std::vector<std::string> kKinds = {"DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter", "Leader"};
+        static const std::vector<std::string> kKinds = {"DimLinear", "DimAligned", "DimAngle", "DimRadius", "DimDiameter", "Leader", "Centermark", "CenterLine"};
         std::vector<int> groups;
         std::map<int, std::string> kind_of;
         for (const SceneObject& o : ctx.Doc().Objects()) {
@@ -718,11 +718,46 @@ void RegisterAnnotateCommands(CommandEngine& e) {
               ++updated;
               ctx.Print("UpdateDimensions:   Leader now points at " + PointTag(tip));
             } else ++skipped;
+          } else if (kind == "Centermark") {
+            Point3d center; ON_Plane pl; double size = 0;
+            if (!ResolveCentermarkGeom(ctx.Doc(), g, center, pl, size)) { ++skipped; continue; }
+            std::string mode = "Fixed";
+            bool has_ref = false;
+            ObjectId ref = kNoObject;
+            int layer = -1;
+            for (const SceneObject& o : ctx.Doc().Objects()) {
+              if (o.group_id != g) continue;
+              layer = o.layer_index;
+              if (auto it = o.user_text.find("CenterSizeMode"); it != o.user_text.end()) mode = it->second;
+              if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has_ref = true; }
+            }
+            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+            if (BuildCentermarkGroup(ctx, center, pl, size, layer, has_ref, ref, mode) >= 0) {
+              ++updated;
+              ctx.Print("UpdateDimensions:   Centermark now at " + PointTag(center));
+            } else ++skipped;
+          } else if (kind == "CenterLine") {
+            Point3d m0, m1;
+            if (!ResolveCenterLinePoints(ctx.Doc(), g, m0, m1)) { ++skipped; continue; }
+            ObjectId ref1 = kNoObject, ref2 = kNoObject;
+            bool has1 = false, has2 = false;
+            int layer = -1;
+            for (const SceneObject& o : ctx.Doc().Objects()) {
+              if (o.group_id != g) continue;
+              layer = o.layer_index;
+              if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has1 = true; }
+              if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { ref2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has2 = true; }
+            }
+            for (ObjectId id : ctx.Doc().GroupMembers(g)) ctx.Doc().Remove(id);
+            if (has1 && has2 && BuildCenterLineGroup(ctx, m0, m1, layer, ref1, ref2) >= 0) {
+              ++updated;
+              ctx.Print("UpdateDimensions:   CenterLine now spans " + PointTag(m0) + " to " + PointTag(m1));
+            } else ++skipped;
           }
         }
         ctx.Print("UpdateDimensions: " + std::to_string(updated) + " dimension(s) regenerated" + (skipped ? ", " + std::to_string(skipped) + " skipped (no resolvable layout/points)" : ""));
       }), CommandStatus::Implemented,
-      "Re-evaluates every associative dimension's anchor(s) - DimLinear/DimAligned/DimRotated, DimAngle, DimRadius/DimDiameter, Leader - and rebuilds its curve/arrow/text geometry from their current position, replacing the old baked geometry in place - the associative counterpart to those dimension types' static bake, following the same explicit-recompute shape as UpdateSectionViews (cmd_drafting2.cpp) rather than an automatic hook on every document edit.");
+      "Re-evaluates every associative dimension's anchor(s) - DimLinear/DimAligned/DimRotated, DimAngle, DimRadius/DimDiameter, Leader, Centermark, CenterLine - and rebuilds its curve/arrow/text geometry from their current position, replacing the old baked geometry in place - the associative counterpart to those dimension types' static bake, following the same explicit-recompute shape as UpdateSectionViews (cmd_drafting2.cpp) rather than an automatic hook on every document edit.");
 }
 
 }  // namespace dino8::app

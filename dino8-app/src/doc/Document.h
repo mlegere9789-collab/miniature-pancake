@@ -309,6 +309,10 @@ struct DocumentSettings {
   // go on (SetDimensionLayer; empty = the current layer).
   kernel::Point3d hatch_base{0, 0, 0};
   std::string dimension_layer;
+  // Layer new Centermark/CenterLine objects go on (SetCenterLayer /
+  // CENTERLAYER; empty = the current layer) - same pattern as
+  // dimension_layer/SetDimensionLayer above.
+  std::string center_layer;
   std::string annotation_style = "Default";
 };
 
