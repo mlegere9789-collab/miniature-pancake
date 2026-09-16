@@ -198,6 +198,7 @@ set(DINO8_SOURCES
   src/commands/cmd_constraints.cpp
   src/arch/ArchComponents.cpp
   src/commands/cmd_arch.cpp
+  src/commands/cmd_standards.cpp
   src/ui/Gumball.cpp
   src/geom/TextOutline.cpp
   src/commands/cmd_annotate.cpp

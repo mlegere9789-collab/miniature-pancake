@@ -2174,4 +2174,36 @@ sbcheck "^ok   expect_objects 13 (got 13)$" "SmartBlockConvert tags occurrences 
 sbcheck "^ok   expect_selected 9 (got 9)$" "SelBlockInstance selects exactly the 9 objects (3 instances x 3 objects) that were converted, and none of the noise objects"
 sbcheck "Block 'SmartBlock1': 3 object\(s\), base .*, 9 object\(s\) in instances" "BlockManager confirms the new block's definition has 3 objects and 9 objects across its instances"
 
+# CAD Standards Checker: Standards/CheckStandards (see standards_script.txt).
+mkdir -p "$TMP/standards"
+cat > "$TMP/standards/standards.json" <<'EOS'
+{
+  "layers": [
+    {"name": "Default", "color": "0,0,0", "linetype": "Continuous"},
+    {"name": "Dims", "color": "0,0,0", "linetype": "Continuous"},
+    {"name": "Notes", "color": "0,0,0", "linetype": "Dashed"}
+  ],
+  "text_styles": ["Default"],
+  "dim_styles": []
+}
+EOS
+sed "s|@TMP@|$TMP/standards|g" "$HERE/standards_script.txt" > "$TMP/standards/standards_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  ST="$("$BIN" --smoke 60 --script "$TMP/standards/standards_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: standards script exited non-zero"; exit 1; }
+else
+  ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/standards/standards_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: standards script exited non-zero"; exit 1; }
+fi
+stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+stcheck "Standards: document linked to '$TMP/standards/standards.json'" "Standards linked the document to the standards file"
+stcheck "CheckStandards: 0 violations" "CheckStandards reports clean before any drift is introduced"
+stcheck "CheckStandards found 3 violation(s)" "CheckStandards found exactly 3 violations after introducing drift"
+stcheck "layer 'Extra' is not defined in the standards file" "CheckStandards flagged the undefined layer 'Extra'"
+stcheck "layer 'Notes' linetype 'Continuous' does not match the standard 'Dashed'" "CheckStandards flagged the linetype drift on 'Notes'"
+stcheck "text/dimension style 'Rogue' is used in the drawing but is not in the standards file" "CheckStandards flagged the non-standard annotation style 'Rogue'"
+if echo "$ST" | grep -q "layer 'Dims'"; then echo "FAIL: CheckStandards incorrectly flagged the compliant layer 'Dims'"; fail=1; else echo "ok   compliant layer 'Dims' was not flagged"; fi
+if echo "$ST" | grep -q "layer 'Default'"; then echo "FAIL: CheckStandards incorrectly flagged the compliant layer 'Default'"; fail=1; else echo "ok   compliant layer 'Default' was not flagged"; fi
+if echo "$ST" | grep -q "style 'Default'"; then echo "FAIL: CheckStandards incorrectly flagged the compliant style 'Default'"; fail=1; else echo "ok   compliant style 'Default' was not flagged"; fi
+echo "$ST" | grep -E "^(ok|FAIL)" || true
+if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
+
 exit $fail
