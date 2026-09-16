@@ -2360,14 +2360,14 @@ DL1_CSV="$(cat "$TMP/datalink.csv" 2>/dev/null || true)"
 if [ "$DL1_CSV" = "$(printf 'A,B\nC,D\n')" ]; then echo "ok   the pushed CSV's content matches the table's cells (A,B / C,D)"; else echo "FAIL the pushed CSV's content matches the table's cells (got: $DL1_CSV)"; fail=1; fi
 
 # Simulate an external spreadsheet edit of the linked file before stage 2.
-sleep 2
+sleep 3
 printf 'P,Q\nR,S\n' > "$TMP/datalink.csv"
 
 DL2="$(run_dl_stage datalink_script2.txt 2)"
 dlcheck() { if echo "$DL2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 dlcheck "DataLinkUpdate: pulled 2x2 table from " "DataLinkUpdate auto-detected the file was the only side that changed and pulled it"
 
-sleep 2
+sleep 3
 
 DL3="$(run_dl_stage datalink_script3.txt 3)"
 dlcheck() { if echo "$DL3" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
@@ -2377,7 +2377,7 @@ if [ "$DL3_CSV" = "$(printf 'M,N\nO,P\n')" ]; then echo "ok   the re-pushed CSV'
 
 # Simulate a second external edit, so that stage 4's own TableEdit and this
 # file both change before the next sync - the ambiguous case.
-sleep 2
+sleep 3
 printf 'Z1,Z2\nZ3,Z4\n' > "$TMP/datalink.csv"
 
 DL4="$(run_dl_stage datalink_script4.txt 4)"
