@@ -210,6 +210,17 @@ int InstantiateBlock(CommandContext& ctx, const std::string& name, Point3d at) {
   return ctx.Doc().CreateGroup(ids, name);
 }
 
+int TagExistingAsBlockInstance(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::string& name, Point3d at) {
+  for (ObjectId id : ids) {
+    if (SceneObject* o = ctx.Doc().Find(id)) {
+      o->selected = false;
+      o->user_text["Block"] = name;
+      o->user_text["BlockInsert"] = FormatPoint(at);
+    }
+  }
+  return ctx.Doc().CreateGroup(ids, name);
+}
+
 void RegisterDraftingCommands(CommandEngine& e) {
   // Hatch: superseded, dead code - RegisterDrafting2Commands re-registers
   // "Hatch" against the real pattern library (LibraryHatchCommand); a
