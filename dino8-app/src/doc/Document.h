@@ -44,11 +44,20 @@ struct Layer {
 
 // A block definition: a named set of objects with a base point. Instances
 // are grouped copies tagged with the block name (see cmd_drafting.cpp).
+//
+// `states` names this block's Visibility-parameter states (BlockAddState /
+// BlockRemoveState in cmd_drafting.cpp), e.g. {"Open", "Closed"}; empty
+// means the block is a plain (non-dynamic) block, unaffected by anything in
+// doc/BlockInstances.h. Each object in `objects` optionally carries a
+// "Dino8.VisStates" user-text tag (a comma list of the states it appears
+// in); an untagged object is visible in every state. See BlockInstances.h
+// for how a placed instance picks and rebuilds its active state.
 struct BlockDefinition {
   std::string name;
   kernel::Point3d base{0, 0, 0};
   std::vector<SceneObject> objects;
   std::string description;
+  std::vector<std::string> states;
 };
 
 struct Group {
@@ -427,6 +436,7 @@ class Document {
   Animation& GetAnimation() { return animation_; }
   const Animation& GetAnimation() const { return animation_; }
   std::vector<BlockDefinition>& Blocks() { return blocks_; }
+  const std::vector<BlockDefinition>& Blocks() const { return blocks_; }
   BlockDefinition* FindBlock(const std::string& name) { for (BlockDefinition& b : blocks_) if (b.name == name) return &b; return nullptr; }
   std::vector<ReferenceModel>& ReferenceModels() { return reference_models_; }
   const std::vector<ReferenceModel>& ReferenceModels() const { return reference_models_; }

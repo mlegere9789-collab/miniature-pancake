@@ -12,9 +12,71 @@
 #include <map>
 #include <sstream>
 
+#include "util/json_mini.h"
+
 namespace dino8::app {
 
 namespace {
+
+// Block definitions (see doc/BlockInstances.h): `Dino8.BlocksMeta` document
+// user text holds the small stuff (name/base/description/states) as one
+// JSON array, same trick as dino8.arch/dino8.constraints; each definition's
+// *objects* persist as ordinary geometry components (reusing the exact
+// read/write code the main object loop below already has for every curve/
+// brep/mesh/SubD kind), tagged `Dino8.BlockDefOf`=<name> and
+// `Dino8.BlockDefIndex`=<position> so Load3dm can pull them back out of
+// Document::Objects() into their BlockDefinition instead of leaving them as
+// ordinary (if invisible) scene objects.
+std::string JsonEscapeBlock(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 2);
+  for (char c : s) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) { char buf[8]; std::snprintf(buf, sizeof(buf), "\\u%04x", c); out += buf; }
+        else out += c;
+    }
+  }
+  return out;
+}
+
+std::string EncodeBlocksMeta(const std::vector<BlockDefinition>& blocks) {
+  std::ostringstream out;
+  out << "[";
+  for (size_t i = 0; i < blocks.size(); ++i) {
+    const BlockDefinition& b = blocks[i];
+    out << (i ? "," : "") << "{\"name\":\"" << JsonEscapeBlock(b.name) << "\",\"desc\":\"" << JsonEscapeBlock(b.description) << "\""
+        << ",\"bx\":" << b.base.x << ",\"by\":" << b.base.y << ",\"bz\":" << b.base.z << ",\"states\":[";
+    for (size_t j = 0; j < b.states.size(); ++j) out << (j ? "," : "") << "\"" << JsonEscapeBlock(b.states[j]) << "\"";
+    out << "]}";
+  }
+  out << "]";
+  return out.str();
+}
+
+std::map<std::string, BlockDefinition> DecodeBlocksMeta(const std::string& text) {
+  std::map<std::string, BlockDefinition> out;
+  if (text.empty()) return out;
+  json::Value root;
+  std::string err;
+  if (!json::Parse(text, root, err) || !root.IsArray()) return out;
+  for (size_t i = 0; i < root.Size(); ++i) {
+    const json::Value& v = root[i];
+    BlockDefinition b;
+    b.name = v["name"].AsString();
+    b.description = v["desc"].AsString();
+    b.base = kernel::Point3d(v["bx"].number, v["by"].number, v["bz"].number);
+    const json::Value& st = v["states"];
+    for (size_t j = 0; j < st.Size(); ++j) b.states.push_back(st[j].AsString());
+    out[b.name] = b;
+  }
+  return out;
+}
 
 std::string LowerExt(const std::string& path) {
   std::string e = std::filesystem::path(path).extension().string();
@@ -501,6 +563,40 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
   // later, and UpdateDimensions' own use of group_id to tie a dimension's
   // baked objects together survives the round trip too.
   for (auto& [file_gid, ids] : restore_groups) doc.CreateGroup(ids);
+  // Block definitions: pull the tagged member objects the loop above just
+  // added as ordinary geometry back out into Document::Blocks() (see the
+  // comment on EncodeBlocksMeta above).
+  {
+    ON_wString v;
+    std::map<std::string, BlockDefinition> by_name;
+    if (model.GetDocumentUserString(L"Dino8.BlocksMeta", v)) by_name = DecodeBlocksMeta(FromWide(v));
+    std::map<std::string, std::vector<std::pair<int, SceneObject>>> members;
+    std::vector<ObjectId> to_remove;
+    for (const SceneObject& o : doc.Objects()) {
+      auto it = o.user_text.find("Dino8.BlockDefOf");
+      if (it == o.user_text.end()) continue;
+      SceneObject c = o;
+      c.id = kNoObject;
+      c.selected = false;
+      c.group_id = -1;
+      c.user_text.erase("Dino8.BlockDefOf");
+      int idx = static_cast<int>(members[it->second].size());
+      auto ii = c.user_text.find("Dino8.BlockDefIndex");
+      if (ii != c.user_text.end()) { idx = std::atoi(ii->second.c_str()); c.user_text.erase(ii); }
+      members[it->second].push_back({idx, std::move(c)});
+      to_remove.push_back(o.id);
+    }
+    for (auto& [name, list] : members) {
+      std::sort(list.begin(), list.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+      BlockDefinition& b = by_name[name];  // default-constructs one if meta was somehow missing
+      b.name = name;
+      b.objects.clear();
+      b.objects.reserve(list.size());
+      for (auto& [idx, obj] : list) b.objects.push_back(std::move(obj));
+    }
+    for (ObjectId id : to_remove) doc.Remove(id);
+    for (auto& [name, b] : by_name) doc.Blocks().push_back(std::move(b));
+  }
   // DimRefObj1/2/3 (see Save3dm) were rewritten to the referenced anchor
   // object's stable uuid at save time, since Open reassigns every object a
   // fresh numeric id - resolve them back to the *new* numeric id now that
@@ -878,6 +974,34 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     if (!g) continue;
     model.AddModelGeometryComponent(g, &attr);
     ++written;
+  }
+
+  // Block definitions (see the comment on EncodeBlocksMeta above): metadata
+  // as one small JSON blob, each definition's objects as ordinary tagged
+  // geometry components reusing the same write code as the main loop above.
+  model.SetDocumentUserString(L"Dino8.BlocksMeta", ON_wString(EncodeBlocksMeta(doc.Blocks()).c_str()));
+  for (const BlockDefinition& def : doc.Blocks()) {
+    for (size_t bi = 0; bi < def.objects.size(); ++bi) {
+      const SceneObject& o = def.objects[bi];
+      ON_3dmObjectAttributes attr;
+      ON_CreateUuid(attr.m_uuid);
+      attr.SetName(ON_wString(o.name.c_str()), true);
+      attr.SetVisible(o.visible);
+      for (const auto& [k, v] : o.user_text) attr.SetUserString(ON_wString(k.c_str()), ON_wString(v.c_str()));
+      attr.SetUserString(L"Dino8.BlockDefOf", ON_wString(def.name.c_str()));
+      attr.SetUserString(L"Dino8.BlockDefIndex", ON_wString(std::to_string(bi).c_str()));
+      ON_Geometry* g = nullptr;
+      switch (o.kind) {
+        case ObjectKind::Point: g = new ON_Point(o.point); break;
+        case ObjectKind::Curve: if (o.curve) g = new ON_NurbsCurve(o.curve->raw()); break;
+        case ObjectKind::Surface: if (o.surface) g = new ON_NurbsSurface(o.surface->raw()); break;
+        case ObjectKind::Brep: if (o.brep) g = new ON_Brep(o.brep->raw()); break;
+        case ObjectKind::Mesh: if (o.mesh) g = new ON_Mesh(o.mesh->raw()); break;
+        case ObjectKind::SubD: if (o.subd) g = new ON_SubD(o.subd->raw()); break;
+      }
+      if (!g) continue;
+      model.AddModelGeometryComponent(g, &attr);
+    }
   }
 
   // Lights are geometry components in the 3dm.

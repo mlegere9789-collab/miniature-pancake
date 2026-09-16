@@ -3,6 +3,8 @@
 
 #include <algorithm>
 
+#include "doc/BlockInstances.h"
+
 namespace dino8::app {
 
 namespace {
@@ -190,11 +192,111 @@ class InsertCommand : public Command {
   std::string name_;
 };
 
+// BlockAddState: names a new Visibility-parameter state on a block
+// definition. A block with at least one state becomes "dynamic":
+// InstantiateBlock/Insert then create a real BlockInstance record for it
+// (see InstantiateBlock below).
+class BlockAddStateCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (ctx.Doc().Blocks().empty()) { ctx.Warn("No block definitions. Use Block to create one."); Finish(); return; }
+    std::string names;
+    for (const BlockDefinition& b : ctx.Doc().Blocks()) names += (names.empty() ? "" : ", ") + b.name;
+    ctx.Print("Blocks: " + names);
+    WantText("Block name", ctx.Doc().Blocks().back().name);
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (name_.empty()) {
+      def_ = ctx.Doc().FindBlock(t);
+      if (!def_) { ctx.Warn("No block named '" + t + "'"); Finish(); return; }
+      name_ = t;
+      WantText("New visibility state name (e.g. Open, Closed)");
+      return;
+    }
+    if (std::find(def_->states.begin(), def_->states.end(), t) != def_->states.end()) {
+      ctx.Warn("Block '" + name_ + "' already has a state named '" + t + "'");
+    } else {
+      ctx.Doc().BeginChange("BlockAddState");
+      def_->states.push_back(t);
+      ctx.Print("Block '" + name_ + "': added visibility state '" + t + "' (" + std::to_string(def_->states.size()) + " total)");
+    }
+    Finish();
+  }
+  std::string name_;
+  BlockDefinition* def_ = nullptr;
+};
+
+// BlockSetVisibility: while a block is open for editing (BlockEdit), tags
+// the selected editable copies with the visibility states they should
+// appear in; finishing BlockEdit bakes those tags into the real
+// BlockDefinition::objects (BlockEditCommand::FinishEdit copies user_text
+// verbatim). Comma-separated, e.g. "Open,PartlyOpen"; empty clears the tag
+// (visible in every state).
+class BlockSetVisibilityCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select block-edit objects to tag", 1); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override { ids_ = ids; WantText("Visible-in states (comma-separated, blank = always)", ""); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    ctx.Doc().BeginChange("BlockSetVisibility");
+    int n = 0;
+    for (ObjectId id : ids_) {
+      if (SceneObject* o = ctx.Doc().Find(id)) {
+        if (t.empty()) o->user_text.erase(kBlockVisStatesKey); else o->user_text[kBlockVisStatesKey] = t;
+        ++n;
+      }
+    }
+    ctx.Print("BlockSetVisibility: tagged " + std::to_string(n) + " object(s) with '" + t + "'");
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+};
+
+// BlockSetState: switches one placed dynamic-block instance to a different
+// named visibility state and rebuilds just that instance's objects
+// (RebuildBlockInstance: delete-old/build-new, same pattern as
+// ArchComponent::Rebuild()), fully undoable like any other object add/
+// remove since it only touches Document::Objects() and the
+// dino8.block_instances user text, both part of the normal BeginChange
+// snapshot.
+class BlockSetStateCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select an object in the instance to re-state", 1); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    group_ = -1;
+    for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->group_id >= 0) { group_ = o->group_id; break; }
+    BlockInstance inst;
+    if (group_ < 0 || !FindBlockInstanceByGroup(ctx.Doc(), group_, inst)) {
+      ctx.Warn("Selection isn't a dynamic-block instance (use BlockAddState first)");
+      Finish();
+      return;
+    }
+    const BlockDefinition* def = ctx.Doc().FindBlock(inst.block);
+    std::string states;
+    if (def) for (const std::string& s : def->states) states += (states.empty() ? "" : ", ") + s;
+    ctx.Print("'" + inst.block + "' states: " + states + " (currently '" + inst.state + "')");
+    WantText("New state");
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    ctx.Doc().BeginChange("BlockSetState");
+    if (!SetBlockInstanceState(ctx.Doc(), group_, t)) ctx.Warn("Could not switch state");
+    else ctx.Print("BlockSetState: instance now showing '" + t + "'");
+    Finish();
+  }
+  int group_ = -1;
+};
+
 }  // namespace
 
+// A block with no named visibility states behaves exactly as before (every
+// object placed, no BlockInstance record - so ordinary/static blocks are
+// completely unaffected). A block that has states delegates to
+// InstantiateDynamicBlock (doc/BlockInstances.h), which places only the
+// objects visible in the initial state and records a BlockInstance so
+// BlockSetState can find and rebuild it later.
 int InstantiateBlock(CommandContext& ctx, const std::string& name, Point3d at) {
   BlockDefinition* def = ctx.Doc().FindBlock(name);
   if (!def) return -1;
+  if (!def->states.empty()) return InstantiateDynamicBlock(ctx.Doc(), name, at);
   const ON_Xform xf = ON_Xform::TranslationTransformation(at - def->base);
   std::vector<ObjectId> ids;
   for (const SceneObject& o : def->objects) {
@@ -244,6 +346,15 @@ void RegisterDraftingCommands(CommandEngine& e) {
         ctx.App().Panels().command_history = true;
       }), CommandStatus::Partial, "Lists every block definition and its instance count in the command history; there is no dedicated dockable panel UI for it in this build.");
   Reg(e, "SelBlockInstance", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([](const SceneObject& o) { return o.user_text.count("Block") > 0; }); }));
+  Reg(e, "BlockAddState", Make<BlockAddStateCommand>(), CommandStatus::Implemented,
+      "Names a new Visibility-parameter state on a block definition (Visibility-state dynamic blocks, first increment - "
+      "see BlockSetVisibility/BlockSetState); a block with no states behaves exactly as a plain (static) block.");
+  Reg(e, "BlockSetVisibility", Make<BlockSetVisibilityCommand>(), CommandStatus::Implemented,
+      "While a block is open for editing (BlockEdit), tags the selected editable copies with the comma-separated "
+      "visibility states they should appear in; finishing BlockEdit bakes the tags into the block definition.");
+  Reg(e, "BlockSetState", Make<BlockSetStateCommand>(), CommandStatus::Implemented,
+      "Switches one placed dynamic-block instance to a named visibility state and rebuilds just that instance's "
+      "objects (delete old / build new, undoable like any other edit).");
 }
 
 }  // namespace dino8::app
