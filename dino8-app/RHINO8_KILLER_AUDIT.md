@@ -188,13 +188,28 @@ all 4 platforms.
   manual invocation) wired into `tests/smoke.sh`, plus a doc-comment clarification in `cmd_constraints.cpp`.
   Verified: full local `tests/smoke.sh` green (0 FAIL, all 10 tutorials) twice in a row on the merged branch.
 
+- [x] **AI/cloud parity layer, increment 1: local DWG/Xref Compare.** New `DwgCompare`/`XrefCompare`/
+  `CompareClear` commands (`src/compare/DwgCompare.{h,cpp}`, `src/commands/cmd_compare.cpp`) diff two files'
+  geometry as a local, offline stand-in for AutoCAD's cloud-backed DWG Compare: an exact fingerprint match
+  (kind + layer + quantized, order-independent tessellated geometry) marks unchanged objects untouched; the
+  remainder is paired within-layer by nearest bounding-box-center match into "modified" pairs; anything left
+  over is "added" (tinted green) or "removed" (re-inserted as a locked, dashed-red ghost on a new "Compare:
+  Removed" layer); `CompareClear` undoes all tinting/ghosting. Honestly disclosed, not silently approximated:
+  this is a heuristic diff, not an ID-exact one (two independently authored/exported files share no object
+  identity) — an equal-count, same-layer, unrelated pair of objects will always be paired as "modified" rather
+  than falling back to "removed + added", and a heavily-edited object can fail to pair with its own former
+  self. Verified with real geometric-content checks (4 new `compare_script.txt` assertions on exact objects
+  tinted/ghosted), not just object counts. A genuine, pre-existing, out-of-scope bug was found and fixed in
+  the test script only (a numeric literal colliding with the `3Point` option's prefix match in `CircleCommand`)
+  and flagged as a possible follow-up, not silently worked around in the compare feature itself.
+
 **Still queued in this wave** (implemented and locally verified by their own author agents, pending this
 session's own independent re-verification/merge/push/CI-confirm before being checked off here): dynamic
 blocks (visibility-state parameter/action graph, first increment), live two-way CSV data linking to
-external spreadsheets, a CAD Standards Checker, an AI/cloud parity layer (local Activity Log + Named
-Snapshots, DWG/Xref Compare, D2-shape-distribution Smart Blocks detection — Save-to-Web/Mobile and live
-Multi-User Markup/Shared Views are explicitly out of scope, since they require hosted server infrastructure
-this codebase cannot honestly provide), vertical-market Mechanical+MEP parametric components (fasteners,
+external spreadsheets, a CAD Standards Checker, the rest of the AI/cloud parity layer (local Activity Log +
+Named Snapshots, D2-shape-distribution Smart Blocks detection — Save-to-Web/Mobile and live Multi-User
+Markup/Shared Views are explicitly out of scope, since they require hosted server infrastructure this
+codebase cannot honestly provide), vertical-market Mechanical+MEP parametric components (fasteners,
 structural shapes, ducts/pipes/conduit sized from flow), a Sheet Set Manager (console-only, one PDF per
 sheet), and auto-updating center marks/centerlines (reusing the existing `DimRefObj#`/`UpdateDimensions`
 associativity pattern).
