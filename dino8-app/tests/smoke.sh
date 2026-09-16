@@ -1851,6 +1851,59 @@ archeck "Object 3 (mesh) layer Default name 'Wall'" "the wall survived two boole
 echo "$AR" | grep -E "^(ok|FAIL)" || true
 if echo "$AR" | grep -q "^FAIL"; then fail=1; fi
 
+# Dynamic blocks: Visibility-state parameter (doc/BlockInstances.h) plus the
+# block-definition persistence fix (Document::Blocks() previously had no
+# Save/Open path - see dynamic_blocks_script.txt's header comment).
+mkdir -p "$TMP/dblk"
+sed "s|@TMP@|$TMP/dblk|g" "$HERE/dynamic_blocks_script.txt" > "$TMP/dblk/dynamic_blocks_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  DB="$("$BIN" --smoke 150 --script "$TMP/dblk/dynamic_blocks_script.txt" 2>&1)" || { echo "$DB"; echo "FAIL: dynamic blocks script exited non-zero"; exit 1; }
+else
+  DB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/dblk/dynamic_blocks_script.txt" 2>&1)" || { echo "$DB"; echo "FAIL: dynamic blocks script exited non-zero"; exit 1; }
+fi
+# Split the transcript at each "List" command's own output: DB_S1 is the
+# state right after instance #2 is switched to state B, DB_S2 is after
+# Undo reverts that switch, DB_S3 is after a Save/Open round trip and a
+# fresh instance #3.
+awk '/^Command: List$/{n++; next} {print > ("'"$TMP"'/dblk/sec" n ".txt")}' <<<"$DB"
+DB_S1="$(cat "$TMP/dblk/sec1.txt" 2>/dev/null)"
+DB_S2="$(cat "$TMP/dblk/sec2.txt" 2>/dev/null)"
+DB_S3="$(cat "$TMP/dblk/sec3.txt" 2>/dev/null)"
+dbcheck() { if echo "$1" | grep -qF "$2"; then echo "ok   $3"; else echo "FAIL $3"; fail=1; fi; }
+dbcheck_absent() { if echo "$1" | grep -qF "$2"; then echo "FAIL $3"; fail=1; else echo "ok   $3"; fi; }
+dbcheck "$DB" "Block 'Widget' defined with 2 object(s)" "Block stored the Line+Circle definition"
+dbcheck "$DB" "added visibility state 'A' (1 total)" "BlockAddState added the first visibility state"
+dbcheck "$DB" "added visibility state 'B' (2 total)" "BlockAddState added the second visibility state"
+dbcheck "$DB" "BlockSetState: instance now showing 'B'" "BlockSetState switched instance #2's active state"
+# State B: instance #1 (state A, its Insert default) still shows only its
+# Line; instance #2 shows only its Circle (its Line was deleted by the
+# rebuild); the block-defining leftover instance from the original Block
+# command (states didn't exist yet when it ran) keeps both, untouched.
+dbcheck "$DB_S1" "CV[0] 100,0,0" "Instance #1 (state A) still shows its Line"
+dbcheck "$DB_S1" "CV[0] 206,5,0" "Instance #2 (state B) shows its Circle after BlockSetState"
+dbcheck_absent "$DB_S1" "CV[0] 200,0,0" "Instance #2's Line (state A) was removed by the rebuild, not left stale"
+dbcheck "$DB_S1" "CV[0] 0,0,0" "The block-defining leftover instance's Line is untouched (pre-existing static-block behaviour)"
+dbcheck "$DB_S1" "CV[0] 6,5,0" "The block-defining leftover instance's Circle is untouched (pre-existing static-block behaviour)"
+# Undo: instance #2 goes back to state A (Line only), fully reverting the
+# BlockSetState rebuild via the same BeginChange/Undo mechanism every other
+# object add/remove uses.
+dbcheck "$DB_S2" "CV[0] 200,0,0" "Undo restored instance #2's Line (back to state A)"
+dbcheck_absent "$DB_S2" "CV[0] 206,5,0" "Undo removed instance #2's Circle (state B) again"
+dbcheck "$DB_S2" "CV[0] 100,0,0" "Instance #1 is unaffected by undoing instance #2's state switch"
+# Persistence: the block definition (both objects, both visibility tags,
+# both named states) and the block-instance records survive Save/Open - a
+# real, independent pre-existing bug (Document::blocks_ had no Save/Load
+# path at all) fixed as a prerequisite for Visibility states to mean
+# anything after a reload. A fresh instance #3 still resolves states
+# correctly: only its Line (state A, Insert's default) should appear -
+# if the states/tags hadn't survived the round trip, InstantiateBlock
+# would fall back to placing every object (Line *and* Circle) instead.
+dbcheck "$DB" "Block 'Widget': 2 object(s), base 0,0,0" "BlockManager confirms the definition round-tripped through Save/Open with both objects"
+dbcheck "$DB_S3" "CV[0] 300,0,0" "Instance #3 (post-reload) shows its Line"
+dbcheck_absent "$DB_S3" "CV[0] 306,5,0" "Instance #3 correctly omits the Circle (its VisStates/BlockDefinition::states tags survived Save/Open)"
+echo "$DB" | grep -E "^(ok|FAIL)" || true
+if echo "$DB" | grep -q "^FAIL"; then fail=1; fi
+
 # Session: 3D digitizer (Dig*, Protocol=File test mode), Worksession /
 # LimitReferenceModel, Snapshots, draw order, and real hole features
 # (Move/Copy/Rotate/MirrorHole) (see session_script.txt).

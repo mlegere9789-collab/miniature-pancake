@@ -1,0 +1,71 @@
+# Dynamic blocks - Visibility-state parameter (see doc/BlockInstances.h,
+# cmd_drafting.cpp's BlockAddState/BlockSetVisibility/BlockSetState) and the
+# block-definition persistence fix (Document::Blocks() previously had no
+# Save/Open path at all - see io/File3dm.cpp's Dino8.BlocksMeta / Dino8.
+# BlockDefOf handling).
+#
+# Build a 2-object block "Widget": a Line tagged visible only in state "A"
+# and a Circle tagged visible only in state "B".
+Line 0,0,0 1,0,0
+SelLast
+SetUserText
+Dino8.VisStates
+A
+Circle 5,5,0 1
+SelLast
+SetUserText
+Dino8.VisStates
+B
+SelAll
+Block
+0,0,0
+Widget
+BlockAddState
+Widget
+A
+BlockAddState
+Widget
+B
+
+# Two placed instances: #1 starts in the block's first state (A - Line
+# only), #2 explicitly switched to B (Circle only) right after placement -
+# each instance must show exactly its own state's objects, independent of
+# the other instance and of the block definition's own (never-shown)
+# template copies.
+Insert
+Widget
+100,0,0
+Enter
+SelLast
+Insert
+Widget
+200,0,0
+Enter
+SelLast
+BlockSetState
+B
+SelAll
+List
+
+# Undo the state switch: instance #2 should go back to showing its Line
+# (state A, its state when first placed by Insert), same delete-old/
+# build-new rebuild as ArchComponent::Rebuild(), fully covered by the
+# ordinary object add/remove + user-text undo snapshot.
+Undo
+SelAll
+List
+
+# Persistence: block definitions (with real geometry) and block-instance
+# state records must round-trip through Save/Open - a real, independent
+# pre-existing gap (Document::blocks_ had no Save/Load path at all) that
+# this increment fixes as a prerequisite for Visibility states to survive
+# a reload at all.
+SaveAs @TMP@/dynamic_blocks.3dm
+Open @TMP@/dynamic_blocks.3dm
+BlockManager
+Insert
+Widget
+300,0,0
+Enter
+SelLast
+List
