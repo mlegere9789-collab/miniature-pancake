@@ -214,15 +214,31 @@ all 4 platforms.
   current run (loaded back from the on-disk sidecar log), and a snapshot saved before Save is still listed
   after re-opening the file from disk.
 
+- [x] **AI/cloud parity layer, increment 3 (final): Smart Blocks detection.** `SmartBlockDetect`/
+  `SmartBlockConvert` (`src/commands/cmd_smartblocks.cpp`) find repeated groups of objects scattered among
+  unrelated geometry using the D2 shape-distribution method (Osada et al. 2002 — sorted pairwise Euclidean
+  distances between object bounding-box centroids within a candidate group), which is rigid-motion
+  (translation + rotation + reflection) invariant, a real geometric-similarity technique rather than a
+  learned model — a defensible, honestly-scoped local substitute for AutoCAD's cloud/ML-based block
+  detection. `SmartBlockConvert` then tags every detected occurrence as an instance of one new block
+  definition, in place (object count unchanged). Verified with a real 3-instance scenario (one plain, one
+  translated, one translated-then-rotated, scattered among noise objects): detection found exactly the one
+  real repeated group and ignored the noise; conversion created exactly one block definition and converted
+  all 3 occurrences, confirmed via `BlockManager`'s own reported object/instance counts.
+
+This closes the AI/cloud ecosystem parity layer's three achievable increments (DWG/Xref Compare, Activity
+Log + Named Snapshots, Smart Blocks detection). Save-to-Web/Mobile and live Multi-User Markup/Shared Views
+remain explicitly out of scope, since they require hosted server infrastructure this codebase cannot
+honestly provide — the same category as the touch-first companion app / Rhino Compute gap already
+documented in the Addendum below.
+
 **Still queued in this wave** (implemented and locally verified by their own author agents, pending this
 session's own independent re-verification/merge/push/CI-confirm before being checked off here): dynamic
 blocks (visibility-state parameter/action graph, first increment), live two-way CSV data linking to
-external spreadsheets, a CAD Standards Checker, D2-shape-distribution Smart Blocks detection (the last
-AI/cloud parity item — Save-to-Web/Mobile and live Multi-User Markup/Shared Views are explicitly out of
-scope, since they require hosted server infrastructure this codebase cannot honestly provide),
-vertical-market Mechanical+MEP parametric components (fasteners, structural shapes, ducts/pipes/conduit
-sized from flow), a Sheet Set Manager (console-only, one PDF per sheet), and auto-updating center
-marks/centerlines (reusing the existing `DimRefObj#`/`UpdateDimensions` associativity pattern).
+external spreadsheets, a CAD Standards Checker, vertical-market Mechanical+MEP parametric components
+(fasteners, structural shapes, ducts/pipes/conduit sized from flow), a Sheet Set Manager (console-only, one
+PDF per sheet), and auto-updating center marks/centerlines (reusing the existing `DimRefObj#`/
+`UpdateDimensions` associativity pattern).
 
 ## Addendum: what "100%, no exceptions" actually required
 
