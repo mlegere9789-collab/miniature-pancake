@@ -1960,6 +1960,48 @@ mmcheck "^ok   expect_objects 18" "mech/MEP script produced the expected object 
 echo "$MM" | grep -E "^(ok|FAIL)" || true
 if echo "$MM" | grep -q "^FAIL"; then fail=1; fi
 
+# Electrical schematic symbols: Resistor/Capacitor/Switch/Ground/Lamp/
+# WireRun, plus ElecTag and PanelSchedule (see elec_script.txt). Bounding
+# boxes and CV endpoints are checked against each symbol's own documented
+# geometry formula (ElecComponents.cpp's per-type Build*() comments), not
+# just object counts; WireRun's associative rebuild is checked by actually
+# moving an anchored Point object and confirming ElecRebuild re-derives the
+# wire's length/endpoints from its new position. No @expect_objects in the
+# script itself (ElecTag/PanelSchedule bake font-dependent glyph curve
+# counts), so ElecTag/PanelSchedule are each checked by their own printed
+# summary line instead of a total object count.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  EL="$("$BIN" --smoke 150 --script "$HERE/elec_script.txt" 2>&1)" || { echo "$EL"; echo "FAIL: electrical script exited non-zero"; exit 1; }
+else
+  EL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/elec_script.txt" 2>&1)" || { echo "$EL"; echo "FAIL: electrical script exited non-zero"; exit 1; }
+fi
+elcheck() { if echo "$EL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+elcheck "Resistor #1 added." "Resistor command built a zigzag symbol"
+elcheck "Bounding box min 0,-0.2,0 max 0.6,0.2,0" "Resistor length=0.6/height=0.4 bbox matches both parameters exactly (6 separate zigzag-segment curves, each corner a real curve endpoint)"
+elcheck "Capacitor #2 added." "Capacitor command built a two-plate symbol"
+elcheck "Bounding box min 1.95,-0.3,0 max 2.05,0.3,0" "Capacitor gap=0.1/plate_length=0.6 bbox width equals the gap and height equals the plate length"
+elcheck "Switch #3 added." "Switch command built an open-contact symbol"
+elcheck "CV\[0\] 4,0,0" "Switch blade starts at the terminal position"
+elcheck "CV\[1\] 4.5,0.3,0" "Switch blade tip sits at length*0.5 = 0.5, height 0.3 above the terminal line"
+elcheck "CV\[0\] 4.6,0,0" "Switch contact stub starts at length*0.6 = 0.6, leaving a real 0.1 open-gap from the blade tip"
+elcheck "Bounding box min 4,0,0 max 5,0.3,0" "Switch bbox spans the full terminal separation (length=1) and the blade's own rise (height=0.3)"
+elcheck "Ground #4 added." "Ground command built a stepped earth symbol"
+elcheck "Bounding box min 5.5,-0.7,0 max 6.5,0,0" "Ground size=1 bbox height (0.7) is exactly the documented 0.7x proportion of size, width (1.0) matches the widest rung"
+elcheck "Lamp #5 added." "Lamp command built a circle+X indicator symbol"
+elcheck "CV\[0\] 7.717,-0.2828,0" "Lamp's inscribed X endpoint sits exactly on the circle at -45 degrees (radius 0.4 / sqrt(2) = 0.2828 from center)"
+elcheck "CV\[1\] 8.283,0.2828,0" "Lamp's inscribed X endpoint sits exactly on the circle at +45 degrees"
+elcheck "Bounding box min 7.6,-0.4,0 max 8.4,0.4,0" "Lamp diameter=0.8 bbox confirms the circle's own radius (0.4) directly"
+elcheck "WireRun #6 added." "WireRun command drew a wire between two anchored Point objects"
+elcheck "Curve 25 length = 10" "WireRun's as-drawn length (10,10,0) to (10,20,0) matches straight-line distance 10"
+elcheck "ElecRebuild: 1 anchored WireRun(s) re-evaluated" "ElecRebuild found the one anchored WireRun after Point 23 was moved"
+elcheck "Curve 26 length = 11.18" "ElecRebuild re-derived the wire's length from the moved point's new position (15,10,0) to (10,20,0) = sqrt(5^2+10^2) = 11.18"
+elcheck "CV\[0\] 15,10,0" "the rebuilt WireRun's own start point is the moved anchor's current position, not the original (10,10,0)"
+elcheck "CV\[1\] 10,20,0" "the rebuilt WireRun's end point is the untouched second anchor's position"
+elcheck "ElecTag: \"R1\" baked as [0-9]* curve(s)" "ElecTag baked a real reference-designator string as font-outline curves (count is font-dependent, same as Text's own smoke check)"
+elcheck "PanelSchedule: 3 circuit row(s) built" "PanelSchedule built a real data table with the exact row count from its Circuits= option, via the same Table/BuildTableGroup mechanism as RevisionTable/BillOfMaterials"
+echo "$EL" | grep -E "^(ok|FAIL)" || true
+if echo "$EL" | grep -q "^FAIL"; then fail=1; fi
+
 # Session: 3D digitizer (Dig*, Protocol=File test mode), Worksession /
 # LimitReferenceModel, Snapshots, draw order, and real hole features
 # (Move/Copy/Rotate/MirrorHole) (see session_script.txt).

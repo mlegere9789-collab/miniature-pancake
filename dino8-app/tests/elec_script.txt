@@ -1,0 +1,117 @@
+# Electrical schematic symbol QC (Resistor/Capacitor/Switch/Ground/Lamp/
+# WireRun - elec/ElecComponents.h/.cpp, cmd_elec.cpp), plus ElecTag and
+# PanelSchedule. Same shared-component-id-counter convention as
+# arch_script.txt/mech_mep_script.txt: ElecComponent ids run 1..6 in
+# creation order (Resistor, Capacitor, Switch, Ground, Lamp, WireRun); real
+# document ObjectIds are tracked explicitly below (a fresh document, so ids
+# start at 1) and verified against the exact geometry formulas documented
+# in ElecComponents.cpp's own per-type Build*() comments. Every SelID group
+# is preceded by SelNone - SelID adds to the current selection rather than
+# replacing it (see cmd_select.cpp's own comment on SelID).
+#
+# No @expect_objects here: ElecTag/PanelSchedule bake real font-outline
+# text curves, whose per-glyph curve count is font-dependent (same reason
+# Text's own smoke.sh check - "Text: [0-9]* curve(s) from " - uses a
+# wildcard rather than a fixed count) - a fixed total would be a
+# system-font assumption this script doesn't need to make.
+#
+# --- Resistor #1: position (0,0,0), direction (1,0,0), length=0.6,
+# height=0.4. Six curve objects (ids 1-6, one per zigzag segment - see
+# BuildResistor's own comment on why each segment is a separate curve)
+# spanning i in [0,0.6], j in [-0.2,0.2] - bbox exactly [0,0.6] x
+# [-0.2,0.2].
+Resistor
+0,0,0
+1,0,0
+0.6
+0.4
+SelNone
+SelID 1 2 3 4 5 6
+BoundingBox
+# --- Capacitor #2: position (2,0,0), direction (3,0,0) (only the direction
+# from the first point matters), gap=0.1, plate_length=0.6. Two curve
+# objects (ids 8,9): plates straddle x=2 by +-0.05, each spanning y
+# +-0.3 - bbox exactly [1.95,2.05] x [-0.3,0.3].
+Capacitor
+2,0,0
+3,0,0
+0.1
+0.6
+SelNone
+SelID 8 9
+BoundingBox
+# --- Switch #3: position (4,0,0), direction (5,0,0), length=1, height=0.3.
+# Blade (id 11): (4,0,0)->(4.5,0.3,0). Contact stub (id 12): (4.6,0,0)->
+# (5,0,0). Open-gap distance = 1*(0.6-0.5) = 0.1 (stub start x 4.6 minus
+# blade tip x 4.5), readable directly off both curves' own CV endpoints.
+Switch
+4,0,0
+5,0,0
+1
+0.3
+SelNone
+SelID 11 12
+List
+BoundingBox
+# --- Ground #4: attachment point (6,0,0), lead direction (7,0,0), size=1.
+# Four curve objects (ids 14-17): a 0.3-long lead plus three rungs at
+# y=-0.3,-0.5,-0.7 (widest = size = 1, so x spans +-0.5). Bbox height
+# (y-extent) = 0.7*size = 0.7 exactly, the fixed proportion required.
+Ground
+6,0,0
+7,0,0
+1
+SelNone
+SelID 14 15 16 17
+BoundingBox
+# --- Lamp #5: center (8,0,0), orientation (9,0,0), diameter=0.8 (radius
+# 0.4). Circle (id 19) plus inscribed X (ids 20,21) whose endpoints sit at
+# +-0.4/sqrt(2) = +-0.282842712 (4 sig figs: 0.2828) from center - bbox
+# [7.6,8.4] x [-0.4,0.4] confirms the radius; List confirms the X's own
+# endpoint coordinates.
+Lamp
+8,0,0
+9,0,0
+0.8
+SelNone
+SelID 19 20 21
+List
+BoundingBox
+# --- WireRun associativity: two real Point objects (ids 23, 24) at
+# (10,10,0) and (10,20,0); WireRun #6 drawn exactly between them (id 25)
+# picks up both as anchors (FindPointAnchor matches the coincident Point
+# objects), so its length (10) tracks them. Moving point 23 by (5,0,0) and
+# running ElecRebuild re-derives the wire from the anchors' *current*
+# positions (a fresh curve id 26, the old one removed) - the associative
+# rebuild rule mirroring ArchComponent's own host-Wall rebuild.
+Point
+10,10,0
+Point
+10,20,0
+WireRun
+10,10,0
+10,20,0
+SelNone
+SelID 25
+Length
+SelNone
+SelID 23
+Move
+10,10,0
+15,10,0
+ElecRebuild
+SelLast
+Length
+List
+# --- ElecTag: a baked "R1" reference-designator label near Resistor #1,
+# real font-outline curve geometry via the same AddGlyphCurves path
+# cmd_annotate.cpp's Text command uses.
+ElecTag
+R1
+0.3,0.5,0
+# --- PanelSchedule: a real data table (Table/TableSpec/BuildTableGroup,
+# the same mechanism as RevisionTable/BillOfMaterials), 3 circuit rows plus
+# the header row = 4 rows x 3 cols - a deterministic row count independent
+# of font-glyph curve counts.
+PanelSchedule circuits=1,Lighting,500;2,Receptacles,900;3,HVAC-AC,3600
+0,-2,0
