@@ -684,6 +684,27 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
         if (AnnotationStyle* existing = doc.FindAnnotationStyle(st.name)) *existing = st; else doc.AnnotationStyles().push_back(st);
         continue;
       }
+      const std::string layer_state_prefix = "Dino8.LayerState.";
+      if (key.compare(0, layer_state_prefix.size(), layer_state_prefix) == 0) {
+        // "layerA,1,0|layerB,0,1|..." (name,visible,locked per layer, '|'-separated)
+        LayerState ls;
+        ls.name = key.substr(layer_state_prefix.size());
+        std::istringstream entries(value);
+        std::string entry;
+        while (std::getline(entries, entry, '|')) {
+          if (entry.empty()) continue;
+          const std::size_t c1 = entry.rfind(',');
+          if (c1 == std::string::npos || c1 == 0) continue;
+          const std::size_t c0 = entry.rfind(',', c1 - 1);
+          if (c0 == std::string::npos) continue;
+          const std::string lname = entry.substr(0, c0);
+          const bool vis = entry.substr(c0 + 1, c1 - c0 - 1) == "1";
+          const bool locked = entry.substr(c1 + 1) == "1";
+          ls.layers.push_back({lname, {vis, locked}});
+        }
+        if (LayerState* existing = doc.FindLayerState(ls.name)) *existing = ls; else doc.LayerStates().push_back(ls);
+        continue;
+      }
       if (key.compare(0, 6, "Dino8.") == 0) continue;  // settings, handled above
       doc.UserText()[key] = value;
     }
@@ -745,6 +766,14 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     for (const AnnotationStyle& st : doc.AnnotationStyles()) {
       std::snprintf(buf, sizeof(buf), "%g;%g;%s", st.text_height, st.arrow_size, st.font.c_str());
       model.SetDocumentUserString(ON_wString(("Dino8.AnnotationStyle." + st.name).c_str()), ON_wString(buf));
+    }
+    for (const LayerState& ls : doc.LayerStates()) {
+      std::string packed;
+      for (const auto& [lname, vis_lock] : ls.layers) {
+        if (!packed.empty()) packed += '|';
+        packed += lname + "," + (vis_lock.first ? "1" : "0") + "," + (vis_lock.second ? "1" : "0");
+      }
+      model.SetDocumentUserString(ON_wString(("Dino8.LayerState." + ls.name).c_str()), ON_wString(packed.c_str()));
     }
   }
 

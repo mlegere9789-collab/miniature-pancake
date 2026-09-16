@@ -53,6 +53,71 @@ class ChangeLayerCommand : public Command {
   std::vector<ObjectId> ids_;
 };
 
+// LayerState: "LayerState Save name" / "Restore name" / "Delete name" /
+// "List" - the scriptable/command-line counterpart of the Layer State
+// Manager panel (Panels.cpp's DrawLayerStateManager), operating on the same
+// per-Document doc.LayerStates() (see doc/Document.h's LayerState) so a
+// state saved from either surface is visible to, and persisted the same
+// way (Dino8.LayerState.<name> in io/File3dm.cpp Save3dm/Load3dm) as, the
+// other.
+class LayerStateCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    options = {{"Save", "", {}, false, false}, {"Restore", "", {}, false, false}, {"Delete", "", {}, false, false}, {"List", "", {}, false, false}};
+    if (auto t = ctx.Engine().TakePendingInput()) { OnOption(ctx, *t, ""); return; }
+    WantEnter("Layer states (Save/Restore/Delete/List)");
+  }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string&) override {
+    const std::string l = ToLower(n);
+    if (l == "list") { List(ctx); Finish(); return; }
+    if (l != "save" && l != "restore" && l != "delete") { ctx.Warn("Unknown option '" + n + "'"); Finish(); return; }
+    action_ = l;
+    if (auto t = ctx.Engine().TakePendingInput()) { OnText(ctx, *t); return; }
+    WantText("Name");
+  }
+  void OnText(CommandContext& ctx, const std::string& name) override {
+    if (action_.empty()) { OnOption(ctx, name, ""); return; }
+    Document& doc = ctx.Doc();
+    LayerState* existing = doc.FindLayerState(name);
+    if (action_ == "save") {
+      LayerState s;
+      s.name = name;
+      for (const Layer& L : doc.Layers()) s.layers.push_back({L.name, {L.visible, L.locked}});
+      if (existing) *existing = s; else doc.LayerStates().push_back(s);
+      doc.Touch();
+      ctx.Print("Layer state '" + name + "' saved (" + std::to_string(s.layers.size()) + " layer(s))");
+    } else if (action_ == "restore") {
+      if (!existing) { ctx.Warn("No layer state '" + name + "'"); }
+      else {
+        for (const auto& [lname, vis_lock] : existing->layers) {
+          int idx = doc.FindLayer(lname);
+          if (idx >= 0) { doc.Layers()[static_cast<size_t>(idx)].visible = vis_lock.first; doc.Layers()[static_cast<size_t>(idx)].locked = vis_lock.second; }
+        }
+        doc.Touch();
+        ctx.Print("Layer state '" + name + "' restored");
+      }
+    } else if (action_ == "delete") {
+      if (!existing) { ctx.Warn("No layer state '" + name + "'"); }
+      else {
+        auto& list = doc.LayerStates();
+        list.erase(std::find_if(list.begin(), list.end(), [&](const LayerState& s) { return s.name == name; }));
+        doc.Touch();
+        ctx.Print("Layer state '" + name + "' deleted");
+      }
+    }
+    Finish();
+  }
+  void OnEnter(CommandContext& ctx) override { List(ctx); Finish(); }
+
+ private:
+  void List(CommandContext& ctx) {
+    auto& l = ctx.Doc().LayerStates();
+    ctx.Print(std::to_string(l.size()) + " layer state(s)");
+    for (auto& s : l) ctx.Print("  " + s.name + ": " + std::to_string(s.layers.size()) + " layer(s)");
+  }
+  std::string action_;
+};
+
 }  // namespace
 
 void RegisterLayerCommands(CommandEngine& e) {
@@ -131,6 +196,7 @@ void RegisterLayerCommands(CommandEngine& e) {
         ctx.Print("All layers unlocked");
       }));
   Reg(e, "LayerStateManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().layer_state_manager = true; }));
+  Reg(e, "LayerState", Make<LayerStateCommand>());
   Reg(e, "Purge", Immediate([](CommandContext& ctx) {
         ctx.Doc().BeginChange("Purge");
         int removed = 0;

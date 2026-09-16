@@ -1329,6 +1329,26 @@ echo "$LY" | grep -E "^(ok|FAIL)"
 if echo "$LY" | grep -q "^FAIL"; then fail=1; fi
 echo "$LY" | grep -q "^smoke:" || { echo "$LY"; echo "FAIL: layer script produced no smoke line"; fail=1; }
 
+# Layer State Manager (LayerState Save/Restore/List, Document::LayerStates -
+# see layerstate_script.txt): a state saved with one layer hidden actually
+# changes selectability when restored (SelAll count), and - the bug this
+# increment fixes - the saved state is a real Document member persisted to
+# the .3dm, not a process-wide static: it must survive New+Open and still
+# restore correctly afterward.
+sed "s|@TMP@|$TMP|g" "$HERE/layerstate_script.txt" > "$TMP/layerstate_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  LS="$("$BIN" --smoke 60 --script "$TMP/layerstate_script.txt" 2>&1)" || { echo "$LS"; echo "FAIL: layerstate script exited non-zero"; exit 1; }
+else
+  LS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/layerstate_script.txt" 2>&1)" || { echo "$LS"; echo "FAIL: layerstate script exited non-zero"; exit 1; }
+fi
+echo "$LS" | grep -E "^(ok|FAIL)"
+if echo "$LS" | grep -q "^FAIL"; then fail=1; fi
+lscheck() { if echo "$LS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+lscheck "Layer state 'HiddenWalls' saved (3 layer(s))" "LayerState Save captured all 3 layers' visibility"
+lscheck "Layer state 'HiddenWalls' restored" "LayerState Restore ran"
+lscheck "1 layer state(s)" "exactly one layer state survived Save/New/Open"
+lscheck "  HiddenWalls: 3 layer(s)" "the reloaded layer state kept its name and layer count"
+
 # Selection: every Sel* command in cmd_select.cpp and cmd_select2.cpp (see select_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
   SL="$("$BIN" --smoke 200 --script "$HERE/select_script.txt" 2>&1)" || { echo "$SL"; echo "FAIL: select script exited non-zero"; exit 1; }

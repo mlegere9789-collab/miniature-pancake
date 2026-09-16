@@ -1051,19 +1051,23 @@ void DrawUndoMultipleWindow(Application& app, bool redo) {
 void DrawLayerStateManager(Application& app) {
   Document& doc = app.Doc();
   if (!ImGui::Begin(PanelTitle("panel.layer_state_manager", "LayerStateManager").c_str(), &app.Panels().layer_state_manager)) { ImGui::End(); return; }
-  struct State { std::string name; std::vector<std::pair<std::string, std::pair<bool, bool>>> layers; };
-  static std::vector<State> states;
+  // States live on the Document (LayerState / doc.LayerStates()), not a
+  // function-local static, so they are scoped per-document and persisted
+  // across Save/Open as "Dino8.LayerState.<name>" document user-strings
+  // (see io/File3dm.cpp), the same way AnnotationStyles are.
   static char name[128] = "";
   ImGui::InputTextWithHint("##ls", "state name", name, sizeof(name));
   ImGui::SameLine();
   if (ImGui::Button("Save state")) {
-    State s;
-    s.name = std::strlen(name) ? name : "State " + std::to_string(states.size() + 1);
+    LayerState s;
+    s.name = std::strlen(name) ? name : "State " + std::to_string(doc.LayerStates().size() + 1);
     for (const Layer& L : doc.Layers()) s.layers.push_back({L.name, {L.visible, L.locked}});
-    states.push_back(s);
+    if (LayerState* existing = doc.FindLayerState(s.name)) *existing = s; else doc.LayerStates().push_back(s);
+    doc.Touch();
     name[0] = 0;
   }
   ImGui::Separator();
+  std::vector<LayerState>& states = doc.LayerStates();
   for (size_t i = 0; i < states.size(); ++i) {
     ImGui::PushID(static_cast<int>(i));
     if (ImGui::Selectable(states[i].name.c_str())) {
@@ -1071,9 +1075,10 @@ void DrawLayerStateManager(Application& app) {
         int idx = doc.FindLayer(lname);
         if (idx >= 0) { doc.Layers()[static_cast<size_t>(idx)].visible = vis_lock.first; doc.Layers()[static_cast<size_t>(idx)].locked = vis_lock.second; }
       }
+      doc.Touch();
     }
     ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20);
-    if (ImGui::SmallButton("x")) { states.erase(states.begin() + static_cast<long>(i)); ImGui::PopID(); break; }
+    if (ImGui::SmallButton("x")) { states.erase(states.begin() + static_cast<long>(i)); doc.Touch(); ImGui::PopID(); break; }
     ImGui::PopID();
   }
   ImGui::End();
