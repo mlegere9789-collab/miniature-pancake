@@ -1793,11 +1793,9 @@ struct AngleDependentSplit {
 // cf.angle, the full-sweep rail-corner-coincidence simplification, see
 // CylindricalFace's own doc comment) can itself fall on the WINDOWED side
 // of v0 - i.e. a window can touch, or even straddle, the angle 0/cf.angle
-// seam (the caller is expected to have already refused the one variant of
-// this this function does not build - a cap0-notched fragment whose
-// corner is active - see the call site's own doc comment for exactly why
-// that variant is scoped out and this one, cap1's mirror, is not). Two
-// real consequences follow, both handled here:
+// seam - for EITHER mirror direction (cap0-notch or cap1-notch active);
+// both are built below, symmetrically. Two real consequences follow, both
+// handled here:
 //  1. The `clamped` piece's own rail-corner value is then v0 itself (its
 //     boundary AT angle 0 is min(cf.length, v0) = v0, since v0 < length in
 //     this regime) - so `clamped.length` becomes v0, not cf.length (a
@@ -1825,10 +1823,27 @@ AngleDependentSplit SplitNotchedCylinderAtHeight(const Brep::CylindricalFace& cf
   AngleDependentSplit result;
   result.clamped = cf;
   if (corner_active) {
-    // Only cap1's mirror reaches here with a real fix applied (see this
-    // function's own doc comment); cap0_is_notch + corner_active is
-    // refused by the caller before this function is ever invoked.
-    result.clamped.length = v0;
+    if (cap0_is_notch) {
+      // Mirror of the cap1 branch below: cap0's own flat rail-corner
+      // value is 0 (at cf.frame.origin), and material here is
+      // [h(theta), length], clamped [max(h(theta), v0), length]. When
+      // this fragment's own corner at v=0 is on the WINDOWED side of v0
+      // (corner_active), clamped's boundary at angle 0 becomes
+      // max(0, v0) = v0, not 0 - so clamped's own v=0 origin shifts
+      // forward by v0 along the axis and its length shrinks by the same
+      // amount (cf.length - v0), rather than cf1's `length = v0`
+      // truncation (which instead shifts the FAR end inward, leaving the
+      // v=0 origin untouched - clamped there already starts at v=0).
+      result.clamped.frame.origin = result.clamped.frame.origin + v0 * result.clamped.frame.zaxis;
+      result.clamped.length = cf.length - v0;
+    } else {
+      // clamped's boundary AT angle 0 is min(cf.length, v0) = v0, since
+      // v0 < length in this regime - so clamped.length becomes v0, not
+      // cf.length. clamped's own v=0 origin is untouched (material here
+      // is [0, h(theta)], clamped [0, min(h(theta), v0)] - the v=0 end
+      // was never in question).
+      result.clamped.length = v0;
+    }
   }
   std::vector<Point3d>& clamped_chain =
       cap0_is_notch ? result.clamped.cap0_notch_points : result.clamped.cap1_notch_points;
@@ -4787,35 +4802,16 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
           if (!windows.empty()) {
             // A window touching (or, once merged, straddling) the full-
             // sweep seam (angle 0 == cf.angle) is handled by
-            // SplitNotchedCylinderAtHeight itself for cap1's mirror (its
-            // own "clamped" piece's rail corner becoming v0 - see that
-            // function's own doc comment) - the shared-notch cylinder
-            // pair's own `lower` fragment hits exactly this, at both of
-            // the disclosed fixture's own box planes. The mirror
-            // direction - a CAP0-notched fragment whose corner is active
-            // - is NOT built (it would need a symmetric frame-shift-and-
-            // truncate fix on the `clamped` piece this increment did not
-            // need for its own disclosed fixture, since `upper`'s own
-            // crossings never reach its flat corner - see
-            // SplitNotchedCylinderAtHeight's own doc comment) - refused
-            // explicitly here, a real but narrower disclosed scope
-            // boundary, rather than silently building a fresh cylindrical
-            // fragment whose own rail-corner contract this function's
-            // cap0 branch does not honor in that configuration.
-            const bool corner_active =
-                windows.front().first <= tol || windows.back().second >= f.cyl.angle - tol;
-            if (corner_active && cap0_is_notch) {
-              throw std::invalid_argument(
-                  "dino8::kernel::BooleanCombineMixed: a CAP0-notched "
-                  "cylindrical fragment's angle-dependent crossing window "
-                  "touches its own full-sweep seam (angle 0 / cf.angle) - "
-                  "out of scope for this increment (the mirror case, a "
-                  "CAP1-notched fragment with the same seam-touching "
-                  "pattern, IS handled - see SplitNotchedCylinderAtHeight's "
-                  "own doc comment, boolean.cpp, for exactly why this "
-                  "direction still needs a symmetric fix this increment "
-                  "did not build)");
-            }
+            // SplitNotchedCylinderAtHeight itself, for BOTH mirror
+            // directions: cap1-notch's own "clamped" piece truncates its
+            // far end to v0 (`clamped.length = v0`, the case the shared-
+            // notch cylinder pair's own `lower` fragment exercises, at
+            // both of that fixture's own box planes), and cap0-notch's
+            // own "clamped" piece is the symmetric mirror - its v=0
+            // origin shifts forward by v0 and its length shrinks by the
+            // same amount - see that function's own doc comment and the
+            // `corner_active` block at its top for both directions'
+            // arithmetic.
             AngleDependentSplit split = SplitNotchedCylinderAtHeight(f.cyl, cap0_is_notch, v_cut, windows, tol);
             MixedFace m_clamped;
             m_clamped.is_cyl = true;

@@ -17041,6 +17041,190 @@ void TestBooleanCombineMixedNotchAwareBothEndsNotchedRefuses() {
         "fix, exercised directly above, would otherwise happily split this fragment on its cap0 side alone)");
 }
 
+// task #92: the CAP0-mirror corner-active fix in SplitNotchedCylinderAtHeight
+// (boolean.cpp) - the one remaining, previously-refused half of the
+// corner-truncation branch task #86/87 only built for cap1 (`result.clamped
+// .length = v0`). Reuses BuildSharedNotchCylinderPair's own well-tested
+// PAIR construction (two stacked fragments sharing one literal notch curve,
+// closed by plain flat quadrant caps at their own FAR, un-notched ends - no
+// hand-built oblique closing cap needed, unlike an earlier version of this
+// fixture that tried to stand a single notched cylinder up on its own with
+// a hand-rolled tilted disk cap: that tripped an UNRELATED, pre-existing
+// gap in ClipPolygonByCircle3d - "the circle crosses the polygon's own
+// boundary" - when the cut plane's own re-cap logic tried to clip against
+// a closing face that isn't a plain flat circle, a genuinely separate
+// limitation this task does not touch), but with a DIFFERENT curve than
+// BuildSharedNotchCylinderPair's own `r*cos(t)`: that curve is anchored so
+// BOTH fragments' rail corners sit exactly at the curve's own GLOBAL
+// EXTREMUM (t=0 is cos's own peak) - so for `upper` (cap0-notch, active
+// where height < v0), any v0 either misses the curve entirely (v0 above
+// the peak - no crossing) or lands BELOW the peak, in which case the
+// near-corner interval is trivially on the far side too (never a genuine,
+// non-degenerate corner touch) - it structurally can't exercise this fix.
+// This fixture's curve is z(t) = D*(1 - cos(t)) instead - the SAME
+// A + B*cos(theta) plane-vs-cylinder ellipse form (see CylindricalFace's
+// own cap0_notch_points doc comment) but shaped so t=0 is the curve's own
+// MINIMUM, not an extremum shared with the corner by construction only
+// vacuously: for `upper`, anchored so its own v=0 rail corner lands at
+// z(0) = 0 (the curve's minimum), any v0 in (0, 2*D) both crosses the
+// curve genuinely (twice, since the curve rises above v0 near theta = pi)
+// AND includes a neighborhood of theta = 0 on the active ("below v0")
+// side, by plain continuity from h(0) = 0 < v0 - a real, non-degenerate
+// corner-active window. `lower`'s own shared corner (v = length, at the
+// SAME curve value 0) is a minimum of ITS OWN local height too (h_lower =
+// z(t) + L, minimized at t=0 same as upper) - but `lower`'s active side is
+// the MIRROR ("above v0"), for which a minimum-valued corner is the
+// LEAST likely point to be active, so lower's own corner-active refusal
+// (long since fixed and tested, task #86/87) is never exercised here -
+// this fixture isolates upper's cap0 mirror cleanly, without needing
+// lower to do anything unusual at all (the cutting plane below doesn't
+// even reach lower's own [-L, 0] range).
+struct Cap0CornerActivePairFixture {
+  dino8::kernel::Brep brep;
+  double true_diff_volume = 0.0;   // 32*pi
+  double true_inter_volume = 0.0;  // 16*pi
+};
+
+// Hand-derived closed form. IMPORTANT, confirmed the same way
+// BuildSharedNotchCylinderPair's own doc comment already states for its
+// curve: the shared notch curve is a purely INTERNAL bookkeeping seam, not
+// a genuine shape feature of the COMBINED solid - at every physical angle
+// theta, lower's own material fills exactly [-L, z(theta)] (global) and
+// upper's own material fills exactly [z(theta), L] (global), so together
+// they fill the FULL [-L, L] range continuously at every angle, REGARDLESS
+// of z(theta)'s own value - the combined solid is a plain, ordinary r = 2
+// cylinder over z in [-6, 6], height 12, exactly as if neither fragment
+// were notched at all (an early draft of this fixture's own comment
+// mistakenly integrated upper's [z(theta), 6] material in ISOLATION, as
+// if it were a standalone boss with nothing filling in the complementary
+// [-6, z(theta)] region below it - forgetting that lower does exactly
+// that, by construction; the earlier, wrong 24*pi + 8 / 16*pi - 8 figures
+// this produced were confirmed wrong directly, against this same built
+// fixture's own measured tessellation volume, before being corrected
+// here - the plain-cylinder form below is the one actually verified
+// against the kernel's own output). Cutting the plain z in [-6, 6], r = 2
+// cylinder at global z = v0 = 2 (upper's own local v0 too, since
+// upper.frame.origin.z = 0):
+//  - Difference (self MINUS {z >= 2}, kept z < 2): height from -6 to 2 is
+//    8, volume = pi*r^2*8 = pi*4*8 = 32*pi.
+//  - Intersection (self AND {z >= 2}, kept z >= 2): height from 2 to 6 is
+//    4, volume = pi*r^2*4 = pi*4*4 = 16*pi.
+//  - Self-check: diff + inter = 32*pi + 16*pi = 48*pi = pi*r^2*12, the
+//    fixture's own true total (plain-cylinder) volume.
+Cap0CornerActivePairFixture BuildCap0CornerActivePair() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double r = 2.0, L = 6.0, D = 2.0;
+  const int n = 200;
+  std::vector<Point3d> curve;
+  curve.reserve(static_cast<size_t>(n) + 1);
+  for (int k = 0; k <= n; ++k) {
+    const double t = 2.0 * ON_PI * static_cast<double>(k) / static_cast<double>(n);
+    curve.emplace_back(r * std::cos(t), r * std::sin(t), D * (1.0 - std::cos(t)));
+  }
+  auto make = [&](double z_origin) {
+    Brep::CylindricalFace cf;
+    cf.frame.origin = Point3d(0, 0, z_origin);
+    cf.frame.xaxis = Vector3d(1, 0, 0);
+    cf.frame.yaxis = Vector3d(0, 1, 0);
+    cf.frame.zaxis = Vector3d(0, 0, 1);
+    cf.frame.UpdateEquation();
+    cf.radius = r;
+    cf.angle = 2.0 * ON_PI;
+    cf.length = L;
+    cf.outward = true;
+    return cf;
+  };
+  // The curve's height at angle 0 is z(0) = 0 - anchoring upper's v=0 rail
+  // corner and lower's v=length rail corner both at global z=0 puts both
+  // fragments' rail corners exactly on the shared curve's first/last
+  // point, per the notch contract.
+  Brep::CylindricalFace upper = make(0.0);  // [0, L], cap0 = curve (rises to 2*D at theta=pi)
+  upper.cap0_notch_points = curve;
+  upper.cap0_notch_tolerance = 1e-4;
+  Brep::CylindricalFace lower = make(-L);  // [-L, 0], cap1 = curve
+  lower.cap1_notch_points = curve;
+  lower.cap1_notch_tolerance = 1e-4;
+
+  std::vector<Brep::PlanarFace> caps;
+  for (Brep::PlanarFace& p : BuildPlainQuadrantCaps(lower, /*at_v0=*/true, 50)) caps.push_back(std::move(p));
+  for (Brep::PlanarFace& p : BuildPlainQuadrantCaps(upper, /*at_v0=*/false, 50)) caps.push_back(std::move(p));
+
+  Cap0CornerActivePairFixture fx;
+  fx.brep = Brep::FromMixedFaces(caps, {lower, upper});
+  fx.true_diff_volume = 32.0 * ON_PI;
+  fx.true_inter_volume = 16.0 * ON_PI;
+  return fx;
+}
+
+void TestBooleanCombineMixedNotchAwareCap0CornerActiveMirrorBuilds() {
+  using dino8::kernel::BooleanCombineMixed;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const Cap0CornerActivePairFixture fx = BuildCap0CornerActivePair();
+  const Brep box = Brep::Box(-10, -10, 2, 10, 10, 10);  // half-space z >= 2
+
+  // Before this fix, EITHER call below threw
+  // "a CAP0-notched cylindrical fragment's angle-dependent crossing window
+  // touches its own full-sweep seam" - SplitMixedAgainstAllFaces' own
+  // caller-side refusal for corner_active && cap0_is_notch, unconditional
+  // regardless of how simple or well-formed the fragment was.
+  const Brep diff = BooleanCombineMixed(fx.brep, box, BooleanOp::Difference);
+  Check(diff.MixedFaces().cylindrical.size() == 2,
+        "Difference(cap0-corner-active pair, box z >= 2) builds exactly 2 cylindrical fragments (lower, entirely "
+        "untouched by this cut, and upper's own wraparound bigon - the window where its notch dips below z = 2, "
+        "merged from the two angle-0/2*pi-touching crossings at theta = pi/2 and 3*pi/2) - the CAP0 mirror of the "
+        "cap1 corner-truncation fix, previously refused outright");
+  const double diff_ordinary = diff.TessellateToClosedMesh(64, 64).Volume();
+  const Mesh diff_conforming = diff.TessellateToClosedMeshConforming(64, 64);
+  Check(Within(diff_conforming.Volume(), fx.true_diff_volume, 1e-3) &&
+            Within(diff_ordinary, fx.true_diff_volume, 5e-3),
+        "Difference(cap0-corner-active pair, box z >= 2) measures the true, hand-derived volume 32*pi = "
+        "100.530965 within 1e-3 conforming / 5e-3 ordinary - this exact call used to throw before this fix");
+  Check(diff.raw().IsValid(), "Difference(cap0-corner-active pair, box z >= 2) builds a genuinely valid ON_Brep");
+
+  const Brep inter = BooleanCombineMixed(fx.brep, box, BooleanOp::Intersection);
+  Check(inter.MixedFaces().cylindrical.size() == 2,
+        "Intersection(cap0-corner-active pair, box z >= 2) builds exactly 2 cylindrical fragments - lower's own "
+        "material is entirely discarded (its [-6, 0] range never reaches z = 2) but its own bigon-window "
+        "bookkeeping fragment is still produced alongside upper's own CAP0-mirror 'clamped' piece (frame.origin "
+        "shifted forward by v0 = 2 along the axis, length reduced from 6 to 4 - the new arithmetic this fix adds) "
+        "and upper's own discarded window bigon - matching the SAME pairing Difference above produces, just with "
+        "the kept/discarded roles swapped");
+  const double inter_ordinary = inter.TessellateToClosedMesh(64, 64).Volume();
+  const Mesh inter_conforming = inter.TessellateToClosedMeshConforming(64, 64);
+  Check(Within(inter_conforming.Volume(), fx.true_inter_volume, 1e-3) &&
+            Within(inter_ordinary, fx.true_inter_volume, 5e-3),
+        "Intersection(cap0-corner-active pair, box z >= 2) measures the true, hand-derived volume 16*pi = "
+        "50.265482 within 1e-3 conforming / 5e-3 ordinary");
+  Check(inter.raw().IsValid(), "Intersection(cap0-corner-active pair, box z >= 2) builds a genuinely valid ON_Brep");
+
+  // Falsifiability control: a plane that does NOT reach the notch's own
+  // corner on upper's side (v0 well above the curve's own max of 2*D = 4,
+  // e.g. z = 5) hits no window at all on upper either - the plain
+  // flat-split branch, completely untouched by this fix - confirming the
+  // corner-active case above is the fixture's own notch geometry doing
+  // genuine work, not a fixture that always routes through the new code
+  // regardless of v0. Closed form: the combined solid is still the same
+  // plain z in [-6, 6], r = 2 cylinder (the notch curve is a purely
+  // internal seam, see this fixture's own doc comment above), so
+  // Difference (kept z < 5) has height 5 - (-6) = 11, volume =
+  // pi*r^2*11 = pi*4*11 = 44*pi.
+  const Brep box_above = Brep::Box(-10, -10, 5, 10, 10, 10);  // z >= 5, above the notch's own max height 4
+  const Brep diff_above = BooleanCombineMixed(fx.brep, box_above, BooleanOp::Difference);
+  const double true_diff_above = 44.0 * ON_PI;
+  const double diff_above_ordinary = diff_above.TessellateToClosedMesh(64, 64).Volume();
+  Check(Within(diff_above_ordinary, true_diff_above, 5e-3),
+        "Difference(cap0-corner-active pair, box z >= 5, ABOVE the notch's own max height 4) measures the true "
+        "44*pi = 138.230077 within 5e-3 - a plain flat split on upper's side untouched by "
+        "NotchWindows/SplitNotchedCylinderAtHeight at all, confirming the corner-active case above needs the "
+        "fixture's own notch geometry to be genuinely reached by v0, not merely present somewhere on the fragment");
+}
+
 // Direct confirmation that the primary fix's own general MECHANISM (not
 // just this one disclosed notch fixture) is what was broken and is now
 // fixed, with NO notch involved at all: two axis-aligned, same-radius,
@@ -18478,6 +18662,7 @@ int main() {
   TestBooleanCombineMixedNotchAwareSplitProducerBuildsSingleCrossingPlane();
   TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingBuilds();
   TestBooleanCombineMixedNotchAwareBothEndsNotchedRefuses();
+  TestBooleanCombineMixedNotchAwareCap0CornerActiveMirrorBuilds();
   TestBooleanCombineMixedOverlappingRangeFragmentsSameWallDedup();
   TestBooleanCombineMixedThreeFragmentsSameWallDedup();
   TestBooleanCombineMixedMidLengthSplitClearsStaleNotch();
