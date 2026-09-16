@@ -17,10 +17,13 @@
 #include "drafting/SectionView.h"
 #include "drafting/Table.h"
 #include "ui/Panels.h"
+#include "util/json_mini.h"
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -110,6 +113,179 @@ std::string UniqueHatchMaterialName(const Document& doc, const std::string& base
 }
 
 // ---------------------------------------------------------------------------
+// DataLink: CSV two-way sync for a table's cell data (see RegisterDrafting2Commands
+// for the DataLink/DataLinkUpdate command doc comments - the design rationale,
+// including why this is CSV and not native .xlsx, lives there).
+// ---------------------------------------------------------------------------
+
+// Milliseconds since the Unix epoch - not just whole seconds - because a
+// table-side change (BuildTableGroup's TableModifiedAt) and a sync
+// (last_sync_utc) can genuinely happen within the same wall-clock second in
+// normal use (e.g. DataLinkUpdate pulling a file and then a script/panel
+// immediately editing the table again): at one-second resolution those two
+// events could tie, and a "> last_sync_utc" comparison would then wrongly
+// read as "nothing changed". Millisecond resolution makes that collision
+// vanishingly unlikely without changing anything about the comparison logic
+// itself (see DataLinkUpdateCommand::Run).
+long long NowMillis() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// std::filesystem::file_time_type isn't convertible to time_t/system_clock
+// via any portable API until C++20's clock_cast. The accepted C++17
+// workaround (used widely, e.g. libstdc++'s own docs) is to convert via the
+// two clocks' "now" offset: it is exact to within the (negligible,
+// sub-microsecond) time between the two now() calls.
+bool FileMtimeMillis(const std::string& path, long long& out) {
+  std::error_code ec;
+  const auto ftime = std::filesystem::last_write_time(path, ec);
+  if (ec) return false;
+  const auto sctp = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+      ftime - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
+  out = std::chrono::duration_cast<std::chrono::milliseconds>(sctp.time_since_epoch()).count();
+  return true;
+}
+
+// Looks up a user-text tag on any member of a group (every table command tags
+// every grid-line object identically, so any one of them is enough - same
+// approach as LoadTableSpec/TableKindOf above).
+bool GroupTag(Document& doc, int group_id, const char* key, std::string& out) {
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    auto it = o.user_text.find(key);
+    if (it != o.user_text.end()) { out = it->second; return true; }
+  }
+  return false;
+}
+
+std::string JsonEscapeLocal(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 2);
+  for (char c : s) {
+    switch (c) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': break;
+      default: out += c;
+    }
+  }
+  return out;
+}
+
+// DataLink metadata: which external CSV file a table is linked to, the
+// direction mode the caller pinned it to (or "Ask" to keep letting
+// DataLinkUpdate decide from mtimes each time), and the wall-clock time of
+// the last successful sync in either direction, so a later DataLinkUpdate has
+// an honest "has either side changed since then" baseline.
+struct DataLinkInfo { std::string path, mode = "Ask"; long long last_sync_utc = 0; };
+
+std::string DataLinkJson(const DataLinkInfo& l) {
+  std::ostringstream ss;
+  ss << "{\"path\":\"" << JsonEscapeLocal(l.path) << "\",\"mode\":\"" << JsonEscapeLocal(l.mode) << "\",\"last_sync_utc\":" << l.last_sync_utc << "}";
+  return ss.str();
+}
+
+bool ParseDataLinkJson(const std::string& json, DataLinkInfo& l) {
+  dino8::json::Value v;
+  std::string err;
+  if (!dino8::json::Parse(json, v, err) || !v.IsObject()) return false;
+  l.path = v["path"].AsString();
+  l.mode = v["mode"].AsString("Ask");
+  l.last_sync_utc = static_cast<long long>(v["last_sync_utc"].number);
+  return !l.path.empty();
+}
+
+// Minimal RFC-4180 CSV writer: quotes a field only when it needs it (contains
+// a comma, quote or newline), doubling embedded quotes. Cell text in a
+// TableSpec is a bare string (no formulas, no styling - see Table.h), so this
+// is a lossless round trip of exactly what a table can represent; it is not,
+// and cannot be, a round trip of a *spreadsheet* formula, since Dino8 has
+// nowhere to store one. What a pull reads back from a formula cell is
+// whatever last computed text the spreadsheet program wrote to the CSV on its
+// last save - a frozen value, not a live computation - and that is an
+// inherent limitation of a plain-text-grid format, not a bug here.
+std::string CsvField(const std::string& s) {
+  const bool needs_quotes = s.find_first_of(",\"\n\r") != std::string::npos;
+  if (!needs_quotes) return s;
+  std::string out = "\"";
+  for (char c : s) { if (c == '"') out += "\"\""; else out += c; }
+  out += "\"";
+  return out;
+}
+
+bool WriteCsvFile(const std::string& path, const TableSpec& spec) {
+  std::ofstream f(path, std::ios::trunc);
+  if (!f) return false;
+  for (int r = 0; r < spec.rows; ++r) {
+    for (int c = 0; c < spec.cols; ++c) f << (c ? "," : "") << CsvField(spec.Cell(r, c));
+    f << "\n";
+  }
+  return true;
+}
+
+// Parses one RFC-4180-minimal CSV file into a row-major grid of fields.
+// Returns false (with `error` set) on a malformed file - the only failure
+// mode this minimal subset can hit is an unterminated quoted field - so a
+// truncated/corrupted linked file is a clear, reported error rather than
+// producing a garbled table or crashing.
+bool ReadCsvFile(const std::string& path, std::vector<std::vector<std::string>>& rows, std::string& error) {
+  std::ifstream f(path, std::ios::binary);
+  if (!f) { error = "could not open '" + path + "'"; return false; }
+  std::ostringstream buf;
+  buf << f.rdbuf();
+  const std::string text = buf.str();
+  rows.clear();
+  std::vector<std::string> row;
+  std::string field;
+  bool in_quotes = false;
+  size_t i = 0;
+  auto end_field = [&]() { row.push_back(field); field.clear(); };
+  auto end_row = [&]() { end_field(); rows.push_back(row); row.clear(); };
+  while (i < text.size()) {
+    const char c = text[i];
+    if (in_quotes) {
+      if (c == '"') {
+        if (i + 1 < text.size() && text[i + 1] == '"') { field += '"'; i += 2; continue; }
+        in_quotes = false; ++i; continue;
+      }
+      field += c; ++i; continue;
+    }
+    if (c == '"' && field.empty()) { in_quotes = true; ++i; continue; }
+    if (c == ',') { end_field(); ++i; continue; }
+    if (c == '\r') { ++i; continue; }  // CRLF or lone CR - drop, LF (below) ends the row
+    if (c == '\n') { end_row(); ++i; continue; }
+    field += c; ++i;
+  }
+  if (in_quotes) { error = "'" + path + "' has an unterminated quoted field"; return false; }
+  if (!field.empty() || !row.empty()) end_row();
+  // Drop a single trailing blank line (the writer above always ends the file
+  // with a final "\n", which otherwise parses as one bogus empty row).
+  if (!rows.empty() && rows.back().size() == 1 && rows.back()[0].empty()) rows.pop_back();
+  if (rows.empty()) { error = "'" + path + "' has no data rows"; return false; }
+  return true;
+}
+
+// Resizes `spec` to the CSV's shape (a linked spreadsheet, unlike TableEdit's
+// Data=, has no obligation to match the table's current row/column count -
+// same "the pull is the new truth" behavior Excel itself shows when you
+// re-open a data range whose source changed shape) and fills its cells from
+// it, clamped to the same sane 1..10000 bound ParseTableDataJson enforces
+// against a hostile/corrupt file. Presentation fields (title, col_widths,
+// row_height, text_height, origin, plane) are untouched - a CSV has no
+// equivalent for any of them (see the DataLink command doc comment).
+void ApplyCsvToSpec(const std::vector<std::vector<std::string>>& rows, TableSpec& spec) {
+  size_t max_cols = 1;
+  for (const auto& r : rows) max_cols = std::max(max_cols, r.size());
+  spec.rows = std::clamp(static_cast<int>(rows.size()), 1, 10000);
+  spec.cols = std::clamp(static_cast<int>(max_cols), 1, 10000);
+  spec.cells.assign(static_cast<size_t>(spec.rows) * static_cast<size_t>(spec.cols), "");
+  for (int r = 0; r < spec.rows && static_cast<size_t>(r) < rows.size(); ++r)
+    for (int c = 0; c < spec.cols && static_cast<size_t>(c) < rows[static_cast<size_t>(r)].size(); ++c)
+      spec.cells[static_cast<size_t>(r) * static_cast<size_t>(spec.cols) + static_cast<size_t>(c)] = rows[static_cast<size_t>(r)][static_cast<size_t>(c)];
+}
+
+// ---------------------------------------------------------------------------
 // Tables: shared build / rebuild.
 // ---------------------------------------------------------------------------
 
@@ -157,6 +333,11 @@ int BuildTableGroup(CommandContext& ctx, TableSpec spec, const std::string& kind
   std::vector<ObjectId> ids;
   const std::string json = drafting::TableDataJson(spec);
   const std::string ox = PointTag(spec.origin), tx = PointTag(Point3d(spec.plane.xaxis)), ty = PointTag(Point3d(spec.plane.yaxis));
+  // TableModifiedAt is the "this group's cell data was last (re)built" wall-clock
+  // timestamp - not shown to the user, just read back by DataLinkUpdate to tell
+  // whether the *table* side has changed since a link's last_sync_utc, the other
+  // half of the push/pull direction heuristic (see DataLinkUpdateCommand below).
+  const std::string modified_at = std::to_string(NowMillis());
   for (const kernel::NurbsCurve& c : lines) {
     SceneObject s = SceneObject::MakeCurve(c);
     s.layer_index = layer;
@@ -165,6 +346,7 @@ int BuildTableGroup(CommandContext& ctx, TableSpec spec, const std::string& kind
     s.user_text["TableOrigin"] = ox;
     s.user_text["TableX"] = tx;
     s.user_text["TableY"] = ty;
+    s.user_text["TableModifiedAt"] = modified_at;
     for (const auto& [k, v] : extra_tags) s.user_text[k] = v;
     ids.push_back(ctx.Doc().Add(std::move(s)));
   }
@@ -266,14 +448,206 @@ class TableEditCommand : public Command {
     if (!data_.empty()) ParseTableData(data_, spec);
     else spec.cells.resize(static_cast<size_t>(spec.rows) * spec.cols, "");
     if (has_title_) spec.title = title_;
+    // A DataLink survives a plain TableEdit (the group is fully torn down and
+    // rebuilt below, same as every other table rebuild) - otherwise editing a
+    // linked table by hand through the Table Editor panel would silently and
+    // irreversibly drop its link. See DataLinkCommand's doc comment.
+    std::map<std::string, std::string> pass_through;
+    std::string link_tag;
+    if (GroupTag(ctx.Doc(), group_id_, "DataLink", link_tag)) pass_through["DataLink"] = link_tag;
     ctx.Doc().BeginChange("TableEdit");
     for (ObjectId id : ctx.Doc().GroupMembers(group_id_)) ctx.Doc().Remove(id);
-    BuildTableGroup(ctx, spec, kind);
+    BuildTableGroup(ctx, spec, kind, -1, pass_through);
     ctx.Print("TableEdit: table rebuilt (" + std::to_string(spec.rows) + "x" + std::to_string(spec.cols) + ")");
   }
   int group_id_ = -1;
   std::string data_, rows_, cols_, title_;
   bool has_title_ = false;
+};
+
+// DataLink / DataLinkUpdate: AutoCAD-style two-way sync between a table's
+// cells and an external CSV file. First increment deliberately targets CSV,
+// not native .xlsx: a TableSpec cell is a bare string (Table.h - no formulas,
+// no styles, no merges), so nothing in the current table model can be lost by
+// not using a heavier spreadsheet-container format, and CSV read/write needs
+// no new dependency (BillOfMaterialsCommand above already writes one by hand
+// with std::ofstream). A later increment could add real .xlsx via a vendored
+// MIT library the way LibreDWG was vendored for real .dwg, if a need for
+// preserving a workbook's *other* sheets/styles ever comes up - CSV cannot do
+// that, since writing a CSV always replaces the whole file.
+//
+// Direction is never guessed silently once a table has synced before: if
+// only the file changed since last_sync_utc, DataLinkUpdate pulls; if only
+// the table changed, it pushes; if both changed, it refuses and asks for an
+// explicit Direction=Push|Pull, mirroring AutoCAD's own DATALINKUPDATE, which
+// is itself a manual, on-demand, non-silent operation - not a background
+// live sync (out of scope here; a poll-on-idle "file changed, run
+// DataLinkUpdate" status hint would be a reasonable later increment).
+//
+// Formula caveat: pulling from a real spreadsheet only ever sees the last
+// value that program itself wrote to the CSV on save. A cell holding
+// "=SUM(A1:A2)" arrives here as whatever number Excel/etc last computed for
+// it, frozen - never the live formula. This is an inherent limit of a
+// plain-text-grid format, disclosed rather than silently papered over.
+bool FindTableGroup(CommandContext& ctx, const std::vector<ObjectId>& ids, int& group_id) {
+  for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id); o && o->user_text.count("TableData")) { group_id = o->group_id; return true; }
+  return false;
+}
+
+// Rewrites a table group's DataLink tag and, when `new_spec` differs from
+// what's on disk (a pull), its cell data too - by the same
+// remove-every-member-then-BuildTableGroup path every other table rebuild in
+// this file uses, so undo/redo, layer, and every other bit of group state
+// stays consistent with the rest of the Table family. `link.last_sync_utc`
+// must already be its final value: BuildTableGroup's remove+CreateGroup
+// mints a *new* group id (same as every other table rebuild here - see
+// TableEditCommand::Run), so there is no group-id-stable way to go back and
+// patch the tag afterwards the way a plain in-place user_text edit could.
+void RebuildWithLink(CommandContext& ctx, int group_id, TableSpec spec, const std::string& kind, const DataLinkInfo& link, const std::string& change_name) {
+  ctx.Doc().BeginChange(change_name);
+  for (ObjectId id : ctx.Doc().GroupMembers(group_id)) ctx.Doc().Remove(id);
+  BuildTableGroup(ctx, spec, kind, -1, {{"DataLink", DataLinkJson(link)}});
+}
+
+class DataLinkCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    auto opts = TakeOptionTokens(ctx);
+    group_id_ = std::atoi(OptionOr(opts, "groupid", "-1").c_str());
+    file_ = OptionOr(opts, "file", "");
+    mode_ = OptionOr(opts, "mode", "Ask");
+    if (group_id_ >= 0) { Run(ctx); Finish(); return; }
+    WantObjects("Select a table to link to a CSV file");
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (!FindTableGroup(ctx, ids, group_id_)) { ctx.Warn("DataLink: selection has no table"); Finish(); return; }
+    Run(ctx);
+    Finish();
+  }
+  void Run(CommandContext& ctx) {
+    if (file_.empty()) { ctx.Warn("DataLink: File=<path.csv> is required"); return; }
+    TableSpec spec;
+    const std::string kind = TableKindOf(ctx.Doc(), group_id_);
+    if (!LoadTableSpec(ctx.Doc(), group_id_, spec)) { ctx.Warn("DataLink: table not found"); return; }
+
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(file_, ec) && !ec;
+    bool push;
+    if (!exists) {
+      // Nothing to pull from yet - always an initial push, same as AutoCAD
+      // DATALINK writing out the table's current data the first time it
+      // targets a source that doesn't exist on disk.
+      push = true;
+    } else if (ToLower(mode_) == "push") {
+      push = true;
+    } else if (ToLower(mode_) == "pull") {
+      push = false;
+    } else {
+      // Mode=Ask (default) and the file already exists: there is no prior
+      // last_sync_utc yet to compare against (this is the *first* sync), so
+      // fall back to comparing the file's mtime against this table's own
+      // last-(re)build time - whichever side has the more recently produced
+      // content wins the direction, same spirit as DataLinkUpdate's
+      // steady-state heuristic below but with "table creation" standing in
+      // for "last sync".
+      long long csv_mtime = 0, table_mtime = 0;
+      std::string mod_tag;
+      FileMtimeMillis(file_, csv_mtime);
+      if (GroupTag(ctx.Doc(), group_id_, "TableModifiedAt", mod_tag)) table_mtime = std::atoll(mod_tag.c_str());
+      push = table_mtime > csv_mtime;  // ties (or an unreadable mtime) favor pulling the existing file's content in
+    }
+
+    if (push) {
+      if (!WriteCsvFile(file_, spec)) { ctx.Warn("DataLink: could not write '" + file_ + "'"); return; }
+    } else {
+      std::vector<std::vector<std::string>> rows;
+      std::string err;
+      if (!ReadCsvFile(file_, rows, err)) { ctx.Warn("DataLink: " + err); return; }
+      ApplyCsvToSpec(rows, spec);
+    }
+    DataLinkInfo link{file_, mode_, NowMillis()};
+    RebuildWithLink(ctx, group_id_, spec, kind, link, "DataLink");
+    ctx.Print("DataLink: " + std::string(push ? "pushed " : "pulled ") + std::to_string(spec.rows) + "x" + std::to_string(spec.cols) +
+               " table " + (push ? "to " : "from ") + file_);
+  }
+  int group_id_ = -1;
+  std::string file_, mode_;
+};
+
+class DataLinkUpdateCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    auto opts = TakeOptionTokens(ctx);
+    group_id_ = std::atoi(OptionOr(opts, "groupid", "-1").c_str());
+    direction_ = OptionOr(opts, "direction", "");
+    if (group_id_ >= 0) { Run(ctx); Finish(); return; }
+    WantObjects("Select a linked table to re-sync");
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (!FindTableGroup(ctx, ids, group_id_)) { ctx.Warn("DataLinkUpdate: selection has no table"); Finish(); return; }
+    Run(ctx);
+    Finish();
+  }
+  void Run(CommandContext& ctx) {
+    std::string link_json;
+    DataLinkInfo link;
+    if (!GroupTag(ctx.Doc(), group_id_, "DataLink", link_json) || !ParseDataLinkJson(link_json, link)) {
+      ctx.Warn("DataLinkUpdate: table is not linked to a file (use DataLink first)");
+      return;
+    }
+    TableSpec spec;
+    const std::string kind = TableKindOf(ctx.Doc(), group_id_);
+    if (!LoadTableSpec(ctx.Doc(), group_id_, spec)) { ctx.Warn("DataLinkUpdate: table not found"); return; }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(link.path, ec) || ec) {
+      // A deleted/moved linked file is a clear, reported error - not a crash
+      // and not silently falling back to a push that would recreate it
+      // without the user asking for that.
+      ctx.Warn("DataLinkUpdate: linked file '" + link.path + "' no longer exists");
+      return;
+    }
+
+    bool push;
+    if (!direction_.empty()) {
+      if (ToLower(direction_) == "push") push = true;
+      else if (ToLower(direction_) == "pull") push = false;
+      else { ctx.Warn("DataLinkUpdate: Direction must be Push or Pull"); return; }
+    } else {
+      long long csv_mtime = 0, table_mtime = 0;
+      std::string mod_tag;
+      const bool have_mtime = FileMtimeMillis(link.path, csv_mtime);
+      if (GroupTag(ctx.Doc(), group_id_, "TableModifiedAt", mod_tag)) table_mtime = std::atoll(mod_tag.c_str());
+      const bool csv_changed = have_mtime && csv_mtime > link.last_sync_utc;
+      const bool table_changed = table_mtime > link.last_sync_utc;
+      if (!csv_changed && !table_changed) { ctx.Print("DataLinkUpdate: already up to date (" + link.path + ")"); return; }
+      if (csv_changed && table_changed) {
+        // Both sides moved since the last sync - never guess which one wins;
+        // AutoCAD's own DATALINKUPDATE never silently overwrites unsaved
+        // changes on either side either.
+        ctx.Warn("DataLinkUpdate: both the table and '" + link.path + "' changed since the last sync (file mtime " +
+                  std::to_string(csv_mtime) + ", table edited " + std::to_string(table_mtime) + ", last sync " +
+                  std::to_string(link.last_sync_utc) + ") - re-run with Direction=Push or Direction=Pull to pick one");
+        return;
+      }
+      push = table_changed;  // exactly one side changed
+    }
+
+    if (push) {
+      if (!WriteCsvFile(link.path, spec)) { ctx.Warn("DataLinkUpdate: could not write '" + link.path + "'"); return; }
+    } else {
+      std::vector<std::vector<std::string>> rows;
+      std::string err;
+      if (!ReadCsvFile(link.path, rows, err)) { ctx.Warn("DataLinkUpdate: " + err); return; }
+      ApplyCsvToSpec(rows, spec);
+    }
+    link.last_sync_utc = NowMillis();
+    RebuildWithLink(ctx, group_id_, spec, kind, link, "DataLinkUpdate");
+    ctx.Print("DataLinkUpdate: " + std::string(push ? "pushed " : "pulled ") + std::to_string(spec.rows) + "x" + std::to_string(spec.cols) +
+               " table " + (push ? "to " : "from ") + link.path);
+  }
+  int group_id_ = -1;
+  std::string direction_;
 };
 
 class RevisionTableCommand : public Command {
@@ -290,7 +664,10 @@ class RevisionTableCommand : public Command {
     int group = -1;
     for (const SceneObject& o : ctx.Doc().Objects()) if (auto it = o.user_text.find("Annotation"); it != o.user_text.end() && it->second == "RevisionTable") { group = o.group_id; break; }
     TableSpec spec;
+    std::map<std::string, std::string> pass_through;
     if (group >= 0 && LoadTableSpec(ctx.Doc(), group, spec)) {
+      std::string link_tag;
+      if (GroupTag(ctx.Doc(), group, "DataLink", link_tag)) pass_through["DataLink"] = link_tag;
       for (ObjectId id : ctx.Doc().GroupMembers(group)) ctx.Doc().Remove(id);
     } else {
       spec.cols = 3;
@@ -307,7 +684,7 @@ class RevisionTableCommand : public Command {
       spec.rows++;
       for (int i = 0; i < 3; ++i) spec.cells.push_back(TrimWs(f[static_cast<size_t>(i)]));
     }
-    BuildTableGroup(ctx, spec, "RevisionTable");
+    BuildTableGroup(ctx, spec, "RevisionTable", -1, pass_through);
     ctx.Print("RevisionTable: " + std::to_string(spec.rows - 1) + " revision(s)");
   }
   std::string add_;
@@ -928,6 +1305,10 @@ void RegisterDrafting2Commands(CommandEngine& e) {
 
   Reg(e, "Table", Make<TableCommand>());
   Reg(e, "TableEdit", Make<TableEditCommand>());
+  Reg(e, "DataLink", Make<DataLinkCommand>(), CommandStatus::Implemented,
+      "Links a table to an external CSV file and does the initial sync (push if the file doesn't exist yet, otherwise Push/Pull/whichever side's content looks newer for Mode=Ask) - CSV, not native .xlsx, since a TableSpec cell is a bare string with no formulas/styles/merges to lose either way; pulling from a real spreadsheet only ever sees the last value it wrote to the CSV on save, never a live formula.");
+  Reg(e, "DataLinkUpdate", Make<DataLinkUpdateCommand>(), CommandStatus::Implemented,
+      "Re-syncs an already-linked table on demand: pulls if only the file changed since the last sync, pushes if only the table did, and refuses to guess (asking for an explicit Direction=Push|Pull) if both changed - manual and on-demand like AutoCAD's own DATALINKUPDATE, not a background file watcher.");
   Reg(e, "RevisionTable", Make<RevisionTableCommand>());
   // Baked curve/surface geometry instead of a live entity is this app's
   // established, accepted shape for every annotation (see cmd_annotate.cpp
