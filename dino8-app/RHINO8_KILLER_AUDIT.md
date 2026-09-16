@@ -242,13 +242,23 @@ documented in the Addendum below.
   pre-existing, out-of-scope bug (`MultiPause`/`ScriptMode` interaction at `cmd_state.cpp:513`) was found
   and correctly left unfixed, flagged as a possible follow-up rather than silently worked around.
 
+- [x] **Sheet Set Manager.** New `SheetSetNew`/`SheetSetAdd`/`SheetSetOpen`/`SheetSetPlot` (alias
+  `SheetSetPublish`) commands (`src/session/SheetSet.{h,cpp}`, `src/commands/cmd_sheetset.cpp`) manage a
+  named set of layout sheets spanning multiple `.3dm` files and batch-plot them all to PDF in one command —
+  matching AutoCAD's own Sheet Set Manager's core purpose. Verified with a real two-file scenario: sheets
+  from two independent documents are added to one set (one while it wasn't even the open document,
+  confirmed the manager genuinely tracks file+layout pairs rather than only the current document's own
+  layouts), `SheetSetOpen` lists both correctly, and `SheetSetPlot` produces exactly one non-trivial,
+  real-PDF-header-verified file per sheet. Honestly scoped, disclosed up front: console-only (no dedicated
+  panel UI) and one PDF per sheet (not a single combined multi-page set output) — both real, working
+  simplifications of AutoCAD's fuller Sheet Set Manager, not silently approximated.
+
 **Still queued in this wave** (implemented and locally verified by their own author agents, pending this
 session's own independent re-verification/merge/push/CI-confirm before being checked off here): dynamic
 blocks (visibility-state parameter/action graph, first increment), live two-way CSV data linking to
-external spreadsheets, vertical-market Mechanical+MEP parametric components (fasteners, structural shapes,
-ducts/pipes/conduit sized from flow), a Sheet Set Manager (console-only, one PDF per sheet), and
-auto-updating center marks/centerlines (reusing the existing `DimRefObj#`/`UpdateDimensions` associativity
-pattern).
+external spreadsheets, and vertical-market Mechanical+MEP parametric components (fasteners, structural
+shapes, ducts/pipes/conduit sized from flow) plus auto-updating center marks/centerlines (reusing the
+existing `DimRefObj#`/`UpdateDimensions` associativity pattern).
 
 ## Addendum: what "100%, no exceptions" actually required
 
