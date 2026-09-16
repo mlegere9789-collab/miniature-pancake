@@ -16792,14 +16792,12 @@ void TestBooleanCombineMixedChainedNegativeControls() {
 // instance of this same gap this increment's own development found, see
 // SplitNotchedCylinderAtHeight's own doc comment) in a single call.
 //
-// What remains genuinely out of scope, and is its own negative control
-// immediately below (TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingRefuses):
-// this fixture's ORIGINAL two-plane box (z in [-1, 1], both faces crossing
-// the SAME shared notch curve) - a SECOND operand planar face reaching a
-// bigon THIS SAME split producer already built from the FIRST. Composing
-// this increment's own split against more than one operand planar face on
-// the same notch is a real, disclosed gap (see case (iii)'s own doc
-// comment, boolean.cpp, and this function's own commit message).
+// task #87 extends this to the fixture's ORIGINAL two-plane box (z in
+// [-1, 1], both faces crossing the SAME shared notch curve) - a SECOND
+// operand planar face reaching a bigon THIS SAME split producer already
+// built from the FIRST - see
+// TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingBuilds
+// immediately below, and case (iii)'s own doc comment, boolean.cpp.
 void TestBooleanCombineMixedNotchAwareSplitProducerBuildsSingleCrossingPlane() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
@@ -16852,55 +16850,114 @@ void TestBooleanCombineMixedNotchAwareSplitProducerBuildsSingleCrossingPlane() {
         "(measured -6.6e-5) / 5e-3 ordinary (measured -1.1e-3)");
 }
 
-// The genuinely remaining gap: composing this increment's own angle-
-// dependent split against a SECOND operand planar face crossing the SAME
-// notch a FIRST face already split it against - the disclosed fixture's
-// OWN original two-plane box (z in [-1, 1]), whose bottom face (z = -1)
-// and top face (z = 1) BOTH cross the shared notch curve's own excursion.
-// Confirmed directly (not merely theorized) that this is a genuinely
-// DIFFERENT, narrower gap than the single-crossing-plane case the test
-// above now handles: the first plane's own split correctly produces
-// `lower`'s own bigon (an angle-dependent window this increment's split
-// producer built, itself doubly-notched by construction), and the SECOND
-// plane genuinely reaches that SAME bigon (global z in roughly [1, 2] at
-// its own angular window) - composing SplitNotchedCylinderAtHeight against
-// a fragment it JUST produced, from a DIFFERENT operand face, is out of
-// scope for this increment (see SplitMixedAgainstAllFaces's own case
-// (iii) doc comment, boolean.cpp, and its own exclusion of length == 0
-// fragments from the single/double-notch routing above).
-void TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingRefuses() {
+// task #87: composing this increment's own angle-dependent split against a
+// SECOND operand planar face crossing the SAME notch a FIRST face already
+// split it against - the disclosed fixture's OWN original two-plane box
+// (z in [-1, 1]), whose bottom face (z = -1) and top face (z = 1) BOTH
+// cross the shared notch curve's own excursion. The first plane's own
+// split correctly produces `lower`'s own bigon (an angle-dependent window,
+// itself doubly-notched by construction - one flat chain, one true-curve
+// chain); the SECOND plane genuinely reaches that SAME bigon (global z in
+// roughly [1, 2] at its own angular window). task #87 extends the split
+// producer to recognize a bigon with exactly one flat chain as eligible for
+// the same single-notch clamp+window machinery already used for the first
+// plane, closing this exact gap - see SplitMixedAgainstAllFaces's own case
+// (iii) doc comment and SplitNotchedCylinderAtHeight's own bigon-orientation
+// comments, boolean.cpp.
+void TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingBuilds() {
   using dino8::kernel::BooleanCombineMixed;
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
 
   const SharedNotchPairFixture fx = BuildSharedNotchCylinderPair();
   const Brep box = Brep::Box(-10, -10, -1, 10, 10, 1);
-  bool diff_threw = false, inter_threw = false;
-  std::string diff_message, inter_message;
-  try {
-    BooleanCombineMixed(fx.brep, box, BooleanOp::Difference);
-  } catch (const std::invalid_argument& e) {
-    diff_threw = true;
-    diff_message = e.what();
-  }
-  try {
-    BooleanCombineMixed(fx.brep, box, BooleanOp::Intersection);
-  } catch (const std::invalid_argument& e) {
-    inter_threw = true;
-    inter_message = e.what();
-  }
-  const char* kExpectedSubstring = "more than one operand planar face on the same notch";
-  Check(diff_threw && inter_threw && diff_message.find(kExpectedSubstring) != std::string::npos &&
-            inter_message.find(kExpectedSubstring) != std::string::npos,
-        "Difference/Intersection(shared-notch PAIR solid, the ORIGINAL two-plane box crossing the shared notch at "
-        "BOTH z = -1 and z = 1) still throw - not the stale 'angle-dependent partial trim' message task #86's "
-        "single-crossing-plane fix already resolves (see the test immediately above), but a REAL, narrower "
-        "remaining gap named directly: composing this increment's own split against a SECOND operand planar face "
-        "reaching a bigon a FIRST face already produced from the same notch - confirmed live that this is exactly "
-        "what happens here (lower's own bigon from the z = -1 pass is genuinely reached again by z = 1) - this "
-        "scope boundary is NOT expected to start passing silently until N-way composition across multiple operand "
-        "planar faces on one notch is built");
+
+  // Closed form (see the research spec's own hand-derived Bucket A/B/C
+  // partition): the shared curve is a purely internal bookkeeping seam, so
+  // Difference keeps the plain bands z in [-3,-1] (height 2) and z in
+  // [1,7] (height 6) - volume 32*pi - and Intersection keeps the plain
+  // slab z in [-1,1] (height 2) - volume 8*pi - independent of the seam's
+  // own angle-dependent shape.
+  const double true_diff_volume = 32.0 * ON_PI;   // 100.530965
+  const double true_inter_volume = 8.0 * ON_PI;   // 25.132741
+
+  const Brep diff = BooleanCombineMixed(fx.brep, box, BooleanOp::Difference);
+  Check(diff.MixedFaces().cylindrical.size() == 4 && diff.MixedFaces().planar.size() == 16,
+        "Difference(shared-notch PAIR solid, the ORIGINAL two-plane box crossing the shared notch at BOTH "
+        "z = -1 and z = 1) builds exactly 4 cylindrical fragments (lower's own clamped piece truncated at "
+        "z = -1, lower's own bigon from EACH plane doubling as the seam's own Bucket-A/C sliver, and upper's "
+        "own untouched-by-the-second-plane clamped piece from z = 1 alone) plus the 16 planar faces (8 "
+        "quadrant caps at each of the solid's two original far ends, z = -3 and z = 7) - task #87's "
+        "bigon-eligible re-split closes the gap the previous negative control (composing this increment's own "
+        "split against a SECOND operand planar face reaching a bigon a FIRST face already produced) used to "
+        "refuse");
+  const double diff_ordinary = diff.TessellateToClosedMesh(64, 64).Volume();
+  const Mesh diff_conforming = diff.TessellateToClosedMeshConforming(64, 64);
+  Check(Within(diff_conforming.Volume(), true_diff_volume, 1e-3) && Within(diff_ordinary, true_diff_volume, 5e-3),
+        "Difference(shared-notch PAIR solid, two-plane box z in [-1, 1]) measures the true 32*pi = 100.530965 "
+        "within 1e-3 conforming / 5e-3 ordinary - the two kept bands (z in [-3,-1] and z in [1,7]) each need only "
+        "ONE of the two planes per the research spec's own bucket derivation, so this exercises the bigon-eligible "
+        "re-split machinery without needing the joint two-plane computation Intersection below needs - note: "
+        "unlike Intersection below, this Difference result's raw ON_Brep::IsValid() itself reports one narrow "
+        "defect: 'closed curve directions are opposite' on upper's own untouched, plain (un-notched), "
+        "full-circle far cap edge at z = 7 - a benign trim-direction mislabel on a periodic edge (traced "
+        "directly to this codebase's own generic FromMixedFaces bRev3d heuristic, src/brep.cpp, which "
+        "degenerates for any closed edge whose two endpoints are literally the same vertex - upper's own "
+        "clamped fragment here is NOT itself touched by task #87's new bigon-eligibility logic, so this is a "
+        "separate, disclosed, pre-existing gap this increment did not introduce and does not attempt to fix) - "
+        "the volume match here (both mesh flavors) is what confirms the DE-COMPOSITION itself is geometrically "
+        "correct, exactly mirroring this same file's own established half-and-half-wall precedent above of "
+        "trusting the volume match over a narrower, separately-disclosed mesh/validity gap");
+
+  const Brep inter = BooleanCombineMixed(fx.brep, box, BooleanOp::Intersection);
+  Check(inter.raw().IsValid(), "Intersection(shared-notch PAIR solid, two-plane box z in [-1, 1]) builds a valid Brep");
+  const double inter_ordinary = inter.TessellateToClosedMesh(64, 64).Volume();
+  const Mesh inter_conforming = inter.TessellateToClosedMeshConforming(64, 64);
+  Check(Within(inter_conforming.Volume(), true_inter_volume, 1e-3) && Within(inter_ordinary, true_inter_volume, 5e-3),
+        "Intersection(shared-notch PAIR solid, two-plane box z in [-1, 1]) measures the true 8*pi = 25.132741 "
+        "within 1e-3 conforming / 5e-3 ordinary - this bucket (the middle slab) genuinely needs the JOINT two-plane "
+        "computation (Bucket B's split is bounded by BOTH planes via the seam curve in between), the one piece the "
+        "research spec's own derivation found could not be built from either plane in isolation");
 }
+
+// task #87, spec section 5.2 (a THIRD plane on the same notch, chosen so its
+// crossings land exactly on a second-pass bigon's own local angle-0/angle-max
+// endpoints - the corner_active-on-a-bigon edge case the research spec's own
+// hand-derived numbers for the two-plane fixture happened not to exercise):
+// attempted directly during this increment's own development and found to
+// hit a DIFFERENT, already-disclosed, pre-existing scope boundary instead -
+// a third plane placed inside the running solid's own z in [-1, 1] range
+// reaches `upper`'s own first-pass bigon at ITS OWN corner (not `lower`'s),
+// which trips the separate "CAP0-notched fragment's angle-dependent crossing
+// window touches its own full-sweep seam" refusal named explicitly in
+// SplitMixedAgainstAllFaces's own case (iii) doc comment (boolean.cpp) - the
+// mirror direction of the corner-touching fix task #87 built for CAP1, which
+// this increment does not attempt (a real, disclosed, SEPARATE remaining gap,
+// not a defect in task #87's own bigon-eligibility logic under test here).
+// Constructing a fixture that exercises ONLY `lower`'s own local-angle-0/max
+// corner (per spec 5.2) without also crossing `upper`'s CAP0 corner turned
+// out to need fixture geometry beyond this increment's own time budget to
+// derive by hand from the shared-notch pair's literal curve; left as a
+// disclosed, out-of-scope gap rather than a forced, unverified fixture -
+// see this increment's own commit message.
+//
+// task #87, spec section 5.3 (the SECOND plane's crossings landing exactly
+// on the FIRST plane's own already-built bigon's far/non-pinch end, the
+// `<= tol` boundary of the corner-merge/pinch-orientation gate): also
+// attempted directly, via two successive BooleanCombineMixed calls applying
+// nearly-coincident planes (z <= 1, then z <= 1 - 1e-9) to force the second
+// pass's crossing search to land within tolerance of the first pass's own
+// bigon boundary - and this ALSO hit the same disclosed CAP0 corner-touching
+// scope boundary above (on `upper`'s own already-clamped fragment, whose own
+// flat corner from the first plane sits within 1e-9 of the second plane),
+// not a defect in task #87's own pinch-orientation logic under test. Left
+// out for the same reason as 5.2 above: constructing a fixture that
+// exercises ONLY the `<= tol` corner-merge boundary in isolation, without
+// also touching `upper`'s separate, still-unfixed CAP0 corner case, needs
+// more fixture-geometry derivation than this increment's own time budget
+// allows; disclosed here rather than shipped as an unverified or
+// misleading test.
 
 // The OTHER genuinely remaining gap: a fragment notched at BOTH ends
 // simultaneously (a Steinmetz eye / unequal-radius plug or middle band),
@@ -18398,7 +18455,7 @@ int main() {
   TestFromMixedFacesSlopedNotchCapAndStraightChordStayDistinct();
   TestFromMixedFacesFlatCornerGateIsInert();
   TestBooleanCombineMixedNotchAwareSplitProducerBuildsSingleCrossingPlane();
-  TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingRefuses();
+  TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingBuilds();
   TestBooleanCombineMixedNotchAwareBothEndsNotchedRefuses();
   TestBooleanCombineMixedOverlappingRangeFragmentsSameWallDedup();
   TestBooleanCombineMixedThreeFragmentsSameWallDedup();

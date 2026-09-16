@@ -1856,29 +1856,90 @@ AngleDependentSplit SplitNotchedCylinderAtHeight(const Brep::CylindricalFace& cf
 
   // The genuine bigon window(s): merge a window ending at cf.angle with
   // one starting at 0 into the single TRUE seam-straddling bigon (see this
-  // function's own doc comment) before building each one.
-  if (windows.size() >= 2 && windows.front().first <= tol && windows.back().second >= cf.angle - tol) {
+  // function's own doc comment) before building each one. Gated on `cf`
+  // being a genuine FULL 2*pi sweep: the merge's whole premise is that
+  // local angle 0 and local angle cf.angle are the SAME physical point
+  // (CylindricalFace's own full-sweep rail-corner-coincidence contract),
+  // which is only true for a full sweep. For a PARTIAL sweep - in
+  // particular, `cf` itself being a bigon this SAME function already built
+  // from an earlier plane (this increment's own re-split extension, see
+  // the call site's own doc comment, SplitMixedAgainstAllFaces case (iii))
+  // - local angle 0 and local angle cf.angle are two ordinary, unrelated
+  // points (that earlier bigon's own two pinch vertices), and merging
+  // across them would splice together two angularly disjoint regions into
+  // one bogus fragment. A partial-sweep window that happens to touch
+  // either of its own two edges is handled below instead, per-window, via
+  // the pinch-orientation check (never merged).
+  const bool full_sweep = cf.angle >= 2.0 * ON_PI - tol;
+  if (full_sweep && windows.size() >= 2 && windows.front().first <= tol && windows.back().second >= cf.angle - tol) {
     std::pair<double, double> merged{windows.back().first, windows.front().second + cf.angle};
     windows.erase(windows.begin());
     windows.pop_back();
     windows.push_back(merged);
   }
   for (const auto& w : windows) {
-    std::vector<Point3d> flat = FlatNotchArc(cf, v0, w.first, w.second);
-    std::vector<Point3d> true_curve = NotchSubChainWrapped(chain, cf, w.first, w.second, v0);
-
+    const bool wrapped = w.second > cf.angle + 1e-9;  // only possible via the full-sweep merge above
     Brep::CylindricalFace bigon;
     bigon.frame.origin = cf.frame.origin + v0 * cf.frame.zaxis;
-    bigon.frame.zaxis = cf.frame.zaxis;
-    bigon.frame.xaxis = std::cos(w.first) * cf.frame.xaxis + std::sin(w.first) * cf.frame.yaxis;
-    bigon.frame.yaxis = -std::sin(w.first) * cf.frame.xaxis + std::cos(w.first) * cf.frame.yaxis;
-    bigon.frame.UpdateEquation();
     bigon.radius = cf.radius;
     bigon.angle = w.second - w.first;
     bigon.length = 0.0;
     bigon.outward = cf.outward;
     bigon.end0_is_original = false;
     bigon.end1_is_original = false;
+
+    std::vector<Point3d> flat, true_curve;
+    if (wrapped) {
+      // Both ends of a wraparound-merged window are genuine crossings (see
+      // this function's own doc comment on the merge above) - the
+      // pre-existing, already-tested orientation (local angle 0 == w.first,
+      // forward sweep) always applies, no pinch check needed.
+      flat = FlatNotchArc(cf, v0, w.first, w.second);
+      true_curve = NotchSubChainWrapped(chain, cf, w.first, w.second, v0);
+      bigon.frame.zaxis = cf.frame.zaxis;
+      bigon.frame.xaxis = std::cos(w.first) * cf.frame.xaxis + std::sin(w.first) * cf.frame.yaxis;
+      bigon.frame.yaxis = -std::sin(w.first) * cf.frame.xaxis + std::cos(w.first) * cf.frame.yaxis;
+    } else {
+      // A non-wrapped window's own two ends are each EITHER a genuine
+      // crossing (an interior NotchCrossingAngles root, chain height == v0
+      // there by construction) OR this fragment's own pre-existing domain
+      // edge (local angle 0 / cf.angle) - which, for a fragment that is
+      // ITSELF already a bigon from an earlier split (this increment's own
+      // re-split extension), is NOT necessarily also a crossing (a
+      // partial-sweep fragment's two edges are two ordinary, unrelated
+      // points - only a genuine full sweep makes them coincide). The true
+      // pinch (height == v0) - required at LOCAL angle 0 by
+      // FromMixedFaces' own rail-corner-exact contract for any length==0
+      // fragment - can therefore fall at EITHER w.first or w.second here;
+      // when it's w.second, local angle 0 must be anchored there instead,
+      // sweeping in the reversed physical sense (mirrored basis, with
+      // frame.zaxis negated to keep (xaxis, yaxis, zaxis) right-handed) -
+      // exactly the device a standalone probe program (preserved outside
+      // the tree during this increment's own development) confirmed both
+      // necessary (ON_Cylinder::GetNurbForm rejects a left-handed frame
+      // outright) and sufficient (the resulting mesh measures correctly).
+      const bool a0_edge = w.first <= tol;
+      const bool a1_edge = w.second >= cf.angle - tol;
+      const double pinch_tol = std::max(tol, 1e-6);
+      const bool a0_pinch = !a0_edge || std::fabs(NotchHeightAt(chain, cf, 0.0) - v0) <= pinch_tol;
+      const bool a1_pinch = !a1_edge || std::fabs(NotchHeightAt(chain, cf, cf.angle) - v0) <= pinch_tol;
+      const bool flip = !a0_pinch && a1_pinch;
+
+      flat = FlatNotchArc(cf, v0, w.first, w.second);
+      true_curve = NotchSubChain(chain, cf, w.first, w.second, v0, /*exact_a0=*/a0_pinch, /*exact_a1=*/a1_pinch);
+      if (!flip) {
+        bigon.frame.zaxis = cf.frame.zaxis;
+        bigon.frame.xaxis = std::cos(w.first) * cf.frame.xaxis + std::sin(w.first) * cf.frame.yaxis;
+        bigon.frame.yaxis = -std::sin(w.first) * cf.frame.xaxis + std::cos(w.first) * cf.frame.yaxis;
+      } else {
+        bigon.frame.zaxis = -cf.frame.zaxis;
+        bigon.frame.xaxis = std::cos(w.second) * cf.frame.xaxis + std::sin(w.second) * cf.frame.yaxis;
+        bigon.frame.yaxis = std::sin(w.second) * cf.frame.xaxis - std::cos(w.second) * cf.frame.yaxis;
+        std::reverse(flat.begin(), flat.end());
+        std::reverse(true_curve.begin(), true_curve.end());
+      }
+    }
+    bigon.frame.UpdateEquation();
     if (cap0_is_notch) {
       bigon.cap0_notch_points = std::move(true_curve);
       bigon.cap0_notch_tolerance = cf.cap0_notch_tolerance;
@@ -4631,31 +4692,60 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
           // chain and NotchHeightAt's own empty-chain callers already
           // return the plain flat height, so `windows` is always empty).
           //
-          // Excludes `f.cyl.length == 0` fragments outright - i.e. a
-          // bigon THIS SAME split producer already built, from an earlier
-          // g_idx pass over a DIFFERENT operand planar face crossing the
-          // same original fragment (SplitMixedAgainstAllFaces' own N-way
-          // face loop folds `next` back into `worklist` between passes -
-          // see that loop's own comments). A bigon is doubly-notched BY
+          // `f.cyl.length == 0` (a bigon) is doubly-notched BY
           // CONSTRUCTION (cap0 = a true-curve sub-run, cap1 = a flat run,
-          // or the mirror), which would otherwise misfire the "notched at
-          // both ends" refusal below for a shape that was never a genuine
-          // both-ends-notched INPUT at all - confirmed directly: the
-          // disclosed fixture's own two-plane box does exactly this (the
+          // or the mirror) - a bigon THIS SAME split producer already
+          // built, from an earlier g_idx pass over a DIFFERENT operand
+          // planar face crossing the same original fragment
+          // (SplitMixedAgainstAllFaces' own N-way face loop folds `next`
+          // back into `worklist` between passes - see that loop's own
+          // comments), genuinely reached again by THIS plane (the
+          // disclosed fixture's own two-plane box does exactly this: the
           // z-plane processed second finds `lower`'s own bigon from the
           // first plane still genuinely reaching it, global z in
-          // [-1, 2] roughly, crossing the second plane at z = 1). A
-          // SECOND plane genuinely reaching an already-built bigon is a
-          // real, disclosed composition gap of its OWN (chaining this
-          // increment's own split producer against a bigon it just
-          // produced) - falling through unchanged to the plain "beyond"
-          // branch below, whose own CylinderPlaneNoInteraction check
-          // refuses it honestly (a length == 0 fragment can never be
-          // "mid", so it always reaches that branch), rather than being
-          // silently misclassified as the unrelated both-ends-notched
-          // scope boundary.
-          const bool cap0_notch = f.cyl.length > tol && !f.cyl.cap0_notch_points.empty();
-          const bool cap1_notch = f.cyl.length > tol && !f.cyl.cap1_notch_points.empty();
+          // [-1, 2] roughly, crossing the second plane at z = 1).
+          // Composing this same single-notch clamp+window machinery
+          // against a bigon it JUST produced (task #87's own extension):
+          // exactly ONE of a bigon's two chains is a literal FLAT run (by
+          // construction, always at relative height 0 - the bigon's own
+          // `length` field is always 0.0, matching BOTH the cap0-flat
+          // default (0) and the cap1-flat default (length) at once) - the
+          // OTHER chain is the genuine active notch curve, eligible for
+          // the exact same routing as an ordinary singly-notched fragment.
+          // A bigon with BOTH chains genuinely curved (a real Steinmetz
+          // eye / unequal-radius plug or middle band fragment, never
+          // produced by THIS split producer but a legitimate boolean
+          // operand in its own right) is NOT eligible - neither chain is
+          // flat, so it falls through unchanged to the "beyond" branch
+          // below exactly as before this increment (still refused there,
+          // never silently misrouted into either the single- or
+          // double-notch machinery).
+          bool bigon_active_is_cap0 = false;
+          bool bigon_eligible = false;
+          if (f.cyl.length <= tol && !f.cyl.cap0_notch_points.empty() && !f.cyl.cap1_notch_points.empty()) {
+            auto height_range = [&](const std::vector<Point3d>& chain, double& lo, double& hi) {
+              lo = std::numeric_limits<double>::infinity();
+              hi = -std::numeric_limits<double>::infinity();
+              for (const Point3d& p : chain) {
+                const double h = ON_DotProduct(p - f.cyl.frame.origin, f.cyl.frame.zaxis);
+                lo = std::min(lo, h);
+                hi = std::max(hi, h);
+              }
+            };
+            double c0_lo, c0_hi, c1_lo, c1_hi;
+            height_range(f.cyl.cap0_notch_points, c0_lo, c0_hi);
+            height_range(f.cyl.cap1_notch_points, c1_lo, c1_hi);
+            const bool cap0_flat = (c0_hi - c0_lo) <= tol;
+            const bool cap1_flat = (c1_hi - c1_lo) <= tol;
+            if (cap0_flat != cap1_flat) {
+              bigon_eligible = true;
+              bigon_active_is_cap0 = cap1_flat;
+            }
+          }
+          const bool cap0_notch = (f.cyl.length > tol && !f.cyl.cap0_notch_points.empty()) ||
+                                   (bigon_eligible && bigon_active_is_cap0);
+          const bool cap1_notch = (f.cyl.length > tol && !f.cyl.cap1_notch_points.empty()) ||
+                                   (bigon_eligible && !bigon_active_is_cap0);
           std::vector<std::pair<double, double>> windows;
           bool cap0_is_notch = false;
           if (cap0_notch && !cap1_notch) {
@@ -4807,13 +4897,16 @@ std::vector<MixedFace> SplitMixedAgainstAllFaces(MixedFace self, const std::vect
             // interaction" and "this increment's own exact per-angle
             // machinery already found none"; or (b) `f` is itself a
             // length == 0 bigon THIS SAME split producer already built
-            // from an earlier operand planar face (deliberately excluded
-            // from the `windows`/notch-routing above - see that exclusion's
-            // own comment), genuinely reached by THIS DIFFERENT plane too
-            // - composing this increment's own split against a bigon it
-            // just produced is a real, disclosed gap of its own (confirmed
-            // directly: the disclosed fixture's own two-plane box crosses
-            // `lower`'s own bigon, from the first plane, with the second).
+            // from an earlier operand planar face, genuinely reached by
+            // THIS DIFFERENT plane too, that is NOT eligible for the
+            // re-split routing above (task #87) - either a genuine
+            // BOTH-curves-notched bigon (a real Steinmetz eye / unequal-
+            // radius plug or middle band operand, never produced by this
+            // split producer itself, where neither chain is flat) or a
+            // cap0-is-notch bigon whose window touches its own local
+            // angle-0/cf.angle edge (refused earlier, at this same
+            // "cap0_is_notch + corner_active" scope boundary that already
+            // applied before task #87 - see that throw's own doc comment).
             // Neither is a bug to paper over.
             if (!CylinderPlaneNoInteraction(f.cyl, g.planar.plane, tol)) {
               throw std::invalid_argument(
