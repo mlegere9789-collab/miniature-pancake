@@ -30,11 +30,41 @@ using dino8::app::ObjectId;
 using dino8::kernel::Point3d;
 using dino8::kernel::Vector3d;
 
-enum class ArchType { Wall, Door, Window, Slab, Roof, Stair, Column, Beam };
+// Bolt/Nut/Washer/IBeam/Channel/Angle (mechanical parts + structural
+// shapes) and Duct/Pipe/Conduit (MEP runs) extend the same flat-struct/
+// enum/Build()/Schedule pattern the original arch types established - see
+// MechSizeTable()/MechSizeAt() below for the (deliberately small, starter)
+// standard-size tables these draw from, and BuildGeometry()'s switch cases
+// in the .cpp for how each turns its parameters into mesh geometry.
+enum class ArchType {
+  Wall, Door, Window, Slab, Roof, Stair, Column, Beam,
+  Bolt, Nut, Washer, IBeam, Channel, Angle,
+  Duct, Pipe, Conduit,
+};
 
 const char* ArchTypeName(ArchType t);
 bool ParseArchType(const std::string& s, ArchType& out);
 std::vector<std::string> ArchTypeNames();
+
+// One row of a small, hand-entered "standard size" table (Bolt/Nut/Washer:
+// ISO-metric-style approximate dimensions; IBeam/Channel/Angle: plausible
+// structural-shape dimensions). THIS IS A STARTER SET FOR A FEW COMMON
+// SIZES, NOT A REAL FASTENER- OR STRUCTURAL-SHAPE STANDARDS DATABASE (no
+// substitute for ISO 4014/4032/7089 or AISC/Eurocode section tables) - see
+// the .cpp for the exact values and where each field is used per type.
+struct MechSizeRow {
+  const char* name;
+  double d0 = 0, d1 = 0, d2 = 0, d3 = 0;
+};
+
+// Returns the standard-size table for `t` (Bolt/Nut/Washer/IBeam/Channel/
+// Angle only; empty for every other ArchType).
+std::vector<MechSizeRow> MechSizeTable(ArchType t);
+// Same table's `name` fields only, for a command's size-picker option list.
+std::vector<std::string> MechSizeNames(ArchType t);
+// Row `idx` of `t`'s table, clamped into range (empty table returns a
+// zeroed row rather than indexing out of bounds).
+MechSizeRow MechSizeAt(ArchType t, int idx);
 
 // One parametric component. Fields not used by `type` are ignored (kept as
 // a flat struct rather than a variant so LoadArch/SaveArch and the ImGui
@@ -62,6 +92,24 @@ struct ArchComponent {
   double rise = 0.18;    // Stair: riser height
   double run = 0.28;     // Stair: tread depth
   double stair_width = 1.0;
+
+  // Bolt/Nut/Washer/IBeam/Channel/Angle: index into MechSizeTable(type).
+  // Bolt/Nut/Washer: p0 = position, p1 = a point off p0 giving the bolt's
+  // axis direction only (its own distance is ignored, same convention as
+  // Stair's p1). IBeam/Channel/Angle: p0-p1 is the shape's own run line,
+  // exactly like Beam.
+  int size_index = 0;
+  // Bolt: overall shank length (reuses `height`'s "vertical/axial extent"
+  // meaning); Nut/Washer/IBeam/Channel/Angle ignore it (Nut/Washer's axial
+  // extent is the table's own thickness; IBeam/Channel/Angle's run length
+  // is |p1-p0|).
+
+  // Duct/Pipe/Conduit: p0-p1 centreline, extruded exactly like Beam.
+  double diameter = 0.15;   // Pipe/Conduit outer diameter; round Duct diameter
+  int duct_round = 1;       // Duct only: 1 = round (uses `diameter`), 0 = rectangular (uses width x thickness)
+  // A single, clearly-heuristic input for SizeDuct/SizePipe below - NOT a
+  // code-compliance calculation (see MepSizeFromFlow()'s own doc comment).
+  double flow_rate = 100.0; // Duct: airflow in CFM; Pipe: flow in GPM; unused by Build()/BuildGeometry() itself
 
   ObjectId host = 0;  // Door/Window: the Wall component id the opening is cut into (0 = none)
 
@@ -95,5 +143,27 @@ int RebuildArchComponent(Document& doc, const ArchComponent& updated);
 // Rebuilds every stored component from scratch (used by File3dm load,
 // where object ids the JSON refers to may have been remapped).
 void RebuildAll(Document& doc);
+
+// ---------------------------------------------------------------------------
+// MEP sizing heuristic (SizeDuct/SizePipe commands, cmd_arch.cpp).
+//
+// THIS IS A SIMPLIFIED, ORDER-OF-MAGNITUDE SIZING RULE OF THUMB, NOT AN
+// ASHRAE- OR NEC-CODE-COMPLIANT DESIGN CALCULATION. Real duct/pipe sizing
+// depends on friction loss, fitting counts, noise criteria, and licensed
+// standards text (ASHRAE Fundamentals/Duct Fitting Database, NEC Chapter 9
+// conduit fill tables, etc.) this project has no license to reproduce and
+// no engineering-liability basis to certify. This function exists only to
+// turn a plausible flow input into a plausible starting cross-section for
+// a parametric model, exactly the spirit of the audit's own "declined
+// feature" callouts elsewhere in this file.
+//
+// Formula (round cross-section): given an assumed duct/pipe face velocity
+// `velocity_m_s` (a fixed constant the caller supplies - a real design
+// would vary it by duct branch/pipe service), continuity gives
+// cross-section area A = flow / velocity, and diameter d = sqrt(4*A/pi)
+// for a round section. `flow_m3_s` is volumetric flow already converted to
+// m^3/s (Duct's ArchComponent::flow_rate is stored in CFM - the caller
+// converts via the well-known 1 CFM = 0.00047194745 m^3/s before calling).
+double MepDiameterFromFlow(double flow_m3_s, double velocity_m_s);
 
 }  // namespace dino8::arch

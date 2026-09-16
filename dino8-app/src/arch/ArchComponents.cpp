@@ -24,6 +24,15 @@ const char* ArchTypeName(ArchType t) {
     case ArchType::Stair: return "Stair";
     case ArchType::Column: return "Column";
     case ArchType::Beam: return "Beam";
+    case ArchType::Bolt: return "Bolt";
+    case ArchType::Nut: return "Nut";
+    case ArchType::Washer: return "Washer";
+    case ArchType::IBeam: return "IBeam";
+    case ArchType::Channel: return "Channel";
+    case ArchType::Angle: return "Angle";
+    case ArchType::Duct: return "Duct";
+    case ArchType::Pipe: return "Pipe";
+    case ArchType::Conduit: return "Conduit";
   }
   return "Wall";
 }
@@ -33,14 +42,132 @@ bool ParseArchType(const std::string& s, ArchType& out) {
       {"Wall", ArchType::Wall}, {"Door", ArchType::Door}, {"Window", ArchType::Window},
       {"Slab", ArchType::Slab}, {"Roof", ArchType::Roof}, {"Stair", ArchType::Stair},
       {"Column", ArchType::Column}, {"Beam", ArchType::Beam},
+      {"Bolt", ArchType::Bolt}, {"Nut", ArchType::Nut}, {"Washer", ArchType::Washer},
+      {"IBeam", ArchType::IBeam}, {"Channel", ArchType::Channel}, {"Angle", ArchType::Angle},
+      {"Duct", ArchType::Duct}, {"Pipe", ArchType::Pipe}, {"Conduit", ArchType::Conduit},
   };
   for (const auto& [name, type] : kTable) if (s == name) { out = type; return true; }
   return false;
 }
 
 std::vector<std::string> ArchTypeNames() {
-  return {"Wall", "Door", "Window", "Slab", "Roof", "Stair", "Column", "Beam"};
+  return {"Wall", "Door", "Window", "Slab", "Roof", "Stair", "Column", "Beam",
+          "Bolt", "Nut", "Washer", "IBeam", "Channel", "Angle", "Duct", "Pipe", "Conduit"};
 }
+
+// ---------------------------------------------------------------------------
+// Standard-size tables (STARTER SETS - see the header's own doc comment on
+// MechSizeRow: a handful of common sizes for testing/demonstration, not a
+// real ISO/AISC standards database). Dimensions are in metres.
+// ---------------------------------------------------------------------------
+
+// Bolt: d0 = shank (nominal thread) diameter, d1 = head across-flats width
+// (the hex head is approximated here as a circle circumscribing the
+// across-flats hexagon, i.e. diameter d1/cos(30deg) ~= d1*1.1547, purely so
+// Build() can use a simple cylinder rather than a hex prism - a real head
+// is hexagonal, not round), d2 = head height. Approximate ISO 4014 values.
+const std::vector<MechSizeRow>& BoltSizes() {
+  static const std::vector<MechSizeRow> kRows = {
+      {"M6", 0.006, 0.010, 0.004, 0}, {"M8", 0.008, 0.013, 0.0053, 0},
+      {"M10", 0.010, 0.017, 0.0064, 0}, {"M12", 0.012, 0.019, 0.0075, 0},
+  };
+  return kRows;
+}
+
+// Nut: d0 = thread diameter (unused by Build(), kept for the BOM label),
+// d1 = across-flats width (same circle approximation as Bolt's head),
+// d2 = nut height/thickness. Approximate ISO 4032 values.
+const std::vector<MechSizeRow>& NutSizes() {
+  static const std::vector<MechSizeRow> kRows = {
+      {"M6", 0.006, 0.010, 0.005, 0}, {"M8", 0.008, 0.013, 0.0065, 0},
+      {"M10", 0.010, 0.017, 0.008, 0}, {"M12", 0.012, 0.019, 0.010, 0},
+  };
+  return kRows;
+}
+
+// Washer: d0 = inner (bore) diameter, d1 = outer diameter, d2 = thickness.
+// Approximate ISO 7089 flat-washer values.
+const std::vector<MechSizeRow>& WasherSizes() {
+  static const std::vector<MechSizeRow> kRows = {
+      {"M6", 0.0064, 0.0125, 0.0016, 0}, {"M8", 0.0084, 0.0170, 0.0016, 0},
+      {"M10", 0.0105, 0.0210, 0.0020, 0}, {"M12", 0.0130, 0.0240, 0.0025, 0},
+  };
+  return kRows;
+}
+
+// IBeam: d0 = overall depth, d1 = flange width, d2 = flange thickness,
+// d3 = web thickness. Plausible small-section dimensions for a parametric
+// generator, not sourced from a specific AISC/Eurocode designation.
+const std::vector<MechSizeRow>& IBeamSizes() {
+  static const std::vector<MechSizeRow> kRows = {
+      {"IB100", 0.100, 0.055, 0.0057, 0.0041}, {"IB150", 0.150, 0.075, 0.0070, 0.0044},
+      {"IB200", 0.200, 0.100, 0.0085, 0.0056}, {"IB300", 0.300, 0.150, 0.0107, 0.0071},
+  };
+  return kRows;
+}
+
+// Channel (C-shape): d0 = overall depth, d1 = flange width, d2 = flange
+// thickness, d3 = web thickness. Same "plausible, not sourced" caveat as
+// IBeamSizes().
+const std::vector<MechSizeRow>& ChannelSizes() {
+  static const std::vector<MechSizeRow> kRows = {
+      {"C100", 0.100, 0.050, 0.0055, 0.0050}, {"C150", 0.150, 0.065, 0.0064, 0.0060},
+      {"C200", 0.200, 0.075, 0.0075, 0.0075},
+  };
+  return kRows;
+}
+
+// Angle (equal or unequal L-shape): d0 = leg 1 length, d1 = leg 2 length,
+// d2 = thickness (both legs share one thickness, the common case). Same
+// "plausible, not sourced" caveat.
+const std::vector<MechSizeRow>& AngleSizes() {
+  static const std::vector<MechSizeRow> kRows = {
+      {"L50x50", 0.050, 0.050, 0.005, 0}, {"L75x75", 0.075, 0.075, 0.006, 0},
+      {"L100x75", 0.100, 0.075, 0.008, 0},
+  };
+  return kRows;
+}
+
+}  // namespace dino8::arch
+
+namespace dino8::arch {
+
+std::vector<MechSizeRow> MechSizeTable(ArchType t) {
+  switch (t) {
+    case ArchType::Bolt: return BoltSizes();
+    case ArchType::Nut: return NutSizes();
+    case ArchType::Washer: return WasherSizes();
+    case ArchType::IBeam: return IBeamSizes();
+    case ArchType::Channel: return ChannelSizes();
+    case ArchType::Angle: return AngleSizes();
+    default: return {};
+  }
+}
+
+std::vector<std::string> MechSizeNames(ArchType t) {
+  std::vector<std::string> names;
+  for (const MechSizeRow& r : MechSizeTable(t)) names.push_back(r.name);
+  return names;
+}
+
+MechSizeRow MechSizeAt(ArchType t, int idx) {
+  std::vector<MechSizeRow> table = MechSizeTable(t);
+  if (table.empty()) return MechSizeRow{"", 0, 0, 0, 0};
+  idx = std::clamp(idx, 0, static_cast<int>(table.size()) - 1);
+  return table[idx];
+}
+
+// See the header's own doc comment: a simplified rule-of-thumb sizing
+// heuristic, not a code-compliance calculation.
+double MepDiameterFromFlow(double flow_m3_s, double velocity_m_s) {
+  double v = velocity_m_s > 1e-9 ? velocity_m_s : 1.0;
+  double area = std::max(0.0, flow_m3_s) / v;
+  return std::sqrt(4.0 * area / M_PI);
+}
+
+}  // namespace dino8::arch
+
+namespace dino8::arch {
 
 // ---------------------------------------------------------------------------
 // Geometry: every solid here is one closed watertight mesh box (or a small
@@ -131,6 +258,113 @@ kernel::Mesh BuildBeam(const ArchComponent& c) {
   // itself is the beam's own centreline (matches how Line/Pipe place
   // their profile in the rest of the app).
   return OrientedBox(c.p0, f.forward, f.right, f.up, 0, f.length, -c.width / 2, c.width / 2, -c.thickness / 2, c.thickness / 2);
+}
+
+// Frame for a Bolt/Nut/Washer's own axis (p0 = position, p1 = a point off
+// p0 whose direction from p0 is the fastener's axis - only the direction
+// matters, exactly the convention MakeRunFrame already uses for `up`
+// elsewhere). Reuses BuildColumn's own "pick any stable perpendicular"
+// construction, just with the fastener's own axis standing in for world Z.
+Vector3d AxisOf(const ArchComponent& c) {
+  Vector3d d = c.p1 - c.p0;
+  return d.Length() > 1e-9 ? UnitOf(d) : Vector3d(0, 0, 1);
+}
+
+// Bolt: a cylindrical shank (diameter = table's shank diameter, length =
+// c.height) plus a cylindrical head (diameter approximating the hex head's
+// across-flats circumscribing circle, height = table's head height) sitting
+// on top of it - see BoltSizes()'s own doc comment for why the head is
+// round rather than a true hex prism.
+kernel::Mesh BuildBolt(const ArchComponent& c) {
+  MechSizeRow row = MechSizeAt(ArchType::Bolt, c.size_index);
+  Vector3d axis = AxisOf(c);
+  double length = std::max(c.height, 1e-6);
+  kernel::Mesh shank = kernel::Mesh::Cylinder(c.p0, axis, row.d0 / 2.0, length);
+  Point3d head_base = c.p0 + axis * length;
+  double head_diam = row.d1 / std::cos(M_PI / 6.0);  // across-flats -> circumscribing circle
+  kernel::Mesh head = kernel::Mesh::Cylinder(head_base, axis, head_diam / 2.0, row.d2);
+  return kernel::BooleanCombine(shank, head, kernel::BooleanOp::Union);
+}
+
+// Nut: a single cylinder approximating the hex nut's across-flats
+// circumscribing circle (same round-head approximation as BuildBolt), with
+// no threaded bore (a solid approximation, not a functional threaded part).
+kernel::Mesh BuildNut(const ArchComponent& c) {
+  MechSizeRow row = MechSizeAt(ArchType::Nut, c.size_index);
+  Vector3d axis = AxisOf(c);
+  double diam = row.d1 / std::cos(M_PI / 6.0);
+  return kernel::Mesh::Cylinder(c.p0, axis, diam / 2.0, row.d2);
+}
+
+// Washer: outer cylinder minus a concentric inner (bore) cylinder - a real
+// hollow ring, unlike Bolt/Nut's solid round-head approximation, since a
+// washer's bore is exactly the one feature that has to be there for the
+// part to mean anything.
+kernel::Mesh BuildWasher(const ArchComponent& c) {
+  MechSizeRow row = MechSizeAt(ArchType::Washer, c.size_index);
+  Vector3d axis = AxisOf(c);
+  kernel::Mesh outer = kernel::Mesh::Cylinder(c.p0, axis, row.d1 / 2.0, row.d2);
+  kernel::Mesh inner = kernel::Mesh::Cylinder(c.p0, axis, row.d0 / 2.0, row.d2);
+  return kernel::BooleanCombine(outer, inner, kernel::BooleanOp::Difference);
+}
+
+// I-beam: union of a web box (centred, full depth, web-thickness wide) and
+// two flange boxes (full width, flange-thickness deep) at the top and
+// bottom of the depth - the standard "I" cross-section, extruded along
+// p0-p1 exactly like BuildBeam extrudes its own rectangular one.
+kernel::Mesh BuildIBeam(const ArchComponent& c) {
+  MechSizeRow row = MechSizeAt(ArchType::IBeam, c.size_index);
+  double depth = row.d0, flange_w = row.d1, flange_t = row.d2, web_t = row.d3;
+  RunFrame f = MakeRunFrame(c.p0, c.p1, c.normal);
+  kernel::Mesh web = OrientedBox(c.p0, f.forward, f.right, f.up, 0, f.length, -web_t / 2, web_t / 2, -depth / 2 + flange_t, depth / 2 - flange_t);
+  kernel::Mesh top = OrientedBox(c.p0, f.forward, f.right, f.up, 0, f.length, -flange_w / 2, flange_w / 2, depth / 2 - flange_t, depth / 2);
+  kernel::Mesh bot = OrientedBox(c.p0, f.forward, f.right, f.up, 0, f.length, -flange_w / 2, flange_w / 2, -depth / 2, -depth / 2 + flange_t);
+  kernel::Mesh m = kernel::BooleanCombine(web, top, kernel::BooleanOp::Union);
+  return kernel::BooleanCombine(m, bot, kernel::BooleanOp::Union);
+}
+
+// Channel (C-shape): union of a web box (full depth, at one side of the
+// width) and two flange boxes (full width, flange-thickness deep) at top
+// and bottom - an I-beam whose web sits at one edge instead of the centre.
+kernel::Mesh BuildChannel(const ArchComponent& c) {
+  MechSizeRow row = MechSizeAt(ArchType::Channel, c.size_index);
+  double depth = row.d0, flange_w = row.d1, flange_t = row.d2, web_t = row.d3;
+  RunFrame f = MakeRunFrame(c.p0, c.p1, c.normal);
+  kernel::Mesh web = OrientedBox(c.p0, f.forward, f.right, f.up, 0, f.length, -flange_w / 2, -flange_w / 2 + web_t, -depth / 2 + flange_t, depth / 2 - flange_t);
+  kernel::Mesh top = OrientedBox(c.p0, f.forward, f.right, f.up, 0, f.length, -flange_w / 2, flange_w / 2, depth / 2 - flange_t, depth / 2);
+  kernel::Mesh bot = OrientedBox(c.p0, f.forward, f.right, f.up, 0, f.length, -flange_w / 2, flange_w / 2, -depth / 2, -depth / 2 + flange_t);
+  kernel::Mesh m = kernel::BooleanCombine(web, top, kernel::BooleanOp::Union);
+  return kernel::BooleanCombine(m, bot, kernel::BooleanOp::Union);
+}
+
+// Angle (L-shape): union of two boxes of the same `thickness`, one running
+// the full length of leg 1 (vertical, in the up direction) and one running
+// the full length of leg 2 (horizontal, in the right direction), sharing
+// the corner at (right=0, up=0).
+kernel::Mesh BuildAngle(const ArchComponent& c) {
+  MechSizeRow row = MechSizeAt(ArchType::Angle, c.size_index);
+  double leg1 = row.d0, leg2 = row.d1, t = row.d2;
+  RunFrame f = MakeRunFrame(c.p0, c.p1, c.normal);
+  kernel::Mesh vert = OrientedBox(c.p0, f.forward, f.right, f.up, 0, f.length, 0, t, 0, leg1);
+  kernel::Mesh horiz = OrientedBox(c.p0, f.forward, f.right, f.up, 0, f.length, 0, leg2, 0, t);
+  return kernel::BooleanCombine(vert, horiz, kernel::BooleanOp::Union);
+}
+
+// Duct/Pipe/Conduit: a straight run extruded along p0-p1, exactly like
+// BuildBeam, except Pipe/Conduit (and a round Duct) use a circular
+// cross-section (kernel::Mesh::Cylinder) instead of a box. Built SOLID, not
+// as a hollow shell/pipe wall - the same simplification BuildBeam/
+// BuildColumn already make for a structural member, not a claim that a
+// real duct or pipe has no wall thickness or bore.
+kernel::Mesh BuildDuct(const ArchComponent& c) {
+  RunFrame f = MakeRunFrame(c.p0, c.p1, c.normal);
+  if (c.duct_round) return kernel::Mesh::Cylinder(c.p0, f.forward, c.diameter / 2.0, f.length);
+  return OrientedBox(c.p0, f.forward, f.right, f.up, 0, f.length, -c.width / 2, c.width / 2, -c.thickness / 2, c.thickness / 2);
+}
+
+kernel::Mesh BuildRoundRun(const ArchComponent& c) {
+  RunFrame f = MakeRunFrame(c.p0, c.p1, c.normal);
+  return kernel::Mesh::Cylinder(c.p0, f.forward, c.diameter / 2.0, f.length);
 }
 
 kernel::Mesh BuildSlab(const ArchComponent& c) {
@@ -246,6 +480,15 @@ std::vector<ObjectId> BuildGeometry(Document& doc, ArchComponent& c, const std::
       for (kernel::Mesh& tread : BuildStairTreads(c)) add_mesh(tread, "Stair tread " + std::to_string(++i));
       break;
     }
+    case ArchType::Bolt: add_mesh(BuildBolt(c), "Bolt"); break;
+    case ArchType::Nut: add_mesh(BuildNut(c), "Nut"); break;
+    case ArchType::Washer: add_mesh(BuildWasher(c), "Washer"); break;
+    case ArchType::IBeam: add_mesh(BuildIBeam(c), "IBeam"); break;
+    case ArchType::Channel: add_mesh(BuildChannel(c), "Channel"); break;
+    case ArchType::Angle: add_mesh(BuildAngle(c), "Angle"); break;
+    case ArchType::Duct: add_mesh(BuildDuct(c), "Duct"); break;
+    case ArchType::Pipe: add_mesh(BuildRoundRun(c), "Pipe"); break;
+    case ArchType::Conduit: add_mesh(BuildRoundRun(c), "Conduit"); break;
   }
   return ids;
 }
@@ -295,6 +538,19 @@ std::vector<ArchComponent> LoadArch(const Document& doc) {
     c.rise = v["rise"].number;
     c.run = v["run"].number;
     c.stair_width = v["stair_width"].number;
+    // size_index/diameter/duct_round/flow_rate are new fields (Bolt/Nut/
+    // Washer/IBeam/Channel/Angle/Duct/Pipe/Conduit): SaveArch always writes
+    // them now, but a .3dm saved before this increment has no such keys in
+    // its JSON, so operator[] returns a default (0-valued) Value for them -
+    // diameter and duct_round need a non-zero fallback so an old file's
+    // Wall/Beam/etc. records (which never use these fields anyway) don't
+    // leave a freshly-loaded Duct/Pipe/Conduit with a zero-size cylinder.
+    c.size_index = static_cast<int>(v["size_index"].number);
+    double diam = v["diameter"].number;
+    c.diameter = diam > 0 ? diam : 0.15;
+    const json::Value& dr = v["duct_round"];
+    c.duct_round = dr.type == json::Value::Type::Number ? static_cast<int>(dr.number) : 1;
+    c.flow_rate = v["flow_rate"].number;
     c.host = static_cast<ObjectId>(v["host"].number);
     const json::Value& objs = v["objects"];
     for (size_t j = 0; j < objs.Size(); ++j) c.objects.push_back(static_cast<ObjectId>(objs[j].number));
@@ -315,6 +571,8 @@ void SaveArch(Document& doc, const std::vector<ArchComponent>& list) {
         << ",\"height\":" << c.height << ",\"thickness\":" << c.thickness << ",\"width\":" << c.width
         << ",\"sill\":" << c.sill_height << ",\"ridge\":" << c.ridge_height << ",\"roof_style\":" << c.roof_style
         << ",\"steps\":" << c.step_count << ",\"rise\":" << c.rise << ",\"run\":" << c.run << ",\"stair_width\":" << c.stair_width
+        << ",\"size_index\":" << c.size_index << ",\"diameter\":" << c.diameter
+        << ",\"duct_round\":" << c.duct_round << ",\"flow_rate\":" << c.flow_rate
         << ",\"host\":" << c.host << ",\"objects\":[";
     for (size_t j = 0; j < c.objects.size(); ++j) out << (j ? "," : "") << c.objects[j];
     out << "]}";

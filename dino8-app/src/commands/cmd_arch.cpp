@@ -5,9 +5,12 @@
 // cmd_solids.cpp's BoxCommand; ArchEdit re-opens an existing component's
 // parameters by picking one of its built objects in the viewport.
 #include <algorithm>
+#include <fstream>
 #include <map>
+#include <sstream>
 
 #include "arch/ArchComponents.h"
+#include "commands/annotate_common.h"
 #include "commands/cmd_common.h"
 
 namespace dino8::app {
@@ -280,6 +283,218 @@ CommandFactory BeamFactory() {
       });
 }
 
+// Bolt/Nut/Washer: pick a position point, an axis-direction point, then a
+// size (option dropdown over MechSizeNames), then (Bolt only) a shank
+// length.
+class FastenerCommand : public Command {
+ public:
+  explicit FastenerCommand(ArchType type) : type_(type) {}
+  void Begin(CommandContext&) override {
+    size_names_ = arch::MechSizeNames(type_);
+    size_index_ = 0;
+    options = {{"Size", size_names_.empty() ? "" : size_names_[0], size_names_, false, false}};
+    WantPoint(std::string(arch::ArchTypeName(type_)) + " position");
+  }
+  void OnOption(CommandContext&, const std::string& name, const std::string& value) override {
+    if (name != "Size") return;
+    auto it = std::find(size_names_.begin(), size_names_.end(), value);
+    if (it != size_names_.end()) size_index_ = static_cast<int>(it - size_names_.begin());
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!have_p0_) { p0_ = p; have_p0_ = true; ctx.SetLastPoint(p); WantPoint("Axis direction (a second point above/along the fastener's axis)"); return; }
+    p1_ = p;
+    ctx.SetLastPoint(p);
+    if (type_ == ArchType::Bolt) { WantNumber("Bolt length (shank)", 0.04); return; }
+    Build(ctx);
+  }
+  void OnNumber(CommandContext& ctx, double v) override { length_ = v; Build(ctx); }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    char* end = nullptr;
+    double v = std::strtod(t.c_str(), &end);
+    if (end && *end == 0) OnNumber(ctx, v);
+  }
+  void OnEnter(CommandContext& ctx) override { if (want == Want::Number && default_number) OnNumber(ctx, *default_number); }
+  void Build(CommandContext& ctx) {
+    ArchComponent c;
+    c.type = type_;
+    c.p0 = p0_; c.p1 = p1_;
+    c.size_index = size_index_;
+    c.height = length_;
+    ctx.Doc().BeginChange(arch::ArchTypeName(type_));
+    int id = arch::AddArchComponent(ctx.Doc(), c);
+    ReportNew(ctx, arch::ArchTypeName(type_), id);
+    Finish();
+  }
+
+ private:
+  ArchType type_;
+  std::vector<std::string> size_names_;
+  int size_index_ = 0;
+  Point3d p0_{0, 0, 0}, p1_{0, 0, 1};
+  bool have_p0_ = false;
+  double length_ = 0.04;
+};
+
+// IBeam/Channel/Angle: two endpoints (the run line, like Beam), then a size
+// (option dropdown over MechSizeNames).
+class StructShapeCommand : public Command {
+ public:
+  explicit StructShapeCommand(ArchType type) : type_(type) {}
+  void Begin(CommandContext&) override {
+    size_names_ = arch::MechSizeNames(type_);
+    size_index_ = 0;
+    options = {{"Size", size_names_.empty() ? "" : size_names_[0], size_names_, false, false}};
+    WantPoint(std::string(arch::ArchTypeName(type_)) + " start point");
+  }
+  void OnOption(CommandContext&, const std::string& name, const std::string& value) override {
+    if (name != "Size") return;
+    auto it = std::find(size_names_.begin(), size_names_.end(), value);
+    if (it != size_names_.end()) size_index_ = static_cast<int>(it - size_names_.begin());
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!have_p0_) { p0_ = p; have_p0_ = true; ctx.SetLastPoint(p); WantPoint(std::string(arch::ArchTypeName(type_)) + " end point"); return; }
+    p1_ = p;
+    ctx.SetLastPoint(p);
+    ArchComponent c;
+    c.type = type_;
+    c.p0 = p0_; c.p1 = p1_;
+    c.size_index = size_index_;
+    ctx.Doc().BeginChange(arch::ArchTypeName(type_));
+    int id = arch::AddArchComponent(ctx.Doc(), c);
+    ReportNew(ctx, arch::ArchTypeName(type_), id);
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (!have_p0_) return;
+    ctx.ClearPreview();
+    ctx.AddPreviewLine(p0_, h);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+
+ private:
+  ArchType type_;
+  std::vector<std::string> size_names_;
+  int size_index_ = 0;
+  Point3d p0_{0, 0, 0}, p1_{1, 0, 0};
+  bool have_p0_ = false;
+};
+
+// Duct/Pipe/Conduit: two endpoints (the run centreline, like Beam), then
+// cross-section (round: diameter; rectangular Duct only: width, height)
+// and a flow-rate value SizeDuct/SizePipe can later re-derive a size from
+// (stored but not itself used by Build() - see MepDiameterFromFlow()'s own
+// doc comment on why sizing is a separate, explicit step).
+class MepRunCommand : public Command {
+ public:
+  explicit MepRunCommand(ArchType type) : type_(type) {}
+  void Begin(CommandContext&) override {
+    if (type_ == ArchType::Duct) options = {{"Shape", "Round", {"Round", "Rectangular"}, false, false}};
+    WantPoint(std::string(arch::ArchTypeName(type_)) + " start point");
+  }
+  void OnOption(CommandContext&, const std::string& name, const std::string& value) override {
+    if (name == "Shape") round_ = value == "Round";
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!have_p0_) { p0_ = p; have_p0_ = true; ctx.SetLastPoint(p); WantPoint(std::string(arch::ArchTypeName(type_)) + " end point"); return; }
+    p1_ = p;
+    ctx.SetLastPoint(p);
+    if (type_ != ArchType::Duct || round_) { WantNumber("Diameter", type_ == ArchType::Duct ? 0.25 : (type_ == ArchType::Pipe ? 0.05 : 0.02)); return; }
+    WantNumber("Duct width", 0.4);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    if (type_ == ArchType::Duct && !round_) {
+      if (!have_width_) { width_ = v; have_width_ = true; WantNumber("Duct height", 0.25); return; }
+      height_ = v;
+    } else {
+      diameter_ = v;
+    }
+    Build(ctx);
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    char* end = nullptr;
+    double v = std::strtod(t.c_str(), &end);
+    if (end && *end == 0) OnNumber(ctx, v);
+  }
+  void OnEnter(CommandContext& ctx) override { if (want == Want::Number && default_number) OnNumber(ctx, *default_number); }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (!have_p0_) return;
+    ctx.ClearPreview();
+    ctx.AddPreviewLine(p0_, h);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  void Build(CommandContext& ctx) {
+    ArchComponent c;
+    c.type = type_;
+    c.p0 = p0_; c.p1 = p1_;
+    c.duct_round = round_ ? 1 : 0;
+    c.diameter = diameter_;
+    c.width = width_; c.thickness = height_;
+    ctx.Doc().BeginChange(arch::ArchTypeName(type_));
+    int id = arch::AddArchComponent(ctx.Doc(), c);
+    ReportNew(ctx, arch::ArchTypeName(type_), id);
+    Finish();
+  }
+
+ private:
+  ArchType type_;
+  Point3d p0_{0, 0, 0}, p1_{1, 0, 0};
+  bool have_p0_ = false;
+  bool round_ = true;
+  double diameter_ = 0.05, width_ = 0.4, height_ = 0.25;
+  bool have_width_ = false;
+};
+
+// SizeDuct/SizePipe: re-derives a run's cross-section from a flow input via
+// MepDiameterFromFlow()'s own documented rule-of-thumb heuristic (NOT a
+// code-compliance calculation - see that function's doc comment) and
+// rebuilds it.
+class MepSizeCommand : public Command {
+ public:
+  explicit MepSizeCommand(ArchType type) : type_(type) {}
+  void Begin(CommandContext&) override {
+    WantObjects(std::string("Select the ") + arch::ArchTypeName(type_) + " to size", 1);
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& objs) override {
+    for (ObjectId id : objs) {
+      arch::ArchComponent c;
+      if (arch::FindArchComponentByObject(ctx.Doc(), id, c) && c.type == type_) { comp_ = c; found_ = true; break; }
+    }
+    if (!found_) { ctx.Warn(std::string("That object is not a ") + arch::ArchTypeName(type_) + "."); Finish(); return; }
+    WantNumber(type_ == ArchType::Duct ? "Airflow (CFM)" : "Flow rate (GPM)", comp_.flow_rate);
+  }
+  void OnNumber(CommandContext& ctx, double v) override {
+    comp_.flow_rate = v;
+    // 1 CFM = 0.00047194745 m^3/s; 1 GPM = 0.0000630902 m^3/s. Assumed
+    // velocities are round, commonly-cited rule-of-thumb figures for
+    // low-pressure ductwork (~6 m/s, ~1200 ft/min) and domestic-scale
+    // piping (~1.5 m/s) - NOT looked up per-application/code, see this
+    // command's own doc comment and MepDiameterFromFlow()'s.
+    double flow_m3_s = type_ == ArchType::Duct ? v * 0.00047194745 : v * 0.0000630902;
+    double velocity = type_ == ArchType::Duct ? 6.0 : 1.5;
+    double d = arch::MepDiameterFromFlow(flow_m3_s, velocity);
+    comp_.diameter = d;
+    if (type_ == ArchType::Duct) comp_.duct_round = 1;
+    ctx.Doc().BeginChange(std::string("Size") + arch::ArchTypeName(type_));
+    arch::RebuildArchComponent(ctx.Doc(), comp_);
+    std::ostringstream msg;
+    msg << arch::ArchTypeName(type_) << " #" << comp_.id << " sized to diameter " << d
+        << " m from a heuristic velocity assumption (rule-of-thumb only, not ASHRAE/NEC code-compliant).";
+    ctx.Print(msg.str());
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    char* end = nullptr;
+    double v = std::strtod(t.c_str(), &end);
+    if (end && *end == 0) OnNumber(ctx, v);
+  }
+  void OnEnter(CommandContext& ctx) override { if (want == Want::Number && default_number) OnNumber(ctx, *default_number); }
+
+ private:
+  ArchType type_;
+  ArchComponent comp_;
+  bool found_ = false;
+};
+
 // ArchEdit: pick one of a component's built objects, then edit a chosen
 // numeric field (height/thickness/width/...) and rebuild.
 class ArchEditCommand : public Command {
@@ -350,6 +565,47 @@ class ArchEditCommand : public Command {
   std::string field_;
 };
 
+// Whether `t` is one of the new size-table/line-run mechanical or MEP
+// types ArchSchedule reports as a real BOM row (label + qty) rather than
+// just a per-type count, the same way the original eight ArchTypes are.
+bool IsMechOrMep(ArchType t) {
+  switch (t) {
+    case ArchType::Bolt: case ArchType::Nut: case ArchType::Washer:
+    case ArchType::IBeam: case ArchType::Channel: case ArchType::Angle:
+    case ArchType::Duct: case ArchType::Pipe: case ArchType::Conduit:
+      return true;
+    default: return false;
+  }
+}
+
+// One human-readable, roundable-quantity label per mechanical/MEP
+// component, e.g. "M8 x 40mm Bolt", "IB200 x 6m IBeam", "round d=250mm x
+// 4m Duct" - two components with the identical label are the identical
+// line item for BOM-grouping purposes (same size/dimensions), matching the
+// spec's own "3x M8x40 bolt" / "2x 6m I-beam W150" examples.
+std::string MechLabel(const arch::ArchComponent& c) {
+  double len = (c.p1 - c.p0).Length();
+  auto mm = [](double meters) { return std::round(meters * 1000.0); };
+  auto m2 = [](double meters) { return std::round(meters * 100.0) / 100.0; };
+  std::ostringstream s;
+  switch (c.type) {
+    case ArchType::Bolt: s << arch::MechSizeAt(ArchType::Bolt, c.size_index).name << " x " << mm(c.height) << "mm Bolt"; break;
+    case ArchType::Nut: s << arch::MechSizeAt(ArchType::Nut, c.size_index).name << " Nut"; break;
+    case ArchType::Washer: s << arch::MechSizeAt(ArchType::Washer, c.size_index).name << " Washer"; break;
+    case ArchType::IBeam: s << arch::MechSizeAt(ArchType::IBeam, c.size_index).name << " x " << m2(len) << "m IBeam"; break;
+    case ArchType::Channel: s << arch::MechSizeAt(ArchType::Channel, c.size_index).name << " x " << m2(len) << "m Channel"; break;
+    case ArchType::Angle: s << arch::MechSizeAt(ArchType::Angle, c.size_index).name << " x " << m2(len) << "m Angle"; break;
+    case ArchType::Duct:
+      if (c.duct_round) s << "round d=" << mm(c.diameter) << "mm x " << m2(len) << "m Duct";
+      else s << mm(c.width) << "x" << mm(c.thickness) << "mm x " << m2(len) << "m Duct (rectangular)";
+      break;
+    case ArchType::Pipe: s << "d=" << mm(c.diameter) << "mm x " << m2(len) << "m Pipe"; break;
+    case ArchType::Conduit: s << "d=" << mm(c.diameter) << "mm x " << m2(len) << "m Conduit"; break;
+    default: s << arch::ArchTypeName(c.type); break;
+  }
+  return s.str();
+}
+
 }  // namespace
 
 void RegisterArchCommands(CommandEngine& e) {
@@ -361,6 +617,28 @@ void RegisterArchCommands(CommandEngine& e) {
   Reg(e, "Stair", StairFactory());
   Reg(e, "Column", Make<ColumnCommand>());
   Reg(e, "Beam", BeamFactory());
+  Reg(e, "Bolt", Make<FastenerCommand>(ArchType::Bolt), CommandStatus::Implemented,
+      "Generated from a small starter table of ISO-metric-style sizes (M6/M8/M10/M12) - not a real fastener-standard database. The hex head is approximated as a circle circumscribing its across-flats width, not a true hex prism.");
+  Reg(e, "Nut", Make<FastenerCommand>(ArchType::Nut), CommandStatus::Implemented,
+      "Same starter size table and round-head approximation as Bolt; built solid, with no threaded bore.");
+  Reg(e, "Washer", Make<FastenerCommand>(ArchType::Washer), CommandStatus::Implemented,
+      "Same starter size table as Bolt/Nut; a real hollow ring (outer cylinder minus bore), unlike Bolt/Nut's solid approximation.");
+  Reg(e, "IBeam", Make<StructShapeCommand>(ArchType::IBeam), CommandStatus::Implemented,
+      "Generated from a small starter table of plausible section dimensions, not a specific AISC/Eurocode designation - a union of three boxes (two flanges, one web), not a rolled-shape fillet profile.");
+  Reg(e, "Channel", Make<StructShapeCommand>(ArchType::Channel), CommandStatus::Implemented,
+      "Same starter-table caveat as IBeam; a C-shaped union of three boxes.");
+  Reg(e, "Angle", Make<StructShapeCommand>(ArchType::Angle), CommandStatus::Implemented,
+      "Same starter-table caveat as IBeam; an L-shaped union of two boxes.");
+  Reg(e, "Duct", Make<MepRunCommand>(ArchType::Duct), CommandStatus::Implemented,
+      "A straight run extruded along its centreline like Beam, built SOLID (not a hollow duct wall) - round or rectangular. See SizeDuct for the flow-based sizing heuristic.");
+  Reg(e, "Pipe", Make<MepRunCommand>(ArchType::Pipe), CommandStatus::Implemented,
+      "A straight round run extruded along its centreline like Beam, built SOLID (not a hollow pipe wall/bore). See SizePipe for the flow-based sizing heuristic.");
+  Reg(e, "Conduit", Make<MepRunCommand>(ArchType::Conduit), CommandStatus::Implemented,
+      "A straight round run extruded along its centreline like Beam, built SOLID (not a hollow conduit wall/raceway).");
+  Reg(e, "SizeDuct", Make<MepSizeCommand>(ArchType::Duct), CommandStatus::Implemented,
+      "Re-derives a Duct's diameter from an airflow (CFM) input via a fixed ~6 m/s velocity assumption (area = flow/velocity, diameter from area) - a plausible starting-point heuristic, explicitly NOT an ASHRAE code-compliance calculation (real duct sizing depends on friction loss, fittings, and noise criteria this project has no license or basis to reproduce).");
+  Reg(e, "SizePipe", Make<MepSizeCommand>(ArchType::Pipe), CommandStatus::Implemented,
+      "Re-derives a Pipe's diameter from a flow (GPM) input via a fixed ~1.5 m/s velocity assumption, the same heuristic-only caveat as SizeDuct (explicitly NOT an NEC/plumbing-code-compliant calculation).");
   Reg(e, "ArchEdit", Make<ArchEditCommand>());
   Reg(e, "ArchDelete", OnSelection("Select an architectural component to delete", [](CommandContext& ctx, const std::vector<ObjectId>& objs) {
         int removed = 0;
@@ -374,6 +652,8 @@ void RegisterArchCommands(CommandEngine& e) {
         ctx.Print("ArchDelete: removed " + std::to_string(removed) + " component(s) (and any openings hosted on a removed Wall).");
       }));
   Reg(e, "ArchSchedule", Immediate([](CommandContext& ctx) {
+        auto opts = TakeOptionTokens(ctx);
+        std::string csv_path = OptionOr(opts, "csv", "");
         std::vector<arch::ArchComponent> list = arch::LoadArch(ctx.Doc());
         std::map<ArchType, int> counts;
         for (const arch::ArchComponent& c : list) counts[c.type]++;
@@ -381,9 +661,40 @@ void RegisterArchCommands(CommandEngine& e) {
         for (const std::string& name : arch::ArchTypeNames()) {
           ArchType t;
           arch::ParseArchType(name, t);
-          if (counts.count(t)) ctx.Print("  " + name + ": " + std::to_string(counts[t]));
+          if (IsMechOrMep(t) || !counts.count(t)) continue;
+          ctx.Print("  " + name + ": " + std::to_string(counts[t]));
         }
-      }), CommandStatus::Implemented, "Prints a count of every Wall/Door/Window/Slab/Roof/Stair/Column/Beam in the document.");
+        // Mechanical/MEP: a real bill-of-materials, not just a count -
+        // group by MechLabel() (size + dimensions) so "3x M8x40 Bolt" and
+        // "2x 6m IBeam IB200" style quantities come out as separate rows,
+        // matching the count-only style's own per-type breakdown above but
+        // with the parameters that make a BOM row actually useful.
+        std::vector<std::pair<std::string, int>> bom;  // preserves first-seen order
+        for (const arch::ArchComponent& c : list) {
+          if (!IsMechOrMep(c.type)) continue;
+          std::string label = MechLabel(c);
+          auto it = std::find_if(bom.begin(), bom.end(), [&](const auto& p) { return p.first == label; });
+          if (it == bom.end()) bom.push_back({label, 1});
+          else ++it->second;
+        }
+        if (!bom.empty()) {
+          ctx.Print("Mechanical / MEP bill of materials:");
+          for (const auto& [label, qty] : bom) ctx.Print("  " + std::to_string(qty) + "x " + label);
+        }
+        if (!csv_path.empty()) {
+          std::ofstream f(csv_path);
+          f << "Item,Qty\n";
+          for (const std::string& name : arch::ArchTypeNames()) {
+            ArchType t;
+            arch::ParseArchType(name, t);
+            if (IsMechOrMep(t) || !counts.count(t)) continue;
+            f << name << "," << counts[t] << "\n";
+          }
+          for (const auto& [label, qty] : bom) f << "\"" << label << "\"," << qty << "\n";
+          ctx.Print("ArchSchedule: CSV written to " + csv_path);
+        }
+      }), CommandStatus::Implemented,
+      "Wall/Door/Window/Slab/Roof/Stair/Column/Beam are reported as a per-type count, exactly as before. Bolt/Nut/Washer/IBeam/Channel/Angle/Duct/Pipe/Conduit are reported as a real bill of materials, grouped by size/dimensions (e.g. '3x M8 x 40mm Bolt') - the same 'baked snapshot, not live-linked' honesty as BillOfMaterials elsewhere in this app, not an associative table. Csv=path writes the same rows as a CSV file, matching BillOfMaterials's own CSV idiom.");
 }
 
 }  // namespace dino8::app
