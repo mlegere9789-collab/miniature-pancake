@@ -56,10 +56,10 @@ std::vector<std::array<double, 3>> SampleGeometry(const SceneObject& o) {
   const DisplayCache& d = o.Display();
   std::vector<std::array<double, 3>> pts;
   pts.reserve(d.points.size() / 3 + d.lines.size() / 3 + d.triangles.size() / 6);
-  for (size_t i = 0; i + 2 < d.points.size(); i += 3) pts.push_back({d.points[i], d.points[i + 1], d.points[i + 2]});
-  for (size_t i = 0; i + 2 < d.lines.size(); i += 3) pts.push_back({d.lines[i], d.lines[i + 1], d.lines[i + 2]});
-  for (size_t i = 0; i + 5 < d.triangles.size(); i += 6) pts.push_back({d.triangles[i], d.triangles[i + 1], d.triangles[i + 2]});
-  if (pts.empty() && o.kind == ObjectKind::Point) pts.push_back({o.point.x, o.point.y, o.point.z});
+  for (size_t i = 0; i + 2 < d.points.size(); i += 3) pts.push_back(std::array<double, 3>{d.points[i], d.points[i + 1], d.points[i + 2]});
+  for (size_t i = 0; i + 2 < d.lines.size(); i += 3) pts.push_back(std::array<double, 3>{d.lines[i], d.lines[i + 1], d.lines[i + 2]});
+  for (size_t i = 0; i + 5 < d.triangles.size(); i += 6) pts.push_back(std::array<double, 3>{d.triangles[i], d.triangles[i + 1], d.triangles[i + 2]});
+  if (pts.empty() && o.kind == ObjectKind::Point) pts.push_back(std::array<double, 3>{o.point.x, o.point.y, o.point.z});
   return pts;
 }
 
