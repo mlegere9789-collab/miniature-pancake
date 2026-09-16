@@ -203,16 +203,26 @@ all 4 platforms.
   the test script only (a numeric literal colliding with the `3Point` option's prefix match in `CircleCommand`)
   and flagged as a possible follow-up, not silently worked around in the compare feature itself.
 
+- [x] **AI/cloud parity layer, increment 2: local Activity Log + Named Snapshots.** A persisted, per-document
+  Activity Log (`Document::ActivityLog`/`RecordActivityLogEntry`, a durable `<doc>.activity.log` sidecar
+  file next to the `.3dm`) records every create/move/delete-class edit with a UTC timestamp and detail
+  string, browsable in a new "Activity Log" panel and exportable via `ActivityExport` to a real CSV. Named
+  Snapshots (`Document::CaptureSnapshotAsDocument`/`AdoptNamedSnapshotFromDocument`) save/restore a full
+  named state as a sidecar `.3dm` under `<docpath>.snapshots/`. Both are local, offline stand-ins for
+  AutoCAD's cloud-backed Activity Insights and version history — verified to survive a real Save→New→Open
+  cycle (not just the live in-memory session): the exported CSV includes entries recorded before the
+  current run (loaded back from the on-disk sidecar log), and a snapshot saved before Save is still listed
+  after re-opening the file from disk.
+
 **Still queued in this wave** (implemented and locally verified by their own author agents, pending this
 session's own independent re-verification/merge/push/CI-confirm before being checked off here): dynamic
 blocks (visibility-state parameter/action graph, first increment), live two-way CSV data linking to
-external spreadsheets, a CAD Standards Checker, the rest of the AI/cloud parity layer (local Activity Log +
-Named Snapshots, D2-shape-distribution Smart Blocks detection — Save-to-Web/Mobile and live Multi-User
-Markup/Shared Views are explicitly out of scope, since they require hosted server infrastructure this
-codebase cannot honestly provide), vertical-market Mechanical+MEP parametric components (fasteners,
-structural shapes, ducts/pipes/conduit sized from flow), a Sheet Set Manager (console-only, one PDF per
-sheet), and auto-updating center marks/centerlines (reusing the existing `DimRefObj#`/`UpdateDimensions`
-associativity pattern).
+external spreadsheets, a CAD Standards Checker, D2-shape-distribution Smart Blocks detection (the last
+AI/cloud parity item — Save-to-Web/Mobile and live Multi-User Markup/Shared Views are explicitly out of
+scope, since they require hosted server infrastructure this codebase cannot honestly provide),
+vertical-market Mechanical+MEP parametric components (fasteners, structural shapes, ducts/pipes/conduit
+sized from flow), a Sheet Set Manager (console-only, one PDF per sheet), and auto-updating center
+marks/centerlines (reusing the existing `DimRefObj#`/`UpdateDimensions` associativity pattern).
 
 ## Addendum: what "100%, no exceptions" actually required
 
