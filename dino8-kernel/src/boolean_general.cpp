@@ -292,20 +292,20 @@ std::vector<Chain> StitchChains(std::vector<Chain> chains, double tol) {
         if (chains[j].size() < 2) continue;
         const Point3d& aj = chains[j].front().p;
         const Point3d& bj = chains[j].back().p;
-        auto near = [&](const Point3d& x, const Point3d& y) { return (x - y).LengthSquared() <= tol2; };
+        auto is_close = [&](const Point3d& x, const Point3d& y) { return (x - y).LengthSquared() <= tol2; };
         Chain merged;
         bool ok = true;
-        if (near(bi, aj)) {
+        if (is_close(bi, aj)) {
           merged = chains[i];
           merged.insert(merged.end(), chains[j].begin() + 1, chains[j].end());
-        } else if (near(bi, bj)) {
+        } else if (is_close(bi, bj)) {
           merged = chains[i];
           Chain rj = ReverseChain(chains[j]);
           merged.insert(merged.end(), rj.begin() + 1, rj.end());
-        } else if (near(ai, aj)) {
+        } else if (is_close(ai, aj)) {
           merged = ReverseChain(chains[i]);
           merged.insert(merged.end(), chains[j].begin() + 1, chains[j].end());
-        } else if (near(ai, bj)) {
+        } else if (is_close(ai, bj)) {
           merged = chains[j];
           merged.insert(merged.end(), chains[i].begin() + 1, chains[i].end());
         } else {
