@@ -627,11 +627,18 @@ void RegisterArchCommands(CommandEngine& e) {
       "Generated from a small starter table of plausible section dimensions, not a specific AISC/Eurocode designation - a union of three boxes (two flanges, one web), not a rolled-shape fillet profile.");
   Reg(e, "Channel", Make<StructShapeCommand>(ArchType::Channel), CommandStatus::Implemented,
       "Same starter-table caveat as IBeam; a C-shaped union of three boxes.");
-  Reg(e, "Angle", Make<StructShapeCommand>(ArchType::Angle), CommandStatus::Implemented,
+  // "AngleIron", not "Angle": cmd_analyze.cpp already registers "Angle" as
+  // the three-point angle-measurement command (analyze_script.txt) - same
+  // reason ArchSlab isn't just "Slab" (see SlabFactory's own registration
+  // above, "Slab" already being a mesh-tools command).
+  Reg(e, "AngleIron", Make<StructShapeCommand>(ArchType::Angle), CommandStatus::Implemented,
       "Same starter-table caveat as IBeam; an L-shaped union of two boxes.");
   Reg(e, "Duct", Make<MepRunCommand>(ArchType::Duct), CommandStatus::Implemented,
       "A straight run extruded along its centreline like Beam, built SOLID (not a hollow duct wall) - round or rectangular. See SizeDuct for the flow-based sizing heuristic.");
-  Reg(e, "Pipe", Make<MepRunCommand>(ArchType::Pipe), CommandStatus::Implemented,
+  // "MepPipe", not "Pipe": cmd_surface.cpp already registers "Pipe" as the
+  // tube-around-a-curve surface command (surface_script.txt) - same
+  // ArchSlab-vs-Slab naming reason as AngleIron above.
+  Reg(e, "MepPipe", Make<MepRunCommand>(ArchType::Pipe), CommandStatus::Implemented,
       "A straight round run extruded along its centreline like Beam, built SOLID (not a hollow pipe wall/bore). See SizePipe for the flow-based sizing heuristic.");
   Reg(e, "Conduit", Make<MepRunCommand>(ArchType::Conduit), CommandStatus::Implemented,
       "A straight round run extruded along its centreline like Beam, built SOLID (not a hollow conduit wall/raceway).");
