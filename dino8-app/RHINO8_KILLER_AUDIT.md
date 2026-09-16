@@ -169,6 +169,36 @@ Grouped by priority (P0 = existential gaps that block "better than Rhino at ever
 - [ ] A plugin marketplace/discovery mechanism — not attempted; a marketplace with zero listings has zero network effect regardless of how good the underlying SDK is (and the SDK itself did get real work — see the P1 Dino Flow item above).
 - [x] Automated QA expansion: a new standalone fuzz-test binary (`dino8_test_fuzz_geometry`, wired into `ctest`) generates randomized-but-seeded NURBS curves/surfaces and boolean/fillet-adjacent operation pairs and checks universal invariants (no crash/hang/NaN/Inf, claimed-closed meshes are actually watertight, closed primitives have positive volume) — ~7M+ checks across 13 seeds found zero bugs, documented honestly in `tests/fuzz_qa_notes.md` (a clean result, not a padded one). This is real property-based coverage added on top of the existing scripted suite, not a replacement for the "millions of real user files over 30 years" gap described below.
 
+### Design addition: AutoCAD-only feature parity wave (2026-09-16)
+
+The user directed that Dino 8 gain real, working coverage of eight AutoCAD-only feature areas identified
+as genuinely not redundant with anything Rhino 8/Dino 8 already had: an AI/cloud ecosystem layer, live 2D
+parametric constraints, dynamic blocks, live two-way Excel data linking, a CAD Standards Checker,
+vertical-market toolsets, a Sheet Set Manager, and auto-updating center marks/centerlines. Each is tracked
+and landed the same way as every kernel increment above: implement → build → full `tests/smoke.sh` green
+→ merge onto `claude/pdf-audit-i2bvwm` → rebuild/retest on the merged branch → push → CI-confirm green on
+all 4 platforms.
+
+- [x] **2D parametric constraint solver — regression coverage added.** The Gauss-Newton/Levenberg-Marquardt
+  constraint solver (`src/sketch/Constraints.{h,cpp}`) already existed and already auto-resolves live, every
+  frame, via `sketch::AutoResolveFrame`/`ConstraintsFrame` called from `Application::Frame()` — a click-to-
+  constrain Fixed/Coincident/Parallel/Tangent/Concentric/Equal-length rule set that re-solves automatically
+  as geometry changes, with no manual "solve" step required. This increment's real gap was test coverage:
+  added `tests/constraints_script.txt` (a Fixed + Coincident scenario proving the solver re-resolves with no
+  manual invocation) wired into `tests/smoke.sh`, plus a doc-comment clarification in `cmd_constraints.cpp`.
+  Verified: full local `tests/smoke.sh` green (0 FAIL, all 10 tutorials) twice in a row on the merged branch.
+
+**Still queued in this wave** (implemented and locally verified by their own author agents, pending this
+session's own independent re-verification/merge/push/CI-confirm before being checked off here): dynamic
+blocks (visibility-state parameter/action graph, first increment), live two-way CSV data linking to
+external spreadsheets, a CAD Standards Checker, an AI/cloud parity layer (local Activity Log + Named
+Snapshots, DWG/Xref Compare, D2-shape-distribution Smart Blocks detection — Save-to-Web/Mobile and live
+Multi-User Markup/Shared Views are explicitly out of scope, since they require hosted server infrastructure
+this codebase cannot honestly provide), vertical-market Mechanical+MEP parametric components (fasteners,
+structural shapes, ducts/pipes/conduit sized from flow), a Sheet Set Manager (console-only, one PDF per
+sheet), and auto-updating center marks/centerlines (reusing the existing `DimRefObj#`/`UpdateDimensions`
+associativity pattern).
+
 ## Addendum: what "100%, no exceptions" actually required
 
 The user directed every backlog item above be closed with no exceptions. Everything that was a genuine engineering task has now been closed, verified (full local build + `tests/smoke.sh`, pushed only when green, CI confirmed on all 4 platforms after each merge), and is checked off above with an honest note on what remains partial. A few items are marked still open because they are not engineering problems, and closing them by writing more code would be dishonest:
