@@ -48,29 +48,83 @@
 // boolean_general.h): the assembled B-rep's edges are polygonal
 // approximations of the true intersection curves, accurate to
 // IntersectOptions::tolerance, not exact to floating point.
-// KNOWN, CONFIRMED (not theorized) GAP as of this writing, found via
-// DINO8_BOOL_DEBUG=1 tracing on a box fully pierced by a perpendicular
-// cylinder (see dino8-kernel/tests/scratch_test.cpp): IntersectFaces()
-// returns ZERO intersection curves for the box's flat z=+-1 planar faces
-// against the cylinder's own periodic wall face, even though the wall
-// unambiguously crosses both planes (frags=1 with no split on every one
-// of those faces, confirmed via the debug trace - not a downstream
-// seam-splitting/stitching issue, the SSX call itself finds nothing for
-// this specific plane-vs-periodic-cylinder pairing). This is NOT a
-// general periodic-surface limitation of the underlying intersector -
-// phase 1's own TestSurfaceIntersectSphereGreatCircle (test_basic.cpp)
-// already proves a periodic surface (a sphere, u-periodic) against a
-// plane works correctly, including the seam-split-into-multiple-curves
-// case. The box+box (pure planar) case above is fully correct (exact
-// closed-form volumes, valid Breps) - this gap is specific to at least
-// one of: (a) IntersectFaces()'s bounding-box pre-filter or seed-search
-// behaving differently for a CYLINDRICAL periodic surface than a
-// SPHERICAL one, or (b) something specific to how the cylinder wall
-// Brep face built via Brep::FromMixedFaces()/CylindricalFace differs
-// from the plain ON_Surface used in the sphere test. Not yet root-caused
-// further than this. Until fixed, BooleanCombineGeneral must not be
-// trusted on any operand pair involving a cylindrical (or, unverified,
-// conical/toroidal) face - only proven correct for planar-only operands.
+// FORMERLY-CONFIRMED GAP, NOW ROOT-CAUSED AND FIXED (the "IntersectFaces()
+// returns ZERO curves for a box's flat face vs a cylinder's periodic wall"
+// symptom originally documented here): it was never really "zero curves"
+// in IntersectFaces() itself - it was the correctly-found closed loop
+// (the box plane's own circular cross-section of the cylinder wall)
+// getting silently corrupted/discarded downstream, by THREE independent,
+// now-fixed bugs, each confirmed by direct before/after tracing:
+//   (a) surface_intersect.cpp's own SplitAtSeams() unconditionally
+//       stamped `closed = false` on any curve it touched at all, even a
+//       curve whose ONLY "seam crossing" is its own closing wraparound
+//       edge (a full loop that goes once around a periodic direction and
+//       crosses that direction's seam exactly once, right where it
+//       closes) - turning a genuinely closed loop into a bogus "open" arc
+//       whose two "ends" are not on any real trim boundary at all, so
+//       SplitFaceLoop() (below) correctly refused to use it and dropped
+//       it. Fixed: such a curve is now recognized and kept closed.
+//   (b) PointInPolygon() (surface_intersect.cpp) had no boundary-inclusive
+//       tolerance: a curve point Newton-refined to sit EXACTLY on a full
+//       (angle == 2*pi) CylindricalFace's own trim rectangle's own right-
+//       hand edge (u == u_max, the seam) could test as marginally
+//       "outside" that trim from ordinary floating-point residue, and
+//       IntersectFaces()'s own point-vs-trim clipping (this file's own
+//       caller) then rips the whole closed loop open at that one spurious
+//       point. Fixed: a point within a scale-relative epsilon of any
+//       trim-polygon edge now counts as inside.
+//   (c) even with (a)/(b) fixed and IntersectFaces() correctly returning
+//       the loop with IntersectionCurve::closed == true, THIS file's own
+//       Chain-building loop (right below) never consulted that flag - it
+//       re-derives open/closed purely by comparing a Chain's own stored
+//       first/last 3D points, which only agree for a chain that repeats
+//       its own closing point, the convention IntersectFaces() does NOT
+//       use (a closed IntersectionCurve stores N distinct points with an
+//       IMPLICIT wrap, exactly like every other closed curve in this
+//       module). Fixed: a Chain built from an already-closed
+//       IntersectionCurve now re-appends its own first point so this
+//       file's own closed-vs-open test agrees.
+// Verified directly (DINO8_BOOL_DEBUG=1 on the box-fully-pierced-by-a-
+// cylinder fixture in scratch_test.cpp): the box's flat faces now DO
+// split against the cylinder wall (frags > 1, a real hole/interior
+// fragment pair appears where the circle is entirely interior to the
+// flat face), where every one of them previously reported frags=1.
+//
+// REMAINING, SEPARATE, NOT-YET-FIXED GAP found while verifying the above:
+// for this SPECIFIC fixture (a flat cutting plane exactly PERPENDICULAR
+// to the cylinder's own axis, so the plane's cross-section of the wall is
+// the cylinder's ENTIRE circumference, not a transversal arc) the
+// assembled polyline can still self-cross / fold back on itself at a few
+// points, which corrupts the downstream fragment polygon (Difference/
+// Intersection eventually throw "an edge is claimed by 3 or more fragment
+// loops" or NurbsSurface::TessellateGridClippedExact's own "trim_polygon
+// must be simple" check) and leaves the Union volume measurably wrong.
+// Root-caused as far as time allowed: RefineSurfaceSurfacePoint()'s
+// 3-equation/4-unknown Newton system is, for this exact geometry, only
+// weakly damped along the curve's own tangent direction (every point on
+// the circle is an equally valid zero-residual solution), so a seed close
+// to one point on the circle can occasionally converge to an unrelated,
+// distant point on the SAME circle instead of the nearest one - a real,
+// reproduced (not theorized) defect, confirmed via direct seed/refined-
+// point tracing. Two mitigations were tried and kept only where they were
+// a clear, isolated improvement: FinishCurve() (surface_intersect.cpp)
+// now skips its own adaptive-subdivision insertion across a segment that
+// straddles a periodic seam (its raw-(u, v) cubic fit is meaningless
+// there, since it has no notion of wraparound). Two OTHER mitigations
+// (a Newton trust-region step cap, and raising this engine's own
+// min_mesh_divisions) were tried, reverted, and are NOT present in this
+// file: the step cap made an unrelated, pre-existing kernel test hang
+// (never terminating), and the coarser/finer mesh change broke the
+// already-passing sphere+box case instead of fixing the cylinder case.
+// Neither the box+cylinder nor (pre-existing, NOT caused by this
+// increment - confirmed by reproducing it against this file's own
+// unmodified baseline commit) the sphere+box volumes are correct yet.
+// Until this is fixed, BooleanCombineGeneral must not be trusted on any
+// operand pair whose true intersection curve is tangent to, or an
+// isoparametric slice of, one operand's own periodic parameter direction
+// (a plane exactly perpendicular to a cylinder's axis being the
+// canonical case) - only proven correct for planar-only operands
+// (box+box, exact closed-form volumes) so far.
 #include "dino8/kernel/boolean_general.h"
 
 #include <algorithm>
@@ -605,11 +659,32 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
       for (const IntersectionCurve& ic : curves) {
         if (ic.points.size() < 2) continue;
         Chain ca, cb;
-        ca.reserve(ic.points.size());
-        cb.reserve(ic.points.size());
+        ca.reserve(ic.points.size() + 1);
+        cb.reserve(ic.points.size() + 1);
         for (size_t k = 0; k < ic.points.size(); ++k) {
           ca.push_back({ic.points[k], ic.uv_a[k]});
           cb.push_back({ic.points[k], ic.uv_b[k]});
+        }
+        // IntersectFaces() already told us this curve is a closed loop
+        // (IntersectionCurve::closed) - it just doesn't repeat the closing
+        // point (the same "N distinct points, implicit wrap" convention
+        // every closed curve in this module uses). This file's own
+        // open/closed test below - and StitchChains's own "already closed"
+        // check - both work purely by comparing a Chain's OWN front and
+        // back 3D points, which only agree for a curve that already IS a
+        // repeated-endpoint loop; without re-adding that endpoint here, an
+        // intersection curve that IntersectFaces() returns as a complete
+        // closed loop in a SINGLE piece (needing no stitching with any
+        // other face-pair's own piece at all) has its first and last
+        // samples merely ADJACENT points on the loop - one mesh cell
+        // apart, nowhere near within `stitch_tol` - so it was silently
+        // misclassified as a wide-open chain and then dropped by
+        // SplitFaceLoop (its two "ends" don't sit on any real trim
+        // boundary). Confirmed root cause of the box-fully-pierced-by-a-
+        // cylinder case (see this file's own top-of-file doc comment).
+        if (ic.closed) {
+          ca.push_back(ca.front());
+          cb.push_back(cb.front());
         }
         raw_a[static_cast<size_t>(i)].push_back(std::move(ca));
         raw_b[static_cast<size_t>(j)].push_back(std::move(cb));

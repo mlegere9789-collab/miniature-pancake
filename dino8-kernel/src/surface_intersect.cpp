@@ -582,6 +582,42 @@ ON_NurbsCurve InterpolateCubic(const std::vector<ON_3dPoint>& in_pts, std::vecto
 // --- face containment ------------------------------------------------------------
 
 bool PointInPolygon(const std::vector<ON_2dPoint>& poly, ON_2dPoint p) {
+  // A point that sits (within a scale-relative epsilon) ON one of the
+  // polygon's own edges is unambiguously part of this loop, not "outside"
+  // it - but the even-odd ray-casting test below has no notion of "on the
+  // boundary": for a point whose x-coordinate happens to land EXACTLY on
+  // a vertical (or near-vertical) edge, whether it counts as in or out
+  // depends on which side of a `<` comparison a tiny floating-point
+  // residual falls on, which is exactly the kind of case a full-sweep
+  // (angle == 2*pi) CylindricalFace's own trim rectangle produces at its
+  // own u_max edge: a seam-crossing intersection curve point can be
+  // Newton-refined to sit at u == u_max to the last bit, i.e. exactly on
+  // the trim's own right-hand edge. Without this check that single point
+  // spuriously tested "outside", which then made IntersectFaces() (this
+  // file) rip an otherwise-genuinely-closed loop open at that one point -
+  // a confirmed root cause (see boolean_general.cpp's own doc comment on
+  // the box-fully-pierced-by-a-cylinder case). Checked first and cheaply
+  // relative to the polygon's own bounding box scale, so it costs nothing
+  // for the overwhelmingly common case of a point nowhere near any edge.
+  double minx = poly[0].x, maxx = poly[0].x, miny = poly[0].y, maxy = poly[0].y;
+  for (const ON_2dPoint& q : poly) {
+    minx = std::min(minx, q.x); maxx = std::max(maxx, q.x);
+    miny = std::min(miny, q.y); maxy = std::max(maxy, q.y);
+  }
+  const double diag = std::hypot(maxx - minx, maxy - miny);
+  const double eps = std::max(1e-9 * diag, 1e-12);
+  for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
+    const ON_2dPoint& a = poly[i];
+    const ON_2dPoint& b = poly[j];
+    const double vx = b.x - a.x, vy = b.y - a.y;
+    const double len2 = vx * vx + vy * vy;
+    if (len2 > 1e-300) {
+      double t = ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2;
+      t = t < 0 ? 0 : (t > 1 ? 1 : t);
+      const double dx = p.x - (a.x + vx * t), dy = p.y - (a.y + vy * t);
+      if (dx * dx + dy * dy <= eps * eps) return true;
+    }
+  }
   bool in = false;
   for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++) {
     const ON_2dPoint& a = poly[i];
@@ -636,6 +672,34 @@ namespace {
 // Fits the NURBS curves of an intersection curve from its refined points and
 // runs the adaptive midpoint check against both surfaces.
 void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
+  // A segment whose two endpoints sit on opposite sides of one of the
+  // surfaces' own closed/periodic parameter directions (its own (u, v)
+  // value differs by more than half that direction's domain length, even
+  // though the two 3D points are ordinary close neighbours on the real
+  // curve) is NOT an ordinary segment for the raw-(u, v) cubic fit below
+  // to subdivide: `fit()` interpolates pcurve_a/pcurve_b directly in RAW
+  // (u, v) numbers with no notion of wraparound, so across a seam segment
+  // it draws a bogus straight-line-ish swing through the MIDDLE of the
+  // domain (e.g. from u near a direction's own max down to u near its own
+  // min goes through u ~ domain-middle, physically nowhere near either
+  // endpoint) - a bad initial guess that can send this segment's own
+  // Newton refinement (see the insertion loop below) to a WRONG point
+  // entirely (a real, confirmed defect for a surface pair whose true
+  // intersection is an extended curve, e.g. an entire circle where a
+  // cylinder wall's own periodic angle direction is degenerate along the
+  // whole curve - see boolean_general.cpp's own doc comment on the
+  // box-fully-pierced-by-a-cylinder case). Simplest safe fix: never
+  // subdivide a seam segment at all - the two endpoints already bracket it
+  // adequately (this is exactly the same segment SplitAtSeams() itself
+  // treats specially), so skipping it only forgoes possibly-unnecessary
+  // extra refinement there, never correctness.
+  auto is_seam_segment = [&](size_t i, size_t j) {
+    for (int dir = 0; dir < 2; ++dir) {
+      if (a.IsClosed(dir) && std::fabs(ic.uv_a[i][dir] - ic.uv_a[j][dir]) > 0.5 * a.Domain(dir).Length()) return true;
+      if (b.IsClosed(dir) && std::fabs(ic.uv_b[i][dir] - ic.uv_b[j][dir]) > 0.5 * b.Domain(dir).Length()) return true;
+    }
+    return false;
+  };
   auto fit = [&]() {
     std::vector<ON_3dPoint> p3, pa, pb;
     for (size_t i = 0; i < ic.points.size(); ++i) {
@@ -658,6 +722,8 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
     for (size_t i = 0; i < n; ++i) {
       np.push_back(ic.points[i]); na.push_back(ic.uv_a[i]); nb.push_back(ic.uv_b[i]);
       if (i >= segs) continue;
+      const size_t j0 = (i + 1) % n;
+      if (is_seam_segment(i, j0)) continue;
       const double t0 = ic.params[i], t1 = ic.params[i + 1];
       if (t1 - t0 <= opt.tolerance * 4) continue;
       const double tm = 0.5 * (t0 + t1);
@@ -681,7 +747,7 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
 }
 
 // Splits a polyline where a closed surface direction's parameter wraps.
-void SplitAtSeams(std::vector<IntersectionCurve>& curves, const ON_Surface& a, const ON_Surface& b) {
+void SplitAtSeams(std::vector<IntersectionCurve>& curves, const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
   std::vector<IntersectionCurve> out;
   auto jumps = [&](const IntersectionCurve& c, size_t i, size_t j) {
     for (int dir = 0; dir < 2; ++dir) {
@@ -696,6 +762,40 @@ void SplitAtSeams(std::vector<IntersectionCurve>& curves, const ON_Surface& a, c
     for (size_t i = 0; i + 1 < n; ++i) if (jumps(c, i, i + 1)) cuts.push_back(i + 1);
     const bool closed_jump = c.closed && jumps(c, n - 1, 0);
     if (cuts.empty() && !closed_jump) { out.push_back(std::move(c)); continue; }
+    // Total number of seam crossings around this curve, counting the
+    // closing wraparound edge (last point -> first point) as one more if
+    // it is itself a crossing. A closed curve that crosses a seam exactly
+    // ONCE (whether that one crossing IS the wraparound edge, or is a
+    // single ordinary internal cut that then gets rotated to the front
+    // below) is NOT actually an open arc: going once around and crossing
+    // the seam once just means the loop's start/end sit on opposite sides
+    // of that seam in (u, v) - the two ends are still the SAME physical
+    // 3D point. The rotate-then-scan logic below only ever detects a jump
+    // between two CONSECUTIVE samples of the (possibly rotated) index
+    // array, so whichever single crossing was rotated to sit at the
+    // wraparound position is never actually cut there, and the entire loop
+    // falls out as one piece - which, before this fix, kept the default
+    // (false) `closed` flag, silently turning a genuinely closed loop into
+    // a bogus "open" arc with no real endpoints on either face's trim
+    // boundary (a confirmed root cause: see boolean_general.cpp's own doc
+    // comment on the box-fully-pierced-by-a-cylinder case, where this
+    // exact mislabeling made the box's flat faces vs. the cylinder's own
+    // periodic wall face produce zero usable splits). Fix: recognize this
+    // single-crossing case explicitly and keep the piece closed, trimming
+    // the duplicated wrap point if the seam split left one (mirrors
+    // IntersectSurfaces()'s own closed-curve duplicate-endpoint
+    // convention). TWO OR MORE crossings genuinely do produce separate
+    // open arcs (each between two different seam-crossing points) and are
+    // left to the general splitting logic below, unchanged.
+    const size_t seam_crossings = cuts.size() + (closed_jump ? 1 : 0);
+    if (c.closed && seam_crossings <= 1) {
+      if (n > 2 && c.points.front().DistanceTo(c.points.back()) <= opt.tolerance) {
+        c.points.pop_back();
+        c.uv_a.pop_back();
+        c.uv_b.pop_back();
+      }
+      if (c.points.size() >= 3) { out.push_back(std::move(c)); continue; }
+    }
     // Rotate a closed curve so it starts at a seam, then cut it open.
     std::vector<size_t> idx(n);
     std::iota(idx.begin(), idx.end(), 0);
@@ -765,7 +865,7 @@ std::vector<IntersectionCurve> IntersectSurfaces(const ON_Surface& a, const ON_S
     if (ic.closed && ic.points.size() < 3) ic.closed = false;
     out.push_back(std::move(ic));
   }
-  SplitAtSeams(out, a, b);
+  SplitAtSeams(out, a, b, opt);
   std::vector<IntersectionCurve> finished;
   for (IntersectionCurve& ic : out) {
     ThinPoints(ic, opt.tolerance * 4, 400);

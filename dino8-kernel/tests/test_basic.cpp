@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "dino8/kernel/boolean.h"
+#include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/convex_hull.h"
 #include "dino8/kernel/curve.h"
@@ -1615,6 +1616,49 @@ void TestSurfaceIntersectSphereGreatCircle() {
           "the near hit's curve parameter matches the hand-derived expected value");
     Check(std::abs(hits[1].t - expected_t1) < 1e-3,
           "the far hit's curve parameter matches the hand-derived expected value");
+  }
+}
+
+void TestBooleanCombineGeneralBoxBox() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  // The general boundary-evaluation boolean engine (boolean_general.h) on
+  // its one fully-proven case: two overlapping axis-aligned boxes, a
+  // purely planar operand pair. See boolean_general.cpp's own top-of-file
+  // doc comment for the (separate, still-open) gap on operand pairs
+  // involving a periodic (cylindrical/spherical) face - this test is
+  // deliberately scoped to the planar-only case that is actually proven
+  // correct today.
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(1, 1, 1, 3, 3, 3);
+
+  {
+    const Brep u = BooleanCombineGeneral(a, b, BooleanOp::Union);
+    Check(u.raw().IsValid(), "box+box Union is a valid ON_Brep");
+    const Mesh m = u.TessellateToClosedMesh(8, 8);
+    Check(std::abs(m.Volume() - 15.0) < 1e-3,
+          "box+box Union's tessellated volume matches the exact closed-form "
+          "15.0 (two overlapping unit-8 boxes minus their shared unit-1 "
+          "overlap) within tessellation tolerance");
+  }
+  {
+    const Brep i = BooleanCombineGeneral(a, b, BooleanOp::Intersection);
+    Check(i.raw().IsValid(), "box+box Intersection is a valid ON_Brep");
+    const Mesh m = i.TessellateToClosedMesh(8, 8);
+    Check(std::abs(m.Volume() - 1.0) < 1e-3,
+          "box+box Intersection's tessellated volume matches the exact "
+          "closed-form 1.0 (the shared unit cube [1,2]^3)");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(a, b, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "box+box Difference is a valid ON_Brep");
+    const Mesh m = d.TessellateToClosedMesh(8, 8);
+    Check(std::abs(m.Volume() - 7.0) < 1e-3,
+          "box+box Difference's tessellated volume matches the exact "
+          "closed-form 7.0 (the first box's own 8 minus the shared 1)");
   }
 }
 
@@ -18538,6 +18582,7 @@ int main() {
   TestSurfaceIsCone();
   TestSurfaceIsTorus();
   TestSurfaceIntersectSphereGreatCircle();
+  TestBooleanCombineGeneralBoxBox();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
