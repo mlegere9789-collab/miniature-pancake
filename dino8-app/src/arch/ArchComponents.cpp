@@ -11,6 +11,13 @@
 
 namespace dino8::arch {
 
+namespace {
+// M_PI is a POSIX/GNU extension to <cmath>, not standard C++ - MSVC only
+// defines it when _USE_MATH_DEFINES is set before the first <cmath>
+// include, which this file doesn't rely on to stay portable.
+constexpr double kPi = 3.14159265358979323846;
+}  // namespace
+
 using app::ObjectKind;
 using app::SceneObject;
 
@@ -162,7 +169,7 @@ MechSizeRow MechSizeAt(ArchType t, int idx) {
 double MepDiameterFromFlow(double flow_m3_s, double velocity_m_s) {
   double v = velocity_m_s > 1e-9 ? velocity_m_s : 1.0;
   double area = std::max(0.0, flow_m3_s) / v;
-  return std::sqrt(4.0 * area / M_PI);
+  return std::sqrt(4.0 * area / kPi);
 }
 
 }  // namespace dino8::arch
@@ -281,7 +288,7 @@ kernel::Mesh BuildBolt(const ArchComponent& c) {
   double length = std::max(c.height, 1e-6);
   kernel::Mesh shank = kernel::Mesh::Cylinder(c.p0, axis, row.d0 / 2.0, length);
   Point3d head_base = c.p0 + axis * length;
-  double head_diam = row.d1 / std::cos(M_PI / 6.0);  // across-flats -> circumscribing circle
+  double head_diam = row.d1 / std::cos(kPi / 6.0);  // across-flats -> circumscribing circle
   kernel::Mesh head = kernel::Mesh::Cylinder(head_base, axis, head_diam / 2.0, row.d2);
   return kernel::BooleanCombine(shank, head, kernel::BooleanOp::Union);
 }
@@ -292,7 +299,7 @@ kernel::Mesh BuildBolt(const ArchComponent& c) {
 kernel::Mesh BuildNut(const ArchComponent& c) {
   MechSizeRow row = MechSizeAt(ArchType::Nut, c.size_index);
   Vector3d axis = AxisOf(c);
-  double diam = row.d1 / std::cos(M_PI / 6.0);
+  double diam = row.d1 / std::cos(kPi / 6.0);
   return kernel::Mesh::Cylinder(c.p0, axis, diam / 2.0, row.d2);
 }
 
