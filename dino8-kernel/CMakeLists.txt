@@ -50,6 +50,7 @@ add_library(dino8_kernel STATIC
   src/brep.cpp
   src/mesh.cpp
   src/boolean.cpp
+  src/boolean_general.cpp
   src/fillet.cpp
   src/file_io.cpp
   src/subd.cpp
