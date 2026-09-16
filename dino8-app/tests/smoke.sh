@@ -1822,8 +1822,16 @@ cncheck "Perpendicular #6: angle 90" "Perpendicular solved to exactly 90 degrees
 cncheck "Parallel constraint #7 added." "Constrain built a Parallel constraint"
 cncheck "Fixed constraint #8 added." "Constrain built a Fixed constraint"
 cncheck "Midpoint constraint #9 added." "Constrain built a Midpoint constraint"
-cncheck "ConstraintsShow: glyphs on (9 constraint(s))" "ConstraintsShow toggled the glyph overlay"
+cncheck "Fixed constraint #10 added." "Constrain built a second Fixed constraint (auto-resolve anchor)"
+cncheck "Coincident constraint #11 added." "Constrain built a second Coincident constraint (auto-resolve case)"
+cncheck "CV\[0\] 400,0,0" "auto re-solve pulled the line onto the fixed circle centre with no ConstraintSolve call"
+cncheck "ConstraintsShow: glyphs on (11 constraint(s))" "ConstraintsShow toggled the glyph overlay"
 cncheck "ConstraintDelete: removed every constraint" "ConstraintDelete All cleared the list"
+# The auto re-solve check above must fire twice: once right after Constrain
+# (creation-time settle) and once again after Move with no ConstraintSolve
+# in between (the actual live-update case this section exists to prove).
+CN_CV0_COUNT="$(echo "$CN" | grep -c "CV\[0\] 400,0,0")"
+if [ "$CN_CV0_COUNT" -ge 2 ]; then echo "ok   line stayed coincident with the fixed circle both before and after Move, unassisted"; else echo "FAIL live auto re-solve after Move did not restore coincidence (saw $CN_CV0_COUNT matches, need 2)"; fail=1; fi
 echo "$CN" | grep -E "^(ok|FAIL)" || true
 if echo "$CN" | grep -q "^FAIL"; then fail=1; fi
 
