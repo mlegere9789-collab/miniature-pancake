@@ -2227,14 +2227,13 @@ test -d "$TMP/activity_test.3dm.snapshots" && echo "ok   the Named Snapshots sid
 # new block without touching object count or the noise.
 SB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/smartblocks_script.txt" 2>&1)" || { echo "$SB"; echo "FAIL: Smart Blocks script exited non-zero"; exit 1; }
 sbcheck() { if echo "$SB" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
-echo "$SB" | grep -E "^(ok|FAIL) expect_" | while read -r l; do echo "$l" | grep -q "^FAIL" && exit 1; done
 echo "$SB" | grep -q "^FAIL expect_" && { echo "FAIL Smart Blocks script's own @expect_objects/@expect_selected checks failed"; fail=1; }
 sbcheck "^history: SmartBlockDetect: 1 repeated group(s) found$" "SmartBlockDetect found exactly one repeated group (not 0, not split into several)"
 sbcheck "^history:   group 1: 3 instance(s), 3 object(s) each$" "SmartBlockDetect correctly counted 3 occurrences of the 3-object bracket shape, ignoring the noise objects"
 sbcheck "^history: SmartBlockConvert: 1 block definition(s) created, 3 instance(s) converted$" "SmartBlockConvert created exactly one new block and converted all 3 detected occurrences"
 sbcheck "^ok   expect_objects 13 (got 13)$" "SmartBlockConvert tags occurrences in place rather than replacing them, so the total object count is unchanged"
 sbcheck "^ok   expect_selected 9 (got 9)$" "SelBlockInstance selects exactly the 9 objects (3 instances x 3 objects) that were converted, and none of the noise objects"
-sbcheck "Block 'SmartBlock1': 3 object\(s\), base .*, 9 object\(s\) in instances" "BlockManager confirms the new block's definition has 3 objects and 9 objects across its instances"
+sbcheck "Block 'SmartBlock1': 3 object(s), base .*, 9 object(s) in instances" "BlockManager confirms the new block's definition has 3 objects and 9 objects across its instances"
 
 # CAD Standards Checker: Standards/CheckStandards (see standards_script.txt).
 mkdir -p "$TMP/standards"
