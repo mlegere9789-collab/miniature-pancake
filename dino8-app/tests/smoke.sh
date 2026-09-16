@@ -2298,4 +2298,55 @@ for f in "$TMP/sheetset_out"/*.pdf; do
   head -c 5 "$f" | grep -q "%PDF-" && echo "ok   $(basename "$f") starts with %PDF-" || { echo "FAIL: $(basename "$f") missing PDF header"; fail=1; }
 done
 
+# DataLink / DataLinkUpdate (see datalink_script1..4.txt): a table linked to
+# a CSV file two-way syncs with it. Four separate app invocations, sharing
+# @TMP@/datalink.3dm on disk, with this script itself playing "someone
+# editing the file in a spreadsheet program" between stages 1->2 and
+# 3->4 - which a single script/single invocation cannot exercise, since the
+# whole point is a file changing *outside* the app between syncs.
+run_dl_stage() {
+  local script="$1" label="$2"
+  sed "s|@TMP@|$TMP|g" "$HERE/$script" > "$TMP/$script"
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+    "$BIN" --smoke 60 --script "$TMP/$script" 2>&1 || { echo "FAIL: DataLink stage $label exited non-zero"; exit 1; }
+  else
+    xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/$script" 2>&1 || { echo "FAIL: DataLink stage $label exited non-zero"; exit 1; }
+  fi
+}
+
+DL1="$(run_dl_stage datalink_script1.txt 1)"
+dlcheck() { if echo "$DL1" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dlcheck "DataLink: pushed 2x2 table to " "DataLink pushed the new table to the CSV file (it didn't exist yet)"
+[ -f "$TMP/datalink.csv" ] || { echo "FAIL DataLink actually wrote $TMP/datalink.csv"; fail=1; }
+DL1_CSV="$(cat "$TMP/datalink.csv" 2>/dev/null || true)"
+if [ "$DL1_CSV" = "$(printf 'A,B\nC,D\n')" ]; then echo "ok   the pushed CSV's content matches the table's cells (A,B / C,D)"; else echo "FAIL the pushed CSV's content matches the table's cells (got: $DL1_CSV)"; fail=1; fi
+
+# Simulate an external spreadsheet edit of the linked file before stage 2.
+sleep 2
+printf 'P,Q\nR,S\n' > "$TMP/datalink.csv"
+
+DL2="$(run_dl_stage datalink_script2.txt 2)"
+dlcheck() { if echo "$DL2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dlcheck "DataLinkUpdate: pulled 2x2 table from " "DataLinkUpdate auto-detected the file was the only side that changed and pulled it"
+
+sleep 2
+
+DL3="$(run_dl_stage datalink_script3.txt 3)"
+dlcheck() { if echo "$DL3" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dlcheck "DataLinkUpdate: pushed 2x2 table to " "DataLinkUpdate auto-detected the table was the only side that changed (after stage 2's TableEdit) and pushed it - the reverse direction from stage 2"
+DL3_CSV="$(cat "$TMP/datalink.csv" 2>/dev/null || true)"
+if [ "$DL3_CSV" = "$(printf 'M,N\nO,P\n')" ]; then echo "ok   the re-pushed CSV's content matches stage 2's TableEdit (M,N / O,P), not the stale P,Q / R,S it pulled"; else echo "FAIL the re-pushed CSV's content matches stage 2's TableEdit (got: $DL3_CSV)"; fail=1; fi
+
+# Simulate a second external edit, so that stage 4's own TableEdit and this
+# file both change before the next sync - the ambiguous case.
+sleep 2
+printf 'Z1,Z2\nZ3,Z4\n' > "$TMP/datalink.csv"
+
+DL4="$(run_dl_stage datalink_script4.txt 4)"
+dlcheck() { if echo "$DL4" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dlcheck "! DataLinkUpdate: both the table and .* changed since the last sync" "DataLinkUpdate refused to silently guess a direction when both the table and the file changed since the last sync"
+dlcheck "DataLinkUpdate: pushed 2x2 table to " "the follow-up DataLinkUpdate Direction=Push resolved the ambiguity explicitly"
+DL4_CSV="$(cat "$TMP/datalink.csv" 2>/dev/null || true)"
+if [ "$DL4_CSV" = "$(printf 'Q,R\nS,T\n')" ]; then echo "ok   Direction=Push wrote the table's edit (Q,R / S,T) to the file, discarding the file's own outside edit as the caller explicitly chose"; else echo "FAIL Direction=Push wrote the table's edit to the file (got: $DL4_CSV)"; fail=1; fi
+
 exit $fail
