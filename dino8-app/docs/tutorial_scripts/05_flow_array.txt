@@ -1,0 +1,9 @@
+# Tutorial 5: Dino Flow - a parametric linear array. Verifies the exact
+# command sequence quoted in docs/site/tutorials.html "Parametric array
+# with Dino Flow" tutorial. @FLOWFILE@ is substituted with the absolute
+# path to flow_linear_array.dflow by the test runner.
+Grasshopper
+GrasshopperPlayer @FLOWFILE@ Bake=Yes
+@expect_objects 6
+SelAll
+List

@@ -1,0 +1,76 @@
+# Curve editing QC: Intersect, Split, Trim, Fillet, Chamfer, FilletCorners.
+# Each section hides what came before so SelAll/SelCrv only see its own objects.
+# --- Intersect: two crossing lines -> one point at 10,0,0
+Line 0,0,0 20,0,0
+Line 10,-10,0 10,10,0
+SelAll
+Intersect
+SelLast
+List
+# --- Split: the first line by the second (pre-selection, then cutters)
+SelNone
+SelID 1
+Split
+SelID 2
+Enter
+List
+# --- Trim: cutter first, then click the part to remove
+SelAll
+Hide
+Line 30,0,0 50,0,0
+Line 40,-10,0 40,10,0
+SelLast
+Trim
+45,0,0
+Enter
+SelCrv
+List
+# --- Fillet two lines, radius 5 (exact)
+SelAll
+Hide
+Line 60,0,0 80,0,0
+Line 80,0,0 80,20,0
+Fillet
+Radius=5
+79,0,0
+80,1,0
+SelCrv
+List
+# --- Chamfer two lines with Join
+SelAll
+Hide
+Line 100,0,0 120,0,0
+Line 120,0,0 120,20,0
+Chamfer
+Distance=4
+Join=Yes
+119,0,0
+120,1,0
+SelCrv
+List
+# --- FilletCorners on a rectangle
+SelAll
+Hide
+Rectangle 140,0,0 160,20,0
+SelLast
+FilletCorners
+3
+SelLast
+List
+# --- Intersect a circle with a line (rational curve, Newton refinement)
+SelAll
+Hide
+Circle 300,0,0 5
+Line 290,0,0 310,0,0
+SelAll
+Intersect
+# --- Split still handles solids through the plane split
+SelAll
+Hide
+Box 200,0,0 220,20,0 10
+SelLast
+Split
+210,-5,0
+210,25,0
+Show
+SelAll

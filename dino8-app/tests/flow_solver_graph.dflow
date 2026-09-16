@@ -1,0 +1,39 @@
+{"format":"dflow1","nodes":[
+{"id":1,"type":"Gene Pool","x":0,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"gene_count":1,"gene_values":[],"refs":[],"inputs":[]},
+{"id":2,"type":"Subtraction","x":150,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Number","num":0}},
+  {"has":true,"value":{"kind":"Number","num":3}}
+]},
+{"id":3,"type":"Multiplication","x":300,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Number","num":0}},
+  {"has":false,"value":{"kind":"Number","num":0}}
+]},
+{"id":4,"type":"Evolutionary Solver","x":450,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Boolean","num":1}},
+  {"has":true,"value":{"kind":"Integer","num":40}},
+  {"has":true,"value":{"kind":"Integer","num":60}},
+  {"has":true,"value":{"kind":"Number","num":0.2}},
+  {"has":true,"value":{"kind":"Integer","num":7}}
+]},
+{"id":5,"type":"Construct Point","x":600,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Number","num":0}},
+  {"has":false,"value":{"kind":"Number","num":0}},
+  {"has":false,"value":{"kind":"Number","num":0}}
+]},
+{"id":6,"type":"Bake","x":750,"y":0,"enabled":true,"preview":true,"slider_min":0,"slider_max":10,"slider_value":0,"slider_integer":false,"toggle":false,"text":"","colour":[1,1,1],"refs":[],"inputs":[
+  {"has":false,"value":{"kind":"Null"}},
+  {"has":false,"value":{"kind":"Text","text":""}},
+  {"has":true,"value":{"kind":"Text","text":"SolverTestPt"}}
+]}
+],"wires":[
+{"from":1,"fp":0,"to":2,"tp":0},
+{"from":2,"fp":0,"to":3,"tp":0},
+{"from":2,"fp":0,"to":3,"tp":1},
+{"from":1,"fp":0,"to":4,"tp":0},
+{"from":3,"fp":0,"to":4,"tp":1},
+{"from":4,"fp":0,"to":5,"tp":0},
+{"from":4,"fp":1,"to":5,"tp":1},
+{"from":5,"fp":0,"to":6,"tp":0}
+]}

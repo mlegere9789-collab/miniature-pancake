@@ -1,0 +1,23 @@
+# DXF MTEXT import QC. Dino 8 never writes a native DXF MTEXT entity itself
+# (Text/TextObject are always pre-converted to glyph-outline curves on
+# creation - see AddTextCurves in cmd_annotate.cpp), so this can't be
+# exercised via a Dino8-authored export/import round trip.
+# tests/dxf_mtext_fixture.dxf is a minimal, hand-written DXF file (ASCII
+# group-code pairs, no CAD tool involved) containing one real MTEXT entity
+# whose content is split across a group-3 chunk ("{\C1;Hi}\P" - a colour
+# override and a formatting-group brace pair around "Hi", then a \P
+# paragraph break) and the final group-1 chunk ("H\H2x;i" - a mid-run
+# height-override code inside the second "Hi"), proving both ImportDxf's
+# MTEXT-to-glyph-outline conversion AND that its inline-formatting-code
+# stripping (MTextToLines in FileExchange.cpp) actually removes \C/\H/{/}
+# codes rather than leaving them as literal glyphs: the plain text should
+# come out as exactly "Hi" on two lines, matching the DXF/DWG TEXT
+# fixtures' own "Hi" ("H" one contour, "i" two: stem + dot" expectation) -
+# so 2 lines x 3 curves = 6 glyph curves total, all closed degree-1
+# polygons (this font's "H" and "i" outlines have no curved segments).
+# smoke.sh substitutes @TMP@ with a scratch directory (and copies the
+# fixture there) before running this script.
+Open @TMP@/dxf_mtext_fixture.dxf
+SelAll
+List
+SelAnnotationStyle

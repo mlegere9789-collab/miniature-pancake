@@ -1,0 +1,91 @@
+# Parametric 2D sketch constraints QC (sketch/Constraints.h, cmd_constraints.cpp).
+# Object ids below assume a fresh document, so every section starts from
+# SelNone and creates exactly the curves it needs before constraining them.
+# --- Coincident: two separate lines' nearest endpoints snap together
+Line 0,0,0 5,0,0
+Line 8,0,0 8,5,0
+SelNone
+Constrain
+Type=Coincident
+SelID 1 2
+Enter
+ConstraintSolve
+# --- Horizontal: a tilted line's second point drops level with the first
+Line 0,20,0 5,22,0
+SelNone
+Constrain
+Type=Horizontal
+SelID 3
+Enter
+ConstraintSolve
+# --- Vertical: a tilted line's second point moves directly above the first
+Line 20,20,0 23,25,0
+SelNone
+Constrain
+Type=Vertical
+SelID 4
+Enter
+ConstraintSolve
+# --- Distance: two separate lines' nearest points pulled to exactly 10 apart
+Line 20,0,0 25,3,0
+Line 40,0,0 45,3,0
+SelNone
+Constrain
+Type=Distance
+SelID 5 6
+Enter
+10
+ConstraintSolve
+# --- Radius: a circle's radius pinned to 5
+Circle 60,0,0 4
+SelNone
+Constrain
+Type=Radius
+SelID 7
+Enter
+5
+ConstraintSolve
+# --- Perpendicular: two lines sharing a corner made to meet at 90 degrees
+Line 80,0,0 85,0,0
+Line 80,0,0 80,3,3
+SelNone
+Constrain
+Type=Perpendicular
+SelID 8 9
+Enter
+ConstraintSolve
+# --- Parallel: a second line tilted to match the first's direction
+Line 100,0,0 105,0,0
+Line 100,10,0 103,14,0
+SelNone
+Constrain
+Type=Parallel
+SelID 10 11
+Enter
+ConstraintSolve
+# --- Fixed: pin a line endpoint at its current position (rebuild snaps it back)
+Line 120,0,0 125,0,0
+SelNone
+Constrain
+Type=Fixed
+SelID 12
+Enter
+ConstraintSolve
+# --- Midpoint: a short line's near endpoint dropped onto another line's midpoint
+# (Constrain only accepts curve objects - see CandidatePoints() in cmd_constraints.cpp -
+# so the "point" side of a Midpoint constraint is a tiny line, not a Point object.)
+Line 140,-5,0 141,-5,0
+Line 140,0,0 150,0,0
+SelNone
+Constrain
+Type=Midpoint
+SelID 13 14
+Enter
+ConstraintSolve
+# --- Overlay + panel + cleanup
+ConstraintsShow
+ConstraintsPanel
+ConstraintDelete All
+ConstraintsPanel
+SelAll
+List

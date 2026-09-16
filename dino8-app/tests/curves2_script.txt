@@ -1,0 +1,284 @@
+# Curve tools QC: conics, catenary, closing, reducing, sub-curves, slicing, arrays, alignment, tweening.
+Conic 0,0,0 20,0,0 10,10,0 10,4,0
+Parabola 0,0,0 0,5,0 10,5,0
+Hyperbola 0,0,0 5,0,0 10,8,0
+Catenary 0,0,0 40,0,0 50
+SelAll
+Hide
+# --- CloseCrv on a polyline, ReducePolyline on a wiggly polyline
+Polyline 0,0,0 10,0,0 10,10,0 0,10,0
+Enter
+SelAll
+CloseCrv
+List
+SelNone
+Polyline 20,0,0 25,0.001,0 30,0,0 35,0,0 40,10,0
+Enter
+SelLast
+ReducePolyline
+List
+# --- SubCrv keeps the picked span of a line
+SelAll
+Hide
+Line 100,0,0 200,0,0
+SubCrv
+120,0,0
+180,0,0
+SelAll
+List
+# --- Contour a sphere every 5 units along Z
+SelAll
+Hide
+Sphere 0,0,0 10
+SelAll
+Contour
+0,0,-10
+0,0,10
+5
+# --- Section through the sphere
+SelSrf
+SelPolysrf
+Section
+-20,0,0
+20,0,0
+# --- Align and Distribute three boxes
+SelAll
+Hide
+Box 0,0,0 10,10,0 10
+Box 30,5,0 40,15,0 10
+Box 70,-3,0 80,7,0 10
+SelAll
+Align
+Bottom
+SelAll
+Distribute
+X
+# --- TweenCurves between two lines, ArrayCrv of a point along a circle
+SelAll
+Hide
+Line 0,0,0 50,0,0
+Line 0,20,0 50,20,0
+SelAll
+TweenCurves
+3
+SelAll
+Hide
+Point 0,0,0
+Circle 0,0,0 30
+SelPt
+ArrayCrv
+SelCrv
+Enter
+6
+# --- LineThroughPt and PlaneThroughPt
+SelAll
+Hide
+Point 0,0,0
+Point 10,1,0
+Point 20,-1,0
+Point 30,0,1
+SelPt
+LineThroughPt
+SelPt
+PlaneThroughPt
+SelNone
+# --- MarkFoci: parabola/hyperbola foci match known analytic geometry
+SelAll
+Hide
+Parabola 0,0,0 0,5,0 10,5,0
+SelLast
+MarkFoci
+SelNone
+SelPt
+List
+SelAll
+Hide
+Hyperbola 0,0,0 5,0,0 10,8,0
+SelLast
+MarkFoci
+SelNone
+SelPt
+List
+SelNone
+# --- MergeCrv: two tangent lines merge into a true single span
+SelAll
+Hide
+Line 100,0,0 110,0,0
+Line 110,0,0 120,0,0
+SelAll
+MergeCrv
+SelLast
+List
+SelNone
+# --- Blend (curvature-continuous option) and ArcBlend (two-arc biarc)
+SelAll
+Hide
+Arc 0,0,0 10,0,0 10,10,0
+Arc 30,10,0 30,20,0 20,20,0
+Blend
+10,10,0
+30,20,0
+SelLast
+List
+SelNone
+SelAll
+Hide
+Arc 0,0,0 10,0,0 10,10,0
+Arc 30,10,0 30,20,0 20,20,0
+ArcBlend
+10,10,0
+30,20,0
+SelLast
+List
+SelNone
+# --- Domain: report, then actually set a new domain
+SelAll
+Hide
+Line 0,0,0 10,0,0
+SelLast
+Domain
+"0 5"
+SelLast
+List
+SelNone
+# --- ModifyRadius rebuilds a circle at a new radius in place
+SelAll
+Hide
+Circle 0,0,0 5
+SelLast
+ModifyRadius
+12
+SelLast
+List
+SelNone
+# --- Match reshapes one curve's end to meet another tangentially
+SelAll
+Hide
+Line 0,0,0 10,0,0
+Line 20,10,0 20,20,0
+Match
+10,0,0
+20,10,0
+SelAll
+List
+SelNone
+# --- IntersectSelf on a single curve (reuses Intersect's own self-intersect mode)
+SelAll
+Hide
+Curve 0,0,0 10,10,0 0,10,0 10,0,0
+Enter
+SelLast
+IntersectSelf
+SelAll
+List
+SelNone
+# --- SoftEditCrv: falloff-limited control point drag
+SelAll
+Hide
+Curve 0,0,0 10,0,0 20,0,0 30,0,0
+Enter
+SelLast
+SoftEditCrv
+15,0,0
+15,8,0
+5
+SelLast
+List
+SelNone
+# --- FixedLengthCrvEdit: edit a point, total length stays fixed
+SelAll
+Hide
+Curve 0,0,0 10,0,0 20,0,0 30,0,0
+Enter
+SelLast
+Length
+SelLast
+FixedLengthCrvEdit
+10,0,0
+10,8,0
+SelLast
+Length
+SelNone
+# --- CurveThroughSrfControlPt: curves through a surface's own CV grid
+SelAll
+Hide
+Plane 0,0,0 10,10,0
+SelLast
+CurveThroughSrfControlPt
+SelAll
+List
+SelNone
+# --- OffsetMultiple: several offsets from one pick
+SelAll
+Hide
+Line 0,0,0 10,0,0
+SelLast
+OffsetMultiple
+0,5,0
+SelAll
+List
+SelNone
+# --- InsertLineIntoCrv: split, insert a line, rejoin - all one command
+SelAll
+Hide
+Line 0,0,0 20,0,0
+SelLast
+InsertLineIntoCrv
+10,0,0
+5
+SelLast
+List
+SelNone
+# --- CSec: cross-sections perpendicular to a rail curve
+SelAll
+Hide
+Line -5,5,5 15,5,5
+Box 0,0,0 10,10,0 10
+SelLast
+CSec
+SelCrv
+Enter
+5
+SelAll
+List
+SelNone
+# --- ContinueCurve: extends a curve and Joins it in one step
+SelAll
+Hide
+Line 0,0,0 10,0,0
+ContinueCurve
+10,0,0
+20,5,0
+30,0,0
+Enter
+SelLast
+List
+SelNone
+# --- EndBulge: scales the end tangent handle length in place
+SelAll
+Hide
+Curve 0,0,0 10,0,0 20,5,0 30,0,0
+Enter
+SelLast
+EndBulge
+0,0,0
+2
+SelLast
+List
+SelNone
+# --- InterpCrvOnSrf: points projected onto a surface before interpolating
+SelAll
+Hide
+Sphere 0,0,0 10
+SelSrf
+SelPolysrf
+InterpCrvOnSrf
+8.66,0,5
+0,8.66,5
+-8.66,0,5
+Enter
+SelLast
+List
+SelNone
+SelNone
+@expect_objects 70

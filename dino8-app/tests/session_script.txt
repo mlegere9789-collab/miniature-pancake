@@ -1,0 +1,99 @@
+# Session QC: 3D digitizer (Dig*), Worksession/LimitReferenceModel,
+# Snapshots, draw order, and real hole features (Move/Copy/Rotate/MirrorHole).
+# @TMP@ is replaced by smoke.sh with a scratch directory; @TMP@/dig_points.txt
+# is written by smoke.sh before this script runs.
+
+# --- Digitizer: Protocol=File replays "x y z [button]" lines deterministically
+DigConnect File @TMP@/dig_points.txt
+DigStatus
+DigPoint
+DigPoint
+DigPoint
+DigListPorts
+DigScale 25.4
+DigDisconnect
+DigStatus
+
+# --- The remaining Dig* commands (cmd_state.cpp): each one reads real
+# points off a connected digitizer's stream, same as DigPoint above.
+DigConnect File @TMP@/dig_points2.txt
+DigScale 1
+Digitize
+DigCamera
+DigClick
+DigLine
+SelLast
+List
+DigBeep
+Digitize
+DigBeep
+DigSection
+DigDisconnect
+
+# --- Draw order: BringToFront/SendToBack/ClearDrawOrder don't change object count
+SelNone
+Circle 0,0,0 5
+Circle 0,0,0 5
+SelID 3
+BringToFront
+SelID 3
+SendToBack
+SelID 3
+ClearDrawOrder
+SelNone
+
+# --- Worksession: attach another .3dm as a locked reference model, limit it,
+# round-trip through a .rws session file, then detach.
+# (New only clears when the document isn't modified - see
+# Application::ConfirmDiscard - so SelAll+Delete clears deterministically
+# regardless of what ran before.)
+SelAll
+Delete
+Box 100,0,0 110,10,0 10
+SelLast
+Save @TMP@/ref.3dm
+New
+Worksession Attach @TMP@/ref.3dm
+Worksession List
+LimitReferenceModel ref.3dm 95,-5,-5 200,200,200
+Worksession Save @TMP@/session.rws
+Worksession Detach All
+Worksession List
+Worksession Load @TMP@/session.rws
+Worksession List
+Save @TMP@/withref.3dm
+
+# --- Snapshots: named, full-document restore points independent of Undo/Redo
+New
+Sphere 0,0,0 5
+Snapshots Save Before
+Box 20,20,0 30,30,0 10
+Snapshots List
+Snapshots Restore Before
+@expect_objects 1
+Snapshots Delete Before
+Snapshots List
+
+# --- Hole features: RoundHole, then move/copy/rotate/mirror it as a real
+# editable feature (re-runs the boolean instead of only printing guidance).
+SelAll
+Delete
+Box 200,0,0 220,20,0 10
+SelLast
+RoundHole
+210,10,10
+3
+10
+SelLast
+MoveHole
+210,10,10 215,10,10
+SelLast
+CopyHole
+215,10,10 215,15,10
+SelLast
+RotateHole
+215,15,10
+90
+SelLast
+MirrorHole
+210,0,0 210,20,0

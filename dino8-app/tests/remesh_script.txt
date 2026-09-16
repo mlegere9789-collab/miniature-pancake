@@ -1,0 +1,60 @@
+# Volumetric remesh tools QC: ShrinkWrap (signed-distance + marching cubes,
+# including a concave L-shaped union so a convex-hull shortcut would be
+# caught), QuadRemesh (single surface + volumetric dual contouring) and
+# ReduceMesh (quadric-error decimation). Objects are selected by explicit
+# id (ids are assigned in creation order, 1-based); every SelID is preceded
+# by SelNone since SelID only adds to the current selection, never clears
+# it, and New needs an unanswered discard-confirmation once the doc has any
+# objects (so it can't be used to reset between sections here).
+# --- ShrinkWrap of an L-shaped union (two overlapping boxes forming a
+# concave notch, boolean-unioned into one mesh: id 1, id 2 -> id 3) stays
+# close to the union's own volume (3000: 2000 + 2000 - the 1000 overlap)
+# and well under the convex hull volume (3500: the notch's reflex corner
+# filled in only as far as the straight line across it) - the real
+# regression test for a marching-cubes wrap that actually follows
+# concavities instead of silently falling back to a convex hull.
+Box 0,0,0 20,10,0 10
+Box 0,0,0 10,20,0 10
+SelNone
+SelID 1 2
+BooleanUnion
+SelNone
+SelID 3
+Volume
+SelNone
+SelID 3
+ShrinkWrap
+SelNone
+SelID 4
+Volume
+@expect_objects 2
+# --- QuadRemesh of a single surface (id 5) uses its exact UV
+# parameterisation, adding a quad mesh (id 6) alongside it.
+Plane 200,0,0 220,10,0
+SelNone
+SelID 5
+QuadRemesh
+SelNone
+SelID 6
+What
+@expect_objects 4
+# --- QuadRemesh of a closed mesh (id 7) dual-contours an all-quad, closed
+# remesh (id 8) alongside it.
+MeshSphere 250,0,0 8
+SelNone
+SelID 7
+QuadRemesh
+SelNone
+SelID 8
+What
+@expect_objects 6
+# --- ReduceMesh decimates a dense mesh sphere (id 9) in place by half its
+# faces - no object is added or removed.
+MeshSphere 280,0,0 8
+SelNone
+SelID 9
+ReduceMesh
+SelNone
+SelID 9
+What
+@expect_objects 7

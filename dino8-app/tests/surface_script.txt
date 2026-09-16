@@ -1,0 +1,230 @@
+# Surface QC: Pipe, OffsetSrf, Shell, Sweep1/2, NetworkSrf, Patch, ExtrudeCrvAlongCrv,
+# ExtrudeCrvTapered, Project, Pull. Each section hides what came before so
+# SelCrv/SelSrf only see its own objects.
+# --- Pipe radius 1 along a 10-long line: closed mesh, volume ~ pi*10
+Line 0,0,0 10,0,0
+SelLast
+Pipe
+Enter
+SelLast
+Volume
+# --- Pipe without caps: periodic NURBS surface, area ~ 2*pi*10
+SelNone
+SelCrv
+Pipe
+Cap=No
+1
+SelLast
+Area
+SelLast
+List
+# --- OffsetSrf of a plane by 2: exact parallel plane at z=2
+SelAll
+Hide
+Plane 20,0,0 30,10,0
+SelLast
+OffsetSrf
+2
+SelLast
+BoundingBox
+# --- OffsetSrf Solid=Yes: 10x10x2 slab mesh
+SelNone
+SelID 4
+OffsetSrf
+Solid=Yes
+2
+SelLast
+Volume
+# --- Shell a 20x20x10 box by 1: 4000 - 18*18*8 = 1408
+SelAll
+Hide
+Box 40,0,0 60,20,0 10
+SelLast
+Shell
+Enter
+1
+SelLast
+List
+SelClosedMesh
+@expect_selected 1
+# --- ExtrudeCrvAlongCrv: exact sum surface, 10 x 5 rectangle
+SelAll
+Hide
+Line 70,0,0 80,0,0
+Line 70,0,0 70,5,0
+SelID 10
+ExtrudeCrvAlongCrv
+SelID 11
+Enter
+SelSrf
+Area
+# --- Sweep1: circle radius 2 along a vertical 10-long rail -> cylinder-like
+SelAll
+Hide
+Line 90,0,0 90,0,10
+Circle 90,0,0 2
+SelID 13
+Sweep1
+SelID 14
+Enter
+SelSrf
+Area
+# --- Sweep2: two parallel rails and a cross line -> 10 x 5 rectangle
+SelAll
+Hide
+Line 100,0,0 110,0,0
+Line 100,5,0 110,5,0
+Line 100,0,0 100,5,0
+SelID 16
+Sweep2
+SelID 17
+Enter
+SelID 18
+Enter
+SelSrf
+Area
+# --- NetworkSrf from 4 lines around a 10x10 square (selected out of order)
+SelAll
+Hide
+Line 120,0,0 130,0,0
+Line 130,10,0 120,10,0
+Line 130,0,0 130,10,0
+Line 120,10,0 120,0,0
+SelCrv
+NetworkSrf
+SelSrf
+Area
+# --- NetworkSrf from 2 curves: exact ruled surface
+SelAll
+Hide
+Line 140,0,0 150,0,0
+Line 140,10,0 150,10,0
+SelCrv
+NetworkSrf
+SelSrf
+Area
+# --- Patch through a closed planar circle: trimmed plane
+SelAll
+Hide
+Circle 160,0,0 5
+SelCrv
+Patch
+SelPolysrf
+Area
+# --- Patch through three points: fitted rectangle
+SelAll
+Hide
+Point 170,0,0
+Point 180,0,0
+Point 170,10,1
+SelPt
+Patch
+# --- ExtrudeCrvTapered: circle r=10, distance 5, draft 10 -> closed solid
+SelAll
+Hide
+Circle 200,0,0 10
+SelCrv
+ExtrudeCrvTapered
+5
+SelPolysrf
+List
+# --- Project a line below a plane onto it (along the CPlane normal)
+SelAll
+Hide
+Plane 220,0,0 240,20,0
+Line 220,0,-5 240,20,-5
+SelCrv
+Project
+SelSrf
+Enter
+SelLast
+List
+# --- Pull a point to the plane
+Point 225,5,-3
+SelNone
+SelPt
+Pull
+SelSrf
+Enter
+SelLast
+List
+Show
+SelAll
+# --- Shell (open): pick a face to remove/open before entering thickness, so
+# the top face's own wall layer is genuinely gone rather than merely
+# relabeled. Appended at the end of the file (after every other section's
+# fixed "SelID N" references) so its extra object IDs don't shift them.
+#
+# A properly shelled-and-opened solid is still a single valid *closed*
+# 2-manifold (like a real 3D-printable mug: no naked edges anywhere) - the
+# "opening" is a cavity reachable from outside through empty space, not a
+# literal hole in the mesh surface, so SelClosedMesh (not SelOpenMesh) is the
+# correct check here; the real, discriminating proof that a real opening
+# exists is that removing the top face's wall layer measurably removes that
+# layer's own material:
+#   closed (this file's very first Shell test): 4000 - 18*18*8 = 1408
+#   open (top face's own 1-thick, 18x18 layer no longer present): 1408 - 18*18*1 = 1084
+# matching the divergence-theorem Volume() of the actual result exactly, not
+# approximately - both the outer and inner surfaces here are flat, so there
+# is no curvature discretization error to blur the comparison. The Area
+# (outer 1200 + inner 972 + a flat 76-unit picture-frame rim between the
+# outer 20x20 and inner 18x18 loops at the untouched z=10 rim = 2248) and the
+# unchanged outer BoundingBox both independently confirm the outer wall and
+# rim geometry are exactly as expected, not just the volume number.
+SelAll
+Hide
+Box 300,0,0 320,20,0 10
+SelLast
+Shell
+310,10,10
+Enter
+1
+SelLast
+List
+SelClosedMesh
+@expect_selected 1
+Area
+BoundingBox
+Volume
+# --- Shell (per-face thickness): no face removed (Enter at the remove
+# prompt), then click the top face and give it its own thickness of 3
+# while every other face (bottom + 4 sides) keeps the default Thickness=1.
+# Proves the per-face override is real numerically, not just accepted
+# without crashing: this is a plain axis-aligned box, so each wall's inset
+# is independent per axis and the inner cavity is exactly another
+# axis-aligned box -
+#   x: [340,360] inset by the default 1 on both sides -> [341,359] (18)
+#   y: [0,20]    inset by the default 1 on both sides -> [1,19]   (18)
+#   z: [0,10]    inset by the default 1 on the bottom, the override 3 on
+#                the top                                -> [1,7]    (6)
+# inner volume = 18*18*6 = 1944, so the shell's volume is exactly
+# 4000 - 1944 = 2056. Cross-check against a uniform thickness-1 shell of
+# this same 20x20x10 box (no override at all): inner would be the full
+# [1,19]x[1,19]x[1,9] box, volume 18*18*8=2592, shell volume 4000-2592=
+# 1408 (matching the first Shell test above, same box size). Giving the
+# top face its own thickness 3 instead of 1 shrinks the inner cavity's
+# height by 2 (from 8 to 6), which removes exactly 18*18*2=648 less
+# material than the uniform case - 1408+648=2056, the number this test
+# actually asserts - so the override is provably changing the real
+# geometry by precisely the amount a thicker top wall should. Area
+# independently cross-checks: outer 2*(20*20)+4*(20*10)=1600, inner
+# 2*(18*18)+2*(18*6)+2*(18*6)=1080, boolean difference of two disjoint
+# nested boxes keeps both surfaces intact so total area = 1600+1080=2680.
+# The outer BoundingBox is untouched (only the inner cavity moved).
+SelAll
+Hide
+Box 340,0,0 360,20,0 10
+SelLast
+Shell
+Mode=Thickness
+350,10,10
+3
+Enter
+1
+SelLast
+List
+SelClosedMesh
+@expect_selected 1
+Area
+BoundingBox
+Volume

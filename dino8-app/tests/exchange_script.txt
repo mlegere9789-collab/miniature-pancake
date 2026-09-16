@@ -1,0 +1,34 @@
+# Exchange-format QC: DXF round-trip, SVG / PDF vector output, PLY round-trip.
+# smoke.sh substitutes @TMP@ with a scratch directory before running this.
+# --- Build a small drawing on two layers
+Line 0,0,0 10,0,0
+Circle 20,0,0 5
+Arc 40,0,0 45,0,0 40,5,0
+Polyline 0,20,0 10,20,0 10,30,0
+Enter
+Point 3,4,5
+NewLayer Solids
+Box 0,0,0 5,5,0 5
+MeshBox 20,20,0 25,25,0 5
+SelNone
+SelPolysrf
+SelMesh
+ChangeToCurrentLayer
+SelAll
+Export @TMP@/exchange.dxf
+# --- Re-open the DXF: 1 line + 1 circle + 1 arc + 1 polyline + 12 box edges = 16 curves, 1 point, 1 mesh
+New
+Open @TMP@/exchange.dxf
+SelAll
+List
+# --- Vector output of the whole drawing (Perspective viewport, fit to page)
+Print @TMP@/exchange.pdf
+Export @TMP@/exchange.svg
+# --- PLY round-trip of the mesh
+SelNone
+SelMesh
+Export @TMP@/exchange.ply
+New
+Open @TMP@/exchange.ply
+SelAll
+List

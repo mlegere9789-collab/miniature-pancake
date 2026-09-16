@@ -1,0 +1,409 @@
+// The Dino 8 application object: owns the document, the viewports, the
+// command engine, the renderer and all UI state, and runs one frame at a
+// time from main().
+#pragma once
+
+#include <array>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "app/ViewTools.h"
+#include "commands/CommandCatalog.h"
+#include "commands/CommandEngine.h"
+#include "doc/Document.h"
+#include "render/GlRenderer.h"
+#include "doc/SubObject.h"
+#include "script/LuaEngine.h"
+#include "script/PythonEngine.h"
+#include "ui/Gumball.h"
+#include "imgui.h"
+#include "viewport/Viewport.h"
+
+namespace dino8::app {
+
+struct PanelState {
+  bool layers = true;
+  bool properties = true;
+  bool command_history = true;
+  bool command_list = false;
+  bool help = false;
+  bool notifications = false;
+  bool named_views = false;
+  bool notes = false;
+  bool document_user_text = false;
+  bool materials = false;
+  bool display = false;
+  bool object_snaps = true;
+  bool toolbars = true;
+  bool calculator = false;
+  bool imgui_demo = false;
+  bool about = false;
+  bool options = false;
+  bool box_edit = false;
+  bool undo_multiple = false;
+  bool redo_multiple = false;
+  bool layer_state_manager = false;
+  bool selection_filter = false;
+  bool macro_editor = false;
+  bool document_properties = false;
+  bool lights = false;
+  bool rendering = false;
+  bool environments = false;
+  bool textures = false;
+  bool render_window = false;
+  bool linetypes = false;
+  bool clipping_planes = false;
+  bool layouts = false;
+  bool named_cplanes = false;
+  bool script_editor = false;
+  bool scripting_reference = false;
+  bool dino_flow = false;        // Grasshopper: the Dino Flow node editor
+  bool plugin_manager = false;   // PlugInManager / GrasshopperPluginList
+  bool package_manager = false;  // PackageManager
+  bool hatch_patterns = false;  // Hatch pattern library thumbnails (cmd_drafting2.cpp)
+  bool table_editor = false;    // Table / RevisionTable / TitleBlock / BillOfMaterials editor
+};
+
+// The Script Editor panel's state (persisted: the last script text lives in
+// the config directory's scripts/ folder as _last.lua).
+struct ScriptEditorState {
+  std::string text;
+  std::string file_name;        // "part.lua" inside the scripts folder, or empty
+  std::string path;             // absolute path when loaded from elsewhere
+  bool as_macro = false;        // run the text as command lines instead of Lua
+  bool loaded = false;          // the persisted last script has been read
+  bool dirty = false;
+  std::vector<std::string> files;  // cached scripts/ listing
+  bool files_dirty = true;
+};
+
+// The last image produced by Render / RenderPreview, shown in the Render
+// Window panel and written by SaveRenderWindowAs.
+struct RenderImage {
+  int width = 0, height = 0;
+  std::vector<unsigned char> rgb;  // top-down rows
+  unsigned texture = 0;            // GL texture for the panel (owned)
+  std::string view_name;
+  std::string last_saved_path;
+  double seconds = 0;
+  bool Valid() const { return width > 0 && height > 0 && rgb.size() == static_cast<size_t>(width) * height * 3; }
+};
+
+// Small app-wide switches set by commands (SelectionFilter*, Echo, DragMode,
+// SetRedrawOff, SetWorkingFolder...). Plain data so cmd_state.cpp and
+// cmd_select2.cpp can read and toggle them without UI code.
+struct AppState {
+  // Sub-object selection filter (SelectionFilterEdges/Faces/Vertices/...).
+  bool filter_enabled = true;
+  bool filter_edges = false, filter_faces = false, filter_vertices = false;
+  bool cull_control_polygon = false;  // CullControlPolygon: only unoccluded control points are pickable
+  bool echo = true;              // Echo / NoEcho: print script commands to the history
+  bool redraw = true;            // SetRedrawOn / SetRedrawOff
+  bool command_prompt = true;    // CommandPrompt / DisplayCommandPrompt
+  bool viewport_tabs = false;    // ViewportTabs
+  bool toolbar_lock = false;     // ToolbarLock
+  bool left_sidebar = true, right_sidebar = true;
+  bool alerter = false;          // Alerter: beep when a command finishes
+  std::string drag_mode = "CPlane";  // DragMode: CPlane / World / UVN / View / ControlPolygon
+  double drag_strength = 100.0;  // DragStrength percent
+  bool drag_copy = false;        // DragCopy
+  bool remember_copy_options = false;
+  double ortho_angle = 90.0;     // OrthoAngle degrees (mirrored onto SnapSettings::ortho_angle_deg for the pick code)
+  double zoom_extents_border = 1.1;  // SetZoomExtentsBorder factor
+  double perspective_angle = 0;      // PerspectiveAngle (0 = derived from the lens)
+  std::string working_folder;        // SetWorkingFolder
+  bool message_boxes_reset = false;
+  bool camera_shown = false;         // Camera Show: draw the active camera frustum
+  bool decimal_comma = false;        // DecimalPoint: print numbers with a decimal comma
+  bool crease_splitting = true;      // CreaseSplitting: AutomaticSubDFromMesh creases sharp edges
+  bool check_new_objects = false;    // CheckNewObjects: validate objects every command adds
+  int layer_book_page = -1;          // LayerBook: index of the layer currently shown alone
+  bool dig_beep = false;             // DigBeep: terminal-bell feedback per digitized point
+  std::string content_filter;        // ContentFilter: case-insensitive name substring for the Materials/Textures/Environments panels
+};
+
+struct FileDialogState {
+  bool open = false;
+  bool save = false;
+  std::string title;
+  std::vector<std::string> extensions;  // e.g. {".3dm"}
+  std::string directory;
+  std::string filename;
+  std::function<void(const std::string&)> callback;
+};
+
+struct Notification {
+  std::string text;
+  double time = 0;
+};
+
+class Application {
+ public:
+  Application();
+  ~Application();
+
+  bool Init(const std::string& exe_dir, std::string& error);
+  void Shutdown();
+  void Frame();  // one full UI + render frame
+
+  // ---- accessors used by commands and panels ----
+  Document& Doc() { return doc_; }
+  CommandEngine& Engine() { return *engine_; }
+  LuaEngine& Lua() { return *lua_; }
+  PythonEngine& Python() { return *python_; }
+  CommandCatalog& Catalog() { return catalog_; }
+  // Scripting: RunScript reads the queued code (from "= expr" lines and the
+  // Script Editor's Run button) instead of a file when one is waiting.
+  void QueueScript(const std::string& code, const std::string& chunk_name, bool expression) {
+    queued_script_ = code; queued_script_name_ = chunk_name; queued_script_is_expression_ = expression; has_queued_script_ = true;
+  }
+  bool TakeQueuedScript(std::string& code, std::string& chunk_name, bool& expression) {
+    if (!has_queued_script_) return false;
+    code = queued_script_; chunk_name = queued_script_name_; expression = queued_script_is_expression_;
+    has_queued_script_ = false; queued_script_.clear();
+    return true;
+  }
+  ScriptEditorState& ScriptEditor() { return script_editor_; }
+  // Folder for user scripts (<config dir>/scripts), created on demand.
+  std::string ScriptsDirectory() const;
+  // Options > General: a Lua file run once at start-up (persisted).
+  std::string startup_script;
+  // rs.MessageBox: a modal message (skipped when headless).
+  void ShowMessageBox(const std::string& title, const std::string& text);
+  std::vector<std::unique_ptr<Viewport>>& Viewports() { return viewports_; }
+  // The viewport commands act on: a model viewport, or - while a layout is
+  // active - the active detail (or the page itself).
+  Viewport* ActiveViewport();
+  // Finds a model viewport, the active layout page or one of its details.
+  Viewport* FindViewport(const std::string& name);
+  // Model viewport list management (SplitViewport*, NewFloatingViewport, CloseViewport).
+  Viewport* AddViewport(const std::string& name, const std::string& standard_view, bool floating = false);
+  bool RemoveViewport(const std::string& name);
+  void BringViewportToTop(const std::string& name) { bring_to_top_ = name; }
+  void RebuildLayout() { layout_built_ = false; }
+
+  // ---- layouts (paper space) ----
+  // -1 = Model; otherwise an index into Doc().Layouts().
+  int ActiveLayoutIndex() const { return active_layout_; }
+  Layout* ActiveLayout();
+  bool SetActiveLayout(int index);
+  bool SetActiveLayoutByName(const std::string& name);  // "Model" switches back
+  int ActiveDetailIndex() const { return active_detail_; }
+  void SetActiveDetail(int index) { active_detail_ = index; }
+  Viewport* PageViewport() { return page_viewport_.get(); }
+  Viewport* DetailViewport(int index);
+  // Creates/removes the per-detail viewports so they match the active layout.
+  void SyncDetailViewports();
+  bool show_viewport_tabs = true;  // the Model / layout tab strip (ViewportTabs)
+  ViewToolsState viewtools;
+  SnapSettings& Snaps() { return snaps_; }
+  PanelState& Panels() { return panels_; }
+  AppState& State() { return state_; }
+  Gumball& GetGumball() { return gumball_; }
+  // Selected control points / vertices / edges / faces (on top of the
+  // whole-object selection). The gumball and the Delete key act on it.
+  SubObjectSelection& SubSelection() { return sub_selection_; }
+  const SubObjectSelection& SubSelection() const { return sub_selection_; }
+  // Deletes the selected sub-objects (Delete key with a sub-object selection).
+  void DeleteSubObjectSelection();
+  // The pick filter the viewports use this frame (SelectionFilter* flags).
+  SubObjectPickFilter CurrentSubObjectFilter() const;
+  // The GLFW window (as an opaque pointer so headers stay GLFW-free); set by
+  // main() so Fullscreen/Maximize/Minimize/Restore can drive the OS window.
+  void* native_window = nullptr;
+  // True in --smoke runs (hidden window): commands must not open browsers
+  // or minimise the window.
+  bool headless = false;
+  const PanelState& Panels() const { return panels_; }
+  // Heights of the fixed chrome (command line under the toolbar, status bar).
+  float CommandLineHeight() const;
+  float StatusBarHeight() const;
+  bool WantsQuit() const { return quit_; }
+  // Asks "Save changes?" when the document is modified, then runs `then`.
+  void ConfirmDiscard(std::function<void()> then);
+  void RequestQuit() { ConfirmDiscard([this]() { quit_ = true; }); }
+  const std::string& ExeDir() const { return exe_dir_; }
+
+  void ShowHelpFor(const std::string& command_name);
+  void ZoomExtentsAll();
+  void SetViewportLayout(int count);  // 1, 3 or 4
+  void FocusCommandLine() { focus_command_line_ = true; }
+  void Notify(const std::string& text);
+  void ShowFileDialog(const std::string& title, const std::vector<std::string>& extensions, bool save,
+                      std::function<void(const std::string&)> callback);
+  std::vector<std::string>& RecentFiles() { return recent_files_; }
+  void AddRecentFile(const std::string& path);
+  // ScreenCaptureToFile: captures the whole application window (every
+  // viewport and panel as composited by ImGui), not just one viewport's own
+  // render target - only main.cpp's frame loop has the default framebuffer
+  // after compositing, so the command just leaves a request here and main.cpp
+  // services it once, right after drawing, then clears it.
+  void RequestWindowCapture(const std::string& path) { pending_window_capture_ = path; }
+  std::optional<std::string> TakeWindowCaptureRequest() { std::optional<std::string> p = pending_window_capture_; pending_window_capture_.reset(); return p; }
+  float ui_scale = 1.0f;
+  bool gumball_enabled = true;
+  // UI theme, selected in Options > General (ui/Panels.cpp) and applied by
+  // ApplyDinoTheme (ui/Theme.cpp): 0 = Dark, 1 = Light, 2 = High Contrast
+  // (a dedicated accessible palette - WCAG-AA-ish text/background contrast,
+  // and hover/selected/disabled states that don't rely on color alone).
+  // Older config files only know "light_theme" (bool); Settings::Load
+  // migrates that into theme_mode when "theme_mode" itself is absent.
+  int theme_mode = 0;
+  // UI language code (Options > General, or the SetLanguage command), e.g.
+  // "en" or "es"; persisted. i18n::SetLanguage is the source of truth at
+  // runtime - this field mirrors it for Settings.cpp and Options.
+  std::string language = "en";
+  std::vector<std::string> toolbar_commands;  // customizable Standard toolbar (empty = default set)
+  // Toolbar appearance (Options > Toolbar), persisted in Settings.
+  int toolbar_icon_size = 24;        // 24, 32 or 40 px
+  bool toolbar_labels = true;        // small caption under each icon
+  int toolbar_tab = 0;               // active toolbar group tab
+  bool show_left_sidebar = true;     // Rhino-style vertical tool column on the left
+  // Theme accent colour (Options > General), RGB 0..1.
+  float accent_color[3] = {0.184f, 0.655f, 0.627f};
+  // First-run welcome overlay: "don't show again" is persisted.
+  bool welcome_dismissed = false;
+  // True when running headless (--smoke): no welcome overlay, no focus games.
+  bool smoke_mode = false;
+  // Notifications the user has not looked at yet (status bar bell badge).
+  int unread_notifications = 0;
+  // True when a saved ImGui layout exists, so the default dock layout is not rebuilt over it.
+  bool has_saved_layout = false;
+
+  // Document-level operations used by both menus and commands.
+  bool NewDocument(bool confirm_discard);
+  bool OpenDocument(const std::string& path, std::string& error);
+  bool SaveDocument(const std::string& path, std::string& error);
+  bool ImportFile(const std::string& path, std::string& error);
+  bool ExportSelected(const std::string& path, std::string& error);
+  // Vector line-art output (.svg / .pdf) of the active view. `scale` = page
+  // millimetres per document unit, 0 = fit to page.
+  bool ExportDrawing(const std::string& path, bool selected_only, double scale, std::string& error);
+
+  // Built-in renderer: renders `vp` (the active viewport when null) in
+  // Rendered mode into the render window image. `supersample` <= 0 uses
+  // the document's render quality; `arctic` renders white matte.
+  // `blowup` is the [x0,y0,x1,y1] NDC sub-rectangle of the viewport's
+  // current full view to fill the output with (RenderBlowup); the default
+  // {-1,-1,1,1} renders the ordinary full view.
+  bool RenderView(Viewport* vp, int width, int height, int supersample, bool arctic, std::string& error,
+                  std::array<double, 4> blowup = {-1, -1, 1, 1});
+  RenderImage& LastRender() { return last_render_; }
+  bool SaveLastRender(const std::string& path, std::string& error);
+  void CloseRenderWindow();
+  GlRenderer& Renderer() { return renderer_; }
+  Viewport::FrameContext MakeFrameContext();
+
+  // Surface analysis (Zebra / EMap / CurvatureAnalysis / DraftAngleAnalysis):
+  // `analysis_defaults` remembers the options between command runs, and
+  // `analysis_fallback` is the app-wide mode applied to every surface that
+  // has no per-object analysis (set by running a command with nothing selected).
+  AnalysisSettings analysis_defaults;
+  AnalysisSettings analysis_fallback;
+  // Persistent overlay lines (CurvatureGraph / EdgeContinuity), x,y,z pairs.
+  std::vector<float> overlay_lines;
+  // Layers the Layers panel highlights (HighlightObjectLayers).
+  std::vector<int> highlight_layers;
+  // Opens the middle-mouse popup toolbar at the cursor (PopupToolbar).
+  void OpenPopupToolbar();
+
+  // Display settings.
+  bool show_control_points_for_selected = false;
+  double curve_display_tolerance = 0.02;
+  double surface_display_tolerance = 0.05;
+  std::string help_command;  // command whose help the Help panel shows
+
+ private:
+  void RegisterCommands();
+  void DrawDockspace();
+  void DrawViewports();
+  void DrawLayoutPage();
+  void DrawViewportTabs();
+  float ViewportTabsHeight() const;
+  void DrawPanels();
+  void DrawCommandLine();
+  void DrawStatusBar();
+  void DrawFileDialog();
+  void DrawNotifications();
+  void DrawConfirmDiscard();
+  void DrawMessageBox();
+  void DrawPopupToolbar();
+  void DrawContextMenu();
+  void DrawWelcomeOverlay();
+  void DrawPopupToolbarGrid();  // icon grid shared by the MMB popup and the context menu
+  void HandleShortcuts();
+  void ProcessViewportEvents(Viewport& vp, const ViewportEvents& ev);
+  void BuildDefaultLayout(unsigned dockspace_id);
+
+  std::string exe_dir_;
+  Document doc_;
+  CommandCatalog catalog_;
+  std::unique_ptr<CommandEngine> engine_;
+  std::unique_ptr<LuaEngine> lua_;
+  std::unique_ptr<PythonEngine> python_;
+  std::string queued_script_, queued_script_name_;
+  bool queued_script_is_expression_ = false;
+  bool has_queued_script_ = false;
+  ScriptEditorState script_editor_;
+  std::deque<std::pair<std::string, std::string>> message_boxes_;  // title, text
+  Gumball gumball_;
+  SubObjectSelection sub_selection_;
+  // Direct control-point drag in progress (originals restored + moved each frame).
+  std::vector<std::pair<ObjectId, SceneObject>> cp_drag_originals_;
+  bool cp_drag_changed_ = false;
+  GlRenderer renderer_;
+  std::vector<std::unique_ptr<Viewport>> viewports_;
+  int active_viewport_ = 3;
+  int active_layout_ = -1;
+  int active_detail_ = -1;
+  std::unique_ptr<Viewport> page_viewport_;
+  std::vector<std::unique_ptr<Viewport>> detail_viewports_;
+  std::string bring_to_top_;
+  SnapSettings snaps_;
+  PanelState panels_;
+  AppState state_;
+  FileDialogState file_dialog_;
+  std::deque<Notification> notifications_;
+  std::vector<std::string> recent_files_;
+  std::optional<std::string> pending_window_capture_;  // ScreenCaptureToFile
+  std::string command_input_;
+  std::vector<std::string> command_line_history_;
+  int history_cursor_ = -1;
+  bool focus_command_line_ = true;
+  int focus_retries_ = 0;
+  bool quit_ = false;
+  bool layout_built_ = false;
+  bool renderer_ok_ = false;
+  std::string renderer_error_;
+  std::optional<kernel::Point3d> pending_hover_;
+  std::string command_list_filter_;
+  int command_list_status_filter_ = 0;  // 0 all, 1 implemented, 2 partial, 3 planned
+  std::string help_search_;
+  int selected_layer_row_ = -1;
+  char rename_buffer_[128] = {};
+  char layer_name_buffer_[128] = {};
+  char notes_buffer_[8192] = {};
+  std::string calc_input_;
+  std::string calc_result_;
+  std::string last_saved_path_;
+  std::function<void()> pending_after_confirm_;
+  bool confirm_open_ = false;
+  bool open_popup_toolbar_ = false;
+  ImVec2 popup_toolbar_pos_;
+  RenderImage last_render_;
+  // Right-click context menu (object or empty space) in a viewport.
+  bool open_context_menu_ = false;
+  ImVec2 context_menu_pos_;
+  ObjectId context_menu_object_ = kNoObject;
+  bool welcome_closed_this_session_ = false;
+  // Command-line autocomplete: highlighted row (-1 = none) and row count.
+  int autocomplete_index_ = -1;
+  int autocomplete_count_ = 0;
+  std::string autocomplete_prefix_;
+};
+
+}  // namespace dino8::app
