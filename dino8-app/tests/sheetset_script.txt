@@ -1,0 +1,13 @@
+Box 0,0,0 20,20,0 10
+Layout SheetA
+Save @TMP@/sheetset_a.3dm
+New
+Sphere 0,0,0 8
+Layout SheetB
+Save @TMP@/sheetset_b.3dm
+SheetSetNew @TMP@/sheetset.dss8set "Smoke Test Set"
+SheetSetAdd @TMP@/sheetset.dss8set SheetB
+Open @TMP@/sheetset_a.3dm
+SheetSetAdd @TMP@/sheetset.dss8set SheetA
+SheetSetOpen @TMP@/sheetset.dss8set
+SheetSetPlot @TMP@/sheetset.dss8set @TMP@/sheetset_out
