@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 
 #include "commands/Command.h"
 #include "doc/SubObjectEdit.h"
@@ -805,10 +806,69 @@ bool Application::OpenDocument(const std::string& path, std::string& error) {
   doc_.SetModified(false);
   AddRecentFile(path);
   ZoomExtentsAll();
+  doc_.LoadActivityLog();          // pick up this file's persisted Activity Log, if any
+  LoadNamedSnapshotsSidecar(path);  // pick up Named Snapshots saved with a previous version of this file
   Notify("Opened " + path + " (" + std::to_string(doc_.ObjectCount()) + " objects)");
   if (!error.empty()) Notify(error);  // reader summary / skipped-entity note
   error.clear();
   return true;
+}
+
+// ---- Named Snapshots persistence ------------------------------------------
+//
+// Document::SaveNamedSnapshot/RestoreNamedSnapshot keep a full document-
+// shaped capture per snapshot name; Document deliberately doesn't link
+// io/File3dm.h (see CaptureSnapshotAsDocument's comment), so the actual
+// on-disk representation lives here: one small sidecar .3dm file per
+// snapshot in "<path>.snapshots/", named by index (snapshot names may
+// contain characters that aren't safe filenames), plus a manifest.txt
+// mapping index -> name. This reuses Save3dm/Load3dm's existing, already-
+// correct object serialization instead of inventing a second one just for
+// snapshots.
+namespace {
+std::filesystem::path SnapshotsDir(const std::string& doc_path) { return std::filesystem::path(doc_path + ".snapshots"); }
+}  // namespace
+
+void Application::SaveNamedSnapshotsSidecar(const std::string& path) {
+  const std::vector<std::string> names = doc_.NamedSnapshotNames();
+  const std::filesystem::path dir = SnapshotsDir(path);
+  std::error_code ec;
+  if (names.empty()) {
+    // Nothing to persist; remove a stale sidecar from a previous save so an
+    // emptied-out snapshot set doesn't leave orphaned files behind.
+    if (std::filesystem::exists(dir, ec)) std::filesystem::remove_all(dir, ec);
+    return;
+  }
+  std::filesystem::create_directories(dir, ec);
+  std::ofstream manifest((dir / "manifest.txt").string(), std::ios::trunc);
+  for (size_t i = 0; i < names.size(); ++i) {
+    Document snap_doc;
+    if (!doc_.CaptureSnapshotAsDocument(names[i], snap_doc)) continue;
+    const std::string file = std::to_string(i) + ".3dm";
+    std::string err;
+    if (Save3dm(snap_doc, (dir / file).string(), err, /*include_reference_objects=*/false) && manifest) {
+      manifest << i << '\t' << names[i] << '\n';
+    }
+  }
+}
+
+void Application::LoadNamedSnapshotsSidecar(const std::string& path) {
+  const std::filesystem::path dir = SnapshotsDir(path);
+  std::ifstream manifest((dir / "manifest.txt").string());
+  if (!manifest) return;
+  std::string line;
+  while (std::getline(manifest, line)) {
+    if (line.empty()) continue;
+    const size_t tab = line.find('\t');
+    if (tab == std::string::npos) continue;
+    const std::string idx = line.substr(0, tab);
+    const std::string name = line.substr(tab + 1);
+    Document snap_doc;
+    std::string err;
+    if (Load3dm(snap_doc, (dir / (idx + ".3dm")).string(), err)) {
+      doc_.AdoptNamedSnapshotFromDocument(name, snap_doc);
+    }
+  }
 }
 
 bool Application::SaveDocument(const std::string& path, std::string& error) {
@@ -817,11 +877,14 @@ bool Application::SaveDocument(const std::string& path, std::string& error) {
   if (ext == ".3dm" || ext.empty()) {
     std::string p = path;
     if (ext.empty()) p += ".3dm";
+    doc_.FlushPendingHistory();  // finalize the last in-flight edit before it's captured/exported
     ok = Save3dm(doc_, p, error, /*include_reference_objects=*/false);
     if (ok) {
       doc_.SetPath(p);
       doc_.SetModified(false);
       AddRecentFile(p);
+      doc_.FlushActivityLogToDisk();  // carries pre-save (e.g. untitled-document) entries onto the new path
+      SaveNamedSnapshotsSidecar(p);
       Notify("Saved " + p);
     }
   } else if (ext == ".obj" || ext == ".stl") {
@@ -1993,6 +2056,7 @@ void Application::DrawPanels() {
   if (panels_.properties) DrawPropertiesPanel(*this);
   if (panels_.command_history) DrawCommandHistoryPanel(*this);
   if (panels_.command_list) DrawCommandListPanel(*this, command_list_filter_, command_list_status_filter_);
+  if (panels_.activity_log) DrawActivityLogPanel(*this, activity_log_filter_, activity_log_from_, activity_log_to_);
   if (panels_.help) DrawHelpPanel(*this, help_search_);
   if (panels_.notifications) { unread_notifications = 0; DrawNotificationsPanel(*this); }
   if (panels_.named_views) DrawNamedViewsPanel(*this);

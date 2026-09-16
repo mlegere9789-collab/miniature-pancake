@@ -196,7 +196,7 @@ void DrawMenuBar(Application& app) {
     Item(app, Tr("tools.load_script").c_str(), "LoadScript");
     if (ImGui::MenuItem(Tr("tools.scripting_reference").c_str())) p.scripting_reference = true;
     ImGui::Separator();
-    Items(app, {"Options", "DocumentProperties", "Toolbar", "ToolbarReset", "Alias", "Macro", "MacroEditor", "ReadCommandFile", "CommandHistory", "CommandList", "CommandPaste", "Calc", "CalcRPN", "Units", "Snap", "Osnap", "Ortho", "Planar", "SmartTrack", "ProjectOsnap", "PersistentOnCrv", "PersistentOnSrf", "PersistentOnMesh", "PersistentOnPolysrf", "DisableOsnap", "Gumball", "PointsOn", "PointsOff", "Layer", "LayerStateManager", "Repeat", "ScriptEditor", "RunScript", "RunPythonScript", "EditPythonScript", "Grasshopper", "GrasshopperPlayer", "PackageManager", "PluginManager", "Audit", "Audit3dmFile", "SystemInfo", "Notes", "Check", "SelBadObjects", "Purge", "ClearUndo", "ClearAllMeshes", "Lock", "Unlock", "Hide", "Show", "Isolate", "Unisolate", "Zoo", "Zoom"});
+    Items(app, {"Options", "DocumentProperties", "Toolbar", "ToolbarReset", "Alias", "Macro", "MacroEditor", "ReadCommandFile", "CommandHistory", "CommandList", "CommandPaste", "Calc", "CalcRPN", "Units", "Snap", "Osnap", "Ortho", "Planar", "SmartTrack", "ProjectOsnap", "PersistentOnCrv", "PersistentOnSrf", "PersistentOnMesh", "PersistentOnPolysrf", "DisableOsnap", "Gumball", "PointsOn", "PointsOff", "Layer", "LayerStateManager", "Repeat", "ScriptEditor", "RunScript", "RunPythonScript", "EditPythonScript", "Grasshopper", "GrasshopperPlayer", "PackageManager", "PluginManager", "Audit", "Audit3dmFile", "SystemInfo", "Notes", "ActivityLog", "ActivityExport", "Check", "SelBadObjects", "Purge", "ClearUndo", "ClearAllMeshes", "Lock", "Unlock", "Hide", "Show", "Isolate", "Unisolate", "Zoo", "Zoom"});
     ImGui::EndMenu();
   }
   if (ImGui::BeginMenu(Tr("menu.analyze").c_str())) {
@@ -216,6 +216,7 @@ void DrawMenuBar(Application& app) {
     ImGui::MenuItem(Tr("panel.notifications").c_str(), "", &p.notifications);
     ImGui::MenuItem(Tr("panel.named_views").c_str(), "", &p.named_views);
     ImGui::MenuItem(Tr("panel.notes").c_str(), "", &p.notes);
+    ImGui::MenuItem(Tr("panel.activity_log").c_str(), "", &p.activity_log);
     ImGui::MenuItem(Tr("panel.document_user_text").c_str(), "", &p.document_user_text);
     ImGui::MenuItem(Tr("panel.linetypes").c_str(), "", &p.linetypes);
     ImGui::MenuItem(Tr("panel.materials").c_str(), "", &p.materials);

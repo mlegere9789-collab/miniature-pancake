@@ -499,6 +499,64 @@ class Document {
   bool DeleteNamedSnapshot(const std::string& name);            // false if no snapshot has that name
   std::vector<std::string> NamedSnapshotNames() const;
 
+  // Named Snapshots persistence (extends the feature above across Save/
+  // Open): a snapshot's payload is a full Document-shaped state (objects,
+  // layers, groups, materials, lights, clipping planes, layouts, id
+  // counters) - exactly what Save3dm/Load3dm already know how to write and
+  // read for a live Document. Rather than inventing a second, parallel
+  // geometry serialization just for snapshots, these two helpers convert a
+  // snapshot to/from an ordinary Document so the application layer (which
+  // already links io/File3dm.h; Document itself deliberately does not, to
+  // avoid a doc->io dependency) can Save3dm() each snapshot to a small
+  // sidecar .3dm file next to the main document and Load3dm() it back in.
+  // See Application::SaveDocument/OpenDocument for the sidecar-file and
+  // manifest handling this enables.
+  bool CaptureSnapshotAsDocument(const std::string& name, Document& out) const;  // false if no snapshot has that name
+  void AdoptNamedSnapshotFromDocument(const std::string& name, const Document& src);  // add/overwrite
+
+  // ---- Activity Log (local analogue of AutoCAD's Activity Insights) -----
+  //
+  // Every StateDelta already carries a human-readable label plus the exact
+  // set of objects it added/removed/modified (see the StateDelta comment
+  // below) - this struct is just that information, boiled down to one
+  // durable, human-readable line per completed edit, kept independently of
+  // the undo_/redo_ stacks so trimming old undo history (max_undo_) never
+  // erases the activity record. Geometry itself is *not* retained here
+  // (only labels/ids/counts) - see ActivityLogEntry's comment for why.
+  struct ActivityLogEntry {
+    std::string timestamp_utc;  // "YYYY-MM-DD HH:MM:SS" UTC, wall-clock time FinalizePending ran
+    std::string label;          // the BeginChange/BeginChangeForObjects label, e.g. "Move", "Delete"
+    std::string summary;        // e.g. "+2 -0 ~3 object(s) [ids 12,13,14,...]"
+  };
+  const std::vector<ActivityLogEntry>& ActivityLog() const { return activity_log_; }
+
+  // Finalizes whatever edit is mid-flight into a real HistoryEntry/
+  // ActivityLogEntry (same finalization BeginChange/Undo/Redo trigger
+  // internally) without starting a new one - callers that need the
+  // Activity Log or undo history to be fully up to date *right now*
+  // without themselves beginning a change (e.g. Application::SaveDocument,
+  // so the very last edit before a save is never silently dropped from the
+  // exported log) call this explicitly.
+  void FlushPendingHistory() { FinalizePending(); }
+
+  // Loads this document's previously-persisted Activity Log (see
+  // ActivityLogEntry) from the sidecar file next to Path(), if one exists,
+  // replacing the in-memory log. Call after SetPath() on Open so a
+  // reopened document's activity history is available again, not just new
+  // edits made in the current session. A no-op if Path() is empty.
+  void LoadActivityLog();
+
+  // Rewrites the sidecar Activity Log file for the *current* Path() from
+  // scratch, from every entry currently in memory (activity_log_) -
+  // including entries recorded before this document had a path at all
+  // (AppendActivityLogLineToDisk is a no-op with no path, so an edit made
+  // to a brand-new/untitled document is otherwise never written to disk
+  // until this runs). Called by Application::SaveDocument right after
+  // SetPath() on every save, so a document's very first save (or a Save As
+  // to a new path) carries its full in-memory history with it instead of
+  // silently losing the pre-save entries. A no-op if Path() is empty.
+  void FlushActivityLogToDisk() const;
+
  private:
   struct Snapshot {
     std::string label;
@@ -636,6 +694,16 @@ class Document {
   void FinalizePending();
   void ApplyDelta(const StateDelta& delta, bool undo);
   void ApplyObjectDelta(const StateDelta& delta, bool undo);
+
+  // Activity Log recording: builds one ActivityLogEntry from a just-
+  // finalized StateDelta, appends it to activity_log_, and (if Path() is
+  // set) appends the same entry as one line to the sidecar log file so it
+  // survives past this session even if the document is never explicitly
+  // saved again. See FinalizePending's call site.
+  void RecordActivityLogEntry(const StateDelta& d);
+  void AppendActivityLogLineToDisk(const ActivityLogEntry& e) const;
+  std::string ActivityLogPath() const;
+  std::vector<ActivityLogEntry> activity_log_;
 
   PendingChange pending_;
   int ops_since_checkpoint_ = 0;

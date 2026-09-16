@@ -66,6 +66,7 @@ struct PanelState {
   bool package_manager = false;  // PackageManager
   bool hatch_patterns = false;  // Hatch pattern library thumbnails (cmd_drafting2.cpp)
   bool table_editor = false;    // Table / RevisionTable / TitleBlock / BillOfMaterials editor
+  bool activity_log = false;    // Activity Log (local Activity Insights analogue; see Document::ActivityLog)
 };
 
 // The Script Editor panel's state (persisted: the last script text lives in
@@ -280,6 +281,10 @@ class Application {
   bool SaveDocument(const std::string& path, std::string& error);
   bool ImportFile(const std::string& path, std::string& error);
   bool ExportSelected(const std::string& path, std::string& error);
+  // Named Snapshots persistence sidecar (see Document::CaptureSnapshotAsDocument's
+  // comment for why the on-disk form lives here rather than in Document).
+  void SaveNamedSnapshotsSidecar(const std::string& path);
+  void LoadNamedSnapshotsSidecar(const std::string& path);
   // Vector line-art output (.svg / .pdf) of the active view. `scale` = page
   // millimetres per document unit, 0 = fit to page.
   bool ExportDrawing(const std::string& path, bool selected_only, double scale, std::string& error);
@@ -382,6 +387,9 @@ class Application {
   std::optional<kernel::Point3d> pending_hover_;
   std::string command_list_filter_;
   int command_list_status_filter_ = 0;  // 0 all, 1 implemented, 2 partial, 3 planned
+  std::string activity_log_filter_;      // substring filter over label/summary
+  char activity_log_from_[16] = {};      // "YYYY-MM-DD" inclusive lower bound, empty = no bound
+  char activity_log_to_[16] = {};        // "YYYY-MM-DD" inclusive upper bound, empty = no bound
   std::string help_search_;
   int selected_layer_row_ = -1;
   char rename_buffer_[128] = {};
