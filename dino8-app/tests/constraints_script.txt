@@ -82,6 +82,37 @@ Type=Midpoint
 SelID 13 14
 Enter
 ConstraintSolve
+# --- Live auto re-solve: a Coincident constraint against a Fixed circle
+# stays satisfied after a later Move on the *other* participant, with no
+# ConstraintSolve call anywhere in between (Constraints.h AutoResolveFrame,
+# run every Application::Frame() - see ConstraintsFrame in this file).
+# (radius 2, not 3: Circle's own "3Point" option would swallow a bare "3")
+Circle 400,0,0 2
+SelNone
+Constrain
+Type=Fixed
+SelID 15
+Enter
+Line 410,0,0 415,5,0
+SelNone
+Constrain
+Type=Coincident
+SelID 15 16
+Enter
+# No ConstraintSolve here: the constraint's own creation frame already
+# auto-resolved line 16's near endpoint onto the fixed circle centre.
+SelNone
+SelID 16
+List
+# Move the *line* (not the fixed circle) away, breaking coincidence...
+SelNone
+SelID 16
+Move 410,0,0 500,50,0
+# ...then read it back with no ConstraintSolve in between: AutoResolveFrame
+# must have pulled CV[0] back onto the circle's centre (400,0,0) by itself.
+SelNone
+SelID 16
+List
 # --- Overlay + panel + cleanup
 ConstraintsShow
 ConstraintsPanel

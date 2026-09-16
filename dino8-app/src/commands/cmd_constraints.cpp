@@ -256,6 +256,15 @@ class ConstrainCommand : public Command {
   double value_ = 0;
 };
 
+// Manual override: sketch::AutoResolveFrame (see ConstraintsFrame below,
+// called every Application::Frame()) already re-solves on its own whenever
+// a constrained object's bounding box changes, so a plain Move/Rotate/
+// Scale/Stretch or gumball drag on a constrained curve keeps every other
+// constraint satisfied without this command ever being typed. ConstraintSolve
+// remains for the rare case where that per-frame nudge isn't enough - e.g.
+// right after loading a .3dm saved by something that left the geometry out
+// of sync with its own constraints, or to force a fresh report of every
+// constraint's current measurement on demand.
 class ConstraintSolveCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
