@@ -158,6 +158,19 @@ struct AnnotationStyle {
   std::string font;         // empty: the first system sans-serif font found
 };
 
+// A Layer State: a named snapshot of every layer's visible/locked flags
+// (the Layer State Manager panel's "Save state" / restore), keyed by layer
+// name rather than index so it survives layers being reordered or new ones
+// added between save and restore. A per-Document member (not a process-wide
+// static) so states are scoped to the document that saved them, and
+// persisted to the .3dm the same way AnnotationStyles are: one
+// "Dino8.LayerState.<name>" document user-string per state, packed as
+// "layer,V,L|layer2,V,L|..." (see io/File3dm.cpp).
+struct LayerState {
+  std::string name;
+  std::vector<std::pair<std::string, std::pair<bool, bool>>> layers;  // name -> {visible, locked}
+};
+
 // A camera description that lives in the document (named views) without
 // dragging viewport/GL code into the document layer.
 struct CameraState {
@@ -417,6 +430,10 @@ class Document {
   const std::vector<AnnotationStyle>& AnnotationStyles() const { return annotation_styles_; }
   AnnotationStyle* FindAnnotationStyle(const std::string& name);
   const AnnotationStyle& CurrentAnnotationStyle() const;
+  // ---- Layer States (Layer State Manager panel) -------------------------
+  std::vector<LayerState>& LayerStates() { return layer_states_; }
+  const std::vector<LayerState>& LayerStates() const { return layer_states_; }
+  LayerState* FindLayerState(const std::string& name);
   std::vector<NamedSelection>& NamedSelections() { return named_selections_; }
   std::vector<NamedPosition>& NamedPositions() { return named_positions_; }
   std::vector<NamedCPlane>& NamedCPlanes() { return named_cplanes_; }
@@ -743,6 +760,7 @@ class Document {
   std::vector<BlockDefinition> blocks_;
   std::vector<Linetype> linetypes_;
   std::vector<AnnotationStyle> annotation_styles_;
+  std::vector<LayerState> layer_states_;
   std::vector<ReferenceModel> reference_models_;
   std::map<ObjectId, HoleFeature> hole_features_;
   std::map<std::string, std::string> user_text_;

@@ -28,6 +28,7 @@ void Document::Clear() {
   named_views_.clear();
   linetypes_ = DefaultLinetypes();
   annotation_styles_ = {AnnotationStyle{}};
+  layer_states_.clear();
   named_cplanes_.clear();
   guides_.clear();
   clipping_planes_.clear();
@@ -402,6 +403,11 @@ const AnnotationStyle& Document::CurrentAnnotationStyle() const {
   for (const AnnotationStyle& a : annotation_styles_) if (a.name == settings_.annotation_style) return a;
   static const AnnotationStyle kDefault;
   return annotation_styles_.empty() ? kDefault : annotation_styles_.front();
+}
+
+LayerState* Document::FindLayerState(const std::string& name) {
+  for (LayerState& s : layer_states_) if (s.name == name) return &s;
+  return nullptr;
 }
 
 NamedCPlane* Document::FindNamedCPlane(const std::string& name) {
