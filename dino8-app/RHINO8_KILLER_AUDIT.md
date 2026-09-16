@@ -280,10 +280,36 @@ documented in the Addendum below.
   consecutive full runs reproduced the identical silent death before the pattern was corrected to
   `^history: Command: List$`.
 
-**Still queued in this wave**: live two-way CSV data linking to external spreadsheets and vertical-market
-Mechanical+MEP parametric components (fasteners, structural shapes, ducts/pipes/conduit sized from flow) —
-both implemented and locally verified by their own author agents, pending this session's own independent
-re-verification/merge/push/CI-confirm before being checked off here.
+- [x] **Live two-way CSV data linking.** New `DataLink`/`DataLinkUpdate` commands (`src/commands/
+  cmd_drafting2.cpp`) link any table object (`Table`/`RevisionTable`/`TitleBlock`/`BillOfMaterials`) to a
+  CSV file and sync in either direction: `DataLink` pushes on first link (file doesn't exist yet) or follows
+  an explicit `Mode=`; `DataLinkUpdate` compares the CSV's mtime and the table's own last-modified time
+  against the link's `last_sync_utc` and auto-picks pull vs. push, refusing with a named `ctx.Warn` (not a
+  silent guess) when both sides changed since the last sync until the caller passes an explicit
+  `Direction=` — mirroring AutoCAD's own manual, non-silent DATALINKUPDATE. Scoped to CSV, not native
+  `.xlsx`, for this increment (a table cell is a bare string with no formulas/styles to lose either way, and
+  CSV needs zero new dependencies), with a disclosed inherent limitation: a pulled value is always a
+  spreadsheet's last-saved computed value, never a live formula. Verified across a real 4-stage external-
+  edit simulation (smoke.sh itself rewrites the CSV between app invocations to stand in for someone editing
+  it in a spreadsheet): push-to-new-file, auto-pull after an outside edit, auto-push after a table edit (the
+  reverse direction), and the ambiguous both-changed case resolved via an explicit `Direction=Push`.
+
+**Independent re-verification of this increment surfaced two further real, previously-undetected bugs in
+`tests/smoke.sh` itself** (not in the DataLink feature code) — found by running the full, merged smoke.sh to
+completion rather than trusting each feature branch's own isolated run: (1) the Smart Blocks section's
+`BlockManager` assertion used `\(`/`\)` inside a plain (BRE) `grep` pattern intending to match literal
+parentheses in `"3 object(s)"` — but in POSIX basic regular expressions `\(`/`\)` is the *grouping*
+metacharacter and unescaped `(`/`)` are literal, exactly backwards from ERE/PCRE convention, so the check
+silently never matched; masked until now because Smart Blocks happened to be verified in isolation as the
+last section in its own worktree's smoke.sh. (2) a redundant `echo | grep | while read; do ... exit 1; done`
+pipeline (the same dead-code class the dynamic-blocks fix above already found once) whose last iteration's
+failed `grep` left the pipeline's own exit status nonzero under `set -e`, silently killing the whole
+smoke.sh run with no FAIL ever printed. Both fixed; the full merged suite is now stable across repeated
+clean runs (0 FAIL, all 10 tutorials, every feature section including DataLink reached and passing).
+
+**Still queued in this wave**: vertical-market Mechanical+MEP parametric components (fasteners, structural
+shapes, ducts/pipes/conduit sized from flow) — implemented and locally verified by its own author agent,
+pending this session's own independent re-verification/merge/push/CI-confirm before being checked off here.
 
 ## Addendum: what "100%, no exceptions" actually required
 
