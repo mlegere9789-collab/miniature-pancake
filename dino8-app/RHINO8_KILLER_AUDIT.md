@@ -253,12 +253,20 @@ documented in the Addendum below.
   panel UI) and one PDF per sheet (not a single combined multi-page set output) — both real, working
   simplifications of AutoCAD's fuller Sheet Set Manager, not silently approximated.
 
-**Still queued in this wave** (implemented and locally verified by their own author agents, pending this
-session's own independent re-verification/merge/push/CI-confirm before being checked off here): dynamic
-blocks (visibility-state parameter/action graph, first increment), live two-way CSV data linking to
-external spreadsheets, and vertical-market Mechanical+MEP parametric components (fasteners, structural
-shapes, ducts/pipes/conduit sized from flow) plus auto-updating center marks/centerlines (reusing the
-existing `DimRefObj#`/`UpdateDimensions` associativity pattern).
+- [x] **Auto-updating center marks/centerlines.** New `Centermark`/`CenterLine`/`SetCenterLayer` commands
+  (`src/commands/annotate_common.h`, `cmd_annotate2.cpp`) reuse the existing `DimRefObj#`-tag/
+  `UpdateDimensions`-recompute associativity pattern already proven for dimensions: a center mark's arc/
+  circle anchor and a center line's two line-curve anchors are recorded at creation and re-derived whenever
+  `UpdateDimensions` runs, exactly like every other associative annotation this session added. Verified
+  with a real move-then-`UpdateDimensions` test. Honestly scoped: `CenterLine` covers two independently
+  selected line curves, not a solid's own parallel-edge pair (which would need edge-topology selection this
+  command doesn't attempt) — disclosed, not silently approximated.
+
+**Still queued in this wave**: dynamic blocks (visibility-state parameter/action graph, first increment),
+live two-way CSV data linking to external spreadsheets, and vertical-market Mechanical+MEP parametric
+components (fasteners, structural shapes, ducts/pipes/conduit sized from flow) — all implemented and
+locally verified by their own author agents, pending this session's own independent re-verification/merge/
+push/CI-confirm before being checked off here.
 
 ## Addendum: what "100%, no exceptions" actually required
 
