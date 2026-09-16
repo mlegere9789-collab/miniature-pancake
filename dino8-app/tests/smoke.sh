@@ -1921,6 +1921,45 @@ dbcheck_absent "$DB_S3" "CV[0] 306,5,0" "Instance #3 correctly omits the Circle 
 echo "$DB" | grep -E "^(ok|FAIL)" || true
 if echo "$DB" | grep -q "^FAIL"; then fail=1; fi
 
+# Mechanical/structural fasteners and MEP runs: Bolt/Nut/Washer/IBeam/
+# Channel/Angle/Duct/Pipe/Conduit, plus SizeDuct/SizePipe (see
+# mech_mep_script.txt). Bounding-box extents are checked against each
+# item's actual standard-size-table/input-diameter parameters, not just
+# object counts; Duct/Pipe/Conduit volumes are checked against the
+# pi*r^2*L continuity formula; SizeDuct/SizePipe are checked against
+# MepDiameterFromFlow()'s own formula.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  MM="$("$BIN" --smoke 100 --script "$HERE/mech_mep_script.txt" 2>&1)" || { echo "$MM"; echo "FAIL: mech/MEP script exited non-zero"; exit 1; }
+else
+  MM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/mech_mep_script.txt" 2>&1)" || { echo "$MM"; echo "FAIL: mech/MEP script exited non-zero"; exit 1; }
+fi
+mmcheck() { if echo "$MM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+mmcheck "Bolt #1 added." "Bolt command built a fastener"
+mmcheck "Bounding box min -0.009815,-0.009815,0 max 0.009815,0.009815,0.0564" "Bolt M10's bounding box matches its table head diameter (0.017/cos30) and shank+head axial extent (0.05+0.0064)"
+mmcheck "Nut #2 added." "Nut command built a fastener"
+mmcheck "Bounding box min 1.99,-0.009815,0 max 2.01,0.009815,0.008" "Nut M10's bounding box matches its table across-flats diameter and thickness (0.008)"
+mmcheck "Washer #3 added." "Washer command built a fastener"
+mmcheck "Bounding box min 3.99,-0.0105,0 max 4.01,0.0105,0.002" "Washer M10's bounding box matches its table outer diameter (0.021) and thickness (0.002)"
+mmcheck "IBeam #4 added." "IBeam command built a structural shape"
+mmcheck "Bounding box min 0,1.95,-0.1 max 5,2.05,0.1" "IBeam IB200's bounding box matches its table depth (0.200) and flange width (0.100)"
+mmcheck "Channel #5 added." "Channel command built a structural shape"
+mmcheck "Bounding box min 0,2.967,-0.075 max 5,3.033,0.075" "Channel C150's bounding box matches its table depth (0.150) and flange width (0.065)"
+mmcheck "Angle #6 added." "Angle command built a structural shape"
+mmcheck "Bounding box min 0,4,0 max 5,4.075,0.075" "Angle L75x75's bounding box matches its table leg lengths (0.075 x 0.075), corner-anchored not centred"
+mmcheck "Duct #7 added." "Duct command built an MEP run"
+mmcheck "Volume = 0.3524 cubic" "Duct diameter=0.3 volume matches pi*0.15^2*5 = 0.3534 within mesh faceting"
+mmcheck "Duct #7 sized to diameter 0.158233 m" "SizeDuct re-derived the diameter from 250 CFM via MepDiameterFromFlow's own formula (area = flow/6 m/s, d = sqrt(4*area/pi))"
+mmcheck "Bounding box min 0,4.921,-0.07912 max 5,5.079,0.07912" "SizeDuct's rebuilt Duct mesh has the exact resized radius (0.158233/2)"
+mmcheck "Pipe #8 added." "Pipe command built an MEP run"
+mmcheck "Volume = 0.03916 cubic" "Pipe diameter=0.1 volume matches pi*0.05^2*5 = 0.03927 within mesh faceting"
+mmcheck "Pipe #8 sized to diameter 0.0400822 m" "SizePipe re-derived the diameter from 30 GPM via MepDiameterFromFlow's own formula (area = flow/1.5 m/s, d = sqrt(4*area/pi))"
+mmcheck "Bounding box min 0,5.98,-0.02004 max 5,6.02,0.02004" "SizePipe's rebuilt Pipe mesh has the exact resized radius (0.0400822/2)"
+mmcheck "Conduit #9 added." "Conduit command built an MEP run"
+mmcheck "Volume = 0.001566 cubic" "Conduit diameter=0.02 volume matches pi*0.01^2*5 = 0.001571 within mesh faceting"
+mmcheck "^ok   expect_objects 18" "mech/MEP script produced the expected object count (9 components + 9 BoundingBox visualization boxes, Duct/Pipe's rebuilt-by-SizeDuct/SizePipe mesh ids not colliding with earlier ones)"
+echo "$MM" | grep -E "^(ok|FAIL)" || true
+if echo "$MM" | grep -q "^FAIL"; then fail=1; fi
+
 # Session: 3D digitizer (Dig*, Protocol=File test mode), Worksession /
 # LimitReferenceModel, Snapshots, draw order, and real hole features
 # (Move/Copy/Rotate/MirrorHole) (see session_script.txt).
