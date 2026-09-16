@@ -51,6 +51,7 @@ void RegisterFileCommands(CommandEngine&);
 void RegisterMiscCommands(CommandEngine&);
 void RegisterAnnotateCommands(CommandEngine&);
 void RegisterDraftingCommands(CommandEngine&);
+void RegisterSmartBlockCommands(CommandEngine&);
 void RegisterAnnotate2Commands(CommandEngine&);
 void RegisterCurves2Commands(CommandEngine&);
 void RegisterSrfEditCommands(CommandEngine&);
@@ -297,6 +298,7 @@ void Application::RegisterCommands() {
   RegisterMiscCommands(*engine_);
   RegisterAnnotateCommands(*engine_);
   RegisterDraftingCommands(*engine_);
+  RegisterSmartBlockCommands(*engine_);
   RegisterAnnotate2Commands(*engine_);  // dimensions, linetypes, hatch and block extras
   RegisterDrafting2Commands(*engine_);  // re-registers Hatch against the pattern library; adds tables/BoM/GD&T/leaders/sections
   RegisterSelect2Commands(*engine_);

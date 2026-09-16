@@ -203,6 +203,7 @@ set(DINO8_SOURCES
   src/commands/cmd_annotate.cpp
   src/commands/cmd_annotate2.cpp
   src/commands/cmd_drafting.cpp
+  src/commands/cmd_smartblocks.cpp
   src/commands/cmd_drafting2.cpp
   src/drafting/HatchLibrary.cpp
   src/drafting/Table.cpp

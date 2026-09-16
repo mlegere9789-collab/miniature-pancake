@@ -304,6 +304,16 @@ inline int JoinNakedEdges(ON_Brep& b, double tol) {
 // Block / BlockInsert); defined in cmd_drafting.cpp. Returns the group id or -1.
 int InstantiateBlock(CommandContext& ctx, const std::string& name, Point3d at);
 
+// Tags `ids` (existing objects already in the document, left exactly where
+// they are - no geometry is copied or transformed) as a grouped instance of
+// block `name`, the same Block/BlockInsert user-text convention
+// InstantiateBlock uses; defined in cmd_drafting.cpp. Used by
+// SmartBlockConvert (cmd_smartblocks.cpp) to convert an in-place, possibly
+// rotated occurrence without losing its orientation (BlockDefinition/
+// InstantiateBlock only support a translated instance, not a rotated one).
+// Returns the group id or -1.
+int TagExistingAsBlockInstance(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::string& name, Point3d at);
+
 // Curve/curve intersection (points) or closed-solid/closed-solid intersection
 // (mesh boolean); defined in cmd_curveedit.cpp. cmd_fillet.cpp's Intersect
 // wrapper delegates to this when the selection has no surfaces/breps.
