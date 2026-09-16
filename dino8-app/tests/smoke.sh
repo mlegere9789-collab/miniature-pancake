@@ -1467,6 +1467,7 @@ echo "$S2" | grep -E "^(ok|FAIL)"
 if echo "$S2" | grep -q "^FAIL"; then fail=1; fi
 echo "$S2" | grep -q "^smoke:" || { echo "$S2"; echo "FAIL: state2 script produced no smoke line"; fail=1; }
 s2check() { if echo "$S2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+s2check "WhatsNew: opened the What's New window" "WhatsNew opens its own real changelog window, not the About box"
 s2check "Echo on" "Echo toggled on"
 s2check "Echo off" "Echo toggled off"
 s2check "Redraw on" "SetRedrawOn"

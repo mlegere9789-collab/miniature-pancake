@@ -384,7 +384,7 @@ void RegisterMiscCommands(CommandEngine& e) {
   Reg(e, "About", Immediate([](CommandContext& ctx) { ctx.App().Panels().about = true; }));
   Reg(e, "Licenses", Immediate([](CommandContext& ctx) { ctx.Print("Dino 8 is free software. No licence keys, subscriptions or activation exist."); ctx.App().Panels().about = true; }));
   Reg(e, "CheckForUpdates", Immediate([](CommandContext& ctx) { ctx.Print("Dino 8 does not phone home. Get new builds from the project's GitHub releases."); }));
-  Reg(e, "WhatsNew", Immediate([](CommandContext& ctx) { ctx.App().Panels().about = true; }));
+  Reg(e, "WhatsNew", Immediate([](CommandContext& ctx) { ctx.App().Panels().whats_new = true; ctx.Print("WhatsNew: opened the What's New window (data/changelog.md, by version)."); }));
   Reg(e, "TechSupport", Immediate([](CommandContext& ctx) { ctx.Print("Support: open an issue at https://github.com/mlegere9789-collab/miniature-pancake"); }));
   Reg(e, "LearnRhino", Immediate([](CommandContext& ctx) { ctx.App().Panels().help = true; }));
   Reg(e, "Tutorials", Immediate([](CommandContext& ctx) { ctx.App().Panels().help = true; }));

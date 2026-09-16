@@ -117,6 +117,7 @@ bool LoadSettingsFrom(const std::string& path_str, Application& app, float& ui_s
   app.toolbar_tab = static_cast<int>(Num(root["toolbar_tab"], app.toolbar_tab));
   app.show_left_sidebar = Bool(root["left_sidebar"], app.show_left_sidebar);
   app.welcome_dismissed = Bool(root["welcome_dismissed"], app.welcome_dismissed);
+  if (root["last_seen_version"].IsString()) app.last_seen_version = root["last_seen_version"].AsString();
   const json::Value& accent = root["accent_color"];
   if (accent.IsArray() && accent.Size() >= 3) for (size_t i = 0; i < 3; ++i) app.accent_color[i] = static_cast<float>(Num(accent[i], app.accent_color[i]));
   app.curve_display_tolerance = Num(root["curve_display_tolerance"], app.curve_display_tolerance);
@@ -147,6 +148,7 @@ bool SaveSettingsTo(const std::string& path_str, const Application& app, float u
   out << "  \"toolbar_tab\": " << a.toolbar_tab << ",\n";
   out << "  \"left_sidebar\": " << (a.show_left_sidebar ? "true" : "false") << ",\n";
   out << "  \"welcome_dismissed\": " << (a.welcome_dismissed ? "true" : "false") << ",\n";
+  out << "  \"last_seen_version\": \"" << Escape(a.last_seen_version) << "\",\n";
   out << "  \"accent_color\": [" << a.accent_color[0] << ", " << a.accent_color[1] << ", " << a.accent_color[2] << "],\n";
   out << "  \"curve_display_tolerance\": " << a.curve_display_tolerance << ",\n";
   out << "  \"surface_display_tolerance\": " << a.surface_display_tolerance << ",\n";

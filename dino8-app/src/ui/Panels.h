@@ -34,6 +34,10 @@ void DrawRenderWindow(Application& app);
 void DrawDisplayPanel(Application& app);
 void DrawCalculatorPanel(Application& app, std::string& input, std::string& result);
 void DrawAboutWindow(Application& app);
+// What's New: the real changelog (data/changelog.md), grouped by version,
+// in a scrollable window. Separate from DrawAboutWindow, which is only the
+// static version blurb.
+void DrawWhatsNewWindow(Application& app);
 void DrawOptionsWindow(Application& app);
 void DrawDocumentPropertiesWindow(Application& app);
 void DrawLinetypesPanel(Application& app);

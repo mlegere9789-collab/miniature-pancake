@@ -736,6 +736,100 @@ void DrawAboutWindow(Application& app) {
   ImGui::End();
 }
 
+namespace {
+
+// One changelog entry: a version heading ("## 0.1.0") and its bullet lines
+// ("- ...") underneath, in file order (newest first, by convention of how
+// data/changelog.md is written).
+struct ChangelogVersion {
+  std::string version;
+  std::vector<std::string> bullets;
+};
+
+// Minimal changelog.md parser: "## <version>" starts a new version block,
+// "- <text>" is a bullet under the current block, everything else (blank
+// lines, the leading commentary paragraph, other heading levels) is
+// ignored. No general Markdown support is needed for a file this simple.
+std::vector<ChangelogVersion> ParseChangelog(const std::string& text) {
+  std::vector<ChangelogVersion> versions;
+  std::istringstream in(text);
+  std::string line;
+  while (std::getline(in, line)) {
+    // Trim trailing \r for files that round-tripped through Windows.
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.rfind("## ", 0) == 0) {
+      versions.push_back(ChangelogVersion{line.substr(3), {}});
+    } else if (!versions.empty() && line.rfind("- ", 0) == 0) {
+      versions.back().bullets.push_back(line.substr(2));
+    } else if (!versions.empty() && line.rfind("  ", 0) == 0 && !versions.back().bullets.empty()) {
+      // A continuation line (wrapped bullet, indented two spaces, no "- ")
+      // gets folded onto the previous bullet instead of becoming its own.
+      std::string cont = line.substr(2);
+      size_t start = cont.find_first_not_of(' ');
+      if (start != std::string::npos) versions.back().bullets.back() += " " + cont.substr(start);
+    }
+  }
+  return versions;
+}
+
+// Loaded once per process and cached: the same search order Application::
+// Init() uses for data/commands.json and data/i18n, so the changelog is
+// found next to the executable in an install, in the build tree, or run
+// from the source checkout.
+const std::vector<ChangelogVersion>& Changelog(Application& app) {
+  static std::vector<ChangelogVersion> cached;
+  static bool loaded = false;
+  if (loaded) return cached;
+  loaded = true;
+  const std::string& exe_dir = app.ExeDir();
+  const std::vector<std::string> candidates = {
+      exe_dir + "/data/changelog.md",           exe_dir + "/../Resources/data/changelog.md",
+      exe_dir + "/../share/dino8/data/changelog.md", exe_dir + "/../../data/changelog.md",
+      exe_dir + "/../../../dino8-app/data/changelog.md", "data/changelog.md",
+  };
+  for (const std::string& path : candidates) {
+    std::ifstream in(path);
+    if (!in) continue;
+    std::stringstream buf;
+    buf << in.rdbuf();
+    cached = ParseChangelog(buf.str());
+    break;
+  }
+  return cached;
+}
+
+}  // namespace
+
+void DrawWhatsNewWindow(Application& app) {
+  ImGui::SetNextWindowSize(ImVec2(560, 480), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.whats_new", "WhatsNew").c_str(), &app.Panels().whats_new, ImGuiWindowFlags_NoDocking)) { ImGui::End(); return; }
+  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(ThemeColors::kAccent[0], ThemeColors::kAccent[1], ThemeColors::kAccent[2], 1));
+  ImGui::Text("What's new in Dino 8");
+  ImGui::PopStyleColor();
+  ImGui::TextDisabled("Running %s", DINO8_VERSION);
+  ImGui::Separator();
+  const std::vector<ChangelogVersion>& versions = Changelog(app);
+  if (versions.empty()) {
+    ImGui::TextWrapped("The changelog (data/changelog.md) could not be found next to this build.");
+  } else {
+    ImGui::BeginChild("##whats_new_scroll", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()));
+    for (const ChangelogVersion& v : versions) {
+      const bool is_current = v.version == DINO8_VERSION;
+      if (is_current) ImGui::PushStyleColor(ImGuiCol_Text, ThemeColors::Accent());
+      const bool open = ImGui::TreeNodeEx(v.version.c_str(), ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed,
+                                          "%s%s", v.version.c_str(), is_current ? "  (this build)" : "");
+      if (is_current) ImGui::PopStyleColor();
+      if (open) {
+        for (const std::string& bullet : v.bullets) ImGui::BulletText("%s", bullet.c_str());
+        ImGui::TreePop();
+      }
+    }
+    ImGui::EndChild();
+  }
+  if (ImGui::Button("Close")) app.Panels().whats_new = false;
+  ImGui::End();
+}
+
 void DrawOptionsWindow(Application& app) {
   ImGui::SetNextWindowSize(ImVec2(620, 460), ImGuiCond_Appearing);
   if (!ImGui::Begin(PanelTitle("panel.options", "Options").c_str(), &app.Panels().options)) { ImGui::End(); return; }
