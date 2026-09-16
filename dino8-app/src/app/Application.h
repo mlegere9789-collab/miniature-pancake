@@ -42,6 +42,7 @@ struct PanelState {
   bool calculator = false;
   bool imgui_demo = false;
   bool about = false;
+  bool whats_new = false;
   bool options = false;
   bool box_edit = false;
   bool undo_multiple = false;
@@ -268,6 +269,12 @@ class Application {
   float accent_color[3] = {0.184f, 0.655f, 0.627f};
   // First-run welcome overlay: "don't show again" is persisted.
   bool welcome_dismissed = false;
+  // Last DINO8_VERSION the user has seen the What's New window for
+  // (Settings persists this). Empty means never seen: the first launch
+  // after install just records the current version without popping the
+  // window (that is what the welcome overlay is for), but any later
+  // version bump auto-opens What's New once.
+  std::string last_seen_version;
   // True when running headless (--smoke): no welcome overlay, no focus games.
   bool smoke_mode = false;
   // Notifications the user has not looked at yet (status bar bell badge).

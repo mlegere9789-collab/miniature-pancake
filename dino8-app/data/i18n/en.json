@@ -121,6 +121,7 @@
   "panel.reset_layout": "Reset Window Layout",
   "panel.imgui_demo": "ImGui Demo (developer)",
   "panel.about": "About Dino 8",
+  "panel.whats_new": "What's New",
   "panel.document_properties": "Document Properties",
   "panel.options": "Options",
   "panel.lights": "Lights",

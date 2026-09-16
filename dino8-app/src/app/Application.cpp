@@ -125,6 +125,16 @@ bool Application::Init(const std::string& exe_dir, std::string& error) {
   }
   SetViewportLayout(4);
   LoadSettings(*this, ui_scale);
+  // Auto-show What's New exactly once per upgrade: an empty last_seen_version
+  // means a fresh install (the welcome overlay covers that case instead), but
+  // any later mismatch means DINO8_VERSION moved since the last launch.
+  // Skipped in headless smoke runs, mirroring DrawWelcomeOverlay's guard,
+  // unless a screenshot run asks for it explicitly.
+  if (!last_seen_version.empty() && last_seen_version != DINO8_VERSION &&
+      (!smoke_mode || std::getenv("DINO8_SHOW_WELCOME"))) {
+    panels_.whats_new = true;
+  }
+  last_seen_version = DINO8_VERSION;
   if (!i18n::SetLanguage(language)) language = i18n::CurrentLanguage();  // unknown/removed language: fall back to English
   if (has_saved_layout) layout_built_ = true;
   plugins::Manager::Get().ScanDefaultFolders(*this);
@@ -2079,6 +2089,7 @@ void Application::DrawPanels() {
   if (panels_.display) DrawDisplayPanel(*this);
   if (panels_.calculator) DrawCalculatorPanel(*this, calc_input_, calc_result_);
   if (panels_.about) DrawAboutWindow(*this);
+  if (panels_.whats_new) DrawWhatsNewWindow(*this);
   if (panels_.options) DrawOptionsWindow(*this);
   if (panels_.document_properties) DrawDocumentPropertiesWindow(*this);
   if (panels_.linetypes) DrawLinetypesPanel(*this);
