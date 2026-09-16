@@ -232,13 +232,23 @@ remain explicitly out of scope, since they require hosted server infrastructure 
 honestly provide — the same category as the touch-first companion app / Rhino Compute gap already
 documented in the Addendum below.
 
+- [x] **CAD Standards Checker.** New `Standards <file.json>`/`CheckStandards` commands (`src/commands/
+  cmd_standards.cpp`) link a document to a standards file (allowed layers with their expected
+  color/linetype, allowed text/dimension styles) and audit the live document against it, exactly matching
+  AutoCAD's own CAD Standards Checker's core purpose: catching layer/style drift from a shared company
+  standard. Verified with a real drift scenario: introducing an undefined layer, a linetype mismatch on an
+  existing layer, and a non-standard annotation style together produce exactly 3 named violations, while
+  compliant layers/styles are correctly never flagged (checked both positively and negatively). A genuine,
+  pre-existing, out-of-scope bug (`MultiPause`/`ScriptMode` interaction at `cmd_state.cpp:513`) was found
+  and correctly left unfixed, flagged as a possible follow-up rather than silently worked around.
+
 **Still queued in this wave** (implemented and locally verified by their own author agents, pending this
 session's own independent re-verification/merge/push/CI-confirm before being checked off here): dynamic
 blocks (visibility-state parameter/action graph, first increment), live two-way CSV data linking to
-external spreadsheets, a CAD Standards Checker, vertical-market Mechanical+MEP parametric components
-(fasteners, structural shapes, ducts/pipes/conduit sized from flow), a Sheet Set Manager (console-only, one
-PDF per sheet), and auto-updating center marks/centerlines (reusing the existing `DimRefObj#`/
-`UpdateDimensions` associativity pattern).
+external spreadsheets, vertical-market Mechanical+MEP parametric components (fasteners, structural shapes,
+ducts/pipes/conduit sized from flow), a Sheet Set Manager (console-only, one PDF per sheet), and
+auto-updating center marks/centerlines (reusing the existing `DimRefObj#`/`UpdateDimensions` associativity
+pattern).
 
 ## Addendum: what "100%, no exceptions" actually required
 
