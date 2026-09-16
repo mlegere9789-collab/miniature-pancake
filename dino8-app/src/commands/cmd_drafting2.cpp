@@ -692,6 +692,49 @@ class RevisionTableCommand : public Command {
   Point3d origin_{0, 0, 0};
 };
 
+// PanelSchedule (Electrical vertical-market toolset, elec/ElecComponents.h -
+// see that header's own scope comment): a real data table of electrical
+// panel circuit rows {circuit #, description, load VA}, built through the
+// exact same TableSpec/BuildTableGroup mechanism as RevisionTable/
+// BillOfMaterials above rather than a new table format. DATA TABLE ONLY -
+// no breaker-sizing, phase load-balancing, or other panel-schedule
+// engineering calculation, and no NEC/IEC code-compliance check (same
+// explicit-scope discipline as MepDiameterFromFlow's own doc comment in
+// ArchComponents.h).
+class PanelScheduleCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    auto opts = TakeOptionTokens(ctx);
+    circuits_ = OptionOr(opts, "circuits", "");
+    name_ = OptionOr(opts, "name", "Panel A");
+    WantPoint("Panel schedule location (top-left corner)");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    TableSpec spec;
+    spec.cols = 3;
+    spec.cells = {"Circuit #", "Description", "Load (VA)"};
+    spec.col_widths = {20, 64, 24};
+    spec.title = name_ + " - Panel Schedule";
+    int rows = 1;
+    for (const std::string& row : SplitChar(circuits_, ';')) {
+      std::vector<std::string> f = SplitChar(row, ',');
+      while (f.size() < 3) f.push_back("");
+      for (int c = 0; c < 3; ++c) spec.cells.push_back(TrimWs(f[static_cast<size_t>(c)]));
+      ++rows;
+    }
+    spec.rows = rows;
+    spec.origin = p;
+    spec.plane = ActivePlane(ctx);
+    ctx.Doc().BeginChange("PanelSchedule");
+    const int g = BuildTableGroup(ctx, spec, "PanelSchedule");
+    ctx.Print("PanelSchedule: " + std::to_string(spec.rows - 1) + " circuit row(s)" + (g < 0 ? " (failed)" : " built"));
+    Finish();
+  }
+
+ private:
+  std::string circuits_, name_;
+};
+
 class TitleBlockCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -1320,6 +1363,8 @@ void RegisterDrafting2Commands(CommandEngine& e) {
       "Builds a simple Name/Date/Scale/Sheet field table, not an instance of a linked block definition - inserting one does not track edits to a shared title-block template, the same live-instancing gap as the Block command (cmd_drafting.cpp) has no fix for.");
   Reg(e, "BillOfMaterials", Make<BillOfMaterialsCommand>(), CommandStatus::Implemented,
       "Associative: the table records which objects (or 'every visible object') it was built from and UpdateBillOfMaterials re-derives every row's count/layer/material/length-area-volume from their current state. Built from an explicit selection, it re-checks only those objects (a deleted one drops out; a new object never joins on its own) - only the Enter/'every visible object' mode picks up newcomers, since only it has a re-scan rule instead of a fixed id list.");
+  Reg(e, "PanelSchedule", Make<PanelScheduleCommand>(), CommandStatus::Implemented,
+      "A real data table (Circuit #/Description/Load VA rows, Circuits=1,Lighting,500;2,Receptacles,900 option syntax) via the same Table/TableSpec/BuildTableGroup mechanism as RevisionTable/BillOfMaterials - NOT a panel-schedule engineering calculation (no breaker sizing, phase load-balancing, or NEC/IEC code-compliance check) and not associative to any electrical component in the drawing.");
 
   Reg(e, "FeatureControlFrame", Make<FeatureControlFrameCommand>(), CommandStatus::Implemented,
       "Characteristic symbols (flatness, position, etc.) are drawn as vector curves matching the ASME Y14.5 shapes; material-condition modifiers (S)/(L)/(M) use Unicode circled letters as a stand-in, since this build has no dedicated GD&T symbol font to draw the real modifier glyphs from.");
