@@ -333,17 +333,32 @@ The remaining five AutoCAD-only vertical-market toolsets this wave's own researc
 the Mechanical+MEP slice above was chosen as the first, most broadly useful increment, not the whole
 category. Every other item from the user's original 8-area "design addition" directive is now closed.
 
-**Two real, cross-platform CI regressions were found and fixed after this wave's merges landed**, caught
+**Four real, cross-platform CI regressions were found and fixed after this wave's merges landed**, caught
 only by reading the actual GitHub Actions job logs after noticing the same jobs failing identically across
 many consecutive commits (a systemic pattern, not per-commit noise) — this session's own local verification
 only builds on Linux/GCC, so a Windows-only or a Linux-only-but-not-locally-reproduced failure can slip
-through unless CI itself is checked directly, not assumed green from a local pass: (1) `DwgCompare.cpp`'s
-`std::vector<std::array<double,3>>::push_back({a,b,c})` calls fail to compile under MSVC (braced-init-list
-isn't deduced through `push_back`'s template overloads there, unlike GCC/Clang) — broken on Windows and
-Windows-on-ARM CI since the DwgCompare merge, fixed by naming the target type explicitly at each call site.
-(2) The Linux `.deb` CI job hit the exact same Smart Blocks smoke.sh bug already documented and fixed above
-(the BRE `\(`/`\)` escaping mistake) — the job logs showed the run dying at the identical point this
-session's own local re-verification had already found and fixed.
+through unless CI itself is checked directly, not assumed green from a local pass:
+1. `DwgCompare.cpp`'s `std::vector<std::array<double,3>>::push_back({a,b,c})` calls fail to compile under
+   MSVC (braced-init-list isn't deduced through `push_back`'s template overloads there, unlike GCC/Clang) —
+   fixed by naming the target type explicitly at each call site.
+2. `DwgCompare.cpp` also never directly `#include <array>` despite using `std::array` throughout — GCC/
+   libstdc++ pulls it in transitively via another standard header, masking the omission on Linux entirely,
+   but MSVC's STL does not, leaving `std::array` an incomplete type there. This was the true root cause;
+   fix #1 alone was necessary but not sufficient — the actual CI error only surfaced this once #1 was
+   already applied (`error C2027: use of undefined type 'std::array<double,3>'`).
+3. `ArchComponents.cpp` used `M_PI`, a POSIX/GNU `<cmath>` extension MSVC only exposes behind
+   `_USE_MATH_DEFINES` (which this file didn't set) — fixed with a local `kPi` constant, the same per-file
+   pattern this codebase already uses elsewhere (`src/ui/Icons.cpp`'s own `kPi`) rather than relying on a
+   platform macro.
+4. The Linux `.deb` CI job hit the exact same Smart Blocks smoke.sh bug already documented above (the BRE
+   `\(`/`\)` escaping mistake) — the job logs showed the run dying at the identical point this session's
+   own local re-verification had already found and fixed. Separately, the DataLinkUpdate mtime-comparison
+   smoke.sh tests flaked under CI's load with too-tight `sleep 2` margins between simulated external file
+   edits — reproduced both on CI and once locally, widened to `sleep 3` and confirmed stable across 3
+   consecutive full local runs.
+
+All four fixes are confirmed: PR #17's full CI matrix (Linux/Windows/Windows-on-ARM/macOS builds, both
+Python lint jobs, and the beta pre-release publish — 12 checks total) is green on head `fe9d913`.
 
 ## Addendum: what "100%, no exceptions" actually required
 
