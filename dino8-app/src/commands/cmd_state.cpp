@@ -16,6 +16,7 @@
 #include "app/Settings.h"
 #include "i18n/I18n.h"
 #include "session/Digitizer.h"
+#include "ui/Panels.h"
 #include "ui/Theme.h"
 
 namespace dino8::app {
@@ -744,6 +745,14 @@ void RegisterStateCommands(CommandEngine& e) {
   Reg(e, "ToggleRightSidebar", Immediate([](CommandContext& ctx) { AppState& s = ctx.App().State(); s.right_sidebar = !s.right_sidebar; ctx.App().Panels().layers = s.right_sidebar; ctx.App().Panels().properties = s.right_sidebar; ctx.Print(std::string("Right sidebar (Layers, Properties) ") + (s.right_sidebar ? "shown" : "hidden")); }));
   Reg(e, "ShowToolbar", Immediate([](CommandContext& ctx) { ctx.App().Panels().toolbars = true; ctx.Print("Toolbar shown"); }));
   Reg(e, "ToolbarLock", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().toolbar_lock; }, "Toolbar lock"), CommandStatus::Implemented, "While on, the Standard toolbar's right-click customize menu (remove a button, add one from Options) is disabled; the toolbar itself is always fixed in place either way.");
+  Reg(e, "ToolbarAddCommand", Make<TextArgCommand>("Command to add to the Standard toolbar", [](CommandContext& ctx, const std::string& name) {
+        if (AddToolbarCommand(ctx.App(), name))
+          ctx.Print("Added '" + name + "' to the Standard toolbar (now " + std::to_string(ctx.App().toolbar_commands.size()) + " buttons)");
+        else
+          ctx.Warn("Unknown command: " + name);
+      }), CommandStatus::Implemented,
+      "Appends a command button to the end of the Standard toolbar - the exact same code path as clicking (or dragging) it in the "
+      "Options > Toolbar icon-grid picker. A scriptable, mouse-free equivalent of that click, for automated testing.");
   Reg(e, "Commands", Immediate([](CommandContext& ctx) { ctx.App().Panels().command_list = true; }));
   Reg(e, "PopupMenu", Immediate([](CommandContext& ctx) { ctx.App().OpenPopupToolbar(); }), CommandStatus::Implemented, "Opens the same popup icon grid a middle mouse click on a viewport does (Application::OpenPopupToolbar).");
   Reg(e, "PopupPopular", Immediate([](CommandContext& ctx) { ctx.Print("Recent commands:"); for (const std::string& n : ctx.Engine().RecentCommands()) ctx.Print("  " + n); ctx.App().Panels().command_list = true; }), CommandStatus::Implemented, "Prints the most recently used commands and opens the command list, which is sorted the same way.");

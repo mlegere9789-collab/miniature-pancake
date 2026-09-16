@@ -16,6 +16,7 @@
 #include "i18n/I18n.h"
 #include "imgui.h"
 #include "script/LuaEngine.h"
+#include "ui/Icons.h"
 #include "ui/Theme.h"
 
 namespace dino8::app {
@@ -932,27 +933,150 @@ void DrawOptionsWindow(Application& app) {
         ImGui::EndCombo();
       }
       ImGui::Separator();
-      ImGui::TextWrapped("Buttons on the Standard tab, in order. Remove with the x, add any command below; the list is saved with your settings. Ctrl+right-click a toolbar button to remove it there (a plain right click runs the button's alternate command).");
+      ImGui::TextWrapped(
+          "Buttons on the Standard tab, in order. Drag an entry to reorder it, or use up/down. "
+          "Drag a command from the picker below (or from any other toolbar tab / the left sidebar) into the list to add it there; "
+          "dropping past the last entry appends it. Remove with the x. Ctrl+right-click a toolbar button to remove it there "
+          "(a plain right click runs the button's alternate command).");
       std::vector<std::string>& tb = app.toolbar_commands;
       if (tb.empty()) tb = DefaultToolbarCommands();
+      int erase_index = -1;
+      int drag_from = -1, drag_to = -1;
+      int insert_at = -1;
+      std::string insert_command;
+      const float icon = 18.0f;
+      ImGui::BeginChild("##tbcustomize_list", ImVec2(0, 170), ImGuiChildFlags_Borders);
       for (size_t i = 0; i < tb.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
-        ImGui::Text("%s", tb[i].c_str());
-        ImGui::SameLine(200);
+        const bool is_sep = tb[i] == "|";
+        const ImVec2 row_top = ImGui::GetCursorScreenPos();
+        if (!is_sep) DrawIcon(ImGui::GetWindowDrawList(), tb[i].c_str(), row_top, icon, ImGui::GetColorU32(ImGuiCol_Text));
+        ImGui::Dummy(ImVec2(icon, icon));
+        ImGui::SameLine();
+        const std::string row_text = is_sep ? "-- separator --" : tb[i];
+        ImGui::Selectable(row_text.c_str(), false, ImGuiSelectableFlags_None, ImVec2(220.0f, icon));
+        // Drag source: reorder within this list.
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+          int idx = static_cast<int>(i);
+          ImGui::SetDragDropPayload(kToolbarReorderDragType, &idx, sizeof(int));
+          if (!is_sep) DrawIcon(ImGui::GetWindowDrawList(), tb[i].c_str(), ImGui::GetCursorScreenPos(), icon, ImGui::GetColorU32(ImGuiCol_Text));
+          ImGui::Dummy(ImVec2(icon, icon));
+          ImGui::SameLine();
+          ImGui::TextUnformatted(row_text.c_str());
+          ImGui::EndDragDropSource();
+        }
+        // Drop target: accepts a reorder (from this same list) or a command
+        // name dragged in from the icon-grid picker or another toolbar tab.
+        if (ImGui::BeginDragDropTarget()) {
+          if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kToolbarReorderDragType)) {
+            drag_from = *static_cast<const int*>(p->Data);
+            drag_to = static_cast<int>(i);
+          }
+          if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kToolbarCommandDragType)) {
+            insert_at = static_cast<int>(i);
+            insert_command = static_cast<const char*>(p->Data);
+          }
+          ImGui::EndDragDropTarget();
+        }
+        ImGui::SameLine();
         if (ImGui::SmallButton("up") && i > 0) std::swap(tb[i], tb[i - 1]);
         ImGui::SameLine();
         if (ImGui::SmallButton("down") && i + 1 < tb.size()) std::swap(tb[i], tb[i + 1]);
         ImGui::SameLine();
-        const bool del = ImGui::SmallButton("x");
+        if (ImGui::SmallButton("x")) erase_index = static_cast<int>(i);
         ImGui::PopID();
-        if (del) { tb.erase(tb.begin() + static_cast<long>(i)); break; }
       }
+      // Trailing drop zone: append instead of inserting before an entry.
+      {
+        const ImVec2 avail = ImGui::GetContentRegionAvail();
+        ImGui::InvisibleButton("##tbcustomize_append", ImVec2(std::max(40.0f, avail.x), std::max(20.0f, avail.y)));
+        if (ImGui::BeginDragDropTarget()) {
+          if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kToolbarReorderDragType)) {
+            drag_from = *static_cast<const int*>(p->Data);
+            drag_to = static_cast<int>(tb.size());
+          }
+          if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kToolbarCommandDragType)) {
+            insert_at = static_cast<int>(tb.size());
+            insert_command = static_cast<const char*>(p->Data);
+          }
+          ImGui::EndDragDropTarget();
+        }
+        if (tb.empty()) { const ImVec2 p = ImGui::GetItemRectMin(); ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + 4, p.y + 2), ImGui::GetColorU32(ImGuiCol_TextDisabled), "Drag or click a command below to start."); }
+      }
+      ImGui::EndChild();
+      if (erase_index >= 0) tb.erase(tb.begin() + erase_index);
+      if (drag_from >= 0 && drag_to >= 0 && drag_from != drag_to && static_cast<size_t>(drag_from) < tb.size()) {
+        const std::string moved = tb[static_cast<size_t>(drag_from)];
+        tb.erase(tb.begin() + drag_from);
+        int at = drag_to;
+        if (drag_from < drag_to) at -= 1;
+        at = std::clamp(at, 0, static_cast<int>(tb.size()));
+        tb.insert(tb.begin() + at, moved);
+      } else if (insert_at >= 0 && !insert_command.empty()) {
+        if (const RegisteredCommand* rc = app.Engine().Find(insert_command)) {
+          const int at = std::clamp(insert_at, 0, static_cast<int>(tb.size()));
+          tb.insert(tb.begin() + at, rc->name);
+        }
+      }
+
+      ImGui::Separator();
+      ImGui::TextDisabled("Add a command (click, or drag into the list above)");
+      static char search[64] = "";
+      ImGui::SetNextItemWidth(240);
+      ImGui::InputTextWithHint("##tbsearch", "search commands by name...", search, sizeof(search));
+      const std::string needle = ToLower(search);
+      static const std::vector<std::string> kAllButtons = AllToolbarButtonCommands();
+      ImGui::BeginChild("##tbpicker", ImVec2(0, 200), ImGuiChildFlags_Borders);
+      const float cell = 60.0f;
+      const int cols = std::max(1, static_cast<int>(ImGui::GetContentRegionAvail().x / cell));
+      int col = 0;
+      for (const std::string& cmd : kAllButtons) {
+        const char* lbl = ToolbarButtonLabel(cmd);
+        const std::string label = lbl ? lbl : cmd;
+        if (!needle.empty()) {
+          std::string haystack = ToLower(cmd) + " " + ToLower(label);
+          if (haystack.find(needle) == std::string::npos) continue;
+        }
+        ImGui::PushID(cmd.c_str());
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const ImVec2 sz(cell - 6.0f, cell - 6.0f);
+        ImGui::InvisibleButton("##cell", sz, ImGuiButtonFlags_MouseButtonLeft);
+        const bool hovered = ImGui::IsItemHovered();
+        const bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (hovered) dl->AddRectFilled(p, ImVec2(p.x + sz.x, p.y + sz.y), ImGui::GetColorU32(ImGuiCol_ButtonHovered), 3.0f);
+        const float ic = 22.0f;
+        DrawIcon(dl, cmd.c_str(), ImVec2(p.x + (sz.x - ic) * 0.5f, p.y + 3.0f), ic, ImGui::GetColorU32(ImGuiCol_Text));
+        ImGui::PushFont(nullptr, 10.5f * ImGui::GetStyle().FontScaleMain);
+        const ImVec2 ts = ImGui::CalcTextSize(label.c_str());
+        const float tx = p.x + std::max(0.0f, (sz.x - ts.x) * 0.5f);
+        dl->PushClipRect(p, ImVec2(p.x + sz.x, p.y + sz.y), true);
+        dl->AddText(ImVec2(tx, p.y + ic + 6.0f), ImGui::GetColorU32(ImGuiCol_Text), label.c_str());
+        dl->PopClipRect();
+        ImGui::PopFont();
+        if (clicked) AddToolbarCommand(app, cmd);
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+          ImGui::SetDragDropPayload(kToolbarCommandDragType, cmd.c_str(), cmd.size() + 1);
+          DrawIcon(ImGui::GetWindowDrawList(), cmd.c_str(), ImGui::GetCursorScreenPos(), ic, ImGui::GetColorU32(ImGuiCol_Text));
+          ImGui::Dummy(ImVec2(ic, ic));
+          ImGui::SameLine();
+          ImGui::TextUnformatted(label.c_str());
+          ImGui::EndDragDropSource();
+        }
+        if (hovered && !ImGui::GetIO().MouseDown[0]) ImGui::SetTooltip("%s\nClick or drag into the toolbar list above to add it.", cmd.c_str());
+        ImGui::PopID();
+        if (++col < cols) { ImGui::SameLine(); } else { col = 0; }
+      }
+      if (col != 0) ImGui::NewLine();
+      ImGui::EndChild();
+
+      ImGui::TextDisabled("Advanced: add any registered command by exact name (not every command has an icon)");
       static char add[64] = "";
       ImGui::SetNextItemWidth(180);
       ImGui::InputTextWithHint("##addcmd", "command name", add, sizeof(add));
       ImGui::SameLine();
       if (ImGui::Button("Add button") && add[0]) {
-        if (const RegisteredCommand* rc = app.Engine().Find(add)) tb.push_back(rc->name); else app.Notify(std::string("Unknown command: ") + add);
+        if (!AddToolbarCommand(app, add)) app.Notify(std::string("Unknown command: ") + add);
         add[0] = 0;
       }
       ImGui::SameLine();

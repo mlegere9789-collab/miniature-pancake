@@ -64,6 +64,16 @@ struct IconButtonResult {
 };
 // Draws one icon button for `command` (caption optional); the caller runs the commands.
 IconButtonResult IconButton(Application& app, const char* command, const char* label, bool show_label, bool customizable);
+// ImGui drag-and-drop payload type for "drag a command name": carried by
+// every toolbar/sidebar IconButton as a drag source (a NUL-terminated
+// command name), and accepted by the Standard toolbar's drop target in
+// DrawButtonRow and by the reorderable list + icon-grid picker in
+// DrawOptionsWindow's Toolbar tab.
+inline constexpr const char* kToolbarCommandDragType = "DINO8_TB_CMD";
+// Payload type for reordering entries within the Standard toolbar customize
+// list itself: carries the dragged entry's index (an int) into
+// app.toolbar_commands.
+inline constexpr const char* kToolbarReorderDragType = "DINO8_TB_REORDER";
 void DrawLeftSidebar(Application& app);
 float ToolbarHeight(const Application& app);      // 0 when toolbars are hidden
 float LeftSidebarWidth(const Application& app);   // 0 when the sidebar is hidden
@@ -72,6 +82,17 @@ const char* ToolbarTabName(int index);
 // Commands of one toolbar tab ("|" = separator); tab 0 is the customizable Standard toolbar.
 std::vector<std::string> ToolbarTabCommands(const Application& app, int index);
 const char* ToolbarButtonLabel(const std::string& command);  // nullptr when unknown
+// Every command with a curated icon/label/tooltip (Toolbars.cpp's kButtons),
+// in a stable display order - the catalog the Options > Toolbar icon-grid
+// picker searches and shows.
+std::vector<std::string> AllToolbarButtonCommands();
+// Appends `name` to the end of the Standard toolbar (app.toolbar_commands),
+// initializing it to the default set first if it was empty. Returns false
+// (nothing added) for an unrecognized command name. This is the single path
+// both the Options > Toolbar icon-grid picker's click handler and the
+// scriptable "ToolbarAddCommand" command (cmd_state.cpp) go through, so the
+// picker's effect can be exercised headlessly without a mouse.
+bool AddToolbarCommand(Application& app, const std::string& name);
 
 // Small shared widgets.
 bool ColorEdit(const char* label, struct Color& color);
