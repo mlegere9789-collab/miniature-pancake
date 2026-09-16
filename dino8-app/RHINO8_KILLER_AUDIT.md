@@ -328,10 +328,34 @@ clean runs (0 FAIL, all 10 tutorials, every feature section including DataLink r
   approximations, solid (no-wall-thickness) Duct/Pipe/Conduit, and rule-of-thumb (non-code-compliant) MEP
   sizing.
 
-The remaining five AutoCAD-only vertical-market toolsets this wave's own research scoped (Electrical, Map
-3D, Plant 3D/P&ID, Raster Design, and further MEP depth beyond this first slice) are not yet attempted —
-the Mechanical+MEP slice above was chosen as the first, most broadly useful increment, not the whole
-category. Every other item from the user's original 8-area "design addition" directive is now closed.
+- [x] **Vertical-market toolset, second slice: Electrical schematic symbols.** New `Resistor`/`Capacitor`/
+  `Switch`/`Ground`/`Lamp`/`WireRun` component types plus `ElecTag` (bakes a reference-designator string like
+  "R1" as real font-outline curve geometry, reusing the same text-bake path the in-app `Text` command uses)
+  and `PanelSchedule` (a real circuit-#/description/load-VA data table via the existing `TableSpec`/
+  `BuildTableGroup` mechanism `BillOfMaterials`/`RevisionTable` already use) — `src/elec/ElecComponents.
+  {h,cpp}`, `src/commands/cmd_elec.cpp`, in a new namespace mirroring the established `ArchComponent`
+  pattern exactly. `WireRun` is genuinely associative: `ElecRebuild` re-resolves an anchored wire's
+  endpoints from whatever the objects it's pinned to currently are, the same class of live recompute as
+  `UpdateDimensions`. Every symbol's geometry is independently checkable (exact bounding boxes, CV
+  endpoints, lengths) — verified with 21 real assertions. A genuine, independent bug was found and fixed
+  along the way: the Resistor zigzag, first built as one 7-point polyline curve, produced a wrong
+  bounding box because the shared kernel's curve tessellation subdivides at each interval's arithmetic
+  midpoint rather than at true knots, so a sharp interior vertex sitting off-center within a chord can be
+  undershot and missed — fixed by building the zigzag as 6 separate two-point line segments instead (every
+  corner becomes a real curve *endpoint*, not an interior vertex), rather than touching the shared kernel
+  tessellator. Honestly scoped out (documented in the header, matching the mech-mep precedent): no IEEE
+  315/ANSI Y32.2 certified symbol geometry claim, no electrical simulation/load-flow/NEC-IEC compliance, no
+  netlist/connectivity graph or DRC, no panel-schedule engineering calculations, no PDF/DWG
+  electrical-standard title-block import.
+
+The remaining four AutoCAD-only vertical-market toolsets this wave's own research scoped (Map 3D, Plant
+3D/P&ID, Raster Design, and further MEP/Electrical depth beyond these first two slices) are not yet
+attempted. Every other item from the user's original 8-area "design addition" directive is now closed.
+
+**This vertical-market-toolset work is now paused.** The user has directed a full pivot: the app-level
+feature-wave work (including any further vertical-market toolset slices) does not move Dino 8's kernel
+capability-parity toward Parasolid, which the user has identified as the metric that matters most and
+wants driven hard from here. See the new kernel-parity research/execution section below for what follows.
 
 **Four real, cross-platform CI regressions were found and fixed after this wave's merges landed**, caught
 only by reading the actual GitHub Actions job logs after noticing the same jobs failing identically across
