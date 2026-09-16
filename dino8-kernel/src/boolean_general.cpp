@@ -48,6 +48,29 @@
 // boolean_general.h): the assembled B-rep's edges are polygonal
 // approximations of the true intersection curves, accurate to
 // IntersectOptions::tolerance, not exact to floating point.
+// KNOWN, CONFIRMED (not theorized) GAP as of this writing, found via
+// DINO8_BOOL_DEBUG=1 tracing on a box fully pierced by a perpendicular
+// cylinder (see dino8-kernel/tests/scratch_test.cpp): IntersectFaces()
+// returns ZERO intersection curves for the box's flat z=+-1 planar faces
+// against the cylinder's own periodic wall face, even though the wall
+// unambiguously crosses both planes (frags=1 with no split on every one
+// of those faces, confirmed via the debug trace - not a downstream
+// seam-splitting/stitching issue, the SSX call itself finds nothing for
+// this specific plane-vs-periodic-cylinder pairing). This is NOT a
+// general periodic-surface limitation of the underlying intersector -
+// phase 1's own TestSurfaceIntersectSphereGreatCircle (test_basic.cpp)
+// already proves a periodic surface (a sphere, u-periodic) against a
+// plane works correctly, including the seam-split-into-multiple-curves
+// case. The box+box (pure planar) case above is fully correct (exact
+// closed-form volumes, valid Breps) - this gap is specific to at least
+// one of: (a) IntersectFaces()'s bounding-box pre-filter or seed-search
+// behaving differently for a CYLINDRICAL periodic surface than a
+// SPHERICAL one, or (b) something specific to how the cylinder wall
+// Brep face built via Brep::FromMixedFaces()/CylindricalFace differs
+// from the plain ON_Surface used in the sphere test. Not yet root-caused
+// further than this. Until fixed, BooleanCombineGeneral must not be
+// trusted on any operand pair involving a cylindrical (or, unverified,
+// conical/toroidal) face - only proven correct for planar-only operands.
 #include "dino8/kernel/boolean_general.h"
 
 #include <algorithm>
