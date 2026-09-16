@@ -333,6 +333,18 @@ The remaining five AutoCAD-only vertical-market toolsets this wave's own researc
 the Mechanical+MEP slice above was chosen as the first, most broadly useful increment, not the whole
 category. Every other item from the user's original 8-area "design addition" directive is now closed.
 
+**Two real, cross-platform CI regressions were found and fixed after this wave's merges landed**, caught
+only by reading the actual GitHub Actions job logs after noticing the same jobs failing identically across
+many consecutive commits (a systemic pattern, not per-commit noise) — this session's own local verification
+only builds on Linux/GCC, so a Windows-only or a Linux-only-but-not-locally-reproduced failure can slip
+through unless CI itself is checked directly, not assumed green from a local pass: (1) `DwgCompare.cpp`'s
+`std::vector<std::array<double,3>>::push_back({a,b,c})` calls fail to compile under MSVC (braced-init-list
+isn't deduced through `push_back`'s template overloads there, unlike GCC/Clang) — broken on Windows and
+Windows-on-ARM CI since the DwgCompare merge, fixed by naming the target type explicitly at each call site.
+(2) The Linux `.deb` CI job hit the exact same Smart Blocks smoke.sh bug already documented and fixed above
+(the BRE `\(`/`\)` escaping mistake) — the job logs showed the run dying at the identical point this
+session's own local re-verification had already found and fixed.
+
 ## Addendum: what "100%, no exceptions" actually required
 
 The user directed every backlog item above be closed with no exceptions. Everything that was a genuine engineering task has now been closed, verified (full local build + `tests/smoke.sh`, pushed only when green, CI confirmed on all 4 platforms after each merge), and is checked off above with an honest note on what remains partial. A few items are marked still open because they are not engineering problems, and closing them by writing more code would be dishonest:
