@@ -2206,4 +2206,34 @@ if echo "$ST" | grep -q "style 'Default'"; then echo "FAIL: CheckStandards incor
 echo "$ST" | grep -E "^(ok|FAIL)" || true
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
 
+# Sheet sets (SheetSetNew/Add/Open/Plot - session/SheetSet.h/cmd_sheetset.cpp):
+# two small single-layout drawings get added to one sheet set file spanning
+# both, then batch-plotted, proving the set genuinely reaches across files
+# rather than only listing layouts within the currently-open document (see
+# sheetset_script.txt).
+sed "s|@TMP@|$TMP|g" "$HERE/sheetset_script.txt" > "$TMP/sheetset_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  SS="$("$BIN" --smoke 60 --script "$TMP/sheetset_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: sheetset script exited non-zero"; exit 1; }
+else
+  SS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/sheetset_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: sheetset script exited non-zero"; exit 1; }
+fi
+sscheck() { if echo "$SS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+sscheck "SheetSetNew: created 'Smoke Test Set'" "SheetSetNew created the sheet set file"
+sscheck "SheetSetAdd: added .*sheetset_b\.3dm / SheetB" "SheetSetAdd added the second document's layout before it was even the open document"
+sscheck "SheetSetAdd: added .*sheetset_a\.3dm / SheetA" "SheetSetAdd added the current document's active layout"
+sscheck "SheetSetOpen: 'Smoke Test Set' .*, 2 sheet(s)" "SheetSetOpen listed both entries"
+sscheck "1\. .*sheetset_b\.3dm : SheetB" "SheetSetOpen listed the first entry (file + layout)"
+sscheck "2\. .*sheetset_a\.3dm : SheetA" "SheetSetOpen listed the second entry (file + layout)"
+sscheck "SheetSetPlot: 2/2 sheet(s) plotted" "SheetSetPlot batch-plotted every sheet in the set"
+for f in "$TMP/sheetset_out"/*.pdf; do
+  [ -s "$f" ] || { echo "FAIL: $f missing or empty"; fail=1; }
+done
+PDF_COUNT=$(ls "$TMP/sheetset_out"/*.pdf 2>/dev/null | wc -l)
+[ "$PDF_COUNT" -eq 2 ] && echo "ok   SheetSetPlot wrote one PDF per sheet (2 files)" || { echo "FAIL: expected 2 plotted PDFs, found $PDF_COUNT"; fail=1; }
+for f in "$TMP/sheetset_out"/*.pdf; do
+  SZ=$(wc -c < "$f")
+  [ "$SZ" -gt 200 ] && echo "ok   $(basename "$f") is a non-trivial PDF ($SZ bytes)" || { echo "FAIL: $(basename "$f") is too small ($SZ bytes)"; fail=1; }
+  head -c 5 "$f" | grep -q "%PDF-" && echo "ok   $(basename "$f") starts with %PDF-" || { echo "FAIL: $(basename "$f") missing PDF header"; fail=1; }
+done
+
 exit $fail

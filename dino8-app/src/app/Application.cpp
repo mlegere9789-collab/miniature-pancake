@@ -78,6 +78,7 @@ void RegisterArchCommands(CommandEngine&);        // cmd_arch.cpp
 void RegisterStandardsCommands(CommandEngine&);   // cmd_standards.cpp: Standards/CheckStandards
 void RegisterSessionCommands(CommandEngine&);  // Dig* digitizer, Worksession/LimitReferenceModel, Snapshots
 void RegisterCompareCommands(CommandEngine&);  // DwgCompare/XrefCompare/CompareClear
+void RegisterSheetSetCommands(CommandEngine&);  // SheetSetNew/Add/Open/Plot/Publish (cmd_sheetset.cpp)
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -324,6 +325,7 @@ void Application::RegisterCommands() {
   RegisterSessionCommands(*engine_);    // Dig* digitizer, Worksession/LimitReferenceModel, Snapshots
   RegisterCompareCommands(*engine_);    // DwgCompare/XrefCompare/CompareClear
   dino8::app::RegisterStandardsCommands(*engine_);  // Standards, CheckStandards (CAD Standards Checker subset)
+  RegisterSheetSetCommands(*engine_);    // SheetSetNew/Add/Open/Plot/Publish
   RegisterFlowCommands(*engine_);       // very last: Dino Flow + plug-ins, replaces the Grasshopper/plug-in stubs
 }
 

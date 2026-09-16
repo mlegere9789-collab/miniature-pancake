@@ -282,9 +282,11 @@ set(DINO8_SOURCES
   src/commands/cmd_flow.cpp
   src/session/Digitizer.cpp
   src/session/Worksession.cpp
+  src/session/SheetSet.cpp
   src/commands/cmd_session.cpp
   src/compare/DwgCompare.cpp
   src/commands/cmd_compare.cpp
+  src/commands/cmd_sheetset.cpp
 )
 
 if(WIN32)
