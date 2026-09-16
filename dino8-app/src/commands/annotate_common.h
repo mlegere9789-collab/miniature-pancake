@@ -38,6 +38,18 @@ inline int DimensionLayer(CommandContext& ctx) {
   return ctx.Doc().CurrentLayer();
 }
 
+// Layer new Centermark/CenterLine objects go on: SetCenterLayer's layer
+// (CENTERLAYER) if it exists, else the current layer - mirrors
+// DimensionLayer/SetDimensionLayer above.
+inline int CenterLayer(CommandContext& ctx) {
+  const std::string& name = ctx.Settings().center_layer;
+  if (!name.empty()) {
+    const int idx = ctx.Doc().FindLayer(name);
+    if (idx >= 0) return idx;
+  }
+  return ctx.Doc().CurrentLayer();
+}
+
 // Default text height: the current annotation style's, else twice the grid spacing.
 inline double AnnotationTextHeight(CommandContext& ctx) {
   const AnnotationStyle& st = ctx.Doc().CurrentAnnotationStyle();
@@ -239,6 +251,126 @@ inline bool ResolveArcAnchor(Document& doc, ObjectId obj, ON_Arc& out) {
   ON_Arc arc;
   if (!o->curve->raw().IsArc(nullptr, &arc)) return false;
   out = arc;
+  return true;
+}
+
+// Centermark/CenterLine associativity (cmd_annotate2.cpp's CentermarkCommand
+// /CenterLineCommand build these; UpdateDimensions in cmd_annotate.cpp
+// re-evaluates them - shared here for the same reason BuildLinearDimension-
+// Group's comment gives for DimGeometry.h).
+
+// Builds (or rebuilds) one Centermark group from its resolved center/plane/
+// size. `size_mode` is "Auto" (a quarter of the circle's radius, recomputed
+// from the live radius on every rebuild) or "Fixed" (the value the command
+// was given via Size=, which never changes); either way `size` is the value
+// actually drawn this time and gets stored back as the fallback CenterSize.
+inline int BuildCentermarkGroup(CommandContext& ctx, Point3d center, const ON_Plane& pl, double size, int layer,
+                                bool has_ref, ObjectId ref, const std::string& size_mode) {
+  if (size <= 0) return -1;
+  std::vector<kernel::NurbsCurve> curves = {PolylineCurve({center - pl.xaxis * size, center + pl.xaxis * size}),
+                                            PolylineCurve({center - pl.yaxis * size, center + pl.yaxis * size})};
+  std::map<std::string, std::string> tags;
+  tags["CenterCenter"] = PointTag(center);
+  tags["CenterPlaneOrigin"] = PointTag(pl.origin);
+  tags["CenterPlaneX"] = PointTag(Point3d(pl.xaxis));
+  tags["CenterPlaneY"] = PointTag(Point3d(pl.yaxis));
+  tags["CenterSizeMode"] = size_mode;
+  tags["CenterSize"] = FormatNumber(size);
+  if (has_ref) tags["DimRefObj1"] = std::to_string(ref);
+  return AddAnnotationGroup(ctx, "Centermark", curves, GlyphSpec{}, layer, tags);
+}
+
+// Resolves a Centermark group's center/plane/size to their *current* value:
+// the referenced arc/circle's live center/plane/radius when DimRefObj1
+// resolves via ResolveArcAnchor (Auto mode re-derives size as a quarter of
+// the live radius; Fixed mode keeps the size the command was given), else
+// the CenterCenter/CenterPlaneOrigin/X/Y/CenterSize recorded at creation.
+inline bool ResolveCentermarkGeom(Document& doc, int group_id, Point3d& center, ON_Plane& pl, double& size) {
+  std::string mode = "Fixed";
+  double fixed_size = 0;
+  bool has_ref = false;
+  ObjectId ref = kNoObject;
+  Point3d fb_center, fb_org, fb_ax, fb_ay;
+  bool have_fb_center = false, have_fb_plane = false;
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    if (auto it = o.user_text.find("CenterSizeMode"); it != o.user_text.end()) mode = it->second;
+    if (auto it = o.user_text.find("CenterSize"); it != o.user_text.end()) fixed_size = std::atof(it->second.c_str());
+    if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has_ref = true; }
+    if (o.user_text.count("CenterCenter") && ParsePointTag(o.user_text.at("CenterCenter"), fb_center)) have_fb_center = true;
+    if (o.user_text.count("CenterPlaneOrigin") && ParsePointTag(o.user_text.at("CenterPlaneOrigin"), fb_org) &&
+        o.user_text.count("CenterPlaneX") && ParsePointTag(o.user_text.at("CenterPlaneX"), fb_ax) &&
+        o.user_text.count("CenterPlaneY") && ParsePointTag(o.user_text.at("CenterPlaneY"), fb_ay)) have_fb_plane = true;
+  }
+  if (has_ref) {
+    ON_Arc arc;
+    if (ResolveArcAnchor(doc, ref, arc)) {
+      center = arc.Center();
+      pl = arc.plane;
+      size = mode == "Auto" ? std::max(arc.Radius() * 0.25, 1e-9) : fixed_size;
+      return size > 0;
+    }
+  }
+  if (!have_fb_center) return false;
+  center = fb_center;
+  pl = have_fb_plane ? ON_Plane(fb_org, Vector3d(fb_ax.x, fb_ax.y, fb_ax.z), Vector3d(fb_ay.x, fb_ay.y, fb_ay.z)) : ON_Plane(fb_center, Vector3d(1, 0, 0), Vector3d(0, 1, 0));
+  size = fixed_size;
+  return size > 0;
+}
+
+// Builds (or rebuilds) one CenterLine group: a single line down the midline
+// of two lines, pairing each line's near ends (rather than always start-to-
+// start) so the midline follows however the two lines are actually wound -
+// same approach as AutoCAD's CENTERLINE.
+inline int BuildCenterLineGroup(CommandContext& ctx, Point3d m0, Point3d m1, int layer, ObjectId ref1, ObjectId ref2) {
+  if (m0.DistanceTo(m1) < 1e-9) return -1;
+  std::vector<kernel::NurbsCurve> curves = {PolylineCurve({m0, m1})};
+  std::map<std::string, std::string> tags;
+  tags["CenterP0"] = PointTag(m0);
+  tags["CenterP1"] = PointTag(m1);
+  tags["DimRefObj1"] = std::to_string(ref1);
+  tags["DimRefObj2"] = std::to_string(ref2);
+  return AddAnnotationGroup(ctx, "CenterLine", curves, GlyphSpec{}, layer, tags);
+}
+
+// Resolves a real curve object to a straight line, if it still is one -
+// same "falls back to the static bake if the shape changed" contract as
+// ResolveArcAnchor.
+inline bool ResolveLineAnchor(Document& doc, ObjectId obj, ON_Line& out) {
+  const SceneObject* o = doc.Find(obj);
+  if (!o || o->kind != ObjectKind::Curve || !o->curve || !o->curve->raw().IsLinear()) return false;
+  out = ON_Line(o->curve->raw().PointAtStart(), o->curve->raw().PointAtEnd());
+  return true;
+}
+
+// Midline of two lines, pairing each line's nearer ends together.
+inline void MidlineOf(const ON_Line& l1, const ON_Line& l2, Point3d& m0, Point3d& m1) {
+  const double d0 = l1.from.DistanceTo(l2.from), d1 = l1.from.DistanceTo(l2.to);
+  const Point3d near2 = d0 <= d1 ? l2.from : l2.to, far2 = d0 <= d1 ? l2.to : l2.from;
+  m0 = Point3d((l1.from + near2) * 0.5);
+  m1 = Point3d((l1.to + far2) * 0.5);
+}
+
+// Resolves a CenterLine group's midline endpoints to their *current* value:
+// both referenced lines' live geometry when DimRefObj1/DimRefObj2 both still
+// resolve to straight lines, else the CenterP0/CenterP1 recorded at creation.
+inline bool ResolveCenterLinePoints(Document& doc, int group_id, Point3d& m0, Point3d& m1) {
+  ObjectId ref1 = kNoObject, ref2 = kNoObject;
+  bool has1 = false, has2 = false;
+  Point3d fb0, fb1;
+  bool have_fb = false;
+  for (const SceneObject& o : doc.Objects()) {
+    if (o.group_id != group_id) continue;
+    if (auto it = o.user_text.find("DimRefObj1"); it != o.user_text.end()) { ref1 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has1 = true; }
+    if (auto it = o.user_text.find("DimRefObj2"); it != o.user_text.end()) { ref2 = static_cast<ObjectId>(std::strtoull(it->second.c_str(), nullptr, 10)); has2 = true; }
+    if (o.user_text.count("CenterP0") && o.user_text.count("CenterP1") && ParsePointTag(o.user_text.at("CenterP0"), fb0) && ParsePointTag(o.user_text.at("CenterP1"), fb1)) have_fb = true;
+  }
+  if (has1 && has2) {
+    ON_Line l1, l2;
+    if (ResolveLineAnchor(doc, ref1, l1) && ResolveLineAnchor(doc, ref2, l2)) { MidlineOf(l1, l2, m0, m1); return true; }
+  }
+  if (!have_fb) return false;
+  m0 = fb0; m1 = fb1;
   return true;
 }
 

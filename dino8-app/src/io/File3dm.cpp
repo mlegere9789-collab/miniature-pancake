@@ -561,6 +561,7 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     if (model.GetDocumentUserString(L"Dino8.LinetypeScale", v)) doc.Settings().linetype_scale = std::max(1e-6, std::atof(FromWide(v).c_str()));
     if (model.GetDocumentUserString(L"Dino8.LinetypeDisplay", v)) doc.Settings().linetype_display = FromWide(v) != "0";
     if (model.GetDocumentUserString(L"Dino8.DimensionLayer", v)) doc.Settings().dimension_layer = FromWide(v);
+    if (model.GetDocumentUserString(L"Dino8.CenterLayer", v)) doc.Settings().center_layer = FromWide(v);
     if (model.GetDocumentUserString(L"Dino8.AnnotationStyle", v)) doc.Settings().annotation_style = FromWide(v);
     if (model.GetDocumentUserString(L"Dino8.HatchBase", v)) {
       double x = 0, y = 0, z = 0;
@@ -640,6 +641,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     model.SetDocumentUserString(L"Dino8.LinetypeScale", ON_wString(buf));
     model.SetDocumentUserString(L"Dino8.LinetypeDisplay", doc.Settings().linetype_display ? L"1" : L"0");
     if (!doc.Settings().dimension_layer.empty()) model.SetDocumentUserString(L"Dino8.DimensionLayer", ON_wString(doc.Settings().dimension_layer.c_str()));
+    if (!doc.Settings().center_layer.empty()) model.SetDocumentUserString(L"Dino8.CenterLayer", ON_wString(doc.Settings().center_layer.c_str()));
     model.SetDocumentUserString(L"Dino8.AnnotationStyle", ON_wString(doc.Settings().annotation_style.c_str()));
     const kernel::Point3d hb = doc.Settings().hatch_base;
     std::snprintf(buf, sizeof(buf), "%g,%g,%g", hb.x, hb.y, hb.z);

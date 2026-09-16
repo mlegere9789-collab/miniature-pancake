@@ -123,3 +123,40 @@ Mirror Copy=Yes
 560,10,0
 SelNone
 SelMirroredBlocks
+SelNone
+# --- Centermark/CenterLine associativity: a Centermark on a circle, and a
+# CenterLine between two parallel lines, both move with the geometry they
+# reference when UpdateDimensions re-evaluates them - not a static copy
+# drawn once. Circle center starts at (700,0,0) r=8; Centermark there, then
+# the circle is moved by (20,15,0) to (720,15,0) - Move's own object prompt
+# picks up the circle's still-live pre-selection from SelLast/Centermark
+# above, not the just-created centermark - and UpdateDimensions must print
+# the mark's new position, not the original.
+Circle 700,0,0 8
+SelLast
+Centermark
+Move 700,0,0 720,15,0
+UpdateDimensions
+SelNone
+# Two parallel vertical lines 20 units apart (x=800 and x=820, y 0..10);
+# CenterLine's midline runs x=810, y 0..10. The id (157/158; verified by
+# running this exact script and reading back its own "Object id" trace,
+# same approach as boolean_adversarial_script.txt's header comment
+# describes) is needed since CenterLine takes exactly these two lines
+# selected, not whatever SelLast/SelAll would grab.
+Line 800,0,0 800,10,0
+Line 820,0,0 820,10,0
+SelID 157 158
+CenterLine
+SelNone
+# Moving the first line (id 157) to x=780 shifts the midline from x=810 to
+# x=800, which UpdateDimensions must pick up - proving CenterLine tracks
+# the live geometry, not a static copy drawn once. SelID adds rather than
+# replaces the current selection (see cmd_select.cpp), hence the SelNone
+# right above: without it, id 158 would still be selected too and Move
+# would translate both lines together, which would still (coincidentally)
+# shift the midline and could mask a real associativity regression.
+SelID 157
+Move 800,0,0 780,0,0
+UpdateDimensions
+SelNone

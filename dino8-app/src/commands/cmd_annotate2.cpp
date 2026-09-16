@@ -249,6 +249,23 @@ class DimCreaseAngleCommand : public Command {
 // Centermark, Arrowhead
 // ---------------------------------------------------------------------------
 
+// Centermark/CenterLine (AutoCAD's CENTERMARK/CENTERLINE): a small cross at
+// a circle/arc's center, or a line down the midline of two selected lines.
+// Both are always associative - like DimRadius/DimDiameter, the command
+// requires picking a real object to begin with, so its id is recorded
+// directly (DimRefObj1[/DimRefObj2]) and UpdateDimensions re-evaluates it -
+// and both fall back to the position recorded at creation (CenterCenter/
+// CenterPlaneOrigin/X/Y or CenterP0/CenterP1) exactly like
+// ResolveRadiusDimGeom's DimCenter/DimRadiusVal fallback, when the
+// referenced object is gone or no longer the right shape: an orphaned,
+// static center mark/line rather than a deleted one, matching that same
+// established behaviour instead of inventing a new one.
+// (BuildCentermarkGroup/ResolveCentermarkGeom/BuildCenterLineGroup/
+// ResolveCenterLinePoints/ResolveLineAnchor/MidlineOf themselves live in
+// annotate_common.h, shared with UpdateDimensions in cmd_annotate.cpp -
+// same reason BuildLinearDimensionGroup's comment gives for
+// commands/DimGeometry.h.)
+
 class CentermarkCommand : public Command {
  public:
   void Begin(CommandContext& ctx) override {
@@ -258,26 +275,72 @@ class CentermarkCommand : public Command {
   }
   void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Size") { size_ = std::max(0.0, std::atof(v.c_str())); options[0].value = FormatNumber(size_); } }
   void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
-    struct Mark { ON_Arc arc; int layer; };
+    struct Mark { ON_Arc arc; ObjectId id; };
     std::vector<Mark> marks;
     for (ObjectId id : ids) {
       const SceneObject* o = ctx.Doc().Find(id);
       ON_Arc arc;
-      if (o && o->kind == ObjectKind::Curve && o->curve->raw().IsArc(nullptr, &arc)) marks.push_back({arc, o->layer_index});
+      if (o && o->kind == ObjectKind::Curve && o->curve->raw().IsArc(nullptr, &arc)) marks.push_back({arc, id});
     }
     if (marks.empty()) { ctx.Warn("Select circles or arcs"); Finish(); return; }
     ctx.Doc().BeginChange("Centermark");
+    const int layer = CenterLayer(ctx);
+    int made = 0;
     for (const Mark& m : marks) {
-      const double s = size_ > 0 ? size_ : std::max(m.arc.Radius() * 0.25, AnnotationTextHeight(ctx) * 0.5);
-      const ON_Plane& pl = m.arc.plane;
-      const Point3d c = m.arc.Center();
-      std::vector<kernel::NurbsCurve> curves = {PolylineCurve({c - pl.xaxis * s, c + pl.xaxis * s}), PolylineCurve({c - pl.yaxis * s, c + pl.yaxis * s})};
-      AddAnnotationGroup(ctx, "Centermark", curves, GlyphSpec{}, m.layer);
+      const bool auto_size = size_ <= 0;
+      const double s = auto_size ? std::max(m.arc.Radius() * 0.25, 1e-9) : size_;
+      if (BuildCentermarkGroup(ctx, m.arc.Center(), m.arc.plane, s, layer, true, m.id, auto_size ? "Auto" : "Fixed") >= 0) ++made;
     }
-    ctx.Print("Centermark: " + std::to_string(marks.size()) + " center mark(s)");
+    ctx.Print("Centermark: " + std::to_string(made) + " center mark(s) (associative to the selected circle/arc)");
     Finish();
   }
   double size_ = 0;
+};
+
+// CenterLine: select two straight lines, draws their midline. Always
+// associative (see BuildCenterLineGroup) since both referenced lines must
+// be real selected objects.
+class CenterLineCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select two lines", 2); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    std::vector<ObjectId> lines;
+    std::vector<ON_Line> geoms;
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (o && o->kind == ObjectKind::Curve && o->curve && o->curve->raw().IsLinear()) {
+        lines.push_back(id);
+        geoms.emplace_back(o->curve->raw().PointAtStart(), o->curve->raw().PointAtEnd());
+      }
+      if (lines.size() == 2) break;
+    }
+    if (lines.size() < 2) { ctx.Warn("Select two straight lines"); Finish(); return; }
+    Point3d m0, m1;
+    MidlineOf(geoms[0], geoms[1], m0, m1);
+    ctx.Doc().BeginChange("CenterLine");
+    const int layer = CenterLayer(ctx);
+    const int g = BuildCenterLineGroup(ctx, m0, m1, layer, lines[0], lines[1]);
+    if (g < 0) { ctx.Warn("CenterLine: the two lines' midpoints coincide, nothing to draw"); Finish(); return; }
+    ctx.Print("CenterLine: midline between the two selected lines (associative to both)");
+    Finish();
+  }
+};
+
+class SetCenterLayerCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    const std::string l = OptionOr(TakeOptionTokens(ctx), "layer");
+    if (!l.empty()) { Apply(ctx, l); return; }
+    WantText("Layer for new center marks/lines (empty = current layer)", ctx.Settings().center_layer.empty() ? ctx.Doc().LayerFullPath(ctx.Doc().CurrentLayer()) : ctx.Settings().center_layer);
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { Apply(ctx, t); }
+  void Apply(CommandContext& ctx, const std::string& name) {
+    if (!name.empty() && ctx.Doc().FindLayer(name) < 0) { ctx.Doc().BeginChange("SetCenterLayer"); ctx.Doc().AddLayer(name); }
+    ctx.Settings().center_layer = name;
+    ctx.Doc().Touch();
+    ctx.Print("SetCenterLayer: new center marks/lines go on layer " + (name.empty() ? std::string("(current)") : name));
+    Finish();
+  }
 };
 
 class ArrowheadCommand : public Command {
@@ -1263,7 +1326,15 @@ void RegisterAnnotate2Commands(CommandEngine& e) {
         const int n = EditGroups(ctx, ids, "DimRecenterText", [](GlyphSpec&) {});
         ctx.Print("DimRecenterText: " + std::to_string(n) + " annotation(s) rebuilt at their original text position");
       }), CommandStatus::Implemented, "Rebuilds the text at the position it was created with.");
-  Reg(e, "Centermark", Make<CentermarkCommand>());
+  Reg(e, "Centermark", Make<CentermarkCommand>(), CommandStatus::Implemented,
+      "Always associative to the selected circle/arc (DimRefObj1, same whole-object anchoring as DimRadius/DimDiameter): UpdateDimensions re-evaluates the arc's current center/plane/radius and redraws the cross from it - an Auto-sized mark (no Size= given) stays a quarter of the live radius as it changes, a Fixed-sized one keeps the size it was given. Falls back to the position/size recorded at creation, orphaned rather than deleted, if the source circle/arc is gone or no longer arc-shaped - same contract as DimRadius's DimCenter/DimRadiusVal fallback. Goes on SetCenterLayer's layer (CENTERLAYER) if set, else the current layer.");
+  // Command lookup is case-insensitive (CommandEngine::Register keys on
+  // ToLower(name) - see CommandEngine.cpp), so "CenterMark" (AutoCAD's own
+  // spelling) already resolves to the registration above; no separate entry
+  // needed.
+  Reg(e, "CenterLine", Make<CenterLineCommand>(), CommandStatus::Implemented,
+      "AutoCAD's CENTERLINE: select two straight lines, draws the line down their midline (pairing each line's nearer ends, so it follows however the two lines are wound). Always associative to both selected lines (DimRefObj1/DimRefObj2): UpdateDimensions re-evaluates both lines' current geometry and redraws the midline from it. Falls back to the midline recorded at creation, orphaned rather than deleted, if either referenced line is gone or no longer straight. Only the two-selected-lines case is implemented - a cylindrical/prismatic pair of parallel solid/surface edges (as opposed to independent line curves) is not selectable as \"two lines\" here and is out of scope. Goes on SetCenterLayer's layer (CENTERLAYER) if set, else the current layer.");
+  Reg(e, "SetCenterLayer", Make<SetCenterLayerCommand>(), CommandStatus::Implemented, "Layer= sets it directly; bare prompts. Empty means new center marks/lines go on the current layer, same as SetDimensionLayer.");
   Reg(e, "Arrowhead", Make<ArrowheadCommand>());
   Reg(e, "RevCloud", Make<RevCloudCommand>());
   Reg(e, "TextProperties", Make<TextPropertiesCommand>("TextProperties"), CommandStatus::Implemented, "Options-driven (Text=, Height=); rebuilds the text outlines of the selected annotations.");
