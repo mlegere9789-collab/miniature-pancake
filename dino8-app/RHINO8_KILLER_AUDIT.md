@@ -262,11 +262,28 @@ documented in the Addendum below.
   selected line curves, not a solid's own parallel-edge pair (which would need edge-topology selection this
   command doesn't attempt) — disclosed, not silently approximated.
 
-**Still queued in this wave**: dynamic blocks (visibility-state parameter/action graph, first increment),
-live two-way CSV data linking to external spreadsheets, and vertical-market Mechanical+MEP parametric
-components (fasteners, structural shapes, ducts/pipes/conduit sized from flow) — all implemented and
-locally verified by their own author agents, pending this session's own independent re-verification/merge/
-push/CI-confirm before being checked off here.
+- [x] **Dynamic blocks, increment 1: visibility states.** New `BlockAddState`/`BlockSetVisibility`/
+  `BlockSetState` commands plus a real `BlockInstance` record (`src/doc/BlockInstances.{h,cpp}`) let one
+  block definition carry multiple named visibility states (e.g. a fastener with "With cap"/"Without cap"
+  variants) that switch which member objects are visible per-instance without duplicating the definition —
+  the first slice of AutoCAD's fuller dynamic-block parameter/action graph (stretch/flip/array actions are
+  not attempted here). Also fixed a real, independent, pre-existing bug found while building this: `Document
+  ::blocks_` had no Save/Open path at all — block definitions silently vanished on file reload before this
+  fix. Verified end to end, including the hard case: visibility-state assignment survives a real Save→New→
+  Open round trip (not just the live session), confirmed via `BlockManager`'s own reported counts and each
+  instance's actual visible-object set before and after reload, plus a full Undo/redo cycle on a state
+  switch. A second real, independent bug was found and fixed during this session's own re-verification
+  (not the implementing agent's): `tests/smoke.sh`'s new section-splitting `awk` pattern matched bare
+  `Command: List` but `--smoke` mode prefixes every line with `history: `, so the split silently never
+  fired and the following `cat`-based assignments failed under `set -e`, killing the *entire* smoke.sh run
+  mid-script with no FAIL ever printed and every later section (including all 10 tutorials) skipped — three
+  consecutive full runs reproduced the identical silent death before the pattern was corrected to
+  `^history: Command: List$`.
+
+**Still queued in this wave**: live two-way CSV data linking to external spreadsheets and vertical-market
+Mechanical+MEP parametric components (fasteners, structural shapes, ducts/pipes/conduit sized from flow) —
+both implemented and locally verified by their own author agents, pending this session's own independent
+re-verification/merge/push/CI-confirm before being checked off here.
 
 ## Addendum: what "100%, no exceptions" actually required
 
