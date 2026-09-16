@@ -1865,7 +1865,7 @@ fi
 # state right after instance #2 is switched to state B, DB_S2 is after
 # Undo reverts that switch, DB_S3 is after a Save/Open round trip and a
 # fresh instance #3.
-awk '/^Command: List$/{n++; next} {print > ("'"$TMP"'/dblk/sec" n ".txt")}' <<<"$DB"
+awk '/^history: Command: List$/{n++; next} {print > ("'"$TMP"'/dblk/sec" n ".txt")}' <<<"$DB"
 DB_S1="$(cat "$TMP/dblk/sec1.txt" 2>/dev/null)"
 DB_S2="$(cat "$TMP/dblk/sec2.txt" 2>/dev/null)"
 DB_S3="$(cat "$TMP/dblk/sec3.txt" 2>/dev/null)"
