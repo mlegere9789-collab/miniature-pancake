@@ -302,6 +302,21 @@ const char* ToolbarButtonLabel(const std::string& command) {
   return b ? b->label : nullptr;
 }
 
+std::vector<std::string> AllToolbarButtonCommands() {
+  std::vector<std::string> out;
+  out.reserve(sizeof(kButtons) / sizeof(kButtons[0]));
+  for (const ToolButton& b : kButtons) out.push_back(b.command);
+  return out;
+}
+
+bool AddToolbarCommand(Application& app, const std::string& name) {
+  const RegisteredCommand* rc = app.Engine().Find(name);
+  if (!rc) return false;
+  if (app.toolbar_commands.empty()) app.toolbar_commands = DefaultToolbarCommands();
+  app.toolbar_commands.push_back(rc->name);
+  return true;
+}
+
 float ToolbarHeight(const Application& app) {
   if (!app.Panels().toolbars) return 0.0f;
   const float tabs = ImGui::GetTextLineHeight() + 8.0f;
@@ -368,6 +383,18 @@ IconButtonResult IconButton(Application& app, const char* command, const char* l
     ImGui::SetNextWindowPos(ImVec2(pos.x, pos.y + size.y + 4.0f));
     RichTooltip(app, b, command, customizable);
   }
+  // Any toolbar/sidebar button can be dragged (AutoCAD/Rhino-style) onto the
+  // Standard toolbar's customize list to add it there - see DrawButtonRow's
+  // drop target and the Options > Toolbar drag target in Panels.cpp. This is
+  // purely additive: it never disturbs the button's own click behaviour.
+  if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+    ImGui::SetDragDropPayload(kToolbarCommandDragType, command, std::strlen(command) + 1);
+    DrawIcon(dl, command, ImGui::GetCursorScreenPos(), icon, ImGui::GetColorU32(ImGuiCol_Text));
+    ImGui::Dummy(ImVec2(icon, icon));
+    ImGui::SameLine();
+    ImGui::TextUnformatted(b ? b->label : command);
+    ImGui::EndDragDropSource();
+  }
   ImGui::PopID();
   return r;
 }
@@ -375,8 +402,11 @@ IconButtonResult IconButton(Application& app, const char* command, const char* l
 namespace {
 
 // Draws one row of buttons for `commands`; returns the index of a button the
-// user asked to remove (Standard tab only), or -1.
-int DrawButtonRow(Application& app, const std::vector<std::string>& commands, bool customizable, bool show_labels) {
+// user asked to remove (Standard tab only), or -1. When `customizable`, a
+// trailing drop zone accepts a dragged command from any other toolbar tab
+// or sidebar (see IconButton's drag source) and reports it through
+// `dropped_command` for the caller to append.
+int DrawButtonRow(Application& app, const std::vector<std::string>& commands, bool customizable, bool show_labels, std::string* dropped_command = nullptr) {
   int remove_index = -1;
   const float row_h = ButtonSize(app, show_labels ? "Xg" : nullptr).y;
   for (size_t i = 0; i < commands.size(); ++i) {
@@ -405,6 +435,24 @@ int DrawButtonRow(Application& app, const std::vector<std::string>& commands, bo
     }
     ImGui::PopID();
     ImGui::SameLine(0, 2);
+  }
+  if (customizable && dropped_command) {
+    // A thin drop zone after the last button, at least as wide as one
+    // button so an empty toolbar still has somewhere to drop onto.
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const ImVec2 zsize(std::max(24.0f, avail.x), row_h);
+    ImGui::InvisibleButton("##tbdrop", zsize);
+    if (ImGui::BeginDragDropTarget()) {
+      if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kToolbarCommandDragType)) {
+        *dropped_command = static_cast<const char*>(payload->Data);
+      }
+      ImGui::EndDragDropTarget();
+    }
+    if (ImGui::IsItemVisible() && !commands.empty()) {
+      const ImVec2 p = ImGui::GetItemRectMin();
+      ImGui::GetWindowDrawList()->AddRect(ImVec2(p.x + 2, p.y + 3), ImVec2(p.x + zsize.x - 2, p.y + zsize.y - 3),
+                                          ImGui::GetColorU32(ImGuiCol_Border, 0.5f), 3.0f, 0, 1.0f);
+    }
   }
   return remove_index;
 }
@@ -474,8 +522,10 @@ void DrawToolbars(Application& app) {
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::GetIO().MouseWheel != 0.0f)
       ImGui::SetScrollX(ImGui::GetScrollX() - ImGui::GetIO().MouseWheel * 60.0f);
     if (app.toolbar_tab == 0) {
-      const int remove_index = DrawButtonRow(app, app.toolbar_commands, !app.State().toolbar_lock, app.toolbar_labels);
+      std::string dropped;
+      const int remove_index = DrawButtonRow(app, app.toolbar_commands, !app.State().toolbar_lock, app.toolbar_labels, &dropped);
       if (remove_index >= 0) app.toolbar_commands.erase(app.toolbar_commands.begin() + remove_index);
+      if (!dropped.empty()) AddToolbarCommand(app, dropped);
     } else {
       std::vector<std::string> cmds;
       for (const char* c : kTabs[app.toolbar_tab].commands) cmds.push_back(c);

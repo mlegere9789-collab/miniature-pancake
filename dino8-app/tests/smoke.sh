@@ -41,6 +41,8 @@ SelNone
 Cylinder 60,0,0 5 15
 SelLast
 What
+ToolbarAddCommand Fillet
+ToolbarAddCommand NotARealCommandXYZ
 EOS
 
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
@@ -59,6 +61,13 @@ check "Saved " "save wrote a .3dm"
 check "Opened " "open re-read the .3dm"
 check "Exported " "OBJ export wrote a file"
 check "length = 14.14" "line length measured"
+# Options > Toolbar's icon-grid command picker adds a command through
+# AddToolbarCommand() (ui/Toolbars.cpp) - the same function the picker's
+# click/drag handlers call in Panels.cpp. Mouse clicks/drags on the picker
+# itself are not scriptable headlessly, but this exercises the exact code
+# path they invoke, via the scriptable ToolbarAddCommand command.
+check "Added 'Fillet' to the Standard toolbar" "icon-grid picker's add-to-toolbar path (ToolbarAddCommand) accepted a known command"
+check "Unknown command: NotARealCommandXYZ" "icon-grid picker's add-to-toolbar path rejects an unknown command"
 test -s "$TMP/test.3dm" && echo "ok   test.3dm exists" || { echo "FAIL test.3dm missing"; fail=1; }
 test -s "$TMP/test.obj" && echo "ok   test.obj exists" || { echo "FAIL test.obj missing"; fail=1; }
 check "gl_error=0" "no OpenGL errors"
