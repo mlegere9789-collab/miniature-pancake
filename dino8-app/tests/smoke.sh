@@ -2106,4 +2106,20 @@ if echo "$TUT" | grep -q "^FAIL"; then fail=1; fi
 TUT_PASS_COUNT=$(echo "$TUT" | grep -c "^PASS:")
 [ "$TUT_PASS_COUNT" -eq 10 ] || { echo "FAIL: expected 10/10 tutorial scripts to pass, got $TUT_PASS_COUNT"; fail=1; }
 
+# DwgCompare / XrefCompare / CompareClear QC (compare/DwgCompare.h,
+# src/commands/cmd_compare.cpp - see compare_script.txt for the full
+# v1-vs-v2 scenario this drives).
+sed "s|@TMP@|$TMP|g" "$HERE/compare_script.txt" > "$TMP/compare_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  CMP="$("$BIN" --smoke 30 --script "$TMP/compare_script.txt" 2>&1)" || { echo "$CMP"; echo "FAIL: compare script exited non-zero"; exit 1; }
+else
+  CMP="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/compare_script.txt" 2>&1)" || { echo "$CMP"; echo "FAIL: compare script exited non-zero"; exit 1; }
+fi
+cmpcheck() { if echo "$CMP" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+cmpcheck "Exported $TMP/cmp_v1.3dm" "compare script saved the v1 baseline"
+cmpcheck "Deleted 1 object(s)" "only the old circle was deleted (the moved line stayed selected-clean)"
+cmpcheck "DwgCompare: 1 added, 1 removed, 1 modified, 1 unchanged" "DwgCompare landed the moved line as modified, the deleted circle as removed, the untouched polyline as unchanged (not counted as a hit), and the new circle as added"
+cmpcheck "CompareClear: 3 object.s. restored/removed" "CompareClear restored the 2 tinted objects and removed the 1 ghost"
+echo "$CMP" | grep -q "DwgCompare: 0 added, 0 removed" && { echo "FAIL: DwgCompare produced no diff at all"; fail=1; }
+
 exit $fail
