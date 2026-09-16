@@ -1075,6 +1075,7 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
 
     int edge_index;
     const auto it = edge_of_vertex_pair.find(key);
+    const bool edge_freshly_created = (it == edge_of_vertex_pair.end());
     if (it == edge_of_vertex_pair.end()) {
       ON_Curve* c3 = nullptr;
       int curve_start_vid = vid_from;
@@ -1164,7 +1165,27 @@ void BuildFaceLoop(ON_Brep& brep, ON_BrepFace& face, const FaceTopology& topo,
     }
 
     const ON_BrepEdge& edge = brep.m_E[edge_index];
-    const bool bRev3d = (edge.m_vi[0] != vid_from);
+    // For a freshly-created edge, the true "is this trim's own walk
+    // direction reversed relative to the 3D edge curve's own
+    // parametrization" fact is already known exactly from `iso_reversed`
+    // (decided above, at the same point `curve_start_vid`/`curve_end_vid`
+    // were chosen) - use it directly instead of re-deriving it from vertex
+    // identity. The vertex-identity comparison below
+    // (`edge.m_vi[0] != vid_from`) is lossy exactly when this segment's own
+    // two endpoint vertices are the SAME vertex - a full 2*pi-sweep closed
+    // cap edge, where vid_from == vid_to identically regardless of the true
+    // sweep direction - and it silently evaluates to `false` for every such
+    // edge no matter what `iso_reversed` says, producing a spurious
+    // ON_Brep::IsValid() "closed curve directions are opposite" report.
+    // For the reuse path (a second face sharing an already-built edge),
+    // this segment's own `iso_reversed`/`is_cap` facts describe the OTHER
+    // face's trim, not this one, so they don't apply here; the
+    // vertex-identity comparison remains the only signal available and is
+    // correct for every non-closed shared edge (the only kind that reaches
+    // this branch in practice - see the doc comment above `is_cap` on why a
+    // closed cap edge is never genuinely shared with `has_notch_interior ==
+    // false` semantics changing between the two uses).
+    const bool bRev3d = edge_freshly_created ? (is_cap && iso_reversed) : (edge.m_vi[0] != vid_from);
 
     ON_Curve* c2 = nullptr;
     if (has_notch_interior) {

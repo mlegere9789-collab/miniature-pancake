@@ -7848,6 +7848,18 @@ void TestMixedFacesRoundTripsCylindricalFace() {
   full.angle = 2.0 * ON_PI;
   full.length = 12.0;
   const Brep mixed = Brep::FromMixedFaces({pf}, {full});
+  // A positive control for the bRev3d fix (src/brep.cpp, BuildFaceLoop):
+  // this face's two full 2*pi-sweep cap edges are each a closed edge whose
+  // own two loop-boundary vertices are the literal same vertex - exactly
+  // the degenerate case the vertex-identity bRev3d heuristic used to get
+  // wrong unconditionally. Asserting IsValid() directly here (a plain,
+  // un-notched, single-cylindrical-face fixture, no boolean pipeline
+  // involved at all) confirms the fix isn't specific to the
+  // shared-notch-pair fixture exercised elsewhere in this file.
+  Check(mixed.raw().IsValid(),
+        "FromMixedFaces() of a mixed planar+full-circle-cylindrical Brep is genuinely ON_Brep::IsValid() - both "
+        "of the cylindrical face's own full 2*pi-sweep cap edges (closed, same-vertex-at-both-ends) get the "
+        "correct bRev3d trim direction, not the vertex-identity heuristic's unconditional false");
   const Brep::MixedFacesResult extracted_mixed = mixed.MixedFaces();
   Check(extracted_mixed.planar.size() == 1 && extracted_mixed.cylindrical.size() == 1,
         "MixedFaces() sorts a mixed planar+cylindrical Brep's faces by type correctly");
@@ -16898,17 +16910,26 @@ void TestBooleanCombineMixedNotchAwareComposedMultiPlaneCrossingBuilds() {
         "Difference(shared-notch PAIR solid, two-plane box z in [-1, 1]) measures the true 32*pi = 100.530965 "
         "within 1e-3 conforming / 5e-3 ordinary - the two kept bands (z in [-3,-1] and z in [1,7]) each need only "
         "ONE of the two planes per the research spec's own bucket derivation, so this exercises the bigon-eligible "
-        "re-split machinery without needing the joint two-plane computation Intersection below needs - note: "
-        "unlike Intersection below, this Difference result's raw ON_Brep::IsValid() itself reports one narrow "
-        "defect: 'closed curve directions are opposite' on upper's own untouched, plain (un-notched), "
-        "full-circle far cap edge at z = 7 - a benign trim-direction mislabel on a periodic edge (traced "
-        "directly to this codebase's own generic FromMixedFaces bRev3d heuristic, src/brep.cpp, which "
-        "degenerates for any closed edge whose two endpoints are literally the same vertex - upper's own "
-        "clamped fragment here is NOT itself touched by task #87's new bigon-eligibility logic, so this is a "
-        "separate, disclosed, pre-existing gap this increment did not introduce and does not attempt to fix) - "
-        "the volume match here (both mesh flavors) is what confirms the DE-COMPOSITION itself is geometrically "
-        "correct, exactly mirroring this same file's own established half-and-half-wall precedent above of "
-        "trusting the volume match over a narrower, separately-disclosed mesh/validity gap");
+        "re-split machinery without needing the joint two-plane computation Intersection below needs");
+  // This Difference result's raw ON_Brep::IsValid() used to report one
+  // narrow defect: "closed curve directions are opposite" on upper's own
+  // untouched, plain (un-notched), full-circle far cap edge at z = 7 - a
+  // trim-direction mislabel on a periodic edge, traced to this codebase's
+  // own generic FromMixedFaces bRev3d heuristic (src/brep.cpp), which used
+  // to degenerate for any closed edge whose two endpoints are literally the
+  // same vertex (a full 2*pi-sweep cap arc: `edge.m_vi[0] != vid_from`
+  // always evaluated to `false` there, regardless of the curve's true
+  // sweep direction). Fixed by using the already-known `iso_reversed` fact
+  // directly for a freshly-created edge instead of re-deriving direction
+  // from vertex identity. This is now asserted directly, not merely
+  // disclosed - upper's own clamped fragment here is NOT itself touched by
+  // task #87's bigon-eligibility logic, so this specifically confirms the
+  // fix generalizes to an untouched, plain full-circle cap edge reached
+  // only incidentally by this fixture.
+  Check(diff.raw().IsValid(),
+        "Difference(shared-notch PAIR solid, two-plane box z in [-1, 1]) is now genuinely ON_Brep::IsValid() - "
+        "the previously-disclosed 'closed curve directions are opposite' defect on upper's own full-circle far "
+        "cap edge at z = 7 is fixed, not merely tolerated via the volume match");
 
   const Brep inter = BooleanCombineMixed(fx.brep, box, BooleanOp::Intersection);
   Check(inter.raw().IsValid(), "Intersection(shared-notch PAIR solid, two-plane box z in [-1, 1]) builds a valid Brep");
