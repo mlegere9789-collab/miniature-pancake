@@ -73,6 +73,7 @@ void RegisterExchange2Commands(CommandEngine&);
 void RegisterConstraintCommands(CommandEngine&);  // cmd_constraints.cpp
 void ConstraintsFrame(Application&);              // cmd_constraints.cpp: auto re-solve + glyph overlay
 void RegisterArchCommands(CommandEngine&);        // cmd_arch.cpp
+void RegisterStandardsCommands(CommandEngine&);   // cmd_standards.cpp: Standards/CheckStandards
 void RegisterSessionCommands(CommandEngine&);  // Dig* digitizer, Worksession/LimitReferenceModel, Snapshots
 
 Application::Application() = default;
@@ -317,6 +318,7 @@ void Application::RegisterCommands() {
   dino8::app::RegisterConstraintCommands(*engine_);     // Constrain, ConstraintSolve, ConstraintDelete, ConstraintsShow
   dino8::app::RegisterArchCommands(*engine_);           // Wall, Door, Window, Slab, Roof, Stair, Column, Beam, ArchEdit, ArchSchedule
   RegisterSessionCommands(*engine_);    // Dig* digitizer, Worksession/LimitReferenceModel, Snapshots
+  dino8::app::RegisterStandardsCommands(*engine_);  // Standards, CheckStandards (CAD Standards Checker subset)
   RegisterFlowCommands(*engine_);       // very last: Dino Flow + plug-ins, replaces the Grasshopper/plug-in stubs
 }
 
