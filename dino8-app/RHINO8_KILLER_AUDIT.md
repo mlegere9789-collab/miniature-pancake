@@ -307,9 +307,31 @@ failed `grep` left the pipeline's own exit status nonzero under `set -e`, silent
 smoke.sh run with no FAIL ever printed. Both fixed; the full merged suite is now stable across repeated
 clean runs (0 FAIL, all 10 tutorials, every feature section including DataLink reached and passing).
 
-**Still queued in this wave**: vertical-market Mechanical+MEP parametric components (fasteners, structural
-shapes, ducts/pipes/conduit sized from flow) — implemented and locally verified by its own author agent,
-pending this session's own independent re-verification/merge/push/CI-confirm before being checked off here.
+- [x] **Vertical-market toolset, first slice: Mechanical/structural fasteners and MEP runs.** New
+  `Bolt`/`Nut`/`Washer`/`IBeam`/`Channel`/`AngleIron`/`MepPipe`/`Duct`/`Conduit` component types plus
+  `SizeDuct`/`SizePipe` (`src/arch/ArchComponents.{h,cpp}`, `src/commands/cmd_arch.cpp`) build real,
+  measurable geometry from a starter-set size table (fastener/structural bounding boxes checked against the
+  actual table row values used; Duct/Pipe/Conduit volumes checked against the `pi*r^2*L` continuity formula;
+  `SizeDuct`/`SizePipe` checked against `MepDiameterFromFlow()`'s own rule-of-thumb sizing formula) — a real,
+  if narrow, slice of AutoCAD's Mechanical+MEP vertical toolsets (Electrical, Map 3D, Plant 3D/P&ID, and
+  Raster Design remain unattempted). This item went through this session's quality gate twice: the first
+  submission shipped real feature code with no automated test coverage and only a manual spot-check, was
+  explicitly rejected and sent back with itemized required steps, and the corrected resubmission (commit
+  `1ed3931`) both added the real regression coverage described above *and* found and fixed a genuine,
+  independent bug the missing coverage had let through: the new `Pipe`/`Angle` command registrations
+  silently shadowed two pre-existing, unrelated commands with the same names (`cmd_surface.cpp`'s
+  tube-around-a-curve `Pipe`, `cmd_analyze.cpp`'s three-point `Angle` measurement) because `Reg()` has no
+  duplicate-name guard — fixed by renaming just the two colliding *registrations* to `MepPipe`/`AngleIron`
+  (matching the codebase's own pre-existing `ArchSlab`-vs-`Slab` registered-name/display-name split), while
+  every printed message and object name still reads "Pipe"/"Angle". Honestly disclosed, not silently
+  shipped as more than it is: starter-set (not real ISO/AISC/Eurocode) size tables, round hex-head
+  approximations, solid (no-wall-thickness) Duct/Pipe/Conduit, and rule-of-thumb (non-code-compliant) MEP
+  sizing.
+
+The remaining five AutoCAD-only vertical-market toolsets this wave's own research scoped (Electrical, Map
+3D, Plant 3D/P&ID, Raster Design, and further MEP depth beyond this first slice) are not yet attempted —
+the Mechanical+MEP slice above was chosen as the first, most broadly useful increment, not the whole
+category. Every other item from the user's original 8-area "design addition" directive is now closed.
 
 ## Addendum: what "100%, no exceptions" actually required
 
