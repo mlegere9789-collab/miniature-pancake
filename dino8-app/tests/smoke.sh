@@ -2098,4 +2098,39 @@ if echo "$TUT" | grep -q "^FAIL"; then fail=1; fi
 TUT_PASS_COUNT=$(echo "$TUT" | grep -c "^PASS:")
 [ "$TUT_PASS_COUNT" -eq 10 ] || { echo "FAIL: expected 10/10 tutorial scripts to pass, got $TUT_PASS_COUNT"; fail=1; }
 
+# Activity Log + Named Snapshots persistence (Document::ActivityLog/
+# RecordActivityLogEntry, ActivityExport, Document::CaptureSnapshotAsDocument/
+# AdoptNamedSnapshotFromDocument + Application's sidecar files - see
+# activity_log_script.txt): a create, a move and a delete must each show up
+# in the exported CSV with the right label, and a Named Snapshot saved
+# before Save must still be listed after New+Open re-reads the file from
+# disk (proving both the activity-log sidecar and the snapshot sidecar
+# survive a real save/close/reopen, not just the live in-memory session).
+sed "s|@TMP@|$TMP|g" "$HERE/activity_log_script.txt" > "$TMP/activity_log_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  AL="$("$BIN" --smoke 40 --script "$TMP/activity_log_script.txt" 2>&1)" || { echo "$AL"; echo "FAIL: activity-log script exited non-zero"; exit 1; }
+else
+  AL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 40 --script "$TMP/activity_log_script.txt" 2>&1)" || { echo "$AL"; echo "FAIL: activity-log script exited non-zero"; exit 1; }
+fi
+alcheck() { if echo "$AL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+alcheck "Snapshot 'MySnap' saved" "Snapshots Save created the named snapshot before the file was saved"
+alcheck "Saved $TMP/activity_test.3dm" "Save wrote the .3dm (and, alongside it, the snapshot sidecar)"
+alcheck "Opened $TMP/activity_test.3dm" "Open re-read the .3dm"
+alcheck "1 snapshot(s)" "Snapshots List found exactly the one snapshot after New+Open, proving Named Snapshots survive Save/Open"
+alcheck "  MySnap" "the reloaded snapshot kept its original name"
+alcheck "ActivityExport: " "ActivityExport ran and reported how many entries it wrote"
+test -s "$TMP/activity_export.csv" && echo "ok   activity_export.csv exists" || { echo "FAIL activity_export.csv missing"; fail=1; }
+head -1 "$TMP/activity_export.csv" | grep -q '^Timestamp (UTC),Action,Detail$' && echo "ok   activity_export.csv has the expected CSV header" || { echo "FAIL activity_export.csv header"; fail=1; }
+grep -q '"Box"' "$TMP/activity_export.csv" && echo "ok   activity_export.csv recorded the Box creation" || { echo "FAIL activity_export.csv missing the Box entry"; fail=1; }
+grep -q '"Move"' "$TMP/activity_export.csv" && echo "ok   activity_export.csv recorded the Move edit" || { echo "FAIL activity_export.csv missing the Move entry"; fail=1; }
+grep -q '"Delete"' "$TMP/activity_export.csv" && echo "ok   activity_export.csv recorded the Delete" || { echo "FAIL activity_export.csv missing the Delete entry"; fail=1; }
+# The exported log must also include entries recorded *before* this session
+# started (i.e. loaded back from the on-disk sidecar log by
+# Document::LoadActivityLog after Open, not just this run's own edits) -
+# count real per-edit label rows (excluding the header) and require at
+# least the 3 edits made above.
+[ "$(($(wc -l < "$TMP/activity_export.csv") - 1))" -ge 3 ] && echo "ok   activity_export.csv has at least the 3 recorded edits" || { echo "FAIL activity_export.csv has too few rows"; fail=1; }
+test -s "$TMP/activity_test.3dm.activity.log" && echo "ok   the durable activity.log sidecar file was written next to the document" || { echo "FAIL activity.log sidecar file missing"; fail=1; }
+test -d "$TMP/activity_test.3dm.snapshots" && echo "ok   the Named Snapshots sidecar directory was written next to the document" || { echo "FAIL snapshots sidecar directory missing"; fail=1; }
+
 exit $fail

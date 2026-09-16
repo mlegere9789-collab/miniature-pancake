@@ -16,6 +16,10 @@ void DrawLayersPanel(Application& app);
 void DrawPropertiesPanel(Application& app);
 void DrawCommandHistoryPanel(Application& app);
 void DrawCommandListPanel(Application& app, std::string& filter, int& status_filter);
+// Activity Log panel: browses Document::ActivityLog(), filterable by a
+// substring (label/summary) and an inclusive "YYYY-MM-DD" date range
+// (each buffer must be at least 16 bytes; empty = unbounded on that side).
+void DrawActivityLogPanel(Application& app, std::string& filter, char* from_date, char* to_date);
 void DrawHelpPanel(Application& app, std::string& search);
 void DrawNotificationsPanel(Application& app);
 void DrawNamedViewsPanel(Application& app);

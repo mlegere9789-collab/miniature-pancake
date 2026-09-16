@@ -2,6 +2,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <ctime>
+#include <fstream>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -44,6 +48,7 @@ void Document::Clear() {
   undo_.clear();
   redo_.clear();
   named_snapshots_.clear();
+  activity_log_.clear();
   ++revision_;
 }
 
@@ -488,6 +493,46 @@ std::vector<std::string> Document::NamedSnapshotNames() const {
   return names;
 }
 
+bool Document::CaptureSnapshotAsDocument(const std::string& name, Document& out) const {
+  const auto it = std::find_if(named_snapshots_.begin(), named_snapshots_.end(),
+                                [&](const auto& p) { return p.first == name; });
+  if (it == named_snapshots_.end()) return false;
+  const Snapshot& s = it->second;
+  out.Clear();
+  out.objects_ = s.objects;
+  out.layers_ = s.layers;
+  out.current_layer_ = s.current_layer;
+  out.groups_ = s.groups;
+  out.materials_ = s.materials;
+  out.lights_ = s.lights;
+  out.clipping_planes_ = s.clipping_planes;
+  out.layouts_ = s.layouts;
+  out.next_id_ = s.next_id;
+  out.next_group_id_ = s.next_group_id;
+  out.next_light_id_ = s.next_light_id;
+  return true;
+}
+
+void Document::AdoptNamedSnapshotFromDocument(const std::string& name, const Document& src) {
+  Snapshot s;
+  s.label = name;
+  s.objects = src.objects_;
+  s.layers = src.layers_;
+  s.current_layer = src.current_layer_;
+  s.groups = src.groups_;
+  s.materials = src.materials_;
+  s.lights = src.lights_;
+  s.clipping_planes = src.clipping_planes_;
+  s.layouts = src.layouts_;
+  s.next_id = src.next_id_;
+  s.next_group_id = src.next_group_id_;
+  s.next_light_id = src.next_light_id_;
+  for (auto& [n, snap] : named_snapshots_) {
+    if (n == name) { snap = std::move(s); return; }
+  }
+  named_snapshots_.emplace_back(name, std::move(s));
+}
+
 // ---- diff-based undo/redo history ----------------------------------------
 //
 // See the StateDelta/HistoryEntry/PendingChange comments in Document.h for
@@ -622,8 +667,110 @@ void Document::FinalizePending() {
     ops_since_checkpoint_ = 0;
     checkpoint = std::make_shared<Snapshot>(Capture(d.label));
   }
+  RecordActivityLogEntry(d);
   undo_.push_back(HistoryEntry{std::move(d), std::move(checkpoint)});
   if (undo_.size() > max_undo_) undo_.erase(undo_.begin());
+}
+
+std::string Document::ActivityLogPath() const {
+  if (path_.empty()) return {};
+  return path_ + ".activity.log";
+}
+
+// Records only labels/ids/counts, never geometry - a long editing session
+// can easily produce thousands of entries, and keeping every StateDelta's
+// full before/after object geometry around forever (rather than the bounded
+// undo_/redo_ stacks, which already cap at max_undo_) would grow without
+// bound. The label plus a short object-id/count summary is exactly what a
+// browsable activity list needs to be useful (see AutoCAD's Activity
+// Insights entries, which are themselves one-line-per-event); reconstructing
+// or replaying full geometry from history is left to the existing Undo
+// stack, which is bounded and already does that job.
+void Document::RecordActivityLogEntry(const StateDelta& d) {
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t t = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_utc{};
+#if defined(_WIN32)
+  gmtime_s(&tm_utc, &t);
+#else
+  gmtime_r(&t, &tm_utc);
+#endif
+  char buf[32];
+  std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm_utc);
+
+  std::ostringstream sum;
+  sum << "+" << d.added.size() << " -" << d.removed.size() << " ~" << d.modified_before.size() << " object(s)";
+  std::vector<ObjectId> ids;
+  ids.reserve(d.added.size() + d.removed.size() + d.modified_before.size());
+  for (const SceneObject& o : d.added) ids.push_back(o.id);
+  for (const auto& r : d.removed) ids.push_back(r.object.id);
+  for (const SceneObject& o : d.modified_before) ids.push_back(o.id);
+  if (!ids.empty()) {
+    sum << " [ids ";
+    const size_t shown = std::min<size_t>(ids.size(), 8);
+    for (size_t i = 0; i < shown; ++i) { if (i) sum << ","; sum << ids[i]; }
+    if (ids.size() > shown) sum << ",...";
+    sum << "]";
+  }
+
+  ActivityLogEntry e{buf, d.label, sum.str()};
+  activity_log_.push_back(e);
+  AppendActivityLogLineToDisk(e);
+}
+
+// Tab-separated, one entry per line: timestamp<TAB>label<TAB>summary. Tabs
+// and newlines can't appear in a label/summary built only from strftime
+// output, counts and object ids above, so no escaping is needed for what
+// this function itself ever writes; it is still defensive against a label
+// containing a literal tab (labels come from BeginChange call sites
+// throughout the codebase, not all reviewed here) by substituting a space,
+// so a hand-crafted or unusual label can never corrupt the line format.
+namespace {
+std::string SanitizeActivityLogField(std::string s) {
+  for (char& c : s) { if (c == '\t' || c == '\n' || c == '\r') c = ' '; }
+  return s;
+}
+void WriteActivityLogLine(std::ostream& out, const Document::ActivityLogEntry& e) {
+  out << SanitizeActivityLogField(e.timestamp_utc) << '\t' << SanitizeActivityLogField(e.label) << '\t'
+      << SanitizeActivityLogField(e.summary) << '\n';
+}
+}  // namespace
+
+void Document::AppendActivityLogLineToDisk(const ActivityLogEntry& e) const {
+  const std::string path = ActivityLogPath();
+  if (path.empty()) return;
+  std::ofstream out(path, std::ios::app);
+  if (!out) return;
+  WriteActivityLogLine(out, e);
+}
+
+void Document::FlushActivityLogToDisk() const {
+  const std::string path = ActivityLogPath();
+  if (path.empty()) return;
+  std::ofstream out(path, std::ios::trunc);
+  if (!out) return;
+  for (const ActivityLogEntry& e : activity_log_) WriteActivityLogLine(out, e);
+}
+
+void Document::LoadActivityLog() {
+  const std::string path = ActivityLogPath();
+  activity_log_.clear();
+  if (path.empty()) return;
+  std::ifstream in(path);
+  if (!in) return;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty()) continue;
+    const size_t t1 = line.find('\t');
+    if (t1 == std::string::npos) continue;
+    const size_t t2 = line.find('\t', t1 + 1);
+    if (t2 == std::string::npos) continue;
+    ActivityLogEntry e;
+    e.timestamp_utc = line.substr(0, t1);
+    e.label = line.substr(t1 + 1, t2 - t1 - 1);
+    e.summary = line.substr(t2 + 1);
+    activity_log_.push_back(std::move(e));
+  }
 }
 
 void Document::ApplyObjectDelta(const StateDelta& d, bool undo) {

@@ -446,6 +446,54 @@ void DrawCommandHistoryPanel(Application& app) {
   ImGui::End();
 }
 
+// Activity Log: browses Document::ActivityLog() - the persisted, labeled
+// record of every finalized edit (see Document::RecordActivityLogEntry) -
+// as a scrollable, filterable table, plus a button to run ActivityExport.
+// Matches DrawCommandListPanel's table style above.
+void DrawActivityLogPanel(Application& app, std::string& filter, char* from_date, char* to_date) {
+  if (!ImGui::Begin(PanelTitle("panel.activity_log", "ActivityLog").c_str(), &app.Panels().activity_log)) { ImGui::End(); return; }
+  const auto& log = app.Doc().ActivityLog();
+  ImGui::Text("%zu recorded activit%s", log.size(), log.size() == 1 ? "y" : "ies");
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Export CSV...")) app.Engine().Execute("ActivityExport");
+  InputString("Filter", filter);
+  ImGui::SetNextItemWidth(110);
+  ImGui::InputTextWithHint("From (YYYY-MM-DD)", "YYYY-MM-DD", from_date, 16);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(110);
+  ImGui::InputTextWithHint("To (YYYY-MM-DD)", "YYYY-MM-DD", to_date, 16);
+  ImGui::Separator();
+  const std::string f = ToLower(filter);
+  const std::string from = from_date;
+  const std::string to = to_date;
+  if (ImGui::BeginTable("activity", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Time (UTC)", ImGuiTableColumnFlags_WidthFixed, 150);
+    ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 140);
+    ImGui::TableSetupColumn("Detail", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableHeadersRow();
+    for (const auto& e : log) {
+      // e.timestamp_utc is "YYYY-MM-DD HH:MM:SS"; its first 10 chars sort
+      // and compare lexicographically identically to the "YYYY-MM-DD"
+      // bounds typed above, so plain string comparison is an exact,
+      // correct inclusive date-range test with no date parsing needed.
+      const std::string day = e.timestamp_utc.substr(0, 10);
+      if (!from.empty() && day < from) continue;
+      if (!to.empty() && day > to) continue;
+      if (!f.empty() && ToLower(e.label).find(f) == std::string::npos && ToLower(e.summary).find(f) == std::string::npos) continue;
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(e.timestamp_utc.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(e.label.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(e.summary.c_str());
+    }
+    ImGui::EndTable();
+  }
+  ImGui::End();
+}
+
 void DrawCommandListPanel(Application& app, std::string& filter, int& status_filter) {
   if (!ImGui::Begin(PanelTitle("panel.command_list", "CommandList").c_str(), &app.Panels().command_list)) { ImGui::End(); return; }
   CommandEngine& eng = app.Engine();

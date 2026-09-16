@@ -6,6 +6,7 @@
 
 #include <cctype>
 #include <filesystem>
+#include <fstream>
 
 namespace dino8::app {
 
@@ -150,6 +151,37 @@ void RegisterFileCommands(CommandEngine& e) {
   Reg(e, "ExportWithOrigin", Make<ExportWithOriginCommand>(), CommandStatus::Implemented, "Translates copies of the selection so the picked point lands at 0,0,0 before writing them; SVG/PDF (page-space view drawings, not object-space geometry) export the plain view instead.");
   Reg(e, "Exit", Immediate([](CommandContext& ctx) { ctx.App().RequestQuit(); }));
   Reg(e, "Notes", Immediate([](CommandContext& ctx) { ctx.App().Panels().notes = true; }));
+  Reg(e, "ActivityLog", Immediate([](CommandContext& ctx) { ctx.App().Panels().activity_log = true; }));
+  // ActivityExport: writes the document's full Activity Log (see
+  // Document::ActivityLog / RecordActivityLogEntry) as CSV - the same
+  // format BillOfMaterials' "csv=" option writes above - so it opens
+  // cleanly in a spreadsheet. Optional first argument is the output path;
+  // Enter with no argument writes next to the document (or to the current
+  // directory for an unsaved document).
+  Reg(e, "ActivityExport", Immediate([](CommandContext& ctx) {
+        std::string path;
+        if (auto t = ctx.Engine().TakePendingInput()) path = *t;
+        if (path.empty()) {
+          path = ctx.Doc().Path().empty() ? "activity_log.csv" : ctx.Doc().Path() + ".activity_export.csv";
+        }
+        ctx.Doc().FlushPendingHistory();  // include the very last edit, even if it hasn't hit another BeginChange yet
+        std::ofstream f(path);
+        if (!f) { ctx.Warn("ActivityExport: could not write " + path); return; }
+        f << "Timestamp (UTC),Action,Detail\n";
+        auto csv_escape = [](const std::string& s) {
+          std::string out = "\"";
+          for (char c : s) { if (c == '"') out += "\"\""; else out += c; }
+          out += "\"";
+          return out;
+        };
+        for (const auto& entry : ctx.Doc().ActivityLog()) {
+          f << csv_escape(entry.timestamp_utc) << "," << csv_escape(entry.label) << "," << csv_escape(entry.summary) << "\n";
+        }
+        ctx.Print("ActivityExport: " + std::to_string(ctx.Doc().ActivityLog().size()) + " entr" +
+                   (ctx.Doc().ActivityLog().size() == 1 ? "y" : "ies") + " written to " + path);
+      }),
+      CommandStatus::Implemented,
+      "Exports the local Activity Log (a persisted, labeled record of every edit made to this document - Dino 8's analogue of AutoCAD's Activity Insights) to CSV. No cross-machine/user sync, single-user local history only.");
   Reg(e, "DocumentProperties", Immediate([](CommandContext& ctx) { ctx.App().Panels().document_properties = true; }));
   Reg(e, "Units", Immediate([](CommandContext& ctx) { ctx.App().Panels().document_properties = true; }));
   Reg(e, "Audit3dmFile", Immediate([](CommandContext& ctx) {
