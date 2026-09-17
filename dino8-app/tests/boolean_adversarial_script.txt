@@ -1,0 +1,174 @@
+# Adversarial boolean QC: hard/messy geometry, not just the clean-touching
+# boxes in boolean_script.txt. Each section hides what came before so
+# SelAll only sees its own objects. IDs are tracked explicitly and never
+# reused (see boolean_script.txt's own header comment) - every Box call and
+# every boolean's own merged-result object consumes the next id, even
+# across an in-script Delete, so the SelID values below are computed by
+# simulating that counter exactly, not guessed. See
+# dino8-app/tests/adversarial_corpus_notes.md for any case here that is a
+# genuine kernel-level limitation rather than a bug this suite expects fixed.
+SetActiveViewport Top
+# --- Near-tangent boxes (id 1, id 2): overlap by 1e-6, far below the
+# default 0.005 tessellation tolerance - must still union into one solid,
+# not silently drop the sliver of overlap into two disjoint pieces.
+Box 0,0,0 10,10,0 10
+Box 9.999999,0,0 19.999999,10,0 10
+SelAll
+BooleanUnion
+@expect_objects 1
+SelAll
+Delete
+# --- Barely-overlapping boxes (id 4, id 5; overlap 1e-4, comparable to the
+# mesh tessellation tolerance itself): BooleanIntersection should still
+# produce a tiny but real, non-empty solid.
+Box 0,0,0 10,10,0 10
+Box 9.9999,0,0 19.9999,10,0 10
+SelNone
+SelID 4
+BooleanIntersection
+SelID 5
+Enter
+@expect_objects 1
+SelAll
+Delete
+# --- Coincident/duplicate solids (id 7, id 8): BooleanUnion of a box with
+# an exact copy of itself must not crash or empty out.
+Box 0,0,0 10,10,0 10
+Box 0,0,0 10,10,0 10
+SelAll
+BooleanUnion
+@expect_objects 1
+SelAll
+Volume
+SelAll
+Delete
+# --- Same, via BooleanIntersection (id 10, id 11): must reproduce the
+# original volume exactly, not collapse to empty from the exact-coincident
+# faces confusing the boolean.
+Box 0,0,0 10,10,0 10
+Box 0,0,0 10,10,0 10
+SelNone
+SelID 10
+BooleanIntersection
+SelID 11
+Enter
+@expect_objects 1
+SelAll
+Volume
+SelAll
+Delete
+# --- Sliver solid (id 13): a 1000 x 1000 x 0.001 slab differenced with a
+# normal box (id 14) that only clips one corner - the slab must survive as
+# a real (if very thin) result, not vanish or crash the mesh tessellation.
+Box 0,0,0 1000,1000,0 0.001
+Box 500,500,0 1500,1500,0 10
+SelNone
+SelID 13
+BooleanDifference
+SelID 14
+Enter
+@expect_objects 1
+SelAll
+Delete
+# --- Huge-scale boolean (id 16, id 17): two boxes at 1e6-unit coordinates,
+# overlapping by a normal (10-unit) amount - tests that the float-precision
+# mesh round trip (see dino8-kernel/src/boolean.cpp's FromManifold note)
+# still yields a sane, non-empty result at this scale, not silent volume
+# loss to zero.
+Box 1000000,1000000,0 1000020,1000020,0 20
+Box 1000010,1000010,0 1000030,1000030,0 20
+SelAll
+BooleanUnion
+@expect_objects 1
+SelAll
+Volume
+SelAll
+Delete
+# --- Chained booleans: 10 successive BooleanDifference cuts into one box
+# (id 19), each removing a small notch - the running solid must stay valid
+# and still boolean cleanly on the final (10th) cut, not silently degrade.
+# Every cut replaces both operands with one new merged object (ids 19, 21,
+# 23, ... 39 are each the running main body in turn).
+Box 0,0,0 100,10,0 10
+Box 2,2,0 4,8,0 10
+SelNone
+SelID 19
+BooleanDifference
+SelID 20
+Enter
+Box 12,2,0 14,8,0 10
+SelNone
+SelID 21
+BooleanDifference
+SelID 22
+Enter
+Box 22,2,0 24,8,0 10
+SelNone
+SelID 23
+BooleanDifference
+SelID 24
+Enter
+Box 32,2,0 34,8,0 10
+SelNone
+SelID 25
+BooleanDifference
+SelID 26
+Enter
+Box 42,2,0 44,8,0 10
+SelNone
+SelID 27
+BooleanDifference
+SelID 28
+Enter
+Box 52,2,0 54,8,0 10
+SelNone
+SelID 29
+BooleanDifference
+SelID 30
+Enter
+Box 62,2,0 64,8,0 10
+SelNone
+SelID 31
+BooleanDifference
+SelID 32
+Enter
+Box 72,2,0 74,8,0 10
+SelNone
+SelID 33
+BooleanDifference
+SelID 34
+Enter
+Box 82,2,0 84,8,0 10
+SelNone
+SelID 35
+BooleanDifference
+SelID 36
+Enter
+Box 92,2,0 94,8,0 10
+SelNone
+SelID 37
+BooleanDifference
+SelID 38
+Enter
+@expect_objects 1
+SelAll
+Volume
+SelAll
+Delete
+# --- Non-manifold input (id 40): an open (top face deleted) box fed to
+# BooleanUnion alongside a normal closed box (id 41) must be rejected with
+# a clear warning and no crash, not silently produce garbage - the open box
+# is left untouched and only the closed one takes part in the boolean (and
+# comes back as a new merged object even though it had nothing to union
+# with, since RunBoolean always rebuilds its result as a fresh object).
+Box 200,0,0 210,10,0 10
+DeleteFaces
+205,5,10
+Enter
+Box 250,0,0 260,10,0 10
+SelAll
+BooleanUnion
+@expect_objects 2
+SelAll
+Delete
+@expect_objects 0

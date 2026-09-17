@@ -1,0 +1,103 @@
+# Layer QC: NewLayer / SetLayer / ChangeLayer / ChangeToCurrentLayer / MatchLayer /
+# SetLayerToObject / OneLayerOn / OneLayerOff / AllLayersOn / LayerOn / LayerOff /
+# LayerLock / LayerUnlock / Purge, verified through List and SelAll counts (see smoke.sh).
+SetActiveViewport Top
+Point 0,0,0
+SelLast
+List
+NewLayer Walls
+Point 10,0,0
+SelLast
+List
+SetLayer Default
+SetLayer Nope
+Point 20,0,0
+SelLast
+List
+# --- ChangeLayer to an existing layer, then to a new one (created on the fly)
+SelLast
+ChangeLayer Walls
+SelLast
+List
+ChangeLayer Roof
+SelLast
+List
+# --- ChangeToCurrentLayer (current is Default), MatchLayer (last selected object is the reference)
+SelLast
+ChangeToCurrentLayer
+SelLast
+List
+SelNone
+SelID 2
+SelID 3
+MatchLayer
+SelNone
+SelID 2
+List
+SelNone
+# --- SetLayerToObject makes the object's layer current, SelLayer / SelLayerNumber pick by layer
+Point 25,0,0
+SelLast
+ChangeLayer Walls
+SelLast
+SetLayerToObject
+Point 30,0,0
+SelLast
+List
+SelNone
+SelLayer
+@expect_selected 2
+SelNone
+SelLayerNumber 0
+@expect_selected 3
+SelNone
+# --- visibility: OneLayerOn hides every other layer, AllLayersOn restores, OneLayerOff hides the current one, LayerOn turns it back on
+OneLayerOn
+SelAll
+@expect_selected 2
+SelNone
+AllLayersOn
+SelAll
+@expect_selected 5
+SelNone
+OneLayerOff
+SelAll
+@expect_selected 3
+SelNone
+LayerOn
+SelAll
+@expect_selected 5
+SelNone
+# --- LayerOff turns off the layers of the selected objects
+SelLayerNumber 0
+LayerOff
+SelNone
+SelAll
+@expect_selected 2
+SelNone
+AllLayersOn
+# --- LayerLock locks the selected objects' layers, LayerUnlock releases every layer
+SelLayerNumber 0
+LayerLock
+SelNone
+SelAll
+@expect_selected 2
+SelNone
+LayerUnlock
+SelAll
+@expect_selected 5
+SelNone
+# --- Purge removes unused layers (Roof is empty; Walls is current so it stays even if empty)
+SetLayer Default
+NewLayer Empty
+SetLayer Default
+Purge
+NewLayer Walls2
+SetLayer Walls
+SelLayer
+@expect_selected 2
+SelNone
+Layer
+Layers
+LayerStateManager
+@expect_objects 5
