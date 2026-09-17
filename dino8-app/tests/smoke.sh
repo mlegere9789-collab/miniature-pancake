@@ -2432,14 +2432,27 @@ DL1_CSV="$(cat "$TMP/datalink.csv" 2>/dev/null || true)"
 if [ "$DL1_CSV" = "$(printf 'A,B\nC,D\n')" ]; then echo "ok   the pushed CSV's content matches the table's cells (A,B / C,D)"; else echo "FAIL the pushed CSV's content matches the table's cells (got: $DL1_CSV)"; fail=1; fi
 
 # Simulate an external spreadsheet edit of the linked file before stage 2.
-sleep 3
+#
+# DataLinkUpdate's push/pull direction heuristic compares this file's mtime
+# against the *previous* stage's last_sync_utc. A plain write here already
+# gives the file a fresh "now" mtime (no explicit touch needed) - the sleep
+# just guarantees real separation from the previous stage's last_sync_utc.
+# NOTE: forcing the mtime artificially far into the future was tried here
+# and reverted - it "fixes" this one comparison but then permanently reads
+# as "still changed" in every later stage too, since a pull never rewrites
+# the file to give it a fresh, real mtime. A plain write + sleep is the
+# correct approach; the real, permanent fix for the two genuine bugs this
+# surfaced lives in cmd_drafting2.cpp (NowMillis()'s monotonic ratchet, and
+# RebuildWithLink pinning a sync's own table rebuild timestamp to exactly
+# last_sync_utc so a sync is never mistaken for a change since itself).
+sleep 5
 printf 'P,Q\nR,S\n' > "$TMP/datalink.csv"
 
 DL2="$(run_dl_stage datalink_script2.txt 2)"
 dlcheck() { if echo "$DL2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 dlcheck "DataLinkUpdate: pulled 2x2 table from " "DataLinkUpdate auto-detected the file was the only side that changed and pulled it"
 
-sleep 3
+sleep 5
 
 DL3="$(run_dl_stage datalink_script3.txt 3)"
 dlcheck() { if echo "$DL3" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
@@ -2449,7 +2462,7 @@ if [ "$DL3_CSV" = "$(printf 'M,N\nO,P\n')" ]; then echo "ok   the re-pushed CSV'
 
 # Simulate a second external edit, so that stage 4's own TableEdit and this
 # file both change before the next sync - the ambiguous case.
-sleep 3
+sleep 5
 printf 'Z1,Z2\nZ3,Z4\n' > "$TMP/datalink.csv"
 
 DL4="$(run_dl_stage datalink_script4.txt 4)"

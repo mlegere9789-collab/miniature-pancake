@@ -124,11 +124,26 @@ std::string UniqueHatchMaterialName(const Document& doc, const std::string& base
 // normal use (e.g. DataLinkUpdate pulling a file and then a script/panel
 // immediately editing the table again): at one-second resolution those two
 // events could tie, and a "> last_sync_utc" comparison would then wrongly
-// read as "nothing changed". Millisecond resolution makes that collision
-// vanishingly unlikely without changing anything about the comparison logic
-// itself (see DataLinkUpdateCommand::Run).
+// read as "nothing changed".
+//
+// Millisecond resolution alone only makes that collision rare, not
+// impossible: a DataLinkUpdate pull (which sets last_sync_utc) immediately
+// followed by a TableEdit (which sets the table's own modified-at stamp) in
+// the SAME script/process can still land in the same millisecond on a fast
+// machine - confirmed as a real, reproducible failure (not a load artifact)
+// via the datalink_script2.txt/smoke.sh sequence, where both writes happen
+// within one process invocation, only microseconds apart. A monotonic
+// ratchet (never return a value <= the last one returned) makes every call
+// to this function strictly increasing regardless of how close together
+// they're made, which is what a "modified at" timestamp used purely for
+// ordering comparisons actually needs - it does not need to reflect the
+// real wall clock down to the millisecond, only to order correctly.
 long long NowMillis() {
-  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  static long long last = 0;
+  long long now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+  if (now <= last) now = last + 1;
+  last = now;
+  return now;
 }
 
 // std::filesystem::file_time_type isn't convertible to time_t/system_clock
@@ -503,10 +518,24 @@ bool FindTableGroup(CommandContext& ctx, const std::vector<ObjectId>& ids, int& 
 // mints a *new* group id (same as every other table rebuild here - see
 // TableEditCommand::Run), so there is no group-id-stable way to go back and
 // patch the tag afterwards the way a plain in-place user_text edit could.
-void RebuildWithLink(CommandContext& ctx, int group_id, TableSpec spec, const std::string& kind, const DataLinkInfo& link, const std::string& change_name) {
+//
+// This rebuild's own BuildTableGroup call sets a fresh TableModifiedAt on
+// the group it just (re)built - that is itself a "table-side change" by
+// BuildTableGroup's own definition, but it is NOT an independent edit that
+// happened after this sync; it *is* this sync. If it were left to pick up
+// its own NowMillis() call (later than `link.last_sync_utc`'s, thanks to
+// NowMillis()'s monotonic ratchet - see that function's own doc comment),
+// DataLinkUpdate's very next run would see table_mtime > last_sync_utc and
+// wrongly think the table changed again immediately after syncing it. Pin
+// both timestamps to the exact same value here so they compare equal (not
+// ">"), which DataLinkUpdate correctly reads as "not changed since this
+// sync" - explicitly overriding BuildTableGroup's own TableModifiedAt via
+// extra_tags (applied after its default in that function, so this wins).
+void RebuildWithLink(CommandContext& ctx, int group_id, TableSpec spec, const std::string& kind, DataLinkInfo link, const std::string& change_name) {
+  link.last_sync_utc = NowMillis();
   ctx.Doc().BeginChange(change_name);
   for (ObjectId id : ctx.Doc().GroupMembers(group_id)) ctx.Doc().Remove(id);
-  BuildTableGroup(ctx, spec, kind, -1, {{"DataLink", DataLinkJson(link)}});
+  BuildTableGroup(ctx, spec, kind, -1, {{"DataLink", DataLinkJson(link)}, {"TableModifiedAt", std::to_string(link.last_sync_utc)}});
 }
 
 class DataLinkCommand : public Command {
