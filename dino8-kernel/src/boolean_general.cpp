@@ -580,8 +580,10 @@ bool SplitPeriodicWrapChain(const Chain& c, const ON_Surface& s, Chain& out_open
     const double lo = s.Domain(wrap_dir).Min(), hi = s.Domain(wrap_dir).Max();
     const double fu = wrap_dir == 0 ? out_open.front().uv.x : out_open.front().uv.y;
     const bool front_is_lo = std::fabs(fu - lo) < std::fabs(fu - hi);
-    auto make_seam_point = [&](const UVPt& near, double snapped) {
-      UVPt sp = near;
+    // `near_pt`, not `near`: the latter is a legacy Windows SDK macro (see
+    // the is_close rename elsewhere in this file for the same MSVC break).
+    auto make_seam_point = [&](const UVPt& near_pt, double snapped) {
+      UVPt sp = near_pt;
       if (wrap_dir == 0) sp.uv.x = snapped; else sp.uv.y = snapped;
       sp.p = s.PointAt(sp.uv.x, sp.uv.y);
       return sp;
