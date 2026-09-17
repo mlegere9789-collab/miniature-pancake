@@ -179,22 +179,75 @@
 // BooleanCombineGeneral's first proven curved-operand case, not just a
 // planar-only one.
 //
-// STILL NOT FIXED, confirmed pre-existing and UNRELATED to any of the
-// above (reproduced identically against this file's own unmodified
-// baseline commit, before this session's own changes): sphere+box. Its
-// own intersection curves are genuinely different in kind from every case
-// above - three OPEN arcs (where the box's three coordinate planes cross
-// the sphere) meeting at three shared 3D corners, stitched together by
-// StitchChains(), with NO periodic wrap-cut involved at all (a sphere's
-// own periodic direction, longitude, is never swept end-to-end by any of
-// these arcs) - so none of this session's periodicity fixes apply to it,
-// positively or negatively. Union/Difference measurably corrupt the
-// result (~1032/~32 instead of the hand-derived ~1029/~996) and fail
-// ON_Brep::IsValid(); Intersection is IsValid() but measures ~0.11 instead
-// of the exact (4/3*pi*r^3)/8 ~ 4.19 - a valid but far-too-small closed
-// shape, meaning the 3-arc stitch/corner assembly itself produces the
-// wrong topology for this operand pair, not a numerical-precision issue.
-// Root-causing that is a separate, still-open piece of work.
+// FORMERLY "STILL NOT FIXED" ABOVE THIS PARAGRAPH, NOW ROOT-CAUSED AND
+// FIXED: sphere+box (the fixture in scratch_test.cpp and
+// TestBooleanCombineGeneralSphereBox: a radius-2 sphere at the origin vs a
+// box with one corner AT the sphere's centre and its three faces on the
+// coordinate planes, so the intersection is exactly one octant). The
+// earlier diagnosis recorded here ("three open arcs meeting at three
+// corners, no periodicity involved, so the stitch/corner assembly must be
+// producing the wrong topology") was half right: it WAS a topology
+// problem, but it was entirely about the sphere's own (u, v) chart, and
+// nothing about the stitching itself. In ON_Sphere::GetNurbForm()'s chart
+// (u = longitude, seam at +x; v = latitude, poles at v = +-pi/2) this
+// fixture is the worst case there is: the y == 0 plane's own arc lies
+// EXACTLY on the u == 0 seam meridian, and both it and the x == 0 plane's
+// arc end at the degenerate north pole. Three independent bugs, each
+// confirmed by direct before/after tracing (DINO8_BOOL_DEBUG=1 plus
+// temporary per-stage dumps inside IntersectSurfaces()/IntersectFaces(),
+// since removed):
+//   (h) surface_intersect.cpp's own FaceContainsUV() tested an UNTRIMMED
+//       face's domain with ON_Interval::Includes(t, true) - whose second
+//       argument is `bTestOpenInterval`, i.e. min < t < max - and so
+//       rejected every sample sitting exactly on the domain boundary. The
+//       mesh seeding was complete (traced: the five seed chains covered
+//       the whole seam arc), but RefineSurfaceSurfacePoint()'s Newton
+//       solve clamps (u, v) to the domain, so a seam sample lands on
+//       u == 0 bit-exactly - and IntersectFaces()'s own clip then threw
+//       those away (while keeping neighbours that happened to round to
+//       u == 1e-17), ripping the seam arc into pieces with real gaps and
+//       dropping the equator arc's own u == 0 endpoint. THIS was the
+//       "far too small" Intersection: with the arcs never closing, the
+//       sphere's only In fragment was a sliver. Fixed: closed-interval
+//       test (the seam and poles ARE part of an untrimmed face).
+//   (i) With (h) fixed the three arcs stitch into one 3D-closed chain -
+//       which SplitFaceLoop() then holed out as an interior island. But in
+//       (u, v) it is NOT an island: it is the corner square [0, pi/2]^2
+//       of the sphere's domain rectangle, running along the rectangle's
+//       own seam side and pole side for their full length. The "hole"
+//       overlapped the outer loop's own seam edge (IsValid() failure on
+//       Union/Difference, whose volumes were short by the misassigned
+//       surface). Fixed by CutChainAtDomainBoundary() (see its doc
+//       comment): chain points on a seam/singular side of an untrimmed
+//       face are snapped onto it in (u, v) (their shared 3D point is
+//       deliberately left alone), the on-boundary runs REPLACE the loop's
+//       own samples over that span on both seam twins (so the seam stays
+//       one welded edge and the box's own copy of the arc becomes a
+//       literal shared edge), and the rest of the chain is spliced as an
+//       ordinary open chain. Alongside: StitchChains() dropped one of the
+//       two (u, v) copies of the pole junction (same 3D point, u = pi/2
+//       vs u ~ 0.26), drawing a bogus diagonal near the pole; both copies
+//       are now kept (AppendStitched()).
+//   (j) Assembly: the loop samples along a pole line all weld to one
+//       vertex, and CollapseDuplicateVids() kept only the FIRST of them,
+//       so the trim leaving the south pole up the u_max seam side started
+//       at the u_min corner's (u, v) - a diagonal 2D line on a seam-type
+//       trim, which IsValid() rightly rejects ("m_type = seam but m_iso is
+//       not N/E/W/S_iso"). Pre-existing for ANY sphere result, this file
+//       just never had a valid sphere case to show it. Fixed the proper
+//       way: the run's first AND last (u, v) are kept and BuildLoop()
+//       bridges them with a genuine ON_Brep::NewSingularTrim() along the
+//       pole line, so every real trim keeps its exact iso (u, v). Restricted
+//       to genuinely singular sides (SingularSideIso()), so a same-vertex
+//       pair that merely differs by Newton noise still collapses to one
+//       point as before - keeping both there left a 2D gap that briefly
+//       regressed box+box's own IsValid() during this work.
+// VERIFIED (TestBooleanCombineGeneralSphereBox): Union, Intersection and
+// both Difference orders are ON_Brep::IsValid() and tessellate to their
+// closed-form volumes (octant = (4/3*pi*r^3)/8) with an error that falls
+// ~4x per doubling of the tessellation (Intersection: 0.110 / 0.029 /
+// 0.0074 at n = 16 / 32 / 64), i.e. convergent tessellation error of the
+// same order as a plain sphere's own. box+box and box+cylinder unchanged.
 //
 // ALSO CONFIRMED, separately, while verifying the above (not introduced,
 // and not fixed, by this session): BooleanCombineGeneral's own
@@ -389,6 +442,27 @@ Chain ReverseChain(Chain c) {
   std::reverse(c.begin(), c.end());
   return c;
 }
+// Appends `tail` to `head`, which already ends at (within the stitch
+// tolerance) tail's own first point. That shared junction point normally
+// carries the same (u, v) in both pieces (each piece refined it
+// independently on this same face, to Newton noise) and is kept once. It
+// is kept TWICE - both copies, same 3D point - when the two (u, v) differ
+// materially: at a degenerate pole (every u is the same 3D point, so the
+// two pieces legitimately arrive at the pole at DIFFERENT u values) or
+// across a periodic seam (u_max vs u_min). Dropping one copy there draws a
+// bogus diagonal in (u, v) between the survivor and the other piece's next
+// sample - confirmed on the sphere+box fixture, where the meridian arc's
+// own pole end (u = pi/2, v = pi/2) was dropped in favour of the seam
+// arc's (u ~ 0.26, v = pi/2), skewing the corner fragment's own (u, v)
+// polygon and handing a sliver of the octant to the wrong fragment. With
+// both copies kept, the polygon runs along the pole line between them (a
+// zero-length 3D edge, collapsed at assembly by CollapseDuplicateVids()).
+void AppendStitched(Chain& head, const Chain& tail) {
+  constexpr double kSameUV = 1e-7;
+  size_t from = 0;
+  if (!head.empty() && !tail.empty() && Dist2(head.back().uv, tail.front().uv) <= kSameUV * kSameUV) from = 1;
+  head.insert(head.end(), tail.begin() + static_cast<long>(from), tail.end());
+}
 std::vector<Chain> StitchChains(std::vector<Chain> chains, double tol) {
   const double tol2 = tol * tol;
   bool changed = true;
@@ -408,17 +482,16 @@ std::vector<Chain> StitchChains(std::vector<Chain> chains, double tol) {
         bool ok = true;
         if (is_close(bi, aj)) {
           merged = chains[i];
-          merged.insert(merged.end(), chains[j].begin() + 1, chains[j].end());
+          AppendStitched(merged, chains[j]);
         } else if (is_close(bi, bj)) {
           merged = chains[i];
-          Chain rj = ReverseChain(chains[j]);
-          merged.insert(merged.end(), rj.begin() + 1, rj.end());
+          AppendStitched(merged, ReverseChain(chains[j]));
         } else if (is_close(ai, aj)) {
           merged = ReverseChain(chains[i]);
-          merged.insert(merged.end(), chains[j].begin() + 1, chains[j].end());
+          AppendStitched(merged, chains[j]);
         } else if (is_close(ai, bj)) {
           merged = chains[j];
-          merged.insert(merged.end(), chains[i].begin() + 1, chains[i].end());
+          AppendStitched(merged, chains[i]);
         } else {
           ok = false;
         }
@@ -593,6 +666,228 @@ bool SplitPeriodicWrapChain(const Chain& c, const ON_Surface& s, Chain& out_open
     out_open.insert(out_open.begin(), front_seam);
     out_open.push_back(back_seam);
   }
+  return true;
+}
+
+// --- chains that run ALONG an untrimmed face's own domain boundary ------
+//
+// An untrimmed periodic/singular face (a full sphere from Brep::Sphere(),
+// the canonical case) has a (u, v) domain rectangle whose sides are not
+// real 3D boundaries at all: the two seam sides (u == u_min and u == u_max)
+// are the SAME meridian, and a singular side (v == v_max, say) is a single
+// 3D point, the pole. An intersection chain can run right along one of
+// those sides - a plane through the sphere's centre containing the seam
+// meridian produces exactly that, and the fixture in scratch_test.cpp /
+// TestBooleanCombineGeneralSphereBox (a box with one corner at the sphere's
+// own centre, its three faces on the coordinate planes) does it for BOTH
+// the seam AND the north pole at once: the three great-circle arcs stitch
+// into one 3D-closed chain that, in (u, v), is the corner square
+// [0, pi/2] x [0, pi/2] of the sphere's own domain rectangle, touching the
+// rectangle's own left (seam) and top (pole) sides along their full length.
+//
+// SplitFaceLoop() below would treat that 3D-closed chain as an interior
+// island (a hole in the untouched fragment plus its own interior fragment)
+// - confirmed wrong: the "hole" then overlapped the outer loop's own seam
+// edge, so ON_Brep::IsValid() failed for Union/Difference and their
+// volumes were measurably short. The right split is the ordinary
+// open-chain one: bisect the rectangle at the two points where the chain
+// leaves/re-enters its boundary, giving the corner square and the notched
+// rest.
+//
+// CutChainAtDomainBoundary() does exactly that, in three steps, and only
+// for an untrimmed face with a genuinely seam/singular side:
+//   1. classify every chain point as ON one such side (3D distance from
+//      the point to the surface evaluated at its (u, v) snapped onto that
+//      side is within `tol` - a pole side snaps to the pole itself, so it
+//      takes priority over a seam side, since at the pole every u is the
+//      seam) and snap those points' (u, v) onto the side exactly (their
+//      shared 3D point `p` is deliberately NOT moved: it is the same point
+//      the other face's own copy of this chain welds against, and
+//      IsValid()'s own trim-vs-edge end check tolerates far more than the
+//      SSX-tolerance-sized residual this leaves on this face alone);
+//   2. splice each maximal run (>= 2 consecutive on-boundary points; an
+//      isolated near-seam sample of a chain crossing the seam
+//      transversally is left entirely alone, so the wrap-cut path stays
+//      untouched) INTO the face's own boundary loop, REPLACING the loop's
+//      own samples over that run's span on that side - and on the seam's
+//      twin side too, with the same 3D points, so the two seam sides stay
+//      bit-identical (they weld into ONE seam edge, as they must) and the
+//      run's own points, being the other face's exact copies, make the
+//      shared cut a literal shared ON_BrepEdge rather than two
+//      differently-sampled polylines of the same arc;
+//   3. cut the chain at those runs: every stretch of off-boundary points,
+//      extended by the bounding run point at each end, becomes an ordinary
+//      open chain whose two ends are now exact loop vertices, spliced by
+//      SplitFaceLoop() like any other open chain.
+// Returns false (chain untouched, loop untouched) when no run exists.
+bool CutChainAtDomainBoundary(const Chain& c, const ON_Surface& s, double tol, std::vector<UVPt>& loop,
+                              std::vector<Chain>& out_open) {
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  // Side numbering follows ON_Surface::IsSingular(): 0 = south (v_min),
+  // 1 = east (u_max), 2 = north (v_max), 3 = west (u_min).
+  bool singular[4], seam[4];
+  bool any = false;
+  for (int side = 0; side < 4; ++side) {
+    singular[side] = s.IsSingular(side);
+    const int dir = (side == 1 || side == 3) ? 0 : 1;
+    seam[side] = !singular[side] && s.IsClosed(dir);
+    any = any || singular[side] || seam[side];
+  }
+  if (!any || c.size() < 2) return false;
+
+  Chain pts = c;
+  const bool closed = pts.size() >= 3 && (pts.front().p - pts.back().p).Length() <= tol;
+  // A closed chain's own repeated closing point is dropped only when it
+  // really is a repeat in (u, v) too - StitchChains() deliberately keeps
+  // both copies of a pole/seam junction (same 3D point, different (u, v);
+  // see AppendStitched()), and they can land exactly at a chain's own two
+  // ends, where both are needed to keep the (u, v) polygon continuous.
+  if (closed && Dist2(pts.front().uv, pts.back().uv) <= 1e-14) pts.pop_back();
+  const size_t n = pts.size();
+  if (n < 2) return false;
+
+  auto snapped_uv = [&](const Point2d& uv, int side) {
+    switch (side) {
+      case 0: return Point2d(uv.x, dv.Min());
+      case 1: return Point2d(du.Max(), uv.y);
+      case 2: return Point2d(uv.x, dv.Max());
+      default: return Point2d(du.Min(), uv.y);
+    }
+  };
+  auto on_side = [&](const UVPt& q, int side) {
+    if (!singular[side] && !seam[side]) return false;
+    if (seam[side]) {
+      // Only claim the seam side this point is actually nearer to in
+      // (u, v), so its snapped copy stays continuous with its neighbours.
+      const int dir = (side == 1 || side == 3) ? 0 : 1;
+      const ON_Interval d = s.Domain(dir);
+      const double val = dir == 0 ? q.uv.x : q.uv.y;
+      const bool nearer_min = (val - d.Min()) < (d.Max() - val);
+      if ((side == 1 || side == 2) == nearer_min) return false;
+    }
+    const Point2d suv = snapped_uv(q.uv, side);
+    return (s.PointAt(suv.x, suv.y) - q.p).Length() <= tol;
+  };
+  std::vector<int> side_of(n, -1);
+  for (size_t k = 0; k < n; ++k) {
+    for (int side : {0, 2, 1, 3}) {  // singular (pole) sides first
+      if (on_side(pts[k], side)) { side_of[k] = side; break; }
+    }
+  }
+  // Runs of >= 2 consecutive on-boundary points (cyclic for a closed chain).
+  std::vector<char> in_run(n, 0);
+  for (size_t k = 0; k < n; ++k) {
+    if (side_of[k] < 0) continue;
+    const size_t prev = (k + n - 1) % n, next = (k + 1) % n;
+    const bool prev_on = (closed || k > 0) && side_of[prev] >= 0;
+    const bool next_on = (closed || k + 1 < n) && side_of[next] >= 0;
+    if (prev_on || next_on) in_run[k] = 1;
+  }
+  size_t run_count = 0;
+  for (char f : in_run) run_count += f ? 1 : 0;
+  if (run_count == 0) return false;
+  for (size_t k = 0; k < n; ++k)
+    if (in_run[k]) pts[k].uv = snapped_uv(pts[k].uv, side_of[k]);
+
+  // Step 2: splice every per-side sub-run into the loop, replacing the
+  // loop's own samples over its span (and on the seam twin side).
+  const double eps_u = 1e-9 * std::max(du.Length(), 1.0), eps_v = 1e-9 * std::max(dv.Length(), 1.0);
+  auto loop_pt_on_side = [&](const UVPt& q, int side) {
+    switch (side) {
+      case 0: return std::fabs(q.uv.y - dv.Min()) <= eps_v;
+      case 1: return std::fabs(q.uv.x - du.Max()) <= eps_u;
+      case 2: return std::fabs(q.uv.y - dv.Max()) <= eps_v;
+      default: return std::fabs(q.uv.x - du.Min()) <= eps_u;
+    }
+  };
+  auto along = [&](const Point2d& uv, int side) { return (side == 0 || side == 2) ? uv.x : uv.y; };
+  auto twin_of = [&](int side) { return seam[side] ? (side + 2) % 4 : -1; };
+  auto splice_subrun = [&](const std::vector<UVPt>& run, int side) {
+    if (run.empty()) return;
+    double lo = along(run.front().uv, side), hi = lo;
+    for (const UVPt& q : run) { lo = std::min(lo, along(q.uv, side)); hi = std::max(hi, along(q.uv, side)); }
+    const double eps = (side == 0 || side == 2) ? eps_u : eps_v;
+    for (int which = 0; which < 2; ++which) {
+      const int sd = which == 0 ? side : twin_of(side);
+      if (sd < 0) continue;
+      std::vector<UVPt> kept;
+      kept.reserve(loop.size() + run.size());
+      for (const UVPt& q : loop) {
+        if (loop_pt_on_side(q, sd) && along(q.uv, sd) >= lo - eps && along(q.uv, sd) <= hi + eps) continue;
+        kept.push_back(q);
+      }
+      loop.swap(kept);
+      struct Ins { size_t edge; double t; UVPt pt; };
+      std::vector<Ins> ins;
+      for (const UVPt& q : run) {
+        UVPt tq = q;
+        tq.uv = snapped_uv(q.uv, sd);
+        const BoundaryHit h = NearestOnLoop(loop, tq.uv);
+        ins.push_back({h.edge_index, h.t, tq});
+      }
+      std::sort(ins.begin(), ins.end(), [](const Ins& a, const Ins& b) { return a.edge < b.edge || (a.edge == b.edge && a.t < b.t); });
+      std::vector<UVPt> aug;
+      aug.reserve(loop.size() + ins.size());
+      size_t ii = 0;
+      for (size_t e = 0; e < loop.size(); ++e) {
+        aug.push_back(loop[e]);
+        while (ii < ins.size() && ins[ii].edge == e) aug.push_back(ins[ii++].pt);
+      }
+      loop.swap(aug);
+    }
+  };
+  // Walk the runs (cyclically for a closed chain) starting from a
+  // non-run point so no run is split by the array's own wraparound.
+  size_t start = 0;
+  if (closed) {
+    while (start < n && in_run[start]) ++start;
+    if (start == n) start = 0;  // entirely on the boundary
+  }
+  {
+    std::vector<UVPt> sub;
+    int sub_side = -1;
+    for (size_t k = 0; k < n; ++k) {
+      const size_t i = (start + k) % n;
+      if (in_run[i] && side_of[i] == sub_side) { sub.push_back(pts[i]); continue; }
+      splice_subrun(sub, sub_side);
+      sub.clear();
+      sub_side = -1;
+      if (in_run[i]) { sub.push_back(pts[i]); sub_side = side_of[i]; }
+    }
+    splice_subrun(sub, sub_side);
+  }
+
+  // Step 3: the off-boundary stretches, each bounded by a run point. A
+  // closed chain is walked cyclically from a run point (revisiting it at
+  // the end) so every stretch is bounded on both sides; an open chain is
+  // walked from its own first point, so a leading/trailing stretch keeps
+  // its ordinary open end (already on the trim, like any open chain).
+  out_open.clear();
+  if (run_count == n) return true;  // lies entirely on the boundary: nothing left to splice
+  size_t walk_start = 0;
+  if (closed) {
+    while (walk_start < n && !in_run[walk_start]) ++walk_start;
+  }
+  Chain cur;
+  bool cur_has_off = false;
+  auto flush = [&]() {
+    if (cur_has_off && cur.size() >= 2) out_open.push_back(cur);
+    cur.clear();
+    cur_has_off = false;
+  };
+  const size_t total = closed ? n + 1 : n;
+  for (size_t k = 0; k < total; ++k) {
+    const size_t i = (walk_start + k) % n;
+    if (in_run[i]) {
+      if (cur_has_off) { cur.push_back(pts[i]); flush(); }
+      cur.clear();
+      cur.push_back(pts[i]);  // a run point also begins the next stretch
+      continue;
+    }
+    cur.push_back(pts[i]);
+    cur_has_off = true;
+  }
+  if (!closed) flush();
   return true;
 }
 
@@ -779,19 +1074,65 @@ struct KeptFace {
   std::vector<std::vector<UVPt>> holes;
 };
 
-void CollapseDuplicateVids(std::vector<UVPt>& loop, VertexWelder& welder) {
-  std::vector<UVPt> out;
-  int last_vid = -1;
-  for (const UVPt& p : loop) {
-    const int vid = welder.Weld(p.p);
-    if (vid == last_vid) continue;
-    out.push_back(p);
-    last_vid = vid;
+// Collapses consecutive loop points that weld to the SAME vertex. A run of
+// such points is normally a literal duplicate (e.g. a spliced chain end
+// coinciding with a loop sample) and keeps just its first point. But on a
+// singular surface side (a sphere's pole line, every (u, v) along which is
+// the same 3D point) a run's first and last points carry genuinely
+// DIFFERENT (u, v) - the two ends of the pole line as the loop enters and
+// leaves it - and BOTH are kept: the trim arriving at the pole must end at
+// the run's first (u, v), the trim leaving it must start at its last, and
+// BuildLoop() bridges the two with a singular trim (see there). Keeping
+// only the first, as this used to, made the departing trim's own 2D line
+// run diagonally across the whole pole line from the arriving side's
+// (u, v) - for the sphere's seam-side trim out of the south pole, a
+// diagonal from (u_min, v_min) to (u_max, v_min + dv): confirmed as the
+// "m_type = seam but m_iso is not N/E/W/S_iso" ON_Brep::IsValid() failure
+// on the sphere+box Union/Difference results. The loop is rotated to start
+// at a run boundary so no run straddles the array's own wraparound.
+// The iso side two (u, v) points share when both sit on one of `srf`'s own
+// SINGULAR sides (a pole line) and differ along it - not_iso otherwise
+// (either not a singular side at all, or a mere (u, v) duplicate).
+ON_Surface::ISO SingularSideIso(const ON_Surface* srf, const Point2d& a, const Point2d& b) {
+  if (!srf || Dist2(a, b) <= 1e-18) return ON_Surface::not_iso;
+  const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+  const double eu = 1e-9 * std::max(du.Length(), 1.0), ev = 1e-9 * std::max(dv.Length(), 1.0);
+  if (srf->IsSingular(0) && std::fabs(a.y - dv.Min()) <= ev && std::fabs(b.y - dv.Min()) <= ev) return ON_Surface::S_iso;
+  if (srf->IsSingular(2) && std::fabs(a.y - dv.Max()) <= ev && std::fabs(b.y - dv.Max()) <= ev) return ON_Surface::N_iso;
+  if (srf->IsSingular(3) && std::fabs(a.x - du.Min()) <= eu && std::fabs(b.x - du.Min()) <= eu) return ON_Surface::W_iso;
+  if (srf->IsSingular(1) && std::fabs(a.x - du.Max()) <= eu && std::fabs(b.x - du.Max()) <= eu) return ON_Surface::E_iso;
+  return ON_Surface::not_iso;
+}
+
+void CollapseDuplicateVids(std::vector<UVPt>& loop, VertexWelder& welder, const ON_Surface* srf) {
+  const size_t n = loop.size();
+  if (n == 0) return;
+  std::vector<int> vids(n);
+  for (size_t k = 0; k < n; ++k) vids[k] = welder.Weld(loop[k].p);
+  size_t start = n;
+  for (size_t k = 0; k < n; ++k) {
+    if (vids[k] != vids[(k + n - 1) % n]) { start = k; break; }
   }
-  if (out.size() >= 2) {
-    const int first_vid = welder.Weld(out.front().p);
-    const int back_vid = welder.Weld(out.back().p);
-    if (first_vid == back_vid) out.pop_back();
+  std::vector<UVPt> out;
+  if (start == n) {  // every point is the same vertex: degenerate, collapses away
+    out.push_back(loop[0]);
+    loop = std::move(out);
+    return;
+  }
+  size_t k = 0;
+  while (k < n) {
+    const size_t i0 = (start + k) % n;
+    size_t len = 1;
+    while (k + len < n && vids[(start + k + len) % n] == vids[i0]) ++len;
+    const size_t i1 = (start + k + len - 1) % n;
+    out.push_back(loop[i0]);
+    // Keep the run's last point too ONLY when BuildLoop() will bridge the
+    // pair with a singular trim; a same-vertex pair that merely differs
+    // by Newton noise in (u, v) (a spliced chain end coinciding with a
+    // loop sample) keeps just its first point, exactly as before, so the
+    // trims on either side stay 2D-continuous through that one point.
+    if (len > 1 && SingularSideIso(srf, loop[i0].uv, loop[i1].uv) != ON_Surface::not_iso) out.push_back(loop[i1]);
+    k += len;
   }
   loop = std::move(out);
 }
@@ -801,11 +1142,29 @@ void BuildLoop(ON_Brep& brep, ON_BrepFace& face, ON_BrepLoop::TYPE type, const s
   const size_t n = loop_pts.size();
   if (n < 3) return;
   ON_BrepLoop& loop = brep.NewLoop(type, face);
+  const ON_Surface* srf = face.SurfaceOf();
   for (size_t k = 0; k < n; ++k) {
     const size_t k1 = (k + 1) % n;
     const int vid_from = welder.Weld(loop_pts[k].p);
     const int vid_to = welder.Weld(loop_pts[k1].p);
-    if (vid_from == vid_to) continue;
+    if (vid_from == vid_to) {
+      // Two consecutive points, one vertex: either a literal duplicate
+      // (same (u, v) too - nothing to build) or the two ends of a run
+      // along a singular surface side that CollapseDuplicateVids() kept
+      // on purpose (see there) - bridged by a genuine singular trim (no
+      // edge, both ends the one vertex, a 2D line along that side) so the
+      // loop stays 2D-continuous and the trims on either side of the pole
+      // keep their own exact iso (u, v).
+      const Point2d& a = loop_pts[k].uv;
+      const Point2d& b = loop_pts[k1].uv;
+      const ON_Surface::ISO iso = SingularSideIso(srf, a, b);
+      if (iso == ON_Surface::not_iso) continue;  // not a singular side: a mere duplicate
+      auto* c2 = new ON_LineCurve(a, b);
+      c2->SetDomain(0.0, 1.0);
+      const int c2i = brep.AddTrimCurve(c2);
+      brep.NewSingularTrim(brep.m_V[vid_from], loop, iso, c2i);
+      continue;
+    }
     const uint32_t lo = static_cast<uint32_t>(std::min(vid_from, vid_to));
     const uint32_t hi = static_cast<uint32_t>(std::max(vid_from, vid_to));
     const uint64_t key = (static_cast<uint64_t>(lo) << 32) | hi;
@@ -935,12 +1294,28 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
   auto build_frags = [&](const ON_Brep& brep, int n, std::vector<std::vector<Chain>>& raw) {
     std::vector<FaceFrags> out;
     for (int i = 0; i < n; ++i) {
-      const std::vector<UVPt> boundary = FaceBoundaryLoop(brep, i);
+      std::vector<UVPt> boundary = FaceBoundaryLoop(brep, i);
       if (boundary.size() < 3) continue;
       const std::vector<Chain> stitched = StitchChains(std::move(raw[static_cast<size_t>(i)]), stitch_tol);
       const ON_Surface* face_surface = brep.m_F[i].SurfaceOf();
+      const bool untrimmed = brep.m_F[i].m_li.Count() == 0;
       std::vector<Chain> closed_chains, open_chains;
       for (const Chain& c : stitched) {
+        // A chain running along an untrimmed face's own seam/pole side is
+        // cut there first (see CutChainAtDomainBoundary's own doc comment),
+        // BEFORE the 3D-closed test below: in (u, v) it is not a closed
+        // island at all, and it must not be holed out as one. The
+        // on-boundary tolerance is the SSX's own accuracy: a chain point
+        // can't be told apart from the seam it sits on any better than
+        // IntersectFaces() itself resolved it.
+        if (untrimmed && face_surface) {
+          std::vector<Chain> cut;
+          if (CutChainAtDomainBoundary(c, *face_surface, std::max(stitch_tol, opt.tolerance), boundary, cut)) {
+            if (debug) std::fprintf(stderr, "  face idx=%d: chain n=%zu cut at domain boundary into %zu open chain(s), boundary now %zu\n", i, c.size(), cut.size(), boundary.size());
+            for (Chain& oc : cut) open_chains.push_back(std::move(oc));
+            continue;
+          }
+        }
         if ((c.front().p - c.back().p).Length() <= stitch_tol) {
           Chain wrap_open;
           if (face_surface && SplitPeriodicWrapChain(c, *face_surface, wrap_open)) {
@@ -1036,8 +1411,8 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
   ON_Brep& brep = result.raw();
   VertexWelder welder;
   for (KeptFace& kf : kept) {
-    CollapseDuplicateVids(kf.outer, welder);
-    for (auto& h : kf.holes) CollapseDuplicateVids(h, welder);
+    CollapseDuplicateVids(kf.outer, welder, kf.surface);
+    for (auto& h : kf.holes) CollapseDuplicateVids(h, welder, kf.surface);
   }
   for (const Point3d& p : welder.Points()) brep.NewVertex(p);
 

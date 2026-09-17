@@ -650,7 +650,21 @@ std::vector<ON_2dPoint> LoopPolygon(const ON_Brep& b, int loop_index, int sample
 bool FaceContainsUV(const ON_BrepFace& f, double u, double v) {
   const ON_Brep* b = f.Brep();
   if (!b) return true;
-  if (f.m_li.Count() == 0) return f.Domain(0).Includes(u, true) && f.Domain(1).Includes(v, true);
+  // CLOSED-interval test (ON_Interval::Includes's second argument is
+  // `bTestOpenInterval`; passing `true` there - as this used to - tests
+  // min < t < max and so rejected every (u, v) sitting EXACTLY on the
+  // untrimmed surface's own domain boundary). That boundary IS part of an
+  // untrimmed face: for a full sphere it is the seam meridian (u == u_min)
+  // and both poles (v == v_min/v_max), and RefineSurfaceSurfacePoint()'s
+  // Newton solve clamps its (u, v) to the domain, so a refined point that
+  // lands on the seam lands on it exactly. Confirmed root cause of the
+  // sphere+box gap (see boolean_general.cpp's own top-of-file comment):
+  // IntersectFaces()'s own clipping pass below silently discarded every
+  // seam-meridian sample refined to u == 0 bit-exactly (while keeping the
+  // ones that happened to round to u == 1e-17), ripping the y == 0
+  // plane's own meridian arc into disconnected pieces with real gaps, and
+  // dropping the equator arc's own u == 0 endpoint.
+  if (f.m_li.Count() == 0) return f.Domain(0).Includes(u) && f.Domain(1).Includes(v);
   const ON_2dPoint p(u, v);
   bool inside_outer = false;
   for (int li = 0; li < f.m_li.Count(); ++li) {

@@ -1777,6 +1777,113 @@ void TestBooleanCombineGeneralBoxCylinder() {
   }
 }
 
+void TestBooleanCombineGeneralSphereBox() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+
+  // The general engine's first proven case with a DOUBLY-degenerate
+  // operand (periodic in u, singular at both v ends), and one that the
+  // special-cased BooleanCombineMixed engine cannot do at all: a radius-2
+  // sphere at the origin against a box whose corner sits exactly at the
+  // sphere's own centre, its three faces on the coordinate planes, and
+  // extending well past the sphere on the far sides. The intersection is
+  // exactly one octant of the sphere. This fixture is deliberately the
+  // worst case for the sphere's own (u, v) chart: the y == 0 plane's arc
+  // lies EXACTLY on the sphere's u == 0 seam meridian, and both that arc
+  // and the x == 0 plane's arc end at the degenerate north pole - see
+  // boolean_general.cpp's own top-of-file doc comment for the three bugs
+  // this exposed (an open-interval domain test in FaceContainsUV() that
+  // discarded every seam-exact sample; the resulting corner-of-the-domain
+  // chain being holed out as an interior island instead of cutting the
+  // domain rectangle at its corner; and the pole's own collapsed loop
+  // samples desyncing the seam trims' 2D lines) and their fixes.
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 2.0);
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+  const double r = 2.0;
+  const double sphere_vol = (4.0 / 3.0) * ON_PI * r * r * r;
+  const double box_vol = 1000.0;
+  const double expect_i = sphere_vol / 8.0;
+  const double expect_u = box_vol + sphere_vol - expect_i;
+  // Note the operand order: BooleanCombineGeneral(a, b, Difference) is
+  // a - b, so (sphere, box) leaves the sphere minus its octant and (box,
+  // sphere) leaves the box minus that same octant. Both orders are checked
+  // - they exercise the sphere as operand A (its fragments classified
+  // against the box) and as operand B (classified against the sphere's own
+  // pole/seam-bearing face) respectively.
+  const double expect_d_sphere_minus_box = sphere_vol - expect_i;
+  const double expect_d_box_minus_sphere = box_vol - expect_i;
+
+  // Tessellation-scaled tolerances, justified by direct measurement of the
+  // volume error at TessellateToClosedMesh(n, 2n) for n = 16 / 32 / 64:
+  //   Intersection (and box - sphere):  -0.110 / -0.029 / -0.0074
+  //   Union and sphere - box:           -0.82  / -0.21  / -0.052
+  // i.e. the error falls by ~4x per doubling of n (second-order, exactly
+  // what an inscribed polyhedral approximation of a sphere gives - the
+  // plain, un-booleaned sphere's own deficit at the same n is 0.94 / 0.24
+  // / 0.06 of its 33.51), so this is convergent tessellation error, not a
+  // fixed leak of missing or doubled surface. Union and sphere - box keep
+  // 7/8 of the sphere's curved surface and so carry ~7x the octant's own
+  // error, hence their wider tolerance at the same n = 32 used here; a
+  // tolerance of 0.5 there and 0.1 for the octant-sized results is ~2.4x
+  // the measured n = 32 error, comfortably inside the 4x gain the next
+  // halving of n would cost.
+  //
+  // As in TestBooleanCombineGeneralBoxCylinder, Mesh::IsClosedManifold()
+  // is deliberately not asserted: that is the separate, pre-existing
+  // mesher-side gap documented there and in boolean_general.cpp.
+  const int nu = 32, nv = 64;
+  const double tol_octant = 0.1, tol_bulk = 0.5;
+
+  {
+    const Brep u = BooleanCombineGeneral(sphere, box, BooleanOp::Union);
+    Check(u.raw().IsValid(), "sphere+box Union is a valid ON_Brep");
+    const Mesh m = u.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_u) < tol_bulk,
+          "sphere+box Union's tessellated volume matches the closed-form "
+          "box + sphere - octant to within tessellation tolerance");
+  }
+  {
+    const Brep i = BooleanCombineGeneral(sphere, box, BooleanOp::Intersection);
+    Check(i.raw().IsValid(), "sphere+box Intersection is a valid ON_Brep");
+    const Mesh m = i.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_i) < tol_octant,
+          "sphere+box Intersection's tessellated volume matches the exact "
+          "closed-form octant (4/3*pi*r^3)/8 to within tessellation "
+          "tolerance");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(sphere, box, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "sphere-box Difference is a valid ON_Brep");
+    const Mesh m = d.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_d_sphere_minus_box) < tol_bulk,
+          "sphere-box Difference's tessellated volume matches the "
+          "closed-form sphere - octant to within tessellation tolerance");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(box, sphere, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "box-sphere Difference is a valid ON_Brep");
+    const Mesh m = d.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_d_box_minus_sphere) < tol_octant,
+          "box-sphere Difference's tessellated volume matches the "
+          "closed-form box - octant to within tessellation tolerance");
+  }
+  {
+    // Resolution check, so the tolerance argument above stays honest in
+    // the test itself: the octant's own error must shrink measurably when
+    // the tessellation is doubled.
+    const Brep i = BooleanCombineGeneral(sphere, box, BooleanOp::Intersection);
+    const double err_coarse = std::abs(i.TessellateToClosedMesh(16, 32).Volume() - expect_i);
+    const double err_fine = std::abs(i.TessellateToClosedMesh(32, 64).Volume() - expect_i);
+    Check(err_fine < 0.5 * err_coarse,
+          "sphere+box Intersection's volume error at least halves when the "
+          "tessellation is doubled (convergent tessellation error, not a "
+          "fixed topological leak)");
+  }
+}
+
 void TestSurfaceGetApproximateSize() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -18699,6 +18806,7 @@ int main() {
   TestSurfaceIntersectSphereGreatCircle();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralBoxCylinder();
+  TestBooleanCombineGeneralSphereBox();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
