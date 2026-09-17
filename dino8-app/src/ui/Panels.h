@@ -20,6 +20,11 @@ void DrawCommandListPanel(Application& app, std::string& filter, int& status_fil
 // substring (label/summary) and an inclusive "YYYY-MM-DD" date range
 // (each buffer must be at least 16 bytes; empty = unbounded on that side).
 void DrawActivityLogPanel(Application& app, std::string& filter, char* from_date, char* to_date);
+// Audit results panel (Application::AuditResults, populated by the Audit
+// command in cmd_analyze.cpp): one row per invalid object with Select/Zoom
+// To actions, following the same Application::ActiveViewport()-driven
+// select/zoom pattern the other object-list panels use.
+void DrawAuditResultsPanel(Application& app);
 void DrawHelpPanel(Application& app, std::string& search);
 void DrawNotificationsPanel(Application& app);
 void DrawNamedViewsPanel(Application& app);

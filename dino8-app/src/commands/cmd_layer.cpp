@@ -198,10 +198,82 @@ void RegisterLayerCommands(CommandEngine& e) {
   Reg(e, "LayerStateManager", Immediate([](CommandContext& ctx) { ctx.App().Panels().layer_state_manager = true; }));
   Reg(e, "LayerState", Make<LayerStateCommand>());
   Reg(e, "Purge", Immediate([](CommandContext& ctx) {
+        // Sweeps every named-item table the document keeps, the same way
+        // AutoCAD's PURGE does in one pass: an item is unused when nothing
+        // in the live document references it any more (same referenced-count
+        // == 0 rule as the pre-existing layer-only purge below), and a
+        // handful of built-in defaults (the current layer, "Continuous", the
+        // active annotation style) are protected exactly like the current
+        // layer already was, since removing them would break the fallback
+        // every new object/layer implicitly relies on.
+        //
+        // Hatch patterns are deliberately out of scope: HatchLibrary (see
+        // drafting/HatchLibrary.h) is a static, document-independent .pat
+        // library (like a font list), not a per-document named table with
+        // per-object usage - there is nothing in a Document to purge there.
         ctx.Doc().BeginChange("Purge");
-        int removed = 0;
-        for (int i = static_cast<int>(ctx.Doc().Layers().size()) - 1; i >= 0; --i) { bool used = false; for (const SceneObject& o : ctx.Doc().Objects()) if (o.layer_index == i) { used = true; break; } if (!used && i != ctx.Doc().CurrentLayer() && ctx.Doc().RemoveLayer(i)) ++removed; }
-        ctx.Print("Purged " + std::to_string(removed) + " unused layer(s)");
+        Document& doc = ctx.Doc();
+
+        int layers_removed = 0;
+        for (int i = static_cast<int>(doc.Layers().size()) - 1; i >= 0; --i) {
+          bool used = false;
+          for (const SceneObject& o : doc.Objects()) if (o.layer_index == i) { used = true; break; }
+          if (!used && i != doc.CurrentLayer() && doc.RemoveLayer(i)) ++layers_removed;
+        }
+
+        int blocks_removed = 0;
+        for (int i = static_cast<int>(doc.Blocks().size()) - 1; i >= 0; --i) {
+          const std::string& name = doc.Blocks()[static_cast<size_t>(i)].name;
+          bool used = false;
+          for (const SceneObject& o : doc.Objects()) { auto it = o.user_text.find("Block"); if (it != o.user_text.end() && it->second == name) { used = true; break; } }
+          if (!used && doc.RemoveBlock(name)) ++blocks_removed;
+        }
+
+        int materials_removed = 0;
+        for (int i = static_cast<int>(doc.Materials().size()) - 1; i >= 0; --i) {
+          const std::string& name = doc.Materials()[static_cast<size_t>(i)].name;
+          bool used = false;
+          for (const SceneObject& o : doc.Objects()) if (o.material_name == name) { used = true; break; }
+          if (!used) for (const Layer& l : doc.Layers()) if (l.material == name) { used = true; break; }
+          if (!used && doc.RemoveMaterial(name)) ++materials_removed;
+        }
+
+        int linetypes_removed = 0;
+        for (int i = static_cast<int>(doc.Linetypes().size()) - 1; i >= 0; --i) {
+          const std::string& name = doc.Linetypes()[static_cast<size_t>(i)].name;
+          if (name == "Continuous") continue;
+          bool used = false;
+          for (const SceneObject& o : doc.Objects()) if (o.linetype == name) { used = true; break; }
+          if (!used) for (const Layer& l : doc.Layers()) if (l.linetype == name) { used = true; break; }
+          if (!used && doc.RemoveLinetype(name)) ++linetypes_removed;
+        }
+
+        int styles_removed = 0;
+        for (int i = static_cast<int>(doc.AnnotationStyles().size()) - 1; i >= 0; --i) {
+          const std::string& name = doc.AnnotationStyles()[static_cast<size_t>(i)].name;
+          if (name == doc.Settings().annotation_style) continue;
+          bool used = false;
+          for (const SceneObject& o : doc.Objects()) { auto it = o.user_text.find("Style"); if (it != o.user_text.end() && it->second == name) { used = true; break; } }
+          if (!used && doc.RemoveAnnotationStyle(name)) ++styles_removed;
+        }
+
+        int groups_removed = doc.RemoveEmptyGroups();
+
+        // AutoCAD-style summary report, one line per non-zero category so a
+        // clean sweep still just says "nothing to purge" instead of a wall
+        // of zeros.
+        std::vector<std::string> parts;
+        auto add = [&](int n, const char* singular, const char* plural) { if (n > 0) parts.push_back(std::to_string(n) + " " + (n == 1 ? singular : plural)); };
+        add(layers_removed, "layer", "layers");
+        add(blocks_removed, "block", "blocks");
+        add(materials_removed, "material", "materials");
+        add(linetypes_removed, "linetype", "linetypes");
+        add(styles_removed, "annotation style", "annotation styles");
+        add(groups_removed, "empty group", "empty groups");
+        if (parts.empty()) { ctx.Print("Purge: nothing to remove"); return; }
+        std::string msg = "Purge: removed";
+        for (size_t i = 0; i < parts.size(); ++i) msg += (i == 0 ? " " : (i + 1 == parts.size() ? " and " : ", ")) + parts[i];
+        ctx.Print(msg);
       }));
 }
 

@@ -68,6 +68,18 @@ struct PanelState {
   bool hatch_patterns = false;  // Hatch pattern library thumbnails (cmd_drafting2.cpp)
   bool table_editor = false;    // Table / RevisionTable / TitleBlock / BillOfMaterials editor
   bool activity_log = false;    // Activity Log (local Activity Insights analogue; see Document::ActivityLog)
+  bool audit_results = false;   // Audit results panel (see Application::AuditResults / cmd_analyze.cpp)
+};
+
+// One invalid object found by Audit/Check (see cmd_analyze.cpp): the
+// object's id (so the panel can Select/Zoom to it even after other edits
+// renumber nothing - ObjectId is stable), its kind name and OpenNURBS'
+// own IsValid(ON_TextLog*) failure text, which is far more specific than
+// a bare "invalid" ("start of NURBS knot vector is not increasing", etc).
+struct AuditIssue {
+  ObjectId id = kNoObject;
+  std::string type;         // ObjectKindName(o.kind)
+  std::string description;  // IsValid()'s failure text, or a generic fallback
 };
 
 // The Script Editor panel's state (persisted: the last script text lives in
@@ -204,6 +216,10 @@ class Application {
   ViewToolsState viewtools;
   SnapSettings& Snaps() { return snaps_; }
   PanelState& Panels() { return panels_; }
+  // Results of the last Audit run (cmd_analyze.cpp), shown by the Audit
+  // Results panel (DrawAuditResultsPanel). Cleared and repopulated each run.
+  std::vector<AuditIssue>& AuditResults() { return audit_results_; }
+  const std::vector<AuditIssue>& AuditResults() const { return audit_results_; }
   AppState& State() { return state_; }
   Gumball& GetGumball() { return gumball_; }
   // Selected control points / vertices / edges / faces (on top of the
@@ -394,6 +410,7 @@ class Application {
   std::optional<kernel::Point3d> pending_hover_;
   std::string command_list_filter_;
   int command_list_status_filter_ = 0;  // 0 all, 1 implemented, 2 partial, 3 planned
+  std::vector<AuditIssue> audit_results_;  // last Audit run's invalid objects
   std::string activity_log_filter_;      // substring filter over label/summary
   char activity_log_from_[16] = {};      // "YYYY-MM-DD" inclusive lower bound, empty = no bound
   char activity_log_to_[16] = {};        // "YYYY-MM-DD" inclusive upper bound, empty = no bound

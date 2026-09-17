@@ -9,6 +9,34 @@ namespace dino8::app {
 
 namespace {
 
+// True if `o`'s geometry passes OpenNURBS' own IsValid() (Points and SubD
+// carry no separate wrapper-level validity here - SubD is checked too, but
+// Points are trivially always valid). When invalid and `reason` is given,
+// captures ON_Object::IsValid(ON_TextLog*)'s own diagnostic text (e.g.
+// "start of NURBS knot vector is not increasing", "ON_Brep::IsValid m_F[3]
+// - not valid.") - the same text Rhino's Check/Audit report, and far more
+// specific than a bare "invalid". Falls back to a generic message on the
+// rare object that fails IsValid() without writing anything to the log.
+bool ObjectValidity(const SceneObject& o, std::string* reason = nullptr) {
+  bool ok = true;
+  ON_wString log_text;
+  ON_TextLog log(log_text);
+  ON_TextLog* lp = reason ? &log : nullptr;
+  if (o.kind == ObjectKind::Curve) ok = o.curve->raw().IsValid(lp);
+  else if (o.kind == ObjectKind::Surface) ok = o.surface->raw().IsValid(lp);
+  else if (o.kind == ObjectKind::Brep) ok = o.brep->raw().IsValid(lp);
+  else if (o.kind == ObjectKind::Mesh) ok = o.mesh->raw().IsValid(lp);
+  else if (o.kind == ObjectKind::SubD) ok = o.subd->raw().IsValid(lp);
+  if (!ok && reason) {
+    ON_String utf8(log_text);
+    *reason = utf8.Length() ? std::string(static_cast<const char*>(utf8)) : "IsValid() returned false with no further detail";
+    // ON_TextLog output is newline-terminated per message; trim trailing
+    // whitespace so the panel/print output doesn't carry a ragged blank line.
+    while (!reason->empty() && (reason->back() == '\n' || reason->back() == '\r' || reason->back() == ' ')) reason->pop_back();
+  }
+  return ok;
+}
+
 double ObjectArea(const SceneObject& o) {
   switch (o.kind) {
     case ObjectKind::Surface: return o.surface ? o.surface->ApproximateArea() : 0;
@@ -287,23 +315,13 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
         for (ObjectId id : ids) {
           const SceneObject* o = ctx.Doc().Find(id);
           if (!o) continue;
-          bool ok = true;
-          if (o->kind == ObjectKind::Curve) ok = o->curve->raw().IsValid();
-          else if (o->kind == ObjectKind::Surface) ok = o->surface->raw().IsValid();
-          else if (o->kind == ObjectKind::Brep) ok = o->brep->raw().IsValid();
-          else if (o->kind == ObjectKind::Mesh) ok = o->mesh->raw().IsValid();
-          else if (o->kind == ObjectKind::SubD) ok = o->subd->raw().IsValid();
-          ctx.Print("Object " + std::to_string(id) + ": " + (ok ? "valid" : "INVALID"));
+          std::string reason;
+          const bool ok = ObjectValidity(*o, &reason);
+          ctx.Print("Object " + std::to_string(id) + ": " + (ok ? "valid" : "INVALID - " + reason));
         }
       }));
   Reg(e, "SelBadObjects", Immediate([](CommandContext& ctx) {
-        ctx.Doc().SelectWhere([](const SceneObject& o) {
-          if (o.kind == ObjectKind::Curve) return !o.curve->raw().IsValid();
-          if (o.kind == ObjectKind::Surface) return !o.surface->raw().IsValid();
-          if (o.kind == ObjectKind::Brep) return !o.brep->raw().IsValid();
-          if (o.kind == ObjectKind::Mesh) return !o.mesh->raw().IsValid();
-          return false;
-        });
+        ctx.Doc().SelectWhere([](const SceneObject& o) { return !ObjectValidity(o); });
         ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " bad object(s) selected");
       }));
   Reg(e, "EvaluatePt", Make<PointsCommand>(std::vector<std::string>{"Point to evaluate"}, [](CommandContext& ctx, const std::vector<Point3d>& p) { ctx.Print("Point " + FormatPoint(p[0])); ctx.App().Notify(FormatPoint(p[0])); }));
@@ -380,10 +398,45 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
       }, 2));
   // "Intersect" lives in cmd_curveedit.cpp (curve/curve, with the solid/solid volume as fallback).
   Reg(e, "Audit", Immediate([](CommandContext& ctx) {
-        int bad = 0;
-        for (const SceneObject& o : ctx.Doc().Objects()) { bool ok = true; if (o.kind == ObjectKind::Curve) ok = o.curve->raw().IsValid(); else if (o.kind == ObjectKind::Surface) ok = o.surface->raw().IsValid(); else if (o.kind == ObjectKind::Brep) ok = o.brep->raw().IsValid(); else if (o.kind == ObjectKind::Mesh) ok = o.mesh->raw().IsValid(); if (!ok) ++bad; }
-        ctx.Print("Audit: " + std::to_string(ctx.Doc().ObjectCount()) + " objects, " + std::to_string(bad) + " invalid, " + std::to_string(ctx.Doc().Layers().size()) + " layers, " + std::to_string(ctx.Doc().Groups().size()) + " groups");
+        std::vector<AuditIssue>& results = ctx.App().AuditResults();
+        results.clear();
+        for (const SceneObject& o : ctx.Doc().Objects()) {
+          std::string reason;
+          if (ObjectValidity(o, &reason)) continue;
+          AuditIssue issue;
+          issue.id = o.id;
+          issue.type = ObjectKindName(o.kind);
+          issue.description = reason;
+          results.push_back(std::move(issue));
+        }
+        ctx.Print("Audit: " + std::to_string(ctx.Doc().ObjectCount()) + " objects, " + std::to_string(results.size()) + " invalid, " +
+                  std::to_string(ctx.Doc().Layers().size()) + " layers, " + std::to_string(ctx.Doc().Groups().size()) + " groups");
+        // Always (re)open the panel, even on a clean document: a run that
+        // finds nothing should still visibly confirm "0 invalid", not leave
+        // whatever the panel happened to show from a previous, dirtier run.
+        ctx.App().Panels().audit_results = true;
       }));
+  // Test/QC-only: deliberately builds one genuinely invalid ON_NurbsCurve
+  // (a clamped cubic whose 4th knot is set below its 3rd, breaking the
+  // "non-decreasing knot vector" NURBS requirement) and adds it to the
+  // document, so Audit/Check/SelBadObjects have a real IsValid()==false
+  // object to exercise without hand-corrupting memory. A self-intersecting
+  // (bowtie) curve is NOT the same kind of failure - see
+  // CurveSelfIntersects/curve_adversarial_script.txt - it is still a
+  // perfectly valid ON_Curve, just geometrically self-crossing.
+  Reg(e, "MakeInvalidCurve", Immediate([](CommandContext& ctx) {
+        kernel::NurbsCurve c;
+        c.raw().Create(3, false, 4, 4);
+        c.raw().SetCV(0, ON_3dPoint(0, 0, 0));
+        c.raw().SetCV(1, ON_3dPoint(3, 5, 0));
+        c.raw().SetCV(2, ON_3dPoint(7, -5, 0));
+        c.raw().SetCV(3, ON_3dPoint(10, 0, 0));
+        c.raw().SetKnot(0, 0); c.raw().SetKnot(1, 0); c.raw().SetKnot(2, 0);
+        c.raw().SetKnot(3, 1); c.raw().SetKnot(4, 1); c.raw().SetKnot(5, 1);
+        c.raw().SetKnot(3, -1.0);  // now less than knot(2) == 0: not non-decreasing
+        ObjectId id = AddCurve(ctx, c, "MakeInvalidCurve");
+        ctx.Print("MakeInvalidCurve: added object " + std::to_string(id) + " (deliberately invalid: non-increasing knot vector)");
+      }), CommandStatus::Implemented, "Test/QC helper: adds a deliberately invalid NURBS curve to the document so Audit/Check/SelBadObjects can be regression-tested against a real IsValid()==false object.");
   Reg(e, "SystemInfo", Immediate([](CommandContext& ctx) {
         ctx.Print(std::string("Dino 8 ") + DINO8_VERSION + " - free, no subscription");
         ctx.Print(std::string("OpenGL: ") + reinterpret_cast<const char*>(glGetString(GL_VERSION)) + " / " + reinterpret_cast<const char*>(glGetString(GL_RENDERER)));

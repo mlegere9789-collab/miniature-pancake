@@ -409,6 +409,9 @@ class Document {
   std::vector<Group>& Groups() { return groups_; }
   Group* FindGroup(int group_id) { for (Group& g : groups_) if (g.id == group_id) return &g; return nullptr; }
   std::vector<ObjectId> GroupMembers(int group_id) const;
+  // Removes every group with no member objects (see Ungroup, which does the
+  // same cleanup for the groups it just emptied). Returns the count removed.
+  int RemoveEmptyGroups();
 
   // ---- named views / user text / notes ---------------------------------
   std::vector<NamedView>& NamedViews() { return named_views_; }
@@ -426,6 +429,10 @@ class Document {
   // linetype display is off.
   std::vector<double> EffectiveDashes(const SceneObject& o) const;
   static std::vector<Linetype> DefaultLinetypes();
+  // Removes a custom linetype by name (refuses "Continuous", the one every
+  // new layer/object implicitly falls back to). Returns false if not found
+  // or protected.
+  bool RemoveLinetype(const std::string& name);
   std::vector<AnnotationStyle>& AnnotationStyles() { return annotation_styles_; }
   const std::vector<AnnotationStyle>& AnnotationStyles() const { return annotation_styles_; }
   AnnotationStyle* FindAnnotationStyle(const std::string& name);
@@ -434,6 +441,9 @@ class Document {
   std::vector<LayerState>& LayerStates() { return layer_states_; }
   const std::vector<LayerState>& LayerStates() const { return layer_states_; }
   LayerState* FindLayerState(const std::string& name);
+  // Removes an annotation style by name (refuses the current one, see
+  // DocumentSettings::annotation_style). Returns false if not found or protected.
+  bool RemoveAnnotationStyle(const std::string& name);
   std::vector<NamedSelection>& NamedSelections() { return named_selections_; }
   std::vector<NamedPosition>& NamedPositions() { return named_positions_; }
   std::vector<NamedCPlane>& NamedCPlanes() { return named_cplanes_; }
@@ -455,6 +465,8 @@ class Document {
   std::vector<BlockDefinition>& Blocks() { return blocks_; }
   const std::vector<BlockDefinition>& Blocks() const { return blocks_; }
   BlockDefinition* FindBlock(const std::string& name) { for (BlockDefinition& b : blocks_) if (b.name == name) return &b; return nullptr; }
+  // Removes a block definition by name. Returns false if not found.
+  bool RemoveBlock(const std::string& name);
   std::vector<ReferenceModel>& ReferenceModels() { return reference_models_; }
   const std::vector<ReferenceModel>& ReferenceModels() const { return reference_models_; }
   void SetHoleFeature(ObjectId id, kernel::Mesh pre_cut_parent, kernel::Mesh cutter) {

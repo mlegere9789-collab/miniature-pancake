@@ -495,6 +495,54 @@ void DrawActivityLogPanel(Application& app, std::string& filter, char* from_date
   ImGui::End();
 }
 
+void DrawAuditResultsPanel(Application& app) {
+  Document& doc = app.Doc();
+  ImGui::SetNextWindowSize(ImVec2(560, 320), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.audit_results", "AuditResults").c_str(), &app.Panels().audit_results)) { ImGui::End(); return; }
+  const std::vector<AuditIssue>& results = app.AuditResults();
+  if (results.empty()) {
+    ImGui::TextWrapped("No invalid objects found. Run Audit again after editing the document to re-check it.");
+    ImGui::End();
+    return;
+  }
+  ImGui::Text("%zu invalid object(s)", results.size());
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Select all")) { doc.SelectNone(); for (const AuditIssue& iss : results) doc.Select(iss.id, true); }
+  ImGui::Separator();
+  if (ImGui::BeginTable("audit", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable, ImVec2(0, 0))) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 70);
+    ImGui::TableSetupColumn("Problem", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("##select", ImGuiTableColumnFlags_WidthFixed, 60);
+    ImGui::TableSetupColumn("##zoom", ImGuiTableColumnFlags_WidthFixed, 70);
+    ImGui::TableHeadersRow();
+    for (size_t i = 0; i < results.size(); ++i) {
+      const AuditIssue& issue = results[i];
+      ImGui::PushID(static_cast<int>(i));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(issue.type.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextWrapped("Object %llu: %s", static_cast<unsigned long long>(issue.id), issue.description.c_str());
+      ImGui::TableNextColumn();
+      // A missing object (deleted since the audit ran) still lists here -
+      // the buttons just no-op via Find()'s nullptr rather than crashing.
+      const bool exists = doc.Find(issue.id) != nullptr;
+      ImGui::BeginDisabled(!exists);
+      if (ImGui::SmallButton("Select")) { doc.SelectNone(); doc.Select(issue.id, true); }
+      ImGui::TableNextColumn();
+      if (ImGui::SmallButton("Zoom To")) {
+        kernel::BoundingBox bb;
+        if (Viewport* vp = app.ActiveViewport()) { if (doc.BoundingBoxOf({issue.id}, bb)) vp->ZoomTo(bb); }
+      }
+      ImGui::EndDisabled();
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+  ImGui::End();
+}
+
 void DrawCommandListPanel(Application& app, std::string& filter, int& status_filter) {
   if (!ImGui::Begin(PanelTitle("panel.command_list", "CommandList").c_str(), &app.Panels().command_list)) { ImGui::End(); return; }
   CommandEngine& eng = app.Engine();

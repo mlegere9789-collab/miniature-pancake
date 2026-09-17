@@ -346,6 +346,24 @@ std::vector<ObjectId> Document::GroupMembers(int group_id) const {
   return ids;
 }
 
+bool Document::RemoveBlock(const std::string& name) {
+  const auto it = std::find_if(blocks_.begin(), blocks_.end(), [&](const BlockDefinition& b) { return b.name == name; });
+  if (it == blocks_.end()) return false;
+  blocks_.erase(it);
+  Touch();
+  return true;
+}
+
+int Document::RemoveEmptyGroups() {
+  const size_t before = groups_.size();
+  groups_.erase(std::remove_if(groups_.begin(), groups_.end(),
+                               [this](const Group& g) { return GroupMembers(g.id).empty(); }),
+                groups_.end());
+  const int removed = static_cast<int>(before - groups_.size());
+  if (removed > 0) Touch();
+  return removed;
+}
+
 std::vector<Linetype> Document::DefaultLinetypes() {
   return {{"Continuous", {}},
           {"Dashed", {5, 2}},
@@ -394,6 +412,15 @@ std::vector<double> Document::EffectiveDashes(const SceneObject& o) const {
   return out;
 }
 
+bool Document::RemoveLinetype(const std::string& name) {
+  if (name == "Continuous") return false;
+  const auto it = std::find_if(linetypes_.begin(), linetypes_.end(), [&](const Linetype& l) { return l.name == name; });
+  if (it == linetypes_.end()) return false;
+  linetypes_.erase(it);
+  Touch();
+  return true;
+}
+
 AnnotationStyle* Document::FindAnnotationStyle(const std::string& name) {
   for (AnnotationStyle& a : annotation_styles_) if (a.name == name) return &a;
   return nullptr;
@@ -408,6 +435,15 @@ const AnnotationStyle& Document::CurrentAnnotationStyle() const {
 LayerState* Document::FindLayerState(const std::string& name) {
   for (LayerState& s : layer_states_) if (s.name == name) return &s;
   return nullptr;
+}
+
+bool Document::RemoveAnnotationStyle(const std::string& name) {
+  if (name == settings_.annotation_style) return false;
+  const auto it = std::find_if(annotation_styles_.begin(), annotation_styles_.end(), [&](const AnnotationStyle& a) { return a.name == name; });
+  if (it == annotation_styles_.end()) return false;
+  annotation_styles_.erase(it);
+  Touch();
+  return true;
 }
 
 NamedCPlane* Document::FindNamedCPlane(const std::string& name) {

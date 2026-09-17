@@ -1358,6 +1358,22 @@ lscheck "Layer state 'HiddenWalls' restored" "LayerState Restore ran"
 lscheck "1 layer state(s)" "exactly one layer state survived Save/New/Open"
 lscheck "  HiddenWalls: 3 layer(s)" "the reloaded layer state kept its name and layer count"
 
+# Purge: sweeps every named-item table (layers, blocks, materials,
+# linetypes, annotation styles, empty groups), not just layers - see
+# cmd_layer.cpp and purge_script.txt. Each category is made unused
+# deliberately, so the single Purge run should report exactly one of each.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  PU="$("$BIN" --smoke 150 --script "$HERE/purge_script.txt" 2>&1)" || { echo "$PU"; echo "FAIL: purge script exited non-zero"; exit 1; }
+else
+  PU="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/purge_script.txt" 2>&1)" || { echo "$PU"; echo "FAIL: purge script exited non-zero"; exit 1; }
+fi
+echo "$PU" | grep -E "^(ok|FAIL)"
+if echo "$PU" | grep -q "^FAIL"; then fail=1; fi
+echo "$PU" | grep -q "^smoke:" || { echo "$PU"; echo "FAIL: purge script produced no smoke line"; fail=1; }
+pucheck() { if echo "$PU" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+pucheck "Purge: removed 1 layer, 1 block, 1 material, 7 linetypes, 1 annotation style and 1 empty group" \
+        "Purge swept layers/blocks/materials/linetypes/annotation styles/empty groups in one pass, not just layers (7 linetypes: the 6 unused-by-default built-ins - Continuous is protected - plus the test's own PurgeUnusedLinetype)"
+
 # Selection: every Sel* command in cmd_select.cpp and cmd_select2.cpp (see select_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
   SL="$("$BIN" --smoke 200 --script "$HERE/select_script.txt" 2>&1)" || { echo "$SL"; echo "FAIL: select script exited non-zero"; exit 1; }
@@ -1447,6 +1463,26 @@ fi
 echo "$AN" | grep -E "^(ok|FAIL)"
 if echo "$AN" | grep -q "^FAIL"; then fail=1; fi
 echo "$AN" | grep -q "^smoke:" || { echo "$AN"; echo "FAIL: analyze script produced no smoke line"; fail=1; }
+
+# Audit on a genuinely invalid object (not just a self-intersecting-but-valid
+# bowtie curve, see curve_adversarial_script.txt for that different case):
+# MakeInvalidCurve builds one deterministic IsValid()==false NURBS curve, and
+# Check/Audit/SelBadObjects must all report it with a specific reason, not
+# just a bare count (see audit_invalid_script.txt and cmd_analyze.cpp).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  AI="$("$BIN" --smoke 150 --script "$HERE/audit_invalid_script.txt" 2>&1)" || { echo "$AI"; echo "FAIL: audit-invalid script exited non-zero"; exit 1; }
+else
+  AI="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/audit_invalid_script.txt" 2>&1)" || { echo "$AI"; echo "FAIL: audit-invalid script exited non-zero"; exit 1; }
+fi
+echo "$AI" | grep -E "^(ok|FAIL)"
+if echo "$AI" | grep -q "^FAIL"; then fail=1; fi
+echo "$AI" | grep -q "^smoke:" || { echo "$AI"; echo "FAIL: audit-invalid script produced no smoke line"; fail=1; }
+aicheck() { if echo "$AI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+aicheck "Object [0-9]*: valid" "Check reported the plain line as valid"
+aicheck "Object [0-9]*: INVALID - .*knot" "Check reported the deliberately invalid curve INVALID with a specific (knot-vector) reason, not just a bare count"
+aicheck "Audit: 2 objects, 1 invalid" "Audit's summary counted exactly the one invalid object (out of the 2 in the doc - the valid Line and the deliberately invalid curve)"
+aicheck "1 bad object(s) selected" "SelBadObjects selected exactly the invalid curve"
+aicheck "Audit: 0 objects, 0 invalid" "Audit correctly reports 0 invalid once the bad object is deleted"
 
 # Views: standard views, Zoom variants, display modes, NamedView Save/Restore, 4View/3View/
 # MaxViewport, CPlane commands, viewport cycling (see view_script.txt).

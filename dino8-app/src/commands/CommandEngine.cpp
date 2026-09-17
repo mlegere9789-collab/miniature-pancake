@@ -569,6 +569,15 @@ bool CommandEngine::TryOption(const std::string& text) {
     name = lower.substr(0, eq);
     value = text.substr(eq + 1);
   }
+  // A bare number (e.g. a typed radius/distance/count) must never be treated
+  // as an option-name prefix match, even if some option happens to start
+  // with a digit (e.g. Circle's "3Point"): a plain numeric token is always
+  // a value, never an option selector.
+  {
+    char* end = nullptr;
+    std::strtod(name.c_str(), &end);
+    if (end && *end == 0 && !name.empty()) return false;
+  }
   // Exact, then unique prefix, against option names.
   const OptionSpec* match = nullptr;
   int prefix_matches = 0;
