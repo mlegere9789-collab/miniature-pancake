@@ -2065,6 +2065,7 @@ void Application::DrawPanels() {
   if (panels_.command_history) DrawCommandHistoryPanel(*this);
   if (panels_.command_list) DrawCommandListPanel(*this, command_list_filter_, command_list_status_filter_);
   if (panels_.activity_log) DrawActivityLogPanel(*this, activity_log_filter_, activity_log_from_, activity_log_to_);
+  if (panels_.audit_results) DrawAuditResultsPanel(*this);
   if (panels_.help) DrawHelpPanel(*this, help_search_);
   if (panels_.notifications) { unread_notifications = 0; DrawNotificationsPanel(*this); }
   if (panels_.named_views) DrawNamedViewsPanel(*this);
