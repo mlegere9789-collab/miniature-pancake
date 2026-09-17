@@ -733,7 +733,57 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
       if (!RefineSurfaceSurfacePoint(a, b, ua, va, ub, vb, opt.tolerance)) continue;
       const Point3d x = a.PointAt(ua, va);
       const size_t j = (i + 1) % n;
-      if (pm.DistanceTo(x) > opt.tolerance && x.DistanceTo(ic.points[i]) > opt.tolerance * 2 && x.DistanceTo(ic.points[j]) > opt.tolerance * 2) {
+      // RefineSurfaceSurfacePoint()'s 3-equation/4-unknown Newton system is
+      // only weakly damped along a curve's own TANGENT direction (every
+      // point along the curve is an equally valid zero-residual solution,
+      // so nothing in the linearized system penalizes sliding along it) -
+      // for the common case this costs nothing (the seed is already close
+      // to the unique nearby true point, so the solve simply doesn't need
+      // to move far), but for a curve that is tangent to BOTH surfaces
+      // along its own entire length (the canonical case: a plane exactly
+      // perpendicular to a cylinder's axis, whose whole circular
+      // cross-section is an equally-valid solution everywhere), a segment
+      // midpoint seed - a genuine, non-degenerate distance away from the
+      // curve in the surfaces' shared NORMAL direction (needing real
+      // Newton work to fix) - can converge to an unrelated, distant point
+      // on the SAME curve instead of the geometrically nearest one: a
+      // real, reproduced defect (see boolean_general.h's own disclosed
+      // limitations), confirmed here directly by tracing the exact
+      // sequence of points a box-face's own flat cross-section of a
+      // cylinder wall produces. The cubic-fit midpoint `pm` is always a
+      // trustworthy, close approximation of where the TRUE point should
+      // land (it is built from two points already confirmed to lie on the
+      // real curve) - `x` landing far from it, rather than just off it by
+      // the small normal-direction correction the Newton solve exists to
+      // make, is exactly this failure mode; reject the insertion outright
+      // (keep the two original, already-correct endpoints, forgoing only
+      // this one segment's extra refinement) rather than splice in a wild
+      // jump that would later self-intersect this curve's own polyline.
+      const double local_span = std::max(ic.points[i].DistanceTo(ic.points[j]), opt.mesh_tolerance * 4);
+      // A second, independent guard against the same failure mode: on a
+      // genuine smooth curve, a segment's own true midpoint - in EITHER
+      // surface's (u, v) chart - never lies outside the bracket its two
+      // endpoints already span (plus a little slack for real curvature,
+      // scaled to that same segment's own span, not some fixed constant
+      // that would be meaningless across wildly different surface
+      // scales/units). A wild jump along a tangent-degenerate direction
+      // routinely fails this even when it happens to still be shorter
+      // than `local_span` above (e.g. jumping backwards a little instead
+      // of forward, or overshooting past the segment's own far endpoint
+      // toward a different nearby true point on the same curve) - this is
+      // NOT a redundant check, it is a real, reproduced tightening (this
+      // exact case: the box-vs-cylinder-wall circle) confirmed to catch
+      // small-amplitude back-and-forth jitter the plain distance cap above
+      // lets through.
+      auto in_bracket = [&](double v, double lo, double hi) {
+        if (lo > hi) std::swap(lo, hi);
+        const double slack = std::max(0.25 * (hi - lo), opt.tolerance * 10);
+        return v >= lo - slack && v <= hi + slack;
+      };
+      const bool bracketed = in_bracket(ua, ic.uv_a[i].x, ic.uv_a[j].x) && in_bracket(va, ic.uv_a[i].y, ic.uv_a[j].y) &&
+                              in_bracket(ub, ic.uv_b[i].x, ic.uv_b[j].x) && in_bracket(vb, ic.uv_b[i].y, ic.uv_b[j].y);
+      if (bracketed && pm.DistanceTo(x) > opt.tolerance && pm.DistanceTo(x) <= local_span &&
+          x.DistanceTo(ic.points[i]) > opt.tolerance * 2 && x.DistanceTo(ic.points[j]) > opt.tolerance * 2) {
         np.push_back(x); na.emplace_back(ua, va); nb.emplace_back(ub, vb);
         inserted = true;
       }

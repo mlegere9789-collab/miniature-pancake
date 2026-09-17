@@ -1662,6 +1662,121 @@ void TestBooleanCombineGeneralBoxBox() {
   }
 }
 
+// Closed finite cylinder, axis along +z from z0 to z1, built via the
+// kernel's own proven CylindricalFace + FromMixedFaces() path - two
+// explicit disk PlanarFace caps welded to the CylindricalFace's own rim via
+// notch_begin/notch_count (see PlanarFace's own doc comment in brep.h),
+// producing a genuinely closed, watertight solid rather than a bare open
+// tube. Mirrors dino8-kernel/tests/scratch_test.cpp's own MakeCylinderZ
+// helper, the fixture this test's own periodicity fix was root-caused and
+// verified against.
+dino8::kernel::Brep MakeCylinderZForBoxCylinderTest(double cx, double cy, double z0, double z1, double r) {
+  using dino8::kernel::Brep;
+  Brep::CylindricalFace cf;
+  cf.frame = ON_Plane(ON_3dPoint(cx, cy, z0), ON_3dVector(1, 0, 0), ON_3dVector(0, 1, 0));
+  cf.radius = r;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = z1 - z0;
+
+  const int n = 128;
+  auto make_cap = [&](double z, bool flip) {
+    Brep::PlanarFace pf;
+    pf.plane = ON_Plane(ON_3dPoint(cx, cy, z), ON_3dVector(0, 0, flip ? -1 : 1));
+    for (int i = 0; i <= n; ++i) {
+      const double a = flip ? -2.0 * ON_PI * i / n : 2.0 * ON_PI * i / n;
+      pf.loop.emplace_back(cx + r * std::cos(a), cy + r * std::sin(a), z);
+    }
+    pf.loop.pop_back();
+    pf.notch_begin = 0;
+    pf.notch_count = static_cast<int>(pf.loop.size());
+    return pf;
+  };
+  Brep::PlanarFace cap0 = make_cap(z0, /*flip=*/true);
+  Brep::PlanarFace cap1 = make_cap(z1, /*flip=*/false);
+  return Brep::FromMixedFaces({cap0, cap1}, {cf});
+}
+
+void TestBooleanCombineGeneralBoxCylinder() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  // The general engine's first PROVEN curved-operand case: a 4x4x2 box
+  // fully pierced by a radius-1 cylinder along its own z-axis, the cylinder
+  // taller than the box on both ends. This is exactly the fixture
+  // boolean_general.cpp's own top-of-file doc comment root-causes and
+  // fixes (three periodicity bugs: a wrap-swept closed intersection loop
+  // was being holed out as an island instead of cut open at the periodic
+  // seam; the seam-cut's own new endpoints didn't sit where
+  // SplitFaceLoop() needed them without desyncing the trim from its own
+  // edge; and FinishCurve()'s adaptive Newton refinement could jump to a
+  // distant, equally-valid point on a curve that is tangent to both
+  // surfaces along its ENTIRE length - the canonical case here, a plane
+  // exactly perpendicular to the cylinder's axis). Closed-form (matching
+  // the existing, already-proven BooleanCombineMixed engine's own result
+  // for this same case): intersection = pi*r^2*box_height; union = box +
+  // cylinder - intersection; difference = box - intersection.
+  const Brep box = Brep::Box(-2, -2, -1, 2, 2, 1);
+  const Brep cyl = MakeCylinderZForBoxCylinderTest(0, 0, -2, 2, 1.0);
+  const double box_h = 2.0, r = 1.0;
+  const double expect_i = ON_PI * r * r * box_h;
+  const double expect_u = 32.0 + 4.0 * ON_PI * r * r - expect_i;
+  const double expect_d = 32.0 - expect_i;
+  // A generous, tessellation-scaled tolerance, same spirit as the existing
+  // BooleanCombineMixed cylinder tests (e.g.
+  // TestBooleanCombineMixedIntersectionMidLengthCrossingSecondGeometry's
+  // own "< 0.05" on a similarly-sized volume) but wider, because this
+  // engine's own edges are DENSE STRAIGHT-SEGMENT POLYLINES approximating
+  // the true intersection curve (a disclosed, pre-existing precision
+  // tradeoff - see boolean_general.h's own doc comment), not the exact
+  // circular arcs BooleanCombineMixed's specialized cylinder path builds -
+  // confirmed by direct measurement to keep shrinking as
+  // TessellateToClosedMesh()'s own division count rises (0.64/0.03/0.55 at
+  // (32, 128) tested here, versus roughly double that at (16, 64)), i.e.
+  // genuine, convergent tessellation error, not a fixed leak.
+  //
+  // Deliberately NOT asserted here, unlike TestBooleanCombineGeneralBoxBox
+  // above: Mesh::IsClosedManifold(). Confirmed by direct measurement (on
+  // BOTH this fixture and, importantly, the box+box case above too) that
+  // BooleanCombineGeneral's own reassembled meshes are not
+  // IsClosedManifold() at any tessellation resolution tried, plain or
+  // Conforming - box+box's own mesh volume still comes out exact despite
+  // this (its axis-aligned geometry apparently cancels out whatever the
+  // mismatch is), so the existing test above never needed to check it.
+  // This is a genuinely separate, pre-existing gap in how far
+  // TessellateToClosedMesh()/TessellateToClosedMeshConforming() reconcile
+  // this engine's own polyline edges across adjacent faces - not
+  // introduced, and not fixed, by this session's periodicity work, and
+  // out of that work's own scope.
+  const double tol = 0.8;
+
+  {
+    const Brep u = BooleanCombineGeneral(box, cyl, BooleanOp::Union);
+    Check(u.raw().IsValid(), "box+cylinder Union is a valid ON_Brep");
+    const Mesh m = u.TessellateToClosedMesh(32, 128);
+    Check(std::abs(m.Volume() - expect_u) < tol,
+          "box+cylinder Union's tessellated volume matches the closed-form "
+          "box + cylinder - intersection to within tessellation tolerance");
+  }
+  {
+    const Brep i = BooleanCombineGeneral(box, cyl, BooleanOp::Intersection);
+    Check(i.raw().IsValid(), "box+cylinder Intersection is a valid ON_Brep");
+    const Mesh m = i.TessellateToClosedMesh(32, 128);
+    Check(std::abs(m.Volume() - expect_i) < tol,
+          "box+cylinder Intersection's tessellated volume matches the "
+          "closed-form pi*r^2*box_height to within tessellation tolerance");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(box, cyl, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "box+cylinder Difference is a valid ON_Brep");
+    const Mesh m = d.TessellateToClosedMesh(32, 128);
+    Check(std::abs(m.Volume() - expect_d) < tol,
+          "box+cylinder Difference's tessellated volume matches the "
+          "closed-form box - intersection to within tessellation tolerance");
+  }
+}
+
 void TestSurfaceGetApproximateSize() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -18583,6 +18698,7 @@ int main() {
   TestSurfaceIsTorus();
   TestSurfaceIntersectSphereGreatCircle();
   TestBooleanCombineGeneralBoxBox();
+  TestBooleanCombineGeneralBoxCylinder();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();

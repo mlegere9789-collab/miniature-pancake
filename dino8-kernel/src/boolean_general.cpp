@@ -90,41 +90,126 @@
 // fragment pair appears where the circle is entirely interior to the
 // flat face), where every one of them previously reported frags=1.
 //
-// REMAINING, SEPARATE, NOT-YET-FIXED GAP found while verifying the above:
-// for this SPECIFIC fixture (a flat cutting plane exactly PERPENDICULAR
-// to the cylinder's own axis, so the plane's cross-section of the wall is
-// the cylinder's ENTIRE circumference, not a transversal arc) the
-// assembled polyline can still self-cross / fold back on itself at a few
-// points, which corrupts the downstream fragment polygon (Difference/
-// Intersection eventually throw "an edge is claimed by 3 or more fragment
-// loops" or NurbsSurface::TessellateGridClippedExact's own "trim_polygon
-// must be simple" check) and leaves the Union volume measurably wrong.
-// Root-caused as far as time allowed: RefineSurfaceSurfacePoint()'s
-// 3-equation/4-unknown Newton system is, for this exact geometry, only
-// weakly damped along the curve's own tangent direction (every point on
-// the circle is an equally valid zero-residual solution), so a seed close
-// to one point on the circle can occasionally converge to an unrelated,
-// distant point on the SAME circle instead of the nearest one - a real,
-// reproduced (not theorized) defect, confirmed via direct seed/refined-
-// point tracing. Two mitigations were tried and kept only where they were
-// a clear, isolated improvement: FinishCurve() (surface_intersect.cpp)
-// now skips its own adaptive-subdivision insertion across a segment that
-// straddles a periodic seam (its raw-(u, v) cubic fit is meaningless
-// there, since it has no notion of wraparound). Two OTHER mitigations
-// (a Newton trust-region step cap, and raising this engine's own
-// min_mesh_divisions) were tried, reverted, and are NOT present in this
-// file: the step cap made an unrelated, pre-existing kernel test hang
-// (never terminating), and the coarser/finer mesh change broke the
-// already-passing sphere+box case instead of fixing the cylinder case.
-// Neither the box+cylinder nor (pre-existing, NOT caused by this
-// increment - confirmed by reproducing it against this file's own
-// unmodified baseline commit) the sphere+box volumes are correct yet.
-// Until this is fixed, BooleanCombineGeneral must not be trusted on any
-// operand pair whose true intersection curve is tangent to, or an
-// isoparametric slice of, one operand's own periodic parameter direction
-// (a plane exactly perpendicular to a cylinder's axis being the
-// canonical case) - only proven correct for planar-only operands
-// (box+box, exact closed-form volumes) so far.
+// FORMERLY-DISCLOSED "REMAINING GAP" ABOVE THIS PARAGRAPH, NOW ALSO FIXED:
+// for the SAME fixture (a flat cutting plane exactly PERPENDICULAR to the
+// cylinder's own axis, so the plane's cross-section of the wall is the
+// cylinder's ENTIRE circumference, not a transversal arc), the assembled
+// polyline could still self-cross / fold back on itself at a few points,
+// which corrupted the downstream fragment polygon (Difference/
+// Intersection threw "an edge is claimed by 3 or more fragment loops" or
+// NurbsSurface::TessellateGridClippedExact's own "trim_polygon must be
+// simple" check) and left the Union volume measurably wrong. Root-caused
+// to THREE further, independent bugs, all specific to a wrap-swept
+// periodic curve, each confirmed by direct before/after tracing:
+//   (d) SplitFaceLoop() (below) had no notion of a "wrap-cut": a 3D-closed
+//       chain that is really a single full sweep of one of a face's own
+//       periodic directions (this exact circle, on the cylinder wall's own
+//       side of the pair) was always treated as an island - holed out of
+//       the untouched fragment plus spun off as its own tiny interior
+//       fragment - rather than as a cut that bisects the wall into the two
+//       bands above/below it. Two circles (this fixture's box top AND
+//       bottom faces both cross the wall) holed the SAME single fragment
+//       twice, producing overlapping, self-intersecting nonsense once
+//       flattened. Fixed: SplitPeriodicWrapChain() detects a closed chain
+//       with exactly one seam crossing (the same signal
+//       surface_intersect.cpp's own SplitAtSeams() already uses) and
+//       re-cuts it into an ordinary open chain whose two new ends land on
+//       the face's own two SEAM sides of its trim boundary (see
+//       FaceBoundaryLoop()'s own doc comment on why a full-sweep periodic
+//       face's own boundary already has both seam sides as distinct
+//       edges), then splices it exactly like any other open chain.
+//   (e) That wrap-cut's own two new ends are ordinary curve samples near
+//       the seam, not points refined to sit exactly on it (up to one mesh
+//       cell's worth of parameter off) - fine for SplitFaceLoop()'s own
+//       splice-tolerance check once (d) also snaps their own (u, v) onto
+//       the exact seam value, but this face's own reconstructed edge/trim
+//       pair then had a genuine 3D gap between where the trim curve's
+//       endpoint evaluates on the surface and where the edge curve's own
+//       endpoint actually sits - exactly what later failed
+//       ON_Brep::IsValid()'s own trim-vs-edge distance check ("Distance
+//       from start of ON_Brep.m_T[...] to 3d edge is 0.12..."). Fixed by
+//       NOT moving the shared point (needed, unchanged, for cross-face
+//       vertex welding against the box's own copy of this same physical
+//       point) at all: a brand-new vertex, genuinely on the seam (exact
+//       (u, v) AND a freshly surface-evaluated 3D point that matches it),
+//       is spliced in one step further out instead, adding one small,
+//       wholly-this-face-only extra facet.
+//   (f) FinishCurve()'s (surface_intersect.cpp) adaptive Newton
+//       subdivision could still jump a segment's own inserted midpoint to
+//       a distant, equally-valid point on this SAME circle instead of the
+//       geometrically nearest one - RefineSurfaceSurfacePoint()'s
+//       3-equation/4-unknown Newton system is only weakly damped along a
+//       curve's own tangent direction (every point on this specific
+//       circle is an equally valid zero-residual solution, since the
+//       cutting plane is exactly perpendicular to the cylinder's axis
+//       everywhere along it), a real, reproduced (not theorized) defect
+//       confirmed via direct seed/refined-point tracing. Fixed with two
+//       independent guards on that one insertion, both scaled to the
+//       segment's own local span rather than any fixed constant: reject
+//       an inserted point farther from the cubic-fit midpoint than the
+//       segment's own chord length, AND reject one whose own (u, v) in
+//       EITHER surface's chart falls outside the bracket its two
+//       endpoints already span (plus modest curvature slack) - the second
+//       guard catches small-amplitude back-and-forth jitter the first,
+//       alone, still let through.
+// A fourth, unrelated bug was found and fixed alongside these: (g)
+// FaceBoundaryLoop() decided how densely to sample each trim EDGE purely
+// from the 2D (u, v) trim curve's own linearity - true for every edge of a
+// periodic surface's own full-sweep trim rectangle, including the two that
+// run ALONG the periodic direction itself (e.g. a cylindrical wall's own
+// full-circle rim at constant height). Those two are NOT straight in 3D;
+// sampling just 2 points for one (the fast path for a genuinely straight
+// edge) collapsed a whole rim circle down to a single chord, which then
+// welded into a degenerate 2-vertex "digon" edge once a kept fragment
+// reused it verbatim - confirmed as the cause of a SEPARATE
+// ON_Brep::IsValid() failure (a stale seam-iso-flag mismatch,
+// "ON_Brep.m_T[...].m_iso = S_iso but matching seam ... != N_iso") on this
+// fixture's own Union result specifically (Intersection/Difference don't
+// keep the wall's own untouched top/bottom rim bands that trip this).
+// Fixed by also checking the edge's own 3D image is genuinely straight
+// (its true midpoint sits on its own end-to-end chord) before trusting the
+// 2-point fast path.
+//
+// VERIFIED (dino8-kernel/tests/test_basic.cpp's own
+// TestBooleanCombineGeneralBoxCylinder, mirroring
+// TestBooleanCombineGeneralBoxBox's own rigor): box+cylinder Union,
+// Intersection, and Difference on the box-fully-pierced-by-a-perpendicular-
+// cylinder fixture are now ALL ON_Brep::IsValid() and tessellate to their
+// exact closed-form volumes within a tessellation-scaled tolerance -
+// BooleanCombineGeneral's first proven curved-operand case, not just a
+// planar-only one.
+//
+// STILL NOT FIXED, confirmed pre-existing and UNRELATED to any of the
+// above (reproduced identically against this file's own unmodified
+// baseline commit, before this session's own changes): sphere+box. Its
+// own intersection curves are genuinely different in kind from every case
+// above - three OPEN arcs (where the box's three coordinate planes cross
+// the sphere) meeting at three shared 3D corners, stitched together by
+// StitchChains(), with NO periodic wrap-cut involved at all (a sphere's
+// own periodic direction, longitude, is never swept end-to-end by any of
+// these arcs) - so none of this session's periodicity fixes apply to it,
+// positively or negatively. Union/Difference measurably corrupt the
+// result (~1032/~32 instead of the hand-derived ~1029/~996) and fail
+// ON_Brep::IsValid(); Intersection is IsValid() but measures ~0.11 instead
+// of the exact (4/3*pi*r^3)/8 ~ 4.19 - a valid but far-too-small closed
+// shape, meaning the 3-arc stitch/corner assembly itself produces the
+// wrong topology for this operand pair, not a numerical-precision issue.
+// Root-causing that is a separate, still-open piece of work.
+//
+// ALSO CONFIRMED, separately, while verifying the above (not introduced,
+// and not fixed, by this session): BooleanCombineGeneral's own
+// reassembled meshes are not Mesh::IsClosedManifold() at ANY
+// TessellateToClosedMesh()/TessellateToClosedMeshConforming() resolution
+// tried, on EITHER the already-proven box+box case or the newly-proven
+// box+cylinder one - box+box's own tessellated volume still comes out
+// exact despite this (its axis-aligned geometry apparently makes whatever
+// the edge-reconciliation mismatch is a wash), which is why
+// TestBooleanCombineGeneralBoxBox never needed to check it and why
+// TestBooleanCombineGeneralBoxCylinder deliberately does not either. This
+// looks like a genuine gap in how far the mesher's own edge-conforming
+// logic extends to this engine's dense-polyline (rather than single
+// analytic curve) edges, separate from - and not blocking - correct
+// volumes; also a separate, still-open piece of work.
 #include "dino8/kernel/boolean_general.h"
 
 #include <algorithm>
@@ -199,7 +284,33 @@ std::vector<UVPt> FaceBoundaryLoop(const ON_Brep& brep, int face_index, int samp
       const ON_Curve* c2 = trim.TrimCurveOf();
       if (!c2) continue;
       const ON_Interval d = trim.Domain();
-      const int n = std::max(2, c2->IsLinear() ? 2 : samples_per_edge);
+      // c2->IsLinear() only says the trim's own 2D (u, v) path is a
+      // straight line - true for every edge of a periodic surface's own
+      // full-sweep trim rectangle, including the two that run ALONG the
+      // periodic direction (e.g. a full-circle rim at constant height on
+      // a cylindrical wall). Those two are NOT straight in 3D at all -
+      // their "linear" 2D path sweeps the ENTIRE periodic range, so its
+      // 3D image is the surface's own full rim circle. Sampling just 2
+      // points for one of these (this function's own fast path for a
+      // genuinely straight edge) collapses that whole circle down to a
+      // single chord, which welds into a degenerate 2-vertex "digon" edge
+      // once a fragment boundary reuses it verbatim (a confirmed defect:
+      // ON_Brep::IsValid() rejects the reconstructed box-vs-cylinder
+      // Union over exactly this, a stale seam-iso-flag mismatch on that
+      // digon's own two half-edges). Guard against it directly: only
+      // trust the 2D linearity test when the 3D image really is straight
+      // too (checked once, cheaply, via the actual midpoint - a genuinely
+      // straight edge's true surface midpoint sits on its own end-to-end
+      // chord; a swept periodic direction's does not, by a wide margin).
+      bool truly_linear = c2->IsLinear();
+      if (truly_linear) {
+        const ON_2dPoint uv0 = c2->PointAt(d.Min()), uv1 = c2->PointAt(d.Max()), uvm = c2->PointAt(d.Mid());
+        const Point3d p0 = s->PointAt(uv0.x, uv0.y), p1 = s->PointAt(uv1.x, uv1.y), pm = s->PointAt(uvm.x, uvm.y);
+        const double chord = p0.DistanceTo(p1);
+        const Point3d mid_of_chord = Point3d(0.5 * (p0.x + p1.x), 0.5 * (p0.y + p1.y), 0.5 * (p0.z + p1.z));
+        truly_linear = pm.DistanceTo(mid_of_chord) <= std::max(1e-6, 1e-6 * chord);
+      }
+      const int n = std::max(2, truly_linear ? 2 : samples_per_edge);
       for (int i = 0; i < n; ++i) {
         const ON_2dPoint uv = c2->PointAt(d.ParameterAt(static_cast<double>(i) / n));
         out.push_back({s->PointAt(uv.x, uv.y), uv});
@@ -371,6 +482,116 @@ std::pair<std::vector<UVPt>, std::vector<UVPt>> SpliceOpenChain(const std::vecto
   std::vector<UVPt> fragB = arcB;  // p1 -> boundary -> p0
   for (size_t idx = 1; idx + 1 < chain.size(); ++idx) fragB.push_back(chain[idx]);
   return {fragA, fragB};
+}
+
+// A 3D-closed chain (front and back coincide) that is really a single FULL
+// SWEEP of one of `s`'s own periodic (u or v) directions - e.g. the circle
+// where a plane exactly perpendicular to a cylinder's axis cuts its
+// periodic wall - is NOT an island to hole out inside the face's trim: in
+// flat (u, v) terms it runs from one side of that direction's domain to
+// the other (every u value is visited exactly once), which is exactly what
+// FaceBoundaryLoop() already represents as the face's own two SEAM edges
+// (see that function's own doc comment: a full-sweep periodic face's trim
+// quad has both seam sides as distinct edges, both being the same real 3D
+// edge). Confirmed root cause of the box-pierced-by-a-perpendicular-
+// cylinder case: treating this loop as a hole put both the "above the cut"
+// and "below the cut" bands of the wall into ONE fragment (the whole
+// boundary, holed out by the two circles) while ALSO spinning each circle
+// off as its own separate degenerate interior fragment - self-intersecting
+// nonsense once flattened, and outright wrong topology (the two bands are
+// obviously not one connected region of the wall). Detected by walking the
+// closed chain's own consecutive (u, v) samples (wrapping once, since the
+// chain repeats its own first point per this file's own closed-chain
+// convention) for a jump exceeding half a periodic direction's domain
+// length - the same signal surface_intersect.cpp's SplitAtSeams() already
+// uses to find a seam crossing. Exactly one such crossing means "single
+// full sweep, cut it open right there"; zero means a genuine island
+// (returns false, left as a closed chain unchanged); more than one is a
+// more exotic case (e.g. wrapping the periodic direction twice) this
+// engine does not attempt to untangle, and is also left as-is (closed,
+// which will fail loudly rather than silently corrupt if it can't be
+// fragmented sanely).
+bool SplitPeriodicWrapChain(const Chain& c, const ON_Surface& s, Chain& out_open) {
+  if (c.size() < 3) return false;
+  // Drop a literal trailing duplicate of the front point (this file's own
+  // convention for a chain built from an already-closed IntersectionCurve)
+  // so seam-jump detection below walks only the curve's own distinct
+  // samples, with the implicit wrap edge (last -> first) checked exactly
+  // once via the modulo index below.
+  Chain pts = c;
+  if (pts.size() >= 2 && (pts.front().p - pts.back().p).Length() <= kWeldTol * 100) pts.pop_back();
+  const size_t n = pts.size();
+  if (n < 3) return false;
+  int crossings = 0;
+  size_t cut_at = 0;
+  int wrap_dir = -1;
+  for (size_t i = 0; i < n; ++i) {
+    const size_t j = (i + 1) % n;
+    for (int dir = 0; dir < 2; ++dir) {
+      if (!s.IsClosed(dir)) continue;
+      const double L = s.Domain(dir).Length();
+      if (L <= 0) continue;
+      const double vi = dir == 0 ? pts[i].uv.x : pts[i].uv.y;
+      const double vj = dir == 0 ? pts[j].uv.x : pts[j].uv.y;
+      if (std::fabs(vi - vj) > 0.5 * L) { ++crossings; cut_at = i; wrap_dir = dir; }
+    }
+  }
+  if (crossings != 1) return false;
+  out_open.clear();
+  out_open.reserve(n);
+  for (size_t k = 0; k < n; ++k) out_open.push_back(pts[(cut_at + 1 + k) % n]);
+  // The two new "ends" (out_open.front()/back(), the pair that straddled
+  // the seam) are ordinary curve samples near the seam, not points
+  // Newton-refined to sit exactly on it - typically off by up to one mesh
+  // cell's worth of parameter (see DivisionsFor() in surface_intersect.cpp),
+  // which is nowhere near SplitFaceLoop()'s own splice tolerance (it
+  // requires an open chain's endpoint to already sit almost exactly on the
+  // fragment boundary it's meant to splice into, since every OTHER open
+  // chain's endpoints really are that precise, being clipped there by
+  // IntersectFaces() itself).
+  //
+  // These two points are ALSO shared, by 3D coincidence, with this SAME
+  // circle's corresponding chain on the OTHER (non-periodic) face of this
+  // pair - e.g. the box's own flat face, which sees this circle as an
+  // ordinary interior island, not a wrap-cut, and so never touches or
+  // moves its own copies of these points at all. Overwriting one side's
+  // (u, v) to sit exactly on the seam WITHOUT moving its own 3D point `p`
+  // to match keeps cross-face welding correct (both sides still agree on
+  // that shared 3D point) but leaves THIS face's own reconstructed
+  // edge/trim pair self-inconsistent - its trim curve's endpoint (u, v)
+  // no longer evaluates back to its edge curve's own endpoint 3D location
+  // (off by a full mesh cell's worth of arc length), which is exactly
+  // what later fails ON_Brep::IsValid()'s own trim-vs-edge distance check.
+  // Confirmed by direct before/after IsValid() text-log tracing on the
+  // box-vs-perpendicular-cylinder fixture.
+  //
+  // Fixed by NOT moving the shared point at all: instead, splice in one
+  // brand-new vertex right at each end, genuinely ON the seam (exact
+  // (u, v) AND a freshly surface-evaluated `p` that matches it exactly,
+  // self-consistent for this face's own trim/edge pair) while leaving the
+  // original near-seam sample in place, one step further into the chain,
+  // still carrying its original, cross-face-shared (u, v)/`p` pair
+  // unchanged. The tiny extra segment this adds (one mesh cell's worth of
+  // arc, wholly within this one face, welded to nothing on the other
+  // side) is a real, if small, extra facet of this face alone - not an
+  // approximation error, since both its own endpoints are exact for THIS
+  // face's own surface.
+  {
+    const double lo = s.Domain(wrap_dir).Min(), hi = s.Domain(wrap_dir).Max();
+    const double fu = wrap_dir == 0 ? out_open.front().uv.x : out_open.front().uv.y;
+    const bool front_is_lo = std::fabs(fu - lo) < std::fabs(fu - hi);
+    auto make_seam_point = [&](const UVPt& near, double snapped) {
+      UVPt sp = near;
+      if (wrap_dir == 0) sp.uv.x = snapped; else sp.uv.y = snapped;
+      sp.p = s.PointAt(sp.uv.x, sp.uv.y);
+      return sp;
+    };
+    const UVPt front_seam = make_seam_point(out_open.front(), front_is_lo ? lo : hi);
+    const UVPt back_seam = make_seam_point(out_open.back(), front_is_lo ? hi : lo);
+    out_open.insert(out_open.begin(), front_seam);
+    out_open.push_back(back_seam);
+  }
+  return true;
 }
 
 // Splits one face's own boundary loop into fragments using every
@@ -700,6 +921,7 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
   // chain's own points are shared verbatim across its own two faces, not
   // independently re-solved).
   const double stitch_tol = std::max(1e-4, opt.tolerance * 20.0);
+  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
 
   // Fragment every face of both operands.
   struct FaceFrags {
@@ -714,13 +936,26 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
       const std::vector<UVPt> boundary = FaceBoundaryLoop(brep, i);
       if (boundary.size() < 3) continue;
       const std::vector<Chain> stitched = StitchChains(std::move(raw[static_cast<size_t>(i)]), stitch_tol);
+      const ON_Surface* face_surface = brep.m_F[i].SurfaceOf();
       std::vector<Chain> closed_chains, open_chains;
       for (const Chain& c : stitched) {
         if ((c.front().p - c.back().p).Length() <= stitch_tol) {
-          closed_chains.push_back(c);
+          Chain wrap_open;
+          if (face_surface && SplitPeriodicWrapChain(c, *face_surface, wrap_open)) {
+            open_chains.push_back(std::move(wrap_open));
+          } else {
+            closed_chains.push_back(c);
+          }
         } else {
           open_chains.push_back(c);
         }
+      }
+      if (debug) {
+        std::fprintf(stderr, "  build_frags face idx=%d boundary=%zu stitched=%zu closed=%zu open=%zu\n", i,
+                     boundary.size(), stitched.size(), closed_chains.size(), open_chains.size());
+        for (const Chain& c : open_chains)
+          std::fprintf(stderr, "    open chain: n=%zu front_uv=(%f,%f) back_uv=(%f,%f)\n", c.size(), c.front().uv.x,
+                       c.front().uv.y, c.back().uv.x, c.back().uv.y);
       }
       FaceFrags ff;
       ff.face_index = i;
@@ -736,7 +971,6 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
 
   // Classify + keep, per operation.
   std::vector<KeptFace> kept;
-  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
   auto process = [&](std::vector<FaceFrags>& frags, const ON_Brep& other, bool a_side) {
     for (FaceFrags& ff : frags) {
       if (debug) std::fprintf(stderr, "face(%s) idx=%d frags=%zu\n", a_side ? "A" : "B", ff.face_index, ff.frags.size());
