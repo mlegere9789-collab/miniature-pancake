@@ -810,15 +810,127 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
   for (size_t i = 0; i < ic.points.size(); ++i) ic.max_error = std::max(ic.max_error, a.PointAt(ic.uv_a[i].x, ic.uv_a[i].y).DistanceTo(b.PointAt(ic.uv_b[i].x, ic.uv_b[i].y)));
 }
 
+// Linear (u, v) interpolation between two consecutive curve samples in one
+// surface's own chart, UNWRAPPED across a periodic seam jump (a closed
+// direction whose two values differ by more than half its domain length is
+// interpolated through the seam, not through the middle of the domain -
+// see FinishCurve's is_seam_segment on why raw interpolation there is
+// bogus) and wrapped back into the domain afterwards.
+ON_2dPoint LerpUV(const ON_Surface& s, const ON_2dPoint& p, const ON_2dPoint& q, double t) {
+  ON_2dPoint r;
+  for (int dir = 0; dir < 2; ++dir) {
+    double pv = p[dir], qv = q[dir];
+    const ON_Interval d = s.Domain(dir);
+    const double L = d.Length();
+    if (s.IsClosed(dir) && L > 0 && std::fabs(pv - qv) > 0.5 * L) qv += pv > qv ? L : -L;
+    double v = pv + (qv - pv) * t;
+    if (s.IsClosed(dir) && L > 0) {
+      if (v < d.Min()) v += L;
+      if (v > d.Max()) v -= L;
+    }
+    r[dir] = Clamp(v, d.Min(), d.Max());
+  }
+  return r;
+}
+
+// Which surface/direction jumps across a periodic seam between samples i
+// and j of `c` (the same signal SplitAtSeams's own `jumps` uses). Returns
+// false when none does.
+bool SeamJumpDir(const IntersectionCurve& c, size_t i, size_t j, const ON_Surface& a, const ON_Surface& b, bool& on_a, int& dir) {
+  for (int d = 0; d < 2; ++d) {
+    if (a.IsClosed(d) && std::fabs(c.uv_a[i][d] - c.uv_a[j][d]) > 0.5 * a.Domain(d).Length()) { on_a = true; dir = d; return true; }
+    if (b.IsClosed(d) && std::fabs(c.uv_b[i][d] - c.uv_b[j][d]) > 0.5 * b.Domain(d).Length()) { on_a = false; dir = d; return true; }
+  }
+  return false;
+}
+
+// The point where the curve crosses a periodic seam between samples i and
+// j (which straddle it: `on_a`/`dir` from SeamJumpDir). The seam parameter
+// is PINNED at the seam and the other three parameters Newton-solved so
+// the result sits exactly on the seam AND on the true curve. Two (u, v)
+// copies come back for each surface: [0] carries the seam value on
+// sample i's side of the domain (for the piece ending at i), [1] the seam
+// value on sample j's side (for the piece starting at j); the 3D point is
+// the same for both, so the two pieces weld to one shared vertex.
+bool SeamCrossing(const IntersectionCurve& c, size_t i, size_t j, const ON_Surface& a, const ON_Surface& b, bool on_a, int dir, const IntersectOptions& opt, Point3d& p, ON_2dPoint uva[2], ON_2dPoint uvb[2]) {
+  const ON_Surface& s = on_a ? a : b;
+  const ON_Interval d = s.Domain(dir);
+  const double L = d.Length();
+  if (L <= 0) return false;
+  const double vi = on_a ? c.uv_a[i][dir] : c.uv_b[i][dir];
+  const double vj = on_a ? c.uv_a[j][dir] : c.uv_b[j][dir];
+  const double vj_un = vj + (vi > vj ? L : -L);
+  const double seam_i = vi > vj ? d.Max() : d.Min();
+  const double seam_j = vi > vj ? d.Min() : d.Max();
+  const double denom = vj_un - vi;
+  const double t = std::fabs(denom) > 1e-300 ? Clamp((seam_i - vi) / denom, 0, 1) : 0;
+  const ON_2dPoint sa = LerpUV(a, c.uv_a[i], c.uv_a[j], t), sb = LerpUV(b, c.uv_b[i], c.uv_b[j], t);
+  double prm[4] = {sa.x, sa.y, sb.x, sb.y};
+  const int pinned = (on_a ? 0 : 2) + dir;
+  prm[pinned] = seam_i;
+  // Three free parameters, three equations (S_a - S_b == 0), seam pinned.
+  std::vector<double> x, lo, hi;
+  const ON_Surface* srf[4] = {&a, &a, &b, &b};
+  for (int k = 0; k < 4; ++k) {
+    if (k == pinned) continue;
+    x.push_back(prm[k]);
+    lo.push_back(srf[k]->Domain(k % 2).Min());
+    hi.push_back(srf[k]->Domain(k % 2).Max());
+  }
+  Residual res = [&](const std::vector<double>& q) {
+    double full[4];
+    int m = 0;
+    for (int k = 0; k < 4; ++k) full[k] = k == pinned ? seam_i : q[static_cast<size_t>(m++)];
+    const Point3d pa = a.PointAt(full[0], full[1]), pb = b.PointAt(full[2], full[3]);
+    return std::vector<double>{pa.x - pb.x, pa.y - pb.y, pa.z - pb.z};
+  };
+  if (!NewtonSolve(res, x, lo, hi, opt.tolerance, 40)) return false;
+  int m = 0;
+  for (int k = 0; k < 4; ++k) if (k != pinned) prm[k] = x[static_cast<size_t>(m++)];
+  p = a.PointAt(prm[0], prm[1]);
+  // Must still be a point of THIS segment, not a distant solution.
+  const double span = std::max(c.points[i].DistanceTo(c.points[j]), opt.tolerance * 10);
+  if (p.DistanceTo(c.points[i]) > 2 * span || p.DistanceTo(c.points[j]) > 2 * span) return false;
+  // A non-pinned closed direction whose solved value landed exactly on
+  // its own domain end is re-expressed on whichever end the neighbouring
+  // sample is on, so the pieces stay jump-free there.
+  auto side_of = [&](const ON_Surface& srf2, int d2, double v, double ref) {
+    const ON_Interval dd = srf2.Domain(d2);
+    if (!srf2.IsClosed(d2) || dd.Length() <= 0) return v;
+    const double eps = 1e-9 * dd.Length();
+    if (v <= dd.Min() + eps && std::fabs(ref - dd.Max()) < std::fabs(ref - dd.Min())) return dd.Max();
+    if (v >= dd.Max() - eps && std::fabs(ref - dd.Min()) < std::fabs(ref - dd.Max())) return dd.Min();
+    return v;
+  };
+  for (int copy = 0; copy < 2; ++copy) {
+    const size_t ref_idx = copy == 0 ? i : j;
+    double out4[4];
+    for (int k = 0; k < 4; ++k) {
+      if (k == pinned) { out4[k] = copy == 0 ? seam_i : seam_j; continue; }
+      const double ref = (k < 2 ? c.uv_a[ref_idx] : c.uv_b[ref_idx])[k % 2];
+      out4[k] = side_of(*srf[k], k % 2, prm[k], ref);
+    }
+    uva[copy] = ON_2dPoint(out4[0], out4[1]);
+    uvb[copy] = ON_2dPoint(out4[2], out4[3]);
+  }
+  return true;
+}
+
 // Splits a polyline where a closed surface direction's parameter wraps.
+// Each cut inserts the exact seam crossing (SeamCrossing) as the LAST
+// point of the piece before it and the FIRST point of the piece after it,
+// so both halves end exactly on the seam - previously each half simply
+// stopped at its own last sample, one mesh step short of the seam (the
+// single seam-column sample belonged to only one of the two), leaving one
+// "interior" endpoint per piece that boolean_general.cpp's SplitFaceLoop
+// then rightly refused to splice (confirmed on two overlapping spheres:
+// neither sphere was ever split at all).
 void SplitAtSeams(std::vector<IntersectionCurve>& curves, const ON_Surface& a, const ON_Surface& b, const IntersectOptions& opt) {
   std::vector<IntersectionCurve> out;
   auto jumps = [&](const IntersectionCurve& c, size_t i, size_t j) {
-    for (int dir = 0; dir < 2; ++dir) {
-      if (a.IsClosed(dir) && std::fabs(c.uv_a[i][dir] - c.uv_a[j][dir]) > 0.5 * a.Domain(dir).Length()) return true;
-      if (b.IsClosed(dir) && std::fabs(c.uv_b[i][dir] - c.uv_b[j][dir]) > 0.5 * b.Domain(dir).Length()) return true;
-    }
-    return false;
+    bool on_a;
+    int dir;
+    return SeamJumpDir(c, i, j, a, b, on_a, dir);
   };
   for (IntersectionCurve& c : curves) {
     const size_t n = c.points.size();
@@ -868,13 +980,45 @@ void SplitAtSeams(std::vector<IntersectionCurve>& curves, const ON_Surface& a, c
       std::rotate(idx.begin(), idx.begin() + static_cast<long>(start), idx.end());
     }
     IntersectionCurve cur;
+    const size_t first_out = out.size();
+    // Cuts the running piece between samples `prev` and `i` (which straddle
+    // a seam), giving both sides the exact seam point.
+    auto cut = [&](size_t prev, size_t i, IntersectionCurve& before, IntersectionCurve& after) {
+      bool on_a = true;
+      int dir = 0;
+      Point3d p;
+      ON_2dPoint xa[2], xb[2];
+      if (!SeamJumpDir(c, prev, i, a, b, on_a, dir) || !SeamCrossing(c, prev, i, a, b, on_a, dir, opt, p, xa, xb)) return;
+      if (!before.points.empty() && before.points.back().DistanceTo(p) > opt.tolerance) {
+        before.points.push_back(p); before.uv_a.push_back(xa[0]); before.uv_b.push_back(xb[0]);
+      }
+      if (c.points[i].DistanceTo(p) > opt.tolerance) {
+        after.points.insert(after.points.begin(), p);
+        after.uv_a.insert(after.uv_a.begin(), xa[1]);
+        after.uv_b.insert(after.uv_b.begin(), xb[1]);
+      }
+    };
     for (size_t k = 0; k < n; ++k) {
       const size_t i = idx[k];
       if (k > 0 && jumps(c, idx[k - 1], i)) {
+        IntersectionCurve next;
+        cut(idx[k - 1], i, cur, next);
         if (cur.points.size() >= 2) out.push_back(cur);
-        cur = IntersectionCurve();
+        cur = std::move(next);
       }
       cur.points.push_back(c.points[i]); cur.uv_a.push_back(c.uv_a[i]); cur.uv_b.push_back(c.uv_b[i]);
+    }
+    // A closed curve was rotated to start right after a seam crossing, so
+    // its wraparound edge (last sample -> first sample) is always one too.
+    if (c.closed && n >= 2 && jumps(c, idx[n - 1], idx[0])) {
+      IntersectionCurve head;
+      cut(idx[n - 1], idx[0], cur, head);
+      IntersectionCurve& first = out.size() > first_out ? out[first_out] : cur;
+      if (!head.points.empty() && (first.points.empty() || first.points.front().DistanceTo(head.points[0]) > opt.tolerance)) {
+        first.points.insert(first.points.begin(), head.points[0]);
+        first.uv_a.insert(first.uv_a.begin(), head.uv_a[0]);
+        first.uv_b.insert(first.uv_b.begin(), head.uv_b[0]);
+      }
     }
     if (cur.points.size() >= 2) out.push_back(cur);
   }
@@ -897,6 +1041,42 @@ void ThinPoints(IntersectionCurve& c, double min_gap, size_t max_points) {
     np.push_back(c.points[i]); na.push_back(c.uv_a[i]); nb.push_back(c.uv_b[i]);
   }
   if (np.size() >= 2) { c.points = np; c.uv_a = na; c.uv_b = nb; }
+}
+
+// The point where the curve leaves the trimmed region of face_a/face_b
+// between sample `in_idx` (inside both trims) and sample `out_idx`
+// (outside at least one): bisection on the segment's own linear (u, v)
+// interpolation (LerpUV, both charts), every candidate Newton-refined onto
+// the true curve (RefineSurfaceSurfacePoint) BEFORE FaceContainsUV()
+// classifies it, so the result is a genuine curve point sitting on the
+// trim polygon to bisection precision, consistent in both charts. Returns
+// false when no such point exists beyond the inside sample itself.
+bool TrimCrossing(const IntersectionCurve& c, size_t in_idx, size_t out_idx, const ON_BrepFace* face_a, const ON_Surface& a, const ON_BrepFace* face_b, const ON_Surface& b, const IntersectOptions& opt, Point3d& p, ON_2dPoint& uva, ON_2dPoint& uvb) {
+  const Point3d& p0 = c.points[in_idx];
+  const Point3d& p1 = c.points[out_idx];
+  const double span = std::max(p0.DistanceTo(p1), opt.tolerance * 10);
+  auto inside_at = [&](double t, Point3d& P, ON_2dPoint& A, ON_2dPoint& B) {
+    const ON_2dPoint sa = LerpUV(a, c.uv_a[in_idx], c.uv_a[out_idx], t), sb = LerpUV(b, c.uv_b[in_idx], c.uv_b[out_idx], t);
+    double ua = sa.x, va = sa.y, ub = sb.x, vb = sb.y;
+    if (!RefineSurfaceSurfacePoint(a, b, ua, va, ub, vb, opt.tolerance)) return false;
+    P = a.PointAt(ua, va);
+    const Point3d chord = p0 + (p1 - p0) * t;
+    if (P.DistanceTo(chord) > 2 * span) return false;  // wandered to a distant solution
+    A = ON_2dPoint(ua, va); B = ON_2dPoint(ub, vb);
+    if (face_a && !FaceContainsUV(*face_a, ua, va)) return false;
+    if (face_b && !FaceContainsUV(*face_b, ub, vb)) return false;
+    return true;
+  };
+  double lo = 0, hi = 1;
+  bool found = false;
+  for (int it = 0; it < 60 && hi - lo > 1e-12; ++it) {
+    const double mid = 0.5 * (lo + hi);
+    Point3d P;
+    ON_2dPoint A, B;
+    if (inside_at(mid, P, A, B)) { lo = mid; p = P; uva = A; uvb = B; found = true; }
+    else hi = mid;
+  }
+  return found;
 }
 
 }  // namespace
@@ -955,20 +1135,49 @@ std::vector<IntersectionCurve> IntersectFaces(const ON_BrepFace* face_a, const O
       if (face_b && !FaceContainsUV(*face_b, c.uv_b[i].x, c.uv_b[i].y)) in[i] = 0;
     }
     if (std::all_of(in.begin(), in.end(), [](char v) { return v == 1; })) { out.push_back(std::move(c)); continue; }
-    // Runs of inside points (a closed curve is opened at the first outside point).
+    // Runs of inside points (a closed curve is opened at the first outside
+    // point). Every in/out transition - however many a curve has, in
+    // either direction, including a closed curve's own wraparound edge -
+    // gets the exact trim-boundary crossing (TrimCrossing) as the run's
+    // own endpoint. Merely DROPPING the outside samples, as this used to,
+    // left every clipped run one mesh step short of the trim boundary, so
+    // its endpoint never met the neighbouring face-pair's own piece (which
+    // starts exactly on that boundary, where the opposing face's own trim
+    // rectangle clamps it) - the confirmed root cause of every
+    // FromPlanarFaces/FromMixedFaces operand failing where Box()/Sphere()
+    // passed (see boolean_general.cpp's own doc comment).
     size_t start = 0;
     if (c.closed) { while (start < n && in[start]) ++start; }
     IntersectionCurve cur;
+    auto add = [&](const Point3d& p, const ON_2dPoint& ua, const ON_2dPoint& ub) {
+      if (!cur.points.empty() && cur.points.back().DistanceTo(p) <= opt.tolerance) return;
+      cur.points.push_back(p); cur.uv_a.push_back(ua); cur.uv_b.push_back(ub);
+    };
+    auto add_crossing = [&](size_t in_idx, size_t out_idx) {
+      Point3d p;
+      ON_2dPoint ua, ub;
+      if (TrimCrossing(c, in_idx, out_idx, face_a, a, face_b, b, opt, p, ua, ub)) add(p, ua, ub);
+    };
+    auto flush = [&]() {
+      if (cur.points.size() >= 2) { FinishCurve(cur, a, b, opt); out.push_back(cur); }
+      cur = IntersectionCurve();
+    };
+    size_t prev = n;
     for (size_t k = 0; k < n; ++k) {
       const size_t i = (start + k) % n;
-      if (!in[i]) {
-        if (cur.points.size() >= 2) { FinishCurve(cur, a, b, opt); out.push_back(cur); }
-        cur = IntersectionCurve();
-        continue;
+      if (in[i]) {
+        if (prev < n && !in[prev]) add_crossing(i, prev);  // entering: crossing first
+        add(c.points[i], c.uv_a[i], c.uv_b[i]);
+      } else {
+        if (prev < n && in[prev]) add_crossing(prev, i);  // leaving: crossing last
+        flush();
       }
-      cur.points.push_back(c.points[i]); cur.uv_a.push_back(c.uv_a[i]); cur.uv_b.push_back(c.uv_b[i]);
+      prev = i;
     }
-    if (cur.points.size() >= 2) { FinishCurve(cur, a, b, opt); out.push_back(cur); }
+    // A closed curve's walk ends one step before `start` (outside) - that
+    // wraparound edge is a leaving transition too if the last sample is in.
+    if (c.closed && prev < n && in[prev] && !in[start]) add_crossing(prev, start);
+    flush();
   }
   return out;
 }
