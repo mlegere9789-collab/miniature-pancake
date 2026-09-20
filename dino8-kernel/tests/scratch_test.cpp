@@ -1,5 +1,10 @@
 #include <cstdio>
 #include <cmath>
+#include <algorithm>
+#include <map>
+#include <set>
+#include <string>
+#include <utility>
 #include "dino8/kernel/boolean_general.h"
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep.h"
@@ -7,6 +12,54 @@
 #include "dino8/kernel/surface.h"
 
 using namespace dino8::kernel;
+
+// Diagnostic: report IsClosedManifold(), boundary-edge count, non-manifold
+// (3+ face) edge count, and print up to a handful of the offending edges'
+// own 3D positions plus which Brep edge (by index, matched via nearest
+// midpoint) they sit closest to - to confirm/refute the "dense polyline
+// edge, adjacent faces sample it differently" T-junction hypothesis.
+static void DiagnoseManifold(const char* label, const Brep& brep, const Mesh& mesh) {
+  const ON_Mesh& m = mesh.raw();
+  std::map<std::pair<int, int>, int> undirected_count;
+  for (int i = 0; i < m.m_F.Count(); ++i) {
+    const ON_MeshFace& f = m.m_F[i];
+    auto visit = [&](int a, int b) { ++undirected_count[std::minmax(a, b)]; };
+    visit(f.vi[0], f.vi[1]);
+    visit(f.vi[1], f.vi[2]);
+    if (f.IsQuad()) {
+      visit(f.vi[2], f.vi[3]);
+      visit(f.vi[3], f.vi[0]);
+    } else {
+      visit(f.vi[2], f.vi[0]);
+    }
+  }
+  int boundary = 0, nonmanifold = 0;
+  int printed_boundary = 0, printed_nonmanifold = 0;
+  for (const auto& [edge, count] : undirected_count) {
+    if (count == 1) {
+      ++boundary;
+      if (printed_boundary < 5) {
+        const ON_3fPoint& a = m.m_V[edge.first];
+        const ON_3fPoint& b = m.m_V[edge.second];
+        printf("  [%s] BOUNDARY edge v%d-v%d  (%.6f,%.6f,%.6f)-(%.6f,%.6f,%.6f)\n", label,
+               edge.first, edge.second, a.x, a.y, a.z, b.x, b.y, b.z);
+        ++printed_boundary;
+      }
+    } else if (count > 2) {
+      ++nonmanifold;
+      if (printed_nonmanifold < 5) {
+        const ON_3fPoint& a = m.m_V[edge.first];
+        const ON_3fPoint& b = m.m_V[edge.second];
+        printf("  [%s] NONMANIFOLD(%d) edge v%d-v%d  (%.6f,%.6f,%.6f)-(%.6f,%.6f,%.6f)\n", label,
+               count, edge.first, edge.second, a.x, a.y, a.z, b.x, b.y, b.z);
+        ++printed_nonmanifold;
+      }
+    }
+  }
+  printf("[%s] IsClosedManifold=%d boundary_edges=%d nonmanifold_edges=%d (total undirected edges=%zu) faces=%d verts=%d\n",
+         label, (int)mesh.IsClosedManifold(), boundary, nonmanifold, undirected_count.size(),
+         m.m_F.Count(), m.m_V.Count());
+}
 
 // Closed finite cylinder, axis along +z from z0 to z1, built via the
 // kernel's own proven CylindricalFace + FromMixedFaces() path. A bare
@@ -66,6 +119,12 @@ int main() {
       double vol = m.Volume();
       bool valid = r.raw().IsValid();
       printf("box+box %s: faces=%d volume=%f valid=%d\n", name, r.FaceCount(), vol, (int)valid);
+      DiagnoseManifold((std::string("box+box ") + name).c_str(), r, m);
+      Mesh mc = r.TessellateToClosedMeshConforming(8, 8);
+      DiagnoseManifold((std::string("box+box(conforming) ") + name).c_str(), r, mc);
+      Mesh mf = TessellateGeneralBooleanClosedMesh(r, 8, 8);
+      printf("box+box %s FIXED volume=%f\n", name, mf.Volume());
+      DiagnoseManifold((std::string("box+box(FIXED) ") + name).c_str(), r, mf);
     } catch (const std::exception& e) {
       printf("box+box %s: EXCEPTION %s\n", name, e.what());
     }
@@ -95,6 +154,12 @@ int main() {
         double vol = m.Volume();
         bool valid = r.raw().IsValid();
         printf("box+cylinder %s: faces=%d volume=%f (expect %f) valid=%d\n", name, r.FaceCount(), vol, expect, (int)valid);
+        DiagnoseManifold((std::string("box+cylinder ") + name).c_str(), r, m);
+        Mesh mc = r.TessellateToClosedMeshConforming(8, 32);
+        DiagnoseManifold((std::string("box+cylinder(conforming) ") + name).c_str(), r, mc);
+        Mesh mf = TessellateGeneralBooleanClosedMesh(r, 8, 32);
+        printf("box+cylinder %s FIXED volume=%f\n", name, mf.Volume());
+        DiagnoseManifold((std::string("box+cylinder(FIXED) ") + name).c_str(), r, mf);
       } catch (const std::exception& e) {
         printf("box+cylinder %s: EXCEPTION %s\n", name, e.what());
       }
@@ -124,6 +189,14 @@ int main() {
           printf("sphere+box %s: faces=%d volume=%f (expect %f) valid=%d\n", name, r2.FaceCount(), vol, expect_i, (int)valid);
         } else {
           printf("sphere+box %s: faces=%d volume=%f valid=%d\n", name, r2.FaceCount(), vol, (int)valid);
+        }
+        DiagnoseManifold((std::string("sphere+box ") + name).c_str(), r2, m);
+        {
+          Mesh mc = r2.TessellateToClosedMeshConforming(16, 32);
+          DiagnoseManifold((std::string("sphere+box(conforming) ") + name).c_str(), r2, mc);
+          Mesh mf = TessellateGeneralBooleanClosedMesh(r2, 16, 32);
+          printf("sphere+box %s FIXED volume=%f\n", name, mf.Volume());
+          DiagnoseManifold((std::string("sphere+box(FIXED) ") + name).c_str(), r2, mf);
         }
       } catch (const std::exception& e) {
         printf("sphere+box %s: EXCEPTION %s\n", name, e.what());

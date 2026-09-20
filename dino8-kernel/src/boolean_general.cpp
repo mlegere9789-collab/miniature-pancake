@@ -266,12 +266,15 @@
 #include "dino8/kernel/boolean_general.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <stdexcept>
 #include <unordered_map>
+#include <vector>
 
 #include "dino8/kernel/surface_intersect.h"
 
@@ -1557,6 +1560,279 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
   brep.SetTrimIsoFlags();
   brep.SetTolerancesBoxesAndFlags(/*bLazy=*/true);
   return result;
+}
+
+// --- TessellateGeneralBooleanClosedMesh(): T-junction stitching --------
+//
+// ROOT CAUSE (measured directly - see tests/scratch_test.cpp's own
+// DiagnoseManifold() dump, run on box+box/box+cylinder/sphere+box): this
+// file's own edges ARE literal shared ON_BrepEdge objects between the two
+// fragments on either side of a cut (confirmed - BuildLoop() above keys
+// edges by welded-vertex-id pair and throws if a third loop ever claims
+// one), so the *topology* is already correctly shared. The mismatch is
+// introduced one step later, purely in TESSELLATION: Brep::Tessellate()
+// resolves each face's own trim polygon (brep.cpp's ResolveFace(), via
+// SampleLoop() - which, for this engine's straight polyline trims,
+// correctly reproduces every polyline vertex exactly, one per trim) and
+// then hands it to NurbsSurface::TessellateGridClippedExact(), which grids
+// each face's OWN (u, v) domain independently and clips each grid cell
+// against that polygon - inserting a NEW boundary point wherever a grid
+// line crosses the polygon boundary. Two faces sharing one polyline edge
+// almost never have the same (u, v) domain/grid orientation (a box's top
+// face and side face, say, or a cylinder wall's own periodic u versus a
+// box face's planar u), so their two independently-computed sets of
+// grid-crossing points along the SAME physical 3D edge disagree - one side
+// gets an extra vertex partway along a segment the other side leaves
+// whole, a classic T-junction, even though the edge's own true endpoints
+// (and every original polyline sample) match exactly on both sides.
+// Confirmed the same way on the fully-planar box+box case as on the
+// curved box+cylinder/sphere+box ones, so this is not a curvature-specific
+// gap; it is generic to any two independently-parameterized exact-clip
+// faces meeting along this engine's own dense polyline boundary.
+//
+// FIX, entirely additive and confined to this file: tessellate exactly as
+// Brep::Tessellate() already does (that function itself, and everything it
+// calls in brep.cpp/surface.cpp, is untouched - BooleanCombineMixed's own
+// tessellation is bit-for-bit unaffected), then, before welding, patch
+// every face's own T-junctions by inserting the other side's extra
+// boundary vertex into the coarser side's boundary edge - splitting the
+// one triangle that owns that edge into a fan through the inserted
+// point(s), preserving the original triangle's winding. Repeated to a
+// fixed pass limit so a vertex inserted this pass can itself close a
+// second, rarer chained mismatch next pass. Finally, degenerate
+// (repeated-vertex, zero-area) triangles - a separate, pre-existing
+// grid-clip artifact near a surface's own singular point (e.g. the exact
+// pole of a trimmed sphere octant) that otherwise leaves spurious
+// zero-length "edges" behind even after the T-junction pass - are dropped.
+namespace {
+
+struct MutFace {
+  std::vector<Point3d> v;
+  std::vector<std::array<int, 3>> f;
+};
+
+MutFace ToMutFace(const Mesh& m) {
+  MutFace out;
+  const ON_Mesh& raw = m.raw();
+  out.v.reserve(static_cast<size_t>(raw.m_V.Count()));
+  for (int i = 0; i < raw.m_V.Count(); ++i) {
+    const ON_3fPoint& p = raw.m_V[i];
+    out.v.emplace_back(static_cast<double>(p.x), static_cast<double>(p.y), static_cast<double>(p.z));
+  }
+  out.f.reserve(static_cast<size_t>(raw.m_F.Count()));
+  for (int i = 0; i < raw.m_F.Count(); ++i) {
+    const ON_MeshFace& mf = raw.m_F[i];
+    out.f.push_back({mf.vi[0], mf.vi[1], mf.vi[2]});
+    if (mf.IsQuad()) out.f.push_back({mf.vi[0], mf.vi[2], mf.vi[3]});
+  }
+  return out;
+}
+
+Mesh FromMutFace(const MutFace& m) {
+  Mesh out;
+  ON_Mesh& raw = out.raw();
+  for (const Point3d& p : m.v) {
+    raw.m_V.Append(ON_3fPoint(static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)));
+  }
+  for (const std::array<int, 3>& t : m.f) {
+    ON_MeshFace mf;
+    mf.vi[0] = t[0];
+    mf.vi[1] = t[1];
+    mf.vi[2] = t[2];
+    mf.vi[3] = t[2];
+    raw.m_F.Append(mf);
+  }
+  return out;
+}
+
+// Whether zero-area triangle `t` (a repeated-vertex or truly collinear
+// degenerate produced by grid-clipping right at a surface's own singular
+// point) should be dropped.
+bool IsDegenerateTriangle(const MutFace& mf, const std::array<int, 3>& t) {
+  if (t[0] == t[1] || t[1] == t[2] || t[2] == t[0]) return true;
+  const Point3d& a = mf.v[static_cast<size_t>(t[0])];
+  const Point3d& b = mf.v[static_cast<size_t>(t[1])];
+  const Point3d& c = mf.v[static_cast<size_t>(t[2])];
+  const Vector3d ab(b.x - a.x, b.y - a.y, b.z - a.z);
+  const Vector3d ac(c.x - a.x, c.y - a.y, c.z - a.z);
+  const Vector3d cross(ab.y * ac.z - ab.z * ac.y, ab.z * ac.x - ab.x * ac.z, ab.x * ac.y - ab.y * ac.x);
+  const double area2 = cross.x * cross.x + cross.y * cross.y + cross.z * cross.z;
+  return area2 < 1e-20;
+}
+
+// True, with `t_out` set, when `p` sits strictly between `a` and `b` on
+// the segment they span (excluding the endpoints themselves - an
+// already-shared vertex needs no patching).
+bool PointStrictlyOnSegment(const Point3d& a, const Point3d& b, const Point3d& p, double tol, double& t_out) {
+  const double abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
+  const double len2 = abx * abx + aby * aby + abz * abz;
+  const double len = std::sqrt(len2);
+  if (len < tol) return false;
+  // Tolerance scaled to THIS segment's own length: a curved face's own
+  // grid-inserted point on what is (for this engine's own straight-edge
+  // faces) a genuinely straight 3D line can deviate from that line by a
+  // small "bulge" proportional to the segment's own length (the surface's
+  // curved (u, v) chart evaluated along a straight-in-UV line isn't
+  // straight in 3D - see this function's own caller's doc comment), not
+  // a fixed absolute amount - so the perpendicular-distance check below
+  // scales with segment length while the along-segment check stays
+  // absolute (`tol`), keeping this from ever matching an unrelated,
+  // merely-nearby point on a long segment.
+  const double perp_tol = std::max(tol, len * 5e-3);
+  const double apx = p.x - a.x, apy = p.y - a.y, apz = p.z - a.z;
+  const double t = (apx * abx + apy * aby + apz * abz) / len2;
+  const double eps_t = tol / len;
+  if (t <= eps_t || t >= 1.0 - eps_t) return false;
+  const double px = a.x + abx * t, py = a.y + aby * t, pz = a.z + abz * t;
+  const double dx = p.x - px, dy = p.y - py, dz = p.z - pz;
+  if (dx * dx + dy * dy + dz * dz > perp_tol * perp_tol) return false;
+  t_out = t;
+  return true;
+}
+
+// One stitching pass over every face's own boundary edges. Returns the
+// number of edges patched (0 => converged, nothing left to do).
+int StitchTJunctionsOnce(std::vector<MutFace>& faces, double tol) {
+  int patched = 0;
+  for (size_t fi = 0; fi < faces.size(); ++fi) {
+    MutFace& mf = faces[fi];
+    // This face's own boundary edges: a directed edge whose reverse
+    // doesn't also appear among this SAME face's own triangles.
+    std::map<std::pair<int, int>, int> directed_owner;  // (a,b) -> triangle index
+    for (size_t ti = 0; ti < mf.f.size(); ++ti) {
+      const std::array<int, 3>& t = mf.f[ti];
+      directed_owner[{t[0], t[1]}] = static_cast<int>(ti);
+      directed_owner[{t[1], t[2]}] = static_cast<int>(ti);
+      directed_owner[{t[2], t[0]}] = static_cast<int>(ti);
+    }
+    std::vector<std::pair<std::pair<int, int>, int>> boundary;  // ((a,b), tri)
+    for (const auto& [edge, tri] : directed_owner) {
+      if (directed_owner.count({edge.second, edge.first}) == 0) {
+        boundary.emplace_back(edge, tri);
+      }
+    }
+    if (boundary.empty()) continue;
+
+    // Triangles this pass replaces, and the fans that replace them -
+    // applied once, after scanning every boundary edge of this face, so
+    // triangle indices found above stay valid throughout the scan.
+    std::vector<bool> removed(mf.f.size(), false);
+    std::vector<std::array<int, 3>> additions;
+
+    for (const auto& [edge, tri_idx] : boundary) {
+      if (removed[static_cast<size_t>(tri_idx)]) continue;  // already replaced this pass
+      const int a_idx = edge.first, b_idx = edge.second;
+      const Point3d& a = mf.v[static_cast<size_t>(a_idx)];
+      const Point3d& b = mf.v[static_cast<size_t>(b_idx)];
+
+      // Candidate extra points: every OTHER face's own vertex (a
+      // T-junction is always introduced by a DIFFERENT face's denser
+      // sampling of this same shared physical edge - this face's own
+      // interior vertices are never candidates for its own boundary).
+      std::vector<std::pair<double, Point3d>> hits;  // (t along a->b, point)
+      for (size_t gi = 0; gi < faces.size(); ++gi) {
+        if (gi == fi) continue;
+        for (const Point3d& p : faces[gi].v) {
+          double t;
+          if (PointStrictlyOnSegment(a, b, p, tol, t)) hits.emplace_back(t, p);
+        }
+      }
+      if (hits.empty()) continue;
+      std::sort(hits.begin(), hits.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+      // De-dup near-identical t values (the same physical point found via
+      // more than one other face, or two other faces sharing that exact
+      // vertex themselves).
+      std::vector<Point3d> chain;
+      chain.push_back(a);
+      for (const auto& [t, p] : hits) {
+        if (!chain.empty()) {
+          const Point3d& last = chain.back();
+          const double dx = p.x - last.x, dy = p.y - last.y, dz = p.z - last.z;
+          if (dx * dx + dy * dy + dz * dz < tol * tol) continue;
+        }
+        chain.push_back(p);
+      }
+      chain.push_back(b);
+      if (chain.size() <= 2) continue;  // nothing new after de-dup
+
+      // Find the third ("apex") vertex of the owning triangle, and its
+      // exact winding, so the fan preserves the original orientation.
+      const std::array<int, 3>& t = mf.f[static_cast<size_t>(tri_idx)];
+      int apex_idx = -1;
+      for (int k = 0; k < 3; ++k) {
+        if (t[static_cast<size_t>(k)] != a_idx && t[static_cast<size_t>(k)] != b_idx) {
+          apex_idx = t[static_cast<size_t>(k)];
+          break;
+        }
+      }
+      if (apex_idx < 0) continue;  // shouldn't happen for a real triangle
+
+      std::vector<int> chain_idx;
+      chain_idx.push_back(a_idx);
+      for (size_t k = 1; k + 1 < chain.size(); ++k) {
+        chain_idx.push_back(static_cast<int>(mf.v.size()));
+        mf.v.push_back(chain[k]);
+      }
+      chain_idx.push_back(b_idx);
+
+      for (size_t k = 0; k + 1 < chain_idx.size(); ++k) {
+        additions.push_back({apex_idx, chain_idx[k], chain_idx[k + 1]});
+      }
+      removed[static_cast<size_t>(tri_idx)] = true;
+      ++patched;
+    }
+
+    if (patched > 0) {
+      std::vector<std::array<int, 3>> next;
+      next.reserve(mf.f.size() + additions.size());
+      for (size_t ti = 0; ti < mf.f.size(); ++ti) {
+        if (!removed[ti]) next.push_back(mf.f[ti]);
+      }
+      for (const std::array<int, 3>& t : additions) next.push_back(t);
+      mf.f = std::move(next);
+    }
+  }
+  return patched;
+}
+
+}  // namespace
+
+Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions, int v_divisions) {
+  const std::vector<Mesh> raw_faces = result.Tessellate(u_divisions, v_divisions);
+  std::vector<MutFace> faces;
+  faces.reserve(raw_faces.size());
+  for (const Mesh& m : raw_faces) faces.push_back(ToMutFace(m));
+
+  // Tolerance scaled to the model's own extent, same spirit as
+  // Mesh::MergeAndWeld()'s own default - fine enough to never merge two
+  // genuinely distinct points, coarse enough to catch the same physical
+  // point reconstructed independently by two different grids/surfaces.
+  double diag = 0.0;
+  for (const MutFace& mf : faces) {
+    for (const Point3d& p : mf.v) {
+      diag = std::max(diag, std::fabs(p.x));
+      diag = std::max(diag, std::fabs(p.y));
+      diag = std::max(diag, std::fabs(p.z));
+    }
+  }
+  const double tol = std::max(1e-6, diag * 1e-6);
+
+  for (int pass = 0; pass < 4; ++pass) {
+    if (StitchTJunctionsOnce(faces, tol) == 0) break;
+  }
+
+  std::vector<Mesh> patched;
+  patched.reserve(faces.size());
+  for (MutFace& mf : faces) {
+    MutFace clean;
+    clean.v = std::move(mf.v);
+    clean.f.reserve(mf.f.size());
+    for (const std::array<int, 3>& t : mf.f) {
+      if (!IsDegenerateTriangle(clean, t)) clean.f.push_back(t);
+    }
+    patched.push_back(FromMutFace(clean));
+  }
+  return Mesh::MergeAndWeld(patched, tol);
 }
 
 }  // namespace dino8::kernel

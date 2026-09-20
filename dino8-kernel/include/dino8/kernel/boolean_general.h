@@ -29,9 +29,36 @@
 
 #include "dino8/kernel/boolean.h"
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/mesh.h"
 
 namespace dino8::kernel {
 
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
+
+// A purely additive, opt-in sibling of Brep::TessellateToClosedMesh()/
+// TessellateToClosedMeshConforming(), scoped ONLY to BooleanCombineGeneral's
+// own results, that closes the mesh-watertightness gap this file's own
+// top-of-file doc comment discloses: `result`'s own faces are tessellated
+// via Brep::Tessellate(u_divisions, v_divisions) - the exact same shared,
+// unmodified grid-clip tessellator BooleanCombineMixed also depends on, not
+// touched by this function at all - then, before welding, every boundary
+// edge of one face's own tessellation that another face's tessellation
+// happens to have an extra, un-partnered vertex sitting exactly on (this
+// engine's own dense straight-segment polyline edges - see this file's own
+// top comment - get resampled at different densities by the two adjacent
+// faces' independent (u, v) grids, since neither Tessellate() nor
+// TessellateConforming() has ever matched a general trimmed face's own
+// polyline boundary the way TessellateConforming()'s existing analytic-
+// curve/plain-quad passes match theirs) is re-triangulated as a fan through
+// that extra vertex, so the two sides' boundary vertex sets agree exactly
+// before Mesh::MergeAndWeld() runs. Also drops any resulting zero-area
+// (degenerate, repeated-vertex) triangle - a separate, pre-existing
+// grid-clip artifact near a surface's own singular point (e.g. a sphere's
+// pole) that otherwise leaves spurious zero-length "edges" behind.
+// See boolean_general.cpp's own implementation comments for the exact
+// algorithm and TestBooleanCombineGeneralBoxBox/BoxCylinder/SphereBox
+// (tests/test_basic.cpp) for the falsifiable Mesh::IsClosedManifold()
+// claims this makes.
+Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
 
 }  // namespace dino8::kernel
