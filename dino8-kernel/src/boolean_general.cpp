@@ -249,20 +249,35 @@
 // 0.0074 at n = 16 / 32 / 64), i.e. convergent tessellation error of the
 // same order as a plain sphere's own. box+box and box+cylinder unchanged.
 //
-// ALSO CONFIRMED, separately, while verifying the above (not introduced,
-// and not fixed, by this session): BooleanCombineGeneral's own
-// reassembled meshes are not Mesh::IsClosedManifold() at ANY
-// TessellateToClosedMesh()/TessellateToClosedMeshConforming() resolution
-// tried, on EITHER the already-proven box+box case or the newly-proven
-// box+cylinder one - box+box's own tessellated volume still comes out
-// exact despite this (its axis-aligned geometry apparently makes whatever
-// the edge-reconciliation mismatch is a wash), which is why
-// TestBooleanCombineGeneralBoxBox never needed to check it and why
-// TestBooleanCombineGeneralBoxCylinder deliberately does not either. This
-// looks like a genuine gap in how far the mesher's own edge-conforming
-// logic extends to this engine's dense-polyline (rather than single
-// analytic curve) edges, separate from - and not blocking - correct
-// volumes; also a separate, still-open piece of work.
+// ALSO CONFIRMED, separately, while verifying the above (not introduced by
+// this session, though PARTIALLY fixed by it - see below): plain
+// Brep::TessellateToClosedMesh()/TessellateToClosedMeshConforming() on this
+// engine's own results are not Mesh::IsClosedManifold() at any resolution
+// tried, on box+box, box+cylinder, or sphere+box - this engine's edges are
+// dense straight-segment polylines (see the top of this file), and neither
+// tessellator has ever matched a general trimmed face's own polyline
+// boundary the way TessellateConforming()'s existing analytic-curve/plain-
+// quad passes match theirs, so two faces sharing one such edge can sample
+// it at different densities and leave T-junctions.
+//
+// PARTIALLY FIXED: a new, purely additive, opt-in function scoped ONLY to
+// this engine's own results, TessellateGeneralBooleanClosedMesh() (see
+// boolean_general.h's own doc comment for the exact algorithm - it calls
+// the unmodified, shared Brep::Tessellate() and then re-triangulates any
+// boundary edge with an un-partnered vertex sitting on it as a fan through
+// that vertex, so adjacent faces' boundary vertex sets agree before
+// welding), makes box+box GENUINELY Mesh::IsClosedManifold() - boundary and
+// non-manifold edge counts drop to exactly zero on all three ops, confirmed
+// by direct measurement (dino8-kernel/tests/scratch_test.cpp). box+cylinder
+// and sphere+box are substantially IMPROVED by the same function (e.g.
+// sphere+box Difference: 40 non-manifold / 167 boundary edges down to 4 /
+// 122) but NOT yet fully closed - the remaining gap is on this engine's
+// curved-face polyline edges specifically (a fan through one extra vertex
+// is not always enough to reconcile two independently-sampled polylines
+// that both approximate, rather than lie exactly on, the same true curve),
+// still a separate, open piece of work. TestBooleanCombineGeneralBoxBox
+// asserts IsClosedManifold() via this new function; BoxCylinder and
+// SphereBox deliberately do not, since it is not yet true for them.
 #include "dino8/kernel/boolean_general.h"
 
 #include <algorithm>

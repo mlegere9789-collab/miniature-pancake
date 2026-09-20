@@ -1624,6 +1624,7 @@ void TestBooleanCombineGeneralBoxBox() {
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
 
   // The general boundary-evaluation boolean engine (boolean_general.h) on
   // its one fully-proven case: two overlapping axis-aligned boxes, a
@@ -1643,6 +1644,17 @@ void TestBooleanCombineGeneralBoxBox() {
           "box+box Union's tessellated volume matches the exact closed-form "
           "15.0 (two overlapping unit-8 boxes minus their shared unit-1 "
           "overlap) within tessellation tolerance");
+    // TessellateGeneralBooleanClosedMesh() (boolean_general.h) is a purely
+    // additive, opt-in sibling of TessellateToClosedMesh() scoped to this
+    // engine's own dense-polyline edges (see boolean_general.cpp's own
+    // top-of-file doc comment) - on this fixture it makes the mesh a
+    // genuine Mesh::IsClosedManifold(), which plain TessellateToClosedMesh()
+    // above never is (a separate, disclosed, still-open gap for curved
+    // operands - see TestBooleanCombineGeneralBoxCylinder/SphereBox, which
+    // deliberately do not assert this yet).
+    const Mesh closed = TessellateGeneralBooleanClosedMesh(u, 8, 8);
+    Check(closed.IsClosedManifold(), "box+box Union's TessellateGeneralBooleanClosedMesh() result is a genuine closed manifold");
+    Check(std::abs(closed.Volume() - 15.0) < 1e-3, "box+box Union's closed-manifold mesh still measures the exact volume 15.0");
   }
   {
     const Brep i = BooleanCombineGeneral(a, b, BooleanOp::Intersection);
@@ -1651,6 +1663,9 @@ void TestBooleanCombineGeneralBoxBox() {
     Check(std::abs(m.Volume() - 1.0) < 1e-3,
           "box+box Intersection's tessellated volume matches the exact "
           "closed-form 1.0 (the shared unit cube [1,2]^3)");
+    const Mesh closed = TessellateGeneralBooleanClosedMesh(i, 8, 8);
+    Check(closed.IsClosedManifold(), "box+box Intersection's TessellateGeneralBooleanClosedMesh() result is a genuine closed manifold");
+    Check(std::abs(closed.Volume() - 1.0) < 1e-3, "box+box Intersection's closed-manifold mesh still measures the exact volume 1.0");
   }
   {
     const Brep d = BooleanCombineGeneral(a, b, BooleanOp::Difference);
@@ -1659,6 +1674,9 @@ void TestBooleanCombineGeneralBoxBox() {
     Check(std::abs(m.Volume() - 7.0) < 1e-3,
           "box+box Difference's tessellated volume matches the exact "
           "closed-form 7.0 (the first box's own 8 minus the shared 1)");
+    const Mesh closed = TessellateGeneralBooleanClosedMesh(d, 8, 8);
+    Check(closed.IsClosedManifold(), "box+box Difference's TessellateGeneralBooleanClosedMesh() result is a genuine closed manifold");
+    Check(std::abs(closed.Volume() - 7.0) < 1e-3, "box+box Difference's closed-manifold mesh still measures the exact volume 7.0");
   }
 }
 
