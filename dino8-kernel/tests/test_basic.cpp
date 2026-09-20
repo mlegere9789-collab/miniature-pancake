@@ -1662,6 +1662,76 @@ void TestBooleanCombineGeneralBoxBox() {
   }
 }
 
+void TestBooleanCombineGeneralCoplanarBoxes() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  // Two unit-8 boxes touching along one entire coplanar face (A's x=2
+  // face and B's x=2 face are the SAME plane with the SAME finite
+  // extent, opposite outward normals) - zero volumetric overlap, a
+  // face-contact-only fixture. This is the case boolean_general.cpp's own
+  // top-of-file doc comment root-causes and fixes: IntersectFaces()
+  // correctly returns ZERO SSX curves for this face pair (coincident
+  // planes have no proper transversal intersection curve), so each box's
+  // shared face survives as a single, untouched whole-face fragment whose
+  // representative point sits EXACTLY on the other solid's own boundary -
+  // ray-cast parity classification of a point sitting exactly on a
+  // boundary plane is numerically arbitrary, so before this fix Union
+  // threw "an edge is claimed by 3 or more fragment loops" (both boxes'
+  // shared faces kept, non-manifold), Intersection returned a single
+  // open, meaningless face (vol ~2.6667, not the true 0), and Difference
+  // was wrong by roughly one face's worth of volume. Fixed by detecting
+  // this exact coincident-face configuration (same plane, same finite
+  // extent, both untouched by any SSX curve) up front and applying an
+  // explicit rule instead of ray-casting: opposite outward normals (this
+  // fixture) drop the shared face from both Union and Intersection
+  // (interior to the union; contributes no volume to the intersection)
+  // and keep exactly the first-named operand's own copy, unflipped, for
+  // that operand's own Difference (the other operand's copy is always
+  // dropped) - see boolean_general.cpp's own `coincident_a`/`coincident_b`
+  // doc comment for the full rule, including the SAME-normal case this
+  // fixture does not exercise.
+  const Brep a = Brep::Box(0, 0, 0, 2, 2, 2);
+  const Brep b = Brep::Box(2, 0, 0, 4, 2, 2);
+
+  {
+    const Brep u = BooleanCombineGeneral(a, b, BooleanOp::Union);
+    Check(u.raw().IsValid(), "coplanar box+box Union is a valid ON_Brep");
+    const Mesh m = u.TessellateToClosedMesh(8, 8);
+    Check(std::abs(m.Volume() - 16.0) < 1e-3,
+          "coplanar box+box Union's tessellated volume matches the exact "
+          "closed-form 16.0 (the two boxes merge into one 4x2x2 box, no "
+          "shared face left in the boundary - both boxes' own 8 with zero "
+          "overlap to subtract)");
+  }
+  {
+    const Brep i = BooleanCombineGeneral(a, b, BooleanOp::Intersection);
+    Check(i.FaceCount() == 0,
+          "coplanar box+box Intersection is the empty solid (face contact "
+          "only, zero volumetric overlap) - not the old lone open face");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(a, b, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "coplanar box+box A-B is a valid ON_Brep");
+    const Mesh m = d.TessellateToClosedMesh(8, 8);
+    Check(std::abs(m.Volume() - 8.0) < 1e-3,
+          "coplanar box+box A-B's tessellated volume matches the exact "
+          "closed-form 8.0 (B doesn't overlap A at all, so A is returned "
+          "unchanged, including its own copy of the shared face)");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(b, a, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "coplanar box+box B-A is a valid ON_Brep");
+    const Mesh m = d.TessellateToClosedMesh(8, 8);
+    Check(std::abs(m.Volume() - 8.0) < 1e-3,
+          "coplanar box+box B-A's tessellated volume matches the exact "
+          "closed-form 8.0 (A doesn't overlap B at all, so B is returned "
+          "unchanged, including its own copy of the shared face)");
+  }
+}
+
 // Closed finite cylinder, axis along +z from z0 to z1, built via the
 // kernel's own proven CylindricalFace + FromMixedFaces() path - two
 // explicit disk PlanarFace caps welded to the CylindricalFace's own rim via
@@ -18805,6 +18875,7 @@ int main() {
   TestSurfaceIsTorus();
   TestSurfaceIntersectSphereGreatCircle();
   TestBooleanCombineGeneralBoxBox();
+  TestBooleanCombineGeneralCoplanarBoxes();
   TestBooleanCombineGeneralBoxCylinder();
   TestBooleanCombineGeneralSphereBox();
   TestSurfaceGetApproximateSize();

@@ -1229,6 +1229,32 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
   for (int i = 0; i < na; ++i) boxes_a[static_cast<size_t>(i)] = ba.m_F[i].SurfaceOf()->BoundingBox();
   for (int j = 0; j < nb; ++j) boxes_b[static_cast<size_t>(j)] = bb.m_F[j].SurfaceOf()->BoundingBox();
 
+  // Coincident-face bookkeeping (see this file's own top-of-file doc
+  // comment, "coplanar shared face" fix): a face of A and a face of B that
+  // lie on the EXACT same plane with the EXACT same finite extent (both
+  // planar, same offset + parallel normal, matching bounding boxes) never
+  // produce an SSX curve at all - coincident surfaces have no proper
+  // transversal intersection, so IntersectFaces() correctly returns zero
+  // curves for the pair - but the two faces are still one PHYSICAL surface
+  // shared by both solids, and ray-cast classification of a point sitting
+  // exactly ON that shared plane is numerically arbitrary (it can come
+  // back In or Out from either side essentially at random). Recorded here,
+  // keyed by face index on each side, with whether the two faces' outward
+  // normals agree (same_normal, e.g. two overlapping prisms sharing an
+  // exact top plane - boolean.cpp's BooleanCombinePlanar/BooleanCombineMixed
+  // dedup this by keeping exactly one copy) or oppose (opposite_normal,
+  // e.g. this fix's own fixture: two boxes merely touching face-to-face,
+  // filling opposite sides of that one shared plane with no volumetric
+  // overlap at all - see the override applied in `process` below for why
+  // opposing normals need a DIFFERENT rule Union/Intersection never needed
+  // before, one boolean.cpp itself has never had a test exercise either).
+  struct CoincidentInfo {
+    int other_face = -1;
+    bool opposite_normal = false;
+  };
+  std::vector<std::vector<CoincidentInfo>> coincident_a(static_cast<size_t>(na)), coincident_b(static_cast<size_t>(nb));
+  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+
   for (int i = 0; i < na; ++i) {
     ON_BoundingBox exp_a = boxes_a[static_cast<size_t>(i)];
     exp_a.m_min -= ON_3dVector(tol, tol, tol);
@@ -1238,6 +1264,24 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
       const ON_BrepFace& fa = ba.m_F[i];
       const ON_BrepFace& fb = bb.m_F[j];
       std::vector<IntersectionCurve> curves = IntersectFaces(&fa, *fa.SurfaceOf(), &fb, *fb.SurfaceOf(), opt);
+      if (curves.empty()) {
+        ON_Plane pa, pb;
+        const ON_Surface* sa = fa.SurfaceOf();
+        const ON_Surface* sb = fb.SurfaceOf();
+        if (sa->IsPlanar(&pa, tol) && sb->IsPlanar(&pb, tol)) {
+          const int parallel = pa.zaxis.IsParallelTo(pb.zaxis, 1e-6);
+          if (parallel != 0 && std::fabs(pa.DistanceTo(pb.origin)) <= tol) {
+            const ON_BoundingBox& box_a = boxes_a[static_cast<size_t>(i)];
+            const ON_BoundingBox& box_b = boxes_b[static_cast<size_t>(j)];
+            const double extent_tol = std::max(tol, 1e-6 * std::max(box_a.Diagonal().Length(), box_b.Diagonal().Length()));
+            if (box_a.m_min.DistanceTo(box_b.m_min) <= extent_tol && box_a.m_max.DistanceTo(box_b.m_max) <= extent_tol) {
+              coincident_a[static_cast<size_t>(i)].push_back({j, parallel == -1});
+              coincident_b[static_cast<size_t>(j)].push_back({i, parallel == -1});
+              if (debug) std::fprintf(stderr, "coincident face pair: A[%d] <-> B[%d], opposite_normal=%d\n", i, j, parallel == -1);
+            }
+          }
+        }
+      }
       for (const IntersectionCurve& ic : curves) {
         if (ic.points.size() < 2) continue;
         Chain ca, cb;
@@ -1282,7 +1326,18 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
   // chain's own points are shared verbatim across its own two faces, not
   // independently re-solved).
   const double stitch_tol = std::max(1e-4, opt.tolerance * 20.0);
-  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+
+  // Whether a face was touched by ANY SSX curve at all (captured before
+  // `raw_a`/`raw_b` are moved-from below, one face at a time, inside
+  // `build_frags`). An untouched planar face that is also part of a
+  // `coincident_a`/`coincident_b` pair is exactly the "whole shared face,
+  // never split" fixture the coincident-face override below applies to -
+  // a face touched by even one real SSX curve (a genuine partial overlap,
+  // not full coincidence) is deliberately excluded from that override and
+  // left to the ordinary ray-cast classification path.
+  std::vector<bool> untouched_a(static_cast<size_t>(na)), untouched_b(static_cast<size_t>(nb));
+  for (int i = 0; i < na; ++i) untouched_a[static_cast<size_t>(i)] = raw_a[static_cast<size_t>(i)].empty();
+  for (int j = 0; j < nb; ++j) untouched_b[static_cast<size_t>(j)] = raw_b[static_cast<size_t>(j)].empty();
 
   // Fragment every face of both operands.
   struct FaceFrags {
@@ -1351,34 +1406,100 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
   auto process = [&](std::vector<FaceFrags>& frags, const ON_Brep& other, bool a_side) {
     for (FaceFrags& ff : frags) {
       if (debug) std::fprintf(stderr, "face(%s) idx=%d frags=%zu\n", a_side ? "A" : "B", ff.face_index, ff.frags.size());
+      const std::vector<CoincidentInfo>& coincident_here =
+          a_side ? coincident_a[static_cast<size_t>(ff.face_index)] : coincident_b[static_cast<size_t>(ff.face_index)];
+      // The override below only ever applies to a face that IS its own
+      // single, untouched fragment - the "whole shared face, no SSX curve
+      // anywhere on it" fixture `coincident_a`/`coincident_b` was built
+      // for. A face that also has some OTHER, genuinely intersecting
+      // opposing face (so ff.frags.size() != 1, or raw_a/raw_b for it
+      // wasn't empty) is left to the ordinary ray-cast path below even if
+      // it happens to be coincident with one particular opposing face -
+      // out of scope for this fix, same as boolean.cpp's own coincident-
+      // plane dedup only ever handling the whole-face case.
+      const bool whole_face_untouched =
+          !coincident_here.empty() && ff.frags.size() == 1 &&
+          (a_side ? untouched_a[static_cast<size_t>(ff.face_index)] : untouched_b[static_cast<size_t>(ff.face_index)]);
       for (Fragment& frag : ff.frags) {
-        Point2d uv;
-        if (!RepresentativeUV(frag, uv)) {
-          if (debug) std::fprintf(stderr, "  frag: NO representative UV found (outer pts=%zu, holes=%zu)\n", frag.outer.size(), frag.holes.size());
-          continue;
-        }
-        const Point3d p3 = ff.surface->PointAt(uv.x, uv.y);
-        const Cls cls = ClassifyPointVsBrep(p3, other, ray_length, opt, tol);
-        if (debug) std::fprintf(stderr, "  frag: outer=%zu holes=%zu uv=(%f,%f) p3=(%f,%f,%f) cls=%s\n", frag.outer.size(), frag.holes.size(), uv.x, uv.y, p3.x, p3.y, p3.z, cls == Cls::In ? "In" : "Out");
         bool keep = false;
         bool flip = false;
-        switch (op) {
-          case BooleanOp::Union:
-            keep = (cls == Cls::Out);
-            break;
-          case BooleanOp::Intersection:
-            keep = (cls == Cls::In);
-            break;
-          case BooleanOp::Difference:
-            if (a_side) {
-              keep = (cls == Cls::Out);
-            } else {
-              keep = (cls == Cls::In);
-              flip = true;
+        if (whole_face_untouched) {
+          // Coincident-face rule (see this file's own top-of-file doc
+          // comment and `coincident_a`/`coincident_b`'s own doc comment
+          // above): this fragment IS the entire physical face, and it has
+          // an exact coincident twin on the other solid - ray-casting its
+          // representative point (which sits exactly ON the other
+          // solid's own boundary) would be numerically arbitrary, so skip
+          // ClassifyPointVsBrep entirely and decide from the two faces'
+          // outward-normal relationship instead, mirroring
+          // BooleanCombinePlanar/BooleanCombineMixed's own same_plane
+          // dedup convention (boolean.cpp) with one addition theirs never
+          // needed: the OPPOSITE-normal case (this fixture's own two
+          // boxes merely touching face-to-face, no volumetric overlap).
+          //   - opposite normals (touching, not overlapping): the shared
+          //     face is interior to the Union (material fills both
+          //     sides) and contributes no volume to the Intersection (a
+          //     2D contact, not a 3D overlap) - dropped by BOTH sides for
+          //     Union and Intersection. For Difference, A's own copy is a
+          //     genuine remaining boundary of A - B (B is being removed
+          //     from the OTHER side of this same plane, so A's face still
+          //     separates A's material from empty space) - kept unflipped
+          //     on the `a_side` (the solid named first in THIS call, per
+          //     boolean.h's own Difference = a-side convention) and always
+          //     dropped on the other side, exactly like boolean.cpp's own
+          //     Difference rule for this normal relationship.
+          //   - same normals (genuine volumetric overlap sharing an exact
+          //     boundary plane, e.g. two overlapping prisms with the same
+          //     top height): the pre-existing boolean.cpp convention -
+          //     keep exactly one copy for Union/Intersection (the a_side's,
+          //     arbitrarily but consistently), cancel both for Difference
+          //     (subtracting B removes the coincident material too).
+          const bool opposite = coincident_here.front().opposite_normal;
+          if (a_side) {
+            switch (op) {
+              case BooleanOp::Union:
+              case BooleanOp::Intersection:
+                keep = !opposite;  // same normal: keep one copy (a_side's); opposite: drop both
+                break;
+              case BooleanOp::Difference:
+                keep = opposite;  // opposite: a_side's copy is a genuine remaining boundary; same: cancels
+                break;
+              default:
+                break;
             }
-            break;
-          default:
-            break;
+          } else {
+            keep = false;  // the other side's coincident copy is always redundant
+          }
+          if (debug)
+            std::fprintf(stderr, "  frag: COINCIDENT face override a_side=%d opposite=%d op=%d -> keep=%d\n", a_side,
+                         opposite, static_cast<int>(op), keep);
+        } else {
+          Point2d uv;
+          if (!RepresentativeUV(frag, uv)) {
+            if (debug) std::fprintf(stderr, "  frag: NO representative UV found (outer pts=%zu, holes=%zu)\n", frag.outer.size(), frag.holes.size());
+            continue;
+          }
+          const Point3d p3 = ff.surface->PointAt(uv.x, uv.y);
+          const Cls cls = ClassifyPointVsBrep(p3, other, ray_length, opt, tol);
+          if (debug) std::fprintf(stderr, "  frag: outer=%zu holes=%zu uv=(%f,%f) p3=(%f,%f,%f) cls=%s\n", frag.outer.size(), frag.holes.size(), uv.x, uv.y, p3.x, p3.y, p3.z, cls == Cls::In ? "In" : "Out");
+          switch (op) {
+            case BooleanOp::Union:
+              keep = (cls == Cls::Out);
+              break;
+            case BooleanOp::Intersection:
+              keep = (cls == Cls::In);
+              break;
+            case BooleanOp::Difference:
+              if (a_side) {
+                keep = (cls == Cls::Out);
+              } else {
+                keep = (cls == Cls::In);
+                flip = true;
+              }
+              break;
+            default:
+              break;
+          }
         }
         if (!keep) continue;
         KeptFace kf;
