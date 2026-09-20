@@ -1972,6 +1972,273 @@ void TestBooleanCombineGeneralSphereBox() {
   }
 }
 
+// A right-handed orthonormal frame with `axis` as its own z-axis, at
+// `origin` - mirrors dino8-kernel/tests/general_boolean_sweep.cpp's own
+// FrameFromAxis exactly (same seed-vector rule), so a fixture built here
+// matches that sweep's own case bit-for-bit.
+ON_Plane FrameFromAxisForGeneralBooleanTest(const dino8::kernel::Point3d& origin, dino8::kernel::Vector3d axis) {
+  axis.Unitize();
+  dino8::kernel::Vector3d seed = std::fabs(axis.z) < 0.9 ? dino8::kernel::Vector3d(0, 0, 1) : dino8::kernel::Vector3d(1, 0, 0);
+  dino8::kernel::Vector3d x = ON_CrossProduct(seed, axis);
+  x.Unitize();
+  dino8::kernel::Vector3d y = ON_CrossProduct(axis, x);
+  y.Unitize();
+  ON_Plane f;
+  f.origin = origin;
+  f.xaxis = x;
+  f.yaxis = y;
+  f.zaxis = axis;
+  f.UpdateEquation();
+  return f;
+}
+
+// A disk cap in `frame`'s own xy plane at axial height `h`, radius `r` -
+// mirrors general_boolean_sweep.cpp's own DiskCap (same angle convention,
+// so it welds to a CylindricalFace/ConicalFace built from the same frame).
+dino8::kernel::Brep::PlanarFace DiskCapForGeneralBooleanTest(const ON_Plane& frame, double h, double r, bool flip, int n = 128) {
+  using dino8::kernel::Brep;
+  Brep::PlanarFace pf;
+  const dino8::kernel::Point3d c = frame.origin + frame.zaxis * h;
+  pf.plane = ON_Plane(c, flip ? -frame.zaxis : frame.zaxis);
+  for (int i = 0; i < n; ++i) {
+    const double a = flip ? -2.0 * ON_PI * i / n : 2.0 * ON_PI * i / n;
+    pf.loop.push_back(c + frame.xaxis * (r * std::cos(a)) + frame.yaxis * (r * std::sin(a)));
+  }
+  pf.notch_begin = 0;
+  pf.notch_count = static_cast<int>(pf.loop.size());
+  return pf;
+}
+
+// Closed finite cylinder along an ARBITRARY unit `axis` (not necessarily
+// z) - the fixture family general_boolean_sweep.cpp's own case 03 (box+cyl
+// OBLIQUE axis piercing) exercises, base centre `base`, radius `r`,
+// extending `length` along the axis.
+dino8::kernel::Brep MakeCylinderAxisForGeneralBooleanTest(const dino8::kernel::Point3d& base, const dino8::kernel::Vector3d& axis, double r, double length) {
+  using dino8::kernel::Brep;
+  Brep::CylindricalFace cf;
+  cf.frame = FrameFromAxisForGeneralBooleanTest(base, axis);
+  cf.radius = r;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = length;
+  return Brep::FromMixedFaces({DiskCapForGeneralBooleanTest(cf.frame, 0.0, r, true), DiskCapForGeneralBooleanTest(cf.frame, length, r, false)}, {cf});
+}
+
+void TestBooleanCombineGeneralObliqueCylinder() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Regression fixture for the "sloped wrap-cut seam vertex" root cause
+  // fixed in this session (see boolean_general.cpp's own top-of-file doc
+  // comment): a 6x6x2 box pierced by a radius-1 cylinder whose axis is
+  // tilted 30 degrees about x then 20 degrees about y, so the cylinder's
+  // own periodic wrap-cut through the box's flat slab is a SLOPED ellipse,
+  // not a level circle - exactly general_boolean_sweep.cpp's own case 03
+  // (box+cyl OBLIQUE axis piercing), whose B-A op used to throw
+  // "trim_polygon must be simple" (a self-intersecting 2D trim loop, root-
+  // caused to two independent bugs: the wrap-cut's own two new seam
+  // vertices took their shared axial-height value from two different,
+  // independently-Newton-noisy nearby samples instead of one shared,
+  // properly-interpolated value; and FinishCurve()'s adaptive refinement
+  // could still insert a point that reversed the chain's own local
+  // angular direction, within its own segment's generous bracket slack).
+  Vector3d axis(0, -std::sin(ON_PI / 6), std::cos(ON_PI / 6));  // Rx(30) applied to +z
+  const double cy = std::cos(ON_PI / 9), sy = std::sin(ON_PI / 9);
+  axis = Vector3d(axis.x * cy + axis.z * sy, axis.y, -axis.x * sy + axis.z * cy);  // Ry(20)
+  axis.Unitize();
+  const double cos_theta = axis.z;
+
+  const Brep box = Brep::Box(-3, -3, -1, 3, 3, 1);
+  const Brep cyl = MakeCylinderAxisForGeneralBooleanTest(Point3d(0, 0, 0) - axis * 6.0, axis, 1.0, 12.0);
+
+  const double box_vol = 72.0;                                 // 6*6*2
+  const double cyl_vol = ON_PI * 1.0 * 1.0 * 12.0;              // pi r^2 * length
+  // The slab (box) cuts the cylinder in an oblique ellipse whose enclosed
+  // volume is the same as a RIGHT cylinder of the slab's own thickness
+  // divided by cos(theta) between the cylinder's axis and the slab's own
+  // normal (a standard oblique-cylinder-through-a-slab result).
+  const double expect_i = ON_PI * 1.0 * 1.0 * 2.0 / cos_theta;
+  const double expect_u = box_vol + cyl_vol - expect_i;
+  const double expect_ab = box_vol - expect_i;
+  const double expect_ba = cyl_vol - expect_i;
+
+  // Tessellation-scaled tolerance, same spirit/order as
+  // TestBooleanCombineGeneralBoxCylinder's own (this fixture's operands are
+  // a similar size and this engine's own edges are the same kind of dense
+  // polyline approximation, now additionally exercising a SLOPED, not
+  // level, wrap-cut).
+  const double tol = 1.6;
+  const int nu = 32, nv = 128;
+
+  {
+    const Brep u = BooleanCombineGeneral(box, cyl, BooleanOp::Union);
+    Check(u.raw().IsValid(), "oblique box+cylinder Union is a valid ON_Brep");
+    const Mesh m = u.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_u) < tol,
+          "oblique box+cylinder Union's tessellated volume matches the "
+          "closed-form box + cylinder - intersection to within tessellation "
+          "tolerance");
+  }
+  {
+    const Brep i = BooleanCombineGeneral(box, cyl, BooleanOp::Intersection);
+    Check(i.raw().IsValid(), "oblique box+cylinder Intersection is a valid ON_Brep");
+    const Mesh m = i.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_i) < tol,
+          "oblique box+cylinder Intersection's tessellated volume matches "
+          "the closed-form pi*r^2*slab/cos(theta) to within tessellation "
+          "tolerance");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(box, cyl, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "oblique box+cylinder A-B is a valid ON_Brep");
+    const Mesh m = d.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_ab) < tol,
+          "oblique box+cylinder A-B's tessellated volume matches the "
+          "closed-form box - intersection to within tessellation tolerance");
+  }
+  {
+    // B-A: this is the op that used to throw before this session's fix -
+    // the cylinder minus the box's slab, leaving the cylinder cut into two
+    // pieces at a sloped wrap-cut on both the entry and exit ellipse.
+    const Brep d = BooleanCombineGeneral(cyl, box, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "oblique box+cylinder B-A is a valid ON_Brep");
+    const Mesh m = d.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_ba) < tol,
+          "oblique box+cylinder B-A's tessellated volume matches the "
+          "closed-form cylinder - intersection to within tessellation "
+          "tolerance - this exact op used to throw "
+          "\"trim_polygon must be simple\" before this session's wrap-cut "
+          "and FinishCurve-reversal fixes");
+  }
+  {
+    // Resolution check: the B-A volume error should shrink as the
+    // tessellation is refined, confirming convergent tessellation error
+    // rather than a fixed topological leak papered over by a loose
+    // tolerance.
+    const Brep d = BooleanCombineGeneral(cyl, box, BooleanOp::Difference);
+    const double err_coarse = std::abs(d.TessellateToClosedMesh(16, 64).Volume() - expect_ba);
+    const double err_fine = std::abs(d.TessellateToClosedMesh(32, 128).Volume() - expect_ba);
+    Check(err_fine < 0.85 * err_coarse,
+          "oblique box+cylinder B-A's volume error shrinks when the "
+          "tessellation is doubled (convergent tessellation error, not a "
+          "fixed topological leak)");
+  }
+}
+
+// Closed frustum (truncated cone) along an arbitrary unit `axis`: radius
+// `r0` at `base`, `r1` at `base + length*axis` - mirrors
+// general_boolean_sweep.cpp's own MakeFrustum (a ConicalFace's own
+// frame.origin is the APEX, so it sits r0/tan(half-angle) behind `base`).
+dino8::kernel::Brep MakeFrustumAxisForGeneralBooleanTest(const dino8::kernel::Point3d& base, const dino8::kernel::Vector3d& axis, double r0, double r1, double length) {
+  using dino8::kernel::Brep;
+  Brep::ConicalFace cf;
+  const double tan_half = (r1 - r0) / length;
+  const ON_Plane base_frame = FrameFromAxisForGeneralBooleanTest(base, axis);
+  cf.frame = base_frame;
+  cf.frame.origin = base - base_frame.zaxis * (r0 / tan_half);
+  cf.frame.UpdateEquation();
+  cf.radius0 = r0;
+  cf.radius1 = r1;
+  cf.angle = 2.0 * ON_PI;
+  cf.length = length;
+  return Brep::FromMixedFaces({DiskCapForGeneralBooleanTest(base_frame, 0.0, r0, true), DiskCapForGeneralBooleanTest(base_frame, length, r1, false)}, {}, {cf});
+}
+
+void TestBooleanCombineGeneralBoxCone() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Regression fixture for the FinishCurve local-reversal fix (see
+  // boolean_general.cpp's own top-of-file doc comment): a 6x6x1 box slab
+  // (z in [1, 2]) piercing a frustum (radius 0.5 at z=0 to radius 1.5 at
+  // z=3, axis z) - exactly general_boolean_sweep.cpp's own case 15
+  // (box+cone perpendicular piercing). Before this session's fix, the
+  // Union and B-A ops threw "trim_polygon must be simple" and Intersection
+  // measured a wrong volume, all traced to the SAME self-intersecting 2D
+  // trim: a small-amplitude back-and-forth jitter in FinishCurve()'s own
+  // adaptive Newton subdivision near the box/cone wrap-cut, where the cone
+  // surface's own tangent-degenerate cross-section (analogous to the
+  // cylinder's own perpendicular-plane case, but on a cone) let two
+  // separately-refined, each individually-valid segments produce adjacent
+  // samples out of angular order.
+  const Brep box = Brep::Box(-3, -3, 1, 3, 3, 2);
+  const Brep cone = MakeFrustumAxisForGeneralBooleanTest(Point3d(0, 0, 0), Vector3d(0, 0, 1), 0.5, 1.5, 3.0);
+
+  const double box_vol = 36.0;  // 6*6*1
+  // Full-frustum volume: (pi h / 3) (r0^2 + r0 r1 + r1^2).
+  const double cone_vol = ON_PI * 3.0 * (0.25 + 0.75 + 2.25) / 3.0;
+  // Intersection: pi * int_1^2 r(z)^2 dz, r(z) = 0.5 + z/3 -> closed form
+  // pi * (r2^3 - r1^3) / (3k), k = dr/dz = 1/3.
+  const double k = 1.0 / 3.0;
+  const double r1 = 0.5 + k * 1.0, r2 = 0.5 + k * 2.0;
+  const double expect_i = ON_PI * (r2 * r2 * r2 - r1 * r1 * r1) / (3.0 * k);
+  const double expect_u = box_vol + cone_vol - expect_i;
+  const double expect_ab = box_vol - expect_i;
+  const double expect_ba = cone_vol - expect_i;
+
+  const double tol = 1.6;
+  const int nu = 32, nv = 128;
+
+  {
+    const Brep u = BooleanCombineGeneral(box, cone, BooleanOp::Union);
+    Check(u.raw().IsValid(), "box+cone Union is a valid ON_Brep");
+    const Mesh m = u.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_u) < tol,
+          "box+cone Union's tessellated volume matches the closed-form box "
+          "+ frustum - intersection to within tessellation tolerance - this "
+          "exact op used to throw \"trim_polygon must be simple\" before "
+          "this session's FinishCurve local-reversal fix");
+  }
+  {
+    const Brep i = BooleanCombineGeneral(box, cone, BooleanOp::Intersection);
+    Check(i.raw().IsValid(), "box+cone Intersection is a valid ON_Brep");
+    const Mesh m = i.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_i) < tol,
+          "box+cone Intersection's tessellated volume matches the "
+          "closed-form pi*int_1^2 r(z)^2 dz to within tessellation "
+          "tolerance - this exact op used to throw "
+          "\"trim_polygon must be simple\" before this session's "
+          "FinishCurve local-reversal fix");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(box, cone, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "box+cone A-B is a valid ON_Brep");
+    const Mesh m = d.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_ab) < tol,
+          "box+cone A-B's tessellated volume matches the closed-form box - "
+          "intersection to within tessellation tolerance");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(cone, box, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "box+cone B-A is a valid ON_Brep");
+    const Mesh m = d.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_ba) < tol,
+          "box+cone B-A's tessellated volume matches the closed-form "
+          "frustum - intersection to within tessellation tolerance - this "
+          "exact op used to throw \"trim_polygon must be simple\" before "
+          "this session's FinishCurve local-reversal fix");
+  }
+  {
+    // Resolution check on Intersection (the op with the tightest relative
+    // volume, most sensitive to any leftover topological error): the
+    // error should shrink as the tessellation is refined.
+    const Brep i = BooleanCombineGeneral(box, cone, BooleanOp::Intersection);
+    const double err_coarse = std::abs(i.TessellateToClosedMesh(16, 64).Volume() - expect_i);
+    const double err_fine = std::abs(i.TessellateToClosedMesh(32, 128).Volume() - expect_i);
+    Check(err_fine < 0.85 * err_coarse,
+          "box+cone Intersection's volume error shrinks when the "
+          "tessellation is doubled (convergent tessellation error, not a "
+          "fixed topological leak)");
+  }
+}
+
 void TestSurfaceGetApproximateSize() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -18896,6 +19163,8 @@ int main() {
   TestBooleanCombineGeneralCoplanarBoxes();
   TestBooleanCombineGeneralBoxCylinder();
   TestBooleanCombineGeneralSphereBox();
+  TestBooleanCombineGeneralObliqueCylinder();
+  TestBooleanCombineGeneralBoxCone();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();

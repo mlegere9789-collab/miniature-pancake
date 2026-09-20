@@ -278,6 +278,138 @@
 // still a separate, open piece of work. TestBooleanCombineGeneralBoxBox
 // asserts IsClosedManifold() via this new function; BoxCylinder and
 // SphereBox deliberately do not, since it is not yet true for them.
+//
+// SESSION: dino8-kernel/tests/general_boolean_sweep.cpp's own 76-case
+// measurement sweep (19 cases x 4 ops), ranked-diagnosis follow-up. Went
+// from 56/76 OK to 60/76 OK. Three root causes found and fixed, all in the
+// wrap-cut/adaptive-refinement machinery this file and surface_intersect.cpp
+// share, none of them the level-perpendicular-plane case the earlier
+// box+cylinder work above already covers:
+//   (k) SplitPeriodicWrapChain()'s own two new seam-side vertices
+//       (front_seam/back_seam) each took the surface's OTHER ("cross")
+//       coordinate - e.g. a cylinder wall's own axial height - from their
+//       OWN nearby original chain sample, independently. For a wrap-cut
+//       that is geometrically level (sphere+cylinder, sweep case 13: the
+//       intersection is exactly two circles of constant height) those two
+//       independent samples are only supposed to agree to within ordinary
+//       Newton-refinement noise - normally invisible, but confirmed by
+//       direct tracing to differ by ~1.05e-6 here, just ABOVE this file's
+//       own kWeldTol (1e-6), so the two vertices that should have welded
+//       into one shared seam-edge endpoint instead stayed two, producing a
+//       genuine zero-length-2D-trim ON_Brep::IsValid() failure. Fixed:
+//       SplitPeriodicWrapChain() now computes ONE shared cross-direction
+//       value, linearly interpolated between the two samples that actually
+//       straddle the seam crossing (the same interpolate-then-pin idea
+//       surface_intersect.cpp's own SeamCrossing() uses for a real
+//       surface-pair seam crossing, specialized to this single
+//       already-known polyline), and uses it for BOTH new vertices. This
+//       also directly benefits a SLOPED or SKEW wrap-cut (sweep cases 03,
+//       08), where the two straddling samples' cross-direction values
+//       genuinely differ geometrically, not just by noise - interpolating
+//       is then the correct thing to do, not merely noise-cancelling.
+//   (l) A further, separate degeneracy on the SAME fixture: the two
+//       samples straddling a seam crossing are not always an ordinary pair
+//       merely NEAR the seam - when the upstream discretization happens to
+//       seed a sample exactly AT one domain end (NewtonSolve()'s own hard
+//       Clamp() to the domain, confirmed to fire here), inserting a
+//       brand-new vertex right next to an already-exact-seam sample gave
+//       the new point the identical (u, v) as that original sample (since
+//       its cross-direction value was taken from - or, after (k), blended
+//       heavily toward - that very sample) but a different `p` (the
+//       original sample's own small SSX residual vs. the new point's exact
+//       analytic evaluation): a second, independent source of the same
+//       zero-length-2D-trim failure. Fixed by reusing the existing
+//       straddling sample IN PLACE (only tidying its own (u, v), `p`
+//       deliberately left untouched, mirroring CutChainAtDomainBoundary's
+//       own already-proven approach) instead of inserting a redundant
+//       vertex negligibly close to it, whenever that sample is already at
+//       the seam to within Newton's own convergence.
+//   (m) FinishCurve()'s (surface_intersect.cpp) adaptive Newton
+//       subdivision inserts at most one new point per segment, checked
+//       only against that segment's own two endpoints (a bracket with 25%
+//       slack, to tolerate real curvature) - so two ADJACENT segments,
+//       each independently refined and each individually passing its own
+//       check, could still produce a small back-and-forth reversal at the
+//       shared point between them (segment 1 inserts a point close to its
+//       start; segment 2, now anchored there, inserts ITS OWN point that
+//       overshoots backward past segment 1's own insertion - bracketed
+//       fine against segment 2's own endpoints, but a clear local reversal
+//       once assembled). Confirmed by direct tracing on a sloped cylinder
+//       (case 03) and a cone (case 15): the resulting polyline folds back
+//       on itself, producing a self-intersecting 2D trim loop
+//       ("trim_polygon must be simple") once flattened - a tangent-
+//       degenerate cross-section (the cone/skew analogue of the earlier
+//       perpendicular-cylinder tangent case) makes this measurably more
+//       likely than on a plain circle, though the mechanism itself is not
+//       specific to periodicity at all. Fixed with two additions: an
+//       insertion-time guard rejecting a new point that itself moves
+//       backward from its own segment's start point (tight slack, just
+//       enough for Newton noise - independent of the existing 25% bracket,
+//       which alone does not catch this), and a final cleanup pass that
+//       drops any ALREADY-ASSEMBLED point found to reverse direction
+//       relative to its own two immediate neighbors (using the same
+//       generous, curvature-tolerant 25% bracket the ordinary insertion
+//       check trusts, so genuine curvature is not disturbed) - needed
+//       because the insertion-time guard alone cannot see the
+//       cross-segment case (m) describes.
+// VERIFIED: sweep case 03 (box+cyl OBLIQUE axis piercing) goes from 3/4 OK
+// (B-A threw "trim_polygon must be simple") to 4/4 OK; case 15 (box+cone
+// perpendicular piercing) goes from 1/4 OK (Union/B-A threw, Intersection
+// measured NaN via the same throw, only A-B was already OK) to 4/4 OK.
+// Both are also asserted directly in dino8-kernel/tests/test_basic.cpp
+// (TestBooleanCombineGeneralObliqueCylinder, TestBooleanCombineGeneralBoxCone
+// - IsValid() plus closed-form volume within a tessellation-scaled
+// tolerance that is itself checked to shrink under a doubled tessellation,
+// same template as TestBooleanCombineGeneralBoxCylinder/SphereBox above).
+// The full dino8_kernel_tests suite (1525 checks, unrelated to this sweep)
+// remains 100% passing, confirming (m)'s change to FinishCurve - shared
+// with the older, separately-tested BooleanCombineMixed engine in
+// boolean.cpp only in principle, since that file does not actually
+// #include surface_intersect.h at all in this codebase - did not disturb
+// anything.
+//
+// STILL NOT FIXED, diagnosed as far as this session went:
+//   - Sweep case 13 (sphere+cyl axis through centre piercing): (k)/(l)
+//     above fix the zero-length-2D-trim failure this case's own Union/A-B/
+//     B-A results used to hit, but a SEPARATE, still-unfixed defect
+//     remains on all three - ON_Brep::IsValid() now instead reports
+//     "Distance from start of ON_Brep.m_T[0] to 3d edge is 0.0143...",
+//     roughly two orders of magnitude bigger than kWeldTol, on the
+//     SPHERE's own face (built via CutChainAtDomainBoundary, not
+//     SplitPeriodicWrapChain - a genuinely different code path from (k)/
+//     (l), never touched this session). Best diagnosis: CutChainAtDomain-
+//     Boundary() splices each on-seam "run" into the domain rectangle's
+//     u == 0 and u == 2*pi sides independently, snapping each run's own
+//     points onto the seam without moving `p`; this fixture has TWO
+//     separate such runs (the sphere's own copies of the SAME two circles
+//     (k) discusses), and the two runs' own u == 0 vs. u == 2*pi copies
+//     likely disagree at a scale similar to (k)'s - but by an unweighted,
+//     un-interpolated amount, since CutChainAtDomainBoundary has no
+//     analogue of (k)'s cross-value interpolation at all. Not attempted:
+//     this needs its own separate root-cause trace through
+//     CutChainAtDomainBoundary()'s own run-splicing (splice_subrun(),
+//     above) rather than a small extension of (k)'s fix.
+//   - Sweep case 08 (cyl+cyl SKEW perpendicular axes): improved but not
+//     fixed - (m)'s cleanup pass measurably reduces the self-intersecting-
+//     trim count on every op (Union 4 to 2, Intersection 3 to 2, A-B 3 to
+//     2, B-A unchanged at 3), and Union/Intersection/A-B no longer throw
+//     "trim_polygon must be simple" at all, but now fail ON_Brep::IsValid()
+//     instead with "is on a closed surface... contains boundary trims ...
+//     They should be seam trims connected to the same edge" - a topology-
+//     level seam-pairing defect ON_Brep::SetTrimIsoFlags() surfaces, not
+//     directly diagnosed this session. B-A still throws the original
+//     self-intersecting-trim exception. The true skew (non-intersecting-
+//     axis) geometry here is qualitatively different from every other
+//     wrap-cut fixture fixed this session (the wrap-cut ellipse's own
+//     plane is not just tilted relative to one cylinder's axis, as in case
+//     03, but the two cylinders' axes do not meet at all), and is left for
+//     a future session's own direct trace.
+//   - Sweep case 06 (cyl+cyl perpendicular equal radii, Steinmetz): NOT
+//     attempted this session, per this same sweep's own ranked diagnosis -
+//     a qualitatively different, harder bug (intersection chains crossing
+//     on the SAME face) than the wrap-cut/refinement family (k)-(m) above.
+//     Still throws "an edge is claimed by 3 or more fragment loops" on
+//     Intersection/A-B/B-A.
 #include "dino8/kernel/boolean_general.h"
 
 #include <algorithm>
@@ -667,22 +799,129 @@ bool SplitPeriodicWrapChain(const Chain& c, const ON_Surface& s, Chain& out_open
   // side) is a real, if small, extra facet of this face alone - not an
   // approximation error, since both its own endpoints are exact for THIS
   // face's own surface.
-  {
-    const double lo = s.Domain(wrap_dir).Min(), hi = s.Domain(wrap_dir).Max();
-    const double fu = wrap_dir == 0 ? out_open.front().uv.x : out_open.front().uv.y;
-    const bool front_is_lo = std::fabs(fu - lo) < std::fabs(fu - hi);
-    // `near_pt`, not `near`: the latter is a legacy Windows SDK macro (see
-    // the is_close rename elsewhere in this file for the same MSVC break).
-    auto make_seam_point = [&](const UVPt& near_pt, double snapped) {
-      UVPt sp = near_pt;
-      if (wrap_dir == 0) sp.uv.x = snapped; else sp.uv.y = snapped;
-      sp.p = s.PointAt(sp.uv.x, sp.uv.y);
-      return sp;
-    };
-    const UVPt front_seam = make_seam_point(out_open.front(), front_is_lo ? lo : hi);
-    const UVPt back_seam = make_seam_point(out_open.back(), front_is_lo ? hi : lo);
-    out_open.insert(out_open.begin(), front_seam);
-    out_open.push_back(back_seam);
+  //
+  // FORMERLY-REMAINING BUG, NOW FIXED: the two new vertices (front_seam at
+  // one end of the periodic direction, back_seam at the other) are BOTH
+  // meant to sit at the exact same location along the surface's OTHER
+  // ("cross") direction - e.g. the same axial height on a cylinder wall,
+  // the same latitude on a sphere - since a periodic surface's u == lo and
+  // u == hi sides are the literal same 3D curve, and this one wrap-cut
+  // crosses that curve at exactly ONE physical point (this is not two
+  // different points, it is the SAME point expressed on both sides of the
+  // domain rectangle). The code used to take that cross-direction value
+  // from each end's own nearby ORIGINAL sample (out_open.front()/back())
+  // independently - two different, already-refined points on the real
+  // curve, each carrying its own small, independent Newton-residual noise
+  // in that direction. For a curve tangent to the wrap direction (a level
+  // circle, the common case), that noise is normally far below drawing
+  // tolerance, but confirmed by direct tracing on sphere+cylinder (sweep
+  // case 13, a cylinder wall pierced by a sphere along its own axis): the
+  // two independent values differed by ~1e-6, just ABOVE this file's own
+  // kWeldTol, so front_seam and back_seam's shared physical point produced
+  // TWO vertices that failed to weld into one - a genuine "Line points are
+  // coincident" / zero-length-2D-trim ON_Brep::IsValid() failure (this
+  // one is a 2D degeneracy: BuildLoop() draws a trim between two
+  // *different* vertices that nonetheless carry the identical (u, v),
+  // since the seam-side loop sample this point later merges with was
+  // snapped from the SAME nearby original sample). Root-caused and fixed:
+  // compute ONE shared cross-direction value from the two samples that
+  // actually straddle the seam crossing (out_open.back() -> out_open.front(),
+  // the very pair the crossing scan above found), linearly interpolated at
+  // the exact point their wrap-direction values cross the seam - the same
+  // interpolate-then-pin idea surface_intersect.cpp's own SeamCrossing()
+  // uses for a genuine surface-pair seam crossing, specialized here to a
+  // single already-known polyline (no second surface / Newton solve
+  // needed: the two straddling samples already bracket the true crossing
+  // tightly enough that a linear blend is accurate to well within
+  // kWeldTol) - and use that ONE value for BOTH new vertices, so they are
+  // computed from IDENTICAL inputs rather than two merely-close ones. This
+  // also directly helps a SLOPED or SKEW wrap-cut (the cutting surface is
+  // not exactly perpendicular to the periodic axis, so the two straddling
+  // samples' cross-direction values differ by more than mere Newton noise
+  // - interpolating between them is then not just noise-cancelling but the
+  // geometrically correct thing to do, unlike either endpoint's own value
+  // alone).
+  //
+  // A FURTHER, SEPARATE degeneracy, also root-caused on this same sweep
+  // case 13 fixture: the two samples that straddle the crossing
+  // (out_open.back()/front(), found by the scan above) are not always an
+  // ORDINARY pair merely near the seam - for a curve whose own upstream
+  // discretization happens to seed a sample exactly AT one domain end (a
+  // Newton solve's own hard clamp to the domain, see NewtonSolve()'s use
+  // of Clamp() in surface_intersect.cpp, lands bit-exactly on `lo`/`hi`
+  // when the unclamped solution would overshoot the domain), BOTH
+  // straddling samples can already sit bit-exactly ON the seam (one at
+  // `lo`, one at `hi`) before this function does anything at all. In that
+  // case the OLD/general code below (insert a brand-new vertex right next
+  // to each original sample) put a freshly-surface-evaluated point
+  // literally adjacent, in the chain, to an original sample that ALREADY
+  // has the exact same wrap-direction value - and, because the new
+  // point's cross-direction value was taken from (or, after the fix just
+  // above, blended from) that same nearby original sample, the two ended
+  // up with IDENTICAL (u, v) but slightly different `p` (the original
+  // sample's own small, inherent SSX residual, ~ opt.tolerance, vs. the
+  // new point's exact analytic surface evaluation) - a genuine "Line
+  // points are coincident" / zero-length-2D-trim ON_Brep::IsValid()
+  // failure, confirmed by direct tracing (the residual measured exactly
+  // the ~1e-6 the sweep's own diagnosis flagged, landing just above
+  // kWeldTol). Fixed the same way CutChainAtDomainBoundary() already
+  // handles an on-boundary run elsewhere in this file: when a straddling
+  // sample is ALREADY at the seam to within Newton's own convergence (not
+  // just "somewhere on the same side" - a tight, absolute check, since
+  // this is specifically catching an exact domain-clamp, not the general
+  // "up to one mesh cell" case the brand-new-vertex path below still
+  // handles), reuse that EXISTING sample as the seam-side end directly -
+  // only tidying its own wrap-direction value to the exact domain bound
+  // and its cross-direction value to the shared, interpolated
+  // `cross_val` - rather than inserting a redundant second vertex
+  // negligibly close to it. Its `p` is deliberately left untouched (same
+  // reasoning as CutChainAtDomainBoundary's own doc comment): it is still
+  // the exact point the OTHER face's own copy of this chain welds
+  // against, and the small (u, v)-vs-`p` residual this leaves is the same
+  // order as any ordinary open-chain splice endpoint's own SSX tolerance,
+  // which ON_Brep::IsValid()'s trim-vs-edge check already tolerates.
+  const double lo = s.Domain(wrap_dir).Min(), hi = s.Domain(wrap_dir).Max();
+  const double L = hi - lo;
+  const UVPt& straddle_before = out_open.back();   // pts[cut_at]
+  const UVPt& straddle_after = out_open.front();   // pts[cut_at + 1]
+  const double w_before = wrap_dir == 0 ? straddle_before.uv.x : straddle_before.uv.y;
+  const double w_after = wrap_dir == 0 ? straddle_after.uv.x : straddle_after.uv.y;
+  const double c_before = wrap_dir == 0 ? straddle_before.uv.y : straddle_before.uv.x;
+  const double c_after = wrap_dir == 0 ? straddle_after.uv.y : straddle_after.uv.x;
+  const double w_after_un = w_after + (w_before > w_after ? L : -L);
+  const double seam_before = w_before > w_after ? hi : lo;
+  const double denom = w_after_un - w_before;
+  const double t = std::fabs(denom) > 1e-300 ? std::clamp((seam_before - w_before) / denom, 0.0, 1.0) : 0.5;
+  const double cross_val = c_before + (c_after - c_before) * t;
+  const double fu = w_after;
+  const bool front_is_lo = std::fabs(fu - lo) < std::fabs(fu - hi);
+  // Exact-domain-clamp check: much tighter than "near the seam" - this
+  // only ever fires for a sample Newton already snapped bit-exactly to
+  // the boundary, never for the ordinary "up to one mesh cell off" case.
+  const double exact_eps = 1e-9 * std::max(L, 1.0);
+  auto already_at_seam = [&](double w, double snapped) { return std::fabs(w - snapped) <= exact_eps; };
+  // `near_pt`, not `near`: the latter is a legacy Windows SDK macro (see
+  // the is_close rename elsewhere in this file for the same MSVC break).
+  auto make_seam_point = [&](const UVPt& near_pt, double snapped) {
+    UVPt sp = near_pt;
+    if (wrap_dir == 0) { sp.uv.x = snapped; sp.uv.y = cross_val; } else { sp.uv.y = snapped; sp.uv.x = cross_val; }
+    sp.p = s.PointAt(sp.uv.x, sp.uv.y);
+    return sp;
+  };
+  const double front_snap = front_is_lo ? lo : hi;
+  const double back_snap = front_is_lo ? hi : lo;
+  if (already_at_seam(w_after, front_snap)) {
+    // Reuse the existing straddling sample in place: no new vertex.
+    if (wrap_dir == 0) { out_open.front().uv.x = front_snap; out_open.front().uv.y = cross_val; }
+    else { out_open.front().uv.y = front_snap; out_open.front().uv.x = cross_val; }
+  } else {
+    out_open.insert(out_open.begin(), make_seam_point(out_open.front(), front_snap));
+  }
+  if (already_at_seam(w_before, back_snap)) {
+    if (wrap_dir == 0) { out_open.back().uv.x = back_snap; out_open.back().uv.y = cross_val; }
+    else { out_open.back().uv.y = back_snap; out_open.back().uv.x = cross_val; }
+  } else {
+    out_open.push_back(make_seam_point(out_open.back(), back_snap));
   }
   return true;
 }

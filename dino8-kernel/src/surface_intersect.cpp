@@ -796,7 +796,44 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
       };
       const bool bracketed = in_bracket(ua, ic.uv_a[i].x, ic.uv_a[j].x) && in_bracket(va, ic.uv_a[i].y, ic.uv_a[j].y) &&
                               in_bracket(ub, ic.uv_b[i].x, ic.uv_b[j].x) && in_bracket(vb, ic.uv_b[i].y, ic.uv_b[j].y);
-      if (bracketed && pm.DistanceTo(x) > opt.tolerance && pm.DistanceTo(x) <= local_span &&
+      // A THIRD, independent guard, needed alongside the two above: a
+      // segment whose own two endpoints (i, j) are themselves NOT
+      // adjacent samples of a clean, already-monotonic curve - because an
+      // EARLIER pass (or the raw mesh-seeded chain itself, before any
+      // refinement) already left a small back-and-forth reversal between
+      // i and a DIFFERENT nearby sample not involved in this segment at
+      // all - can still pass both the distance cap and the bracket check
+      // above for a NEW point that itself reverses direction relative to
+      // i (moving AWAY from j, back the way the curve already came from,
+      // rather than continuing toward it), since the bracket's own 25%
+      // slack is generous enough to admit exactly this: confirmed by
+      // direct tracing on a SLOPED cylinder cut (sweep case 03, box+cyl
+      // OBLIQUE axis) and a cone (case 15) - a self-intersecting 2D trim
+      // loop traced back to two consecutive chain samples out of angular
+      // order (e.g. angle 0.093 immediately followed by angle 0.057,
+      // reversing a few mesh-cells' worth of otherwise-monotonic angular
+      // progress). Reject an insertion whose own coordinate, in EITHER
+      // surface's chart, moves backward from `i` relative to the
+      // direction `i` is heading toward `j` - a small allowance
+      // (opt.tolerance, or a tiny fraction of the segment's own span)
+      // covers ordinary Newton noise on an intentionally near-constant
+      // coordinate without opening the same hole the 25%-of-range bracket
+      // slack does. This does not by itself fix an already-reversed PAIR
+      // of raw/coarse samples (this pass only ever proposes ONE new point
+      // per segment) but does stop this segment's own refinement from
+      // making a bad situation worse, and in practice removes the
+      // specific self-crossing traced above.
+      auto monotonic_from_i = [&](double v, double vi, double vj) {
+        const double range = vj - vi;
+        const double back_slack = std::max(opt.tolerance, 1e-9 * std::fabs(range));
+        if (std::fabs(range) <= back_slack) return true;  // no meaningful direction on this coordinate
+        return range > 0 ? (v >= vi - back_slack) : (v <= vi + back_slack);
+      };
+      const bool no_reversal = monotonic_from_i(ua, ic.uv_a[i].x, ic.uv_a[j].x) &&
+                                monotonic_from_i(va, ic.uv_a[i].y, ic.uv_a[j].y) &&
+                                monotonic_from_i(ub, ic.uv_b[i].x, ic.uv_b[j].x) &&
+                                monotonic_from_i(vb, ic.uv_b[i].y, ic.uv_b[j].y);
+      if (bracketed && no_reversal && pm.DistanceTo(x) > opt.tolerance && pm.DistanceTo(x) <= local_span &&
           x.DistanceTo(ic.points[i]) > opt.tolerance * 2 && x.DistanceTo(ic.points[j]) > opt.tolerance * 2) {
         np.push_back(x); na.emplace_back(ua, va); nb.emplace_back(ub, vb);
         inserted = true;
@@ -804,6 +841,62 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
     }
     if (!inserted) break;
     ic.points = np; ic.uv_a = na; ic.uv_b = nb;
+    fit();
+  }
+  // Final cleanup pass: drop any point that locally reverses direction
+  // relative to its own two immediate neighbors, in EITHER surface's own
+  // chart - a small-amplitude back-and-forth jitter that the insertion-time
+  // guard above cannot always catch, because it can arise from TWO
+  // separately-refined adjacent segments each individually valid on its
+  // own (only ever checked against its own two endpoints) but mutually
+  // inconsistent once assembled - e.g. a segment (P, Q) refined first,
+  // landing its own new point near P, followed by a refinement of (that
+  // new point, Q) or (P, that new point) that, checked only against ITS
+  // own now-nearer endpoints, still passes but overshoots back past where
+  // the curve had already gotten to. Confirmed by direct tracing on a cone
+  // (sweep case 15, box+cone): a self-intersecting 2D trim loop traced
+  // back to exactly a triple of this shape, immune to the per-segment
+  // insertion guard for exactly that reason. Uses the SAME generous,
+  // curvature-tolerant bracket (25% of the neighbor-to-neighbor span, or
+  // a small absolute floor) already trusted for ordinary insertion, so a
+  // genuinely curved passage - where the middle sample legitimately sits
+  // a little outside the dead-straight P-Q line - is not disturbed; only
+  // an overshoot beyond that same margin, in some coordinate, is dropped.
+  // Runs to a fixed point (a dropped point can occasionally expose a
+  // second one, now that its former neighbors are adjacent) with a small
+  // iteration cap so a pathological curve degrades to "leaves the jitter
+  // in place" rather than loops.
+  for (int cleanup_pass = 0; cleanup_pass < 4; ++cleanup_pass) {
+    const size_t n = ic.points.size();
+    if (n < 4) break;
+    const size_t nsegs = ic.closed ? n : n - 1;
+    std::vector<char> drop(n, 0);
+    bool any_drop = false;
+    for (size_t idx = 0; idx < n; ++idx) {
+      if (!ic.closed && (idx == 0 || idx + 1 >= n)) continue;
+      const size_t ip = (idx + n - 1) % n, in = (idx + 1) % n;
+      if (ic.closed && nsegs < 4) continue;  // too small a loop to second-guess
+      if (is_seam_segment(ip, idx) || is_seam_segment(idx, in)) continue;
+      auto out_of_bracket = [&](double vp, double vi, double vn) {
+        double lo = std::min(vp, vn), hi = std::max(vp, vn);
+        const double slack = std::max(0.25 * (hi - lo), opt.tolerance * 10);
+        return vi < lo - slack || vi > hi + slack;
+      };
+      const bool bad = out_of_bracket(ic.uv_a[ip].x, ic.uv_a[idx].x, ic.uv_a[in].x) ||
+                        out_of_bracket(ic.uv_a[ip].y, ic.uv_a[idx].y, ic.uv_a[in].y) ||
+                        out_of_bracket(ic.uv_b[ip].x, ic.uv_b[idx].x, ic.uv_b[in].x) ||
+                        out_of_bracket(ic.uv_b[ip].y, ic.uv_b[idx].y, ic.uv_b[in].y);
+      if (bad) { drop[idx] = 1; any_drop = true; }
+    }
+    if (!any_drop) break;
+    std::vector<Point3d> np2;
+    std::vector<ON_2dPoint> na2, nb2;
+    for (size_t idx = 0; idx < n; ++idx) {
+      if (drop[idx]) continue;
+      np2.push_back(ic.points[idx]); na2.push_back(ic.uv_a[idx]); nb2.push_back(ic.uv_b[idx]);
+    }
+    if (np2.size() < 3) break;  // never collapse below a usable curve
+    ic.points = np2; ic.uv_a = na2; ic.uv_b = nb2;
     fit();
   }
   ic.max_error = 0;
