@@ -1231,6 +1231,29 @@ nccheck "NestedClippingDrawing: 1 nested drawing curve(s) clipping PlaneX's sect
 nccheck "Bounding box min 0,0,0 max 0,0,10" "the nested drawing is the hand-computed line where PlaneX and PlaneY intersect, clipped to PlaneX's rectangle (x=0,y=0,z in [0,10]) -- a real doubly-clipped result, not a re-derivation from the cube"
 nccheck "^ok   expect_objects 3" "nested-clipping script ended with exactly the cube, the flat PlaneX drawing and the nested PlaneX>PlaneY drawing"
 
+# ImportLayout: per-detail hidden-object state (LayoutDetail::hidden_objects)
+# must survive the round trip through a saved .3dm and back in via
+# ImportLayout, not just the page/detail cameras - see importlayout_script.txt
+# and cmd_viewtools.cpp's ImportLayout/DetailHiddenSelfTest.
+mkdir -p "$TMP/il"
+sed "s|@TMP@|$TMP/il|g" "$HERE/importlayout_script.txt" > "$TMP/importlayout_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  IL="$("$BIN" --smoke 30 --script "$TMP/importlayout_script.txt" 2>&1)" || { echo "$IL"; echo "FAIL: ImportLayout script exited non-zero"; exit 1; }
+else
+  IL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/importlayout_script.txt" 2>&1)" || { echo "$IL"; echo "FAIL: ImportLayout script exited non-zero"; exit 1; }
+fi
+ilcheck() { if echo "$IL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+ilcheck "HideInDetail: 1 object(s) in 1 detail(s)" "HideInDetail hid the tagged box in the source document"
+ilcheck "ImportLayout: imported 1 layout(s) and 2 object(s) from $TMP/il/importlayout_src.3dm" "ImportLayout pulled in the layout and both objects it references"
+ilcheck "Layouts: 1 layout(s); active: Model" "the imported layout exists in the fresh document"
+IL_BEFORE_COUNT="$(echo "$IL" | grep -c "^history: DetailHiddenSelfTest: Sheet1/Det1 hidden_objects=1")"
+[ "$IL_BEFORE_COUNT" -ge 2 ] && echo "ok   DetailHiddenSelfTest reports exactly 1 hidden object both before Save and after ImportLayout" || { echo "FAIL DetailHiddenSelfTest hidden_objects count ($IL_BEFORE_COUNT occurrence(s) of hidden_objects=1, want >=2)"; fail=1; }
+IL_HIDDEN_COUNT="$(echo "$IL" | grep -c "^history: DetailHiddenSelfTest: SrcHidden hidden$")"
+IL_VISIBLE_COUNT="$(echo "$IL" | grep -c "^history: DetailHiddenSelfTest: SrcVisible visible$")"
+[ "$IL_HIDDEN_COUNT" -ge 2 ] && echo "ok   SrcHidden is reported hidden in LayoutDetail::hidden_objects both before Save and after ImportLayout ($IL_HIDDEN_COUNT occurrence(s))" || { echo "FAIL SrcHidden was not consistently reported hidden ($IL_HIDDEN_COUNT occurrence(s), want >=2)"; fail=1; }
+[ "$IL_VISIBLE_COUNT" -ge 2 ] && echo "ok   SrcVisible is reported visible (not swept into hidden_objects) both before Save and after ImportLayout ($IL_VISIBLE_COUNT occurrence(s))" || { echo "FAIL SrcVisible was not consistently reported visible ($IL_VISIBLE_COUNT occurrence(s), want >=2)"; fail=1; }
+ilcheck "^ok   expect_objects 2" "ImportLayout script ended with exactly the 2 imported objects (no duplicated geometry)"
+
 # PrintDisplay: the preview must show each object's real print colour
 # (Document::EffectiveColor, the same colour ExportPdf/ExportSvg actually
 # put on the page) instead of Viewport.cpp's near-black-on-dark-background

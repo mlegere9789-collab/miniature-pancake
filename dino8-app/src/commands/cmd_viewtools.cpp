@@ -1716,11 +1716,71 @@ void RegisterViewToolsCommands(CommandEngine& e) {
         std::string err;
         if (!Load3dm(other, path, err)) { ctx.Warn(err); return; }
         ctx.Doc().BeginChange("ImportLayout");
+        // Bring the source file's model geometry along too (like the plain
+        // Import command), tracking old-id -> new-id so each imported
+        // detail's per-object hidden list (LayoutDetail::hidden_objects,
+        // resolved from "Dino8.HiddenObjects" uuids by Load3dm above) can be
+        // remapped onto the objects that actually now exist in this
+        // document. Without this the hidden-object ids from `other` would
+        // be meaningless here (Document::Add always assigns fresh ids), so
+        // the hidden state would silently disappear on import.
+        std::map<ObjectId, ObjectId> id_map;
+        for (SceneObject o : other.Objects()) {
+          const ObjectId old_id = o.id;
+          o.selected = false;
+          const ObjectId new_id = ctx.Doc().Add(std::move(o));
+          id_map[old_id] = new_id;
+        }
         int n = 0;
-        for (const Layout& L : other.Layouts()) { Layout c = L; c.name = UniqueLayoutName(ctx.Doc(), L.name); ctx.Doc().Layouts().push_back(c); ++n; }
+        for (const Layout& L : other.Layouts()) {
+          Layout c = L;
+          c.name = UniqueLayoutName(ctx.Doc(), L.name);
+          for (LayoutDetail& d : c.details) {
+            std::vector<ObjectId> mapped;
+            mapped.reserve(d.hidden_objects.size());
+            for (ObjectId old_id : d.hidden_objects) {
+              auto it = id_map.find(old_id);
+              if (it != id_map.end()) mapped.push_back(it->second);
+            }
+            d.hidden_objects = std::move(mapped);
+          }
+          ctx.Doc().Layouts().push_back(c);
+          ++n;
+        }
         ctx.Doc().Touch();
-        ctx.Print("ImportLayout: imported " + std::to_string(n) + " layout(s) from " + path);
-      }), CommandStatus::Partial, "Imports the page and detail cameras; per-detail hidden objects are not mapped.");
+        ctx.Print("ImportLayout: imported " + std::to_string(n) + " layout(s) and " + std::to_string(id_map.size()) + " object(s) from " + path);
+      }), CommandStatus::Implemented, "Imports the page and detail cameras plus the source file's model geometry, remapping each detail's per-object hidden list (Dino8.HiddenObjects) onto the freshly-imported objects so hidden state survives the round trip.");
+  // Test-only diagnostic (not in commands.json, not on any menu - same
+  // pattern as ThemeSelfTest/DockLayoutSelfTest above): reports, for one
+  // named layout/detail, the real LayoutDetail::hidden_objects list's size
+  // and whether each object carrying a given "Dino8.ImportLayoutTag"
+  // user-text value (set via SetUserText - user text round-trips through
+  // Save/Open and ImportLayout's own object import verbatim, unlike an
+  // object name, which nothing in this app's command set lets a script set)
+  // is actually a member of it - a direct check of the data model
+  // ImportLayout's per-detail hidden-object mapping writes into, not a
+  // rendered-pixel proxy for it.
+  Reg(e, "DetailHiddenSelfTest", Immediate([](CommandContext& ctx) {
+        std::map<std::string, std::string> opts;
+        const std::vector<std::string> pos = TakeOptions(ctx, opts);
+        if (pos.size() < 2) { ctx.Warn("DetailHiddenSelfTest: DetailHiddenSelfTest <Layout> <Detail> [TagValue...] (test-only: reports LayoutDetail::hidden_objects membership directly, by Dino8.ImportLayoutTag user text)"); return; }
+        Layout* L = ctx.Doc().FindLayout(pos[0]);
+        if (!L) { ctx.Warn("DetailHiddenSelfTest: no layout named " + pos[0]); return; }
+        LayoutDetail* d = nullptr;
+        for (LayoutDetail& dd : L->details) if (ToLower(dd.name) == ToLower(pos[1])) d = &dd;
+        if (!d) { ctx.Warn("DetailHiddenSelfTest: no detail named " + pos[1] + " in " + pos[0]); return; }
+        ctx.Print("DetailHiddenSelfTest: " + pos[0] + "/" + pos[1] + " hidden_objects=" + std::to_string(d->hidden_objects.size()));
+        for (size_t i = 2; i < pos.size(); ++i) {
+          const SceneObject* o = nullptr;
+          for (const SceneObject& s : ctx.Doc().Objects()) {
+            auto it = s.user_text.find("Dino8.ImportLayoutTag");
+            if (it != s.user_text.end() && it->second == pos[i]) { o = &s; break; }
+          }
+          if (!o) { ctx.Print("DetailHiddenSelfTest: " + pos[i] + " not-found"); continue; }
+          const bool hidden = std::find(d->hidden_objects.begin(), d->hidden_objects.end(), o->id) != d->hidden_objects.end();
+          ctx.Print("DetailHiddenSelfTest: " + pos[i] + " " + (hidden ? "hidden" : "visible"));
+        }
+      }));
   Reg(e, "Detail", Make<DetailCommand>());
   Reg(e, "CopyDetailToViewport", Immediate([](CommandContext& ctx) { CopyDetailCamera(ctx, true); }));
   Reg(e, "CopyViewportToDetail", Immediate([](CommandContext& ctx) { CopyDetailCamera(ctx, false); }));
