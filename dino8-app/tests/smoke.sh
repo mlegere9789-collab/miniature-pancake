@@ -1027,7 +1027,7 @@ stcheck "CreateRegions: 3 open curve(s) don't close into a simple loop (a dangli
 # A fresh Cage/CageEdit pair is used (not the object 8/cage 9 pair from the
 # Cage/CageEdit section above, whose own CageBinding is already gone by
 # this point - see the comment in solidtools_script.txt).
-stcheck "ExtractOriginalCaptives: 1 original\(s\) restored as copies" "ExtractOriginalCaptives restored the captive's original after Save/New/Open, not just within the same session"
+stcheck "ExtractOriginalCaptives: 1 original(s) restored as copies" "ExtractOriginalCaptives restored the captive's original after Save/New/Open, not just within the same session"
 stcheck "Bounding box min 1800,0,0 max 1810,10,10" "the restored original is the untouched pre-cage box (1800,0,0 to 1810,10,10), the exact geometry Box 1800,0,0 1810,10,0 10 created before it was ever bound to the cage"
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
