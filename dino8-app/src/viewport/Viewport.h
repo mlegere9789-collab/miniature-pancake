@@ -242,6 +242,15 @@ class Viewport {
   // Writes the last rendered frame of this viewport as a 24-bit BMP.
   bool CaptureToFile(const std::string& path, std::string& error) const;
 
+  // Reads back the last rendered frame's pixels (bottom-up rows - GL's own
+  // glReadPixels order, the same layout CaptureToFile's BMP writer already
+  // relies on - 3 bytes per pixel) without touching disk. The shared basis
+  // for CaptureToFile and for the OS-clipboard capture commands
+  // (ViewCaptureToClipboard, ScreenCaptureToClipboard), which need the raw
+  // RGB buffer to hand to the platform clipboard writer instead of a file
+  // path.
+  bool CapturePixelsRGB(std::vector<unsigned char>& rgb, int& width, int& height, std::string& error) const;
+
   void ZoomExtents(const Document& doc, bool selected_only);
   void ZoomTo(const kernel::BoundingBox& box);
 

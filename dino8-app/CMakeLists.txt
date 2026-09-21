@@ -5,6 +5,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
+# ClipboardMac.mm (src/platform/) is Objective-C++ - the real NSPasteboard
+# shim behind the OS-clipboard image commands (ViewCaptureToClipboard,
+# ScreenCaptureToClipboard, CopyRenderWindowToClipboard) on macOS. The
+# language must be enabled before any target references that file.
+if(APPLE)
+  enable_language(OBJCXX)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
@@ -229,6 +237,7 @@ set(DINO8_SOURCES
   src/viewport/Viewport.cpp
   src/render/GlRenderer.cpp
   src/render/ImageIO.cpp
+  src/platform/Clipboard.cpp
   src/render/Bvh.cpp
   src/render/MaterialLibrary.cpp
   src/render/PathTracer.cpp
@@ -293,6 +302,23 @@ set(DINO8_SOURCES
   src/commands/cmd_sheetset.cpp
 )
 
+# Real OS-clipboard image backend for ViewCaptureToClipboard/
+# ScreenCaptureToClipboard/CopyRenderWindowToClipboard: exactly one
+# platform-specific translation unit per host OS (see src/platform/
+# Clipboard.h for why - each is a genuinely different native API).
+if(WIN32)
+  list(APPEND DINO8_SOURCES src/platform/ClipboardWin32.cpp)
+elseif(APPLE)
+  list(APPEND DINO8_SOURCES src/platform/ClipboardMac.mm)
+  set_source_files_properties(src/platform/ClipboardMac.mm PROPERTIES LANGUAGE OBJCXX)
+else()
+  list(APPEND DINO8_SOURCES src/platform/ClipboardLinuxX11.cpp)
+  # libX11-dev is already a build requirement for GLFW's X11 backend
+  # (GLFW_BUILD_X11, above); this just links the same library directly for
+  # our own ICCCM CLIPBOARD-selection-owner code.
+  find_package(X11 REQUIRED)
+endif()
+
 if(WIN32)
   add_executable(Dino8 WIN32 ${DINO8_SOURCES} resources/dino8.rc)
 elseif(APPLE)
@@ -328,6 +354,19 @@ target_link_libraries(Dino8 PRIVATE dino8_kernel imgui glfw OpenGL::GL opennurbs
 if(Python3_FOUND)
   target_compile_definitions(Dino8 PRIVATE DINO8_HAVE_PYTHON)
   target_link_libraries(Dino8 PRIVATE pybind11::embed)
+endif()
+
+# Clipboard backend libraries (see the platform-specific source list above).
+# ClipboardWin32.cpp only needs User32 (OpenClipboard/SetClipboardData/...
+# and RegisterClipboardFormatW live there; GlobalAlloc/Lock/Unlock/Free are
+# Kernel32, already linked by default) - no GDI object is created.
+if(WIN32)
+  target_link_libraries(Dino8 PRIVATE user32)
+elseif(APPLE)
+  target_link_libraries(Dino8 PRIVATE "-framework AppKit")
+else()
+  target_include_directories(Dino8 PRIVATE ${X11_INCLUDE_DIR})
+  target_link_libraries(Dino8 PRIVATE ${X11_LIBRARIES})
 endif()
 
 if(MSVC)

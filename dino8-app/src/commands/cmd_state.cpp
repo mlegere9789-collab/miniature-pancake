@@ -15,6 +15,7 @@
 
 #include "app/Settings.h"
 #include "i18n/I18n.h"
+#include "platform/Clipboard.h"
 #include "session/Digitizer.h"
 #include "ui/Panels.h"
 #include "ui/Theme.h"
@@ -976,17 +977,35 @@ void RegisterStateCommands(CommandEngine& e) {
       "Stored flag: when on, Digitize/DigCamera/DigClick/DigLine/DigSection/DigSketch print a terminal bell (\\a) for each digitized point - a real, if minimal, stand-in for the audible beep real digitizer hardware would make. Still Partial because none of those commands can ever fire without a connected digitizer.");
 
   // ---- clipboard captures --------------------------------------------------
+  // Both copy the active viewport's last-rendered frame to the real OS
+  // clipboard as an image (PNG, plus a BMP/CF_DIB representation where the
+  // platform backend offers one) - see src/platform/Clipboard.h for the
+  // per-OS mechanism (an in-process X11 ICCCM selection owner on Linux, the
+  // Win32 clipboard on Windows, NSPasteboard on macOS). Neither captures the
+  // whole application window the way ScreenCaptureToFile does; despite the
+  // "Screen" name, ScreenCaptureToClipboard here is the same active-viewport
+  // capture as ViewCaptureToClipboard, just under Rhino's other menu name
+  // for it.
   auto capture = [](const char* label) {
     return Immediate([label](CommandContext& ctx) {
       Viewport* vp = ctx.ActiveViewport();
       if (!vp) return;
-      const std::string p = (fs::path(ConfigDirectory()) / "clipboard.bmp").string();
+      std::vector<unsigned char> rgb;
+      int w = 0, h = 0;
       std::string err;
-      if (vp->CaptureToFile(p, err)) ctx.Print(std::string(label) + ": image written to " + p + " (system clipboard images are planned)"); else ctx.Warn(err);
+      if (!vp->CapturePixelsRGB(rgb, w, h, err)) { ctx.Warn(err); return; }
+      if (platform::WriteImageToClipboard(w, h, rgb, /*bottom_up=*/true, err)) {
+        ctx.Print(std::string(label) + ": " + std::to_string(w) + "x" + std::to_string(h) +
+                   " image copied to the system clipboard (image/png)");
+      } else {
+        ctx.Warn(std::string(label) + ": could not reach the system clipboard (" + err + ")");
+      }
     });
   };
-  Reg(e, "ViewCaptureToClipboard", capture("ViewCaptureToClipboard"), CommandStatus::Partial, "There is no real system-clipboard image write here (that needs a platform-specific API - X11/Wayland selection ownership, the Win32 or Cocoa clipboard - which this GLFW-based app doesn't wire up, and X11's async selection protocol in particular doesn't survive a script exiting right after this command runs). Writes the capture to clipboard.bmp next to the settings instead.");
-  Reg(e, "ScreenCaptureToClipboard", capture("ScreenCaptureToClipboard"), CommandStatus::Partial, "Same limitation as ViewCaptureToClipboard: no real system-clipboard image write, so it captures the active viewport to a file next to the settings instead.");
+  Reg(e, "ViewCaptureToClipboard", capture("ViewCaptureToClipboard"), CommandStatus::Implemented,
+      "Copies the active viewport's last-rendered frame to the real OS clipboard as an image (image/png, plus image/bmp where the platform backend offers it) - a genuine clipboard write (X11 ICCCM selection ownership on Linux, the Win32 clipboard on Windows, NSPasteboard on macOS; see src/platform/Clipboard.h), not a file written next to the settings.");
+  Reg(e, "ScreenCaptureToClipboard", capture("ScreenCaptureToClipboard"), CommandStatus::Implemented,
+      "Same real OS-clipboard image write as ViewCaptureToClipboard (see its help). Despite the name, this captures the active viewport, not the whole application window - ScreenCaptureToFile is the one that captures every viewport and panel as composited.");
 }
 
 }  // namespace dino8::app

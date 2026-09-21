@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -335,7 +336,124 @@ bool LoadPng(const std::vector<unsigned char>& d, Image& img, std::string& error
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// PNG encoding (write side): CRC-32 and Adler-32 checksums, a "stored"
+// (uncompressed) deflate block writer, and the IHDR/IDAT/IEND chunk layout.
+// Real, spec-conformant output (RFC 2083 / RFC 1950 / RFC 1951) - just not
+// compressed, since correctness (a byte-exact, standards-conformant PNG any
+// reader can decode) matters far more here than file size for a clipboard
+// image.
+// ---------------------------------------------------------------------------
+
+uint32_t Crc32(const unsigned char* data, size_t n) {
+  static uint32_t table[256];
+  static bool built = false;
+  if (!built) {
+    for (uint32_t i = 0; i < 256; ++i) {
+      uint32_t c = i;
+      for (int k = 0; k < 8; ++k) c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+      table[i] = c;
+    }
+    built = true;
+  }
+  uint32_t crc = 0xFFFFFFFFu;
+  for (size_t i = 0; i < n; ++i) crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+  return crc ^ 0xFFFFFFFFu;
+}
+
+uint32_t Adler32(const unsigned char* data, size_t n) {
+  uint32_t a = 1, b = 0;
+  const uint32_t MOD = 65521;
+  for (size_t i = 0; i < n; ++i) {
+    a = (a + data[i]) % MOD;
+    b = (b + a) % MOD;
+  }
+  return (b << 16) | a;
+}
+
+// Wraps `raw` in a minimal zlib stream (RFC 1950 header, RFC 1951 "stored"
+// (type 00) deflate blocks - each literally the input bytes with a 5-byte
+// block header, valid and fully decodable even though it does not actually
+// compress anything, RFC 1951 section 3.2.4 - and the trailing Adler-32).
+void ZlibDeflateStored(const std::vector<unsigned char>& raw, std::vector<unsigned char>& out) {
+  out.clear();
+  out.push_back(0x78);  // CMF: CM=8 (deflate), CINFO=7 (32K window)
+  out.push_back(0x01);  // FLG: FCHECK makes (CMF<<8|FLG) a multiple of 31; FLEVEL=0 (fastest, honest for stored blocks)
+  size_t pos = 0;
+  const size_t n = raw.size();
+  do {
+    const size_t chunk = std::min<size_t>(65535, n - pos);
+    const bool final_block = (pos + chunk >= n);
+    out.push_back(final_block ? 0x01 : 0x00);  // BFINAL | BTYPE(00)<<1, byte-aligned (3 header bits + zero padding)
+    const unsigned len = static_cast<unsigned>(chunk);
+    const unsigned nlen = (~len) & 0xFFFFu;
+    out.push_back(static_cast<unsigned char>(len & 0xFF));
+    out.push_back(static_cast<unsigned char>((len >> 8) & 0xFF));
+    out.push_back(static_cast<unsigned char>(nlen & 0xFF));
+    out.push_back(static_cast<unsigned char>((nlen >> 8) & 0xFF));
+    out.insert(out.end(), raw.begin() + static_cast<long>(pos), raw.begin() + static_cast<long>(pos + chunk));
+    pos += chunk;
+  } while (pos < n);
+  const uint32_t adler = Adler32(raw.data(), raw.size());
+  out.push_back(static_cast<unsigned char>((adler >> 24) & 0xFF));
+  out.push_back(static_cast<unsigned char>((adler >> 16) & 0xFF));
+  out.push_back(static_cast<unsigned char>((adler >> 8) & 0xFF));
+  out.push_back(static_cast<unsigned char>(adler & 0xFF));
+}
+
+void PutBe32(std::vector<unsigned char>& out, uint32_t v) {
+  out.push_back(static_cast<unsigned char>((v >> 24) & 0xFF));
+  out.push_back(static_cast<unsigned char>((v >> 16) & 0xFF));
+  out.push_back(static_cast<unsigned char>((v >> 8) & 0xFF));
+  out.push_back(static_cast<unsigned char>(v & 0xFF));
+}
+
 }  // namespace
+
+bool EncodePng(int width, int height, const std::vector<unsigned char>& rgb, std::vector<unsigned char>& out,
+                std::string& error) {
+  if (width <= 0 || height <= 0 || rgb.size() < static_cast<size_t>(width) * height * 3) {
+    error = "Nothing to encode";
+    return false;
+  }
+  // Raw scanlines: each row is a filter-type byte (0 = None) followed by
+  // width*3 RGB bytes, top row first (PNG scans top-to-bottom).
+  const size_t row_bytes = static_cast<size_t>(width) * 3;
+  std::vector<unsigned char> raw(static_cast<size_t>(height) * (row_bytes + 1));
+  for (int y = 0; y < height; ++y) {
+    unsigned char* dst = &raw[static_cast<size_t>(y) * (row_bytes + 1)];
+    dst[0] = 0;  // filter type None
+    std::memcpy(dst + 1, &rgb[static_cast<size_t>(y) * row_bytes], row_bytes);
+  }
+  std::vector<unsigned char> zlib_stream;
+  ZlibDeflateStored(raw, zlib_stream);
+
+  out.clear();
+  static const unsigned char kSig[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
+  out.insert(out.end(), kSig, kSig + 8);
+
+  auto emit_chunk = [&](const char type[4], const std::vector<unsigned char>& body) {
+    PutBe32(out, static_cast<uint32_t>(body.size()));
+    std::vector<unsigned char> crc_input(type, type + 4);
+    crc_input.insert(crc_input.end(), body.begin(), body.end());
+    out.insert(out.end(), crc_input.begin(), crc_input.begin() + 4);
+    out.insert(out.end(), body.begin(), body.end());
+    PutBe32(out, Crc32(crc_input.data(), crc_input.size()));
+  };
+
+  std::vector<unsigned char> ihdr;
+  PutBe32(ihdr, static_cast<uint32_t>(width));
+  PutBe32(ihdr, static_cast<uint32_t>(height));
+  ihdr.push_back(8);  // bit depth
+  ihdr.push_back(2);  // colour type 2 = truecolor RGB
+  ihdr.push_back(0);  // compression method (only value defined by the spec)
+  ihdr.push_back(0);  // filter method (only value defined by the spec)
+  ihdr.push_back(0);  // interlace method: none
+  emit_chunk("IHDR", ihdr);
+  emit_chunk("IDAT", zlib_stream);
+  emit_chunk("IEND", {});
+  return true;
+}
 
 bool ZlibInflate(const unsigned char* data, size_t size, std::vector<unsigned char>& out, std::string& error) {
   if (size < 2 || (data[0] & 0x0f) != 8 || ((data[0] << 8) | data[1]) % 31 != 0) { error = "bad zlib header"; return false; }
@@ -391,6 +509,26 @@ bool SaveImageRGB(const std::string& path, int w, int h, const std::vector<unsig
     std::fwrite(line.data(), 1, line.size(), f);
   }
   std::fclose(f);
+  return true;
+}
+
+bool EncodeBmp(int w, int h, const std::vector<unsigned char>& rgb, std::vector<unsigned char>& out, std::string& error) {
+  if (w <= 0 || h <= 0 || rgb.size() < static_cast<size_t>(w) * h * 3) { error = "Nothing to encode"; return false; }
+  const int row = (w * 3 + 3) & ~3;
+  const unsigned data_size = static_cast<unsigned>(row) * static_cast<unsigned>(h);
+  out.assign(54 + data_size, 0);
+  out[0] = 'B'; out[1] = 'M';
+  auto put32 = [&](int at, unsigned v) { for (int i = 0; i < 4; ++i) out[static_cast<size_t>(at + i)] = static_cast<unsigned char>((v >> (8 * i)) & 0xff); };
+  auto put16 = [&](int at, unsigned v) { out[static_cast<size_t>(at)] = static_cast<unsigned char>(v & 0xff); out[static_cast<size_t>(at + 1)] = static_cast<unsigned char>((v >> 8) & 0xff); };
+  put32(2, 54 + data_size); put32(10, 54); put32(14, 40); put32(18, static_cast<unsigned>(w)); put32(22, static_cast<unsigned>(h));
+  put16(26, 1); put16(28, 24); put32(34, data_size);
+  for (int y = h - 1; y >= 0; --y) {  // BMP rows are bottom-up
+    unsigned char* line = &out[54 + static_cast<size_t>(h - 1 - y) * row];
+    for (int x = 0; x < w; ++x) {
+      const unsigned char* p = &rgb[(static_cast<size_t>(y) * w + x) * 3];
+      line[static_cast<size_t>(x) * 3] = p[2]; line[static_cast<size_t>(x) * 3 + 1] = p[1]; line[static_cast<size_t>(x) * 3 + 2] = p[0];
+    }
+  }
   return true;
 }
 

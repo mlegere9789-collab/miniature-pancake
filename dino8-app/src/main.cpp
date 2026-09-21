@@ -49,6 +49,7 @@
 #include "app/Application.h"
 #include "app/Settings.h"
 #include "doc/Document.h"
+#include "platform/Clipboard.h"
 #include "ui/Theme.h"
 #include "util/ThreadPool.h"
 #include "viewport/Viewport.h"
@@ -504,6 +505,10 @@ int main(int argc, char** argv) {
   }
 
   app.Shutdown();
+  // Stops the X11 CLIPBOARD-selection-owner thread (Linux) cleanly; a no-op
+  // on Windows/macOS, where clipboard ownership isn't held by a background
+  // thread. See src/platform/Clipboard.h.
+  dino8::platform::ShutdownClipboard();
   ImGui_ImplOpenGL3_Shutdown();
   ImGui_ImplGlfw_Shutdown();
   ImGui::DestroyContext();

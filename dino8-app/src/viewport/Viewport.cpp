@@ -2247,14 +2247,23 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
 
 namespace dino8::app {
 
-bool Viewport::CaptureToFile(const std::string& path, std::string& error) const {
+bool Viewport::CapturePixelsRGB(std::vector<unsigned char>& rgb, int& width, int& height, std::string& error) const {
   const int w = target_.Width(), h = target_.Height();
   if (w <= 0 || h <= 0 || target_.Texture() == 0) { error = "Viewport has not been rendered yet"; return false; }
-  std::vector<unsigned char> rgb(static_cast<size_t>(w) * h * 3);
+  rgb.assign(static_cast<size_t>(w) * h * 3, 0);
   target_.Bind();
   glPixelStorei(GL_PACK_ALIGNMENT, 1);
   glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, rgb.data());
   RenderTarget::Unbind();
+  width = w;
+  height = h;
+  return true;
+}
+
+bool Viewport::CaptureToFile(const std::string& path, std::string& error) const {
+  int w = 0, h = 0;
+  std::vector<unsigned char> rgb;
+  if (!CapturePixelsRGB(rgb, w, h, error)) return false;
   FILE* f = std::fopen(path.c_str(), "wb");
   if (!f) { error = "Cannot write " + path; return false; }
   const int row = (w * 3 + 3) & ~3;

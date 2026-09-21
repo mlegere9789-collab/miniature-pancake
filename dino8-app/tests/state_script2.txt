@@ -145,7 +145,7 @@ GumballDynamicRelocate
 GumballRelocate 5,5,5
 GumballReset
 GumballSettings
-# --- capture (headless: writes files, no system clipboard)
+# --- capture (real OS clipboard image write, verified via DINO8_CLIPBOARD_DEBUG_FILE - see clipboard_script.txt)
 ViewCaptureToClipboard
 ScreenCaptureToClipboard
 # --- misc: help, command list/history, aliases, calculators, macros, toolbars

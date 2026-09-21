@@ -801,7 +801,7 @@ rncheck "BakeMapping: baked the current mapping into mesh UVs for 1 object" "Bak
 rncheck "MappingWidget: showing the mapping-plane gizmo for '(unnamed)' (Surface mapping)" "MappingWidget shows the real gizmo for the selected object's mapping"
 rncheck "MappingWidgetOff: mapping-plane gizmo hidden" "MappingWidgetOff closes the panel"
 rncheck "DownloadLibraryTextures: Dino 8 does not download anything" "DownloadLibraryTextures explains there is nothing to fetch"
-rncheck "CopyRenderWindowToClipboard: this build has no OS image-clipboard integration" "CopyRenderWindowToClipboard explains the real limitation"
+rncheck "CopyRenderWindowToClipboard: [0-9]*x[0-9]* rendering copied to the system clipboard (image/png)" "CopyRenderWindowToClipboard copied the last rendering to the real OS clipboard"
 rncheck "gl_error=0" "no OpenGL errors in the render script"
 python3 - "$TMP/render.bmp" <<'PY' && echo "ok   render.bmp is a valid, non-black 24-bit BMP" || { echo "FAIL render.bmp invalid or black"; fail=1; }
 import struct, sys
@@ -1575,8 +1575,8 @@ s2check "Gumball auto reset off" "GumballAutoReset"
 s2check "Gumball dynamic relocate on" "GumballDynamicRelocate"
 s2check "Gumball origin 5,5,5" "GumballRelocate"
 s2check "Gumball reset" "GumballReset"
-s2check "ViewCaptureToClipboard: image written to" "ViewCaptureToClipboard"
-s2check "ScreenCaptureToClipboard: image written to" "ScreenCaptureToClipboard"
+s2check "ViewCaptureToClipboard: [0-9]*x[0-9]* image copied to the system clipboard (image/png)" "ViewCaptureToClipboard copied a real image to the OS clipboard"
+s2check "ScreenCaptureToClipboard: [0-9]*x[0-9]* image copied to the system clipboard (image/png)" "ScreenCaptureToClipboard copied a real image to the OS clipboard"
 s2check "Alias qq -> Box" "Alias"
 if echo "$S2" | grep -qF "2+3*4 = 14"; then echo "ok   Calc"; else echo "FAIL Calc"; fail=1; fi
 s2check "Left sidebar" "ToggleLeftSidebar"
@@ -2540,5 +2540,35 @@ dlcheck "! DataLinkUpdate: both the table and .* changed since the last sync" "D
 dlcheck "DataLinkUpdate: pushed 2x2 table to " "the follow-up DataLinkUpdate Direction=Push resolved the ambiguity explicitly"
 DL4_CSV="$(cat "$TMP/datalink.csv" 2>/dev/null || true)"
 if [ "$DL4_CSV" = "$(printf 'Q,R\nS,T\n')" ]; then echo "ok   Direction=Push wrote the table's edit (Q,R / S,T) to the file, discarding the file's own outside edit as the caller explicitly chose"; else echo "FAIL Direction=Push wrote the table's edit to the file (got: $DL4_CSV)"; fail=1; fi
+
+# Real OS-clipboard image write (ViewCaptureToClipboard/ScreenCaptureToClipboard/
+# CopyRenderWindowToClipboard - see src/platform/Clipboard.h). There is no
+# clipboard reader available in this headless harness, so DINO8_CLIPBOARD_DEBUG_FILE
+# is used instead: it makes WriteImageToClipboard also write the exact PNG bytes
+# it handed the platform clipboard backend to a file, so the assertions below
+# can check for a real, non-trivial PNG rather than just "the command didn't
+# crash" (see tests/clipboard_script.txt).
+CLIP_DEBUG="$TMP/clipboard_debug.png"
+export DINO8_CLIPBOARD_DEBUG_FILE="$CLIP_DEBUG"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  CB="$("$BIN" --smoke 60 --script "$HERE/clipboard_script.txt" 2>&1)" || { echo "$CB"; echo "FAIL: clipboard script exited non-zero"; exit 1; }
+else
+  CB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/clipboard_script.txt" 2>&1)" || { echo "$CB"; echo "FAIL: clipboard script exited non-zero"; exit 1; }
+fi
+unset DINO8_CLIPBOARD_DEBUG_FILE
+cbcheck() { if echo "$CB" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+cbcheck "CopyRenderWindowToClipboard: [0-9]*x[0-9]* rendering copied to the system clipboard (image/png)" "CopyRenderWindowToClipboard ran the real OS-clipboard write path"
+cbcheck "ViewCaptureToClipboard: [0-9]*x[0-9]* image copied to the system clipboard (image/png)" "ViewCaptureToClipboard ran the real OS-clipboard write path"
+cbcheck "ScreenCaptureToClipboard: [0-9]*x[0-9]* image copied to the system clipboard (image/png)" "ScreenCaptureToClipboard ran the real OS-clipboard write path"
+if [ -s "$CLIP_DEBUG" ]; then
+  echo "ok   DINO8_CLIPBOARD_DEBUG_FILE was written"
+  CLIP_SIG="$(head -c 8 "$CLIP_DEBUG" | od -An -tx1 | tr -d ' \n')"
+  if [ "$CLIP_SIG" = "89504e470d0a1a0a" ]; then echo "ok   clipboard debug file starts with a real PNG signature (89 50 4E 47 0D 0A 1A 0A)"; else echo "FAIL clipboard debug file does not start with a PNG signature (got $CLIP_SIG)"; fail=1; fi
+  CLIP_SIZE="$(wc -c < "$CLIP_DEBUG")"
+  if [ "$CLIP_SIZE" -gt 1000 ]; then echo "ok   clipboard debug file is a non-trivial size ($CLIP_SIZE bytes)"; else echo "FAIL clipboard debug file is too small to be real image data ($CLIP_SIZE bytes)"; fail=1; fi
+else
+  echo "FAIL DINO8_CLIPBOARD_DEBUG_FILE was never written"
+  fail=1
+fi
 
 exit $fail

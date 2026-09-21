@@ -12,6 +12,7 @@
 
 #include "app/Settings.h"
 #include "imgui.h"
+#include "platform/Clipboard.h"
 #include "render/ImageIO.h"
 #include "render/MaterialLibrary.h"
 #include "ui/Panels.h"
@@ -1157,13 +1158,18 @@ void RegisterRenderCommands(CommandEngine& e) {
         app.ShowFileDialog("Save rendering", {".bmp", ".ppm"}, true, [save](const std::string& path) { save(path); });
       }));
   Reg(e, "CopyRenderWindowToClipboard", Immediate([](CommandContext& ctx) {
+        const RenderImage& img = ctx.App().LastRender();
+        if (!img.Valid()) { ctx.Warn("Nothing has been rendered yet (run Render first)"); return; }
         std::string err;
-        const std::string path = ConfigDirectory() + "/last_render.bmp";
-        std::error_code ec;
-        std::filesystem::create_directories(ConfigDirectory(), ec);
-        if (ctx.App().SaveLastRender(path, err)) ctx.Print("CopyRenderWindowToClipboard: this build has no OS image-clipboard integration anywhere (see ViewCaptureToClipboard/ScreenCaptureToClipboard); the rendering was written to " + path + " instead.");
-        else ctx.Warn(err);
-      }), CommandStatus::Partial, "No OS clipboard integration for images exists anywhere in this app (same limitation as ViewCaptureToClipboard/ScreenCaptureToClipboard), so the image is written to a file next to the settings instead.");
+        // LastRender().rgb is already top-down (RenderTarget::ReadPixels flips
+        // it), unlike Viewport::CapturePixelsRGB's raw GL readback.
+        if (platform::WriteImageToClipboard(img.width, img.height, img.rgb, /*bottom_up=*/false, err)) {
+          ctx.Print("CopyRenderWindowToClipboard: " + std::to_string(img.width) + "x" + std::to_string(img.height) +
+                     " rendering copied to the system clipboard (image/png)");
+        } else {
+          ctx.Warn("CopyRenderWindowToClipboard: could not reach the system clipboard (" + err + ")");
+        }
+      }), CommandStatus::Implemented, "Copies the last rendering (from Render/RenderPreview/RenderArctic) to the real OS clipboard as an image (image/png, plus image/bmp where the platform backend offers it) - a genuine clipboard write (X11 ICCCM selection ownership on Linux, the Win32 clipboard on Windows, NSPasteboard on macOS; see src/platform/Clipboard.h), not a file written next to the settings.");
   Reg(e, "RenderOpenLastRendering", Immediate([](CommandContext& ctx) {
         ctx.App().Panels().render_window = true;
         const RenderImage& img = ctx.App().LastRender();
