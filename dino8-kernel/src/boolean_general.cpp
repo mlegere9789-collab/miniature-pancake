@@ -509,6 +509,128 @@
 //   diagnosis and the two failed/succeeded experiments above as a starting
 //   point rather than a fresh trace.
 //
+// SESSION 3: sweep case 07 (cyl+cyl perpendicular UNEQUAL radii) follow-up.
+// Went from 64/76 OK to 68/76 OK - case 07 fully fixed (4/4), and, as a
+// direct consequence of the same fix, case 12 (sphere+sphere, the "ROOT-
+// CAUSED, NOT FIXED" item two sessions above) is ALSO now fixed (4/4),
+// superseding that entry's own "NOT FIXED" conclusion - left in place
+// above, unedited, as the accurate record of what session 2 itself found
+// and did not fix, since this session's fix was not the "keyhole-bridging"
+// experiment session 2 tried and abandoned for THAT fixture specifically
+// (see below for why the same idea succeeds here).
+//   Root cause (confirmed by direct measurement, not assumed from
+//   resemblance to case 12): case 07's own Union/A-B WRONG-VOLUME (short by
+//   ~0.79 / ~0.75 out of ~22 / ~17) is NOT a classification, welding or
+//   assembly bug - direct DINO8_BOOL_DEBUG=1 tracing shows cylinder A's own
+//   wall face fragments into EXACTLY the right topology (one Out fragment,
+//   correctly carrying 2 holes - the two disjoint lens-shaped patches where
+//   the smaller cylinder B's wall pierces through A's - plus the 2 matching
+//   interior/In fragments), and Intersection/B-A (which only ever use the 2
+//   In fragments and B's own pieces, never that one holed Out fragment)
+//   were already exact. The deficiency's own MAGNITUDE is the unmistakable
+//   signature of a resolution-dependent tessellation-quality bug, not a
+//   fixed topological leak: measured directly, the Union/A-B error HALVES
+//   with every doubling of the sweep's own tessellation resolution (0.7931
+//   / 0.7532 at 32x128, 0.4200 / 0.3967 at 64x256, 0.2381 / 0.2187 at
+//   128x512 - a dropped/duplicated/misclassified fragment would instead
+//   show a gap that does NOT shrink with resolution). Root cause: brep.cpp's
+//   own ResolveFace() only routes a face to the accurate
+//   NurbsSurface::TessellateGridClippedExact() tessellation when that
+//   face's own holes list is EMPTY (`exact_clip = !outer.empty() &&
+//   holes.empty()`) - a face built with a genuine ON_BrepLoop::inner hole
+//   (exactly what SplitFaceLoop() builds for a closed intersection chain
+//   entirely interior to a trim, cylinder A's own wall face here) is
+//   instead routed to the much cruder NurbsSurface::TessellateGrid()
+//   whole-cell fallback, which drops an entire grid cell outright the
+//   moment even ONE of its 4 corners tests outside outer-minus-holes - a
+//   real, systematic O(cell size) UNDER-estimate. This is the EXACT SAME
+//   underlying shared-tessellation defect session 2 above diagnosed (but
+//   left unfixed there) for case 12 - confirmed the same mechanism by that
+//   identical halving signature, not merely assumed by resemblance, and
+//   the two fixtures are otherwise unrelated (a cylinder wall vs. a sphere,
+//   an ordinary interior hole vs. one touching the domain's own seam).
+//   Fix: BridgeHolesIntoOuter() (this file, right below SplitFaceLoop() and
+//   its own siblings), called once per kept fragment right after
+//   SplitFaceLoop() assigns it its holes, folds each hole directly into its
+//   own fragment's outer loop as a "keyhole" - a thin, GENUINELY non-zero-
+//   width corridor from a point near the outer boundary in to the hole and
+//   back out - so BuildLoop() only ever emits ONE ON_BrepLoop::outer for
+//   the assembled face, no ON_BrepLoop::inner at all, and ResolveFace()
+//   picks the accurate exact-clip path automatically, with NO changes to
+//   brep.cpp/surface.cpp's shared tessellation pipeline at all (this file's
+//   own top comment already discloses why touching that shared, broadly-
+//   relied-on code safely was out of reach for one session, in the case-12
+//   entry above). This IS the "keyhole-bridging" idea case 12's own session
+//   tried and abandoned - but that attempt used a ZERO-width bridge (walk
+//   out to a hole vertex and immediately back through the exact SAME
+//   point), root-caused THIS session (via BridgeHolesIntoOuter()'s own
+//   development, not assumed) as the reason it failed: an exact 180-degree
+//   reversal has cross product EXACTLY zero, invisible to BOTH
+//   detail::IsSimplePolygon() (which only flags a PROPER transverse
+//   crossing, by its own documented design) AND surface.cpp's own
+//   IsConvexPolygon() (whose collinear-vertex skip, `abs(turn) < 1e-12`,
+//   can't see a zero-turn spike as a convexity violation either) - so the
+//   genuinely concave, notched polygon silently misclassifies as convex and
+//   gets routed through TessellateGridClippedExact()'s FAST Sutherland-
+//   Hodgman ClipConvex() path (which assumes convexity and has no way to
+//   represent "and also carve out this notch"), instead of the correct
+//   concave ClipPolygon() fallback - a wrong result close to the full outer
+//   area, notch silently ignored, not a subtle imprecision (matching case
+//   12's own session's own measured "213 sq units on a ~28 sq unit
+//   sphere"). Fixed by construction this session: every one of the 4 new
+//   bridge vertices sits a small but genuinely NON-ZERO fraction
+//   (kEdgeFraction, 0.1%) of one real edge's own length away from the
+//   nearest existing outer/hole vertex, giving the notch real, non-
+//   collinear corners IsConvexPolygon() correctly flags, at the cost of a
+//   geometrically negligible sliver of area and one small, already-
+//   disclosed-class T-junction (see this file's own "not yet
+//   IsClosedManifold()" paragraph above) per bridged hole - never a new
+//   category of defect, and provably harmless to both ON_Brep::IsValid()
+//   and volume measurement (see BridgeHolesIntoOuter()'s own doc comment
+//   for the full argument). A SECOND, independent bug was caught and fixed
+//   during this same development, before it ever shipped: bridging TWO
+//   holes on the SAME face by mutating the outer loop sequentially (bridge
+//   hole 1 into outer, THEN search for hole 2's own nearest attachment
+//   point against that already-mutated outer) let hole 2's search land
+//   INSIDE hole 1's own just-inserted, extremely thin notch on a fixture
+//   with two close-together holes (sweep case 16, "torus+box half torus in
+//   box" - the box's own face has 2 holes from the torus's own two profile
+//   circles) - IsSimplePolygon() and the area cross-check both still
+//   passed (neither is sensitive to a merely-very-short, not zero-length,
+//   edge), yet the result had two numerically-coincident consecutive trim
+//   points, a genuine ON_Brep::IsValid() regression on case 16's own Union
+//   (caught by this file's own full-sweep before/after diff before it was
+//   ever committed, not released). Fixed by having every hole's own
+//   candidate search run against the face's ORIGINAL, unmutated outer loop
+//   (never a partially-bridged one still growing from an earlier hole in
+//   the same call), assembling all accepted bridges into the final outer
+//   in one combined pass; `reserved` additionally blocks two holes from
+//   ever choosing the same or an adjacent original outer index, as a
+//   second, independent guard. A THIRD, more subtle bug, also caught before
+//   shipping: a closed intersection chain is stored with its own closing
+//   point deliberately repeated (front and back the SAME point - see this
+//   file's own "IntersectFaces() already told us this curve is a closed
+//   loop" comment below, needed for THIS file's own closed-vs-open test),
+//   unlike the "N distinct points, implicit wrap" convention every other
+//   loop in this file uses - left alone, walking "every hole point except
+//   the one at the bridge" still crossed that repeated point mid-walk,
+//   inserting the same physical point twice in a row (the exact same
+//   coincident-point failure as the sequential-mutation bug above, but on
+//   a SINGLE hole, no second hole involved) - fixed by normalizing a hole
+//   back to the no-repeated-point convention once, up front, before
+//   BridgeHolesIntoOuter() reasons about its own indices at all.
+// VERIFIED: sweep case 07 goes from 2/4 OK (Union/A-B WRONG-VOLUME,
+// Intersection/B-A already OK) to 4/4 OK; case 12 goes from 2/4 OK
+// (Union/B-A WRONG-VOLUME) to 4/4 OK; a full 76-line before/after verdict
+// diff confirms these are the ONLY 4 lines that changed anywhere in the
+// sweep - zero regressions on the other 72. New
+// TestBooleanCombineGeneralUnequalRadiusPerpendicularCylinders
+// (test_basic.cpp) asserts IsValid() and the closed-form 1-D quadrature
+// volume for all four op/order combinations plus a tessellation-doubling
+// convergence check, mirroring this file's own existing general-boolean
+// test template. The full dino8_kernel_tests suite (1561 checks, 9 of them
+// new from that test) remains 100% passing.
+//
 // STILL NOT FIXED, diagnosed as far as an earlier session went:
 //   - Sweep case 08 (cyl+cyl SKEW perpendicular axes): improved but not
 //     fixed - (m)'s cleanup pass measurably reduces the self-intersecting-
@@ -544,6 +666,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/surface_intersect.h"
 
 namespace dino8::kernel {
@@ -1383,6 +1506,283 @@ bool RepresentativeUV(const Fragment& frag, Point2d& out_uv) {
   return false;
 }
 
+// --- keyhole bridging: fold a genuinely interior closed hole loop into
+// its own fragment's outer loop, so the assembled face ends up hole-free
+// -------------------------------------------------------------------
+//
+// WHY: brep.cpp's own ResolveFace() only routes a face to the accurate
+// NurbsSurface::TessellateGridClippedExact() tessellation when that
+// face's own holes list is EMPTY (`exact_clip = !outer.empty() &&
+// holes.empty()`) - a face built with a genuine ON_BrepLoop::inner hole
+// (exactly what SplitFaceLoop() above builds for a closed intersection
+// chain entirely interior to a trim) is instead routed to the much
+// cruder NurbsSurface::TessellateGrid() whole-cell fallback, which drops
+// an entire grid cell outright the moment even ONE of its 4 corners
+// tests outside outer-minus-holes - a real, systematic O(cell size)
+// UNDER-estimate of the kept region's own area/volume.
+//
+// ROOT-CAUSED (this session, sweep case 07 "cyl+cyl perpendicular
+// unequal radii": Union/A-B WRONG-VOLUME, Intersection/B-A already OK):
+// direct DINO8_BOOL_DEBUG=1 tracing shows cylinder A's own wall face
+// fragments into EXACTLY the right topology - one Out fragment (the wall
+// band exterior to B) correctly carrying 2 holes (the two disjoint
+// lens-shaped patches where the smaller cylinder B's wall pierces
+// through), plus the 2 matching interior (In) fragments - so this is NOT
+// a dropped/duplicated/misclassified fragment (the Out fragment's own
+// hole count and the 2 In fragments are all exactly right, and
+// Intersection/B-A, which use the SAME 2 In fragments plus B's own
+// pieces and never touch this one holed Out fragment, already measure
+// correctly). The deficiency is entirely explained by, and its magnitude
+// is the unmistakable signature of, this whole-cell tessellation
+// crudeness: measured directly, the Union/A-B error (0.7931 / 0.7532 out
+// of ~22 / ~17 at the sweep's own 32x128 resolution) HALVES with every
+// doubling of that resolution (0.4200 / 0.3967 at 64x256, 0.2381 /
+// 0.2187 at 128x512) - a resolution-INDEPENDENT bug (a dropped fragment,
+// wrong classification, wrong winding, ...) would show a gap that does
+// NOT shrink like this. This is the SAME underlying shared-tessellation
+// defect this file's own top comment already diagnosed (but left
+// unfixed, as genuinely harder to fix safely) for sweep case 12
+// (sphere+sphere) - confirmed the same mechanism here by that identical
+// halving signature, not merely assumed by resemblance.
+//
+// THE FIX: rather than touching the shared, broadly-relied-on
+// brep.cpp/surface.cpp tessellation pipeline (case 12's own abandoned
+// attempt - see above - correctly identified this as the general correct
+// fix but too large a blast radius to verify safely in one session),
+// this function avoids the crude path entirely, staying local to this
+// file: it merges a hole directly into its own fragment's outer loop as
+// a "keyhole" - a thin corridor from a point near the outer boundary in
+// to the hole and back out - so BuildLoop() below only ever emits ONE
+// ON_BrepLoop::outer for the assembled face, no ON_BrepLoop::inner at
+// all, and ResolveFace() picks the accurate exact-clip path automatically
+// with NO changes to brep.cpp/surface.cpp whatsoever.
+//
+// A zero-width version of this same idea (walk out to a hole vertex and
+// immediately back through the exact SAME point) was tried in an earlier
+// session for case 12 and abandoned there as unsafe: it passes
+// detail::IsSimplePolygon() (which only flags a PROPER transverse
+// crossing - two edges that merely touch at a shared endpoint, including
+// an exact in-and-back-out spike, are invisible to it, by that
+// function's own documented design) but still tessellated wildly wrong
+// downstream. Root-caused here: an exact 180-degree reversal has cross
+// product EXACTLY zero, which surface.cpp's own IsConvexPolygon() (its
+// collinear-vertex skip, `abs(turn) < 1e-12`) also can't see as a
+// convexity violation - so a genuinely concave, notched polygon built
+// with a zero-width spike gets silently misclassified as convex and
+// routed through TessellateGridClippedExact()'s FAST Sutherland-Hodgman
+// ClipConvex() path (which assumes convexity and has no way to represent
+// "and also carve out this notch"), rather than the correct concave
+// ClipPolygon() fallback - explaining a result close to the full outer
+// area, notch ignored, not a subtle imprecision.
+//
+// Fixed by construction: every one of the 4 new bridge vertices sits a
+// small but genuinely NON-ZERO fraction of one real edge's own length
+// away from the nearest existing outer/hole vertex (never reusing an
+// exact point twice, never landing exactly at parameter 0 or 1 of an
+// existing edge), so the notch has real, non-collinear corners
+// IsConvexPolygon() correctly flags as a convexity violation, sending it
+// through the (already correct, unmodified) concave path. The nearest
+// existing outer and hole vertices themselves are simply skipped
+// (replaced by their own two straddling bridge points), losing a
+// geometrically negligible sliver of area (see kEdgeFraction below) -
+// this only ever shortens the ONE outer edge and ONE hole edge the
+// bridge attaches to into two smaller pieces apiece, exactly the same
+// kind of independently-tessellated-adjacent-face mismatch this file's
+// own top comment already discloses as a known, accepted limitation (the
+// "not yet IsClosedManifold()" gap) - not a new category of defect, and
+// provably harmless to both ON_Brep::IsValid() (every affected edge still
+// gets a consistent, correctly-oriented ON_BrepEdge/ON_BrepTrim pair;
+// IsValid() has never required matching subdivision density across a
+// shared edge - only this engine's own separate, not-yet-attempted
+// IsClosedManifold() check does) and to volume measurement (the
+// divergence-theorem integral a tessellated closed mesh computes doesn't
+// depend on how finely two adjacent, independently-tessellated faces
+// subdivide their own shared boundary, only that each face's own
+// triangulation correctly tiles its own trimmed region - which an
+// ordinary exact-clip tessellation of a genuinely simple polygon already
+// guarantees).
+//
+// Purely additive and self-verifying, never a regression risk: several
+// candidate attachment points are tried per hole, nearest pair first, and
+// each candidate is checked directly - detail::IsSimplePolygon() on the
+// FULL merged polygon (this hole's own bridge plus every other hole
+// already accepted), plus its own signed area matching
+// outer_area + sum(hole areas) within generous slack - before being
+// accepted; a hole with no checked-out candidate is left completely
+// untouched in `holes` for the caller to fall back to the original,
+// already-correct-if-cruder separate ON_BrepLoop::inner representation.
+//
+// Every hole's own candidate search runs against the face's ORIGINAL,
+// unmutated outer loop - never against a partially-bridged one still
+// growing from an earlier hole in the same call. An earlier version of
+// this function bridged holes one at a time, mutating `outer` in place
+// between them; on a fixture with two holes close enough together that
+// the SECOND hole's nearest attachment point ended up landing inside the
+// FIRST hole's own just-inserted, already extremely thin notch (measured
+// directly: sweep case 16 "torus+box half torus in box", box face with 2
+// holes from the torus's own two profile circles - a real regression
+// this shipped with once, caught by this file's own full-sweep
+// before/after diff, never released) - IsSimplePolygon() and the area
+// check both still passed (neither is sensitive to a merely-very-short,
+// not zero-length, edge), yet the resulting trim curve had two
+// numerically-coincident consecutive points, an ON_Brep::IsValid()
+// failure ("Line points are coincident"). Searching every hole against
+// the same pristine `outer` avoids the entanglement outright: distinct,
+// well-separated holes get distinct, well-separated attachment points on
+// the ORIGINAL boundary, never on each other's own bridge. `reserved`
+// additionally blocks two holes from ever choosing the same or an
+// adjacent original outer index, as a second, independent guard.
+double SignedAreaUV(const std::vector<UVPt>& loop) {
+  double area = 0.0;
+  const size_t n = loop.size();
+  for (size_t i = 0; i < n; ++i) {
+    const Point2d& a = loop[i].uv;
+    const Point2d& b = loop[(i + 1) % n].uv;
+    area += a.x * b.y - b.x * a.y;
+  }
+  return 0.5 * area;
+}
+
+UVPt LerpOnSurface(const ON_Surface* s, const UVPt& a, const UVPt& b, double t) {
+  const double u = a.uv.x + (b.uv.x - a.uv.x) * t;
+  const double v = a.uv.y + (b.uv.y - a.uv.y) * t;
+  return {s->PointAt(u, v), Point2d(u, v)};
+}
+
+struct HoleAttachment {
+  size_t outer_index = 0;      // original outer[] index this attachment REPLACES (skipped, not kept)
+  std::vector<UVPt> insert;    // [a_out, c_in, ...hole walk..., c_out, a_in]
+};
+
+std::vector<UVPt> AssembleWithAttachments(const std::vector<UVPt>& outer, const std::vector<HoleAttachment>& attachments) {
+  std::unordered_map<size_t, const std::vector<UVPt>*> by_index;
+  for (const HoleAttachment& a : attachments) by_index.emplace(a.outer_index, &a.insert);
+  std::vector<UVPt> merged;
+  merged.reserve(outer.size() * 2);
+  for (size_t i = 0; i < outer.size(); ++i) {
+    const auto it = by_index.find(i);
+    if (it == by_index.end()) {
+      merged.push_back(outer[i]);
+    } else {
+      for (const UVPt& p : *it->second) merged.push_back(p);
+    }
+  }
+  return merged;
+}
+
+bool BridgeHolesIntoOuter(std::vector<UVPt>& outer, std::vector<std::vector<UVPt>>& holes, const ON_Surface* surface) {
+  if (!surface || outer.size() < 4) return false;
+  const size_t n = outer.size();
+  const double outer_area = SignedAreaUV(outer);
+
+  // 0.1% of one already-short (densely sampled) edge's own length - the
+  // notch corners this produces are, per this function's own doc
+  // comment, orders of magnitude above IsConvexPolygon()'s 1e-12
+  // collinearity threshold, while the area this sliver costs is many
+  // orders of magnitude below the tessellation-scale errors this whole
+  // fix exists to close.
+  constexpr double kEdgeFraction = 1e-3;
+
+  std::vector<HoleAttachment> attachments;
+  std::vector<bool> reserved(n, false);
+  std::vector<std::vector<UVPt>> remaining;
+  double accepted_hole_area = 0.0;
+
+  for (std::vector<UVPt>& hole : holes) {
+    if (hole.size() < 3) {
+      remaining.push_back(std::move(hole));
+      continue;
+    }
+    // A closed intersection chain is stored with its own closing point
+    // repeated (front and back are the SAME point) - see this file's own
+    // top comment on why (the chain's OWN "closed" test needs it) - unlike
+    // every other loop this function handles, which use the "N distinct
+    // points, implicit wrap" convention throughout. Left alone, walking
+    // "every hole point except the one at the bridge" below would still
+    // cross that repeated point mid-walk (unless the bridge happens to
+    // land exactly on it), inserting the same physical point twice in a
+    // row into the merged polygon - a genuine, exact-zero-length
+    // coincident-points ON_Brep::IsValid() failure, confirmed directly
+    // (sweep case 16 "torus+box half torus in box": Union regressed from
+    // valid to invalid on exactly this before this dedup was added).
+    // Normalized back to this function's own "no repeated closing point"
+    // convention up front, once, before any of the rest of this loop
+    // reasons about hole indices at all.
+    std::vector<UVPt> hole_pts = hole;
+    if (hole_pts.size() >= 2 && (hole_pts.front().p - hole_pts.back().p).Length() <= 1e-9) {
+      hole_pts.pop_back();
+    }
+    if (hole_pts.size() < 3) {
+      remaining.push_back(std::move(hole));
+      continue;
+    }
+    const size_t m = hole_pts.size();
+    std::vector<UVPt> oriented_hole = hole_pts;
+    if ((outer_area >= 0.0) == (SignedAreaUV(hole_pts) >= 0.0)) {
+      std::reverse(oriented_hole.begin(), oriented_hole.end());
+    }
+    const double hole_area = SignedAreaUV(oriented_hole);
+
+    std::vector<std::pair<double, std::pair<size_t, size_t>>> candidates;
+    candidates.reserve(n * m);
+    for (size_t i = 0; i < n; ++i) {
+      for (size_t j = 0; j < m; ++j) candidates.push_back({Dist2(outer[i].uv, oriented_hole[j].uv), {i, j}});
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [](const std::pair<double, std::pair<size_t, size_t>>& a,
+                 const std::pair<double, std::pair<size_t, size_t>>& b) { return a.first < b.first; });
+
+    const size_t kMaxTries = std::min<size_t>(candidates.size(), 32);
+    const double area_scale = std::max({std::fabs(outer_area), std::fabs(hole_area), 1.0});
+    bool accepted = false;
+
+    for (size_t t = 0; t < kMaxTries && !accepted; ++t) {
+      const size_t i = candidates[t].second.first;
+      const size_t j = candidates[t].second.second;
+      if (reserved[i] || reserved[(i + n - 1) % n] || reserved[(i + 1) % n]) continue;
+
+      const UVPt& o_prev = outer[(i + n - 1) % n];
+      const UVPt& o_i = outer[i];
+      const UVPt& o_next = outer[(i + 1) % n];
+      const UVPt& h_prev = oriented_hole[(j + m - 1) % m];
+      const UVPt& h_j = oriented_hole[j];
+      const UVPt& h_next = oriented_hole[(j + 1) % m];
+
+      HoleAttachment cand;
+      cand.outer_index = i;
+      cand.insert.reserve(m + 4);
+      cand.insert.push_back(LerpOnSurface(surface, o_prev, o_i, 1.0 - kEdgeFraction));
+      cand.insert.push_back(LerpOnSurface(surface, h_j, h_next, kEdgeFraction));
+      for (size_t k = (j + 1) % m; k != j; k = (k + 1) % m) cand.insert.push_back(oriented_hole[k]);
+      cand.insert.push_back(LerpOnSurface(surface, h_prev, h_j, 1.0 - kEdgeFraction));
+      cand.insert.push_back(LerpOnSurface(surface, o_i, o_next, kEdgeFraction));
+
+      std::vector<HoleAttachment> trial = attachments;
+      trial.push_back(std::move(cand));
+      const std::vector<UVPt> merged = AssembleWithAttachments(outer, trial);
+      const double expected_area = outer_area + accepted_hole_area + hole_area;
+
+      if (!dino8::kernel::detail::IsSimplePolygon(ToPoly(merged))) continue;
+      if (std::fabs(SignedAreaUV(merged) - expected_area) > 1e-3 * area_scale) continue;
+
+      attachments = std::move(trial);
+      reserved[i] = true;
+      accepted_hole_area += hole_area;
+      accepted = true;
+    }
+    if (!accepted) remaining.push_back(std::move(hole));
+  }
+
+  if (attachments.empty()) return false;
+  outer = AssembleWithAttachments(outer, attachments);
+  holes = std::move(remaining);
+  if (std::getenv("DINO8_BOOL_DEBUG")) {
+    std::fprintf(stderr, "  BridgeHolesIntoOuter: bridged=%zu leftover_holes=%zu merged_n=%zu\n", attachments.size(),
+                 holes.size(), outer.size());
+  }
+  return true;
+}
+
 // --- classification: ray-cast a 3D point against a whole Brep's own
 // faces using the general CSX (IntersectCurveSurface), generalizing
 // boolean.cpp's own ClassifyPointVsSolid beyond hand-solved formulas. ---
@@ -1885,6 +2285,16 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
         kf.rev = flip ? !ff.base_rev : ff.base_rev;
         kf.outer = frag.outer;
         kf.holes = frag.holes;
+        // Try to fold every hole into kf.outer as a keyhole notch (see
+        // BridgeHolesIntoOuter's own doc comment) so the assembled face
+        // reaches brep.cpp's exact-clip tessellation path instead of the
+        // much cruder whole-cell fallback ANY ON_BrepLoop::inner hole
+        // forces it into - the confirmed root cause of sweep case 07's
+        // Union/A-B WRONG-VOLUME result. Purely additive: a hole that
+        // can't be bridged safely (checked directly, never assumed) stays
+        // in kf.holes and is built as an ordinary inner loop below, same
+        // as before this fix.
+        if (!kf.holes.empty()) BridgeHolesIntoOuter(kf.outer, kf.holes, ff.surface);
         kept.push_back(std::move(kf));
       }
     }

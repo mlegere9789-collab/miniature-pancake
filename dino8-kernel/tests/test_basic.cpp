@@ -2350,6 +2350,120 @@ void TestBooleanCombineGeneralSphereCylinderThroughCentre() {
   }
 }
 
+void TestBooleanCombineGeneralUnequalRadiusPerpendicularCylinders() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Regression fixture for the keyhole-bridge fix (see boolean_general.cpp's
+  // own top-of-file doc comment): general_boolean_sweep.cpp's own sweep
+  // case 07 - two perpendicular, axis-intersecting cylinders of UNEQUAL
+  // radius (A: radius 1 along z, z in [-3, 3]; B: radius 0.5 along x, x in
+  // [-3, 3]). Cylinder A's own wall face fragments correctly (confirmed by
+  // direct DINO8_BOOL_DEBUG=1 tracing) into an Out fragment carrying
+  // EXACTLY the right 2 holes (the two disjoint lens-shaped patches where
+  // the smaller cylinder B pierces through) plus the 2 matching interior
+  // fragments - so Intersection and B-A (which only ever use the interior
+  // fragments and B's own pieces) were already numerically exact, but
+  // Union and A-B (which both use that one holed Out fragment) measured
+  // short: brep.cpp's own ResolveFace() only takes the accurate
+  // NurbsSurface::TessellateGridClippedExact() tessellation path when a
+  // face's own holes list is empty, so a face carrying a genuine
+  // ON_BrepLoop::inner hole is instead routed to the much cruder whole-cell
+  // NurbsSurface::TessellateGrid() fallback - confirmed the actual cause,
+  // not a fragment/classification bug, by measuring the Union/A-B error
+  // HALVE with every doubling of the tessellation resolution (0.7931 /
+  // 0.7532 at 32x128, 0.4200 / 0.3967 at 64x256, 0.2381 / 0.2187 at
+  // 128x512 - the signature of whole-cell boundary-following error, not a
+  // fixed topological leak). Fixed by folding each hole directly into its
+  // own fragment's outer loop as a "keyhole" notch (BridgeHolesIntoOuter())
+  // so the assembled face carries zero ON_BrepLoop::inner loops and reaches
+  // the accurate exact-clip path automatically - no changes to
+  // brep.cpp/surface.cpp's shared tessellation pipeline at all.
+  const Brep a = MakeCylinderAxisForGeneralBooleanTest(Point3d(0, 0, -3), Vector3d(0, 0, 1), 1.0, 6.0);
+  const Brep b = MakeCylinderAxisForGeneralBooleanTest(Point3d(-3, 0, 0), Vector3d(1, 0, 0), 0.5, 6.0);
+
+  const double ra = 1.0, rb = 0.5, len = 6.0;
+  const double vol_a = ON_PI * ra * ra * len;
+  const double vol_b = ON_PI * rb * rb * len;
+  // Closed-form 1-D quadrature (same derivation general_boolean_sweep.cpp's
+  // own case 07 uses): for each y in [-rb, rb], the lens cross-section
+  // width in x is 2*sqrt(ra^2-y^2) on cylinder A's side and 2*sqrt(rb^2-y^2)
+  // on B's, giving 4*sqrt(ra^2-y^2)*sqrt(rb^2-y^2) as the intersection's
+  // own cross-sectional area at that y.
+  const auto integrand = [ra, rb](double y) { return 4.0 * std::sqrt(ra * ra - y * y) * std::sqrt(rb * rb - y * y); };
+  const int n = 4000;
+  const double h = (2.0 * rb) / n;
+  double sum = integrand(-rb) + integrand(rb);
+  for (int k = 1; k < n; ++k) sum += (k % 2 ? 4.0 : 2.0) * integrand(-rb + k * h);
+  const double expect_i = sum * h / 3.0;
+  const double expect_u = vol_a + vol_b - expect_i;
+  const double expect_ab = vol_a - expect_i;
+  const double expect_ba = vol_b - expect_i;
+
+  const int nu = 32, nv = 128;
+  const double tol = 0.5;
+
+  {
+    const Brep u = BooleanCombineGeneral(a, b, BooleanOp::Union);
+    Check(u.raw().IsValid(), "unequal-radius perpendicular cylinders Union is a valid ON_Brep");
+    const Mesh m = u.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_u) < tol,
+          "unequal-radius perpendicular cylinders Union's tessellated volume "
+          "matches cyl A + cyl B - lens to within tessellation tolerance - "
+          "this exact op used to measure short by ~0.79 (out of ~22) before "
+          "the keyhole-bridge fix, forced into whole-cell tessellation by "
+          "cylinder A's own holed wall fragment");
+  }
+  {
+    const Brep i = BooleanCombineGeneral(a, b, BooleanOp::Intersection);
+    Check(i.raw().IsValid(), "unequal-radius perpendicular cylinders Intersection is a valid ON_Brep");
+    const Mesh m = i.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_i) < tol,
+          "unequal-radius perpendicular cylinders Intersection's tessellated "
+          "volume matches the closed-form lens quadrature to within "
+          "tessellation tolerance - already exact before this session's fix");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(a, b, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "unequal-radius perpendicular cylinders A-B is a valid ON_Brep");
+    const Mesh m = d.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_ab) < tol,
+          "unequal-radius perpendicular cylinders A-B's tessellated volume "
+          "matches cyl A - lens to within tessellation tolerance - this "
+          "exact op used to measure short by ~0.75 (out of ~17) before the "
+          "keyhole-bridge fix, for the same reason as Union above");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(b, a, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "unequal-radius perpendicular cylinders B-A is a valid ON_Brep");
+    const Mesh m = d.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_ba) < tol,
+          "unequal-radius perpendicular cylinders B-A's tessellated volume "
+          "matches cyl B - lens to within tessellation tolerance - already "
+          "exact before this session's fix");
+  }
+  {
+    // Resolution check on Union: the volume error should shrink as the
+    // tessellation is refined, confirming convergent tessellation error
+    // (the exact-clip path this fix now reaches) rather than a fixed
+    // topological leak (what the pre-fix whole-cell path's error, which
+    // ALSO shrinks with resolution but far too slowly to fall under a
+    // fixed tessellation-scaled tolerance at 32x128, could be mistaken
+    // for without this check).
+    const Brep u = BooleanCombineGeneral(a, b, BooleanOp::Union);
+    const double err_coarse = std::abs(u.TessellateToClosedMesh(16, 64).Volume() - expect_u);
+    const double err_fine = std::abs(u.TessellateToClosedMesh(32, 128).Volume() - expect_u);
+    Check(err_fine < 0.85 * err_coarse,
+          "unequal-radius perpendicular cylinders Union's volume error "
+          "shrinks when the tessellation is doubled (convergent "
+          "tessellation error, not a fixed topological leak)");
+  }
+}
+
 void TestSurfaceGetApproximateSize() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -19277,6 +19391,7 @@ int main() {
   TestBooleanCombineGeneralObliqueCylinder();
   TestBooleanCombineGeneralBoxCone();
   TestBooleanCombineGeneralSphereCylinderThroughCentre();
+  TestBooleanCombineGeneralUnequalRadiusPerpendicularCylinders();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();
