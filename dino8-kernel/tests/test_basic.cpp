@@ -2239,6 +2239,117 @@ void TestBooleanCombineGeneralBoxCone() {
   }
 }
 
+void TestBooleanCombineGeneralSphereCylinderThroughCentre() {
+  using dino8::kernel::BooleanCombineGeneral;
+  using dino8::kernel::BooleanOp;
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Regression fixture for the CutChainAtDomainBoundary seam-crossing fix
+  // (see boolean_general.cpp's own top-of-file doc comment): a radius-2
+  // sphere at the origin pierced clean through by a radius-1 cylinder along
+  // a diameter (axis z, z in [-4, 4]) - exactly general_boolean_sweep.cpp's
+  // own case 13. The intersection with the sphere's own surface is TWO
+  // level circles (at z = +-sqrt(R^2-r^2)), each a full sweep of the
+  // sphere's own periodic longitude that closes up right at its u == 0 /
+  // u == 2*pi seam - so, unlike the plain sphere+box octant fixture above
+  // (whose seam-touching arc runs ALONG the seam for its own full length),
+  // this fixture's seam contact is a brief, one-point crossing on each
+  // circle, handled by CutChainAtDomainBoundary rather than
+  // SplitPeriodicWrapChain. Before this session's fix, CutChainAtDomainBoundary
+  // used a stitching-scaled on-boundary tolerance (~20x the SSX's own
+  // accuracy) to decide which chain samples sit "on" the seam, wide enough
+  // to also catch each circle's own ordinary one-mesh-cell-away neighbour
+  // sample (not just the true seam-crossing sample itself) as a SEPARATE,
+  // independently-classified "run" on the OTHER seam side - splicing two
+  // vertices at the SAME nominal seam location but each carrying its own
+  // sample's own (different) 3D point, ~0.014 apart (confirmed by direct
+  // tracing), into the sphere's own face boundary. That produced a genuine
+  // "Distance from start of trim to 3d edge is ~0.0143" ON_Brep::IsValid()
+  // failure on Union/A-B/B-A, and Intersection instead threw "an edge is
+  // claimed by 3 or more fragment loops". Fixed by tightening the
+  // on-boundary tolerance passed to CutChainAtDomainBoundary to the SSX's
+  // own accuracy (opt.tolerance) instead of the looser stitching tolerance
+  // - exactly what that call site's own pre-existing comment already
+  // claimed it did. That correctly excludes the noisy one-cell-away
+  // neighbour from the run, leaving only the two genuinely-coincident
+  // seam-crossing samples (which already agree to float precision, no
+  // interpolation needed here, unlike (k)'s cylinder-wall fix above).
+  const Brep sphere = Brep::Sphere(Point3d(0, 0, 0), 2.0);
+  const Brep cyl = MakeCylinderAxisForGeneralBooleanTest(Point3d(0, 0, -4), Vector3d(0, 0, 1), 1.0, 8.0);
+
+  const double R = 2.0, r = 1.0;
+  const double sphere_vol = (4.0 / 3.0) * ON_PI * R * R * R;
+  const double cyl_vol = ON_PI * r * r * 8.0;
+  // Closed form: the sphere's own core within radius r of a diameter.
+  const double expect_i = (4.0 / 3.0) * ON_PI * (R * R * R - std::pow(R * R - r * r, 1.5));
+  const double expect_u = sphere_vol + cyl_vol - expect_i;
+  const double expect_ab = sphere_vol - expect_i;
+  const double expect_ba = cyl_vol - expect_i;
+
+  const int nu = 32, nv = 128;
+  const double tol = 0.8;
+
+  {
+    const Brep u = BooleanCombineGeneral(sphere, cyl, BooleanOp::Union);
+    Check(u.raw().IsValid(), "sphere+cyl-through-centre Union is a valid ON_Brep - "
+                             "this exact op used to fail IsValid() with a ~0.0143 "
+                             "trim-vs-edge distance before this session's "
+                             "CutChainAtDomainBoundary tolerance fix");
+    const Mesh m = u.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_u) < tol,
+          "sphere+cyl-through-centre Union's tessellated volume matches the "
+          "closed-form sphere + cylinder - core to within tessellation "
+          "tolerance");
+  }
+  {
+    const Brep i = BooleanCombineGeneral(sphere, cyl, BooleanOp::Intersection);
+    Check(i.raw().IsValid(), "sphere+cyl-through-centre Intersection is a valid "
+                             "ON_Brep - this exact op used to throw \"an edge is "
+                             "claimed by 3 or more fragment loops\" before this "
+                             "session's CutChainAtDomainBoundary tolerance fix");
+    const Mesh m = i.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_i) < tol,
+          "sphere+cyl-through-centre Intersection's tessellated volume "
+          "matches the closed-form core 4/3*pi*(R^3-(R^2-r^2)^1.5) to "
+          "within tessellation tolerance");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(sphere, cyl, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "sphere-cyl-through-centre A-B is a valid ON_Brep - "
+                             "this exact op used to fail IsValid() before this "
+                             "session's CutChainAtDomainBoundary tolerance fix");
+    const Mesh m = d.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_ab) < tol,
+          "sphere-cyl-through-centre A-B's tessellated volume matches the "
+          "closed-form sphere - core to within tessellation tolerance");
+  }
+  {
+    const Brep d = BooleanCombineGeneral(cyl, sphere, BooleanOp::Difference);
+    Check(d.raw().IsValid(), "cyl-sphere-through-centre B-A is a valid ON_Brep - "
+                             "this exact op used to fail IsValid() before this "
+                             "session's CutChainAtDomainBoundary tolerance fix");
+    const Mesh m = d.TessellateToClosedMesh(nu, nv);
+    Check(std::abs(m.Volume() - expect_ba) < tol,
+          "cyl-sphere-through-centre B-A's tessellated volume matches the "
+          "closed-form cylinder - core to within tessellation tolerance");
+  }
+  {
+    // Resolution check on Intersection: the volume error should shrink as
+    // the tessellation is refined, confirming convergent tessellation
+    // error rather than a fixed topological leak.
+    const Brep i = BooleanCombineGeneral(sphere, cyl, BooleanOp::Intersection);
+    const double err_coarse = std::abs(i.TessellateToClosedMesh(16, 64).Volume() - expect_i);
+    const double err_fine = std::abs(i.TessellateToClosedMesh(32, 128).Volume() - expect_i);
+    Check(err_fine < 0.85 * err_coarse,
+          "sphere+cyl-through-centre Intersection's volume error shrinks "
+          "when the tessellation is doubled (convergent tessellation "
+          "error, not a fixed topological leak)");
+  }
+}
+
 void TestSurfaceGetApproximateSize() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -19165,6 +19276,7 @@ int main() {
   TestBooleanCombineGeneralSphereBox();
   TestBooleanCombineGeneralObliqueCylinder();
   TestBooleanCombineGeneralBoxCone();
+  TestBooleanCombineGeneralSphereCylinderThroughCentre();
   TestSurfaceGetApproximateSize();
   TestSurfaceTessellateGridClippedExactRejectsTooFewPoints();
   TestSurfaceTessellateGridRejectsTooFewTrimPoints();

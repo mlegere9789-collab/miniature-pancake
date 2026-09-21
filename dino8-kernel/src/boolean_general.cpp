@@ -368,27 +368,148 @@
 // #include surface_intersect.h at all in this codebase - did not disturb
 // anything.
 //
-// STILL NOT FIXED, diagnosed as far as this session went:
-//   - Sweep case 13 (sphere+cyl axis through centre piercing): (k)/(l)
-//     above fix the zero-length-2D-trim failure this case's own Union/A-B/
-//     B-A results used to hit, but a SEPARATE, still-unfixed defect
-//     remains on all three - ON_Brep::IsValid() now instead reports
-//     "Distance from start of ON_Brep.m_T[0] to 3d edge is 0.0143...",
-//     roughly two orders of magnitude bigger than kWeldTol, on the
-//     SPHERE's own face (built via CutChainAtDomainBoundary, not
-//     SplitPeriodicWrapChain - a genuinely different code path from (k)/
-//     (l), never touched this session). Best diagnosis: CutChainAtDomain-
-//     Boundary() splices each on-seam "run" into the domain rectangle's
-//     u == 0 and u == 2*pi sides independently, snapping each run's own
-//     points onto the seam without moving `p`; this fixture has TWO
-//     separate such runs (the sphere's own copies of the SAME two circles
-//     (k) discusses), and the two runs' own u == 0 vs. u == 2*pi copies
-//     likely disagree at a scale similar to (k)'s - but by an unweighted,
-//     un-interpolated amount, since CutChainAtDomainBoundary has no
-//     analogue of (k)'s cross-value interpolation at all. Not attempted:
-//     this needs its own separate root-cause trace through
-//     CutChainAtDomainBoundary()'s own run-splicing (splice_subrun(),
-//     above) rather than a small extension of (k)'s fix.
+// SESSION 2: sphere-seam follow-up, targeting sweep cases 12 and 13
+// specifically (both involve a sphere operand; both were suspected,
+// entering this session, to share a root cause in CutChainAtDomainBoundary
+// - confirmed true for 13, confirmed FALSE for 12, by direct tracing of
+// each independently, per below). Went from 60/76 OK to 64/76 OK.
+//   (n) Sweep case 13 (sphere+cyl axis through centre piercing), the
+//       "STILL NOT FIXED" item this section used to carry (its own former
+//       text: "Distance from start of ON_Brep.m_T[0] to 3d edge is
+//       0.0143..." on Union/A-B/B-A, "an edge is claimed by 3 or more
+//       fragment loops" on Intersection) - ROOT-CAUSED AND FIXED, and the
+//       prior session's own speculative diagnosis (an unweighted,
+//       un-interpolated disagreement between two on-seam "runs", the (k)
+//       pattern applied to CutChainAtDomainBoundary) was WRONG: direct
+//       tracing (temporary per-point dumps inside CutChainAtDomainBoundary,
+//       since removed) showed the two level circles this fixture's own
+//       sphere face sees (at z = +-sqrt(R^2-r^2), each a full sweep of the
+//       sphere's own longitude that closes up right at its u == 0/2*pi
+//       seam - structurally a wrap-cut, but funneled through
+//       CutChainAtDomainBoundary rather than SplitPeriodicWrapChain because
+//       the sphere is untrimmed) each produce a run of exactly TWO
+//       consecutive on-seam samples per seam side, not one: the genuine
+//       seam-crossing sample itself (3D distance to its own snapped (u, v)
+//       point measured bit-exactly 0) AND its own ordinary neighbouring
+//       sample one mesh cell farther around the circle (measured 3D
+//       distance ~0.0143 - the EXACT value ON_Brep::IsValid() later
+//       complained about). That second, spurious sample only qualified as
+//       "on the seam" at all because the on-boundary tolerance
+//       build_frags() passed to CutChainAtDomainBoundary was
+//       std::max(stitch_tol, opt.tolerance) - stitch_tol (~20x opt.tolerance,
+//       meant for reconciling independently-refined face-pair SSX curve
+//       endpoints elsewhere) dominates and is roughly 20x looser than the
+//       ~0.0143 gap, while opt.tolerance alone is roughly 15x TIGHTER than
+//       that gap - even though this call site's own pre-existing comment
+//       already said the intent was "the on-boundary tolerance is the
+//       SSX's own accuracy," the code passed the much looser value instead.
+//       With the spurious neighbour wrongly included, CutChainAtDomain-
+//       Boundary spliced it into the loop as its own extra vertex, whose
+//       own (u, v) sits at the exact seam value but whose own `p` (left
+//       deliberately unmoved, by design) is ~0.0143 away from where that
+//       (u, v) actually evaluates - precisely the trim-vs-edge distance
+//       IsValid() flags. Fixed with a one-line change to the tolerance
+//       actually passed (opt.tolerance, not std::max(stitch_tol,
+//       opt.tolerance)) - aligning the code with what its own comment
+//       already claimed, not a new invented constant. This correctly
+//       leaves each run at exactly one genuine seam-crossing sample per
+//       side (an isolated point, per this function's own "isolated
+//       near-seam sample... left entirely alone" rule, EXCEPT it is not
+//       isolated here: its cyclic neighbour across the array's own
+//       wraparound is the OTHER seam side's genuine crossing sample, so
+//       both still count as "in a run" and get spliced - just with no
+//       spurious extra vertex now, and the two genuine crossing samples
+//       already agree to float precision, needing no (k)-style
+//       interpolation at all). VERIFIED: sweep case 13 goes from 0/4 OK
+//       (Union/A-B/B-A INVALID, Intersection EXCEPTION) to 4/4 OK, with
+//       ZERO change to any of the other 75 cases (full before/after verdict
+//       diff). New TestBooleanCombineGeneralSphereCylinderThroughCentre
+//       (test_basic.cpp) asserts IsValid() and closed-form volume
+//       (4/3*pi*(R^3-(R^2-r^2)^1.5)) for all four ops plus a tessellation-
+//       doubling convergence check, mirroring the existing sphere/cylinder
+//       general-boolean tests' own template.
+//   Sweep case 12 (sphere+sphere overlapping, unequal radii) - ROOT-CAUSED,
+//   NOT FIXED, genuinely independent of (n) as suspected (confirmed by
+//   direct tracing, not assumed): Union and B-A measure short by ~1.23 and
+//   ~1.02 (out of ~42.6 and ~9.06); Intersection and A-B are already OK.
+//   Direct per-op fragment tracing (DINO8_BOOL_DEBUG=1) shows the lens
+//   circle DOES cross sphere A's own seam (A's centre sits on the ray the
+//   B-centre offset defines, so A's own u == 0 meridian passes through the
+//   lens plane) - handled correctly by (n)'s own fixed code path, confirmed
+//   by A's own fragments (Out/2xIn, no holes) being numerically exact in
+//   every op that uses them (A-B, which needs A's Out, is OK). Sphere B's
+//   copy of the SAME circle does NOT cross B's own seam (B's offset keeps
+//   its own meridian on the far side) and is instead handled as an
+//   ordinary CLOSED chain producing an ordinary hole - the ordinary,
+//   long-proven "closed chain -> hole in an untouched fragment" path
+//   (item 2 at the top of this file), not any seam/pole code at all. That
+//   fragment (the whole sphere B domain rectangle as outer, with the lens
+//   circle as one interior hole) is EXACTLY the one used by both wrong ops
+//   (Union: A's Out + B's Out; B-A: B's Out + A's In) and never by the two
+//   correct ones (Intersection/A-B, which only ever use B's In, the hole
+//   polygon itself with no separate outer). Isolated the defect below
+//   BooleanCombineGeneral entirely, in the shared, general-purpose
+//   tessellation pipeline it hands its result to (confirmed by a standalone
+//   probe measuring Mesh::Area() per assembled face against the closed-form
+//   spherical-cap arithmetic): brep.cpp's ResolveFace() sets
+//   `exact_clip = false` whenever a face carries ANY hole loop (its own
+//   comment: TessellateConforming() cannot clip a hole at all, so a holed
+//   face is routed to Brep::Tessellate()'s ordinary TessellateGrid() path
+//   instead of NurbsSurface::TessellateGridClippedExact()), and
+//   TessellateGrid()'s own whole-cell trimming (surface.cpp's
+//   TessellateFromValues - keep a grid cell only when ALL FOUR of its
+//   corners test inside outer-minus-holes, drop it whole otherwise) is a
+//   materially cruder approximation than the exact-clip path: measured
+//   directly on this fixture's own assembled B-side face, sphere B's own
+//   Out annulus (full domain minus the lens hole) tessellates to 18.68 sq
+//   units at TessellateToClosedMesh(64, 256) and 17.96 at the sweep's own
+//   (32, 128), against a closed-form (analytic cap subtracted from the
+//   full sphere) expectation of ~19.44 - a ~4-8% area deficit, roughly two
+//   orders of magnitude worse than the ~0.05% error an EXACT-clip fragment
+//   of comparable size shows at the same resolution (confirmed: sphere A's
+//   own holeless Out fragment, same fixture, same resolution, measures
+//   43.176 against a closed-form 43.197). This is not a defect
+//   BooleanCombineGeneral introduces - the whole-cell hole-trimming
+//   tradeoff is pre-existing, general kernel behaviour (see brep.cpp's own
+//   doc comment on ResolveFace(), which already discloses it) - this
+//   fixture is simply the first case anywhere in the kernel's own tests to
+//   put an ordinary, non-seam-touching hole on a SMALL, fully-untrimmed,
+//   doubly-periodic/singular (sphere) domain, where the O(hole perimeter x
+//   cell size) staircase error the whole-cell method inherently carries is
+//   a large fraction of the whole face's own area, rather than a
+//   negligible fraction of a much bigger flat face as in every other
+//   holed-face case this kernel already exercises (e.g. sweep case 01's
+//   box-face-with-a-circular-hole). NOT FIXED this session: the
+//   correct general fix (teaching TessellateGridClippedExact-style exact
+//   clipping to also subtract one or more hole polygons per cell, or
+//   equivalently bridging an outer+hole loop pair into one single "keyhole"
+//   polygon so the EXISTING exact-clip path can be used unmodified) is
+//   shared, broadly-relied-on tessellation code (surface.cpp/brep.cpp, used
+//   far beyond BooleanCombineGeneral), and a same-session attempt at the
+//   keyhole-bridging approach (entirely local to this file's own KeptFace
+//   construction, so it would NOT have touched shared code) was tried and
+//   ABANDONED after direct measurement: even with the bridge's own winding
+//   corrected (the hole must be walked in the OPPOSITE direction from the
+//   outer loop so the merged polygon's net signed area is outer - hole, not
+//   their sum - confirmed via SignedArea()), the resulting single polygon's
+//   own EXACT-clip tessellation came back wildly wrong (213 sq units on a
+//   ~28 sq unit sphere) despite IsSimplePolygon() reporting it as simple -
+//   the shared concave polygon-clipping path (ClipPolygon/EarClipTriangulate
+//   in surface.cpp) is not robust to the zero-width, exactly-self-touching
+//   "slit" a naive bridge produces (this file's own TessellateGridClippedExact
+//   already has an unrelated "nudge points off grid lines" workaround for a
+//   different exact-degeneracy sensitivity in the very same concave path,
+//   corroborating that this is a real, known-fragile area, not a fluke of
+//   this one fixture). Making the bridge itself robust (a small, carefully-
+//   directed offset, the standard "simulation of simplicity" fix for this
+//   exact class of degeneracy) is a real, well-understood next step, but
+//   verifying it doesn't regress the concave-clip path's other, already-
+//   proven callers is more work than this session had time to do safely -
+//   left for a future session's own direct attempt, now with this
+//   diagnosis and the two failed/succeeded experiments above as a starting
+//   point rather than a fresh trace.
+//
+// STILL NOT FIXED, diagnosed as far as an earlier session went:
 //   - Sweep case 08 (cyl+cyl SKEW perpendicular axes): improved but not
 //     fixed - (m)'s cleanup pass measurably reduces the self-intersecting-
 //     trim count on every op (Union 4 to 2, Intersection 3 to 2, A-B 3 to
@@ -1622,7 +1743,7 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
         // IntersectFaces() itself resolved it.
         if (untrimmed && face_surface) {
           std::vector<Chain> cut;
-          if (CutChainAtDomainBoundary(c, *face_surface, std::max(stitch_tol, opt.tolerance), boundary, cut)) {
+          if (CutChainAtDomainBoundary(c, *face_surface, opt.tolerance, boundary, cut)) {
             if (debug) std::fprintf(stderr, "  face idx=%d: chain n=%zu cut at domain boundary into %zu open chain(s), boundary now %zu\n", i, c.size(), cut.size(), boundary.size());
             for (Chain& oc : cut) open_chains.push_back(std::move(oc));
             continue;
