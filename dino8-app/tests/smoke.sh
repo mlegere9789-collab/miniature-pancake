@@ -653,7 +653,13 @@ secheck "Rib: tapered wall of height 2 built following the base's local surface 
 secheck "Volume = 1006 cubic" "Rib's union really added the tapered wall's volume"
 secheck "FilletSrfToRail: fillet surface built along the rail's own points" "FilletSrfToRail built real rolling-ball arcs along a picked rail"
 secheck "SoftEditSrf: 4 control point(s) moved with a cosine falloff within radius 8 (max displacement 3)" "SoftEditSrf moved control points with a real falloff"
-secheck "^ok   expect_objects 95" "surface-edit script produced the expected object count"
+secheck "^ok   expect_objects 95" "surface-edit script produced the expected object count halfway through (before UnjoinEdge/ReplaceEdge)"
+secheck "ShowEdges: 1 object(s), 7 edge(s), 6 naked edge(s)" "ShowEdges found the joined planes' 1 shared and 6 naked edges before unjoining"
+secheck "UnjoinEdge: edge [0-9]* split into two naked, coincident edges - both faces remain in the same polysurface" "UnjoinEdge split the shared edge in place via real Brep::UnjoinEdge()"
+secheck "ShowEdges: 1 object(s), 8 edge(s), 8 naked edge(s)" "ShowEdges confirms exactly 2 more naked edges after unjoining - the old shared edge, now two coincident naked ones"
+secheck "ReplaceEdge: edge [0-9]* re-trimmed against the picked curve's own shape, every affected face re-projected onto it" "ReplaceEdge re-trimmed a naked edge against a bowed substitute curve via real Brep::ReplaceEdgeCurve()"
+secheck "2 faces, 9 edges, open" "the re-trimmed polysurface keeps its same topology (2 faces) after ReplaceEdge - only the one edge's own shape changed"
+secheck "^ok   expect_objects 97" "surface-edit script produced the expected final object count"
 
 # Mesh tools: deformations, mesh editing and mesh primitives (see meshtools_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
@@ -923,9 +929,11 @@ stcheck "Reflect: mirrored across the plane through 1005,0,0 and welded original
 stcheck "Radiate: baked diffuse.specular vertex colours from 1 light(s)/sun onto 1 mesh(es)" "Radiate baked vertex colours from the Sun onto the mesh"
 stcheck "RadiateFind: 0 enabled light source(s) selected (the Sun also lights Radiate" "RadiateFind reported the Sun as Radiate's only light source"
 stcheck "OrientCrvToEdge: placed 1 copy(ies) at 1 point(s)" "OrientCrvToEdge picked the box edge directly and oriented a copy onto it"
+stcheck "NonmanifoldMerge: 2 piece(s) joined into one polysurface, 1 newly-adjacent coplanar face pair(s) merged via real B-rep topology surgery (no mesh boolean, no Manifold)" "NonmanifoldMerge joined two coplanar planes and welded their one newly-adjacent face pair with real Brep::MergeCoplanarFaces() topology surgery"
+stcheck "Area = 100 square" "NonmanifoldMerge's merged single face has the combined 5x10 + 5x10 = 100 area"
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
-stcheck "smoke: frames=[12][0-9][0-9] objects=35" "solid-tools script produced the expected object count"
+stcheck "smoke: frames=[12][0-9][0-9] objects=36" "solid-tools script produced the expected object count"
 
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface

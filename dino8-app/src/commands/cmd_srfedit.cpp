@@ -2019,6 +2019,84 @@ class SoftEditSrfCommand : public Command {
   double radius_ = 5.0;
 };
 
+// ---------------------------------------------------------------------------
+// UnjoinEdge / ReplaceEdge - real Brep::UnjoinEdge()/ReplaceEdgeCurve()
+// topology surgery (dino8/kernel/brep.h), not the ExtractSrf workaround/
+// print-only stub these used to fall back to.
+// ---------------------------------------------------------------------------
+
+class UnjoinEdgeCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Click the shared edge to unjoin"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    std::optional<EdgePick> pick = PickEdge(ctx, p);
+    if (!pick) { ctx.Warn("No edge near that point"); Finish(); return; }
+    const SceneObject* o = ctx.Doc().Find(pick->id);
+    if (!o || o->kind != ObjectKind::Brep || !o->brep) { ctx.Warn("UnjoinEdge needs a polysurface edge"); Finish(); return; }
+    kernel::Brep b = *o->brep;
+    const kernel::Result r = b.UnjoinEdge(pick->edge);
+    if (r != kernel::Result::Ok) {
+      ctx.Warn("UnjoinEdge: edge " + std::to_string(pick->edge) + " is not shared by exactly two faces "
+                "(a naked edge has nothing to unjoin; a non-manifold 3+-face edge is out of scope)");
+      Finish();
+      return;
+    }
+    ctx.Doc().BeginChange("UnjoinEdge");
+    if (SceneObject* orig = ctx.Doc().Find(pick->id)) { orig->brep->raw() = b.raw(); orig->InvalidateDisplay(); }
+    ctx.Print("UnjoinEdge: edge " + std::to_string(pick->edge) + " split into two naked, coincident "
+              "edges - both faces remain in the same polysurface");
+    Finish();
+  }
+};
+
+class ReplaceEdgeCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Click the edge to replace"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!edge_) {
+      edge_ = PickEdge(ctx, p);
+      if (!edge_) { ctx.Warn("No edge near that point"); return; }
+      WantPoint("Click the replacement curve (must start/end at the edge's own endpoints)");
+      return;
+    }
+    Run(ctx, p);
+    Finish();
+  }
+  void Run(CommandContext& ctx, Point3d curve_pick) {
+    const SceneObject* o = ctx.Doc().Find(edge_->id);
+    if (!o || o->kind != ObjectKind::Brep || !o->brep) { ctx.Warn("ReplaceEdge needs a polysurface edge"); return; }
+    // Nearest curve object to the second pick is the substitute curve.
+    const ON_Curve* substitute = nullptr;
+    double best_d = std::numeric_limits<double>::max();
+    for (const SceneObject& obj : ctx.Doc().Objects()) {
+      if (obj.kind != ObjectKind::Curve || !obj.curve) continue;
+      const double d = obj.curve->ClosestPoint(curve_pick, 200).DistanceTo(curve_pick);
+      if (d < best_d) { best_d = d; substitute = &obj.curve->raw(); }
+    }
+    if (!substitute) { ctx.Warn("ReplaceEdge: no curve found near that point"); return; }
+    ON_NurbsCurve nc;
+    if (substitute->GetNurbForm(nc) <= 0) { ctx.Warn("ReplaceEdge: the replacement curve has no NURBS form"); return; }
+    kernel::NurbsCurve kc;
+    kc.raw() = nc;
+
+    kernel::Brep b = *o->brep;
+    const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-4);
+    try {
+      b.ReplaceEdgeCurve(edge_->edge, kc, tol);
+    } catch (const std::exception& ex) {
+      ctx.Warn(std::string("ReplaceEdge failed: ") + ex.what());
+      return;
+    }
+    ctx.Doc().BeginChange("ReplaceEdge");
+    if (SceneObject* orig = ctx.Doc().Find(edge_->id)) { orig->brep->raw() = b.raw(); orig->InvalidateDisplay(); }
+    ctx.Print("ReplaceEdge: edge " + std::to_string(edge_->edge) + " re-trimmed against the picked "
+              "curve's own shape, every affected face re-projected onto it");
+  }
+
+ private:
+  std::optional<EdgePick> edge_;
+};
+
 }  // namespace
 
 void RegisterSrfEditCommands(CommandEngine& e) {
@@ -2122,8 +2200,14 @@ void RegisterSrfEditCommands(CommandEngine& e) {
         ctx.Doc().Select(nid, true);
         ctx.Print("JoinEdge: " + std::to_string(n) + " naked edge pair(s) joined");
       }));
-  Reg(e, "UnjoinEdge", Planned("UnjoinEdge: use ExtractSrf on one of the two faces sharing the edge, which leaves both faces with a naked copy of it; a true in-place unjoin that keeps both faces in the same polysurface is not implemented."), CommandStatus::Partial);
-  Reg(e, "ReplaceEdge", Planned("ReplaceEdge: planned; the kernel has no operation to re-trim a face against a substitute edge curve while keeping the rest of the polysurface intact."), CommandStatus::Partial);
+  Reg(e, "UnjoinEdge", Make<UnjoinEdgeCommand>(), CommandStatus::Implemented,
+      "Real Brep::UnjoinEdge(): duplicates the shared edge's own 3D curve into a second ON_BrepEdge and "
+      "re-points one of its two trims onto it, leaving both faces in the same polysurface with a naked "
+      "copy of the boundary each - not ExtractSrf's separate-object workaround.");
+  Reg(e, "ReplaceEdge", Make<ReplaceEdgeCommand>(), CommandStatus::Implemented,
+      "Real Brep::ReplaceEdgeCurve(): re-projects every affected face's own trim onto the substitute "
+      "curve via closest-point projection and replaces the edge's own 3D curve, leaving the rest of the "
+      "polysurface intact; throws (reported as a Warn) if the substitute curve doesn't reasonably fit.");
   Reg(e, "RemoveAllNakedMicroEdges", OnSelection("Select polysurfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         double tol = ctx.Settings().absolute_tolerance;
         int found = 0;

@@ -4,6 +4,7 @@
 
 #include <opennurbs.h>
 
+#include "dino8/kernel/curve.h"
 #include "dino8/kernel/surface.h"
 
 namespace dino8::kernel {
@@ -1592,6 +1593,129 @@ class Brep {
   // TessellateToClosedMesh()'s own composition over Tessellate().
   Mesh TessellateToClosedMeshConforming(int u_divisions = 8, int v_divisions = 8,
                                          int boundary_samples = -1) const;
+
+  // Merges adjacent, coplanar-and-coincident faces of THIS Brep's own
+  // real ON_Brep topology into fewer, larger faces, in place - the
+  // classic "merge coplanar/tangent adjacent faces along a shared edge
+  // into one face, dropping the now-interior edge" operation, done by
+  // walking this Brep's own m_E/m_T/m_L adjacency directly, never through
+  // a mesh boolean and never through Manifold (github.com/elalish/
+  // manifold, this kernel's separate solid-boolean engine - see
+  // boolean.h). This is the concrete rebuttal to the reasoning
+  // NonmanifoldMerge used to be narrowed by (see cmd_solidtools.cpp's own
+  // history): "no non-manifold representation to merge faces of" was only
+  // ever true of Manifold's own mesh format, never of ON_Brep, which is
+  // exactly what this class already wraps and which OpenNURBS itself
+  // documents as supporting non-manifold topology (an edge referenced by
+  // more than two trims).
+  //
+  // A candidate pair of faces (fa, fb) is merged only when ALL of the
+  // following hold - each one a genuine "leave it alone, don't guess"
+  // narrowing, not an oversight:
+  //   - both are planar (NurbsSurface::IsPlanar) and lie in the SAME
+  //     plane (coincident origin and parallel same-direction normal,
+  //     within `tolerance`) - a curved or merely-tangent (not coplanar)
+  //     pair is left untouched, exactly the "coplanar" half of the
+  //     classic operation's own name.
+  //   - both have exactly one loop (no inner/hole loops) - a v1
+  //     narrowing; a face with a hole is left untouched rather than
+  //     risking a wrong merge of its hole boundary.
+  //   - they share EXACTLY ONE edge, and that edge has EXACTLY TWO trims
+  //     (both belonging to fa and fb) - the "non-manifold-safe" condition
+  //     the class comment above promises: an edge a THIRD face also
+  //     touches is never removed, so merging never corrupts topology
+  //     anywhere else in a non-manifold assembly (e.g. one NonmanifoldMerge
+  //     produced by welding several solids' naked boundaries together
+  //     first). A pair touching along more than one edge (a shape whose
+  //     merge would not be a simple polygon) is left untouched too.
+  //
+  // The merge itself walks each face's own outer loop (via ON_BrepTrim::
+  // Edge()/m_bRev3d, not a re-derived polygon) to build the two boundary
+  // curve chains that remain once the shared edge is removed, splices
+  // them (they always meet head-to-tail at the shared edge's own two
+  // vertices, by the standard opposite-direction two-manifold-edge
+  // convention) into one closed boundary, and rebuilds a single trimmed-
+  // plane face from it via the same ON_BrepTrimmedPlane() OpenNURBS API
+  // this kernel's app layer already uses for a coplanar-face merge
+  // (cmd_fillet.cpp's MergeFacesInto) - the one piece of this operation
+  // that isn't itself new, since building a trimmed plane from a 3D
+  // boundary is a solved problem this codebase already relies on
+  // elsewhere; what IS new is deriving that boundary from real B-rep
+  // adjacency instead of from a mesh boolean of extruded slabs. Any
+  // naked edge the merge exposes elsewhere on the two consumed faces
+  // (a third, untouched neighbor's own edge) is re-welded onto the new
+  // face's matching boundary edge, the same coincident-naked-edge join
+  // this kernel's app layer already performs after a topology edit.
+  //
+  // Repeats until no more eligible pairs remain (merging fa/fb can expose
+  // a new coplanar-adjacent pair). Returns the number of merges actually
+  // performed (each merge reduces FaceCount() by exactly one) - 0 if none
+  // of this Brep's faces qualify. Never throws: an ineligible face or
+  // pair is simply left alone, not an error.
+  int MergeCoplanarFaces(double tolerance = 1e-6);
+
+  // Re-trims every face that shares edge `edge_index` against a
+  // substitute 3D curve, replacing the edge's own geometry in place while
+  // leaving the rest of this Brep's topology (every other face, edge,
+  // vertex) untouched - closing the "no operation to re-trim a face
+  // against a substitute edge curve while keeping the rest of the
+  // polysurface intact" gap (see cmd_srfedit.cpp's own prior history).
+  // Works for a naked (1-trim), ordinary shared (2-trim) or genuinely
+  // non-manifold (3+-trim) edge alike, since it just walks
+  // `edge.m_ti[]` - however many trims that is.
+  //
+  // `new_curve`'s own endpoints must land within `tolerance` of the
+  // edge's EXISTING two vertices (in either direction; the curve is
+  // reversed internally if it runs the other way) - ReplaceEdgeCurve
+  // reshapes the edge between its own fixed endpoints, it does not
+  // re-point the topology to new ones. For each trim on the edge, this
+  // then samples `new_curve` and projects each sample onto that trim's
+  // OWN face surface via NurbsSurface::ClosestPointParameter() - the same
+  // closest-point projection this kernel's app layer already uses to
+  // re-derive a trim after a topology edit invalidates its old one (see
+  // cmd_fillet.cpp's SplitFace/SplitEdge) - to build that face's new 2D
+  // trim curve directly through the projected (u, v) points.
+  //
+  // Throws std::invalid_argument if `edge_index` is out of range or
+  // refers to a deleted edge, if `new_curve`'s endpoints don't land near
+  // the edge's own two vertices (see above), or if a face's surface has
+  // no NURBS form. Throws std::runtime_error - the "genuinely doesn't
+  // fit" case this is deliberately not silent about - if any projected
+  // sample lands more than `tolerance` (loosened by a fixed factor to
+  // allow for ordinary projection/fit noise) from `new_curve`'s own point
+  // there, or strays outside that face's surface domain: a substitute
+  // curve of wildly different length or shape than the edge it's
+  // replacing fails this way rather than silently producing a
+  // self-intersecting or out-of-domain trim.
+  void ReplaceEdgeCurve(int edge_index, const NurbsCurve& new_curve,
+                        double tolerance = 1e-4);
+
+  // Splits a shared (exactly two trims) edge into two coincident but
+  // topologically distinct naked edges, in place, while leaving both
+  // faces in THIS SAME Brep - Rhino's own UnjoinEdge semantics exactly
+  // (as opposed to ExtractSrf, which pulls one of the two faces out into
+  // a separate object entirely; see cmd_srfedit.cpp's own prior history
+  // for the gap this closes). The edge's own 3D curve is duplicated into
+  // a brand-new ON_BrepEdge sharing the same two vertices; the SECOND of
+  // the original edge's two trims (edge.m_ti[1]) is then moved onto that
+  // new edge via ON_BrepTrim::AttachToEdge() - the OpenNURBS "expert
+  // user" API that correctly updates both edges' own m_ti[] bookkeeping,
+  // rather than hand-editing it. The result: two edges, each with exactly
+  // one trim - i.e. two naked edges where SelNakedEdges-style detection
+  // (edge.TrimCount() == 1) previously found none, occupying the same
+  // 3D location.
+  //
+  // Returns Result::Failed (not a thrown exception - this is an
+  // ordinary, expected outcome, the same "can't, but that's not a bug"
+  // contract MergeEdge's own ON_Brep::CombineContiguousEdges failure
+  // already has in cmd_fillet.cpp) if `edge_index` refers to an edge that
+  // is not shared by EXACTLY two trims (a naked edge has nothing to
+  // unjoin; a non-manifold 3+-trim edge is out of scope for v1) or whose
+  // curve could not be duplicated. Throws std::out_of_range if
+  // `edge_index` itself is out of range, or std::invalid_argument if it
+  // refers to an already-deleted edge - both genuine caller bugs, not
+  // ordinary outcomes.
+  Result UnjoinEdge(int edge_index);
 
   const ON_Brep& raw() const { return brep_; }
   ON_Brep& raw() { return brep_; }

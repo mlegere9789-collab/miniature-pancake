@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <unordered_map>
@@ -4350,6 +4351,490 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
 
 Mesh Brep::TessellateToClosedMeshConforming(int u_divisions, int v_divisions, int boundary_samples) const {
   return Mesh::MergeAndWeld(TessellateConforming(u_divisions, v_divisions, boundary_samples));
+}
+
+// ---------------------------------------------------------------------------
+// MergeCoplanarFaces / ReplaceEdgeCurve / UnjoinEdge - real B-rep topology
+// surgery, operating directly on this class' own ON_Brep member (m_E/m_T/
+// m_L/m_F), never through Manifold (see brep.h's own doc comment on each
+// method for the full rationale/contract).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// ON_Brep::SetEdgeTolerance() (the plain OpenNURBS base-class version this
+// kernel links against, not Rhino's own internal TL_Brep override) is
+// documented, directly in its own vendored source, to do nothing useful
+// for an edge that has any trims: it unconditionally sets
+// edge.m_tolerance to ON_UNSET_VALUE and leaves an actual computation to
+// TL_Brep, which isn't part of open-source OpenNURBS at all. So calling
+// ON_Brep::SetTolerancesBoxesAndFlags() - needed here for its OTHER
+// bookkeeping (vertex/trim tolerances, trim iso/type flags, loop types,
+// trim boxes, all of which the base class computes for real) - silently
+// RESETS every trimmed edge's own tolerance to invalid on the way, even
+// one this class itself had already set correctly (e.g. FromPlanarFaces()'s
+// own exact 0.0 - see BuildFaceLoop's own comment). Every edge this
+// class's own topology surgery touches is built from an EXACT duplicate
+// or exact substitute curve (DuplicateCurve(), or ReplaceEdgeCurve()'s own
+// caller-supplied curve), so 0.0 - "this edge's curve IS the boundary,
+// not an approximation of it" - is the same honest, exact claim this
+// class already makes elsewhere, not a guess. Called after
+// SetTolerancesBoxesAndFlags(), never before, so it's this call that has
+// the final say.
+void FixUnsetEdgeTolerances(ON_Brep& b) {
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    ON_BrepEdge& e = b.m_E[i];
+    if (e.m_edge_index >= 0 && !(e.m_tolerance >= 0.0)) e.m_tolerance = 0.0;
+  }
+}
+
+// Joins coincident naked (single-trim) edges of `b` within `tol` by
+// position (or, for a closed edge, by tangent direction at its start) -
+// the same technique dino8-app's own JoinNakedEdges (cmd_common.h)
+// already uses, duplicated here rather than shared because the app layer
+// is a separate target this kernel library cannot depend on.
+// Brep::MergeCoplanarFaces() uses this to re-weld a freshly-merged face's
+// own boundary onto whatever naked edges deleting its two source faces
+// exposed on their other, untouched neighbors.
+int WeldCoincidentNakedEdges(ON_Brep& b, double tol) {
+  int joined = 0;
+  for (int i = 0; i < b.m_E.Count(); ++i) {
+    ON_BrepEdge& e0 = b.m_E[i];
+    if (e0.m_edge_index < 0 || e0.TrimCount() != 1) continue;
+    const ON_3dPoint a0 = e0.PointAtStart(), a1 = e0.PointAtEnd();
+    for (int j = i + 1; j < b.m_E.Count(); ++j) {
+      ON_BrepEdge& e1 = b.m_E[j];
+      if (e1.m_edge_index < 0 || e1.TrimCount() != 1) continue;
+      const ON_3dPoint p0 = e1.PointAtStart(), p1 = e1.PointAtEnd();
+      bool forward = a0.DistanceTo(p0) <= tol && a1.DistanceTo(p1) <= tol;
+      bool reversed = !forward && a0.DistanceTo(p1) <= tol && a1.DistanceTo(p0) <= tol;
+      if (forward && a0.DistanceTo(a1) <= tol) {
+        // Closed edges: endpoints alone say nothing about direction.
+        forward = ON_DotProduct(e0.TangentAt(e0.Domain().Min()), e1.TangentAt(e1.Domain().Min())) > 0;
+        reversed = !forward;
+      }
+      if (!forward && !reversed) continue;
+      const ON_3dPoint m0 = e0.PointAt(e0.Domain().Mid()), m1 = e1.PointAt(e1.Domain().Mid());
+      if (m0.DistanceTo(m1) > tol * 10) continue;
+      if (reversed && !e1.Reverse()) continue;
+      for (int k = 0; k < 2; ++k) {
+        if (e0.m_vi[k] == e1.m_vi[k]) continue;
+        if (!b.CombineCoincidentVertices(b.m_V[e0.m_vi[k]], b.m_V[e1.m_vi[k]])) break;
+      }
+      if (b.CombineCoincidentEdges(e0, e1)) { ++joined; break; }
+    }
+  }
+  return joined;
+}
+
+// Attempts to merge faces `fa`/`fb` of `b`, already confirmed coplanar and
+// sharing EXACTLY one edge (`shared_edge_index`, with exactly two trims),
+// into a single face on `plane`. On success, deletes both source faces,
+// appends the merged one, re-welds any naked edges the deletion exposed
+// on their other neighbors, and returns true. Returns false (leaving `b`
+// completely untouched) if the merge boundary can't be spliced into one
+// simple closed loop or ON_BrepTrimmedPlane refuses it - the caller
+// treats that the same as "not eligible", not an error: a face pair that
+// merely LOOKS mergeable (coplanar, one shared 2-trim edge) can still
+// fail here, e.g. if the two loops' own stored trim directions aren't the
+// standard opposite pair a valid 2-manifold edge is expected to have.
+bool TryMergeCoplanarPair(ON_Brep& b, int fa, int fb, int shared_edge_index, const ON_Plane& plane, double tol) {
+  const ON_BrepFace& face_a = b.m_F[fa];
+  const ON_BrepFace& face_b = b.m_F[fb];
+  if (face_a.LoopCount() != 1 || face_b.LoopCount() != 1) return false;
+  const ON_BrepLoop& loop_a = *face_a.Loop(0);
+  const ON_BrepLoop& loop_b = *face_b.Loop(0);
+
+  std::vector<std::unique_ptr<ON_Curve>> owned;
+
+  // Builds the open boundary path that remains once the trim using
+  // `shared_edge_index` is removed from `loop`, walked in the loop's own
+  // stored order starting right after that trim - i.e. from the shared
+  // edge's own "end" (in this loop's own direction) around to its own
+  // "start". Returns an empty vector if the shared edge isn't found in
+  // `loop` exactly once, the loop has fewer than 2 trims, or any trim
+  // along the way has no edge (a singular/seam trim - out of scope here).
+  auto build_path = [&](const ON_BrepLoop& loop) -> std::vector<ON_Curve*> {
+    std::vector<ON_Curve*> path;
+    const int n = loop.TrimCount();
+    if (n < 2) return path;
+    int pos = -1;
+    for (int k = 0; k < n; ++k) {
+      const ON_BrepTrim* t = loop.Trim(k);
+      if (t && t->m_ei == shared_edge_index) {
+        if (pos >= 0) return {};  // shared edge appears twice in this loop
+        pos = k;
+      }
+    }
+    if (pos < 0) return path;
+    for (int step = 1; step < n; ++step) {
+      const ON_BrepTrim* t = loop.Trim((pos + step) % n);
+      const ON_BrepEdge* e = t ? t->Edge() : nullptr;
+      if (!e) return {};
+      ON_Curve* c = e->DuplicateCurve();
+      if (!c) return {};
+      if (t->m_bRev3d) c->Reverse();
+      owned.emplace_back(c);
+      path.push_back(c);
+    }
+    return path;
+  };
+
+  const std::vector<ON_Curve*> path_a = build_path(loop_a);
+  const std::vector<ON_Curve*> path_b = build_path(loop_b);
+  if (path_a.empty() || path_b.empty()) return false;
+
+  // The standard two-manifold-edge invariant (the two faces traverse
+  // their shared edge in opposite directions) means path_a's own end
+  // meets path_b's own start, and vice versa - if it doesn't, this pair's
+  // own topology isn't the ordinary case this merge handles, so back out
+  // rather than guess.
+  const double jt = std::max(tol, 1e-6);
+  if (path_a.back()->PointAtEnd().DistanceTo(path_b.front()->PointAtStart()) > jt ||
+      path_b.back()->PointAtEnd().DistanceTo(path_a.front()->PointAtStart()) > jt) {
+    return false;
+  }
+
+  ON_SimpleArray<ON_Curve*> boundary;
+  for (ON_Curve* c : path_a) boundary.Append(c);
+  for (ON_Curve* c : path_b) boundary.Append(c);
+
+  ON_Brep* merged_raw = ON_BrepTrimmedPlane(plane, boundary, /*bDuplicateCurves=*/true);
+  if (!merged_raw) return false;
+  ON_Brep merged = *merged_raw;
+  delete merged_raw;
+  if (merged.m_F.Count() != 1) return false;
+
+  // Defensive: ON_BrepTrimmedPlane() is documented to decide the new
+  // face's own m_bRev from the boundary's winding, which is not
+  // guaranteed (by that function's own contract) to line up with
+  // `plane.zaxis` - fa's own real outward normal, by construction above -
+  // in every case. Checked here directly against the surface's own true
+  // evaluated normal (NormalAt(), corrected for m_bRev) rather than
+  // trusted blindly, and flipped if it disagrees: a silent mismatch here
+  // would still pass IsValid()/IsManifold()/IsSolid() (orientability is a
+  // topological property; it says nothing about which of the two
+  // consistent orientations is actually stored) while silently reversing
+  // this one face's own contribution to any divergence-theorem volume
+  // integral over the whole solid.
+  {
+    const ON_Surface* srf = merged.m_F[0].SurfaceOf();
+    const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+    ON_3dVector actual_normal = srf->NormalAt(du.Mid(), dv.Mid());
+    if (merged.m_F[0].m_bRev) actual_normal = -actual_normal;
+    if (ON_DotProduct(actual_normal, plane.zaxis) < 0.0) {
+      merged.FlipFace(merged.m_F[0]);
+    }
+  }
+
+  const int hi = std::max(fa, fb), lo = std::min(fa, fb);
+  b.DeleteFace(b.m_F[hi], true);
+  b.DeleteFace(b.m_F[lo], true);
+  b.Compact();
+  b.Append(merged);
+  WeldCoincidentNakedEdges(b, std::max(tol * 20, 1e-4));
+  b.Compact();
+  b.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(b);
+  return true;
+}
+
+}  // namespace
+
+int Brep::MergeCoplanarFaces(double tolerance) {
+  // This method mutates brep_'s own real ON_Brep topology directly
+  // (ON_Brep::DeleteFace()/Append()/Compact()), which invalidates every
+  // per-face side table this class otherwise carries as an exact_clip/
+  // arc_runs/notch fast path (face_trim_loops_ and its five siblings
+  // below, all indexed parallel to brep_.m_F - see their own doc
+  // comments) - those are just parallel vectors with no knowledge of a
+  // face index being deleted, appended, or renumbered by Compact(), so
+  // after any of that they would silently describe the WRONG face at a
+  // given index. Checked directly, not assumed: without this clear, a
+  // later Tessellate() (e.g. TessellateToClosedMesh()) read a stale trim
+  // polygon at a still-in-range index for whichever face now sits there,
+  // corrupting that face's own tessellated shape and, through it, the
+  // whole solid's divergence-theorem volume - while every topology check
+  // (IsValid()/IsManifold()/IsSolid()) still passed, since those never
+  // look at this class's own side tables at all. Cleared unconditionally,
+  // up front, rather than patched face-by-face: every remaining face's
+  // own real ON_Brep loop already describes its trim correctly (a
+  // straight or simple curved 2D trim samples the same shape whether
+  // read from a side-table shortcut or derived generically - see
+  // ResolveFace's own fallback path), so losing the fast path costs only
+  // some OTHER, unrelated curved face's verbatim record elsewhere in this
+  // same Brep (a real but narrow precision-only trade-off, not a
+  // correctness one) - never a wrong shape.
+  face_trim_loops_.clear();
+  face_exact_clip_.clear();
+  face_hole_loops_.clear();
+  face_arc_runs_.clear();
+  face_notch_rows_.clear();
+  face_records_.clear();
+
+  const double tol = std::max(tolerance, 1e-9);
+  int merges = 0;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (int fa = 0; fa < brep_.m_F.Count() && !changed; ++fa) {
+      const ON_BrepFace& face_a = brep_.m_F[fa];
+      if (face_a.m_face_index < 0 || face_a.LoopCount() != 1) continue;
+      FaceGeometry fga;
+      if (!ResolveFace(brep_, fa, face_trim_loops_, face_exact_clip_, face_hole_loops_, fga)) continue;
+      if (!fga.holes.empty()) continue;
+      NurbsSurface wa;
+      wa.raw() = fga.surface;
+      if (!wa.IsPlanar()) continue;
+      const PlanarFace pa = ExtractPlanarFace(fga);
+
+      const ON_BrepLoop& loop_a = *face_a.Loop(0);
+      for (int k = 0; k < loop_a.TrimCount() && !changed; ++k) {
+        const ON_BrepTrim* trim = loop_a.Trim(k);
+        const ON_BrepEdge* edge = trim ? trim->Edge() : nullptr;
+        if (!edge || edge->TrimCount() != 2) continue;  // not a manifold-safe boundary
+        const int other_ti = edge->m_ti[0] == trim->m_trim_index ? edge->m_ti[1] : edge->m_ti[0];
+        const ON_BrepTrim& other_trim = brep_.m_T[other_ti];
+        const int fb = other_trim.FaceIndexOf();
+        if (fb < 0 || fb == fa) continue;
+        const ON_BrepFace& face_b = brep_.m_F[fb];
+        if (face_b.LoopCount() != 1) continue;
+
+        // fa/fb must share EXACTLY this one edge - a pair also touching
+        // along a second, separate edge would not merge into one simple
+        // polygon by the splice below.
+        int shared_edges = 0;
+        for (int m = 0; m < loop_a.TrimCount(); ++m) {
+          const ON_BrepTrim* tm = loop_a.Trim(m);
+          const ON_BrepEdge* em = tm ? tm->Edge() : nullptr;
+          if (!em) continue;
+          for (int q = 0; q < em->TrimCount(); ++q) {
+            if (em->m_ti[q] == tm->m_trim_index) continue;
+            if (brep_.m_T[em->m_ti[q]].FaceIndexOf() == fb) { ++shared_edges; break; }
+          }
+        }
+        if (shared_edges != 1) continue;
+
+        FaceGeometry fgb;
+        if (!ResolveFace(brep_, fb, face_trim_loops_, face_exact_clip_, face_hole_loops_, fgb)) continue;
+        if (!fgb.holes.empty()) continue;
+        NurbsSurface wb;
+        wb.raw() = fgb.surface;
+        if (!wb.IsPlanar()) continue;
+        const PlanarFace pb = ExtractPlanarFace(fgb);
+
+        // Coplanar AND coincident: same-direction normal, and fb's plane
+        // origin lies in fa's own plane.
+        if (ON_DotProduct(pa.plane.zaxis, pb.plane.zaxis) < 1.0 - 1e-6) continue;
+        if (std::fabs(ON_DotProduct(pa.plane.zaxis, pb.plane.origin - pa.plane.origin)) > tol) continue;
+
+        if (TryMergeCoplanarPair(brep_, fa, fb, edge->m_edge_index, pa.plane, tol)) {
+          ++merges;
+          changed = true;
+        }
+      }
+    }
+  }
+  return merges;
+}
+
+void Brep::ReplaceEdgeCurve(int edge_index, const NurbsCurve& new_curve, double tolerance) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::ReplaceEdgeCurve: edge_index " + std::to_string(edge_index) +
+        " is out of range (this Brep has " + std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  ON_BrepEdge& edge = brep_.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::ReplaceEdgeCurve: edge_index " +
+                                 std::to_string(edge_index) + " refers to a deleted edge");
+  }
+
+  const double tol = std::max(tolerance, 1e-9);
+  const double vtol = std::max(tol, 1e-4);
+
+  const ON_NurbsCurve& src = new_curve.raw();
+  const ON_3dPoint new_start = src.PointAtStart();
+  const ON_3dPoint new_end = src.PointAtEnd();
+  const ON_3dPoint v0 = brep_.m_V[edge.m_vi[0]].point;
+  const ON_3dPoint v1 = brep_.m_V[edge.m_vi[1]].point;
+  const bool same_dir = new_start.DistanceTo(v0) <= vtol && new_end.DistanceTo(v1) <= vtol;
+  const bool rev_dir = !same_dir && new_start.DistanceTo(v1) <= vtol && new_end.DistanceTo(v0) <= vtol;
+  if (!same_dir && !rev_dir) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::ReplaceEdgeCurve: new_curve's own endpoints don't land within "
+        "tolerance of edge " +
+        std::to_string(edge_index) +
+        "'s own two vertices - a substitute curve must at least start and end where the edge it "
+        "replaces does (this reshapes an edge between its own fixed endpoints; it does not "
+        "re-point the topology to new ones)");
+  }
+
+  ON_NurbsCurve fitted_curve = src;
+  if (rev_dir) fitted_curve.Reverse();
+  const ON_Interval curve_dom = fitted_curve.Domain();
+
+  // Phase 1: for every trim sharing this edge, re-derive its own 2D trim
+  // curve via closest-point projection of `fitted_curve` onto that
+  // trim's own face surface, validating as we go - WITHOUT mutating this
+  // Brep at all yet, so a thrown exception here leaves every existing
+  // face's trim exactly as valid as it was before this call.
+  struct PendingTrim {
+    int trim_index;
+    std::unique_ptr<ON_NurbsCurve> curve;
+  };
+  std::vector<PendingTrim> pending;
+  constexpr int kSamples = 24;
+  for (int k = 0; k < edge.m_ti.Count(); ++k) {
+    const int ti = edge.m_ti[k];
+    const ON_BrepTrim& trim = brep_.m_T[ti];
+    const int face_index = trim.FaceIndexOf();
+    if (face_index < 0) continue;
+    const ON_BrepFace& face = brep_.m_F[face_index];
+    const ON_Surface* srf = face.SurfaceOf();
+    if (!srf) {
+      throw std::invalid_argument("dino8::kernel::Brep::ReplaceEdgeCurve: face " +
+                                   std::to_string(face_index) + " sharing edge " +
+                                   std::to_string(edge_index) + " has no surface");
+    }
+    ON_NurbsSurface ns;
+    if (const auto* cast = ON_NurbsSurface::Cast(srf)) {
+      ns = *cast;
+    } else if (srf->GetNurbForm(ns) <= 0) {
+      throw std::invalid_argument("dino8::kernel::Brep::ReplaceEdgeCurve: face " +
+                                   std::to_string(face_index) + "'s surface has no NURBS form");
+    }
+    NurbsSurface wrapper;
+    wrapper.raw() = ns;
+    const ON_Interval du = ns.Domain(0), dv = ns.Domain(1);
+    const double u_pad = std::max(du.Length(), 1e-9) * 1e-4;
+    const double v_pad = std::max(dv.Length(), 1e-9) * 1e-4;
+
+    std::vector<ON_3dPoint> uv_points;
+    uv_points.reserve(kSamples + 1);
+    double max_residual = 0.0;
+    for (int i = 0; i <= kSamples; ++i) {
+      const double t = curve_dom.ParameterAt(static_cast<double>(i) / kSamples);
+      const ON_3dPoint p3 = fitted_curve.PointAt(t);
+      const Point2d uv = wrapper.ClosestPointParameter(Point3d(p3.x, p3.y, p3.z), 40, 40);
+      const Point3d back = wrapper.PointAt(uv.x, uv.y);
+      max_residual = std::max(max_residual, back.DistanceTo(p3));
+      if (uv.x < du.Min() - u_pad || uv.x > du.Max() + u_pad || uv.y < dv.Min() - v_pad ||
+          uv.y > dv.Max() + v_pad) {
+        throw std::runtime_error(
+            "dino8::kernel::Brep::ReplaceEdgeCurve: new_curve's own point at t=" +
+            std::to_string(t) + " projects outside face " + std::to_string(face_index) +
+            "'s own surface domain - this substitute curve does not reasonably fit this face");
+      }
+      uv_points.emplace_back(uv.x, uv.y, 0.0);
+    }
+    const double fit_tol = std::max(vtol * 10.0, tol * 100.0);
+    if (max_residual > fit_tol) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::ReplaceEdgeCurve: new_curve strays " + std::to_string(max_residual) +
+          " from face " + std::to_string(face_index) + "'s own surface (tolerance " +
+          std::to_string(fit_tol) +
+          ") - this substitute curve does not reasonably fit this face's geometry");
+    }
+
+    auto trim_curve = std::make_unique<ON_NurbsCurve>();
+    if (!trim_curve->CreateClampedUniformNurbs(2, 2, static_cast<int>(uv_points.size()), uv_points.data())) {
+      throw std::runtime_error("dino8::kernel::Brep::ReplaceEdgeCurve: failed to build face " +
+                                std::to_string(face_index) + "'s new trim curve");
+    }
+    pending.push_back({ti, std::move(trim_curve)});
+  }
+
+  // Phase 2: every validation above passed, so commit - replace the
+  // edge's own 3D curve, then re-point every affected trim onto its
+  // freshly-built (and already-validated) 2D curve.
+  auto* new_curve_heap = new ON_NurbsCurve(fitted_curve);
+  const int c3i = brep_.AddEdgeCurve(new_curve_heap);
+  if (!edge.ChangeEdgeCurve(c3i)) {
+    throw std::runtime_error("dino8::kernel::Brep::ReplaceEdgeCurve: ON_BrepEdge::ChangeEdgeCurve "
+                              "failed for edge " +
+                              std::to_string(edge_index));
+  }
+  for (PendingTrim& pt : pending) {
+    const int c2i = brep_.AddTrimCurve(pt.curve.release());
+    ON_BrepTrim& trim = brep_.m_T[pt.trim_index];
+    if (!trim.ChangeTrimCurve(c2i)) {
+      throw std::runtime_error(
+          "dino8::kernel::Brep::ReplaceEdgeCurve: ON_BrepTrim::ChangeTrimCurve failed for trim " +
+          std::to_string(pt.trim_index));
+    }
+  }
+
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+
+  // The face(s) sharing this edge just had their own real trim curve
+  // replaced, but this class's own per-face side tables (face_trim_loops_
+  // and its siblings - see MergeCoplanarFaces()'s own doc comment for the
+  // full explanation of why these go stale and what that costs) still
+  // hold whatever UV polygon that face had BEFORE this edit, at the same
+  // still-valid index - so a later Tessellate() would silently keep
+  // showing the OLD boundary instead of the one just set here. Cleared
+  // unconditionally (not just for the affected face indices) for the same
+  // reason MergeCoplanarFaces() does: simple and always correct, at the
+  // cost of losing an unrelated curved face's own verbatim fast-path
+  // record elsewhere in this same Brep, never a wrong shape.
+  face_trim_loops_.clear();
+  face_exact_clip_.clear();
+  face_hole_loops_.clear();
+  face_arc_runs_.clear();
+  face_notch_rows_.clear();
+  face_records_.clear();
+}
+
+Result Brep::UnjoinEdge(int edge_index) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::UnjoinEdge: edge_index " +
+                             std::to_string(edge_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  ON_BrepEdge& edge = brep_.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::UnjoinEdge: edge_index " +
+                                 std::to_string(edge_index) + " refers to a deleted edge");
+  }
+  if (edge.TrimCount() != 2) return Result::Failed;
+
+  ON_Curve* dup = edge.DuplicateCurve();
+  if (!dup) return Result::Failed;
+  const int c3i = brep_.AddEdgeCurve(dup);
+  ON_BrepVertex& v0 = brep_.m_V[edge.m_vi[0]];
+  ON_BrepVertex& v1 = brep_.m_V[edge.m_vi[1]];
+  ON_BrepEdge& new_edge = brep_.NewEdge(v0, v1, c3i);
+  new_edge.m_tolerance = edge.m_tolerance;
+
+  // Move the SECOND of the original edge's two trims onto the new,
+  // duplicate edge - AttachToEdge() is the OpenNURBS "expert user" API
+  // that correctly updates both edges' own m_ti[] bookkeeping (removing
+  // the trim from the old edge's list, adding it to the new edge's),
+  // rather than hand-editing those arrays. The result: two edges, each
+  // with exactly one trim (a naked edge, by the same TrimCount()==1 test
+  // this kernel's SelNakedEdges-style detection already uses), occupying
+  // the same 3D location - both faces stay in this SAME ON_Brep.
+  const int ti = edge.m_ti[1];
+  ON_BrepTrim& trim = brep_.m_T[ti];
+  const bool rev = trim.m_bRev3d;
+  if (!trim.AttachToEdge(new_edge.m_edge_index, rev)) {
+    new_edge.m_edge_index = -1;  // roll back the unused edge so a failed
+    brep_.Compact();             // attempt leaves this Brep untouched
+    return Result::Failed;
+  }
+
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  // Unlike MergeCoplanarFaces()/ReplaceEdgeCurve() (see their own doc
+  // comments), this class's own per-face side tables do NOT need
+  // invalidating here: no face was added, removed, or renumbered, and
+  // both faces' own VISIBLE boundary is bit-identical to before (the
+  // duplicated edge carries the exact same 3D curve content - only which
+  // ON_BrepEdge object underlies each of the two now-separate trims
+  // changed, not the shape either face presents).
+  return Result::Ok;
 }
 
 }  // namespace dino8::kernel
