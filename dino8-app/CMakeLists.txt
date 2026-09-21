@@ -287,6 +287,7 @@ set(DINO8_SOURCES
   src/geom/BrepMesher.cpp
   src/geom/SurfaceIntersect.cpp
   src/geom/BlendSurface.cpp
+  src/geom/BrepTrimFace.cpp
   src/commands/cmd_fillet.cpp
   src/util/json_mini.cpp
   src/flow/FlowData.cpp

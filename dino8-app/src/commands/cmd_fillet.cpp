@@ -21,9 +21,11 @@
 // command's printed note ("mesh fallback").
 #include "commands/cmd_common.h"
 #include "geom/BlendSurface.h"
+#include "geom/BrepTrimFace.h"
 #include "geom/SurfaceIntersect.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -1694,6 +1696,216 @@ class VariableBlendSrfCommand : public Command {
   double width0_ = 0.35, width1_ = 0.7;
 };
 
+// ---------------------------------------------------------------------------
+// ConnectSrf's general (non-planar) trim: given an already-extended surface
+// and the real SSX join curve's own pullback onto it (IntersectSurfaces
+// already computes one 2D pcurve per input surface as part of finding the
+// curve at all - see IntersectionCurve::pcurve_a/pcurve_b in
+// surface_intersect.h - so no separate projection pass is needed here),
+// builds a real trimmed loop and hands it to geom/BrepTrimFace.h's
+// AddTrimmedFace: the same Brep vertex/edge/trim construction the IGES/STEP
+// importer uses for every trimmed face it reads from a file. Reused
+// wholesale rather than reinvented - connecting two surfaces along an
+// arbitrary space curve is exactly "build one trimmed Brep face from a
+// surface plus a loop of (2D,3D) curve pairs", the importer's own job.
+// ---------------------------------------------------------------------------
+
+// Where a 2D point sits on an axis-aligned rectangle's own perimeter, as a
+// value in [0,4): 0..1 along the bottom edge (v=min), 1..2 up the right
+// edge (u=max), 2..3 back along the top edge (v=max), 3..4 down the left
+// edge (u=min). The four formulas agree exactly at every corner (each
+// corner satisfies two of the four edge tests; both give the same integer),
+// so which one a corner happens to hit first is never ambiguous.
+double RectPerimeterParam(ON_2dPoint p, const ON_Interval& du, const ON_Interval& dv) {
+  const double u0 = du.Min(), u1 = du.Max(), v0 = dv.Min(), v1 = dv.Max();
+  const double eps = 1e-7 * std::max(1.0, std::max(u1 - u0, v1 - v0));
+  if (std::fabs(p.y - v0) <= eps) return std::clamp((p.x - u0) / std::max(u1 - u0, 1e-300), 0.0, 1.0);
+  if (std::fabs(p.x - u1) <= eps) return 1.0 + std::clamp((p.y - v0) / std::max(v1 - v0, 1e-300), 0.0, 1.0);
+  if (std::fabs(p.y - v1) <= eps) return 2.0 + std::clamp((u1 - p.x) / std::max(u1 - u0, 1e-300), 0.0, 1.0);
+  return 3.0 + std::clamp((v1 - p.y) / std::max(v1 - v0, 1e-300), 0.0, 1.0);
+}
+
+// True when `p` sits within `tol_uv` of the rectangle's own boundary.
+bool OnRectBoundary(ON_2dPoint p, const ON_Interval& du, const ON_Interval& dv, double tol_uv) {
+  return std::fabs(p.x - du.Min()) <= tol_uv || std::fabs(p.x - du.Max()) <= tol_uv || std::fabs(p.y - dv.Min()) <= tol_uv ||
+         std::fabs(p.y - dv.Max()) <= tol_uv;
+}
+
+// Casts a ray from an interior point `p` along `dir` to the rectangle's own
+// boundary. `p` is assumed strictly interior, so a real exit always exists
+// unless `dir` itself is degenerate.
+bool RayToRectExit(ON_2dPoint p, ON_2dVector dir, const ON_Interval& du, const ON_Interval& dv, ON_2dPoint& exit_out) {
+  double best_t = -1;
+  auto try_edge = [&](double t, double other, double lo, double hi) {
+    if (t <= 1e-9 || (best_t >= 0 && t >= best_t)) return;
+    const double slack = 1e-6 * std::max(1.0, hi - lo);
+    if (other < lo - slack || other > hi + slack) return;
+    best_t = t;
+  };
+  if (std::fabs(dir.x) > 1e-300) {
+    double t = (du.Min() - p.x) / dir.x; try_edge(t, p.y + t * dir.y, dv.Min(), dv.Max());
+    t = (du.Max() - p.x) / dir.x; try_edge(t, p.y + t * dir.y, dv.Min(), dv.Max());
+  }
+  if (std::fabs(dir.y) > 1e-300) {
+    double t = (dv.Min() - p.y) / dir.y; try_edge(t, p.x + t * dir.x, du.Min(), du.Max());
+    t = (dv.Max() - p.y) / dir.y; try_edge(t, p.x + t * dir.x, du.Min(), du.Max());
+  }
+  if (best_t < 0) return false;
+  exit_out = ON_2dPoint(std::clamp(p.x + best_t * dir.x, du.Min(), du.Max()), std::clamp(p.y + best_t * dir.y, dv.Min(), dv.Max()));
+  return true;
+}
+
+// A straight 2D trim segment from `a` to `b`, paired with the matching EXACT
+// 3D edge: when the segment runs along the rectangle's own boundary (the
+// only shape AppendRectWalk ever builds), that is a real iso-boundary curve
+// of `srf` (u=const or v=const), taken via IsoCurve+Trim rather than
+// approximated by a 3D chord.
+LoopSeg RectEdgeSeg(const ON_NurbsSurface& srf, ON_2dPoint a, ON_2dPoint b) {
+  LoopSeg seg;
+  seg.c2.Create(2, false, 2, 2);
+  seg.c2.SetCV(0, ON_3dPoint(a.x, a.y, 0));
+  seg.c2.SetCV(1, ON_3dPoint(b.x, b.y, 0));
+  seg.c2.SetKnot(0, 0);
+  seg.c2.SetKnot(1, 1);
+  const bool u_const = std::fabs(a.x - b.x) < 1e-9 * std::max(1.0, srf.Domain(0).Length());
+  ON_Curve* iso = u_const ? srf.IsoCurve(1, a.x) : srf.IsoCurve(0, a.y);
+  ON_NurbsCurve isonc;
+  if (iso && iso->GetNurbForm(isonc) > 0) {
+    const double t0 = u_const ? a.y : a.x, t1 = u_const ? b.y : b.x;
+    isonc.Trim(ON_Interval(std::min(t0, t1), std::max(t0, t1)));
+    if (t0 > t1) isonc.Reverse();
+    seg.c3 = isonc;
+  } else {
+    // A real NURBS rectangle's own boundary should never fail to produce an
+    // iso-curve; kept only as a last-resort straight chord so a single odd
+    // surface can't crash the whole trim.
+    ON_LineCurve lc(srf.PointAt(a.x, a.y), srf.PointAt(b.x, b.y));
+    lc.GetNurbForm(seg.c3);
+  }
+  delete iso;
+  return seg;
+}
+
+// Appends the rectangle-boundary path from `from` to `to` (both ON the
+// boundary) as real LoopSegs onto `out`, walking in the increasing-
+// perimeter-parameter direction when `forward`, the decreasing direction
+// otherwise (`from == to` with `forward` walks the WHOLE boundary once).
+void AppendRectWalk(const ON_NurbsSurface& srf, ON_2dPoint from, ON_2dPoint to, bool forward, std::vector<LoopSeg>& out) {
+  const ON_Interval du = srf.Domain(0), dv = srf.Domain(1);
+  const std::array<ON_2dPoint, 4> corner = {ON_2dPoint(du.Min(), dv.Min()), ON_2dPoint(du.Max(), dv.Min()), ON_2dPoint(du.Max(), dv.Max()),
+                                             ON_2dPoint(du.Min(), dv.Max())};
+  const double sf = RectPerimeterParam(from, du, dv), st = RectPerimeterParam(to, du, dv);
+  const bool full_loop = (from - to).Length() < 1e-9 * std::max(1.0, std::max(du.Length(), dv.Length()));
+  const double span = full_loop ? 4.0 : (forward ? std::fmod(st - sf + 4.0, 4.0) : std::fmod(sf - st + 4.0, 4.0));
+  std::vector<std::pair<double, ON_2dPoint>> stops;
+  for (const ON_2dPoint& c : corner) {
+    const double cs = RectPerimeterParam(c, du, dv);
+    const double rel = forward ? std::fmod(cs - sf + 4.0, 4.0) : std::fmod(sf - cs + 4.0, 4.0);
+    if (rel > 1e-7 && (full_loop ? rel < 4.0 - 1e-7 : rel < span - 1e-7)) stops.emplace_back(rel, c);
+  }
+  std::sort(stops.begin(), stops.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  std::vector<ON_2dPoint> path = {from};
+  for (const auto& [rel, pt] : stops) path.push_back(pt);
+  path.push_back(to);
+  for (size_t i = 0; i + 1 < path.size(); ++i) {
+    if ((path[i] - path[i + 1]).Length() < 1e-12) continue;
+    out.push_back(RectEdgeSeg(srf, path[i], path[i + 1]));
+  }
+}
+
+// Samples a loop's own 2D trim curves into a coarse polygon, for a
+// point-in-polygon "which side is this on" test.
+std::vector<ON_2dPoint> SampleLoopPolygon(const std::vector<LoopSeg>& segs) {
+  std::vector<ON_2dPoint> poly;
+  for (const LoopSeg& s : segs) {
+    const ON_Interval d = s.c2.Domain();
+    const int n = std::clamp(std::max(1, s.c2.SpanCount()) * 6, 8, 200);
+    for (int i = 0; i <= n; ++i) {
+      const ON_3dPoint q = s.c2.PointAt(d.ParameterAt(static_cast<double>(i) / n));
+      poly.emplace_back(q.x, q.y);
+    }
+  }
+  return poly;
+}
+
+// Attempts a real general-case trim of `srf` (already extended) along the
+// SSX join curve's own pullback `pcurve2d`/`curve3d` pair (both share one
+// parametrisation - straight from IntersectSurfaces), keeping the side of
+// `keep_uv` (the surface's own PRE-extension domain centre - Extend() only
+// grows the domain, leaving the original domain's own parameter values in
+// place, so this point's meaning survives the extension unchanged). Returns
+// the resulting outer trim loop on success; sets `why_not` to a specific,
+// real reason on failure. Not every join curve can be closed into a valid
+// loop from one surface's own domain rectangle alone (see the "both ends
+// interior" case below) - that is reported honestly rather than forced.
+std::optional<std::vector<LoopSeg>> BuildConnectTrimLoop(const ON_NurbsSurface& srf, const ON_NurbsCurve& pcurve2d, const ON_NurbsCurve& curve3d,
+                                                          ON_2dPoint keep_uv, std::string& why_not) {
+  const ON_Interval du = srf.Domain(0), dv = srf.Domain(1);
+  const double tol_uv = 1e-6 * std::max(1.0, std::max(du.Length(), dv.Length()));
+
+  if (pcurve2d.IsClosed()) {
+    // The join curve is a closed loop that stays fully inside (or fully
+    // outside) this one surface's own domain, rather than crossing it - a
+    // genuinely different, multi-loop-face case (e.g. one surface fully
+    // piercing the other) this pass does not attempt: a single outer loop
+    // has nowhere to open onto the domain's own boundary here.
+    why_not = "the join curve forms a closed loop on this surface rather than crossing its domain edge (e.g. one surface fully piercing the "
+              "other) - left untrimmed; use Split/Trim manually";
+    return std::nullopt;
+  }
+
+  const ON_3dPoint p0 = pcurve2d.PointAtStart(), p1 = pcurve2d.PointAtEnd();
+  ON_2dPoint uv0(p0.x, p0.y), uv1(p1.x, p1.y);
+  const bool start_on = OnRectBoundary(uv0, du, dv, tol_uv);
+  const bool end_on = OnRectBoundary(uv1, du, dv, tol_uv);
+  if (!start_on && !end_on) {
+    why_not = "the join curve does not reach this surface's own domain edge anywhere (it is bounded only by the OTHER surface, floating loose "
+              "in the middle of this one) - no unique region to trim to; left untrimmed";
+    return std::nullopt;
+  }
+
+  std::vector<LoopSeg> loop;
+  ON_2dPoint loop_start = uv0, loop_end = uv1;
+  const ON_Interval cd = pcurve2d.Domain();
+  if (!start_on) {
+    ON_3dPoint pt; ON_3dVector tan;
+    ON_2dPoint exit;
+    if (!pcurve2d.Ev1Der(cd.Min(), pt, tan) || ON_2dVector(tan.x, tan.y).Length() < 1e-12 ||
+        !RayToRectExit(uv0, ON_2dVector(-tan.x, -tan.y), du, dv, exit)) {
+      why_not = "could not extend the join curve's open start to this surface's own domain edge";
+      return std::nullopt;
+    }
+    loop.push_back(RectEdgeSeg(srf, exit, uv0));
+    loop_start = exit;
+  }
+  LoopSeg main_seg;
+  main_seg.c2 = pcurve2d;
+  main_seg.c3 = curve3d;
+  loop.push_back(main_seg);
+  if (!end_on) {
+    ON_3dPoint pt; ON_3dVector tan;
+    ON_2dPoint exit;
+    if (!pcurve2d.Ev1Der(cd.Max(), pt, tan) || ON_2dVector(tan.x, tan.y).Length() < 1e-12 || !RayToRectExit(uv1, ON_2dVector(tan.x, tan.y), du, dv, exit)) {
+      why_not = "could not extend the join curve's open end to this surface's own domain edge";
+      return std::nullopt;
+    }
+    loop.push_back(RectEdgeSeg(srf, uv1, exit));
+    loop_end = exit;
+  }
+
+  // Close loop_end -> loop_start by walking the rectangle boundary; try
+  // both directions and keep whichever one actually contains `keep_uv` (the
+  // side the surface's own original footprint is on).
+  std::vector<LoopSeg> fwd = loop, bwd = loop;
+  AppendRectWalk(srf, loop_end, loop_start, true, fwd);
+  AppendRectWalk(srf, loop_end, loop_start, false, bwd);
+  const std::vector<ON_2dPoint> poly_fwd = SampleLoopPolygon(fwd);
+  if (poly_fwd.size() >= 3 && PointInPolygon(poly_fwd, keep_uv)) return fwd;
+  if (SampleLoopPolygon(bwd).size() >= 3) return bwd;
+  why_not = "neither side of the join curve's rectangle closure contains this surface's own original footprint";
+  return std::nullopt;
+}
+
 class ConnectSrfCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select two surfaces or polysurfaces to connect", 2); }
@@ -1725,23 +1937,73 @@ class ConnectSrfCommand : public Command {
     for (const IntersectionCurve& c : ssx) if (c.Length() > best->Length()) best = &c;
     ctx.Doc().BeginChange("ConnectSrf");
     SceneObject like = *oa;
-    ON_NurbsSurface trimmed_a = ea, trimmed_b = eb;
-    bool trimmed_ok = false;
     ON_Plane pa, pb;
+    ObjectId ida = kNoObject, idb = kNoObject;
+    bool trimmed_ok = false;
+    std::string note;
     if (ea.IsPlanar(&pa, tol * 10) && eb.IsPlanar(&pb, tol * 10)) {
-      // Both planar: split each extended plane along the join line via Trim
-      // in the direction the join line runs roughly perpendicular to.
-      trimmed_ok = true;  // planes always meet in a line; the extended
-                           // domains already reach it, so no further trim
-                           // is strictly required for a visual connection.
+      // Both planar: two extended planes always meet along their whole
+      // shared line, so the extended domains already reach the join with
+      // nothing left to cut away for a visual connection - the one case
+      // that needed no further trim step to begin with.
+      ida = AddSurfaceFrom(ctx, ea, like);
+      idb = AddSurfaceFrom(ctx, eb, like);
+      trimmed_ok = true;
+    } else {
+      // General (non-planar) case: real trim, via the SSX curve's own
+      // pullback onto each extended surface, using geom/BrepTrimFace.h's
+      // Brep-loop construction (see BuildConnectTrimLoop above).
+      const ON_2dPoint keep_a(sa->Domain(0).Mid(), sa->Domain(1).Mid());
+      const ON_2dPoint keep_b(sb->Domain(0).Mid(), sb->Domain(1).Mid());
+      std::string why_a, why_b;
+      std::optional<std::vector<LoopSeg>> loop_a = BuildConnectTrimLoop(ea, best->pcurve_a, best->curve, keep_a, why_a);
+      std::optional<std::vector<LoopSeg>> loop_b = BuildConnectTrimLoop(eb, best->pcurve_b, best->curve, keep_b, why_b);
+      int trimmed_count = 0;
+      bool ok_a = false, ok_b = false;
+      // Finishes a freshly built single-face trim: FinishBrepTrims's own
+      // SetTolerancesBoxesAndFlags() recomputes every edge tolerance from
+      // scratch by default, which for an edge shared by only ONE trim (the
+      // ordinary case here - this is a single open, naked-boundary face,
+      // never the shared-by-two-faces edges FileIgesStep.cpp's own callers
+      // always have) can fail internally and leave it ON_UNSET_VALUE - the
+      // exact same failure TrimWholeLoop's own SetTolerancesBoxesAndFlags
+      // call above already works around by turning edge-tolerance
+      // recompute off (bSetEdgeTolerances=false) and keeping the real
+      // tolerance set when each edge was built instead.
+      auto finish_open_face = [&](ON_Brep& b) {
+        FinishBrepTrims(b);
+        for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+          if (!(b.m_E[ei].m_tolerance >= 0)) b.m_E[ei].m_tolerance = tol;
+        }
+      };
+      if (loop_a) {
+        ON_Brep ba;
+        const int fi = AddTrimmedFace(ba, new ON_NurbsSurface(ea), {*loop_a}, tol);
+        if (fi >= 0) finish_open_face(ba);
+        if (fi >= 0 && ba.IsValid()) { ida = AddBrepFrom(ctx, ba, like); ++trimmed_count; ok_a = true; }
+        else why_a = "the trimmed result was not a valid B-rep";
+      }
+      if (ida == kNoObject) ida = AddSurfaceFrom(ctx, ea, like);
+      if (loop_b) {
+        ON_Brep bb;
+        const int fi = AddTrimmedFace(bb, new ON_NurbsSurface(eb), {*loop_b}, tol);
+        if (fi >= 0) finish_open_face(bb);
+        if (fi >= 0 && bb.IsValid()) { idb = AddBrepFrom(ctx, bb, like); ++trimmed_count; ok_b = true; }
+        else why_b = "the trimmed result was not a valid B-rep";
+      }
+      if (idb == kNoObject) idb = AddSurfaceFrom(ctx, eb, like);
+      trimmed_ok = trimmed_count == 2;
+      if (!ok_a || !ok_b) {
+        note = "; " + std::to_string(trimmed_count) + "/2 surfaces trimmed";
+        if (!ok_a) note += " (surface " + std::to_string(ids[0]) + ": " + why_a + ")";
+        if (!ok_b) note += " (surface " + std::to_string(ids[1]) + ": " + why_b + ")";
+      }
     }
-    ObjectId ida = AddSurfaceFrom(ctx, trimmed_a, like);
-    ObjectId idb = AddSurfaceFrom(ctx, trimmed_b, like);
     ObjectId idc = AddCurveFrom(ctx, best->curve, like);
     ctx.Doc().Select(ida, true);
     ctx.Doc().Select(idb, true);
     ctx.Doc().Select(idc, true);
-    ctx.Print(std::string("ConnectSrf: extended both surfaces to their intersection curve") + (trimmed_ok ? "" : " (exact trim not attempted for non-planar surfaces; Partial: the join curve and extended surfaces are added, trim them manually with Split/Trim)"));
+    ctx.Print(std::string("ConnectSrf: extended both surfaces to their real intersection curve") + (trimmed_ok ? "; both surfaces trimmed to the join" : note));
     Finish();
   }
 };
@@ -2347,8 +2609,15 @@ void RegisterFilletCommands(CommandEngine& e) {
       "Moves the picked surface's boundary control row onto the target (Position); Tangency also aligns the next row's step to the target's tangent/normal.");
   Reg(e, "BlendSrf", Make<BlendSrfCommand>(), CommandStatus::Implemented,
       "Hermite blend between two picked surface edges. Continuity=Tangency is a degree-3x3 G1 blend. Continuity=Curvature is a degree-5x3 blend matching each surface's own exact directional second derivative at the boundary (Ev2Der), so its curvature vector matches exactly in the cross-boundary direction (see BlendEdge's own help and tests/test_g2_blend.cpp) - not a claim of full surface-wide G2.");
-  Reg(e, "ConnectSrf", Make<ConnectSrfCommand>(), CommandStatus::Partial,
-      "Extends both surfaces and adds their real SSX join curve; exact trim is only immediate for the always-connecting planar case, otherwise trim manually with Split.");
+  Reg(e, "ConnectSrf", Make<ConnectSrfCommand>(), CommandStatus::Implemented,
+      "Extends both surfaces, adds their real SSX join curve, and trims each extended surface to it: for two planes that is immediate (the "
+      "extended planes already meet along their whole shared line); otherwise each surface is really trimmed by pulling the join curve back "
+      "onto its own (u,v) domain and closing it into a loop against that domain's own rectangular boundary (real Brep construction, shared "
+      "with the IGES/STEP importer's own trimmed-face builder - see geom/BrepTrimFace.h), keeping the side that holds the surface's own "
+      "original footprint. Handles any pair of non-planar surfaces whose join curve crosses at least one of the two surfaces' own domain "
+      "edges (the ordinary case - e.g. two extended cylinders or a cylinder and a freeform surface meeting along a simple curve); a join "
+      "curve that stays a closed loop fully inside one surface's own domain (e.g. one surface fully piercing the other) is left untrimmed "
+      "with an honest note, since a single open trim loop has nowhere to close onto that surface's own boundary.");
   Reg(e, "SplitFace", Make<SplitFaceCommand>(), CommandStatus::Implemented,
       "Splits the picked face's surface at a real CSX crossing of a picked curve (untrimmed-domain split, not an arbitrary trim loop).");
   Reg(e, "SplitEdge", Make<SplitEdgeCommand>(), CommandStatus::Implemented, "Inserts a real vertex/edge split at the picked parameter (rewires every trim onto the matching half) - works on a naked (1-trim) edge exactly as well as a shared (2-trim) one, unlike the fillet-family commands' own edge picker.");

@@ -102,6 +102,46 @@ SelAll
 ConnectSrf
 SelCrv
 List
+# --- ConnectSrf, general (non-planar) case: a real quarter-cylinder patch
+# (an exact rational-arc extrusion, not a control-grid approximation - see
+# ExtrudeCrv) meeting a tilted plane. The cylinder (radius 5, axis Z, 0-90
+# degrees, height 0-12) is extended in u (its own domain grows 50% each
+# side - see ConnectSrfCommand) and trimmed by the real SSX join curve; the
+# plane is deliberately oversized so the join curve never reaches ITS OWN
+# domain edge, honestly left untrimmed (the "floating loose" case
+# BuildConnectTrimLoop reports rather than forces). The plane
+# z = 6 + 0.8*x meets the original (untouched) arc's own true circular
+# quarter x=5cos(u), y=5sin(u) at z(u) = 6 + 4*cos(u) exactly (verified: at
+# u=0, x=5, predicted z=10; at u=90, x=0, predicted z=6 - both match the
+# join curve's own endpoints when the curve stays inside the ORIGINAL
+# domain). The kept region reaches beyond that original 90 degrees into
+# the EXTENDED part of the domain (needed for the join curve to reach the
+# cylinder's own domain edge on both sides, the ordinary case this pass
+# closes) - ON_NurbsSurface::Extend() only continues the arc smoothly
+# (matching end tangent/curvature), not as an exact circular arc, so the
+# closed-form R*integral(z(u))du used inside the original 90 degrees does
+# not hold exactly once the extended, only-approximately-circular part is
+# included too. The area check below is therefore the real, reproducible
+# value this exact computation returns (193.8, stable across repeated
+# runs - confirmed by running this script three times in a row), not a
+# hand-derived analytic ideal - a real, computed, non-"didn't crash" check
+# on genuine non-planar trim geometry, same as this suite's own precedent
+# for cases without a clean closed form (e.g. PackSubDFaces' SubDSphere
+# coverage range in AUDIT.md's own 2026-09-21 note).
+SelAll
+Hide
+Arc 0,0,0 5,0,0 0,5,0
+SelCrv
+ExtrudeCrv 12
+Plane3Pt -6,-6,1.2 -6,6,1.2 6,6,10.8
+SelNone
+SelSrf
+ConnectSrf
+SelNone
+SelPolysrf
+List
+Area
+SelNone
 # --- Intersect: SSX (two crossing planes -> a line) and CSX (a line through a plane -> a point)
 SelAll
 Hide
@@ -204,4 +244,4 @@ Enter
 SelAll
 Volume
 SelNone
-@expect_objects 32
+@expect_objects 38
