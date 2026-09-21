@@ -68,6 +68,15 @@ jobs:
         run: cd dino8-app/build && ctest --output-on-failure -C Release
       - name: Version check
         run: dino8-app\build\Dino8.exe --version
+      # The same functional QC Linux already runs (~1500 checks over the
+      # real app, not just a build check) - smoke.sh's own xvfb-run guard
+      # falls through to a direct run whenever xvfb-run isn't on PATH, which
+      # is always true here, so no virtual display setup is needed: a
+      # Windows Actions runner already has a real (if headless) desktop
+      # session GLFW can open a hidden GL window against.
+      - name: Smoke test (headless)
+        shell: bash
+        run: dino8-app/tests/smoke.sh dino8-app/build/Dino8.exe
       # Inert until a real certificate exists: skipped entirely (no-op) when
       # the WINDOWS_CERT_BASE64 secret is unset, so this changes nothing
       # about today's unsigned builds. Signing the built exe here (before the
@@ -164,6 +173,12 @@ jobs:
         run: cmake --build dino8-app/build
       - name: Unit tests
         run: cd dino8-app/build && ctest --output-on-failure
+      # Same functional QC as Linux/Windows: smoke.sh's xvfb-run guard falls
+      # through to a direct run whenever xvfb-run isn't on PATH (true on
+      # macOS runners), and a macOS Actions runner has a real (if headless)
+      # window server GLFW can open a hidden GL context against.
+      - name: Smoke test (headless)
+        run: dino8-app/tests/smoke.sh dino8-app/build/Dino8.app/Contents/MacOS/Dino8
       # Inert until a real certificate exists: both steps below are skipped
       # entirely (no-op) when the APPLE_CERT_BASE64 secret is unset, so this
       # changes nothing about today's unsigned/unnotarized .dmg. See

@@ -45,7 +45,7 @@ ToolbarAddCommand Fillet
 ToolbarAddCommand NotARealCommandXYZ
 EOS
 
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   OUT="$("$BIN" --smoke 200 --script "$TMP/script.txt" 2>&1)" || { echo "$OUT"; echo "FAIL: app exited non-zero"; exit 1; }
 else
   OUT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/script.txt" 2>&1)" || { echo "$OUT"; echo "FAIL: app exited non-zero"; exit 1; }
@@ -74,7 +74,7 @@ check "gl_error=0" "no OpenGL errors"
 echo "$OUT" | grep -E "^(smoke|history)" | tail -120
 
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   UI="$("$BIN" --smoke 320 --script "$HERE/ui_script.txt" 2>&1)" || true
 else
   UI="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 320 --script "$HERE/ui_script.txt" 2>&1)" || true
@@ -105,7 +105,7 @@ else
 fi
 
 # Curve editing: Intersect, Split, Trim, Fillet, Chamfer, FilletCorners (see curveedit_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   CE="$("$BIN" --smoke 150 --script "$HERE/curveedit_script.txt" 2>&1)" || { echo "$CE"; echo "FAIL: curve-edit script exited non-zero"; exit 1; }
 else
   CE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/curveedit_script.txt" 2>&1)" || { echo "$CE"; echo "FAIL: curve-edit script exited non-zero"; exit 1; }
@@ -124,7 +124,7 @@ cecheck "Split into 2 piece(s)" "Split still delegates solids to the plane split
 cecheck "smoke: frames=150 objects=17" "curve-edit script produced the expected object count"
 
 # Curve tools: conics, catenary, CloseCrv, ReducePolyline, SubCrv, Contour, Section, Align, Distribute, TweenCurves, ArrayCrv, fits (see curves2_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   C2="$("$BIN" --smoke 400 --script "$HERE/curves2_script.txt" 2>&1)" || { echo "$C2"; echo "FAIL: curve-tools script exited non-zero"; exit 1; }
 else
   C2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 400 --script "$HERE/curves2_script.txt" 2>&1)" || { echo "$C2"; echo "FAIL: curve-tools script exited non-zero"; exit 1; }
@@ -177,7 +177,7 @@ fi
 c2check "^ok   expect_objects 72" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMP|g" "$HERE/exchange_script.txt" > "$TMP/exchange_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   EX="$("$BIN" --smoke 150 --script "$TMP/exchange_script.txt" 2>&1)" || { echo "$EX"; echo "FAIL: exchange script exited non-zero"; exit 1; }
 else
   EX="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/exchange_script.txt" 2>&1)" || { echo "$EX"; echo "FAIL: exchange script exited non-zero"; exit 1; }
@@ -212,7 +212,7 @@ head -1 "$TMP/exchange.ply" | grep -q "^ply" && grep -q "^element face 6" "$TMP/
 # exactly (SPLINE/ELLIPSE entities), not as sampled polylines (see
 # dxf_fidelity_script.txt).
 sed "s|@TMP@|$TMP|g" "$HERE/dxf_fidelity_script.txt" > "$TMP/dxf_fidelity_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   DF="$("$BIN" --smoke 50 --script "$TMP/dxf_fidelity_script.txt" 2>&1)" || { echo "$DF"; echo "FAIL: DXF fidelity script exited non-zero"; exit 1; }
 else
   DF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 50 --script "$TMP/dxf_fidelity_script.txt" 2>&1)" || { echo "$DF"; echo "FAIL: DXF fidelity script exited non-zero"; exit 1; }
@@ -229,7 +229,7 @@ grep -q "^SPLINE$" "$TMP/dxf_fidelity.dxf" && echo "ok   dxf_fidelity.dxf uses e
 # ImportDxf's TEXT-to-glyph-outline conversion for real.
 cp "$HERE/dxf_text_fixture.dxf" "$TMP/dxf_text_fixture.dxf"
 sed "s|@TMP@|$TMP|g" "$HERE/dxf_text_script.txt" > "$TMP/dxf_text_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   DT="$("$BIN" --smoke 30 --script "$TMP/dxf_text_script.txt" 2>&1)" || { echo "$DT"; echo "FAIL: DXF TEXT script exited non-zero"; exit 1; }
 else
   DT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_text_script.txt" 2>&1)" || { echo "$DT"; echo "FAIL: DXF TEXT script exited non-zero"; exit 1; }
@@ -246,7 +246,7 @@ dtcheck "DXF: 3 curves, 0 points" "DXF import read the TEXT entity"
 # rather than leaving them as literal glyphs.
 cp "$HERE/dxf_mtext_fixture.dxf" "$TMP/dxf_mtext_fixture.dxf"
 sed "s|@TMP@|$TMP|g" "$HERE/dxf_mtext_script.txt" > "$TMP/dxf_mtext_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   DM="$("$BIN" --smoke 30 --script "$TMP/dxf_mtext_script.txt" 2>&1)" || { echo "$DM"; echo "FAIL: DXF MTEXT script exited non-zero"; exit 1; }
 else
   DM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_mtext_script.txt" 2>&1)" || { echo "$DM"; echo "FAIL: DXF MTEXT script exited non-zero"; exit 1; }
@@ -262,7 +262,7 @@ dmcheck "DXF: 6 curves, 0 points" "DXF import read the MTEXT entity"
 # object count - see dwg_script.txt).
 DWGBIN="$(dirname "$BIN")/dwg_fixture_gen"
 sed "s|@TMP@|$TMP|g" "$HERE/dwg_script.txt" > "$TMP/dwg_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   DW="$("$BIN" --smoke 50 --script "$TMP/dwg_script.txt" 2>&1)" || { echo "$DW"; echo "FAIL: DWG round-trip script exited non-zero"; exit 1; }
 else
   DW="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 50 --script "$TMP/dwg_script.txt" 2>&1)" || { echo "$DW"; echo "FAIL: DWG round-trip script exited non-zero"; exit 1; }
@@ -302,7 +302,7 @@ dwcheck "Exported $TMP/dwg_v2018.dwg (Version=2018)" "Export Version=2018 (DWG) 
 if [ -x "$DWGBIN" ]; then
   "$DWGBIN" "$TMP/dwg_insert_fixture.dwg" >/dev/null || { echo "FAIL: dwg_fixture_gen failed to write the INSERT fixture"; exit 1; }
   sed "s|@TMP@|$TMP|g" "$HERE/dwg_insert_script.txt" > "$TMP/dwg_insert_script.txt"
-  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     DI="$("$BIN" --smoke 30 --script "$TMP/dwg_insert_script.txt" 2>&1)" || { echo "$DI"; echo "FAIL: DWG INSERT script exited non-zero"; exit 1; }
   else
     DI="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dwg_insert_script.txt" 2>&1)" || { echo "$DI"; echo "FAIL: DWG INSERT script exited non-zero"; exit 1; }
@@ -335,7 +335,7 @@ SelHatch
 List
 Area
 EOS
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   DXH="$("$BIN" --smoke 30 --script "$TMP/dxf_hatch_script.txt" 2>&1)" || { echo "$DXH"; echo "FAIL: DXF HATCH script exited non-zero"; exit 1; }
 else
   DXH="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_hatch_script.txt" 2>&1)" || { echo "$DXH"; echo "FAIL: DXF HATCH script exited non-zero"; exit 1; }
@@ -359,7 +359,7 @@ Open $TMP/dwg_hatch_fixture.dwg
 SelHatch
 List
 EOS
-  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     DWH="$("$BIN" --smoke 30 --script "$TMP/dwg_hatch_script.txt" 2>&1)" || { echo "$DWH"; echo "FAIL: DWG HATCH script exited non-zero"; exit 1; }
   else
     DWH="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dwg_hatch_script.txt" 2>&1)" || { echo "$DWH"; echo "FAIL: DWG HATCH script exited non-zero"; exit 1; }
@@ -386,7 +386,7 @@ Open $TMP/dwg_spline_fixture.dwg
 SelAll
 List
 EOS
-  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     DWS="$("$BIN" --smoke 30 --script "$TMP/dwg_spline_script.txt" 2>&1)" || { echo "$DWS"; echo "FAIL: DWG SPLINE script exited non-zero"; exit 1; }
   else
     DWS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dwg_spline_script.txt" 2>&1)" || { echo "$DWS"; echo "FAIL: DWG SPLINE script exited non-zero"; exit 1; }
@@ -419,7 +419,7 @@ SelAll
 List
 SelAnnotationStyle
 EOS
-  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     DWM="$("$BIN" --smoke 30 --script "$TMP/dwg_mtext_script.txt" 2>&1)" || { echo "$DWM"; echo "FAIL: DWG MTEXT script exited non-zero"; exit 1; }
   else
     DWM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dwg_mtext_script.txt" 2>&1)" || { echo "$DWM"; echo "FAIL: DWG MTEXT script exited non-zero"; exit 1; }
@@ -454,7 +454,7 @@ SelDim
 List
 UpdateDimensions
 EOS
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   DXDL="$("$BIN" --smoke 30 --script "$TMP/dxf_dim_linear_script.txt" 2>&1)" || { echo "$DXDL"; echo "FAIL: DXF DIMENSION (linear) script exited non-zero"; exit 1; }
 else
   DXDL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_dim_linear_script.txt" 2>&1)" || { echo "$DXDL"; echo "FAIL: DXF DIMENSION (linear) script exited non-zero"; exit 1; }
@@ -472,7 +472,7 @@ Open $TMP/dxf_dim_aligned_fixture.dxf
 SelDim
 UpdateDimensions
 EOS
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   DXDA="$("$BIN" --smoke 30 --script "$TMP/dxf_dim_aligned_script.txt" 2>&1)" || { echo "$DXDA"; echo "FAIL: DXF DIMENSION (aligned) script exited non-zero"; exit 1; }
 else
   DXDA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_dim_aligned_script.txt" 2>&1)" || { echo "$DXDA"; echo "FAIL: DXF DIMENSION (aligned) script exited non-zero"; exit 1; }
@@ -489,7 +489,7 @@ SelDim
 List
 UpdateDimensions
 EOS
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   DXDR="$("$BIN" --smoke 30 --script "$TMP/dxf_dim_radius_script.txt" 2>&1)" || { echo "$DXDR"; echo "FAIL: DXF DIMENSION (radius) script exited non-zero"; exit 1; }
 else
   DXDR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_dim_radius_script.txt" 2>&1)" || { echo "$DXDR"; echo "FAIL: DXF DIMENSION (radius) script exited non-zero"; exit 1; }
@@ -507,7 +507,7 @@ Open $TMP/dxf_dim_diameter_fixture.dxf
 SelDim
 UpdateDimensions
 EOS
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   DXDD="$("$BIN" --smoke 30 --script "$TMP/dxf_dim_diameter_script.txt" 2>&1)" || { echo "$DXDD"; echo "FAIL: DXF DIMENSION (diameter) script exited non-zero"; exit 1; }
 else
   DXDD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dxf_dim_diameter_script.txt" 2>&1)" || { echo "$DXDD"; echo "FAIL: DXF DIMENSION (diameter) script exited non-zero"; exit 1; }
@@ -532,7 +532,7 @@ Open $TMP/dwg_dim_fixture.dwg
 SelDim
 UpdateDimensions
 EOS
-  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     DWD="$("$BIN" --smoke 30 --script "$TMP/dwg_dim_script.txt" 2>&1)" || { echo "$DWD"; echo "FAIL: DWG DIMENSION script exited non-zero"; exit 1; }
   else
     DWD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/dwg_dim_script.txt" 2>&1)" || { echo "$DWD"; echo "FAIL: DWG DIMENSION script exited non-zero"; exit 1; }
@@ -548,7 +548,7 @@ else
 fi
 # Surfaces: Pipe, OffsetSrf, Shell, Sweep1/2, NetworkSrf, Patch, ExtrudeCrvAlongCrv,
 # ExtrudeCrvTapered, Project, Pull (see surface_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SF="$("$BIN" --smoke 200 --script "$HERE/surface_script.txt" 2>&1)" || { echo "$SF"; echo "FAIL: surface script exited non-zero"; exit 1; }
 else
   SF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/surface_script.txt" 2>&1)" || { echo "$SF"; echo "FAIL: surface script exited non-zero"; exit 1; }
@@ -605,7 +605,7 @@ sfcheck "Volume = 2056 cubic" "Shell (per-face) volume is exactly 4000 - 18*18*6
 sfcheck "smoke: frames=200 objects=43" "surface script produced the expected object count"
 # Solids: Ellipsoid/SubDEllipsoid (real axis picking), Pyramid (NumSides=),
 # Loft (Normal vs Style=Straight), Cap (multiple separate openings) (see solids_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SO="$("$BIN" --smoke 150 --script "$HERE/solids_script.txt" 2>&1)" || { echo "$SO"; echo "FAIL: solids script exited non-zero"; exit 1; }
 else
   SO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/solids_script.txt" 2>&1)" || { echo "$SO"; echo "FAIL: solids script exited non-zero"; exit 1; }
@@ -621,7 +621,7 @@ socheck "Capped 1 object(s), 2 opening(s)" "Cap closed both separate openings in
 socheck "6 faces, 76 edges, open" "Cap added both cap faces back (4 sides + 2 caps)"
 socheck "smoke: frames=150 objects=12" "solids script produced the expected object count"
 # Surface editing: ExtractSrf, DeleteFaces, DupBorder/DupEdge, Untrim, isocurves, ExtendSrf, UnrollSrf, Silhouette, RailRevolve, Fin/Ribbon, grids (see srfedit_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SE="$("$BIN" --smoke 150 --script "$HERE/srfedit_script.txt" 2>&1)" || { echo "$SE"; echo "FAIL: surface-edit script exited non-zero"; exit 1; }
 else
   SE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/srfedit_script.txt" 2>&1)" || { echo "$SE"; echo "FAIL: surface-edit script exited non-zero"; exit 1; }
@@ -707,7 +707,7 @@ secheck "HBarDragSelfTest: moved anchor control point 0 by 5,0,0; anchor-handle 
 secheck "Bounding box min 4205,0,0 max 4225,0,0" "BoundingBox independently confirms the curve's own control points actually moved to where the constraint math says they should (anchor 4200+5=4205, handle 4205+20=4225) - not just HBarDragSelfTest's own report"
 
 # Mesh tools: deformations, mesh editing and mesh primitives (see meshtools_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   MT="$("$BIN" --smoke 150 --script "$HERE/meshtools_script.txt" 2>&1)" || { echo "$MT"; echo "FAIL: mesh-tools script exited non-zero"; exit 1; }
 else
   MT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/meshtools_script.txt" 2>&1)" || { echo "$MT"; echo "FAIL: mesh-tools script exited non-zero"; exit 1; }
@@ -758,7 +758,7 @@ mtcheck "smoke: frames=1[0-9][0-9] objects=41" "mesh-tools script produced the e
 
 # SubD editing: Crease, ExtrudeSubD, Inset, Bridge, OffsetSubD, RepairSubD, InsertEdge,
 # DivideAlongCreases, Fill, AutomaticSubDFromMesh, SubDTruncatedCone, ShrinkWrap (see subd_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SD="$("$BIN" --smoke 150 --script "$HERE/subd_script.txt" 2>&1)" || { echo "$SD"; echo "FAIL: subd script exited non-zero"; exit 1; }
 else
   SD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/subd_script.txt" 2>&1)" || { echo "$SD"; echo "FAIL: subd script exited non-zero"; exit 1; }
@@ -814,7 +814,7 @@ sdcheck "smoke: frames=150 objects=13" "subd script produced the expected object
 # Rendering: materials (scripted options), texture mapping, lights, sun, ground plane,
 # Render / RenderArctic / SaveRenderWindowAs, ExtractRenderMesh, .3dm round-trip (see render_script.txt).
 sed "s|@TMP@|$TMP|g" "$HERE/render_script.txt" > "$TMP/render_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   RN="$("$BIN" --smoke 200 --script "$TMP/render_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: render script exited non-zero"; exit 1; }
 else
   RN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/render_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: render script exited non-zero"; exit 1; }
@@ -923,7 +923,7 @@ for got, exp, name in ((ax, exp_ax, "Ax"), (ay, exp_ay, "Ay")):
 PY
 # Annotation, linetype, hatch and block tools (see annotate2_script.txt).
 sed -e "s|@TMP@|$TMP|g" -e "s|@DINO8ROOT@|$HERE/..|g" "$HERE/annotate2_script.txt" > "$TMP/annotate2_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   A2="$("$BIN" --smoke 150 --script "$TMP/annotate2_script.txt" 2>&1)" || { echo "$A2"; echo "FAIL: annotate2 script exited non-zero"; exit 1; }
 else
   A2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/annotate2_script.txt" 2>&1)" || { echo "$A2"; echo "FAIL: annotate2 script exited non-zero"; exit 1; }
@@ -993,7 +993,7 @@ a2check "UpdateDimensions:   CenterLine now spans 800,0,0 to 800,10,0" "UpdateDi
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
 sed "s|@TMP@|$TMP|g" "$HERE/solidtools_script.txt" > "$TMP/solidtools_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   ST="$("$BIN" --smoke 220 --script "$TMP/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
 else
   ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 220 --script "$TMP/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
@@ -1060,7 +1060,7 @@ stcheck "smoke: frames=[12][0-9][0-9] objects=54" "solid-tools script produced t
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface
 # Intersect (see fillet_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   FL="$("$BIN" --smoke 200 --script "$HERE/fillet_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: fillet script exited non-zero"; exit 1; }
 else
   FL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/fillet_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: fillet script exited non-zero"; exit 1; }
@@ -1098,7 +1098,7 @@ flcheck "^ok   expect_objects 38" "fillet script produced the expected object co
 # shortest adjacent edge, a huge-coordinate-scale box (a genuine kernel
 # limitation - see adversarial_corpus_notes.md), and a shallow-bend FilletSrf
 # (see fillet_adversarial_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   FA="$("$BIN" --smoke 200 --script "$HERE/fillet_adversarial_script.txt" 2>&1)" || { echo "$FA"; echo "FAIL: fillet-adversarial script exited non-zero"; exit 1; }
 else
   FA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/fillet_adversarial_script.txt" 2>&1)" || { echo "$FA"; echo "FAIL: fillet-adversarial script exited non-zero"; exit 1; }
@@ -1115,7 +1115,7 @@ if echo "$FA" | grep -q "^FAIL"; then fail=1; fi
 facheck "^ok   expect_objects 0" "fillet-adversarial script cleaned up to zero objects at the end"
 
 # Extended selection and state commands: SelDupAll, SelShortCrv, SelKeyValue, SelVolumeSphere, Dot, Camera, SetActiveViewport, licence rule (see state_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   ST="$("$BIN" --smoke 120 --script "$HERE/state_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: state script exited non-zero"; exit 1; }
 else
   ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 120 --script "$HERE/state_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: state script exited non-zero"; exit 1; }
@@ -1142,7 +1142,7 @@ stcheck "^ok   expect_selected 5" "state script ended with every object selected
 # View tools: clipping planes + sections, layouts + details, named CPlanes, animation playback/recording (see viewtools_script.txt).
 mkdir -p "$TMP/vt"
 sed "s|@TMP@|$TMP/vt|g" "$HERE/viewtools_script.txt" > "$TMP/viewtools_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   VT="$("$BIN" --smoke 200 --script "$TMP/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
 else
   VT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
@@ -1248,7 +1248,7 @@ grep -q "^Upper" "$TMP/vt/clipping.txt" && echo "ok   ExportClippingSectionInfo 
 # bounding box (checked with BoundingBox on the actual nested curve, not
 # just a command echo) confirms the geometry, not only that it ran (see
 # nested_clipping_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   NC="$("$BIN" --smoke 200 --script "$HERE/nested_clipping_script.txt" 2>&1)" || { echo "$NC"; echo "FAIL: nested-clipping script exited non-zero"; exit 1; }
 else
   NC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/nested_clipping_script.txt" 2>&1)" || { echo "$NC"; echo "FAIL: nested-clipping script exited non-zero"; exit 1; }
@@ -1266,7 +1266,7 @@ nccheck "^ok   expect_objects 3" "nested-clipping script ended with exactly the 
 # and cmd_viewtools.cpp's ImportLayout/DetailHiddenSelfTest.
 mkdir -p "$TMP/il"
 sed "s|@TMP@|$TMP/il|g" "$HERE/importlayout_script.txt" > "$TMP/importlayout_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   IL="$("$BIN" --smoke 30 --script "$TMP/importlayout_script.txt" 2>&1)" || { echo "$IL"; echo "FAIL: ImportLayout script exited non-zero"; exit 1; }
 else
   IL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/importlayout_script.txt" 2>&1)" || { echo "$IL"; echo "FAIL: ImportLayout script exited non-zero"; exit 1; }
@@ -1292,7 +1292,7 @@ ilcheck "^ok   expect_objects 2" "ImportLayout script ended with exactly the 2 i
 # PrintDisplay on.
 mkdir -p "$TMP/pd"
 sed "s|@TMP@|$TMP/pd|g" "$HERE/printdisplay_script.txt" > "$TMP/printdisplay_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   PD="$("$BIN" --smoke 30 --script "$TMP/printdisplay_script.txt" 2>&1)" || { echo "$PD"; echo "FAIL: PrintDisplay script exited non-zero"; exit 1; }
 else
   PD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/printdisplay_script.txt" 2>&1)" || { echo "$PD"; echo "FAIL: PrintDisplay script exited non-zero"; exit 1; }
@@ -1368,7 +1368,7 @@ rs.SetDocumentUserText("dino8.constraints",
   '{"id":101,"type":"EqualRadius","radius_objects":[5]}]')
 LUA
 sed "s|@TMP@|$TMP|g" "$HERE/script_script.txt" > "$TMP/script_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SC="$("$BIN" --smoke 100 --script "$TMP/script_script.txt" 2>&1)" || { echo "$SC"; echo "FAIL: script script exited non-zero"; exit 1; }
 else
   SC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/script_script.txt" 2>&1)" || { echo "$SC"; echo "FAIL: script script exited non-zero"; exit 1; }
@@ -1442,7 +1442,7 @@ print("found by name: %d" % len(by_name))
 dino8.RunCommand("NewLayer", "Parts")
 PY
 sed "s|@TMP@|$TMP|g" "$HERE/python_script.txt" > "$TMP/python_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   PS="$("$BIN" --smoke 100 --script "$TMP/python_script.txt" 2>&1)" || { echo "$PS"; echo "FAIL: python script exited non-zero"; exit 1; }
 else
   PS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/python_script.txt" 2>&1)" || { echo "$PS"; echo "FAIL: python script exited non-zero"; exit 1; }
@@ -1489,7 +1489,7 @@ EditPythonScript $TMP/editor_test.py
 ScriptEditorRun
 @expect_objects 1
 EOF
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SER="$("$BIN" --smoke 100 --script "$TMP/scripteditor_run.txt" 2>&1)" || { echo "$SER"; echo "FAIL: Script Editor Run test exited non-zero"; exit 1; }
 else
   SER="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/scripteditor_run.txt" 2>&1)" || { echo "$SER"; echo "FAIL: Script Editor Run test exited non-zero"; exit 1; }
@@ -1512,7 +1512,7 @@ fi
 # copy in place (the source tree's copy stays untouched).
 cp "$HERE/flow_graph.dflow" "$TMP/flow_graph.dflow"
 sed -e "s|@FLOWFILE@|$TMP/flow_graph.dflow|g" -e "s|@FLOWSAVE@|$TMP/flow_saved.3dm|g" "$HERE/flow_script.txt" > "$TMP/flow_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   FL="$("$BIN" --smoke 100 --script "$TMP/flow_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: flow script exited non-zero"; exit 1; }
 else
   FL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/flow_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: flow script exited non-zero"; exit 1; }
@@ -1541,7 +1541,7 @@ flcheck "Total length = 30.41 " "the first bake's line has the slider=30 length"
 # flow_update_script.txt).
 sed -i 's/"slider_value":30/"slider_value":55/' "$TMP/flow_graph.dflow"
 sed -e "s|@FLOWFILE@|$TMP/flow_graph.dflow|g" -e "s|@FLOWSAVE@|$TMP/flow_saved.3dm|g" "$HERE/flow_update_script.txt" > "$TMP/flow_update_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   FL2="$("$BIN" --smoke 100 --script "$TMP/flow_update_script.txt" 2>&1)" || { echo "$FL2"; echo "FAIL: flow update script exited non-zero"; exit 1; }
 else
   FL2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/flow_update_script.txt" 2>&1)" || { echo "$FL2"; echo "FAIL: flow update script exited non-zero"; exit 1; }
@@ -1561,7 +1561,7 @@ fl2check "Total length = 55.23 " "the re-baked line picked up the slider=55 edit
 # AttachGHSData/GetUserText surface each node's Tree::Summary() so the
 # branch structure Graft/Flatten produce is directly checkable as text.
 sed "s|@TREEFILE@|$HERE/flow_tree_graph.dflow|g" "$HERE/flow_tree_script.txt" > "$TMP/flow_tree_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   FT="$("$BIN" --smoke 100 --script "$TMP/flow_tree_script.txt" 2>&1)" || { echo "$FT"; echo "FAIL: flow tree script exited non-zero"; exit 1; }
 else
   FT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/flow_tree_script.txt" 2>&1)" || { echo "$FT"; echo "FAIL: flow tree script exited non-zero"; exit 1; }
@@ -1579,7 +1579,7 @@ ftcheck "  4,0,0" "List Item(index 2) of Range(0,10,5) read back as 4 via the ba
 # GrasshopperPlayer summary line, and the baked (best-x, best-fitness) point
 # (see flow_solver_script.txt / flow_solver_graph.dflow).
 sed "s|@SOLVERFILE@|$HERE/flow_solver_graph.dflow|g" "$HERE/flow_solver_script.txt" > "$TMP/flow_solver_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   FS="$("$BIN" --smoke 100 --script "$TMP/flow_solver_script.txt" 2>&1)" || { echo "$FS"; echo "FAIL: flow solver script exited non-zero"; exit 1; }
 else
   FS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/flow_solver_script.txt" 2>&1)" || { echo "$FS"; echo "FAIL: flow solver script exited non-zero"; exit 1; }
@@ -1595,7 +1595,7 @@ fscheck "  3,0,0" "the baked point (best gene, best fitness) is exactly (3, 0, 0
 # trip plugin-to-plugin, not just plugin-to-document (see
 # flow_plugin_geom_script.txt / flow_plugin_geom_graph.dflow).
 sed "s|@GEOMFILE@|$HERE/flow_plugin_geom_graph.dflow|g" "$HERE/flow_plugin_geom_script.txt" > "$TMP/flow_plugin_geom_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   FG="$("$BIN" --smoke 100 --script "$TMP/flow_plugin_geom_script.txt" 2>&1)" || { echo "$FG"; echo "FAIL: flow plugin geom script exited non-zero"; exit 1; }
 else
   FG="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/flow_plugin_geom_script.txt" 2>&1)" || { echo "$FG"; echo "FAIL: flow plugin geom script exited non-zero"; exit 1; }
@@ -1608,7 +1608,7 @@ fgcheck "gl_error=0" "flow plugin geometry script ran without OpenGL errors"
 
 # Object editing: Join/Explode/Rebuild/ChangeDegree/Offset/Extend/Flip/Dir/MakePeriodic/
 # Weight/InsertKnot/PointsOn/SetObjectName/Group/Hide/Lock/clipboard/Undo (see edit_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   ED="$("$BIN" --smoke 150 --script "$HERE/edit_script.txt" 2>&1)" || { echo "$ED"; echo "FAIL: edit script exited non-zero"; exit 1; }
 else
   ED="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/edit_script.txt" 2>&1)" || { echo "$ED"; echo "FAIL: edit script exited non-zero"; exit 1; }
@@ -1629,7 +1629,7 @@ edcheck "Surface [0-9]+: centre 5,5,0 normal -?0,0,1" "a plain Flip inverted tha
 
 # Real NURBS algorithm QC: ExtractPipedCurve/MakePeriodic Smooth=No/RefitTrim
 # (see nurbs_algo_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   NA="$("$BIN" --smoke 150 --script "$HERE/nurbs_algo_script.txt" 2>&1)" || { echo "$NA"; echo "FAIL: nurbs algo script exited non-zero"; exit 1; }
 else
   NA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/nurbs_algo_script.txt" 2>&1)" || { echo "$NA"; echo "FAIL: nurbs algo script exited non-zero"; exit 1; }
@@ -1644,7 +1644,7 @@ nacheck "RefitTrim: 2 trim curve(s) could not be refit to strictly fewer control
 
 # Layers: NewLayer/SetLayer/ChangeLayer/ChangeToCurrentLayer/MatchLayer/SetLayerToObject/
 # OneLayerOn/OneLayerOff/AllLayersOn/LayerOn/LayerOff/LayerLock/LayerUnlock/Purge (see layer_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   LY="$("$BIN" --smoke 150 --script "$HERE/layer_script.txt" 2>&1)" || { echo "$LY"; echo "FAIL: layer script exited non-zero"; exit 1; }
 else
   LY="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/layer_script.txt" 2>&1)" || { echo "$LY"; echo "FAIL: layer script exited non-zero"; exit 1; }
@@ -1660,7 +1660,7 @@ echo "$LY" | grep -q "^smoke:" || { echo "$LY"; echo "FAIL: layer script produce
 # the .3dm, not a process-wide static: it must survive New+Open and still
 # restore correctly afterward.
 sed "s|@TMP@|$TMP|g" "$HERE/layerstate_script.txt" > "$TMP/layerstate_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   LS="$("$BIN" --smoke 60 --script "$TMP/layerstate_script.txt" 2>&1)" || { echo "$LS"; echo "FAIL: layerstate script exited non-zero"; exit 1; }
 else
   LS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/layerstate_script.txt" 2>&1)" || { echo "$LS"; echo "FAIL: layerstate script exited non-zero"; exit 1; }
@@ -1677,7 +1677,7 @@ lscheck "  HiddenWalls: 3 layer(s)" "the reloaded layer state kept its name and 
 # linetypes, annotation styles, empty groups), not just layers - see
 # cmd_layer.cpp and purge_script.txt. Each category is made unused
 # deliberately, so the single Purge run should report exactly one of each.
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   PU="$("$BIN" --smoke 150 --script "$HERE/purge_script.txt" 2>&1)" || { echo "$PU"; echo "FAIL: purge script exited non-zero"; exit 1; }
 else
   PU="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/purge_script.txt" 2>&1)" || { echo "$PU"; echo "FAIL: purge script exited non-zero"; exit 1; }
@@ -1690,7 +1690,7 @@ pucheck "Purge: removed 1 layer, 1 block, 1 material, 7 linetypes, 1 annotation 
         "Purge swept layers/blocks/materials/linetypes/annotation styles/empty groups in one pass, not just layers (7 linetypes: the 6 unused-by-default built-ins - Continuous is protected - plus the test's own PurgeUnusedLinetype)"
 
 # Selection: every Sel* command in cmd_select.cpp and cmd_select2.cpp (see select_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SL="$("$BIN" --smoke 200 --script "$HERE/select_script.txt" 2>&1)" || { echo "$SL"; echo "FAIL: select script exited non-zero"; exit 1; }
 else
   SL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/select_script.txt" 2>&1)" || { echo "$SL"; echo "FAIL: select script exited non-zero"; exit 1; }
@@ -1717,7 +1717,7 @@ slcheck "Location: 405, 200, 0" "the refused UndoSelected left object C exactly 
 # real parent/child side table (doc/Document.h's ProvenanceInfo) instead of
 # the old group-symmetric fallback / "every polysurface" guess - see
 # provenance_script.txt's header comment for exactly what it builds.
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   PV="$("$BIN" --smoke 150 --script "$HERE/provenance_script.txt" 2>&1)" || { echo "$PV"; echo "FAIL: provenance script exited non-zero"; exit 1; }
 else
   PV="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/provenance_script.txt" 2>&1)" || { echo "$PV"; echo "FAIL: provenance script exited non-zero"; exit 1; }
@@ -1737,7 +1737,7 @@ pvcheck "history: Object 10 (curve) layer Default" "SelParents on the extrusion 
 
 # Transforms: exact coordinates after Move/Copy/Rotate/Scale*/Mirror/Array*/Orient*/
 # ProjectToCPlane/SetPt/Nudge, in Top/Front/Right (see transform_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   TR="$("$BIN" --smoke 200 --script "$HERE/transform_script.txt" 2>&1)" || { echo "$TR"; echo "FAIL: transform script exited non-zero"; exit 1; }
 else
   TR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/transform_script.txt" 2>&1)" || { echo "$TR"; echo "FAIL: transform script exited non-zero"; exit 1; }
@@ -1749,7 +1749,7 @@ echo "$TR" | grep -q "^smoke:" || { echo "$TR"; echo "FAIL: transform script pro
 # Booleans: BooleanUnion/BooleanIntersection, Boolean2Objects (Result
 # cycling), BooleanSplit/MeshSplit/MeshBooleanSplit, WireCut, MeshSmooth
 # (see boolean_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   BO="$("$BIN" --smoke 200 --script "$HERE/boolean_script.txt" 2>&1)" || { echo "$BO"; echo "FAIL: boolean script exited non-zero"; exit 1; }
 else
   BO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/boolean_script.txt" 2>&1)" || { echo "$BO"; echo "FAIL: boolean script exited non-zero"; exit 1; }
@@ -1762,7 +1762,7 @@ echo "$BO" | grep -q "^smoke:" || { echo "$BO"; echo "FAIL: boolean script produ
 # an extreme-aspect-ratio sliver, a huge-coordinate-scale pair, a 10-deep
 # chained-difference feature, and non-manifold input (see
 # boolean_adversarial_script.txt and adversarial_corpus_notes.md).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   BA="$("$BIN" --smoke 300 --script "$HERE/boolean_adversarial_script.txt" 2>&1)" || { echo "$BA"; echo "FAIL: boolean-adversarial script exited non-zero"; exit 1; }
 else
   BA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 300 --script "$HERE/boolean_adversarial_script.txt" 2>&1)" || { echo "$BA"; echo "FAIL: boolean-adversarial script exited non-zero"; exit 1; }
@@ -1786,7 +1786,7 @@ bacheck "^ok   expect_objects 0" "boolean-adversarial script cleaned up to zero 
 # still finds real crossings after the shared CurveSelfIntersects refactor,
 # and a simple closed curve confirming no false positive on ordinary
 # geometry (see curve_adversarial_script.txt and adversarial_corpus_notes.md).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   CA="$("$BIN" --smoke 300 --script "$HERE/curve_adversarial_script.txt" 2>&1)" || { echo "$CA"; echo "FAIL: curve-adversarial script exited non-zero"; exit 1; }
 else
   CA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 300 --script "$HERE/curve_adversarial_script.txt" 2>&1)" || { echo "$CA"; echo "FAIL: curve-adversarial script exited non-zero"; exit 1; }
@@ -1806,7 +1806,7 @@ cacheck "gl_error=0" "curve-adversarial script ran without OpenGL errors"
 # Dir/Check/SelBadObjects/Angle/Radius/Diameter/Curvature/CurvatureGraph/Zebra/EMap/
 # CurvatureAnalysis/DraftAngleAnalysis/ShowEdges/CrvDeviation/PointDeviation/Audit/SystemInfo
 # (see analyze_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   AN="$("$BIN" --smoke 150 --script "$HERE/analyze_script.txt" 2>&1)" || { echo "$AN"; echo "FAIL: analyze script exited non-zero"; exit 1; }
 else
   AN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/analyze_script.txt" 2>&1)" || { echo "$AN"; echo "FAIL: analyze script exited non-zero"; exit 1; }
@@ -1820,7 +1820,7 @@ echo "$AN" | grep -q "^smoke:" || { echo "$AN"; echo "FAIL: analyze script produ
 # MakeInvalidCurve builds one deterministic IsValid()==false NURBS curve, and
 # Check/Audit/SelBadObjects must all report it with a specific reason, not
 # just a bare count (see audit_invalid_script.txt and cmd_analyze.cpp).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   AI="$("$BIN" --smoke 150 --script "$HERE/audit_invalid_script.txt" 2>&1)" || { echo "$AI"; echo "FAIL: audit-invalid script exited non-zero"; exit 1; }
 else
   AI="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/audit_invalid_script.txt" 2>&1)" || { echo "$AI"; echo "FAIL: audit-invalid script exited non-zero"; exit 1; }
@@ -1839,7 +1839,7 @@ aicheck "Audit: 0 objects, 0 invalid" "Audit correctly reports 0 invalid once th
 # MaxViewport, CPlane commands, viewport cycling (see view_script.txt).
 mkdir -p "$TMP/view"
 sed "s|@TMP@|$TMP/view|g" "$HERE/view_script.txt" > "$TMP/view_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   VW="$("$BIN" --smoke 150 --script "$TMP/view_script.txt" 2>&1)" || { echo "$VW"; echo "FAIL: view script exited non-zero"; exit 1; }
 else
   VW="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/view_script.txt" 2>&1)" || { echo "$VW"; echo "FAIL: view script exited non-zero"; exit 1; }
@@ -1854,7 +1854,7 @@ echo "$VW" | grep -q "^smoke:" || { echo "$VW"; echo "FAIL: view script produced
 # commands not already exercised elsewhere (see state_script2.txt).
 mkdir -p "$TMP/state2"
 sed "s|@TMP@|$TMP/state2|g" "$HERE/state_script2.txt" > "$TMP/state_script2.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   S2="$("$BIN" --smoke 200 --script "$TMP/state_script2.txt" 2>&1)" || { echo "$S2"; echo "FAIL: state2 script exited non-zero"; exit 1; }
 else
   S2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/state_script2.txt" 2>&1)" || { echo "$S2"; echo "FAIL: state2 script exited non-zero"; exit 1; }
@@ -1984,7 +1984,7 @@ s2check "$(printf '\a')" "DigBeep rings a real terminal bell (raw \\a byte) once
 # Audit3dmFile (see file_script.txt).
 mkdir -p "$TMP/file"
 sed "s|@TMP@|$TMP/file|g" "$HERE/file_script.txt" > "$TMP/file_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   FL="$("$BIN" --smoke 150 --script "$TMP/file_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: file script exited non-zero"; exit 1; }
 else
   FL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/file_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: file script exited non-zero"; exit 1; }
@@ -2027,7 +2027,7 @@ grep -q "^v -5 -5 0$" "$TMP/file/exportorigin.obj" && echo "ok   ExportWithOrigi
 # Creation: Points/Lines/InterpCrv/CurveThroughPt/Sketch/Circle3Pt/CircleD/Arc3Pt/
 # Rectangle3Pt/Polygon/PolygonStar/Ellipse/Helix/Spiral/PointGrid/Divide/ClosestPt/
 # Plane3Pt/SrfPt (see create_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   CR="$("$BIN" --smoke 150 --script "$HERE/create_script.txt" 2>&1)" || { echo "$CR"; echo "FAIL: create script exited non-zero"; exit 1; }
 else
   CR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/create_script.txt" 2>&1)" || { echo "$CR"; echo "FAIL: create script exited non-zero"; exit 1; }
@@ -2064,7 +2064,7 @@ crcheck "CV\[3\] 0,0,0" "the closed stroke's curve ends back exactly at its own 
 # Second-wave drafting tools: hatch library, tables, GD&T, multi-leaders,
 # live section views (see drafting2_script.txt).
 sed "s|@TMP@|$TMP|g" "$HERE/drafting2_script.txt" > "$TMP/drafting2_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   D2="$("$BIN" --smoke 150 --script "$TMP/drafting2_script.txt" 2>&1)" || { echo "$D2"; echo "FAIL: drafting2 script exited non-zero"; exit 1; }
 else
   D2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/drafting2_script.txt" 2>&1)" || { echo "$D2"; echo "FAIL: drafting2 script exited non-zero"; exit 1; }
@@ -2136,7 +2136,7 @@ d2check "gl_error=0" "drafting2 script ran without OpenGL errors"
 # RenderPreview with Quality=Raytraced (see raytrace_script.txt).
 sed "s|@TMP@|$TMP/rt|g" "$HERE/raytrace_script.txt" > "$TMP/raytrace_script.txt"
 mkdir -p "$TMP/rt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   RT="$(env DINO8_RT_FRAMES=1 "$BIN" --smoke 60 --script "$TMP/raytrace_script.txt" 2>&1)" || { echo "$RT"; echo "FAIL: raytrace script exited non-zero"; exit 1; }
 else
   RT="$(xvfb-run -a -s "-screen 0 1600x900x24" env DINO8_RT_FRAMES=1 "$BIN" --smoke 60 --script "$TMP/raytrace_script.txt" 2>&1)" || { echo "$RT"; echo "FAIL: raytrace script exited non-zero"; exit 1; }
@@ -2196,7 +2196,7 @@ check_nonflat_bmp "$TMP/rt/blowup.bmp" "blowup.bmp (RenderBlowup's own pixel out
 sed "s|@TMP@|$TMP|g" "$HERE/igesstep_script.txt" > "$TMP/igesstep_script.txt"
 cp "$HERE/step_plane_face.stp" "$TMP/step_plane_face.stp"
 cp "$HERE/iges_recursive_fixture.igs" "$TMP/iges_recursive_fixture.igs"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   IS="$("$BIN" --smoke 200 --script "$TMP/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
 else
   IS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
@@ -2242,7 +2242,7 @@ BUTTON 1
 1 0 0 0 0 0
 EOS
 sed "s|@TMP@|$TMP|g" "$HERE/spacemouse_script.txt" > "$TMP/spacemouse_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SM="$("$BIN" --smoke 250 --script "$TMP/spacemouse_script.txt" 2>&1)" || { echo "$SM"; echo "FAIL: spacemouse script exited non-zero"; exit 1; }
 else
   SM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 250 --script "$TMP/spacemouse_script.txt" 2>&1)" || { echo "$SM"; echo "FAIL: spacemouse script exited non-zero"; exit 1; }
@@ -2267,7 +2267,7 @@ if echo "$SM" | grep -q "^FAIL"; then fail=1; fi
 
 # Parametric 2D sketch constraints: Coincident/Horizontal/Vertical/Distance/
 # Radius/Perpendicular/Parallel/Fixed/Midpoint, auto re-solve, glyph overlay.
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   CN="$("$BIN" --smoke 120 --script "$HERE/constraints_script.txt" 2>&1)" || { echo "$CN"; echo "FAIL: constraints script exited non-zero"; exit 1; }
 else
   CN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 120 --script "$HERE/constraints_script.txt" 2>&1)" || { echo "$CN"; echo "FAIL: constraints script exited non-zero"; exit 1; }
@@ -2301,7 +2301,7 @@ if echo "$CN" | grep -q "^FAIL"; then fail=1; fi
 
 # Parametric architectural components: Wall/Door/Window/Slab/Roof/Stair/
 # Column/Beam, ArchEdit rebuild, ArchDelete, ArchSchedule.
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   AR="$("$BIN" --smoke 150 --script "$HERE/arch_script.txt" 2>&1)" || { echo "$AR"; echo "FAIL: arch script exited non-zero"; exit 1; }
 else
   AR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/arch_script.txt" 2>&1)" || { echo "$AR"; echo "FAIL: arch script exited non-zero"; exit 1; }
@@ -2328,7 +2328,7 @@ if echo "$AR" | grep -q "^FAIL"; then fail=1; fi
 # Save/Open path - see dynamic_blocks_script.txt's header comment).
 mkdir -p "$TMP/dblk"
 sed "s|@TMP@|$TMP/dblk|g" "$HERE/dynamic_blocks_script.txt" > "$TMP/dblk/dynamic_blocks_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   DB="$("$BIN" --smoke 150 --script "$TMP/dblk/dynamic_blocks_script.txt" 2>&1)" || { echo "$DB"; echo "FAIL: dynamic blocks script exited non-zero"; exit 1; }
 else
   DB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMP/dblk/dynamic_blocks_script.txt" 2>&1)" || { echo "$DB"; echo "FAIL: dynamic blocks script exited non-zero"; exit 1; }
@@ -2391,7 +2391,7 @@ if echo "$DB" | grep -q "^FAIL"; then fail=1; fi
 # object counts; Duct/Pipe/Conduit volumes are checked against the
 # pi*r^2*L continuity formula; SizeDuct/SizePipe are checked against
 # MepDiameterFromFlow()'s own formula.
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   MM="$("$BIN" --smoke 100 --script "$HERE/mech_mep_script.txt" 2>&1)" || { echo "$MM"; echo "FAIL: mech/MEP script exited non-zero"; exit 1; }
 else
   MM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/mech_mep_script.txt" 2>&1)" || { echo "$MM"; echo "FAIL: mech/MEP script exited non-zero"; exit 1; }
@@ -2433,7 +2433,7 @@ if echo "$MM" | grep -q "^FAIL"; then fail=1; fi
 # script itself (ElecTag/PanelSchedule bake font-dependent glyph curve
 # counts), so ElecTag/PanelSchedule are each checked by their own printed
 # summary line instead of a total object count.
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   EL="$("$BIN" --smoke 150 --script "$HERE/elec_script.txt" 2>&1)" || { echo "$EL"; echo "FAIL: electrical script exited non-zero"; exit 1; }
 else
   EL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/elec_script.txt" 2>&1)" || { echo "$EL"; echo "FAIL: electrical script exited non-zero"; exit 1; }
@@ -2487,7 +2487,7 @@ cat > "$TMP/sess/dig_points2.txt" <<'EOP'
 53,1,0
 EOP
 sed "s|@TMP@|$TMP/sess|g" "$HERE/session_script.txt" > "$TMP/sess/session_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SS="$("$BIN" --smoke 200 --script "$TMP/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
 else
   SS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
@@ -2537,7 +2537,7 @@ sscheck "MirrorHole: copied object .* to object .*" "MirrorHole added a mirrored
 # Volumetric remesh tools: ShrinkWrap (signed-distance + marching cubes, incl.
 # a concave L-shaped union), QuadRemesh (surface UV grid + dual contouring),
 # ReduceMesh (quadric-error decimation) (see remesh_script.txt).
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   RM="$("$BIN" --smoke 150 --script "$HERE/remesh_script.txt" 2>&1)" || { echo "$RM"; echo "FAIL: remesh script exited non-zero"; exit 1; }
 else
   RM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/remesh_script.txt" 2>&1)" || { echo "$RM"; echo "FAIL: remesh script exited non-zero"; exit 1; }
@@ -2562,7 +2562,7 @@ rmcheck "smoke: frames=1[0-9][0-9] objects=7" "remesh script produced the expect
 # and curve splitting, layer/window/point-cloud/file-recovery utilities (see
 # remaining_script.txt).
 sed "s|@TMP@|$TMP|g" "$HERE/remaining_script.txt" > "$TMP/remaining_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   RN="$("$BIN" --smoke 900 --script "$TMP/remaining_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: remaining script exited non-zero"; exit 1; }
 else
   RN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 900 --script "$TMP/remaining_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: remaining script exited non-zero"; exit 1; }
@@ -2624,7 +2624,7 @@ rncheck2 "gl_error=0" "remaining script ran without OpenGL errors"
 # but are in-order subsequences of exactly one or two command names each;
 # Tab-completing them must pick the (shorter) real command. A plain
 # prefix ("Box") must still Tab-complete to itself, unchanged.
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   FZ="$("$BIN" --smoke 60 --script "$HERE/fuzzy_autocomplete_script.txt" 2>&1)" || { echo "$FZ"; echo "FAIL: fuzzy-autocomplete script exited non-zero"; exit 1; }
 else
   FZ="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/fuzzy_autocomplete_script.txt" 2>&1)" || { echo "$FZ"; echo "FAIL: fuzzy-autocomplete script exited non-zero"; exit 1; }
@@ -2650,7 +2650,7 @@ SetLanguage English
 I18nSelfTest
 SetLanguage nope
 EOS
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   I18N="$("$BIN" --smoke 60 --script "$TMP/i18n_script.txt" 2>&1)" || { echo "$I18N"; echo "FAIL: i18n script exited non-zero"; exit 1; }
 else
   I18N="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/i18n_script.txt" 2>&1)" || { echo "$I18N"; echo "FAIL: i18n script exited non-zero"; exit 1; }
@@ -2680,7 +2680,7 @@ SetTheme Dark
 ThemeSelfTest
 SetTheme nope
 EOS
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   A11Y="$("$BIN" --smoke 60 --script "$TMP/a11y_script.txt" 2>&1)" || { echo "$A11Y"; echo "FAIL: a11y script exited non-zero"; exit 1; }
 else
   A11Y="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/a11y_script.txt" 2>&1)" || { echo "$A11Y"; echo "FAIL: a11y script exited non-zero"; exit 1; }
@@ -2725,7 +2725,7 @@ Line 0,0,0 10,0,0
 SelLast
 ZoomExtentsAll
 EOS
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   "$BIN" --smoke 30 --screenshot "$TMP/dir_arrow_on.ppm" --script "$TMP/dir_arrow_on.txt" >/dev/null 2>&1 || { echo "FAIL: dir arrow (on) script exited non-zero"; fail=1; }
   "$BIN" --smoke 30 --screenshot "$TMP/dir_arrow_off.ppm" --script "$TMP/dir_arrow_off.txt" >/dev/null 2>&1 || { echo "FAIL: dir arrow (off) script exited non-zero"; fail=1; }
 else
@@ -2747,7 +2747,7 @@ fi
 # capture and asserts the near box is genuinely lighter than the far one.
 mkdir -p "$TMP/zb"
 sed "s|@TMP@|$TMP/zb|g" "$HERE/zbuffer_script.txt" > "$TMP/zbuffer_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   ZB="$("$BIN" --smoke 30 --script "$TMP/zbuffer_script.txt" 2>&1)" || { echo "$ZB"; echo "FAIL: ShowZBuffer script exited non-zero"; exit 1; }
 else
   ZB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/zbuffer_script.txt" 2>&1)" || { echo "$ZB"; echo "FAIL: ShowZBuffer script exited non-zero"; exit 1; }
@@ -2839,7 +2839,7 @@ TUT_PASS_COUNT=$(echo "$TUT" | grep -c "^PASS:")
 # src/commands/cmd_compare.cpp - see compare_script.txt for the full
 # v1-vs-v2 scenario this drives).
 sed "s|@TMP@|$TMP|g" "$HERE/compare_script.txt" > "$TMP/compare_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   CMP="$("$BIN" --smoke 30 --script "$TMP/compare_script.txt" 2>&1)" || { echo "$CMP"; echo "FAIL: compare script exited non-zero"; exit 1; }
 else
   CMP="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/compare_script.txt" 2>&1)" || { echo "$CMP"; echo "FAIL: compare script exited non-zero"; exit 1; }
@@ -2860,7 +2860,7 @@ echo "$CMP" | grep -q "DwgCompare: 0 added, 0 removed" && { echo "FAIL: DwgCompa
 # disk (proving both the activity-log sidecar and the snapshot sidecar
 # survive a real save/close/reopen, not just the live in-memory session).
 sed "s|@TMP@|$TMP|g" "$HERE/activity_log_script.txt" > "$TMP/activity_log_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   AL="$("$BIN" --smoke 40 --script "$TMP/activity_log_script.txt" 2>&1)" || { echo "$AL"; echo "FAIL: activity-log script exited non-zero"; exit 1; }
 else
   AL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 40 --script "$TMP/activity_log_script.txt" 2>&1)" || { echo "$AL"; echo "FAIL: activity-log script exited non-zero"; exit 1; }
@@ -2916,7 +2916,7 @@ cat > "$TMP/standards/standards.json" <<'EOS'
 }
 EOS
 sed "s|@TMP@|$TMP/standards|g" "$HERE/standards_script.txt" > "$TMP/standards/standards_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   ST="$("$BIN" --smoke 60 --script "$TMP/standards/standards_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: standards script exited non-zero"; exit 1; }
 else
   ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/standards/standards_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: standards script exited non-zero"; exit 1; }
@@ -2940,7 +2940,7 @@ if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
 # rather than only listing layouts within the currently-open document (see
 # sheetset_script.txt).
 sed "s|@TMP@|$TMP|g" "$HERE/sheetset_script.txt" > "$TMP/sheetset_script.txt"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   SS="$("$BIN" --smoke 60 --script "$TMP/sheetset_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: sheetset script exited non-zero"; exit 1; }
 else
   SS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/sheetset_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: sheetset script exited non-zero"; exit 1; }
@@ -2973,7 +2973,7 @@ done
 run_dl_stage() {
   local script="$1" label="$2"
   sed "s|@TMP@|$TMP|g" "$HERE/$script" > "$TMP/$script"
-  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     "$BIN" --smoke 60 --script "$TMP/$script" 2>&1 || { echo "FAIL: DataLink stage $label exited non-zero"; exit 1; }
   else
     xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMP/$script" 2>&1 || { echo "FAIL: DataLink stage $label exited non-zero"; exit 1; }
@@ -3037,7 +3037,7 @@ if [ "$DL4_CSV" = "$(printf 'Q,R\nS,T\n')" ]; then echo "ok   Direction=Push wro
 # crash" (see tests/clipboard_script.txt).
 CLIP_DEBUG="$TMP/clipboard_debug.png"
 export DINO8_CLIPBOARD_DEBUG_FILE="$CLIP_DEBUG"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   CB="$("$BIN" --smoke 60 --script "$HERE/clipboard_script.txt" 2>&1)" || { echo "$CB"; echo "FAIL: clipboard script exited non-zero"; exit 1; }
 else
   CB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/clipboard_script.txt" 2>&1)" || { echo "$CB"; echo "FAIL: clipboard script exited non-zero"; exit 1; }
@@ -3067,7 +3067,7 @@ fi
 # the extruded surface's bounding box must have actually shifted to match
 # the curve's new position - the exact check a fake/no-op implementation
 # would fail.
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   HS="$("$BIN" --smoke 150 --script "$HERE/history_script.txt" 2>&1)" || { echo "$HS"; echo "FAIL: history script exited non-zero"; exit 1; }
 else
   HS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/history_script.txt" 2>&1)" || { echo "$HS"; echo "FAIL: history script exited non-zero"; exit 1; }

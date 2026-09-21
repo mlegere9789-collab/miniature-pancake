@@ -712,6 +712,7 @@ void Application::DrawWelcomeOverlay() {
     ImGui::TextColored(ThemeColors::Accent(), "Welcome to Dino 8");
     ImGui::PopFont();
     ImGui::TextDisabled("Free NURBS / SubD / mesh modeler, version " DINO8_VERSION);
+    ImGui::TextDisabled("By LegeLabs - Designed by Michael Legere");
     ImGui::EndGroup();
     ImGui::SameLine(ImGui::GetWindowWidth() - 44);
     if (ImGui::SmallButton("x")) welcome_closed_this_session_ = true;
