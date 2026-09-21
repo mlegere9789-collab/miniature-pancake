@@ -101,6 +101,14 @@ struct ViewportEvents {
   // mouse-down frame, update every frame with the total delta, end on release.
   bool cp_drag_begin = false, cp_drag_update = false, cp_drag_end = false;
   kernel::Vector3d cp_drag_delta{0, 0, 0};
+  // Continuous mouse-drag capture (want_drag, e.g. Sketch): set on the frame
+  // the mouse button is released after a want_drag drag. drag_points holds
+  // every world-space sample taken during that drag (button-down position,
+  // then each throttled mousemove sample, then the button-up position), in
+  // capture order - the caller hands the whole polyline to
+  // CommandEngine::FeedDragPolyline in one call.
+  bool drag_finished = false;
+  std::vector<kernel::Point3d> drag_points;
 };
 
 class Viewport {
@@ -203,15 +211,20 @@ class Viewport {
   // Draws the ImGui window that shows this viewport and handles its input.
   // Returns the events that occurred. `want_point` / `want_objects` tell
   // the viewport what the active command is asking for so hover feedback
-  // and cursor snapping behave accordingly.
+  // and cursor snapping behave accordingly. `want_drag` asks for a
+  // continuous mouse-drag capture (Sketch) instead of single-click points:
+  // while it's true, a left-button drag is sampled into drag_points and
+  // handed back as one polyline on release, instead of becoming a rubber-
+  // band selection window.
   ViewportEvents DrawUI(const Document& doc, const SnapSettings& snaps, bool want_point,
                         bool want_objects, std::optional<kernel::Point3d> ortho_base,
-                        double grid_spacing, bool& request_focus_command_line);
+                        double grid_spacing, bool& request_focus_command_line, bool want_drag = false);
   // Same as DrawUI but inside the caller's ImGui window, at the current
   // cursor position with the given pixel size (layout details).
   ViewportEvents DrawEmbedded(const Document& doc, const SnapSettings& snaps, bool want_point,
                               bool want_objects, std::optional<kernel::Point3d> ortho_base,
-                              double grid_spacing, bool& request_focus_command_line, int width, int height);
+                              double grid_spacing, bool& request_focus_command_line, int width, int height,
+                              bool want_drag = false);
 
   // Hit tests against the document's display geometry. Returns the
   // closest object within `pixel_radius` of the given pixel position.
@@ -300,7 +313,8 @@ class Viewport {
   void DrawClippingPlanes(GlRenderer& renderer, const Document& doc);
   ViewportEvents DrawContent(const Document& doc, const SnapSettings& snaps, bool want_point,
                              bool want_objects, std::optional<kernel::Point3d> ortho_base,
-                             double grid_spacing, bool& request_focus_command_line, bool embedded);
+                             double grid_spacing, bool& request_focus_command_line, bool embedded,
+                             bool want_drag);
 
   std::string name_;
   std::string standard_view_;
@@ -329,6 +343,14 @@ class Viewport {
   double last_x_ = 0, last_y_ = 0;
   bool drag_moved_ = false;
   double last_click_time_ = -10.0;
+  // Continuous mouse-drag capture (want_drag, e.g. Sketch): true for the
+  // duration of a button-0 drag started while want_drag was set. Samples
+  // accumulate in drag_capture_pts_, throttled by drag_capture_last_x_/y_
+  // (the pixel position of the last accepted sample) so a slow drag doesn't
+  // add a point every single frame.
+  bool drag_capturing_ = false;
+  std::vector<kernel::Point3d> drag_capture_pts_;
+  double drag_capture_last_x_ = 0, drag_capture_last_y_ = 0;
   // Sub-object state.
   const SubObjectSelection* sub_selection_ = nullptr;
   SubObjectPickFilter sub_filter_;

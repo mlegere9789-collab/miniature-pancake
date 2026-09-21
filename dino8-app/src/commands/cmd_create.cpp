@@ -358,6 +358,78 @@ class HelixCommand : public Command {
   std::vector<Point3d> pts_;
 };
 
+// Sketch: a real continuous mouse-drag capture (Want::Drag - see Command.h
+// and CommandEngine::FeedDragPolyline/FeedText's Want::Drag case), not
+// click-by-click points. The real-mouse path (Viewport.cpp) samples the
+// cursor every few pixels of movement from button-down to button-up and
+// hands the whole polyline back in one call; the scripted path
+// (tests/*.txt, --script) feeds the same command one sample per typed
+// point token, ended by Enter. Either way OnDragSample() accumulates
+// samples (dropping any closer than kMinSampleSpacing world units to the
+// last accepted one - a drag reports far more samples than a hand-drawn
+// curve needs control points for) and OnDragEnd() fits one interpolated
+// NURBS curve through what's left via the exact same InterpolatedNurbs()
+// helper InterpCrv/CurveThroughPt already use below (that helper's own
+// comment calls it "global cubic"; CreateClampedUniformNurbs is actually
+// called with order=3, i.e. degree 2/quadratic, not degree 3 - a pre-
+// existing discrepancy in that comment, not something this pass changed or
+// relies on being cubic for): real Rhino's own Sketch help says only that it
+// "draws a curve by dragging the mouse", and an interpolated curve through
+// the (decimated) samples is the more useful, less control-point-bloated
+// reading of that - a literal one-segment-per-sample polyline would be
+// needlessly dense and is not what a "sketch" reads as.
+class SketchCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    WantDrag("Click and drag to sketch a curve; release the mouse button to finish");
+    options = {{"Closed", "No", {"Yes", "No"}, false, true}, {"Undo", "", {}, false, false}};
+  }
+  void OnOption(CommandContext&, const std::string& name, const std::string& value) override {
+    if (name == "Closed") { closed_ = (ToLower(value) == "yes"); options[0].value = closed_ ? "Yes" : "No"; }
+    else if (name == "Undo" && !pts_.empty()) pts_.pop_back();
+  }
+  void OnDragSample(CommandContext& ctx, Point3d p) override {
+    if (!pts_.empty() && (p - pts_.back()).Length() < kMinSampleSpacing) return;
+    pts_.push_back(p);
+    ctx.SetLastPoint(p);
+  }
+  void OnDragEnd(CommandContext& ctx) override {
+    ctx.ClearPreview();
+    std::vector<Point3d> pts = pts_;
+    if (closed_ && pts.size() >= 3 && (pts.front() - pts.back()).Length() > kMinSampleSpacing) pts.push_back(pts.front());
+    if (pts.size() == 2) {
+      AddCurve(ctx, PolylineCurve(pts), "Sketch");
+    } else if (pts.size() >= 3) {
+      kernel::NurbsCurve k;
+      if (InterpolatedNurbs(pts, k)) {
+        AddCurve(ctx, k, "Sketch");
+        ctx.Print("Sketch: interpolated a curve through " + std::to_string(pts.size()) + " drag sample(s)" +
+                  (closed_ ? " (closed)" : ""));
+      }
+    } else if (!pts.empty()) {
+      ctx.Warn("Sketch: drag too short to make a curve (need at least 2 sampled points)");
+    }
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (pts_.empty()) return;
+    ctx.ClearPreview();
+    std::vector<Point3d> pv = pts_;
+    pv.push_back(h);
+    ctx.AddPreviewPolyline(pv);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+
+ private:
+  // Minimum world-space distance between two accepted samples: a genuine
+  // decimation of the raw drag/scripted samples (matching the fit-tolerance
+  // simplification real digitising/sketch tools apply) before the
+  // interpolation, not just a zero-length-segment guard.
+  static constexpr double kMinSampleSpacing = 0.05;
+  std::vector<Point3d> pts_;
+  bool closed_ = false;
+};
+
 }  // namespace
 
 void RegisterCreateCommands(CommandEngine& e) {
@@ -374,23 +446,18 @@ void RegisterCreateCommands(CommandEngine& e) {
   Reg(e, "CurveThroughPt", Make<CurveThroughPtCommand>(), CommandStatus::Implemented,
       "Interpolates a curve through the selected point objects (ordered by object id), via the same global cubic "
       "interpolation as InterpCrv.");
-  // Investigated: real Rhino Sketch is a continuous mouse-drag-to-polyline
-  // capture (button down, drag, release), sampling many points per second.
-  // No command in this codebase has that input path - Viewport.cpp's mouse
-  // handling only feeds discrete per-click points into Command::OnPoint (see
-  // Want::Point in CommandEngine.cpp) or drives non-command UI drags (Gumball
-  // control-point dragging, the window/crossing selection box); "Lasso" (see
-  // cmd_select2.cpp's SelFenceCommand), the closest existing freehand-shaped
-  // tool, is also click-a-polygon, not drag-capture. Adding one would mean
-  // new Viewport/CommandEngine plumbing (an OnDrag callback streaming mouse
-  // deltas to the active command while a mouse button is held) that no other
-  // command relies on, and it would be unverifiable by this text-script smoke
-  // harness (no scripted line simulates a held-button mouse drag), so it's
-  // left Partial rather than faked. Click points instead; the interpolation
-  // itself is real and identical to InterpCrv/CurveThroughPt.
-  Reg(e, "Sketch", Make<MultiPointCurveCommand>(MultiPointCurveCommand::Kind::Interpolated), CommandStatus::Partial,
-      "Click points instead of a continuous mouse-drag capture; no command in this codebase has drag-to-polyline "
-      "input (confirmed absent in Viewport.cpp/CommandEngine.cpp), and it wouldn't be scriptable/testable here even if added.");
+  // Real continuous mouse-drag capture: see SketchCommand above,
+  // Want::Drag/OnDragSample/OnDragEnd in Command.h, CommandEngine's
+  // FeedDragPolyline (real mouse) and Want::Drag case in FeedText
+  // (scripted), and Viewport.cpp's drag_capturing_/drag_capture_pts_
+  // (button-down -> throttled mousemove samples -> button-up).
+  Reg(e, "Sketch", Make<SketchCommand>(), CommandStatus::Implemented,
+      "Real continuous mouse-drag capture: click and hold, drag the cursor to draw the curve, release to finish "
+      "(Closed option: close it when you release). The drag is sampled every few pixels of movement and fit with "
+      "one global interpolated NURBS curve through the (decimated) samples, same technique (InterpolatedNurbs(), "
+      "degree 2) as InterpCrv/CurveThroughPt. "
+      "Scripted/tested the same way other point-prompting commands are, via a sequence of point tokens ending in "
+      "Enter, standing in for the sampled drag positions.");
   Reg(e, "Circle", Make<CircleCommand>());
   Reg(e, "Circle3Pt", Make<PointsCommand>(std::vector<std::string>{"First point on circle", "Second point on circle", "Third point on circle"},
                                           [](CommandContext& ctx, const std::vector<Point3d>& p) {

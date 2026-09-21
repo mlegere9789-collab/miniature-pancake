@@ -2041,7 +2041,7 @@ void Viewport::ZoomExtents(const Document& doc, bool selected_only) {
 
 ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, bool want_point,
                                 bool want_objects, std::optional<Point3d> ortho_base,
-                                double grid_spacing, bool& request_focus_command_line) {
+                                double grid_spacing, bool& request_focus_command_line, bool want_drag) {
   ViewportEvents ev;
   if (!visible_) return ev;
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -2057,7 +2057,7 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
   const ImVec2 avail = ImGui::GetContentRegionAvail();
   width_ = std::max(1, static_cast<int>(avail.x));
   height_ = std::max(1, static_cast<int>(avail.y));
-  ev = DrawContent(doc, snaps, want_point, want_objects, ortho_base, grid_spacing, request_focus_command_line, false);
+  ev = DrawContent(doc, snaps, want_point, want_objects, ortho_base, grid_spacing, request_focus_command_line, false, want_drag);
   ImGui::End();
   ImGui::PopStyleVar();
   return ev;
@@ -2065,18 +2065,20 @@ ViewportEvents Viewport::DrawUI(const Document& doc, const SnapSettings& snaps, 
 
 ViewportEvents Viewport::DrawEmbedded(const Document& doc, const SnapSettings& snaps, bool want_point,
                                       bool want_objects, std::optional<Point3d> ortho_base,
-                                      double grid_spacing, bool& request_focus_command_line, int width, int height) {
+                                      double grid_spacing, bool& request_focus_command_line, int width, int height,
+                                      bool want_drag) {
   width_ = std::max(1, width);
   height_ = std::max(1, height);
   ImGui::PushID(name_.c_str());
-  ViewportEvents ev = DrawContent(doc, snaps, want_point, want_objects, ortho_base, grid_spacing, request_focus_command_line, true);
+  ViewportEvents ev = DrawContent(doc, snaps, want_point, want_objects, ortho_base, grid_spacing, request_focus_command_line, true, want_drag);
   ImGui::PopID();
   return ev;
 }
 
 ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& snaps, bool want_point,
                                      bool want_objects, std::optional<Point3d> ortho_base,
-                                     double grid_spacing, bool& request_focus_command_line, bool embedded) {
+                                     double grid_spacing, bool& request_focus_command_line, bool embedded,
+                                     bool want_drag) {
   ViewportEvents ev;
   ImGuiIO& io = ImGui::GetIO();
   const ImVec2 cursor = ImGui::GetCursorScreenPos();
@@ -2147,6 +2149,13 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
   if (!want_point && !cp_dragging_) {
     track_points_.clear();
     track_candidate_.reset();
+  }
+  // A command that stopped wanting a drag mid-capture (cancelled, or
+  // finished by some other input) abandons whatever was sampled so far
+  // instead of ever delivering a stale/partial polyline.
+  if (!want_drag && drag_capturing_) {
+    drag_capturing_ = false;
+    drag_capture_pts_.clear();
   }
   auto dashed = [&](Point3d a, Point3d b, ImU32 col) {
     double ax, ay, bx, by;
@@ -2231,6 +2240,19 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
             ev.cp_drag_begin = true;
           }
         }
+        // Continuous mouse-drag capture (Sketch): button-down starts the
+        // capture and takes its first sample at the press position. Grid
+        // snap and the previous-point perp/tan snaps are disabled for the
+        // whole drag (grid_spacing 0, ortho_base unset) - real Rhino's
+        // Sketch documents doing the same ("temporarily turns off Grid Snap
+        // and ignores Ortho").
+        if (b == 0 && want_drag) {
+          drag_capturing_ = true;
+          drag_capture_pts_.clear();
+          drag_capture_pts_.push_back(PickPoint(doc, snaps, mx, my, std::nullopt, 0.0, true).point);
+          drag_capture_last_x_ = mx;
+          drag_capture_last_y_ = my;
+        }
       }
     }
     if (hovered) active_ = active_ || ImGui::IsMouseClicked(0);
@@ -2246,6 +2268,33 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
           camera_.Dolly(-dy * 0.02);
         } else {
           camera_.Orbit(dx, dy);
+        }
+      }
+    } else if (drag_button_ == 0 && drag_capturing_) {
+      // Continuous mouse-drag capture (Sketch): sample the cursor's CPlane
+      // position every frame the mouse has moved at least
+      // kDragSampleMinPixels since the last accepted sample - a throttle so
+      // a slow drag doesn't flood the polyline with near-duplicate points,
+      // while a fast one still gets one sample roughly every few pixels.
+      constexpr double kDragSampleMinPixels = 4.0;
+      if (std::hypot(mx - drag_capture_last_x_, my - drag_capture_last_y_) >= kDragSampleMinPixels) {
+        drag_capture_pts_.push_back(PickPoint(doc, snaps, mx, my, std::nullopt, 0.0, true).point);
+        drag_capture_last_x_ = mx;
+        drag_capture_last_y_ = my;
+      }
+      // Live preview of the sketch so far.
+      for (size_t i = 1; i < drag_capture_pts_.size(); ++i) {
+        double ax, ay, bx, by;
+        if (WorldToPixel(drag_capture_pts_[i - 1], ax, ay) && WorldToPixel(drag_capture_pts_[i], bx, by)) {
+          dl->AddLine(ImVec2(static_cast<float>(img_x_ + ax), static_cast<float>(img_y_ + ay)),
+                      ImVec2(static_cast<float>(img_x_ + bx), static_cast<float>(img_y_ + by)), IM_COL32(255, 230, 60, 230), 2.0f);
+        }
+      }
+      if (!drag_capture_pts_.empty()) {
+        double lx, ly;
+        if (WorldToPixel(drag_capture_pts_.back(), lx, ly)) {
+          dl->AddLine(ImVec2(static_cast<float>(img_x_ + lx), static_cast<float>(img_y_ + ly)),
+                      ImVec2(static_cast<float>(io.MousePos.x), static_cast<float>(io.MousePos.y)), IM_COL32(255, 230, 60, 140), 1.0f);
         }
       }
     } else if (drag_button_ == 0 && cp_dragging_) {
@@ -2283,7 +2332,18 @@ ViewportEvents Viewport::DrawContent(const Document& doc, const SnapSettings& sn
     last_y_ = my;
     if (!ImGui::IsMouseDown(drag_button_)) {
       dragging_ = false;
-      if (drag_button_ == 0) {
+      if (drag_button_ == 0 && drag_capturing_) {
+        // Button-up ends the capture: take one last sample at the release
+        // position (regardless of the pixel throttle, so the curve actually
+        // reaches where the mouse was let go), then hand the whole polyline
+        // back in one ViewportEvents - Application::ProcessViewportEvents
+        // forwards it to CommandEngine::FeedDragPolyline.
+        drag_capture_pts_.push_back(PickPoint(doc, snaps, mx, my, std::nullopt, 0.0, true).point);
+        ev.drag_finished = true;
+        ev.drag_points = drag_capture_pts_;
+        drag_capturing_ = false;
+        drag_capture_pts_.clear();
+      } else if (drag_button_ == 0) {
         if (cp_dragging_) {
           cp_dragging_ = false;
           ev.cp_drag_end = true;

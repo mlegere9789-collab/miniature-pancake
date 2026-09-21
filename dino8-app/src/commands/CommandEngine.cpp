@@ -461,6 +461,22 @@ void CommandEngine::FeedPoint(Point3d p) {
   AfterCallback();
 }
 
+void CommandEngine::FeedDragPolyline(const std::vector<Point3d>& pts) {
+  if (std::getenv("DINO8_UI_DEBUG")) std::fprintf(stderr, "[engine] FeedDragPolyline %zu pts active=%s want=%d\n", pts.size(), active_name_.c_str(), active_ ? static_cast<int>(active_->want) : -1);
+  if (!active_) return;
+  if (active_->want != Want::Drag) return;
+  CommandContext ctx(app_, doc_, *this);
+  for (const Point3d& p : pts) {
+    if (!active_) break;  // a sample's callback could in principle finish/cancel the command
+    DINO8_GUARD(active_->OnDragSample(ctx, p));
+  }
+  if (active_) {
+    if (!pts.empty()) last_point_ = pts.back();
+    DINO8_GUARD(active_->OnDragEnd(ctx));
+  }
+  AfterCallback();
+}
+
 void CommandEngine::FeedEnter() {
   if (!active_) {
     RepeatLast();
@@ -480,6 +496,11 @@ void CommandEngine::FeedEnter() {
     DINO8_GUARD(active_->OnNumber(ctx, *active_->default_number));
   } else if (active_->want == Want::Text && active_->default_text) {
     DINO8_GUARD(active_->OnText(ctx, *active_->default_text));
+  } else if (active_->want == Want::Drag) {
+    // Scripted path: Enter after a run of typed point samples (fed one by
+    // one through FeedText below) ends the drag, same as releasing the
+    // mouse button does for FeedDragPolyline.
+    DINO8_GUARD(active_->OnDragEnd(ctx));
   } else {
     DINO8_GUARD(active_->OnEnter(ctx));
   }
@@ -656,6 +677,24 @@ void CommandEngine::FeedText(const std::string& text) {
         DINO8_GUARD(active_->OnNumber(ctx, number));
       } else {
         Print("Invalid number: " + text);
+      }
+      break;
+    }
+    case Want::Drag: {
+      // Scripted drag capture: a script (or a typed command line) supplies
+      // the drag's sample points one token at a time, same as it would type
+      // successive Want::Point picks for Polyline/InterpCrv; the difference
+      // is these go to OnDragSample rather than OnPoint, and the sequence
+      // is only finished by an explicit Enter (see FeedEnter above), not
+      // point-by-point. This is tests/*.txt's way of driving Sketch without
+      // a real display or mouse - see FeedDragPolyline for the real path.
+      Point3d p;
+      if (TryParsePoint(text, p)) {
+        Print(FormatPoint(p));
+        DINO8_GUARD(active_->OnDragSample(ctx, p));
+        last_point_ = p;
+      } else {
+        DINO8_GUARD(active_->OnText(ctx, text));
       }
       break;
     }

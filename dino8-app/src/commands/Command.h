@@ -22,7 +22,12 @@ namespace dino8::app {
 class Application;
 class CommandEngine;
 
-enum class Want { Nothing, Point, Objects, Number, Text, Enter };
+// Drag: a continuous mouse-drag capture (button down, drag, release) rather
+// than a single click, used by Sketch. See CommandEngine::FeedDragPolyline
+// (the real mouse path, fed by Viewport's drag-sample accumulation) and
+// FeedText (the scripted path, one sample per typed point token) - both
+// funnel into Command::OnDragSample/OnDragEnd below.
+enum class Want { Nothing, Point, Objects, Number, Text, Enter, Drag };
 
 // A command-line option shown after the prompt, e.g. "Radius=5" or
 // "Mode=Lines". Typing the option name (or clicking it) triggers OnOption.
@@ -88,6 +93,14 @@ class Command {
 
   virtual void Begin(CommandContext& ctx) = 0;
   virtual void OnPoint(CommandContext&, kernel::Point3d) {}
+  // Want::Drag: one sample of the point being continuously dragged (called
+  // once per captured sample - real mouse path: every throttled mousemove
+  // between button-down and button-up; scripted path: once per typed point
+  // token). OnDragEnd is called once the drag/scripted sequence finishes
+  // (mouse-up, or Enter in a script) so the command can build its curve from
+  // every accumulated sample.
+  virtual void OnDragSample(CommandContext&, kernel::Point3d) {}
+  virtual void OnDragEnd(CommandContext&) {}
   virtual void OnNumber(CommandContext&, double) {}
   virtual void OnText(CommandContext&, const std::string&) {}
   virtual void OnObjects(CommandContext&, const std::vector<ObjectId>&) {}
@@ -112,6 +125,7 @@ class Command {
 
  protected:
   void WantPoint(const std::string& p) { want = Want::Point; prompt = p; }
+  void WantDrag(const std::string& p) { want = Want::Drag; prompt = p; }
   void WantObjects(const std::string& p, int min_count = 1) { want = Want::Objects; prompt = p; min_objects = min_count; }
   void WantNumber(const std::string& p, std::optional<double> def = std::nullopt) { want = Want::Number; prompt = p; default_number = def; }
   void WantText(const std::string& p, std::optional<std::string> def = std::nullopt) { want = Want::Text; prompt = p; default_text = def; }

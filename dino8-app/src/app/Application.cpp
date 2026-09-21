@@ -1182,6 +1182,7 @@ void Application::DrawViewports() {
   const Want want = engine_->CurrentWant();
   const bool want_point = want == Want::Point;
   const bool want_objects = want == Want::Objects;
+  const bool want_drag = want == Want::Drag;
   std::optional<kernel::Point3d> ortho_base = engine_->LastPoint();
   bool maximized_any = false;
   for (auto& vp : viewports_) maximized_any = maximized_any || vp->Maximized();
@@ -1247,7 +1248,7 @@ void Application::DrawViewports() {
     vp.SetSubObjectSelection(&sub_selection_);
     vp.SetSubObjectFilter(CurrentSubObjectFilter());
     ViewportEvents ev = vp.DrawUI(doc_, snaps_, want_point, want_objects, ortho_base,
-                                  doc_.Settings().grid_spacing, request_focus);
+                                  doc_.Settings().grid_spacing, request_focus, want_drag);
     if (ev.hovered) {
       if (ev.hover_pick) hover = ev.hover_pick->point;
     }
@@ -1469,6 +1470,16 @@ void Application::ProcessViewportEvents(Viewport& vp, const ViewportEvents& ev) 
     }
     cp_drag_originals_.clear();
     cp_drag_changed_ = false;
+  }
+  if (ev.drag_finished) {
+    // Continuous mouse-drag capture (Sketch): the viewport already sampled
+    // and throttled the whole button-down-to-button-up polyline; hand it to
+    // the active command in one call.
+    if (want == Want::Drag) {
+      for (auto& other : viewports_) other->SetActive(other.get() == &vp);
+      engine_->FeedDragPolyline(ev.drag_points);
+    }
+    return;
   }
   if (ev.clicked) {
     for (auto& other : viewports_) other->SetActive(other.get() == &vp);

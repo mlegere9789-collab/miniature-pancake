@@ -63,6 +63,13 @@ class CommandEngine {
 
   // Input from the UI while a command runs.
   void FeedPoint(kernel::Point3d p);
+  // Continuous mouse-drag capture (Want::Drag, e.g. Sketch): the real mouse
+  // path. Viewport accumulates every sample of one mousedown->mouseup drag
+  // and hands the whole polyline back in one call once the button is
+  // released: each point is delivered to the active command's
+  // OnDragSample(), then OnDragEnd() runs once to finish it. Points must be
+  // in world space, in the order they were sampled.
+  void FeedDragPolyline(const std::vector<kernel::Point3d>& pts);
   void FeedText(const std::string& text);   // typed on the command line
   void FeedEnter();
   void FeedObjects(const std::vector<ObjectId>& ids);

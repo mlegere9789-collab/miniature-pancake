@@ -36,10 +36,37 @@ Delete
 SelAll
 Delete
 @expect_objects 0
+# Sketch: real continuous mouse-drag capture (Want::Drag), driven here the
+# way every headless script drives it - a sequence of drag-sample point
+# tokens ending in Enter (CommandEngine::FeedText's Want::Drag case; the
+# real mouse path is Viewport.cpp's drag_capturing_/FeedDragPolyline). Two
+# samples make a straight 2-CV polyline; three or more are decimated (any
+# sample closer than 0.05 units to the last accepted one is dropped) and fit
+# with one global interpolation, exactly like InterpCrv/CurveThroughPt.
 Sketch 0,0,0 10,5,0 20,0,0
 Enter
 @expect_objects 1
 SelLast
+List
+Delete
+@expect_objects 0
+# L-shape-then-curved-back stroke: 7 samples, all well past the 0.05-unit
+# decimation floor, so every one survives as a control point; the fit curve
+# must start and end exactly at the drag's own first and last samples.
+Sketch 0,0,0 10,0,0 10,10,0 20,10,0 20,20,0 10,25,0 0,20,0
+Enter
+@expect_objects 1
+SelLast
+List
+Delete
+@expect_objects 0
+# Closed option: set before dragging (matching real Rhino's own documented
+# Sketch behaviour), closes the curve when the drag/sequence ends.
+Sketch Closed=Yes 0,0,0 10,0,0 5,8,0
+Enter
+@expect_objects 1
+SelLast
+List
 Delete
 # --- Circle3Pt / CircleD
 Circle3Pt 10,0,0 -10,0,0 0,10,0
