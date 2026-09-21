@@ -308,6 +308,7 @@ void RegisterAnalyzeCommands(CommandEngine& e) {
           else if (o->kind == ObjectKind::Mesh) { ctx.Print("  " + std::to_string(o->mesh->VertexCount()) + " vertices, " + std::to_string(o->mesh->FaceCount()) + " faces"); }
           else if (o->kind == ObjectKind::SubD) { ctx.Print("  " + std::to_string(o->subd->FaceCount()) + " faces, " + std::to_string(o->subd->EdgeCount()) + " edges, " + std::to_string(o->subd->VertexCount()) + " vertices, " + std::to_string(o->subd->CreaseEdgeCount()) + " creases"); }
           else if (o->kind == ObjectKind::Point) ctx.Print("  " + FormatPoint(o->point));
+          else if (o->kind == ObjectKind::PointCloud) ctx.Print("  " + std::to_string(o->point_cloud->PointCount()) + " points");
         }
         ctx.App().Panels().command_history = true;
       }));

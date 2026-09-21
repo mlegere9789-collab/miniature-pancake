@@ -510,15 +510,10 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
         made = true;
       }
     } else if (const ON_PointCloud* pc = ON_PointCloud::Cast(g)) {
-      for (int i = 0; i < pc->PointCount(); ++i) {
-        SceneObject po = SceneObject::MakePoint(pc->m_P[i]);
-        if (attr) {
-          auto lm = layer_map.find(attr->m_layer_index);
-          if (lm != layer_map.end()) po.layer_index = lm->second;
-        }
-        doc.Add(std::move(po));
-      }
-      continue;
+      kernel::PointCloud k;
+      k.raw() = *pc;
+      obj = SceneObject::MakePointCloud(k);
+      made = true;
     }
     if (!made) {
       ++skipped;
@@ -1001,6 +996,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
       case ObjectKind::Brep: if (o.brep) g = new ON_Brep(o.brep->raw()); break;
       case ObjectKind::Mesh: if (o.mesh) g = new ON_Mesh(o.mesh->raw()); break;
       case ObjectKind::SubD: if (o.subd) g = new ON_SubD(o.subd->raw()); break;
+      case ObjectKind::PointCloud: if (o.point_cloud) g = new ON_PointCloud(o.point_cloud->raw()); break;
     }
     if (!g) continue;
     model.AddModelGeometryComponent(g, &attr);
@@ -1029,6 +1025,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
         case ObjectKind::Brep: if (o.brep) g = new ON_Brep(o.brep->raw()); break;
         case ObjectKind::Mesh: if (o.mesh) g = new ON_Mesh(o.mesh->raw()); break;
         case ObjectKind::SubD: if (o.subd) g = new ON_SubD(o.subd->raw()); break;
+        case ObjectKind::PointCloud: if (o.point_cloud) g = new ON_PointCloud(o.point_cloud->raw()); break;
       }
       if (!g) continue;
       model.AddModelGeometryComponent(g, &attr);

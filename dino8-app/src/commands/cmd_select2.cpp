@@ -213,6 +213,7 @@ int PointCount(const SceneObject& o) {
     case ObjectKind::Brep: return o.brep->raw().m_V.Count() * 1000 + o.brep->raw().m_F.Count();
     case ObjectKind::Mesh: return o.mesh->VertexCount() * 1000 + o.mesh->FaceCount();
     case ObjectKind::SubD: return o.subd->raw().VertexCount() * 1000 + o.subd->raw().FaceCount();
+    case ObjectKind::PointCloud: return o.point_cloud->PointCount();
   }
   return 0;
 }

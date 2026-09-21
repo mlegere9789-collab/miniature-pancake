@@ -14,6 +14,7 @@
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/point_cloud.h"
 #include "dino8/kernel/subd.h"
 #include "dino8/kernel/surface.h"
 #include "dino8/kernel/types.h"
@@ -23,7 +24,7 @@ namespace dino8::app {
 using ObjectId = std::uint64_t;
 constexpr ObjectId kNoObject = 0;
 
-enum class ObjectKind { Point, Curve, Surface, Brep, Mesh, SubD };
+enum class ObjectKind { Point, Curve, Surface, Brep, Mesh, SubD, PointCloud };
 
 const char* ObjectKindName(ObjectKind kind);
 
@@ -134,6 +135,7 @@ class SceneObject {
   static SceneObject MakeBrep(const kernel::Brep& brep);
   static SceneObject MakeMesh(const kernel::Mesh& mesh);
   static SceneObject MakeSubD(const kernel::SubD& subd);
+  static SceneObject MakePointCloud(const kernel::PointCloud& point_cloud);
 
   ObjectId id = kNoObject;
   std::string name;
@@ -188,6 +190,7 @@ class SceneObject {
   std::unique_ptr<kernel::Brep> brep;
   std::unique_ptr<kernel::Mesh> mesh;
   std::unique_ptr<kernel::SubD> subd;
+  std::unique_ptr<kernel::PointCloud> point_cloud;
 
   // Applies a transform to the geometry in place and invalidates display.
   void Transform(const ON_Xform& xform);

@@ -1105,7 +1105,7 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
       if (style.fill) line_color = style.monochrome || style.force_white ? style.edge_color : Mix(line_color, style.edge_color, 0.55f);
       if (!style.edges && !style.isocurves && !o.selected) {
         // Rendered mode: no wires on surfaces/meshes at all.
-        if (o.kind != ObjectKind::Point) continue;
+        if (o.kind != ObjectKind::Point && o.kind != ObjectKind::PointCloud) continue;
       }
     }
     if (doc.IsObjectLocked(o)) line_color = Mix(line_color, kLockedColor, 0.7f);
@@ -1860,6 +1860,13 @@ PickResult Viewport::PickPoint(const Document& doc, const SnapSettings& snaps, d
               const ON_3fPoint& v = m.m_V[i];
               consider(Point3d(v.x, v.y, v.z), snaps.vertex ? "Vertex" : "End");
             }
+          }
+          break;
+        }
+        case ObjectKind::PointCloud: {
+          if (snaps.point && o.point_cloud) {
+            const int n = o.point_cloud->PointCount();
+            for (int i = 0; i < n; ++i) consider(o.point_cloud->PointAt(i), "Point");
           }
           break;
         }

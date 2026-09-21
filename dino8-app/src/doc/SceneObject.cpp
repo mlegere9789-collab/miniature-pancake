@@ -59,6 +59,7 @@ const char* ObjectKindName(ObjectKind kind) {
     case ObjectKind::Brep: return "polysurface";
     case ObjectKind::Mesh: return "mesh";
     case ObjectKind::SubD: return "SubD";
+    case ObjectKind::PointCloud: return "point cloud";
   }
   return "object";
 }
@@ -112,6 +113,7 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   brep = other.brep ? std::make_unique<kernel::Brep>(*other.brep) : nullptr;
   mesh = other.mesh ? std::make_unique<kernel::Mesh>(*other.mesh) : nullptr;
   subd = other.subd ? std::make_unique<kernel::SubD>(*other.subd) : nullptr;
+  point_cloud = other.point_cloud ? std::make_unique<kernel::PointCloud>(*other.point_cloud) : nullptr;
   cache_ = other.cache_;
   display_dashes_ = other.display_dashes_;
 }
@@ -214,6 +216,13 @@ SceneObject SceneObject::MakeSubD(const kernel::SubD& s) {
   return o;
 }
 
+SceneObject SceneObject::MakePointCloud(const kernel::PointCloud& pc) {
+  SceneObject o;
+  o.kind = ObjectKind::PointCloud;
+  o.point_cloud = std::make_unique<kernel::PointCloud>(pc);
+  return o;
+}
+
 void SceneObject::Transform(const ON_Xform& xform) {
   switch (kind) {
     case ObjectKind::Point: point = xform * point; break;
@@ -222,6 +231,7 @@ void SceneObject::Transform(const ON_Xform& xform) {
     case ObjectKind::Brep: brep->raw().Transform(xform); break;
     case ObjectKind::Mesh: *mesh = mesh->Transform(xform); break;
     case ObjectKind::SubD: subd->raw().Transform(xform); break;
+    case ObjectKind::PointCloud: *point_cloud = point_cloud->Transform(xform); break;
   }
   // Block instances remember their insertion point (see cmd_drafting.cpp).
   auto it = user_text.find("BlockInsert");
@@ -707,6 +717,18 @@ void SceneObject::EnsureDisplay(double curve_tolerance, double surface_tolerance
       }
       break;
     }
+    case ObjectKind::PointCloud: {
+      const int n = point_cloud->PointCount();
+      cache_.points.reserve(static_cast<size_t>(n) * 3);
+      for (int i = 0; i < n; ++i) {
+        const kernel::Point3d p = point_cloud->PointAt(i);
+        cache_.points.push_back(static_cast<float>(p.x));
+        cache_.points.push_back(static_cast<float>(p.y));
+        cache_.points.push_back(static_cast<float>(p.z));
+        ExpandBox(cache_.bbox, cache_.has_bbox, p);
+      }
+      break;
+    }
   }
   cache_.dirty = false;
 }
@@ -1047,6 +1069,11 @@ std::string SceneObject::Describe() const {
     case ObjectKind::SubD:
       out << "\n  Faces: " << subd->FaceCount() << "\n  Vertices: " << subd->VertexCount()
           << "\n  Edges: " << subd->EdgeCount() << "\n  Crease edges: " << subd->CreaseEdgeCount();
+      break;
+    case ObjectKind::PointCloud:
+      out << "\n  Points: " << point_cloud->PointCount()
+          << "\n  Colors: " << (point_cloud->HasColors() ? "yes" : "no")
+          << "\n  Normals: " << (point_cloud->HasNormals() ? "yes" : "no");
       break;
   }
   const kernel::BoundingBox b = BoundingBox();

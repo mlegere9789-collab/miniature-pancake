@@ -850,10 +850,22 @@ void RegisterStateCommands(CommandEngine& e) {
         std::vector<ObjectId> pts;
         for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id); o && o->kind == ObjectKind::Point) pts.push_back(id);
         if (pts.empty()) { ctx.Warn("Select point objects"); return; }
+        kernel::PointCloud pc;
+        for (ObjectId id : pts) if (const SceneObject* o = ctx.Doc().Find(id)) pc.AppendPoint(o->point);
         ctx.Doc().BeginChange("PointCloud");
-        ctx.Doc().CreateGroup(pts, "PointCloud");
-        ctx.Print("PointCloud: " + std::to_string(pts.size()) + " point(s) grouped");
-      }), CommandStatus::Partial, "Dino 8's ObjectKind enum has no distinct point-cloud kind (only Point/Curve/Surface/Brep/Mesh/SubD), so there is no per-point-color/density point-cloud object to build here - this groups the selected Point objects instead, the closest honest approximation with the data model as it stands.");
+        // The source Point objects are consumed into the one new PointCloud
+        // object, not left behind duplicated - the same "select these,
+        // build one new thing from them" semantics as Loft/Join elsewhere
+        // in this app, and the only sensible reading of "select points for
+        // the point cloud" once there's a real point-cloud kind to build.
+        for (ObjectId id : pts) ctx.Doc().Remove(id);
+        SceneObject po = SceneObject::MakePointCloud(pc);
+        po.name = "PointCloud";
+        const ObjectId added = ctx.Doc().Add(std::move(po));
+        ctx.Doc().Select(added);
+        ctx.Print("PointCloud: " + std::to_string(pts.size()) + " point(s)");
+      }), CommandStatus::Implemented,
+      "Builds a genuine ObjectKind::PointCloud object (a real ON_PointCloud-backed point set, not a group of separate Point objects) from the selected Point objects, which are consumed into it. Per-point color and normal data (kernel::PointCloud::SetColors/SetNormals) round-trips through Save/Open, like every other geometry channel this app writes, but nothing in this app's UI can set per-point color/normal, or select/grip-edit a single point within the cloud - only pick/Move/Rotate/Scale/delete the whole object, the same granularity every other object kind here has; the viewport draws every point in the object's one effective color, the same single-color DrawPoints() call every other point-kind object already uses.");
   Reg(e, "InfinitePlane", Immediate([](CommandContext& ctx) {
         ON_Plane pl = ActivePlane(ctx);
         const double s = std::max(1.0, ctx.Settings().grid_spacing * ctx.Settings().grid_extents) * 20.0;

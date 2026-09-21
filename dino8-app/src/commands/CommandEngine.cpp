@@ -413,6 +413,7 @@ void CommandEngine::CheckNewObjects() {
       case ObjectKind::Brep: ok = o.brep && o.brep->raw().IsValid(); break;
       case ObjectKind::Mesh: ok = o.mesh && o.mesh->raw().IsValid(); break;
       case ObjectKind::SubD: ok = o.subd && o.subd->raw().IsValid(); break;
+      case ObjectKind::PointCloud: ok = o.point_cloud && o.point_cloud->raw().IsValid(); break;
       default: break;
     }
     if (!ok) { ++bad; Print("CheckNewObjects: object " + std::to_string(o.id) + " (" + ObjectKindName(o.kind) + ") is INVALID"); }
