@@ -134,3 +134,26 @@ SubDSphere 145,5,5 5
 SelLast
 PackSubDFaces
 @expect_objects 9
+# --- ToNURBS: real Catmull-Clark limit-surface-to-bicubic-NURBS-patch
+# conversion (kernel::SubD::ToNurbsPatches, see its doc comment) - not the
+# old flat-facetted dense-mesh-to-Brep approximation. SubDPlane's control
+# net is a triangulated grid (TessellateGrid splits each cell into 2
+# triangles), which real Catmull-Clark refinement turns into an
+# almost-entirely-regular quad net after a couple of rounds - a real
+# nonzero count of mathematically EXACT bicubic patches should come out of
+# it; SubDBox's 8 corners are the only extraordinary vertices (valence 3,
+# a cube corner), so it exercises the honestly-approximated irregular-patch
+# path for just those, exact everywhere else. List then reports each
+# resulting Brep's real face count (many small bicubic patches, not 6/16
+# flat facets).
+SubDPlane 160,0,0 168,8,0
+SelLast
+ToNURBS
+SelLast
+List
+SubDBox 160,20,0 168,28,0 4
+SelLast
+ToNURBS
+SelLast
+List
+@expect_objects 13

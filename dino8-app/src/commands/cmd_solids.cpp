@@ -764,42 +764,88 @@ void RegisterSolidCommands(CommandEngine& e) {
   Reg(e, "MeshToSubD", OnSelection("Select meshes to convert", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { MeshFromSelection(ctx, ids, "MeshToSubD", true); }));
   Reg(e, "ToNURBS", OnSelection("Select SubDs or meshes to convert", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("ToNURBS");
-        int made = 0;
+        int made = 0, exact_patches = 0, approx_patches = 0;
         for (ObjectId id : ids) {
           const SceneObject* o = ctx.Doc().Find(id);
           if (!o) continue;
           if (o->kind == ObjectKind::SubD) {
-            ON_SubD copy = o->subd->raw();
-            ON_Brep* b = copy.BrepForm(nullptr);
-            if (!b) {
-              // The vendored OpenNURBS build's ON_SubD::BrepForm() is an
-              // unconditional stub (always returns nullptr - the real
-              // Catmull-Clark limit-surface-to-NURBS-patch conversion is
-              // Rhino-proprietary and not part of the public OpenNURBS
-              // source), so this always fails; approximate instead by
-              // subdividing to a dense quad mesh (the same technique
-              // SmoothSubDMesh in SceneObject.cpp uses for on-screen
-              // display) and building a facetted Brep from that, exactly
-              // like the Mesh branch below already does.
+            // Real Catmull-Clark limit-surface conversion (kernel::SubD::
+            // ToNurbsPatches(), see its own doc comment for the math):
+            // every face whose 4 corners are ordinary interior vertices
+            // gets its mathematically exact bicubic Bezier patch; every
+            // face touching an extraordinary vertex, crease, or boundary
+            // gets a tolerance-bounded flat approximation instead. First
+            // subdivide (Catmull-Clark refinement, real and non-stub -
+            // see the class comment on kernel::SubD) a few rounds so (a)
+            // triangle/n-gon input becomes quad-only, and (b) the
+            // irregular patches shrink to a tight tolerance before being
+            // approximated - each round roughly quarters their maximum
+            // deviation from the true limit surface (see
+            // ToNurbsPatches()'s doc comment).
+            kernel::SubD refined = *o->subd;
+            // Cap subdivision rounds (and hence patch count) much lower than
+            // the old dense-mesh path's cap: each patch here is a real NURBS
+            // surface, not a mesh triangle, and JoinNakedEdges (below) is
+            // O(edge_count^2), so a handful of rounds is both plenty to
+            // shrink irregular patches to a tight tolerance (see
+            // ToNurbsPatches()'s doc comment) and keeps patch/edge counts
+            // practical.
+            int faces = refined.FaceCount(), levels = 0;
+            while (levels < 2 && faces > 0 && faces * 4 <= 4000) { faces *= 4; ++levels; }
+            if (levels == 0) levels = 1;  // always at least one round, to guarantee quad faces
+            try {
+              refined.Subdivide(levels);
+              std::vector<kernel::SubDNurbsPatch> patches = refined.ToNurbsPatches();
+              if (!patches.empty()) {
+                ON_Brep combined;
+                for (kernel::SubDNurbsPatch& p : patches) {
+                  ON_Brep tmp;
+                  ON_NurbsSurface* srf = new ON_NurbsSurface(p.surface.raw());
+                  tmp.Create(srf);
+                  combined.Append(tmp);
+                  if (p.exact) ++exact_patches; else ++approx_patches;
+                }
+                JoinNakedEdges(combined, ctx.Settings().absolute_tolerance * 10);
+                kernel::Brep k; k.raw() = combined;
+                ctx.Doc().Add(SceneObject::MakeBrep(k));
+                ++made;
+              }
+            } catch (...) {
+              // Fall back to the old dense-facetted-mesh approximation
+              // only if the real conversion itself throws (e.g. a
+              // pathological/non-manifold SubD) - not the normal path.
               try {
                 kernel::SubD dense = *o->subd;
-                int faces = dense.FaceCount(), levels = 0;
-                while (levels < 3 && faces > 0 && faces * 4 <= 100000) { faces *= 4; ++levels; }
-                if (levels > 0) dense.Subdivide(levels);
-                b = ON_BrepFromMesh(dense.ToApproximateMesh().raw().Topology());
-              } catch (...) { b = nullptr; }
+                dense.Subdivide(levels > 0 ? levels : 1);
+                if (ON_Brep* b = ON_BrepFromMesh(dense.ToApproximateMesh().raw().Topology())) {
+                  ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b)));
+                  ++made;
+                }
+              } catch (...) {}
             }
-            if (b) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ++made; }
           } else if (o->kind == ObjectKind::Mesh) {
             ON_Brep* b = ON_BrepFromMesh(o->mesh->raw().Topology());
             if (b) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ++made; }
           }
         }
-        ctx.Print("Converted " + std::to_string(made) + " object(s)");
-      }), CommandStatus::Partial,
-      "SubD input approximates with a dense subdivided quad mesh converted to a facetted Brep, not smooth "
-      "NURBS patches - OpenNURBS' own SubD-to-NURBS-patch conversion is Rhino-proprietary and unavailable "
-      "here. Mesh input converts exactly.");
+        std::string msg = "Converted " + std::to_string(made) + " object(s)";
+        if (exact_patches || approx_patches) {
+          msg += " (" + std::to_string(exact_patches) + " exact, " + std::to_string(approx_patches) +
+                 " approximated near extraordinary vertices/creases/boundaries)";
+        }
+        ctx.Print(msg);
+      }), CommandStatus::Implemented,
+      "SubD input: converts to a real multi-patch NURBS Brep via Catmull-Clark limit-surface evaluation "
+      "(kernel::SubD::ToNurbsPatches) - every face whose 4 corners are ordinary interior (valence-4) "
+      "vertices becomes the mathematically exact bicubic Bezier patch (the well-known, non-proprietary "
+      "fact that a regular Catmull-Clark control net *is* a uniform bicubic B-spline lattice; adjacent "
+      "exact patches share bit-identical boundary curves and join into one seamless polysurface). Faces "
+      "touching an extraordinary vertex, a crease, or a boundary have no such closed form and instead get "
+      "a flat bilinear approximation whose deviation from the true limit surface shrinks with a few rounds "
+      "of Catmull-Clark pre-refinement (applied automatically, up to 2 rounds bounded by face count) - "
+      "those patches stay unjoined at their approximate edges rather than being silently forced to look "
+      "exact. The status line reports how many patches of each kind were produced. Mesh input converts "
+      "exactly (unchanged).");
   Reg(e, "MeshToNURB", OnSelection("Select meshes", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("MeshToNURB");
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Mesh) if (ON_Brep* b = ON_BrepFromMesh(o->mesh->raw().Topology())) ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); }
