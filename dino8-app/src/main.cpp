@@ -265,6 +265,17 @@ void RunCullTest(dino8::app::Application& app, int far_count, const std::string&
 }  // namespace
 
 int main(int argc, char** argv) {
+  // Unbuffered stdout/stderr: when --smoke/--script is piped (never a TTY),
+  // the CRT fully buffers stdout by default on both glibc and MSVC, so any
+  // crash (segfault/access violation, no atexit) silently discards every
+  // line printed since the buffer last flushed instead of surfacing them -
+  // exactly the failure mode that made a real Windows-only crash further
+  // down the command pipeline look like "the process produced zero output
+  // then exited non-zero" in CI logs. Line-buffered still batches syscalls
+  // reasonably (one flush per printed line, not one per crash), but nothing
+  // observable is ever lost to a crash again.
+  std::setvbuf(stdout, nullptr, _IOLBF, 4096);
+  std::setvbuf(stderr, nullptr, _IOLBF, 4096);
   int smoke_frames = -1;
   int stress_count = -1;
   int cull_test_far_count = -1;
