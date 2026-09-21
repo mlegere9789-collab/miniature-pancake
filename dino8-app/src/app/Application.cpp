@@ -378,6 +378,7 @@ Viewport* Application::AddViewport(const std::string& name, const std::string& s
   viewports_.back()->SetActive(true);
   active_viewport_ = static_cast<int>(viewports_.size()) - 1;
   layout_built_ = false;
+  InvalidateFloatingDockSnapshots();  // the viewport set changed under any pending snapshot
   return viewports_.back().get();
 }
 
@@ -390,6 +391,7 @@ bool Application::RemoveViewport(const std::string& name) {
     active_viewport_ = std::clamp(active_viewport_, 0, static_cast<int>(viewports_.size()) - 1);
     if (was_active) viewports_[static_cast<size_t>(std::min<int>(static_cast<int>(i), static_cast<int>(viewports_.size()) - 1))]->SetActive(true);
     layout_built_ = false;
+    InvalidateFloatingDockSnapshots();
     return true;
   }
   return false;
@@ -429,6 +431,7 @@ bool Application::SetActiveLayout(int index) {
     SyncDetailViewports();
   }
   layout_built_ = false;  // the dock layout swaps between the viewport grid and the page
+  InvalidateFloatingDockSnapshots();
   return true;
 }
 
@@ -489,6 +492,7 @@ void Application::SetViewportLayout(int count) {
   Viewport* persp = FindViewport("Perspective");
   (persp ? persp : viewports_.back().get())->SetActive(true);
   layout_built_ = false;
+  InvalidateFloatingDockSnapshots();
 }
 
 void Application::ShowHelpFor(const std::string& command_name) {
@@ -1026,6 +1030,29 @@ void Application::Frame() {
   DrawContextMenu();
   DrawWelcomeOverlay();
   DrawNotifications();
+}
+
+void Application::SnapshotDockLayoutBeforeFloating(const std::string& viewport_name) {
+  if (!ImGui::GetCurrentContext()) return;
+  size_t size = 0;
+  const char* ini = ImGui::SaveIniSettingsToMemory(&size);
+  if (!ini) return;
+  floating_dock_snapshots_[viewport_name] = std::string(ini, size);
+}
+
+bool Application::RestoreDockLayoutAfterFloating(const std::string& viewport_name) {
+  auto it = floating_dock_snapshots_.find(viewport_name);
+  if (it == floating_dock_snapshots_.end() || !ImGui::GetCurrentContext()) return false;
+  // LoadIniSettingsFromMemory is self-contained: ImGui's own docking settings
+  // handler clears every current dock node and undocks every window before
+  // rebuilding the tree from this text (imgui_internal.h's
+  // DockSettingsHandler_ClearAll, registered as that handler's ReadInitFn), so
+  // this one call puts the whole dockspace - the re-docked viewport, every
+  // other viewport, and every panel - back exactly where the pre-float
+  // snapshot left it. No BuildDefaultLayout()/layout_built_ involvement needed.
+  ImGui::LoadIniSettingsFromMemory(it->second.data(), it->second.size());
+  floating_dock_snapshots_.erase(it);
+  return true;
 }
 
 void Application::BuildDefaultLayout(unsigned dockspace_id) {

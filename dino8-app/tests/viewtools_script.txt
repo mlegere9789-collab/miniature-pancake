@@ -119,6 +119,19 @@ ViewLastFrame
 Sun
 SplitViewportHorizontal
 CloseViewport
+# --- ToggleFloatingViewport: re-docking must restore the exact prior
+# arrangement, not just the default grid. DockLayoutRearrangeSelfTest tabs
+# Right into Top's dock node (a real ImGui rearrangement the default grid
+# never produces on its own); DockLayoutSelfTest reads back the real
+# ImGui dock-node ID of every model viewport (see cmd_viewtools.cpp /
+# app/Application.cpp's SnapshotDockLayoutBeforeFloating /
+# RestoreDockLayoutAfterFloating).
+DockLayoutRearrangeSelfTest Right Top
+DockLayoutSelfTest
+SetActiveViewport Perspective
+ToggleFloatingViewport
+ToggleFloatingViewport
+DockLayoutSelfTest
 Save @TMP@/viewtools.3dm
 New
 Open @TMP@/viewtools.3dm

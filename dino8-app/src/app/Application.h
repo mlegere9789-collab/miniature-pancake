@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "app/ViewTools.h"
@@ -204,6 +205,26 @@ class Application {
   bool RemoveViewport(const std::string& name);
   void BringViewportToTop(const std::string& name) { bring_to_top_ = name; }
   void RebuildLayout() { layout_built_ = false; }
+  // ToggleFloatingViewport (cmd_viewtools.cpp): captures the CURRENT ImGui dock
+  // layout - via ImGui's own ini text (ImGui::SaveIniSettingsToMemory, the same
+  // API SaveWindowLayout/WindowLayout already round-trip through disk) - right
+  // before the named viewport floats, so re-docking it later can restore that
+  // exact arrangement (every other viewport/panel included) instead of falling
+  // back to the default grid. RestoreDockLayoutAfterFloating consumes (erases)
+  // the snapshot and returns true if one was on record for that viewport;
+  // false means the caller should fall back to RebuildLayout()'s default grid
+  // (e.g. the first-ever toggle for that viewport, or the snapshot was
+  // invalidated - see InvalidateFloatingDockSnapshots).
+  void SnapshotDockLayoutBeforeFloating(const std::string& viewport_name);
+  bool RestoreDockLayoutAfterFloating(const std::string& viewport_name);
+  // Drops every pending floating-dock snapshot. Called whenever the dock grid
+  // is going to be rebuilt for a reason other than ToggleFloatingViewport's own
+  // float/re-dock pair (AddViewport, RemoveViewport, a layout-page swap): the
+  // node IDs a snapshot refers to only make sense against the viewport set
+  // that existed when it was captured, so once that set changes underneath a
+  // floating viewport, the safe thing is to fall back to the default grid
+  // (as before this fix) rather than replay a snapshot that no longer matches.
+  void InvalidateFloatingDockSnapshots() { floating_dock_snapshots_.clear(); }
 
   // ---- layouts (paper space) ----
   // -1 = Model; otherwise an index into Doc().Layouts().
@@ -413,6 +434,9 @@ class Application {
   int focus_retries_ = 0;
   bool quit_ = false;
   bool layout_built_ = false;
+  // See SnapshotDockLayoutBeforeFloating/RestoreDockLayoutAfterFloating: one
+  // ImGui ini-text snapshot per currently-floating viewport, keyed by name.
+  std::unordered_map<std::string, std::string> floating_dock_snapshots_;
   bool renderer_ok_ = false;
   std::string renderer_error_;
   std::optional<kernel::Point3d> pending_hover_;

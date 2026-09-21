@@ -1085,9 +1085,9 @@ stcheck "^ok   expect_selected 5" "state script ended with every object selected
 mkdir -p "$TMP/vt"
 sed "s|@TMP@|$TMP/vt|g" "$HERE/viewtools_script.txt" > "$TMP/viewtools_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
-  VT="$("$BIN" --smoke 190 --script "$TMP/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
+  VT="$("$BIN" --smoke 200 --script "$TMP/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
 else
-  VT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 190 --script "$TMP/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
+  VT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
 fi
 vtcheck() { if echo "$VT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 vtcheck "ClippingPlane: created Clipping Plane 1 (40 x 40, normal 0,0,1, clips all viewports)" "ClippingPlane built a plane from two corners"
@@ -1145,6 +1145,35 @@ vtcheck "SetSeasonalSunAnimation: 4 frame(s); PlayAnimation/RecordAnimation will
 vtcheck "Azimuth=180 Altitude=-10" "the seasonal animation's first and last frames are both winter (fixed solar-noon azimuth, lowest altitude)"
 vtcheck "SplitViewportHorizontal: added Perspective 2 (5 viewports)" "SplitViewportHorizontal added a viewport"
 vtcheck "CloseViewport: closed Perspective 2 (4 left)" "CloseViewport removed it"
+# ToggleFloatingViewport re-dock must restore the real ImGui dock layout it
+# had right before floating - including another viewport the user (here,
+# DockLayoutRearrangeSelfTest) had already dragged out of the default grid -
+# not just rebuild the default grid (see cmd_viewtools.cpp's
+# ToggleFloatingViewport/DockLayoutSelfTest/DockLayoutRearrangeSelfTest and
+# app/Application.cpp's SnapshotDockLayoutBeforeFloating/
+# RestoreDockLayoutAfterFloating).
+vtcheck "DockLayoutRearrangeSelfTest: tabbed Right into Top's dock node" "DockLayoutRearrangeSelfTest tabbed Right into Top (simulates the drag a mouse can't do headlessly)"
+vtcheck "ToggleFloatingViewport: Perspective is now floating" "ToggleFloatingViewport floated Perspective"
+vtcheck "ToggleFloatingViewport: Perspective is docked again" "ToggleFloatingViewport re-docked Perspective"
+dockid() { echo "$VT" | grep "^history: DockLayoutSelfTest: $1 dock=" | sed -n "${2}p" | grep -oE '0x[0-9A-Fa-f]+'; }
+DOCK_TOP_BEFORE="$(dockid Top 1)"; DOCK_RIGHT_BEFORE="$(dockid Right 1)"; DOCK_FRONT_BEFORE="$(dockid Front 1)"
+DOCK_TOP_AFTER="$(dockid Top 2)"; DOCK_RIGHT_AFTER="$(dockid Right 2)"; DOCK_FRONT_AFTER="$(dockid Front 2)"
+DOCK_PERSP_AFTER="$(dockid Perspective 2)"
+if [ -n "$DOCK_RIGHT_BEFORE" ] && [ -n "$DOCK_TOP_BEFORE" ] && [ "$DOCK_RIGHT_BEFORE" = "$DOCK_TOP_BEFORE" ] && [ "$DOCK_FRONT_BEFORE" != "$DOCK_TOP_BEFORE" ]; then
+  echo "ok   DockLayoutRearrangeSelfTest actually tabbed Right into Top's real ImGui dock node ($DOCK_RIGHT_BEFORE, distinct from Front's $DOCK_FRONT_BEFORE)"
+else
+  echo "FAIL DockLayoutRearrangeSelfTest did not really tab Right into Top (Right=$DOCK_RIGHT_BEFORE Top=$DOCK_TOP_BEFORE Front=$DOCK_FRONT_BEFORE)"; fail=1
+fi
+if [ -n "$DOCK_TOP_AFTER" ] && [ "$DOCK_TOP_AFTER" = "$DOCK_TOP_BEFORE" ] && [ "$DOCK_RIGHT_AFTER" = "$DOCK_RIGHT_BEFORE" ] && [ "$DOCK_FRONT_AFTER" = "$DOCK_FRONT_BEFORE" ]; then
+  echo "ok   ToggleFloatingViewport's re-dock restored the exact prior arrangement (Right stayed tabbed with Top at $DOCK_RIGHT_AFTER, Front unchanged at $DOCK_FRONT_AFTER) instead of resetting to the default grid"
+else
+  echo "FAIL ToggleFloatingViewport's re-dock did not preserve the prior arrangement (Top $DOCK_TOP_BEFORE->$DOCK_TOP_AFTER, Right $DOCK_RIGHT_BEFORE->$DOCK_RIGHT_AFTER, Front $DOCK_FRONT_BEFORE->$DOCK_FRONT_AFTER)"; fail=1
+fi
+if [ -n "$DOCK_PERSP_AFTER" ] && [ "$DOCK_PERSP_AFTER" != "0x00000000" ]; then
+  echo "ok   Perspective is itself back in the dock tree after the float/re-dock round trip (dock=$DOCK_PERSP_AFTER)"
+else
+  echo "FAIL Perspective did not end up re-docked (dock='$DOCK_PERSP_AFTER')"; fail=1
+fi
 vtcheck "Layouts: 2 layout(s); active: Model" "layouts survived the .3dm round-trip"
 vtcheck "NamedCPlane: 3 named CPlane(s)" "named CPlanes survived the .3dm round-trip"
 vtcheck "SelClippingPlane: 2 clipping plane(s) selected" "clipping planes survived the .3dm round-trip"

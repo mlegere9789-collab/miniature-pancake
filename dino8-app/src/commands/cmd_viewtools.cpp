@@ -16,6 +16,7 @@
 #include <sstream>
 
 #include "app/ViewTools.h"
+#include "imgui_internal.h"  // DockLayoutSelfTest/DockLayoutRearrangeSelfTest: real ImGui dock-node state
 #include "io/File3dm.h"
 
 namespace dino8::app {
@@ -1726,10 +1727,60 @@ void RegisterViewToolsCommands(CommandEngine& e) {
   Reg(e, "ToggleFloatingViewport", Immediate([](CommandContext& ctx) {
         Viewport* vp = ctx.ActiveViewport();
         if (!vp || vp->IsPage()) return;
-        vp->SetFloating(!vp->Floating());
-        ctx.App().RebuildLayout();
+        if (!vp->Floating()) {
+          // About to float: snapshot the CURRENT dock arrangement (every
+          // other viewport/panel included, not just the default grid) so
+          // re-docking this same viewport later can restore it exactly.
+          ctx.App().SnapshotDockLayoutBeforeFloating(vp->Name());
+          vp->SetFloating(true);
+          ctx.App().RebuildLayout();  // still needed to pull vp out of the dock tree
+        } else {
+          vp->SetFloating(false);
+          // Replay the snapshot taken right before this viewport floated, if
+          // it is still on record; otherwise (first-ever toggle, or the
+          // viewport set changed while it was floating - see
+          // InvalidateFloatingDockSnapshots) fall back to the default grid.
+          if (!ctx.App().RestoreDockLayoutAfterFloating(vp->Name())) ctx.App().RebuildLayout();
+        }
         ctx.Print("ToggleFloatingViewport: " + vp->Name() + (vp->Floating() ? " is now floating" : " is docked again"));
-      }), CommandStatus::Partial, "Floats or re-docks the target viewport correctly, but re-docking rebuilds the whole ImGui dock grid from scratch (there is no saved-arrangement to restore to), so any other viewports the user had rearranged snap back to the default grid too.");
+      }));
+  // Test-only diagnostics (not in commands.json, not on any menu - see
+  // ThemeSelfTest, cmd_state.cpp, for the same pattern): DockLayoutSelfTest
+  // reads back the real ImGui dock node ID (ImGuiWindow::DockId) each model
+  // viewport window is bound to right now, and DockLayoutRearrangeSelfTest
+  // forces one viewport to tab into another's current node exactly the way a
+  // user's drag-to-dock would (the same DockBuilderDockWindow() API
+  // BuildDefaultLayout already uses, above). Mouse drags that rearrange the
+  // dock grid are not scriptable headlessly, so - the same way
+  // ToolbarAddCommand exercises the icon-grid picker's own add-to-toolbar
+  // code path - this exercises the exact ImGui call a real drag ends up
+  // making. Together they let tests/smoke.sh prove that
+  // ToggleFloatingViewport's re-dock restores a real prior arrangement,
+  // including a viewport the user had moved out of the default grid, rather
+  // than just rebuilding the default grid and getting lucky.
+  Reg(e, "DockLayoutSelfTest", Immediate([](CommandContext& ctx) {
+        for (auto& vp : ctx.Viewports()) {
+          const std::string title = vp->Name() + "###vp_" + vp->Name();
+          ImGuiWindow* w = ImGui::FindWindowByName(title.c_str());
+          char buf[16];
+          std::snprintf(buf, sizeof(buf), "0x%08X", w ? w->DockId : 0u);
+          ctx.Print("DockLayoutSelfTest: " + vp->Name() + " dock=" + std::string(buf));
+        }
+      }));
+  Reg(e, "DockLayoutRearrangeSelfTest", Immediate([](CommandContext& ctx) {
+        std::map<std::string, std::string> opts;
+        const std::vector<std::string> pos = TakeOptions(ctx, opts);
+        if (pos.size() < 2) { ctx.Warn("DockLayoutRearrangeSelfTest: DockLayoutRearrangeSelfTest <ViewportA> <ViewportB> (test-only: tabs A into B's current dock node)"); return; }
+        Viewport* a = ctx.App().FindViewport(pos[0]);
+        Viewport* b = ctx.App().FindViewport(pos[1]);
+        if (!a || !b) { ctx.Warn("DockLayoutRearrangeSelfTest: unknown viewport (" + pos[0] + ", " + pos[1] + ")"); return; }
+        const std::string title_a = a->Name() + "###vp_" + a->Name();
+        const std::string title_b = b->Name() + "###vp_" + b->Name();
+        ImGuiWindow* wb = ImGui::FindWindowByName(title_b.c_str());
+        if (!wb || wb->DockId == 0) { ctx.Warn("DockLayoutRearrangeSelfTest: " + b->Name() + " is not currently docked"); return; }
+        ImGui::DockBuilderDockWindow(title_a.c_str(), wb->DockId);
+        ctx.Print("DockLayoutRearrangeSelfTest: tabbed " + a->Name() + " into " + b->Name() + "'s dock node");
+      }));
   Reg(e, "ReadViewportsFromFile", Immediate([](CommandContext& ctx) {
         const std::string path = FirstToken(ctx);
         if (path.empty()) { ctx.Warn("ReadViewportsFromFile: ReadViewportsFromFile <file.3dm>"); return; }
