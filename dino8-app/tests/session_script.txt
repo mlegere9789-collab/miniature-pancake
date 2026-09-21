@@ -65,9 +65,11 @@ Save @TMP@/withref.3dm
 
 # --- Snapshots: named, full-document restore points independent of Undo/Redo
 New
+@expect_objects 0
 Sphere 0,0,0 5
 Snapshots Save Before
 Box 20,20,0 30,30,0 10
+@expect_objects 2
 Snapshots List
 Snapshots Restore Before
 @expect_objects 1

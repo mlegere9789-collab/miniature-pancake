@@ -2427,6 +2427,13 @@ else
   SS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMP/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
 fi
 sscheck() { if echo "$SS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+# Diagnostic only (task #141): always print the exact object-count trail
+# around the Snapshots section, win or lose, since xvfb-run does not
+# propagate $BIN's own nonzero exit code (a separate, pre-existing gap -
+# see the `|| { ...; exit 1; }` guards above, which is why an
+# @expect_objects mismatch inside session_script.txt never actually halts
+# this script early even though main.cpp does return a nonzero exit_code).
+echo "$SS" | grep -E "^history: (Command: (New|Sphere|Snapshots|Box)|New document\.|Snapshot '|0,0,0|20,20,0|30,30,0)|^(ok|FAIL) +expect_objects" || true
 sscheck "Digitizer: connected, protocol File, file $TMP/sess/dig_points.txt" "DigConnect opened the fixture file"
 sscheck "DigPoint: digitized 1,2,3" "DigPoint read the first fixture point"
 sscheck "DigPoint: digitized 4.5,5.5,6.5 (button 1)" "DigPoint read the second point and its button"
