@@ -25,6 +25,21 @@ void DrawActivityLogPanel(Application& app, std::string& filter, char* from_date
 // To actions, following the same Application::ActiveViewport()-driven
 // select/zoom pattern the other object-list panels use.
 void DrawAuditResultsPanel(Application& app);
+// BlockManager: table of every block definition (name, object count,
+// instance count) with per-row Select Instances / Rename / Delete (if
+// unused) / Insert New Instance actions - defined in cmd_drafting.cpp,
+// alongside the block data model it reads and writes.
+void DrawBlockManagerPanel(Application& app);
+// UVEditor: a read-only, pannable/zoomable 2D view of the first selected
+// object's current texture mapping in UV space (the object's tessellated
+// triangle edges projected through the same EnsureMappedUVs the renderer
+// itself uses) - defined in cmd_remaining.cpp.
+void DrawUVEditorPanel(Application& app);
+// MappingWidget's companion panel: status/info for the interactive 3D
+// mapping-plane gizmo (ui/MappingGizmo.h) that the main render loop draws
+// directly into the viewport while this panel is open - defined in
+// cmd_render.cpp, alongside ApplyCustomMapping's mapping-frame fields.
+void DrawMappingWidgetPanel(Application& app);
 void DrawHelpPanel(Application& app, std::string& search);
 void DrawNotificationsPanel(Application& app);
 void DrawNamedViewsPanel(Application& app);

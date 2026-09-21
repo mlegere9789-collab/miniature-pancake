@@ -2090,6 +2090,39 @@ void ExportBitmaps(CommandContext& ctx) {
 
 CommandFactory Say(const char* text) { return Immediate([text](CommandContext& ctx) { TakeOptions(ctx); ctx.Print(text); }); }
 
+// The real UV-space computation behind the UVEditor command/panel: the
+// object's current mapping (SceneObject::mapping/mapping_scale), projected
+// per triangle vertex by SceneObject::EnsureMappedUVs - the exact function
+// the renderer itself calls to texture the object - so the wireframe this
+// reports/draws is the same UVs the object is actually textured with, not
+// a separate approximation. `has_geometry` is false only for an object
+// with no tessellated triangles (Point, or an empty/degenerate curve).
+struct UVWireframeInfo {
+  bool has_geometry = false;
+  double u_min = 0, u_max = 0, v_min = 0, v_max = 0;
+  size_t triangle_count = 0;
+};
+
+UVWireframeInfo ComputeUVWireframeInfo(SceneObject& obj, double curve_tolerance, double surface_tolerance) {
+  UVWireframeInfo info;
+  obj.EnsureDisplay(curve_tolerance, surface_tolerance);
+  const float scale = obj.mapping_scale > 0.f ? obj.mapping_scale : 1.f;
+  obj.EnsureMappedUVs(obj.mapping, scale);
+  const std::vector<float>& uv = obj.Display().mapped_uvs;
+  info.triangle_count = uv.size() / 6;  // 3 vertices/triangle, 2 floats (u,v) each
+  if (uv.empty()) return info;
+  info.has_geometry = true;
+  info.u_min = info.u_max = uv[0];
+  info.v_min = info.v_max = uv[1];
+  for (size_t i = 0; i < uv.size(); i += 2) {
+    info.u_min = std::min(info.u_min, static_cast<double>(uv[i]));
+    info.u_max = std::max(info.u_max, static_cast<double>(uv[i]));
+    info.v_min = std::min(info.v_min, static_cast<double>(uv[i + 1]));
+    info.v_max = std::max(info.v_max, static_cast<double>(uv[i + 1]));
+  }
+  return info;
+}
+
 }  // namespace
 
 void RegisterRemainingCommands(CommandEngine& e) {
@@ -2253,7 +2286,43 @@ void RegisterRemainingCommands(CommandEngine& e) {
         ExtractUVMesh(ctx, ids);
       }), CommandStatus::Implemented,
       "Delegates to ExtractUVMesh's real flat UV-rectangle mesh; there is no true unwrap/flattening algorithm for curved surfaces (which would preserve edge lengths and add cuts), so a curved surface's unwrap is only exact for the parts that are already flat.");
-  Reg(e, "UVEditor", Say("UVEditor: there is no UV editor; mapping is set per object with ApplyPlanarMapping, ApplyBoxMapping, ApplyCylindricalMapping and ApplySphericalMapping."), CommandStatus::Partial);
+  Reg(e, "UVEditor", Immediate([](CommandContext& ctx) {
+        // Text-based fallback (for headless/script use) plus the real
+        // thing: a dockable, pannable/zoomable UV-space wireframe view
+        // (DrawUVEditorPanel, this file) of the first selected object's
+        // current mapping. Both read the identical computation
+        // (ComputeUVWireframeInfo, below), which itself is just
+        // SceneObject::EnsureMappedUVs - the exact per-triangle-vertex UV
+        // projection the renderer already uses to texture the object -
+        // so what the panel draws and what this prints are the same UVs.
+        Document& doc = ctx.Doc();
+        const std::vector<ObjectId> sel = doc.SelectedIds();
+        if (sel.empty()) {
+          ctx.Print("UVEditor: no objects selected; select a surface, mesh, brep or SubD first.");
+        }
+        for (ObjectId id : sel) {
+          SceneObject* o = doc.Find(id);
+          if (!o) continue;
+          const std::string label = o->name.empty() ? "(unnamed)" : o->name;
+          const UVWireframeInfo info = ComputeUVWireframeInfo(*o, ctx.App().curve_display_tolerance, ctx.App().surface_display_tolerance);
+          if (!info.has_geometry) {
+            ctx.Print("UVEditor: '" + label + "' has no tessellated geometry to show in UV space (points/empty objects have none).");
+            continue;
+          }
+          ctx.Print("UVEditor: '" + label + "' (" + TextureMappingName(o->mapping) + " mapping) UV bounding box: u[" +
+                    FormatNumber(info.u_min) + ", " + FormatNumber(info.u_max) + "] v[" + FormatNumber(info.v_min) + ", " +
+                    FormatNumber(info.v_max) + "], " + std::to_string(info.triangle_count) + " triangle(s)");
+        }
+        ctx.App().Panels().uv_editor = true;
+      }), CommandStatus::Implemented,
+      "Prints the first-through-last selected object's real UV-space bounding box and triangle count in the command "
+      "history (headless fallback) and opens a dockable UV-space wireframe view (DrawUVEditorPanel) with its own "
+      "mouse-wheel zoom and middle-drag pan, matching this app's viewport pan/zoom convention - a real, correctly-"
+      "computed, interactively-navigable view of the current mapping's UV space (not editing/dragging UVs, which "
+      "this build does not add here). The pan/zoom drag itself is, like every other viewport in this app, not "
+      "exercised by the headless smoke-test harness, but the underlying UV computation it displays "
+      "(ComputeUVWireframeInfo/EnsureMappedUVs) is identical to what this command prints and is fully scripted-tested.");
+  Reg(e, "ApplyOcsMapping", Say("ApplyOcsMapping: object-coordinate-system mapping is not available; ApplyPlanarMapping uses the object's bounding box."), CommandStatus::Partial);
   Reg(e, "ApplyOcsMapping", Say("ApplyOcsMapping: object-coordinate-system mapping is not available; ApplyPlanarMapping uses the object's bounding box."), CommandStatus::Partial);
   Reg(e, "ExtractCustomMappingObject", OnSelection("Select objects with a custom mapping", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         Document& doc = ctx.Doc();
@@ -2284,6 +2353,103 @@ void RegisterRemainingCommands(CommandEngine& e) {
   // "no Python/RhinoScript engine" stub was actively winning and shadowing
   // the real Lua-backed EditScript/LoadScript — removing the duplicate here
   // fixes that regression rather than just relabeling it.
+}
+
+// UVEditor panel: a read-only, pannable/zoomable view of the first
+// selected object's UV-space wireframe (ComputeUVWireframeInfo above draws
+// on the exact same SceneObject::EnsureMappedUVs the renderer uses to
+// texture the object, so this is the real current mapping, not a mock-up).
+// Pan/zoom follows this app's own viewport convention (Viewport.cpp):
+// mouse wheel zooms toward the cursor, middle-mouse-drag pans. There is no
+// UV editing (dragging a UV point) here - only the view, which is what
+// Rhino's own basic UV editor is mostly used for in practice (checking a
+// mapping/seams visually).
+void DrawUVEditorPanel(Application& app) {
+  static float zoom = 240.0f;  // screen pixels per UV unit
+  static ImVec2 pan(40.0f, 40.0f);  // screen-pixel offset of uv (0,0) from the canvas's top-left
+  static bool dragging_pan = false;
+  static ObjectId last_object = kNoObject;
+
+  ImGui::SetNextWindowSize(ImVec2(480, 440), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.uv_editor", "UVEditor").c_str(), &app.Panels().uv_editor)) { ImGui::End(); return; }
+  Document& doc = app.Doc();
+  const std::vector<ObjectId> sel = doc.SelectedIds();
+  SceneObject* obj = sel.empty() ? nullptr : doc.Find(sel.front());
+  if (!obj) {
+    ImGui::TextWrapped("Select an object (surface, mesh, brep or SubD) to view its UV-space wireframe.");
+    ImGui::End();
+    return;
+  }
+  const UVWireframeInfo info = ComputeUVWireframeInfo(*obj, app.curve_display_tolerance, app.surface_display_tolerance);
+  if (obj->id != last_object) {
+    // A newly-selected object re-fits the view once, rather than keeping
+    // the previous object's pan/zoom (which would likely show nothing).
+    last_object = obj->id;
+    if (info.has_geometry) {
+      const double span = std::max({info.u_max - info.u_min, info.v_max - info.v_min, 1e-6});
+      zoom = static_cast<float>(300.0 / span);
+      pan = ImVec2(20.0f - zoom * static_cast<float>(info.u_min), 20.0f + zoom * static_cast<float>(info.v_max));
+    }
+  }
+  ImGui::Text("%s - %s mapping", obj->name.empty() ? "(unnamed)" : obj->name.c_str(), TextureMappingName(obj->mapping));
+  if (!info.has_geometry) {
+    ImGui::TextWrapped("No tessellated geometry to show in UV space (points and empty objects have none).");
+    ImGui::End();
+    return;
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("| %zu triangle(s) | u[%.3f, %.3f] v[%.3f, %.3f]", info.triangle_count, info.u_min, info.u_max, info.v_min, info.v_max);
+  ImGui::SameLine();
+  if (ImGui::SmallButton("Fit")) last_object = kNoObject;  // re-fit next frame
+  ImGui::TextDisabled("Scroll to zoom, middle-drag to pan.");
+  ImGui::Separator();
+
+  ImGui::BeginChild("uv_canvas", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+  const ImVec2 canvas_p0 = ImGui::GetCursorScreenPos();
+  ImVec2 canvas_sz = ImGui::GetContentRegionAvail();
+  if (canvas_sz.x < 1.0f) canvas_sz.x = 1.0f;
+  if (canvas_sz.y < 1.0f) canvas_sz.y = 1.0f;
+  const ImVec2 canvas_p1(canvas_p0.x + canvas_sz.x, canvas_p0.y + canvas_sz.y);
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  dl->AddRectFilled(canvas_p0, canvas_p1, IM_COL32(28, 28, 32, 255));
+  dl->PushClipRect(canvas_p0, canvas_p1, true);
+  ImGui::InvisibleButton("uv_canvas_input", canvas_sz);
+  const bool hovered = ImGui::IsItemHovered();
+  ImGuiIO& io = ImGui::GetIO();
+
+  if (hovered && io.MouseWheel != 0.0f) {
+    const float old_zoom = zoom;
+    zoom = std::clamp(zoom * std::pow(1.1f, io.MouseWheel), 4.0f, 40000.0f);
+    const float mx = io.MousePos.x - canvas_p0.x, my = io.MousePos.y - canvas_p0.y;
+    pan.x = mx - (mx - pan.x) * (zoom / old_zoom);
+    pan.y = my - (my - pan.y) * (zoom / old_zoom);
+  }
+  if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) dragging_pan = true;
+  if (dragging_pan) {
+    pan.x += io.MouseDelta.x;
+    pan.y += io.MouseDelta.y;
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle)) dragging_pan = false;
+  }
+
+  // v grows upward on screen, like a texture, so this flips the sign of v.
+  auto ToScreen = [&](float u, float v) { return ImVec2(canvas_p0.x + pan.x + u * zoom, canvas_p0.y + pan.y - v * zoom); };
+  dl->AddLine(ToScreen(-1e4f, 0), ToScreen(1e4f, 0), IM_COL32(70, 70, 80, 160), 1.0f);
+  dl->AddLine(ToScreen(0, -1e4f), ToScreen(0, 1e4f), IM_COL32(70, 70, 80, 160), 1.0f);
+  dl->AddRect(ToScreen(0, 0), ToScreen(1, 1), IM_COL32(120, 120, 135, 220), 0.0f, 0, 1.5f);  // the canonical 0-1 UV tile
+
+  const std::vector<float>& uv = obj->Display().mapped_uvs;
+  for (size_t t = 0; t + 5 < uv.size(); t += 6) {
+    const ImVec2 p0 = ToScreen(uv[t + 0], uv[t + 1]);
+    const ImVec2 p1 = ToScreen(uv[t + 2], uv[t + 3]);
+    const ImVec2 p2 = ToScreen(uv[t + 4], uv[t + 5]);
+    const ImU32 col = IM_COL32(130, 195, 255, 210);
+    dl->AddLine(p0, p1, col);
+    dl->AddLine(p1, p2, col);
+    dl->AddLine(p2, p0, col);
+  }
+  dl->PopClipRect();
+  ImGui::EndChild();
+  ImGui::End();
 }
 
 }  // namespace dino8::app

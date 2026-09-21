@@ -238,6 +238,9 @@ void DrawMenuBar(Application& app) {
     ImGui::MenuItem(Tr("panel.package_manager").c_str(), "", &p.package_manager);
     ImGui::MenuItem(Tr("panel.hatch_patterns").c_str(), "", &p.hatch_patterns);
     ImGui::MenuItem(Tr("panel.table_editor").c_str(), "", &p.table_editor);
+    ImGui::MenuItem(Tr("panel.block_manager").c_str(), "", &p.block_manager);
+    ImGui::MenuItem(Tr("panel.uv_editor").c_str(), "", &p.uv_editor);
+    ImGui::MenuItem(Tr("panel.mapping_widget").c_str(), "", &p.mapping_widget);
     ImGui::MenuItem(Tr("panel.viewport_tabs").c_str(), "", &app.show_viewport_tabs);
     ImGui::Separator();
     if (ImGui::MenuItem(Tr("panel.reset_layout").c_str())) app.SetViewportLayout(4);

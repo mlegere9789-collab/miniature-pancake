@@ -32,7 +32,9 @@ Adding those 13 back gave **1031 Implemented / 24 Partial / 0 Planned out of 105
 
 **Update (2026-09-09):** the "24 Partial" count above is now stale — a live re-scan of the running binary's own command registry (which correctly resolves the same last-registration-wins override behaviour `CommandEngine::Reg` uses, so a command re-registered by a later `Register*Commands` call is counted under its *final* status, not an earlier stub) found **1003 Implemented / 52 Partial / 0 Planned out of 1055**. The gap is not a regression: most of the 29 newly-counted names are commands added by later feature work in this same development effort (the Digitizer/SpaceMouse/architecture/GD&T subsystems, the DXF/DWG interop series, etc.) whose own `CommandStatus::Partial` registrations were correct and honestly-noted from the day they landed, but were never folded back into this section's hand-written count and Appendix A listing. One entry (`SelMirroredBlocks`) has been *removed* from Appendix A below since it was fixed to `Implemented` in a later pass and no longer belongs in either the count or the table. §1.1's own per-file tally further down this document was NOT re-walked to match this correction — that would need its own dedicated pass — so treat the totals in §1.1 as the earlier, now-superseded snapshot and this section's numbers as current.
 
-### 0.1 The 52 remaining Partial commands
+**Update (2026-09-21):** three more of the "52 Partial" below are fixed to `Implemented` in this pass, all genuine new UI features rather than reclassifications: `BlockManager` gets a real dockable table panel (`DrawBlockManagerPanel`, `cmd_drafting.cpp`) with per-row Select Instances/Rename/Delete-if-unused/Insert New Instance actions, each backed by a headlessly-scriptable command (`SelBlockInstanceOf`, `BlockRename`, `Purge`'s existing block removal, `Insert`); `UVEditor` gets a real dockable, pannable/zoomable UV-space wireframe view (`DrawUVEditorPanel`, `cmd_remaining.cpp`) computed from `SceneObject::EnsureMappedUVs` (the same per-triangle UV projection the renderer uses to texture the object), plus a headless `UVEditor` command reporting the identical UV bounding box/triangle count; `MappingWidget` gets a real interactive 3D gizmo (`MappingGizmo`, `ui/MappingGizmo.h/.cpp`) that drags a selected object's mapping reference plane, reusing `Gumball.cpp`'s own ray/plane hit-test math (`RayPlane`/`ClosestParamOnLine`/`DistToSegmentPx`, exported for this) rather than a second implementation of it. In all three, the mouse-driven part (clicking a panel button, dragging the gizmo, panning/zooming the UV view) is - like every other mouse interaction in this app - not exercised by the headless `tests/smoke.sh` harness, but the underlying data/logic each one drives is independently scriptable and covered by new smoke-test assertions (`tests/dynamic_blocks_script.txt`'s `SelBlockInstanceOf`/`BlockRename` cases, `tests/render_script.txt`'s `UVEditor` and `MappingWidget` cases). This brings the live re-scan total to **1006 Implemented / 49 Partial / 0 Planned out of 1055**, and Appendix A below no longer lists these three.
+
+### 0.1 The 49 remaining Partial commands
 
 After walking every one of them individually against current source: the majority are genuinely infeasible without a capability this codebase deliberately does not have (hardware, a platform clipboard API, a kernel/data-model representation this app's design doesn't carry); a smaller number are real, scoped-down feature work rather than hard blockers — e.g. `CreateRegions`' open-curve-network case, `PointGrid`'s count options, `PrintDisplay`'s print colours, and `RemoveAllNakedMicroEdges`' actual removal step are each honestly described as future extensions of an already-partially-working command, not fully blocked. None are silent oversights or overclaimed successes either way:
 
@@ -44,10 +46,9 @@ After walking every one of them individually against current source: the majorit
 | Continuous mouse-drag capture in the command engine | `Sketch` |
 | A per-version DWG/DXF "scheme" picker (AutoCAD's dialog for choosing an output release) | `AcadSchemes` |
 | A per-object OCS distinct from bounding-box mapping | `ApplyOcsMapping` |
-| A UV-editing window | `UVEditor` |
 | Surface/surface intersection or topology-repair beyond what the kernel offers | `ConnectSrf`, `FilletSrfCrv`, `RefitTrim`, `ReplaceEdge`, `SplitRefitSurface`, `SquishBack`, `SquishInfo`, `UnjoinEdge`, `VariableBlendSrf`, `ExtractPipedCurve`, `ExtractOriginalCaptives` |
 | A live constructional-history/parametric dependency graph (an edit re-driving everything built from it) | `History`, `Symmetry`, `RemoveSymmetry` |
-| A dockable panel UI for this specific listing/gizmo | `BlockManager`, `MappingWidget`, `HBar` |
+| A dockable panel UI for this specific listing/gizmo | `HBar` |
 | A saved dock-layout to restore a floated viewport to (today's re-dock rebuilds the whole grid) | `ToggleFloatingViewport` |
 | Deliberately never implemented (security/scope: no unsandboxed external-process exec) | `Run` |
 | A distinct point-cloud object kind in the data model (`ObjectKind` has no such variant) | `PointCloud` |
@@ -230,7 +231,7 @@ The audit's theme tally (forum-topic counts, carried over verbatim from the prio
 - **No document tabs/MDI**, and no large-document performance testing exists.
 - **The installer is unsigned** — no `signtool`/`codesign` invocation found in `packaging/`.
 - **The path tracer is CPU-only**, not the GPU renderer doc4 described.
-- **The 52 remaining Partial commands** (§0.1, count corrected 2026-09-09 from a live registry re-scan) are mostly genuinely blocked on hardware, OS APIs, or kernel/data-model capabilities this project does not have, plus a handful of honestly-scoped-down feature extensions (see §0.1) — not oversights, but still real gaps for a user who needs exactly one of them.
+- **The 49 remaining Partial commands** (§0.1, count corrected 2026-09-09 from a live registry re-scan, then again 2026-09-21 as `BlockManager`/`UVEditor`/`MappingWidget` were fixed to `Implemented`) are mostly genuinely blocked on hardware, OS APIs, or kernel/data-model capabilities this project does not have, plus a handful of honestly-scoped-down feature extensions (see §0.1) — not oversights, but still real gaps for a user who needs exactly one of them.
 
 ### 4.3 What is absent
 A DinoCommon .NET SDK (this is a C++17 codebase — very unlikely to ever exist without a rewrite); Python/C#/RhinoScript compatibility for Dino Flow/plug-ins (the plug-in ABI is a from-scratch C ABI, not Rhino-compatible); SAT/Parasolid/SKP/FBX/glTF and most other exchange formats beyond .3dm/OBJ/STL/PLY/DXF/DWG/SVG/PDF/IGES/STEP (DWG was added since the prior pass, via the linked GPLv3 GNU LibreDWG library — see `docs/INTEROP_LIMITATIONS.md` and `THIRD_PARTY_LICENSES.md`; its entity coverage is a subset of DXF's); code signing; document tabs/MDI; live/associative annotation objects; construction history; incremental (O(change)) undo; a fuzzy command palette; multi-sheet printing with a print dialog; a UV-editing window; an OS clipboard image API; a per-version DWG/DXF "scheme" picker.
@@ -252,6 +253,8 @@ Clean checkout, no conflict markers anywhere in `src/` (`grep -rl "<<<<<<< " src
 
 Re-checking the coverage count against this pass's own build: `tests/smoke.sh`'s startup line now reads "1055 commands loaded (1144 implemented, 53 partial, 0 planned)" — one more Partial than the "52" documented in §0/§0.1/Appendix A above. This was not independently reconciled in this pass (that needs the same live-registry-dump methodology the "52" figure itself came from, per the note above it); flagging the 1-command drift honestly rather than silently leaving the stale "52" uncorrected.
 
+**Update (2026-09-21):** after this pass's `BlockManager`/`UVEditor`/`MappingWidget` fixes (see the dated note under §0.1), the same startup line now reads "1055 commands loaded (1193 implemented, 50 partial, 0 planned)". The Partial count moved from 53 to 50, exactly the 3 commands this pass fixed; the Implemented count's own further drift (1144 → 1193, i.e. +49 beyond the 3 this pass accounts for) is pre-existing growth from other work done on this codebase between the last note and now, not independently reconciled here either — flagging it honestly rather than implying this pass explains all of it.
+
 ---
 
 ## 5. Top gaps to close next (prioritised)
@@ -266,7 +269,7 @@ Given the current state — 1031/24/0 catalogue coverage and the specific remain
 6. **A fuzzy command palette** — autocomplete is still `WithPrefix`-only; doc4's promise and a common modern-CAD UX expectation.
 7. **Code signing** for the Windows/macOS installers — still entirely unsigned.
 8. **Document tabs / MDI** — unchanged, still single-document-per-process.
-9. **A UV-editing window** and **a per-version DWG/DXF "scheme" picker** — two of the remaining Partial commands (`UVEditor`, `AcadSchemes`) that could become real with dedicated feature work, unlike the hardware- or clipboard-blocked ones. (`AcadSchemes` itself is Partial only because there is no such per-release-version picker UI — DWG/DXF export/import themselves are real, see §4.2's File I/O row.)
+9. **A per-version DWG/DXF "scheme" picker** — one of the remaining Partial commands (`AcadSchemes`) that could become real with dedicated feature work, unlike the hardware- or clipboard-blocked ones. It is Partial only because there is no such per-release-version picker UI — DWG/DXF export/import themselves are real, see §4.2's File I/O row. (A UV-editing window, the other item this list used to name here, is no longer a gap: `UVEditor` now has a real dockable, pannable/zoomable UV-space wireframe view - see Appendix A's note below and `cmd_remaining.cpp`'s `DrawUVEditorPanel`.)
 10. **A large-document performance benchmark** in `tests/` — there is currently no way to know whether the snapshot-undo/immediate-mode-UI architecture holds up at scale, which is exactly the audit's #4 pain point.
 11. **Exact Catmull-Clark SubD→NURBS conversion** (`ToNURBS`/`MakeSubDFriendly`) — still an approximate rebuild through sampled points.
 12. **Multi-sheet printing with a print dialog** (page setup, line-weight/colour table, all layouts → one PDF).
@@ -275,15 +278,14 @@ Given the current state — 1031/24/0 catalogue coverage and the specific remain
 
 ---
 
-## Appendix A — All 52 Partial commands with their exact notes
+## Appendix A — All 49 Partial commands with their exact notes
 
-(Updated 2026-09-09 from a live re-scan of the running binary's registry — see the note under §0.1. `SelMirroredBlocks`, previously listed here, is removed: it was fixed to `Implemented` in a later pass.)
+(Updated 2026-09-09 from a live re-scan of the running binary's registry — see the note under §0.1. `SelMirroredBlocks`, previously listed here, is removed: it was fixed to `Implemented` in a later pass. Updated again 2026-09-21: `BlockManager`, `UVEditor` and `MappingWidget` are removed the same way, each fixed to `Implemented` by a real dockable-panel/gizmo feature — see the dated note under §0.1 for what each now does and what is honestly still mouse-only.)
 
 | Command | Note (verbatim from source) | Source |
 |---|---|---|
 | AcadSchemes | "AcadSchemes: there are no per-version export 'schemes' to pick from (AutoCAD's dialog for choosing an output DWG/DXF release); Dino 8's Export/SaveAs writes DWG through GNU LibreDWG as AC1015 (AutoCAD 2000) - the version LibreDWG's own writer documents as reliable - and DXF as the same AC1015. Also exports .3dm, OBJ, STL, PLY, SVG and PDF (see Export)." | `cmd_remaining.cpp` |
 | ApplyOcsMapping | "ApplyOcsMapping: object-coordinate-system mapping is not available; ApplyPlanarMapping uses the object's bounding box." | `cmd_remaining.cpp:2251` |
-| BlockManager | "BlockManager: Lists every block definition and its instance count in the command history; there is no dedicated dockable panel UI for it in this build." | `cmd_drafting.cpp:226` |
 | ConnectSrf | "Extends both surfaces and adds their real SSX join curve; exact trim is only immediate for the always-connecting planar case, otherwise trim manually with Split." | `cmd_fillet.cpp:1753-1754` |
 | CopyRenderWindowToClipboard | "CopyRenderWindowToClipboard: No OS clipboard integration for images exists anywhere in this app (same limitation as ViewCaptureToClipboard/ScreenCaptureToClipboard), so the image is written to a file next to the settings instead." | `cmd_render.cpp:1135` |
 | CreateRegions | "CreateRegions: Every region of up to 6 overlapping closed curves; open-curve networks are planned." | `cmd_solidtools.cpp:2013` |
@@ -304,7 +306,6 @@ Given the current state — 1031/24/0 catalogue coverage and the specific remain
 | Hydrostatics | "Hydrostatics: Volume, displacement, and center of buoyancy are computed for real (clipped at the active construction plane, which stands in for a chosen waterline); longitudinal/vertical prismatic coefficients and a trim/heel solver are not implemented." | `cmd_srfedit.cpp:2208` |
 | ImportLayout | "ImportLayout: Imports the page and detail cameras; per-detail hidden objects are not mapped." | `cmd_viewtools.cpp:1555` |
 | MakePeriodic | "MakePeriodic: Only the Smooth=Yes behaviour is implemented (a periodic-uniform curve refit through the same control points, seam relaxed smooth); Smooth=No's exact-shape-preserving re-knot is a distinct, considerably harder NURBS algorithm this build does not have." | `cmd_edit.cpp:601` |
-| MappingWidget | "MappingWidget: There is no interactive 3D mapping gizmo in this build (the Gumball only manipulates objects, not mapping channels); ApplyCustomMapping's picked reference plane and Scale= option cover the same ground non-interactively." | `cmd_render.cpp:1025` |
 | NestedClippingDrawing | "NestedClippingDrawing: A clipping drawing nested inside another (one that shows the section of a section) needs block-instance recursion this app's ClippingDrawing model does not have; ClippingDrawings covers the flat case." | `cmd_viewtools.cpp:1514` |
 | NonmanifoldMerge | "NonmanifoldMerge: Genuinely infeasible without a kernel change: Dino 8's boolean/solid kernel is Manifold (github.com/elalish/manifold), which - as its name says - represents and operates on manifold (two-sided, no T-junctions) meshes only, so there is no non-manifold mesh/B-rep representation here to merge faces of into. Falls back to Join, which at least combines the selection into one object without claiming to weld non-manifold faces." | `cmd_solidtools.cpp:1999` |
 | PackSubDFaces | "PackSubDFaces: Reports the face count only: the kernel has no per-face UV/texture-coordinate storage to pack, so no texture atlas is produced." | `cmd_subd.cpp:1341` |
@@ -328,7 +329,6 @@ Given the current state — 1031/24/0 catalogue coverage and the specific remain
 | Symmetry | "Symmetry: Builds a one-time mirrored copy via Mirror; true Symmetry needs a live constraint that keeps re-mirroring the other half on every future edit, which would require hooking every edit/transform path in the document (not something this command alone can add) - edit each half and re-run Mirror to update the copy." | `cmd_curves2.cpp:2508` |
 | ToNURBS | "ToNURBS: SubD input approximates with a dense subdivided quad mesh converted to a facetted Brep, not smooth NURBS patches - OpenNURBS' own SubD-to-NURBS-patch conversion is Rhino-proprietary and unavailable here. Mesh input converts exactly." | `cmd_solids.cpp:649` |
 | ToggleFloatingViewport | "ToggleFloatingViewport: Floats or re-docks the target viewport correctly, but re-docking rebuilds the whole ImGui dock grid from scratch (there is no saved-arrangement to restore to), so any other viewports the user had rearranged snap back to the default grid too." | `cmd_viewtools.cpp:1725` |
-| UVEditor | "UVEditor: there is no UV editor; mapping is set per object with ApplyPlanarMapping, ApplyBoxMapping, ApplyCylindricalMapping and ApplySphericalMapping." | `cmd_remaining.cpp:2250` |
 | UndoSelected | "UndoSelected: Undoes the last change to the whole document." | `cmd_select2.cpp:889` |
 | UnjoinEdge | "UnjoinEdge: use ExtractSrf on one of the two faces sharing the edge, which leaves both faces with a naked copy of it; a true in-place unjoin that keeps both faces in the same polysurface is not implemented." | `cmd_srfedit.cpp:2125` |
 | VariableBlendSrf | "Uses the same variable-radius rolling-ball fillet as VariableFilletSrf (a true independent blend-tangent variant is not implemented)." | `cmd_fillet.cpp:1747-1748` |

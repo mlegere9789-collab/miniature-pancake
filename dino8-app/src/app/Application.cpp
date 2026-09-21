@@ -1190,11 +1190,25 @@ void Application::DrawViewports() {
     vp.Render(renderer_, ctx);
     // The gumball hit-tests against last frame's image rectangle and locks
     // the viewport's left button while it owns the mouse.
-    const bool gumball_wants_mouse = gumball_enabled && !engine_->IsRunning() &&
-                                     gumball_.Update(*this, vp, ImGui::IsMouseHoveringRect(
-                                         ImVec2(static_cast<float>(vp.ScreenX()), static_cast<float>(vp.ScreenY())),
-                                         ImVec2(static_cast<float>(vp.ScreenX() + vp.Width()), static_cast<float>(vp.ScreenY() + vp.Height()))));
-    vp.SetInputLocked(gumball_wants_mouse);
+    const bool viewport_rect_hovered = ImGui::IsMouseHoveringRect(
+        ImVec2(static_cast<float>(vp.ScreenX()), static_cast<float>(vp.ScreenY())),
+        ImVec2(static_cast<float>(vp.ScreenX() + vp.Width()), static_cast<float>(vp.ScreenY() + vp.Height())));
+    const bool gumball_wants_mouse = gumball_enabled && !engine_->IsRunning() && !panels_.mapping_widget &&
+                                     gumball_.Update(*this, vp, viewport_rect_hovered);
+    // MappingWidget: while the panel is open, the first selected object's
+    // mapping reference plane gets a draggable gizmo instead of the normal
+    // Gumball (dragging the mapping frame while also dragging the object
+    // would be ambiguous over the same handles).
+    bool mapping_gizmo_wants_mouse = false;
+    if (panels_.mapping_widget && !engine_->IsRunning()) {
+      const std::vector<ObjectId> sel = doc_.SelectedIds();
+      if (!sel.empty()) {
+        if (SceneObject* o = doc_.Find(sel.front())) {
+          mapping_gizmo_wants_mouse = mapping_gizmo_.Update(*this, vp, *o, viewport_rect_hovered);
+        }
+      }
+    }
+    vp.SetInputLocked(gumball_wants_mouse || mapping_gizmo_wants_mouse);
     vp.SetSubObjectSelection(&sub_selection_);
     vp.SetSubObjectFilter(CurrentSubObjectFilter());
     ViewportEvents ev = vp.DrawUI(doc_, snaps_, want_point, want_objects, ortho_base,
@@ -2076,6 +2090,9 @@ void Application::DrawPanels() {
   if (panels_.command_list) DrawCommandListPanel(*this, command_list_filter_, command_list_status_filter_);
   if (panels_.activity_log) DrawActivityLogPanel(*this, activity_log_filter_, activity_log_from_, activity_log_to_);
   if (panels_.audit_results) DrawAuditResultsPanel(*this);
+  if (panels_.block_manager) DrawBlockManagerPanel(*this);
+  if (panels_.uv_editor) DrawUVEditorPanel(*this);
+  if (panels_.mapping_widget) DrawMappingWidgetPanel(*this);
   if (panels_.help) DrawHelpPanel(*this, help_search_);
   if (panels_.notifications) { unread_notifications = 0; DrawNotificationsPanel(*this); }
   if (panels_.named_views) DrawNamedViewsPanel(*this);

@@ -56,6 +56,26 @@ void SaveBlockInstances(Document& doc, const std::vector<BlockInstance>& list);
 // can find it again. Returns the new instance's group id, or -1.
 int InstantiateDynamicBlock(Document& doc, const std::string& name, kernel::Point3d at, const std::string& state = "");
 
+// Inserts an instance of block `name` at `at` (a grouped copy tagged
+// Block/BlockInsert for a static block, or InstantiateDynamicBlock's own
+// dynamic-instance record for one with visibility states) - the
+// Document-only sibling of cmd_common.h's InstantiateBlock(CommandContext&,
+// ...), for callers (the BlockManager panel) that have a Document but no
+// CommandContext. Defined in cmd_drafting.cpp, which also defines the
+// CommandContext overload as a thin wrapper around this one. Returns the
+// new instance's group id, or -1 if no such block is defined.
+int InstantiateBlockInDocument(Document& doc, const std::string& name, kernel::Point3d at);
+
+// Renames a block definition and every place its name is recorded: the
+// BlockDefinition itself, every instance object's "Block" user-text tag,
+// any Group whose name matches (CreateGroup/InstantiateBlockInDocument name
+// a placed instance's group after its block), and any dynamic-block
+// BlockInstance records (block_instances user text). Used by both the
+// BlockManager command (cmd_drafting.cpp) and panel (ui/Panels.cpp).
+// Returns false (no change made) if `old_name` isn't a known block or
+// `new_name` already names a different one.
+bool RenameBlockInDocument(Document& doc, const std::string& old_name, const std::string& new_name);
+
 // Rebuilds one instance in place from its current `state`: deletes its
 // previous objects and instantiates a fresh filtered set at the same
 // insertion point, updating and persisting the record. Returns false if the

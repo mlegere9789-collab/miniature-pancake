@@ -12,6 +12,7 @@ SelNone
 SelID 3
 RenderAssignMaterialToObjects Brass Color=205,170,80 Gloss=0.8 Reflectivity=0.4
 ApplyCylindricalMapping Scale=2
+UVEditor
 SelNone
 SelID 1
 AssignBlankTexture
@@ -97,6 +98,7 @@ SelID 1
 Bake
 SelID 1
 BakeMapping
+SelLast
 MappingWidget
 MappingWidgetOff
 DownloadLibraryTextures

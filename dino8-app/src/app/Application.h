@@ -20,6 +20,7 @@
 #include "script/LuaEngine.h"
 #include "script/PythonEngine.h"
 #include "ui/Gumball.h"
+#include "ui/MappingGizmo.h"
 #include "imgui.h"
 #include "viewport/Viewport.h"
 
@@ -69,6 +70,9 @@ struct PanelState {
   bool table_editor = false;    // Table / RevisionTable / TitleBlock / BillOfMaterials editor
   bool activity_log = false;    // Activity Log (local Activity Insights analogue; see Document::ActivityLog)
   bool audit_results = false;   // Audit results panel (see Application::AuditResults / cmd_analyze.cpp)
+  bool block_manager = false;   // BlockManager: block definitions table with per-row actions (cmd_drafting.cpp)
+  bool uv_editor = false;       // UVEditor: read-only pannable/zoomable UV-space wireframe view (cmd_remaining.cpp)
+  bool mapping_widget = false;  // MappingWidget: interactive 3D mapping-plane gizmo (cmd_render.cpp)
 };
 
 // One invalid object found by Audit/Check (see cmd_analyze.cpp): the
@@ -222,6 +226,7 @@ class Application {
   const std::vector<AuditIssue>& AuditResults() const { return audit_results_; }
   AppState& State() { return state_; }
   Gumball& GetGumball() { return gumball_; }
+  MappingGizmo& GetMappingGizmo() { return mapping_gizmo_; }
   // Selected control points / vertices / edges / faces (on top of the
   // whole-object selection). The gumball and the Delete key act on it.
   SubObjectSelection& SubSelection() { return sub_selection_; }
@@ -379,6 +384,7 @@ class Application {
   ScriptEditorState script_editor_;
   std::deque<std::pair<std::string, std::string>> message_boxes_;  // title, text
   Gumball gumball_;
+  MappingGizmo mapping_gizmo_;
   SubObjectSelection sub_selection_;
   // Direct control-point drag in progress (originals restored + moved each frame).
   std::vector<std::pair<ObjectId, SceneObject>> cp_drag_originals_;

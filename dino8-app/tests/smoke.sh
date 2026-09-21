@@ -751,6 +751,7 @@ rncheck "Created material Plastic" "RenderAssignMaterialToObjects created a mate
 rncheck "Material Glass: color=200,225,240 transparency=0.6 reflectivity=0.3 gloss=0.9" "material options were applied"
 rncheck "Material Brass assigned to 1 object(s)" "material assigned to the cylinder"
 rncheck "Cylindrical mapping applied to 1 object(s), Scale=2" "ApplyCylindricalMapping set the mapping and scale"
+rncheck "UVEditor: '(unnamed)' (Cylindrical mapping) UV bounding box: u\[0\.[0-9]*, 2\] v\[0, 2\], [0-9]* triangle(s)" "UVEditor computed a real UV bounding box (ComputeUVWireframeInfo/EnsureMappedUVs) for the cylinder's own cylindrical mapping - u wraps to width Scale=2, v spans height Scale=2, same as the panel would draw"
 rncheck "AssignBlankTexture: .*blank_texture.ppm assigned to 1 object(s)" "AssignBlankTexture wrote and assigned a checker texture"
 rncheck "SynchronizeRenderColors: 1 material(s)" "SynchronizeRenderColors made a material from the display colour"
 rncheck "Point light 1: Point light at 10,-30,40, Intensity=1.5" "PointLight took its point and Intensity option"
@@ -791,7 +792,8 @@ rncheck "BackgroundBitmap: .*render.bmp (on)" "BackgroundBitmap set the modellin
 rncheck "RenderBlowup: .* region rendered as a true optical zoom" "RenderBlowup rendered the picked region as a real optical zoom (full viewport resolution, off-axis frustum), not a crop"
 rncheck "Bake: baked 1 procedural texture" "Bake rasterized the procedural texture to a file"
 rncheck "BakeMapping: baked the current mapping into mesh UVs for 1 object" "BakeMapping froze the mapping into mesh UVs"
-rncheck "MappingWidget: this app has no draggable 3D mapping gizmo" "MappingWidget explains the real limitation"
+rncheck "MappingWidget: showing the mapping-plane gizmo for '(unnamed)' (Surface mapping)" "MappingWidget shows the real gizmo for the selected object's mapping"
+rncheck "MappingWidgetOff: mapping-plane gizmo hidden" "MappingWidgetOff closes the panel"
 rncheck "DownloadLibraryTextures: Dino 8 does not download anything" "DownloadLibraryTextures explains there is nothing to fetch"
 rncheck "CopyRenderWindowToClipboard: this build has no OS image-clipboard integration" "CopyRenderWindowToClipboard explains the real limitation"
 rncheck "gl_error=0" "no OpenGL errors in the render script"
@@ -1984,6 +1986,14 @@ dbcheck "$DB_S2" "CV[0] 100,0,0" "Instance #1 is unaffected by undoing instance 
 dbcheck "$DB" "Block 'Widget': 2 object(s), base 0,0,0" "BlockManager confirms the definition round-tripped through Save/Open with both objects"
 dbcheck "$DB_S3" "CV[0] 300,0,0" "Instance #3 (post-reload) shows its Line"
 dbcheck_absent "$DB_S3" "CV[0] 306,5,0" "Instance #3 correctly omits the Circle (its VisStates/BlockDefinition::states tags survived Save/Open)"
+# BlockManager panel actions (DrawBlockManagerPanel, ui/Panels.cpp - see
+# cmd_drafting.cpp): each button calls exactly the command-line entry point
+# exercised here, so this is a real, headless test of the panel's own
+# Select Instances and Rename logic, not just a parallel reimplementation.
+dbcheck "$DB" "SelBlockInstanceOf: selected 5 object(s) in instances of 'Widget'" "SelBlockInstanceOf (the panel's Select Instances button) selects only the leftover base instance plus instances #1-#3's Line objects, not the whole document"
+dbcheck "$DB" "BlockRename: 'Widget' renamed to 'Gadget'" "BlockRename (the panel's Rename button) renamed the block"
+dbcheck "$DB" "Block 'Gadget': 2 object(s), base 0,0,0, 5 object(s) in instances" "BlockManager confirms every instance tag, not just the definition name, followed the rename"
+dbcheck "$DB" "SelBlockInstanceOf: selected 5 object(s) in instances of 'Gadget'" "SelBlockInstanceOf finds the renamed block's instances by their newly-retagged 'Block' user text"
 echo "$DB" | grep -E "^(ok|FAIL)" || true
 if echo "$DB" | grep -q "^FAIL"; then fail=1; fi
 

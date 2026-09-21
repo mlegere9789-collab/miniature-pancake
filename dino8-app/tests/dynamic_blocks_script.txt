@@ -69,3 +69,17 @@ Widget
 Enter
 SelLast
 List
+
+# BlockManager panel actions (DrawBlockManagerPanel, ui/Panels.cpp), each
+# exercised here via its exact same headlessly-scriptable command-line
+# entry point: SelBlockInstanceOf (Select Instances button),
+# BlockRename (Rename button); delete-if-unused reuses Purge's own
+# Document::RemoveBlock, already covered by tests/purge_script.txt.
+SelBlockInstanceOf
+Widget
+BlockRename
+Widget
+Gadget
+BlockManager
+SelBlockInstanceOf
+Gadget

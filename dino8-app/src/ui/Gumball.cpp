@@ -11,10 +11,10 @@
 
 namespace dino8::app {
 
-namespace {
-
 using kernel::Point3d;
 using kernel::Vector3d;
+
+namespace {
 
 // GumballAlignment: the widget's own X/Y/Z axes. "World" is the identity;
 // "CPlane" uses the active viewport's construction plane; "Object" uses a
@@ -53,7 +53,11 @@ std::array<Vector3d, 3> GumballAxes(const Gumball::Settings& s, Viewport& vp, Do
   return world;
 }
 
-// Parameter along the line (origin, dir) closest to the ray.
+}  // namespace
+
+// Parameter along the line (origin, dir) closest to the ray. Exported (see
+// Gumball.h) for MappingGizmo, which drags a mapping plane's own frame with
+// the exact same ray/line-projection technique.
 double ClosestParamOnLine(const Ray& ray, Point3d origin, Vector3d dir) {
   const Vector3d w0 = origin - ray.origin;
   const double a = ON_DotProduct(ray.direction, ray.direction), b = ON_DotProduct(ray.direction, dir), c = ON_DotProduct(dir, dir);
@@ -71,7 +75,7 @@ bool RayPlane(const Ray& ray, Point3d p0, Vector3d n, Point3d& out) {
   return true;
 }
 
-double DistToSegment(ImVec2 p, ImVec2 a, ImVec2 b) {
+double DistToSegmentPx(ImVec2 p, ImVec2 a, ImVec2 b) {
   const float dx = b.x - a.x, dy = b.y - a.y;
   const float len2 = dx * dx + dy * dy;
   float t = len2 > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2 : 0.0f;
@@ -80,6 +84,10 @@ double DistToSegment(ImVec2 p, ImVec2 a, ImVec2 b) {
   return std::sqrt(px * px + py * py);
 }
 
+namespace {
+// Local alias so the rest of this file's hit-testing reads exactly as
+// before.
+inline double DistToSegment(ImVec2 p, ImVec2 a, ImVec2 b) { return DistToSegmentPx(p, a, b); }
 }  // namespace
 
 bool Gumball::Update(Application& app, Viewport& vp, bool viewport_hovered) {

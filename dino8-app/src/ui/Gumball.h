@@ -10,11 +10,22 @@
 
 #include "doc/SceneObject.h"
 #include "doc/SubObject.h"
+#include "imgui.h"
 
 namespace dino8::app {
 
 class Application;
 class Viewport;
+struct Ray;
+
+// Ray/plane and screen-space hit-test math shared with MappingGizmo
+// (ui/MappingGizmo.cpp), which drags a selected object's mapping reference
+// plane using the same drag-from-a-ray-hit technique as this widget's own
+// axis/rotation/scale handles - exported here (defined in Gumball.cpp)
+// rather than duplicated, so both widgets go through one copy.
+bool RayPlane(const Ray& ray, kernel::Point3d p0, kernel::Vector3d n, kernel::Point3d& out);
+double ClosestParamOnLine(const Ray& ray, kernel::Point3d origin, kernel::Vector3d dir);
+double DistToSegmentPx(ImVec2 p, ImVec2 a, ImVec2 b);
 
 class Gumball {
  public:

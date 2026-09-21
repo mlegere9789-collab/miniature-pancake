@@ -11,6 +11,7 @@
 #include <sstream>
 
 #include "app/Settings.h"
+#include "imgui.h"
 #include "render/ImageIO.h"
 #include "render/MaterialLibrary.h"
 #include "ui/Panels.h"
@@ -1022,10 +1023,33 @@ void RegisterRenderCommands(CommandEngine& e) {
   Reg(e, "ApplySphericalMapping", Make<MappingCommand>(TextureMapping::Spherical));
   Reg(e, "ApplySurfaceMapping", Make<MappingCommand>(TextureMapping::Surface));
   Reg(e, "ApplyCustomMapping", Make<CustomMappingCommand>(), CommandStatus::Implemented, "Custom mapping frame: an origin and X-axis point picked in the scene, instead of the object's own bounding box.");
-  Reg(e, "MappingWidget", Immediate([](CommandContext& ctx) { ctx.Print("MappingWidget: this app has no draggable 3D mapping gizmo (the Gumball only transforms objects, not mapping channels); use ApplyPlanarMapping/ApplyCustomMapping's Scale= and picked reference frame, or MatchMapping, to control the mapping instead."); }), CommandStatus::Partial,
-      "There is no interactive 3D mapping gizmo in this build (the Gumball only manipulates objects, not mapping channels); ApplyCustomMapping's picked reference plane and Scale= option cover the same ground non-interactively.");
-  Reg(e, "MappingWidgetOff", Immediate([](CommandContext& ctx) { ctx.Print("MappingWidgetOff: no mapping widgets are ever shown (see MappingWidget)."); }), CommandStatus::Implemented,
-      "A true no-op that always succeeds: consistent with MappingWidget, since no mapping gizmo exists to hide, the postcondition (no widget visible) already holds.");
+  Reg(e, "MappingWidget", Immediate([](CommandContext& ctx) {
+        // Text-based fallback (for headless/script use) plus the real
+        // thing: a draggable 3D gizmo (MappingGizmo, reusing Gumball's own
+        // ray/plane drag math - see ui/MappingGizmo.h) for the first
+        // selected object's mapping reference plane, drawn directly in the
+        // viewport by Application's render loop while this panel is open.
+        Document& doc = ctx.Doc();
+        const std::vector<ObjectId> sel = doc.SelectedIds();
+        if (sel.empty()) {
+          ctx.Print("MappingWidget: no objects selected; select an object to show its mapping-plane gizmo.");
+        } else if (SceneObject* o = doc.Find(sel.front())) {
+          const std::string label = o->name.empty() ? "(unnamed)" : o->name;
+          ctx.Print("MappingWidget: showing the mapping-plane gizmo for '" + label + "' (" + TextureMappingName(o->mapping) +
+                    " mapping) - drag its translate/rotate/scale handles in the viewport, or use ApplyCustomMapping's typed "
+                    "origin/axis-point/Scale= options for the identical field updates headlessly.");
+        }
+        ctx.App().Panels().mapping_widget = true;
+      }), CommandStatus::Implemented,
+      "Opens a real interactive 3D gizmo (MappingGizmo) for dragging the first selected object's mapping reference plane "
+      "(custom_mapping_origin/x/y/size) in place, reusing Gumball's own ray/plane hit-test and drag math rather than a "
+      "second implementation of it. The mouse drag itself is not exercised by the headless smoke-test harness (true of "
+      "every viewport drag in this app), but the field updates it performs are the same ones ApplyCustomMapping's typed "
+      "origin/axis-point/Scale= options already exercise headlessly - see the render_script.txt smoke test.");
+  Reg(e, "MappingWidgetOff", Immediate([](CommandContext& ctx) {
+        ctx.App().Panels().mapping_widget = false;
+        ctx.Print("MappingWidgetOff: mapping-plane gizmo hidden.");
+      }), CommandStatus::Implemented, "Closes the MappingWidget panel/gizmo.");
   Reg(e, "RemoveMappingChannel", OnSelection("Select objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("RemoveMappingChannel");
         int n = 0;
@@ -1360,6 +1384,47 @@ void RegisterRenderCommands(CommandEngine& e) {
         }
         ctx.Print("BakeMapping: baked the current mapping into mesh UVs for " + std::to_string(n) + " object(s) (each replaced by a mesh)" + (skipped ? "; " + std::to_string(skipped) + " object(s) skipped" : ""));
       }), CommandStatus::Implemented, "Replaces each object with a mesh whose own texture coordinates are the resolved mapping (Planar/Box/Cylindrical/Spherical/Custom), frozen so it survives further mapping changes.");
+}
+
+// MappingWidget's companion panel: status/info text plus numeric fields
+// for the mapping plane the gizmo (ui/MappingGizmo.h, drawn directly into
+// the viewport by Application's render loop) is currently dragging - the
+// exact same custom_mapping_origin/x/y/size fields, so a typed edit here
+// and a drag of the 3D gizmo both take effect immediately on the same
+// data. There is no separate "widget state" to draw: MappingGizmo reads
+// and writes the selected object's own fields directly.
+void DrawMappingWidgetPanel(Application& app) {
+  ImGui::SetNextWindowSize(ImVec2(340, 260), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.mapping_widget", "MappingWidget").c_str(), &app.Panels().mapping_widget)) { ImGui::End(); return; }
+  Document& doc = app.Doc();
+  const std::vector<ObjectId> sel = doc.SelectedIds();
+  SceneObject* obj = sel.empty() ? nullptr : doc.Find(sel.front());
+  if (!obj) {
+    ImGui::TextWrapped("Select an object to drag its mapping reference plane. The gizmo appears on it in every viewport while this panel is open.");
+    ImGui::End();
+    return;
+  }
+  ImGui::Text("%s - %s mapping", obj->name.empty() ? "(unnamed)" : obj->name.c_str(), TextureMappingName(obj->mapping));
+  ImGui::TextWrapped("Drag the gizmo's axis arrows (move), rings (rotate) or square handles (scale) in any viewport.");
+  ImGui::Separator();
+  if (!obj->has_custom_mapping_frame) {
+    ImGui::TextDisabled("No custom mapping frame yet - one is seeded from the object's bounding box as soon as the gizmo is drawn.");
+  } else {
+    bool changed = false;
+    float origin[3] = {static_cast<float>(obj->custom_mapping_origin.x), static_cast<float>(obj->custom_mapping_origin.y), static_cast<float>(obj->custom_mapping_origin.z)};
+    if (ImGui::DragFloat3("Origin", origin, 0.1f)) { obj->custom_mapping_origin = Point3d(origin[0], origin[1], origin[2]); changed = true; }
+    float size = static_cast<float>(obj->custom_mapping_size);
+    if (ImGui::DragFloat("Size", &size, 0.05f, 1e-3f, 1e6f)) { obj->custom_mapping_size = size; changed = true; }
+    float mscale = obj->mapping_scale;
+    if (ImGui::DragFloat("Tiling scale", &mscale, 0.05f, 1e-3f, 1e6f)) { obj->mapping_scale = mscale; changed = true; }
+    // Field edits here follow the same convention as the Properties
+    // panel's other per-frame drag/checkbox widgets (Color, Locked, ...):
+    // doc.Touch() only, not a BeginChange snapshot per frame, since a
+    // DragFloat fires continuously while held. The 3D gizmo's own drag
+    // (MappingGizmo::Update) still snapshots once per whole drag.
+    if (changed) { obj->mapping = TextureMapping::Custom; obj->InvalidateDisplay(); doc.Touch(); }
+  }
+  ImGui::End();
 }
 
 }  // namespace dino8::app

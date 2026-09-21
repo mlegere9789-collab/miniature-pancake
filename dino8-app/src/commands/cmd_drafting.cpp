@@ -4,6 +4,8 @@
 #include <algorithm>
 
 #include "doc/BlockInstances.h"
+#include "imgui.h"
+#include "ui/Panels.h"
 
 namespace dino8::app {
 
@@ -192,6 +194,57 @@ class InsertCommand : public Command {
   std::string name_;
 };
 
+// BlockRename <old> <new>: the command-line, headlessly-scriptable path
+// for the BlockManager panel's per-row Rename action (ui/Panels.cpp calls
+// the same RenameBlockInDocument helper directly).
+class BlockRenameCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (ctx.Doc().Blocks().empty()) { ctx.Warn("No block definitions. Use Block to create one."); Finish(); return; }
+    std::string names;
+    for (const BlockDefinition& b : ctx.Doc().Blocks()) names += (names.empty() ? "" : ", ") + b.name;
+    ctx.Print("Blocks: " + names);
+    WantText("Block to rename");
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override {
+    if (!have_old_) {
+      if (!ctx.Doc().FindBlock(t)) { ctx.Warn("No block named '" + t + "'"); Finish(); return; }
+      old_ = t;
+      have_old_ = true;
+      WantText("New name");
+      return;
+    }
+    ctx.Doc().BeginChange("BlockRename");
+    if (RenameBlockInDocument(ctx.Doc(), old_, t)) ctx.Print("BlockRename: '" + old_ + "' renamed to '" + t + "'");
+    else ctx.Warn("BlockRename: '" + t + "' is already used by another block, or '" + old_ + "' no longer exists");
+    Finish();
+  }
+  bool have_old_ = false;
+  std::string old_;
+};
+
+// SelBlockInstanceOf <name>: the command-line, headlessly-scriptable path
+// for the BlockManager panel's per-row Select Instances action.
+class SelBlockInstanceOfCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    if (ctx.Doc().Blocks().empty()) { ctx.Warn("No block definitions. Use Block to create one."); Finish(); return; }
+    WantText("Block name");
+  }
+  void OnText(CommandContext& ctx, const std::string& name) override {
+    if (!ctx.Doc().FindBlock(name)) { ctx.Warn("No block named '" + name + "'"); Finish(); return; }
+    int n = 0;
+    ctx.Doc().SelectWhere([&](const SceneObject& o) {
+      auto it = o.user_text.find("Block");
+      const bool match = it != o.user_text.end() && it->second == name;
+      if (match) ++n;
+      return match;
+    });
+    ctx.Print("SelBlockInstanceOf: selected " + std::to_string(n) + " object(s) in instances of '" + name + "'");
+    Finish();
+  }
+};
+
 // BlockAddState: names a new Visibility-parameter state on a block
 // definition. A block with at least one state becomes "dynamic":
 // InstantiateBlock/Insert then create a real BlockInstance record for it
@@ -293,10 +346,16 @@ class BlockSetStateCommand : public Command {
 // InstantiateDynamicBlock (doc/BlockInstances.h), which places only the
 // objects visible in the initial state and records a BlockInstance so
 // BlockSetState can find and rebuild it later.
-int InstantiateBlock(CommandContext& ctx, const std::string& name, Point3d at) {
-  BlockDefinition* def = ctx.Doc().FindBlock(name);
+// Document-only overload for callers - such as the BlockManager panel
+// (ui/Panels.cpp) - that don't have a CommandContext to hand. Declared in
+// doc/BlockInstances.h (a Document-only header) so panel code can call it
+// without pulling in the much heavier command-engine headers this file
+// includes. The CommandContext overload below is now a thin wrapper, so
+// there is exactly one copy of the actual instantiation logic.
+int InstantiateBlockInDocument(Document& doc, const std::string& name, Point3d at) {
+  BlockDefinition* def = doc.FindBlock(name);
   if (!def) return -1;
-  if (!def->states.empty()) return InstantiateDynamicBlock(ctx.Doc(), name, at);
+  if (!def->states.empty()) return InstantiateDynamicBlock(doc, name, at);
   const ON_Xform xf = ON_Xform::TranslationTransformation(at - def->base);
   std::vector<ObjectId> ids;
   for (const SceneObject& o : def->objects) {
@@ -307,9 +366,33 @@ int InstantiateBlock(CommandContext& ctx, const std::string& name, Point3d at) {
     c.user_text["Block"] = name;
     // The insertion point travels with the instance (SceneObject::Transform keeps it current).
     c.user_text["BlockInsert"] = FormatPoint(at);
-    ids.push_back(ctx.Doc().Add(std::move(c)));
+    ids.push_back(doc.Add(std::move(c)));
   }
-  return ctx.Doc().CreateGroup(ids, name);
+  return doc.CreateGroup(ids, name);
+}
+
+int InstantiateBlock(CommandContext& ctx, const std::string& name, Point3d at) {
+  return InstantiateBlockInDocument(ctx.Doc(), name, at);
+}
+
+bool RenameBlockInDocument(Document& doc, const std::string& old_name, const std::string& new_name) {
+  if (old_name.empty() || new_name.empty()) return false;
+  if (old_name == new_name) return true;
+  BlockDefinition* def = doc.FindBlock(old_name);
+  if (!def) return false;
+  if (doc.FindBlock(new_name)) return false;  // name already used by a different block
+  def->name = new_name;
+  for (SceneObject& o : doc.Objects()) {
+    auto it = o.user_text.find("Block");
+    if (it != o.user_text.end() && it->second == old_name) it->second = new_name;
+  }
+  for (Group& g : doc.Groups()) if (g.name == old_name) g.name = new_name;
+  std::vector<BlockInstance> instances = LoadBlockInstances(doc);
+  bool changed = false;
+  for (BlockInstance& bi : instances) if (bi.block == old_name) { bi.block = new_name; changed = true; }
+  if (changed) SaveBlockInstances(doc, instances);
+  doc.Touch();
+  return true;
 }
 
 int TagExistingAsBlockInstance(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::string& name, Point3d at) {
@@ -337,15 +420,33 @@ void RegisterDraftingCommands(CommandEngine& e) {
   Reg(e, "Insert", Make<InsertCommand>(), CommandStatus::Implemented, "Inserts a copy of the named block definition at the given point, or falls back to Import when no blocks are defined.");
   Reg(e, "ExplodeBlock", OnSelection("Select block instances to explode", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { ctx.Doc().BeginChange("ExplodeBlock"); ctx.Doc().Ungroup(ids); for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->user_text.erase("Block"); o->user_text.erase("BlockInsert"); } }));
   Reg(e, "BlockManager", Immediate([](CommandContext& ctx) {
-        if (ctx.Doc().Blocks().empty()) { ctx.Print("No block definitions. Use Block to create one."); return; }
+        // Text-based fallback (unchanged, for headless/script use - see
+        // BlockRename/SelBlockInstanceOf below for the rest of the panel's
+        // actions in scriptable form) plus the real thing: a dockable table
+        // panel (DrawBlockManagerPanel, ui/Panels.cpp) with per-row Select
+        // Instances / Rename / Delete (if unused) / Insert New Instance.
+        if (ctx.Doc().Blocks().empty()) { ctx.Print("No block definitions. Use Block to create one."); }
         for (const BlockDefinition& b : ctx.Doc().Blocks()) {
           int instances = 0;
           for (const SceneObject& o : ctx.Doc().Objects()) { auto it = o.user_text.find("Block"); if (it != o.user_text.end() && it->second == b.name) ++instances; }
           ctx.Print("Block '" + b.name + "': " + std::to_string(b.objects.size()) + " object(s), base " + FormatPoint(b.base) + ", " + std::to_string(instances) + " object(s) in instances");
         }
         ctx.App().Panels().command_history = true;
-      }), CommandStatus::Partial, "Lists every block definition and its instance count in the command history; there is no dedicated dockable panel UI for it in this build.");
+        ctx.App().Panels().block_manager = true;
+      }), CommandStatus::Implemented,
+      "Lists every block definition and its instance count in the command history (unchanged headless fallback) and opens a "
+      "real dockable table panel (DrawBlockManagerPanel) with, per block, a live instance count and Select Instances / Rename / "
+      "Delete (if unused, reusing Purge's own Document::RemoveBlock) / Insert New Instance buttons. The mouse clicks on those "
+      "buttons are, like every other panel button in this app, not exercised by the headless smoke-test harness, but every "
+      "action they perform is independently scriptable and tested: BlockRename, SelBlockInstanceOf, Purge (delete-if-unused) "
+      "and Insert all reach the identical Document-level code the panel calls.");
+  Reg(e, "BlockRename", Make<BlockRenameCommand>(), CommandStatus::Implemented,
+      "Renames a block definition and every place its name is recorded (instance tags, matching groups, dynamic-block "
+      "instance records) via RenameBlockInDocument - the exact function BlockManager's panel Rename button calls.");
   Reg(e, "SelBlockInstance", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([](const SceneObject& o) { return o.user_text.count("Block") > 0; }); }));
+  Reg(e, "SelBlockInstanceOf", Make<SelBlockInstanceOfCommand>(), CommandStatus::Implemented,
+      "Selects only the instances of the named block (SelBlockInstance selects every block instance regardless of name); "
+      "the scriptable equivalent of BlockManager's per-row 'Select Instances' button.");
   Reg(e, "BlockAddState", Make<BlockAddStateCommand>(), CommandStatus::Implemented,
       "Names a new Visibility-parameter state on a block definition (Visibility-state dynamic blocks, first increment - "
       "see BlockSetVisibility/BlockSetState); a block with no states behaves exactly as a plain (static) block.");
@@ -355,6 +456,89 @@ void RegisterDraftingCommands(CommandEngine& e) {
   Reg(e, "BlockSetState", Make<BlockSetStateCommand>(), CommandStatus::Implemented,
       "Switches one placed dynamic-block instance to a named visibility state and rebuilds just that instance's "
       "objects (delete old / build new, undoable like any other edit).");
+}
+
+// BlockManager panel: a table of every block definition with the same
+// live instance count the text-based command prints, plus real per-row
+// actions. Every action here calls the exact same Document-level function
+// its headless command-line equivalent does (see the Reg() calls above),
+// so the panel is a mouse-driven front end for logic that is independently
+// scriptable and tested, not a second implementation of it.
+void DrawBlockManagerPanel(Application& app) {
+  Document& doc = app.Doc();
+  ImGui::SetNextWindowSize(ImVec2(520, 320), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.block_manager", "BlockManager").c_str(), &app.Panels().block_manager)) { ImGui::End(); return; }
+  if (doc.Blocks().empty()) {
+    ImGui::TextWrapped("No block definitions. Use Block to create one from the current selection.");
+    ImGui::End();
+    return;
+  }
+  ImGui::TextWrapped("%zu block definition(s). Insert New Instance places a fresh copy at the world origin (0,0,0) - move it into place with the Gumball afterwards, the same as a freshly-drawn object.", doc.Blocks().size());
+  ImGui::Separator();
+  if (ImGui::BeginTable("blocks", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable)) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Objects", ImGuiTableColumnFlags_WidthFixed, 60);
+    ImGui::TableSetupColumn("Instances", ImGuiTableColumnFlags_WidthFixed, 70);
+    ImGui::TableSetupColumn("##actions", ImGuiTableColumnFlags_WidthFixed, 300);
+    ImGui::TableHeadersRow();
+    // Iterate by index (not reference) since Delete mutates doc.Blocks() in place.
+    for (size_t i = 0; i < doc.Blocks().size();) {
+      BlockDefinition& b = doc.Blocks()[i];
+      const std::string name = b.name;  // stable copy: renaming below moves b's storage
+      int instances = 0;
+      for (const SceneObject& o : doc.Objects()) { auto it = o.user_text.find("Block"); if (it != o.user_text.end() && it->second == name) ++instances; }
+      ImGui::PushID(static_cast<int>(i));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(name.c_str());
+      ImGui::TableNextColumn();
+      ImGui::Text("%zu", b.objects.size());
+      ImGui::TableNextColumn();
+      ImGui::Text("%d", instances);
+      ImGui::TableNextColumn();
+      if (ImGui::SmallButton("Select")) {
+        int n = 0;
+        doc.SelectWhere([&](const SceneObject& o) { auto it = o.user_text.find("Block"); const bool m = it != o.user_text.end() && it->second == name; if (m) ++n; return m; });
+        app.Notify("Selected " + std::to_string(n) + " object(s) in instances of '" + name + "'");
+      }
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Rename")) ImGui::OpenPopup("block_rename");
+      if (ImGui::BeginPopup("block_rename")) {
+        static char rename_buf[128];
+        if (ImGui::IsWindowAppearing()) std::snprintf(rename_buf, sizeof(rename_buf), "%s", name.c_str());
+        ImGui::SetKeyboardFocusHere();
+        const bool submit = ImGui::InputText("New name", rename_buf, sizeof(rename_buf), ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::Button("Rename") || submit) {
+          doc.BeginChange("BlockRename");
+          if (!RenameBlockInDocument(doc, name, rename_buf)) app.Notify("Rename failed: name already in use, or block missing");
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+      }
+      ImGui::SameLine();
+      ImGui::BeginDisabled(instances > 0);
+      if (ImGui::SmallButton("Delete")) {
+        doc.BeginChange("Delete block");
+        doc.RemoveBlock(name);
+        ImGui::EndDisabled();
+        ImGui::PopID();
+        continue;  // don't advance i: the next block has shifted into this slot
+      }
+      ImGui::EndDisabled();
+      if (instances > 0 && ImGui::IsItemHovered()) ImGui::SetTooltip("In use by %d instance(s) - Delete is disabled (same used-check as Purge)", instances);
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Insert New Instance")) {
+        doc.BeginChange("Insert");
+        const int group = InstantiateBlockInDocument(doc, name, Point3d(0, 0, 0));
+        if (group >= 0) app.Notify("Inserted a new instance of '" + name + "' at the origin");
+      }
+      ImGui::PopID();
+      ++i;
+    }
+    ImGui::EndTable();
+  }
+  ImGui::End();
 }
 
 }  // namespace dino8::app
