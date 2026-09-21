@@ -368,6 +368,14 @@ int InstantiateBlockInDocument(Document& doc, const std::string& name, Point3d a
     c.user_text["BlockInsert"] = FormatPoint(at);
     ids.push_back(doc.Add(std::move(c)));
   }
+  // Real parent/child provenance for this instance: the first object placed
+  // is the instance's anchor, every other object's provenance parent_id
+  // points at it (doc/Document.h's ProvenanceInfo/ProvenanceKind) - so
+  // SelChildren/SelParents (cmd_select2.cpp) can walk a genuine hierarchy
+  // instead of the group-symmetric "other members of the same group"
+  // fallback used before. A single-object block has nothing to tag (no
+  // second object to point at the first).
+  for (size_t i = 1; i < ids.size(); ++i) doc.SetProvenance(ids[i], ids[0], ProvenanceKind::BlockInstanceMember);
   return doc.CreateGroup(ids, name);
 }
 

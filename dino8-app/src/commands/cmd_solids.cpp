@@ -405,15 +405,18 @@ class ExtrudeCommand : public Command {
       Point3d shift(0, 0, 0);
       if (both_) { v = n * (2 * d); shift = Point3d(0, 0, 0) - n * d; }
       if (o->kind == ObjectKind::Curve) {
-        if (ExtrudeCurve(ctx, *o->curve, v, shift)) ++made;
+        if (ExtrudeCurve(ctx, id, *o->curve, v, shift)) ++made;
       } else if (o->kind == ObjectKind::Surface) {
         ON_Brep* b = ON_Brep::New();
         ON_NurbsSurface* srf = new ON_NurbsSurface(o->surface->raw());
         b->Create(srf);
         if (shift != Point3d(0, 0, 0)) b->Translate(shift);
         ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + v));
-        if (ON_BrepExtrudeFace(*b, 0, path, solid_) >= 0) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ++made; }
-        else delete b;
+        if (ON_BrepExtrudeFace(*b, 0, path, solid_) >= 0) {
+          const ObjectId new_id = ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b)));
+          ctx.Doc().SetProvenance(new_id, id, ProvenanceKind::ExtrusionRail);
+          ++made;
+        } else delete b;
       } else if (o->kind == ObjectKind::Brep) {
         ON_Brep* b = new ON_Brep(o->brep->raw());
         if (shift != Point3d(0, 0, 0)) b->Translate(shift);
@@ -421,13 +424,22 @@ class ExtrudeCommand : public Command {
         bool ok = true;
         const int nf = b->m_F.Count();
         for (int f = 0; f < nf && ok; ++f) ok = ON_BrepExtrudeFace(*b, f, path, solid_) >= 0;
-        if (ok) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); ++made; } else delete b;
+        if (ok) {
+          const ObjectId new_id = ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b)));
+          ctx.Doc().SetProvenance(new_id, id, ProvenanceKind::ExtrusionRail);
+          ++made;
+        } else delete b;
       }
     }
     ctx.Print("Extruded " + std::to_string(made) + " object(s)");
     Finish();
   }
-  bool ExtrudeCurve(CommandContext& ctx, const kernel::NurbsCurve& kc, Vector3d v, Point3d shift) {
+  // `source_id` is the profile curve's ObjectId, recorded as this
+  // extrusion's provenance parent (doc/Document.h's ProvenanceInfo) on
+  // whichever object actually gets built below, so SelExtrusion/SelParents/
+  // SelChildren (cmd_select2.cpp) can find the real link - and, once the
+  // source curve is deleted, gracefully find nothing instead of crashing.
+  bool ExtrudeCurve(CommandContext& ctx, ObjectId source_id, const kernel::NurbsCurve& kc, Vector3d v, Point3d shift) {
     ON_NurbsCurve c = kc.raw();
     if (shift != Point3d(0, 0, 0)) c.Translate(shift);
     ON_Plane plane;
@@ -449,7 +461,11 @@ class ExtrudeCommand : public Command {
       ON_Brep* b = ON_BrepTrimmedPlane(plane, c);
       if (b) {
         ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + v));
-        if (ON_BrepExtrudeFace(*b, 0, path, true) >= 0) { ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b))); return true; }
+        if (ON_BrepExtrudeFace(*b, 0, path, true) >= 0) {
+          const ObjectId new_id = ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b)));
+          ctx.Doc().SetProvenance(new_id, source_id, ProvenanceKind::ExtrusionRail);
+          return true;
+        }
         delete b;
       }
     }
@@ -457,7 +473,8 @@ class ExtrudeCommand : public Command {
     if (!ss.Create(c, v)) return false;
     kernel::NurbsSurface k;
     if (!SurfaceFromON(ss, k)) return false;
-    ctx.Doc().Add(SceneObject::MakeSurface(k));
+    const ObjectId new_id = ctx.Doc().Add(SceneObject::MakeSurface(k));
+    ctx.Doc().SetProvenance(new_id, source_id, ProvenanceKind::ExtrusionRail);
     return true;
   }
   void BuildToPoint(CommandContext& ctx, Point3d apex) {
@@ -471,7 +488,11 @@ class ExtrudeCommand : public Command {
       ON_NurbsCurve b = a;
       for (int i = 0; i < b.CVCount(); ++i) b.SetCV(i, apex);
       ON_NurbsSurface s;
-      if (s.CreateRuledSurface(a, b)) { kernel::NurbsSurface k; k.raw() = s; ctx.Doc().Add(SceneObject::MakeSurface(k)); }
+      if (s.CreateRuledSurface(a, b)) {
+        kernel::NurbsSurface k; k.raw() = s;
+        const ObjectId new_id = ctx.Doc().Add(SceneObject::MakeSurface(k));
+        ctx.Doc().SetProvenance(new_id, id, ProvenanceKind::ExtrusionRail);
+      }
     }
     Finish();
   }

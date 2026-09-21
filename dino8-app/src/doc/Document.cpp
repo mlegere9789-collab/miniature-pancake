@@ -71,6 +71,7 @@ bool Document::Remove(ObjectId id) {
   objects_.erase(it);
   hole_features_.erase(id);
   pipe_features_.erase(id);
+  provenance_.erase(id);
   Touch();
   return true;
 }

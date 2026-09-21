@@ -321,6 +321,34 @@ struct PipeFeature {
   kernel::NurbsCurve rail;
 };
 
+// General parent/child provenance for an object created out of another one:
+// which object it was derived from (`parent_id`, kNoObject if none recorded)
+// and what kind of derivation it was. Two producers currently populate this:
+//  - BlockInstanceMember: InstantiateBlockInDocument (doc/BlockInstances.h /
+//    cmd_drafting.cpp) tags every member of a placed instance except the
+//    first with parent_id = that first member's ObjectId, so the instance
+//    has one real "anchor" object children point at - SelChildren/SelParents
+//    (cmd_select2.cpp) walk this instead of the group-symmetric fallback
+//    selection used before.
+//  - ExtrusionRail: ExtrudeCommand (cmd_solids.cpp) tags the solid/surface
+//    it builds with parent_id = the profile curve (or source surface/brep)
+//    it was extruded from, so SelExtrusion/SelParents can find the real
+//    source instead of guessing from object kind alone.
+// Kept in a side table for exactly HoleFeature/PipeFeature's reasons above
+// (ordinary objects, Save3dm, ObjectCount() and the object list are
+// untouched by it) and with the same scope: session state only, not written
+// to the .3dm and not restored by Undo/Redo. `parent_id` is intentionally
+// allowed to go stale (the referenced object may later be deleted, e.g. the
+// extrusion's source curve) - callers always re-check the id still resolves
+// via Find() before using it, so a dangling reference degrades to "no parent
+// found" rather than a crash, same as a HoleFeature outliving an Undo past
+// its cut.
+enum class ProvenanceKind { BlockInstanceMember, ExtrusionRail };
+struct ProvenanceInfo {
+  ObjectId parent_id = kNoObject;
+  ProvenanceKind kind = ProvenanceKind::BlockInstanceMember;
+};
+
 struct DocumentSettings {
   std::string unit_system = "Millimeters";
   std::string title, author, comments;  // file metadata (saved in the .3dm)
@@ -493,6 +521,22 @@ class Document {
     return it == pipe_features_.end() ? nullptr : &it->second;
   }
   void ClearPipeFeature(ObjectId id) { pipe_features_.erase(id); }
+  void SetProvenance(ObjectId id, ObjectId parent_id, ProvenanceKind kind) {
+    provenance_[id] = ProvenanceInfo{parent_id, kind};
+  }
+  const ProvenanceInfo* FindProvenance(ObjectId id) const {
+    const auto it = provenance_.find(id);
+    return it == provenance_.end() ? nullptr : &it->second;
+  }
+  void ClearProvenance(ObjectId id) { provenance_.erase(id); }
+  // Every currently-recorded child of `parent_id` (objects whose provenance
+  // parent_id equals it), regardless of `parent_id` itself still existing -
+  // callers that need that check (SelParents) do it themselves via Find().
+  std::vector<ObjectId> ProvenanceChildren(ObjectId parent_id) const {
+    std::vector<ObjectId> out;
+    for (const auto& [id, info] : provenance_) if (info.parent_id == parent_id) out.push_back(id);
+    return out;
+  }
   std::map<std::string, std::string>& UserText() { return user_text_; }
   std::string& Notes() { return notes_; }
   DocumentSettings& Settings() { return settings_; }
@@ -792,6 +836,7 @@ class Document {
   std::vector<ReferenceModel> reference_models_;
   std::map<ObjectId, HoleFeature> hole_features_;
   std::map<ObjectId, PipeFeature> pipe_features_;
+  std::map<ObjectId, ProvenanceInfo> provenance_;
   std::map<std::string, std::string> user_text_;
   std::string notes_;
   DocumentSettings settings_;

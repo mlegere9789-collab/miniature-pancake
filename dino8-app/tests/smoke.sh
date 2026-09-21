@@ -1409,6 +1409,28 @@ echo "$SL" | grep -E "^(ok|FAIL)"
 if echo "$SL" | grep -q "^FAIL"; then fail=1; fi
 echo "$SL" | grep -q "^smoke:" || { echo "$SL"; echo "FAIL: select script produced no smoke line"; fail=1; }
 
+# Provenance-based selection: SelChildren/SelParents/SelExtrusion now walk a
+# real parent/child side table (doc/Document.h's ProvenanceInfo) instead of
+# the old group-symmetric fallback / "every polysurface" guess - see
+# provenance_script.txt's header comment for exactly what it builds.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  PV="$("$BIN" --smoke 150 --script "$HERE/provenance_script.txt" 2>&1)" || { echo "$PV"; echo "FAIL: provenance script exited non-zero"; exit 1; }
+else
+  PV="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/provenance_script.txt" 2>&1)" || { echo "$PV"; echo "FAIL: provenance script exited non-zero"; exit 1; }
+fi
+echo "$PV" | grep -E "^(ok|FAIL)"
+if echo "$PV" | grep -q "^FAIL"; then fail=1; fi
+echo "$PV" | grep -q "^smoke:" || { echo "$PV"; echo "FAIL: provenance script produced no smoke line"; fail=1; }
+pvcheck() { if echo "$PV" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+pvcheck "Block 'Widget' defined with 2 object(s)" "Block replaced the source curves with a 2-object instance"
+pvcheck "history: Object 5 (curve) layer Default" "SelChildren on instance #2's anchor (5) added exactly its own member (6), not another instance's objects"
+pvcheck "history: Object 6 (curve) layer Default" "  (List after SelChildren shows member 6 selected alongside anchor 5)"
+pvcheck "SelParents: no tracked parent found for the current selection (or the parent object was deleted)" \
+        "SelParents reports (not crashes) when nothing is tracked - both for an anchor object and for an extrusion whose source curve was deleted"
+pvcheck "SelChildren: no tracked children found for the current selection" "SelChildren reports rather than matching everything when a leaf object has no children"
+pvcheck "history: Object 11 (polysurface) layer Default" "SelExtrusion found the real ExtrudeCrv result (11), not the decoy Box (9) - a genuine improvement over the old any-polysurface Partial behaviour"
+pvcheck "history: Object 10 (curve) layer Default" "SelParents on the extrusion found its real source curve (10) while it still existed"
+
 # Transforms: exact coordinates after Move/Copy/Rotate/Scale*/Mirror/Array*/Orient*/
 # ProjectToCPlane/SetPt/Nudge, in Top/Front/Right (see transform_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then

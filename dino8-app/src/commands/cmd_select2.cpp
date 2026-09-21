@@ -659,7 +659,12 @@ void RegisterSelect2Commands(CommandEngine& e) {
         }
         ctx.Print("SelConnected: " + std::to_string(added) + " connected object(s) added, " + std::to_string(ctx.Doc().SelectedCount()) + " selected");
       }));
-  Reg(e, "SelExtrusion", SelWhere([](CommandContext&, const SceneObject& o) { return o.kind == ObjectKind::Brep; }), CommandStatus::Partial, "Dino 8 stores extrusions as polysurfaces; selects every polysurface.");
+  Reg(e, "SelExtrusion", SelWhere([](CommandContext& ctx, const SceneObject& o) {
+        const ProvenanceInfo* p = ctx.Doc().FindProvenance(o.id);
+        return p && p->kind == ProvenanceKind::ExtrusionRail;
+      }), CommandStatus::Implemented,
+      "Selects objects built by an extrusion command (ExtrudeCrv/ExtrudeCrvToPoint/ExtrudeSrf), tracked via "
+      "provenance (doc/Document.h's ProvenanceInfo) regardless of whether the source curve/surface still exists.");
   Reg(e, "SelTrimmedSrf", SelWhere([](CommandContext&, const SceneObject& o) { return o.kind == ObjectKind::Brep && o.brep->raw().m_F.Count() == 1 && !o.brep->raw().FaceIsSurface(0); }));
   Reg(e, "SelUntrimmedSrf", SelWhere([](CommandContext&, const SceneObject& o) { return o.kind == ObjectKind::Surface || (o.kind == ObjectKind::Brep && o.brep->raw().m_F.Count() == 1 && o.brep->raw().FaceIsSurface(0)); }));
   Reg(e, "SelClosedSubD", SelWhere([](CommandContext&, const SceneObject& o) { return o.kind == ObjectKind::SubD && o.subd->raw().IsSolid(); }));
@@ -674,8 +679,45 @@ void RegisterSelect2Commands(CommandEngine& e) {
       Report(ctx);
     });
   };
-  Reg(e, "SelChildren", group_members("SelChildren"), CommandStatus::Partial, "Selects the other members of the selected objects' groups.");
-  Reg(e, "SelParents", group_members("SelParents"), CommandStatus::Partial, "Selects the other members of the selected objects' groups.");
+  // SelChildren/SelParents walk the real parent/child provenance graph
+  // (doc/Document.h's ProvenanceInfo) instead of the old group-symmetric
+  // fallback: a block instance's anchor object's "children" are the rest of
+  // that instance's members (doc/BlockInstances.h/cmd_drafting.cpp tag
+  // them), and an extrusion's "parent" is the profile curve/surface it was
+  // built from (cmd_solids.cpp's ExtrudeCommand tags it). Both add to the
+  // existing selection (SelWhere's convention above), and both report
+  // rather than crash when nothing is tracked or the tracked object was
+  // since deleted (Find() comes back null).
+  Reg(e, "SelChildren", Immediate([](CommandContext& ctx) {
+        std::set<ObjectId> parents;
+        for (const SceneObject& o : ctx.Doc().Objects()) if (o.selected) parents.insert(o.id);
+        if (parents.empty()) { ctx.Print("SelChildren: nothing selected"); return; }
+        size_t found = 0;
+        ctx.Doc().SelectWhere([&](const SceneObject& o) {
+          if (!Selectable(ctx, o)) return false;
+          const ProvenanceInfo* p = ctx.Doc().FindProvenance(o.id);
+          const bool match = p && parents.count(p->parent_id) > 0;
+          if (match) ++found;
+          return match;
+        }, true);
+        if (found == 0) { ctx.Print("SelChildren: no tracked children found for the current selection"); return; }
+        Report(ctx);
+      }), CommandStatus::Implemented,
+      "Selects the objects whose recorded parent (SetProvenance: a block instance's anchor object, or the "
+      "curve/surface an extrusion was built from) is one of the selected objects.");
+  Reg(e, "SelParents", Immediate([](CommandContext& ctx) {
+        std::set<ObjectId> found;
+        for (const SceneObject& o : ctx.Doc().Objects()) {
+          if (!o.selected) continue;
+          const ProvenanceInfo* p = ctx.Doc().FindProvenance(o.id);
+          if (p && p->parent_id != kNoObject && ctx.Doc().Find(p->parent_id)) found.insert(p->parent_id);
+        }
+        if (found.empty()) { ctx.Print("SelParents: no tracked parent found for the current selection (or the parent object was deleted)"); return; }
+        ctx.Doc().SelectWhere([&](const SceneObject& o) { return Selectable(ctx, o) && found.count(o.id) > 0; }, true);
+        Report(ctx);
+      }), CommandStatus::Implemented,
+      "Selects the recorded parent of the current selection (a block instance's anchor object, or the "
+      "curve/surface an extrusion was built from) - nothing if none is tracked or the parent was deleted.");
   Reg(e, "SelCaptives", group_members("SelCaptives"), CommandStatus::Partial, "Selects the other members of the selected objects' groups.");
 
   Reg(e, "SelControlPoint", Immediate([](CommandContext& ctx) {

@@ -119,6 +119,10 @@ int InstantiateDynamicBlock(Document& doc, const std::string& name, kernel::Poin
   std::string active = state;
   if (active.empty() && !def->states.empty()) active = def->states.front();
   const std::vector<ObjectId> ids = PlaceFiltered(doc, *def, at, active);
+  // Same anchor-object provenance as the static-block path in
+  // InstantiateBlockInDocument (cmd_drafting.cpp) - see ProvenanceInfo's
+  // comment in doc/Document.h.
+  for (size_t i = 1; i < ids.size(); ++i) doc.SetProvenance(ids[i], ids[0], ProvenanceKind::BlockInstanceMember);
   const int group = doc.CreateGroup(ids, name);
   if (!def->states.empty()) {
     std::vector<BlockInstance> list = LoadBlockInstances(doc);
@@ -143,8 +147,10 @@ bool RebuildBlockInstance(Document& doc, int group) {
   for (ObjectId id : it->objects) doc.Remove(id);
   it->objects = PlaceFiltered(doc, *def, it->insert, it->state);
   // Re-attach the fresh objects to the same group id so selection/explode
-  // (which key off Document::Group membership) still find this instance.
+  // (which key off Document::Group membership) still find this instance,
+  // and rebuild the anchor-object provenance the same way InstantiateDynamicBlock does.
   for (ObjectId id : it->objects) if (SceneObject* o = doc.Find(id)) o->group_id = it->group;
+  for (size_t i = 1; i < it->objects.size(); ++i) doc.SetProvenance(it->objects[i], it->objects[0], ProvenanceKind::BlockInstanceMember);
   SaveBlockInstances(doc, list);
   return true;
 }
