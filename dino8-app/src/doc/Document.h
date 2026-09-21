@@ -23,6 +23,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "doc/SceneObject.h"
@@ -600,6 +601,22 @@ class Document {
   void BeginChangeForObjects(const std::string& label, const std::vector<ObjectId>& ids);
   bool Undo();
   bool Redo();
+
+  // UndoSelected (Rhino's per-object-scoped undo): walks the undo history
+  // from most recent to oldest for the most recent entry whose added/
+  // removed/modified object set intersects `selected_ids`, and undoes just
+  // that one entry - which is not necessarily the top of the whole-document
+  // undo stack, and without necessarily undoing whatever unrelated edits
+  // happened more recently, exactly like Rhino's own UndoSelected. See
+  // Document.cpp for exactly which cases this can and cannot safely
+  // isolate given this codebase's whole-object/whole-list snapshot delta
+  // model (StateDelta above) - the honestly-scoped limit is documented
+  // there and in cmd_select2.cpp's registration text. Returns true (and
+  // undoes exactly one entry) on success; returns false, with `*why` set
+  // when non-null, when there is nothing to undo for the selection or when
+  // the match can't be safely isolated from newer, unrelated entries still
+  // on the stack.
+  bool UndoSelected(const std::vector<ObjectId>& selected_ids, std::string* why = nullptr);
   bool CanUndo() const { return pending_.active || !undo_.empty(); }
   bool CanRedo() const { return !redo_.empty(); }
   std::vector<std::string> UndoLabels() const;
@@ -766,6 +783,19 @@ class Document {
   struct StateDelta {
     std::string label;
 
+    // True exactly when this delta was recorded via BeginChangeForObjects
+    // (the fast path) rather than the general BeginChange(label): that
+    // call's own contract (see its comment above) guarantees the command
+    // added no objects, removed no objects, and touched no document state
+    // other than the declared ids' own geometry/properties - i.e. every
+    // *_before/*_after pair below except modified_/added/removed is
+    // guaranteed equal. UndoSelected (Document.cpp) relies on this flag,
+    // not a runtime equality check (Layer/Group/Material/... have no
+    // operator==), to know when it is safe to splice this one entry's
+    // effect out of the middle of the undo stack without disturbing any
+    // other document-level state a later, unrelated entry might depend on.
+    bool object_only = false;
+
     std::vector<Layer> layers_before, layers_after;
     int current_layer_before = 0, current_layer_after = 0;
     std::vector<Group> groups_before, groups_after;
@@ -839,6 +869,9 @@ class Document {
   void FinalizePending();
   void ApplyDelta(const StateDelta& delta, bool undo);
   void ApplyObjectDelta(const StateDelta& delta, bool undo);
+  // The set of object ids a StateDelta actually touches: added, removed, or
+  // modified. See UndoSelected (Document.cpp) for how this is used.
+  static std::unordered_set<ObjectId> AffectedObjectIds(const StateDelta& delta);
 
   // Activity Log recording: builds one ActivityLogEntry from a just-
   // finalized StateDelta, appends it to activity_log_, and (if Path() is

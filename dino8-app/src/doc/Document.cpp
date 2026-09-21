@@ -646,6 +646,7 @@ void Document::FinalizePending() {
   if (!pending_.active) return;
   StateDelta d;
   d.label = pending_.label;
+  d.object_only = pending_.fast_path;
   d.layers_before = std::move(pending_.layers);
   d.layers_after = layers_;
   d.current_layer_before = pending_.current_layer;
@@ -932,6 +933,137 @@ bool Document::Redo() {
   // redo_ is via Undo() above, which already materialized it.
   ApplyDelta(entry.delta, /*undo=*/false);
   undo_.push_back(std::move(entry));
+  return true;
+}
+
+// The set of object ids a StateDelta *reliably* touches: added and removed
+// ids are always precise (Add()/Remove() name exactly the objects that
+// changed), but `modified_before` is only precise when the delta is
+// object_only (BeginChangeForObjects' declared-ids fast path). Under the
+// general BeginChange(label) path, `modified_before` is deliberately a
+// conservative superset - EVERY object that existed both before and after
+// is listed as a "candidate", whether or not it actually changed, because
+// SceneObject has no cheap operator== to tell (see the StateDelta comment
+// above `modified_before`/`modified_after`). Folding that superset into
+// "what this entry touched" would be a real correctness bug for
+// UndoSelected: e.g. creating object B while object A merely continues to
+// exist would falsely make "the entry that created B" look like it also
+// touched A, hiding an older entry that genuinely did move A. So a general-
+// path entry's `modified_before` is excluded here - UndoSelected can match
+// such an entry via add/remove, and via BeginChangeForObjects entries
+// (which cover the common in-place-edit case: Move/Rotate/Scale/... on an
+// existing selection, see cmd_transform.cpp's ApplyXform), but not via an
+// unrelated general-path edit's unreliable candidate list. This is an
+// honestly-scoped limit of the same kind as this codebase's other
+// documented Partial-turned-Implemented tradeoffs, not a silent gap.
+std::unordered_set<ObjectId> Document::AffectedObjectIds(const StateDelta& d) {
+  std::unordered_set<ObjectId> ids;
+  ids.reserve(d.added.size() + d.removed.size() + (d.object_only ? d.modified_before.size() : 0));
+  for (const SceneObject& o : d.added) ids.insert(o.id);
+  for (const auto& r : d.removed) ids.insert(r.object.id);
+  if (d.object_only) {
+    for (const SceneObject& o : d.modified_before) ids.insert(o.id);
+  }
+  return ids;
+}
+
+bool Document::UndoSelected(const std::vector<ObjectId>& selected_ids, std::string* why) {
+  FinalizePending();
+  if (selected_ids.empty()) {
+    if (why) *why = "Nothing is selected.";
+    return false;
+  }
+  if (undo_.empty()) {
+    if (why) *why = "Nothing to undo.";
+    return false;
+  }
+  const std::unordered_set<ObjectId> selection(selected_ids.begin(), selected_ids.end());
+
+  // Walk from the most recent entry (undo_.back()) toward the oldest,
+  // looking for the first (i.e. most recent) whose own affected-object set
+  // intersects the current selection.
+  std::ptrdiff_t candidate = -1;
+  std::unordered_set<ObjectId> candidate_ids;
+  for (std::ptrdiff_t i = static_cast<std::ptrdiff_t>(undo_.size()) - 1; i >= 0; --i) {
+    std::unordered_set<ObjectId> ids = AffectedObjectIds(undo_[static_cast<size_t>(i)].delta);
+    bool hit = false;
+    for (ObjectId id : ids) {
+      if (selection.count(id)) { hit = true; break; }
+    }
+    if (hit) {
+      candidate = i;
+      candidate_ids = std::move(ids);
+      break;
+    }
+  }
+  if (candidate < 0) {
+    if (why) *why = "No recorded change affects the current selection.";
+    return false;
+  }
+
+  const size_t top = undo_.size() - 1;
+  if (static_cast<size_t>(candidate) == top) {
+    // The most recent entry touching the selection IS the most recent
+    // entry overall - identical to a plain Undo(), including full Redo
+    // support.
+    return Undo();
+  }
+
+  // The match is buried under newer, unrelated edits. Isolating just this
+  // one entry's effect - reverting it while leaving every entry above and
+  // below it on the stack exactly as it was - is only sound given this
+  // codebase's whole-object/whole-list snapshot delta model (see the
+  // StateDelta comment in Document.h) when BOTH:
+  //  (a) the candidate entry itself is object_only (BeginChangeForObjects'
+  //      contract guarantees it touched no document-level state - layers/
+  //      groups/materials/lights/clipping planes/layouts/id counters -
+  //      besides the declared objects), so splicing it out can't strand a
+  //      later entry's own before/after copy of any of those lists; and
+  //  (b) no later (more recent) entry also touches one of the SAME object
+  //      ids - if one did, that later entry's own before/after image of
+  //      the object was captured relative to a document state that already
+  //      includes the candidate's edit, and this codebase's deltas store
+  //      whole-object snapshots, not composable field-level patches, so
+  //      there is no correct way to "subtract" just the candidate's part
+  //      of that object's history back out.
+  // When either fails, UndoSelected honestly reports that it can't safely
+  // isolate the change rather than guessing (matching this codebase's
+  // established convention - see e.g. RemoveSymmetry/Symmetry's own notes).
+  const StateDelta& cd = undo_[static_cast<size_t>(candidate)].delta;
+  if (!cd.object_only) {
+    if (why) {
+      *why = "The most recent change to the selection ('" + cd.label +
+             "') also touched other document state and can't be safely undone on its own "
+             "while newer, unrelated edits stay in place. Use Undo repeatedly instead.";
+    }
+    return false;
+  }
+  for (size_t i = static_cast<size_t>(candidate) + 1; i <= top; ++i) {
+    std::unordered_set<ObjectId> later_ids = AffectedObjectIds(undo_[i].delta);
+    for (ObjectId id : candidate_ids) {
+      if (later_ids.count(id)) {
+        if (why) {
+          *why = "The most recent change to the selection ('" + cd.label +
+                 "') was followed by a later edit ('" + undo_[i].delta.label +
+                 "') to the same object, so it can't be safely undone on its own "
+                 "without also affecting that later edit. Use Undo repeatedly instead.";
+        }
+        return false;
+      }
+    }
+  }
+
+  // Safe to splice: apply just this entry's own object-level undo directly
+  // to the live document (object_only guarantees no document-level list
+  // needs restoring), then remove it from the stack. It deliberately does
+  // not go to redo_: a redo of one entry spliced out of the middle of a
+  // linear history has no well-defined place to be reinserted relative to
+  // the entries that came after it, so - like Rhino's own documented
+  // caveat that not every undo is redoable - this specific case is
+  // knowingly not offered.
+  ApplyObjectDelta(cd, /*undo=*/true);
+  Touch();
+  undo_.erase(undo_.begin() + candidate);
   return true;
 }
 

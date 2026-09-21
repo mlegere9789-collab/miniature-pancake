@@ -930,7 +930,23 @@ void RegisterSelect2Commands(CommandEngine& e) {
         ctx.Doc().Touch();
         ctx.Print("SetGroupName: " + std::to_string(groups.size()) + " group(s) named '" + name + "'");
       }));
-  Reg(e, "UndoSelected", Immediate([](CommandContext& ctx) { if (!ctx.Doc().Undo()) ctx.Print("Nothing to undo"); }), CommandStatus::Partial, "Undoes the last change to the whole document.");
+  Reg(e, "UndoSelected", Immediate([](CommandContext& ctx) {
+        const std::vector<ObjectId> sel = ctx.Doc().SelectedIds();
+        std::string why;
+        if (!ctx.Doc().UndoSelected(sel, &why)) {
+          ctx.Warn(why.empty() ? "Nothing to undo" : why);
+        }
+      }), CommandStatus::Implemented,
+      "UndoSelected: undoes the single most recent recorded change that touched an object "
+      "currently selected - not necessarily the top of the whole-document Undo stack, and "
+      "without necessarily undoing unrelated edits made to other objects after it. When that "
+      "change is itself the most recent entry overall, this behaves exactly like Undo (and "
+      "stays Redo-able). When it is buried under newer, unrelated edits, it is spliced out in "
+      "place - but only when doing so is provably safe: the matched entry touched only object "
+      "geometry/properties (no layer/group/material/... state), and no later entry touched the "
+      "same object again. When neither holds, it reports why rather than guessing, and does "
+      "not offer Redo for a spliced entry (there is no well-defined place to reinsert it "
+      "relative to the newer entries that stayed on the stack).");
   Reg(e, "HidePt", Immediate([](CommandContext& ctx) {
         // With a control-point selection, hide only those points (and drop
         // them from the selection); otherwise fall back to hiding the

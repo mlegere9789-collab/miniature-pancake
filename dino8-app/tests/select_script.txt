@@ -218,6 +218,69 @@ SelID 1
 SelChain
 @expect_selected 1
 SelNone
+# --- UndoSelected: per-object-scoped undo, not the whole-document Undo.
+# Objects are re-found afterward by a unique Hyperlink user-text tag (via
+# SelKeyValue) rather than a numeric id, since New's confirm-discard dialog
+# never auto-confirms in a headless script (see smoke.sh's own comment on
+# this test), so ids are not otherwise reset to a known value here.
+Point 200,200,0
+SelLast
+Hyperlink https://dino8.example/undosel-a
+Move 200,200,0 205,200,0
+Point 300,200,0
+SelLast
+Hyperlink https://dino8.example/undosel-b
+Move 300,200,0 300,220,0
+# A (tagged undosel-a) was moved to 205,200,0; B (tagged undosel-b) was
+# moved separately to 300,220,0 afterward. UndoSelected on A alone must
+# revert A's own move and leave B's later, unrelated move intact - a plain
+# Undo here would instead undo B's move (the most recent edit overall), so
+# this is the exact case that distinguishes the two commands. It also
+# exercises the non-top-of-stack splice path (A's own move entry is not the
+# top of the whole-document undo stack at this point - B's is).
+SelNone
+SelKeyValue Hyperlink https://dino8.example/undosel-a
+UndoSelected
+SelNone
+SelKeyValue Hyperlink https://dino8.example/undosel-a
+What
+SelNone
+SelKeyValue Hyperlink https://dino8.example/undosel-b
+What
+# A's spliced-out entry is not carried to Redo (see UndoSelected's own
+# comment for why), but confirm the rest of the stack it left behind is
+# undisturbed: an ordinary Undo/Redo still finds and round-trips B's move.
+Undo
+SelNone
+SelKeyValue Hyperlink https://dino8.example/undosel-b
+What
+Redo
+SelNone
+SelKeyValue Hyperlink https://dino8.example/undosel-b
+What
+# --- UndoSelected: honest refusal when isolating a match would require
+# subtracting one entry's effect out of an object a later, unrelated entry
+# also touched (this codebase's whole-object snapshot deltas can't compose
+# that safely - see Document.cpp's UndoSelected for why).
+Point 400,200,0
+SelLast
+Hyperlink https://dino8.example/undosel-c
+Point 450,200,0
+SelLast
+Hyperlink https://dino8.example/undosel-d
+SelNone
+SelKeyValue Hyperlink https://dino8.example/undosel-c
+SelKeyValue Hyperlink https://dino8.example/undosel-d
+Move 400,200,0 405,200,0
+SelNone
+SelKeyValue Hyperlink https://dino8.example/undosel-d
+Move 450,200,0 450,230,0
+SelNone
+SelKeyValue Hyperlink https://dino8.example/undosel-c
+UndoSelected
+SelNone
+SelKeyValue Hyperlink https://dino8.example/undosel-c
+What
 UngroupAll
 SelectionFilter
 Cancel

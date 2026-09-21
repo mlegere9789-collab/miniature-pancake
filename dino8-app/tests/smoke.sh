@@ -1566,6 +1566,20 @@ fi
 echo "$SL" | grep -E "^(ok|FAIL)"
 if echo "$SL" | grep -q "^FAIL"; then fail=1; fi
 echo "$SL" | grep -q "^smoke:" || { echo "$SL"; echo "FAIL: select script produced no smoke line"; fail=1; }
+slcheck() { if echo "$SL" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+# UndoSelected (per-object-scoped undo): object A (tagged undosel-a) was
+# moved to 205,200,0, then unrelated object B (tagged undosel-b) was moved
+# to 300,220,0 afterward - so A's own move entry is NOT the top of the
+# whole-document undo stack (B's is), exercising the non-top splice path.
+# UndoSelected on A alone must revert only A - not B, and not the whole
+# document the way a plain Undo would (which would undo B's move instead,
+# since it's the most recent edit overall).
+slcheck "Location: 200, 200, 0" "UndoSelected on A reverted A's own move back to its pre-move location (200,200,0), not left at 205,200,0, even though A's entry was buried under B's later, unrelated one"
+slcheck "Location: 300, 220, 0" "B's later, unrelated move stayed intact after UndoSelected targeted A only - proving this is not the same as a plain Undo (which would have undone B's move, the most recent edit overall)"
+slcheck "Location: 300, 200, 0" "B's move is genuinely still on the undo stack after UndoSelected spliced A's entry out from underneath it: an ordinary Undo() right afterward undoes B's move next (back to 300,200,0)"
+slcheck "The most recent change to the selection ('Move') was followed by a later edit ('Move') to the same object, so it can't be safely undone on its own without also affecting that later edit. Use Undo repeatedly instead." \
+  "UndoSelected honestly refuses (rather than guessing) when isolating a match would require splitting a later, still-live edit to an object the match's own batch-move also touched"
+slcheck "Location: 405, 200, 0" "the refused UndoSelected left object C exactly where the batch move put it (405,200,0), not reverted, since it could not be safely isolated"
 
 # Provenance-based selection: SelChildren/SelParents/SelExtrusion now walk a
 # real parent/child side table (doc/Document.h's ProvenanceInfo) instead of
