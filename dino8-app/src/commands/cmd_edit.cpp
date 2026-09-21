@@ -293,6 +293,63 @@ class ExtendCommand : public Command {
   std::vector<ObjectId> ids_;
 };
 
+// MakePeriodic: Smooth=Yes is the old periodic-uniform refit through the
+// same control points (seam relaxed smooth, shape changes slightly).
+// Smooth=No is the real exact-shape-preserving re-knot
+// (kernel::NurbsCurve::MakePeriodicExact, see its own doc comment) - a
+// closed curve becomes genuinely periodic while PointAt(t) stays the same
+// (to within 1e-9) at every parameter in the original domain, including a
+// curve with a genuine sharp corner at the seam (which then keeps that
+// corner - periodic does not mean smooth, just that the wraparound is
+// exact and structural).
+class MakePeriodicCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select curves"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    options = {{"Smooth", smooth_ ? "Yes" : "No", {"Yes", "No"}, false, true}};
+    WantEnter("Press Enter to make periodic (Smooth=" + std::string(smooth_ ? "Yes" : "No") + ")");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n != "Smooth") return;
+    smooth_ = (v == "Yes");
+    options[0].value = smooth_ ? "Yes" : "No";
+    prompt = "Press Enter to make periodic (Smooth=" + std::string(smooth_ ? "Yes" : "No") + ")";
+  }
+  void OnEnter(CommandContext& ctx) override { Run(ctx); }
+  void OnText(CommandContext& ctx, const std::string& t) override { Run(ctx); ctx.Engine().Execute(t); }
+  void Run(CommandContext& ctx) {
+    ctx.Doc().BeginChange("MakePeriodic");
+    int made = 0, failed = 0;
+    for (ObjectId id : ids_) {
+      SceneObject* o = ctx.Doc().Find(id);
+      if (!o || o->kind != ObjectKind::Curve) continue;
+      if (smooth_) {
+        ON_NurbsCurve& c = o->curve->raw();
+        if (c.IsPeriodic()) { ++made; continue; }
+        const int order = c.Order();
+        int n = c.CVCount();
+        if (c.IsClosed() && n > order) --n;  // the duplicated seam CV
+        if (n < order) { ++failed; continue; }
+        std::vector<ON_3dPoint> cvs;
+        for (int i = 0; i < n; ++i) { ON_3dPoint p; c.GetCV(i, p); cvs.push_back(p); }
+        ON_NurbsCurve periodic;
+        if (periodic.CreatePeriodicUniformNurbs(3, order, n, cvs.data())) { c = periodic; o->InvalidateDisplay(); ++made; }
+        else ++failed;
+      } else {
+        const kernel::Result r = o->curve->MakePeriodicExact();
+        if (r == kernel::Result::Ok || r == kernel::Result::NoOpAlreadySatisfied) { o->InvalidateDisplay(); ++made; }
+        else ++failed;
+      }
+    }
+    ctx.Print("MakePeriodic: " + std::to_string(made) + " curve(s) made periodic (Smooth=" + (smooth_ ? "Yes" : "No") + ")" +
+               (failed ? ", " + std::to_string(failed) + " skipped (not closed, or degree < 2)" : ""));
+    Finish();
+  }
+  std::vector<ObjectId> ids_;
+  bool smooth_ = true;
+};
+
 // Picks the single control point of a curve/surface selection nearest a
 // clicked point, then sets its weight (making the object rational if it
 // wasn't already). With no pick (Enter), falls back to making every
@@ -598,30 +655,8 @@ void RegisterEditCommands(CommandEngine& e) {
   Reg(e, "Offset", Make<OffsetCommand>());
   Reg(e, "Extend", Make<ExtendCommand>(), CommandStatus::Implemented,
       "Extends the end of each curve nearer the picked point until its tangent line reaches that point (Enter extends both ends by a fixed 10% of the domain instead).");
-  Reg(e, "MakePeriodic", OnSelection("Select curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        // A closed clamped curve becomes a periodic uniform curve through the
-        // same control points (like Rhino's Smooth=Yes: the shape relaxes
-        // slightly but the seam becomes smooth). Only re-knotting the clamped
-        // CVs, as before, tore the curve open at the seam.
-        ctx.Doc().BeginChange("MakePeriodic");
-        int made = 0;
-        for (ObjectId id : ids) {
-          SceneObject* o = ctx.Doc().Find(id);
-          if (!o || o->kind != ObjectKind::Curve) continue;
-          ON_NurbsCurve& c = o->curve->raw();
-          if (c.IsPeriodic()) { ++made; continue; }
-          const int order = c.Order();
-          int n = c.CVCount();
-          if (c.IsClosed() && n > order) --n;  // the duplicated seam CV
-          if (n < order) continue;
-          std::vector<ON_3dPoint> cvs;
-          for (int i = 0; i < n; ++i) { ON_3dPoint p; c.GetCV(i, p); cvs.push_back(p); }
-          ON_NurbsCurve periodic;
-          if (periodic.CreatePeriodicUniformNurbs(3, order, n, cvs.data())) { c = periodic; o->InvalidateDisplay(); ++made; }
-        }
-        ctx.Print("MakePeriodic: " + std::to_string(made) + " curve(s) made periodic");
-      }), CommandStatus::Partial,
-      "Only the Smooth=Yes behaviour is implemented (a periodic-uniform curve refit through the same control points, seam relaxed smooth); Smooth=No's exact-shape-preserving re-knot is a distinct, considerably harder NURBS algorithm this build does not have.");
+  Reg(e, "MakePeriodic", Make<MakePeriodicCommand>(), CommandStatus::Implemented,
+      "Smooth=Yes is a periodic-uniform curve refit through the same control points (the seam relaxes smooth, shape changes slightly). Smooth=No is the real exact-shape-preserving re-knot (kernel::NurbsCurve::MakePeriodicExact - Bezier-decompose then wrap the control polygon/knot vector by the curve's own degree): the periodic result reproduces the original curve's PointAt(t) to within 1e-9 at every parameter in the original domain, not merely a smoothed-out lookalike.");
   Reg(e, "Weight", Make<WeightCommand>(), CommandStatus::Implemented,
       "Picks the nearest control point to a clicked point and sets its weight (making the curve/surface rational if needed); Enter instead makes every selected object rational at weight 1.");
   Reg(e, "PointsOn", OnSelection("Select objects to turn on control points", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { for (ObjectId id : ids) if (SceneObject* o = ctx.Doc().Find(id)) { o->show_control_points = true; o->InvalidateDisplay(); } ctx.Print("Control points on for " + std::to_string(ids.size()) + " object(s)"); }));

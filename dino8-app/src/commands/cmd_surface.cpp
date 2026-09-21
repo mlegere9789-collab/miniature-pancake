@@ -714,9 +714,16 @@ class PipeCommand : public Command {
         if (wrap) m = MeshFromRows(rows, true, true);
         else m = kernel::Mesh::LoftClosedRings(rows);
         m = Outward(m);
-        ctx.Doc().Add(SceneObject::MakeMesh(m));
+        ObjectId new_id = ctx.Doc().Add(SceneObject::MakeMesh(m));
+        // Tag with the rail curve (see PipeFeature, Document.h) even for the
+        // mesh case, so ExtractPipedCurve works regardless of Cap.
+        ctx.Doc().SetPipeFeature(new_id, c);
       } else {
-        ctx.Doc().Add(SceneObject::MakeSurface(SurfaceFromRows(rows, true, false)));
+        ObjectId new_id = ctx.Doc().Add(SceneObject::MakeSurface(SurfaceFromRows(rows, true, false)));
+        // Tag the resulting surface with its rail curve, as real geometry
+        // (a value copy of `c`, not a reference to the source curve object,
+        // which may since have been deleted) - see PipeFeature, Document.h.
+        ctx.Doc().SetPipeFeature(new_id, c);
       }
       ++made;
     }

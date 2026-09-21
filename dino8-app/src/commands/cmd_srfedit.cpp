@@ -1485,6 +1485,125 @@ class VariableOffsetSrfCommand : public Command {
 // per-sample projection, the actual distinction the Partial note wanted.
 // ---------------------------------------------------------------------------
 
+// Real max deviation between a candidate (u,v) fit curve and the
+// original trim's own sampled (u,v) points, measured in the surface's
+// own real 3D space (not raw parameter-space distance, which has no
+// fixed relationship to real geometric size - e.g. a cylinder wall's own
+// u parameter is an angle in radians, where a "0.05" parameter gap can
+// mean anything from a hair's width to several document units of real
+// arc length depending on the radius). `tol` is a real 3D tolerance,
+// matching RefitTrim's own promise and the document tolerance a caller
+// would naturally pass it, so this is the honest way to check it.
+double MaxDeviationFromSamples(const ON_Surface& srf, const kernel::NurbsCurve& fit, const std::vector<Point3d>& samples) {
+  double worst = 0;
+  for (const Point3d& s : samples) {
+    const Point3d fit_uv = fit.ClosestPoint(s);
+    const ON_3dPoint p_orig = srf.PointAt(s.x, s.y);
+    const ON_3dPoint p_fit = srf.PointAt(fit_uv.x, fit_uv.y);
+    const double d = p_orig.DistanceTo(p_fit);
+    if (d > worst) worst = d;
+  }
+  return worst;
+}
+
+// RefitTrim: a real constrained least-squares curve fit
+// (kernel::NurbsCurve::FitLeastSquares) of the picked trim's own 2D
+// (u,v) curve to a target tolerance, using strictly fewer control points
+// than the original - iterating the control point count upward from
+// degree+1 until the fit is within `tol` of the ORIGINAL trim's own
+// sampled points, per the command's own promise. A degree-p B-spline
+// curve always lies within the convex hull of its own control points, so
+// clamping every fitted control point into the surface's own (u,v)
+// domain rectangle is a real, mathematically guaranteed way to keep the
+// whole curve inside the domain (not a clip-after-the-fact that could
+// reopen a trim-vs-domain gap) - re-verified against the tolerance after
+// clamping, since clamping can itself push the fit out of tolerance, in
+// which case this tries more control points rather than accept a
+// silently-worse fit.
+bool RefitOneTrim(ON_Brep& b, ON_BrepTrim& trim, double tol, int* out_original_cv_count) {
+  ON_BrepFace* face = trim.Face();
+  const ON_Surface* srf = face ? face->SurfaceOf() : nullptr;
+  if (!srf) return false;
+  ON_NurbsCurve orig;
+  if (trim.GetNurbForm(orig) <= 0) return false;
+  const int degree = std::max(orig.Degree(), 1);
+  const int original_cv_count = orig.CVCount();
+  if (out_original_cv_count) *out_original_cv_count = original_cv_count;
+  if (original_cv_count <= degree + 1) return false;  // already at the minimum possible
+
+  const ON_Interval du = srf->Domain(0), dv = srf->Domain(1);
+  const ON_Interval trim_domain = trim.Domain();
+  const int sample_count = std::max(200, original_cv_count * 4);
+  std::vector<Point3d> samples;
+  samples.reserve(static_cast<size_t>(sample_count) + 1);
+  for (int i = 0; i <= sample_count; ++i) {
+    const double t = trim_domain.ParameterAt(static_cast<double>(i) / sample_count);
+    const ON_3dPoint uv = trim.PointAt(t);
+    samples.push_back(Point3d(uv.x, uv.y, 0));
+  }
+
+  for (int cvc = degree + 1; cvc < original_cv_count; ++cvc) {
+    kernel::NurbsCurve fit;
+    if (kernel::NurbsCurve::FitLeastSquares(samples, degree, cvc, fit) != kernel::Result::Ok) continue;
+    if (MaxDeviationFromSamples(*srf, fit, samples) > tol) continue;
+
+    bool clamped = false;
+    for (int i = 0; i < fit.ControlPointCount(); ++i) {
+      const Point3d cp = fit.ControlPointAt(i);
+      const double cu = std::clamp(cp.x, du.Min(), du.Max());
+      const double cv2 = std::clamp(cp.y, dv.Min(), dv.Max());
+      if (cu != cp.x || cv2 != cp.y) {
+        fit.SetControlPointAt(i, Point3d(cu, cv2, 0));
+        clamped = true;
+      }
+    }
+    if (clamped && MaxDeviationFromSamples(*srf, fit, samples) > tol) continue;  // re-verify, then keep trying larger cvc
+
+    ON_NurbsCurve* new2d = new ON_NurbsCurve(fit.raw());
+    new2d->ChangeDimension(2);
+    const int c2i = b.AddTrimCurve(new2d);
+    if (c2i < 0) { delete new2d; continue; }
+    if (!b.SetTrimCurve(trim, c2i)) continue;
+    return true;
+  }
+  return false;
+}
+
+class RefitTrimCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantPoint("Click a trim (edge) to refit"); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!pick_) {
+      pick_ = PickEdge(ctx, p);
+      if (!pick_) { ctx.Warn("RefitTrim: no edge near that point"); Finish(); return; }
+      WantNumber("Fit tolerance", ctx.Settings().absolute_tolerance);
+    }
+  }
+  void OnNumber(CommandContext& ctx, double tol) override {
+    if (!pick_) return;
+    if (!(tol > 0)) { ctx.Warn("RefitTrim: tolerance must be positive"); Finish(); return; }
+    SceneObject* o = ctx.Doc().Find(pick_->id);
+    if (!o || o->kind != ObjectKind::Brep || !o->brep) { Finish(); return; }
+    ON_Brep& b = o->brep->raw();
+    if (pick_->edge < 0 || pick_->edge >= b.m_E.Count()) { Finish(); return; }
+    ON_BrepEdge& edge = b.m_E[pick_->edge];
+    ctx.Doc().BeginChange("RefitTrim");
+    int refit_count = 0, failed_count = 0;
+    for (int ti = 0; ti < edge.TrimCount(); ++ti) {
+      ON_BrepTrim* trim = edge.Trim(ti);
+      if (!trim) continue;
+      int original_cv_count = 0;
+      if (RefitOneTrim(b, *trim, tol, &original_cv_count)) ++refit_count; else ++failed_count;
+    }
+    if (refit_count > 0) { b.Compact(); o->InvalidateDisplay(); }
+    if (refit_count) ctx.Print("RefitTrim: " + std::to_string(refit_count) + " trim curve(s) refit to fewer control points within tolerance " + FormatNumber(tol));
+    if (failed_count) ctx.Warn("RefitTrim: " + std::to_string(failed_count) + " trim curve(s) could not be refit to strictly fewer control points within that tolerance while staying inside the surface's own (u,v) domain (they were already minimal, or no smaller fit satisfies both constraints) - left unchanged");
+    Finish();
+  }
+  void OnText(CommandContext& ctx, const std::string& t) override { char* e2; const double v2 = std::strtod(t.c_str(), &e2); if (e2 != t.c_str() && *e2 == 0) OnNumber(ctx, v2); }
+  std::optional<EdgePick> pick_;
+};
+
 class FitCurveToSurfaceCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select curve to fit to a surface"); }
@@ -2143,7 +2262,8 @@ void RegisterSrfEditCommands(CommandEngine& e) {
         if (found == 0) ctx.Print("RemoveAllNakedMicroEdges: no naked edges shorter than " + FormatNumber(tol * 100) + " found");
         else ctx.Warn("RemoveAllNakedMicroEdges: " + std::to_string(found) + " naked micro edge(s) found, but automatic removal (collapsing the surrounding trims) is not implemented; remove them by hand with EditSrf/PointsOn");
       }), CommandStatus::Partial, "Detects naked edges shorter than 100x the document tolerance and reports them; does not yet remove them (that needs re-trimming the surrounding faces).");
-  Reg(e, "RefitTrim", Planned("RefitTrim: planned; refitting a trim curve to a tolerance while keeping it inside the surface domain needs a constrained curve fit the kernel does not offer."), CommandStatus::Partial);
+  Reg(e, "RefitTrim", Make<RefitTrimCommand>(), CommandStatus::Implemented,
+      "Real constrained curve fit: kernel::NurbsCurve::FitLeastSquares (a genuine global least-squares B-spline approximation) tried at increasing control-point counts until the fit is within the given tolerance of the original trim's own sampled points, with every fitted control point clamped into the surface's own (u,v) domain rectangle afterward (control points bound the curve, so this provably keeps the whole curve inside the domain) and the tolerance re-verified after clamping.");
   Reg(e, "SplitRefitSurface", Planned("SplitRefitSurface: planned; use Split then Rebuild on the pieces."), CommandStatus::Partial);
   Reg(e, "MoveFace", Make<MovePartsCommand>(true, false));
   Reg(e, "MoveEdge", Make<MovePartsCommand>(false, false));
@@ -2188,7 +2308,19 @@ void RegisterSrfEditCommands(CommandEngine& e) {
         }
         ctx.Print("ExtractBadSrf: " + std::to_string(made) + " invalid polysurface(s) extracted as copies");
       }));
-  Reg(e, "ExtractPipedCurve", Planned("ExtractPipedCurve: planned; Dino 8's Pipe command does not tag the resulting surface with its rail curve, so there is nothing recorded to extract."), CommandStatus::Partial);
+  Reg(e, "ExtractPipedCurve", OnSelection("Select pipe surfaces or meshes to extract the rail curve from", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        ctx.Doc().BeginChange("ExtractPipedCurve");
+        int made = 0;
+        for (ObjectId id : ids) {
+          const PipeFeature* pf = ctx.Doc().FindPipeFeature(id);
+          if (!pf) continue;
+          ctx.Doc().Add(SceneObject::MakeCurve(pf->rail));
+          ++made;
+        }
+        if (made == 0) ctx.Warn("ExtractPipedCurve: none of the selected objects carry a recorded Pipe rail curve (only objects made by this session's Pipe command do)");
+        else ctx.Print("ExtractPipedCurve: extracted " + std::to_string(made) + " rail curve(s)");
+      }), CommandStatus::Implemented,
+      "Real extraction: Pipe now tags its resulting surface/mesh with the original rail curve as independent geometry (a value copy, session-state side table - see PipeFeature, Document.h), so ExtractPipedCurve pulls it back out as a new curve object even if the source curve was deleted.");
   Reg(e, "ExtractAnalysisMesh", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Mesh"); }));
   Reg(e, "ConvertExtrusion", Immediate([](CommandContext& ctx) { ctx.Print("ConvertExtrusion: Dino 8 has no separate lightweight extrusion object type; every extrusion is already stored as an ordinary polysurface, so there is nothing to convert."); }));
   Reg(e, "UseExtrusions", Immediate([](CommandContext& ctx) { ctx.Print("UseExtrusions: Dino 8 always stores extruded geometry as an ordinary polysurface; this setting has no separate extrusion representation to toggle."); }));

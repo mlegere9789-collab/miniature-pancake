@@ -980,6 +980,125 @@ void TestCurveExtend() {
         "Extend()'s own documented restriction");
 }
 
+// MakePeriodicExact(): the real, exact-shape-preserving re-knot behind
+// MakePeriodic's Smooth=No (as distinct from the periodic-uniform refit
+// behind Smooth=Yes, which relaxes the shape at the seam). Proves the
+// actual claim - that the periodic curve evaluates IDENTICALLY to the
+// pre-conversion original at every parameter in the original domain, to
+// within machine-precision-scale error - on curves this algorithm has to
+// handle honestly: a non-rational curve with a genuine sharp corner at
+// the seam (the hard case: nothing here assumes the seam was already
+// smooth), and a rational one (a circle, whose homogeneous weights are a
+// real, separate source of numerical trouble this implementation had to
+// specifically work around - see MakePeriodicExact()'s own doc comment).
+void TestCurveMakePeriodicExact() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A closed, degree-3 curve with a genuine sharp corner at the seam
+  // (the control polygon's incoming and outgoing directions at the
+  // shared start/end point are nothing alike - an actual kink, not a
+  // smooth closure) - the case Smooth=No's own honest note singled out
+  // as needing more than a plain periodic-uniform refit.
+  const std::vector<Point3d> kinked_pts = {
+      Point3d(0, 0, 0),  Point3d(2, 0, 0),   Point3d(2, 2, 0),  Point3d(0, 2, 0),
+      Point3d(-2, 2, 0), Point3d(-2, -2, 0), Point3d(2, -2, 0), Point3d(0, 0, 0)};
+  NurbsCurve kinked = NurbsCurve::FromControlPoints(kinked_pts, /*degree=*/3);
+  Check(kinked.IsClosed() && !kinked.IsPeriodic(),
+        "the kinked test curve starts closed but not periodic (the case "
+        "MakePeriodicExact exists to handle)");
+
+  std::vector<Point3d> kinked_before;
+  const dino8::kernel::Interval kinked_domain = kinked.Domain();
+  constexpr int kSamples = 50;
+  for (int i = 0; i <= kSamples; ++i) {
+    const double t = kinked_domain.min + (kinked_domain.max - kinked_domain.min) * i / kSamples;
+    kinked_before.push_back(kinked.PointAt(t));
+  }
+
+  const Result kinked_result = kinked.MakePeriodicExact();
+  Check(kinked_result == Result::Ok, "MakePeriodicExact() returns Ok on the kinked closed curve");
+  Check(kinked.IsPeriodic(),
+        "the result is genuinely ON-periodic (IsPeriodic() true), not just closed");
+  Check(kinked.raw().IsValid(),
+        "the resulting knot vector and control net form a genuinely valid ON_NurbsCurve "
+        "(not merely one that happens to evaluate correctly)");
+  const dino8::kernel::Interval kinked_domain_after = kinked.Domain();
+  Check(std::abs(kinked_domain_after.min - kinked_domain.min) < 1e-12 &&
+            std::abs(kinked_domain_after.max - kinked_domain.max) < 1e-12,
+        "the periodic curve's own domain is unchanged - same parameter range as the original");
+
+  double kinked_max_error = 0.0;
+  for (int i = 0; i <= kSamples; ++i) {
+    const double t = kinked_domain.min + (kinked_domain.max - kinked_domain.min) * i / kSamples;
+    const double error = (kinked.PointAt(t) - kinked_before[static_cast<size_t>(i)]).Length();
+    kinked_max_error = std::max(kinked_max_error, error);
+  }
+  Check(kinked_max_error < 1e-9,
+        "the exact claim, proven numerically: sampled at 51 points across the original "
+        "domain (including both a genuine sharp corner in the middle of the control net "
+        "and the seam itself at both domain ends), the periodic curve's PointAt(t) matches "
+        "the ORIGINAL (pre-conversion) curve's PointAt(t) to within 1e-9 everywhere - not a "
+        "'looks similar' tolerance");
+
+  // A second, independently-checked case: a rational curve (a circle),
+  // whose weights this implementation had to specifically handle without
+  // distorting the curve - see MakePeriodicExact()'s own doc comment on
+  // why a literal zero-width knot span at the domain end is numerically
+  // unsafe for a rational curve specifically (confirmed directly: without
+  // the fix, OpenNURBS' own evaluator returns Inf there, not merely an
+  // approximate value).
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 3.0);
+  ON_NurbsCurve circle_form;
+  Check(on_circle.GetNurbForm(circle_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = circle_form;
+  Check(circle.IsClosed() && !circle.IsPeriodic(),
+        "ON_Circle::GetNurbForm's own output is closed but not itself periodic");
+
+  std::vector<Point3d> circle_before;
+  const dino8::kernel::Interval circle_domain = circle.Domain();
+  for (int i = 0; i <= kSamples; ++i) {
+    const double t = circle_domain.min + (circle_domain.max - circle_domain.min) * i / kSamples;
+    circle_before.push_back(circle.PointAt(t));
+  }
+  const Result circle_result = circle.MakePeriodicExact();
+  Check(circle_result == Result::Ok, "MakePeriodicExact() returns Ok on the rational circle");
+  Check(circle.IsPeriodic() && circle.raw().IsValid(),
+        "the periodic circle is both genuinely ON-periodic and a valid ON_NurbsCurve");
+
+  double circle_max_error = 0.0;
+  for (int i = 0; i <= kSamples; ++i) {
+    const double t = circle_domain.min + (circle_domain.max - circle_domain.min) * i / kSamples;
+    const double error = (circle.PointAt(t) - circle_before[static_cast<size_t>(i)]).Length();
+    circle_max_error = std::max(circle_max_error, error);
+  }
+  Check(circle_max_error < 1e-9,
+        "the same exact-match proof, including a rational curve's own homogeneous "
+        "weights, and including evaluating exactly at both domain endpoints (where the "
+        "unpatched construction returned Inf) - still within 1e-9");
+
+  // Degree 1 and an already-periodic curve are both explicit no-shape-
+  // change cases: MakePeriodicExact() must say so honestly rather than
+  // silently doing nothing or, worse, corrupting the curve.
+  NurbsCurve line_loop = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(0, 1, 0), Point3d(0, 0, 0)}, /*degree=*/1);
+  Check(line_loop.MakePeriodicExact() == Result::Failed,
+        "MakePeriodicExact() refuses a degree-1 curve rather than fabricating a periodic "
+        "form ON's own convention says degree-1 curves cannot have");
+
+  NurbsCurve already_periodic;
+  already_periodic.raw().CreatePeriodicUniformNurbs(
+      3, 4, 5, std::vector<ON_3dPoint>({ON_3dPoint(0, 0, 0), ON_3dPoint(1, 2, 0), ON_3dPoint(2, 0, 0),
+                                         ON_3dPoint(1, -2, 0), ON_3dPoint(-1, -1, 0)})
+                   .data());
+  Check(already_periodic.IsPeriodic(), "the CreatePeriodicUniformNurbs fixture is already periodic");
+  Check(already_periodic.MakePeriodicExact() == Result::NoOpAlreadySatisfied,
+        "MakePeriodicExact() reports NoOpAlreadySatisfied on a curve that's already periodic, "
+        "rather than rebuilding it");
+}
+
 void TestCurveClosestPoint() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -1008,6 +1127,157 @@ void TestCurveClosestPoint() {
   Check((on_curve - Point3d(7, 0, 0)).Length() < 1e-6,
         "a query point already on the curve is returned as its own "
         "closest point");
+}
+
+// FitLeastSquares: the real global least-squares curve approximation
+// behind RefitTrim's "fewer, better-distributed control points within a
+// tolerance" claim - not a disguised interpolation. Proves the actual,
+// numerically meaningful property of a least-squares fit: MORE control
+// points strictly improves (or at worst does not worsen) the fit, and
+// the two endpoints are always interpolated exactly.
+void TestCurveFitLeastSquares() {
+  using dino8::kernel::Interval;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  std::vector<Point3d> pts;
+  const int N = 60;
+  for (int i = 0; i <= N; ++i) {
+    const double t = static_cast<double>(i) / N;
+    pts.push_back(Point3d(t * 10.0, std::sin(t * 6.0) * 2.0 + 0.3 * std::sin(t * 23.0), 0.0));
+  }
+  // The same chord-length parameterization FitLeastSquares itself uses
+  // internally, so sampling the fit curve at these parameters is the
+  // honest way to measure "how close is the fit to point k" - sampling
+  // at a uniform parameter fraction instead would conflate parameterization
+  // mismatch with actual fit error (confirmed by a first draft of this
+  // test that did exactly that and got a misleadingly large "error").
+  std::vector<double> u_bar(static_cast<size_t>(N) + 1);
+  {
+    double total = 0.0;
+    std::vector<double> seg(static_cast<size_t>(N) + 1, 0.0);
+    for (int k = 1; k <= N; ++k) { seg[static_cast<size_t>(k)] = (pts[static_cast<size_t>(k)] - pts[static_cast<size_t>(k - 1)]).Length(); total += seg[static_cast<size_t>(k)]; }
+    u_bar[0] = 0.0;
+    u_bar[static_cast<size_t>(N)] = 1.0;
+    double acc = 0.0;
+    for (int k = 1; k < N; ++k) { acc += seg[static_cast<size_t>(k)]; u_bar[static_cast<size_t>(k)] = acc / total; }
+  }
+
+  auto max_error = [&](const NurbsCurve& fit) {
+    double worst = 0.0;
+    for (int i = 0; i <= N; ++i) {
+      const double e = (fit.PointAt(u_bar[static_cast<size_t>(i)]) - pts[static_cast<size_t>(i)]).Length();
+      worst = std::max(worst, e);
+    }
+    return worst;
+  };
+
+  double previous_error = std::numeric_limits<double>::infinity();
+  for (int cvc : {5, 8, 12, 20, 40}) {
+    NurbsCurve fit;
+    const Result r = NurbsCurve::FitLeastSquares(pts, /*degree=*/3, cvc, fit);
+    Check(r == Result::Ok, ("FitLeastSquares succeeds for control_point_count=" + std::to_string(cvc)).c_str());
+    Check(fit.ControlPointCount() == cvc, "the fit curve has exactly the requested control point count");
+    Check((fit.PointAt(fit.Domain().min) - pts.front()).Length() < 1e-9 &&
+              (fit.PointAt(fit.Domain().max) - pts.back()).Length() < 1e-9,
+          "the fit curve interpolates the first and last data points exactly, as a real "
+          "least-squares curve fit does");
+    const double err = max_error(fit);
+    Check(err <= previous_error + 1e-9,
+          ("more control points (" + std::to_string(cvc) +
+           ") does not make the least-squares fit worse than fewer").c_str());
+    previous_error = err;
+  }
+  Check(previous_error < 0.01,
+        "the real numeric claim: with 40 of the original 61 data points' worth of control "
+        "points, the least-squares fit is within 0.01 of every original sample - genuinely "
+        "converging, not just reporting Ok");
+
+  // Real failure modes this should refuse cleanly rather than crash or
+  // fabricate a result for.
+  NurbsCurve dummy;
+  Check(NurbsCurve::FitLeastSquares({Point3d(0, 0, 0)}, 3, 2, dummy) == Result::Failed,
+        "FitLeastSquares fails on fewer than 2 data points");
+  Check(NurbsCurve::FitLeastSquares(pts, 3, 3, dummy) == Result::Failed,
+        "FitLeastSquares fails when control_point_count < degree + 1");
+  Check(NurbsCurve::FitLeastSquares(pts, 3, 1000, dummy) == Result::Failed,
+        "FitLeastSquares fails when control_point_count exceeds the number of data points");
+}
+
+// Simulates RefitTrim's own algorithm directly at the kernel level (fit at
+// increasing control-point counts, clamp into a target (u,v) domain
+// rectangle, re-verify the tolerance still holds after clamping) on a
+// circle - proving BOTH halves of the command's promise with a single,
+// controlled test fixture: a domain with real margin around the trim
+// curve succeeds with fewer control points and stays inside the domain,
+// while the SAME curve in a domain tight against its own bounding box is
+// honestly reported infeasible (the fitted control polygon of a NURBS
+// approximation to a circular arc unavoidably overshoots the arc itself -
+// a real, hand-verifiable geometric fact, not a bug) rather than silently
+// producing an out-of-domain or out-of-tolerance result.
+void TestCurveFitLeastSquaresConstrainedRefit() {
+  using dino8::kernel::Interval;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const double radius = 2.0;
+  const int degree = 3;
+  std::vector<Point3d> samples;
+  const int N = 200;
+  for (int i = 0; i <= N; ++i) {
+    const double a = 2.0 * ON_PI * i / N;
+    samples.push_back(Point3d(radius * std::cos(a), radius * std::sin(a), 0.0));
+  }
+  const int original_cv_count = 12;  // pretend the "original" trim had this many CVs
+
+  auto try_refit = [&](Interval du, Interval dv, double tol, bool* out_clamped_at_success) -> bool {
+    for (int cvc = degree + 1; cvc < original_cv_count; ++cvc) {
+      NurbsCurve fit;
+      if (NurbsCurve::FitLeastSquares(samples, degree, cvc, fit) != Result::Ok) continue;
+      auto max_dev = [&]() {
+        double worst = 0.0;
+        for (const Point3d& s : samples) worst = std::max(worst, (fit.ClosestPoint(s) - s).Length());
+        return worst;
+      };
+      if (max_dev() > tol) continue;
+      bool clamped = false;
+      for (int i = 0; i < fit.ControlPointCount(); ++i) {
+        const Point3d cp = fit.ControlPointAt(i);
+        const double cx = std::clamp(cp.x, du.min, du.max);
+        const double cy = std::clamp(cp.y, dv.min, dv.max);
+        if (cx != cp.x || cy != cp.y) { fit.SetControlPointAt(i, Point3d(cx, cy, 0)); clamped = true; }
+      }
+      if (clamped && max_dev() > tol) continue;
+      if (out_clamped_at_success) *out_clamped_at_success = clamped;
+      return true;
+    }
+    return false;
+  };
+
+  // Generous domain (radius 2 circle inside a [-20,20] square): plenty of
+  // room for the fitted control polygon's own natural overshoot.
+  bool clamped_at_success = false;
+  const bool generous_ok = try_refit(Interval{-20, 20}, Interval{-20, 20}, 0.01, &clamped_at_success);
+  Check(generous_ok, "the constrained refit succeeds with fewer control points when the target "
+                      "domain has real margin around the trim curve");
+  Check(!clamped_at_success, "...and with that much margin, the accepted fit's control points "
+                              "never actually needed clamping in the first place");
+
+  // Domain clamped exactly to the curve's own tight bounding box: the
+  // real geometric fact that a NURBS curve fit to a circular arc has
+  // control points that overshoot the arc's own radius makes this
+  // genuinely infeasible at a tight tolerance - the algorithm must say so
+  // rather than silently return an out-of-domain or out-of-tolerance
+  // curve.
+  const bool tight_ok = try_refit(Interval{-radius, radius}, Interval{-radius, radius}, 0.01, nullptr);
+  Check(!tight_ok, ("the SAME constrained refit honestly reports infeasible when the domain is "
+                     "clamped exactly to the trim curve's own tight bounding box (fewer than "
+                     "the original " + std::to_string(original_cv_count) +
+                         " control points cannot stay both within tolerance and within that "
+                         "domain at once) - proven, not assumed, by exhausting every candidate "
+                         "control-point count").c_str());
 }
 
 void TestCurveCurvature() {
@@ -19371,7 +19641,10 @@ int main() {
   TestCurveTrim();
   TestCurveSplit();
   TestCurveExtend();
+  TestCurveMakePeriodicExact();
   TestCurveClosestPoint();
+  TestCurveFitLeastSquares();
+  TestCurveFitLeastSquaresConstrainedRefit();
   TestCurveCurvature();
   TestCurveSuggestedSamples();
   TestCurveSuggestedParameterValues();
