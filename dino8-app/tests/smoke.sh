@@ -1155,6 +1155,52 @@ FRAMES="$(ls "$TMP/vt/frames"/frame_*.bmp 2>/dev/null | wc -l)"
 [ -s "$TMP/vt/frames/frame_0001.bmp" ] && [ "$(head -c 2 "$TMP/vt/frames/frame_0001.bmp")" = "BM" ] && echo "ok   frame_0001.bmp is a BMP" || { echo "FAIL frame_0001.bmp"; fail=1; }
 grep -q "^Upper" "$TMP/vt/clipping.txt" && echo "ok   ExportClippingSectionInfo listed the Upper plane" || { echo "FAIL clipping.txt"; fail=1; }
 
+# PrintDisplay: the preview must show each object's real print colour
+# (Document::EffectiveColor, the same colour ExportPdf/ExportSvg actually
+# put on the page) instead of Viewport.cpp's near-black-on-dark-background
+# legibility lift - see printdisplay_script.txt. A line coloured 5,5,5 (near
+# black) on the default dark Wireframe background gets lifted to 222,225,230
+# with PrintDisplay off, and must show its literal, unlifted 5,5,5 with
+# PrintDisplay on.
+mkdir -p "$TMP/pd"
+sed "s|@TMP@|$TMP/pd|g" "$HERE/printdisplay_script.txt" > "$TMP/printdisplay_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  PD="$("$BIN" --smoke 30 --script "$TMP/printdisplay_script.txt" 2>&1)" || { echo "$PD"; echo "FAIL: PrintDisplay script exited non-zero"; exit 1; }
+else
+  PD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/printdisplay_script.txt" 2>&1)" || { echo "$PD"; echo "FAIL: PrintDisplay script exited non-zero"; exit 1; }
+fi
+pdcheck() { if echo "$PD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+pdcheck "SetRenderColor: 1 object(s) set to 5,5,5" "SetRenderColor gave the line its own near-black colour"
+pdcheck "PrintDisplay: off" "PrintDisplay off before the first screenshot"
+pdcheck "PrintDisplay: on (print line widths and print colours previewed)" "PrintDisplay on reports it now also previews print colours"
+pdcheck "^ok   expect_objects 1" "PrintDisplay script left exactly the one line"
+python3 - "$TMP/pd/pd_off.bmp" "$TMP/pd/pd_on.bmp" <<'PY' && echo "ok   PrintDisplay on shows the line's literal print colour (5,5,5); PrintDisplay off still lifts it to 222,225,230 for on-screen legibility" || { echo "FAIL PrintDisplay's preview does not reflect each object's real print colour"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert size == len(d) and hdr == 40 and planes == 1 and bpp == 24, (path, size, len(d), w, h, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * abs(h), (path, 'pixel data size')
+    return px
+
+def count(px, triple):
+    return sum(1 for i in range(0, len(px) - 2, 3) if px[i:i + 3] == triple)
+
+off_px = read_bmp(sys.argv[1])
+on_px = read_bmp(sys.argv[2])
+lifted_bgr = bytes((230, 225, 222))  # Color::FromBytes(222,225,230) written BGR (BMP's own byte order)
+raw_gray = bytes((5, 5, 5))          # SetRenderColor 5,5,5 - a pure grey, so BGR/RGB order does not matter
+
+assert count(off_px, lifted_bgr) > 0, 'PrintDisplay off: the near-black line was not lifted to the legibility colour'
+assert count(off_px, raw_gray) == 0, 'PrintDisplay off: the literal near-black colour leaked through despite the legibility lift'
+assert count(on_px, raw_gray) > 0, 'PrintDisplay on: the line does not show its own literal print colour (5,5,5)'
+assert count(on_px, lifted_bgr) == 0, 'PrintDisplay on: the legibility lift colour is still present - PrintDisplay is not bypassing it'
+PY
+
 # Lua scripting: RunScript/rs.* API, "= expr" inline evaluation, rs.GetPoint
 # fed by a trailing script token (see script_script.txt).
 cat > "$TMP/t.lua" <<'LUA'
@@ -1797,6 +1843,7 @@ crcheck "CV\[0\] 10,0,0" "Polygon's first corner sits at the picked radius"
 crcheck "degree 1, 13 control points, non-rational, closed" "PolygonStar NumSides=6 built a closed 13-CV (12+seam) star"
 crcheck "Closest point 5,0,0 distance 5" "ClosestPt found the nearest point on the line"
 crcheck "degree 1 x 1, CVs 2 x 2" "Plane3Pt/SrfPt built flat 4-CV surfaces"
+crcheck "PointGrid: 3 x 4 grid of points" "PointGrid CountX=3 CountY=4 built a real, non-square grid, not the old hardcoded 5 x 5"
 
 # Second-wave drafting tools: hatch library, tables, GD&T, multi-leaders,
 # live section views (see drafting2_script.txt).

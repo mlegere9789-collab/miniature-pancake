@@ -173,7 +173,10 @@ class Viewport {
     // Per-detail hiding (HideInDetail / HideLayersInDetail): null = nothing extra hidden.
     const std::vector<int>* hidden_layers = nullptr;
     const std::vector<ObjectId>* hidden_objects = nullptr;
-    // PrintDisplay: preview print line widths (curves drawn thicker).
+    // PrintDisplay: preview print line widths (curves drawn thicker) and
+    // each object's real print colour (skips the near-black-on-dark-
+    // background legibility lift - see DrawObjects), matching what
+    // ExportPdf/ExportSvg actually put on the page.
     bool print_display = false;
     // Draw the document's clipping planes as translucent rectangles.
     bool show_clipping_planes = true;

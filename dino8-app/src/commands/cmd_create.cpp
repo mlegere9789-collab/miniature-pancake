@@ -247,6 +247,56 @@ class CurveCountCommand : public Command {
   std::vector<ObjectId> ids_;
 };
 
+// PointGrid: two corner picks define a rectangular grid of point objects,
+// with CountX/CountY options (same OptionSpec convention as PolygonCommand's
+// NumSides and HelixCommand's Turns/Pitch) letting the user size the grid
+// instead of the fixed 5 x 5 it used to always place. Each count must be at
+// least 2 (a "grid" of 1 is just a single point/line, and the row/column
+// spacing math below divides by count-1).
+class PointGridCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    WantPoint("First corner of grid");
+    options = {{"CountX", std::to_string(count_x_), {}, true, false}, {"CountY", std::to_string(count_y_), {}, true, false}};
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    int k = std::atoi(v.c_str());
+    if (n == "CountX" && k >= 2) { count_x_ = k; options[0].value = std::to_string(count_x_); }
+    else if (n == "CountY" && k >= 2) { count_y_ = k; options[1].value = std::to_string(count_y_); }
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    pts_.push_back(p);
+    ctx.SetLastPoint(p);
+    if (pts_.size() < 2) { WantPoint("Other corner"); return; }
+    ctx.ClearPreview();
+    Build(ctx, pts_[0], pts_[1]);
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (pts_.empty()) return;
+    ctx.ClearPreview();
+    for (const Point3d& gp : GridPoints(pts_[0], h)) ctx.AddPreviewPoint(gp);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+
+ private:
+  std::vector<Point3d> GridPoints(Point3d a, Point3d b) const {
+    std::vector<Point3d> pts;
+    for (int i = 0; i < count_x_; ++i)
+      for (int j = 0; j < count_y_; ++j)
+        pts.push_back(Point3d(a.x + (b.x - a.x) * i / (count_x_ - 1), a.y + (b.y - a.y) * j / (count_y_ - 1), a.z));
+    return pts;
+  }
+  void Build(CommandContext& ctx, Point3d a, Point3d b) {
+    ctx.Doc().BeginChange("PointGrid");
+    for (const Point3d& gp : GridPoints(a, b)) ctx.Doc().Add(SceneObject::MakePoint(gp));
+    ctx.Print("PointGrid: " + std::to_string(count_x_) + " x " + std::to_string(count_y_) + " grid of points");
+  }
+  std::vector<Point3d> pts_;
+  int count_x_ = 5;
+  int count_y_ = 5;
+};
+
 // Helix / spiral with Turns and Radius options.
 class HelixCommand : public Command {
  public:
@@ -466,15 +516,8 @@ void RegisterCreateCommands(CommandEngine& e) {
                                         }));
   Reg(e, "Helix", Make<HelixCommand>(false));
   Reg(e, "Spiral", Make<HelixCommand>(true));
-  Reg(e, "PointGrid", Make<PointsCommand>(std::vector<std::string>{"First corner of grid", "Other corner"},
-                                          [](CommandContext& ctx, const std::vector<Point3d>& p) {
-                                            ctx.Doc().BeginChange("PointGrid");
-                                            const int n = 5;
-                                            for (int i = 0; i < n; ++i)
-                                              for (int j = 0; j < n; ++j)
-                                                ctx.Doc().Add(SceneObject::MakePoint(Point3d(p[0].x + (p[1].x - p[0].x) * i / (n - 1), p[0].y + (p[1].y - p[0].y) * j / (n - 1), p[0].z)));
-                                          }),
-      CommandStatus::Partial, "5 x 5 grid; count options are planned.");
+  Reg(e, "PointGrid", Make<PointGridCommand>(),
+      CommandStatus::Implemented, "Rectangular grid of point objects between two picked corners; CountX/CountY options set the grid size (default 5 x 5).");
   Reg(e, "Divide", Make<CurveCountCommand>("Select curves to divide", "Number of segments", 10,
                                            [](CommandContext& ctx, ObjectId id, int n) {
                                              const SceneObject* o = ctx.Doc().Find(id);

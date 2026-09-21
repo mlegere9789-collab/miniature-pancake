@@ -1597,8 +1597,9 @@ void RegisterViewToolsCommands(CommandEngine& e) {
         TakeOptions(ctx, opts);
         bool& p = ctx.App().viewtools.print_display;
         p = opts.count("state") ? IsYes(opts["state"]) : !p;
-        ctx.Print(std::string("PrintDisplay: ") + (p ? "on (print line widths previewed)" : "off"));
-      }), CommandStatus::Partial, "Previews line widths; print colours are planned.");
+        ctx.Print(std::string("PrintDisplay: ") + (p ? "on (print line widths and print colours previewed)" : "off"));
+      }), CommandStatus::Implemented,
+      "Previews print line widths and each object's/layer's real print colour (Document::EffectiveColor - the same colour ExportPdf/ExportSvg actually put on the page), skipping the near-black-on-dark-background legibility lift that Viewport.cpp otherwise applies for on-screen readability.");
 
   // ---- CPlanes ----
   Reg(e, "CPlane", Make<CPlaneCommand>());

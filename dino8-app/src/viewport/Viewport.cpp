@@ -1023,7 +1023,12 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     Color line_color = doc.EffectiveColor(o);
     // Rhino's default layer colour is black, which vanishes on a dark
     // background: lift near-black wire colours so curves stay readable.
-    {
+    // PrintDisplay's whole point is to preview each object's actual print
+    // colour - the exact same Document::EffectiveColor() that ExportPdf/
+    // ExportSvg's CollectPaths (FileExchange.cpp) put on the page - so it
+    // skips this screen-legibility-only lift instead of showing a colour
+    // that will never actually appear on the printed/exported page.
+    if (!ctx.print_display) {
       Color bg_top, bg_bottom;
       BackgroundFor(mode, &doc, ctx.arctic, bg_top, bg_bottom);
       const float bg_lum = 0.299f * bg_bottom.r + 0.587f * bg_bottom.g + 0.114f * bg_bottom.b;
