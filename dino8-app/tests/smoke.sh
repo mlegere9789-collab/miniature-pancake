@@ -1986,12 +1986,12 @@ crcheck "PointGrid: 3 x 4 grid of points" "PointGrid CountX=3 CountY=4 built a r
 # create_script.txt's scripted drag-sample sequences (see CommandEngine's
 # FeedText Want::Drag case / FeedDragPolyline - the real mouse path lives in
 # Viewport.cpp's drag_capturing_/drag_capture_pts_, not exercised headlessly).
-crcheck "Sketch: interpolated a curve through 3 drag sample\(s\)" "Sketch (3 samples) fit an interpolated curve, not click-by-click points"
-crcheck "Sketch: interpolated a curve through 7 drag sample\(s\)" "Sketch (7-sample L-shaped-then-curved-back stroke) kept every sample past the 0.05-unit decimation floor"
+crcheck "Sketch: interpolated a curve through 3 drag sample(s)" "Sketch (3 samples) fit an interpolated curve, not click-by-click points"
+crcheck "Sketch: interpolated a curve through 7 drag sample(s)" "Sketch (7-sample L-shaped-then-curved-back stroke) kept every sample past the 0.05-unit decimation floor"
 crcheck "degree 2, 7 control points, non-rational, open" "the 7-sample stroke fit a real 7-CV curve, not a single segment"
 crcheck "CV\[0\] 0,0,0" "the 7-sample stroke's curve starts exactly at the drag's first sampled point"
 crcheck "CV\[6\] 0,20,0" "the 7-sample stroke's curve ends exactly at the drag's last sampled point"
-crcheck "Sketch: interpolated a curve through 4 drag sample\(s\) \(closed\)" "Sketch Closed=Yes closed the curve when the drag/sequence ended"
+crcheck "Sketch: interpolated a curve through 4 drag sample(s) (closed)" "Sketch Closed=Yes closed the curve when the drag/sequence ended"
 crcheck "degree 2, 4 control points, non-rational, closed" "the closed stroke's curve is reported closed, with the closing point appended as a 4th control point"
 crcheck "CV\[3\] 0,0,0" "the closed stroke's curve ends back exactly at its own start point (CV\[0\] == CV\[3\])"
 
