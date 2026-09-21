@@ -2572,6 +2572,90 @@ else
   echo "FAIL Dir's direction-arrow glyph changed no visible pixel vs. an otherwise identical scene"; fail=1
 fi
 
+# ShowZBuffer (Viewport::DrawObjects' "ShowZBuffer" pass, GlRenderer::
+# DrawTrianglesDepth - see AUDIT.md's dated note and zbuffer_script.txt):
+# builds two boxes at very different camera depths and toggles the flag on
+# and off around a viewport-only ViewCaptureToFile capture of each state -
+# same on/off screenshot-diff technique as the Dir arrow proof just above,
+# plus a second, stronger check that samples specific pixels in the "on"
+# capture and asserts the near box is genuinely lighter than the far one.
+mkdir -p "$TMP/zb"
+sed "s|@TMP@|$TMP/zb|g" "$HERE/zbuffer_script.txt" > "$TMP/zbuffer_script.txt"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  ZB="$("$BIN" --smoke 30 --script "$TMP/zbuffer_script.txt" 2>&1)" || { echo "$ZB"; echo "FAIL: ShowZBuffer script exited non-zero"; exit 1; }
+else
+  ZB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMP/zbuffer_script.txt" 2>&1)" || { echo "$ZB"; echo "FAIL: ShowZBuffer script exited non-zero"; exit 1; }
+fi
+zbcheck() { if echo "$ZB" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+zbcheck "ShowZBuffer: on (every visible surface/mesh now draws as a grayscale depth value - near light, far dark)" "ShowZBuffer on reports the real depth pass, not just a recorded flag"
+zbcheck "ShowZBuffer: off" "ShowZBuffer off"
+zbcheck "^ok   expect_objects 2" "ShowZBuffer script left exactly the two boxes"
+if [ -s "$TMP/zb/zbuffer_off.bmp" ] && [ -s "$TMP/zb/zbuffer_on.bmp" ] && [ -s "$TMP/zb/zbuffer_off2.bmp" ] && \
+   ! cmp -s "$TMP/zb/zbuffer_off.bmp" "$TMP/zb/zbuffer_on.bmp" && cmp -s "$TMP/zb/zbuffer_off.bmp" "$TMP/zb/zbuffer_off2.bmp"; then
+  echo "ok   ShowZBuffer is a real drawn depth pass (on differs from off; off before and after ShowZBuffer's on/off round trip is pixel-identical, so nothing else changed)"
+else
+  echo "FAIL ShowZBuffer's on capture does not differ from its own off captures"; fail=1
+fi
+python3 - "$TMP/zb/zbuffer_on.bmp" <<'PY' && echo "ok   ShowZBuffer's near box (Box A, y=0..2) samples genuinely lighter than its far box (Box B, y=100..140): a real grayscale-by-camera-distance pass, not a flat colour" || { echo "FAIL ShowZBuffer's grayscale does not get darker with camera distance"; fail=1; }
+import struct, sys
+
+def read_bmp(path):
+    d = open(path, 'rb').read()
+    assert d[:2] == b'BM', (path, 'signature')
+    size, off, hdr, w, h, planes, bpp = struct.unpack('<IxxxxIIiiHH', d[2:30])
+    assert hdr == 40 and planes == 1 and bpp == 24, (path, hdr, planes, bpp)
+    row = (w * 3 + 3) & ~3
+    px = d[off:]
+    assert len(px) == row * h, (path, 'pixel data size')
+    def get(x, y):  # y = 0 at the top of the image
+        r = h - 1 - y
+        i = r * row + x * 3
+        b, g, rr = px[i], px[i + 1], px[i + 2]
+        return rr, g, b
+    return w, h, get
+
+w, h, get = read_bmp(sys.argv[1])
+
+# Column brightness profile (max red channel per column, sampled every
+# other row for speed) to find the two boxes' bright/grey blobs against the
+# pure-black (ShowZBuffer forces the background and grid off) empty space
+# between and around them.
+BG_THRESH = 10
+col_bright = [max(get(x, y)[0] for y in range(0, h, 2)) for x in range(w)]
+cols = [x for x, b in enumerate(col_bright) if b > BG_THRESH]
+assert cols, 'no non-background pixels found in the ShowZBuffer capture'
+runs, start, prev = [], cols[0], cols[0]
+for x in cols[1:]:
+    if x - prev > 3:
+        runs.append((start, prev))
+        start = x
+    prev = x
+runs.append((start, prev))
+assert len(runs) >= 2, f'expected 2 separate boxes (near/far) in the capture, found {len(runs)}: {runs}'
+runs.sort()
+left, right = runs[0], runs[-1]
+
+def sample(run):
+    x = (run[0] + run[1]) // 2
+    best, besty = -1, 0
+    for y in range(h):
+        r, g, b = get(x, y)
+        if r > best:
+            best, besty = r, y
+    return x, besty, best
+
+nx, ny, near_gray = sample(left)
+fx, fy, far_gray = sample(right)
+print(f'near box (Box A, screen-left) sample: pixel ({nx},{ny}) gray={near_gray}')
+print(f'far  box (Box B, screen-right) sample: pixel ({fx},{fy}) gray={far_gray}')
+r, g, b = get(nx, ny)
+assert r == g == b, f'near sample is not a pure grey (r,g,b)={(r, g, b)} - ShowZBuffer must not tint by material colour'
+r, g, b = get(fx, fy)
+assert r == g == b, f'far sample is not a pure grey (r,g,b)={(r, g, b)} - ShowZBuffer must not tint by material colour'
+assert far_gray > BG_THRESH, f'far box sample ({far_gray}) is indistinguishable from the black background'
+assert near_gray > far_gray + 40, f'near box ({near_gray}) is not clearly lighter than the far box ({far_gray})'
+PY
+
 # Docs tutorials (docs/site/tutorials.html and README's "10 tutorials,
 # verified by running them" claim): run every 01..10 tutorial script
 # through the real binary via docs/tutorial_scripts/run_all.sh and fold

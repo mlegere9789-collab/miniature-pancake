@@ -128,6 +128,11 @@ vec3 Shade(vec3 base, vec3 n, vec3 view_dir) {
 
 void main() {
   if (u_mode == 1) { frag = u_color; return; }
+  // ShowZBuffer: the per-vertex colour already *is* the final depth-grey
+  // value (see Viewport::DrawObjects) - unlike mode 4 below, it must not
+  // be modulated by lighting, or two equally-distant surfaces with
+  // different normals would show different greys for the same depth.
+  if (u_mode == 7) { frag = vec4(v_col, u_color.a); return; }
   vec3 n = normalize(v_nrm_view);
   vec3 view_dir = (u_ortho == 1) ? vec3(0.0, 0.0, -1.0) : normalize(v_pos_view);
   // Back faces: flip the normal towards the eye so both sides shade alike.
@@ -519,8 +524,9 @@ void GlRenderer::DrawMesh(const std::vector<float>& data, const std::vector<floa
                           const std::vector<float>* uvs, MeshMode mode, Color color, float param0, float param1) {
   if (data.empty()) return;
   const GLsizei vertex_count = static_cast<GLsizei>(data.size() / 6);
-  const bool use_colors = mode == kVertexColor && colors && colors->size() >= static_cast<size_t>(vertex_count) * 3;
-  if (mode == kVertexColor && !use_colors) mode = kLit;
+  const bool wants_colors = mode == kVertexColor || mode == kDepthGray;
+  const bool use_colors = wants_colors && colors && colors->size() >= static_cast<size_t>(vertex_count) * 3;
+  if (wants_colors && !use_colors) mode = kLit;
   const bool use_uvs = mode == kRendered && uvs && uvs->size() >= static_cast<size_t>(vertex_count) * 2 && material_.texture != 0;
   const Mat4 mvp = proj_ * view_;
   // An orthographic projection has w == 1 for every vertex (m[15] == 1);
@@ -599,6 +605,10 @@ void GlRenderer::DrawTriangles(const std::vector<float>& data, Color color, bool
 
 void GlRenderer::DrawTriangles(const std::vector<float>& data, const std::vector<float>& colors, float alpha) {
   DrawMesh(data, &colors, nullptr, kVertexColor, Color{1.f, 1.f, 1.f, alpha}, 0.f, 0.f);
+}
+
+void GlRenderer::DrawTrianglesDepth(const std::vector<float>& data, const std::vector<float>& colors) {
+  DrawMesh(data, &colors, nullptr, kDepthGray, Color{1.f, 1.f, 1.f, 1.f}, 0.f, 0.f);
 }
 
 void GlRenderer::DrawTrianglesZebra(const std::vector<float>& data, bool vertical, float density, float alpha) {

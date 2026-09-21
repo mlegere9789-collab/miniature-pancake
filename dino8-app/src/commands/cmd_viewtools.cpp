@@ -1517,8 +1517,8 @@ void RegisterViewToolsCommands(CommandEngine& e) {
   Reg(e, "ShowZBuffer", Immediate([](CommandContext& ctx) {
         bool& z = ctx.App().viewtools.show_zbuffer;
         z = !z;
-        ctx.Print(std::string("ShowZBuffer: ") + (z ? "on (depth view is planned; the flag is recorded)" : "off"));
-      }), CommandStatus::Partial, "Toggles and remembers the flag only; an actual depth-buffer visualization needs a grayscale-by-camera-distance pass added to GlRenderer's shading, which no viewport display mode does today.");
+        ctx.Print(std::string("ShowZBuffer: ") + (z ? "on (every visible surface/mesh now draws as a grayscale depth value - near light, far dark)" : "off"));
+      }), CommandStatus::Implemented, "Toggles a real per-frame depth-grayscale pass in the active viewport (Viewport::DrawObjects' ShowZBuffer branch, drawn unlit via GlRenderer::DrawTrianglesDepth): every visible surface/mesh's own camera-space depth (each vertex's position dotted against the camera's forward axis) is remapped across the frame's near..far range and drawn white-to-black, near = light, far = dark, replacing normal shading/materials/grid/background for as long as the flag is on.");
 
   // ---- layouts / details ----
   Reg(e, "Layout", Make<LayoutCommand>());

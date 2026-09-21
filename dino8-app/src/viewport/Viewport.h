@@ -182,6 +182,11 @@ class Viewport {
     bool show_clipping_planes = true;
     // Selected sub-objects (control points, edges, faces) drawn highlighted.
     const SubObjectSelection* sub_selection = nullptr;
+    // ShowZBuffer: every visible surface/mesh is drawn as a grayscale
+    // value proportional to its camera-space depth instead of its normal
+    // shading, and the grid/background are forced black - see DrawObjects'
+    // "ShowZBuffer" pass and cmd_viewtools.cpp's ShowZBuffer command.
+    bool show_zbuffer = false;
   };
   void Render(GlRenderer& renderer, const FrameContext& ctx);
 

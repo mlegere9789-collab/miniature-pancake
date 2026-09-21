@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <set>
 
 #include "doc/SubObjectEdit.h"
@@ -185,13 +186,19 @@ void Viewport::Render(GlRenderer& renderer, const FrameContext& ctx) {
   if (!target_.Resize(std::max(width_, 1), std::max(height_, 1))) return;
   target_.Bind();
   Color top, bottom;
-  BackgroundFor(mode_, ctx.doc, false, top, bottom);
+  if (ctx.show_zbuffer) {
+    // Empty space is "infinitely far" - the same black a real depth
+    // buffer clears to before anything is drawn into it.
+    top = bottom = Color::FromBytes(0, 0, 0);
+  } else {
+    BackgroundFor(mode_, ctx.doc, false, top, bottom);
+  }
   renderer.SetMatrices(camera_.ViewMatrix(), camera_.ProjectionMatrix(Aspect()));
   renderer.ClearGradient(top, bottom);
-  DrawBackgroundImage(renderer, ctx.doc, mode_, false, false);
+  if (!ctx.show_zbuffer) DrawBackgroundImage(renderer, ctx.doc, mode_, false, false);
   renderer.EnableDepthTest(true);
   renderer.EnableBlend(true);
-  if (mode_ == DisplayMode::RayTraced && !page_ && ctx.doc) {
+  if (mode_ == DisplayMode::RayTraced && !page_ && ctx.doc && !ctx.show_zbuffer) {
     // Real per-frame GPU raytraced preview (render::GpuRaytracer): a BVH
     // built once from the document (below, only when the scene actually
     // changed) is traced by a fragment shader every frame, temporally
@@ -333,7 +340,10 @@ void Viewport::DrawScene(GlRenderer& renderer, const FrameContext& ctx, DisplayM
   doc_for_grid_ = ctx.doc;
   // The ground plane replaces the grid in Rendered mode (as in Rhino).
   const bool ground = mode == DisplayMode::Rendered && ctx.doc->Render().ground_plane;
-  if (!ctx.for_render && !ground) DrawGrid(renderer, ctx.doc->Settings(), mode);
+  // ShowZBuffer draws every visible surface/mesh's own depth and nothing
+  // else - the grid is neither, so it would just be arbitrary clutter on
+  // top of the depth image.
+  if (!ctx.for_render && !ground && !ctx.show_zbuffer) DrawGrid(renderer, ctx.doc->Settings(), mode);
   if (mode == DisplayMode::Rendered) {
     SetupLights(renderer, ctx);
     DrawGroundPlane(renderer, ctx);
@@ -892,6 +902,61 @@ void Viewport::DrawObjects(GlRenderer& renderer, const FrameContext& ctx, Displa
     }
     frustum_cull_stats_.total_objects = objects.size();
     frustum_cull_stats_.draw_candidates = render_candidates.size();
+  }
+
+  // ShowZBuffer: every visible surface/mesh drawn as a grayscale value
+  // proportional to its camera-space depth (near = light, far = dark),
+  // in place of all normal fill/edge/material shading for this frame.
+  // Colours are computed here, per vertex, from that vertex's real world
+  // position dotted against the camera's forward axis - the same
+  // view-space-depth idiom the transparency sort just above already uses
+  // for its own sort key - then drawn through GlRenderer::DrawTrianglesDepth
+  // (GlRenderer.cpp's kDepthGray mesh mode), a small unlit sibling of the
+  // existing per-vertex-colour path (DrawTriangles(data, colors, alpha),
+  // kVertexColor - used by Curvature/DraftAngle/Thickness analysis) added
+  // for this: that path still multiplies by a diffuse lighting term, which
+  // would make two equally-distant but differently-oriented surfaces show
+  // different greys, wrong for an actual depth visualization.
+  if (ctx.show_zbuffer) {
+    const Point3d eye = camera_.State().eye;
+    const Vector3d forward = camera_.Forward();
+    double near_d = std::numeric_limits<double>::infinity();
+    double far_d = -std::numeric_limits<double>::infinity();
+    std::vector<const SceneObject*> depth_objects;
+    depth_objects.reserve(render_candidates.size());
+    for (std::size_t candidate_index : render_candidates) {
+      const SceneObject& o = doc.Objects()[candidate_index];
+      if (!shown(o)) continue;
+      o.EnsureDisplay(ctx.curve_tolerance, ctx.surface_tolerance);
+      const DisplayCache& d = o.Display();
+      if (d.triangles.empty()) continue;
+      depth_objects.push_back(&o);
+      for (std::size_t v = 0; v + 5 < d.triangles.size(); v += 6) {
+        const Point3d p(d.triangles[v], d.triangles[v + 1], d.triangles[v + 2]);
+        const double depth = (p - eye) * forward;
+        near_d = std::min(near_d, depth);
+        far_d = std::max(far_d, depth);
+      }
+    }
+    const double span = far_d - near_d;
+    renderer.EnablePolygonOffset(true);
+    for (const SceneObject* op : depth_objects) {
+      const DisplayCache& d = op->Display();
+      std::vector<float> colors;
+      colors.reserve(d.triangles.size() / 2);
+      for (std::size_t v = 0; v + 5 < d.triangles.size(); v += 6) {
+        const Point3d p(d.triangles[v], d.triangles[v + 1], d.triangles[v + 2]);
+        const double depth = (p - eye) * forward;
+        const float t = span > 1e-9 ? static_cast<float>(std::clamp((depth - near_d) / span, 0.0, 1.0)) : 0.0f;
+        const float gray = 1.0f - t;  // nearest vertex (t=0) -> white, farthest (t=1) -> black
+        colors.push_back(gray);
+        colors.push_back(gray);
+        colors.push_back(gray);
+      }
+      renderer.DrawTrianglesDepth(d.triangles, colors);
+    }
+    renderer.EnablePolygonOffset(false);
+    return;
   }
 
   // Pass 1: fills (with polygon offset so edges win the depth test).

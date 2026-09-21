@@ -206,6 +206,7 @@ Viewport::FrameContext Application::MakeFrameContext() {
   ctx.fallback_analysis = &analysis_fallback;
   ctx.sub_selection = &sub_selection_;
   ctx.overlay_lines = &overlay_lines;
+  ctx.show_zbuffer = viewtools.show_zbuffer;
   return ctx;
 }
 

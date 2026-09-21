@@ -87,6 +87,12 @@ class GlRenderer {
   // Triangles with a per-vertex colour (r,g,b per vertex, same vertex count
   // as `data`), lit with the standard key light. `alpha` applies to all.
   void DrawTriangles(const std::vector<float>& data, const std::vector<float>& colors, float alpha = 1.0f);
+  // ShowZBuffer: per-vertex colour drawn as-is, with no lighting/shading
+  // applied (unlike the DrawTriangles(..., colors, alpha) above, whose
+  // kVertexColor mode still multiplies by a diffuse term) - the colour is
+  // meant to *be* a depth value, so it must not vary with surface
+  // orientation the way a lit colour would.
+  void DrawTrianglesDepth(const std::vector<float>& data, const std::vector<float>& colors);
   // Surface-analysis shading, environment-mapped by the view-space
   // reflection vector. Zebra: black/white stripes (`vertical` picks the
   // stripe direction, `density` the stripe frequency). EMap: a procedural
@@ -130,7 +136,7 @@ class GlRenderer {
  private:
   GLuint CompileProgram(const char* vs, const char* fs, std::string& error);
   // Shared mesh path: `mode` is the shader's u_mode (see kMeshFS).
-  enum MeshMode { kLit = 0, kFlat = 1, kZebra = 2, kEMap = 3, kVertexColor = 4, kRendered = 5, kGround = 6 };
+  enum MeshMode { kLit = 0, kFlat = 1, kZebra = 2, kEMap = 3, kVertexColor = 4, kRendered = 5, kGround = 6, kDepthGray = 7 };
   void DrawMesh(const std::vector<float>& data, const std::vector<float>* colors, const std::vector<float>* uvs,
                 MeshMode mode, Color color, float param0, float param1);
   void UploadLights();
