@@ -12,7 +12,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <map>
+#include <numeric>
 #include <set>
 
 namespace dino8::app {
@@ -62,11 +64,13 @@ std::optional<kernel::Mesh> ClosedMeshOfBrep(ON_Brep* b, double tol) {
   return Outward(m);
 }
 
-// Closed slab: the planar region bounded by `c` (lying in `plane`) swept by
-// `offset`. The face is meshed with the app's own trimmed-face mesher and
-// closed with ExtrudeCappedSolid; ON_BrepExtrudeFace is the fallback.
-std::optional<kernel::Mesh> RegionSlab(const ON_Plane& plane, const ON_Curve& c, Vector3d offset, double tol) {
-  ON_Brep* b = ON_BrepTrimmedPlane(plane, c);
+// Shared tail of RegionSlab/RegionSlabFromBoundary below: meshes the
+// trimmed-plane brep `b` (already built by one of the two ON_BrepTrimmedPlane
+// overloads, and owned by this call - it is always either consumed into the
+// result or deleted) with the app's own trimmed-face mesher and closes it
+// into a solid slab with ExtrudeCappedSolid; ON_BrepExtrudeFace is the
+// fallback.
+std::optional<kernel::Mesh> SlabFromTrimmedPlane(ON_Brep* b, Vector3d offset, double tol) {
   if (!b) return std::nullopt;
   BrepMeshOptions opt;
   opt.chord_tolerance = tol;
@@ -83,6 +87,22 @@ std::optional<kernel::Mesh> RegionSlab(const ON_Plane& plane, const ON_Curve& c,
   ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + offset));
   if (ON_BrepExtrudeFace(*b, 0, path, true) < 0) { delete b; return std::nullopt; }
   return ClosedMeshOfBrep(b, tol);
+}
+
+// Closed slab: the planar region bounded by `c` (lying in `plane`) swept by
+// `offset`.
+std::optional<kernel::Mesh> RegionSlab(const ON_Plane& plane, const ON_Curve& c, Vector3d offset, double tol) {
+  return SlabFromTrimmedPlane(ON_BrepTrimmedPlane(plane, c), offset, tol);
+}
+
+// Closed slab bounded by a chain of curves (`boundary`, in loop order, each
+// one's end meeting the next one's start) rather than a single already-closed
+// curve - the open-curve-network case: the curves need not have been joined
+// into one ON_Curve first, since ON_BrepTrimmedPlane's own array overload
+// (used by OpenNURBS' own NewPlanarFaceLoop) accepts a boundary given as
+// separate pieces, exactly like this one.
+std::optional<kernel::Mesh> RegionSlabFromBoundary(const ON_Plane& plane, ON_SimpleArray<ON_Curve*>& boundary, Vector3d offset, double tol) {
+  return SlabFromTrimmedPlane(ON_BrepTrimmedPlane(plane, boundary, /*bDuplicateCurves=*/true), offset, tol);
 }
 
 struct Solid {
@@ -274,13 +294,19 @@ kernel::NurbsCurve InterpolateCubic(const std::vector<Point3d>& pts, bool closed
   return k;
 }
 
-// The plane of a closed planar curve object, oriented like the CPlane.
-std::optional<ON_Plane> ClosedPlanarCurvePlane(CommandContext& ctx, const SceneObject& o) {
-  if (o.kind != ObjectKind::Curve || !o.curve || !o.curve->raw().IsClosed()) return std::nullopt;
+// The plane of a planar curve object (open or closed), oriented like the CPlane.
+std::optional<ON_Plane> PlanarCurvePlane(CommandContext& ctx, const SceneObject& o) {
+  if (o.kind != ObjectKind::Curve || !o.curve) return std::nullopt;
   ON_Plane pl;
   if (!o.curve->raw().IsPlanar(&pl, ctx.Settings().absolute_tolerance * 10)) return std::nullopt;
   if (ON_DotProduct(pl.zaxis, ActiveNormal(ctx)) < 0) pl.Flip();
   return pl;
+}
+
+// The plane of a closed planar curve object, oriented like the CPlane.
+std::optional<ON_Plane> ClosedPlanarCurvePlane(CommandContext& ctx, const SceneObject& o) {
+  if (!o.curve || !o.curve->raw().IsClosed()) return std::nullopt;
+  return PlanarCurvePlane(ctx, o);
 }
 
 // NURBS surface of a surface object or a single-face polysurface.
@@ -1246,7 +1272,8 @@ void Clash(CommandContext& ctx, const Input& in) {
 // ---------------------------------------------------------------------------
 
 struct Region {
-  ObjectId id;
+  ObjectId id;                       // representative source id (layer/attribute donor)
+  std::vector<ObjectId> source_ids;  // every input curve this region came from (>1 for an assembled open-curve loop)
   kernel::Mesh slab;
 };
 
@@ -1256,36 +1283,190 @@ struct RegionSet {
   std::vector<Region> regions;
 };
 
+// One closed loop assembled end-to-end out of open curves: `pieces` are
+// oriented (reversed as needed) and endpoint-snapped copies, in loop order,
+// each one's PointAtEnd() exactly equal to the next one's PointAtStart() (and
+// the last one's end equal to the first one's start) - ready to hand to
+// RegionSlabFromBoundary as-is.
+struct AssembledLoop {
+  std::vector<ObjectId> source_ids;
+  std::vector<std::unique_ptr<ON_NurbsCurve>> pieces;
+};
+
+// Chains open planar curves whose endpoints meet up (within `tol`) into
+// closed loops, treating both curve endpoints as a planar graph's vertices
+// (points within `tol` of each other are the same vertex) and the curves as
+// its edges. A connected component closes into exactly one simple loop when,
+// and only when, every vertex in it has degree exactly 2 - that is the
+// standard graph fact that a connected graph with every vertex of degree 2 is
+// a single cycle, so there is exactly one way to walk it and no ambiguity to
+// resolve. A component with a degree-1 vertex (a dangling end that meets
+// nothing) or a degree-3+ vertex (a branch point where three or more curve
+// ends meet, e.g. a "Y" or a curve crossing another at a shared endpoint) is
+// a genuine open network or offers more than one possible face; deciding
+// which face was meant would be a guess, so such curves are left out
+// (appended to `*unresolved`) rather than resolved arbitrarily. This does not
+// detect a curve crossing another in its *interior* (away from any shared
+// endpoint) either - the same "simple, non-self-intersecting boundary" limit
+// ON_BrepTrimmedPlane's own contract already places on a single closed input
+// curve today.
+std::vector<AssembledLoop> ChainOpenCurvesIntoLoops(const std::vector<const SceneObject*>& open, double tol, std::vector<ObjectId>* unresolved) {
+  const int n = static_cast<int>(open.size());
+  std::vector<Point3d> vertex_pts;
+  auto vertex_of = [&](Point3d p) {
+    for (size_t i = 0; i < vertex_pts.size(); ++i) if ((vertex_pts[i] - p).Length() <= tol) return static_cast<int>(i);
+    vertex_pts.push_back(p);
+    return static_cast<int>(vertex_pts.size()) - 1;
+  };
+  std::vector<int> va(n), vb(n);
+  for (int i = 0; i < n; ++i) { va[i] = vertex_of(open[i]->curve->raw().PointAtStart()); vb[i] = vertex_of(open[i]->curve->raw().PointAtEnd()); }
+
+  // Union-find over vertices, joined by every curve that spans two of them.
+  std::vector<int> parent(vertex_pts.size());
+  std::iota(parent.begin(), parent.end(), 0);
+  std::function<int(int)> find = [&](int x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
+  for (int i = 0; i < n; ++i) { int a = find(va[i]), b = find(vb[i]); if (a != b) parent[a] = b; }
+
+  std::map<int, int> degree;
+  for (int i = 0; i < n; ++i) { ++degree[va[i]]; ++degree[vb[i]]; }
+
+  std::map<int, std::vector<int>> by_component;
+  for (int i = 0; i < n; ++i) by_component[find(va[i])].push_back(i);
+
+  std::vector<AssembledLoop> loops;
+  for (auto& [root, idxs] : by_component) {
+    std::set<int> verts;
+    for (int i : idxs) { verts.insert(va[i]); verts.insert(vb[i]); }
+    bool simple_cycle = true;
+    for (int v : verts) if (degree[v] != 2) { simple_cycle = false; break; }
+    if (!simple_cycle) { for (int i : idxs) unresolved->push_back(open[i]->id); continue; }
+
+    std::set<int> remaining(idxs.begin(), idxs.end());
+    AssembledLoop loop;
+    int cur = va[idxs.front()];
+    bool ok = true;
+    while (!remaining.empty()) {
+      int found = -1;
+      bool rev = false;
+      for (int i : remaining) {
+        if (va[i] == cur) { found = i; rev = false; break; }
+        if (vb[i] == cur) { found = i; rev = true; break; }
+      }
+      if (found < 0) { ok = false; break; }  // guarded against by the degree check above; never expected
+      remaining.erase(found);
+      auto piece = std::make_unique<ON_NurbsCurve>(open[found]->curve->raw());
+      if (rev) piece->Reverse();
+      if (!loop.pieces.empty()) piece->SetStartPoint(loop.pieces.back()->PointAtEnd());
+      loop.source_ids.push_back(open[found]->id);
+      cur = rev ? va[found] : vb[found];
+      loop.pieces.push_back(std::move(piece));
+    }
+    if (!ok || loop.pieces.empty()) { for (int i : idxs) unresolved->push_back(open[i]->id); continue; }
+    loop.pieces.back()->SetEndPoint(loop.pieces.front()->PointAtStart());  // close the seam exactly, not just within tol
+    loops.push_back(std::move(loop));
+  }
+  return loops;
+}
+
 std::optional<RegionSet> Regions(CommandContext& ctx, const std::vector<ObjectId>& ids, const std::string& label) {
   RegionSet set;
-  bool have_plane = false;
   const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-4);
   kernel::BoundingBox all{};
   bool any = false;
-  std::vector<const SceneObject*> curves;
+  auto grow = [&](const kernel::BoundingBox& bb) {
+    if (!any) { all = bb; any = true; return; }
+    all.min.x = std::min(all.min.x, bb.min.x); all.min.y = std::min(all.min.y, bb.min.y); all.min.z = std::min(all.min.z, bb.min.z);
+    all.max.x = std::max(all.max.x, bb.max.x); all.max.y = std::max(all.max.y, bb.max.y); all.max.z = std::max(all.max.z, bb.max.z);
+  };
+
+  // Every selected curve is either already closed (handled exactly as
+  // before) or open - and an open one may still end up bounding a region if
+  // its ends meet up with other open curves into a closed loop, so it is not
+  // rejected outright the way a non-curve or non-planar object is.
+  std::vector<const SceneObject*> closed_curves, open_curves;
   for (ObjectId id : ids) {
     const SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
-    std::optional<ON_Plane> pl = ClosedPlanarCurvePlane(ctx, *o);
-    if (!pl) { ctx.Warn(label + ": object " + Id(id) + " is not a closed planar curve; skipped"); continue; }
-    if (!have_plane) { set.plane = *pl; have_plane = true; }
-    const kernel::BoundingBox bb = o->curve->GetTightBoundingBox();
-    if (!any) { all = bb; any = true; }
-    else { all.min.x = std::min(all.min.x, bb.min.x); all.min.y = std::min(all.min.y, bb.min.y); all.min.z = std::min(all.min.z, bb.min.z); all.max.x = std::max(all.max.x, bb.max.x); all.max.y = std::max(all.max.y, bb.max.y); all.max.z = std::max(all.max.z, bb.max.z); }
-    curves.push_back(o);
+    if (o->kind != ObjectKind::Curve || !o->curve) { ctx.Warn(label + ": object " + Id(id) + " is not a curve; skipped"); continue; }
+    (o->curve->raw().IsClosed() ? closed_curves : open_curves).push_back(o);
   }
-  if (!have_plane) { ctx.Warn(label + ": select closed planar curves"); return std::nullopt; }
+
+  std::vector<const SceneObject*> valid_closed;
+  for (const SceneObject* o : closed_curves) {
+    if (!ClosedPlanarCurvePlane(ctx, *o)) { ctx.Warn(label + ": object " + Id(o->id) + " is not a closed planar curve; skipped"); continue; }
+    grow(o->curve->GetTightBoundingBox());
+    valid_closed.push_back(o);
+  }
+
+  std::vector<const SceneObject*> planar_open;
+  for (const SceneObject* o : open_curves) {
+    if (!PlanarCurvePlane(ctx, *o)) { ctx.Warn(label + ": object " + Id(o->id) + " is not a planar curve; skipped"); continue; }
+    planar_open.push_back(o);
+  }
+  std::vector<ObjectId> unresolved_open;
+  std::vector<AssembledLoop> loops = ChainOpenCurvesIntoLoops(planar_open, tol * 10, &unresolved_open);
+  for (const AssembledLoop& lp : loops) {
+    for (const auto& piece : lp.pieces) {
+      ON_BoundingBox pbb;
+      piece->GetTightBoundingBox(pbb);
+      grow({pbb.Min(), pbb.Max()});
+    }
+  }
+  if (!unresolved_open.empty()) {
+    ctx.Warn(label + ": " + std::to_string(unresolved_open.size()) +
+             " open curve(s) don't close into a simple loop (a dangling end, or 3+ curve ends meeting at one point) and were skipped");
+  }
+  if (valid_closed.empty() && loops.empty()) { ctx.Warn(label + ": select closed planar curves, or open curves whose endpoints meet end-to-end into closed loops"); return std::nullopt; }
+
+  // The working plane: from the first closed curve if there is one, else
+  // from the first assembled loop's own overall shape, joined into one
+  // polycurve first - never from a single input curve's own individually-
+  // reported plane the way the pre-existing closed-curve path could, since
+  // ON_Curve::IsPlanar() on a lone straight line (a common open-curve-network
+  // piece) reports *some* plane containing that line, not necessarily the
+  // one the rest of the network actually lies in; joining the whole loop
+  // first before asking removes that ambiguity the same way a closed
+  // triangle's own three non-collinear corners already pin its plane down
+  // uniquely.
+  std::optional<ON_Plane> plane;
+  if (!valid_closed.empty()) plane = ClosedPlanarCurvePlane(ctx, *valid_closed.front());
+  if (!plane && !loops.empty()) {
+    ON_PolyCurve whole;
+    for (const auto& piece : loops.front().pieces) whole.Append(new ON_NurbsCurve(*piece));
+    ON_Plane pl;
+    if (whole.IsPlanar(&pl, tol * 10)) {
+      if (ON_DotProduct(pl.zaxis, ActiveNormal(ctx)) < 0) pl.Flip();
+      plane = pl;
+    }
+  }
+  if (!plane) { ctx.Warn(label + ": could not determine a common plane for the selected curves"); return std::nullopt; }
+  set.plane = *plane;
+
   set.height = std::max((all.max - all.min).Length() * 0.1, 1e-3);
   // Outlines come back as polylines, so mesh the regions at a display-like chord tolerance.
   const double mesh_tol = std::max((all.max - all.min).Length() * 0.002, tol);
   ON_Xform proj = ON_Xform::IdentityTransformation;
   proj.PlanarProjection(set.plane);
-  for (const SceneObject* o : curves) {
+
+  for (const SceneObject* o : valid_closed) {
     ON_NurbsCurve c = o->curve->raw();
     c.Transform(proj);
     std::optional<kernel::Mesh> slab = RegionSlab(set.plane, c, set.plane.zaxis * set.height, mesh_tol);
     if (!slab) { ctx.Warn(label + ": could not build a region from curve " + Id(o->id)); continue; }
-    set.regions.push_back({o->id, *slab});
+    set.regions.push_back({o->id, {o->id}, *slab});
+  }
+  for (const AssembledLoop& lp : loops) {
+    ON_SimpleArray<ON_Curve*> boundary;
+    std::vector<std::unique_ptr<ON_NurbsCurve>> projected;
+    for (const auto& piece : lp.pieces) {
+      auto pc = std::make_unique<ON_NurbsCurve>(*piece);
+      pc->Transform(proj);
+      boundary.Append(pc.get());
+      projected.push_back(std::move(pc));
+    }
+    std::optional<kernel::Mesh> slab = RegionSlabFromBoundary(set.plane, boundary, set.plane.zaxis * set.height, mesh_tol);
+    if (!slab) { ctx.Warn(label + ": could not build a region from the closed loop of " + std::to_string(lp.source_ids.size()) + " open curve(s) starting at " + Id(lp.source_ids[0])); continue; }
+    set.regions.push_back({lp.source_ids[0], lp.source_ids, *slab});
   }
   if (set.regions.empty()) return std::nullopt;
   return set;
@@ -1390,7 +1571,7 @@ void RegionBoolean(CommandContext& ctx, const std::vector<ObjectId>& ids, Region
       ++made;
     }
   }
-  if (delete_input) for (const Region& r : set->regions) ctx.Doc().Remove(r.id);
+  if (delete_input) for (const Region& r : set->regions) for (ObjectId sid : r.source_ids) ctx.Doc().Remove(sid);
   ctx.Print(label + ": " + what + " of " + std::to_string(set->regions.size()) + " region(s) -> " + std::to_string(made) + " closed curve(s)" + (delete_input ? ", input deleted" : ""));
 }
 
@@ -2069,9 +2250,16 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
                              Guarded("PlanarUnion", [](CommandContext& ctx, const Input& in) { RegionBoolean(ctx, in.O(0), RegionOp::Union, in.Yes("DeleteInput"), "PlanarUnion"); })));
   Reg(e, "PlanarDifference", Tool({ObjectsStep("Select closed planar curves (first minus the rest)", 2)}, {Toggle("DeleteInput", false)},
                                   Guarded("PlanarDifference", [](CommandContext& ctx, const Input& in) { RegionBoolean(ctx, in.O(0), RegionOp::Difference, in.Yes("DeleteInput"), "PlanarDifference"); })));
-  Reg(e, "CreateRegions", Tool({ObjectsStep("Select closed planar curves", 1)}, {Toggle("DeleteInput", false)},
+  Reg(e, "CreateRegions", Tool({ObjectsStep("Select closed planar curves, or open curves whose ends meet up into closed loops", 1)}, {Toggle("DeleteInput", false)},
                                Guarded("CreateRegions", [](CommandContext& ctx, const Input& in) { RegionBoolean(ctx, in.O(0), RegionOp::Regions, in.Yes("DeleteInput"), "CreateRegions"); })),
-      CommandStatus::Partial, "Every region of up to 6 overlapping closed curves; open-curve networks are planned.");
+      CommandStatus::Implemented,
+      "Every region of up to 6 overlapping closed curves, now including a closed curve assembled on the fly from open "
+      "curves whose endpoints meet end-to-end (ChainOpenCurvesIntoLoops treats curve endpoints as a planar graph's "
+      "vertices and finds each simple cycle - the one unambiguous loop through any run of curves where every vertex "
+      "has degree exactly 2). A curve network with a branch point (3+ curve-ends meeting at one point, e.g. a \"Y\") or "
+      "a dangling end is left out rather than guessed at, since a branch point admits more than one possible face; "
+      "full planar-subdivision arrangement (choosing among the several faces a branching network can bound) remains "
+      "future work.");
 
   // ---- cage editing ----------------------------------------------------------------
   Reg(e, "Cage", Tool({PointStep("First corner of cage"), PointStep("Other corner of cage"), NumberStep("Height", 10)},

@@ -995,9 +995,14 @@ stcheck "RadiateFind: 0 enabled light source(s) selected (the Sun also lights Ra
 stcheck "OrientCrvToEdge: placed 1 copy(ies) at 1 point(s)" "OrientCrvToEdge picked the box edge directly and oriented a copy onto it"
 stcheck "NonmanifoldMerge: 2 piece(s) joined into one polysurface, 1 newly-adjacent coplanar face pair(s) merged via real B-rep topology surgery (no mesh boolean, no Manifold)" "NonmanifoldMerge joined two coplanar planes and welded their one newly-adjacent face pair with real Brep::MergeCoplanarFaces() topology surgery"
 stcheck "Area = 100 square" "NonmanifoldMerge's merged single face has the combined 5x10 + 5x10 = 100 area"
+stcheck "CreateRegions: regions of 1 region(s) -> 1 closed curve(s)" "CreateRegions assembled 3 open Line segments meeting end-to-end into 1 closed triangular region (the open-curve-network fix)"
+stcheck "Area = 600 square" "the assembled triangle's real planar-surface area is exactly 0.5*30*40 = 600 (straight edges only, so PlanarSrf's mesher adds no extra vertices and the match is exact, not approximate)"
+stcheck "CreateRegions: regions of 2 region(s) -> 2 closed curve(s)" "CreateRegions found 2 regions from a mix of an assembled open-curve loop (Arc + Line closing a semicircle) and a separate untouched closed Circle"
+stcheck "Area = 153.1 square" "the assembled semicircle region's (Arc + Line, r=10) measured area is close to the analytic 0.5*pi*10^2 = 157.08, the gap being this shared Regions()/Outlines() pipeline's own pre-existing chord-tolerance polygon approximation (also present for closed curves), not something the open-curve-loop fix introduced"
+stcheck "CreateRegions: 3 open curve(s) don't close into a simple loop (a dangling end, or 3+ curve ends meeting at one point) and were skipped" "a branch point (3 open Lines meeting at one shared point) is honestly refused rather than guessed at or crashed on"
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
-stcheck "smoke: frames=[12][0-9][0-9] objects=36" "solid-tools script produced the expected object count"
+stcheck "smoke: frames=[12][0-9][0-9] objects=50" "solid-tools script produced the expected object count"
 
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface

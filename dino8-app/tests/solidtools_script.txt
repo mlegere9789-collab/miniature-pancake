@@ -245,3 +245,50 @@ NonmanifoldMerge
 SelLast
 Area
 @expect_objects 36
+# --- CreateRegions: an open-curve network - 3 open Line segments meeting
+# end-to-end into a closed right triangle (legs 30 and 40), the real fix for
+# "open-curve networks are planned" (AUDIT.md). Verified with an exact area,
+# not an approximation: every edge is straight, so PlanarSrf's mesher adds no
+# extra vertices and 0.5*30*40 = 600 comes back exactly.
+SelAll
+Hide
+Line 1400,0,0 1430,0,0
+Line 1430,0,0 1400,40,0
+Line 1400,40,0 1400,0,0
+SelAll
+CreateRegions
+SelLast
+PlanarSrf
+SelLast
+Area
+@expect_objects 41
+# --- CreateRegions: a mix of an assembled open-curve loop (an Arc + a Line
+# closing its diameter into a semicircle, r=10) and a separate, non-touching
+# closed Circle (r=5) -> 2 distinct regions, the "open curves alongside
+# closed curves" case. SelLast after CreateRegions picks the semicircle
+# region specifically (it is built second, from the assembled loop, after
+# the pre-existing closed-curve path builds the circle's region first).
+SelAll
+Hide
+Arc 1500,0,0 1510,0,0 1490,0,0
+Line 1490,0,0 1510,0,0
+Circle 1600,0,0 5
+SelAll
+CreateRegions
+SelLast
+PlanarSrf
+SelLast
+Area
+@expect_objects 47
+# --- CreateRegions: a branch point (3 open Lines meeting at one shared
+# point, a "Y") admits more than one possible face - ChainOpenCurvesIntoLoops
+# refuses to guess which one was meant, warns, and skips them instead of
+# resolving it arbitrarily or crashing.
+SelAll
+Hide
+Line 1700,0,0 1700,10,0
+Line 1700,0,0 1710,0,0
+Line 1700,0,0 1690,-5,0
+SelAll
+CreateRegions
+@expect_objects 50
