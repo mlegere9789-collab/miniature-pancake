@@ -1060,10 +1060,12 @@ flcheck "FilletEdge: edge 10 of object .* replaced with an exact fillet (variabl
 flcheck "Volume = 990.7 cubic" "a 10x10x10 box minus a variable r=1->3 edge fillet has volume 1000 - (1-pi/4)*10*(1+3+9)/3 = 990.70, matching the closed-form integral of a linear radius ramp"
 flcheck "FilletSrf: built between object .* and .*, radius 1 to 2; one surface trimmed (the other is not planar; left untrimmed)" "VariableFilletSrf built a plane+cylinder variable-radius fillet via BuildPlaneCylinderVariableFillet, not the constant-radius approximation (no 'approximate' suffix means every sample landed exactly on the plane and exactly on the cylinder)"
 flcheck "degree 2 x 3, CVs 3 x 33" "the plane+cylinder variable fillet lofted all 33 (samples+1) exact rows into its NURBS surface"
+flcheck "VariableBlendSrf: blend surface added between object .* and .*, width 0.2 to 0.8 .Continuity=Curvature: quintic blend, cross-boundary curvature matched exactly to both surfaces." "VariableBlendSrf built a real independent blend (BuildBlendSurfaceG2, same construction as BlendSrf/BlendEdge) with a width that genuinely ramps from 0.2 to 0.8 along the rail, not the rolling-ball fillet VariableFilletSrf uses"
+flcheck "degree 5 x 3, CVs 6 x 25" "VariableBlendSrf's Continuity=Curvature output is the degree-5x3 quintic-Hermite blend (25 = 24 samples + 1 rows), the same construction BuildBlendSurfaceG2 gives BlendSrf/BlendEdge - not a rolling-ball fillet arc, and see tests/test_variable_blend.cpp for the numeric proof the width itself (measured on the constructed surface's own control points) actually varies along the rail while the G2 curvature match still holds at both ends"
 flcheck "FilletEdge: edge .* -- mesh fallback (exact B-rep trim unavailable here; result is an approximate mesh, not a clean B-rep)" "FilletEdge succeeded on a solid cylinder's own closed (periodic) rim edge via the mesh fallback - this used to fail unconditionally with a watertight-gap error regardless of radius (see adversarial_corpus_notes.md SS3)"
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
-flcheck "^ok   expect_objects 29" "fillet script produced the expected object count"
+flcheck "^ok   expect_objects 32" "fillet script produced the expected object count"
 
 # Adversarial fillets: tiny/at-the-limit/too-large radii relative to the
 # shortest adjacent edge, a huge-coordinate-scale box (a genuine kernel

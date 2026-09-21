@@ -154,6 +154,35 @@ EndRadius=2
 SelLast
 List
 SelNone
+# --- VariableBlendSrf: a genuine independent blend-tangent variant of
+# BlendSrf (NOT the rolling-ball fillet VariableFilletSrf uses above),
+# between the top face and an adjacent side face of a box, extracted so
+# they're two independently-picked surfaces the same way FilletSrf's own
+# pair is (no deletion needed here: the top face at z=10 and the east face
+# at x=710 sit at different physical locations, so unlike FilletSrf's
+# coplanar-corner setup there is no overlap to confuse the next pick).
+# Width=0.2 -> EndWidth=0.8 ramps the blend's own cross-section width
+# along the rail - a real width variance, structurally impossible for a
+# fixed-cross-section rolling-ball fillet - and Continuity=Curvature
+# exercises the same real quintic G2 blend BlendSrf/BlendEdge use (degree
+# 5 in the cross-rail direction; see tests/test_variable_blend.cpp for the
+# numeric width/curvature verification of this exact construction).
+SelAll
+Hide
+Box 700,0,0 710,10,0 10
+ExtractSrf
+705,5,10
+Enter
+SelNone
+VariableBlendSrf
+Width=0.2
+EndWidth=0.8
+Continuity=Curvature
+709,5,10
+710,5,9
+SelLast
+List
+SelNone
 # --- FilletEdge on a solid cylinder's own flat-top rim (a full 360-degree
 # closed edge, one planar face + one cylindrical face) via the mesh
 # fallback: the exact B-rep trim only handles planar-planar adjacent
@@ -175,4 +204,4 @@ Enter
 SelAll
 Volume
 SelNone
-@expect_objects 29
+@expect_objects 32

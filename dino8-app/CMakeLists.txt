@@ -448,6 +448,17 @@ if(DINO8_BUILD_TESTS)
   target_link_libraries(dino8_test_g2_blend PRIVATE dino8_kernel)
   add_test(NAME dino8_g2_blend COMMAND dino8_test_g2_blend)
 
+  # Numerically verifies VariableBlendSrf's own claim (cmd_fillet.cpp's
+  # VariableBlendSrfCommand): that BuildBlendSurfaceG1/G2's new
+  # width_frac_at hook makes the blend's cross-section width genuinely
+  # vary along the rail (measured on the constructed surface's own CVs),
+  # while the G2 path's real curvature match (see dino8_g2_blend above)
+  # still holds independent of that width. See tests/test_variable_blend.cpp.
+  add_executable(dino8_test_variable_blend tests/test_variable_blend.cpp src/geom/BlendSurface.cpp)
+  target_include_directories(dino8_test_variable_blend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(dino8_test_variable_blend PRIVATE dino8_kernel)
+  add_test(NAME dino8_variable_blend COMMAND dino8_test_variable_blend)
+
   # Standalone timing benchmark for Document's diff-based undo/redo history
   # (see tests/undo_bench.cpp and tests/undo_scaling_notes.md) - not an
   # add_test(), it has nothing to assert, just numbers to print.

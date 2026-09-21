@@ -179,7 +179,7 @@ HomogeneousRow HermiteRowG2(Point3d pa, Vector3d ta, Vector3d ka, Point3d pb, Ve
 
 }  // namespace
 
-bool BuildBlendSurfaceG1(const ON_Curve& ea, const ON_Surface& sa, const std::function<ON_2dPoint(double)>& uv_a_at, const ON_Curve& eb, const ON_Surface& sb, const std::function<ON_2dPoint(double)>& uv_b_at, bool tangent_boost, int samples, ON_NurbsSurface& out) {
+bool BuildBlendSurfaceG1(const ON_Curve& ea, const ON_Surface& sa, const std::function<ON_2dPoint(double)>& uv_a_at, const ON_Curve& eb, const ON_Surface& sb, const std::function<ON_2dPoint(double)>& uv_b_at, bool tangent_boost, int samples, ON_NurbsSurface& out, const std::function<double(double)>& width_frac_at) {
   std::vector<HomogeneousRow> rows;
   std::vector<double> params;
   const ON_Interval da = ea.Domain();
@@ -193,7 +193,8 @@ bool BuildBlendSurfaceG1(const ON_Curve& ea, const ON_Surface& sa, const std::fu
     Vector3d out_a = InteriorDirection3d(sa, uva.x, uva.y) * -1.0;
     Vector3d out_b = InteriorDirection3d(sb, uvb.x, uvb.y) * -1.0;
     const double gap = pa.DistanceTo(pb);
-    const double mag = gap * (tangent_boost ? 0.55 : 0.35);
+    const double frac = width_frac_at ? width_frac_at(t) : (tangent_boost ? 0.55 : 0.35);
+    const double mag = gap * frac;
     rows.push_back(HermiteRowG1(pa, out_a, pb, out_b, mag));
     params.push_back(t);
   }
@@ -201,7 +202,7 @@ bool BuildBlendSurfaceG1(const ON_Curve& ea, const ON_Surface& sa, const std::fu
   return LoftRows(rows, params, 4, out);
 }
 
-bool BuildBlendSurfaceG2(const ON_Curve& ea, const ON_Surface& sa, const std::function<ON_2dPoint(double)>& uv_a_at, const ON_Curve& eb, const ON_Surface& sb, const std::function<ON_2dPoint(double)>& uv_b_at, int samples, ON_NurbsSurface& out) {
+bool BuildBlendSurfaceG2(const ON_Curve& ea, const ON_Surface& sa, const std::function<ON_2dPoint(double)>& uv_a_at, const ON_Curve& eb, const ON_Surface& sb, const std::function<ON_2dPoint(double)>& uv_b_at, int samples, ON_NurbsSurface& out, const std::function<double(double)>& width_frac_at) {
   std::vector<HomogeneousRow> rows;
   std::vector<double> params;
   const ON_Interval da = ea.Domain();
@@ -213,7 +214,7 @@ bool BuildBlendSurfaceG2(const ON_Curve& ea, const ON_Surface& sa, const std::fu
     const ON_2dPoint uvb = uv_b_at(t);
     const Point3d pb = sb.PointAt(uvb.x, uvb.y);
     const double gap = pa.DistanceTo(pb);
-    const double mag = gap * 0.55;
+    const double mag = gap * (width_frac_at ? width_frac_at(t) : 0.55);
 
     const DirectionalDerivs dda = OutwardDirectionalDerivs(sa, uva.x, uva.y);
     const DirectionalDerivs ddb = OutwardDirectionalDerivs(sb, uvb.x, uvb.y);

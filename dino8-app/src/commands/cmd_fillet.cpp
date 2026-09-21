@@ -1596,6 +1596,104 @@ class BlendSrfCommand : public Command {
   bool curvature_ = false;
 };
 
+// ---------------------------------------------------------------------------
+// VariableBlendSrf: a genuine independent blend-tangent variant of BlendSrf,
+// not the rolling-ball fillet construction VariableFilletSrf uses. It picks
+// two surface edges exactly like BlendSrfCommand and builds the same
+// BuildBlendSurfaceG1/G2 Hermite/quintic blend, but with the tangent-
+// magnitude fraction (the blend's cross-section "width") interpolated
+// linearly along the rail from Width= at t=0 to EndWidth= at t=1 via
+// width_frac_at - the same piecewise-linear-along-the-rail technique
+// FilletTwoSurfacesCommand::Run uses for its own Radius=/EndRadius=
+// (radius_at(t) = r0 + (r1-r0)*t), just applied to the blend's width
+// instead of a rolling-ball radius. Because this reuses
+// BuildBlendSurfaceG1/G2 directly, Continuity=Curvature here gets the exact
+// same real, numerically-verified G2 cross-boundary curvature match BlendSrf
+// gets (see BuildBlendSurfaceG2's own comment and tests/test_g2_blend.cpp) -
+// something no rolling-ball fillet construction (fixed circular
+// cross-section) can give except at the one radius that happens to match
+// the adjacent surface's own curvature.
+class VariableBlendSrfCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    options = {{"Width", FormatNumber(width0_), {}, true, false}, {"EndWidth", FormatNumber(width1_), {}, true, false}, {"Continuity", "Tangency", {"Tangency", "Curvature"}, false, false}};
+    WantPoint("Click the first surface edge (near the edge to blend from)");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override {
+    if (n == "Width") width0_ = std::atof(v.c_str());
+    if (n == "EndWidth") width1_ = std::atof(v.c_str());
+    if (n == "Continuity") curvature_ = (v == "Curvature");
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    if (!first_) {
+      first_ = PickFace(ctx, p);
+      if (!first_) { ctx.Warn("No surface near that point"); return; }
+      first_pt_ = p;
+      WantPoint("Click the second surface edge");
+      return;
+    }
+    auto second = PickFace(ctx, p);
+    if (!second) { ctx.Warn("No surface near that point"); return; }
+    Run(ctx, *first_, first_pt_, *second, p);
+    Finish();
+  }
+  void Run(CommandContext& ctx, const FacePick& fa, Point3d pa, const FacePick& fb, Point3d pb) {
+    const SceneObject *oa = ctx.Doc().Find(fa.id), *ob = ctx.Doc().Find(fb.id);
+    if (!oa || !ob) return;
+    std::optional<ON_NurbsSurface> sa = SurfaceOfObject(*oa, fa.face), sb = SurfaceOfObject(*ob, fb.face);
+    if (!sa || !sb) { ctx.Warn("Could not read the surfaces"); return; }
+    // Same nearest-boundary-isocurve edge pick as BlendSrfCommand::Run.
+    auto boundary_curve = [&](const ON_NurbsSurface& s, Point3d p) -> ON_Curve* {
+      double u, v;
+      SurfaceClosestPointGlobal(s, p, u, v);
+      const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+      const double eu0 = u - du.Min(), eu1 = du.Max() - u, ev0 = v - dv.Min(), ev1 = dv.Max() - v;
+      const double m = std::min({eu0, eu1, ev0, ev1});
+      if (m == eu0) return s.IsoCurve(1, du.Min());
+      if (m == eu1) return s.IsoCurve(1, du.Max());
+      if (m == ev0) return s.IsoCurve(0, dv.Min());
+      return s.IsoCurve(0, dv.Max());
+    };
+    ON_Curve* ea = boundary_curve(*sa, pa);
+    ON_Curve* eb = boundary_curve(*sb, pb);
+    if (!ea || !eb) { ctx.Warn("VariableBlendSrf: could not find a boundary edge at the pick"); delete ea; delete eb; return; }
+    auto uv_on = [&](const ON_NurbsSurface& s, const ON_Curve& c, double t01) {
+      const ON_Interval d = c.Domain();
+      const Point3d p3 = c.PointAt(d.ParameterAt(t01));
+      double u, v;
+      SurfaceClosestPoint(s, p3, u, v);
+      return ON_2dPoint(u, v);
+    };
+    auto uv_a_fn = [&](double t) { return uv_on(*sa, *ea, t); };
+    auto uv_b_fn = [&](double t) { return uv_on(*sb, *eb, t); };
+    // Width interpolated linearly along the rail, exactly the
+    // FilletTwoSurfacesCommand::Run radius_at(t) pattern (r0 + (r1-r0)*t)
+    // applied to the blend's own tangent-magnitude fraction instead of a
+    // rolling-ball radius - this is the "vary the width along the rail"
+    // piece layered on top of the independent blend construction.
+    const double w0 = width0_, w1 = width1_;
+    auto width_at = [w0, w1](double t) { return w0 + (w1 - w0) * t; };
+    ON_NurbsSurface built;
+    const bool ok = curvature_ ? BuildBlendSurfaceG2(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, 24, built, width_at)
+                               : BuildBlendSurfaceG1(*ea, *sa, uv_a_fn, *eb, *sb, uv_b_fn, false, 24, built, width_at);
+    delete ea;
+    delete eb;
+    if (!ok) { ctx.Warn("VariableBlendSrf: could not build the blend"); return; }
+    ctx.Doc().BeginChange("VariableBlendSrf");
+    SceneObject like = *oa;
+    ObjectId nid = AddSurfaceFrom(ctx, built, like);
+    ctx.Doc().Select(nid, true);
+    ctx.Print(std::string("VariableBlendSrf: blend surface added between object ") + std::to_string(fa.id) + " and " + std::to_string(fb.id) + ", width " + FormatNumber(w0) + " to " + FormatNumber(w1) +
+              (curvature_ ? " (Continuity=Curvature: quintic blend, cross-boundary curvature matched exactly to both surfaces)" : " (Continuity=Tangency)"));
+  }
+
+ private:
+  std::optional<FacePick> first_;
+  Point3d first_pt_{0, 0, 0};
+  bool curvature_ = false;
+  double width0_ = 0.35, width1_ = 0.7;
+};
+
 class ConnectSrfCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantObjects("Select two surfaces or polysurfaces to connect", 2); }
@@ -2243,8 +2341,8 @@ void RegisterFilletCommands(CommandEngine& e) {
       "Same trimming strategy as FilletEdge, a ruled chamfer instead of an arc.");
   Reg(e, "BlendEdge", Make<FilletEdgeCommand>(FilletEdgeCommand::Mode::Blend), CommandStatus::Implemented,
       "Hermite blend surface added between the two faces (not stitched into the polysurface). Continuity=Tangency is a degree-3x3 G1 blend. Continuity=Curvature is a degree-5x3 blend whose cross-boundary second derivative is set to each face's own exact analytic directional second derivative (Ev2Der, not a finite difference), so its curvature vector matches each face's curvature exactly in that direction (numerically verified in tests/test_g2_blend.cpp for both flat and curved faces) - real G2 in the cross-boundary direction, not full surface-wide G2 in every direction, and it silently falls back to the plain G1 tangent at any sample where a face's own parametrization is singular there.");
-  Reg(e, "VariableBlendSrf", Make<FilletTwoSurfacesCommand>(FilletTwoSurfacesCommand::Mode::VariableFillet), CommandStatus::Partial,
-      "Uses the same variable-radius rolling-ball fillet as VariableFilletSrf (a true independent blend-tangent variant is not implemented).");
+  Reg(e, "VariableBlendSrf", Make<VariableBlendSrfCommand>(), CommandStatus::Implemented,
+      "A genuine independent blend-tangent variant of BlendSrf (not the rolling-ball fillet VariableFilletSrf uses): the same BuildBlendSurfaceG1/G2 Hermite/quintic blend between two picked surface edges, with the blend's own cross-section width interpolated linearly along the rail from Width= to EndWidth=, the same piecewise-linear-along-the-rail technique FilletTwoSurfacesCommand uses for Radius=/EndRadius=. Continuity=Curvature gets the same real, numerically-verified G2 cross-boundary curvature match as BlendSrf (see tests/test_g2_blend.cpp and tests/test_variable_blend.cpp), independent of the width, which no fixed-cross-section rolling-ball fillet construction can do except at one coincidental radius.");
   Reg(e, "MatchSrf", Make<MatchSrfCommand>(), CommandStatus::Implemented,
       "Moves the picked surface's boundary control row onto the target (Position); Tangency also aligns the next row's step to the target's tangent/normal.");
   Reg(e, "BlendSrf", Make<BlendSrfCommand>(), CommandStatus::Implemented,

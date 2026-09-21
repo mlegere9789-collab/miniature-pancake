@@ -82,11 +82,17 @@ Vector3d CurvatureVectorFromDerivs(const Vector3d& d1, const Vector3d& d2);
 // magnitude up - this is the pre-existing "Continuity=Curvature"
 // approximation: it changes how far the blend leans out before turning,
 // but does NOT match any second derivative, so it stays G1 (tangent-plane
-// continuous) only, never G2. Returns false if the edges have too few
-// usable samples.
+// continuous) only, never G2. `width_frac_at`, when non-null, is sampled
+// at each row's own t in [0, 1] (the same t the row is built at) and
+// REPLACES the fixed 0.35/0.55 tangent-magnitude fraction of the local
+// gap with its own return value - this is the hook VariableBlendSrf uses
+// (cmd_fillet.cpp) to make the blend's cross-section width genuinely vary
+// along the rail, independent of any rolling-ball radius machinery.
+// Returns false if the edges have too few usable samples.
 bool BuildBlendSurfaceG1(const ON_Curve& ea, const ON_Surface& sa, const std::function<ON_2dPoint(double)>& uv_a_at,
                           const ON_Curve& eb, const ON_Surface& sb, const std::function<ON_2dPoint(double)>& uv_b_at,
-                          bool tangent_boost, int samples, ON_NurbsSurface& out);
+                          bool tangent_boost, int samples, ON_NurbsSurface& out,
+                          const std::function<double(double)>& width_frac_at = nullptr);
 
 // Builds a degree-5 x 3 quintic-Hermite blend surface between the same
 // inputs, with each boundary row's cross-boundary first AND second
@@ -107,10 +113,18 @@ bool BuildBlendSurfaceG1(const ON_Curve& ea, const ON_Surface& sa, const std::fu
 // second-fundamental-form / twist-term matching), which no single-patch
 // blend of this kind attempts. See tests/test_g2_blend.cpp for the
 // numerical check (both a flat and a genuinely curved adjacent surface)
-// this comment's claim rests on. Returns false if the edges have too few
-// usable samples, mirroring BuildBlendSurfaceG1.
+// this comment's claim rests on. `width_frac_at`, when non-null, works
+// exactly as in BuildBlendSurfaceG1: sampled per-row at that row's own t
+// and substituted for the fixed 0.55 fraction, scaling BOTH the tangent
+// (d1) and, because CurvatureVectorFromDerivs is scale-invariant only
+// under matched (d1, d2) scaling (see HermiteRowG2's own comment), the
+// second-derivative term consistently, so a varying width still keeps the
+// exact per-row curvature match - the width and the G2 matching are
+// independent knobs. Returns false if the edges have too few usable
+// samples, mirroring BuildBlendSurfaceG1.
 bool BuildBlendSurfaceG2(const ON_Curve& ea, const ON_Surface& sa, const std::function<ON_2dPoint(double)>& uv_a_at,
                           const ON_Curve& eb, const ON_Surface& sb, const std::function<ON_2dPoint(double)>& uv_b_at,
-                          int samples, ON_NurbsSurface& out);
+                          int samples, ON_NurbsSurface& out,
+                          const std::function<double(double)>& width_frac_at = nullptr);
 
 }  // namespace dino8::app
