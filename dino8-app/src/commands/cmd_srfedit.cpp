@@ -14,6 +14,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <utility>
 
 namespace dino8::app {
 
@@ -543,18 +544,65 @@ void Unroll(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* l
       for (int i = 0; i <= nu; ++i) for (int j = 0; j <= nv; ++j) m.SetVertex(i * (nv + 1) + j, pl.PointAt(x_offset + f[i][j].x - minx, f[i][j].y - miny));
       for (int i = 0; i < nu; ++i) for (int j = 0; j < nv; ++j) m.SetQuad(i * nv + j, i * (nv + 1) + j, (i + 1) * (nv + 1) + j, (i + 1) * (nv + 1) + j + 1, i * (nv + 1) + j + 1);
       m.ComputeFaceNormals();
+      // Per-grid-cell distortion: flattened quad area vs its real 3D quad
+      // area (same v00/v10/v11/v01 -> 2-triangle split as the mesh's own
+      // SetQuad above and Mesh::Area()'s IsQuad() convention), as
+      // |flat/3d - 1|. Squish's grid already has both g[][] (3D) and
+      // f[][] (flat) at this point, so this is free to compute here.
+      auto tri_area3 = [](Point3d a, Point3d b, Point3d c) { return 0.5 * ON_CrossProduct(b - a, c - a).Length(); };
+      auto tri_area2 = [](ON_2dPoint a, ON_2dPoint b, ON_2dPoint c) { return 0.5 * std::fabs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)); };
+      double max_distortion = 0, sum_distortion = 0;
+      int cells = 0;
+      for (int i = 0; i < nu; ++i) {
+        for (int j = 0; j < nv; ++j) {
+          const Point3d &v00 = g[i][j], &v10 = g[i + 1][j], &v11 = g[i + 1][j + 1], &v01 = g[i][j + 1];
+          const ON_2dPoint &u00 = f[i][j], &u10 = f[i + 1][j], &u11 = f[i + 1][j + 1], &u01 = f[i][j + 1];
+          double a3d = tri_area3(v00, v10, v11) + tri_area3(v00, v11, v01);
+          double a2d = tri_area2(u00, u10, u11) + tri_area2(u00, u11, u01);
+          if (a3d <= 1e-12) continue;
+          double dist = std::fabs(a2d / a3d - 1.0);
+          max_distortion = std::max(max_distortion, dist);
+          sum_distortion += dist;
+          ++cells;
+        }
+      }
+      double avg_distortion = cells > 0 ? sum_distortion / cells : 0;
       kernel::Mesh km; km.raw() = m;
       double area3d = MeshOf(*o, 0.01) ? MeshOf(*o, 0.01)->Area() : 0;
+      double flat = km.Area();
+      // Squish alone also records, on the flattened mesh itself, each
+      // vertex's own source-surface (u, v) as a texture coordinate (the
+      // correspondence SquishBack needs), plus the report SquishInfo
+      // reprints, keyed by the new mesh object's id (see SquishFeature).
+      const bool is_squish = std::string(label) == "Squish";
+      if (is_squish) {
+        std::vector<kernel::Point2d> uvs(static_cast<size_t>(nu + 1) * (nv + 1));
+        for (int i = 0; i <= nu; ++i)
+          for (int j = 0; j <= nv; ++j)
+            uvs[static_cast<size_t>(i) * (nv + 1) + j] =
+                kernel::Point2d(s->Domain(0).ParameterAt(static_cast<double>(i) / nu), s->Domain(1).ParameterAt(static_cast<double>(j) / nv));
+        km.SetTextureCoordinates(uvs);
+      }
       SceneObject n = SceneObject::MakeMesh(km); n.layer_index = like.layer_index;
-      ctx.Doc().Add(std::move(n));
+      ObjectId new_id = ctx.Doc().Add(std::move(n));
+      if (is_squish) {
+        SquishFeature sf;
+        sf.source_surface.raw() = *s;
+        sf.area_3d = area3d > 0 ? area3d : flat;  // whole-object area unavailable (e.g. bare Surface): fall back to this face's own flat area, so distortion still reads as 0 rather than misleadingly huge
+        sf.area_flat = flat;
+        sf.max_distortion = max_distortion;
+        sf.avg_distortion = avg_distortion;
+        ctx.Doc().SetSquishFeature(new_id, std::move(sf));
+      }
       std::vector<Point3d> outline;
       for (int j = 0; j <= nv; ++j) outline.push_back(pl.PointAt(x_offset + f[0][j].x - minx, f[0][j].y - miny));
       for (int i = 1; i <= nu; ++i) outline.push_back(pl.PointAt(x_offset + f[i][nv].x - minx, f[i][nv].y - miny));
       for (int j = nv - 1; j >= 0; --j) outline.push_back(pl.PointAt(x_offset + f[nu][j].x - minx, f[nu][j].y - miny));
       for (int i = nu - 1; i >= 0; --i) outline.push_back(pl.PointAt(x_offset + f[i][0].x - minx, f[i][0].y - miny));
       AddCurve(ctx, PolylineCurve(outline), label);
-      double flat = km.Area();
-      ctx.Print(std::string(label) + ": face " + std::to_string(fi) + " flattened, area " + FormatNumber(flat) + (area3d > 0 ? " (whole object 3D area " + FormatNumber(area3d) + ")" : ""));
+      ctx.Print(std::string(label) + ": face " + std::to_string(fi) + " flattened, area " + FormatNumber(flat) +
+                (area3d > 0 ? " (whole object 3D area " + FormatNumber(area3d) + ")" : "") +
+                (is_squish ? ", distortion max " + FormatNumber(max_distortion * 100) + "% avg " + FormatNumber(avg_distortion * 100) + "%" : ""));
       double w = 0; for (auto& col : f) for (auto& p : col) w = std::max(w, p.x - minx);
       x_offset += w * 1.1;
       ++made;
@@ -2216,6 +2264,150 @@ class ReplaceEdgeCommand : public Command {
   std::optional<EdgePick> edge_;
 };
 
+// ---------------------------------------------------------------------------
+// SquishBack: projects a curve drawn on a Squish flat pattern back onto the
+// source surface it was flattened from, using the per-vertex source-surface
+// (u, v) that Squish's own Unroll() stores as the flattened mesh's texture
+// coordinates (see SquishFeature in Document.h).
+// ---------------------------------------------------------------------------
+
+// Closest point on triangle (a, b, c) to `p`, plus that point's own
+// barycentric weights (wa, wb, wc; wa+wb+wc == 1) against the triangle -
+// same region-based algorithm as kernel::Mesh::ClosestPoint's own
+// ClosestPointOnTriangle (mesh.cpp), extended to also return the weights
+// (via the standard area-ratio formula on the resulting in-plane point)
+// since SquishBack needs them to interpolate the triangle's own 3 stored
+// (u, v) values, not just the closest position itself.
+Point3d ClosestPointOnTriangleBary(Point3d p, Point3d a, Point3d b, Point3d c, double& wa, double& wb, double& wc) {
+  Vector3d ab = b - a, ac = c - a, ap = p - a;
+  double d1 = ON_DotProduct(ab, ap), d2 = ON_DotProduct(ac, ap);
+  Point3d q;
+  if (d1 <= 0.0 && d2 <= 0.0) { q = a; }
+  else {
+    Vector3d bp = p - b;
+    double d3 = ON_DotProduct(ab, bp), d4 = ON_DotProduct(ac, bp);
+    if (d3 >= 0.0 && d4 <= d3) { q = b; }
+    else {
+      double vc = d1 * d4 - d3 * d2;
+      if (vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0) { q = a + (d1 / (d1 - d3)) * ab; }
+      else {
+        Vector3d cp = p - c;
+        double d5 = ON_DotProduct(ab, cp), d6 = ON_DotProduct(ac, cp);
+        if (d6 >= 0.0 && d5 <= d6) { q = c; }
+        else {
+          double vb = d5 * d2 - d1 * d6;
+          if (vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0) { q = a + (d2 / (d2 - d6)) * ac; }
+          else {
+            double va = d3 * d6 - d5 * d4;
+            if (va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0) { q = b + ((d4 - d3) / ((d4 - d3) + (d5 - d6))) * (c - b); }
+            else {
+              double denom = 1.0 / (va + vb + vc);
+              q = a + ab * (vb * denom) + ac * (vc * denom);
+            }
+          }
+        }
+      }
+    }
+  }
+  // Barycentric weights of `q` (now known to lie in/on the triangle) via
+  // the standard dot-product solve (Ericson 3.4), robust for a
+  // vertex/edge/interior result alike.
+  Vector3d v0 = b - a, v1 = c - a, v2 = q - a;
+  double d00 = ON_DotProduct(v0, v0), d01 = ON_DotProduct(v0, v1), d11 = ON_DotProduct(v1, v1);
+  double d20 = ON_DotProduct(v2, v0), d21 = ON_DotProduct(v2, v1);
+  double denom = d00 * d11 - d01 * d01;
+  if (std::fabs(denom) < 1e-18) { wa = 1; wb = 0; wc = 0; return q; }
+  wb = (d11 * d20 - d01 * d21) / denom;
+  wc = (d00 * d21 - d01 * d20) / denom;
+  wa = 1.0 - wb - wc;
+  return q;
+}
+
+// The flattened mesh among `ids` that Squish recorded a SquishFeature for.
+std::optional<ObjectId> FindSquishMesh(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (o && o->kind == ObjectKind::Mesh && ctx.Doc().FindSquishFeature(id)) return id;
+  }
+  return std::nullopt;
+}
+
+// For a point in the flattened mesh's own embedding, the source surface's
+// (u, v) at the nearest point on the mesh (barycentric-interpolated from
+// the 3 nearest triangle corners' own stored (u, v)), or nullopt if the
+// mesh carries no per-vertex (u, v) at all (e.g. an older/foreign mesh).
+std::optional<ON_2dPoint> SquishBackUV(const kernel::Mesh& mesh, Point3d p) {
+  if (!mesh.HasTextureCoordinates()) return std::nullopt;
+  const ON_Mesh& m = mesh.raw();
+  double best_d2 = std::numeric_limits<double>::infinity();
+  ON_2dPoint best_uv(0, 0);
+  auto consider = [&](int i0, int i1, int i2) {
+    Point3d a(m.m_V[i0]), b(m.m_V[i1]), c(m.m_V[i2]);
+    double wa, wb, wc;
+    Point3d q = ClosestPointOnTriangleBary(p, a, b, c, wa, wb, wc);
+    double d2 = (q - p).LengthSquared();
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      kernel::Point2d ua = mesh.TextureCoordinateAt(i0), ub = mesh.TextureCoordinateAt(i1), uc = mesh.TextureCoordinateAt(i2);
+      best_uv = ON_2dPoint(wa * ua.x + wb * ub.x + wc * uc.x, wa * ua.y + wb * ub.y + wc * uc.y);
+    }
+  };
+  for (int i = 0; i < m.m_F.Count(); ++i) {
+    const ON_MeshFace& mf = m.m_F[i];
+    consider(mf.vi[0], mf.vi[1], mf.vi[2]);
+    if (mf.IsQuad()) consider(mf.vi[0], mf.vi[2], mf.vi[3]);
+  }
+  if (!std::isfinite(best_d2)) return std::nullopt;
+  return best_uv;
+}
+
+class SquishBackCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select the curve(s) drawn on the flat pattern to project back"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (!picked_curves_) {
+      for (ObjectId id : ids) {
+        const SceneObject* o = ctx.Doc().Find(id);
+        if (o && o->kind == ObjectKind::Curve && o->curve) curves_.push_back(*o->curve);
+      }
+      picked_curves_ = true;
+      if (curves_.empty()) { ctx.Warn("SquishBack: select one or more curves"); Finish(); return; }
+      for (ObjectId id : ids) ctx.Doc().Select(id, false);
+      accept_preselection = false;
+      WantObjects("Select the flattened mesh (Squish result) the curve(s) lie on");
+      return;
+    }
+    std::optional<ObjectId> mesh_id = FindSquishMesh(ctx, ids);
+    if (!mesh_id) { ctx.Warn("SquishBack: select a mesh that Squish itself flattened (SquishInfo can confirm one has a stored report)"); Finish(); return; }
+    const SceneObject* mo = ctx.Doc().Find(*mesh_id);
+    const SquishFeature* sf = ctx.Doc().FindSquishFeature(*mesh_id);
+    if (!mo || !mo->mesh || !sf) { Finish(); return; }
+    ctx.Doc().BeginChange("SquishBack");
+    int made = 0, missed = 0;
+    for (const kernel::NurbsCurve& c : curves_) {
+      std::vector<Point3d> back;
+      const int n = 80;
+      kernel::Interval d = c.Domain();
+      for (int i = 0; i <= n; ++i) {
+        Point3d p = c.PointAt(d.min + (d.max - d.min) * i / n);
+        std::optional<ON_2dPoint> uv = SquishBackUV(*mo->mesh, p);
+        if (!uv) { ++missed; continue; }
+        back.push_back(sf->source_surface.PointAt(uv->x, uv->y));
+      }
+      if (back.size() < 2) continue;
+      AddCurve(ctx, InterpolateCubic(back), "SquishBack");
+      ++made;
+    }
+    if (made == 0) ctx.Warn("SquishBack: no curve sample projected onto the flattened mesh");
+    else ctx.Print("SquishBack: " + std::to_string(made) + " curve(s) projected back onto the source surface via the flat pattern's own per-vertex (u,v) map" + (missed > 0 ? " (" + std::to_string(missed) + " sample(s) off the flattened mesh skipped)" : ""));
+    Finish();
+  }
+
+ private:
+  bool picked_curves_ = false;
+  std::vector<kernel::NurbsCurve> curves_;
+};
+
 }  // namespace
 
 void RegisterSrfEditCommands(CommandEngine& e) {
@@ -2257,8 +2449,29 @@ void RegisterSrfEditCommands(CommandEngine& e) {
   Reg(e, "UnrollSrfUV", OnSelection("Select surfaces to unroll", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Unroll(ctx, ids, "UnrollSrfUV"); }));
   Reg(e, "Smash", OnSelection("Select surfaces to smash flat", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Unroll(ctx, ids, "Smash"); }));
   Reg(e, "Squish", OnSelection("Select surfaces or meshes to squish flat", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Unroll(ctx, ids, "Squish"); }));
-  Reg(e, "SquishBack", Planned("SquishBack: planned; Squish's flattened mesh does not retain a per-point map back to its source surface, so a curve drawn on the flat pattern cannot be projected back onto the 3D surface."), CommandStatus::Partial);
-  Reg(e, "SquishInfo", Planned("SquishInfo: the flattened area/distortion report is printed at the end of Squish itself; there is no separate stored record to query afterwards."), CommandStatus::Partial);
+  Reg(e, "SquishBack", Make<SquishBackCommand>(), CommandStatus::Implemented,
+      "Real point correspondence, not a projection heuristic: Squish itself now stores each flattened "
+      "vertex's own source-surface (u,v) as the flat mesh's per-vertex texture coordinates; SquishBack "
+      "samples the picked curve, barycentric-interpolates (u,v) from the nearest flattened triangle's 3 "
+      "corners for each sample, evaluates the source surface there, and fits a curve through the results "
+      "(InterpolateCubic, the same curve-through-points fit InterpCrvOnSrf/ContinueInterpCrv use). Only "
+      "works on a mesh Squish itself produced (it needs that stored (u,v) map) - a plain mesh, or one from "
+      "UnrollSrf/Smash/FlattenSrf, has none, since only Squish's own registration stores it.");
+  Reg(e, "SquishInfo", OnSelection("Select a flattened (Squish) mesh", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
+        for (ObjectId id : ids) {
+          const SquishFeature* sf = ctx.Doc().FindSquishFeature(id);
+          if (!sf) continue;
+          ctx.Print("SquishInfo: object " + std::to_string(id) + " - flat area " + FormatNumber(sf->area_flat) +
+                     " (3D area " + FormatNumber(sf->area_3d) + "), distortion max " + FormatNumber(sf->max_distortion * 100) +
+                     "% avg " + FormatNumber(sf->avg_distortion * 100) + "%");
+          return;
+        }
+        ctx.Warn("SquishInfo: none of the selected object(s) is a mesh Squish itself produced (SquishInfo only has a report for Squish's own output, not UnrollSrf/Smash/FlattenSrf or an ordinary mesh)");
+      }), CommandStatus::Implemented,
+      "Reprints Squish's own report (area before/after, max/avg distortion) for a previously-squished mesh, "
+      "stored at Squish time in a Document-level side table keyed by the flattened mesh's ObjectId (the same "
+      "session-state side-table pattern as HoleFeature/PipeFeature) - not recomputed, and not available for "
+      "UnrollSrf/Smash/FlattenSrf output, which don't populate that table.");
   Reg(e, "FlattenSrf", OnSelection("Select surfaces to flatten", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Unroll(ctx, ids, "FlattenSrf"); }));
   Reg(e, "ExtendSrf", Make<ExtendSrfCommand>());
   Reg(e, "MergeSrf", OnSelection("Select two surfaces sharing an edge", MergeSrf, 2));
@@ -2328,24 +2541,80 @@ void RegisterSrfEditCommands(CommandEngine& e) {
       "curve via closest-point projection and replaces the edge's own 3D curve, leaving the rest of the "
       "polysurface intact; throws (reported as a Warn) if the substitute curve doesn't reasonably fit.");
   Reg(e, "RemoveAllNakedMicroEdges", OnSelection("Select polysurfaces", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        double tol = ctx.Settings().absolute_tolerance;
-        int found = 0;
+        const double micro_tol = ctx.Settings().absolute_tolerance * 100;
+        int found = 0, removed = 0;
+        // Computed entirely on local copies first (no document mutation)
+        // so a single BeginChange below covers exactly the objects that
+        // actually changed - the same "know the full set before mutating
+        // anything" contract BeginChangeForObjects documents.
+        std::vector<std::pair<ObjectId, kernel::Brep>> fixed;
         for (ObjectId id : ids) {
           const SceneObject* o = ctx.Doc().Find(id);
-          std::optional<ON_Brep> b = o ? BrepOfObject(*o) : std::nullopt;
-          if (!b) continue;
-          for (int i = 0; i < b->m_E.Count(); ++i) {
-            const ON_BrepEdge& e2 = b->m_E[i];
-            if (e2.m_edge_index < 0 || e2.TrimCount() != 1) continue;
+          if (!o || o->kind != ObjectKind::Brep || !o->brep) continue;
+          kernel::Brep b = *o->brep;
+          auto is_micro = [&](const ON_BrepEdge& e2) {
+            if (e2.m_edge_index < 0 || e2.TrimCount() != 1) return false;
             ON_NurbsCurve nc;
-            if (e2.GetNurbForm(nc) <= 0) continue;
+            if (e2.GetNurbForm(nc) <= 0) return false;
             kernel::NurbsCurve k; k.raw() = nc;
-            if (k.Length(20) < tol * 100) ++found;
+            return k.Length(20) < micro_tol;
+          };
+          // Census first, once, before any removal - a fixed count of
+          // what this object actually starts with, so a persistently
+          // out-of-scope edge (still there on every later re-scan) is
+          // never counted more than the one time it genuinely exists.
+          {
+            const ON_Brep& raw = b.raw();
+            for (int i = 0; i < raw.m_E.Count(); ++i) if (is_micro(raw.m_E[i])) ++found;
+          }
+          bool any_changed = false;
+          // Each successful removal renumbers edges (Brep::Compact(), see
+          // RemoveNakedMicroEdge's own doc comment), so re-scan from
+          // scratch after every fix rather than trusting stale indices -
+          // this loop only ever counts INTO `removed`, never back into
+          // `found` above.
+          bool progress = true;
+          while (progress) {
+            progress = false;
+            const ON_Brep& raw = b.raw();
+            for (int i = 0; i < raw.m_E.Count(); ++i) {
+              if (!is_micro(raw.m_E[i])) continue;
+              if (b.RemoveNakedMicroEdge(i, micro_tol) == kernel::Result::Ok) {
+                ++removed;
+                any_changed = true;
+                progress = true;
+                break;  // indices just shifted under Compact() - restart the scan
+              }
+              // Left in place (out of RemoveNakedMicroEdge's own safely-
+              // automatable scope, see its doc comment): keep scanning
+              // past it rather than looping on it forever.
+            }
+          }
+          if (any_changed) fixed.emplace_back(id, std::move(b));
+        }
+        if (found == 0) { ctx.Print("RemoveAllNakedMicroEdges: no naked edges shorter than " + FormatNumber(micro_tol) + " found"); return; }
+        if (!fixed.empty()) {
+          ctx.Doc().BeginChange("RemoveAllNakedMicroEdges");
+          for (auto& [id, b] : fixed) {
+            if (SceneObject* o = ctx.Doc().Find(id)) { *o->brep = std::move(b); o->InvalidateDisplay(); }
           }
         }
-        if (found == 0) ctx.Print("RemoveAllNakedMicroEdges: no naked edges shorter than " + FormatNumber(tol * 100) + " found");
-        else ctx.Warn("RemoveAllNakedMicroEdges: " + std::to_string(found) + " naked micro edge(s) found, but automatic removal (collapsing the surrounding trims) is not implemented; remove them by hand with EditSrf/PointsOn");
-      }), CommandStatus::Partial, "Detects naked edges shorter than 100x the document tolerance and reports them; does not yet remove them (that needs re-trimming the surrounding faces).");
+        const int left = found - removed;
+        if (left == 0) {
+          ctx.Print("RemoveAllNakedMicroEdges: " + std::to_string(removed) +
+                    " naked micro edge(s) removed (endpoints welded, the two loop-adjacent naked edges re-trimmed to close the gap)");
+        } else {
+          ctx.Warn("RemoveAllNakedMicroEdges: " + std::to_string(removed) + " naked micro edge(s) removed; " + std::to_string(left) +
+                    " left in place (shared with a second face, or its own vertex depended on by a third edge - outside "
+                    "the safely-automatable case; remove those by hand with EditSrf/PointsOn)");
+        }
+      }), CommandStatus::Implemented,
+      "Detects naked edges shorter than 100x the document tolerance and actually removes each one whose two "
+      "loop-adjacent edges are ALSO naked and whose own two endpoints touch nothing else in the polysurface "
+      "(Brep::RemoveNakedMicroEdge: welds the endpoints and re-trims those two neighbors to close the gap via "
+      "the same ReplaceEdgeCurve() this app already uses elsewhere) - the common 'a bad trim left a hairline "
+      "gap' case. A micro edge shared with a second face, or whose vertex a third edge also depends on, is "
+      "left in place and reported rather than guessed at.");
   Reg(e, "RefitTrim", Make<RefitTrimCommand>(), CommandStatus::Implemented,
       "Real constrained curve fit: kernel::NurbsCurve::FitLeastSquares (a genuine global least-squares B-spline approximation) tried at increasing control-point counts until the fit is within the given tolerance of the original trim's own sampled points, with every fitted control point clamped into the surface's own (u,v) domain rectangle afterward (control points bound the curve, so this provably keeps the whole curve inside the domain) and the tolerance re-verified after clamping.");
   Reg(e, "SplitRefitSurface", Planned("SplitRefitSurface: planned; use Split then Rebuild on the pieces."), CommandStatus::Partial);

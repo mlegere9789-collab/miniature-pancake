@@ -380,3 +380,59 @@ SelPolysrf
 List
 SelNone
 @expect_objects 97
+# --- Squish / SquishInfo: Squish now stores its own flattening report
+# (area, distortion) plus each flattened vertex's own source-surface
+# (u,v) in a real Document-level side table keyed by the flattened
+# mesh's ObjectId (SquishFeature) - SquishInfo reprints that report
+# without recomputing anything. A flat Plane is used so the expected
+# numbers are exact (no distortion at all from flattening something
+# already flat): area 100, 0% distortion either way.
+SelAll
+Hide
+Plane 3700,0,0 3710,10,0
+SelSrf
+Squish
+SelMesh
+SquishInfo
+# --- SquishBack: projects a curve on the flat pattern back onto the
+# source surface via the per-vertex (u,v) map Squish just stored (see
+# above) - nearest-triangle barycentric interpolation, then a curve
+# fitted through the results (InterpolateCubic, shared with
+# InterpCrvOnSrf/ContinueInterpCrv). The flat pattern of an already-flat
+# Plane sits exactly on world z=0 at the same (x,y) it printed above, so
+# a diagonal line drawn there projects back onto the SAME diagonal on
+# the real (offset) plane, exactly - a real, checkable round trip.
+SelAll
+Hide
+Plane 3700,0,0 3710,10,0
+SelSrf
+Squish
+Line 2,2,0 8,8,0
+SelLast
+SquishBack
+SelMesh
+Enter
+SelLast
+BoundingBox
+# --- RemoveAllNakedMicroEdges: actually CLOSES a real, isolated hairline
+# sliver rather than only reporting it. SplitEdge twice, both cuts within
+# 0.01 of each other near one corner of an open box's naked top ring,
+# brackets a genuine sub-tolerance naked micro edge between two ordinary
+# naked neighbors (both still part of the same ring) - exactly
+# Brep::RemoveNakedMicroEdge()'s own safely-automatable case. The OTHER
+# new micro edge this leaves next to the corner (whose other neighbor is
+# the box's own shared vertical edge, not naked) is correctly left in
+# place and reported instead of guessed at.
+SelAll
+Hide
+Box 3800,0,0 3810,10,0 10
+DeleteFaces
+3805,5,10
+Enter
+SplitEdge
+3800.01,0,10
+SplitEdge
+3800.02,0,10
+SelPolysrf
+RemoveAllNakedMicroEdges
+@expect_objects 107

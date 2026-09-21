@@ -679,6 +679,13 @@ secheck "ShowEdges: 1 object(s), 8 edge(s), 8 naked edge(s)" "ShowEdges confirms
 secheck "ReplaceEdge: edge [0-9]* re-trimmed against the picked curve's own shape, every affected face re-projected onto it" "ReplaceEdge re-trimmed a naked edge against a bowed substitute curve via real Brep::ReplaceEdgeCurve()"
 secheck "2 faces, 9 edges, open" "the re-trimmed polysurface keeps its same topology (2 faces) after ReplaceEdge - only the one edge's own shape changed"
 secheck "^ok   expect_objects 97" "surface-edit script produced the expected final object count"
+secheck "Squish: face 0 flattened, area 100 (whole object 3D area 100), distortion max 0% avg 0%" "Squish flattened an already-flat plane with exactly zero distortion either way"
+secheck "SquishInfo: object [0-9]* - flat area 100 (3D area 100), distortion max 0% avg 0%" "SquishInfo reprinted Squish's own stored report (area + distortion) instead of recomputing it"
+secheck "SquishBack: 1 curve(s) projected back onto the source surface via the flat pattern's own per-vertex (u,v) map" "SquishBack projected a curve on the flat pattern back onto the source surface via the stored (u,v) map"
+secheck "Bounding box min 3702,2,0 max 3708,8,0" "SquishBack's round trip landed the projected curve exactly back on the source plane's own diagonal"
+secheck "DeleteFaces: face [0-9]* deleted, 5 face(s) left" "DeleteFaces opened the fresh box for the naked-micro-edge fixture"
+secheck "RemoveAllNakedMicroEdges: 1 naked micro edge(s) removed; 1 left in place" "RemoveAllNakedMicroEdges actually CLOSED the isolated sliver (real Brep::RemoveNakedMicroEdge) while correctly leaving the corner-adjacent one it can't safely close"
+secheck "^ok   expect_objects 107" "surface-edit script produced the expected object count after the Squish/SquishBack/RemoveAllNakedMicroEdges additions"
 
 # Mesh tools: deformations, mesh editing and mesh primitives (see meshtools_script.txt).
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then

@@ -38,6 +38,7 @@ void Document::Clear() {
   reference_models_.clear();
   hole_features_.clear();
   pipe_features_.clear();
+  squish_features_.clear();
   user_text_.clear();
   notes_.clear();
   settings_ = DocumentSettings{};
@@ -72,6 +73,7 @@ bool Document::Remove(ObjectId id) {
   hole_features_.erase(id);
   pipe_features_.erase(id);
   provenance_.erase(id);
+  squish_features_.erase(id);
   Touch();
   return true;
 }

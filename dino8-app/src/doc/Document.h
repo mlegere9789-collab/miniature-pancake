@@ -349,6 +349,34 @@ struct ProvenanceInfo {
   ProvenanceKind kind = ProvenanceKind::BlockInstanceMember;
 };
 
+// The data behind SquishInfo/SquishBack: Squish's own flattening report
+// (area before/after, distortion) plus the source surface it flattened, so
+// SquishBack can evaluate that surface at a (u, v) to project a point back
+// onto it. Kept as a value copy of the source surface (not an ObjectId
+// reference), same rationale as PipeFeature's rail curve above: the tag
+// survives the source surface object being deleted. The per-flattened-
+// vertex correspondence to a source-surface (u, v) - what SquishBack
+// actually interpolates - is NOT kept here: it rides along on the
+// flattened mesh object itself, as its own per-vertex texture coordinates
+// (kernel::Mesh::SetTextureCoordinates/TextureCoordinateAt), so it is one
+// piece of real mesh data rather than a second table to keep in sync, and
+// (unlike this side table) it naturally survives copy/Undo/Redo along with
+// the mesh object. Session state only - not written to the .3dm and not
+// restored by Undo/Redo (same side-table pattern and same rationale as
+// HoleFeature above: an Undo past the Squish leaves a harmless orphaned
+// entry, cleared whenever the flattened mesh object itself is removed).
+struct SquishFeature {
+  kernel::NurbsSurface source_surface;
+  double area_3d = 0;
+  double area_flat = 0;
+  // Per-grid-cell scale distortion (flattened cell area / 3D cell area),
+  // as |ratio - 1| over Unroll()'s own sample grid - the same grid Squish
+  // already walks to flatten the surface, so this costs nothing extra to
+  // compute there.
+  double max_distortion = 0;
+  double avg_distortion = 0;
+};
+
 struct DocumentSettings {
   std::string unit_system = "Millimeters";
   std::string title, author, comments;  // file metadata (saved in the .3dm)
@@ -545,6 +573,12 @@ class Document {
     for (const auto& [id, info] : provenance_) if (info.parent_id == parent_id) out.push_back(id);
     return out;
   }
+  void SetSquishFeature(ObjectId id, SquishFeature f) { squish_features_[id] = std::move(f); }
+  const SquishFeature* FindSquishFeature(ObjectId id) const {
+    const auto it = squish_features_.find(id);
+    return it == squish_features_.end() ? nullptr : &it->second;
+  }
+  void ClearSquishFeature(ObjectId id) { squish_features_.erase(id); }
   std::map<std::string, std::string>& UserText() { return user_text_; }
   std::string& Notes() { return notes_; }
   DocumentSettings& Settings() { return settings_; }
@@ -845,6 +879,7 @@ class Document {
   std::map<ObjectId, HoleFeature> hole_features_;
   std::map<ObjectId, PipeFeature> pipe_features_;
   std::map<ObjectId, ProvenanceInfo> provenance_;
+  std::map<ObjectId, SquishFeature> squish_features_;
   std::map<std::string, std::string> user_text_;
   std::string notes_;
   DocumentSettings settings_;

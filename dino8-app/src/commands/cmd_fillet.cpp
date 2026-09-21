@@ -1714,63 +1714,183 @@ class SplitFaceCommand : public Command {
   std::optional<FacePick> face_;
 };
 
+// Same nearest-edge search as PickEdge() above, but for SplitEdgeCommand
+// specifically: inserting a mid-edge vertex has no need of PickEdge()'s
+// own "needs two adjacent faces" restriction (that's a genuine
+// requirement for the FILLET-family commands sharing PickEdge - a fillet
+// needs a real edge between two faces to roll a blend across - not one
+// SplitEdge itself has: splitting a naked edge is, if anything, simpler,
+// since there's only ever one trim's own 2D curve to also split). Without
+// its own picker, SplitEdge would silently skip every naked edge and
+// resolve to whatever SHARED edge happens to be nearest instead - often
+// nowhere near the click, and one whose closest-point parameter then
+// sits right at its own domain boundary (Split()'s own documented
+// "fails at an exact endpoint" case), which is exactly the confusing
+// "could not split the edge curve" this used to produce for a click
+// that was actually right on a valid naked edge.
+std::optional<EdgePick> PickEdgeAny(CommandContext& ctx, Point3d p) {
+  std::optional<EdgePick> best;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    if (!ctx.Doc().IsObjectVisible(o) || ctx.Doc().IsObjectLocked(o)) continue;
+    std::optional<ON_Brep> b = BrepOfObject(o);
+    if (!b) continue;
+    for (int i = 0; i < b->m_E.Count(); ++i) {
+      const ON_BrepEdge& e = b->m_E[i];
+      if (e.m_edge_index < 0 || e.TrimCount() < 1) continue;
+      double t = 0;
+      if (!EdgeClosest(e, p, t)) continue;
+      ON_NurbsCurve enc;
+      e.GetNurbForm(enc);
+      const double d = enc.PointAt(t).DistanceTo(p);
+      if (!best || d < best->dist) best = EdgePick{o.id, i, d};
+    }
+  }
+  return best;
+}
+
 class SplitEdgeCommand : public Command {
  public:
   void Begin(CommandContext&) override { WantPoint("Click the edge, near where you want to split it"); }
   void OnPoint(CommandContext& ctx, Point3d p) override {
-    std::optional<EdgePick> pick = PickEdge(ctx, p);
+    std::optional<EdgePick> pick = PickEdgeAny(ctx, p);
     if (!pick) { ctx.Warn("No edge near that point"); return; }
     const SceneObject* o = ctx.Doc().Find(pick->id);
     if (!o || o->kind != ObjectKind::Brep || !o->brep) { ctx.Warn("SplitEdge needs a polysurface edge"); Finish(); return; }
     ON_Brep b = o->brep->raw();
-    ON_BrepEdge& e = b.m_E[pick->edge];
+    const int old_ei = pick->edge;
     double t;
-    if (!EdgeClosest(e, p, t)) { Finish(); return; }
+    if (!EdgeClosest(b.m_E[old_ei], p, t)) { Finish(); return; }
     // Insert a vertex at t: split the edge curve and re-wire each trim's
     // affected side onto a new edge sharing the new vertex.
     ON_NurbsCurve nc;
-    e.GetNurbForm(nc);
+    b.m_E[old_ei].GetNurbForm(nc);
     kernel::NurbsCurve kc;
     kc.raw() = nc;
     kernel::NurbsCurve left, right;
     if (kc.Split(t, left, right) != kernel::Result::Ok) { ctx.Warn("SplitEdge: could not split the edge curve"); Finish(); return; }
-    ON_BrepVertex& v0 = b.m_V[e.m_vi[0]];
-    ON_BrepVertex& v1 = b.m_V[e.m_vi[1]];
-    ON_BrepVertex& vmid = b.NewVertex(e.PointAt(t), std::max(ctx.Settings().absolute_tolerance, 1e-5));
+    // `t` is the EDGE's own raw domain parameter (whatever that edge's
+    // domain actually is - not necessarily [0,1], see the fraction/frac
+    // use below) - captured now, before old_ei's own edge is replaced.
+    const ON_Interval edge_dom = b.m_E[old_ei].Domain();
+    // Everything below is kept by INDEX, never by reference, across any
+    // New*()/Add*() call: each one appends to its own ON_Brep array
+    // (m_V/m_E/m_T/...), which can reallocate that array's buffer - a
+    // reference taken before such a call (the original code's own e/v0/
+    // v1/trim references) is left silently dangling by one that
+    // reallocates, a real crash this fixes (found running this on a
+    // naked edge for the first time - see PickEdgeAny's own doc comment
+    // above for why that case was never actually exercised before).
+    const int v0i = b.m_E[old_ei].m_vi[0];
+    const int v1i = b.m_E[old_ei].m_vi[1];
+    const Point3d mid_pt = b.m_E[old_ei].PointAt(t);
+    const int vmid_i = b.NewVertex(mid_pt, std::max(ctx.Settings().absolute_tolerance, 1e-5)).m_vertex_index;
     const int c0 = b.AddEdgeCurve(new ON_NurbsCurve(left.raw()));
     const int c1 = b.AddEdgeCurve(new ON_NurbsCurve(right.raw()));
-    ON_BrepEdge& e0 = b.NewEdge(v0, vmid, c0);
-    ON_BrepEdge& e1 = b.NewEdge(vmid, v1, c1);
+    const int e0i = b.NewEdge(b.m_V[v0i], b.m_V[vmid_i], c0).m_edge_index;
+    const int e1i = b.NewEdge(b.m_V[vmid_i], b.m_V[v1i], c1).m_edge_index;
     // Re-point every trim that used the old edge onto the matching new half.
-    for (int i = 0; i < e.m_ti.Count(); ++i) {
-      ON_BrepTrim& trim = b.m_T[e.m_ti[i]];
-      trim.m_ei = trim.m_bRev3d ? e1.m_edge_index : e0.m_edge_index;
+    // The old edge's own trim-index LIST is copied by value up front - its
+    // storage lives on the OLD edge object, which NewTrim() below could
+    // just as easily leave dangling (b.m_E reallocating) if read fresh
+    // from inside the loop.
+    const ON_SimpleArray<int> old_ti = b.m_E[old_ei].m_ti;
+    for (int i = 0; i < old_ti.Count(); ++i) {
+      const int ti = old_ti[i];
+      const bool rev = b.m_T[ti].m_bRev3d;
+      // AttachToEdge() (the same "expert user" primitive UnjoinEdge() above
+      // uses) - not a raw trim.m_ei assignment, which would leave the NEW
+      // edge's own m_ti[] never told about this trim at all.
+      b.m_T[ti].AttachToEdge(rev ? e1i : e0i, rev);
       // Both halves need a trim in the loop; duplicate the trim's 2D curve,
       // split it at the matching parameter and add the second half.
-      ON_Curve* c2 = trim.DuplicateCurve();
+      ON_Curve* c2 = b.m_T[ti].DuplicateCurve();
       kernel::NurbsCurve tk;
       ON_NurbsCurve tnc;
       c2->GetNurbForm(tnc);
       tk.raw() = tnc;
       kernel::NurbsCurve tleft, tright;
-      const ON_Interval trim_dom = trim.Domain();
-      const double t_abs = trim_dom.ParameterAt(t);
-      const double tt = trim_dom.NormalizedParameterAt(t_abs);
+      // The split point as a FRACTION of the edge's own domain (`t` is a
+      // raw parameter value on THAT domain, not necessarily [0,1] - the
+      // original code's own trim_dom.ParameterAt(t) treated it as if it
+      // already were one, which is only ever right by coincidence when
+      // the edge's domain happens to itself be [0,1]; on a real box edge,
+      // whose domain is closer to real-world arc length, that silently
+      // split the trim curve at the WRONG point, sometimes badly enough
+      // to leave the loop's own 2D boundary discontinuous - a real,
+      // separate bug this fixes). A REVERSED trim's own 2D curve runs
+      // opposite the edge's 3D direction, so its fraction is (1 - the
+      // edge's).
+      const double edge_frac = edge_dom.NormalizedParameterAt(t);
+      const double trim_frac = rev ? (1.0 - edge_frac) : edge_frac;
       const kernel::Interval tk_dom = tk.Domain();
-      const double tk_split = tk_dom.min + (tk_dom.max - tk_dom.min) * tt;
+      const double tk_split = tk_dom.min + (tk_dom.max - tk_dom.min) * trim_frac;
       if (tk.Split(tk_split, tleft, tright) == kernel::Result::Ok) {
-        ON_BrepLoop& loop = b.m_L[trim.m_li];
-        const int c2i_first = b.AddTrimCurve(new ON_NurbsCurve(trim.m_bRev3d ? tright.raw() : tleft.raw()));
-        const int c2i_second = b.AddTrimCurve(new ON_NurbsCurve(trim.m_bRev3d ? tleft.raw() : tright.raw()));
-        trim.m_c2i = c2i_first;
-        ON_BrepTrim& new_trim = b.NewTrim(trim.m_bRev3d ? e0 : e1, trim.m_bRev3d, loop, c2i_second);
-        new_trim.m_type = trim.m_type;
+        const int li = b.m_T[ti].m_li;
+        const ON_BrepTrim::TYPE trim_type = b.m_T[ti].m_type;
+        // `ti` keeps its OWN start (tk_dom.min, i.e. `tleft`) regardless of
+        // `rev` - AttachToEdge() above already re-pointed it to whichever
+        // of e0i/e1i shares that same real-world span (see the comment on
+        // that call), so no rev-based swap belongs here too: doing both
+        // would put the LARGE half's own 3D edge together with the SMALL
+        // half's own 2D curve (or vice versa) whenever rev is true - a
+        // genuine curve/edge-length mismatch that Check() would (rightly)
+        // flag as a discontinuous loop, found running this on a reversed
+        // naked trim for the first time.
+        const int c2i_first = b.AddTrimCurve(new ON_NurbsCurve(tleft.raw()));
+        const int c2i_second = b.AddTrimCurve(new ON_NurbsCurve(tright.raw()));
+        // ChangeTrimCurve() - not a raw trim.m_c2i assignment, which leaves
+        // this trim's OWN curve-proxy (it inherits ON_CurveProxy) still
+        // pointing at its old, pre-split curve: m_c2i said "use the new
+        // one" but every actual evaluation (PointAtStart(), used right
+        // after by SetTolerancesBoxesAndFlags()) kept reading the old,
+        // now-wrong-length one - the real cause of a hard-to-place SIGSEGV
+        // this fixes (ON_CurveProxy::Dimension() on a curve whose own
+        // domain/CV state no longer matched its trim's new, much shorter
+        // span).
+        b.m_T[ti].ChangeTrimCurve(c2i_first);
+        const int new_ti = b.NewTrim(b.m_E[rev ? e0i : e1i], rev, b.m_L[li], c2i_second).m_trim_index;
+        b.m_T[new_ti].m_type = trim_type;
+        // NewTrim() only APPENDS to loop.m_ti (see its own source) - it
+        // has no idea this new trim is really the second half of `ti`,
+        // splitting its old position. Splice it back to sit immediately
+        // after `ti` instead of at the end, so the loop's own cyclic
+        // trim order - what PrevTrim()/NextTrim() (and hence
+        // Brep::RemoveNakedMicroEdge()'s own loop-neighbor search) walk
+        // - still matches the two halves' real geometric adjacency.
+        ON_BrepLoop& loop = b.m_L[li];
+        const int last = loop.m_ti.Count() - 1;
+        if (last >= 0 && loop.m_ti[last] == new_ti) {
+          loop.m_ti.Remove(last);
+          int ti_pos = -1;
+          for (int k = 0; k < loop.m_ti.Count(); ++k) {
+            if (loop.m_ti[k] == ti) { ti_pos = k; break; }
+          }
+          loop.m_ti.Insert(ti_pos >= 0 ? ti_pos + 1 : loop.m_ti.Count(), new_ti);
+        }
       }
       delete c2;
     }
-    e.m_edge_index = -1;  // orphaned; Compact() removes it
+    b.m_E[old_ei].m_edge_index = -1;  // orphaned; Compact() removes it
     b.Compact();
     b.SetTolerancesBoxesAndFlags();
+    // ON_Brep::SetEdgeTolerance() (the OPEN-SOURCE base class SetTolerances-
+    // BoxesAndFlags() above actually calls) is a documented no-op for any
+    // edge with at least one trim - it deliberately leaves edge.m_tolerance
+    // at ON_UNSET_VALUE and says so in its own comment ("TL_Brep::
+    // SetEdgeTolerance overrides ... and sets the tolerance correctly" -
+    // TL_Brep isn't part of this build). Every kernel-side topology method
+    // here already works around exactly this gap (see brep.cpp's own
+    // FixUnsetEdgeTolerances(), called right after every one of its own
+    // SetTolerancesBoxesAndFlags() calls) - this is that same one-line fix,
+    // inline, for the one app-layer command that edits real Brep topology
+    // directly instead of going through the kernel: an edge tolerance left
+    // at ON_UNSET_VALUE fails ON_Brep::IsValid() outright ("should be >=
+    // 0.0"), which is otherwise invisible until something actually checks
+    // it (found running SplitEdge on a naked edge for the first time).
+    for (int i = 0; i < b.m_E.Count(); ++i) {
+      ON_BrepEdge& fix_e = b.m_E[i];
+      if (fix_e.m_edge_index >= 0 && !(fix_e.m_tolerance >= 0.0)) fix_e.m_tolerance = 0.0;
+    }
     ctx.Doc().BeginChange("SplitEdge");
     if (SceneObject* orig = ctx.Doc().Find(pick->id)) { orig->brep->raw() = b; orig->InvalidateDisplay(); }
     ctx.Print("SplitEdge: edge " + std::to_string(pick->edge) + " split at t=" + FormatNumber(t));
@@ -2133,7 +2253,7 @@ void RegisterFilletCommands(CommandEngine& e) {
       "Extends both surfaces and adds their real SSX join curve; exact trim is only immediate for the always-connecting planar case, otherwise trim manually with Split.");
   Reg(e, "SplitFace", Make<SplitFaceCommand>(), CommandStatus::Implemented,
       "Splits the picked face's surface at a real CSX crossing of a picked curve (untrimmed-domain split, not an arbitrary trim loop).");
-  Reg(e, "SplitEdge", Make<SplitEdgeCommand>(), CommandStatus::Implemented, "Inserts a real vertex/edge split at the picked parameter (rewires every trim onto the matching half).");
+  Reg(e, "SplitEdge", Make<SplitEdgeCommand>(), CommandStatus::Implemented, "Inserts a real vertex/edge split at the picked parameter (rewires every trim onto the matching half) - works on a naked (1-trim) edge exactly as well as a shared (2-trim) one, unlike the fillet-family commands' own edge picker.");
   Reg(e, "MergeEdge", Make<MergeEdgeCommand>(false), CommandStatus::Implemented, "ON_Brep::CombineContiguousEdges on the two picked edges (needs them tangent within 5 degrees).");
   Reg(e, "MergeAllEdges", Make<MergeEdgeCommand>(true), CommandStatus::Implemented, "Combines every colinear/tangent pair of edges sharing a vertex, repeatedly.");
   Reg(e, "MergeFaces", Make<MergeCoplanarCommand>(false), CommandStatus::Implemented, "Unions the picked coplanar faces' outlines (mesh boolean of thin slabs) into one real trimmed-plane face.");

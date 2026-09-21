@@ -259,28 +259,8 @@ std::vector<Point3d> GeneralConicFoci(const kernel::NurbsCurve& c, const ON_Plan
   return out;
 }
 
-// Cubic curve interpolating `pts` (chord-length parameters, relaxation solve).
-kernel::NurbsCurve InterpolateCubic(const std::vector<Point3d>& pts, bool closed = false) {
-  if (pts.size() < 2) return PolylineCurve(pts);
-  if (pts.size() == 2) return PolylineCurve(pts);
-  ON_3dPointArray arr;
-  for (const Point3d& p : pts) arr.Append(p);
-  if (closed) arr.Append(pts.front());
-  ON_NurbsCurve nc;
-  if (!nc.CreateClampedUniformNurbs(3, 3, arr.Count(), arr.Array())) return PolylineCurve(pts);
-  kernel::NurbsCurve k;
-  k.raw() = nc;
-  for (int iter = 0; iter < 40; ++iter) {
-    for (int i = 0; i < arr.Count(); ++i) {
-      double t = k.raw().Domain().ParameterAt(static_cast<double>(i) / (arr.Count() - 1));
-      Point3d on = k.raw().PointAt(t);
-      Point3d cv;
-      k.raw().GetCV(i, cv);
-      k.raw().SetCV(i, cv + (arr[i] - on));
-    }
-  }
-  return k;
-}
+// InterpolateCubic (cubic curve through `pts`) now lives in cmd_common.h,
+// shared with SquishBack (cmd_srfedit.cpp).
 
 // Rational quadratic Bezier (a conic arc) from P0 to P2 with apex P1 and weight w.
 kernel::NurbsCurve ConicArc(Point3d p0, Point3d p1, Point3d p2, double w) {

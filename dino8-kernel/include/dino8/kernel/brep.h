@@ -1717,6 +1717,42 @@ class Brep {
   // ordinary outcomes.
   Result UnjoinEdge(int edge_index);
 
+  // Closes RemoveAllNakedMicroEdges' own real gap (cmd_srfedit.cpp used to
+  // only detect these, never remove them): actually removes a naked
+  // (1-trim) edge shorter than `tolerance`, by welding its two endpoint
+  // vertices into one and re-trimming its two loop-adjacent edges (via
+  // ReplaceEdgeCurve, above) to close over the resulting gap - not a
+  // silent DeleteEdge, which would leave the loop's boundary open.
+  //
+  // Deliberately scoped to the one case this can close WITHOUT guessing at
+  // unrelated topology: `edge_index` must be naked (TrimCount() == 1,
+  // same detection the app layer already uses), its two loop-neighboring
+  // edges (ON_Brep::PrevTrim()/NextTrim() on its own single trim) must
+  // ALSO be naked, and each of the micro edge's own two vertices must
+  // touch NOTHING ELSE in this Brep besides the micro edge and that one
+  // neighbor - i.e. a genuine, isolated sliver on one face's own open
+  // boundary (the common "bad trim left a hairline gap" case), never a
+  // vertex a third edge, a second face's shared edge, or a non-manifold
+  // junction also depends on. Returns Result::Failed - not a thrown
+  // exception, the same "can't, but that's not a bug" contract
+  // UnjoinEdge() above already has - for every case outside that scope,
+  // or if closing the gap failed for a reason specific to this edge's own
+  // geometry (see below); the edge is left exactly as it was.
+  //
+  // The actual close: each neighbor edge's own curve is duplicated and
+  // nudged, via ON_Curve::SetStartPoint()/SetEndPoint() (whichever end
+  // touches the micro edge), to reach the midpoint of the micro edge's
+  // own two vertices instead of its own old endpoint - then committed
+  // through ReplaceEdgeCurve() itself (re-trimming that neighbor's own
+  // one face against the nudged curve, exactly the "re-trim the two faces
+  // on either side to close the gap" this is built on), before the two
+  // vertices are combined (ON_Brep::CombineCoincidentVertices()) and the
+  // now fully degenerate micro edge/trim are deleted and the Brep is
+  // Compact()ed. If SetStartPoint()/SetEndPoint() can't move a neighbor's
+  // curve (some curve types refuse - see that method's own doc comment)
+  // this returns Result::Failed before touching this Brep at all.
+  Result RemoveNakedMicroEdge(int edge_index, double tolerance = 1e-4);
+
   const ON_Brep& raw() const { return brep_; }
   ON_Brep& raw() { return brep_; }
 

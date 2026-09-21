@@ -19929,6 +19929,137 @@ void TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies() {
   Check(threw, "UnjoinEdge() throws std::out_of_range for an out-of-range edge_index");
 }
 
+// Brep::RemoveNakedMicroEdge() on a single flat plate whose own boundary
+// loop has one hairline sliver edge (a near-duplicate point inserted
+// along one side, exactly the "bad trim left a tiny gap" shape
+// RemoveAllNakedMicroEdges (cmd_srfedit.cpp) detects but historically
+// could only report). Before: 5 naked edges, one of them (length 1e-4)
+// a micro edge whose own two loop-neighbors are naked too - squarely the
+// scope this method actually closes.
+void TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep::PlanarFace f;
+  f.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  // A unit square with an extra point at (1, 1e-4, 0) splitting the
+  // (1,0,0)-(1,1,0) side into a long edge and a 1e-4-long micro edge -
+  // well above VertexWelder's own 1e-6 weld tolerance (brep.cpp), so the
+  // two new points genuinely stay distinct vertices, not accidentally
+  // welded into one before this method ever runs.
+  f.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1e-4, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  Brep plate = Brep::FromPlanarFaces({f});
+  Check(plate.FaceCount() == 1, "the sliver-plate fixture has exactly 1 face");
+  Check(plate.raw().IsValid(), "the sliver-plate fixture is a valid ON_Brep before the fix");
+  Check(plate.raw().m_E.Count() == 5, "the sliver-plate fixture has 5 naked boundary edges (4 real sides, 1 sliver)");
+
+  auto find_micro_edge = [&](double tol) {
+    for (int i = 0; i < plate.raw().m_E.Count(); ++i) {
+      const ON_BrepEdge& e = plate.raw().m_E[i];
+      if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
+      ON_NurbsCurve nc;
+      if (e.GetNurbForm(nc) <= 0) continue;
+      dino8::kernel::NurbsCurve k;
+      k.raw() = nc;
+      if (k.Length(20) < tol) return i;
+    }
+    return -1;
+  };
+  const int micro_index = find_micro_edge(0.01);
+  Check(micro_index >= 0, "found the 1e-4-long sliver edge via the same length test RemoveAllNakedMicroEdges uses");
+
+  auto plate_area = [&]() {
+    double a = 0;
+    for (const dino8::kernel::Mesh& m : plate.Tessellate(24, 24)) a += m.Area();
+    return a;
+  };
+  const double area_before = plate_area();
+  Check(std::abs(area_before - 1.0) < 1e-4, "the sliver plate's own area is still ~1.0 before the fix");
+
+  const Result r = plate.RemoveNakedMicroEdge(micro_index, 0.01);
+  Check(r == Result::Ok, "RemoveNakedMicroEdge() succeeded on the isolated sliver");
+  Check(plate.raw().IsValid(), "the plate is still a valid ON_Brep after the fix");
+  Check(plate.FaceCount() == 1, "still exactly 1 face - only the boundary loop changed, not the face itself");
+  Check(plate.raw().m_E.Count() == 4, "the sliver edge (and the vertex it collapsed into its neighbor) is genuinely gone: 4 edges left, not 5");
+
+  Check(find_micro_edge(0.01) < 0, "RemoveAllNakedMicroEdges' own detection test now finds no micro edge left");
+
+  const double area_after = plate_area();
+  Check(std::abs(area_after - area_before) < 1e-3,
+        "closing the sliver left the plate's own area unchanged within a tight tolerance - real geometry "
+        "wasn't removed, just the numerical gap");
+
+  // A second call on any remaining (ordinary-length) naked edge has
+  // nothing micro to close.
+  Check(plate.RemoveNakedMicroEdge(0, 0.01) == Result::Failed,
+        "RemoveNakedMicroEdge() on an ordinary-length naked edge returns Result::Failed, not a thrown exception");
+
+  bool threw = false;
+  try {
+    plate.RemoveNakedMicroEdge(plate.raw().m_E.Count() + 100, 0.01);
+  } catch (const std::out_of_range&) {
+    threw = true;
+  }
+  Check(threw, "RemoveNakedMicroEdge() throws std::out_of_range for an out-of-range edge_index");
+}
+
+// The scope restriction itself: a micro edge whose loop-neighbor is the
+// two-square fixture's own SHARED edge (or whose endpoint is a vertex a
+// third face also depends on) must be refused, not guessed at - the
+// Brep is left completely unchanged either way.
+void TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep::PlanarFace a, b;
+  a.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  // Same square as the MergeCoplanarFaces/UnjoinEdge fixture's face a,
+  // but with an extra near-duplicate point right next to the (1,1,0)
+  // corner where its own shared edge (with b) ends - so the resulting
+  // sliver edge's own loop-neighbor is that genuinely shared (2-trim)
+  // edge, and its own far endpoint (1,1,0) is also a vertex face b's own
+  // boundary depends on.
+  a.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(1 - 1e-4, 1, 0), Point3d(0, 1, 0)};
+  b.plane = ON_Plane(Point3d(1, 0, 0), ON_3dVector(0, 0, 1));
+  b.loop = {Point3d(1, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0), Point3d(1, 1, 0)};
+  Brep flat = Brep::FromPlanarFaces({a, b});
+  Check(flat.FaceCount() == 2, "the shared-edge sliver fixture starts with 2 faces");
+  Check(flat.raw().IsValid(), "the shared-edge sliver fixture is a valid ON_Brep");
+
+  int micro_index = -1;
+  for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
+    const ON_BrepEdge& e = flat.raw().m_E[i];
+    if (e.m_edge_index < 0 || e.TrimCount() != 1) continue;
+    ON_NurbsCurve nc;
+    if (e.GetNurbForm(nc) <= 0) continue;
+    dino8::kernel::NurbsCurve k;
+    k.raw() = nc;
+    if (k.Length(20) < 0.01) { micro_index = i; break; }
+  }
+  Check(micro_index >= 0, "found the sliver edge next to the shared seam");
+
+  const int edges_before = flat.raw().m_E.Count();
+  const Result r = flat.RemoveNakedMicroEdge(micro_index, 0.01);
+  Check(r == Result::Failed,
+        "RemoveNakedMicroEdge() refuses a sliver whose neighbor is a shared edge (or whose endpoint a third "
+        "face also depends on) rather than guessing at it");
+  Check(flat.raw().m_E.Count() == edges_before, "a refused call leaves the edge count completely unchanged");
+  Check(flat.raw().IsValid(), "the Brep is still a valid ON_Brep after a refused call");
+
+  // The genuinely naked, non-micro-adjacent original shared edge is
+  // untouched: RemoveNakedMicroEdge() on it directly is also refused
+  // (it isn't a micro edge at all - length ~1, not < tolerance).
+  int shared_edge_index = -1;
+  for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
+    if (flat.raw().m_E[i].TrimCount() == 2) { shared_edge_index = i; break; }
+  }
+  Check(shared_edge_index >= 0, "found the shared edge");
+  Check(flat.RemoveNakedMicroEdge(shared_edge_index, 0.01) == Result::Failed,
+        "RemoveNakedMicroEdge() on a shared (2-trim) edge returns Result::Failed");
+}
+
 int main() {
   ON::Begin();
 
@@ -20240,6 +20371,8 @@ int main() {
   TestReplaceEdgeCurveThrowsOnEndpointMismatch();
   TestReplaceEdgeCurveThrowsOnSurfaceMismatch();
   TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies();
+  TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate();
+  TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge();
 
   ON::End();
 

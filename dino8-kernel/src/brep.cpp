@@ -4713,8 +4713,20 @@ void Brep::ReplaceEdgeCurve(int edge_index, const NurbsCurve& new_curve, double 
     std::vector<ON_3dPoint> uv_points;
     uv_points.reserve(kSamples + 1);
     double max_residual = 0.0;
+    // A trim's own 2D curve always runs in ITS OWN loop-consistent
+    // direction (PointAtStart() == the 3D point at trim.m_vi[0]), which
+    // is the EDGE's direction only when m_bRev3d is false - reversed
+    // (m_bRev3d true), it runs opposite the edge's own fitted_curve.
+    // Sampling forward regardless (the previous, unconditional i=0..
+    // kSamples order below) silently built the trim's new 2D curve
+    // backwards for a reversed trim: same 2D shape, wrong direction, so
+    // trim.PointAtStart()/PointAtEnd() swapped without trim.m_vi[]
+    // knowing it - a loop whose neighbor still expects the OLD start to
+    // be there sees a real discontinuity (caught running this against a
+    // reversed naked trim, via RemoveNakedMicroEdge, for the first time).
     for (int i = 0; i <= kSamples; ++i) {
-      const double t = curve_dom.ParameterAt(static_cast<double>(i) / kSamples);
+      const double s = trim.m_bRev3d ? static_cast<double>(kSamples - i) : static_cast<double>(i);
+      const double t = curve_dom.ParameterAt(s / kSamples);
       const ON_3dPoint p3 = fitted_curve.PointAt(t);
       const Point2d uv = wrapper.ClosestPointParameter(Point3d(p3.x, p3.y, p3.z), 40, 40);
       const Point3d back = wrapper.PointAt(uv.x, uv.y);
@@ -4834,6 +4846,142 @@ Result Brep::UnjoinEdge(int edge_index) {
   // duplicated edge carries the exact same 3D curve content - only which
   // ON_BrepEdge object underlies each of the two now-separate trims
   // changed, not the shape either face presents).
+  return Result::Ok;
+}
+
+Result Brep::RemoveNakedMicroEdge(int edge_index, double tolerance) {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::RemoveNakedMicroEdge: edge_index " +
+                             std::to_string(edge_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  const ON_BrepEdge& micro = brep_.m_E[edge_index];
+  if (micro.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::RemoveNakedMicroEdge: edge_index " +
+                                 std::to_string(edge_index) + " refers to a deleted edge");
+  }
+  if (micro.TrimCount() != 1) return Result::Failed;  // not naked - out of scope
+
+  // Must actually BE a micro edge - same length measure (GetNurbForm +
+  // a 20-sample polyline length) the app layer's own detection already
+  // uses (cmd_srfedit.cpp's RemoveAllNakedMicroEdges).
+  {
+    ON_NurbsCurve nc;
+    if (micro.GetNurbForm(nc) <= 0) return Result::Failed;
+    NurbsCurve len_check;
+    len_check.raw() = nc;
+    if (len_check.Length(20) >= tolerance) return Result::Failed;
+  }
+
+  const int ti = micro.m_ti[0];
+  if (ti < 0 || ti >= brep_.m_T.Count()) return Result::Failed;
+  const ON_BrepTrim& trim = brep_.m_T[ti];
+  if (trim.m_li < 0 || trim.m_li >= brep_.m_L.Count()) return Result::Failed;
+
+  // The two edges flanking this one in its own loop - the "faces on
+  // either side" this re-trims (both happen to be the SAME face here,
+  // since this is scoped to a naked edge's own single-face loop).
+  const int ti_prev = brep_.PrevTrim(ti);
+  const int ti_next = brep_.NextTrim(ti);
+  if (ti_prev < 0 || ti_next < 0 || ti_prev == ti || ti_next == ti || ti_prev == ti_next) return Result::Failed;
+  const ON_BrepTrim& trim_prev = brep_.m_T[ti_prev];
+  const ON_BrepTrim& trim_next = brep_.m_T[ti_next];
+  const int ei_prev = trim_prev.m_ei;
+  const int ei_next = trim_next.m_ei;
+  if (ei_prev < 0 || ei_next < 0 || ei_prev == edge_index || ei_next == edge_index) return Result::Failed;
+  const ON_BrepEdge& edge_prev = brep_.m_E[ei_prev];
+  const ON_BrepEdge& edge_next = brep_.m_E[ei_next];
+  // Scoped to naked neighbors only (see this method's own doc comment):
+  // a neighbor shared with a second face, or itself non-manifold, is left
+  // for a caller to handle by hand rather than guessed at here.
+  if (edge_prev.TrimCount() != 1 || edge_next.TrimCount() != 1) return Result::Failed;
+
+  const int v_start = trim.m_vi[0];
+  const int v_end = trim.m_vi[1];
+  if (v_start < 0 || v_end < 0 || v_start == v_end) return Result::Failed;
+  if (v_start >= brep_.m_V.Count() || v_end >= brep_.m_V.Count()) return Result::Failed;
+
+  // Isolated-sliver check: each endpoint may touch nothing in this WHOLE
+  // Brep besides the micro edge itself and its own one loop-neighbor - a
+  // vertex a third edge (another face, a non-manifold junction, ...) also
+  // depends on is left alone rather than risked.
+  auto only_touches = [&](int vi, int allowed_other_edge) {
+    const ON_BrepVertex& v = brep_.m_V[vi];
+    for (int k = 0; k < v.m_ei.Count(); ++k) {
+      const int e = v.m_ei[k];
+      if (e != edge_index && e != allowed_other_edge) return false;
+    }
+    return true;
+  };
+  if (!only_touches(v_start, ei_prev) || !only_touches(v_end, ei_next)) return Result::Failed;
+
+  const ON_3dPoint p_start = brep_.m_V[v_start].point;
+  const ON_3dPoint p_end = brep_.m_V[v_end].point;
+  const ON_3dPoint merged((p_start.x + p_end.x) / 2.0, (p_start.y + p_end.y) / 2.0, (p_start.z + p_end.z) / 2.0);
+
+  // Phase 1 (no mutation yet): for each neighbor, duplicate its own curve
+  // and nudge the ONE end that touches the micro edge over to `merged`
+  // via ON_Curve::SetStartPoint()/SetEndPoint() - the standard OpenNURBS
+  // "close a small gap without reshaping the rest of the curve" primitive.
+  // If either can't be moved this way, bail before touching this Brep.
+  auto nudge = [&](const ON_BrepEdge& e, int vi) -> std::optional<NurbsCurve> {
+    ON_Curve* dup = e.DuplicateCurve();
+    if (!dup) return std::nullopt;
+    const bool at_end = (e.m_vi[1] == vi);
+    const bool moved = at_end ? dup->SetEndPoint(merged) : dup->SetStartPoint(merged);
+    if (!moved) { delete dup; return std::nullopt; }
+    ON_NurbsCurve nc;
+    const bool has_nurbs_form = dup->GetNurbForm(nc) > 0;
+    delete dup;
+    if (!has_nurbs_form) return std::nullopt;
+    NurbsCurve out;
+    out.raw() = nc;
+    return out;
+  };
+  std::optional<NurbsCurve> new_prev = nudge(edge_prev, v_start);
+  std::optional<NurbsCurve> new_next = nudge(edge_next, v_end);
+  if (!new_prev || !new_next) return Result::Failed;
+
+  // Phase 2: commit. Move the two vertices to their shared merged point
+  // FIRST, so ReplaceEdgeCurve()'s own "new curve endpoints must land
+  // near the edge's EXISTING vertices" check (see its doc comment) passes
+  // with near-zero residual rather than needing a loosened tolerance.
+  brep_.m_V[v_start].point = merged;
+  brep_.m_V[v_end].point = merged;
+  const double retrim_tolerance = std::max(tolerance, p_start.DistanceTo(p_end));
+  try {
+    ReplaceEdgeCurve(ei_prev, *new_prev, retrim_tolerance);
+    ReplaceEdgeCurve(ei_next, *new_next, retrim_tolerance);
+  } catch (const std::exception&) {
+    // Leaves this Brep with, at most, one neighbor's curve nudged by the
+    // same micro-scale amount this whole operation is trying to close (a
+    // no-op-sized change, never a structural one) and the micro edge
+    // itself untouched - a safe, honest "couldn't", not a corrupted Brep.
+    return Result::Failed;
+  }
+
+  // Both neighbors now reach the shared `merged` point; weld the micro
+  // edge's own two vertices into one (ON_Brep's own "expert user"
+  // primitive for exactly this - re-points every trim referencing the
+  // second vertex onto the first) and delete the now fully degenerate
+  // micro edge and its lone trim, then physically cull them.
+  brep_.CombineCoincidentVertices(brep_.m_V[v_start], brep_.m_V[v_end]);
+  brep_.m_E[edge_index].m_edge_index = -1;
+  brep_.m_T[ti].m_trim_index = -1;
+  brep_.Compact();
+
+  brep_.SetTolerancesBoxesAndFlags();
+  FixUnsetEdgeTolerances(brep_);
+  // Same reasoning as ReplaceEdgeCurve()/MergeCoplanarFaces() above: the
+  // affected face's own trim loop just changed shape (one fewer edge),
+  // so this class's own per-face side tables would otherwise silently
+  // keep describing the pre-edit boundary.
+  face_trim_loops_.clear();
+  face_exact_clip_.clear();
+  face_hole_loops_.clear();
+  face_arc_runs_.clear();
+  face_notch_rows_.clear();
+  face_records_.clear();
   return Result::Ok;
 }
 
