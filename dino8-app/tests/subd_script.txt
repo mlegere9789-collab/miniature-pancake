@@ -102,9 +102,10 @@ Enter
 SelLast
 What
 @expect_objects 7
-# --- PackSubDFaces (face count only, no texture atlas), SubDFaceEdgeVertexToggle
-# (cycles the real app-wide sub-object pick filter shared with SelectionFilter*),
-# AddGuide/RemoveGuide (document-stored two-point guide lines; no scene objects).
+# --- PackSubDFaces (a real UV-atlas layout - per-face planar unwrap + shelf
+# bin-packing, see cmd_subd.cpp), SubDFaceEdgeVertexToggle (cycles the real
+# app-wide sub-object pick filter shared with SelectionFilter*), AddGuide/
+# RemoveGuide (document-stored two-point guide lines; no scene objects).
 SelLast
 PackSubDFaces
 SubDFaceEdgeVertexToggle
@@ -122,3 +123,14 @@ RemoveGuide
 RemoveGuide
 Enter
 @expect_objects 7
+# --- PackSubDFaces on two fresh, regular SubDs (a plain box and a sphere)
+# for a predictable coverage number - smoke.sh checks the printed UV
+# bounds, overlap count and coverage percentage against real thresholds,
+# not just that the command didn't crash.
+SubDBox 120,0,0 130,10,0 10
+SelLast
+PackSubDFaces
+SubDSphere 145,5,5 5
+SelLast
+PackSubDFaces
+@expect_objects 9

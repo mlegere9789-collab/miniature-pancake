@@ -378,6 +378,24 @@ struct SquishFeature {
   double avg_distortion = 0;
 };
 
+// The data behind PackSubDFaces (cmd_subd.cpp): the packed UV-atlas layout
+// for a SubD's current control-net faces. `packed_mesh` is a
+// duplicated-vertex (fully unwelded) copy of the control net - one private
+// vertex per face corner, never shared with another face - carrying its own
+// per-vertex (u, v) texture coordinates via kernel::Mesh::
+// SetTextureCoordinates (the same per-vertex-only storage SquishBack's
+// SquishFeature already rides on above; duplicating vertices per face is
+// what lets two faces sharing a 3D vertex get different UVs, since the
+// underlying storage has no per-corner granularity - see that method's own
+// doc comment). Session state only, same side-table pattern and rationale
+// as SquishFeature/HoleFeature above: not written to the .3dm, not restored
+// by Undo/Redo, cleared whenever the source SubD object is removed.
+struct SubDPackFeature {
+  kernel::Mesh packed_mesh;
+  int face_count = 0;
+  double coverage = 0;  // fraction of the unit square actually covered by face content (not gutters)
+};
+
 struct DocumentSettings {
   std::string unit_system = "Millimeters";
   std::string title, author, comments;  // file metadata (saved in the .3dm)
@@ -580,6 +598,12 @@ class Document {
     return it == squish_features_.end() ? nullptr : &it->second;
   }
   void ClearSquishFeature(ObjectId id) { squish_features_.erase(id); }
+  void SetSubDPackFeature(ObjectId id, SubDPackFeature f) { subd_pack_features_[id] = std::move(f); }
+  const SubDPackFeature* FindSubDPackFeature(ObjectId id) const {
+    const auto it = subd_pack_features_.find(id);
+    return it == subd_pack_features_.end() ? nullptr : &it->second;
+  }
+  void ClearSubDPackFeature(ObjectId id) { subd_pack_features_.erase(id); }
   std::map<std::string, std::string>& UserText() { return user_text_; }
   std::string& Notes() { return notes_; }
   DocumentSettings& Settings() { return settings_; }
@@ -913,6 +937,7 @@ class Document {
   std::map<ObjectId, PipeFeature> pipe_features_;
   std::map<ObjectId, ProvenanceInfo> provenance_;
   std::map<ObjectId, SquishFeature> squish_features_;
+  std::map<ObjectId, SubDPackFeature> subd_pack_features_;
   std::map<std::string, std::string> user_text_;
   std::string notes_;
   DocumentSettings settings_;

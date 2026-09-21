@@ -770,10 +770,20 @@ sdcheck "InsertPoint: 1 point(s) inserted on edges" "InsertPoint split an edge o
 sdcheck "Slide: vertex moved" "Slide moved the picked vertex along its best-aligned edge"
 sdcheck "SubDSpinEdge: 1 edge(s) spun" "SubDSpinEdge spun the picked edge"
 sdcheck "SubDExpandEdges: 2 strip face(s) added, width 1" "SubDExpandEdges added a strip on both sides of the picked edge"
+# PackSubDFaces: a real per-face planar-unwrap + shelf-bin-packing UV atlas,
+# not just a face count. These checks are programmatic, not "didn't crash":
+# the command's own printed UV bounds/overlap-count/coverage are themselves
+# computed directly from the packed rectangles (UnwrapFacesLocally/
+# ShelfPackFaces in cmd_subd.cpp) - "within [0,1]x[0,1]" is a real bounds
+# check against every placed corner, "0 overlapping island pair(s)" a real
+# brute-force pairwise rectangle-overlap check, and the coverage percentage
+# the actual packed-content-area fraction of the unit square, not eyeballed.
+sdcheck "PackSubDFaces: object 11: 6 face(s) packed independently (own island each, no adjacent-face grouping) via per-face planar unwrap + shelf bin-packing; UV bounds \[0\.[0-9]*,0\.[0-9]*\]x\[0\.[0-9]*,0\.[0-9]*\] within \[0,1\]x\[0,1\], 0 overlapping island pair(s), coverage 5[0-9]\.[0-9]*%" "PackSubDFaces built a real, non-overlapping, in-bounds UV atlas for a plain SubD box (6 faces) with reasonable (~53%) coverage"
+sdcheck "PackSubDFaces: object 12: 48 face(s) packed independently (own island each, no adjacent-face grouping) via per-face planar unwrap + shelf bin-packing; UV bounds \[0\.[0-9]*,0\.[0-9]*\]x\[0\.[0-9]*,0\.[0-9]*\] within \[0,1\]x\[0,1\], 0 overlapping island pair(s), coverage [3-9][0-9]\.[0-9]*%" "PackSubDFaces built a real, non-overlapping, in-bounds UV atlas for a SubD sphere (48 faces) with reasonable (>=30%) coverage"
 sdcheck "gl_error=0" "subd script ran without OpenGL errors"
 echo "$SD" | grep -E "^(ok|FAIL)"
 if echo "$SD" | grep -q "^FAIL"; then fail=1; fi
-sdcheck "smoke: frames=150 objects=7" "subd script produced the expected object count"
+sdcheck "smoke: frames=150 objects=9" "subd script produced the expected object count"
 # Rendering: materials (scripted options), texture mapping, lights, sun, ground plane,
 # Render / RenderArctic / SaveRenderWindowAs, ExtractRenderMesh, .3dm round-trip (see render_script.txt).
 sed "s|@TMP@|$TMP|g" "$HERE/render_script.txt" > "$TMP/render_script.txt"

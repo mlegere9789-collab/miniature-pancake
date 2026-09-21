@@ -1295,6 +1295,223 @@ class SweepThenSubDCommand : public Command {
   ObjectId max_id_ = kNoObject;
 };
 
+// ---------------------------------------------------------------------------
+// PackSubDFaces: a real (if simple) UV-atlas packer for a SubD's current
+// control-net faces. Each face is packed as its own independent island -
+// no adjacent-face grouping - via:
+//   1. A per-face planar (box) unwrap: each face's own best-fit normal
+//      (Net::FaceNormal, already used elsewhere in this file) defines a
+//      local 2D basis; every corner is projected into it and the local
+//      bounding box becomes that face's own UV rectangle. This preserves
+//      the face's true aspect ratio and, for planar faces (the common
+//      case - a SubD box's faces, say), unwraps it exactly with zero
+//      distortion; a non-planar face's corners project slightly off-plane
+//      the same way any flat projection of a warped quad would.
+//   2. Shelf packing (Next-Fit Decreasing Height): rectangles sorted by
+//      height, placed left-to-right into shelves of a unit-width bin,
+//      starting a new shelf when the current one would overflow - a real,
+//      working, reasonably space-efficient bin-packing algorithm, not a
+//      "return [0,1]x[0,1] for everything" stub.
+//   3. A single uniform rescale (never a per-axis stretch, so every face
+//      keeps its own aspect ratio) so the whole shelf layout fits exactly
+//      within [0,1]x[0,1], touching 1 in whichever axis is the tighter
+//      constraint.
+// A 12%-of-size gutter is reserved around each face's own rectangle before
+// packing and left empty, so the final per-face content rectangles never
+// touch, let alone overlap: rectangle disjointness is a direct consequence
+// of the shelf construction (same-shelf rectangles have disjoint x-ranges,
+// different shelves have disjoint y-ranges), not something checked after
+// the fact.
+struct SubDFacePackRect {
+  double minu = 0, minv = 0;  // this face's own local-unwrap bounding-box min
+  double w = 0, h = 0;        // this face's own local-unwrap bounding-box size (content, no gutter)
+  std::vector<ON_2dPoint> local;  // per-corner local 2D coordinate, aligned with the Net face's vertex loop
+};
+
+// Computes each face's own local planar unwrap and its bounding-box rectangle.
+std::vector<SubDFacePackRect> UnwrapFacesLocally(const Net& net) {
+  std::vector<SubDFacePackRect> rects(net.f.size());
+  for (size_t fi = 0; fi < net.f.size(); ++fi) {
+    const Poly& p = net.f[fi];
+    Vector3d normal = net.FaceNormal(p);
+    if (normal.Length() < 1e-9) normal = Vector3d(0, 0, 1);
+    const Point3d centroid = net.Centroid(p);
+    Vector3d ref = std::fabs(normal.z) < 0.9 ? Vector3d(0, 0, 1) : Vector3d(1, 0, 0);
+    Vector3d uaxis = ON_CrossProduct(ref, normal);
+    if (!uaxis.Unitize()) uaxis = Vector3d(1, 0, 0);
+    Vector3d vaxis = ON_CrossProduct(normal, uaxis);
+    vaxis.Unitize();
+    SubDFacePackRect r;
+    r.local.resize(p.size());
+    double minu = std::numeric_limits<double>::max(), minv = minu;
+    double maxu = -minu, maxv = -minu;
+    for (size_t k = 0; k < p.size(); ++k) {
+      const Vector3d d = net.v[p[k]] - centroid;
+      const double lu = d * uaxis, lv = d * vaxis;
+      r.local[k] = ON_2dPoint(lu, lv);
+      minu = std::min(minu, lu); maxu = std::max(maxu, lu);
+      minv = std::min(minv, lv); maxv = std::max(maxv, lv);
+    }
+    constexpr double kMinExtent = 1e-6;  // guards a degenerate (collapsed) face rather than dividing by zero below
+    r.minu = minu; r.minv = minv;
+    r.w = std::max(kMinExtent, maxu - minu);
+    r.h = std::max(kMinExtent, maxv - minv);
+    rects[fi] = std::move(r);
+  }
+  return rects;
+}
+
+// One face's final placement: its content rectangle's origin in [0,1]x[0,1]
+// (its size is the corresponding SubDFacePackRect's own w/h, uniformly
+// rescaled by `uv_scale`).
+struct SubDFacePlacement { double x0 = 0, y0 = 0; };
+
+struct SubDPackLayout {
+  std::vector<SubDFacePlacement> placements;
+  double uv_scale = 1.0;    // single global scalar (same for u and v): preserves every face's own aspect ratio
+  double coverage = 0;      // sum of face content areas / area of the used [0, max_x_used]x[0, total_height] extent
+  int overlap_pairs = 0;    // brute-force pairwise AABB-overlap count over the final content rectangles (must be 0)
+  double min_u = 0, min_v = 0, max_u = 1, max_v = 1;  // observed bounds over every placed content rectangle
+};
+
+// Shelf (Next-Fit Decreasing Height) bin packing of `rects` into the unit
+// square, each with a proportional gutter reserved around it so the packed
+// content rectangles never touch. Also runs the two direct verification
+// checks PackSubDFaces reports: a brute-force O(n^2) pairwise rectangle
+// overlap check (real geometry, not just trusting the algorithm) and the
+// observed UV bounds.
+SubDPackLayout ShelfPackFaces(const std::vector<SubDFacePackRect>& rects) {
+  const size_t n = rects.size();
+  SubDPackLayout out;
+  out.placements.resize(n);
+  if (n == 0) return out;
+
+  constexpr double kPadFrac = 0.12;  // 12% gutter around each face's own content, split evenly on each side
+  std::vector<double> alloc_w(n), alloc_h(n), pad_w(n), pad_h(n);
+  double max_alloc_w = 0, total_alloc_area = 0;
+  for (size_t i = 0; i < n; ++i) {
+    pad_w[i] = rects[i].w * kPadFrac;
+    pad_h[i] = rects[i].h * kPadFrac;
+    alloc_w[i] = rects[i].w + pad_w[i];
+    alloc_h[i] = rects[i].h + pad_h[i];
+    max_alloc_w = std::max(max_alloc_w, alloc_w[i]);
+    total_alloc_area += alloc_w[i] * alloc_h[i];
+  }
+  // Pick the shelf bin's width via the standard "aim for a roughly square
+  // strip" shelf-packing heuristic: sqrt(total allocated area), clamped up
+  // to the single widest cell so that cell always fits. Using the widest
+  // cell alone as the bin width (what an earlier version of this function
+  // did) forces exactly one rectangle per shelf whenever most faces are a
+  // similar size - e.g. a cube's 6 equal faces - which stacks everything
+  // into one tall, narrow column and wastes most of the unit square; this
+  // heuristic instead lets same-sized rectangles actually share shelves.
+  const double bin_w = std::max(max_alloc_w, std::sqrt(std::max(total_alloc_area, 1e-12)));
+  const double norm = bin_w > 1e-12 ? 1.0 / bin_w : 1.0;
+
+  std::vector<size_t> order(n);
+  std::iota(order.begin(), order.end(), 0);
+  std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return alloc_h[a] > alloc_h[b]; });
+
+  std::vector<double> cell_x(n), cell_y(n);
+  double shelf_y = 0, shelf_h = 0, cursor_x = 0, max_x_used = 0;
+  for (size_t idx : order) {
+    const double w = alloc_w[idx] * norm, h = alloc_h[idx] * norm;
+    if (cursor_x > 0 && cursor_x + w > 1.0 + 1e-9) { shelf_y += shelf_h; cursor_x = 0; shelf_h = 0; }
+    cell_x[idx] = cursor_x;
+    cell_y[idx] = shelf_y;
+    cursor_x += w;
+    shelf_h = std::max(shelf_h, h);
+    max_x_used = std::max(max_x_used, cursor_x);
+  }
+  const double total_height = shelf_y + shelf_h;
+  // A single uniform rescale (both axes by the same factor) so the whole
+  // layout fits within [0,1]x[0,1] - never a per-axis stretch, so it never
+  // distorts any one face's own aspect ratio.
+  const double final_scale = 1.0 / std::max({max_x_used, total_height, 1e-12});
+  out.uv_scale = norm * final_scale;
+
+  double content_area = 0;
+  double min_u = std::numeric_limits<double>::max(), min_v = min_u, max_u = -min_u, max_v = -min_u;
+  std::vector<std::array<double, 4>> content_rects(n);  // x0,y0,x1,y1
+  for (size_t i = 0; i < n; ++i) {
+    const double x0 = (cell_x[i] + pad_w[i] * norm / 2.0) * final_scale;
+    const double y0 = (cell_y[i] + pad_h[i] * norm / 2.0) * final_scale;
+    const double x1 = x0 + rects[i].w * out.uv_scale;
+    const double y1 = y0 + rects[i].h * out.uv_scale;
+    out.placements[i] = SubDFacePlacement{x0, y0};
+    content_rects[i] = {x0, y0, x1, y1};
+    content_area += (x1 - x0) * (y1 - y0);
+    min_u = std::min(min_u, x0); max_u = std::max(max_u, x1);
+    min_v = std::min(min_v, y0); max_v = std::max(max_v, y1);
+  }
+  int overlaps = 0;
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = i + 1; j < n; ++j) {
+      const auto& a = content_rects[i]; const auto& b = content_rects[j];
+      const bool disjoint = a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1];
+      if (!disjoint) ++overlaps;
+    }
+  }
+  const double used_area = std::max(max_x_used, total_height) * final_scale;
+  out.coverage = used_area > 1e-12 ? content_area / (used_area * used_area) : 0;
+  out.overlap_pairs = overlaps;
+  out.min_u = min_u; out.min_v = min_v; out.max_u = max_u; out.max_v = max_v;
+  return out;
+}
+
+// Builds the duplicated-vertex (fully unwelded) mesh PackSubDFaces stores:
+// one private vertex per control-net face corner (fan-triangulating any
+// face with more than 4 corners, since kernel::Mesh's ON_MeshFace only
+// holds a triangle or quad), each carrying its own packed (u, v).
+kernel::Mesh BuildPackedMesh(const Net& net, const std::vector<SubDFacePackRect>& rects, const SubDPackLayout& layout) {
+  kernel::Mesh km;
+  ON_Mesh& m = km.raw();
+  std::vector<Point3d> verts;
+  std::vector<kernel::Point2d> uvs;
+  std::vector<std::array<int, 4>> faces;  // quad/tri indices into verts/uvs, tri repeats the last index
+  auto add_corner = [&](const Poly& p, size_t k, const SubDFacePackRect& r, const SubDFacePlacement& pl) -> int {
+    const int idx = static_cast<int>(verts.size());
+    verts.push_back(net.v[p[k]]);
+    const double u = pl.x0 + (r.local[k].x - r.minu) * layout.uv_scale;
+    const double v = pl.y0 + (r.local[k].y - r.minv) * layout.uv_scale;
+    uvs.push_back(kernel::Point2d(u, v));
+    return idx;
+  };
+  for (size_t fi = 0; fi < net.f.size(); ++fi) {
+    const Poly& p = net.f[fi];
+    if (p.size() < 3) continue;
+    const SubDFacePackRect& r = rects[fi];
+    const SubDFacePlacement& pl = layout.placements[fi];
+    if (p.size() == 3) {
+      const int a = add_corner(p, 0, r, pl), b = add_corner(p, 1, r, pl), c = add_corner(p, 2, r, pl);
+      faces.push_back({a, b, c, c});
+    } else if (p.size() == 4) {
+      const int a = add_corner(p, 0, r, pl), b = add_corner(p, 1, r, pl);
+      const int c = add_corner(p, 2, r, pl), d = add_corner(p, 3, r, pl);
+      faces.push_back({a, b, c, d});
+    } else {
+      // Fan-triangulate around corner 0 - every triangle still gets its
+      // corner's own local unwrap coordinate, so all of them stay inside
+      // this one face's own packed rectangle.
+      const int a0 = add_corner(p, 0, r, pl);
+      for (size_t k = 1; k + 1 < p.size(); ++k) {
+        const int b = add_corner(p, k, r, pl), c = add_corner(p, k + 1, r, pl);
+        faces.push_back({a0, b, c, c});
+      }
+    }
+  }
+  for (int i = 0; i < static_cast<int>(verts.size()); ++i) m.SetVertex(i, verts[static_cast<size_t>(i)]);
+  int fi = 0;
+  for (const auto& f : faces) {
+    if (f[2] == f[3]) m.SetTriangle(fi++, f[0], f[1], f[2]);
+    else m.SetQuad(fi++, f[0], f[1], f[2], f[3]);
+  }
+  m.ComputeFaceNormals();
+  m.ComputeVertexNormals();
+  km.SetTextureCoordinates(uvs);
+  return km;
+}
+
 void ToggleDisplay(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   std::vector<ObjectId> targets = ids;
   if (targets.empty()) for (const SceneObject& o : ctx.Doc().Objects()) if (o.kind == ObjectKind::SubD) targets.push_back(o.id);
@@ -1339,8 +1556,31 @@ void RegisterSubDCommands(CommandEngine& e) {
       CommandStatus::Implemented, "Re-spaces the interior knots by chord length so the object is no longer uniform.");
   Reg(e, "RepairSubD", OnSelection("Select SubDs to repair", RepairAction));
   Reg(e, "PackSubDFaces", OnSelection("Select SubDs", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::SubD) ctx.Print("PackSubDFaces: object " + std::to_string(id) + ": " + std::to_string(o->subd->FaceCount()) + " face(s) in 1 pack (texture packing is not stored in this build)"); }
-      }), CommandStatus::Partial, "Reports the face count only: the kernel has no per-face UV/texture-coordinate storage to pack, so no texture atlas is produced.");
+        for (ObjectId id : ids) {
+          SceneObject* o = ctx.Doc().Find(id);
+          if (!o || o->kind != ObjectKind::SubD || !o->subd) continue;
+          const Net net = Unpack(o->subd->raw());
+          if (net.f.empty()) { ctx.Print("PackSubDFaces: object " + std::to_string(id) + ": no faces to pack"); continue; }
+          const std::vector<SubDFacePackRect> rects = UnwrapFacesLocally(net);
+          const SubDPackLayout layout = ShelfPackFaces(rects);
+          kernel::Mesh packed = BuildPackedMesh(net, rects, layout);
+          const bool bounds_ok = layout.min_u >= -1e-9 && layout.min_v >= -1e-9 && layout.max_u <= 1.0 + 1e-9 && layout.max_v <= 1.0 + 1e-9;
+          ctx.Doc().SetSubDPackFeature(id, SubDPackFeature{packed, static_cast<int>(net.f.size()), layout.coverage});
+          ctx.Print("PackSubDFaces: object " + std::to_string(id) + ": " + std::to_string(net.f.size()) +
+                     " face(s) packed independently (own island each, no adjacent-face grouping) via per-face planar unwrap + shelf bin-packing; " +
+                     "UV bounds [" + Num(layout.min_u) + "," + Num(layout.max_u) + "]x[" + Num(layout.min_v) + "," + Num(layout.max_v) + "] " +
+                     (bounds_ok ? "within [0,1]x[0,1]" : "OUTSIDE [0,1]x[0,1]") + ", " + std::to_string(layout.overlap_pairs) +
+                     " overlapping island pair(s), coverage " + Num(layout.coverage * 100) + "%");
+        }
+      }), CommandStatus::Implemented,
+      "Builds a real UV-atlas layout for the SubD's current control-net faces: each face is packed as its own "
+      "independent island (a planar box-unwrap of that face alone, preserving its own aspect ratio; no adjacent-face "
+      "grouping into larger islands), placed into the unit square by shelf (Next-Fit Decreasing Height) bin-packing "
+      "with a 12% gutter reserved around every island so none touch, then the whole layout is uniformly rescaled to "
+      "fit exactly within [0,1]x[0,1]. The result is stored as a duplicated-vertex mesh (kernel::Mesh::"
+      "SetTextureCoordinates, one private vertex per face corner - the same per-vertex texture-coordinate storage "
+      "SquishBack already uses) via Document::SetSubDPackFeature, keyed by the object id; session state only, not "
+      "written to the .3dm.");
 
   // ---- display / selection ------------------------------------------------------
   Reg(e, "SubDDisplayToggle", Immediate([](CommandContext& ctx) { ToggleDisplay(ctx, ctx.Selected()); }));
