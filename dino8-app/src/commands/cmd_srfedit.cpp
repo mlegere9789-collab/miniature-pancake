@@ -2408,6 +2408,181 @@ class SquishBackCommand : public Command {
   std::vector<kernel::NurbsCurve> curves_;
 };
 
+// ---------------------------------------------------------------------------
+// SplitRefitSurface: split a (non-solid) NURBS surface with curve or
+// surface/plane cutters, then refit every resulting piece to a clean
+// untrimmed NURBS surface instead of leaving it as a bare split sub-patch.
+//
+// The split itself reuses SplitFace's own technique (cmd_fillet.cpp): a
+// curve cutter's crossings with the target (IntersectCurveSurface, the
+// kernel's real curve/surface intersector) are reduced to a u=const or
+// v=const isoline through them - whichever direction the crossings vary
+// LEAST in - and kernel::NurbsSurface::Split() cuts the surface there.
+// SplitFace only ever takes the first two crossings; this command
+// generalizes that to any number of crossings (any number of pieces) and
+// to any number of target surfaces and cutters in one pass. A surface or
+// plane cutter is supported the same way, via the general surface/surface
+// intersector (IntersectSurfaces): each intersection curve's start/end
+// (u,v) on the target stand in for a curve cutter's own CurveSurfaceHit
+// list, feeding the same isoline-through-the-crossings split. This is an
+// honest, DOCUMENTED approximation for a non-planar cutter or a cutter
+// whose true intersection is not itself iso-parametric: the split line
+// follows the nearest u=const/v=const isoline through the actual crossing
+// points, not the exact intersection curve itself - the same tradeoff
+// SplitFace already ships as Implemented. For a cutter whose intersection
+// with the target IS iso-parametric (a plane parallel to a parameter
+// direction's isocurve, or a curve lying along one) the split is exact.
+//
+// Each split piece from Split() is already an exact, untrimmed NURBS
+// sub-patch (not a trimmed sub-surface - Split() shortens the domain, it
+// does not add a trim loop), so "refit" here means resampling that patch
+// on a uniform grid and rebuilding it via kernel::NurbsSurface::
+// FromControlGrid - the exact technique RebuildCommand (cmd_edit.cpp,
+// also driving FitSrf) already uses for "refit to N control points" -
+// rather than leaving each piece with whatever control-point layout
+// Split() produced (Split() never changes CV count, only the domain).
+// ---------------------------------------------------------------------------
+
+// Resamples `s` on a u_count x v_count grid over its own domain and
+// rebuilds it as a fresh degree-(deg,deg) NURBS surface through those
+// samples - the surface branch of RebuildCommand::OnNumber (cmd_edit.cpp),
+// factored out so it can be called directly on a split piece instead of
+// only through Rebuild's own interactive WantNumber prompt.
+kernel::NurbsSurface RefitSurfaceGrid(const kernel::NurbsSurface& s, int n, int degree) {
+  const int deg = std::clamp(degree, 1, n - 1);
+  const kernel::Interval du = s.Domain(0), dv = s.Domain(1);
+  std::vector<Point3d> grid;
+  grid.reserve(static_cast<size_t>(n) * static_cast<size_t>(n));
+  for (int j = 0; j < n; ++j)
+    for (int i = 0; i < n; ++i)
+      grid.push_back(s.PointAt(du.min + (du.max - du.min) * i / (n - 1.0), dv.min + (dv.max - dv.min) * j / (n - 1.0)));
+  return kernel::NurbsSurface::FromControlGrid(grid, n, n, deg, deg);
+}
+
+class SplitRefitSurfaceCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select surface(s) to split and refit"); }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    if (!have_targets_) {
+      for (ObjectId id : ids) {
+        const SceneObject* o = ctx.Doc().Find(id);
+        if (o && o->kind == ObjectKind::Surface && o->surface) targets_.push_back(id);
+      }
+      have_targets_ = true;
+      if (targets_.empty()) { ctx.Warn("SplitRefitSurface: select one or more (non-solid) surface objects"); Finish(); return; }
+      for (ObjectId id : ids) ctx.Doc().Select(id, false);
+      accept_preselection = false;
+      WantObjects("Select curve(s) or surface(s)/plane(s) to cut with");
+      return;
+    }
+    std::vector<ObjectId> cutter_curves, cutter_surfaces;
+    for (ObjectId id : ids) {
+      const SceneObject* o = ctx.Doc().Find(id);
+      if (!o) continue;
+      if (o->kind == ObjectKind::Curve && o->curve) cutter_curves.push_back(id);
+      else if ((o->kind == ObjectKind::Surface && o->surface) || (o->kind == ObjectKind::Brep && o->brep)) cutter_surfaces.push_back(id);
+    }
+    if (cutter_curves.empty() && cutter_surfaces.empty()) { ctx.Warn("SplitRefitSurface: select curves or surfaces to cut with"); Finish(); return; }
+    ctx.Doc().BeginChange("SplitRefitSurface");
+    int split_count = 0, pieces_total = 0, approx_count = 0;
+    ctx.Doc().SelectNone();
+    const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
+    IntersectOptions opt;
+    opt.tolerance = tol;
+    opt.mesh_tolerance = std::max(tol * 4, 1e-4);
+    for (ObjectId tid : targets_) {
+      const SceneObject* to = ctx.Doc().Find(tid);
+      if (!to) continue;
+      std::optional<ON_NurbsSurface> s0 = SurfaceOfObject(*to);
+      if (!s0) continue;
+      kernel::NurbsSurface base;
+      base.raw() = *s0;
+
+      // Gather (u,v) crossing points from every cutter against this target.
+      std::vector<ON_2dPoint> hits;
+      bool used_surface_cutter = false;
+      for (ObjectId cid : cutter_curves) {
+        const SceneObject* co = ctx.Doc().Find(cid);
+        if (!co || !co->curve) continue;
+        for (const CurveSurfaceHit& h : IntersectCurveSurface(co->curve->raw(), *s0, opt)) hits.push_back(h.uv);
+      }
+      for (ObjectId cid : cutter_surfaces) {
+        const SceneObject* co = ctx.Doc().Find(cid);
+        std::optional<ON_NurbsSurface> cs = co ? SurfaceOfObject(*co) : std::nullopt;
+        if (!cs) continue;
+        for (const IntersectionCurve& ic : IntersectSurfaces(*s0, *cs, opt)) {
+          if (ic.uv_a.size() < 2) continue;
+          hits.push_back(ic.uv_a.front());
+          hits.push_back(ic.uv_a.back());
+          used_surface_cutter = true;
+        }
+      }
+      if (hits.size() < 2) continue;
+
+      // Split direction: whichever varies LEAST across all crossings (same
+      // rule SplitFace uses with exactly two hits) - the isoline that
+      // follows the actual crossings most closely.
+      double u_lo = hits[0].x, u_hi = hits[0].x, v_lo = hits[0].y, v_hi = hits[0].y;
+      for (const ON_2dPoint& h : hits) {
+        u_lo = std::min(u_lo, h.x); u_hi = std::max(u_hi, h.x);
+        v_lo = std::min(v_lo, h.y); v_hi = std::max(v_hi, h.y);
+      }
+      const int dir = (u_hi - u_lo) < (v_hi - v_lo) ? 0 : 1;
+
+      // Distinct split parameters along that direction, clear of the
+      // surface's own domain ends and of each other.
+      const kernel::Interval dom = base.Domain(dir);
+      const double min_gap = std::max((dom.max - dom.min) * 1e-4, 1e-9);
+      std::vector<double> params;
+      for (const ON_2dPoint& h : hits) {
+        const double t = dir == 0 ? h.x : h.y;
+        if (t <= dom.min + min_gap || t >= dom.max - min_gap) continue;
+        bool dup = false;
+        for (double p : params) if (std::fabs(p - t) < min_gap) { dup = true; break; }
+        if (!dup) params.push_back(t);
+      }
+      std::sort(params.begin(), params.end());
+      if (params.empty()) continue;
+
+      // Split sequentially, each time cutting the still-uncut remainder.
+      std::vector<kernel::NurbsSurface> pieces;
+      kernel::NurbsSurface remaining = base;
+      bool ok = true;
+      for (double t : params) {
+        kernel::NurbsSurface west, east;
+        if (remaining.Split(dir, t, west, east) != kernel::Result::Ok) { ok = false; break; }
+        pieces.push_back(west);
+        remaining = east;
+      }
+      if (!ok || pieces.empty()) continue;
+      pieces.push_back(remaining);
+
+      const SceneObject like = *to;
+      ctx.Doc().Remove(tid);
+      for (kernel::NurbsSurface& piece : pieces) {
+        const int n = std::clamp(std::max(piece.CVCountU(), piece.CVCountV()), 4, 24);
+        const kernel::NurbsSurface refit = RefitSurfaceGrid(piece, n, 3);
+        ctx.Doc().Select(AddSurfaceFrom(ctx, refit.raw(), like), true);
+      }
+      ++split_count;
+      pieces_total += static_cast<int>(pieces.size());
+      if (used_surface_cutter) ++approx_count;
+    }
+    if (split_count == 0) {
+      ctx.Warn("SplitRefitSurface: the cutting object(s) do not cross the target surface(s) away from their domain edges");
+    } else {
+      ctx.Print("SplitRefitSurface: " + std::to_string(split_count) + " surface(s) split into " + std::to_string(pieces_total) +
+                 " piece(s), each refit to a clean untrimmed NURBS surface (resampled and rebuilt the same way Rebuild/FitSrf do)" +
+                 (approx_count ? " - " + std::to_string(approx_count) + " used a surface/plane cutter: the cut follows the nearest u=const or v=const isoline through the true intersection (SplitFace's own approximation), not the exact intersection curve" : ""));
+    }
+    Finish();
+  }
+
+ private:
+  std::vector<ObjectId> targets_;
+  bool have_targets_ = false;
+};
+
 }  // namespace
 
 void RegisterSrfEditCommands(CommandEngine& e) {
@@ -2617,7 +2792,8 @@ void RegisterSrfEditCommands(CommandEngine& e) {
       "left in place and reported rather than guessed at.");
   Reg(e, "RefitTrim", Make<RefitTrimCommand>(), CommandStatus::Implemented,
       "Real constrained curve fit: kernel::NurbsCurve::FitLeastSquares (a genuine global least-squares B-spline approximation) tried at increasing control-point counts until the fit is within the given tolerance of the original trim's own sampled points, with every fitted control point clamped into the surface's own (u,v) domain rectangle afterward (control points bound the curve, so this provably keeps the whole curve inside the domain) and the tolerance re-verified after clamping.");
-  Reg(e, "SplitRefitSurface", Planned("SplitRefitSurface: planned; use Split then Rebuild on the pieces."), CommandStatus::Partial);
+  Reg(e, "SplitRefitSurface", Make<SplitRefitSurfaceCommand>(), CommandStatus::Implemented,
+      "Real split + refit: splits each target surface at every crossing with the chosen curve or surface/plane cutter(s) (kernel::NurbsSurface::Split, the same technique SplitFace uses), then rebuilds every resulting piece on a uniform sample grid to a clean, untrimmed NURBS patch (RebuildCommand's own grid-resample-and-rebuild). The split line follows the nearest u=const or v=const isoline through each crossing - exact when the cutter's true intersection is itself iso-parametric (e.g. a plane parallel to, or a curve along, a parameter direction), and SplitFace's own documented approximation otherwise (a plane/surface cutter always uses this approximate path).");
   Reg(e, "MoveFace", Make<MovePartsCommand>(true, false));
   Reg(e, "MoveEdge", Make<MovePartsCommand>(false, false));
   Reg(e, "MoveUntrimmedFace", Make<MovePartsCommand>(true, true));

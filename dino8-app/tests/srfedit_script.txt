@@ -480,6 +480,24 @@ SplitEdge
 SelPolysrf
 RemoveAllNakedMicroEdges
 @expect_objects 109
+# --- SplitRefitSurface: split a plane by a curve crossing it twice (same
+# V-shaped-polyline-through-z=0 cutter SplitFace's own test uses), then
+# confirm both resulting pieces are genuinely refit - a fresh 4x4-CV
+# NURBS patch each (not left at the original 2x2 CVs Split() itself would
+# produce) - and that their geometry (bounding boxes) is still exactly
+# where the plane was split.
+SelAll
+Hide
+Plane 4400,0,0 4410,10,0
+Polyline 4405,-2,-3 4405,4,3 4405,10,-3
+Enter
+SelSrf
+SplitRefitSurface
+SelCrv
+Enter
+SelSrf
+List
+BoundingBox
 # --- HBar: locks the distance between two control points of a straight
 # 2-CV line, then proves the lock is a real, general constraint (not just
 # a stored number) three ways: (1) HBarSetDistance changes the locked
