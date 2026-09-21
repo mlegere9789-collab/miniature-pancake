@@ -311,6 +311,16 @@ struct HoleFeature {
   kernel::Mesh cutter;
 };
 
+// The data behind ExtractPipedCurve: the rail curve a Pipe surface was
+// swept along, kept as real geometry (a value copy, not an ObjectId
+// reference) so the tag survives the source curve object being deleted -
+// same rationale, and same side-table pattern, as HoleFeature above. Session
+// state only: not written to the .3dm and not restored by Undo/Redo (see
+// HoleFeature's comment for why that tradeoff is acceptable here too).
+struct PipeFeature {
+  kernel::NurbsCurve rail;
+};
+
 struct DocumentSettings {
   std::string unit_system = "Millimeters";
   std::string title, author, comments;  // file metadata (saved in the .3dm)
@@ -477,6 +487,12 @@ class Document {
     return it == hole_features_.end() ? nullptr : &it->second;
   }
   void ClearHoleFeature(ObjectId id) { hole_features_.erase(id); }
+  void SetPipeFeature(ObjectId id, kernel::NurbsCurve rail) { pipe_features_[id] = PipeFeature{std::move(rail)}; }
+  const PipeFeature* FindPipeFeature(ObjectId id) const {
+    const auto it = pipe_features_.find(id);
+    return it == pipe_features_.end() ? nullptr : &it->second;
+  }
+  void ClearPipeFeature(ObjectId id) { pipe_features_.erase(id); }
   std::map<std::string, std::string>& UserText() { return user_text_; }
   std::string& Notes() { return notes_; }
   DocumentSettings& Settings() { return settings_; }
@@ -775,6 +791,7 @@ class Document {
   std::vector<LayerState> layer_states_;
   std::vector<ReferenceModel> reference_models_;
   std::map<ObjectId, HoleFeature> hole_features_;
+  std::map<ObjectId, PipeFeature> pipe_features_;
   std::map<std::string, std::string> user_text_;
   std::string notes_;
   DocumentSettings settings_;

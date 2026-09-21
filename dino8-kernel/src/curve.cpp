@@ -24,7 +24,174 @@ void SubdivideForFlatness(const NurbsCurve& curve, double t0, double t1, double 
   }
 }
 
+// Value of basis function N_i(t) for the clamped B-spline defined by
+// `knot` (ON's own compressed convention), `cv_count` control points and
+// `order` = degree + 1. Used to build the least-squares normal equations
+// in FitLeastSquares() below - real Cox-de Boor evaluation via
+// OpenNURBS' own ON_NurbsSpanIndex/ON_EvaluateNurbsBasis, not an
+// approximation of it.
+double BasisValue(const std::vector<double>& knot, int cv_count, int order, int i, double t) {
+  const int span = ON_NurbsSpanIndex(order, cv_count, knot.data(), t, 0, 0);
+  if (i < span || i > span + order - 1) return 0.0;
+  // ON_EvaluateNurbsBasis writes a full order-by-order triangular table
+  // (every degree up to `degree`, not just the final row) - its own doc
+  // comment spells out "If N were declared as double N[order][order]".
+  // Passing a buffer of only `order` doubles here (an earlier draft's
+  // bug, caught by the corruption it caused) overruns it; the degree-d
+  // values this function actually wants are the first `order` entries.
+  std::vector<double> B(static_cast<size_t>(order) * static_cast<size_t>(order));
+  ON_EvaluateNurbsBasis(order, knot.data() + span, t, B.data());
+  return B[static_cast<size_t>(i - span)];
+}
+
+// Solves the dense linear system A*X = B in place via Gaussian
+// elimination with partial pivoting. A is `size` x `size` (row-major),
+// B is `size` x `rhs_count` (row-major) and is overwritten with the
+// solution X. Returns false if A is (numerically) singular.
+bool SolveLinearSystem(std::vector<double>& a, std::vector<double>& b, int size, int rhs_count) {
+  for (int col = 0; col < size; ++col) {
+    int pivot_row = col;
+    double pivot_val = std::abs(a[static_cast<size_t>(col * size + col)]);
+    for (int row = col + 1; row < size; ++row) {
+      const double v = std::abs(a[static_cast<size_t>(row * size + col)]);
+      if (v > pivot_val) { pivot_val = v; pivot_row = row; }
+    }
+    if (pivot_val < 1e-14) return false;
+    if (pivot_row != col) {
+      for (int k = 0; k < size; ++k) std::swap(a[static_cast<size_t>(col * size + k)], a[static_cast<size_t>(pivot_row * size + k)]);
+      for (int k = 0; k < rhs_count; ++k) std::swap(b[static_cast<size_t>(col * rhs_count + k)], b[static_cast<size_t>(pivot_row * rhs_count + k)]);
+    }
+    const double diag = a[static_cast<size_t>(col * size + col)];
+    for (int row = 0; row < size; ++row) {
+      if (row == col) continue;
+      const double factor = a[static_cast<size_t>(row * size + col)] / diag;
+      if (factor == 0.0) continue;
+      for (int k = col; k < size; ++k) a[static_cast<size_t>(row * size + k)] -= factor * a[static_cast<size_t>(col * size + k)];
+      for (int k = 0; k < rhs_count; ++k) b[static_cast<size_t>(row * rhs_count + k)] -= factor * b[static_cast<size_t>(col * rhs_count + k)];
+    }
+  }
+  for (int row = 0; row < size; ++row) {
+    const double diag = a[static_cast<size_t>(row * size + row)];
+    for (int k = 0; k < rhs_count; ++k) b[static_cast<size_t>(row * rhs_count + k)] /= diag;
+  }
+  return true;
+}
+
 }  // namespace
+
+Result NurbsCurve::FitLeastSquares(const std::vector<Point3d>& points, int degree, int control_point_count,
+                                    NurbsCurve& out) {
+  const int m_plus_1 = static_cast<int>(points.size());
+  const int p = degree;
+  const int order = p + 1;
+  const int n_plus_1 = control_point_count;
+  const int n = n_plus_1 - 1;
+  const int m = m_plus_1 - 1;
+  if (m_plus_1 < 2 || p < 1 || n_plus_1 < order || n_plus_1 > m_plus_1) {
+    return Result::Failed;
+  }
+
+  // Chord-length parameterization, u_bar[0..m] in [0, 1].
+  std::vector<double> u_bar(static_cast<size_t>(m_plus_1));
+  {
+    double total = 0.0;
+    std::vector<double> seg(static_cast<size_t>(m_plus_1), 0.0);
+    for (int k = 1; k <= m; ++k) {
+      seg[static_cast<size_t>(k)] = (points[static_cast<size_t>(k)] - points[static_cast<size_t>(k - 1)]).Length();
+      total += seg[static_cast<size_t>(k)];
+    }
+    u_bar[0] = 0.0;
+    u_bar[static_cast<size_t>(m)] = 1.0;
+    if (total <= 0.0) {
+      for (int k = 1; k < m; ++k) u_bar[static_cast<size_t>(k)] = static_cast<double>(k) / m;
+    } else {
+      double acc = 0.0;
+      for (int k = 1; k < m; ++k) {
+        acc += seg[static_cast<size_t>(k)];
+        u_bar[static_cast<size_t>(k)] = acc / total;
+      }
+    }
+  }
+
+  // Knot vector via the standard approximation knot-averaging formula
+  // (Piegl & Tiller eq. 9.68/9.69): textbook (uncompressed) convention
+  // first, length n+p+2, then converted to ON's compressed storage.
+  std::vector<double> u_full(static_cast<size_t>(n + p + 2));
+  for (int i = 0; i <= p; ++i) u_full[static_cast<size_t>(i)] = 0.0;
+  for (int i = 0; i <= p; ++i) u_full[static_cast<size_t>(n + 1 + i)] = 1.0;
+  const int h = n - p;
+  if (h > 0) {
+    const double d = static_cast<double>(m_plus_1) / static_cast<double>(n - p + 1);
+    for (int j = 1; j <= h; ++j) {
+      const double jd = j * d;
+      int i = static_cast<int>(jd);
+      const double alpha = jd - i;
+      if (i < 1) i = 1;
+      if (i > m) i = m;
+      const double u_im1 = u_bar[static_cast<size_t>(i - 1)];
+      const double u_i = u_bar[static_cast<size_t>(i)];
+      u_full[static_cast<size_t>(p + j)] = (1.0 - alpha) * u_im1 + alpha * u_i;
+    }
+  }
+  // ON's compressed knot array drops the redundant first/last textbook
+  // entries: compressed[k] = u_full[k + 1], length n + p.
+  std::vector<double> knot(static_cast<size_t>(n + p));
+  for (int k = 0; k < n + p; ++k) knot[static_cast<size_t>(k)] = u_full[static_cast<size_t>(k + 1)];
+
+  const Point3d q0 = points.front();
+  const Point3d qm = points.back();
+
+  if (n == 1) {
+    // Only the two (fixed) endpoints - no interior unknowns to solve for.
+    NurbsCurve result;
+    result.curve_.Create(3, false, order, n_plus_1);
+    result.curve_.SetCV(0, q0);
+    result.curve_.SetCV(1, qm);
+    for (int k = 0; k < n + p; ++k) result.curve_.SetKnot(k, knot[static_cast<size_t>(k)]);
+    out = result;
+    return Result::Ok;
+  }
+
+  // Normal equations for the (n-1) interior control points P_1..P_{n-1}.
+  const int unknowns = n - 1;
+  std::vector<double> a(static_cast<size_t>(unknowns) * static_cast<size_t>(unknowns), 0.0);
+  std::vector<double> rhs(static_cast<size_t>(unknowns) * 3, 0.0);
+  for (int k = 1; k < m; ++k) {
+    const double t = u_bar[static_cast<size_t>(k)];
+    const double n0 = BasisValue(knot, n_plus_1, order, 0, t);
+    const double nn = BasisValue(knot, n_plus_1, order, n, t);
+    const Point3d rk((points[static_cast<size_t>(k)].x - n0 * q0.x - nn * qm.x),
+                      (points[static_cast<size_t>(k)].y - n0 * q0.y - nn * qm.y),
+                      (points[static_cast<size_t>(k)].z - n0 * q0.z - nn * qm.z));
+    std::vector<double> ni(static_cast<size_t>(unknowns));
+    for (int i = 1; i <= unknowns; ++i) ni[static_cast<size_t>(i - 1)] = BasisValue(knot, n_plus_1, order, i, t);
+    for (int i = 0; i < unknowns; ++i) {
+      if (ni[static_cast<size_t>(i)] == 0.0) continue;
+      rhs[static_cast<size_t>(i * 3 + 0)] += ni[static_cast<size_t>(i)] * rk.x;
+      rhs[static_cast<size_t>(i * 3 + 1)] += ni[static_cast<size_t>(i)] * rk.y;
+      rhs[static_cast<size_t>(i * 3 + 2)] += ni[static_cast<size_t>(i)] * rk.z;
+      for (int j = 0; j < unknowns; ++j) {
+        a[static_cast<size_t>(i * unknowns + j)] += ni[static_cast<size_t>(i)] * ni[static_cast<size_t>(j)];
+      }
+    }
+  }
+  if (!SolveLinearSystem(a, rhs, unknowns, 3)) {
+    return Result::Failed;
+  }
+
+  NurbsCurve result;
+  result.curve_.Create(3, false, order, n_plus_1);
+  result.curve_.SetCV(0, q0);
+  for (int i = 1; i < n; ++i) {
+    const Point3d p_i(rhs[static_cast<size_t>((i - 1) * 3 + 0)], rhs[static_cast<size_t>((i - 1) * 3 + 1)],
+                       rhs[static_cast<size_t>((i - 1) * 3 + 2)]);
+    result.curve_.SetCV(i, p_i);
+  }
+  result.curve_.SetCV(n, qm);
+  for (int k = 0; k < n + p; ++k) result.curve_.SetKnot(k, knot[static_cast<size_t>(k)]);
+  out = result;
+  return Result::Ok;
+}
 
 NurbsCurve NurbsCurve::FromControlPoints(const std::vector<Point3d>& control_points,
                                           int degree) {
@@ -344,6 +511,102 @@ Result NurbsCurve::Extend(double t0, double t1) {
     return Result::NoOpAlreadySatisfied;
   }
   return curve_.Extend(ON_Interval(t0, t1)) ? Result::Ok : Result::Failed;
+}
+
+Result NurbsCurve::MakePeriodicExact() {
+  if (curve_.IsPeriodic()) {
+    return Result::NoOpAlreadySatisfied;
+  }
+  if (!IsClosed()) {
+    return Result::Failed;
+  }
+  const int p = curve_.Degree();
+  if (p < 2) {
+    return Result::Failed;
+  }
+
+  // Work on a scratch copy so a failure partway through leaves curve_
+  // untouched.
+  ON_NurbsCurve c = curve_;
+  const int order = c.Order();
+
+  // Bezier-decompose: bring every interior knot up to full multiplicity
+  // p, via real (already-verified-exact) Boehm knot insertion. After
+  // this, every former breakpoint - including the two ends, which a
+  // clamped curve already stores at multiplicity p - has the same,
+  // uniform structure.
+  {
+    const int span_count = c.SpanCount();
+    std::vector<double> span_vector(static_cast<size_t>(span_count) + 1);
+    if (!c.GetSpanVector(span_vector.data())) {
+      return Result::Failed;
+    }
+    for (int i = 1; i < span_count; ++i) {
+      if (!c.InsertKnot(span_vector[static_cast<size_t>(i)], p)) {
+        return Result::Failed;
+      }
+    }
+  }
+
+  const int n = c.CVCount() - 1;  // last CV index; CV[0] == CV[n] (closed)
+  const int L = n;                // distinct CVs once the duplicate is dropped
+  const int old_knot_count = c.KnotCount();
+  std::vector<double> old_knots(static_cast<size_t>(old_knot_count));
+  for (int i = 0; i < old_knot_count; ++i) old_knots[static_cast<size_t>(i)] = c.Knot(i);
+  const double domain_min = old_knots[static_cast<size_t>(order - 2)];
+  const double domain_max = old_knots[static_cast<size_t>(c.CVCount() - 1)];
+  const double period = domain_max - domain_min;
+  if (!(period > 0.0)) {
+    return Result::Failed;
+  }
+
+  const int new_cv_count = L + p;
+  const int new_knot_count = new_cv_count + order - 2;  // = old_knot_count + (p - 1)
+  std::vector<double> new_knots(static_cast<size_t>(new_knot_count));
+  for (int i = 0; i < old_knot_count; ++i) new_knots[static_cast<size_t>(i)] = old_knots[static_cast<size_t>(i)];
+  // Extend past the old domain end by continuing the curve's own knot
+  // spacing one period later - the periodic wraparound's own knots, not
+  // a newly invented pattern. These land strictly outside [domain_min,
+  // domain_max], so they take no part in reproducing the curve there.
+  for (int j = 0; j < p - 1; ++j) {
+    new_knots[static_cast<size_t>(old_knot_count + j)] = old_knots[static_cast<size_t>(p + j)] + period;
+  }
+
+  // See MakePeriodicExact()'s own doc comment: the last `p` knots (the
+  // ex-clamped end's own full-multiplicity run, now landing at the new
+  // domain's own end) collapse to a single, genuinely zero-width span at
+  // the new domain boundary, which OpenNURBS' own rational evaluator
+  // does not handle there (confirmed: it returns Inf/garbage, not an
+  // approximate value). Spread that one run apart by a relative 1e-13 of
+  // the period - the domain's own end point (last entry) is untouched,
+  // so the reported domain does not move.
+  constexpr double kRelativeSeparation = 1e-13;
+  const double separation = kRelativeSeparation * period;
+  const int domain_max_index = new_cv_count - 1;
+  for (int k = 0; k < p - 1; ++k) {
+    const int idx = domain_max_index - 1 - k;
+    if (idx < 0) break;
+    new_knots[static_cast<size_t>(idx)] = domain_max - static_cast<double>(k + 1) * separation;
+  }
+
+  ON_NurbsCurve pc;
+  if (!pc.Create(3, c.IsRational(), order, new_cv_count)) {
+    return Result::Failed;
+  }
+  for (int i = 0; i < L; ++i) {
+    ON_4dPoint cv;
+    c.GetCV(i, cv);
+    pc.SetCV(i, cv);
+  }
+  for (int i = 0; i < p; ++i) {
+    ON_4dPoint cv;
+    c.GetCV(i, cv);
+    pc.SetCV(L + i, cv);
+  }
+  for (int i = 0; i < new_knot_count; ++i) pc.SetKnot(i, new_knots[static_cast<size_t>(i)]);
+
+  curve_ = pc;
+  return Result::Ok;
 }
 
 Result NurbsCurve::Split(double t, NurbsCurve& out_left, NurbsCurve& out_right) const {

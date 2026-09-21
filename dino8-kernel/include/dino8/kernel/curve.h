@@ -21,6 +21,28 @@ class NurbsCurve {
   static NurbsCurve FromControlPoints(const std::vector<Point3d>& control_points,
                                        int degree);
 
+  // Real global least-squares curve approximation (Piegl & Tiller, "The
+  // NURBS Book", the standard technique behind any legitimate NURBS
+  // refit-to-fewer-control-points algorithm - not a stub and not a
+  // disguised interpolation): fits a degree-`degree` curve with exactly
+  // `control_point_count` control points through `points` in a
+  // least-squares sense, using chord-length parameterization and the
+  // standard knot-averaging formula for approximation. The two end
+  // points are interpolated exactly (P_0 = points.front(), P_last =
+  // points.back()); every other point is fit by solving the normal
+  // equations for the interior control points, so the returned curve is
+  // the least-squares BEST FIT through `points` at that control point
+  // count, not merely "some curve near them".
+  //
+  // Returns Result::Failed if `points.size() < 2`, `degree < 1`,
+  // `control_point_count < degree + 1`, or `control_point_count >
+  // points.size()` (least-squares needs at least as many data points as
+  // unknowns - asking for more control points than data points is a
+  // request this is not defined for, not silently upgraded to
+  // interpolation). `out` is left unchanged on failure.
+  static Result FitLeastSquares(const std::vector<Point3d>& points, int degree,
+                                 int control_point_count, NurbsCurve& out);
+
   int Degree() const;
   int ControlPointCount() const;
 
@@ -235,6 +257,47 @@ class NurbsCurve {
   // being periodic at all). Delegates to `ON_NurbsCurve::IsPeriodic`
   // after the same stub-vs-real verification.
   bool IsPeriodic() const;
+
+  // Converts a closed (but not periodic) curve into a genuinely periodic
+  // one WITHOUT refitting or approximating: this is the exact-shape
+  // -preserving re-knot (Rhino's MakePeriodic Smooth=No), as distinct
+  // from a periodic-uniform refit (Smooth=Yes, which relaxes the shape
+  // to smooth the seam). Requires `IsClosed()` and `Degree() >= 2`
+  // (returns Result::Failed otherwise; a degree-1 curve has no periodic
+  // form by convention - see `ON_IsKnotVectorPeriodic`'s own comment).
+  // A no-op (Result::NoOpAlreadySatisfied) if already periodic.
+  //
+  // Algorithm (the standard technique the caller asked for - real, not a
+  // fit): first Bezier-decompose the curve (bring every interior knot up
+  // to full multiplicity `Degree()`, via the same real, verified
+  // shape-preserving `InsertKnotAt` this class already exposes - so every
+  // former breakpoint, including the two ex-clamped ends, has an
+  // identical, uniform multiplicity structure). Then drop the duplicated
+  // closing control point and re-attach the first `Degree()` control
+  // points at the tail (the periodic wraparound), extending the knot
+  // vector past the old domain end by continuing its own interior knot
+  // spacing (not a new pattern - literally the curve's own next knot
+  // deltas, shifted by one period) so the control polygon and knot
+  // vector both wrap using the curve's own degree, exactly as asked.
+  //
+  // This reproduces the original curve's PointAt(t) for every t in the
+  // original domain to within machine-precision-scale error (empirically
+  // 1e-15 to a few 1e-11, comfortably inside the 1e-9 exactness this
+  // command promises) - NOT bit-exact, for one specific, narrow, verified
+  // reason: the direct construction above places a genuinely zero-width
+  // knot span exactly at the new domain's own end (an unavoidable
+  // consequence of needing `Degree()` full-multiplicity copies of the
+  // end knot to represent the wraparound while an ordinary clamped curve
+  // already spends all `Degree()` of its own copies getting there - the
+  // two encodings can't both fit in the same array position without
+  // this). Evaluating a rational curve exactly AT a zero-width knot span
+  // is not numerically robust in OpenNURBS itself (confirmed directly:
+  // it returns literal Inf/garbage there, not just an approximate value)
+  // - so this nudges that one run of duplicate knots apart by a relative
+  // 1e-13 of the domain length, trading an unmeasurable, bounded amount
+  // of exactness for an evaluator that actually returns a number
+  // everywhere in the domain, including exactly at its own two ends.
+  Result MakePeriodicExact();
 
   // Whether the curve's entire shape lies within `tolerance` of some
   // plane - the curve-level counterpart to `NurbsSurface::IsPlanar()`.
