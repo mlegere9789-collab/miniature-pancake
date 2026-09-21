@@ -230,3 +230,18 @@ OrientCrvToEdge
 1200,0,3
 Enter
 @expect_objects 35
+# --- NonmanifoldMerge: two coplanar adjacent planes joined into one
+# polysurface via real Brep::MergeCoplanarFaces() B-rep topology surgery
+# (walks the joined ON_Brep's own edge/face adjacency directly - no mesh
+# boolean, no Manifold), welding the pair back into a single 5x10+5x10=100
+# face - the same construction MergeFaces' own smoke case uses (see
+# fillet_script.txt), run here through NonmanifoldMerge's own Join+merge path
+SelAll
+Hide
+Plane 1300,0,0 1305,10,0
+Plane 1305,0,0 1310,10,0
+SelAll
+NonmanifoldMerge
+SelLast
+Area
+@expect_objects 36

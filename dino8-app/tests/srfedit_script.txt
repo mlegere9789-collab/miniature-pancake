@@ -345,3 +345,38 @@ SoftEditSrf Radius=8
 3505,5,3
 SelNone
 @expect_objects 95
+# --- UnjoinEdge: splits a shared edge into two naked copies while keeping
+# both faces in the same polysurface (real Brep::UnjoinEdge(), not the
+# ExtractSrf-into-a-separate-object workaround)
+SelAll
+Hide
+Plane 3600,0,0 3610,10,0
+Plane 3610,0,0 3620,10,0
+SelAll
+Join
+SelPolysrf
+ShowEdges
+SelPolysrf
+UnjoinEdge
+3610,5,0
+SelPolysrf
+ShowEdges
+# --- ReplaceEdge: re-trims a naked edge's own trim against a substitute
+# curve via real closest-point projection (Brep::ReplaceEdgeCurve()),
+# replacing the edge's own 3D curve while leaving the rest of the
+# polysurface intact. Reuses the SAME joined-and-unjoined polysurface
+# above (PlanarSrf's own single-boundary-curve construction gives a face
+# just ONE edge for its whole 4-sided loop, not 4 separately-pickable
+# ones, so it can't stand in for a specific naked edge the way this
+# Plane+Plane+Join fixture already does), picking one of its OTHER,
+# untouched naked edges - the west side of the first plane, at x=3600.
+InterpCrv 3600,0,0 3602,5,0 3600,10,0
+Enter
+SelPolysrf
+ReplaceEdge
+3600,5,0
+3602,5,0
+SelPolysrf
+List
+SelNone
+@expect_objects 97

@@ -1138,6 +1138,49 @@ void Merge(CommandContext& ctx, const std::vector<ObjectId>& ids) {
   ctx.Print("Merge: " + std::to_string(solids.size()) + " solids merged into one mesh solid, " + MeshSummary(result));
 }
 
+// Joins the selection exactly as Join does (ON_Brep::Append + JoinNakedEdges
+// - see cmd_edit.cpp's own Join), then runs Brep::MergeCoplanarFaces()
+// directly on the combined ON_Brep's own real topology to weld any
+// newly-adjacent coplanar faces it exposes into fewer, bigger faces -
+// walking m_E/m_T/m_L adjacency itself, never through a mesh boolean and
+// never through Manifold (this kernel's separate solid-boolean engine,
+// which - unlike ON_Brep - genuinely cannot represent non-manifold
+// topology at all). A shared boundary that's actually non-manifold (three
+// or more faces meeting at one edge) is left exactly as Join already
+// leaves it: MergeCoplanarFaces() only ever touches an edge with exactly
+// two trims, precisely so it can never corrupt topology elsewhere in a
+// non-manifold assembly.
+void NonmanifoldMerge(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  std::vector<SceneObject> pieces;
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (o && (o->kind == ObjectKind::Brep || o->kind == ObjectKind::Surface)) pieces.push_back(*o);
+  }
+  if (pieces.size() < 2) { ctx.Warn("NonmanifoldMerge: select at least two polysurfaces or surfaces"); return; }
+
+  ON_Brep combined;
+  for (const SceneObject& o : pieces) {
+    if (o.kind == ObjectKind::Brep) combined.Append(o.brep->raw());
+    else { ON_Brep tmp; ON_NurbsSurface* srf = new ON_NurbsSurface(o.surface->raw()); tmp.Create(srf); combined.Append(tmp); }
+  }
+  const double tol = std::max(ctx.Settings().absolute_tolerance, 1e-5);
+  JoinNakedEdges(combined, tol * 10);
+
+  kernel::Brep k;
+  k.raw() = combined;
+  const int merged = k.MergeCoplanarFaces(std::max(tol, 1e-6));
+
+  ctx.Doc().BeginChange("NonmanifoldMerge");
+  SceneObject n = SceneObject::MakeBrep(k);
+  n.layer_index = pieces[0].layer_index;
+  for (const SceneObject& o : pieces) ctx.Doc().Remove(o.id);
+  ObjectId nid = ctx.Doc().Add(std::move(n));
+  ctx.Doc().Select(nid, true);
+  std::string msg = "NonmanifoldMerge: " + std::to_string(pieces.size()) + " piece(s) joined into one polysurface";
+  if (merged > 0) msg += ", " + std::to_string(merged) + " newly-adjacent coplanar face pair(s) merged via real B-rep topology surgery (no mesh boolean, no Manifold)";
+  ctx.Print(msg);
+}
+
 void Clash(CommandContext& ctx, const Input& in) {
   const double clearance = std::max(0.0, in.OptNum("Clearance", 0));
   struct Item { ObjectId id; std::vector<Tri> tris; ON_BoundingBox box; };
@@ -2006,8 +2049,14 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
         try { CreateSolid(ctx, ids); } catch (const std::exception& ex) { ctx.Warn(std::string("CreateSolid failed: ") + ex.what()); }
       }), CommandStatus::Implemented, "Joins and welds the surface meshes into a closed mesh solid, verifying the result is actually watertight (rejecting it with the naked-edge count otherwise) rather than silently returning an open shell; surfaces that overlap instead of exactly abutting are not trimmed at the overlap the way a true B-rep boolean would.");
   Reg(e, "Merge", OnSelection("Select closed solids to merge", [](CommandContext& ctx, const std::vector<ObjectId>& ids) { Merge(ctx, ids); }, 2));
-  Reg(e, "NonmanifoldMerge", Immediate([](CommandContext& ctx) { ctx.Print("NonmanifoldMerge: joining the selection (non-manifold polysurfaces are not supported; coincident faces stay separate)"); ctx.Engine().Execute("Join"); }),
-      CommandStatus::Partial, "Genuinely infeasible without a kernel change: Dino 8's boolean/solid kernel is Manifold (github.com/elalish/manifold), which - as its name says - represents and operates on manifold (two-sided, no T-junctions) meshes only, so there is no non-manifold mesh/B-rep representation here to merge faces of into. Falls back to Join, which at least combines the selection into one object without claiming to weld non-manifold faces.");
+  Reg(e, "NonmanifoldMerge", OnSelection("Select polysurfaces or surfaces to merge (non-manifold shared boundaries are kept, not booleaned away)", NonmanifoldMerge, 2),
+      CommandStatus::Implemented,
+      "Real Brep::MergeCoplanarFaces() (dino8/kernel/brep.h): joins the selection like Join, then walks the "
+      "combined ON_Brep's own edge/face adjacency directly - never through a mesh boolean, never through "
+      "Manifold (github.com/elalish/manifold, this kernel's separate solid-boolean engine) - to weld any "
+      "newly-adjacent coplanar faces sharing a manifold-safe (exactly two trims) edge into one bigger face. A "
+      "genuinely non-manifold edge (three or more faces) is left untouched, exactly as Join already leaves it, "
+      "since ON_Brep (unlike Manifold's own mesh format) already represents that topology natively.");
   Reg(e, "Clash", Tool({ObjectsStep("Select objects to check for clashes", 2)}, {Numeric("Clearance", 0)}, Guarded("Clash", Clash)));
 
   // ---- planar curve booleans ------------------------------------------------

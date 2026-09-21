@@ -19346,6 +19346,319 @@ void TestFromMixedFacesFlatCornerGateIsInert() {
         "notched face is unchanged");
 }
 
+// ---------------------------------------------------------------------------
+// Brep::MergeCoplanarFaces() / Brep::ReplaceEdgeCurve() / Brep::UnjoinEdge() -
+// real B-rep topology surgery operating directly on ON_Brep's own m_E/m_T/
+// m_L/m_F tables (see brep.h's own doc comment on each), never through
+// Manifold (this kernel's separate, manifold-mesh-only solid-boolean
+// engine).
+// ---------------------------------------------------------------------------
+
+// Two coplanar unit squares sharing one edge (built via FromPlanarFaces(),
+// which welds coincident loop points into genuine ON_Brep topology - see
+// that factory's own doc comment) - the minimal fixture for
+// MergeCoplanarFaces(): a flat, open (not a closed solid) 2-face patch.
+void TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  Brep::PlanarFace a, b;
+  a.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  a.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  b.plane = ON_Plane(Point3d(1, 0, 0), ON_3dVector(0, 0, 1));
+  b.loop = {Point3d(1, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0), Point3d(1, 1, 0)};
+
+  Brep flat = Brep::FromPlanarFaces({a, b});
+  Check(flat.FaceCount() == 2, "the two-square fixture starts with 2 faces");
+  Check(flat.raw().IsValid(), "the two-square fixture is a valid ON_Brep before merging");
+
+  const int merges = flat.MergeCoplanarFaces();
+  Check(merges == 1, "MergeCoplanarFaces() performed exactly 1 merge on the two-square fixture");
+  Check(flat.FaceCount() == 1, "the two adjacent coplanar squares merged into a single face");
+  Check(flat.raw().IsValid(), "the merged single face is still a valid ON_Brep");
+  Check(flat.MergeCoplanarFaces() == 0, "a second call finds nothing left to merge");
+}
+
+// A genuine closed solid (a 2x2x1 box) whose top/bottom/front/back faces
+// have each been pre-split into two coplanar halves along x=1 - built by
+// clipping Box()'s own real PlanarFaces() (never hand-guessed
+// coordinates), so every new half-edge lines up EXACTLY with its
+// neighbor's (no T-junction: the same "clip at x=1" transform is applied
+// to all four faces that span the full x range, and Box()'s own bilinear
+// corner ordering keeps the two clipped vertices adjacent in each loop -
+// see this test's own comment history for the reasoning). This is
+// topologically what NonmanifoldMerge leaves behind after joining two
+// half-boxes that were never given their own touching inner wall faces:
+// MergeCoplanarFaces() should weld all four split pairs back into the
+// original 6-face box, with the volume exactly unchanged.
+void TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+
+  const std::vector<Brep::PlanarFace> whole = Brep::Box(0, 0, 0, 2, 2, 1).PlanarFaces();
+  Check(whole.size() == 6, "the fixture box has 6 planar faces before splitting");
+
+  auto clip_at_x = [](const Brep::PlanarFace& f, double x_cut, bool keep_left) {
+    Brep::PlanarFace out;
+    out.plane = f.plane;
+    out.loop.reserve(f.loop.size());
+    for (const Point3d& p : f.loop) {
+      const double x = keep_left ? std::min(p.x, x_cut) : std::max(p.x, x_cut);
+      out.loop.emplace_back(x, p.y, p.z);
+    }
+    return out;
+  };
+
+  // whole[0..3] = bottom/top/front/back, each spanning the full x range;
+  // whole[4]/whole[5] = left (x=0) / right (x=2), each already confined
+  // to one side of the x=1 cut and so kept whole, untouched.
+  std::vector<Brep::PlanarFace> split_faces;
+  for (int i = 0; i < 4; ++i) {
+    split_faces.push_back(clip_at_x(whole[static_cast<size_t>(i)], 1.0, true));
+    split_faces.push_back(clip_at_x(whole[static_cast<size_t>(i)], 1.0, false));
+  }
+  split_faces.push_back(whole[4]);
+  split_faces.push_back(whole[5]);
+
+  Brep box = Brep::FromPlanarFaces(split_faces);
+  Check(box.FaceCount() == 10, "the pre-split fixture has 10 faces (4 faces split in 2, 2 kept whole)");
+
+  ON_TextLog log_before;
+  Check(box.raw().IsValid(&log_before), "the pre-split fixture is a valid ON_Brep");
+  bool oriented_before = false, boundary_before = true;
+  Check(box.raw().IsManifold(&oriented_before, &boundary_before) && oriented_before && !boundary_before,
+        "the pre-split fixture is still a closed, oriented 2-manifold");
+  Check(box.raw().IsSolid(), "the pre-split fixture still reports IsSolid()");
+
+  const double volume_before = box.TessellateToClosedMesh().Volume();
+  Check(std::abs(volume_before - 4.0) < 1e-6, "the pre-split fixture's own volume is the plain 2x2x1 box, 4.0");
+
+  const int merges = box.MergeCoplanarFaces();
+  Check(merges == 4, "MergeCoplanarFaces() performed exactly 4 merges (bottom, top, front, back pairs)");
+  Check(box.FaceCount() == 6, "after merging, the box is back down to its original 6 faces");
+
+  ON_TextLog log_after;
+  Check(box.raw().IsValid(&log_after), "after merging, the box is still a valid ON_Brep");
+  bool oriented_after = false, boundary_after = true;
+  Check(box.raw().IsManifold(&oriented_after, &boundary_after) && oriented_after && !boundary_after,
+        "after merging, the box is still a closed, oriented 2-manifold");
+  Check(box.raw().IsSolid(), "after merging, the box still reports IsSolid()");
+
+  const double volume_after = box.TessellateToClosedMesh().Volume();
+  Check(std::abs(volume_after - volume_before) < 1e-6,
+        "merging the four split face-pairs back into their originals leaves the volume exactly unchanged");
+  Check(box.MergeCoplanarFaces() == 0, "a second MergeCoplanarFaces() call on the restored box finds nothing left to merge");
+}
+
+// Brep::ReplaceEdgeCurve() on a single, naked-boundary flat plate: since
+// the substitute curve only has to fit ONE face's own plane (a naked
+// edge, unlike a shared one, is never constrained to lie on a second
+// face's surface too), it can genuinely bow away from the original
+// straight edge while still fitting - a real, non-trivial re-trim, not
+// just a reparameterization of the same line.
+void TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const std::vector<Brep::PlanarFace> whole = Brep::Box(0, 0, 0, 2, 2, 1).PlanarFaces();
+  Brep plate = Brep::FromPlanarFaces({whole[1]});  // just the top (+z) face, alone
+  Check(plate.FaceCount() == 1, "the plate fixture has exactly 1 face");
+  Check(plate.raw().IsValid(), "the plate fixture is a valid ON_Brep");
+  Check(plate.raw().m_E.Count() == 4, "the plate fixture has 4 naked boundary edges");
+
+  const int edge_index = 0;
+  const ON_BrepEdge& edge_before = plate.raw().m_E[edge_index];
+  Check(edge_before.TrimCount() == 1, "edge 0 is a naked (1-trim) boundary edge");
+  const Point3d p0 = edge_before.PointAtStart();
+  const Point3d p1 = edge_before.PointAtEnd();
+  const Point3d old_mid = edge_before.PointAt(edge_before.Domain().Mid());
+
+  // A V-shaped (degree 1, so its own middle control point sits exactly
+  // ON the curve - unlike a quadratic Bezier's, whose curve only passes
+  // through the FIRST and LAST control points - unambiguous for the
+  // exact-sagitta check below) bow between the SAME two endpoints, offset
+  // within the plate's own plane (the z=1 plane, perpendicular to the
+  // edge itself) so it still fits that one face.
+  const Point3d mid((p0.x + p1.x) / 2, (p0.y + p1.y) / 2, p0.z);
+  ON_3dVector perp(-(p1.y - p0.y), (p1.x - p0.x), 0.0);
+  perp.Unitize();
+  const Point3d bowed_mid = mid + perp * ((p1 - p0).Length() * 0.15);
+  const NurbsCurve substitute = NurbsCurve::FromControlPoints({p0, bowed_mid, p1}, /*degree=*/1);
+
+  plate.ReplaceEdgeCurve(edge_index, substitute);
+
+  Check(plate.raw().IsValid(), "the plate is still a valid ON_Brep after ReplaceEdgeCurve");
+  const ON_BrepEdge& edge_after = plate.raw().m_E[edge_index];
+  const Point3d new_mid = edge_after.PointAt(edge_after.Domain().Mid());
+  Check(new_mid.DistanceTo(old_mid) > 0.05,
+        "the edge's own midpoint genuinely moved (a real re-trim, not a no-op)");
+  Check(edge_after.PointAtStart().DistanceTo(p0) < 1e-6 && edge_after.PointAtEnd().DistanceTo(p1) < 1e-6,
+        "the edge's own two endpoints are unchanged");
+
+  // Confirm the whole tessellation PIPELINE sees the bow too, not just the
+  // raw ON_BrepEdge object queried directly above: PlanarFaces() (like
+  // Tessellate()) reads each face's trim through this class's own
+  // per-face side tables when one exists for that face index (see
+  // ResolveFace, brep.cpp) - a real, previously-uncaught bug class where
+  // ReplaceEdgeCurve() correctly updated the raw ON_Brep edge/trim but
+  // left a STALE pre-edit UV polygon behind in that fast path, so
+  // Tessellate() kept silently drawing the OLD straight edge. The
+  // farthest point of the re-derived loop from the original straight
+  // p0-p1 line must be close to the bow's own true sagitta (~0.15 *
+  // edge length), not ~0 (which is what the stale straight-line record
+  // would give).
+  const std::vector<Brep::PlanarFace> after = plate.PlanarFaces();
+  Check(after.size() == 1, "PlanarFaces() still reports exactly 1 face after ReplaceEdgeCurve");
+  const double edge_length = (p1 - p0).Length();
+  ON_3dVector edge_dir = p1 - p0;
+  edge_dir.Unitize();
+  double max_dev = 0.0;
+  for (const Point3d& q : after[0].loop) {
+    // Only consider points that actually project onto the p0-p1 SEGMENT
+    // and stay reasonably close to it - excluding both the rectangle's
+    // two perpendicular sides (which share an endpoint but run away from
+    // the line) and its parallel FAR side (same projection range, but a
+    // full edge_length away) - keeping just this one replaced edge's own
+    // (densely re-sampled, since it's now a real curve) points, whose
+    // true deviation is the much smaller bow sagitta.
+    const double t = ON_DotProduct(q - p0, edge_dir);
+    if (t < -1e-6 || t > edge_length + 1e-6) continue;
+    const Point3d proj = p0 + edge_dir * t;
+    const double d = q.DistanceTo(proj);
+    if (d > edge_length * 0.5) continue;
+    max_dev = std::max(max_dev, d);
+  }
+  const double expected_sagitta = (p1 - p0).Length() * 0.15;
+  const std::string sagitta_msg = "PlanarFaces()'s own re-derived loop shows the bow's real sagitta (~" +
+                                   std::to_string(expected_sagitta) +
+                                   "), not a stale pre-edit straight edge (measured " + std::to_string(max_dev) + ")";
+  Check(std::abs(max_dev - expected_sagitta) < 0.02, sagitta_msg.c_str());
+}
+
+// A substitute curve whose endpoints don't land anywhere near the edge's
+// own two vertices is the "genuinely doesn't fit" case ReplaceEdgeCurve
+// is documented to throw on rather than silently produce invalid
+// geometry for.
+void TestReplaceEdgeCurveThrowsOnEndpointMismatch() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const std::vector<Brep::PlanarFace> whole = Brep::Box(0, 0, 0, 2, 2, 1).PlanarFaces();
+  Brep plate = Brep::FromPlanarFaces({whole[1]});
+
+  const NurbsCurve wildly_off = NurbsCurve::FromControlPoints(
+      {Point3d(50, 50, 50), Point3d(60, 60, 60)}, /*degree=*/1);
+
+  bool threw = false;
+  try {
+    plate.ReplaceEdgeCurve(0, wildly_off);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ReplaceEdgeCurve throws std::invalid_argument when the substitute curve's own endpoints "
+               "don't land near the edge's own two vertices");
+}
+
+// A substitute curve whose endpoints DO match but whose shape strays far
+// off the face's own surface (here: off the flat plate's own plane) is
+// the other "genuinely doesn't fit" case - a std::runtime_error, not a
+// silently-wrong trim.
+void TestReplaceEdgeCurveThrowsOnSurfaceMismatch() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const std::vector<Brep::PlanarFace> whole = Brep::Box(0, 0, 0, 2, 2, 1).PlanarFaces();
+  Brep plate = Brep::FromPlanarFaces({whole[1]});
+  const ON_BrepEdge& edge = plate.raw().m_E[0];
+  const Point3d p0 = edge.PointAtStart();
+  const Point3d p1 = edge.PointAtEnd();
+  const Point3d mid((p0.x + p1.x) / 2, (p0.y + p1.y) / 2, p0.z);
+  // Same two endpoints, but the curve bulges 5 units OFF the plate's own
+  // z=1 plane - the plate's surface can't follow it.
+  const Point3d off_plane_mid(mid.x, mid.y, mid.z + 5.0);
+  const NurbsCurve off_plane = NurbsCurve::FromControlPoints({p0, off_plane_mid, p1}, /*degree=*/2);
+
+  bool threw = false;
+  try {
+    plate.ReplaceEdgeCurve(0, off_plane);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  Check(threw, "ReplaceEdgeCurve throws std::runtime_error when the substitute curve's own shape strays "
+               "far off the face's own surface, even though its endpoints matched");
+}
+
+// Brep::UnjoinEdge() on the two-square fixture's own shared edge: before,
+// exactly 1 edge is shared (2-trim) and 6 are naked (1-trim); after, 0
+// are shared and 8 are naked - the same TrimCount()==1 test this
+// codebase's own naked-edge detection already uses (see cmd_common.h's
+// JoinNakedEdges / cmd_srfedit.cpp's RemoveAllNakedMicroEdges) reports
+// exactly 2 more naked edges where one shared edge used to be, and both
+// faces remain in this SAME Brep throughout.
+void TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  Brep::PlanarFace a, b;
+  a.plane = ON_Plane(Point3d(0, 0, 0), ON_3dVector(0, 0, 1));
+  a.loop = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, 0), Point3d(0, 1, 0)};
+  b.plane = ON_Plane(Point3d(1, 0, 0), ON_3dVector(0, 0, 1));
+  b.loop = {Point3d(1, 0, 0), Point3d(2, 0, 0), Point3d(2, 1, 0), Point3d(1, 1, 0)};
+  Brep flat = Brep::FromPlanarFaces({a, b});
+  Check(flat.FaceCount() == 2, "the two-square fixture starts with 2 faces");
+
+  auto count_trims = [&](int trim_count) {
+    int n = 0;
+    for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
+      if (flat.raw().m_E[i].m_edge_index < 0) continue;
+      if (flat.raw().m_E[i].TrimCount() == trim_count) ++n;
+    }
+    return n;
+  };
+  const int naked_before = count_trims(1);
+  const int shared_before = count_trims(2);
+  Check(naked_before == 6 && shared_before == 1,
+        "before unjoining: 1 shared (2-trim) edge and 6 naked (1-trim) edges");
+
+  int shared_edge_index = -1;
+  for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
+    if (flat.raw().m_E[i].TrimCount() == 2) { shared_edge_index = i; break; }
+  }
+  Check(shared_edge_index >= 0, "found the shared edge to unjoin");
+
+  const Result r = flat.UnjoinEdge(shared_edge_index);
+  Check(r == Result::Ok, "UnjoinEdge() succeeded on the shared edge");
+  Check(flat.FaceCount() == 2, "both faces remain in the same Brep after unjoining");
+  Check(flat.raw().IsValid(), "the Brep is still a valid ON_Brep after unjoining");
+
+  const int naked_after = count_trims(1);
+  const int shared_after = count_trims(2);
+  Check(naked_after == naked_before + 2,
+        "naked-edge count increased by exactly 2 (SelNakedEdges-style TrimCount()==1 detection would now "
+        "find 2 naked edges where it found none of this pair before)");
+  Check(shared_after == shared_before - 1, "the original shared edge is no longer counted as shared");
+
+  // A naked edge has nothing left to unjoin.
+  int some_naked_edge = -1;
+  for (int i = 0; i < flat.raw().m_E.Count(); ++i) {
+    if (flat.raw().m_E[i].TrimCount() == 1) { some_naked_edge = i; break; }
+  }
+  Check(flat.UnjoinEdge(some_naked_edge) == Result::Failed,
+        "UnjoinEdge() on an already-naked edge returns Result::Failed, not a thrown exception");
+
+  bool threw = false;
+  try {
+    flat.UnjoinEdge(flat.raw().m_E.Count() + 100);
+  } catch (const std::out_of_range&) {
+    threw = true;
+  }
+  Check(threw, "UnjoinEdge() throws std::out_of_range for an out-of-range edge_index");
+}
+
 int main() {
   ON::Begin();
 
@@ -19647,6 +19960,13 @@ int main() {
   TestBooleanCombineMixedMidLengthSplitClearsStaleNotch();
   TestBooleanCombineMixedInsideDiscProducerCoversSealedEndBoundary();
   TestSplitMixedAgainstAllFacesPassThroughCarriesArcRuns();
+
+  TestMergeCoplanarFacesWeldsTwoAdjacentSquaresIntoOne();
+  TestMergeCoplanarFacesRestoresBoxAfterSplittingFourFacesAtOnePlane();
+  TestReplaceEdgeCurveRefitsANakedEdgeToABowedSubstitute();
+  TestReplaceEdgeCurveThrowsOnEndpointMismatch();
+  TestReplaceEdgeCurveThrowsOnSurfaceMismatch();
+  TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies();
 
   ON::End();
 
