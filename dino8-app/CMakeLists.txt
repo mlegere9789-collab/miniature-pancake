@@ -218,6 +218,7 @@ set(DINO8_SOURCES
   src/commands/cmd_standards.cpp
   src/ui/Gumball.cpp
   src/ui/MappingGizmo.cpp
+  src/ui/DirectionArrows.cpp
   src/geom/TextOutline.cpp
   src/commands/cmd_annotate.cpp
   src/commands/cmd_annotate2.cpp

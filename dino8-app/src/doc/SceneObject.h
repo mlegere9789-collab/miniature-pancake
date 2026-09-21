@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -146,6 +147,14 @@ class SceneObject {
   bool show_control_points = false;
   // Control points hidden with HidePt (indices as in SubObjectRef); cleared by ShowPt.
   std::vector<int> hidden_control_points;
+  // Dir: draws a clickable direction-arrow glyph at this curve's start
+  // point / tangent or this surface's domain-centre point / normal
+  // (ui/DirectionArrows.cpp); clicking the glyph calls the same
+  // FlipObject() reversal the Flip command itself uses (cmd_common.h).
+  // Like show_control_points, this is display state carried through
+  // CopyFrom (so it survives undo/redo snapshots) but never written to
+  // the .3dm.
+  bool show_direction_arrow = false;
   bool show_control_net = false;  // SubD: draw the control polygon instead of the smoothed surface
   bool highlight_edges = false;  // ShowEdges: draw brep/mesh edges thick, naked edges in a second colour
   bool force_shaded = false;     // ShadeSelected: filled even in a display mode that otherwise draws no fills
@@ -224,5 +233,26 @@ class SceneObject {
 // returns the polyline unchanged.
 std::vector<std::vector<kernel::Point3d>> DashPolyline(const std::vector<kernel::Point3d>& points,
                                                        const std::vector<double>& pattern);
+
+// Reverses a curve's parameter direction, a surface's U direction, flips a
+// mesh's face normals, or flips a brep's orientation - the Flip command's
+// entire reversal logic (cmd_edit.cpp), factored out here so the Dir
+// command's clickable direction-arrow glyph (ui/DirectionArrows.cpp) can
+// call the exact same function on a click instead of a second,
+// independent reversal implementation.
+void FlipObject(SceneObject& o);
+
+// The location and direction Dir reports/draws: a curve's start point and
+// tangent, or a surface's domain-centre point and normal. Returns
+// std::nullopt for a kind Dir has nothing to show for (Point/Brep/Mesh/
+// SubD) or an object missing its geometry pointer. Shared by the Dir
+// command's own printed text (cmd_edit.cpp) and its direction-arrow glyph
+// (ui/DirectionArrows.cpp) so the two can never disagree about where the
+// arrow actually is.
+struct DirArrow {
+  kernel::Point3d origin;
+  kernel::Vector3d direction;
+};
+std::optional<DirArrow> ComputeDirArrow(const SceneObject& o);
 
 }  // namespace dino8::app

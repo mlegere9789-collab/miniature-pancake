@@ -19,6 +19,7 @@
 #include "doc/SubObject.h"
 #include "script/LuaEngine.h"
 #include "script/PythonEngine.h"
+#include "ui/DirectionArrows.h"
 #include "ui/Gumball.h"
 #include "ui/MappingGizmo.h"
 #include "imgui.h"
@@ -385,6 +386,7 @@ class Application {
   std::deque<std::pair<std::string, std::string>> message_boxes_;  // title, text
   Gumball gumball_;
   MappingGizmo mapping_gizmo_;
+  DirectionArrows direction_arrows_;  // Dir's clickable direction-arrow glyphs
   SubObjectSelection sub_selection_;
   // Direct control-point drag in progress (originals restored + moved each frame).
   std::vector<std::pair<ObjectId, SceneObject>> cp_drag_originals_;

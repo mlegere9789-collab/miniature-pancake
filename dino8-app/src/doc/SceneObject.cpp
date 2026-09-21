@@ -87,6 +87,7 @@ void SceneObject::CopyFrom(const SceneObject& other) {
   selected = other.selected;
   show_control_points = other.show_control_points;
   hidden_control_points = other.hidden_control_points;
+  show_direction_arrow = other.show_direction_arrow;
   show_control_net = other.show_control_net;
   highlight_edges = other.highlight_edges;
   force_shaded = other.force_shaded;
@@ -1053,6 +1054,27 @@ std::string SceneObject::Describe() const {
       << b.max.x << ", " << b.max.y << ", " << b.max.z << ")";
   for (const auto& kv : user_text) out << "\n  " << kv.first << " = " << kv.second;
   return out.str();
+}
+
+void FlipObject(SceneObject& o) {
+  if (o.kind == ObjectKind::Curve && o.curve) o.curve->Reverse();
+  else if (o.kind == ObjectKind::Surface && o.surface) o.surface->Reverse(0);
+  else if (o.kind == ObjectKind::Mesh && o.mesh) *o.mesh = o.mesh->FlipNormals();
+  else if (o.kind == ObjectKind::Brep && o.brep) o.brep->raw().Flip();
+  o.InvalidateDisplay();
+}
+
+std::optional<DirArrow> ComputeDirArrow(const SceneObject& o) {
+  if (o.kind == ObjectKind::Curve && o.curve) {
+    const kernel::Interval d = o.curve->Domain();
+    return DirArrow{o.curve->PointAt(d.min), o.curve->TangentAt(d.min)};
+  }
+  if (o.kind == ObjectKind::Surface && o.surface) {
+    const kernel::Interval du = o.surface->Domain(0), dv = o.surface->Domain(1);
+    const double u = (du.min + du.max) / 2, v = (dv.min + dv.max) / 2;
+    return DirArrow{o.surface->PointAt(u, v), o.surface->NormalAt(u, v)};
+  }
+  return std::nullopt;
 }
 
 }  // namespace dino8::app

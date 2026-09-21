@@ -134,6 +134,12 @@ inline double AdaptiveMeshTolerance(const SceneObject& o, double fallback = 0.00
   return AdaptiveMeshTolerance(o.BoundingBox(), fallback);
 }
 
+// FlipObject()/ComputeDirArrow()/DirArrow live in doc/SceneObject.h (they
+// are pure object-geometry helpers with no command-engine dependency),
+// shared as-is by Flip/Dir here and by the Dir direction-arrow glyph
+// (ui/DirectionArrows.cpp) without either the commands or the ui layer
+// needing to include the other.
+
 // Best-effort closed mesh for an object (for booleans, volume, export).
 inline std::optional<kernel::Mesh> MeshOf(const SceneObject& o, double tol = 0.01) {
   switch (o.kind) {

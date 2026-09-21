@@ -87,6 +87,24 @@ Flip
 SelLast
 Dir
 Delete
+# --- Dir's printed origin/direction is the exact pair ComputeDirArrow()
+# feeds the viewport's direction-arrow glyph (doc/SceneObject.h/.cpp); a
+# plain Flip must invert both a curve's and a surface's numbers exactly,
+# proving the glyph's own geometry (not just Dir's text) is real.
+Line 0,0,0 10,0,0
+SelLast
+Dir
+Flip
+SelLast
+Dir
+Delete
+Plane 0,0,0 10,10,0
+SelLast
+Dir
+Flip
+SelLast
+Dir
+Delete
 Circle 0,0,0 10
 SelLast
 MakePeriodic

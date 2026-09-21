@@ -1405,6 +1405,16 @@ fi
 echo "$ED" | grep -E "^(ok|FAIL)"
 if echo "$ED" | grep -q "^FAIL"; then fail=1; fi
 echo "$ED" | grep -q "^smoke:" || { echo "$ED"; echo "FAIL: edit script produced no smoke line"; fail=1; }
+# Dir's own printed origin/direction is exactly the geometry ComputeDirArrow()
+# (doc/SceneObject.h/.cpp) hands the viewport's direction-arrow glyph, so a
+# plain Flip (FlipObject() - the same function a glyph click calls) must
+# invert it precisely, for both a curve and a surface - the headlessly-
+# verifiable half of Dir's real-glyph fix (see AUDIT.md's dated note).
+edcheck() { if echo "$ED" | grep -Eq "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+edcheck "Curve [0-9]+: start 0,0,0 tangent 1,0,0" "Dir printed a fresh line's real start point and unit tangent"
+edcheck "Curve [0-9]+: start 10,0,0 tangent -1,0,0" "a plain Flip inverted that same curve's Dir-reported start/tangent exactly"
+edcheck "Surface [0-9]+: centre 5,5,0 normal 0,0,-1" "Dir printed a fresh planar surface's real domain-centre point and unit normal"
+edcheck "Surface [0-9]+: centre 5,5,0 normal -?0,0,1" "a plain Flip inverted that same surface's Dir-reported normal exactly, leaving its centre point unchanged (Reverse(0) reparameterises, it does not move the surface)"
 
 # Real NURBS algorithm QC: ExtractPipedCurve/MakePeriodic Smooth=No/RefitTrim
 # (see nurbs_algo_script.txt).
@@ -2425,6 +2435,38 @@ CULL="$(bash "$HERE/cull_test.sh" "$BIN" 2>&1)" || true
 echo "$CULL" | grep -E "^(ok|FAIL)"
 if echo "$CULL" | grep -q "^FAIL"; then fail=1; fi
 echo "$CULL" | grep -q "^ok   cull-on and cull-off screenshots are pixel-identical" || { echo "FAIL cull_test.sh did not run to completion"; fail=1; }
+
+# Dir's direction-arrow glyph (ui/DirectionArrows.h/.cpp, wired into
+# Application::DrawViewports) is a real drawn viewport overlay, not just an
+# internal flag: two scripts, byte-identical except that one runs Dir on a
+# selected line and the other does not, must produce DIFFERENT final-frame
+# --screenshot captures - the mirror image of cull_test.sh's own pixel-
+# IDENTICAL proof just above. The click-on-the-glyph half is mouse-only and
+# not exercised here (see AUDIT.md's dated note); this only proves the
+# glyph itself really renders where ComputeDirArrow() says it is.
+cat > "$TMP/dir_arrow_on.txt" <<'EOS'
+Line 0,0,0 10,0,0
+SelLast
+ZoomExtentsAll
+Dir
+EOS
+cat > "$TMP/dir_arrow_off.txt" <<'EOS'
+Line 0,0,0 10,0,0
+SelLast
+ZoomExtentsAll
+EOS
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  "$BIN" --smoke 30 --screenshot "$TMP/dir_arrow_on.ppm" --script "$TMP/dir_arrow_on.txt" >/dev/null 2>&1 || { echo "FAIL: dir arrow (on) script exited non-zero"; fail=1; }
+  "$BIN" --smoke 30 --screenshot "$TMP/dir_arrow_off.ppm" --script "$TMP/dir_arrow_off.txt" >/dev/null 2>&1 || { echo "FAIL: dir arrow (off) script exited non-zero"; fail=1; }
+else
+  xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --screenshot "$TMP/dir_arrow_on.ppm" --script "$TMP/dir_arrow_on.txt" >/dev/null 2>&1 || { echo "FAIL: dir arrow (on) script exited non-zero"; fail=1; }
+  xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --screenshot "$TMP/dir_arrow_off.ppm" --script "$TMP/dir_arrow_off.txt" >/dev/null 2>&1 || { echo "FAIL: dir arrow (off) script exited non-zero"; fail=1; }
+fi
+if [ -s "$TMP/dir_arrow_on.ppm" ] && [ -s "$TMP/dir_arrow_off.ppm" ] && ! cmp -s "$TMP/dir_arrow_on.ppm" "$TMP/dir_arrow_off.ppm"; then
+  echo "ok   Dir's direction-arrow glyph is a real drawn overlay (the only-difference-is-Dir screenshot differs from the no-Dir one)"
+else
+  echo "FAIL Dir's direction-arrow glyph changed no visible pixel vs. an otherwise identical scene"; fail=1
+fi
 
 # Docs tutorials (docs/site/tutorials.html and README's "10 tutorials,
 # verified by running them" claim): run every 01..10 tutorial script

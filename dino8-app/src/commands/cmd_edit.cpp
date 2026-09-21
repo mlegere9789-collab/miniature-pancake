@@ -645,13 +645,24 @@ void RegisterEditCommands(CommandEngine& e) {
       "Elevates curves/surfaces to a typed target degree (elevation only - it never lowers a degree, which is a lossy refit, not a plain elevation).");
   Reg(e, "Flip", OnSelection("Select curves, surfaces or meshes to flip", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         ctx.Doc().BeginChange("Flip");
-        for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (!o) continue; if (o->kind == ObjectKind::Curve) o->curve->Reverse(); else if (o->kind == ObjectKind::Surface) o->surface->Reverse(0); else if (o->kind == ObjectKind::Mesh) *o->mesh = o->mesh->FlipNormals(); else if (o->kind == ObjectKind::Brep) o->brep->raw().Flip(); o->InvalidateDisplay(); }
+        for (ObjectId id : ids) { SceneObject* o = ctx.Doc().Find(id); if (!o) continue; FlipObject(*o); }
       }));
   Reg(e, "Dir", OnSelection("Select objects to show direction", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (!o) continue; if (o->kind == ObjectKind::Curve) { kernel::Interval d = o->curve->Domain(); ctx.Print("Curve " + std::to_string(id) + ": start " + FormatPoint(o->curve->PointAt(d.min)) + " tangent " + FormatPoint(Point3d(o->curve->TangentAt(d.min)))); } else if (o->kind == ObjectKind::Surface) { ctx.Print("Surface " + std::to_string(id) + ": normal at centre " + FormatPoint(Point3d(o->surface->NormalAt((o->surface->Domain(0).min + o->surface->Domain(0).max) / 2, (o->surface->Domain(1).min + o->surface->Domain(1).max) / 2)))); } }
-        ctx.Print("Use Flip to reverse direction.");
-      }), CommandStatus::Partial,
-      "Reports each curve's start point/tangent or surface's centre normal in the command history; there are no clickable direction-arrow glyphs drawn in the viewport, so reversing is a separate Flip call rather than a click on the arrow itself.");
+        int shown = 0;
+        for (ObjectId id : ids) {
+          SceneObject* o = ctx.Doc().Find(id);
+          if (!o) continue;
+          const std::optional<DirArrow> arrow = ComputeDirArrow(*o);
+          if (!arrow) continue;
+          o->show_direction_arrow = true;
+          o->InvalidateDisplay();
+          ++shown;
+          if (o->kind == ObjectKind::Curve) ctx.Print("Curve " + std::to_string(id) + ": start " + FormatPoint(arrow->origin) + " tangent " + FormatPoint(Point3d(arrow->direction)));
+          else ctx.Print("Surface " + std::to_string(id) + ": centre " + FormatPoint(arrow->origin) + " normal " + FormatPoint(Point3d(arrow->direction)));
+        }
+        if (shown > 0) ctx.Print("Click the direction arrow in the viewport, or run Flip, to reverse.");
+      }), CommandStatus::Implemented,
+      "Reports each curve's start point/tangent or surface's centre point/normal in the command history AND draws a real, clickable direction-arrow glyph at that exact location in every open viewport (ui/DirectionArrows.cpp, ComputeDirArrow()/FlipObject() in doc/SceneObject.h/.cpp) - clicking it calls the same FlipObject() reversal Flip itself uses, not a second implementation. The glyph-click path is mouse-only and, like every other mouse-driven interaction in this app (Gumball, MappingGizmo, ...), is not exercised by the headless tests/smoke.sh harness; the glyph's own computed geometry is independently verifiable headlessly because ComputeDirArrow() is the exact function both Dir's printed origin/direction and the glyph's drawn position/direction come from - a script confirms the printed numbers, then re-runs Dir after a plain Flip and confirms they invert.");
   Reg(e, "Offset", Make<OffsetCommand>());
   Reg(e, "Extend", Make<ExtendCommand>(), CommandStatus::Implemented,
       "Extends the end of each curve nearer the picked point until its tangent line reaches that point (Enter extends both ends by a fixed 10% of the domain instead).");

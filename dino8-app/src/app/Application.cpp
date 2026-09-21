@@ -1193,22 +1193,29 @@ void Application::DrawViewports() {
     const bool viewport_rect_hovered = ImGui::IsMouseHoveringRect(
         ImVec2(static_cast<float>(vp.ScreenX()), static_cast<float>(vp.ScreenY())),
         ImVec2(static_cast<float>(vp.ScreenX() + vp.Width()), static_cast<float>(vp.ScreenY() + vp.Height())));
-    const bool gumball_wants_mouse = gumball_enabled && !engine_->IsRunning() && !panels_.mapping_widget &&
-                                     gumball_.Update(*this, vp, viewport_rect_hovered);
+    // Dir: any object with show_direction_arrow set gets a clickable
+    // direction-arrow glyph, drawn/hit-tested ahead of Gumball so a click
+    // on an arrow flips that object (DirectionArrows::Update, reusing
+    // Flip's own FlipObject()) instead of starting a Gumball drag
+    // underneath it.
+    const bool dir_arrows_wants_mouse = !engine_->IsRunning() &&
+                                         direction_arrows_.Update(*this, vp, viewport_rect_hovered);
+    const bool gumball_wants_mouse = gumball_enabled && !engine_->IsRunning() && !panels_.mapping_widget && !dir_arrows_wants_mouse &&
+                                     gumball_.Update(*this, vp, viewport_rect_hovered && !dir_arrows_wants_mouse);
     // MappingWidget: while the panel is open, the first selected object's
     // mapping reference plane gets a draggable gizmo instead of the normal
     // Gumball (dragging the mapping frame while also dragging the object
     // would be ambiguous over the same handles).
     bool mapping_gizmo_wants_mouse = false;
-    if (panels_.mapping_widget && !engine_->IsRunning()) {
+    if (panels_.mapping_widget && !engine_->IsRunning() && !dir_arrows_wants_mouse) {
       const std::vector<ObjectId> sel = doc_.SelectedIds();
       if (!sel.empty()) {
         if (SceneObject* o = doc_.Find(sel.front())) {
-          mapping_gizmo_wants_mouse = mapping_gizmo_.Update(*this, vp, *o, viewport_rect_hovered);
+          mapping_gizmo_wants_mouse = mapping_gizmo_.Update(*this, vp, *o, viewport_rect_hovered && !dir_arrows_wants_mouse);
         }
       }
     }
-    vp.SetInputLocked(gumball_wants_mouse || mapping_gizmo_wants_mouse);
+    vp.SetInputLocked(gumball_wants_mouse || mapping_gizmo_wants_mouse || dir_arrows_wants_mouse);
     vp.SetSubObjectSelection(&sub_selection_);
     vp.SetSubObjectFilter(CurrentSubObjectFilter());
     ViewportEvents ev = vp.DrawUI(doc_, snaps_, want_point, want_objects, ortho_base,
