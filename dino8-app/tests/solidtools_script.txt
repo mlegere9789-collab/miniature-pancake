@@ -292,3 +292,32 @@ Line 1700,0,0 1690,-5,0
 SelAll
 CreateRegions
 @expect_objects 50
+# --- ExtractOriginalCaptives survives a Save -> New -> Open round trip (the
+# actual point of CageBinding/Captive now living in Document::CageBindings()
+# and being written to/read back from the .3dm - see io/File3dm.cpp and the
+# CageBinding comment in doc/Document.h). A fresh Cage/CageEdit pair is used
+# here rather than reusing the object 8/cage 9 pair from the Cage/CageEdit
+# section far above: that pair's own CageBinding is already gone by this
+# point in the script, as an existing, unrelated side effect of the
+# CageDivisions-corruption regression test right after it (once that test
+# forges cage 9's own CageDivisions tag, IsCage rejects it and UpdateCages
+# treats the cage as gone, dropping its CageBinding along with it, well
+# before this point) - not something this round-trip test should be
+# entangled with.
+SelNone
+Box 1800,0,0 1810,10,0 10
+SelLast
+SetObjectName CaptiveBox
+Cage 1795,-5,0 1815,15,0 15
+SelName CaptiveBox
+CageEdit
+SelLast
+Enter
+Save @TMP@/solidtools_captive.3dm
+New
+Open @TMP@/solidtools_captive.3dm
+SelCaptives
+ExtractOriginalCaptives
+SelLast
+BoundingBox
+@expect_objects 54

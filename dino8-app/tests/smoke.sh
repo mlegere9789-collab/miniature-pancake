@@ -968,10 +968,11 @@ a2check "CenterLine: midline between the two selected lines (associative to both
 a2check "UpdateDimensions:   CenterLine now spans 800,0,0 to 800,10,0" "UpdateDimensions redrew the CenterLine's midline at x=800 after moving one of the two lines from x=800 to x=780 (midline between the moved line and the untouched x=820 line), not the x=810 midline it was created at"
 a2check "gl_error=0" "annotate2 script ran without OpenGL errors"
 # Solid tools: RoundHole, CurveBoolean, Clash, Cage/CageEdit, Flow, ScaleByPlane (see solidtools_script.txt).
+sed "s|@TMP@|$TMP|g" "$HERE/solidtools_script.txt" > "$TMP/solidtools_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
-  ST="$("$BIN" --smoke 220 --script "$HERE/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
+  ST="$("$BIN" --smoke 220 --script "$TMP/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
 else
-  ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 220 --script "$HERE/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
+  ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 220 --script "$TMP/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
 fi
 stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 stcheck "RoundHole: radius 3, through, cut 1 solid(s)" "RoundHole cut the box"
@@ -1017,9 +1018,20 @@ stcheck "Area = 600 square" "the assembled triangle's real planar-surface area i
 stcheck "CreateRegions: regions of 2 region(s) -> 2 closed curve(s)" "CreateRegions found 2 regions from a mix of an assembled open-curve loop (Arc + Line closing a semicircle) and a separate untouched closed Circle"
 stcheck "Area = 153.1 square" "the assembled semicircle region's (Arc + Line, r=10) measured area is close to the analytic 0.5*pi*10^2 = 157.08, the gap being this shared Regions()/Outlines() pipeline's own pre-existing chord-tolerance polygon approximation (also present for closed curves), not something the open-curve-loop fix introduced"
 stcheck "CreateRegions: 3 open curve(s) don't close into a simple loop (a dangling end, or 3+ curve ends meeting at one point) and were skipped" "a branch point (3 open Lines meeting at one shared point) is honestly refused rather than guessed at or crashed on"
+# ExtractOriginalCaptives after a real Save -> New -> Open round trip (see
+# CageBinding, doc/Document.h and io/File3dm.cpp): a freshly-bound captive's
+# pre-cage original must come back as a real, untouched copy even after the
+# document was fully closed and reopened, not only within the same
+# session - the actual point of the fix (this command used to be
+# CommandStatus::Partial exactly because that side table was session-only).
+# A fresh Cage/CageEdit pair is used (not the object 8/cage 9 pair from the
+# Cage/CageEdit section above, whose own CageBinding is already gone by
+# this point - see the comment in solidtools_script.txt).
+stcheck "ExtractOriginalCaptives: 1 original\(s\) restored as copies" "ExtractOriginalCaptives restored the captive's original after Save/New/Open, not just within the same session"
+stcheck "Bounding box min 1800,0,0 max 1810,10,10" "the restored original is the untouched pre-cage box (1800,0,0 to 1810,10,10), the exact geometry Box 1800,0,0 1810,10,0 10 created before it was ever bound to the cage"
 echo "$ST" | grep -E "^(ok|FAIL)"
 if echo "$ST" | grep -q "^FAIL"; then fail=1; fi
-stcheck "smoke: frames=[12][0-9][0-9] objects=50" "solid-tools script produced the expected object count"
+stcheck "smoke: frames=[12][0-9][0-9] objects=54" "solid-tools script produced the expected object count"
 
 # Fillet family: FilletEdge/ChamferEdge exact box-corner trims, FilletSrf, BlendEdge,
 # MatchSrf, SplitFace, MergeFaces, ConnectSrf, surface/surface and curve/surface

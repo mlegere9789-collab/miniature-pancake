@@ -1583,23 +1583,10 @@ constexpr const char* kCageTag = "Cage";
 constexpr const char* kCageDivisionsTag = "CageDivisions";
 constexpr const char* kCaptiveTag = "CageCaptive";
 
-struct Captive {
-  ObjectId id;
-  std::vector<Vector3d> local;  // (s, t, u) lattice coordinates per point
-  SceneObject original;
-};
-
-struct CageBinding {
-  ObjectId cage = kNoObject;
-  int nx = 2, ny = 2, nz = 2;
-  std::vector<Point3d> lattice;  // positions the captives were last evaluated with
-  std::vector<Captive> captives;
-};
-
-std::map<ObjectId, CageBinding>& Bindings() {
-  static std::map<ObjectId, CageBinding> b;
-  return b;
-}
+// Captive/CageBinding themselves now live in doc/Document.h (Document::
+// CageBindings()) rather than as a static here, so they round-trip through
+// Save3dm/Load3dm (see io/File3dm.cpp) and don't leak across documents -
+// see Document.h's comment on CageBinding for the persistence format.
 
 int LatticeIndex(int nx, int ny, int i, int j, int k) { return i + (nx + 1) * (j + (ny + 1) * k); }
 
@@ -1752,7 +1739,7 @@ void CageEdit(CommandContext& ctx, const Input& in) {
   }
   SceneObject* cage = ctx.Doc().Find(cage_id);
   if (!cage) return;
-  CageBinding& b = Bindings()[cage_id];
+  CageBinding& b = ctx.Doc().CageBindings()[cage_id];
   b.cage = cage_id;
   CageDivisions(*cage, b.nx, b.ny, b.nz);
   b.lattice = CageLattice(*cage);
@@ -1769,7 +1756,7 @@ void CageEdit(CommandContext& ctx, const Input& in) {
     if (!ok) { ctx.Warn("CageEdit: the cage is degenerate"); continue; }
     points += static_cast<int>(c.local.size());
     // Replace an older binding of the same object.
-    for (auto& kv : Bindings()) kv.second.captives.erase(std::remove_if(kv.second.captives.begin(), kv.second.captives.end(), [&](const Captive& x) { return x.id == id; }), kv.second.captives.end());
+    for (auto& kv : ctx.Doc().CageBindings()) kv.second.captives.erase(std::remove_if(kv.second.captives.begin(), kv.second.captives.end(), [&](const Captive& x) { return x.id == id; }), kv.second.captives.end());
     b.captives.push_back(std::move(c));
     o->user_text[kCaptiveTag] = Id(cage_id);
   }
@@ -1781,7 +1768,7 @@ void CageEdit(CommandContext& ctx, const Input& in) {
 // Re-evaluates the captives of every cage whose lattice changed. Called once
 // per frame by the application.
 void UpdateCages(Document& doc) {
-  std::map<ObjectId, CageBinding>& all = Bindings();
+  std::map<ObjectId, CageBinding>& all = doc.CageBindings();
   for (auto it = all.begin(); it != all.end();) {
     CageBinding& b = it->second;
     SceneObject* cage = doc.Find(b.cage);
@@ -1813,16 +1800,16 @@ void ReleaseFromCage(CommandContext& ctx, const std::vector<ObjectId>& ids) {
     SceneObject* o = ctx.Doc().Find(id);
     if (!o) continue;
     if (IsCage(*o)) {
-      auto it = Bindings().find(id);
-      if (it != Bindings().end()) {
+      auto it = ctx.Doc().CageBindings().find(id);
+      if (it != ctx.Doc().CageBindings().end()) {
         for (const Captive& c : it->second.captives) if (SceneObject* co = ctx.Doc().Find(c.id)) { co->user_text.erase(kCaptiveTag); ++released; }
-        Bindings().erase(it);
+        ctx.Doc().CageBindings().erase(it);
       }
       o->user_text.erase("CageEdit");
       continue;
     }
     if (o->user_text.erase(kCaptiveTag)) ++released;
-    for (auto& kv : Bindings()) kv.second.captives.erase(std::remove_if(kv.second.captives.begin(), kv.second.captives.end(), [&](const Captive& x) { return x.id == id; }), kv.second.captives.end());
+    for (auto& kv : ctx.Doc().CageBindings()) kv.second.captives.erase(std::remove_if(kv.second.captives.begin(), kv.second.captives.end(), [&](const Captive& x) { return x.id == id; }), kv.second.captives.end());
   }
   ctx.Print("ReleaseFromCage: " + std::to_string(released) + " object(s) released");
 }
@@ -1831,7 +1818,7 @@ void ExtractOriginalCaptives(CommandContext& ctx, const std::vector<ObjectId>& i
   ctx.Doc().BeginChange("ExtractOriginalCaptives");
   int made = 0;
   for (ObjectId id : ids) {
-    for (auto& kv : Bindings()) {
+    for (auto& kv : ctx.Doc().CageBindings()) {
       for (const Captive& c : kv.second.captives) {
         if (c.id != id) continue;
         SceneObject dup = c.original;
@@ -2267,8 +2254,8 @@ void RegisterSolidToolsCommands(CommandEngine& e) {
   Reg(e, "CageEdit", Tool({ObjectsStep("Select captive objects"), ObjectsStep("Select control cage (Enter or BoundingBox=Yes for a bounding-box cage)", 0)},
                           {Toggle("BoundingBox", false), Numeric("XDivisions", 2), Numeric("YDivisions", 2), Numeric("ZDivisions", 2)}, Guarded("CageEdit", CageEdit)));
   Reg(e, "ReleaseFromCage", OnSelection("Select captives or cages to release", ReleaseFromCage));
-  Reg(e, "ExtractOriginalCaptives", OnSelection("Select captive objects", ExtractOriginalCaptives), CommandStatus::Partial,
-      "Fully restores the pre-cage original as a real copy while the document stays open, exactly like the analogous CopyHole/MoveHole hole-feature side table (see HoleFeature, Document.h) - but the same way, that side table is deliberately session state only, never written to the .3dm, so the original is gone once the file is closed and reopened.");
+  Reg(e, "ExtractOriginalCaptives", OnSelection("Select captive objects", ExtractOriginalCaptives), CommandStatus::Implemented,
+      "Fully restores the pre-cage original as a real copy. Unlike the session-only HoleFeature/PipeFeature/SquishFeature/SubDPackFeature side tables (Document.h), CageBinding's captive originals are written to and read back from the .3dm (io/File3dm.cpp: each original travels as a hidden geometry component tagged Dino8.CaptiveOriginalOf/Dino8.CaptiveCageOf/Dino8.CaptiveLocal, plus a small Dino8.CageBindingsMeta JSON sidecar for the cage's own nx/ny/nz/lattice), so the original is still there to extract after the file is closed and reopened.");
   Reg(e, "SelCaptives", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([](const SceneObject& o) { return o.user_text.count(kCaptiveTag) > 0; }); ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " captive(s) selected"); }));
   Reg(e, "SelControls", Immediate([](CommandContext& ctx) { ctx.Doc().SelectWhere([](const SceneObject& o) { return o.user_text.count(kCageTag) > 0; }); ctx.Print(std::to_string(ctx.Doc().SelectedCount()) + " cage(s) selected"); }));
 

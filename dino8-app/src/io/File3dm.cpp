@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <iomanip>
 #include <map>
 #include <sstream>
 
@@ -74,6 +75,75 @@ std::map<std::string, BlockDefinition> DecodeBlocksMeta(const std::string& text)
     const json::Value& st = v["states"];
     for (size_t j = 0; j < st.Size(); ++j) b.states.push_back(st[j].AsString());
     out[b.name] = b;
+  }
+  return out;
+}
+
+// Cage-editing captive originals (see doc/Document.h's comment on
+// CageBinding): one entry per cage, holding just the small per-cage numbers
+// (nx/ny/nz and the lattice positions the captives were last evaluated
+// with) - every captive's own `local`/`original` travels as an extra
+// hidden geometry component instead (see the write/read loops in Save3dm/
+// Load3dm below, same "real geometry component + small JSON sidecar"
+// pattern as EncodeBlocksMeta above). `cage_uuid` is the cage object's
+// stable file uuid, resolved back to a live ObjectId on read the same way
+// DimRefObj1/2/3 are.
+struct CageBindingMeta {
+  std::string cage_uuid;
+  int nx = 2, ny = 2, nz = 2;
+  std::vector<kernel::Point3d> lattice;
+};
+
+std::string EncodeCageBindingsMeta(const std::vector<CageBindingMeta>& bindings) {
+  std::ostringstream out;
+  out << std::setprecision(17) << "[";
+  for (size_t i = 0; i < bindings.size(); ++i) {
+    const CageBindingMeta& b = bindings[i];
+    out << (i ? "," : "") << "{\"cage\":\"" << b.cage_uuid << "\",\"nx\":" << b.nx << ",\"ny\":" << b.ny << ",\"nz\":" << b.nz << ",\"lat\":[";
+    for (size_t j = 0; j < b.lattice.size(); ++j) {
+      const kernel::Point3d& p = b.lattice[j];
+      out << (j ? "," : "") << "[" << p.x << "," << p.y << "," << p.z << "]";
+    }
+    out << "]}";
+  }
+  out << "]";
+  return out.str();
+}
+
+std::vector<CageBindingMeta> DecodeCageBindingsMeta(const std::string& text) {
+  std::vector<CageBindingMeta> out;
+  if (text.empty()) return out;
+  json::Value root;
+  std::string err;
+  if (!json::Parse(text, root, err) || !root.IsArray()) return out;
+  for (size_t i = 0; i < root.Size(); ++i) {
+    const json::Value& v = root[i];
+    CageBindingMeta b;
+    b.cage_uuid = v["cage"].AsString();
+    b.nx = static_cast<int>(v["nx"].number);
+    b.ny = static_cast<int>(v["ny"].number);
+    b.nz = static_cast<int>(v["nz"].number);
+    const json::Value& lat = v["lat"];
+    for (size_t j = 0; j < lat.Size(); ++j) {
+      const json::Value& p = lat[j];
+      b.lattice.emplace_back(p[static_cast<size_t>(0)].number, p[static_cast<size_t>(1)].number, p[static_cast<size_t>(2)].number);
+    }
+    out.push_back(std::move(b));
+  }
+  return out;
+}
+
+// Parses the ';'-separated "x,y,z" triples Save3dm writes to a captive
+// original's "Dino8.CaptiveLocal" user string back into per-point lattice
+// coordinates.
+std::vector<kernel::Vector3d> DecodeCaptiveLocal(const std::string& text) {
+  std::vector<kernel::Vector3d> out;
+  std::istringstream in(text);
+  std::string tok;
+  while (std::getline(in, tok, ';')) {
+    if (tok.empty()) continue;
+    double x = 0, y = 0, z = 0;
+    if (std::sscanf(tok.c_str(), "%lf,%lf,%lf", &x, &y, &z) == 3) out.emplace_back(x, y, z);
   }
   return out;
 }
@@ -592,6 +662,53 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     for (ObjectId id : to_remove) doc.Remove(id);
     for (auto& [name, b] : by_name) doc.Blocks().push_back(std::move(b));
   }
+  // Cage-editing captive originals (see CageBindingMeta/CageBinding above
+  // and the comment on CageBinding in doc/Document.h): the hidden geometry
+  // components the loop above just added, tagged "Dino8.CaptiveOriginalOf"/
+  // "Dino8.CaptiveCageOf", are pulled back out into Document::CageBindings()
+  // the same way block-definition member objects were pulled out just
+  // above - real Document objects, Save3dm, ObjectCount() and the object
+  // list stay untouched by any of it once this is done.
+  {
+    ON_wString v;
+    std::vector<CageBindingMeta> metas;
+    if (model.GetDocumentUserString(L"Dino8.CageBindingsMeta", v)) metas = DecodeCageBindingsMeta(FromWide(v));
+    std::map<std::string, CageBinding> by_cage_uuid;
+    for (const CageBindingMeta& m : metas) {
+      auto cage_it = object_ids.find(ON_UuidFromString(m.cage_uuid.c_str()));
+      if (cage_it == object_ids.end()) continue;  // cage object didn't survive (e.g. excluded reference)
+      CageBinding& b = by_cage_uuid[m.cage_uuid];
+      b.cage = static_cast<ObjectId>(cage_it->second);
+      b.nx = m.nx;
+      b.ny = m.ny;
+      b.nz = m.nz;
+      b.lattice = m.lattice;
+    }
+    std::vector<ObjectId> to_remove;
+    for (const SceneObject& o : doc.Objects()) {
+      auto it = o.user_text.find("Dino8.CaptiveOriginalOf");
+      if (it == o.user_text.end()) continue;
+      to_remove.push_back(o.id);
+      auto captive_it = object_ids.find(ON_UuidFromString(it->second.c_str()));
+      auto cage_tag = o.user_text.find("Dino8.CaptiveCageOf");
+      if (captive_it == object_ids.end() || cage_tag == o.user_text.end()) continue;
+      auto binding_it = by_cage_uuid.find(cage_tag->second);
+      if (binding_it == by_cage_uuid.end()) continue;
+      Captive c;
+      c.id = static_cast<ObjectId>(captive_it->second);
+      auto local_tag = o.user_text.find("Dino8.CaptiveLocal");
+      if (local_tag != o.user_text.end()) c.local = DecodeCaptiveLocal(local_tag->second);
+      c.original = o;
+      c.original.id = kNoObject;
+      c.original.selected = false;
+      c.original.user_text.erase("Dino8.CaptiveOriginalOf");
+      c.original.user_text.erase("Dino8.CaptiveCageOf");
+      c.original.user_text.erase("Dino8.CaptiveLocal");
+      binding_it->second.captives.push_back(std::move(c));
+    }
+    for (ObjectId id : to_remove) doc.Remove(id);
+    for (auto& [uuid, b] : by_cage_uuid) doc.CageBindings()[b.cage] = std::move(b);
+  }
   // DimRefObj1/2/3 (see Save3dm) were rewritten to the referenced anchor
   // object's stable uuid at save time, since Open reassigns every object a
   // fresh numeric id - resolve them back to the *new* numeric id now that
@@ -1030,6 +1147,69 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
       if (!g) continue;
       model.AddModelGeometryComponent(g, &attr);
     }
+  }
+
+  // Cage-editing captive originals (see the CageBindingMeta/CageBinding
+  // comments above and in doc/Document.h): the same "real geometry
+  // component + small JSON sidecar" pattern as block definitions just
+  // above, so ExtractOriginalCaptives can still restore an original after
+  // a Save/Open round trip. A binding whose cage (or a given captive) isn't
+  // itself being written (e.g. excluded reference objects) is silently
+  // skipped for that entry - same tolerance as the DimRefObj1/2/3 handling
+  // above.
+  {
+    std::vector<CageBindingMeta> metas;
+    for (const auto& [cage_id, b] : doc.CageBindings()) {
+      auto cage_uuid = object_uuids.find(b.cage);
+      if (cage_uuid == object_uuids.end()) continue;
+      CageBindingMeta m;
+      m.cage_uuid = UuidString(cage_uuid->second);
+      m.nx = b.nx;
+      m.ny = b.ny;
+      m.nz = b.nz;
+      m.lattice = b.lattice;
+      metas.push_back(m);
+      for (const Captive& c : b.captives) {
+        auto captive_uuid = object_uuids.find(c.id);
+        if (captive_uuid == object_uuids.end()) continue;
+        const SceneObject& o = c.original;
+        ON_3dmObjectAttributes attr;
+        ON_CreateUuid(attr.m_uuid);
+        attr.SetName(ON_wString(o.name.c_str()), true);
+        // The captured original's own visibility (not "false" - unlike the
+        // block-definition write loop just above, which also does this,
+        // this hidden component's attribute is read straight back into
+        // Captive::original's own `visible` field on Load, see below, and
+        // ExtractOriginalCaptives later duplicates that field verbatim onto
+        // the restored object; forcing it false here would make every
+        // Save/Open-restored original invisible even when it was visible
+        // when captured).
+        attr.SetVisible(o.visible);
+        for (const auto& [k, v] : o.user_text) attr.SetUserString(ON_wString(k.c_str()), ON_wString(v.c_str()));
+        attr.SetUserString(L"Dino8.CaptiveOriginalOf", ON_wString(UuidString(captive_uuid->second).c_str()));
+        attr.SetUserString(L"Dino8.CaptiveCageOf", ON_wString(m.cage_uuid.c_str()));
+        std::ostringstream local;
+        local << std::setprecision(17);
+        for (size_t i = 0; i < c.local.size(); ++i) {
+          if (i) local << ";";
+          local << c.local[i].x << "," << c.local[i].y << "," << c.local[i].z;
+        }
+        attr.SetUserString(L"Dino8.CaptiveLocal", ON_wString(local.str().c_str()));
+        ON_Geometry* g = nullptr;
+        switch (o.kind) {
+          case ObjectKind::Point: g = new ON_Point(o.point); break;
+          case ObjectKind::Curve: if (o.curve) g = new ON_NurbsCurve(o.curve->raw()); break;
+          case ObjectKind::Surface: if (o.surface) g = new ON_NurbsSurface(o.surface->raw()); break;
+          case ObjectKind::Brep: if (o.brep) g = new ON_Brep(o.brep->raw()); break;
+          case ObjectKind::Mesh: if (o.mesh) g = new ON_Mesh(o.mesh->raw()); break;
+          case ObjectKind::SubD: if (o.subd) g = new ON_SubD(o.subd->raw()); break;
+          case ObjectKind::PointCloud: if (o.point_cloud) g = new ON_PointCloud(o.point_cloud->raw()); break;
+        }
+        if (!g) continue;
+        model.AddModelGeometryComponent(g, &attr);
+      }
+    }
+    model.SetDocumentUserString(L"Dino8.CageBindingsMeta", ON_wString(EncodeCageBindingsMeta(metas).c_str()));
   }
 
   // Lights are geometry components in the 3dm.

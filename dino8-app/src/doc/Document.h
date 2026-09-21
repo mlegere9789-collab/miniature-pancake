@@ -396,6 +396,42 @@ struct SubDPackFeature {
   double coverage = 0;  // fraction of the unit square actually covered by face content (not gutters)
 };
 
+// One object bound into a Cage's free-form-deformation lattice
+// (CageEdit/cmd_solidtools.cpp): `local` is its per-point (s, t, u) lattice
+// coordinate (world position re-evaluated from the cage's current lattice
+// on every UpdateCages() pass), and `original` is a full value copy of the
+// object exactly as it stood the moment it was bound - not an ObjectId
+// reference, for the same reason PipeFeature/SquishFeature keep a value
+// copy of their source geometry: the tag must survive whatever CageEdit
+// does to the live object afterward. ExtractOriginalCaptives
+// (cmd_solidtools.cpp) adds `original` back into the document as a new,
+// independent object. Unlike HoleFeature/PipeFeature/SquishFeature/
+// SubDPackFeature above, this side table (and CageBinding below) round-trips
+// through Save3dm/Load3dm (see io/File3dm.cpp): every captive's `original`
+// is written as an extra hidden geometry component tagged
+// "Dino8.CaptiveOriginalOf" (the live captive object's stable file uuid)
+// and "Dino8.CaptiveLocal" (`local`, encoded as ';'-separated "x,y,z"
+// triples), and each cage's nx/ny/nz/lattice is written as one small JSON
+// entry in the "Dino8.CageBindingsMeta" document user string, keyed by the
+// cage object's stable file uuid - the same "write real geometry
+// components tagged for pull-back on Load, small metadata as document user
+// text" pattern BlockDefinition's own objects use (see EncodeBlocksMeta's
+// comment in io/File3dm.cpp). It is still cleared, not persisted, across
+// Undo/Redo (an Undo past the CageEdit leaves a harmless orphaned entry,
+// same as the other side tables above).
+struct Captive {
+  ObjectId id = kNoObject;
+  std::vector<kernel::Vector3d> local;
+  SceneObject original;
+};
+
+struct CageBinding {
+  ObjectId cage = kNoObject;
+  int nx = 2, ny = 2, nz = 2;
+  std::vector<kernel::Point3d> lattice;
+  std::vector<Captive> captives;
+};
+
 struct DocumentSettings {
   std::string unit_system = "Millimeters";
   std::string title, author, comments;  // file metadata (saved in the .3dm)
@@ -604,6 +640,13 @@ class Document {
     return it == subd_pack_features_.end() ? nullptr : &it->second;
   }
   void ClearSubDPackFeature(ObjectId id) { subd_pack_features_.erase(id); }
+  // See CageBinding's comment above: unlike the other feature side tables,
+  // this one is written to and restored from the .3dm by io/File3dm.cpp, so
+  // it gets a direct mutable accessor (like Blocks() above) rather than the
+  // narrower Set/Find/Clear-by-id API those session-only tables use -
+  // File3dm.cpp and cmd_solidtools.cpp both need to walk and rebuild it.
+  std::map<ObjectId, CageBinding>& CageBindings() { return cage_bindings_; }
+  const std::map<ObjectId, CageBinding>& CageBindings() const { return cage_bindings_; }
   std::map<std::string, std::string>& UserText() { return user_text_; }
   std::string& Notes() { return notes_; }
   DocumentSettings& Settings() { return settings_; }
@@ -938,6 +981,7 @@ class Document {
   std::map<ObjectId, ProvenanceInfo> provenance_;
   std::map<ObjectId, SquishFeature> squish_features_;
   std::map<ObjectId, SubDPackFeature> subd_pack_features_;
+  std::map<ObjectId, CageBinding> cage_bindings_;
   std::map<std::string, std::string> user_text_;
   std::string notes_;
   DocumentSettings settings_;
