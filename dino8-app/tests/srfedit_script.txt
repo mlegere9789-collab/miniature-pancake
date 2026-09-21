@@ -190,6 +190,50 @@ Hide
 Sphere 2000,0,0 5
 SelPolysrf
 Hydrostatics
+# --- Hydrostatics Cp/Cvp: a cone lying on its side (apex on the long axis,
+# base circle of radius 5 ten units away), axis exactly in the construction
+# plane so the clip plane cuts it right through its own axis - the textbook
+# half-cone case: cross-section area at station x is pi*(5x/10)^2/2, so
+# submerged volume = pi*5^2*10/6 (half the full cone), waterplane outline is
+# the triangle (0,0)-(10,5)-(10,-5) of area 5*10=50, max section area (at the
+# base end) is pi*5^2/2=39.27, draft = 5 (the radius) => Cp = displaced
+# volume / (length * max section area) = (pi*25*10/6)/(10*pi*12.5) = 1/3
+# exactly, Cvp = displaced volume / (draft * waterplane area)
+# = (pi*25*10/6)/(5*50) = pi/6 =~ 0.5236 - both real, hand-computable numbers.
+# Trim/heel must converge to 0 by the shape's own up/down symmetry about its axis.
+SelAll
+Hide
+Cone 2050,0,0 5 10
+SelPolysrf
+Rotate3D
+2050,0,0
+2050,1,0
+90
+SelPolysrf
+Hydrostatics
+# --- Hydrostatics trim solve: a 10-unit cube, centered on the construction
+# plane, then pitched 20 degrees about its own center (Rotate3D about the
+# construction plane's Y axis) - a cube's own geometric centroid (= CG here)
+# does not generally sit under the center of buoyancy of an off-axis cut
+# through it, so the trim solver has real, nonzero work to do. Because the
+# cube was pitched about exactly the axis (and through exactly the point)
+# the solver itself pitches the waterplane about, re-leveling it by the
+# opposite (well, same-signed, per this file's rotation convention) 20
+# degrees exactly undoes the pitch and must converge to trim=20, heel=0.
+SelAll
+Hide
+Box 2150,-5,0 2160,5,0 10
+SelPolysrf
+Move
+0,0,0
+0,0,-5
+SelPolysrf
+Rotate3D
+2155,0,0
+2155,1,0
+20
+SelPolysrf
+Hydrostatics
 # --- ExtractBadSrf / RemoveAllNakedMicroEdges: real checks that find nothing wrong with a good box
 SelAll
 Hide
@@ -209,15 +253,15 @@ ShrinkTrimmedSrfToEdge
 # closed circle profile along a straight rail). Both curves must exist before
 # Sweep1 starts (typing a new curve-creation command mid-selection doesn't
 # work - it's swallowed as a bogus option token), so they're created first
-# and picked by their known object IDs (68, 69: this script has created
-# exactly 67 objects by this point).
+# and picked by their known object IDs (70, 71: this script has created
+# exactly 69 objects by this point).
 SelAll
 Hide
 Line 2300,0,0 2300,0,10
 Circle 2300,0,0 4
-SelID 68
+SelID 70
 Sweep1
-SelID 69
+SelID 71
 Enter
 SrfSeam
 2304,0,5
@@ -269,11 +313,11 @@ SelAll
 Hide
 Line 2900,0,0 2900,10,0
 Arc 2950,0,0 2950,15,5 2950,30,0
-SelID 81
+SelID 83
 ApplyCrv
-SelID 81
+SelID 83
 Enter
-SelID 82
+SelID 84
 Enter
 # --- ApplyMesh / ApplyMeshUVN: reshape a mesh sphere onto a same-topology
 # bigger mesh sphere (identical tessellation regardless of radius); both
@@ -282,21 +326,21 @@ SelAll
 Hide
 MeshSphere 3000,0,0 5
 MeshSphere 3000,0,0 8
-SelID 83
+SelID 85
 ApplyMesh
-SelID 83
+SelID 85
 Enter
-SelID 84
+SelID 86
 Enter
 SelAll
 Hide
 MeshSphere 3100,0,0 5
 MeshSphere 3100,0,0 9
-SelID 86
+SelID 88
 ApplyMeshUVN
-SelID 86
+SelID 88
 Enter
-SelID 87
+SelID 89
 Enter
 # --- Boss: a closed circle footprint on a box's top face, extruded upward
 # following the (flat) surface normal and unioned with the box (curve
@@ -344,7 +388,7 @@ SoftEditSrf Radius=8
 3505,5,0
 3505,5,3
 SelNone
-@expect_objects 95
+@expect_objects 97
 # --- UnjoinEdge: splits a shared edge into two naked copies while keeping
 # both faces in the same polysurface (real Brep::UnjoinEdge(), not the
 # ExtractSrf-into-a-separate-object workaround)
@@ -379,7 +423,7 @@ ReplaceEdge
 SelPolysrf
 List
 SelNone
-@expect_objects 97
+@expect_objects 99
 # --- Squish / SquishInfo: Squish now stores its own flattening report
 # (area, distortion) plus each flattened vertex's own source-surface
 # (u,v) in a real Document-level side table keyed by the flattened
@@ -435,7 +479,7 @@ SplitEdge
 3800.02,0,10
 SelPolysrf
 RemoveAllNakedMicroEdges
-@expect_objects 107
+@expect_objects 109
 # --- HBar: locks the distance between two control points of a straight
 # 2-CV line, then proves the lock is a real, general constraint (not just
 # a stored number) three ways: (1) HBarSetDistance changes the locked

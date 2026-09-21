@@ -2691,7 +2691,7 @@ void RegisterSrfEditCommands(CommandEngine& e) {
       "Real thin wall (Thickness x Height) following the base surface's local normal along the spine curve, tapering to zero at both ends, boolean-unioned with the base solid.");
   Reg(e, "Slide", Planned("Slide: planned; use Move. Slide's real feature - keeping an object confined to (sliding along) the surface it started on while dragging - needs a constrained drag the command engine's point tool does not support."), CommandStatus::Partial);
   Reg(e, "Hydrostatics", OnSelection("Select closed objects", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
-        ON_Plane wl = ActivePlane(ctx);
+        ON_Plane base_wl = ActivePlane(ctx);
         for (ObjectId id : ids) {
           const SceneObject* o = ctx.Doc().Find(id);
           if (!o) continue;
@@ -2699,57 +2699,199 @@ void RegisterSrfEditCommands(CommandEngine& e) {
           if (!m) continue;
           ON_Mesh mesh = m->raw();
           mesh.ConvertQuadsToTriangles();
-          // Submerged volume/centroid below the waterplane: clip every triangle
-          // to the half-space below `wl` and sum signed tetrahedra from a point
-          // ON the plane (not the world origin). Because that apex lies exactly
-          // in the cutting plane, the (unbuilt) flat "lid" at the waterline
-          // contributes zero volume on its own, so no explicit lid triangulation
-          // is needed - the same trick Mesh::Volume()/GetCentroid() use with the
-          // world origin as their apex, just moved onto the waterplane.
-          RawMoments sub;
-          double full_area = 0;
-          for (int fi = 0; fi < mesh.FaceCount(); ++fi) {
-            const ON_MeshFace& f = mesh.m_F[fi];
-            Point3d tri[3] = {mesh.Vertex(f.vi[0]), mesh.Vertex(f.vi[1]), mesh.Vertex(f.vi[2])};
-            full_area += ON_CrossProduct(tri[1] - tri[0], tri[2] - tri[0]).Length() * 0.5;
-            double h[3]; for (int k = 0; k < 3; ++k) h[k] = ON_DotProduct(tri[k] - wl.origin, wl.zaxis);
-            std::vector<Point3d> below;
-            for (int k = 0; k < 3; ++k) {
-              Point3d a = tri[k], b = tri[(k + 1) % 3];
-              double ha = h[k], hb = h[(k + 1) % 3];
-              if (ha <= 0) below.push_back(a);
-              if ((ha <= 0) != (hb <= 0)) { double t = ha / (ha - hb); below.push_back(a + (b - a) * t); }
+
+          // Submerged volume/centroid + waterplane area/centroid, below an
+          // arbitrary plane `wl` - factored out of a single fixed waterplane
+          // so the trim/heel solve below can re-clip at trial orientations.
+          // Clips every triangle to the half-space below `wl` and sums signed
+          // tetrahedra from a point ON the plane (not the world origin).
+          // Because that apex lies exactly in the cutting plane, the (unbuilt)
+          // flat "lid" at the waterline contributes zero volume on its own, so
+          // no explicit lid triangulation is needed - the same trick
+          // Mesh::Volume()/GetCentroid() use with the world origin as their
+          // apex, just moved onto the waterplane.
+          struct ClipResult { double volume = 0; Point3d cb; double wp_area = 0; Point3d wp_centroid; double full_area = 0; };
+          auto ClipAt = [&](const ON_Plane& wl) -> ClipResult {
+            RawMoments sub;
+            double full_area = 0;
+            for (int fi = 0; fi < mesh.FaceCount(); ++fi) {
+              const ON_MeshFace& f = mesh.m_F[fi];
+              Point3d tri[3] = {mesh.Vertex(f.vi[0]), mesh.Vertex(f.vi[1]), mesh.Vertex(f.vi[2])};
+              full_area += ON_CrossProduct(tri[1] - tri[0], tri[2] - tri[0]).Length() * 0.5;
+              double h[3]; for (int k = 0; k < 3; ++k) h[k] = ON_DotProduct(tri[k] - wl.origin, wl.zaxis);
+              std::vector<Point3d> below;
+              for (int k = 0; k < 3; ++k) {
+                Point3d a = tri[k], b = tri[(k + 1) % 3];
+                double ha = h[k], hb = h[(k + 1) % 3];
+                if (ha <= 0) below.push_back(a);
+                if ((ha <= 0) != (hb <= 0)) { double t = ha / (ha - hb); below.push_back(a + (b - a) * t); }
+              }
+              for (size_t k = 1; k + 1 < below.size(); ++k) {
+                Vector3d a = below[0] - wl.origin, b = below[k] - wl.origin, c = below[k + 1] - wl.origin;
+                double v6 = ON_DotProduct(a, ON_CrossProduct(b, c));
+                double vol = v6 / 6.0;
+                sub.measure += vol;
+                sub.first += Vector3d(below[0].x + below[k].x + below[k + 1].x - 3 * wl.origin.x,
+                                       below[0].y + below[k].y + below[k + 1].y - 3 * wl.origin.y,
+                                       below[0].z + below[k].z + below[k + 1].z - 3 * wl.origin.z) * (vol / 4.0);
+              }
             }
-            for (size_t k = 1; k + 1 < below.size(); ++k) {
-              Vector3d a = below[0] - wl.origin, b = below[k] - wl.origin, c = below[k + 1] - wl.origin;
-              double v6 = ON_DotProduct(a, ON_CrossProduct(b, c));
-              double vol = v6 / 6.0;
-              sub.measure += vol;
-              sub.first += Vector3d(below[0].x + below[k].x + below[k + 1].x - 3 * wl.origin.x,
-                                     below[0].y + below[k].y + below[k + 1].y - 3 * wl.origin.y,
-                                     below[0].z + below[k].z + below[k + 1].z - 3 * wl.origin.z) * (vol / 4.0);
-              // (moments-of-inertia terms are not needed for the hydrostatics report; only volume and centroid are used below.)
+            // Waterplane outline and its area/centroid, via the shared section-slicing helper.
+            std::vector<std::vector<Point3d>> chains = drafting::SliceMeshToChains(mesh, wl, ctx.Settings().absolute_tolerance * 10);
+            double wp_area = 0; Vector3d wp_first(0, 0, 0);
+            for (const auto& chain : chains) {
+              if (chain.size() < 3) continue;
+              Point3d o0 = chain[0];
+              for (size_t k = 1; k + 1 < chain.size(); ++k) {
+                double a2 = ON_DotProduct(ON_CrossProduct(chain[k] - o0, chain[k + 1] - o0), wl.zaxis);
+                wp_area += a2 * 0.5;
+                wp_first += Vector3d(o0 + (chain[k] - o0) / 3.0 + (chain[k + 1] - o0) / 3.0) * (a2 * 0.5);
+              }
+            }
+            ClipResult r;
+            r.volume = sub.measure;
+            r.cb = sub.measure > 1e-12 ? Point3d(sub.first / sub.measure) + Vector3d(wl.origin) : wl.origin;
+            r.wp_area = wp_area;
+            r.wp_centroid = std::fabs(wp_area) > 1e-9 ? Point3d(wp_first / wp_area) : wl.origin;
+            r.full_area = full_area;
+            return r;
+          };
+
+          const ClipResult base = ClipAt(base_wl);
+          const RawMoments full = VolumeMoments(mesh);
+          const Point3d cg = full.Centroid();
+
+          // --- Longitudinal axis: whichever in-plane construction-plane
+          // direction the hull spans further along is taken as "length"
+          // (the usual case for a ship-shaped mesh); the other is "beam".
+          // Also collects the draft (max submersion depth below base_wl).
+          Vector3d longaxis = base_wl.xaxis, beamaxis = base_wl.yaxis;
+          double lmin = std::numeric_limits<double>::max(), lmax = -lmin;
+          double draft = 0;
+          for (int vi = 0; vi < mesh.VertexCount(); ++vi) {
+            Point3d v = mesh.Vertex(vi);
+            Vector3d d = v - base_wl.origin;
+            double px = ON_DotProduct(d, base_wl.xaxis), py = ON_DotProduct(d, base_wl.yaxis);
+            double h = ON_DotProduct(d, base_wl.zaxis);
+            if (h < -draft) draft = -h;
+            (void)px; (void)py;
+          }
+          {
+            double xmin = std::numeric_limits<double>::max(), xmax = -xmin, ymin = xmin, ymax = -xmin;
+            for (int vi = 0; vi < mesh.VertexCount(); ++vi) {
+              Vector3d d = mesh.Vertex(vi) - base_wl.origin;
+              double px = ON_DotProduct(d, base_wl.xaxis), py = ON_DotProduct(d, base_wl.yaxis);
+              xmin = std::min(xmin, px); xmax = std::max(xmax, px);
+              ymin = std::min(ymin, py); ymax = std::max(ymax, py);
+            }
+            if ((ymax - ymin) > (xmax - xmin)) { longaxis = base_wl.yaxis; beamaxis = base_wl.xaxis; lmin = ymin; lmax = ymax; }
+            else { lmin = xmin; lmax = xmax; }
+          }
+
+          // --- Max transverse cross-sectional area (the "midships" station):
+          // slice the WHOLE hull with a plane perpendicular to the long axis
+          // at a series of stations, clip each resulting outline loop to the
+          // submerged half (below base_wl) with the same edge-crossing
+          // technique as the volume clip above, and take its area. The
+          // largest such station area over the sampled run is Am.
+          auto ClipChainBelow = [&](const std::vector<Point3d>& chain, const ON_Plane& wl) {
+            std::vector<Point3d> out;
+            const size_t n = chain.size();
+            for (size_t i = 0; i < n; ++i) {
+              Point3d a = chain[i], b = chain[(i + 1) % n];
+              double ha = ON_DotProduct(a - wl.origin, wl.zaxis), hb = ON_DotProduct(b - wl.origin, wl.zaxis);
+              if (ha <= 0) out.push_back(a);
+              if ((ha <= 0) != (hb <= 0)) { double t = ha / (ha - hb); out.push_back(a + (b - a) * t); }
+            }
+            return out;
+          };
+          auto PolygonArea = [&](const std::vector<Point3d>& poly, Vector3d normal) {
+            if (poly.size() < 3) return 0.0;
+            double area = 0; Point3d o0 = poly[0];
+            for (size_t k = 1; k + 1 < poly.size(); ++k) area += ON_DotProduct(ON_CrossProduct(poly[k] - o0, poly[k + 1] - o0), normal) * 0.5;
+            return std::fabs(area);
+          };
+          double max_section_area = 0;
+          const int kStations = 60;
+          if (lmax > lmin) {
+            for (int s = 0; s <= kStations; ++s) {
+              double t = lmin + (lmax - lmin) * s / kStations;
+              ON_Plane station(base_wl.origin + longaxis * t, longaxis);
+              std::vector<std::vector<Point3d>> station_chains = drafting::SliceMeshToChains(mesh, station, ctx.Settings().absolute_tolerance * 10);
+              double area = 0;
+              for (const auto& chain : station_chains) {
+                if (chain.size() < 3) continue;
+                area += PolygonArea(ClipChainBelow(chain, base_wl), longaxis);
+              }
+              max_section_area = std::max(max_section_area, area);
             }
           }
-          // Waterplane outline and its area/centroid, via the shared section-slicing helper.
-          std::vector<std::vector<Point3d>> chains = drafting::SliceMeshToChains(mesh, wl, ctx.Settings().absolute_tolerance * 10);
-          double wp_area = 0; Vector3d wp_first(0, 0, 0);
-          for (const auto& chain : chains) {
-            if (chain.size() < 3) continue;
-            Point3d o0 = chain[0];
-            for (size_t k = 1; k + 1 < chain.size(); ++k) {
-              double a2 = ON_DotProduct(ON_CrossProduct(chain[k] - o0, chain[k + 1] - o0), wl.zaxis);
-              wp_area += a2 * 0.5;
-              wp_first += Vector3d(o0 + (chain[k] - o0) / 3.0 + (chain[k + 1] - o0) / 3.0) * (a2 * 0.5);
-            }
-          }
-          Point3d displacement_centroid = sub.measure > 1e-12 ? Point3d(sub.first / sub.measure) + Vector3d(wl.origin) : wl.origin;
-          Point3d waterplane_centroid = std::fabs(wp_area) > 1e-9 ? Point3d(wp_first / wp_area) : wl.origin;
-          ctx.Print("Object " + std::to_string(id) + ": total volume " + FormatNumber(m->Volume()) + ", total area " + FormatNumber(full_area) +
-                     "\n  displacement (below the construction plane): " + FormatNumber(std::fabs(sub.measure)) + ", center of buoyancy " + FormatPoint(displacement_centroid) +
-                     "\n  waterplane area " + FormatNumber(std::fabs(wp_area)) + ", waterplane centroid " + FormatPoint(waterplane_centroid));
+          const double lbp = lmax - lmin;
+          const double disp_vol = std::fabs(base.volume);
+          const double cp = (lbp > 1e-9 && max_section_area > 1e-9) ? disp_vol / (lbp * max_section_area) : 0.0;
+          const double cvp = (draft > 1e-9 && std::fabs(base.wp_area) > 1e-9) ? disp_vol / (draft * std::fabs(base.wp_area)) : 0.0;
+
+          // --- Trim/heel solve: find the rotation of the waterplane (about
+          // a fixed draft, i.e. the point on the base waterplane directly
+          // under the hull's own centroid - not the construction plane's
+          // own, possibly far-away, origin, which would otherwise put the
+          // whole hull on the end of a giant lever arm and swing it clean
+          // out of the water for a trial angle of just a few degrees) that
+          // brings the center of buoyancy onto the vertical line through the
+          // center of gravity. Convention (documented since Rhino's own
+          // solver isn't available to check against): CG is the object's
+          // own geometric (uniform-density) centroid; "trim" rotates the
+          // waterplane about the construction plane's transverse (Y) axis,
+          // "heel" then rotates about its ORIGINAL (unrotated) longitudinal
+          // (X) axis - both extrinsic rotations about that fixed pivot,
+          // composed as heel-after-trim. The residual driven to zero is
+          // CB's in-plane (u, v) offset from CG once both are projected onto
+          // the trial waterplane along its own normal - i.e. "CB is directly
+          // under CG in the vessel's own floating frame".
+          const Point3d pivot = base_wl.origin + base_wl.xaxis * ON_DotProduct(cg - base_wl.origin, base_wl.xaxis) +
+                                 base_wl.yaxis * ON_DotProduct(cg - base_wl.origin, base_wl.yaxis);
+          auto FrameAt = [&](double trim, double heel) {
+            ON_Xform r1, r2;
+            r1.Rotation(trim, base_wl.yaxis, pivot);
+            r2.Rotation(heel, base_wl.xaxis, pivot);
+            ON_Xform xf = r2 * r1;
+            Vector3d nx = base_wl.xaxis, ny = base_wl.yaxis;
+            nx.Transform(xf); ny.Transform(xf);
+            nx.Unitize(); ny.Unitize();
+            return ON_Plane(pivot, nx, ny);
+          };
+          Residual res = [&](const std::vector<double>& x) -> std::vector<double> {
+            ON_Plane wl2 = FrameAt(x[0], x[1]);
+            ClipResult cr = ClipAt(wl2);
+            double bu = ON_DotProduct(cr.cb - wl2.origin, wl2.xaxis), bv = ON_DotProduct(cr.cb - wl2.origin, wl2.yaxis);
+            double gu = ON_DotProduct(cg - wl2.origin, wl2.xaxis), gv = ON_DotProduct(cg - wl2.origin, wl2.yaxis);
+            return {bu - gu, bv - gv};
+          };
+          std::vector<double> x = {0.0, 0.0};
+          const std::vector<double> lo(2, -1.3), hi(2, 1.3);  // +-74.5 deg: stay well clear of the plane going edge-on
+          double final_norm = 0;
+          const double bbox_scale = std::max({lmax - lmin, draft, 1.0});
+          const bool converged = NewtonSolve(res, x, lo, hi, std::max(ctx.Settings().absolute_tolerance, 1e-6) * bbox_scale, 60, &final_norm);
+          const double trim_deg = x[0] * 180.0 / ON_PI, heel_deg = x[1] * 180.0 / ON_PI;
+
+          ctx.Print("Object " + std::to_string(id) + ": total volume " + FormatNumber(m->Volume()) + ", total area " + FormatNumber(base.full_area) +
+                     "\n  displacement (below the construction plane): " + FormatNumber(disp_vol) + ", center of buoyancy " + FormatPoint(base.cb) +
+                     "\n  waterplane area " + FormatNumber(std::fabs(base.wp_area)) + ", waterplane centroid " + FormatPoint(base.wp_centroid) +
+                     "\n  length (between perpendiculars, waterline extent along the long axis) " + FormatNumber(lbp) + ", draft " + FormatNumber(draft) +
+                     ", max section area " + FormatNumber(max_section_area) +
+                     "\n  prismatic coefficient Cp " + FormatNumber(cp) + ", vertical prismatic coefficient Cvp " + FormatNumber(cvp) +
+                     "\n  " + (converged ? "" : "(did not fully converge - ") + "trim " + FormatNumber(trim_deg) + " deg, heel " + FormatNumber(heel_deg) + " deg" +
+                     (converged ? " (about the construction plane's Y then X axis, center of buoyancy realigned under the geometric centroid)"
+                                : ", residual " + FormatNumber(final_norm) + ")"));
         }
-      }), CommandStatus::Partial, "Volume, displacement, and center of buoyancy are computed for real (clipped at the active construction plane, which stands in for a chosen waterline); longitudinal/vertical prismatic coefficients and a trim/heel solver are not implemented.");
+      }), CommandStatus::Implemented,
+      "Volume, displacement, and center of buoyancy are computed for real (clipped at the active construction plane, which stands in for a chosen waterline). "
+      "Longitudinal prismatic coefficient Cp = displaced volume / (waterline length x max transverse section area), found by slicing the actual mesh at 60 "
+      "stations along its long axis; vertical prismatic coefficient Cvp = displaced volume / (draft x waterplane area), both from real mesh geometry, no "
+      "hardcoded constants. Trim (about the construction plane's Y axis) and heel (about its X axis) are then solved for real with a damped Gauss-Newton "
+      "iteration (kernel::NewtonSolve) that re-clips the mesh at each trial waterplane orientation until the center of buoyancy sits vertically under the "
+      "object's own geometric centroid (the assumed center of gravity, since this app carries no separate mass/density model) - see the Hydrostatics "
+      "registration's own comment for the exact rotation convention.");
   Reg(e, "AreaMoments", OnSelection("Select surfaces or planar curves", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         for (ObjectId id : ids) {
           const SceneObject* o = ctx.Doc().Find(id);
