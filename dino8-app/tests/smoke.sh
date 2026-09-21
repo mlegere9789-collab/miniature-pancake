@@ -266,6 +266,25 @@ dwcheck "DWG: 3 curves, 0 points" "DWG import read the line, circle and closed p
 [ "$(echo "$DW" | grep -c "CV\[0\] 0,0,0")" = "2" ] && [ "$(echo "$DW" | grep -c "CV\[1\] 12,0,0")" = "2" ] && echo "ok   DWG LINE kept its exact endpoints" || { echo "FAIL DWG LINE endpoints did not survive round-trip"; fail=1; }
 [ "$(echo "$DW" | grep -c "Total length = ")" = "2" ] && [ "$(echo "$DW" | grep "Total length = " | sort -u | wc -l)" = "1" ] && echo "ok   DWG round-trip kept the exact combined curve length (line + circle + polyline)" || { echo "FAIL DWG round-trip changed the combined curve length"; fail=1; }
 [ "$(head -c 6 "$TMP/dwg_roundtrip.dwg")" = "AC1015" ] && echo "ok   dwg_roundtrip.dwg is a real binary DWG (AC1015/AutoCAD 2000 header)" || { echo "FAIL dwg_roundtrip.dwg is not a real DWG file"; fail=1; }
+# AcadSchemes / Version=: a per-export Version= token and the persistent
+# AcadSchemes Version= setting must both change the real bytes written -
+# the DWG's own 6-byte version magic at file offset 0 (GNU LibreDWG's
+# dwg_version_codes(), copied verbatim to the start of its output - see
+# src/encode.c) and the DXF's $ACADVER header value - not just print a
+# claim, and the scoped Version= override on Export must not leak into
+# the document's own persistent scheme for a later, unversioned Export.
+dwcheck "AcadSchemes: Export/SaveAs to DWG/DXF write AC1015 (AutoCAD 2000)\." "AcadSchemes reports the AC1015 default before anything is set"
+dwcheck "Exported $TMP/dwg_v13.dwg (Version=13)" "Export Version=13 (DWG) ran"
+dwcheck "AcadSchemes: Export/SaveAs to DWG/DXF write AC1027 (AutoCAD 2013, just set)\." "AcadSchemes Version=2013 set the persistent scheme"
+dwcheck "AcadSchemes: Export/SaveAs to DWG/DXF write AC1027 (AutoCAD 2013)\." "a later no-arg AcadSchemes reports AC1027 without changing it"
+dwcheck "Exported $TMP/dwg_v2018.dwg (Version=2018)" "Export Version=2018 (DWG) ran"
+[ "$(head -c 6 "$TMP/dwg_v13.dwg")" = "AC1012" ] && echo "ok   Export Version=13 wrote a real AC1012 (AutoCAD Release 13) DWG header" || { echo "FAIL Export Version=13 did not write an AC1012 DWG"; fail=1; }
+[ "$(head -c 6 "$TMP/dwg_v2013.dwg")" = "AC1027" ] && echo "ok   AcadSchemes Version=2013 made a later unversioned Export write a real AC1027 (AutoCAD 2013) DWG header" || { echo "FAIL the persistent AcadSchemes Version=2013 scheme did not reach Export"; fail=1; }
+[ "$(head -c 6 "$TMP/dwg_v2018.dwg")" = "AC1032" ] && echo "ok   Export Version=2018 wrote a real AC1032 (AutoCAD 2018) DWG header" || { echo "FAIL Export Version=2018 did not write an AC1032 DWG"; fail=1; }
+[ "$(head -c 6 "$TMP/dwg_after_override.dwg")" = "AC1027" ] && echo "ok   after a one-off Version=2018 export, the next unversioned Export still wrote AC1027 - the per-export override did not leak into the persistent AcadSchemes scheme" || { echo "FAIL a one-off Export Version= override leaked into the document's persistent AcadSchemes scheme"; fail=1; }
+[ "$(grep -A2 '\$ACADVER' "$TMP/dwg_v13.dxf" | tail -1)" = "AC1012" ] && echo "ok   Export Version=13 wrote \$ACADVER=AC1012 in the DXF header" || { echo "FAIL Export Version=13 (DXF) did not write \$ACADVER=AC1012"; fail=1; }
+[ "$(grep -A2 '\$ACADVER' "$TMP/dwg_v2013.dxf" | tail -1)" = "AC1027" ] && echo "ok   the persistent AcadSchemes Version=2013 scheme made a later unversioned Export write \$ACADVER=AC1027 in the DXF header" || { echo "FAIL the persistent AcadSchemes Version=2013 scheme did not reach the DXF \$ACADVER"; fail=1; }
+[ "$(head -c 6 "$TMP/dwg_saveas_v14.dwg")" = "AC1014" ] && echo "ok   SaveAs Version=14 wrote a real AC1014 (AutoCAD Release 14) DWG header" || { echo "FAIL SaveAs Version=14 did not write an AC1014 DWG"; fail=1; }
 # BLOCK_HEADER/INSERT (block instance): Dino 8 cannot itself write a real
 # DWG INSERT (a block instance placed in-app is stored pre-flattened - see
 # InstantiateBlock), so this fixture is built independently through
@@ -816,6 +835,44 @@ assert max(px) > 0 and min(px) < 255, 'image is flat'
 assert len(set(px[i:i + 3] for i in range(0, len(px) - 3, 3 * 97))) > 8, 'too few colours'
 PY
 head -c 2 "$TMP/arctic.ppm" | grep -q "P6" && echo "ok   arctic.ppm is a binary PPM" || { echo "FAIL arctic.ppm"; fail=1; }
+# ApplyOcsMapping: AutoCAD's real Arbitrary Axis Algorithm (see
+# render_script.txt's comment for how the tilted circle's exact normal
+# N=(1,1,1)/sqrt(3) was constructed). By hand, for that N:
+#   |Nx|=|Ny|=0.5774 is not < 1/64, so Ax = unitize(WorldZ x N)
+#     = unitize((0,0,1) x (0.5774,0.5774,0.5774)) = unitize(-0.5774,0.5774,0)
+#     = (-1/sqrt2, 1/sqrt2, 0) = (-0.70711, 0.70711, 0)
+#   Ay = unitize(N x Ax) = (-1/sqrt6, -1/sqrt6, 2/sqrt6) = (-0.40825, -0.40825, 0.81650)
+# ExtractCustomMappingObject's rectangle is [origin, origin+size*Ax,
+# origin+size*Ax+size*Ay, origin+size*Ay, origin] (CV[0..4]), so
+# CV[1]-CV[0] is parallel to Ax and CV[3]-CV[0] is parallel to Ay - checked
+# by normalizing those differences and comparing to the hand-derived unit
+# vectors above, which needs no assumption about the unknown origin/size
+# (a world-aligned-bounding-box implementation would not match this at
+# all: e.g. its "Ax" would be a world axis like (1,0,0) or (0,1,0)).
+rncheck "ApplyOcsMapping: 1 object(s) mapped from their own normal via the Arbitrary Axis Algorithm" "ApplyOcsMapping ran"
+printf '%s' "$RN" > "$TMP/render_output.txt"
+python3 - "$TMP/render_output.txt" <<'PY' && echo "ok   ApplyOcsMapping's Custom mapping frame matches the Arbitrary Axis Algorithm's own Ax/Ay for N=(1,1,1)/sqrt(3), not the bounding box" || { echo "FAIL ApplyOcsMapping's mapping frame does not match the Arbitrary Axis Algorithm"; fail=1; }
+import re, math, sys
+text = open(sys.argv[1]).read()
+cvs = {}
+for m in re.finditer(r"CV\[(\d+)\] (-?[\d.]+),(-?[\d.]+),(-?[\d.]+)", text):
+    i = int(m.group(1))
+    if i in (0, 1, 3):
+        cvs[i] = tuple(float(m.group(k)) for k in (2, 3, 4))
+assert set(cvs) == {0, 1, 3}, f"expected CV[0], CV[1], CV[3] in output, got {sorted(cvs)}"
+def sub(a, b): return tuple(x - y for x, y in zip(a, b))
+def unit(v):
+    n = math.sqrt(sum(c * c for c in v))
+    assert n > 1e-9, "degenerate vector"
+    return tuple(c / n for c in v)
+ax = unit(sub(cvs[1], cvs[0]))
+ay = unit(sub(cvs[3], cvs[0]))
+exp_ax = (-1 / math.sqrt(2), 1 / math.sqrt(2), 0.0)
+exp_ay = (-1 / math.sqrt(6), -1 / math.sqrt(6), 2 / math.sqrt(6))
+for got, exp, name in ((ax, exp_ax, "Ax"), (ay, exp_ay, "Ay")):
+    for g, e in zip(got, exp):
+        assert abs(g - e) < 0.01, f"{name}: got {got}, expected {exp}"
+PY
 # Annotation, linetype, hatch and block tools (see annotate2_script.txt).
 sed -e "s|@TMP@|$TMP|g" -e "s|@DINO8ROOT@|$HERE/..|g" "$HERE/annotate2_script.txt" > "$TMP/annotate2_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
@@ -2236,7 +2293,7 @@ rncheck2 "MoveTargetToObjects: " "MoveTargetToObjects moved the camera target"
 rncheck2 "ClearAllObjectDisplayModes: " "ClearAllObjectDisplayModes ran"
 rncheck2 "SaveWindowLayout: saved QCLayout" "SaveWindowLayout wrote a layout"
 rncheck2 "WindowLayout: restored QCLayout" "WindowLayout restored it"
-rncheck2 "AcadSchemes: there are no per-version export 'schemes'" "AcadSchemes explains the real limitation (DWG now writes for real, via LibreDWG, as AC1015)"
+rncheck2 "AcadSchemes: Export/SaveAs to DWG/DXF write AC1015 (AutoCAD 2000)\. Schemes: 13=AC1012 .*, 2018=AC1032" "AcadSchemes reports the current DWG/DXF scheme and the full real, LibreDWG-writer-verified list (see dwg_script.txt/smoke.sh's dwcheck section for the byte-level Version= round-trip)"
 rncheck2 "Unwrap: no per-triangle flattening/unwrapping algorithm exists" "Unwrap explains the real limitation and extracts a UV mesh"
 # IgesImportOptions/STEPTree open a file dialog (owned by cmd_exchange2.cpp,
 # not this file) and EditScript opens the Lua Script Editor panel silently

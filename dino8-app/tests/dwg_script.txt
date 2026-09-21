@@ -18,3 +18,28 @@ Open @TMP@/dwg_roundtrip.dwg
 SelAll
 List
 Length
+# AcadSchemes / Version=: real per-version DWG/DXF export. A one-off
+# Version= token on Export overrides the document's AcadSchemes scheme for
+# just that file and restores it after; AcadSchemes Version= sets the
+# persistent default for later Export/SaveAs calls; see smoke.sh's
+# dwcheck section for the real byte-level ($ACADVER / the DWG's own
+# 6-byte version magic at offset 0) verification that these actually
+# differ, not just print a claim.
+SelAll
+AcadSchemes
+SelAll
+Export Version=13 @TMP@/dwg_v13.dwg
+SelAll
+Export Version=13 @TMP@/dwg_v13.dxf
+SelAll
+AcadSchemes Version=2013
+SelAll
+Export @TMP@/dwg_v2013.dwg
+SelAll
+Export @TMP@/dwg_v2013.dxf
+AcadSchemes
+SelAll
+Export Version=2018 @TMP@/dwg_v2018.dwg
+SelAll
+Export @TMP@/dwg_after_override.dwg
+SaveAs Version=14 @TMP@/dwg_saveas_v14.dwg

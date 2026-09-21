@@ -659,6 +659,7 @@ bool Load3dm(Document& doc, const std::string& path, std::string& error) {
     if (model.GetDocumentUserString(L"Dino8.DimensionLayer", v)) doc.Settings().dimension_layer = FromWide(v);
     if (model.GetDocumentUserString(L"Dino8.CenterLayer", v)) doc.Settings().center_layer = FromWide(v);
     if (model.GetDocumentUserString(L"Dino8.AnnotationStyle", v)) doc.Settings().annotation_style = FromWide(v);
+    if (model.GetDocumentUserString(L"Dino8.DwgExportScheme", v)) doc.Settings().dwg_export_scheme = FromWide(v);
     if (model.GetDocumentUserString(L"Dino8.HatchBase", v)) {
       double x = 0, y = 0, z = 0;
       if (std::sscanf(FromWide(v).c_str(), "%lf,%lf,%lf", &x, &y, &z) == 3) doc.Settings().hatch_base = kernel::Point3d(x, y, z);
@@ -760,6 +761,7 @@ bool Save3dm(const Document& doc, const std::string& path, std::string& error, b
     if (!doc.Settings().dimension_layer.empty()) model.SetDocumentUserString(L"Dino8.DimensionLayer", ON_wString(doc.Settings().dimension_layer.c_str()));
     if (!doc.Settings().center_layer.empty()) model.SetDocumentUserString(L"Dino8.CenterLayer", ON_wString(doc.Settings().center_layer.c_str()));
     model.SetDocumentUserString(L"Dino8.AnnotationStyle", ON_wString(doc.Settings().annotation_style.c_str()));
+    model.SetDocumentUserString(L"Dino8.DwgExportScheme", ON_wString(doc.Settings().dwg_export_scheme.c_str()));
     const kernel::Point3d hb = doc.Settings().hatch_base;
     std::snprintf(buf, sizeof(buf), "%g,%g,%g", hb.x, hb.y, hb.z);
     model.SetDocumentUserString(L"Dino8.HatchBase", ON_wString(buf));

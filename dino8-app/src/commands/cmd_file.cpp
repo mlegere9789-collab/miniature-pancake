@@ -7,6 +7,8 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <optional>
 
 namespace dino8::app {
 
@@ -26,6 +28,36 @@ const std::vector<std::string> kExportExts = {".3dm", ".obj", ".stl", ".ply", ".
 void SaveTo(CommandContext& ctx, const std::string& path) {
   std::string err;
   if (!ctx.App().SaveDocument(path, err)) ctx.Warn(err);
+}
+
+// Drains the pending-input tokens for Export/SaveAs, pulling out an
+// AcadSchemes-style "Version=" token (see cmd_remaining.cpp's AcadSchemes)
+// as a one-off override for just this export, and returning the single
+// remaining token as the path - same tolerant "any order, last plain token
+// wins" parsing "Print"'s own Scale=/path tokens already use. Returns
+// nullopt (falling back to a file dialog) when no path token was given.
+std::optional<std::string> TakePathAndVersion(CommandContext& ctx, std::string& scheme_override) {
+  std::optional<std::string> path;
+  while (auto t = ctx.Engine().TakePendingInput()) {
+    std::string lower = *t;
+    for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lower.rfind("version=", 0) == 0) { scheme_override = t->substr(8); continue; }
+    path = *t;
+  }
+  return path;
+}
+
+// Runs `fn` (an Export/SaveAs call) with the document's AcadSchemes default
+// (DocumentSettings::dwg_export_scheme) temporarily replaced by
+// `scheme_key` - a normalized key from NormalizeAcadScheme(), or empty to
+// leave the document's own persistent scheme in effect - and restored right
+// after, so a one-off "Version=" on Export/SaveAs never changes the
+// document's own AcadSchemes setting for later exports.
+void ExportWithSchemeOverride(Document& doc, const std::string& scheme_key, const std::function<void()>& fn) {
+  const std::string prev = doc.Settings().dwg_export_scheme;
+  if (!scheme_key.empty()) doc.Settings().dwg_export_scheme = scheme_key;
+  fn();
+  doc.Settings().dwg_export_scheme = prev;
 }
 
 // Same extension dispatch as Application::ExportSelected, but against a
@@ -117,9 +149,20 @@ void RegisterFileCommands(CommandEngine& e) {
       }));
   Reg(e, "SaveAs", Immediate([](CommandContext& ctx) {
         Application& app = ctx.App();
-        if (auto p = ctx.Engine().TakePendingInput()) { SaveTo(ctx, *p); return; }
+        std::string scheme_input;
+        if (auto p = TakePathAndVersion(ctx, scheme_input)) {
+          std::string normalized;
+          if (!scheme_input.empty()) {
+            normalized = NormalizeAcadScheme(scheme_input);
+            if (normalized.empty()) { ctx.Warn("SaveAs: unrecognized Version=" + scheme_input + " (see AcadSchemes for valid values)"); return; }
+          }
+          ExportWithSchemeOverride(ctx.Doc(), normalized, [&] { SaveTo(ctx, *p); });
+          return;
+        }
         app.ShowFileDialog("Save model as", kExportExts, true, [&app](const std::string& path) { std::string err; if (!app.SaveDocument(path, err)) app.Notify(err); });
-      }));
+      }), CommandStatus::Implemented,
+      "A Version=13/14/2000/2004/2010/2013/2018 token overrides the document's AcadSchemes default just for this "
+      "DWG/DXF save (other extensions ignore it); with no path token, opens the save-as dialog instead.");
   Reg(e, "SaveSmall", Immediate([](CommandContext& ctx) { if (ctx.Doc().Path().empty()) ctx.Engine().Execute("SaveAs"); else SaveTo(ctx, ctx.Doc().Path()); }), CommandStatus::Implemented, "Dino 8 never stores render meshes, so every save is already small.");
   Reg(e, "IncrementalSave", Immediate([](CommandContext& ctx) {
         std::string p = ctx.Doc().Path();
@@ -140,9 +183,23 @@ void RegisterFileCommands(CommandEngine& e) {
   Reg(e, "Export", OnSelection("Select objects to export", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         Application& app = ctx.App();
         for (ObjectId id : ids) ctx.Doc().Select(id, true);
-        if (auto p = ctx.Engine().TakePendingInput()) { std::string err; if (!app.ExportSelected(*p, err)) ctx.Warn(err); else ctx.Print("Exported " + *p); return; }
+        std::string scheme_input;
+        if (auto p = TakePathAndVersion(ctx, scheme_input)) {
+          std::string normalized;
+          if (!scheme_input.empty()) {
+            normalized = NormalizeAcadScheme(scheme_input);
+            if (normalized.empty()) { ctx.Warn("Export: unrecognized Version=" + scheme_input + " (see AcadSchemes for valid values)"); return; }
+          }
+          std::string err;
+          bool ok = false;
+          ExportWithSchemeOverride(ctx.Doc(), normalized, [&] { ok = app.ExportSelected(*p, err); });
+          if (!ok) ctx.Warn(err); else ctx.Print("Exported " + *p + (normalized.empty() ? "" : " (Version=" + normalized + ")"));
+          return;
+        }
         app.ShowFileDialog("Export selected", kExportExts, true, [&app](const std::string& path) { std::string err; if (!app.ExportSelected(path, err)) app.Notify(err); else app.Notify("Exported " + path); });
-      }));
+      }), CommandStatus::Implemented,
+      "A Version=13/14/2000/2004/2010/2013/2018 token overrides the document's AcadSchemes default just for this "
+      "DWG/DXF export (other extensions ignore it); with no path token, opens the export dialog instead.");
   Reg(e, "ExportSelected", OnSelection("Select objects to export", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         Application& app = ctx.App();
         for (ObjectId id : ids) ctx.Doc().Select(id, true);

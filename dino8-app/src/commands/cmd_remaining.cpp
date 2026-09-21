@@ -18,6 +18,7 @@
 #include "app/Settings.h"
 #include "imgui.h"
 #include "io/File3dm.h"
+#include "io/FileExchange.h"
 #include "ui/Panels.h"
 
 namespace dino8::app {
@@ -2014,6 +2015,36 @@ void DecimalPoint(CommandContext& ctx) {
   ctx.Print(std::string("DecimalPoint: numbers print with a decimal ") + (comma ? "comma (1,5)" : "point (1.5)"));
 }
 
+// AcadSchemes [Version=13|14|2000|2004|2010|2013|2018]: sets (or, with no
+// Version= given, just reports) DocumentSettings::dwg_export_scheme, the
+// real per-document DWG/DXF release Export/SaveAs targets - AutoCAD's own
+// "which release does this SaveAs write" scheme choice. ExportDxf reads it
+// for the $ACADVER header variable and ExportDwg reads it (via
+// dwg_version_hdr_type, GNU LibreDWG's own header-string lookup) for the
+// Dwg_Version_Type handed to LibreDWG's writer - see FileExchange.h/.cpp.
+// Only the seven releases LibreDWG's writer actually round-trips are
+// offered (see AcadSchemesList()'s comment on why R2007 is excluded).
+void AcadSchemes(CommandContext& ctx) {
+  const Opts o = TakeOptions(ctx);
+  const std::string given = OptStr(o, "Version", "");
+  std::string all_keys;
+  for (const AcadScheme& s : AcadSchemesList()) all_keys += (all_keys.empty() ? "" : ", ") + s.key;
+  if (!given.empty()) {
+    const std::string key = NormalizeAcadScheme(given);
+    if (key.empty()) {
+      ctx.Warn("AcadSchemes: unrecognized Version=" + given + "; valid values are " + all_keys);
+      return;
+    }
+    ctx.Doc().Settings().dwg_export_scheme = key;
+    ctx.Doc().Touch();
+  }
+  const AcadScheme& current = EffectiveAcadScheme(ctx.Doc());
+  std::string list;
+  for (const AcadScheme& s : AcadSchemesList()) list += (list.empty() ? "" : ", ") + (s.key + "=" + s.acadver + " (" + s.label + ")");
+  ctx.Print("AcadSchemes: Export/SaveAs to DWG/DXF write " + current.acadver + " (" + current.label +
+            (given.empty() ? ")" : ", just set)") + ". Schemes: " + list);
+}
+
 void Rescue3dmFile(CommandContext& ctx) {
   std::vector<std::string> plain;
   TakeOptions(ctx, &plain);
@@ -2122,6 +2153,136 @@ UVWireframeInfo ComputeUVWireframeInfo(SceneObject& obj, double curve_tolerance,
   }
   return info;
 }
+
+// ---------------------------------------------------------------------------
+// ApplyOcsMapping: AutoCAD's "Arbitrary Axis Algorithm" (documented in the
+// DXF Reference's "OCS and Extrusion Direction" section, and used by every
+// DXF-writing CAD tool to turn a flat object's own normal/extrusion
+// direction into a local Object Coordinate System) instead of a
+// world-aligned bounding box. Given a unit normal N = (Nx, Ny, Nz):
+//   if |Nx| < 1/64 and |Ny| < 1/64: Ax = unitize(WorldY x N)
+//   otherwise:                      Ax = unitize(WorldZ x N)
+//   Ay = unitize(N x Ax)
+// ---------------------------------------------------------------------------
+
+std::pair<Vector3d, Vector3d> ArbitraryAxisAlgorithm(Vector3d n) {
+  if (!n.Unitize()) n = Vector3d(0, 0, 1);
+  constexpr double kLimit = 1.0 / 64.0;
+  Vector3d ax = (std::fabs(n.x) < kLimit && std::fabs(n.y) < kLimit) ? ON_CrossProduct(Vector3d(0, 1, 0), n)
+                                                                      : ON_CrossProduct(Vector3d(0, 0, 1), n);
+  if (!ax.Unitize()) ax = Vector3d(1, 0, 0);
+  Vector3d ay = ON_CrossProduct(n, ax);
+  if (!ay.Unitize()) ay = Vector3d(0, 1, 0);
+  return {ax, ay};
+}
+
+// Picks the "most meaningful" normal (and a point on the object to anchor
+// the OCS at) per object kind: a planar curve's own plane normal; a
+// surface's normal at its domain midpoint; a Brep's first face's normal at
+// its domain midpoint (the whole Brep's normal when it is a single planar
+// face - the common case this command is for); a mesh's area-weighted
+// average face normal (the same weighting SceneObject/Mesh::
+// ComputeVertexNormals already uses, just summed over the whole mesh
+// instead of per vertex). Returns false (no orientable geometry - Point,
+// SubD, or a degenerate curve/mesh) rather than guessing.
+bool ObjectOcsFrame(const SceneObject& o, double tol, Point3d& origin, Vector3d& normal) {
+  switch (o.kind) {
+    case ObjectKind::Curve: {
+      ON_Plane pl;
+      if (o.curve && o.curve->raw().IsPlanar(&pl, tol)) { origin = pl.origin; normal = pl.zaxis; return true; }
+      return false;
+    }
+    case ObjectKind::Surface: {
+      if (!o.surface) return false;
+      const kernel::Interval du = o.surface->Domain(0), dv = o.surface->Domain(1);
+      const double u = (du.min + du.max) / 2, v = (dv.min + dv.max) / 2;
+      origin = o.surface->PointAt(u, v);
+      normal = o.surface->NormalAt(u, v);
+      return true;
+    }
+    case ObjectKind::Brep: {
+      if (!o.brep || o.brep->raw().m_F.Count() == 0) return false;
+      const ON_BrepFace& f = o.brep->raw().m_F[0];
+      const ON_Surface* s = f.SurfaceOf();
+      if (!s) return false;
+      const ON_Interval du = s->Domain(0), dv = s->Domain(1);
+      const double u = (du.Min() + du.Max()) / 2, v = (dv.Min() + dv.Max()) / 2;
+      origin = s->PointAt(u, v);
+      ON_3dVector n = s->NormalAt(u, v);
+      if (f.m_bRev) n = -n;
+      normal = n;
+      return true;
+    }
+    case ObjectKind::Mesh: {
+      if (!o.mesh || o.mesh->raw().m_F.Count() == 0) return false;
+      const ON_Mesh& m = o.mesh->raw();
+      Vector3d sum(0, 0, 0);
+      auto accumulate = [&](int i0, int i1, int i2) {
+        const Point3d a(m.m_V[i0]), b(m.m_V[i1]), c(m.m_V[i2]);
+        sum += ON_CrossProduct(b - a, c - a);
+      };
+      for (int i = 0; i < m.m_F.Count(); ++i) {
+        const ON_MeshFace& f = m.m_F[i];
+        accumulate(f.vi[0], f.vi[1], f.vi[2]);
+        if (f.IsQuad()) accumulate(f.vi[0], f.vi[2], f.vi[3]);
+      }
+      if (sum.Length() <= 1e-12) return false;
+      normal = sum;
+      normal.Unitize();
+      const kernel::BoundingBox bb = o.BoundingBox();
+      origin = Point3d((bb.min.x + bb.max.x) / 2, (bb.min.y + bb.max.y) / 2, (bb.min.z + bb.max.z) / 2);
+      return true;
+    }
+    default:
+      return false;
+  }
+}
+
+// ApplyOcsMapping [Scale=n]: selection -> per-object Custom mapping frame
+// whose origin/X/Y axes come from ObjectOcsFrame()+ArbitraryAxisAlgorithm()
+// above, genuinely computed from each object's own normal - not the
+// world-aligned bounding box ApplyPlanarMapping/an-unset-Custom-mapping
+// fall back to. Reuses the same has_custom_mapping_frame/custom_mapping_*
+// fields and TextureMapping::Custom planar projection ApplyCustomMapping
+// already stores/reads (see SceneObject::EnsureMappedUVs's Custom case).
+class OcsMappingCommand : public Command {
+ public:
+  void Begin(CommandContext& ctx) override {
+    const Opts o = TakeOptions(ctx);
+    const double d = OptNum(o, "Scale", scale_);
+    if (d > 0) scale_ = static_cast<float>(d);
+    WantObjects("Select objects for OCS (Arbitrary Axis Algorithm) mapping");
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    Document& doc = ctx.Doc();
+    doc.BeginChange("ApplyOcsMapping");
+    const double tol = ctx.Settings().absolute_tolerance * 10;
+    int mapped = 0, skipped = 0;
+    for (ObjectId id : ids) {
+      SceneObject* o = doc.Find(id);
+      if (!o) continue;
+      Point3d origin;
+      Vector3d normal;
+      if (!ObjectOcsFrame(*o, tol, origin, normal)) { ++skipped; continue; }
+      const auto [ax, ay] = ArbitraryAxisAlgorithm(normal);
+      const kernel::BoundingBox bb = o->BoundingBox();
+      const double size = std::max({bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z, 1e-9});
+      o->mapping = TextureMapping::Custom;
+      o->mapping_scale = scale_;
+      o->has_custom_mapping_frame = true;
+      o->custom_mapping_origin = origin;
+      o->custom_mapping_x = ax;
+      o->custom_mapping_y = ay;
+      o->custom_mapping_size = size;
+      o->InvalidateDisplay();
+      ++mapped;
+    }
+    ctx.Print("ApplyOcsMapping: " + std::to_string(mapped) + " object(s) mapped from their own normal via the Arbitrary Axis Algorithm, Scale=" + FormatNumber(scale_) +
+              (skipped ? "; " + std::to_string(skipped) + " skipped (no orientable normal - Point/SubD/degenerate geometry)" : ""));
+    Finish();
+  }
+  float scale_ = 1.f;
+};
 
 }  // namespace
 
@@ -2269,10 +2430,13 @@ void RegisterRemainingCommands(CommandEngine& e) {
   Reg(e, "ChangeSpace", OnSelection("Select objects to move between model and layout space", ChangeSpace), CommandStatus::Implemented,
       "With a layout active, copies the objects tagged with the layout name; in model space removes the tag. Objects are not drawn per page.");
   Reg(e, "DecimalPoint", Immediate(DecimalPoint), CommandStatus::Implemented, "Toggles the decimal separator of printed numbers (Separator=Comma/Point).");
-  Reg(e, "AcadSchemes", Say("AcadSchemes: there are no per-version export 'schemes' to pick from (AutoCAD's dialog for choosing an output DWG/DXF release); "
-                            "Dino 8's Export/SaveAs writes DWG through GNU LibreDWG as AC1015 (AutoCAD 2000) - the version LibreDWG's own writer documents as reliable - "
-                            "and DXF as the same AC1015. Also exports .3dm, OBJ, STL, PLY, SVG and PDF (see Export)."),
-      CommandStatus::Partial);
+  Reg(e, "AcadSchemes", Immediate(AcadSchemes), CommandStatus::Implemented,
+      "Version=13/14/2000/2004/2010/2013/2018 sets which DWG/DXF release Export/SaveAs writes (with no Version=, reports "
+      "the current one); a per-export Version= token on Export/ExportSelected/SaveAs itself overrides it just for that "
+      "file. Backed by GNU LibreDWG's real writer support (its own README: \"good enough for everything but R2007\", "
+      "confirmed in src/encode.c - so 2007 is not offered, since LibreDWG silently downgrades it to 2010 instead of "
+      "writing it) - the DWG's own version bytes and the DXF's $ACADVER both change for real, verified by reading them "
+      "back after export.");
   Reg(e, "Rescue3dmFile", Immediate(Rescue3dmFile), CommandStatus::Implemented,
       "Reads what OpenNURBS can still parse from a damaged .3dm and adds the recovered objects; no chunk-level repair.");
   Reg(e, "ExportBitmaps", Immediate(ExportBitmaps), CommandStatus::Implemented, "Copies every referenced material texture into a folder (textures are never embedded).");
@@ -2322,8 +2486,13 @@ void RegisterRemainingCommands(CommandEngine& e) {
       "this build does not add here). The pan/zoom drag itself is, like every other viewport in this app, not "
       "exercised by the headless smoke-test harness, but the underlying UV computation it displays "
       "(ComputeUVWireframeInfo/EnsureMappedUVs) is identical to what this command prints and is fully scripted-tested.");
-  Reg(e, "ApplyOcsMapping", Say("ApplyOcsMapping: object-coordinate-system mapping is not available; ApplyPlanarMapping uses the object's bounding box."), CommandStatus::Partial);
-  Reg(e, "ApplyOcsMapping", Say("ApplyOcsMapping: object-coordinate-system mapping is not available; ApplyPlanarMapping uses the object's bounding box."), CommandStatus::Partial);
+  Reg(e, "ApplyOcsMapping", Make<OcsMappingCommand>(), CommandStatus::Implemented,
+      "Maps each selected object from its own Object Coordinate System, via AutoCAD's real Arbitrary Axis Algorithm "
+      "(WorldZ/WorldY x normal, then normal x that, per the DXF Reference) applied to a planar curve's plane normal, "
+      "a surface/Brep face's normal at its domain midpoint, or a mesh's area-weighted average face normal - not the "
+      "world-aligned bounding box ApplyPlanarMapping uses. Stores the result as a Custom mapping frame (Scale=n), so "
+      "ExtractCustomMappingObject can pull it back out as a rectangle curve. Objects with no orientable normal "
+      "(Point, SubD, a non-planar curve, a faceless Brep) are skipped.");
   Reg(e, "ExtractCustomMappingObject", OnSelection("Select objects with a custom mapping", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         Document& doc = ctx.Doc();
         int n = 0;

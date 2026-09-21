@@ -413,6 +413,48 @@ void WriteDxfMesh(DxfWriter& w, const ON_Mesh& m, const std::string& layer, cons
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// AcadSchemes: the DWG/DXF export "scheme" (target release) - see
+// FileExchange.h's AcadScheme/AcadSchemesList/NormalizeAcadScheme comment
+// for why exactly these seven releases (and not R2007) are offered.
+// ---------------------------------------------------------------------------
+
+const std::vector<AcadScheme>& AcadSchemesList() {
+  static const std::vector<AcadScheme> kSchemes = {
+      {"13", "AC1012", "AutoCAD Release 13"},
+      {"14", "AC1014", "AutoCAD Release 14"},
+      {"2000", "AC1015", "AutoCAD 2000"},
+      {"2004", "AC1018", "AutoCAD 2004"},
+      {"2010", "AC1024", "AutoCAD 2010"},
+      {"2013", "AC1027", "AutoCAD 2013"},
+      {"2018", "AC1032", "AutoCAD 2018"},
+  };
+  return kSchemes;
+}
+
+std::string NormalizeAcadScheme(const std::string& input) {
+  std::string s = Trim(input);
+  for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  // Accept a leading "R"/"R_" (as in LibreDWG's own r2013/r14 naming).
+  if (!s.empty() && s.front() == 'R') s.erase(0, s[1] == '_' ? 2 : 1);
+  for (const AcadScheme& sch : AcadSchemesList()) {
+    std::string key_upper = sch.key, ac_upper = sch.acadver;
+    for (char& c : key_upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    for (char& c : ac_upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    if (s == key_upper || s == ac_upper) return sch.key;
+  }
+  return "";
+}
+
+const AcadScheme& EffectiveAcadScheme(const Document& doc) {
+  const std::string key = NormalizeAcadScheme(doc.Settings().dwg_export_scheme);
+  const std::vector<AcadScheme>& schemes = AcadSchemesList();
+  for (const AcadScheme& sch : schemes) {
+    if (sch.key == (key.empty() ? "2000" : key)) return sch;
+  }
+  return schemes[2];  // "2000" - always present, keeps this a safe fallback
+}
+
 bool ExportDxf(const Document& doc, const std::string& path, bool selected_only, std::string& error) {
   std::vector<const SceneObject*> objs;
   for (const SceneObject& o : doc.Objects()) {
@@ -443,8 +485,9 @@ bool ExportDxf(const Document& doc, const std::string& path, bool selected_only,
   if (layer_names.empty()) layer_names.push_back("0");
 
   // HEADER
+  const AcadScheme& scheme = EffectiveAcadScheme(doc);
   w.G(0, "SECTION"); w.G(2, "HEADER");
-  w.G(9, "$ACADVER"); w.G(1, "AC1015");
+  w.G(9, "$ACADVER"); w.G(1, scheme.acadver);
   w.G(9, "$INSUNITS");
   {
     const std::string& u = doc.Settings().unit_system;
@@ -1997,6 +2040,17 @@ bool ExportDwg(const Document& doc, const std::string& path, bool selected_only,
     dwg_free(&dwg);
     return false;
   }
+  // AcadSchemes' Version=: the intermediate DXF already carries the chosen
+  // scheme's $ACADVER (ExportDxf, above), so dxf_read_file's own
+  // from_version already matches it - but set dwg.header.version explicitly
+  // from the same scheme, the same way LibreDWG's own dwgwrite program does
+  // after its `--as rNNNN` option (see programs/dwgwrite.c), rather than
+  // relying on that implicit agreement. dwg_version_hdr_type is LibreDWG's
+  // own public header-string-to-enum lookup (include/dwg.h), so this uses
+  // its real symbol/table, not a hand-guessed enum mapping.
+  const AcadScheme& scheme = EffectiveAcadScheme(doc);
+  const Dwg_Version_Type version = dwg_version_hdr_type(scheme.acadver.c_str());
+  if (version != R_INVALID) dwg.header.version = version;
   err = dwg_write_file(path.c_str(), &dwg);
   dwg_free(&dwg);
   if (err >= DWG_ERR_CRITICAL) {

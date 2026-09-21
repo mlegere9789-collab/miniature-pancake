@@ -103,3 +103,22 @@ MappingWidget
 MappingWidgetOff
 DownloadLibraryTextures
 CopyRenderWindowToClipboard
+# --- ApplyOcsMapping: AutoCAD's real Arbitrary Axis Algorithm, not the
+# world-aligned bounding box. A circle in the default Top CPlane (normal
+# 0,0,1) rotated exactly acos(1/sqrt(3)) degrees = 54.735610317245346 about
+# the axis (-1,1,0) through the origin lands its plane normal exactly on
+# N=(1,1,1)/sqrt(3) (hand-derived via Rodrigues' rotation formula - see
+# smoke.sh's comment next to the check for the by-hand Ax/Ay this must
+# match). ExtractCustomMappingObject pulls the resulting Custom mapping
+# frame back out as a rectangle curve so smoke.sh can read its real
+# Ax/Ay off the CV coordinates.
+SelNone
+Circle 0,0,0 5
+SelLast
+Rotate3D 0,0,0 -1,1,0 54.735610317245346
+SelLast
+ApplyOcsMapping
+SelLast
+ExtractCustomMappingObject
+SelLast
+List

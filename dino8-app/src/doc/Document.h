@@ -374,6 +374,14 @@ struct DocumentSettings {
   // dimension_layer/SetDimensionLayer above.
   std::string center_layer;
   std::string annotation_style = "Default";
+  // AcadSchemes' Version= setting: which DWG/DXF release Export/SaveAs
+  // targets ("13"/"14"/"2000"/"2004"/"2010"/"2013"/"2018" - see
+  // FileExchange.h's AcadSchemesList()/NormalizeAcadScheme()). Read by
+  // ExportDxf (the $ACADVER header variable) and ExportDwg (the
+  // Dwg_Version_Type handed to GNU LibreDWG's writer). Empty or an
+  // unrecognized value falls back to "2000" (AC1015), the prior hardcoded
+  // behaviour.
+  std::string dwg_export_scheme = "2000";
 };
 
 class Document {
