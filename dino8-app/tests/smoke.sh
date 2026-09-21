@@ -1201,6 +1201,24 @@ FRAMES="$(ls "$TMP/vt/frames"/frame_*.bmp 2>/dev/null | wc -l)"
 [ -s "$TMP/vt/frames/frame_0001.bmp" ] && [ "$(head -c 2 "$TMP/vt/frames/frame_0001.bmp")" = "BM" ] && echo "ok   frame_0001.bmp is a BMP" || { echo "FAIL frame_0001.bmp"; fail=1; }
 grep -q "^Upper" "$TMP/vt/clipping.txt" && echo "ok   ExportClippingSectionInfo listed the Upper plane" || { echo "FAIL clipping.txt"; fail=1; }
 
+# NestedClippingDrawing: a real section of a section, not just a flat
+# ClippingDrawing repeated twice -- the second plane re-clips the FIRST
+# plane's already-sectioned rectangle, and the result's own hand-computed
+# bounding box (checked with BoundingBox on the actual nested curve, not
+# just a command echo) confirms the geometry, not only that it ran (see
+# nested_clipping_script.txt).
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  NC="$("$BIN" --smoke 200 --script "$HERE/nested_clipping_script.txt" 2>&1)" || { echo "$NC"; echo "FAIL: nested-clipping script exited non-zero"; exit 1; }
+else
+  NC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/nested_clipping_script.txt" 2>&1)" || { echo "$NC"; echo "FAIL: nested-clipping script exited non-zero"; exit 1; }
+fi
+nccheck() { if echo "$NC" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+nccheck "ClippingDrawings: 1 drawing curve(s) on layer 'Clipping Drawings' from 1 plane(s)" "ClippingDrawings built PlaneX's flat section of the cube"
+nccheck "Bounding box min 0,-5,0 max 0,5,10" "PlaneX's flat section is the hand-computed 10 x 10 rectangle (x=0, y in [-5,5], z in [0,10])"
+nccheck "NestedClippingDrawing: 1 nested drawing curve(s) clipping PlaneX's section by PlaneY (section of a section, on layer 'Clipping Drawings')" "NestedClippingDrawing re-clipped PlaneX's own section by PlaneY, not the scene"
+nccheck "Bounding box min 0,0,0 max 0,0,10" "the nested drawing is the hand-computed line where PlaneX and PlaneY intersect, clipped to PlaneX's rectangle (x=0,y=0,z in [0,10]) -- a real doubly-clipped result, not a re-derivation from the cube"
+nccheck "^ok   expect_objects 3" "nested-clipping script ended with exactly the cube, the flat PlaneX drawing and the nested PlaneX>PlaneY drawing"
+
 # PrintDisplay: the preview must show each object's real print colour
 # (Document::EffectiveColor, the same colour ExportPdf/ExportSvg actually
 # put on the page) instead of Viewport.cpp's near-black-on-dark-background

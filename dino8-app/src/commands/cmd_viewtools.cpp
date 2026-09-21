@@ -394,6 +394,162 @@ int AddClippingDrawingCurves(CommandContext& ctx, const std::vector<ClippingPlan
   return made;
 }
 
+// ---------------------------------------------------------------------------
+// Nested clipping drawings (NestedClippingDrawing): a clipping drawing whose
+// *source* is itself another ClippingDrawing's already-sectioned geometry,
+// not just the original scene objects -- a section of a section.
+//
+// A flat ClippingDrawing curve records only which plane made it
+// ("ClippingDrawing" = plane name). A nested one additionally records what
+// it was re-clipped from ("ClippingDrawingSource" = the source curve's
+// ObjectId), so the chain back to the original scene objects can be walked
+// and so a further NestedClippingDrawing can itself nest on top of this
+// one. This is the "recursive/chainable data structure" the flat model
+// didn't have: each drawing curve either has no source tag (clipped
+// straight from the scene, depth 0) or a source tag pointing at another
+// drawing curve (depth = 1 + that curve's depth).
+// ---------------------------------------------------------------------------
+
+// Caps how deep a ClippingDrawing's source chain may run before generation
+// gives up on it, the same defensive pattern as BuildIgesCurve's composite
+// -curve recursion cap (io/FileIgesStep.cpp) and the BVH builder's depth
+// cap: a document can be hand-edited (or scripted) into a source chain
+// that cycles back on itself, which would otherwise recurse forever.
+constexpr int kMaxNestedClippingDepth = 16;
+
+ClippingPlane* FindPlaneByName(CommandContext& ctx, const std::string& name) {
+  for (ClippingPlane& cp : ctx.Doc().ClippingPlanes()) if (cp.name == name) return &cp;
+  return nullptr;
+}
+
+// Depth of a ClippingDrawing curve in its source chain: 0 for one clipped
+// straight from the scene, N+1 for one whose source is a depth-N drawing.
+// `guard` breaks a cycle (a curve whose source chain loops back to itself,
+// whether hand-edited or self-referencing) instead of recursing forever.
+int ClippingDrawingDepth(CommandContext& ctx, ObjectId id, int guard = 0) {
+  if (guard > kMaxNestedClippingDepth) return kMaxNestedClippingDepth + 1;
+  const SceneObject* o = ctx.Doc().Find(id);
+  if (!o) return 0;
+  auto it = o->user_text.find("ClippingDrawingSource");
+  if (it == o->user_text.end()) return 0;
+  char* end = nullptr;
+  const ObjectId src = static_cast<ObjectId>(std::strtoull(it->second.c_str(), &end, 10));
+  if (!end || end == it->second.c_str() || src == id) return kMaxNestedClippingDepth + 1;  // malformed or self-reference
+  return 1 + ClippingDrawingDepth(ctx, src, guard + 1);
+}
+
+// The points of a degree-1 (polyline) NurbsCurve, in order -- the exact
+// inverse of PolylineCurve() above, which is how every ClippingDrawing
+// curve here is built.
+std::vector<Point3d> PolylinePointsOf(const kernel::NurbsCurve& c) {
+  std::vector<Point3d> pts;
+  const ON_NurbsCurve& nc = c.raw();
+  ON_3dPoint p;
+  for (int i = 0; i < nc.CVCount(); ++i) { nc.GetCV(i, p); pts.push_back(Point3d(p)); }
+  return pts;
+}
+
+// Re-clips existing ClippingDrawing curves (`source_ids`) by a second
+// plane (`nest`), producing real section-of-a-section geometry: each
+// source curve's closed loop is rebuilt into a trimmed planar face on
+// *its own* plane (the same ON_BrepTrimmedPlane construction
+// AddSliceSurfaces/ExtractClippingSlices uses), that face is meshed, and
+// the mesh is sliced by `nest` exactly like AddClippingDrawingCurves
+// slices the original solid -- so a plane cutting through a cross-section
+// is genuinely re-clipping already-clipped geometry, not re-deriving it
+// from the original scene objects.
+int AddNestedClippingDrawingCurves(CommandContext& ctx, ClippingPlane* nest, const std::vector<ObjectId>& source_ids, int layer_index) {
+  int made = 0;
+  const double tol = ctx.Settings().absolute_tolerance * 10;
+  const ON_Plane nest_plane(nest->origin, nest->x_axis, nest->y_axis);
+  std::vector<SceneObject> added;
+  for (ObjectId id : source_ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (!o || o->kind != ObjectKind::Curve || !o->curve) continue;
+    auto tag = o->user_text.find("ClippingDrawing");
+    if (tag == o->user_text.end()) continue;  // not a ClippingDrawing curve at all
+    if (tag->second == nest->name) continue;  // re-clipping by the plane that made it is a no-op, not nesting
+    const int depth = ClippingDrawingDepth(ctx, id);
+    if (depth > kMaxNestedClippingDepth) continue;  // runaway/self-referencing source chain
+    ClippingPlane* source_plane_obj = FindPlaneByName(ctx, tag->second);
+    if (!source_plane_obj) continue;  // the plane that made this drawing was deleted since
+    const ON_Plane source_plane(source_plane_obj->origin, source_plane_obj->x_axis, source_plane_obj->y_axis);
+    std::vector<Point3d> loop = PolylinePointsOf(*o->curve);
+    // Only a closed loop bounds a region a second plane can meaningfully
+    // cut through (an open section, from an open surface, has no inside).
+    if (loop.size() < 4 || loop.front().DistanceTo(loop.back()) > tol * 10) continue;
+    loop.back() = loop.front();
+    ON_Brep* b = ON_BrepTrimmedPlane(source_plane, PolylineCurve(loop).raw());
+    if (!b) continue;
+    kernel::Brep k;
+    k.raw() = *b;
+    delete b;
+    std::optional<kernel::Mesh> m = MeshOf(SceneObject::MakeBrep(k), 0.005);
+    if (!m) continue;
+    for (std::vector<Point3d> pl : SliceMesh(m->raw(), nest_plane, tol)) {
+      if (pl.size() < 2) continue;
+      if (pl.size() > 2 && pl.front().DistanceTo(pl.back()) <= tol * 10) pl.back() = pl.front();
+      SceneObject c = SceneObject::MakeCurve(PolylineCurve(pl));
+      c.layer_index = layer_index;
+      c.user_text["ClippingDrawing"] = nest->name;
+      c.user_text["ClippingDrawingSource"] = std::to_string(id);
+      c.name = tag->second + " > " + nest->name + " drawing";
+      added.push_back(std::move(c));
+      ++made;
+    }
+  }
+  for (SceneObject& c : added) ctx.Doc().Add(std::move(c));
+  return made;
+}
+
+void MakeNestedClippingDrawing(CommandContext& ctx) {
+  std::map<std::string, std::string> opts;
+  const std::vector<std::string> pos = TakeOptions(ctx, opts);
+  const std::string base_name = StringOr(opts, "base", pos.size() > 0 ? pos[0] : "");
+  const std::string nest_name = StringOr(opts, "nest", pos.size() > 1 ? pos[1] : "");
+  std::vector<ClippingPlane*> enabled = TargetPlanes(ctx, {}, true);
+  ClippingPlane* base = nullptr;
+  ClippingPlane* nest = nullptr;
+  if (!base_name.empty()) base = FindPlaneByName(ctx, base_name);
+  if (!nest_name.empty()) nest = FindPlaneByName(ctx, nest_name);
+  if (base && !base->enabled) base = nullptr;
+  if (nest && !nest->enabled) nest = nullptr;
+  // Fall back to the first two distinct enabled planes when not named.
+  for (ClippingPlane* p : enabled) {
+    if (!base && p != nest) { base = p; continue; }
+    if (!nest && p != base) nest = p;
+  }
+  if (!base || !nest || base == nest) {
+    ctx.Warn("NestedClippingDrawing: need two different enabled clipping planes (Base=<name> Nest=<name>, or just two enabled planes)");
+    return;
+  }
+  ctx.Doc().BeginChange("NestedClippingDrawing");
+  int layer_index = ctx.Doc().FindLayer("Clipping Drawings");
+  if (layer_index < 0) layer_index = ctx.Doc().AddLayer("Clipping Drawings");
+
+  // The base plane's own flat drawing is the source to nest on; build it
+  // first if it doesn't exist yet (exactly what ClippingDrawings would).
+  std::vector<ObjectId> base_ids;
+  for (const SceneObject& o : ctx.Doc().Objects()) {
+    auto it = o.user_text.find("ClippingDrawing");
+    if (it != o.user_text.end() && it->second == base->name) base_ids.push_back(o.id);
+  }
+  if (base_ids.empty()) {
+    std::vector<ObjectId> scene_ids = ctx.Doc().SelectedIds();
+    if (scene_ids.empty()) for (const SceneObject& o : ctx.Doc().Objects()) if (ctx.Doc().IsObjectVisible(o) && !o.user_text.count("ClippingDrawing")) scene_ids.push_back(o.id);
+    AddClippingDrawingCurves(ctx, {base}, scene_ids, layer_index);
+    for (const SceneObject& o : ctx.Doc().Objects()) {
+      auto it = o.user_text.find("ClippingDrawing");
+      if (it != o.user_text.end() && it->second == base->name) base_ids.push_back(o.id);
+    }
+  }
+  if (base_ids.empty()) { ctx.Warn("NestedClippingDrawing: " + base->name + " produced no section to nest " + nest->name + " on"); return; }
+
+  const int made = AddNestedClippingDrawingCurves(ctx, nest, base_ids, layer_index);
+  ctx.Print("NestedClippingDrawing: " + std::to_string(made) + " nested drawing curve(s) clipping " + base->name + "'s section by " + nest->name +
+            " (section of a section, on layer 'Clipping Drawings')");
+}
+
 void MakeClippingDrawings(CommandContext& ctx, const char* label, bool update = false) {
   std::map<std::string, std::string> opts;
   const std::vector<std::string> names = TakeOptions(ctx, opts);
@@ -1512,8 +1668,8 @@ void RegisterViewToolsCommands(CommandEngine& e) {
   Reg(e, "EditClippingDrawings", Immediate([](CommandContext& ctx) { EditClippingDrawings(ctx); }), CommandStatus::Implemented,
       "Selects the drawing curves so you can edit them directly with the normal curve-editing commands; there is no separate drawing-block editor.");
   Reg(e, "ExportClippingDrawings", Immediate([](CommandContext& ctx) { ExportClippingDrawings(ctx); }));
-  Reg(e, "NestedClippingDrawing", Immediate([](CommandContext& ctx) { ctx.Print("NestedClippingDrawing: use ClippingDrawings for each clipping plane in turn; a drawing containing another drawing's live section is planned (Dino 8 has no drawing-in-drawing block instancing yet)."); }),
-      CommandStatus::Partial, "A clipping drawing nested inside another (one that shows the section of a section) needs block-instance recursion this app's ClippingDrawing model does not have; ClippingDrawings covers the flat case.");
+  Reg(e, "NestedClippingDrawing", Immediate([](CommandContext& ctx) { MakeNestedClippingDrawing(ctx); }), CommandStatus::Implemented,
+      "Clips one clipping plane's own drawing section by a second clipping plane (Base=<name> Nest=<name>, or the first two enabled planes): a real section of a section, re-clipping the base plane's already-sectioned geometry rather than re-deriving from the scene, tagged with ClippingDrawingSource so it chains and can itself be nested further.");
   Reg(e, "ShowZBuffer", Immediate([](CommandContext& ctx) {
         bool& z = ctx.App().viewtools.show_zbuffer;
         z = !z;
