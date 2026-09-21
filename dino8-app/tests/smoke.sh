@@ -1440,6 +1440,43 @@ else
   grep -q "! Python error" <<<"$PS" && { echo "FAIL python_script.txt printed a Python error"; fail=1; } || echo "ok   no Python script errors"
 fi
 
+# EditPythonScript / Script Editor "Run" dispatch (see cmd_misc.cpp's
+# EditPythonScript registration and ui/Panels.cpp's RunScriptEditor): opens
+# a .py file in the Script Editor panel exactly like EditPythonScript does,
+# then triggers the panel's actual Run-button code path via the test-only
+# ScriptEditorRun command (cmd_misc.cpp - not in commands.json, not on any
+# menu, exists purely so this can be exercised headlessly the same way
+# DockLayoutRearrangeSelfTest/HBarDragSelfTest exercise other mouse-only UI
+# elsewhere in this suite). Deliberately NOT calling RunPythonScript here -
+# that would prove the Python engine works (already covered above) but say
+# nothing about whether the panel's own Run button routes to it.
+cat > "$TMP/editor_test.py" <<'PY'
+import dino8
+pid = dino8.doc.Objects.AddPoint(7, 8, 9)
+print("script editor ran python: " + str(pid is not None))
+PY
+cat > "$TMP/scripteditor_run.txt" <<EOF
+EditPythonScript $TMP/editor_test.py
+ScriptEditorRun
+@expect_objects 1
+EOF
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  SER="$("$BIN" --smoke 100 --script "$TMP/scripteditor_run.txt" 2>&1)" || { echo "$SER"; echo "FAIL: Script Editor Run test exited non-zero"; exit 1; }
+else
+  SER="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMP/scripteditor_run.txt" 2>&1)" || { echo "$SER"; echo "FAIL: Script Editor Run test exited non-zero"; exit 1; }
+fi
+if echo "$SER" | grep -q "no Python 3 development install"; then
+  echo "skip Script Editor Run->Python test not available in this build (compiled without Python3 Development.Embed)"
+else
+  echo "$SER" | grep -E "^(ok|FAIL)"
+  if echo "$SER" | grep -q "^FAIL"; then fail=1; fi
+  sercheck() { if echo "$SER" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  sercheck "history: script editor ran python: True" "the Script Editor panel's Run button (ScriptEditorRun - the exact RunScriptEditor() code path DrawScriptEditor's button calls) dispatched the loaded .py file to PythonEngine, not Lua"
+  sercheck "^ok   expect_objects 1" "the point dino8.doc.Objects.AddPoint created from inside the Script Editor's Python run is the only object in the document"
+  grep -q "! Script error" <<<"$SER" && { echo "FAIL scripteditor_run.txt printed a Lua script error (the .py file was mis-routed to Lua by the Run button)"; fail=1; } || echo "ok   Script Editor Run did not mis-route the .py file to Lua"
+  grep -q "! Python error" <<<"$SER" && { echo "FAIL scripteditor_run.txt printed a Python error"; fail=1; } || echo "ok   no Python errors from the Script Editor Run test"
+fi
+
 # Dino Flow + plug-ins: node editor, the HelloDino sample plug-in (command +
 # Dino Flow node), and GrasshopperPlayer headless solve/bake (see flow_script.txt).
 # The .dflow is copied to $TMP first so the second run below can edit that

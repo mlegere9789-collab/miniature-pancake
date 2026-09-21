@@ -422,8 +422,18 @@ void RegisterMiscCommands(CommandEngine& e) {
           ctx.Print("This build has no Python 3 development install; opening the (Lua-oriented) Script Editor as a plain text editor for the file.");
         if (std::optional<std::string> path = ctx.Engine().TakePendingInput()) OpenInScriptEditor(ctx.App(), *path);
         ctx.App().Panels().script_editor = true;
-      }), CommandStatus::Partial, "Opens the given .py file in the Script Editor panel as text; that panel's Run button still runs Lua - use RunPythonScript to execute a .py file.");
+      }), CommandStatus::Implemented, "Opens the given .py file in the Script Editor panel; the panel's Run button detects the .py extension and dispatches to the embedded Python 3 interpreter (same engine as RunPythonScript), while .lua files there still run as Lua.");
   Reg(e, "ScriptEditor", Immediate([](CommandContext& ctx) { ctx.App().Panels().script_editor = true; }));
+  // ScriptEditorRun: headless equivalent of clicking the Script Editor
+  // panel's Run button - goes through the exact same RunScriptEditor()
+  // dispatch (Panels.cpp), so a .py file loaded there (EditPythonScript,
+  // Open..., or the scripts list) runs through PythonEngine and a .lua one
+  // still runs through Lua/RunScript. Not surfaced in the menu (there is no
+  // reason to type it interactively - the panel button already does this);
+  // it exists so scripts/tests can exercise the panel's real routing logic
+  // instead of calling RunPythonScript/RunScript directly.
+  Reg(e, "ScriptEditorRun", Immediate([](CommandContext& ctx) { RunScriptEditor(ctx.App()); }),
+      CommandStatus::Implemented, "Runs whatever the Script Editor panel currently holds, exactly as its Run button would (Python for a loaded .py file, Lua otherwise). Not shown in the menu.");
   Reg(e, "ScriptingReference", Immediate([](CommandContext& ctx) { ctx.App().Panels().scripting_reference = true; }));
   // PackageManager / PluginManager: superseded, dead code - cmd_flow.cpp
   // registers the real panel-opening commands (RegisterFlowCommands runs

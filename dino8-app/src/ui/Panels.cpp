@@ -1413,6 +1413,40 @@ void RefreshScriptList(Application& app) {
 }
 }  // namespace
 
+// The Run button's actual dispatch logic, factored out of DrawScriptEditor
+// so ScriptEditorRunCommand (cmd_misc.cpp's headless "run whatever the
+// Script Editor currently holds" command, used by RunScript-style callers
+// and by tests that need to exercise this exact routing rather than call
+// RunPythonScript/RunScript directly) goes through the identical code path
+// as an actual click, extension check included.
+void RunScriptEditor(Application& app) {
+  ScriptEditorState& s = app.ScriptEditor();
+  const std::string ext = ToLower(std::filesystem::path(s.file_name.empty() ? s.path : s.file_name).extension().string());
+  const bool is_python = (ext == ".py");
+  if (is_python) {
+    // Persist immediately so a crash mid-script doesn't lose the text.
+    { std::ofstream out(app.ScriptsDirectory() + "/_last.py", std::ios::binary); out << s.text; }
+    if (s.as_macro) {
+      std::istringstream in(s.text);
+      std::string line;
+      while (std::getline(in, line)) if (!line.empty() && line[0] != '#') app.Engine().Execute(line);
+    } else {
+      // Runs to completion right here (no Lua-style coroutine pump needed).
+      app.Python().Start(s.text, s.file_name.empty() ? "Script Editor" : s.file_name);
+    }
+  } else {
+    { std::ofstream out(app.ScriptsDirectory() + "/_last.lua", std::ios::binary); out << s.text; }
+    if (s.as_macro) {
+      std::istringstream in(s.text);
+      std::string line;
+      while (std::getline(in, line)) if (!line.empty() && line[0] != '#') app.Engine().Execute(line);
+    } else {
+      app.QueueScript(s.text, s.file_name.empty() ? "Script Editor" : s.file_name, false);
+      app.Engine().Execute("-RunScript");
+    }
+  }
+}
+
 bool OpenInScriptEditor(Application& app, const std::string& path) {
   std::ifstream in(path, std::ios::binary);
   if (!in) return false;
@@ -1438,13 +1472,21 @@ void DrawScriptEditor(Application& app) {
     else s.text = "-- Dino 8 Lua script. rs.* mirrors rhinoscriptsyntax; see Help > Scripting Reference.\nlocal id = rs.AddPoint(0, 0, 0)\nprint(\"created point \" .. tostring(id))\n";
     s.loaded = true;
   }
+  // The currently-loaded file's extension decides which engine the Run
+  // button below dispatches to: a .py file (loaded via EditPythonScript, or
+  // Open.../the scripts list) runs through the embedded PythonEngine, same
+  // as RunPythonScript would; everything else (including untitled/new
+  // buffers) keeps running as Lua through RunScript, unchanged.
+  const std::string loaded_ext = ToLower(std::filesystem::path(s.file_name.empty() ? s.path : s.file_name).extension().string());
+  const bool is_python = (loaded_ext == ".py");
+
   ImGui::SetNextWindowSize(ImVec2(760, 520), ImGuiCond_Appearing);
   if (!ImGui::Begin(PanelTitle("panel.script_editor", "ScriptEditor").c_str(), &app.Panels().script_editor)) { ImGui::End(); return; }
 
   if (ImGui::Button("New")) { s.text.clear(); s.path.clear(); s.file_name.clear(); s.dirty = false; }
   ImGui::SameLine();
   if (ImGui::Button("Open...")) {
-    app.ShowFileDialog("Open script", {".lua"}, false, [&app](const std::string& path) { OpenInScriptEditor(app, path); });
+    app.ShowFileDialog("Open script", {".lua", ".py"}, false, [&app](const std::string& path) { OpenInScriptEditor(app, path); });
   }
   ImGui::SameLine();
   if (ImGui::Button("Save")) {
@@ -1468,25 +1510,22 @@ void DrawScriptEditor(Application& app) {
   ImGui::SameLine();
   ImGui::TextDisabled("%s%s", s.file_name.empty() ? "(untitled)" : s.file_name.c_str(), s.dirty ? " *" : "");
 
-  ImGui::Checkbox("Run as command macro (one command per line) instead of Lua", &s.as_macro);
+  ImGui::Checkbox(is_python ? "Run as command macro (one command per line) instead of Python" : "Run as command macro (one command per line) instead of Lua", &s.as_macro);
   ImGui::SameLine();
   ImGui::TextDisabled("(?)");
-  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: the text runs as Lua through rs.*, exactly like a .lua file passed to RunScript.\nOn: each line runs as a Dino 8 command, exactly like the Macro Editor.");
-
-  const bool running = app.Lua().Running();
-  ImGui::BeginDisabled(running && !app.Lua().Suspended());
-  if (ImGui::Button(running ? "Continue" : "Run") && !running) {
-    // Persist immediately so a crash mid-script doesn't lose the text.
-    { std::ofstream out(app.ScriptsDirectory() + "/_last.lua", std::ios::binary); out << s.text; }
-    if (s.as_macro) {
-      std::istringstream in(s.text);
-      std::string line;
-      while (std::getline(in, line)) if (!line.empty() && line[0] != '#') app.Engine().Execute(line);
-    } else {
-      app.QueueScript(s.text, s.file_name.empty() ? "Script Editor" : s.file_name, false);
-      app.Engine().Execute("-RunScript");
-    }
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(is_python
+        ? "Off: the text runs as Python through the embedded dino8 module, exactly like a .py file passed to RunPythonScript.\nOn: each line runs as a Dino 8 command, exactly like the Macro Editor."
+        : "Off: the text runs as Lua through rs.*, exactly like a .lua file passed to RunScript.\nOn: each line runs as a Dino 8 command, exactly like the Macro Editor.");
   }
+
+  // Lua scripts can suspend mid-run (rs.GetPoint et al. yield the
+  // coroutine - see LuaEngine); Python scripts never do (PythonEngine runs
+  // start-to-finish inside Start(), see PythonEngine.h), so "Continue" /
+  // "Waiting for input" only ever apply to the Lua path.
+  const bool running = !is_python && app.Lua().Running();
+  ImGui::BeginDisabled(running && !app.Lua().Suspended());
+  if (ImGui::Button((running ? "Continue" : "Run")) && !running) RunScriptEditor(app);
   ImGui::EndDisabled();
   if (running) { ImGui::SameLine(); ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1), app.Lua().Suspended() ? "Waiting for input in a viewport / the command line..." : "Running..."); }
 
@@ -1514,8 +1553,9 @@ void DrawScriptEditor(Application& app) {
   }
   ImGui::TextDisabled("Output");
   ImGui::BeginChild("script_output", ImVec2(-1, output_h), true);
-  for (const std::string& line : app.Lua().LastOutput()) ImGui::TextWrapped("%s", line.c_str());
-  if (app.Lua().LastOutput().empty()) ImGui::TextDisabled("(nothing printed yet)");
+  const std::vector<std::string>& last_output = is_python ? app.Python().LastOutput() : app.Lua().LastOutput();
+  for (const std::string& line : last_output) ImGui::TextWrapped("%s", line.c_str());
+  if (last_output.empty()) ImGui::TextDisabled("(nothing printed yet)");
   ImGui::EndChild();
   ImGui::EndChild();
   ImGui::Columns(1);

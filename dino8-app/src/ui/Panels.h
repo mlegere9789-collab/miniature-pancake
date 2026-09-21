@@ -78,6 +78,12 @@ void DrawScriptEditor(Application& app);
 void DrawScriptingReference(Application& app);
 // Loads a script file into the Script Editor panel (and opens it).
 bool OpenInScriptEditor(Application& app, const std::string& path);
+// Runs whatever the Script Editor panel currently holds, exactly as its Run
+// button does: dispatches to PythonEngine for a loaded .py file, Lua
+// (RunScript) otherwise. Exposed so headless commands/tests can trigger the
+// same routing the button uses instead of calling RunPythonScript/RunScript
+// directly.
+void RunScriptEditor(Application& app);
 void DrawHatchPatternsPanel(Application& app);  // defined in cmd_drafting2.cpp
 void DrawTableEditorPanel(Application& app);    // defined in cmd_drafting2.cpp
 
