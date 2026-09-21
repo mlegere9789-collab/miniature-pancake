@@ -304,7 +304,14 @@ int main(int argc, char** argv) {
 #ifdef __APPLE__
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 #endif
-  glfwWindowHint(GLFW_SAMPLES, 4);
+  // 4x MSAA is a rendering-quality nicety, not something headless/offscreen
+  // QC needs - and some CI runners' virtual/software GPU can't satisfy an
+  // NSGL pixel format request that combines it with a 3.3 core profile at
+  // all (confirmed on GitHub's macOS Actions runners: "NSGL: Failed to
+  // find a suitable pixel format" with samples=4, which resolves clean
+  // with samples=0), so skip it in --smoke/--stress/--cull-test mode
+  // rather than fail to even open a window.
+  if (smoke_frames < 0) glfwWindowHint(GLFW_SAMPLES, 4);
   if (smoke_frames >= 0) glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
 
   GLFWwindow* window = glfwCreateWindow(1600, 900, "Dino 8", nullptr, nullptr);
