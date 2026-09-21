@@ -8,8 +8,15 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 # ClipboardMac.mm (src/platform/) is Objective-C++ - the real NSPasteboard
 # shim behind the OS-clipboard image commands (ViewCaptureToClipboard,
 # ScreenCaptureToClipboard, CopyRenderWindowToClipboard) on macOS. The
-# language must be enabled before any target references that file.
+# language must be enabled before any target references that file. OBJC is
+# enabled alongside it (not just OBJCXX) so that plain Objective-C .m files
+# fetched from third-party dependencies (GLFW's Cocoa backend) keep
+# compiling as Objective-C rather than being swept into Objective-C++ by
+# CMake's default source-to-language mapping when only OBJCXX is known -
+# GLFW 3.4's cocoa_*.m files rely on C-style implicit void*-to-typed-pointer
+# conversions (e.g. from calloc-style allocators) that Objective-C++ rejects.
 if(APPLE)
+  enable_language(OBJC)
   enable_language(OBJCXX)
 endif()
 
