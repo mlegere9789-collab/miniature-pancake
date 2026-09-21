@@ -68,12 +68,37 @@ jobs:
         run: cd dino8-app/build && ctest --output-on-failure -C Release
       - name: Version check
         run: dino8-app\build\Dino8.exe --version
+      # GitHub's windows-latest runner has no real GPU: WGL reports "The
+      # driver does not appear to support OpenGL" and GLFW can't create even
+      # a hidden 3.3 core window (confirmed by actually running the smoke
+      # test without this step first). Drop in Mesa's llvmpipe software
+      # OpenGL implementation as opengl32.dll right next to Dino8.exe -
+      # Windows' DLL search order checks the executable's own directory
+      # before System32, so this shadows the real (non-functional) driver
+      # for this one binary only, with no system-wide install. Queried
+      # dynamically (not a pinned version) since this workflow step runs on
+      # the Actions runner itself, which has full internet access unlike
+      # this repo's own sandboxed dev environment.
+      - name: Install Mesa (software OpenGL) for the headless smoke test
+        shell: pwsh
+        run: |
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/pal1000/mesa-dist-win/releases/latest" -Headers @{ "User-Agent" = "dino8-ci" }
+          $asset = $release.assets | Where-Object { $_.name -match "release-msvc\.7z$" } | Select-Object -First 1
+          if (-not $asset) { throw "mesa-dist-win: no release-msvc .7z asset found in latest release $($release.tag_name)" }
+          Write-Host "Using $($asset.name) from mesa-dist-win $($release.tag_name)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "$env:RUNNER_TEMP\mesa.7z"
+          7z x "$env:RUNNER_TEMP\mesa.7z" -o"$env:RUNNER_TEMP\mesa" -y | Out-Null
+          $x64 = Get-ChildItem -Path "$env:RUNNER_TEMP\mesa" -Recurse -Directory -Filter "x64" | Select-Object -First 1
+          if (-not $x64) { throw "mesa-dist-win archive had no x64 directory" }
+          Copy-Item "$($x64.FullName)\*.dll" -Destination "dino8-app\build" -Force
+          "MESA_GL_VERSION_OVERRIDE=3.3" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "MESA_GLSL_VERSION_OVERRIDE=330" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "GALLIUM_DRIVER=llvmpipe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       # The same functional QC Linux already runs (~1500 checks over the
       # real app, not just a build check) - smoke.sh's own xvfb-run guard
       # falls through to a direct run whenever xvfb-run isn't on PATH, which
-      # is always true here, so no virtual display setup is needed: a
-      # Windows Actions runner already has a real (if headless) desktop
-      # session GLFW can open a hidden GL window against.
+      # is always true here, so no virtual display setup is needed beyond
+      # the software-GL swap above.
       - name: Smoke test (headless)
         shell: bash
         run: dino8-app/tests/smoke.sh dino8-app/build/Dino8.exe
