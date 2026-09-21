@@ -244,7 +244,7 @@ The audit's theme tally (forum-topic counts, carried over verbatim from the prio
 - **No document tabs/MDI**, and no large-document performance testing exists.
 - **The installer is unsigned** — no `signtool`/`codesign` invocation found in `packaging/`.
 - **The path tracer is CPU-only**, not the GPU renderer doc4 described.
-- **The 46 remaining Partial commands** (§0.1, count corrected 2026-09-09 from a live registry re-scan, then reduced from 52 to 46 on 2026-09-21 when `BlockManager`/`UVEditor`/`MappingWidget`/`NonmanifoldMerge`/`ReplaceEdge`/`UnjoinEdge` were fixed) are mostly genuinely blocked on hardware, OS APIs, or kernel/data-model capabilities this project does not have, plus a handful of honestly-scoped-down feature extensions (see §0.1) — not oversights, but still real gaps for a user who needs exactly one of them.
+- **The 43 remaining Partial commands** (§0.1, count corrected 2026-09-09 from a live registry re-scan, then reduced from 52 to 43 on 2026-09-21 when `BlockManager`/`UVEditor`/`MappingWidget`/`NonmanifoldMerge`/`ReplaceEdge`/`UnjoinEdge`/`ExtractPipedCurve`/`MakePeriodic`(Smooth=No)/`RefitTrim` were fixed) are mostly genuinely blocked on hardware, OS APIs, or kernel/data-model capabilities this project does not have, plus a handful of honestly-scoped-down feature extensions (see §0.1) — not oversights, but still real gaps for a user who needs exactly one of them.
 
 ### 4.3 What is absent
 A DinoCommon .NET SDK (this is a C++17 codebase — very unlikely to ever exist without a rewrite); Python/C#/RhinoScript compatibility for Dino Flow/plug-ins (the plug-in ABI is a from-scratch C ABI, not Rhino-compatible); SAT/Parasolid/SKP/FBX/glTF and most other exchange formats beyond .3dm/OBJ/STL/PLY/DXF/DWG/SVG/PDF/IGES/STEP (DWG was added since the prior pass, via the linked GPLv3 GNU LibreDWG library — see `docs/INTEROP_LIMITATIONS.md` and `THIRD_PARTY_LICENSES.md`; its entity coverage is a subset of DXF's); code signing; document tabs/MDI; live/associative annotation objects; construction history; incremental (O(change)) undo; a fuzzy command palette; multi-sheet printing with a print dialog; a UV-editing window; an OS clipboard image API; a per-version DWG/DXF "scheme" picker.
@@ -291,7 +291,7 @@ Given the current state — 1031/24/0 catalogue coverage and the specific remain
 
 ---
 
-## Appendix A — All 46 Partial commands with their exact notes
+## Appendix A — All 43 Partial commands with their exact notes
 
 (Updated 2026-09-09 from a live re-scan of the running binary's registry — see the note under §0.1. `SelMirroredBlocks`, previously listed here, is removed: it was fixed to `Implemented` in a later pass. Updated again 2026-09-21: `BlockManager`, `UVEditor`, `MappingWidget`, `NonmanifoldMerge`, `ReplaceEdge` and `UnjoinEdge`, previously listed here, are all removed — the first three fixed to `Implemented` by real dockable-panel/gizmo features, the latter three via real `Brep::MergeCoplanarFaces()`/`ReplaceEdgeCurve()`/`UnjoinEdge()` B-rep topology surgery added to `dino8-kernel`; see the dated note under §0.1 for details.)
 
