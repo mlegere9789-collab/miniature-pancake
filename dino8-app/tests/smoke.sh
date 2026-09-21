@@ -1894,6 +1894,25 @@ s2check "Dino Flow: opened the node editor" "Grasshopper"
 s2check "PackageManager: opened the package manager" "PackageManager"
 s2check "PluginManager: opened the plug-in manager" "PluginManager"
 
+# Dig* digitizer family (DigBeep/DigCamera/DigClick/DigLine/DigSection/
+# DigSketch/Digitize): DigConnect Protocol=Simulated needs no hardware -
+# state_script2.txt feeds it points as plain "x,y,z" tokens, proving these
+# commands' real read/calibrate/build pipeline end-to-end, not just that
+# DigConnect itself is real.
+s2check "Digitizer: connected, protocol Simulated, not calibrated" "DigConnect Protocol=Simulated connects with no hardware"
+s2check "Digitize: digitized 1,2,3" "Digitize reads a simulated point and reports its exact coordinates"
+s2check "Digitize: digitized 4,5,6" "Digitize reads a second simulated point"
+s2check "DigLine: line digitized" "DigLine builds a real 2-point line from two simulated points"
+s2check "Bounding box min 10,0,0 max 20,0,0" "DigLine's own curve spans exactly its two digitized endpoints"
+s2check "DigCamera: camera set from two digitized points" "DigCamera consumes two simulated points (eye, target)"
+s2check "location 100,0,0, target 0,0,0" "DigCamera actually moved the active viewport's camera eye/target"
+s2check "DigSection: 3 point(s) digitized into a curve" "DigSection builds a polyline from a simulated point sequence"
+s2check "Bounding box min 0,0,0 max 10,10,0" "DigSection's polyline spans exactly its 3 digitized points"
+s2check "DigSketch: 3 point(s) digitized into a curve" "DigSketch (same pipeline as DigSection) builds its own polyline"
+s2check "Bounding box min 0,0,0 max 5,5,0" "DigSketch's polyline spans exactly its 3 digitized points"
+s2check "DigDisconnect: disconnected" "DigDisconnect"
+s2check "$(printf '\a')" "DigBeep rings a real terminal bell (raw \\a byte) once digitizing is on - not suppressed under --smoke"
+
 # Files: New/Open/Revert/Save/SaveAs/SaveSmall/IncrementalSave/SaveAsTemplate/
 # Import/Export/ExportSelected/ExportWithOrigin/Notes/DocumentProperties/Units/
 # Audit3dmFile (see file_script.txt).

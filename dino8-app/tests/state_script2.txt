@@ -225,6 +225,34 @@ EditPythonScript
 ScriptEditor
 PackageManager
 PluginManager
+# --- Dig* digitizer family: DigConnect Protocol=Simulated needs no real
+# hardware at all - each digitized point below is typed as a plain "x,y,z"
+# token, the exact same WantPoint mechanism Line/Polyline already feed a
+# few lines up this file, and the one a real mouse click in the viewport
+# also drives (Digitizer::FeedSimulatedPoint, via CommandEngine::FeedPoint).
+# No calibration is set (DigScale stays at its 1.0 default too), so
+# Digitizer::ToModel is the identity here and every digitized point comes
+# back exactly as typed - what's under test is the read/beep/build pipeline
+# itself, not the calibration math (DigCalibrate already covers that).
+DigConnect Simulated
+Digitize 1,2,3
+DigBeep
+Digitize 4,5,6
+DigLine 10,0,0 20,0,0
+SelLast
+BoundingBox
+DigCamera 100,0,0 0,0,0
+Camera
+!cancel
+DigSection 0,0,0 10,0,0 10,10,0
+Enter
+SelLast
+BoundingBox
+DigSketch 0,0,0 5,0,0 5,5,0
+Enter
+SelLast
+BoundingBox
+DigDisconnect
 SelAll
 Delete
 @expect_objects 0

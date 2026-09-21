@@ -48,12 +48,84 @@ CommandFactory Say(const char* text, bool warn = false) {
 const char* kFree = "Dino 8 is free software: no licenses, accounts or subscriptions.";
 const char* kDigNotConnected = "No digitizer is connected. Use DigConnect (Protocol=Ascii for real hardware, File or Simulated to test headlessly), then this command reads its calibrated point stream.";
 
-// DigBeep: a terminal bell for each digitized point, when enabled.
-// Only actually rings the terminal bell outside script/headless mode - a
-// raw '\a' byte on stdout would otherwise corrupt piped/redirected output
-// (including this project's own smoke tests), the same reason OpenURL and
-// FileExplorer skip their real OS side effect there too.
-void DigBeep(CommandContext& ctx) { if (ctx.App().State().dig_beep && !ctx.App().headless && !ctx.ScriptMode()) std::fputc('\a', stdout); }
+// DigBeep: a terminal bell for each digitized point, when enabled. Suppressed
+// in script mode (a "-Command" macro shouldn't chatter at the terminal), but
+// - unlike OpenURL/FileExplorer's real OS side effects, which need an actual
+// desktop and are genuinely no-ops headless - a bare '\a' byte on stdout has
+// no display-server dependency, so it is NOT suppressed under --smoke: that
+// is what lets tests/smoke.sh assert the byte actually appears once a Dig*
+// command has digitized a point.
+void DigBeep(CommandContext& ctx) { if (ctx.App().State().dig_beep && !ctx.ScriptMode()) std::fputc('\a', stdout); }
+
+// Reads one digitized point at a time, building up to `count` of them
+// (count == 0: read until Enter, for the polyline-shaped commands), then
+// hands them to `done`. Protocol=File/Ascii read synchronously - a real
+// device or a fixture file already has the points queued up, exactly as
+// DigPoint/DigCalibrate read them. Protocol=Simulated instead prompts for
+// each point with WantPoint, the same mechanism every other point-picking
+// command uses: a real mouse click in the viewport (Application.cpp's click
+// handler calls CommandEngine::FeedPoint, which reaches this command's
+// OnPoint) or, in --script tests, a "x,y,z" token on the command line. Each
+// point is round-tripped through Digitizer::FeedSimulatedPoint()/ReadPoint()
+// before use, so Simulated mode exercises the exact same calibration/
+// unit-scale (Digitizer::ToModel) pipeline a real serial stream would -
+// this is the wiring DigCalibrate already used; the six commands below just
+// reuse it instead of only ever reading synchronously.
+class DigPointsCommand : public Command {
+ public:
+  DigPointsCommand(std::string name, int count, std::function<void(CommandContext&, const std::vector<Point3d>&)> done)
+      : name_(std::move(name)), count_(count), done_(std::move(done)) {}
+
+  void Begin(CommandContext& ctx) override {
+    if (!Digitizer::Instance().Connected()) { ctx.Warn(kDigNotConnected); Finish(); return; }
+    ReadNext(ctx);
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    Digitizer::Instance().FeedSimulatedPoint(p);
+    DigitizerPoint dp;
+    Digitizer::Instance().ReadPoint(dp);
+    Got(ctx, dp.raw);
+  }
+  void OnEnter(CommandContext& ctx) override {
+    if (count_ == 0) Complete(ctx);
+    else Finish();
+  }
+  void OnCancel(CommandContext&) override { want = Want::Nothing; }
+
+ private:
+  void ReadNext(CommandContext& ctx) {
+    Digitizer& d = Digitizer::Instance();
+    if (d.Protocol() == DigitizerProtocol::Simulated) {
+      WantPoint(name_ + ": digitize a point" + (count_ == 0 ? " (click in the viewport; Enter when done)" : " (click in the viewport)"));
+      return;
+    }
+    DigitizerPoint p;
+    if (!d.ReadPoint(p)) {
+      if (count_ == 0) { Complete(ctx); return; }
+      ctx.Warn(name_ + ": no point available from the digitizer");
+      Finish();
+      return;
+    }
+    Got(ctx, p.raw);
+  }
+  void Got(CommandContext& ctx, Point3d raw) {
+    pts_.push_back(raw);
+    if (count_ == 0) DigBeep(ctx);  // one beep per point, like a real digitizer sweep
+    if ((count_ != 0 && static_cast<int>(pts_.size()) >= count_) || (count_ == 0 && pts_.size() >= 5000)) { Complete(ctx); return; }
+    ReadNext(ctx);
+  }
+  void Complete(CommandContext& ctx) {
+    if (count_ == 0 && pts_.size() < 2) { ctx.Warn(name_ + ": needs at least two digitized points"); Finish(); return; }
+    if (count_ != 0) DigBeep(ctx);  // one beep for the whole fixed-size read (eye+target, line endpoints, ...)
+    want = Want::Nothing;  // done_() may itself call CommandEngine::FeedPoint(); make sure that can't re-enter OnPoint
+    done_(ctx, pts_);
+    Finish();
+  }
+  std::string name_;
+  int count_;
+  std::function<void(CommandContext&, const std::vector<Point3d>&)> done_;
+  std::vector<Point3d> pts_;
+};
 
 // Takes the next typed token, or prompts for text.
 class TextArgCommand : public Command {
@@ -925,68 +997,58 @@ void RegisterStateCommands(CommandEngine& e) {
   // (session/Digitizer.h - a real serial port, or Protocol=File/Simulated
   // headless stand-ins for testing without hardware), registered after
   // this file so they always win over the stubs that used to live here.
-  // The remaining Dig* commands below build directly on top of a
-  // *connected* digitizer's calibrated, unit-scaled point stream and have
-  // no headless equivalent of their own: each is Partial for exactly the
-  // reason DigPoint itself is (see cmd_session.cpp) - there is no digitizer
-  // plugged into this environment, connected or simulated, by default.
-  Reg(e, "Digitize", Immediate([](CommandContext& ctx) {
-        Digitizer& d = Digitizer::Instance();
-        if (!d.Connected()) { ctx.Warn(kDigNotConnected); return; }
-        DigitizerPoint p;
-        if (!d.ReadPoint(p)) { ctx.Warn("Digitize: no point available from the digitizer"); return; }
-        DigBeep(ctx);
-        AddObject(ctx, SceneObject::MakePoint(d.ToModel(p.raw)), "Digitize");
-        ctx.Print("Digitize: digitized " + FormatPoint(d.ToModel(p.raw)));
-      }), CommandStatus::Partial, kDigNotConnected);
-  Reg(e, "DigCamera", Immediate([](CommandContext& ctx) {
-        Digitizer& d = Digitizer::Instance();
-        if (!d.Connected()) { ctx.Warn(kDigNotConnected); return; }
-        DigitizerPoint eye, target;
-        if (!d.ReadPoint(eye) || !d.ReadPoint(target)) { ctx.Warn("DigCamera: needs two points (eye, target) from the digitizer"); return; }
+  // The six Dig* commands below build directly on top of a *connected*
+  // digitizer's calibrated, unit-scaled point stream (DigPointsCommand,
+  // above), exactly like DigPoint/DigCalibrate do. Protocol=Ascii (real
+  // hardware) and Protocol=File (a fixture of recorded points) always could
+  // drive them end-to-end; Protocol=Simulated - no hardware needed at all,
+  // just DigConnect Protocol=Simulated then a mouse click per point, or a
+  // point token in a --script test - now does too (see DigPointsCommand's
+  // comment). Nothing about the underlying logic here is a stub for any of
+  // the three protocols.
+  Reg(e, "Digitize", Make<DigPointsCommand>("Digitize", 1, [](CommandContext& ctx, const std::vector<Point3d>& pts) {
+        const Point3d model = Digitizer::Instance().ToModel(pts[0]);
+        AddObject(ctx, SceneObject::MakePoint(model), "Digitize");
+        ctx.Print("Digitize: digitized " + FormatPoint(model));
+      }), CommandStatus::Implemented,
+      "Reads one point from the connected digitizer's calibrated stream and adds it as a point object. DigConnect first: Protocol=Ascii for real hardware, File to replay a fixture of recorded points, or Simulated to feed points from mouse clicks (or, in a --script test, a plain \"x,y,z\" token) with no hardware at all - all three protocols run the identical read/calibrate/add-object logic here.");
+  Reg(e, "DigCamera", Make<DigPointsCommand>("DigCamera", 2, [](CommandContext& ctx, const std::vector<Point3d>& pts) {
         Viewport* vp = ctx.ActiveViewport();
         if (!vp) return;
-        DigBeep(ctx);
-        vp->GetCamera().State().eye = d.ToModel(eye.raw);
-        vp->GetCamera().State().target = d.ToModel(target.raw);
-        ctx.Print("DigCamera: camera set from two digitized points");
-      }), CommandStatus::Partial, kDigNotConnected);
-  Reg(e, "DigClick", Immediate([](CommandContext& ctx) {
         Digitizer& d = Digitizer::Instance();
-        if (!d.Connected()) { ctx.Warn(kDigNotConnected); return; }
-        DigitizerPoint p;
-        if (!d.ReadPoint(p)) { ctx.Warn("DigClick: no point available from the digitizer"); return; }
-        DigBeep(ctx);
-        const Point3d model = d.ToModel(p.raw);
+        vp->GetCamera().State().eye = d.ToModel(pts[0]);
+        vp->GetCamera().State().target = d.ToModel(pts[1]);
+        ctx.Print("DigCamera: camera set from two digitized points");
+      }), CommandStatus::Implemented,
+      "Digitizes two points - eye, then target - and points the active viewport's camera from the first at the second, both run through the digitizer's calibration/unit scale exactly like every other Dig* command. DigConnect first (Protocol=Simulated needs no hardware: DigConnect Protocol=Simulated, then click twice in the viewport).");
+  Reg(e, "DigClick", Make<DigPointsCommand>("DigClick", 1, [](CommandContext& ctx, const std::vector<Point3d>& pts) {
+        const Point3d model = Digitizer::Instance().ToModel(pts[0]);
         ctx.Print("DigClick: digitized " + FormatPoint(model));
         ctx.Engine().FeedPoint(model);
-      }), CommandStatus::Partial,
-      "No digitizer is connected (see the note on Digitize). Note also that unlike a real digitizer's hardware button, DigClick here is just another typed command name: this engine feeds any typed line to whatever command is already running, so DigClick can only ever fire when *no* other command is waiting for a point - it cannot interrupt one the way a real digitizer's stylus click would. It still prints and forwards the point it reads via CommandEngine::FeedPoint for whenever a future point-prompting command checks right after it runs.");
-  Reg(e, "DigLine", Immediate([](CommandContext& ctx) {
+      }), CommandStatus::Implemented,
+      "Digitizes one point and prints it, the same as Digitize but without adding an object. Note that unlike a real digitizer's hardware button, DigClick here is just another typed command name: this engine feeds any typed line to whatever command is already running, so DigClick can only ever fire when *no* other command is waiting for a point - it cannot interrupt one the way a real digitizer's stylus click would. It still forwards the point it reads via CommandEngine::FeedPoint, a no-op today for the same reason (nothing is ever waiting for a point at that moment either), kept for a future point-prompting command that might check right after it runs.");
+  Reg(e, "DigLine", Make<DigPointsCommand>("DigLine", 2, [](CommandContext& ctx, const std::vector<Point3d>& pts) {
         Digitizer& d = Digitizer::Instance();
-        if (!d.Connected()) { ctx.Warn(kDigNotConnected); return; }
-        DigitizerPoint a, b;
-        if (!d.ReadPoint(a) || !d.ReadPoint(b)) { ctx.Warn("DigLine: needs two points from the digitizer"); return; }
-        DigBeep(ctx);
-        AddCurve(ctx, PolylineCurve({d.ToModel(a.raw), d.ToModel(b.raw)}), "DigLine");
+        AddCurve(ctx, PolylineCurve({d.ToModel(pts[0]), d.ToModel(pts[1])}), "DigLine");
         ctx.Print("DigLine: line digitized");
-      }), CommandStatus::Partial, kDigNotConnected);
+      }), CommandStatus::Implemented,
+      "Digitizes two points and joins them into a line (a 2-point polyline curve). DigConnect first; Protocol=Simulated needs no hardware, just two clicks in the viewport (or two \"x,y,z\" tokens in a --script test).");
   auto dig_polyline = [](const char* name) {
-    return Immediate([name](CommandContext& ctx) {
+    return Make<DigPointsCommand>(name, 0, [name](CommandContext& ctx, const std::vector<Point3d>& pts) {
       Digitizer& d = Digitizer::Instance();
-      if (!d.Connected()) { ctx.Warn(kDigNotConnected); return; }
-      std::vector<Point3d> pts;
-      DigitizerPoint p;
-      while (pts.size() < 5000 && d.ReadPoint(p)) { DigBeep(ctx); pts.push_back(d.ToModel(p.raw)); }
-      if (pts.size() < 2) { ctx.Warn(std::string(name) + ": needs at least two digitized points"); return; }
-      AddCurve(ctx, PolylineCurve(pts), name);
-      ctx.Print(std::string(name) + ": " + std::to_string(pts.size()) + " point(s) digitized into a curve");
+      std::vector<Point3d> model_pts;
+      model_pts.reserve(pts.size());
+      for (const Point3d& p : pts) model_pts.push_back(d.ToModel(p));
+      AddCurve(ctx, PolylineCurve(model_pts), name);
+      ctx.Print(std::string(name) + ": " + std::to_string(model_pts.size()) + " point(s) digitized into a curve");
     });
   };
-  Reg(e, "DigSection", dig_polyline("DigSection"), CommandStatus::Partial, kDigNotConnected);
-  Reg(e, "DigSketch", dig_polyline("DigSketch"), CommandStatus::Partial, kDigNotConnected);
-  Reg(e, "DigBeep", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().dig_beep; }, "DigBeep"), CommandStatus::Partial,
-      "Stored flag: when on, Digitize/DigCamera/DigClick/DigLine/DigSection/DigSketch print a terminal bell (\\a) for each digitized point - a real, if minimal, stand-in for the audible beep real digitizer hardware would make. Still Partial because none of those commands can ever fire without a connected digitizer.");
+  Reg(e, "DigSection", dig_polyline("DigSection"), CommandStatus::Implemented,
+      "Digitizes a sequence of points (Protocol=File/Ascii: every point currently queued, up to 5000; Protocol=Simulated: click points in the viewport, Enter when done) and joins them into a polyline curve, standing in for tracing a physical cross-section with a digitizer arm.");
+  Reg(e, "DigSketch", dig_polyline("DigSketch"), CommandStatus::Implemented,
+      "Identical to DigSection - digitizes a sequence of points into a polyline curve - named separately because Rhino offers both for the same real-world action of tracing a shape freehand with the stylus.");
+  Reg(e, "DigBeep", Toggle([](CommandContext& ctx) -> bool& { return ctx.App().State().dig_beep; }, "DigBeep"), CommandStatus::Implemented,
+      "Stored flag: when on, Digitize/DigCamera/DigClick/DigLine/DigSection/DigSketch print a terminal bell (\\a) for each digitized point - a real, if minimal, stand-in for the audible beep real digitizer hardware would make. Fires under any of the three DigConnect protocols, including Simulated (DigConnect Protocol=Simulated needs no hardware at all).");
 
   // ---- clipboard captures --------------------------------------------------
   // Both copy the active viewport's last-rendered frame to the real OS
