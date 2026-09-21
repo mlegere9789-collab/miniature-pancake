@@ -1456,6 +1456,7 @@ void Application::ProcessViewportEvents(Viewport& vp, const ViewportEvents& ev) 
       if (SceneObject* o = doc_.Find(id)) {
         SceneObject moved = original;
         TransformSubObjects(moved, sub_selection_.ItemsOf(id), xf);
+        ApplyHBarConstraint(moved, hbar_);
         *o = moved;
       }
     }
@@ -2127,6 +2128,7 @@ void Application::DrawPanels() {
   if (panels_.block_manager) DrawBlockManagerPanel(*this);
   if (panels_.uv_editor) DrawUVEditorPanel(*this);
   if (panels_.mapping_widget) DrawMappingWidgetPanel(*this);
+  if (panels_.hbar) DrawHBarPanel(*this);
   if (panels_.help) DrawHelpPanel(*this, help_search_);
   if (panels_.notifications) { unread_notifications = 0; DrawNotificationsPanel(*this); }
   if (panels_.named_views) DrawNamedViewsPanel(*this);

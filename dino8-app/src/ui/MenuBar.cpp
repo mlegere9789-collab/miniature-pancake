@@ -241,6 +241,7 @@ void DrawMenuBar(Application& app) {
     ImGui::MenuItem(Tr("panel.block_manager").c_str(), "", &p.block_manager);
     ImGui::MenuItem(Tr("panel.uv_editor").c_str(), "", &p.uv_editor);
     ImGui::MenuItem(Tr("panel.mapping_widget").c_str(), "", &p.mapping_widget);
+    ImGui::MenuItem(Tr("panel.hbar").c_str(), "", &p.hbar);
     ImGui::MenuItem(Tr("panel.viewport_tabs").c_str(), "", &app.show_viewport_tabs);
     ImGui::Separator();
     if (ImGui::MenuItem(Tr("panel.reset_layout").c_str())) app.SetViewportLayout(4);

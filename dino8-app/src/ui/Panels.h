@@ -40,6 +40,11 @@ void DrawUVEditorPanel(Application& app);
 // directly into the viewport while this panel is open - defined in
 // cmd_render.cpp, alongside ApplyCustomMapping's mapping-frame fields.
 void DrawMappingWidgetPanel(Application& app);
+// HBar: shows the active distance-lock constraint's locked distance (if
+// any), a field to type a new one and a Release button - defined in
+// cmd_select2.cpp, alongside the HBar/HBarSetDistance/HBarOff commands and
+// the HBarConstraint data it reads and writes (doc/SubObjectEdit.h).
+void DrawHBarPanel(Application& app);
 void DrawHelpPanel(Application& app, std::string& search);
 void DrawNotificationsPanel(Application& app);
 void DrawNamedViewsPanel(Application& app);

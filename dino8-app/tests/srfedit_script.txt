@@ -436,3 +436,23 @@ SplitEdge
 SelPolysrf
 RemoveAllNakedMicroEdges
 @expect_objects 107
+# --- HBar: locks the distance between two control points of a straight
+# 2-CV line, then proves the lock is a real, general constraint (not just
+# a stored number) three ways: (1) HBarSetDistance changes the locked
+# value and immediately re-projects the handle CV to match; (2)
+# HBarDragSelfTest exercises the EXACT TransformSubObjects+
+# ApplyHBarConstraint call sequence a real Gumball/direct-control-point
+# mouse drag makes (see ApplyHBarConstraint's own doc comment,
+# doc/SubObjectEdit.h) on the anchor CV, and the handle CV swings to keep
+# the locked distance; (3) BoundingBox independently confirms the curve's
+# actual geometry moved to exactly where the constraint math says it
+# should, not just that HBarDragSelfTest's own printed distance says so.
+Line 4200,0,0 4210,0,0
+SelLast
+SelControlPoint
+HBar
+HBarSetDistance
+20
+HBarDragSelfTest
+5,0,0
+BoundingBox

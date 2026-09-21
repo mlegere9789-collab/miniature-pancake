@@ -16,6 +16,7 @@
 #include "commands/CommandCatalog.h"
 #include "commands/CommandEngine.h"
 #include "doc/Document.h"
+#include "doc/SubObjectEdit.h"
 #include "render/GlRenderer.h"
 #include "doc/SubObject.h"
 #include "script/LuaEngine.h"
@@ -75,6 +76,7 @@ struct PanelState {
   bool block_manager = false;   // BlockManager: block definitions table with per-row actions (cmd_drafting.cpp)
   bool uv_editor = false;       // UVEditor: read-only pannable/zoomable UV-space wireframe view (cmd_remaining.cpp)
   bool mapping_widget = false;  // MappingWidget: interactive 3D mapping-plane gizmo (cmd_render.cpp)
+  bool hbar = false;            // HBar: distance-lock panel for two control points (cmd_select2.cpp)
 };
 
 // One invalid object found by Audit/Check (see cmd_analyze.cpp): the
@@ -249,6 +251,12 @@ class Application {
   AppState& State() { return state_; }
   Gumball& GetGumball() { return gumball_; }
   MappingGizmo& GetMappingGizmo() { return mapping_gizmo_; }
+  // HBar: the single active distance-lock constraint (HBarConstraint,
+  // doc/SubObjectEdit.h), shown/edited by the HBar panel (DrawHBarPanel,
+  // cmd_select2.cpp). Enforced after every control-point edit that can
+  // move its object (see ApplyHBarConstraint's own call sites).
+  HBarConstraint& HBar() { return hbar_; }
+  const HBarConstraint& HBar() const { return hbar_; }
   // Selected control points / vertices / edges / faces (on top of the
   // whole-object selection). The gumball and the Delete key act on it.
   SubObjectSelection& SubSelection() { return sub_selection_; }
@@ -407,6 +415,7 @@ class Application {
   std::deque<std::pair<std::string, std::string>> message_boxes_;  // title, text
   Gumball gumball_;
   MappingGizmo mapping_gizmo_;
+  HBarConstraint hbar_;
   DirectionArrows direction_arrows_;  // Dir's clickable direction-arrow glyphs
   SubObjectSelection sub_selection_;
   // Direct control-point drag in progress (originals restored + moved each frame).

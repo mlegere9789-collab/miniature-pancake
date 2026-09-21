@@ -305,6 +305,7 @@ bool Gumball::Update(Application& app, Viewport& vp, bool viewport_hovered) {
           std::vector<SubObjectRef> refs;
           for (const SubObjectRef& r : sub_refs_) if (r.id == id) refs.push_back(r);
           TransformSubObjects(moved, refs, xf);
+          ApplyHBarConstraint(moved, app.HBar());
         } else {
           moved.Transform(xf);
           moved.selected = true;

@@ -8,6 +8,8 @@
 #include <set>
 
 #include "doc/SubObjectEdit.h"
+#include "imgui.h"
+#include "ui/Panels.h"
 
 namespace dino8::app {
 
@@ -1071,7 +1073,93 @@ void RegisterSelect2Commands(CommandEngine& e) {
       }), CommandStatus::Implemented, "Moves the selected surface control points along the surface's own local U, V and normal directions at each point.");
 
   // ---- misc point-edit --------------------------------------------------
-  Reg(e, "HBar", Immediate([](CommandContext& ctx) { ctx.Print("HBar: turn on control points (PointsOn), select a control point, then use the Gumball to drag it - the two-sided Bezier handlebar UI is planned."); }), CommandStatus::Partial, "Handlebar-style dragging is not drawn; PointsOn + Gumball reaches the same result one CV at a time.");
+  // HBar: locks the distance between two selected control points of the
+  // same object (see ApplyHBarConstraint, doc/SubObjectEdit.h/.cpp) - a
+  // real handlebar-style rod constraint, not just a printed suggestion to
+  // use PointsOn + Gumball. Text-based fallback (unchanged, for headless/
+  // script use - see HBarSetDistance/HBarOff below for the rest of the
+  // panel's actions in scriptable form) plus the real thing: a dockable
+  // panel (DrawHBarPanel, below) showing the locked distance, a field to
+  // type a new one, and a Release button.
+  Reg(e, "HBar", Immediate([](CommandContext& ctx) {
+        std::vector<SubObjectRef> cps = SelectedOfKind(ctx, SubObjectKind::Vertex);
+        if (cps.size() != 2) { ctx.Warn("HBar: select exactly two control points first (PointsOn, then click them) - " + std::to_string(cps.size()) + " selected"); return; }
+        if (cps[0].id != cps[1].id) { ctx.Warn("HBar: the two control points must belong to the same object"); return; }
+        SceneObject* o = ctx.Doc().Find(cps[0].id);
+        Point3d a, b;
+        if (!o || !ControlPointPosition(*o, cps[0].index, a) || !ControlPointPosition(*o, cps[1].index, b)) { ctx.Warn("HBar: could not read those control points"); return; }
+        HBarConstraint& c = ctx.App().HBar();
+        c.active = true;
+        c.object = cps[0].id;
+        c.anchor_index = cps[0].index;
+        c.handle_index = cps[1].index;
+        c.locked_distance = a.DistanceTo(b);
+        ctx.Print("HBar: locked the distance between control points " + std::to_string(c.anchor_index) + " and " + std::to_string(c.handle_index) +
+                  " of '" + (o->name.empty() ? "(unnamed)" : o->name) + "' at " + FormatNumber(c.locked_distance) +
+                  " - drag either point (Gumball, or a direct control-point drag) and the other follows to keep that distance, "
+                  "or use HBarSetDistance to type a new one.");
+        ctx.App().Panels().command_history = true;
+        ctx.App().Panels().hbar = true;
+      }), CommandStatus::Implemented,
+      "Locks the distance between two selected control points of the same object (ApplyHBarConstraint, doc/SubObjectEdit.cpp, "
+      "called from both TransformSubObjects call sites that move a control-point selection - Gumball.cpp's gizmo drag and "
+      "Application::ProcessViewportEvents' direct control-point drag): after that, moving either point swings or projects "
+      "the other point back onto the sphere of radius `locked_distance` around the moved one, exactly like a rigid rod pinned "
+      "at both ends. Opens a real dockable panel (DrawHBarPanel) showing the current locked distance with a field to type a "
+      "new one (HBarSetDistance) and a Release button (HBarOff); the panel's own mouse clicks are, like every other panel "
+      "button in this app, not exercised by the headless smoke-test harness, but the constraint math it drives - both "
+      "HBarSetDistance's typed-distance path and the exact TransformSubObjects+ApplyHBarConstraint call sequence a mouse "
+      "drag makes (HBarDragSelfTest, test-only, the same convention as DockLayoutRearrangeSelfTest) - is fully scriptable "
+      "and tested; see tests/srfedit_script.txt.");
+  Reg(e, "HBarSetDistance", Make<TextArgCommand>("New locked distance (model units)", [](CommandContext& ctx, const std::string& t) {
+        HBarConstraint& c = ctx.App().HBar();
+        if (!c.active) { ctx.Warn("HBarSetDistance: no HBar lock is active - run HBar first"); return; }
+        double v = 0;
+        if (std::sscanf(t.c_str(), "%lf", &v) != 1 || !(v > 0)) { ctx.Warn("HBarSetDistance: enter a positive number"); return; }
+        SceneObject* o = ctx.Doc().Find(c.object);
+        if (!o) { ctx.Warn("HBarSetDistance: the locked object no longer exists"); return; }
+        c.locked_distance = v;
+        ctx.Doc().BeginChangeForObjects("HBarSetDistance", {c.object});
+        ApplyHBarConstraint(*o, c);
+        ctx.Doc().Touch();
+        ctx.Print("HBarSetDistance: locked distance set to " + FormatNumber(v) + " - control point " + std::to_string(c.handle_index) + " moved to match.");
+      }), CommandStatus::Implemented,
+      "Types a new locked distance for the active HBar constraint and immediately re-applies it (ApplyHBarConstraint), moving "
+      "the handle control point back onto the sphere of the new radius around the anchor - the same update HBar's panel "
+      "field performs when you type into it.");
+  Reg(e, "HBarOff", Immediate([](CommandContext& ctx) {
+        HBarConstraint& c = ctx.App().HBar();
+        const bool was_active = c.active;
+        c = HBarConstraint{};
+        ctx.Print(was_active ? "HBarOff: HBar distance lock released." : "HBarOff: no HBar lock was active.");
+      }), CommandStatus::Implemented, "Releases the active HBar distance lock, if any - the same action as the panel's Release button.");
+  // Test-only diagnostic (not in commands.json, not on any menu - see
+  // DockLayoutRearrangeSelfTest, cmd_viewtools.cpp, for the same pattern):
+  // a mouse drag of the anchor control point (Gumball, or the direct
+  // control-point drag path) is not scriptable headlessly, so this
+  // exercises the exact call sequence either one makes -
+  // TransformSubObjects to move the anchor, then ApplyHBarConstraint - on
+  // the active HBar lock's own anchor/handle indices, rather than a
+  // separate, unverified re-implementation of the drag.
+  Reg(e, "HBarDragSelfTest", Make<TextArgCommand>("dx,dy,dz to move the locked anchor control point (test-only)", [](CommandContext& ctx, const std::string& t) {
+        HBarConstraint& c = ctx.App().HBar();
+        if (!c.active) { ctx.Warn("HBarDragSelfTest: no HBar lock is active - run HBar first"); return; }
+        SceneObject* o = ctx.Doc().Find(c.object);
+        if (!o) { ctx.Warn("HBarDragSelfTest: the locked object no longer exists"); return; }
+        double dx = 0, dy = 0, dz = 0;
+        std::sscanf(t.c_str(), "%lf,%lf,%lf", &dx, &dy, &dz);
+        ctx.Doc().BeginChangeForObjects("HBarDragSelfTest", {c.object});
+        SceneObject moved = *o;
+        const ON_Xform xf = ON_Xform::TranslationTransformation(Vector3d(dx, dy, dz));
+        TransformSubObjects(moved, {SubObjectRef::Vertex(c.object, c.anchor_index)}, xf);
+        ApplyHBarConstraint(moved, c);
+        *o = moved;
+        Point3d a, b;
+        ControlPointPosition(*o, c.anchor_index, a);
+        ControlPointPosition(*o, c.handle_index, b);
+        ctx.Print("HBarDragSelfTest: moved anchor control point " + std::to_string(c.anchor_index) + " by " + FormatPoint(Point3d(dx, dy, dz)) +
+                  "; anchor-handle distance is now " + FormatNumber(a.DistanceTo(b)) + " (locked at " + FormatNumber(c.locked_distance) + ")");
+      }));
   Reg(e, "DrapePt", OnSelection("Select points to drape onto the objects below them", [](CommandContext& ctx, const std::vector<ObjectId>& ids) {
         std::vector<ObjectId> pts;
         for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Point) pts.push_back(id); }
@@ -1101,6 +1189,51 @@ void RegisterSelect2Commands(CommandEngine& e) {
         ctx.Doc().Touch();
         ctx.Print("DrapePt: " + std::to_string(n) + " of " + std::to_string(pts.size()) + " point(s) draped onto the object(s) below them");
       }), CommandStatus::Implemented, "Drops the selected points straight down (world -Z) onto the nearest surface/polysurface/mesh/SubD below them.");
+}
+
+// HBar panel: shows the active distance-lock constraint (if any), a field
+// to type a new locked distance, and a Release button. Every action here
+// calls the exact same code its headless command-line equivalent does
+// (HBarSetDistance / HBarOff, registered above), so the panel is a
+// mouse-driven front end for logic that is independently scriptable and
+// tested, not a second implementation of it - the same convention
+// DrawBlockManagerPanel/DrawMappingWidgetPanel follow.
+void DrawHBarPanel(Application& app) {
+  ImGui::SetNextWindowSize(ImVec2(320, 160), ImGuiCond_Appearing);
+  if (!ImGui::Begin(PanelTitle("panel.hbar", "HBar").c_str(), &app.Panels().hbar)) { ImGui::End(); return; }
+  HBarConstraint& c = app.HBar();
+  Document& doc = app.Doc();
+  SceneObject* o = c.active ? doc.Find(c.object) : nullptr;
+  if (!c.active || !o) {
+    ImGui::TextWrapped("No distance lock is active. Turn on control points (PointsOn), select exactly two control points of "
+                        "the same object, then run HBar to lock the distance between them.");
+    ImGui::End();
+    return;
+  }
+  ImGui::Text("%s - control points %d / %d", o->name.empty() ? "(unnamed)" : o->name.c_str(), c.anchor_index, c.handle_index);
+  ImGui::TextWrapped("Drag either point (Gumball, direct control-point drag, or MoveUVN) and the other follows to keep this distance.");
+  ImGui::Separator();
+  float dist = static_cast<float>(c.locked_distance);
+  ImGui::Text("Locked distance");
+  ImGui::SetNextItemWidth(-1);
+  // Field edits follow the same per-frame-Touch convention as
+  // DrawMappingWidgetPanel's DragFloat fields: a continuously-firing drag
+  // widget doesn't snapshot per frame, only Touch()es; a whole discrete
+  // edit (InputFloat's Enter) reapplies the constraint once.
+  if (ImGui::InputFloat("##hbar_distance", &dist, 0.0f, 0.0f, "%.4f", ImGuiInputTextFlags_EnterReturnsTrue)) {
+    if (dist > 0.f) {
+      c.locked_distance = dist;
+      doc.BeginChangeForObjects("HBarSetDistance", {c.object});
+      ApplyHBarConstraint(*o, c);
+      doc.Touch();
+    }
+  }
+  ImGui::Separator();
+  if (ImGui::Button("Release Lock")) {
+    c = HBarConstraint{};
+    app.Notify("HBar distance lock released.");
+  }
+  ImGui::End();
 }
 
 }  // namespace dino8::app

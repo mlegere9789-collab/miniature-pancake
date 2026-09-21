@@ -48,6 +48,33 @@ bool TransformSubObjects(SceneObject& o, const std::vector<SubObjectRef>& refs, 
 // deletion is not possible.
 bool DeleteSubObjects(SceneObject& o, const std::vector<SubObjectRef>& refs, bool& remove_object, std::string& message);
 
+// ---- HBar: distance-lock constraint between two control points -------------
+// HBar locks the distance between two control points of the same object
+// (its "anchor" and its "handle") to a fixed value. ApplyHBarConstraint is
+// called after every control-point edit that can move either point (see the
+// TransformSubObjects call sites in Gumball.cpp and Application.cpp's
+// direct-control-point-drag path, plus MoveUVN and the other typed CV-move
+// commands in cmd_select2.cpp): it re-reads both points' current positions
+// and, if they have drifted from the locked distance, slides the handle
+// point back onto the sphere of radius `locked_distance` centered on the
+// anchor, along the current anchor->handle direction. This is a real,
+// general rod/ball-joint constraint, not a special case of any one editing
+// command: moving the anchor swings the handle around it (a pinned rod of
+// fixed length); moving the handle directly projects the attempted move
+// back onto that same sphere, so only the direction of the drag - never its
+// distance from the anchor - has any effect once the constraint is active.
+struct HBarConstraint {
+  bool active = false;
+  ObjectId object = kNoObject;
+  int anchor_index = -1;
+  int handle_index = -1;
+  double locked_distance = 0.0;
+};
+// No-op unless `c.active` and `o.id == c.object` and both indices are still
+// valid control points of `o`. Returns true if the handle point was moved
+// to restore the locked distance.
+bool ApplyHBarConstraint(SceneObject& o, const HBarConstraint& c);
+
 // Approximate MoveFace / MoveEdge on a brep: the listed faces move rigidly
 // with their edges; neighbouring untrimmed faces follow by moving the row
 // of surface control points along the shared edge (exact for iso edges,

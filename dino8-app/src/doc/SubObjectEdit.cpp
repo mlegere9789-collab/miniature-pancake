@@ -608,6 +608,20 @@ bool TransformSubObjects(SceneObject& o, const std::vector<SubObjectRef>& refs, 
   return any;
 }
 
+bool ApplyHBarConstraint(SceneObject& o, const HBarConstraint& c) {
+  if (!c.active || o.id != c.object) return false;
+  if (c.anchor_index < 0 || c.handle_index < 0) return false;
+  Point3d anchor, handle;
+  if (!ControlPointPosition(o, c.anchor_index, anchor)) return false;
+  if (!ControlPointPosition(o, c.handle_index, handle)) return false;
+  Vector3d dir = handle - anchor;
+  const double d = dir.Length();
+  if (d < 1e-12) return false;  // degenerate (coincident points): nothing to project onto
+  if (std::fabs(d - c.locked_distance) < 1e-9) return false;  // already at the locked distance
+  dir.Unitize();
+  return SetControlPointPosition(o, c.handle_index, anchor + dir * c.locked_distance);
+}
+
 bool DeleteSubObjects(SceneObject& o, const std::vector<SubObjectRef>& refs, bool& remove_object, std::string& message) {
   remove_object = false;
   if (refs.empty()) return false;
