@@ -255,6 +255,7 @@ set(DINO8_SOURCES
   src/commands/CommandCatalog.cpp
   src/commands/cmd_create.cpp
   src/commands/cmd_solids.cpp
+  src/commands/cmd_history.cpp
   src/commands/cmd_transform.cpp
   src/commands/cmd_edit.cpp
   src/commands/cmd_curveedit.cpp

@@ -350,6 +350,36 @@ struct ProvenanceInfo {
   ProvenanceKind kind = ProvenanceKind::BlockInstanceMember;
 };
 
+// The data behind History/UpdateHistory (cmd_misc.cpp): which construction
+// command built this object, from what source object(s), and with what
+// numeric/text parameters, so UpdateHistory can re-run that exact
+// construction against the source(s)' *current* geometry and replace this
+// object's geometry in place - generalizing the same side-table +
+// explicit-recompute pattern ElecRebuild's WireRun anchors and
+// UpdateDimensions' associative dimensions already use (see ElecRebuild's
+// comment in cmd_elec.cpp and BuildXDimensionGroup's in cmd_annotate.cpp)
+// to a specific, well-scoped set of construction commands - not a general
+// dependency graph covering all commands, which stays explicitly out of
+// scope (see RegisterMiscCommands' History registration for the exact
+// supported list and why those five). Only populated while
+// AppState::history_recording (History On) is set, exactly like Rhino's own
+// History command gating whether *new* construction records a link -
+// existing objects from before History was turned on never get one.
+// `command` is the command name exactly as UpdateHistory's own dispatch
+// table expects it (see kHistoryRebuilders in cmd_misc.cpp). Kept in a side
+// table for the same reason as HoleFeature/PipeFeature/ProvenanceInfo
+// above: ordinary objects, Save3dm, ObjectCount() and the object list are
+// untouched by it. Session state only - not written to the .3dm and not
+// restored by Undo/Redo (an Undo past the construction leaves a harmless
+// orphaned entry, cleared whenever the dependent object itself is removed -
+// same tradeoff HoleFeature/PipeFeature accept above).
+struct HistoryRecord {
+  std::string command;                        // "Extrude", "ExtrudeCrvToPoint", "Revolve", "Loft", "SubDLoft"
+  std::vector<ObjectId> sources;               // source curve(s), in construction order
+  std::map<std::string, double> num;           // e.g. "distance", "both", "solid", "ax","ay","az","bx","by","bz"
+  bool straight = false;                       // Loft Style=Straight
+};
+
 // The data behind SquishInfo/SquishBack: Squish's own flattening report
 // (area before/after, distortion) plus the source surface it flattened, so
 // SquishBack can evaluate that surface at a (u, v) to project a point back
@@ -654,6 +684,13 @@ class Document {
     for (const auto& [id, info] : provenance_) if (info.parent_id == parent_id) out.push_back(id);
     return out;
   }
+  void SetHistoryRecord(ObjectId id, HistoryRecord r) { history_records_[id] = std::move(r); }
+  const HistoryRecord* FindHistoryRecord(ObjectId id) const {
+    const auto it = history_records_.find(id);
+    return it == history_records_.end() ? nullptr : &it->second;
+  }
+  void ClearHistoryRecord(ObjectId id) { history_records_.erase(id); }
+  const std::map<ObjectId, HistoryRecord>& HistoryRecords() const { return history_records_; }
   void SetSquishFeature(ObjectId id, SquishFeature f) { squish_features_[id] = std::move(f); }
   const SquishFeature* FindSquishFeature(ObjectId id) const {
     const auto it = squish_features_.find(id);
@@ -1014,6 +1051,7 @@ class Document {
   std::vector<ReferenceModel> reference_models_;
   std::map<ObjectId, HoleFeature> hole_features_;
   std::map<ObjectId, PipeFeature> pipe_features_;
+  std::map<ObjectId, HistoryRecord> history_records_;
   std::map<ObjectId, ProvenanceInfo> provenance_;
   std::map<ObjectId, SquishFeature> squish_features_;
   std::map<ObjectId, SymmetryLink> symmetry_links_;

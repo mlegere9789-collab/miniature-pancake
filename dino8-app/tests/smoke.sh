@@ -1935,8 +1935,8 @@ s2check "ContentFilter: off (showing every entry)" "ContentFilter Clear removed 
 s2check "Dino 8 is free software. No licence keys" "Licenses"
 s2check "Dino 8 does not phone home" "CheckForUpdates"
 s2check "Support: open an issue at " "TechSupport"
-s2check "History: not recorded. Every edit is captured by the snapshot undo instead" "History"
-s2check "RecordHistory: not needed; undo snapshots cover every change" "RecordHistory"
+s2check "History recording: .* object(s) with live construction history" "History (real toggle+report, cmd_history.cpp's own implementation, no longer a stub)"
+s2check "History recording: .* (type On or Off to change)" "RecordHistory (shares History's own toggle)"
 s2check "Text: [0-9]* curve(s) from " "Text (annotate's real text-curve command, no longer shadowed)"
 s2check "Dino Flow: opened the node editor" "Grasshopper"
 s2check "PackageManager: opened the package manager" "PackageManager"
@@ -3039,5 +3039,32 @@ else
   echo "FAIL DINO8_CLIPBOARD_DEBUG_FILE was never written"
   fail=1
 fi
+
+# History / RecordHistory / UpdateHistory: a real, intentionally-scoped
+# constructional-history mechanism (Extrude/ExtrudeCrv, ExtrudeCrvToPoint,
+# Revolve, Loft, SubDLoft - see cmd_history.cpp's own header comment and
+# tests/history_script.txt's for exactly what this checks). The key
+# assertion is a real bounding-box move, not just an object count: after
+# History On, Extrude, moving the source curve and running UpdateHistory,
+# the extruded surface's bounding box must have actually shifted to match
+# the curve's new position - the exact check a fake/no-op implementation
+# would fail.
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
+  HS="$("$BIN" --smoke 150 --script "$HERE/history_script.txt" 2>&1)" || { echo "$HS"; echo "FAIL: history script exited non-zero"; exit 1; }
+else
+  HS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/history_script.txt" 2>&1)" || { echo "$HS"; echo "FAIL: history script exited non-zero"; exit 1; }
+fi
+echo "$HS" | grep -E "^(ok|FAIL)"
+if echo "$HS" | grep -q "^FAIL"; then fail=1; fi
+echo "$HS" | grep -q "^smoke:" || { echo "$HS"; echo "FAIL: history script produced no smoke line"; fail=1; }
+hcheck() { if echo "$HS" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+hcheck "History recording: off. 0 object(s) with live construction history" "History defaults Off and reports it"
+hcheck "UpdateHistory: 0 object(s) re-evaluated from their source curve(s)' current geometry" "an Extrude made while History was Off recorded nothing for UpdateHistory to redo"
+hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"
+hcheck "Bounding box min 20,0,0 max 30,0,5" "the freshly-extruded surface's bounding box, before the source curve moves"
+hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry" "UpdateHistory found and rebuilt exactly the one object History was tracking"
+hcheck "Bounding box min 20,0,20 max 30,0,25" "UpdateHistory genuinely re-derived the extruded surface's geometry from the source curve's new z=20 position - not the z=0..5 box baked at creation time"
+hcheck "History recording: on. 1 object(s) with live construction history:" "the live report lists exactly one tracked object"
+hcheck "object 4: Extrude <- 3" "the report names the real dependent/source pair (surface 4 built from curve 3)"
 
 exit $fail

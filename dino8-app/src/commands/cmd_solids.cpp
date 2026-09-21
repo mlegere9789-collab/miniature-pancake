@@ -1,9 +1,121 @@
 // Surface, solid, mesh and SubD creation commands.
 #include "commands/cmd_common.h"
+#include "commands/history_rebuild.h"
 
 #include <unordered_map>
 
 namespace dino8::app {
+
+namespace {
+// Local copy of the anonymous-namespace WrapBrep below, needed here because
+// the free Rebuild* functions have external linkage (declared in
+// history_rebuild.h for cmd_history.cpp to call) and so can't see a
+// same-TU anonymous-namespace symbol defined later in the file.
+kernel::Brep WrapBrepForHistory(ON_Brep* b) {
+  kernel::Brep k;
+  if (b) { k.raw() = *b; delete b; }
+  return k;
+}
+}  // namespace
+
+void RecordHistoryIfEnabled(CommandContext& ctx, ObjectId new_id, const std::string& command,
+                             std::vector<ObjectId> sources, std::map<std::string, double> num, bool straight) {
+  if (!ctx.App().State().history_recording) return;
+  HistoryRecord r;
+  r.command = command;
+  r.sources = std::move(sources);
+  r.num = std::move(num);
+  r.straight = straight;
+  ctx.Doc().SetHistoryRecord(new_id, std::move(r));
+}
+
+// Shared by ExtrudeCommand::ExtrudeCurve (Kind::Curve) below and
+// UpdateHistory (cmd_history.cpp) - see history_rebuild.h's comment for why
+// this is the single copy of the construction logic both call.
+std::optional<SceneObject> RebuildExtrude(CommandContext& ctx, const kernel::NurbsCurve& kc, const HistoryRecord& rec) {
+  auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  const Vector3d v(num("vx"), num("vy"), num("vz"));
+  const Point3d shift(num("shiftx"), num("shifty"), num("shiftz"));
+  const bool solid = num("solid") != 0.0;
+  if (v.Length() <= 0) return std::nullopt;
+  ON_NurbsCurve c = kc.raw();
+  if (shift != Point3d(0, 0, 0)) c.Translate(shift);
+  ON_Plane plane;
+  const bool closed = c.IsClosed();
+  kernel::NurbsCurve for_check;
+  const bool self_intersects = CurveFromON(c, for_check) && CurveSelfIntersects(for_check, std::max(ctx.Settings().absolute_tolerance, 1e-9));
+  if (!self_intersects && closed && solid && c.IsPlanar(&plane, ctx.Settings().absolute_tolerance)) {
+    ON_Brep* b = ON_BrepTrimmedPlane(plane, c);
+    if (b) {
+      ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + v));
+      if (ON_BrepExtrudeFace(*b, 0, path, true) >= 0) return SceneObject::MakeBrep(WrapBrepForHistory(b));
+      delete b;
+    }
+  }
+  ON_SumSurface ss;
+  if (!ss.Create(c, v)) return std::nullopt;
+  kernel::NurbsSurface k;
+  if (!SurfaceFromON(ss, k)) return std::nullopt;
+  return SceneObject::MakeSurface(k);
+}
+
+// ExtrudeCrvToPoint's construction - shared the same way as RebuildExtrude
+// above.
+std::optional<SceneObject> RebuildExtrudeToPoint(CommandContext&, const kernel::NurbsCurve& kc, const HistoryRecord& rec) {
+  auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  const Point3d apex(num("ax"), num("ay"), num("az"));
+  ON_NurbsCurve a = kc.raw();
+  ON_NurbsCurve b = a;
+  for (int i = 0; i < b.CVCount(); ++i) b.SetCV(i, apex);
+  ON_NurbsSurface s;
+  if (!s.CreateRuledSurface(a, b)) return std::nullopt;
+  kernel::NurbsSurface k;
+  k.raw() = s;
+  return SceneObject::MakeSurface(k);
+}
+
+// Revolve's construction - shared the same way as RebuildExtrude above.
+std::optional<SceneObject> RebuildRevolve(CommandContext&, const kernel::NurbsCurve& kc, const HistoryRecord& rec) {
+  auto num = [&](const char* k) { auto it = rec.num.find(k); return it == rec.num.end() ? 0.0 : it->second; };
+  const Point3d a(num("ax"), num("ay"), num("az")), b(num("bx"), num("by"), num("bz"));
+  if ((b - a).Length() <= 0) return std::nullopt;
+  ON_RevSurface* rs = ON_RevSurface::New();
+  rs->m_curve = new ON_NurbsCurve(kc.raw());
+  rs->m_axis = ON_Line(a, b);
+  rs->m_angle = ON_Interval(0, 2 * ON_PI);
+  rs->m_t = rs->m_curve->Domain();
+  ON_Brep* brep = ON_BrepRevSurface(rs, true, true);
+  if (!brep) return std::nullopt;
+  return SceneObject::MakeBrep(WrapBrepForHistory(brep));
+}
+
+// Loft/SubDLoft's construction - shared the same way as RebuildExtrude
+// above. `rec.command == "SubDLoft"` selects the SubD/mesh output kind;
+// `rec.straight` is Style=Straight. Faithfully replicates Loft()'s own
+// control-grid construction below (including its existing behaviour that
+// an open SubDLoft still yields a NurbsSurface, same as Loft, since the
+// SubD-from-rings path only applies to closed sections) so a rebuilt
+// object can never differ from what the live command would have built.
+std::optional<SceneObject> RebuildLoft(CommandContext&, const std::vector<const kernel::NurbsCurve*>& curves, const HistoryRecord& rec) {
+  if (curves.size() < 2) return std::nullopt;
+  const bool subd = rec.command == "SubDLoft";
+  const int n = 24;
+  std::vector<Point3d> grid;
+  const bool closed = curves.front()->IsClosed();
+  for (const kernel::NurbsCurve* c : curves) {
+    kernel::Interval d = c->Domain();
+    for (int i = 0; i < n; ++i) grid.push_back(c->PointAt(d.min + (d.max - d.min) * i / (closed ? n : n - 1.0)));
+  }
+  if (closed) {
+    std::vector<std::vector<Point3d>> rings;
+    for (size_t k = 0; k < curves.size(); ++k) rings.emplace_back(grid.begin() + static_cast<long>(k * n), grid.begin() + static_cast<long>((k + 1) * n));
+    kernel::Mesh m = kernel::Mesh::LoftClosedRings(rings);
+    if (subd) return SceneObject::MakeSubD(kernel::SubD::FromControlMesh(m));
+    return SceneObject::MakeMesh(m);
+  }
+  const int vdeg = rec.straight ? 1 : std::min(3, static_cast<int>(curves.size()) - 1);
+  return SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, n, static_cast<int>(curves.size()), 3, vdeg));
+}
 
 namespace {
 
@@ -439,42 +551,30 @@ class ExtrudeCommand : public Command {
   // whichever object actually gets built below, so SelExtrusion/SelParents/
   // SelChildren (cmd_select2.cpp) can find the real link - and, once the
   // source curve is deleted, gracefully find nothing instead of crashing.
+  // Delegates the actual construction to the free RebuildExtrude function
+  // (defined above RegisterSolidCommands' anonymous namespace) so
+  // UpdateHistory (cmd_history.cpp) can later re-run the exact same
+  // construction against the source curve's current geometry - see
+  // history_rebuild.h's comment. `v`/`shift` are recorded as this
+  // extrusion's HistoryRecord parameters (History On only) alongside
+  // `source_id` as this extrusion's provenance parent (doc/Document.h's
+  // ProvenanceInfo), so SelExtrusion/SelParents/SelChildren
+  // (cmd_select2.cpp) can find the real link - and, once the source curve
+  // is deleted, gracefully find nothing instead of crashing.
   bool ExtrudeCurve(CommandContext& ctx, ObjectId source_id, const kernel::NurbsCurve& kc, Vector3d v, Point3d shift) {
-    ON_NurbsCurve c = kc.raw();
-    if (shift != Point3d(0, 0, 0)) c.Translate(shift);
-    ON_Plane plane;
-    const bool closed = c.IsClosed();
-    // ON_BrepTrimmedPlane builds a single trim loop unconditionally, with
-    // no check that the boundary curve is simple - for a self-crossing
-    // closed curve it would still hand back a Brep that topologically
-    // looks like a closed solid (every edge has two trims) while its trim
-    // loop actually crosses itself in 2D, a silent geometric corruption
-    // exactly like the huge-coordinate mesh-precision case documented in
-    // adversarial_corpus_notes.md. Reject it here instead and fall through
-    // to the open ruled-surface path below (SumSurface has no "solid"
-    // claim to violate, so it's a safe, honest degrade rather than a
-    // second failure mode).
     kernel::NurbsCurve for_check;
-    if (CurveFromON(c, for_check) && CurveSelfIntersects(for_check, std::max(ctx.Settings().absolute_tolerance, 1e-9))) {
+    ON_NurbsCurve check_c = kc.raw();
+    if (shift != Point3d(0, 0, 0)) check_c.Translate(shift);
+    if (CurveFromON(check_c, for_check) && CurveSelfIntersects(for_check, std::max(ctx.Settings().absolute_tolerance, 1e-9)))
       ctx.Warn("Extrude: the selected curve crosses itself - building an open surface instead of a solid cap");
-    } else if (closed && solid_ && c.IsPlanar(&plane, ctx.Settings().absolute_tolerance)) {
-      ON_Brep* b = ON_BrepTrimmedPlane(plane, c);
-      if (b) {
-        ON_LineCurve path(ON_Line(ON_3dPoint::Origin, ON_3dPoint::Origin + v));
-        if (ON_BrepExtrudeFace(*b, 0, path, true) >= 0) {
-          const ObjectId new_id = ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b)));
-          ctx.Doc().SetProvenance(new_id, source_id, ProvenanceKind::ExtrusionRail);
-          return true;
-        }
-        delete b;
-      }
-    }
-    ON_SumSurface ss;
-    if (!ss.Create(c, v)) return false;
-    kernel::NurbsSurface k;
-    if (!SurfaceFromON(ss, k)) return false;
-    const ObjectId new_id = ctx.Doc().Add(SceneObject::MakeSurface(k));
+    HistoryRecord rec;
+    rec.command = "Extrude";
+    rec.num = {{"vx", v.x}, {"vy", v.y}, {"vz", v.z}, {"shiftx", shift.x}, {"shifty", shift.y}, {"shiftz", shift.z}, {"solid", solid_ ? 1.0 : 0.0}};
+    std::optional<SceneObject> built = RebuildExtrude(ctx, kc, rec);
+    if (!built) return false;
+    const ObjectId new_id = ctx.Doc().Add(std::move(*built));
     ctx.Doc().SetProvenance(new_id, source_id, ProvenanceKind::ExtrusionRail);
+    RecordHistoryIfEnabled(ctx, new_id, "Extrude", {source_id}, rec.num);
     return true;
   }
   void BuildToPoint(CommandContext& ctx, Point3d apex) {
@@ -483,16 +583,14 @@ class ExtrudeCommand : public Command {
     for (ObjectId id : ids_) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o || o->kind != ObjectKind::Curve) continue;
-      // Ruled surface from the curve to a degenerate curve at the apex.
-      ON_NurbsCurve a = o->curve->raw();
-      ON_NurbsCurve b = a;
-      for (int i = 0; i < b.CVCount(); ++i) b.SetCV(i, apex);
-      ON_NurbsSurface s;
-      if (s.CreateRuledSurface(a, b)) {
-        kernel::NurbsSurface k; k.raw() = s;
-        const ObjectId new_id = ctx.Doc().Add(SceneObject::MakeSurface(k));
-        ctx.Doc().SetProvenance(new_id, id, ProvenanceKind::ExtrusionRail);
-      }
+      HistoryRecord rec;
+      rec.command = "ExtrudeCrvToPoint";
+      rec.num = {{"ax", apex.x}, {"ay", apex.y}, {"az", apex.z}};
+      std::optional<SceneObject> built = RebuildExtrudeToPoint(ctx, *o->curve, rec);
+      if (!built) continue;
+      const ObjectId new_id = ctx.Doc().Add(std::move(*built));
+      ctx.Doc().SetProvenance(new_id, id, ProvenanceKind::ExtrusionRail);
+      RecordHistoryIfEnabled(ctx, new_id, "ExtrudeCrvToPoint", {id}, rec.num);
     }
     Finish();
   }
@@ -535,13 +633,18 @@ class RevolveCommand : public Command {
     for (ObjectId id : ids_) {
       const SceneObject* o = ctx.Doc().Find(id);
       if (!o) continue;
-      ON_RevSurface* rs = ON_RevSurface::New();
-      rs->m_curve = new ON_NurbsCurve(o->curve->raw());
-      rs->m_axis = ON_Line(*a_, p);
-      rs->m_angle = ON_Interval(0, 2 * ON_PI);
-      rs->m_t = rs->m_curve->Domain();
-      ON_Brep* b = ON_BrepRevSurface(rs, true, true);
-      if (b) ctx.Doc().Add(SceneObject::MakeBrep(WrapBrep(b)));
+      // Delegates to the free RebuildRevolve function so UpdateHistory
+      // (cmd_history.cpp) can re-run the exact same revolve against this
+      // curve's current geometry later - see history_rebuild.h. The axis
+      // (`a_`, `p`) is recorded as-picked and does NOT move on rebuild,
+      // same as Rhino's own Revolve history.
+      HistoryRecord rec;
+      rec.command = "Revolve";
+      rec.num = {{"ax", a_->x}, {"ay", a_->y}, {"az", a_->z}, {"bx", p.x}, {"by", p.y}, {"bz", p.z}};
+      std::optional<SceneObject> built = RebuildRevolve(ctx, *o->curve, rec);
+      if (!built) continue;
+      const ObjectId new_id = ctx.Doc().Add(std::move(*built));
+      RecordHistoryIfEnabled(ctx, new_id, "Revolve", {id}, rec.num);
     }
     Finish();
   }
@@ -561,29 +664,21 @@ class RevolveCommand : public Command {
 // no way to express - claiming them as distinct styles here would not be
 // honest, so Straight is the only alternate style.
 void Loft(CommandContext& ctx, const std::vector<ObjectId>& ids, bool subd, bool straight = false) {
+  std::vector<ObjectId> curve_ids;
   std::vector<const kernel::NurbsCurve*> curves;
-  for (ObjectId id : ids) { const SceneObject* o = ctx.Doc().Find(id); if (o && o->kind == ObjectKind::Curve) curves.push_back(o->curve.get()); }
+  for (ObjectId id : ids) {
+    const SceneObject* o = ctx.Doc().Find(id);
+    if (o && o->kind == ObjectKind::Curve) { curve_ids.push_back(id); curves.push_back(o->curve.get()); }
+  }
   if (curves.size() < 2) { ctx.Warn("Select at least two curves"); return; }
-  const int n = 24;
-  std::vector<Point3d> grid;
-  const bool closed = curves.front()->IsClosed();
-  for (const kernel::NurbsCurve* c : curves) {
-    kernel::Interval d = c->Domain();
-    for (int i = 0; i < n; ++i) grid.push_back(c->PointAt(d.min + (d.max - d.min) * i / (closed ? n : n - 1.0)));
-  }
   ctx.Doc().BeginChange(subd ? "SubDLoft" : "Loft");
-  if (subd || closed) {
-    std::vector<std::vector<Point3d>> rings;
-    for (size_t k = 0; k < curves.size(); ++k) rings.emplace_back(grid.begin() + static_cast<long>(k * n), grid.begin() + static_cast<long>((k + 1) * n));
-    if (closed) {
-      kernel::Mesh m = kernel::Mesh::LoftClosedRings(rings);
-      if (subd) ctx.Doc().Add(SceneObject::MakeSubD(kernel::SubD::FromControlMesh(m)));
-      else ctx.Doc().Add(SceneObject::MakeMesh(m));
-      return;
-    }
-  }
-  int vdeg = straight ? 1 : std::min(3, static_cast<int>(curves.size()) - 1);
-  ctx.Doc().Add(SceneObject::MakeSurface(kernel::NurbsSurface::FromControlGrid(grid, n, static_cast<int>(curves.size()), 3, vdeg)));
+  HistoryRecord rec;
+  rec.command = subd ? "SubDLoft" : "Loft";
+  rec.straight = straight;
+  std::optional<SceneObject> built = RebuildLoft(ctx, curves, rec);
+  if (!built) { ctx.Warn("Loft failed"); return; }
+  const ObjectId new_id = ctx.Doc().Add(std::move(*built));
+  RecordHistoryIfEnabled(ctx, new_id, rec.command, curve_ids, {}, straight);
 }
 
 // Pulls "Style=Straight"/"Style=Normal" off the command's remaining typed

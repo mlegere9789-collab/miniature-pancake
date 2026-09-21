@@ -81,6 +81,7 @@ void RegisterStandardsCommands(CommandEngine&);   // cmd_standards.cpp: Standard
 void RegisterSessionCommands(CommandEngine&);  // Dig* digitizer, Worksession/LimitReferenceModel, Snapshots
 void RegisterCompareCommands(CommandEngine&);  // DwgCompare/XrefCompare/CompareClear
 void RegisterSheetSetCommands(CommandEngine&);  // SheetSetNew/Add/Open/Plot/Publish (cmd_sheetset.cpp)
+void RegisterHistoryCommands(CommandEngine&);   // History/RecordHistory/UpdateHistory (cmd_history.cpp)
 
 Application::Application() = default;
 Application::~Application() = default;
@@ -340,6 +341,7 @@ void Application::RegisterCommands() {
   RegisterCompareCommands(*engine_);    // DwgCompare/XrefCompare/CompareClear
   dino8::app::RegisterStandardsCommands(*engine_);  // Standards, CheckStandards (CAD Standards Checker subset)
   RegisterSheetSetCommands(*engine_);    // SheetSetNew/Add/Open/Plot/Publish
+  RegisterHistoryCommands(*engine_);     // History/RecordHistory/UpdateHistory - runs last so it always wins over cmd_misc.cpp's dead stub comment
   RegisterFlowCommands(*engine_);       // very last: Dino Flow + plug-ins, replaces the Grasshopper/plug-in stubs
 }
 

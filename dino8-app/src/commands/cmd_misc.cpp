@@ -395,10 +395,10 @@ void RegisterMiscCommands(CommandEngine& e) {
   // keys are case-insensitive) - superseded by that real ChoiceCommand
   // (RegisterStateCommands runs after this file, so it always won here
   // anyway; this stub was dead code).
-  Reg(e, "History", Immediate([](CommandContext& ctx) { ctx.Print("History: not recorded. Every edit is captured by the snapshot undo instead."); }), CommandStatus::Partial,
-      "There is no constructional-history dependency graph in this build (e.g. a moved curve does not update surfaces built from it); undo snapshots are a substitute for undo/redo only, not for live parametric updates.");
-  Reg(e, "RecordHistory", Immediate([](CommandContext& ctx) { ctx.Print("RecordHistory: not needed; undo snapshots cover every change."); }), CommandStatus::Partial,
-      "Toggles nothing real: there is no history-recording engine to turn on (see History).");
+  // History / RecordHistory / UpdateHistory: real, scoped constructional
+  // history (Extrude/ExtrudeCrv, ExtrudeCrvToPoint, Revolve, Loft,
+  // SubDLoft) - registered by RegisterHistoryCommands (cmd_history.cpp),
+  // which runs after this file, so it always wins here anyway.
   // Grasshopper: superseded, dead code - cmd_flow.cpp's real Dino Flow node
   // editor (RegisterFlowCommands runs last, so it always wins here anyway).
   Reg(e, "RunScript", Make<ScriptCommand>("RunScript"),

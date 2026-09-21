@@ -143,6 +143,7 @@ struct AppState {
   bool decimal_comma = false;        // DecimalPoint: print numbers with a decimal comma
   bool crease_splitting = true;      // CreaseSplitting: AutomaticSubDFromMesh creases sharp edges
   bool check_new_objects = false;    // CheckNewObjects: validate objects every command adds
+  bool history_recording = false;    // History On/Off: whether NEW construction commands record a HistoryRecord (doc/Document.h) for UpdateHistory to rebuild later
   int layer_book_page = -1;          // LayerBook: index of the layer currently shown alone
   bool dig_beep = false;             // DigBeep: terminal-bell feedback per digitized point
   std::string content_filter;        // ContentFilter: case-insensitive name substring for the Materials/Textures/Environments panels
