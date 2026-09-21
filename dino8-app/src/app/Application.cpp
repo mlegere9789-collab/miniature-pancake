@@ -66,6 +66,7 @@ void RegisterRenderCommands(CommandEngine&);
 void RegisterRaytraceCommands(CommandEngine&);
 void RegisterSolidToolsCommands(CommandEngine&);
 void UpdateCageCaptives(Document&);  // cmd_solidtools.cpp: re-deforms CageEdit captives when a cage moved
+void UpdateSymmetryLive(Document&);  // cmd_curves2.cpp: re-derives Symmetry's mirrored copies when their source moved
 void RegisterSelect2Commands(CommandEngine&);
 void RegisterStateCommands(CommandEngine&);
 void RegisterViewToolsCommands(CommandEngine&);
@@ -1014,6 +1015,7 @@ bool Application::ExportDrawing(const std::string& path, bool selected_only, dou
 void Application::Frame() {
   if (std::getenv("DINO8_UI_DEBUG") && (ImGui::GetFrameCount() == 5 || ImGui::GetFrameCount() == 90)) { const ImVec4& w = ImGui::GetStyle().Colors[ImGuiCol_WindowBg]; std::fprintf(stderr, "[theme] mode=%d WindowBg=%.2f %.2f %.2f a=%.2f\n", theme_mode, w.x, w.y, w.z, w.w); }
   UpdateCageCaptives(doc_);
+  UpdateSymmetryLive(doc_);
   HandleShortcuts();
   ViewToolsFrame(*this);
   dino8::input::Frame(*this);  // SpaceMouse: apply queued 6-DOF deltas, draw its options page

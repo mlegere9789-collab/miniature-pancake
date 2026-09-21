@@ -2199,7 +2199,149 @@ void MergeCurves(CommandContext& ctx, const std::vector<ObjectId>& ids) {
              std::to_string(merged) + " tangent junction(s) into a single span");
 }
 
+// ---------------------------------------------------------------------------
+// Symmetry / RemoveSymmetry: a live mirrored copy (see Document::
+// SymmetryLink for the side table and UpdateSymmetryPairs' comment on the
+// module note near RegisterCurves2Commands for the update hook).
+// ---------------------------------------------------------------------------
+
+// Replaces `target`'s geometry (kind + point/curve/surface/brep/mesh/subd/
+// point_cloud) with `src`'s, transformed by `xf`, leaving every other field
+// of `target` (id, name, layer, color, group, user_text, visibility...)
+// untouched - the general-kind equivalent of ReplaceCurve above, needed
+// here because a Symmetry pair can be any object kind (Mirror itself
+// handles all kinds via SceneObject::Transform, so this must too).
+void RederiveMirroredCopy(SceneObject& target, const SceneObject& src, const ON_Xform& xf) {
+  SceneObject dup = src;
+  dup.Transform(xf);
+  target.kind = dup.kind;
+  target.point = dup.point;
+  target.curve = std::move(dup.curve);
+  target.surface = std::move(dup.surface);
+  target.brep = std::move(dup.brep);
+  target.mesh = std::move(dup.mesh);
+  target.subd = std::move(dup.subd);
+  target.point_cloud = std::move(dup.point_cloud);
+  target.InvalidateDisplay();
+}
+
+ON_Xform MirrorXform(Point3d plane_point, Vector3d plane_normal) {
+  return ON_Xform::MirrorTransformation(
+      ON_PlaneEquation(plane_normal.x, plane_normal.y, plane_normal.z, -ON_DotProduct(plane_normal, plane_point)));
+}
+
+class SymmetryCommand : public Command {
+ public:
+  void Begin(CommandContext&) override { WantObjects("Select objects to build a live symmetric (mirrored) copy of"); }
+  void OnObjects(CommandContext&, const std::vector<ObjectId>& ids) override {
+    ids_ = ids;
+    WantPoint("Start of symmetry plane");
+    options = {{"XAxis", "", {}, false, false}, {"YAxis", "", {}, false, false}};
+  }
+  void OnOption(CommandContext& ctx, const std::string& n, const std::string&) override {
+    ON_Plane pl = ActivePlane(ctx);
+    if (n == "XAxis") Apply(ctx, pl.origin, pl.origin + pl.xaxis);
+    if (n == "YAxis") Apply(ctx, pl.origin, pl.origin + pl.yaxis);
+  }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    ctx.SetLastPoint(p);
+    if (!a_) { a_ = p; WantPoint("End of symmetry plane"); return; }
+    Apply(ctx, *a_, p);
+  }
+  Vector3d PlaneNormal(CommandContext& ctx, Point3d a, Point3d b) {
+    Vector3d dir = b - a;
+    Vector3d n = ON_CrossProduct(dir, ActiveNormal(ctx));
+    if (n.Length() <= 0) n = ActivePlane(ctx).yaxis;
+    n.Unitize();
+    return n;
+  }
+  void Apply(CommandContext& ctx, Point3d a, Point3d b) {
+    const Vector3d n = PlaneNormal(ctx, a, b);
+    const ON_Xform xf = MirrorXform(a, n);
+    ctx.Doc().BeginChange("Symmetry");
+    int made = 0;
+    for (ObjectId id : ids_) {
+      const SceneObject* src = ctx.Doc().Find(id);
+      if (!src) continue;
+      SceneObject dup = *src;
+      dup.id = kNoObject;
+      dup.selected = false;
+      dup.Transform(xf);
+      if (dup.user_text.count("Block")) dup.user_text["Mirrored"] = "1";
+      const ObjectId copy_id = ctx.Doc().Add(std::move(dup));
+      // The live link itself: UpdateSymmetryPairs (below) re-derives this
+      // copy's geometry from object `id`'s *current* shape on every future
+      // edit, using this same (plane_point, plane_normal) transform - a
+      // real constraint, not a one-time bake (contrast the old Mirror-only
+      // behaviour this command used to have).
+      ctx.Doc().SetSymmetryLink(copy_id, id, a, n);
+      ++made;
+    }
+    ctx.ClearPreview();
+    ctx.Print("Symmetry: " + std::to_string(made) + " live mirrored cop" + (made == 1 ? "y" : "ies") +
+               " created - editing the source half updates the mirrored half automatically (RemoveSymmetry breaks the link)");
+    Finish();
+  }
+  void OnHover(CommandContext& ctx, Point3d h) override {
+    if (!a_) return;
+    ctx.ClearPreview();
+    ctx.AddPreviewLine(*a_, h);
+  }
+  void OnCancel(CommandContext& ctx) override { ctx.ClearPreview(); }
+  std::vector<ObjectId> ids_;
+  std::optional<Point3d> a_;
+};
+
+// Re-evaluates every live Symmetry pair whose source has changed since the
+// last pass. Called once per frame by Application::Frame(), the exact hook
+// UpdateCageCaptives/UpdateCages already use to keep CageEdit's captives
+// following a moved/scaled cage in real time (cmd_solidtools.cpp) - this
+// reuses that hook rather than adding a second one. Unlike ElecRebuild/
+// UpdateDimensions (an explicit, user-invoked recompute - see their own
+// notes), this makes Symmetry a genuine live constraint: no rebuild command
+// needed, the mirrored copy just stays in sync.
+void UpdateSymmetryPairs(Document& doc) {
+  std::map<ObjectId, SymmetryLink>& links = doc.SymmetryLinks();
+  for (auto it = links.begin(); it != links.end();) {
+    const ObjectId copy_id = it->first;
+    const SymmetryLink& link = it->second;
+    SceneObject* copy = doc.Find(copy_id);
+    const SceneObject* src = doc.Find(link.source_id);
+    if (!copy || !src) { it = links.erase(it); continue; }
+    RederiveMirroredCopy(*copy, *src, MirrorXform(link.plane_point, link.plane_normal));
+    doc.Touch();
+    ++it;
+  }
+}
+
+// Breaks the live link a Symmetry pair's objects carry. Accepts either half
+// selected: the mirrored copy (looked up directly, since SymmetryLink is
+// keyed by the copy's id) or the source half (found by scanning for a link
+// whose source_id matches - a pair's source can feed more than one live
+// copy, e.g. two separate Symmetry runs against different planes, so this
+// removes every link that selected object is the source of). The freed
+// copy becomes an ordinary independent object: its geometry stays exactly
+// as it last was, nothing about it changes except that UpdateSymmetryPairs
+// no longer touches it.
+void RemoveSymmetryOf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
+  int removed = 0;
+  for (ObjectId id : ids) {
+    if (ctx.Doc().FindSymmetryLink(id)) { ctx.Doc().ClearSymmetryLink(id); ++removed; continue; }
+    std::vector<ObjectId> as_source;
+    for (const auto& [copy_id, link] : ctx.Doc().SymmetryLinks()) if (link.source_id == id) as_source.push_back(copy_id);
+    for (ObjectId copy_id : as_source) { ctx.Doc().ClearSymmetryLink(copy_id); ++removed; }
+  }
+  if (removed == 0) ctx.Print("RemoveSymmetry: no live symmetry link on the selected object(s)");
+  else ctx.Print("RemoveSymmetry: " + std::to_string(removed) + " live symmetry link(s) removed - the mirrored cop" +
+                 std::string(removed == 1 ? "y is" : "ies are") + " now independent object(s), no longer updated when the source is edited");
+}
+
 }  // namespace
+
+// Called once per frame by Application::Frame() (see UpdateSymmetryPairs'
+// own comment above) - external linkage wrapper, same shape as
+// UpdateCageCaptives/UpdateCages in cmd_solidtools.cpp.
+void UpdateSymmetryLive(Document& doc) { UpdateSymmetryPairs(doc); }
 
 void RegisterCurves2Commands(CommandEngine& e) {
   Reg(e, "Conic", Make<ConicCommand>());
@@ -2485,10 +2627,10 @@ void RegisterCurves2Commands(CommandEngine& e) {
   Reg(e, "ExtendCrvOnSrf", Make<ExtendCrvOnSrfCommand>());
   Reg(e, "InterpCrvOnSrf", Make<InterpCrvOnSrfCommand>());
   Reg(e, "HandleCurve", Make<SoftEditCommand>("HandleCurve"));
-  Reg(e, "Symmetry", Immediate([](CommandContext& ctx) { ctx.Engine().Execute("Mirror"); }), CommandStatus::Partial,
-      "Builds a one-time mirrored copy via Mirror; true Symmetry needs a live constraint that keeps re-mirroring the other half on every future edit, which would require hooking every edit/transform path in the document (not something this command alone can add) - edit each half and re-run Mirror to update the copy.");
-  Reg(e, "RemoveSymmetry", Immediate([](CommandContext& ctx) { ctx.Print("RemoveSymmetry: no live symmetry is active."); }), CommandStatus::Partial,
-      "Since Symmetry itself only ever builds a one-time mirrored copy (see its own note), there is no live link for this command to remove - it can only ever report that, honestly, rather than actually breaking a constraint that was never created.");
+  Reg(e, "Symmetry", Make<SymmetryCommand>(), CommandStatus::Implemented,
+      "Builds a live mirrored copy: like Mirror Copy=Yes, but the copy carries a real link (Document::SymmetryLink, a side table keyed by the copy's id, same pattern as HoleFeature/PipeFeature/SquishFeature) back to the source object and the mirror plane it was built from. UpdateSymmetryPairs re-derives the copy's geometry from the source's *current* shape every frame (the same per-frame hook UpdateCageCaptives already uses to keep CageEdit's captives following a moved cage - Application::Frame, cmd_solidtools.cpp), so editing the source keeps the mirrored copy in sync automatically with no rebuild command needed - a genuine live constraint, not a one-time bake. RemoveSymmetry breaks the link.");
+  Reg(e, "RemoveSymmetry", OnSelection("Select the mirrored copy or its source (either half of a Symmetry pair)", RemoveSymmetryOf), CommandStatus::Implemented,
+      "Clears the SymmetryLink a Symmetry pair's objects carry (see Symmetry's own note): selecting either the mirrored copy or its source removes the live link, so UpdateSymmetryPairs stops re-deriving that copy and it becomes an ordinary independent object - its geometry is left exactly as it last stood, only the automatic future updates stop.");
   Reg(e, "InsertLineIntoCrv", Make<InsertLineIntoCrvCommand>());
   Reg(e, "CSec", Make<CSecCommand>());
 }

@@ -378,6 +378,32 @@ struct SquishFeature {
   double avg_distortion = 0;
 };
 
+// The data behind a live Symmetry pair (Symmetry/RemoveSymmetry,
+// cmd_curves2.cpp): which source object the mirrored copy tracks and the
+// mirror plane it was built from, as a point on the plane plus its unit
+// normal (the same (point, normal) shape MirrorCommand's own
+// ON_PlaneEquation already uses - see cmd_transform.cpp). Keyed by the
+// mirrored *copy's* object id, same side-table pattern and same session-
+// only scope as HoleFeature/PipeFeature/SquishFeature above (not written
+// to the .3dm, not restored by Undo/Redo; an Undo past the Symmetry leaves
+// a harmless orphaned entry). UpdateSymmetryPairs (cmd_curves2.cpp, called
+// once per frame by Application::Frame - the exact hook UpdateCageCaptives/
+// UpdateCages already use for CageEdit's own live captives, see
+// CageBinding below) re-evaluates every entry: re-applies the stored
+// mirror transform to the source object's *current* geometry and writes
+// the result into the copy, so editing either half's source keeps the
+// mirrored copy in sync automatically, with no explicit rebuild command
+// needed - unlike ElecRebuild/UpdateDimensions, which stay one-shot,
+// explicitly-invoked recomputes by design (see their own comments). A
+// dangling source_id (source deleted) or a missing copy makes
+// UpdateSymmetryPairs drop the entry, same "degrades to nothing found
+// rather than a crash" contract ProvenanceInfo documents above.
+struct SymmetryLink {
+  ObjectId source_id = kNoObject;
+  kernel::Point3d plane_point{0, 0, 0};
+  kernel::Vector3d plane_normal{0, 0, 1};
+};
+
 // The data behind PackSubDFaces (cmd_subd.cpp): the packed UV-atlas layout
 // for a SubD's current control-net faces. `packed_mesh` is a
 // duplicated-vertex (fully unwelded) copy of the control net - one private
@@ -634,6 +660,16 @@ class Document {
     return it == squish_features_.end() ? nullptr : &it->second;
   }
   void ClearSquishFeature(ObjectId id) { squish_features_.erase(id); }
+  void SetSymmetryLink(ObjectId copy_id, ObjectId source_id, kernel::Point3d plane_point, kernel::Vector3d plane_normal) {
+    symmetry_links_[copy_id] = SymmetryLink{source_id, plane_point, plane_normal};
+  }
+  const SymmetryLink* FindSymmetryLink(ObjectId copy_id) const {
+    const auto it = symmetry_links_.find(copy_id);
+    return it == symmetry_links_.end() ? nullptr : &it->second;
+  }
+  void ClearSymmetryLink(ObjectId copy_id) { symmetry_links_.erase(copy_id); }
+  std::map<ObjectId, SymmetryLink>& SymmetryLinks() { return symmetry_links_; }
+  const std::map<ObjectId, SymmetryLink>& SymmetryLinks() const { return symmetry_links_; }
   void SetSubDPackFeature(ObjectId id, SubDPackFeature f) { subd_pack_features_[id] = std::move(f); }
   const SubDPackFeature* FindSubDPackFeature(ObjectId id) const {
     const auto it = subd_pack_features_.find(id);
@@ -980,6 +1016,7 @@ class Document {
   std::map<ObjectId, PipeFeature> pipe_features_;
   std::map<ObjectId, ProvenanceInfo> provenance_;
   std::map<ObjectId, SquishFeature> squish_features_;
+  std::map<ObjectId, SymmetryLink> symmetry_links_;
   std::map<ObjectId, SubDPackFeature> subd_pack_features_;
   std::map<ObjectId, CageBinding> cage_bindings_;
   std::map<std::string, std::string> user_text_;

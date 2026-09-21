@@ -280,5 +280,32 @@ Enter
 SelLast
 List
 SelNone
+# --- Symmetry / RemoveSymmetry: a real live mirrored copy (Document::
+# SymmetryLink + UpdateSymmetryPairs, called every frame from
+# Application::Frame alongside UpdateCageCaptives - not a one-time Mirror
+# bake). Moving SymSource updates SymCopy automatically with no rebuild
+# command; after RemoveSymmetry, moving SymSource again leaves SymCopy
+# exactly where it was.
+SelAll
+Hide
+Line 0,0,0 10,0,0
+SelLast
+SetObjectName SymSource
+Symmetry 20,0,0 20,1,0
+SelLast
+SetObjectName SymCopy
+What
+SelName SymSource
+Move 0,0,0 0,0,5
+SelName SymCopy
+What
+SelName SymSource
+RemoveSymmetry
+SelName SymSource
+Move 0,0,5 0,0,9
+SelName SymCopy
+What
+SelAll
+Show
 SelNone
-@expect_objects 70
+@expect_objects 72

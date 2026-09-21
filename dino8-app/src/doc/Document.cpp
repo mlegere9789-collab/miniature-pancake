@@ -40,6 +40,7 @@ void Document::Clear() {
   pipe_features_.clear();
   squish_features_.clear();
   subd_pack_features_.clear();
+  symmetry_links_.clear();
   user_text_.clear();
   notes_.clear();
   settings_ = DocumentSettings{};
@@ -76,6 +77,10 @@ bool Document::Remove(ObjectId id) {
   provenance_.erase(id);
   squish_features_.erase(id);
   subd_pack_features_.erase(id);
+  symmetry_links_.erase(id);
+  for (auto it2 = symmetry_links_.begin(); it2 != symmetry_links_.end();) {
+    if (it2->second.source_id == id) it2 = symmetry_links_.erase(it2); else ++it2;
+  }
   Touch();
   return true;
 }

@@ -165,7 +165,16 @@ c2check "CSec: 1 curve(s) from 5 section(s) along the rail" "CSec sectioned perp
 c2check "ContinueCurve: curve extended with 2 new point(s) and joined" "ContinueCurve extended and auto-joined a curve"
 c2check "EndBulge: end handle scaled by 2" "EndBulge scaled the end tangent handle"
 c2check "InterpCrvOnSrf: curve interpolated through 3 point(s) on the surface" "InterpCrvOnSrf projected points onto the surface before interpolating"
-c2check "^ok   expect_objects 70" "curve-tools script produced the expected object count"
+c2check "Symmetry: 1 live mirrored copy created" "Symmetry built a real live-linked mirrored copy, not a one-time Mirror bake"
+c2check "Bounding box: (30, 0, 0) to (40, 0, 0)" "Symmetry's mirrored copy starts at the hand-derived reflection of the source about x=20"
+c2check "Bounding box: (30, 0, 5) to (40, 0, 5)" "moving the source updated the mirrored copy automatically (UpdateSymmetryPairs, no rebuild command run)"
+c2check "RemoveSymmetry: 1 live symmetry link" "RemoveSymmetry actually broke the live link, not just reported one was never there"
+if echo "$C2" | grep -q "Bounding box: (30, 0, 9) to (40, 0, 9)"; then
+  echo "FAIL RemoveSymmetry did not actually break the live link (copy still followed the source's post-removal move)"; fail=1
+else
+  echo "ok   RemoveSymmetry genuinely broke the live link (copy did NOT follow the source's post-removal move)"
+fi
+c2check "^ok   expect_objects 72" "curve-tools script produced the expected object count"
 # Exchange formats: DXF round-trip, SVG / PDF vector output, PLY round-trip (see exchange_script.txt).
 sed "s|@TMP@|$TMP|g" "$HERE/exchange_script.txt" > "$TMP/exchange_script.txt"
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1; then
