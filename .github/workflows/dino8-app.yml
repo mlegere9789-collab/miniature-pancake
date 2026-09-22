@@ -119,6 +119,15 @@ jobs:
       # smoke.sh's function-wrapping/retry logic, gives the rawest possible
       # signal on which specific code path is responsible. continue-on-error
       # so this diagnostic never blocks the real smoke.sh run below.
+      # Round 1 (already run, both exit=0/succeeded): a single plain Export
+      # and a single Version=13 Export, each its OWN process launch, both
+      # fine - a one-off DWG export alone is not the trigger. The real
+      # dwg_script.txt's distinguishing feature is doing SEVERAL DWG
+      # operations back-to-back INSIDE ONE running process (Export, then
+      # New+Open the same file back, then more Exports with different
+      # Version= values) - a pattern this round tests directly, since a
+      # non-reentrant/leaking bit of LibreDWG global state would only bite
+      # on a second in-process call, not a fresh process's first call.
       - name: DWG export bisection (diagnostic)
         shell: bash
         continue-on-error: true
@@ -126,13 +135,17 @@ jobs:
           set +e
           T="$(cygpath -m "$RUNNER_TEMP")/dwgbisect"
           mkdir -p "$T"
-          printf 'Line 0,0,0 12,0,0\nExport %s/plain.dwg\n' "$T" > "$T/plain.txt"
-          printf 'Line 0,0,0 12,0,0\nExport Version=13 %s/versioned.dwg\n' "$T" > "$T/versioned.txt"
-          echo "--- plain DWG export (no Version=) ---"
-          dino8-app/build/Dino8.exe --smoke 5 --script "$T/plain.txt" 2>&1
+          printf 'Line 0,0,0 12,0,0\nExport %s/two_a.dwg\nExport %s/two_b.dwg\n' "$T" "$T" > "$T/two_exports.txt"
+          printf 'Line 0,0,0 12,0,0\nExport %s/exp.dwg\nNew\nOpen %s/exp.dwg\n' "$T" "$T" > "$T/export_open.txt"
+          printf 'Line 0,0,0 12,0,0\nExport Version=13 %s/v13.dwg\nExport Version=2018 %s/v2018.dwg\n' "$T" "$T" > "$T/two_versioned.txt"
+          echo "--- two plain Exports, same process ---"
+          dino8-app/build/Dino8.exe --smoke 5 --script "$T/two_exports.txt" 2>&1
           echo "exit=$?"
-          echo "--- versioned DWG export (Version=13) ---"
-          dino8-app/build/Dino8.exe --smoke 5 --script "$T/versioned.txt" 2>&1
+          echo "--- Export then New+Open, same process ---"
+          dino8-app/build/Dino8.exe --smoke 5 --script "$T/export_open.txt" 2>&1
+          echo "exit=$?"
+          echo "--- two differently-versioned Exports, same process ---"
+          dino8-app/build/Dino8.exe --smoke 5 --script "$T/two_versioned.txt" 2>&1
           echo "exit=$?"
           exit 0
       # The same functional QC Linux already runs (~1500 checks over the
