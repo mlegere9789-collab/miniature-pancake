@@ -119,15 +119,22 @@ jobs:
       # smoke.sh's function-wrapping/retry logic, gives the rawest possible
       # signal on which specific code path is responsible. continue-on-error
       # so this diagnostic never blocks the real smoke.sh run below.
-      # Round 1 (already run, both exit=0/succeeded): a single plain Export
-      # and a single Version=13 Export, each its OWN process launch, both
-      # fine - a one-off DWG export alone is not the trigger. The real
-      # dwg_script.txt's distinguishing feature is doing SEVERAL DWG
-      # operations back-to-back INSIDE ONE running process (Export, then
-      # New+Open the same file back, then more Exports with different
-      # Version= values) - a pattern this round tests directly, since a
-      # non-reentrant/leaking bit of LibreDWG global state would only bite
-      # on a second in-process call, not a fresh process's first call.
+      # Round 1 (both exit=0): a single plain Export and a single Version=13
+      # Export, each its OWN process launch - a one-off DWG export alone is
+      # not the trigger. Round 2 (this one) tried 3 same-process combos at
+      # --smoke 5 and all 3 also came back exit=0 - but reading the actual
+      # captured output showed each run's LAST printed line was the first
+      # Export's own "Command: Export ..." echo, immediately followed by
+      # the final "smoke: frames=N" summary - the second scripted line
+      # (the 2nd Export/New/Open) never got a chance to run at all: 5-6
+      # frames was not enough for main.cpp's script-cursor advance logic to
+      # reach past the first command, so round 2 accidentally re-tested
+      # "one export, then the frame budget runs out" - the exact same
+      # single-op case round 1 already covered, not the intended
+      # multi-op-in-one-process case. The real dwg_script.txt runs at
+      # --smoke 50; matching that budget here so every scripted line
+      # actually gets a chance to execute is what actually tests the
+      # multi-op-in-one-process hypothesis.
       - name: DWG export bisection (diagnostic)
         shell: bash
         continue-on-error: true
@@ -139,13 +146,13 @@ jobs:
           printf 'Line 0,0,0 12,0,0\nExport %s/exp.dwg\nNew\nOpen %s/exp.dwg\n' "$T" "$T" > "$T/export_open.txt"
           printf 'Line 0,0,0 12,0,0\nExport Version=13 %s/v13.dwg\nExport Version=2018 %s/v2018.dwg\n' "$T" "$T" > "$T/two_versioned.txt"
           echo "--- two plain Exports, same process ---"
-          dino8-app/build/Dino8.exe --smoke 5 --script "$T/two_exports.txt" 2>&1
+          dino8-app/build/Dino8.exe --smoke 50 --script "$T/two_exports.txt" 2>&1
           echo "exit=$?"
           echo "--- Export then New+Open, same process ---"
-          dino8-app/build/Dino8.exe --smoke 5 --script "$T/export_open.txt" 2>&1
+          dino8-app/build/Dino8.exe --smoke 50 --script "$T/export_open.txt" 2>&1
           echo "exit=$?"
           echo "--- two differently-versioned Exports, same process ---"
-          dino8-app/build/Dino8.exe --smoke 5 --script "$T/two_versioned.txt" 2>&1
+          dino8-app/build/Dino8.exe --smoke 50 --script "$T/two_versioned.txt" 2>&1
           echo "exit=$?"
           exit 0
       # The same functional QC Linux already runs (~1500 checks over the
