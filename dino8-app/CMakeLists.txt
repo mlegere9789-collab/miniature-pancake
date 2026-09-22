@@ -24,6 +24,32 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
+# Diagnostic instrumentation for the Windows-only DWG reopen crash (see
+# ImportDwg/DwgReadFileSafe in src/io/FileExchange.cpp): neither a larger
+# thread stack nor a __try/__except wrap with _resetstkoflw() changed the
+# crash's exit-127/zero-output signature at all - real evidence against
+# ordinary stack exhaustion. What remains consistent with every observation
+# (uncatchable by any SEH handler, Windows-only, deterministic, content-
+# dependent) is a Windows __fastfail termination - the mechanism behind an
+# /GS stack-buffer-overrun or heap-corruption check, which deliberately
+# bypasses all exception handling. AddressSanitizer catches the actual
+# out-of-bounds access before /GS's cookie check would even fire, and
+# prints the exact file/line to stdout - real forensic evidence instead of
+# another blind guess.
+#
+# MUST be applied globally (every MSVC target, via add_compile_options here
+# at the top, before any add_subdirectory/FetchContent_MakeAvailable) rather
+# than scoped to just the suspect library: MSVC's linker enforces that every
+# object file linked into one binary agree on ASan instrumentation
+# (LNK2038 "mismatch detected for 'annotate_string'" etc. otherwise) - a
+# first attempt that scoped this to only Dino8's own sources and the
+# LibreDWG library, leaving OpenNURBS/Manifold uninstrumented, hit exactly
+# that mismatch.
+if(MSVC)
+  add_compile_options(/fsanitize=address /Zi)
+  add_link_options(/DEBUG /INCREMENTAL:NO)
+endif()
+
 # ---------------------------------------------------------------------------
 # Geometry kernel (same repo). The app never builds the kernel's own test
 # suite or demo programs - CI runs those from the kernel directory directly.
@@ -171,26 +197,9 @@ endif()
 if(NOT MSVC)
   target_compile_definitions(${DINO8_LIBREDWG_TARGET} PRIVATE _GNU_SOURCE _DARWIN_C_SOURCE)
 endif()
-# Diagnostic instrumentation for the Windows-only DWG reopen crash (see
-# ImportDwg/DwgReadFileSafe in FileExchange.cpp): neither a larger thread
-# stack nor a __try/__except wrap with _resetstkoflw() changed the crash's
-# signature at all (still exit 127, zero output, both attempts) - real
-# evidence against ordinary stack exhaustion, since _resetstkoflw() is the
-# documented, MSDN-sample-verified fix for exactly that case. What remains
-# consistent with every observation (uncatchable by any SEH handler, by
-# design; Windows-only; deterministic; content-dependent) is a Windows
-# `__fastfail` termination - the mechanism behind an /GS stack-buffer-
-# overrun or heap-corruption check, which intentionally bypasses all
-# exception handling so a corrupted process can't be exploited via handler
-# execution. AddressSanitizer catches the actual out-of-bounds write before
-# /GS's cookie check would even fire, and prints the exact file/line from
-# LibreDWG's own vendored C source to stdout - real forensic evidence
-# instead of another blind hypothesis. Scoped to just the LibreDWG library
-# and the Dino8 executable (not GLFW/ImGui/OpenNURBS) since those have
-# nothing to do with this bug and ASan adds real runtime overhead.
-if(MSVC)
-  target_compile_options(${DINO8_LIBREDWG_TARGET} PRIVATE /fsanitize=address /Zi)
-endif()
+# ASan is enabled globally near the top of this file (see that comment) for
+# the Windows-only DWG reopen crash investigation - no extra flag needed
+# here specifically for LibreDWG.
 # LibreDWG's own generated dwg2.spec code intentionally casts BITCODE_TV
 # (char*) to BITCODE_TU (unsigned short*) hundreds of times in its TRACE
 # logging macros - a deliberate, known-safe alignment-widening cast in
@@ -400,13 +409,9 @@ else()
 endif()
 
 if(MSVC)
-  # /fsanitize=address /Zi + linker /DEBUG /INCREMENTAL:NO - see the
-  # DINO8_LIBREDWG_TARGET diagnostic-instrumentation comment above for why.
-  # Applied to Dino8's own sources too (not just the vendored decoder)
-  # since the corruption could equally be in FileExchange.cpp's own glue
-  # code calling into it.
-  target_compile_options(Dino8 PRIVATE /W3 /EHsc /bigobj /fsanitize=address /Zi)
-  target_link_options(Dino8 PRIVATE /DEBUG /INCREMENTAL:NO)
+  # ASan (/fsanitize=address /Zi, linker /DEBUG /INCREMENTAL:NO) is enabled
+  # globally near the top of this file - no extra flag needed here.
+  target_compile_options(Dino8 PRIVATE /W3 /EHsc /bigobj)
   # WIN32 subsystem still needs a main(): tell the linker to use it.
   target_link_options(Dino8 PRIVATE /ENTRY:mainCRTStartup)
   # Windows' default thread stack is 1MB (reserve+commit), far smaller than
