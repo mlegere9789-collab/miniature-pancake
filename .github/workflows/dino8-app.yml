@@ -94,29 +94,47 @@ jobs:
           "MESA_GL_VERSION_OVERRIDE=3.3" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "MESA_GLSL_VERSION_OVERRIDE=330" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "GALLIUM_DRIVER=llvmpipe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-      # smoke.sh's DWG round-trip test was failing deterministically on this
-      # runner with exit 127 and zero output - not even the script's first
-      # command ever got printed, on a binary that had already launched and
-      # run successfully dozens of times earlier in this same job (the only
-      # thing new is writing a freshly-created .dwg file). A same-job "run
-      # the exact same DWG script very early too" diagnostic proved this
-      # isn't positional/cumulative (it fails just as hard on the 2nd
-      # process launch of the whole job) - it is specifically tied to
-      # exercising the DWG code path. Zero captured output before a bash
-      # exit-127 (bash's own "could not exec" code, not something Dino8.exe
-      # itself returns) matches Windows Defender's real-time protection
-      # intercepting/locking a just-written executable or a newly-created,
-      # less-common file type (.dwg) for scanning before letting it run -
-      # a well-documented cause of exactly this failure shape on GitHub's
-      # Windows runners. Exclude the build output and the temp directory
-      # smoke.sh writes its scratch files into (Git Bash's mktemp resolves
-      # under here) from real-time scanning before running the suite.
+      # smoke.sh's DWG round-trip test fails deterministically on this runner
+      # with exit 127 and zero output - not even the script's first command
+      # ever gets printed, on a binary that has already launched and run
+      # successfully dozens of times earlier in this same job. A same-job
+      # "run the exact same DWG script very early too" diagnostic proved
+      # this isn't positional/cumulative (fails just as hard as the 2nd
+      # process launch) - it's tied to the DWG code path's content. Tried
+      # excluding the build/temp dirs from Windows Defender (suspecting
+      # real-time-scan interference on a freshly-written .dwg/.exe) - ran
+      # cleanly but did NOT fix it, ruling that theory out. Kept as a
+      # harmless hardening; the real cause is still open.
       - name: Exclude build/temp dirs from Windows Defender
         shell: pwsh
         run: |
           Add-MpPreference -ExclusionPath (Resolve-Path "dino8-app\build").Path
           Add-MpPreference -ExclusionPath $env:TEMP
           Add-MpPreference -ExclusionProcess "Dino8.exe"
+      # Minimal, isolated bisection: smoke.sh's own dwg_script.txt exercises
+      # both a plain Export to .dwg AND a Version=/AcadSchemes override in
+      # the same run, so a full-script failure alone doesn't say which part
+      # triggers it. Running two tiny standalone scripts here - one with
+      # only a plain DWG export, one adding a Version= override - outside
+      # smoke.sh's function-wrapping/retry logic, gives the rawest possible
+      # signal on which specific code path is responsible. continue-on-error
+      # so this diagnostic never blocks the real smoke.sh run below.
+      - name: DWG export bisection (diagnostic)
+        shell: bash
+        continue-on-error: true
+        run: |
+          set +e
+          T="$(cygpath -m "$RUNNER_TEMP")/dwgbisect"
+          mkdir -p "$T"
+          printf 'Line 0,0,0 12,0,0\nExport %s/plain.dwg\n' "$T" > "$T/plain.txt"
+          printf 'Line 0,0,0 12,0,0\nExport Version=13 %s/versioned.dwg\n' "$T" > "$T/versioned.txt"
+          echo "--- plain DWG export (no Version=) ---"
+          dino8-app/build/Dino8.exe --smoke 5 --script "$T/plain.txt" 2>&1
+          echo "exit=$?"
+          echo "--- versioned DWG export (Version=13) ---"
+          dino8-app/build/Dino8.exe --smoke 5 --script "$T/versioned.txt" 2>&1
+          echo "exit=$?"
+          exit 0
       # The same functional QC Linux already runs (~1500 checks over the
       # real app, not just a build check) - smoke.sh's own xvfb-run guard
       # falls through to a direct run whenever xvfb-run isn't on PATH, which
