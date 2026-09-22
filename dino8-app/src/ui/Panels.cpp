@@ -618,7 +618,11 @@ void DrawHelpPanel(Application& app, std::string& search) {
   if (const RegisteredCommand* rc = app.Engine().Find(info->name)) {
     ImGui::SameLine();
     ImGui::TextColored(StatusColor(rc->status), "[%s]", StatusName(rc->status));
-    if (!rc->note.empty()) ImGui::TextDisabled("%s", rc->note.c_str());
+    // rc->note is internal engineering commentary written for other
+    // developers reading the source (it names source files, functions, and
+    // other internal command names) - never shown here, since `info` is
+    // guaranteed non-null on this path and its own real, user-facing
+    // description is always printed right below.
   }
   if (ImGui::SmallButton("Run")) app.Engine().Execute(info->name);
   ImGui::TextWrapped("%s", info->description.c_str());
@@ -1527,7 +1531,7 @@ void DrawScriptEditor(Application& app) {
   ImGui::BeginDisabled(running && !app.Lua().Suspended());
   if (ImGui::Button((running ? "Continue" : "Run")) && !running) RunScriptEditor(app);
   ImGui::EndDisabled();
-  if (running) { ImGui::SameLine(); ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.2f, 1), app.Lua().Suspended() ? "Waiting for input in a viewport / the command line..." : "Running..."); }
+  if (running) { ImGui::SameLine(); ImGui::TextColored(ImVec4(ThemeColors::kWarn[0], ThemeColors::kWarn[1], ThemeColors::kWarn[2], 1), app.Lua().Suspended() ? "Waiting for input in a viewport / the command line..." : "Running..."); }
 
   ImGui::Separator();
   ImGui::Columns(2, "script_cols", true);
@@ -1573,7 +1577,7 @@ void DrawScriptingReference(Application& app) {
   const std::string needle = ToLower(filter);
   for (const RsFunctionDoc& d : LuaEngine::ApiDocs()) {
     if (!needle.empty() && ToLower(d.name).find(needle) == std::string::npos && ToLower(d.doc).find(needle) == std::string::npos) continue;
-    ImGui::TextColored(ImVec4(0.4f, 0.75f, 0.95f, 1), "%s", d.signature);
+    ImGui::TextColored(ThemeColors::Accent(), "%s", d.signature);
     ImGui::TextWrapped("  %s", d.doc);
     ImGui::Spacing();
   }

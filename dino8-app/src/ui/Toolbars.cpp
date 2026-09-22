@@ -261,7 +261,9 @@ void RichTooltip(Application& app, const ToolButton* b, const std::string& comma
   if (info && !info->description.empty()) desc = info->description;
   else if (b && b->tip) desc = b->tip;
   if (!desc.empty()) ImGui::TextUnformatted(desc.c_str());
-  if (rc && !rc->note.empty()) ImGui::TextDisabled("%s", rc->note.c_str());
+  // rc->note is internal engineering commentary (source files, function
+  // names, other internal command names) written for developers reading
+  // the source - never appropriate in a user-facing tooltip.
   ImGui::Separator();
   ImGui::TextDisabled("Left click:");
   ImGui::SameLine();

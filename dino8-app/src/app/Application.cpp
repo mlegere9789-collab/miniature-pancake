@@ -1430,7 +1430,7 @@ void Application::DrawViewportTabs() {
                                  ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
   ImGui::Begin("##ViewportTabs", nullptr, flags);
   auto tab = [&](const char* name, bool current, int index) {
-    ImGui::PushStyleColor(ImGuiCol_Button, current ? ImVec4(0.22f, 0.45f, 0.75f, 1) : ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
+    ImGui::PushStyleColor(ImGuiCol_Button, current ? ThemeColors::Accent() : ImGui::GetStyle().Colors[ImGuiCol_FrameBg]);
     if (ImGui::SmallButton(name)) SetActiveLayout(index);
     ImGui::PopStyleColor();
     ImGui::SameLine(0, 4);
