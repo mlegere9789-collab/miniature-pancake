@@ -288,6 +288,18 @@ sed "s|@TMP@|$TMPW|g" "$HERE/dwg_script.txt" > "$TMPW/dwg_script.txt"
 # instability under many rapid process launches - without waiting on a
 # whole separate CI re-run).
 dwg_run() {
+  # The retry above proved this is a real, deterministic, zero-output
+  # exit-127 - not a buffering artifact, not a flake, and not the
+  # graceful "could not create window"/"could not load GL" paths in
+  # main.cpp (both of those print a clear message and exit 1, not a
+  # silent 127). That leaves either bash's own exec() failing to launch
+  # $BIN at all, or the process being torn down before it could write
+  # anything (e.g. AV/security-software interference on this specific
+  # runner). Print to stderr (kept out of $DW/dwcheck's own parsing, so
+  # it can't affect any check, but still visible in the raw CI log)
+  # exactly what state the binary/script are in at the moment of the
+  # call, to tell those apart on the next run.
+  echo "[dwg_run diag] BIN=$BIN exists=$([ -e "$BIN" ] && echo yes || echo no) executable=$([ -x "$BIN" ] && echo yes || echo no) size=$(wc -c < "$BIN" 2>/dev/null || echo '?') script_exists=$([ -e "$TMPW/dwg_script.txt" ] && echo yes || echo no) pwd=$(pwd)" >&2
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     "$BIN" --smoke 50 --script "$TMPW/dwg_script.txt" 2>&1
   else
