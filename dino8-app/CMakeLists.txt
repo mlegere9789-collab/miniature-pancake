@@ -163,6 +163,11 @@ FetchContent_Declare(
   libredwg
   GIT_REPOSITORY https://github.com/LibreDWG/libredwg.git
   GIT_TAG        0.14.8594
+  # See cmake/patch_libredwg.cmake for what this fixes and why: a real,
+  # platform-dependent (Windows-only) memory-corruption bug in LibreDWG
+  # 0.14.8594's own decode.c, root-caused by this project's own multi-round
+  # Windows DWG-reopen-crash investigation (see src/io/FileExchange.cpp).
+  PATCH_COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=<SOURCE_DIR> -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libredwg.cmake
 )
 set(LIBREDWG_LIBONLY ON CACHE BOOL "" FORCE)
 set(LIBREDWG_DISABLE_JSON ON CACHE BOOL "" FORCE)
