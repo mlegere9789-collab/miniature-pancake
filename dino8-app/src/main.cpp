@@ -28,6 +28,34 @@
 //   @key NAME | @text STR | @wait N | @expect_selected N | @expect_objects N
 //   FILE.3dm      open a model on start-up
 
+#if defined(_MSC_VER)
+// Windows-only forensic diagnostic for the DWG-reopen crash investigation
+// (see src/io/FileExchange.cpp's ImportDwg/DwgReadFileSafe): neither a
+// larger thread stack, a __try/__except wrap with _resetstkoflw(), nor
+// AddressSanitizer instrumentation on the whole build changed the crash's
+// exit-127/zero-output signature or produced any ASan report - real
+// evidence that whatever is killing the process is not an ordinary
+// SEH-dispatchable access violation or a heap/stack-buffer overflow ASan's
+// redzones would catch. SetUnhandledExceptionFilter below is a different,
+// more universal net: it fires for ANY exception left unhandled on ANY
+// thread, printing the real exception code/address before the process
+// dies - and critically, this is one of very few remaining ways to tell
+// apart "still didn't fire" (near-conclusive evidence for an uncatchable
+// Windows __fastfail, e.g. a /GS stack-cookie or heap-corruption check,
+// which by design bypasses all exception dispatch, SEH and this filter
+// alike) from "fires with a real exception code" (an actual, fixable bug
+// this filter finally identifies). WIN32_LEAN_AND_MEAN/NOMINMAX and
+// including windows.h before GLFW's own header is the standard order that
+// avoids APIENTRY/CALLBACK macro redefinition conflicts.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -264,7 +292,25 @@ void RunCullTest(dino8::app::Application& app, int far_count, const std::string&
 
 }  // namespace
 
+#if defined(_MSC_VER)
+namespace {
+LONG WINAPI Dino8UnhandledExceptionFilter(EXCEPTION_POINTERS* info) {
+  std::fprintf(stderr, "UNHANDLED EXCEPTION: code=0x%08lX address=%p\n",
+               static_cast<unsigned long>(info->ExceptionRecord->ExceptionCode),
+               info->ExceptionRecord->ExceptionAddress);
+  std::fflush(stderr);
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+}  // namespace
+#endif
+
 int main(int argc, char** argv) {
+#if defined(_MSC_VER)
+  // See the windows.h include comment near the top of this file for why:
+  // this is the most universal remaining diagnostic net for the Windows-
+  // only DWG reopen crash. Installed as the very first thing main() does.
+  SetUnhandledExceptionFilter(Dino8UnhandledExceptionFilter);
+#endif
   // Unbuffered stdout/stderr: when --smoke/--script is piped (never a TTY),
   // the CRT fully buffers stdout by default on both glibc and MSVC, so any
   // crash (segfault/access violation, no atexit) silently discards every
