@@ -53,8 +53,28 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 // that extra vertex, so the two sides' boundary vertex sets agree exactly
 // before Mesh::MergeAndWeld() runs. Also drops any resulting zero-area
 // (degenerate, repeated-vertex) triangle - a separate, pre-existing
-// grid-clip artifact near a surface's own singular point (e.g. a sphere's
-// pole) that otherwise leaves spurious zero-length "edges" behind.
+// grid-clip artifact (near a surface's own singular point, e.g. a
+// sphere's pole, but also - confirmed directly - at an ordinary planar
+// trim corner where two cut boundaries meet) that otherwise leaves
+// spurious zero-length "edges" behind. This drop runs BOTH before and
+// after the T-junction stitching pass above, not only after: dropping a
+// boundary-line sliver strands its two OTHER edges - which the sliver
+// had "claimed" as internal, so the stitcher never offered them a
+// cross-face partner - as fresh, unmatched boundary edges once the
+// sliver disappears, unless it is gone before the stitcher ever sees it.
+// tests/general_boolean_sweep.cpp's own 76-combination measurement
+// (BooleanCombineGeneral over 19 primitive-pair cases x 4 ops, at
+// u_divisions=32/v_divisions=128) went from 0/76 to 14/76 genuinely
+// Mesh::IsClosedManifold() from this reordering alone - every
+// axis-aligned-planar case (box+box, disjoint/touching/rotated box
+// pairs) now closes at any division count tried (8x8 through 32x128).
+// The other 62 all pair a curved face (cylinder/cone/sphere/torus)
+// against another face along a curved or skew intersection: each side's
+// own grid-clip tessellation approximates that shared curve with its own
+// independently-sampled dense polyline (not shared sample points, unlike
+// a straight box edge, where both sides' clip points genuinely coincide
+// once the sliver above stops hiding them) - a materially larger, still
+// explicitly open gap; see boolean_general.cpp's own top-of-file comment.
 // See boolean_general.cpp's own implementation comments for the exact
 // algorithm and TestBooleanCombineGeneralBoxBox/BoxCylinder/SphereBox
 // (tests/test_basic.cpp) for the falsifiable Mesh::IsClosedManifold()

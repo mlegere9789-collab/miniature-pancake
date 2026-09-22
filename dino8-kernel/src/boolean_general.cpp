@@ -2602,21 +2602,56 @@ Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions, int
   }
   const double tol = std::max(1e-6, diag * 1e-6);
 
+  // Drop each face's own degenerate (zero-area) triangles in place. These
+  // are pre-existing grid-clip artifacts, already present in
+  // `result.Tessellate()`'s own raw per-face output (confirmed by direct
+  // inspection, before this function's stitcher ever runs) - typically a
+  // spurious zero-width sliver sitting exactly on top of what is
+  // otherwise a face's genuine boundary edge (three boundary-line points,
+  // no off-line apex).
+  auto drop_degenerate_triangles = [](std::vector<MutFace>& fs) {
+    for (MutFace& mf : fs) {
+      std::vector<std::array<int, 3>> kept;
+      kept.reserve(mf.f.size());
+      for (const std::array<int, 3>& t : mf.f) {
+        if (!IsDegenerateTriangle(mf, t)) kept.push_back(t);
+      }
+      mf.f = std::move(kept);
+    }
+  };
+
+  // Do this BEFORE T-junction stitching, not after: dropping a sliver
+  // that sits on a face's own boundary can strand that sliver's two
+  // OTHER edges - which the sliver had "claimed" as its own, so
+  // StitchTJunctionsOnce never treated them as needing a cross-face
+  // partner - as fresh, unmatched boundary edges once the sliver is
+  // gone. Dropping first instead exposes the face's TRUE boundary (with
+  // the spurious sliver already gone) before the stitcher ever runs, so
+  // it treats those edges like any other boundary edge and fills them
+  // from the neighboring face's own matching points. Confirmed by direct
+  // measurement: box+box Intersection/A-B (32x32 and 32x128 divisions)
+  // had 9 and 27 such leftover boundary edges respectively, every one of
+  // them at exactly this pattern (a dropped sliver's ex-neighbor edge),
+  // and both drop to 0 with this reordering alone.
+  drop_degenerate_triangles(faces);
+
   for (int pass = 0; pass < 4; ++pass) {
     if (StitchTJunctionsOnce(faces, tol) == 0) break;
   }
 
+  // A second, final pass: StitchTJunctionsOnce's own chain-insertion can
+  // occasionally produce a fresh degenerate triangle of its own (three
+  // chain points that end up numerically collinear), so sweep once more
+  // after stitching converges. This second pass targets a DIFFERENT,
+  // much rarer defect than the pre-stitch one above (confirmed separately
+  // by direct measurement: it never fires on the box+box case, only on
+  // curved-face cases where stitched chain points can be nearly
+  // collinear along a curve's own local tangent).
+  drop_degenerate_triangles(faces);
+
   std::vector<Mesh> patched;
   patched.reserve(faces.size());
-  for (MutFace& mf : faces) {
-    MutFace clean;
-    clean.v = std::move(mf.v);
-    clean.f.reserve(mf.f.size());
-    for (const std::array<int, 3>& t : mf.f) {
-      if (!IsDegenerateTriangle(clean, t)) clean.f.push_back(t);
-    }
-    patched.push_back(FromMutFace(clean));
-  }
+  for (MutFace& mf : faces) patched.push_back(FromMutFace(mf));
   return Mesh::MergeAndWeld(patched, tol);
 }
 

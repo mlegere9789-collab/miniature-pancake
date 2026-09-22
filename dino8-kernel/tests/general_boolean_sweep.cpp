@@ -2,10 +2,28 @@
 // suite): sweeps BooleanCombineGeneral (boolean_general.h) over a fixed
 // set of operand configurations and prints, for every case x op, the
 // face count, ON_Brep::IsValid(), the tessellated volume at
-// TessellateToClosedMesh(32, 128), the expected volume (closed-form where
-// one exists, otherwise a labelled reference), the absolute error, and a
-// verdict. It fixes nothing - it only measures, so the next fixes to the
-// general engine can be chosen from evidence rather than guesswork.
+// TessellateGeneralBooleanClosedMesh(32, 128) (boolean_general.h's own
+// closed-manifold-oriented tessellator for this engine's results - NOT
+// plain Brep::TessellateToClosedMesh(), which this engine's dense-polyline
+// edges were never Mesh::IsClosedManifold() under, at any resolution; see
+// boolean_general.h's own doc comment), the expected volume (closed-form
+// where one exists, otherwise a labelled reference), the absolute error,
+// and a verdict. It fixes nothing about BooleanCombineGeneral's own
+// geometry - only measures it - so the next fixes to the general engine
+// can be chosen from evidence rather than guesswork; the `closedmesh`
+// column, though, measures a real, separate property of the CHOSEN
+// tessellator above, not of BooleanCombineGeneral's own topology, and a
+// session fixing that tessellator's own bugs (a pre-existing grid-clip
+// degenerate-sliver artifact stranding its neighbor's edge when dropped
+// after, not before, T-junction stitching - see TessellateGeneralBoolean-
+// ClosedMesh's own doc comment) took this column from 0/76 to 14/76.
+// The remaining 62 are every case with a curved operand (cylinder, cone,
+// sphere, torus) meeting another face along a curved/skew intersection:
+// each side's own grid-clip tessellation approximates that shared curve
+// with an independently-sampled dense polyline (not shared sample
+// points), a materially larger, still-open gap needing genuine curve/
+// edge-topology-conforming tessellation (as TessellateToClosedMeshConforming
+// already does for BooleanCombineMixed/Planar), not local point-matching.
 //
 // Every operand is built from the kernel's own primitives: Brep::Box(),
 // Brep::Sphere(), Brep::FromPlanarFaces() (a rotated box),
@@ -27,9 +45,10 @@
 // are closed manifolds, regardless of whether a closed form exists.
 //
 // Verdict rule: EXCEPTION if BooleanCombineGeneral itself threw;
-// TESSELLATION-EXCEPTION if the B-rep was built but its own
-// TessellateToClosedMesh() threw (each self-intersecting (u, v) trim loop
-// is then located and printed - see ReportNonSimpleTrims); INVALID if the
+// TESSELLATION-EXCEPTION if the B-rep was built but tessellating it (via
+// TessellateGeneralBooleanClosedMesh(), which calls the shared
+// Brep::Tessellate() under the hood) threw (each self-intersecting (u, v)
+// trim loop is then located and printed - see ReportNonSimpleTrims); INVALID if the
 // result is not ON_Brep::IsValid() (each zero-length 2D trim is printed -
 // see ReportZeroLengthTrims; an EMPTY result has no topology and is judged
 // by volume alone); WRONG-VOLUME if |measured - expected| exceeds 2% of
@@ -410,7 +429,7 @@ void RunCase(const Case& c) {
     if (faces > 0) {
       valid = res.raw().IsValid();
       try {
-        const Mesh m = res.TessellateToClosedMesh(kNU, kNV);
+        const Mesh m = TessellateGeneralBooleanClosedMesh(res, kNU, kNV);
         vol = m.Volume();
         closed = m.IsClosedManifold();
       } catch (const std::exception& e) {
