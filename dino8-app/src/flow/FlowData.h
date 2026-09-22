@@ -23,8 +23,15 @@ enum class Kind { Null, Number, Integer, Boolean, Text, Point, Vector, Plane, Cu
 
 const char* KindName(Kind k);
 Kind KindFromName(const std::string& name);
-// Port colour for a kind (RGBA 0..1).
-void KindColor(Kind k, float* rgba);
+// Port/wire colour for a kind (RGBA 0..1), tuned per UI theme mode so the
+// legend stays readable against that mode's canvas: 0 = Dark, 1 = Light
+// (kept as a plain int, matching how app::Application stores theme_mode, so
+// this data-model header does not need to depend on ui/Theme.h), 2 =
+// HighContrast, which additionally uses a deliberately more separated,
+// saturated palette (fixed hues spread evenly around the colour wheel) so
+// every kind stays distinguishable regardless of the user's chosen accent -
+// the same guarantee ApplyDinoTheme makes for the rest of the UI in that mode.
+void KindColor(Kind k, float* rgba, int theme_mode = 0);
 // Whether a value of `from` may be plugged into a port of `to`.
 bool KindCompatible(Kind from, Kind to);
 

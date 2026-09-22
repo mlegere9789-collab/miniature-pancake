@@ -33,7 +33,12 @@ Kind KindFromName(const std::string& n) {
   return Kind::Any;
 }
 
-void KindColor(Kind k, float* c) {
+namespace {
+
+// Dark: the original palette. It was picked to read against the Dino Flow
+// canvas's near-black Dark-mode background and still does, so it is kept
+// as-is.
+void KindColorDark(Kind k, float* c) {
   auto set = [&](int r, int g, int b) { c[0] = r / 255.f; c[1] = g / 255.f; c[2] = b / 255.f; c[3] = 1.f; };
   switch (k) {
     case Kind::Number: set(96, 190, 255); break;
@@ -50,6 +55,61 @@ void KindColor(Kind k, float* c) {
     case Kind::Colour: set(255, 100, 180); break;
     default: set(190, 190, 190); break;
   }
+}
+
+// Light: the same hues, deepened/darkened so each still has enough contrast
+// against the light-mode canvas (which the Dark palette's pale, low-value
+// colours would wash out on).
+void KindColorLight(Kind k, float* c) {
+  auto set = [&](int r, int g, int b) { c[0] = r / 255.f; c[1] = g / 255.f; c[2] = b / 255.f; c[3] = 1.f; };
+  switch (k) {
+    case Kind::Number: set(25, 105, 190); break;
+    case Kind::Integer: set(15, 75, 150); break;
+    case Kind::Boolean: set(190, 40, 40); break;
+    case Kind::Text: set(165, 125, 15); break;
+    case Kind::Point: set(200, 85, 15); break;
+    case Kind::Vector: set(125, 55, 185); break;
+    case Kind::Plane: set(15, 130, 110); break;
+    case Kind::Curve: set(25, 130, 55); break;
+    case Kind::Surface: set(30, 110, 90); break;
+    case Kind::Brep: set(15, 100, 80); break;
+    case Kind::Mesh: set(95, 120, 35); break;
+    case Kind::Colour: set(185, 35, 105); break;
+    default: set(90, 90, 90); break;
+  }
+}
+
+// High Contrast: fixes its own palette, same as ApplyDinoTheme fixes its own
+// accent - 12 fully-saturated hues spread evenly around the colour wheel (30
+// degrees apart, the maximum even spacing for 12 categories) so every kind
+// stays clearly separated from every other one against the mode's pure-black
+// canvas, regardless of how close their Dark/Light hues happen to be (e.g.
+// Curve/Surface/Brep are all similar greens above; here they are not).
+void KindColorHighContrast(Kind k, float* c) {
+  auto set = [&](int r, int g, int b) { c[0] = r / 255.f; c[1] = g / 255.f; c[2] = b / 255.f; c[3] = 1.f; };
+  switch (k) {
+    case Kind::Boolean: set(255, 45, 45); break;    // 0 deg
+    case Kind::Point: set(255, 140, 0); break;       // 30 deg
+    case Kind::Text: set(255, 221, 0); break;        // 60 deg
+    case Kind::Mesh: set(200, 255, 40); break;       // 90 deg
+    case Kind::Curve: set(40, 255, 90); break;       // 120 deg
+    case Kind::Surface: set(40, 255, 180); break;    // 150 deg
+    case Kind::Plane: set(40, 230, 255); break;      // 180 deg
+    case Kind::Number: set(40, 150, 255); break;     // 210 deg
+    case Kind::Integer: set(70, 100, 255); break;    // 240 deg
+    case Kind::Vector: set(150, 60, 255); break;     // 270 deg
+    case Kind::Colour: set(255, 40, 220); break;     // 300 deg
+    case Kind::Brep: set(255, 60, 140); break;       // 330 deg
+    default: set(215, 215, 215); break;
+  }
+}
+
+}  // namespace
+
+void KindColor(Kind k, float* c, int theme_mode) {
+  if (theme_mode == 2) { KindColorHighContrast(k, c); return; }
+  if (theme_mode == 1) { KindColorLight(k, c); return; }
+  KindColorDark(k, c);
 }
 
 bool KindCompatible(Kind from, Kind to) {

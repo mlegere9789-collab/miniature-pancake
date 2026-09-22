@@ -31,6 +31,7 @@ struct ThemeColors {
   inline static float kAccentBright[4] = {0.30f, 0.80f, 0.77f, 1.0f};
   static constexpr float kWarn[4] = {0.95f, 0.70f, 0.25f, 1.0f};
   static constexpr float kOk[4] = {0.45f, 0.80f, 0.45f, 1.0f};
+  static constexpr float kError[4] = {0.90f, 0.35f, 0.32f, 1.0f};
   static constexpr float kMuted[4] = {0.62f, 0.64f, 0.68f, 1.0f};
   static ImVec4 Accent(float alpha = 1.0f) { return ImVec4(kAccent[0], kAccent[1], kAccent[2], alpha); }
   static ImU32 AccentU32(float alpha = 1.0f) { return ImGui::GetColorU32(Accent(alpha)); }

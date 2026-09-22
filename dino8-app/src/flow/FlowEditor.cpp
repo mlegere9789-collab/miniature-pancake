@@ -8,6 +8,7 @@
 #include "flow/FlowPreview.h"
 #include "imgui_internal.h"
 #include "ui/Panels.h"
+#include "ui/Theme.h"
 
 namespace dino8::flow {
 
@@ -18,12 +19,26 @@ constexpr float kNodeHeaderH = 22.0f;
 constexpr float kPortRowH = 18.0f;
 constexpr float kNodeRounding = 6.0f;
 
-ImU32 Col(float r, float g, float b, float a = 1.0f) { return ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, a)); }
+// All canvas colours come from the active ImGui style (set globally by
+// ApplyDinoTheme for the current ThemeMode) or from ThemeColors/KindColor, so
+// the Dino Flow editor looks right in Dark, Light and HighContrast like every
+// other panel - nothing here is a fixed literal.
 
-ImU32 PortColor(Kind k) {
+ImVec4 Mix(const ImVec4& a, const ImVec4& b, float t) {
+  return ImVec4(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t);
+}
+
+// Tints `base` toward a semantic colour (kWarn/kError) for warning/error node
+// bodies, so the tint still tracks the current theme's body colour rather
+// than being a fixed hardcoded shade.
+ImVec4 Tint(const ImVec4& base, const float* rgb, float t) {
+  return Mix(base, ImVec4(rgb[0], rgb[1], rgb[2], 1.0f), t);
+}
+
+ImU32 PortColor(Kind k, int theme_mode) {
   float c[4];
-  KindColor(k, c);
-  return Col(c[0], c[1], c[2], 1.0f);
+  KindColor(k, c, theme_mode);
+  return ImGui::GetColorU32(ImVec4(c[0], c[1], c[2], c[3]));
 }
 
 // Fuzzy subsequence match: every character of `needle` appears in order in
@@ -152,15 +167,21 @@ void Editor::DrawCanvas(app::Application& app) {
   ImDrawList* dl = ImGui::GetWindowDrawList();
   canvas_origin_ = ImGui::GetCursorScreenPos();
   const ImVec2 canvas_size = ImGui::GetContentRegionAvail();
-  dl->AddRectFilled(canvas_origin_, canvas_origin_ + canvas_size, Col(0.098f, 0.106f, 0.122f));
+  // The canvas reads as a recessed surface inset into the "Dino Flow" window,
+  // like an inset frame/field - FrameBg, not WindowBg (which would make it
+  // indistinguishable from the window behind the toolbar).
+  dl->AddRectFilled(canvas_origin_, canvas_origin_ + canvas_size, ImGui::GetColorU32(ImGuiCol_FrameBg));
 
-  // Dot grid.
+  // Dot grid: a faint tint of the theme's border colour rather than a fixed
+  // white, so the dots stay subtle-but-visible against the canvas in every
+  // mode instead of disappearing (or looking wrong) against a light bg.
   const float grid = 24.0f * zoom_;
   if (grid > 4.0f) {
+    const ImU32 dot_color = ImGui::GetColorU32(ImGuiCol_Border, 0.28f);
     const ImVec2 off = ImVec2(std::fmod(pan_.x * zoom_, grid), std::fmod(pan_.y * zoom_, grid));
     for (float x = off.x; x < canvas_size.x; x += grid)
       for (float y = off.y; y < canvas_size.y; y += grid)
-        dl->AddCircleFilled(canvas_origin_ + ImVec2(x, y), 1.1f, Col(1, 1, 1, 0.06f));
+        dl->AddCircleFilled(canvas_origin_ + ImVec2(x, y), 1.1f, dot_color);
   }
 
   ImGui::InvisibleButton("dflow_canvas_bg", canvas_size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
@@ -194,13 +215,13 @@ void Editor::DrawCanvas(app::Application& app) {
     Node* fn = graph.Find(w.from);
     Node* tn = graph.Find(w.to);
     if (!fn || !tn) continue;
-    const ImU32 color = PortColor(fn->outputs[static_cast<size_t>(w.from_port)].kind);
+    const ImU32 color = PortColor(fn->outputs[static_cast<size_t>(w.from_port)].kind, app.theme_mode);
     draw_wire(port_screen_pos(fn, w.from_port, true), port_screen_pos(tn, w.to_port, false), color);
   }
   if (wiring_from_node_ != kNoNode) {
     if (Node* n = graph.Find(wiring_from_node_)) {
       const ImVec2 a = port_screen_pos(n, wiring_from_port_, wiring_is_output_);
-      const ImU32 color = PortColor(wiring_is_output_ ? n->outputs[static_cast<size_t>(wiring_from_port_)].kind : n->inputs[static_cast<size_t>(wiring_from_port_)].kind);
+      const ImU32 color = PortColor(wiring_is_output_ ? n->outputs[static_cast<size_t>(wiring_from_port_)].kind : n->inputs[static_cast<size_t>(wiring_from_port_)].kind, app.theme_mode);
       if (wiring_is_output_) draw_wire(a, mouse, color); else draw_wire(mouse, a, color);
     }
   }
@@ -222,15 +243,15 @@ void Editor::DrawCanvas(app::Application& app) {
       const ImVec2 pp = port_screen_pos(&n, static_cast<int>(i), false);
       const bool hit = canvas_hovered_ && (mouse.x - pp.x) * (mouse.x - pp.x) + (mouse.y - pp.y) * (mouse.y - pp.y) < (kPortRadius * 2) * (kPortRadius * 2);
       if (hit) { hovered_input_port_node = n.id; hovered_input_port = static_cast<int>(i); }
-      dl->AddCircleFilled(pp, kPortRadius * zoom_, PortColor(n.inputs[i].kind));
-      dl->AddCircle(pp, kPortRadius * zoom_, Col(0, 0, 0, 0.5f));
+      dl->AddCircleFilled(pp, kPortRadius * zoom_, PortColor(n.inputs[i].kind, app.theme_mode));
+      dl->AddCircle(pp, kPortRadius * zoom_, ImGui::GetColorU32(ImGuiCol_Border));
     }
     for (size_t i = 0; i < n.outputs.size(); ++i) {
       const ImVec2 pp = port_screen_pos(&n, static_cast<int>(i), true);
       const bool hit = canvas_hovered_ && (mouse.x - pp.x) * (mouse.x - pp.x) + (mouse.y - pp.y) * (mouse.y - pp.y) < (kPortRadius * 2) * (kPortRadius * 2);
       if (hit) { hovered_output_port_node = n.id; hovered_output_port = static_cast<int>(i); }
-      dl->AddCircleFilled(pp, kPortRadius * zoom_, PortColor(n.outputs[i].kind));
-      dl->AddCircle(pp, kPortRadius * zoom_, Col(0, 0, 0, 0.5f));
+      dl->AddCircleFilled(pp, kPortRadius * zoom_, PortColor(n.outputs[i].kind, app.theme_mode));
+      dl->AddCircle(pp, kPortRadius * zoom_, ImGui::GetColorU32(ImGuiCol_Border));
     }
 
     if (hovered_input_port_node == kNoNode && hovered_output_port_node == kNoNode && node_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -305,8 +326,10 @@ void Editor::DrawCanvas(app::Application& app) {
     if (!over_any_node) { box_selecting_ = true; box_start_ = mouse; if (!ImGui::GetIO().KeyShift) for (auto& n : graph.Nodes()) n->selected = false; }
   }
   if (box_selecting_) {
-    dl->AddRect(box_start_, mouse, Col(0.4f, 0.7f, 1.0f, 0.9f));
-    dl->AddRectFilled(box_start_, mouse, Col(0.4f, 0.7f, 1.0f, 0.12f));
+    // Selection marquee uses the app's accent colour, same as every other
+    // selection/highlight surface (TextSelectedBg, DockingPreview, ...).
+    dl->AddRect(box_start_, mouse, app::ThemeColors::AccentU32(0.9f));
+    dl->AddRectFilled(box_start_, mouse, app::ThemeColors::AccentU32(0.15f));
     if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
       const ImVec2 lo(std::min(box_start_.x, mouse.x), std::min(box_start_.y, mouse.y));
       const ImVec2 hi(std::max(box_start_.x, mouse.x), std::max(box_start_.y, mouse.y));
@@ -400,25 +423,42 @@ void Editor::DrawSearchPopup(app::Application& app) {
 void Editor::DrawNode(app::Application& app, Node& n, ImDrawList* dl, ImVec2 origin) {
   const float w = NodeWidth(n) * zoom_;
   const float h = NodeHeight(n) * zoom_;
-  const ImU32 body = n.error.empty() ? (n.warning.empty() ? Col(0.16f, 0.17f, 0.20f) : Col(0.22f, 0.19f, 0.10f)) : Col(0.24f, 0.11f, 0.11f);
-  const ImU32 header = n.selected ? Col(0.30f, 0.46f, 0.72f) : Col(0.24f, 0.25f, 0.29f);
+  const ImGuiStyle& style = ImGui::GetStyle();
+  // Node body is a step off the canvas colour (ImGuiCol_Button, the same
+  // "raised surface" tier used for real buttons), tinted toward the warn/error
+  // semantic colour when relevant so the tint still tracks the theme's own
+  // body colour instead of being a fixed shade.
+  const ImVec4& body_base = style.Colors[ImGuiCol_Button];
+  const ImU32 body = n.error.empty() ? (n.warning.empty() ? ImGui::GetColorU32(body_base) : ImGui::GetColorU32(Tint(body_base, app::ThemeColors::kWarn, 0.30f)))
+                                      : ImGui::GetColorU32(Tint(body_base, app::ThemeColors::kError, 0.30f));
+  // Header is one step further than the body (ButtonHovered) when idle, and
+  // switches to the accent-tinted "active" surface (HeaderActive, the same
+  // colour a selected list/tree row gets) when the node is selected.
+  const ImU32 header = n.selected ? ImGui::GetColorU32(ImGuiCol_HeaderActive) : ImGui::GetColorU32(ImGuiCol_ButtonHovered);
   dl->AddRectFilled(origin, origin + ImVec2(w, h), body, kNodeRounding * zoom_);
   dl->AddRectFilled(origin, origin + ImVec2(w, kNodeHeaderH * zoom_), header, kNodeRounding * zoom_, ImDrawFlags_RoundCornersTop);
-  if (n.selected) dl->AddRect(origin, origin + ImVec2(w, h), Col(0.55f, 0.78f, 1.0f, 0.9f), kNodeRounding * zoom_, 0, 2.0f);
-  else dl->AddRect(origin, origin + ImVec2(w, h), Col(0, 0, 0, 0.5f), kNodeRounding * zoom_);
-  if (!n.enabled) dl->AddRectFilled(origin, origin + ImVec2(w, h), Col(0, 0, 0, 0.35f), kNodeRounding * zoom_);
+  // Selection outline uses the app accent colour, matching the box-select
+  // marquee and every other "this is selected" highlight in the app.
+  if (n.selected) dl->AddRect(origin, origin + ImVec2(w, h), app::ThemeColors::AccentU32(0.9f), kNodeRounding * zoom_, 0, 2.0f);
+  else dl->AddRect(origin, origin + ImVec2(w, h), ImGui::GetColorU32(ImGuiCol_Border), kNodeRounding * zoom_);
+  // Disabled nodes fade toward the canvas colour (FrameBg) rather than a
+  // fixed black wash, so "disabled" reads as a fade in every mode instead of
+  // an incongruous darkening in Light mode.
+  if (!n.enabled) dl->AddRectFilled(origin, origin + ImVec2(w, h), ImGui::GetColorU32(ImGuiCol_FrameBg, 0.45f), kNodeRounding * zoom_);
 
   const std::string title = n.def ? (n.def->nick.empty() ? n.def->name : n.def->name) : n.type;
-  dl->AddText(origin + ImVec2(8 * zoom_, 3 * zoom_), Col(0.95f, 0.95f, 0.97f), title.c_str());
+  const ImU32 text_color = ImGui::GetColorU32(ImGuiCol_Text);
+  const ImU32 muted_text_color = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+  dl->AddText(origin + ImVec2(8 * zoom_, 3 * zoom_), text_color, title.c_str());
 
   for (size_t i = 0; i < n.inputs.size(); ++i) {
     const float y = kNodeHeaderH + kPortRowH * static_cast<float>(i) + kPortRowH * 0.5f;
-    dl->AddText(origin + ImVec2(10 * zoom_, (y - 7) * zoom_), Col(0.82f, 0.83f, 0.86f), n.inputs[i].name.c_str());
+    dl->AddText(origin + ImVec2(10 * zoom_, (y - 7) * zoom_), muted_text_color, n.inputs[i].name.c_str());
   }
   for (size_t i = 0; i < n.outputs.size(); ++i) {
     const float y = kNodeHeaderH + kPortRowH * static_cast<float>(i) + kPortRowH * 0.5f;
     const ImVec2 sz = ImGui::CalcTextSize(n.outputs[i].name.c_str());
-    dl->AddText(origin + ImVec2(w - 10 * zoom_ - sz.x * zoom_, (y - 7) * zoom_), Col(0.82f, 0.83f, 0.86f), n.outputs[i].name.c_str());
+    dl->AddText(origin + ImVec2(w - 10 * zoom_ - sz.x * zoom_, (y - 7) * zoom_), muted_text_color, n.outputs[i].name.c_str());
   }
 
   // Node-specific interactive widgets, drawn as real ImGui items positioned
