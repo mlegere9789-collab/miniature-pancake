@@ -35,9 +35,19 @@ static void DiagnoseManifold(const char* label, const Brep& brep, const Mesh& me
   }
   int boundary = 0, nonmanifold = 0;
   int printed_boundary = 0, printed_nonmanifold = 0;
+  int near_rim = 0, near_seam = 0, other = 0;
   for (const auto& [edge, count] : undirected_count) {
     if (count == 1) {
       ++boundary;
+      const ON_3fPoint& a = m.m_V[edge.first];
+      const ON_3fPoint& b = m.m_V[edge.second];
+      const bool rim = (std::fabs(a.z - (-2.0f)) < 0.05f || std::fabs(a.z - 2.0f) < 0.05f) &&
+                        (std::fabs(b.z - (-2.0f)) < 0.05f || std::fabs(b.z - 2.0f) < 0.05f);
+      const bool seam = std::fabs(a.x - 1.0f) < 0.05f && std::fabs(a.y) < 0.05f && std::fabs(b.x - 1.0f) < 0.05f &&
+                         std::fabs(b.y) < 0.05f;
+      if (rim) ++near_rim;
+      else if (seam) ++near_seam;
+      else ++other;
       if (printed_boundary < 5) {
         const ON_3fPoint& a = m.m_V[edge.first];
         const ON_3fPoint& b = m.m_V[edge.second];
@@ -59,6 +69,8 @@ static void DiagnoseManifold(const char* label, const Brep& brep, const Mesh& me
   printf("[%s] IsClosedManifold=%d boundary_edges=%d nonmanifold_edges=%d (total undirected edges=%zu) faces=%d verts=%d\n",
          label, (int)mesh.IsClosedManifold(), boundary, nonmanifold, undirected_count.size(),
          m.m_F.Count(), m.m_V.Count());
+  printf("[%s] boundary breakdown: near_rim(z=+-2)=%d near_seam(x=1,y=0)=%d other=%d\n", label, near_rim, near_seam,
+         other);
 }
 
 // Closed finite cylinder, axis along +z from z0 to z1, built via the
@@ -152,8 +164,37 @@ int main() {
         Brep r = BooleanCombineGeneral(box, cyl, op);
         Mesh m = r.TessellateToClosedMesh(8,32);
         double vol = m.Volume();
-        bool valid = r.raw().IsValid();
+        ON_wString vlog_s;
+        ON_TextLog vlog(vlog_s);
+        bool valid = r.raw().IsValid(&vlog);
         printf("box+cylinder %s: faces=%d volume=%f (expect %f) valid=%d\n", name, r.FaceCount(), vol, expect, (int)valid);
+        if (!valid) {
+          ON_String vlog_a(vlog_s);
+          printf("  IsValid log:\n%s\n", vlog_a.Array());
+        }
+        if (op == BooleanOp::Union) {
+          const ON_Brep& rb = r.raw();
+          int naked = 0;
+          std::map<int, int> per_face;
+          for (int ei = 0; ei < rb.m_E.Count(); ++ei) {
+            if (rb.m_E[ei].m_ti.Count() == 1) {
+              ++naked;
+              const int fidx = rb.m_T[rb.m_E[ei].m_ti[0]].Face()->m_face_index;
+              ++per_face[fidx];
+              if (fidx >= 6) {
+                const ON_3dPoint p0 = rb.m_E[ei].PointAtStart(), p1 = rb.m_E[ei].PointAtEnd();
+                printf("  TOPO-NAKED edge %d face=%d (%.4f,%.4f,%.4f)-(%.4f,%.4f,%.4f)\n", ei, fidx, p0.x, p0.y,
+                       p0.z, p1.x, p1.y, p1.z);
+              }
+            }
+          }
+          printf("  TOPO naked-edge-count=%d / total-edges=%d faces=%d\n", naked, rb.m_E.Count(), rb.m_F.Count());
+          for (auto& [fidx, cnt] : per_face) {
+            const ON_Surface* sf = rb.m_F[fidx].SurfaceOf();
+            const char* kind = sf->IsPlanar() ? "planar" : sf->IsCylinder() ? "cylinder" : "other";
+            printf("    face %d (%s): naked=%d\n", fidx, kind, cnt);
+          }
+        }
         DiagnoseManifold((std::string("box+cylinder ") + name).c_str(), r, m);
         Mesh mc = r.TessellateToClosedMeshConforming(8, 32);
         DiagnoseManifold((std::string("box+cylinder(conforming) ") + name).c_str(), r, mc);

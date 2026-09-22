@@ -106,17 +106,69 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //   (2) A SEPARATE, larger structural gap, found while isolating (1)'s
 //       own residual: an "untouched" operand face BooleanCombineGeneral
 //       keeps wholesale (no intersection curve touches it at all, e.g. a
-//       cylinder's own end cap once the cut only touches its wall) does
+//       cylinder's own end cap once the cut only touches its wall) did
 //       NOT get welded through the same VertexWelder/BuildLoop() identity
 //       mechanism a freshly-cut NEIGHBORING fragment does - so the two
-//       share no real ON_BrepEdge at all, even though they meet at
+//       shared no real ON_BrepEdge at all, even though they meet at
 //       identical 3D points (this file's own "friendless cylindrical
 //       band" notch precedent, brep.cpp/brep.h, is the same shape of gap
-//       one level up). Edge-topology-conforming reconciliation cannot
-//       help here by construction (there is no shared edge to walk);
-//       closing it needs BooleanCombineGeneral's own fragment-assembly
-//       step to weld an untouched face's own boundary into the SAME
-//       identity scope as its freshly-rebuilt neighbors.
+//       one level up).
+//
+//       CLOSED (a later session): root-caused to FaceBoundaryLoop()
+//       (boolean_general.cpp) resampling each face's own trim/edge curve
+//       at a fixed `samples_per_edge` FRACTION of ITS OWN parameter
+//       domain, independently per face - for a boundary two faces
+//       genuinely share (e.g. a solid cylinder's disk cap and its own
+//       wall, built by Brep::FromMixedFaces() from the SAME dense point
+//       ring, confirmed directly), each side's own trim has a DIFFERENT
+//       parameterization (the cap's a dense polyline indexed by vertex
+//       count, the wall's a plain 2D line whose 3D image is the true
+//       isocurve circle indexed by angle), so sampling both at the same
+//       `i / samples_per_edge` fraction lands at a different physical
+//       angle on each side past the shared endpoint. Added
+//       ReconcileFragmentBoundaries(), a NEW pass at fragment-assembly
+//       time (BEFORE the real VertexWelder/BuildLoop() pass, not
+//       ReconcileEdgeTopology's own tessellation-time one): it welds a
+//       throwaway detector over every kept fragment's own loop to find
+//       "anchor" positions already coincident with some OTHER fragment,
+//       splits each loop into anchor-to-anchor runs (including the
+//       degenerate but real "one single anchor, the whole loop is one
+//       run back to itself" and "two DIFFERENT positions on one loop that
+//       share one anchor vertex, because that loop continues past it
+//       toward a completely different neighbor" cases - both measured
+//       directly on box+cylinder's own cap/wall boundary), and whenever
+//       exactly two runs from two DIFFERENT fragments share an anchor
+//       pair AND a multi-probe geometric vote confirms they trace the
+//       SAME physical curve (rejecting a same-corner-only false match,
+//       also measured directly to occur elsewhere in the sweep), reuses
+//       the denser run's own points VERBATIM on the sparser side - so the
+//       real welder below is guaranteed to merge them into one shared
+//       vertex per point, giving BuildLoop() a genuine, TrimCount()==2
+//       ON_BrepEdge to hand ReconcileEdgeTopology afterward, exactly as a
+//       chain-cut edge already gets.
+//
+//       Measured directly on box+cylinder Union (the disclosed fixture
+//       above): the result's own naked (TrimCount()==1) ON_BrepEdge count
+//       dropped from 120 to 20 - the cap/wall boundary itself now fully
+//       shared (0 naked, down from 52 combined) - ON_Brep::IsValid() and
+//       the tessellated volume unaffected (both already correct before
+//       and after, confirmed by direct measurement, not merely inferred
+//       from the edge count). The sweep's own aggregate closedmesh count
+//       did NOT move (still 15/76, identical case set, no reshuffling):
+//       for box+cylinder specifically, ReconcileEdgeTopology's own
+//       DINO8_RECONCILE_DEBUG trace shows it never even walks these now-
+//       real cap/wall edges (their own tessellated boundaries already
+//       agree with no T-junction to insert - the topology fix genuinely
+//       worked), yet DiagnoseManifold's own mesh-boundary count still
+//       shows most of its residual sitting exactly at the rim (z = the
+//       wall's own v=0/v=length grid lines) - consistent with, not a new
+//       instance of, gap (1) above (TessellateGridClippedExact's own
+//       grid-alignment vertex-dropping bug, EXPLICITLY out of scope for
+//       this session, is worst exactly on a v=const grid line, which a
+//       rim by construction always is). This fix stands on its own
+//       (confirmed correct in isolation) but needs (1) fixed too, on some
+//       later session, before its effect can show up in the aggregate
+//       closedmesh count for a curved-vs-curved case like this one.
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
 
 }  // namespace dino8::kernel

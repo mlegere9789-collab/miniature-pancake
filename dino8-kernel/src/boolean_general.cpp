@@ -687,6 +687,24 @@ double Dist2(const Point2d& a, const Point2d& b) {
   return dx * dx + dy * dy;
 }
 
+// `v`'s own fraction along the straight chord p0 -> p1 (unclamped - a
+// point slightly outside [0, 1] from ordinary Newton/round-off noise at
+// an endpoint is still meaningful, just close to 0 or 1). Shared by
+// ReconcileFragmentBoundaries() (below, pre-tessellation fragment loops)
+// and ReconcileEdgeTopology() (this file's own tessellation-time pass,
+// much further down) - same chord-snap technique, two different stages.
+double ProjectT(const Point3d& p0, const Point3d& p1, const Point3d& v) {
+  const double abx = p1.x - p0.x, aby = p1.y - p0.y, abz = p1.z - p0.z;
+  const double len2 = abx * abx + aby * aby + abz * abz;
+  if (len2 < 1e-30) return 0.0;
+  const double apx = v.x - p0.x, apy = v.y - p0.y, apz = v.z - p0.z;
+  return (apx * abx + apy * aby + apz * abz) / len2;
+}
+
+Point3d ChordPoint(const Point3d& p0, const Point3d& p1, double t) {
+  return Point3d(p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t, p0.z + (p1.z - p0.z) * t);
+}
+
 // --- vertex welding (self-contained copy of brep.cpp's own VertexWelder
 // pattern - not exported from that translation unit) ------------------
 struct WeldKey {
@@ -1975,6 +1993,385 @@ void BuildLoop(ON_Brep& brep, ON_BrepFace& face, ON_BrepLoop::TYPE type, const s
   }
 }
 
+// --- weld an untouched face's own boundary into its freshly-cut
+// neighbor's shared identity scope --------------------------------------
+//
+// ROOT CAUSE (see boolean_general.h's own doc comment for the discovery
+// context): every kept fragment's own boundary is built by ONE of two
+// paths - a CUT fragment's boundary is spliced together from real
+// IntersectionCurve points shared verbatim between the two faces on
+// either side of the cut (see this file's own top comment, point 4 -
+// "the two sides' welded points coincide exactly"), but an UNTOUCHED
+// face's whole boundary - and, just as much, the still-untouched PORTION
+// of a partially-cut neighbor's own boundary (e.g. a cut cylinder wall's
+// own rim, nowhere near the cut) - comes from FaceBoundaryLoop() instead:
+// it resamples that face's own real trim/edge curve at a fixed
+// `samples_per_edge` FRACTION of that edge's own 2D parameter domain,
+// independently per face. For a boundary two faces genuinely share (e.g.
+// a solid cylinder's disk cap and its own wall, built by
+// Brep::FromMixedFaces() from the SAME dense point ring - confirmed
+// directly, see PlanarFace::notch_begin/notch_count's own doc comment in
+// brep.h), each face's own trim is a SEPARATE curve object with its own
+// parameterization (the cap's a dense ON_PolylineCurve threaded through
+// its own real vertices, domain proportional to VERTEX INDEX; the wall's
+// a plain ON_LineCurve in (u, v) whose 3D image is the cylinder's true
+// isocurve circle, domain proportional to ANGLE) - so sampling each at
+// the same `i / samples_per_edge` fraction lands at a DIFFERENT physical
+// angle on each side once `i` is not 0 or `samples_per_edge` (confirmed
+// directly: box+cylinder Union's cap/wall rim boundary drifts from a
+// matching phase at i=0 to roughly a 0.13 degree-per-step divergence by
+// i=23, out of VertexWelder's own kWeldTol). The two faces' own real
+// ON_BrepVertex endpoints of that shared run DO still coincide exactly
+// (both are literal copies of the same corner point the primitive
+// constructor emitted), so the identity mechanism BuildLoop() below
+// already correctly shares - VertexWelder + edge_of_pair, one instance,
+// used for EVERY kept face uniformly - just never gets the chance: with
+// no interior point in common, the run welds into two ADJACENT edges
+// with two DIFFERENT interior vertex sets instead of one shared edge with
+// one, exactly the "no shared edge to walk" gap ReconcileEdgeTopology
+// cannot help with (it only ever visits an edge two faces already agree
+// is theirs - TrimCount() == 2 - see its own doc comment).
+//
+// FIX: before the real welder below ever runs, walk every kept fragment's
+// own loop (outer and each hole) and weld ITS points too, with a
+// throwaway detector of the same identity (kWeldTol) - purely to find
+// which loop POSITIONS are "anchors": already-coincident with some OTHER
+// kept face's own loop (this is always true at a shared corner/endpoint,
+// which every producer of a fragment boundary - chain-splice or
+// FaceBoundaryLoop - already reproduces exactly, being literal copies of
+// the same real vertex). Between every pair of anchors, a loop has a
+// "run" of purely local, so-far-unshared interior points. When exactly
+// two runs from two DIFFERENT kept faces share the same anchor pair, they
+// are the two sides of one real physical boundary that just hasn't been
+// sampled in common yet - reconcile them to ONE shared, chord-snapped
+// interior point set (the same technique ReconcileEdgeTopology already
+// uses for tessellated boundaries, adapted here to these pre-tessellation
+// fragment loops - a straight 3D chord between the two anchors is exactly
+// what BuildLoop() below would build as this run's own edge curve anyway,
+// see its own `new ON_LineCurve(vertex_from, vertex_to)`, so snapping onto
+// it changes nothing this engine doesn't already do at the per-micro-
+// segment level). Each side keeps its own (u, v) at every point it
+// already had, gets a linearly-interpolated (u, v) at every point only
+// the OTHER side had (between its own nearest original bracketing points -
+// the same interpolation BridgeHolesIntoOuter's own LerpOnSurface already
+// relies on elsewhere in this file), so both sides' own 2D trim stays
+// valid while their 3D points become bit-for-bit identical at every
+// shared fraction - guaranteeing the real welder below welds them into
+// ONE shared ON_BrepEdge with TrimCount() == 2, at which point
+// ReconcileEdgeTopology (already unmodified) can finish the job at
+// tessellation time exactly as it already does for a chain-cut edge.
+void ReconcileFragmentBoundaries(std::vector<KeptFace>& kept) {
+  const bool debug = std::getenv("DINO8_BOOL_DEBUG") != nullptr;
+  struct LoopInfo {
+    int kf_index;
+    std::vector<UVPt>* pts;
+    const ON_Surface* surface;
+  };
+  std::vector<LoopInfo> loops;
+  for (size_t ki = 0; ki < kept.size(); ++ki) {
+    KeptFace& kf = kept[ki];
+    if (kf.outer.size() >= 3) loops.push_back({static_cast<int>(ki), &kf.outer, kf.surface});
+    for (std::vector<UVPt>& h : kf.holes) {
+      if (h.size() >= 3) loops.push_back({static_cast<int>(ki), &h, kf.surface});
+    }
+  }
+  if (loops.size() < 2) return;
+
+  // Detector pass: weld every point of every loop, and for each resulting
+  // id, which kept faces (by index) own at least one point that welds to
+  // it - purely to tell an "anchor" (shared with some OTHER face already)
+  // from an ordinary local sample.
+  VertexWelder detect;
+  std::vector<std::vector<int>> vids(loops.size());
+  std::unordered_map<int, std::vector<int>> vid_kfs;
+  for (size_t li = 0; li < loops.size(); ++li) {
+    const std::vector<UVPt>& pts = *loops[li].pts;
+    vids[li].resize(pts.size());
+    for (size_t k = 0; k < pts.size(); ++k) {
+      const int vid = detect.Weld(pts[k].p);
+      vids[li][k] = vid;
+      std::vector<int>& owners = vid_kfs[vid];
+      if (std::find(owners.begin(), owners.end(), loops[li].kf_index) == owners.end()) {
+        owners.push_back(loops[li].kf_index);
+      }
+    }
+  }
+  auto is_anchor = [&](size_t li, size_t k) { return vid_kfs[vids[li][k]].size() >= 2; };
+
+  // Group every loop's own anchor-to-anchor run by its (undirected) anchor
+  // vertex-id pair. Two special cases beyond the ordinary "run between two
+  // DIFFERENT anchor positions" below, both confirmed directly on
+  // box+cylinder Union's own cap/wall boundary:
+  //   - A loop with only ONE anchor position at all (an untouched face's
+  //     whole boundary touches its neighbor at exactly one real vertex,
+  //     e.g. a solid cylinder's disk cap meeting its own wall only at the
+  //     rim's own single angle-0 corner - FromMixedFaces() gives the cap
+  //     and the wall separate edge objects for their shared rim, see this
+  //     function's own doc comment, but DOES weld their shared corner
+  //     vertex) - its own single run is the WHOLE loop, wrapping from that
+  //     one anchor position all the way around back to itself.
+  //   - Two DIFFERENT positions on the SAME loop that happen to weld to
+  //     the SAME anchor vertex (the neighboring wall fragment's own view
+  //     of that identical rim: its loop leaves and later returns to that
+  //     same corner vertex, since it ALSO continues on past it toward a
+  //     completely different, unrelated shared edge - the freshly-cut
+  //     chain boundary against a third face). This run's own two ends
+  //     share one vertex id, not two - `key` below uses that one id
+  //     twice, deliberately not skipped as a trivial same-point span.
+  struct Run {
+    size_t li;
+    size_t a_pos, b_pos;  // loop-local indices of this run's own two anchors
+  };
+  std::map<std::pair<int, int>, std::vector<Run>> runs_by_pair;
+  for (size_t li = 0; li < loops.size(); ++li) {
+    const size_t n = loops[li].pts->size();
+    std::vector<size_t> anchors;
+    for (size_t k = 0; k < n; ++k) {
+      if (is_anchor(li, k)) anchors.push_back(k);
+    }
+    if (debug) {
+      std::fprintf(stderr, "  loop li=%zu kf=%d n=%zu anchors=%zu:", li, loops[li].kf_index, n, anchors.size());
+      for (size_t a : anchors) std::fprintf(stderr, " [%zu vid=%d]", a, vids[li][a]);
+      std::fprintf(stderr, "\n");
+    }
+    if (anchors.empty()) continue;
+    if (anchors.size() == 1) {
+      const int vid = vids[li][anchors[0]];
+      runs_by_pair[{vid, vid}].push_back({li, anchors[0], anchors[0]});
+      continue;
+    }
+    for (size_t ai = 0; ai < anchors.size(); ++ai) {
+      const size_t a_pos = anchors[ai];
+      const size_t b_pos = anchors[(ai + 1) % anchors.size()];
+      const int vid_a = vids[li][a_pos], vid_b = vids[li][b_pos];
+      const std::pair<int, int> key(std::min(vid_a, vid_b), std::max(vid_a, vid_b));
+      runs_by_pair[key].push_back({li, a_pos, b_pos});
+    }
+  }
+
+  // A run's own points, in loop order from a_pos to b_pos inclusive
+  // (circularly - walking the WHOLE loop and back to a_pos again when
+  // a_pos == b_pos, the single-anchor case above), plus each point's own
+  // fraction of the run's total 3D ARC LENGTH (0 at a_pos, 1 at b_pos) -
+  // not a straight-chord projection: a single-anchor run has no second,
+  // distinct endpoint to define a chord from, and arc length remains
+  // perfectly well-defined (and equally valid for an ordinary open run)
+  // regardless.
+  struct RunPoint {
+    Point3d p;
+    Point2d uv;
+    double t;
+  };
+  struct GatherResult {
+    std::vector<RunPoint> pts;
+    double total_len = 0.0;  // the run's own real 3D arc length, BEFORE t-normalization
+  };
+  auto gather = [&](const Run& r) {
+    const std::vector<UVPt>& pts = *loops[r.li].pts;
+    const size_t n = pts.size();
+    std::vector<size_t> idx;
+    if (r.a_pos == r.b_pos) {
+      for (size_t step = 0; step < n; ++step) idx.push_back((r.a_pos + step) % n);
+      idx.push_back(r.a_pos);
+    } else {
+      for (size_t k = r.a_pos; k != r.b_pos; k = (k + 1) % n) idx.push_back(k);
+      idx.push_back(r.b_pos);
+    }
+    GatherResult res;
+    res.pts.reserve(idx.size());
+    double total = 0.0;
+    res.pts.push_back({pts[idx[0]].p, pts[idx[0]].uv, 0.0});
+    for (size_t k = 1; k < idx.size(); ++k) {
+      const Point3d& prev = pts[idx[k - 1]].p;
+      const Point3d& cur = pts[idx[k]].p;
+      total += std::sqrt((cur.x - prev.x) * (cur.x - prev.x) + (cur.y - prev.y) * (cur.y - prev.y) +
+                          (cur.z - prev.z) * (cur.z - prev.z));
+      res.pts.push_back({cur, pts[idx[k]].uv, total});
+    }
+    res.total_len = total;
+    if (total > 1e-12) {
+      for (RunPoint& rp : res.pts) rp.t /= total;
+    }
+    return res;
+  };
+
+  // Linear-in-arc-length-fraction interpolation of `arr`'s own (p, uv) at
+  // fraction `t` (already normalized the same way `gather()` above
+  // computes its own points' `t`).
+  auto interp_at = [](const std::vector<RunPoint>& arr, double t) {
+    size_t lo = 0;
+    while (lo + 2 < arr.size() && arr[lo + 1].t <= t) ++lo;
+    const RunPoint& a = arr[lo];
+    const RunPoint& b = arr[std::min(lo + 1, arr.size() - 1)];
+    const double span = b.t - a.t;
+    const double frac = std::fabs(span) > 1e-15 ? (t - a.t) / span : 0.0;
+    UVPt out;
+    out.p = Point3d(a.p.x + (b.p.x - a.p.x) * frac, a.p.y + (b.p.y - a.p.y) * frac, a.p.z + (b.p.z - a.p.z) * frac);
+    out.uv = Point2d(a.uv.x + (b.uv.x - a.uv.x) * frac, a.uv.y + (b.uv.y - a.uv.y) * frac);
+    return out;
+  };
+
+  // Phase 1: decide every run's own new interior point set, purely by
+  // reading the ORIGINAL (pre-edit) loop point arrays - never mutating a
+  // loop here, since a loop can carry several independent runs (e.g. a
+  // cut cylinder wall's own untouched rim AND its freshly-cut far edge)
+  // and rewriting one in place would invalidate every other run's own
+  // `a_pos`/`b_pos` loop-local indices into the same array.
+  struct Edit {
+    size_t a_pos, b_pos;
+    std::vector<UVPt> new_interior;  // NOT including the endpoints at a_pos/b_pos
+  };
+  std::vector<std::vector<Edit>> edits(loops.size());
+
+  if (debug) {
+    int total_pairs = 0, two_run_pairs = 0, cross_face_pairs = 0;
+    for (auto& [key, rs] : runs_by_pair) {
+      ++total_pairs;
+      if (rs.size() == 2) {
+        ++two_run_pairs;
+        if (loops[rs[0].li].kf_index != loops[rs[1].li].kf_index) ++cross_face_pairs;
+      }
+    }
+    std::fprintf(stderr, "ReconcileFragmentBoundaries: loops=%zu anchor_pairs=%d two_run=%d cross_face=%d\n",
+                 loops.size(), total_pairs, two_run_pairs, cross_face_pairs);
+  }
+  auto dist2 = [](const Point3d& x, const Point3d& y) {
+    const double dx = x.x - y.x, dy = x.y - y.y, dz = x.z - y.z;
+    return dx * dx + dy * dy + dz * dz;
+  };
+  for (auto& [key, rs] : runs_by_pair) {
+    if (rs.size() != 2) continue;  // ambiguous (0, 1, or 3+ claimants) - leave alone
+    if (loops[rs[0].li].kf_index == loops[rs[1].li].kf_index) continue;  // same face's own seam - out of scope
+
+    const GatherResult ga = gather(rs[0]);
+    const GatherResult gb = gather(rs[1]);
+    if (ga.pts.size() <= 2 && gb.pts.size() <= 2) continue;  // both sides already a single direct span
+
+    // The denser side is the ground truth: its own points are reused
+    // VERBATIM (bit-for-bit) as the sparse side's new interior points, so
+    // the real welder below is guaranteed to merge them into one shared
+    // vertex per point, not just within tolerance. The reference side
+    // itself is left completely untouched.
+    const bool a_is_ref = ga.pts.size() >= gb.pts.size();
+    const std::vector<RunPoint>& ref = a_is_ref ? ga.pts : gb.pts;
+    const std::vector<RunPoint>& sparse_full = a_is_ref ? gb.pts : ga.pts;
+    const Run& sparse_run = a_is_ref ? rs[1] : rs[0];
+    if (ref.size() <= 2) continue;  // reference itself has no interior points to share
+
+    // `ref`'s own t and `sparse_full`'s own t need not run the same
+    // direction: two ADJACENT faces of a manifold solid trace their one
+    // shared boundary in OPPOSITE senses (this file's own outward-CCW
+    // convention - see e.g. MakeBoxXform's own "CCW as seen from outside"
+    // loops), so a_pos need not land on the same PHYSICAL end on both
+    // sides - confirmed directly as a real, not theoretical, bug: naively
+    // assuming matching direction sent a wall fragment's own (u, v) up to
+    // 0.51 units (of a radius-1 cylinder) from its true point, an
+    // ON_Brep::IsValid() failure.
+    //
+    // Both this AND direction itself are settled together by the SAME
+    // multi-probe geometric vote, not assumed: an anchor-vertex pair can
+    // be shared by two loops that DON'T trace the same physical curve at
+    // all (e.g. two otherwise-unrelated fragments that merely touch at
+    // one corner point, each with no OTHER shared vertex of its own - the
+    // exact shape a genuine disk-cap/wall run also has) - confirmed
+    // directly as a real, not theoretical, false-positive: an early,
+    // single-probe version of this same check accepted several such
+    // unrelated pairs across the sweep's OTHER cases (cyl+cyl, sphere+
+    // sphere, box+cone - none involving an untouched disk cap at all),
+    // each a real WRONG-VOLUME or non-manifold regression measured
+    // directly, not one this file's own comment can just assert away.
+    // Three probes, well clear of both t=0.5 (ambiguous on a symmetric
+    // curve) and the endpoints, each required to land within a real
+    // geometric tolerance (scaled off the SPARSE run's own arc length,
+    // the shorter/less precise of this pair) of `ref`'s corresponding
+    // point, in whichever of the two candidate directions wins the FIRST
+    // probe - reject the whole pair the moment any probe disagrees.
+    constexpr double kProbes[3] = {0.25, 0.5, 0.75};
+    const double probe_tol = std::max(1e-6, 0.05 * std::min(ga.total_len, gb.total_len));
+    bool same_direction = true;
+    bool accepted = true;
+    for (int pi = 0; pi < 3 && accepted; ++pi) {
+      const double t = kProbes[pi];
+      const Point3d ref_probe = interp_at(ref, t).p;
+      const Point3d same_probe = interp_at(sparse_full, t).p;
+      const Point3d flip_probe = interp_at(sparse_full, 1.0 - t).p;
+      const double d_same = dist2(same_probe, ref_probe);
+      const double d_flip = dist2(flip_probe, ref_probe);
+      if (pi == 0) same_direction = d_same <= d_flip;
+      const double d = same_direction ? d_same : d_flip;
+      if (d > probe_tol * probe_tol) accepted = false;
+    }
+    if (!accepted) {
+      if (debug) {
+        std::fprintf(stderr, "  REJECTED key=(%d,%d) kf_a=%d kf_b=%d ga=%zu gb=%zu (probe mismatch - not the same curve)\n",
+                     key.first, key.second, loops[rs[0].li].kf_index, loops[rs[1].li].kf_index, ga.pts.size(), gb.pts.size());
+      }
+      continue;
+    }
+
+    // Built walking `ref` in ITS OWN forward (a_pos -> b_pos) order, each
+    // point's `p` taken verbatim from `ref` and `uv` interpolated for the
+    // matching physical location on the sparse side. When the two runs
+    // trace the shared curve in OPPOSITE physical senses (`!same_direction`
+    // - the common case for two ADJACENT faces, see above), `ref`'s own
+    // forward order is the SPARSE side's own BACKWARD order (b_pos ->
+    // a_pos) - confirmed directly as a real, not theoretical, bug: left
+    // unreversed, this spliced a wall fragment's own new interior points
+    // in from its rim end (b_pos) toward its start (a_pos), backwards
+    // against the rest of its own loop, corrupting the whole loop's
+    // winding without the earlier direction/probe checks having any way
+    // to catch it (both check per-point CORRESPONDENCE, not the run's own
+    // insertion order) - measured as a genuine ~10% WRONG-VOLUME, not
+    // merely a slower convergence. Reversed here so the spliced sequence
+    // always runs from near a_pos to near b_pos in the SPARSE loop's own
+    // forward sense, matching every other run this function ever builds.
+    std::vector<UVPt> new_interior;
+    new_interior.reserve(ref.size() - 2);
+    for (size_t k = 1; k + 1 < ref.size(); ++k) {
+      const double query_t = same_direction ? ref[k].t : 1.0 - ref[k].t;
+      new_interior.push_back({ref[k].p, interp_at(sparse_full, query_t).uv});
+    }
+    if (!same_direction) std::reverse(new_interior.begin(), new_interior.end());
+    edits[sparse_run.li].push_back({sparse_run.a_pos, sparse_run.b_pos, std::move(new_interior)});
+    if (debug) {
+      std::fprintf(stderr, "  reconciled key=(%d,%d) kf_a=%d kf_b=%d ga=%zu gb=%zu ref=%s\n", key.first, key.second,
+                   loops[rs[0].li].kf_index, loops[rs[1].li].kf_index, ga.pts.size(), gb.pts.size(),
+                   a_is_ref ? "a" : "b");
+    }
+  }
+
+  // Phase 2: apply every loop's own edits (there may be several,
+  // disjoint by construction - each covers one run between two distinct
+  // anchors) in one single rebuild pass, so no edit's own a_pos/b_pos
+  // ever refers to an already-mutated array.
+  for (size_t li = 0; li < loops.size(); ++li) {
+    if (edits[li].empty()) continue;
+    std::vector<UVPt>& pts = *loops[li].pts;
+    const size_t n = pts.size();
+    std::vector<bool> skip(n, false);
+    std::unordered_map<size_t, const std::vector<UVPt>*> insert_after;
+    for (const Edit& e : edits[li]) {
+      for (size_t k = (e.a_pos + 1) % n; k != e.b_pos; k = (k + 1) % n) skip[k] = true;
+      insert_after[e.a_pos] = &e.new_interior;
+      if (debug) {
+        std::fprintf(stderr, "  EDIT li=%zu kf=%d a_pos=%zu b_pos=%zu new_interior=%zu:", li, loops[li].kf_index,
+                     e.a_pos, e.b_pos, e.new_interior.size());
+        for (const UVPt& p : e.new_interior)
+          std::fprintf(stderr, " (uv=%.4f,%.4f p=%.4f,%.4f,%.4f)", p.uv.x, p.uv.y, p.p.x, p.p.y, p.p.z);
+        std::fprintf(stderr, "\n");
+      }
+    }
+    std::vector<UVPt> result;
+    result.reserve(n + 8);
+    for (size_t k = 0; k < n; ++k) {
+      if (!skip[k]) result.push_back(pts[k]);
+      const auto it = insert_after.find(k);
+      if (it != insert_after.end()) result.insert(result.end(), it->second->begin(), it->second->end());
+    }
+    pts = std::move(result);
+  }
+}
+
 }  // namespace
 
 Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
@@ -2315,6 +2712,15 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
     for (KeptFace& kf : kept) delete kf.surface;
     return Brep();
   }
+
+  // Weld an untouched face's own boundary (or a cut face's own still-
+  // untouched portion) into the same edge-identity scope its freshly-cut
+  // neighbor already uses - see ReconcileFragmentBoundaries()'s own doc
+  // comment. Purely additive: it only ever adds points strictly between
+  // two already-shared anchor vertices, on faces that already share those
+  // two anchors exactly, so it cannot change which fragments got kept or
+  // any fragment's own overall shape/area.
+  ReconcileFragmentBoundaries(kept);
 
   // Reassemble.
   Brep result;
@@ -2701,21 +3107,6 @@ struct WalkStep {
   int idx;
   int tri;
 };
-
-// `v`'s own fraction along the straight chord p0 -> p1 (unclamped - a
-// point slightly outside [0, 1] from ordinary Newton/round-off noise at
-// an endpoint is still meaningful, just close to 0 or 1).
-double ProjectT(const Point3d& p0, const Point3d& p1, const Point3d& v) {
-  const double abx = p1.x - p0.x, aby = p1.y - p0.y, abz = p1.z - p0.z;
-  const double len2 = abx * abx + aby * aby + abz * abz;
-  if (len2 < 1e-30) return 0.0;
-  const double apx = v.x - p0.x, apy = v.y - p0.y, apz = v.z - p0.z;
-  return (apx * abx + apy * aby + apz * abz) / len2;
-}
-
-Point3d ChordPoint(const Point3d& p0, const Point3d& p1, double t) {
-  return Point3d(p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t, p0.z + (p1.z - p0.z) * t);
-}
 
 // Walks `g`'s own boundary graph from `start` until reaching a vertex
 // within `tol` of `end_p`, appending each visited vertex (and the
