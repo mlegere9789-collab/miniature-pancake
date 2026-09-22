@@ -28,6 +28,8 @@
   "submenu.set_cplane": "Définir le plan de construction",
   "submenu.viewport_layout": "Disposition des fenêtres",
   "submenu.display_mode": "Mode d'affichage",
+  "submenu.layouts": "Mises en page",
+  "submenu.clipping_drawings": "Dessins de coupe",
   "submenu.point_object": "Objet point",
   "submenu.line": "Ligne",
   "submenu.circle": "Cercle",

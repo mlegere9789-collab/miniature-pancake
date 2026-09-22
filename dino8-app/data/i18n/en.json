@@ -28,6 +28,8 @@
   "submenu.set_cplane": "Set CPlane",
   "submenu.viewport_layout": "Viewport Layout",
   "submenu.display_mode": "Display Mode",
+  "submenu.layouts": "Layouts",
+  "submenu.clipping_drawings": "Clipping Drawings",
   "submenu.point_object": "Point Object",
   "submenu.line": "Line",
   "submenu.circle": "Circle",

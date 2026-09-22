@@ -133,11 +133,19 @@ void DrawMenuBar(Application& app) {
       Items(app, {"SetDisplayMode", "Wireframe", "Shade", "ShadedViewport", "RenderedViewport", "GhostedViewport", "XRayViewport", "TechnicalViewport", "ArtisticViewport", "PenViewport", "ArcticViewport", "MonochromeViewport", "RayTracedViewport", "SetObjectDisplayMode"});
       ImGui::EndMenu();
     }
+    if (ImGui::BeginMenu(Tr("submenu.layouts").c_str())) {
+      Items(app, {"Layout", "Layouts", "LayoutProperties", "CopyLayout", "ImportLayout"});
+      ImGui::EndMenu();
+    }
     ImGui::Separator();
     Item(app, Tr("view.grid").c_str(), "Grid", "F7");
     Item(app, Tr("view.grid_options").c_str(), "GridOptions");
     Item(app, Tr("view.background_bitmap").c_str(), "BackgroundBitmap");
     Item(app, Tr("view.clipping_plane").c_str(), "ClippingPlane");
+    if (ImGui::BeginMenu(Tr("submenu.clipping_drawings").c_str())) {
+      Items(app, {"ClippingPlaneProperties", "EnableClippingPlane", "DisableClippingPlane", "ClippingDrawings", "UpdateClippingDrawings", "EditClippingDrawings", "NestedClippingDrawing", "ExportClippingDrawings", "ClearClippingSections"});
+      ImGui::EndMenu();
+    }
     Item(app, Tr("view.named_views").c_str(), "NamedView");
     Item(app, Tr("view.refresh_shade").c_str(), "RefreshShade");
     ImGui::EndMenu();
@@ -167,11 +175,11 @@ void DrawMenuBar(Application& app) {
     ImGui::EndMenu();
   }
   if (ImGui::BeginMenu(Tr("menu.surface").c_str())) {
-    Items(app, {"Plane", "Plane3Pt", "PlaneV", "PlaneThroughPt", "CutPlane", "PictureFrame", "SrfPt", "EdgeSrf", "PlanarSrf", "ExtrudeCrv", "ExtrudeCrvAlongCrv", "ExtrudeCrvTapered", "ExtrudeCrvToPoint", "ExtrudeSrf", "Loft", "Revolve", "RailRevolve", "Sweep1", "Sweep2", "NetworkSrf", "Patch", "Drape", "Heightfield", "FilletSrf", "ChamferSrf", "BlendSrf", "VariableFilletSrf", "OffsetSrf", "MatchSrf", "MergeSrf", "ExtendSrf", "ShrinkTrimmedSrf", "Untrim", "SplitEdge", "MergeEdge", "JoinEdge", "ShowEdges", "SrfSeam", "SetSurfaceTangent", "Rebuild", "RebuildUV", "ChangeDegree", "Smooth", "MakePeriodic", "SrfControlPtGrid", "UnrollSrf", "Squish", "Smash", "TweenSurfaces", "FitSrf", "ConvertToBeziers", "MakeUniformUV", "RemoveMultiKnot", "InsertKnot", "Dir", "SolidPtOn", "DivideAlongCreases"});
+    Items(app, {"Plane", "Plane3Pt", "PlaneV", "PlaneThroughPt", "CutPlane", "PictureFrame", "SrfPt", "EdgeSrf", "PlanarSrf", "ExtrudeCrv", "ExtrudeCrvAlongCrv", "ExtrudeCrvTapered", "ExtrudeCrvToPoint", "ExtrudeSrf", "Loft", "Revolve", "RailRevolve", "Sweep1", "Sweep2", "NetworkSrf", "Patch", "Drape", "Heightfield", "FilletSrf", "FilletSrfCrv", "ChamferSrf", "BlendSrf", "VariableFilletSrf", "VariableBlendSrf", "ConnectSrf", "OffsetSrf", "MatchSrf", "MergeSrf", "ExtendSrf", "ShrinkTrimmedSrf", "SplitRefitSurface", "Untrim", "SplitEdge", "MergeEdge", "JoinEdge", "ShowEdges", "SrfSeam", "SetSurfaceTangent", "Rebuild", "RebuildUV", "ChangeDegree", "Smooth", "MakePeriodic", "SrfControlPtGrid", "UnrollSrf", "Squish", "Smash", "TweenSurfaces", "FitSrf", "ConvertToBeziers", "MakeUniformUV", "RemoveMultiKnot", "InsertKnot", "Dir", "SolidPtOn", "DivideAlongCreases"});
     ImGui::EndMenu();
   }
   if (ImGui::BeginMenu(Tr("menu.subd").c_str())) {
-    Items(app, {"SubDBox", "SubDSphere", "SubDCylinder", "SubDCone", "SubDTruncatedCone", "SubDEllipsoid", "SubDTorus", "SubDPlane", "SubDLoft", "SubDSweep1", "SubDSweep2", "SubDRevolve", "SubDMultiPipe", "SubDThicken", "ToSubD", "ToNURBS", "SubDDisplayToggle", "Bridge", "Bevel", "Crease", "RemoveCrease", "Fill", "InsertEdge", "InsertPoint", "SubDExpandEdges", "MergeFaces", "OffsetSubD", "Reflect", "Slide", "Stitch", "SubDivide", "Unweld", "QuadRemesh", "AddCorner", "RemoveCorner", "Append", "ExtrudeSubD", "MoveSubDVertex", "SmoothSubD", "SubDSymmetryToggle", "Symmetry", "SubDWireframe"});
+    Items(app, {"SubDBox", "SubDSphere", "SubDCylinder", "SubDCone", "SubDTruncatedCone", "SubDEllipsoid", "SubDTorus", "SubDPlane", "SubDLoft", "SubDSweep1", "SubDSweep2", "SubDRevolve", "SubDMultiPipe", "SubDThicken", "ToSubD", "ToNURBS", "SubDDisplayToggle", "Bridge", "Bevel", "Crease", "RemoveCrease", "Fill", "InsertEdge", "InsertPoint", "SubDExpandEdges", "MergeFaces", "OffsetSubD", "Reflect", "Slide", "Stitch", "SubDivide", "Unweld", "QuadRemesh", "AddCorner", "RemoveCorner", "Append", "ExtrudeSubD", "MoveSubDVertex", "SmoothSubD", "SubDSymmetryToggle", "Symmetry", "SubDWireframe", "PackSubDFaces"});
     ImGui::EndMenu();
   }
   if (ImGui::BeginMenu(Tr("menu.solid").c_str())) {
@@ -187,7 +195,7 @@ void DrawMenuBar(Application& app) {
     ImGui::EndMenu();
   }
   if (ImGui::BeginMenu(Tr("menu.transform").c_str())) {
-    Items(app, {"Move", "Copy", "Rotate", "Rotate3D", "Scale", "Scale1D", "Scale2D", "ScaleNU", "ScaleByPlane", "Mirror", "Orient", "Orient3Pt", "OrientOnCrv", "OrientOnSrf", "OrientCameraToSrf", "Array", "ArrayPolar", "ArrayCrv", "ArrayCrvOnSrf", "ArraySrf", "ArrayLinear", "ArrayHole", "Gumball", "BoxEdit", "SetPt", "Shear", "Twist", "Bend", "Taper", "Flow", "FlowAlongSrf", "Maelstrom", "Splop", "Stretch", "Smooth", "Fair", "CageEdit", "Cage", "ReleaseFromCage", "SoftMove", "SoftEditCrv", "SoftEditSrf", "MoveUVN", "Project", "ProjectToCPlane", "RemapCPlane", "Align", "Distribute", "Group", "Ungroup", "Explode", "History", "RecordHistory", "HistoryPurge", "Dragmode", "Nudge", "Symmetry", "Reflect"});
+    Items(app, {"Move", "Copy", "Rotate", "Rotate3D", "Scale", "Scale1D", "Scale2D", "ScaleNU", "ScaleByPlane", "Mirror", "Orient", "Orient3Pt", "OrientOnCrv", "OrientOnSrf", "OrientCameraToSrf", "Array", "ArrayPolar", "ArrayCrv", "ArrayCrvOnSrf", "ArraySrf", "ArrayLinear", "ArrayHole", "Gumball", "BoxEdit", "SetPt", "Shear", "Twist", "Bend", "Taper", "Flow", "FlowAlongSrf", "Maelstrom", "Splop", "Stretch", "Smooth", "Fair", "CageEdit", "Cage", "ReleaseFromCage", "SoftMove", "SoftEditCrv", "SoftEditSrf", "MoveUVN", "Project", "ProjectToCPlane", "RemapCPlane", "Align", "Distribute", "Group", "Ungroup", "Explode", "History", "RecordHistory", "UpdateHistory", "HistoryPurge", "Dragmode", "Nudge", "Symmetry", "Reflect"});
     ImGui::EndMenu();
   }
   if (ImGui::BeginMenu(Tr("menu.tools").c_str())) {

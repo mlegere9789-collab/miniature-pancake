@@ -28,6 +28,8 @@
   "submenu.set_cplane": "Definir CPlano",
   "submenu.viewport_layout": "Disposición de ventanas",
   "submenu.display_mode": "Modo de visualización",
+  "submenu.layouts": "Presentaciones",
+  "submenu.clipping_drawings": "Dibujos de recorte",
   "submenu.point_object": "Objeto punto",
   "submenu.line": "Línea",
   "submenu.circle": "Círculo",
