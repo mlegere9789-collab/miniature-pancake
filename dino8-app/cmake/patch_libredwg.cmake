@@ -74,5 +74,53 @@ endif()
 
 string(REPLACE "${_old1}" "${_new1}" _contents "${_contents}")
 string(REPLACE "${_old2}" "${_new2}" _contents "${_contents}")
+
+# Diagnostic breadcrumbs (see FileExchange.cpp's ImportDwg for the full
+# investigation): three independent instrumentation methods (SEH+
+# _resetstkoflw, whole-build AddressSanitizer, a process-wide
+# SetUnhandledExceptionFilter) all came back with zero signal on the
+# Windows-only DWG reopen crash, and a dedicated static trace of the actual
+# LINE/CIRCLE/LWPOLYLINE/LAYER decode path found no second reachable
+# `long`-width bug. The remaining, most direct diagnostic: print a
+# breadcrumb, flushed immediately, right before dwg_decode() starts and
+# right before every single object's type-dispatch switch - since the
+# crash is 100% deterministic, whichever breadcrumb printed last in the CI
+# log is decoding at the moment of death, which pinpoints the real crash
+# site precisely (unlike every exception-based method tried so far, this
+# does not depend on the crash mechanism being catchable at all).
+set(_old3 "dwg_decode (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
+{
+  char magic[11];")
+set(_new3 "dwg_decode (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
+{
+  char magic[11];
+  fprintf (stderr, \"DINO8_DWG_TRACE: dwg_decode() entered\\n\");
+  fflush (stderr);")
+
+set(_old4 "  restartpos = bit_position (dat); // relative
+
+  /* Check the type of the object
+   */
+  switch (obj->type)")
+set(_new4 "  restartpos = bit_position (dat); // relative
+  fprintf (stderr, \"DINO8_DWG_TRACE: object #%lu type=%d size=%u addr=%\" PRIuSIZE \" pos=%\" PRIuSIZE \"\\n\",
+           (unsigned long)num, obj->type, obj->size, obj->address, restartpos);
+  fflush (stderr);
+
+  /* Check the type of the object
+   */
+  switch (obj->type)")
+
+string(FIND "${_contents}" "${_old3}" _pos3)
+string(FIND "${_contents}" "${_old4}" _pos4)
+if(_pos3 EQUAL -1)
+  message(FATAL_ERROR "patch_libredwg.cmake: dwg_decode() entry pattern not found in ${_f} - LibreDWG source may have changed, patch needs updating")
+endif()
+if(_pos4 EQUAL -1)
+  message(FATAL_ERROR "patch_libredwg.cmake: object-dispatch pattern not found in ${_f} - LibreDWG source may have changed, patch needs updating")
+endif()
+string(REPLACE "${_old3}" "${_new3}" _contents "${_contents}")
+string(REPLACE "${_old4}" "${_new4}" _contents "${_contents}")
+
 file(WRITE "${_f}" "${_contents}")
-message(STATUS "patch_libredwg.cmake: fixed platform-dependent ULONG_MAX underflow check in ${_f}")
+message(STATUS "patch_libredwg.cmake: fixed platform-dependent ULONG_MAX underflow check and added diagnostic breadcrumbs in ${_f}")
