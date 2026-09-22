@@ -383,6 +383,25 @@ if(MSVC)
   target_compile_options(Dino8 PRIVATE /W3 /EHsc /bigobj)
   # WIN32 subsystem still needs a main(): tell the linker to use it.
   target_link_options(Dino8 PRIVATE /ENTRY:mainCRTStartup)
+  # Windows' default thread stack is 1MB (reserve+commit), far smaller than
+  # Linux's typical default (commonly 8MB+). A Windows-only, deterministic,
+  # content-dependent crash decoding a real DWG file via GNU LibreDWG's
+  # vendored decoder (dwg_read_file, called from ImportDwg in
+  # FileExchange.cpp) has resisted every other explanation tried: an SEH
+  # __try/__except wrap around the call did not catch it, which was first
+  # read as ruling out an ordinary access violation in favor of an
+  # uncatchable /GS stack-protector fast-fail - but a genuine stack
+  # overflow ALSO regularly survives a plain __except unrecovered on
+  # Windows, because there is often no stack headroom left to safely run
+  # the handler itself once the guard pages are exhausted; that signature
+  # doesn't distinguish the two theories the way it first appeared to.
+  # DWG's own format is naturally recursive (nested block references,
+  # object handles chained through a table), so a content-dependent
+  # recursion depth that fits comfortably in 8MB+ but not 1MB is a
+  # plausible, platform-explaining, and - unlike a vendored-library memory
+  # bug - directly fixable cause. 16MB reserve+commit gives real headroom
+  # without the eager-commit cost of a much larger reservation.
+  target_link_options(Dino8 PRIVATE /STACK:16777216,16777216)
 else()
   target_compile_options(Dino8 PRIVATE -Wall -Wextra)
 endif()
