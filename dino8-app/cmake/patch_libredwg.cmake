@@ -443,3 +443,90 @@ string(REPLACE "${_old13}" "${_new13}" _contents5 "${_contents5}")
 file(WRITE "${_f5}" "${_contents5}")
 message(STATUS "patch_libredwg.cmake: fixed cvt_TIMEBLL's out-of-range tm_mday in its degenerate-timestamp fallback (real Windows DWG-reopen crash root cause, confirmed via local MinGW+Wine reproduction)")
 message(STATUS "patch_libredwg.cmake: added round-4 diagnostic breadcrumbs bracketing dwg_decode_header_variables in ${_f4}")
+
+# Round 6: a second, separate, real bug - only ever reachable once round 5's
+# fix let the Windows build get this far. Windows CI's global ASan build
+# (see CMakeLists.txt's MSVC /fsanitize=address block) caught a genuine
+# heap-buffer-overflow READ in dwg_add_HATCH's DWG_TYPE_POLYLINE_2D case:
+# it loops up to pline->num_owned (the file's declared vertex count) while
+# reading dwg_object_polyline_2d_get_points()'s returned array, but that
+# getter only allocates and fills as many points as it could actually
+# resolve real VERTEX_2D objects for via dwg_ref_object - which can be
+# fewer than num_owned if a vertex handle fails to resolve. Looping past
+# that smaller allocation reads past its end.
+#
+# The fix bounds the loop to the actual point count the getter reports
+# (via dwg_object_polyline_2d_get_numpoints, the same helper the getter
+# itself calls internally), never more than what was actually allocated.
+# Verified locally with Valgrind (dwg_fixture_gen ... hatch, 0 errors)
+# after the fix; MinGW/GCC does not accept MSVC's /fsanitize=address
+# syntax so this could not be reproduced bit-for-bit under Wine the way
+# round 5 was, but the fix is correct by construction: the loop bound can
+# never exceed the array's actual allocated size.
+set(_f6 "${SOURCE_DIR}/src/dwg_api.c")
+file(READ "${_f6}" _contents6)
+set(_old14 "          case DWG_TYPE_POLYLINE_2D:
+            {
+              Dwg_Entity_POLYLINE_2D *pline
+                  = pathobjs[i]->tio.entity->tio.POLYLINE_2D;
+              dwg_point_2d *pts;
+              _obj->paths[i].flag = 2 + (is_associative ? 0x200 : 0);
+              _obj->paths[i].closed = pline->flag & 1 ? 1 : 0;
+              _obj->paths[i].num_segs_or_paths = pline->num_owned;
+              _obj->paths[i].polyline_paths
+                  = (Dwg_HATCH_PolylinePath *)calloc (
+                      pline->num_owned, sizeof (Dwg_HATCH_PolylinePath));
+              pts = dwg_object_polyline_2d_get_points (pathobjs[i], &error);
+              if (error)
+                return NULL;
+              for (unsigned j = 0; j < pline->num_owned; j++)
+                {
+                  _obj->paths[i].polyline_paths[j].parent = &_obj->paths[i];
+                  _obj->paths[i].polyline_paths[j].point.x = pts[j].x;
+                  _obj->paths[i].polyline_paths[j].point.y = pts[j].y;
+                }
+              // TODO bulges, curve_type
+              free (pts);
+            }
+            break;")
+set(_new14 "          case DWG_TYPE_POLYLINE_2D:
+            {
+              Dwg_Entity_POLYLINE_2D *pline
+                  = pathobjs[i]->tio.entity->tio.POLYLINE_2D;
+              dwg_point_2d *pts;
+              int numpts_error = 0;
+              BITCODE_BL numpts;
+              _obj->paths[i].flag = 2 + (is_associative ? 0x200 : 0);
+              _obj->paths[i].closed = pline->flag & 1 ? 1 : 0;
+              _obj->paths[i].num_segs_or_paths = pline->num_owned;
+              _obj->paths[i].polyline_paths
+                  = (Dwg_HATCH_PolylinePath *)calloc (
+                      pline->num_owned, sizeof (Dwg_HATCH_PolylinePath));
+              pts = dwg_object_polyline_2d_get_points (pathobjs[i], &error);
+              if (error)
+                return NULL;
+              /* dwg_object_polyline_2d_get_points only allocates as many
+                 points as it could actually resolve real VERTEX_2D
+                 objects for, which can be fewer than pline->num_owned if
+                 a vertex handle fails to resolve - looping to num_owned
+                 here read past the end of that smaller allocation. */
+              numpts = dwg_object_polyline_2d_get_numpoints (pathobjs[i], &numpts_error);
+              if (numpts > pline->num_owned)
+                numpts = pline->num_owned;
+              for (unsigned j = 0; j < numpts; j++)
+                {
+                  _obj->paths[i].polyline_paths[j].parent = &_obj->paths[i];
+                  _obj->paths[i].polyline_paths[j].point.x = pts[j].x;
+                  _obj->paths[i].polyline_paths[j].point.y = pts[j].y;
+                }
+              // TODO bulges, curve_type
+              free (pts);
+            }
+            break;")
+string(FIND "${_contents6}" "${_old14}" _pos14)
+if(_pos14 EQUAL -1)
+  message(FATAL_ERROR "patch_libredwg.cmake: dwg_add_HATCH's DWG_TYPE_POLYLINE_2D case pattern not found in ${_f6} - LibreDWG source may have changed, patch needs updating")
+endif()
+string(REPLACE "${_old14}" "${_new14}" _contents6 "${_contents6}")
+file(WRITE "${_f6}" "${_contents6}")
+message(STATUS "patch_libredwg.cmake: fixed dwg_add_HATCH's out-of-bounds read past dwg_object_polyline_2d_get_points' actual allocation (Windows ASan-caught heap-buffer-overflow, found once round 5's fix let the build reach this code)")
