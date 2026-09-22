@@ -111,30 +111,19 @@ jobs:
           Add-MpPreference -ExclusionPath (Resolve-Path "dino8-app\build").Path
           Add-MpPreference -ExclusionPath $env:TEMP
           Add-MpPreference -ExclusionProcess "Dino8.exe"
-      # Minimal, isolated bisection: smoke.sh's own dwg_script.txt exercises
-      # both a plain Export to .dwg AND a Version=/AcadSchemes override in
-      # the same run, so a full-script failure alone doesn't say which part
-      # triggers it. Running two tiny standalone scripts here - one with
-      # only a plain DWG export, one adding a Version= override - outside
-      # smoke.sh's function-wrapping/retry logic, gives the rawest possible
-      # signal on which specific code path is responsible. continue-on-error
-      # so this diagnostic never blocks the real smoke.sh run below.
-      # Round 1 (both exit=0): a single plain Export and a single Version=13
-      # Export, each its OWN process launch - a one-off DWG export alone is
-      # not the trigger. Round 2 (this one) tried 3 same-process combos at
-      # --smoke 5 and all 3 also came back exit=0 - but reading the actual
-      # captured output showed each run's LAST printed line was the first
-      # Export's own "Command: Export ..." echo, immediately followed by
-      # the final "smoke: frames=N" summary - the second scripted line
-      # (the 2nd Export/New/Open) never got a chance to run at all: 5-6
-      # frames was not enough for main.cpp's script-cursor advance logic to
-      # reach past the first command, so round 2 accidentally re-tested
-      # "one export, then the frame budget runs out" - the exact same
-      # single-op case round 1 already covered, not the intended
-      # multi-op-in-one-process case. The real dwg_script.txt runs at
-      # --smoke 50; matching that budget here so every scripted line
-      # actually gets a chance to execute is what actually tests the
-      # multi-op-in-one-process hypothesis.
+      # Rounds 1-2 of this bisection were both invalid, for the same root
+      # cause I should have caught up front: Export is registered as an
+      # OnSelection command (cmd_file.cpp) - it needs an active selection
+      # or it opens a picker and BLOCKS waiting for one. None of my test
+      # scripts called SelAll first, so every "Export" line just sat idle
+      # consuming the whole frame budget with nothing selected, then the
+      # smoke harness exited cleanly (by design, always terminating at its
+      # frame count) - never actually running an export at all. That's why
+      # every prior round came back exit=0 with no "Exported ..." line:
+      # they tested nothing. The real dwg_script.txt always does
+      # SelAll/SelCrv before Export - matching that here is what makes
+      # this bisection real. continue-on-error so it never blocks the
+      # actual smoke.sh run below.
       - name: DWG export bisection (diagnostic)
         shell: bash
         continue-on-error: true
@@ -142,9 +131,9 @@ jobs:
           set +e
           T="$(cygpath -m "$RUNNER_TEMP")/dwgbisect"
           mkdir -p "$T"
-          printf 'Line 0,0,0 12,0,0\nExport %s/two_a.dwg\nExport %s/two_b.dwg\n' "$T" "$T" > "$T/two_exports.txt"
-          printf 'Line 0,0,0 12,0,0\nExport %s/exp.dwg\nNew\nOpen %s/exp.dwg\n' "$T" "$T" > "$T/export_open.txt"
-          printf 'Line 0,0,0 12,0,0\nExport Version=13 %s/v13.dwg\nExport Version=2018 %s/v2018.dwg\n' "$T" "$T" > "$T/two_versioned.txt"
+          printf 'Line 0,0,0 12,0,0\nSelAll\nExport %s/two_a.dwg\nSelAll\nExport %s/two_b.dwg\n' "$T" "$T" > "$T/two_exports.txt"
+          printf 'Line 0,0,0 12,0,0\nSelAll\nExport %s/exp.dwg\nNew\nOpen %s/exp.dwg\n' "$T" "$T" > "$T/export_open.txt"
+          printf 'Line 0,0,0 12,0,0\nSelAll\nExport Version=13 %s/v13.dwg\nSelAll\nExport Version=2018 %s/v2018.dwg\n' "$T" "$T" > "$T/two_versioned.txt"
           echo "--- two plain Exports, same process ---"
           dino8-app/build/Dino8.exe --smoke 50 --script "$T/two_exports.txt" 2>&1
           echo "exit=$?"
