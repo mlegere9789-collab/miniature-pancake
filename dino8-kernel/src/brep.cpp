@@ -4817,8 +4817,14 @@ Result Brep::UnjoinEdge(int edge_index) {
   const int c3i = brep_.AddEdgeCurve(dup);
   ON_BrepVertex& v0 = brep_.m_V[edge.m_vi[0]];
   ON_BrepVertex& v1 = brep_.m_V[edge.m_vi[1]];
+  // Cache what's still needed from `edge` before calling NewEdge: NewEdge
+  // appends to brep_.m_E internally, which can reallocate that array and
+  // invalidate the `edge` reference into it (a real, ASan-caught
+  // heap-use-after-free when the two both continued to be read below).
+  const double edge_tolerance = edge.m_tolerance;
+  const int edge_ti1 = edge.m_ti[1];
   ON_BrepEdge& new_edge = brep_.NewEdge(v0, v1, c3i);
-  new_edge.m_tolerance = edge.m_tolerance;
+  new_edge.m_tolerance = edge_tolerance;
 
   // Move the SECOND of the original edge's two trims onto the new,
   // duplicate edge - AttachToEdge() is the OpenNURBS "expert user" API
@@ -4828,7 +4834,7 @@ Result Brep::UnjoinEdge(int edge_index) {
   // with exactly one trim (a naked edge, by the same TrimCount()==1 test
   // this kernel's SelNakedEdges-style detection already uses), occupying
   // the same 3D location - both faces stay in this SAME ON_Brep.
-  const int ti = edge.m_ti[1];
+  const int ti = edge_ti1;
   ON_BrepTrim& trim = brep_.m_T[ti];
   const bool rev = trim.m_bRev3d;
   if (!trim.AttachToEdge(new_edge.m_edge_index, rev)) {
