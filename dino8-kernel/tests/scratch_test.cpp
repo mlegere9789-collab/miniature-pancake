@@ -181,7 +181,7 @@ int main() {
               ++naked;
               const int fidx = rb.m_T[rb.m_E[ei].m_ti[0]].Face()->m_face_index;
               ++per_face[fidx];
-              if (fidx >= 6) {
+              {
                 const ON_3dPoint p0 = rb.m_E[ei].PointAtStart(), p1 = rb.m_E[ei].PointAtEnd();
                 printf("  TOPO-NAKED edge %d face=%d (%.4f,%.4f,%.4f)-(%.4f,%.4f,%.4f)\n", ei, fidx, p0.x, p0.y,
                        p0.z, p1.x, p1.y, p1.z);

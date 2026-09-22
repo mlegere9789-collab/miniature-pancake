@@ -22,6 +22,7 @@ namespace {
 constexpr double kUvCoincidenceEpsilon = 1e-9;
 
 double Cross2d(const Point2d& a, const Point2d& b) { return a.x * b.y - a.y * b.x; }
+double Dot2d(const Point2d& a, const Point2d& b) { return a.x * b.x + a.y * b.y; }
 
 double SignedArea(const std::vector<Point2d>& polygon) {
   double area = 0.0;
@@ -69,7 +70,25 @@ bool IsConvexPolygon(const std::vector<Point2d>& polygon) {
     const Point2d edge2(c.x - b.x, c.y - b.y);
     const double turn = Cross2d(edge1, edge2);
     if (std::abs(turn) < 1e-12) {
-      continue;  // collinear vertex, doesn't affect convexity either way
+      // Cross2d near zero means edge1/edge2 are PARALLEL, but that covers
+      // two very different cases: a genuinely straight run (edge2 points
+      // the SAME way as edge1 - harmless, doesn't affect convexity either
+      // way) and an exact (or near-exact) 180-degree reversal spike -
+      // e.g. a zero/near-zero-width "there and back" notch, such as a
+      // keyhole bridge's own in/out crossing (see boolean_general.cpp's
+      // BridgeHolesIntoOuter, which deliberately keeps its bridge
+      // NON-collinear for exactly this reason) - which is a genuine,
+      // sharp concavity that a cross-product-only test cannot see (the
+      // turn angle is +-pi either way, indistinguishable from 0 by cross
+      // product alone). Checking the dot product too disambiguates them:
+      // a real reversal has edge1 and edge2 pointing opposite ways
+      // (negative dot), which no genuinely convex polygon can ever
+      // contain (a convex polygon's edges only ever turn one way, never
+      // fold back on themselves).
+      if (Dot2d(edge1, edge2) < 0.0) {
+        return false;
+      }
+      continue;  // genuinely collinear (same direction), doesn't affect convexity either way
     }
     const double turn_sign = turn > 0 ? 1.0 : -1.0;
     if (sign == 0.0) {
