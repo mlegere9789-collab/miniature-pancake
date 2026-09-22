@@ -315,18 +315,22 @@ dwg_reopen_run() {
 # that is allowed to fail, with no ambiguity about which contexts a given
 # shell treats as exempt.
 # Both launches below retry once on a non-zero exit before treating it as a
-# real failure. This isn't guessing around the crash this file's own header
-# comment above already root-caused (a process reopening a path it itself
-# wrote, in the same process, which the two-process split already fixes) -
-# it is the same "retry once to rule out a transient flake" safety net an
-# earlier version of this test had (see this file's git history, e.g.
-# commit eaa3bec, "DWG round-trip test: capture the real exit code, retry
-# once on failure") for Mesa/llvmpipe instability under many rapid process
-# launches, which this reopen call is doing as roughly the 20th+ of this
-# script's 170+ total launches - a regime the split-process fix's own
-# isolated bisection tests never actually exercised (they always ran early,
-# as the 2nd-6th launch). A real, deterministic bug would fail on the retry
-# too; a transient one won't.
+# real failure - but an immediate retry of the DWG reopen launch on Windows
+# CI was confirmed to fail identically, so an instant retry alone does not
+# fix it (kept anyway: it's still a legitimate safety net for a genuine
+# one-off, and costs nothing when the first attempt succeeds). A sleep is
+# added before the reopen launch specifically: exit 127 with literally zero
+# output - not even the app's own startup banner - is what bash reports
+# when the OS itself fails to start the process, not something the app's
+# own code produced. That points at a transient lock on the just-written
+# DWG file or the executable itself (e.g. a real-time antivirus scan
+# triggered by the export process's write, which an instant relaunch
+# doesn't give time to clear but a short wall-clock pause plausibly would)
+# rather than anything in the DWG codec. The earlier 120-frame delay this
+# file's own git history mentions was a --smoke frame-budget pause tested
+# in the since-superseded single-process shape (frames, not real time, and
+# before the export/reopen split) - a real sleep(2) here is a new,
+# different experiment, not a repeat of that ruled-out one.
 # dwg_run_retrying is called as a plain command, never via "$(...)" - calling
 # it through a command substitution would capture its own echo/diagnostic
 # output (and swallow its "exit 1" into a failed assignment that set -e
@@ -339,8 +343,9 @@ dwg_run_retrying() {
   DWG_RETRY_RESULT="$("$fn")"; ec=$?
   set -e
   if [ "$ec" -ne 0 ]; then
-    echo "$label script exited $ec on the first attempt (output below); retrying once to check for a transient flake:"
+    echo "$label script exited $ec on the first attempt (output below); pausing 2s then retrying once to check for a transient flake:"
     echo "$DWG_RETRY_RESULT"
+    sleep 2
     set +e
     DWG_RETRY_RESULT="$("$fn")"; ec=$?
     set -e
@@ -356,6 +361,11 @@ dwg_run_retrying() {
 }
 dwg_run_retrying "DWG export" dwg_run
 DW="$DWG_RETRY_RESULT"
+# A short real wall-clock pause before the reopen launch specifically - see
+# the comment above dwg_run_retrying for why (a transient lock on the file
+# dwg_run just wrote, or on the executable itself, that an instant relaunch
+# doesn't give time to clear).
+sleep 2
 dwg_run_retrying "DWG reopen" dwg_reopen_run
 DWI="$DWG_RETRY_RESULT"
 dwcheck() { if echo "$DW" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
