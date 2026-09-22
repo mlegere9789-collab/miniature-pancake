@@ -5,6 +5,7 @@
 #pragma once
 
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -87,6 +88,14 @@ class CommandEngine {
   const std::vector<std::string>& RecentCommands() const { return recent_; }
   const std::string& LastCommand() const { return last_command_; }
   void ClearHistory() { history_.clear(); }
+  // Called synchronously from Print(), before the command that just queued
+  // this line actually runs - main.cpp uses this in --smoke/--script mode to
+  // flush each line to stdout immediately, so a crash *inside* a command's
+  // own execution (which happens after Print() already recorded "Command: X"
+  // but before control ever returns to any print-after-the-fact loop) still
+  // leaves a trace of exactly which command was running. Unset in normal
+  // interactive use (the UI reads History() directly, no console to flush).
+  std::function<void(const std::string&)> on_print_line;
 
   // Point state shared with viewports (ortho base, relative coordinates).
   std::optional<kernel::Point3d> LastPoint() const { return last_point_; }

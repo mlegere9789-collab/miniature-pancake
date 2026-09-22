@@ -372,6 +372,35 @@ int main(int argc, char** argv) {
   dino8::app::ApplyDinoTheme(app.ui_scale, static_cast<dino8::app::ThemeMode>(app.theme_mode), app.accent_color);
   if (!error.empty()) std::fprintf(stderr, "warning: %s\n", error.c_str());
 
+  // In --smoke mode only (no console for a human to watch, this is what CI
+  // reads): flush each history line to stdout the instant CommandEngine
+  // records it, not after app.Frame()/Execute() returns. A command's own
+  // Begin()/handler runs strictly *after* CommandEngine::Print() already
+  // recorded "Command: X" but *before* control ever gets back to the
+  // history_printed loop below - so a crash inside a command's own logic
+  // (a real, hard, non-C++-exception crash the DINO8_GUARD in
+  // CommandEngine.cpp cannot catch) used to produce zero stdout output no
+  // matter how the earlier buffering/incremental-print fixes were tuned,
+  // because that print-after-the-fact loop was simply never reached. This
+  // makes the very next Windows CI run show exactly which command was
+  // executing at the moment of any such crash.
+  if (smoke_frames >= 0) {
+    // app.Init() above already ran the command catalog through Print() (the
+    // "Command catalog: N commands loaded" line) before this hook existed
+    // to catch it live - flush whatever's already in History() once, right
+    // now, so it isn't silently dropped (the on_print_line guard on the
+    // catch-up loops below only helps for lines recorded *after* this
+    // point).
+    for (const std::string& line : app.Engine().History()) {
+      std::printf("history: %s\n", line.c_str());
+    }
+    std::fflush(stdout);
+    app.Engine().on_print_line = [](const std::string& line) {
+      std::printf("history: %s\n", line.c_str());
+      std::fflush(stdout);
+    };
+  }
+
   if (!open_path.empty()) {
     std::string e;
     if (!app.OpenDocument(open_path, e)) std::fprintf(stderr, "%s\n", e.c_str());
@@ -396,7 +425,9 @@ int main(int argc, char** argv) {
   // DWG round-trip crash tests/smoke.sh once hit) completely undiagnosable
   // from CI logs. Printing each new history line as soon as it appears
   // means a crash always shows every command that ran before it.
-  size_t history_printed = 0;
+  // Starts at History().size(), not 0: the block above already flushed
+  // everything recorded up to and including hook registration.
+  size_t history_printed = app.Engine().History().size();
 
   int frame = 0;
   int exit_code = 0;
@@ -494,10 +525,14 @@ int main(int argc, char** argv) {
     }
     if (wait_frames > 0) --wait_frames;
     app.Frame();
-    // Flush any new command-history lines now, not at end-of-run - see the
-    // comment on history_printed above.
+    // Catch up history_printed to whatever on_print_line already flushed
+    // live as each line was recorded (see its own comment on why that has
+    // to happen from inside CommandEngine::Print(), not here) - printing
+    // again here too would print every line twice. When on_print_line isn't
+    // set (normal interactive use, no console to flush to), this is the
+    // only printer, same as before.
     for (const auto& hist = app.Engine().History(); history_printed < hist.size(); ++history_printed) {
-      std::printf("history: %s\n", hist[history_printed].c_str());
+      if (!app.Engine().on_print_line) std::printf("history: %s\n", hist[history_printed].c_str());
     }
 
     ImGui::Render();
@@ -533,11 +568,11 @@ int main(int argc, char** argv) {
       // Report a few facts the QC script checks.
       std::printf("smoke: frames=%d objects=%zu commands=%zu gl_error=%u\n", frame, app.Doc().ObjectCount(),
                   app.Engine().Registry().size(), static_cast<unsigned>(glGetError()));
-      // Every history line has already been printed incrementally above as
-      // it appeared; this is just a safety-net catch-up, not the primary
-      // print path anymore.
+      // Same on_print_line-already-handled-it guard as above - every history
+      // line has already been printed live if the hook is set; this is only
+      // the catch-up path when it isn't.
       for (const auto& hist = app.Engine().History(); history_printed < hist.size(); ++history_printed) {
-        std::printf("history: %s\n", hist[history_printed].c_str());
+        if (!app.Engine().on_print_line) std::printf("history: %s\n", hist[history_printed].c_str());
       }
       break;
     }

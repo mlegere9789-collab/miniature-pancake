@@ -252,6 +252,11 @@ bool CommandEngine::RunNested(const std::string& line) {
 void CommandEngine::Print(const std::string& line) {
   history_.push_back(line);
   while (history_.size() > 2000) history_.pop_front();
+  // Fires synchronously, right here - before RunCommand() (called by our own
+  // caller right after this returns) ever runs the command's actual logic.
+  // See the on_print_line declaration in CommandEngine.h for why this can't
+  // just be main.cpp reading History() after the frame returns.
+  if (on_print_line) on_print_line(line);
 }
 
 void CommandEngine::Execute(const std::string& raw_input) {
