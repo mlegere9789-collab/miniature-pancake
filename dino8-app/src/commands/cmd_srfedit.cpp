@@ -431,7 +431,11 @@ void ExtractWireframe(CommandContext& ctx, const std::vector<ObjectId>& ids) {
       const ON_BrepFace& f = b->m_F[fi];
       bool trimmed = f.LoopCount() != 1 || (f.Loop(0) && f.Loop(0)->TrimCount() != 4);
       if (trimmed) continue;  // trimmed faces: edges only
-      std::optional<ON_NurbsSurface> s = SurfaceOfObject(*o, fi);
+      // Use the local copy, not *o: the edges loop above may have called
+      // AddCurveFrom, which can push_back into ctx.Doc()'s object vector
+      // and reallocate it, leaving o dangling (a real, ASan-caught
+      // heap-use-after-free).
+      std::optional<ON_NurbsSurface> s = SurfaceOfObject(like, fi);
       if (!s) continue;
       for (int dir = 0; dir < 2; ++dir) {
         int spans = s->SpanCount(dir);
@@ -512,7 +516,11 @@ void Unroll(CommandContext& ctx, const std::vector<ObjectId>& ids, const char* l
     std::optional<ON_Brep> b = BrepOfObject(*o);
     if (!b) continue;
     for (int fi = 0; fi < b->m_F.Count(); ++fi) {
-      std::optional<ON_NurbsSurface> s = SurfaceOfObject(*o, fi);
+      // Use the local copy, not *o: an earlier fi iteration's AddCurve
+      // below can push_back into ctx.Doc()'s object vector and reallocate
+      // it, leaving o dangling on a later iteration (same class of bug
+      // fixed in ExtractWireframe above).
+      std::optional<ON_NurbsSurface> s = SurfaceOfObject(like, fi);
       if (!s) continue;
       const int nu = 24, nv = 24;
       std::vector<std::vector<Point3d>> g(nu + 1, std::vector<Point3d>(nv + 1));

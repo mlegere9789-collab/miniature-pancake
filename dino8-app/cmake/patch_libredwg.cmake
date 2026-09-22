@@ -530,3 +530,156 @@ endif()
 string(REPLACE "${_old14}" "${_new14}" _contents6 "${_contents6}")
 file(WRITE "${_f6}" "${_contents6}")
 message(STATUS "patch_libredwg.cmake: fixed dwg_add_HATCH's out-of-bounds read past dwg_object_polyline_2d_get_points' actual allocation (Windows ASan-caught heap-buffer-overflow, found once round 5's fix let the build reach this code)")
+
+# Round 7: the actual root cause behind round 6's mismatch, not just its
+# symptom. Once round 6's clamp stopped the crash, the HATCH pattern-fill
+# smoke checks started failing on the real point count/geometry (e.g. "did
+# not produce the expected 57 pattern-line curves") - dwg_add_HATCH's
+# POLYLINE_2D case was now safe, but wrong: it was building a hatch
+# boundary with one fewer point than the real 4-point square boundary.
+#
+# The cause is in dwg_object_polyline_2d_get_numpoints and
+# dwg_object_polyline_2d_get_points' shared R13-R2000 branch (the one this
+# project's default AC1015/AutoCAD 2000 export/import path exercises),
+# which walks _obj->first_vertex through _obj->last_vertex via
+# dwg_next_object. Both used the identical pattern
+#   do { ...count/fill current vobj...; } while ((vobj = dwg_next_object(vobj)) && vobj != vlast);
+# which checks "vobj != vlast" only AFTER advancing - so the loop stops the
+# moment vobj becomes vlast, without ever counting/filling vlast itself.
+# That is a genuine off-by-one undercount of exactly 1 vertex, matching
+# what round 6 observed (3 points read for a real 4-point boundary).
+#
+# Fixed by restructuring both loops to walk first_vertex..last_vertex
+# INCLUSIVE: count/fill the current vertex, then break if it was vlast,
+# otherwise advance. Verified locally (dwg_fixture_gen ... hatch followed
+# by the app's own HATCH round-trip smoke checks) that this now produces
+# the real 4-point boundary and the correct 57 ANSI31 pattern-line count.
+set(_f7 "${SOURCE_DIR}/src/dwg_api.c")
+file(READ "${_f7}" _contents7)
+
+set(_old15 "      if (dwg->header.version >= R_2004)
+        return obj->tio.entity->tio.POLYLINE_2D->num_owned;
+      // iterate over first_vertex - last_vertex
+      else if (dwg->header.version >= R_13b1)
+        {
+          Dwg_Object *vobj = dwg_ref_object (dwg, _obj->first_vertex);
+          Dwg_Object *vlast = dwg_ref_object (dwg, _obj->last_vertex);
+          if (!vobj)
+            *error = 1;
+          else
+            {
+              do
+                {
+                  if (vobj->fixedtype == DWG_TYPE_VERTEX_2D)
+                    num_points++;
+                  else
+                    *error = 1; // return not all vertices, but some
+                }
+              while ((vobj = dwg_next_object (vobj)) && vobj != vlast);
+            }
+        }")
+set(_new15 "      if (dwg->header.version >= R_2004)
+        return obj->tio.entity->tio.POLYLINE_2D->num_owned;
+      // iterate over first_vertex - last_vertex (inclusive: the original
+      // do-while checked vobj != vlast only AFTER advancing, so it never
+      // counted last_vertex itself - an off-by-one undercount)
+      else if (dwg->header.version >= R_13b1)
+        {
+          Dwg_Object *vobj = dwg_ref_object (dwg, _obj->first_vertex);
+          Dwg_Object *vlast = dwg_ref_object (dwg, _obj->last_vertex);
+          if (!vobj)
+            *error = 1;
+          else
+            {
+              for (;;)
+                {
+                  if (vobj->fixedtype == DWG_TYPE_VERTEX_2D)
+                    num_points++;
+                  else
+                    *error = 1; // return not all vertices, but some
+                  if (vobj == vlast)
+                    break;
+                  vobj = dwg_next_object (vobj);
+                  if (!vobj)
+                    break;
+                }
+            }
+        }")
+string(FIND "${_contents7}" "${_old15}" _pos15)
+if(_pos15 EQUAL -1)
+  message(FATAL_ERROR "patch_libredwg.cmake: dwg_object_polyline_2d_get_numpoints's first_vertex/last_vertex loop pattern not found in ${_f7} - LibreDWG source may have changed, patch needs updating")
+endif()
+string(REPLACE "${_old15}" "${_new15}" _contents7 "${_contents7}")
+
+set(_old16 "          Dwg_Object *vobj = dwg_ref_object (dwg, _obj->first_vertex);
+          Dwg_Object *vlast = dwg_ref_object (dwg, _obj->last_vertex);
+          if (!vobj)
+            *error = 1;
+          else
+            {
+              i = 0;
+              do
+                {
+                  if (vobj->fixedtype == DWG_TYPE_VERTEX_2D
+                      && (vertex = dwg_object_to_VERTEX_2D (vobj)))
+                    {
+                      ptx[i].x = vertex->point.x;
+                      ptx[i].y = vertex->point.y;
+                      i++;
+                      if (i > num_points)
+                        {
+                          *error = 1;
+                          break;
+                        }
+                    }
+                  else
+                    {
+                      *error = 1; // return not all vertices, but some
+                    }
+                }
+              while ((vobj = dwg_next_object (vobj)) && vobj != vlast);
+            }
+        }")
+set(_new16 "          Dwg_Object *vobj = dwg_ref_object (dwg, _obj->first_vertex);
+          Dwg_Object *vlast = dwg_ref_object (dwg, _obj->last_vertex);
+          if (!vobj)
+            *error = 1;
+          else
+            {
+              i = 0;
+              // inclusive first_vertex..last_vertex walk - see the matching
+              // fix and comment in dwg_object_polyline_2d_get_numpoints
+              // above; this loop had the identical off-by-one.
+              for (;;)
+                {
+                  if (vobj->fixedtype == DWG_TYPE_VERTEX_2D
+                      && (vertex = dwg_object_to_VERTEX_2D (vobj)))
+                    {
+                      ptx[i].x = vertex->point.x;
+                      ptx[i].y = vertex->point.y;
+                      i++;
+                      if (i > num_points)
+                        {
+                          *error = 1;
+                          break;
+                        }
+                    }
+                  else
+                    {
+                      *error = 1; // return not all vertices, but some
+                    }
+                  if (vobj == vlast)
+                    break;
+                  vobj = dwg_next_object (vobj);
+                  if (!vobj)
+                    break;
+                }
+            }
+        }")
+string(FIND "${_contents7}" "${_old16}" _pos16)
+if(_pos16 EQUAL -1)
+  message(FATAL_ERROR "patch_libredwg.cmake: dwg_object_polyline_2d_get_points's first_vertex/last_vertex fill-loop pattern not found in ${_f7} - LibreDWG source may have changed, patch needs updating")
+endif()
+string(REPLACE "${_old16}" "${_new16}" _contents7 "${_contents7}")
+file(WRITE "${_f7}" "${_contents7}")
+message(STATUS "patch_libredwg.cmake: fixed the first_vertex/last_vertex off-by-one undercount in dwg_object_polyline_2d_get_numpoints/get_points (real correctness bug behind round 6's mismatch)")

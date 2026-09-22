@@ -454,8 +454,17 @@ EOS
   fi
   dwhcheck() { if echo "$DWH" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
   dwhcheck "DWG: 0 curves, 0 points, 1 hatch; 1 unsupported entity skipped" "ImportDwg read the pattern-fill HATCH entity (and honestly counted its own POLYLINE_2D boundary record as unsupported on its own)"
-  dwhcheck "57 object(s) selected" "SelHatch found every ANSI31 hatch line as a real Hatch-tagged object, not a stray subset"
-  [ "$(echo "$DWH" | grep -c "^history:   degree 1, 2 control points, non-rational, open$")" = "57" ] && echo "ok   DWG HATCH's 57 ANSI31 pattern lines are all real degree-1 line curves" || { echo "FAIL DWG HATCH did not produce the expected 57 pattern-line curves"; fail=1; }
+  # 113, not 57: LibreDWG's dwg_object_polyline_2d_get_numpoints/get_points
+  # had a real off-by-one (see cmake/patch_libredwg.cmake round 7) that
+  # undercounted this fixture's 4-point square boundary as only 3 points,
+  # producing a degenerate (not-actually-square) clip boundary - 57 was
+  # the pattern-line count for THAT wrong boundary, not the real one. Once
+  # fixed, the boundary is a genuine 10x10 square (verified by the
+  # corner-to-corner diagonal checks below) and the correct ANSI31
+  # pattern-line count for it is 113 - confirmed deterministic across
+  # repeated local runs.
+  dwhcheck "113 object(s) selected" "SelHatch found every ANSI31 hatch line as a real Hatch-tagged object, not a stray subset"
+  [ "$(echo "$DWH" | grep -c "^history:   degree 1, 2 control points, non-rational, open$")" = "113" ] && echo "ok   DWG HATCH's 113 ANSI31 pattern lines are all real degree-1 line curves" || { echo "FAIL DWG HATCH did not produce the expected 113 pattern-line curves"; fail=1; }
   dwhcheck "CV\[0\] 0,0,0" "one ANSI31 hatch line runs the boundary's own diagonal-adjacent corner"
   dwhcheck "CV\[1\] 10,10,0" "...to the opposite corner of the 10x10 boundary, confirming the pattern was clipped to the real boundary, not an arbitrary box"
 else
