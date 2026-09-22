@@ -3380,7 +3380,13 @@ void ReconcileEdgeTopology(const ON_Brep& brep, std::vector<MutFace>& faces, dou
     if (!ok_a) ok_a = find_chain(mfa, graph_for(fa), p1, p0, chain_a);
     bool ok_b = find_chain(mfb, graph_for(fb), p0, p1, chain_b);
     if (!ok_b) ok_b = find_chain(mfb, graph_for(fb), p1, p0, chain_b);
-    if (!ok_a || !ok_b) continue;  // no clean run on one side - leave for the fallback pass
+    if (!ok_a || !ok_b) {
+      if (std::getenv("DINO8_RECONCILE_DEBUG")) {
+        std::fprintf(stderr, "edge %d: fa=%d fb=%d FAILED ok_a=%d ok_b=%d p0=(%g,%g,%g) p1=(%g,%g,%g) edge_len=%g\n",
+                     ei, fa, fb, (int)ok_a, (int)ok_b, p0.x, p0.y, p0.z, p1.x, p1.y, p1.z, edge_len);
+      }
+      continue;  // no clean run on one side - leave for the fallback pass
+    }
 
     std::vector<double> merged_t;
     for (size_t k = 1; k + 1 < chain_a.size(); ++k) merged_t.push_back(ProjectT(p0, p1, mfa.v[static_cast<size_t>(chain_a[k].idx)]));
