@@ -386,6 +386,17 @@ int main(int argc, char** argv) {
   }
   size_t script_cursor = 0;
   int wait_frames = 0;
+  // How much of app.Engine().History() has already been printed. Printing
+  // was previously done in one single batch after the whole script/smoke
+  // run finished (see the old loop at the bottom of this function) - which
+  // meant a crash anywhere during script execution produced ZERO stdout
+  // output no matter how stdout was buffered, because the printf calls
+  // themselves were never reached, not because output was lost in a
+  // buffer. That made every mid-script crash (see e.g. the Windows-only
+  // DWG round-trip crash tests/smoke.sh once hit) completely undiagnosable
+  // from CI logs. Printing each new history line as soon as it appears
+  // means a crash always shows every command that ran before it.
+  size_t history_printed = 0;
 
   int frame = 0;
   int exit_code = 0;
@@ -483,6 +494,11 @@ int main(int argc, char** argv) {
     }
     if (wait_frames > 0) --wait_frames;
     app.Frame();
+    // Flush any new command-history lines now, not at end-of-run - see the
+    // comment on history_printed above.
+    for (const auto& hist = app.Engine().History(); history_printed < hist.size(); ++history_printed) {
+      std::printf("history: %s\n", hist[history_printed].c_str());
+    }
 
     ImGui::Render();
     int w, h;
@@ -517,7 +533,12 @@ int main(int argc, char** argv) {
       // Report a few facts the QC script checks.
       std::printf("smoke: frames=%d objects=%zu commands=%zu gl_error=%u\n", frame, app.Doc().ObjectCount(),
                   app.Engine().Registry().size(), static_cast<unsigned>(glGetError()));
-      for (const std::string& line : app.Engine().History()) std::printf("history: %s\n", line.c_str());
+      // Every history line has already been printed incrementally above as
+      // it appeared; this is just a safety-net catch-up, not the primary
+      // print path anymore.
+      for (const auto& hist = app.Engine().History(); history_printed < hist.size(); ++history_printed) {
+        std::printf("history: %s\n", hist[history_printed].c_str());
+      }
       break;
     }
   }
