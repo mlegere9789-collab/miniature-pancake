@@ -329,3 +329,51 @@ string(REPLACE "${_old9}" "${_new9}" _contents3 "${_contents3}")
 string(REPLACE "${_old10}" "${_new10}" _contents3 "${_contents3}")
 file(WRITE "${_f3}" "${_contents3}")
 message(STATUS "patch_libredwg.cmake: added round-3 diagnostic breadcrumbs to decode_R13_R2000 in ${_f3}")
+
+# Round 4: round 3 narrowed the crash to somewhere between "dwg_sections_init
+# ok" and "before classes loop" - both attempts died in that exact ~280-line
+# span with no further breadcrumb ever printing. The section-locator-records
+# loop and array allocation in dwg_sections_init were read carefully and
+# check out as platform-safe (all fixed-width BITCODE_RL/size_t arithmetic,
+# num_sections forced equal to sections before the bounded calloc). The one
+# real remaining suspect in that span is dwg_decode_header_variables() - a
+# large, complex, largely macro/spec-generated header-variable parser that
+# is a single opaque function call from here, unlike everything else in this
+# span which was small enough to read line-by-line with confidence. This
+# brackets that call plus the classes_section: label right after the
+# CRC-check code that follows it, so this round conclusively determines
+# whether the crash is inside dwg_decode_header_variables itself or in the
+# CRC-check/classes-section-entry code that runs right after it returns.
+set(_old11 "  dat->bit = 0;
+
+  error |= dwg_decode_header_variables (dat, dat, dat, dwg);")
+set(_new11 "  dat->bit = 0;
+
+  fprintf (stderr, \"DINO8_DWG_TRACE: before dwg_decode_header_variables, header_vars.size=\" FORMAT_RL \"\\n\", dwg->header_vars.size); fflush (stderr);
+  error |= dwg_decode_header_variables (dat, dat, dat, dwg);
+  fprintf (stderr, \"DINO8_DWG_TRACE: after dwg_decode_header_variables error=%d\\n\", error); fflush (stderr);")
+
+set(_old12 "  /*-------------------------------------------------------------------------
+   * Classes, section 1
+   */
+classes_section:")
+set(_new12 "  fprintf (stderr, \"DINO8_DWG_TRACE: reached classes_section label\\n\"); fflush (stderr);
+  /*-------------------------------------------------------------------------
+   * Classes, section 1
+   */
+classes_section:")
+
+set(_f4 "${SOURCE_DIR}/src/decode.c")
+file(READ "${_f4}" _contents4)
+string(FIND "${_contents4}" "${_old11}" _pos11)
+string(FIND "${_contents4}" "${_old12}" _pos12)
+if(_pos11 EQUAL -1)
+  message(FATAL_ERROR "patch_libredwg.cmake: dwg_decode_header_variables call pattern not found in ${_f4} - LibreDWG source may have changed, patch needs updating")
+endif()
+if(_pos12 EQUAL -1)
+  message(FATAL_ERROR "patch_libredwg.cmake: classes_section label pattern not found in ${_f4} - LibreDWG source may have changed, patch needs updating")
+endif()
+string(REPLACE "${_old11}" "${_new11}" _contents4 "${_contents4}")
+string(REPLACE "${_old12}" "${_new12}" _contents4 "${_contents4}")
+file(WRITE "${_f4}" "${_contents4}")
+message(STATUS "patch_libredwg.cmake: added round-4 diagnostic breadcrumbs bracketing dwg_decode_header_variables in ${_f4}")
