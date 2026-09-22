@@ -171,6 +171,26 @@ endif()
 if(NOT MSVC)
   target_compile_definitions(${DINO8_LIBREDWG_TARGET} PRIVATE _GNU_SOURCE _DARWIN_C_SOURCE)
 endif()
+# Diagnostic instrumentation for the Windows-only DWG reopen crash (see
+# ImportDwg/DwgReadFileSafe in FileExchange.cpp): neither a larger thread
+# stack nor a __try/__except wrap with _resetstkoflw() changed the crash's
+# signature at all (still exit 127, zero output, both attempts) - real
+# evidence against ordinary stack exhaustion, since _resetstkoflw() is the
+# documented, MSDN-sample-verified fix for exactly that case. What remains
+# consistent with every observation (uncatchable by any SEH handler, by
+# design; Windows-only; deterministic; content-dependent) is a Windows
+# `__fastfail` termination - the mechanism behind an /GS stack-buffer-
+# overrun or heap-corruption check, which intentionally bypasses all
+# exception handling so a corrupted process can't be exploited via handler
+# execution. AddressSanitizer catches the actual out-of-bounds write before
+# /GS's cookie check would even fire, and prints the exact file/line from
+# LibreDWG's own vendored C source to stdout - real forensic evidence
+# instead of another blind hypothesis. Scoped to just the LibreDWG library
+# and the Dino8 executable (not GLFW/ImGui/OpenNURBS) since those have
+# nothing to do with this bug and ASan adds real runtime overhead.
+if(MSVC)
+  target_compile_options(${DINO8_LIBREDWG_TARGET} PRIVATE /fsanitize=address /Zi)
+endif()
 # LibreDWG's own generated dwg2.spec code intentionally casts BITCODE_TV
 # (char*) to BITCODE_TU (unsigned short*) hundreds of times in its TRACE
 # logging macros - a deliberate, known-safe alignment-widening cast in
@@ -380,7 +400,13 @@ else()
 endif()
 
 if(MSVC)
-  target_compile_options(Dino8 PRIVATE /W3 /EHsc /bigobj)
+  # /fsanitize=address /Zi + linker /DEBUG /INCREMENTAL:NO - see the
+  # DINO8_LIBREDWG_TARGET diagnostic-instrumentation comment above for why.
+  # Applied to Dino8's own sources too (not just the vendored decoder)
+  # since the corruption could equally be in FileExchange.cpp's own glue
+  # code calling into it.
+  target_compile_options(Dino8 PRIVATE /W3 /EHsc /bigobj /fsanitize=address /Zi)
+  target_link_options(Dino8 PRIVATE /DEBUG /INCREMENTAL:NO)
   # WIN32 subsystem still needs a main(): tell the linker to use it.
   target_link_options(Dino8 PRIVATE /ENTRY:mainCRTStartup)
   # Windows' default thread stack is 1MB (reserve+commit), far smaller than
