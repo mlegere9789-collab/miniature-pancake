@@ -87,6 +87,118 @@ test -s "$TMPW/test.obj" && echo "ok   test.obj exists" || { echo "FAIL test.obj
 check "gl_error=0" "no OpenGL errors"
 echo "$OUT" | grep -E "^(smoke|history)" | tail -120
 
+# DWG round-trip (via GNU LibreDWG, see FileExchange.cpp's ExportDwg/
+# ImportDwg): a line, a circle and a closed 4-point polyline must survive a
+# real Export to .dwg and a real Open back, with exact control-point
+# counts/rational/closed flags and exact combined curve length (not just an
+# object count - see dwg_script.txt).
+#
+# Deliberately run here, as the 2nd process launch of this whole script
+# (right after the very first sanity script above), not further down where
+# it used to sit (~20+ launches deep). A long multi-round CI bisection (see
+# this file's git history, and dwg_script.txt's own header comment) found a
+# Windows-only crash on the reopen half - exit 127, zero output - that
+# survived every fix tried at that position: a same-process vs split-process
+# rewrite, an instant retry, and a 2-second wall-clock pause before the
+# retry. Every one of those failed identically, which rules out timing and
+# locking as the mechanism. What every FAILED real run had in common was
+# happening deep in this script (~20+ prior process launches); what every
+# SUCCESSFUL isolated bisection test had in common was running early (as
+# the 2nd-6th launch) - a variable never actually isolated until now. This
+# move tests that positional theory directly: if running this as the 2nd
+# launch here fixes it for good, that confirms something about a long
+# sequence of prior launches (not the DWG codec or Windows file locking) was
+# always the real cause, and the retry/sleep logic below can eventually be
+# simplified back down once that's confirmed stable.
+DWGBIN="$(dirname "$BIN")/dwg_fixture_gen"
+sed "s|@TMP@|$TMPW|g" "$HERE/dwg_script.txt" > "$TMPW/dwg_script.txt"
+sed "s|@TMP@|$TMPW|g" "$HERE/dwg_reopen_script.txt" > "$TMPW/dwg_reopen_script.txt"
+dwg_run() {
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    "$BIN" --smoke 50 --script "$TMPW/dwg_script.txt" 2>&1
+  else
+    xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 50 --script "$TMPW/dwg_script.txt" 2>&1
+  fi
+}
+dwg_reopen_run() {
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    "$BIN" --smoke 30 --script "$TMPW/dwg_reopen_script.txt" 2>&1
+  else
+    xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_reopen_script.txt" 2>&1
+  fi
+}
+# set -e is active for this whole file (see the top), and a bare
+# DW="$(dwg_run)" is NOT one of the contexts POSIX exempts from it (that
+# exemption only covers a command substitution's own failure being ignored
+# when the assignment itself is part of an if/while/&&/|| - a plain
+# assignment statement is not), so a failing dwg_run would kill the entire
+# smoke.sh run right here. set +e/-e around exactly this call is the
+# standard, portable way to capture both output and exit code of a command
+# that is allowed to fail, with no ambiguity about which contexts a given
+# shell treats as exempt.
+# dwg_run_retrying is called as a plain command, never via "$(...)" - calling
+# it through a command substitution would capture its own echo/diagnostic
+# output (and swallow its "exit 1" into a failed assignment that set -e
+# kills the whole script on, silently, before any of those echoes ever
+# reach the real log) instead of printing it live. It sets the global
+# DWG_RETRY_RESULT for the caller to pick up after it returns. Kept as a
+# safety net for a genuine one-off even now that this section runs early;
+# costs nothing when the first attempt succeeds.
+dwg_run_retrying() {
+  local label="$1" fn="$2" ec
+  set +e
+  DWG_RETRY_RESULT="$("$fn")"; ec=$?
+  set -e
+  if [ "$ec" -ne 0 ]; then
+    echo "$label script exited $ec on the first attempt (output below); pausing 2s then retrying once to check for a transient flake:"
+    echo "$DWG_RETRY_RESULT"
+    sleep 2
+    set +e
+    DWG_RETRY_RESULT="$("$fn")"; ec=$?
+    set -e
+    if [ "$ec" -eq 0 ]; then
+      echo "ok   $label succeeded on retry (first attempt's exit was a one-off, not reproduced)"
+    else
+      echo "$label script exited $ec on the retry too (output below):"
+      echo "$DWG_RETRY_RESULT"
+      echo "FAIL: $label script exited non-zero on both attempts"
+      exit 1
+    fi
+  fi
+}
+dwg_run_retrying "DWG export" dwg_run
+DW="$DWG_RETRY_RESULT"
+dwg_run_retrying "DWG reopen" dwg_reopen_run
+DWI="$DWG_RETRY_RESULT"
+dwcheck() { if echo "$DW" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dwicheck() { if echo "$DWI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dwcheck "Exported $TMPW/dwg_roundtrip.dwg" "DWG export wrote a file"
+[ "$(echo "$DW" | grep -c "^history: Exported $TMPW/dwg_roundtrip.dwg\$")" = "2" ] && echo "ok   re-exporting DWG to the exact same path overwrites instead of silently failing" || { echo "FAIL DWG re-export to the same path did not overwrite"; fail=1; }
+dwicheck "DWG: 3 curves, 0 points" "DWG import read the line, circle and closed polyline back"
+[ "$(echo "$DWI" | grep -c "degree 2, 9 control points, rational, closed")" = "1" ] && echo "ok   DWG CIRCLE round-tripped as an exact rational NURBS circle" || { echo "FAIL DWG CIRCLE did not survive round-trip"; fail=1; }
+[ "$(echo "$DWI" | grep -c "degree 1, 5 control points, non-rational, closed")" = "1" ] && echo "ok   DWG closed LWPOLYLINE round-tripped with the right point count and closed flag" || { echo "FAIL DWG closed polyline did not survive round-trip"; fail=1; }
+[ "$(echo "$DWI" | grep -c "CV\[0\] 0,0,0")" = "1" ] && [ "$(echo "$DWI" | grep -c "CV\[1\] 12,0,0")" = "1" ] && echo "ok   DWG LINE kept its exact endpoints" || { echo "FAIL DWG LINE endpoints did not survive round-trip"; fail=1; }
+[ -n "$(echo "$DW" | grep "Total length = ")" ] && [ "$(echo "$DW" | grep "Total length = ")" = "$(echo "$DWI" | grep "Total length = ")" ] && echo "ok   DWG round-trip kept the exact combined curve length (line + circle + polyline)" || { echo "FAIL DWG round-trip changed the combined curve length"; fail=1; }
+[ "$(head -c 6 "$TMPW/dwg_roundtrip.dwg")" = "AC1015" ] && echo "ok   dwg_roundtrip.dwg is a real binary DWG (AC1015/AutoCAD 2000 header)" || { echo "FAIL dwg_roundtrip.dwg is not a real DWG file"; fail=1; }
+# AcadSchemes / Version=: a per-export Version= token and the persistent
+# AcadSchemes Version= setting must both change the real bytes written -
+# the DWG's own 6-byte version magic at file offset 0 (GNU LibreDWG's
+# dwg_version_codes(), copied verbatim to the start of its output - see
+# src/encode.c) and the DXF's $ACADVER header value - not just print a
+# claim, and the scoped Version= override on Export must not leak into
+# the document's own persistent scheme for a later, unversioned Export.
+dwcheck "AcadSchemes: Export/SaveAs to DWG/DXF write AC1015 (AutoCAD 2000)\." "AcadSchemes reports the AC1015 default before anything is set"
+dwcheck "Exported $TMPW/dwg_v13.dwg (Version=13)" "Export Version=13 (DWG) ran"
+dwcheck "AcadSchemes: Export/SaveAs to DWG/DXF write AC1027 (AutoCAD 2013, just set)\." "AcadSchemes Version=2013 set the persistent scheme"
+dwcheck "AcadSchemes: Export/SaveAs to DWG/DXF write AC1027 (AutoCAD 2013)\." "a later no-arg AcadSchemes reports AC1027 without changing it"
+dwcheck "Exported $TMPW/dwg_v2018.dwg (Version=2018)" "Export Version=2018 (DWG) ran"
+[ "$(head -c 6 "$TMPW/dwg_v13.dwg")" = "AC1012" ] && echo "ok   Export Version=13 wrote a real AC1012 (AutoCAD Release 13) DWG header" || { echo "FAIL Export Version=13 did not write an AC1012 DWG"; fail=1; }
+[ "$(head -c 6 "$TMPW/dwg_v2013.dwg")" = "AC1027" ] && echo "ok   AcadSchemes Version=2013 made a later unversioned Export write a real AC1027 (AutoCAD 2013) DWG header" || { echo "FAIL the persistent AcadSchemes Version=2013 scheme did not reach Export"; fail=1; }
+[ "$(head -c 6 "$TMPW/dwg_v2018.dwg")" = "AC1032" ] && echo "ok   Export Version=2018 wrote a real AC1032 (AutoCAD 2018) DWG header" || { echo "FAIL Export Version=2018 did not write an AC1032 DWG"; fail=1; }
+[ "$(head -c 6 "$TMPW/dwg_after_override.dwg")" = "AC1027" ] && echo "ok   after a one-off Version=2018 export, the next unversioned Export still wrote AC1027 - the per-export override did not leak into the persistent AcadSchemes scheme" || { echo "FAIL a one-off Export Version= override leaked into the document's persistent AcadSchemes scheme"; fail=1; }
+[ "$(grep -A2 '\$ACADVER' "$TMPW/dwg_v13.dxf" | tail -1)" = "AC1012" ] && echo "ok   Export Version=13 wrote \$ACADVER=AC1012 in the DXF header" || { echo "FAIL Export Version=13 (DXF) did not write \$ACADVER=AC1012"; fail=1; }
+[ "$(grep -A2 '\$ACADVER' "$TMPW/dwg_v2013.dxf" | tail -1)" = "AC1027" ] && echo "ok   the persistent AcadSchemes Version=2013 scheme made a later unversioned Export write \$ACADVER=AC1027 in the DXF header" || { echo "FAIL the persistent AcadSchemes Version=2013 scheme did not reach the DXF \$ACADVER"; fail=1; }
+[ "$(head -c 6 "$TMPW/dwg_saveas_v14.dwg")" = "AC1014" ] && echo "ok   SaveAs Version=14 wrote a real AC1014 (AutoCAD Release 14) DWG header" || { echo "FAIL SaveAs Version=14 did not write an AC1014 DWG"; fail=1; }
 
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -270,133 +382,6 @@ dmcheck() { if echo "$DM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $
 dmcheck "DXF: 6 curves, 0 points" "DXF import read the MTEXT entity"
 [ "$(echo "$DM" | grep -c "^history:   degree 1, [0-9]* control points, non-rational, closed$")" = "6" ] && echo "ok   DXF MTEXT's two \\P-separated 'Hi' lines each converted into exactly 3 closed glyph-outline curves (6 total)" || { echo "FAIL DXF MTEXT did not produce the expected glyph curves"; fail=1; }
 [ "$(echo "$DM" | grep -c "^history: 6 object(s) selected$")" = "2" ] && echo "ok   DXF MTEXT's glyph curves carry the same Annotation=Text/Style=Standard user text as TEXT import (SelAnnotationStyle finds all 6, same as SelAll)" || { echo "FAIL DXF MTEXT glyph curves are not tagged/selectable like TEXT import's"; fail=1; }
-# DWG round-trip (via GNU LibreDWG, see FileExchange.cpp's ExportDwg/
-# ImportDwg): a line, a circle and a closed 4-point polyline must survive a
-# real Export to .dwg and a real Open back, with exact control-point
-# counts/rational/closed flags and exact combined curve length (not just an
-# object count - see dwg_script.txt).
-DWGBIN="$(dirname "$BIN")/dwg_fixture_gen"
-sed "s|@TMP@|$TMPW|g" "$HERE/dwg_script.txt" > "$TMPW/dwg_script.txt"
-sed "s|@TMP@|$TMPW|g" "$HERE/dwg_reopen_script.txt" > "$TMPW/dwg_reopen_script.txt"
-# A careful, multi-round CI bisection found that on Windows specifically, a
-# process that writes a DWG file and then, in that SAME process, reopens
-# that exact path crashes instantly - exit 127, zero output, not even the
-# startup banner. Every other combination (two exports to different paths,
-# a version-switched double-export, opening a file a *different*
-# process/launch wrote, exporting one file then opening a *different*
-# pre-existing file) succeeded every time; a temp-file+atomic-rename
-# export and a 120-frame real-time delay before reopening both changed
-# nothing. See dwg_script.txt's own header comment for the full reasoning
-# - this is why the export half (dwg_script.txt) and the reopen half
-# (dwg_reopen_script.txt) below are run as two SEPARATE process launches
-# rather than one process doing Export-then-Open, matching the pattern
-# already proven to work.
-dwg_run() {
-  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    "$BIN" --smoke 50 --script "$TMPW/dwg_script.txt" 2>&1
-  else
-    xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 50 --script "$TMPW/dwg_script.txt" 2>&1
-  fi
-}
-dwg_reopen_run() {
-  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-    "$BIN" --smoke 30 --script "$TMPW/dwg_reopen_script.txt" 2>&1
-  else
-    xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_reopen_script.txt" 2>&1
-  fi
-}
-# set -e is active for this whole file (see the top), and a bare
-# DW="$(dwg_run)" is NOT one of the contexts POSIX exempts from it (that
-# exemption only covers a command substitution's own failure being ignored
-# when the assignment itself is part of an if/while/&&/|| - a plain
-# assignment statement is not), so a failing dwg_run would kill the entire
-# smoke.sh run right here. set +e/-e around exactly this call is the
-# standard, portable way to capture both output and exit code of a command
-# that is allowed to fail, with no ambiguity about which contexts a given
-# shell treats as exempt.
-# Both launches below retry once on a non-zero exit before treating it as a
-# real failure - but an immediate retry of the DWG reopen launch on Windows
-# CI was confirmed to fail identically, so an instant retry alone does not
-# fix it (kept anyway: it's still a legitimate safety net for a genuine
-# one-off, and costs nothing when the first attempt succeeds). A sleep is
-# added before the reopen launch specifically: exit 127 with literally zero
-# output - not even the app's own startup banner - is what bash reports
-# when the OS itself fails to start the process, not something the app's
-# own code produced. That points at a transient lock on the just-written
-# DWG file or the executable itself (e.g. a real-time antivirus scan
-# triggered by the export process's write, which an instant relaunch
-# doesn't give time to clear but a short wall-clock pause plausibly would)
-# rather than anything in the DWG codec. The earlier 120-frame delay this
-# file's own git history mentions was a --smoke frame-budget pause tested
-# in the since-superseded single-process shape (frames, not real time, and
-# before the export/reopen split) - a real sleep(2) here is a new,
-# different experiment, not a repeat of that ruled-out one.
-# dwg_run_retrying is called as a plain command, never via "$(...)" - calling
-# it through a command substitution would capture its own echo/diagnostic
-# output (and swallow its "exit 1" into a failed assignment that set -e
-# kills the whole script on, silently, before any of those echoes ever
-# reach the real log) instead of printing it live. It sets the global
-# DWG_RETRY_RESULT for the caller to pick up after it returns.
-dwg_run_retrying() {
-  local label="$1" fn="$2" ec
-  set +e
-  DWG_RETRY_RESULT="$("$fn")"; ec=$?
-  set -e
-  if [ "$ec" -ne 0 ]; then
-    echo "$label script exited $ec on the first attempt (output below); pausing 2s then retrying once to check for a transient flake:"
-    echo "$DWG_RETRY_RESULT"
-    sleep 2
-    set +e
-    DWG_RETRY_RESULT="$("$fn")"; ec=$?
-    set -e
-    if [ "$ec" -eq 0 ]; then
-      echo "ok   $label succeeded on retry (first attempt's exit was a one-off, not reproduced)"
-    else
-      echo "$label script exited $ec on the retry too (output below):"
-      echo "$DWG_RETRY_RESULT"
-      echo "FAIL: $label script exited non-zero on both attempts"
-      exit 1
-    fi
-  fi
-}
-dwg_run_retrying "DWG export" dwg_run
-DW="$DWG_RETRY_RESULT"
-# A short real wall-clock pause before the reopen launch specifically - see
-# the comment above dwg_run_retrying for why (a transient lock on the file
-# dwg_run just wrote, or on the executable itself, that an instant relaunch
-# doesn't give time to clear).
-sleep 2
-dwg_run_retrying "DWG reopen" dwg_reopen_run
-DWI="$DWG_RETRY_RESULT"
-dwcheck() { if echo "$DW" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
-dwicheck() { if echo "$DWI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
-dwcheck "Exported $TMPW/dwg_roundtrip.dwg" "DWG export wrote a file"
-[ "$(echo "$DW" | grep -c "^history: Exported $TMPW/dwg_roundtrip.dwg\$")" = "2" ] && echo "ok   re-exporting DWG to the exact same path overwrites instead of silently failing" || { echo "FAIL DWG re-export to the same path did not overwrite"; fail=1; }
-dwicheck "DWG: 3 curves, 0 points" "DWG import read the line, circle and closed polyline back"
-[ "$(echo "$DWI" | grep -c "degree 2, 9 control points, rational, closed")" = "1" ] && echo "ok   DWG CIRCLE round-tripped as an exact rational NURBS circle" || { echo "FAIL DWG CIRCLE did not survive round-trip"; fail=1; }
-[ "$(echo "$DWI" | grep -c "degree 1, 5 control points, non-rational, closed")" = "1" ] && echo "ok   DWG closed LWPOLYLINE round-tripped with the right point count and closed flag" || { echo "FAIL DWG closed polyline did not survive round-trip"; fail=1; }
-[ "$(echo "$DWI" | grep -c "CV\[0\] 0,0,0")" = "1" ] && [ "$(echo "$DWI" | grep -c "CV\[1\] 12,0,0")" = "1" ] && echo "ok   DWG LINE kept its exact endpoints" || { echo "FAIL DWG LINE endpoints did not survive round-trip"; fail=1; }
-[ -n "$(echo "$DW" | grep "Total length = ")" ] && [ "$(echo "$DW" | grep "Total length = ")" = "$(echo "$DWI" | grep "Total length = ")" ] && echo "ok   DWG round-trip kept the exact combined curve length (line + circle + polyline)" || { echo "FAIL DWG round-trip changed the combined curve length"; fail=1; }
-[ "$(head -c 6 "$TMPW/dwg_roundtrip.dwg")" = "AC1015" ] && echo "ok   dwg_roundtrip.dwg is a real binary DWG (AC1015/AutoCAD 2000 header)" || { echo "FAIL dwg_roundtrip.dwg is not a real DWG file"; fail=1; }
-# AcadSchemes / Version=: a per-export Version= token and the persistent
-# AcadSchemes Version= setting must both change the real bytes written -
-# the DWG's own 6-byte version magic at file offset 0 (GNU LibreDWG's
-# dwg_version_codes(), copied verbatim to the start of its output - see
-# src/encode.c) and the DXF's $ACADVER header value - not just print a
-# claim, and the scoped Version= override on Export must not leak into
-# the document's own persistent scheme for a later, unversioned Export.
-dwcheck "AcadSchemes: Export/SaveAs to DWG/DXF write AC1015 (AutoCAD 2000)\." "AcadSchemes reports the AC1015 default before anything is set"
-dwcheck "Exported $TMPW/dwg_v13.dwg (Version=13)" "Export Version=13 (DWG) ran"
-dwcheck "AcadSchemes: Export/SaveAs to DWG/DXF write AC1027 (AutoCAD 2013, just set)\." "AcadSchemes Version=2013 set the persistent scheme"
-dwcheck "AcadSchemes: Export/SaveAs to DWG/DXF write AC1027 (AutoCAD 2013)\." "a later no-arg AcadSchemes reports AC1027 without changing it"
-dwcheck "Exported $TMPW/dwg_v2018.dwg (Version=2018)" "Export Version=2018 (DWG) ran"
-[ "$(head -c 6 "$TMPW/dwg_v13.dwg")" = "AC1012" ] && echo "ok   Export Version=13 wrote a real AC1012 (AutoCAD Release 13) DWG header" || { echo "FAIL Export Version=13 did not write an AC1012 DWG"; fail=1; }
-[ "$(head -c 6 "$TMPW/dwg_v2013.dwg")" = "AC1027" ] && echo "ok   AcadSchemes Version=2013 made a later unversioned Export write a real AC1027 (AutoCAD 2013) DWG header" || { echo "FAIL the persistent AcadSchemes Version=2013 scheme did not reach Export"; fail=1; }
-[ "$(head -c 6 "$TMPW/dwg_v2018.dwg")" = "AC1032" ] && echo "ok   Export Version=2018 wrote a real AC1032 (AutoCAD 2018) DWG header" || { echo "FAIL Export Version=2018 did not write an AC1032 DWG"; fail=1; }
-[ "$(head -c 6 "$TMPW/dwg_after_override.dwg")" = "AC1027" ] && echo "ok   after a one-off Version=2018 export, the next unversioned Export still wrote AC1027 - the per-export override did not leak into the persistent AcadSchemes scheme" || { echo "FAIL a one-off Export Version= override leaked into the document's persistent AcadSchemes scheme"; fail=1; }
-[ "$(grep -A2 '\$ACADVER' "$TMPW/dwg_v13.dxf" | tail -1)" = "AC1012" ] && echo "ok   Export Version=13 wrote \$ACADVER=AC1012 in the DXF header" || { echo "FAIL Export Version=13 (DXF) did not write \$ACADVER=AC1012"; fail=1; }
-[ "$(grep -A2 '\$ACADVER' "$TMPW/dwg_v2013.dxf" | tail -1)" = "AC1027" ] && echo "ok   the persistent AcadSchemes Version=2013 scheme made a later unversioned Export write \$ACADVER=AC1027 in the DXF header" || { echo "FAIL the persistent AcadSchemes Version=2013 scheme did not reach the DXF \$ACADVER"; fail=1; }
-[ "$(head -c 6 "$TMPW/dwg_saveas_v14.dwg")" = "AC1014" ] && echo "ok   SaveAs Version=14 wrote a real AC1014 (AutoCAD Release 14) DWG header" || { echo "FAIL SaveAs Version=14 did not write an AC1014 DWG"; fail=1; }
 # BLOCK_HEADER/INSERT (block instance): Dino 8 cannot itself write a real
 # DWG INSERT (a block instance placed in-app is stored pre-flattened - see
 # InstantiateBlock), so this fixture is built independently through
