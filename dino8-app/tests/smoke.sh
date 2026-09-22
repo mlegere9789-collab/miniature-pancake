@@ -327,30 +327,37 @@ dwg_reopen_run() {
 # isolated bisection tests never actually exercised (they always ran early,
 # as the 2nd-6th launch). A real, deterministic bug would fail on the retry
 # too; a transient one won't.
+# dwg_run_retrying is called as a plain command, never via "$(...)" - calling
+# it through a command substitution would capture its own echo/diagnostic
+# output (and swallow its "exit 1" into a failed assignment that set -e
+# kills the whole script on, silently, before any of those echoes ever
+# reach the real log) instead of printing it live. It sets the global
+# DWG_RETRY_RESULT for the caller to pick up after it returns.
 dwg_run_retrying() {
-  local label="$1" fn="$2" out ec
+  local label="$1" fn="$2" ec
   set +e
-  out="$("$fn")"; ec=$?
+  DWG_RETRY_RESULT="$("$fn")"; ec=$?
   set -e
   if [ "$ec" -ne 0 ]; then
     echo "$label script exited $ec on the first attempt (output below); retrying once to check for a transient flake:"
-    echo "$out"
+    echo "$DWG_RETRY_RESULT"
     set +e
-    out="$("$fn")"; ec=$?
+    DWG_RETRY_RESULT="$("$fn")"; ec=$?
     set -e
     if [ "$ec" -eq 0 ]; then
       echo "ok   $label succeeded on retry (first attempt's exit was a one-off, not reproduced)"
     else
       echo "$label script exited $ec on the retry too (output below):"
-      echo "$out"
+      echo "$DWG_RETRY_RESULT"
       echo "FAIL: $label script exited non-zero on both attempts"
       exit 1
     fi
   fi
-  printf '%s' "$out"
 }
-DW="$(dwg_run_retrying "DWG export" dwg_run)"
-DWI="$(dwg_run_retrying "DWG reopen" dwg_reopen_run)"
+dwg_run_retrying "DWG export" dwg_run
+DW="$DWG_RETRY_RESULT"
+dwg_run_retrying "DWG reopen" dwg_reopen_run
+DWI="$DWG_RETRY_RESULT"
 dwcheck() { if echo "$DW" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 dwicheck() { if echo "$DWI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 dwcheck "Exported $TMPW/dwg_roundtrip.dwg" "DWG export wrote a file"
