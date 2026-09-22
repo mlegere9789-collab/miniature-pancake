@@ -73,12 +73,50 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 // own grid-clip tessellation approximates that shared curve with its own
 // independently-sampled dense polyline (not shared sample points, unlike
 // a straight box edge, where both sides' clip points genuinely coincide
-// once the sliver above stops hiding them) - a materially larger, still
-// explicitly open gap; see boolean_general.cpp's own top-of-file comment.
-// See boolean_general.cpp's own implementation comments for the exact
-// algorithm and TestBooleanCombineGeneralBoxBox/BoxCylinder/SphereBox
-// (tests/test_basic.cpp) for the falsifiable Mesh::IsClosedManifold()
-// claims this makes.
+// once the sliver above stops hiding them) - a materially larger gap.
+//
+// FOLLOW-UP SESSION: real-edge-topology-conforming reconciliation, the
+// technique TessellateToClosedMeshConforming() already uses for
+// BooleanCombineMixed/Planar, adapted to this engine (see
+// ReconcileEdgeTopology() in boolean_general.cpp's own implementation
+// comments for the full root-cause/fix writeup). Walks `result`'s own
+// genuine ON_BrepEdge topology and, for every interior (two-face) edge,
+// reconciles its two adjacent faces' raw tessellation boundaries to one
+// shared, chord-snapped point set BEFORE the plain point-matching pass
+// above (StitchTJunctionsOnce(), kept unmodified as its fallback). Went
+// from 14/76 to 15/76 - box+box (second box rotated 30deg about z)
+// Intersection newly closes, box+box's own axis-aligned Union/A-B/B-A and
+// every previously-closing case stay closed and volume-correct. The
+// dominant remaining curved-vs-curved gap (box+cylinder etc.) is now
+// root-caused two levels deep, both still open:
+//   (1) NurbsSurface::TessellateGridClippedExact() can silently DROP a
+//       genuine trim-polygon vertex outright under certain grid-alignment
+//       degeneracies (confirmed: a shared cut circle sitting exactly on a
+//       v-grid line loses roughly half its polyline vertices on the
+//       curved side's own raw tessellation, not merely mis-sampling it).
+//       An experimental same-session fix (inserting the missing vertex by
+//       splitting whichever existing boundary edge it lies on) measurably
+//       helped (box+cylinder Union: 1327 -> 808 unmatched boundary edges)
+//       and passed the FULL existing test suite with zero failures, but
+//       added enough runtime cost (an O(this face's own vertex count)
+//       repair scan, worst-case per failed edge) that it was reverted
+//       rather than shipped without a confirmed, complete 76-case
+//       re-measurement and a cheaper repair-lookup - a concrete, laid-out
+//       next increment, not a dead end.
+//   (2) A SEPARATE, larger structural gap, found while isolating (1)'s
+//       own residual: an "untouched" operand face BooleanCombineGeneral
+//       keeps wholesale (no intersection curve touches it at all, e.g. a
+//       cylinder's own end cap once the cut only touches its wall) does
+//       NOT get welded through the same VertexWelder/BuildLoop() identity
+//       mechanism a freshly-cut NEIGHBORING fragment does - so the two
+//       share no real ON_BrepEdge at all, even though they meet at
+//       identical 3D points (this file's own "friendless cylindrical
+//       band" notch precedent, brep.cpp/brep.h, is the same shape of gap
+//       one level up). Edge-topology-conforming reconciliation cannot
+//       help here by construction (there is no shared edge to walk);
+//       closing it needs BooleanCombineGeneral's own fragment-assembly
+//       step to weld an untouched face's own boundary into the SAME
+//       identity scope as its freshly-rebuilt neighbors.
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
 
 }  // namespace dino8::kernel

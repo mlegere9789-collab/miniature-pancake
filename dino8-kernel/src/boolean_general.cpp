@@ -664,6 +664,7 @@
 #include <map>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "dino8/kernel/detail/polygon2d.h"
@@ -2582,6 +2583,366 @@ int StitchTJunctionsOnce(std::vector<MutFace>& faces, double tol) {
 
 }  // namespace
 
+// --- TessellateGeneralBooleanClosedMesh(): edge-topology-conforming ----
+// reconciliation (real curved-edge fix; StitchTJunctionsOnce() above is
+// kept, unmodified, as a fallback safety net - see its own effect on
+// box+box).
+//
+// ROOT CAUSE, confirmed directly on box+cylinder Union (sweep case 01):
+// every interior cut edge this engine builds (BuildLoop(), above) is a
+// genuine, single shared ON_BrepEdge whose own 3D curve is a STRAIGHT
+// ON_LineCurve between two welded ON_BrepVertex points, and BOTH adjacent
+// faces' own 2D trims for that edge are ALSO straight lines, in THEIR OWN
+// (u, v) space (BuildLoop() constructs each trim's c2 the same way as the
+// edge's own c3: one ON_LineCurve per polyline segment). For a PLANAR
+// face that is an affine map, so a straight-(u, v) trim IS a straight-3D
+// trim: NurbsSurface::TessellateGridClippedExact()'s own grid-crossing
+// insertions along it land exactly on the edge's own straight 3D chord -
+// exactly what StitchTJunctionsOnce()'s own perp-tolerance check above
+// expects. For a CURVED face (a cylinder wall's own angular direction,
+// say), the SAME straight-(u, v) trim maps through that face's OWN
+// curved surface to a genuinely CURVED 3D path (the wall's own true
+// circular arc between the two shared endpoints) - not the chord at all.
+// So the cylinder side's own grid-inserted points sit on the TRUE circle,
+// bowed away from the chord by an amount that scales with the arc's OWN
+// curvature (sagitta), not ordinary Newton/round-off noise - confirmed
+// directly to exceed StitchTJunctionsOnce()'s own perp_tol on this
+// fixture at the sweep's own division count, which is why that pass
+// alone leaves the entire circle's worth of boundary edges unmatched
+// (1327 of them, not a handful of stray T-junctions - see
+// boolean_general.h's own doc comment).
+//
+// FIX: for every INTERIOR edge (exactly two trims) of `result`'s own real
+// topology, walk each of its two adjacent faces' own raw tessellation
+// boundary from that edge's start vertex to its end vertex (a short walk:
+// this engine gives every original polyline segment ITS OWN ON_BrepEdge -
+// BuildLoop() again - so the run between two immediately-consecutive edge
+// endpoints is at most the handful of points either face's OWN grid
+// happened to insert along that one short span), collect the UNION of
+// both sides' own insertion points as fractions `t` along the edge's own
+// straight chord (not their raw, possibly curve-bowed 3D position), and
+// rebuild BOTH sides' boundary triangulation from the SAME merged,
+// chord-interpolated point at each shared `t` - so a merged point is
+// float-for-float (Mesh itself stores ON_3fPoint) IDENTICAL on both
+// sides, not merely "close enough" to clear a tolerance. This is a small,
+// bounded, already-disclosed approximation (boolean_general.h: "the
+// assembled B-rep's edges are polygonal approximations of the true
+// intersection curves"): a curved face's own newly-snapped boundary point
+// moves from the true surface onto the edge's own straight chord, no
+// worse than the chord error the ORIGINAL, coarser edge already carried
+// before this function ever ran.
+//
+// Falls back silently (leaves an edge for StitchTJunctionsOnce() above to
+// try) whenever the walk can't find a clean run between the two
+// endpoints on one side - a self-seam edge (both trims on the SAME face,
+// e.g. a cylindrical wall's own vertical seam) in particular is left to
+// that pass, which already handles it (that seam is straight in 3D too,
+// so the plain perp-tolerance match already closes it - confirmed: this
+// exclusion does not regress box+box or any other case that was already
+// closing).
+namespace {
+
+// a -> (b, owning triangle index), for every directed boundary edge (a,
+// b) of `mf` whose reverse (b, a) is NOT also one of `mf`'s own directed
+// triangle edges.
+struct BoundaryGraph {
+  std::unordered_map<int, std::pair<int, int>> next;
+};
+
+BoundaryGraph BuildBoundaryGraph(const MutFace& mf) {
+  std::map<std::pair<int, int>, int> directed_owner;
+  for (size_t ti = 0; ti < mf.f.size(); ++ti) {
+    const std::array<int, 3>& t = mf.f[ti];
+    directed_owner[{t[0], t[1]}] = static_cast<int>(ti);
+    directed_owner[{t[1], t[2]}] = static_cast<int>(ti);
+    directed_owner[{t[2], t[0]}] = static_cast<int>(ti);
+  }
+  BoundaryGraph g;
+  // A vertex with MORE THAN ONE outgoing boundary edge (a pinch point -
+  // e.g. where a dropped degenerate sliver used to join two otherwise-
+  // separate boundary runs, see this function's own doc comment) has no
+  // single well-defined "next" hop; `ambiguous` marks it so the walk
+  // below treats it as a dead end rather than silently picking whichever
+  // candidate this map happened to see first (confirmed directly to send
+  // the walk on a long, wrong detour otherwise - see ReconcileEdgeTopology's
+  // own doc comment).
+  std::unordered_set<int> ambiguous;
+  for (const auto& [edge, tri] : directed_owner) {
+    if (directed_owner.count({edge.second, edge.first}) == 0) {
+      if (!g.next.emplace(edge.first, std::make_pair(edge.second, tri)).second) ambiguous.insert(edge.first);
+    }
+  }
+  for (int a : ambiguous) g.next.erase(a);
+  return g;
+}
+
+// The boundary-graph vertex (an edge-starting vertex) nearest `p`, within
+// `tol` - or -1 if none is that close.
+int NearestBoundaryStart(const MutFace& mf, const BoundaryGraph& g, const Point3d& p, double tol) {
+  int best = -1;
+  double best_d2 = tol * tol;
+  for (const auto& [a, unused] : g.next) {
+    (void)unused;
+    const Point3d& v = mf.v[static_cast<size_t>(a)];
+    const double dx = v.x - p.x, dy = v.y - p.y, dz = v.z - p.z;
+    const double d2 = dx * dx + dy * dy + dz * dz;
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best = a;
+    }
+  }
+  return best;
+}
+
+// One hop of a walked boundary chain: `idx` is the vertex, `tri` is the
+// triangle owning the boundary edge FROM this vertex to the next one in
+// the chain (unused - -1 - on the chain's own last entry).
+struct WalkStep {
+  int idx;
+  int tri;
+};
+
+// `v`'s own fraction along the straight chord p0 -> p1 (unclamped - a
+// point slightly outside [0, 1] from ordinary Newton/round-off noise at
+// an endpoint is still meaningful, just close to 0 or 1).
+double ProjectT(const Point3d& p0, const Point3d& p1, const Point3d& v) {
+  const double abx = p1.x - p0.x, aby = p1.y - p0.y, abz = p1.z - p0.z;
+  const double len2 = abx * abx + aby * aby + abz * abz;
+  if (len2 < 1e-30) return 0.0;
+  const double apx = v.x - p0.x, apy = v.y - p0.y, apz = v.z - p0.z;
+  return (apx * abx + apy * aby + apz * abz) / len2;
+}
+
+Point3d ChordPoint(const Point3d& p0, const Point3d& p1, double t) {
+  return Point3d(p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * t, p0.z + (p1.z - p0.z) * t);
+}
+
+// Walks `g`'s own boundary graph from `start` until reaching a vertex
+// within `tol` of `end_p`, appending each visited vertex (and the
+// triangle owning its outgoing edge) to `out`. Returns false - `out` left
+// in a partial, unusable state - if the walk dead-ends, runs past a small
+// step cap, or (the `p0`/`p1`/`max_dev` check) ever visits a vertex too
+// far from the edge's own straight chord to plausibly be one of ITS OWN
+// grid-inserted points: this engine gives every original polyline
+// segment its own ON_BrepEdge (see ReconcileEdgeTopology's own doc
+// comment), so a genuine run between two consecutive such edges' own
+// endpoints is always SHORT and stays close to their shared chord: a run
+// that wanders far or long is walking a DIFFERENT part of this face's own
+// boundary entirely (confirmed directly: without this check, a face with
+// a pinch point left by BuildBoundaryGraph()'s own ambiguous-vertex
+// pruning could still walk 100+ hops around most of its own loop before
+// coincidentally landing back within `tol` of `end_p` - corrupting, not
+// just failing, box+box's own previously-closing Intersection/A-B/B-A).
+bool WalkBoundaryChain(const MutFace& mf, const BoundaryGraph& g, int start, const Point3d& end_p, double tol,
+                        const Point3d& p0, const Point3d& p1, double max_dev, std::vector<WalkStep>& out) {
+  out.clear();
+  int cur = start;
+  const double tol2 = tol * tol;
+  constexpr int kMaxSteps = 48;
+  for (int steps = 0; steps < kMaxSteps; ++steps) {
+    const Point3d& cur_p = mf.v[static_cast<size_t>(cur)];
+    const double dx = cur_p.x - end_p.x, dy = cur_p.y - end_p.y, dz = cur_p.z - end_p.z;
+    if (dx * dx + dy * dy + dz * dz <= tol2) {
+      out.push_back({cur, -1});
+      return true;
+    }
+    const double t = ProjectT(p0, p1, cur_p);
+    if (t < -0.5 || t > 1.5) return false;  // well outside this edge's own span
+    const Point3d on_chord = ChordPoint(p0, p1, t);
+    const double ddx = cur_p.x - on_chord.x, ddy = cur_p.y - on_chord.y, ddz = cur_p.z - on_chord.z;
+    if (ddx * ddx + ddy * ddy + ddz * ddz > max_dev * max_dev) return false;  // too far off-chord
+    const auto it = g.next.find(cur);
+    if (it == g.next.end()) return false;
+    out.push_back({cur, it->second.second});
+    cur = it->second.first;
+  }
+  return false;
+}
+
+// Reconciles one face's own already-walked boundary run (`chain`, from
+// `p0` to `p1`) to contain exactly `merged_t`'s points: every EXISTING
+// chain vertex is snapped onto the chord at its own `t` (so it agrees,
+// float-for-float, with the other side's copy of the same `t` - both
+// sides compute it with the same ChordPoint() formula), and every
+// `merged_t` value missing from this side is fanned into the triangle
+// that currently owns the span containing it. Mutates `mf` in place.
+void ReconcileChainToChord(MutFace& mf, const std::vector<WalkStep>& chain, const Point3d& p0, const Point3d& p1,
+                            const std::vector<double>& merged_t, double tol, double edge_len) {
+  const size_t n = chain.size();
+  if (n < 2) return;
+
+  std::vector<double> t_here(n);
+  for (size_t k = 0; k < n; ++k) t_here[k] = ProjectT(p0, p1, mf.v[static_cast<size_t>(chain[k].idx)]);
+  // Snap every existing chain vertex onto the chord at its own `t`.
+  for (size_t k = 0; k < n; ++k) mf.v[static_cast<size_t>(chain[k].idx)] = ChordPoint(p0, p1, t_here[k]);
+
+  const double eps_t = edge_len > 1e-12 ? tol / edge_len : 1e-9;
+  std::vector<bool> removed(mf.f.size(), false);
+  std::vector<std::array<int, 3>> additions;
+
+  for (size_t k = 0; k + 1 < n; ++k) {
+    const int a_idx = chain[k].idx, b_idx = chain[k + 1].idx;
+    const int tri_idx = chain[k].tri;
+    if (tri_idx < 0 || static_cast<size_t>(tri_idx) >= mf.f.size() || removed[static_cast<size_t>(tri_idx)]) continue;
+    const double t_lo = t_here[k], t_hi = t_here[k + 1];
+    const double t_min = std::min(t_lo, t_hi), t_max = std::max(t_lo, t_hi);
+    const bool increasing = t_hi >= t_lo;
+
+    std::vector<double> extra;
+    for (double t : merged_t) {
+      if (t > t_min + eps_t && t < t_max - eps_t) extra.push_back(t);
+    }
+    if (extra.empty()) continue;
+    std::sort(extra.begin(), extra.end());
+    if (!increasing) std::reverse(extra.begin(), extra.end());
+
+    const std::array<int, 3>& tri = mf.f[static_cast<size_t>(tri_idx)];
+    int apex_idx = -1;
+    for (int kk = 0; kk < 3; ++kk) {
+      if (tri[static_cast<size_t>(kk)] != a_idx && tri[static_cast<size_t>(kk)] != b_idx) {
+        apex_idx = tri[static_cast<size_t>(kk)];
+        break;
+      }
+    }
+    if (apex_idx < 0) continue;
+
+    std::vector<int> chain_idx;
+    chain_idx.push_back(a_idx);
+    for (double t : extra) {
+      const Point3d p = ChordPoint(p0, p1, t);
+      const Point3d& last = mf.v[static_cast<size_t>(chain_idx.back())];
+      const double dx = p.x - last.x, dy = p.y - last.y, dz = p.z - last.z;
+      if (dx * dx + dy * dy + dz * dz < tol * tol) continue;  // de-dup a near-zero-length sub-segment
+      chain_idx.push_back(static_cast<int>(mf.v.size()));
+      mf.v.push_back(p);
+    }
+    chain_idx.push_back(b_idx);
+    if (chain_idx.size() <= 2) continue;
+
+    for (size_t kk = 0; kk + 1 < chain_idx.size(); ++kk) additions.push_back({apex_idx, chain_idx[kk], chain_idx[kk + 1]});
+    removed[static_cast<size_t>(tri_idx)] = true;
+  }
+
+  if (!additions.empty()) {
+    std::vector<std::array<int, 3>> next;
+    next.reserve(mf.f.size() + additions.size());
+    for (size_t ti = 0; ti < mf.f.size(); ++ti) {
+      if (!removed[ti]) next.push_back(mf.f[ti]);
+    }
+    for (const std::array<int, 3>& t : additions) next.push_back(t);
+    mf.f = std::move(next);
+  }
+}
+
+// Drives the whole pass: every interior (two-trim) edge of `brep`, whose
+// two trims land on two DIFFERENT faces (a self-seam - same face on both
+// trims - is left to StitchTJunctionsOnce(), see this section's own doc
+// comment), gets its two adjacent faces' boundaries reconciled to a
+// shared, chord-snapped point set. `faces[i]` is assumed to be
+// `brep.m_F[i]`'s own tessellation (Brep::Tessellate()'s own documented
+// face-index order) - silently skipped whenever that correspondence
+// isn't exactly 1:1 (e.g. a face Brep::Tessellate() itself dropped),
+// since there is then no reliable way to know which MutFace an edge's
+// own face index means.
+void ReconcileEdgeTopology(const ON_Brep& brep, std::vector<MutFace>& faces, double tol) {
+  if (static_cast<size_t>(brep.m_F.Count()) != faces.size()) return;
+
+  std::vector<bool> has_graph(faces.size(), false);
+  std::vector<BoundaryGraph> graphs(faces.size());
+  auto graph_for = [&](int fi) -> BoundaryGraph& {
+    if (!has_graph[static_cast<size_t>(fi)]) {
+      graphs[static_cast<size_t>(fi)] = BuildBoundaryGraph(faces[static_cast<size_t>(fi)]);
+      has_graph[static_cast<size_t>(fi)] = true;
+    }
+    return graphs[static_cast<size_t>(fi)];
+  };
+  auto invalidate = [&](int fi) { has_graph[static_cast<size_t>(fi)] = false; };
+
+  for (int ei = 0; ei < brep.m_E.Count(); ++ei) {
+    const ON_BrepEdge& edge = brep.m_E[ei];
+    if (edge.TrimCount() != 2) continue;
+    const ON_BrepTrim* t0 = edge.Trim(0);
+    const ON_BrepTrim* t1 = edge.Trim(1);
+    if (!t0 || !t1) continue;
+    const ON_BrepFace* face_a = t0->Face();
+    const ON_BrepFace* face_b = t1->Face();
+    if (!face_a || !face_b) continue;
+    const int fa = face_a->m_face_index;
+    const int fb = face_b->m_face_index;
+    if (fa == fb) continue;  // self-seam: StitchTJunctionsOnce() handles it
+    if (fa < 0 || fb < 0 || static_cast<size_t>(fa) >= faces.size() || static_cast<size_t>(fb) >= faces.size()) continue;
+
+    const ON_3dPoint& raw_p0 = brep.m_V[edge.m_vi[0]].point;
+    const ON_3dPoint& raw_p1 = brep.m_V[edge.m_vi[1]].point;
+    const Point3d p0(raw_p0.x, raw_p0.y, raw_p0.z);
+    const Point3d p1(raw_p1.x, raw_p1.y, raw_p1.z);
+    const double edge_len =
+        std::sqrt((p1.x - p0.x) * (p1.x - p0.x) + (p1.y - p0.y) * (p1.y - p0.y) + (p1.z - p0.z) * (p1.z - p0.z));
+    if (edge_len < tol) continue;
+
+    MutFace& mfa = faces[static_cast<size_t>(fa)];
+    MutFace& mfb = faces[static_cast<size_t>(fb)];
+    // Deliberately NOT scaled to edge_len: p0/p1 are exact, real
+    // ON_BrepVertex positions that Brep::Tessellate()'s own boundary
+    // reconstruction reproduces to float precision (Mesh stores
+    // ON_3fPoint) on EVERY face that uses them - the same "every original
+    // polyline sample matches exactly on both sides" guarantee
+    // StitchTJunctionsOnce() above already relies on - so a small,
+    // fixed-size tolerance is correct; a fraction of edge_len is not
+    // (confirmed by direct measurement: it wrongly matched an unrelated
+    // nearby vertex on a short segment, corrupting even the box+box case).
+    const double walk_tol = std::max(tol, 1e-9) * 10.0;
+    // How far off the chord a genuine grid-inserted point on THIS one
+    // short span may plausibly sit (the curvature "bulge" this section's
+    // own doc comment describes) - generous relative to the span itself,
+    // but still bounded, so a walk that strays onto an unrelated part of
+    // the face's own boundary (e.g. via a pinch point) is rejected long
+    // before it could wander back and falsely land near the other
+    // endpoint (see WalkBoundaryChain's own doc comment).
+    const double max_dev = std::max(walk_tol, edge_len * 1.5);
+
+    auto find_chain = [&](MutFace& mf, BoundaryGraph& g, const Point3d& from_p, const Point3d& to_p,
+                           std::vector<WalkStep>& out) -> bool {
+      const int s = NearestBoundaryStart(mf, g, from_p, walk_tol);
+      if (s < 0) return false;
+      return WalkBoundaryChain(mf, g, s, to_p, walk_tol, from_p, to_p, max_dev, out);
+    };
+
+    std::vector<WalkStep> chain_a, chain_b;
+    bool ok_a = find_chain(mfa, graph_for(fa), p0, p1, chain_a);
+    if (!ok_a) ok_a = find_chain(mfa, graph_for(fa), p1, p0, chain_a);
+    bool ok_b = find_chain(mfb, graph_for(fb), p0, p1, chain_b);
+    if (!ok_b) ok_b = find_chain(mfb, graph_for(fb), p1, p0, chain_b);
+    if (!ok_a || !ok_b) continue;  // no clean run on one side - leave for the fallback pass
+
+    std::vector<double> merged_t;
+    for (size_t k = 1; k + 1 < chain_a.size(); ++k) merged_t.push_back(ProjectT(p0, p1, mfa.v[static_cast<size_t>(chain_a[k].idx)]));
+    for (size_t k = 1; k + 1 < chain_b.size(); ++k) merged_t.push_back(ProjectT(p0, p1, mfb.v[static_cast<size_t>(chain_b[k].idx)]));
+    if (merged_t.empty()) continue;  // both sides already a single direct span - nothing to reconcile
+    std::sort(merged_t.begin(), merged_t.end());
+    const double eps_t = edge_len > 1e-12 ? tol / edge_len : 1e-9;
+    std::vector<double> deduped;
+    for (double t : merged_t) {
+      if (deduped.empty() || t - deduped.back() > eps_t) {
+        deduped.push_back(t);
+      } else {
+        deduped.back() = 0.5 * (deduped.back() + t);
+      }
+    }
+
+    if (std::getenv("DINO8_RECONCILE_DEBUG")) {
+      std::fprintf(stderr, "edge %d: fa=%d fb=%d chainA=%zu chainB=%zu merged=%zu (raw %zu) edge_len=%g\n", ei, fa, fb,
+                   chain_a.size(), chain_b.size(), deduped.size(), merged_t.size(), edge_len);
+    }
+    ReconcileChainToChord(mfa, chain_a, p0, p1, deduped, tol, edge_len);
+    ReconcileChainToChord(mfb, chain_b, p0, p1, deduped, tol, edge_len);
+    invalidate(fa);
+    invalidate(fb);
+  }
+}
+
+}  // namespace
+
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions, int v_divisions) {
   const std::vector<Mesh> raw_faces = result.Tessellate(u_divisions, v_divisions);
   std::vector<MutFace> faces;
@@ -2633,6 +2994,29 @@ Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions, int
   // had 9 and 27 such leftover boundary edges respectively, every one of
   // them at exactly this pattern (a dropped sliver's ex-neighbor edge),
   // and both drop to 0 with this reordering alone.
+  drop_degenerate_triangles(faces);
+
+  // Real curved-edge fix (see ReconcileEdgeTopology()'s own doc comment
+  // just above): walks `result`'s own genuine ON_Brep edge topology and
+  // reconciles each interior edge's two adjacent faces to a shared,
+  // chord-snapped boundary point set, BEFORE the plain point-matching
+  // StitchTJunctionsOnce() pass below - which still runs afterward,
+  // unmodified, as a fallback for whatever this pass leaves untouched
+  // (self-seam edges, and anything else it couldn't cleanly walk).
+  ReconcileEdgeTopology(result.raw(), faces, tol);
+
+  // Same reordering reasoning as the drop_degenerate_triangles() call
+  // above, applied to a fresh source: ReconcileChainToChord()'s own
+  // chord-snapping can occasionally leave a fan triangle degenerate (two
+  // merged `t` values close enough to produce a near-zero-length
+  // sub-segment survives its own de-dup but still ends up numerically
+  // collinear with its neighbor once snapped) - confirmed directly on
+  // box+box Union: 5 corner slivers of exactly this shape, each
+  // stranding its own two other edges as fresh unmatched boundary once
+  // dropped, UNLESS dropped here, before StitchTJunctionsOnce() ever
+  // sees them (the very same stranding mechanism the first
+  // drop_degenerate_triangles() call above was already written to
+  // avoid).
   drop_degenerate_triangles(faces);
 
   for (int pass = 0; pass < 4; ++pass) {
