@@ -15,6 +15,12 @@ namespace dino8::kernel {
 
 namespace {
 
+// The (u, v)-space precision floor this whole file already treats two
+// points as "the same" at (TessellateGridClippedExact's own
+// kDuplicatePointEpsilon, which reuses this constant below) - also used by
+// ClipConvex's own robust boundary test, see there.
+constexpr double kUvCoincidenceEpsilon = 1e-9;
+
 double Cross2d(const Point2d& a, const Point2d& b) { return a.x * b.y - a.y * b.x; }
 
 double SignedArea(const std::vector<Point2d>& polygon) {
@@ -122,6 +128,44 @@ std::vector<Point2d> ClipConvex(std::vector<Point2d> subject,
     }
   }
   return subject;
+}
+
+// Collapses a run of CONSECUTIVE vertices that are collinear (within
+// `eps`, a perpendicular distance in the polygon's own (u, v) units) with
+// their immediate original neighbors down to just that run's own two
+// endpoints. A single left-to-right pass suffices (not an iterative
+// Douglas-Peucker): for a genuinely straight run, EVERY interior point's
+// immediate original prev/next already form the same line, so every
+// interior point is flagged for removal in one pass, regardless of run
+// length. Purely a redundant-point cleanup - it does not change the
+// polygon's shape by more than `eps` - see ClipConvex's own caller
+// (TessellateGridClippedExact) for why removing these specific
+// redundant points, rather than loosening ClipConvex's own inside test,
+// is the safe fix.
+std::vector<Point2d> SimplifyCollinearRuns(const std::vector<Point2d>& polygon, double eps) {
+  const size_t n = polygon.size();
+  if (n < 4) return polygon;  // nothing to collapse without losing the polygon itself
+  std::vector<bool> keep(n, true);
+  size_t kept = n;
+  for (size_t i = 0; i < n; ++i) {
+    const Point2d& prev = polygon[(i + n - 1) % n];
+    const Point2d& curr = polygon[i];
+    const Point2d& next = polygon[(i + 1) % n];
+    const double ex = next.x - prev.x, ey = next.y - prev.y;
+    const double len = std::sqrt(ex * ex + ey * ey);
+    if (len <= 1e-300) continue;  // prev == next (degenerate spike) - never drop `curr` here
+    const double dist = std::abs(ex * (curr.y - prev.y) - ey * (curr.x - prev.x)) / len;
+    if (dist < eps && kept > 3) {
+      keep[i] = false;
+      --kept;
+    }
+  }
+  std::vector<Point2d> out;
+  out.reserve(kept);
+  for (size_t i = 0; i < n; ++i) {
+    if (keep[i]) out.push_back(polygon[i]);
+  }
+  return out.size() >= 3 ? out : polygon;
 }
 
 // Greiner-Hormann polygon intersection: clips `subject` against `clip`,
@@ -963,6 +1007,52 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
   const bool trim_is_convex = IsConvexPolygon(trim_polygon);
   const double orientation_sign = SignedArea(trim_polygon) >= 0.0 ? 1.0 : -1.0;
 
+  // ClipConvex (Sutherland-Hodgman) clips a cell against `clip` one EDGE
+  // at a time, testing every subject point's side of that edge's own
+  // infinite line via a strict `>= 0.0` cross-product test. That is
+  // exactly right for a genuine polygon edge, but a trim_polygon whose
+  // boundary runs along a real straight (u, v) line - the common case for
+  // a curved face cut by a planar face, e.g. a cylinder wall's cut
+  // circle, dead straight in (u, v) since v there is literally height -
+  // arrives here as MANY near-duplicate collinear vertices, not one
+  // straight edge: BuildLoop() resamples every original chain segment at
+  // up to ~samples_per_edge points regardless of curvature, and each of
+  // those points is only Newton-refined to the intersecting surfaces' own
+  // convergence tolerance, not bit-identical to its neighbors (confirmed
+  // directly: up to ~1e-11 (u, v)-unit jitter measured on this exact
+  // case). A grid cell corner sitting exactly on that line - the
+  // documented, worst-case coincidence: the cut also lands on the
+  // tessellation's own v-grid line - then gets tested against dozens of
+  // near-duplicate copies of essentially the same infinite line in a row,
+  // each with its own independent sub-ULP-to-1e-11 jitter; roughly half
+  // of those redundant tests land the point a hair on the wrong side by
+  // pure noise, and ONE wrong verdict anywhere in that sequence silently
+  // drops the point for good (Sutherland-Hodgman only ever narrows the
+  // clipped result, never recovers a point once excluded).
+  //
+  // Fixed by removing the REDUNDANCY itself rather than loosening the
+  // per-edge test: SimplifyCollinearRuns() collapses a run of consecutive
+  // trim_polygon vertices that are collinear with their own immediate
+  // neighbors (within this function's own kDuplicatePointEpsilon-scale
+  // (u, v) precision floor) down to that run's own two endpoints, so a
+  // dead-straight cut contributes ONE clip edge instead of dozens of
+  // near-duplicate ones - eliminating the redundant re-testing that
+  // erodes a coincident point, without changing what "inside" means
+  // anywhere (a version of this fix that widened ClipConvex's own
+  // boundary test instead was tried first and reverted: it also papers
+  // over a SEPARATE, genuinely degenerate case - two DIFFERENT real
+  // boundaries meeting at a near-zero-width sliver, e.g. a cut landing
+  // exactly on a face's own untouched domain edge - by manufacturing a
+  // sliver's worth of spurious extra area there, breaking previously-
+  // exact box+box cases (confirmed directly: new nonmanifold mesh edges
+  // appeared exactly at such a domain-edge/cut-edge coincidence)).
+  // Applied once per call (O(trim_polygon size), not per grid cell), so
+  // its cost is negligible next to the O(u_divisions * v_divisions) grid
+  // loop below - unlike the reverted EnsureBoundaryVertex repair, this
+  // adds no per-boundary-edge or per-triangle work at all.
+  const std::vector<Point2d> simplified_convex_trim =
+      trim_is_convex ? SimplifyCollinearRuns(trim_polygon, kUvCoincidenceEpsilon) : trim_polygon;
+
   // ClipPolygon's own crossing detection deliberately excludes an
   // intersection landing within `kEps` of either segment's endpoint (see
   // its comment) - the standard way to avoid double-registering a
@@ -1011,7 +1101,7 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
   // loop before triangulating it - a zero-area sliver edge is a real
   // topological defect (it corrupts ExtrudeCappedSolid's boundary-edge
   // extraction), not just a rendering nit.
-  constexpr double kDuplicatePointEpsilon = 1e-9;
+  constexpr double kDuplicatePointEpsilon = kUvCoincidenceEpsilon;
 
   for (int i = 0; i < u_divisions; ++i) {
     for (int j = 0; j < v_divisions; ++j) {
@@ -1031,7 +1121,7 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
       // produces zero or one.
       std::vector<std::vector<Point2d>> pieces;
       if (trim_is_convex) {
-        std::vector<Point2d> clipped = ClipConvex(cell, trim_polygon, orientation_sign);
+        std::vector<Point2d> clipped = ClipConvex(cell, simplified_convex_trim, orientation_sign);
         if (clipped.size() >= 3) {
           pieces.push_back(std::move(clipped));
         }

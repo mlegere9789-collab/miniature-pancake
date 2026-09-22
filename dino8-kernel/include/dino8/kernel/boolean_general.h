@@ -103,6 +103,87 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       rather than shipped without a confirmed, complete 76-case
 //       re-measurement and a cheaper repair-lookup - a concrete, laid-out
 //       next increment, not a dead end.
+//
+//       ROOT-CAUSED (a later session, surface.cpp): the drop is
+//       ClipConvex's (Sutherland-Hodgman) own strict `>= 0.0` half-plane
+//       test losing a coin-flip to ordinary floating-point noise, over
+//       and over. A trim_polygon boundary that is genuinely straight in
+//       (u, v) (the common case here: a curved face cut by a planar face,
+//       so the cut is dead straight since v is literally height) still
+//       arrives as MANY near-duplicate collinear vertices, not one clip
+//       edge - BuildLoop() (boolean_general.cpp) resamples every original
+//       chain segment at up to ~samples_per_edge points regardless of
+//       curvature, and each point is only Newton-refined to the
+//       intersecting surfaces' own convergence tolerance (confirmed
+//       directly: up to ~1e-11 (u, v)-unit jitter between neighbors on
+//       this exact case, box+cylinder Union's cylinder-wall trim). A grid
+//       cell corner sitting exactly on that line then gets tested against
+//       dozens of near-duplicate copies of essentially the same infinite
+//       line in a row, each with its own independent jitter; about half
+//       of those redundant tests land the point a hair on the wrong side
+//       by pure noise, and ONE wrong verdict anywhere in the sequence
+//       drops the point for good (Sutherland-Hodgman only ever narrows
+//       the clipped result). Confirmed by direct reproduction: the
+//       cylinder wall's own cut-boundary trim_polygon at u_divisions=8/
+//       v_divisions=32 (box+cylinder Union) carries 104 vertices for what
+//       is geometrically a 4-corner rectangle.
+//
+//       A first fix attempt loosened ClipConvex's own inside test to a
+//       small (u, v)-distance tolerance instead - REJECTED after direct
+//       measurement: it also papers over a genuinely different, and
+//       genuinely degenerate, case (two DIFFERENT real boundaries, e.g. a
+//       cut landing exactly on a face's own UNTOUCHED domain edge, not
+//       redundant copies of the SAME boundary) by manufacturing a
+//       sliver's worth of real extra area there, which showed up as new
+//       NONMANIFOLD (not boundary) mesh edges and broke previously-exact,
+//       purely-planar box+box Intersection/A-B/B-A (15/76 -> 12/76).
+//       Shipped fix instead: SimplifyCollinearRuns(), a single O(trim
+//       size) pass (once per TessellateGridClippedExact call, not per
+//       grid cell) that collapses a run of consecutive trim_polygon
+//       vertices collinear with their own immediate original neighbors
+//       (within this file's existing kDuplicatePointEpsilon-scale (u, v)
+//       floor) down to that run's own two endpoints - removing the
+//       REDUNDANCY that causes the noise-driven coin flip, rather than
+//       loosening the test itself, so it cannot manufacture new area at
+//       an unrelated two-boundary coincidence. Confirmed: collapses that
+//       same 104-vertex trim down to its true 4 corners; full 76-case
+//       sweep and full ctest suite both green, zero regressions anywhere
+//       (including the box+box cases the first attempt broke).
+//
+//       Measured impact is real but SMALL, not the hoped-for large one:
+//       box+cylinder Union/Intersection/Difference's own naked-boundary-
+//       edge count (TessellateGeneralBooleanClosedMesh, DiagnoseManifold
+//       in scratch_test.cpp) each drop by ~1% (380->378, 234->231,
+//       252->249); the sweep's own aggregate closedmesh count does not
+//       move (still 15/76). Root-caused why, not just observed, by
+//       instrumenting ReconcileEdgeTopology (boolean_general.cpp)
+//       directly: every one of the 224 short polyline segments making up
+//       box+cylinder Union's own z=-1 cut circle fails its WALL-side
+//       match (`ok_b=0`) while its box-face side matches fine (`ok_a=1`).
+//       The wall's own GridClippedExact tessellation only ever places
+//       boundary vertices at u_divisions grid-corner resolution along
+//       that straight cut (now, correctly, just as many as the geometry
+//       needs - see the fix above); the box face's own boundary is built
+//       from the ORIGINAL, much finer BuildLoop() polyline. Reconcile-
+//       EdgeTopology processes the shared boundary one ORIGINAL fine
+//       segment (one ON_BrepEdge) at a time and can only RELOCATE an
+//       EXISTING boundary vertex on each side to a shared chord fraction
+//       - it cannot manufacture a wall-side vertex that TessellateGrid-
+//       ClippedExact's own coarser grid never produced in the first
+//       place, so a fine segment whose endpoints fall between two of the
+//       wall's (far sparser) grid corners has no matching run on that
+//       side and is left for StitchTJunctionsOnce()'s coarser fallback,
+//       which the wall's curvature-bowed-off-chord geometry (this file's
+//       own earlier session) already defeats. This is a SEPARATE,
+//       deeper gap than (1) - a resolution mismatch between two
+//       independently-chosen sampling densities, not a vertex being
+//       dropped - one level up from TessellateGridClippedExact, in
+//       either ReconcileEdgeTopology's own per-edge walk (boolean_
+//       general.cpp) or in giving TessellateGridClippedExact a way to
+//       honor a denser trim boundary's own intermediate points along a
+//       straight cut, not just its two endpoints, when the grid is
+//       coarser than the trim. A concrete next-increment target, not
+//       explored further this session.
 //   (2) A SEPARATE, larger structural gap, found while isolating (1)'s
 //       own residual: an "untouched" operand face BooleanCombineGeneral
 //       keeps wholesale (no intersection curve touches it at all, e.g. a
