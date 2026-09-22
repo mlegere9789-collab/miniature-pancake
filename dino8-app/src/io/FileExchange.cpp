@@ -15,6 +15,12 @@
 #include <dwg.h>
 #include <dwg_api.h>
 
+#if defined(_MSC_VER)
+// EXCEPTION_EXECUTE_HANDLER / __try / __except (Structured Exception
+// Handling) - see DwgReadFileSafe below.
+#include <excpt.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -1991,13 +1997,58 @@ void WalkDwgEntities(Document& doc, Dwg_Object* block_obj, const ON_Xform& xf, s
 
 }  // namespace
 
+#if defined(_MSC_VER)
+namespace {
+// dwg_read_file (LibreDWG's own decoder - vendored third-party GPLv3 C code,
+// not this project's) has a confirmed Windows-only hard crash decoding at
+// least one real DWG this app's own ExportDwg produced: bisected all the
+// way down to this exact call via CommandEngine's live history-print hook
+// (see CommandEngine.h's on_print_line) - "Command: Open <path>" prints,
+// then the process dies with zero further output, deterministically,
+// unaffected by retries or delay. The same file content round-trips fine on
+// Linux/macOS, which points at a platform-specific bug in the vendored C
+// decoder itself (LibreDWG's decode.c/bits.c use plain `long` for several
+// bit-position/offset computations, which is 32-bit on Windows/LLP64 but
+// 64-bit on Linux/macOS's LP64 - a plausible, not yet confirmed, candidate)
+// rather than anything in this project's own code. Root-causing it further
+// needs real Windows-native debugging tools this environment does not have.
+//
+// Wrapping the call in Structured Exception Handling turns that crash into
+// an ordinary "could not read this file" error instead of taking the whole
+// application down - the correct behavior for a real user who hits the same
+// bug on some other DWG this app didn't necessarily write itself, not just
+// a CI workaround. dwg is left in a possibly-inconsistent state if this
+// fires (the crash can happen mid-decode, after some of it has already been
+// populated), so the caller must NOT call dwg_free() on it in that case -
+// crashed reports whether that happened.
+int DwgReadFileSafe(const char* path, Dwg_Data* dwg, bool& crashed) {
+  crashed = false;
+  __try {
+    return dwg_read_file(path, dwg);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    crashed = true;
+    return DWG_ERR_INTERNALERROR;
+  }
+}
+}  // namespace
+#endif
+
 bool ImportDwg(Document& doc, const std::string& path, std::string& summary) {
   summary.clear();
   Dwg_Data dwg{};
+#if defined(_MSC_VER)
+  bool crashed = false;
+  const int err = DwgReadFileSafe(path.c_str(), &dwg, crashed);
+#else
   const int err = dwg_read_file(path.c_str(), &dwg);
+#endif
   if (err >= DWG_ERR_CRITICAL) {
     summary = "Could not read " + path + " (LibreDWG error 0x" + [&] { std::ostringstream h; h << std::hex << err; return h.str(); }() + ")";
+#if defined(_MSC_VER)
+    if (!crashed) dwg_free(&dwg);
+#else
     dwg_free(&dwg);
+#endif
     return false;
   }
   Dwg_Object* mspace = dwg_model_space_object(&dwg);
