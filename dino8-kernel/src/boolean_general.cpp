@@ -3055,8 +3055,28 @@ struct BoundaryGraph {
   std::unordered_map<int, std::pair<int, int>> next;
 };
 
+// Plain std::hash for `int` doesn't extend to std::pair, and std::map's
+// own O(log n) tree (the original implementation here) turns into a real
+// cost once BuildBoundaryGraph() is called often - see this function's
+// own caller, ReconcileEdgeTopology, for why a face can now need many
+// REBUILDS per call once a genuine resolution-mismatch fix elsewhere
+// (surface.cpp's TessellateGridClippedExact) lets many more of a shared
+// boundary's own short edges succeed instead of bailing out early:
+// confirmed directly, box+cylinder Union's own wall/box boundary alone
+// invalidates and rebuilds each side's graph roughly 200+ times, each
+// rebuild scanning every one of that face's own several thousand
+// triangles - an unordered_map's average O(1) insert/lookup (vs.
+// std::map's O(log n) with real tree-node allocation overhead) measurably
+// matters at that scale.
+struct DirectedEdgeHash {
+  size_t operator()(const std::pair<int, int>& e) const noexcept {
+    return (static_cast<size_t>(static_cast<uint32_t>(e.first)) << 32) ^ static_cast<uint32_t>(e.second);
+  }
+};
+
 BoundaryGraph BuildBoundaryGraph(const MutFace& mf) {
-  std::map<std::pair<int, int>, int> directed_owner;
+  std::unordered_map<std::pair<int, int>, int, DirectedEdgeHash> directed_owner;
+  directed_owner.reserve(mf.f.size() * 3);
   for (size_t ti = 0; ti < mf.f.size(); ++ti) {
     const std::array<int, 3>& t = mf.f[ti];
     directed_owner[{t[0], t[1]}] = static_cast<int>(ti);

@@ -142,7 +142,38 @@ std::vector<Point2d> ClipConvex(std::vector<Point2d> subject,
 // (TessellateGridClippedExact) for why removing these specific
 // redundant points, rather than loosening ClipConvex's own inside test,
 // is the safe fix.
-std::vector<Point2d> SimplifyCollinearRuns(const std::vector<Point2d>& polygon, double eps) {
+//
+// One point SimplifyCollinearRuns() dropped, plus the two SURVIVING
+// (simplified-polygon) vertices its own now-collapsed run sat between -
+// not just its bare position. See InsertForcedPointsIntoTriangulation's
+// own doc comment for why the edge identity matters just as much as the
+// point itself: an axis-aligned cut (the common box+box case) is exactly
+// as straight, in (u, v), as this SAME cell's own plain grid-line
+// boundary, so a forced point's bare position alone cannot tell "this
+// cut's own boundary edge" apart from "an ordinary cell edge that merely
+// happens to run the same direction" - only knowing which specific trim
+// edge (by its own two endpoints) it came from can.
+struct RemovedTrimPoint {
+  Point2d p;
+  Point2d edge_t0, edge_t1;
+};
+
+// `removed_out`, if non-null, collects every dropped `curr` in its
+// original polygon order - not thrown away, unlike the original version
+// of this function: a run collapsed here because it's straight in (u, v)
+// (the common case: a curved face cut by a planar face) is NOT
+// necessarily redundant NOISE - BuildLoop() (boolean_general.cpp) gives
+// each of these points its own real ON_BrepVertex, genuinely spread out
+// along the line (real angular/positional spacing, not sub-ULP jitter;
+// only the line's OWN perpendicular direction is noisy, which is exactly
+// what makes them look "collinear" here) - so TessellateGridClippedExact
+// re-injects them as forced boundary points once the CLIPPING decision
+// itself (which is what this simplification protects, per this
+// function's own doc comment above) is safely made from the clean
+// 2-endpoint line instead. See TessellateGridClippedExact's own updated
+// doc comment for the full resolution-mismatch writeup this closes.
+std::vector<Point2d> SimplifyCollinearRuns(const std::vector<Point2d>& polygon, double eps,
+                                            std::vector<RemovedTrimPoint>* removed_out = nullptr) {
   const size_t n = polygon.size();
   if (n < 4) return polygon;  // nothing to collapse without losing the polygon itself
   std::vector<bool> keep(n, true);
@@ -165,7 +196,160 @@ std::vector<Point2d> SimplifyCollinearRuns(const std::vector<Point2d>& polygon, 
   for (size_t i = 0; i < n; ++i) {
     if (keep[i]) out.push_back(polygon[i]);
   }
-  return out.size() >= 3 ? out : polygon;
+  if (out.size() < 3) {
+    if (removed_out != nullptr) removed_out->clear();
+    return polygon;
+  }
+  if (removed_out != nullptr) {
+    // `out_idx` tracks, in ORIGINAL polygon order, the index (into `out`)
+    // of the most recently passed KEPT point - seeded to `out`'s own last
+    // element so a removed run starting right at polygon[0] (wrapping
+    // across the array boundary) still resolves to the correct pair of
+    // surviving endpoints.
+    size_t out_idx = out.size() - 1;
+    for (size_t i = 0; i < n; ++i) {
+      if (keep[i]) {
+        out_idx = (out_idx + 1) % out.size();
+      } else {
+        RemovedTrimPoint rp;
+        rp.p = polygon[i];
+        rp.edge_t0 = out[out_idx];
+        rp.edge_t1 = out[(out_idx + 1) % out.size()];
+        removed_out->push_back(rp);
+      }
+    }
+  }
+  return out;
+}
+
+// Inserts every point of `forced` that lies strictly on one of `pts`'s
+// own first `n0` points' boundary edges (i, (i+1) % n0 - `pts`'s own
+// ORIGINAL cyclic order, a single grid cell's own already-triangulated
+// clipped boundary) into `tris` (a valid triangulation of those `n0`
+// points, as EarClipTriangulate already produced), by replacing the ONE
+// triangle that owns that boundary edge with a fan through its own apex
+// (the triangle's third vertex) and the edge's own new points in sorted
+// order - mirroring ReconcileEdgeTopology's own already-proven
+// ReconcileChainToChord technique (boolean_general.cpp) at this earlier,
+// per-cell stage instead of after full mesh assembly. New points are
+// APPENDED to `pts` (never reordering or erasing its first `n0` entries),
+// so every original triangle's OWN vertex indices - and every OTHER
+// boundary edge's own owning-triangle search, run afterward in the same
+// pass - stay valid throughout.
+//
+// Deliberately does NOT hand the grown point set to EarClipTriangulate:
+// this cell's own baseline `n0` (whatever a bare grid-cell clip already
+// produces, always small) is all that function ever sees, however many
+// forced points this cell's own bucket carries - each forced point costs
+// only an O(n0)-triangle scan (to find its edge's owning triangle) plus
+// O(1) to fan it in. An earlier version of this fix instead re-ran
+// EarClipTriangulate on the ALREADY-forced-point-augmented polygon;
+// confirmed directly to roughly DOUBLE the 76-case sweep's own
+// wall-clock time (63s -> 125s) purely from EarClipTriangulate's own
+// worst-case cost scaling with however large a single cell's own forced
+// bucket happened to be - this version measurably restores the
+// pre-forced-insertion runtime (see this method's own doc comment for
+// the exact numbers).
+void InsertForcedPointsIntoTriangulation(std::vector<Point2d>& pts, std::vector<std::array<int, 3>>& tris,
+                                          size_t n0, const std::vector<RemovedTrimPoint>& forced, double eps) {
+  if (forced.empty() || n0 < 3) return;
+  for (size_t i = 0; i < n0; ++i) {
+    const size_t a_idx = i, b_idx = (i + 1) % n0;
+    const Point2d a = pts[a_idx];
+    const Point2d b = pts[b_idx];
+    const double ex = b.x - a.x, ey = b.y - a.y;
+    const double len2 = ex * ex + ey * ey;
+    if (len2 <= 1e-300) continue;  // a == b (already-degenerate edge) - nothing to insert onto
+    const double len = std::sqrt(len2);
+
+    std::vector<std::pair<double, Point2d>> hits;
+    for (const RemovedTrimPoint& rp : forced) {
+      // This cell edge (a, b) must itself sit on `rp`'s own ORIGINATING
+      // trim edge's line - not merely run the same direction as it. An
+      // axis-aligned cut (the common box+box case) can be dead straight
+      // along the SAME direction as an ordinary cell grid-line edge; only
+      // checking "is `rp.p` collinear with a-b" (as an earlier version of
+      // this function did) cannot tell that genuine coincidence apart
+      // from an unrelated cell edge that merely happens to run parallel -
+      // confirmed directly: without this check, a forced point could get
+      // fanned into a plain interior grid-line edge shared with an
+      // untouched neighboring cell, leaving that neighbor without the
+      // matching point and opening a small crack (regressed box+box
+      // Union/Difference's own previously-closing
+      // TessellateGeneralBooleanClosedMesh() result - caught by this
+      // repo's own ctest suite, not the sweep).
+      const double tex = rp.edge_t1.x - rp.edge_t0.x, tey = rp.edge_t1.y - rp.edge_t0.y;
+      const double tlen2 = tex * tex + tey * tey;
+      if (tlen2 <= 1e-300) continue;
+      const double tlen = std::sqrt(tlen2);
+      const double perp_a = std::abs((a.x - rp.edge_t0.x) * tey - (a.y - rp.edge_t0.y) * tex) / tlen;
+      if (perp_a > eps) continue;
+      const double perp_b = std::abs((b.x - rp.edge_t0.x) * tey - (b.y - rp.edge_t0.y) * tex) / tlen;
+      if (perp_b > eps) continue;
+
+      const double fx = rp.p.x - a.x, fy = rp.p.y - a.y;
+      const double t = (fx * ex + fy * ey) / len2;
+      if (t <= eps || t >= 1.0 - eps) continue;  // not strictly interior - leave to a/b themselves
+      const double perp = std::abs(fx * ey - fy * ex) / len;
+      if (perp > eps) continue;  // not on this edge's own line
+      hits.emplace_back(t, rp.p);
+    }
+    if (hits.empty()) continue;
+    std::sort(hits.begin(), hits.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+
+    std::vector<Point2d> mids;
+    mids.reserve(hits.size());
+    for (const auto& [t, p] : hits) {
+      (void)t;
+      const Point2d& last = mids.empty() ? a : mids.back();
+      if (std::abs(p.x - last.x) <= eps && std::abs(p.y - last.y) <= eps) continue;  // near-dup
+      mids.push_back(p);
+    }
+    if (!mids.empty() && std::abs(mids.back().x - b.x) <= eps && std::abs(mids.back().y - b.y) <= eps) {
+      mids.pop_back();  // last hit coincides with `b` itself - nothing to add there
+    }
+    if (mids.empty()) continue;
+
+    // Find the (exactly one, for a genuine polygon boundary edge) triangle
+    // whose own directed edge is a_idx -> b_idx.
+    int owner = -1;
+    for (size_t ti = 0; ti < tris.size() && owner < 0; ++ti) {
+      const std::array<int, 3>& t = tris[ti];
+      for (int k = 0; k < 3; ++k) {
+        if (t[static_cast<size_t>(k)] == static_cast<int>(a_idx) &&
+            t[static_cast<size_t>((k + 1) % 3)] == static_cast<int>(b_idx)) {
+          owner = static_cast<int>(ti);
+          break;
+        }
+      }
+    }
+    if (owner < 0) continue;  // defensive - shouldn't happen for a genuine boundary edge
+
+    const std::array<int, 3> owner_tri = tris[static_cast<size_t>(owner)];
+    int apex = -1;
+    for (int k = 0; k < 3; ++k) {
+      if (owner_tri[static_cast<size_t>(k)] != static_cast<int>(a_idx) &&
+          owner_tri[static_cast<size_t>(k)] != static_cast<int>(b_idx)) {
+        apex = owner_tri[static_cast<size_t>(k)];
+        break;
+      }
+    }
+    if (apex < 0) continue;
+
+    std::vector<int> chain_idx;
+    chain_idx.reserve(mids.size() + 2);
+    chain_idx.push_back(static_cast<int>(a_idx));
+    for (const Point2d& p : mids) {
+      chain_idx.push_back(static_cast<int>(pts.size()));
+      pts.push_back(p);
+    }
+    chain_idx.push_back(static_cast<int>(b_idx));
+
+    tris.erase(tris.begin() + owner);
+    for (size_t k = 0; k + 1 < chain_idx.size(); ++k) {
+      tris.push_back({apex, chain_idx[k], chain_idx[k + 1]});
+    }
+  }
 }
 
 // Greiner-Hormann polygon intersection: clips `subject` against `clip`,
@@ -1050,8 +1234,51 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
   // its cost is negligible next to the O(u_divisions * v_divisions) grid
   // loop below - unlike the reverted EnsureBoundaryVertex repair, this
   // adds no per-boundary-edge or per-triangle work at all.
+  //
+  // RESOLUTION-MISMATCH FIX (later session, see this method's own doc
+  // comment above for the full writeup): `removed_points` is exactly
+  // what SimplifyCollinearRuns() above just erased from `trim_polygon` -
+  // real, individually-meaningful boundary points (usually a denser
+  // neighboring face's own shared cut vertices; see BuildLoop() in
+  // boolean_general.cpp for why they arrive here at all), not
+  // redundant noise, just collinear with their own straight run.
+  // Re-injected below, per grid cell, as forced extra boundary vertices,
+  // so this face's own clipped mesh carries the same points its neighbor
+  // does along their shared straight cut - without touching the
+  // COLLINEAR-simplified polygon ClipConvex itself clips against, so
+  // 413c0ae's own fix (this exact section, above) is untouched.
+  std::vector<RemovedTrimPoint> removed_points;
   const std::vector<Point2d> simplified_convex_trim =
-      trim_is_convex ? SimplifyCollinearRuns(trim_polygon, kUvCoincidenceEpsilon) : trim_polygon;
+      trim_is_convex ? SimplifyCollinearRuns(trim_polygon, kUvCoincidenceEpsilon, &removed_points) : trim_polygon;
+
+  // Buckets `removed_points` by which grid cell's own (u, v) domain
+  // rectangle contains each one, so the per-cell loop below can look up
+  // "does THIS cell need any forced points" in O(1) instead of testing
+  // every removed point against every cell (O(u_divisions * v_divisions *
+  // removed_points.size()) - the exact per-boundary-edge cost pattern the
+  // EARLIER EnsureBoundaryVertex repair was reverted for). A point
+  // exactly on a grid line (the u/v_divisions crossing points
+  // SimplifyCollinearRuns's own two surviving endpoints already produce
+  // natively) rounds into one adjacent cell or the other - if that
+  // specific cell's own clipped boundary doesn't happen to carry it (a
+  // point already ON a grid line is already a natural mesh vertex there,
+  // so InsertForcedPointsIntoTriangulation's own strictly-interior test
+  // just no-ops), nothing is lost: the grid clip already produces that
+  // exact vertex on both adjacent cells regardless.
+  std::vector<std::vector<RemovedTrimPoint>> removed_buckets;
+  if (!removed_points.empty()) {
+    removed_buckets.resize(static_cast<size_t>(u_divisions) * static_cast<size_t>(v_divisions));
+    const double u_width = u_domain.Length() / u_divisions;
+    const double v_width = v_domain.Length() / v_divisions;
+    for (const RemovedTrimPoint& rp : removed_points) {
+      int i = u_width > 0.0 ? static_cast<int>(std::floor((rp.p.x - u_domain.Min()) / u_width)) : 0;
+      int j = v_width > 0.0 ? static_cast<int>(std::floor((rp.p.y - v_domain.Min()) / v_width)) : 0;
+      i = std::clamp(i, 0, u_divisions - 1);
+      j = std::clamp(j, 0, v_divisions - 1);
+      removed_buckets[static_cast<size_t>(i) * static_cast<size_t>(v_divisions) + static_cast<size_t>(j)]
+          .push_back(rp);
+    }
+  }
 
   // ClipPolygon's own crossing detection deliberately excludes an
   // intersection landing within `kEps` of either segment's endpoint (see
@@ -1129,6 +1356,16 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
         pieces = ClipPolygon(cell, trim_for_clipping);
       }
 
+      // Only meaningful for the convex path (the only one `removed_buckets`
+      // is ever populated for - see this method's own doc comment above);
+      // a single lookup per cell, shared by every piece below (the convex
+      // path only ever produces zero or one piece per cell anyway).
+      static const std::vector<RemovedTrimPoint> kNoForced;
+      const std::vector<RemovedTrimPoint>& forced_here =
+          (trim_is_convex && !removed_buckets.empty())
+              ? removed_buckets[static_cast<size_t>(i) * static_cast<size_t>(v_divisions) + static_cast<size_t>(j)]
+              : kNoForced;
+
       for (const std::vector<Point2d>& piece : pieces) {
         std::vector<Point2d> deduped;
         deduped.reserve(piece.size());
@@ -1148,16 +1385,29 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
           continue;
         }
 
+        // EarClipTriangulate() runs on `deduped` alone - this cell's own
+        // bare grid-clip boundary, whatever `forced_here` this cell also
+        // carries - and `pts`/`tris` are only grown/patched afterward, by
+        // InsertForcedPointsIntoTriangulation's own O(n0)-per-point fan
+        // insertion, not by re-triangulating a larger polygon; see that
+        // function's own doc comment for why (a real, measured perf
+        // regression this avoids).
+        std::vector<Point2d> pts = deduped;
+        std::vector<std::array<int, 3>> tris = EarClipTriangulate(deduped);
+        if (!forced_here.empty()) {
+          InsertForcedPointsIntoTriangulation(pts, tris, deduped.size(), forced_here, kUvCoincidenceEpsilon);
+        }
+
         std::vector<int> indices;
-        indices.reserve(deduped.size());
-        for (const Point2d& p : deduped) {
+        indices.reserve(pts.size());
+        for (const Point2d& p : pts) {
           indices.push_back(raw.m_V.Count());
           raw.m_V.Append(ON_3fPoint(PointAt(p.x, p.y)));
         }
-        for (const std::array<int, 3>& tri : EarClipTriangulate(deduped)) {
-          const Point2d& p0 = deduped[static_cast<size_t>(tri[0])];
-          const Point2d& p1 = deduped[static_cast<size_t>(tri[1])];
-          const Point2d& p2 = deduped[static_cast<size_t>(tri[2])];
+        for (const std::array<int, 3>& tri : tris) {
+          const Point2d& p0 = pts[static_cast<size_t>(tri[0])];
+          const Point2d& p1 = pts[static_cast<size_t>(tri[1])];
+          const Point2d& p2 = pts[static_cast<size_t>(tri[2])];
           const double area2 = Cross2d(Point2d(p1.x - p0.x, p1.y - p0.y),
                                         Point2d(p2.x - p0.x, p2.y - p0.y));
           if (std::abs(area2) <= 1e-15) {

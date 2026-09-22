@@ -250,6 +250,142 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       (confirmed correct in isolation) but needs (1) fixed too, on some
 //       later session, before its effect can show up in the aggregate
 //       closedmesh count for a curved-vs-curved case like this one.
+//
+//   (1), continued (a LATER session): the resolution-mismatch gap above -
+//       ReconcileEdgeTopology's own per-edge walk cannot manufacture a
+//       wall-side vertex that TessellateGridClippedExact's own coarser
+//       grid never produced - is closed at the SOURCE instead of at
+//       ReconcileEdgeTopology's own layer (the doc comment above laid out
+//       both directions; this session investigated both before choosing).
+//       Approach (1) - extending ReconcileEdgeTopology's own per-edge walk
+//       to INSERT a missing point on the coarser side - turns out not to
+//       be viable AS WRITTEN: it processes ONE original fine ON_BrepEdge
+//       at a time (a short span between two consecutive BuildLoop()
+//       points), and its own walk requires an EXISTING vertex near BOTH
+//       endpoints on BOTH sides before it can even start (NearestBoundary-
+//       Start). For box+cylinder Union's own 224 fine edges along the cut,
+//       the wall's own u_divisions-resolution grid corners are far sparser
+//       than the box's fine edges, so MOST fine edges have NEITHER
+//       endpoint anywhere near an existing wall vertex - the walk fails
+//       to even START, not merely fails to find a clean run. Grouping
+//       consecutive fine edges into one coarser reconciliation instead
+//       would mean approximating a REAL multi-edge span of the true curve
+//       with one much longer chord (a materially worse approximation than
+//       the existing per-fine-edge chord), and - more fundamentally -
+//       would mean this pass genuinely rewriting real ON_BrepEdge
+//       topology mid-tessellation, not just patching a mesh in place.
+//       Approach (2) - TessellateGridClippedExact learning about a denser
+//       neighbor's own intermediate points along a shared straight cut -
+//       turned out to need NO actual cross-face communication at all:
+//       Brep::Tessellate()'s own ResolveFace()/SampleLoop() already builds
+//       `trim_polygon` by walking EVERY real ON_BrepTrim of a face's own
+//       loop and taking one sample per trim (BuildLoop() gives each
+//       original fine polyline segment its own trim, and SampleLoop()
+//       takes `samples=1` for a linear trim) - so `trim_polygon`, BEFORE
+//       SimplifyCollinearRuns() ever runs, ALREADY carries the wall's own
+//       full BuildLoop-fine resolution, matching the box side's exactly
+//       (confirmed directly: box+cylinder Union's wall trim carries 104
+//       points for a 4-corner rectangle, same as 413c0ae's own earlier
+//       measurement). SimplifyCollinearRuns() is precisely what erases
+//       them again, to protect ClipConvex's own inside test (see its own
+//       doc comment above) - the fix is to give TessellateGridClippedExact
+//       a way to remember what it erased and put it back afterward,
+//       without ever handing ClipConvex the redundant, noise-prone
+//       version.
+//
+//       Shipped: SimplifyCollinearRuns() now also returns every point it
+//       dropped, each tagged with the two SURVIVING simplified-trim
+//       vertices its own collapsed run sat between (RemovedTrimPoint,
+//       surface.cpp) - not just its bare (u, v) position. TessellateGrid-
+//       ClippedExact buckets these by which grid cell's own (u, v)
+//       rectangle contains each one (O(1) lookup per cell, not O(cells x
+//       removed points) - the same performance discipline the earlier-
+//       rejected EnsureBoundaryVertex repair was rejected for missing),
+//       then a new InsertForcedPointsIntoTriangulation() fans each
+//       relevant cell's own forced points into whichever triangle
+//       EarClipTriangulate() already gave that boundary span - the SAME
+//       "replace one owning triangle with a fan through its apex"
+//       technique ReconcileChainToChord (boolean_general.cpp) already
+//       uses, just one layer earlier (on a single grid cell's own small
+//       polygon, before mesh assembly, not on the whole assembled mesh
+//       after it). EarClipTriangulate() itself is deliberately never
+//       handed the grown point set - only the cell's own bare
+//       grid-clip boundary, however many forced points get fanned in
+//       afterward - see that function's own doc comment for why (a real,
+//       measured performance regression: feeding EarClipTriangulate() the
+//       augmented polygon directly roughly DOUBLED the 76-case sweep's
+//       own wall-clock time, 63s -> 125s, before this fix; restored to
+//       ~79s with the fan-insertion approach instead - still a real,
+//       bounded ~25% increase over the pre-fix baseline, from genuinely
+//       reinserting ~15,600 real boundary points across the sweep's own
+//       76 cases, not from any remaining algorithmic blowup).
+//
+//       ONE REAL BUG found and fixed before this was safe to ship: a
+//       forced point's bare (u, v) position alone cannot tell "this is
+//       the trim's own cut boundary" apart from "an ordinary interior
+//       grid-line edge that merely happens to run the SAME direction" -
+//       for an AXIS-ALIGNED cut (the common, previously-rock-solid
+//       box+box case), the cut's own direction routinely coincides
+//       exactly with a plain u=const or v=const cell edge direction. An
+//       early version tested only "is this forced point collinear with
+//       the candidate cell edge", which happily matched an ordinary
+//       shared grid-line edge between two cells - fanning a point into
+//       ONE cell's copy of that edge while its untouched neighbor cell
+//       kept the un-subdivided original, opening a small crack. Caught by
+//       this repo's own ctest suite (dino8_kernel_smoke), NOT the sweep:
+//       box+box Union and Difference's own previously-Mesh::IsClosedManifold()
+//       TessellateGeneralBooleanClosedMesh() results broke. Fixed by
+//       requiring BOTH of the candidate cell edge's own endpoints - not
+//       just the forced point itself - to sit on the SAME originating
+//       trim edge's own line (RemovedTrimPoint's own `edge_t0`/`edge_t1`,
+//       carried from SimplifyCollinearRuns() through bucketing to the
+//       fan-insertion check itself): a genuine trim-cut edge segment lies
+//       ON that exact line by construction; an ordinary cell edge that
+//       merely runs parallel to it does not (unless the cut happens to
+//       sit exactly on a grid line, the pre-existing, separately-disclosed
+//       degeneracy above - a narrower, real edge case, not this bug's
+//       broad failure mode). A second, unrelated attempt at raising the
+//       box+cylinder Union nonmanifold-edge count back down (a FOURTH
+//       degenerate-triangle drop pass after the final cross-face weld,
+//       targeting a handful of weld-time near-duplicate-vertex artifacts)
+//       was tried and REVERTED for the same reason as the box+box
+//       regression above: it is the LAST pass with nothing after it to
+//       re-stitch whatever it strands, so it reopened box+box Union/
+//       Difference again (caught the same way, by ctest, not the sweep).
+//       Not shipped; see this file's own next-increment note below.
+//
+//       MEASURED, not assumed: tests/general_boolean_sweep.cpp's own
+//       76-case sweep: 15/76 -> 16/76 (box+box, second box rotated
+//       30deg, Union newly closes - the sweep's OWN case set, no
+//       reshuffling of any previously-closing case). box+cylinder Union's
+//       own naked-boundary-edge count (DiagnoseManifold, scratch_test.cpp,
+//       this file's own disclosed fixture, u_divisions=8/v_divisions=32):
+//       378 -> 334, an honest ~12% reduction, not the full close this
+//       gap's own root cause would suggest - see the next-increment note
+//       below for exactly what's left. Its own non-manifold-edge count
+//       moved 4 -> 10, a real, disclosed, NOT-fixed-this-session side
+//       effect - all 6 new ones sit at an UNRELATED location (near the
+//       cylinder's own z rim/cap seam, not this fix's own target cut
+//       boundary), same general shape (a near-duplicate vertex pair that
+//       StitchTJunctionsOnce's own chain insertion leaves a hair's width
+//       apart) as the 4 that were ALREADY there before this session,
+//       just reshuffled by this fix's own upstream effect on which edges
+//       ReconcileEdgeTopology reconciles first. Full dino8-kernel ctest
+//       suite (dino8_kernel_smoke, 1663 checks): 100% pass, 147.35s wall
+//       clock - matches this suite's normal ~150s+ runtime, no
+//       regression (the sweep's own ~25% slowdown above is confined to
+//       tests/general_boolean_sweep.cpp, which is deliberately NOT
+//       registered with ctest - see its own top comment).
+//
+//       NEXT INCREMENT: the reverted post-weld degenerate-drop pass above
+//       is a real, disclosed residual, not a dead end - it needs to run
+//       somewhere a SUBSEQUENT reconciliation pass can still heal whatever
+//       it strands (mirroring the pre-weld drop_degenerate_triangles()
+//       calls' own before/after-stitching placement, not appended after
+//       everything with nothing left to fix its own fallout), or the
+//       weld-time near-duplicate-vertex coincidence needs a real fix at
+//       its own source (StitchTJunctionsOnce's own chain-insertion
+//       tolerance) rather than a triangle drop after the fact.
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
 
 }  // namespace dino8::kernel
