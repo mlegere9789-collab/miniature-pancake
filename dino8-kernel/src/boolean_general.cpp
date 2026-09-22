@@ -2931,17 +2931,73 @@ int StitchTJunctionsOnce(std::vector<MutFace>& faces, double tol) {
       }
       if (hits.empty()) continue;
       std::sort(hits.begin(), hits.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
-      // De-dup near-identical t values (the same physical point found via
-      // more than one other face, or two other faces sharing that exact
-      // vertex themselves).
+      // Cluster-merge guard: a hit within this distance of an ALREADY-
+      // ACCEPTED INTERIOR hit (never of `a`/`b` themselves - see below) is
+      // indistinguishable from "the same point, seen again through the
+      // other face's own independently-sampled tessellation" rather than a
+      // genuine second, distinct interior T-junction point. Scaled the same
+      // scale-aware way PointStrictlyOnSegment's own perpendicular-distance
+      // acceptance just above is (floored at `tol`, else a fraction of this
+      // segment's own length) - a fixed multiple of that formula's own
+      // len*5e-3, not a fresh, unrelated constant - so this can only reject
+      // a hit already accepted as "plausibly this segment's own", never
+      // widen what counts as a hit in the first place. The multiple (2x)
+      // was raised from that formula's own 1x by direct measurement (see
+      // this function's own caller): 1x merged 2 of 3 known occurrences on
+      // this file's own box+cylinder Union fixture with zero regressions
+      // anywhere in the 76-case sweep or full ctest suite; 2x merges a
+      // third with the same zero-regression result; measured up to 20x
+      // with no further occurrence closing and no new regression appearing
+      // either - so 2x is kept rather than pushed further for no benefit.
+      //
+      // Without this: this engine's T-junction stitching is fed EVERY
+      // other face's own vertex as a hit candidate for a given boundary
+      // edge (see this loop's own comment above), not just the one true
+      // topological neighbor - so at a fully PERIODIC boundary (a closed
+      // rim where a face's own trim loop wraps back on itself, e.g. a
+      // cylinder cap meeting its own wall) a denser OTHER face's
+      // genuinely-curved-in-(u, v) tessellation can contribute several
+      // MUTUALLY close hits that each individually pass
+      // PointStrictlyOnSegment (which is blind to the OTHER hits found for
+      // this same segment) - confirmed directly on box+cylinder Union's
+      // wall/cap rim: a single chain there collected 3 separate hits
+      // within ~0.0003 of EACH OTHER, all near the segment's own
+      // interior, not near either endpoint. Fanning all three in as
+      // separate vertices produces two slivers thin enough that this
+      // face's boundary no longer agrees with its neighbor's about which
+      // vertex is "the" corner there: a nonmanifold edge, not a mere
+      // T-junction. Merging them leaves one representative point instead.
+      //
+      // Deliberately scoped to hit-vs-PRIOR-HIT only, NOT hit-vs-`a`/`b`:
+      // tried and REJECTED first - even a hit genuinely close to a
+      // segment's own real endpoint is a normal, expected, and often
+      // NECESSARY case elsewhere in this engine (this file's own
+      // resolution-mismatch forced-point mechanism, surface.cpp, routinely
+      // places a real boundary point close to one end of a short chord) -
+      // confirmed directly: rejecting hits close to `a`/`b` broke box+box
+      // (second box rotated 30deg about z)'s own previously-closing B-A
+      // case in the 76-case sweep at EVERY coefficient tried, including
+      // ones far too small to help box+cylinder at all (1e-3, 2e-3, 3e-3),
+      // while a coefficient large enough to meaningfully help
+      // box+cylinder (5e-3+) also started suppressing a DIFFERENT,
+      // legitimate reconciliation hit on the SAME box+cylinder rim (an
+      // overlapping-scale case with no clean separating threshold - see
+      // this file's own git history for the equivalent area-ratio
+      // attempt). Hit-vs-prior-hit clustering has no such conflict: two
+      // hits within a hair of EACH OTHER are never both individually
+      // meaningful the way a single hit near an endpoint routinely is.
+      const double ab_len =
+          std::sqrt((b.x - a.x) * (b.x - a.x) + (b.y - a.y) * (b.y - a.y) + (b.z - a.z) * (b.z - a.z));
+      const double corner_tol = std::max(tol, ab_len * 1e-2);
       std::vector<Point3d> chain;
       chain.push_back(a);
+      bool have_interior = false;
       for (const auto& [t, p] : hits) {
-        if (!chain.empty()) {
-          const Point3d& last = chain.back();
-          const double dx = p.x - last.x, dy = p.y - last.y, dz = p.z - last.z;
-          if (dx * dx + dy * dy + dz * dz < tol * tol) continue;
-        }
+        const Point3d& last = chain.back();
+        const double dx = p.x - last.x, dy = p.y - last.y, dz = p.z - last.z;
+        const double use_tol = have_interior ? corner_tol : tol;
+        if (dx * dx + dy * dy + dz * dz < use_tol * use_tol) continue;
+        have_interior = true;
         chain.push_back(p);
       }
       chain.push_back(b);

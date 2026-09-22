@@ -377,15 +377,74 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       tests/general_boolean_sweep.cpp, which is deliberately NOT
 //       registered with ctest - see its own top comment).
 //
-//       NEXT INCREMENT: the reverted post-weld degenerate-drop pass above
-//       is a real, disclosed residual, not a dead end - it needs to run
-//       somewhere a SUBSEQUENT reconciliation pass can still heal whatever
-//       it strands (mirroring the pre-weld drop_degenerate_triangles()
-//       calls' own before/after-stitching placement, not appended after
-//       everything with nothing left to fix its own fallout), or the
-//       weld-time near-duplicate-vertex coincidence needs a real fix at
-//       its own source (StitchTJunctionsOnce's own chain-insertion
-//       tolerance) rather than a triangle drop after the fact.
+//       NEXT INCREMENT (CLOSED, a later session): the weld-time near-
+//       duplicate-vertex coincidence above got its real fix at its own
+//       source, in StitchTJunctionsOnce's own chain-insertion (boolean_
+//       general.cpp), not a triangle drop after the fact - see that
+//       function's own doc comment for the full mechanism. DIAGNOSIS
+//       (DINO8_RECONCILE_DEBUG plus direct instrumentation of Stitch-
+//       TJunctionsOnce itself): box+cylinder Union's z rim (where the
+//       cylinder's own wall meets its own cap - a fully PERIODIC boundary)
+//       falls entirely to StitchTJunctionsOnce's own fallback, never
+//       ReconcileEdgeTopology (confirmed: NearestBoundaryStart fails on
+//       the cap side for every one of that rim's real edges - the cap's
+//       own genuinely-curved-in-(u,v) grid-clip boundary lands 0.0003-
+//       0.001 away from the wall's real edge vertices there, a SEPARATE,
+//       not-closed-this-session instance of the resolution-mismatch gap
+//       above, this time on a curved rather than straight trim). Because
+//       StitchTJunctionsOnce is fed EVERY other face's own vertex as a
+//       hit candidate for a boundary edge (not just the true topological
+//       neighbor), the cap's denser sampling there routinely contributes
+//       several genuinely-distinct-but-mutually-adjacent hits (confirmed:
+//       up to 3 within ~0.0003 of each other) that each individually pass
+//       PointStrictlyOnSegment (which is blind to the other hits found
+//       for the same segment) - fanning them all in as separate vertices
+//       produces slivers thin enough that the two faces' boundaries no
+//       longer agree which vertex is "the" corner there: a nonmanifold
+//       edge, not a mere T-junction.
+//
+//       FIX: widen StitchTJunctionsOnce's own existing hit-vs-hit de-dup
+//       (previously a tiny, fixed `tol`) to the SAME scale-aware distance
+//       PointStrictlyOnSegment already uses for its own perpendicular-
+//       distance acceptance (floored at `tol`, else a fraction of the
+//       segment's own length), at 2x that formula's own coefficient -
+//       scoped DELIBERATELY to hit-vs-PRIOR-HIT only, never hit-vs-the-
+//       segment's-own-endpoint: an equivalent endpoint-relative version
+//       was tried FIRST and REJECTED - even a hit genuinely close to a
+//       real endpoint is a normal, often NECESSARY case elsewhere in this
+//       engine (this file's own resolution-mismatch forced-point
+//       mechanism routinely places one there), and rejecting it broke
+//       box+box (second box rotated 30deg about z)'s own previously-
+//       closing B-A case in the 76-case sweep at every coefficient tried,
+//       including ones far too small to help box+cylinder at all. An
+//       equivalent triangle-area-ratio formulation of the same
+//       endpoint-relative idea was also tried and also rejected the same
+//       way - confirmed directly, on this same fixture, that no single
+//       distance or area-ratio threshold cleanly separates "duplicate"
+//       from "legitimate" once endpoints are included, since their own
+//       scales genuinely overlap. Hit-vs-prior-hit alone has no such
+//       conflict and was measured clean up to 20x its own coefficient
+//       with no further benefit and no new regression either.
+//
+//       MEASURED: box+cylinder Union's own nonmanifold-edge count
+//       (DiagnoseManifold, scratch_test.cpp, u_divisions=8/v_divisions=
+//       32): 10 -> 6 (the 965ee6b session's own 4-edge PRE-regression
+//       baseline is not quite reached - of the remaining 6, 4 (at z=-1 and
+//       z=1, the wall/box CUT boundary itself) are the SAME 4 edges
+//       965ee6b's own disclosure already named as pre-existing there -
+//       gap (1)'s own resolution-mismatch residual, not this rim's
+//       periodic-seam defect, and UNCHANGED by this session's fix, as
+//       expected; the other 2 (still at the z rim) are one more
+//       occurrence of this SAME rim defect that hit-vs-prior-hit
+//       clustering alone cannot reach, since it is a single isolated hit
+//       near a segment's own endpoint, not a mutually-close cluster - the
+//       curved-trim resolution-mismatch gap above is this residual's own
+//       real next increment, not a further StitchTJunctionsOnce tweak).
+//       tests/general_boolean_sweep.cpp's own 76-case sweep: unchanged at
+//       16/76, byte-for-byte the same case set (diffed directly) - zero
+//       reshuffling. Full dino8-kernel ctest suite (dino8_kernel_smoke,
+//       1663 checks): 100% pass, 155.26s wall clock, matching this
+//       suite's normal runtime - no regression.
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
 
 }  // namespace dino8::kernel
