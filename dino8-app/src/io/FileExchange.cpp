@@ -2055,13 +2055,41 @@ bool ExportDwg(const Document& doc, const std::string& path, bool selected_only,
   // exists (stat() succeeds -> "The file already exists. We won't
   // overwrite it.", src/dwg.c) - a safety check meant for LibreDWG's own
   // CLI tools, not for an app whose Export/SaveAs command is expected to
-  // overwrite like every other format here does. Without this, exporting
-  // to the same .dwg path a second time silently failed every time.
-  std::filesystem::remove(path, ec);
-  err = dwg_write_file(path.c_str(), &dwg);
+  // overwrite like every other format here does.
+  //
+  // Write to a fresh temp path and rename it into place, rather than
+  // writing straight to `path`, for two independent reasons: it makes the
+  // export atomic (a crash mid-write never leaves a half-written file at
+  // `path`), and - the reason this was actually found - a Windows-only
+  // smoke-test crash traced to exactly this pattern: a process that writes
+  // a file and then, moments later, reopens that *exact* path itself
+  // (e.g. Export followed by Open in the same session) triggered a
+  // deterministic, silent process kill (bisected across 6 CI scenarios:
+  // every combination EXCEPT "write path P, reopen path P in the same
+  // process" succeeded cleanly - two exports to different paths, a
+  // version-switched export, opening a file a *different* process wrote,
+  // and opening one *different* file after exporting another all worked).
+  // That failure shape (deterministic, instant, zero output even from the
+  // startup banner) matches known Windows filesystem-metadata-staleness
+  // and antivirus/EDR write-then-reread heuristics, not a logic bug in the
+  // DWG codec itself. Renaming a fully-written temp file into place means
+  // the final path is never the file this process itself just held open
+  // for writing, sidestepping the trigger entirely rather than guessing
+  // at which OS/AV subsystem causes it.
+  const std::string tmp_dwg = TempPathNear(path, ".dwg");
+  std::filesystem::remove(tmp_dwg, ec);
+  err = dwg_write_file(tmp_dwg.c_str(), &dwg);
   dwg_free(&dwg);
   if (err >= DWG_ERR_CRITICAL) {
+    std::filesystem::remove(tmp_dwg, ec);
     error = "Could not write " + path + " (LibreDWG error 0x" + [&] { std::ostringstream h; h << std::hex << err; return h.str(); }() + ")";
+    return false;
+  }
+  std::filesystem::remove(path, ec);
+  std::filesystem::rename(tmp_dwg, path, ec);
+  if (ec) {
+    error = "Could not move the written DWG into place at " + path + " (" + ec.message() + ")";
+    std::filesystem::remove(tmp_dwg, ec);
     return false;
   }
   return true;
