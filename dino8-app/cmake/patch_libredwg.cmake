@@ -376,4 +376,70 @@ endif()
 string(REPLACE "${_old11}" "${_new11}" _contents4 "${_contents4}")
 string(REPLACE "${_old12}" "${_new12}" _contents4 "${_contents4}")
 file(WRITE "${_f4}" "${_contents4}")
+
+# Round 5: the actual, confirmed root cause. Found via local reproduction -
+# a MinGW cross-build of this exact patched source, run under Wine against
+# the exact DWG bytes this project's own smoke test writes and reopens (the
+# first time this bug was reproduced outside Windows CI, and much faster to
+# iterate on: seconds per attempt instead of a ~15-20 minute CI round trip).
+#
+# The standalone decode completed under Wine but printed two
+# "err:msvcrt:_invalid_parameter" diagnostics from Wine's own msvcrt shim,
+# both landing inside dwg_decode_header_variables between the round-4
+# breadcrumbs. Wine's CRT logs that and carries on; real Windows' MSVC CRT
+# default invalid-parameter handler aborts the process instead - with no
+# exception for SEH/AddressSanitizer/an unhandled-exception filter to ever
+# catch, since it isn't a memory-safety fault at all (matching every
+# negative result from those three earlier, more invasive diagnostic
+# attempts: they were looking for the wrong class of bug).
+#
+# src/header_variables.spec's DECODER block for TDCREATE/TDUPDATE runs when
+# a DWG's own TDCREATE is unset - exactly what happens for a freshly-
+# exported Dino8 document (see FileExchange.cpp's ExportDwg, which never
+# sets TDCREATE), deriving it from TDUCREATE instead and calling strftime
+# via cvt_TIMEBLL (src/common.c) to build a trace string. TDUCREATE.days is
+# itself 0 for such a document (never round-tripped through a real DWG
+# creation timestamp before), which sends cvt_TIMEBLL down its "ja < 1000"
+# fallback branch - meant for TDINDWG-style relative/duration values, not
+# absolute dates - which does `memset (tm, 0, sizeof (struct tm))` and
+# nothing else. That leaves tm_mday == 0, which is out of struct tm's valid
+# [1,31] range for a calendar date. glibc's and Darwin's strftime silently
+# tolerate an out-of-range tm_mday; MSVC's CRT parameter validation treats
+# it as an invalid argument and aborts - deterministically, since the same
+# degenerate all-zero timestamp is produced every time a fresh document is
+# exported and reopened.
+#
+# The fix is in cvt_TIMEBLL itself, not the call site: after zeroing the
+# struct in that fallback branch, also set tm_mday = 1 - a valid, correct
+# placeholder day (this branch already produces a nonsense/placeholder
+# date by design; the bug was only that it produced an out-of-range one).
+# This is a real root-cause fix, not a Windows-specific workaround: an
+# out-of-range struct tm is invalid on every platform, and this keeps
+# cvt_TIMEBLL's result valid everywhere, not just where the CRT happens to
+# enforce it.
+set(_f5 "${SOURCE_DIR}/src/common.c")
+file(READ "${_f5}" _contents5)
+set(_old13 "  if (ja < 1000)
+    {
+      // TDINDWG: relative minutes
+      memset (tm, 0, sizeof (struct tm));
+    }")
+set(_new13 "  if (ja < 1000)
+    {
+      // TDINDWG: relative minutes. memset alone leaves tm_mday at 0, which
+      // is out of struct tm's valid [1,31] range - harmless on glibc/
+      // Darwin's lenient strftime, but MSVC's CRT parameter validation
+      // treats it as an invalid argument and aborts the process (see this
+      // patch script's own round-5 comment for the full investigation,
+      // found via local MinGW+Wine reproduction of the real Windows crash).
+      memset (tm, 0, sizeof (struct tm));
+      tm->tm_mday = 1;
+    }")
+string(FIND "${_contents5}" "${_old13}" _pos13)
+if(_pos13 EQUAL -1)
+  message(FATAL_ERROR "patch_libredwg.cmake: cvt_TIMEBLL's ja<1000 fallback pattern not found in ${_f5} - LibreDWG source may have changed, patch needs updating")
+endif()
+string(REPLACE "${_old13}" "${_new13}" _contents5 "${_contents5}")
+file(WRITE "${_f5}" "${_contents5}")
+message(STATUS "patch_libredwg.cmake: fixed cvt_TIMEBLL's out-of-range tm_mday in its degenerate-timestamp fallback (real Windows DWG-reopen crash root cause, confirmed via local MinGW+Wine reproduction)")
 message(STATUS "patch_libredwg.cmake: added round-4 diagnostic breadcrumbs bracketing dwg_decode_header_variables in ${_f4}")
