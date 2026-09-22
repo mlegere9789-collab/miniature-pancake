@@ -19,6 +19,20 @@
 // EXCEPTION_EXECUTE_HANDLER / __try / __except (Structured Exception
 // Handling) - see DwgReadFileSafe below.
 #include <excpt.h>
+// _resetstkoflw - see DwgReadFileSafe below.
+#include <malloc.h>
+// EXCEPTION_STACK_OVERFLOW (winnt.h, via windows.h - excpt.h alone does not
+// declare it). NOMINMAX/WIN32_LEAN_AND_MEAN keep windows.h from clobbering
+// std::min/std::max (used throughout this file below this point) with
+// function-like macros, and from pulling in the full Win32 API surface this
+// file has no other need for.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 
 #include <algorithm>
@@ -2021,12 +2035,36 @@ namespace {
 // fires (the crash can happen mid-decode, after some of it has already been
 // populated), so the caller must NOT call dwg_free() on it in that case -
 // crashed reports whether that happened.
+//
+// An earlier version of this same __try/__except wrap appeared on CI to not
+// catch anything at all (identical zero-output crash signature, with or
+// without it). The real reason: when the underlying fault is a genuine
+// stack overflow (very plausible for LibreDWG's recursive decode of a
+// handle-chained object table / nested block references, especially with a
+// 32-bit `long` bit-offset walking off the rails on Windows/LLP64), Windows
+// only grants the thread a small, one-shot emergency guard-page allowance to
+// run the __except filter/handler itself - see _resetstkoflw's own MSDN
+// page, whose sample code is exactly this pattern. Without calling
+// _resetstkoflw() before returning, that guard page stays depleted, and the
+// very next stack-hungry call (even ImportDwg's own std::string/
+// std::ostringstream error-message building immediately after this
+// function returns) re-faults instantly and unrecoverably - a second,
+// uncatchable hard crash with the identical zero-output signature, making
+// the __except block look like it never ran. Restoring the guard page here,
+// while still on the handler's own stack frame (the documented, correct
+// place to call it), is the fix; the larger /STACK reserve+commit in
+// CMakeLists.txt (an earlier, insufficient-on-its-own attempt at this same
+// bug) is kept too since a bigger stack still reduces how often this path
+// is hit in the first place.
 int DwgReadFileSafe(const char* path, Dwg_Data* dwg, bool& crashed) {
   crashed = false;
   __try {
     return dwg_read_file(path, dwg);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     crashed = true;
+    if (GetExceptionCode() == EXCEPTION_STACK_OVERFLOW) {
+      _resetstkoflw();
+    }
     return DWG_ERR_INTERNALERROR;
   }
 }
