@@ -136,8 +136,23 @@ jobs:
       # New itself ever involved?), and Export one file then Open a
       # DIFFERENT, independently-pre-written fixture file (does ANY import
       # after an in-process Export crash, or specifically reopening the
-      # exact same path?). continue-on-error so this never blocks the
-      # actual smoke.sh run below.
+      # exact same path?). Round 5 result: exactly "reopen the same path"
+      # fails (with or without New); everything else succeeds. Applied a
+      # fix in FileExchange.cpp (ExportDwg writes to a temp file, then
+      # atomically renames it into place, so `path` is never a file this
+      # process itself held open for writing) on the theory that a
+      # lingering write handle/cache tied to the destination path was the
+      # trigger - kept as a real, independently-good crash-safety practice
+      # (atomic export), but it did NOT fix this crash: the exact same
+      # zero-output exit=127 still happens even via rename-into-place, so
+      # the trigger tracks this process touching `path` at all, not
+      # specifically an open write handle on it. This round adds one more
+      # test to check a timing/caching-staleness angle instead: the same
+      # write-then-reopen, but with a 120-frame (--script "wait N", real
+      # elapsed time) pause in between - if a delay fixes it, this is a
+      # metadata-refresh/caching race, not a permanent same-path block.
+      # continue-on-error so this never blocks the actual smoke.sh run
+      # below.
       - name: DWG export bisection (diagnostic)
         shell: bash
         continue-on-error: true
@@ -153,6 +168,7 @@ jobs:
           printf 'Open %s/fixture.dwg\nSelAll\nList\n' "$T" > "$T/open_only.txt"
           printf 'Line 0,0,0 12,0,0\nSelAll\nExport %s/a.dwg\nOpen %s/a.dwg\n' "$T" "$T" > "$T/direct_reopen.txt"
           printf 'Line 0,0,0 12,0,0\nSelAll\nExport %s/b.dwg\nOpen %s/fixture2.dwg\n' "$T" "$T" > "$T/export_then_other.txt"
+          printf 'Line 0,0,0 12,0,0\nSelAll\nExport %s/c.dwg\nwait 120\nOpen %s/c.dwg\n' "$T" "$T" > "$T/delay_reopen.txt"
           echo "--- two plain Exports, same process ---"
           dino8-app/build/Dino8.exe --smoke 50 --script "$T/two_exports.txt" 2>&1
           echo "exit=$?"
@@ -170,6 +186,9 @@ jobs:
           echo "exit=$?"
           echo "--- Export one file, then Open a DIFFERENT pre-existing fixture ---"
           dino8-app/build/Dino8.exe --smoke 50 --script "$T/export_then_other.txt" 2>&1
+          echo "exit=$?"
+          echo "--- Export then Open the SAME path, with a 120-frame wait between ---"
+          dino8-app/build/Dino8.exe --smoke 200 --script "$T/delay_reopen.txt" 2>&1
           echo "exit=$?"
           exit 0
       # The same functional QC Linux already runs (~1500 checks over the
