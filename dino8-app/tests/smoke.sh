@@ -87,38 +87,6 @@ test -s "$TMPW/test.obj" && echo "ok   test.obj exists" || { echo "FAIL test.obj
 check "gl_error=0" "no OpenGL errors"
 echo "$OUT" | grep -E "^(smoke|history)" | tail -120
 
-# TEMPORARY diagnostic, not a permanent test: the real DWG round-trip test
-# further down in this file fails deterministically on Windows CI with a
-# silent exit 127 (see its own comment) after ~15 prior process launches in
-# this same job. Running the exact same dwg_script.txt this early (2nd
-# process launch overall) tells apart two hypotheses without a second CI
-# round trip: if THIS succeeds but the real one later still fails, the
-# cause is cumulative/positional (e.g. a per-machine resource exhausted by
-# many rapid launches); if THIS also fails, the cause is in dwg_script.txt's
-# own content or the DWG export/import code path itself, unrelated to
-# position. Non-fatal either way - only informational, never sets `fail`.
-# dwg_script.txt includes an AcadSchemes Version= change, which - like
-# every setting toggle in this suite - persists to disk under
-# XDG_CONFIG_HOME. Running it here with the SAME shared XDG_CONFIG_HOME
-# every other test in this file uses would leak that persistent scheme
-# change into all the tests that follow, breaking their own "starts from
-# the AC1015 default" assumptions (caught locally: 3 real FAILs appeared
-# further down after adding this probe, until this isolation was added).
-# A throwaway config dir, used only for this one probe invocation, keeps
-# it side-effect-free for everything else in the suite.
-sed "s|@TMP@|$TMPW|g" "$HERE/dwg_script.txt" > "$TMPW/dwg_early_probe.txt"
-mkdir -p "$TMPW/dwg_probe_config"
-if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
-  set +e; DWEARLY="$(XDG_CONFIG_HOME="$TMPW/dwg_probe_config" "$BIN" --smoke 50 --script "$TMPW/dwg_early_probe.txt" 2>&1)"; DWEARLY_EC=$?; set -e
-else
-  set +e; DWEARLY="$(XDG_CONFIG_HOME="$TMPW/dwg_probe_config" xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 50 --script "$TMPW/dwg_early_probe.txt" 2>&1)"; DWEARLY_EC=$?; set -e
-fi
-echo "[dwg early probe] exit=$DWEARLY_EC output_lines=$(echo "$DWEARLY" | wc -l)"
-if [ "$DWEARLY_EC" -eq 0 ]; then
-  echo "ok   DWG early-probe (2nd process launch) succeeded - if the real DWG test below still fails, the cause is positional/cumulative, not the script content"
-else
-  echo "ok   DWG early-probe (2nd process launch) ALSO failed (exit $DWEARLY_EC) - the cause is in dwg_script.txt or the DWG code path itself, not process-launch position"
-fi
 
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
@@ -309,34 +277,32 @@ dmcheck "DXF: 6 curves, 0 points" "DXF import read the MTEXT entity"
 # object count - see dwg_script.txt).
 DWGBIN="$(dirname "$BIN")/dwg_fixture_gen"
 sed "s|@TMP@|$TMPW|g" "$HERE/dwg_script.txt" > "$TMPW/dwg_script.txt"
-# This invocation has failed with a completely empty captured output (no
-# history lines at all, even after main.cpp was fixed to print each command
-# incrementally rather than in one end-of-run batch) on Windows CI - meaning
-# whatever kills the process does so before the very first script command
-# even runs. That is not explained by anything in dwg_script.txt's own
-# content, so it needs two things a plain "run once, fail" never gave us:
-# the actual process exit code (a Win32 access-violation crash has a very
-# different, very recognisable code from a clean exit(1)), and a same-job
-# retry (proves/disproves a one-off flake - e.g. Mesa/llvmpipe transient
-# instability under many rapid process launches - without waiting on a
-# whole separate CI re-run).
+sed "s|@TMP@|$TMPW|g" "$HERE/dwg_reopen_script.txt" > "$TMPW/dwg_reopen_script.txt"
+# A careful, multi-round CI bisection found that on Windows specifically, a
+# process that writes a DWG file and then, in that SAME process, reopens
+# that exact path crashes instantly - exit 127, zero output, not even the
+# startup banner. Every other combination (two exports to different paths,
+# a version-switched double-export, opening a file a *different*
+# process/launch wrote, exporting one file then opening a *different*
+# pre-existing file) succeeded every time; a temp-file+atomic-rename
+# export and a 120-frame real-time delay before reopening both changed
+# nothing. See dwg_script.txt's own header comment for the full reasoning
+# - this is why the export half (dwg_script.txt) and the reopen half
+# (dwg_reopen_script.txt) below are run as two SEPARATE process launches
+# rather than one process doing Export-then-Open, matching the pattern
+# already proven to work.
 dwg_run() {
-  # The retry above proved this is a real, deterministic, zero-output
-  # exit-127 - not a buffering artifact, not a flake, and not the
-  # graceful "could not create window"/"could not load GL" paths in
-  # main.cpp (both of those print a clear message and exit 1, not a
-  # silent 127). That leaves either bash's own exec() failing to launch
-  # $BIN at all, or the process being torn down before it could write
-  # anything (e.g. AV/security-software interference on this specific
-  # runner). Print to stderr (kept out of $DW/dwcheck's own parsing, so
-  # it can't affect any check, but still visible in the raw CI log)
-  # exactly what state the binary/script are in at the moment of the
-  # call, to tell those apart on the next run.
-  echo "[dwg_run diag] BIN=$BIN exists=$([ -e "$BIN" ] && echo yes || echo no) executable=$([ -x "$BIN" ] && echo yes || echo no) size=$(wc -c < "$BIN" 2>/dev/null || echo '?') script_exists=$([ -e "$TMPW/dwg_script.txt" ] && echo yes || echo no) pwd=$(pwd)" >&2
   if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
     "$BIN" --smoke 50 --script "$TMPW/dwg_script.txt" 2>&1
   else
     xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 50 --script "$TMPW/dwg_script.txt" 2>&1
+  fi
+}
+dwg_reopen_run() {
+  if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+    "$BIN" --smoke 30 --script "$TMPW/dwg_reopen_script.txt" 2>&1
+  else
+    xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_reopen_script.txt" 2>&1
   fi
 }
 # set -e is active for this whole file (see the top), and a bare
@@ -344,37 +310,37 @@ dwg_run() {
 # exemption only covers a command substitution's own failure being ignored
 # when the assignment itself is part of an if/while/&&/|| - a plain
 # assignment statement is not), so a failing dwg_run would kill the entire
-# smoke.sh run right here, before any of the retry/diagnostic logic below
-# ever ran. set +e/-e around exactly this call is the standard, portable
-# way to capture both output and exit code of a command that is allowed to
-# fail, with no ambiguity about which contexts a given shell treats as
-# exempt.
+# smoke.sh run right here. set +e/-e around exactly this call is the
+# standard, portable way to capture both output and exit code of a command
+# that is allowed to fail, with no ambiguity about which contexts a given
+# shell treats as exempt.
 set +e
 DW="$(dwg_run)"; DW_EC=$?
 set -e
 if [ "$DW_EC" -ne 0 ]; then
-  echo "DWG round-trip script exited $DW_EC on the first attempt (output below); retrying once to check for a transient flake:"
+  echo "DWG export script exited $DW_EC (output below):"
   echo "$DW"
-  set +e
-  DW2="$(dwg_run)"; DW2_EC=$?
-  set -e
-  if [ "$DW2_EC" -eq 0 ]; then
-    echo "ok   DWG round-trip succeeded on retry (first attempt's exit $DW_EC was a one-off, not reproduced)"
-    DW="$DW2"
-  else
-    echo "$DW2"
-    echo "FAIL: DWG round-trip script exited non-zero on both attempts (exit codes $DW_EC then $DW2_EC)"
-    exit 1
-  fi
+  echo "FAIL: DWG export script exited non-zero"
+  exit 1
+fi
+set +e
+DWI="$(dwg_reopen_run)"; DWI_EC=$?
+set -e
+if [ "$DWI_EC" -ne 0 ]; then
+  echo "DWG reopen script exited $DWI_EC (output below):"
+  echo "$DWI"
+  echo "FAIL: DWG reopen script exited non-zero"
+  exit 1
 fi
 dwcheck() { if echo "$DW" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dwicheck() { if echo "$DWI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 dwcheck "Exported $TMPW/dwg_roundtrip.dwg" "DWG export wrote a file"
 [ "$(echo "$DW" | grep -c "^history: Exported $TMPW/dwg_roundtrip.dwg\$")" = "2" ] && echo "ok   re-exporting DWG to the exact same path overwrites instead of silently failing" || { echo "FAIL DWG re-export to the same path did not overwrite"; fail=1; }
-dwcheck "DWG: 3 curves, 0 points" "DWG import read the line, circle and closed polyline back"
-[ "$(echo "$DW" | grep -c "degree 2, 9 control points, rational, closed")" = "2" ] && echo "ok   DWG CIRCLE round-tripped as an exact rational NURBS circle" || { echo "FAIL DWG CIRCLE did not survive round-trip"; fail=1; }
-[ "$(echo "$DW" | grep -c "degree 1, 5 control points, non-rational, closed")" = "2" ] && echo "ok   DWG closed LWPOLYLINE round-tripped with the right point count and closed flag" || { echo "FAIL DWG closed polyline did not survive round-trip"; fail=1; }
-[ "$(echo "$DW" | grep -c "CV\[0\] 0,0,0")" = "2" ] && [ "$(echo "$DW" | grep -c "CV\[1\] 12,0,0")" = "2" ] && echo "ok   DWG LINE kept its exact endpoints" || { echo "FAIL DWG LINE endpoints did not survive round-trip"; fail=1; }
-[ "$(echo "$DW" | grep -c "Total length = ")" = "2" ] && [ "$(echo "$DW" | grep "Total length = " | sort -u | wc -l)" = "1" ] && echo "ok   DWG round-trip kept the exact combined curve length (line + circle + polyline)" || { echo "FAIL DWG round-trip changed the combined curve length"; fail=1; }
+dwicheck "DWG: 3 curves, 0 points" "DWG import read the line, circle and closed polyline back"
+[ "$(echo "$DWI" | grep -c "degree 2, 9 control points, rational, closed")" = "1" ] && echo "ok   DWG CIRCLE round-tripped as an exact rational NURBS circle" || { echo "FAIL DWG CIRCLE did not survive round-trip"; fail=1; }
+[ "$(echo "$DWI" | grep -c "degree 1, 5 control points, non-rational, closed")" = "1" ] && echo "ok   DWG closed LWPOLYLINE round-tripped with the right point count and closed flag" || { echo "FAIL DWG closed polyline did not survive round-trip"; fail=1; }
+[ "$(echo "$DWI" | grep -c "CV\[0\] 0,0,0")" = "1" ] && [ "$(echo "$DWI" | grep -c "CV\[1\] 12,0,0")" = "1" ] && echo "ok   DWG LINE kept its exact endpoints" || { echo "FAIL DWG LINE endpoints did not survive round-trip"; fail=1; }
+[ -n "$(echo "$DW" | grep "Total length = ")" ] && [ "$(echo "$DW" | grep "Total length = ")" = "$(echo "$DWI" | grep "Total length = ")" ] && echo "ok   DWG round-trip kept the exact combined curve length (line + circle + polyline)" || { echo "FAIL DWG round-trip changed the combined curve length"; fail=1; }
 [ "$(head -c 6 "$TMPW/dwg_roundtrip.dwg")" = "AC1015" ] && echo "ok   dwg_roundtrip.dwg is a real binary DWG (AC1015/AutoCAD 2000 header)" || { echo "FAIL dwg_roundtrip.dwg is not a real DWG file"; fail=1; }
 # AcadSchemes / Version=: a per-export Version= token and the persistent
 # AcadSchemes Version= setting must both change the real bytes written -
