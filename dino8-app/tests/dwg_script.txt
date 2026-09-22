@@ -13,6 +13,12 @@ SelAll
 List
 Length
 Export @TMP@/dwg_roundtrip.dwg
+# Re-export to the exact same path: dwg_write_file() refuses to touch a
+# path that already exists (it's a LibreDWG CLI safety check, not meant
+# for an app whose Export/SaveAs is expected to overwrite), so ExportDwg
+# must remove the old file first - re-exporting silently failed every
+# time before that fix.
+Export @TMP@/dwg_roundtrip.dwg
 New
 Open @TMP@/dwg_roundtrip.dwg
 SelAll

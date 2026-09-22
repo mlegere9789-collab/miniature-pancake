@@ -2051,6 +2051,13 @@ bool ExportDwg(const Document& doc, const std::string& path, bool selected_only,
   const AcadScheme& scheme = EffectiveAcadScheme(doc);
   const Dwg_Version_Type version = dwg_version_hdr_type(scheme.acadver.c_str());
   if (version != R_INVALID) dwg.header.version = version;
+  // dwg_write_file() deliberately refuses to touch a path that already
+  // exists (stat() succeeds -> "The file already exists. We won't
+  // overwrite it.", src/dwg.c) - a safety check meant for LibreDWG's own
+  // CLI tools, not for an app whose Export/SaveAs command is expected to
+  // overwrite like every other format here does. Without this, exporting
+  // to the same .dwg path a second time silently failed every time.
+  std::filesystem::remove(path, ec);
   err = dwg_write_file(path.c_str(), &dwg);
   dwg_free(&dwg);
   if (err >= DWG_ERR_CRITICAL) {

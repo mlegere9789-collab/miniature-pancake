@@ -87,6 +87,39 @@ test -s "$TMPW/test.obj" && echo "ok   test.obj exists" || { echo "FAIL test.obj
 check "gl_error=0" "no OpenGL errors"
 echo "$OUT" | grep -E "^(smoke|history)" | tail -120
 
+# TEMPORARY diagnostic, not a permanent test: the real DWG round-trip test
+# further down in this file fails deterministically on Windows CI with a
+# silent exit 127 (see its own comment) after ~15 prior process launches in
+# this same job. Running the exact same dwg_script.txt this early (2nd
+# process launch overall) tells apart two hypotheses without a second CI
+# round trip: if THIS succeeds but the real one later still fails, the
+# cause is cumulative/positional (e.g. a per-machine resource exhausted by
+# many rapid launches); if THIS also fails, the cause is in dwg_script.txt's
+# own content or the DWG export/import code path itself, unrelated to
+# position. Non-fatal either way - only informational, never sets `fail`.
+# dwg_script.txt includes an AcadSchemes Version= change, which - like
+# every setting toggle in this suite - persists to disk under
+# XDG_CONFIG_HOME. Running it here with the SAME shared XDG_CONFIG_HOME
+# every other test in this file uses would leak that persistent scheme
+# change into all the tests that follow, breaking their own "starts from
+# the AC1015 default" assumptions (caught locally: 3 real FAILs appeared
+# further down after adding this probe, until this isolation was added).
+# A throwaway config dir, used only for this one probe invocation, keeps
+# it side-effect-free for everything else in the suite.
+sed "s|@TMP@|$TMPW|g" "$HERE/dwg_script.txt" > "$TMPW/dwg_early_probe.txt"
+mkdir -p "$TMPW/dwg_probe_config"
+if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
+  set +e; DWEARLY="$(XDG_CONFIG_HOME="$TMPW/dwg_probe_config" "$BIN" --smoke 50 --script "$TMPW/dwg_early_probe.txt" 2>&1)"; DWEARLY_EC=$?; set -e
+else
+  set +e; DWEARLY="$(XDG_CONFIG_HOME="$TMPW/dwg_probe_config" xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 50 --script "$TMPW/dwg_early_probe.txt" 2>&1)"; DWEARLY_EC=$?; set -e
+fi
+echo "[dwg early probe] exit=$DWEARLY_EC output_lines=$(echo "$DWEARLY" | wc -l)"
+if [ "$DWEARLY_EC" -eq 0 ]; then
+  echo "ok   DWG early-probe (2nd process launch) succeeded - if the real DWG test below still fails, the cause is positional/cumulative, not the script content"
+else
+  echo "ok   DWG early-probe (2nd process launch) ALSO failed (exit $DWEARLY_EC) - the cause is in dwg_script.txt or the DWG code path itself, not process-launch position"
+fi
+
 # Interactive UI replay: typed command, viewport picks, click-select, Delete, Undo.
 if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/dev/null 2>&1; then
   UI="$("$BIN" --smoke 320 --script "$HERE/ui_script.txt" 2>&1)" || true
@@ -336,6 +369,7 @@ if [ "$DW_EC" -ne 0 ]; then
 fi
 dwcheck() { if echo "$DW" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
 dwcheck "Exported $TMPW/dwg_roundtrip.dwg" "DWG export wrote a file"
+[ "$(echo "$DW" | grep -c "^history: Exported $TMPW/dwg_roundtrip.dwg\$")" = "2" ] && echo "ok   re-exporting DWG to the exact same path overwrites instead of silently failing" || { echo "FAIL DWG re-export to the same path did not overwrite"; fail=1; }
 dwcheck "DWG: 3 curves, 0 points" "DWG import read the line, circle and closed polyline back"
 [ "$(echo "$DW" | grep -c "degree 2, 9 control points, rational, closed")" = "2" ] && echo "ok   DWG CIRCLE round-tripped as an exact rational NURBS circle" || { echo "FAIL DWG CIRCLE did not survive round-trip"; fail=1; }
 [ "$(echo "$DW" | grep -c "degree 1, 5 control points, non-rational, closed")" = "2" ] && echo "ok   DWG closed LWPOLYLINE round-tripped with the right point count and closed flag" || { echo "FAIL DWG closed polyline did not survive round-trip"; fail=1; }
