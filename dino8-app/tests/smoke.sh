@@ -294,11 +294,25 @@ dwg_run() {
     xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 50 --script "$TMPW/dwg_script.txt" 2>&1
   fi
 }
+# set -e is active for this whole file (see the top), and a bare
+# DW="$(dwg_run)" is NOT one of the contexts POSIX exempts from it (that
+# exemption only covers a command substitution's own failure being ignored
+# when the assignment itself is part of an if/while/&&/|| - a plain
+# assignment statement is not), so a failing dwg_run would kill the entire
+# smoke.sh run right here, before any of the retry/diagnostic logic below
+# ever ran. set +e/-e around exactly this call is the standard, portable
+# way to capture both output and exit code of a command that is allowed to
+# fail, with no ambiguity about which contexts a given shell treats as
+# exempt.
+set +e
 DW="$(dwg_run)"; DW_EC=$?
+set -e
 if [ "$DW_EC" -ne 0 ]; then
   echo "DWG round-trip script exited $DW_EC on the first attempt (output below); retrying once to check for a transient flake:"
   echo "$DW"
+  set +e
   DW2="$(dwg_run)"; DW2_EC=$?
+  set -e
   if [ "$DW2_EC" -eq 0 ]; then
     echo "ok   DWG round-trip succeeded on retry (first attempt's exit $DW_EC was a one-off, not reproduced)"
     DW="$DW2"
