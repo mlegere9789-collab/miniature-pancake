@@ -119,21 +119,25 @@ jobs:
       # consuming the whole frame budget with nothing selected, then the
       # smoke harness exited cleanly (by design) - never actually running
       # an export at all. Fixed and verified locally (Linux) before
-      # pushing. Round 3 (with SelAll, --smoke 50) gave the first real
-      # signal: "two plain Exports, same process" and "two differently-
-      # versioned Exports, same process" both succeeded, but "Export, then
-      # New, then Open that same file back, same process" failed instantly
-      # with exit=127 and ZERO output - not even the startup banner that
-      # prints unconditionally before any script line runs. This round
-      # adds one more test to tell apart two remaining hypotheses: does
-      # importing ANY DWG crash on Windows, or specifically a DWG this
-      # exact process just wrote itself moments earlier? dwg_fixture_gen
-      # (built alongside Dino8.exe) writes a real DWG independently, in
-      # its own separate process, so Opening THAT file tests import in
-      # isolation from any same-process prior write. Verified locally
-      # (Linux) that this open-only script correctly reads the fixture
-      # (6 objects) before pushing. continue-on-error so this never blocks
-      # the actual smoke.sh run below.
+      # pushing. Round 3 (with SelAll, --smoke 50) gave the first real signal: "two
+      # plain Exports, same process" and "two differently-versioned
+      # Exports, same process" both succeeded, but "Export, then New, then
+      # Open that same file back, same process" failed instantly with
+      # exit=127 and ZERO output - not even the startup banner that prints
+      # unconditionally before any script line runs, and not even the
+      # Export's own confirmation that should have printed first. Round 4
+      # added: Opening a DWG written by a SEPARATE process (dwg_fixture_gen)
+      # succeeded cleanly (6 objects) - so DWG import is not broken in
+      # general on Windows, only after a same-process Export happens first.
+      # This round narrows it further with two more same-process tests
+      # (verified locally on Linux, where the crash doesn't reproduce, but
+      # confirms both scripts execute the intended commands correctly):
+      # Export then Open the SAME path directly (no "New" in between - was
+      # New itself ever involved?), and Export one file then Open a
+      # DIFFERENT, independently-pre-written fixture file (does ANY import
+      # after an in-process Export crash, or specifically reopening the
+      # exact same path?). continue-on-error so this never blocks the
+      # actual smoke.sh run below.
       - name: DWG export bisection (diagnostic)
         shell: bash
         continue-on-error: true
@@ -145,7 +149,10 @@ jobs:
           printf 'Line 0,0,0 12,0,0\nSelAll\nExport %s/exp.dwg\nNew\nOpen %s/exp.dwg\n' "$T" "$T" > "$T/export_open.txt"
           printf 'Line 0,0,0 12,0,0\nSelAll\nExport Version=13 %s/v13.dwg\nSelAll\nExport Version=2018 %s/v2018.dwg\n' "$T" "$T" > "$T/two_versioned.txt"
           dino8-app/build/dwg_fixture_gen.exe "$T/fixture.dwg"
+          dino8-app/build/dwg_fixture_gen.exe "$T/fixture2.dwg"
           printf 'Open %s/fixture.dwg\nSelAll\nList\n' "$T" > "$T/open_only.txt"
+          printf 'Line 0,0,0 12,0,0\nSelAll\nExport %s/a.dwg\nOpen %s/a.dwg\n' "$T" "$T" > "$T/direct_reopen.txt"
+          printf 'Line 0,0,0 12,0,0\nSelAll\nExport %s/b.dwg\nOpen %s/fixture2.dwg\n' "$T" "$T" > "$T/export_then_other.txt"
           echo "--- two plain Exports, same process ---"
           dino8-app/build/Dino8.exe --smoke 50 --script "$T/two_exports.txt" 2>&1
           echo "exit=$?"
@@ -157,6 +164,12 @@ jobs:
           echo "exit=$?"
           echo "--- Open only, a DWG written by a separate process (dwg_fixture_gen) ---"
           dino8-app/build/Dino8.exe --smoke 50 --script "$T/open_only.txt" 2>&1
+          echo "exit=$?"
+          echo "--- Export then Open the SAME path directly, no New ---"
+          dino8-app/build/Dino8.exe --smoke 50 --script "$T/direct_reopen.txt" 2>&1
+          echo "exit=$?"
+          echo "--- Export one file, then Open a DIFFERENT pre-existing fixture ---"
+          dino8-app/build/Dino8.exe --smoke 50 --script "$T/export_then_other.txt" 2>&1
           echo "exit=$?"
           exit 0
       # The same functional QC Linux already runs (~1500 checks over the
