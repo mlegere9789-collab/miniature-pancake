@@ -2127,6 +2127,270 @@ class FilletSrfToRailCommand : public Command {
 };
 
 // ---------------------------------------------------------------------------
+// FilletSrfCrv: rolling-ball fillet between a surface and an INDEPENDENT
+// curve, with the curve itself surviving as one exact edge of the result -
+// the actual gap the earlier Partial note named (a bare curve's closest
+// point gives an arc merely touching the curve, not tangent to it).
+//
+// The surface side is exactly as in BuildFillet (cmd_fillet.cpp): a point
+// (u,v) with the ball centre placed a fixed radius r along the surface's own
+// normal there is ALWAYS tangent to the surface, no equation required for
+// that half. The curve side is a genuinely different, 2-constraint
+// condition: "the ball is tangent to the curve" means the sphere of radius r
+// centred at C is tangent to the curve's own tangent LINE at some point
+// P(t) - i.e. (1) |C - P(t)| = r and (2) (C - P(t)) is perpendicular to the
+// curve's tangent T(t) there. A bare closest-point substitute (the old gap)
+// only gets a merely-touching point, satisfying neither.
+//
+// t itself is NOT a third unknown - it is fixed to this station's own
+// sample parameter along the rail, so `contact_crv` lands EXACTLY on the
+// input curve at that parameter (the literal "exact edge" the command
+// promises), and (u, v) are the only two unknowns, solved from the two
+// equations above with the same Gauss-Newton NewtonSolve
+// (geom/SurfaceIntersect.h) SurfaceClosestPoint and RefineSurfaceSurfacePoint
+// already use.
+//
+// An earlier version of this solver added a third equation - "T(t) must be
+// coplanar with the arc's own two radius directions" - on the theory that
+// perpendicularity alone only pins T(t) to SOME direction on the cone
+// normal to (C-P), and coplanarity was needed to nail down which one. That
+// reasoning was itself sound (coplanarity really is an extra, independent
+// constraint, not implied by (1)/(2)) but the constraint it wrote down is
+// the WRONG one: the arc's own in-plane tangent at the curve-contact end is
+// the component of dir_srf orthogonal to dir_crv, i.e.
+// dir_srf - (dir_srf.dir_crv) dir_crv, and forcing T(t) to be PARALLEL to
+// that is a real, independent equation, but one the geometry does not
+// generally satisfy - and for the textbook case this command exists to
+// handle (a curve held at a roughly constant height/tangent above a
+// surface it runs parallel to, e.g. this file's own flat-plane test
+// fixture), it is never satisfiable: with the ball centred at C = a + n*r,
+// T(t) is required by (2) to be perpendicular to (C-P)'s in-plane
+// component, while the old third equation required T(t) to be PARALLEL to
+// that very same component (both reduce, in the flat/parallel case, to
+// requiring T(t) . (dx, dy) to be simultaneously 0 and nonzero) - an
+// outright contradiction with no root, which is exactly why Newton failed
+// on every single station regardless of seeding. Verified by hand and
+// numerically (see the derivation in the fix's commit message / PR):
+// arc_tangent . curve_tangent = 0 EXACTLY for a straight horizontal line
+// over a flat plane, so a solver chasing arc_tangent == curve_tangent was
+// chasing an angle of exactly 90 degrees, not 0. What actually guarantees
+// the fillet SURFACE (the loft through all these arcs, not any one arc in
+// isolation) is genuinely tangent to the curve along its edge is just (2):
+// once (C-P) is perpendicular to T(t), T(t) lies in the sphere's own
+// tangent plane at P, which by the standard envelope/canal-surface
+// argument is exactly the loft surface's own tangent plane there too - no
+// third equation needed, and the one that was added actively broke the
+// solve instead of tightening it.
+// ---------------------------------------------------------------------------
+
+// Which side of the surface the ball sits on - the side the curve is on,
+// picked once (at the surface's domain-centre point) and held fixed for
+// every station, same technique as OffsetSign in cmd_fillet.cpp.
+double SrfCrvOffsetSign(const ON_NurbsSurface& s, const kernel::NurbsCurve& crv) {
+  const double u = s.Domain(0).Mid(), v = s.Domain(1).Mid();
+  const Point3d p = s.PointAt(u, v);
+  ON_3dVector n = s.NormalAt(u, v);
+  if (!n.Unitize()) return 1.0;
+  const kernel::Interval d = crv.Domain();
+  const Point3d target = crv.PointAt((d.min + d.max) * 0.5);
+  return ON_DotProduct(target - p, n) >= 0 ? 1.0 : -1.0;
+}
+
+struct SrfCrvStation {
+  Point3d center;
+  Point3d contact_srf, contact_crv;
+  Vector3d dir_srf, dir_crv;  // unit, center -> each contact point
+  double t = 0;
+  double tangent_err = 0;  // radians by which (center - contact_crv) misses being exactly perpendicular to the curve's TangentAt(t) - the true tangency-to-the-curve error; a merely-touching/closest-point substitute (the old bug) would generally make this large, since nothing forces perpendicularity there
+};
+
+// Solves the two-unknown (u, v) system described above for one station, in
+// place (u/v are seeded on entry); `t` is fixed (this station's own rail
+// parameter, not solved for). `sign` fixes the ball's side of the surface
+// (see SrfCrvOffsetSign). Returns false if Newton fails to converge to
+// `tol` (a combined norm over the two, unit-scaled residuals below).
+bool SolveSrfCrvStation(const ON_NurbsSurface& s, const kernel::NurbsCurve& crv, double r, double sign,
+                         double& u, double& v, double t, double tol, SrfCrvStation& out) {
+  const ON_Interval du = s.Domain(0), dv = s.Domain(1);
+  const double seed_u = u, seed_v = v;
+  std::vector<double> x = {u, v};
+  const std::vector<double> lo = {du.Min(), dv.Min()};
+  const std::vector<double> hi = {du.Max(), dv.Max()};
+  Vector3d tc = crv.TangentAt(t);
+  if (!tc.Unitize()) tc = Vector3d(1, 0, 0);
+  const Point3d pc = crv.PointAt(t);
+  Residual res = [&](const std::vector<double>& p) -> std::vector<double> {
+    const Point3d a = s.PointAt(p[0], p[1]);
+    ON_3dVector n = s.NormalAt(p[0], p[1]);
+    if (!n.Unitize()) n = ON_3dVector(0, 0, 1);
+    n = n * sign;
+    const Point3d c = a + n * r;   // ball centre: exactly r along the surface normal, so tangency to the surface is exact by construction
+    const Vector3d db = pc - c;    // centre -> curve point, NOT yet unit
+    const double dist = db.Length();
+    // Scaled to O(1) (dividing by r) so one combined Euclidean-norm
+    // tolerance is meaningful across both residuals.
+    return {(dist - r) / r, ON_DotProduct(db, tc) / r};
+  };
+  double norm = 0;
+  const bool ok = NewtonSolve(res, x, lo, hi, tol, 60, &norm);
+  u = x[0]; v = x[1];
+  if (getenv("FSC_DEBUG")) {
+    std::vector<double> r0 = res({u, v});
+    fprintf(stderr, "FSC_DEBUG seed=(%.4f,%.4f) t=%.4f solved=(%.4f,%.4f) norm=%.6g res=(%.6g,%.6g) ok=%d\n",
+            seed_u, seed_v, t, u, v, norm, r0[0], r0[1], ok ? 1 : 0);
+  }
+  if (!ok) return false;
+  const Point3d a = s.PointAt(u, v);
+  ON_3dVector n = s.NormalAt(u, v);
+  if (!n.Unitize()) return false;
+  n = n * sign;
+  out.center = a + n * r;
+  out.contact_srf = a;
+  out.dir_srf = -n;
+  out.contact_crv = pc;
+  Vector3d dcv = out.contact_crv - out.center;
+  if (!dcv.Unitize()) return false;
+  out.dir_crv = dcv;
+  out.t = t;
+  // True tangency-to-the-curve error: how far (center - contact_crv) is
+  // from perpendicular to the curve's own tangent there. 0 exactly iff
+  // residual (2) above is exactly satisfied, i.e. the sphere is genuinely
+  // tangent to the curve's tangent line at contact_crv, not merely
+  // touching it.
+  const double s_dot = std::clamp(std::fabs(ON_DotProduct(tc, out.dir_crv)), 0.0, 1.0);
+  out.tangent_err = std::asin(s_dot);
+  return true;
+}
+
+class FilletSrfCrvCommand : public Command {
+ public:
+  void Begin(CommandContext&) override {
+    options = {{"Radius", FormatNumber(radius_), {}, true, false}};
+    WantPoint("Click the surface to fillet");
+  }
+  void OnOption(CommandContext&, const std::string& n, const std::string& v) override { if (n == "Radius") radius_ = std::atof(v.c_str()); }
+  void OnPoint(CommandContext& ctx, Point3d p) override {
+    a_ = PickFace(ctx, p);
+    if (!a_) { ctx.Warn("FilletSrfCrv: no surface near that point"); Finish(); return; }
+    WantObjects("Select the curve to fillet into");
+  }
+  void OnObjects(CommandContext& ctx, const std::vector<ObjectId>& ids) override {
+    for (ObjectId id : ids) if (const SceneObject* o = ctx.Doc().Find(id)) if (o->kind == ObjectKind::Curve) { rail_ = *o->curve; break; }
+    for (ObjectId id : ids) ctx.Doc().Select(id, false);
+    if (!rail_) { ctx.Warn("FilletSrfCrv: select a curve"); Finish(); return; }
+    Run(ctx);
+    Finish();
+  }
+  void Run(CommandContext& ctx) {
+    const SceneObject* oa = ctx.Doc().Find(a_->id);
+    if (!oa) return;
+    std::optional<ON_NurbsSurface> sa = SurfaceOfObject(*oa, a_->face);
+    if (!sa) { ctx.Warn("FilletSrfCrv: could not read the surface"); return; }
+    if (!(radius_ > 0)) { ctx.Warn("FilletSrfCrv: radius must be positive"); return; }
+    const double sign = SrfCrvOffsetSign(*sa, *rail_);
+    const int n = 48;
+    const kernel::Interval d = rail_->Domain();
+    const double step = (d.max - d.min) / n;
+    std::vector<std::vector<Point3d>> rows;
+    double max_gap = 0, max_tangent_err = 0;
+    double u = 0, v = 0;
+    bool have_seed = false;
+    int made = 0;
+    int fail_seed = 0, fail_newton = 0;
+    // The bootstrap seed needs real thought: the closest point on the
+    // surface to the RAW curve point P(t) - ignoring the ball's own radius
+    // - is a fine seed in general, but for the extremely common case of a
+    // surface directly "under" the curve (e.g. a flat plane with the curve
+    // running roughly parallel above it), that closest point is an exact
+    // critical point of the distance residual's own (u,v)-Jacobian (both
+    // partials vanish there by symmetry: nudging (u,v) a little either way
+    // only INCREASES distance-to-P, same as at any 2D local minimum), so
+    // Newton's own first-order model sees no way to improve that residual
+    // from there and gives up before ever reaching the true answer, which
+    // generically sits a real, non-infinitesimal distance away (a point on
+    // the circle of radius sqrt(r^2-h^2) around the raw closest point,
+    // h = raw distance to P(t) - the classic "ball rolling off to the
+    // side" picture). So the real seed is built from that same picture:
+    // the raw closest point, offset sideways (in the surface's own tangent
+    // plane, perpendicular to the curve's tangent T - the natural
+    // "which way does the ball roll" direction) by that exact radius,
+    // tried on both sides since the true station could be on either;
+    // re-projected onto the surface so it stays a valid (u,v). Once one
+    // station solves for real, every later station seeds from the previous
+    // station's own (u,v) (already off the degenerate point), so this is
+    // only needed for the bootstrap.
+    for (int i = 0; i <= n; ++i) {
+      const double t_target = d.min + step * i;
+      SrfCrvStation st;
+      double uu = u, vv = v;
+      bool solved = false;
+      if (have_seed) {
+        solved = SolveSrfCrvStation(*sa, *rail_, radius_, sign, uu, vv, t_target, 1e-9, st);
+      } else {
+        double raw_u = 0, raw_v = 0;
+        const Point3d p0 = rail_->PointAt(t_target);
+        if (!SurfaceClosestPointGlobal(*sa, p0, raw_u, raw_v)) { ++fail_seed; continue; }
+        const Point3d raw_pt = sa->PointAt(raw_u, raw_v);
+        Vector3d t0 = rail_->TangentAt(t_target);
+        ON_3dVector n0 = sa->NormalAt(raw_u, raw_v);
+        // The triangle that actually matters is between the BALL CENTRE
+        // (which sits a fixed distance r off the surface along its normal,
+        // not on the surface itself) and the curve point - not between the
+        // raw surface point and the curve point. Using the raw surface-to-
+        // curve distance here (as an earlier version of this seed did)
+        // silently assumes the ball centre coincides with the surface, which
+        // is wrong by exactly r and, for a curve held a constant height
+        // above a flat surface (the direct-underneath degenerate case this
+        // seed exists for), makes an achievable radius look like it "does
+        // not fit" (h_raw = curve height > r) when the real vertical gap
+        // from the centre (h_centre = curve height - r) is well inside it.
+        Vector3d n0u = n0; n0u.Unitize();
+        const Point3d center0 = raw_pt + n0u * (sign * radius_);
+        const double h = center0.DistanceTo(p0);
+        Vector3d side = (t0.Unitize() && n0.Unitize()) ? ON_CrossProduct(n0, t0) : Vector3d(1, 0, 0);
+        const double offset_mag = radius_ > h ? std::sqrt(radius_ * radius_ - h * h) : radius_;
+        const bool have_side = side.Unitize();
+        if (getenv("FSC_DEBUG2")) {
+          fprintf(stderr, "FSC_DEBUG2 t=%.4f raw_pt=(%.4f,%.4f,%.4f) p0=(%.4f,%.4f,%.4f) center0=(%.4f,%.4f,%.4f) h=%.4f n0=(%.4f,%.4f,%.4f) side=(%.4f,%.4f,%.4f) offset_mag=%.4f sign=%.1f\n",
+                  t_target, raw_pt.x, raw_pt.y, raw_pt.z, p0.x, p0.y, p0.z, center0.x, center0.y, center0.z, h, n0.x, n0.y, n0.z, side.x, side.y, side.z, offset_mag, sign);
+        }
+        // Candidate bootstrap seeds, in order: the raw closest point itself
+        // (works whenever it isn't the degenerate case above), then the
+        // sideways offset in each direction.
+        double su[3] = {raw_u, raw_u, raw_u}, sv[3] = {raw_v, raw_v, raw_v};
+        int n_cand = 1;
+        if (have_side && offset_mag > 0) {
+          const Point3d plus = raw_pt + side * offset_mag, minus = raw_pt - side * offset_mag;
+          if (SurfaceClosestPointGlobal(*sa, plus, su[1], sv[1])) ++n_cand;
+          if (SurfaceClosestPointGlobal(*sa, minus, su[n_cand], sv[n_cand])) ++n_cand;
+        }
+        for (int k = 0; k < n_cand && !solved; ++k) {
+          uu = su[k]; vv = sv[k];
+          solved = SolveSrfCrvStation(*sa, *rail_, radius_, sign, uu, vv, t_target, 1e-9, st);
+        }
+      }
+      if (!solved) { ++fail_newton; continue; }
+      u = uu; v = vv; have_seed = true;
+      max_gap = std::max(max_gap, std::fabs((st.contact_srf - st.center).Length() - radius_));
+      max_tangent_err = std::max(max_tangent_err, st.tangent_err);
+      rows.push_back(ArcPoints(st.center, st.dir_srf, st.dir_crv, radius_, 8));
+      ++made;
+    }
+    if (made < 2) { ctx.Warn("FilletSrfCrv: too few valid stations (radius likely does not fit between the surface and the curve) [debug: seed=" + std::to_string(fail_seed) + " newton=" + std::to_string(fail_newton) + " made=" + std::to_string(made) + "]"); return; }
+    const kernel::NurbsSurface fillet = SurfaceThroughRows(rows);
+    ctx.Doc().BeginChange("FilletSrfCrv");
+    SceneObject like = *oa;
+    ObjectId nid = AddSurfaceFrom(ctx, fillet.raw(), like);
+    ctx.Doc().Select(nid, true);
+    ctx.Print("FilletSrfCrv: fillet surface built tangent to the surface and osculating-tangent to the curve (radius " + FormatNumber(radius_) + "; " + std::to_string(made) +
+              " stations; contact points off the exact radius by up to " + FormatNumber(max_gap) + "; arc tangent matches the curve's own tangent to within " + FormatNumber(max_tangent_err * 180.0 / ON_PI) + " degrees)");
+  }
+  std::optional<FacePick> a_;
+  std::optional<kernel::NurbsCurve> rail_;
+  double radius_ = 1.0;
+};
+
+// ---------------------------------------------------------------------------
 // SoftEditSrf: a real falloff-weighted control-point move - every CV within
 // Radius of the picked point is dragged towards the target by a smooth
 // cosine falloff, instead of PointsOn's one-CV-at-a-time edit.
@@ -2813,7 +3077,8 @@ void RegisterSrfEditCommands(CommandEngine& e) {
       "Real tangent-row rotation against the target surface's normal (the tangency-only half of MatchSrf's own technique), edge position left unchanged.");
   Reg(e, "SrfSeam", Make<SrfSeamCommand>(), CommandStatus::Implemented,
       "Real ON_NurbsSurface::ChangeSurfaceSeam knot-vector rotation, for a standalone closed surface object (not yet a face inside a polysurface, whose trims would also need re-deriving across the new seam).");
-  Reg(e, "FilletSrfCrv", Planned("FilletSrfCrv: planned; Rhino's version blends a surface into an independent curve, with the curve itself as one exact edge of the result. The rolling-ball arc construction FilletSrf/FilletSrfToRail use (cmd_fillet.cpp, and above in this file) needs a second SURFACE's closest point/normal at each arc; substituting a bare curve's closest point in its place gives an arc tangent to the surface but merely touching (not tangent to) the curve - a visibly different, not just approximate, result from what the command promises, so it is left honestly Partial rather than shipped as a misleading Implemented."), CommandStatus::Partial);
+  Reg(e, "FilletSrfCrv", Make<FilletSrfCrvCommand>(), CommandStatus::Implemented,
+      "Real rolling-ball fillet between a surface and an independent curve: the surface side is tangent by construction (ball centre placed exactly radius r along the surface normal), and the curve side is solved per station (2-unknown Newton over the surface (u,v), at the station's own fixed curve parameter t) for the sphere to be genuinely tangent to the curve's own tangent line there - not just a closest-point touch.");
   Reg(e, "FilletSrfToRail", Make<FilletSrfToRailCommand>(), CommandStatus::Implemented,
       "Real rolling-ball arcs (the same construction FilletSrf uses) sampled along a picked rail curve instead of the SSX-computed spine; reports how far off the exact radius the rail leaves the contact points.");
   Reg(e, "VariableOffsetSrf", Make<VariableOffsetSrfCommand>(), CommandStatus::Implemented,

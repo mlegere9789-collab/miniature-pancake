@@ -380,6 +380,25 @@ SelLast
 FilletSrfToRail Radius=1
 3405,0,5
 3400,5,5
+# --- FilletSrfCrv: rolling-ball fillet between a surface and an
+# INDEPENDENT curve, the curve itself surviving as one exact edge of the
+# result - not merely touched, genuinely osculating-tangent (the actual gap
+# the earlier Partial note named). A flat plane (z=0) and a wavy InterpCrv
+# held at z=3 (real curvature, non-constant tangent direction, so a
+# merely-touching arc and a genuinely tangent one would visibly disagree);
+# Radius=2 lets the r=2 ball's 2r=4 reach comfortably cover the z=3 curve.
+# smoke.sh's FilletSrfCrv checks pull the printed max-gap and max-tangent-
+# error numbers back out and assert both are numerically tiny - the exact
+# test that would have caught the old "merely touching" bug (which would
+# have left a real, non-tiny tangent-angle error).
+SelAll
+Hide
+Plane 3450,0,0 3460,10,0
+InterpCrv 3450,2,3 3452,7,3 3455,3,3 3458,8,3 3460,5,3
+Enter
+SelLast
+FilletSrfCrv Radius=2
+3455,5,0
 # --- SoftEditSrf: falloff-weighted control point drag on a flat plane
 SelAll
 Hide
@@ -388,7 +407,7 @@ SoftEditSrf Radius=8
 3505,5,0
 3505,5,3
 SelNone
-@expect_objects 97
+@expect_objects 100
 # --- UnjoinEdge: splits a shared edge into two naked copies while keeping
 # both faces in the same polysurface (real Brep::UnjoinEdge(), not the
 # ExtractSrf-into-a-separate-object workaround)
@@ -423,7 +442,7 @@ ReplaceEdge
 SelPolysrf
 List
 SelNone
-@expect_objects 99
+@expect_objects 102
 # --- Squish / SquishInfo: Squish now stores its own flattening report
 # (area, distortion) plus each flattened vertex's own source-surface
 # (u,v) in a real Document-level side table keyed by the flattened
@@ -479,7 +498,7 @@ SplitEdge
 3800.02,0,10
 SelPolysrf
 RemoveAllNakedMicroEdges
-@expect_objects 109
+@expect_objects 112
 # --- SplitRefitSurface: split a plane by a curve crossing it twice (same
 # V-shaped-polyline-through-z=0 cutter SplitFace's own test uses), then
 # confirm both resulting pieces are genuinely refit - a fresh 4x4-CV
