@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "dino8/kernel/detail/polygon2d.h"
+#include "dino8/kernel/tolerance.h"
 
 namespace dino8::kernel {
 
@@ -1245,17 +1246,18 @@ bool IsRingPlanar(const std::vector<Point3d>& ring) {
   for (const Point3d& p : ring) {
     scale = std::max(scale, (p - origin).Length());
   }
-  if (scale <= 1e-12) {
+  if (scale <= tolerance::kZero) {
     return true;
   }
 
   // Relative, not absolute, tolerance: a ring's own coordinates set the
   // scale a "how far out of plane" check has to be judged against, the
-  // same reasoning MergeAndWeld()'s own tolerance already uses.
-  constexpr double kRelativeTolerance = 1e-6;
-  const double tolerance = scale * kRelativeTolerance;
+  // same reasoning MergeAndWeld()'s own tolerance already uses. The
+  // fraction itself is the kernel's policy value (tolerance.h), not a
+  // literal of this function's own.
+  const double plane_tolerance = scale * tolerance::kPlanarityRelative;
   for (const Point3d& p : ring) {
-    if (std::abs(ON_DotProduct(p - origin, normal)) > tolerance) {
+    if (std::abs(ON_DotProduct(p - origin, normal)) > plane_tolerance) {
       return false;
     }
   }
