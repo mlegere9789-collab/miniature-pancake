@@ -6263,6 +6263,92 @@ void TestSubDFlatQuadGridStaysFlatAndAreaExact() {
         "on a much smaller scale than the box's, not a bug");
 }
 
+void TestSubDToNurbsPatchesExactOnRegularFlatGrid() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDNurbsPatch;
+
+  // A flat 3x3 grid of quads (4x4 vertices, integer (i,j,0) positions) -
+  // the smallest grid with an interior face whose all 4 corners are
+  // ordinary-interior (valence 4) vertices: the center face at grid
+  // indices (1,1)-(2,2). ToNurbsPatches()'s "regular" stencil claims this
+  // patch is *exactly* the Catmull-Clark limit surface, and for a flat,
+  // uniformly-spaced planar grid that limit surface is provably just the
+  // plane itself (a uniform bicubic B-spline surface whose control net is
+  // an affine function of (u,v) reproduces that affine function exactly,
+  // since B-spline basis functions partition unity) - a case where the
+  // "exact" claim can be checked against a hand-derivable ground truth,
+  // not just plausibility. This is the first direct test of
+  // ToNurbsPatches() - its intricate 4x4-neighborhood topology walk
+  // (OuterNeighbor/DiagonalFace/DiagonalVertex) had no test coverage
+  // before this.
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      raw.m_V.Append(ON_3fPoint(static_cast<double>(i), static_cast<double>(j), 0.0));
+    }
+  }
+  auto idx = [](int i, int j) { return i * 4 + j; };
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      ON_MeshFace face;
+      face.vi[0] = idx(i, j);
+      face.vi[1] = idx(i + 1, j);
+      face.vi[2] = idx(i + 1, j + 1);
+      face.vi[3] = idx(i, j + 1);
+      raw.m_F.Append(face);
+    }
+  }
+
+  const auto subd = SubD::FromControlMesh(grid);
+  const std::vector<SubDNurbsPatch> patches = subd.ToNurbsPatches();
+  Check(patches.size() == 9, "9 faces in the 3x3 flat grid produce 9 patches");
+
+  int exact_count = 0;
+  const SubDNurbsPatch* regular_patch = nullptr;
+  for (const auto& patch : patches) {
+    if (patch.exact) {
+      ++exact_count;
+      regular_patch = &patch;
+    }
+  }
+  Check(exact_count == 1,
+        "exactly one of the 9 faces (the center one, whose 4 corners are "
+        "all valence-4 interior vertices) is reported as a regular/exact "
+        "patch - every other face touches a boundary (valence 1 or 2) "
+        "vertex, so is correctly reported as not exact");
+
+  // The regular patch's face corners span x,y in [1,2]x[1,2] (grid
+  // indices 1..2, matching the mesh face's own vi[0..3] winding: u
+  // increases along v0->v1 = increasing i = increasing x, v increases
+  // along v1->v2 = increasing j = increasing y). Sample its surface at
+  // several (u,v) and check it matches the exact plane point
+  // (1+u, 1+v, 0) - this is the actual arithmetic ToNurbsPatches()
+  // performs (gathering the 4x4 neighbor stencil via the topology-walk
+  // helpers, then B-spline-to-Bezier conversion), not an assumption; a
+  // mistake in the row/col vs. u/v indexing, or in which neighbor
+  // vertex fills which grid cell, would show up here as a wrong point,
+  // not just a wrong shape.
+  bool all_match = true;
+  if (regular_patch != nullptr) {
+    const double samples[] = {0.0, 0.25, 0.5, 0.75, 1.0};
+    for (double u : samples) {
+      for (double v : samples) {
+        const Point3d p = regular_patch->surface.PointAt(u, v);
+        const Point3d expected(1.0 + u, 1.0 + v, 0.0);
+        if ((p - expected).Length() > 1e-9) all_match = false;
+      }
+    }
+  }
+  Check(all_match,
+        "the regular patch's surface reproduces the exact plane point "
+        "(1+u, 1+v, 0) at every sampled (u,v) - confirming ToNurbsPatches' "
+        "neighbor-gathering and B-spline-to-Bezier conversion are both "
+        "correct for the regular case, not just plausible");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -20245,6 +20331,7 @@ int main() {
   TestSubDFromControlMeshRejectsEmptyMesh();
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
+  TestSubDToNurbsPatchesExactOnRegularFlatGrid();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
