@@ -1201,14 +1201,94 @@ Mesh NurbsSurface::TessellateGridNonUniformAdaptive(
 // self-touching (not transversally-crossing) polygon and splitting it at
 // its own touch point into two simple sub-polygons, each tessellated and
 // unioned separately - is a genuine next increment, not attempted here.
+namespace {
+// Snaps any two NON-adjacent vertices already within `tol` of each other to
+// the exact same point. See TessellateGridClippedExact's own doc comment
+// on why this alone is not a fix for a self-touching trim_polygon (it only
+// cleans up the floating-point noise that would otherwise make a benign
+// touch register as a false crossing) - PAIRED with the pinch-split logic
+// below, not a replacement for it.
+void WeldNearDuplicateNonAdjacentVertices(std::vector<Point2d>& poly, double tol) {
+  const double tol2 = tol * tol;
+  const size_t n = poly.size();
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = i + 2; j < n; ++j) {
+      if (i == 0 && j == n - 1) continue;  // adjacent via wraparound
+      const double dx = poly[i].x - poly[j].x, dy = poly[i].y - poly[j].y;
+      if (dx * dx + dy * dy <= tol2) poly[j] = poly[i];
+    }
+  }
+}
+
+// True (with `out_i < out_j`) if two NON-adjacent vertices of `poly` sit
+// within `tol` of each other - a genuine self-touch (e.g. a Steinmetz
+// wall's own "inside both cylinders" region, pinched to a point at each of
+// the 2 places its two bounding ellipses cross), not a proper crossing
+// (already ruled out by the caller's own IsSimplePolygon check).
+bool FindRepeatedNonAdjacentVertex(const std::vector<Point2d>& poly, double tol, size_t& out_i, size_t& out_j) {
+  const double tol2 = tol * tol;
+  const size_t n = poly.size();
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = i + 2; j < n; ++j) {
+      if (i == 0 && j == n - 1) continue;  // adjacent via wraparound
+      const double dx = poly[i].x - poly[j].x, dy = poly[i].y - poly[j].y;
+      if (dx * dx + dy * dy <= tol2) {
+        out_i = i;
+        out_j = j;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// The closed sub-loop poly[from], poly[from+1], ..., poly[to-1] (wrapping,
+// `to` itself excluded since poly[to] == poly[from] by construction - see
+// FindRepeatedNonAdjacentVertex).
+std::vector<Point2d> ExtractSubLoop(const std::vector<Point2d>& poly, size_t from, size_t to) {
+  std::vector<Point2d> out;
+  const size_t n = poly.size();
+  for (size_t k = from; k != to; k = (k + 1) % n) out.push_back(poly[k]);
+  return out;
+}
+}  // namespace
+
+// A trim_polygon built from two independently-refined intersection curves
+// that mathematically only TOUCH at a point (e.g. the two ellipses of a
+// Steinmetz - equal-radius, perpendicular, intersecting-axes - cylinder
+// pair's own wall, which cross at exactly 2 points) needs two things this
+// function does in sequence, not either alone (see the direct measurement
+// below for why): first, WeldNearDuplicateNonAdjacentVertices() cleans up
+// the ~1.5e-7 (u, v)-unit gap between what should be the exact same pinch-
+// point vertex (each curve's own independent Newton refinement converges
+// to it from a different direction) - without this, IsSimplePolygon()'s
+// own exact-equality-based crossing test (see its doc comment: a genuinely
+// shared vertex is never flagged, only a PROPER transverse crossing) sees
+// a real crossing instead of a benign touch. Second, once welded, the
+// polygon is a genuinely self-TOUCHING (not crossing) shape - IsSimple-
+// Polygon() correctly calls that simple, by its own documented design,
+// but a self-touching polygon is still NOT one well-defined region for
+// the grid-clip/ear-clip tessellation below, which assumes a plain,
+// non-self-touching loop. Tried shipping the weld alone first: it does
+// silence the exception, but the resulting volume is then badly WRONG
+// (Steinmetz Intersection: 47.5 vs the true 5.3; A-B: -5.08, a NEGATIVE
+// volume) - a silently wrong answer, strictly worse than this function's
+// own honest exception. The real fix, below: detect the repeated vertex
+// and split the polygon there into its two separate simple lobes, each
+// tessellated independently and merged back into one mesh (the two lobes
+// share that one vertex exactly, so Mesh::MergeAndWeld welds them there
+// automatically) - recursing (via this same function) rather than
+// duplicating the tessellation logic below, and correctly handling more
+// than one pinch point since each recursive call re-checks its own,
+// smaller polygon.
 Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
-                                               const std::vector<Point2d>& trim_polygon) const {
+                                               const std::vector<Point2d>& trim_polygon_in) const {
   if (u_divisions < 1 || v_divisions < 1) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsSurface::TessellateGridClippedExact: u_divisions "
         "and v_divisions must be at least 1");
   }
-  if (trim_polygon.size() < 3) {
+  if (trim_polygon_in.size() < 3) {
     throw std::invalid_argument(
         "dino8::kernel::NurbsSurface::TessellateGridClippedExact: trim_polygon "
         "must have at least 3 points (fewer isn't a closed polygon at all - "
@@ -1216,6 +1296,13 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
         "out-of-bounds clip[0] access deep in the concave-clipping path, "
         "confirmed by a debug run, not merely a silent wrong result)");
   }
+  // Tolerance chosen from direct measurement (the Steinmetz pinch-point gap,
+  // ~1.5e-7) with real headroom, while staying far below this codebase's
+  // typical dense-polyline edge length (~1e-2 to 1e-1 in these fixtures).
+  constexpr double kPinchTolerance = 1e-6;
+  std::vector<Point2d> trim_polygon = trim_polygon_in;
+  WeldNearDuplicateNonAdjacentVertices(trim_polygon, kPinchTolerance);
+
   size_t bad_i = 0, bad_j = 0;
   if (!dino8::kernel::detail::IsSimplePolygon(trim_polygon, &bad_i, &bad_j)) {
     if (std::getenv("DINO8_BOOL_DEBUG")) {
@@ -1233,6 +1320,18 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
         "dino8::kernel::NurbsSurface::TessellateGridClippedExact: trim_polygon "
         "must be simple (non-self-intersecting) - a self-intersecting trim "
         "isn't decomposable into a well-defined \"inside\" at all");
+  }
+
+  size_t touch_i = 0, touch_j = 0;
+  if (FindRepeatedNonAdjacentVertex(trim_polygon, kPinchTolerance, touch_i, touch_j)) {
+    if (std::getenv("DINO8_BOOL_DEBUG")) {
+      std::fprintf(stderr, "  TessellateGridClippedExact: self-touching trim_polygon n=%zu, splitting at i=%zu j=%zu\n",
+                   trim_polygon.size(), touch_i, touch_j);
+    }
+    const std::vector<Point2d> lobe_a = ExtractSubLoop(trim_polygon, touch_i, touch_j);
+    const std::vector<Point2d> lobe_b = ExtractSubLoop(trim_polygon, touch_j, touch_i);
+    return Mesh::MergeAndWeld({TessellateGridClippedExact(u_divisions, v_divisions, lobe_a),
+                                TessellateGridClippedExact(u_divisions, v_divisions, lobe_b)});
   }
 
   Mesh mesh;
