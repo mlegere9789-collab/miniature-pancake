@@ -638,6 +638,26 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       track record, re-verified with fresh point-level data (not just
 //       counts) before being trusted.
 //
+//       TRIED AND REJECTED (measured, not guessed): simply shrinking
+//       kEdgeFraction (so c_in/c_out's offset from h_j falls below
+//       kWeldTol=1e-6, letting them weld to h_j and to the neighbor's own
+//       exact point for free, no data-flow changes needed) was tried at
+//       1e-7 and at 1e-5. BOTH regressed the 76-case sweep - several
+//       previously-OK cases (box+cyl case 01/02/03, cyl+cyl case 07/08,
+//       sphere+box case 09, sphere+sphere case 12, box+cone case 15,
+//       torus+box case 16) turned into TessellateGridClippedExact
+//       exceptions ("trim_polygon must have at least 3 points"), i.e. the
+//       notch corner became numerically collinear/degenerate at that
+//       fraction for at least one geometry scale in the corpus - exactly
+//       the failure mode this constant's own doc comment already warned
+//       about. A single global fraction cannot be shrunk safely without
+//       either a per-attachment absolute-distance floor (scaled to the
+//       LOCAL edge lengths at that specific notch, not the whole model's
+//       diagonal) or reworking the collinearity check itself - out of
+//       scope for a quick constant tweak. Both values were reverted via
+//       `git checkout HEAD` immediately after being measured; neither is
+//       in the tree.
+//
 //       ONE MORE WRINKLE (found while scoping the fix above): BridgeHoles
 //       IntoOuter()'s own notch (this file, above) does not even splice in
 //       the hole loop's own EXACT pinch vertex - it inserts the two fresh
