@@ -1790,6 +1790,87 @@ What this repo does instead:
   at all, not just a slightly-off approximation of one. Only genuinely
   shape-preserving when every weight was already equal (the mirror-image
   condition of `MakeRational()`'s own guarantee).
+- `NurbsSurface::RemoveKnotAt(direction, knot_index, tolerance,
+  &max_deviation)` (new `src/surface_edit.cpp`): the exact inverse of
+  `InsertKnotAt()`, a gap OpenNURBS itself leaves open (verified against
+  the v8 source: `ON_NurbsCurve`/`ON_NurbsSurface` have `InsertKnot`,
+  `IncreaseDegree`, `Extend`, `Trim`, `Split`, but no knot removal at
+  all - `RemoveSpan` deletes a whole span's geometry, which is a
+  different operation). Implemented from scratch as Tiller's algorithm
+  (Piegl & Tiller A5.8, single removal), run in homogeneous 4D on every
+  row/column of the control net at once so it handles rational surfaces
+  too, with the knot vector converted between ON's compressed storage
+  (which drops the two redundant end knots) and the textbook form the
+  algorithm indexes. The important property: knot removal is only
+  shape-preserving when the surface genuinely has the extra continuity
+  at that knot, and this kernel's rule is never to ship a silently-wrong
+  approximation, so the method computes a *rigorous* upper bound on the
+  max 3D deviation the removal would cause - the algorithm's own control-
+  net discrepancy, which bounds the surface error because it is the
+  coefficient of a single non-negative, partition-of-unity basis
+  function (on a rational surface the discrepancy lives in homogeneous
+  space and is converted to a Euclidean bound via P&T eq. 5.30's
+  `TOL = d * w_min / (1 + |P|_max)`, looser but still rigorous) - and
+  only commits when that bound is within `tolerance`, otherwise leaving
+  the surface bit-identical and still reporting the bound. Verified with
+  computed geometry, not just counts: inserting a knot into a wiggly
+  bicubic and removing it again recovers every original control point
+  to 1e-9 and the sampled surface to 1e-9; the same on a rational
+  radius-3 sphere (every sampled point still exactly radius 3);
+  removing a genuinely non-removable knot is refused at 1e-6 with the
+  net untouched, then committed at a permissive tolerance where the
+  sampled deviation on a 129x33 grid is confirmed to be both nonzero and
+  <= the reported bound (and > 25% of it, so the bound isn't vacuous);
+  and removing one multiplicity of a sphere's quarter-point double knot
+  has its sampled deviation <= the rational bound. A mutation check
+  (skipping the algorithm's control-point recomputation) makes four of
+  those checks fail, so the test genuinely exercises the math. Knot
+  vectors that aren't clamped in that direction (periodic surfaces)
+  are refused honestly rather than half-handled: their wrapped control
+  points would need matching edits this doesn't do. Companion
+  `MaxSampledDeviationFrom(other, nu, nv)` is the sampled (lower-bound)
+  deviation measurement the tests use, exposed because refit/rebuild-
+  style operations need the same report.
+- `NurbsSurface::SetDomain(direction, t0, t1)`: reparameterizes one
+  direction onto exactly `[t0, t1]` - an affine rescale of that
+  direction's knot vector and nothing else, delegating to
+  `ON_NurbsSurface::SetDomain` after reading its source to confirm it's
+  the real linear knot map, not a stub. Verified by computed geometry:
+  every U knot lands at the affine image of its old value to 1e-12, the
+  same *normalized* (u, v) evaluates to the same 3D point to 1e-12 on a
+  13x13 grid, and every control point stays bit-identical. Reported as
+  a no-op on the current domain, refused for an empty/reversed interval.
+- `NurbsSurface::Rebuild(u_count, v_count, u_degree, v_degree, out,
+  &max_deviation, u_samples, v_samples)`: Rhino's Rebuild / a
+  Parasolid-style refit, as the *global tensor-product least-squares*
+  solution rather than the "sample the surface and use the samples as
+  control points" shortcut (which shrinks any curved surface toward its
+  interior, since a B-spline never passes through its interior control
+  points). Piegl & Tiller A9.7: sample the source on a parameter grid,
+  least-squares-fit every sample row in U with the two end control
+  points pinned (eq. 9.63-9.67), then fit every column of those
+  intermediate points in V the same way - with gridded parameters and
+  one shared clamped-uniform knot vector per direction the row-then-
+  column solve is the exact tensor-product least-squares solution, so
+  the corners are interpolated exactly and the result reproduces the
+  source's own parameterization and domain. The deviation report is a
+  genuine measurement (both surfaces evaluated on a grid twice as fine
+  as the fit samples, offset half a step so it never re-uses a sample
+  the fit already saw, plus the four boundary curves), documented as a
+  sampled lower bound rather than claimed exact. Verified with computed
+  geometry: refitting a wiggly 6x4 bicubic onto its own net recovers
+  every control point to 1e-9 with deviation < 1e-9; onto a 9x7 net
+  whose knots are a superset it is still exact (< 1e-9, confirmed by an
+  independent 65x65 sampling); onto a 5-CV net that can't hold the
+  source's knots the reported deviation is > 1e-3, agrees with an
+  independent 129x65 sampling within 5%, the corners stay exact to
+  1e-12, and the least-squares fit deviates less than a third as much
+  as the sample-as-control-point construction on the same net; a
+  rational radius-2 sphere refit to a 16x10 cubic net reports a
+  deviation between 1e-6 and 0.02 that bounds the measured radius
+  error within 5%. A mutation check (writing samples straight into the
+  control points instead of solving the normal equations) fails five of
+  those checks.
 
 ## What's still not done (as of chunk 2)
 

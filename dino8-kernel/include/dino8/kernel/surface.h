@@ -614,6 +614,90 @@ class NurbsSurface {
   Mesh TessellateGridClippedExactAdaptive(double chord_tolerance,
                                            const std::vector<Point2d>& trim_polygon) const;
 
+  // ---- Surface editing (implemented in src/surface_edit.cpp) ----
+
+  // Removes one multiplicity of the interior knot at ON-convention index
+  // `knot_index` (0 <= knot_index < KnotCount(direction); any index in a
+  // multiple knot's run selects that whole knot value) in `direction`
+  // (0 = U, 1 = V) - the exact inverse of `InsertKnotAt()`, i.e. Tiller's
+  // knot-removal algorithm (Piegl & Tiller, "The NURBS Book", A5.8),
+  // applied to every row/column of the control net at once. Knot removal
+  // is only shape-preserving when the surface genuinely has the extra
+  // continuity at that knot (e.g. a knot `InsertKnotAt()` itself added);
+  // otherwise the best-fitting reduced net is an approximation. This
+  // method never silently ships that approximation: it computes a
+  // rigorous upper bound on the resulting max 3D deviation from the
+  // original surface over the whole domain (the algorithm's own control-
+  // net discrepancy, which bounds the surface error because B-spline
+  // basis functions are non-negative and sum to 1; on a rational surface
+  // the discrepancy is measured on the homogeneous control points and
+  // converted to a Euclidean bound via Piegl & Tiller eq. 5.30, a looser
+  // but still rigorous bound) and only commits the removal if that bound
+  // is <= `tolerance`. Otherwise returns Result::Failed and leaves the
+  // surface untouched. `out_max_deviation`, if non-null, always receives
+  // the bound (also on failure, so a caller can report how far off the
+  // removal would have been). Requires the knot vector to be clamped in
+  // `direction` (an unclamped/periodic knot vector's wrapped control
+  // points would need matching edits this doesn't do) - returns
+  // Result::Failed otherwise. Throws std::invalid_argument if `direction`
+  // isn't 0/1, `knot_index` is out of range, or the knot isn't strictly
+  // inside the domain (the domain's own end knots can't be removed).
+  Result RemoveKnotAt(int direction, int knot_index, double tolerance,
+                      double* out_max_deviation = nullptr);
+
+  // Max 3D distance between `PointAt(u, v)` on this surface and on
+  // `other` over a `u_samples` x `v_samples` grid of (u, v) values spread
+  // across *this surface's* domain (both surfaces are evaluated at the
+  // same numeric (u, v), so this only means anything when the two share a
+  // parameterization - e.g. one is a knot-refined/removed, degree-
+  // elevated or refit copy of the other). A sampled measurement, so a
+  // lower bound on the true max deviation, not an upper bound; the
+  // sample count sets how fine. Throws std::invalid_argument if either
+  // sample count is < 2.
+  double MaxSampledDeviationFrom(const NurbsSurface& other, int u_samples = 64,
+                                 int v_samples = 64) const;
+
+  // Reparameterizes `direction` (0 = U, 1 = V) in place so its domain
+  // becomes exactly [t0, t1], leaving the 3D shape bit-for-bit untouched:
+  // an affine rescale of that direction's knot vector, nothing else
+  // (delegates to `ON_NurbsSurface::SetDomain`, verified as a real
+  // implementation that maps every knot linearly from the old domain
+  // onto the new one). Afterward `PointAt()` at the same *normalized*
+  // parameter returns the same point as before. Returns
+  // Result::NoOpAlreadySatisfied if the domain already is [t0, t1],
+  // Result::Failed if `t0 >= t1` or OpenNURBS' own call fails. Throws
+  // std::invalid_argument if `direction` isn't 0/1.
+  Result SetDomain(int direction, double t0, double t1);
+
+  // Rebuilds (refits) this surface as a new non-rational NURBS surface
+  // with exactly `u_count` x `v_count` control points of degree
+  // `u_degree` x `v_degree` and clamped uniform knots over the *same*
+  // domain as this surface - Rhino's Rebuild / Parasolid's refit. The
+  // fit is the global tensor-product least-squares solution (Piegl &
+  // Tiller A9.7: the source is sampled on a `u_samples` x `v_samples`
+  // parameter grid, every sample row is least-squares fit in U with the
+  // two end control points pinned to the row's end samples, then every
+  // column of those intermediate control points is fit in V the same
+  // way; with gridded parameters and one shared knot vector per
+  // direction this row-then-column solve *is* the full tensor-product
+  // least-squares solution, not a heuristic). Consequences: the four
+  // corners are interpolated exactly, and the result reproduces this
+  // surface's own parameterization (evaluate both at the same (u, v) to
+  // compare), so `out_max_deviation`, if non-null, receives the max 3D
+  // deviation measured on a grid twice as fine as the fit samples,
+  // offset by half a step so it never lands on the fit samples
+  // themselves - a sampled lower bound on the true deviation, stated as
+  // such rather than claimed exact. A refit is an approximation
+  // whenever the source isn't already representable with the requested
+  // net (e.g. a rational sphere or a higher-degree/denser source) and
+  // exact (deviation ~1e-12) whenever it is - both verified in the
+  // tests. Returns Result::Failed if the normal equations are singular.
+  // Throws std::invalid_argument if a degree is < 1, a count is <=
+  // its degree, or a sample count is < the corresponding control count
+  // (an underdetermined fit).
+  Result Rebuild(int u_count, int v_count, int u_degree, int v_degree, NurbsSurface& out,
+                 double* out_max_deviation = nullptr, int u_samples = 64, int v_samples = 64) const;
+
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }
 
