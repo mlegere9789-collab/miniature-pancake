@@ -876,12 +876,54 @@ void AppendStitched(Chain& head, const Chain& tail) {
   if (!head.empty() && !tail.empty() && Dist2(head.back().uv, tail.front().uv) <= kSameUV * kSameUV) from = 1;
   head.insert(head.end(), tail.begin() + static_cast<long>(from), tail.end());
 }
+// Unit tangent a chain is travelling in as it LEAVES its own front point /
+// ARRIVES at its own back point - used by StitchChains() below to tell a
+// genuine curve continuation apart from two DIFFERENT physical branches
+// that merely touch at a shared 3D point (see there).
+Vector3d ChainStartTangent(const Chain& c) {
+  Vector3d v = c[1].p - c[0].p;
+  const double len = v.Length();
+  return len > 1e-12 ? v / len : v;
+}
+Vector3d ChainEndTangent(const Chain& c) {
+  const size_t n = c.size();
+  Vector3d v = c[n - 1].p - c[n - 2].p;
+  const double len = v.Length();
+  return len > 1e-12 ? v / len : v;
+}
+
 std::vector<Chain> StitchChains(std::vector<Chain> chains, double tol) {
   const double tol2 = tol * tol;
   bool changed = true;
   while (changed) {
     changed = false;
-    for (size_t i = 0; i < chains.size() && !changed; ++i) {
+    // Best-tangent-continuity join across EVERY currently-close endpoint
+    // pair, not just the first one the nested loop happens to reach (the
+    // original implementation's own behavior, which this replaces): at a
+    // point where two DIFFERENT physical intersection-curve branches
+    // merely TOUCH rather than share a real endpoint - e.g. the two
+    // ellipses of a Steinmetz (equal-radius, perpendicular, intersecting-
+    // axes) cylinder pair, which cross each other twice on one cylinder's
+    // own wall - more than one candidate pair can sit within `tol` of
+    // each other at once. Root-caused directly (DINO8_BOOL_DEBUG_VERBOSE
+    // u-coordinate dump on the sweep's own Steinmetz fixture): accepting
+    // whichever candidate the old index-order-first scan reached first
+    // welded one branch's own outgoing piece to the OTHER branch's
+    // REVERSED piece at their shared touch point, producing a single
+    // self-crossing "there and back" chain (walks out along one branch,
+    // reverses onto the other at the touch point, walks back) instead of
+    // two separate closed loops - exactly the corrupt topology behind
+    // "an edge is claimed by 3 or more fragment loops" downstream.
+    // Preferring the candidate whose tangent direction continues
+    // smoothly across the join (a near-+1 dot product) over one that
+    // reverses (near -1) resolves the ambiguity the same way tracing the
+    // curve by eye would - a real, physical distinguisher a person
+    // looking at the two curves would use, not a tie-break rule invented
+    // to force some verdict.
+    size_t best_i = 0, best_j = 0;
+    double best_score = -2.0;  // below any real dot product; -2 means "no candidate yet"
+    Chain best_merged;
+    for (size_t i = 0; i < chains.size(); ++i) {
       if (chains[i].size() < 2) continue;
       const Point3d& ai = chains[i].front().p;
       const Point3d& bi = chains[i].back().p;
@@ -890,31 +932,39 @@ std::vector<Chain> StitchChains(std::vector<Chain> chains, double tol) {
         if (chains[j].size() < 2) continue;
         const Point3d& aj = chains[j].front().p;
         const Point3d& bj = chains[j].back().p;
-        auto is_close = [&](const Point3d& x, const Point3d& y) { return (x - y).LengthSquared() <= tol2; };
-        Chain merged;
-        bool ok = true;
-        if (is_close(bi, aj)) {
-          merged = chains[i];
+        auto consider = [&](double score, Chain&& candidate) {
+          if (score <= best_score) return;
+          best_score = score;
+          best_i = i;
+          best_j = j;
+          best_merged = std::move(candidate);
+        };
+        if ((bi - aj).LengthSquared() <= tol2) {
+          Chain merged = chains[i];
           AppendStitched(merged, chains[j]);
-        } else if (is_close(bi, bj)) {
-          merged = chains[i];
-          AppendStitched(merged, ReverseChain(chains[j]));
-        } else if (is_close(ai, aj)) {
-          merged = ReverseChain(chains[i]);
-          AppendStitched(merged, chains[j]);
-        } else if (is_close(ai, bj)) {
-          merged = chains[j];
-          AppendStitched(merged, chains[i]);
-        } else {
-          ok = false;
+          consider(ON_DotProduct(ChainEndTangent(chains[i]), ChainStartTangent(chains[j])), std::move(merged));
         }
-        if (ok) {
-          chains[i] = std::move(merged);
-          chains.erase(chains.begin() + static_cast<long>(j));
-          changed = true;
-          break;
+        if ((bi - bj).LengthSquared() <= tol2) {
+          Chain merged = chains[i];
+          AppendStitched(merged, ReverseChain(chains[j]));
+          consider(ON_DotProduct(ChainEndTangent(chains[i]), -ChainEndTangent(chains[j])), std::move(merged));
+        }
+        if ((ai - aj).LengthSquared() <= tol2) {
+          Chain merged = ReverseChain(chains[i]);
+          AppendStitched(merged, chains[j]);
+          consider(ON_DotProduct(-ChainStartTangent(chains[i]), ChainStartTangent(chains[j])), std::move(merged));
+        }
+        if ((ai - bj).LengthSquared() <= tol2) {
+          Chain merged = chains[j];
+          AppendStitched(merged, chains[i]);
+          consider(ON_DotProduct(ChainEndTangent(chains[j]), ChainStartTangent(chains[i])), std::move(merged));
         }
       }
+    }
+    if (best_score > -2.0) {
+      chains[best_i] = std::move(best_merged);
+      chains.erase(chains.begin() + static_cast<long>(best_j));
+      changed = true;
     }
   }
   std::vector<Chain> out;
@@ -1021,6 +1071,11 @@ bool SplitPeriodicWrapChain(const Chain& c, const ON_Surface& s, Chain& out_open
       const double vj = dir == 0 ? pts[j].uv.x : pts[j].uv.y;
       if (std::fabs(vi - vj) > 0.5 * L) { ++crossings; cut_at = i; wrap_dir = dir; }
     }
+  }
+  if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
+    std::fprintf(stderr, "  SplitPeriodicWrapChain full u dump (n=%zu, crossings=%d):", n, crossings);
+    for (size_t k = 0; k < n; ++k) std::fprintf(stderr, " %.4f", pts[k].uv.x);
+    std::fprintf(stderr, "\n");
   }
   if (crossings != 1) return false;
   out_open.clear();
