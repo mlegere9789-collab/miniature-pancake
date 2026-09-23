@@ -1228,18 +1228,42 @@ bool SplitPeriodicWrapChain(const Chain& c, const ON_Surface& s, Chain& out_open
   };
   const double front_snap = front_is_lo ? lo : hi;
   const double back_snap = front_is_lo ? hi : lo;
-  if (already_at_seam(w_after, front_snap)) {
-    // Reuse the existing straddling sample in place: no new vertex.
+  const bool front_reused = already_at_seam(w_after, front_snap);
+  const bool back_reused = already_at_seam(w_before, back_snap);
+  if (front_reused) {
+    // Reuse the existing straddling sample in place: no new vertex. Its
+    // own `p` is deliberately left untouched (see this function's own
+    // doc comment above) - it must still match the OTHER solid's
+    // independently-built copy of this same intersection-curve sample.
     if (wrap_dir == 0) { out_open.front().uv.x = front_snap; out_open.front().uv.y = cross_val; }
     else { out_open.front().uv.y = front_snap; out_open.front().uv.x = cross_val; }
   } else {
-    out_open.insert(out_open.begin(), make_seam_point(out_open.front(), front_snap));
+    UVPt sp = make_seam_point(out_open.front(), front_snap);
+    // If the OTHER end of this same crossing reused an existing sample
+    // (kept its own small SSX-tolerance-scale residual `p`, per above),
+    // this freshly-synthesized point has no such obligation of its own
+    // (it is not a real intersection-curve sample) - copy that
+    // neighbor's `p` here rather than independently evaluating
+    // s.PointAt(front_snap, cross_val). Both calls are analytically the
+    // same physical point (a periodic surface's own two domain ends at
+    // equal cross-direction value), but confirmed by direct trace
+    // (sweep case 08) to differ by ~8.8e-5 in practice - comfortably
+    // inside ON_Brep::IsValid()'s own trim-vs-edge tolerance, but far
+    // above VertexWelder's much tighter kWeldTol (1e-6), so the two
+    // seam-side copies of this ONE crossing point welded into two
+    // DIFFERENT vertices instead of one - the confirmed root cause of
+    // "outer loop contains boundary trims ... They should be seam trims
+    // connected to the same edge".
+    if (back_reused) sp.p = out_open.back().p;
+    out_open.insert(out_open.begin(), sp);
   }
-  if (already_at_seam(w_before, back_snap)) {
+  if (back_reused) {
     if (wrap_dir == 0) { out_open.back().uv.x = back_snap; out_open.back().uv.y = cross_val; }
     else { out_open.back().uv.y = back_snap; out_open.back().uv.x = cross_val; }
   } else {
-    out_open.push_back(make_seam_point(out_open.back(), back_snap));
+    UVPt sp = make_seam_point(out_open.back(), back_snap);
+    if (front_reused) sp.p = out_open.front().p;
+    out_open.push_back(sp);
   }
   return true;
 }
@@ -2182,6 +2206,18 @@ void BuildLoop(ON_Brep& brep, ON_BrepFace& face, ON_BrepLoop::TYPE type, const s
     const size_t k1 = (k + 1) % n;
     const int vid_from = welder.Weld(loop_pts[k].p);
     const int vid_to = welder.Weld(loop_pts[k1].p);
+    if (std::getenv("DINO8_SEAM_DEBUG") && srf && srf->IsClosed(0)) {
+      const ON_Interval du = srf->Domain(0);
+      auto near_seam = [&](double u) { return std::fabs(u - du.Min()) < 1e-6 || std::fabs(u - du.Max()) < 1e-6; };
+      if (near_seam(loop_pts[k].uv.x) || near_seam(loop_pts[k1].uv.x)) {
+        std::fprintf(stderr,
+                     "  BuildLoop SEAM: k=%zu uv=(%.9f,%.9f) vid=%d p=(%.9f,%.9f,%.9f) -> k1 uv=(%.9f,%.9f) vid=%d "
+                     "p=(%.9f,%.9f,%.9f)\n",
+                     k, loop_pts[k].uv.x, loop_pts[k].uv.y, vid_from, loop_pts[k].p.x, loop_pts[k].p.y,
+                     loop_pts[k].p.z, loop_pts[k1].uv.x, loop_pts[k1].uv.y, vid_to, loop_pts[k1].p.x,
+                     loop_pts[k1].p.y, loop_pts[k1].p.z);
+      }
+    }
     if (vid_from == vid_to) {
       // Two consecutive points, one vertex: either a literal duplicate
       // (same (u, v) too - nothing to build) or the two ends of a run
