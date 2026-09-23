@@ -561,35 +561,62 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       legitimate same-face self-seam - both runs on the same kf - and
 //       is correctly left alone by the existing same-kf `continue`.)
 //
-//       What the 17 one-run keys most likely mean instead: the box cap's
-//       own loop (kf0, after BridgeHolesIntoOuter's keyhole splice) and
-//       the neighboring cylinder-wall fragment's own loop (kf8) each have
-//       their OWN, DIFFERENT set of anchor positions along what should be
-//       the same shared physical boundary - e.g. kf8 also touches a THIRD
-//       face (kf6, the cylinder's own end cap) at a point kf0 has no
-//       reason to share, splitting what would be one clean run on kf8's
-//       side into two sub-runs, neither of which lines up with kf0's own
-//       single run over the same span. This is a genuine 3-face-junction
-//       anchor-matching gap, not (only) a keyhole-notch artifact - NOT
-//       fully confirmed by tracing kf8's own anchor list against kf0's
-//       point-by-point in this session; that trace is the correct next
-//       diagnostic step before attempting any fix here, rather than
-//       generalizing from the still-unverified guess above.
+//       CONFIRMED (by directly comparing both loops' own printed anchor
+//       lists point-by-point, not just inferring from counts): kf0's
+//       (box cap) loop has vids 38 through 111 EACH individually anchored
+//       - i.e. positions 38,39,...,111 are ALL consecutive per-loop
+//       anchors, meaning kf0's own run structure over that span is 73
+//       separate ONE-STEP runs (38,39),(39,40),...,(110,111), not one
+//       big (38,111) span. On box+cylinder Union, the neighboring wall
+//       fragment kf8 (the portion of the cylinder wall SplitFaceLoop's
+//       own open-chain cut split off below the box, v<1) has ONLY vid 38
+//       and vid 111 as anchors, with NO anchors at any of the 73
+//       intermediate positions - so kf8 never offers a matching partner
+//       for any of kf0's 73 fine-grained keys, and (38,111) itself is
+//       never a key kf0 actually produces (its own walk never jumps
+//       straight from 38 to 111 - every step in between is anchored).
+//       That means kf8's OWN 25 intermediate points (its own positions
+//       39..63, u-sampled independently at kf8's own coarser resolution)
+//       are foreign to kf0 entirely: neither side's boundary was ever
+//       resampled to share the other's points along this specific span,
+//       so MergeAndWeld can only weld the two shared ENDPOINTS, leaving
+//       71 of kf0's own points with no counterpart on kf8's side at all.
+//       Cross-checked against the SAME fixture's A-B run: there, the
+//       corresponding wall fragment (kf6, NOT split by an open-chain cut
+//       the same way) has 156 points and DOES carry all 74 of kf0's
+//       intermediate vids as its own individual anchors, reconciling
+//       cleanly. So the resolution mismatch is specific to whichever
+//       wall fragment SplitFaceLoop's own open-chain cut produces (kf8/
+//       kf9 in Union, i.e. the wall piece trimmed to v<1 or v>3) - its
+//       own boundary along the cut is independently re-sampled rather
+//       than inheriting the hole loop's exact points, the same "curved-
+//       trim resolution-mismatch" family this file has fixed several
+//       times before (see ReconcileEdgeTopology, StitchTJunctionsOnce,
+//       and this history's own "Curved-trim resolution-mismatch fix for
+//       BooleanCombineGeneral" entry) - just not yet closed for a
+//       keyhole-bridged hole boundary meeting a SplitFaceLoop-cut wall
+//       segment specifically.
 //
 //       The BridgeHolesIntoOuter() perturbed-vertex wrinkle documented
 //       just below (LerpOnSurface(..., kEdgeFraction=1e-3) splice points
 //       instead of the hole loop's own exact vertices) is independently
 //       confirmed by reading BridgeHolesIntoOuter()'s own source directly
-//       and remains real and relevant to any eventual fix, regardless of
-//       which exact anchor-matching mechanism turns out to explain the
-//       17 one-run keys.
+//       and remains real and relevant to any eventual fix on top of the
+//       above.
 //
-//       NEXT STEP (not yet implemented, and the specific mechanism above
-//       is not yet fully confirmed - verify before fixing): for one of
-//       the 17 one-run keys (e.g. box+cylinder Union's (38,111) on kf0),
-//       dump kf8's own full anchor list and walk both loops by hand
-//       (or with a small standalone script) to see exactly which anchor
-//       kf8 has that kf0 does not, and vice versa, along that span.
+//       NEXT STEP (not yet implemented): this is very likely closeable by
+//       the SAME general mechanism ReconcileFragmentBoundaries() already
+//       uses for ordinary two-run pairs - it just needs to recognize a
+//       RUN OF ADJACENT one-step same-face keys (kf0's own 73 consecutive
+//       (k,k+1) pairs) that collectively span the SAME physical arc as one
+//       coarser cross-face run (kf8's own (38,111) span) as a single
+//       resolvable unit: treat kf0's own fine chain as the reference
+//       (denser side, same convention as the ordinary path) and insert
+//       its intermediate points into kf8's sparse run - conceptually
+//       ReconcileChainToChord()'s own existing chord-snap/fan-insert
+//       idea, generalized to trigger off "many one-step same-face keys
+//       whose endpoints match a single cross-face run's own two ends"
+//       rather than requiring one single already-matching key pair.
 //
 //       ONE MORE WRINKLE (found while scoping the fix above, before
 //       writing any code for it - read, not yet acted on): BridgeHolesInto
