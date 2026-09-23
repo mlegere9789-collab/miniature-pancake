@@ -916,6 +916,52 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
     ic.points = np2; ic.uv_a = na2; ic.uv_b = nb2;
     fit();
   }
+  // Final de-duplication pass: two ADJACENT samples that end up within a
+  // couple tolerance-units of each other in 3D - not caught by the initial
+  // seed-sampling dedup in IntersectSurfaces()'s own main loop, since this
+  // one can be introduced LATER, by a point the insertion loop or the
+  // reversal-cleanup pass above added - are effectively the SAME physical
+  // point sampled twice, each independently Newton-refined with its own
+  // small residual noise in (u, v). Keeping both is worse than harmless:
+  // their two slightly-divergent (u, v) values can disagree about which
+  // one comes "first" along the curve, producing exactly the kind of
+  // spurious local self-crossing the reversal cleanup above exists to
+  // catch - but at an amplitude too small (comparable to the noise
+  // itself) for that bracket-based check to safely flag without also
+  // catching genuine fine curvature elsewhere (see its own doc comment on
+  // why its floor can't just be tightened further). Root-caused directly
+  // on sweep case 08 (skew, non-intersecting-axes perpendicular cylinder
+  // pair): two adjacent samples only ~1.0e-3 apart in 3D - right at this
+  // engine's own default refinement tolerance - carried (u, v) residuals
+  // that put one of them locally out of order relative to its neighbors.
+  // Merging near-duplicates by 3D distance sidesteps the ambiguity
+  // entirely: there is no meaningful answer to "which (u, v) came first"
+  // for two samples of the same physical point, so simply keep whichever
+  // was reached first in the existing ordering and drop the other.
+  for (int dedup_pass = 0; dedup_pass < 4; ++dedup_pass) {
+    const size_t n = ic.points.size();
+    if (n < 4) break;
+    const double dedup_tol = opt.tolerance * 3;
+    std::vector<char> drop(n, 0);
+    bool any_drop = false;
+    const size_t nsegs2 = ic.closed ? n : n - 1;
+    for (size_t i = 0; i < nsegs2; ++i) {
+      if (drop[i]) continue;  // don't chain off a point already being removed this pass
+      const size_t j = (i + 1) % n;
+      if (drop[j]) continue;
+      if (ic.points[i].DistanceTo(ic.points[j]) <= dedup_tol) { drop[j] = 1; any_drop = true; }
+    }
+    if (!any_drop) break;
+    std::vector<Point3d> np3;
+    std::vector<ON_2dPoint> na3, nb3;
+    for (size_t idx = 0; idx < n; ++idx) {
+      if (drop[idx]) continue;
+      np3.push_back(ic.points[idx]); na3.push_back(ic.uv_a[idx]); nb3.push_back(ic.uv_b[idx]);
+    }
+    if (np3.size() < 3) break;  // never collapse below a usable curve
+    ic.points = np3; ic.uv_a = na3; ic.uv_b = nb3;
+    fit();
+  }
   ic.max_error = 0;
   for (size_t i = 0; i < ic.points.size(); ++i) ic.max_error = std::max(ic.max_error, a.PointAt(ic.uv_a[i].x, ic.uv_a[i].y).DistanceTo(b.PointAt(ic.uv_b[i].x, ic.uv_b[i].y)));
 }
