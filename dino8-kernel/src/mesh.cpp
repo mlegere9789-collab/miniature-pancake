@@ -4,6 +4,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -468,16 +470,35 @@ bool Mesh::IsClosedManifold() const {
     }
   }
 
+  // Diagnostic only (DINO8_MESH_DEBUG) - behavior below is unchanged
+  // either way. Confirmed directly on BooleanCombineGeneral's own sweep
+  // corpus: every currently-CLOSED case (box+box) reports
+  // orientation_consistent=1, bad-edge-count=0 - this check is
+  // meaningful, not a chronic false positive - while every curved-face
+  // case still failing (box+cylinder etc.) reports
+  // orientation_consistent=0 (a directed edge walked twice - two
+  // triangles both "claim" the same edge in the same winding direction)
+  // ALONGSIDE a large bad-edge-count (hundreds to low thousands of
+  // naked/nonmanifold edges) - two DISTINCT failure signatures, not
+  // shown to share a single root cause yet. The orientation-conflict
+  // signature is NOT documented anywhere in boolean_general.h's own
+  // extensive closedmesh-gap writeup (which only discusses missing/
+  // mismatched boundary vertices) - a genuinely new lead for a future
+  // pass into TessellateGeneralBooleanClosedMesh's own fan-insertion
+  // passes (StitchTJunctionsOnce, ReconcileChainToChord) to find which
+  // one can emit a mis-wound fan triangle.
+  int bad = 0;
+  for (const auto& [edge, count] : undirected_edge_count) {
+    if (count != 2) ++bad;
+  }
+  if (std::getenv("DINO8_MESH_DEBUG")) {
+    std::fprintf(stderr, "  IsClosedManifold: orientation_consistent=%d bad-edge-count=%d / total-edges=%zu\n",
+                 (int)orientation_consistent, bad, undirected_edge_count.size());
+  }
   if (!orientation_consistent) {
     return false;
   }
-  for (const auto& [edge, count] : undirected_edge_count) {
-    if (count != 2) {
-      return false;  // a boundary edge (count 1) or a non-manifold edge
-                      // shared by 3+ faces (count > 2)
-    }
-  }
-  return true;
+  return bad == 0;
 }
 
 Mesh Mesh::Transform(const ON_Xform& xform) const {
