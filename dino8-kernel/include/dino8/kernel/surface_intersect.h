@@ -96,7 +96,13 @@ bool NewtonSolve(const Residual& residual, std::vector<double>& x, const std::ve
 // Newton polish of a surface/surface point from seed parameters.
 bool RefineSurfaceSurfacePoint(const ON_Surface& a, const ON_Surface& b, double& ua, double& va, double& ub, double& vb, double tol, int max_iter = 40);
 
-// Closest point on a surface (Newton from a seed; `global` first scans a grid).
+// Closest point on a surface (Newton from a seed; `global` first scans a grid
+// to seed the Newton polish, then reports the SAME convergence status as
+// SurfaceClosestPoint() - i.e. `global`'s bool is not automatically true
+// just because a grid seed exists; a genuinely pathological surface (e.g.
+// wildly-varying rational weights) can still fail the Newton polish and
+// this correctly returns false in that case, matching SurfaceClosestPoint's
+// own contract).
 bool SurfaceClosestPoint(const ON_Surface& s, Point3d p, double& u, double& v, int max_iter = 40);
 bool SurfaceClosestPointGlobal(const ON_Surface& s, Point3d p, double& u, double& v, int grid = 24);
 

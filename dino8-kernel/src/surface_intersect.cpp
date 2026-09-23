@@ -451,8 +451,7 @@ bool SurfaceClosestPointGlobal(const ON_Surface& s, Point3d p, double& u, double
       const double d = s.PointAt(uu, vv).DistanceTo(p);
       if (d < best) { best = d; u = uu; v = vv; }
     }
-  SurfaceClosestPoint(s, p, u, v);
-  return true;
+  return SurfaceClosestPoint(s, p, u, v);
 }
 
 double CurveClosestParam(const ON_Curve& c, Point3d p, double seed, int max_iter) {

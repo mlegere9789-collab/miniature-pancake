@@ -3776,6 +3776,65 @@ void TestSurfaceClosestPoint() {
         "the seam point itself");
 }
 
+void TestSurfaceClosestPointGlobalReportsConvergenceFailure() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SurfaceClosestPointGlobal;
+
+  // SurfaceClosestPointGlobal() (surface_intersect.h) grid-seeds a Newton
+  // polish and is documented to report the SAME convergence status as
+  // SurfaceClosestPoint() - a real, previously-undetected bug had it
+  // hardcode `return true;` regardless of whether the Newton polish
+  // actually converged, silently discarding a genuine failure signal that
+  // dino8-app's own commands (SrfSeam, SetSurfaceTangent, SoftEditSrf,
+  // several FilletEdge pick-location paths) rely on via `if (!...) { Warn
+  // ...; return; }` - those warnings could never fire.
+  //
+  // This fixture is a real (not synthetic/mocked) rational bicubic NURBS
+  // surface with deliberately wild per-control-point weights, found by a
+  // randomized probe search (fixed seed 12345, trial 6 of 200000) for a
+  // surface+query pair where SurfaceClosestPoint's Newton polish
+  // genuinely fails to converge within its default iteration budget -
+  // confirmed directly by running the probe standalone against this
+  // kernel's own SurfaceClosestPoint(), not assumed. Hardcoded here as
+  // exact literal control points/weights so the regression is
+  // deterministic and doesn't depend on RNG reproducibility across builds.
+  ON_NurbsSurface wild;
+  wild.Create(3, /*is_rational=*/true, 4, 4, 4, 4);
+  const double cvs[4][4][4] = {
+      {{0.713110, 3.048754, 3.493440, 1.621991},
+       {-3.202335, 2.076466, 2.549767, 0.575890},
+       {3.557721, 4.121677, 3.246089, 4.262293},
+       {-2.649201, -4.605644, -1.623153, 1.114224}},
+      {{3.599308, -0.612792, -2.225644, 0.668116},
+       {1.952605, 4.652838, 4.875471, 1.648461},
+       {0.288541, 2.854566, -4.638695, 3.367891},
+       {1.453576, -4.600227, -0.736331, 3.381067}},
+      {{-2.741354, 2.037432, 2.049326, 2.864950},
+       {4.531246, -2.945309, -3.818924, 4.924178},
+       {-3.961690, 4.303003, -1.612021, 4.676180},
+       {1.078011, 1.232005, -0.587598, 0.673231}},
+      {{4.582039, -3.509195, -1.671194, 0.891587},
+       {-1.277548, -0.393197, -3.829403, 0.369822},
+       {-4.423599, -3.659467, 0.799879, 4.762362},
+       {1.602534, -0.952616, 2.106731, 3.293129}},
+  };
+  for (int u = 0; u < 4; ++u) {
+    for (int v = 0; v < 4; ++v) {
+      wild.SetCV(u, v, ON_4dPoint(cvs[u][v][0], cvs[u][v][1], cvs[u][v][2], cvs[u][v][3]));
+    }
+  }
+  wild.MakeClampedUniformKnotVector(0);
+  wild.MakeClampedUniformKnotVector(1);
+
+  double u = 0, v = 0;
+  const Point3d query(4.551276, 4.883771, 3.446433);
+  const bool ok = SurfaceClosestPointGlobal(wild, query, u, v);
+  Check(!ok,
+        "SurfaceClosestPointGlobal reports false (Newton did not converge) "
+        "for a genuinely pathological rational surface - not hardcoded "
+        "true regardless of the underlying refinement's real outcome");
+}
+
 void TestSurfaceCurvature() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -20311,6 +20370,7 @@ int main() {
   TestSurfaceApproximateArea();
   TestSurfaceCVCount();
   TestSurfaceClosestPoint();
+  TestSurfaceClosestPointGlobalReportsConvergenceFailure();
   TestSurfaceCurvature();
   TestSurfaceSuggestedDivisions();
   TestSurfaceTessellateGridAdaptive();
