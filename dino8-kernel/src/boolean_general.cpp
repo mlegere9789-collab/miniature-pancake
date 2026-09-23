@@ -1471,44 +1471,122 @@ bool CutChainAtDomainBoundary(const Chain& c, const ON_Surface& s, double tol, s
 // whichever open-chain fragment geometrically contains them) plus their
 // own interior fragment; open chains bisect the boundary, applied one at
 // a time against whichever current fragment contains both its endpoints.
+// True (with `touch_idx` set) if some INTERIOR point of `c` (excluding its
+// own two endpoints) coincides, within `tol`, with a vertex of `outer` -
+// i.e. `c`'s own path crosses `outer`'s boundary again somewhere other
+// than the two endpoints SpliceOpenChain() expects to be its only contact
+// points. Confirmed directly on a Steinmetz (equal-radius, perpendicular,
+// intersecting-axes) cylinder pair: two full periodic-wrap chains sharing
+// both endpoints at the seam (see SplitPeriodicWrapChain) can ALSO cross
+// each other again at one interior point (their two ellipses' own second
+// crossing) - once the first chain's path is already part of a fragment's
+// boundary (SpliceOpenChain inserts a chain's own interior points into
+// the fragment verbatim), the second chain's own interior sample at that
+// crossing lands within ~1.5e-7 (u, v)-units of the first chain's copy of
+// the same physical point.
+bool FindInteriorChainTouch(const Chain& c, const std::vector<UVPt>& outer, double tol, size_t& touch_idx) {
+  if (c.size() < 3) return false;
+  const double tol2 = tol * tol;
+  for (size_t k = 1; k + 1 < c.size(); ++k) {
+    for (const UVPt& o : outer) {
+      const double dx = c[k].uv.x - o.uv.x, dy = c[k].uv.y - o.uv.y;
+      if (dx * dx + dy * dy <= tol2) {
+        touch_idx = k;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 std::vector<Fragment> SplitFaceLoop(const std::vector<UVPt>& boundary, const std::vector<Chain>& closed_chains,
                                      const std::vector<Chain>& open_chains) {
   std::vector<std::vector<UVPt>> outers = {boundary};
-  for (const Chain& c : open_chains) {
+  // A chain that turns out to cross an ALREADY-spliced fragment boundary at
+  // an interior point (see FindInteriorChainTouch's own doc comment) is
+  // split there into two pieces, each pushed back here for its own splice
+  // attempt - so this is a worklist, not a fixed list: indexing by a
+  // running cursor (not a range-for) lets it grow safely mid-loop.
+  std::vector<Chain> worklist(open_chains.begin(), open_chains.end());
+  // Same tolerance basis as TessellateGridClippedExact's own pinch-point
+  // weld (surface.cpp) - real headroom above the measured ~1.5e-7 gap, far
+  // below this codebase's typical dense-polyline edge length.
+  constexpr double kInteriorTouchTolerance = 1e-4;
+  for (size_t wi = 0; wi < worklist.size(); ++wi) {
+    const Chain c = worklist[wi];
     if (c.size() < 2) continue;
-    bool applied = false;
+    // Every CURRENT fragment whose boundary both of `c`'s own endpoints
+    // project onto - almost always exactly one (the pre-existing, still
+    // correct case for every chain that doesn't need the interior-touch
+    // handling below), but a chain sharing endpoints with the seam of an
+    // already-split wrap pair can match MORE than one fragment at once,
+    // since that seam corner exists in every fragment descended from it.
+    std::vector<size_t> candidates;
     for (size_t i = 0; i < outers.size(); ++i) {
       const BoundaryHit h0 = NearestOnLoop(outers[i], c.front().uv);
-      const BoundaryHit h1 = NearestOnLoop(outers[i], c.back().uv);
       const Point2d& e0a = outers[i][h0.edge_index].uv;
       const Point2d& e0b = outers[i][(h0.edge_index + 1) % outers[i].size()].uv;
       const Point2d proj0(e0a.x + (e0b.x - e0a.x) * h0.t, e0a.y + (e0b.y - e0a.y) * h0.t);
-      const Point2d& e1a = outers[i][h1.edge_index].uv;
-      const Point2d& e1b = outers[i][(h1.edge_index + 1) % outers[i].size()].uv;
-      const Point2d proj1(e1a.x + (e1b.x - e1a.x) * h1.t, e1a.y + (e1b.y - e1a.y) * h1.t);
-      const double bbox_span = 1.0;  // scale-agnostic relative check below
-      (void)bbox_span;
       // Both endpoints must actually sit close to this fragment's own
-      // boundary (not just closest-of-the-worklist) for it to be the
-      // right one to splice.
+      // boundary (not just closest-of-the-worklist) for it to be a
+      // candidate at all.
       if (std::sqrt(Dist2(proj0, c.front().uv)) > 1e-3 * (1.0 + std::sqrt(Dist2(e0a, e0b))) &&
           std::sqrt(Dist2(proj0, c.front().uv)) > 1e-6) {
         continue;
       }
-      auto [fa, fb] = SpliceOpenChain(outers[i], c);
-      if (fb.empty()) continue;  // splice refused (degenerate)
-      outers[i] = fa;
-      outers.push_back(fb);
-      applied = true;
-      break;
+      const BoundaryHit h1 = NearestOnLoop(outers[i], c.back().uv);
+      const Point2d& e1a = outers[i][h1.edge_index].uv;
+      const Point2d& e1b = outers[i][(h1.edge_index + 1) % outers[i].size()].uv;
+      const Point2d proj1(e1a.x + (e1b.x - e1a.x) * h1.t, e1a.y + (e1b.y - e1a.y) * h1.t);
+      if (std::sqrt(Dist2(proj1, c.back().uv)) > 1e-3 * (1.0 + std::sqrt(Dist2(e1a, e1b))) &&
+          std::sqrt(Dist2(proj1, c.back().uv)) > 1e-6) {
+        continue;
+      }
+      candidates.push_back(i);
     }
-    if (!applied) {
+    if (candidates.empty()) {
       // Could not find a fragment whose boundary the chain actually
       // touches - drop it rather than corrupt the topology. Disclosed
       // limitation: this can happen for chains that graze a fragment
       // seam produced by an earlier splice.
       continue;
     }
+    size_t chosen = candidates.front();
+    if (candidates.size() > 1) {
+      // Ambiguous: disambiguate by which candidate's own polygon actually
+      // contains a point just INSIDE the chain's own path near its front
+      // endpoint (c[1], not the endpoint itself, which is the very point
+      // shared by every candidate) - the chain's own initial direction
+      // unambiguously belongs to exactly one of them.
+      const Point2d probe = c.size() > 2 ? c[1].uv : c.back().uv;
+      bool picked = false;
+      for (size_t idx : candidates) {
+        if (PointInPolygon(ToPoly(outers[idx]), probe)) {
+          chosen = idx;
+          picked = true;
+          break;
+        }
+      }
+      if (!picked) chosen = candidates.front();  // fall back to the old behavior
+    }
+    size_t touch_idx = 0;
+    if (FindInteriorChainTouch(c, outers[chosen], kInteriorTouchTolerance, touch_idx)) {
+      if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
+        std::fprintf(stderr,
+                     "  SplitFaceLoop: chain (n=%zu) crosses outers[%zu]'s own boundary at interior idx=%zu - "
+                     "splitting into two pieces instead of one splice\n",
+                     c.size(), chosen, touch_idx);
+      }
+      Chain c1(c.begin(), c.begin() + static_cast<long>(touch_idx) + 1);
+      Chain c2(c.begin() + static_cast<long>(touch_idx), c.end());
+      worklist.push_back(std::move(c1));
+      worklist.push_back(std::move(c2));
+      continue;
+    }
+    auto [fa, fb] = SpliceOpenChain(outers[chosen], c);
+    if (fb.empty()) continue;  // splice refused (degenerate)
+    outers[chosen] = fa;
+    outers.push_back(fb);
   }
 
   std::vector<Fragment> frags;
