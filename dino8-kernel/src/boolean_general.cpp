@@ -1670,6 +1670,27 @@ std::vector<Fragment> SplitFaceLoop(const std::vector<UVPt>& boundary, const std
   for (const Chain& c : closed_chains) {
     if (c.size() < 3) continue;
     const std::vector<Point2d> chain_poly = ToPoly(c);
+    // Diagnostic only (DINO8_BOOL_DEBUG_VERBOSE). Root-caused sweep case
+    // 08 (skew, non-intersecting-axes perpendicular cylinder pair)
+    // directly with this trace: an initial hypothesis - that this
+    // engine's own AppendStitched() was welding two independently-
+    // sampled raw curve pieces near a shared cusp without aligning their
+    // phase - was DISPROVEN by comparing this same trace against a raw-
+    // piece dump (see build_frags's own "RAW piece" trace, temporarily
+    // added and removed while investigating): the offending chain here
+    // is copied VERBATIM from a single already-closed raw piece
+    // (front_uv == back_uv before StitchChains ever runs on it, and the
+    // piece's own point values match this chain's points exactly) - no
+    // stitching, splicing, or welding of any kind touches it. The
+    // zigzag (a short local reversal right at a (u, v) cusp) is
+    // therefore intrinsic to the raw SSX curve extraction itself
+    // (IntersectFaces()/the curve tracer in surface_intersect.cpp), not
+    // to anything in this file. A correct fix belongs there - most
+    // likely a marching/refinement step whose own local parametrization
+    // can produce a non-monotonic sample near a point of near-zero
+    // projected velocity in one (u, v) coordinate - and is left for a
+    // dedicated future pass into that subsystem rather than attempted
+    // here blind.
     if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
       size_t bi = 0, bj = 0;
       if (!dino8::kernel::detail::IsSimplePolygon(chain_poly, &bi, &bj)) {
