@@ -2025,6 +2025,89 @@ void TestSurfaceIntersectSphereGreatCircle() {
   }
 }
 
+void TestIntersectCurvesFindsCrossingsAndRejectsMisses() {
+  using dino8::kernel::CurveCurveHit;
+  using dino8::kernel::IntersectCurves;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // IntersectCurves() (CCX) is the curve/curve counterpart to
+  // IntersectSurfaces() (SSX) and IntersectCurveSurface() (CSX) above -
+  // OpenNURBS' public SDK has none of the three. Case 1: two straight
+  // lines forming an X in the z=0 plane, (0,0,0)->(10,10,0) and
+  // (0,10,0)->(10,0,0), cross at exactly one point, the geometric
+  // midpoint of both (5,5,0) - and since a straight line's own
+  // parametrization is linear in position, that's exactly the domain
+  // midpoint of both (ta = tb = 0.5), a hand-derivable exact value, not
+  // just a plausible-looking one.
+  IntersectOptions opt;
+  opt.tolerance = 1e-8;
+  opt.mesh_tolerance = 0.05;
+
+  const NurbsCurve line_a = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(10, 10, 0)}, /*degree=*/1);
+  const NurbsCurve line_b = NurbsCurve::FromControlPoints(
+      {Point3d(0, 10, 0), Point3d(10, 0, 0)}, /*degree=*/1);
+  const std::vector<CurveCurveHit> x_hits = IntersectCurves(line_a.raw(), line_b.raw(), opt);
+  Check(x_hits.size() == 1, "two crossing lines forming an X intersect at exactly one point");
+  if (x_hits.size() == 1) {
+    Check(x_hits[0].point.DistanceTo(Point3d(5, 5, 0)) < 1e-6,
+          "the crossing point is exactly the geometric midpoint (5, 5, 0)");
+    Check(std::abs(x_hits[0].ta - 0.5) < 1e-6 && std::abs(x_hits[0].tb - 0.5) < 1e-6,
+          "both curve parameters at the crossing are exactly 0.5 (the "
+          "domain midpoint), since a straight line's parametrization is "
+          "linear in position");
+    Check(x_hits[0].error < opt.tolerance * 2,
+          "the refined |A(ta) - B(tb)| residual is within the requested "
+          "tolerance, not just a coarse polyline-seed distance");
+  }
+
+  // Case 2: the identical X shape, but line_b lifted to z = 1 - the two
+  // lines are now skew (never actually meet in 3D), so a genuinely
+  // correct intersector must report zero hits rather than the in-plane
+  // crossing its 2D (x, y) projection would suggest.
+  const NurbsCurve line_b_lifted = NurbsCurve::FromControlPoints(
+      {Point3d(0, 10, 1), Point3d(10, 0, 1)}, /*degree=*/1);
+  const std::vector<CurveCurveHit> skew_hits = IntersectCurves(line_a.raw(), line_b_lifted.raw(), opt);
+  Check(skew_hits.empty(), "two skew (non-coplanar, non-meeting) lines produce no intersection hits");
+
+  // Case 3: a genuinely curved curve, not just lines - a real circle
+  // (ON_Circle::GetNurbForm, the same exact rational-NURBS construction
+  // TestCurveParameterAtArcLength() above already validates) in the z=0
+  // plane, centered at the origin, against a straight line along the
+  // x-axis passing straight through it. The line must hit the circle at
+  // exactly the two points where the x-axis crosses the circle's own
+  // boundary: (radius, 0, 0) and (-radius, 0, 0) - independently
+  // knowable from the circle's definition, not fit to whatever the
+  // intersector happens to produce.
+  const double radius = 4.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve circle_nurbs_form;
+  Check(on_circle.GetNurbForm(circle_nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = circle_nurbs_form;
+
+  const NurbsCurve axis_line = NurbsCurve::FromControlPoints(
+      {Point3d(-10, 0, 0), Point3d(10, 0, 0)}, /*degree=*/1);
+  const std::vector<CurveCurveHit> circle_hits = IntersectCurves(axis_line.raw(), circle.raw(), opt);
+  Check(circle_hits.size() == 2, "a line straight through a circle's center hits it at exactly two points");
+  if (circle_hits.size() == 2) {
+    // Sorted by ta (the line's own parameter, increasing x), so the
+    // near-side hit at x = -radius comes first.
+    Check(circle_hits[0].point.DistanceTo(Point3d(-radius, 0, 0)) < 1e-6,
+          "the first hit sits at exactly (-radius, 0, 0)");
+    Check(circle_hits[1].point.DistanceTo(Point3d(radius, 0, 0)) < 1e-6,
+          "the second hit sits at exactly (radius, 0, 0)");
+  }
+
+  // A curve intersected with itself throws nothing and is not asserted
+  // here (see the "not intended for coincident curves" caveat on
+  // IntersectCurves() itself) - deliberately not exercised as a pass/fail
+  // case, since there is no single correct finite answer to assert
+  // against for a genuinely coincident pair.
+}
+
 void TestBooleanCombineGeneralBoxBox() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -6260,6 +6343,154 @@ void TestMeshSignedDistance() {
         "just inside the +Z face (z=1.9 of 2.0) is still negative");
   Check(box.SignedDistance(Point3d(1, 1, 2.1)) > 0.0,
         "just outside the +Z face (z=2.1 of 2.0) is positive");
+}
+
+void TestMeshVolumeMassProperties() {
+  using dino8::kernel::MassProperties;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  // Case 1: a 2 x 3 x 4 box with one corner at the origin, as 6 quad
+  // faces. Every expected value below is the textbook closed form for a
+  // uniform box of extents (a, b, c) = (2, 3, 4), volume V = 24, centroid
+  // (1, 1.5, 2), not a number read off the implementation:
+  //   about the centroid: Ixx = V(b^2 + c^2)/12 = 24*25/12 = 50,
+  //                       Iyy = V(a^2 + c^2)/12 = 24*20/12 = 40,
+  //                       Izz = V(a^2 + b^2)/12 = 24*13/12 = 26,
+  //                       every product of inertia 0 (axis-aligned);
+  //   about the origin (parallel-axis theorem, I_o = I_c + V*d^2):
+  //                       Ixx_o = 50 + 24*(1.5^2 + 2^2) = 200,
+  //                       Iyy_o = 40 + 24*(1^2 + 2^2)   = 160,
+  //                       Izz_o = 26 + 24*(1^2 + 1.5^2) = 104,
+  //                       Pxy_o = V*cx*cy = 36, Pyz_o = 72, Pxz_o = 48.
+  const auto box = MakeQuadBoxMesh(0, 0, 0, 2, 3, 4);
+  const MassProperties mp = box.VolumeMassProperties();
+  Check(std::abs(mp.volume - 24.0) < 1e-9, "VolumeMassProperties volume of the 2x3x4 box is exactly 24");
+  Check(mp.centroid.DistanceTo(Point3d(1, 1.5, 2)) < 1e-9,
+        "VolumeMassProperties centroid of the 2x3x4 box is exactly (1, 1.5, 2)");
+  Check(std::abs(mp.ixx - 50.0) < 1e-9 && std::abs(mp.iyy - 40.0) < 1e-9 && std::abs(mp.izz - 26.0) < 1e-9,
+        "centroidal moments of the 2x3x4 box are exactly the textbook "
+        "V(b^2+c^2)/12 family: (50, 40, 26)");
+  Check(std::abs(mp.ixy) < 1e-9 && std::abs(mp.iyz) < 1e-9 && std::abs(mp.ixz) < 1e-9,
+        "centroidal products of inertia of an axis-aligned box are exactly zero");
+  Check(std::abs(mp.ixx_origin - 200.0) < 1e-9 && std::abs(mp.iyy_origin - 160.0) < 1e-9 &&
+            std::abs(mp.izz_origin - 104.0) < 1e-9,
+        "moments about the world origin are exactly the parallel-axis "
+        "values (200, 160, 104)");
+  Check(std::abs(mp.ixy_origin - 36.0) < 1e-9 && std::abs(mp.iyz_origin - 72.0) < 1e-9 &&
+            std::abs(mp.ixz_origin - 48.0) < 1e-9,
+        "products of inertia about the world origin are exactly V*ci*cj: (36, 72, 48)");
+  Check(std::abs(mp.principal_moments[0] - 26.0) < 1e-9 && std::abs(mp.principal_moments[1] - 40.0) < 1e-9 &&
+            std::abs(mp.principal_moments[2] - 50.0) < 1e-9,
+        "principal moments come back ascending as exactly (26, 40, 50)");
+  Check(std::abs(std::abs(mp.principal_axes[0].z) - 1.0) < 1e-9 &&
+            std::abs(std::abs(mp.principal_axes[1].y) - 1.0) < 1e-9 &&
+            std::abs(std::abs(mp.principal_axes[2].x) - 1.0) < 1e-9,
+        "the principal axes are the box's own z (smallest moment), y, x "
+        "(largest) axes, matching the moment order");
+  Check(std::abs(ON_DotProduct(ON_CrossProduct(mp.principal_axes[0], mp.principal_axes[1]),
+                               mp.principal_axes[2]) -
+                 1.0) < 1e-9,
+        "the principal axes form a right-handed orthonormal frame");
+  Check(std::abs(mp.radii_of_gyration[0] - std::sqrt(26.0 / 24.0)) < 1e-9 &&
+            std::abs(mp.radii_of_gyration[2] - std::sqrt(50.0 / 24.0)) < 1e-9,
+        "radii of gyration are exactly sqrt(I_k / V)");
+
+  // Case 2: the identical box as 12 triangles (MakeBox) rather than 6
+  // quads - the quad path's second triangle (a, c, d) must contribute,
+  // or the quad mesh would come out at exactly half of these values.
+  const MassProperties tri = MakeBox(0, 0, 0, 2, 3, 4).VolumeMassProperties();
+  Check(std::abs(tri.volume - mp.volume) < 1e-9 && std::abs(tri.ixx - mp.ixx) < 1e-9 &&
+            std::abs(tri.iyy - mp.iyy) < 1e-9 && std::abs(tri.izz - mp.izz) < 1e-9 &&
+            std::abs(tri.ixy_origin - mp.ixy_origin) < 1e-9,
+        "the same box as 12 triangles gives identical mass properties to "
+        "the 6-quad version (both quad triangles are counted)");
+
+  // Case 3: the same box rotated by 0.7 rad about a skew axis and then
+  // translated. Principal moments are a rigid-motion invariant, so they
+  // must still be (26, 40, 50); the centroid must be the transformed
+  // original centroid; the principal axes must be the transformed box
+  // axes; and, the check that proves the tensor really rotated rather
+  // than staying diagonal, the world-frame products of inertia must now
+  // be clearly nonzero. Tolerances are loose only to the extent ON_Mesh
+  // stores vertices as floats (~1e-6 absolute position error at these
+  // magnitudes, which enters the moments multiplied by ~2*V*L).
+  Vector3d rotation_axis(0.3, 0.6, 0.74162);
+  rotation_axis.Unitize();
+  ON_Xform rotation;
+  rotation.Rotation(/*angle_radians=*/0.7, rotation_axis, Point3d(0.5, -1.0, 2.0));
+  const ON_Xform motion = ON_Xform::TranslationTransformation(Vector3d(5, -3, 10)) * rotation;
+  const MassProperties moved = box.Transform(motion).VolumeMassProperties();
+  Check(std::abs(moved.volume - 24.0) < 1e-4, "rigidly moved box keeps volume 24");
+  Check(moved.centroid.DistanceTo(motion * Point3d(1, 1.5, 2)) < 1e-5,
+        "rigidly moved box's centroid is the transformed original centroid");
+  Check(std::abs(moved.principal_moments[0] - 26.0) < 1e-3 && std::abs(moved.principal_moments[1] - 40.0) < 1e-3 &&
+            std::abs(moved.principal_moments[2] - 50.0) < 1e-3,
+        "principal moments are a rigid-motion invariant: still (26, 40, 50) "
+        "after rotation + translation");
+  Check(std::abs(moved.ixy) + std::abs(moved.iyz) + std::abs(moved.ixz) > 1.0,
+        "the rotated box's world-frame products of inertia are clearly "
+        "nonzero (the tensor genuinely rotated, it isn't just re-diagonalized)");
+  Check(std::abs(std::abs(ON_DotProduct(moved.principal_axes[2], motion * Vector3d(1, 0, 0))) - 1.0) < 1e-5 &&
+            std::abs(std::abs(ON_DotProduct(moved.principal_axes[1], motion * Vector3d(0, 1, 0))) - 1.0) < 1e-5 &&
+            std::abs(std::abs(ON_DotProduct(moved.principal_axes[0], motion * Vector3d(0, 0, 1))) - 1.0) < 1e-5,
+        "the principal axes are the rotated box's own x/y/z axes");
+
+  // Case 4: a genuinely curved solid with a closed-form inertia tensor -
+  // a torus of major radius R = 3, minor radius r = 1 about z. For a
+  // uniform torus of mass M: I_axis = M(R^2 + 3r^2/4) = 9.75 M and, about
+  // any diameter in its plane, I_diam = M(R^2/2 + 5r^2/8) = 5.125 M. The
+  // polygonal torus is exact for the polyhedron it is and converges to
+  // those as the segment counts grow; at 96 x 48 its per-volume moments
+  // land within 1% of the smooth values (the tolerance below), which a
+  // sampled/approximate integrator at this resolution wouldn't. Two
+  // exact properties hold regardless of tessellation: the 96-fold
+  // rotational symmetry makes the two in-plane moments equal (an n-fold
+  // symmetric body's in-plane tensor is isotropic for n >= 3), and the
+  // largest-moment principal axis is the torus's own axis.
+  const auto torus = Mesh::Torus(Point3d(0, 0, 0), Vector3d(0, 0, 1), 3.0, 1.0, 96, 48);
+  const MassProperties tp = torus.VolumeMassProperties();
+  Check(std::abs(tp.principal_moments[2] / tp.volume - 9.75) < 0.01 * 9.75,
+        "torus moment about its own axis per unit volume is within 1% of "
+        "the closed-form R^2 + 3r^2/4 = 9.75");
+  Check(std::abs(tp.principal_moments[0] / tp.volume - 5.125) < 0.01 * 5.125,
+        "torus moment about an in-plane diameter per unit volume is within "
+        "1% of the closed-form R^2/2 + 5r^2/8 = 5.125");
+  Check(std::abs(tp.principal_moments[0] - tp.principal_moments[1]) < 1e-6 * tp.principal_moments[0],
+        "the torus's two in-plane principal moments are equal (96-fold "
+        "symmetry makes its in-plane tensor exactly isotropic)");
+  Check(std::abs(std::abs(tp.principal_axes[2].z) - 1.0) < 1e-6,
+        "the torus's largest-moment principal axis is its own z axis");
+
+  // The same torus translated far from the origin: its centroidal tensor
+  // must be unchanged (the parallel-axis correction is exact on a curved
+  // body too, not just the box), and its centroid must be the new center.
+  const auto far_torus = Mesh::Torus(Point3d(10, -5, 2), Vector3d(0, 0, 1), 3.0, 1.0, 96, 48);
+  const MassProperties fp = far_torus.VolumeMassProperties();
+  Check(fp.centroid.DistanceTo(Point3d(10, -5, 2)) < 1e-5,
+        "translated torus's centroid is its own center");
+  Check(std::abs(fp.ixx - tp.ixx) < 1e-4 * tp.ixx && std::abs(fp.izz - tp.izz) < 1e-4 * tp.izz &&
+            std::abs(fp.ixy - tp.ixy) < 1e-4 * tp.ixx,
+        "translated torus's centroidal inertia tensor equals the origin-"
+        "centered one's (parallel-axis correction exact on a curved body)");
+
+  // Case 5: an inside-out mesh and an empty mesh both throw rather than
+  // returning negated or divide-by-zero moments.
+  bool threw_flipped = false;
+  try {
+    box.FlipNormals().VolumeMassProperties();
+  } catch (const std::invalid_argument&) {
+    threw_flipped = true;
+  }
+  Check(threw_flipped, "VolumeMassProperties throws on an inside-out (negative-volume) mesh");
+  bool threw_empty = false;
+  try {
+    Mesh().VolumeMassProperties();
+  } catch (const std::invalid_argument&) {
+    threw_empty = true;
+  }
+  Check(threw_empty, "VolumeMassProperties throws on a mesh with no volume");
 }
 
 void TestMeshAreaCountsBothQuadTriangles() {
@@ -20871,6 +21102,7 @@ int main() {
   TestSurfaceIsCone();
   TestSurfaceIsTorus();
   TestSurfaceIntersectSphereGreatCircle();
+  TestIntersectCurvesFindsCrossingsAndRejectsMisses();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralCoplanarBoxes();
   TestBooleanCombineGeneralBoxCylinder();
@@ -20958,6 +21190,7 @@ int main() {
   TestMeshContainsPoint();
   TestMeshClosestPoint();
   TestMeshSignedDistance();
+  TestMeshVolumeMassProperties();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
