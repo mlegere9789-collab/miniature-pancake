@@ -1333,8 +1333,16 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
     }
     const std::vector<Point2d> lobe_a = ExtractSubLoop(trim_polygon, touch_i, touch_j);
     const std::vector<Point2d> lobe_b = ExtractSubLoop(trim_polygon, touch_j, touch_i);
-    return Mesh::MergeAndWeld({TessellateGridClippedExact(u_divisions, v_divisions, lobe_a),
-                                TessellateGridClippedExact(u_divisions, v_divisions, lobe_b)});
+    if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
+      std::fprintf(stderr, "    lobe areas: parent=%.6f lobe_a(n=%zu)=%.6f lobe_b(n=%zu)=%.6f\n",
+                   SignedArea(trim_polygon), lobe_a.size(), SignedArea(lobe_a), lobe_b.size(), SignedArea(lobe_b));
+    }
+    Mesh mesh_a = TessellateGridClippedExact(u_divisions, v_divisions, lobe_a);
+    Mesh mesh_b = TessellateGridClippedExact(u_divisions, v_divisions, lobe_b);
+    if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
+      std::fprintf(stderr, "    lobe mesh areas: a=%.6f b=%.6f\n", mesh_a.Area(), mesh_b.Area());
+    }
+    return Mesh::MergeAndWeld({mesh_a, mesh_b});
   }
 
   Mesh mesh;
