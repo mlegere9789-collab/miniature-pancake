@@ -1529,6 +1529,55 @@ void TestCurveSuggestedParameterValues() {
         "non-positive chord_tolerance");
 }
 
+void TestSurfaceFromControlGridRejectsDegenerateInput() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  // Regression: the surface-side twin of FromControlPoints()'s own
+  // degenerate-input bug (ON_NurbsSurface::Create() refuses cv_count <
+  // order / order < 2 without allocating, and the setters below it
+  // silently no-op), but with a worse downstream symptom: the empty
+  // surface's PointAt() segfaulted inside ON_NurbsSurface::Evaluate() on
+  // its null knot array (confirmed by a debug run against the pre-fix
+  // build), and a control_grid shorter than u_count * v_count was read
+  // past its end by the SetCV loop.
+  auto throws = [](const std::vector<Point3d>& grid, int u_count, int v_count, int u_degree,
+                   int v_degree) {
+    try {
+      (void)NurbsSurface::FromControlGrid(grid, u_count, v_count, u_degree, v_degree);
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  const std::vector<Point3d> four = {Point3d(0, 0, 0), Point3d(0, 1, 0), Point3d(1, 0, 0),
+                                     Point3d(1, 1, 0)};
+  Check(throws(four, 2, 2, 3, 3),
+        "FromControlGrid throws std::invalid_argument when a count is below its degree + 1");
+  Check(throws(four, 2, 2, 1, 2),
+        "...in either direction independently (v_count 2 < v_degree + 1 = 3, u fine)");
+  Check(throws(four, 2, 2, 0, 1), "FromControlGrid throws std::invalid_argument for degree 0");
+  Check(throws(four, 2, 2, 1, -1), "FromControlGrid throws std::invalid_argument for a negative degree");
+  Check(throws({four[0], four[1], four[2]}, 2, 2, 1, 1),
+        "FromControlGrid throws std::invalid_argument when control_grid has fewer than u_count * "
+        "v_count entries (was an out-of-bounds read)");
+  Check(throws({four[0], four[1], four[2], four[3], four[0]}, 2, 2, 1, 1),
+        "...or more than u_count * v_count entries (a silently ignored tail is a caller bug too)");
+  Check(throws({}, 0, 0, 1, 1), "FromControlGrid throws std::invalid_argument for an empty grid");
+
+  // The boundary case (exactly degree + 1 control points per direction)
+  // must keep working exactly as before - this is the bilinear quad every
+  // Brep::Box() face and Mesh::Cylinder() cap is built from.
+  const NurbsSurface bilinear = NurbsSurface::FromControlGrid(four, 2, 2, 1, 1);
+  Check(bilinear.raw().IsValid() && bilinear.CVCountU() == 2 && bilinear.CVCountV() == 2,
+        "exactly degree + 1 control points per direction is still accepted and valid");
+  const dino8::kernel::Interval du = bilinear.Domain(0), dv = bilinear.Domain(1);
+  const Point3d center = bilinear.PointAt(0.5 * (du.min + du.max), 0.5 * (dv.min + dv.max));
+  Check(std::abs(center.x - 0.5) < 1e-12 && std::abs(center.y - 0.5) < 1e-12 &&
+            std::abs(center.z) < 1e-12,
+        "...and evaluates to the unit square's own center (0.5, 0.5, 0) at its domain midpoint");
+}
+
 void TestSurfaceNormalAt() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -20377,6 +20426,7 @@ int main() {
   TestCurveCurvature();
   TestCurveSuggestedSamples();
   TestCurveSuggestedParameterValues();
+  TestSurfaceFromControlGridRejectsDegenerateInput();
   TestSurfaceNormalAt();
   TestSurfaceDegreeElevation();
   TestSurfaceIsClosed();
