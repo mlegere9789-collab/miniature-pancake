@@ -55,6 +55,41 @@ struct MassProperties {
   std::array<double, 3> radii_of_gyration{};
 };
 
+// One crossing of a ray with a mesh, from Mesh::FireRay().
+struct RayHit {
+  // Ray parameter: the hit is at `origin + t * direction`, in units of
+  // `direction`'s own length (t is a multiple of `direction`, NOT a
+  // distance, unless `direction` is unit length).
+  double t = 0;
+  Point3d point;
+  int face_index = -1;  // index into the mesh's own face list
+  // Whether the ray enters the solid here (crosses the face against its
+  // outward normal, direction . normal < 0) or leaves it. Only meaningful
+  // on a consistently-oriented (CCW from outside) mesh.
+  bool entering = false;
+};
+
+// Closest pair of points between two meshes' surfaces, from
+// Mesh::DistanceTo().
+struct MeshDistance {
+  double distance = 0;  // exactly 0 when the surfaces touch or cross
+  Point3d point_on_this;
+  Point3d point_on_other;
+  int face_on_this = -1;
+  int face_on_other = -1;
+};
+
+// Solid-level relationship between two closed meshes, from
+// Mesh::ClashWith(). Mutually exclusive, decided in the order listed on
+// the doc comment there.
+enum class Clash {
+  Clear,             // no shared volume, surfaces further apart than the distance tolerance
+  ThisInsideOther,   // (essentially) all of this mesh's volume lies inside `other`
+  OtherInsideThis,   // (essentially) all of `other`'s volume lies inside this mesh
+  Intersecting,      // the solids share positive volume, but neither contains the other
+  Touching,          // no shared volume, but the surfaces meet (shared face, edge or corner contact)
+};
+
 // Wraps ON_Mesh. OpenNURBS' polygon-mesh representation, produced by
 // tessellating a Brep — this is as far as OpenNURBS' public API goes
 // toward "meshing"; it has no boolean/CSG operations on top of it (see
@@ -180,6 +215,83 @@ class Mesh {
   // eigen-solver itself reports failure, which a finite symmetric
   // tensor should never trigger.
   MassProperties VolumeMassProperties() const;
+
+  // Every crossing of the ray `origin + t * direction` (t > 0, i.e.
+  // strictly ahead of `origin`) with this mesh's faces, sorted by
+  // increasing t - the first entry is the nearest hit, which is what a
+  // pick, a shadow/visibility test, or a "shoot a ray and see what it
+  // lands on" query wants. ContainsPoint() has always fired a ray
+  // internally, but only ever counted its crossings; nothing here could
+  // report WHERE a ray hits, or on which face. Exact Moller-Trumbore
+  // per triangle (the same formula ContainsPoint() uses, now returning
+  // its parameter and barycentrics instead of a bool) - not a march or
+  // a sampled search - with no spatial acceleration structure (every
+  // triangle is tested; a quad face's own two triangles both, same split
+  // Area()/Volume() use). Returns empty for a miss. A hit exactly on a
+  // quad face's shared diagonal is reported once, not once per
+  // triangle. A ray exactly grazing an edge or vertex shared by two
+  // faces is the usual unhandled degenerate case (it may be reported
+  // once per face touched, or missed by both) - not hardened against,
+  // same caveat ContainsPoint() documents. A ray parallel to a face's
+  // plane never hits that face, even if it lies in it. Throws
+  // std::invalid_argument on a zero-length `direction`.
+  std::vector<RayHit> FireRay(Point3d origin, Vector3d direction) const;
+
+  // The exact minimum distance between this mesh's surface and
+  // `other`'s, with the pair of points (and faces) where it's attained
+  // - the clearance query a clash/interference check, an assembly
+  // fit, or a "how far apart are these two parts" measurement needs,
+  // which nothing here could answer before (ClosestPoint() is
+  // point-to-mesh only). Exact per triangle pair: the minimum distance
+  // between two triangles is attained either at a vertex of one and the
+  // closest point on the other (the same Ericson region test
+  // ClosestPoint() uses, 6 vertex/triangle pairs) or between two edges
+  // (the closed-form segment/segment closest points, 9 edge pairs), and
+  // is exactly 0 when an edge of one pierces the other's interior
+  // (segment/triangle intersection, 6 edge/triangle pairs) - all three
+  // families are checked, so a crossing pair reports 0 rather than the
+  // nearest vertex's or edge's positive distance. Returns
+  // `distance == 0` for touching or crossing surfaces. Meaningful for
+  // open surfaces too (it's a surface/surface query, not a solid one).
+  // Brute force over every triangle pair with a per-pair bounding-box
+  // reject against the best distance found so far; no BVH. Throws
+  // std::invalid_argument if either mesh has no faces.
+  MeshDistance DistanceTo(const Mesh& other) const;
+
+  // Solid-level classification of how this closed mesh and `other`
+  // relate (see Clash) - the interference check an assembly needs, which
+  // nothing here could answer before. Decided from the EXACT overlap
+  // volume `vol(this ∩ other)`, computed with the existing Manifold-
+  // backed BooleanCombine(), plus DistanceTo() for contact, in this
+  // order: ThisInsideOther if the overlap is at least
+  // `(1 - relative_volume_tolerance) * Volume()` (so an identical pair,
+  // or a part nestled against its container's wall from inside, reports
+  // this); else OtherInsideThis by the mirror test; else Intersecting if
+  // the overlap exceeds `relative_volume_tolerance * min(volumes)`; else
+  // Touching if the surfaces come within `distance_tolerance` of each
+  // other; else Clear. Two boxes sharing exactly one face (or an edge,
+  // or a corner) are Touching, not Intersecting: they meet but share no
+  // volume.
+  //
+  // Why overlap volume rather than edge/face piercing predicates: the
+  // most ordinary CAD clash - two equal-height boxes overlapping in plan
+  // - has every edge/face crossing landing exactly on a face's edge or
+  // lying in a face's own plane, degenerate for any such predicate,
+  // whereas its overlap volume is plainly positive. Manifold's boolean
+  // (exact predicates with symbolic perturbation) is built for exactly
+  // that coincident geometry. The volume tolerance is relative because
+  // ON_Mesh stores vertices as single-precision floats, so a touching
+  // pair whose coordinates aren't exactly representable can carry a
+  // round-off sliver of overlap (~1e-7 relative); 1e-6 is comfortably
+  // above that and far below any real interference. Requires both meshes
+  // to be closed, consistently oriented (IsClosedManifold()) and of
+  // positive volume - checked directly, throwing std::invalid_argument
+  // otherwise (also if a tolerance is out of range); BooleanCombine()'s
+  // own std::runtime_error can still surface if Manifold rejects a mesh
+  // that passed those checks. Not a high-performance broad-phase check -
+  // it runs a full boolean.
+  Clash ClashWith(const Mesh& other, double distance_tolerance = 1e-6,
+                  double relative_volume_tolerance = 1e-6) const;
 
   // Per-vertex normals: for each vertex, the area-weighted sum of every
   // adjacent face's own flat (non-normalized) triangle normal, then
