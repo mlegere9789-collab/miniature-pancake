@@ -658,6 +658,33 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       `git checkout HEAD` immediately after being measured; neither is
 //       in the tree.
 //
+//       ALSO TRIED AND REJECTED (measured): using h_j directly (no offset
+//       at all) for c_in/c_out, on the hypothesis that the collinearity
+//       risk kEdgeFraction guards against is specific to the OUTER side
+//       (box edges are straight, so o_prev/o_i/o_next are often exactly
+//       collinear) and not the hole side (a circle's consecutive samples
+//       are essentially never exactly collinear, so the hole-side offset
+//       seemed unnecessary for that specific reason) - leaving a_out/a_in
+//       untouched and only replacing c_in/c_out with h_j itself. This did
+//       NOT reproduce the earlier TessellateGridClippedExact regressions
+//       (no collinearity exceptions), but introduced a DIFFERENT, equally
+//       real regression: several cases that previously reported OK now
+//       report WRONG-VOLUME (box+cyl 01/02/03, cyl+cyl 07/08, box+cone 15)
+//       or INVALID (sphere+sphere 12), with volumes off by ~5-10%. Passing
+//       BridgeHolesIntoOuter's own IsSimplePolygon()/area-match acceptance
+//       checks is evidently not sufficient for a zero-width slit (both
+//       ends of the notch at the exact same point) to tessellate/clip
+//       correctly downstream - something in the exact-clip tessellation
+//       or area accounting treats a literal zero-width pinch differently
+//       from a genuinely narrow one, in a way that silently produces the
+//       wrong result rather than failing loudly. This confirms BOTH
+//       kEdgeFraction offsets (outer AND hole side) are load-bearing for
+//       reasons beyond simple collinearity avoidance, not just one of
+//       them - a real fix cannot touch the notch's own geometry at all
+//       and must instead work at the metadata level (the identity-mapping
+//       approach described above). Reverted via `git checkout HEAD`
+//       immediately after being measured; not in the tree.
+//
 //       ONE MORE WRINKLE (found while scoping the fix above): BridgeHoles
 //       IntoOuter()'s own notch (this file, above) does not even splice in
 //       the hole loop's own EXACT pinch vertex - it inserts the two fresh
