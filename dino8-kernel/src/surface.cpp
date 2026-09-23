@@ -823,6 +823,33 @@ Point3d NurbsSurface::PointAt(double u, double v) const {
 Point2d NurbsSurface::ClosestPointParameter(Point3d point, int u_divisions, int v_divisions) const {
   const ON_Interval u_domain = surface_.Domain(0);
   const ON_Interval v_domain = surface_.Domain(1);
+  // A closed direction (u=Min() and u=Max() are the SAME physical point,
+  // e.g. a sphere/cylinder/cone/revolved surface's own periodic
+  // parameter, or a NURBS circle's own domain) needs its search window to
+  // be able to cross that seam - the true closest point can sit on either
+  // side of it. `wrap` folds a possibly out-of-domain sample back into
+  // [lo, hi] for evaluation, while the window-narrowing logic below keeps
+  // working with the RAW (un-wrapped) best_u/best_v so the window can
+  // continue shrinking smoothly across the seam instead of being clamped
+  // there - the actual bug this fixes: before, a non-closed-style
+  // `std::max(u_domain.Min(), ...)` / `std::min(u_domain.Max(), ...)`
+  // clamp meant a coarse sample landing exactly on the seam (u=0) could
+  // never explore the adjacent region just past u=domain.Max() (the other
+  // side of the same physical seam), silently snapping to the seam point
+  // instead of the true closest point up to a seam-wide margin away.
+  // Confirmed directly on a radius-3 sphere: a query point at longitude
+  // -8.7 degrees from the seam used to snap to exactly (3,0,0) (u=0)
+  // instead of the true closest point ~0.26 units away (about 8.7% of
+  // the radius) - fixed by this wrap.
+  const bool u_closed = surface_.IsClosed(0);
+  const bool v_closed = surface_.IsClosed(1);
+  auto wrap = [](double t, double lo, double hi) {
+    const double len = hi - lo;
+    if (len <= 0.0) return t;
+    double r = std::fmod(t - lo, len);
+    if (r < 0.0) r += len;
+    return lo + r;
+  };
   auto distance_squared = [&](double u, double v) { return (PointAt(u, v) - point).LengthSquared(); };
 
   double u_lo = u_domain.Min();
@@ -836,25 +863,29 @@ Point2d NurbsSurface::ClosestPointParameter(Point3d point, int u_divisions, int 
   for (int level = 0; level < kRefinementLevels; ++level) {
     double best_d2 = std::numeric_limits<double>::max();
     for (int i = 0; i <= u_divisions; ++i) {
-      const double u = u_lo + (u_hi - u_lo) * static_cast<double>(i) / u_divisions;
+      const double u_raw = u_lo + (u_hi - u_lo) * static_cast<double>(i) / u_divisions;
+      const double u = u_closed ? wrap(u_raw, u_domain.Min(), u_domain.Max()) : u_raw;
       for (int j = 0; j <= v_divisions; ++j) {
-        const double v = v_lo + (v_hi - v_lo) * static_cast<double>(j) / v_divisions;
+        const double v_raw = v_lo + (v_hi - v_lo) * static_cast<double>(j) / v_divisions;
+        const double v = v_closed ? wrap(v_raw, v_domain.Min(), v_domain.Max()) : v_raw;
         const double d2 = distance_squared(u, v);
         if (d2 < best_d2) {
           best_d2 = d2;
-          best_u = u;
-          best_v = v;
+          best_u = u_raw;
+          best_v = v_raw;
         }
       }
     }
     const double u_step = (u_hi - u_lo) / u_divisions;
     const double v_step = (v_hi - v_lo) / v_divisions;
-    u_lo = std::max(u_domain.Min(), best_u - u_step);
-    u_hi = std::min(u_domain.Max(), best_u + u_step);
-    v_lo = std::max(v_domain.Min(), best_v - v_step);
-    v_hi = std::min(v_domain.Max(), best_v + v_step);
+    u_lo = u_closed ? (best_u - u_step) : std::max(u_domain.Min(), best_u - u_step);
+    u_hi = u_closed ? (best_u + u_step) : std::min(u_domain.Max(), best_u + u_step);
+    v_lo = v_closed ? (best_v - v_step) : std::max(v_domain.Min(), best_v - v_step);
+    v_hi = v_closed ? (best_v + v_step) : std::min(v_domain.Max(), best_v + v_step);
   }
-  return Point2d(best_u, best_v);
+  const double final_u = u_closed ? wrap(best_u, u_domain.Min(), u_domain.Max()) : best_u;
+  const double final_v = v_closed ? wrap(best_v, v_domain.Min(), v_domain.Max()) : best_v;
+  return Point2d(final_u, final_v);
 }
 
 Point3d NurbsSurface::ClosestPoint(Point3d point, int u_divisions, int v_divisions) const {

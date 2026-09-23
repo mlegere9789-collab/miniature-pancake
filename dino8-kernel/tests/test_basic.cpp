@@ -3698,6 +3698,40 @@ void TestSurfaceClosestPoint() {
         "a query point far outside the domain clamps to exactly the "
         "surface's own boundary corner (1,1,0), not an extrapolation "
         "past its domain");
+
+  // A genuine sphere (radius 3, centered at the origin) via
+  // ON_Sphere::GetNurbForm, queried at a point whose own closest point on
+  // the sphere sits just past the surface's own periodic (u) seam - a
+  // real, confirmed bug this test locks in the fix for: for a query point
+  // q outside a sphere centered at the origin, the true closest point is
+  // exactly `radius * q.Normalize()` (independent of the surface's own
+  // parametrization/seam entirely - a hand-derivable closed form, not an
+  // approximation), so this doesn't depend on knowing the seam's own u/v
+  // location. Before the fix, ClosestPointParameter()'s shrinking search
+  // window CLAMPED at the domain boundary instead of wrapping across it,
+  // so a coarse sample landing exactly on the seam (u=0) could never
+  // explore the physically-adjacent region just past the domain's other
+  // end - a query a few degrees off the seam silently snapped to the seam
+  // point itself instead of converging to the true answer. Query point at
+  // longitude -8 degrees from the seam, radius 5 from center (well
+  // outside the sphere): confirmed by a debug run to fall in the
+  // previously-broken range.
+  const double sphere_radius = 3.0;
+  const ON_Sphere on_sphere_for_closest(ON_3dPoint(0, 0, 0), sphere_radius);
+  ON_NurbsSurface sphere_surface_for_closest;
+  Check(on_sphere_for_closest.GetNurbForm(sphere_surface_for_closest) != 0,
+        "ON_Sphere::GetNurbForm succeeds");
+  NurbsSurface sphere_for_closest;
+  sphere_for_closest.raw() = sphere_surface_for_closest;
+  const double angle = -8.0 * ON_PI / 180.0;
+  const double query_radius = 5.0;
+  const Point3d query(query_radius * std::cos(angle), query_radius * std::sin(angle), 0.0);
+  const Point3d expected(sphere_radius * std::cos(angle), sphere_radius * std::sin(angle), 0.0);
+  const Point3d p3 = sphere_for_closest.ClosestPoint(query);
+  Check((p3 - expected).Length() < 1e-2,
+        "ClosestPoint on a sphere near its own periodic seam converges to "
+        "the hand-derivable exact answer (radius * query direction), not "
+        "the seam point itself");
 }
 
 void TestSurfaceCurvature() {
