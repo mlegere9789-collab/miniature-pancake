@@ -6895,6 +6895,150 @@ void TestSubDToNurbsPatchesExactOnRegularFlatGrid() {
         "correct for the regular case, not just plausible");
 }
 
+void TestSubDLimitPointsExactCubeAndFlatGrid() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDLimitPoint;
+  using dino8::kernel::Vector3d;
+
+  // Case 1: the [-1,1]^3 cube cage. Every corner is a valence-3 vertex
+  // whose exact Catmull-Clark limit position follows from the standard
+  // closed-form limit mask (Halstead, Kass & DeRose 1993):
+  //   limit = (n^2 v + 4 sum(edge neighbors) + sum(diagonal neighbors))
+  //           / (n (n + 5)),   n = 3
+  // For v = (1,1,1): edge neighbors (-1,1,1),(1,-1,1),(1,1,-1) sum to
+  // (1,1,1); the diagonal (face-opposite) neighbors (-1,-1,1),(-1,1,-1),
+  // (1,-1,-1) sum to (-1,-1,-1); so limit = (9+4-1)/24 * (1,1,1) =
+  // (0.5, 0.5, 0.5) - i.e. exactly half of every corner's own position,
+  // by the cube's symmetry. Not a number read off the implementation.
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(cube);
+  const std::vector<SubDLimitPoint> lps = subd.LimitPoints();
+  Check(lps.size() == 8 && static_cast<int>(lps.size()) == subd.VertexCount(),
+        "LimitPoints returns one entry per control-net vertex (8 for the cube cage)");
+  bool all_half = true, all_valence3_smooth = true, all_normals_diagonal = true;
+  for (const SubDLimitPoint& lp : lps) {
+    const Point3d expect(0.5 * lp.control_point.x, 0.5 * lp.control_point.y, 0.5 * lp.control_point.z);
+    if (lp.limit_point.DistanceTo(expect) > 1e-9) all_half = false;
+    if (lp.valence != 3 || !lp.smooth) all_valence3_smooth = false;
+    // By symmetry the limit normal at a corner is the outward body
+    // diagonal, (+/-1, +/-1, +/-1)/sqrt(3) with the corner's own signs.
+    Vector3d diag = Vector3d(lp.control_point.x, lp.control_point.y, lp.control_point.z);
+    diag.Unitize();
+    if (std::abs(ON_DotProduct(lp.limit_normal, diag) - 1.0) > 1e-9) all_normals_diagonal = false;
+  }
+  Check(all_half, "every cube-cage corner's limit point is exactly half its control position, "
+                  "the closed-form valence-3 Catmull-Clark limit mask");
+  Check(all_valence3_smooth, "every cube-cage corner reports valence 3 and smooth");
+  Check(all_normals_diagonal, "every cube-cage corner's unit limit normal is its outward body diagonal");
+
+  // Case 2: independent cross-check against the subdivision itself.
+  // Repeated Subdivide() must converge toward the reported limit points
+  // (the corner's descendant vertex approaches it geometrically): the
+  // nearest control-net vertex to each limit point gets strictly closer
+  // at every level checked, and is within 1e-4 after 6 levels (a debug
+  // run measured 0.096, 0.016, 4.4e-4, 1.2e-5 at levels 1, 2, 4, 6).
+  double previous = std::numeric_limits<double>::infinity();
+  bool strictly_closer = true;
+  double at_six = 0;
+  for (int levels : {1, 2, 4, 6}) {
+    SubD copy = SubD::FromControlMesh(cube);
+    copy.Subdivide(levels);
+    const Mesh m = copy.ToApproximateMesh();
+    double worst = 0;
+    for (const SubDLimitPoint& lp : lps) {
+      double best = std::numeric_limits<double>::infinity();
+      for (int i = 0; i < m.raw().m_V.Count(); ++i) {
+        best = std::min(best, Point3d(m.raw().m_V[i]).DistanceTo(lp.limit_point));
+      }
+      worst = std::max(worst, best);
+    }
+    if (!(worst < previous)) strictly_closer = false;
+    previous = worst;
+    if (levels == 6) at_six = worst;
+  }
+  Check(strictly_closer, "repeated subdivision brings the control net strictly closer to the "
+                         "reported limit points at every level checked (1, 2, 4, 6)");
+  Check(at_six < 1e-4, "after 6 subdivisions every limit point is within 1e-4 of a control-net vertex");
+
+  // Case 3: the limit surface is invariant under subdivision, so the
+  // level-1 control net's own limit points must include the 8 level-0
+  // ones (to round-off) - the level-0 corners' descendants converge to
+  // the same points.
+  SubD once = SubD::FromControlMesh(cube);
+  once.Subdivide(1);
+  const std::vector<SubDLimitPoint> l1 = once.LimitPoints();
+  Check(l1.size() == 26, "after one subdivision the cube has 26 limit points (8 + 12 + 6)");
+  double worst_l1 = 0;
+  for (const SubDLimitPoint& lp : lps) {
+    double best = std::numeric_limits<double>::infinity();
+    for (const SubDLimitPoint& q : l1) best = std::min(best, q.limit_point.DistanceTo(lp.limit_point));
+    worst_l1 = std::max(worst_l1, best);
+  }
+  Check(worst_l1 < 1e-12, "each level-0 limit point reappears exactly among the level-1 limit points "
+                          "(the limit surface is invariant under subdivision)");
+
+  // Case 4: the flat 2x2-quad grid (3x3 vertices). Three hand-derivable
+  // regimes on one control net: the interior valence-4 vertex (1,1,0)
+  // is regular, and the regular limit mask (16 v + 4 sum(edge) +
+  // sum(diagonal))/36 of a uniform grid is v itself; a boundary edge is a
+  // crease, whose limit mask (e1 + 4 v + e2)/6 leaves a boundary edge
+  // midpoint like (1,0,0) at itself (its crease neighbors (0,0,0) and
+  // (2,0,0) average to it) but pulls a corner like (0,0,0) - crease
+  // neighbors (1,0,0) and (0,1,0) - to exactly (1/6, 1/6, 0). Every
+  // limit normal is (0,0,1): the grid is flat.
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      raw.m_V.Append(ON_3fPoint(static_cast<double>(i), static_cast<double>(j), 0.0));
+    }
+  }
+  auto idx = [](int i, int j) { return i * 3 + j; };
+  for (int i = 0; i < 2; ++i) {
+    for (int j = 0; j < 2; ++j) {
+      ON_MeshFace face;
+      face.vi[0] = idx(i, j);
+      face.vi[1] = idx(i + 1, j);
+      face.vi[2] = idx(i + 1, j + 1);
+      face.vi[3] = idx(i, j + 1);
+      raw.m_F.Append(face);
+    }
+  }
+  const std::vector<SubDLimitPoint> grid_lps = SubD::FromControlMesh(grid).LimitPoints();
+  Check(grid_lps.size() == 9, "the flat 3x3 grid has 9 limit points");
+  bool interior_ok = false, edges_ok = true, corners_ok = true, normals_ok = true;
+  int interior_seen = 0, edge_seen = 0, corner_seen = 0;
+  for (const SubDLimitPoint& lp : grid_lps) {
+    const Point3d& c = lp.control_point;
+    const bool on_x_edge = (c.x == 0.0 || c.x == 2.0), on_y_edge = (c.y == 0.0 || c.y == 2.0);
+    if (!on_x_edge && !on_y_edge) {
+      ++interior_seen;
+      interior_ok = lp.valence == 4 && lp.smooth && lp.limit_point.DistanceTo(c) < 1e-9;
+    } else if (on_x_edge && on_y_edge) {
+      ++corner_seen;
+      const Point3d expect(c.x == 0.0 ? 1.0 / 6.0 : 2.0 - 1.0 / 6.0, c.y == 0.0 ? 1.0 / 6.0 : 2.0 - 1.0 / 6.0, 0.0);
+      if (lp.valence != 2 || lp.smooth || lp.limit_point.DistanceTo(expect) > 1e-9) corners_ok = false;
+    } else {
+      ++edge_seen;
+      if (lp.valence != 3 || lp.smooth || lp.limit_point.DistanceTo(c) > 1e-9) edges_ok = false;
+    }
+    if (std::abs(lp.limit_normal.z - 1.0) > 1e-9 || std::abs(lp.limit_normal.x) > 1e-9 ||
+        std::abs(lp.limit_normal.y) > 1e-9) {
+      normals_ok = false;
+    }
+  }
+  Check(interior_seen == 1 && interior_ok,
+        "the grid's one interior vertex is regular (valence 4, smooth) and its limit point is exactly itself");
+  Check(edge_seen == 4 && edges_ok,
+        "the 4 boundary edge midpoints (valence 3, on a crease) have limit points exactly at themselves");
+  Check(corner_seen == 4 && corners_ok,
+        "the 4 corners (valence 2, on a crease) land at exactly (1/6, 1/6, 0) and its mirrors, "
+        "the boundary-crease limit mask (e1 + 4v + e2)/6");
+  Check(normals_ok, "every flat-grid limit normal is exactly (0, 0, 1)");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -20884,6 +21028,7 @@ int main() {
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestSubDToNurbsPatchesExactOnRegularFlatGrid();
+  TestSubDLimitPointsExactCubeAndFlatGrid();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();

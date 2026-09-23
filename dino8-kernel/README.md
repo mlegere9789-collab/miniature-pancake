@@ -1934,6 +1934,40 @@ What this repo does instead:
     let an open mesh through to Manifold's own less specific error -
     fixed by checking `IsClosedManifold()` directly first, as the
     documented precondition says.
+- `SubD::LimitPoints()`: the EXACT Catmull-Clark limit-surface point and
+  normal of every control-net vertex - closing the "not exact limit-
+  surface evaluation" item this file's own "What's still not done" list
+  carried since chunk 2, at least for the vertices. A corrected
+  assumption, found by reading rather than trusting: `subd.h`'s class
+  comment (and that list) said OpenNURBS' public API ships no exact
+  limit evaluator, but `ON_SubDVertex::SurfacePoint()`/`SurfaceNormal()`
+  are real, non-stub implementations in `opennurbs_subd_eval.cpp` (a
+  sector-based computation walking the vertex's incident faces via
+  `ON_SubDSectorIterator` - unlike the `BrepForm()`/`CreaseEdgeCount()`
+  stubs the same comment correctly documents). Being real in the source
+  isn't being correct, so it was verified numerically against the
+  standard closed-form limit masks before being trusted, all confirmed
+  by a debug run first: on the [-1,1]^3 cube cage every valence-3
+  corner's limit point is exactly half its control position, which is
+  what Halstead/Kass/DeRose's `(n^2 v + 4 sum(edge nbrs) + sum(diagonal
+  nbrs)) / (n(n+5))` gives by hand ((9+4-1)/24 = 1/2), with the outward
+  body diagonal as its unit normal; on a flat 3x3 grid the regular
+  interior vertex and the boundary-crease edge midpoints stay exactly
+  put while the corners land at exactly `(1/6, 1/6, 0)`, the crease
+  mask `(e1 + 4v + e2)/6` by hand, with every normal exactly `(0,0,1)`.
+  Two further independent cross-checks against the subdivision itself:
+  repeated `Subdivide()` brings the control net strictly closer to the
+  reported limit points at every level (measured 0.096, 0.016, 4.4e-4,
+  1.2e-5 at levels 1, 2, 4, 6 - genuine geometric convergence, the
+  defining property of a limit point), and the level-1 net's own limit
+  points reproduce the level-0 ones to 1.7e-16 (the limit surface is
+  invariant under subdivision). Honest scope on the declaration: this is
+  per-vertex only, not evaluation at an arbitrary (u, v) inside an
+  irregular face (`ToNurbsPatches()` already covers regular faces
+  exactly); a crease/corner vertex's normal is reported for the sector
+  of its first face only, since the limit surface genuinely has one
+  normal per sector there. `subd.h`'s class comment and the "What's
+  still not done" bullet are both corrected rather than left stale.
 
 ## What's still not done (as of chunk 2)
 
@@ -1980,9 +2014,13 @@ What this repo does instead:
   different resolutions along their shared edge) — vertex-snapping can't
   fix a genuine T-junction, only near-identical positions at matching
   sample counts.
-- `SubD` wraps real Catmull-Clark refinement, but not exact limit-surface
-  evaluation — `ToApproximateMesh()` is the repeated-subdivision
-  approximation, not the true smooth surface. Interior creases are now
+- `SubD` wraps real Catmull-Clark refinement; exact limit-surface
+  evaluation now exists at the VERTICES (`LimitPoints()`, see below -
+  OpenNURBS turned out to ship a real per-vertex limit evaluator after
+  all) and over regular faces (`ToNurbsPatches()`), but not at an
+  arbitrary point inside an irregular face — `ToApproximateMesh()` is
+  still the repeated-subdivision approximation there, not the true
+  smooth surface. Interior creases are now
   supported (see below) but only that one crease option; no SubD editing
   (adding/removing faces, extrude, etc.), and no SubD ↔ Brep conversion
   (that direction is the stubbed `BrepForm()`/`GetSurfaceBrep()` this
