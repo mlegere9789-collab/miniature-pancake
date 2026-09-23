@@ -575,6 +575,33 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       76-case sweep (expect the closedmesh count to improve without
 //       any volume/ON_Brep::IsValid()/nonsimple-trim regression) and the
 //       full ctest suite before being considered fixed.
+//
+//       ONE MORE WRINKLE (found while scoping the fix above, before
+//       writing any code for it - read, not yet acted on): BridgeHolesInto
+//       Outer()'s own notch (this file, above) does not even splice in the
+//       hole loop's own EXACT pinch vertices - it inserts fresh points via
+//       LerpOnSurface(..., kEdgeFraction=1e-3) on both the outer side (o_i/
+//       o_next) and the hole side (h_j/h_prev), a deliberate near-miss so
+//       the notch's own corners are never exactly collinear/zero-area
+//       (this function's own top comment explains why). That means kf0's
+//       slit-adjacent points are NEVER meant to exactly equal the hole
+//       loop's own true vertices at all - only points 0.1% of an edge
+//       length away from them. So the fix above (treating the cross-face
+//       run as an ordinary 2-run pair) is not by itself sufficient: it
+//       must route the reconciliation through the hole loop's own
+//       UNPERTURBED vertices (h_j, h_prev, h_next etc., the same points
+//       oriented_hole itself holds before the two LerpOnSurface() calls
+//       run) rather than the notch's own already-offset splice points -
+//       otherwise "fixing" the run-count check would just make the
+//       cylinder wall's boundary match the notch's own 1e-3-offset
+//       points instead of the hole's true boundary, trading one seam
+//       mismatch for a smaller but still-nonzero one. The cleanest place
+//       to fix this is likely BridgeHolesIntoOuter() itself: track which
+//       inserted point corresponds to which original hole-loop point (it
+//       already knows this per-attachment, see HoleAttachment) and thread
+//       that mapping out to ReconcileFragmentBoundaries() so it can
+//       resolve anchors against the hole's own true samples instead of
+//       the notch's perturbed ones.
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
 
 }  // namespace dino8::kernel
