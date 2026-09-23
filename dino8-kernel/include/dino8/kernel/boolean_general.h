@@ -530,11 +530,51 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       and this file's own DINO8_FACE_ORIGIN_DEBUG block are both
 //       print-only - the 76-case sweep's output is byte-for-byte
 //       unchanged with them compiled in, and the full ctest suite (dino8_
-//       kernel_smoke) is 100% green. NEXT STEP: read SplitFaceLoop's own
-//       notch-composition path for face 0 (the box's bottom cap) on this
-//       exact fixture to see whether its hole loop is built once or
-//       whether more than one candidate loop/fragment is emitted for the
-//       same physical hole boundary.
+//       kernel_smoke) is 100% green.
+//
+//       ROOT CAUSE FOUND (same later session, continued): confirmed the
+//       "more than one candidate face" symptom above is a real, single
+//       mechanism, not multiple independent bugs - ReconcileFragmentBound
+//       aries() (this file) explicitly skips reconciling any anchor-
+//       vertex-pair whose key has `rs.size() != 2` ("ambiguous (0, 1, or
+//       3+ claimants) - leave alone", see the `continue` right after this
+//       function's own `total_pairs`/`two_run_pairs` debug counters).
+//       Added a per-pair DINO8_BOOL_DEBUG dump of every such skipped
+//       pair's owning loops/positions and, on box+cylinder Union, found
+//       ALL 14 of the 444 anchor pairs that are NOT cleanly 2-run (444-
+//       430=14, matching the earlier "two_run=430" count in this file's
+//       own debug output) trace to the SAME mechanism: BridgeHolesInto
+//       Outer()'s keyhole-notch splice makes the box cap's own SINGLE
+//       outer loop (kf0/kf1, built by folding the circular hole into the
+//       rectangular outer boundary as an out-and-back slit) touch the
+//       hole boundary's own two "pinch" anchor vertices TWICE - once
+//       walking out along the slit, once walking back - so the anchor-
+//       pair key for the hole boundary's own two ends already has 2
+//       same-face runs (both owned by kf0 itself) BEFORE the neighboring
+//       cylinder-wall fragment's (kf8/kf9) own matching run is even
+//       counted. That pushes the total claimant count to 3, so this
+//       function's own `if (rs.size() != 2) continue` bails out on
+//       exactly this pair - meaning the box cap's hole boundary and the
+//       cylinder wall's matching edge are NEVER reconciled to share
+//       identical points at all, leaving each side with its own
+//       independently-sampled boundary; those independent samples land
+//       close together but not identically (e.g. the v1110/v1249 pair
+//       above, ~1.7e-4 apart), so Mesh::MergeAndWeld()'s tolerance never
+//       merges them, and the two sides' triangulations meet with
+//       inconsistent winding at that seam - directly producing the
+//       orientation conflict this whole investigation started from.
+//       NEXT STEP (not yet implemented): teach ReconcileFragmentBound
+//       aries() to recognize this specific 3-claimant shape (exactly one
+//       same-face self-pair - the keyhole's own out/back touch - plus one
+//       cross-face run) as resolvable rather than ambiguous: treat the
+//       cross-face run exactly as an ordinary 2-run pair (reusing
+//       whichever side is denser as ground truth, same as the ordinary
+//       path below), leaving the same-face self-pair itself untouched
+//       (it is kf0's own internal keyhole seam, never meant to gain
+//       fresh points from a neighbor). Must be verified against the same
+//       76-case sweep (expect the closedmesh count to improve without
+//       any volume/ON_Brep::IsValid()/nonsimple-trim regression) and the
+//       full ctest suite before being considered fixed.
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
 
 }  // namespace dino8::kernel

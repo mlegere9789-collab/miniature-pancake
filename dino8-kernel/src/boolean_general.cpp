@@ -2508,6 +2508,14 @@ void ReconcileFragmentBoundaries(std::vector<KeptFace>& kept) {
     }
     std::fprintf(stderr, "ReconcileFragmentBoundaries: loops=%zu anchor_pairs=%d two_run=%d cross_face=%d\n",
                  loops.size(), total_pairs, two_run_pairs, cross_face_pairs);
+    for (auto& [key, rs] : runs_by_pair) {
+      if (rs.size() == 2 && loops[rs[0].li].kf_index != loops[rs[1].li].kf_index) continue;
+      std::fprintf(stderr, "  UNRESOLVED anchor pair (%d,%d): %zu run(s)", key.first, key.second, rs.size());
+      for (const Run& r : rs) {
+        std::fprintf(stderr, " [li=%zu kf=%d a_pos=%zu b_pos=%zu]", r.li, loops[r.li].kf_index, r.a_pos, r.b_pos);
+      }
+      std::fprintf(stderr, "\n");
+    }
   }
   auto dist2 = [](const Point3d& x, const Point3d& y) {
     const double dx = x.x - y.x, dy = x.y - y.y, dz = x.z - y.z;

@@ -411,6 +411,7 @@ void RunCase(const Case& c) {
       {"B-A         ", &b, &a, BooleanOp::Difference, ex.ba, &ref.mb, &ref.ma},
   };
   for (const Run& r : runs) {
+    if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) std::fprintf(stderr, "--- op=%s ---\n", r.label);
     const double mref = MeshRefVolume(ref, *r.mx, *r.my, r.op);
     Brep res;
     try {
