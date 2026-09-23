@@ -1832,6 +1832,57 @@ What this repo does instead:
   the "Known gaps" note itself named, plus the weld/join family, so the
   byte-identical sweep claim stays checkable one family at a time.
 
+## Blending build log (Parasolid "blend/chamfer" class, chronological)
+
+Exact edge blends live in `include/dino8/kernel/fillet.h` /
+`src/fillet.cpp` (`FilletConvexEdge`, the tapered `FilletConvexEdgeTapered`
+overloads, and the chamfers below). Each entry here records what was
+closed, the closed form it was checked against, and what is still
+honestly out of scope.
+
+- **`ChamferConvexEdge(solid, p0, p1, distance_i, distance_j)` and
+  `ChamferConvexEdgeAngle(solid, p0, p1, distance_i, angle_from_i)`** -
+  the planar sibling of `FilletConvexEdge`: a two-distance (Parasolid
+  "chamfer by two ranges") or distance+angle chamfer of one straight,
+  convex edge between two planar faces. Because the blend face is a
+  plane, the whole result is a `Brep::FromMixedFaces` of planar faces
+  only: no dense polygonal notch, no sagitta tolerance, every shared
+  boundary a single exact `ON_LineCurve` edge. The one genuinely new
+  piece of geometry versus the fillet is the END CONDITION, and it is
+  MORE general than the fillet's: at each endpoint the third face's
+  sharp corner is replaced by the two points where the chamfer's rails
+  pierce that face's plane (`Q_i = rail_i /\ plane_k`, which provably
+  lies on face k's own existing edge with face i, since `rail_i` lies in
+  plane i), so an end face OBLIQUE to the edge - the case
+  `FilletConvexEdge` still leaves untouched, because a cylinder's
+  oblique section is an ellipse - is closed exactly here, because a
+  plane's oblique section is just another line. Four or more faces at an
+  endpoint, or a curved neighbour, throw `std::invalid_argument` rather
+  than returning a chamfer whose end floats unattached; a free edge end
+  (no third face at all) is honestly left open, as the fillet already
+  does. The angle form is a thin dispatch: `distance_j = distance_i *
+  sin(angle) / sin(theta + angle)` from the law of sines in the
+  chamfer's own triangular cross-section (theta = interior dihedral),
+  rejecting angles outside `(0, pi - theta)`. Verified in
+  `tests/test_basic.cpp` (`TestChamferConvexEdge*`), not merely argued:
+  a unit box chamfered (0.3, 0.2) is `IsValid()`/`IsManifold()`-closed/
+  `IsSolid()` with 7 faces, 15 edges, 10 vertices and tessellated volume
+  `1 - 0.3*0.2/2 = 0.97` to within 1e-6 (the residual is `ON_Mesh`'s own
+  float vertex storage, ~1e-9 here); a hand-built hexahedron whose +x end
+  face is the oblique plane `x = 1 + 0.3y` chamfers to a closed solid of
+  volume `1.15 - (di*dj/2)*(1 + 0.1*di)` (the removed prism's triangle
+  centroid at `y = di/3` swept to the oblique plane - exact, checked to
+  1e-6) with the rail/oblique-face piercing vertex landing exactly at
+  `(1 + 0.3*di, di, 1)`; the 45-degree angle form reproduces the
+  symmetric `(di, di)` chamfer and the 30-degree form's own plane makes
+  exactly 30 degrees with face i; and non-positive/oversized distances, a
+  non-edge diagonal, out-of-range angles and an input already carrying a
+  fillet's curved face are all rejected. Still out of scope, disclosed:
+  a chamfer on an edge with a curved adjacent face, a concave edge, and
+  chaining several chamfers on one solid (the second call is rejected by
+  `PlanarFaces()` only if the first left a curved face; two chamfers are
+  both planar and do chain).
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`

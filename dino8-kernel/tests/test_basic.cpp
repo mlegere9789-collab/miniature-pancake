@@ -20380,6 +20380,287 @@ void TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge() {
         "RemoveNakedMicroEdge() on a shared (2-trim) edge returns Result::Failed");
 }
 
+// ---------------------------------------------------------------------------
+// ChamferConvexEdge / ChamferConvexEdgeAngle (fillet.h) - exact planar
+// chamfers. Every face of a chamfered planar solid is itself planar, so
+// the tessellated volume below is limited only by ON_Mesh's own single-
+// precision vertex storage (~1e-8 relative), not by any chordal error.
+
+// Builds a PlanarFace from a CCW-as-seen-from-outside loop, deriving its
+// outward plane via Newell's method exactly as Brep::PlanarFaces() does -
+// so a hand-built hexahedron fixture below uses the same convention every
+// planar-face factory in brep.h produces.
+dino8::kernel::Brep::PlanarFace ChamferTestPlanarFace(const std::vector<dino8::kernel::Point3d>& loop) {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+  dino8::kernel::Brep::PlanarFace f;
+  f.loop = loop;
+  Vector3d n(0, 0, 0);
+  for (size_t k = 0; k < loop.size(); ++k) {
+    const Point3d& a = loop[k];
+    const Point3d& b = loop[(k + 1) % loop.size()];
+    n.x += (a.y - b.y) * (a.z + b.z);
+    n.y += (a.z - b.z) * (a.x + b.x);
+    n.z += (a.x - b.x) * (a.y + b.y);
+  }
+  n.Unitize();
+  f.plane = ON_Plane(loop[0], n);
+  return f;
+}
+
+bool ChamferTestBrepHasVertexNear(const dino8::kernel::Brep& b, const dino8::kernel::Point3d& p, double tol) {
+  const ON_Brep& raw = b.raw();
+  for (int i = 0; i < raw.m_V.Count(); ++i) {
+    if (raw.m_V[i].point.DistanceTo(p) <= tol) return true;
+  }
+  return false;
+}
+
+void TestChamferConvexEdgeUnitCubeClosedFormVolumeAndTopology() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexEdge;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double di = 0.3, dj = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  // Face i (walks edge_p0 -> edge_p1) is the top (z=1) face, face j the
+  // front (y=0) face - the same edge TestFilletConvexEdgeUnitCubeTopFrontCorner uses.
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const Brep c = ChamferConvexEdge(box, edge_p0, edge_p1, di, dj);
+
+  Check(c.FaceCount() == 7, "chamfering one box edge yields 7 faces (4 re-cornered/untouched + 2 re-trimmed + 1 chamfer)");
+
+  ON_TextLog log;
+  Check(c.raw().IsValid(&log), "the chamfered box passes ON_Brep::IsValid()");
+  bool oriented = false, has_boundary = true;
+  Check(c.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary,
+        "the chamfered box is an oriented, CLOSED 2-manifold (both end faces re-cornered exactly)");
+  Check(c.raw().IsSolid(), "the chamfered box reports IsSolid() == true");
+
+  // Closed form: the removed material is a right triangular prism of
+  // cross-section (1/2)*di*dj along the unit-length edge.
+  const double expected_volume = 1.0 - 0.5 * di * dj;
+  const double measured_volume = c.TessellateToClosedMesh(8, 8).Volume();
+  Check(std::fabs(measured_volume - expected_volume) < 1e-6,
+        "chamfered unit cube's tessellated volume matches 1 - di*dj/2 = 0.97 to within 1e-6");
+
+  // The four chamfer rail corners are real vertices of the result.
+  Check(ChamferTestBrepHasVertexNear(c, Point3d(0, di, 1), 1e-9) && ChamferTestBrepHasVertexNear(c, Point3d(1, di, 1), 1e-9),
+        "face i's (top) chamfer rail runs exactly along y = di at z = 1");
+  Check(ChamferTestBrepHasVertexNear(c, Point3d(0, 0, 1 - dj), 1e-9) &&
+            ChamferTestBrepHasVertexNear(c, Point3d(1, 0, 1 - dj), 1e-9),
+        "face j's (front) chamfer rail runs exactly along z = 1 - dj at y = 0");
+  // The original sharp edge is gone.
+  Check(!ChamferTestBrepHasVertexNear(c, edge_p0, 1e-9) && !ChamferTestBrepHasVertexNear(c, edge_p1, 1e-9),
+        "the original sharp edge's two endpoint vertices no longer exist in the chamfered Brep");
+
+  // Exactly one face has the chamfer plane's outward normal
+  // (0, -dj, di)/|.| - between +z (top) and -y (front).
+  Vector3d n_c(0, -dj, di);
+  n_c.Unitize();
+  int chamfer_faces = 0;
+  const ON_Brep& raw = c.raw();
+  for (int f = 0; f < raw.m_F.Count(); ++f) {
+    ON_Plane pl;
+    if (!raw.m_F[f].SurfaceOf()->IsPlanar(&pl, 1e-9)) continue;
+    Vector3d n = pl.zaxis;
+    if (raw.m_F[f].m_bRev) n = -n;
+    if (std::fabs(std::fabs(n * n_c) - 1.0) < 1e-9) ++chamfer_faces;
+  }
+  Check(chamfer_faces == 1, "exactly one face of the result lies in the chamfer plane with normal (0, -dj, di)/|.|");
+  Check(raw.m_E.Count() == 15, "chamfered box has 15 edges (12 - 1 removed + 4 new)");
+  Check(raw.m_V.Count() == 10, "chamfered box has 10 vertices (8 - 2 removed + 4 new)");
+}
+
+void TestChamferConvexEdgeObliqueEndFaceIsExactAndClosed() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexEdge;
+  using dino8::kernel::Point3d;
+
+  // A hexahedron whose +x end face is OBLIQUE to the chamfered edge: the
+  // unit square cross-section in (y, z) extruded along x from the plane
+  // x = 0 to the plane x = 1 + 0.3*y. Its volume is exactly
+  // int_0^1 int_0^1 (1 + 0.3 y) dy dz = 1.15.
+  auto X = [](double y) { return 1.0 + 0.3 * y; };
+  const Point3d A(0, 0, 0), B(0, 1, 0), C(0, 1, 1), D(0, 0, 1);
+  const Point3d A1(X(0), 0, 0), B1(X(1), 1, 0), C1(X(1), 1, 1), D1(X(0), 0, 1);
+  std::vector<Brep::PlanarFace> faces = {
+      ChamferTestPlanarFace({A, D, C, B}),    // x = 0
+      ChamferTestPlanarFace({A1, B1, C1, D1}),  // oblique end
+      ChamferTestPlanarFace({A, A1, D1, D}),  // y = 0
+      ChamferTestPlanarFace({B, C, C1, B1}),  // y = 1
+      ChamferTestPlanarFace({A, B, B1, A1}),  // z = 0
+      ChamferTestPlanarFace({D, D1, C1, C}),  // z = 1
+  };
+  const Brep hex = Brep::FromPlanarFaces(faces);
+  Check(hex.raw().IsSolid(), "sanity: the hand-built oblique-ended hexahedron fixture is itself a closed solid");
+  Check(std::fabs(hex.TessellateToClosedMesh(8, 8).Volume() - 1.15) < 1e-6,
+        "sanity: the fixture's own volume is exactly 1.15");
+
+  // Chamfer the top-front edge (z=1, y=0), from x=0 to x=X(0)=1.
+  const double di = 0.3, dj = 0.2;
+  const Brep c = ChamferConvexEdge(hex, Point3d(0, 0, 1), Point3d(1, 0, 1), di, dj);
+
+  ON_TextLog log;
+  Check(c.raw().IsValid(&log), "the oblique-ended chamfered hexahedron passes ON_Brep::IsValid()");
+  bool oriented = false, has_boundary = true;
+  Check(c.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary,
+        "the oblique-ended chamfered hexahedron is a CLOSED 2-manifold - the oblique end face is re-cornered exactly, "
+        "not left with its sharp corner");
+  Check(c.raw().IsSolid(), "the oblique-ended chamfered hexahedron reports IsSolid() == true");
+
+  // Closed form for the removed prism: the (1/2)*di*dj triangle in the
+  // (y, z) plane, with centroid at y = di/3, swept along x from 0 to
+  // X(y) = 1 + 0.3 y, so V_removed = (di*dj/2) * (1 + 0.3*di/3).
+  const double removed = 0.5 * di * dj * (1.0 + 0.1 * di);
+  const double expected = 1.15 - removed;
+  const double measured = c.TessellateToClosedMesh(8, 8).Volume();
+  Check(std::fabs(measured - expected) < 1e-6,
+        "oblique-ended chamfer volume matches the closed form 1.15 - (di*dj/2)*(1 + 0.1*di) to within 1e-6");
+
+  // The rail/oblique-face piercing points: rail_i (z=1, y=di) meets the
+  // oblique plane at x = X(di); rail_j (y=0, z=1-dj) meets it at x = X(0).
+  Check(ChamferTestBrepHasVertexNear(c, Point3d(X(di), di, 1), 1e-9),
+        "face i's rail pierces the oblique end face exactly at (1 + 0.3*di, di, 1) - it slid along the end face's own edge");
+  Check(ChamferTestBrepHasVertexNear(c, Point3d(X(0), 0, 1 - dj), 1e-9),
+        "face j's rail pierces the oblique end face exactly at (1, 0, 1 - dj)");
+  // And the perpendicular x=0 end is the plain in-plane corner cut.
+  Check(ChamferTestBrepHasVertexNear(c, Point3d(0, di, 1), 1e-9) && ChamferTestBrepHasVertexNear(c, Point3d(0, 0, 1 - dj), 1e-9),
+        "the perpendicular x=0 end face is re-cornered at (0, di, 1) and (0, 0, 1 - dj)");
+  Check(!ChamferTestBrepHasVertexNear(c, Point3d(1, 0, 1), 1e-9), "the oblique end's original sharp corner vertex is gone");
+}
+
+void TestChamferConvexEdgeAngleMatchesTwoDistanceForm() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexEdge;
+  using dino8::kernel::ChamferConvexEdgeAngle;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  const double di = 0.3;
+
+  // 45 degrees on a right-angle edge is the symmetric chamfer.
+  const Brep sym_angle = ChamferConvexEdgeAngle(box, edge_p0, edge_p1, di, ON_PI / 4.0);
+  const Brep sym_dist = ChamferConvexEdge(box, edge_p0, edge_p1, di, di);
+  Check(std::fabs(sym_angle.TessellateToClosedMesh(8, 8).Volume() - (1.0 - 0.5 * di * di)) < 1e-6,
+        "45-degree chamfer on a right-angle edge has volume 1 - di^2/2 (the symmetric chamfer)");
+  Check(ChamferTestBrepHasVertexNear(sym_angle, Point3d(0, 0, 1 - di), 1e-9),
+        "45-degree chamfer's face-j rail sits at exactly distance di, matching the two-distance form");
+  Check(sym_angle.raw().m_V.Count() == sym_dist.raw().m_V.Count() && sym_angle.raw().m_E.Count() == sym_dist.raw().m_E.Count(),
+        "45-degree and (di, di) chamfers have identical vertex/edge counts");
+
+  // 30 degrees: law of sines, dj = di*sin(30)/sin(90+30) = di*0.5/cos(30).
+  const double ang = ON_PI / 6.0;
+  const double dj = di * std::sin(ang) / std::sin(ON_PI / 2.0 + ang);
+  Check(std::fabs(dj - di * 0.5 / std::cos(ON_PI / 6.0)) < 1e-15, "sanity: the test's own law-of-sines value is consistent");
+  const Brep c30 = ChamferConvexEdgeAngle(box, edge_p0, edge_p1, di, ang);
+  Check(std::fabs(c30.TessellateToClosedMesh(8, 8).Volume() - (1.0 - 0.5 * di * dj)) < 1e-6,
+        "30-degree chamfer's volume matches 1 - di*dj/2 with dj from the law of sines");
+  Check(ChamferTestBrepHasVertexNear(c30, Point3d(0, 0, 1 - dj), 1e-9),
+        "30-degree chamfer's face-j rail sits exactly at the law-of-sines distance");
+  // The chamfer plane really makes a 30-degree angle with face i (z=1):
+  // its normal makes 30 degrees with +z.
+  const ON_Brep& raw = c30.raw();
+  bool found = false;
+  for (int f = 0; f < raw.m_F.Count() && !found; ++f) {
+    ON_Plane pl;
+    if (!raw.m_F[f].SurfaceOf()->IsPlanar(&pl, 1e-9)) continue;
+    dino8::kernel::Vector3d n = pl.zaxis;
+    if (raw.m_F[f].m_bRev) n = -n;
+    if (std::fabs(n.x) > 1e-9 || n.y > -1e-9) continue;  // want the (0, -, +) chamfer normal
+    if (std::fabs(std::acos(std::max(-1.0, std::min(1.0, n.z))) - ang) < 1e-9) found = true;
+  }
+  Check(found, "the 30-degree chamfer's own plane makes exactly 30 degrees with face i");
+  Check(c30.raw().IsSolid(), "the 30-degree chamfered box is a closed solid");
+}
+
+void TestChamferConvexEdgeRejectsInvalidInput() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexEdge;
+  using dino8::kernel::ChamferConvexEdgeAngle;
+  using dino8::kernel::Point3d;
+
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Point3d edge_p0(0, 0, 1), edge_p1(1, 0, 1);
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(throws([&] { ChamferConvexEdge(box, edge_p0, edge_p1, 0.0, 0.2); }), "rejects distance_i == 0");
+  Check(throws([&] { ChamferConvexEdge(box, edge_p0, edge_p1, 0.3, -0.2); }), "rejects negative distance_j");
+  Check(throws([&] { ChamferConvexEdge(box, edge_p0, edge_p1, 1.0, 0.2); }), "rejects a distance equal to the face's full extent");
+  Check(throws([&] { ChamferConvexEdge(box, edge_p0, edge_p1, 0.3, 1.5); }), "rejects a distance beyond the face's extent");
+  Check(throws([&] { ChamferConvexEdge(box, Point3d(0, 0, 1), Point3d(1, 1, 1), 0.3, 0.2); }),
+        "rejects a diagonal that is not a shared boundary edge");
+  Check(throws([&] { ChamferConvexEdgeAngle(box, edge_p0, edge_p1, 0.3, 0.0); }), "rejects angle 0");
+  Check(throws([&] { ChamferConvexEdgeAngle(box, edge_p0, edge_p1, 0.3, ON_PI / 2.0); }),
+        "rejects angle == pi - theta (chamfer plane parallel to face j)");
+  Check(throws([&] { ChamferConvexEdgeAngle(box, edge_p0, edge_p1, -0.3, ON_PI / 4.0); }), "angle form rejects negative distance");
+  // An input already carrying a curved face is rejected by PlanarFaces()
+  // itself (see fillet.h's own SCOPE note), not silently mis-chamfered.
+  const Brep filleted = dino8::kernel::FilletConvexEdge(box, Point3d(0, 1, 1), Point3d(1, 1, 1), 0.2);
+  Check(throws([&] { ChamferConvexEdge(filleted, edge_p0, edge_p1, 0.3, 0.2); }),
+        "rejects a solid that already carries a curved (fillet) face");
+}
+
+void TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::ChamferConvexEdge;
+  using dino8::kernel::Point3d;
+
+  const double di = 0.3, dj = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+
+  // (a) Two PARALLEL top edges (front y=0 and back y=1): two disjoint
+  // prisms, V = 1 - 2*(di*dj/2).
+  const Brep one = ChamferConvexEdge(box, Point3d(0, 0, 1), Point3d(1, 0, 1), di, dj);
+  const Brep two = ChamferConvexEdge(one, Point3d(1, 1, 1), Point3d(0, 1, 1), di, dj);
+  Check(two.raw().IsSolid(), "two parallel chamfers chained on one box give a closed solid");
+  Check(std::fabs(two.TessellateToClosedMesh(8, 8).Volume() - (1.0 - di * dj)) < 1e-6,
+        "two parallel chained chamfers remove exactly two disjoint prisms: V = 1 - di*dj");
+  Check(two.FaceCount() == 8, "two parallel chained chamfers: 8 faces");
+
+  // (b) Two top edges MEETING at the corner (0, 0, 1): the front edge,
+  // then the left edge (which after the first chamfer runs from (0,1,1)
+  // to the first chamfer's own rail corner (0, di, 1)). The two removed
+  // prisms P1 = {y/di + (1-z)/dj <= 1} and P2 = {x/di + (1-z)/dj <= 1}
+  // overlap in the corner: with w = (1-z)/dj, the overlap's cross-section
+  // at height w is the di(1-w) x di(1-w) square, so V(P1 /\ P2) =
+  // int_0^1 di^2 (1-w)^2 dj dw = di^2 dj / 3, and
+  // V = 1 - di*dj + di^2*dj/3 exactly.
+  const Brep corner = ChamferConvexEdge(one, Point3d(0, 1, 1), Point3d(0, di, 1), di, dj);
+  ON_TextLog log;
+  Check(corner.raw().IsValid(&log), "two chamfers meeting at a box corner pass ON_Brep::IsValid()");
+  bool oriented = false, has_boundary = true;
+  Check(corner.raw().IsManifold(&oriented, &has_boundary) && oriented && !has_boundary,
+        "two chamfers meeting at a box corner form a CLOSED 2-manifold (the second chamfer's end is re-cornered "
+        "against the FIRST chamfer's own oblique face)");
+  Check(corner.raw().IsSolid(), "two chamfers meeting at a box corner report IsSolid() == true");
+  const double expected = 1.0 - di * dj + di * di * dj / 3.0;
+  const double measured = corner.TessellateToClosedMesh(8, 8).Volume();
+  Check(std::fabs(measured - expected) < 1e-6,
+        "two chamfers meeting at a corner have volume 1 - di*dj + di^2*dj/3 exactly (overlapping prisms)");
+  Check(corner.FaceCount() == 8, "two corner-meeting chamfers: 8 faces (the two chamfer planes share one edge)");
+  // The two chamfer planes meet along the segment from (di, di, 1) down
+  // to (0, 0, 1-dj) - both endpoints are real vertices, and the lower one
+  // is the SAME vertex the left and front faces already shared (valence 4).
+  Check(ChamferTestBrepHasVertexNear(corner, Point3d(di, di, 1), 1e-9),
+        "the two chamfer planes meet the top face at the single point (di, di, 1)");
+  Check(ChamferTestBrepHasVertexNear(corner, Point3d(0, 0, 1 - dj), 1e-9),
+        "the two chamfer planes meet the left/front edge at (0, 0, 1-dj), an existing vertex reused, not duplicated");
+  int at_corner = 0;
+  for (int v = 0; v < corner.raw().m_V.Count(); ++v) {
+    if (corner.raw().m_V[v].point.DistanceTo(Point3d(0, 0, 1 - dj)) < 1e-9) ++at_corner;
+  }
+  Check(at_corner == 1, "exactly one vertex sits at (0, 0, 1-dj) - the shared corner was welded, not doubled");
+}
+
 int main() {
   ON::Begin();
 
@@ -20552,6 +20833,11 @@ int main() {
   TestFilletConvexEdgeTaperedTwoStationDispatchIsBitIdenticalToTwoRadiusOverload();
   TestFilletConvexEdgeTaperedMultiStationInteriorJoinToleranceDoesNotVanish();
   TestFilletConvexEdgeTaperedMultiStationRejectsInvalidStations();
+  TestChamferConvexEdgeUnitCubeClosedFormVolumeAndTopology();
+  TestChamferConvexEdgeObliqueEndFaceIsExactAndClosed();
+  TestChamferConvexEdgeAngleMatchesTwoDistanceForm();
+  TestChamferConvexEdgeRejectsInvalidInput();
+  TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
   TestShellConvexPlanarResultHasValidTopology();
