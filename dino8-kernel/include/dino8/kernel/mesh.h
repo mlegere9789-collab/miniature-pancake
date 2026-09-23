@@ -299,7 +299,13 @@ class Mesh {
   // "sharing" its own single facet) can call `MergeAndWeld({loaded_mesh})`
   // afterward. Returns Result::Failed if the file can't be opened, an
   // ASCII `vertex`/`facet`/`endfacet` line is malformed (wrong token
-  // count, unparsable number), or a binary file is truncated mid-record -
+  // count, unparsable number - which already covers a "nan"/"inf" token,
+  // since stream parsing refuses those), a binary file is truncated
+  // mid-record, or a binary vertex coordinate is non-finite (NaN/Inf
+  // bit patterns are perfectly encodable in the 32-bit floats a binary
+  // record stores; letting one through used to hand back a Result::Ok
+  // mesh whose Volume()/GetCentroid() were silently NaN and whose
+  // poisoned vertex could never weld - confirmed by a debug run) -
   // `out_mesh` is left unspecified in that case, not partially filled and
   // silently trusted.
   static Result LoadStl(const std::string& path, Mesh& out_mesh);

@@ -17,7 +17,13 @@ class NurbsCurve {
   // Builds a degree-`degree` NURBS curve interpolating a polyline through
   // `control_points` with uniform-ish knots. Not a general-purpose curve
   // fit — just enough to construct a testable curve without pulling in a
-  // fitting algorithm this chunk doesn't own.
+  // fitting algorithm this chunk doesn't own. Throws std::invalid_argument
+  // if `degree < 1` or `control_points.size() < degree + 1` (a NURBS
+  // curve needs at least `order = degree + 1` control points): before
+  // that check, `ON_NurbsCurve::Create()`'s own refusal of such input was
+  // silently ignored and an empty, never-allocated curve came back that
+  // still evaluated - to (0, 0, 0) everywhere, with Length() 0 - rather
+  // than failing (confirmed by a debug run).
   static NurbsCurve FromControlPoints(const std::vector<Point3d>& control_points,
                                        int degree);
 

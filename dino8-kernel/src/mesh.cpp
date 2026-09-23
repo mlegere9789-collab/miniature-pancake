@@ -848,6 +848,14 @@ Result LoadBinaryStl(const std::string& path, uint32_t triangle_count, Mesh& out
       if (!in.read(reinterpret_cast<char*>(xyz), sizeof(xyz))) {
         return Result::Failed;
       }
+      // The raw bytes can encode NaN/Inf, which the ASCII path can never
+      // produce (operator>> refuses "nan"/"inf"/overflowing tokens) - and
+      // which, if let through, silently poisons every downstream query
+      // on the returned mesh (Volume()/GetCentroid() go NaN, the vertex
+      // never welds) rather than failing here. See LoadStl()'s doc comment.
+      if (!std::isfinite(xyz[0]) || !std::isfinite(xyz[1]) || !std::isfinite(xyz[2])) {
+        return Result::Failed;
+      }
       face.vi[i] = raw.m_V.Count();
       raw.m_V.Append(ON_3fPoint(xyz[0], xyz[1], xyz[2]));
     }
