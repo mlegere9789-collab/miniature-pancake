@@ -4374,6 +4374,79 @@ void TestModelAddMeshRoundTrips() {
   std::remove(path.c_str());
 }
 
+void TestModelLoadRejectsMeshWithOutOfRangeFaceIndex() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  // Regression: OpenNURBS' ON_Mesh::Read() copies each face's vertex
+  // indices off the disk without checking them against the vertex count,
+  // and Model::Load() used to trust that - so a .3dm mesh with a face
+  // pointing past its own vertex array loaded with Result::Ok (ON_Mesh::
+  // IsValid() false, but nothing looked), after which every kernel Mesh
+  // query indexed m_V out of bounds: a debug run against the pre-fix
+  // build got Area() == 0.5 from garbage memory, no error anywhere.
+  // Built through this class's own Save() (which OpenNURBS doesn't
+  // validate either - the first Check below documents that honestly)
+  // rather than hand-written bytes, since the reader is the boundary
+  // this test is about.
+  const std::string bad_path = "dino8_kernel_model_bad_mesh_index_test.3dm";
+  {
+    Mesh bad;
+    ON_Mesh& raw = bad.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));
+    raw.m_V.Append(ON_3fPoint(0, 1, 0));
+    ON_MeshFace good;
+    good.vi[0] = 0; good.vi[1] = 1; good.vi[2] = 2; good.vi[3] = 2;
+    ON_MeshFace broken;
+    broken.vi[0] = 0; broken.vi[1] = 1; broken.vi[2] = 7; broken.vi[3] = 7;  // 3 vertices only
+    raw.m_F.Append(good);
+    raw.m_F.Append(broken);
+    Check(!raw.IsValid(), "fixture: OpenNURBS itself agrees the mesh is invalid");
+    Model model;
+    model.AddMesh(bad);
+    Check(model.Save(bad_path) == Result::Ok,
+          "control: a model holding a mesh with an out-of-range face index still SAVES - "
+          "OpenNURBS writes it verbatim, so the READER is the boundary that has to catch it");
+  }
+  Model loaded;
+  Check(Model::Load(bad_path, loaded) == Result::Failed,
+        "Model::Load fails on a .3dm whose mesh face references a vertex index beyond the "
+        "vertex count, instead of returning Result::Ok with a mesh every kernel query would "
+        "then read out of bounds");
+  Check(loaded.ObjectCount() == 0, "...and leaves out_model empty rather than half-trusted");
+  std::remove(bad_path.c_str());
+
+  // Control: the same three vertices with only the in-range face (a
+  // degenerate-but-in-range face too - repeated indices are a legitimate
+  // thing other exporters write and indexing them is safe, so the check
+  // must NOT be as strict as ON_MeshFace::IsValid()) still load fine.
+  const std::string good_path = "dino8_kernel_model_good_mesh_index_test.3dm";
+  {
+    Mesh fine;
+    ON_Mesh& raw = fine.raw();
+    raw.m_V.Append(ON_3fPoint(0, 0, 0));
+    raw.m_V.Append(ON_3fPoint(1, 0, 0));
+    raw.m_V.Append(ON_3fPoint(0, 1, 0));
+    ON_MeshFace good;
+    good.vi[0] = 0; good.vi[1] = 1; good.vi[2] = 2; good.vi[3] = 2;
+    ON_MeshFace degenerate;
+    degenerate.vi[0] = 0; degenerate.vi[1] = 0; degenerate.vi[2] = 1; degenerate.vi[3] = 1;
+    raw.m_F.Append(good);
+    raw.m_F.Append(degenerate);
+    Model model;
+    model.AddMesh(fine);
+    Check(model.Save(good_path) == Result::Ok, "control: the in-range mesh saves");
+  }
+  Model loaded_fine;
+  Check(Model::Load(good_path, loaded_fine) == Result::Ok,
+        "control: a mesh whose every face index is in range - including a degenerate "
+        "repeated-index face - still loads with Result::Ok");
+  Check(loaded_fine.ObjectCount() == 1, "control: ...with its one mesh object intact");
+  std::remove(good_path.c_str());
+}
+
 void TestModelAddSubDRoundTrips() {
   using dino8::kernel::Model;
   using dino8::kernel::Result;
@@ -20549,6 +20622,7 @@ int main() {
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
+  TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
   TestSimplify();
