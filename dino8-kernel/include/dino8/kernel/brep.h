@@ -6,6 +6,7 @@
 
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/surface.h"
+#include "dino8/kernel/tolerance.h"
 
 namespace dino8::kernel {
 
@@ -1652,7 +1653,7 @@ class Brep {
   // performed (each merge reduces FaceCount() by exactly one) - 0 if none
   // of this Brep's faces qualify. Never throws: an ineligible face or
   // pair is simply left alone, not an error.
-  int MergeCoplanarFaces(double tolerance = 1e-6);
+  int MergeCoplanarFaces(double tolerance = tolerance::kDistance);
 
   // Re-trims every face that shares edge `edge_index` against a
   // substitute 3D curve, replacing the edge's own geometry in place while
@@ -1688,7 +1689,7 @@ class Brep {
   // replacing fails this way rather than silently producing a
   // self-intersecting or out-of-domain trim.
   void ReplaceEdgeCurve(int edge_index, const NurbsCurve& new_curve,
-                        double tolerance = 1e-4);
+                        double tolerance = tolerance::kEdgeJoin);
 
   // Splits a shared (exactly two trims) edge into two coincident but
   // topologically distinct naked edges, in place, while leaving both
@@ -1751,7 +1752,7 @@ class Brep {
   // Compact()ed. If SetStartPoint()/SetEndPoint() can't move a neighbor's
   // curve (some curve types refuse - see that method's own doc comment)
   // this returns Result::Failed before touching this Brep at all.
-  Result RemoveNakedMicroEdge(int edge_index, double tolerance = 1e-4);
+  Result RemoveNakedMicroEdge(int edge_index, double tolerance = tolerance::kEdgeJoin);
 
   const ON_Brep& raw() const { return brep_; }
   ON_Brep& raw() { return brep_; }

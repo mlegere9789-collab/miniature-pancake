@@ -30,6 +30,7 @@
 #include "dino8/kernel/subd.h"
 #include "dino8/kernel/surface.h"
 #include "dino8/kernel/surface_intersect.h"
+#include "dino8/kernel/tolerance.h"
 
 namespace {
 
@@ -5672,6 +5673,85 @@ void TestLoftClosedRingsRejectsTooFewRingsAndMismatchedCounts() {
   Check(threw_non_planar,
         "LoftClosedRings throws when the first ring is non-planar, since its "
         "cap triangulation (projected onto a single plane) isn't well-defined");
+}
+
+// The tolerance policy (tolerance.h) is only worth anything if the
+// values it names are the ones actually IN FORCE at the call sites that
+// used to spell them as literals - so this pins each routed site to the
+// policy constant by MEASURED behaviour at both sides of the threshold,
+// not by re-reading the header. A future policy change that moves a
+// primitive without its dependants following would fail here, not
+// silently drift.
+void TestTolerancePolicyValuesAreTheOnesInForce() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  namespace tol = dino8::kernel::tolerance;
+
+  // The documented numbers themselves - the whole point of this pass is
+  // that NOTHING measurable changed, so the constants must still read
+  // exactly what the literals they replaced did.
+  Check(tol::kDistance == 1e-6, "tolerance::kDistance is the 1e-6 the weld sites always used");
+  Check(tol::kWeld == tol::kDistance, "tolerance::kWeld is derived from kDistance, not a second literal");
+  Check(tol::kRelative == 1e-6 && tol::kPlanarityRelative == tol::kRelative,
+        "tolerance::kPlanarityRelative is derived from the 1e-6 kRelative primitive");
+  Check(tol::kOnGridLineFraction == 1e-6 && tol::kGridNudgeFraction == 1e-6,
+        "the concave-clip grid-line fractions still read 1e-6");
+  Check(tol::kEdgeJoin == 1e-4, "tolerance::kEdgeJoin is the 1e-4 the join/micro-edge sites always used");
+  Check(tol::kZeroVector == 1e-9 && tol::kZero == 1e-12, "the degeneracy floors read 1e-9 / 1e-12");
+  Check(tol::DistanceForSize(0.0) == tol::kDistance && tol::DistanceForSize(10.0) == 10.0 * tol::kRelative,
+        "DistanceForSize() floors at kDistance and scales by kRelative above it");
+
+  // Mesh::MergeAndWeld()'s DEFAULT argument is kWeld: two copies of a
+  // triangle whose vertices differ by 0.4*kWeld (same 1e-6 snap cell,
+  // since round(0.4) == 0) weld into 3 vertices, while copies 3*kWeld
+  // apart (cells 0 vs 3) stay separate at 6 - both with NO tolerance
+  // argument passed.
+  auto triangle_at = [](double dx) {
+    Mesh m;
+    m.raw().m_V.Append(ON_3fPoint(static_cast<float>(dx), 0.0f, 0.0f));
+    m.raw().m_V.Append(ON_3fPoint(1.0f, 0.0f, 0.0f));
+    m.raw().m_V.Append(ON_3fPoint(0.0f, 1.0f, 0.0f));
+    ON_MeshFace f;
+    f.vi[0] = 0; f.vi[1] = 1; f.vi[2] = 2; f.vi[3] = 2;
+    m.raw().m_F.Append(f);
+    return m;
+  };
+  // float can't represent 4e-7 offsets from 1.0, but it can from 0.0:
+  // 0.4e-6 and 3e-6 are exactly the offsets used below on the x of the
+  // origin vertex only.
+  const Mesh welded = Mesh::MergeAndWeld({triangle_at(0.0), triangle_at(0.4 * tol::kWeld)});
+  Check(welded.VertexCount() == 3,
+        "MergeAndWeld()'s default tolerance welds vertices 0.4*kWeld apart (the same snap cell)");
+  const Mesh unwelded = Mesh::MergeAndWeld({triangle_at(0.0), triangle_at(3.0 * tol::kWeld)});
+  Check(unwelded.VertexCount() == 4,
+        "...but leaves vertices 3*kWeld apart distinct (only the two far-apart origin vertices differ)");
+
+  // IsRingPlanar (LoftClosedRings' end-cap validation) reads
+  // kPlanarityRelative: a unit square whose one corner is lifted by
+  // 0.5*kPlanarityRelative*extent (extent = sqrt(2), the diagonal from
+  // the first corner) lofts fine, while 3x that deviation throws.
+  auto loft_with_lift = [&](double lift) {
+    const std::vector<Point3d> bottom = {Point3d(0, 0, 0), Point3d(1, 0, 0), Point3d(1, 1, lift),
+                                         Point3d(0, 1, 0)};
+    const std::vector<Point3d> top = {Point3d(0, 0, 1), Point3d(1, 0, 1), Point3d(1, 1, 1),
+                                      Point3d(0, 1, 1)};
+    Mesh::LoftClosedRings({bottom, top});
+  };
+  const double extent = std::sqrt(2.0);
+  bool threw_small = false;
+  try {
+    loft_with_lift(0.5 * tol::kPlanarityRelative * extent);
+  } catch (const std::invalid_argument&) {
+    threw_small = true;
+  }
+  Check(!threw_small, "LoftClosedRings accepts an end ring 0.5*kPlanarityRelative*extent out of plane");
+  bool threw_big = false;
+  try {
+    loft_with_lift(3.0 * tol::kPlanarityRelative * extent);
+  } catch (const std::invalid_argument&) {
+    threw_big = true;
+  }
+  Check(threw_big, "...and rejects one 3*kPlanarityRelative*extent out of plane - the routed constant is in force");
 }
 
 void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
@@ -21071,6 +21151,8 @@ int main() {
   TestUnjoinEdgeSplitsSharedEdgeIntoTwoNakedCopies();
   TestRemoveNakedMicroEdgeClosesIsolatedSliverOnAPlate();
   TestRemoveNakedMicroEdgeRefusesASliverNextToASharedEdge();
+
+  TestTolerancePolicyValuesAreTheOnesInForce();
 
   ON::End();
 
