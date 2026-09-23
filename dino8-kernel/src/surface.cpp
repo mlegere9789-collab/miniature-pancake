@@ -12,6 +12,7 @@
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/tolerance.h"
 
 namespace dino8::kernel {
 
@@ -1538,10 +1539,11 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
   if (!trim_is_convex) {
     const double u_width = u_domain.Length() / u_divisions;
     const double v_width = v_domain.Length() / v_divisions;
-    // static: MSVC will not let a lambda use a non-static constexpr local
-    // without an explicit capture.
-    static constexpr double kOnGridLineFraction = 1e-6;
-    static constexpr double kNudgeFraction = 1e-6;
+    // Both fractions are the kernel's policy values (tolerance.h), not
+    // literals of this function's own. static: MSVC will not let a
+    // lambda use a non-static constexpr local without an explicit capture.
+    static constexpr double kOnGridLineFraction = tolerance::kOnGridLineFraction;
+    static constexpr double kNudgeFraction = tolerance::kGridNudgeFraction;
     auto nudge_onto_grid_line = [](double coord, double origin, double width) {
       if (width == 0.0) {
         return coord;

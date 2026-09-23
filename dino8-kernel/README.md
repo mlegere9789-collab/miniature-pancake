@@ -1790,6 +1790,47 @@ What this repo does instead:
   at all, not just a slightly-off approximation of one. Only genuinely
   shape-preserving when every weight was already equal (the mirror-image
   condition of `MakeRational()`'s own guarantee).
+- `include/dino8/kernel/tolerance.h` - the kernel's tolerance policy,
+  closing the one "Known gaps" point below that had stayed accurate
+  since chunk 1 ("no tolerance-management policy defined yet"). Three
+  primitives in the same classes Parasolid/ACIS distinguish - an
+  absolute distance (`tolerance::kDistance`, 1e-6 model units), a
+  relative fraction (`kRelative`, 1e-6 of a local size) and an angle
+  expressed as the unit-vector dot-product deficit every existing call
+  site already computes (`kAlignment`, 1e-6, ~0.08 degrees) - plus two
+  degeneracy floors (`kZeroVector` 1e-9, `kZero` 1e-12) and the DERIVED
+  constants specific operations read: `kWeld` (= `kDistance`; `Mesh::
+  MergeAndWeld()`'s default and brep.cpp's `kBrepWeldTolerance`),
+  `kPlanarityRelative` (= `kRelative`; `IsRingPlanar()`'s end-cap test in
+  `LoftClosedRings()`), `kOnGridLineFraction`/`kGridNudgeFraction` (=
+  `kRelative`; `TessellateGridClippedExact()`'s concave-trim grid-line
+  nudge) and `kEdgeJoin` (1e-4; `RemoveNakedMicroEdge()`'s/
+  `ReplaceEdgeCurve()`'s defaults and the floor `MergeCoplanarFaces()`
+  re-welds exposed naked edges with), with `DistanceForSize(size)` =
+  `max(kDistance, size * kRelative)` for the "absolute floor, relative
+  above it" pattern brep.cpp used by hand. Deliberately a NAME-AND-ROUTE
+  pass, not a tuning pass: every constant carries exactly the literal it
+  replaced, and that nothing measurable changed is proven two ways - the
+  BooleanCombineGeneral sweep (`tests/general_boolean_sweep.cpp`) output
+  is byte-for-byte identical (`cmp`) before and after, and the full
+  smoke suite stays green. `TestTolerancePolicyValuesAreTheOnesInForce`
+  pins the routing by BEHAVIOUR at both sides of each threshold, not by
+  re-reading the header: `MergeAndWeld()` with no tolerance argument
+  welds vertices 0.4*`kWeld` apart and leaves 3*`kWeld` distinct, and
+  `LoftClosedRings()` accepts an end ring 0.5*`kPlanarityRelative`*extent
+  out of plane and throws at 3x. Proven to actually watch the routed
+  site: temporarily editing `kPlanarityRelative` to 1e-7 in the header
+  moved `LoftClosedRings()`'s own accept/reject threshold with it (the
+  behavioural checks still passed against the moved value; only the
+  "reads 1e-6" pin failed) - a literal left behind in mesh.cpp would
+  have failed the 3x rejection instead. Honest limits, unchanged from
+  before and now stated in one place: `kDistance` is not scaled by model
+  size, so a 1e-6 gap on a 1e6-unit model is below double precision's
+  own resolution there; and the many OTHER literals still in brep.cpp/
+  boolean.cpp (`scale * 1e-6` planarity checks, `1e-4` cylinder-fit
+  tolerances, `1e-9` axis floors) are not routed yet - only the sites
+  the "Known gaps" note itself named, plus the weld/join family, so the
+  byte-identical sweep claim stays checkable one family at a time.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
@@ -1990,9 +2031,12 @@ This section is stale as of chunk 2 - "no general solid construction" and
 aren't anymore (see the narrative and "What's still not done" above for
 what's real today). Kept only for its one still-accurate point:
 
-- No tolerance-management policy defined yet; wrapper calls use
-  OpenNURBS defaults or ad-hoc constants (`Mesh::MergeAndWeld`'s default
-  tolerance, `LoftClosedRings()`'s/`IsRingPlanar()`'s relative-tolerance
-  planarity check, `TessellateGridClippedExact()`'s grid-line nudge
-  fraction), which will need revisiting once real modeling tolerances are
-  decided.
+- A tolerance-management policy now exists (`include/dino8/kernel/
+  tolerance.h` - see its own entry above): the ad-hoc constants this
+  point used to list (`Mesh::MergeAndWeld`'s default tolerance,
+  `LoftClosedRings()`'s/`IsRingPlanar()`'s relative-tolerance planarity
+  check, `TessellateGridClippedExact()`'s grid-line nudge fraction) all
+  route through named policy values now. What is still open is the
+  TUNING those values will need once real modeling tolerances are
+  decided (every value is still the literal it replaced), and routing
+  the remaining brep.cpp/boolean.cpp literals the entry above lists.

@@ -6,6 +6,7 @@
 #include <opennurbs.h>
 
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/tolerance.h"
 #include "dino8/kernel/types.h"
 
 namespace dino8::kernel {
@@ -316,9 +317,11 @@ class Mesh {
   // boolean engine like Manifold requires a genuinely closed manifold -
   // coincident-but-separate vertices at a seam don't count - so this is
   // the step that turns "several open patches that happen to line up"
-  // into "one watertight solid."
+  // into "one watertight solid." The default is the kernel's weld
+  // distance, tolerance::kWeld (see tolerance.h) - the same 1e-6 it has
+  // always been, now named rather than a literal.
   static Mesh MergeAndWeld(const std::vector<Mesh>& meshes,
-                            double tolerance = 1e-6);
+                            double tolerance = tolerance::kWeld);
 
   // Sweeps `cap` (any open mesh with a well-defined boundary loop - a
   // trimmed planar face's tessellation, an untrimmed one, or any other
