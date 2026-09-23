@@ -445,6 +445,60 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       reshuffling. Full dino8-kernel ctest suite (dino8_kernel_smoke,
 //       1663 checks): 100% pass, 155.26s wall clock, matching this
 //       suite's normal runtime - no regression.
+//
+//   NEW LEAD (a later session, after the 76-case sweep's own boolean-
+//       CORRECTNESS gap - volume/ON_Brep::IsValid()/nonsimple-trim - was
+//       separately closed to 76/76): re-measured the closedmesh gap
+//       itself (now 17/76) and found every prior fix in this file's own
+//       history above targets exactly one failure signature -
+//       Mesh::IsClosedManifold()'s own undirected-edge-count check
+//       (count != 2: a naked or nonmanifold edge) - never its OTHER,
+//       independent check: `orientation_consistent` (a directed edge
+//       walked twice - two triangles both claiming the same edge in the
+//       SAME winding direction). Added a DINO8_MESH_DEBUG diagnostic to
+//       IsClosedManifold() itself (mesh.cpp) and confirmed directly: box+
+//       cylinder Union/Intersection/A-B/B-A ALL report
+//       orientation_consistent=0, while every currently-CLOSED case
+//       (box+box) reports orientation_consistent=1 - this check is
+//       genuinely meaningful here, not a chronic false positive.
+//
+//       Tried the same "insert a bracketing vertex" idea (2) above landed
+//       on conceptually, generalized to ReconcileEdgeTopology's own
+//       vertex-proximity walk (a new FindBracketingBoundaryEdge/
+//       InsertBracketedSpan pair, splitting a coarse boundary edge's own
+//       owning triangle when NEITHER of a finer neighbor's shared edge
+//       endpoints sits near any vertex on the coarse side at all - the
+//       genuinely different case (2)'s own fix above didn't reach, per
+//       (1)'s "next-increment" note earlier in this comment). Measured,
+//       not shipped: it triggered 16 times on box+cylinder Union but the
+//       full 76-case sweep's own output was byte-for-byte UNCHANGED, and
+//       box+cylinder Union's own naked-edge count went UP slightly (1177
+//       -> 1183) rather than down - reverted rather than ship a change
+//       with no verified benefit.
+//
+//       ISOLATED FURTHER: instrumented TessellateGeneralBooleanClosedMesh
+//       itself to merge-and-check `result.Tessellate()`'s own RAW per-face
+//       output BEFORE any of this file's own StitchTJunctionsOnce/
+//       ReconcileEdgeTopology/ReconcileChainToChord passes run at all.
+//       That RAW merge is ALREADY orientation_consistent=0 for box+
+//       cylinder Union (bad-edge-count=2696), and stays orientation_
+//       consistent=0 after every reconciliation pass runs (bad-edge-count
+//       drops to 1177 - real, substantial progress on the naked-edge
+//       axis, exactly matching this file's own long history above - but
+//       the orientation flag itself never moves). This rules out
+//       StitchTJunctionsOnce/ReconcileChainToChord/ReconcileEdgeTopology
+//       as the SOURCE of the orientation conflict (their own fan-
+//       insertion was independently re-checked by hand for winding
+//       preservation and found consistent: every fan triangle is built
+//       as {apex, chain[k], chain[k+1]} in the same cyclic order the
+//       original triangle's own directed edge already carried) - the
+//       true source is upstream, in Brep::Tessellate()'s own per-face
+//       generation (a face-level m_bRev/FlipNormals defect on some
+//       specific face of a BooleanCombineGeneral result?) or in the raw,
+//       topology-blind Mesh::MergeAndWeld() itself. NOT diagnosed further
+//       this session - a genuinely fresh, precisely-scoped next-increment
+//       target, orthogonal to every naked-edge-count fix documented
+//       above.
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
 
 }  // namespace dino8::kernel
