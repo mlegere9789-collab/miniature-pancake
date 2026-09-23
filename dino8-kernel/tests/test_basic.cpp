@@ -62,6 +62,50 @@ void TestCurveDegreeElevation() {
   Check(curve.Degree() == 5, "curve degree increased to 5");
 }
 
+void TestCurveFromControlPointsRejectsDegenerateInput() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // Regression: ON_NurbsCurve::Create() returns false (allocating nothing)
+  // for cv_count < order or order < 2, and FromControlPoints() used to
+  // ignore that and hand back a silently empty curve - Degree() 0,
+  // ControlPointCount() 0, PointAt() == (0, 0, 0) and Length() == 0 for
+  // every input (confirmed by a debug run against the pre-fix build).
+  // The app's Python AddCurve(pts, degree) forwards a user-typed degree
+  // straight here, so this was reachable from a one-line script.
+  auto throws = [](const std::vector<Point3d>& pts, int degree) {
+    try {
+      (void)NurbsCurve::FromControlPoints(pts, degree);
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  const std::vector<Point3d> two = {Point3d(0, 0, 0), Point3d(1, 0, 0)};
+  const std::vector<Point3d> three = {Point3d(0, 0, 0), Point3d(1, 1, 0), Point3d(2, 0, 0)};
+  Check(throws(two, 3),
+        "FromControlPoints throws std::invalid_argument when control_points.size() < degree + 1");
+  Check(throws(three, 3),
+        "...including the off-by-one case (3 control points for a cubic, which needs 4)");
+  Check(throws(three, 0), "FromControlPoints throws std::invalid_argument for degree 0");
+  Check(throws(three, -1), "FromControlPoints throws std::invalid_argument for a negative degree");
+  Check(throws({}, 1), "FromControlPoints throws std::invalid_argument for an empty control point list");
+
+  // The boundary case (exactly degree + 1 points, a single Bezier span)
+  // must keep working exactly as before.
+  const NurbsCurve line = NurbsCurve::FromControlPoints(two, 1);
+  Check(line.Degree() == 1 && line.ControlPointCount() == 2 && line.raw().IsValid(),
+        "exactly degree + 1 control points is still accepted (degree 1, 2 points) and is valid");
+  const NurbsCurve quadratic = NurbsCurve::FromControlPoints(three, 2);
+  Check(quadratic.Degree() == 2 && quadratic.ControlPointCount() == 3 && quadratic.raw().IsValid(),
+        "exactly degree + 1 control points is still accepted (degree 2, 3 points) and is valid");
+  const dino8::kernel::Interval domain = quadratic.Domain();
+  const Point3d mid = quadratic.PointAt(domain.min + 0.5 * (domain.max - domain.min));
+  Check(std::abs(mid.x - 1.0) < 1e-12 && std::abs(mid.y - 0.5) < 1e-12 && std::abs(mid.z) < 1e-12,
+        "the accepted quadratic evaluates to its hand-derived Bezier midpoint (1, 0.5, 0) - "
+        "0.25*P0 + 0.5*P1 + 0.25*P2");
+}
+
 void TestCurveLength() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -20304,6 +20348,7 @@ int main() {
   ON::Begin();
 
   TestCurveDegreeElevation();
+  TestCurveFromControlPointsRejectsDegenerateInput();
   TestCurveLength();
   TestCurveParameterAtArcLength();
   TestCurveDivideByCount();
