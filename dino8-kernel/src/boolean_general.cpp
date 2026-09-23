@@ -1670,6 +1670,16 @@ std::vector<Fragment> SplitFaceLoop(const std::vector<UVPt>& boundary, const std
   for (const Chain& c : closed_chains) {
     if (c.size() < 3) continue;
     const std::vector<Point2d> chain_poly = ToPoly(c);
+    if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
+      size_t bi = 0, bj = 0;
+      if (!dino8::kernel::detail::IsSimplePolygon(chain_poly, &bi, &bj)) {
+        std::fprintf(stderr, "  SplitFaceLoop: RAW closed chain (n=%zu) is ALREADY self-intersecting at i=%zu j=%zu\n",
+                     chain_poly.size(), bi, bj);
+        for (size_t k = 0; k < 8 && k < chain_poly.size(); ++k) {
+          std::fprintf(stderr, "    pt[%zu] = (%.6f,%.6f)\n", k, chain_poly[k].x, chain_poly[k].y);
+        }
+      }
+    }
     int owner = -1;
     for (size_t i = 0; i < frags.size(); ++i) {
       if (PointInPolygon(ToPoly(frags[i].outer), c.front().uv)) {
