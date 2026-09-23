@@ -1127,6 +1127,48 @@ void TestCurveClosestPoint() {
   Check((on_curve - Point3d(7, 0, 0)).Length() < 1e-6,
         "a query point already on the curve is returned as its own "
         "closest point");
+
+  // The closed-curve counterpart of TestSurfaceClosestPoint's periodic-
+  // seam sphere case: a full circle's parametrization has a seam at
+  // domain.Min()/domain.Max() (both map to the same physical point,
+  // (radius,0,0)). Deliberately does NOT assume the curve's raw
+  // parameter is linear in angle (a rational NURBS circle's isn't,
+  // necessarily) - instead picks a target parameter t0 just inside
+  // domain.Max() (closer to it than half the default 200-sample coarse
+  // spacing, so the coarse scan's nearest sample is the seam point
+  // itself, not some interior sample already on the correct side), reads
+  // the curve's own PointAt(t0) as the true target, and places the query
+  // point on the same ray from the circle's center (the origin) at a
+  // larger radius - since the circle is centered at the origin, the
+  // closest point to any point on that ray is, by construction,
+  // PointAt(t0) itself, regardless of how the parameter maps to angle.
+  // This exercises exactly the bug ClosestPointParameter's golden-section
+  // window used to have: the coarse scan ties between domain.Min() and
+  // domain.Max() (the same physical seam point) and keeps the earlier-
+  // found domain.Min() as `best_t`, so the old clamped-to-domain window
+  // opened on the wrong side of the seam and could never reach t0.
+  const double circle_radius = 3.0;
+  const ON_Circle on_circle_for_closest(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)),
+                                         circle_radius);
+  ON_NurbsCurve circle_nurbs_for_closest;
+  Check(on_circle_for_closest.GetNurbForm(circle_nurbs_for_closest) != 0,
+        "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle_for_closest;
+  circle_for_closest.raw() = circle_nurbs_for_closest;
+  Check(circle_for_closest.raw().IsClosed() != 0,
+        "sanity: the full-circle NURBS curve is closed");
+  const dino8::kernel::Interval seam_domain = circle_for_closest.Domain();
+  const double seam_domain_length = seam_domain.max - seam_domain.min;
+  const double t0 = seam_domain.max - 0.001 * seam_domain_length;
+  const Point3d target = circle_for_closest.PointAt(t0);
+  const double query_radius = 5.0 / circle_radius;
+  const Point3d seam_query(target.x * query_radius, target.y * query_radius,
+                            target.z * query_radius);
+  const Point3d seam_closest = circle_for_closest.ClosestPoint(seam_query);
+  Check((seam_closest - target).Length() < 1e-2,
+        "ClosestPoint on a circle near its own closed-curve seam converges "
+        "to the true target point just before domain.Max(), not the seam "
+        "point at domain.Min()/domain.Max()");
 }
 
 // FitLeastSquares: the real global least-squares curve approximation

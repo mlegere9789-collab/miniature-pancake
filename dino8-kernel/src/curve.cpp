@@ -367,7 +367,20 @@ std::vector<double> NurbsCurve::SuggestedParameterValues(double chord_tolerance,
 
 double NurbsCurve::ClosestPointParameter(Point3d point, int samples) const {
   const ON_Interval domain = curve_.Domain();
+  const bool closed = curve_.IsClosed() != 0;
   auto distance_squared = [&](double t) { return (PointAt(t) - point).LengthSquared(); };
+  // Maps a parameter that may have wandered outside `domain` back into it
+  // by wrapping around the seam, for a closed curve only - see the
+  // wrap-vs-clamp discussion below.
+  auto wrap = [&](double t) {
+    if (!closed) return t;
+    const double len = domain.Length();
+    if (len <= 0.0) return t;
+    double r = std::fmod(t - domain.Min(), len);
+    if (r < 0.0) r += len;
+    return domain.Min() + r;
+  };
+  auto distance_squared_wrapped = [&](double t) { return distance_squared(wrap(t)); };
 
   double best_t = domain.Min();
   double best_d2 = distance_squared(best_t);
@@ -381,14 +394,23 @@ double NurbsCurve::ClosestPointParameter(Point3d point, int samples) const {
   }
 
   const double step = domain.Length() / samples;
-  double lo = std::max(domain.Min(), best_t - step);
-  double hi = std::min(domain.Max(), best_t + step);
+  // For an open curve, the refinement window is clamped to the domain -
+  // the true closest point can never lie outside it. For a closed curve,
+  // clamping is wrong whenever the coarse sample above happens to land
+  // near `domain.Min()` or `domain.Max()`: the true nearest point may
+  // sit just past that boundary, on the far side of the same physical
+  // seam point, and clamping would wall the golden-section search off
+  // from ever reaching it. Letting the window extend past the domain and
+  // evaluating through `wrap()` lets the search cross the seam like any
+  // other point on the curve.
+  double lo = closed ? (best_t - step) : std::max(domain.Min(), best_t - step);
+  double hi = closed ? (best_t + step) : std::min(domain.Max(), best_t + step);
 
   const double golden_ratio = (std::sqrt(5.0) - 1.0) / 2.0;
   double c = hi - golden_ratio * (hi - lo);
   double d = lo + golden_ratio * (hi - lo);
   for (int iter = 0; iter < 100 && (hi - lo) > 1e-13; ++iter) {
-    if (distance_squared(c) < distance_squared(d)) {
+    if (distance_squared_wrapped(c) < distance_squared_wrapped(d)) {
       hi = d;
     } else {
       lo = c;
@@ -396,7 +418,7 @@ double NurbsCurve::ClosestPointParameter(Point3d point, int samples) const {
     c = hi - golden_ratio * (hi - lo);
     d = lo + golden_ratio * (hi - lo);
   }
-  return (lo + hi) / 2.0;
+  return wrap((lo + hi) / 2.0);
 }
 
 Point3d NurbsCurve::ClosestPoint(Point3d point, int samples) const {

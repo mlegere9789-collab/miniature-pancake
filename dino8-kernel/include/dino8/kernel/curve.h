@@ -427,7 +427,14 @@ class NurbsCurve {
   // the same "approximate, not exhaustive" honesty `Length()`'s own
   // polyline sampling already documents. Increasing `samples` narrows the
   // risk of missing a closer, separate local minimum, at proportional
-  // cost.
+  // cost. For a closed curve (`ON_Curve::IsClosed()`), the golden-section
+  // refinement window wraps across the seam instead of clamping to the
+  // domain boundary - the same seam-wrap fix `NurbsSurface::
+  // ClosestPointParameter()` needed, and for the identical reason: a
+  // coarse sample landing near the domain boundary must be able to
+  // explore just past the seam, on the physically-adjacent far side of
+  // the same domain edge, or the search can converge to a wrong point
+  // near, but not at, the true nearest point across the seam.
   double ClosestPointParameter(Point3d point, int samples = 200) const;
 
   // The actual closest point: `PointAt(ClosestPointParameter(point,
