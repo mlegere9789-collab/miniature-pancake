@@ -856,12 +856,29 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
   // the curve had already gotten to. Confirmed by direct tracing on a cone
   // (sweep case 15, box+cone): a self-intersecting 2D trim loop traced
   // back to exactly a triple of this shape, immune to the per-segment
-  // insertion guard for exactly that reason. Uses the SAME generous,
-  // curvature-tolerant bracket (25% of the neighbor-to-neighbor span, or
-  // a small absolute floor) already trusted for ordinary insertion, so a
-  // genuinely curved passage - where the middle sample legitimately sits
-  // a little outside the dead-straight P-Q line - is not disturbed; only
-  // an overshoot beyond that same margin, in some coordinate, is dropped.
+  // insertion guard for exactly that reason.
+  //
+  // Uses the SAME 25%-of-neighbor-span relative slack already trusted for
+  // ordinary insertion, so a genuinely curved passage - where the middle
+  // sample legitimately sits a little outside the dead-straight P-Q line -
+  // is not disturbed; only an overshoot beyond that same margin, in some
+  // coordinate, is dropped. The ABSOLUTE floor, though, is deliberately
+  // tighter here (opt.tolerance * 2, not the insertion guard's own
+  // opt.tolerance * 10): root-caused directly on the skew (non-
+  // intersecting-axes) perpendicular cylinder pair sweep case (case 08) -
+  // a genuine local reversal (three consecutive samples whose middle one
+  // sits ~4.5e-3 past its own neighbor-bracket) went undetected because
+  // the neighbor-to-neighbor span there was itself only ~1.15e-2, so 25%
+  // of it (~2.9e-3) was smaller than the insertion guard's own floor
+  // (opt.tolerance * 10 = 1e-2 at this engine's default tolerance) - the
+  // floor, not the relative term, ended up setting the bracket, and it was
+  // generous enough to hide a reversal comparable in size to the segment
+  // span itself. The insertion guard's own floor is left untouched (it
+  // vets a single BRAND-NEW candidate point, a different, already-tuned
+  // situation - see its own doc comment); only this later, independent
+  // pass over ALREADY-accepted points gets the tighter floor, matching
+  // the tighter (opt.tolerance * 1) floor `monotonic_from_i` already uses
+  // above for the same reversal failure mode during insertion.
   // Runs to a fixed point (a dropped point can occasionally expose a
   // second one, now that its former neighbors are adjacent) with a small
   // iteration cap so a pathological curve degrades to "leaves the jitter
@@ -879,7 +896,7 @@ void FinishCurve(IntersectionCurve& ic, const ON_Surface& a, const ON_Surface& b
       if (is_seam_segment(ip, idx) || is_seam_segment(idx, in)) continue;
       auto out_of_bracket = [&](double vp, double vi, double vn) {
         double lo = std::min(vp, vn), hi = std::max(vp, vn);
-        const double slack = std::max(0.25 * (hi - lo), opt.tolerance * 10);
+        const double slack = std::max(0.25 * (hi - lo), opt.tolerance * 2);
         return vi < lo - slack || vi > hi + slack;
       };
       const bool bad = out_of_bracket(ic.uv_a[ip].x, ic.uv_a[idx].x, ic.uv_a[in].x) ||
