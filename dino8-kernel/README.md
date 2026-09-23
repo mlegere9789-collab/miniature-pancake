@@ -1822,6 +1822,46 @@ What this repo does instead:
   `general_boolean_sweep` too (byte-identical to the baseline - it's a
   new function nothing else calls yet, but it lives in
   `surface_intersect.cpp`, so that check is the rule, not optional).
+- `Mesh::VolumeMassProperties()` closes the second-moment half of mass
+  properties that `Volume()`/`GetCentroid()` never covered: the complete
+  inertia tensor about both the world origin and the centroid (products
+  of inertia in the `ixy = integral of x*y dV` convention Rhino and
+  every engineering table use, with the tensor's off-diagonals being
+  their negatives - stated on the `MassProperties` struct so nobody has
+  to guess the sign), principal moments (ascending) with a right-handed
+  orthonormal principal frame, and radii of gyration. The public
+  OpenNURBS SDK has no mesh mass-property implementation at all
+  (grepped: no `ON_Mesh::VolumeMassProperties` anywhere in the source),
+  so this is from scratch. EXACT, not sampled - Eberly's "Polyhedral
+  Mass Properties (Revisited)": each of the ten volume integrals of
+  `{1, x, y, z, x^2, y^2, z^2, xy, yz, zx}` is reduced by the divergence
+  theorem to a closed-form polynomial in every triangle's three vertices
+  (the same principle `Volume()` already uses for the zeroth moment), so
+  a polyhedron's moments are its true moments, and a tessellated curved
+  solid's converge to the smooth shape's exactly as `Volume()`'s does.
+  The principal decomposition delegates to OpenNURBS'
+  `ON_Sym3x3EigenSolver`, read and verified as a real implementation
+  (Jacobi rotation to tridiagonal form plus a closed-form tridiagonal
+  solve) rather than one of its declared-but-unimplemented stubs.
+  Verified against hand-derived closed forms, all confirmed by a debug
+  run before being asserted: a 2x3x4 box (quad faces) gives exactly
+  `V(b^2+c^2)/12 = 50, 40, 26` about its centroid, exactly `200, 160,
+  104` and products `36, 72, 48` about the origin (the parallel-axis
+  theorem by hand), principal moments exactly `(26, 40, 50)` on its own
+  z/y/x axes; the identical box as 12 triangles matches to 1e-9 (the
+  quad path's second triangle is counted); the box rotated 0.7 rad about
+  a skew axis and translated keeps principal moments `(26, 40, 50)` to
+  6e-7 (a rigid-motion invariant) while its world-frame products of
+  inertia become clearly nonzero (the tensor genuinely rotated, it
+  wasn't re-diagonalized); and a real curved body with a closed-form
+  tensor, a torus (`R=3, r=1`, 96x48 segments), lands within 0.1% of
+  `M(R^2 + 3r^2/4)` about its axis and `M(R^2/2 + 5r^2/8)` about a
+  diameter, with its two in-plane moments exactly equal (96-fold
+  symmetry makes the in-plane tensor isotropic) and its centroidal
+  tensor unchanged to 2e-8 relative when the whole torus is built at
+  `(10, -5, 2)` instead of the origin. Throws `std::invalid_argument` on
+  an inside-out (negative-volume) mesh rather than returning negated
+  moments, and on an empty/zero-volume one - both checked.
 
 ## What's still not done (as of chunk 2)
 
