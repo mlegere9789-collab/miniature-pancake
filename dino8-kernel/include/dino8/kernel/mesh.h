@@ -211,8 +211,12 @@ class Mesh {
   // (face), and now `vt` (texture coordinate) lines are understood; `vn`
   // (including the ones SaveObj() itself writes - vertex normals here are
   // always geometry-derived via ComputeVertexNormals(), never stored
-  // independently), materials, groups, and negative (relative) indices
-  // are all silently skipped. If any face line carries a `vt` reference
+  // independently), materials, and groups are all silently skipped. A
+  // negative (relative) face index is NOT silently skipped - unlike those
+  // truly-ignored line types, it fails the WHOLE load (Result::Failed,
+  // see below), since resolving it correctly would need real support this
+  // parser doesn't have, and guessing would risk silently loading the
+  // wrong geometry. If any face line carries a `vt` reference
   // (the `v/vt` or `v/vt/vn` forms), the referenced texture coordinate is
   // stored for that corner's *vertex* (SetTextureCoordinates()'s own
   // per-vertex granularity, not per-corner) - if two different face
@@ -229,9 +233,10 @@ class Mesh {
   // Returns Result::Failed if the file can't be opened, a face line
   // references a vertex or texture-coordinate index that doesn't exist
   // yet (must appear before any face referencing it, same requirement any
-  // valid .obj already satisfies), or a face has more than 4 or fewer
-  // than 3 indices - `out_mesh` is left unspecified in that case, not
-  // partially filled and silently trusted.
+  // valid .obj already satisfies), a face has more than 4 or fewer than 3
+  // indices, or any face-line index is negative/relative (see above) -
+  // `out_mesh` is left unspecified in that case, not partially filled and
+  // silently trusted.
   static Result LoadObj(const std::string& path, Mesh& out_mesh);
 
   // Writes this mesh as an ASCII Wavefront `.stl` file - the second

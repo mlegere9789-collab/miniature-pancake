@@ -6481,8 +6481,24 @@ void TestMeshLoadObjRejectsMalformedFiles() {
         "LoadObj fails on a 5-index face line rather than silently "
         "misinterpreting it (ON_MeshFace only holds a triangle or quad)");
 
+  // Negative (relative) face indices are a legitimate general-.obj
+  // construct this parser doesn't resolve - locks in the actual contract
+  // (Result::Failed for the whole file) against LoadObj()'s own doc
+  // comment, which used to say these are "silently skipped" (grouping
+  // them with truly-ignored line types like `vn`/materials/groups) before
+  // that wording was corrected to match this real behavior.
+  const std::string relative_index_path = "dino8_kernel_mesh_obj_test_relative_index.obj";
+  {
+    std::ofstream bad(relative_index_path);
+    bad << "v 0 0 0\nv 1 0 0\nv 1 1 0\nf -3 -2 -1\n";
+  }
+  Check(Mesh::LoadObj(relative_index_path, out) == Result::Failed,
+        "LoadObj fails on a face line with negative (relative) indices "
+        "rather than silently skipping them");
+
   std::remove(forward_ref_path.c_str());
   std::remove(pentagon_path.c_str());
+  std::remove(relative_index_path.c_str());
 }
 
 void TestMeshSaveStlSplitsQuadsAndComputesNormals() {
