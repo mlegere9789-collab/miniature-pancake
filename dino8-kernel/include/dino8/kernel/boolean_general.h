@@ -499,6 +499,42 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       this session - a genuinely fresh, precisely-scoped next-increment
 //       target, orthogonal to every naked-edge-count fix documented
 //       above.
+//
+//       FURTHER ISOLATED (a still later session): added a DINO8_FACE_
+//       ORIGIN_DEBUG diagnostic directly in TessellateGeneralBooleanClosed
+//       Mesh (before Mesh::MergeAndWeld() discards per-face provenance) -
+//       an independent, weld-by-rounding pass over `faces` (the per-ON_
+//       Brep-face MutFace list) that re-derives the same duplicate-
+//       directed-edge conflict but tags each triangle with its origin
+//       ON_Brep face index, so the two conflicting triangles can be traced
+//       back to which face(s) produced them. On box+cylinder Union, the
+//       FIRST conflict is between ON_Brep face 0 (m_bRev=0 - the box's
+//       bottom cap, which after the boolean carries a hole loop where the
+//       cylinder passes through it) and, at the SAME directed edge
+//       (v1110->v1249, on the box's bottom-cap hole boundary), THREE
+//       different candidate cylinder-wall fragment faces show up across
+//       repeated runs of the same detector (faces 8 and 2, both m_bRev=0,
+//       and face 6, m_bRev=1) - i.e. more than one fragment face's own
+//       triangulation is claiming a triangle incident to this exact
+//       boundary edge. This is NOT simply "one face's m_bRev is flipped
+//       relative to its neighbor" (that would show a single consistent
+//       origin-face pair every time) - it looks instead like the box's
+//       hole-boundary loop and the cylinder-wall fragment(s) that should
+//       meet it are not cleanly 1:1: either the hole loop itself is
+//       duplicated/overlapping in the notch-composition that built face
+//       0's trim, or more than one cylinder-wall KeptFace fragment
+//       independently believes it owns this same seam segment. Confirmed
+//       behavior-preserving: the diagnostic added in mesh.cpp's own
+//       IsClosedManifold() (captures the first duplicate-directed-edge's
+//       two vertex ids/coords and the two ON_MeshFace records involved)
+//       and this file's own DINO8_FACE_ORIGIN_DEBUG block are both
+//       print-only - the 76-case sweep's output is byte-for-byte
+//       unchanged with them compiled in, and the full ctest suite (dino8_
+//       kernel_smoke) is 100% green. NEXT STEP: read SplitFaceLoop's own
+//       notch-composition path for face 0 (the box's bottom cap) on this
+//       exact fixture to see whether its hole loop is built once or
+//       whether more than one candidate loop/fragment is emitted for the
+//       same physical hole boundary.
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
 
 }  // namespace dino8::kernel

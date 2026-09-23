@@ -445,28 +445,37 @@ Mesh Mesh::FlipNormals() const {
 
 bool Mesh::IsClosedManifold() const {
   std::map<std::pair<int, int>, int> undirected_edge_count;
-  std::set<std::pair<int, int>> directed_edges_seen;
+  std::map<std::pair<int, int>, int> directed_edge_first_face;
   bool orientation_consistent = true;
+  int conflict_a = -1, conflict_b = -1;
+  int conflict_face_first = -1, conflict_face_second = -1;
 
-  auto visit_edge = [&](int a, int b) {
+  auto visit_edge = [&](int a, int b, int face_index) {
     ++undirected_edge_count[std::minmax(a, b)];
-    if (!directed_edges_seen.insert({a, b}).second) {
+    auto ins = directed_edge_first_face.emplace(std::make_pair(a, b), face_index);
+    if (!ins.second) {
       // The same directed edge walked twice means two faces sharing this
       // edge both "walk" it the same way - a real orientation conflict
       // between neighbors, not just a coincidence.
+      if (orientation_consistent) {
+        conflict_a = a;
+        conflict_b = b;
+        conflict_face_first = ins.first->second;
+        conflict_face_second = face_index;
+      }
       orientation_consistent = false;
     }
   };
 
   for (int i = 0; i < mesh_.m_F.Count(); ++i) {
     const ON_MeshFace& f = mesh_.m_F[i];
-    visit_edge(f.vi[0], f.vi[1]);
-    visit_edge(f.vi[1], f.vi[2]);
+    visit_edge(f.vi[0], f.vi[1], i);
+    visit_edge(f.vi[1], f.vi[2], i);
     if (f.IsQuad()) {
-      visit_edge(f.vi[2], f.vi[3]);
-      visit_edge(f.vi[3], f.vi[0]);
+      visit_edge(f.vi[2], f.vi[3], i);
+      visit_edge(f.vi[3], f.vi[0], i);
     } else {
-      visit_edge(f.vi[2], f.vi[0]);
+      visit_edge(f.vi[2], f.vi[0], i);
     }
   }
 
@@ -494,6 +503,21 @@ bool Mesh::IsClosedManifold() const {
   if (std::getenv("DINO8_MESH_DEBUG")) {
     std::fprintf(stderr, "  IsClosedManifold: orientation_consistent=%d bad-edge-count=%d / total-edges=%zu\n",
                  (int)orientation_consistent, bad, undirected_edge_count.size());
+    if (!orientation_consistent && conflict_a >= 0) {
+      const ON_3fPoint& pa = mesh_.m_V[conflict_a];
+      const ON_3fPoint& pb = mesh_.m_V[conflict_b];
+      std::fprintf(stderr,
+                   "  first orientation conflict: directed edge (v%d -> v%d) walked by face %d and face %d\n"
+                   "    v%d = (%.9g, %.9g, %.9g)\n    v%d = (%.9g, %.9g, %.9g)\n",
+                   conflict_a, conflict_b, conflict_face_first, conflict_face_second,
+                   conflict_a, (double)pa.x, (double)pa.y, (double)pa.z,
+                   conflict_b, (double)pb.x, (double)pb.y, (double)pb.z);
+      for (int fi : {conflict_face_first, conflict_face_second}) {
+        const ON_MeshFace& f = mesh_.m_F[fi];
+        std::fprintf(stderr, "    face %d: vi = [%d, %d, %d, %d]%s\n", fi,
+                     f.vi[0], f.vi[1], f.vi[2], f.vi[3], f.IsQuad() ? " (quad)" : "");
+      }
+    }
   }
   if (!orientation_consistent) {
     return false;

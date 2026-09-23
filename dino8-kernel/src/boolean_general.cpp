@@ -3788,6 +3788,83 @@ Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions, int
   // collinear along a curve's own local tangent).
   drop_degenerate_triangles(faces);
 
+  // Diagnostic only (DINO8_FACE_ORIGIN_DEBUG): re-derive the same
+  // duplicate-directed-edge conflict Mesh::IsClosedManifold() detects on
+  // the final merged mesh, but BEFORE MergeAndWeld() discards per-face
+  // provenance, so the offending two triangles can be traced back to
+  // their originating ON_Brep face index (and that face's own m_bRev) -
+  // continuing the investigation opened by the "orientation conflict
+  // predates all reconciliation" finding (see IsClosedManifold's own
+  // doc comment in mesh.cpp). This block does its own simple weld (by
+  // rounding to `tol`) purely to find which triangles from which faces
+  // touch the same physical point; it does not affect `patched`/the
+  // returned mesh at all.
+  if (std::getenv("DINO8_FACE_ORIGIN_DEBUG")) {
+    std::map<std::tuple<long long, long long, long long>, int> weld_id_of;
+    auto weld_key = [&](const Point3d& p) {
+      const double inv = 1.0 / tol;
+      return std::make_tuple(static_cast<long long>(std::llround(p.x * inv)),
+                              static_cast<long long>(std::llround(p.y * inv)),
+                              static_cast<long long>(std::llround(p.z * inv)));
+    };
+    std::vector<Point3d> welded_pos;
+    auto welded_id = [&](const Point3d& p) {
+      auto key = weld_key(p);
+      auto it = weld_id_of.find(key);
+      if (it != weld_id_of.end()) return it->second;
+      int id = static_cast<int>(welded_pos.size());
+      welded_pos.push_back(p);
+      weld_id_of.emplace(key, id);
+      return id;
+    };
+    struct TriOrigin {
+      int face_index;
+      int a, b, c;  // welded ids, in the triangle's own winding
+    };
+    std::map<std::pair<int, int>, TriOrigin> first_face_for_directed_edge;
+    bool found = false;
+    for (size_t fi = 0; fi < faces.size() && !found; ++fi) {
+      const MutFace& mf = faces[fi];
+      for (const std::array<int, 3>& t : mf.f) {
+        const int a = welded_id(mf.v[t[0]]);
+        const int b = welded_id(mf.v[t[1]]);
+        const int c = welded_id(mf.v[t[2]]);
+        const int edges[3][2] = {{a, b}, {b, c}, {c, a}};
+        TriOrigin origin{static_cast<int>(fi), a, b, c};
+        for (const auto& e : edges) {
+          std::pair<int, int> key(e[0], e[1]);
+          auto ins = first_face_for_directed_edge.emplace(key, origin);
+          if (!ins.second) {
+            const TriOrigin& prev = ins.first->second;
+            std::fprintf(stderr,
+                         "  [face-origin] directed edge (v%d -> v%d) walked by "
+                         "ON_Brep face %d (tri %d,%d,%d) and ON_Brep face %d (tri %d,%d,%d)\n",
+                         e[0], e[1], prev.face_index, prev.a, prev.b, prev.c, origin.face_index, origin.a,
+                         origin.b, origin.c);
+            const Point3d& pa = welded_pos[e[0]];
+            const Point3d& pb = welded_pos[e[1]];
+            std::fprintf(stderr, "    v%d = (%.9g, %.9g, %.9g)\n    v%d = (%.9g, %.9g, %.9g)\n", e[0], pa.x, pa.y,
+                         pa.z, e[1], pb.x, pb.y, pb.z);
+            if (prev.face_index >= 0 && prev.face_index < result.raw().m_F.Count()) {
+              std::fprintf(stderr, "    ON_Brep face %d: m_bRev=%d\n", prev.face_index,
+                           (int)result.raw().m_F[prev.face_index].m_bRev);
+            }
+            if (origin.face_index >= 0 && origin.face_index < result.raw().m_F.Count()) {
+              std::fprintf(stderr, "    ON_Brep face %d: m_bRev=%d\n", origin.face_index,
+                           (int)result.raw().m_F[origin.face_index].m_bRev);
+            }
+            found = true;
+            break;
+          }
+        }
+        if (found) break;
+      }
+    }
+    if (!found) {
+      std::fprintf(stderr, "  [face-origin] no post-stitch directed-edge conflict found\n");
+    }
+  }
+
   std::vector<Mesh> patched;
   patched.reserve(faces.size());
   for (MutFace& mf : faces) patched.push_back(FromMutFace(mf));
