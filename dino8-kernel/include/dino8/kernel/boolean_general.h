@@ -685,6 +685,53 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       approach described above). Reverted via `git checkout HEAD`
 //       immediately after being measured; not in the tree.
 //
+//       METADATA-LEVEL FIX IMPLEMENTED AND MEASURED (also not in the
+//       tree - kept out because it doesn't close the gap, see below, not
+//       because it broke anything): built the identity-mapping approach
+//       in full - HoleAttachment gained `skipped_vertex`/`skipped_outer_
+//       vertex` (h_j and o_i, recorded at candidate-acceptance time),
+//       AssembleWithAttachments gained an optional `insert_starts` output
+//       so each attachment's final position in the merged array is known,
+//       BridgeHolesIntoOuter threaded a `pinches_out` vector of (position,
+//       true-vertex) pairs for all four notch corners (c_in, c_out, a_out,
+//       a_in) out to a new `KeptFace::hole_pinches` field, and
+//       ReconcileFragmentBoundaries relabeled each pinch position's own
+//       weld id (via the SAME `detect` welder already in scope) to its
+//       true target's id right after the normal per-point weld pass,
+//       before anchors are computed - touching NO geometry at all, only
+//       the internal id bookkeeping. Measured: the 76-case sweep stayed
+//       byte-for-byte unchanged (no regression, confirmed), and on box+
+//       cylinder Union the anchor-pair bookkeeping genuinely improved (14
+//       unresolved pairs down to 6, cross-checked point-by-point - the 2
+//       new "2-run" pairs that appeared are legitimate same-face self-
+//       seams, correctly left alone by the pre-existing same-kf check).
+//       BUT Mesh::IsClosedManifold()'s own bad-edge-count on that exact
+//       fixture was completely UNCHANGED (1177, identical to before) -
+//       the fix has zero effect on the actual output mesh. Root cause of
+//       THAT: every pair this fix resolves is already a trivial single-
+//       segment span on both sides (`ga.pts.size() <= 2 && gb.pts.size()
+//       <= 2` in the existing reconciliation code), so the fix changes
+//       nothing about which points get inserted where - it only avoids a
+//       wasted/ambiguous-looking match attempt. The two ACTUAL physical
+//       points (c_in/c_out's own real 3D coordinates, still offset from
+//       h_j by kEdgeFraction as always) are never moved or merged by this
+//       fix, and the ACTUAL weld that matters happens much later, in
+//       Mesh::MergeAndWeld() (TessellateGeneralBooleanClosedMesh, this
+//       file), which only ever sees raw 3D coordinates post-tessellation
+//       - it has no visibility into ReconcileFragmentBoundaries's own
+//       (pre-tessellation, 2D-trim-loop-level) weld-id bookkeeping at
+//       all. A fix that actually closes this gap must therefore act at
+//       the MESH level (inside TessellateGeneralBooleanClosedMesh, after
+//       `result.Tessellate()` produces `raw_faces`/`faces`, before the
+//       final `Mesh::MergeAndWeld(patched, tol)` call) rather than at the
+//       2D boundary-reconciliation level this section has been probing -
+//       genuinely new architectural territory (the pinch identity would
+//       need to survive from BridgeHolesIntoOuter's own 2D loop all the
+//       way through BuildLoop -> ON_BrepLoop/ON_BrepTrim -> brep.cpp's
+//       own per-face tessellation, which does not currently preserve any
+//       such provenance) - out of scope for this pass. Reverted via `git
+//       checkout HEAD` after measuring; not in the tree.
+//
 //       ONE MORE WRINKLE (found while scoping the fix above): BridgeHoles
 //       IntoOuter()'s own notch (this file, above) does not even splice in
 //       the hole loop's own EXACT pinch vertex - it inserts the two fresh
