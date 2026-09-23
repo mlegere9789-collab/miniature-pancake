@@ -370,11 +370,24 @@ Enter
 SelMesh
 Volume
 # --- FilletSrfToRail: rolling-ball arcs sampled along a rail running down a
-# box corner (two perpendicular planes)
+# box corner (two perpendicular planes). SrfPt's 4 corners must be given
+# walking the rectangle's own perimeter (its command implementation swaps
+# the last two into grid order internally) - the previous raster-order
+# corners here silently built a TWISTED (non-planar-parametrized) patch:
+# even though all 4 points share a plane, the wrong corner order gives the
+# bilinear patch a nonzero cross-term, so the query point (3400,0,z) was
+# never actually reachable within the surface's own [0,1]x[0,1] domain
+# (confirmed by hand: at z=2 the patch's own x-range there is
+# [3402,3408], never 3400). A now-fixed kernel bug (SurfaceClosestPointGlobal
+# used to hardcode success regardless of real Newton convergence) had been
+# silently masking this and building a distorted fillet from the garbage,
+# never-converged closest points; with that bug fixed, FilletSrfToRail
+# correctly reports "too few valid rail samples" instead. Corrected here
+# to genuine perimeter order so the rail truly lies flush with both planes.
 SelAll
 Hide
-SrfPt 3400,0,0 3410,0,0 3400,0,10 3410,0,10
-SrfPt 3400,0,0 3400,10,0 3400,0,10 3400,10,10
+SrfPt 3400,0,0 3410,0,0 3410,0,10 3400,0,10
+SrfPt 3400,0,0 3400,10,0 3400,10,10 3400,0,10
 Line 3400,0,2 3400,0,8
 SelLast
 FilletSrfToRail Radius=1
