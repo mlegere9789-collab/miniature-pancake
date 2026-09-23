@@ -156,7 +156,7 @@ inline bool SegmentsProperlyIntersect(const Point2d& p1, const Point2d& p2, cons
 // non-adjacent vertex, only genuine edge-edge crossings). O(n^2) in the
 // vertex count, fine for the modestly-sized trim/ring polygons this is
 // meant for.
-inline bool IsSimplePolygon(const std::vector<Point2d>& poly) {
+inline bool IsSimplePolygon(const std::vector<Point2d>& poly, size_t* out_i = nullptr, size_t* out_j = nullptr) {
   const size_t n = poly.size();
   for (size_t i = 0; i < n; ++i) {
     const Point2d& a1 = poly[i];
@@ -168,6 +168,8 @@ inline bool IsSimplePolygon(const std::vector<Point2d>& poly) {
       const Point2d& b1 = poly[j];
       const Point2d& b2 = poly[(j + 1) % n];
       if (SegmentsProperlyIntersect(a1, a2, b1, b2)) {
+        if (out_i) *out_i = i;
+        if (out_j) *out_j = j;
         return false;
       }
     }

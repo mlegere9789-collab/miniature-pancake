@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -1170,6 +1172,35 @@ Mesh NurbsSurface::TessellateGridNonUniformAdaptive(
   return TessellateGridNonUniform(u_values, v_values, trim_polygon, hole_polygons);
 }
 
+// TRIED AND REJECTED (this session): a trim_polygon built from two
+// independently-refined intersection curves that mathematically only
+// TOUCH at a point (e.g. the two ellipses of a Steinmetz - equal-radius,
+// perpendicular, intersecting-axes - cylinder pair's own wall, which cross
+// at exactly 2 points) can carry two DIFFERENT vertices, at different list
+// positions, that are meant to be the SAME physical point but land a tiny
+// distance apart (confirmed directly via the debug dump below: a ~1.5e-7
+// (u, v)-unit gap, from the two curves' own independent Newton refinement
+// converging to the same true point from opposite directions) - just
+// large enough that IsSimplePolygon()'s own exact-equality-based crossing
+// test (see its doc comment: a genuinely shared vertex is never flagged,
+// only a PROPER transverse crossing) sees a real crossing instead of a
+// benign touch, throwing "trim_polygon must be simple". Snapping any two
+// near-but-not-exactly-coincident non-adjacent vertices to the same exact
+// point DOES silence that exception - measured directly - but the
+// resulting mesh's volume is then badly WRONG (Steinmetz Intersection:
+// 47.5 vs the true 5.3; A-B: -5.08, a NEGATIVE volume), not merely
+// imprecise. Root cause: welding the two near-coincident vertices doesn't
+// make the polygon a valid simple shape, it just stops the ONE check that
+// would have caught that it still isn't one - the true "inside both
+// cylinders" region is a genuinely pinched (bowtie/figure-8, self-touching
+// at 2 points) polygon that needs to be SPLIT into its two separate simple
+// lobes before tessellating, not merely have its touch point's own
+// floating-point noise cleaned up. A silently wrong volume is a strictly
+// worse outcome than this function's own honest, disclosed exception, so
+// this welding approach was not shipped. The real fix - detecting a
+// self-touching (not transversally-crossing) polygon and splitting it at
+// its own touch point into two simple sub-polygons, each tessellated and
+// unioned separately - is a genuine next increment, not attempted here.
 Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
                                                const std::vector<Point2d>& trim_polygon) const {
   if (u_divisions < 1 || v_divisions < 1) {
@@ -1185,7 +1216,19 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
         "out-of-bounds clip[0] access deep in the concave-clipping path, "
         "confirmed by a debug run, not merely a silent wrong result)");
   }
-  if (!dino8::kernel::detail::IsSimplePolygon(trim_polygon)) {
+  size_t bad_i = 0, bad_j = 0;
+  if (!dino8::kernel::detail::IsSimplePolygon(trim_polygon, &bad_i, &bad_j)) {
+    if (std::getenv("DINO8_BOOL_DEBUG")) {
+      const size_t bad_i1 = (bad_i + 1) % trim_polygon.size();
+      const size_t bad_j1 = (bad_j + 1) % trim_polygon.size();
+      std::fprintf(stderr, "  TessellateGridClippedExact: NONSIMPLE trim_polygon n=%zu, crossing edges i=%zu-%zu x j=%zu-%zu\n",
+                   trim_polygon.size(), bad_i, bad_i1, bad_j, bad_j1);
+      std::fprintf(stderr, "    edgeA: (%.12f,%.12f)-(%.12f,%.12f)  edgeB: (%.12f,%.12f)-(%.12f,%.12f)\n",
+                   trim_polygon[bad_i].x, trim_polygon[bad_i].y, trim_polygon[bad_i1].x, trim_polygon[bad_i1].y,
+                   trim_polygon[bad_j].x, trim_polygon[bad_j].y, trim_polygon[bad_j1].x, trim_polygon[bad_j1].y);
+      std::fprintf(stderr, "    start-point gap: dx=%.3e dy=%.3e\n", trim_polygon[bad_i].x - trim_polygon[bad_j].x,
+                   trim_polygon[bad_i].y - trim_polygon[bad_j].y);
+    }
     throw std::invalid_argument(
         "dino8::kernel::NurbsSurface::TessellateGridClippedExact: trim_polygon "
         "must be simple (non-self-intersecting) - a self-intersecting trim "
