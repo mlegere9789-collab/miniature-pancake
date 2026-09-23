@@ -532,49 +532,64 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       unchanged with them compiled in, and the full ctest suite (dino8_
 //       kernel_smoke) is 100% green.
 //
-//       ROOT CAUSE FOUND (same later session, continued): confirmed the
-//       "more than one candidate face" symptom above is a real, single
-//       mechanism, not multiple independent bugs - ReconcileFragmentBound
-//       aries() (this file) explicitly skips reconciling any anchor-
-//       vertex-pair whose key has `rs.size() != 2` ("ambiguous (0, 1, or
-//       3+ claimants) - leave alone", see the `continue` right after this
-//       function's own `total_pairs`/`two_run_pairs` debug counters).
-//       Added a per-pair DINO8_BOOL_DEBUG dump of every such skipped
-//       pair's owning loops/positions and, on box+cylinder Union, found
-//       ALL 14 of the 444 anchor pairs that are NOT cleanly 2-run (444-
-//       430=14, matching the earlier "two_run=430" count in this file's
-//       own debug output) trace to the SAME mechanism: BridgeHolesInto
-//       Outer()'s keyhole-notch splice makes the box cap's own SINGLE
-//       outer loop (kf0/kf1, built by folding the circular hole into the
-//       rectangular outer boundary as an out-and-back slit) touch the
-//       hole boundary's own two "pinch" anchor vertices TWICE - once
-//       walking out along the slit, once walking back - so the anchor-
-//       pair key for the hole boundary's own two ends already has 2
-//       same-face runs (both owned by kf0 itself) BEFORE the neighboring
-//       cylinder-wall fragment's (kf8/kf9) own matching run is even
-//       counted. That pushes the total claimant count to 3, so this
-//       function's own `if (rs.size() != 2) continue` bails out on
-//       exactly this pair - meaning the box cap's hole boundary and the
-//       cylinder wall's matching edge are NEVER reconciled to share
-//       identical points at all, leaving each side with its own
-//       independently-sampled boundary; those independent samples land
-//       close together but not identically (e.g. the v1110/v1249 pair
-//       above, ~1.7e-4 apart), so Mesh::MergeAndWeld()'s tolerance never
-//       merges them, and the two sides' triangulations meet with
-//       inconsistent winding at that seam - directly producing the
-//       orientation conflict this whole investigation started from.
-//       NEXT STEP (not yet implemented): teach ReconcileFragmentBound
-//       aries() to recognize this specific 3-claimant shape (exactly one
-//       same-face self-pair - the keyhole's own out/back touch - plus one
-//       cross-face run) as resolvable rather than ambiguous: treat the
-//       cross-face run exactly as an ordinary 2-run pair (reusing
-//       whichever side is denser as ground truth, same as the ordinary
-//       path below), leaving the same-face self-pair itself untouched
-//       (it is kf0's own internal keyhole seam, never meant to gain
-//       fresh points from a neighbor). Must be verified against the same
-//       76-case sweep (expect the closedmesh count to improve without
-//       any volume/ON_Brep::IsValid()/nonsimple-trim regression) and the
-//       full ctest suite before being considered fixed.
+//       ROOT CAUSE, FIRST PASS (same later session, continued - SEE
+//       CORRECTION FURTHER BELOW, this pass's own "3-claimant" mechanism
+//       was disproven by a closer read of its own debug output): found
+//       that ReconcileFragmentBoundaries() (this file) explicitly skips
+//       reconciling any anchor-vertex-pair whose key has `rs.size() != 2`
+//       ("ambiguous (0, 1, or 3+ claimants) - leave alone", see the
+//       `continue` right after this function's own `total_pairs`/
+//       `two_run_pairs` debug counters), and added a per-pair DINO8_
+//       BOOL_DEBUG dump of every such skipped pair's owning loops/
+//       positions to see which. Originally guessed (WRONG, see below)
+//       that BridgeHolesIntoOuter()'s keyhole notch pushes these pairs to
+//       3 claimants via a same-face double-touch.
+//
+//       CORRECTION (reading the actual dump output, not just the
+//       mechanism it plausibly suggested): of the 444 anchor-pair keys on
+//       box+cylinder Union, only 18 are not cleanly 2-run, and of THOSE,
+//       17 have exactly ONE run total (not 3) - meaning no matching
+//       cross-face partner was found for them at all, a different failure
+//       shape than "ambiguous 3+ claimants". The apparent "three
+//       different candidate faces" in the FACE_ORIGIN_DEBUG finding
+//       above was three separate op EXECUTIONS (Union/A-B/B-A, each its
+//       own independent BooleanCombineGeneral call hitting its own first
+//       conflict) reported together, not three simultaneous claimants of
+//       one physical edge within a single mesh - conflating those was
+//       this pass's own mistake, corrected here rather than left
+//       standing. (The one truly-2-run-but-skipped pair found is a
+//       legitimate same-face self-seam - both runs on the same kf - and
+//       is correctly left alone by the existing same-kf `continue`.)
+//
+//       What the 17 one-run keys most likely mean instead: the box cap's
+//       own loop (kf0, after BridgeHolesIntoOuter's keyhole splice) and
+//       the neighboring cylinder-wall fragment's own loop (kf8) each have
+//       their OWN, DIFFERENT set of anchor positions along what should be
+//       the same shared physical boundary - e.g. kf8 also touches a THIRD
+//       face (kf6, the cylinder's own end cap) at a point kf0 has no
+//       reason to share, splitting what would be one clean run on kf8's
+//       side into two sub-runs, neither of which lines up with kf0's own
+//       single run over the same span. This is a genuine 3-face-junction
+//       anchor-matching gap, not (only) a keyhole-notch artifact - NOT
+//       fully confirmed by tracing kf8's own anchor list against kf0's
+//       point-by-point in this session; that trace is the correct next
+//       diagnostic step before attempting any fix here, rather than
+//       generalizing from the still-unverified guess above.
+//
+//       The BridgeHolesIntoOuter() perturbed-vertex wrinkle documented
+//       just below (LerpOnSurface(..., kEdgeFraction=1e-3) splice points
+//       instead of the hole loop's own exact vertices) is independently
+//       confirmed by reading BridgeHolesIntoOuter()'s own source directly
+//       and remains real and relevant to any eventual fix, regardless of
+//       which exact anchor-matching mechanism turns out to explain the
+//       17 one-run keys.
+//
+//       NEXT STEP (not yet implemented, and the specific mechanism above
+//       is not yet fully confirmed - verify before fixing): for one of
+//       the 17 one-run keys (e.g. box+cylinder Union's (38,111) on kf0),
+//       dump kf8's own full anchor list and walk both loops by hand
+//       (or with a small standalone script) to see exactly which anchor
+//       kf8 has that kf0 does not, and vice versa, along that span.
 //
 //       ONE MORE WRINKLE (found while scoping the fix above, before
 //       writing any code for it - read, not yet acted on): BridgeHolesInto
