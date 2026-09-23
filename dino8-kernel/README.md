@@ -1790,6 +1790,38 @@ What this repo does instead:
   at all, not just a slightly-off approximation of one. Only genuinely
   shape-preserving when every weight was already equal (the mirror-image
   condition of `MakeRational()`'s own guarantee).
+- `IntersectCurves(a, b, opt)` (CCX, `surface_intersect.h`): the
+  curve/curve counterpart to the existing `IntersectSurfaces()` (SSX)
+  and `IntersectCurveSurface()` (CSX) - the public OpenNURBS SDK ships
+  none of the three. Recovered from a previous session's uncommitted,
+  mid-flight worktree edits (found coherent and nearly finished on
+  inspection - the header, implementation and regression test all
+  present and mutually consistent - rather than re-derived from scratch;
+  credited here honestly). Two general space curves only meet at
+  isolated points, so unlike SSX it returns points (`CurveCurveHit`: both
+  parameters, the refined point, the residual), not curves. Seeded like
+  CSX: both curves are sampled into polylines at a resolution driven by
+  `opt.mesh_tolerance`, every segment pair whose padded boxes overlap is
+  checked with Ericson's exact closed-form closest-points-between-two-
+  segments computation (the same textbook `Mesh::ClosestPoint()` already
+  cites), and every close-approach pair seeds a damped Gauss-Newton on
+  `(ta, tb)` minimizing `|A(ta) - B(tb)|` via the shared `NewtonSolve()`;
+  hits within `4 * opt.tolerance` of an accepted one are dropped as the
+  same crossing. Verified with three hand-derivable exact cases, not
+  plausible-looking ones: two lines forming an X cross at exactly
+  `(5, 5, 0)` with `ta = tb = 0.5` (a line's parametrization is linear in
+  position, so the geometric midpoint IS the domain midpoint); the same X
+  with one line lifted to `z = 1` (skew, never meeting) reports zero hits
+  rather than the in-plane crossing its XY projection suggests; and a
+  genuine rational-NURBS circle (`ON_Circle::GetNurbForm`) against a line
+  through its center hits at exactly `(+/-radius, 0, 0)`, in `ta` order.
+  Honest limitation, stated on the declaration: not intended for curves
+  coincident over a real span (the residual is ~0 along the whole
+  overlap, so the finite seeding/dedup reports a handful of isolated
+  points, not the shared span). Verified against the full 76-case
+  `general_boolean_sweep` too (byte-identical to the baseline - it's a
+  new function nothing else calls yet, but it lives in
+  `surface_intersect.cpp`, so that check is the rule, not optional).
 
 ## What's still not done (as of chunk 2)
 

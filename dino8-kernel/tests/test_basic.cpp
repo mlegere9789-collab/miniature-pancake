@@ -1931,6 +1931,89 @@ void TestSurfaceIntersectSphereGreatCircle() {
   }
 }
 
+void TestIntersectCurvesFindsCrossingsAndRejectsMisses() {
+  using dino8::kernel::CurveCurveHit;
+  using dino8::kernel::IntersectCurves;
+  using dino8::kernel::IntersectOptions;
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  // IntersectCurves() (CCX) is the curve/curve counterpart to
+  // IntersectSurfaces() (SSX) and IntersectCurveSurface() (CSX) above -
+  // OpenNURBS' public SDK has none of the three. Case 1: two straight
+  // lines forming an X in the z=0 plane, (0,0,0)->(10,10,0) and
+  // (0,10,0)->(10,0,0), cross at exactly one point, the geometric
+  // midpoint of both (5,5,0) - and since a straight line's own
+  // parametrization is linear in position, that's exactly the domain
+  // midpoint of both (ta = tb = 0.5), a hand-derivable exact value, not
+  // just a plausible-looking one.
+  IntersectOptions opt;
+  opt.tolerance = 1e-8;
+  opt.mesh_tolerance = 0.05;
+
+  const NurbsCurve line_a = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(10, 10, 0)}, /*degree=*/1);
+  const NurbsCurve line_b = NurbsCurve::FromControlPoints(
+      {Point3d(0, 10, 0), Point3d(10, 0, 0)}, /*degree=*/1);
+  const std::vector<CurveCurveHit> x_hits = IntersectCurves(line_a.raw(), line_b.raw(), opt);
+  Check(x_hits.size() == 1, "two crossing lines forming an X intersect at exactly one point");
+  if (x_hits.size() == 1) {
+    Check(x_hits[0].point.DistanceTo(Point3d(5, 5, 0)) < 1e-6,
+          "the crossing point is exactly the geometric midpoint (5, 5, 0)");
+    Check(std::abs(x_hits[0].ta - 0.5) < 1e-6 && std::abs(x_hits[0].tb - 0.5) < 1e-6,
+          "both curve parameters at the crossing are exactly 0.5 (the "
+          "domain midpoint), since a straight line's parametrization is "
+          "linear in position");
+    Check(x_hits[0].error < opt.tolerance * 2,
+          "the refined |A(ta) - B(tb)| residual is within the requested "
+          "tolerance, not just a coarse polyline-seed distance");
+  }
+
+  // Case 2: the identical X shape, but line_b lifted to z = 1 - the two
+  // lines are now skew (never actually meet in 3D), so a genuinely
+  // correct intersector must report zero hits rather than the in-plane
+  // crossing its 2D (x, y) projection would suggest.
+  const NurbsCurve line_b_lifted = NurbsCurve::FromControlPoints(
+      {Point3d(0, 10, 1), Point3d(10, 0, 1)}, /*degree=*/1);
+  const std::vector<CurveCurveHit> skew_hits = IntersectCurves(line_a.raw(), line_b_lifted.raw(), opt);
+  Check(skew_hits.empty(), "two skew (non-coplanar, non-meeting) lines produce no intersection hits");
+
+  // Case 3: a genuinely curved curve, not just lines - a real circle
+  // (ON_Circle::GetNurbForm, the same exact rational-NURBS construction
+  // TestCurveParameterAtArcLength() above already validates) in the z=0
+  // plane, centered at the origin, against a straight line along the
+  // x-axis passing straight through it. The line must hit the circle at
+  // exactly the two points where the x-axis crosses the circle's own
+  // boundary: (radius, 0, 0) and (-radius, 0, 0) - independently
+  // knowable from the circle's definition, not fit to whatever the
+  // intersector happens to produce.
+  const double radius = 4.0;
+  const ON_Circle on_circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), radius);
+  ON_NurbsCurve circle_nurbs_form;
+  Check(on_circle.GetNurbForm(circle_nurbs_form) != 0, "ON_Circle::GetNurbForm succeeds");
+  NurbsCurve circle;
+  circle.raw() = circle_nurbs_form;
+
+  const NurbsCurve axis_line = NurbsCurve::FromControlPoints(
+      {Point3d(-10, 0, 0), Point3d(10, 0, 0)}, /*degree=*/1);
+  const std::vector<CurveCurveHit> circle_hits = IntersectCurves(axis_line.raw(), circle.raw(), opt);
+  Check(circle_hits.size() == 2, "a line straight through a circle's center hits it at exactly two points");
+  if (circle_hits.size() == 2) {
+    // Sorted by ta (the line's own parameter, increasing x), so the
+    // near-side hit at x = -radius comes first.
+    Check(circle_hits[0].point.DistanceTo(Point3d(-radius, 0, 0)) < 1e-6,
+          "the first hit sits at exactly (-radius, 0, 0)");
+    Check(circle_hits[1].point.DistanceTo(Point3d(radius, 0, 0)) < 1e-6,
+          "the second hit sits at exactly (radius, 0, 0)");
+  }
+
+  // A curve intersected with itself throws nothing and is not asserted
+  // here (see the "not intended for coincident curves" caveat on
+  // IntersectCurves() itself) - deliberately not exercised as a pass/fail
+  // case, since there is no single correct finite answer to assert
+  // against for a genuinely coincident pair.
+}
+
 void TestBooleanCombineGeneralBoxBox() {
   using dino8::kernel::BooleanCombineGeneral;
   using dino8::kernel::BooleanOp;
@@ -20341,6 +20424,7 @@ int main() {
   TestSurfaceIsCone();
   TestSurfaceIsTorus();
   TestSurfaceIntersectSphereGreatCircle();
+  TestIntersectCurvesFindsCrossingsAndRejectsMisses();
   TestBooleanCombineGeneralBoxBox();
   TestBooleanCombineGeneralCoplanarBoxes();
   TestBooleanCombineGeneralBoxCylinder();
