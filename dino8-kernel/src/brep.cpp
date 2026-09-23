@@ -3594,11 +3594,11 @@ std::vector<Mesh> Brep::Tessellate(int u_divisions, int v_divisions) const {
     } else if (fg.outer.empty()) {
       result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions));
     } else if (fg.exact_clip) {
-      if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
-        std::fprintf(stderr, "  Tessellate: face_index=%d exact_clip outer.size()=%zu m_bRev=%d\n", i,
-                     fg.outer.size(), (int)brep_.m_F[i].m_bRev);
-      }
       result.push_back(wrapper.TessellateGridClippedExact(u_divisions, v_divisions, fg.outer));
+      if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
+        std::fprintf(stderr, "  Tessellate: face_index=%d exact_clip outer.size()=%zu m_bRev=%d area=%.6f\n", i,
+                     fg.outer.size(), (int)brep_.m_F[i].m_bRev, result.back().Area());
+      }
     } else {
       const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
       result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions, &fg.outer, holes));
@@ -4345,11 +4345,11 @@ std::vector<Mesh> Brep::TessellateConforming(int u_divisions, int v_divisions, i
     } else if (fg.outer.empty()) {
       result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions));
     } else if (fg.exact_clip) {
-      if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
-        std::fprintf(stderr, "  Tessellate: face_index=%d exact_clip outer.size()=%zu m_bRev=%d\n", i,
-                     fg.outer.size(), (int)brep_.m_F[i].m_bRev);
-      }
       result.push_back(wrapper.TessellateGridClippedExact(u_divisions, v_divisions, fg.outer));
+      if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
+        std::fprintf(stderr, "  Tessellate: face_index=%d exact_clip outer.size()=%zu m_bRev=%d area=%.6f\n", i,
+                     fg.outer.size(), (int)brep_.m_F[i].m_bRev, result.back().Area());
+      }
     } else {
       const std::vector<std::vector<Point2d>>* holes = fg.holes.empty() ? nullptr : &fg.holes;
       result.push_back(wrapper.TessellateGrid(u_divisions, v_divisions, &fg.outer, holes));
