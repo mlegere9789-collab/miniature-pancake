@@ -1302,6 +1302,9 @@ Mesh NurbsSurface::TessellateGridClippedExact(int u_divisions, int v_divisions,
   constexpr double kPinchTolerance = 1e-6;
   std::vector<Point2d> trim_polygon = trim_polygon_in;
   WeldNearDuplicateNonAdjacentVertices(trim_polygon, kPinchTolerance);
+  if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
+    std::fprintf(stderr, "  TessellateGridClippedExact CALL: n=%zu\n", trim_polygon.size());
+  }
 
   size_t bad_i = 0, bad_j = 0;
   if (!dino8::kernel::detail::IsSimplePolygon(trim_polygon, &bad_i, &bad_j)) {
