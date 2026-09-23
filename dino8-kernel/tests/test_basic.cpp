@@ -2757,10 +2757,12 @@ void TestSurfaceGetApproximateSize() {
 
   // Cylinder wall, radius 1: U wraps the unit circle (true circumference
   // 2*pi ~ 6.283), V is the straight height (1.0, exact - a line has no
-  // curvature either). Confirmed by the same debug run: this overstates
-  // the true circumference substantially (8.0, not merely a rounding
-  // difference from 6.283), the real, non-negligible gap this
-  // control-polygon approximation has for a genuinely curved direction.
+  // curvature either). GetApproximateSize() now measures a representative
+  // isocurve's own true arc length (NurbsCurve::Length()'s convergent
+  // polyline sampling) rather than the control polygon's own vertex
+  // spacing, so this is close to the true circumference (previously
+  // overstated it substantially: 8.0 vs 6.283, the control-polygon-length
+  // gap this fix closes).
   const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 1.0);
   const ON_Cylinder cylinder(circle, 1.0);
   ON_NurbsSurface cylinder_surface;
@@ -2768,10 +2770,11 @@ void TestSurfaceGetApproximateSize() {
   NurbsSurface wall;
   wall.raw() = cylinder_surface;
   const auto wall_size = wall.GetApproximateSize();
-  Check(wall_size.width > 2.0 * ON_PI,
-        "the cylinder wall's approximate width overstates the true "
-        "circumference (2*pi), matching the control-polygon "
-        "approximation's own documented direction of error");
+  Check(std::abs(wall_size.width - 2.0 * ON_PI) < 1e-3,
+        "the cylinder wall's approximate width closely matches the true "
+        "circumference (2*pi), now that GetApproximateSize() measures a "
+        "representative isocurve's true arc length instead of the "
+        "control polygon's own coarser vertex spacing");
   Check(std::abs(wall_size.height - 1.0) < 1e-9,
         "the cylinder wall's approximate height is exactly 1.0, the "
         "true straight-line height");

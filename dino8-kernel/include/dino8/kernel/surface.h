@@ -263,23 +263,23 @@ class NurbsSurface {
   bool IsTorus(double tolerance = ON_ZERO_TOLERANCE) const;
 
   // An approximate physical width (U direction) and height (V direction)
-  // of the surface. Delegates to `ON_NurbsSurface::GetSurfaceSize` after
-  // verifying it's a real implementation - but a genuinely approximate
-  // one, by the method's own source comment (`// TODO - get lengths of
-  // polygon`): it returns each direction's *control polygon length*
-  // (the sum of straight-line distances between consecutive control
-  // points), not the true arc length of an isocurve through that
-  // direction. For a straight/flat surface these coincide exactly (no
-  // curvature for a polyline-through-control-points to overstate); for
-  // a genuinely curved surface, this overstates the true size, the same
-  // direction of error `NurbsCurve::Length()`'s own polyline-sampling
-  // approximation has, but from a single coarse 2-point-per-span
-  // estimate rather than a convergent fine sampling. Verified exactly
-  // on a flat identity-mapped surface, and confirmed to overstate (not
-  // understate) a cylinder wall's true circumference (8.0 vs. the
-  // true 2*pi ~ 6.28 for a unit-radius circle) - a real, substantial gap
-  // from the control polygon's own coarser vertex count, not a rounding
-  // artifact.
+  // of the surface, measured as a representative isocurve's own true arc
+  // length in each direction (an isocurve at the OTHER direction's own
+  // domain midpoint, sliced via `ON_Surface::IsoCurve` - the same pattern
+  // `SuggestedDivisions()`/`SuggestedParameterValues()` already use - then
+  // measured with `NurbsCurve::Length()`'s own convergent polyline
+  // sampling). For a straight/flat surface this is exact (no curvature to
+  // approximate); for a genuinely curved one it converges to the true
+  // size as `NurbsCurve::Length()`'s own sample count does. This FIXES a
+  // previously-documented, previously-real gap: this method used to
+  // delegate straight to `ON_NurbsSurface::GetSurfaceSize` (by its own
+  // source comment `// TODO - get lengths of polygon`), which returns
+  // each direction's *control polygon length* instead - confirmed to
+  // overstate a unit-radius cylinder wall's true circumference
+  // substantially (8.0 vs the true 2*pi ~ 6.28). Falls back to that same
+  // control-polygon estimate, per direction, only if the isocurve can't
+  // be cast to `ON_NurbsCurve` (shouldn't happen for a genuine NURBS
+  // surface).
   SurfaceSize GetApproximateSize() const;
 
   // Approximate surface area: tessellates via `TessellateGrid()` at
@@ -287,14 +287,13 @@ class NurbsSurface {
   // triangle areas (`Mesh::Area()`) - not a from-scratch numeric
   // integration of the first fundamental form, since the tessellator
   // already exists and a flat-triangle approximation of a smooth surface
-  // converges to the true area from below as the grid refines (same
+  // converges to the true area from below as the grid refines (the same
   // "understates via straight-line/flat-facet approximation" direction
-  // every polyline/polygon approximation in this file has), the mirror
-  // image of `GetApproximateSize()`'s "overstates via the control
-  // polygon" error direction above - genuinely exact only where the
-  // surface has no curvature for a flat facet to fall short of (a flat
-  // plane). Throws std::invalid_argument if either division count is
-  // less than 1 (`TessellateGrid()`'s own validation - see there).
+  // every polyline/polygon approximation in this file has) - genuinely
+  // exact only where the surface has no curvature for a flat facet to
+  // fall short of (a flat plane). Throws std::invalid_argument if either
+  // division count is less than 1 (`TessellateGrid()`'s own validation -
+  // see there).
   double ApproximateArea(int u_divisions = 50, int v_divisions = 50) const;
 
   // Reverses the surface's parameterization in `direction` (0 = U,

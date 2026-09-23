@@ -712,9 +712,43 @@ bool NurbsSurface::IsCone(double tolerance) const { return surface_.IsCone(nullp
 bool NurbsSurface::IsTorus(double tolerance) const { return surface_.IsTorus(nullptr, tolerance); }
 
 SurfaceSize NurbsSurface::GetApproximateSize() const {
-  double width = 0.0;
-  double height = 0.0;
-  surface_.GetSurfaceSize(&width, &height);
+  // Control-polygon fallback (ON_NurbsSurface::GetSurfaceSize's own
+  // estimate) - used only if a representative isocurve can't be cast to
+  // ON_NurbsCurve below, which shouldn't happen for a genuine NURBS
+  // surface but keeps this degrading gracefully rather than throwing.
+  double fallback_width = 0.0;
+  double fallback_height = 0.0;
+  surface_.GetSurfaceSize(&fallback_width, &fallback_height);
+
+  const ON_Interval u_domain = surface_.Domain(0);
+  const ON_Interval v_domain = surface_.Domain(1);
+
+  // Same IsoCurve-slicing pattern SuggestedDivisions()/SuggestedParameterValues()
+  // already use, but for true arc length (NurbsCurve::Length()'s own
+  // convergent polyline sampling) instead of a segment-count heuristic -
+  // fixes GetApproximateSize()'s own documented "overstates via the
+  // control polygon" gap (confirmed on a unit-radius cylinder wall: was
+  // 8.0, true circumference is 2*pi ~ 6.283) by measuring one
+  // representative isocurve per direction (at the OTHER direction's own
+  // domain midpoint) instead of trusting the control net's own vertex
+  // spacing.
+  auto isocurve_length = [](const ON_Surface& s, int direction, double fixed_param, double fallback) {
+    ON_Curve* iso = s.IsoCurve(direction, fixed_param);
+    if (iso == nullptr) {
+      return fallback;
+    }
+    double length = fallback;
+    if (ON_NurbsCurve* nurbs_iso = ON_NurbsCurve::Cast(iso)) {
+      NurbsCurve wrapped;
+      wrapped.raw() = *nurbs_iso;
+      length = wrapped.Length();
+    }
+    delete iso;
+    return length;
+  };
+
+  const double width = isocurve_length(surface_, 0, v_domain.Mid(), fallback_width);
+  const double height = isocurve_length(surface_, 1, u_domain.Mid(), fallback_height);
   return SurfaceSize{width, height};
 }
 
