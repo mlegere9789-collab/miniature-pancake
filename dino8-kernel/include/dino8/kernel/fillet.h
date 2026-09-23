@@ -454,4 +454,123 @@ Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1
 Brep FilletConvexEdgeTapered(const Brep& solid, Point3d edge_p0, Point3d edge_p1,
                               const std::vector<FilletRadiusStation>& stations);
 
+
+// Exact kernel-level CHAMFER of ONE straight, convex edge shared by two
+// PLANAR faces of `solid`: the classical two-distance chamfer (Parasolid
+// "chamfer by two ranges", Rhino's ChamferEdge with Distance1/Distance2),
+// the planar sibling of FilletConvexEdge above. Where a rolling ball
+// produces a circular-cylinder patch, a chamfer produces a PLANAR strip -
+// so unlike every fillet in this file there is no curved surface at all,
+// and the whole result is exact to floating-point precision by
+// construction of the representation itself (every face is a
+// Brep::PlanarFace, every edge a straight ON_LineCurve): no dense
+// polygonal notch, no sagitta tolerance, no chordal error anywhere.
+//
+// `edge_p0`/`edge_p1` identify the edge exactly as FilletConvexEdge's own
+// doc comment requires (two endpoints of one consecutive vertex pair
+// shared, in opposite walking directions, by exactly two of
+// `solid.PlanarFaces()`'s loops; face i walks edge_p0 -> edge_p1, face j
+// walks edge_p1 -> edge_p0). `distance_i` is the chamfer's setback
+// measured IN face i's own plane, perpendicular to the edge, from the
+// original sharp edge to the new chamfer rail; `distance_j` likewise in
+// face j's plane. Both must be strictly positive (throws
+// std::invalid_argument otherwise, as for a non-shared edge or a
+// non-convex dihedral).
+//
+// The construction:
+//   1. n_i, n_j, e, theta (interior dihedral angle) exactly as
+//      FilletConvexEdge's own step 1; m_i = normalize(n_i x e) and m_j =
+//      normalize(n_j x -e) are each face's own in-plane, perpendicular-
+//      to-the-edge, INTO-MATERIAL direction (the loop's own interior is
+//      to the left of a CCW-outward walk - checked directly against each
+//      face's own vertex extent rather than assumed).
+//   2. The two chamfer RAILS are the lines {edge_p0 + distance_i*m_i +
+//      t*e} in face i's plane and {edge_p0 + distance_j*m_j + t*e} in
+//      face j's plane - always parallel to the edge, for the same reason
+//      FilletConvexEdge's contact lines are (a constant offset along a
+//      straight edge between two planes).
+//   3. Faces i and j are re-trimmed by one half-space clip each, at their
+//      own rail (the same detail::ClipByHalfspace3d primitive
+//      FilletConvexEdge uses), leaving the rail as the loop's new boundary
+//      edge. Throws std::invalid_argument if either distance exceeds that
+//      face's own extent from the edge (the chamfer doesn't fit).
+//   4. The chamfer face is the planar quad spanned by the two rails,
+//      oriented CCW-outward (its outward normal lies strictly between n_i
+//      and n_j for a convex edge - verified by construction, not assumed).
+//   5. END CONDITIONS - a genuine, CHECKED generalization over
+//      FilletConvexEdge's own perpendicular-end-face-only corner notch:
+//      at each of edge_p0/edge_p1, any THIRD face whose loop has a vertex
+//      there with its two loop neighbours on face i's and face j's own
+//      planes (the ordinary trihedral corner) has that sharp corner
+//      replaced by the two points where the two rails pierce that face's
+//      own plane, Q_i = rail_i /\ plane_k and Q_j = rail_j /\ plane_k -
+//      both of which lie exactly on that face's own two existing boundary
+//      lines (rail_i lies in plane i, so rail_i /\ plane_k is on the line
+//      plane_i /\ plane_k, which IS face k's edge shared with face i; same
+//      for Q_j). The chamfer quad's own end edge at that vertex is then
+//      the straight segment Q_i Q_j, which lies in plane_k by construction
+//      - so the chamfer face, face k, and the two re-trimmed faces meet
+//      EXACTLY there whether face k is perpendicular to the edge (Q_i =
+//      edge_p0 + distance_i*m_i exactly, the box case) or OBLIQUE to it
+//      (Q_i slides along face k's edge by distance_i*(m_i.n_k)/(e.n_k) -
+//      the case FilletConvexEdge still leaves untouched, because a
+//      cylinder's oblique section is an ellipse while a plane's is just
+//      another line). The chamfer quad's own four corners are therefore
+//      Q_i(edge_p0), Q_i(edge_p1), Q_j(edge_p1), Q_j(edge_p0), and faces
+//      i/j are re-trimmed by the rail LINES (not segments), so their new
+//      corners are those same Q points automatically. Throws
+//      std::invalid_argument if a Q point would fall beyond the far end
+//      of face k's own edge (the chamfer overruns the third face), or if
+//      face k's plane is parallel to the edge (no finite Q; impossible
+//      at a manifold trihedral vertex, checked anyway). A Q point landing
+//      EXACTLY on that far vertex is legitimate (the chamfer's end edge
+//      terminates at an existing vertex, which becomes valence-4) and is
+//      spliced without duplicating it - the case two equal-setback
+//      chamfers meeting at a box corner produce, see the chained-chamfer
+//      regression test.
+//      If NO face other than i/j touches an endpoint at all, that end of
+//      the chamfer is honestly left as a free boundary (an open shell,
+//      exactly as FilletConvexEdge's own free-boundary case). If faces DO
+//      touch it but none matches the trihedral pattern (four or more
+//      faces at the vertex, or a non-planar neighbour), this function
+//      throws std::invalid_argument rather than returning a solid whose
+//      chamfer end floats unattached - a genuinely different (vertex-
+//      blend) problem, disclosed rather than silently mis-built.
+//
+// The result is `solid` with faces i/j re-trimmed, any matching third
+// faces re-cornered, and the new chamfer PlanarFace inserted, assembled
+// via Brep::FromMixedFaces: for a closed input its topology is a genuine
+// closed 2-manifold (IsSolid() == true) with every shared edge a single
+// real ON_BrepEdge, and its volume is exactly the input's minus the
+// chamfer prism's (see dino8-kernel's own regression tests for the
+// closed forms this was checked against, including the oblique-end case).
+//
+// SCOPE: one straight edge between exactly two PLANAR faces, convex
+// dihedral only, of a solid PlanarFaces() can describe (an input already
+// carrying a curved face from an earlier fillet is rejected by
+// PlanarFaces() itself - see that method's own doc comment). A curved
+// adjacent face or a concave edge remain out of scope, disclosed exactly
+// as FilletConvexEdge discloses them.
+Brep ChamferConvexEdge(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
+                        double distance_j);
+
+// DISTANCE + ANGLE form of ChamferConvexEdge (Parasolid "chamfer by range
+// and angle", Rhino's ChamferEdge Distance/Angle mode): `distance_i` is
+// the setback in face i's plane exactly as above, and `angle_from_i`
+// (radians) is the angle between face i's plane and the chamfer plane,
+// measured inside the removed material. The second distance follows
+// exactly from the law of sines in the chamfer's own triangular cross-
+// section (sides distance_i, distance_j, included angle theta = the
+// interior dihedral angle; the angle opposite distance_j is angle_from_i
+// and the angle opposite distance_i is pi - theta - angle_from_i):
+//   distance_j = distance_i * sin(angle_from_i) / sin(theta + angle_from_i)
+// - then this overload DISPATCHES to the two-distance form above with
+// that value, so every claim in that doc comment holds verbatim. Throws
+// std::invalid_argument unless 0 < angle_from_i < pi - theta (the chamfer
+// plane must actually reach face j); at angle_from_i = (pi - theta)/2
+// (45 degrees for a right-angle edge) distance_j == distance_i exactly,
+// the symmetric chamfer - checked directly by dino8-kernel's own tests.
+Brep ChamferConvexEdgeAngle(const Brep& solid, Point3d edge_p0, Point3d edge_p1, double distance_i,
+                             double angle_from_i);
+
 }  // namespace dino8::kernel
