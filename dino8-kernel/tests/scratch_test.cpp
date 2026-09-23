@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <algorithm>
 #include <map>
@@ -161,6 +162,7 @@ int main() {
       const char* name = op==BooleanOp::Union?"Union":op==BooleanOp::Intersection?"Intersection":"Difference";
       const double expect = op==BooleanOp::Union?expect_u:op==BooleanOp::Intersection?expect_i:expect_d;
       try {
+        if (std::getenv("DINO8_RECONCILE_DEBUG")) std::fprintf(stderr, "=== box+cylinder %s ===\n", name);
         Brep r = BooleanCombineGeneral(box, cyl, op);
         Mesh m = r.TessellateToClosedMesh(8,32);
         double vol = m.Volume();
