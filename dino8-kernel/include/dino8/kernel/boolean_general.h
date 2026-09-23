@@ -581,82 +581,73 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op);
 //       happening). The prototype fix never fired for exactly this
 //       reason, and was reverted rather than left in the tree unused.
 //
-//       CONFIRMED (this time by dumping every point's own 3D coordinate
-//       for both loops, not just anchor status): the ENTIRE (38,111) gap
-//       is ONE single missing point. kf0's own hole boundary has TWO
-//       near-duplicate, un-anchored points straddling the circle's true
-//       north pole (0,1,-1): position 37 at (-1.20496156e-4, 0.999992714,
-//       -1) and position 112 at (+1.20496156e-4, 0.999992714, -1) - offset
-//       from the true point and from EACH OTHER by the same ~1.2e-4 in x,
-//       in opposite directions. kf8's own boundary has exactly ONE point
-//       there, sitting at the true (0,1,-1) exactly (its own position 63,
-//       which is consequently un-anchored - it has no partner on kf0's
-//       side within weld tolerance of EITHER of kf0's two straddling
-//       points). This is a genuine seam-vertex mismatch on the hole
-//       loop's own closed intersection chain - structurally the same
-//       FAMILY of defect this session already found and fixed once this
-//       session in SplitPeriodicWrapChain (commit f83d6ea, "seam-vertex p
-//       mismatch... closing sweep case 08"), but a DIFFERENT, still-open
-//       occurrence of it: that fix made an already_at_seam-reused point
-//       match the freshly-synthesized seam point's own `p` value when
-//       BOTH ends of a crossing reuse/synthesize at the same seam: it did
-//       not (and was never verified to) cover this hole boundary's own
-//       chain, which is built via a different code path (this file's own
-//       closed-chain handling in SplitFaceLoop / the general SSX pipeline
-//       feeding it, not necessarily SplitPeriodicWrapChain itself - NOT
-//       yet traced to its exact originating call this session).
+//       CONFIRMED, PRECISELY AND FINALLY (this time by adding a targeted
+//       print directly at BridgeHolesIntoOuter()'s own accepted-candidate
+//       site and matching its EXACT numbers against the (38,111) gap's own
+//       coordinates - no more inference from counts or nearby-but-not-
+//       identical evidence): the (38,111) gap IS BridgeHolesIntoOuter()'s
+//       own kEdgeFraction=1e-3 splice, exactly as this file's own earlier,
+//       already-written "ONE MORE WRINKLE" note below described - an
+//       EARLIER pass through this same investigation (immediately above,
+//       in an intervening commit) incorrectly concluded the two were
+//       "unrelated" from position/count reasoning alone; that conclusion
+//       is retracted here now that the actual numbers are in hand. On box+
+//       cylinder Union's accepted hole attachment: h_j.p = (0, 1, -1)
+//       (the chosen hole-boundary pinch vertex, at the circle's true north
+//       pole); the notch's own c_in = LerpOnSurface(h_j, h_next, 1e-3) =
+//       (-1.20496156e-4, 0.999992714, -1); c_out = LerpOnSurface(h_prev,
+//       h_j, 1-1e-3) = (+1.20496156e-4, 0.999992714, -1). These are BIT-
+//       FOR-BIT the same two points found straddling the north pole in
+//       kf0's own assembled loop (positions 37 and 112) - not merely
+//       similar in magnitude. h_j itself is never copied into kf0's own
+//       loop at all (the hole-walk loop deliberately starts at h_{j+1} and
+//       ends at h_{j-1}, skipping h_j - see the `for (size_t k = (j + 1) %
+//       m; k != j; ...)` loop), while kf8's own boundary DOES carry h_j
+//       verbatim (unaffected by this file's own notch splicing, since kf8
+//       is a plain wall fragment, not a bridged-hole face) - so kf8's own
+//       exact h_j anchor has no counterpart on kf0's side within weld
+//       tolerance of either c_in or c_out, and the pair goes unreconciled.
+//       This is NOT the SplitPeriodicWrapChain/seam-vertex-p family this
+//       session fixed once already (f83d6ea) - that fix and this gap are
+//       unrelated; the actual mechanism is exactly the deliberate,
+//       documented kEdgeFraction perturbation already described below.
 //
-//       NEXT STEP (not yet implemented, and the exact originating
-//       function for the hole chain's own seam split is not yet
-//       identified - trace that first): find where the hole loop's own
-//       closed intersection chain for this fixture gets cut/reconciled at
-//       its own u=pi/2-equivalent seam (likely near where the cylinder's
-//       own periodic surface parametrization wraps, or wherever
-//       CutChainAtDomainBoundary/SplitPeriodicWrapChain's own logic
-//       applies to a HOLE chain specifically, as opposed to the outer-
-//       boundary-crossing chains those functions' own doc comments
-//       describe), and either weld its two straddling points to the same
-//       `p` (mirroring f83d6ea's own fix) or emit only one point there in
-//       the first place. Once fixed, must be verified against the same
-//       76-case sweep (watch for the closedmesh count moving, and no
-//       volume/ON_Brep::IsValid()/nonsimple-trim regression) and the full
-//       ctest suite before being considered done.
+//       NEXT STEP (not yet implemented - the mechanism is now fully
+//       confirmed with matching numbers, but the fix itself still needs
+//       real design + testing before landing, given this investigation's
+//       own history of wrong first guesses in this exact file): the
+//       cleanest fix is likely to preserve h_j's own identity somewhere
+//       recoverable rather than only ever emitting the two offset points
+//       around it - e.g. have BridgeHolesIntoOuter() record, per
+//       attachment, which two ASSEMBLED-array positions (c_in and c_out)
+//       morally correspond to which ORIGINAL hole-loop vertex (h_j), and
+//       teach ReconcileFragmentBoundaries() to treat a cross-face anchor
+//       matching h_j as reconcilable against EITHER of kf0's two straddling
+//       points (snapping both, or the nearer one, to h_j exactly) instead
+//       of requiring an exact weld. Simply splicing h_j itself into kf0's
+//       own array adjacent to c_in or c_out was considered and rejected
+//       without writing code: c_in/c_out are deliberately offset TOWARD
+//       h_j from the h_next/h_prev side respectively, so placing h_j
+//       immediately next to either one would create a short backtracking
+//       zigzag (walk toward h_j, then away again) rather than a clean
+//       insertion - a real risk of a new self-overlap defect, not a free
+//       lunch. Any fix here must be verified against the full 76-case
+//       sweep (watch for the closedmesh count moving, and no volume/
+//       ON_Brep::IsValid()/nonsimple-trim regression) and the full ctest
+//       suite before being considered done - and, given this investigation's
+//       track record, re-verified with fresh point-level data (not just
+//       counts) before being trusted.
 //
-//       The BridgeHolesIntoOuter() perturbed-vertex wrinkle documented
-//       just below (LerpOnSurface(..., kEdgeFraction=1e-3) splice points
-//       instead of the hole loop's own exact vertices) is independently
-//       confirmed by reading BridgeHolesIntoOuter()'s own source directly
-//       and remains real, but is UNRELATED to the (38,111) gap just found
-//       (that gap is nowhere near the notch's own splice point) - it
-//       remains a second, separate thing to account for whenever a fix
-//       lands near the notch itself specifically.
-//
-//       ONE MORE WRINKLE (found while scoping the fix above, before
-//       writing any code for it - read, not yet acted on): BridgeHolesInto
-//       Outer()'s own notch (this file, above) does not even splice in the
-//       hole loop's own EXACT pinch vertices - it inserts fresh points via
-//       LerpOnSurface(..., kEdgeFraction=1e-3) on both the outer side (o_i/
-//       o_next) and the hole side (h_j/h_prev), a deliberate near-miss so
-//       the notch's own corners are never exactly collinear/zero-area
-//       (this function's own top comment explains why). That means kf0's
-//       slit-adjacent points are NEVER meant to exactly equal the hole
-//       loop's own true vertices at all - only points 0.1% of an edge
-//       length away from them. So the fix above (treating the cross-face
-//       run as an ordinary 2-run pair) is not by itself sufficient: it
-//       must route the reconciliation through the hole loop's own
-//       UNPERTURBED vertices (h_j, h_prev, h_next etc., the same points
-//       oriented_hole itself holds before the two LerpOnSurface() calls
-//       run) rather than the notch's own already-offset splice points -
-//       otherwise "fixing" the run-count check would just make the
-//       cylinder wall's boundary match the notch's own 1e-3-offset
-//       points instead of the hole's true boundary, trading one seam
-//       mismatch for a smaller but still-nonzero one. The cleanest place
-//       to fix this is likely BridgeHolesIntoOuter() itself: track which
-//       inserted point corresponds to which original hole-loop point (it
-//       already knows this per-attachment, see HoleAttachment) and thread
-//       that mapping out to ReconcileFragmentBoundaries() so it can
-//       resolve anchors against the hole's own true samples instead of
-//       the notch's perturbed ones.
+//       ONE MORE WRINKLE (found while scoping the fix above): BridgeHoles
+//       IntoOuter()'s own notch (this file, above) does not even splice in
+//       the hole loop's own EXACT pinch vertex - it inserts the two fresh
+//       LerpOnSurface(..., kEdgeFraction=1e-3) points on both the outer
+//       side (o_i/o_next) and the hole side (h_j/h_prev) described above,
+//       a deliberate near-miss so the notch's own corners are never
+//       exactly collinear/zero-area (this function's own top comment
+//       explains why - IsConvexPolygon()'s 1e-12 collinearity threshold).
+//       This IS the (38,111) gap's own root cause, confirmed above, not a
+//       separate concern layered on top of it.
 Mesh TessellateGeneralBooleanClosedMesh(const Brep& result, int u_divisions = 8, int v_divisions = 8);
 
 }  // namespace dino8::kernel
