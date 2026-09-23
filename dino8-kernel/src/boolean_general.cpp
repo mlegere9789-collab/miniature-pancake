@@ -1499,6 +1499,54 @@ bool FindInteriorChainTouch(const Chain& c, const std::vector<UVPt>& outer, doub
   return false;
 }
 
+// True if chain `c`'s own polyline crosses one of `outer`'s own edges at a
+// genuine interior EDGE intersection - a point strictly between two of
+// `c`'s sample vertices, not sitting near any single vertex of either
+// curve (that vertex-level case is FindInteriorChainTouch's job, checked
+// first by the caller). Confirmed on the skew (non-intersecting-axes,
+// offset) perpendicular-cylinder-pair sweep case: that geometry's wall
+// face carries TWO geometrically separate wrap chains (unlike Steinmetz's
+// one self-crossing pair), and once the first is already spliced into a
+// fragment's own boundary, the second can cross clean through the first
+// chain's now-embedded polyline at a point falling strictly BETWEEN two of
+// its own sample vertices (measured gap ~9e-3 uv-units, far above
+// FindInteriorChainTouch's ~1e-4 vertex-proximity tolerance) - a real
+// edge/edge crossing, not a shared or near-shared vertex.
+bool FindChainBoundaryCrossing(const Chain& c, const std::vector<UVPt>& outer, size_t& c_idx, size_t& outer_idx,
+                                UVPt& out_pt) {
+  if (c.size() < 2 || outer.size() < 2) return false;
+  const size_t cn = c.size();
+  const size_t on = outer.size();
+  for (size_t k = 0; k + 1 < cn; ++k) {
+    const Point2d& a1 = c[k].uv;
+    const Point2d& a2 = c[k + 1].uv;
+    for (size_t j = 0; j < on; ++j) {
+      const Point2d& b1 = outer[j].uv;
+      const Point2d& b2 = outer[(j + 1) % on].uv;
+      if (!dino8::kernel::detail::SegmentsProperlyIntersect(a1, a2, b1, b2)) continue;
+      // Solve for the intersection parameters along each segment directly
+      // (SegmentsProperlyIntersect already confirmed a proper crossing
+      // exists, so this system is well-conditioned) and interpolate both
+      // the (u, v) location and the 3D point linearly along `c`'s own
+      // segment - the two chains lie extremely close together right here
+      // (that's the whole reason a crossing formed at all), so a linear
+      // interpolation of the surface point is an entirely adequate
+      // approximation, well within this engine's own weld tolerances.
+      const double dax = a2.x - a1.x, day = a2.y - a1.y;
+      const double dbx = b2.x - b1.x, dby = b2.y - b1.y;
+      const double denom = dax * dby - day * dbx;
+      if (std::fabs(denom) < 1e-15) continue;
+      const double t = ((b1.x - a1.x) * dby - (b1.y - a1.y) * dbx) / denom;
+      c_idx = k;
+      outer_idx = j;
+      out_pt.uv = Point2d(a1.x + dax * t, a1.y + day * t);
+      out_pt.p = c[k].p + (c[k + 1].p - c[k].p) * t;
+      return true;
+    }
+  }
+  return false;
+}
+
 std::vector<Fragment> SplitFaceLoop(const std::vector<UVPt>& boundary, const std::vector<Chain>& closed_chains,
                                      const std::vector<Chain>& open_chains) {
   std::vector<std::vector<UVPt>> outers = {boundary};
@@ -1579,6 +1627,32 @@ std::vector<Fragment> SplitFaceLoop(const std::vector<UVPt>& boundary, const std
       }
       Chain c1(c.begin(), c.begin() + static_cast<long>(touch_idx) + 1);
       Chain c2(c.begin() + static_cast<long>(touch_idx), c.end());
+      worklist.push_back(std::move(c1));
+      worklist.push_back(std::move(c2));
+      continue;
+    }
+    size_t cross_c_idx = 0, cross_outer_idx = 0;
+    UVPt cross_pt;
+    if (FindChainBoundaryCrossing(c, outers[chosen], cross_c_idx, cross_outer_idx, cross_pt)) {
+      // `c` crosses outers[chosen]'s own boundary at a point strictly
+      // between two existing vertices on BOTH sides (see
+      // FindChainBoundaryCrossing's doc comment) - split both the chain
+      // and the fragment boundary right there, so every future candidacy
+      // check sees this as an ordinary shared vertex instead of a missed
+      // crossing.
+      if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
+        std::fprintf(stderr,
+                     "  SplitFaceLoop: chain (n=%zu) crosses outers[%zu]'s own edge at c_idx=%zu outer_idx=%zu "
+                     "uv=(%.6f,%.6f) - inserting a shared vertex and re-splitting\n",
+                     c.size(), chosen, cross_c_idx, cross_outer_idx, cross_pt.uv.x, cross_pt.uv.y);
+      }
+      std::vector<UVPt>& outer_ref = outers[chosen];
+      outer_ref.insert(outer_ref.begin() + static_cast<long>(cross_outer_idx) + 1, cross_pt);
+      Chain c1(c.begin(), c.begin() + static_cast<long>(cross_c_idx) + 1);
+      c1.push_back(cross_pt);
+      Chain c2;
+      c2.push_back(cross_pt);
+      c2.insert(c2.end(), c.begin() + static_cast<long>(cross_c_idx) + 1, c.end());
       worklist.push_back(std::move(c1));
       worklist.push_back(std::move(c2));
       continue;
@@ -2703,6 +2777,14 @@ Brep BooleanCombineGeneral(const Brep& a, const Brep& b, BooleanOp op) {
       ff.surface = brep.m_F[i].SurfaceOf()->DuplicateSurface();
       ff.base_rev = brep.m_F[i].m_bRev;
       ff.frags = SplitFaceLoop(boundary, closed_chains, open_chains);
+      if (std::getenv("DINO8_BOOL_DEBUG_VERBOSE")) {
+        for (size_t fi = 0; fi < ff.frags.size(); ++fi) {
+          std::fprintf(stderr, "  SplitFaceLoop face_index=%d frag[%zu] outer.size()=%zu holes=%zu",
+                       ff.face_index, fi, ff.frags[fi].outer.size(), ff.frags[fi].holes.size());
+          for (const auto& h : ff.frags[fi].holes) std::fprintf(stderr, " hole.size()=%zu", h.size());
+          std::fprintf(stderr, "\n");
+        }
+      }
       out.push_back(std::move(ff));
     }
     return out;
