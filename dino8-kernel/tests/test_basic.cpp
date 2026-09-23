@@ -6999,6 +6999,80 @@ void TestMeshLoadStlBinary() {
   std::remove(truncated_path.c_str());
 }
 
+void TestMeshLoadStlBinaryRejectsNonFiniteVertices() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Result;
+
+  // Regression: the binary STL reader copied each 32-bit float straight
+  // into the mesh, so a record carrying a NaN or Inf vertex coordinate
+  // loaded with Result::Ok and the NaN then propagated silently into every
+  // downstream query (confirmed by a debug run against the pre-fix build:
+  // Volume() == NaN, GetCentroid() == (NaN, NaN, NaN) because its own
+  // zero-volume guard fails open on NaN, and MergeAndWeld() could not weld
+  // the poisoned vertex, so IsClosedManifold() went false on an otherwise
+  // closed solid). The ASCII path already refuses "nan"/"inf" tokens
+  // (operator>> sets failbit on them), so only the binary path needed
+  // the check - documented by the last Check() below rather than assumed.
+  auto write_tetrahedron = [](const std::string& path, bool poison, float poison_value) {
+    std::ofstream out(path, std::ios::binary);
+    char header[80] = {0};
+    out.write(header, sizeof(header));
+    const uint32_t triangle_count = 4;
+    out.write(reinterpret_cast<const char*>(&triangle_count), sizeof(triangle_count));
+    // A closed, outward-wound unit tetrahedron (volume exactly 1/6).
+    const float v[4][3] = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    const int tris[4][3] = {{0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {1, 2, 3}};
+    for (int t = 0; t < 4; ++t) {
+      const float normal[3] = {0, 0, 0};
+      out.write(reinterpret_cast<const char*>(normal), sizeof(normal));
+      for (int k = 0; k < 3; ++k) {
+        float p[3] = {v[tris[t][k]][0], v[tris[t][k]][1], v[tris[t][k]][2]};
+        if (poison && t == 3 && k == 0) p[2] = poison_value;
+        out.write(reinterpret_cast<const char*>(p), sizeof(p));
+      }
+      const uint16_t attribute_byte_count = 0;
+      out.write(reinterpret_cast<const char*>(&attribute_byte_count), sizeof(attribute_byte_count));
+    }
+  };
+  const std::string clean_path = "dino8_kernel_mesh_stl_binary_finite_test.stl";
+  const std::string nan_path = "dino8_kernel_mesh_stl_binary_nan_test.stl";
+  const std::string inf_path = "dino8_kernel_mesh_stl_binary_inf_test.stl";
+  write_tetrahedron(clean_path, false, 0.0f);
+  write_tetrahedron(nan_path, true, std::numeric_limits<float>::quiet_NaN());
+  write_tetrahedron(inf_path, true, std::numeric_limits<float>::infinity());
+
+  Mesh clean;
+  Check(Mesh::LoadStl(clean_path, clean) == Result::Ok,
+        "control: the same tetrahedron with all-finite coordinates still loads");
+  const Mesh welded = Mesh::MergeAndWeld({clean});
+  Check(welded.IsClosedManifold() && std::abs(welded.Volume() - 1.0 / 6.0) < 1e-6,
+        "control: ...and welds into a closed solid with the tetrahedron's own volume 1/6");
+
+  Mesh poisoned;
+  Check(Mesh::LoadStl(nan_path, poisoned) == Result::Failed,
+        "LoadStl fails on a binary STL whose vertex carries a NaN coordinate instead of "
+        "loading it");
+  Check(Mesh::LoadStl(inf_path, poisoned) == Result::Failed,
+        "LoadStl fails on a binary STL whose vertex carries an Inf coordinate");
+
+  // The ASCII path's existing behaviour for the same poison, documented
+  // so a future parser change can't silently open this hole from the
+  // other side.
+  const std::string ascii_path = "dino8_kernel_mesh_stl_ascii_nan_test.stl";
+  {
+    std::ofstream out(ascii_path);
+    out << "solid t\nfacet normal 0 0 0\nouter loop\nvertex nan 0 0\nvertex 1 0 0\n"
+           "vertex 0 1 0\nendloop\nendfacet\nendsolid t\n";
+  }
+  Check(Mesh::LoadStl(ascii_path, poisoned) == Result::Failed,
+        "the ASCII path already rejects a 'nan' vertex token (stream parse failure)");
+
+  std::remove(clean_path.c_str());
+  std::remove(nan_path.c_str());
+  std::remove(inf_path.c_str());
+  std::remove(ascii_path.c_str());
+}
+
 void TestMeshSaveStlBinaryRoundTrips() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Result;
@@ -20536,6 +20610,7 @@ int main() {
   TestMeshSaveStlSplitsQuadsAndComputesNormals();
   TestMeshLoadStlRoundTrips();
   TestMeshLoadStlBinary();
+  TestMeshLoadStlBinaryRejectsNonFiniteVertices();
   TestMeshSaveStlBinaryRoundTrips();
   TestExactClippingMatchesAreaButNotCellCounts();
   TestExactClippingHandlesNonConvexTrim();
