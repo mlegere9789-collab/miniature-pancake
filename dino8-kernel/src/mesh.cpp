@@ -588,6 +588,46 @@ MassProperties Mesh::VolumeMassProperties() const {
   return mp;
 }
 
+OrientedBoundingBox Mesh::GetOrientedBoundingBox() const {
+  // VolumeMassProperties()'s own precondition (closed, consistently
+  // oriented, positive volume) and its own exceptions on failure - see
+  // this method's own doc comment for why its principal_axes are exactly
+  // the box's own axes, not a separate PCA.
+  const MassProperties mp = VolumeMassProperties();
+
+  OrientedBoundingBox obb;
+  obb.axes = mp.principal_axes;
+
+  // The tightest slab along each axis that contains every vertex: the
+  // largest and smallest signed distance from the centroid (an arbitrary
+  // but convenient common reference point - any point would do, since
+  // only the difference of extremes and their own midpoint are kept)
+  // found by direct search, not estimated.
+  std::array<double, 3> lo = {0.0, 0.0, 0.0};
+  std::array<double, 3> hi = {0.0, 0.0, 0.0};
+  bool first = true;
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const Vector3d d = Point3d(mesh_.m_V[i]) - mp.centroid;
+    for (size_t k = 0; k < 3; ++k) {
+      const double t = ON_DotProduct(d, obb.axes[k]);
+      if (first) {
+        lo[k] = hi[k] = t;
+      } else {
+        lo[k] = std::min(lo[k], t);
+        hi[k] = std::max(hi[k], t);
+      }
+    }
+    first = false;
+  }
+
+  obb.center = mp.centroid;
+  for (size_t k = 0; k < 3; ++k) {
+    obb.center = obb.center + obb.axes[k] * (0.5 * (lo[k] + hi[k]));
+    obb.half_extents[k] = 0.5 * (hi[k] - lo[k]);
+  }
+  return obb;
+}
+
 std::vector<RayHit> Mesh::FireRay(Point3d origin, Vector3d direction) const {
   if (direction.LengthSquared() <= 0.0) {
     throw std::invalid_argument(
@@ -1265,7 +1305,254 @@ Result LoadBinaryStl(const std::string& path, uint32_t triangle_count, Mesh& out
   return Result::Ok;
 }
 
+// One "property <type> <name>" or "property list <count_type> <type>
+// <name>" line from a PLY header.
+struct PlyProperty {
+  bool is_list = false;
+  std::string name;
+};
+
+// One "element <name> <count>" block from a PLY header, plus the
+// property lines that followed it.
+struct PlyElement {
+  std::string name;
+  int count = 0;
+  std::vector<PlyProperty> properties;
+};
+
+// Parses an ASCII PLY header (everything up to and including
+// "end_header") into an ordered list of elements. Returns false on any
+// header line this kernel doesn't recognize, a "property" line before
+// any "element" line, or a "format" line that isn't exactly
+// "format ascii <version>" - PLY's binary_little_endian/
+// binary_big_endian formats are a disclosed, out-of-scope gap (see
+// Mesh::SavePly()'s own doc comment), not silently misread as ASCII.
+bool ParsePlyHeader(std::istream& in, std::vector<PlyElement>& out_elements) {
+  std::string line;
+  if (!std::getline(in, line) || line != "ply") {
+    return false;
+  }
+  if (!std::getline(in, line)) {
+    return false;
+  }
+  {
+    std::istringstream header(line);
+    std::string tag, format;
+    if (!(header >> tag >> format) || tag != "format" || format != "ascii") {
+      return false;
+    }
+  }
+  while (std::getline(in, line)) {
+    std::istringstream stream(line);
+    std::string tag;
+    stream >> tag;
+    if (tag == "comment" || tag.empty()) {
+      continue;
+    }
+    if (tag == "end_header") {
+      return true;
+    }
+    if (tag == "element") {
+      PlyElement element;
+      if (!(stream >> element.name >> element.count) || element.count < 0) {
+        return false;
+      }
+      out_elements.push_back(std::move(element));
+      continue;
+    }
+    if (tag == "property") {
+      if (out_elements.empty()) {
+        return false;  // property line before any element line
+      }
+      std::string type;
+      if (!(stream >> type)) {
+        return false;
+      }
+      PlyProperty property;
+      if (type == "list") {
+        std::string count_type, value_type;
+        if (!(stream >> count_type >> value_type >> property.name)) {
+          return false;
+        }
+        property.is_list = true;
+      } else {
+        if (!(stream >> property.name)) {
+          return false;
+        }
+      }
+      out_elements.back().properties.push_back(std::move(property));
+      continue;
+    }
+    return false;  // unrecognized header line
+  }
+  return false;  // stream ended without "end_header"
+}
+
 }  // namespace
+
+Result Mesh::SavePly(const std::string& path) const {
+  std::ofstream out(path);
+  if (!out) {
+    return Result::Failed;
+  }
+
+  const std::vector<Vector3d> normals = ComputeVertexNormals();
+  const bool has_uvs = HasTextureCoordinates();
+
+  out << "ply\n";
+  out << "format ascii 1.0\n";
+  out << "comment written by dino8-kernel\n";
+  out << "element vertex " << mesh_.m_V.Count() << '\n';
+  out << "property float x\n";
+  out << "property float y\n";
+  out << "property float z\n";
+  out << "property float nx\n";
+  out << "property float ny\n";
+  out << "property float nz\n";
+  if (has_uvs) {
+    out << "property float u\n";
+    out << "property float v\n";
+  }
+  out << "element face " << mesh_.m_F.Count() << '\n';
+  out << "property list uchar int vertex_indices\n";
+  out << "end_header\n";
+
+  for (int i = 0; i < mesh_.m_V.Count(); ++i) {
+    const ON_3fPoint& p = mesh_.m_V[i];
+    const Vector3d& n = normals[static_cast<size_t>(i)];
+    out << p.x << ' ' << p.y << ' ' << p.z << ' ' << n.x << ' ' << n.y << ' ' << n.z;
+    if (has_uvs) {
+      const Point2d uv = TextureCoordinateAt(i);
+      out << ' ' << uv.x << ' ' << uv.y;
+    }
+    out << '\n';
+  }
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    if (f.IsQuad()) {
+      out << "4 " << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << ' ' << f.vi[3] << '\n';
+    } else {
+      out << "3 " << f.vi[0] << ' ' << f.vi[1] << ' ' << f.vi[2] << '\n';
+    }
+  }
+
+  return out.good() ? Result::Ok : Result::Failed;
+}
+
+Result Mesh::LoadPly(const std::string& path, Mesh& out_mesh) {
+  std::ifstream in(path);
+  if (!in) {
+    return Result::Failed;
+  }
+
+  std::vector<PlyElement> elements;
+  if (!ParsePlyHeader(in, elements)) {
+    return Result::Failed;
+  }
+
+  Mesh result;
+  ON_Mesh& raw = result.raw();
+  bool found_vertex = false;
+  bool found_face = false;
+  std::vector<Point2d> uvs;
+  bool have_uvs = false;
+
+  for (const PlyElement& element : elements) {
+    if (element.name == "vertex") {
+      found_vertex = true;
+      int idx_x = -1, idx_y = -1, idx_z = -1, idx_u = -1, idx_v = -1;
+      for (size_t i = 0; i < element.properties.size(); ++i) {
+        const PlyProperty& property = element.properties[i];
+        if (property.is_list) {
+          return Result::Failed;  // a list property on a vertex isn't a position/normal/UV
+        }
+        if (property.name == "x") idx_x = static_cast<int>(i);
+        else if (property.name == "y") idx_y = static_cast<int>(i);
+        else if (property.name == "z") idx_z = static_cast<int>(i);
+        else if (property.name == "u") idx_u = static_cast<int>(i);
+        else if (property.name == "v") idx_v = static_cast<int>(i);
+        // nx/ny/nz and any other property (color, ...) are read as plain
+        // columns below but never looked up by name - discarded, same
+        // "always geometry-derived" convention as LoadObj()'s vn.
+      }
+      if (idx_x < 0 || idx_y < 0 || idx_z < 0) {
+        return Result::Failed;
+      }
+      have_uvs = idx_u >= 0 && idx_v >= 0;
+
+      std::string line;
+      for (int row = 0; row < element.count; ++row) {
+        if (!std::getline(in, line)) {
+          return Result::Failed;
+        }
+        std::istringstream stream(line);
+        std::vector<double> values(element.properties.size());
+        for (double& value : values) {
+          if (!(stream >> value)) {
+            return Result::Failed;
+          }
+        }
+        raw.m_V.Append(ON_3fPoint(values[static_cast<size_t>(idx_x)],
+                                   values[static_cast<size_t>(idx_y)],
+                                   values[static_cast<size_t>(idx_z)]));
+        if (have_uvs) {
+          uvs.push_back(Point2d(values[static_cast<size_t>(idx_u)], values[static_cast<size_t>(idx_v)]));
+        }
+      }
+    } else if (element.name == "face") {
+      found_face = true;
+      if (element.properties.size() != 1 || !element.properties[0].is_list) {
+        return Result::Failed;  // this kernel only reads the ordinary "one index list" face shape
+      }
+      std::string line;
+      for (int row = 0; row < element.count; ++row) {
+        if (!std::getline(in, line)) {
+          return Result::Failed;
+        }
+        std::istringstream stream(line);
+        int corner_count = 0;
+        if (!(stream >> corner_count) || corner_count < 3 || corner_count > 4) {
+          return Result::Failed;
+        }
+        int indices[4] = {0, 0, 0, 0};
+        for (int i = 0; i < corner_count; ++i) {
+          if (!(stream >> indices[i]) || indices[i] < 0 || indices[i] >= raw.m_V.Count()) {
+            return Result::Failed;
+          }
+        }
+        ON_MeshFace face;
+        face.vi[0] = indices[0];
+        face.vi[1] = indices[1];
+        face.vi[2] = indices[2];
+        face.vi[3] = (corner_count == 4) ? indices[3] : indices[2];
+        raw.m_F.Append(face);
+      }
+    } else {
+      // An element type this kernel doesn't read (e.g. a color-only
+      // "edge" element) - skip its data lines rather than rejecting the
+      // file over data this kernel was never going to use.
+      std::string line;
+      for (int row = 0; row < element.count; ++row) {
+        if (!std::getline(in, line)) {
+          return Result::Failed;
+        }
+      }
+    }
+  }
+
+  if (!found_vertex || !found_face) {
+    return Result::Failed;
+  }
+  if (have_uvs) {
+    if (static_cast<int>(uvs.size()) != raw.m_V.Count()) {
+      return Result::Failed;  // can only happen if the header lied about the vertex count
+    }
+    result.SetTextureCoordinates(uvs);
+  }
+
+  out_mesh = std::move(result);
+  return Result::Ok;
+}
 
 Result Mesh::LoadStl(const std::string& path, Mesh& out_mesh) {
   // Distinguishes binary from ASCII the same way most real-world STL
@@ -2208,6 +2495,139 @@ std::vector<int> WeldGroups(const ON_Mesh& mesh, const std::vector<int>& candida
   return rep;
 }
 
+// Same degeneracy test Mesh::Check() has always used, factored out so
+// Mesh::RemoveDegenerateFaces() removes EXACTLY what Check() counts - a
+// repeated vertex index, an edge shorter than `tolerance`, or a height
+// (2*area / longest edge) at or below `tolerance`.
+bool IsDegenerateFace(const ON_Mesh& mesh, const ON_MeshFace& f, double tolerance) {
+  const int n = f.IsQuad() ? 4 : 3;
+  for (int a = 0; a < n; ++a) {
+    for (int b = a + 1; b < n; ++b) {
+      if (f.vi[a] == f.vi[b]) return true;
+    }
+  }
+  const ON_3dPoint p0(mesh.m_V[f.vi[0]]), p1(mesh.m_V[f.vi[1]]), p2(mesh.m_V[f.vi[2]]);
+  double longest = std::max({p0.DistanceTo(p1), p1.DistanceTo(p2), p2.DistanceTo(p0)});
+  double shortest = std::min({p0.DistanceTo(p1), p1.DistanceTo(p2), p2.DistanceTo(p0)});
+  double area2 = ON_CrossProduct(p1 - p0, p2 - p0).Length();
+  if (f.IsQuad()) {
+    const ON_3dPoint p3(mesh.m_V[f.vi[3]]);
+    longest = std::max({longest, p2.DistanceTo(p3), p3.DistanceTo(p0)});
+    shortest = std::min({shortest, p2.DistanceTo(p3), p3.DistanceTo(p0)});
+    area2 += ON_CrossProduct(p2 - p0, p3 - p0).Length();
+  }
+  const double height = longest > 0.0 ? area2 / longest : 0.0;
+  return shortest <= tolerance || height <= tolerance;
+}
+
+// A face's identity independent of vertex order or winding direction:
+// the lexicographically smallest of all 2n rotations (n forward + n
+// reversed, n = 3 or 4) of its vertex-index sequence. Two faces are the
+// "same polygon" - Mesh::Check()'s duplicate_faces / RemoveDuplicateFaces()'s
+// own definition - exactly when their keys are equal: the same vertices,
+// same cyclic adjacency, either winding direction.
+std::vector<int> CanonicalFaceKey(const ON_MeshFace& f) {
+  const int n = f.IsQuad() ? 4 : 3;
+  std::vector<int> v(f.vi, f.vi + n);
+  std::vector<int> best = v;
+  for (int dir = 0; dir < 2; ++dir) {
+    for (int start = 0; start < n; ++start) {
+      std::vector<int> cand(static_cast<size_t>(n));
+      for (int k = 0; k < n; ++k) cand[static_cast<size_t>(k)] = v[static_cast<size_t>((start + k) % n)];
+      if (cand < best) best = cand;
+    }
+    std::reverse(v.begin(), v.end());
+  }
+  return best;
+}
+
+// Drops every vertex no surviving face of `mesh` references and
+// reindexes those faces to match - the exact compaction step
+// CloseNakedEdges() and RemoveDegenerateFaces() both need after removing
+// or remapping faces. Does not touch m_F itself, only m_V and the
+// indices already in m_F.
+void CompactUnusedVertices(ON_Mesh& mesh) {
+  std::vector<int> new_index(static_cast<size_t>(mesh.m_V.Count()), -1);
+  ON_3fPointArray vertices;
+  for (int i = 0; i < mesh.m_F.Count(); ++i) {
+    for (int k = 0; k < 4; ++k) {
+      int& v = mesh.m_F[i].vi[k];
+      if (new_index[static_cast<size_t>(v)] < 0) {
+        new_index[static_cast<size_t>(v)] = vertices.Count();
+        vertices.Append(mesh.m_V[v]);
+      }
+      v = new_index[static_cast<size_t>(v)];
+    }
+  }
+  mesh.m_V = vertices;
+}
+
+// --- self-intersection -------------------------------------------------
+
+// Whether triangle `p` genuinely crosses the plane with unit normal `n`
+// through `q0`, filling `out` with the two points where its boundary
+// crosses it. A vertex within `eps` of the plane counts as on the positive
+// side (the same convention surface_intersect.cpp's own CrossPlane uses for
+// its cross-surface intersection curves); false if all three vertices land
+// on the same side (no crossing at all).
+bool CrossesPlane(const Point3d p[3], const Vector3d& n, const Point3d& q0, double eps, Point3d out[2]) {
+  double s[3];
+  int pos = 0, neg = 0;
+  for (int i = 0; i < 3; ++i) {
+    s[i] = ON_DotProduct(p[i] - q0, n);
+    if (s[i] > -eps && s[i] < eps) s[i] = eps;
+    if (s[i] > 0) ++pos; else ++neg;
+  }
+  if (pos == 0 || neg == 0) return false;
+  int k = 0;
+  for (int i = 0; i < 3 && k < 2; ++i) {
+    const int j = (i + 1) % 3;
+    if ((s[i] > 0) == (s[j] > 0)) continue;
+    const double t = s[i] / (s[i] - s[j]);
+    out[k++] = p[i] + (p[j] - p[i]) * t;
+  }
+  return k == 2;
+}
+
+// Whether two triangles that share NO vertex genuinely overlap in 3D by more
+// than `tolerance` - Mesh::FindSelfIntersections()'s own per-pair test,
+// the same construction as surface_intersect.cpp's own cross-surface TriTri
+// (used there for two independent meshes' intersection curve, with UV
+// tracking this test doesn't need), specialized to a single mesh's
+// self-overlap question: each triangle is split by the other's plane, and
+// the two resulting intervals along the two planes' own cross-product line
+// must overlap by MORE than `tolerance`, so a hairline touch (two triangles
+// meeting exactly at a tolerance-close edge or point) is not reported, only
+// a genuine crossing is. Coplanar or parallel triangles (near-zero cross
+// product of their normals) return false - the same "handled by neighbours"
+// limitation TriTri's own comment documents; see FindSelfIntersections'
+// own doc comment for why that is an honest, not silent, gap.
+bool TrianglesProperlyOverlap(const Point3d a[3], const Point3d b[3], double tolerance) {
+  Vector3d na = ON_CrossProduct(a[1] - a[0], a[2] - a[0]);
+  Vector3d nb = ON_CrossProduct(b[1] - b[0], b[2] - b[0]);
+  // A degenerate triangle is Check()'s degenerate_faces's own job, not this
+  // test's - treat it as never overlapping rather than dividing by zero.
+  if (!na.Unitize() || !nb.Unitize()) return false;
+  Vector3d dir = ON_CrossProduct(na, nb);
+  const double dir_len = dir.Length();
+  if (dir_len < tolerance::kZeroVector) return false;  // coplanar or parallel
+  dir /= dir_len;
+
+  Point3d ca[2], cb[2];
+  if (!CrossesPlane(a, nb, b[0], tolerance, ca)) return false;
+  if (!CrossesPlane(b, na, a[0], tolerance, cb)) return false;
+
+  double ta0 = ON_DotProduct(ca[0] - Point3d::Origin, dir);
+  double ta1 = ON_DotProduct(ca[1] - Point3d::Origin, dir);
+  double tb0 = ON_DotProduct(cb[0] - Point3d::Origin, dir);
+  double tb1 = ON_DotProduct(cb[1] - Point3d::Origin, dir);
+  if (ta0 > ta1) std::swap(ta0, ta1);
+  if (tb0 > tb1) std::swap(tb0, tb1);
+  const double t0 = std::max(ta0, tb0);
+  const double t1 = std::min(ta1, tb1);
+  return t1 - t0 > tolerance;
+}
+
 }  // namespace
 
 Mesh::CheckReport Mesh::Check(double tolerance) const {
@@ -2215,6 +2635,7 @@ Mesh::CheckReport Mesh::Check(double tolerance) const {
   const double tol = std::max(tolerance, 0.0);
   std::map<std::pair<int, int>, int> undirected_count;
   std::map<std::pair<int, int>, int> directed_count;
+  std::set<std::vector<int>> seen_faces;
   for (int i = 0; i < mesh_.m_F.Count(); ++i) {
     const ON_MeshFace& f = mesh_.m_F[i];
     ForEachDirectedEdge(f, [&](int a, int b) {
@@ -2222,29 +2643,8 @@ Mesh::CheckReport Mesh::Check(double tolerance) const {
       ++directed_count[std::make_pair(a, b)];
     });
 
-    // Degeneracy: repeated index, a too-short edge, or a too-small height.
-    const int n = f.IsQuad() ? 4 : 3;
-    bool degenerate = false;
-    for (int a = 0; a < n && !degenerate; ++a) {
-      for (int b = a + 1; b < n && !degenerate; ++b) {
-        if (f.vi[a] == f.vi[b]) degenerate = true;
-      }
-    }
-    if (!degenerate) {
-      const ON_3dPoint p0(mesh_.m_V[f.vi[0]]), p1(mesh_.m_V[f.vi[1]]), p2(mesh_.m_V[f.vi[2]]);
-      double longest = std::max({p0.DistanceTo(p1), p1.DistanceTo(p2), p2.DistanceTo(p0)});
-      double area2 = ON_CrossProduct(p1 - p0, p2 - p0).Length();
-      double shortest = std::min({p0.DistanceTo(p1), p1.DistanceTo(p2), p2.DistanceTo(p0)});
-      if (f.IsQuad()) {
-        const ON_3dPoint p3(mesh_.m_V[f.vi[3]]);
-        longest = std::max({longest, p2.DistanceTo(p3), p3.DistanceTo(p0)});
-        shortest = std::min({shortest, p2.DistanceTo(p3), p3.DistanceTo(p0)});
-        area2 += ON_CrossProduct(p2 - p0, p3 - p0).Length();
-      }
-      const double height = longest > 0.0 ? area2 / longest : 0.0;
-      if (shortest <= tol || height <= tol) degenerate = true;
-    }
-    if (degenerate) ++report.degenerate_faces;
+    if (IsDegenerateFace(mesh_, f, tol)) ++report.degenerate_faces;
+    if (!seen_faces.insert(CanonicalFaceKey(f)).second) ++report.duplicate_faces;
   }
   for (const auto& [edge, count] : undirected_count) {
     if (count == 1) ++report.naked_edges;
@@ -2276,6 +2676,117 @@ Mesh::CheckReport Mesh::Check(double tolerance) const {
     if (group_size[rep[static_cast<size_t>(i)]] > 1) ++report.duplicate_vertices;
   }
   return report;
+}
+
+std::vector<std::pair<int, int>> Mesh::FindSelfIntersections(double tolerance) const {
+  const double tol = std::max(tolerance, 0.0);
+
+  // Flat triangle list: each face contributes one triangle, or two -
+  // (0,1,2) and (0,2,3) - for a quad, the exact split Contains()'s own ray
+  // cast already uses. A quad's own two triangles always share an edge, so
+  // they fall out through the ordinary "shares a vertex" skip below, the
+  // same as any other legitimately adjacent pair.
+  struct Tri {
+    int face;
+    int vi[3];
+    ON_BoundingBox box;
+  };
+  std::vector<Tri> tris;
+  tris.reserve(static_cast<size_t>(mesh_.m_F.Count()) * 2);
+  auto add_tri = [&](int face, int i0, int i1, int i2) {
+    Tri t;
+    t.face = face;
+    t.vi[0] = i0;
+    t.vi[1] = i1;
+    t.vi[2] = i2;
+    t.box.Set(Point3d(mesh_.m_V[i0]), true);
+    t.box.Set(Point3d(mesh_.m_V[i1]), true);
+    t.box.Set(Point3d(mesh_.m_V[i2]), true);
+    tris.push_back(t);
+  };
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    const ON_MeshFace& f = mesh_.m_F[i];
+    add_tri(i, f.vi[0], f.vi[1], f.vi[2]);
+    if (f.IsQuad()) add_tri(i, f.vi[0], f.vi[2], f.vi[3]);
+  }
+  if (tris.size() < 2) return {};
+
+  // Broad phase: a uniform grid over every triangle's own bounding box,
+  // cell count scaled to triangle count - mirrors surface_intersect.cpp's
+  // own Grid (built there for a cross-mesh test; here for a single mesh's
+  // self-test). Every triangle is inserted into every cell its own,
+  // `tol`-padded bounding box overlaps, so a near-miss at a cell boundary
+  // is still found; this never skips a genuine candidate pair, only
+  // (in the ordinary case) avoids testing every pair outright.
+  ON_BoundingBox box = tris[0].box;
+  for (size_t i = 1; i < tris.size(); ++i) box.Union(tris[i].box);
+  const ON_3dVector pad(tol, tol, tol);
+  box.m_min -= pad;
+  box.m_max += pad;
+  const double diag = std::max(box.Diagonal().Length(), 1.0);
+  const double target = std::max(1.0, std::cbrt(static_cast<double>(tris.size())));
+  int n[3];
+  double cell[3];
+  for (int k = 0; k < 3; ++k) {
+    n[k] = static_cast<int>(std::clamp(std::ceil(target), 1.0, 48.0));
+    const double ext = box.m_max[k] - box.m_min[k];
+    if (ext > 0) {
+      cell[k] = ext / n[k];
+    } else {
+      n[k] = 1;
+      cell[k] = diag;
+    }
+  }
+  auto index_of = [&](int x, int y, int z) { return (static_cast<size_t>(z) * n[1] + y) * static_cast<size_t>(n[0]) + x; };
+  auto box_range = [&](const ON_BoundingBox& b, int lo[3], int hi[3]) {
+    for (int k = 0; k < 3; ++k) {
+      lo[k] = static_cast<int>(std::clamp(std::floor((b.m_min[k] - box.m_min[k]) / cell[k]), 0.0, static_cast<double>(n[k] - 1)));
+      hi[k] = static_cast<int>(std::clamp(std::floor((b.m_max[k] - box.m_min[k]) / cell[k]), 0.0, static_cast<double>(n[k] - 1)));
+    }
+  };
+  std::map<size_t, std::vector<int>> cells;
+  for (size_t t = 0; t < tris.size(); ++t) {
+    int lo[3], hi[3];
+    box_range(tris[t].box, lo, hi);
+    for (int z = lo[2]; z <= hi[2]; ++z)
+      for (int y = lo[1]; y <= hi[1]; ++y)
+        for (int x = lo[0]; x <= hi[0]; ++x) cells[index_of(x, y, z)].push_back(static_cast<int>(t));
+  }
+
+  std::set<std::pair<int, int>> hits;
+  std::vector<int> stamp(tris.size(), -1);
+  int mark = 0;
+  for (size_t ta = 0; ta < tris.size(); ++ta) {
+    int lo[3], hi[3];
+    box_range(tris[ta].box, lo, hi);
+    ++mark;
+    for (int z = lo[2]; z <= hi[2]; ++z)
+      for (int y = lo[1]; y <= hi[1]; ++y)
+        for (int x = lo[0]; x <= hi[0]; ++x) {
+          const auto it = cells.find(index_of(x, y, z));
+          if (it == cells.end()) continue;
+          for (int tb : it->second) {
+            if (tb <= static_cast<int>(ta) || stamp[static_cast<size_t>(tb)] == mark) continue;
+            stamp[static_cast<size_t>(tb)] = mark;
+            const Tri& A = tris[ta];
+            const Tri& B = tris[static_cast<size_t>(tb)];
+            if (A.face == B.face) continue;  // a quad's own two split triangles
+            bool shares_vertex = false;
+            for (int i = 0; i < 3 && !shares_vertex; ++i) {
+              for (int j = 0; j < 3 && !shares_vertex; ++j) {
+                if (A.vi[i] == B.vi[j]) shares_vertex = true;
+              }
+            }
+            if (shares_vertex) continue;
+            const Point3d pa[3] = {Point3d(mesh_.m_V[A.vi[0]]), Point3d(mesh_.m_V[A.vi[1]]), Point3d(mesh_.m_V[A.vi[2]])};
+            const Point3d pb[3] = {Point3d(mesh_.m_V[B.vi[0]]), Point3d(mesh_.m_V[B.vi[1]]), Point3d(mesh_.m_V[B.vi[2]])};
+            if (TrianglesProperlyOverlap(pa, pb, tol)) {
+              hits.insert(std::minmax(A.face, B.face));
+            }
+          }
+        }
+  }
+  return std::vector<std::pair<int, int>>(hits.begin(), hits.end());
 }
 
 std::vector<std::vector<int>> Mesh::NakedEdgeLoops() const {
@@ -2343,25 +2854,52 @@ int Mesh::CloseNakedEdges(double tolerance) {
     }
     faces.Append(f);
   }
-  // Compact the vertex list to the ones still referenced.
-  std::vector<int> new_index(static_cast<size_t>(mesh_.m_V.Count()), -1);
-  ON_3fPointArray vertices;
-  for (int i = 0; i < faces.Count(); ++i) {
-    for (int k = 0; k < 4; ++k) {
-      int& v = faces[i].vi[k];
-      if (new_index[static_cast<size_t>(v)] < 0) {
-        new_index[static_cast<size_t>(v)] = vertices.Count();
-        vertices.Append(mesh_.m_V[v]);
-      }
-      v = new_index[static_cast<size_t>(v)];
-    }
-  }
-  mesh_.m_V = vertices;
   mesh_.m_F = faces;
+  CompactUnusedVertices(mesh_);
   mesh_.m_S.Destroy();
   mesh_.m_N.Destroy();
   mesh_.m_FN.Destroy();
   return welded;
+}
+
+int Mesh::RemoveDegenerateFaces(double tolerance) {
+  const double tol = std::max(tolerance, 0.0);
+  ON_SimpleArray<ON_MeshFace> faces;
+  int removed = 0;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    if (IsDegenerateFace(mesh_, mesh_.m_F[i], tol)) {
+      ++removed;
+      continue;
+    }
+    faces.Append(mesh_.m_F[i]);
+  }
+  if (removed == 0) return 0;
+  mesh_.m_F = faces;
+  CompactUnusedVertices(mesh_);
+  mesh_.m_S.Destroy();
+  mesh_.m_N.Destroy();
+  mesh_.m_FN.Destroy();
+  return removed;
+}
+
+int Mesh::RemoveDuplicateFaces() {
+  std::set<std::vector<int>> seen;
+  ON_SimpleArray<ON_MeshFace> faces;
+  int removed = 0;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    if (!seen.insert(CanonicalFaceKey(mesh_.m_F[i])).second) {
+      ++removed;
+      continue;
+    }
+    faces.Append(mesh_.m_F[i]);
+  }
+  if (removed == 0) return 0;
+  mesh_.m_F = faces;
+  CompactUnusedVertices(mesh_);
+  mesh_.m_S.Destroy();
+  mesh_.m_N.Destroy();
+  mesh_.m_FN.Destroy();
+  return removed;
 }
 
 int Mesh::FillSmallHoles(double max_extent) {

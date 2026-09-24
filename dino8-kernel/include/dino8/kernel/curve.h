@@ -237,8 +237,29 @@ class NurbsCurve {
   // false.
   Result MakeNonRational();
 
-  // Elevates the curve's degree in place. Returns NoOpAlreadySatisfied if
-  // `new_degree <= Degree()`.
+  // Elevates the curve's degree in place, preserving its shape exactly
+  // (to floating-point precision) - `PointAt(t)` is the same for every
+  // `t` before and after. Returns NoOpAlreadySatisfied if `new_degree <=
+  // Degree()`, Result::Failed if the curve is not a valid NURBS curve.
+  //
+  // NOT a wrapper around `ON_NurbsCurve::IncreaseDegree` any more: a
+  // randomized probe found that routine silently CORRUPTS the shape of a
+  // curve with a non-uniform knot vector at moderate-to-high degree
+  // (measured at unit scale: up to 1.7e-6 off at degree 8, 3.2e+2 at
+  // degree 12, 1e+24 - garbage - at degree 16 with repeated knots; even a
+  // uniform degree-19 curve drifted 3.4e-6). Implemented instead via
+  // detail/degree_elevate.h: Piegl & Tiller's published algorithm A5.9
+  // (Bezier decomposition, closed-form per-segment elevation, exact knot
+  // removal) for the minimal `ControlPointCount() + t * spans` result,
+  // VERIFIED against an unconditionally-exact piecewise-Bezier elevation
+  // by direct evaluation, and falling back to that exact Bezier form
+  // (same degree and shape, more control points - full-multiplicity
+  // interior knots) whenever knot removal's own high-degree ill-
+  // conditioning would have moved the curve by more than 1e-12 of its
+  // control polygon's bounding-box diagonal. So the control-point count
+  // of the result is minimal in the common case (every degree <= 5 case
+  // probed; most degree <= 8 ones) but not guaranteed; the shape always
+  // is. A periodic curve comes back clamped (same as before).
   Result ElevateDegree(int new_degree);
 
   // Whether the curve's start and end points coincide - either because
@@ -404,6 +425,45 @@ class NurbsCurve {
   // a closed curve is undefined - matches `ON_NurbsCurve::Extend`'s own
   // documented restriction), or OpenNURBS' own call fails.
   Result Extend(double t0, double t1);
+
+  // Joins `other` onto the end of this curve in place, producing ONE
+  // continuous NURBS curve - the first curve-combining operation here
+  // (every earlier method cuts a curve down or reshapes one in place;
+  // nothing could chain two curves into a single one, the "Join" every
+  // modeler has). Exact, not a re-fit: delegates to
+  // `ON_NurbsCurve::Append` after verifying by reading its source that
+  // it's a real implementation - it degree-elevates the lower-degree
+  // operand, makes both rational if either is, clamps the ends, then
+  // splices the two knot vectors with `other`'s knots shifted so its
+  // domain continues from this curve's end - so both operands' own
+  // shapes survive to floating-point round-off (degree elevation and
+  // clamping are shape-preserving, the same machinery `ElevateDegree()`
+  // and `Trim()` already rely on).
+  //
+  // A real `Append` behavior, found by reading rather than assumed, that
+  // this wrapper exists to guard: `Append` never checks that the two
+  // curves actually meet - it simply DISCARDS `other`'s first control
+  // point in favour of this curve's last one (its control-point copy
+  // loop starts at index 1), so appending a curve that doesn't start
+  // where this one ends would silently snap the junction shut and
+  // distort `other`'s first span rather than fail. So this checks first:
+  // `other`'s start must lie within `tolerance` of this curve's end - or,
+  // as a convenience matching Rhino's own Join, `other`'s END may
+  // instead, in which case a reversed copy of `other` is what gets
+  // appended. Throws std::invalid_argument if neither end meets (the
+  // message reports both measured gaps) or if this curve is closed
+  // (nothing can be appended to a closed loop). `tolerance` defaults to
+  // the same 1e-6 `Mesh::MergeAndWeld()` uses for coincident points.
+  //
+  // Continuity at the junction is exactly what the two curves had
+  // geometrically: always C0 (position), a tangent kink if their
+  // tangents differ there - no smoothing is applied. The result's domain
+  // is this curve's domain extended by `other`'s domain length, with the
+  // junction at exactly this curve's previous `Domain().max`, so a
+  // parameter `s` on `other` maps to `old_max + (s - other_min)` on the
+  // result. Returns Result::Failed if either curve has fewer than 2
+  // control points or OpenNURBS' own Append fails.
+  Result Join(const NurbsCurve& other, double tolerance = 1e-6);
 
   // The curve's own parameter domain [min, max] - the valid range for
   // `t` in `PointAt(t)`, `TangentAt(t)`, `CurvatureAt(t)`, and every
@@ -577,6 +637,85 @@ class NurbsCurve {
   // Domain().Max()]` (2 values) - confirmed directly, not assumed.
   // Throws std::invalid_argument if `chord_tolerance <= 0`.
   std::vector<double> SuggestedParameterValues(double chord_tolerance, int max_depth = 12) const;
+
+  // Offsets this curve, in its own fitted plane, by `distance` along the
+  // in-plane direction `TangentAt(t) x plane.zaxis` (a consistent
+  // "right of travel, as seen from +plane.zaxis" side at every
+  // parameter) - the curve-level counterpart to `NurbsSurface::
+  // OffsetAnalytic()`, with the analogous honesty split: EXACT for the
+  // two shapes whose true offset (the literal locus of points at
+  // `distance` along that direction, not an approximation of it) is
+  // itself the same closed-form type, and an explicitly-approximate
+  // least-squares refit (via this class's own real `FitLeastSquares()`,
+  // not a stub) for everything else - never silently presented as exact.
+  //
+  //  - A LINE offsets to an exact parallel line (`FromControlPoints()`
+  //    of the two translated endpoints).
+  //  - A CIRCULAR ARC (or full circle) offsets to an exact CONCENTRIC
+  //    arc/circle of the SAME plane, center, and angular span
+  //    (`DomainRadians()`), radius
+  //    `radius +/- distance` - trivial but exact, since every point on a
+  //    circle moves radially by exactly `distance`. The +/- sign is
+  //    resolved the same way `NurbsSurface::OffsetAnalytic()` resolves
+  //    it for a sphere/cylinder/torus (see there for why it can't be
+  //    assumed fixed): AT RUNTIME, by comparing `TangentAt(t) x
+  //    plane.zaxis` against the independently-known true outward radial
+  //    direction `point - center` at one sample point, rather than
+  //    trusted from `ON_Arc`'s own parametrization convention - so
+  //    `distance > 0` always GROWS the arc/circle here, whichever way
+  //    this particular curve's own tangent happens to wind. Refused
+  //    (`Result::Failed`, `out` untouched) if `radius +/- distance <= 0`
+  //    - the exact curve counterpart of `OffsetAnalytic()`'s sphere/
+  //    cylinder self-intersection guard: the offset distance exceeds
+  //    this arc's own (constant) radius of curvature and folds it
+  //    through its own center.
+  //  - Any other curve is treated as a general planar curve: sampled
+  //    uniformly across `Domain()` at `max(SuggestedSamples(chord_tol),
+  //    4 * ControlPointCount()) + 1` points (`SuggestedSamples()`'s own
+  //    curvature-informed count, floored so `FitLeastSquares()` below
+  //    always has comfortably more samples than unknowns; `chord_tol` =
+  //    `tolerance::RelativeDistance()` of this curve's own
+  //    `GetTightBoundingBox()` diagonal), each moved by `distance` along
+  //    its own `TangentAt(t) x plane.zaxis` (this curve-level `plane`'s
+  //    own fitted zaxis, one FIXED but otherwise arbitrary sign for the
+  //    whole curve - a real, disclosed limitation: unlike the arc case
+  //    above, a general curve has no independently-known "outward" to
+  //    check the sign against, so which side is positive is whatever
+  //    `IsPlanar()`'s own fit happens to assign, not chosen by the
+  //    caller beyond the sign of `distance` itself), then refit via
+  //    `FitLeastSquares()` at this curve's own `Degree()` and
+  //    `ControlPointCount()` - an honestly APPROXIMATE result (the true
+  //    offset of a general curve is generally not itself an exact NURBS
+  //    curve of the same degree/control-point count at all), unlike the
+  //    two exact cases above. Before refitting, every sample is checked
+  //    against `CurvatureAt(t)`: wherever `distance` moved it TOWARD that
+  //    point's own center of curvature by at least that point's own
+  //    local radius (`1 / kappa`), the offset would fold the curve
+  //    through itself there, and this returns `Result::Failed` (`out`
+  //    untouched) instead of silently building a self-intersecting
+  //    result - the direct curve analogue of `OffsetAnalytic()`'s cone
+  //    guard, and the real hazard a plain per-point translate-and-refit
+  //    would otherwise hide. This sampling-based check, like `Length()`'s
+  //    own sampling, can miss a hazard strictly between two samples on a
+  //    pathologically fast-varying curve - not an exhaustive proof, the
+  //    same honesty this file's other sampling-based methods already
+  //    disclose.
+  //
+  // Returns `Result::Failed`, `out` left unchanged, if this curve isn't
+  // planar within `tolerance` at all (a genuinely non-planar 3D offset -
+  // e.g. sweeping a curve's own Frenet frame - is a different, harder
+  // operation this method does not attempt), or if `FitLeastSquares()`
+  // itself fails in the general case (fewer than `Degree() + 1` samples,
+  // which does not happen at this method's own default sample count, but
+  // could if a caller passed a very small `samples`).
+  //
+  // `tolerance` defaults (`<= 0`) to `tolerance::DistanceForSize()` of
+  // this curve's own `GetTightBoundingBox()` diagonal - `IsPlanar()`/
+  // `IsLinear()`/`IsArc()`'s own `ON_ZERO_TOLERANCE` default is, as
+  // `NurbsSurface::OffsetAnalytic()`'s own doc comment already found for
+  // the surface case, far tighter than anything but a hand-built exact
+  // primitive tolerates.
+  Result OffsetInPlane(double distance, NurbsCurve& out, double tolerance = -1.0) const;
 
   const ON_NurbsCurve& raw() const { return curve_; }
   ON_NurbsCurve& raw() { return curve_; }

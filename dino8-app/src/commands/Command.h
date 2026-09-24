@@ -103,6 +103,20 @@ class Command {
   virtual void OnDragEnd(CommandContext&) {}
   virtual void OnNumber(CommandContext&, double) {}
   virtual void OnText(CommandContext&, const std::string&) {}
+  // Want::Point only: a typed bare number is, by default, treated as a
+  // distance constraint (CommandEngine::FeedText places a point that many
+  // units from the last point, toward the cursor - e.g. typing a segment
+  // length while drawing a Line/Polyline). A command whose Want::Point
+  // stage is really asking for a literal scalar (Box's "Height. Press
+  // Enter for a cube", reached via WantPoint so a height can *also* be
+  // picked by clicking) overrides this to true, so that typed number goes
+  // straight to OnText/OnNumber as the literal value instead of being
+  // silently reinterpreted as a hover-direction offset and re-projected
+  // (which, for Box, produced a near-zero height whenever the incidental
+  // cursor/hover position wasn't aligned with the construction plane's
+  // normal - the root cause of a real, reproducible Windows-only "Box
+  // failed" smoke-test failure; see BoxCommand).
+  virtual bool NumberIsLiteralValue() const { return false; }
   virtual void OnObjects(CommandContext&, const std::vector<ObjectId>&) {}
   virtual void OnEnter(CommandContext&) {}
   virtual void OnOption(CommandContext&, const std::string& /*name*/, const std::string& /*value*/) {}

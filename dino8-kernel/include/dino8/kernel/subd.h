@@ -90,6 +90,40 @@ class SubD {
   // (`ON_SubDFromMeshParameters::Smooth`, this class's original behavior).
   static SubD FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges = false);
 
+  // Builds a SubD control cage from a single UNTRIMMED NURBS surface by
+  // evaluating a u_divisions x v_divisions grid of points across its
+  // parameter domain and taking each grid cell as one genuine QUAD SubD
+  // face - closing PARITY_MAP.md's subd_mesh "SubD from NURBS/B-rep
+  // conversion (reverse of ToNurbsPatches)" [missing] item for the
+  // single-surface case (a full Brep -> SubD conversion, matching faces
+  // and creases across a whole solid or polysurface, is a materially
+  // bigger problem this does not attempt).
+  //
+  // Unlike `NurbsSurface::TessellateGrid()` (built for mesh-boolean work
+  // and always TRIANGULATING each grid cell), this keeps every cell a
+  // genuine quad - the whole point of building a SubD cage: a
+  // triangulated control net starts every face irregular
+  // (`ToNurbsPatches()` only gives an exact limit patch on regular,
+  // all-quad faces), throwing away the surface's own regular parametric
+  // structure before `Subdivide()` even runs once.
+  //
+  // This is deliberately an APPROXIMATION of the input surface, not a
+  // lossless conversion: a Catmull-Clark limit surface over a regular
+  // interior quad reproduces a UNIFORM bicubic B-spline patch (see
+  // `ToNurbsPatches()`'s own doc comment), not an arbitrary NURBS
+  // surface's real shape between grid points (non-uniform knots, a
+  // different degree, rational weights - none of that survives sampling
+  // into flat grid quads); the approximation improves as
+  // u_divisions/v_divisions increase, the same tradeoff
+  // `TessellateGrid()` already documents for its own triangulated
+  // output. A flat/bilinear input surface is the one case this IS exact
+  // for (verified in the tests: every corner of a regular quad's flat
+  // Catmull-Clark limit patch coincides with its own control points).
+  //
+  // Throws std::invalid_argument if u_divisions or v_divisions is less
+  // than 1, the same validation `TessellateGrid()` already applies.
+  static SubD FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_divisions);
+
   // Applies `levels` rounds of real Catmull-Clark global subdivision in
   // place. Each round refines every face, edge, and vertex of the
   // current control net into a strictly finer one; the result converges
@@ -175,6 +209,25 @@ class SubD {
   // before). Delegates to `ON_SubD::EdgeCount`.
   int EdgeCount() const;
 
+  // True if OpenNURBS' own ON_SubD::IsValid() considers the current
+  // control net structurally sound - the SubD-level counterpart to
+  // Mesh::IsClosedManifold(), closing a real gap this class had: no
+  // Check()/IsValid() at all, so a caller could only discover a broken
+  // SubD (e.g. one built by hand-editing raw() rather than through this
+  // class's own methods) the hard way, whatever ON_SubD happened to do
+  // internally when handed one. Delegates to the real, non-stub
+  // ON_SubD::IsValid() (verified by reading its implementation in
+  // opennurbs_subd.cpp: it walks every level's vertices/edges/faces
+  // checking cross-reference and tag consistency, a genuine structural
+  // check, not a placeholder). Passes OpenNURBS' own documented sentinel
+  // (an ON_TextLog* with its low bit set - not a dereferenced pointer;
+  // ON_SubD::IsValid masks that bit off again before ever touching it,
+  // verified the same way) so a "no" answer never has the side effect of
+  // writing to OpenNURBS' global error log - this is a validity CHECK a
+  // caller may reasonably expect to fail sometimes (e.g. mid-edit), not
+  // an assertion that something already went wrong.
+  bool IsValid() const;
+
   // Count of the current subdivision level's own crease edges (the
   // sharp folds `FromControlMesh(mesh, crease_at_double_edges=true)`
   // can create - see that method's own doc comment) - the only direct
@@ -193,6 +246,78 @@ class SubD {
   // own doc comment recommends), counting edges whose tag is genuinely
   // a crease.
   int CreaseEdgeCount() const;
+
+  // Marks the SMOOTH interior edge between the control-net vertices found
+  // at (or within `point_tolerance` of) `p0` and `p1` as a semi-sharp
+  // crease of constant weight `sharpness` - real Pixar/OpenSubdiv-style
+  // variable-weight creasing (OpenNURBS' own ON_SubDEdge::m_sharpness /
+  // ON_SubDEdgeSharpness), which this class previously had no way to set
+  // at all: `FromControlMesh(mesh, crease_at_double_edges=true)` only
+  // ever gives a binary sharp/smooth split (ON_SubDEdgeTag::Crease,
+  // permanent and never relaxes), with no way to dial in anything
+  // between "fully smooth" and "fully creased".
+  //
+  // `sharpness` must be in [0, ON_SubDEdgeSharpness::MaximumValue] (== 4,
+  // verified against the v8.34 source, not guessed) - 0 is a no-op
+  // ("fully smooth"), and MaximumValue makes the edge behave like a real
+  // Crease-tagged edge at the CURRENT subdivision level only (see below
+  // for how that differs from an actual crease tag). GlobalSubdivide()
+  // genuinely consumes this value in its Catmull-Clark matrix -
+  // opennurbs_subd_limit.cpp's regular-patch evaluator branches on
+  // ON_SubDEdge::IsSharp() and ON_SubDVertex::VertexSharpness() to blend
+  // face/edge/vertex points toward crease behavior, read directly from
+  // OpenNURBS' source, not assumed - and decays it toward zero by (at
+  // most) 1.0 per level via ON_SubDEdge::SubdivideSharpness(). So a
+  // semi-sharp edge relaxes into an ordinary smooth edge after
+  // ceil(sharpness) further Subdivide() levels; a real Crease-tagged
+  // edge never relaxes. This wrapper exposes one constant weight per
+  // edge (both ends equal); OpenNURBS also supports a per-end-variable
+  // sharpness (linearly interpolated along the edge, decaying
+  // differently at each end) that this method does not expose - a
+  // caller needing that must use raw() directly.
+  //
+  // Returns false, unchanged, if: `sharpness` is outside
+  // [0, ON_SubDEdgeSharpness::MaximumValue]; no vertex is found at p0 or
+  // at p1 within point_tolerance; no edge connects them; or that edge is
+  // not smooth (it's already a hard Crease-tagged edge - sharpness has
+  // no meaning there in OpenNURBS' own model, so this refuses rather
+  // than silently no-op'ing and pretending it worked).
+  bool SetEdgeSharpness(const Point3d& p0, const Point3d& p1, double sharpness,
+                        double point_tolerance = 0.0);
+
+  // Retags the interior edge between the control-net vertices found at
+  // (or within `point_tolerance` of) `p0` and `p1` as a hard Crease
+  // (`crease = true`) or back to Smooth (`crease = false`) - a direct
+  // kernel-level crease tagging operation, which this class previously
+  // had no way to do at all after construction: `FromControlMesh(mesh,
+  // crease_at_double_edges=true)` only ever decides creases once, from
+  // mesh topology, at build time.
+  //
+  // Unlike SetEdgeSharpness() above (which needs a const_cast onto a
+  // low-level "for experts" primitive, because OpenNURBS' own
+  // convenience wrapper for THAT turned out to be unimplemented), this
+  // delegates to a genuinely public, fully-implemented
+  // `ON_SubD::SetEdgeTags()` - verified by reading its body in
+  // opennurbs_subd.cpp, not assumed: it does real work beyond the one
+  // edge's tag, reclassifying both endpoint vertices (Smooth / Dart /
+  // Crease / Corner, by their new count of incident crease edges),
+  // clearing any leftover SetEdgeSharpness() weight on either transition
+  // (a semi-sharp edge retagged Crease doesn't keep its old sharpness
+  // value sitting around unused), and invalidating cached evaluation
+  // state - all the bookkeeping a caller hand-editing `raw()` would have
+  // to get right itself.
+  //
+  // `crease = true` on an edge that already has 3+ faces (non-manifold)
+  // or fewer than 2 (a boundary edge - always already a crease by
+  // OpenNURBS' own convention) is refused by `ON_SubD::SetEdgeTags`
+  // itself, same as `crease = false` there.
+  //
+  // Returns false if: no vertex is found at p0 or at p1 within
+  // point_tolerance; no edge connects them; or the edge already has the
+  // requested tag, or otherwise can't accept it (see above) - a real
+  // no-op, same as `ON_SubD::SetEdgeTags` returning a 0 changed-count.
+  // Returns true only when the edge's tag genuinely changed.
+  bool SetCrease(const Point3d& p0, const Point3d& p1, bool crease, double point_tolerance = 0.0);
 
   // The EXACT limit-surface point (and normal) of every vertex of the
   // current subdivision level's control net, in ON_SubD's own vertex

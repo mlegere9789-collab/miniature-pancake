@@ -339,6 +339,15 @@ int main(int argc, char** argv) {
   const bool stress_only = (stress_count >= 0 || cull_test_far_count >= 0) && smoke_frames < 0;
   if (stress_only) smoke_frames = 4;
 
+  // A real, 100%-reproducible Windows CI hang has been seen starting right
+  // here: a process launched this way produced *zero* further output (not
+  // even a crash message) until the job's own timeout killed it - see
+  // RHINO8_KILLER_AUDIT.md row L. stdout/stderr are already unbuffered
+  // above, so if this line is ever missing from a hung run's log, the hang
+  // is before glfwInit(); if it's present but startup finished (below)
+  // never prints, the hang is inside glfwInit()/glfwCreateWindow()/the GL
+  // context/ImGui setup that follows.
+  if (smoke_frames >= 0 || !script_path.empty()) std::fprintf(stderr, "dino8: starting GLFW init\n");
   glfwSetErrorCallback(GlfwErrorCallback);
   if (!glfwInit()) {
     std::fprintf(stderr, "Could not initialise GLFW\n");
@@ -370,12 +379,14 @@ int main(int argc, char** argv) {
   // gap. Ignored on platforms without per-monitor scaling (macOS).
   glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
 
+  if (smoke_frames >= 0 || !script_path.empty()) std::fprintf(stderr, "dino8: GLFW initialised, creating window\n");
   GLFWwindow* window = glfwCreateWindow(1600, 900, "Dino 8", nullptr, nullptr);
   if (!window) {
     std::fprintf(stderr, "Could not create an OpenGL 3.3 window\n");
     glfwTerminate();
     return 1;
   }
+  if (smoke_frames >= 0 || !script_path.empty()) std::fprintf(stderr, "dino8: window created, loading GL\n");
   glfwMakeContextCurrent(window);
   glfwSwapInterval(1);
   if (!dino8::gl::Load()) {
