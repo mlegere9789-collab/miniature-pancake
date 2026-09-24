@@ -49,12 +49,46 @@ struct SurfaceSize {
   double height;  // approximate size in the V direction
 };
 
+// Continuity order NurbsSurface::MatchEdge() enforces along the shared
+// edge: Position (G0), Tangent (G1), Curvature (G2).
+enum class MatchContinuity { Position, Tangent, Curvature };
+
+// What NurbsSurface::MatchEdge() reports about the match it just made,
+// every number measured by evaluating both surfaces after the edit (not
+// inferred from the construction).
+struct MatchEdgeReport {
+  // Max 3D distance between the two surfaces along the shared edge.
+  double max_position_error = 0.0;
+  // Max |S_cross + scale * T_cross| along the edge (0 unless Tangent or
+  // Curvature was requested): how far this surface's cross-boundary
+  // first derivative is from the (scaled, reversed) target's. Both
+  // cross derivatives are taken along the direction pointing *into*
+  // their own surface, i.e. the raw parametric derivative at a
+  // domain-min edge and its negation at a domain-max edge.
+  double max_tangent_error = 0.0;
+  // Max |S_crosscross - scale^2 * T_crosscross| along the edge (0
+  // unless Curvature was requested).
+  double max_curvature_error = 0.0;
+  // The cross-derivative scale factor used (see MatchEdge()).
+  double scale = 1.0;
+  // Whether the target edge was traversed in reverse to line up with
+  // this surface's edge.
+  bool target_edge_reversed = false;
+};
+
 // Wraps ON_NurbsSurface. Same rationale as NurbsCurve: expose raw()
 // rather than mirror the whole OpenNURBS surface API.
 class NurbsSurface {
  public:
   // Builds a bilinear-ish degree-(u_degree, v_degree) NURBS surface from a
   // u_count x v_count grid of control points, row-major (u varies fastest).
+  // Throws std::invalid_argument if either degree is < 1, either count is
+  // below its degree + 1, or `control_grid.size() != u_count * v_count` -
+  // the same contract `NurbsCurve::FromControlPoints()` enforces, for the
+  // same reason (an `ON_NurbsSurface::Create()` refusal used to be
+  // silently ignored, handing back an empty surface whose `PointAt()`
+  // segfaulted on its never-allocated knot array; a too-short grid was
+  // read past its end).
   static NurbsSurface FromControlGrid(const std::vector<Point3d>& control_grid,
                                        int u_count, int v_count, int u_degree,
                                        int v_degree);
@@ -631,6 +665,151 @@ class NurbsSurface {
   // TessellateGridAdaptive(), same "one call instead of two" convenience.
   Mesh TessellateGridClippedExactAdaptive(double chord_tolerance,
                                            const std::vector<Point2d>& trim_polygon) const;
+
+  // ---- Surface editing (implemented in src/surface_edit.cpp) ----
+
+  // Removes one multiplicity of the interior knot at ON-convention index
+  // `knot_index` (0 <= knot_index < KnotCount(direction); any index in a
+  // multiple knot's run selects that whole knot value) in `direction`
+  // (0 = U, 1 = V) - the exact inverse of `InsertKnotAt()`, i.e. Tiller's
+  // knot-removal algorithm (Piegl & Tiller, "The NURBS Book", A5.8),
+  // applied to every row/column of the control net at once. Knot removal
+  // is only shape-preserving when the surface genuinely has the extra
+  // continuity at that knot (e.g. a knot `InsertKnotAt()` itself added);
+  // otherwise the best-fitting reduced net is an approximation. This
+  // method never silently ships that approximation: it computes a
+  // rigorous upper bound on the resulting max 3D deviation from the
+  // original surface over the whole domain (the algorithm's own control-
+  // net discrepancy, which bounds the surface error because B-spline
+  // basis functions are non-negative and sum to 1; on a rational surface
+  // the discrepancy is measured on the homogeneous control points and
+  // converted to a Euclidean bound via Piegl & Tiller eq. 5.30, a looser
+  // but still rigorous bound) and only commits the removal if that bound
+  // is <= `tolerance`. Otherwise returns Result::Failed and leaves the
+  // surface untouched. `out_max_deviation`, if non-null, always receives
+  // the bound (also on failure, so a caller can report how far off the
+  // removal would have been). Requires the knot vector to be clamped in
+  // `direction` (an unclamped/periodic knot vector's wrapped control
+  // points would need matching edits this doesn't do) - returns
+  // Result::Failed otherwise. Throws std::invalid_argument if `direction`
+  // isn't 0/1, `knot_index` is out of range, or the knot isn't strictly
+  // inside the domain (the domain's own end knots can't be removed).
+  Result RemoveKnotAt(int direction, int knot_index, double tolerance,
+                      double* out_max_deviation = nullptr);
+
+  // Max 3D distance between `PointAt(u, v)` on this surface and on
+  // `other` over a `u_samples` x `v_samples` grid of (u, v) values spread
+  // across *this surface's* domain (both surfaces are evaluated at the
+  // same numeric (u, v), so this only means anything when the two share a
+  // parameterization - e.g. one is a knot-refined/removed, degree-
+  // elevated or refit copy of the other). A sampled measurement, so a
+  // lower bound on the true max deviation, not an upper bound; the
+  // sample count sets how fine. Throws std::invalid_argument if either
+  // sample count is < 2.
+  double MaxSampledDeviationFrom(const NurbsSurface& other, int u_samples = 64,
+                                 int v_samples = 64) const;
+
+  // Reparameterizes `direction` (0 = U, 1 = V) in place so its domain
+  // becomes exactly [t0, t1], leaving the 3D shape bit-for-bit untouched:
+  // an affine rescale of that direction's knot vector, nothing else
+  // (delegates to `ON_NurbsSurface::SetDomain`, verified as a real
+  // implementation that maps every knot linearly from the old domain
+  // onto the new one). Afterward `PointAt()` at the same *normalized*
+  // parameter returns the same point as before. Returns
+  // Result::NoOpAlreadySatisfied if the domain already is [t0, t1],
+  // Result::Failed if `t0 >= t1` or OpenNURBS' own call fails. Throws
+  // std::invalid_argument if `direction` isn't 0/1.
+  Result SetDomain(int direction, double t0, double t1);
+
+  // Rebuilds (refits) this surface as a new non-rational NURBS surface
+  // with exactly `u_count` x `v_count` control points of degree
+  // `u_degree` x `v_degree` and clamped uniform knots over the *same*
+  // domain as this surface - Rhino's Rebuild / Parasolid's refit. The
+  // fit is the global tensor-product least-squares solution (Piegl &
+  // Tiller A9.7: the source is sampled on a `u_samples` x `v_samples`
+  // parameter grid, every sample row is least-squares fit in U with the
+  // two end control points pinned to the row's end samples, then every
+  // column of those intermediate control points is fit in V the same
+  // way; with gridded parameters and one shared knot vector per
+  // direction this row-then-column solve *is* the full tensor-product
+  // least-squares solution, not a heuristic). Consequences: the four
+  // corners are interpolated exactly, and the result reproduces this
+  // surface's own parameterization (evaluate both at the same (u, v) to
+  // compare), so `out_max_deviation`, if non-null, receives the max 3D
+  // deviation measured on a grid twice as fine as the fit samples,
+  // offset by half a step so it never lands on the fit samples
+  // themselves - a sampled lower bound on the true deviation, stated as
+  // such rather than claimed exact. A refit is an approximation
+  // whenever the source isn't already representable with the requested
+  // net (e.g. a rational sphere or a higher-degree/denser source) and
+  // exact (deviation ~1e-12) whenever it is - both verified in the
+  // tests. Returns Result::Failed if the normal equations are singular.
+  // Throws std::invalid_argument if a degree is < 1, a count is <=
+  // its degree, or a sample count is < the corresponding control count
+  // (an underdetermined fit).
+  Result Rebuild(int u_count, int v_count, int u_degree, int v_degree, NurbsSurface& out,
+                 double* out_max_deviation = nullptr, int u_samples = 64, int v_samples = 64) const;
+
+  // MatchSrf: edits this surface in place so its boundary edge where
+  // parameter `fixed_direction` (0 = U, 1 = V) sits at its domain min
+  // (`at_min` true) or max coincides with `target`'s boundary edge
+  // selected the same way (`target_fixed_direction`/`target_at_min`),
+  // with the requested continuity across the join - the Parasolid/Rhino
+  // "match surface" operation, done as exact NURBS algebra rather than
+  // by moving control points onto sampled target points:
+  //
+  //  1. The two edges' bases are made identical along the edge (the
+  //     target edge is oriented to run the same way as this one -
+  //     detected from the corner points, reported in
+  //     `target_edge_reversed` - reparameterized onto this edge's domain
+  //     via SetDomain, then both are degree-elevated to the higher of the
+  //     two edge degrees and knot-refined to the union knot vector; all
+  //     three are shape-preserving, so the target is never altered in
+  //     3D and this surface only gains control points). If either side
+  //     is rational the other is made rational too.
+  //  2. This surface's control-point row on the edge is replaced by the
+  //     target's edge row (homogeneous coordinates, so weights carry
+  //     over) - the two boundary curves become the *same* NURBS curve,
+  //     G0 exactly, not to a tolerance.
+  //  3. Tangent: the next row is set so this surface's cross-boundary
+  //     first derivative equals `-scale` times the target's, both taken
+  //     along the direction pointing into their own surface (the minus
+  //     sign because the two surfaces continue each other across the
+  //     edge, the target's inward direction being this surface's
+  //     outward one; in raw parametric derivatives that is `S_v(min) =
+  //     -scale * T_t(min)` for a min/min pairing and `S_v(min) = +scale
+  //     * T_t(max)` when the target edge sits at its domain max), using
+  //     the clamped-B-spline end-derivative formula
+  //     `p / (V_{p+1} - V_1) * (R_1 - R_0)`. Curvature: the third row is
+  //     set so the second cross derivative equals `scale^2` times the
+  //     target's. With a constant `scale` these are exactly C1/C2 in the
+  //     reparameterization v' = scale * v, hence G1/G2, and the target's
+  //     own Gaussian curvature is reproduced along the edge (checked in
+  //     the tests). `scale` is the ratio of this surface's mean
+  //     cross-derivative magnitude along the edge (before the edit) to
+  //     the target's, so the match keeps this surface's own
+  //     parameterization speed instead of adopting the target's; pass
+  //     `cross_scale > 0` to force a value (1.0 = plain C1/C2 with the
+  //     target's own speed).
+  //
+  // Rows beyond the ones rewritten (1 for Position, 2 for Tangent, 3
+  // for Curvature) are untouched. To guarantee the far edge never moves,
+  // the cross direction is first degree-elevated to at least 2 (Tangent)
+  // / 3 (Curvature) and, if it still has no spare row, knot-refined at
+  // its mid-parameter to add one - both shape-preserving. `report`, if
+  // non-null, receives measured residuals (both surfaces evaluated along
+  // the edge after the edit); the method itself checks them against
+  // 1e-9 times the surfaces' size and returns Result::Failed, restoring
+  // this surface, if they don't hold - a self-check, so a wrong result
+  // can't be shipped silently. Also Result::Failed (surface untouched)
+  // if either surface isn't clamped in the directions involved (a
+  // periodic edge/cross direction isn't supported), if the requested
+  // continuity exceeds the target's cross degree (a degree-1 target has
+  // no curvature to match), or if a resulting rational weight would be
+  // <= 0. Throws std::invalid_argument on a direction outside 0/1.
+  Result MatchEdge(int fixed_direction, bool at_min, const NurbsSurface& target, int target_fixed_direction,
+                   bool target_at_min, MatchContinuity continuity, MatchEdgeReport* report = nullptr,
+                   double cross_scale = 0.0);
 
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }

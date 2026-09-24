@@ -46,12 +46,14 @@ endif()
 add_library(dino8_kernel STATIC
   src/curve.cpp
   src/surface.cpp
+  src/surface_edit.cpp
   src/surface_intersect.cpp
   src/brep.cpp
   src/mesh.cpp
   src/boolean.cpp
   src/boolean_general.cpp
   src/fillet.cpp
+  src/sweep.cpp
   src/file_io.cpp
   src/subd.cpp
   src/convex_hull.cpp

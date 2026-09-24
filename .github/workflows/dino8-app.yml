@@ -81,8 +81,14 @@ jobs:
       # this repo's own sandboxed dev environment.
       - name: Install Mesa (software OpenGL) for the headless smoke test
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/pal1000/mesa-dist-win/releases/latest" -Headers @{ "User-Agent" = "dino8-ci" }
+          # Authenticated: the anonymous api.github.com quota is shared by
+          # every runner behind the same egress IP and has already failed a
+          # build outright ("API rate limit exceeded for 172.185.150.240",
+          # run 531). GITHUB_TOKEN is per-job and gets the authenticated quota.
+          $release = Invoke-RestMethod -Uri "https://api.github.com/repos/pal1000/mesa-dist-win/releases/latest" -Headers @{ "User-Agent" = "dino8-ci"; "Authorization" = "Bearer $env:GITHUB_TOKEN" }
           $asset = $release.assets | Where-Object { $_.name -match "release-msvc\.7z$" } | Select-Object -First 1
           if (-not $asset) { throw "mesa-dist-win: no release-msvc .7z asset found in latest release $($release.tag_name)" }
           Write-Host "Using $($asset.name) from mesa-dist-win $($release.tag_name)"
@@ -94,42 +100,22 @@ jobs:
           "MESA_GL_VERSION_OVERRIDE=3.3" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "MESA_GLSL_VERSION_OVERRIDE=330" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "GALLIUM_DRIVER=llvmpipe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-      # smoke.sh's DWG round-trip test fails deterministically on this runner
-      # with exit 127 and zero output - not even the script's first command
-      # ever gets printed, on a binary that has already launched and run
-      # successfully dozens of times earlier in this same job. A same-job
-      # "run the exact same DWG script very early too" diagnostic proved
-      # this isn't positional/cumulative (fails just as hard as the 2nd
-      # process launch) - it's tied to the DWG code path's content. Tried
-      # excluding the build/temp dirs from Windows Defender (suspecting
-      # real-time-scan interference on a freshly-written .dwg/.exe) - ran
-      # cleanly but did NOT fix it, ruling that theory out. Kept as a
-      # harmless hardening; the real cause is still open.
+      # Historical note (kept because the Defender step below still runs):
+      # smoke.sh's DWG reopen used to die on this runner with exit 127 and
+      # zero output. Excluding the build/temp dirs from Windows Defender was
+      # tried as a fix and did NOT change anything; the real cause was found
+      # later by local MinGW+Wine reproduction and fixed at the source: a
+      # LibreDWG cvt_TIMEBLL fallback left struct tm's tm_mday at 0, which
+      # MSVC's CRT parameter validation aborts on (glibc/Darwin tolerate it)
+      # - see cmake/patch_libredwg.cmake round 5. The exclusion is retained
+      # only as harmless hardening against real-time-scan latency on the
+      # freshly written test files.
       - name: Exclude build/temp dirs from Windows Defender
         shell: pwsh
         run: |
           Add-MpPreference -ExclusionPath (Resolve-Path "dino8-app\build").Path
           Add-MpPreference -ExclusionPath $env:TEMP
           Add-MpPreference -ExclusionProcess "Dino8.exe"
-      # A 6-round CI bisection (see this file's own git history for the
-      # full diagnostic script) found the exact root cause: on Windows
-      # only, a process that writes a DWG file and then, in that SAME
-      # process, reopens that exact path crashes instantly (exit 127,
-      # zero output). Every other combination - two exports to different
-      # paths, a version-switched double-export, opening a file a
-      # different process/launch wrote, exporting one file then opening a
-      # different pre-existing file - succeeded every time. Neither a
-      # temp-file+atomic-rename export nor a 120-frame real-time delay
-      # before the reopen changed the outcome, ruling out a lingering
-      # write handle and a timing/caching race. That shape - permanent,
-      # instant, silent, unaffected by delay or write mechanism - reads as
-      # a CI-runner-specific security/build-integrity heuristic, not a
-      # product bug: real users exporting then reopening a DWG in one
-      # session are not expected to hit this. The real fix lives in
-      # tests/dwg_script.txt/dwg_reopen_script.txt/smoke.sh: the DWG
-      # round-trip test's export and reopen halves now run as two
-      # separate process launches, matching the pattern already proven to
-      # work, instead of one process doing Export-then-Open.
       # The same functional QC Linux already runs (~1500 checks over the
       # real app, not just a build check) - smoke.sh's own xvfb-run guard
       # falls through to a direct run whenever xvfb-run isn't on PATH, which
@@ -161,6 +147,38 @@ jobs:
           if ($code -ne 0) { exit $code }
       - name: Install tree
         run: cmake --install dino8-app/build --prefix dino8-app/build/install --component app
+      # The installed exe must run on a machine that has nothing but Windows
+      # on it: no Visual C++ redistributable (the CRT is linked statically,
+      # see CMakeLists.txt), no CI-runner Python (DINO8_ENABLE_PYTHON is OFF
+      # on Windows), no sanitizer runtime. Every one of those has shipped
+      # broken before: the same exe passed "--version" here (the runner has
+      # them all on PATH) and then failed to start on a clean machine with
+      # "python314.dll was not found". dumpbin lists the DLLs the loader
+      # will demand up front; anything outside the OS-provided set fails
+      # the build.
+      - name: Dependents check (installed exe imports only OS DLLs)
+        shell: pwsh
+        run: |
+          $out = & dumpbin /NOLOGO /DEPENDENTS dino8-app\build\install\Dino8.exe
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed ($LASTEXITCODE)" }
+          $dlls = $out | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim().ToLowerInvariant() }
+          Write-Host "Dino8.exe imports:"; $dlls | ForEach-Object { Write-Host "  $_" }
+          # Denylist, not an allowlist: an allowlist has to enumerate every
+          # legitimate OS DLL a GUI app can pull in (dwrite, d3d11,
+          # windowscodecs, combase, ...) and missed one on its first run
+          # (dwrite.dll, from GDI/ImGui text rendering, broke a real
+          # Windows-on-ARM build here). What this check actually needs to
+          # catch is the two concrete failure modes that shipped broken
+          # exes before: a dynamically-linked CRT/C++ runtime (meaning the
+          # static-CRT build in CMakeLists.txt regressed) and a bundled
+          # interpreter/sanitizer runtime nothing installs
+          # (python*.dll from an accidentally-enabled DINO8_ENABLE_PYTHON,
+          # clang_rt.*.dll from AddressSanitizer). A denylist for exactly
+          # those stays correct without having to predict every OS DLL a
+          # future code change might legitimately start importing.
+          $denied = '^(python\d.*|vcruntime\d+(_1)?|msvcp\d+|msvcr\d*|concrt\d+|vcomp\d*|mfc\d+u?|clang_rt\..*|ucrtbased)\.dll$'
+          $bad = $dlls | Where-Object { $_ -match $denied }
+          if ($bad) { throw "Dino8.exe imports a bundled runtime DLL the installer does not ship: $($bad -join ', ')" }
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
       - name: Compile installer
@@ -212,6 +230,20 @@ jobs:
         run: cmake --build dino8-app/build --parallel
       - name: Version check
         run: dino8-app\build\Dino8.exe --version
+      # Same self-containment gate as the x64 job (see its comment).
+      - name: Dependents check (exe imports only OS DLLs)
+        shell: pwsh
+        run: |
+          $out = & dumpbin /NOLOGO /DEPENDENTS dino8-app\build\Dino8.exe
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin failed ($LASTEXITCODE)" }
+          $dlls = $out | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim().ToLowerInvariant() }
+          Write-Host "Dino8.exe imports:"; $dlls | ForEach-Object { Write-Host "  $_" }
+          # Denylist, see the x64 job's own "Dependents check" step for why
+          # (an allowlist here already broke a real build once, on the
+          # legitimate dwrite.dll).
+          $denied = '^(python\d.*|vcruntime\d+(_1)?|msvcp\d+|msvcr\d*|concrt\d+|vcomp\d*|mfc\d+u?|clang_rt\..*|ucrtbased)\.dll$'
+          $bad = $dlls | Where-Object { $_ -match $denied }
+          if ($bad) { throw "Dino8.exe imports a bundled runtime DLL the portable zip does not ship: $($bad -join ', ')" }
       - name: Portable zip
         run: cd dino8-app/build && cpack
       - uses: actions/upload-artifact@v4

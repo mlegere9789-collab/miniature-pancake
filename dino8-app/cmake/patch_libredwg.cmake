@@ -26,6 +26,12 @@
 # subtraction, which is correct and identical on every platform regardless
 # of `long`'s width.
 #
+# Idempotent: FetchContent re-runs PATCH_COMMAND on an already-patched
+# checkout whenever this script (or anything else in the FetchContent
+# declaration) changes, so every replacement below first checks whether its
+# own replacement text is already present and only fails when NEITHER the
+# original nor the patched pattern is found (a real upstream change).
+#
 # Applied via FetchContent's PATCH_COMMAND (see CMakeLists.txt) so it lands
 # on every fresh clone, matching this project's discipline of never hand-
 # editing a vendored dependency's checked-out source in place.
@@ -64,320 +70,27 @@ set(_new2 "  size_t pos = bit_position (dat);
     }")
 
 string(FIND "${_contents}" "${_old1}" _pos1)
+string(FIND "${_contents}" "${_new1}" _applied1)
 string(FIND "${_contents}" "${_old2}" _pos2)
-if(_pos1 EQUAL -1)
+string(FIND "${_contents}" "${_new2}" _applied2)
+if(_pos1 EQUAL -1 AND _applied1 EQUAL -1)
   message(FATAL_ERROR "patch_libredwg.cmake: dwg_decode_unknown_bits pattern not found in ${_f} - LibreDWG source may have changed, patch needs updating")
 endif()
-if(_pos2 EQUAL -1)
+if(_pos2 EQUAL -1 AND _applied2 EQUAL -1)
   message(FATAL_ERROR "patch_libredwg.cmake: dwg_decode_unknown_rest pattern not found in ${_f} - LibreDWG source may have changed, patch needs updating")
 endif()
 
 string(REPLACE "${_old1}" "${_new1}" _contents "${_contents}")
 string(REPLACE "${_old2}" "${_new2}" _contents "${_contents}")
 
-# Diagnostic breadcrumbs (see FileExchange.cpp's ImportDwg for the full
-# investigation): three independent instrumentation methods (SEH+
-# _resetstkoflw, whole-build AddressSanitizer, a process-wide
-# SetUnhandledExceptionFilter) all came back with zero signal on the
-# Windows-only DWG reopen crash, and a dedicated static trace of the actual
-# LINE/CIRCLE/LWPOLYLINE/LAYER decode path found no second reachable
-# `long`-width bug. The remaining, most direct diagnostic: print a
-# breadcrumb, flushed immediately, right before dwg_decode() starts and
-# right before every single object's type-dispatch switch - since the
-# crash is 100% deterministic, whichever breadcrumb printed last in the CI
-# log is decoding at the moment of death, which pinpoints the real crash
-# site precisely (unlike every exception-based method tried so far, this
-# does not depend on the crash mechanism being catchable at all).
-set(_old3 "dwg_decode (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
-{
-  char magic[11];")
-set(_new3 "dwg_decode (Bit_Chain *restrict dat, Dwg_Data *restrict dwg)
-{
-  char magic[11];
-  fprintf (stderr, \"DINO8_DWG_TRACE: dwg_decode() entered\\n\");
-  fflush (stderr);")
-
-set(_old4 "  restartpos = bit_position (dat); // relative
-
-  /* Check the type of the object
-   */
-  switch (obj->type)")
-set(_new4 "  restartpos = bit_position (dat); // relative
-  fprintf (stderr, \"DINO8_DWG_TRACE: object #%lu type=%d size=%u addr=%\" PRIuSIZE \" pos=%\" PRIuSIZE \"\\n\",
-           (unsigned long)num, obj->type, obj->size, obj->address, restartpos);
-  fflush (stderr);
-
-  /* Check the type of the object
-   */
-  switch (obj->type)")
-
-string(FIND "${_contents}" "${_old3}" _pos3)
-string(FIND "${_contents}" "${_old4}" _pos4)
-if(_pos3 EQUAL -1)
-  message(FATAL_ERROR "patch_libredwg.cmake: dwg_decode() entry pattern not found in ${_f} - LibreDWG source may have changed, patch needs updating")
-endif()
-if(_pos4 EQUAL -1)
-  message(FATAL_ERROR "patch_libredwg.cmake: object-dispatch pattern not found in ${_f} - LibreDWG source may have changed, patch needs updating")
-endif()
-string(REPLACE "${_old3}" "${_new3}" _contents "${_contents}")
-string(REPLACE "${_old4}" "${_new4}" _contents "${_contents}")
-
 file(WRITE "${_f}" "${_contents}")
-message(STATUS "patch_libredwg.cmake: fixed platform-dependent ULONG_MAX underflow check and added diagnostic breadcrumbs in ${_f}")
+message(STATUS "patch_libredwg.cmake: fixed platform-dependent ULONG_MAX underflow check in ${_f}")
 
-# Round 2 of breadcrumbs: the round-1 breadcrumbs (above) proved the crash
-# happens BEFORE any object reaches type-dispatch - "dwg_decode() entered"
-# printed, but not one single "object #N ..." line ever did, on either of
-# two independent crash reproductions in the same CI run. That means the
-# real crash site is somewhere in read_r2007_meta_data
-# (src/decode_r2007.c) - the R2007+ file-header/pages-map/sections-map/
-# per-section parsing sequence that runs before the object-map walk ever
-# starts. This adds one breadcrumb before each major step in that function
-# so the next CI run pinpoints exactly which section parser is crashing.
-set(_f2 "${SOURCE_DIR}/src/decode_r2007.c")
-file(READ "${_f2}" _contents2)
-
-set(_old5 "  read_r2007_init (dwg);
-#ifdef USE_TRACING
-  probe = getenv (\"LIBREDWG_TRACE\");
-  if (probe)
-    loglevel = atoi (probe);
-#endif
-  // @ 0x62
-  error = read_file_header (dat, &dwg->fhdr.r2007_file_header);")
-set(_new5 "  read_r2007_init (dwg);
-#ifdef USE_TRACING
-  probe = getenv (\"LIBREDWG_TRACE\");
-  if (probe)
-    loglevel = atoi (probe);
-#endif
-  fprintf (stderr, \"DINO8_DWG_TRACE: before read_file_header\\n\"); fflush (stderr);
-  // @ 0x62
-  error = read_file_header (dat, &dwg->fhdr.r2007_file_header);
-  fprintf (stderr, \"DINO8_DWG_TRACE: after read_file_header error=%d\\n\", error); fflush (stderr);")
-
-set(_old6 "  pages_map = read_pages_map (dat, file_header->pages_map_size_comp,
-                              file_header->pages_map_size_uncomp,
-                              file_header->pages_map_correction);
-  if (!pages_map)
-    return DWG_ERR_PAGENOTFOUND; // Error already logged")
-set(_new6 "  fprintf (stderr, \"DINO8_DWG_TRACE: before read_pages_map\\n\"); fflush (stderr);
-  pages_map = read_pages_map (dat, file_header->pages_map_size_comp,
-                              file_header->pages_map_size_uncomp,
-                              file_header->pages_map_correction);
-  fprintf (stderr, \"DINO8_DWG_TRACE: after read_pages_map pages_map=%p\\n\", (void*)pages_map); fflush (stderr);
-  if (!pages_map)
-    return DWG_ERR_PAGENOTFOUND; // Error already logged")
-
-set(_old7 "  sections_map = read_sections_map (dat, file_header->sections_map_size_comp,
-                                    file_header->sections_map_size_uncomp,
-                                    file_header->sections_map_correction);
-  if (!sections_map)
-    goto error;
-
-  error
-      = read_2007_section_header (dat, hdl_dat, dwg, sections_map, pages_map);
-  if (dwg->header.summaryinfo_address)
-    error |= read_2007_section_summary (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_classes (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_handles (dat, hdl_dat, dwg, sections_map,
-                                      pages_map);
-  error |= read_2007_section_auxheader (dat, dwg, sections_map, pages_map);
-  if (dwg->header.thumbnail_address)
-    error |= read_2007_section_preview (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_appinfo (dat, dwg, sections_map, pages_map);
-  error
-      |= read_2007_section_appinfohistory (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_filedeplist (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_security (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_revhistory (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_objfreespace (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_template (dat, dwg, sections_map, pages_map);
-  if (dwg->header.vbaproj_address)
-    error |= read_2007_section_vbaproject (dat, dwg, sections_map, pages_map);
-  // error |= read_2007_section_signature (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_acds (dat, dwg, sections_map, pages_map);
-  // read_2007_blocks (dat, hdl_dat, dwg, sections_map, pages_map);")
-set(_new7 "  fprintf (stderr, \"DINO8_DWG_TRACE: before read_sections_map\\n\"); fflush (stderr);
-  sections_map = read_sections_map (dat, file_header->sections_map_size_comp,
-                                    file_header->sections_map_size_uncomp,
-                                    file_header->sections_map_correction);
-  fprintf (stderr, \"DINO8_DWG_TRACE: after read_sections_map sections_map=%p\\n\", (void*)sections_map); fflush (stderr);
-  if (!sections_map)
-    goto error;
-
-  fprintf (stderr, \"DINO8_DWG_TRACE: before read_2007_section_header\\n\"); fflush (stderr);
-  error
-      = read_2007_section_header (dat, hdl_dat, dwg, sections_map, pages_map);
-  fprintf (stderr, \"DINO8_DWG_TRACE: after read_2007_section_header error=%d\\n\", error); fflush (stderr);
-  if (dwg->header.summaryinfo_address)
-    error |= read_2007_section_summary (dat, dwg, sections_map, pages_map);
-  fprintf (stderr, \"DINO8_DWG_TRACE: before read_2007_section_classes\\n\"); fflush (stderr);
-  error |= read_2007_section_classes (dat, dwg, sections_map, pages_map);
-  fprintf (stderr, \"DINO8_DWG_TRACE: after read_2007_section_classes error=%d\\n\", error); fflush (stderr);
-  fprintf (stderr, \"DINO8_DWG_TRACE: before read_2007_section_handles\\n\"); fflush (stderr);
-  error |= read_2007_section_handles (dat, hdl_dat, dwg, sections_map,
-                                      pages_map);
-  fprintf (stderr, \"DINO8_DWG_TRACE: after read_2007_section_handles error=%d\\n\", error); fflush (stderr);
-  error |= read_2007_section_auxheader (dat, dwg, sections_map, pages_map);
-  if (dwg->header.thumbnail_address)
-    error |= read_2007_section_preview (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_appinfo (dat, dwg, sections_map, pages_map);
-  error
-      |= read_2007_section_appinfohistory (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_filedeplist (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_security (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_revhistory (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_objfreespace (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_template (dat, dwg, sections_map, pages_map);
-  if (dwg->header.vbaproj_address)
-    error |= read_2007_section_vbaproject (dat, dwg, sections_map, pages_map);
-  // error |= read_2007_section_signature (dat, dwg, sections_map, pages_map);
-  error |= read_2007_section_acds (dat, dwg, sections_map, pages_map);
-  fprintf (stderr, \"DINO8_DWG_TRACE: read_r2007_meta_data reached end, error=%d\\n\", error); fflush (stderr);
-  // read_2007_blocks (dat, hdl_dat, dwg, sections_map, pages_map);")
-
-string(FIND "${_contents2}" "${_old5}" _pos5)
-string(FIND "${_contents2}" "${_old6}" _pos6)
-string(FIND "${_contents2}" "${_old7}" _pos7)
-if(_pos5 EQUAL -1)
-  message(FATAL_ERROR "patch_libredwg.cmake: read_file_header pattern not found in ${_f2} - LibreDWG source may have changed, patch needs updating")
-endif()
-if(_pos6 EQUAL -1)
-  message(FATAL_ERROR "patch_libredwg.cmake: read_pages_map pattern not found in ${_f2} - LibreDWG source may have changed, patch needs updating")
-endif()
-if(_pos7 EQUAL -1)
-  message(FATAL_ERROR "patch_libredwg.cmake: read_r2007_meta_data section sequence pattern not found in ${_f2} - LibreDWG source may have changed, patch needs updating")
-endif()
-string(REPLACE "${_old5}" "${_new5}" _contents2 "${_contents2}")
-string(REPLACE "${_old6}" "${_new6}" _contents2 "${_contents2}")
-string(REPLACE "${_old7}" "${_new7}" _contents2 "${_contents2}")
-file(WRITE "${_f2}" "${_contents2}")
-message(STATUS "patch_libredwg.cmake: added round-2 diagnostic breadcrumbs to read_r2007_meta_data in ${_f2}")
-
-# Round 3: round 2's own breadcrumbs (in decode_r2007.c) never fired even
-# locally on a real, successful round trip - proving this app's own default
-# DWG export (no Version= override) writes AC1015/AutoCAD 2000 format,
-# which decodes via decode_R13_R2000 (this same file, ~line 292), NOT
-# decode_R2007. That is almost certainly true on Windows CI too, since it's
-# the exact same default export path. These breadcrumbs bracket the three
-# real candidate zones inside decode_R13_R2000 that run before the first
-# object-map dwg_decode_add_object call: right after the header.spec
-# parse, right before the classes-table parsing loop (which reallocs a
-# dwg_class array in a loop - a real dynamic-allocation candidate), and
-# right before the handles_section: object-map walk itself begins.
-set(_old8 "    // clang-format off
-    #include \"header.spec\"
-    // clang-format on
-  }
-  if ((error = dwg_sections_init (dwg)))
-    return error;")
-set(_new8 "    // clang-format off
-    #include \"header.spec\"
-    // clang-format on
-  }
-  fprintf (stderr, \"DINO8_DWG_TRACE: R13_R2000 header.spec parsed ok\\n\"); fflush (stderr);
-  if ((error = dwg_sections_init (dwg)))
-    return error;
-  fprintf (stderr, \"DINO8_DWG_TRACE: R13_R2000 dwg_sections_init ok\\n\"); fflush (stderr);")
-
-set(_old9 "  LOG_INSANE (\"endpos: %\" PRIuSIZE, endpos);
-  LOG_POS_ (INSANE);
-
-  /* Read the classes
-   */
-  dwg->layout_type = 0;
-  dwg->num_classes = 0;")
-set(_new9 "  LOG_INSANE (\"endpos: %\" PRIuSIZE, endpos);
-  LOG_POS_ (INSANE);
-  fprintf (stderr, \"DINO8_DWG_TRACE: R13_R2000 before classes loop, endpos=%\" PRIuSIZE \" dat->byte=%\" PRIuSIZE \"\\n\", endpos, dat->byte); fflush (stderr);
-
-  /* Read the classes
-   */
-  dwg->layout_type = 0;
-  dwg->num_classes = 0;")
-
-set(_old10 "  /*-------------------------------------------------------------------------
-   * Object-map, section 2
-   */
-handles_section:
-  dat->byte = dwg->header.section[SECTION_HANDLES_R13].address;")
-set(_new10 "  fprintf (stderr, \"DINO8_DWG_TRACE: R13_R2000 classes loop done, num_classes=%u\\n\", dwg->num_classes); fflush (stderr);
-  /*-------------------------------------------------------------------------
-   * Object-map, section 2
-   */
-handles_section:
-  fprintf (stderr, \"DINO8_DWG_TRACE: R13_R2000 entering handles_section, error=%d\\n\", error); fflush (stderr);
-  dat->byte = dwg->header.section[SECTION_HANDLES_R13].address;")
-
-set(_f3 "${SOURCE_DIR}/src/decode.c")
-file(READ "${_f3}" _contents3)
-string(FIND "${_contents3}" "${_old8}" _pos8)
-string(FIND "${_contents3}" "${_old9}" _pos9)
-string(FIND "${_contents3}" "${_old10}" _pos10)
-if(_pos8 EQUAL -1)
-  message(FATAL_ERROR "patch_libredwg.cmake: R13_R2000 header.spec pattern not found in ${_f3} - LibreDWG source may have changed, patch needs updating")
-endif()
-if(_pos9 EQUAL -1)
-  message(FATAL_ERROR "patch_libredwg.cmake: R13_R2000 classes-loop pattern not found in ${_f3} - LibreDWG source may have changed, patch needs updating")
-endif()
-if(_pos10 EQUAL -1)
-  message(FATAL_ERROR "patch_libredwg.cmake: R13_R2000 handles_section pattern not found in ${_f3} - LibreDWG source may have changed, patch needs updating")
-endif()
-string(REPLACE "${_old8}" "${_new8}" _contents3 "${_contents3}")
-string(REPLACE "${_old9}" "${_new9}" _contents3 "${_contents3}")
-string(REPLACE "${_old10}" "${_new10}" _contents3 "${_contents3}")
-file(WRITE "${_f3}" "${_contents3}")
-message(STATUS "patch_libredwg.cmake: added round-3 diagnostic breadcrumbs to decode_R13_R2000 in ${_f3}")
-
-# Round 4: round 3 narrowed the crash to somewhere between "dwg_sections_init
-# ok" and "before classes loop" - both attempts died in that exact ~280-line
-# span with no further breadcrumb ever printing. The section-locator-records
-# loop and array allocation in dwg_sections_init were read carefully and
-# check out as platform-safe (all fixed-width BITCODE_RL/size_t arithmetic,
-# num_sections forced equal to sections before the bounded calloc). The one
-# real remaining suspect in that span is dwg_decode_header_variables() - a
-# large, complex, largely macro/spec-generated header-variable parser that
-# is a single opaque function call from here, unlike everything else in this
-# span which was small enough to read line-by-line with confidence. This
-# brackets that call plus the classes_section: label right after the
-# CRC-check code that follows it, so this round conclusively determines
-# whether the crash is inside dwg_decode_header_variables itself or in the
-# CRC-check/classes-section-entry code that runs right after it returns.
-set(_old11 "  dat->bit = 0;
-
-  error |= dwg_decode_header_variables (dat, dat, dat, dwg);")
-set(_new11 "  dat->bit = 0;
-
-  fprintf (stderr, \"DINO8_DWG_TRACE: before dwg_decode_header_variables, header_vars.size=\" FORMAT_RL \"\\n\", dwg->header_vars.size); fflush (stderr);
-  error |= dwg_decode_header_variables (dat, dat, dat, dwg);
-  fprintf (stderr, \"DINO8_DWG_TRACE: after dwg_decode_header_variables error=%d\\n\", error); fflush (stderr);")
-
-set(_old12 "  /*-------------------------------------------------------------------------
-   * Classes, section 1
-   */
-classes_section:")
-set(_new12 "  fprintf (stderr, \"DINO8_DWG_TRACE: reached classes_section label\\n\"); fflush (stderr);
-  /*-------------------------------------------------------------------------
-   * Classes, section 1
-   */
-classes_section:")
-
-set(_f4 "${SOURCE_DIR}/src/decode.c")
-file(READ "${_f4}" _contents4)
-string(FIND "${_contents4}" "${_old11}" _pos11)
-string(FIND "${_contents4}" "${_old12}" _pos12)
-if(_pos11 EQUAL -1)
-  message(FATAL_ERROR "patch_libredwg.cmake: dwg_decode_header_variables call pattern not found in ${_f4} - LibreDWG source may have changed, patch needs updating")
-endif()
-if(_pos12 EQUAL -1)
-  message(FATAL_ERROR "patch_libredwg.cmake: classes_section label pattern not found in ${_f4} - LibreDWG source may have changed, patch needs updating")
-endif()
-string(REPLACE "${_old11}" "${_new11}" _contents4 "${_contents4}")
-string(REPLACE "${_old12}" "${_new12}" _contents4 "${_contents4}")
-file(WRITE "${_f4}" "${_contents4}")
-
-# Round 5: the actual, confirmed root cause. Found via local reproduction -
+# Round 5: the actual, confirmed root cause of the Windows-only DWG reopen
+# crash. (Rounds 1-4 were fprintf(stderr) breadcrumbs threaded through
+# decode.c/decode_r2007.c purely to bisect the crash site on CI; they did
+# their job and have been removed again - a shipped decoder must not print
+# a trace line per object to stderr on every DWG open.) Found via local reproduction -
 # a MinGW cross-build of this exact patched source, run under Wine against
 # the exact DWG bytes this project's own smoke test writes and reopens (the
 # first time this bug was reproduced outside Windows CI, and much faster to
@@ -385,8 +98,8 @@ file(WRITE "${_f4}" "${_contents4}")
 #
 # The standalone decode completed under Wine but printed two
 # "err:msvcrt:_invalid_parameter" diagnostics from Wine's own msvcrt shim,
-# both landing inside dwg_decode_header_variables between the round-4
-# breadcrumbs. Wine's CRT logs that and carries on; real Windows' MSVC CRT
+# both landing inside dwg_decode_header_variables (which the round-4
+# breadcrumbs had already bracketed as the crash site). Wine's CRT logs that and carries on; real Windows' MSVC CRT
 # default invalid-parameter handler aborts the process instead - with no
 # exception for SEH/AddressSanitizer/an unhandled-exception filter to ever
 # catch, since it isn't a memory-safety fault at all (matching every
@@ -436,13 +149,13 @@ set(_new13 "  if (ja < 1000)
       tm->tm_mday = 1;
     }")
 string(FIND "${_contents5}" "${_old13}" _pos13)
-if(_pos13 EQUAL -1)
+string(FIND "${_contents5}" "${_new13}" _applied13)
+if(_pos13 EQUAL -1 AND _applied13 EQUAL -1)
   message(FATAL_ERROR "patch_libredwg.cmake: cvt_TIMEBLL's ja<1000 fallback pattern not found in ${_f5} - LibreDWG source may have changed, patch needs updating")
 endif()
 string(REPLACE "${_old13}" "${_new13}" _contents5 "${_contents5}")
 file(WRITE "${_f5}" "${_contents5}")
 message(STATUS "patch_libredwg.cmake: fixed cvt_TIMEBLL's out-of-range tm_mday in its degenerate-timestamp fallback (real Windows DWG-reopen crash root cause, confirmed via local MinGW+Wine reproduction)")
-message(STATUS "patch_libredwg.cmake: added round-4 diagnostic breadcrumbs bracketing dwg_decode_header_variables in ${_f4}")
 
 # Round 6: a second, separate, real bug - only ever reachable once round 5's
 # fix let the Windows build get this far. Windows CI's global ASan build
@@ -524,7 +237,8 @@ set(_new14 "          case DWG_TYPE_POLYLINE_2D:
             }
             break;")
 string(FIND "${_contents6}" "${_old14}" _pos14)
-if(_pos14 EQUAL -1)
+string(FIND "${_contents6}" "${_new14}" _applied14)
+if(_pos14 EQUAL -1 AND _applied14 EQUAL -1)
   message(FATAL_ERROR "patch_libredwg.cmake: dwg_add_HATCH's DWG_TYPE_POLYLINE_2D case pattern not found in ${_f6} - LibreDWG source may have changed, patch needs updating")
 endif()
 string(REPLACE "${_old14}" "${_new14}" _contents6 "${_contents6}")
@@ -606,7 +320,8 @@ set(_new15 "      if (dwg->header.version >= R_2004)
             }
         }")
 string(FIND "${_contents7}" "${_old15}" _pos15)
-if(_pos15 EQUAL -1)
+string(FIND "${_contents7}" "${_new15}" _applied15)
+if(_pos15 EQUAL -1 AND _applied15 EQUAL -1)
   message(FATAL_ERROR "patch_libredwg.cmake: dwg_object_polyline_2d_get_numpoints's first_vertex/last_vertex loop pattern not found in ${_f7} - LibreDWG source may have changed, patch needs updating")
 endif()
 string(REPLACE "${_old15}" "${_new15}" _contents7 "${_contents7}")
@@ -677,7 +392,8 @@ set(_new16 "          Dwg_Object *vobj = dwg_ref_object (dwg, _obj->first_vertex
             }
         }")
 string(FIND "${_contents7}" "${_old16}" _pos16)
-if(_pos16 EQUAL -1)
+string(FIND "${_contents7}" "${_new16}" _applied16)
+if(_pos16 EQUAL -1 AND _applied16 EQUAL -1)
   message(FATAL_ERROR "patch_libredwg.cmake: dwg_object_polyline_2d_get_points's first_vertex/last_vertex fill-loop pattern not found in ${_f7} - LibreDWG source may have changed, patch needs updating")
 endif()
 string(REPLACE "${_old16}" "${_new16}" _contents7 "${_contents7}")

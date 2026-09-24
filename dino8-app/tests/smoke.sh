@@ -66,7 +66,25 @@ else
 fi
 echo "$OUT" | grep "^smoke:" || { echo "$OUT"; echo "FAIL: no smoke line"; exit 1; }
 fail=0
-check() { if echo "$OUT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+# On a FAIL, show what the app actually printed for the line the check was
+# looking for, so a platform-specific value difference (e.g. MSVC vs GCC
+# producing "Volume = 199.9999" instead of "Volume = 200") is visible in the
+# CI log directly instead of only "FAIL <description>". The expected pattern
+# is trimmed at its first digit to get a stable prefix ("Volume = ", "CV[0] ",
+# "Shell: thickness "), and every output line carrying that prefix is echoed
+# (capped, so a runaway match can't flood the log). Diagnostic only - never
+# changes pass/fail.
+near() {
+  local out="$1" pat="$2" prefix
+  prefix="${pat%%[0-9]*}"
+  prefix="${prefix%%\\*}"
+  prefix="${prefix%%[\[\]\(\)\.\*\^\$]*}"
+  echo "     expected: $pat"
+  if [ -n "$prefix" ] && [ "$prefix" != "$pat" ]; then
+    echo "$out" | grep -F -- "$prefix" | head -6 | sed 's/^/     actual:   /' || true
+  fi
+}
+check() { if echo "$OUT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$OUT" "$1"; fail=1; fi; }
 check "1055 commands loaded" "catalog has all 1055 commands"
 check "BooleanDifference:" "boolean difference ran"
 check "Volume = " "volume measured"
@@ -170,8 +188,8 @@ dwg_run_retrying "DWG export" dwg_run
 DW="$DWG_RETRY_RESULT"
 dwg_run_retrying "DWG reopen" dwg_reopen_run
 DWI="$DWG_RETRY_RESULT"
-dwcheck() { if echo "$DW" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
-dwicheck() { if echo "$DWI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dwcheck() { if echo "$DW" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DW" "$1"; fail=1; fi; }
+dwicheck() { if echo "$DWI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DWI" "$1"; fail=1; fi; }
 dwcheck "Exported $TMPW/dwg_roundtrip.dwg" "DWG export wrote a file"
 [ "$(echo "$DW" | grep -c "^history: Exported $TMPW/dwg_roundtrip.dwg\$")" = "2" ] && echo "ok   re-exporting DWG to the exact same path overwrites instead of silently failing" || { echo "FAIL DWG re-export to the same path did not overwrite"; fail=1; }
 dwicheck "DWG: 3 curves, 0 points" "DWG import read the line, circle and closed polyline back"
@@ -237,7 +255,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   CE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/curveedit_script.txt" 2>&1)" || { echo "$CE"; echo "FAIL: curve-edit script exited non-zero"; exit 1; }
 fi
-cecheck() { if echo "$CE" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+cecheck() { if echo "$CE" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$CE" "$1"; fail=1; fi; }
 cecheck "intersection at 10,0,0" "Intersect found the line/line crossing"
 cecheck "Split 1 curve into 2 pieces" "Split cut the line at the crossing"
 cecheck "Trimmed curve 6" "Trim removed the clicked portion"
@@ -256,7 +274,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   C2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 400 --script "$HERE/curves2_script.txt" 2>&1)" || { echo "$C2"; echo "FAIL: curve-tools script exited non-zero"; exit 1; }
 fi
-c2check() { if echo "$C2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+c2check() { if echo "$C2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$C2" "$1"; fail=1; fi; }
 c2check "Conic: rho = 0.4" "Conic passed through the shoulder point"
 c2check "Parabola: focal length 5" "Parabola built from vertex and focus"
 c2check "Hyperbola: a = 5" "Hyperbola built from center and vertex"
@@ -309,7 +327,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   EX="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMPW/exchange_script.txt" 2>&1)" || { echo "$EX"; echo "FAIL: exchange script exited non-zero"; exit 1; }
 fi
-excheck() { if echo "$EX" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+excheck() { if echo "$EX" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$EX" "$1"; fail=1; fi; }
 excheck "Exported $TMPW/exchange.dxf" "DXF export wrote a file"
 excheck "DXF: 16 curves, 1 point, 1 mesh, 1 new layer" "DXF import read every entity back (line, circle, arc, polyline, 12 box edges, point, mesh, layer)"
 excheck "degree 2, 9 control points, rational, closed" "DXF CIRCLE came back as an exact rational circle"
@@ -344,7 +362,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   DF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 50 --script "$TMPW/dxf_fidelity_script.txt" 2>&1)" || { echo "$DF"; echo "FAIL: DXF fidelity script exited non-zero"; exit 1; }
 fi
-dfcheck() { if echo "$DF" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dfcheck() { if echo "$DF" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DF" "$1"; fail=1; fi; }
 dfcheck "Exported $TMPW/dxf_fidelity.dxf" "DXF export wrote a file"
 [ "$(echo "$DF" | grep -c "degree 3, 4 control points, non-rational, open")" = "2" ] && echo "ok   DXF SPLINE round-tripped the curve's exact degree/CV count" || { echo "FAIL DXF SPLINE degree/CV count did not survive round-trip"; fail=1; }
 [ "$(echo "$DF" | grep -c "CV\[0\] 0,0,0")" = "2" ] && [ "$(echo "$DF" | grep -c "CV\[1\] 5,10,0")" = "2" ] && [ "$(echo "$DF" | grep -c "CV\[2\] 10,-5,0")" = "2" ] && [ "$(echo "$DF" | grep -c "CV\[3\] 15,5,0")" = "2" ] && echo "ok   DXF SPLINE round-tripped the exact control points" || { echo "FAIL DXF SPLINE control points did not survive round-trip"; fail=1; }
@@ -361,7 +379,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   DT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_text_script.txt" 2>&1)" || { echo "$DT"; echo "FAIL: DXF TEXT script exited non-zero"; exit 1; }
 fi
-dtcheck() { if echo "$DT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dtcheck() { if echo "$DT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DT" "$1"; fail=1; fi; }
 dtcheck "DXF: 3 curves, 0 points" "DXF import read the TEXT entity"
 [ "$(echo "$DT" | grep -c "^history:   degree 1, [0-9]* control points, non-rational, closed$")" = "3" ] && echo "ok   DXF TEXT converted 'Hi' into exactly 3 closed glyph-outline curves (H, i-stem, i-dot)" || { echo "FAIL DXF TEXT did not produce the expected glyph curves"; fail=1; }
 # DXF MTEXT import: a minimal, hand-written DXF (no Dino8-authored export
@@ -378,7 +396,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   DM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_mtext_script.txt" 2>&1)" || { echo "$DM"; echo "FAIL: DXF MTEXT script exited non-zero"; exit 1; }
 fi
-dmcheck() { if echo "$DM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dmcheck() { if echo "$DM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DM" "$1"; fail=1; fi; }
 dmcheck "DXF: 6 curves, 0 points" "DXF import read the MTEXT entity"
 [ "$(echo "$DM" | grep -c "^history:   degree 1, [0-9]* control points, non-rational, closed$")" = "6" ] && echo "ok   DXF MTEXT's two \\P-separated 'Hi' lines each converted into exactly 3 closed glyph-outline curves (6 total)" || { echo "FAIL DXF MTEXT did not produce the expected glyph curves"; fail=1; }
 [ "$(echo "$DM" | grep -c "^history: 6 object(s) selected$")" = "2" ] && echo "ok   DXF MTEXT's glyph curves carry the same Annotation=Text/Style=Standard user text as TEXT import (SelAnnotationStyle finds all 6, same as SelAll)" || { echo "FAIL DXF MTEXT glyph curves are not tagged/selectable like TEXT import's"; fail=1; }
@@ -395,7 +413,7 @@ if [ -x "$DWGBIN" ]; then
   else
     DI="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_insert_script.txt" 2>&1)" || { echo "$DI"; echo "FAIL: DWG INSERT script exited non-zero"; exit 1; }
   fi
-  dicheck() { if echo "$DI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  dicheck() { if echo "$DI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DI" "$1"; fail=1; fi; }
   dicheck "DWG: 6 curves, 0 points, 1 block instance flattened" "ImportDwg flattened the independently-built BLOCK_HEADER/INSERT fixture (plus the TEXT fixture's 3 glyph curves)"
   dicheck "CV\[0\] 100,50,0" "DWG INSERT's flattened line starts at the scaled/rotated/translated insertion point"
   dicheck "CV\[1\] 100,56,0" "DWG INSERT's flattened line ends where a 2-unit block line scaled 3x and rotated 90 degrees should (100,50,0)-(100,56,0)"
@@ -428,7 +446,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   DXH="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_hatch_script.txt" 2>&1)" || { echo "$DXH"; echo "FAIL: DXF HATCH script exited non-zero"; exit 1; }
 fi
-dxhcheck() { if echo "$DXH" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dxhcheck() { if echo "$DXH" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DXH" "$1"; fail=1; fi; }
 dxhcheck "DXF: 0 curves, 0 points, 0 meshes, 1 hatch" "ImportDxf read the solid-fill HATCH entity"
 dxhcheck "1 object(s) selected" "SelHatch found the imported hatch (real Hatch=Solid user_text, not just an ordinary object)"
 dxhcheck "name 'Hatch Solid'" "the imported solid hatch is the same trimmed-planar-brep object AddSolidHatch/BuildSolidHatch builds in-app"
@@ -452,7 +470,7 @@ EOS
   else
     DWH="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_hatch_script.txt" 2>&1)" || { echo "$DWH"; echo "FAIL: DWG HATCH script exited non-zero"; exit 1; }
   fi
-  dwhcheck() { if echo "$DWH" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  dwhcheck() { if echo "$DWH" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DWH" "$1"; fail=1; fi; }
   dwhcheck "DWG: 0 curves, 0 points, 1 hatch; 1 unsupported entity skipped" "ImportDwg read the pattern-fill HATCH entity (and honestly counted its own POLYLINE_2D boundary record as unsupported on its own)"
   # 113, not 57: LibreDWG's dwg_object_polyline_2d_get_numpoints/get_points
   # had a real off-by-one (see cmake/patch_libredwg.cmake round 7) that
@@ -488,7 +506,7 @@ EOS
   else
     DWS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_spline_script.txt" 2>&1)" || { echo "$DWS"; echo "FAIL: DWG SPLINE script exited non-zero"; exit 1; }
   fi
-  dwscheck() { if echo "$DWS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  dwscheck() { if echo "$DWS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DWS" "$1"; fail=1; fi; }
   dwscheck "DWG: 1 curve, 0 points" "ImportDwg read the fit-point-only SPLINE entity"
   dwscheck "degree 1, 4 control points, non-rational, open" "the SPLINE's fit points became an exact polyline through them"
   dwscheck "CV\[0\] 0,0,0" "the polyline starts at the SPLINE's first real fit point"
@@ -521,7 +539,7 @@ EOS
   else
     DWM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_mtext_script.txt" 2>&1)" || { echo "$DWM"; echo "FAIL: DWG MTEXT script exited non-zero"; exit 1; }
   fi
-  dwmcheck() { if echo "$DWM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  dwmcheck() { if echo "$DWM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DWM" "$1"; fail=1; fi; }
   dwmcheck "DWG: 6 curves, 0 points" "ImportDwg read the MTEXT entity"
   [ "$(echo "$DWM" | grep -c "^history:   degree 1, [0-9]* control points, non-rational, closed$")" = "6" ] && echo "ok   DWG MTEXT's two \\P-separated 'Hi' lines (with \\C/\\H/{}} codes stripped) each converted into exactly 3 closed glyph-outline curves (6 total)" || { echo "FAIL DWG MTEXT did not produce the expected glyph curves"; fail=1; }
   [ "$(echo "$DWM" | grep -c "^history: 6 object(s) selected$")" = "2" ] && echo "ok   DWG MTEXT's glyph curves carry the same Annotation=Text/Style=Standard user text as TEXT import (SelAnnotationStyle finds all 6, same as SelAll)" || { echo "FAIL DWG MTEXT glyph curves are not tagged/selectable like TEXT import's"; fail=1; }
@@ -556,7 +574,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   DXDL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_dim_linear_script.txt" 2>&1)" || { echo "$DXDL"; echo "FAIL: DXF DIMENSION (linear) script exited non-zero"; exit 1; }
 fi
-dxdlcheck() { if echo "$DXDL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dxdlcheck() { if echo "$DXDL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DXDL" "$1"; fail=1; fi; }
 dxdlcheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the type-0 (linear) DIMENSION entity"
 dxdlcheck "^history: 8 object(s) selected$" "SelDim found the imported dimension's 8 curves (dim line + 2 ext lines + 2 arrows + 3 '10' glyph curves) as a real DimLinear group"
 dxdlcheck "CV\[0\] 0,5,0" "the rebuilt dimension line sits at the def_pt's Y offset (5), not the raw extension-line points"
@@ -574,7 +592,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   DXDA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_dim_aligned_script.txt" 2>&1)" || { echo "$DXDA"; echo "FAIL: DXF DIMENSION (aligned) script exited non-zero"; exit 1; }
 fi
-dxdacheck() { if echo "$DXDA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dxdacheck() { if echo "$DXDA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DXDA" "$1"; fail=1; fi; }
 dxdacheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the type-1 (aligned) DIMENSION entity"
 dxdacheck "^history: 8 object(s) selected$" "SelDim found the imported aligned dimension as a real DimAligned group"
 dxdacheck "UpdateDimensions:   DimAligned now measures 10" "UpdateDimensions re-derived the exact hand-computed 3-4-5-triangle distance (sqrt(6^2+8^2) = 10)"
@@ -591,7 +609,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   DXDR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_dim_radius_script.txt" 2>&1)" || { echo "$DXDR"; echo "FAIL: DXF DIMENSION (radius) script exited non-zero"; exit 1; }
 fi
-dxdrcheck() { if echo "$DXDR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dxdrcheck() { if echo "$DXDR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DXDR" "$1"; fail=1; fi; }
 dxdrcheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the type-4 (radius) DIMENSION entity"
 dxdrcheck "^history: 5 object(s) selected$" "SelDim found the imported radius dimension's 5 curves (leader + arrow + 3 'R 5' glyph curves) as a real DimRadius group"
 dxdrcheck "CV\[0\] 40,0,0" "the rebuilt leader starts exactly at the DIMENSION's own def_pt (the arc/circle center)"
@@ -609,7 +627,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   DXDD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dxf_dim_diameter_script.txt" 2>&1)" || { echo "$DXDD"; echo "FAIL: DXF DIMENSION (diameter) script exited non-zero"; exit 1; }
 fi
-dxddcheck() { if echo "$DXDD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dxddcheck() { if echo "$DXDD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DXDD" "$1"; fail=1; fi; }
 dxddcheck "DXF: 0 curves, 0 points, 0 meshes, 1 dimension" "ImportDxf read the type-3 (diameter) DIMENSION entity"
 dxddcheck "^history: 8 object(s) selected$" "SelDim found the imported diameter dimension's 8 curves (2-arrow diameter line + 2 arrows + 4 'D 10' glyph curves) as a real DimDiameter group"
 dxddcheck "UpdateDimensions:   DimDiameter now measures 10" "UpdateDimensions re-derived the exact hand-computed diameter (far_chord_pt (-5,0,0) to first_arc_pt (5,0,0) = 10 span, so diameter 10)"
@@ -634,7 +652,7 @@ EOS
   else
     DWD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/dwg_dim_script.txt" 2>&1)" || { echo "$DWD"; echo "FAIL: DWG DIMENSION script exited non-zero"; exit 1; }
   fi
-  dwdcheck() { if echo "$DWD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  dwdcheck() { if echo "$DWD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DWD" "$1"; fail=1; fi; }
   dwdcheck "DWG: 0 curves, 0 points, 2 dimensions" "ImportDwg read the real DIMENSION_LINEAR and DIMENSION_RADIUS entities"
   dwdcheck "^history: 13 object(s) selected$" "SelDim found both imported dimensions' curves as real DimLinear/DimRadius groups"
   dwdcheck "UpdateDimensions:   DimLinear now measures 10" "UpdateDimensions re-derived the exact hand-computed linear distance (xline2.x - xline1.x = 10)"
@@ -650,7 +668,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   SF="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/surface_script.txt" 2>&1)" || { echo "$SF"; echo "FAIL: surface script exited non-zero"; exit 1; }
 fi
-sfcheck() { if echo "$SF" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+sfcheck() { if echo "$SF" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SF" "$1"; fail=1; fi; }
 sfcheck "Pipe: radius 1, 1 pipe(s) (capped mesh)" "Pipe built a capped mesh"
 sfcheck "Volume = 31.06 cubic" "Pipe r=1 along 10 units has volume ~ pi*10"
 sfcheck "Area = 62.79 square" "uncapped Pipe surface area ~ 2*pi*10"
@@ -707,7 +725,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   SO="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/solids_script.txt" 2>&1)" || { echo "$SO"; echo "FAIL: solids script exited non-zero"; exit 1; }
 fi
-socheck() { if echo "$SO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+socheck() { if echo "$SO" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SO" "$1"; fail=1; fi; }
 socheck "Volume = 132 cubic" "Ellipsoid volume is close to the analytic 4/3*pi*5*3*2 (~125.7)"
 socheck "48 faces, 72 edges, 26 vertices, 0 creases" "SubDEllipsoid built a SubD from the same three axes"
 socheck "7 vertices, 10 faces" "Pyramid NumSides=6 built a 7-vertex hexagonal-base mesh"
@@ -723,7 +741,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   SE="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/srfedit_script.txt" 2>&1)" || { echo "$SE"; echo "FAIL: surface-edit script exited non-zero"; exit 1; }
 fi
-secheck() { if echo "$SE" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+secheck() { if echo "$SE" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SE" "$1"; fail=1; fi; }
 secheck "ExtractSrf: face 5 extracted from object 1" "ExtractSrf pulled the top face off the box"
 secheck "5 faces, 12 edges, open" "ExtractSrf left a 5-face open polysurface"
 secheck "DeleteFaces: face 4 deleted, 4 face(s) left" "DeleteFaces removed the bottom face"
@@ -818,7 +836,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   MT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/meshtools_script.txt" 2>&1)" || { echo "$MT"; echo "FAIL: mesh-tools script exited non-zero"; exit 1; }
 fi
-mtcheck() { if echo "$MT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+mtcheck() { if echo "$MT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$MT" "$1"; fail=1; fi; }
 mtcheck "Twist: 90 degrees over 20 units" "Twist read its axis and angle"
 mtcheck "Twist: deformed 1 object(s)" "Twist deformed the mesh cylinder"
 mtcheck "Bend: deformed 1 object(s) (1 converted to meshes)" "Bend converted the box to a mesh and bent it"
@@ -869,7 +887,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   SD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/subd_script.txt" 2>&1)" || { echo "$SD"; echo "FAIL: subd script exited non-zero"; exit 1; }
 fi
-sdcheck() { if echo "$SD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+sdcheck() { if echo "$SD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SD" "$1"; fail=1; fi; }
 sdcheck "Crease: 2 edge(s) creased on 1 SubD(s)" "Crease tagged the two picked edges"
 sdcheck "Crease edges: 2" "What reports the crease edges on the control net"
 sdcheck "ExtrudeSubD: extruded 1 face(s) by 3 on 1 SubD(s), 4 side face(s) added" "ExtrudeSubD extruded the top face with four side faces"
@@ -925,7 +943,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   RN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMPW/render_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: render script exited non-zero"; exit 1; }
 fi
-rncheck() { if echo "$RN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+rncheck() { if echo "$RN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RN" "$1"; fail=1; fi; }
 rncheck "Created material Plastic" "RenderAssignMaterialToObjects created a material"
 rncheck "Material Glass: color=200,225,240 transparency=0.6 reflectivity=0.3 gloss=0.9" "material options were applied"
 rncheck "Material Brass assigned to 1 object(s)" "material assigned to the cylinder"
@@ -1034,7 +1052,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   A2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMPW/annotate2_script.txt" 2>&1)" || { echo "$A2"; echo "FAIL: annotate2 script exited non-zero"; exit 1; }
 fi
-a2check() { if echo "$A2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+a2check() { if echo "$A2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$A2" "$1"; fail=1; fi; }
 a2check "DimArea: Area = 314 square" "DimArea measured the circle (pi * 100)"
 a2check "DimCurveLength: Length = 40" "DimCurveLength measured the line"
 if echo "$A2" | grep -A1 "^history: Command: SelDim$" | grep -q "^history: 70 object(s) selected$"; then
@@ -1104,7 +1122,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 220 --script "$TMPW/solidtools_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: solid-tools script exited non-zero"; exit 1; }
 fi
-stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ST" "$1"; fail=1; fi; }
 stcheck "RoundHole: radius 3, through, cut 1 solid(s)" "RoundHole cut the box"
 stcheck "Volume = 37[12][0-9] cubic" "box minus a r=3 through hole has volume ~ 4000 - 90*pi"
 stcheck "CurveBoolean: Union of 2 region(s) -> 1 closed curve(s)" "CurveBoolean united two overlapping circles into one curve"
@@ -1171,7 +1189,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   FL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/fillet_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: fillet script exited non-zero"; exit 1; }
 fi
-flcheck() { if echo "$FL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+flcheck() { if echo "$FL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$FL" "$1"; fail=1; fi; }
 flcheck "FilletEdge: edge 10 of object 1 replaced with an exact fillet (radius 2)" "FilletEdge trimmed the box corner into a real B-rep, not a mesh fallback"
 flcheck "Volume = 991.4 cubic" "a 10x10x10 box minus a r=2 edge fillet has volume 1000 - 10*4*(1-pi/4) = 991.42"
 flcheck "ChamferEdge: edge 10 of object 2 replaced with an exact chamfer (radius 3)" "ChamferEdge trimmed the box corner exactly"
@@ -1209,7 +1227,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   FA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/fillet_adversarial_script.txt" 2>&1)" || { echo "$FA"; echo "FAIL: fillet-adversarial script exited non-zero"; exit 1; }
 fi
-facheck() { if echo "$FA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+facheck() { if echo "$FA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$FA" "$1"; fail=1; fi; }
 facheck "FilletEdge: edge 10 of object 1 replaced with an exact fillet (radius 0.02)" "a radius far smaller than the shortest adjacent edge still built a real, exact fillet"
 facheck "FilletEdge: edge 10 of object 2 replaced with an exact fillet (radius 1)" "a radius at exactly half the shortest adjacent edge's length still built a valid fillet"
 facheck "7 faces, 15 edges, closed solid" "the at-the-limit fillet is a genuine closed solid, not degenerate"
@@ -1226,7 +1244,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 120 --script "$HERE/state_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: state script exited non-zero"; exit 1; }
 fi
-stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ST" "$1"; fail=1; fi; }
 stcheck "SelDupAll: 2 duplicate object(s) selected" "SelDupAll found the two identical lines"
 stcheck "SelShortCrv: 1 curve(s) shorter than 5 selected" "SelShortCrv picked the 2-unit line"
 stcheck "Hyperlink 'https://example.org/dino8' set on 1 object(s)" "Hyperlink stored user text"
@@ -1253,7 +1271,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   VT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMPW/viewtools_script.txt" 2>&1)" || { echo "$VT"; echo "FAIL: view-tools script exited non-zero"; exit 1; }
 fi
-vtcheck() { if echo "$VT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+vtcheck() { if echo "$VT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$VT" "$1"; fail=1; fi; }
 vtcheck "ClippingPlane: created Clipping Plane 1 (40 x 40, normal 0,0,1, clips all viewports)" "ClippingPlane built a plane from two corners"
 vtcheck "ClippingSections: 1 curve(s) from 1 plane(s)" "ClippingSections cut the sphere's equator"
 vtcheck "degree 1, [0-9]* control points, non-rational, closed" "the section is a closed polyline"
@@ -1359,7 +1377,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   NC="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$HERE/nested_clipping_script.txt" 2>&1)" || { echo "$NC"; echo "FAIL: nested-clipping script exited non-zero"; exit 1; }
 fi
-nccheck() { if echo "$NC" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+nccheck() { if echo "$NC" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$NC" "$1"; fail=1; fi; }
 nccheck "ClippingDrawings: 1 drawing curve(s) on layer 'Clipping Drawings' from 1 plane(s)" "ClippingDrawings built PlaneX's flat section of the cube"
 nccheck "Bounding box min 0,-5,0 max 0,5,10" "PlaneX's flat section is the hand-computed 10 x 10 rectangle (x=0, y in [-5,5], z in [0,10])"
 nccheck "NestedClippingDrawing: 1 nested drawing curve(s) clipping PlaneX's section by PlaneY (section of a section, on layer 'Clipping Drawings')" "NestedClippingDrawing re-clipped PlaneX's own section by PlaneY, not the scene"
@@ -1377,7 +1395,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   IL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/importlayout_script.txt" 2>&1)" || { echo "$IL"; echo "FAIL: ImportLayout script exited non-zero"; exit 1; }
 fi
-ilcheck() { if echo "$IL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+ilcheck() { if echo "$IL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$IL" "$1"; fail=1; fi; }
 ilcheck "HideInDetail: 1 object(s) in 1 detail(s)" "HideInDetail hid the tagged box in the source document"
 ilcheck "ImportLayout: imported 1 layout(s) and 2 object(s) from $TMPW/il/importlayout_src.3dm" "ImportLayout pulled in the layout and both objects it references"
 ilcheck "Layouts: 1 layout(s); active: Model" "the imported layout exists in the fresh document"
@@ -1403,7 +1421,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   PD="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/printdisplay_script.txt" 2>&1)" || { echo "$PD"; echo "FAIL: PrintDisplay script exited non-zero"; exit 1; }
 fi
-pdcheck() { if echo "$PD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+pdcheck() { if echo "$PD" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PD" "$1"; fail=1; fi; }
 pdcheck "SetRenderColor: 1 object(s) set to 5,5,5" "SetRenderColor gave the line its own near-black colour"
 pdcheck "PrintDisplay: off" "PrintDisplay off before the first screenshot"
 pdcheck "PrintDisplay: on (print line widths and print colours previewed)" "PrintDisplay on reports it now also previews print colours"
@@ -1481,7 +1499,7 @@ else
 fi
 echo "$SC" | grep -E "^(ok|FAIL)"
 if echo "$SC" | grep -q "^FAIL"; then fail=1; fi
-sccheck() { if echo "$SC" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+sccheck() { if echo "$SC" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SC" "$1"; fail=1; fi; }
 sccheck "history: inline curve length 5.00" "the \"= expr\" command line ran Lua inline (3-4-5 triangle)"
 sccheck "history: bbox min 0,0,0" "RunScript's rs.BoundingBox reported the box's own corner"
 sccheck "history: bbox max 10,10,13" "RunScript's rs.BoundingBox included the raised, unioned sphere"
@@ -1558,7 +1576,7 @@ if echo "$PS" | grep -q "no Python 3 development install"; then
 else
   echo "$PS" | grep -E "^(ok|FAIL)"
   if echo "$PS" | grep -q "^FAIL"; then fail=1; fi
-  pscheck() { if echo "$PS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  pscheck() { if echo "$PS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PS" "$1"; fail=1; fi; }
   pscheck "history: name: Widget" "RunPythonScript's Dino8Object.Name getter/setter round-tripped"
   pscheck "history: layer: Default" "Dino8Object.Layer read back the box's layer"
   pscheck "Layer 'Parts' created and made current" "dino8.RunCommand(\"NewLayer\", \"Parts\") ran the real NewLayer command (deferred until RunPythonScript's own command finished, same as rs.Command would be)"
@@ -1605,7 +1623,7 @@ if echo "$SER" | grep -q "no Python 3 development install"; then
 else
   echo "$SER" | grep -E "^(ok|FAIL)"
   if echo "$SER" | grep -q "^FAIL"; then fail=1; fi
-  sercheck() { if echo "$SER" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+  sercheck() { if echo "$SER" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SER" "$1"; fail=1; fi; }
   sercheck "history: script editor ran python: True" "the Script Editor panel's Run button (ScriptEditorRun - the exact RunScriptEditor() code path DrawScriptEditor's button calls) dispatched the loaded .py file to PythonEngine, not Lua"
   sercheck "^ok   expect_objects 1" "the point dino8.doc.Objects.AddPoint created from inside the Script Editor's Python run is the only object in the document"
   grep -q "! Script error" <<<"$SER" && { echo "FAIL scripteditor_run.txt printed a Lua script error (the .py file was mis-routed to Lua by the Run button)"; fail=1; } || echo "ok   Script Editor Run did not mis-route the .py file to Lua"
@@ -1623,7 +1641,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   FL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/flow_script.txt" 2>&1)" || { echo "$FL"; echo "FAIL: flow script exited non-zero"; exit 1; }
 fi
-flcheck() { if echo "$FL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+flcheck() { if echo "$FL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$FL" "$1"; fail=1; fi; }
 flcheck "Dino Flow: opened the node editor" "Grasshopper opened the Dino Flow panel"
 flcheck "GrasshopperPluginList: 4 plug-in(s) found" "the plug-in loader found all four sample plug-ins"
 flcheck "HelloDino 1.0.0 - 1 command(s), 1 node(s)" "HelloDino loaded its command and Dino Flow node"
@@ -1652,7 +1670,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   FL2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/flow_update_script.txt" 2>&1)" || { echo "$FL2"; echo "FAIL: flow update script exited non-zero"; exit 1; }
 fi
-fl2check() { if echo "$FL2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+fl2check() { if echo "$FL2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$FL2" "$1"; fail=1; fi; }
 echo "$FL2" | grep -E "^(ok|FAIL)"
 if echo "$FL2" | grep -q "^FAIL"; then fail=1; fi
 fl2check "gl_error=0" "flow update script ran without OpenGL errors"
@@ -1672,7 +1690,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   FT="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/flow_tree_script.txt" 2>&1)" || { echo "$FT"; echo "FAIL: flow tree script exited non-zero"; exit 1; }
 fi
-ftcheck() { if echo "$FT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+ftcheck() { if echo "$FT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$FT" "$1"; fail=1; fi; }
 ftcheck "^ok   expect_objects 1" "the tree graph baked exactly one point"
 ftcheck "Range=5 items" "Range produced a 5-item, single-branch list"
 ftcheck "Graft Tree=5 items in 5 branches" "Graft Tree wrapped each item in its own branch"
@@ -1690,7 +1708,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   FS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/flow_solver_script.txt" 2>&1)" || { echo "$FS"; echo "FAIL: flow solver script exited non-zero"; exit 1; }
 fi
-fscheck() { if echo "$FS" | grep -qE "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+fscheck() { if echo "$FS" | grep -qE "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$FS" "$1"; fail=1; fi; }
 fscheck "^ok   expect_objects 1" "the solver graph baked exactly one point"
 fscheck "Evolutionary Solver \(#4\) best fitness 0 after 60 generation\(s\)" "the solver ran all 60 generations and converged to fitness 0 for (x-3)^2 with this fixed seed"
 fscheck "  3,0,0" "the baked point (best gene, best fitness) is exactly (3, 0, 0) - the true optimum of (x-3)^2"
@@ -1706,7 +1724,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   FG="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$TMPW/flow_plugin_geom_script.txt" 2>&1)" || { echo "$FG"; echo "FAIL: flow plugin geom script exited non-zero"; exit 1; }
 fi
-fgcheck() { if echo "$FG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+fgcheck() { if echo "$FG" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$FG" "$1"; fail=1; fi; }
 fgcheck "^ok   expect_objects 1" "the plugin geometry graph baked exactly one point"
 fgcheck "GrasshopperPlayer: solved 4 node(s)" "GrasshopperPlayer solved Spiral Curve -> Plugin Curve Length -> Construct Point -> Bake"
 fgcheck "  10,0,0" "Plugin Curve Length correctly computed 10 for a radius=0 turns=1 pitch=10 helix (a straight segment), round-tripped through two plug-in nodes and baked as the point's X"
@@ -1727,7 +1745,7 @@ echo "$ED" | grep -q "^smoke:" || { echo "$ED"; echo "FAIL: edit script produced
 # plain Flip (FlipObject() - the same function a glyph click calls) must
 # invert it precisely, for both a curve and a surface - the headlessly-
 # verifiable half of Dir's real-glyph fix (see AUDIT.md's dated note).
-edcheck() { if echo "$ED" | grep -Eq "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+edcheck() { if echo "$ED" | grep -Eq "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ED" "$1"; fail=1; fi; }
 edcheck "Curve [0-9]+: start 0,0,0 tangent 1,0,0" "Dir printed a fresh line's real start point and unit tangent"
 edcheck "Curve [0-9]+: start 10,0,0 tangent -1,0,0" "a plain Flip inverted that same curve's Dir-reported start/tangent exactly"
 edcheck "Surface [0-9]+: centre 5,5,0 normal 0,0,-1" "Dir printed a fresh planar surface's real domain-centre point and unit normal"
@@ -1743,7 +1761,7 @@ fi
 echo "$NA" | grep -E "^(ok|FAIL)"
 if echo "$NA" | grep -q "^FAIL"; then fail=1; fi
 echo "$NA" | grep -q "^smoke:" || { echo "$NA"; echo "FAIL: nurbs algo script produced no smoke line"; fail=1; }
-nacheck() { if echo "$NA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+nacheck() { if echo "$NA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$NA" "$1"; fail=1; fi; }
 nacheck "ExtractPipedCurve: extracted 1 rail curve(s)" "ExtractPipedCurve pulled the rail curve back out of the Pipe surface, even after the original curve was deleted"
 nacheck "MakePeriodic: 1 curve(s) made periodic (Smooth=No)" "MakePeriodic Smooth=No ran the real exact-shape-preserving re-knot"
 nacheck "RefitTrim: 2 trim curve(s) could not be refit to strictly fewer control points" "RefitTrim ran its real constrained least-squares fit end to end and correctly, honestly refused a genuinely infeasible case (a cylinder cap's domain leaves no margin for the fitted control polygon's own real overshoot) rather than violating the tolerance or the surface domain"
@@ -1773,7 +1791,7 @@ else
 fi
 echo "$LS" | grep -E "^(ok|FAIL)"
 if echo "$LS" | grep -q "^FAIL"; then fail=1; fi
-lscheck() { if echo "$LS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+lscheck() { if echo "$LS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$LS" "$1"; fail=1; fi; }
 lscheck "Layer state 'HiddenWalls' saved (3 layer(s))" "LayerState Save captured all 3 layers' visibility"
 lscheck "Layer state 'HiddenWalls' restored" "LayerState Restore ran"
 lscheck "1 layer state(s)" "exactly one layer state survived Save/New/Open"
@@ -1791,7 +1809,7 @@ fi
 echo "$PU" | grep -E "^(ok|FAIL)"
 if echo "$PU" | grep -q "^FAIL"; then fail=1; fi
 echo "$PU" | grep -q "^smoke:" || { echo "$PU"; echo "FAIL: purge script produced no smoke line"; fail=1; }
-pucheck() { if echo "$PU" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+pucheck() { if echo "$PU" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PU" "$1"; fail=1; fi; }
 pucheck "Purge: removed 1 layer, 1 block, 1 material, 7 linetypes, 1 annotation style and 1 empty group" \
         "Purge swept layers/blocks/materials/linetypes/annotation styles/empty groups in one pass, not just layers (7 linetypes: the 6 unused-by-default built-ins - Continuous is protected - plus the test's own PurgeUnusedLinetype)"
 
@@ -1804,7 +1822,7 @@ fi
 echo "$SL" | grep -E "^(ok|FAIL)"
 if echo "$SL" | grep -q "^FAIL"; then fail=1; fi
 echo "$SL" | grep -q "^smoke:" || { echo "$SL"; echo "FAIL: select script produced no smoke line"; fail=1; }
-slcheck() { if echo "$SL" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+slcheck() { if echo "$SL" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SL" "$1"; fail=1; fi; }
 # UndoSelected (per-object-scoped undo): object A (tagged undosel-a) was
 # moved to 205,200,0, then unrelated object B (tagged undosel-b) was moved
 # to 300,220,0 afterward - so A's own move entry is NOT the top of the
@@ -1831,7 +1849,7 @@ fi
 echo "$PV" | grep -E "^(ok|FAIL)"
 if echo "$PV" | grep -q "^FAIL"; then fail=1; fi
 echo "$PV" | grep -q "^smoke:" || { echo "$PV"; echo "FAIL: provenance script produced no smoke line"; fail=1; }
-pvcheck() { if echo "$PV" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+pvcheck() { if echo "$PV" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$PV" "$1"; fail=1; fi; }
 pvcheck "Block 'Widget' defined with 2 object(s)" "Block replaced the source curves with a 2-object instance"
 pvcheck "history: Object 5 (curve) layer Default" "SelChildren on instance #2's anchor (5) added exactly its own member (6), not another instance's objects"
 pvcheck "history: Object 6 (curve) layer Default" "  (List after SelChildren shows member 6 selected alongside anchor 5)"
@@ -1873,7 +1891,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   BA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 300 --script "$HERE/boolean_adversarial_script.txt" 2>&1)" || { echo "$BA"; echo "FAIL: boolean-adversarial script exited non-zero"; exit 1; }
 fi
-bacheck() { if echo "$BA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+bacheck() { if echo "$BA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$BA" "$1"; fail=1; fi; }
 bacheck "BooleanUnion: 44 faces, volume 2000" "near-tangent boxes (1e-6 overlap) unioned into one solid at the correct volume"
 bacheck "BooleanIntersection: 16 faces, volume 0.01" "barely-overlapping boxes (1e-4 overlap) still intersected into a real, non-empty sliver"
 bacheck "BooleanUnion: 16 faces, volume 1000" "coincident duplicate boxes unioned without collapsing or crashing"
@@ -1897,7 +1915,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   CA="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 300 --script "$HERE/curve_adversarial_script.txt" 2>&1)" || { echo "$CA"; echo "FAIL: curve-adversarial script exited non-zero"; exit 1; }
 fi
-cacheck() { if echo "$CA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+cacheck() { if echo "$CA" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$CA" "$1"; fail=1; fi; }
 cacheck "! PlanarSrf: 1 curve(s) cross themselves" "PlanarSrf rejected a closed bowtie polyline instead of silently building a self-crossing trim loop"
 cacheck "! Extrude: the selected curve crosses itself - building an open surface instead of a solid cap" "Extrude Solid=Yes degraded a bowtie curve to an open surface instead of claiming a solid it cannot honestly build"
 cacheck "  intersection at 5,5,0" "IntersectSelf still finds a real self-crossing after the shared CurveSelfIntersects refactor"
@@ -1934,7 +1952,7 @@ fi
 echo "$AI" | grep -E "^(ok|FAIL)"
 if echo "$AI" | grep -q "^FAIL"; then fail=1; fi
 echo "$AI" | grep -q "^smoke:" || { echo "$AI"; echo "FAIL: audit-invalid script produced no smoke line"; fail=1; }
-aicheck() { if echo "$AI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+aicheck() { if echo "$AI" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$AI" "$1"; fail=1; fi; }
 aicheck "Object [0-9]*: valid" "Check reported the plain line as valid"
 aicheck "Object [0-9]*: INVALID - .*knot" "Check reported the deliberately invalid curve INVALID with a specific (knot-vector) reason, not just a bare count"
 aicheck "Audit: 2 objects, 1 invalid" "Audit's summary counted exactly the one invalid object (out of the 2 in the doc - the valid Line and the deliberately invalid curve)"
@@ -1968,7 +1986,7 @@ fi
 echo "$S2" | grep -E "^(ok|FAIL)"
 if echo "$S2" | grep -q "^FAIL"; then fail=1; fi
 echo "$S2" | grep -q "^smoke:" || { echo "$S2"; echo "FAIL: state2 script produced no smoke line"; fail=1; }
-s2check() { if echo "$S2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+s2check() { if echo "$S2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$S2" "$1"; fail=1; fi; }
 s2check "WhatsNew: opened the What's New window" "WhatsNew opens its own real changelog window, not the About box"
 s2check "Echo on" "Echo toggled on"
 s2check "Echo off" "Echo toggled off"
@@ -2098,7 +2116,7 @@ fi
 echo "$FL" | grep -E "^(ok|FAIL)"
 if echo "$FL" | grep -q "^FAIL"; then fail=1; fi
 echo "$FL" | grep -q "^smoke:" || { echo "$FL"; echo "FAIL: file script produced no smoke line"; fail=1; }
-flcheck() { if echo "$FL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+flcheck() { if echo "$FL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$FL" "$1"; fail=1; fi; }
 flcheck "Saved $TMPW/file/file1.3dm" "Save wrote file1.3dm"
 flcheck "Opened $TMPW/file/file1.3dm (3 objects)" "Open re-read file1.3dm"
 flcheck "Saved $TMPW/file/file2.3dm" "SaveAs wrote file2.3dm"
@@ -2141,7 +2159,7 @@ fi
 echo "$CR" | grep -E "^(ok|FAIL)"
 if echo "$CR" | grep -q "^FAIL"; then fail=1; fi
 echo "$CR" | grep -q "^smoke:" || { echo "$CR"; echo "FAIL: create script produced no smoke line"; fail=1; }
-crcheck() { if echo "$CR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+crcheck() { if echo "$CR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$CR" "$1"; fail=1; fi; }
 crcheck "degree 2, 9 control points, rational, closed" "Circle3Pt/CircleD/Ellipse built rational closed conics"
 crcheck "CV\[0\] 10,0,0" "Circle3Pt through (10,0,0),(-10,0,0),(0,10,0) is centred on the origin with radius 10"
 crcheck "CV\[2\] 5,5,0" "CircleD from (0,0,0) to (10,0,0) passes through the diameter's midpoint region"
@@ -2175,7 +2193,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   D2="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$TMPW/drafting2_script.txt" 2>&1)" || { echo "$D2"; echo "FAIL: drafting2 script exited non-zero"; exit 1; }
 fi
-d2check() { if echo "$D2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+d2check() { if echo "$D2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$D2" "$1"; fail=1; fi; }
 d2check "Hatch: 1 boundary(ies) hatched (ANSI31)" "Hatch used the ANSI31 library pattern"
 d2check "Table: 2x2 table created" "Table built a 2x2 grid"
 d2check "TableEdit: table rebuilt (2x2)" "TableEdit rebuilt the table in place"
@@ -2247,7 +2265,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   RT="$(xvfb-run -a -s "-screen 0 1600x900x24" env DINO8_RT_FRAMES=1 "$BIN" --smoke 60 --script "$TMPW/raytrace_script.txt" 2>&1)" || { echo "$RT"; echo "FAIL: raytrace script exited non-zero"; exit 1; }
 fi
-rtcheck() { if echo "$RT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+rtcheck() { if echo "$RT" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RT" "$1"; fail=1; fi; }
 rtcheck "Created material ChromeMat from preset Chrome" "RenderAssignMaterialToObjects Preset= created a material from the built-in library"
 rtcheck "Material GoldMat assigned to 1 object(s)" "material from a preset assigned to an object"
 rtcheck "MaterialLibrary: 48 built-in preset(s)" "MaterialLibrary reports the full preset count"
@@ -2307,7 +2325,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   IS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMPW/igesstep_script.txt" 2>&1)" || { echo "$IS"; echo "FAIL: iges/step script exited non-zero"; exit 1; }
 fi
-ischeck() { if echo "$IS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+ischeck() { if echo "$IS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$IS" "$1"; fail=1; fi; }
 ischeck "Exported $TMPW/box.igs" "IGES export wrote a file"
 ischeck "Exported $TMPW/box.stp" "STEP export wrote a file"
 ischeck "Volume = 1000" "box volume survived an IGES and a STEP round-trip"
@@ -2353,7 +2371,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   SM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 250 --script "$TMPW/spacemouse_script.txt" 2>&1)" || { echo "$SM"; echo "FAIL: spacemouse script exited non-zero"; exit 1; }
 fi
-smcheck() { if echo "$SM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+smcheck() { if echo "$SM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SM" "$1"; fail=1; fi; }
 smcheck "SpaceMouse protocol set to File" "SpaceMouseProtocol switched to the File protocol"
 smcheck "connected (File:" "SpaceMouse connected over the File protocol"
 smcheck "^history: Command: Top$" "a button carried on a motion sample still fired its mapped command (button 1 default -> Top)"
@@ -2378,7 +2396,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   CN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 120 --script "$HERE/constraints_script.txt" 2>&1)" || { echo "$CN"; echo "FAIL: constraints script exited non-zero"; exit 1; }
 fi
-cncheck() { if echo "$CN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+cncheck() { if echo "$CN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$CN" "$1"; fail=1; fi; }
 cncheck "Coincident constraint #1 added." "Constrain built a Coincident constraint"
 cncheck "^history: Coincident #1: ok$" "Coincident solved"
 cncheck "Horizontal constraint #2 added." "Constrain built a Horizontal constraint"
@@ -2412,7 +2430,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   AR="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/arch_script.txt" 2>&1)" || { echo "$AR"; echo "FAIL: arch script exited non-zero"; exit 1; }
 fi
-archeck() { if echo "$AR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+archeck() { if echo "$AR" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$AR" "$1"; fail=1; fi; }
 archeck "Wall #1 added." "Wall command built a wall"
 archeck "Door #2 added." "Door command cut an opening into the wall"
 archeck "Window #3 added." "Window command cut a second opening into the wall"
@@ -2447,7 +2465,7 @@ awk '/^history: Command: List$/{n++; next} {print > ("'"$TMPW"'/dblk/sec" n ".tx
 DB_S1="$(cat "$TMPW/dblk/sec1.txt" 2>/dev/null)"
 DB_S2="$(cat "$TMPW/dblk/sec2.txt" 2>/dev/null)"
 DB_S3="$(cat "$TMPW/dblk/sec3.txt" 2>/dev/null)"
-dbcheck() { if echo "$1" | grep -qF "$2"; then echo "ok   $3"; else echo "FAIL $3"; fail=1; fi; }
+dbcheck() { if echo "$1" | grep -qF "$2"; then echo "ok   $3"; else echo "FAIL $3"; near "$1" "$2"; fail=1; fi; }
 dbcheck_absent() { if echo "$1" | grep -qF "$2"; then echo "FAIL $3"; fail=1; else echo "ok   $3"; fi; }
 dbcheck "$DB" "Block 'Widget' defined with 2 object(s)" "Block stored the Line+Circle definition"
 dbcheck "$DB" "added visibility state 'A' (1 total)" "BlockAddState added the first visibility state"
@@ -2502,7 +2520,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   MM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 100 --script "$HERE/mech_mep_script.txt" 2>&1)" || { echo "$MM"; echo "FAIL: mech/MEP script exited non-zero"; exit 1; }
 fi
-mmcheck() { if echo "$MM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+mmcheck() { if echo "$MM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$MM" "$1"; fail=1; fi; }
 mmcheck "Bolt #1 added." "Bolt command built a fastener"
 mmcheck "Bounding box min -0.009815,-0.009815,0 max 0.009815,0.009815,0.0564" "Bolt M10's bounding box matches its table head diameter (0.017/cos30) and shank+head axial extent (0.05+0.0064)"
 mmcheck "Nut #2 added." "Nut command built a fastener"
@@ -2544,7 +2562,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   EL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/elec_script.txt" 2>&1)" || { echo "$EL"; echo "FAIL: electrical script exited non-zero"; exit 1; }
 fi
-elcheck() { if echo "$EL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+elcheck() { if echo "$EL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$EL" "$1"; fail=1; fi; }
 elcheck "Resistor #1 added." "Resistor command built a zigzag symbol"
 elcheck "Bounding box min 0,-0.2,0 max 0.6,0.2,0" "Resistor length=0.6/height=0.4 bbox matches both parameters exactly (6 separate zigzag-segment curves, each corner a real curve endpoint)"
 elcheck "Capacitor #2 added." "Capacitor command built a two-plate symbol"
@@ -2598,7 +2616,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   SS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 200 --script "$TMPW/sess/session_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: session script exited non-zero"; exit 1; }
 fi
-sscheck() { if echo "$SS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+sscheck() { if echo "$SS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SS" "$1"; fail=1; fi; }
 # Diagnostic only (task #141): always print the exact object-count trail
 # around the Snapshots section, win or lose, since xvfb-run does not
 # propagate $BIN's own nonzero exit code (a separate, pre-existing gap -
@@ -2648,7 +2666,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   RM="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 150 --script "$HERE/remesh_script.txt" 2>&1)" || { echo "$RM"; echo "FAIL: remesh script exited non-zero"; exit 1; }
 fi
-rmcheck() { if echo "$RM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+rmcheck() { if echo "$RM" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RM" "$1"; fail=1; fi; }
 rmcheck "BooleanUnion: 54 faces, volume 3000" "BooleanUnion built the L-shaped union (2000 + 2000 - 1000 overlap)"
 rmcheck "ShrinkWrap: signed-distance wrap with [0-9]* vertices, [0-9]* faces (closed)" "ShrinkWrap wrapped the L-shape into a closed mesh"
 rmcheck "Volume = 2[0-9][0-9][0-9] cubic" "ShrinkWrap volume stays close to the L-shape's own volume (3000)"
@@ -2673,7 +2691,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   RN="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 900 --script "$TMPW/remaining_script.txt" 2>&1)" || { echo "$RN"; echo "FAIL: remaining script exited non-zero"; exit 1; }
 fi
-rncheck2() { if echo "$RN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+rncheck2() { if echo "$RN" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$RN" "$1"; fail=1; fi; }
 rncheck2 "1 object(s) selected" "Convert built a curve to select and inspect"
 rncheck2 "degree 1, 5 control points, non-rational, closed" "Convert Output=Lines kept the 4-point polyline exact (closed 5-CV polyline)"
 rncheck2 "RibbonOffset: 1 ribbon(s) of width 2" "RibbonOffset built one ribbon"
@@ -2735,7 +2753,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   FZ="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/fuzzy_autocomplete_script.txt" 2>&1)" || { echo "$FZ"; echo "FAIL: fuzzy-autocomplete script exited non-zero"; exit 1; }
 fi
-fzcheck() { if echo "$FZ" | grep -qE "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+fzcheck() { if echo "$FZ" | grep -qE "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$FZ" "$1"; fail=1; fi; }
 fzcheck "^history: Command: BooleanDifference$" "fuzzy subsequence 'bdiff' (not a prefix/substring of any command) autocompleted to BooleanDifference"
 fzcheck "^history: Command: Box$" "plain prefix 'Box' still autocompletes to itself (no regression from adding fuzzy matching)"
 fzcheck "^history: Command: ZoomNonManifold$" "fuzzy subsequence 'zmanif' (not a prefix/substring of any command) autocompleted to the unique match ZoomNonManifold"
@@ -2761,7 +2779,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   I18N="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/i18n_script.txt" 2>&1)" || { echo "$I18N"; echo "FAIL: i18n script exited non-zero"; exit 1; }
 fi
-i18ncheck() { if echo "$I18N" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+i18ncheck() { if echo "$I18N" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$I18N" "$1"; fail=1; fi; }
 i18ncheck "SetLanguage: es" "SetLanguage switched to Spanish"
 i18ncheck "I18nSelfTest: active=es" "the active language is now es"
 i18ncheck "I18nSelfTest: menu\.file=Archivo" "a translated string (menu.file) reads Archivo in Spanish, proving the switch changes displayed text"
@@ -2791,7 +2809,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   A11Y="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/a11y_script.txt" 2>&1)" || { echo "$A11Y"; echo "FAIL: a11y script exited non-zero"; exit 1; }
 fi
-a11ycheck() { if echo "$A11Y" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+a11ycheck() { if echo "$A11Y" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$A11Y" "$1"; fail=1; fi; }
 a11ycheck "SetTheme: highcontrast" "SetTheme switched to High Contrast"
 a11ycheck "ThemeSelfTest: mode=2" "the active theme mode is now HighContrast (2)"
 a11ycheck "ThemeSelfTest: window_bg=0\.000,0\.000,0\.000" "High Contrast's window background is pure black, not a tint of Dark's background"
@@ -2858,7 +2876,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   ZB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/zbuffer_script.txt" 2>&1)" || { echo "$ZB"; echo "FAIL: ShowZBuffer script exited non-zero"; exit 1; }
 fi
-zbcheck() { if echo "$ZB" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+zbcheck() { if echo "$ZB" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ZB" "$1"; fail=1; fi; }
 zbcheck "ShowZBuffer: on (every visible surface/mesh now draws as a grayscale depth value - near light, far dark)" "ShowZBuffer on reports the real depth pass, not just a recorded flag"
 zbcheck "ShowZBuffer: off" "ShowZBuffer off"
 zbcheck "^ok   expect_objects 2" "ShowZBuffer script left exactly the two boxes"
@@ -2950,7 +2968,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   CMP="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 30 --script "$TMPW/compare_script.txt" 2>&1)" || { echo "$CMP"; echo "FAIL: compare script exited non-zero"; exit 1; }
 fi
-cmpcheck() { if echo "$CMP" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+cmpcheck() { if echo "$CMP" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$CMP" "$1"; fail=1; fi; }
 cmpcheck "Exported $TMPW/cmp_v1.3dm" "compare script saved the v1 baseline"
 cmpcheck "Deleted 1 object(s)" "only the old circle was deleted (the moved line stayed selected-clean)"
 cmpcheck "DwgCompare: 1 added, 1 removed, 1 modified, 1 unchanged" "DwgCompare landed the moved line as modified, the deleted circle as removed, the untouched polyline as unchanged (not counted as a hit), and the new circle as added"
@@ -2971,7 +2989,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   AL="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 40 --script "$TMPW/activity_log_script.txt" 2>&1)" || { echo "$AL"; echo "FAIL: activity-log script exited non-zero"; exit 1; }
 fi
-alcheck() { if echo "$AL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+alcheck() { if echo "$AL" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$AL" "$1"; fail=1; fi; }
 alcheck "Snapshot 'MySnap' saved" "Snapshots Save created the named snapshot before the file was saved"
 alcheck "Saved $TMPW/activity_test.3dm" "Save wrote the .3dm (and, alongside it, the snapshot sidecar)"
 alcheck "Opened $TMPW/activity_test.3dm" "Open re-read the .3dm"
@@ -2999,7 +3017,7 @@ test -d "$TMPW/activity_test.3dm.snapshots" && echo "ok   the Named Snapshots si
 # noise, then confirm conversion turns all 3 into tagged instances of one
 # new block without touching object count or the noise.
 SB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/smartblocks_script.txt" 2>&1)" || { echo "$SB"; echo "FAIL: Smart Blocks script exited non-zero"; exit 1; }
-sbcheck() { if echo "$SB" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+sbcheck() { if echo "$SB" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SB" "$1"; fail=1; fi; }
 echo "$SB" | grep -q "^FAIL expect_" && { echo "FAIL Smart Blocks script's own @expect_objects/@expect_selected checks failed"; fail=1; }
 sbcheck "^history: SmartBlockDetect: 1 repeated group(s) found$" "SmartBlockDetect found exactly one repeated group (not 0, not split into several)"
 sbcheck "^history:   group 1: 3 instance(s), 3 object(s) each$" "SmartBlockDetect correctly counted 3 occurrences of the 3-object bracket shape, ignoring the noise objects"
@@ -3027,7 +3045,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   ST="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/standards/standards_script.txt" 2>&1)" || { echo "$ST"; echo "FAIL: standards script exited non-zero"; exit 1; }
 fi
-stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+stcheck() { if echo "$ST" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$ST" "$1"; fail=1; fi; }
 stcheck "Standards: document linked to '$TMPW/standards/standards.json'" "Standards linked the document to the standards file"
 stcheck "CheckStandards: 0 violations" "CheckStandards reports clean before any drift is introduced"
 stcheck "CheckStandards found 3 violation(s)" "CheckStandards found exactly 3 violations after introducing drift"
@@ -3051,7 +3069,7 @@ if [ -n "${DISPLAY:-}" ] && xset q >/dev/null 2>&1 || ! command -v xvfb-run >/de
 else
   SS="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$TMPW/sheetset_script.txt" 2>&1)" || { echo "$SS"; echo "FAIL: sheetset script exited non-zero"; exit 1; }
 fi
-sscheck() { if echo "$SS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+sscheck() { if echo "$SS" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$SS" "$1"; fail=1; fi; }
 sscheck "SheetSetNew: created 'Smoke Test Set'" "SheetSetNew created the sheet set file"
 sscheck "SheetSetAdd: added .*sheetset_b\.3dm / SheetB" "SheetSetAdd added the second document's layout before it was even the open document"
 sscheck "SheetSetAdd: added .*sheetset_a\.3dm / SheetA" "SheetSetAdd added the current document's active layout"
@@ -3087,7 +3105,7 @@ run_dl_stage() {
 }
 
 DL1="$(run_dl_stage datalink_script1.txt 1)"
-dlcheck() { if echo "$DL1" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dlcheck() { if echo "$DL1" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DL1" "$1"; fail=1; fi; }
 dlcheck "DataLink: pushed 2x2 table to " "DataLink pushed the new table to the CSV file (it didn't exist yet)"
 [ -f "$TMPW/datalink.csv" ] || { echo "FAIL DataLink actually wrote $TMPW/datalink.csv"; fail=1; }
 DL1_CSV="$(cat "$TMPW/datalink.csv" 2>/dev/null || true)"
@@ -3111,13 +3129,13 @@ sleep 5
 printf 'P,Q\nR,S\n' > "$TMPW/datalink.csv"
 
 DL2="$(run_dl_stage datalink_script2.txt 2)"
-dlcheck() { if echo "$DL2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dlcheck() { if echo "$DL2" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DL2" "$1"; fail=1; fi; }
 dlcheck "DataLinkUpdate: pulled 2x2 table from " "DataLinkUpdate auto-detected the file was the only side that changed and pulled it"
 
 sleep 5
 
 DL3="$(run_dl_stage datalink_script3.txt 3)"
-dlcheck() { if echo "$DL3" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dlcheck() { if echo "$DL3" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DL3" "$1"; fail=1; fi; }
 dlcheck "DataLinkUpdate: pushed 2x2 table to " "DataLinkUpdate auto-detected the table was the only side that changed (after stage 2's TableEdit) and pushed it - the reverse direction from stage 2"
 DL3_CSV="$(cat "$TMPW/datalink.csv" 2>/dev/null || true)"
 if [ "$DL3_CSV" = "$(printf 'M,N\nO,P\n')" ]; then echo "ok   the re-pushed CSV's content matches stage 2's TableEdit (M,N / O,P), not the stale P,Q / R,S it pulled"; else echo "FAIL the re-pushed CSV's content matches stage 2's TableEdit (got: $DL3_CSV)"; fail=1; fi
@@ -3128,7 +3146,7 @@ sleep 5
 printf 'Z1,Z2\nZ3,Z4\n' > "$TMPW/datalink.csv"
 
 DL4="$(run_dl_stage datalink_script4.txt 4)"
-dlcheck() { if echo "$DL4" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+dlcheck() { if echo "$DL4" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$DL4" "$1"; fail=1; fi; }
 dlcheck "! DataLinkUpdate: both the table and .* changed since the last sync" "DataLinkUpdate refused to silently guess a direction when both the table and the file changed since the last sync"
 dlcheck "DataLinkUpdate: pushed 2x2 table to " "the follow-up DataLinkUpdate Direction=Push resolved the ambiguity explicitly"
 DL4_CSV="$(cat "$TMPW/datalink.csv" 2>/dev/null || true)"
@@ -3149,7 +3167,7 @@ else
   CB="$(xvfb-run -a -s "-screen 0 1600x900x24" "$BIN" --smoke 60 --script "$HERE/clipboard_script.txt" 2>&1)" || { echo "$CB"; echo "FAIL: clipboard script exited non-zero"; exit 1; }
 fi
 unset DINO8_CLIPBOARD_DEBUG_FILE
-cbcheck() { if echo "$CB" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+cbcheck() { if echo "$CB" | grep -q "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$CB" "$1"; fail=1; fi; }
 cbcheck "CopyRenderWindowToClipboard: [0-9]*x[0-9]* rendering copied to the system clipboard (image/png)" "CopyRenderWindowToClipboard ran the real OS-clipboard write path"
 cbcheck "ViewCaptureToClipboard: [0-9]*x[0-9]* image copied to the system clipboard (image/png)" "ViewCaptureToClipboard ran the real OS-clipboard write path"
 cbcheck "ScreenCaptureToClipboard: [0-9]*x[0-9]* image copied to the system clipboard (image/png)" "ScreenCaptureToClipboard ran the real OS-clipboard write path"
@@ -3181,7 +3199,7 @@ fi
 echo "$HS" | grep -E "^(ok|FAIL)"
 if echo "$HS" | grep -q "^FAIL"; then fail=1; fi
 echo "$HS" | grep -q "^smoke:" || { echo "$HS"; echo "FAIL: history script produced no smoke line"; fail=1; }
-hcheck() { if echo "$HS" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; fail=1; fi; }
+hcheck() { if echo "$HS" | grep -qF "$1"; then echo "ok   $2"; else echo "FAIL $2"; near "$HS" "$1"; fail=1; fi; }
 hcheck "History recording: off. 0 object(s) with live construction history" "History defaults Off and reports it"
 hcheck "UpdateHistory: 0 object(s) re-evaluated from their source curve(s)' current geometry" "an Extrude made while History was Off recorded nothing for UpdateHistory to redo"
 hcheck "History recording: on - new Extrude/ExtrudeCrvToPoint/Revolve/Loft/SubDLoft results will remember their source curve(s) for UpdateHistory" "History On toggled recording on"

@@ -45,6 +45,16 @@ class Model {
   // version this OpenNURBS build knows how to write.
   Result Save(const std::string& path, int version = 0) const;
 
+  // Reads a .3dm file into `out_model`. Returns Result::Failed if
+  // OpenNURBS can't read the file, or if any mesh object in it carries a
+  // face whose vertex index is outside `[0, VertexCount())` - OpenNURBS'
+  // own reader copies face indices off the disk unchecked and never
+  // validates them, and every kernel Mesh query indexes the vertex array
+  // by those face indices just as unchecked, so before this check a
+  // corrupt .3dm loaded with Result::Ok and then read out of bounds
+  // silently (confirmed by a debug run, see file_io.cpp). `out_model` is
+  // reset to empty in that case rather than left half-trusted. Same
+  // contract Mesh::LoadObj() already has for an out-of-range face index.
   static Result Load(const std::string& path, Model& out_model);
 
   const ONX_Model& raw() const { return model_; }

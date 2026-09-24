@@ -1,14 +1,95 @@
 #pragma once
 
+#include <array>
 #include <string>
 #include <vector>
 
 #include <opennurbs.h>
 
 #include "dino8/kernel/brep.h"
+#include "dino8/kernel/tolerance.h"
 #include "dino8/kernel/types.h"
 
 namespace dino8::kernel {
+
+// Exact volume mass properties of a closed solid at unit density, from
+// Mesh::VolumeMassProperties(). Every second moment below uses the
+// "products of inertia" convention: `ixx = integral of (y^2 + z^2) dV`,
+// `ixy = integral of (x * y) dV` (NOT its negative), so the inertia
+// tensor is assembled as
+//
+//   I = [[ ixx, -ixy, -ixz ],
+//        [ -ixy, iyy, -iyz ],
+//        [ -ixz, -iyz, izz ]]
+//
+// - the convention Rhino's own MassProperties reports and every
+// engineering reference tabulates. Multiply every moment by the actual
+// density to get real mass moments (volume by density gives mass).
+struct MassProperties {
+  double volume = 0;
+  Point3d centroid;
+
+  // Second moments about the WORLD ORIGIN.
+  double ixx_origin = 0, iyy_origin = 0, izz_origin = 0;
+  double ixy_origin = 0, iyz_origin = 0, ixz_origin = 0;
+
+  // Second moments about the CENTROID (parallel-axis theorem applied to
+  // the origin moments above).
+  double ixx = 0, iyy = 0, izz = 0;
+  double ixy = 0, iyz = 0, ixz = 0;
+
+  // Eigen-decomposition of the centroidal tensor: `principal_moments`
+  // in ascending order, `principal_axes[k]` the unit axis of
+  // `principal_moments[k]`. The three axes form a right-handed
+  // orthonormal frame (the third is the cross product of the first two,
+  // which is still an eigenvector). An eigenvector's sign is arbitrary
+  // (it's an axis, not a direction), and for a repeated eigenvalue
+  // (a body with an axis of rotational symmetry, e.g. a cylinder or
+  // torus) any orthonormal pair in that eigenspace is equally valid -
+  // callers must not assume a specific pair comes back in that case.
+  std::array<double, 3> principal_moments{};
+  std::array<Vector3d, 3> principal_axes{};
+
+  // `sqrt(principal_moments[k] / volume)` - the distance from the
+  // principal axis at which the whole volume, concentrated, would have
+  // the same moment.
+  std::array<double, 3> radii_of_gyration{};
+};
+
+// One crossing of a ray with a mesh, from Mesh::FireRay().
+struct RayHit {
+  // Ray parameter: the hit is at `origin + t * direction`, in units of
+  // `direction`'s own length (t is a multiple of `direction`, NOT a
+  // distance, unless `direction` is unit length).
+  double t = 0;
+  Point3d point;
+  int face_index = -1;  // index into the mesh's own face list
+  // Whether the ray enters the solid here (crosses the face against its
+  // outward normal, direction . normal < 0) or leaves it. Only meaningful
+  // on a consistently-oriented (CCW from outside) mesh.
+  bool entering = false;
+};
+
+// Closest pair of points between two meshes' surfaces, from
+// Mesh::DistanceTo().
+struct MeshDistance {
+  double distance = 0;  // exactly 0 when the surfaces touch or cross
+  Point3d point_on_this;
+  Point3d point_on_other;
+  int face_on_this = -1;
+  int face_on_other = -1;
+};
+
+// Solid-level relationship between two closed meshes, from
+// Mesh::ClashWith(). Mutually exclusive, decided in the order listed on
+// the doc comment there.
+enum class Clash {
+  Clear,             // no shared volume, surfaces further apart than the distance tolerance
+  ThisInsideOther,   // (essentially) all of this mesh's volume lies inside `other`
+  OtherInsideThis,   // (essentially) all of `other`'s volume lies inside this mesh
+  Intersecting,      // the solids share positive volume, but neither contains the other
+  Touching,          // no shared volume, but the surfaces meet (shared face, edge or corner contact)
+};
 
 // Wraps ON_Mesh. OpenNURBS' polygon-mesh representation, produced by
 // tessellating a Brep — this is as far as OpenNURBS' public API goes
@@ -100,6 +181,118 @@ class Mesh {
   // one query, exactly as expensive as one ClosestPoint() call plus one
   // ContainsPoint() call.
   double SignedDistance(Point3d point) const;
+
+  // The full volume mass properties (see MassProperties above) - volume,
+  // centroid, the complete inertia tensor about both the world origin
+  // and the centroid, and its principal moments/axes. Volume() and
+  // GetCentroid() were the only mass-property queries here before; no
+  // second moment (inertia, product of inertia, radius of gyration)
+  // existed at all, and the public OpenNURBS SDK has no mesh
+  // mass-property implementation to delegate to (grepped: no
+  // `ON_Mesh::VolumeMassProperties` anywhere in the source).
+  //
+  // EXACT, not sampled: every integral of 1, x, y, z, x^2, y^2, z^2, xy,
+  // yz, zx over the enclosed volume is reduced by the divergence theorem
+  // to a closed-form polynomial in each triangle's three vertices
+  // (Eberly, "Polyhedral Mass Properties (Revisited)") and summed - the
+  // same principle Volume() uses for the volume alone, extended to the
+  // first and second moments. So a box's moments are exactly its
+  // textbook `V*(b^2 + c^2)/12`, and a tessellated curved solid's are
+  // exactly those of the polyhedron it actually is (converging to the
+  // smooth shape's as the tessellation refines, like Volume()). A quad
+  // face contributes both of its triangles, same split as Volume().
+  //
+  // The principal decomposition delegates to OpenNURBS'
+  // `ON_Sym3x3EigenSolver` (verified a real implementation - a Jacobi
+  // rotation to tridiagonal form plus a closed-form tridiagonal solve -
+  // not a stub), with the results sorted ascending and re-unitized here.
+  //
+  // Only meaningful for a closed, consistently-oriented (CCW from
+  // outside) mesh - the same requirement Volume()/GetCentroid() have.
+  // Throws std::invalid_argument if the signed volume is (near) zero (an
+  // open surface or degenerate solid: no volume to have moments) OR
+  // negative (an inside-out mesh - every moment would come back negated;
+  // FlipNormals() it first). Throws std::runtime_error only if the
+  // eigen-solver itself reports failure, which a finite symmetric
+  // tensor should never trigger.
+  MassProperties VolumeMassProperties() const;
+
+  // Every crossing of the ray `origin + t * direction` (t > 0, i.e.
+  // strictly ahead of `origin`) with this mesh's faces, sorted by
+  // increasing t - the first entry is the nearest hit, which is what a
+  // pick, a shadow/visibility test, or a "shoot a ray and see what it
+  // lands on" query wants. ContainsPoint() has always fired a ray
+  // internally, but only ever counted its crossings; nothing here could
+  // report WHERE a ray hits, or on which face. Exact Moller-Trumbore
+  // per triangle (the same formula ContainsPoint() uses, now returning
+  // its parameter and barycentrics instead of a bool) - not a march or
+  // a sampled search - with no spatial acceleration structure (every
+  // triangle is tested; a quad face's own two triangles both, same split
+  // Area()/Volume() use). Returns empty for a miss. A hit exactly on a
+  // quad face's shared diagonal is reported once, not once per
+  // triangle. A ray exactly grazing an edge or vertex shared by two
+  // faces is the usual unhandled degenerate case (it may be reported
+  // once per face touched, or missed by both) - not hardened against,
+  // same caveat ContainsPoint() documents. A ray parallel to a face's
+  // plane never hits that face, even if it lies in it. Throws
+  // std::invalid_argument on a zero-length `direction`.
+  std::vector<RayHit> FireRay(Point3d origin, Vector3d direction) const;
+
+  // The exact minimum distance between this mesh's surface and
+  // `other`'s, with the pair of points (and faces) where it's attained
+  // - the clearance query a clash/interference check, an assembly
+  // fit, or a "how far apart are these two parts" measurement needs,
+  // which nothing here could answer before (ClosestPoint() is
+  // point-to-mesh only). Exact per triangle pair: the minimum distance
+  // between two triangles is attained either at a vertex of one and the
+  // closest point on the other (the same Ericson region test
+  // ClosestPoint() uses, 6 vertex/triangle pairs) or between two edges
+  // (the closed-form segment/segment closest points, 9 edge pairs), and
+  // is exactly 0 when an edge of one pierces the other's interior
+  // (segment/triangle intersection, 6 edge/triangle pairs) - all three
+  // families are checked, so a crossing pair reports 0 rather than the
+  // nearest vertex's or edge's positive distance. Returns
+  // `distance == 0` for touching or crossing surfaces. Meaningful for
+  // open surfaces too (it's a surface/surface query, not a solid one).
+  // Brute force over every triangle pair with a per-pair bounding-box
+  // reject against the best distance found so far; no BVH. Throws
+  // std::invalid_argument if either mesh has no faces.
+  MeshDistance DistanceTo(const Mesh& other) const;
+
+  // Solid-level classification of how this closed mesh and `other`
+  // relate (see Clash) - the interference check an assembly needs, which
+  // nothing here could answer before. Decided from the EXACT overlap
+  // volume `vol(this ∩ other)`, computed with the existing Manifold-
+  // backed BooleanCombine(), plus DistanceTo() for contact, in this
+  // order: ThisInsideOther if the overlap is at least
+  // `(1 - relative_volume_tolerance) * Volume()` (so an identical pair,
+  // or a part nestled against its container's wall from inside, reports
+  // this); else OtherInsideThis by the mirror test; else Intersecting if
+  // the overlap exceeds `relative_volume_tolerance * min(volumes)`; else
+  // Touching if the surfaces come within `distance_tolerance` of each
+  // other; else Clear. Two boxes sharing exactly one face (or an edge,
+  // or a corner) are Touching, not Intersecting: they meet but share no
+  // volume.
+  //
+  // Why overlap volume rather than edge/face piercing predicates: the
+  // most ordinary CAD clash - two equal-height boxes overlapping in plan
+  // - has every edge/face crossing landing exactly on a face's edge or
+  // lying in a face's own plane, degenerate for any such predicate,
+  // whereas its overlap volume is plainly positive. Manifold's boolean
+  // (exact predicates with symbolic perturbation) is built for exactly
+  // that coincident geometry. The volume tolerance is relative because
+  // ON_Mesh stores vertices as single-precision floats, so a touching
+  // pair whose coordinates aren't exactly representable can carry a
+  // round-off sliver of overlap (~1e-7 relative); 1e-6 is comfortably
+  // above that and far below any real interference. Requires both meshes
+  // to be closed, consistently oriented (IsClosedManifold()) and of
+  // positive volume - checked directly, throwing std::invalid_argument
+  // otherwise (also if a tolerance is out of range); BooleanCombine()'s
+  // own std::runtime_error can still surface if Manifold rejects a mesh
+  // that passed those checks. Not a high-performance broad-phase check -
+  // it runs a full boolean.
+  Clash ClashWith(const Mesh& other, double distance_tolerance = 1e-6,
+                  double relative_volume_tolerance = 1e-6) const;
 
   // Per-vertex normals: for each vertex, the area-weighted sum of every
   // adjacent face's own flat (non-normalized) triangle normal, then
@@ -299,13 +492,106 @@ class Mesh {
   // "sharing" its own single facet) can call `MergeAndWeld({loaded_mesh})`
   // afterward. Returns Result::Failed if the file can't be opened, an
   // ASCII `vertex`/`facet`/`endfacet` line is malformed (wrong token
-  // count, unparsable number), or a binary file is truncated mid-record -
+  // count, unparsable number - which already covers a "nan"/"inf" token,
+  // since stream parsing refuses those), a binary file is truncated
+  // mid-record, or a binary vertex coordinate is non-finite (NaN/Inf
+  // bit patterns are perfectly encodable in the 32-bit floats a binary
+  // record stores; letting one through used to hand back a Result::Ok
+  // mesh whose Volume()/GetCentroid() were silently NaN and whose
+  // poisoned vertex could never weld - confirmed by a debug run) -
   // `out_mesh` is left unspecified in that case, not partially filled and
   // silently trusted.
   static Result LoadStl(const std::string& path, Mesh& out_mesh);
 
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
+
+  // --- Check / heal ------------------------------------------------------
+  //
+  // The mesh-level counterpart of Brep::Check() and its repairs: the
+  // same questions IsClosedManifold() answers with one bool, as COUNTS
+  // and LOCATIONS a caller can act on, plus the three repairs that turn
+  // the common "almost closed" meshes back into closed manifolds.
+  struct CheckReport {
+    // Undirected edges used by exactly one face (the open boundary).
+    int naked_edges = 0;
+    // Undirected edges used by three or more faces.
+    int non_manifold_edges = 0;
+    // Directed edges used twice - two faces walking a shared edge the
+    // same way, IsClosedManifold()'s own orientation-conflict condition.
+    int orientation_conflicts = 0;
+    // Faces with a repeated vertex index, an edge shorter than
+    // `tolerance`, or a height (2*area / longest edge) at or below
+    // `tolerance` - a face contributing nothing but bad edges.
+    int degenerate_faces = 0;
+    // Distinct vertex indices within `tolerance` of another (counted per
+    // vertex that has at least one such partner): the "same point stored
+    // twice" MergeAndWeld() exists to prevent, and CloseNakedEdges()
+    // repairs when it happened on a boundary.
+    int duplicate_vertices = 0;
+    // Every naked edge as (a, b) in the direction its one face walks it,
+    // in face order - the input FillSmallHoles() chains into loops.
+    std::vector<std::pair<int, int>> naked_edge_list;
+    // Same three conditions as Mesh::IsClosedManifold().
+    bool IsClosedManifold() const {
+      return naked_edges == 0 && non_manifold_edges == 0 && orientation_conflicts == 0;
+    }
+  };
+  CheckReport Check(double tolerance = tolerance::kDistance) const;
+
+  // The open boundary as closed loops of vertex indices: each naked edge
+  // (a, b) chained a -> b -> ... in the direction its face walks it, so
+  // walking a loop keeps the existing faces on the same side a
+  // reversed-edge fill needs. A loop through a vertex with more than one
+  // outgoing naked edge (a bowtie: two holes touching at one vertex) is
+  // ambiguous and is NOT returned (its edges are left unchained rather
+  // than guessed); a chain that never closes (only possible on a
+  // non-manifold boundary) is dropped the same way. Empty for a closed
+  // mesh.
+  std::vector<std::vector<int>> NakedEdgeLoops() const;
+
+  // Welds vertices that lie on naked edges and are within `tolerance`
+  // of another naked-edge vertex into one - a TRUE distance test (every
+  // pair within `tolerance` welds, unlike MergeAndWeld()'s grid snapping,
+  // which can leave two points a hair apart in adjacent cells unwelded),
+  // restricted to boundary vertices so an interior feature smaller than
+  // `tolerance` is never touched. The lowest-indexed vertex of each
+  // group survives at ITS OWN position (nothing is averaged or moved);
+  // faces are remapped, a face that collapses to fewer than 3 distinct
+  // vertices is dropped, a quad that collapses to 3 becomes a triangle,
+  // and vertices no longer used by any face are removed. This is the
+  // repair for a seam that construction left `tolerance`-wide open: a
+  // duplicated vertex (two copies of the same point, each used by
+  // different faces), or the mesh of a Brep whose JoinNakedEdges()
+  // recorded a tolerant edge (see brep.h). Returns the number of
+  // vertices welded away. Texture coordinates are dropped (a welded
+  // vertex has no single UV).
+  int CloseNakedEdges(double tolerance);
+
+  // Fills every boundary loop (NakedEdgeLoops()) whose vertices' axis-
+  // aligned bounding-box diagonal is at most `max_extent`: a 3-vertex
+  // loop gets one triangle, any larger loop a fan of triangles from a
+  // NEW vertex at the loop's own centroid (so a non-planar or non-convex
+  // hole still gets a valid, non-self-overlapping fill without any
+  // ear-clipping; a planar hole's fill lies exactly in its plane, since
+  // the centroid does). Every fill triangle walks its boundary edge in
+  // REVERSE of the existing face, so the result is orientation-
+  // consistent with the surrounding mesh. Loops larger than `max_extent`
+  // are left open (the bound is what keeps this from "filling" a whole
+  // missing side of a model with a fan nobody asked for). Returns the
+  // number of holes filled.
+  int FillSmallHoles(double max_extent);
+
+  // Makes face windings consistent across every manifold (2-face) edge
+  // by breadth-first traversal from each not-yet-visited face, flipping
+  // whichever neighbour walks a shared edge the same way (the same
+  // per-face reversal FlipNormals() applies to all faces), then, if the
+  // result IsClosedManifold() and Volume() is negative, flips every face
+  // so the mesh faces outward. Non-manifold (3+-face) edges are skipped
+  // (no single "other side" to agree with). Returns the number of face
+  // flips performed; an open mesh is only made consistent, not oriented
+  // outward.
+  int UnifyNormals();
 
   // Concatenates several independently-tessellated meshes into one and
   // welds vertices within `tolerance` of each other into a single shared
@@ -316,9 +602,11 @@ class Mesh {
   // boolean engine like Manifold requires a genuinely closed manifold -
   // coincident-but-separate vertices at a seam don't count - so this is
   // the step that turns "several open patches that happen to line up"
-  // into "one watertight solid."
+  // into "one watertight solid." The default is the kernel's weld
+  // distance, tolerance::kWeld (see tolerance.h) - the same 1e-6 it has
+  // always been, now named rather than a literal.
   static Mesh MergeAndWeld(const std::vector<Mesh>& meshes,
-                            double tolerance = 1e-6);
+                            double tolerance = tolerance::kWeld);
 
   // Sweeps `cap` (any open mesh with a well-defined boundary loop - a
   // trimmed planar face's tessellation, an untrimmed one, or any other

@@ -1414,4 +1414,115 @@ std::vector<CurveSurfaceHit> IntersectCurveSurface(const ON_Curve& c, const ON_S
   return hits;
 }
 
+namespace {
+
+// Cheap axis-aligned-box overlap test (each segment's own box padded by
+// `pad`), used to skip the exact closest-point computation below for the
+// large majority of segment pairs that plainly can't be within `pad` of
+// each other. Never a false negative: any two segments actually within
+// `pad` have overlapping padded boxes on every axis.
+bool SegmentBoxesOverlap(const Point3d& p0, const Point3d& p1, const Point3d& q0, const Point3d& q1, double pad) {
+  auto axis_overlaps = [&](double a0, double a1, double b0, double b1) {
+    const double alo = std::min(a0, a1), ahi = std::max(a0, a1);
+    const double blo = std::min(b0, b1), bhi = std::max(b0, b1);
+    return alo - pad <= bhi && blo - pad <= ahi;
+  };
+  return axis_overlaps(p0.x, p1.x, q0.x, q1.x) && axis_overlaps(p0.y, p1.y, q0.y, q1.y) &&
+         axis_overlaps(p0.z, p1.z, q0.z, q1.z);
+}
+
+// Closest points between two 3D segments p0-p1 and q0-q1 (Ericson,
+// "Real-Time Collision Detection" 5.1.9 - the same textbook Mesh::
+// ClosestPoint()'s own point/triangle region test already cites), used
+// here to seed IntersectCurves() the way SegTri() above seeds
+// IntersectCurveSurface(). Returns the squared distance at closest
+// approach and the two segment parameters s, t in [0, 1] (on p and q
+// respectively) at which it occurs - exact closed-form clamped-Voronoi-
+// region math, not an iterative search.
+double ClosestSegmentSegment(const Point3d& p0, const Point3d& p1, const Point3d& q0, const Point3d& q1, double& s, double& t) {
+  const Vector3d d1 = p1 - p0, d2 = q1 - q0, r = p0 - q0;
+  const double a = ON_DotProduct(d1, d1), e = ON_DotProduct(d2, d2), f = ON_DotProduct(d2, r);
+  const double kEps = 1e-20;
+  if (a <= kEps && e <= kEps) {
+    s = 0; t = 0;
+  } else if (a <= kEps) {
+    s = 0; t = Clamp(f / e, 0, 1);
+  } else {
+    const double c = ON_DotProduct(d1, r);
+    if (e <= kEps) {
+      t = 0; s = Clamp(-c / a, 0, 1);
+    } else {
+      const double b = ON_DotProduct(d1, d2);
+      const double denom = a * e - b * b;
+      s = denom > kEps ? Clamp((b * f - c * e) / denom, 0, 1) : 0;
+      t = (b * s + f) / e;
+      if (t < 0) {
+        t = 0; s = Clamp(-c / a, 0, 1);
+      } else if (t > 1) {
+        t = 1; s = Clamp((b - c) / a, 0, 1);
+      }
+    }
+  }
+  const Point3d cp = p0 + d1 * s, cq = q0 + d2 * t;
+  const Vector3d diff = cp - cq;
+  return ON_DotProduct(diff, diff);
+}
+
+}  // namespace
+
+std::vector<CurveCurveHit> IntersectCurves(const ON_Curve& a, const ON_Curve& b, const IntersectOptions& opt) {
+  std::vector<CurveCurveHit> hits;
+  const ON_Interval da = a.Domain(), db = b.Domain();
+  const ON_BoundingBox ba = a.BoundingBox(), bb = b.BoundingBox();
+  const double len_a = ba.IsValid() ? ba.Diagonal().Length() : 1;
+  const double len_b = bb.IsValid() ? bb.Diagonal().Length() : 1;
+  const double step = std::max(opt.mesh_tolerance, 1e-6);
+  const int na = static_cast<int>(Clamp(std::ceil(len_a / step), 64, 2000));
+  const int nb = static_cast<int>(Clamp(std::ceil(len_b / step), 64, 2000));
+
+  std::vector<Point3d> sa(static_cast<size_t>(na) + 1), sb(static_cast<size_t>(nb) + 1);
+  for (int i = 0; i <= na; ++i) sa[static_cast<size_t>(i)] = a.PointAt(da.ParameterAt(static_cast<double>(i) / na));
+  for (int j = 0; j <= nb; ++j) sb[static_cast<size_t>(j)] = b.PointAt(db.ParameterAt(static_cast<double>(j) / nb));
+
+  const double pad = std::max(opt.mesh_tolerance * 4, 1e-9);
+  struct Seed { double ta, tb; };
+  std::vector<Seed> seeds;
+  for (int i = 0; i < na; ++i) {
+    const Point3d& p0 = sa[static_cast<size_t>(i)];
+    const Point3d& p1 = sa[static_cast<size_t>(i) + 1];
+    for (int j = 0; j < nb; ++j) {
+      const Point3d& q0 = sb[static_cast<size_t>(j)];
+      const Point3d& q1 = sb[static_cast<size_t>(j) + 1];
+      if (!SegmentBoxesOverlap(p0, p1, q0, q1, pad)) continue;
+      double s = 0, t = 0;
+      if (ClosestSegmentSegment(p0, p1, q0, q1, s, t) > pad * pad) continue;
+      seeds.push_back({da.ParameterAt((i + s) / na), db.ParameterAt((j + t) / nb)});
+    }
+  }
+
+  const std::vector<double> lo = {da.Min(), db.Min()}, hi = {da.Max(), db.Max()};
+  for (const Seed& sd : seeds) {
+    std::vector<double> x = {sd.ta, sd.tb};
+    Residual res = [&](const std::vector<double>& q) {
+      const Point3d pa = a.PointAt(q[0]), pb = b.PointAt(q[1]);
+      return std::vector<double>{pa.x - pb.x, pa.y - pb.y, pa.z - pb.z};
+    };
+    double err = 0;
+    if (!NewtonSolve(res, x, lo, hi, opt.tolerance, 40, &err)) continue;
+    CurveCurveHit h;
+    h.ta = x[0];
+    h.tb = x[1];
+    const Point3d pa = a.PointAt(h.ta), pb = b.PointAt(h.tb);
+    h.point = Point3d((pa.x + pb.x) / 2, (pa.y + pb.y) / 2, (pa.z + pb.z) / 2);
+    h.error = err;
+    bool dup = false;
+    for (const CurveCurveHit& o : hits) {
+      if (o.point.DistanceTo(h.point) <= opt.tolerance * 4) { dup = true; break; }
+    }
+    if (!dup) hits.push_back(h);
+  }
+  std::sort(hits.begin(), hits.end(), [](const CurveCurveHit& x, const CurveCurveHit& y) { return x.ta < y.ta; });
+  return hits;
+}
+
 }  // namespace dino8::kernel
