@@ -368,6 +368,38 @@ class Brep {
   static Brep Sweep1(const NurbsCurve& section, const NurbsCurve& rail, int stations = 32,
                      bool cap = true);
 
+  // Sweep2: `section` carried between `rail1` and `rail2` (Parasolid/
+  // Rhino's two-rail sweep with scaling). At each of `stations` equal-
+  // arc-length stations on each rail (rail2 reversed first if needed so
+  // it runs the same direction as rail1), an orthonormal frame is built:
+  // origin on rail1, x toward rail2 (unit), z = unit(x cross the
+  // averaged rail tangent), y = z cross x; `width` is the rail-to-rail
+  // distance there. `section` is read ONCE, in the station-0 frame,
+  // as local coordinates (dot(p - origin_0, x_0)/width_0, .../width_0,
+  // .../width_0) - a SINGLE uniform scale by width, not an independent
+  // scale per axis, so a profile centered between the rails stays
+  // centered as they converge or diverge, and a circular section stays
+  // circular (only its diameter changes) rather than distorting into an
+  // ellipse. At every other station the same local coordinates are
+  // placed back via that station's own origin/frame/width. Two straight,
+  // non-parallel rails (and an open, non-periodic section) use exactly
+  // 2 stations - the exact ruled surface, since both the frame's origin
+  // and its width are then linear in the station fraction, so every
+  // local point's 3D trajectory is a straight line and Loft()'s own
+  // degree-1 shortcut is exact for it (verified: a unit square between a
+  // vertical rail and a linearly-converging one reproduces the closed-
+  // form pyramid-frustum volume (h/3)(w0^2 + w0*w1 + w1^2) to 1e-9).
+  // Otherwise the wall is Loft()'s own interpolating skin through the
+  // `stations` per-station copies (so it passes through each of them
+  // exactly), same closed-rail/periodic-skin handling as Sweep1(). Caps
+  // as Sweep1() (a closed, non-periodic, planar section only). Throws
+  // std::invalid_argument for stations < 2, either rail invalid, or a
+  // station where the rails touch (zero separation) or a rail's tangent
+  // is parallel to the rail-to-rail direction (the frame is undefined
+  // there) - genuine, disclosed limits, not silently degraded output.
+  static Brep Sweep2(const NurbsCurve& section, const NurbsCurve& rail1, const NurbsCurve& rail2,
+                     int stations = 32, bool cap = true);
+
   // Pipe: an exact rational circle of `radius`, centered on the rail's
   // start point in the plane perpendicular to the rail there, swept by
   // Sweep1(). Along a straight rail this is the exact rational cylinder
@@ -423,6 +455,42 @@ class Brep {
                            bool cap = true, int stations = 32);
 
   int FaceCount() const;
+  int VertexCount() const;
+  int EdgeCount() const;
+
+  // Topology & adjacency queries - the reusable equivalent of the ad-hoc
+  // brep_.m_V/m_E/m_F/m_T walks scattered through this file (e.g.
+  // MergeCoplanarFaces' own loop_a.Trim(k)->Edge()->m_ti walk). All three
+  // read raw()'s own topology directly and are safe on any Brep this
+  // class produces or that raw() was assigned a genuine-topology .3dm
+  // Brep into; a Brep built by one of the surface-only factories (Box(),
+  // Sphere(), TrimmedPlanarFace(), FromSurface() - see this class's own
+  // top comment) has no ON_BrepVertex/ON_BrepEdge/ON_BrepTrim records at
+  // all, so VertexCount()/EdgeCount() report 0 and EdgesOfVertex()/
+  // FacesOfEdge()/NeighborFaces() have nothing to walk.
+
+  // Every edge incident to vertex `vertex_index`, in ON_BrepVertex::m_ei's
+  // own stored order (not sorted or deduplicated - a genuine ON_Brep never
+  // lists the same edge twice against one vertex). Throws std::out_of_range
+  // for an out-of-range vertex_index.
+  std::vector<int> EdgesOfVertex(int vertex_index) const;
+
+  // The distinct faces bordering edge `edge_index` - one entry per face
+  // touching the edge through any of its trims, in first-occurrence order
+  // (a naked edge gives one face; a manifold interior edge gives two; a
+  // non-manifold edge with 3+ trims on faces that repeat gives each face
+  // once). Throws std::out_of_range for an out-of-range edge_index, or
+  // std::invalid_argument if edge_index names a deleted edge slot.
+  std::vector<int> FacesOfEdge(int edge_index) const;
+
+  // The distinct faces sharing an edge with face `face_index` (walking
+  // every trim of every loop of the face, then every OTHER trim on that
+  // trim's own edge), in first-occurrence order - face_index itself is
+  // never included, even if a self-intersecting or non-manifold loop
+  // makes it its own edge-neighbour. Throws std::out_of_range for an
+  // out-of-range face_index, or std::invalid_argument if face_index names
+  // a deleted face slot.
+  std::vector<int> NeighborFaces(int face_index) const;
 
   // One planar face's boundary as a real 3D polygon plus its plane -
   // the representation an exact (non-tessellated) planar B-rep boolean
@@ -2311,6 +2379,25 @@ class Brep {
       // derive the trim from). `index` is the loop, `location` the 3D
       // point of its first sample.
       SelfIntersectingLoop,
+      // A loop whose 2D trim polygon is perfectly simple (the check
+      // above finds nothing) but whose 3D IMAGE - the same samples,
+      // mapped through the face's surface - genuinely crosses itself: a
+      // fold/warp in the surface (a bad fit, a corrupted control net, a
+      // degenerate Coons/loft patch) can map two non-crossing regions of
+      // parameter space onto the same physical neighbourhood. The
+      // textbook case is a bilinear-ish surface whose four corners are
+      // wired as a "bowtie" - the parameter-space boundary is an
+      // ordinary rectangle (perfectly simple in (u, v)), but connecting
+      // the corners in that order draws a self-crossing quadrilateral in
+      // 3D. `index` is the loop, `other_index` its face, `location` the
+      // midpoint of the two closest points found, `measure` their
+      // distance (always <= `tolerance`, since that is the trigger).
+      // Detection-only, like SelfIntersectingLoop above: this never
+      // changes what a Brep IS, only what Check() reports about it. See
+      // Segments3dProperlyCross()'s own doc comment (brep.cpp) for the
+      // exact test and its honest limitations (nearly-parallel segments
+      // are not checked - that is SliverFace's own job, not this one's).
+      SelfIntersectingLoop3d,
     };
     Kind kind = Kind::NakedEdge;
     int index = -1;

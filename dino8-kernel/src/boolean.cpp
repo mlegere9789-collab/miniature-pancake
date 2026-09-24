@@ -242,6 +242,16 @@ Mesh MinkowskiDifference(const Mesh& a, const Mesh& b) {
   return FromManifold(result);
 }
 
+Mesh OffsetSolid(const Mesh& solid, double distance, int sphere_divisions) {
+  if (distance == 0.0) return solid;
+  if (sphere_divisions < 3) {
+    throw std::invalid_argument("dino8::kernel::OffsetSolid: sphere_divisions must be >= 3");
+  }
+  const Brep sphere_brep = Brep::Sphere(Point3d(0.0, 0.0, 0.0), std::fabs(distance));
+  const Mesh sphere = sphere_brep.TessellateToClosedMesh(sphere_divisions, sphere_divisions);
+  return distance > 0.0 ? MinkowskiSum(solid, sphere) : MinkowskiDifference(solid, sphere);
+}
+
 std::vector<Mesh> Decompose(const Mesh& mesh) {
   const std::vector<manifold::Manifold> pieces = ToManifold(mesh).Decompose();
   std::vector<Mesh> result;
@@ -1158,6 +1168,57 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
   }
 
   return Brep::FromPlanarFaces(result);
+}
+
+Brep ShellClosedSphere(Point3d center, double outer_radius, double thickness) {
+  if (!(outer_radius > 0.0)) {
+    throw std::invalid_argument("dino8::kernel::ShellClosedSphere: outer_radius must be positive");
+  }
+  if (!(thickness > 0.0) || !(thickness < outer_radius)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ShellClosedSphere: thickness must be strictly between 0 "
+        "and outer_radius - otherwise the inner sphere collapses through, or "
+        "inverts past, the center");
+  }
+  Brep outer = Brep::Sphere(center, outer_radius);
+  Brep inner = Brep::Sphere(center, outer_radius - thickness);
+  inner.raw().FlipFace(inner.raw().m_F[0]);
+  return Brep::Compound({outer, inner});
+}
+
+Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_minor_radius, double thickness) {
+  if (!(major_radius > 0.0) || !(outer_minor_radius > 0.0)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ShellClosedTorus: major_radius and outer_minor_radius must be positive");
+  }
+  if (!(outer_minor_radius < major_radius)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ShellClosedTorus: outer_minor_radius must be less than "
+        "major_radius - otherwise the OUTER torus itself is already a "
+        "self-intersecting spindle torus");
+  }
+  if (!(thickness > 0.0) || !(thickness < outer_minor_radius)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ShellClosedTorus: thickness must be strictly between 0 "
+        "and outer_minor_radius - otherwise the inner torus collapses through, "
+        "or inverts past, the center circle");
+  }
+
+  auto build_torus = [&](double minor_radius) {
+    ON_Torus torus(plane, major_radius, minor_radius);
+    ON_NurbsSurface raw;
+    if (torus.GetNurbForm(raw) == 0) {
+      throw std::runtime_error("dino8::kernel::ShellClosedTorus: ON_Torus::GetNurbForm failed");
+    }
+    NurbsSurface surface;
+    surface.raw() = raw;
+    return Brep::FromSurface(surface);
+  };
+
+  Brep outer = build_torus(outer_minor_radius);
+  Brep inner = build_torus(outer_minor_radius - thickness);
+  inner.raw().FlipFace(inner.raw().m_F[0]);
+  return Brep::Compound({outer, inner});
 }
 
 // ---------------------------------------------------------------------

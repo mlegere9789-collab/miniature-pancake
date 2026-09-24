@@ -93,6 +93,43 @@ Mesh MinkowskiSum(const Mesh& a, const Mesh& b);
 // MinkowskiSum().
 Mesh MinkowskiDifference(const Mesh& a, const Mesh& b);
 
+// Offsets a closed solid mesh by `distance` - Parasolid `PK_BODY_offset`'s
+// uniform-distance body-offset case, at the mesh level (see
+// NurbsSurface::OffsetAnalytic() for the exact-surface counterpart on a
+// single analytic face). Backed directly by MinkowskiSum()/
+// MinkowskiDifference() above with a sphere of radius `|distance|`
+// centered at the origin - the standard morphological dilation/erosion
+// definition of a uniform body offset, not something this kernel derives
+// independently:
+//  - `distance > 0` GROWS the solid (`MinkowskiSum(solid, sphere)`).
+//    Every CONVEX edge/corner is rounded to radius `distance` - a real
+//    property of the ball-offset operation itself (dilating a cube by a
+//    small ball rounds its 12 edges and 8 corners into fillets/spherical
+//    corners), not a limitation of this wrapper.
+//  - `distance < 0` SHRINKS it (`MinkowskiDifference(solid, sphere)`) -
+//    the dual case: every CONCAVE (reflex) edge/corner is rounded
+//    instead, while convex ones stay sharp (shrinking a cube by a small
+//    enough ball keeps its edges sharp, just moved inward - exactly
+//    ShellConvexPlanar()'s/OffsetAnalytic()'s own exact-offset behavior
+//    for a convex shape, recovered here as a special case of the general
+//    mesh-level operation). This asymmetry between growing and shrinking
+//    is the genuine, well-known behavior of a uniform ball offset, not
+//    approximated or hidden here.
+//  - `distance == 0` returns `solid` unchanged (no Minkowski call at
+//    all - a zero-radius sphere is degenerate, not a meaningful no-op
+//    through Manifold itself).
+//
+// `sphere_divisions` (both u and v) controls the rounding sphere's own
+// tessellation density - a rounded region in the result is only as
+// smooth as this sphere is, exactly as coarsely/finely tessellating the
+// sphere passed directly to MinkowskiSum()/MinkowskiDifference() would
+// be. Throws std::invalid_argument if `sphere_divisions < 3` (fewer
+// cannot tessellate a genuine 3D sphere at all), and whatever
+// MinkowskiSum()/MinkowskiDifference() themselves throw for other
+// failures (e.g. `solid` not a valid closed manifold, same requirement
+// as BooleanCombine()).
+Mesh OffsetSolid(const Mesh& solid, double distance, int sphere_divisions = 24);
+
 // Splits `mesh` into its disconnected pieces - one Mesh per connected
 // component - backed by Manifold's own `Manifold::Decompose`. The
 // counterpart to Mesh::MergeAndWeld() concatenating several meshes into
@@ -351,6 +388,44 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 // this overload's existence.
 Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
                         const std::vector<double>& wall_thickness);
+
+// Hollows a FULL sphere into a spherical SHELL solid, wall thickness
+// `thickness`: a concentric inner sphere at radius `outer_radius -
+// thickness`, its single face reversed (`ON_Brep::FlipFace`) so its own
+// outward-from-material direction points INWARD, combined with the outer
+// sphere via `Brep::Compound()` - the exact closed-surface counterpart of
+// ShellConvexPlanar() above, for the one case ShellConvexPlanar() itself
+// cannot reach at all (a sphere has no planar faces for `PlanarFaces()`
+// to see, so ShellConvexPlanar() cannot even be called on one). No rim/
+// wall construction is needed here, unlike ShellConvexPlanar()'s own
+// planar rim washers, because a full sphere has no boundary curve to
+// begin with - it is already a closed 2-manifold on its own, and so is
+// its concentric inner copy; `Brep::Compound()` is exactly the
+// "two disjoint closed shells, one solid" combinator this needs (see its
+// own doc comment: "IsValid()/IsSolid() hold for a compound of valid
+// solid lumps ... Tessellate*() volumes add up per face").
+//
+// Throws std::invalid_argument if `outer_radius` is not positive, or if
+// `thickness` is not strictly between 0 and `outer_radius` - the exact
+// self-intersection guard NurbsSurface::OffsetAnalytic()'s own sphere
+// case already enforces (a thickness at or beyond the radius collapses
+// or inverts the inner sphere through the center).
+Brep ShellClosedSphere(Point3d center, double outer_radius, double thickness);
+
+// The torus sibling of ShellClosedSphere() above: hollows a FULL torus
+// (major radius `major_radius`, tube/minor radius `outer_minor_radius`,
+// lying in `plane`) into a shell of wall thickness `thickness` - a
+// concentric inner torus with the SAME major radius and plane, minor
+// radius `outer_minor_radius - thickness`, its face reversed and combined
+// via `Brep::Compound()`, exactly as ShellClosedSphere() does. Throws
+// std::invalid_argument if `major_radius`/`outer_minor_radius` are not
+// positive, if `outer_minor_radius >= major_radius` (the OUTER torus
+// itself would already be a self-intersecting spindle torus - checked
+// here rather than left to a downstream, harder-to-diagnose failure), or
+// if `thickness` is not strictly between 0 and `outer_minor_radius` (the
+// same collapse-through-center hazard ShellClosedSphere() and
+// OffsetAnalytic()'s own torus case both guard against).
+Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_minor_radius, double thickness);
 
 // Exact B-rep boolean between two solids where either (or both) may have
 // a CYLINDRICAL face, not just planar ones - what closes the gap

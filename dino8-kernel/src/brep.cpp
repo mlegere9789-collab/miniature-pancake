@@ -260,6 +260,75 @@ Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
 }
 
 int Brep::FaceCount() const { return brep_.m_F.Count(); }
+int Brep::VertexCount() const { return brep_.m_V.Count(); }
+int Brep::EdgeCount() const { return brep_.m_E.Count(); }
+
+std::vector<int> Brep::EdgesOfVertex(int vertex_index) const {
+  if (vertex_index < 0 || vertex_index >= brep_.m_V.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::EdgesOfVertex: vertex_index " +
+                             std::to_string(vertex_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_V.Count()) + " vertex slot(s))");
+  }
+  const ON_BrepVertex& v = brep_.m_V[vertex_index];
+  std::vector<int> edges;
+  edges.reserve(static_cast<size_t>(std::max(0, v.m_ei.Count())));
+  for (int k = 0; k < v.m_ei.Count(); ++k) edges.push_back(v.m_ei[k]);
+  return edges;
+}
+
+std::vector<int> Brep::FacesOfEdge(int edge_index) const {
+  if (edge_index < 0 || edge_index >= brep_.m_E.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::FacesOfEdge: edge_index " +
+                             std::to_string(edge_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_E.Count()) + " edge slot(s))");
+  }
+  const ON_BrepEdge& edge = brep_.m_E[edge_index];
+  if (edge.m_edge_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::FacesOfEdge: edge_index " +
+                                 std::to_string(edge_index) + " refers to a deleted edge");
+  }
+  std::vector<int> faces;
+  for (int k = 0; k < edge.m_ti.Count(); ++k) {
+    const int ti = edge.m_ti[k];
+    if (ti < 0 || ti >= brep_.m_T.Count()) continue;
+    const int fi = brep_.m_T[ti].FaceIndexOf();
+    if (fi < 0) continue;
+    if (std::find(faces.begin(), faces.end(), fi) == faces.end()) faces.push_back(fi);
+  }
+  return faces;
+}
+
+std::vector<int> Brep::NeighborFaces(int face_index) const {
+  if (face_index < 0 || face_index >= brep_.m_F.Count()) {
+    throw std::out_of_range("dino8::kernel::Brep::NeighborFaces: face_index " +
+                             std::to_string(face_index) + " is out of range (this Brep has " +
+                             std::to_string(brep_.m_F.Count()) + " face slot(s))");
+  }
+  const ON_BrepFace& face = brep_.m_F[face_index];
+  if (face.m_face_index < 0) {
+    throw std::invalid_argument("dino8::kernel::Brep::NeighborFaces: face_index " +
+                                 std::to_string(face_index) + " refers to a deleted face");
+  }
+  std::vector<int> neighbors;
+  for (int li = 0; li < face.LoopCount(); ++li) {
+    const ON_BrepLoop* loop = face.Loop(li);
+    if (!loop) continue;
+    for (int k = 0; k < loop->TrimCount(); ++k) {
+      const ON_BrepTrim* trim = loop->Trim(k);
+      const ON_BrepEdge* edge = trim ? trim->Edge() : nullptr;
+      if (!edge) continue;
+      for (int q = 0; q < edge->m_ti.Count(); ++q) {
+        const int ti = edge->m_ti[q];
+        if (ti == trim->m_trim_index) continue;
+        if (ti < 0 || ti >= brep_.m_T.Count()) continue;
+        const int fi = brep_.m_T[ti].FaceIndexOf();
+        if (fi < 0 || fi == face_index) continue;
+        if (std::find(neighbors.begin(), neighbors.end(), fi) == neighbors.end()) neighbors.push_back(fi);
+      }
+    }
+  }
+  return neighbors;
+}
 
 namespace {
 
@@ -5663,6 +5732,99 @@ std::vector<ON_3dPoint> LoopSamples3d(const ON_Brep& b, const ON_BrepLoop& loop)
   return out;
 }
 
+// Whether 3D segments (a1, a2) and (b1, b2) genuinely cross - the 3D
+// counterpart to detail::SegmentsProperlyIntersect's 2D test, needed
+// because a loop's SAMPLED 2D trim polygon can be perfectly simple while
+// the SAME loop's 3D image (through a folded/warped surface) crosses
+// itself: two non-crossing regions of parameter space can still map onto
+// the same physical neighbourhood (CheckIssue::Kind::SelfIntersectingLoop3d's
+// own doc comment has the textbook example - a "bowtie"-wired bilinear
+// patch). Two segments in general position are skew, not intersecting, so
+// "crossing" here means their closest approach is within `tolerance` of
+// an ACTUAL transversal crossing, with the same two honest exclusions
+// Mesh::TrianglesProperlyOverlap already applies one level up (mesh
+// triangles, not loop segments):
+//
+//  1. Nearly PARALLEL segments are never reported. Two reasons, not one:
+//     the closest-point solve below divides by `a*e - b*b` (by the
+//     Lagrange identity, exactly |d1 x d2|^2), a hazard as the segments
+//     approach parallel; and, more fundamentally, a close-but-parallel
+//     pair of segments is the ordinary shape of two sides of a thin but
+//     perfectly legitimate sliver face - Check()'s own SliverFace already
+//     names that, and re-reporting it here under a different Kind would
+//     be noise, not a new finding.
+//  2. The closest-approach point must land in the OPEN interior of BOTH
+//     segments (its parameter strictly between 0 and 1 on each). Adjacent
+//     loop segments share a vertex by construction and are never compared
+//     here (the caller skips them, exactly as detail::IsSimplePolygon
+//     does); a closest point landing exactly at 0 or 1 for a NON-adjacent
+//     pair means one segment's endpoint merely grazes the other's
+//     interior (a T-junction touch), which - the same considered
+//     position Mesh::FindSelfIntersections() takes on a hairline
+//     triangle touch - is not a crossing, only a proper one is.
+//
+// `out_point`/`out_distance` receive the crossing's two-closest-point
+// midpoint and their measured distance (always <= `tolerance`) when this
+// returns true; both are left untouched otherwise.
+bool Segments3dProperlyCross(const ON_3dPoint& a1, const ON_3dPoint& a2, const ON_3dPoint& b1,
+                              const ON_3dPoint& b2, double tolerance, ON_3dPoint* out_point,
+                              double* out_distance) {
+  const ON_3dVector d1 = a2 - a1;
+  const ON_3dVector d2 = b2 - b1;
+  const double a = d1 * d1;
+  const double e = d2 * d2;
+  if (a <= tolerance::kZero || e <= tolerance::kZero) return false;  // a degenerate sample segment
+  ON_3dVector u1 = d1, u2 = d2;
+  u1.Unitize();
+  u2.Unitize();
+  if (ON_CrossProduct(u1, u2).Length() < tolerance::kZeroVector) return false;  // parallel: SliverFace's job
+
+  const ON_3dVector r = a1 - b1;
+  const double b = d1 * d2;
+  const double f = d2 * r;
+  const double c = d1 * r;
+  const double denom = a * e - b * b;
+  double s = (denom > tolerance::kZero) ? std::clamp((b * f - c * e) / denom, 0.0, 1.0) : 0.0;
+  double t = (b * s + f) / e;
+  if (t < 0.0) {
+    t = 0.0;
+    s = std::clamp(-c / a, 0.0, 1.0);
+  } else if (t > 1.0) {
+    t = 1.0;
+    s = std::clamp((b - c) / a, 0.0, 1.0);
+  }
+  constexpr double kOpen = 1e-9;  // parameter-space margin excluding an endpoint touch
+  if (s <= kOpen || s >= 1.0 - kOpen || t <= kOpen || t >= 1.0 - kOpen) return false;
+
+  const ON_3dPoint c1 = a1 + s * d1;
+  const ON_3dPoint c2 = b1 + t * d2;
+  const double dist = c1.DistanceTo(c2);
+  if (dist > tolerance) return false;
+  if (out_point) *out_point = ON_3dPoint(0.5 * (c1.x + c2.x), 0.5 * (c1.y + c2.y), 0.5 * (c1.z + c2.z));
+  if (out_distance) *out_distance = dist;
+  return true;
+}
+
+// Whether the loop's 3D image (LoopSamples3d) crosses itself - every
+// non-adjacent pair of its sampled segments checked with
+// Segments3dProperlyCross(), the same adjacency skip
+// detail::IsSimplePolygon uses (`j == i + 1` or the wraparound pair) so a
+// shared sample vertex is never compared against itself. `where`/`measure`
+// receive the first crossing found.
+bool LoopSelfIntersects3d(const std::vector<ON_3dPoint>& pts, double tolerance, ON_3dPoint* where,
+                           double* measure) {
+  const size_t n = pts.size();
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = i + 1; j < n; ++j) {
+      if (j == i + 1 || (j + 1) % n == i) continue;  // adjacent: shares a vertex, not a crossing
+      if (Segments3dProperlyCross(pts[i], pts[(i + 1) % n], pts[j], pts[(j + 1) % n], tolerance, where, measure)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Width of a 3D point set about its own longest chord: find the two
 // farthest-apart points (O(n^2), n is a loop's handful of samples), then
 // the largest distance of any point from the line through them. Zero
@@ -5872,8 +6034,12 @@ Brep::CheckReport Brep::Check(double tolerance, double sliver_width) const {
     if (gap > allowed) add(CheckKind::TrimEdgeGap, ti, t.m_ei, where, gap);
   }
 
-  // Loops: continuity between consecutive trims, and self-intersection
-  // of the sampled 2D polygon.
+  // Loops: continuity between consecutive trims, self-intersection of the
+  // sampled 2D polygon, and - a DIFFERENT question the 2D check cannot
+  // answer, see CheckIssue::Kind::SelfIntersectingLoop3d's own doc
+  // comment - self-intersection of that same loop's 3D IMAGE, which a
+  // folded/warped surface can produce even from a perfectly simple 2D
+  // trim polygon.
   for (int li = 0; li < b.m_L.Count(); ++li) {
     const ON_BrepLoop& loop = b.m_L[li];
     if (loop.m_loop_index < 0) continue;
@@ -5892,6 +6058,14 @@ Brep::CheckReport Brep::Check(double tolerance, double sliver_width) const {
         ON_3dPoint where(0, 0, 0);
         if (const ON_Surface* srf = loop.SurfaceOf()) where = srf->PointAt(poly[0].x, poly[0].y);
         add(CheckKind::SelfIntersectingLoop, li, loop.m_fi, where, 0.0);
+      }
+      const std::vector<ON_3dPoint> pts3d = LoopSamples3d(b, loop);
+      if (pts3d.size() >= 4) {
+        ON_3dPoint where(0, 0, 0);
+        double measure = 0.0;
+        if (LoopSelfIntersects3d(pts3d, tol, &where, &measure)) {
+          add(CheckKind::SelfIntersectingLoop3d, li, loop.m_fi, where, measure);
+        }
       }
     }
   }
