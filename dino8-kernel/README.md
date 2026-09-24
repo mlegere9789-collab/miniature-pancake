@@ -3649,6 +3649,59 @@ honestly out of scope.
   undertaking, on the order of `BooleanCombineGeneral` itself, not
   attempted in this pass), thicken-sheet-to-solid (closed for the
   closed-surface case the same day, see below), and body/solid offset.
+- **`OffsetFace(solid, face_index, distance)`** (2026-09-24) - the
+  direct-editing "move face" / "push-pull" operation (PARITY_MAP.md's own
+  `kernel: Local / direct-edit operations` category, not `offsetshell`
+  itself, but explicitly cross-referenced by this subsystem's own
+  original scoping note as sharing face-offset machinery with it): moves
+  ONE face of a convex planar-faced solid along its own normal, re-
+  extending or re-trimming every OTHER face so the result is still a
+  valid closed solid - distinct from `ShellConvexPlanar()` (which offsets
+  every KEPT face at once to hollow out a shell) and from
+  `NurbsSurface::OffsetAnalytic()` (a bare surface with no neighbours to
+  reconcile at all).
+  The construction is the standard technique for reconstructing a convex
+  polytope directly from a set of half-spaces, applied uniformly to every
+  face whether or not it moved: only `face_index`'s own plane is
+  translated (every other face's plane is left exactly alone), then EVERY
+  face's own new boundary is recomputed as a generously oversized polygon
+  in that face's own (possibly-moved) plane - a square with side `50 *
+  this solid's own bounding-box diagonal`, guaranteed larger than the true
+  result - clipped (this file's own existing `ClipConvexPolygon()`, the
+  same Sutherland-Hodgman half-space clipper `ShellConvexPlanar()` already
+  uses) against every OTHER face's plane. Starting oversized and clipping
+  down to the exact bounded result is what makes this correct whether a
+  given face needs to GROW or SHRINK - re-clipping a face's own EXISTING
+  (not oversized) loop, the more obvious-looking shortcut, only ever
+  removes area and so silently gets the "this face needs to grow because
+  a neighbour moved away" case wrong; starting oversized was a deliberate
+  choice made for exactly that reason, not discovered as a bug afterward.
+  Verified on two genuinely different convex solids, not just a cube
+  (where every plane offset happens to be axis-aligned and could hide an
+  otherwise-real bug): a BOX, where growing/shrinking the top face by 2
+  gives EXACTLY the expected 10x10x12 / 10x10x8 volume, and growing the
+  LEFT face is checked not just by total volume but by the new bounding
+  box itself - confirming the box extends to x=-1 while the RIGHT face
+  (whose plane never moved) stays at EXACTLY x=10, the real proof that
+  only one plane moved and every other face's own boundary was correctly
+  re-derived from it, not merely that the volumes happen to add up; and a
+  hand-built TETRAHEDRON (apex at the origin, base at z=h) - moving its
+  base face outward by `d` must scale the whole solid's exact volume by
+  `((h+d)/h)^3`, the classical pyramid/cone similarity ratio (the other 3
+  face planes all still pass through the same fixed apex, so the result
+  is a genuinely similar, non-axis-aligned tetrahedron, not a shape a
+  linear-volume assumption would get right) - confirmed to match that
+  independently-derivable closed form exactly, not merely plausibly.
+  Same convex-solid precondition and failure mode as `ShellConvexPlanar()`/
+  `BooleanIntersectConvexPlanar()` (a non-convex solid would clip pieces of
+  itself away against its own planes); refuses an out-of-range
+  `face_index`, and refuses (rather than silently guessing) a `distance`
+  large enough that some face's own new boundary collapses to fewer than 3
+  vertices or ~0 area - the resulting solid's TOPOLOGY would need to
+  change there (a face vanishing, a different adjacency), which this does
+  not attempt. The general boolean sweep is byte-for-byte identical
+  before and after, as expected (this never touches
+  `boolean_general.cpp`).
 - **`ShellClosedSphere(center, outer_radius, thickness)` /
   `ShellClosedTorus(plane, major_radius, outer_minor_radius,
   thickness)`** (2026-09-24) - the closed-surface counterpart of
@@ -3712,8 +3765,14 @@ honestly out of scope.
   walls turn out to be exact cones/planes for a sphere - a real,
   disclosed follow-on, not attempted here); a full untrimmed cylinder or
   cone shell (both have circular end boundaries needing their own caps,
-  unlike the sphere/torus's total closure); and body/solid offset
-  (closed the same day at the mesh level, see below).
+  unlike the sphere/torus's total closure - investigated directly, not
+  just deferred: a plain full-sweep `CylindricalFace` DOES get one real
+  topological seam edge via `FromMixedFaces()`, but only its own TWO rail-
+  corner vertices are real welding points - the rest of a circular cap's
+  boundary would only meet the wall at whatever tessellation density a
+  LATER `Tessellate()` call happens to use, a fragile coordination this
+  kernel's own "exact where possible" standard doesn't accept); and
+  body/solid offset (closed the same day at the mesh level, see below).
 - **`OffsetSolid(solid, distance, sphere_divisions)`** (2026-09-24) -
   the uniform body/solid offset this subsystem's own README entries had
   been listing as an open gap, closed not by building new geometry
