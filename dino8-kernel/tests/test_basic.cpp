@@ -4862,6 +4862,74 @@ void TestModelAddSubDRoundTrips() {
   std::remove(path.c_str());
 }
 
+// AddPointCloud() closes the same "no way to put this into a .3dm" gap
+// AddMesh()/AddSubD() closed for their own types - until it existed, a
+// dino8::kernel::PointCloud had no path into a Model at all, so
+// PointCloud's own doc comment claim that ON_PointCloud "round-trips"
+// through .3dm was unreachable from this kernel's API. Checks positions,
+// per-point colors, and per-point normals all survive - PointCloud's
+// "all or nothing" convention means a partial round trip of any one of
+// those would silently look like "no colors"/"no normals" rather than an
+// error, so each is checked explicitly rather than just object count.
+void TestModelAddPointCloudRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+
+  PointCloud cloud;
+  cloud.AppendPoint(dino8::kernel::Point3d(0, 0, 0));
+  cloud.AppendPoint(dino8::kernel::Point3d(1, 2, 3));
+  cloud.AppendPoint(dino8::kernel::Point3d(-4, 5, -6));
+  cloud.SetColors({ON_Color(255, 0, 0), ON_Color(0, 255, 0), ON_Color(0, 0, 255)});
+  cloud.SetNormals({dino8::kernel::Vector3d(1, 0, 0), dino8::kernel::Vector3d(0, 1, 0),
+                     dino8::kernel::Vector3d(0, 0, 1)});
+  Check(cloud.HasColors() && cloud.HasNormals(), "fixture: cloud carries colors and normals");
+
+  Model model;
+  model.AddPointCloud(cloud);
+  Check(model.ObjectCount() == 1, "model has one object after AddPointCloud()");
+
+  const std::string path = "dino8_kernel_point_cloud_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a point cloud object succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.ObjectCount() == 1, "round-tripped model has one object");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_cloud = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const auto* cloud_geometry =
+        dynamic_cast<const ON_PointCloud*>(geometry_component->Geometry(nullptr));
+    if (cloud_geometry == nullptr) continue;
+    found_cloud = true;
+
+    Check(cloud_geometry->PointCount() == cloud.PointCount(),
+          "the round-tripped point cloud has the original's point count (3)");
+    Check(cloud_geometry->HasPointColors(), "the round-tripped cloud kept its per-point colors");
+    Check(cloud_geometry->HasPointNormals(), "the round-tripped cloud kept its per-point normals");
+
+    PointCloud reloaded;
+    reloaded.raw() = *cloud_geometry;
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(reloaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 1e-12,
+            "round-tripped point position matches exactly");
+      Check(reloaded.ColorAt(i) == cloud.ColorAt(i), "round-tripped point color matches exactly");
+      const auto original_n = cloud.NormalAt(i);
+      const auto reloaded_n = reloaded.NormalAt(i);
+      Check(std::abs(reloaded_n.x - original_n.x) < 1e-12 &&
+                std::abs(reloaded_n.y - original_n.y) < 1e-12 &&
+                std::abs(reloaded_n.z - original_n.z) < 1e-12,
+            "round-tripped point normal matches exactly");
+    }
+  }
+  Check(found_cloud, "the .3dm file's model geometry actually contains a point cloud object");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -7793,6 +7861,140 @@ void TestPointCloudSpatialQueries() {
     Check(threw_k0, "KNearest(k = 0) throws");
     Check(threw_kneg, "KNearest(k < 0) throws");
     Check(threw_radius, "PointsWithinRadius(negative radius) throws");
+  }
+}
+
+// SaveXyz()/LoadXyz() close a real gap: before this, a PointCloud had no
+// Save/Load path of its own at all (only Model::AddPointCloud()'s .3dm
+// route) - no counterpart to Mesh's SaveObj/SaveStl for the point-cloud
+// interchange format most external tools (CloudCompare, PCL, MeshLab)
+// actually use. Round-trips positions alone, then positions+normals
+// together (SaveXyz()'s "3 or 6 columns" convention), checking exact
+// values survive, not just point count.
+void TestPointCloudXyzRoundTrips() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // Positions only.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(0, 0, 0));
+    cloud.AppendPoint(Point3d(1.5, -2.25, 3.125));
+    cloud.AppendPoint(Point3d(-10, 20, -30));
+    Check(!cloud.HasNormals(), "fixture: cloud has no normals");
+
+    const std::string path = "dino8_kernel_point_cloud_xyz_positions_test.xyz";
+    Check(cloud.SaveXyz(path) == Result::Ok, "SaveXyz() succeeds for a positions-only cloud");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Ok, "LoadXyz() succeeds");
+    Check(loaded.PointCount() == cloud.PointCount(), "loaded point count matches (3)");
+    Check(!loaded.HasNormals(), "loaded cloud has no normals - the file had no normal columns");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 1e-12,
+            "round-tripped position matches exactly");
+    }
+    std::remove(path.c_str());
+  }
+
+  // Positions + normals.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(0, 0, 0));
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    cloud.SetNormals({Vector3d(1, 0, 0), Vector3d(0, 0, 1)});
+    Check(cloud.HasNormals(), "fixture: cloud has normals");
+
+    const std::string path = "dino8_kernel_point_cloud_xyz_normals_test.xyz";
+    Check(cloud.SaveXyz(path) == Result::Ok, "SaveXyz() succeeds for a cloud with normals");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Ok, "LoadXyz() succeeds");
+    Check(loaded.HasNormals(), "loaded cloud has normals - the file had 6-column lines");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 1e-12,
+            "round-tripped position with normals present still matches exactly");
+      const auto original_n = cloud.NormalAt(i);
+      const auto loaded_n = loaded.NormalAt(i);
+      Check(std::abs(loaded_n.x - original_n.x) < 1e-12 && std::abs(loaded_n.y - original_n.y) < 1e-12 &&
+                std::abs(loaded_n.z - original_n.z) < 1e-12,
+            "round-tripped normal matches exactly");
+    }
+    std::remove(path.c_str());
+  }
+}
+
+// Malformed/ambiguous input is rejected outright (Result::Failed), never
+// silently misread as something plausible-looking.
+void TestPointCloudLoadXyzRejectsMalformedInput() {
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+
+  {
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz("dino8_kernel_point_cloud_xyz_nonexistent.xyz", loaded) == Result::Failed,
+          "LoadXyz() fails on a file that doesn't exist");
+  }
+
+  auto write_file = [](const std::string& path, const std::string& contents) {
+    std::ofstream out(path);
+    out << contents;
+  };
+
+  // Mixing a 3-column line and a 6-column line in one file is genuinely
+  // ambiguous (is column 4 a normal, or the next point's x?) - rejected
+  // rather than guessed at.
+  {
+    const std::string path = "dino8_kernel_point_cloud_xyz_mixed_width_test.xyz";
+    write_file(path, "0 0 0\n1 2 3 0 0 1\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Failed,
+          "LoadXyz() fails on a file mixing 3- and 6-column lines");
+    std::remove(path.c_str());
+  }
+
+  // A column count other than 3 or 6 (here 4 - not a valid position or a
+  // valid position+normal).
+  {
+    const std::string path = "dino8_kernel_point_cloud_xyz_bad_width_test.xyz";
+    write_file(path, "0 0 0 0\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Failed,
+          "LoadXyz() fails on a line with 4 columns (neither a position nor position+normal)");
+    std::remove(path.c_str());
+  }
+
+  // A non-numeric token.
+  {
+    const std::string path = "dino8_kernel_point_cloud_xyz_garbage_test.xyz";
+    write_file(path, "0 0 zzz\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Failed,
+          "LoadXyz() fails on a line with a non-numeric token");
+    std::remove(path.c_str());
+  }
+
+  // A file with no points at all (blank lines only).
+  {
+    const std::string path = "dino8_kernel_point_cloud_xyz_empty_test.xyz";
+    write_file(path, "\n\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Failed,
+          "LoadXyz() fails on a file with zero points");
+    std::remove(path.c_str());
+  }
+
+  // Control: a well-formed file still loads fine after all those
+  // rejections, proving the checks above aren't rejecting everything.
+  {
+    const std::string path = "dino8_kernel_point_cloud_xyz_control_test.xyz";
+    write_file(path, "1 2 3\n4 5 6\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Ok, "control: a well-formed file loads fine");
+    Check(loaded.PointCount() == 2, "control: loaded the expected 2 points");
+    std::remove(path.c_str());
   }
 }
 
@@ -24817,6 +25019,7 @@ int main() {
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
+  TestModelAddPointCloudRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
@@ -24873,6 +25076,8 @@ int main() {
   TestMeshDistanceTo();
   TestMeshClashWith();
   TestPointCloudSpatialQueries();
+  TestPointCloudXyzRoundTrips();
+  TestPointCloudLoadXyzRejectsMalformedInput();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
