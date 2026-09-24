@@ -1051,12 +1051,36 @@ Brep FilletConcaveEdges(const Brep& solid, const std::vector<std::pair<Point3d, 
 //
 // SCOPE: convex trihedral (valence-3) corners of a solid PlanarFaces() can
 // describe only (an input already carrying a curved face is rejected by
-// PlanarFaces() itself); one shared distance along all 3 edges (asymmetric
-// per-edge distances, the vertex analogue of ChamferConvexEdge's own
-// distance_i/distance_j, are out of scope here); higher-valence corners
-// (4 or more edges meeting at one vertex) are out of scope, rejected
-// rather than guessed at.
+// PlanarFaces() itself); higher-valence corners (4 or more edges meeting
+// at one vertex) are out of scope, rejected rather than guessed at. See
+// the per-edge-distance overload below for asymmetric distances.
 Brep ChamferConvexVertex(const Brep& solid, Point3d vertex, double distance);
+
+// ASYMMETRIC per-edge-distance overload - the vertex analogue of
+// ChamferConvexEdge's own distance_i/distance_j (as opposed to the single
+// shared `distance` above, the vertex analogue of a single-radius fillet).
+// `edge_distances` must have exactly 3 entries, one per edge at `vertex`,
+// each identified by that edge's own far neighbor point (the same
+// edge_p0/edge_p1 point-identified-edge convention every other function
+// in this file already uses) paired with that edge's own chamfer
+// distance. The single-`distance` overload above is now a thin
+// convenience wrapper around this one (builds a 3-entry vector with the
+// same distance 3 times) - not a second implementation.
+//
+// The construction is otherwise IDENTICAL (same ChamferVertexCore, same
+// per-edge convexity validation, same self-determining clip-plane sign):
+// only the corner points P_k = vertex + distances[k] * e_k change, one
+// independent distance per edge instead of one shared distance.
+//
+// CLOSED FORM this was checked against (dino8-kernel's own regression
+// tests): the removed tetrahedron's own volume generalizes to
+// (d_0 * d_1 * d_2 / 6) * |e_0 . (e_1 x e_2)| for the 3 UNIT edge
+// directions and their own INDEPENDENT distances d_k - the general
+// scalar triple product formula for a tetrahedron whose 3 edges from one
+// vertex have independent lengths, checked on the unit box's own corner
+// with 3 different distances against 1 - d_x*d_y*d_z/6.
+Brep ChamferConvexVertex(const Brep& solid, Point3d vertex,
+                          const std::vector<std::pair<Point3d, double>>& edge_distances);
 
 // The CONCAVE mirror of ChamferConvexVertex: cuts across a trihedral,
 // valence-3 CONCAVE (reflex) corner's own deepest point with a single new
@@ -1099,9 +1123,20 @@ Brep ChamferConvexVertex(const Brep& solid, Point3d vertex, double distance);
 // mutually-perpendicular edges), added instead of removed.
 //
 // SCOPE: identical to ChamferConvexVertex's own (valence-3 corners only,
-// PlanarFaces()-describable solids only, one shared distance for all 3
-// edges, no mixed convex/concave corner support).
+// PlanarFaces()-describable solids only, no mixed convex/concave corner
+// support). See the per-edge-distance overload below for asymmetric
+// distances.
 Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex, double distance);
+
+// ASYMMETRIC per-edge-distance overload - the CONCAVE mirror of
+// ChamferConvexVertex's own per-edge-distance overload above, exactly the
+// same relationship the single-distance overloads already have. See that
+// overload's own doc comment for the full derivation and closed form
+// (added, not removed, here - same tetrahedron, same sign flip
+// ChamferConcaveVertex's own single-distance overload already has
+// relative to ChamferConvexVertex's).
+Brep ChamferConcaveVertex(const Brep& solid, Point3d vertex,
+                           const std::vector<std::pair<Point3d, double>>& edge_distances);
 
 
 // BLEND REMOVAL: the inverse of FilletConvexEdge - restores the original
