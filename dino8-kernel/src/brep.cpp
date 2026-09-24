@@ -20,6 +20,7 @@
 #include "dino8/kernel/detail/arc_schedule3d.h"
 #include "dino8/kernel/detail/ellipse_clip3d.h"
 #include "dino8/kernel/detail/polygon2d.h"
+#include "dino8/kernel/detail/segment3d.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/tolerance.h"
 
@@ -303,6 +304,165 @@ Brep Brep::TrimmedPlanarFace(const NurbsSurface& surface,
 int Brep::FaceCount() const { return brep_.m_F.Count(); }
 int Brep::VertexCount() const { return brep_.m_V.Count(); }
 int Brep::EdgeCount() const { return brep_.m_E.Count(); }
+
+namespace {
+
+// 5-point Gauss-Legendre quadrature on [-1, 1] - exact for any
+// polynomial up to degree 9 per span, comfortably covering every degree
+// this kernel's own Brep factories build (degree <= 3 skinned sections,
+// degree-2 rational conics for Sphere()/Torus()/Pipe()'s own circles).
+// Standard published nodes/weights (Abramowitz & Stegun table 25.4),
+// not re-derived here.
+constexpr int kMassPropsGaussPoints = 5;
+constexpr double kMassPropsGaussNodes[kMassPropsGaussPoints] = {
+    -0.9061798459386640, -0.5384693101056831, 0.0, 0.5384693101056831, 0.9061798459386640};
+constexpr double kMassPropsGaussWeights[kMassPropsGaussPoints] = {
+    0.2369268850561891, 0.4786286704993665, 0.5688888888888889, 0.4786286704993665, 0.2369268850561891};
+
+// Distinct knot values (span breakpoints, including both domain
+// endpoints) of `s` in direction `dir` - the sub-intervals a piecewise
+// polynomial/rational NURBS surface must be integrated separately over
+// for Gauss-Legendre quadrature to actually see a smooth (single-span
+// polynomial) integrand, the same knot-merging idea sweep.cpp's own
+// MakeCompatible() already uses for a different purpose.
+std::vector<double> MassPropsSpanBreakpoints(const ON_NurbsSurface& s, int dir) {
+  std::vector<double> breaks;
+  const int kc = s.KnotCount(dir);
+  for (int i = 0; i < kc; ++i) {
+    const double k = s.Knot(dir, i);
+    if (breaks.empty() || k > breaks.back()) breaks.push_back(k);
+  }
+  return breaks;
+}
+
+// Sums `integrand(u, v)` over `s`'s own full parameter domain via 5x5
+// product Gauss-Legendre quadrature per (u-span, v-span) pair -
+// `integrand` returns the pointwise value only; the quadrature weight
+// and the span's own Jacobian (half-width in each direction) are applied
+// here.
+template <typename Integrand>
+double IntegrateOverNurbsSurface(const ON_NurbsSurface& s, Integrand&& integrand) {
+  const std::vector<double> u_breaks = MassPropsSpanBreakpoints(s, 0);
+  const std::vector<double> v_breaks = MassPropsSpanBreakpoints(s, 1);
+  double total = 0.0;
+  for (size_t su = 0; su + 1 < u_breaks.size(); ++su) {
+    const double ua = u_breaks[su], ub = u_breaks[su + 1];
+    if (!(ub > ua)) continue;  // a zero-length span from a repeated knot
+    const double u_mid = 0.5 * (ua + ub), u_half = 0.5 * (ub - ua);
+    for (size_t sv = 0; sv + 1 < v_breaks.size(); ++sv) {
+      const double va = v_breaks[sv], vb = v_breaks[sv + 1];
+      if (!(vb > va)) continue;
+      const double v_mid = 0.5 * (va + vb), v_half = 0.5 * (vb - va);
+      for (int i = 0; i < kMassPropsGaussPoints; ++i) {
+        const double u = u_mid + u_half * kMassPropsGaussNodes[i];
+        for (int j = 0; j < kMassPropsGaussPoints; ++j) {
+          const double v = v_mid + v_half * kMassPropsGaussNodes[j];
+          total += kMassPropsGaussWeights[i] * kMassPropsGaussWeights[j] * u_half * v_half * integrand(u, v);
+        }
+      }
+    }
+  }
+  return total;
+}
+
+}  // namespace
+
+// True iff face `i` covers its ENTIRE underlying surface parameter
+// domain, in either of the two ways this kernel's own factories express
+// that: (a) a real ON_Brep loop that runs along the surface's own
+// boundary (`raw().FaceIsSurface(i)`, used by every factory that builds
+// genuine shared topology - Extrude()/Revolve()/Loft()/Sweep1()/
+// Sweep2()/Pipe()/PipeVariable() via AssembleSweptBody()), or (b) NO
+// ON_Brep loop at all (`face.m_li.Count() == 0`) AND none of this
+// kernel's own pseudo-trim side tables populated for it - the
+// convention Box()/Sphere()/Torus()/an untrimmed TrimmedPlanarFace() all
+// use (`NewFace(int)`'s own plain overload never builds a loop at all,
+// so `FaceIsSurface()` alone would wrongly say "trimmed" for every one
+// of them - confirmed by reading ON_Brep::NewFace(int)'s own source, not
+// assumed). A face with a real interior hole loop, a genuine non-
+// trivial ON_Brep trim, or a populated pseudo-trim side table matches
+// neither (a) nor (b) and is correctly reported as trimmed.
+bool Brep::FaceCoversWholeDomain(int i) const {
+  const ON_BrepFace& face = brep_.m_F[i];
+  if (brep_.FaceIsSurface(i)) return true;
+  return face.m_li.Count() == 0 && face_trim_loops_[static_cast<size_t>(i)].empty() &&
+         face_hole_loops_[static_cast<size_t>(i)].empty() && face_arc_runs_[static_cast<size_t>(i)].empty() &&
+         !face_notch_rows_[static_cast<size_t>(i)].present;
+}
+
+double Brep::Volume() const {
+  // raw().IsSolid() is the WRONG check here: it requires genuine shared
+  // ON_Brep edge/vertex topology between faces, which several of this
+  // kernel's own factories never build (Box()/Sphere()/Torus() each add
+  // their faces via the plain single-surface NewFace(int) overload - see
+  // their own doc comments - so raw().IsSolid() is false for every one
+  // of them despite being genuinely closed solids). What actually makes
+  // the divergence-theorem sum below correct is that the faces'
+  // boundaries geometrically close up into one watertight, consistently
+  // outward-oriented surface - exactly what TessellateToClosedMesh()'s
+  // own weld-then-check already verifies (the same "tessellate a coarse
+  // check mesh and inspect it" approach AssembleSweptBody()'s own
+  // orientation cross-check in sweep.cpp already uses), so that's the
+  // precondition used instead.
+  if (!TessellateToClosedMesh(8, 8).IsClosedManifold()) {
+    throw std::invalid_argument(
+        "dino8::kernel::Brep::Volume: this Brep is not a closed, watertight solid "
+        "(TessellateToClosedMesh(8, 8).IsClosedManifold() is false) - there is no well-defined "
+        "enclosed volume otherwise");
+  }
+  double total = 0.0;
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    if (!FaceCoversWholeDomain(i)) {
+      throw std::invalid_argument("dino8::kernel::Brep::Volume: face " + std::to_string(i) +
+                                   " is trimmed - exact integration over its true trim region is a "
+                                   "materially different problem this does not attempt");
+    }
+    const ON_BrepFace& face = brep_.m_F[i];
+    const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
+    if (!s) {
+      throw std::runtime_error("dino8::kernel::Brep::Volume: face " + std::to_string(i) +
+                                " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
+    }
+    const double sign = face.m_bRev ? -1.0 : 1.0;
+    total += sign * IntegrateOverNurbsSurface(*s, [&](double u, double v) {
+               ON_3dPoint p;
+               ON_3dVector su, sv;
+               if (!s->Ev1Der(u, v, p, su, sv)) {
+                 throw std::runtime_error("dino8::kernel::Brep::Volume: Ev1Der failed on face " +
+                                           std::to_string(i));
+               }
+               const ON_3dVector n = ON_CrossProduct(su, sv);
+               return (p.x * n.x + p.y * n.y + p.z * n.z) / 3.0;
+             });
+  }
+  return total;
+}
+
+double Brep::Area() const {
+  double total = 0.0;
+  for (int i = 0; i < brep_.m_F.Count(); ++i) {
+    if (!FaceCoversWholeDomain(i)) {
+      throw std::invalid_argument("dino8::kernel::Brep::Area: face " + std::to_string(i) +
+                                   " is trimmed - exact integration over its true trim region is a "
+                                   "materially different problem this does not attempt");
+    }
+    const ON_BrepFace& face = brep_.m_F[i];
+    const ON_NurbsSurface* s = ON_NurbsSurface::Cast(face.SurfaceOf());
+    if (!s) {
+      throw std::runtime_error("dino8::kernel::Brep::Area: face " + std::to_string(i) +
+                                " is not backed by an ON_NurbsSurface (every face this kernel builds should be)");
+    }
+    total += IntegrateOverNurbsSurface(*s, [&](double u, double v) {
+      ON_3dPoint p;
+      ON_3dVector su, sv;
+      if (!s->Ev1Der(u, v, p, su, sv)) {
+        throw std::runtime_error("dino8::kernel::Brep::Area: Ev1Der failed on face " + std::to_string(i));
+      }
+      return ON_CrossProduct(su, sv).Length();
+    });
+  }
+  return total;
+}
 
 std::vector<int> Brep::EdgesOfVertex(int vertex_index) const {
   if (vertex_index < 0 || vertex_index >= brep_.m_V.Count()) {
@@ -6456,6 +6616,65 @@ Result Brep::SplitNakedEdgeAt(int edge_index, Point3d point, double tolerance) {
   FixUnsetEdgeTolerances(b);
   ClearFaceSideTables();
   return Result::Ok;
+}
+
+int Brep::SewTJunctions(double tolerance) {
+  const double tol = std::max(tolerance, 0.0);
+  ON_Brep& b = brep_;
+  int splits = 0;
+  const int kMaxIterations = 4 * std::max(b.m_E.Count(), 1) + 16;
+  for (int iter = 0; iter < kMaxIterations; ++iter) {
+    std::vector<int> naked;
+    for (int ei = 0; ei < b.m_E.Count(); ++ei) {
+      const ON_BrepEdge& e = b.m_E[ei];
+      if (e.m_edge_index >= 0 && e.TrimCount() == 1) naked.push_back(ei);
+    }
+
+    // Find one T-junction this pass: a naked edge B whose endpoint lands
+    // strictly inside another naked, LINEAR edge A's own span. Only one
+    // split is committed per pass, since SplitNakedEdgeAt()'s own
+    // Compact() renumbers every edge/vertex index afterward - trying a
+    // second candidate against stale indices would be wrong.
+    bool found = false;
+    for (const int ai : naked) {
+      const ON_BrepEdge& a = b.m_E[ai];
+      if (!a.IsLinear(tol)) continue;
+      const Point3d a0 = b.m_V[a.m_vi[0]].point;
+      const Point3d a1 = b.m_V[a.m_vi[1]].point;
+      if (a0.DistanceTo(a1) <= tol) continue;  // degenerate - nothing to be inside of
+
+      for (const int bi : naked) {
+        if (bi == ai) continue;
+        const ON_BrepEdge& be = b.m_E[bi];
+        for (int k = 0; k < 2; ++k) {
+          const Point3d v = b.m_V[be.m_vi[k]].point;
+          // Already at (or coincides with) one of A's own endpoints: an
+          // ordinary endpoint match, JoinNakedEdges()'s job, not a
+          // T-junction.
+          if (v.DistanceTo(a0) <= tol || v.DistanceTo(a1) <= tol) continue;
+
+          double s = 0.0, t = 0.0;
+          const double dist2 = detail::ClosestSegmentSegment(a0, a1, v, v, s, t);
+          if (dist2 > tol * tol) continue;   // not on A's line within tolerance
+          if (s <= 0.0 || s >= 1.0) continue;  // clamped to an end - not strictly interior
+
+          const Point3d proj = a0 + (a1 - a0) * s;
+          if (proj.DistanceTo(a0) <= tol || proj.DistanceTo(a1) <= tol) continue;
+
+          if (SplitNakedEdgeAt(ai, v, tol) == Result::Ok) {
+            ++splits;
+            found = true;
+          }
+          break;
+        }
+        if (found) break;
+      }
+      if (found) break;
+    }
+    if (!found) break;
+  }
+  if (splits > 0) JoinNakedEdges(tol);
+  return splits;
 }
 
 Mesh Brep::TessellateToClosedMeshTolerant(int u_divisions, int v_divisions) const {
