@@ -352,6 +352,44 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
                         const std::vector<double>& wall_thickness);
 
+// Hollows a FULL sphere into a spherical SHELL solid, wall thickness
+// `thickness`: a concentric inner sphere at radius `outer_radius -
+// thickness`, its single face reversed (`ON_Brep::FlipFace`) so its own
+// outward-from-material direction points INWARD, combined with the outer
+// sphere via `Brep::Compound()` - the exact closed-surface counterpart of
+// ShellConvexPlanar() above, for the one case ShellConvexPlanar() itself
+// cannot reach at all (a sphere has no planar faces for `PlanarFaces()`
+// to see, so ShellConvexPlanar() cannot even be called on one). No rim/
+// wall construction is needed here, unlike ShellConvexPlanar()'s own
+// planar rim washers, because a full sphere has no boundary curve to
+// begin with - it is already a closed 2-manifold on its own, and so is
+// its concentric inner copy; `Brep::Compound()` is exactly the
+// "two disjoint closed shells, one solid" combinator this needs (see its
+// own doc comment: "IsValid()/IsSolid() hold for a compound of valid
+// solid lumps ... Tessellate*() volumes add up per face").
+//
+// Throws std::invalid_argument if `outer_radius` is not positive, or if
+// `thickness` is not strictly between 0 and `outer_radius` - the exact
+// self-intersection guard NurbsSurface::OffsetAnalytic()'s own sphere
+// case already enforces (a thickness at or beyond the radius collapses
+// or inverts the inner sphere through the center).
+Brep ShellClosedSphere(Point3d center, double outer_radius, double thickness);
+
+// The torus sibling of ShellClosedSphere() above: hollows a FULL torus
+// (major radius `major_radius`, tube/minor radius `outer_minor_radius`,
+// lying in `plane`) into a shell of wall thickness `thickness` - a
+// concentric inner torus with the SAME major radius and plane, minor
+// radius `outer_minor_radius - thickness`, its face reversed and combined
+// via `Brep::Compound()`, exactly as ShellClosedSphere() does. Throws
+// std::invalid_argument if `major_radius`/`outer_minor_radius` are not
+// positive, if `outer_minor_radius >= major_radius` (the OUTER torus
+// itself would already be a self-intersecting spindle torus - checked
+// here rather than left to a downstream, harder-to-diagnose failure), or
+// if `thickness` is not strictly between 0 and `outer_minor_radius` (the
+// same collapse-through-center hazard ShellClosedSphere() and
+// OffsetAnalytic()'s own torus case both guard against).
+Brep ShellClosedTorus(const ON_Plane& plane, double major_radius, double outer_minor_radius, double thickness);
+
 // Exact B-rep boolean between two solids where either (or both) may have
 // a CYLINDRICAL face, not just planar ones - what closes the gap
 // BooleanCombinePlanar's own PlanarFaces()-only precondition leaves open:
