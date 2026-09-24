@@ -1078,6 +1078,59 @@ ON_Xform FrameToFrame(const Frame& from, const Frame& to) {
 
 namespace {
 
+// Two-rail sweep frame (see brep.h Sweep2()'s own doc comment): origin on
+// rail1, x toward rail2, an orthonormal completion via the averaged rail
+// tangent, and the rail-to-rail `width` a local profile is uniformly
+// scaled by. `sweep_dir` (the averaged tangent used to build z) doubles
+// as the "forward" direction Sweep1()'s own cap-orientation check uses
+// frames[0].t for.
+struct TwoRailFrame {
+  ON_3dPoint origin;
+  ON_3dVector x, y, z;
+  ON_3dVector sweep_dir;
+  double width = 0.0;
+};
+
+std::vector<TwoRailFrame> TwoRailFrames(const ON_NurbsCurve& rail1, const ON_NurbsCurve& rail2,
+                                        const std::vector<double>& p1, const std::vector<double>& p2,
+                                        const char* caller) {
+  const int m = static_cast<int>(p1.size());
+  if (static_cast<int>(p2.size()) != m) Internal(caller, "rail station count mismatch");
+  const double scale = 1.0 + CurveScale(rail1) + CurveScale(rail2);
+  std::vector<TwoRailFrame> frames(static_cast<size_t>(m));
+  for (int k = 0; k < m; ++k) {
+    TwoRailFrame& f = frames[static_cast<size_t>(k)];
+    f.origin = rail1.PointAt(p1[static_cast<size_t>(k)]);
+    const ON_3dPoint q = rail2.PointAt(p2[static_cast<size_t>(k)]);
+    ON_3dVector x = q - f.origin;
+    f.width = x.Length();
+    if (f.width <= 1e-9 * scale) {
+      Fail(caller, "the two rails touch (zero separation) at a station - Sweep2 does not support this");
+    }
+    x = x / f.width;
+    ON_3dVector t1 = rail1.TangentAt(p1[static_cast<size_t>(k)]);
+    ON_3dVector t2 = rail2.TangentAt(p2[static_cast<size_t>(k)]);
+    if (!t1.Unitize() || !t2.Unitize()) Fail(caller, "a rail has a zero tangent at a station");
+    ON_3dVector t = t1 + t2;
+    if (!t.Unitize()) t = t1;  // exactly opposite rail tangents: fall back to rail1's own direction
+    ON_3dVector z = ON_CrossProduct(x, t);
+    if (!z.Unitize()) {
+      Fail(caller,
+           "a rail's tangent is exactly parallel to the rail-to-rail direction at a station - the two-rail "
+           "frame is undefined there");
+    }
+    f.x = x;
+    f.z = z;
+    f.y = ON_CrossProduct(z, x);
+    f.sweep_dir = t;
+  }
+  return frames;
+}
+
+}  // namespace
+
+namespace {
+
 // Exact, closed-form in-plane offset of a CONVEX degree-1 polyline (open
 // or closed, non-rational, at least 3 distinct vertices, not reducible to
 // a single line or arc - callers filter for that) by `distance`, along
@@ -1509,6 +1562,91 @@ Brep Brep::Sweep1(const NurbsCurve& section_in, const NurbsCurve& rail_in, int s
     // Stations are equally spaced in arc length, so the natural station
     // parameter is uniform; the chord-length average agrees for a rigid
     // sweep and is used for consistency with Loft().
+    double period = 1.0;
+    const std::vector<double> params_v = SkinParameters(copies, wrap, &period, caller);
+    wall = SkinSections(copies, std::min(3, m - 1), wrap, params_v, period, caller);
+  }
+  return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
+}
+
+Brep Brep::Sweep2(const NurbsCurve& section_in, const NurbsCurve& rail1_in, const NurbsCurve& rail2_in, int stations,
+                  bool cap) {
+  const char* caller = "Sweep2";
+  if (stations < 2) Fail(caller, "stations must be at least 2");
+  ON_NurbsCurve rail1 = rail1_in.raw();
+  ON_NurbsCurve rail2 = rail2_in.raw();
+  if (!rail1.IsValid()) Fail(caller, "rail1 is not a valid NURBS curve");
+  if (!rail2.IsValid()) Fail(caller, "rail2 is not a valid NURBS curve");
+  ON_NurbsCurve section = section_in.raw();
+  if (!section.IsValid()) Fail(caller, "section is not a valid NURBS curve");
+  ClampIfPeriodic(section);
+
+  // Match rail2's direction to rail1's (compare start-to-start against
+  // start-to-end), the same convention the app's own Sweep2Command uses.
+  const ON_3dPoint a0 = rail1.PointAtStart();
+  const ON_3dPoint b0 = rail2.PointAtStart(), b1 = rail2.PointAtEnd();
+  if (a0.DistanceTo(b1) < a0.DistanceTo(b0)) ReverseKeepDomain(rail2);
+
+  const bool wrap = rail1.IsClosed() && rail2.IsClosed();
+  const double rail_scale = 1e-9 * (CurveScale(rail1) + CurveScale(rail2));
+  const bool straight = !wrap && rail1.IsLinear(rail_scale) && rail2.IsLinear(rail_scale);
+  const int m = straight ? 2 : std::max(stations, 3);
+
+  std::vector<double> p1 = rail1_in.DivideByCount(wrap ? m : m - 1);
+  NurbsCurve rail2_k;
+  rail2_k.raw() = rail2;
+  std::vector<double> p2 = rail2_k.DivideByCount(wrap ? m : m - 1);
+  if (wrap) {
+    p1.pop_back();
+    p2.pop_back();
+  }
+  if (static_cast<int>(p1.size()) != m || static_cast<int>(p2.size()) != m) Internal(caller, "station count mismatch");
+
+  const std::vector<TwoRailFrame> frames = TwoRailFrames(rail1, rail2, p1, p2, caller);
+
+  const bool closed_section = section.IsClosed();
+  const bool want_caps = cap && closed_section && !wrap;
+  if (want_caps) {
+    ON_Plane plane;
+    if (!section.IsPlanar(&plane, 1e-8 * CurveScale(section))) Fail(caller, "cap requested but the section is not planar");
+    if (std::fabs(ON_DotProduct(plane.zaxis, frames[0].sweep_dir)) <= 1e-9) {
+      Fail(caller, "the section's plane contains the sweep direction at the start - the sweep is flat there");
+    }
+    ON_Plane about_t(plane.origin, frames[0].sweep_dir);
+    if (SignedAreaAbout(section, about_t) < 0.0) ReverseKeepDomain(section);
+  }
+
+  // Decode the (possibly just-reversed) input section ONCE, into station-
+  // 0's frame, as local coordinates uniformly scaled by that station's
+  // own rail-to-rail width - see brep.h's own doc comment for why a
+  // single shared scale factor (not one per axis) is the right contract.
+  const int n = section.CVCount();
+  const double w0 = frames[0].width;
+  std::vector<ON_3dVector> local(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) {
+    const ON_3dVector d = EuclideanCV(section, i) - frames[0].origin;
+    local[static_cast<size_t>(i)] =
+        ON_3dVector(ON_DotProduct(d, frames[0].x), ON_DotProduct(d, frames[0].y), ON_DotProduct(d, frames[0].z)) / w0;
+  }
+
+  std::vector<ON_NurbsCurve> copies;
+  copies.reserve(static_cast<size_t>(m));
+  for (int k = 0; k < m; ++k) {
+    ON_NurbsCurve ck = section;
+    const TwoRailFrame& f = frames[static_cast<size_t>(k)];
+    for (int i = 0; i < n; ++i) {
+      const ON_3dVector& l = local[static_cast<size_t>(i)];
+      const ON_3dPoint p = f.origin + (f.x * l.x + f.y * l.y + f.z * l.z) * f.width;
+      const double w = section.Weight(i);  // 1.0 for a non-rational section
+      ck.SetCV(i, ON_4dPoint(p.x * w, p.y * w, p.z * w, w));
+    }
+    copies.push_back(std::move(ck));
+  }
+  MakeCompatible(copies, caller);  // no-op (same control structure at every station); one code path with Loft()/Sweep1()
+  std::unique_ptr<ON_NurbsSurface> wall;
+  if (m == 2) {
+    wall = RuledBetween(copies[0], copies[1], 0.0, 1.0, caller);
+  } else {
     double period = 1.0;
     const std::vector<double> params_v = SkinParameters(copies, wrap, &period, caller);
     wall = SkinSections(copies, std::min(3, m - 1), wrap, params_v, period, caller);
