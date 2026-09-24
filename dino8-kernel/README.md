@@ -3735,7 +3735,62 @@ honestly out of scope.
   walls turn out to be exact cones/planes for a sphere - a real,
   disclosed follow-on, not attempted here); a full untrimmed cylinder or
   cone shell (both have circular end boundaries needing their own caps,
-  unlike the sphere/torus's total closure); and body/solid offset.
+  unlike the sphere/torus's total closure); and body/solid offset
+  (closed the same day at the mesh level, see below).
+- **`OffsetSolid(solid, distance, sphere_divisions)`** (2026-09-24) -
+  the uniform body/solid offset this subsystem's own README entries had
+  been listing as an open gap, closed not by building new geometry
+  machinery but by RECOGNIZING it was already latent in this kernel's
+  existing `MinkowskiSum()`/`MinkowskiDifference()` (Manifold-backed
+  Minkowski sum/difference, already implemented and tested for a
+  different stated purpose - "rounding a solid" / "a clearance
+  envelope"): the Minkowski sum of a solid with a ball of radius `d` IS,
+  by definition, exactly the uniform outward offset of that solid by
+  `d` (Parasolid `PK_BODY_offset`'s own uniform-distance case), and the
+  Minkowski difference is the inward offset - this wrapper is the thin,
+  deliberate naming of that existing identity, not new offset math:
+  build a closed sphere of radius `|distance|` centered at the origin
+  (`Brep::Sphere()` + `TessellateToClosedMesh()`, already-tested), then
+  call `MinkowskiSum()` for `distance > 0` or `MinkowskiDifference()`
+  for `distance < 0`.
+  The real content here is documenting - and then independently
+  verifying, not just asserting - the one property a caller actually
+  needs to know before reaching for this: uniform ball-offset is NOT
+  symmetric between growing and shrinking. Growing a convex solid
+  ROUNDS every convex edge/corner to the ball's own radius (this is a
+  genuine, well-known property of dilation, not a limitation of this
+  wrapper); shrinking a convex solid stays perfectly SHARP, with no
+  rounding at all (erosion of a convex shape by a small-enough ball
+  introduces no new features) - the exact complementary behavior
+  `ShellConvexPlanar()`'s/`OffsetAnalytic()`'s own exact per-face offset
+  already has for a convex solid, now recovered here as a special case
+  of the general mesh-level operation, not a separate implementation of
+  it. Verified independently for BOTH directions on the same 10-cube,
+  not just spot-checked: growing by 1 matches the classical STEINER
+  FORMULA for a convex polyhedron dilated by a ball - `V(P) + Area(P)*d
+  + (total edge length)*(pi*d^2/4) + (4/3)*pi*d^3` (an independently
+  hand-derivable closed form for exactly this operation, not tuned to
+  this implementation) - to within 2% (limited by the rounding sphere's
+  own tessellation density, `sphere_divisions`); shrinking by 1 matches
+  the EXACT smaller cube's volume (8^3) with no Steiner term at all,
+  confirming the asymmetry is real and not an implementation quirk in
+  either direction. Also checked: both directions' bounding boxes
+  change by exactly `distance` on every side, `distance == 0.0` returns
+  the input unchanged without ever calling into Manifold (a zero-radius
+  sphere is degenerate there, not a meaningful no-op), and
+  `sphere_divisions < 3` is refused. Confirmed via git-stash that the
+  new tests require this code (compile errors without it) - even though
+  the underlying Minkowski operations already existed, `OffsetSolid`
+  itself, as a named, directly-callable body-offset entry point, did
+  not. The general boolean sweep is byte-for-byte identical before and
+  after, as expected (this never touches `boolean_general.cpp`, and
+  reuses `MinkowskiSum`/`MinkowskiDifference` exactly as already
+  implemented there).
+  Deliberately out of scope, same as `MinkowskiSum`/`MinkowskiDifference`
+  themselves: a NON-uniform (per-face or per-region) body offset, and
+  producing an exact B-rep result rather than a tessellated mesh (this
+  operates on `Mesh`, not `Brep` - the Manifold-backed operations it
+  wraps are mesh-level by construction).
 - `NurbsSurface::CoonsPatch(bottom, top, left, right, out, tolerance,
   &out_corner_gap)`: the exact bilinearly-blended Coons patch through 4
   boundary curves (Parasolid/Rhino's NetworkSrf/EdgeSrf for exactly 4
