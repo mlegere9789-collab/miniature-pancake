@@ -36,35 +36,58 @@ bool MeshFaceIndicesInRange(const ON_Mesh& mesh) {
   return true;
 }
 
+// Shared by every Add*() below: a fresh UUID, plus `name` set via
+// SetName() when non-empty and `layer_index` written straight through. See
+// file_io.h's own doc comment on the `name`/`layer_index` parameters for
+// why this exists and why an empty name / a layer_index of 0 are no-ops.
+ON_3dmObjectAttributes MakeAttributes(const std::string& name, int layer_index) {
+  ON_3dmObjectAttributes attributes;
+  ON_CreateUuid(attributes.m_uuid);
+  if (!name.empty()) {
+    attributes.SetName(ON_wString(name.c_str()), true);
+  }
+  attributes.m_layer_index = layer_index;
+  return attributes;
+}
+
 }  // namespace
 
 Model::Model() = default;
 
-void Model::AddCurve(const NurbsCurve& curve) {
+int Model::AddLayer(const std::string& name, Color color) {
+  if (name.empty()) {
+    return -1;
+  }
+  return model_.AddLayer(ON_wString(name.c_str()), ON_Color(color.r, color.g, color.b));
+}
+
+void Model::AddCurve(const NurbsCurve& curve, const std::string& name, int layer_index) {
   auto* geometry = new ON_NurbsCurve(curve.raw());
-  ON_3dmObjectAttributes attributes;
-  ON_CreateUuid(attributes.m_uuid);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
-void Model::AddBrep(const Brep& brep) {
+void Model::AddBrep(const Brep& brep, const std::string& name, int layer_index) {
   auto* geometry = new ON_Brep(brep.raw());
-  ON_3dmObjectAttributes attributes;
-  ON_CreateUuid(attributes.m_uuid);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
-void Model::AddMesh(const Mesh& mesh) {
+void Model::AddMesh(const Mesh& mesh, const std::string& name, int layer_index) {
   auto* geometry = new ON_Mesh(mesh.raw());
-  ON_3dmObjectAttributes attributes;
-  ON_CreateUuid(attributes.m_uuid);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 
-void Model::AddSubD(const SubD& subd) {
+void Model::AddSubD(const SubD& subd, const std::string& name, int layer_index) {
   auto* geometry = new ON_SubD(subd.raw());
-  ON_3dmObjectAttributes attributes;
-  ON_CreateUuid(attributes.m_uuid);
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index);
+  model_.AddModelGeometryComponent(geometry, &attributes);
+}
+
+void Model::AddPointCloud(const PointCloud& cloud, const std::string& name, int layer_index) {
+  auto* geometry = new ON_PointCloud(cloud.raw());
+  ON_3dmObjectAttributes attributes = MakeAttributes(name, layer_index);
   model_.AddModelGeometryComponent(geometry, &attributes);
 }
 

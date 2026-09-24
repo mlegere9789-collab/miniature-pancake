@@ -326,6 +326,32 @@ std::vector<Point3d> ClipConvexPolygon(const std::vector<Point3d>& poly, const O
 // rim, genuinely out of scope here, not silently approximated.
 Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces, double t);
 
+// Per-face wall-thickness override of ShellConvexPlanar() above (Parasolid
+// PK_BODY_shell's own per-face `thickness` array, as distinct from its
+// single-scalar form): identical construction, except every place the
+// single `t` above offsets a KEPT face's own plane/loop inward, this uses
+// THAT FACE's own `wall_thickness[i]` instead - so two adjacent kept faces
+// may end up with genuinely different wall thickness, each face's inner
+// offset still independently clipped against every OTHER (possibly
+// differently-offset) face's own constraint plane exactly as before.
+// `wall_thickness.size()` must equal `solid.PlanarFaces().size()` (one
+// entry per face, by the same index PlanarFaces()/`removed_faces` already
+// use) - throws std::invalid_argument otherwise, rather than silently
+// zip-truncating or index-wrapping a mismatched-length array. Every entry
+// for a KEPT face (an index not in `removed_faces`) must be positive (the
+// same check the scalar overload makes on its own single `t`); an entry
+// for a REMOVED face is never read (that face has no wall of its own to
+// thicken) and may be anything, including left at 0.
+//
+// The scalar `ShellConvexPlanar(solid, removed_faces, t)` above is
+// exactly `ShellConvexPlanar(solid, removed_faces, std::vector<double>(
+// solid.PlanarFaces().size(), t))` - a thin delegation, not a second
+// implementation, so its own already-verified behavior (including every
+// one of its own degeneracy/adjacency checks) is provably unchanged by
+// this overload's existence.
+Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
+                        const std::vector<double>& wall_thickness);
+
 // Exact B-rep boolean between two solids where either (or both) may have
 // a CYLINDRICAL face, not just planar ones - what closes the gap
 // BooleanCombinePlanar's own PlanarFaces()-only precondition leaves open:

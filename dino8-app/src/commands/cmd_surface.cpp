@@ -590,6 +590,22 @@ void NetworkSrf(CommandContext& ctx, const std::vector<ObjectId>& ids) {
     end = c.PointAt(c.Domain().max);
     loop.push_back(c);
   }
+  // Exactly 4 curves: try the kernel's exact NurbsSurface::CoonsPatch()
+  // first - real NURBS control-point algebra that reproduces all 4
+  // boundary curves exactly, rather than the sample-then-refit
+  // approximation below (self-checks its own result and fails closed,
+  // so falling through to that approximation on Result::Failed - e.g.
+  // curves whose degrees/knots can't be unified within tolerance -
+  // never leaves this command worse off than before this swap).
+  if (loop.size() == 4) {
+    kernel::NurbsSurface exact;
+    if (kernel::NurbsSurface::CoonsPatch(loop[0], loop[2], loop[3], loop[1], exact) == kernel::Result::Ok) {
+      ctx.Doc().BeginChange("NetworkSrf");
+      ctx.Doc().Add(SceneObject::MakeSurface(exact));
+      ctx.Print("NetworkSrf: exact Coons patch through 4 curves (all 4 boundaries reproduced exactly)");
+      return;
+    }
+  }
   const int n = kProfileSamples + 8;
   const Row bottom = SampleCurve(loop[0], n, false), right = SampleCurve(loop[1], n, false);
   Row top = SampleCurve(loop[2], n, false);

@@ -56,6 +56,56 @@ struct MassProperties {
   std::array<double, 3> radii_of_gyration{};
 };
 
+// An oriented bounding box, from Mesh::GetOrientedBoundingBox(): a box
+// exactly `2 * half_extents[k]` long along each `axes[k]` (unit,
+// mutually orthogonal, right-handed - the SAME frame convention
+// MassProperties::principal_axes uses, and in fact the same axes: see
+// GetOrientedBoundingBox()'s own doc comment), centered at `center`.
+// Every vertex of the mesh it was built from lies within the box by
+// construction (`half_extents[k]` is exactly the largest projection onto
+// `axes[k]` found among all of that mesh's vertices), never merely
+// approximately.
+struct OrientedBoundingBox {
+  Point3d center;
+  std::array<Vector3d, 3> axes;
+  std::array<double, 3> half_extents{};
+};
+
+// One crossing of a ray with a mesh, from Mesh::FireRay().
+struct RayHit {
+  // Ray parameter: the hit is at `origin + t * direction`, in units of
+  // `direction`'s own length (t is a multiple of `direction`, NOT a
+  // distance, unless `direction` is unit length).
+  double t = 0;
+  Point3d point;
+  int face_index = -1;  // index into the mesh's own face list
+  // Whether the ray enters the solid here (crosses the face against its
+  // outward normal, direction . normal < 0) or leaves it. Only meaningful
+  // on a consistently-oriented (CCW from outside) mesh.
+  bool entering = false;
+};
+
+// Closest pair of points between two meshes' surfaces, from
+// Mesh::DistanceTo().
+struct MeshDistance {
+  double distance = 0;  // exactly 0 when the surfaces touch or cross
+  Point3d point_on_this;
+  Point3d point_on_other;
+  int face_on_this = -1;
+  int face_on_other = -1;
+};
+
+// Solid-level relationship between two closed meshes, from
+// Mesh::ClashWith(). Mutually exclusive, decided in the order listed on
+// the doc comment there.
+enum class Clash {
+  Clear,             // no shared volume, surfaces further apart than the distance tolerance
+  ThisInsideOther,   // (essentially) all of this mesh's volume lies inside `other`
+  OtherInsideThis,   // (essentially) all of `other`'s volume lies inside this mesh
+  Intersecting,      // the solids share positive volume, but neither contains the other
+  Touching,          // no shared volume, but the surfaces meet (shared face, edge or corner contact)
+};
+
 // Wraps ON_Mesh. OpenNURBS' polygon-mesh representation, produced by
 // tessellating a Brep — this is as far as OpenNURBS' public API goes
 // toward "meshing"; it has no boolean/CSG operations on top of it (see
@@ -101,6 +151,57 @@ class Mesh {
   // returning a degenerate all-zero box that would look like a valid
   // point-sized mesh at the origin.
   BoundingBox GetBoundingBox() const;
+
+  // A tighter box than GetBoundingBox() for anything not already
+  // axis-aligned: oriented to the solid's own principal axes of inertia
+  // rather than the world's. GetBoundingBox()'s own box can waste
+  // arbitrary volume on a rotated shape (a long thin box at 45 degrees
+  // gets an AABB nearly twice as wide as it is), which matters for a
+  // viewport's camera framing or a broad-phase overlap test's own
+  // tightness - nothing here could answer that before.
+  //
+  // The axes are exactly VolumeMassProperties()'s own `principal_axes` -
+  // not a separate PCA computation over vertex POSITIONS (the common,
+  // simpler technique, and a real alternative this deliberately isn't):
+  // a vertex-covariance PCA is biased by tessellation density (a region
+  // meshed more finely pulls the axes toward it even though the true
+  // shape hasn't changed), whereas the inertia tensor's eigenvectors -
+  // computed, like Volume()/GetCentroid(), by the divergence-theorem
+  // integral over the solid's actual enclosed volume - depend only on
+  // the real shape, not how finely any part of it happens to be
+  // triangulated. (The two are related, not unrelated formulas pressed
+  // into service: for the standard second-moment convention, inertia
+  // tensor I = trace(covariance) * Identity - covariance, so I and the
+  // volume-weighted covariance matrix are simultaneously diagonalized -
+  // same eigenVECTORS, just a different, monotonic map from eigenvalue
+  // to eigenvalue - which is exactly why reusing principal_axes here is
+  // mathematically the volume-weighted PCA frame, not an approximation
+  // of it.) Requires the same closed, consistently-oriented (CCW from
+  // outside), positive-volume precondition VolumeMassProperties() has -
+  // this delegates to it directly, so that method's own exceptions (both
+  // std::invalid_argument on a zero/negative volume and std::runtime_error
+  // from its eigensolver) surface here unchanged, not re-wrapped.
+  //
+  // `half_extents[k]` is then the tightest slab along `axes[k]` that
+  // contains every one of this mesh's own vertices - the largest
+  // absolute projection onto that axis, found by direct search over all
+  // vertices, not estimated - so the returned box provably contains the
+  // whole mesh, with `center` at the midpoint of each slab (not
+  // GetCentroid() - the box's own middle, generally a different point
+  // from the volume centroid for a shape that isn't symmetric about it).
+  //
+  // Honest scope: this is the standard, principal-axis-aligned oriented
+  // box, not a search for the GLOBALLY minimum-volume box over every
+  // possible orientation (that problem's practical 3D algorithms - e.g.
+  // an exhaustive rotating-calipers search over every face normal - are
+  // a materially different, much more expensive undertaking this does
+  // not attempt). For a solid whose own principal axes of inertia
+  // already line up with its tightest orientation - an axis-aligned box
+  // itself is the simplest example - the two coincide exactly, verified
+  // below; for a shape whose principal axes genuinely diverge from its
+  // tightest orientation (some non-convex or very asymmetric shapes),
+  // this box can be looser than that unattempted global minimum.
+  OrientedBoundingBox GetOrientedBoundingBox() const;
 
   // Whether `point` lies inside this mesh - a real "is this point part
   // of the solid" query nothing here could answer before (every existing
@@ -181,6 +282,83 @@ class Mesh {
   // eigen-solver itself reports failure, which a finite symmetric
   // tensor should never trigger.
   MassProperties VolumeMassProperties() const;
+
+  // Every crossing of the ray `origin + t * direction` (t > 0, i.e.
+  // strictly ahead of `origin`) with this mesh's faces, sorted by
+  // increasing t - the first entry is the nearest hit, which is what a
+  // pick, a shadow/visibility test, or a "shoot a ray and see what it
+  // lands on" query wants. ContainsPoint() has always fired a ray
+  // internally, but only ever counted its crossings; nothing here could
+  // report WHERE a ray hits, or on which face. Exact Moller-Trumbore
+  // per triangle (the same formula ContainsPoint() uses, now returning
+  // its parameter and barycentrics instead of a bool) - not a march or
+  // a sampled search - with no spatial acceleration structure (every
+  // triangle is tested; a quad face's own two triangles both, same split
+  // Area()/Volume() use). Returns empty for a miss. A hit exactly on a
+  // quad face's shared diagonal is reported once, not once per
+  // triangle. A ray exactly grazing an edge or vertex shared by two
+  // faces is the usual unhandled degenerate case (it may be reported
+  // once per face touched, or missed by both) - not hardened against,
+  // same caveat ContainsPoint() documents. A ray parallel to a face's
+  // plane never hits that face, even if it lies in it. Throws
+  // std::invalid_argument on a zero-length `direction`.
+  std::vector<RayHit> FireRay(Point3d origin, Vector3d direction) const;
+
+  // The exact minimum distance between this mesh's surface and
+  // `other`'s, with the pair of points (and faces) where it's attained
+  // - the clearance query a clash/interference check, an assembly
+  // fit, or a "how far apart are these two parts" measurement needs,
+  // which nothing here could answer before (ClosestPoint() is
+  // point-to-mesh only). Exact per triangle pair: the minimum distance
+  // between two triangles is attained either at a vertex of one and the
+  // closest point on the other (the same Ericson region test
+  // ClosestPoint() uses, 6 vertex/triangle pairs) or between two edges
+  // (the closed-form segment/segment closest points, 9 edge pairs), and
+  // is exactly 0 when an edge of one pierces the other's interior
+  // (segment/triangle intersection, 6 edge/triangle pairs) - all three
+  // families are checked, so a crossing pair reports 0 rather than the
+  // nearest vertex's or edge's positive distance. Returns
+  // `distance == 0` for touching or crossing surfaces. Meaningful for
+  // open surfaces too (it's a surface/surface query, not a solid one).
+  // Brute force over every triangle pair with a per-pair bounding-box
+  // reject against the best distance found so far; no BVH. Throws
+  // std::invalid_argument if either mesh has no faces.
+  MeshDistance DistanceTo(const Mesh& other) const;
+
+  // Solid-level classification of how this closed mesh and `other`
+  // relate (see Clash) - the interference check an assembly needs, which
+  // nothing here could answer before. Decided from the EXACT overlap
+  // volume `vol(this ∩ other)`, computed with the existing Manifold-
+  // backed BooleanCombine(), plus DistanceTo() for contact, in this
+  // order: ThisInsideOther if the overlap is at least
+  // `(1 - relative_volume_tolerance) * Volume()` (so an identical pair,
+  // or a part nestled against its container's wall from inside, reports
+  // this); else OtherInsideThis by the mirror test; else Intersecting if
+  // the overlap exceeds `relative_volume_tolerance * min(volumes)`; else
+  // Touching if the surfaces come within `distance_tolerance` of each
+  // other; else Clear. Two boxes sharing exactly one face (or an edge,
+  // or a corner) are Touching, not Intersecting: they meet but share no
+  // volume.
+  //
+  // Why overlap volume rather than edge/face piercing predicates: the
+  // most ordinary CAD clash - two equal-height boxes overlapping in plan
+  // - has every edge/face crossing landing exactly on a face's edge or
+  // lying in a face's own plane, degenerate for any such predicate,
+  // whereas its overlap volume is plainly positive. Manifold's boolean
+  // (exact predicates with symbolic perturbation) is built for exactly
+  // that coincident geometry. The volume tolerance is relative because
+  // ON_Mesh stores vertices as single-precision floats, so a touching
+  // pair whose coordinates aren't exactly representable can carry a
+  // round-off sliver of overlap (~1e-7 relative); 1e-6 is comfortably
+  // above that and far below any real interference. Requires both meshes
+  // to be closed, consistently oriented (IsClosedManifold()) and of
+  // positive volume - checked directly, throwing std::invalid_argument
+  // otherwise (also if a tolerance is out of range); BooleanCombine()'s
+  // own std::runtime_error can still surface if Manifold rejects a mesh
+  // that passed those checks. Not a high-performance broad-phase check -
+  // it runs a full boolean.
+  Clash ClashWith(const Mesh& other, double distance_tolerance = 1e-6,
+                  double relative_volume_tolerance = 1e-6) const;
 
   // Per-vertex normals: for each vertex, the area-weighted sum of every
   // adjacent face's own flat (non-normalized) triangle normal, then
@@ -391,8 +569,247 @@ class Mesh {
   // silently trusted.
   static Result LoadStl(const std::string& path, Mesh& out_mesh);
 
+  // Writes this mesh as an ASCII PLY (Stanford Polygon) file - the third
+  // "other file format" here, and a genuine gap: this kernel had zero PLY
+  // code at all before this. Unlike `.stl`, PLY's face element is a
+  // genuine variable-length list, so a quad face (`ON_MeshFace::IsQuad()`)
+  // is written as its own native 4-index face, not split into two
+  // triangles the way SaveStl() has to. Every vertex line always carries
+  // a geometry-derived normal (`ComputeVertexNormals()`, same convention
+  // as SaveObj()'s `vn`/SaveStl()'s facet normal - never a stored,
+  // independent one), and a `u`/`v` texture-coordinate pair per vertex
+  // when `HasTextureCoordinates()` is true (PLY has no single standard
+  // UV property name across tools - some use `s`/`t` - `u`/`v` is chosen
+  // here to match this kernel's own OBJ `vt` semantics exactly: one UV
+  // per vertex, not per face corner). Only the ASCII PLY encoding is
+  // written - PLY's binary_little_endian/binary_big_endian formats are a
+  // real, disclosed gap, not attempted here, the same honest treatment
+  // this codebase already gives Parasolid/ACIS licensing. Returns
+  // Result::Failed if the file can't be opened for writing.
+  Result SavePly(const std::string& path) const;
+
+  // Reads an ASCII PLY file into `out_mesh` - written by SavePly() or by
+  // another tool, as long as it's ASCII-encoded (binary PLY is rejected,
+  // see SavePly()'s own doc comment on why) and follows PLY's ordinary
+  // shape: a `vertex` element with `x`/`y`/`z` scalar properties (in any
+  // order, and tolerating extra properties this kernel doesn't use, e.g.
+  // color, by name rather than assuming a fixed column layout - genuinely
+  // parses the header's own property list instead of guessing a position),
+  // optional `nx`/`ny`/`nz` (read but discarded, same "always
+  // geometry-derived" convention LoadObj()'s `vn` and LoadStl()'s facet
+  // normal already have - there's nowhere in this kernel's Mesh to store
+  // an independent per-vertex normal), and optional `u`/`v` (stored via
+  // SetTextureCoordinates() only if present on every vertex, same
+  // all-or-nothing rule LoadObj() already applies); and a `face` element
+  // with exactly one list property (whatever its declared name -
+  // `vertex_indices`/`vertex_index` are both common) giving each face's
+  // 0-based vertex indices, 3 or 4 per face (this kernel's `ON_MeshFace`
+  // holds a triangle or quad only, same limit LoadObj() already has for
+  // `.obj`'s `f` lines - a 5+-gon face is rejected, not silently
+  // fan-triangulated). Any other element name (e.g. a color-only `edge`
+  // element) has its data lines skipped, not rejected - this kernel just
+  // doesn't read it into anything. Returns Result::Failed - `out_mesh`
+  // left unspecified, not partially filled - if the file can't be opened,
+  // isn't `ply`/`format ascii ...`, the vertex element is missing
+  // `x`/`y`/`z`, the face element's list property is missing or isn't a
+  // list, a face has fewer than 3 or more than 4 indices, a face index is
+  // out of range, or any header/data line fails to parse.
+  static Result LoadPly(const std::string& path, Mesh& out_mesh);
+
   const ON_Mesh& raw() const { return mesh_; }
   ON_Mesh& raw() { return mesh_; }
+
+  // --- Check / heal ------------------------------------------------------
+  //
+  // The mesh-level counterpart of Brep::Check() and its repairs: the
+  // same questions IsClosedManifold() answers with one bool, as COUNTS
+  // and LOCATIONS a caller can act on, plus the five repairs that turn
+  // the common "almost closed" or "almost clean" meshes back into closed,
+  // valid ones (CloseNakedEdges() and FillSmallHoles() for naked_edges,
+  // UnifyNormals() for orientation_conflicts, RemoveDegenerateFaces() for
+  // degenerate_faces, RemoveDuplicateFaces() for duplicate_faces, below).
+  // Two of CheckReport's six conditions still have no repair here:
+  // non_manifold_edges (repairing a 3+-face edge needs a judgment call -
+  // which faces stay grouped together - this class doesn't make for you)
+  // and interior duplicate_vertices away from any naked edge
+  // (CloseNakedEdges() only welds boundary ones, by design - an interior
+  // feature that happens to be `tolerance`-close to another is not the
+  // same bug as a seam left open by construction, and silently welding
+  // it could collapse real geometry).
+  struct CheckReport {
+    // Undirected edges used by exactly one face (the open boundary).
+    int naked_edges = 0;
+    // Undirected edges used by three or more faces.
+    int non_manifold_edges = 0;
+    // Directed edges used twice - two faces walking a shared edge the
+    // same way, IsClosedManifold()'s own orientation-conflict condition.
+    int orientation_conflicts = 0;
+    // Faces with a repeated vertex index, an edge shorter than
+    // `tolerance`, or a height (2*area / longest edge) at or below
+    // `tolerance` - a face contributing nothing but bad edges.
+    int degenerate_faces = 0;
+    // Distinct vertex indices within `tolerance` of another (counted per
+    // vertex that has at least one such partner): the "same point stored
+    // twice" MergeAndWeld() exists to prevent, and CloseNakedEdges()
+    // repairs when it happened on a boundary.
+    int duplicate_vertices = 0;
+    // Faces that are the exact same polygon as another face already
+    // counted (same vertex indices, in the same cyclic order OR its
+    // exact reverse - i.e. the identical shape, winding-direction-
+    // agnostic) - counted per LATER occurrence, so two duplicates of the
+    // same triangle count as 1, not 2. Independent of degenerate_faces:
+    // two perfectly valid, non-degenerate triangles sitting exactly on
+    // top of each other (a common "appended the same geometry twice"
+    // import defect) trip this, not that.
+    int duplicate_faces = 0;
+    // Every naked edge as (a, b) in the direction its one face walks it,
+    // in face order - the input FillSmallHoles() chains into loops.
+    std::vector<std::pair<int, int>> naked_edge_list;
+    // Same three conditions as Mesh::IsClosedManifold().
+    bool IsClosedManifold() const {
+      return naked_edges == 0 && non_manifold_edges == 0 && orientation_conflicts == 0;
+    }
+  };
+  CheckReport Check(double tolerance = tolerance::kDistance) const;
+
+  // Face pairs whose triangles genuinely cross in 3D - the "does this
+  // otherwise-closed-manifold mesh actually pass through itself" question
+  // Check() does not answer at all: CheckReport's six conditions are every
+  // one an EDGE-adjacency defect (naked/non-manifold edges, orientation,
+  // degenerate/duplicate faces, duplicate vertices), so a mesh with none of
+  // them - IsClosedManifold() true, Check() clean - can still be a genuinely
+  // self-overlapping shape: two unrelated sheets of the same result crossing
+  // each other, e.g. a general boolean/fillet/offset chain whose
+  // intermediate tolerance slop let one surface poke through another (see
+  // boolean_general.h's own investigation-log comments for how load-bearing
+  // that chain's tolerance handling already is). Returned as (face_a,
+  // face_b) with face_a < face_b, each pair reported once.
+  //
+  // Two triangles that SHARE A VERTEX (including two triangles that are a
+  // single quad face's own (0,1,2)/(0,2,3) split) are never reported - that
+  // is completely normal mesh connectivity, not a self-intersection, and is
+  // simply not the question this method answers (a wrong fan at a shared
+  // vertex shows up as a degenerate or duplicate face, or a bad normal, not
+  // here). For a pair sharing no vertex, the two triangles are each split by
+  // the other's plane and the resulting intervals along the two planes' own
+  // cross-product line must overlap by MORE than `tolerance` - so two
+  // triangles that merely touch (a shared boundary from a weld, or two
+  // patches coincident within tolerance) are not reported, only a genuine
+  // crossing is.
+  //
+  // Honest limitations, both inherited from the same cross-triangle test
+  // surface_intersect.cpp's own TriTri uses for cross-SURFACE intersection
+  // curves (this is that same construction, specialized to one mesh's own
+  // self-overlap question rather than two independent meshes' intersection
+  // curve): (1) two overlapping COPLANAR triangles are not reported - the
+  // cross-product of two coplanar faces' normals is zero, so this test can't
+  // place them along a shared line at all; a real coplanar overlap (e.g. two
+  // duplicate-but-shifted flat faces) needs its own 2D-polygon-overlap test,
+  // which this is not. (2) DETECTION ONLY - no repair. A genuine
+  // self-intersection has no single correct fix (split both triangles at
+  // the crossing? drop one sheet? re-run the operation at a tighter
+  // tolerance?) the way a duplicate face or a below-tolerance sliver does,
+  // so - the same considered position Check()'s own non_manifold_edges and
+  // interior duplicate_vertices already take, see CheckReport's class
+  // comment above - this kernel reports it and leaves the fix to the
+  // caller rather than guess.
+  //
+  // Broad-phase accelerated with a uniform grid over the mesh's own
+  // triangles (mirroring surface_intersect.cpp's own Grid), so this stays
+  // usable on the several-thousand-triangle meshes TessellateConforming()
+  // and the general boolean path produce - O(n) candidate pairs in the
+  // ordinary case, degrading to O(n^2) only if every triangle lands in one
+  // grid cell. Never modifies this mesh.
+  std::vector<std::pair<int, int>> FindSelfIntersections(double tolerance = tolerance::kDistance) const;
+
+  // The open boundary as closed loops of vertex indices: each naked edge
+  // (a, b) chained a -> b -> ... in the direction its face walks it, so
+  // walking a loop keeps the existing faces on the same side a
+  // reversed-edge fill needs. A loop through a vertex with more than one
+  // outgoing naked edge (a bowtie: two holes touching at one vertex) is
+  // ambiguous and is NOT returned (its edges are left unchained rather
+  // than guessed); a chain that never closes (only possible on a
+  // non-manifold boundary) is dropped the same way. Empty for a closed
+  // mesh.
+  std::vector<std::vector<int>> NakedEdgeLoops() const;
+
+  // Welds vertices that lie on naked edges and are within `tolerance`
+  // of another naked-edge vertex into one - a TRUE distance test (every
+  // pair within `tolerance` welds, unlike MergeAndWeld()'s grid snapping,
+  // which can leave two points a hair apart in adjacent cells unwelded),
+  // restricted to boundary vertices so an interior feature smaller than
+  // `tolerance` is never touched. The lowest-indexed vertex of each
+  // group survives at ITS OWN position (nothing is averaged or moved);
+  // faces are remapped, a face that collapses to fewer than 3 distinct
+  // vertices is dropped, a quad that collapses to 3 becomes a triangle,
+  // and vertices no longer used by any face are removed. This is the
+  // repair for a seam that construction left `tolerance`-wide open: a
+  // duplicated vertex (two copies of the same point, each used by
+  // different faces), or the mesh of a Brep whose JoinNakedEdges()
+  // recorded a tolerant edge (see brep.h). Returns the number of
+  // vertices welded away. Texture coordinates are dropped (a welded
+  // vertex has no single UV).
+  int CloseNakedEdges(double tolerance);
+
+  // Removes every face Check(tolerance) would count in degenerate_faces -
+  // literally the same test, not a redefinition of it (see Check()'s own
+  // comment: a repeated vertex index, an edge shorter than `tolerance`,
+  // or a height at or below `tolerance`), so a caller can trust that
+  // Check(tolerance).degenerate_faces == 0 after this runs. A vertex left
+  // referenced by no surviving face is then dropped and remaining faces
+  // reindexed, the same compaction CloseNakedEdges() already does. Never
+  // touches a face that ISN'T degenerate, even if removing it would make
+  // a neighboring hole "nicer" - this is strictly subtractive, no
+  // re-triangulation or hole-filling (FillSmallHoles() is the tool for
+  // the hole a removed sliver can leave behind). Texture coordinates are
+  // dropped, same reason as CloseNakedEdges() - a vertex surviving a
+  // removed face may have lost the only UV that referenced it uniquely.
+  // Returns the number of faces removed.
+  int RemoveDegenerateFaces(double tolerance = tolerance::kDistance);
+
+  // Removes every face Check() would count in duplicate_faces - the
+  // LATER occurrence of each repeated polygon is dropped, the first
+  // survives untouched at its original index order (only later indices
+  // shift down). "Duplicate" means the exact same vertex indices in the
+  // same cyclic order or its exact reverse (so a triangle and its
+  // opposite-wound twin both count, along with an ordinary reordered
+  // repeat) - not merely "close in space" the way CloseNakedEdges()'s
+  // vertex welding is; two faces built from entirely different vertex
+  // INDICES that happen to sit at the same 3D positions are a
+  // duplicate_vertices problem for CloseNakedEdges(), not this. Distinct
+  // from RemoveDegenerateFaces(): a duplicate pair can be two perfectly
+  // valid, non-degenerate triangles sitting exactly on top of each
+  // other (e.g. an import that appended the same geometry twice), which
+  // Check()'s degenerate_faces test alone would never catch (each one,
+  // taken alone, is a fine triangle). Compacts now-unused vertices and
+  // drops texture coordinates, same as RemoveDegenerateFaces(). Returns
+  // the number of faces removed.
+  int RemoveDuplicateFaces();
+
+  // Fills every boundary loop (NakedEdgeLoops()) whose vertices' axis-
+  // aligned bounding-box diagonal is at most `max_extent`: a 3-vertex
+  // loop gets one triangle, any larger loop a fan of triangles from a
+  // NEW vertex at the loop's own centroid (so a non-planar or non-convex
+  // hole still gets a valid, non-self-overlapping fill without any
+  // ear-clipping; a planar hole's fill lies exactly in its plane, since
+  // the centroid does). Every fill triangle walks its boundary edge in
+  // REVERSE of the existing face, so the result is orientation-
+  // consistent with the surrounding mesh. Loops larger than `max_extent`
+  // are left open (the bound is what keeps this from "filling" a whole
+  // missing side of a model with a fan nobody asked for). Returns the
+  // number of holes filled.
+  int FillSmallHoles(double max_extent);
+
+  // Makes face windings consistent across every manifold (2-face) edge
+  // by breadth-first traversal from each not-yet-visited face, flipping
+  // whichever neighbour walks a shared edge the same way (the same
+  // per-face reversal FlipNormals() applies to all faces), then, if the
+  // result IsClosedManifold() and Volume() is negative, flips every face
+  // so the mesh faces outward. Non-manifold (3+-face) edges are skipped
+  // (no single "other side" to agree with). Returns the number of face
+  // flips performed; an open mesh is only made consistent, not oriented
+  // outward.
+  int UnifyNormals();
 
   // Concatenates several independently-tessellated meshes into one and
   // welds vertices within `tolerance` of each other into a single shared

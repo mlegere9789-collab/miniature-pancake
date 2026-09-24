@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/detail/degree_elevate.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/tolerance.h"
@@ -718,11 +719,21 @@ Result NurbsSurface::MakeNonRational() {
 }
 
 Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
+  if (direction != 0 && direction != 1) {
+    return Result::Failed;
+  }
   if (new_degree <= surface_.Degree(direction)) {
     return Result::NoOpAlreadySatisfied;
   }
-  const bool ok = surface_.IncreaseDegree(direction, new_degree);
-  return ok ? Result::Ok : Result::Failed;
+  // Deliberately NOT `ON_NurbsSurface::IncreaseDegree` - it delegates to
+  // `ON_NurbsCurve::IncreaseDegree`, whose measured shape corruption on
+  // non-uniform knots detail/degree_elevate.h documents.
+  ON_NurbsSurface elevated;
+  if (!detail::DegreeElevateNurbsSurface(surface_, direction, new_degree, elevated)) {
+    return Result::Failed;
+  }
+  surface_ = elevated;
+  return Result::Ok;
 }
 
 bool NurbsSurface::IsClosed(int direction) const { return surface_.IsClosed(direction); }
@@ -890,8 +901,10 @@ Point2d NurbsSurface::ClosestPointParameter(Point3d point, int u_divisions, int 
   double best_v = v_lo;
 
   constexpr int kRefinementLevels = 8;
+  std::vector<double> d2_grid(static_cast<size_t>(u_divisions + 1) * static_cast<size_t>(v_divisions + 1));
   for (int level = 0; level < kRefinementLevels; ++level) {
     double best_d2 = std::numeric_limits<double>::max();
+    int best_i = 0, best_j = 0;
     for (int i = 0; i <= u_divisions; ++i) {
       const double u_raw = u_lo + (u_hi - u_lo) * static_cast<double>(i) / u_divisions;
       const double u = u_closed ? wrap(u_raw, u_domain.Min(), u_domain.Max()) : u_raw;
@@ -899,19 +912,76 @@ Point2d NurbsSurface::ClosestPointParameter(Point3d point, int u_divisions, int 
         const double v_raw = v_lo + (v_hi - v_lo) * static_cast<double>(j) / v_divisions;
         const double v = v_closed ? wrap(v_raw, v_domain.Min(), v_domain.Max()) : v_raw;
         const double d2 = distance_squared(u, v);
+        d2_grid[static_cast<size_t>(i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(j)] = d2;
         if (d2 < best_d2) {
           best_d2 = d2;
           best_u = u_raw;
           best_v = v_raw;
+          best_i = i;
+          best_j = j;
         }
       }
     }
-    const double u_step = (u_hi - u_lo) / u_divisions;
-    const double v_step = (v_hi - v_lo) / v_divisions;
-    u_lo = u_closed ? (best_u - u_step) : std::max(u_domain.Min(), best_u - u_step);
-    u_hi = u_closed ? (best_u + u_step) : std::min(u_domain.Max(), best_u + u_step);
-    v_lo = v_closed ? (best_v - v_step) : std::max(v_domain.Min(), best_v - v_step);
-    v_hi = v_closed ? (best_v + v_step) : std::min(v_domain.Max(), best_v + v_step);
+    // The window for the NEXT level is best +/- one grid cell of THIS
+    // level - normally `(u_hi - u_lo) / u_divisions`. But using the
+    // caller's own (possibly large) u_divisions/v_divisions here too
+    // was a real, confirmed bug: it makes the total distance the window
+    // can drift across all `kRefinementLevels` (a geometric series with
+    // ratio ~2/divisions per level) shrink roughly as `1/divisions` -
+    // so a FINER grid, which should only ever improve accuracy, instead
+    // shrinks this "drift budget" and can leave the window unable to
+    // travel far enough to reach a true minimum that the level-0 sample
+    // landed more than a few of its own (now much smaller) grid cells
+    // away from - confirmed directly on a degree-(1,3) rational-free
+    // surface where 100x100 sampling converged to a parameter ~0.011
+    // short of the true minimum's basin (dist ~908.57) while 24x24
+    // sampling had enough drift budget to reach it (dist ~893.39), the
+    // opposite of the expected finer-is-better-or-equal trend. Capping
+    // the divisor used HERE (not the sampling density above, which
+    // still benefits fully from a larger u_divisions/v_divisions) keeps
+    // the drift budget at least as large as this method's own default
+    // (20x20) provides, regardless of how fine the caller's sampling is.
+    //
+    // Separately: only narrow a direction's window if that direction
+    // actually discriminated at this level. At a DEGENERATE edge - a
+    // sphere's pole, a cone's apex, a revolved surface's on-axis end,
+    // where a whole row of control points collapses to one point - every
+    // u sample on the pole row evaluates to the same point, so the best
+    // sample's u is just whichever tied sample came first (u = u_lo),
+    // and narrowing the u window around it locked the search into the
+    // wrong azimuth for every later level: a real, reproduced bug (see
+    // TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth) - a query
+    // 0.3r off the sphere just 0.36 degrees from the pole came back with
+    // its closest point ~32 degrees of azimuth away. Leaving a flat
+    // direction's window alone lets the OTHER direction move off the
+    // degenerate edge first; the flat direction then discriminates on
+    // the next level and narrows normally (one level of the 8 spent, of
+    // a resolution budget that has plenty to spare).
+    constexpr int kMaxNarrowingDivisions = 24;
+    double row_min = std::numeric_limits<double>::max(), row_max = 0.0;
+    for (int i = 0; i <= u_divisions; ++i) {
+      const double d2 = d2_grid[static_cast<size_t>(i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(best_j)];
+      row_min = std::min(row_min, d2);
+      row_max = std::max(row_max, d2);
+    }
+    double col_min = std::numeric_limits<double>::max(), col_max = 0.0;
+    for (int j = 0; j <= v_divisions; ++j) {
+      const double d2 = d2_grid[static_cast<size_t>(best_i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(j)];
+      col_min = std::min(col_min, d2);
+      col_max = std::max(col_max, d2);
+    }
+    const bool u_flat = (row_max - row_min) <= 1e-12 * best_d2;
+    const bool v_flat = (col_max - col_min) <= 1e-12 * best_d2;
+    const double u_step = (u_hi - u_lo) / std::min(u_divisions, kMaxNarrowingDivisions);
+    const double v_step = (v_hi - v_lo) / std::min(v_divisions, kMaxNarrowingDivisions);
+    if (!u_flat) {
+      u_lo = u_closed ? (best_u - u_step) : std::max(u_domain.Min(), best_u - u_step);
+      u_hi = u_closed ? (best_u + u_step) : std::min(u_domain.Max(), best_u + u_step);
+    }
+    if (!v_flat) {
+      v_lo = v_closed ? (best_v - v_step) : std::max(v_domain.Min(), best_v - v_step);
+      v_hi = v_closed ? (best_v + v_step) : std::min(v_domain.Max(), best_v + v_step);
+    }
   }
   const double final_u = u_closed ? wrap(best_u, u_domain.Min(), u_domain.Max()) : best_u;
   const double final_v = v_closed ? wrap(best_v, v_domain.Min(), v_domain.Max()) : best_v;
@@ -958,7 +1028,35 @@ SurfaceCurvature NurbsSurface::CurvatureAt(double u, double v) const {
   const double n_coeff = dvv * normal;
 
   const double denom = e_coeff * g_coeff - f_coeff * f_coeff;
-  if (std::abs(denom) < 1e-15) {
+  // EG - F^2 == |du x dv|^2, so the tangent plane degenerates whenever
+  // either partial derivative vanishes (a POLE - a sphere's axis point, a
+  // cone's apex, a revolved surface's on-axis end, where a whole row of
+  // control points collapses to one point) or the two partials are
+  // parallel (a fold). Both must be tested RELATIVELY, not against an
+  // absolute threshold: EG - F^2 scales with length^4, so an absolute
+  // test throws "degenerate" at perfectly regular points of any small
+  // enough surface (see TestSurfaceCurvatureAtIsScaleInvariant).
+  //
+  // The two relative tests are NOT interchangeable, and using only the
+  // first one is itself a real, reproduced regression: "EG - F^2 over EG"
+  // (sine-squared of the partials' angle) correctly flags a fold when E
+  // and G are comparable, but is USELESS right at a pole. There, one
+  // partial (say du) is mathematically zero but evaluates to pure
+  // floating-point noise (measured: |du| ~1e-17 to 1e-23 at unit-to-tiny
+  // scale) whose direction is essentially arbitrary, so F = du.dv is
+  // noise of the SAME relative order as E = du.du, and EG - F^2 over EG
+  // comes out anywhere from 0.24 to 0.76 depending on scale - nowhere
+  // near 0, so it missed every pole case in
+  // TestSurfaceCurvatureAtIsScaleInvariant. What IS scale-invariant and
+  // noise-robust at the pole is comparing E to G directly: measured on
+  // sphere radii 1, 1e-4 and 1e-6, a regular point has
+  // min(E,G)/max(E,G) ~ 0.94-1.0, while a pole has it ~1e-33 to 1e-41 -
+  // one partial is at the noise floor relative to the other, regardless
+  // of overall scale. So a vanishing tangent is caught by this second,
+  // independent relative test.
+  const bool near_parallel = !(denom > 1e-16 * e_coeff * g_coeff);
+  const bool tangent_vanishes = !(std::min(e_coeff, g_coeff) > 1e-16 * std::max(e_coeff, g_coeff));
+  if (!std::isfinite(denom) || near_parallel || tangent_vanishes) {
     throw std::runtime_error(
         "dino8::kernel::NurbsSurface::CurvatureAt: degenerate first "
         "fundamental form at this (u, v)");
@@ -1701,6 +1799,210 @@ Mesh NurbsSurface::TessellateGridClippedExactAdaptive(double chord_tolerance,
                                                         const std::vector<Point2d>& trim_polygon) const {
   const SurfaceDivisions divisions = SuggestedDivisions(chord_tolerance);
   return TessellateGridClippedExact(divisions.u, divisions.v, trim_polygon);
+}
+
+namespace {
+
+// Which of the two possible unit-normal fields `normal` belongs to,
+// relative to a geometrically-known "true outward" direction at the same
+// point - see OffsetAnalytic()'s own doc comment for why this can't be
+// assumed fixed. +1 if they point the same way, -1 if opposite.
+double OffsetNormalSign(const Vector3d& normal, const Vector3d& true_outward) {
+  return ON_DotProduct(normal, true_outward) >= 0.0 ? 1.0 : -1.0;
+}
+
+}  // namespace
+
+Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double tolerance) const {
+  if (!ON_IsValid(distance)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::OffsetAnalytic: distance must be finite");
+  }
+  if (distance == 0.0) {
+    out.surface_ = surface_;
+    return Result::Ok;
+  }
+
+  ON_BoundingBox bbox;
+  surface_.GetBoundingBox(bbox, false);
+  const double tol = tolerance > 0.0 ? tolerance
+                                      : dino8::kernel::tolerance::DistanceForSize(bbox.Diagonal().Length());
+
+  const Interval du = Domain(0);
+  const Interval dv = Domain(1);
+  const double umid = 0.5 * (du.min + du.max);
+  const double vmid = 0.5 * (dv.min + dv.max);
+
+  // --- Plane -----------------------------------------------------------
+  // Exact for ANY planar surface (not just a full/closed one) - see the
+  // header doc comment for why a constant control-point translation is
+  // the exact offset here, and why it's better than the GetNurbForm()
+  // rebuild the other four cases use.
+  {
+    ON_Plane plane;
+    if (surface_.IsPlanar(&plane, tol)) {
+      const Vector3d n = NormalAt(umid, vmid);
+      ON_NurbsSurface moved = surface_;
+      const int cv_count_u = moved.CVCount(0);
+      const int cv_count_v = moved.CVCount(1);
+      for (int i = 0; i < cv_count_u; ++i) {
+        for (int j = 0; j < cv_count_v; ++j) {
+          ON_4dPoint cv;
+          moved.GetCV(i, j, cv);
+          cv.x += cv.w * distance * n.x;
+          cv.y += cv.w * distance * n.y;
+          cv.z += cv.w * distance * n.z;
+          moved.SetCV(i, j, cv);
+        }
+      }
+      out.surface_ = moved;
+      return Result::Ok;
+    }
+  }
+
+  // --- Sphere ------------------------------------------------------------
+  {
+    ON_Sphere sphere;
+    if (surface_.IsSphere(&sphere, tol)) {
+      const Point3d p = PointAt(umid, vmid);
+      const Vector3d n = NormalAt(umid, vmid);
+      Vector3d radial = p - sphere.Center();
+      if (!radial.Unitize()) return Result::Failed;
+      const double sign = OffsetNormalSign(n, radial);
+      const double new_radius = sphere.radius + sign * distance;
+      if (!(new_radius > 0.0)) return Result::Failed;
+      ON_Sphere new_sphere(sphere.Center(), new_radius);
+      ON_NurbsSurface ns;
+      if (new_sphere.GetNurbForm(ns) == 0) return Result::Failed;
+      out.surface_ = ns;
+      return Result::Ok;
+    }
+  }
+
+  // --- Cylinder ----------------------------------------------------------
+  {
+    ON_Cylinder cyl;
+    if (surface_.IsCylinder(&cyl, tol)) {
+      // IsCylinder()'s own fallback extraction (this surface is always a
+      // bare ON_NurbsSurface, never an ON_RevSurface, so that fallback -
+      // not the ON_RevSurface::IsCylindrical() path - is always what
+      // runs here) only fits `cyl.circle`; it never sets `cyl.height`,
+      // which is left at its default height[0] == height[1] == 0, i.e.
+      // "infinite cylinder" (confirmed by reading
+      // opennurbs_revsurface.cpp's ON_Surface::IsCylinder). An infinite
+      // cylinder's own GetNurbForm() always fails (it requires
+      // height[0] != height[1]), so the real finite extent has to be
+      // recovered independently here, from this surface's own v-domain
+      // ends, before the offset cylinder can be built at all.
+      const Point3d p_lo = PointAt(umid, dv.min);
+      const Point3d p_hi = PointAt(umid, dv.max);
+      double angle_unused, h_lo, h_hi;
+      cyl.ClosestPointTo(p_lo, &angle_unused, &h_lo);
+      cyl.ClosestPointTo(p_hi, &angle_unused, &h_hi);
+      cyl.height[0] = std::min(h_lo, h_hi);
+      cyl.height[1] = std::max(h_lo, h_hi);
+      if (cyl.height[0] == cyl.height[1]) return Result::Failed;  // degenerate zero-height patch
+
+      const Point3d p = PointAt(umid, vmid);
+      const Vector3d n = NormalAt(umid, vmid);
+      // The point on the cylinder's AXIS LINE closest to `p` - NOT
+      // `cyl.circle.plane.ClosestPointTo(p)`, which projects onto the
+      // circle's own 2D cross-section PLANE (dropping only the
+      // along-axis component) and so returns a point still `radius`
+      // away from the axis whenever `p` sits at a different height than
+      // that plane's own origin - a real bug caught by testing (that
+      // projection came back exactly equal to `p` itself, a give-away,
+      // when IsCylinder()'s own fitted cross-section happened to sit at
+      // this same sample height).
+      const Point3d axis_point = cyl.circle.plane.origin +
+          ON_DotProduct(p - cyl.circle.plane.origin, cyl.circle.plane.zaxis) * cyl.circle.plane.zaxis;
+      Vector3d radial = p - axis_point;
+      if (!radial.Unitize()) return Result::Failed;
+      const double sign = OffsetNormalSign(n, radial);
+      const double new_radius = cyl.circle.radius + sign * distance;
+      if (!(new_radius > 0.0)) return Result::Failed;
+      ON_Cylinder new_cyl(ON_Circle(cyl.circle.plane, new_radius));
+      new_cyl.height[0] = cyl.height[0];
+      new_cyl.height[1] = cyl.height[1];
+      ON_NurbsSurface ns;
+      if (new_cyl.GetNurbForm(ns) == 0) return Result::Failed;
+      out.surface_ = ns;
+      return Result::Ok;
+    }
+  }
+
+  // --- Cone ----------------------------------------------------------------
+  {
+    ON_Cone cone;
+    if (surface_.IsCone(&cone, tol)) {
+      const double alpha = cone.AngleInRadians();
+      const double sin_alpha = std::sin(alpha);
+      if (!ON_IsValid(alpha) || std::abs(sin_alpha) <= dino8::kernel::tolerance::kZeroVector) {
+        return Result::Failed;  // degenerate (near-flat or near-cylindrical) half-angle
+      }
+
+      const Point3d apex = cone.ApexPoint();
+      const Vector3d axis = cone.Axis();
+      const Point3d p = PointAt(umid, vmid);
+      const Vector3d to_p = p - apex;
+      Vector3d radial = to_p - ON_DotProduct(to_p, axis) * axis;
+      if (!radial.Unitize()) return Result::Failed;
+      const Vector3d n = NormalAt(umid, vmid);
+      const double sign = OffsetNormalSign(n, radial);
+      const double signed_distance = sign * distance;
+
+      // Self-intersection guard: shrinking the cone (signed_distance < 0)
+      // by at least the smallest radius anywhere in this surface's own
+      // v-domain folds the surface through the axis there - the cone's
+      // local radius of curvature, circumferentially, is exactly its
+      // distance from the axis.
+      if (signed_distance < 0.0) {
+        const Point3d p_a = PointAt(umid, dv.min);
+        const Point3d p_b = PointAt(umid, dv.max);
+        const double r_a = (p_a - apex - ON_DotProduct(p_a - apex, axis) * axis).Length();
+        const double r_b = (p_b - apex - ON_DotProduct(p_b - apex, axis) * axis).Length();
+        if (-signed_distance >= std::min(r_a, r_b)) return Result::Failed;
+      }
+
+      const double apex_shift = -signed_distance / sin_alpha;
+      ON_Plane new_plane = cone.plane;
+      new_plane.origin = apex + apex_shift * axis;
+      new_plane.UpdateEquation();
+      ON_Cone new_cone;
+      if (!new_cone.Create(new_plane, cone.height, cone.radius) || !new_cone.IsValid()) {
+        return Result::Failed;
+      }
+      ON_NurbsSurface ns;
+      if (new_cone.GetNurbForm(ns) == 0) return Result::Failed;
+      out.surface_ = ns;
+      return Result::Ok;
+    }
+  }
+
+  // --- Torus -----------------------------------------------------------------
+  {
+    ON_Torus torus;
+    if (surface_.IsTorus(&torus, tol)) {
+      const Point3d p = PointAt(umid, vmid);
+      double major_angle, minor_angle;
+      torus.ClosestPointTo(p, &major_angle, &minor_angle);
+      const Point3d tube_center = torus.MinorCircleRadians(major_angle).Center();
+      Vector3d radial = p - tube_center;
+      if (!radial.Unitize()) return Result::Failed;
+      const Vector3d n = NormalAt(umid, vmid);
+      const double sign = OffsetNormalSign(n, radial);
+      const double new_minor = torus.minor_radius + sign * distance;
+      if (!(new_minor > 0.0)) return Result::Failed;             // tube collapses through its own center circle
+      if (new_minor >= torus.major_radius) return Result::Failed;  // self-intersecting spindle torus
+      ON_Torus new_torus(torus.plane, torus.major_radius, new_minor);
+      ON_NurbsSurface ns;
+      if (new_torus.GetNurbForm(ns) == 0) return Result::Failed;
+      out.surface_ = ns;
+      return Result::Ok;
+    }
+  }
+
+  return Result::Failed;
 }
 
 }  // namespace dino8::kernel

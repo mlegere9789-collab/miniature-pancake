@@ -9,6 +9,7 @@
 namespace dino8::kernel {
 
 class Mesh;
+class NurbsCurve;
 
 // The four scalar curvature values at one point on a surface, from
 // classical differential geometry's first/second fundamental forms:
@@ -49,12 +50,54 @@ struct SurfaceSize {
   double height;  // approximate size in the V direction
 };
 
+// Continuity order NurbsSurface::MatchEdge() enforces along the shared
+// edge: Position (G0), Tangent (G1), Curvature (G2).
+enum class MatchContinuity { Position, Tangent, Curvature };
+
+// What NurbsSurface::MatchEdge() reports about the match it just made,
+// every number measured by evaluating both surfaces after the edit (not
+// inferred from the construction).
+struct MatchEdgeReport {
+  // Max 3D distance between the two surfaces along the shared edge.
+  double max_position_error = 0.0;
+  // Max |S_cross + scale * T_cross| along the edge (0 unless Tangent or
+  // Curvature was requested): how far this surface's cross-boundary
+  // first derivative is from the (scaled, reversed) target's. Both
+  // cross derivatives are taken along the direction pointing *into*
+  // their own surface, i.e. the raw parametric derivative at a
+  // domain-min edge and its negation at a domain-max edge.
+  double max_tangent_error = 0.0;
+  // Max |S_crosscross - scale^2 * T_crosscross| along the edge (0
+  // unless Curvature was requested).
+  double max_curvature_error = 0.0;
+  // The cross-derivative scale factor used (see MatchEdge()).
+  double scale = 1.0;
+  // Whether the target edge was traversed in reverse to line up with
+  // this surface's edge.
+  bool target_edge_reversed = false;
+};
+
+// Which analytic developable primitive NurbsSurface::UnrollDevelopable()
+// matched, written to its optional out_kind - useful for a caller (e.g.
+// an app command) that wants to report which case applied, or confirm
+// it wasn't a coincidental match.
+enum class DevelopableKind { Plane, Cylinder, Cone };
+
 // Wraps ON_NurbsSurface. Same rationale as NurbsCurve: expose raw()
 // rather than mirror the whole OpenNURBS surface API.
 class NurbsSurface {
  public:
   // Builds a bilinear-ish degree-(u_degree, v_degree) NURBS surface from a
-  // u_count x v_count grid of control points, row-major (u varies fastest).
+  // u_count x v_count grid of control points. Doc/implementation
+  // mismatch found and fixed while building `CoonsPatch()` below (which
+  // got bitten by trusting the old wording): despite this comment
+  // previously claiming "row-major (u varies fastest)", the actual
+  // indexing (confirmed directly against the .cpp, not assumed) is
+  // `idx = u * v_count + v` - v is the one that varies fastest for
+  // consecutive `control_grid` entries, u the slow/outer index, i.e.
+  // `control_grid[u * v_count + v]` becomes `CV(u, v)`. Only the words
+  // were wrong; the indexing itself is unchanged (many existing callers
+  // already rely on the real behavior), so this is a comment-only fix.
   // Throws std::invalid_argument if either degree is < 1, either count is
   // below its degree + 1, or `control_grid.size() != u_count * v_count` -
   // the same contract `NurbsCurve::FromControlPoints()` enforces, for the
@@ -65,6 +108,63 @@ class NurbsSurface {
   static NurbsSurface FromControlGrid(const std::vector<Point3d>& control_grid,
                                        int u_count, int v_count, int u_degree,
                                        int v_degree);
+
+  // Builds the exact bilinearly-blended Coons patch through 4 boundary
+  // curves (Parasolid/Rhino's NetworkSrf/EdgeSrf for exactly 4 curves) -
+  // as real NURBS algebra on the curves' own control points, not by
+  // sampling them into points and re-fitting a surface through the
+  // samples the way dino8-app's existing `NetworkSrf` command does
+  // (that command's own `SurfaceFromRows()` hands sampled points
+  // straight to `FromControlGrid()`, which treats them *as* control
+  // points - a B-spline generally does not pass through its own
+  // control points, so that surface's boundary only approximates the
+  // source curves, confirmed by measuring the gap in the tests here).
+  // This method's own boundary isocurves instead reproduce `bottom`/
+  // `top`/`left`/`right` exactly (verified in the tests: the residual
+  // is at the level of the reparameterization/refinement steps'
+  // floating-point rounding, not a fitting error).
+  //
+  // `bottom`/`top` run in the same direction (both start at the "left"
+  // side and end at the "right" side); `left`/`right` likewise both run
+  // from "bottom" to "top" - the standard Coons convention, though only
+  // `bottom` actually needs to be handed in that orientation: `top`,
+  // `left` and `right` are each tried both as given and reversed (8
+  // combinations total) and whichever combination best closes all 4
+  // corners is used, since a caller chaining arbitrarily-picked curves
+  // (dino8-app's own NetworkSrf, for instance) has no way to guarantee
+  // any of the other 3 curves' own stored directions already match.
+  // `bottom` alone sets the reference orientation (it defines the two
+  // "bottom" corners unambiguously; there is nothing to compare it
+  // against). Classical
+  // construction: each curve is reparameterized onto [0, 1]
+  // (`SetDomain`, shape-preserving), `bottom`/`top` are brought to a
+  // shared degree and knot vector (the higher of the two degrees,
+  // degree-elevated; then each one's interior knots inserted into the
+  // other - both shape-preserving, same technique `MatchEdge()` uses
+  // for its own shared edge), `left`/`right` the same way, and the
+  // patch is built as the classical sum of a ruled surface between
+  // `bottom`/`top`, a ruled surface between `left`/`right`, and a
+  // bilinear correction surface through the 4 corners
+  // (`S = R_uv + R_vu - B`), all three brought to one shared (degree,
+  // knot vector) pair in both directions (via `ElevateDegree`/
+  // `InsertKnotAt`) so the sum is exact control-point (homogeneous, if
+  // any input is rational) arithmetic, not an approximation. Every step
+  // is a real, previously-tested primitive; nothing here is a new
+  // approximation algorithm.
+  //
+  // Returns Result::Failed (with `out_corner_gap`, if non-null,
+  // reporting the best achievable max corner gap across all 4
+  // orientation combinations) if no orientation brings all 4 corners
+  // within `tolerance` of each other, or if the resulting blend would
+  // need a non-positive weight anywhere (checked, same guard
+  // `MatchEdge()` uses) - never ships a patch that doesn't actually
+  // meet its own boundary curves. Self-checks its own result the same
+  // way: evaluates the built surface's own 4 boundary isocurves against
+  // the (reparameterized, orientation-corrected) input curves and rolls
+  // back to Result::Failed if the residual exceeds a tight tolerance.
+  static Result CoonsPatch(const NurbsCurve& bottom, const NurbsCurve& top, const NurbsCurve& left,
+                            const NurbsCurve& right, NurbsSurface& out, double tolerance = 1e-6,
+                            double* out_corner_gap = nullptr);
 
   int DegreeU() const;
   int DegreeV() const;
@@ -151,8 +251,19 @@ class NurbsSurface {
   // `ON_NurbsSurface::MakeNonRational()`.
   Result MakeNonRational();
 
-  // Elevates degree in the given direction (0 = U, 1 = V). Returns
-  // NoOpAlreadySatisfied if the surface is already at or above that degree.
+  // Elevates degree in the given direction (0 = U, 1 = V), preserving the
+  // surface's shape exactly (to floating-point precision). Returns
+  // NoOpAlreadySatisfied if the surface is already at or above that
+  // degree, Result::Failed if `direction` isn't 0/1 or the surface is not
+  // a valid NURBS surface. NOT a wrapper around `ON_NurbsSurface::
+  // IncreaseDegree` any more - that routine packs every row of control
+  // points into one high-dimensional `ON_NurbsCurve` and hands it to
+  // `ON_NurbsCurve::IncreaseDegree`, which `NurbsCurve::ElevateDegree()`'s
+  // own comment documents as silently shape-corrupting for non-uniform
+  // knots at moderate-to-high degree; this uses the same row-packing
+  // trick over that comment's verified exact elevation instead (see
+  // detail/degree_elevate.h), with the same "minimal control-point count
+  // when it verifies, exact piecewise-Bezier form otherwise" guarantee.
   Result ElevateDegree(int direction, int new_degree);
 
   // Whether the surface wraps seamlessly onto itself in `direction`
@@ -395,6 +506,36 @@ class NurbsSurface {
   // seam-wide margin off - verified on a radius-3 sphere, an ~8.7-degree-
   // off-seam query used to return a point ~0.26 units from the true
   // answer, about 8.7% of the radius).
+  //
+  // `u_divisions`/`v_divisions` above this method's own default (20) only
+  // add per-level SAMPLING precision, not extra ability to correct a bad
+  // early guess: the window-narrowing step between levels is internally
+  // capped as if at most 24 divisions were requested (see surface.cpp),
+  // fixing a real, confirmed bug where a caller-requested finer grid
+  // (fewer levels needed to reach floating-point precision, but each
+  // level's window shrinks by ~2/divisions) could leave the search unable
+  // to travel far enough from an early level's best sample to reach a true
+  // nearby minimum - i.e. a FINER grid converging to a WORSE answer than a
+  // coarser one on the exact same surface and query, the opposite of the
+  // expected trend. That's on top of, not instead of, this method's own
+  // pre-existing "not a guaranteed global minimum" caveat above: a
+  // pathological multi-modal distance landscape can still make two
+  // different grid resolutions land in two different, genuinely separate
+  // local minima from the very first level, each one converged to
+  // correctly - that residual is inherent to any finite-sampling search
+  // and isn't fixable by adjusting the narrowing step.
+  //
+  // A second real, reproduced bug of the same "window locks onto the
+  // wrong place" family, at a DEGENERATE edge (a sphere's pole, a cone's
+  // apex, a revolved surface's on-axis end): every u sample on the pole
+  // row evaluates to the same point, so the coarse scan's best u there
+  // was just the first tied sample, and narrowing the u window around it
+  // locked every later level into the wrong azimuth - a query 0.3r off
+  // the surface, 0.36 degrees from the pole, came back ~32 degrees of
+  // azimuth away. Fixed by not narrowing a direction whose row/column of
+  // samples through the best point is flat (identical distances to
+  // 1e-12 relative) at that level, so the other direction moves off the
+  // degenerate edge first.
   Point2d ClosestPointParameter(Point3d point, int u_divisions = 20, int v_divisions = 20) const;
 
   // The actual closest point: `PointAt(ClosestPointParameter(point,
@@ -431,7 +572,22 @@ class NurbsSurface {
   // principal curvatures k1,k2 = H +/- sqrt(H^2-K). Throws
   // std::runtime_error if `Ev2Der` fails or the point is singular (zero
   // or parallel partial derivatives, same condition `NormalAt()` already
-  // throws on).
+  // throws on), judged by two RELATIVE tests, neither absolute: (1) EG-F^2
+  // (exactly |du x dv|^2) below 1e-16 of EG catches near-parallel partials
+  // of comparable magnitude (a fold); (2) the smaller of E, G below 1e-16
+  // of the larger catches a vanishing partial (a pole/apex/on-axis end,
+  // where an entire row of control points collapses to one point) - test
+  // (1) alone misses this, because at a pole the vanishing partial
+  // evaluates to pure floating-point noise whose direction is arbitrary,
+  // so EG-F^2 over EG comes out order-1, not near 0. An absolute
+  // `EG-F^2 < 1e-15` used to apply instead of test (1); EG-F^2 scales with
+  // length^4, so that threw "degenerate" at perfectly regular points of
+  // any surface smaller than ~1e-4 units (a radius-1e-4 sphere, say) - a
+  // real scale bug found by a randomized probe. Test (2) was itself added
+  // after that fix regressed every sphere-pole case (measured
+  // min(E,G)/max(E,G) ~1e-33..1e-41 at a pole vs ~0.94..1.0 at a regular
+  // point, independent of overall scale). See
+  // TestSurfaceCurvatureAtIsScaleInvariant for both.
   SurfaceCurvature CurvatureAt(double u, double v) const;
 
   // Suggests u/v division counts for TessellateGrid()/
@@ -620,6 +776,309 @@ class NurbsSurface {
   // TessellateGridAdaptive(), same "one call instead of two" convenience.
   Mesh TessellateGridClippedExactAdaptive(double chord_tolerance,
                                            const std::vector<Point2d>& trim_polygon) const;
+
+  // ---- Surface editing (implemented in src/surface_edit.cpp) ----
+
+  // Removes one multiplicity of the interior knot at ON-convention index
+  // `knot_index` (0 <= knot_index < KnotCount(direction); any index in a
+  // multiple knot's run selects that whole knot value) in `direction`
+  // (0 = U, 1 = V) - the exact inverse of `InsertKnotAt()`, i.e. Tiller's
+  // knot-removal algorithm (Piegl & Tiller, "The NURBS Book", A5.8),
+  // applied to every row/column of the control net at once. Knot removal
+  // is only shape-preserving when the surface genuinely has the extra
+  // continuity at that knot (e.g. a knot `InsertKnotAt()` itself added);
+  // otherwise the best-fitting reduced net is an approximation. This
+  // method never silently ships that approximation: it computes a
+  // rigorous upper bound on the resulting max 3D deviation from the
+  // original surface over the whole domain (the algorithm's own control-
+  // net discrepancy, which bounds the surface error because B-spline
+  // basis functions are non-negative and sum to 1; on a rational surface
+  // the discrepancy is measured on the homogeneous control points and
+  // converted to a Euclidean bound via Piegl & Tiller eq. 5.30, a looser
+  // but still rigorous bound) and only commits the removal if that bound
+  // is <= `tolerance`. Otherwise returns Result::Failed and leaves the
+  // surface untouched. `out_max_deviation`, if non-null, always receives
+  // the bound (also on failure, so a caller can report how far off the
+  // removal would have been). Requires the knot vector to be clamped in
+  // `direction` (an unclamped/periodic knot vector's wrapped control
+  // points would need matching edits this doesn't do) - returns
+  // Result::Failed otherwise. Throws std::invalid_argument if `direction`
+  // isn't 0/1, `knot_index` is out of range, or the knot isn't strictly
+  // inside the domain (the domain's own end knots can't be removed).
+  Result RemoveKnotAt(int direction, int knot_index, double tolerance,
+                      double* out_max_deviation = nullptr);
+
+  // Max 3D distance between `PointAt(u, v)` on this surface and on
+  // `other` over a `u_samples` x `v_samples` grid of (u, v) values spread
+  // across *this surface's* domain (both surfaces are evaluated at the
+  // same numeric (u, v), so this only means anything when the two share a
+  // parameterization - e.g. one is a knot-refined/removed, degree-
+  // elevated or refit copy of the other). A sampled measurement, so a
+  // lower bound on the true max deviation, not an upper bound; the
+  // sample count sets how fine. Throws std::invalid_argument if either
+  // sample count is < 2.
+  double MaxSampledDeviationFrom(const NurbsSurface& other, int u_samples = 64,
+                                 int v_samples = 64) const;
+
+  // Reparameterizes `direction` (0 = U, 1 = V) in place so its domain
+  // becomes exactly [t0, t1], leaving the 3D shape bit-for-bit untouched:
+  // an affine rescale of that direction's knot vector, nothing else
+  // (delegates to `ON_NurbsSurface::SetDomain`, verified as a real
+  // implementation that maps every knot linearly from the old domain
+  // onto the new one). Afterward `PointAt()` at the same *normalized*
+  // parameter returns the same point as before. Returns
+  // Result::NoOpAlreadySatisfied if the domain already is [t0, t1],
+  // Result::Failed if `t0 >= t1` or OpenNURBS' own call fails. Throws
+  // std::invalid_argument if `direction` isn't 0/1.
+  Result SetDomain(int direction, double t0, double t1);
+
+  // Rebuilds (refits) this surface as a new non-rational NURBS surface
+  // with exactly `u_count` x `v_count` control points of degree
+  // `u_degree` x `v_degree` and clamped uniform knots over the *same*
+  // domain as this surface - Rhino's Rebuild / Parasolid's refit. The
+  // fit is the global tensor-product least-squares solution (Piegl &
+  // Tiller A9.7: the source is sampled on a `u_samples` x `v_samples`
+  // parameter grid, every sample row is least-squares fit in U with the
+  // two end control points pinned to the row's end samples, then every
+  // column of those intermediate control points is fit in V the same
+  // way; with gridded parameters and one shared knot vector per
+  // direction this row-then-column solve *is* the full tensor-product
+  // least-squares solution, not a heuristic). Consequences: the four
+  // corners are interpolated exactly, and the result reproduces this
+  // surface's own parameterization (evaluate both at the same (u, v) to
+  // compare), so `out_max_deviation`, if non-null, receives the max 3D
+  // deviation measured on a grid twice as fine as the fit samples,
+  // offset by half a step so it never lands on the fit samples
+  // themselves - a sampled lower bound on the true deviation, stated as
+  // such rather than claimed exact. A refit is an approximation
+  // whenever the source isn't already representable with the requested
+  // net (e.g. a rational sphere or a higher-degree/denser source) and
+  // exact (deviation ~1e-12) whenever it is - both verified in the
+  // tests. Returns Result::Failed if the normal equations are singular.
+  // Throws std::invalid_argument if a degree is < 1, a count is <=
+  // its degree, or a sample count is < the corresponding control count
+  // (an underdetermined fit).
+  Result Rebuild(int u_count, int v_count, int u_degree, int v_degree, NurbsSurface& out,
+                 double* out_max_deviation = nullptr, int u_samples = 64, int v_samples = 64) const;
+
+  // MatchSrf: edits this surface in place so its boundary edge where
+  // parameter `fixed_direction` (0 = U, 1 = V) sits at its domain min
+  // (`at_min` true) or max coincides with `target`'s boundary edge
+  // selected the same way (`target_fixed_direction`/`target_at_min`),
+  // with the requested continuity across the join - the Parasolid/Rhino
+  // "match surface" operation, done as exact NURBS algebra rather than
+  // by moving control points onto sampled target points:
+  //
+  //  1. The two edges' bases are made identical along the edge (the
+  //     target edge is oriented to run the same way as this one -
+  //     detected from the corner points, reported in
+  //     `target_edge_reversed` - reparameterized onto this edge's domain
+  //     via SetDomain, then both are degree-elevated to the higher of the
+  //     two edge degrees and knot-refined to the union knot vector; all
+  //     three are shape-preserving, so the target is never altered in
+  //     3D and this surface only gains control points). If either side
+  //     is rational the other is made rational too.
+  //  2. This surface's control-point row on the edge is replaced by the
+  //     target's edge row (homogeneous coordinates, so weights carry
+  //     over) - the two boundary curves become the *same* NURBS curve,
+  //     G0 exactly, not to a tolerance.
+  //  3. Tangent: the next row is set so this surface's cross-boundary
+  //     first derivative equals `-scale` times the target's, both taken
+  //     along the direction pointing into their own surface (the minus
+  //     sign because the two surfaces continue each other across the
+  //     edge, the target's inward direction being this surface's
+  //     outward one; in raw parametric derivatives that is `S_v(min) =
+  //     -scale * T_t(min)` for a min/min pairing and `S_v(min) = +scale
+  //     * T_t(max)` when the target edge sits at its domain max), using
+  //     the clamped-B-spline end-derivative formula
+  //     `p / (V_{p+1} - V_1) * (R_1 - R_0)`. Curvature: the third row is
+  //     set so the second cross derivative equals `scale^2` times the
+  //     target's. With a constant `scale` these are exactly C1/C2 in the
+  //     reparameterization v' = scale * v, hence G1/G2, and the target's
+  //     own Gaussian curvature is reproduced along the edge (checked in
+  //     the tests). `scale` is the ratio of this surface's mean
+  //     cross-derivative magnitude along the edge (before the edit) to
+  //     the target's, so the match keeps this surface's own
+  //     parameterization speed instead of adopting the target's; pass
+  //     `cross_scale > 0` to force a value (1.0 = plain C1/C2 with the
+  //     target's own speed).
+  //
+  // Rows beyond the ones rewritten (1 for Position, 2 for Tangent, 3
+  // for Curvature) are untouched. To guarantee the far edge never moves,
+  // the cross direction is first degree-elevated to at least 2 (Tangent)
+  // / 3 (Curvature) and, if it still has no spare row, knot-refined at
+  // its mid-parameter to add one - both shape-preserving. `report`, if
+  // non-null, receives measured residuals (both surfaces evaluated along
+  // the edge after the edit); the method itself checks them against
+  // 1e-9 times the surfaces' size and returns Result::Failed, restoring
+  // this surface, if they don't hold - a self-check, so a wrong result
+  // can't be shipped silently. Also Result::Failed (surface untouched)
+  // if either surface isn't clamped in the directions involved (a
+  // periodic edge/cross direction isn't supported), if the requested
+  // continuity exceeds the target's cross degree (a degree-1 target has
+  // no curvature to match), or if a resulting rational weight would be
+  // <= 0. Throws std::invalid_argument on a direction outside 0/1.
+  Result MatchEdge(int fixed_direction, bool at_min, const NurbsSurface& target, int target_fixed_direction,
+                   bool target_at_min, MatchContinuity continuity, MatchEdgeReport* report = nullptr,
+                   double cross_scale = 0.0);
+
+  // Unrolls a *developable* surface (a plane, a cylinder, or a cone -
+  // the only three shapes an ON_NurbsSurface can be per OpenNURBS'
+  // IsPlanar/IsCylinder/IsCone, and the classical differential-geometry
+  // fact that a surface unrolls to the plane without distortion iff its
+  // Gaussian curvature is identically zero, which holds for exactly
+  // these among the primitives this kernel builds - a cylinder/cone's
+  // zero Gaussian curvature is itself confirmed elsewhere in this file's
+  // own CurvatureAt() tests) into `out_flat`, a flat triangle mesh in
+  // the world XY plane. Tries IsPlanar()/IsCylinder()/IsCone() in that
+  // order (each already a real OpenNURBS geometric fit, not a name
+  // check) and returns Result::Failed, `out_flat` left untouched, if
+  // none matches - a curved (non-developable) surface like a sphere or
+  // torus, or a generic freeform NURBS surface, is refused rather than
+  // silently flattened with distortion (that's `TessellateGrid()` +
+  // hand-rolled triangulation, what dino8-app's own Squish/Unroll
+  // commands already do for the general case - this method is the exact
+  // complement for the three shapes that admit a true isometry).
+  //
+  // Every one of the `(u_divisions + 1) x (v_divisions + 1)` flat
+  // vertices is computed by mapping the *exact* 3D point directly
+  // through the matched primitive's own closed-form inverse (no
+  // tessellation error folded in): a cylinder's `ON_Cylinder::
+  // ClosestPointTo()` gives the point's exact (angle, height), mapped
+  // to flat `(radius * angle, height)`; a cone's gives (angle,
+  // axial height), converted to the exact slant distance from the apex
+  // `L = height / cos(halfAngle)` and mapped to flat
+  // `(L * cos(angle * sin(halfAngle)), L * sin(angle * sin(halfAngle)))`
+  // - the standard cone-unroll construction (a full lap around the cone,
+  // true circumference `2*pi*L*sin(halfAngle)` at slant distance L,
+  // becomes a `2*pi*sin(halfAngle)`-radian sector of a flat circle of
+  // radius L, which has that same arc length); a plane's
+  // `ON_Plane::ClosestPointTo()` gives the point's own in-plane (x, y)
+  // directly - a rigid-body isometry with no scaling at all. Because
+  // each vertex is placed by this direct formula rather than by
+  // integrating or accumulating edge lengths across the mesh, two
+  // invariants hold up to `ON_Mesh`'s own single-precision vertex
+  // storage (~1e-6 relative, the same limit this kernel's other mesh-
+  // based tests already account for), independent of
+  // `u_divisions`/`v_divisions` - verified this way in the tests, not
+  // just by eyeballing a rendered flat shape: every flat vertex at the
+  // same `v` sits at exactly the same flat y (cylinder) or exactly the
+  // same flat distance from the unrolled apex (cone) as its true 3D
+  // counterpart's height/slant-distance, and the *total* flat width of
+  // a full circumferential sweep equals exactly `radius * totalAngle`
+  // (cylinder) or the exact sector formula (cone) - not merely
+  // approaching it as the mesh gets finer. What does converge only in
+  // the mesh-refinement sense (same honesty this kernel already applies
+  // to `ApproximateArea()`) is any single flat *triangle's* area against
+  // its true 3D counterpart's, since a straight mesh edge is a chord of
+  // the true curve, not the curve itself - `out_area`, if non-null,
+  // receives the flat mesh's own measured area (`Mesh::Area()`), which
+  // is therefore an approximation of the true closed-form patch area
+  // that improves with `u_divisions`/`v_divisions`, not an exact value.
+  //
+  // Throws std::invalid_argument if either division count is < 1.
+  Result UnrollDevelopable(int u_divisions, int v_divisions, Mesh& out_flat, double* out_area = nullptr,
+                           DevelopableKind* out_kind = nullptr) const;
+
+  // Computes the EXACT offset of this surface by `distance` along its own
+  // NormalAt(u, v) direction, for the five analytic types whose true
+  // offset (the literal "surface of points at distance `distance` along
+  // the normal", not an approximation of it) is itself expressible in
+  // the same closed form: a plane, sphere, cylinder, cone, or torus
+  // (detected the same real, tolerance-based way IsPlanar()/IsSphere()/
+  // IsCylinder()/IsCone()/IsTorus() and UnrollDevelopable() already do,
+  // not a name check). This is the general-surface counterpart to
+  // Parasolid's PK_BODY_offset computing an exact analytic offset face
+  // rather than approximating it with a refit spline - the honest
+  // "approximate elsewhere" freeform case this deliberately does NOT
+  // attempt is refused outright (see the failure list below), not
+  // silently approximated.
+  //
+  // What each case actually returns (every one verified algebraically,
+  // not assumed from "offsetting shrinks/grows a round thing"):
+  //  - Plane: this surface's OWN control points translated by
+  //    `distance * NormalAt(u, v)` (the same vector everywhere a plane's
+  //    normal is constant) - exact for ANY planar surface regardless of
+  //    its actual shape/domain/control structure, unlike the four cases
+  //    below, since a constant per-control-point translation moves every
+  //    evaluated point by that same vector (NURBS partition of unity),
+  //    which for a constant normal field is precisely what "offset by
+  //    distance along the normal" means. Preserves this surface's exact
+  //    domain and control/weight structure - a genuine caller-facing
+  //    difference from the other four cases, which instead rebuild the
+  //    matched primitive's own natural full extent from scratch via
+  //    GetNurbForm() (a plane has no such single natural bounded form to
+  //    rebuild from, since a plane itself is unbounded).
+  //  - Sphere / Cylinder: a concentric sphere / coaxial cylinder with
+  //    radius `radius +/- distance` (the sign resolved per surface, see
+  //    below) - trivially exact, every point moves radially by exactly
+  //    `distance`.
+  //  - Cone: a coaxial cone with the exact SAME half-angle, apex shifted
+  //    along the cone's own axis by `distance / sin(half_angle)` - the
+  //    standard, non-obvious fact (verified here by direct algebraic
+  //    derivation, not assumed) that a cone's offset is itself a cone
+  //    with unchanged opening angle: parametrizing the cone as
+  //    P(h, theta) = (h*tan(alpha)*cos(theta), h*tan(alpha)*sin(theta), h)
+  //    (h = distance from apex along the axis, alpha = half-angle) and
+  //    solving for the one apex position z_a such that
+  //    P(h, theta) + distance * outward_normal(h, theta) lies exactly on
+  //    a same-alpha cone with apex at z_a gives the closed form
+  //    z_a = -distance / sin(alpha), independent of h and theta - i.e.
+  //    this genuinely holds at every point of the surface, not just
+  //    near where it was checked.
+  //  - Torus: a coaxial torus with the SAME major (center-circle) radius
+  //    and tube radius `minor_radius +/- distance` - by the same kind of
+  //    exact derivation as the cone case (a torus is a tube of circles
+  //    around its own center circle; offsetting that tube by a constant
+  //    distance is exactly a tube of radius `minor_radius +/- distance`
+  //    around the SAME center circle).
+  //
+  // The sign for each +/- above is resolved AT RUNTIME by comparing this
+  // surface's own NormalAt() at a sample point against the fitted
+  // primitive's independently-known true outward direction there (e.g.
+  // `point - sphere.Center()` for a sphere) - deliberately not assumed
+  // to be a fixed convention, since nothing guarantees every possible
+  // NurbsSurface's own du x dv handedness agrees with "outward" (this
+  // file's own IsSphere() doc comment already records EvNormal's sign
+  // behaving surprisingly for at least one shape). This makes the result
+  // correct for whichever of the two possible normal fields this
+  // particular surface happens to have, instead of silently producing a
+  // shrunk surface when a caller who read "distance > 0 means grow"
+  // expected it to grow.
+  //
+  // A real, deliberately enforced correctness guard against a genuine
+  // self-intersection hazard (the same one Parasolid's own offset is
+  // documented to check for), not an omission: this returns
+  // Result::Failed, `out` left unchanged, rather than silently building
+  // an invalid or self-overlapping surface, when the requested offset:
+  //  - would make a sphere/cylinder's radius, or a torus's tube radius,
+  //    <= 0 (the offset distance exceeds that constant-curvature
+  //    surface's own radius of curvature - it folds through its own
+  //    axis/center);
+  //  - would make a torus's tube radius >= its own major radius (a
+  //    self-intersecting spindle torus, not merely a fatter one);
+  //  - would, for a cone, shrink the radius below zero anywhere within
+  //    this surface's own existing v-domain (checked at both v-domain
+  //    ends, where a cone's monotonically-varying radius is smallest) -
+  //    the direct cone analogue of "offset exceeds local radius of
+  //    curvature", since a cone's local radius of curvature in the
+  //    circumferential direction is exactly its distance from the axis
+  //    at that point.
+  //
+  // Returns Result::Failed, `out` unchanged, if this surface isn't
+  // (within `tolerance`) one of the five types above - a general
+  // freeform surface's true offset is generally NOT itself expressible
+  // as an exact NURBS surface at all (it's a genuinely different,
+  // typically non-rational algebraic surface), so this deliberately
+  // refuses rather than quietly returning an approximation dressed up as
+  // an exact one; that harder, inherently-approximate case belongs to a
+  // different, explicitly-approximate method this one is not. `tolerance`
+  // defaults (`<= 0`) to `tolerance::DistanceForSize()` of this surface's
+  // own bounding-box diagonal, the same reasoning UnrollDevelopable()
+  // already applies: IsPlanar()/IsSphere()/IsCylinder()/IsCone()/
+  // IsTorus()'s own `ON_ZERO_TOLERANCE` default is far too tight for
+  // anything but a hand-built exact primitive.
+  Result OffsetAnalytic(double distance, NurbsSurface& out, double tolerance = -1.0) const;
 
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }

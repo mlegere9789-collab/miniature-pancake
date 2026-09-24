@@ -1,5 +1,6 @@
 #pragma once
 
+#include <utility>
 #include <vector>
 
 #include <opennurbs.h>
@@ -162,6 +163,265 @@ class Brep {
                                  bool exact_clip = false,
                                  std::vector<std::vector<Point2d>> hole_loops_uv = {});
 
+  // ------------------------------------------------------------------
+  // Sweep-class factories (Parasolid "sweep/spin/loft/pipe" class) -
+  // implemented in src/sweep.cpp. Every one of them builds REAL
+  // ON_Brep topology (vertices/edges/trims/loops via ON_Brep::NewFace's
+  // own vid/eid/bRev3d overload, so shared edges are literally shared,
+  // singular sides are singular trims and a closed section's seam is a
+  // seam trim) rather than the surface-only NewFace(int) the older
+  // factories above use - `raw().IsValid()` passes, and a closed result
+  // reports `raw().IsSolid()` true. Common conventions:
+  //
+  //   - The wall surface's u runs along the section/profile and its v
+  //     runs along the sweep (the extrusion vector, the revolve angle in
+  //     radians, the loft/sweep station parameter in [0, 1]).
+  //   - Exact math throughout: an extrusion is the exact degree-(p, 1)
+  //     tensor product of the profile and the direction; a revolution is
+  //     the exact rational quadratic (Piegl & Tiller A8.1, one 90-degree
+  //     rational arc per quadrant, with the full-circle case built from
+  //     an exact quadrant table so its seam control points are
+  //     bit-identical); a loft/sweep INTERPOLATES its sections exactly
+  //     (global B-spline interpolation through compatible sections, not
+  //     the sections-as-control-points fit the app's own Loft command
+  //     used), so `S(u, v_k)` reproduces section k to solver rounding.
+  //     Between sweep stations the surface is an interpolant, not the
+  //     true swept shape - a straight rail collapses to the exact
+  //     2-station degree-1 extrusion, so Pipe() along a line is an exact
+  //     rational cylinder; any other rail is an approximation whose
+  //     accuracy improves with `stations`.
+  //   - Caps. A closed planar end section gets a planar cap face built as
+  //     a "fan": D(u, v) = (1 - v) X + v C(u), degree (p, 1), where X is a
+  //     point in the KERNEL of the section's planar region (the set of
+  //     points that see the whole boundary), found by exact half-plane
+  //     intersection over a dense sampling and then re-verified against
+  //     the true curve (the angle of C(u) - X must be strictly monotone).
+  //     This is a genuine planar NURBS face whose north boundary is the
+  //     wall's own boundary isocurve, so the two faces share their edge
+  //     exactly AND their tessellations weld at ANY (u_divisions,
+  //     v_divisions) - Tessellate()/TessellateToClosedMesh() give a
+  //     closed manifold at every division pair, not only at one the cap
+  //     happened to be sampled at (the reason caps are not
+  //     TrimmedPlanarFace()-style polygon trims, whose fixed sampling can
+  //     only ever match one wall sampling). The honest limit: a closed
+  //     section whose region is NOT star-shaped (empty kernel - a C or a
+  //     spiral) cannot be capped this way and throws
+  //     std::invalid_argument when `cap` is requested; a closed
+  //     non-planar section likewise throws. `cap` is silently irrelevant
+  //     for an OPEN section (nothing to cap - the result is an open
+  //     surface) and for a periodic result (a closed loft/sweep has no
+  //     ends).
+  //   - Orientation: a capped body is built outward-facing by
+  //     construction (the section is reversed if needed so the wall's
+  //     u x v normal points out of the solid), and a closed result is
+  //     additionally cross-checked by the sign of a coarse tessellation's
+  //     volume - a negative sign flips every face - so a closed result's
+  //     Mesh::Volume() is always positive. An open result keeps the
+  //     section's own direction (normal = tangent x sweep direction).
+  //   - Numerical note: shared boundary vertices between a wall and its
+  //     cap (and across a wall's own seam) are the same curve evaluated
+  //     through two different arithmetic paths, equal to a few ULPs, not
+  //     bit-identical - well inside Mesh::MergeAndWeld()'s tolerance,
+  //     the same situation Sphere()'s own seam/poles already rely on.
+  //
+  // Extrude: profile swept along `direction` (length = distance). Any
+  // NURBS profile (rational or not, any degree, open or closed). With
+  // `cap` and a closed planar profile whose plane is not parallel to
+  // `direction`, two fan caps make it a solid (a closed profile is
+  // reversed first if needed so the result faces outward); an open
+  // profile gives one open face. Throws std::invalid_argument for a
+  // zero direction, a cap request on a closed non-planar / non-star-
+  // shaped profile, or a direction lying in the profile plane.
+  static Brep Extrude(const NurbsCurve& profile, Vector3d direction, bool cap = true);
+
+  // ExtrudeTapered: Extrude() with a draft angle - the wall leans instead
+  // of running straight along `direction`. `direction` must be parallel
+  // (either sign) to `profile`'s own fitted plane normal, within 1e-9 of
+  // dot-product alignment - an OBLIQUE draft direction would need the
+  // in-plane offset and the extrusion translation decomposed separately,
+  // which this does not attempt and refuses (std::invalid_argument)
+  // instead of guessing. `draft_angle` (radians, strictly in
+  // (-pi/2, pi/2); 0 delegates to Extrude() itself, exactly) is measured
+  // from `direction`: a POSITIVE angle shrinks the profile moving along
+  // +direction (the standard mold-release convention: walls lean in
+  // toward the part as you move away from the parting line - each point
+  // moves laterally by `L * tan(draft_angle)`, L = |direction|, measured
+  // perpendicular to the profile's own boundary there, so the wall
+  // literally makes angle `draft_angle` with `direction`); negative
+  // flares it outward.
+  //
+  // The top section is built by offsetting `profile` in its own plane by
+  // `-L * tan(draft_angle)` (NurbsCurve::OffsetInPlane()'s own sign
+  // convention: positive distance always GROWS there) and translating it
+  // by `direction`, then Loft()-ing the two sections at degree 1 - the
+  // exact ruled wall between them, with Loft()'s own cap/orientation
+  // logic applying unchanged. The offset itself has three honestly
+  // different fidelity levels, matching the shapes it is actually exact
+  // for:
+  //   - A LINE or a CIRCLE/ARC profile: OffsetInPlane()'s own EXACT case
+  //     (a parallel line; a concentric arc/circle of radius
+  //     `radius -/+ L*tan(draft_angle)`) - a drafted circular boss/hole
+  //     is therefore an exact NURBS cone frustum wall, volume
+  //     `(pi*L/3)(r0^2 + r0*r1 + r1^2)` up to tessellation chord error,
+  //     the same closed form Loft()'s own two-circle case already
+  //     verifies.
+  //   - A CONVEX multi-segment polyline profile (degree 1, not reducible
+  //     to a single line or arc): this kernel's own exact planar
+  //     miter-join offset (every vertex moved to the intersection of its
+  //     two adjacent edges' offset copies, in closed form - see
+  //     OffsetConvexPolyline() in sweep.cpp), NOT OffsetInPlane()'s own
+  //     general per-sample least-squares refit, which cannot be exact for
+  //     a sharp corner (it blurs one) and, for a CLOSED polygon whose
+  //     seam sits exactly at a corner, does not even reproduce a closed
+  //     curve (the tangent - and so the offset direction - genuinely
+  //     differs on the two sides of that corner, splitting the fitted
+  //     seam into two different points). Restricted to CONVEX input
+  //     (checked; throws otherwise) because that is exactly the case a
+  //     cheap, EXACT validity check exists for (every offset edge stays a
+  //     positive multiple of its own original direction - proof in
+  //     OffsetConvexPolyline()'s own comment); a concave polygon's offset
+  //     can self-intersect far from any single corner, the general
+  //     polygon-offset self-intersection-removal problem this kernel
+  //     discloses elsewhere as a known gap (PARITY_MAP.md, "Offsetting,
+  //     shelling, thickening" - "Offset self-intersection / invalid-loop
+  //     removal"), and is refused here rather than silently risking a
+  //     folded wall.
+  //   - Any other planar profile: falls through to OffsetInPlane()'s own
+  //     general least-squares branch, with its own documented exactness/
+  //     approximation split and its own curvature-based self-intersection
+  //     guard - the same honesty this kernel already ships for a general
+  //     curve offset, not a new limitation invented for this function.
+  // Throws std::invalid_argument for a non-finite or out-of-range
+  // `draft_angle`, a non-planar profile, an oblique `direction`, a
+  // non-convex multi-segment polyline profile, or a draft/height
+  // combination whose offset would self-intersect or fold through itself
+  // (surfaced by whichever of the three paths above hit it) - propagated
+  // with a message naming which one refused and why, never silently
+  // built anyway.
+  static Brep ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double draft_angle, bool cap = true);
+
+  // Revolve: `profile` spun about the axis through `axis_point` along
+  // `axis_direction` by `angle` radians (0 < angle <= 2*pi; exactly
+  // 2*pi, within 1e-12, is a full revolution). The profile must lie in a
+  // plane containing the axis and on one side of it (checked; throws).
+  // The wall is the exact rational surface of revolution. Which ends are
+  // capped follows from the profile:
+  //   - closed profile: full angle -> a closed torus-like solid with no
+  //     caps; partial angle + `cap` -> two planar fan caps in the start
+  //     and end half-planes.
+  //   - open profile with BOTH endpoints on the axis: full angle -> a
+  //     closed solid with two singular poles (a cylinder from an L-shaped
+  //     profile, a sphere from a semicircle); partial angle + `cap` ->
+  //     two planar caps whose fan apex lies ON the axis segment between
+  //     the endpoints, so the two caps share the axis segment as two
+  //     literal edges and the body is a genuine solid.
+  //   - open profile with an endpoint off the axis: full angle + `cap`
+  //     -> a flat disc cap (a fan over that end's circle) closes it; a
+  //     partial angle with an off-axis endpoint is not cappable here and
+  //     throws when `cap` is requested. Two off-axis endpoints at the
+  //     same axial height (a zero-thickness disc) throw.
+  // A closed profile touching the axis (a rectangle with one side on it)
+  // is NOT supported - the touching side would sweep to a degenerate
+  // zero-area band inside one face - and throws; revolve the open
+  // profile instead (the L-shaped polyline (0,0)->(r,0)->(r,h)->(0,h)
+  // gives the cylinder exactly).
+  static Brep Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction,
+                      double angle = 2.0 * ON_PI, bool cap = true);
+
+  // Loft: a surface interpolating `sections` in order, degree `degree`
+  // (clamped to sections.size() - 1) in the loft direction. Sections are
+  // made compatible first - each is clamped if periodic, made rational
+  // if any is, degree-elevated to the maximum degree, reparameterized to
+  // [0, 1] and refined to the merged knot vector (knots within 1e-12
+  // are treated as one) - all shape-preserving. Then the standard global
+  // interpolation (chord-length station parameters averaged over the
+  // control-point columns, knots by averaging) solves for the control
+  // net, so every section lies exactly on the surface at its own v_k.
+  // `degree == 1` is the exact ruled loft (two circles -> the exact cone
+  // frustum). `closed` lofts back from the last section to the first
+  // (periodic interpolation through a cyclic system, then clamped at the
+  // seam - the surface is C^(degree-1) across the seam and reports
+  // IsClosed(1)); such a result has no ends and takes no caps. Sections
+  // must all be closed or all open, consistently oriented and seam-
+  // aligned (this does not re-orient or re-seam them; a capped loft of
+  // closed planar sections is reversed as a whole if needed so it faces
+  // outward). Throws std::invalid_argument for fewer than 2 sections,
+  // fewer than degree + 1 sections for a closed loft, or mixed open/
+  // closed sections.
+  static Brep Loft(const std::vector<NurbsCurve>& sections, int degree = 3, bool closed = false,
+                   bool cap = true);
+
+  // Sweep1: `section` carried along `rail` by rotation-minimizing
+  // frames (Wang et al. 2008's double-reflection method, evaluated at
+  // `stations` equal-arc-length stations) and skinned through the
+  // transported copies with Loft()'s interpolation (degree min(3,
+  // stations - 1)). The section is moved RIGIDLY with the frame (it need
+  // not sit on the rail; its offset from the rail start is preserved).
+  // A straight open rail uses exactly 2 stations and degree 1 - the
+  // exact extrusion. A closed rail gives a periodic sweep: the frames'
+  // accumulated twist around the loop is spread evenly over the
+  // stations so the last frame meets the first, and the tube has no
+  // ends. Between stations the surface interpolates, it is not the
+  // exact sweep - increase `stations` for a tighter approximation.
+  // Caps as Extrude(). Throws std::invalid_argument for stations < 2 or
+  // a degenerate rail.
+  static Brep Sweep1(const NurbsCurve& section, const NurbsCurve& rail, int stations = 32,
+                     bool cap = true);
+
+  // Pipe: an exact rational circle of `radius`, centered on the rail's
+  // start point in the plane perpendicular to the rail there, swept by
+  // Sweep1(). Along a straight rail this is the exact rational cylinder
+  // (capped: volume pi r^2 L up to tessellation chord error); a closed
+  // rail gives a closed tube. Throws std::invalid_argument for a
+  // non-positive radius.
+  static Brep Pipe(const NurbsCurve& rail, double radius, bool cap = true, int stations = 32);
+
+  // PipeVariable: like Pipe(), but the radius varies along the rail per
+  // `radius_points` - (t, radius) pairs where `t` is the fraction, in
+  // [0, 1], of the rail's own arc length from its start (the same
+  // "arc-length parametrization" convention NurbsCurve::DivideByCount()
+  // and Sweep1()'s equal-arc-length stations already use), interpolated
+  // PIECEWISE LINEARLY between consecutive points and held flat at the
+  // nearest endpoint's radius outside the given range - so a caller
+  // need not place a point at t = 0 or t = 1. Requires at least 2
+  // points, strictly increasing in `t`, each `t` in [0, 1] and each
+  // radius positive; throws std::invalid_argument otherwise (naming
+  // which point failed).
+  //
+  // Every radius point's own arc-length fraction is inserted as an
+  // exact rotation-minimizing-frame station, in addition to `stations`
+  // stations spaced evenly in arc length, so the built tube's radius
+  // matches every given point exactly there, not only approximately
+  // near it (two fractions closer than 1e-9 collapse to one station).
+  // As with Sweep1() (whose rigid-frame-transport machinery this
+  // shares - only the per-station radius differs, so this does not
+  // delegate to Pipe()/Sweep1() the way Pipe() delegates to Sweep1()),
+  // the wall is a global interpolating skin through these circle
+  // stations (degree min(3, station_count - 1)): exact circular cross-
+  // sections AT every station, a smooth interpolant BETWEEN them - the
+  // (t, radius) pairs describe a literally piecewise-linear radius
+  // profile, which this only approximates between stations, tighter as
+  // `stations` grows.
+  //
+  // Exact case: exactly 2 radius points spanning the whole rail (t = 0
+  // and t = 1) on a STRAIGHT rail is the exact rational CONE FRUSTUM
+  // wall - the degree-1 ruled surface between the two end circles
+  // (Loft()'s own 2-section shortcut, Sweep1()'s own straight-rail
+  // shortcut), `stations` irrelevant, exactly as it is for Sweep1()
+  // along a straight rail.
+  //
+  // A CLOSED rail's tube must meet itself at the seam, so
+  // `radius_points`'s first and last radius must be equal (within
+  // 1e-9 * rail scale) - throws otherwise rather than silently
+  // producing a mismatched step where the tube wraps around.
+  //
+  // Caps as Pipe() (flat end discs on an open rail when `cap`; a closed
+  // rail has no ends and ignores `cap`). Throws std::invalid_argument
+  // for the `radius_points` violations above, `stations` < 2, or a
+  // degenerate (zero-length or zero-tangent) rail.
+  static Brep PipeVariable(const NurbsCurve& rail, const std::vector<std::pair<double, double>>& radius_points,
+                           bool cap = true, int stations = 32);
+
   int FaceCount() const;
 
   // One planar face's boundary as a real 3D polygon plus its plane -
@@ -204,6 +464,21 @@ class Brep {
     // Tessellate(), not just look right in this kernel's own pipeline.
     int notch_begin = 0;
     int notch_count = 0;
+    // Further notch runs on the SAME face, with exactly the semantics of
+    // notch_begin/notch_count above (begin index, point count, no
+    // wraparound, each run an adjacent CylindricalFace's own true cap
+    // arc). A face meeting several filleted edges - a box end face whose
+    // two top corners are both rounded by FilletConvexEdges (fillet.h),
+    // or two parallel FilletConvexEdge calls in sequence - needs one run
+    // per notched corner; before this field existed a second notch simply
+    // overwrote the first's notch_begin/notch_count, leaving that earlier
+    // corner as ~200 unshared micro-edges (a free boundary in
+    // IsManifold()). FromMixedFaces() treats {notch_begin, notch_count}
+    // (when notch_count > 1) plus every entry here as one set of
+    // non-overlapping runs and collapses each identically. Empty (the
+    // default) for every face this kernel built before the field existed,
+    // so nothing already built changes.
+    std::vector<std::pair<int, int>> notch_runs;
 
     // Optional, narrow extension consumed ONLY by TessellateConforming()
     // (below) - every other producer/consumer of PlanarFace (PlanarFaces(),
@@ -790,6 +1065,78 @@ class Brep {
     double cap1_surface_fit_tolerance = 0.0;
   };
 
+  // One spherical blend patch's exact geometry: the piece of the sphere
+  // of radius `radius` centered at `frame.origin` covering longitude
+  // [0, angle] (radians, measured from frame.xaxis toward frame.yaxis
+  // about frame.zaxis - the same angle=0-at-xaxis convention every other
+  // angle on CylindricalFace/ConicalFace uses) and latitude [lat0, lat1]
+  // (radians, from the frame's own equator plane toward +frame.zaxis; the
+  // south pole is -pi/2, the north pole +pi/2). This is exactly the shape
+  // a constant-radius rolling-ball VERTEX blend takes at a convex corner
+  // where the ball is simultaneously tangent to three faces (see
+  // FilletConvexEdges in dino8/kernel/fillet.h, the one producer): the
+  // spherical triangle bounded by the three great-circle arcs along which
+  // the three incident edge fillets' own cylinders end - realized here as
+  // a latitude/longitude rectangle whose `lat1` (or `lat0`) side has
+  // collapsed to a pole, so its three genuine boundary curves are ALL
+  // isocurves of the sphere's own parameterization: the equator arc at
+  // v=lat0 (or lat1) and the two meridians at u=0 and u=`angle`. (A
+  // spherical triangle whose three arcs are NOT two meridians plus one
+  // latitude circle - a corner where fewer than two of the three dihedral
+  // angles are right angles - cannot be written this way; see
+  // FilletConvexEdges' own SCOPE note for that disclosed limit.)
+  //
+  // Exactness argument, the same one CylindricalFace/ConicalFace rely on:
+  // FromMixedFaces() builds the surface via ON_Sphere::GetNurbForm (a
+  // rational quadratic NURBS that is EXACTLY the sphere, the same
+  // conversion Brep::Sphere() already trusts) and trims it to the
+  // sub-rectangle of the sphere's own (u, v) domain given by `angle`,
+  // `lat0`, `lat1` - converted from true radians to NURBS parameter via
+  // ON_Circle::GetNurbFormParameterFromRadian for u (ON_Sphere's u-knots
+  // are literally the base circle's, confirmed against the vendored
+  // source), and via the same conversion on the meridian's own
+  // south-pole-to-north-pole semicircle (knots -pi/2, 0, +pi/2 - a circle
+  // knot vector shifted by -pi/2) for v. At the quadrant knots (0, +-pi/2,
+  // pi, ...) NURBS parameter and radian agree exactly, so a box corner's
+  // own octant is trimmed with no conversion error at all. The patch's
+  // outward normal is the sphere's own radial direction; `outward ==
+  // true` (the default, and the only value the vertex blend ever needs)
+  // keeps it, `false` flips it via ON_BrepFace::m_bRev exactly as
+  // CylindricalFace::outward does.
+  //
+  // A POLE (lat1 == +pi/2 or lat0 == -pi/2, within 1e-9) is legal and is
+  // the normal case for a vertex blend: that side of the (u, v) rectangle
+  // maps to a single 3D point, so FromMixedFaces() gives it an
+  // ON_Brep SINGULAR trim (ON_Brep::NewSingularTrim - a trim with no
+  // edge, the standard B-rep representation of a surface's own
+  // degenerate boundary, exactly what a full Rhino sphere carries at its
+  // two poles) rather than a zero-length edge, and the exact-clip
+  // tessellator's pole-adjacent triangles collapse to zero 3D area and
+  // are dropped by Mesh::MergeAndWeld, so TessellateToClosedMesh() of a
+  // solid carrying such a patch is a genuine closed manifold with no
+  // degenerate faces. Both lat0 and lat1 being poles (a full meridian
+  // lune) is rejected: that is not a blend patch this kernel builds.
+  //
+  // The two rail corners at each latitude end - the points at (angle 0,
+  // lat0), (angle `angle`, lat0), and their lat1 counterparts (which
+  // coincide at a pole) - are exactly the points frame.origin +
+  // radius*(cos(lat)*(cos(phi)*xaxis + sin(phi)*yaxis) + sin(lat)*zaxis)
+  // for the matching (phi, lat), and FromMixedFaces() welds them into the
+  // same global vertex space as every PlanarFace/CylindricalFace loop
+  // point, so an adjacent fillet cylinder's own cap arc (the SAME great
+  // circle, the same two corner points, the same NURBS parameterization
+  // along it - see FilletConvexEdges' own frame convention) becomes ONE
+  // literal shared ON_BrepEdge with this patch's own equator or meridian
+  // edge, with no notch machinery at all.
+  struct SphericalFace {
+    ON_Plane frame;
+    double radius = 0.0;
+    double angle = 0.0;
+    double lat0 = 0.0;
+    double lat1 = 0.0;
+    bool outward = true;
+  };
+
   // The general sibling of PlanarFaces() that also recognizes a
   // cylindrical face rather than throwing on it - the extraction half of
   // what BooleanCombineMixed (see boolean.h) needs to get a
@@ -938,6 +1285,11 @@ class Brep {
     std::vector<PlanarFace> planar;
     std::vector<CylindricalFace> cylindrical;
     std::vector<ConicalFace> conical;
+    // Every SphericalFace comes back from its verbatim FromMixedFaces()
+    // record (see FaceRecord), or, for a face with no record whose surface
+    // ON_NurbsSurface::IsSphere accepts, from a geometric extraction that
+    // reads the frame straight off the surface's own quadrant points.
+    std::vector<SphericalFace> spherical;
   };
   MixedFacesResult MixedFaces() const;
 
@@ -1007,7 +1359,8 @@ class Brep {
   // FromPlanarFaces(faces) is exactly FromMixedFaces(faces, {}, {}).
   static Brep FromMixedFaces(const std::vector<PlanarFace>& faces,
                               const std::vector<CylindricalFace>& cylindrical_faces,
-                              const std::vector<ConicalFace>& conical_faces = {});
+                              const std::vector<ConicalFace>& conical_faces = {},
+                              const std::vector<SphericalFace>& spherical_faces = {});
 
   // The inverse of PlanarFaces(): builds a new Brep with one
   // TrimmedPlanarFace()-equivalent face per PlanarFace, each an exact
@@ -1060,25 +1413,158 @@ class Brep {
   // more than one lump (see boolean.h).
   std::vector<std::pair<int, int>> LumpFaceRanges() const;
 
+  // Splits this Brep into its disjoint pieces: the maximal groups of
+  // faces connected to each other by a shared EDGE (an actual shared
+  // edge record - m_ei on a trim on both faces' loops - not merely
+  // touching in space), each returned as its own independent Brep. The
+  // gap this closes: LumpFaceRanges() above can only replay Compound()'s
+  // OWN bookkeeping, so it says nothing about a Brep loaded from a file,
+  // built by any other factory, or raw()-edited into several actually-
+  // disconnected shells - nothing here could answer "how many separate
+  // bodies is this really, and what are they" for such a Brep before.
+  //
+  // Connectivity is computed by `ON_Brep::LabelConnectedComponents()` on
+  // a private copy of this Brep - a real graph search (verified by
+  // reading its source): it walks, from each face, every trim on every
+  // loop out to that trim's edge and every OTHER face incident to that
+  // same edge, so two faces sharing an edge land in the same component
+  // however many faces are strung between them; it does NOT check for
+  // vertex-only connections (documented on the OpenNURBS method itself),
+  // so two faces meeting only at a single shared vertex - with no shared
+  // edge - count as separate pieces. This is also, deliberately, why two
+  // Compound() lumps that only touch along a curve (the unwelded XOR
+  // case Compound()'s own doc comment describes) come back as separate
+  // pieces here: they were never given a shared edge record to begin
+  // with.
+  //
+  // Each piece is then built by `ON_Brep::DuplicateFaces()` (also
+  // verified by reading its source to be a real deep copy, not a stub) -
+  // it duplicates exactly the referenced surfaces, curves, vertices,
+  // edges, trims and loops for that piece's own faces, nothing shared
+  // with the other pieces or left dangling from the original. This
+  // class's own per-face side tables (the PlanarFace/CylindricalFace
+  // verbatim records FromMixedFaces() attaches, cylinder cap-notch rows,
+  // trim/hole polygons and arc runs) survive the split intact and
+  // correctly reordered: DuplicateFaces() itself records each duplicated
+  // face's ORIGINAL index in its own `m_face_user.i` (an OpenNURBS
+  // guarantee documented on the method), which is exactly the index this
+  // reads each side-table entry from - not a re-derivation or a
+  // best-effort guess. A side table not in lockstep with FaceCount() (a
+  // raw()-assigned Brep - see Compound()'s own such check) is treated as
+  // absent for every piece, the same safe "lose the fast path, never a
+  // wrong shape" fallback MixedFaces() itself already relies on.
+  //
+  // Pieces are returned in the order LabelConnectedComponents() finds
+  // them - the piece containing the lowest original face index first,
+  // and so on - deterministic, not an iteration-order accident. A Brep
+  // with a single connected component (the overwhelmingly common case)
+  // returns a single-element vector holding an exact copy of *this, side
+  // tables and all, untouched - nothing was actually split, so nothing
+  // needed to be recomputed or could be lost. A Brep with no faces
+  // returns an empty vector.
+  //
+  // An honest limitation found WHILE building this, not assumed: since
+  // connectivity is read from real loop/trim/edge records, this throws
+  // std::invalid_argument outright (naming the offending face) rather
+  // than ever running the search, whenever this Brep has more than one
+  // face and ANY of them has none of that topology - which is exactly
+  // every face `Box()`, `Sphere()`, `FromSurface()` and
+  // `TrimmedPlanarFace()` build (see this class's own class-level doc
+  // comment on the "minimal NewFace(surface_index)-only path" those four
+  // factories use). Silently proceeding on such a Brep would not
+  // degrade gracefully - `LabelConnectedComponents()` has nothing at all
+  // to walk from a loop-less face, so it reports EVERY one of them as
+  // its own separate one-face "piece", a confident and wrong answer for
+  // one of the most common Breps in this kernel (a plain `Box()`), not
+  // a merely incomplete one. Callers must first give the Brep real
+  // topology - `FromPlanarFaces()`/`FromMixedFaces()` (whose own results,
+  // and everything assembled from them - `BooleanCombinePlanar()`,
+  // `BooleanCombineMixed()`, `ShellConvexPlanar()`, `FilletConvexEdge()` -
+  // already have it, per this class's own class-level doc comment), or a
+  // Brep loaded from a genuine `.3dm` file. Throws std::runtime_error
+  // only if `DuplicateFaces()` itself fails for a face list this
+  // method's own labeling just reported as valid, which should not
+  // happen.
+  std::vector<Brep> SplitDisjointPieces() const;
+
   // Bounding box over the Brep's actual curved geometry, not just its
   // control points - a real gap nothing here could answer without
   // tessellating first (Mesh::GetBoundingBox() only sees a tessellation's
-  // sampled vertices, an approximation of the true surface). Delegates to
-  // ON_Brep::GetTightBoundingBox, which despite its name is NOT a
-  // genuine tight/exact bound in the public OpenNURBS build for a face
-  // whose true extremum lies strictly inside its parameter domain (it
-  // only samples each face's boundary/Greville-abscissa isocurves and
-  // control points, never searches the true 2D interior - verified by
-  // testing: a doubly-curved bicubic bulge whose true peak is at its
-  // center comes back overshot, at exactly half the peak control point's
-  // height above its neighbors instead of the analytically exact value).
-  // Still always a valid, safe bound (it can overshoot, never exclude
-  // part of the surface) - exact for Box() (flat faces) and, more subtly,
-  // Sphere() (the extrema of a standard rational-NURBS sphere's meridian
-  // circles coincide exactly with points its isocurve sampling actually
+  // sampled vertices, an approximation of the true surface).
+  //
+  // A real, previously-undocumented gap found (not assumed) while
+  // building SplitDisjointPieces() above, and corrected here rather than
+  // left stale: `ON_Brep::GetTightBoundingBox()` (read in full) computes
+  // each face's box from its UNDERLYING SURFACE alone - vertices, a
+  // Greville-abscissa isocurve refinement, and each face's own bbox are
+  // all unioned in - and NEVER consults that face's own trim boundary at
+  // all, even when a real trim loop exists. For a face whose surface
+  // genuinely extends beyond its own trim (FromMixedFaces() pads a
+  // planar face's underlying surface 5% beyond its trim loop for an
+  // unrelated tessellation reason - see its own "small margin" comment;
+  // TrimmedPlanarFace() lets a caller trim an arbitrarily small polygon
+  // out of an arbitrarily large surface directly), the box this returned
+  // was the UNTRIMMED surface's own box, silently oversized - this
+  // repo's own former doc comment here claiming "exact for Box() (flat
+  // faces)" was true only because Box()'s own faces happen to be
+  // untrimmed (trim == the surface's own full domain), not because flat
+  // faces are handled correctly in general; a real trim on a flat face
+  // was never exact before this fix.
+  //
+  // Now exact for a face whose surface is a genuine, non-rational,
+  // bilinear (degree (1,1), 4 control points) surface with a ZERO
+  // "twist" term (`P00 - P10 - P01 + P11`, checked directly on the
+  // surface's own control points, not assumed from which factory built
+  // it) - i.e. a true AFFINE map, exactly what
+  // FromPlanarFaces()/FromMixedFaces()/TrimmedPlanarFace() build for
+  // every planar face. Zero twist is required, not just flatness: a
+  // merely planar-IMAGE bilinear patch (4 coplanar corners) can still
+  // curve a diagonal (u, v) line WITHIN that same plane if its twist is
+  // nonzero - confirmed with a concrete hand-built counterexample before
+  // this was trusted - which could make a naive corner-or-vertex-only
+  // box UNDERSHOOT the true one; true zero twist rules that out exactly,
+  // since every straight edge of the face's own stored trim polygon
+  // (`face_trim_loops_`, straight-in-UV by that table's own convention)
+  // then maps to a straight edge in 3D too, so the box of its own stored
+  // vertices (or, for an untrimmed such face, its own domain corners) IS
+  // the face's exact real boundary, not an approximation of a curved
+  // one. Only trusted when that side table is genuinely in lockstep with
+  // this Brep's own FaceCount() (the same self-check Compound() and
+  // SplitDisjointPieces() apply) - a raw()-assigned Brep whose tables
+  // don't cover its faces gets the fallback below instead, never a
+  // mismatched lookup.
+  //
+  // Every OTHER face (curved, rational, a twisted bilinear, or this
+  // Brep's side tables not in lockstep) is completely untouched: this
+  // reproduces EXACTLY what `ON_Brep::GetTightBoundingBox()` itself
+  // computes for that one face, by building a throwaway single-face
+  // `ON_Brep` from its own surface and running that SAME whole-Brep
+  // method on it - not the more obvious-looking, directly callable
+  // `ON_BrepFace::GetTightBoundingBox()`, a real pitfall found (via a
+  // direct probe, not assumed) and rejected: that inherited method is a
+  // DIFFERENT, cruder algorithm - it returned a bicubic test surface's
+  // raw control-point extent, completely missing the Greville-abscissa
+  // isocurve refinement the whole-Brep method implements as its own
+  // inline per-face logic - so calling it would have silently LOOSENED
+  // this method's own already-tested behavior for every curved face,
+  // exactly the opposite of "completely untouched." A safe bound that
+  // can overshoot but never excludes part of the surface, same as before
+  // this fix, including its own prior limitation: NOT a genuine
+  // tight/exact bound for a face whose true extremum lies strictly
+  // inside its parameter domain (it only samples boundary/Greville-
+  // abscissa isocurves and control points, never searches the true 2D
+  // interior - verified by testing: a doubly-curved bicubic bulge whose
+  // true peak is at its center comes back overshot, at exactly half the
+  // peak control point's height above its neighbors instead of the
+  // analytically exact value). Exact for Sphere(), more subtly: the
+  // extrema of a standard rational-NURBS sphere's meridian circles
+  // coincide exactly with points its isocurve sampling actually
   // evaluates, not because the underlying algorithm does a real 3D
-  // extremum search). Throws std::runtime_error if OpenNURBS' own call
-  // fails (e.g. a face with an invalid surface).
+  // extremum search.
+  //
+  // Throws std::runtime_error only if no face produced any usable box
+  // (including a genuinely empty Brep) AND OpenNURBS' own whole-Brep
+  // fallback also fails.
   BoundingBox GetTightBoundingBox() const;
 
   // Tessellates each face into a triangle mesh via NurbsSurface's grid
@@ -1754,11 +2240,257 @@ class Brep {
   // this returns Result::Failed before touching this Brep at all.
   Result RemoveNakedMicroEdge(int edge_index, double tolerance = tolerance::kEdgeJoin);
 
+  // --- Check / heal ------------------------------------------------------
+  //
+  // The Parasolid PK_BODY_check / ACIS api_check_entity class of
+  // diagnostics, as a STRUCTURED list rather than ON_Brep::IsValid()'s
+  // bare bool (which also, per this class's own top comment, reports
+  // every Box()/Sphere()/FromSurface()/TrimmedPlanarFace()-built Brep as
+  // invalid for lacking topology, so it can't tell a broken solid from a
+  // surface-only one). Every issue names WHAT is wrong, WHERE (an index
+  // into this Brep's own raw() m_E/m_F/m_T/m_L arrays plus a 3D point to
+  // look at) and HOW MUCH (a gap distance, an edge length, a face width -
+  // the number a caller compares against a tolerance to decide whether
+  // to heal or refuse).
+  struct CheckIssue {
+    enum class Kind {
+      // An edge used by fewer than two trims: 1 = an open boundary
+      // (`other_index` is the trim count, so 0 = a dangling edge no face
+      // uses at all). `index` is the edge.
+      NakedEdge,
+      // An edge used by three or more trims. `index` is the edge,
+      // `other_index` its trim count.
+      NonManifoldEdge,
+      // Two faces sharing a 2-trim edge both walk it the same way in 3D,
+      // so one is wound backwards relative to the other - ON_Brep::
+      // IsManifold()'s own "not oriented" condition, per edge. `index`
+      // and `other_index` are the two faces; `location` the edge's
+      // midpoint. Reported once per offending edge, so a single flipped
+      // face on a box shows up as 4 issues (its 4 edges), not 1.
+      InconsistentFaceOrientation,
+      // An edge whose 3D curve is no longer than `tolerance` (its two
+      // vertices coincide within tolerance too). `index` is the edge,
+      // `measure` its sampled length.
+      DegenerateEdge,
+      // A face whose outer boundary, mapped to 3D, is collinear within
+      // `tolerance` (zero area: all boundary points within `measure` of
+      // one line), has fewer than 3 distinct boundary points, has no
+      // loop, or has no surface. `index` is the face; `location` its
+      // boundary's centroid.
+      DegenerateFace,
+      // A face that is not degenerate but whose boundary is within
+      // `sliver_width` of one line - a hairline face, the kind a bad
+      // trim or an almost-coincident boolean cut leaves behind. `index`
+      // is the face, `measure` its width.
+      SliverFace,
+      // An edge's 3D curve does not start/end at its own vertex: the
+      // gap is `measure`, above `tolerance` AND above the vertex's own
+      // recorded tolerance. `index` is the edge, `other_index` the
+      // vertex, `location` the vertex.
+      EdgeVertexGap,
+      // A trim's 2D curve, mapped through its face's surface, strays
+      // from the 3D edge it claims to lie on by `measure` (sampled at
+      // the trim's start, middle and end), above `tolerance` AND above
+      // the edge's own recorded ON_BrepEdge::m_tolerance - so a
+      // deliberately TOLERANT edge (see JoinNakedEdges) is not
+      // re-reported as a gap. `index` is the trim, `other_index` the
+      // edge, `location` the trim's own 3D point at the worst sample.
+      TrimEdgeGap,
+      // Two consecutive trims of a loop don't meet: the 3D distance
+      // between one trim's end and the next's start, through the
+      // surface, is `measure` > `tolerance`. `index` is the loop,
+      // `other_index` the first of the two trims.
+      LoopGap,
+      // A non-singular trim with no edge, no 2D curve, or a 2D curve
+      // whose endpoints lie outside the surface's own (u, v) domain by
+      // more than `tolerance` (in parameter units). `index` is the
+      // trim, `other_index` its loop.
+      InvalidTrim,
+      // A loop whose sampled 2D trim polygon crosses itself
+      // (detail::IsSimplePolygon on the same samples Tessellate() would
+      // derive the trim from). `index` is the loop, `location` the 3D
+      // point of its first sample.
+      SelfIntersectingLoop,
+    };
+    Kind kind = Kind::NakedEdge;
+    int index = -1;
+    int other_index = -1;
+    Point3d location = Point3d(0, 0, 0);
+    double measure = 0.0;
+  };
+
+  struct CheckReport {
+    std::vector<CheckIssue> issues;
+    // ON_Brep::IsValidTopology() - index consistency of the raw arrays,
+    // independent of everything above (a Box() reports false here while
+    // having no issues at all; see the class-level comment).
+    bool topology_valid = false;
+    // No NakedEdge and no NonManifoldEdge issue, and at least one face.
+    bool is_closed = false;
+    // No InconsistentFaceOrientation issue.
+    bool is_oriented = false;
+
+    int Count(CheckIssue::Kind kind) const;
+    // No issues at all (does NOT require topology_valid - see above).
+    bool IsClean() const { return issues.empty(); }
+  };
+
+  // Runs every check above and returns the full list plus the summary
+  // flags. Deleted (m_*_index < 0) faces/edges/trims/loops are skipped,
+  // the same way ON_Brep::IsManifold() skips them. `tolerance` is the
+  // distance below which a gap or an edge length counts as zero (the
+  // kernel's own kDistance by default); `sliver_width` the face width at
+  // or below which a non-degenerate face is reported as a sliver (the
+  // edge-join distance by default: a sliver narrower than what
+  // JoinNakedEdges would close is the one RemoveSliverFaces can heal
+  // without leaving a gap behind). Never throws and never modifies this
+  // Brep. Face-width and edge-length are SAMPLED measurements (the trim
+  // loop's own samples through the surface, 16 samples per edge curve),
+  // not exact minimum-width computations - fine for the "is this
+  // essentially zero" question they answer, not a general shape metric.
+  CheckReport Check(double tolerance = tolerance::kDistance,
+                    double sliver_width = tolerance::kEdgeJoin) const;
+
+  // Joins every pair of naked (single-trim) edges whose endpoints (and
+  // midpoints) coincide within `tolerance`, in either direction, into
+  // one shared edge - the missing "Join" this class's app layer had to
+  // carry itself (cmd_common.h's JoinNakedEdges), now here with the one
+  // thing that version lacked: TOLERANT-edge bookkeeping. After joining,
+  // every edge's ON_BrepEdge::m_tolerance and every vertex's
+  // ON_BrepVertex::m_tolerance are set from the ACTUAL measured gap
+  // between that edge's 3D curve and each of its trims' 3D images (the
+  // same samples Check()'s TrimEdgeGap uses), so a pair joined across a
+  // 1e-4 gap records 1e-4 on the surviving edge, exactly Parasolid's
+  // tolerant-edge notion: the kernel knows, and Check() honours, how far
+  // that edge's sides may legitimately disagree - instead of the join
+  // silently pretending the gap was zero. A pair whose gap is at or below
+  // kDistance records 0 (the same exact claim FromPlanarFaces makes).
+  // Then makes face orientations consistent across the newly shared
+  // edges (UnifyNormals(), below), the same way Rhino's own Join does.
+  // Returns the number of edge pairs joined. Clears this class's own
+  // per-face side tables (see MergeCoplanarFaces' comment for why every
+  // topology-surgery method here must). The surviving edge of each pair
+  // is the LOWER-indexed one, its 3D curve kept verbatim; the other
+  // face's trims now refer to it with the recorded tolerance - this
+  // does NOT move either face's surface, so TessellateToClosedMesh()'s
+  // fixed kWeld weld will still leave a 1e-4 seam open in the MESH;
+  // TessellateToClosedMeshTolerant() (below) is the tessellation that
+  // honours the recorded edge tolerances and closes it.
+  int JoinNakedEdges(double tolerance = tolerance::kEdgeJoin);
+
+  // Makes face orientations consistent across every shared 2-trim edge
+  // (breadth-first from each not-yet-visited face, flipping whichever
+  // neighbour walks a shared edge the same way in 3D - the rule ON_Brep::
+  // IsManifold() itself checks, extended by the app layer's proven
+  // ON_Brep::LoopDirection() term so a face whose outer loop happens to
+  // be stored clockwise still orients correctly), then, if the result is
+  // closed (ON_Brep::IsManifold() with no boundary), makes the whole
+  // shell face OUTWARD by the sign of TessellateToClosedMesh(4, 4)'s
+  // divergence-theorem volume - flipping every face if it is negative.
+  // Returns the total number of face flips performed (a box with one
+  // face flipped may report 1 or 11: if the traversal happens to seed
+  // from the flipped face, the other five flip to match it and the
+  // outward step then flips all six back - the FINAL state is the same
+  // either way). Never throws; an open shell is only made consistent,
+  // not oriented outward (there is no "outward" for it). Leaves the
+  // side tables intact: FlipFace() changes m_bRev only, never a face
+  // index or a trim.
+  int UnifyNormals();
+
+  // Deletes every face Check() would report as DegenerateFace at
+  // `tolerance` (collinear/empty boundary, no loop, no surface), then
+  // re-joins the naked edges that deletion exposes on the neighbours
+  // with JoinNakedEdges(tolerance): a degenerate face's two sides ARE
+  // coincident within `tolerance`, so its neighbours' newly-naked edges
+  // join back into one shared edge and the shell stays closed. Returns
+  // the number of faces removed. Honest limit: a degenerate face whose
+  // two sides are split differently (three collinear edges a-b, b-c,
+  // c-a - a T-junction) leaves its neighbours' edges naked after
+  // removal, since no endpoint pair coincides; those show up as
+  // NakedEdge in a subsequent Check(), never silently.
+  int RemoveDegenerateFaces(double tolerance = tolerance::kDistance);
+
+  // Same as RemoveDegenerateFaces() but for SliverFace at `max_width`:
+  // deletes every face whose boundary is within `max_width` of one
+  // line (including outright degenerate ones) and re-joins the exposed
+  // neighbour edges with JoinNakedEdges(max_width). The surviving shell
+  // then carries the sliver's width as the joined edges' tolerance (see
+  // JoinNakedEdges) - a tolerant edge replaces a hairline face, which is
+  // exactly what Parasolid's own sliver-removal heal does. Returns the
+  // number of faces removed.
+  int RemoveSliverFaces(double max_width = tolerance::kEdgeJoin);
+
+  // Collapses every edge Check() would report as DegenerateEdge at
+  // `tolerance` (3D length within tolerance) to a single vertex via
+  // ON_Brep::CollapseEdge() (which closes the resulting 2D trim gaps in
+  // the adjoining loops itself), then Compact()s. Works on shared and
+  // naked edges alike, unlike RemoveNakedMicroEdge() (which is the
+  // heavier re-trim for a naked sliver that is NOT below tolerance).
+  // Returns the number of edges collapsed. Clears the side tables.
+  int RemoveDegenerateEdges(double tolerance = tolerance::kDistance);
+
+  // Caps every planar hole in this Brep's open boundary with a new
+  // planar face - Rhino's own Cap for the case Check() reports as a
+  // closed chain of NakedEdge issues: each chain of naked (single-trim)
+  // edges is walked head-to-tail through its own vertices (a vertex with
+  // more than two naked edges is ambiguous and its chains are skipped,
+  // never guessed), its edge curves are duplicated and reversed as
+  // needed into one closed boundary, and, if every point sampled on
+  // that boundary lies within `tolerance` (floored at
+  // tolerance::DistanceForSize of the loop's own extent) of one plane
+  // (Newell's method through the samples), a trimmed planar face is
+  // built on it with ON_BrepTrimmedPlane() - the same construction
+  // MergeCoplanarFaces() already relies on - and appended. The new
+  // face's naked boundary is then joined onto the chain's own edges
+  // with JoinNakedEdges(tolerance), which also orients it (and, for a
+  // now-closed shell, the whole shell) consistently, so the cap's own
+  // plane-normal sign never has to be guessed. A non-planar hole is left
+  // open (it needs a real surface fit this kernel doesn't have) and
+  // still shows up as NakedEdge in a following Check(). Returns the
+  // number of caps added. Clears the side tables.
+  int CapPlanarHoles(double tolerance = tolerance::kEdgeJoin);
+
+  // TessellateToClosedMesh() for a Brep that carries TOLERANT edges
+  // (JoinNakedEdges()/RemoveSliverFaces()/a .3dm with real edge
+  // tolerances): the plain call welds only at tolerance::kWeld by grid
+  // snapping, so the very gap a tolerant edge records - or even a
+  // sub-kWeld gap that happens to straddle a snap-cell boundary - stays
+  // open in the mesh. This runs the plain tessellation and then
+  // Mesh::CloseNakedEdges() over its naked seams at
+  // max(kWeld, 2 * the largest ON_BrepEdge::m_tolerance in this Brep):
+  // a true-distance weld restricted to boundary vertices, so nothing
+  // interior is ever touched and a Brep with only exact edges gets the
+  // plain result plus at most a kWeld-wide true-distance boundary weld.
+  // Deliberately a separate entry point rather than a change to
+  // TessellateToClosedMesh() itself: notched conical fillet caps
+  // (FromMixedFaces) already carry genuinely computed edge tolerances,
+  // and the plain path's output on them is pinned by existing tests, so
+  // widening their weld silently was not an option in this pass.
+  Mesh TessellateToClosedMeshTolerant(int u_divisions = 8, int v_divisions = 8) const;
+
   const ON_Brep& raw() const { return brep_; }
   ON_Brep& raw() { return brep_; }
 
  private:
+  // Clears every per-face side table (face_trim_loops_ and its siblings
+  // below) - what every topology-surgery method here must do first; see
+  // MergeCoplanarFaces' own comment for why.
+  void ClearFaceSideTables();
+  // Shared body of RemoveDegenerateFaces()/RemoveSliverFaces().
+  int RemoveThinFaces(double width, double join_tolerance, bool slivers_too);
+
   ON_Brep brep_;
+  // Appends `count` "untrimmed face" entries to every per-face side
+  // table below, keeping them in lockstep with brep_.m_F for a face
+  // whose trims live entirely in brep_'s own real loop topology (the
+  // sweep-class factories in src/sweep.cpp).
+  void AppendUntrimmedFaceSideTables(int count);
+  // The sweep-class factories' shared assembly step (src/sweep.cpp):
+  // takes ownership of `wall`, adds it and the requested caps as real
+  // ON_Brep topology, appends the side tables and applies the closed-
+  // body outward cross-check described in those factories' doc comment.
+  static Brep AssembleSweptBody(ON_NurbsSurface* wall, bool cap_v0, bool cap_v1, bool cap_u0, bool cap_u1,
+                                const char* caller);
   // Parallel to brep_.m_F: face_trim_loops_[i] is empty for an untrimmed
   // face, or the trim polygon for a face built by TrimmedPlanarFace().
   // Every face-adding factory must keep this in lockstep with brep_.m_F.
@@ -1815,10 +2547,11 @@ class Brep {
   // in place of the geometric extraction after checking it still matches
   // the face's own surface.
   struct FaceRecord {
-    enum Kind { kNone = 0, kPlanar, kCylindrical };
+    enum Kind { kNone = 0, kPlanar, kCylindrical, kSpherical };
     Kind kind = kNone;
     PlanarFace planar;
     CylindricalFace cyl;
+    SphericalFace sph;
   };
   std::vector<FaceRecord> face_records_;
   // Set only by Compound(): the [begin, end) face-index range of each
