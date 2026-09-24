@@ -5060,6 +5060,65 @@ void TestModelAddLayerRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Every Add*()'s new `render_color` parameter: before this, an object's
+// displayed color could only ever come from its layer (ON::color_from_layer,
+// ON_3dmObjectAttributes' own default) - the same "kernel-level data
+// exchange" gap TestModelAddLayerRoundTrips() closed for `m_layer_index`,
+// just for `m_color`/`ColorSource()` instead. Checks a real round trip: one
+// object given an explicit render_color (proving it overrides
+// ColorSource() to ON::color_from_object and the color itself survives
+// save/reload byte-for-byte), and a second object left with no
+// render_color argument (proving the new parameter is additive, not a
+// behavior change for existing callers - ColorSource() stays
+// ON::color_from_layer, the default this kernel used before render_color
+// existed at all).
+void TestModelAddRenderColorRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  Model model;
+  const auto box_mesh = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  model.AddMesh(box_mesh, "ColoredMesh", 0, Color{10, 200, 30});
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(box_brep);  // no render_color given: stays layer-colored
+
+  const std::string path = "dino8_kernel_model_render_color_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with an object render color succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_colored_mesh = false;
+  bool found_uncolored_brep = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    const ON_Geometry* geometry = geometry_component->Geometry(nullptr);
+    if (dynamic_cast<const ON_Mesh*>(geometry) != nullptr) {
+      found_colored_mesh = true;
+      Check(attributes->ColorSource() == ON::color_from_object,
+            "the reloaded mesh's ColorSource() switched to ON::color_from_object");
+      Check(attributes->m_color == ON_Color(10, 200, 30),
+            "the reloaded mesh's color exactly matches what AddMesh() was given");
+    } else if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
+      found_uncolored_brep = true;
+      Check(attributes->ColorSource() == ON::color_from_layer,
+            "the reloaded brep - added with no render_color argument - kept ColorSource() at "
+            "its default ON::color_from_layer, proving the new parameter is a no-op when "
+            "omitted");
+    }
+  }
+  Check(found_colored_mesh && found_uncolored_brep,
+        "both object types (colored mesh, uncolored brep) were found in the reloaded model");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -26881,6 +26940,7 @@ int main() {
   TestModelAddPointCloudRoundTrips();
   TestModelAddObjectNameRoundTrips();
   TestModelAddLayerRoundTrips();
+  TestModelAddRenderColorRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
