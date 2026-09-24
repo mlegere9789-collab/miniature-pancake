@@ -42,8 +42,18 @@ bool DecimalComma() { return g_decimal_comma; }
 
 std::string FormatNumber(double v) {
   char buf[64];
-  if (std::abs(v - std::round(v)) < 1e-9) std::snprintf(buf, sizeof(buf), "%.0f", v);
-  else std::snprintf(buf, sizeof(buf), "%.4g", v);
+  if (std::abs(v - std::round(v)) < 1e-9) {
+    // Print the rounded value, and never as "-0": a coordinate that lands a
+    // few ulps below zero (a hatch line clipped to a boundary corner, a
+    // product of inertia that cancels to ~-1e-17) otherwise reads "-0" or
+    // "0" depending on which side of zero the C library's sin/cos rounding
+    // happened to leave it - which differs between glibc and MSVC's CRT.
+    double r = std::round(v);
+    if (r == 0) r = 0;  // drop the sign of negative zero
+    std::snprintf(buf, sizeof(buf), "%.0f", r);
+  } else {
+    std::snprintf(buf, sizeof(buf), "%.4g", v);
+  }
   if (g_decimal_comma) for (char* c = buf; *c; ++c) if (*c == '.') *c = ',';
   return buf;
 }
