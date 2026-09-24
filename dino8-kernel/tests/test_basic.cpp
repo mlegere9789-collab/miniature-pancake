@@ -8741,6 +8741,62 @@ void TestSubDFromNurbsSurfaceExactOnFlatGrid() {
   Check(matched == 25, "every one of the 25 grid points lands exactly on the flat surface's own P(u,v) = (u, v, 0)");
 }
 
+// SubD::CapBoundaryLoop(): a flat 2x2 quad grid (9 vertices, 4 faces,
+// one 8-edge boundary loop around the outside, one fully interior
+// valence-4 vertex at the center) capped with a single new 8-sided
+// N-gon face - genuinely SubD-native (no centroid vertex or fan the way
+// Mesh::FillSmallHoles() needs), and the loop's own 8 boundary edges
+// retagged from Crease (the automatic boundary tag) back to Smooth so
+// the cap blends in rather than leaving a crease ring.
+void TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  for (int j = 0; j <= 2; ++j) {
+    for (int i = 0; i <= 2; ++i) raw.m_V.Append(ON_3fPoint(static_cast<float>(i), static_cast<float>(j), 0.0f));
+  }
+  const auto idx = [](int i, int j) { return j * 3 + i; };
+  for (int j = 0; j < 2; ++j) {
+    for (int i = 0; i < 2; ++i) {
+      ON_MeshFace f;
+      f.vi[0] = idx(i, j);
+      f.vi[1] = idx(i + 1, j);
+      f.vi[2] = idx(i + 1, j + 1);
+      f.vi[3] = idx(i, j + 1);
+      raw.m_F.Append(f);
+    }
+  }
+
+  SubD subd = SubD::FromControlMesh(grid, false);
+  Check(subd.FaceCount() == 4 && subd.VertexCount() == 9 && subd.EdgeCount() == 12,
+        "the flat 2x2 grid starts as 4 faces / 9 vertices / 12 edges (8 boundary + 4 interior)");
+  Check(subd.CreaseEdgeCount() == 8, "all 8 outer boundary edges start Crease-tagged, the automatic boundary convention");
+
+  Check(!subd.CapBoundaryLoop(Point3d(9, 9, 9), 1e-9),
+        "CapBoundaryLoop refuses when no vertex exists at the given point");
+  Check(!subd.CapBoundaryLoop(Point3d(1, 1, 0), 1e-9),
+        "CapBoundaryLoop refuses at the one fully interior vertex (1,1,0) - it has no naked edge to start from");
+
+  Check(subd.CapBoundaryLoop(Point3d(0, 0, 0), 1e-9), "CapBoundaryLoop succeeds from a genuine boundary vertex");
+  Check(subd.FaceCount() == 5 && subd.VertexCount() == 9 && subd.EdgeCount() == 12,
+        "capping adds exactly 1 new face and 0 new vertices/edges (it reuses the existing boundary edges)");
+  Check(subd.CreaseEdgeCount() == 0,
+        "the 8 former-boundary edges are retagged Smooth - no crease ring left where the hole used to be");
+
+  bool found_ngon = false;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    if (f->EdgeCount() == 8) found_ngon = true;
+  }
+  Check(found_ngon, "the new cap face is a genuine 8-sided N-gon, not silently triangulated or quad-split");
+
+  Check(!subd.CapBoundaryLoop(Point3d(0, 0, 0), 1e-9),
+        "CapBoundaryLoop refuses again now that the SubD is fully closed - no naked edge left anywhere");
+}
+
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -27149,6 +27205,7 @@ int main() {
   TestSubDIsValid();
   TestSubDMeshRoundTripIsExactAtLevelZero();
   TestSubDFromNurbsSurfaceExactOnFlatGrid();
+  TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
