@@ -231,8 +231,29 @@ class NurbsCurve {
   // false.
   Result MakeNonRational();
 
-  // Elevates the curve's degree in place. Returns NoOpAlreadySatisfied if
-  // `new_degree <= Degree()`.
+  // Elevates the curve's degree in place, preserving its shape exactly
+  // (to floating-point precision) - `PointAt(t)` is the same for every
+  // `t` before and after. Returns NoOpAlreadySatisfied if `new_degree <=
+  // Degree()`, Result::Failed if the curve is not a valid NURBS curve.
+  //
+  // NOT a wrapper around `ON_NurbsCurve::IncreaseDegree` any more: a
+  // randomized probe found that routine silently CORRUPTS the shape of a
+  // curve with a non-uniform knot vector at moderate-to-high degree
+  // (measured at unit scale: up to 1.7e-6 off at degree 8, 3.2e+2 at
+  // degree 12, 1e+24 - garbage - at degree 16 with repeated knots; even a
+  // uniform degree-19 curve drifted 3.4e-6). Implemented instead via
+  // detail/degree_elevate.h: Piegl & Tiller's published algorithm A5.9
+  // (Bezier decomposition, closed-form per-segment elevation, exact knot
+  // removal) for the minimal `ControlPointCount() + t * spans` result,
+  // VERIFIED against an unconditionally-exact piecewise-Bezier elevation
+  // by direct evaluation, and falling back to that exact Bezier form
+  // (same degree and shape, more control points - full-multiplicity
+  // interior knots) whenever knot removal's own high-degree ill-
+  // conditioning would have moved the curve by more than 1e-12 of its
+  // control polygon's bounding-box diagonal. So the control-point count
+  // of the result is minimal in the common case (every degree <= 5 case
+  // probed; most degree <= 8 ones) but not guaranteed; the shape always
+  // is. A periodic curve comes back clamped (same as before).
   Result ElevateDegree(int new_degree);
 
   // Whether the curve's start and end points coincide - either because

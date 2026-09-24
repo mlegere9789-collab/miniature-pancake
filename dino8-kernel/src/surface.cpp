@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "dino8/kernel/curve.h"
+#include "dino8/kernel/detail/degree_elevate.h"
 #include "dino8/kernel/detail/polygon2d.h"
 #include "dino8/kernel/mesh.h"
 
@@ -688,11 +689,21 @@ Result NurbsSurface::MakeNonRational() {
 }
 
 Result NurbsSurface::ElevateDegree(int direction, int new_degree) {
+  if (direction != 0 && direction != 1) {
+    return Result::Failed;
+  }
   if (new_degree <= surface_.Degree(direction)) {
     return Result::NoOpAlreadySatisfied;
   }
-  const bool ok = surface_.IncreaseDegree(direction, new_degree);
-  return ok ? Result::Ok : Result::Failed;
+  // Deliberately NOT `ON_NurbsSurface::IncreaseDegree` - it delegates to
+  // `ON_NurbsCurve::IncreaseDegree`, whose measured shape corruption on
+  // non-uniform knots detail/degree_elevate.h documents.
+  ON_NurbsSurface elevated;
+  if (!detail::DegreeElevateNurbsSurface(surface_, direction, new_degree, elevated)) {
+    return Result::Failed;
+  }
+  surface_ = elevated;
+  return Result::Ok;
 }
 
 bool NurbsSurface::IsClosed(int direction) const { return surface_.IsClosed(direction); }
@@ -860,8 +871,10 @@ Point2d NurbsSurface::ClosestPointParameter(Point3d point, int u_divisions, int 
   double best_v = v_lo;
 
   constexpr int kRefinementLevels = 8;
+  std::vector<double> d2_grid(static_cast<size_t>(u_divisions + 1) * static_cast<size_t>(v_divisions + 1));
   for (int level = 0; level < kRefinementLevels; ++level) {
     double best_d2 = std::numeric_limits<double>::max();
+    int best_i = 0, best_j = 0;
     for (int i = 0; i <= u_divisions; ++i) {
       const double u_raw = u_lo + (u_hi - u_lo) * static_cast<double>(i) / u_divisions;
       const double u = u_closed ? wrap(u_raw, u_domain.Min(), u_domain.Max()) : u_raw;
@@ -869,19 +882,55 @@ Point2d NurbsSurface::ClosestPointParameter(Point3d point, int u_divisions, int 
         const double v_raw = v_lo + (v_hi - v_lo) * static_cast<double>(j) / v_divisions;
         const double v = v_closed ? wrap(v_raw, v_domain.Min(), v_domain.Max()) : v_raw;
         const double d2 = distance_squared(u, v);
+        d2_grid[static_cast<size_t>(i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(j)] = d2;
         if (d2 < best_d2) {
           best_d2 = d2;
           best_u = u_raw;
           best_v = v_raw;
+          best_i = i;
+          best_j = j;
         }
       }
     }
+    // Only narrow a direction's window if that direction actually
+    // discriminated at this level. At a DEGENERATE edge - a sphere's pole,
+    // a cone's apex, a revolved surface's on-axis end, where a whole row
+    // of control points collapses to one point - every u sample on the
+    // pole row evaluates to the same point, so the best sample's u is
+    // just whichever tied sample came first (u = u_lo), and narrowing the
+    // u window around it locked the search into the wrong azimuth for
+    // every later level: a real, reproduced bug (see
+    // TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth) - a query
+    // 0.3r off the sphere just 0.36 degrees from the pole came back with
+    // its closest point ~32 degrees of azimuth away. Leaving a flat
+    // direction's window alone lets the OTHER direction move off the
+    // degenerate edge first; the flat direction then discriminates on
+    // the next level and narrows normally (one level of the 8 spent, of
+    // a resolution budget that has plenty to spare).
+    double row_min = std::numeric_limits<double>::max(), row_max = 0.0;
+    for (int i = 0; i <= u_divisions; ++i) {
+      const double d2 = d2_grid[static_cast<size_t>(i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(best_j)];
+      row_min = std::min(row_min, d2);
+      row_max = std::max(row_max, d2);
+    }
+    double col_min = std::numeric_limits<double>::max(), col_max = 0.0;
+    for (int j = 0; j <= v_divisions; ++j) {
+      const double d2 = d2_grid[static_cast<size_t>(best_i) * static_cast<size_t>(v_divisions + 1) + static_cast<size_t>(j)];
+      col_min = std::min(col_min, d2);
+      col_max = std::max(col_max, d2);
+    }
+    const bool u_flat = (row_max - row_min) <= 1e-12 * best_d2;
+    const bool v_flat = (col_max - col_min) <= 1e-12 * best_d2;
     const double u_step = (u_hi - u_lo) / u_divisions;
     const double v_step = (v_hi - v_lo) / v_divisions;
-    u_lo = u_closed ? (best_u - u_step) : std::max(u_domain.Min(), best_u - u_step);
-    u_hi = u_closed ? (best_u + u_step) : std::min(u_domain.Max(), best_u + u_step);
-    v_lo = v_closed ? (best_v - v_step) : std::max(v_domain.Min(), best_v - v_step);
-    v_hi = v_closed ? (best_v + v_step) : std::min(v_domain.Max(), best_v + v_step);
+    if (!u_flat) {
+      u_lo = u_closed ? (best_u - u_step) : std::max(u_domain.Min(), best_u - u_step);
+      u_hi = u_closed ? (best_u + u_step) : std::min(u_domain.Max(), best_u + u_step);
+    }
+    if (!v_flat) {
+      v_lo = v_closed ? (best_v - v_step) : std::max(v_domain.Min(), best_v - v_step);
+      v_hi = v_closed ? (best_v + v_step) : std::min(v_domain.Max(), best_v + v_step);
+    }
   }
   const double final_u = u_closed ? wrap(best_u, u_domain.Min(), u_domain.Max()) : best_u;
   const double final_v = v_closed ? wrap(best_v, v_domain.Min(), v_domain.Max()) : best_v;
@@ -928,7 +977,35 @@ SurfaceCurvature NurbsSurface::CurvatureAt(double u, double v) const {
   const double n_coeff = dvv * normal;
 
   const double denom = e_coeff * g_coeff - f_coeff * f_coeff;
-  if (std::abs(denom) < 1e-15) {
+  // EG - F^2 == |du x dv|^2, so the tangent plane degenerates whenever
+  // either partial derivative vanishes (a POLE - a sphere's axis point, a
+  // cone's apex, a revolved surface's on-axis end, where a whole row of
+  // control points collapses to one point) or the two partials are
+  // parallel (a fold). Both must be tested RELATIVELY, not against an
+  // absolute threshold: EG - F^2 scales with length^4, so an absolute
+  // test throws "degenerate" at perfectly regular points of any small
+  // enough surface (see TestSurfaceCurvatureAtIsScaleInvariant).
+  //
+  // The two relative tests are NOT interchangeable, and using only the
+  // first one is itself a real, reproduced regression: "EG - F^2 over EG"
+  // (sine-squared of the partials' angle) correctly flags a fold when E
+  // and G are comparable, but is USELESS right at a pole. There, one
+  // partial (say du) is mathematically zero but evaluates to pure
+  // floating-point noise (measured: |du| ~1e-17 to 1e-23 at unit-to-tiny
+  // scale) whose direction is essentially arbitrary, so F = du.dv is
+  // noise of the SAME relative order as E = du.du, and EG - F^2 over EG
+  // comes out anywhere from 0.24 to 0.76 depending on scale - nowhere
+  // near 0, so it missed every pole case in
+  // TestSurfaceCurvatureAtIsScaleInvariant. What IS scale-invariant and
+  // noise-robust at the pole is comparing E to G directly: measured on
+  // sphere radii 1, 1e-4 and 1e-6, a regular point has
+  // min(E,G)/max(E,G) ~ 0.94-1.0, while a pole has it ~1e-33 to 1e-41 -
+  // one partial is at the noise floor relative to the other, regardless
+  // of overall scale. So a vanishing tangent is caught by this second,
+  // independent relative test.
+  const bool near_parallel = !(denom > 1e-16 * e_coeff * g_coeff);
+  const bool tangent_vanishes = !(std::min(e_coeff, g_coeff) > 1e-16 * std::max(e_coeff, g_coeff));
+  if (!std::isfinite(denom) || near_parallel || tangent_vanishes) {
     throw std::runtime_error(
         "dino8::kernel::NurbsSurface::CurvatureAt: degenerate first "
         "fundamental form at this (u, v)");
