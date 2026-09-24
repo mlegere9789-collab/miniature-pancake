@@ -5060,6 +5060,65 @@ void TestModelAddLayerRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Every Add*()'s new `render_color` parameter: before this, an object's
+// displayed color could only ever come from its layer (ON::color_from_layer,
+// ON_3dmObjectAttributes' own default) - the same "kernel-level data
+// exchange" gap TestModelAddLayerRoundTrips() closed for `m_layer_index`,
+// just for `m_color`/`ColorSource()` instead. Checks a real round trip: one
+// object given an explicit render_color (proving it overrides
+// ColorSource() to ON::color_from_object and the color itself survives
+// save/reload byte-for-byte), and a second object left with no
+// render_color argument (proving the new parameter is additive, not a
+// behavior change for existing callers - ColorSource() stays
+// ON::color_from_layer, the default this kernel used before render_color
+// existed at all).
+void TestModelAddRenderColorRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  Model model;
+  const auto box_mesh = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  model.AddMesh(box_mesh, "ColoredMesh", 0, Color{10, 200, 30});
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(box_brep);  // no render_color given: stays layer-colored
+
+  const std::string path = "dino8_kernel_model_render_color_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with an object render color succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_colored_mesh = false;
+  bool found_uncolored_brep = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    const ON_Geometry* geometry = geometry_component->Geometry(nullptr);
+    if (dynamic_cast<const ON_Mesh*>(geometry) != nullptr) {
+      found_colored_mesh = true;
+      Check(attributes->ColorSource() == ON::color_from_object,
+            "the reloaded mesh's ColorSource() switched to ON::color_from_object");
+      Check(attributes->m_color == ON_Color(10, 200, 30),
+            "the reloaded mesh's color exactly matches what AddMesh() was given");
+    } else if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
+      found_uncolored_brep = true;
+      Check(attributes->ColorSource() == ON::color_from_layer,
+            "the reloaded brep - added with no render_color argument - kept ColorSource() at "
+            "its default ON::color_from_layer, proving the new parameter is a no-op when "
+            "omitted");
+    }
+  }
+  Check(found_colored_mesh && found_uncolored_brep,
+        "both object types (colored mesh, uncolored brep) were found in the reloaded model");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -6790,6 +6849,113 @@ void TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge() {
         "...whose tolerant tessellation is a closed manifold of volume 1");
 }
 
+// Brep::Check()'s 3D counterpart to its own 2D SelfIntersectingLoop check
+// (CheckIssue::Kind::SelfIntersectingLoop3d's own doc comment has the full
+// rationale): a loop's sampled 2D trim polygon can be perfectly simple
+// while its 3D image still crosses itself, if the surface underneath it
+// folds space between the loop's two arms. The textbook counterexample,
+// built here directly via the raw OpenNURBS API (this kernel's own
+// factories never need a folded surface, so there is no higher-level way
+// to construct one): a bilinear (degree-1 x degree-1) surface whose four
+// corners are wired "bowtie"-style. NurbsSurface::FromControlGrid's own
+// documented indexing (control_grid[u*v_count+v]) and ON_Brep::
+// NewFace(surface)'s own documented trim order ("south, east, north, and
+// west side... in that order", i.e. (u:0->1,v=0), (u=1,v:0->1),
+// (v=1,u:1->0), (u=0,v:1->0)) together mean corners [P00,P01,P10,P11]
+// produce the loop P00->P10->P11->P01->P00 - and with P00=(0,0,0),
+// P10=(1,1,0), P11=(1,0,z), P01=(0,1,z), the loop's first and third edges
+// (P00-P10 and P11-P01) are the unit square's own two diagonals: their
+// (x, y) projections cross at exactly (0.5, 0.5) regardless of z, at a 3D
+// distance of exactly |z| apart there (hand-derived: both segments' own
+// closest-approach parameter works out to s = t = 0.5 - checked directly
+// against Segments3dProperlyCross's own algorithm, not merely assumed).
+// The (u, v) loop itself is always just the ordinary unit square - always
+// simple - confirmed throughout via SelfIntersectingLoop's own Count()
+// staying 0.
+void TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  auto bowtie_brep = [](double z_diag2) {
+    // control_grid[u*2+v]: [P(0,0), P(0,1), P(1,0), P(1,1)].
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0),        // P00
+        Point3d(0, 1, z_diag2),  // P01
+        Point3d(1, 1, 0),        // P10
+        Point3d(1, 0, z_diag2),  // P11
+    };
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    Brep b;
+    b.raw().NewFace(surface.raw());
+    b.raw().SetTrimIsoFlags();
+    b.raw().SetTolerancesBoxesAndFlags();
+    return b;
+  };
+
+  // (1) Exact crossing (z = 0: both diagonals lie in the z = 0 plane) -
+  // the pure bowtie. Reported, and reported ONLY as the new 3D kind.
+  {
+    const Brep b = bowtie_brep(0.0);
+    const Brep::CheckReport r = b.Check();
+    Check(r.Count(Brep::CheckIssue::Kind::SelfIntersectingLoop3d) == 1,
+          "a bowtie-wired bilinear patch's 3D-crossing diagonals are reported exactly once");
+    Check(r.Count(Brep::CheckIssue::Kind::SelfIntersectingLoop) == 0,
+          "...while the EXISTING 2D check finds nothing - the (u, v) loop is a plain, simple unit square");
+    const auto it = std::find_if(r.issues.begin(), r.issues.end(), [](const Brep::CheckIssue& i) {
+      return i.kind == Brep::CheckIssue::Kind::SelfIntersectingLoop3d;
+    });
+    Check(it != r.issues.end() && it->measure < 1e-9 && std::abs(it->location.x - 0.5) < 1e-9 &&
+              std::abs(it->location.y - 0.5) < 1e-9 && std::abs(it->location.z) < 1e-9,
+          "...at the hand-derived crossing point (0.5, 0.5, 0), measured distance ~0");
+  }
+
+  // (2) Tolerance boundary: separate the two diagonals along z by exactly
+  // `h`, so their true closest approach (hand-derived above) is exactly
+  // `h`, independent of the (u, v) loop's own shape.
+  {
+    constexpr double t = 1e-3;
+    Check(bowtie_brep(0.9 * t).Check(t).Count(Brep::CheckIssue::Kind::SelfIntersectingLoop3d) == 1,
+          "diagonals 0.9*tolerance apart (in z) are still reported");
+    Check(bowtie_brep(t).Check(t).Count(Brep::CheckIssue::Kind::SelfIntersectingLoop3d) == 1,
+          "...and exactly AT tolerance too (measure <= tolerance triggers - the same inclusive convention "
+          "Mesh::CheckReport's own duplicate_vertices uses)");
+    Check(bowtie_brep(1.1 * t).Check(t).Count(Brep::CheckIssue::Kind::SelfIntersectingLoop3d) == 0,
+          "...but not at 1.1*tolerance - these diagonals genuinely miss each other, not a sampling artifact");
+  }
+
+  // (3) Documented limitation: two long sides separated by only 1e-9 (far
+  // closer than the default 1e-6 tolerance - if the check tested proximity
+  // alone, this WOULD trigger) but running PARALLEL rather than crossing:
+  // Segments3dProperlyCross's own doc comment names exactly this shape
+  // (two sides of a thin-but-legitimate sliver-ish face) as excluded by
+  // design - a close-but-parallel pair is SliverFace/DegenerateFace's own
+  // territory, not a fold, and is never reported here however close.
+  {
+    const std::vector<Point3d> grid = {
+        Point3d(0, 0, 0), Point3d(0, 1e-9, 0), Point3d(1, 0, 0), Point3d(1, 1e-9, 0),
+    };
+    const NurbsSurface surface = NurbsSurface::FromControlGrid(grid, 2, 2, 1, 1);
+    Brep sliver;
+    sliver.raw().NewFace(surface.raw());
+    sliver.raw().SetTrimIsoFlags();
+    sliver.raw().SetTolerancesBoxesAndFlags();
+    Check(sliver.Check().Count(Brep::CheckIssue::Kind::SelfIntersectingLoop3d) == 0,
+          "a hairline-thin but non-crossing (parallel-sided) loop is not reported as a 3D self-intersection, "
+          "despite its two long sides sitting far closer than the default tolerance - a disclosed limitation, "
+          "see Segments3dProperlyCross's own doc comment");
+  }
+
+  // (4) True negative: the ordinary, already-exercised clean fixture (the
+  // real-topology box every other Check() test in this file uses) has no
+  // fold anywhere, so the new check adds nothing to its report.
+  {
+    const Brep box = Brep::FromPlanarFaces(CheckHealBoxFaces());
+    Check(box.Check().Count(Brep::CheckIssue::Kind::SelfIntersectingLoop3d) == 0,
+          "the ordinary clean box fixture has no 3D self-intersection either");
+  }
+}
+
 // Mesh-level Check()/FillSmallHoles(): drop one triangle (a 3-vertex
 // hole, filled with a single triangle) and then a whole quad face (a
 // 4-vertex hole, filled with a centroid fan); the box sits away from the
@@ -7032,6 +7198,81 @@ void TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon() {
   const ON_MeshFace& f0 = m.raw().m_F[0];
   Check(f0.vi[0] == 0 && f0.vi[1] == 1 && f0.vi[2] == 2,
         "the SURVIVING copy is the first occurrence (0,1,2), not one of the later duplicates");
+}
+
+// Builds a single flat unit-square quad face at z=0, wound CCW when
+// viewed from +Z (vertices (0,0,0),(1,0,0),(1,1,0),(0,1,0)) - the
+// simplest possible fixture with an exact, hand-derivable vertex normal
+// ((0,0,1) everywhere, since both of the quad's own triangles share that
+// same flat normal) and an exact hand-derivable Offset()/Thicken()
+// result.
+dino8::kernel::Mesh MakeFlatUnitSquareMesh() {
+  dino8::kernel::Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace f;
+  f.vi[0] = 0;
+  f.vi[1] = 1;
+  f.vi[2] = 2;
+  f.vi[3] = 3;
+  raw.m_F.Append(f);
+  return m;
+}
+
+void TestMeshOffsetMovesVerticesAlongExactVertexNormal() {
+  using dino8::kernel::Point3d;
+
+  const auto square = MakeFlatUnitSquareMesh();
+  const auto offset = square.Offset(2.5);
+  Check(offset.VertexCount() == 4 && offset.FaceCount() == 1, "Offset() doesn't change vertex/face counts");
+  // Every vertex shifts by exactly (0, 0, 2.5) - the flat square's own
+  // exact (0,0,1) normal times the offset distance.
+  bool all_exact = true;
+  for (int i = 0; i < 4; ++i) {
+    const Point3d before(square.raw().m_V[i]);
+    const Point3d after(offset.raw().m_V[i]);
+    all_exact = all_exact && std::fabs(after.x - before.x) < 1e-9 && std::fabs(after.y - before.y) < 1e-9 &&
+                std::fabs(after.z - before.z - 2.5) < 1e-9;
+  }
+  Check(all_exact, "every vertex moves by exactly (0, 0, 2.5) - the flat square's exact normal times the distance");
+}
+
+// Thicken() on the same flat unit square must produce an EXACT unit cube
+// (for distance = 1): 8 vertices, 6 faces (1 flipped original bottom, 1
+// offset top, 4 side walls), closed manifold, volume exactly 1 - a fully
+// hand-derivable result, not merely plausible-looking.
+void TestMeshThickenBuildsExactUnitCubeFromFlatSquare() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto square = MakeFlatUnitSquareMesh();
+
+  bool threw_zero = false;
+  try {
+    (void)square.Thicken(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "Thicken(0.0) throws - a zero-thickness solid is meaningless");
+
+  const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  bool threw_closed = false;
+  try {
+    (void)box.Thicken(1.0);
+  } catch (const std::invalid_argument&) {
+    threw_closed = true;
+  }
+  Check(threw_closed, "Thicken() on an already-closed mesh throws - it only handles an open sheet");
+
+  const Mesh cube = square.Thicken(1.0);
+  Check(cube.VertexCount() == 8 && cube.FaceCount() == 6,
+        "Thicken(1.0) on the flat unit square gives exactly 8 vertices / 6 faces");
+  Check(cube.IsClosedManifold(), "...and the result is a genuine closed 2-manifold");
+  Check(std::fabs(cube.Volume() - 1.0) < 1e-9,
+        "...with volume exactly 1 - the flat square's own area (1) times the offset distance (1)");
 }
 
 // Mesh::FindSelfIntersections(): the "does this otherwise-closed-manifold
@@ -8622,6 +8863,176 @@ void TestSubDMeshRoundTripIsExactAtLevelZero() {
     for (int i = 0; i < back.raw().m_F.Count(); ++i) all_quads = all_quads && back.raw().m_F[i].IsQuad();
     Check(all_quads, "...and every round-tripped face is still a genuine quad, not split into triangles");
   }
+}
+
+// SubD::FromNurbsSurface(): closes PARITY_MAP.md's subd_mesh "SubD from
+// NURBS/B-rep conversion (reverse of ToNurbsPatches)" [missing] item for
+// a single untrimmed surface. Uses the same flat P(u,v) = (u, v, 0)
+// bilinear surface TestSurfaceNormalAt() already relies on (an exact,
+// hand-derivable fixture, not approximate) so the resulting grid's exact
+// positions are known in closed form, not just plausible-looking.
+void TestSubDFromNurbsSurfaceExactOnFlatGrid() {
+  using dino8::kernel::Interval;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  const Interval du = flat.Domain(0), dv = flat.Domain(1);
+
+  bool threw = false;
+  try {
+    (void)SubD::FromNurbsSurface(flat, 0, 4);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SubD::FromNurbsSurface throws std::invalid_argument when u_divisions < 1");
+
+  const SubD subd = SubD::FromNurbsSurface(flat, 4, 4);
+  Check(subd.VertexCount() == 25 && subd.FaceCount() == 16,
+        "a 4x4-division conversion yields a 5x5 vertex grid of 16 quad faces");
+
+  const Mesh mesh = subd.ToApproximateMesh();
+  Check(mesh.VertexCount() == 25 && mesh.FaceCount() == 16,
+        "the level-0 control net matches the SubD's own topology counts exactly");
+  bool all_quads = true;
+  for (int i = 0; i < mesh.raw().m_F.Count(); ++i) all_quads = all_quads && mesh.raw().m_F[i].IsQuad();
+  Check(all_quads, "every emitted face is a genuine quad, not a triangulated cell");
+
+  int matched = 0;
+  for (int i = 0; i <= 4; ++i) {
+    const double u = du.min + (du.max - du.min) * (i / 4.0);
+    for (int j = 0; j <= 4; ++j) {
+      const double v = dv.min + (dv.max - dv.min) * (j / 4.0);
+      const Point3d expected(u, v, 0.0);  // P(u, v) = (u, v, 0) exactly, for this fixture
+      for (int k = 0; k < mesh.raw().m_V.Count(); ++k) {
+        if (expected.DistanceTo(Point3d(mesh.raw().m_V[k])) < 1e-6) {
+          ++matched;
+          break;
+        }
+      }
+    }
+  }
+  Check(matched == 25, "every one of the 25 grid points lands exactly on the flat surface's own P(u,v) = (u, v, 0)");
+}
+
+// SubD::CapBoundaryLoop(): a flat 2x2 quad grid (9 vertices, 4 faces,
+// one 8-edge boundary loop around the outside, one fully interior
+// valence-4 vertex at the center) capped with a single new 8-sided
+// N-gon face - genuinely SubD-native (no centroid vertex or fan the way
+// Mesh::FillSmallHoles() needs), and the loop's own 8 boundary edges
+// retagged from Crease (the automatic boundary tag) back to Smooth so
+// the cap blends in rather than leaving a crease ring.
+void TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  for (int j = 0; j <= 2; ++j) {
+    for (int i = 0; i <= 2; ++i) raw.m_V.Append(ON_3fPoint(static_cast<float>(i), static_cast<float>(j), 0.0f));
+  }
+  const auto idx = [](int i, int j) { return j * 3 + i; };
+  for (int j = 0; j < 2; ++j) {
+    for (int i = 0; i < 2; ++i) {
+      ON_MeshFace f;
+      f.vi[0] = idx(i, j);
+      f.vi[1] = idx(i + 1, j);
+      f.vi[2] = idx(i + 1, j + 1);
+      f.vi[3] = idx(i, j + 1);
+      raw.m_F.Append(f);
+    }
+  }
+
+  SubD subd = SubD::FromControlMesh(grid, false);
+  Check(subd.FaceCount() == 4 && subd.VertexCount() == 9 && subd.EdgeCount() == 12,
+        "the flat 2x2 grid starts as 4 faces / 9 vertices / 12 edges (8 boundary + 4 interior)");
+  Check(subd.CreaseEdgeCount() == 8, "all 8 outer boundary edges start Crease-tagged, the automatic boundary convention");
+
+  Check(!subd.CapBoundaryLoop(Point3d(9, 9, 9), 1e-9),
+        "CapBoundaryLoop refuses when no vertex exists at the given point");
+  Check(!subd.CapBoundaryLoop(Point3d(1, 1, 0), 1e-9),
+        "CapBoundaryLoop refuses at the one fully interior vertex (1,1,0) - it has no naked edge to start from");
+
+  Check(subd.CapBoundaryLoop(Point3d(0, 0, 0), 1e-9), "CapBoundaryLoop succeeds from a genuine boundary vertex");
+  Check(subd.FaceCount() == 5 && subd.VertexCount() == 9 && subd.EdgeCount() == 12,
+        "capping adds exactly 1 new face and 0 new vertices/edges (it reuses the existing boundary edges)");
+  Check(subd.CreaseEdgeCount() == 0,
+        "the 8 former-boundary edges are retagged Smooth - no crease ring left where the hole used to be");
+
+  bool found_ngon = false;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    if (f->EdgeCount() == 8) found_ngon = true;
+  }
+  Check(found_ngon, "the new cap face is a genuine 8-sided N-gon, not silently triangulated or quad-split");
+
+  Check(!subd.CapBoundaryLoop(Point3d(0, 0, 0), 1e-9),
+        "CapBoundaryLoop refuses again now that the SubD is fully closed - no naked edge left anywhere");
+}
+
+// SubD::Transform(): a closed quad-box SubD's control cage moved by an
+// exact translation and scaled by an exact uniform factor - both hand-
+// derivable, not approximate - plus the documented mirror caveat (still
+// IsValid() afterward, exactly like a wholly Mesh::FlipNormals()-ed
+// mesh) and the invalid-xform rejection.
+void TestSubDTransformMovesScalesAndStaysValidUnderMirror() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::Vector3d;
+
+  const auto subd = SubD::FromControlMesh(MakeQuadBoxMesh(0, 0, 0, 2, 2, 2));
+  Check(subd.IsValid(), "the source box SubD is valid before any transform");
+  const auto before = subd.LimitPoints();
+
+  const ON_Xform translate = ON_Xform::TranslationTransformation(ON_3dVector(5, -1, 2));
+  const auto moved = subd.Transform(translate);
+  Check(moved.VertexCount() == subd.VertexCount() && moved.IsValid(),
+        "Transform() preserves vertex count and validity under a plain translation");
+  const auto after_move = moved.LimitPoints();
+  bool all_translated = before.size() == after_move.size();
+  for (size_t i = 0; all_translated && i < before.size(); ++i) {
+    all_translated = all_translated && ((after_move[i].control_point - before[i].control_point) -
+                                         Vector3d(5, -1, 2))
+                                                .Length() < 1e-12;
+  }
+  Check(all_translated, "every control-net vertex shifts by exactly (5, -1, 2), no more and no less");
+
+  const ON_Xform scale = ON_Xform::ScaleTransformation(ON_3dPoint::Origin, 2.0, 2.0, 2.0);
+  const auto scaled = subd.Transform(scale);
+  const auto after_scale = scaled.LimitPoints();
+  bool all_scaled = before.size() == after_scale.size();
+  for (size_t i = 0; all_scaled && i < before.size(); ++i) {
+    all_scaled = all_scaled && (Point3d(after_scale[i].control_point) -
+                                 Point3d(2.0 * before[i].control_point.x, 2.0 * before[i].control_point.y,
+                                         2.0 * before[i].control_point.z))
+                                        .Length() < 1e-9;
+  }
+  Check(all_scaled, "every control-net vertex scales by exactly 2x about the origin");
+
+  const ON_Xform mirror = ON_Xform::ScaleTransformation(ON_3dPoint::Origin, -1.0, 1.0, 1.0);
+  const auto mirrored = subd.Transform(mirror);
+  Check(mirrored.IsValid(),
+        "a mirrored (negative-determinant) transform still leaves a perfectly VALID SubD - "
+        "coordinate reflection doesn't touch face winding, the documented caveat");
+
+  ON_Xform bad = ON_Xform::IdentityTransformation;
+  bad.m_xform[1][2] = ON_DBL_QNAN;
+  bool threw = false;
+  try {
+    (void)subd.Transform(bad);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "Transform() throws std::invalid_argument for a genuinely invalid (NaN-carrying) xform");
 }
 
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
@@ -10740,6 +11151,82 @@ void TestShellConvexPlanarPerFaceWallThicknessArgumentChecks() {
   Check(!threw_unexpectedly,
         "ShellConvexPlanar's per-face overload ignores a removed face's own "
         "wall_thickness entry, however nonsensical");
+}
+
+void TestShellClosedSphereMatchesExactShellVolume() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::ShellClosedSphere;
+
+  const double R = 5.0, t = 1.0;
+  const Brep shell = ShellClosedSphere(Point3d(1, 2, 3), R, t);
+  Check(shell.FaceCount() == 2, "ShellClosedSphere produces exactly 2 faces (outer + inner)");
+
+  const std::vector<std::pair<int, int>> ranges = shell.LumpFaceRanges();
+  Check(ranges.size() == 2, "ShellClosedSphere's outer and inner spheres are two separate lumps "
+                            "(Brep::Compound() of two genuinely disjoint closed shells, not welded "
+                            "into one shared-topology face pair)");
+
+  const Mesh mesh = shell.TessellateToClosedMesh(60, 60);
+  Check(mesh.IsClosedManifold(),
+        "ShellClosedSphere's tessellation welds into one closed, watertight manifold "
+        "(the outer sphere's own closure plus the inner sphere's own closure, combined)");
+  const double expected_volume = (4.0 / 3.0) * ON_PI * (R * R * R - (R - t) * (R - t) * (R - t));
+  Check(std::fabs(mesh.Volume() - expected_volume) / expected_volume < 1e-2,
+        "ShellClosedSphere's tessellated volume matches the exact closed-form "
+        "4/3*pi*(R^3-(R-t)^3) within the mesh's own tessellation-density tolerance");
+
+  bool threw = false;
+  try { ShellClosedSphere(Point3d(0, 0, 0), R, R); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(thickness == outer_radius) is refused (inner radius would be exactly 0)");
+
+  threw = false;
+  try { ShellClosedSphere(Point3d(0, 0, 0), R, R + 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(thickness > outer_radius) is refused (inner radius would be negative)");
+
+  threw = false;
+  try { ShellClosedSphere(Point3d(0, 0, 0), R, -1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(negative thickness) is refused");
+
+  threw = false;
+  try { ShellClosedSphere(Point3d(0, 0, 0), -1.0, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedSphere(negative outer_radius) is refused");
+}
+
+void TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::ShellClosedTorus;
+
+  const double R = 10.0, r = 3.0, t = 1.0;
+  const ON_Plane plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1));
+  const Brep shell = ShellClosedTorus(plane, R, r, t);
+  Check(shell.FaceCount() == 2, "ShellClosedTorus produces exactly 2 faces (outer + inner)");
+  Check(shell.LumpFaceRanges().size() == 2, "ShellClosedTorus's outer and inner tori are two separate lumps");
+
+  const Mesh mesh = shell.TessellateToClosedMesh(80, 40);
+  Check(mesh.IsClosedManifold(), "ShellClosedTorus's tessellation welds into one closed, watertight manifold");
+  // A torus's own enclosed volume is 2*pi^2*R*r^2 (Pappus's theorem: the
+  // tube's own cross-section area pi*r^2, swept a distance 2*pi*R around
+  // the major circle); the shell is the outer solid's volume minus the
+  // inner's, at the SAME major radius (only the tube radius changes -
+  // exactly what NurbsSurface::OffsetAnalytic's own torus case computes).
+  const double expected_volume = 2.0 * ON_PI * ON_PI * R * (r * r - (r - t) * (r - t));
+  Check(std::fabs(mesh.Volume() - expected_volume) / expected_volume < 1e-2,
+        "ShellClosedTorus's tessellated volume matches 2*pi^2*R*(r^2-(r-t)^2) within tessellation tolerance");
+
+  bool threw = false;
+  try { ShellClosedTorus(plane, R, R, t); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedTorus refuses outer_minor_radius >= major_radius (the outer torus would already be a spindle torus)");
+
+  threw = false;
+  try { ShellClosedTorus(plane, R, r, r); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedTorus refuses thickness >= outer_minor_radius (inner torus collapses through its own center circle)");
+
+  threw = false;
+  try { ShellClosedTorus(plane, -1.0, r, t); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ShellClosedTorus refuses a non-positive major_radius");
 }
 
 }  // namespace
@@ -27104,6 +27591,7 @@ int main() {
   TestModelAddPointCloudRoundTrips();
   TestModelAddObjectNameRoundTrips();
   TestModelAddLayerRoundTrips();
+  TestModelAddRenderColorRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
@@ -27168,6 +27656,9 @@ int main() {
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
   TestSubDIsValid();
   TestSubDMeshRoundTripIsExactAtLevelZero();
+  TestSubDFromNurbsSurfaceExactOnFlatGrid();
+  TestSubDCapBoundaryLoopAddsGenuineNgonAndRetagsSmooth();
+  TestSubDTransformMovesScalesAndStaysValidUnderMirror();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
@@ -27202,6 +27693,8 @@ int main() {
   TestShellConvexPlanarRejectsAdjacentOpenings();
   TestShellConvexPlanarPerFaceWallThicknessMatchesExactCavityFormula();
   TestShellConvexPlanarPerFaceWallThicknessArgumentChecks();
+  TestShellClosedSphereMatchesExactShellVolume();
+  TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
@@ -27398,11 +27891,14 @@ int main() {
   TestBrepJoinNakedEdgesRecordsTolerantEdges();
   TestBrepRemoveSliverAndDegenerateFacesHealHairlineStrip();
   TestBrepRemoveDegenerateEdgesCollapsesSharedMicroEdge();
+  TestBrepCheckDetects3dSelfIntersectingLoopBeyondThe2dTrimCheck();
   TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
   TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
+  TestMeshOffsetMovesVerticesAlongExactVertexNormal();
+  TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
   TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();

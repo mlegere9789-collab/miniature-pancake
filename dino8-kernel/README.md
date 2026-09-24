@@ -2447,6 +2447,118 @@ What this repo does instead:
   3 - the first occurrence is the baseline, not a duplicate of itself),
   `RemoveDuplicateFaces()` removes exactly those 2, and the survivor is
   provably the first occurrence, not an arbitrary one.
+- `SubD::FromNurbsSurface(surface, u_divisions, v_divisions)`: closes
+  PARITY_MAP.md's subd_mesh "SubD from NURBS/B-rep conversion (reverse
+  of ToNurbsPatches)" [missing] item for a single untrimmed surface (a
+  full Brep -> SubD conversion - matching faces and creases across a
+  whole solid or polysurface - is a materially bigger problem, not
+  attempted here). Evaluates a `u_divisions x v_divisions` grid of
+  points across the surface's own parameter domain and takes each cell
+  as one genuine QUAD SubD face, then hands that straight to the
+  already-existing `FromControlMesh()`. Deliberately NOT built on
+  `NurbsSurface::TessellateGrid()` despite the obvious temptation to
+  reuse it: that method always TRIANGULATES each cell (it exists for
+  mesh-boolean work), which would start every SubD face irregular before
+  `Subdivide()` even ran once - `ToNurbsPatches()` only gives an exact
+  limit patch on regular, all-quad faces, so triangulating here would
+  quietly defeat the entire point of building a SubD cage in the first
+  place. Honestly scoped as an APPROXIMATION of the input surface, not a
+  lossless conversion: a Catmull-Clark limit surface over a regular quad
+  reproduces a uniform bicubic B-spline (see `ToNurbsPatches()`'s own
+  doc comment), not an arbitrary NURBS surface's true shape between grid
+  points (non-uniform knots, non-cubic degree, rational weights - none
+  of that survives flat-grid sampling); the one case this IS exact for
+  is a flat/bilinear input, verified directly: a hand-derivable
+  `P(u,v) = (u, v, 0)` fixture (the same one `TestSurfaceNormalAt()`
+  already relies on) converts to a 5x5-vertex, 16-quad-face SubD whose
+  level-0 control net reproduces all 25 grid points to within 1e-6 of
+  their exact closed-form positions - not merely "close," measured.
+- `SubD::CapBoundaryLoop(start, point_tolerance)`: closes PARITY_MAP.md's
+  subd_mesh "SubD hole/opening capping at kernel level" [missing] item -
+  the SubD-level counterpart to `Mesh::FillSmallHoles()`, but genuinely
+  SubD-native rather than a ported mesh trick: `ON_MeshFace` tops out at
+  4 indices, so `FillSmallHoles()` needs a new centroid vertex and a
+  triangle fan, but `ON_SubDFace` supports any edge count directly, so an
+  n-sided hole becomes exactly ONE new n-gon face - no extra vertex, and
+  (being a real SubD face like any other) immediately a genuine,
+  further-subdividable part of the control net. Identifies the loop by
+  walking from one of its own boundary vertices (every boundary vertex
+  has exactly 2 naked edges, so the walk - follow a naked edge, take the
+  far vertex's OTHER naked edge, repeat - is unambiguous except at a
+  "bowtie" vertex where two loops touch, the same acknowledged ambiguity
+  `Mesh::NakedEdgeLoops()` already documents for its identical case), then
+  hands the collected edges to the real, working
+  `ON_SubD::AddFace(const ON_SimpleArray<ON_SubDEdge*>&)` (verified by
+  reading its implementation: it validates the loop genuinely closes and
+  computes each edge's orientation from shared vertices automatically,
+  not a stub). The one subtlety worth documenting: the loop's own edges
+  are tagged Crease purely because they were a boundary (OpenNURBS' "an
+  open SubD's boundary edges are themselves always creases" convention,
+  not because anyone asked for a sharp seam), so after capping they're
+  retagged Smooth via the same `ON_SubD::SetEdgeTags()` primitive
+  `SetCrease()` already wraps - otherwise the cap would leave a
+  permanent, unintended crease ring exactly where the hole used to be. A
+  caller who DOES want that sharp ring can call `SetCrease()` again
+  afterward. Verified with a flat 2x2 quad grid (9 vertices, 4 faces, one
+  8-edge boundary loop, one fully interior vertex): capping adds exactly
+  1 new 8-sided N-gon face and 0 new vertices/edges, all 8 former-
+  boundary edges read back as Smooth (not Crease) afterward, capping at
+  the interior vertex is refused (no naked edge to start from), and
+  capping again once the SubD is fully closed is refused too.
+- `SubD::Transform(xform)`: the same missing piece `Mesh::Transform()`
+  already closed for `Mesh`, but this class never had at all - no way to
+  move, rotate, scale, or mirror a SubD once built (baking the transform
+  into the control mesh only works BEFORE `FromControlMesh()`, and is
+  impossible after `Subdivide()` has already discarded the original
+  mesh). Delegates to the real `ON_SubD::Transform` (verified by reading
+  `ON_SubDimple::Transform`'s own implementation: it transforms every
+  level's vertices, detects a similarity transform to preserve cached
+  subdivision/limit points instead of discarding them, and updates
+  texture/color mapping and symmetry state). One caveat documented
+  explicitly because it's genuinely easy to miss: a MIRROR (negative-
+  determinant `xform`) only moves positions - it doesn't touch any
+  face's vertex winding, the same convention `Mesh::Transform()` already
+  follows (`ON_Mesh::Transform` flips stored normal VECTORS on a
+  negative determinant but never reorders `ON_MeshFace::vi[]`). The
+  result stays perfectly `IsValid()` (a uniform coordinate transform
+  can't break the topology's internal edge/face winding agreement - the
+  same reason a wholly `Mesh::FlipNormals()`-ed mesh stays a valid
+  closed manifold), just "inside-out" relative to the mirrored geometry;
+  there's no `SubD`-level `FlipNormals()`/`UnifyNormals()` counterpart
+  here (a real, disclosed gap), so a caller mirroring a SubD should
+  handle that at the `ToApproximateMesh()`/`ToNurbsPatches()` stage
+  instead. Verified on a closed quad-box SubD: every control-net vertex
+  shifts by an exact translation and scales by an exact uniform factor
+  (hand-derived, not approximate), a mirror leaves `IsValid()` true
+  (measured, not just claimed), and a genuinely invalid (NaN-carrying)
+  `xform` throws rather than silently handing back a garbage copy.
+- `Mesh::Offset(distance)` / `Mesh::Thicken(distance)`: the mesh-level
+  offset/thicken this class never had at all (distinct from the Brep-
+  level offset/shell another session owns). `Offset()` moves every
+  vertex along its own `ComputeVertexNormals()` direction - built
+  directly on that already-existing, already-documented primitive
+  rather than recomputing normals its own way, so it inherits that
+  method's own area-weighted, per-triangle-contribution correctness (and
+  its own honest "zero vector for an unreferenced vertex" edge case).
+  Honestly NOT topologically robust - a plain per-vertex push with no
+  self-intersection detection or repair, the same disclosed tradeoff
+  every simple normal-offset mesher has. `Thicken()` builds a genuine
+  solid shell from an OPEN mesh: an `Offset()` copy stitched to the
+  original along every naked edge with a new quad wall face, the
+  original layer flipped to face the material correctly. The walls need
+  no separate orientation logic at all - each is built directly from
+  `Check()`'s own `naked_edge_list`, already recorded in the correct
+  outward-walking direction by that field's own long-standing
+  documentation, so getting `Thicken()` right was really just trusting
+  data that already existed. Refuses (`std::invalid_argument`) a zero
+  distance and an already-closed input (closed-mesh hollowing is a
+  materially different, unattempted problem). Verified by hand, not
+  just plausibly: a single flat unit-square face thickened by exactly 1
+  produces an EXACT unit cube - 8 vertices, 6 faces, closed manifold,
+  volume exactly 1.0 - derived corner-by-corner and edge-by-edge before
+  writing the test (which triangle's flip direction and which wall
+  vertex order produce an outward-facing cube), not verified after the
+  fact by adjusting signs until a check passed.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
@@ -3468,8 +3580,72 @@ honestly out of scope.
   `PlanarFaces()` alone, so a curved-face Brep isn't representable
   here at all - a genuine curved-face shell is a substantially larger
   undertaking, on the order of `BooleanCombineGeneral` itself, not
-  attempted in this pass), thicken-sheet-to-solid, and body/solid
-  offset.
+  attempted in this pass), thicken-sheet-to-solid (closed for the
+  closed-surface case the same day, see below), and body/solid offset.
+- **`ShellClosedSphere(center, outer_radius, thickness)` /
+  `ShellClosedTorus(plane, major_radius, outer_minor_radius,
+  thickness)`** (2026-09-24) - the closed-surface counterpart of
+  `ShellConvexPlanar()` above, for the one case that function cannot
+  reach AT ALL: a sphere or torus has no planar faces for
+  `PlanarFaces()` to see, so `ShellConvexPlanar()` cannot even be
+  CALLED on one, let alone shell it. A full sphere/torus is already a
+  closed 2-manifold with no boundary curve, so unlike
+  `ShellConvexPlanar()`'s own planar rim washers (needed to close the
+  gap where a face was removed), NO wall/rim construction is needed
+  here at all: the whole thing is just a concentric inner copy (radius
+  `outer_radius - thickness`, or minor radius `outer_minor_radius -
+  thickness` at the SAME major radius/plane for the torus) with its
+  single face reversed (`ON_Brep::FlipFace`, so its own outward-from-
+  material direction points INWARD, toward the cavity), combined with
+  the outer copy via the existing, already-documented-and-tested
+  `Brep::Compound()` - which exists for exactly this "N disjoint closed
+  shells make one solid" case (its own doc comment: "IsValid()/
+  IsSolid() hold for a compound of valid solid lumps ... Tessellate*()
+  volumes add up per face"), so this needed no new Brep-level topology
+  machinery at all, only composing three already-public APIs
+  (`Brep::Sphere()`/`ON_Torus::GetNurbForm()` via `Brep::FromSurface()`,
+  `FlipFace()`, `Compound()`).
+  A real thing checked before trusting this, not assumed safe: a
+  Sphere()-/FromSurface()-built face (the "minimal NewFace(surface_
+  index)-only path" brep.h's own class comment already flags) reports
+  `raw().IsValid()`/`IsSolid()`/`IsManifold()` all false REGARDLESS of
+  this change - confirmed directly by checking a bare `Brep::Sphere()`
+  alone shows the exact same false/false/false, so this is a
+  pre-existing, already-disclosed limitation of that construction style
+  (no real ON_Brep loop/trim/edge topology), not something this
+  introduces or makes worse; the correctness signal this kernel already
+  relies on for such Breps - the TESSELLATED mesh's own
+  `IsClosedManifold()`/`Volume()` - is what's actually checked here, and
+  it comes back genuinely closed and watertight.
+  Verified against the exact closed-form shell volumes: a sphere shell
+  matches `4/3*pi*(R^3-(R-t)^3)` and a torus shell matches
+  `2*pi^2*R*(r^2-(r-t)^2)` (Pappus's theorem applied to the outer minus
+  inner solid tori, both at the same major radius R - exactly what
+  `NurbsSurface::OffsetAnalytic()`'s own torus case already established:
+  offsetting a torus changes only the minor radius), both within the
+  tessellation's own density-limited tolerance; `LumpFaceRanges()`
+  reports two separate lumps, not a single welded 4-face shell (the
+  outer and inner spheres/tori share no topology at all, correctly);
+  and both functions refuse a thickness at or beyond the applicable
+  radius (collapsing/inverting the inner copy through the center) and,
+  for the torus, an outer minor radius at or beyond the major radius (a
+  self-intersecting spindle torus) - the same self-intersection hazards
+  `NurbsSurface::OffsetAnalytic()`'s own sphere/torus cases already
+  guard against, checked here independently since this doesn't
+  delegate to `OffsetAnalytic()` (it rebuilds the inner primitive
+  directly, the same way `Brep::Sphere()` itself does, rather than
+  offsetting an existing surface).
+  Still deliberately out of scope: the general TRIMMED (non-closed)
+  analytic patch case - thickening a spherical/cylindrical/conical
+  wedge or cap that has real boundary curves needs actual wall/rim
+  construction (this kernel's `SphericalFace`/`CylindricalFace`/
+  `ConicalFace` blend-patch structs support trimming, but connecting a
+  trimmed patch's boundary to its offset counterpart is a genuinely
+  larger undertaking than this pass attempts, even though the connecting
+  walls turn out to be exact cones/planes for a sphere - a real,
+  disclosed follow-on, not attempted here); a full untrimmed cylinder or
+  cone shell (both have circular end boundaries needing their own caps,
+  unlike the sphere/torus's total closure); and body/solid offset.
 - `NurbsSurface::CoonsPatch(bottom, top, left, right, out, tolerance,
   &out_corner_gap)`: the exact bilinearly-blended Coons patch through 4
   boundary curves (Parasolid/Rhino's NetworkSrf/EdgeSrf for exactly 4
