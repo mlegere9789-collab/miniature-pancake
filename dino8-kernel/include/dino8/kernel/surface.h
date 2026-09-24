@@ -76,6 +76,12 @@ struct MatchEdgeReport {
   bool target_edge_reversed = false;
 };
 
+// Which analytic developable primitive NurbsSurface::UnrollDevelopable()
+// matched, written to its optional out_kind - useful for a caller (e.g.
+// an app command) that wants to report which case applied, or confirm
+// it wasn't a coincidental match.
+enum class DevelopableKind { Plane, Cylinder, Cone };
+
 // Wraps ON_NurbsSurface. Same rationale as NurbsCurve: expose raw()
 // rather than mirror the whole OpenNURBS surface API.
 class NurbsSurface {
@@ -792,6 +798,64 @@ class NurbsSurface {
   Result MatchEdge(int fixed_direction, bool at_min, const NurbsSurface& target, int target_fixed_direction,
                    bool target_at_min, MatchContinuity continuity, MatchEdgeReport* report = nullptr,
                    double cross_scale = 0.0);
+
+  // Unrolls a *developable* surface (a plane, a cylinder, or a cone -
+  // the only three shapes an ON_NurbsSurface can be per OpenNURBS'
+  // IsPlanar/IsCylinder/IsCone, and the classical differential-geometry
+  // fact that a surface unrolls to the plane without distortion iff its
+  // Gaussian curvature is identically zero, which holds for exactly
+  // these among the primitives this kernel builds - a cylinder/cone's
+  // zero Gaussian curvature is itself confirmed elsewhere in this file's
+  // own CurvatureAt() tests) into `out_flat`, a flat triangle mesh in
+  // the world XY plane. Tries IsPlanar()/IsCylinder()/IsCone() in that
+  // order (each already a real OpenNURBS geometric fit, not a name
+  // check) and returns Result::Failed, `out_flat` left untouched, if
+  // none matches - a curved (non-developable) surface like a sphere or
+  // torus, or a generic freeform NURBS surface, is refused rather than
+  // silently flattened with distortion (that's `TessellateGrid()` +
+  // hand-rolled triangulation, what dino8-app's own Squish/Unroll
+  // commands already do for the general case - this method is the exact
+  // complement for the three shapes that admit a true isometry).
+  //
+  // Every one of the `(u_divisions + 1) x (v_divisions + 1)` flat
+  // vertices is computed by mapping the *exact* 3D point directly
+  // through the matched primitive's own closed-form inverse (no
+  // tessellation error folded in): a cylinder's `ON_Cylinder::
+  // ClosestPointTo()` gives the point's exact (angle, height), mapped
+  // to flat `(radius * angle, height)`; a cone's gives (angle,
+  // axial height), converted to the exact slant distance from the apex
+  // `L = height / cos(halfAngle)` and mapped to flat
+  // `(L * cos(angle * sin(halfAngle)), L * sin(angle * sin(halfAngle)))`
+  // - the standard cone-unroll construction (a full lap around the cone,
+  // true circumference `2*pi*L*sin(halfAngle)` at slant distance L,
+  // becomes a `2*pi*sin(halfAngle)`-radian sector of a flat circle of
+  // radius L, which has that same arc length); a plane's
+  // `ON_Plane::ClosestPointTo()` gives the point's own in-plane (x, y)
+  // directly - a rigid-body isometry with no scaling at all. Because
+  // each vertex is placed by this direct formula rather than by
+  // integrating or accumulating edge lengths across the mesh, two
+  // invariants hold up to `ON_Mesh`'s own single-precision vertex
+  // storage (~1e-6 relative, the same limit this kernel's other mesh-
+  // based tests already account for), independent of
+  // `u_divisions`/`v_divisions` - verified this way in the tests, not
+  // just by eyeballing a rendered flat shape: every flat vertex at the
+  // same `v` sits at exactly the same flat y (cylinder) or exactly the
+  // same flat distance from the unrolled apex (cone) as its true 3D
+  // counterpart's height/slant-distance, and the *total* flat width of
+  // a full circumferential sweep equals exactly `radius * totalAngle`
+  // (cylinder) or the exact sector formula (cone) - not merely
+  // approaching it as the mesh gets finer. What does converge only in
+  // the mesh-refinement sense (same honesty this kernel already applies
+  // to `ApproximateArea()`) is any single flat *triangle's* area against
+  // its true 3D counterpart's, since a straight mesh edge is a chord of
+  // the true curve, not the curve itself - `out_area`, if non-null,
+  // receives the flat mesh's own measured area (`Mesh::Area()`), which
+  // is therefore an approximation of the true closed-form patch area
+  // that improves with `u_divisions`/`v_divisions`, not an exact value.
+  //
+  // Throws std::invalid_argument if either division count is < 1.
+  Result UnrollDevelopable(int u_divisions, int v_divisions, Mesh& out_flat, double* out_area = nullptr,
+                           DevelopableKind* out_kind = nullptr) const;
 
   const ON_NurbsSurface& raw() const { return surface_; }
   ON_NurbsSurface& raw() { return surface_; }

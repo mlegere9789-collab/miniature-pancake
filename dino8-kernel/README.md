@@ -2647,6 +2647,66 @@ honestly out of scope.
   `FilletConvexEdgeTapered`'s own `ConicalFace` and `FilletConvexEdges`'
   own spherical corners remain out of scope, disclosed rather than
   approximated - the natural next increment for this one function.
+- `NurbsSurface::UnrollDevelopable(u_divisions, v_divisions, out_flat,
+  &area, &kind)`: unrolls a plane, cylinder, or cone - the only shapes
+  an ON_NurbsSurface can be that are actually developable (zero
+  Gaussian curvature everywhere, the classical differential-geometry
+  condition for "unrolls to the plane without distortion") - into a
+  flat `Mesh`, using OpenNURBS' own `IsPlanar`/`IsCylinder`/`IsCone`
+  (real geometric fits, tried in that order) to detect which. This is
+  the exact complement to dino8-app's existing Unroll/Squish/Smash
+  commands, which use a from-scratch triangulation-based distance-
+  preserving heuristic that works on *any* surface but is never exact,
+  even for a perfect cylinder (it reports a measured "distortion"
+  percentage). Every flat vertex here is placed by mapping the true 3D
+  point directly through the matched primitive's own closed-form
+  inverse - `ON_Cylinder`/`ON_Cone::ClosestPointTo()` give the exact
+  (angle, height) of a point already known (within tolerance) to lie on
+  that primitive, converted to flat `(radius * angle, height)` for a
+  cylinder or, for a cone, to the exact slant distance from the apex
+  `L = height / cos(halfAngle)` at unrolled angle `angle *
+  sin(halfAngle)` (the classical cone-unroll construction: a full lap's
+  true circumference `2*pi*L*sin(halfAngle)` becomes a flat sector of
+  radius L spanning that many radians, which has the same arc length by
+  construction) - not by integrating or accumulating edge lengths
+  across the mesh.
+  A real bug found and fixed before finalizing: `ClosestPointTo()`'s
+  angular parameter wraps at the atan2 branch cut, so a naive per-
+  vertex lookup tears a genuine full-360-degree loop apart at the seam
+  (one column jumps back by 2*pi instead of continuing) - confirmed by
+  a debug run on a real closed `ON_Cylinder::GetNurbForm()` wall, fixed
+  with a standard phase-unwrap pass (detect which parametric direction
+  is the primitive's own circular one via `IsClosed()`, then walk it
+  making each step continuous) before any point is turned into a flat
+  coordinate. Verified with real per-point geometry, not just "didn't
+  crash": on a partial (270-degree) cylinder, every flat vertex at the
+  same height sits at *exactly* the same flat y regardless of angle,
+  the total flat height span is exactly the true cylinder height, and
+  the total flat circumferential span is exactly `radius * sweptAngle`
+  - all to `ON_Mesh`'s own single-precision vertex storage limit, not a
+  convergent approximation; the same circumference check on a genuine
+  *full-loop* wall confirms the unwrap fix actually works (span is
+  exactly `radius * 2*pi`, monotonically increasing, not torn at the
+  seam). On a cone, every sampled vertex's true 3D distance from the
+  apex exactly equals its flat distance from the unrolled apex (origin),
+  the base rim sits at exactly the true slant length, and the full
+  loop's total unrolled angle is exactly `2*pi*sin(halfAngle)`. On a
+  tilted planar quad (a genuine rigid-body isometry, no chord-vs-arc gap
+  at all), *arbitrary* pairwise 3D distances - not just adjacent-sample
+  ones - equal their flat counterparts exactly. `out_area` (the flat
+  mesh's own measured area) is checked against the true closed-form
+  patch area: exact (to any division count, even a deliberately coarse
+  4x1 grid) for a cylinder - proven why in the test's own comment, a
+  cylinder's flat map makes every quad cell an exact axis-aligned
+  rectangle regardless of how non-uniformly the source NURBS parameter
+  is spaced in angle - and within 5% for a cone (which really is only a
+  tessellation approximation, since a flat cone-sector cell is a wedge,
+  not a rectangle). Refused (`Result::Failed`, `out_flat` untouched) for
+  a genuine sphere and for a generic freeform wiggly bicubic - neither
+  developable, confirmed rather than assumed by testing both. A
+  mutation (disabling the angle-unwrap pass) makes exactly the 5 checks
+  that depend on it fail, including the full-loop seam check, closing
+  the loop on why that fix was needed rather than just asserting it.
 
 ## What's still not done (as of chunk 2)
 
