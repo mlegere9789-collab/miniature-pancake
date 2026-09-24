@@ -914,13 +914,22 @@ double PlanarPolygonArea(const std::vector<Point3d>& poly, const Vector3d& norma
 }  // namespace
 
 Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces, double t) {
+  return ShellConvexPlanar(solid, removed_faces,
+                            std::vector<double>(solid.PlanarFaces().size(), t));
+}
 
-  if (!(t > 0.0)) {
-    throw std::invalid_argument("dino8::kernel::ShellConvexPlanar: t must be positive");
-  }
+Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
+                        const std::vector<double>& wall_thickness) {
 
   const std::vector<Brep::PlanarFace> faces = solid.PlanarFaces();
   const int n = static_cast<int>(faces.size());
+
+  if (wall_thickness.size() != static_cast<size_t>(n)) {
+    throw std::invalid_argument(
+        "dino8::kernel::ShellConvexPlanar: wall_thickness.size() must equal "
+        "solid.PlanarFaces().size() - one entry per face");
+  }
+
   const double tol = RelativeTol(faces);
   if (!IsConvex(faces, tol)) {
     throw std::invalid_argument(
@@ -938,6 +947,14 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
           "out of range for solid.PlanarFaces()");
     }
     is_removed[static_cast<size_t>(idx)] = true;
+  }
+
+  for (int i = 0; i < n; ++i) {
+    if (!is_removed[static_cast<size_t>(i)] && !(wall_thickness[static_cast<size_t>(i)] > 0.0)) {
+      throw std::invalid_argument(
+          "dino8::kernel::ShellConvexPlanar: wall_thickness[" + std::to_string(i) +
+          "] must be positive for a kept face");
+    }
   }
 
   // Scope limit: two removed faces sharing an edge would need a
@@ -968,10 +985,10 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
   }
 
   // (1) Constraint planes: kept -> that face's own plane offset inward by
-  // t (translated by -t*n_i); removed -> unchanged (a removed face
-  // contributes an opening, so nothing is offset there, and its plane
-  // never moves on either side of the cut - see the rim derivation
-  // below).
+  // ITS OWN wall_thickness[i] (translated by -wall_thickness[i]*n_i);
+  // removed -> unchanged (a removed face contributes an opening, so
+  // nothing is offset there, and its plane never moves on either side of
+  // the cut - see the rim derivation below).
   std::vector<ON_Plane> pi(static_cast<size_t>(n));
   for (int i = 0; i < n; ++i) {
     if (is_removed[static_cast<size_t>(i)]) {
@@ -979,15 +996,15 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
       continue;
     }
     ON_Plane offset = faces[static_cast<size_t>(i)].plane;
-    offset.origin = offset.origin - t * offset.zaxis;
+    offset.origin = offset.origin - wall_thickness[static_cast<size_t>(i)] * offset.zaxis;
     offset.UpdateEquation();
     pi[static_cast<size_t>(i)] = offset;
   }
 
   // Every kept face's inner (cavity-side) loop, computed - and checked
   // for degeneracy - for ALL kept faces before any output face is built,
-  // so a t that's too large anywhere aborts the whole operation instead
-  // of emitting a partially-shelled Brep.
+  // so a wall_thickness that's too large anywhere aborts the whole
+  // operation instead of emitting a partially-shelled Brep.
   std::vector<std::vector<Point3d>> inner(static_cast<size_t>(n));
   for (int i = 0; i < n; ++i) {
     if (is_removed[static_cast<size_t>(i)]) continue;
@@ -995,7 +1012,7 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
     const Vector3d n_i = face.plane.zaxis;
     std::vector<Point3d> translated;
     translated.reserve(face.loop.size());
-    for (const Point3d& p : face.loop) translated.push_back(p - t * n_i);
+    for (const Point3d& p : face.loop) translated.push_back(p - wall_thickness[static_cast<size_t>(i)] * n_i);
 
     std::vector<ON_Plane> others;
     others.reserve(static_cast<size_t>(n - 1));
@@ -1010,10 +1027,10 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
     const double area_tol = tol * tol;
     if (clipped.size() < 3 || area <= area_tol) {
       throw std::invalid_argument(
-          "dino8::kernel::ShellConvexPlanar: wall thickness t is too large "
-          "for face " + std::to_string(i) + " - its inner offset collapses "
-          "to fewer than 3 vertices or ~0 area (t at or beyond that face's "
-          "own local offset feasibility, up to the solid's inradius)");
+          "dino8::kernel::ShellConvexPlanar: wall_thickness[" + std::to_string(i) +
+          "] is too large for that face - its inner offset collapses to "
+          "fewer than 3 vertices or ~0 area (at or beyond that face's own "
+          "local offset feasibility, up to the solid's inradius)");
     }
     inner[static_cast<size_t>(i)] = std::move(clipped);
   }
@@ -1073,9 +1090,10 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
 
     if (rim_j.size() < 3) {
       throw std::invalid_argument(
-          "dino8::kernel::ShellConvexPlanar: wall thickness t collapses "
-          "opening " + std::to_string(j) + "'s rim entirely (t at or beyond "
-          "the opening's own local offset feasibility)");
+          "dino8::kernel::ShellConvexPlanar: the adjacent faces' wall "
+          "thickness collapses opening " + std::to_string(j) + "'s rim "
+          "entirely (at or beyond the opening's own local offset "
+          "feasibility)");
     }
 
     const size_t m = loop_j.size();
@@ -1125,10 +1143,11 @@ Brep ShellConvexPlanar(const Brep& solid, const std::vector<int>& removed_faces,
       const int rm = rim_edge_for_face[static_cast<size_t>(owner)];
       if (rm < 0) {
         throw std::invalid_argument(
-            "dino8::kernel::ShellConvexPlanar: wall thickness t collapses "
-            "the rim edge of opening " + std::to_string(j) + " adjacent to "
-            "face " + std::to_string(owner) +
-            " - out of scope here, see this function's own doc comment");
+            "dino8::kernel::ShellConvexPlanar: face " + std::to_string(owner) +
+            "'s own wall thickness collapses the rim edge of opening " +
+            std::to_string(j) +
+            " adjacent to it - out of scope here, see this function's own "
+            "doc comment");
       }
       Brep::PlanarFace quad;
       quad.plane = face_j.plane;
