@@ -2005,6 +2005,20 @@ echo "$VW" | grep -q "^smoke:" || { echo "$VW"; echo "FAIL: view script produced
 [ -s "$TMPW/view/view.bmp" ] && echo "ok   ViewCaptureToFile wrote view.bmp" || { echo "FAIL ViewCaptureToFile"; fail=1; }
 [ -s "$TMPW/view/screen.bmp" ] && echo "ok   ScreenCaptureToFile wrote screen.bmp" || { echo "FAIL ScreenCaptureToFile"; fail=1; }
 
+# A genuine, 100%-reproducible Windows-only hang (RHINO8_KILLER_AUDIT.md row
+# L) has been seen starting exactly here on every Windows CI run since it was
+# first noticed: the $BIN launch below produces zero output - not even the
+# unbuffered startup breadcrumbs main.cpp now prints before glfwInit() - until
+# the job's own timeout kills it. It is not caused by anything in
+# state_script2.txt itself (never reached). One live hypothesis: OS-level
+# contention between this launch and the *previous* $BIN process's
+# not-yet-fully-torn-down GL context/window (many $BIN processes are launched
+# back-to-back in this same job) - cheaply testable with a short pause here,
+# Windows only (this is the exact same cygpath-presence check TMPW/HEREW use
+# above to detect running under Git-Bash on Windows). If this does NOT fix
+# the hang, it at least rules the hypothesis out for row L's next reader.
+if command -v cygpath >/dev/null 2>&1; then sleep 3; fi
+
 # Extended state/window/misc: the remaining cmd_state.cpp and cmd_misc.cpp
 # commands not already exercised elsewhere (see state_script2.txt).
 mkdir -p "$TMPW/state2"
