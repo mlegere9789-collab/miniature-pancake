@@ -507,7 +507,10 @@ void Document::Restore(const Snapshot& s) {
   lights_ = s.lights;
   clipping_planes_ = s.clipping_planes;
   layouts_ = s.layouts;
-  next_id_ = s.next_id;
+  // Monotonic for the same reason as ApplyDelta(): a named-snapshot restore
+  // must never let a later Add() reuse an id that a side-table record made
+  // since the snapshot still refers to.
+  next_id_ = std::max(next_id_, s.next_id);
   next_group_id_ = s.next_group_id;
   next_light_id_ = s.next_light_id;
   for (SceneObject& o : objects_) o.InvalidateDisplay();
@@ -888,7 +891,20 @@ void Document::ApplyDelta(const StateDelta& d, bool undo) {
   lights_ = undo ? d.lights_before : d.lights_after;
   clipping_planes_ = undo ? d.clipping_planes_before : d.clipping_planes_after;
   layouts_ = undo ? d.layouts_before : d.layouts_after;
-  next_id_ = undo ? d.next_id_before : d.next_id_after;
+  // Object ids are never handed out twice, even across Undo: the counter only
+  // ever moves forward (like Rhino's own runtime serial numbers). Rolling it
+  // back to next_id_before here used to let the very next Add() reuse the id
+  // of the object this Undo just removed - and every id-keyed record that is
+  // deliberately NOT part of the undo history (the HistoryRecord/Provenance/
+  // HoleFeature/PipeFeature/SymmetryLink/cage-binding side tables, plus
+  // cross-references like a HistoryRecord's source ids, a ProvenanceInfo's
+  // parent_id or a detail's hidden_objects) would then silently attach to
+  // that unrelated new object: UpdateHistory rebuilt a freshly-drawn Box into
+  // the undone extrusion, SelExtrusion selected it, and so on. Keeping the
+  // counter monotonic makes a stale id resolve to nothing (Find() == null),
+  // which every one of those consumers already handles, while Redo still
+  // re-adds the recorded objects under their original, still-unique ids.
+  next_id_ = std::max(next_id_, undo ? d.next_id_before : d.next_id_after);
   next_group_id_ = undo ? d.next_group_id_before : d.next_group_id_after;
   next_light_id_ = undo ? d.next_light_id_before : d.next_light_id_after;
   Touch();

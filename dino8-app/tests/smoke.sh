@@ -3190,5 +3190,20 @@ hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' curr
 hcheck "Bounding box min 20,0,20 max 30,0,25" "UpdateHistory genuinely re-derived the extruded surface's geometry from the source curve's new z=20 position - not the z=0..5 box baked at creation time"
 hcheck "History recording: on. 1 object(s) with live construction history:" "the live report lists exactly one tracked object"
 hcheck "object 4: Extrude <- 3" "the report names the real dependent/source pair (surface 4 built from curve 3)"
+# Undo id-reuse regression (see the last section of history_script.txt):
+# a Box drawn right after undoing a tracked Extrude used to be handed the
+# undone extrusion's own id (6), so its HistoryRecord/Provenance entries -
+# side tables keyed by ObjectId, deliberately outside the undo history -
+# attached to the Box, and UpdateHistory rebuilt the Box into "surface
+# (40,0,0)-(50,0,5)". Document::ApplyDelta now keeps the id counter
+# monotonic across Undo, so the Box gets a fresh id (7) and the stale
+# record resolves to nothing.
+hcheck_absent() { if echo "$HS" | grep -qF "$1"; then echo "FAIL $2"; fail=1; else echo "ok   $2"; fi; }
+hcheck "object 6: Extrude <- 5" "an Undo/Redo round trip keeps the redone extrusion's own id (6) and its HistoryRecord (the record survives Undo+Redo, it is only ever orphaned by a real removal)"
+hcheck "  ID: 7" "a Box drawn after undoing the tracked extrusion (id 6) gets a fresh id (7), not the undone object's id"
+hcheck "UpdateHistory: 1 object(s) re-evaluated from their source curve(s)' current geometry, 1 orphaned entry cleared (object deleted or an Undo passed the construction)" \
+  "UpdateHistory rebuilt only the still-live tracked surface (4) and reported the undone extrusion's record (6) as orphaned - it did NOT treat the new Box as a tracked object"
+hcheck_absent "Bounding box: (40, 0, 0) to (50, 0, 5)" "the Box was never rebuilt into line 5's extrusion (the exact silent wrong result the id reuse produced before)"
+hcheck "Bounding box: (50, 50, 0) to (60, 60, 10)" "the Box's own geometry is untouched after UpdateHistory"
 
 exit $fail
