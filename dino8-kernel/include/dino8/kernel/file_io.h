@@ -57,19 +57,24 @@ class Model {
   // asked to add a named layer.
   int AddLayer(const std::string& name, Color color = Color());
 
-  // Every Add*() below takes an optional object `name` and `layer_index`.
-  // Before `name` existed, every object this kernel ever put into a Model
-  // got a default, empty ON_3dmObjectAttributes - a real, disclosed gap in
-  // .3dm metadata fidelity (PARITY_MAP.md's own "kernel-level data
-  // exchange" evidence: "write a default ON_3dmObjectAttributes only"): a
-  // caller had no way to attach even the most basic identifying metadata
-  // .3dm consumers actually rely on (Rhino's own object name, used for
-  // selection-by-name, block/part naming, and round-tripping identity
-  // across a save/reload; and, now, which layer the object lives on,
-  // needed for the same reasons AddLayer() itself exists - see its own
-  // doc comment above). An empty (default) `name` and a `layer_index` of 0
-  // (the model's always-present default layer, `AddLayer()`'s own doc
-  // comment aside) leave the attributes exactly as before - no behavior
+  // Every Add*() below takes an optional object `name`, `layer_index`, and
+  // `object_color`. Before `name` existed, every object this kernel ever
+  // put into a Model got a default, empty ON_3dmObjectAttributes - a real,
+  // disclosed gap in .3dm metadata fidelity (PARITY_MAP.md's own
+  // "kernel-level data exchange" evidence: "write a default
+  // ON_3dmObjectAttributes only"): a caller had no way to attach even the
+  // most basic identifying metadata .3dm consumers actually rely on
+  // (Rhino's own object name, used for selection-by-name, block/part
+  // naming, and round-tripping identity across a save/reload; which layer
+  // the object lives on, needed for the same reasons AddLayer() itself
+  // exists - see its own doc comment above; and, now, a per-object display
+  // color overriding its layer's - Rhino's other most basic way to
+  // distinguish objects, e.g. color-coding boolean results by operand,
+  // that PARITY_MAP.md's same evidence line names alongside layers and was
+  // equally unreachable from this API). An empty (default) `name`, a
+  // `layer_index` of 0 (the model's always-present default layer,
+  // `AddLayer()`'s own doc comment aside), and a `std::nullopt`
+  // `object_color` leave the attributes exactly as before - no behavior
   // change for existing callers. A non-empty `name` is set via
   // ON_3dmObjectAttributes::SetName(..., /*bFixInvalidName=*/true), the
   // same call dino8-app/src/io/File3dm.cpp already uses for every other
