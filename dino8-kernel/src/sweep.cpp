@@ -1532,4 +1532,112 @@ Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations) {
   return Sweep1(section, rail, stations, cap);
 }
 
+Brep Brep::PipeVariable(const NurbsCurve& rail_in, const std::vector<std::pair<double, double>>& radius_points,
+                        bool cap, int stations) {
+  const char* caller = "PipeVariable";
+  if (stations < 2) Fail(caller, "stations must be at least 2");
+  if (radius_points.size() < 2) Fail(caller, "at least 2 radius points are required");
+  for (size_t i = 0; i < radius_points.size(); ++i) {
+    const double t = radius_points[i].first, r = radius_points[i].second;
+    if (!std::isfinite(t) || t < 0.0 || t > 1.0) {
+      Fail(caller, "radius point " + std::to_string(i) + " has t outside [0, 1]");
+    }
+    if (!(r > 0.0)) Fail(caller, "radius point " + std::to_string(i) + " has a non-positive radius");
+    if (i > 0 && !(t > radius_points[i - 1].first)) {
+      Fail(caller, "radius points must be strictly increasing in t");
+    }
+  }
+
+  ON_NurbsCurve rail = rail_in.raw();
+  if (!rail.IsValid()) Fail(caller, "rail is not a valid NURBS curve");
+  const bool wrap = rail.IsClosed();
+  if (wrap && std::fabs(radius_points.front().second - radius_points.back().second) > 1e-9 * CurveScale(rail)) {
+    Fail(caller, "a closed rail needs equal radius at t = 0 and t = 1 (the tube must meet itself at the seam)");
+  }
+
+  const double total_length = rail_in.Length();
+  if (!(total_length > 0.0)) Fail(caller, "the rail has zero length");
+
+  // Exact case: exactly 2 radius points spanning the whole rail (t = 0 and
+  // t = 1) on a STRAIGHT rail is the exact rational cone frustum wall -
+  // Sweep1()'s own straight-rail shortcut (RuledBetween at 2 stations,
+  // degree 1), only with the two end circles built at their own radius
+  // instead of copies of one section. `stations` does not matter here,
+  // exactly as it does not for Sweep1() along a straight rail.
+  const bool exact_two_point_taper = !wrap && radius_points.size() == 2 && radius_points.front().first == 0.0 &&
+                                     radius_points.back().first == 1.0 && rail.IsLinear(1e-9 * CurveScale(rail));
+
+  std::vector<double> merged;
+  std::vector<double> params;
+  if (exact_two_point_taper) {
+    merged = {0.0, 1.0};
+    params = {rail.Domain().Min(), rail.Domain().Max()};
+  } else {
+    // Station fractions: `stations` spaced evenly in arc length, plus
+    // every radius point's own fraction so the tube's radius matches it
+    // exactly.
+    const int m_even = std::max(stations, 3);
+    std::vector<double> fractions;
+    fractions.reserve(static_cast<size_t>(m_even) + radius_points.size());
+    for (int k = 0; k < m_even; ++k) fractions.push_back(static_cast<double>(k) / static_cast<double>(m_even - 1));
+    for (const auto& rp : radius_points) fractions.push_back(rp.first);
+    std::sort(fractions.begin(), fractions.end());
+    for (double f : fractions) {
+      if (merged.empty() || f - merged.back() > 1e-9) merged.push_back(f);
+    }
+    if (wrap && merged.size() > 1 && merged.back() >= 1.0 - 1e-9) merged.pop_back();  // t=1 is t=0 on a closed rail
+    if (merged.size() < 2) Fail(caller, "too few distinct stations - the radius points are too close together");
+    params.resize(merged.size());
+    for (size_t k = 0; k < merged.size(); ++k) params[k] = rail_in.ParameterAtArcLength(merged[k] * total_length);
+  }
+  const int m = static_cast<int>(merged.size());
+  const std::vector<Frame> frames = RmfFrames(rail, params, wrap, caller);
+
+  // Piecewise-linear radius at an arbitrary arc-length fraction, held
+  // flat at the nearest endpoint's radius outside the given range.
+  auto radius_at = [&](double f) {
+    if (f <= radius_points.front().first) return radius_points.front().second;
+    if (f >= radius_points.back().first) return radius_points.back().second;
+    for (size_t i = 1; i < radius_points.size(); ++i) {
+      if (f <= radius_points[i].first) {
+        const double t0 = radius_points[i - 1].first, t1 = radius_points[i].first;
+        const double r0 = radius_points[i - 1].second, r1 = radius_points[i].second;
+        return r0 + (f - t0) / (t1 - t0) * (r1 - r0);
+      }
+    }
+    return radius_points.back().second;  // unreachable given the f >= back() check above
+  };
+
+  std::vector<ON_NurbsCurve> sections;
+  sections.reserve(static_cast<size_t>(m));
+  for (int k = 0; k < m; ++k) {
+    const Frame& f = frames[static_cast<size_t>(k)];
+    const ON_Plane plane(f.origin, f.r, f.s);
+    const ON_Circle circle(plane, radius_at(merged[static_cast<size_t>(k)]));
+    ON_NurbsCurve nc;
+    if (circle.GetNurbForm(nc) == 0) Internal(caller, "ON_Circle::GetNurbForm failed");
+    sections.push_back(std::move(nc));
+  }
+  // Every station is the same ON_Circle::GetNurbForm() representation
+  // (same degree/knots/weights, only plane and radius differ), so this is
+  // effectively a no-op - kept for the same reason Sweep1() keeps it on
+  // its own rigid copies: one code path, and a real check if that ever
+  // stops being true.
+  MakeCompatible(sections, caller);
+
+  const bool want_caps = cap && !wrap;
+  std::unique_ptr<ON_NurbsSurface> wall;
+  if (m == 2) {
+    // The exact ruled surface between the two end circles - identical to
+    // Loft()/Sweep1()'s own 2-section shortcut, and the only path
+    // `exact_two_point_taper` above takes.
+    wall = RuledBetween(sections[0], sections[1], 0.0, 1.0, caller);
+  } else {
+    double period = 1.0;
+    const std::vector<double> params_v = SkinParameters(sections, wrap, &period, caller);
+    wall = SkinSections(sections, std::min(3, m - 1), wrap, params_v, period, caller);
+  }
+  return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
+}
+
 }  // namespace dino8::kernel

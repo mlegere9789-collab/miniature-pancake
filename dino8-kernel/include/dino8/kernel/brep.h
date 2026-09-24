@@ -1,5 +1,6 @@
 #pragma once
 
+#include <utility>
 #include <vector>
 
 #include <opennurbs.h>
@@ -374,6 +375,52 @@ class Brep {
   // rail gives a closed tube. Throws std::invalid_argument for a
   // non-positive radius.
   static Brep Pipe(const NurbsCurve& rail, double radius, bool cap = true, int stations = 32);
+
+  // PipeVariable: like Pipe(), but the radius varies along the rail per
+  // `radius_points` - (t, radius) pairs where `t` is the fraction, in
+  // [0, 1], of the rail's own arc length from its start (the same
+  // "arc-length parametrization" convention NurbsCurve::DivideByCount()
+  // and Sweep1()'s equal-arc-length stations already use), interpolated
+  // PIECEWISE LINEARLY between consecutive points and held flat at the
+  // nearest endpoint's radius outside the given range - so a caller
+  // need not place a point at t = 0 or t = 1. Requires at least 2
+  // points, strictly increasing in `t`, each `t` in [0, 1] and each
+  // radius positive; throws std::invalid_argument otherwise (naming
+  // which point failed).
+  //
+  // Every radius point's own arc-length fraction is inserted as an
+  // exact rotation-minimizing-frame station, in addition to `stations`
+  // stations spaced evenly in arc length, so the built tube's radius
+  // matches every given point exactly there, not only approximately
+  // near it (two fractions closer than 1e-9 collapse to one station).
+  // As with Sweep1() (whose rigid-frame-transport machinery this
+  // shares - only the per-station radius differs, so this does not
+  // delegate to Pipe()/Sweep1() the way Pipe() delegates to Sweep1()),
+  // the wall is a global interpolating skin through these circle
+  // stations (degree min(3, station_count - 1)): exact circular cross-
+  // sections AT every station, a smooth interpolant BETWEEN them - the
+  // (t, radius) pairs describe a literally piecewise-linear radius
+  // profile, which this only approximates between stations, tighter as
+  // `stations` grows.
+  //
+  // Exact case: exactly 2 radius points spanning the whole rail (t = 0
+  // and t = 1) on a STRAIGHT rail is the exact rational CONE FRUSTUM
+  // wall - the degree-1 ruled surface between the two end circles
+  // (Loft()'s own 2-section shortcut, Sweep1()'s own straight-rail
+  // shortcut), `stations` irrelevant, exactly as it is for Sweep1()
+  // along a straight rail.
+  //
+  // A CLOSED rail's tube must meet itself at the seam, so
+  // `radius_points`'s first and last radius must be equal (within
+  // 1e-9 * rail scale) - throws otherwise rather than silently
+  // producing a mismatched step where the tube wraps around.
+  //
+  // Caps as Pipe() (flat end discs on an open rail when `cap`; a closed
+  // rail has no ends and ignores `cap`). Throws std::invalid_argument
+  // for the `radius_points` violations above, `stations` < 2, or a
+  // degenerate (zero-length or zero-tangent) rail.
+  static Brep PipeVariable(const NurbsCurve& rail, const std::vector<std::pair<double, double>>& radius_points,
+                           bool cap = true, int stations = 32);
 
   int FaceCount() const;
 
