@@ -569,51 +569,69 @@ class Mesh {
   // silently trusted.
   static Result LoadStl(const std::string& path, Mesh& out_mesh);
 
-  // Writes this mesh as an ASCII PLY (Stanford Polygon) file - the third
-  // "other file format" here, and a genuine gap: this kernel had zero PLY
-  // code at all before this. Unlike `.stl`, PLY's face element is a
-  // genuine variable-length list, so a quad face (`ON_MeshFace::IsQuad()`)
-  // is written as its own native 4-index face, not split into two
-  // triangles the way SaveStl() has to. Every vertex line always carries
-  // a geometry-derived normal (`ComputeVertexNormals()`, same convention
-  // as SaveObj()'s `vn`/SaveStl()'s facet normal - never a stored,
+  // Writes this mesh as a PLY (Stanford Polygon) file, ASCII by default or
+  // `binary_little_endian` when `binary` is true - the third "other file
+  // format" here, and a genuine gap this kernel had zero PLY code for at
+  // all before this. Unlike `.stl`, PLY's face element is a genuine
+  // variable-length list, so a quad face (`ON_MeshFace::IsQuad()`) is
+  // written as its own native 4-index face, not split into two triangles
+  // the way SaveStl() has to. Every vertex line always carries a
+  // geometry-derived normal (`ComputeVertexNormals()`, same convention as
+  // SaveObj()'s `vn`/SaveStl()'s facet normal - never a stored,
   // independent one), and a `u`/`v` texture-coordinate pair per vertex
-  // when `HasTextureCoordinates()` is true (PLY has no single standard
-  // UV property name across tools - some use `s`/`t` - `u`/`v` is chosen
+  // when `HasTextureCoordinates()` is true (PLY has no single standard UV
+  // property name across tools - some use `s`/`t` - `u`/`v` is chosen
   // here to match this kernel's own OBJ `vt` semantics exactly: one UV
-  // per vertex, not per face corner). Only the ASCII PLY encoding is
-  // written - PLY's binary_little_endian/binary_big_endian formats are a
-  // real, disclosed gap, not attempted here, the same honest treatment
-  // this codebase already gives Parasolid/ACIS licensing. Returns
+  // per vertex, not per face corner). The binary payload writes every
+  // vertex property as a genuine 4-byte IEEE-754 float and every face as
+  // a 1-byte unsigned corner count followed by that many 4-byte signed
+  // indices - matching the header's own declared `float`/`uchar`/`int`
+  // property types exactly, the widths LoadPly() below reads back.
+  // Only `binary_little_endian` is written - `binary_big_endian` remains
+  // a disclosed gap, this kernel assumes a little-endian host throughout
+  // (see LoadStl()'s own LoadBinaryStl() comment for why that's a real,
+  // already-established scope narrowing here, not a new one). Returns
   // Result::Failed if the file can't be opened for writing.
-  Result SavePly(const std::string& path) const;
+  Result SavePly(const std::string& path, bool binary = false) const;
 
-  // Reads an ASCII PLY file into `out_mesh` - written by SavePly() or by
-  // another tool, as long as it's ASCII-encoded (binary PLY is rejected,
-  // see SavePly()'s own doc comment on why) and follows PLY's ordinary
-  // shape: a `vertex` element with `x`/`y`/`z` scalar properties (in any
-  // order, and tolerating extra properties this kernel doesn't use, e.g.
-  // color, by name rather than assuming a fixed column layout - genuinely
-  // parses the header's own property list instead of guessing a position),
-  // optional `nx`/`ny`/`nz` (read but discarded, same "always
-  // geometry-derived" convention LoadObj()'s `vn` and LoadStl()'s facet
-  // normal already have - there's nowhere in this kernel's Mesh to store
-  // an independent per-vertex normal), and optional `u`/`v` (stored via
-  // SetTextureCoordinates() only if present on every vertex, same
-  // all-or-nothing rule LoadObj() already applies); and a `face` element
-  // with exactly one list property (whatever its declared name -
-  // `vertex_indices`/`vertex_index` are both common) giving each face's
-  // 0-based vertex indices, 3 or 4 per face (this kernel's `ON_MeshFace`
-  // holds a triangle or quad only, same limit LoadObj() already has for
-  // `.obj`'s `f` lines - a 5+-gon face is rejected, not silently
-  // fan-triangulated). Any other element name (e.g. a color-only `edge`
-  // element) has its data lines skipped, not rejected - this kernel just
-  // doesn't read it into anything. Returns Result::Failed - `out_mesh`
-  // left unspecified, not partially filled - if the file can't be opened,
-  // isn't `ply`/`format ascii ...`, the vertex element is missing
-  // `x`/`y`/`z`, the face element's list property is missing or isn't a
-  // list, a face has fewer than 3 or more than 4 indices, a face index is
-  // out of range, or any header/data line fails to parse.
+  // Reads a PLY file into `out_mesh` - written by SavePly() or by another
+  // tool - in either the `ascii` or `binary_little_endian` format
+  // (`binary_big_endian` is rejected outright: this kernel assumes a
+  // little-endian host throughout, see LoadStl()'s own LoadBinaryStl()
+  // comment). Follows PLY's ordinary shape: a `vertex` element with
+  // `x`/`y`/`z` scalar properties (in any order, and tolerating extra
+  // properties this kernel doesn't use, e.g. color, by name rather than
+  // assuming a fixed column layout - genuinely parses the header's own
+  // property list instead of guessing a position), optional `nx`/`ny`/`nz`
+  // (read but discarded, same "always geometry-derived" convention
+  // LoadObj()'s `vn` and LoadStl()'s facet normal already have - there's
+  // nowhere in this kernel's Mesh to store an independent per-vertex
+  // normal), and optional `u`/`v` (stored via SetTextureCoordinates()
+  // only if present on every vertex, same all-or-nothing rule LoadObj()
+  // already applies); and a `face` element with exactly one list property
+  // (whatever its declared name - `vertex_indices`/`vertex_index` are
+  // both common) giving each face's 0-based vertex indices, 3 or 4 per
+  // face (this kernel's `ON_MeshFace` holds a triangle or quad only, same
+  // limit LoadObj() already has for `.obj`'s `f` lines - a 5+-gon face is
+  // rejected, not silently fan-triangulated). Any other element name
+  // (e.g. a color-only `edge` element) has its data skipped, not
+  // rejected - in the binary format, skipped at that element's own
+  // declared property widths (so the stream stays correctly aligned for
+  // whatever follows it), never by assuming a fixed byte count. Every
+  // property's own declared scalar type - `char`/`uchar` through
+  // `double`/`float64`, PLY's full type-name set, not just the
+  // `float`/`uchar`/`int` set SavePly() itself writes - is read at its
+  // correct binary byte width, so a file from another tool using
+  // `double` positions or `ushort` face-index lists still reads
+  // correctly. Returns Result::Failed - `out_mesh` left unspecified, not
+  // partially filled - if the file can't be opened, isn't
+  // `ply`/`format ascii ...`/`format binary_little_endian ...`, the
+  // vertex element is missing `x`/`y`/`z`, the face element's list
+  // property is missing or isn't a list, a face has fewer than 3 or more
+  // than 4 indices, a face index is out of range, a property declares a
+  // scalar type this kernel doesn't recognize (e.g. `int64`/`uint64` -
+  // out of scope), or any header/data line or binary record fails to
+  // parse (a truncated file included).
   static Result LoadPly(const std::string& path, Mesh& out_mesh);
 
   const ON_Mesh& raw() const { return mesh_; }
