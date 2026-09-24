@@ -3621,6 +3621,98 @@ honestly out of scope.
   (Minkowski-style) offset, shell/hollow beyond the existing
   `ShellConvexPlanar`, per-face wall-thickness overrides, and
   thicken-sheet-to-solid - the last four still aren't implemented.
+- **`NurbsSurface::OffsetApproximate(distance, out, tolerance)`**
+  (2026-09-24) - the general fallback `OffsetAnalytic()`'s own doc comment
+  above promised but didn't itself implement: an explicitly-approximate
+  offset for any surface that isn't one of the five exact analytic types,
+  closing PARITY_MAP.md's own "Kernel-level offset API ... usable by
+  booleans and fillets" gap for the freeform case (previously this
+  existed only at the app layer, `cmd_surface.cpp`'s `OffsetNurbs`, with
+  the exact same comment - "exact for planes, approximate elsewhere" -
+  this method now makes true at the kernel level too, so it's reachable
+  from `BooleanCombine`/fillet code that never touches the app).
+  Method: translate each control point by `distance * NormalAt(gu, gv)`,
+  where `(gu, gv)` is that control point's OWN Greville abscissa pair
+  (`GrevilleAbcissa()`) - `OffsetAnalytic()`'s plane branch's identical
+  formula, generalized from one shared normal to one normal per control
+  point. Exact for a plane (constant normal, reduces to exactly the
+  `OffsetAnalytic()` plane branch - confirmed to machine precision,
+  `worst < 1e-9`, not just asserted), and a genuine, quantified
+  first-order approximation otherwise: measured against `OffsetAnalytic`'s
+  own exact concentric-sphere ground truth (radius 5, offset 1.5), the
+  real pointwise radius deviation is bounded (`< 1.0`) but definitely
+  nonzero (`> 0.05`) - proving this is an honest approximation, not a
+  disguised-exact method that happens to read zero on convenient
+  fixtures.
+  A real self-intersection guard, not skipped because the general case
+  lacks a closed form: at each point of a domain-interior sample grid,
+  checks `distance * k >= 1.0` for either of `CurvatureAt()`'s own two
+  principal curvatures. The derivation reuses `CurvatureAt()`'s own
+  documented sign convention (verified there against a real sphere: an
+  outward normal gives a convex surface NEGATIVE curvature) to place the
+  center of curvature for a principal direction with curvature `k` at
+  exactly `point + (1/k) * normal` - so offsetting by `distance` along
+  that SAME normal reaches or passes that center exactly when `distance *
+  k >= 1.0`. Cross-checked directly against `OffsetAnalytic`'s own
+  closed-form guard on the identical sphere: both refuse `distance =
+  -5.0` on a radius-5 sphere at the exact same threshold, two
+  independently-derived guards (one algebraic, one from general
+  differential geometry) agreeing on the same real hazard. Each principal
+  direction is checked independently, so a saddle point (opposite-signed
+  principal curvatures) is handled correctly - an offset that folds in
+  one direction without folding in the other is still refused.
+  A real, hard-won correctness finding while building this, kept in the
+  method's own doc comment rather than fixed by picking a friendlier
+  test fixture: this file's OWN `OffsetAnalytic` plane test fixture
+  (`FromControlGrid({(0,0,0),(1,0,0),(2,0,0),(0,1,0),(1,1,0),(2,1,0)},
+  3,2,2,1)`) is genuinely `IsPlanar()` (every control point shares z=0)
+  but turns out to be a self-overlapping/twisted parametrization whose
+  own `NormalAt()` actually flips to the OPPOSITE hemisphere at several
+  `(u, v)` - confirmed by direct sampling, not assumed. That's invisible
+  to `OffsetAnalytic()`'s plane branch (it samples the normal once, at
+  the domain midpoint, and applies that one vector to every control
+  point uniformly, so a flip elsewhere never surfaces), but silently
+  corrupts a per-control-point method like this one: reusing that same
+  fixture here first produced a garbage result (some control points
+  translated in the wrong direction entirely) before the cause was
+  traced back to the fixture, not this method's own math. Fixed by using
+  a plainly, verifiably rectangular grid for this method's own plane
+  test instead, and documented as a real, disclosed scope limit: this
+  method assumes its surface's own normal field is consistently
+  oriented across the domain, and a self-overlapping or degenerately-
+  twisted control net (not a real B-rep face - those don't arise this
+  way) is not specifically detected.
+  A second real, disclosed characteristic found while testing (not
+  glossed over): a NURBS circle/cylinder's own RATIONAL control points
+  don't sit uniformly close to the true surface (weight variation pulls
+  several of them well off it), so this per-control-point technique's
+  actual accuracy on a bare NURBS cylinder is noticeably worse than on a
+  genuinely polynomial freeform surface at a comparable distance/size
+  ratio - not a defect, since a real cylinder should go through the
+  exact `OffsetAnalytic()` first (this method is deliberately the
+  fallback for when that returns `Result::Failed`), but worth recording
+  plainly rather than claiming uniform accuracy this method doesn't have.
+  Verified in `tests/test_basic.cpp`
+  (`TestSurfaceOffsetApproximate*`): exact-to-machine-precision on a
+  genuine (verified-consistent-normal) plane; bounded-but-nonzero error
+  against `OffsetAnalytic`'s own sphere ground truth, plus the matching
+  fold-threshold cross-check; bounded-but-nonzero error on the same
+  bulged-freeform fixture `TestSurfaceOffsetAnalyticRefusesFreeformSurface`
+  already uses (this method succeeds where `OffsetAnalytic` correctly
+  refuses), plus refusal of a too-large distance that would fold through
+  the bulge's own peak curvature; NaN-distance throws; `distance == 0`
+  no-op. Confirmed the tests actually require this method: reverting just
+  `surface.h`/`surface.cpp` (`git stash`) turns every
+  `OffsetApproximate` test into a compile error, not a runtime failure.
+  Deliberately out of scope, disclosed rather than silently missing: no
+  general least-squares surface refit (unlike `NurbsCurve::OffsetInPlane`'s
+  own general-curve branch, which fits a NEW curve through sampled offset
+  points rather than moving existing control points - building an
+  equivalent NURBS SURFACE fitter was judged too large an increment for
+  this pass, so this method reuses the existing control net's own
+  structure instead, the same simpler technique the app layer's
+  `OffsetNurbs` already uses); no automatic detection of a self-
+  overlapping/twisted input parametrization (see above).
 - **`NurbsCurve::OffsetInPlane(distance, out, tolerance)`** (2026-09-24) -
   the curve-level counterpart to `OffsetAnalytic()` above, and, like it,
   the kernel's first curve-offset capability at all. Same honesty split:
@@ -3953,6 +4045,60 @@ honestly out of scope.
   corner gap. A mutation (dropping the bilinear correction term) makes
   the method's own internal self-check catch the wrong result and fail
   closed, which the corresponding test then observes.
+- `NurbsSurface::ExtendLinear(direction, t0, t1)`: `Extend()`'s "linear"
+  sibling (Rhino/Parasolid's ExtendSrf Type=Linear vs. Type=Smooth). The
+  existing `Extend()` continues the surface's own polynomial basis
+  beyond its domain (real analytic continuation - confirmed by reading
+  `ON_NurbsCurve::Extend()`'s own source: it re-evaluates the SAME last
+  span's basis functions over a wider interval via De Boor extrapolation,
+  keeping the exact same control-point/knot count), which follows the
+  original curvature. `ExtendLinear()` instead appends a genuinely new,
+  independent, zero-curvature Bezier-like span per isoparametric row,
+  built from a closed-form algebraic identity rather than sampling: the
+  new control points are an arithmetic progression `Q_k = Q_0 + k *
+  (delta / degree) * D` continuing from the existing boundary control
+  point along the curve's own *existing* end-derivative vector `D` (the
+  same clamped-B-spline end-derivative quantity `MatchEdge()` computes
+  elsewhere in this file, read here rather than chosen) - exact, not
+  approximate, because a Bernstein-basis (Bezier) curve with control
+  points in arithmetic progression parametrizes *exactly* linearly in
+  its own parameter (the Bernstein basis functions' first moment is
+  exactly linear in the normalized parameter, a standard algebraic
+  identity), so the new span is a genuine straight line even when the
+  surface is rational (built entirely in homogeneous coordinates; a
+  homogeneous curve linear in its parameter dehomogenizes to a rational-
+  *linear* curve, which is still exactly a straight line in Euclidean
+  space, only non-uniformly paced along it).
+  A real, non-obvious NURBS knot-vector bug found and fixed before
+  finalizing, not guessed at: the first working version kept the old
+  boundary's full clamped multiplicity (degree + 1) unchanged and simply
+  appended a new clamped span after it - `ON_NurbsSurface::IsValid()`
+  correctly rejected this with "knot[cv_count-2] >= knot[cv_count-1]",
+  because OpenNURBS reserves multiplicity degree + 1 exclusively for a
+  curve's two true ends; an *interior* knot's legal multiplicity caps at
+  `degree`. Fixed by dropping exactly one (redundant - all copies hold
+  the same value) occurrence of the old boundary knot before appending
+  the new end's own degree + 1 copies, verified afterward (not assumed)
+  to still reproduce the pre-extension shape exactly.
+  Verified with real per-point geometry: on a genuinely curved (wiggly)
+  bicubic surface, every sampled point in the new region lies exactly on
+  its own row's boundary tangent line (rows have different tangent
+  directions, since the boundary itself isn't ruled) to floating-point
+  precision; the new domain endpoint lands at *exactly*
+  `boundary_pt + (t_new - t_old) * boundary_derivative` (pins down the
+  extrapolation *speed*, not just the direction - a uniformly mis-scaled
+  arithmetic progression would still lie perfectly on the same line,
+  confirmed by a mutation that changes only the scale and is caught by
+  this exact-endpoint check together with the join-derivative check
+  below); the surface's own derivative evaluated exactly at the join
+  parameter matches the pre-extension boundary derivative exactly (G1);
+  the pre-extension region is bit-for-bit unchanged; and `ExtendLinear`
+  measurably diverges from `Extend()` further from the join while
+  agreeing with it exactly at the join itself. Also verified on a
+  genuine rational surface (a sphere) that the extension is still an
+  exact straight line in real 3D space, on both U and V directions, and
+  extending both ends of a direction at once. Refused (matching
+  `Extend()`'s own documented restriction) for a closed direction.
 
 - **`RemoveBlend` extended to `ConicalFace`** - closes the first of the
   two gaps that increment's own README entry disclosed: a

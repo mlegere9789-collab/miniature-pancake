@@ -12095,10 +12095,11 @@ void TestFilletConvexEdgeUnitCubeTopFrontCorner() {
   Check(threw_too_big, "FilletConvexEdge rejects a radius too large to fit on the adjacent faces");
 }
 
-// =====================================================================// FilletConvexEdgeTapered (linear-taper rolling-ball fillet -> exact trimmed
+// =====================================================================
+// FilletConvexEdgeTapered (linear-taper rolling-ball fillet -> exact trimmed
 // right-circular-cone patch) - see fillet.h's own doc comment for the full
 // derivation these tests independently verify.
-// =====================================================================
+// ==============================================================
 // Verification item (1): rail-exactness. A FREE box edge (does not reach
 // either x=0 or x=3, so no third/perpendicular end face is anywhere near it
 // - the corner-notch scope-out question is entirely orthogonal to this test,
@@ -12748,7 +12749,8 @@ void TestFilletConvexEdgeTaperedRejectsInvalidInput() {
   // this box's own scale is still correctly rejected above.
 }
 
-// =====================================================================// FilletConvexEdgeTapered's N-station overload (piecewise-linear
+// =====================================================================
+// FilletConvexEdgeTapered's N-station overload (piecewise-linear
 // multi-station taper) - see fillet.h's own N-station doc comment for the
 // full derivation these tests independently verify: each segment is the
 // SAME per-segment cone construction the two-radius overload already
@@ -12757,7 +12759,7 @@ void TestFilletConvexEdgeTaperedRejectsInvalidInput() {
 // segment's own cap0 verbatim (a genuine, non-vanishing approximation on
 // the later segment's own side, honestly bounded via
 // cap0_surface_fit_tolerance).
-// =====================================================================
+// ==============================================================
 namespace {
 
 // Hand re-derivation (independent of fillet.cpp's own internals - see
@@ -27767,6 +27769,160 @@ void TestSurfaceOffsetAnalyticZeroDistanceIsNoOpCopy() {
   Check(out.PointAt(0.3, 0.2).DistanceTo(s.PointAt(0.3, 0.2)) < 1e-12, "OffsetAnalytic(0.0) reproduces the same surface");
 }
 
+void TestSurfaceOffsetApproximateIsExactOnAGenuinePlane() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // A plainly rectangular (x = i, y = j, z = 0) control grid, unlike this
+  // file's own OffsetAnalytic plane fixture above (grid = {(0,0,0),(1,0,0),
+  // (2,0,0),(0,1,0),(1,1,0),(2,1,0)}, FromControlGrid(grid,3,2,2,1)): that
+  // fixture, while genuinely IsPlanar() (all its control points DO share
+  // z=0), turns out to be a self-overlapping/twisted parametrization whose
+  // own NormalAt() actually FLIPS to the opposite hemisphere at several
+  // (u, v) - confirmed by direct sampling, not assumed - which is fine for
+  // OffsetAnalytic's plane branch (it only ever evaluates the normal ONCE,
+  // at the domain midpoint, and applies that one vector to every control
+  // point uniformly, so a normal flip elsewhere in the domain never
+  // surfaces there) but would silently break OffsetApproximate's own
+  // per-control-point-own-Greville-normal design, which relies on the
+  // normal field being consistently oriented. A real, disclosed scope
+  // limit (see this method's own header doc comment) - not something this
+  // test works around by picking a "nicer" fixture to hide it.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 3; ++j)
+      grid.push_back(Point3d(i, j, 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 3, 3, 2);
+  Check(s.IsPlanar(1e-9), "OffsetApproximate plane setup: the constructed grid is genuinely planar");
+
+  NurbsSurface out;
+  Check(s.OffsetApproximate(2.0, out) == Result::Ok, "OffsetApproximate(+2.0) succeeds on a plane");
+
+  double worst = 0.0;
+  const dino8::kernel::Interval du = s.Domain(0);
+  const dino8::kernel::Interval dv = s.Domain(1);
+  for (double u = du.min + 0.1; u < du.max; u += 0.3) {
+    for (double v = dv.min + 0.1; v < dv.max; v += 0.3) {
+      const Point3d expected = s.PointAt(u, v) + 2.0 * s.NormalAt(u, v);
+      worst = std::max(worst, expected.DistanceTo(out.PointAt(u, v)));
+    }
+  }
+  Check(worst < 1e-9, "OffsetApproximate(+2.0) on a genuine plane: exact everywhere, not just at one sampled point (matches OffsetAnalytic's own plane-exactness claim)");
+}
+
+void TestSurfaceOffsetApproximateSphereErrorIsBoundedButGenuinelyNonzero() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // A sphere large enough, and an offset distance small enough relative to
+  // its radius, that the approximation is neither absurdly bad nor a
+  // fluke exact match - measured against OffsetAnalytic's own exact
+  // concentric-sphere result as ground truth, the same cross-check this
+  // file already uses to validate other exact/approximate pairs.
+  const ON_Sphere sphere(ON_3dPoint(1, 2, 3), 5.0);
+  ON_NurbsSurface raw;
+  Check(sphere.GetNurbForm(raw) != 0, "OffsetApproximate sphere setup: GetNurbForm succeeds");
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface approx;
+  Check(s.OffsetApproximate(1.5, approx) == Result::Ok, "OffsetApproximate(+1.5) succeeds on a sphere");
+
+  const dino8::kernel::Interval du = s.Domain(0);
+  const dino8::kernel::Interval dv = s.Domain(1);
+  double worst = 0.0;
+  for (double u = du.min + 0.2; u < du.max - 0.2; u += 0.4) {
+    for (double v = dv.min + 0.2; v < dv.max - 0.2; v += 0.15) {
+      worst = std::max(worst, std::abs(approx.PointAt(u, v).DistanceTo(sphere.Center()) - 6.5));
+    }
+  }
+  // Bounded: the per-control-point-translation approximation doesn't blow
+  // up into nonsense for a moderate distance/radius ratio (1.5/5 = 30%).
+  Check(worst < 1.0, "OffsetApproximate(+1.5) on a sphere: deviation from the true concentric-sphere radius stays bounded");
+  // Genuinely nonzero: proves this is a REAL approximation, not a
+  // disguised exact method that happens to read zero on this fixture -
+  // the standing mandate's own bar for what a real test has to catch.
+  Check(worst > 0.05, "OffsetApproximate(+1.5) on a sphere: deviation is genuinely nonzero, not a silently-exact result");
+
+  // Fold-through-center guard cross-check: refusing at exactly the same
+  // threshold OffsetAnalytic's own closed-form `new_radius <= 0` guard
+  // uses on this identical sphere - two independently-derived guards
+  // (one algebraic, one from CurvatureAt()'s general `distance * k >= 1`
+  // principal-curvature criterion) agreeing on the same real hazard.
+  NurbsSurface exact;
+  Check(s.OffsetAnalytic(-5.0, exact) == Result::Failed, "cross-check setup: OffsetAnalytic(-5.0) on this radius-5 sphere is refused");
+  Check(s.OffsetApproximate(-5.0, approx) == Result::Failed, "OffsetApproximate(-5.0) on this radius-5 sphere is ALSO refused, at the same fold threshold");
+  Check(s.OffsetApproximate(-2.0, approx) == Result::Ok, "OffsetApproximate(-2.0) on a radius-5 sphere succeeds (still well short of the fold threshold)");
+}
+
+void TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // The exact same bulged-control-net fixture
+  // TestSurfaceOffsetAnalyticRefusesFreeformSurface already uses to prove
+  // OffsetAnalytic correctly refuses a genuinely non-analytic surface -
+  // reused here because it's already an established, understood, and
+  // (confirmed by direct sampling before writing this test) consistently-
+  // oriented freeform surface, unlike the OffsetAnalytic plane fixture's
+  // own twisted control net this file's own OffsetApproximate plane test
+  // above deliberately avoids.
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 4; ++i)
+    for (int j = 0; j < 4; ++j)
+      grid.push_back(Point3d(i, j, (i == 2 && j == 2) ? 3.0 : 0.0));
+  const NurbsSurface s = NurbsSurface::FromControlGrid(grid, 4, 4, 3, 3);
+
+  NurbsSurface out;
+  Check(s.OffsetApproximate(0.2, out) == Result::Ok, "OffsetApproximate(+0.2) succeeds on a bulged freeform surface OffsetAnalytic itself refuses");
+
+  const dino8::kernel::Interval du = s.Domain(0);
+  const dino8::kernel::Interval dv = s.Domain(1);
+  double worst = 0.0;
+  for (double u = du.min + 0.1; u < du.max; u += 0.25) {
+    for (double v = dv.min + 0.1; v < dv.max; v += 0.25) {
+      const Point3d expected = s.PointAt(u, v) + 0.2 * s.NormalAt(u, v);
+      worst = std::max(worst, expected.DistanceTo(out.PointAt(u, v)));
+    }
+  }
+  Check(worst < 0.15, "OffsetApproximate(+0.2) on the bulge: deviation from this surface's own point+distance*normal stays bounded");
+  Check(worst > 1e-4, "OffsetApproximate(+0.2) on the bulge: deviation is genuinely nonzero - this is a curved surface, not secretly a plane");
+
+  // A large enough distance relative to the bulge's own tight local
+  // curvature at its peak must be refused (Result::Failed), not silently
+  // produce a folded/self-overlapping surface - the same real correctness
+  // hazard this whole session's scope was asked to check for, now for a
+  // general freeform surface rather than just the five analytic types.
+  Check(s.OffsetApproximate(1.0, out) == Result::Failed, "OffsetApproximate(+1.0) on the bulge is refused - exceeds the local radius of curvature at its own peak");
+}
+
+void TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  const ON_Sphere sphere(ON_3dPoint(0, 0, 0), 2.0);
+  ON_NurbsSurface raw;
+  sphere.GetNurbForm(raw);
+  NurbsSurface s;
+  s.raw() = raw;
+
+  NurbsSurface out;
+  bool threw = false;
+  try {
+    s.OffsetApproximate(std::numeric_limits<double>::quiet_NaN(), out);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetApproximate(NaN) throws std::invalid_argument");
+
+  Check(s.OffsetApproximate(0.0, out) == Result::Ok, "OffsetApproximate(0.0) succeeds");
+  Check(out.PointAt(0.3, 0.2).DistanceTo(s.PointAt(0.3, 0.2)) < 1e-12, "OffsetApproximate(0.0) reproduces the same surface");
+}
+
 void TestCurveOffsetInPlaneLineIsExactParallelLine() {
   using dino8::kernel::NurbsCurve;
   using dino8::kernel::Point3d;
@@ -28286,6 +28442,229 @@ void TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth() {
   }
 }
 
+// ---- NurbsSurface::ExtendLinear ----
+
+namespace {
+
+// Point-to-line distance for a point `p`, given a point `a` on the line
+// and its (not necessarily unit) direction `dir`.
+double DistanceToLine(dino8::kernel::Point3d p, dino8::kernel::Point3d a, ON_3dVector dir) {
+  dir.Unitize();
+  const ON_3dVector w = p - a;
+  const ON_3dVector perp = w - dir * ON_DotProduct(w, dir);
+  return perp.Length();
+}
+
+}  // namespace
+
+void TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  NurbsSurface s = WigglyBicubic(5, 4);  // degree 3x3, genuinely curved
+  const NurbsSurface original = s;
+  const double u_old = original.Domain(0).max;  // FromControlGrid's own clamped-uniform domain end (not necessarily CV count - 1)
+  const double u_new = u_old + 6.0;
+  const double v_lo = s.Domain(1).min, v_hi = s.Domain(1).max;
+
+  // Boundary points and true end derivatives (U-direction) at u = u_old,
+  // for several different v - the surface's own cross-boundary
+  // derivative genuinely varies with v (a wiggly, non-ruled edge), so
+  // this exercises the per-row construction, not just one shared line.
+  const std::vector<double> vs = {v_lo, v_lo + (v_hi - v_lo) * 0.3, v_lo + (v_hi - v_lo) * 0.7, v_hi};
+  std::vector<dino8::kernel::Point3d> boundary_pt(vs.size());
+  std::vector<ON_3dVector> boundary_deriv(vs.size());
+  for (size_t i = 0; i < vs.size(); ++i) {
+    ON_3dPoint pt;
+    ON_3dVector du, dv;
+    original.raw().Ev1Der(u_old, vs[i], pt, du, dv);
+    boundary_pt[i] = pt;
+    boundary_deriv[i] = du;
+  }
+
+  const Result r = s.ExtendLinear(0, s.Domain(0).min, u_new);
+  Check(r == Result::Ok, "ExtendLinear extends the U-max end successfully");
+  Check(std::abs(s.Domain(0).max - u_new) < 1e-9, "ExtendLinear reaches exactly the requested new domain end");
+  Check(std::abs(s.Domain(0).min - original.Domain(0).min) < 1e-12, "ExtendLinear leaves the untouched (min) end of the same direction alone");
+  Check(std::abs(s.Domain(1).min - original.Domain(1).min) < 1e-12 && std::abs(s.Domain(1).max - original.Domain(1).max) < 1e-12,
+        "ExtendLinear leaves the other direction's domain completely unchanged");
+
+  // Straightness: every sampled point in the NEW region, for each of
+  // the 4 rows, lies exactly on that row's own boundary tangent line -
+  // not merely "low curvature", a hard zero-distance check.
+  double worst_line_dev = 0.0;
+  for (size_t i = 0; i < vs.size(); ++i) {
+    for (int k = 0; k <= 20; ++k) {
+      const double u = u_old + (u_new - u_old) * k / 20.0;
+      worst_line_dev = std::max(worst_line_dev, DistanceToLine(s.PointAt(u, vs[i]), boundary_pt[i], boundary_deriv[i]));
+    }
+  }
+  Check(worst_line_dev < 1e-9, "ExtendLinear: every sampled point in the new region lies exactly on its row's boundary tangent line (< 1e-9)");
+
+  // Exact endpoint position, not just "somewhere on the line": the
+  // construction is a constant-velocity extrapolation holding the
+  // boundary's own derivative fixed, so PointAt(u_new) must equal
+  // EXACTLY boundary_pt + (u_new - u_old) * boundary_deriv - this is
+  // the check that actually pins down the *speed* along the line (the
+  // "on the line" check above alone can't distinguish this from any
+  // other constant multiple of the same direction, since a uniformly
+  // mis-scaled arithmetic progression is still perfectly collinear).
+  double worst_endpoint_err = 0.0;
+  for (size_t i = 0; i < vs.size(); ++i) {
+    const dino8::kernel::Point3d expected = boundary_pt[i] + boundary_deriv[i] * (u_new - u_old);
+    worst_endpoint_err = std::max(worst_endpoint_err, s.PointAt(u_new, vs[i]).DistanceTo(expected));
+  }
+  Check(worst_endpoint_err < 1e-9,
+        "ExtendLinear: the new domain endpoint lands exactly at boundary_pt + (u_new - u_old) * boundary_deriv (pins down the extrapolation speed, not just direction)");
+
+  // The old (unextended) region is bit-identical - this operation only
+  // adds new control points/knots, never touches the original ones.
+  double old_region_err = 0.0;
+  for (int k = 0; k <= 20; ++k) {
+    const double u = original.Domain(0).min + (u_old - original.Domain(0).min) * k / 20.0;
+    for (double v : vs) old_region_err = std::max(old_region_err, s.PointAt(u, v).DistanceTo(original.PointAt(u, v)));
+  }
+  Check(old_region_err < 1e-9, "ExtendLinear leaves the original (pre-extension) region of the surface unchanged");
+
+  // G1 continuity at the join: the extended surface's own U-derivative
+  // evaluated exactly at u = u_old (still inside its new, larger
+  // domain) matches the ORIGINAL surface's boundary derivative exactly
+  // - the real substance of "tangent-continuous", not just "looks
+  // smooth".
+  double worst_deriv_err = 0.0;
+  for (size_t i = 0; i < vs.size(); ++i) {
+    ON_3dPoint pt;
+    ON_3dVector du, dv;
+    s.raw().Ev1Der(u_old, vs[i], pt, du, dv);
+    worst_deriv_err = std::max(worst_deriv_err, (du - boundary_deriv[i]).Length());
+  }
+  Check(worst_deriv_err < 1e-9, "ExtendLinear: the extended surface's own derivative at the join exactly matches the original boundary derivative (G1)");
+
+  // But NOT G2: the new region has zero curvature (it's straight) while
+  // the original surface at that same boundary is genuinely curved -
+  // confirming this is really "linear", not a disguised smooth extend.
+  const auto orig_curv = original.CurvatureAt(u_old, vs[1]);
+  Check(std::abs(orig_curv.gaussian) > 1e-3 || std::abs(orig_curv.mean) > 1e-3,
+        "ExtendLinear setup: the original wiggly surface genuinely has nonzero curvature at the join");
+}
+
+void TestSurfaceExtendLinearDiffersFromSmoothExtend() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  NurbsSurface linear = WigglyBicubic(5, 4);
+  NurbsSurface smooth = linear;
+  const double u_old = linear.Domain(0).max, u_new = u_old + 6.0, v_mid = linear.Domain(1).max * 0.5;
+  Check(linear.ExtendLinear(0, linear.Domain(0).min, u_new) == Result::Ok, "ExtendLinear (comparison setup) succeeds");
+  Check(smooth.Extend(0, smooth.Domain(0).min, u_new) == Result::Ok, "Extend (comparison setup, smooth) succeeds");
+
+  // Both agree at the join (position and, to the extent Extend() also
+  // matches derivative there - both must at least agree on position).
+  Check(linear.PointAt(u_old, v_mid).DistanceTo(smooth.PointAt(u_old, v_mid)) < 1e-9,
+        "ExtendLinear and Extend agree exactly at the join itself (both continue from the same boundary)");
+
+  // But diverge further into the new region, since one follows the
+  // original curvature and the other goes straight - a real, measured
+  // difference, not a rounding-level one.
+  double diff = 0.0;
+  for (int k = 1; k <= 20; ++k) {
+    const double u = u_old + (u_new - u_old) * k / 20.0;
+    diff = std::max(diff, linear.PointAt(u, v_mid).DistanceTo(smooth.PointAt(u, v_mid)));
+  }
+  Check(diff > 1e-3, "ExtendLinear's straight extension measurably diverges from Extend()'s curvature-continuing one further from the join");
+}
+
+void TestSurfaceExtendLinearBothEndsBothDirectionsAndRational() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  // Both ends of U at once.
+  {
+    NurbsSurface s = WigglyBicubic(5, 4);
+    const NurbsSurface original = s;
+    const double v_mid = original.Domain(1).min + (original.Domain(1).max - original.Domain(1).min) * 0.5;
+    Check(s.ExtendLinear(0, -5.0, 12.0) == Result::Ok, "ExtendLinear extends both U ends at once");
+    Check(std::abs(s.Domain(0).min - (-5.0)) < 1e-9 && std::abs(s.Domain(0).max - 12.0) < 1e-9,
+          "ExtendLinear's both-ends domain is exactly [-5, 12]");
+    ON_3dPoint pt;
+    ON_3dVector du, dv;
+    original.raw().Ev1Der(original.Domain(0).min, v_mid, pt, du, dv);
+    Check(DistanceToLine(s.PointAt(-5.0, v_mid), pt, du) < 1e-9, "ExtendLinear's min-end extension also lies exactly on the boundary tangent line");
+  }
+  // V direction (not just U) - confirms the row/column index logic in
+  // ExtendOneEndLinear isn't accidentally U-only.
+  {
+    NurbsSurface s = WigglyBicubic(4, 5);  // degree 3x3, U has 4 CVs, V has 5
+    const NurbsSurface original = s;
+    const double u_mid = original.Domain(0).min + (original.Domain(0).max - original.Domain(0).min) * 0.5;
+    const double v_old = original.Domain(1).max, v_new = v_old + 6.0;
+    Check(s.ExtendLinear(1, original.Domain(1).min, v_new) == Result::Ok, "ExtendLinear extends the V direction");
+    Check(std::abs(s.Domain(1).max - v_new) < 1e-9, "ExtendLinear's V-direction domain reaches exactly the requested new end");
+    Check(std::abs(s.Domain(0).min - original.Domain(0).min) < 1e-12 && std::abs(s.Domain(0).max - original.Domain(0).max) < 1e-12,
+          "ExtendLinear(direction=1) leaves the U domain untouched");
+    ON_3dPoint pt;
+    ON_3dVector du, dv;
+    original.raw().Ev1Der(u_mid, v_old, pt, du, dv);
+    double worst = 0.0;
+    for (int k = 0; k <= 10; ++k) {
+      const double v = v_old + (v_new - v_old) * k / 10.0;
+      worst = std::max(worst, DistanceToLine(s.PointAt(u_mid, v), pt, dv));
+    }
+    Check(worst < 1e-9, "ExtendLinear(direction=1)'s extension lies exactly on the boundary's V-tangent line");
+  }
+  // A genuine rational surface (sphere): the homogeneous-space
+  // arithmetic-progression construction must still trace an exact
+  // straight line in real 3D Euclidean space, not merely in projective
+  // (homogeneous) space.
+  {
+    ON_NurbsSurface sphere_raw;
+    ON_Sphere(ON_3dPoint(1, -2, 3), 2.5).GetNurbForm(sphere_raw);
+    NurbsSurface sphere;
+    sphere.raw() = sphere_raw;
+    Check(sphere.IsRational(), "ExtendLinear rational setup: the sphere NURBS form is rational");
+    const NurbsSurface original_sphere = sphere;
+    const double v_max = sphere.Domain(1).max;
+    const double new_v_max = v_max + (sphere.Domain(1).max - sphere.Domain(1).min);
+    const Result r = sphere.ExtendLinear(1, sphere.Domain(1).min, new_v_max);
+    Check(r == Result::Ok, "ExtendLinear succeeds on a genuine rational (sphere) surface");
+    ON_3dPoint pt;
+    ON_3dVector du, dv;
+    original_sphere.raw().Ev1Der(original_sphere.Domain(0).min, v_max, pt, du, dv);
+    double worst = 0.0;
+    for (int k = 1; k <= 10; ++k) {
+      const double v = v_max + (new_v_max - v_max) * k / 10.0;
+      worst = std::max(worst, DistanceToLine(sphere.PointAt(sphere.Domain(0).min, v), pt, dv));
+    }
+    Check(worst < 1e-6, "ExtendLinear on a rational sphere: the extension is still an exact straight line in 3D (< 1e-6, float-mesh-free double precision)");
+  }
+}
+
+void TestSurfaceExtendLinearNoOpAndRefusalChecks() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Result;
+
+  NurbsSurface s = WigglyBicubic(5, 4);
+  const dino8::kernel::Interval d = s.Domain(0);
+  Check(s.ExtendLinear(0, d.min, d.max) == Result::NoOpAlreadySatisfied, "ExtendLinear reports a no-op when the requested domain is already covered");
+  Check(s.ExtendLinear(0, d.max, d.min) == Result::Failed, "ExtendLinear refuses t0 >= t1");
+
+  bool threw = false;
+  try { s.ExtendLinear(2, 0.0, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "ExtendLinear throws on a direction other than 0/1");
+
+  // A closed direction (a full cylinder wall, closed in U) is refused,
+  // same restriction Extend() already documents for the same reason.
+  const ON_Circle circle(ON_Plane(ON_3dPoint(0, 0, 0), ON_3dVector(0, 0, 1)), 2.0);
+  const ON_Cylinder cylinder(circle, 5.0);
+  ON_NurbsSurface cyl_raw;
+  cylinder.GetNurbForm(cyl_raw);
+  NurbsSurface wall;
+  wall.raw() = cyl_raw;
+  Check(wall.IsClosed(0), "ExtendLinear closed-direction setup: the full cylinder wall is closed in U");
+  Check(wall.ExtendLinear(0, wall.Domain(0).min - 1.0, wall.Domain(0).max) == Result::Failed,
+        "ExtendLinear refuses to extend a closed direction");
+}
+
 int main() {
   ON::Begin();
 
@@ -28728,6 +29107,11 @@ int main() {
   TestSurfaceOffsetAnalyticRefusesFreeformSurface();
   TestSurfaceOffsetAnalyticZeroDistanceIsNoOpCopy();
 
+  TestSurfaceOffsetApproximateIsExactOnAGenuinePlane();
+  TestSurfaceOffsetApproximateSphereErrorIsBoundedButGenuinelyNonzero();
+  TestSurfaceOffsetApproximateOnBulgedFreeformIsBoundedAndRejectsExcessiveDistance();
+  TestSurfaceOffsetApproximateArgumentChecksAndZeroDistance();
+
   TestCurveOffsetInPlaneLineIsExactParallelLine();
   TestCurveOffsetInPlaneCircleIsExactConcentricCircle();
   TestCurveOffsetInPlanePartialArcPreservesAngularSpan();
@@ -28743,6 +29127,11 @@ int main() {
   TestSurfaceCurvatureAtIsScaleInvariant();
   TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth();
   sweep_tests::TestPipeVariable();
+  TestSurfaceExtendLinearIsExactlyStraightAndG1AtTheJoin();
+  TestSurfaceExtendLinearDiffersFromSmoothExtend();
+  TestSurfaceExtendLinearBothEndsBothDirectionsAndRational();
+  TestSurfaceExtendLinearNoOpAndRefusalChecks();
+
   sweep_tests::TestSweep2ExactFrustumAndDegenerateCases();
   ON::End();
 

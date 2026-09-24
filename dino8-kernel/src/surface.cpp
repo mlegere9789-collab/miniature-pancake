@@ -2005,4 +2005,68 @@ Result NurbsSurface::OffsetAnalytic(double distance, NurbsSurface& out, double t
   return Result::Failed;
 }
 
+Result NurbsSurface::OffsetApproximate(double distance, NurbsSurface& out, double tolerance) const {
+  if (!ON_IsValid(distance)) {
+    throw std::invalid_argument(
+        "dino8::kernel::NurbsSurface::OffsetApproximate: distance must be finite");
+  }
+  if (distance == 0.0) {
+    out.surface_ = surface_;
+    return Result::Ok;
+  }
+
+  ON_BoundingBox bbox;
+  surface_.GetBoundingBox(bbox, false);
+  const double tol = tolerance > 0.0 ? tolerance
+                                      : dino8::kernel::tolerance::DistanceForSize(bbox.Diagonal().Length());
+
+  const Interval du = Domain(0);
+  const Interval dv = Domain(1);
+  const double u_range = du.max - du.min;
+  const double v_range = dv.max - dv.min;
+
+  // Fold-through-center-of-curvature guard - see this method's own header
+  // doc comment for the `distance * k >= 1.0` derivation. Sampled at
+  // domain-INTERIOR midpoints (never the exact boundary, to dodge a
+  // natural parametrization's own poles) on a grid at least as fine as
+  // the control net itself, since curvature can vary between control
+  // points and the fold can occur anywhere in the domain.
+  const SurfaceDivisions divs = SuggestedDivisions(tol);
+  const int nu = std::max({divs.u, 4 * CVCountU(), 1});
+  const int nv = std::max({divs.v, 4 * CVCountV(), 1});
+  for (int i = 0; i < nu; ++i) {
+    const double u = du.min + u_range * (i + 0.5) / nu;
+    for (int j = 0; j < nv; ++j) {
+      const double v = dv.min + v_range * (j + 0.5) / nv;
+      const SurfaceCurvature sc = CurvatureAt(u, v);
+      if (distance * sc.k1 >= 1.0 || distance * sc.k2 >= 1.0) return Result::Failed;
+    }
+  }
+
+  // Per-control-point translation along this surface's own normal at that
+  // control point's Greville abscissa - see this method's own header doc
+  // comment for why this is exact for a plane and a first-order
+  // approximation otherwise, and for the domain-interior nudge below.
+  ON_NurbsSurface moved = surface_;
+  const int cv_count_u = moved.CVCount(0);
+  const int cv_count_v = moved.CVCount(1);
+  const double nudge_u = 1e-6 * u_range;
+  const double nudge_v = 1e-6 * v_range;
+  for (int i = 0; i < cv_count_u; ++i) {
+    const double gu = std::clamp(surface_.GrevilleAbcissa(0, i), du.min + nudge_u, du.max - nudge_u);
+    for (int j = 0; j < cv_count_v; ++j) {
+      const double gv = std::clamp(surface_.GrevilleAbcissa(1, j), dv.min + nudge_v, dv.max - nudge_v);
+      const Vector3d n = NormalAt(gu, gv);
+      ON_4dPoint cv;
+      moved.GetCV(i, j, cv);
+      cv.x += cv.w * distance * n.x;
+      cv.y += cv.w * distance * n.y;
+      cv.z += cv.w * distance * n.z;
+      moved.SetCV(i, j, cv);
+    }
+  }
+  out.surface_ = moved;
+  return Result::Ok;
+}
+
 }  // namespace dino8::kernel
