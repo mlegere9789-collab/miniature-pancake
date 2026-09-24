@@ -761,4 +761,119 @@ SubDSurfacePoint SubD::EvaluateFace(unsigned int face_id, double u, double v,
   return EvaluateFaceAdaptive(working_copy, f0_copy, u, v, max_adaptive_levels);
 }
 
+namespace {
+
+SubDNurbsPatch GridToPatch(const ON_3dPoint grid[4][4], bool exact) {
+  std::vector<Point3d> cvs(16);
+  for (int u = 0; u < 4; ++u) {
+    for (int w = 0; w < 4; ++w) {
+      cvs[static_cast<size_t>(u) * 4 + static_cast<size_t>(w)] = grid[w][u];
+    }
+  }
+  SubDNurbsPatch patch;
+  patch.surface = NurbsSurface::FromControlGrid(cvs, 4, 4, 3, 3);
+  patch.exact = exact;
+  return patch;
+}
+
+// Recursive core of SubD::ToNurbsPatchesAdaptive(): `s` is treated as
+// read-only (unlike EvaluateFaceAdaptive()'s single shared mutable
+// working copy, since here up to 4 sibling children may each need their
+// OWN further recursion, and mutating one shared copy across siblings
+// would invalidate the others' already-found face pointers) - splitting
+// only ever clones `s` into a fresh local copy, mirroring
+// SubD::EvaluateFace()'s own top-level "clone once, raw() untouched"
+// pattern, just done per-recursion-level instead of only once.
+void ToNurbsPatchesAdaptiveRecurse(const ON_SubD& s, unsigned int face_id, int depth_remaining,
+                                   std::vector<SubDNurbsPatch>& out) {
+  const ON_SubDFace* f = s.FaceFromId(face_id);
+  if (f == nullptr) return;  // Shouldn't happen; be defensive rather than crash.
+
+  ON_3dPoint grid[4][4];
+  bool regular = false;
+  BuildFaceBezierGrid(f, grid, regular);
+
+  constexpr unsigned int kMaxWorkingFaceCount = 500000;
+  if (regular || depth_remaining <= 0 || s.FaceCount() > kMaxWorkingFaceCount) {
+    out.push_back(GridToPatch(grid, regular));
+    return;
+  }
+
+  // Capture the would-be refined positions of the face point and its 4
+  // edge points BEFORE subdividing - the same SubdivisionPoint()-based
+  // technique EvaluateFaceAdaptive() uses to relocate them afterward,
+  // since `f`'s own pointer (and everything else in `s`) goes stale the
+  // moment a copy is subdivided.
+  const ON_3dPoint face_ref = f->SubdivisionPoint();
+  ON_3dPoint edge_ref[4];
+  bool refs_ok = face_ref.IsValid();
+  for (unsigned int i = 0; refs_ok && i < 4; ++i) {
+    const ON_SubDEdge* e = f->Edge(i);
+    edge_ref[i] = e ? e->SubdivisionPoint() : ON_3dPoint::UnsetPoint;
+    refs_ok = edge_ref[i].IsValid();
+  }
+  if (!refs_ok) {
+    out.push_back(GridToPatch(grid, regular));
+    return;
+  }
+
+  const double tolerance = FindTolerance(f);
+  ON_SubD refined(s);
+  if (!refined.GlobalSubdivide(1)) {
+    out.push_back(GridToPatch(grid, regular));
+    return;
+  }
+
+  const ON_SubDVertex* vF = refined.FindVertex(&face_ref.x, tolerance);
+  const ON_SubDVertex* vE[4] = {nullptr, nullptr, nullptr, nullptr};
+  bool found = vF != nullptr;
+  for (int i = 0; found && i < 4; ++i) {
+    vE[i] = refined.FindVertex(&edge_ref[i].x, tolerance);
+    found = vE[i] != nullptr;
+  }
+
+  unsigned int child_id[4] = {0, 0, 0, 0};
+  for (int k = 0; found && k < 4; ++k) {
+    // Quadrant k's child touches the shared face point, the edge point
+    // "before" it and the edge point "after" it - the same
+    // FindCommonFace(vF, vP, vN) pairing EvaluateFaceAdaptive() uses for
+    // whichever single quadrant a query point lands in, just run here
+    // for all 4 in turn.
+    const ON_SubDFace* child = FindCommonFace(vF, vE[(k + 3) % 4], vE[k]);
+    found = child != nullptr;
+    if (found) child_id[k] = child->FaceId();
+  }
+
+  if (!found) {
+    out.push_back(GridToPatch(grid, regular));
+    return;
+  }
+
+  for (int k = 0; k < 4; ++k) {
+    ToNurbsPatchesAdaptiveRecurse(refined, child_id[k], depth_remaining - 1, out);
+  }
+}
+
+}  // namespace
+
+std::vector<SubDNurbsPatch> SubD::ToNurbsPatchesAdaptive(int max_adaptive_levels) const {
+  if (max_adaptive_levels < 0) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::ToNurbsPatchesAdaptive: max_adaptive_levels must be >= 0");
+  }
+  std::vector<unsigned int> face_ids;
+  ON_SubDFaceIterator fit = subd_.FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    if (f->EdgeCount() != 4) continue;
+    if (!f->Vertex(0) || !f->Vertex(1) || !f->Vertex(2) || !f->Vertex(3)) continue;
+    face_ids.push_back(f->FaceId());
+  }
+
+  std::vector<SubDNurbsPatch> patches;
+  for (unsigned int id : face_ids) {
+    ToNurbsPatchesAdaptiveRecurse(subd_, id, max_adaptive_levels, patches);
+  }
+  return patches;
+}
+
 }  // namespace dino8::kernel

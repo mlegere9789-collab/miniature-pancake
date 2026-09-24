@@ -10208,6 +10208,254 @@ void TestSubDEvaluateFaceThrowsOnBadInput() {
   Check(threw_bad_id, "EvaluateFace throws on a face_id that doesn't exist");
 }
 
+void TestSubDToNurbsPatchesAdaptiveMatchesNonAdaptiveAtZeroLevels() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDNurbsPatch;
+
+  // max_adaptive_levels=0 must be identical to ToNurbsPatches(): same
+  // patch count, same exact flags, same control points - the "no
+  // splitting at all" degenerate case.
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  SubD subd = SubD::FromControlMesh(cube);
+  subd.Subdivide(1);
+
+  const std::vector<SubDNurbsPatch> plain = subd.ToNurbsPatches();
+  const std::vector<SubDNurbsPatch> adaptive0 = subd.ToNurbsPatchesAdaptive(0);
+  Check(plain.size() == adaptive0.size(),
+        "ToNurbsPatchesAdaptive(0) returns the same number of patches as ToNurbsPatches()");
+
+  bool all_match = plain.size() == adaptive0.size();
+  for (size_t i = 0; all_match && i < plain.size(); ++i) {
+    if (plain[i].exact != adaptive0[i].exact) all_match = false;
+    const double samples[] = {0.0, 0.3, 0.7, 1.0};
+    for (double u : samples) {
+      for (double v : samples) {
+        if (plain[i].surface.PointAt(u, v).DistanceTo(adaptive0[i].surface.PointAt(u, v)) > 1e-9) {
+          all_match = false;
+        }
+      }
+    }
+  }
+  Check(all_match,
+        "ToNurbsPatchesAdaptive(0)'s patches are pointwise identical to ToNurbsPatches()'s, "
+        "face for face, in the same order");
+}
+
+void TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDNurbsPatch;
+
+  // Same once-subdivided cube setup as TestSubDEvaluateFaceAdaptiveOnIrregularFace:
+  // every level-1 face touching exactly one original (valence-3) corner
+  // has exactly 1 irregular corner and 3 already-regular ones, so one
+  // level of adaptive splitting should turn it into exactly 4 patches:
+  // 3 exact + 1 still-approximate (covering the quadrant nearest the
+  // extraordinary corner).
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  SubD subd = SubD::FromControlMesh(cube);
+  subd.Subdivide(1);
+
+  Check(subd.ToNurbsPatches().size() == static_cast<size_t>(subd.FaceCount()),
+        "sanity: plain ToNurbsPatches() still gives one patch per face (24 for the level-1 cube)");
+
+  const int total_faces = subd.FaceCount();
+  const std::vector<SubDNurbsPatch> plain = subd.ToNurbsPatchesAdaptive(0);
+  const std::vector<SubDNurbsPatch> split1 = subd.ToNurbsPatchesAdaptive(1);
+  Check(static_cast<int>(plain.size()) == total_faces,
+        "ToNurbsPatchesAdaptive(0) gives one patch per face, same as ToNurbsPatches()");
+
+  int plain_irregular = 0;
+  for (const auto& p : plain) {
+    if (!p.exact) ++plain_irregular;
+  }
+  // Every level-1 cube face touches exactly one original corner (there
+  // are 8 corners, each incident to 3 of the 24 level-1 faces) - all 24
+  // faces are irregular before any splitting.
+  Check(plain_irregular == total_faces,
+        "sanity: every level-1 cube face is irregular before splitting (each still touches "
+        "one original valence-3 corner)");
+
+  // Splitting once should replace each of those 24 single irregular
+  // patches with 4 (3 exact + 1 not), so the total patch count should
+  // grow by 3x the number of previously-irregular faces.
+  Check(split1.size() == plain.size() + 3u * static_cast<size_t>(plain_irregular),
+        "ToNurbsPatchesAdaptive(1) replaces every irregular face's one patch with exactly 4 "
+        "(the 4 children of one Catmull-Clark subdivision step)");
+
+  int split1_exact = 0, split1_inexact = 0;
+  for (const auto& p : split1) {
+    if (p.exact) {
+      ++split1_exact;
+    } else {
+      ++split1_inexact;
+    }
+  }
+  Check(split1_exact == 3 * total_faces,
+        "one level of splitting turns 3 of every irregular face's 4 children exact "
+        "(3 * 24 = 72 exact patches)");
+  Check(split1_inexact == total_faces,
+        "one level of splitting leaves exactly 1 of every face's 4 children still "
+        "approximate (still touching the original extraordinary corner)");
+
+  // Deeper splitting should strictly increase the exact fraction of the
+  // total surface area covered (a proxy for "the approximation keeps
+  // improving"), without ever producing fewer patches.
+  const std::vector<SubDNurbsPatch> split2 = subd.ToNurbsPatchesAdaptive(2);
+  Check(split2.size() > split1.size(),
+        "ToNurbsPatchesAdaptive(2) produces strictly more patches than level 1 (further "
+        "splitting the still-irregular quadrant from level 1)");
+  int split2_inexact = 0;
+  for (const auto& p : split2) {
+    if (!p.exact) ++split2_inexact;
+  }
+  Check(split2_inexact == total_faces,
+        "at level 2, exactly one still-inexact patch remains per original face (the "
+        "extraordinary corner's own shrinking quadrant), same count as level 1 - only its "
+        "own size shrinks, not its count");
+
+  // Cross-check against an independent construction of the same
+  // geometry: ToNurbsPatchesAdaptive(1) resolves its 3 newly-regular
+  // quadrants by internally subdividing `subd` one level further and
+  // reading THEIR Catmull-Clark stencils - which is exactly what
+  // literally calling Subdivide(1) again and then plain ToNurbsPatches()
+  // computes for those same (now real, level-2) faces. A corner-vertex
+  // comparison against the raw control net would be wrong here (a
+  // regular vertex's Catmull-Clark limit point generally does NOT
+  // coincide with its own control-net position on curved geometry, only
+  // on locally flat regions) - matching whole patches against this
+  // independent, differently-coded path is the correct invariant.
+  SubD level2 = subd;
+  level2.Subdivide(1);
+  const std::vector<SubDNurbsPatch> level2_patches = level2.ToNurbsPatches();
+
+  const double corner_uv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  auto corners_of = [&](const SubDNurbsPatch& p, Point3d out[4]) {
+    for (int k = 0; k < 4; ++k) out[k] = p.surface.PointAt(corner_uv[k][0], corner_uv[k][1]);
+  };
+  bool every_exact_patch_matches_level2 = true;
+  for (const auto& p : split1) {
+    if (!p.exact) continue;
+    Point3d c1[4];
+    corners_of(p, c1);
+    double best_total = std::numeric_limits<double>::infinity();
+    for (const auto& q : level2_patches) {
+      if (!q.exact) continue;
+      Point3d c2[4];
+      corners_of(q, c2);
+      // Try all 4 cyclic rotations - the two constructions have no
+      // guaranteed shared corner-labeling convention, only the same
+      // underlying quad.
+      for (int rot = 0; rot < 4; ++rot) {
+        double total = 0;
+        for (int k = 0; k < 4; ++k) total += c1[k].DistanceTo(c2[(k + rot) % 4]);
+        best_total = std::min(best_total, total);
+      }
+    }
+    if (best_total > 1e-9) every_exact_patch_matches_level2 = false;
+  }
+  Check(every_exact_patch_matches_level2,
+        "every exact patch ToNurbsPatchesAdaptive(1) produces by splitting an irregular face "
+        "matches (to floating-point precision) some exact patch plain ToNurbsPatches() computes "
+        "on the SAME SubD after one real Subdivide(1) - the adaptive split's 3 newly-regular "
+        "quadrants are genuinely identical to subdividing for real, not just plausible-looking");
+}
+
+void TestSubDToNurbsPatchesAdaptiveRegularFaceUnaffected() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDNurbsPatch;
+
+  // The 3x3 flat-grid setup shared with TestSubDToNurbsPatchesExactOnRegularFlatGrid:
+  // the one regular face must stay a SINGLE exact patch at every
+  // max_adaptive_levels, since ToNurbsPatchesAdaptiveRecurse() checks
+  // "regular" before ever trying to split.
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      raw.m_V.Append(ON_3fPoint(static_cast<double>(i), static_cast<double>(j), 0.0));
+    }
+  }
+  auto idx = [](int i, int j) { return i * 4 + j; };
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      ON_MeshFace face;
+      face.vi[0] = idx(i, j);
+      face.vi[1] = idx(i + 1, j);
+      face.vi[2] = idx(i + 1, j + 1);
+      face.vi[3] = idx(i, j + 1);
+      raw.m_F.Append(face);
+    }
+  }
+  const SubD subd = SubD::FromControlMesh(grid);
+
+  // The other 8 faces of this grid are boundary faces (touching a
+  // valence-1 or valence-2 vertex) - genuinely irregular, so they DO
+  // split at max_adaptive_levels > 0 and the total patch count legitimately
+  // grows with `levels`. What must stay constant is the regular CENTER
+  // face's own single contribution: its patch is found immediately as
+  // "regular" in ToNurbsPatchesAdaptiveRecurse() and returned without
+  // ever calling GlobalSubdivide(), so exactly one returned patch should
+  // always have this face's own exact corners (1,1,0)/(2,1,0)/(2,2,0)/
+  // (1,2,0) - the same ones TestSubDToNurbsPatchesExactOnRegularFlatGrid
+  // already established ToNurbsPatches() reports at (0,0)/(1,0)/(1,1)/(0,1).
+  for (int levels : {0, 1, 3, 5}) {
+    const std::vector<SubDNurbsPatch> patches = subd.ToNurbsPatchesAdaptive(levels);
+    Check(patches.size() >= 9,
+          "ToNurbsPatchesAdaptive(levels) never returns fewer patches than ToNurbsPatches() "
+          "would (splitting only ever adds patches, never removes the regular face's own one)");
+
+    int matches_found = 0;
+    const SubDNurbsPatch* regular_patch = nullptr;
+    for (const auto& p : patches) {
+      if (p.surface.PointAt(0, 0).DistanceTo(Point3d(1, 1, 0)) < 1e-9 &&
+          p.surface.PointAt(1, 1).DistanceTo(Point3d(2, 2, 0)) < 1e-9) {
+        ++matches_found;
+        regular_patch = &p;
+      }
+    }
+    Check(matches_found == 1,
+          "at every max_adaptive_levels, exactly one returned patch is the regular center "
+          "face's own untouched patch (identified by its known exact corners), never split "
+          "into smaller pieces");
+    if (regular_patch != nullptr) {
+      Check(regular_patch->exact, "the regular center face's own patch is still reported exact");
+      bool all_match = true;
+      const double samples[] = {0.0, 0.25, 0.5, 0.75, 1.0};
+      for (double u : samples) {
+        for (double v : samples) {
+          if (regular_patch->surface.PointAt(u, v).DistanceTo(Point3d(1.0 + u, 1.0 + v, 0.0)) >
+              1e-9) {
+            all_match = false;
+          }
+        }
+      }
+      Check(all_match, "the regular center face's own patch still reproduces the exact plane "
+                       "point (1+u, 1+v, 0), unaffected by splitting elsewhere in the SubD");
+    }
+  }
+}
+
+void TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(cube);
+
+  bool threw = false;
+  try {
+    subd.ToNurbsPatchesAdaptive(-1);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "ToNurbsPatchesAdaptive throws std::invalid_argument on a negative max_adaptive_levels");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -29644,6 +29892,10 @@ int main() {
   TestSubDEvaluateFaceExactOnRegularFlatGrid();
   TestSubDEvaluateFaceAdaptiveOnIrregularFace();
   TestSubDEvaluateFaceThrowsOnBadInput();
+  TestSubDToNurbsPatchesAdaptiveMatchesNonAdaptiveAtZeroLevels();
+  TestSubDToNurbsPatchesAdaptiveSplitsIrregularFace();
+  TestSubDToNurbsPatchesAdaptiveRegularFaceUnaffected();
+  TestSubDToNurbsPatchesAdaptiveThrowsOnNegativeLevels();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
