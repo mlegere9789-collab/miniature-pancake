@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "dino8/kernel/curve.h"
 #include "dino8/kernel/mesh.h"
 #include "dino8/kernel/surface.h"
 
@@ -384,6 +385,103 @@ Result NurbsSurface::Rebuild(int u_count, int v_count, int u_degree, int v_degre
 
 namespace {
 
+// Degree-elevates `a`/`b` to their shared max degree, then inserts each
+// one's interior knots into the other (skipping a value already present
+// within `tol`) so both end up with identical degree and knot vector -
+// the curve-level twin of MatchEdge()'s own edge-unification step.
+// Returns false if either OpenNURBS call fails.
+bool UnifyCurves(ON_NurbsCurve& a, ON_NurbsCurve& b, double tol) {
+  const int degree = std::max(a.Degree(), b.Degree());
+  if (a.Degree() < degree && !a.IncreaseDegree(degree)) return false;
+  if (b.Degree() < degree && !b.IncreaseDegree(degree)) return false;
+  auto merge = [&](ON_NurbsCurve& into, const ON_NurbsCurve& from) {
+    const ON_Interval dom = into.Domain();
+    int k = 0;
+    while (k < from.KnotCount()) {
+      const double value = from.Knot(k);
+      int mult = 1;
+      while (k + mult < from.KnotCount() && from.Knot(k + mult) == value) ++mult;
+      if (value > dom.Min() && value < dom.Max()) {
+        double target = value;
+        for (int i = 0; i < into.KnotCount(); ++i) {
+          if (std::abs(into.Knot(i) - value) <= tol) { target = into.Knot(i); break; }
+        }
+        if (!into.InsertKnot(target, mult)) return false;
+      }
+      k += mult;
+    }
+    return true;
+  };
+  if (!merge(a, b) || !merge(b, a)) return false;
+  return a.CVCount() == b.CVCount() && a.KnotCount() == b.KnotCount();
+}
+
+// Brings NurbsSurface `s`'s `direction` to `target_degree`/`target_knots`
+// via the already-tested ElevateDegree()/InsertKnotAt() wrapper methods -
+// reused verbatim, no new low-level NURBS algebra here.
+bool BringDirectionTo(NurbsSurface& s, int direction, int target_degree, const std::vector<double>& target_knots,
+                      double tol) {
+  if (s.raw().Degree(direction) < target_degree && s.ElevateDegree(direction, target_degree) == Result::Failed) return false;
+  int k = 0;
+  while (k < static_cast<int>(target_knots.size())) {
+    const double value = target_knots[static_cast<size_t>(k)];
+    int mult = 1;
+    while (k + mult < static_cast<int>(target_knots.size()) && target_knots[static_cast<size_t>(k + mult)] == value) ++mult;
+    const Interval dom = s.Domain(direction);
+    if (value > dom.min && value < dom.max) {
+      bool present = false;
+      for (int i = 0; i < s.KnotCount(direction); ++i) {
+        if (std::abs(s.KnotAt(direction, i) - value) <= tol) { present = true; break; }
+      }
+      if (!present) {
+        const Result r = s.InsertKnotAt(direction, value, mult);
+        if (r == Result::Failed) return false;
+      }
+    }
+    k += mult;
+  }
+  return s.KnotCount(direction) == static_cast<int>(target_knots.size());
+}
+
+// The `NurbsSurface` built by ruling directly between two curves that
+// already share a degree and knot vector: CV(i, 0) = a's CVi, CV(i, 1) =
+// b's CVi (homogeneous, so a rational input carries its weights), a
+// plain 2-knot clamped-linear structure in the ruled direction.
+NurbsSurface RuleBetween(const ON_NurbsCurve& a, const ON_NurbsCurve& b, int ruled_direction) {
+  const bool rational = a.IsRational() || b.IsRational();
+  const int n = a.CVCount();
+  NurbsSurface out;
+  ON_NurbsSurface& s = out.raw();
+  if (ruled_direction == 1) {
+    s.Create(3, rational, a.Order(), 2, n, 2);
+    for (int k = 0; k < s.KnotCount(0); ++k) s.SetKnot(0, k, a.Knot(k));
+    s.SetKnot(1, 0, 0.0);
+    s.SetKnot(1, 1, 1.0);
+  } else {
+    s.Create(3, rational, 2, a.Order(), 2, n);
+    s.SetKnot(0, 0, 0.0);
+    s.SetKnot(0, 1, 1.0);
+    for (int k = 0; k < s.KnotCount(1); ++k) s.SetKnot(1, k, a.Knot(k));
+  }
+  for (int i = 0; i < n; ++i) {
+    ON_4dPoint pa, pb;
+    a.GetCV(i, pa);
+    b.GetCV(i, pb);
+    if (!a.IsRational()) pa.w = 1.0;
+    if (!b.IsRational()) pb.w = 1.0;
+    if (ruled_direction == 1) {
+      if (rational) { s.SetCV(i, 0, pa); s.SetCV(i, 1, pb); } else { s.SetCV(i, 0, ON_3dPoint(pa.x, pa.y, pa.z)); s.SetCV(i, 1, ON_3dPoint(pb.x, pb.y, pb.z)); }
+    } else {
+      if (rational) { s.SetCV(0, i, pa); s.SetCV(1, i, pb); } else { s.SetCV(0, i, ON_3dPoint(pa.x, pa.y, pa.z)); s.SetCV(1, i, ON_3dPoint(pb.x, pb.y, pb.z)); }
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+namespace {
+
 // Homogeneous control-point row of `s` at index `k` in `fixed_direction`
 // (0 = U: row k = CV(k, *); 1 = V: row k = CV(*, k)), w forced to 1 on
 // a non-rational surface.
@@ -728,6 +826,117 @@ Result NurbsSurface::UnrollDevelopable(int u_divisions, int v_divisions, Mesh& o
   out_flat.raw() = m;
   if (out_area) *out_area = out_flat.Area();
   if (out_kind) *out_kind = kind;
+  return Result::Ok;
+}
+
+Result NurbsSurface::CoonsPatch(const NurbsCurve& bottom, const NurbsCurve& top, const NurbsCurve& left,
+                                const NurbsCurve& right, NurbsSurface& out, double tolerance,
+                                double* out_corner_gap) {
+  // Working copies, reparameterized onto [0, 1] (shape-preserving).
+  ON_NurbsCurve c0 = bottom.raw(), c1_fwd = top.raw(), d0 = left.raw(), d1_fwd = right.raw();
+  c0.SetDomain(0.0, 1.0);
+  c1_fwd.SetDomain(0.0, 1.0);
+  d0.SetDomain(0.0, 1.0);
+  d1_fwd.SetDomain(0.0, 1.0);
+  ON_NurbsCurve c1_rev = c1_fwd, d1_rev = d1_fwd;
+  // ON_NurbsCurve::Reverse() does not preserve the [0, 1] domain just
+  // set above (confirmed by a debug run: its own domain ends up
+  // negated, e.g. [-1, 0]) - re-normalize immediately so PointAt(0)/
+  // PointAt(1) below correctly mean "new start"/"new end".
+  c1_rev.Reverse();
+  c1_rev.SetDomain(0.0, 1.0);
+  d1_rev.Reverse();
+  d1_rev.SetDomain(0.0, 1.0);
+
+  // Try all 4 orientations of (top, right) against the fixed (bottom,
+  // left) reference and keep whichever best closes all 4 corners.
+  const ON_3dPoint p00 = c0.PointAt(0.0), p10 = c0.PointAt(1.0);
+  double best_gap = std::numeric_limits<double>::infinity();
+  int best_c1 = 0, best_d1 = 0;  // 0 = forward, 1 = reversed
+  for (int ci = 0; ci < 2; ++ci) {
+    const ON_NurbsCurve& c1 = ci == 0 ? c1_fwd : c1_rev;
+    for (int di = 0; di < 2; ++di) {
+      const ON_NurbsCurve& d1 = di == 0 ? d1_fwd : d1_rev;
+      const double gap = d0.PointAt(0.0).DistanceTo(p00) + d1.PointAt(0.0).DistanceTo(p10) +
+                          d0.PointAt(1.0).DistanceTo(c1.PointAt(0.0)) + d1.PointAt(1.0).DistanceTo(c1.PointAt(1.0));
+      if (gap < best_gap) { best_gap = gap; best_c1 = ci; best_d1 = di; }
+    }
+  }
+  if (out_corner_gap) *out_corner_gap = best_gap;
+  if (!(best_gap <= 4.0 * tolerance)) return Result::Failed;
+  ON_NurbsCurve c1 = best_c1 == 0 ? c1_fwd : c1_rev;
+  ON_NurbsCurve d1 = best_d1 == 0 ? d1_fwd : d1_rev;
+
+  // Shared degree/knots within each curve pair (shape-preserving).
+  if (!UnifyCurves(c0, c1, tolerance) || !UnifyCurves(d0, d1, tolerance)) return Result::Failed;
+  std::vector<double> u_knots(static_cast<size_t>(c0.KnotCount()));
+  for (int k = 0; k < c0.KnotCount(); ++k) u_knots[static_cast<size_t>(k)] = c0.Knot(k);
+  std::vector<double> v_knots(static_cast<size_t>(d0.KnotCount()));
+  for (int k = 0; k < d0.KnotCount(); ++k) v_knots[static_cast<size_t>(k)] = d0.Knot(k);
+  const int pu = c0.Degree(), pv = d0.Degree();
+
+  // R1 = ruled between c0 (v=0) and c1 (v=1); R2 = ruled between d0
+  // (u=0) and d1 (u=1); B = bilinear corner patch (always non-rational
+  // - the classical Coons construction's correction term is exact
+  // corner *positions*, not weighted). Bring all three to the one
+  // shared (pu, u_knots) x (pv, v_knots) structure.
+  NurbsSurface r1 = RuleBetween(c0, c1, 1);
+  NurbsSurface r2 = RuleBetween(d0, d1, 0);
+  // FromControlGrid's control_grid is indexed idx = u * v_count + v (v
+  // varies fastest) - confirmed directly against its implementation,
+  // not its own doc comment (which says the opposite; see the fix in
+  // this same commit) - so CV(0,0)=P00, CV(0,1)=P01, CV(1,0)=P10,
+  // CV(1,1)=P11 needs this order, not [P00, P10, P01, P11].
+  NurbsSurface b = FromControlGrid({c0.PointAt(0.0), c1.PointAt(0.0), c0.PointAt(1.0), c1.PointAt(1.0)}, 2, 2, 1, 1);
+  if (!BringDirectionTo(r1, 1, pv, v_knots, tolerance) || !BringDirectionTo(r2, 0, pu, u_knots, tolerance) ||
+      !BringDirectionTo(b, 0, pu, u_knots, tolerance) || !BringDirectionTo(b, 1, pv, v_knots, tolerance)) {
+    return Result::Failed;
+  }
+  if (r1.CVCountU() != r2.CVCountU() || r1.CVCountU() != b.CVCountU() || r1.CVCountV() != r2.CVCountV() ||
+      r1.CVCountV() != b.CVCountV()) {
+    return Result::Failed;
+  }
+
+  const bool rational = r1.IsRational() || r2.IsRational();
+  ON_NurbsSurface result;
+  if (!result.Create(3, rational, pu + 1, pv + 1, r1.CVCountU(), r1.CVCountV())) return Result::Failed;
+  for (int k = 0; k < result.KnotCount(0); ++k) result.SetKnot(0, k, r1.KnotAt(0, k));
+  for (int k = 0; k < result.KnotCount(1); ++k) result.SetKnot(1, k, r1.KnotAt(1, k));
+  for (int i = 0; i < r1.CVCountU(); ++i) {
+    for (int j = 0; j < r1.CVCountV(); ++j) {
+      ON_4dPoint a, c, e;
+      r1.raw().GetCV(i, j, a);
+      r2.raw().GetCV(i, j, c);
+      b.raw().GetCV(i, j, e);
+      if (!r1.IsRational()) a.w = 1.0;
+      if (!r2.IsRational()) c.w = 1.0;
+      e.w = 1.0;
+      const ON_4dPoint cv = Add4(Sub4(a, e), c);
+      if (rational) {
+        if (!(cv.w > 0.0)) return Result::Failed;
+        result.SetCV(i, j, cv);
+      } else {
+        result.SetCV(i, j, ON_3dPoint(cv.x, cv.y, cv.z));
+      }
+    }
+  }
+  if (!result.IsValid()) return Result::Failed;
+
+  // Self-check: the built surface's own 4 boundary isocurves must
+  // reproduce the (reparameterized, orientation-corrected) inputs.
+  NurbsSurface candidate;
+  candidate.raw() = result;
+  double residual = 0.0;
+  for (int k = 0; k <= 32; ++k) {
+    const double t = k / 32.0;
+    residual = std::max(residual, candidate.PointAt(t, 0.0).DistanceTo(c0.PointAt(t)));
+    residual = std::max(residual, candidate.PointAt(t, 1.0).DistanceTo(c1.PointAt(t)));
+    residual = std::max(residual, candidate.PointAt(0.0, t).DistanceTo(d0.PointAt(t)));
+    residual = std::max(residual, candidate.PointAt(1.0, t).DistanceTo(d1.PointAt(t)));
+  }
+  if (!(residual <= 1e-6 * std::max(1.0, p00.DistanceTo(p10)))) return Result::Failed;
+
+  out = candidate;
   return Result::Ok;
 }
 
