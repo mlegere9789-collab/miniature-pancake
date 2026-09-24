@@ -2101,6 +2101,7 @@ void TestBooleanCombineGeneralBoxCylinder() {
   using dino8::kernel::BooleanOp;
   using dino8::kernel::Brep;
   using dino8::kernel::Mesh;
+  using dino8::kernel::TessellateGeneralBooleanClosedMesh;
 
   // The general engine's first PROVEN curved-operand case: a 4x4x2 box
   // fully pierced by a radius-1 cylinder along its own z-axis, the cylinder
@@ -2136,9 +2137,10 @@ void TestBooleanCombineGeneralBoxCylinder() {
   // (32, 128) tested here, versus roughly double that at (16, 64)), i.e.
   // genuine, convergent tessellation error, not a fixed leak.
   //
-  // Deliberately NOT asserted here, unlike TestBooleanCombineGeneralBoxBox
-  // above: Mesh::IsClosedManifold(). Confirmed by direct measurement (on
-  // BOTH this fixture and, importantly, the box+box case above too) that
+  // Deliberately NOT asserted on the PLAIN TessellateToClosedMesh() meshes
+  // below, unlike TestBooleanCombineGeneralBoxBox above:
+  // Mesh::IsClosedManifold(). Confirmed by direct measurement (on BOTH
+  // this fixture and, importantly, the box+box case above too) that
   // BooleanCombineGeneral's own reassembled meshes are not
   // IsClosedManifold() at any tessellation resolution tried, plain or
   // Conforming - box+box's own mesh volume still comes out exact despite
@@ -2149,6 +2151,43 @@ void TestBooleanCombineGeneralBoxCylinder() {
   // this engine's own polyline edges across adjacent faces - not
   // introduced, and not fixed, by this session's periodicity work, and
   // out of that work's own scope.
+  //
+  // Partially asserted (a later session) on TessellateGeneralBooleanClosed
+  // Mesh (boolean_general.h), this engine's own closed-manifold-oriented
+  // tessellator, at the same (32, 128) tests/general_boolean_sweep.cpp
+  // measures at, with that function's mesh-level seam repair (see
+  // boolean_general.h's own "MESH-LEVEL SEAM REPAIR" section) applied.
+  // Intersection closes cleanly and IS asserted below. Union and
+  // Difference are NOT: measured directly (tests/scratch_test.cpp's own
+  // "STANDALONE-REPRO" fixture, byte-for-byte this same box+cylinder), the
+  // repair leaves each with exactly 4 residual naked edges, root-caused
+  // with DINO8_SEAM_REPAIR_DEBUG=2 to one small quadrilateral hole (at the
+  // cylindrical face's own u=0 periodic seam, which THIS fixture's
+  // MakeCylinderZForBoxCylinderTest happens to place at physical angle 0,
+  // i.e. point (r,0,z)) whose two possible triangulating diagonals are
+  // BOTH already saturated (undirected count 2) by the box cap's own and
+  // the wall's own separately-closed local tessellation - no 2-triangle
+  // fan using only the hole's own 4 existing corners can close it without
+  // pushing a diagonal to count 3, and this repair pass never invents a
+  // new interior vertex to sidestep that. This is genuinely seam-angle-
+  // dependent, not a property of the geometry alone: the same box+cylinder
+  // combination with the wall's u=0 seam at a different absolute angle
+  // (tests/general_boolean_sweep.cpp's own case 01, built via a different
+  // frame convention) closes on all four of its ops - confirmed directly,
+  // not inferred, by re-running this exact fixture with the seam rotated
+  // 90deg (still exactly the same box+cylinder shape, since the box is
+  // 90deg-symmetric and 32 divisions is an exact multiple of 4). Not
+  // pursued further this session - see boolean_general.h's own doc
+  // comment for why. All three ops' volumes still land at the
+  // tessellation's OWN inherent inscribed-32-gon deficit (~0.64% of the
+  // cylinder's pi*r^2 cross-section, 0.040 on the 6.28 intersection) even
+  // where closure is incomplete - the repair does not trade volume for
+  // closure, whether or not it fully closes. Not asserted at coarser
+  // resolutions on purpose: measured directly, Union/Difference also close
+  // at (8, 8) and (8, 32) but Intersection is left with a handful of
+  // broken edges there (6-9 naked, 2-3 nonmanifold) that the repair's
+  // bounded, local moves do not reach - a disclosed residual, see the same
+  // doc section.
   const double tol = 0.8;
 
   {
@@ -2158,6 +2197,13 @@ void TestBooleanCombineGeneralBoxCylinder() {
     Check(std::abs(m.Volume() - expect_u) < tol,
           "box+cylinder Union's tessellated volume matches the closed-form "
           "box + cylinder - intersection to within tessellation tolerance");
+    // NOT asserted IsClosedManifold() here - see this function's own top
+    // comment: this exact fixture's cylinder seam angle leaves a disclosed
+    // 4-edge residual on Union. Volume is still checked: closure and
+    // volume-correctness are independent properties of this repair pass.
+    const Mesh closed = TessellateGeneralBooleanClosedMesh(u, 32, 128);
+    Check(std::abs(closed.Volume() - expect_u) < tol,
+          "box+cylinder Union's TessellateGeneralBooleanClosedMesh(32, 128) mesh still matches the closed-form volume");
   }
   {
     const Brep i = BooleanCombineGeneral(box, cyl, BooleanOp::Intersection);
@@ -2166,6 +2212,11 @@ void TestBooleanCombineGeneralBoxCylinder() {
     Check(std::abs(m.Volume() - expect_i) < tol,
           "box+cylinder Intersection's tessellated volume matches the "
           "closed-form pi*r^2*box_height to within tessellation tolerance");
+    const Mesh closed = TessellateGeneralBooleanClosedMesh(i, 32, 128);
+    Check(closed.IsClosedManifold(),
+          "box+cylinder Intersection's TessellateGeneralBooleanClosedMesh(32, 128) result is a genuine closed manifold");
+    Check(std::abs(closed.Volume() - expect_i) < tol,
+          "box+cylinder Intersection's closed-manifold mesh still matches the closed-form volume");
   }
   {
     const Brep d = BooleanCombineGeneral(box, cyl, BooleanOp::Difference);
@@ -2174,6 +2225,11 @@ void TestBooleanCombineGeneralBoxCylinder() {
     Check(std::abs(m.Volume() - expect_d) < tol,
           "box+cylinder Difference's tessellated volume matches the "
           "closed-form box - intersection to within tessellation tolerance");
+    // NOT asserted IsClosedManifold() here either - same disclosed 4-edge
+    // residual as Union above (this fixture's own cylinder seam angle).
+    const Mesh closed = TessellateGeneralBooleanClosedMesh(d, 32, 128);
+    Check(std::abs(closed.Volume() - expect_d) < tol,
+          "box+cylinder Difference's TessellateGeneralBooleanClosedMesh(32, 128) mesh still matches the closed-form volume");
   }
 }
 
