@@ -811,6 +811,45 @@ class Mesh {
   // outward.
   int UnifyNormals();
 
+  // Moves every vertex by `distance` along its own ComputeVertexNormals()
+  // direction (the standard area-weighted, per-triangle-contribution
+  // vertex normal that method already computes) - the mesh-level
+  // "inflate/deflate", distinct from the Brep-level offset another
+  // session owns. A vertex with no adjacent faces (a zero-vector normal,
+  // per ComputeVertexNormals()'s own documented edge case) doesn't move.
+  // Honestly NOT topologically robust: this is a plain per-vertex
+  // push, with no self-intersection detection or repair, so a large
+  // `distance` relative to local feature size (a sharp concave corner,
+  // say) can fold the result over itself - the same disclosed tradeoff
+  // every simple normal-offset mesher has, not attempted to be solved
+  // here. Returns a new mesh; this one is untouched.
+  Mesh Offset(double distance) const;
+
+  // Builds a solid shell from this (necessarily OPEN) mesh: an
+  // Offset(distance) copy stitched to the original along every naked
+  // edge with a new quad "wall" face, so the result is a single closed
+  // 2-manifold enclosing the material between the two layers - the
+  // mesh-level "thicken a sheet into a solid" operation, distinct from
+  // Brep-level shell/thicken another session owns. The original layer
+  // is flipped (it becomes the shell's INNER wall, so it must face
+  // "outward" relative to the material, i.e. opposite its own original
+  // direction); the offset layer keeps its own winding (it's the
+  // shell's outer wall, already facing away from the material, per
+  // Offset()'s own construction along outward vertex normals); each
+  // wall quad is built directly from Check()'s own directed
+  // naked_edge_list (already recorded in the correct outward-walking
+  // order - see that field's own comment), so no separate orientation
+  // logic is needed for the walls. Multiple disjoint boundary loops
+  // (e.g. an annulus-shaped input) are all walled up the same way, with
+  // no special-casing.
+  //
+  // Throws std::invalid_argument if `distance` is exactly 0 (a
+  // zero-thickness "solid" is meaningless) or if this mesh has no naked
+  // edges at all (already closed - Thicken() only handles the open-sheet
+  // case; a closed mesh needs a hollowing/shell operation, which is a
+  // materially different problem this method does not attempt).
+  Mesh Thicken(double distance) const;
+
   // Concatenates several independently-tessellated meshes into one and
   // welds vertices within `tolerance` of each other into a single shared
   // vertex. Needed because Brep::Tessellate() tessellates each face on
