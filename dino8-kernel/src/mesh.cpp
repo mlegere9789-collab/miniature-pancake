@@ -1333,6 +1333,38 @@ Mesh Mesh::MergeAndWeld(const std::vector<Mesh>& meshes, double tolerance) {
       remapped.vi[1] = remap[static_cast<size_t>(face.vi[1])];
       remapped.vi[2] = remap[static_cast<size_t>(face.vi[2])];
       remapped.vi[3] = remap[static_cast<size_t>(face.vi[3])];
+      // A face that welding collapsed - two of its corners landed on one
+      // vertex - is dropped (or, for a quad with one repeated corner,
+      // kept as the triangle that remains). Before this, a pole row of a
+      // sphere/cone/fan-cap tessellation (every sample at v=v0 is the
+      // same physical point) survived as zero-area triangles (a, a, b)
+      // whose edge {a, b} was then counted by THREE faces, so
+      // Brep::Sphere().TessellateToClosedMesh() never reported
+      // Mesh::IsClosedManifold() even though it was geometrically
+      // watertight - see TestMergeAndWeldDropsCollapsedPoleTriangles.
+      // Volume()/Area() are unchanged by this (a collapsed face
+      // contributes exactly zero to both).
+      if (face.IsQuad()) {
+        int v[4] = {remapped.vi[0], remapped.vi[1], remapped.vi[2], remapped.vi[3]};
+        int distinct[4];
+        int nd = 0;
+        for (int k = 0; k < 4; ++k) {
+          if (v[k] != v[(k + 3) % 4]) distinct[nd++] = v[k];  // drop a corner equal to its predecessor (cyclically)
+        }
+        if (nd == 4) {
+          if (v[0] == v[2] || v[1] == v[3]) continue;  // opposite corners coincide: no area
+          out.m_F.Append(remapped);
+        } else if (nd == 3) {
+          ON_MeshFace tri;
+          tri.vi[0] = distinct[0];
+          tri.vi[1] = distinct[1];
+          tri.vi[2] = distinct[2];
+          tri.vi[3] = distinct[2];
+          out.m_F.Append(tri);
+        }
+        continue;
+      }
+      if (remapped.vi[0] == remapped.vi[1] || remapped.vi[1] == remapped.vi[2] || remapped.vi[2] == remapped.vi[0]) continue;
       out.m_F.Append(remapped);
     }
   }
