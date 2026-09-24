@@ -3759,6 +3759,47 @@ honestly out of scope.
   same stash-based method as `OffsetAnalytic()`'s own entry: reverting
   just `curve.h`/`curve.cpp` turns every `OffsetInPlane` test into a
   compile error, not a runtime failure.
+  **Follow-up fix, same day:** the general (approximate) branch above
+  originally fit once, at this curve's own `ControlPointCount()`, with
+  no check of how far off that fit actually was - the "loose but
+  meaningful tolerance (worst case ~0.004 on a 10-unit curve)" result
+  quoted above was true for that ONE gentle test fixture, not a bound
+  this method actually enforced. A genuinely wiggly planar curve (several
+  oscillations, not one gentle bulge) exposed the real gap: fitting at
+  the original control-point count alone left a worst-case deviation of
+  0.104 units for a 0.5-unit offset (over 20% relative error, and over
+  50x this method's own internal target tolerance) with nothing to catch
+  it. Fixed by making the fit genuinely tolerance-driven, the real
+  "Loose/Tolerance refit" option PARITY_MAP.md's own offsetshell category
+  disclosed as missing: starting from `ControlPointCount()`, the
+  control-point count is doubled and refit, measuring the actual
+  worst-case `ClosestPoint()` deviation between the sampled offset locus
+  and the fitted curve (a genuine per-point bound, not the aggregate
+  least-squares residual `FitLeastSquares()` itself minimizes) each time,
+  until it's at or under `tolerance` or the count would exceed the number
+  of sampled points - refusing (`Result::Failed`) rather than silently
+  returning a fit that doesn't meet it. On the same wiggly fixture, this
+  converges to a 176-control-point fit with worst-case deviation ~2e-6,
+  against a target tolerance of ~1e-5 - both confirmed by direct
+  measurement, not assumed from the loop's own exit condition. Verified
+  in `tests/test_basic.cpp`
+  (`TestCurveOffsetInPlaneGeneralCurveRefinesUntilWithinTolerance`):
+  refinement genuinely grows the control-point count past the original;
+  the refined fit's worst-case deviation is confirmed at (or very near)
+  the internal target tolerance; and a direct side-by-side
+  `FitLeastSquares()` call at the unrefined original count on the exact
+  same sample points reproduces the bad (>50x tolerance) error this fix
+  closes, so the test proves the refinement is necessary, not merely
+  present. Confirmed via `git stash` on just `curve.h`/`curve.cpp`: the
+  new test's two refinement-specific checks genuinely FAIL against the
+  old code (not a compile error, since the method already existed) -
+  `worst-case deviation` came back over the tolerance and the
+  control-point count never grew - while every pre-existing
+  `OffsetInPlane` test (including the original gentle-curve fixture,
+  whose loose 0.05 threshold the old code already happened to clear)
+  still passes unchanged either way, confirming this is a real
+  regression fix, not a cosmetic one that just happens to also pass the
+  old, looser tests.
   Still deliberately out of scope: a genuinely non-planar 3D curve
   offset (e.g. sweeping a Frenet frame along the curve), body/solid
   offset, shell/hollow beyond `ShellConvexPlanar`, per-face wall-

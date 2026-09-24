@@ -683,11 +683,29 @@ class NurbsCurve {
   //    check the sign against, so which side is positive is whatever
   //    `IsPlanar()`'s own fit happens to assign, not chosen by the
   //    caller beyond the sign of `distance` itself), then refit via
-  //    `FitLeastSquares()` at this curve's own `Degree()` and
-  //    `ControlPointCount()` - an honestly APPROXIMATE result (the true
-  //    offset of a general curve is generally not itself an exact NURBS
-  //    curve of the same degree/control-point count at all), unlike the
-  //    two exact cases above. Before refitting, every sample is checked
+  //    `FitLeastSquares()` at this curve's own `Degree()` - an honestly
+  //    APPROXIMATE result (the true offset of a general curve is
+  //    generally not itself an exact NURBS curve of the same degree at
+  //    all), unlike the two exact cases above, but not an UNBOUNDED one:
+  //    this is `tolerance`-DRIVEN, the real "Loose/Tolerance refit" option
+  //    Rhino's own Offset command exposes and this method previously
+  //    lacked entirely (it fit once, at this curve's own
+  //    `ControlPointCount()`, with no check of how far off that fit
+  //    actually was - a real, silent accuracy gap in this method's own
+  //    first version, closed here rather than left as a known issue).
+  //    Starting from `ControlPointCount()`, the control-point count is
+  //    doubled and refit, each time measuring the actual worst-case
+  //    deviation between the sampled offset points above and their own
+  //    `ClosestPoint()` on the freshly-fitted curve (not the fit
+  //    residual `FitLeastSquares()` itself minimizes, which is an
+  //    aggregate least-squares quantity, not a guaranteed per-point
+  //    bound), until that worst case is at or under `tolerance` or the
+  //    count would exceed the number of sampled points (the most
+  //    `FitLeastSquares()` is defined for) - whichever comes first. If
+  //    `tolerance` still isn't met at that ceiling, this returns
+  //    `Result::Failed` rather than silently handing back the best
+  //    attempt dressed up as satisfying a tolerance it doesn't meet.
+  //    Before refitting, every sample is checked
   //    against `CurvatureAt(t)`: wherever `distance` moved it TOWARD that
   //    point's own center of curvature by at least that point's own
   //    local radius (`1 / kappa`), the offset would fold the curve
