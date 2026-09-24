@@ -753,6 +753,45 @@ What this repo does instead:
   rejection tests for a binary-format header, a vertex element missing
   `z`, a face line with the wrong corner count, and an out-of-range face
   index.
+- Every `Model::Add*()` gained an optional `name` parameter, closing a
+  real gap in `.3dm` metadata fidelity: before this, every object placed
+  in a `Model` got a default, empty `ON_3dmObjectAttributes`, so a caller
+  had no way to attach even the most basic .3dm object metadata - the
+  object name Rhino itself relies on for selection-by-name and for
+  round-tripping identity across a save/reload. A non-empty name is set
+  via `ON_3dmObjectAttributes::SetName(..., /*bFixInvalidName=*/true)`,
+  the same call `dino8-app/src/io/File3dm.cpp` already uses for every
+  other named entity it writes; an empty (default) name leaves the
+  attributes exactly as before, so the change is additive - no existing
+  caller's behavior changes. Verified with a real round trip through an
+  actual `.3dm` file: named a `Mesh` and a `Brep` differently, added a
+  third `Curve` with no name at all, saved, reloaded, and confirmed each
+  reloaded object's own `ON_3dmObjectAttributes::Name()` exactly matches
+  what it was given - including the unnamed curve coming back with a
+  genuinely empty name, not some default placeholder.
+- `Model::AddLayer()` plus a new `layer_index` parameter on every
+  `Model::Add*()`, closing another real gap in `.3dm` metadata fidelity
+  flagged by the same PARITY_MAP.md evidence as the `name` parameter
+  above: before this, this kernel had no concept of a layer at all (`grep
+  ON_Layer` in `dino8-kernel/src` found nothing), so nothing it saved
+  could carry Rhino's most basic organizational metadata - color-by-layer,
+  per-layer visibility, selection-by-layer - even though `ONX_Model` (and
+  the `.3dm` format underneath) has always supported it.
+  `Model::AddLayer(name, color)` wraps `ONX_Model::AddLayer()`, OpenNURBS'
+  own "easy way to add a layer" helper, and returns the new layer's index
+  for use as every `Add*()`'s new `layer_index` argument; an empty `name`
+  returns `-1` instead of forwarding to OpenNURBS, whose own contract for
+  that case (aliasing the "Default" layer) would be a surprising silent
+  success for a caller who asked to add a named layer. `layer_index`
+  defaults to 0 (the model's always-present default layer, the same value
+  every existing object's attributes already carried), so the change is
+  additive - no existing caller's behavior changes. Verified with a real
+  round trip through an actual `.3dm` file: added a named, colored layer,
+  placed a `Mesh` on it by index, left a `Brep` on the default layer,
+  saved, reloaded, and confirmed the reloaded layer's name and color
+  exactly match what `AddLayer()` was given, the mesh's reloaded
+  `ON_3dmObjectAttributes::m_layer_index` matches the returned index, and
+  the brep's stayed at 0.
 - `Brep::GetTightBoundingBox()` closes a real gap: nothing here could
   answer "roughly how big/where is this Brep" without tessellating it
   first, and even then Mesh::GetBoundingBox() only sees a tessellation's
@@ -2170,12 +2209,104 @@ What this repo does instead:
     side would sweep to a degenerate zero-area band inside one face -
     with the open L-shaped profile named as the exact alternative; a
     partial revolve of an open profile with an off-axis endpoint is not
-    cappable here; sections are not auto-aligned or re-seamed; no draft
-    angle, no 2-rail sweep with scaling, no variable-radius pipe yet.
+    cappable here; sections are not auto-aligned or re-seamed; no
+    2-rail sweep with scaling, no variable-radius pipe yet (draft-angle
+    extrusion is closed below).
     A capped body reverses its section internally when needed for
     outward orientation, so the wall's u may run opposite to the input
     curve (the closed-loft test matches section corners as a set for
     that reason).
+- `Brep::ExtrudeTapered(profile, direction, draft_angle, cap)`
+  (`src/sweep.cpp`): `Extrude()` with a draft angle - the wall leans
+  instead of running straight, Parasolid/ACIS's TAPER option on a swept
+  protrusion and AutoCAD `EXTRUDE`'s `Taper angle`. The app already had
+  an approximate version (`ExtrudeTaperedCommand`,
+  `dino8-app/src/commands/cmd_surface.cpp:1191`: the top section is the
+  profile SCALED ABOUT ITS CENTROID by `tan(draft) * height` - exact only
+  for a profile centered on its own centroid with uniform radius, i.e. a
+  circle; wrong for anything else, since a real draft wall is supposed to
+  move every boundary point by the same PERPENDICULAR distance, not scale
+  the whole shape toward one interior point). This is the first
+  kernel-native, genuinely-correct one, built on `Loft()`'s own exact
+  degree-1 ruled wall between the profile and an in-plane-offset copy of
+  it translated to the far end, with three honestly different fidelity
+  levels depending on what the profile actually is:
+  - **Circle/arc profiles are exact.** `NurbsCurve::OffsetInPlane()`'s own
+    Arc/Circle case offsets to an exact concentric arc/circle, so a
+    drafted circular boss or hole is a genuine NURBS cone frustum wall
+    (`NurbsSurface::IsCone()` holds), volume verified against the closed
+    form `(pi*L/3)(r0^2 + r0*r1 + r1^2)` to 0.3% (tessellation chord
+    error, same bound the existing frustum tests use) - and the top
+    section's own radius is checked directly against `r0 -
+    L*tan(draft_angle)` to 1e-9, not just the aggregate volume.
+  - **Convex polygon profiles are ALSO exact - a new closed-form
+    algorithm, not a reuse of `OffsetInPlane()`'s general branch.** A
+    multi-segment polyline (a rectangle, a hexagon, any convex profile
+    built as straight `Polyline()` segments) needs `OffsetInPlane()`'s
+    OWN least-squares refit branch, which cannot get a sharp corner right
+    (it blurs it) and, for a CLOSED polygon whose seam sits exactly at a
+    corner, does not even reproduce a closed curve at all (the tangent -
+    and so the offset direction - genuinely differs on the two sides of
+    that corner, so the refit's own forced-equal endpoints split into two
+    different points). `OffsetConvexPolyline()` (`src/sweep.cpp`) instead
+    computes the EXACT planar miter-join point at every vertex in closed
+    form - `V' = V + distance*(n0 + n1) / (1 + n0.n1)`, derived directly
+    from the two edges' half-angle bisector, not fit or iterated - and is
+    proven safe for a convex input by a cheap, exact check applied to
+    every result: each offset edge must stay a POSITIVE multiple of its
+    own original direction (a convex polygon offset uniformly can only
+    self-intersect by inverting an edge first, so checking for that
+    directly is a complete, not heuristic, validity proof). Convexity
+    itself is checked up front (all turns the same sign) and a concave
+    profile is refused rather than risked - the general polygon-offset
+    self-intersection problem this kernel already discloses as open
+    elsewhere (`PARITY_MAP.md`, "Offset self-intersection / invalid-loop
+    removal") is not attempted here. Verified two ways: an isotropically-
+    tapered square's SIDE FACES are themselves planar (a real geometric
+    fact for uniform-scale taper, checked by hand: the four corners of
+    each side quad are coplanar), so unlike the circular case the
+    tessellated volume is EXACT (not merely within tolerance) at any
+    division, `1e-9` against the closed-form frustum-of-pyramid volume
+    `A0*h*(k0^2 + k0*k1 + k1^2)/3`; and the actual top corner positions
+    are checked directly against the hand-computed offset points, not
+    just the volume.
+  - **A general (non-arc, non-polyline) planar profile** falls through to
+    `OffsetInPlane()`'s own general least-squares branch, inheriting its
+    already-documented exactness/approximation split and its own
+    curvature-based self-intersection guard - no new limitation invented
+    for this function.
+  - **Sign is anchored to `direction`, not to whichever way
+    `IsPlanar()`'s fit happened to come out.** `NurbsCurve::
+    OffsetInPlane()`'s own Arc/Circle case self-corrects its sign against
+    the shape's independently-known true radial direction (its own doc
+    comment), but its Line/general case and this function's own convex-
+    polygon path do not - both use "distance > 0 grows along this
+    curve's own fitted plane normal," and that normal's SIGN is an
+    otherwise-arbitrary artifact of `IsPlanar()`'s fit (confirmed by
+    reading `ON_Curve::IsPlanar()`/`ON_NurbsCurve::IsPlanar()`: the plane
+    itself is built from the curve's own control points, independent of
+    the tolerance argument, so the SAME curve always gets the SAME fitted
+    normal, but a mirrored or differently-wound copy of the same shape
+    can fit to the opposite one). `ExtrudeTapered()` canonicalizes once
+    (flips the reference normal, and the delegated `OffsetInPlane()`
+    distance sign with it, whenever the fit came out opposite
+    `direction`) so "positive `draft_angle` shrinks moving along
+    +`direction`" holds for every profile, not just the ones whose fit
+    happened to agree - checked directly: the same circle built with its
+    defining plane's normal flipped gives the exact same frustum for the
+    same `draft_angle`.
+  - **Degenerate cases refused, not guessed.** A non-finite or
+    out-of-`(-pi/2, pi/2)` `draft_angle`; a non-planar profile; a
+    `direction` not parallel to the profile's own plane normal (an
+    oblique draft would need the in-plane offset and the axial
+    translation decomposed separately, not attempted); a non-convex
+    multi-segment profile; a draft/height combination that would fold
+    the offset curve through itself (an arc shrinking past its own
+    radius, a polygon edge inverting past its own inradius, or a general
+    curve's own curvature-based guard) - every one throws
+    `std::invalid_argument` naming which check failed, and `draft_angle
+    == 0` delegates to `Extrude()` itself exactly rather than taking a
+    numerically-noisier path through the offset machinery for no reason.
 - `SubD::SetEdgeSharpness(p0, p1, sharpness, point_tolerance)`: real
   Pixar/OpenSubdiv-style semi-sharp (variable-weight) creasing, closing a
   gap `FromControlMesh()`'s own `crease_at_double_edges` parameter left
@@ -2316,6 +2447,32 @@ What this repo does instead:
   3 - the first occurrence is the baseline, not a duplicate of itself),
   `RemoveDuplicateFaces()` removes exactly those 2, and the survivor is
   provably the first occurrence, not an arbitrary one.
+- `SubD::FromNurbsSurface(surface, u_divisions, v_divisions)`: closes
+  PARITY_MAP.md's subd_mesh "SubD from NURBS/B-rep conversion (reverse
+  of ToNurbsPatches)" [missing] item for a single untrimmed surface (a
+  full Brep -> SubD conversion - matching faces and creases across a
+  whole solid or polysurface - is a materially bigger problem, not
+  attempted here). Evaluates a `u_divisions x v_divisions` grid of
+  points across the surface's own parameter domain and takes each cell
+  as one genuine QUAD SubD face, then hands that straight to the
+  already-existing `FromControlMesh()`. Deliberately NOT built on
+  `NurbsSurface::TessellateGrid()` despite the obvious temptation to
+  reuse it: that method always TRIANGULATES each cell (it exists for
+  mesh-boolean work), which would start every SubD face irregular before
+  `Subdivide()` even ran once - `ToNurbsPatches()` only gives an exact
+  limit patch on regular, all-quad faces, so triangulating here would
+  quietly defeat the entire point of building a SubD cage in the first
+  place. Honestly scoped as an APPROXIMATION of the input surface, not a
+  lossless conversion: a Catmull-Clark limit surface over a regular quad
+  reproduces a uniform bicubic B-spline (see `ToNurbsPatches()`'s own
+  doc comment), not an arbitrary NURBS surface's true shape between grid
+  points (non-uniform knots, non-cubic degree, rational weights - none
+  of that survives flat-grid sampling); the one case this IS exact for
+  is a flat/bilinear input, verified directly: a hand-derivable
+  `P(u,v) = (u, v, 0)` fixture (the same one `TestSurfaceNormalAt()`
+  already relies on) converts to a 5x5-vertex, 16-quad-face SubD whose
+  level-0 control net reproduces all 25 grid points to within 1e-6 of
+  their exact closed-form positions - not merely "close," measured.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
@@ -3462,8 +3619,10 @@ honestly out of scope.
   `Mesh::ConeToApex()`/`Mesh::Cone()`/`Mesh::RevolveProfile()`/
   `Mesh::LoftClosedRings()`/`Mesh::Torus()` were the only shapes/
   operations here; `Brep::Extrude()`/`Revolve()`/`Loft()`/`Sweep1()`/
-  `Pipe()` (see above) now add the B-rep-level sweep class, with draft
-  angles, 2-rail sweeps and variable-radius pipes still open.
+  `Pipe()` (see above) now add the B-rep-level sweep class;
+  `ExtrudeTapered()` (see above) closes draft angles for
+  circle/arc/convex-polygon profiles, with 2-rail sweeps and
+  variable-radius pipes still open.
   `RevolveProfile()` now supports a flat end rim too (see below);
   `LoftClosedRings()`'s end caps require each ring to be planar and
   simple (non-self-intersecting) - both are now validated

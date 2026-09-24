@@ -90,6 +90,40 @@ class SubD {
   // (`ON_SubDFromMeshParameters::Smooth`, this class's original behavior).
   static SubD FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges = false);
 
+  // Builds a SubD control cage from a single UNTRIMMED NURBS surface by
+  // evaluating a u_divisions x v_divisions grid of points across its
+  // parameter domain and taking each grid cell as one genuine QUAD SubD
+  // face - closing PARITY_MAP.md's subd_mesh "SubD from NURBS/B-rep
+  // conversion (reverse of ToNurbsPatches)" [missing] item for the
+  // single-surface case (a full Brep -> SubD conversion, matching faces
+  // and creases across a whole solid or polysurface, is a materially
+  // bigger problem this does not attempt).
+  //
+  // Unlike `NurbsSurface::TessellateGrid()` (built for mesh-boolean work
+  // and always TRIANGULATING each grid cell), this keeps every cell a
+  // genuine quad - the whole point of building a SubD cage: a
+  // triangulated control net starts every face irregular
+  // (`ToNurbsPatches()` only gives an exact limit patch on regular,
+  // all-quad faces), throwing away the surface's own regular parametric
+  // structure before `Subdivide()` even runs once.
+  //
+  // This is deliberately an APPROXIMATION of the input surface, not a
+  // lossless conversion: a Catmull-Clark limit surface over a regular
+  // interior quad reproduces a UNIFORM bicubic B-spline patch (see
+  // `ToNurbsPatches()`'s own doc comment), not an arbitrary NURBS
+  // surface's real shape between grid points (non-uniform knots, a
+  // different degree, rational weights - none of that survives sampling
+  // into flat grid quads); the approximation improves as
+  // u_divisions/v_divisions increase, the same tradeoff
+  // `TessellateGrid()` already documents for its own triangulated
+  // output. A flat/bilinear input surface is the one case this IS exact
+  // for (verified in the tests: every corner of a regular quad's flat
+  // Catmull-Clark limit patch coincides with its own control points).
+  //
+  // Throws std::invalid_argument if u_divisions or v_divisions is less
+  // than 1, the same validation `TessellateGrid()` already applies.
+  static SubD FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_divisions);
+
   // Applies `levels` rounds of real Catmull-Clark global subdivision in
   // place. Each round refines every face, edge, and vertex of the
   // current control net into a strictly finer one; the result converges

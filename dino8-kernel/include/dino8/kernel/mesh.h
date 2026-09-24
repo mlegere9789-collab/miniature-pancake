@@ -672,6 +672,56 @@ class Mesh {
   };
   CheckReport Check(double tolerance = tolerance::kDistance) const;
 
+  // Face pairs whose triangles genuinely cross in 3D - the "does this
+  // otherwise-closed-manifold mesh actually pass through itself" question
+  // Check() does not answer at all: CheckReport's six conditions are every
+  // one an EDGE-adjacency defect (naked/non-manifold edges, orientation,
+  // degenerate/duplicate faces, duplicate vertices), so a mesh with none of
+  // them - IsClosedManifold() true, Check() clean - can still be a genuinely
+  // self-overlapping shape: two unrelated sheets of the same result crossing
+  // each other, e.g. a general boolean/fillet/offset chain whose
+  // intermediate tolerance slop let one surface poke through another (see
+  // boolean_general.h's own investigation-log comments for how load-bearing
+  // that chain's tolerance handling already is). Returned as (face_a,
+  // face_b) with face_a < face_b, each pair reported once.
+  //
+  // Two triangles that SHARE A VERTEX (including two triangles that are a
+  // single quad face's own (0,1,2)/(0,2,3) split) are never reported - that
+  // is completely normal mesh connectivity, not a self-intersection, and is
+  // simply not the question this method answers (a wrong fan at a shared
+  // vertex shows up as a degenerate or duplicate face, or a bad normal, not
+  // here). For a pair sharing no vertex, the two triangles are each split by
+  // the other's plane and the resulting intervals along the two planes' own
+  // cross-product line must overlap by MORE than `tolerance` - so two
+  // triangles that merely touch (a shared boundary from a weld, or two
+  // patches coincident within tolerance) are not reported, only a genuine
+  // crossing is.
+  //
+  // Honest limitations, both inherited from the same cross-triangle test
+  // surface_intersect.cpp's own TriTri uses for cross-SURFACE intersection
+  // curves (this is that same construction, specialized to one mesh's own
+  // self-overlap question rather than two independent meshes' intersection
+  // curve): (1) two overlapping COPLANAR triangles are not reported - the
+  // cross-product of two coplanar faces' normals is zero, so this test can't
+  // place them along a shared line at all; a real coplanar overlap (e.g. two
+  // duplicate-but-shifted flat faces) needs its own 2D-polygon-overlap test,
+  // which this is not. (2) DETECTION ONLY - no repair. A genuine
+  // self-intersection has no single correct fix (split both triangles at
+  // the crossing? drop one sheet? re-run the operation at a tighter
+  // tolerance?) the way a duplicate face or a below-tolerance sliver does,
+  // so - the same considered position Check()'s own non_manifold_edges and
+  // interior duplicate_vertices already take, see CheckReport's class
+  // comment above - this kernel reports it and leaves the fix to the
+  // caller rather than guess.
+  //
+  // Broad-phase accelerated with a uniform grid over the mesh's own
+  // triangles (mirroring surface_intersect.cpp's own Grid), so this stays
+  // usable on the several-thousand-triangle meshes TessellateConforming()
+  // and the general boolean path produce - O(n) candidate pairs in the
+  // ordinary case, degrading to O(n^2) only if every triangle lands in one
+  // grid cell. Never modifies this mesh.
+  std::vector<std::pair<int, int>> FindSelfIntersections(double tolerance = tolerance::kDistance) const;
+
   // The open boundary as closed loops of vertex indices: each naked edge
   // (a, b) chained a -> b -> ... in the direction its face walks it, so
   // walking a loop keeps the existing faces on the same side a

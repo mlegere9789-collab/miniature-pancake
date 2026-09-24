@@ -4930,6 +4930,136 @@ void TestModelAddPointCloudRoundTrips() {
   std::remove(path.c_str());
 }
 
+// Every Add*() gained an optional `name` parameter - before this, every
+// object placed in a Model got a default, empty ON_3dmObjectAttributes,
+// so a caller had no way to attach even the most basic .3dm object
+// metadata (the name Rhino itself uses for selection-by-name and
+// round-tripping object identity). Checks a real round trip of a name
+// through an actual .3dm file for two different object types (Mesh,
+// Brep), plus the "no name given" case still leaving the object unnamed
+// (proving the new parameter is additive, not a behavior change for
+// existing callers).
+void TestModelAddObjectNameRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  const auto box_mesh = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+
+  Model model;
+  model.AddMesh(box_mesh, "MyMesh");
+  model.AddBrep(box_brep, "MyBrep");
+  const auto line = dino8::kernel::NurbsCurve::FromControlPoints(
+      {dino8::kernel::Point3d(0, 0, 0), dino8::kernel::Point3d(1, 0, 0)}, /*degree=*/1);
+  model.AddCurve(line);  // no name given
+  Check(model.ObjectCount() == 3, "model has three objects after two named + one unnamed Add*()");
+
+  const std::string path = "dino8_kernel_model_object_name_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with named objects succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_named_mesh = false;
+  bool found_named_brep = false;
+  bool found_unnamed_curve = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    Check(attributes != nullptr, "every reloaded geometry object still carries its attributes");
+    const ON_Geometry* geometry = geometry_component->Geometry(nullptr);
+    if (dynamic_cast<const ON_Mesh*>(geometry) != nullptr) {
+      found_named_mesh = true;
+      Check(attributes->Name() == ON_wString("MyMesh"),
+            "the reloaded mesh's object name exactly matches what AddMesh() was given (\"MyMesh\")");
+    } else if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
+      found_named_brep = true;
+      Check(attributes->Name() == ON_wString("MyBrep"),
+            "the reloaded brep's object name exactly matches what AddBrep() was given (\"MyBrep\")");
+    } else if (dynamic_cast<const ON_NurbsCurve*>(geometry) != nullptr) {
+      found_unnamed_curve = true;
+      Check(attributes->Name().IsEmpty(),
+            "the reloaded curve - added with no name argument - has no object name, proving "
+            "the new parameter is a no-op when omitted");
+    }
+  }
+  Check(found_named_mesh && found_named_brep && found_unnamed_curve,
+        "all three object types (named mesh, named brep, unnamed curve) were found in the "
+        "reloaded model");
+
+  std::remove(path.c_str());
+}
+
+// Model::AddLayer() plus every Add*()'s new `layer_index` parameter: before
+// this, this kernel had no concept of a layer at all (PARITY_MAP.md's
+// "kernel-level data exchange" evidence: "grep ON_Layer/ON_Material in
+// dino8-kernel/src: none"), so nothing it saved could carry Rhino's most
+// basic organizational metadata. Checks a real round trip through an
+// actual .3dm file: a named, colored layer; an object placed on it via
+// its returned index; a second object left on the default layer (proving
+// the new parameter is additive, not a behavior change for existing
+// callers); and AddLayer()'s own -1 contract for an empty name.
+void TestModelAddLayerRoundTrips() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Color;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Model;
+  using dino8::kernel::Result;
+
+  Model model;
+  const int layer_index = model.AddLayer("MyLayer", Color{200, 100, 50});
+  Check(layer_index >= 0, "AddLayer() with a non-empty name returns a valid (>= 0) index");
+  Check(model.AddLayer("") == -1, "AddLayer() with an empty name returns -1 rather than aliasing "
+                                  "OpenNURBS' own \"Default\" layer");
+
+  const auto box_mesh = MakeQuadBoxMesh(0, 0, 0, 1, 1, 1);
+  model.AddMesh(box_mesh, "OnMyLayer", layer_index);
+  const auto box_brep = Brep::Box(0, 0, 0, 1, 1, 1);
+  model.AddBrep(box_brep);  // no layer given: stays on the default layer
+
+  const std::string path = "dino8_kernel_model_layer_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a named layer succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+
+  const ON_ModelComponentReference layer_ref = loaded.raw().LayerFromIndex(layer_index);
+  const ON_Layer* layer = ON_Layer::Cast(layer_ref.ModelComponent());
+  Check(layer != nullptr, "the reloaded model still has a layer at the returned index");
+  Check(layer->Name() == ON_wString("MyLayer"),
+        "the reloaded layer's name exactly matches what AddLayer() was given (\"MyLayer\")");
+  Check(layer->Color() == ON_Color(200, 100, 50),
+        "the reloaded layer's color exactly matches what AddLayer() was given");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_layered_mesh = false;
+  bool found_default_brep = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const ON_3dmObjectAttributes* attributes = geometry_component->Attributes(nullptr);
+    const ON_Geometry* geometry = geometry_component->Geometry(nullptr);
+    if (dynamic_cast<const ON_Mesh*>(geometry) != nullptr) {
+      found_layered_mesh = true;
+      Check(attributes->m_layer_index == layer_index,
+            "the reloaded mesh's layer index exactly matches what AddMesh() was given");
+    } else if (dynamic_cast<const ON_Brep*>(geometry) != nullptr) {
+      found_default_brep = true;
+      Check(attributes->m_layer_index == 0,
+            "the reloaded brep - added with no layer_index argument - stayed on the default "
+            "layer (index 0), proving the new parameter is a no-op when omitted");
+    }
+  }
+  Check(found_layered_mesh && found_default_brep,
+        "both object types (layered mesh, default-layer brep) were found in the reloaded model");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -6904,6 +7034,89 @@ void TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon() {
         "the SURVIVING copy is the first occurrence (0,1,2), not one of the later duplicates");
 }
 
+// Mesh::FindSelfIntersections(): the "does this otherwise-closed-manifold
+// mesh actually pass through itself" question Check() cannot answer at all
+// (its own six conditions are every one an edge-adjacency defect - see
+// FindSelfIntersections' own doc comment). Four hand-derived cases:
+//
+//  (1) an ordinary closed box mesh - lots of triangles sharing edges and
+//      vertices, zero genuine crossings - must report nothing: the
+//      "shares a vertex" skip has to actually fire on every adjacent pair
+//      a real mesh throws at it, not just a hand-picked one.
+//  (2) two triangles built to cross exactly through the origin like an X -
+//      one lying in the z=0 plane (A0=(-2,-2,0), A1=(2,-2,0), A2=(0,2,0)),
+//      the other in the y=0 plane (B0=(-2,0,-2), B1=(2,0,-2), B2=(0,0,2)) -
+//      share no vertex and must be reported. Both triangles' own crossing
+//      segments (where each meets the OTHER's plane) land at exactly the
+//      same interval, x in [-1, 1] at y=z=0 (hand-derived: on edge A0-A2,
+//      y crosses 0 at t=0.5, giving x=-1; on A1-A2 likewise x=1; B's own
+//      B0-B2/B1-B2 crossings give the identical x=-1/x=1 at z=0) - so the
+//      overlap length is exactly 2, and the tolerance boundary is exactly
+//      checked: still reported at 1.9, NOT reported at 2.0 or 2.5 ("more
+//      than tolerance", not "at least" - see FindSelfIntersections' own
+//      doc comment).
+//  (3) two triangles sharing NO vertex and not overlapping at all (one far
+//      out at (100, 100, 100)) - a true negative distinct from (1)'s
+//      vertex-sharing exclusion, since this pair has nothing to skip on.
+//  (4) two overlapping COPLANAR triangles (both in the z=0 plane) - the
+//      documented honest gap: a real overlap this method does NOT catch,
+//      because coplanar triangles have no shared cross-product line to
+//      measure an overlap along. Pinned here so a future change to that
+//      behavior is a deliberate test update, never a silent regression.
+void TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  namespace tol = dino8::kernel::tolerance;
+
+  // (1)
+  const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(3, 3);
+  Check(box.FindSelfIntersections().empty(),
+        "an ordinary closed box mesh has no self-intersections, despite many triangles sharing edges/vertices");
+
+  auto add_tri = [](Mesh& m, double ax, double ay, double az, double bx, double by, double bz, double cx, double cy,
+                     double cz) {
+    ON_Mesh& raw = m.raw();
+    const int base = raw.m_V.Count();
+    raw.m_V.Append(ON_3fPoint(ax, ay, az));
+    raw.m_V.Append(ON_3fPoint(bx, by, bz));
+    raw.m_V.Append(ON_3fPoint(cx, cy, cz));
+    ON_MeshFace f;
+    f.vi[0] = base;
+    f.vi[1] = base + 1;
+    f.vi[2] = base + 2;
+    f.vi[3] = base + 2;
+    raw.m_F.Append(f);
+  };
+
+  // (2)
+  Mesh crossing;
+  add_tri(crossing, -2, -2, 0, 2, -2, 0, 0, 2, 0);   // face 0: lies in the z = 0 plane
+  add_tri(crossing, -2, 0, -2, 2, 0, -2, 0, 0, 2);   // face 1: lies in the y = 0 plane
+  const auto hits = crossing.FindSelfIntersections(tol::kDistance);
+  Check(hits.size() == 1 && hits[0] == std::make_pair(0, 1),
+        "two triangles crossing like an X through the origin, sharing no vertex, are reported as one pair");
+  Check(crossing.FindSelfIntersections(1.9).size() == 1,
+        "the hand-derived overlap length is exactly 2 (x in [-1,1], both triangles' own crossing segments coincide) "
+        "- still reported just below it");
+  Check(crossing.FindSelfIntersections(2.0).empty() && crossing.FindSelfIntersections(2.5).empty(),
+        "...but not reported AT or above the exact overlap length itself - 'more than tolerance', not 'at least'");
+
+  // (3)
+  Mesh apart;
+  add_tri(apart, -2, -2, 0, 2, -2, 0, 0, 2, 0);
+  add_tri(apart, 100, 100, 100, 101, 100, 100, 100, 101, 100);
+  Check(apart.FindSelfIntersections().empty(),
+        "two triangles that share no vertex and don't overlap at all are correctly reported clean");
+
+  // (4)
+  Mesh coplanar;
+  add_tri(coplanar, 0, 0, 0, 4, 0, 0, 0, 4, 0);
+  add_tri(coplanar, 1, 1, 0, 5, 1, 0, 1, 5, 0);
+  Check(coplanar.FindSelfIntersections().empty(),
+        "two overlapping COPLANAR triangles are NOT reported - a documented limitation, not a silent one (see "
+        "FindSelfIntersections' own doc comment)");
+}
+
 void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -8409,6 +8622,64 @@ void TestSubDMeshRoundTripIsExactAtLevelZero() {
     for (int i = 0; i < back.raw().m_F.Count(); ++i) all_quads = all_quads && back.raw().m_F[i].IsQuad();
     Check(all_quads, "...and every round-tripped face is still a genuine quad, not split into triangles");
   }
+}
+
+// SubD::FromNurbsSurface(): closes PARITY_MAP.md's subd_mesh "SubD from
+// NURBS/B-rep conversion (reverse of ToNurbsPatches)" [missing] item for
+// a single untrimmed surface. Uses the same flat P(u,v) = (u, v, 0)
+// bilinear surface TestSurfaceNormalAt() already relies on (an exact,
+// hand-derivable fixture, not approximate) so the resulting grid's exact
+// positions are known in closed form, not just plausible-looking.
+void TestSubDFromNurbsSurfaceExactOnFlatGrid() {
+  using dino8::kernel::Interval;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  const Interval du = flat.Domain(0), dv = flat.Domain(1);
+
+  bool threw = false;
+  try {
+    (void)SubD::FromNurbsSurface(flat, 0, 4);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SubD::FromNurbsSurface throws std::invalid_argument when u_divisions < 1");
+
+  const SubD subd = SubD::FromNurbsSurface(flat, 4, 4);
+  Check(subd.VertexCount() == 25 && subd.FaceCount() == 16,
+        "a 4x4-division conversion yields a 5x5 vertex grid of 16 quad faces");
+
+  const Mesh mesh = subd.ToApproximateMesh();
+  Check(mesh.VertexCount() == 25 && mesh.FaceCount() == 16,
+        "the level-0 control net matches the SubD's own topology counts exactly");
+  bool all_quads = true;
+  for (int i = 0; i < mesh.raw().m_F.Count(); ++i) all_quads = all_quads && mesh.raw().m_F[i].IsQuad();
+  Check(all_quads, "every emitted face is a genuine quad, not a triangulated cell");
+
+  int matched = 0;
+  for (int i = 0; i <= 4; ++i) {
+    const double u = du.min + (du.max - du.min) * (i / 4.0);
+    for (int j = 0; j <= 4; ++j) {
+      const double v = dv.min + (dv.max - dv.min) * (j / 4.0);
+      const Point3d expected(u, v, 0.0);  // P(u, v) = (u, v, 0) exactly, for this fixture
+      for (int k = 0; k < mesh.raw().m_V.Count(); ++k) {
+        if (expected.DistanceTo(Point3d(mesh.raw().m_V[k])) < 1e-6) {
+          ++matched;
+          break;
+        }
+      }
+    }
+  }
+  Check(matched == 25, "every one of the 25 grid points lands exactly on the flat surface's own P(u,v) = (u, v, 0)");
 }
 
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
@@ -24941,6 +25212,266 @@ void TestSweep1AndPipe() {
   Check(Throws([&] { Brep::Sweep1(square, rail, 1); }), "fewer than 2 stations throws");
 }
 
+void TestPipeVariable() {
+  using RP = std::pair<double, double>;
+
+  // Exactly 2 radius points spanning the whole straight rail: the exact
+  // rational cone frustum (Loft()/Sweep1()'s own 2-section ruled
+  // shortcut), the same closed form ExtrudeTapered()'s circular case
+  // already verifies elsewhere in this file.
+  {
+    const double r0 = 2.0, r1 = 1.0, L = 5.0;
+    const NurbsCurve line = Polyline({P(0, 0, 0), P(0, 0, L)});
+    const Brep frustum = Brep::PipeVariable(line, {RP{0.0, r0}, RP{1.0, r1}});
+    CheckSolidTopology(frustum, 3, "variable pipe: straight rail, 2 end points");
+    Check(FaceSurface(frustum, 0).DegreeV() == 1, "straight 2-point taper's wall is ruled (degree 1) along the rail");
+    const double exact = (M_PI * L / 3.0) * (r0 * r0 + r0 * r1 + r1 * r1);
+    CheckClosedMeshVolume(frustum, 64, 4, exact, 0.003, "variable pipe straight 2-point cone frustum");
+    // Every cross-section is exactly circular at radius linearly
+    // interpolated between r0 and r1 - checked at both ends, where the
+    // wall's own domain boundary is exactly the input circle regardless
+    // of any interpolation elsewhere.
+    const NurbsSurface wall = FaceSurface(frustum, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    double worst0 = 0.0, worst1 = 0.0;
+    for (int j = 0; j <= 16; ++j) {
+      worst0 = std::max(worst0, std::abs(wall.PointAt(du.ParameterAt(j / 16.0), dv.Min()).DistanceTo(P(0, 0, 0)) - r0));
+      worst1 = std::max(worst1, std::abs(wall.PointAt(du.ParameterAt(j / 16.0), dv.Max()).DistanceTo(P(0, 0, L)) - r1));
+    }
+    Check(worst0 < 1e-9 && worst1 < 1e-9, "the 2-point taper's end circles are exactly r0 and r1");
+  }
+
+  // 3 radius points on a straight rail (a symmetric bulge): not exactly
+  // representable by a single ruled surface, so this takes the general
+  // interpolating-skin path. Cross-checked two ways: (1) the wall's own
+  // domain-boundary sections are still exactly r0/r_last (guaranteed by
+  // the skin's own "reproduces every input section exactly" contract,
+  // independent of the interpolation elsewhere), and (2) the tessellated
+  // volume against the closed-form volume of the TRUE piecewise-linear-
+  // radius solid this profile describes (two stacked cone frustums,
+  // (pi/3) sum of L_i (r_i^2 + r_i r_{i+1} + r_{i+1}^2)), which this
+  // interpolates rather than reproduces exactly - measured 0.3% at 96
+  // stations, so 1% is a real bound, not a loose one.
+  {
+    const double r0 = 1.0, rm = 2.5, r1 = 1.0, L = 6.0;
+    const NurbsCurve line = Polyline({P(0, 0, 0), P(0, 0, L)});
+    const Brep bulge = Brep::PipeVariable(line, {RP{0.0, r0}, RP{0.5, rm}, RP{1.0, r1}}, true, 96);
+    CheckSolidTopology(bulge, 3, "variable pipe: straight rail, 3-point bulge");
+    const NurbsSurface wall = FaceSurface(bulge, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    double worst0 = 0.0, worst1 = 0.0;
+    for (int j = 0; j <= 16; ++j) {
+      worst0 = std::max(worst0, std::abs(wall.PointAt(du.ParameterAt(j / 16.0), dv.Min()).DistanceTo(P(0, 0, 0)) - r0));
+      worst1 = std::max(worst1, std::abs(wall.PointAt(du.ParameterAt(j / 16.0), dv.Max()).DistanceTo(P(0, 0, L)) - r1));
+    }
+    Check(worst0 < 1e-9 && worst1 < 1e-9, "the 3-point bulge's end circles are still exactly r0 and r1");
+    const double half = L / 2.0;
+    const double exact = (M_PI * half / 3.0) * (r0 * r0 + r0 * rm + rm * rm) + (M_PI * half / 3.0) * (rm * rm + rm * r1 + r1 * r1);
+    CheckClosedMeshVolume(bulge, 64, 8, exact, 0.01, "variable pipe straight 3-point bulge vs. stacked-frustum reference");
+  }
+
+  // Open rail with caps: the two flat end discs must have the specified
+  // end radii (r0 at the start, r1 at the end), exactly as Pipe()'s own
+  // capped cylinder does for a constant radius.
+  {
+    const double r0 = 1.5, r1 = 0.5, L = 4.0;
+    const NurbsCurve line = Polyline({P(0, 0, 0), P(0, 0, L)});
+    const Brep capped = Brep::PipeVariable(line, {RP{0.0, r0}, RP{1.0, r1}}, /*cap=*/true);
+    CheckSolidTopology(capped, 3, "variable pipe with caps");
+    const double exact = (M_PI * L / 3.0) * (r0 * r0 + r0 * r1 + r1 * r1);
+    CheckClosedMeshVolume(capped, 64, 4, exact, 0.003, "capped variable pipe volume");
+  }
+
+  // Closed rail: first and last radius must match (the seam), a varying
+  // middle radius is allowed. Volume reference: the exact volume of the
+  // continuum solid this piecewise-linear-in-angle radius profile
+  // describes is the generalized Pappus integral 2 pi^2 R * INT r(f)^2 df
+  // (same derivation Pipe()'s own constant-radius closed-ring test uses,
+  // 2 pi^2 R r^2, generalized to a varying r) - measured 0.6% at 64
+  // stations, so 2% is a real, not a loose, bound.
+  {
+    const double R = 4.0, r0 = 1.0, rm = 2.0;
+    const NurbsCurve ring = Circle(P(0, 0, 0), Vector3d(0, 0, 1), R);
+    const Brep torus = Brep::PipeVariable(ring, {RP{0.0, r0}, RP{0.5, rm}, RP{1.0, r0}}, true, 64);
+    CheckSolidTopology(torus, 1, "variable pipe: closed rail");
+    Check(FaceSurface(torus, 0).IsClosed(0) && FaceSurface(torus, 0).IsClosed(1), "closed-rail variable pipe is closed in both directions");
+    // INT_0^1 r(f)^2 df over 2 symmetric linear segments, each length 0.5.
+    const double seg = 0.5 * (r0 * r0 + r0 * rm + rm * rm) / 3.0;
+    const double exact = 2.0 * M_PI * M_PI * R * (seg + seg);
+    const double measured = torus.TessellateToClosedMesh(48, 96).Volume();
+    Check(std::abs(measured - exact) / exact < 0.02, "closed variable pipe volume within 2% of the generalized-Pappus reference");
+    Check(torus.TessellateToClosedMesh(12, 5).IsClosedManifold(), "closed variable pipe is a closed manifold at (12, 5)");
+  }
+
+  // Negative controls.
+  const NurbsCurve line = Polyline({P(0, 0, 0), P(0, 0, 5)});
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.0, 1.0}}); }), "fewer than 2 radius points throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.5, 1.0}, RP{0.5, 2.0}}); }), "non-increasing t throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.5, 1.0}, RP{0.2, 2.0}}); }), "decreasing t throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{-0.1, 1.0}, RP{1.0, 2.0}}); }), "t below 0 throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.0, 1.0}, RP{1.1, 2.0}}); }), "t above 1 throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.0, 0.0}, RP{1.0, 1.0}}); }), "non-positive radius throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.0, 1.0}, RP{1.0, -1.0}}); }), "negative radius throws");
+  Check(Throws([&] { Brep::PipeVariable(line, {RP{0.0, 1.0}, RP{1.0, 2.0}}, true, 1); }), "fewer than 2 stations throws");
+  Check(Throws([&] {
+          Brep::PipeVariable(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 4.0), {RP{0.0, 1.0}, RP{1.0, 2.0}}, true, 32);
+        }),
+        "closed rail with mismatched seam radii throws");
+}
+
+void TestExtrudeTaperedCircularProfileIsExactConeFrustum() {
+  // Shrinking: r0=2 -> r1=1 over height 3, tan(theta) = (r0 - r1) / h.
+  const double r0 = 2.0, r1 = 1.0, h = 3.0;
+  const double theta = std::atan((r0 - r1) / h);
+  const Brep frustum = Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), r0), Vector3d(0, 0, h), theta);
+  CheckSolidTopology(frustum, 3, "drafted circle (shrinking)");
+  Check(FaceSurface(frustum, 0).IsCone(1e-9), "a drafted circular extrusion's wall is an exact NURBS cone");
+  const double exact = M_PI * h / 3.0 * (r0 * r0 + r0 * r1 + r1 * r1);
+  CheckClosedMeshVolume(frustum, 64, 4, exact, 0.003, "drafted circle cone frustum (shrinking)");
+  // The top circle's actual radius must be exactly r1 (not just the
+  // overall volume matching by coincidence).
+  {
+    const NurbsSurface wall = FaceSurface(frustum, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    double worst = 0.0;
+    for (int j = 0; j <= 32; ++j) {
+      const Point3d p = wall.PointAt(du.ParameterAt(j / 32.0), dv.Max());
+      worst = std::max(worst, std::fabs(std::hypot(p.x, p.y) - r1));
+    }
+    Check(worst < 1e-9, "the top section's radius is exactly r1 = r0 - h*tan(draft_angle)");
+  }
+
+  // Flaring: a NEGATIVE draft angle grows the profile - r0=1 -> r1=2 over h=2.
+  const double g0 = 1.0, g1 = 2.0, gh = 2.0;
+  const double gtheta = std::atan((g0 - g1) / gh);
+  Check(gtheta < 0.0, "a growing draft angle is negative under this function's own convention");
+  const Brep flare = Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), g0), Vector3d(0, 0, gh), gtheta);
+  CheckSolidTopology(flare, 3, "drafted circle (flaring)");
+  const double exact_flare = M_PI * gh / 3.0 * (g0 * g0 + g0 * g1 + g1 * g1);
+  CheckClosedMeshVolume(flare, 64, 4, exact_flare, 0.003, "drafted circle cone frustum (flaring)");
+
+  // A draft angle along -direction gives the SAME solid: the sign
+  // convention is anchored to `direction` itself, not to whichever way
+  // IsPlanar() happened to fit the profile's own plane normal.
+  const Brep frustum_neg_dir = Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, -1), r0), Vector3d(0, 0, h), theta);
+  // Compared against the OTHER tessellated mesh (not the analytic
+  // `exact`, whose own ~0.16% chord-error gap swamps a tight tolerance):
+  // both are the same inscribed-polygon approximation of the identical
+  // exact cone, so their volumes are bit-for-bit identical, confirmed
+  // directly (a diagnostic run measured 0.000e+00 difference).
+  Check(std::abs(frustum_neg_dir.TessellateToClosedMesh(64, 4).Volume() - frustum.TessellateToClosedMesh(64, 4).Volume()) < 1e-9,
+        "the same draft_angle gives the same shrinking frustum regardless of the circle's own winding/plane sign");
+
+  // Zero draft angle delegates to Extrude() itself - same volume as the
+  // plain cylinder, exactly.
+  const Brep straight = Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.5), Vector3d(0, 0, 4), 0.0);
+  const Brep plain = Brep::Extrude(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.5), Vector3d(0, 0, 4));
+  CheckSolidTopology(straight, 3, "zero draft angle");
+  Check(std::abs(straight.TessellateToClosedMesh(64, 4).Volume() - plain.TessellateToClosedMesh(64, 4).Volume()) < 1e-9,
+        "zero draft angle gives the exact same volume as plain Extrude()");
+
+  // Negative controls.
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 10), std::atan(1.0)); }),
+        "a draft steep enough to shrink the circle to zero radius before the top throws");
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 1), M_PI / 2); }),
+        "draft_angle == pi/2 throws (tan undefined)");
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 1), -M_PI / 2); }),
+        "draft_angle == -pi/2 throws");
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(1, 0, 0), 0.1); }),
+        "direction lying flat in the profile's own plane throws");
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(1, 0, 3), 0.1); }),
+        "a genuinely oblique (non-flat, non-parallel) direction throws too");
+  Check(Throws([&] { Brep::ExtrudeTapered(Circle(P(0, 0, 0), Vector3d(0, 0, 1), 1.0), Vector3d(0, 0, 0), 0.1); }),
+        "zero direction throws");
+}
+
+void TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum() {
+  const NurbsCurve square = Polyline({P(-1, -1, 0), P(1, -1, 0), P(1, 1, 0), P(-1, 1, 0), P(-1, -1, 0)});
+
+  // Shrinking: half-width 1 -> 0.5 over height 1 (in-plane offset 0.5,
+  // tan(theta) = 0.5).
+  {
+    const double theta = std::atan(0.5);
+    const Brep box = Brep::ExtrudeTapered(square, Vector3d(0, 0, 1), theta);
+    CheckSolidTopology(box, 3, "drafted square (shrinking)");
+    Check(FaceSurface(box, 0).DegreeU() == 1 && FaceSurface(box, 0).DegreeV() == 1, "wall is degree (1, 1)");
+    // Isotropic linear taper (both dimensions shrink by the same
+    // fraction) - the exact frustum-of-pyramid closed form:
+    // V = A0 * h * (k0^2 + k0*k1 + k1^2) / 3, A0 = 4, k0 = 1, k1 = 0.5.
+    const double exact = 4.0 * 1.0 * (1.0 + 0.5 + 0.25) / 3.0;  // 7/3
+    // Every side wall is a genuine PLANAR trapezoid here (isotropic
+    // scaling + translation only along the taper axis keeps the 4
+    // corners of each side face coplanar), so - exactly like the plain
+    // rectangular prism test above - the tessellated volume is exact at
+    // any division, not merely a converging approximation.
+    CheckClosedMeshVolume(box, 8, 8, exact, 1e-9, "drafted square (shrinking) is an exact planar frustum");
+    // At (12, 5) too - looser than the (8, 8) check above only because
+    // `theta` itself round-tripped through atan()/tan() in this TEST
+    // (not in ExtrudeTapered() itself), which is not bit-exact; measured
+    // 1.55e-8 directly. A division not a multiple of the profile's own
+    // 4 segments (e.g. (5, 12) - swapped from what's checked here) hits
+    // a real, PRE-EXISTING tessellation quirk shared by plain Extrude()
+    // itself (confirmed directly: TestExtrudeRectangleIsExactCappedSolid's
+    // own untapered 2x3x5 box is ALSO off by exactly -6 of 30, 20%, at
+    // (5, 5)/(5, 12) - a `CollectPlainQuadFaces()`/asymmetric-seam-pass
+    // matter unrelated to ExtrudeTapered, which is why that existing
+    // test - and CheckClosedMeshVolume()'s own asymmetric checks above -
+    // never assert volume at a division the profile's own segment count
+    // doesn't divide evenly; this one deliberately keeps to (12, 5) for
+    // the same reason).
+    Check(std::abs(box.TessellateToClosedMesh(12, 5).Volume() - exact) < 1e-6, "...and at an asymmetric (12, 5) division too");
+    // The top corners are exactly the analytically-offset square corners.
+    const NurbsSurface wall = FaceSurface(box, 0);
+    const ON_Interval du = wall.raw().Domain(0), dv = wall.raw().Domain(1);
+    const std::vector<Point3d> expect_top = {P(-0.5, -0.5, 1), P(0.5, -0.5, 1), P(0.5, 0.5, 1), P(-0.5, 0.5, 1)};
+    for (const Point3d& target : expect_top) {
+      double best = 1e9;
+      for (int j = 0; j <= 4; ++j) best = std::min(best, wall.PointAt(du.ParameterAt(j / 4.0), dv.Max()).DistanceTo(target));
+      Check(best < 1e-9, "a top corner is exactly the analytically-offset square corner");
+    }
+  }
+
+  // Flaring: half-width 1 -> 1.5 over height 1 (negative draft_angle).
+  {
+    const double theta = std::atan(-0.5);
+    const Brep box = Brep::ExtrudeTapered(square, Vector3d(0, 0, 1), theta);
+    CheckSolidTopology(box, 3, "drafted square (flaring)");
+    const double exact = 4.0 * 1.0 * (1.0 + 1.5 + 2.25) / 3.0;  // 19/3
+    CheckClosedMeshVolume(box, 8, 8, exact, 1e-9, "drafted square (flaring) is also an exact planar frustum");
+  }
+
+  // Open convex polyline (a 2-segment chain, no caps): each endpoint
+  // offsets exactly perpendicular to its own single adjacent edge.
+  {
+    const NurbsCurve chain = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 2, 0)});
+    const double grow = 0.3, L = 1.0;
+    const double theta = std::atan(-grow / L);  // negative draft_angle grows
+    const Brep wall = Brep::ExtrudeTapered(chain, Vector3d(0, 0, L), theta, /*cap=*/false);
+    Check(wall.FaceCount() == 1, "open profile: one wall face, no caps");
+    const NurbsSurface s = FaceSurface(wall, 0);
+    const ON_Interval du = s.raw().Domain(0), dv = s.raw().Domain(1);
+    // edge0 = (0,0,0)->(2,0,0): offset_dir = edge0 x +z = (0,-1,0) (CCW
+    // chain winds counter-clockwise about +z, so its own "grow" side for
+    // this convex corner is -y here); the first vertex only has that one
+    // adjacent edge, so it moves by exactly `grow` along it.
+    const double best0 = std::min(s.PointAt(du.Min(), dv.Max()).DistanceTo(P(0, -grow, L)),
+                                  s.PointAt(du.Max(), dv.Max()).DistanceTo(P(0, -grow, L)));
+    Check(best0 < 1e-9, "the open chain's first endpoint offsets by exactly `grow` perpendicular to its own edge");
+  }
+
+  // Negative controls.
+  const NurbsCurve cee = Polyline({P(0, 0, 0), P(3, 0, 0), P(3, 1, 0), P(1, 1, 0), P(1, 2, 0), P(3, 2, 0), P(3, 3, 0), P(0, 3, 0), P(0, 0, 0)});
+  Check(Throws([&] { Brep::ExtrudeTapered(cee, Vector3d(0, 0, 1), std::atan(0.1)); }),
+        "a non-convex (C-shaped) multi-segment profile throws");
+  Check(Throws([&] { Brep::ExtrudeTapered(square, Vector3d(0, 0, 1), std::atan(2.0)); }),
+        "a draft distance exceeding the square's own inradius throws (an edge would invert)");
+  Check(Throws([&] { Brep::ExtrudeTapered(square, Vector3d(0, 0, 0), std::atan(0.1)); }), "zero direction throws");
+  const NurbsCurve skew = Polyline({P(0, 0, 0), P(2, 0, 0), P(2, 3, 1), P(0, 3, 0), P(0, 0, 0)});
+  Check(Throws([&] { Brep::ExtrudeTapered(skew, Vector3d(0, 0, 5), std::atan(0.1)); }), "a non-planar profile throws");
+  Check(Throws([&] { Brep::ExtrudeTapered(square, Vector3d(1, 0, 0), std::atan(0.1)); }),
+        "direction in the profile's own plane throws");
+}
+
 }  // namespace sweep_tests
 
 // ---------------------------------------------------------------------------
@@ -25620,6 +26151,45 @@ void TestSurfaceCoonsPatchAutoOrientsReversedBoundaries() {
       diff = std::max(diff, reference.PointAt(u, v).DistanceTo(reoriented.PointAt(ru, rv)));
     }
   Check(diff < 1e-9, "CoonsPatch built from reversed inputs is geometrically identical to the one built from correctly-oriented inputs");
+}
+
+void TestSurfaceCoonsPatchAutoOrientsAllThreeNonReferenceCurves() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const NurbsCurve bottom = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(2, 0, 0.5), Point3d(4, 0, 0)}, 2);
+  const NurbsCurve top = NurbsCurve::FromControlPoints({Point3d(0, 4, 1), Point3d(2, 4, 1.5), Point3d(4, 4, 1)}, 2);
+  const NurbsCurve left = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 4, 1)}, 1);
+  const NurbsCurve right = NurbsCurve::FromControlPoints({Point3d(4, 0, 0), Point3d(4, 4, 1)}, 1);
+  NurbsSurface reference;
+  Check(NurbsSurface::CoonsPatch(bottom, top, left, right, reference) == Result::Ok,
+        "CoonsPatch left-orientation setup: the correctly-oriented reference patch succeeds");
+
+  // left reversed too (on top of top/right already reversed) - the
+  // scenario a loop-chaining caller like NetworkSrf genuinely produces,
+  // since which of a loop's 4 curves points "forward" depends only on
+  // which curve happened to be chained first.
+  NurbsCurve top_rev = top, left_rev = left, right_rev = right;
+  top_rev.Reverse();
+  left_rev.Reverse();
+  right_rev.Reverse();
+  NurbsSurface reoriented;
+  double gap = -1.0;
+  Check(NurbsSurface::CoonsPatch(bottom, top_rev, left_rev, right_rev, reoriented, 1e-6, &gap) == Result::Ok,
+        "CoonsPatch succeeds when top, left AND right are all handed in reversed");
+  Check(gap < 1e-9, "CoonsPatch's 8-way auto-orientation search still finds an essentially-zero corner gap");
+  double diff = 0.0;
+  for (int i = 0; i <= 10; ++i)
+    for (int j = 0; j <= 10; ++j) {
+      const double u = reference.Domain(0).min + (reference.Domain(0).max - reference.Domain(0).min) * i / 10.0;
+      const double v = reference.Domain(1).min + (reference.Domain(1).max - reference.Domain(1).min) * j / 10.0;
+      const double ru = reoriented.Domain(0).min + (reoriented.Domain(0).max - reoriented.Domain(0).min) * i / 10.0;
+      const double rv = reoriented.Domain(1).min + (reoriented.Domain(1).max - reoriented.Domain(1).min) * j / 10.0;
+      diff = std::max(diff, reference.PointAt(u, v).DistanceTo(reoriented.PointAt(ru, rv)));
+    }
+  Check(diff < 1e-9, "CoonsPatch built with all 3 non-reference curves reversed is geometrically identical to the reference build");
 }
 
 void TestSurfaceCoonsPatchRefusesNonClosingBoundaries() {
@@ -26443,6 +27013,8 @@ int main() {
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
   TestModelAddPointCloudRoundTrips();
+  TestModelAddObjectNameRoundTrips();
+  TestModelAddLayerRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
@@ -26507,6 +27079,7 @@ int main() {
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
   TestSubDIsValid();
   TestSubDMeshRoundTripIsExactAtLevelZero();
+  TestSubDFromNurbsSurfaceExactOnFlatGrid();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
@@ -26744,12 +27317,15 @@ int main() {
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
   TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
+  TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
   sweep_tests::TestExtrudeRectangleIsExactCappedSolid();
   sweep_tests::TestRevolveExactSolidsAndCaps();
   sweep_tests::TestLoftInterpolatesSectionsExactly();
   sweep_tests::TestSweep1AndPipe();
+  sweep_tests::TestExtrudeTaperedCircularProfileIsExactConeFrustum();
+  sweep_tests::TestExtrudeTaperedConvexPolygonIsExactPlanarFrustum();
 
   TestSurfaceUnrollDevelopablePlaneIsExactIsometry();
   TestSurfaceUnrollDevelopableCylinderPreservesHeightAndCircumferenceExactly();
@@ -26759,6 +27335,7 @@ int main() {
 
   TestSurfaceCoonsPatchReproducesFourCurvedBoundariesExactly();
   TestSurfaceCoonsPatchAutoOrientsReversedBoundaries();
+  TestSurfaceCoonsPatchAutoOrientsAllThreeNonReferenceCurves();
   TestSurfaceCoonsPatchRefusesNonClosingBoundaries();
 
   TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere();
@@ -26783,6 +27360,7 @@ int main() {
   TestCurveParameterAtArcLengthStaysInsideDomain();
   TestSurfaceCurvatureAtIsScaleInvariant();
   TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth();
+  sweep_tests::TestPipeVariable();
   ON::End();
 
   if (g_failures > 0) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <utility>
 #include <vector>
 
 #include <opennurbs.h>
@@ -233,6 +234,72 @@ class Brep {
   // shaped profile, or a direction lying in the profile plane.
   static Brep Extrude(const NurbsCurve& profile, Vector3d direction, bool cap = true);
 
+  // ExtrudeTapered: Extrude() with a draft angle - the wall leans instead
+  // of running straight along `direction`. `direction` must be parallel
+  // (either sign) to `profile`'s own fitted plane normal, within 1e-9 of
+  // dot-product alignment - an OBLIQUE draft direction would need the
+  // in-plane offset and the extrusion translation decomposed separately,
+  // which this does not attempt and refuses (std::invalid_argument)
+  // instead of guessing. `draft_angle` (radians, strictly in
+  // (-pi/2, pi/2); 0 delegates to Extrude() itself, exactly) is measured
+  // from `direction`: a POSITIVE angle shrinks the profile moving along
+  // +direction (the standard mold-release convention: walls lean in
+  // toward the part as you move away from the parting line - each point
+  // moves laterally by `L * tan(draft_angle)`, L = |direction|, measured
+  // perpendicular to the profile's own boundary there, so the wall
+  // literally makes angle `draft_angle` with `direction`); negative
+  // flares it outward.
+  //
+  // The top section is built by offsetting `profile` in its own plane by
+  // `-L * tan(draft_angle)` (NurbsCurve::OffsetInPlane()'s own sign
+  // convention: positive distance always GROWS there) and translating it
+  // by `direction`, then Loft()-ing the two sections at degree 1 - the
+  // exact ruled wall between them, with Loft()'s own cap/orientation
+  // logic applying unchanged. The offset itself has three honestly
+  // different fidelity levels, matching the shapes it is actually exact
+  // for:
+  //   - A LINE or a CIRCLE/ARC profile: OffsetInPlane()'s own EXACT case
+  //     (a parallel line; a concentric arc/circle of radius
+  //     `radius -/+ L*tan(draft_angle)`) - a drafted circular boss/hole
+  //     is therefore an exact NURBS cone frustum wall, volume
+  //     `(pi*L/3)(r0^2 + r0*r1 + r1^2)` up to tessellation chord error,
+  //     the same closed form Loft()'s own two-circle case already
+  //     verifies.
+  //   - A CONVEX multi-segment polyline profile (degree 1, not reducible
+  //     to a single line or arc): this kernel's own exact planar
+  //     miter-join offset (every vertex moved to the intersection of its
+  //     two adjacent edges' offset copies, in closed form - see
+  //     OffsetConvexPolyline() in sweep.cpp), NOT OffsetInPlane()'s own
+  //     general per-sample least-squares refit, which cannot be exact for
+  //     a sharp corner (it blurs one) and, for a CLOSED polygon whose
+  //     seam sits exactly at a corner, does not even reproduce a closed
+  //     curve (the tangent - and so the offset direction - genuinely
+  //     differs on the two sides of that corner, splitting the fitted
+  //     seam into two different points). Restricted to CONVEX input
+  //     (checked; throws otherwise) because that is exactly the case a
+  //     cheap, EXACT validity check exists for (every offset edge stays a
+  //     positive multiple of its own original direction - proof in
+  //     OffsetConvexPolyline()'s own comment); a concave polygon's offset
+  //     can self-intersect far from any single corner, the general
+  //     polygon-offset self-intersection-removal problem this kernel
+  //     discloses elsewhere as a known gap (PARITY_MAP.md, "Offsetting,
+  //     shelling, thickening" - "Offset self-intersection / invalid-loop
+  //     removal"), and is refused here rather than silently risking a
+  //     folded wall.
+  //   - Any other planar profile: falls through to OffsetInPlane()'s own
+  //     general least-squares branch, with its own documented exactness/
+  //     approximation split and its own curvature-based self-intersection
+  //     guard - the same honesty this kernel already ships for a general
+  //     curve offset, not a new limitation invented for this function.
+  // Throws std::invalid_argument for a non-finite or out-of-range
+  // `draft_angle`, a non-planar profile, an oblique `direction`, a
+  // non-convex multi-segment polyline profile, or a draft/height
+  // combination whose offset would self-intersect or fold through itself
+  // (surfaced by whichever of the three paths above hit it) - propagated
+  // with a message naming which one refused and why, never silently
+  // built anyway.
+  static Brep ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double draft_angle, bool cap = true);
+
   // Revolve: `profile` spun about the axis through `axis_point` along
   // `axis_direction` by `angle` radians (0 < angle <= 2*pi; exactly
   // 2*pi, within 1e-12, is a full revolution). The profile must lie in a
@@ -308,6 +375,52 @@ class Brep {
   // rail gives a closed tube. Throws std::invalid_argument for a
   // non-positive radius.
   static Brep Pipe(const NurbsCurve& rail, double radius, bool cap = true, int stations = 32);
+
+  // PipeVariable: like Pipe(), but the radius varies along the rail per
+  // `radius_points` - (t, radius) pairs where `t` is the fraction, in
+  // [0, 1], of the rail's own arc length from its start (the same
+  // "arc-length parametrization" convention NurbsCurve::DivideByCount()
+  // and Sweep1()'s equal-arc-length stations already use), interpolated
+  // PIECEWISE LINEARLY between consecutive points and held flat at the
+  // nearest endpoint's radius outside the given range - so a caller
+  // need not place a point at t = 0 or t = 1. Requires at least 2
+  // points, strictly increasing in `t`, each `t` in [0, 1] and each
+  // radius positive; throws std::invalid_argument otherwise (naming
+  // which point failed).
+  //
+  // Every radius point's own arc-length fraction is inserted as an
+  // exact rotation-minimizing-frame station, in addition to `stations`
+  // stations spaced evenly in arc length, so the built tube's radius
+  // matches every given point exactly there, not only approximately
+  // near it (two fractions closer than 1e-9 collapse to one station).
+  // As with Sweep1() (whose rigid-frame-transport machinery this
+  // shares - only the per-station radius differs, so this does not
+  // delegate to Pipe()/Sweep1() the way Pipe() delegates to Sweep1()),
+  // the wall is a global interpolating skin through these circle
+  // stations (degree min(3, station_count - 1)): exact circular cross-
+  // sections AT every station, a smooth interpolant BETWEEN them - the
+  // (t, radius) pairs describe a literally piecewise-linear radius
+  // profile, which this only approximates between stations, tighter as
+  // `stations` grows.
+  //
+  // Exact case: exactly 2 radius points spanning the whole rail (t = 0
+  // and t = 1) on a STRAIGHT rail is the exact rational CONE FRUSTUM
+  // wall - the degree-1 ruled surface between the two end circles
+  // (Loft()'s own 2-section shortcut, Sweep1()'s own straight-rail
+  // shortcut), `stations` irrelevant, exactly as it is for Sweep1()
+  // along a straight rail.
+  //
+  // A CLOSED rail's tube must meet itself at the seam, so
+  // `radius_points`'s first and last radius must be equal (within
+  // 1e-9 * rail scale) - throws otherwise rather than silently
+  // producing a mismatched step where the tube wraps around.
+  //
+  // Caps as Pipe() (flat end discs on an open rail when `cap`; a closed
+  // rail has no ends and ignores `cap`). Throws std::invalid_argument
+  // for the `radius_points` violations above, `stations` < 2, or a
+  // degenerate (zero-length or zero-tangent) rail.
+  static Brep PipeVariable(const NurbsCurve& rail, const std::vector<std::pair<double, double>>& radius_points,
+                           bool cap = true, int stations = 32);
 
   int FaceCount() const;
 

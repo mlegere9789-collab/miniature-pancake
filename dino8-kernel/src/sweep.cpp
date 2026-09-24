@@ -1076,6 +1076,136 @@ ON_Xform FrameToFrame(const Frame& from, const Frame& to) {
 
 }  // namespace
 
+namespace {
+
+// Exact, closed-form in-plane offset of a CONVEX degree-1 polyline (open
+// or closed, non-rational, at least 3 distinct vertices, not reducible to
+// a single line or arc - callers filter for that) by `distance`, along
+// the same "edge tangent x plane.zaxis" convention NurbsCurve::
+// OffsetInPlane()'s own Line/Arc cases use (distance > 0 grows).
+//
+// Every vertex gets the exact planar MITER-JOIN point: for the two unit
+// offset directions n0 (incoming edge) and n1 (outgoing edge) meeting at
+// a vertex,
+//     V' = V + distance * (n0 + n1) / (1 + n0 . n1)
+// - the standard closed-form polygon-offset miter point, derivable
+// directly: the bisector of n0 and n1 makes half-angle theta/2 with
+// each, where cos(theta) = n0 . n1; |n0 + n1| = 2 cos(theta/2) (both
+// unit vectors); and reaching perpendicular distance `distance` from
+// EACH edge along that bisector needs a further 1 / cos(theta/2) - the
+// two factors combine to 1 / (2 cos^2(theta/2)) = 1 / (1 + cos(theta)) =
+// 1 / (1 + n0 . n1). An open polyline's two end vertices have only one
+// adjacent edge and just translate by `distance * n` along it - exactly
+// OffsetInPlane()'s own Line case.
+//
+// Deliberately restricted to CONVEX input (checked here first; throws
+// otherwise) - the same scope this kernel's polygon machinery already
+// draws elsewhere (PlanCap()'s star-shaped-only cap above, fillet.h's
+// "concave/degenerate edges are out of scope"). The restriction earns
+// something concrete in return: for a convex polygon offset uniformly, a
+// cheap and EXACT sufficient validity check exists and is applied
+// unconditionally below - every offset edge must stay a POSITIVE
+// multiple of its own original direction. That this is sufficient is a
+// direct consequence of convexity, not merely plausible: walking a
+// convex polygon's edges in order turns monotonically in ONE angular
+// direction by a total of exactly 2*pi; each edge's own supporting line
+// moves outward (grow) or inward (shrink) by the same `distance` without
+// changing its DIRECTION (a translated line is still parallel to
+// itself), so the new edges still turn monotonically the same way by the
+// same total 2*pi PROVIDED none of them inverted - which is exactly what
+// the check confirms. A monotonically-turning closed polygon with no
+// inverted edge is convex and simple by construction (it cannot cross
+// itself: crossing would require an edge to double back, i.e. invert,
+// somewhere). A general (possibly concave) polygon has no such
+// guarantee - its offset can self-intersect far from any single corner -
+// which is exactly the "Offset self-intersection / invalid-loop removal"
+// gap this kernel discloses in PARITY_MAP.md ("Offsetting, shelling,
+// thickening"); that harder problem is not attempted here.
+ON_NurbsCurve OffsetConvexPolyline(const ON_NurbsCurve& c, const ON_Plane& plane, double distance,
+                                   const char* caller) {
+  const bool closed = c.IsClosed();
+  const int cv_count = c.CVCount();
+  const int vcount = closed ? cv_count - 1 : cv_count;
+  if (vcount < 3) Internal(caller, "OffsetConvexPolyline needs at least 3 distinct vertices");
+  std::vector<ON_3dPoint> v(static_cast<size_t>(vcount));
+  for (int i = 0; i < vcount; ++i) v[static_cast<size_t>(i)] = EuclideanCV(c, i);
+
+  const int edge_count = closed ? vcount : vcount - 1;
+  std::vector<ON_3dVector> edir(static_cast<size_t>(edge_count)), ndir(static_cast<size_t>(edge_count));
+  for (int i = 0; i < edge_count; ++i) {
+    ON_3dVector d = v[static_cast<size_t>((i + 1) % vcount)] - v[static_cast<size_t>(i)];
+    if (!d.Unitize()) Fail(caller, "the profile has a zero-length edge");
+    edir[static_cast<size_t>(i)] = d;
+    ON_3dVector n = ON_CrossProduct(d, plane.zaxis);
+    if (!n.Unitize()) Internal(caller, "degenerate edge offset direction");
+    ndir[static_cast<size_t>(i)] = n;
+  }
+
+  // Convexity: every turn (consecutive edge pair; wrapping for a closed
+  // polyline, interior vertices only for an open one) must have the SAME
+  // sign of cross product about plane.zaxis - a dimensionless quantity
+  // (both edir entries are unit vectors), so a small absolute tolerance
+  // is the right kind of tolerance here, not a scaled one. Collinear
+  // (near-zero) turns are allowed either way.
+  {
+    double sign = 0.0;
+    const int turns = closed ? edge_count : edge_count - 1;
+    for (int i = 0; i < turns; ++i) {
+      const ON_3dVector& a = edir[static_cast<size_t>(i)];
+      const ON_3dVector& b = edir[static_cast<size_t>((i + 1) % edge_count)];
+      const double cross = ON_DotProduct(ON_CrossProduct(a, b), plane.zaxis);
+      if (std::fabs(cross) <= 1e-9) continue;
+      const double this_sign = cross > 0.0 ? 1.0 : -1.0;
+      if (sign == 0.0) {
+        sign = this_sign;
+      } else if (this_sign != sign) {
+        Fail(caller,
+             "a draft-angle extrusion of a multi-segment profile needs a CONVEX polygon - this one turns both "
+             "ways (a reflex corner), which risks a self-intersecting offset this kernel does not detect/repair "
+             "for general polygons (see PARITY_MAP.md's disclosed offset self-intersection gap)");
+      }
+    }
+  }
+
+  std::vector<ON_3dPoint> out(static_cast<size_t>(vcount));
+  for (int i = 0; i < vcount; ++i) {
+    if (!closed && i == 0) {
+      out[0] = v[0] + distance * ndir[0];
+      continue;
+    }
+    if (!closed && i == vcount - 1) {
+      out[static_cast<size_t>(i)] = v[static_cast<size_t>(i)] + distance * ndir[static_cast<size_t>(edge_count - 1)];
+      continue;
+    }
+    const ON_3dVector& n0 = ndir[static_cast<size_t>((i - 1 + edge_count) % edge_count)];
+    const ON_3dVector& n1 = ndir[static_cast<size_t>(i % edge_count)];
+    const double denom = 1.0 + ON_DotProduct(n0, n1);
+    if (denom <= 1e-9) {
+      Fail(caller, "the profile folds back on itself at a near-180-degree corner - no finite miter offset exists there");
+    }
+    out[static_cast<size_t>(i)] = v[static_cast<size_t>(i)] + (distance / denom) * (n0 + n1);
+  }
+
+  // Validity: every offset edge must be a positive multiple of its own
+  // original direction (see this function's own doc comment for why
+  // that is a sufficient simplicity proof for a convex input).
+  const double length_floor = 1e-12 * CurveScale(c);
+  for (int i = 0; i < edge_count; ++i) {
+    const ON_3dVector e = out[static_cast<size_t>((i + 1) % vcount)] - out[static_cast<size_t>(i)];
+    if (ON_DotProduct(e, edir[static_cast<size_t>(i)]) <= length_floor) {
+      Fail(caller,
+           "the draft angle/height shrinks the profile past its own inradius - an edge would invert or collapse; "
+           "use a smaller draft angle, a shorter extrusion, or a larger profile");
+    }
+  }
+
+  std::vector<Point3d> pts(out.begin(), out.end());
+  if (closed) pts.push_back(out.front());
+  return NurbsCurve::FromControlPoints(pts, 1).raw();
+}
+
+}  // namespace
+
 // ---------------------------------------------------------------------------
 // Public factories.
 // ---------------------------------------------------------------------------
@@ -1106,6 +1236,59 @@ Brep Brep::Extrude(const NurbsCurve& profile, Vector3d direction, bool cap) {
   c1.Translate(direction);
   std::unique_ptr<ON_NurbsSurface> wall = RuledBetween(c, c1, 0.0, L, caller);
   return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
+}
+
+Brep Brep::ExtrudeTapered(const NurbsCurve& profile, Vector3d direction, double draft_angle, bool cap) {
+  const char* caller = "ExtrudeTapered";
+  const double L = direction.Length();
+  if (!(L > 0.0)) Fail(caller, "direction must be non-zero (its length is the extrusion distance)");
+  if (!ON_IsValid(draft_angle) || !(draft_angle > -0.5 * ON_PI && draft_angle < 0.5 * ON_PI)) {
+    Fail(caller, "draft_angle must be a finite value strictly between -pi/2 and pi/2 radians");
+  }
+  if (draft_angle == 0.0) return Extrude(profile, direction, cap);
+
+  ON_NurbsCurve c = profile.raw();
+  if (!c.IsValid()) Fail(caller, "profile is not a valid NURBS curve");
+  ClampIfPeriodic(c);
+  ON_Plane plane;
+  if (!c.IsPlanar(&plane, 1e-8 * CurveScale(c))) {
+    Fail(caller, "profile is not planar - a draft angle needs a well-defined in-plane offset direction");
+  }
+  const ON_3dVector d_unit = direction / L;
+  const double along = ON_DotProduct(plane.zaxis, d_unit);
+  if (std::fabs(along) <= 1.0 - 1e-9) {
+    Fail(caller,
+         "direction must be parallel to the profile's own plane normal - an oblique draft direction would need "
+         "the in-plane offset and the extrusion translation decomposed separately, which this does not attempt");
+  }
+
+  // Positive draft_angle SHRINKS the profile moving along +direction (see
+  // this function's own brep.h doc comment for the convention and why
+  // the sign here is the negative of L * tan(draft_angle)).
+  const double offset_distance = -L * std::tan(draft_angle);
+
+  NurbsCurve top;
+  const bool is_line_or_arc = c.IsLinear(1e-9 * CurveScale(c)) || c.IsArc(nullptr, nullptr, 1e-9 * CurveScale(c));
+  if (c.Degree() == 1 && !c.IsRational() && !is_line_or_arc) {
+    // A genuine multi-segment polyline: this kernel's own exact convex
+    // miter offset, not OffsetInPlane()'s general least-squares branch
+    // (see ExtrudeTapered()'s own brep.h doc comment for why).
+    top.raw() = OffsetConvexPolyline(c, plane, offset_distance, caller);
+  } else {
+    NurbsCurve profile_wrapped;
+    profile_wrapped.raw() = c;
+    if (profile_wrapped.OffsetInPlane(offset_distance, top) != Result::Ok) {
+      Fail(caller,
+           "the draft angle/extrusion height is too large for this profile - the offset curve would "
+           "self-intersect or fold through its own center of curvature");
+    }
+  }
+  ON_NurbsCurve top_raw = top.raw();
+  top_raw.Translate(direction);
+  NurbsCurve top_translated;
+  top_translated.raw() = top_raw;
+
+  return Loft({profile, top_translated}, 1, /*closed=*/false, cap);
 }
 
 Brep Brep::Revolve(const NurbsCurve& profile, Point3d axis_point, Vector3d axis_direction, double angle, bool cap) {
@@ -1347,6 +1530,114 @@ Brep Brep::Pipe(const NurbsCurve& rail, double radius, bool cap, int stations) {
   NurbsCurve section;
   section.raw() = nurbs_circle;
   return Sweep1(section, rail, stations, cap);
+}
+
+Brep Brep::PipeVariable(const NurbsCurve& rail_in, const std::vector<std::pair<double, double>>& radius_points,
+                        bool cap, int stations) {
+  const char* caller = "PipeVariable";
+  if (stations < 2) Fail(caller, "stations must be at least 2");
+  if (radius_points.size() < 2) Fail(caller, "at least 2 radius points are required");
+  for (size_t i = 0; i < radius_points.size(); ++i) {
+    const double t = radius_points[i].first, r = radius_points[i].second;
+    if (!std::isfinite(t) || t < 0.0 || t > 1.0) {
+      Fail(caller, "radius point " + std::to_string(i) + " has t outside [0, 1]");
+    }
+    if (!(r > 0.0)) Fail(caller, "radius point " + std::to_string(i) + " has a non-positive radius");
+    if (i > 0 && !(t > radius_points[i - 1].first)) {
+      Fail(caller, "radius points must be strictly increasing in t");
+    }
+  }
+
+  ON_NurbsCurve rail = rail_in.raw();
+  if (!rail.IsValid()) Fail(caller, "rail is not a valid NURBS curve");
+  const bool wrap = rail.IsClosed();
+  if (wrap && std::fabs(radius_points.front().second - radius_points.back().second) > 1e-9 * CurveScale(rail)) {
+    Fail(caller, "a closed rail needs equal radius at t = 0 and t = 1 (the tube must meet itself at the seam)");
+  }
+
+  const double total_length = rail_in.Length();
+  if (!(total_length > 0.0)) Fail(caller, "the rail has zero length");
+
+  // Exact case: exactly 2 radius points spanning the whole rail (t = 0 and
+  // t = 1) on a STRAIGHT rail is the exact rational cone frustum wall -
+  // Sweep1()'s own straight-rail shortcut (RuledBetween at 2 stations,
+  // degree 1), only with the two end circles built at their own radius
+  // instead of copies of one section. `stations` does not matter here,
+  // exactly as it does not for Sweep1() along a straight rail.
+  const bool exact_two_point_taper = !wrap && radius_points.size() == 2 && radius_points.front().first == 0.0 &&
+                                     radius_points.back().first == 1.0 && rail.IsLinear(1e-9 * CurveScale(rail));
+
+  std::vector<double> merged;
+  std::vector<double> params;
+  if (exact_two_point_taper) {
+    merged = {0.0, 1.0};
+    params = {rail.Domain().Min(), rail.Domain().Max()};
+  } else {
+    // Station fractions: `stations` spaced evenly in arc length, plus
+    // every radius point's own fraction so the tube's radius matches it
+    // exactly.
+    const int m_even = std::max(stations, 3);
+    std::vector<double> fractions;
+    fractions.reserve(static_cast<size_t>(m_even) + radius_points.size());
+    for (int k = 0; k < m_even; ++k) fractions.push_back(static_cast<double>(k) / static_cast<double>(m_even - 1));
+    for (const auto& rp : radius_points) fractions.push_back(rp.first);
+    std::sort(fractions.begin(), fractions.end());
+    for (double f : fractions) {
+      if (merged.empty() || f - merged.back() > 1e-9) merged.push_back(f);
+    }
+    if (wrap && merged.size() > 1 && merged.back() >= 1.0 - 1e-9) merged.pop_back();  // t=1 is t=0 on a closed rail
+    if (merged.size() < 2) Fail(caller, "too few distinct stations - the radius points are too close together");
+    params.resize(merged.size());
+    for (size_t k = 0; k < merged.size(); ++k) params[k] = rail_in.ParameterAtArcLength(merged[k] * total_length);
+  }
+  const int m = static_cast<int>(merged.size());
+  const std::vector<Frame> frames = RmfFrames(rail, params, wrap, caller);
+
+  // Piecewise-linear radius at an arbitrary arc-length fraction, held
+  // flat at the nearest endpoint's radius outside the given range.
+  auto radius_at = [&](double f) {
+    if (f <= radius_points.front().first) return radius_points.front().second;
+    if (f >= radius_points.back().first) return radius_points.back().second;
+    for (size_t i = 1; i < radius_points.size(); ++i) {
+      if (f <= radius_points[i].first) {
+        const double t0 = radius_points[i - 1].first, t1 = radius_points[i].first;
+        const double r0 = radius_points[i - 1].second, r1 = radius_points[i].second;
+        return r0 + (f - t0) / (t1 - t0) * (r1 - r0);
+      }
+    }
+    return radius_points.back().second;  // unreachable given the f >= back() check above
+  };
+
+  std::vector<ON_NurbsCurve> sections;
+  sections.reserve(static_cast<size_t>(m));
+  for (int k = 0; k < m; ++k) {
+    const Frame& f = frames[static_cast<size_t>(k)];
+    const ON_Plane plane(f.origin, f.r, f.s);
+    const ON_Circle circle(plane, radius_at(merged[static_cast<size_t>(k)]));
+    ON_NurbsCurve nc;
+    if (circle.GetNurbForm(nc) == 0) Internal(caller, "ON_Circle::GetNurbForm failed");
+    sections.push_back(std::move(nc));
+  }
+  // Every station is the same ON_Circle::GetNurbForm() representation
+  // (same degree/knots/weights, only plane and radius differ), so this is
+  // effectively a no-op - kept for the same reason Sweep1() keeps it on
+  // its own rigid copies: one code path, and a real check if that ever
+  // stops being true.
+  MakeCompatible(sections, caller);
+
+  const bool want_caps = cap && !wrap;
+  std::unique_ptr<ON_NurbsSurface> wall;
+  if (m == 2) {
+    // The exact ruled surface between the two end circles - identical to
+    // Loft()/Sweep1()'s own 2-section shortcut, and the only path
+    // `exact_two_point_taper` above takes.
+    wall = RuledBetween(sections[0], sections[1], 0.0, 1.0, caller);
+  } else {
+    double period = 1.0;
+    const std::vector<double> params_v = SkinParameters(sections, wrap, &period, caller);
+    wall = SkinSections(sections, std::min(3, m - 1), wrap, params_v, period, caller);
+  }
+  return AssembleSweptBody(wall.release(), want_caps, want_caps, false, false, caller);
 }
 
 }  // namespace dino8::kernel
