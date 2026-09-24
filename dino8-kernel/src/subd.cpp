@@ -18,6 +18,45 @@ SubD SubD::FromControlMesh(const Mesh& control_mesh, bool crease_at_double_edges
   return result;
 }
 
+SubD SubD::FromNurbsSurface(const NurbsSurface& surface, int u_divisions, int v_divisions) {
+  if (u_divisions < 1 || v_divisions < 1) {
+    throw std::invalid_argument(
+        "dino8::kernel::SubD::FromNurbsSurface: u_divisions and v_divisions "
+        "must be at least 1");
+  }
+  const Interval u_domain = surface.Domain(0);
+  const Interval v_domain = surface.Domain(1);
+
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  const int u_points = u_divisions + 1;
+  const int v_points = v_divisions + 1;
+  const auto grid_index = [v_points](int i, int j) { return i * v_points + j; };
+
+  raw.m_V.Reserve(u_points * v_points);
+  for (int i = 0; i < u_points; ++i) {
+    const double u = u_domain.min + (u_domain.max - u_domain.min) * (static_cast<double>(i) / u_divisions);
+    for (int j = 0; j < v_points; ++j) {
+      const double v = v_domain.min + (v_domain.max - v_domain.min) * (static_cast<double>(j) / v_divisions);
+      raw.m_V.Append(ON_3fPoint(surface.PointAt(u, v)));
+    }
+  }
+
+  raw.m_F.Reserve(u_divisions * v_divisions);
+  for (int i = 0; i < u_divisions; ++i) {
+    for (int j = 0; j < v_divisions; ++j) {
+      ON_MeshFace f;
+      f.vi[0] = grid_index(i, j);
+      f.vi[1] = grid_index(i + 1, j);
+      f.vi[2] = grid_index(i + 1, j + 1);
+      f.vi[3] = grid_index(i, j + 1);
+      raw.m_F.Append(f);
+    }
+  }
+
+  return SubD::FromControlMesh(grid);
+}
+
 void SubD::Subdivide(int levels) {
   if (levels <= 0) {
     return;
