@@ -520,8 +520,16 @@ void Application::Notify(const std::string& text) {
 void Application::ShowFileDialog(const std::string& title, const std::vector<std::string>& extensions,
                                  bool save, std::function<void(const std::string&)> callback) {
 #if defined(_WIN32)
-  // Native Windows dialog: what testers expect on that platform.
-  {
+  // Native Windows dialog: what testers expect on that platform. Skipped in
+  // --smoke/headless runs (no user present): GetOpenFileNameA/
+  // GetSaveFileNameA are synchronous, modal Win32 calls that block the
+  // calling thread until a user interacts with the dialog, so a headless
+  // run would hang forever waiting for a click that never comes - this was
+  // RHINO8_KILLER_AUDIT.md row L's Windows-only CI hang (ReadCommandFile,
+  // called with no filename by tests/state_script2.txt, triggers it).
+  // Headless runs instead fall through below to the same non-blocking
+  // ImGui-drawn dialog every non-Windows platform already uses.
+  if (!headless) {
     std::string filter;
     std::string all;
     for (const std::string& e : extensions) all += (all.empty() ? "*" : ";*") + e;
