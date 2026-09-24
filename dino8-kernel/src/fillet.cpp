@@ -2628,7 +2628,18 @@ Brep RemoveCylindricalBlend(const Brep::MixedFacesResult& mf, int best, const st
     throw std::invalid_argument("dino8::kernel::RemoveBlend: degenerate bisector geometry (cosb too small)");
   }
   const double offset = cf.radius / cosb;
-  const Point3d edge_p0 = cf.frame.origin + bis * offset;
+  // `bis`/`cosb`/`offset` are symmetric in n_i/n_j (bis = normalize(n_i +
+  // n_j) doesn't care which face is "i"), so the ONLY thing that depends
+  // on whether this patch was built by FilletConvexEdge (cf.outward ==
+  // true, frame.origin = edge_p0 - bis*offset - see that function's own
+  // doc comment) or by FilletConcaveEdge (cf.outward == false,
+  // frame.origin = edge_p0 + bis*offset - the ball center moves into the
+  // EMPTY wedge instead of into the material) is the SIGN of this one
+  // term - a genuine mirror, not a guess: FilletConcaveEdge's own
+  // axis_point is p + bis*offset, so inverting it needs the opposite
+  // sign from FilletConvexEdge's own p - bis*offset.
+  const double sign = cf.outward ? 1.0 : -1.0;
+  const Point3d edge_p0 = cf.frame.origin + sign * bis * offset;
   const Point3d edge_p1 = edge_p0 + cf.length * cf.frame.zaxis;
 
   // Reject a FilletConvexEdges-built spherical vertex blend's own corner

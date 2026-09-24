@@ -848,9 +848,16 @@ Brep FilletConvexEdges(const Brep& solid, const std::vector<std::pair<Point3d, P
 //      m==1 end is unaffected either way, since FilletConvexEdge and
 //      FilletConvexEdges use IDENTICAL math for that case).
 //   3. The restored sharp edge's own two endpoints follow directly:
-//      edge_p0 = frame.origin + bis*offset, edge_p1 = edge_p0 +
+//      edge_p0 = frame.origin +/- bis*offset, edge_p1 = edge_p0 +
 //      length*frame.zaxis - the exact algebraic inverse of
-//      axis_point(p) = p - bis*offset.
+//      FilletConvexEdge's own axis_point(p) = p - bis*offset (the "+"
+//      sign) or FilletConcaveEdge's own axis_point(p) = p + bis*offset
+//      (the "-" sign) - `CylindricalFace::outward` (true for
+//      FilletConvexEdge, false for FilletConcaveEdge - see that field's
+//      own doc comment) is exactly the bit that tells this step which
+//      construction built the patch, so which sign to invert with; `bis`
+//      and `offset` themselves are symmetric in n_i/n_j and need no
+//      change either way.
 //   4. Face i's and face j's own loops are re-trimmed by replacing their
 //      shared rail edge with the restored sharp edge - literally
 //      splicing (edge_p0, edge_p1) in place of the rail's own two

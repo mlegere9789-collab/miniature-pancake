@@ -27493,6 +27493,45 @@ void TestFilletConcaveEdgeRejectsUnsupportedConfigurations() {
         "rejects a radius too large to fit");
 }
 
+void TestRemoveBlendRoundTripsAConcaveFillet() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConcaveEdge;
+  using dino8::kernel::Point3d;
+
+  const Brep prism = ConcaveLShapedPrism();
+  const double base_volume = prism.TessellateToClosedMesh(4, 4).Volume();
+  const Point3d edge_p0(1, 1, 0), edge_p1(1, 1, 1);
+  const double radius = 0.3;
+  const Brep filleted = FilletConcaveEdge(prism, edge_p0, edge_p1, radius);
+
+  const Brep::MixedFacesResult mf = filleted.MixedFaces();
+  Check(mf.cylindrical.size() == 1 && mf.cylindrical[0].outward == false,
+        "sanity: the concave-filleted prism has exactly one cylindrical face, marked outward=false");
+  const Brep::CylindricalFace& cf = mf.cylindrical[0];
+  const Point3d mid_on_cyl = cf.frame.origin + 0.5 * cf.length * cf.frame.zaxis +
+                            cf.radius * std::cos(cf.angle * 0.5) * cf.frame.xaxis +
+                            cf.radius * std::sin(cf.angle * 0.5) * cf.frame.yaxis;
+  const Brep restored = dino8::kernel::RemoveBlend(filleted, mid_on_cyl);
+
+  Check(restored.FaceCount() == 8, "RemoveBlend restores the exact face count of the pre-fillet L-shaped prism");
+  ON_TextLog log;
+  bool oriented = false, has_boundary = true;
+  Check(restored.raw().IsValid(&log) && restored.raw().IsManifold(&oriented, &has_boundary) && oriented &&
+            !has_boundary && restored.raw().IsSolid(),
+        "the restored solid is itself a valid, closed, manifold solid");
+  Check(std::fabs(restored.TessellateToClosedMesh(4, 4).Volume() - base_volume) < 1e-6,
+        "the restored solid's volume matches the original L-shaped prism's, undoing exactly the r^2*(1-pi/4) this "
+        "fillet added");
+  bool has_p0 = false, has_p1 = false;
+  for (int v = 0; v < restored.raw().m_V.Count(); ++v) {
+    if (restored.raw().m_V[v].point.DistanceTo(edge_p0) < 1e-9) has_p0 = true;
+    if (restored.raw().m_V[v].point.DistanceTo(edge_p1) < 1e-9) has_p1 = true;
+  }
+  Check(has_p0 && has_p1, "the restored solid has its original sharp concave corner vertices back");
+  Check(!ChamferTestBrepHasVertexNear(restored, mid_on_cyl, 1e-9),
+        "the fillet's own cylindrical surface point is gone from the restored solid");
+}
+
 // ---- NurbsSurface::UnrollDevelopable ----
 
 namespace {
@@ -29319,6 +29358,7 @@ int main() {
   TestRemoveChamferRejectsUnsupportedConfigurations();
   TestFilletConcaveEdgeAddsExactQuarterRoundVolume();
   TestFilletConcaveEdgeRejectsUnsupportedConfigurations();
+  TestRemoveBlendRoundTripsAConcaveFillet();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBrepAdjacencyQueries();
   TestBooleanCombinePlanarResultHasValidClosedTopology();

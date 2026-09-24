@@ -4438,6 +4438,31 @@ honestly out of scope.
   `FilletConvexEdges` generalized it - the natural next gap in this
   subsystem.
 
+- **`RemoveBlend` extended to `FilletConcaveEdge`-built cylindrical
+  faces** - closes that gap immediately: a concave fillet can now be
+  removed the same way a convex one can. `RemoveCylindricalBlend` already
+  recovered `bis`/`cosb`/`offset` from the two adjacent faces' own
+  normals (symmetric quantities, unaffected by which construction built
+  the patch), so the entire fix is a single sign: `edge_p0 =
+  frame.origin +/- bis*offset`, `+` inverting `FilletConvexEdge`'s own
+  `axis_point(p) = p - bis*offset` and `-` inverting
+  `FilletConcaveEdge`'s own `axis_point(p) = p + bis*offset` -
+  `CylindricalFace::outward` (already set correctly by each of the two
+  forward constructions) is exactly the bit that says which. Every other
+  step (locating the two rail faces, the corner-notch collapse, the
+  spherical-vertex-blend and sloped-cap-notch rejections) is untouched
+  and applies identically, since none of them read `outward` at all.
+  Verified (`TestRemoveBlendRoundTripsAConcaveFillet`): round-trips the
+  same L-shaped prism fixture `FilletConcaveEdge`'s own tests use back to
+  its exact pre-fillet face count, valid/manifold/closed/solid, volume
+  matching to floating-point precision (undoing exactly the `r^2*(1 -
+  pi/4)` the fillet added), both original sharp concave corner vertices
+  restored. Full `dino8_kernel_smoke`: 3262 checks, 0 failures;
+  `dino8_general_boolean_sweep` unaffected. The oblique-end and multi-
+  edge/vertex-blend gaps `FilletConcaveEdge`'s own entry discloses remain
+  exactly as disclosed there - this increment only extends removal to
+  match what construction already covers.
+
 ## What's still not done (as of chunk 2)
 
 - `Brep::Box()`, `Brep::Sphere()`, `Brep::TrimmedPlanarFace()`
