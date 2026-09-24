@@ -41,6 +41,20 @@ void Document::Clear() {
   squish_features_.clear();
   subd_pack_features_.clear();
   symmetry_links_.clear();
+  // These id-keyed/name-keyed tables belong to the OLD document only: New
+  // used to leave them in place, so the new document's first objects -
+  // handed the same small ids Clear() just reset the counter to - could
+  // silently inherit an unrelated old HistoryRecord/ProvenanceInfo (see
+  // UpdateHistory/SelExtrusion), the old block table kept offering stale
+  // block definitions to Insert/BlockManager, and old cage bindings kept
+  // pointing at ids a brand new document could reissue.
+  blocks_.clear();
+  history_records_.clear();
+  provenance_.clear();
+  cage_bindings_.clear();
+  prev_selection_.clear();
+  named_selections_.clear();
+  named_positions_.clear();
   user_text_.clear();
   notes_.clear();
   settings_ = DocumentSettings{};
