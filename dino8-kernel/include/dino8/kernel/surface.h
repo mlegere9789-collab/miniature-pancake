@@ -245,8 +245,19 @@ class NurbsSurface {
   // `ON_NurbsSurface::MakeNonRational()`.
   Result MakeNonRational();
 
-  // Elevates degree in the given direction (0 = U, 1 = V). Returns
-  // NoOpAlreadySatisfied if the surface is already at or above that degree.
+  // Elevates degree in the given direction (0 = U, 1 = V), preserving the
+  // surface's shape exactly (to floating-point precision). Returns
+  // NoOpAlreadySatisfied if the surface is already at or above that
+  // degree, Result::Failed if `direction` isn't 0/1 or the surface is not
+  // a valid NURBS surface. NOT a wrapper around `ON_NurbsSurface::
+  // IncreaseDegree` any more - that routine packs every row of control
+  // points into one high-dimensional `ON_NurbsCurve` and hands it to
+  // `ON_NurbsCurve::IncreaseDegree`, which `NurbsCurve::ElevateDegree()`'s
+  // own comment documents as silently shape-corrupting for non-uniform
+  // knots at moderate-to-high degree; this uses the same row-packing
+  // trick over that comment's verified exact elevation instead (see
+  // detail/degree_elevate.h), with the same "minimal control-point count
+  // when it verifies, exact piecewise-Bezier form otherwise" guarantee.
   Result ElevateDegree(int direction, int new_degree);
 
   // Whether the surface wraps seamlessly onto itself in `direction`
@@ -507,6 +518,18 @@ class NurbsSurface {
   // local minima from the very first level, each one converged to
   // correctly - that residual is inherent to any finite-sampling search
   // and isn't fixable by adjusting the narrowing step.
+  //
+  // A second real, reproduced bug of the same "window locks onto the
+  // wrong place" family, at a DEGENERATE edge (a sphere's pole, a cone's
+  // apex, a revolved surface's on-axis end): every u sample on the pole
+  // row evaluates to the same point, so the coarse scan's best u there
+  // was just the first tied sample, and narrowing the u window around it
+  // locked every later level into the wrong azimuth - a query 0.3r off
+  // the surface, 0.36 degrees from the pole, came back ~32 degrees of
+  // azimuth away. Fixed by not narrowing a direction whose row/column of
+  // samples through the best point is flat (identical distances to
+  // 1e-12 relative) at that level, so the other direction moves off the
+  // degenerate edge first.
   Point2d ClosestPointParameter(Point3d point, int u_divisions = 20, int v_divisions = 20) const;
 
   // The actual closest point: `PointAt(ClosestPointParameter(point,
@@ -543,7 +566,22 @@ class NurbsSurface {
   // principal curvatures k1,k2 = H +/- sqrt(H^2-K). Throws
   // std::runtime_error if `Ev2Der` fails or the point is singular (zero
   // or parallel partial derivatives, same condition `NormalAt()` already
-  // throws on).
+  // throws on), judged by two RELATIVE tests, neither absolute: (1) EG-F^2
+  // (exactly |du x dv|^2) below 1e-16 of EG catches near-parallel partials
+  // of comparable magnitude (a fold); (2) the smaller of E, G below 1e-16
+  // of the larger catches a vanishing partial (a pole/apex/on-axis end,
+  // where an entire row of control points collapses to one point) - test
+  // (1) alone misses this, because at a pole the vanishing partial
+  // evaluates to pure floating-point noise whose direction is arbitrary,
+  // so EG-F^2 over EG comes out order-1, not near 0. An absolute
+  // `EG-F^2 < 1e-15` used to apply instead of test (1); EG-F^2 scales with
+  // length^4, so that threw "degenerate" at perfectly regular points of
+  // any surface smaller than ~1e-4 units (a radius-1e-4 sphere, say) - a
+  // real scale bug found by a randomized probe. Test (2) was itself added
+  // after that fix regressed every sphere-pole case (measured
+  // min(E,G)/max(E,G) ~1e-33..1e-41 at a pole vs ~0.94..1.0 at a regular
+  // point, independent of overall scale). See
+  // TestSurfaceCurvatureAtIsScaleInvariant for both.
   SurfaceCurvature CurvatureAt(double u, double v) const;
 
   // Suggests u/v division counts for TessellateGrid()/

@@ -25896,6 +25896,391 @@ void TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy() {
   Check(out.PointAt(0.5).DistanceTo(c.PointAt(0.5)) < 1e-12, "OffsetInPlane(0.0) reproduces the same curve");
 }
 
+// distance between two curves at 201 matching normalized domain positions.
+double MaxCurveDeviation(const dino8::kernel::NurbsCurve& a, const dino8::kernel::NurbsCurve& b) {
+  const auto da = a.Domain();
+  const auto db = b.Domain();
+  double worst = 0.0;
+  for (int i = 0; i <= 200; ++i) {
+    const double s = i / 200.0;
+    worst = std::max(worst, (a.PointAt(da.min + (da.max - da.min) * s) -
+                             b.PointAt(db.min + (db.max - db.min) * s))
+                                .Length());
+  }
+  return worst;
+}
+
+// Same for two surfaces, over a 31x31 grid of matching normalized positions.
+double MaxSurfaceDeviation(const dino8::kernel::NurbsSurface& a, const dino8::kernel::NurbsSurface& b) {
+  double worst = 0.0;
+  for (int i = 0; i <= 30; ++i) {
+    for (int j = 0; j <= 30; ++j) {
+      const double s = i / 30.0, t = j / 30.0;
+      const auto au = a.Domain(0), av = a.Domain(1), bu = b.Domain(0), bv = b.Domain(1);
+      worst = std::max(worst, (a.PointAt(au.min + (au.max - au.min) * s, av.min + (av.max - av.min) * t) -
+                               b.PointAt(bu.min + (bu.max - bu.min) * s, bv.min + (bv.max - bv.min) * t))
+                                  .Length());
+    }
+  }
+  return worst;
+}
+
+// Regression test for a real, measured bug in the routine
+// NurbsCurve::ElevateDegree() used to delegate to: OpenNURBS'
+// ON_NurbsCurve::IncreaseDegree silently CHANGES THE SHAPE of a curve with
+// a non-uniform knot vector at moderate-to-high degree (a randomized probe
+// measured up to 1.7e-6 at degree 8, 3.2e+2 at degree 12 and 1e+24 at
+// degree 16, unit scale). The kernel now elevates via
+// detail/degree_elevate.h (Piegl & Tiller A5.9, verified against an exact
+// piecewise-Bezier elevation). Fixed inputs derived from that probe.
+void TestCurveElevateDegreePreservesShapeWithNonUniformKnots() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Fixture 1: degree 12, 21 control points, 8 distinct non-uniform
+  // interior knots. ON_NurbsCurve::IncreaseDegree moves THIS exact curve
+  // by 1.6e-8 (+1), 3.1e-8 (+2) and 7.7e-5 (+3); the exact elevation
+  // stays at ~1.6e-14.
+  {
+    std::vector<Point3d> pts;
+    for (int i = 0; i < 21; ++i) {
+      pts.emplace_back(0.7 * i, 2.0 * std::sin(1.3 * i), 1.5 * std::cos(0.9 * i));
+    }
+    NurbsCurve c12 = NurbsCurve::FromControlPoints(pts, /*degree=*/12);
+    // FromControlPoints() gives the clamped-uniform domain [0, 21 - 12] =
+    // [0, 9]; the 8 interior knots sit at indices 12..19.
+    const double interior[8] = {0.3, 0.9, 1.1, 2.6, 4.0, 4.05, 6.7, 8.2};
+    bool knots_ok = true;
+    for (int i = 0; i < 8; ++i) {
+      knots_ok = knots_ok && c12.SetKnotAt(12 + i, interior[i]) == Result::Ok;
+    }
+    Check(knots_ok, "degree-12 fixture's 8 non-uniform interior knots were set");
+    for (int target = 13; target <= 15; ++target) {
+      NurbsCurve e = c12;
+      Check(e.ElevateDegree(target) == Result::Ok && e.Degree() == target,
+            "degree-12 non-uniform-knot curve elevates to the requested degree");
+      const double dev = MaxCurveDeviation(c12, e);
+      char msg[256];
+      std::snprintf(msg, sizeof msg,
+                    "degree-12 non-uniform-knot curve keeps its shape when elevated to %d (max deviation "
+                    "%.3g < 1e-10; ON_NurbsCurve::IncreaseDegree gave 1.6e-8 / 3.1e-8 / 7.7e-5 here)",
+                    target, dev);
+      Check(dev < 1e-10, msg);
+      // Still a valid, evaluable curve everywhere (a corrupt control net
+      // would show up as non-finite points, not just displaced ones).
+      const auto d = e.Domain();
+      bool finite = true;
+      for (int i = 0; i <= 50; ++i) {
+        const Point3d p = e.PointAt(d.min + (d.max - d.min) * i / 50.0);
+        finite = finite && std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+      }
+      Check(finite, "elevated degree-12 curve evaluates to finite points everywhere");
+    }
+  }
+
+  // Fixture 2: degree 8, 12 control points, 3 clustered interior knots
+  // (0.35, 0.4, 3.1 on the domain [0, 4]) - the everyday-degree case.
+  // ON_NurbsCurve::IncreaseDegree moves this one by 2.1e-5 for +3.
+  {
+    const std::vector<Point3d> pts = {
+        Point3d(0.0, 0.0, 0.0),   Point3d(1.3, 2.1, -0.4), Point3d(2.2, -1.7, 0.9), Point3d(3.8, 1.2, 1.5),
+        Point3d(4.1, -2.4, -1.1), Point3d(5.7, 0.6, 0.3),  Point3d(6.3, 2.8, -0.7), Point3d(7.9, -0.9, 1.8),
+        Point3d(8.4, 1.9, -1.6),  Point3d(9.6, -2.2, 0.5), Point3d(10.2, 0.8, 1.2), Point3d(11.5, -1.3, -0.2),
+    };
+    NurbsCurve c8 = NurbsCurve::FromControlPoints(pts, /*degree=*/8);
+    Check(c8.SetKnotAt(8, 0.35) == Result::Ok && c8.SetKnotAt(9, 0.4) == Result::Ok &&
+              c8.SetKnotAt(10, 3.1) == Result::Ok,
+          "degree-8 fixture's clustered interior knots were set");
+    NurbsCurve e = c8;
+    Check(e.ElevateDegree(11) == Result::Ok && e.Degree() == 11, "degree-8 clustered-knot curve elevates to 11");
+    const double dev = MaxCurveDeviation(c8, e);
+    char msg[256];
+    std::snprintf(msg, sizeof msg,
+                  "degree-8 clustered-knot curve keeps its shape when elevated to 11 (max deviation %.3g < "
+                  "1e-10; ON_NurbsCurve::IncreaseDegree gave 2.1e-5 here)",
+                  dev);
+    Check(dev < 1e-10, msg);
+  }
+
+  // Fixture 3: a genuine rational curve (a radius-2.5 NURBS circle, degree
+  // 2, 9 control points over 4 Bezier spans) elevated to degree 5 is
+  // still exactly that circle, in the minimal 9 + 3 * 4 = 21 control
+  // points (knot removal verifies cleanly at this degree).
+  {
+    ON_Circle circle(ON_Plane::World_xy, 2.5);
+    NurbsCurve c;
+    circle.GetNurbForm(c.raw());
+    Check(c.IsRational() && c.Degree() == 2 && c.ControlPointCount() == 9, "circle fixture is the expected rational quadratic");
+    NurbsCurve e = c;
+    Check(e.ElevateDegree(5) == Result::Ok && e.Degree() == 5, "rational circle elevates to degree 5");
+    double worst_radius_error = 0.0;
+    const auto d = e.Domain();
+    for (int i = 0; i <= 200; ++i) {
+      const Point3d p = e.PointAt(d.min + (d.max - d.min) * i / 200.0);
+      worst_radius_error = std::max(worst_radius_error, std::abs(p.DistanceTo(ON_3dPoint::Origin) - 2.5));
+    }
+    Check(worst_radius_error < 1e-12, "degree-5 elevation of a rational circle is still exactly that circle (radius error < 1e-12)");
+    Check(e.ControlPointCount() == 21, "rational circle's degree-5 elevation is the minimal 21-control-point form");
+    Check(MaxCurveDeviation(c, e) < 1e-12, "...and matches the original circle pointwise");
+  }
+
+  // Fixture 4: the everyday case (uniform cubic, 7 control points, 4
+  // spans) still comes back in the minimal 7 + 4 = 11 control points, so
+  // the exact-Bezier-form fallback is genuinely a fallback, not the norm.
+  {
+    const std::vector<Point3d> pts = {Point3d(0, 0, 0),   Point3d(1.3, 2.1, -0.4), Point3d(2.2, -1.7, 0.9),
+                                      Point3d(3.8, 1.2, 1.5), Point3d(4.1, -2.4, -1.1), Point3d(5.7, 0.6, 0.3),
+                                      Point3d(6.3, 2.8, -0.7)};
+    NurbsCurve c = NurbsCurve::FromControlPoints(pts, /*degree=*/3);
+    NurbsCurve e = c;
+    Check(e.ElevateDegree(4) == Result::Ok && e.Degree() == 4, "uniform cubic elevates to 4");
+    Check(e.ControlPointCount() == 11, "uniform cubic's degree-4 elevation is the minimal 7 + 4 = 11 control points");
+    Check(MaxCurveDeviation(c, e) < 1e-12, "uniform cubic keeps its shape under degree elevation");
+    Check(c.ElevateDegree(3) == Result::NoOpAlreadySatisfied, "elevating to the current degree is still a no-op");
+  }
+}
+
+// Surface counterpart: ON_NurbsSurface::IncreaseDegree packs the rows into
+// one high-dimensional ON_NurbsCurve and calls the same broken routine.
+// Fixed inputs derived from the same probe (21x4 grid, degrees (12, 2),
+// the same 8 non-uniform U knots as the curve fixture above).
+void TestSurfaceElevateDegreePreservesShapeWithNonUniformKnots() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  std::vector<Point3d> grid;
+  for (int i = 0; i < 21; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      grid.emplace_back(0.7 * i, 1.5 * j + 0.3 * std::sin(1.3 * i), 1.5 * std::cos(0.9 * i + j));
+    }
+  }
+  NurbsSurface s = NurbsSurface::FromControlGrid(grid, 21, 4, /*u_degree=*/12, /*v_degree=*/2);
+  const double interior[8] = {0.3, 0.9, 1.1, 2.6, 4.0, 4.05, 6.7, 8.2};
+  bool knots_ok = true;
+  for (int i = 0; i < 8; ++i) {
+    knots_ok = knots_ok && s.SetKnotAt(0, 12 + i, interior[i]) == Result::Ok;
+  }
+  Check(knots_ok, "surface fixture's 8 non-uniform U knots were set");
+
+  // ON_NurbsSurface::IncreaseDegree moves this surface by 2.4e-8 (U to 13)
+  // and 3.2e-8 (U to 14); the exact elevation stays at ~1.3e-14.
+  for (int target = 13; target <= 14; ++target) {
+    NurbsSurface e = s;
+    Check(e.ElevateDegree(/*direction=*/0, target) == Result::Ok && e.DegreeU() == target && e.DegreeV() == 2,
+          "surface U-degree elevation reaches the requested degree and leaves V alone");
+    const double dev = MaxSurfaceDeviation(s, e);
+    char msg[256];
+    std::snprintf(msg, sizeof msg,
+                  "degree-(12,2) non-uniform-U-knot surface keeps its shape when U is elevated to %d (max "
+                  "deviation %.3g < 1e-10; ON_NurbsSurface::IncreaseDegree gave 2.4e-8 / 3.2e-8 here)",
+                  target, dev);
+    Check(dev < 1e-10, msg);
+  }
+
+  // V direction too (degree 2 -> 4 across a non-uniform V knot), which
+  // exercises the other row-packing orientation; 4 + 2 * 2 = 8 control
+  // points is the minimal form.
+  {
+    NurbsSurface sv = s;
+    Check(sv.SetKnotAt(1, 2, 0.15) == Result::Ok, "surface fixture's non-uniform V knot was set");
+    NurbsSurface e = sv;
+    Check(e.ElevateDegree(/*direction=*/1, 4) == Result::Ok && e.DegreeV() == 4 && e.DegreeU() == 12,
+          "surface V-degree elevation reaches degree 4 and leaves U alone");
+    Check(MaxSurfaceDeviation(sv, e) < 1e-10, "surface keeps its shape when V is elevated across a non-uniform knot");
+    Check(e.CVCountV() == 8 && e.CVCountU() == 21, "V elevation from 2 to 4 over 2 spans gives the minimal 8 V control points");
+    Check(e.ElevateDegree(2, 5) == Result::Failed, "an invalid direction is refused, not silently treated as U or V");
+  }
+}
+
+// Regression test for a real, reproduced ClosestPointParameter() miss: a
+// closed-but-not-periodic degree-4 curve (FromControlPoints() with the
+// first and last control points equal, so its seam is only C0 - a kink),
+// queried from a point just off that seam. The true nearest point lies on
+// the far side of the seam, INSIDE the +/- one-coarse-step refinement
+// window - but the golden-section search assumes the distance function is
+// unimodal on that window, and the kink makes it bimodal, so the search
+// walked to the near side's own local minimum instead: 0.00215 away, when
+// the true nearest point (found by a plain 20000-sample scan) is 0.000743
+// away - 2.9x farther, with the better point sitting in the very window
+// being searched. Fixed by sub-sampling the window before the polish and
+// never returning worse than the best sample seen.
+void TestCurveClosestPointAcrossClampedSeamKink() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  NurbsCurve c;
+  ON_NurbsCurve& raw = c.raw();
+  raw.Create(3, false, /*order=*/5, /*cv_count=*/10);
+  const double knots[13] = {0, 0, 0, 0, 1.38698490512363, 1.8705936816984137, 2.4378860258037047,
+                            3.9907205095635137, 5.7989363609240074, 6, 6, 6, 6};
+  for (int i = 0; i < 13; ++i) raw.SetKnot(i, knots[i]);
+  const double cvs[10][3] = {
+      {0.069708490269153156, 0.11210293680398298, -0.76322511230777346},
+      {-0.87819820398321835, -0.58847452229800756, -0.62787389330361498},
+      {0.27604673936746327, 0.89687423431623925, 0.44903236329897744},
+      {-0.88183841960085951, 0.75904190962741169, -0.32157359872369684},
+      {-0.64086752287908633, 0.55969799332998682, 0.32300630136893282},
+      {-0.57767551394033068, 0.92786576740538873, 0.39939359053737244},
+      {0.99461568065996309, 0.92485348423054248, 0.93400209607383222},
+      {-0.15484731753059866, -0.40079670420498592, 0.42383170313092755},
+      {-0.28678184268560891, -0.2545467512471794, -0.34008569262013022},
+      {0.069708490269153156, 0.11210293680398298, -0.76322511230777346}};
+  for (int i = 0; i < 10; ++i) raw.SetCV(i, ON_3dPoint(cvs[i][0], cvs[i][1], cvs[i][2]));
+  Check(raw.IsValid() && c.IsClosed() && !c.IsPeriodic(), "seam-kink fixture is a valid closed, non-periodic curve");
+
+  const Point3d query(0.068231429730267426, 0.11023876276341521, -0.76088826174781632);
+  // Reference: a plain dense scan, no refinement at all.
+  double brute = std::numeric_limits<double>::infinity();
+  const auto dom = c.Domain();
+  for (int i = 0; i <= 20000; ++i) {
+    brute = std::min(brute, (c.PointAt(dom.min + (dom.max - dom.min) * i / 20000.0) - query).Length());
+  }
+  Check(brute < 1e-3, "sanity: the query point is within 1e-3 of the curve (brute-force scan)");
+
+  for (int samples : {200, 2000}) {
+    const double t = c.ClosestPointParameter(query, samples);
+    Check(t >= dom.min && t <= dom.max, "ClosestPointParameter returns a parameter inside the domain");
+    const double d = (c.PointAt(t) - query).Length();
+    char msg[256];
+    std::snprintf(msg, sizeof msg,
+                  "ClosestPoint(samples=%d) across the clamped seam kink is no farther than the dense scan's "
+                  "nearest point (%.6g vs %.6g; used to return 0.00215 for samples=2000)",
+                  samples, d, brute);
+    Check(d <= brute * (1.0 + 1e-6), msg);
+  }
+}
+
+// Regression test for ParameterAtArcLength(Length()) landing a few 1e-12
+// PAST Domain().max: the interpolation fraction (target - previous) /
+// segment was computed from the ROUNDED cumulative length and could exceed
+// 1 by an ulp of a large cumulative sum. A polyline whose first segment
+// (1e6) dwarfs its last (1e-3) reproduces it deterministically; the method
+// promises to clamp to the domain.
+void TestCurveParameterAtArcLengthStaysInsideDomain() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::Point3d;
+
+  const NurbsCurve line = NurbsCurve::FromControlPoints(
+      {Point3d(0, 0, 0), Point3d(1e6, 0, 0), Point3d(1e6 + 1e-3, 0, 0)}, /*degree=*/1);
+  const auto dom = line.Domain();
+  const double length = line.Length(1000);
+  const double t_end = line.ParameterAtArcLength(length, 1000);
+  char msg[200];
+  std::snprintf(msg, sizeof msg,
+                "ParameterAtArcLength(Length()) is exactly Domain().max (%.17g vs %.17g; used to overshoot "
+                "by ~1e-11)",
+                t_end, dom.max);
+  Check(t_end == dom.max, msg);
+  // Monotone and in-domain for every intermediate target too.
+  bool monotone = true, inside = true;
+  double prev = dom.min;
+  for (int i = 0; i <= 40; ++i) {
+    const double t = line.ParameterAtArcLength(length * i / 40.0, 1000);
+    monotone = monotone && t >= prev;
+    inside = inside && t >= dom.min && t <= dom.max;
+    prev = t;
+  }
+  Check(monotone && inside, "ParameterAtArcLength stays monotone and inside the domain across its whole range");
+  const auto divisions = line.DivideByCount(5, 1000);
+  Check(divisions.size() == 6 && divisions.front() == dom.min && divisions.back() == dom.max,
+        "DivideByCount on the same polyline still ends exactly at the domain bounds");
+}
+
+// Regression test for a real scale bug in NurbsSurface::CurvatureAt():
+// its "degenerate first fundamental form" guard was the ABSOLUTE test
+// `EG - F^2 < 1e-15`, but EG - F^2 scales with length^4, so a perfectly
+// regular point on a radius-1e-4 sphere (EG - F^2 ~ 1e-16) threw while
+// the same point on a radius-1 sphere returned K = 1/r^2 as it should. The
+// guard is now relative (the partials' angle). A genuinely singular point
+// (the pole) must still throw.
+void TestSurfaceCurvatureAtIsScaleInvariant() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SurfaceCurvature;
+
+  for (double r : {1.0, 1e-4, 1e-6}) {
+    NurbsSurface s;
+    ON_Sphere sphere(Point3d(0.3 * r, -0.7 * r, 1.1 * r), r);
+    sphere.GetNurbForm(s.raw());
+    const auto du = s.Domain(0), dv = s.Domain(1);
+    const double u = du.min + 0.37 * (du.max - du.min);
+    const double v = dv.min + 0.41 * (dv.max - dv.min);
+    bool threw = false;
+    SurfaceCurvature k{0, 0, 0, 0};
+    try {
+      k = s.CurvatureAt(u, v);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    char msg[200];
+    std::snprintf(msg, sizeof msg,
+                  "CurvatureAt on a radius-%g sphere at a regular point does not throw 'degenerate' (used to "
+                  "for r <= 1e-4)",
+                  r);
+    Check(!threw, msg);
+    if (!threw) {
+      std::snprintf(msg, sizeof msg, "radius-%g sphere: Gaussian curvature * r^2 = %.9g (expect 1)", r,
+                    k.gaussian * r * r);
+      Check(std::abs(k.gaussian * r * r - 1.0) < 1e-6, msg);
+      std::snprintf(msg, sizeof msg, "radius-%g sphere: |mean curvature| * r = %.9g (expect 1)", r,
+                    std::abs(k.mean) * r);
+      Check(std::abs(std::abs(k.mean) * r - 1.0) < 1e-6, msg);
+    }
+    // The pole (v at the domain end) is genuinely singular: still throws.
+    bool pole_threw = false;
+    try {
+      s.CurvatureAt(u, dv.min);
+    } catch (const std::runtime_error&) {
+      pole_threw = true;
+    }
+    std::snprintf(msg, sizeof msg, "radius-%g sphere: CurvatureAt at the pole still throws (genuinely singular)", r);
+    Check(pole_threw, msg);
+  }
+}
+
+// Regression test for a real, reproduced NurbsSurface::ClosestPoint() bug
+// at a degenerate edge: on a sphere's pole row every u sample evaluates
+// to the same point, so the coarse scan's best u there was just the first
+// tied sample (u = 0), and narrowing the u window around it locked every
+// later refinement level into the wrong azimuth. A query 0.3r off the
+// surface at u = pi (180 degrees from that tie-break), 0.36 degrees from
+// the pole, came back with a closest point ~32 degrees of azimuth away:
+// distance 0.30007r instead of 0.3r, and a returned POINT ~0.0035r from
+// the true one - 3500x the true distance for a query 1e-6 r off the
+// surface. Fixed by not narrowing a direction whose samples are flat.
+void TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth() {
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+
+  for (double r : {1.0, 1e-4}) {
+    const Point3d center(0.3 * r, -0.7 * r, 1.1 * r);
+    NurbsSurface s;
+    ON_Sphere sphere(center, r);
+    sphere.GetNurbForm(s.raw());
+    const auto du = s.Domain(0), dv = s.Domain(1);
+    for (double fv : {0.002, 0.998}) {
+      const double u = du.min + 0.5 * (du.max - du.min);
+      const double v = dv.min + fv * (dv.max - dv.min);
+      const Point3d on = s.PointAt(u, v);
+      const Point3d query = center + (on - center) * 1.3;
+      const Point3d cp = s.ClosestPoint(query);
+      const double d = cp.DistanceTo(query);
+      char msg[256];
+      std::snprintf(msg, sizeof msg,
+                    "radius-%g sphere, query 0.36 degrees from the %s pole at u=pi: ClosestPoint distance "
+                    "%.12g is 0.3r to 1e-9 relative (used to be 0.30007r)",
+                    r, fv < 0.5 ? "south" : "north", d / r);
+      Check(std::abs(d - 0.3 * r) <= 1e-9 * r, msg);
+      std::snprintf(msg, sizeof msg,
+                    "...and the returned point is the radial foot itself (%.3g r away; used to be ~3.5e-3 r)",
+                    cp.DistanceTo(on) / r);
+      Check(cp.DistanceTo(on) <= 1e-6 * r, msg);
+    }
+  }
+}
+
 int main() {
   ON::Begin();
 
@@ -26313,6 +26698,13 @@ int main() {
   TestCurveOffsetInPlaneRefusesNonPlanarCurve();
   TestCurveOffsetInPlaneZeroDistanceIsNoOpCopy();
 
+
+  TestCurveElevateDegreePreservesShapeWithNonUniformKnots();
+  TestSurfaceElevateDegreePreservesShapeWithNonUniformKnots();
+  TestCurveClosestPointAcrossClampedSeamKink();
+  TestCurveParameterAtArcLengthStaysInsideDomain();
+  TestSurfaceCurvatureAtIsScaleInvariant();
+  TestSurfaceClosestPointNearSpherePoleDoesNotLockAzimuth();
   ON::End();
 
   if (g_failures > 0) {
