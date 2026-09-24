@@ -665,6 +665,18 @@ class Mesh {
     // Every naked edge as (a, b) in the direction its one face walks it,
     // in face order - the input FillSmallHoles() chains into loops.
     std::vector<std::pair<int, int>> naked_edge_list;
+    // Every non-manifold edge (3+ faces) as its two vertex indices
+    // (a, b) with a < b - undirected, since a 3+-face edge has no single
+    // "the" walking direction the way a naked or orientation-conflicted
+    // edge does. One entry per such edge (matching non_manifold_edges'
+    // own count), in the order first encountered walking the mesh's own
+    // face list - the localization non_manifold_edges' bare count never
+    // gave a caller: without this, "3 non-manifold edges" told you
+    // something was wrong, never where. Deliberately NOT a repair input
+    // the way naked_edge_list is for FillSmallHoles(): which faces
+    // should stay grouped together at a 3+-face edge is a judgment call
+    // this class still doesn't make (see Check()'s own class comment).
+    std::vector<std::pair<int, int>> non_manifold_edge_list;
     // Same three conditions as Mesh::IsClosedManifold().
     bool IsClosedManifold() const {
       return naked_edges == 0 && non_manifold_edges == 0 && orientation_conflicts == 0;
