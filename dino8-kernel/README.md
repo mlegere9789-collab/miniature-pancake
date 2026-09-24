@@ -2002,6 +2002,33 @@ What this repo does instead:
   three-piece curve's kinks once its domain is 3.57 long, cutting each
   corner by ~1e-3 - the same polyline approximation `Length()` has
   always documented, so the test measures that case at 200000 samples.
+- `PointCloud::KNearest(query, k)` and `PointCloud::PointsWithinRadius(query,
+  radius)`: the point cloud's first spatial queries - before this, a
+  `PointCloud` could only be built, indexed by raw position (`PointAt(i)`),
+  colored, normaled and transformed, with no way to ask "which points are
+  near this one", the operation every point-cloud tool (nearest-sample
+  lookup, local normal estimation, a "select points near here" pick,
+  density/outlier checks) is built on. Exact Euclidean distance to every
+  point, brute force - honestly no spatial acceleration structure (no
+  kd-tree, no layering on OpenNURBS' own real `ON_RTree`, despite it being
+  available), the same "exact over every candidate, no BVH" tradeoff
+  `Mesh::DistanceTo()` already documents for its own point-to-triangle
+  work; O(`PointCount()`) per query, not claimed to be anything faster.
+  Both return `PointCloudNeighbor{index, distance}`, sorted by ascending
+  distance with ties (exactly equal distance) broken by ascending index,
+  so results are fully deterministic regardless of insertion order -
+  verified with a cloud built to have an exact, hand-derivable answer: a
+  duplicated point (two coincident points at distance 1, at indices 1 and
+  5) confirms both the ascending-distance order AND the index tie-break in
+  one case, and the third-place, fourth-place distances are checked
+  exactly (`2`, `2*sqrt(2)`, `3`). `KNearest` clamps `k >= PointCount()` to
+  "return everything, sorted" rather than erroring (a reasonable request,
+  just an easy one), and throws `std::invalid_argument` for `k <= 0` or an
+  empty cloud (there is no such thing as "the nearest points" into nothing
+  - unlike `PointsWithinRadius`, where zero matches is a perfectly valid
+  answer, so an empty cloud or a too-small radius return an empty result,
+  never throwing on cloud state - only on a genuinely malformed request, a
+  negative radius).
 
 ## What's still not done (as of chunk 2)
 

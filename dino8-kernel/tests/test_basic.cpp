@@ -27,6 +27,7 @@
 #include "dino8/kernel/file_io.h"
 #include "dino8/kernel/fillet.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/point_cloud.h"
 #include "dino8/kernel/subd.h"
 #include "dino8/kernel/surface.h"
 #include "dino8/kernel/surface_intersect.h"
@@ -6636,6 +6637,120 @@ void TestMeshClashWith() {
     threw = true;
   }
   Check(threw, "ClashWith throws on an open (zero-volume) operand rather than classifying it");
+}
+
+void TestPointCloudSpatialQueries() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::PointCloudNeighbor;
+
+  // Six points with hand-derivable exact distances from the origin, plus
+  // a deliberate duplicate (index 5 == index 1's position) so tie-break
+  // ordering is actually exercised, not just assumed:
+  //   idx 0: (0,0,0)  distance 0
+  //   idx 1: (1,0,0)  distance 1
+  //   idx 5: (1,0,0)  distance 1  (duplicate of idx 1 - a genuine tie)
+  //   idx 2: (0,2,0)  distance 2
+  //   idx 3: (2,2,0)  distance sqrt(8) = 2*sqrt(2)
+  //   idx 4: (0,0,3)  distance 3
+  // Appended out of distance order (0, 1, 2, 3, 4, then the idx-5
+  // duplicate last) so a passing test can't be an accident of insertion
+  // order already being sorted.
+  PointCloud cloud;
+  cloud.AppendPoint(Point3d(0, 0, 0));
+  cloud.AppendPoint(Point3d(1, 0, 0));
+  cloud.AppendPoint(Point3d(0, 2, 0));
+  cloud.AppendPoint(Point3d(2, 2, 0));
+  cloud.AppendPoint(Point3d(0, 0, 3));
+  cloud.AppendPoint(Point3d(1, 0, 0));
+  const Point3d query(0, 0, 0);
+
+  // KNearest(3): the three smallest distances are 0, 1, 1 (the tie
+  // between idx 1 and idx 5), broken by ascending index - so idx 1
+  // strictly before idx 5, both strictly before idx 2 (distance 2).
+  {
+    const auto k3 = cloud.KNearest(query, 3);
+    Check(k3.size() == 3, "KNearest(3) returns exactly 3 neighbors");
+    Check(k3[0].index == 0 && std::abs(k3[0].distance - 0.0) < 1e-12, "1st nearest is idx 0 at distance 0");
+    Check(k3[1].index == 1 && std::abs(k3[1].distance - 1.0) < 1e-12,
+          "2nd nearest is idx 1 at distance 1 (tie-break: lower index first)");
+    Check(k3[2].index == 5 && std::abs(k3[2].distance - 1.0) < 1e-12,
+          "3rd nearest is idx 5, the coincident duplicate, also at distance 1");
+  }
+
+  // KNearest(k >= PointCount()) clamps to all 6 points, still sorted,
+  // rather than erroring - so the full ascending order is checked,
+  // including the sqrt(8) and the two remaining singletons.
+  {
+    const auto all = cloud.KNearest(query, 100);
+    Check(all.size() == 6, "KNearest(k > PointCount()) clamps to all 6 points rather than throwing");
+    const std::vector<int> expected_order = {0, 1, 5, 2, 3, 4};
+    bool order_ok = true;
+    for (size_t i = 0; i < expected_order.size(); ++i) {
+      if (all[i].index != expected_order[i]) order_ok = false;
+    }
+    Check(order_ok, "KNearest(all) is fully sorted: 0, 1, 5 (tie), 2, 3, 4");
+    Check(std::abs(all[3].distance - 2.0) < 1e-12, "idx 2's distance is exactly 2");
+    Check(std::abs(all[4].distance - 2.0 * std::sqrt(2.0)) < 1e-9, "idx 3's distance is exactly 2*sqrt(2)");
+    Check(std::abs(all[5].distance - 3.0) < 1e-12, "idx 4's distance is exactly 3");
+  }
+
+  // PointsWithinRadius: radius 1.0 catches exactly the distance-0 and
+  // the two distance-1 points (0, 1, 5), same tie order as KNearest;
+  // radius 0.5 catches only the exact match; radius 10 catches all 6;
+  // radius 0 catches only idx 0 itself (distance == radius, inclusive).
+  {
+    const auto r1 = cloud.PointsWithinRadius(query, 1.0);
+    Check(r1.size() == 3, "PointsWithinRadius(1.0) finds exactly 3 points (distances 0, 1, 1)");
+    Check(r1[0].index == 0 && r1[1].index == 1 && r1[2].index == 5,
+          "PointsWithinRadius(1.0) is sorted 0, 1, 5 - same tie-break as KNearest");
+
+    Check(cloud.PointsWithinRadius(query, 0.5).size() == 1, "PointsWithinRadius(0.5) finds only the exact match at idx 0");
+    Check(cloud.PointsWithinRadius(query, 10.0).size() == 6, "PointsWithinRadius(10.0) finds all 6 points");
+    Check(cloud.PointsWithinRadius(query, 0.0).size() == 1,
+          "PointsWithinRadius(0.0) is inclusive: the coincident point at distance exactly 0 still counts");
+  }
+
+  // An empty cloud: PointsWithinRadius validly returns nothing (zero
+  // matches is a legitimate answer), but KNearest has nothing it could
+  // return as "the nearest points" and throws instead.
+  {
+    const PointCloud empty;
+    Check(empty.PointsWithinRadius(query, 1e9).empty(),
+          "PointsWithinRadius on an empty cloud returns an empty result, not an error");
+    bool threw_empty = false;
+    try {
+      empty.KNearest(query, 1);
+    } catch (const std::invalid_argument&) {
+      threw_empty = true;
+    }
+    Check(threw_empty, "KNearest on an empty cloud throws (there is no nearest point to report)");
+  }
+
+  // Invalid arguments: k <= 0 and a negative radius are caller bugs,
+  // not sparse-data edge cases, so both throw regardless of cloud
+  // contents.
+  {
+    bool threw_k0 = false, threw_kneg = false, threw_radius = false;
+    try {
+      cloud.KNearest(query, 0);
+    } catch (const std::invalid_argument&) {
+      threw_k0 = true;
+    }
+    try {
+      cloud.KNearest(query, -1);
+    } catch (const std::invalid_argument&) {
+      threw_kneg = true;
+    }
+    try {
+      cloud.PointsWithinRadius(query, -0.001);
+    } catch (const std::invalid_argument&) {
+      threw_radius = true;
+    }
+    Check(threw_k0, "KNearest(k = 0) throws");
+    Check(threw_kneg, "KNearest(k < 0) throws");
+    Check(threw_radius, "PointsWithinRadius(negative radius) throws");
+  }
 }
 
 void TestMeshAreaCountsBothQuadTriangles() {
@@ -21127,6 +21242,7 @@ int main() {
   TestMeshFireRay();
   TestMeshDistanceTo();
   TestMeshClashWith();
+  TestPointCloudSpatialQueries();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
