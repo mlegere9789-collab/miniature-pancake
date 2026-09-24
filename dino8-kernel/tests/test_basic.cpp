@@ -8624,6 +8624,64 @@ void TestSubDMeshRoundTripIsExactAtLevelZero() {
   }
 }
 
+// SubD::FromNurbsSurface(): closes PARITY_MAP.md's subd_mesh "SubD from
+// NURBS/B-rep conversion (reverse of ToNurbsPatches)" [missing] item for
+// a single untrimmed surface. Uses the same flat P(u,v) = (u, v, 0)
+// bilinear surface TestSurfaceNormalAt() already relies on (an exact,
+// hand-derivable fixture, not approximate) so the resulting grid's exact
+// positions are known in closed form, not just plausible-looking.
+void TestSubDFromNurbsSurfaceExactOnFlatGrid() {
+  using dino8::kernel::Interval;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const std::vector<Point3d> flat_grid = {
+      Point3d(0, 0, 0),
+      Point3d(0, 1, 0),
+      Point3d(1, 0, 0),
+      Point3d(1, 1, 0),
+  };
+  const NurbsSurface flat = NurbsSurface::FromControlGrid(flat_grid, 2, 2, /*u_degree=*/1, /*v_degree=*/1);
+  const Interval du = flat.Domain(0), dv = flat.Domain(1);
+
+  bool threw = false;
+  try {
+    (void)SubD::FromNurbsSurface(flat, 0, 4);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "SubD::FromNurbsSurface throws std::invalid_argument when u_divisions < 1");
+
+  const SubD subd = SubD::FromNurbsSurface(flat, 4, 4);
+  Check(subd.VertexCount() == 25 && subd.FaceCount() == 16,
+        "a 4x4-division conversion yields a 5x5 vertex grid of 16 quad faces");
+
+  const Mesh mesh = subd.ToApproximateMesh();
+  Check(mesh.VertexCount() == 25 && mesh.FaceCount() == 16,
+        "the level-0 control net matches the SubD's own topology counts exactly");
+  bool all_quads = true;
+  for (int i = 0; i < mesh.raw().m_F.Count(); ++i) all_quads = all_quads && mesh.raw().m_F[i].IsQuad();
+  Check(all_quads, "every emitted face is a genuine quad, not a triangulated cell");
+
+  int matched = 0;
+  for (int i = 0; i <= 4; ++i) {
+    const double u = du.min + (du.max - du.min) * (i / 4.0);
+    for (int j = 0; j <= 4; ++j) {
+      const double v = dv.min + (dv.max - dv.min) * (j / 4.0);
+      const Point3d expected(u, v, 0.0);  // P(u, v) = (u, v, 0) exactly, for this fixture
+      for (int k = 0; k < mesh.raw().m_V.Count(); ++k) {
+        if (expected.DistanceTo(Point3d(mesh.raw().m_V[k])) < 1e-6) {
+          ++matched;
+          break;
+        }
+      }
+    }
+  }
+  Check(matched == 25, "every one of the 25 grid points lands exactly on the flat surface's own P(u,v) = (u, v, 0)");
+}
+
 void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Point3d;
@@ -26945,6 +27003,7 @@ int main() {
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
   TestSubDIsValid();
   TestSubDMeshRoundTripIsExactAtLevelZero();
+  TestSubDFromNurbsSurfaceExactOnFlatGrid();
   TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
   TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
