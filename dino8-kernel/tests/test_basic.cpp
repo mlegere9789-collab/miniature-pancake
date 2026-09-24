@@ -25034,6 +25034,136 @@ void TestSurfaceUnrollDevelopableArgumentChecks() {
   Check(threw, "UnrollDevelopable throws on v_divisions < 1");
 }
 
+// ---- NurbsSurface::CoonsPatch ----
+
+void TestSurfaceCoonsPatchReproducesFourCurvedBoundariesExactly() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Four genuinely different, curved boundary curves (not straight
+  // lines - a straight-line patch can't distinguish "exact" from
+  // "close enough", since a bilinear fit through samples of a straight
+  // line is already exact). Bottom/top run +x, left/right run +y;
+  // corners: (0,0,0), (4,0,1), (0,4,1), (4,4,2).
+  const NurbsCurve bottom = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1.5, -0.5, 0.6), Point3d(2.5, 0.5, -0.4), Point3d(4, 0, 1)}, 3);
+  const NurbsCurve top = NurbsCurve::FromControlPoints({Point3d(0, 4, 1), Point3d(1.5, 3.5, 1.8), Point3d(2.5, 4.5, 0.7), Point3d(4, 4, 2)}, 3);
+  const NurbsCurve left = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(-0.4, 1.3, 0.5), Point3d(0.4, 2.7, 0.3), Point3d(0, 4, 1)}, 3);
+  const NurbsCurve right = NurbsCurve::FromControlPoints({Point3d(4, 0, 1), Point3d(3.6, 1.3, 1.4), Point3d(4.4, 2.7, 1.9), Point3d(4, 4, 2)}, 3);
+
+  NurbsSurface patch;
+  double gap = -1.0;
+  const Result r = NurbsSurface::CoonsPatch(bottom, top, left, right, patch, 1e-6, &gap);
+  Check(r == Result::Ok, "CoonsPatch succeeds on 4 curved, already-closing boundary curves");
+  Check(gap < 1e-9, "CoonsPatch reports an essentially-zero corner gap for boundaries that already close");
+
+  // The patch's own boundary isocurves must reproduce the ORIGINAL
+  // (unreparameterized) curves exactly, sample by sample - the real
+  // test: a naive sample-then-refit approach (what NetworkSrf does)
+  // would NOT pass this at anywhere near this tolerance.
+  double max_err = 0.0;
+  for (int k = 0; k <= 40; ++k) {
+    const double t = k / 40.0;
+    const Point3d pb = bottom.PointAt(bottom.Domain().min + (bottom.Domain().max - bottom.Domain().min) * t);
+    const Point3d pt = top.PointAt(top.Domain().min + (top.Domain().max - top.Domain().min) * t);
+    const Point3d pl = left.PointAt(left.Domain().min + (left.Domain().max - left.Domain().min) * t);
+    const Point3d pr = right.PointAt(right.Domain().min + (right.Domain().max - right.Domain().min) * t);
+    const double du = patch.Domain(0).max - patch.Domain(0).min, dv = patch.Domain(1).max - patch.Domain(1).min;
+    const double u = patch.Domain(0).min + du * t, v = patch.Domain(1).min + dv * t;
+    max_err = std::max({max_err, patch.PointAt(u, patch.Domain(1).min).DistanceTo(pb), patch.PointAt(u, patch.Domain(1).max).DistanceTo(pt),
+                        patch.PointAt(patch.Domain(0).min, v).DistanceTo(pl), patch.PointAt(patch.Domain(0).max, v).DistanceTo(pr)});
+  }
+  Check(max_err < 1e-9, "CoonsPatch's own boundary isocurves reproduce all 4 original input curves exactly (< 1e-9), at 41 samples each");
+
+  // The 4 corners are reproduced exactly too (a degenerate case of the
+  // boundary check above, called out separately since it's the part a
+  // bilinear-only construction would get right while missing the
+  // curved interior of each edge).
+  Check(patch.PointAt(patch.Domain(0).min, patch.Domain(1).min).DistanceTo(Point3d(0, 0, 0)) < 1e-9, "CoonsPatch corner (0,0,0) exact");
+  Check(patch.PointAt(patch.Domain(0).max, patch.Domain(1).min).DistanceTo(Point3d(4, 0, 1)) < 1e-9, "CoonsPatch corner (4,0,1) exact");
+  Check(patch.PointAt(patch.Domain(0).min, patch.Domain(1).max).DistanceTo(Point3d(0, 4, 1)) < 1e-9, "CoonsPatch corner (0,4,1) exact");
+  Check(patch.PointAt(patch.Domain(0).max, patch.Domain(1).max).DistanceTo(Point3d(4, 4, 2)) < 1e-9, "CoonsPatch corner (4,4,2) exact");
+
+  // Compare against the weaker "sample the curves, refit a surface
+  // through the samples" approach dino8-app's own NetworkSrf/
+  // SurfaceFromRows uses - the real, measurable gap this method closes.
+  std::vector<Point3d> naive_grid;
+  const int n = 8;
+  for (int j = 0; j < n; ++j) {
+    for (int i = 0; i < n; ++i) {
+      const double fu = static_cast<double>(i) / (n - 1), fv = static_cast<double>(j) / (n - 1);
+      const Point3d b0 = bottom.PointAt(bottom.Domain().min + (bottom.Domain().max - bottom.Domain().min) * fu);
+      const Point3d t0 = top.PointAt(top.Domain().min + (top.Domain().max - top.Domain().min) * fu);
+      naive_grid.push_back(b0 * (1 - fv) + t0 * fv);
+    }
+  }
+  const NurbsSurface naive = NurbsSurface::FromControlGrid(naive_grid, n, n, 3, 3);
+  double naive_err = 0.0;
+  for (int k = 0; k <= 40; ++k) {
+    const double t = k / 40.0;
+    const Point3d pb = bottom.PointAt(bottom.Domain().min + (bottom.Domain().max - bottom.Domain().min) * t);
+    naive_err = std::max(naive_err, naive.PointAt(naive.Domain(0).min + (naive.Domain(0).max - naive.Domain(0).min) * t, naive.Domain(1).min).DistanceTo(pb));
+  }
+  Check(naive_err > 1e-3, "the naive sample-and-refit construction (what NetworkSrf uses today) measurably misses the bottom boundary curve, unlike CoonsPatch");
+}
+
+void TestSurfaceCoonsPatchAutoOrientsReversedBoundaries() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  NurbsCurve bottom = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(2, 0, 0.5), Point3d(4, 0, 0)}, 2);
+  NurbsCurve top = NurbsCurve::FromControlPoints({Point3d(0, 4, 1), Point3d(2, 4, 1.5), Point3d(4, 4, 1)}, 2);
+  NurbsCurve left = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 4, 1)}, 1);
+  NurbsCurve right = NurbsCurve::FromControlPoints({Point3d(4, 0, 0), Point3d(4, 4, 1)}, 1);
+
+  NurbsSurface reference;
+  Check(NurbsSurface::CoonsPatch(bottom, top, left, right, reference) == Result::Ok, "CoonsPatch orientation setup: the correctly-oriented reference patch succeeds");
+
+  // Reverse top and right - exactly what an app command chaining
+  // arbitrarily-picked curves would hand this method in practice.
+  NurbsCurve top_rev = top, right_rev = right;
+  top_rev.Reverse();
+  right_rev.Reverse();
+  NurbsSurface reoriented;
+  double gap = -1.0;
+  Check(NurbsSurface::CoonsPatch(bottom, top_rev, left, right_rev, reoriented, 1e-6, &gap) == Result::Ok,
+        "CoonsPatch succeeds even when top and right are handed in reversed as given");
+  Check(gap < 1e-9, "CoonsPatch's auto-orientation search still finds an essentially-zero corner gap");
+  double diff = 0.0;
+  for (int i = 0; i <= 10; ++i)
+    for (int j = 0; j <= 10; ++j) {
+      const double u = reference.Domain(0).min + (reference.Domain(0).max - reference.Domain(0).min) * i / 10.0;
+      const double v = reference.Domain(1).min + (reference.Domain(1).max - reference.Domain(1).min) * j / 10.0;
+      const double ru = reoriented.Domain(0).min + (reoriented.Domain(0).max - reoriented.Domain(0).min) * i / 10.0;
+      const double rv = reoriented.Domain(1).min + (reoriented.Domain(1).max - reoriented.Domain(1).min) * j / 10.0;
+      diff = std::max(diff, reference.PointAt(u, v).DistanceTo(reoriented.PointAt(ru, rv)));
+    }
+  Check(diff < 1e-9, "CoonsPatch built from reversed inputs is geometrically identical to the one built from correctly-oriented inputs");
+}
+
+void TestSurfaceCoonsPatchRefusesNonClosingBoundaries() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const NurbsCurve bottom = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(4, 0, 0)}, 1);
+  const NurbsCurve top = NurbsCurve::FromControlPoints({Point3d(0, 4, 0), Point3d(4, 4, 0)}, 1);
+  const NurbsCurve left = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 4, 0)}, 1);
+  // Deliberately doesn't reach (4, *, *) at all - a genuinely
+  // disconnected boundary, not just a rounding-level gap.
+  const NurbsCurve right = NurbsCurve::FromControlPoints({Point3d(9, 0, 0), Point3d(9, 4, 0)}, 1);
+
+  NurbsSurface patch;
+  double gap = -1.0;
+  Check(NurbsSurface::CoonsPatch(bottom, top, left, right, patch, 1e-6, &gap) == Result::Failed,
+        "CoonsPatch refuses 4 curves that don't actually close into a loop");
+  Check(gap > 1.0, "CoonsPatch reports a genuinely large corner gap on refusal (not a rounding-level number)");
+}
+
 int main() {
   ON::Begin();
 
@@ -25424,6 +25554,10 @@ int main() {
   TestSurfaceUnrollDevelopableConePreservesApexDistanceAndSectorAngleExactly();
   TestSurfaceUnrollDevelopableRefusesNonDevelopableSurface();
   TestSurfaceUnrollDevelopableArgumentChecks();
+
+  TestSurfaceCoonsPatchReproducesFourCurvedBoundariesExactly();
+  TestSurfaceCoonsPatchAutoOrientsReversedBoundaries();
+  TestSurfaceCoonsPatchRefusesNonClosingBoundaries();
 
   ON::End();
 

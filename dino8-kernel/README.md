@@ -3047,6 +3047,57 @@ honestly out of scope.
   mutation (disabling the angle-unwrap pass) makes exactly the 5 checks
   that depend on it fail, including the full-loop seam check, closing
   the loop on why that fix was needed rather than just asserting it.
+- `NurbsSurface::CoonsPatch(bottom, top, left, right, out, tolerance,
+  &out_corner_gap)`: the exact bilinearly-blended Coons patch through 4
+  boundary curves (Parasolid/Rhino's NetworkSrf/EdgeSrf for exactly 4
+  curves), as real NURBS control-point algebra - the classical
+  `S = R_uv + R_vu - B` construction (a ruled surface between
+  `bottom`/`top`, a ruled surface between `left`/`right`, minus a
+  bilinear correction through the 4 corners), all three brought to one
+  shared (degree, knot vector) pair in both directions via
+  `ElevateDegree()`/`InsertKnotAt()` (both already-tested,
+  shape-preserving) so the sum is exact homogeneous control-point
+  arithmetic, never a fit. This directly replaces a real weaker
+  approximation in dino8-app's own existing `NetworkSrf` command for
+  its 4-curve case: that command's `SurfaceFromRows()` samples each
+  curve into discrete points and hands them to `FromControlGrid()`,
+  which treats sampled points *as* control points - and a B-spline
+  generally does not pass through its own control points, so that
+  surface's boundary only approximates the source curves (measured in
+  the tests: > 1e-3 off on a genuinely curved boundary, vs. this
+  method's < 1e-9).
+  `bottom`/`top` and `left`/`right` are auto-oriented (each of `top`/
+  `right` tried both as given and reversed, 4 combinations, whichever
+  best closes all 4 corners) since a caller chaining arbitrarily-picked
+  curves - the real situation an app command using this is in - can't
+  otherwise guarantee a consistent winding.
+  Two real bugs found and fixed while building this, both confirmed by
+  a debug run before assuming a cause, not guessed at: (1)
+  `FromControlGrid()`'s own doc comment claimed "u varies fastest" for
+  its `control_grid` indexing; the actual code is `idx = u * v_count +
+  v` (v varies fastest) - a doc-only fix (see there), but it broke this
+  method's own bilinear-correction-term construction until traced with
+  a scratch probe. (2) `ON_NurbsCurve::Reverse()` (already documented,
+  correctly, on `NurbsCurve::Reverse()`'s own doc comment as not
+  preserving the prior domain) needs its domain re-normalized
+  immediately after reversing for this method's own orientation search
+  to compare endpoints meaningfully - missing that made every
+  "reversed" trial candidate compare against the wrong, un-normalized
+  parameter range, confirmed by a debug run showing `PointAt(0)`/
+  `PointAt(1)` landing on the wrong (in one case a domain-negated,
+  off-curve) points after a raw `Reverse()`.
+  Verified with real control-point-level geometry, not sampled fitting:
+  on 4 genuinely different curved boundaries (cubic, not straight
+  lines, so a coincidental match is not possible), the built patch's
+  own 4 boundary isocurves reproduce all 4 original input curves
+  exactly (< 1e-9 at 41 samples each) and all 4 corners exactly; the
+  same patch built from `top`/`right` handed in pre-reversed is
+  geometrically identical (< 1e-9) to the correctly-oriented build,
+  confirming the auto-orientation search; 4 curves that never actually
+  meet are refused with a genuinely large (not rounding-level) reported
+  corner gap. A mutation (dropping the bilinear correction term) makes
+  the method's own internal self-check catch the wrong result and fail
+  closed, which the corresponding test then observes.
 
 ## What's still not done (as of chunk 2)
 
