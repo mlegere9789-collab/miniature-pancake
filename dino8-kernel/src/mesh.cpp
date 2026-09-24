@@ -2520,6 +2520,27 @@ bool IsDegenerateFace(const ON_Mesh& mesh, const ON_MeshFace& f, double toleranc
   return shortest <= tolerance || height <= tolerance;
 }
 
+// A face's identity independent of vertex order or winding direction:
+// the lexicographically smallest of all 2n rotations (n forward + n
+// reversed, n = 3 or 4) of its vertex-index sequence. Two faces are the
+// "same polygon" - Mesh::Check()'s duplicate_faces / RemoveDuplicateFaces()'s
+// own definition - exactly when their keys are equal: the same vertices,
+// same cyclic adjacency, either winding direction.
+std::vector<int> CanonicalFaceKey(const ON_MeshFace& f) {
+  const int n = f.IsQuad() ? 4 : 3;
+  std::vector<int> v(f.vi, f.vi + n);
+  std::vector<int> best = v;
+  for (int dir = 0; dir < 2; ++dir) {
+    for (int start = 0; start < n; ++start) {
+      std::vector<int> cand(static_cast<size_t>(n));
+      for (int k = 0; k < n; ++k) cand[static_cast<size_t>(k)] = v[static_cast<size_t>((start + k) % n)];
+      if (cand < best) best = cand;
+    }
+    std::reverse(v.begin(), v.end());
+  }
+  return best;
+}
+
 // Drops every vertex no surviving face of `mesh` references and
 // reindexes those faces to match - the exact compaction step
 // CloseNakedEdges() and RemoveDegenerateFaces() both need after removing
@@ -2548,6 +2569,7 @@ Mesh::CheckReport Mesh::Check(double tolerance) const {
   const double tol = std::max(tolerance, 0.0);
   std::map<std::pair<int, int>, int> undirected_count;
   std::map<std::pair<int, int>, int> directed_count;
+  std::set<std::vector<int>> seen_faces;
   for (int i = 0; i < mesh_.m_F.Count(); ++i) {
     const ON_MeshFace& f = mesh_.m_F[i];
     ForEachDirectedEdge(f, [&](int a, int b) {
@@ -2556,6 +2578,7 @@ Mesh::CheckReport Mesh::Check(double tolerance) const {
     });
 
     if (IsDegenerateFace(mesh_, f, tol)) ++report.degenerate_faces;
+    if (!seen_faces.insert(CanonicalFaceKey(f)).second) ++report.duplicate_faces;
   }
   for (const auto& [edge, count] : undirected_count) {
     if (count == 1) ++report.naked_edges;
@@ -2668,6 +2691,26 @@ int Mesh::RemoveDegenerateFaces(double tolerance) {
   int removed = 0;
   for (int i = 0; i < mesh_.m_F.Count(); ++i) {
     if (IsDegenerateFace(mesh_, mesh_.m_F[i], tol)) {
+      ++removed;
+      continue;
+    }
+    faces.Append(mesh_.m_F[i]);
+  }
+  if (removed == 0) return 0;
+  mesh_.m_F = faces;
+  CompactUnusedVertices(mesh_);
+  mesh_.m_S.Destroy();
+  mesh_.m_N.Destroy();
+  mesh_.m_FN.Destroy();
+  return removed;
+}
+
+int Mesh::RemoveDuplicateFaces() {
+  std::set<std::vector<int>> seen;
+  ON_SimpleArray<ON_MeshFace> faces;
+  int removed = 0;
+  for (int i = 0; i < mesh_.m_F.Count(); ++i) {
+    if (!seen.insert(CanonicalFaceKey(mesh_.m_F[i])).second) {
       ++removed;
       continue;
     }

@@ -2291,6 +2291,31 @@ What this repo does instead:
   Both are now permanent regression tests
   (`TestSubDMeshRoundTripIsExactAtLevelZero`), so this is a corrected,
   verified claim rather than an assumed one.
+- `Mesh::CheckReport::duplicate_faces` + `Mesh::RemoveDuplicateFaces()`:
+  the fifth `Check()`/repair pair, closing a real gap `degenerate_faces`/
+  `RemoveDegenerateFaces()` didn't cover - two perfectly valid, non-
+  degenerate faces sitting exactly on top of each other (the same
+  vertex indices, in the same cyclic order or its exact reverse - a
+  common "import appended the same geometry twice" defect), which a
+  per-face degeneracy test alone can never catch, since each one, taken
+  alone, is a fine triangle. Identity is computed as the lexicographically
+  smallest of a face's 2n rotations (n forward + n reversed, n = 3 or 4)
+  - winding-direction-agnostic and rotation-agnostic, so a triangle, its
+  same-winding rotated repeat, AND its opposite-winding repeat are all
+  correctly recognized as the same polygon, not just an exact index-array
+  match. `RemoveDuplicateFaces()` keeps the first occurrence (in face-array
+  order) and drops every later duplicate, reusing the same
+  `CompactUnusedVertices()` helper the degenerate-face repair already
+  uses. Distinct from `duplicate_vertices`: two faces built from
+  different vertex INDICES that happen to sit at the same 3D position is
+  a `CloseNakedEdges()` problem, not this one - `duplicate_faces` is
+  about index-identical polygons, not merely coincident ones. Verified
+  with a fixture carrying one triangle repeated 3 ways (an index-order
+  repeat, a rotated repeat, an opposite-winding repeat) alongside one
+  genuinely distinct triangle: `Check()` counts exactly 2 duplicates (not
+  3 - the first occurrence is the baseline, not a duplicate of itself),
+  `RemoveDuplicateFaces()` removes exactly those 2, and the survivor is
+  provably the first occurrence, not an arbitrary one.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
