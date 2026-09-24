@@ -79,6 +79,14 @@ Mesh SubD::ToApproximateMesh() const {
   return result;
 }
 
+SubD SubD::Transform(const ON_Xform& xform) const {
+  SubD result = *this;  // ON_SubD's copy ctor deep-copies (verified in SetEdgeSharpness()'s own comment)
+  if (!result.subd_.Transform(xform)) {
+    throw std::invalid_argument("dino8::kernel::SubD::Transform: ON_SubD::Transform failed (xform is not a valid transform)");
+  }
+  return result;
+}
+
 int SubD::FaceCount() const { return static_cast<int>(subd_.FaceCount()); }
 int SubD::VertexCount() const { return static_cast<int>(subd_.VertexCount()); }
 int SubD::EdgeCount() const { return static_cast<int>(subd_.EdgeCount()); }
