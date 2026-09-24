@@ -22021,6 +22021,391 @@ void TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges() {
 }
 
 // ---------------------------------------------------------------------------
+// Brep::SphericalFace (brep.h) and FilletConvexEdges (fillet.h) - spherical
+// vertex blends.
+
+std::vector<std::pair<dino8::kernel::Point3d, dino8::kernel::Point3d>> AllUnitBoxEdges() {
+  using dino8::kernel::Point3d;
+  std::vector<std::pair<Point3d, Point3d>> all;
+  for (int z = 0; z < 2; ++z) {
+    for (int y = 0; y < 2; ++y) all.push_back({Point3d(0, y, z), Point3d(1, y, z)});
+    for (int x = 0; x < 2; ++x) all.push_back({Point3d(x, 0, z), Point3d(x, 1, z)});
+  }
+  for (int x = 0; x < 2; ++x) {
+    for (int y = 0; y < 2; ++y) all.push_back({Point3d(x, y, 0), Point3d(x, y, 1)});
+  }
+  return all;
+}
+
+// Steiner's formula for the Minkowski sum of a convex polyhedron K with a
+// ball of radius r: V = V(K) + S(K) r + M(K) r^2 + (4/3) pi r^3, with
+// M(K) = sum over edges of L_e * (pi - theta_e) / 2.
+double RoundedUnitBoxVolume(double r) {
+  const double a = 1.0 - 2.0 * r;
+  return a * a * a + 6.0 * a * a * r + 3.0 * a * ON_PI * r * r + (4.0 / 3.0) * ON_PI * r * r * r;
+}
+
+void TestSphericalFaceOctantIsValidWithSingularPoleTrim() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  Brep::SphericalFace sf;
+  sf.frame = ON_Plane(Point3d(0, 0, 0), Vector3d(1, 0, 0), Vector3d(0, 1, 0));
+  sf.radius = 1.0;
+  sf.angle = ON_PI / 2.0;
+  sf.lat0 = 0.0;
+  sf.lat1 = ON_PI / 2.0;
+  const Brep b = Brep::FromMixedFaces({}, {}, {}, {sf});
+  ON_TextLog log;
+  Check(b.raw().IsValid(&log), "a lone sphere octant SphericalFace passes ON_Brep::IsValid()");
+  Check(b.FaceCount() == 1 && b.raw().m_V.Count() == 3 && b.raw().m_E.Count() == 3 && b.raw().m_T.Count() == 4,
+        "the octant has 3 vertices (two equator corners + the pole), 3 edges and 4 trims");
+  int singular = 0;
+  for (int t = 0; t < b.raw().m_T.Count(); ++t) {
+    if (b.raw().m_T[t].m_type == ON_BrepTrim::singular) ++singular;
+  }
+  Check(singular == 1, "exactly one trim is SINGULAR (the collapsed north-pole side), the other three carry real edges");
+  // Every real edge is an exact great-circle quadrant: its midpoint is at
+  // distance 1 from the center, at 45 degrees between its two vertices.
+  bool arcs_exact = true;
+  for (int e = 0; e < b.raw().m_E.Count(); ++e) {
+    const ON_BrepEdge& E = b.raw().m_E[e];
+    const Point3d mid = E.PointAt(E.Domain().Mid());
+    if (std::fabs(mid.DistanceTo(Point3d(0, 0, 0)) - 1.0) > 1e-9) arcs_exact = false;
+  }
+  Check(arcs_exact, "each of the octant's three edges is an exact arc on the unit sphere (midpoint at radius 1)");
+
+  const Mesh m = b.TessellateToClosedMesh(32, 32);
+  Check(std::fabs(m.Area() - ON_PI / 2.0) < 0.01, "the tessellated octant's area is within 1% of pi/2 at 32x32");
+  int degenerate = 0;
+  for (int i = 0; i < m.raw().m_F.Count(); ++i) {
+    const ON_MeshFace& f = m.raw().m_F[i];
+    if (f.vi[0] == f.vi[1] || f.vi[1] == f.vi[2] || f.vi[0] == f.vi[2]) ++degenerate;
+  }
+  Check(degenerate == 0, "MergeAndWeld drops every pole-collapsed zero-area triangle - no degenerate faces remain");
+
+  const Brep::MixedFacesResult mf = b.MixedFaces();
+  Check(mf.spherical.size() == 1 && mf.planar.empty() && mf.cylindrical.empty(),
+        "MixedFaces() hands the SphericalFace record back (one spherical, nothing else)");
+  if (mf.spherical.size() == 1) {
+    Check(std::fabs(mf.spherical[0].angle - ON_PI / 2.0) < 1e-12 && std::fabs(mf.spherical[0].lat0) < 1e-12 &&
+              std::fabs(mf.spherical[0].lat1 - ON_PI / 2.0) < 1e-12 && std::fabs(mf.spherical[0].radius - 1.0) < 1e-12,
+          "the round-tripped octant's angle/lat0/lat1/radius are exact");
+  }
+
+  // A general latitude band (no pole, non-quadrant angle) exercises both
+  // NURBS<->radian conversions away from the knots: area = angle * r^2 *
+  // (sin lat1 - sin lat0), and the record round-trips exactly.
+  Brep::SphericalFace band = sf;
+  band.angle = 2.0;
+  band.lat0 = -0.3;
+  band.lat1 = 0.7;
+  const Brep bb = Brep::FromMixedFaces({}, {}, {}, {band});
+  Check(bb.raw().IsValid(&log) && bb.raw().m_T.Count() == 4 && bb.raw().m_E.Count() == 4,
+        "a pole-free latitude band is valid with 4 real edges and no singular trim");
+  const double band_area = 2.0 * (std::sin(0.7) - std::sin(-0.3));
+  Check(std::fabs(bb.TessellateToClosedMesh(64, 64).Area() - band_area) < 0.005 * band_area,
+        "the band's tessellated area is within 0.5% of angle*(sin lat1 - sin lat0)");
+  const Brep::MixedFacesResult mb = bb.MixedFaces();
+  Check(mb.spherical.size() == 1 && std::fabs(mb.spherical[0].angle - 2.0) < 1e-12 &&
+            std::fabs(mb.spherical[0].lat0 + 0.3) < 1e-12 && std::fabs(mb.spherical[0].lat1 - 0.7) < 1e-12,
+        "the band's angle/lat0/lat1 survive the record round trip exactly");
+  // And the geometric (record-less) extraction agrees: strip the record by
+  // rebuilding from the raw ON_Brep alone.
+  Brep raw_only;
+  raw_only.raw() = bb.raw();
+  // raw_only has no side tables at all, so MixedFaces() must recover the
+  // trim from the real topology and the frame from the surface itself.
+  const Brep::MixedFacesResult mr = raw_only.MixedFaces();
+  Check(mr.spherical.size() == 1 && std::fabs(mr.spherical[0].angle - 2.0) < 1e-9 &&
+            std::fabs(mr.spherical[0].lat0 + 0.3) < 1e-9 && std::fabs(mr.spherical[0].lat1 - 0.7) < 1e-9 &&
+            std::fabs(mr.spherical[0].radius - 1.0) < 1e-9,
+        "with no record at all, MixedFaces() recovers the band's frame/radius/angle/latitudes from the surface and "
+        "topology alone (IsSphere + quadrant points + trim bounds)");
+
+  // Both poles at once is rejected.
+  Brep::SphericalFace lune = sf;
+  lune.lat0 = -ON_PI / 2.0;
+  bool threw = false;
+  try {
+    Brep::FromMixedFaces({}, {}, {}, {lune});
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "a SphericalFace spanning both poles (a full lune) is rejected");
+}
+
+void TestMergeAndWeldMakesBrepSphereAClosedManifold() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Point3d;
+  // Before MergeAndWeld dropped pole-collapsed faces, a welded Brep::Sphere
+  // carried 2*divisions zero-area triangles at its poles whose collapsed
+  // edge is walked twice by one face, so IsClosedManifold() was false
+  // even though the mesh was watertight - confirmed by reverting just the
+  // mesh.cpp change and watching this check fail.
+  const auto mesh = Brep::Sphere(Point3d(0, 0, 0), 2.0).TessellateToClosedMesh(32, 32);
+  Check(mesh.IsClosedManifold(), "a welded Brep::Sphere tessellation is a closed manifold (pole triangles dropped)");
+  Check(std::fabs(mesh.Volume() - (4.0 / 3.0) * ON_PI * 8.0) / ((4.0 / 3.0) * ON_PI * 8.0) < 0.01,
+        "dropping the zero-area pole faces leaves the sphere's volume unchanged (within 1% at 32x32)");
+}
+
+void TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  const double r = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep rounded = FilletConvexEdges(box, AllUnitBoxEdges(), r);
+  Check(rounded.FaceCount() == 26, "all 12 edges filleted: 6 planar + 12 cylindrical + 8 spherical = 26 faces");
+  Check(rounded.raw().m_E.Count() == 48 && rounded.raw().m_V.Count() == 24,
+        "the rounded box has 48 edges (24 rails + 24 arcs) and 24 vertices (3 per corner)");
+  ON_TextLog log;
+  Check(rounded.raw().IsValid(&log), "the rounded box passes ON_Brep::IsValid()");
+  bool oriented = false, has_boundary = true;
+  const bool manifold = rounded.raw().IsManifold(&oriented, &has_boundary);
+  Check(manifold && oriented && !has_boundary,
+        "the rounded box is an oriented CLOSED 2-manifold - every cylinder cap arc is ONE edge shared with a sphere "
+        "octant, every rail ONE edge shared with a planar face");
+  Check(rounded.raw().IsSolid(), "the rounded box reports IsSolid() == true");
+  int naked = 0;
+  for (int e = 0; e < rounded.raw().m_E.Count(); ++e) {
+    if (rounded.raw().m_E[e].TrimCount() != 2) ++naked;
+  }
+  Check(naked == 0, "no edge of the rounded box has other than exactly two trims");
+
+  // Closed form (Steiner / Minkowski sum of the inset box with a ball).
+  const double expected = RoundedUnitBoxVolume(r);
+  Check(std::fabs(expected - 0.907704993) < 1e-9, "sanity: the test's own closed form evaluates to 0.907704993...");
+  const double v5 = rounded.TessellateToClosedMeshAdaptive(1e-5).Volume();
+  const double v6 = rounded.TessellateToClosedMeshAdaptive(1e-6).Volume();
+  Check(std::fabs(v6 - expected) < 5e-6,
+        "rounded box volume at 1e-6 chord tolerance matches (1-2r)^3 + 6(1-2r)^2 r + 3(1-2r) pi r^2 + 4/3 pi r^3 "
+        "to within 5e-6 (measured error ~1.8e-6, the sphere octants' own chordal deficit)");
+  Check(std::fabs(v6 - expected) < std::fabs(v5 - expected) && v5 < expected && v6 < expected,
+        "the tessellated volume converges to the closed form from below as the chord tolerance tightens (chordal "
+        "deficit only, no systematic error)");
+
+  // Every sphere octant's center is a box corner offset by (r, r, r)
+  // inward, and every cylinder is set back by r at both ends.
+  const Brep::MixedFacesResult mf = rounded.MixedFaces();
+  Check(mf.spherical.size() == 8 && mf.cylindrical.size() == 12 && mf.planar.size() == 6 && mf.conical.empty(),
+        "MixedFaces() returns 6 planar, 12 cylindrical and 8 spherical records");
+  bool centers_ok = true, setbacks_ok = true;
+  for (const Brep::SphericalFace& sf : mf.spherical) {
+    for (double c : {sf.frame.origin.x, sf.frame.origin.y, sf.frame.origin.z}) {
+      if (std::fabs(c - r) > 1e-9 && std::fabs(c - (1.0 - r)) > 1e-9) centers_ok = false;
+    }
+    if (std::fabs(sf.radius - r) > 1e-12 || std::fabs(sf.angle - ON_PI / 2.0) > 1e-12) centers_ok = false;
+  }
+  for (const Brep::CylindricalFace& cf : mf.cylindrical) {
+    if (std::fabs(cf.length - (1.0 - 2.0 * r)) > 1e-9 || std::fabs(cf.radius - r) > 1e-12) setbacks_ok = false;
+  }
+  Check(centers_ok, "every corner sphere is centered at a box corner offset (r, r, r) inward, radius r, quarter sweep");
+  Check(setbacks_ok, "every edge cylinder is set back by exactly r at both ends (length 1 - 2r)");
+
+  // The whole thing round-trips through MixedFaces()/FromMixedFaces().
+  const Brep rebuilt = Brep::FromMixedFaces(mf.planar, mf.cylindrical, mf.conical, mf.spherical);
+  Check(rebuilt.raw().IsSolid() && rebuilt.FaceCount() == 26,
+        "rebuilding the rounded box from its own MixedFaces() records gives a 26-face solid again");
+}
+
+void TestFilletConvexEdgesHexagonalPrismMatchesSteinerFormula() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  // Regular hexagonal prism, circumradius 1, height 1.5: side/side
+  // dihedral 120 degrees (a NON-right equator sweep of 60 degrees), caps
+  // perpendicular to the sides (the "pole" faces).
+  const int N = 6;
+  const double R = 1.0, H = 1.5, r = 0.15;
+  std::vector<Point3d> bot, top;
+  for (int k = 0; k < N; ++k) {
+    const double ang = 2.0 * ON_PI * k / N;
+    bot.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), 0));
+    top.push_back(Point3d(R * std::cos(ang), R * std::sin(ang), H));
+  }
+  std::vector<Brep::PlanarFace> faces;
+  faces.push_back(ChamferTestPlanarFace(std::vector<Point3d>(bot.rbegin(), bot.rend())));
+  faces.push_back(ChamferTestPlanarFace(top));
+  for (int k = 0; k < N; ++k) {
+    const int k1 = (k + 1) % N;
+    faces.push_back(ChamferTestPlanarFace({bot[k], bot[k1], top[k1], top[k]}));
+  }
+  const Brep prism = Brep::FromPlanarFaces(faces);
+  const double area = 0.5 * N * R * R * std::sin(2.0 * ON_PI / N);
+  Check(prism.raw().IsSolid() && std::fabs(prism.TessellateToClosedMesh(4, 4).Volume() - area * H) < 1e-6,
+        "sanity: the hexagonal prism fixture is a closed solid of volume area*H");
+
+  std::vector<std::pair<Point3d, Point3d>> edges;
+  for (int k = 0; k < N; ++k) {
+    const int k1 = (k + 1) % N;
+    edges.push_back({bot[k], bot[k1]});
+    edges.push_back({top[k], top[k1]});
+    edges.push_back({bot[k], top[k]});
+  }
+  const Brep rounded = FilletConvexEdges(prism, edges, r);
+  Check(rounded.FaceCount() == 8 + 18 + 12, "all 18 prism edges filleted: 8 planar + 18 cylindrical + 12 spherical faces");
+  ON_TextLog log;
+  Check(rounded.raw().IsValid(&log), "the rounded hexagonal prism passes ON_Brep::IsValid()");
+  bool oriented = false, has_boundary = true;
+  const bool manifold = rounded.raw().IsManifold(&oriented, &has_boundary);
+  Check(manifold && oriented && !has_boundary && rounded.raw().IsSolid(),
+        "the rounded hexagonal prism is a closed solid - the 60-degree equator arcs weld to the side cylinders' caps "
+        "through the shared NURBS parameterization");
+
+  // Steiner: K = the hexagon inset by r (apothem R cos(pi/6) - r), height
+  // H - 2r; vertical edges have exterior angle pi/3, cap edges pi/2.
+  const double apothem_k = R * std::cos(ON_PI / N) - r;
+  const double Rk = apothem_k / std::cos(ON_PI / N);
+  const double side_k = 2.0 * Rk * std::sin(ON_PI / N);
+  const double hk = H - 2.0 * r;
+  const double area_k = 0.5 * N * Rk * Rk * std::sin(2.0 * ON_PI / N);
+  const double VK = area_k * hk;
+  const double SK = 2.0 * area_k + N * side_k * hk;
+  const double MK = N * hk * (2.0 * ON_PI / N) / 2.0 + 2.0 * N * side_k * (ON_PI / 2.0) / 2.0;
+  const double expected = VK + SK * r + MK * r * r + (4.0 / 3.0) * ON_PI * r * r * r;
+  const double measured = rounded.TessellateToClosedMeshAdaptive(1e-6).Volume();
+  Check(std::fabs(measured - expected) < 1e-5,
+        "rounded hexagonal prism volume matches Steiner's formula V(K) + S(K) r + M(K) r^2 + 4/3 pi r^3 to within 1e-5");
+  Check(measured < expected, "the prism's tessellated volume sits below the closed form (chordal deficit only)");
+}
+
+void TestFilletConvexEdgesParallelPairDoubleNotchesEndFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  // Two parallel top edges: each end face (x=0, x=1) gets TWO corner
+  // notches - the case PlanarFace::notch_runs exists for.
+  const double r = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep two = FilletConvexEdges(box, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}, {Point3d(0, 1, 1), Point3d(1, 1, 1)}}, r);
+  Check(two.FaceCount() == 8, "two parallel fillets: 8 faces");
+  ON_TextLog log;
+  Check(two.raw().IsValid(&log), "two parallel fillets pass ON_Brep::IsValid()");
+  bool oriented = false, has_boundary = true;
+  const bool manifold = two.raw().IsManifold(&oriented, &has_boundary);
+  Check(manifold && oriented && !has_boundary && two.raw().IsSolid(),
+        "two parallel fillets give a CLOSED solid - both notches on each end face are collapsed to single shared "
+        "edges (a second notch no longer overwrites the first)");
+  const double expected = 1.0 - 2.0 * r * r * (1.0 - ON_PI / 4.0);
+  Check(std::fabs(two.TessellateToClosedMeshAdaptive(1e-6).Volume() - expected) < 2e-6,
+        "two parallel fillets remove exactly two disjoint r^2(1 - pi/4) prisms");
+  const Brep::MixedFacesResult mf = two.MixedFaces();
+  int double_notched = 0;
+  for (const Brep::PlanarFace& f : mf.planar) {
+    if (f.notch_count > 1 && f.notch_runs.size() == 1) ++double_notched;
+  }
+  Check(double_notched == 2, "exactly the two end faces carry a legacy notch plus one notch_runs entry");
+}
+
+void TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+
+  // The three edges meeting at the origin: one spherical corner, three
+  // set-back cylinders, and three ordinary perpendicular notches at the
+  // far ends - both vertex regimes in one solid.
+  const double r = 0.2;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep c = FilletConvexEdges(
+      box, {{Point3d(0, 0, 0), Point3d(1, 0, 0)}, {Point3d(0, 0, 0), Point3d(0, 1, 0)}, {Point3d(0, 0, 0), Point3d(0, 0, 1)}},
+      r);
+  Check(c.FaceCount() == 10, "one rounded corner: 6 planar + 3 cylindrical + 1 spherical = 10 faces");
+  bool oriented = false, has_boundary = true;
+  const bool manifold = c.raw().IsManifold(&oriented, &has_boundary);
+  Check(manifold && oriented && !has_boundary && c.raw().IsSolid(), "one rounded corner is a closed solid");
+  // Removed: three (1-r)-long r^2(1-pi/4) prisms plus the corner cube
+  // minus the ball octant, r^3 (1 - pi/6).
+  const double expected = 1.0 - 3.0 * (1.0 - r) * r * r * (1.0 - ON_PI / 4.0) - r * r * r * (1.0 - ON_PI / 6.0);
+  Check(std::fabs(c.TessellateToClosedMeshAdaptive(1e-6).Volume() - expected) < 3e-6,
+        "one rounded corner's volume matches 1 - 3(1-r) r^2 (1-pi/4) - r^3 (1-pi/6)");
+  const Brep::MixedFacesResult mf = c.MixedFaces();
+  Check(mf.spherical.size() == 1 && mf.spherical[0].frame.origin.DistanceTo(Point3d(r, r, r)) < 1e-9,
+        "the corner sphere is centered at (r, r, r)");
+  bool lengths_ok = mf.cylindrical.size() == 3;
+  for (const Brep::CylindricalFace& cf : mf.cylindrical) {
+    if (std::fabs(cf.length - (1.0 - r)) > 1e-9) lengths_ok = false;
+  }
+  Check(lengths_ok, "each of the three cylinders is set back by r at the corner and runs to the far face (length 1 - r)");
+}
+
+void TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdge() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdge;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  const Brep one = FilletConvexEdges(box, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}}, 0.3);
+  const Brep ref = FilletConvexEdge(box, Point3d(0, 0, 1), Point3d(1, 0, 1), 0.3);
+  Check(one.FaceCount() == ref.FaceCount() && one.raw().m_E.Count() == ref.raw().m_E.Count() &&
+            one.raw().m_V.Count() == ref.raw().m_V.Count(),
+        "a single-edge FilletConvexEdges call has the same face/edge/vertex counts as FilletConvexEdge");
+  Check(std::fabs(one.TessellateToClosedMeshAdaptive(1e-7).Volume() - ref.TessellateToClosedMeshAdaptive(1e-7).Volume()) < 1e-12,
+        "a single-edge FilletConvexEdges call tessellates to the same volume as FilletConvexEdge (same construction)");
+  Check(one.raw().IsSolid(), "a single-edge FilletConvexEdges result is a closed solid");
+}
+
+void TestFilletConvexEdgesRejectsUnsupportedConfigurations() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::FilletConvexEdges;
+  using dino8::kernel::Point3d;
+  const Brep box = Brep::Box(0, 0, 0, 1, 1, 1);
+  auto throws = [](const std::function<void()>& fn) {
+    try {
+      fn();
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+    return false;
+  };
+  Check(throws([&] { FilletConvexEdges(box, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}}, 0.0); }), "rejects radius 0");
+  Check(throws([&] { FilletConvexEdges(box, {}, 0.2); }), "rejects an empty edge list");
+  Check(throws([&] {
+          FilletConvexEdges(box, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}, {Point3d(1, 0, 1), Point3d(0, 0, 1)}}, 0.2);
+        }),
+        "rejects the same edge listed twice (in either direction)");
+  Check(throws([&] {
+          FilletConvexEdges(box, {{Point3d(0, 0, 0), Point3d(1, 0, 0)}, {Point3d(0, 0, 0), Point3d(0, 1, 0)}}, 0.2);
+        }),
+        "rejects two fillets meeting at a corner whose third edge stays sharp (m == 2) - a non-spherical vertex blend");
+  Check(throws([&] { FilletConvexEdges(box, AllUnitBoxEdges(), 0.6); }), "rejects a radius that does not fit the faces");
+  // A flat box whose height is less than two set-backs: the two spherical
+  // corners on each vertical edge would overlap.
+  const Brep flat = Brep::Box(0, 0, 0, 1, 1, 0.3);
+  std::vector<std::pair<Point3d, Point3d>> flat_edges;
+  for (int z = 0; z < 2; ++z) {
+    const double zz = z == 0 ? 0.0 : 0.3;
+    for (int y = 0; y < 2; ++y) flat_edges.push_back({Point3d(0, y, zz), Point3d(1, y, zz)});
+    for (int x = 0; x < 2; ++x) flat_edges.push_back({Point3d(x, 0, zz), Point3d(x, 1, zz)});
+  }
+  for (int x = 0; x < 2; ++x) {
+    for (int y = 0; y < 2; ++y) flat_edges.push_back({Point3d(x, y, 0), Point3d(x, y, 0.3)});
+  }
+  Check(throws([&] { FilletConvexEdges(flat, flat_edges, 0.2); }),
+        "rejects two spherical corners overlapping on a 0.3-long edge with r = 0.2 (set-backs 0.2 + 0.2 > 0.3)");
+  // A regular tetrahedron: every corner is trihedral but no face is
+  // perpendicular to the other two, so the corner blend is a general
+  // spherical triangle - disclosed as out of scope, rejected.
+  const Point3d A(1, 1, 1), B(1, -1, -1), C(-1, 1, -1), D(-1, -1, 1);
+  const std::vector<Brep::PlanarFace> tf = {ChamferTestPlanarFace({A, C, B}), ChamferTestPlanarFace({A, B, D}),
+                                            ChamferTestPlanarFace({A, D, C}), ChamferTestPlanarFace({B, C, D})};
+  const Brep tet = Brep::FromPlanarFaces(tf);
+  Check(tet.raw().IsSolid(), "sanity: the tetrahedron fixture is a closed solid");
+  Check(throws([&] { FilletConvexEdges(tet, {{A, B}, {A, C}, {A, D}, {B, C}, {B, D}, {C, D}}, 0.1); }),
+        "rejects a tetrahedron corner (no face perpendicular to the other two) rather than approximating its "
+        "spherical triangle");
+  // An input already carrying a curved face is rejected by PlanarFaces().
+  const Brep pre = FilletConvexEdges(box, {{Point3d(0, 0, 1), Point3d(1, 0, 1)}}, 0.2);
+  Check(throws([&] { FilletConvexEdges(pre, {{Point3d(0, 1, 1), Point3d(1, 1, 1)}}, 0.2); }),
+        "rejects a solid that already carries a fillet's curved face (PlanarFaces() scope)");
+}
+
 // Sweep-class Brep factories (src/sweep.cpp): Extrude / Revolve / Loft /
 // Sweep1 / Pipe, plus the MergeAndWeld collapsed-face fix they exposed.
 // Every check below is against computed geometry - closed-form volumes,
@@ -22688,6 +23073,14 @@ int main() {
   TestChamferConvexEdgeAngleMatchesTwoDistanceForm();
   TestChamferConvexEdgeRejectsInvalidInput();
   TestChamferConvexEdgeChainsAcrossACornerAndAlongParallelEdges();
+  TestSphericalFaceOctantIsValidWithSingularPoleTrim();
+  TestMergeAndWeldMakesBrepSphereAClosedManifold();
+  TestFilletConvexEdgesRoundedBoxMatchesSteinerFormula();
+  TestFilletConvexEdgesHexagonalPrismMatchesSteinerFormula();
+  TestFilletConvexEdgesParallelPairDoubleNotchesEndFaces();
+  TestFilletConvexEdgesSingleCornerSphereWithNotchedFarEnds();
+  TestFilletConvexEdgesSingleEdgeMatchesFilletConvexEdge();
+  TestFilletConvexEdgesRejectsUnsupportedConfigurations();
   TestBrepFromPlanarFacesBuildsValidOpenNurbsTopology();
   TestBooleanCombinePlanarResultHasValidClosedTopology();
   TestShellConvexPlanarResultHasValidTopology();
