@@ -5369,6 +5369,85 @@ void TestMinkowskiSum() {
         "size round-trip even though the erosion translates the result");
 }
 
+void TestOffsetSolidGrowMatchesSteinerFormula() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::OffsetSolid;
+
+  const Brep box_brep = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Mesh box = box_brep.TessellateToClosedMesh(1, 1);
+  const double d = 1.0;
+  const Mesh grown = OffsetSolid(box, d, 24);
+
+  const auto bounds = grown.GetBoundingBox();
+  Check(std::fabs(bounds.min.x - (-d)) < 1e-6 && std::fabs(bounds.max.x - (10.0 + d)) < 1e-6 &&
+            std::fabs(bounds.min.y - (-d)) < 1e-6 && std::fabs(bounds.max.y - (10.0 + d)) < 1e-6 &&
+            std::fabs(bounds.min.z - (-d)) < 1e-6 && std::fabs(bounds.max.z - (10.0 + d)) < 1e-6,
+        "OffsetSolid(+1.0) on a 10-cube expands its bounding box by exactly 1.0 on every side");
+
+  // Steiner's formula for the volume of a convex polyhedron P dilated by
+  // a ball of radius d: V(P) + Area(P)*d + (sum of edge lengths)*(pi*d^2/4)
+  // + (4/3)*pi*d^3 - a real, independently-derivable closed form for
+  // "growing" a solid by a ball (the exact volume a genuinely correct
+  // Minkowski sum with a sphere must produce), not something tuned to
+  // this implementation. For the unit cube of side 10: 6 faces of area
+  // 100, 12 edges of length 10 each.
+  const double V = 10.0 * 10.0 * 10.0;
+  const double surface_area = 6.0 * 10.0 * 10.0;
+  const double total_edge_length = 12.0 * 10.0;
+  const double expected = V + surface_area * d + total_edge_length * (ON_PI * d * d / 4.0) + (4.0 / 3.0) * ON_PI * d * d * d;
+  Check(std::fabs(grown.Volume() - expected) / expected < 0.02,
+        "OffsetSolid(+1.0) on a cube matches the independently-derived Steiner formula "
+        "(box growth + rounded edges/corners) within the rounding sphere's own tessellation error");
+}
+
+void TestOffsetSolidShrinkStaysExactForConvexSolid() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::OffsetSolid;
+
+  const Brep box_brep = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Mesh box = box_brep.TessellateToClosedMesh(1, 1);
+  const Mesh shrunk = OffsetSolid(box, -1.0, 24);
+
+  // Shrinking (erosion) a CONVEX solid by a ball smaller than its own
+  // inradius does NOT round any new corners - unlike growth, which rounds
+  // every convex edge/corner - so the result is exactly the smaller cube
+  // [1,9]^3, sharp edges and all: the real, asymmetric behavior of a
+  // uniform ball offset (see this function's own header doc comment),
+  // not approximated here.
+  const auto bounds = shrunk.GetBoundingBox();
+  Check(std::fabs(bounds.min.x - 1.0) < 1e-6 && std::fabs(bounds.max.x - 9.0) < 1e-6 &&
+            std::fabs(bounds.min.y - 1.0) < 1e-6 && std::fabs(bounds.max.y - 9.0) < 1e-6 &&
+            std::fabs(bounds.min.z - 1.0) < 1e-6 && std::fabs(bounds.max.z - 9.0) < 1e-6,
+        "OffsetSolid(-1.0) on a 10-cube contracts its bounding box by exactly 1.0 on every side");
+  Check(std::fabs(shrunk.Volume() - 8.0 * 8.0 * 8.0) / (8.0 * 8.0 * 8.0) < 1e-2,
+        "OffsetSolid(-1.0) on a cube matches the EXACT smaller cube's volume (8^3), "
+        "with no Steiner rounding term at all (a convex shrink stays sharp)");
+}
+
+void TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  using dino8::kernel::OffsetSolid;
+
+  const Brep box_brep = Brep::Box(0, 0, 0, 10, 10, 10);
+  const Mesh box = box_brep.TessellateToClosedMesh(1, 1);
+
+  const Mesh same = OffsetSolid(box, 0.0, 24);
+  Check(std::fabs(same.Volume() - box.Volume()) < 1e-9,
+        "OffsetSolid(0.0) returns the mesh unchanged, without calling into Manifold at all "
+        "(a zero-radius sphere is degenerate, not a meaningful no-op through it)");
+
+  bool threw = false;
+  try {
+    OffsetSolid(box, 1.0, 2);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  Check(threw, "OffsetSolid throws for sphere_divisions < 3 (cannot tessellate a genuine 3D sphere)");
+}
+
 void TestDecompose() {
   using dino8::kernel::Decompose;
   using dino8::kernel::Mesh;
@@ -7273,6 +7352,41 @@ void TestMeshThickenBuildsExactUnitCubeFromFlatSquare() {
   Check(cube.IsClosedManifold(), "...and the result is a genuine closed 2-manifold");
   Check(std::fabs(cube.Volume() - 1.0) < 1e-9,
         "...with volume exactly 1 - the flat square's own area (1) times the offset distance (1)");
+}
+
+// Mesh::Check()'s non_manifold_edge_list: a "book" of 3 triangles sharing
+// one spine edge (0,1) - the simplest possible non-manifold fixture -
+// with every other edge naked (used by only 1 triangle each), so the
+// spine is the ONLY non-manifold edge and its exact vertex pair must be
+// localized, not just counted.
+void TestMeshCheckLocalizesNonManifoldEdges() {
+  using dino8::kernel::Mesh;
+
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0: spine
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 1: spine
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));   // 2: page A
+  raw.m_V.Append(ON_3fPoint(0, -1, 0));  // 3: page B
+  raw.m_V.Append(ON_3fPoint(0, 0, 1));   // 4: page C
+  auto add_tri = [&](int a, int b, int c) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = c;
+    raw.m_F.Append(f);
+  };
+  add_tri(0, 1, 2);
+  add_tri(1, 0, 3);
+  add_tri(0, 1, 4);
+
+  const Mesh::CheckReport r = m.Check();
+  Check(r.non_manifold_edges == 1, "the 3-triangle spine edge is the only non-manifold edge");
+  Check(r.non_manifold_edge_list.size() == 1,
+        "non_manifold_edge_list has exactly 1 entry, matching non_manifold_edges' own count");
+  Check(r.non_manifold_edge_list[0] == std::make_pair(0, 1),
+        "the entry is (0, 1) - the spine's own two vertices, undirected and min-first");
 }
 
 // Mesh::FindSelfIntersections(): the "does this otherwise-closed-manifold
@@ -27641,6 +27755,9 @@ int main() {
   TestConvexHull();
   TestSimplify();
   TestMinkowskiSum();
+  TestOffsetSolidGrowMatchesSteinerFormula();
+  TestOffsetSolidShrinkStaysExactForConvexSolid();
+  TestOffsetSolidZeroDistanceIsIdentityAndArgumentChecks();
   TestDecompose();
   TestMinGap();
   TestRefineToLength();
@@ -27946,6 +28063,7 @@ int main() {
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
   TestMeshOffsetMovesVerticesAlongExactVertexNormal();
   TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
+  TestMeshCheckLocalizesNonManifoldEdges();
   TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();

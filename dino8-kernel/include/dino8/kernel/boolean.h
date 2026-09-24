@@ -93,6 +93,43 @@ Mesh MinkowskiSum(const Mesh& a, const Mesh& b);
 // MinkowskiSum().
 Mesh MinkowskiDifference(const Mesh& a, const Mesh& b);
 
+// Offsets a closed solid mesh by `distance` - Parasolid `PK_BODY_offset`'s
+// uniform-distance body-offset case, at the mesh level (see
+// NurbsSurface::OffsetAnalytic() for the exact-surface counterpart on a
+// single analytic face). Backed directly by MinkowskiSum()/
+// MinkowskiDifference() above with a sphere of radius `|distance|`
+// centered at the origin - the standard morphological dilation/erosion
+// definition of a uniform body offset, not something this kernel derives
+// independently:
+//  - `distance > 0` GROWS the solid (`MinkowskiSum(solid, sphere)`).
+//    Every CONVEX edge/corner is rounded to radius `distance` - a real
+//    property of the ball-offset operation itself (dilating a cube by a
+//    small ball rounds its 12 edges and 8 corners into fillets/spherical
+//    corners), not a limitation of this wrapper.
+//  - `distance < 0` SHRINKS it (`MinkowskiDifference(solid, sphere)`) -
+//    the dual case: every CONCAVE (reflex) edge/corner is rounded
+//    instead, while convex ones stay sharp (shrinking a cube by a small
+//    enough ball keeps its edges sharp, just moved inward - exactly
+//    ShellConvexPlanar()'s/OffsetAnalytic()'s own exact-offset behavior
+//    for a convex shape, recovered here as a special case of the general
+//    mesh-level operation). This asymmetry between growing and shrinking
+//    is the genuine, well-known behavior of a uniform ball offset, not
+//    approximated or hidden here.
+//  - `distance == 0` returns `solid` unchanged (no Minkowski call at
+//    all - a zero-radius sphere is degenerate, not a meaningful no-op
+//    through Manifold itself).
+//
+// `sphere_divisions` (both u and v) controls the rounding sphere's own
+// tessellation density - a rounded region in the result is only as
+// smooth as this sphere is, exactly as coarsely/finely tessellating the
+// sphere passed directly to MinkowskiSum()/MinkowskiDifference() would
+// be. Throws std::invalid_argument if `sphere_divisions < 3` (fewer
+// cannot tessellate a genuine 3D sphere at all), and whatever
+// MinkowskiSum()/MinkowskiDifference() themselves throw for other
+// failures (e.g. `solid` not a valid closed manifold, same requirement
+// as BooleanCombine()).
+Mesh OffsetSolid(const Mesh& solid, double distance, int sphere_divisions = 24);
+
 // Splits `mesh` into its disconnected pieces - one Mesh per connected
 // component - backed by Manifold's own `Manifold::Decompose`. The
 // counterpart to Mesh::MergeAndWeld() concatenating several meshes into
