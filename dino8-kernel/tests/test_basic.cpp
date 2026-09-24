@@ -7093,6 +7093,81 @@ void TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon() {
         "the SURVIVING copy is the first occurrence (0,1,2), not one of the later duplicates");
 }
 
+// Builds a single flat unit-square quad face at z=0, wound CCW when
+// viewed from +Z (vertices (0,0,0),(1,0,0),(1,1,0),(0,1,0)) - the
+// simplest possible fixture with an exact, hand-derivable vertex normal
+// ((0,0,1) everywhere, since both of the quad's own triangles share that
+// same flat normal) and an exact hand-derivable Offset()/Thicken()
+// result.
+dino8::kernel::Mesh MakeFlatUnitSquareMesh() {
+  dino8::kernel::Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));
+  raw.m_V.Append(ON_3fPoint(1, 1, 0));
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));
+  ON_MeshFace f;
+  f.vi[0] = 0;
+  f.vi[1] = 1;
+  f.vi[2] = 2;
+  f.vi[3] = 3;
+  raw.m_F.Append(f);
+  return m;
+}
+
+void TestMeshOffsetMovesVerticesAlongExactVertexNormal() {
+  using dino8::kernel::Point3d;
+
+  const auto square = MakeFlatUnitSquareMesh();
+  const auto offset = square.Offset(2.5);
+  Check(offset.VertexCount() == 4 && offset.FaceCount() == 1, "Offset() doesn't change vertex/face counts");
+  // Every vertex shifts by exactly (0, 0, 2.5) - the flat square's own
+  // exact (0,0,1) normal times the offset distance.
+  bool all_exact = true;
+  for (int i = 0; i < 4; ++i) {
+    const Point3d before(square.raw().m_V[i]);
+    const Point3d after(offset.raw().m_V[i]);
+    all_exact = all_exact && std::fabs(after.x - before.x) < 1e-9 && std::fabs(after.y - before.y) < 1e-9 &&
+                std::fabs(after.z - before.z - 2.5) < 1e-9;
+  }
+  Check(all_exact, "every vertex moves by exactly (0, 0, 2.5) - the flat square's exact normal times the distance");
+}
+
+// Thicken() on the same flat unit square must produce an EXACT unit cube
+// (for distance = 1): 8 vertices, 6 faces (1 flipped original bottom, 1
+// offset top, 4 side walls), closed manifold, volume exactly 1 - a fully
+// hand-derivable result, not merely plausible-looking.
+void TestMeshThickenBuildsExactUnitCubeFromFlatSquare() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+
+  const auto square = MakeFlatUnitSquareMesh();
+
+  bool threw_zero = false;
+  try {
+    (void)square.Thicken(0.0);
+  } catch (const std::invalid_argument&) {
+    threw_zero = true;
+  }
+  Check(threw_zero, "Thicken(0.0) throws - a zero-thickness solid is meaningless");
+
+  const Mesh box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  bool threw_closed = false;
+  try {
+    (void)box.Thicken(1.0);
+  } catch (const std::invalid_argument&) {
+    threw_closed = true;
+  }
+  Check(threw_closed, "Thicken() on an already-closed mesh throws - it only handles an open sheet");
+
+  const Mesh cube = square.Thicken(1.0);
+  Check(cube.VertexCount() == 8 && cube.FaceCount() == 6,
+        "Thicken(1.0) on the flat unit square gives exactly 8 vertices / 6 faces");
+  Check(cube.IsClosedManifold(), "...and the result is a genuine closed 2-manifold");
+  Check(std::fabs(cube.Volume() - 1.0) < 1e-9,
+        "...with volume exactly 1 - the flat square's own area (1) times the offset distance (1)");
+}
+
 // Mesh::FindSelfIntersections(): the "does this otherwise-closed-manifold
 // mesh actually pass through itself" question Check() cannot answer at all
 // (its own six conditions are every one an edge-adjacency defect - see
@@ -27491,6 +27566,8 @@ int main() {
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
   TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
   TestMeshRemoveDuplicateFacesKeepsOneCopyPerPolygon();
+  TestMeshOffsetMovesVerticesAlongExactVertexNormal();
+  TestMeshThickenBuildsExactUnitCubeFromFlatSquare();
   TestMeshFindSelfIntersectionsDetectsOnlyGenuineCrossings();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
