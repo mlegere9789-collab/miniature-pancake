@@ -2323,6 +2323,81 @@ What this repo does instead:
     `std::invalid_argument` naming which check failed, and `draft_angle
     == 0` delegates to `Extrude()` itself exactly rather than taking a
     numerically-noisier path through the offset machinery for no reason.
+- `Brep::Sweep2(section, rail1, rail2, stations, cap)` (`src/sweep.cpp`):
+  the two-rail sweep with scaling - Parasolid/ACIS's `SWEEP` along two
+  guide curves and Rhino's own `Sweep2`, the one item `PARITY_MAP.md`
+  still listed as "missing" for kernel-native NURBS B-rep sweep
+  operations (the app's own `Sweep2Command`,
+  `dino8-app/src/commands/cmd_surface.cpp:478-549`, only ever emits an
+  open mesh/surface fit through arc-length-matched rail stations - no
+  Brep, no caps, no exactness claim). Built on the SAME machinery
+  `Sweep1()` and `Loft()` already established here (`TwoRailFrames()`,
+  a new per-station frame builder alongside `RmfFrames()`, feeding the
+  same `SkinSections()`/`RuledBetween()`/`AssembleSweptBody()` pipeline),
+  not a separate implementation:
+  - **The frame.** At each station, origin on rail1, x toward rail2
+    (unit), z = unit(x cross the averaged rail1/rail2 tangent), y = z
+    cross x - an orthonormal, not merely linear, basis (checked directly:
+    x, y, z are each unit and mutually perpendicular by construction, so
+    the frame never introduces shear). `width` is the rail-to-rail
+    distance there. rail2 is reversed first if needed so it runs the
+    same direction as rail1 (comparing start-to-start against
+    start-to-end distance, the same rule the app's own `Sweep2Command`
+    already uses).
+  - **Uniform scaling, not independent per-axis stretching - a
+    deliberate, disclosed choice matching the app's own existing
+    `Sweep2Command` convention** (verified by reading its own `Build()`:
+    `local.push_back(... / w)` divides ALL THREE local coordinates by
+    the same rail-to-rail distance, and reconstruction multiplies all
+    three back by the station's own width - never one axis alone). This
+    kernel version reads `section` ONCE, in the station-0 frame, as
+    local coordinates uniformly scaled by that station's own width, then
+    places the SAME local coordinates back at every other station scaled
+    by ITS OWN width - so a profile centered between the rails stays
+    centered as they converge, and a circular section stays circular
+    (only its diameter changes) rather than distorting into an ellipse.
+  - **Exact where the geometry allows it, proven by closed form, not
+    merely argued.** Two straight, non-parallel rails take exactly 2
+    stations (`Loft()`'s own degree-1 ruled-surface shortcut): both the
+    frame's origin and its width are then affine in the station
+    fraction, so every local point's 3D trajectory is provably a
+    straight line, making the ruled wall the true geometry, not an
+    approximation of it. Verified against a hand-derived pyramid-frustum
+    closed form: a unit-square-derived profile spanning the FULL
+    rail-to-rail width between a vertical rail and a linearly-converging
+    one gives `Volume = (H/3)(D0^2 + D0*D1 + D1^2)` (the standard
+    frustum formula with "radius" replaced by full width) to 3e-16
+    relative - and the derivation genuinely needed a second pass: a
+    first attempt assumed the profile's plane was perpendicular to the
+    rails' own travel direction and got a factor of 4 wrong (the test
+    profile was drawn at HALF the rail separation, so its reconstructed
+    cross-section was `width/2` wide, not `width`) - caught by the exact
+    check itself, not glossed over. Parallel rails (constant separation,
+    zero scaling) are checked to reduce to a plain extrusion - volume
+    `D0^2 * H` to 4e-15 relative - confirming Sweep2 doesn't merely
+    "happen to work" for the tapered case but degrades correctly to its
+    own degenerate limit.
+  - **General curved rails are the interpolating skin**, same
+    `SkinSections()` global B-spline interpolation `Sweep1()`/`Loft()`
+    already use (so the wall passes through every station's own
+    transformed section exactly) - no closed form exists for a general
+    curved two-rail sweep, so this case is checked structurally instead:
+    a genuine `IsValid()`/`IsSolid()` closed solid, positive volume, and
+    `Mesh::IsClosedManifold()` at both a requested and an asymmetric
+    division pair. A closed (wrap) rail pair skins periodically with no
+    caps, exactly as `Sweep1()`'s own closed-rail case does.
+  - **Caps** follow `Sweep1()`'s own rule (a closed, non-periodic,
+    planar section only), oriented via the station-0 frame's own
+    averaged tangent playing the role `Sweep1()`'s `frames[0].t` plays
+    there.
+  - **Disclosed limits, not silently degraded output**: throws
+    `std::invalid_argument` for `stations < 2`, either rail invalid, a
+    station where the rails touch (zero separation - the frame's width
+    would be zero), or a station where a rail's tangent is exactly
+    parallel to the rail-to-rail direction (the frame's own `z` cross
+    product is then undefined). No twist/road-like alignment control, no
+    guide curves - `PARITY_MAP.md`'s own remaining "Sweep controls:
+    twist along path, scale along path" gap is unaffected by this entry.
 - `SubD::SetEdgeSharpness(p0, p1, sharpness, point_tolerance)`: real
   Pixar/OpenSubdiv-style semi-sharp (variable-weight) creasing, closing a
   gap `FromControlMesh()`'s own `crease_at_double_edges` parameter left
