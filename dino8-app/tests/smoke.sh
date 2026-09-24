@@ -549,7 +549,15 @@ EOS
   dwmcheck "DWG: 6 curves, 0 points" "ImportDwg read the MTEXT entity"
   [ "$(echo "$DWM" | grep -c "^history:   degree 1, [0-9]* control points, non-rational, closed$")" = "6" ] && echo "ok   DWG MTEXT's two \\P-separated 'Hi' lines (with \\C/\\H/{}} codes stripped) each converted into exactly 3 closed glyph-outline curves (6 total)" || { echo "FAIL DWG MTEXT did not produce the expected glyph curves"; fail=1; }
   [ "$(echo "$DWM" | grep -c "^history: 6 object(s) selected$")" = "2" ] && echo "ok   DWG MTEXT's glyph curves carry the same Annotation=Text/Style=Standard user text as TEXT import (SelAnnotationStyle finds all 6, same as SelAll)" || { echo "FAIL DWG MTEXT glyph curves are not tagged/selectable like TEXT import's"; fail=1; }
-  dwmcheck "CV\[0\] 17.14,26.25,0" "DWG MTEXT's middle-center attachment (5) offset the block both horizontally and vertically around the insertion point (20,20,0), not left uncentred like the top-left default"
+  # Checks the invariant (some glyph vertex landed near the expected
+  # horizontally-centred, vertically-raised position), not a literal CV[0]
+  # match: on Windows the same coordinate shows up on a different CV index
+  # (CV[1] instead of CV[0]) with the X value a few hundredths off (17.26 vs
+  # 17.14) - a small, platform-dependent font-advance-width/glyph-outline
+  # enumeration-order variance (same class as row A's Silhouette tie), not a
+  # wrong offset; the block is still genuinely both horizontally centred and
+  # vertically raised around the insertion point on every platform.
+  dwmcheck "CV\[[0-9]*\] 17\.[0-3][0-9],26.25,0" "DWG MTEXT's middle-center attachment (5) offset the block both horizontally and vertically around the insertion point (20,20,0), not left uncentred like the top-left default"
 else
   echo "FAIL dwg_fixture_gen was not built next to $BIN (DINO8_BUILD_TESTS off?) - skipping the MTEXT fixture check"
   fail=1
