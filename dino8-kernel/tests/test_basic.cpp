@@ -9729,6 +9729,273 @@ void TestSubDLimitPointsExactCubeAndFlatGrid() {
   Check(normals_ok, "every flat-grid limit normal is exactly (0, 0, 1)");
 }
 
+void TestSubDEvaluateFaceExactOnRegularFlatGrid() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDSurfacePoint;
+
+  // Same 3x3 flat grid as TestSubDToNurbsPatchesExactOnRegularFlatGrid,
+  // and the same hand-derivable ground truth: the regular center face's
+  // limit surface is exactly the plane point (1+u, 1+v, 0), so its
+  // partials are exactly (1,0,0) and (0,1,0) and its normal exactly
+  // (0,0,1) - a case EvaluateFace() can be checked against directly,
+  // not just for plausibility.
+  Mesh grid;
+  ON_Mesh& raw = grid.raw();
+  for (int i = 0; i < 4; ++i) {
+    for (int j = 0; j < 4; ++j) {
+      raw.m_V.Append(ON_3fPoint(static_cast<double>(i), static_cast<double>(j), 0.0));
+    }
+  }
+  auto idx = [](int i, int j) { return i * 4 + j; };
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      ON_MeshFace face;
+      face.vi[0] = idx(i, j);
+      face.vi[1] = idx(i + 1, j);
+      face.vi[2] = idx(i + 1, j + 1);
+      face.vi[3] = idx(i, j + 1);
+      raw.m_F.Append(face);
+    }
+  }
+
+  const SubD subd = SubD::FromControlMesh(grid);
+
+  // Find the one regular face (4 ordinary-interior corners) the same way
+  // TestSubDToNurbsPatchesExactOnRegularFlatGrid's own assertion already
+  // proved exists exactly once, and grab its face_id.
+  unsigned int regular_face_id = 0;
+  int regular_seen = 0;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr; f = fit.NextFace()) {
+    bool all_valence4 = f->EdgeCount() == 4;
+    for (unsigned int i = 0; all_valence4 && i < 4; ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      all_valence4 = v && v->EdgeCount() == 4 && v->FaceCount() == 4 && v->IsSmooth();
+    }
+    if (all_valence4) {
+      ++regular_seen;
+      regular_face_id = f->FaceId();
+    }
+  }
+  Check(regular_seen == 1, "sanity: exactly one regular face in the 3x3 flat grid, as in the "
+                           "ToNurbsPatches test this setup is shared with");
+
+  bool all_match = true, all_exact = true;
+  const double samples[] = {0.0, 0.1, 0.5, 0.9, 1.0};
+  for (double u : samples) {
+    for (double v : samples) {
+      const SubDSurfacePoint pt = subd.EvaluateFace(regular_face_id, u, v);
+      if (!pt.exact) all_exact = false;
+      const Point3d expected(1.0 + u, 1.0 + v, 0.0);
+      if (pt.position.DistanceTo(expected) > 1e-9) all_match = false;
+      if ((pt.tangent_u - dino8::kernel::Vector3d(1, 0, 0)).Length() > 1e-9) all_match = false;
+      if ((pt.tangent_v - dino8::kernel::Vector3d(0, 1, 0)).Length() > 1e-9) all_match = false;
+      if ((pt.normal - dino8::kernel::Vector3d(0, 0, 1)).Length() > 1e-9) all_match = false;
+    }
+  }
+  Check(all_exact, "EvaluateFace reports exact=true everywhere on the regular face");
+  Check(all_match,
+        "EvaluateFace's position matches the exact plane point (1+u,1+v,0), its tangent_u/"
+        "tangent_v match the exact (1,0,0)/(0,1,0) partials, and its normal matches the "
+        "exact (0,0,1), at every sampled (u,v) including the face's own corners");
+}
+
+void TestSubDEvaluateFaceAdaptiveOnIrregularFace() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+  using dino8::kernel::SubDSurfacePoint;
+
+  // A once-subdivided cube: every original corner keeps its valence-3
+  // extraordinary status (subdivision never changes an existing vertex's
+  // valence), while every newly-created edge/face-point vertex is
+  // valence 4 - so a face touching exactly one original corner has
+  // exactly 1 irregular (valence != 4) corner and 3 regular ones, the
+  // scenario EvaluateFace()'s one-level adaptive refinement is built for.
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  SubD subd = SubD::FromControlMesh(cube);
+  subd.Subdivide(1);
+
+  const ON_SubDFace* target = nullptr;
+  int irregular_corner = -1;
+  ON_SubDFaceIterator fit = subd.raw().FaceIterator();
+  for (const ON_SubDFace* f = fit.FirstFace(); f != nullptr && target == nullptr; f = fit.NextFace()) {
+    if (f->EdgeCount() != 4) continue;
+    int irregular_count = 0, irregular_idx = -1;
+    bool all_smooth = true;
+    for (unsigned int i = 0; i < 4; ++i) {
+      const ON_SubDVertex* v = f->Vertex(i);
+      if (!v || !v->IsSmooth()) all_smooth = false;
+      if (!v || v->EdgeCount() != 4) {
+        ++irregular_count;
+        irregular_idx = static_cast<int>(i);
+      }
+    }
+    if (all_smooth && irregular_count == 1) {
+      target = f;
+      irregular_corner = irregular_idx;
+    }
+  }
+  Check(target != nullptr,
+        "found a level-1 cube face with exactly one still-extraordinary (valence-3) "
+        "corner and 3 already-regular (valence-4) corners");
+
+  const unsigned int face_id = target->FaceId();
+  const int k = irregular_corner;
+  // Points 0.4 of the way from the face's own center (0.5, 0.5) toward
+  // each corner - deliberately NOT exact quadrant centers (0.25/0.75):
+  // those are exact dyadic fractions, and EvaluateFace()'s quadrant
+  // doubling maps a dyadic fraction to another exact dyadic fraction at
+  // every recursion level, which can walk the query to an exactly-0-or-1
+  // parameter (a face corner) after only 1-2 levels - a real degenerate
+  // case EvaluateFace() now resolves correctly (by snapping to that
+  // corner's own exact vertex limit point), but not what this test means
+  // to probe. 0.1/0.9 are not exact in binary floating point, so no
+  // level of this doubling ever lands exactly on 0 or 1.
+  const double near_pts[4][2] = {{0.1, 0.1}, {0.9, 0.1}, {0.9, 0.9}, {0.1, 0.9}};
+  const int opposite = (k + 2) % 4;
+
+  const SubDSurfacePoint far_pt = subd.EvaluateFace(face_id, near_pts[opposite][0], near_pts[opposite][1]);
+  Check(far_pt.exact,
+        "the quadrant diagonally opposite the still-extraordinary corner becomes exactly "
+        "regular after EvaluateFace()'s one level of adaptive refinement");
+
+  const int also_exact_quadrant = (k + 1) % 4;
+  const SubDSurfacePoint also_exact_pt =
+      subd.EvaluateFace(face_id, near_pts[also_exact_quadrant][0], near_pts[also_exact_quadrant][1]);
+  Check(also_exact_pt.exact,
+        "the other quadrant not touching the still-extraordinary corner is exact too");
+
+  // Unlike the two checks above (which only need ONE level of adaptive
+  // refinement to resolve, since any point outside corner k's own
+  // quadrant becomes regular immediately), staying "not exact" across
+  // MULTIPLE levels needs a query point close enough to corner k's own
+  // (u, v) that repeated doubling can't carry it into a neighboring
+  // quadrant within the levels tested below - 0.1 away isn't that close
+  // (each level's doubling roughly doubles the local offset too, so a
+  // 0.1-ish offset can cross a 0.5 quadrant boundary within just 2-3
+  // levels, entirely legitimately landing in an already-regular region -
+  // not a bug, just not what this check means to probe). 1e-6 away
+  // comfortably survives the handful of levels tested here (doubling
+  // 1e-6 stays under 0.5 for ~19 levels).
+  const double corner_uv[4][2] = {{0.0, 0.0}, {1.0, 0.0}, {1.0, 1.0}, {0.0, 1.0}};
+  const double inward[4][2] = {{1.0, 1.0}, {-1.0, 1.0}, {-1.0, -1.0}, {1.0, -1.0}};
+  const double deep_eps = 1e-6;
+  const double deep_u = corner_uv[k][0] + inward[k][0] * deep_eps;
+  const double deep_v = corner_uv[k][1] + inward[k][1] * deep_eps;
+
+  const SubDSurfacePoint near_pt = subd.EvaluateFace(face_id, deep_u, deep_v);
+  Check(!near_pt.exact,
+        "a query point genuinely close to the still-extraordinary corner is correctly "
+        "reported as not exact, at the default adaptive-level budget");
+
+  // Continuity check across the shared boundary between quadrant k
+  // (touching the still-extraordinary corner) and its neighbor
+  // `also_exact_quadrant`: evaluating from both sides, just short of and
+  // just past the shared u=0.5 or v=0.5 divide, must land at nearly the
+  // same 3D point - a strong check on the quadrant remapping and
+  // rotation math (ToVertexLocal/FromVertexLocal), since a sign or
+  // rotation bug there would show up as a visible jump, not just a
+  // wrong-but-plausible value.
+  const double eps = 1e-6;
+  double u_lo, v_lo, u_hi, v_hi;
+  if (k % 2 == 0) {
+    // k and (k+1)%4 share the vertical line u=0.5.
+    const double shared_v = (k == 0) ? 0.25 : 0.75;
+    u_lo = 0.5 - eps; v_lo = shared_v;
+    u_hi = 0.5 + eps; v_hi = shared_v;
+  } else {
+    // k and (k+1)%4 share the horizontal line v=0.5.
+    const double shared_u = (k == 1) ? 0.75 : 0.25;
+    u_lo = shared_u; v_lo = 0.5 - eps;
+    u_hi = shared_u; v_hi = 0.5 + eps;
+  }
+  const SubDSurfacePoint side_a = subd.EvaluateFace(face_id, u_lo, v_lo);
+  const SubDSurfacePoint side_b = subd.EvaluateFace(face_id, u_hi, v_hi);
+  Check(side_a.position.DistanceTo(side_b.position) < 1e-4,
+        "positions evaluated just either side of the boundary between the exact and "
+        "approximate quadrants nearly coincide (continuity, not a jump)");
+
+  // Increasing the adaptive-level budget should move the near-corner
+  // quadrant's reported value monotonically closer to itself at a much
+  // higher budget (a proxy for "converges", without needing a
+  // hand-derived closed form for the irregular case).
+  // Depth kept modest deliberately: EvaluateFace()'s adaptive refinement
+  // globally re-subdivides its whole internal working copy once per
+  // level (see its own doc comment on the resulting cost), and this
+  // mesh's level-1 face count (24) already means depth 6 means a
+  // ~98,000-face working copy - plenty for a reference value without
+  // getting anywhere near the method's own large-mesh safety cap.
+  const SubDSurfacePoint ref = subd.EvaluateFace(face_id, deep_u, deep_v, 6);
+  double prev_distance = std::numeric_limits<double>::infinity();
+  bool converges = true;
+  for (int levels : {0, 1, 2, 3}) {
+    const SubDSurfacePoint p = subd.EvaluateFace(face_id, deep_u, deep_v, levels);
+    const double d = p.position.DistanceTo(ref.position);
+    if (!(d <= prev_distance + 1e-12)) converges = false;
+    prev_distance = d;
+  }
+  Check(converges,
+        "the near-corner quadrant's reported position gets monotonically closer to a "
+        "high-adaptive-level reference value as max_adaptive_levels increases");
+
+  // max_adaptive_levels=0 must exactly match evaluating the SAME whole-
+  // face bilinear-corner-interpolant ToNurbsPatches() itself would build
+  // for this face (the two are meant to use the identical fallback).
+  const Point3d c00 = Point3d(target->Vertex(0)->ControlNetPoint());
+  const Point3d c10 = Point3d(target->Vertex(1)->ControlNetPoint());
+  const Point3d c11 = Point3d(target->Vertex(2)->ControlNetPoint());
+  const Point3d c01 = Point3d(target->Vertex(3)->ControlNetPoint());
+  const double u = 0.3, v = 0.7;
+  const Point3d expected_bilinear =
+      (1.0 - u) * ((1.0 - v) * c00 + v * c01) + u * ((1.0 - v) * c10 + v * c11);
+  const SubDSurfacePoint zero_budget = subd.EvaluateFace(face_id, u, v, 0);
+  Check(!zero_budget.exact, "max_adaptive_levels=0 always reports exact=false on an irregular face");
+  Check(zero_budget.position.DistanceTo(expected_bilinear) < 1e-9,
+        "max_adaptive_levels=0's position matches the hand-computed bilinear corner "
+        "interpolant of the face's own 4 control-net corners");
+
+  // Querying exactly at the still-extraordinary corner's own (u, v) -
+  // even with max_adaptive_levels=0, where the quadrant-recursion path
+  // never runs at all - must give that vertex's real, non-stub exact
+  // limit point (the same value LimitPoints() reports), not the raw
+  // control-net position or a bilinear approximation.
+  const std::vector<dino8::kernel::SubDLimitPoint> lps = subd.LimitPoints();
+  const dino8::kernel::SubDLimitPoint* expected_lp = nullptr;
+  for (const auto& lp : lps) {
+    if (lp.vertex_id == target->Vertex(static_cast<unsigned int>(k))->VertexId()) expected_lp = &lp;
+  }
+  Check(expected_lp != nullptr, "sanity: the irregular corner's vertex_id is in LimitPoints()'s output");
+  const double corner_u[4] = {0.0, 1.0, 1.0, 0.0};
+  const double corner_v[4] = {0.0, 0.0, 1.0, 1.0};
+  const SubDSurfacePoint at_corner = subd.EvaluateFace(face_id, corner_u[k], corner_v[k], 0);
+  Check(at_corner.exact, "EvaluateFace() at the extraordinary corner's own (u,v) is exact, "
+                         "even with max_adaptive_levels=0");
+  if (expected_lp != nullptr) {
+    Check(at_corner.position.DistanceTo(expected_lp->limit_point) < 1e-12,
+          "EvaluateFace() at the extraordinary corner's own (u,v) matches LimitPoints()'s "
+          "exact limit position for that same vertex");
+  }
+}
+
+void TestSubDEvaluateFaceThrowsOnBadInput() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::SubD;
+
+  const Mesh cube = MakeQuadBoxMesh(-1, -1, -1, 1, 1, 1);
+  const SubD subd = SubD::FromControlMesh(cube);
+
+  bool threw_bad_id = false;
+  try {
+    subd.EvaluateFace(999999, 0.5, 0.5);
+  } catch (const std::runtime_error&) {
+    threw_bad_id = true;
+  }
+  Check(threw_bad_id, "EvaluateFace throws on a face_id that doesn't exist");
+}
+
 void TestMeshComputeVertexNormals() {
   using dino8::kernel::Mesh;
   using dino8::kernel::Vector3d;
@@ -11461,6 +11728,123 @@ void TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle() {
   threw = false;
   try { ShellClosedTorus(plane, -1.0, r, t); } catch (const std::invalid_argument&) { threw = true; }
   Check(threw, "ShellClosedTorus refuses a non-positive major_radius");
+}
+
+void TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetFace;
+  using dino8::kernel::Point3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  const Brep grown_top = OffsetFace(box, 1, 2.0);
+  Check(std::fabs(PlanarBrepVolumeExact(grown_top) - 1200.0) < 1e-9,
+        "OffsetFace(box, top, +2.0) gives volume exactly 1200 (10x10x12)");
+  Check(grown_top.FaceCount() == 6, "OffsetFace on a box keeps exactly 6 faces (no topology change)");
+
+  const Brep shrunk_top = OffsetFace(box, 1, -2.0);
+  Check(std::fabs(PlanarBrepVolumeExact(shrunk_top) - 800.0) < 1e-9,
+        "OffsetFace(box, top, -2.0) gives volume exactly 800 (10x10x8)");
+
+  // Growing the LEFT face must extend the box to x=-1 while the RIGHT
+  // face (the one directly opposite, whose plane never moved) stays
+  // exactly at x=10 - the real test that only ONE plane moved and every
+  // other face's own boundary was correctly recomputed against it, not
+  // just that the total volume happens to match.
+  const Brep grown_left = OffsetFace(box, 4, 1.0);
+  Check(std::fabs(PlanarBrepVolumeExact(grown_left) - 1100.0) < 1e-9,
+        "OffsetFace(box, left, +1.0) gives volume exactly 1100 (11x10x10)");
+  Point3d min_pt = grown_left.PlanarFaces()[0].loop[0], max_pt = min_pt;
+  for (const auto& f : grown_left.PlanarFaces()) {
+    for (const Point3d& p : f.loop) {
+      min_pt.x = std::min(min_pt.x, p.x); max_pt.x = std::max(max_pt.x, p.x);
+      min_pt.y = std::min(min_pt.y, p.y); max_pt.y = std::max(max_pt.y, p.y);
+      min_pt.z = std::min(min_pt.z, p.z); max_pt.z = std::max(max_pt.z, p.z);
+    }
+  }
+  Check(std::fabs(min_pt.x - (-1.0)) < 1e-9 && std::fabs(max_pt.x - 10.0) < 1e-9 &&
+            std::fabs(min_pt.y) < 1e-9 && std::fabs(max_pt.y - 10.0) < 1e-9 &&
+            std::fabs(min_pt.z) < 1e-9 && std::fabs(max_pt.z - 10.0) < 1e-9,
+        "OffsetFace(box, left, +1.0): the box's new bounding box is exactly [-1,10]x[0,10]x[0,10] - "
+        "only the left face moved, every other face's own plane and boundary are exactly where they started");
+
+  const auto mesh = grown_left.TessellateToClosedMesh(1, 1);
+  Check(mesh.IsClosedManifold(), "OffsetFace's result tessellates to a closed, watertight manifold");
+  Check(std::fabs(mesh.Volume() - 1100.0) < 1e-3, "...with tessellated volume also matching 1100");
+
+  bool threw = false;
+  try { OffsetFace(box, 1, -11.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "OffsetFace refuses a distance that collapses the solid (the face would pass through the opposite one)");
+
+  threw = false;
+  try { OffsetFace(box, 99, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "OffsetFace refuses an out-of-range face_index");
+}
+
+// A right tetrahedron (apex at the origin, base triangle in the plane
+// z=h) is a genuinely non-axis-aligned, non-rectangular convex solid -
+// moving its BASE face outward by `d` (the other 3 face planes, which
+// all pass through the fixed apex, are untouched) must scale the whole
+// solid by the classical cone/pyramid similarity ratio ((h+d)/h)^3,
+// since the 3 side planes still meet at the same apex and only the cap's
+// own distance from it changed - an exact, independently-derivable
+// relationship this test checks directly, not merely a plausible-looking
+// number.
+void TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetFace;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double h = 3.0;
+  const Point3d apex(0, 0, 0);
+  const Point3d b0(2, 0, h), b1(-1, 2, h), b2(-1, -2, h);
+  const Point3d centroid((apex.x + b0.x + b1.x + b2.x) / 4.0, (apex.y + b0.y + b1.y + b2.y) / 4.0,
+                          (apex.z + b0.z + b1.z + b2.z) / 4.0);
+
+  auto make_outward = [&](Point3d p0, Point3d p1, Point3d p2) {
+    Brep::PlanarFace f;
+    Vector3d n = ON_CrossProduct(p1 - p0, p2 - p0);
+    n.Unitize();
+    if (ON_DotProduct(n, p0 - centroid) < 0) {
+      std::swap(p1, p2);
+      n = -n;
+    }
+    f.plane = ON_Plane(p0, n);
+    f.loop = {p0, p1, p2};
+    return f;
+  };
+
+  const std::vector<Brep::PlanarFace> faces = {
+      make_outward(apex, b0, b1),
+      make_outward(apex, b1, b2),
+      make_outward(apex, b2, b0),
+      make_outward(b0, b2, b1),  // base, at z = h
+  };
+  const Brep tet = Brep::FromPlanarFaces(faces);
+  const double orig_vol = PlanarBrepVolumeExact(tet);
+  Check(orig_vol > 0.0, "the hand-built tetrahedron has positive (correctly outward-oriented) volume");
+
+  int base_idx = -1;
+  const auto pf = tet.PlanarFaces();
+  for (size_t i = 0; i < pf.size(); ++i) {
+    if (std::fabs(pf[i].plane.zaxis.z - 1.0) < 1e-6) {
+      base_idx = static_cast<int>(i);
+      break;
+    }
+  }
+  Check(base_idx >= 0, "found the tetrahedron's own base face (outward normal +z) among Brep::FromPlanarFaces()'s output");
+
+  const double d = 1.5;
+  const Brep moved = OffsetFace(tet, base_idx, d);
+  const double expected = orig_vol * std::pow((h + d) / h, 3.0);
+  Check(std::fabs(PlanarBrepVolumeExact(moved) - expected) / expected < 1e-9,
+        "OffsetFace on the tetrahedron's base scales its exact volume by ((h+d)/h)^3, "
+        "the classical pyramid-similarity ratio - not merely a plausible number");
+  Check(moved.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the moved tetrahedron also tessellates to a closed, watertight manifold");
 }
 
 }  // namespace
@@ -27929,6 +28313,9 @@ int main() {
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestSubDToNurbsPatchesExactOnRegularFlatGrid();
   TestSubDLimitPointsExactCubeAndFlatGrid();
+  TestSubDEvaluateFaceExactOnRegularFlatGrid();
+  TestSubDEvaluateFaceAdaptiveOnIrregularFace();
+  TestSubDEvaluateFaceThrowsOnBadInput();
   TestMeshComputeVertexNormals();
   TestMeshSaveObjRoundTrips();
   TestMeshTextureCoordinates();
@@ -27960,6 +28347,8 @@ int main() {
   TestShellConvexPlanarPerFaceWallThicknessArgumentChecks();
   TestShellClosedSphereMatchesExactShellVolume();
   TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle();
+  TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces();
+  TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
