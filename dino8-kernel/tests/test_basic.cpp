@@ -4862,6 +4862,74 @@ void TestModelAddSubDRoundTrips() {
   std::remove(path.c_str());
 }
 
+// AddPointCloud() closes the same "no way to put this into a .3dm" gap
+// AddMesh()/AddSubD() closed for their own types - until it existed, a
+// dino8::kernel::PointCloud had no path into a Model at all, so
+// PointCloud's own doc comment claim that ON_PointCloud "round-trips"
+// through .3dm was unreachable from this kernel's API. Checks positions,
+// per-point colors, and per-point normals all survive - PointCloud's
+// "all or nothing" convention means a partial round trip of any one of
+// those would silently look like "no colors"/"no normals" rather than an
+// error, so each is checked explicitly rather than just object count.
+void TestModelAddPointCloudRoundTrips() {
+  using dino8::kernel::Model;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+
+  PointCloud cloud;
+  cloud.AppendPoint(dino8::kernel::Point3d(0, 0, 0));
+  cloud.AppendPoint(dino8::kernel::Point3d(1, 2, 3));
+  cloud.AppendPoint(dino8::kernel::Point3d(-4, 5, -6));
+  cloud.SetColors({ON_Color(255, 0, 0), ON_Color(0, 255, 0), ON_Color(0, 0, 255)});
+  cloud.SetNormals({dino8::kernel::Vector3d(1, 0, 0), dino8::kernel::Vector3d(0, 1, 0),
+                     dino8::kernel::Vector3d(0, 0, 1)});
+  Check(cloud.HasColors() && cloud.HasNormals(), "fixture: cloud carries colors and normals");
+
+  Model model;
+  model.AddPointCloud(cloud);
+  Check(model.ObjectCount() == 1, "model has one object after AddPointCloud()");
+
+  const std::string path = "dino8_kernel_point_cloud_roundtrip_test.3dm";
+  Check(model.Save(path) == Result::Ok, ".3dm save with a point cloud object succeeded");
+
+  Model loaded;
+  Check(Model::Load(path, loaded) == Result::Ok, ".3dm load succeeded");
+  Check(loaded.ObjectCount() == 1, "round-tripped model has one object");
+
+  ONX_ModelComponentIterator iterator(loaded.raw(), ON_ModelComponent::Type::ModelGeometry);
+  bool found_cloud = false;
+  for (const ON_ModelComponent* component = iterator.FirstComponent(); component != nullptr;
+       component = iterator.NextComponent()) {
+    const auto* geometry_component = static_cast<const ON_ModelGeometryComponent*>(component);
+    const auto* cloud_geometry =
+        dynamic_cast<const ON_PointCloud*>(geometry_component->Geometry(nullptr));
+    if (cloud_geometry == nullptr) continue;
+    found_cloud = true;
+
+    Check(cloud_geometry->PointCount() == cloud.PointCount(),
+          "the round-tripped point cloud has the original's point count (3)");
+    Check(cloud_geometry->HasPointColors(), "the round-tripped cloud kept its per-point colors");
+    Check(cloud_geometry->HasPointNormals(), "the round-tripped cloud kept its per-point normals");
+
+    PointCloud reloaded;
+    reloaded.raw() = *cloud_geometry;
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(reloaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 1e-12,
+            "round-tripped point position matches exactly");
+      Check(reloaded.ColorAt(i) == cloud.ColorAt(i), "round-tripped point color matches exactly");
+      const auto original_n = cloud.NormalAt(i);
+      const auto reloaded_n = reloaded.NormalAt(i);
+      Check(std::abs(reloaded_n.x - original_n.x) < 1e-12 &&
+                std::abs(reloaded_n.y - original_n.y) < 1e-12 &&
+                std::abs(reloaded_n.z - original_n.z) < 1e-12,
+            "round-tripped point normal matches exactly");
+    }
+  }
+  Check(found_cloud, "the .3dm file's model geometry actually contains a point cloud object");
+
+  std::remove(path.c_str());
+}
+
 void TestBoxVolume() {
   const auto box = MakeBox(0, 0, 0, 2, 2, 2);
   Check(std::abs(box.Volume() - 8.0) < 1e-9, "unit-scaled box volume is correct");
@@ -6722,6 +6790,68 @@ void TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices() {
   }
 }
 
+// Mesh-level RemoveDegenerateFaces(): three faces, each degenerate for a
+// DIFFERENT one of Check()'s own reasons (repeated vertex index, a
+// zero-length edge between two coincident-but-distinct vertices, and a
+// zero-height collinear triangle), each touching its own private
+// vertices not shared with anything else, alongside one genuinely valid
+// triangle. All hand-derived, not read back: removing the 3 degenerate
+// faces should also drop the 6 vertices only they referenced (3 stay:
+// the valid triangle's own), and leave the valid triangle untouched.
+void TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::Mesh;
+  namespace tol = dino8::kernel::tolerance;
+
+  Mesh clean_box = Brep::Box(1, 1, 1, 2, 2, 2).TessellateToClosedMesh(1, 1);
+  Check(clean_box.RemoveDegenerateFaces(tol::kDistance) == 0 && clean_box.FaceCount() == 12 &&
+            clean_box.VertexCount() == 8,
+        "RemoveDegenerateFaces() on an already-clean mesh removes nothing and leaves it untouched");
+
+  Mesh m;
+  ON_Mesh& raw = m.raw();
+  raw.m_V.Append(ON_3fPoint(0, 0, 0));   // 0: valid triangle
+  raw.m_V.Append(ON_3fPoint(1, 0, 0));   // 1: valid triangle
+  raw.m_V.Append(ON_3fPoint(0, 1, 0));   // 2: valid triangle
+  raw.m_V.Append(ON_3fPoint(5, 5, 5));   // 3: only the repeated-index face
+  raw.m_V.Append(ON_3fPoint(10, 10, 10));  // 4: collinear face
+  raw.m_V.Append(ON_3fPoint(11, 10, 10));  // 5: collinear face
+  raw.m_V.Append(ON_3fPoint(12, 10, 10));  // 6: collinear face
+  raw.m_V.Append(ON_3fPoint(20, 20, 20));  // 7: short-edge face
+  raw.m_V.Append(ON_3fPoint(20, 20, 20));  // 8: short-edge face (coincident with 7, distinct index)
+  raw.m_V.Append(ON_3fPoint(21, 20, 20));  // 9: short-edge face
+  auto add_tri = [&](int a, int b, int c) {
+    ON_MeshFace f;
+    f.vi[0] = a;
+    f.vi[1] = b;
+    f.vi[2] = c;
+    f.vi[3] = c;
+    raw.m_F.Append(f);
+  };
+  add_tri(0, 1, 2);  // valid: a real right triangle
+  add_tri(0, 0, 3);  // degenerate: repeated index (vi[0] == vi[1])
+  add_tri(4, 5, 6);  // degenerate: exactly collinear, zero height
+  add_tri(7, 8, 9);  // degenerate: vertices 7 and 8 coincide, zero-length edge
+
+  const Mesh::CheckReport before = m.Check(tol::kDistance);
+  Check(before.degenerate_faces == 3, "Check() counts all 3 degenerate faces (one per distinct reason)");
+
+  Check(m.RemoveDegenerateFaces(tol::kDistance) == 3, "RemoveDegenerateFaces() removes exactly those 3 faces");
+  Check(m.FaceCount() == 1, "only the one valid triangle survives");
+  Check(m.VertexCount() == 3, "the 6 vertices used only by degenerate faces are dropped along with them");
+  Check(m.Check(tol::kDistance).degenerate_faces == 0, "no degenerate faces remain, by Check()'s own count");
+  Check(m.RemoveDegenerateFaces(tol::kDistance) == 0, "a second call is a no-op - nothing left to remove");
+
+  // The surviving triangle is exactly the original valid one, not some
+  // other combination - its 3 vertices are still at their original
+  // positions.
+  const ON_MeshFace& f = m.raw().m_F[0];
+  Check(ON_3dPoint(m.raw().m_V[f.vi[0]]) == ON_3dPoint(0, 0, 0) &&
+            ON_3dPoint(m.raw().m_V[f.vi[1]]) == ON_3dPoint(1, 0, 0) &&
+            ON_3dPoint(m.raw().m_V[f.vi[2]]) == ON_3dPoint(0, 1, 0),
+        "the surviving face is the original (0,0,0)-(1,0,0)-(0,1,0) triangle, reindexed but not moved");
+}
+
 void TestLoftClosedRingsConcaveEndCapsExactPrismVolume() {
   using dino8::kernel::BooleanCombine;
   using dino8::kernel::BooleanOp;
@@ -7796,6 +7926,140 @@ void TestPointCloudSpatialQueries() {
   }
 }
 
+// SaveXyz()/LoadXyz() close a real gap: before this, a PointCloud had no
+// Save/Load path of its own at all (only Model::AddPointCloud()'s .3dm
+// route) - no counterpart to Mesh's SaveObj/SaveStl for the point-cloud
+// interchange format most external tools (CloudCompare, PCL, MeshLab)
+// actually use. Round-trips positions alone, then positions+normals
+// together (SaveXyz()'s "3 or 6 columns" convention), checking exact
+// values survive, not just point count.
+void TestPointCloudXyzRoundTrips() {
+  using dino8::kernel::Point3d;
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+  using dino8::kernel::Vector3d;
+
+  // Positions only.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(0, 0, 0));
+    cloud.AppendPoint(Point3d(1.5, -2.25, 3.125));
+    cloud.AppendPoint(Point3d(-10, 20, -30));
+    Check(!cloud.HasNormals(), "fixture: cloud has no normals");
+
+    const std::string path = "dino8_kernel_point_cloud_xyz_positions_test.xyz";
+    Check(cloud.SaveXyz(path) == Result::Ok, "SaveXyz() succeeds for a positions-only cloud");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Ok, "LoadXyz() succeeds");
+    Check(loaded.PointCount() == cloud.PointCount(), "loaded point count matches (3)");
+    Check(!loaded.HasNormals(), "loaded cloud has no normals - the file had no normal columns");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 1e-12,
+            "round-tripped position matches exactly");
+    }
+    std::remove(path.c_str());
+  }
+
+  // Positions + normals.
+  {
+    PointCloud cloud;
+    cloud.AppendPoint(Point3d(0, 0, 0));
+    cloud.AppendPoint(Point3d(1, 2, 3));
+    cloud.SetNormals({Vector3d(1, 0, 0), Vector3d(0, 0, 1)});
+    Check(cloud.HasNormals(), "fixture: cloud has normals");
+
+    const std::string path = "dino8_kernel_point_cloud_xyz_normals_test.xyz";
+    Check(cloud.SaveXyz(path) == Result::Ok, "SaveXyz() succeeds for a cloud with normals");
+
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Ok, "LoadXyz() succeeds");
+    Check(loaded.HasNormals(), "loaded cloud has normals - the file had 6-column lines");
+    for (int i = 0; i < cloud.PointCount(); ++i) {
+      Check(loaded.PointAt(i).DistanceTo(cloud.PointAt(i)) < 1e-12,
+            "round-tripped position with normals present still matches exactly");
+      const auto original_n = cloud.NormalAt(i);
+      const auto loaded_n = loaded.NormalAt(i);
+      Check(std::abs(loaded_n.x - original_n.x) < 1e-12 && std::abs(loaded_n.y - original_n.y) < 1e-12 &&
+                std::abs(loaded_n.z - original_n.z) < 1e-12,
+            "round-tripped normal matches exactly");
+    }
+    std::remove(path.c_str());
+  }
+}
+
+// Malformed/ambiguous input is rejected outright (Result::Failed), never
+// silently misread as something plausible-looking.
+void TestPointCloudLoadXyzRejectsMalformedInput() {
+  using dino8::kernel::PointCloud;
+  using dino8::kernel::Result;
+
+  {
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz("dino8_kernel_point_cloud_xyz_nonexistent.xyz", loaded) == Result::Failed,
+          "LoadXyz() fails on a file that doesn't exist");
+  }
+
+  auto write_file = [](const std::string& path, const std::string& contents) {
+    std::ofstream out(path);
+    out << contents;
+  };
+
+  // Mixing a 3-column line and a 6-column line in one file is genuinely
+  // ambiguous (is column 4 a normal, or the next point's x?) - rejected
+  // rather than guessed at.
+  {
+    const std::string path = "dino8_kernel_point_cloud_xyz_mixed_width_test.xyz";
+    write_file(path, "0 0 0\n1 2 3 0 0 1\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Failed,
+          "LoadXyz() fails on a file mixing 3- and 6-column lines");
+    std::remove(path.c_str());
+  }
+
+  // A column count other than 3 or 6 (here 4 - not a valid position or a
+  // valid position+normal).
+  {
+    const std::string path = "dino8_kernel_point_cloud_xyz_bad_width_test.xyz";
+    write_file(path, "0 0 0 0\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Failed,
+          "LoadXyz() fails on a line with 4 columns (neither a position nor position+normal)");
+    std::remove(path.c_str());
+  }
+
+  // A non-numeric token.
+  {
+    const std::string path = "dino8_kernel_point_cloud_xyz_garbage_test.xyz";
+    write_file(path, "0 0 zzz\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Failed,
+          "LoadXyz() fails on a line with a non-numeric token");
+    std::remove(path.c_str());
+  }
+
+  // A file with no points at all (blank lines only).
+  {
+    const std::string path = "dino8_kernel_point_cloud_xyz_empty_test.xyz";
+    write_file(path, "\n\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Failed,
+          "LoadXyz() fails on a file with zero points");
+    std::remove(path.c_str());
+  }
+
+  // Control: a well-formed file still loads fine after all those
+  // rejections, proving the checks above aren't rejecting everything.
+  {
+    const std::string path = "dino8_kernel_point_cloud_xyz_control_test.xyz";
+    write_file(path, "1 2 3\n4 5 6\n");
+    PointCloud loaded;
+    Check(PointCloud::LoadXyz(path, loaded) == Result::Ok, "control: a well-formed file loads fine");
+    Check(loaded.PointCount() == 2, "control: loaded the expected 2 points");
+    std::remove(path.c_str());
+  }
+}
+
 void TestMeshAreaCountsBothQuadTriangles() {
   using dino8::kernel::Mesh;
 
@@ -8007,6 +8271,174 @@ void TestSubDCreaseAtDoubleEdgeKeepsFoldStraight() {
         "without it, the same edge is treated as smooth and its "
         "subdivision point is measurably pulled off that line instead - "
         "proving the crease flag does something real, not a no-op");
+}
+
+void TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const Point3d fold_a(0, 0, 0);
+  const Point3d fold_b(1, 0, 0);
+  const double kMax = ON_SubDEdgeSharpness::MaximumValue;  // 4.0, per OpenNURBS
+
+  // --- Rejection cases: SetEdgeSharpness must refuse, not silently no-op. ---
+  {
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(!subd.SetEdgeSharpness(fold_a, fold_b, -0.5, 1e-9),
+          "SetEdgeSharpness refuses a negative sharpness");
+    Check(!subd.SetEdgeSharpness(fold_a, fold_b, kMax + 1.0, 1e-9),
+          "SetEdgeSharpness refuses a sharpness above ON_SubDEdgeSharpness::MaximumValue");
+    Check(!subd.SetEdgeSharpness(Point3d(9, 9, 9), Point3d(9, 9, 8), 2.0, 1e-9),
+          "SetEdgeSharpness refuses when no vertex exists at the given points");
+
+    // A real (double-edge) hard crease can't take a sharpness value -
+    // OpenNURBS' own ON_SubDEdge::SetSharpnessForExperts defines
+    // sharpness as meaningless there, and this wrapper refuses outright
+    // instead of pretending it worked.
+    auto creased = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/true);
+    Check(!creased.SetEdgeSharpness(fold_a, fold_b, 2.0, 1e-9),
+          "SetEdgeSharpness refuses an edge that is already a hard Crease");
+    Check(creased.CreaseEdgeCount() == 7,
+          "the refused call left the hard-crease SubD's crease count unchanged");
+  }
+
+  // --- Exact bookkeeping: the stored value, decay arithmetic, and tag
+  // stay exactly what OpenNURBS' own primitives compute - read back via
+  // raw(), not inferred. ---
+  {
+    auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(subd.SetEdgeSharpness(fold_a, fold_b, 2.5, 1e-9),
+          "SetEdgeSharpness accepts a genuinely fractional ('semi-sharp') weight "
+          "on an ordinary smooth edge");
+
+    const ON_SubDVertex* v0 = subd.raw().FindVertex(&fold_a.x, 1e-9);
+    const ON_SubDVertex* v1 = subd.raw().FindVertex(&fold_b.x, 1e-9);
+    const ON_SubDEdge* e = subd.raw().FindEdge(v0, v1).Edge();
+    Check(e != nullptr && e->IsSmooth() && !e->IsCrease(),
+          "the sharp fold edge keeps its Smooth edge TAG - sharpness is a "
+          "distinct property, not a disguised crease tag");
+    Check(e->IsSharp(), "the fold edge now reports IsSharp() true");
+    Check(e->EndSharpness(0u) == 2.5 && e->EndSharpness(1u) == 2.5,
+          "both ends store exactly the constant weight passed in, read back "
+          "via ON_SubDEdge::EndSharpness - not approximated");
+
+    // ON_SubDEdge::Subdivided() is the exact primitive
+    // ON_SubDimple::GlobalSubdivide() itself calls to compute a child
+    // edge's sharpness (verified by reading opennurbs_subd.cpp's
+    // GlobalSubdivide implementation) - subtracting 1.0 per level. Check
+    // its output directly, deterministic and exact for these inputs.
+    const ON_SubDEdgeSharpness subdivided = e->Sharpness(false).Subdivided(0);
+    Check(subdivided.EndSharpness(0) == 1.5 && subdivided.EndSharpness(1) == 1.5,
+          "one level of decay subtracts exactly 1.0 from a 2.5 weight, per "
+          "ON_SubDEdgeSharpness::Subdivided() - real relaxation math, not a "
+          "permanent crease");
+
+    // Exercise the real Subdivide() pipeline (not just the isolated
+    // Subdivided() function) and confirm the decay actually happened:
+    // the fold's two child edges must both still be sharp (2.5 - 1 = 1.5
+    // > 0) but the edge count with IsSharp() must be exactly the fold's
+    // own 2 children - no other edge in this mesh was ever marked sharp.
+    subd.Subdivide(1);
+    int sharp_edge_count = 0;
+    ON_SubDEdgeIterator eit = subd.raw().EdgeIterator();
+    for (const ON_SubDEdge* e1 = eit.FirstEdge(); e1 != nullptr; e1 = eit.NextEdge()) {
+      if (e1->IsSharp()) {
+        Check(e1->EndSharpness(0u) == 1.5 && e1->EndSharpness(1u) == 1.5,
+              "each child edge of the sharp fold decayed by exactly 1.0, "
+              "matching the isolated Subdivided() computation above");
+        ++sharp_edge_count;
+      }
+    }
+    Check(sharp_edge_count == 2,
+          "exactly the fold's 2 child edges (from splitting the 1 sharp "
+          "parent edge) are sharp after one real Subdivide() - decay is "
+          "real, localized, and not silently dropped or duplicated");
+  }
+
+  // --- Geometric proof: a MaximumValue-weight sharp edge produces the
+  // identical straight-fold subdivision point a real hard crease does,
+  // for the level it hasn't decayed past yet - same check
+  // TestSubDCreaseAtDoubleEdgeKeepsFoldStraight() already uses for an
+  // actual Crease-tagged edge, applied here to a Smooth-tagged one whose
+  // sharpness alone does the work. ---
+  {
+    auto sharp = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+    Check(sharp.SetEdgeSharpness(fold_a, fold_b, kMax, 1e-9),
+          "SetEdgeSharpness accepts the maximum in-range weight");
+    auto plain = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+
+    sharp.Subdivide(1);
+    plain.Subdivide(1);
+
+    auto closest_to_fold_midpoint = [](const Mesh& mesh) {
+      const Point3d target(0.5, 0, 0);
+      double best_dist = 1e30;
+      for (int i = 0; i < mesh.raw().m_V.Count(); ++i) {
+        const double dist = (Point3d(mesh.raw().m_V[i]) - target).Length();
+        best_dist = std::min(best_dist, dist);
+      }
+      return best_dist;
+    };
+
+    Check(closest_to_fold_midpoint(sharp.ToApproximateMesh()) < 1e-6,
+          "a MaximumValue-sharp edge gets a real subdivision point exactly "
+          "at its straight-line midpoint (0.5, 0, 0), just like a real "
+          "hard crease");
+    Check(closest_to_fold_midpoint(plain.ToApproximateMesh()) > 0.05,
+          "the untouched control SubD still rounds the same fold off, "
+          "confirming the difference is SetEdgeSharpness's doing");
+  }
+}
+
+// SubD::SetCrease(): retagging an ordinary shared edge to Crease (and
+// back) after construction, without the mesh-double-edge trick
+// crease_at_double_edges needs. Reuses the same hinge fixture and
+// straight-fold-midpoint check TestSubDCreaseAtDoubleEdgeKeepsFoldStraight()
+// and TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease() already
+// established, since a genuine retag must produce the identical
+// geometric effect a construction-time crease does.
+void TestSubDSetCreaseTagsAndUntagsEdges() {
+  using dino8::kernel::Mesh;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::SubD;
+
+  const Point3d fold_a(0, 0, 0);
+  const Point3d fold_b(1, 0, 0);
+
+  Check(!SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), false)
+             .SetCrease(Point3d(9, 9, 9), Point3d(9, 9, 8), true, 1e-9),
+        "SetCrease refuses when no vertex exists at the given points");
+
+  auto subd = SubD::FromControlMesh(MakeHingedDoubleEdgeMesh(), /*crease_at_double_edges=*/false);
+  Check(subd.CreaseEdgeCount() == 6, "the untouched hinge starts with only its 6 boundary creases");
+
+  Check(subd.SetCrease(fold_a, fold_b, true, 1e-9), "SetCrease(true) retags the fold edge and reports a real change");
+  Check(subd.CreaseEdgeCount() == 7,
+        "the fold is now creased too - matching crease_at_double_edges=true's own count exactly");
+  Check(!subd.SetCrease(fold_a, fold_b, true, 1e-9),
+        "SetCrease(true) again is a no-op (already a crease) and reports no change");
+
+  // Geometric proof: retagging must produce the identical effect
+  // FromControlMesh(..., crease_at_double_edges=true) does.
+  {
+    auto retagged = subd;  // deep copy (ON_SubD's copy ctor deep-copies)
+    retagged.Subdivide(1);
+    const Mesh approx = retagged.ToApproximateMesh();
+    const Point3d target(0.5, 0, 0);
+    double best_dist = 1e30;
+    for (int i = 0; i < approx.raw().m_V.Count(); ++i) {
+      best_dist = std::min(best_dist, (Point3d(approx.raw().m_V[i]) - target).Length());
+    }
+    Check(best_dist < 1e-6,
+          "the retagged fold gets a real subdivision point exactly at its "
+          "straight-line midpoint (0.5, 0, 0), same as a construction-time crease");
+  }
+
+  Check(subd.SetCrease(fold_a, fold_b, false, 1e-9), "SetCrease(false) un-tags the fold back to smooth");
+  Check(subd.CreaseEdgeCount() == 6, "...restoring the original 6-boundary-crease-only count");
+  Check(!subd.SetCrease(fold_a, fold_b, false, 1e-9),
+        "SetCrease(false) again is a no-op (already smooth) and reports no change");
 }
 
 void TestSubDFlatQuadGridStaysFlatAndAreaExact() {
@@ -24602,6 +25034,136 @@ void TestSurfaceUnrollDevelopableArgumentChecks() {
   Check(threw, "UnrollDevelopable throws on v_divisions < 1");
 }
 
+// ---- NurbsSurface::CoonsPatch ----
+
+void TestSurfaceCoonsPatchReproducesFourCurvedBoundariesExactly() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  // Four genuinely different, curved boundary curves (not straight
+  // lines - a straight-line patch can't distinguish "exact" from
+  // "close enough", since a bilinear fit through samples of a straight
+  // line is already exact). Bottom/top run +x, left/right run +y;
+  // corners: (0,0,0), (4,0,1), (0,4,1), (4,4,2).
+  const NurbsCurve bottom = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(1.5, -0.5, 0.6), Point3d(2.5, 0.5, -0.4), Point3d(4, 0, 1)}, 3);
+  const NurbsCurve top = NurbsCurve::FromControlPoints({Point3d(0, 4, 1), Point3d(1.5, 3.5, 1.8), Point3d(2.5, 4.5, 0.7), Point3d(4, 4, 2)}, 3);
+  const NurbsCurve left = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(-0.4, 1.3, 0.5), Point3d(0.4, 2.7, 0.3), Point3d(0, 4, 1)}, 3);
+  const NurbsCurve right = NurbsCurve::FromControlPoints({Point3d(4, 0, 1), Point3d(3.6, 1.3, 1.4), Point3d(4.4, 2.7, 1.9), Point3d(4, 4, 2)}, 3);
+
+  NurbsSurface patch;
+  double gap = -1.0;
+  const Result r = NurbsSurface::CoonsPatch(bottom, top, left, right, patch, 1e-6, &gap);
+  Check(r == Result::Ok, "CoonsPatch succeeds on 4 curved, already-closing boundary curves");
+  Check(gap < 1e-9, "CoonsPatch reports an essentially-zero corner gap for boundaries that already close");
+
+  // The patch's own boundary isocurves must reproduce the ORIGINAL
+  // (unreparameterized) curves exactly, sample by sample - the real
+  // test: a naive sample-then-refit approach (what NetworkSrf does)
+  // would NOT pass this at anywhere near this tolerance.
+  double max_err = 0.0;
+  for (int k = 0; k <= 40; ++k) {
+    const double t = k / 40.0;
+    const Point3d pb = bottom.PointAt(bottom.Domain().min + (bottom.Domain().max - bottom.Domain().min) * t);
+    const Point3d pt = top.PointAt(top.Domain().min + (top.Domain().max - top.Domain().min) * t);
+    const Point3d pl = left.PointAt(left.Domain().min + (left.Domain().max - left.Domain().min) * t);
+    const Point3d pr = right.PointAt(right.Domain().min + (right.Domain().max - right.Domain().min) * t);
+    const double du = patch.Domain(0).max - patch.Domain(0).min, dv = patch.Domain(1).max - patch.Domain(1).min;
+    const double u = patch.Domain(0).min + du * t, v = patch.Domain(1).min + dv * t;
+    max_err = std::max({max_err, patch.PointAt(u, patch.Domain(1).min).DistanceTo(pb), patch.PointAt(u, patch.Domain(1).max).DistanceTo(pt),
+                        patch.PointAt(patch.Domain(0).min, v).DistanceTo(pl), patch.PointAt(patch.Domain(0).max, v).DistanceTo(pr)});
+  }
+  Check(max_err < 1e-9, "CoonsPatch's own boundary isocurves reproduce all 4 original input curves exactly (< 1e-9), at 41 samples each");
+
+  // The 4 corners are reproduced exactly too (a degenerate case of the
+  // boundary check above, called out separately since it's the part a
+  // bilinear-only construction would get right while missing the
+  // curved interior of each edge).
+  Check(patch.PointAt(patch.Domain(0).min, patch.Domain(1).min).DistanceTo(Point3d(0, 0, 0)) < 1e-9, "CoonsPatch corner (0,0,0) exact");
+  Check(patch.PointAt(patch.Domain(0).max, patch.Domain(1).min).DistanceTo(Point3d(4, 0, 1)) < 1e-9, "CoonsPatch corner (4,0,1) exact");
+  Check(patch.PointAt(patch.Domain(0).min, patch.Domain(1).max).DistanceTo(Point3d(0, 4, 1)) < 1e-9, "CoonsPatch corner (0,4,1) exact");
+  Check(patch.PointAt(patch.Domain(0).max, patch.Domain(1).max).DistanceTo(Point3d(4, 4, 2)) < 1e-9, "CoonsPatch corner (4,4,2) exact");
+
+  // Compare against the weaker "sample the curves, refit a surface
+  // through the samples" approach dino8-app's own NetworkSrf/
+  // SurfaceFromRows uses - the real, measurable gap this method closes.
+  std::vector<Point3d> naive_grid;
+  const int n = 8;
+  for (int j = 0; j < n; ++j) {
+    for (int i = 0; i < n; ++i) {
+      const double fu = static_cast<double>(i) / (n - 1), fv = static_cast<double>(j) / (n - 1);
+      const Point3d b0 = bottom.PointAt(bottom.Domain().min + (bottom.Domain().max - bottom.Domain().min) * fu);
+      const Point3d t0 = top.PointAt(top.Domain().min + (top.Domain().max - top.Domain().min) * fu);
+      naive_grid.push_back(b0 * (1 - fv) + t0 * fv);
+    }
+  }
+  const NurbsSurface naive = NurbsSurface::FromControlGrid(naive_grid, n, n, 3, 3);
+  double naive_err = 0.0;
+  for (int k = 0; k <= 40; ++k) {
+    const double t = k / 40.0;
+    const Point3d pb = bottom.PointAt(bottom.Domain().min + (bottom.Domain().max - bottom.Domain().min) * t);
+    naive_err = std::max(naive_err, naive.PointAt(naive.Domain(0).min + (naive.Domain(0).max - naive.Domain(0).min) * t, naive.Domain(1).min).DistanceTo(pb));
+  }
+  Check(naive_err > 1e-3, "the naive sample-and-refit construction (what NetworkSrf uses today) measurably misses the bottom boundary curve, unlike CoonsPatch");
+}
+
+void TestSurfaceCoonsPatchAutoOrientsReversedBoundaries() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  NurbsCurve bottom = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(2, 0, 0.5), Point3d(4, 0, 0)}, 2);
+  NurbsCurve top = NurbsCurve::FromControlPoints({Point3d(0, 4, 1), Point3d(2, 4, 1.5), Point3d(4, 4, 1)}, 2);
+  NurbsCurve left = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 4, 1)}, 1);
+  NurbsCurve right = NurbsCurve::FromControlPoints({Point3d(4, 0, 0), Point3d(4, 4, 1)}, 1);
+
+  NurbsSurface reference;
+  Check(NurbsSurface::CoonsPatch(bottom, top, left, right, reference) == Result::Ok, "CoonsPatch orientation setup: the correctly-oriented reference patch succeeds");
+
+  // Reverse top and right - exactly what an app command chaining
+  // arbitrarily-picked curves would hand this method in practice.
+  NurbsCurve top_rev = top, right_rev = right;
+  top_rev.Reverse();
+  right_rev.Reverse();
+  NurbsSurface reoriented;
+  double gap = -1.0;
+  Check(NurbsSurface::CoonsPatch(bottom, top_rev, left, right_rev, reoriented, 1e-6, &gap) == Result::Ok,
+        "CoonsPatch succeeds even when top and right are handed in reversed as given");
+  Check(gap < 1e-9, "CoonsPatch's auto-orientation search still finds an essentially-zero corner gap");
+  double diff = 0.0;
+  for (int i = 0; i <= 10; ++i)
+    for (int j = 0; j <= 10; ++j) {
+      const double u = reference.Domain(0).min + (reference.Domain(0).max - reference.Domain(0).min) * i / 10.0;
+      const double v = reference.Domain(1).min + (reference.Domain(1).max - reference.Domain(1).min) * j / 10.0;
+      const double ru = reoriented.Domain(0).min + (reoriented.Domain(0).max - reoriented.Domain(0).min) * i / 10.0;
+      const double rv = reoriented.Domain(1).min + (reoriented.Domain(1).max - reoriented.Domain(1).min) * j / 10.0;
+      diff = std::max(diff, reference.PointAt(u, v).DistanceTo(reoriented.PointAt(ru, rv)));
+    }
+  Check(diff < 1e-9, "CoonsPatch built from reversed inputs is geometrically identical to the one built from correctly-oriented inputs");
+}
+
+void TestSurfaceCoonsPatchRefusesNonClosingBoundaries() {
+  using dino8::kernel::NurbsCurve;
+  using dino8::kernel::NurbsSurface;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Result;
+
+  const NurbsCurve bottom = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(4, 0, 0)}, 1);
+  const NurbsCurve top = NurbsCurve::FromControlPoints({Point3d(0, 4, 0), Point3d(4, 4, 0)}, 1);
+  const NurbsCurve left = NurbsCurve::FromControlPoints({Point3d(0, 0, 0), Point3d(0, 4, 0)}, 1);
+  // Deliberately doesn't reach (4, *, *) at all - a genuinely
+  // disconnected boundary, not just a rounding-level gap.
+  const NurbsCurve right = NurbsCurve::FromControlPoints({Point3d(9, 0, 0), Point3d(9, 4, 0)}, 1);
+
+  NurbsSurface patch;
+  double gap = -1.0;
+  Check(NurbsSurface::CoonsPatch(bottom, top, left, right, patch, 1e-6, &gap) == Result::Failed,
+        "CoonsPatch refuses 4 curves that don't actually close into a loop");
+  Check(gap > 1.0, "CoonsPatch reports a genuinely large corner gap on refusal (not a rounding-level number)");
+}
+
 void TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere() {
   using dino8::kernel::NurbsSurface;
   using dino8::kernel::Point3d;
@@ -25017,6 +25579,7 @@ int main() {
   TestFileRoundTrip();
   TestModelAddMeshRoundTrips();
   TestModelAddSubDRoundTrips();
+  TestModelAddPointCloudRoundTrips();
   TestModelLoadRejectsMeshWithOutOfRangeFaceIndex();
   TestSplitByPlane();
   TestConvexHull();
@@ -25073,10 +25636,14 @@ int main() {
   TestMeshDistanceTo();
   TestMeshClashWith();
   TestPointCloudSpatialQueries();
+  TestPointCloudXyzRoundTrips();
+  TestPointCloudLoadXyzRejectsMalformedInput();
   TestMeshAreaCountsBothQuadTriangles();
   TestSubDFromBoxSubdividesToExactCatmullClarkCounts();
   TestSubDFromControlMeshRejectsEmptyMesh();
   TestSubDCreaseAtDoubleEdgeKeepsFoldStraight();
+  TestSubDSetEdgeSharpnessCreatesRealSemiSharpCrease();
+  TestSubDSetCreaseTagsAndUntagsEdges();
   TestSubDFlatQuadGridStaysFlatAndAreaExact();
   TestSubDToNurbsPatchesExactOnRegularFlatGrid();
   TestSubDLimitPointsExactCubeAndFlatGrid();
@@ -25304,6 +25871,7 @@ int main() {
   TestMeshCheckAndFillSmallHolesRestoreDroppedFaces();
   TestMeshUnifyNormalsFixesFlippedAndInvertedFaces();
   TestMeshCloseNakedEdgesWeldsDuplicateAndOffsetVertices();
+  TestMeshRemoveDegenerateFacesDropsOnlyDegenerateOnes();
 
   sweep_tests::TestMergeAndWeldDropsCollapsedPoleTriangles();
   sweep_tests::TestExtrudeRectangleIsExactCappedSolid();
@@ -25316,6 +25884,10 @@ int main() {
   TestSurfaceUnrollDevelopableConePreservesApexDistanceAndSectorAngleExactly();
   TestSurfaceUnrollDevelopableRefusesNonDevelopableSurface();
   TestSurfaceUnrollDevelopableArgumentChecks();
+
+  TestSurfaceCoonsPatchReproducesFourCurvedBoundariesExactly();
+  TestSurfaceCoonsPatchAutoOrientsReversedBoundaries();
+  TestSurfaceCoonsPatchRefusesNonClosingBoundaries();
 
   TestSurfaceOffsetAnalyticSphereIsExactConcentricSphere();
   TestSurfaceOffsetAnalyticCylinderIsExactCoaxialCylinder();

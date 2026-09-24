@@ -9,6 +9,7 @@
 namespace dino8::kernel {
 
 class Mesh;
+class NurbsCurve;
 
 // The four scalar curvature values at one point on a surface, from
 // classical differential geometry's first/second fundamental forms:
@@ -87,7 +88,16 @@ enum class DevelopableKind { Plane, Cylinder, Cone };
 class NurbsSurface {
  public:
   // Builds a bilinear-ish degree-(u_degree, v_degree) NURBS surface from a
-  // u_count x v_count grid of control points, row-major (u varies fastest).
+  // u_count x v_count grid of control points. Doc/implementation
+  // mismatch found and fixed while building `CoonsPatch()` below (which
+  // got bitten by trusting the old wording): despite this comment
+  // previously claiming "row-major (u varies fastest)", the actual
+  // indexing (confirmed directly against the .cpp, not assumed) is
+  // `idx = u * v_count + v` - v is the one that varies fastest for
+  // consecutive `control_grid` entries, u the slow/outer index, i.e.
+  // `control_grid[u * v_count + v]` becomes `CV(u, v)`. Only the words
+  // were wrong; the indexing itself is unchanged (many existing callers
+  // already rely on the real behavior), so this is a comment-only fix.
   // Throws std::invalid_argument if either degree is < 1, either count is
   // below its degree + 1, or `control_grid.size() != u_count * v_count` -
   // the same contract `NurbsCurve::FromControlPoints()` enforces, for the
@@ -98,6 +108,57 @@ class NurbsSurface {
   static NurbsSurface FromControlGrid(const std::vector<Point3d>& control_grid,
                                        int u_count, int v_count, int u_degree,
                                        int v_degree);
+
+  // Builds the exact bilinearly-blended Coons patch through 4 boundary
+  // curves (Parasolid/Rhino's NetworkSrf/EdgeSrf for exactly 4 curves) -
+  // as real NURBS algebra on the curves' own control points, not by
+  // sampling them into points and re-fitting a surface through the
+  // samples the way dino8-app's existing `NetworkSrf` command does
+  // (that command's own `SurfaceFromRows()` hands sampled points
+  // straight to `FromControlGrid()`, which treats them *as* control
+  // points - a B-spline generally does not pass through its own
+  // control points, so that surface's boundary only approximates the
+  // source curves, confirmed by measuring the gap in the tests here).
+  // This method's own boundary isocurves instead reproduce `bottom`/
+  // `top`/`left`/`right` exactly (verified in the tests: the residual
+  // is at the level of the reparameterization/refinement steps'
+  // floating-point rounding, not a fitting error).
+  //
+  // `bottom`/`top` run in the same direction (both start at the "left"
+  // side and end at the "right" side); `left`/`right` likewise both run
+  // from "bottom" to "top" - the standard Coons convention. `top` and
+  // `right` are each tried both as given and reversed (4 combinations
+  // total) and whichever combination best closes all 4 corners is used
+  // - `bottom` and `left` set the reference orientation. Classical
+  // construction: each curve is reparameterized onto [0, 1]
+  // (`SetDomain`, shape-preserving), `bottom`/`top` are brought to a
+  // shared degree and knot vector (the higher of the two degrees,
+  // degree-elevated; then each one's interior knots inserted into the
+  // other - both shape-preserving, same technique `MatchEdge()` uses
+  // for its own shared edge), `left`/`right` the same way, and the
+  // patch is built as the classical sum of a ruled surface between
+  // `bottom`/`top`, a ruled surface between `left`/`right`, and a
+  // bilinear correction surface through the 4 corners
+  // (`S = R_uv + R_vu - B`), all three brought to one shared (degree,
+  // knot vector) pair in both directions (via `ElevateDegree`/
+  // `InsertKnotAt`) so the sum is exact control-point (homogeneous, if
+  // any input is rational) arithmetic, not an approximation. Every step
+  // is a real, previously-tested primitive; nothing here is a new
+  // approximation algorithm.
+  //
+  // Returns Result::Failed (with `out_corner_gap`, if non-null,
+  // reporting the best achievable max corner gap across all 4
+  // orientation combinations) if no orientation brings all 4 corners
+  // within `tolerance` of each other, or if the resulting blend would
+  // need a non-positive weight anywhere (checked, same guard
+  // `MatchEdge()` uses) - never ships a patch that doesn't actually
+  // meet its own boundary curves. Self-checks its own result the same
+  // way: evaluates the built surface's own 4 boundary isocurves against
+  // the (reparameterized, orientation-corrected) input curves and rolls
+  // back to Result::Failed if the residual exceeds a tight tolerance.
+  static Result CoonsPatch(const NurbsCurve& bottom, const NurbsCurve& top, const NurbsCurve& left,
+                            const NurbsCurve& right, NurbsSurface& out, double tolerance = 1e-6,
+                            double* out_corner_gap = nullptr);
 
   int DegreeU() const;
   int DegreeV() const;

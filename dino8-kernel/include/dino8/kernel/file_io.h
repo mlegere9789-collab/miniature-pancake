@@ -7,6 +7,7 @@
 #include "dino8/kernel/brep.h"
 #include "dino8/kernel/curve.h"
 #include "dino8/kernel/mesh.h"
+#include "dino8/kernel/point_cloud.h"
 #include "dino8/kernel/subd.h"
 #include "dino8/kernel/types.h"
 
@@ -37,6 +38,18 @@ class Model {
   // pattern: copies the SubD's underlying ON_SubD into a new model
   // geometry component.
   void AddSubD(const SubD& subd);
+
+  // Adds a point cloud as its own model object. PointCloud's own doc
+  // comment claims ON_PointCloud is "the same one [OpenNURBS'] .3dm
+  // reader/writer already round-trips" - true of the underlying
+  // OpenNURBS class, but until this method existed there was no way to
+  // actually get a dino8::kernel::PointCloud INTO a Model at all, so
+  // that round-trip claim was unreachable from this kernel's own API
+  // (the same "no way to put this object type into a .3dm" gap
+  // AddMesh()/AddSubD() closed for their own types). Same pattern: copies
+  // `cloud`'s underlying ON_PointCloud (positions, and per-point colors/
+  // normals when present) into a new model geometry component.
+  void AddPointCloud(const PointCloud& cloud);
 
   int ObjectCount() const;
 

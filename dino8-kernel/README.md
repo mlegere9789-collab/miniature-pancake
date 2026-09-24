@@ -693,6 +693,41 @@ What this repo does instead:
   SubD control cage, reloaded the file, found the actual `ON_SubD` object
   inside the reloaded model's geometry components, and confirmed its
   vertex and face counts exactly match the original.
+- `Model::AddPointCloud()` closes the same gap for `PointCloud` that
+  `AddMesh()`/`AddSubD()` closed for their own types: `PointCloud`'s own
+  header already documented that its underlying `ON_PointCloud` is "the
+  same one OpenNURBS' own `.3dm` reader/writer already round-trips" - true
+  of the OpenNURBS class, but until this method existed there was no way
+  to get a `dino8::kernel::PointCloud` into a `Model` at all, so that
+  round-trip claim was unreachable from this kernel's own API. Same
+  pattern: copies the cloud's underlying `ON_PointCloud` into a new model
+  geometry component. Verified with a real round trip on all three
+  optional fields at once (a cloud is "all or nothing" per field, so a
+  partial round trip of colors or normals would silently read back as "no
+  colors"/"no normals" rather than an error): saved a 3-point cloud with
+  per-point colors and per-point normals set, reloaded the file, found the
+  actual `ON_PointCloud` object inside the reloaded model's geometry
+  components, and confirmed point count, `HasPointColors()`,
+  `HasPointNormals()`, and every point's exact position/color/normal all
+  survived.
+- `PointCloud::SaveXyz()`/`LoadXyz()` close a real gap: before this,
+  `PointCloud` had no `Save`/`Load` of its own at all - only
+  `Model::AddPointCloud()`'s `.3dm` route existed, with no counterpart to
+  `Mesh::SaveObj()`/`SaveStl()` for the plain-text ASCII XYZ format most
+  external point-cloud tools (CloudCompare, PCL, MeshLab) actually read
+  and write. One point per line: `x y z`, or `x y z nx ny nz` when the
+  cloud has normals (the columns-3-or-6 convention `LoadXyz()` also
+  parses back, rejecting a file that mixes both widths as genuinely
+  ambiguous rather than guessing). Per-point colors are deliberately NOT
+  written: unlike position/normal, ASCII XYZ has no single agreed-on
+  column order, count, or scale for color across the tools that read it,
+  so writing something would be inventing a convention the format doesn't
+  actually have - an honest, documented gap instead of a silent,
+  undocumented one. Verified with a real round trip of exact values (not
+  just point count) for a positions-only cloud and, separately, a cloud
+  with normals set, plus explicit rejection tests for a nonexistent file,
+  a file mixing 3- and 6-column lines, a line with a column count that's
+  neither, a non-numeric token, and a file with zero points.
 - `Brep::GetTightBoundingBox()` closes a real gap: nothing here could
   answer "roughly how big/where is this Brep" without tessellating it
   first, and even then Mesh::GetBoundingBox() only sees a tessellation's
@@ -2116,6 +2151,83 @@ What this repo does instead:
     outward orientation, so the wall's u may run opposite to the input
     curve (the closed-loft test matches section corners as a set for
     that reason).
+- `SubD::SetEdgeSharpness(p0, p1, sharpness, point_tolerance)`: real
+  Pixar/OpenSubdiv-style semi-sharp (variable-weight) creasing, closing a
+  gap `FromControlMesh()`'s own `crease_at_double_edges` parameter left
+  open since it landed - that flag only ever gives a binary sharp/smooth
+  split (a permanent `ON_SubDEdgeTag::Crease`), with no way to dial in
+  anything between "fully smooth" and "fully creased," and no way to
+  crease an edge at all without the mesh-double-edge topology trick.
+  OpenNURBS' own model for this turned out to already exist and be real,
+  not a stub - found by reading, not assumed: `ON_SubDEdge::m_sharpness`
+  (`ON_SubDEdgeSharpness`, range `[0, MaximumValue=4]`) is genuinely
+  consumed by `ON_SubDimple::GlobalSubdivide()` (it reads
+  `e0->IsSharp()`/`e0->Sharpness(false)` and calls `.Subdivided(0/1)` on
+  each child edge, both read directly in `opennurbs_subd.cpp`) and by the
+  regular-patch evaluator in `opennurbs_subd_limit.cpp` (branches on
+  `ON_SubDEdge::IsSharp()` / `ON_SubDVertex::VertexSharpness()` to blend
+  face/edge/vertex points toward crease behavior) - the same "declared in
+  the public header, actually implemented" pattern this file's SubD
+  entries already document for `LimitPoints()`, as opposed to the
+  `BrepForm()`/`CreaseEdgeCount()` stubs. The convenience wrapper the
+  class comment for those methods once pointed to (`ON_SubD::
+  SetEdgeSharpness()`) turned out to be the *unimplemented* one this
+  time - grepped across the whole v8.34 source tree, it doesn't exist
+  anywhere outside a doc comment - so this method instead calls the same
+  low-level primitive OpenNURBS' own `AddEdge(..., ON_SubDEdgeSharpness)`
+  overloads call on a freshly-built edge
+  (`ON_SubDEdge::SetSharpnessForExperts`), applied here to an edge found
+  via the ordinary const `FindVertex`/`FindEdge` accessors (a `const_cast`
+  is required to call it, since those accessors are const - safe because
+  the call writes exactly one field with no other cached state to
+  invalidate, verified by reading `SetSharpnessForExperts`'s own three-line
+  body, and because `ON_SubD`'s copy constructor deep-copies its
+  `ON_SubDimple` rather than sharing it, so a fresh `SubD::FromControlMesh()`
+  result is never aliased with another live `ON_SubD`). Refuses (returns
+  `false`, no change made) rather than silently no-op'ing for an
+  out-of-range weight, an edge that doesn't exist between the given
+  points, or an edge that's already a hard crease (sharpness is
+  meaningless there in OpenNURBS' own model). Verified three ways, not
+  just read: (1) exact bookkeeping - a 2.5 weight reads back as exactly
+  2.5 via `EndSharpness()`, `Subdivided()` subtracts exactly 1.0, and a
+  real `Subdivide(1)` call leaves exactly the fold's 2 child edges
+  (and no others) reporting `IsSharp()` at exactly the decayed 1.5; (2) a
+  `MaximumValue`-weight edge produces the identical exact straight-fold
+  subdivision point `TestSubDCreaseAtDoubleEdgeKeepsFoldStraight()`
+  already proved for a real hard crease, on the same hinge fixture, while
+  an untouched control SubD still rounds the same fold off; (3) the
+  refusal cases leave the SubD provably unchanged (a hard crease's
+  `CreaseEdgeCount()` unaffected by the refused call). One honestly-
+  scoped limitation: this exposes one constant weight per edge; OpenNURBS
+  also supports a per-end-variable sharpness (linearly interpolated along
+  the edge, decaying differently at each end), which this wrapper doesn't
+  expose - a caller needing that must use `raw()` directly.
+- `SubD::SetCrease(p0, p1, crease, point_tolerance)`: retags an existing
+  edge Crease or back to Smooth after construction - closing PARITY_MAP.md's
+  subd_mesh-category "Crease tagging / un-tagging as a kernel operation"
+  [missing] item directly (kernel::SubD had no `SetCrease`/`ClearCrease`
+  at all; the app's `SubDCrease` command edited `ON_SubDEdge` tags
+  directly, bypassing this wrapper entirely). Unlike `SetEdgeSharpness()`
+  just above - which needs a `const_cast` onto a low-level "for experts"
+  primitive because OpenNURBS' own convenience wrapper for THAT is
+  unimplemented - this delegates to a genuinely public, fully-implemented
+  `ON_SubD::SetEdgeTags()`, verified by reading its body in
+  `opennurbs_subd.cpp` rather than trusting the name: it does real work
+  beyond the one edge's own tag, reclassifying both endpoint vertices
+  (Smooth/Dart/Crease/Corner, recomputed from their new incident-crease
+  count), clearing any leftover `SetEdgeSharpness()` weight on either
+  transition, and invalidating cached evaluation state - bookkeeping a
+  caller hand-editing `raw()` would otherwise have to reproduce itself.
+  Verified geometrically, not just by reading: `SetCrease(true)` on the
+  hinge fixture's smooth fold edge produces the bit-identical straight-
+  line subdivision point at (0.5, 0, 0) that both a construction-time
+  `crease_at_double_edges=true` crease and a `SetEdgeSharpness`-at-
+  `MaximumValue` semi-sharp edge already independently proved above -
+  three different mechanisms, same underlying OpenNURBS crease math, same
+  measured result. Returns `false` (a real no-op, not an error) for a
+  point pair with no matching edge or an edge that already carries the
+  requested tag, matching `ON_SubD::SetEdgeTags`'s own 0-changed
+  convention.
 
 ## Blending build log (Parasolid "blend/chamfer" class, chronological)
 
@@ -3086,6 +3198,57 @@ honestly out of scope.
   offset (e.g. sweeping a Frenet frame along the curve), body/solid
   offset, shell/hollow beyond `ShellConvexPlanar`, per-face wall-
   thickness overrides, and thicken-sheet-to-solid.
+- `NurbsSurface::CoonsPatch(bottom, top, left, right, out, tolerance,
+  &out_corner_gap)`: the exact bilinearly-blended Coons patch through 4
+  boundary curves (Parasolid/Rhino's NetworkSrf/EdgeSrf for exactly 4
+  curves), as real NURBS control-point algebra - the classical
+  `S = R_uv + R_vu - B` construction (a ruled surface between
+  `bottom`/`top`, a ruled surface between `left`/`right`, minus a
+  bilinear correction through the 4 corners), all three brought to one
+  shared (degree, knot vector) pair in both directions via
+  `ElevateDegree()`/`InsertKnotAt()` (both already-tested,
+  shape-preserving) so the sum is exact homogeneous control-point
+  arithmetic, never a fit. This directly replaces a real weaker
+  approximation in dino8-app's own existing `NetworkSrf` command for
+  its 4-curve case: that command's `SurfaceFromRows()` samples each
+  curve into discrete points and hands them to `FromControlGrid()`,
+  which treats sampled points *as* control points - and a B-spline
+  generally does not pass through its own control points, so that
+  surface's boundary only approximates the source curves (measured in
+  the tests: > 1e-3 off on a genuinely curved boundary, vs. this
+  method's < 1e-9).
+  `bottom`/`top` and `left`/`right` are auto-oriented (each of `top`/
+  `right` tried both as given and reversed, 4 combinations, whichever
+  best closes all 4 corners) since a caller chaining arbitrarily-picked
+  curves - the real situation an app command using this is in - can't
+  otherwise guarantee a consistent winding.
+  Two real bugs found and fixed while building this, both confirmed by
+  a debug run before assuming a cause, not guessed at: (1)
+  `FromControlGrid()`'s own doc comment claimed "u varies fastest" for
+  its `control_grid` indexing; the actual code is `idx = u * v_count +
+  v` (v varies fastest) - a doc-only fix (see there), but it broke this
+  method's own bilinear-correction-term construction until traced with
+  a scratch probe. (2) `ON_NurbsCurve::Reverse()` (already documented,
+  correctly, on `NurbsCurve::Reverse()`'s own doc comment as not
+  preserving the prior domain) needs its domain re-normalized
+  immediately after reversing for this method's own orientation search
+  to compare endpoints meaningfully - missing that made every
+  "reversed" trial candidate compare against the wrong, un-normalized
+  parameter range, confirmed by a debug run showing `PointAt(0)`/
+  `PointAt(1)` landing on the wrong (in one case a domain-negated,
+  off-curve) points after a raw `Reverse()`.
+  Verified with real control-point-level geometry, not sampled fitting:
+  on 4 genuinely different curved boundaries (cubic, not straight
+  lines, so a coincidental match is not possible), the built patch's
+  own 4 boundary isocurves reproduce all 4 original input curves
+  exactly (< 1e-9 at 41 samples each) and all 4 corners exactly; the
+  same patch built from `top`/`right` handed in pre-reversed is
+  geometrically identical (< 1e-9) to the correctly-oriented build,
+  confirming the auto-orientation search; 4 curves that never actually
+  meet are refused with a genuinely large (not rounding-level) reported
+  corner gap. A mutation (dropping the bilinear correction term) makes
+  the method's own internal self-check catch the wrong result and fail
+  closed, which the corresponding test then observes.
 
 ## What's still not done (as of chunk 2)
 
