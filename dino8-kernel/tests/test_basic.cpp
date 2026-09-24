@@ -11730,6 +11730,123 @@ void TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle() {
   Check(threw, "ShellClosedTorus refuses a non-positive major_radius");
 }
 
+void TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetFace;
+  using dino8::kernel::Point3d;
+
+  // Box face order per Brep::Box()'s own comment: 0=bottom(-z) 1=top(+z)
+  // 2=front(-y) 3=back(+y) 4=left(-x) 5=right(+x).
+  const Brep box = Brep::Box(0, 0, 0, 10, 10, 10);
+
+  const Brep grown_top = OffsetFace(box, 1, 2.0);
+  Check(std::fabs(PlanarBrepVolumeExact(grown_top) - 1200.0) < 1e-9,
+        "OffsetFace(box, top, +2.0) gives volume exactly 1200 (10x10x12)");
+  Check(grown_top.FaceCount() == 6, "OffsetFace on a box keeps exactly 6 faces (no topology change)");
+
+  const Brep shrunk_top = OffsetFace(box, 1, -2.0);
+  Check(std::fabs(PlanarBrepVolumeExact(shrunk_top) - 800.0) < 1e-9,
+        "OffsetFace(box, top, -2.0) gives volume exactly 800 (10x10x8)");
+
+  // Growing the LEFT face must extend the box to x=-1 while the RIGHT
+  // face (the one directly opposite, whose plane never moved) stays
+  // exactly at x=10 - the real test that only ONE plane moved and every
+  // other face's own boundary was correctly recomputed against it, not
+  // just that the total volume happens to match.
+  const Brep grown_left = OffsetFace(box, 4, 1.0);
+  Check(std::fabs(PlanarBrepVolumeExact(grown_left) - 1100.0) < 1e-9,
+        "OffsetFace(box, left, +1.0) gives volume exactly 1100 (11x10x10)");
+  Point3d min_pt = grown_left.PlanarFaces()[0].loop[0], max_pt = min_pt;
+  for (const auto& f : grown_left.PlanarFaces()) {
+    for (const Point3d& p : f.loop) {
+      min_pt.x = std::min(min_pt.x, p.x); max_pt.x = std::max(max_pt.x, p.x);
+      min_pt.y = std::min(min_pt.y, p.y); max_pt.y = std::max(max_pt.y, p.y);
+      min_pt.z = std::min(min_pt.z, p.z); max_pt.z = std::max(max_pt.z, p.z);
+    }
+  }
+  Check(std::fabs(min_pt.x - (-1.0)) < 1e-9 && std::fabs(max_pt.x - 10.0) < 1e-9 &&
+            std::fabs(min_pt.y) < 1e-9 && std::fabs(max_pt.y - 10.0) < 1e-9 &&
+            std::fabs(min_pt.z) < 1e-9 && std::fabs(max_pt.z - 10.0) < 1e-9,
+        "OffsetFace(box, left, +1.0): the box's new bounding box is exactly [-1,10]x[0,10]x[0,10] - "
+        "only the left face moved, every other face's own plane and boundary are exactly where they started");
+
+  const auto mesh = grown_left.TessellateToClosedMesh(1, 1);
+  Check(mesh.IsClosedManifold(), "OffsetFace's result tessellates to a closed, watertight manifold");
+  Check(std::fabs(mesh.Volume() - 1100.0) < 1e-3, "...with tessellated volume also matching 1100");
+
+  bool threw = false;
+  try { OffsetFace(box, 1, -11.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "OffsetFace refuses a distance that collapses the solid (the face would pass through the opposite one)");
+
+  threw = false;
+  try { OffsetFace(box, 99, 1.0); } catch (const std::invalid_argument&) { threw = true; }
+  Check(threw, "OffsetFace refuses an out-of-range face_index");
+}
+
+// A right tetrahedron (apex at the origin, base triangle in the plane
+// z=h) is a genuinely non-axis-aligned, non-rectangular convex solid -
+// moving its BASE face outward by `d` (the other 3 face planes, which
+// all pass through the fixed apex, are untouched) must scale the whole
+// solid by the classical cone/pyramid similarity ratio ((h+d)/h)^3,
+// since the 3 side planes still meet at the same apex and only the cap's
+// own distance from it changed - an exact, independently-derivable
+// relationship this test checks directly, not merely a plausible-looking
+// number.
+void TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling() {
+  using dino8::kernel::Brep;
+  using dino8::kernel::OffsetFace;
+  using dino8::kernel::Point3d;
+  using dino8::kernel::Vector3d;
+
+  const double h = 3.0;
+  const Point3d apex(0, 0, 0);
+  const Point3d b0(2, 0, h), b1(-1, 2, h), b2(-1, -2, h);
+  const Point3d centroid((apex.x + b0.x + b1.x + b2.x) / 4.0, (apex.y + b0.y + b1.y + b2.y) / 4.0,
+                          (apex.z + b0.z + b1.z + b2.z) / 4.0);
+
+  auto make_outward = [&](Point3d p0, Point3d p1, Point3d p2) {
+    Brep::PlanarFace f;
+    Vector3d n = ON_CrossProduct(p1 - p0, p2 - p0);
+    n.Unitize();
+    if (ON_DotProduct(n, p0 - centroid) < 0) {
+      std::swap(p1, p2);
+      n = -n;
+    }
+    f.plane = ON_Plane(p0, n);
+    f.loop = {p0, p1, p2};
+    return f;
+  };
+
+  const std::vector<Brep::PlanarFace> faces = {
+      make_outward(apex, b0, b1),
+      make_outward(apex, b1, b2),
+      make_outward(apex, b2, b0),
+      make_outward(b0, b2, b1),  // base, at z = h
+  };
+  const Brep tet = Brep::FromPlanarFaces(faces);
+  const double orig_vol = PlanarBrepVolumeExact(tet);
+  Check(orig_vol > 0.0, "the hand-built tetrahedron has positive (correctly outward-oriented) volume");
+
+  int base_idx = -1;
+  const auto pf = tet.PlanarFaces();
+  for (size_t i = 0; i < pf.size(); ++i) {
+    if (std::fabs(pf[i].plane.zaxis.z - 1.0) < 1e-6) {
+      base_idx = static_cast<int>(i);
+      break;
+    }
+  }
+  Check(base_idx >= 0, "found the tetrahedron's own base face (outward normal +z) among Brep::FromPlanarFaces()'s output");
+
+  const double d = 1.5;
+  const Brep moved = OffsetFace(tet, base_idx, d);
+  const double expected = orig_vol * std::pow((h + d) / h, 3.0);
+  Check(std::fabs(PlanarBrepVolumeExact(moved) - expected) / expected < 1e-9,
+        "OffsetFace on the tetrahedron's base scales its exact volume by ((h+d)/h)^3, "
+        "the classical pyramid-similarity ratio - not merely a plausible number");
+  Check(moved.TessellateToClosedMesh(1, 1).IsClosedManifold(),
+        "the moved tetrahedron also tessellates to a closed, watertight manifold");
+}
+
 }  // namespace
 
 // The spec's own required exact case: fillet the unit cube's top
@@ -28175,6 +28292,8 @@ int main() {
   TestShellConvexPlanarPerFaceWallThicknessArgumentChecks();
   TestShellClosedSphereMatchesExactShellVolume();
   TestShellClosedTorusMatchesExactShellVolumeAndRejectsSpindle();
+  TestOffsetFaceOnBoxMatchesExactLinearVolumeAndPinsOtherFaces();
+  TestOffsetFaceOnTetrahedronMatchesExactCubicVolumeScaling();
   TestFilletConvexEdgeUnitCubeTopFrontCorner();
   TestFilletConvexEdgeTaperedRailExactness();
   TestFilletConvexEdgeTaperedClosedFormVolumeMatchesFrustumFormula();
