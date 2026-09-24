@@ -163,9 +163,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "dumpbin failed ($LASTEXITCODE)" }
           $dlls = $out | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim().ToLowerInvariant() }
           Write-Host "Dino8.exe imports:"; $dlls | ForEach-Object { Write-Host "  $_" }
-          $allowed = '^(kernel32|user32|gdi32|shell32|advapi32|ole32|oleaut32|comdlg32|opengl32|ws2_32|winmm|imm32|version|setupapi|hid|cfgmgr32|dwmapi|uxtheme|shlwapi|bcrypt|crypt32|rpcrt4|api-ms-win-.*|ext-ms-win-.*)\.dll$'
-          $bad = $dlls | Where-Object { $_ -notmatch $allowed }
-          if ($bad) { throw "Dino8.exe imports non-OS DLL(s) that the installer does not ship: $($bad -join ', ')" }
+          # Denylist, not an allowlist: an allowlist has to enumerate every
+          # legitimate OS DLL a GUI app can pull in (dwrite, d3d11,
+          # windowscodecs, combase, ...) and missed one on its first run
+          # (dwrite.dll, from GDI/ImGui text rendering, broke a real
+          # Windows-on-ARM build here). What this check actually needs to
+          # catch is the two concrete failure modes that shipped broken
+          # exes before: a dynamically-linked CRT/C++ runtime (meaning the
+          # static-CRT build in CMakeLists.txt regressed) and a bundled
+          # interpreter/sanitizer runtime nothing installs
+          # (python*.dll from an accidentally-enabled DINO8_ENABLE_PYTHON,
+          # clang_rt.*.dll from AddressSanitizer). A denylist for exactly
+          # those stays correct without having to predict every OS DLL a
+          # future code change might legitimately start importing.
+          $denied = '^(python\d.*|vcruntime\d+(_1)?|msvcp\d+|msvcr\d*|concrt\d+|vcomp\d*|mfc\d+u?|clang_rt\..*|ucrtbased)\.dll$'
+          $bad = $dlls | Where-Object { $_ -match $denied }
+          if ($bad) { throw "Dino8.exe imports a bundled runtime DLL the installer does not ship: $($bad -join ', ')" }
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
       - name: Compile installer
@@ -225,9 +238,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "dumpbin failed ($LASTEXITCODE)" }
           $dlls = $out | Where-Object { $_ -match '^\s+\S+\.dll\s*$' } | ForEach-Object { $_.Trim().ToLowerInvariant() }
           Write-Host "Dino8.exe imports:"; $dlls | ForEach-Object { Write-Host "  $_" }
-          $allowed = '^(kernel32|user32|gdi32|shell32|advapi32|ole32|oleaut32|comdlg32|opengl32|ws2_32|winmm|imm32|version|setupapi|hid|cfgmgr32|dwmapi|uxtheme|shlwapi|bcrypt|crypt32|rpcrt4|api-ms-win-.*|ext-ms-win-.*)\.dll$'
-          $bad = $dlls | Where-Object { $_ -notmatch $allowed }
-          if ($bad) { throw "Dino8.exe imports non-OS DLL(s) that the portable zip does not ship: $($bad -join ', ')" }
+          # Denylist, see the x64 job's own "Dependents check" step for why
+          # (an allowlist here already broke a real build once, on the
+          # legitimate dwrite.dll).
+          $denied = '^(python\d.*|vcruntime\d+(_1)?|msvcp\d+|msvcr\d*|concrt\d+|vcomp\d*|mfc\d+u?|clang_rt\..*|ucrtbased)\.dll$'
+          $bad = $dlls | Where-Object { $_ -match $denied }
+          if ($bad) { throw "Dino8.exe imports a bundled runtime DLL the portable zip does not ship: $($bad -join ', ')" }
       - name: Portable zip
         run: cd dino8-app/build && cpack
       - uses: actions/upload-artifact@v4
