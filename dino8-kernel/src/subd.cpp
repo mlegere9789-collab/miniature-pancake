@@ -143,6 +143,72 @@ bool SubD::SetCrease(const Point3d& p0, const Point3d& p1, bool crease, double p
   return changed == 1;
 }
 
+namespace {
+
+// The other of `v`'s naked (single-face) edges - not `exclude` - or
+// nullptr if there isn't exactly one such edge. A boundary vertex has
+// exactly 2 naked edges; this is how SubD::CapBoundaryLoop() walks from
+// one to the "next" one around the loop.
+const ON_SubDEdge* OtherNakedEdge(const ON_SubDVertex* v, const ON_SubDEdge* exclude) {
+  if (v == nullptr) return nullptr;
+  const ON_SubDEdge* found = nullptr;
+  for (unsigned int i = 0; i < v->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = v->Edge(i);
+    if (e == nullptr || e == exclude || e->FaceCount() != 1) continue;
+    if (found != nullptr) return nullptr;  // a bowtie's other side - ambiguous here, not guessed
+    found = e;
+  }
+  return found;
+}
+
+}  // namespace
+
+bool SubD::CapBoundaryLoop(const Point3d& start, double point_tolerance) {
+  const ON_SubDVertex* v0 = subd_.FindVertex(&start.x, point_tolerance);
+  if (v0 == nullptr) return false;
+
+  const ON_SubDEdge* first_edge = nullptr;
+  for (unsigned int i = 0; i < v0->EdgeCount(); ++i) {
+    const ON_SubDEdge* e = v0->Edge(i);
+    if (e != nullptr && e->FaceCount() == 1) {
+      first_edge = e;
+      break;
+    }
+  }
+  if (first_edge == nullptr) return false;
+
+  std::vector<const ON_SubDEdge*> loop;
+  const ON_SubDEdge* e = first_edge;
+  const ON_SubDVertex* v = v0;
+  const unsigned int budget = subd_.EdgeCount();
+  for (unsigned int steps = 0; steps <= budget; ++steps) {
+    loop.push_back(e);
+    const ON_SubDVertex* next_v = e->OtherEndVertex(v);
+    if (next_v == nullptr) return false;
+    if (next_v == v0) {
+      ON_SimpleArray<ON_SubDEdge*> edges(static_cast<int>(loop.size()));
+      // AddFace() takes non-const ON_SubDEdge* - the same const_cast
+      // pattern OpenNURBS' own AddEdge()/SetEdgeTags() callers use on
+      // pointers obtained from const accessors (FindVertex()/Edge()
+      // here), never on anything actually declared const by the caller.
+      for (const ON_SubDEdge* le : loop) edges.Append(const_cast<ON_SubDEdge*>(le));
+      ON_SubDFace* face = subd_.AddFace(edges);
+      if (face == nullptr) return false;
+
+      std::vector<ON_SubDComponentPtr> cptrs;
+      cptrs.reserve(loop.size());
+      for (const ON_SubDEdge* le : loop) cptrs.push_back(ON_SubDComponentPtr::Create(le));
+      subd_.SetEdgeTags(cptrs.data(), cptrs.size(), ON_SubDEdgeTag::Smooth);
+      return true;
+    }
+    const ON_SubDEdge* next_edge = OtherNakedEdge(next_v, e);
+    if (next_edge == nullptr) return false;
+    e = next_edge;
+    v = next_v;
+  }
+  return false;
+}
+
 std::vector<SubDLimitPoint> SubD::LimitPoints() const {
   std::vector<SubDLimitPoint> out;
   ON_SubDVertexIterator vit = subd_.VertexIterator();
